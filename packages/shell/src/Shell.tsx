@@ -192,6 +192,10 @@ export function Shell(props: { deps: ShellDeps }) {
   }
 
   useKeyboard((key) => {
+    // quit works from any state — raw \x03 (legacy mode) or parsed ctrl+c
+    // (kitty keyboard protocol delivers it as CSI-u, OpenTUI parses to
+    // name "c" + ctrl flag)
+    if (key.sequence === "\x03" || ((key.name === "c" || key.name === "C") && key.ctrl)) process.exit(0)
     // approval modal takes precedence
     const ap = approval()
     if (ap) {
@@ -206,7 +210,6 @@ export function Shell(props: { deps: ShellDeps }) {
       }
       return
     }
-    if (key.sequence === "\x03") process.exit(0)
     if (busy()) {
       if (key.name === "escape" && abort) abort.abort()
       return
