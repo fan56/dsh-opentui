@@ -1,10 +1,11 @@
 /**
- * The Runtime plugin: boots the OpenTUI engine inside a cordis context,
- * registers the surface service, and mounts the shell's Solid root.
+ * The Runtime: boots the OpenTUI engine, optionally registers the surface
+ * service on a cordis context, and mounts the shell's Solid root.
  *
  * Usage (from the shell):
  *
- *   const runtime = await bootRuntime(ctx, { root: () => <Shell /> })
+ *   const runtime = await bootRuntime({ root: (store) => <Shell deps={{store,...}} /> })
+ *   // with a host context: bootRuntime({ ctx, root })
  */
 import type { Context } from "@deepseek-ai/cordis"
 import { render } from "@opentui/solid"
@@ -17,7 +18,9 @@ export { SurfaceStore, registerSurfaceService, hasSurface, OpentuiSurfaceService
 export { mountEngine, unmountEngine, type EngineOptions, type StdoutCapture } from "./engine.ts"
 
 export interface RuntimeOptions extends EngineOptions {
-  /** Pre-created surface store; the runtime registers it as ctx.surface. */
+  /** Host context; when given, `ctx.surface` is registered for plugins. */
+  ctx?: Context
+  /** Pre-created surface store. */
   store?: SurfaceStore
   /** The shell's Solid root component. */
   root: (store: SurfaceStore) => JSX.Element
@@ -28,9 +31,9 @@ export interface RuntimeHandle {
   stop(): Promise<void>
 }
 
-export async function bootRuntime(ctx: Context, options: RuntimeOptions): Promise<RuntimeHandle> {
+export async function bootRuntime(options: RuntimeOptions): Promise<RuntimeHandle> {
   const store = options.store ?? new SurfaceStore()
-  registerSurfaceService(ctx, store)
+  if (options.ctx) registerSurfaceService(options.ctx, store)
 
   let exitReason = "unknown"
   const { renderer, capture } = await mountEngine({
@@ -47,7 +50,7 @@ export async function bootRuntime(ctx: Context, options: RuntimeOptions): Promis
     store,
     stop: async () => {
       await unmountEngine(renderer, capture)
-      ctx.logger?.info(`runtime stopped: ${exitReason}`)
+      options.ctx?.logger?.info(`runtime stopped: ${exitReason}`)
     },
   }
 }
