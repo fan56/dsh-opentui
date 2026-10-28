@@ -1,0 +1,11 @@
+#!/bin/bash
+# dsh-opentui launcher: boots the real dsh host with the dsh-opentui profile.
+# OpenTUI's native core needs node >=26.4 with --experimental-ffi inside the host.
+set -euo pipefail
+
+case " ${NODE_OPTIONS:-} " in
+  *" --experimental-ffi "*) ;;                      # already present, keep as-is
+  *) export NODE_OPTIONS="${NODE_OPTIONS:-} --experimental-ffi" ;;
+esac
+
+exec dsh --profile dsh-opentui "$@"

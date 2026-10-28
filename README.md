@@ -17,7 +17,30 @@ chat agent TUI on top of it:
 
 See [CONTEXT.md](CONTEXT.md) for the glossary and [docs/adr/](docs/adr/)
 for decisions: Solid (0001), two integration channels with no compat shim
-(0002), Bun + compiled binary distribution (0003).
+(0002), Bun + compiled binary distribution (0003), host profile route (0004).
+
+## Run as a dsh profile (host mode)
+
+The Shell can run inside the real dsh host as a profile, instead of the
+standalone binary:
+
+```bash
+./dsh-opentui                                        # launcher (adds the flag for you)
+NODE_OPTIONS=--experimental-ffi dsh --profile dsh-opentui   # equivalent, manual
+./try-host.sh                                        # keymap banner + launcher
+```
+
+| What | Where |
+|---|---|
+| Profile | installed at `~/.dsh/profiles/dsh-opentui` (bundles: `dsh-base` + `@dsh-opentui/shell`; plugins mounted via `link:`) |
+| Runtime | OpenTUI's native core needs node >= 26.4 with `--experimental-ffi` inside the host |
+| Model & keys | fully reused from the host's own config (agent-default-model combo by default) |
+
+After changing plugin sources, rebuild:
+
+```bash
+cd packages/shell && bun build-host.ts
+```
 
 ## Try the Shell (M2 demo)
 
@@ -74,6 +97,6 @@ bunfig; a root-level one breaks compiled binaries ("preload not found").
 
 ## Status
 
-M2 (working Shell with direct-LLM agent loop). Roadmap: host seams
+M3: host profile mode (`dsh --profile dsh-opentui`) + direct-LLM fallback. Roadmap: host seams
 (approval waterfall, ask, attachments, sessions via the real dsh host) ·
 full Kit + starter polish · linux binary release pipeline.

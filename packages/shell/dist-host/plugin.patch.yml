@@ -1,0 +1,4 @@
+# dsh-opentui bundle patch: mount the OpenTUI shell plugin over the base bundle
+- insert:
+    - id: dsh-opentui
+      name: "@dsh-opentui/shell"
