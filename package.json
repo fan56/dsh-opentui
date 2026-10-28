@@ -1,0 +1,15 @@
+{
+  "name": "dsh-opentui-monorepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.3",
+  "engines": {
+    "bun": ">=1.3.14"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "bun test",
+    "typecheck": "pnpm -r typecheck",
+    "shell": "pnpm --filter @dsh-opentui/shell dev"
+  }
+}

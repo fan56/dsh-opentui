@@ -1,0 +1,21 @@
+{
+  "name": "@dsh-opentui/starter",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Example plugin consuming the dsh-opentui surface protocol \u2014 copy this directory to start a new plugin.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dsh-opentui/runtime": "workspace:*",
+    "@deepseek-ai/cordis": "4.0.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/bun": "latest"
+  }
+}
