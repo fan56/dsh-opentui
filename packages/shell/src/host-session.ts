@@ -27,6 +27,7 @@ export class HostSession {
   #resolveTurn?: () => void
   #running = false
   #toolCalls = new Map<string, { name: string; args: string }>()
+  #override?: { provider: string; model: string }
   usage = { prompt: 0, completion: 0 }
 
   constructor(ctx: Context) {
@@ -34,13 +35,46 @@ export class HostSession {
     this.#wire()
   }
 
+  /** Provider catalog as the host sees it (llm service), best-effort. */
+  listProviders(): { provider: string; models: string[] }[] {
+    try {
+      const llm = (this.#ctx as any).get?.("llm")
+      const providers = llm?.listConfigurableProviders?.() ?? []
+      return providers
+        .map((p: any) => ({
+          provider: String(p?.provider ?? p?.id ?? p ?? ""),
+          models: (p?.models ?? [])
+            .map((m: any) => String(m?.id ?? m?.model ?? m ?? ""))
+            .filter(Boolean),
+        }))
+        .filter((p: { provider: string }) => p.provider)
+    } catch {
+      return []
+    }
+  }
+
+  /** Switch model for the NEXT session (the current one keeps its route). */
+  switchModel(provider: string, model: string): void {
+    this.#override = { provider, model }
+    // drop the live session so the next turn re-creates with the new route
+    try {
+      this.#handle?.dispose?.()
+    } catch {
+      /* already gone */
+    }
+    this.#handle = undefined
+    this.#sessionId = undefined
+    this.#agentId = undefined
+    this.label = `${provider}/${model}`
+  }
+
   async turn(userText: string, cb: TurnCallbacks, _signal?: AbortSignal): Promise<void> {
     this.#cb = cb
     if (!this.#handle) {
       this.#sessionId = randomUUID()
-      // the host does NOT auto-apply a default model — seed from the
-      // composed agent-default-model selection (ctx.get needs no inject)
-      const sel = (this.#ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
+      // Model precedence: an explicit /model override wins over the composed
+      // agent-default-model selection (the host does NOT auto-apply either).
+      const sel = this.#override ?? (this.#ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
       const agentOptions = sel
         ? { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}) }
         : {}

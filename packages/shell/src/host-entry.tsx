@@ -4,9 +4,8 @@
  * process and renders ShellHost, wired to a HostSession.
  *
  * Runtime contract (see build-host.ts): @opentui/* and solid-js stay
- * external (resolved from the profile's node_modules); @deepseek-ai/* are
- * type-only here except dsh-session's createUserMessage, resolved from the
- * global dsh closure via symlink.
+ * external (resolved from the profile's node_modules); dsh-llm resolves
+ * from the global dsh closure via symlink.
  */
 import type { Context } from "@deepseek-ai/cordis"
 import { render } from "@opentui/solid"
@@ -22,15 +21,14 @@ import { HostSession } from "./host-session.ts"
 // export object, not as a sibling named export
 const inject = ["agents"]
 
-export function apply(ctx: Context) {
+export function apply(ctx: Context, config?: { theme?: string }) {
   const i18n = createI18n("zh-CN")
   const store = new SurfaceStore()
   const session = new HostSession(ctx)
 
   mountEngine({}).then(({ renderer }) => {
-    // engine teardown follows the plugin's own disposal
     render(
-      () => <ShellHost deps={{ store, t: i18n.t, session }} />,
+      () => <ShellHost deps={{ store, t: i18n.t, session, themeName: config?.theme }} />,
       renderer,
     )
   }).catch((e) => {

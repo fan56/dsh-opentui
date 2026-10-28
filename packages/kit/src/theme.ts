@@ -19,6 +19,16 @@ export interface ThemeTokens {
   text: string
   /** Panel border color. */
   border: string
+  /** Selection highlight background (optional extension). */
+  selection?: string
+  /** User message prefix color (optional extension). */
+  userMark?: string
+  /** Tool success state color (optional extension). */
+  toolOk?: string
+  /** Tool failure state color (optional extension). */
+  toolFail?: string
+  /** Approval card border color (optional extension). */
+  approvalBorder?: string
 }
 
 export interface Theme {
@@ -37,4 +47,35 @@ export const defaultTheme: Theme = {
     text: "#eeeeee",
     border: "#444444",
   },
+}
+
+/** Catppuccin Mocha palette. Background is left to the terminal itself. */
+export const catppuccinMocha: Theme = {
+  name: "catppuccin-mocha",
+  tokens: {
+    accent: "#a6e3a1", // green
+    dim: "#6c7086", // overlay0
+    danger: "#f38ba8", // red
+    ok: "#a6e3a1", // green
+    warn: "#f9e2af", // yellow
+    text: "#cdd6f4", // text
+    border: "#45475a", // surface1
+    selection: "#313244", // surface0
+    userMark: "#89b4fa", // blue
+    toolOk: "#f9e2af", // yellow
+    toolFail: "#f38ba8", // red
+    approvalBorder: "#f9e2af", // yellow
+  },
+}
+
+/** All shipped themes, keyed by theme name. */
+export const themes: Record<string, Theme> = {
+  default: defaultTheme,
+  "catppuccin-mocha": catppuccinMocha,
+}
+
+/** Resolve a theme by name; unknown or missing names fall back to default. */
+export function getTheme(name?: string): Theme {
+  if (name && themes[name]) return themes[name]!
+  return defaultTheme
 }

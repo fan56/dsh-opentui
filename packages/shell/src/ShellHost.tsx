@@ -1,11 +1,12 @@
 /**
  * ShellHost — the Shell driving a HostSession (the real dsh host inside
- * this process). Same transcript/input/status layout as the direct Shell;
-* /model is host-owned so it is omitted here.
+ * this process). dsh-tui-pi-style affordances: slash palette with
+ * autocomplete, themes, footer hints, markdown-ish transcript with
+ * left-rail tool blocks, live /model switching across host providers.
  */
 import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
-import { StatusBar, defaultTheme, type I18n } from "@dsh-opentui/kit"
+import { StatusBar, getTheme, themes, type I18n, type Theme } from "@dsh-opentui/kit"
 import type { SurfaceStore, SurfaceWidgetDecl } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
@@ -14,6 +15,8 @@ export interface ShellHostDeps {
   store: SurfaceStore
   t: I18n["t"]
   session: HostSession
+  /** Theme name from plugin config; env wins over this. */
+  themeName?: string
 }
 
 type TItem =
@@ -25,6 +28,49 @@ type TItem =
   | { kind: "system"; text: string }
 
 const MAX_VISIBLE_LINES = 200
+const THEME_ORDER = ["catppuccin-mocha", "default"]
+
+/** Slash commands surfaced by the autocomplete palette (dsh-tui-pi style). */
+const COMMANDS: { name: string; desc: string }[] = [
+  { name: "/help", desc: "show available commands" },
+  { name: "/clear", desc: "clear the transcript" },
+  { name: "/usage", desc: "show token usage summary" },
+  { name: "/theme", desc: "cycle theme" },
+  { name: "/model", desc: "show or switch model (/model provider/id)" },
+  { name: "/quit", desc: "exit the shell" },
+]
+
+/** Hint strip rendered above the status bar (dsh-tui-pi style). */
+const footerHints: { key: string; label: string }[] = [
+  { key: "enter", label: "send" },
+  { key: "y/n", label: "approve" },
+  { key: "esc", label: "abort" },
+  { key: "/help", label: "commands" },
+  { key: "ctrl+c", label: "quit" },
+]
+
+/** Minimal markdown-ish transcript rendering: headings pop, fenced code
+ * blocks get a dim left rail, everything else passes through. */
+function renderAssistant(text: string, theme: Theme): { text: string; fg?: string }[] {
+  const out: { text: string; fg?: string }[] = []
+  let inFence = false
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1")
+    if (/^```/.test(line)) {
+      inFence = !inFence
+      out.push({ text: inFence ? "┌─" : "└─", fg: theme.tokens.dim })
+      continue
+    }
+    if (inFence) {
+      out.push({ text: `│ ${line}`, fg: theme.tokens.dim })
+      continue
+    }
+    const heading = /^(#{1,3})\s+(.*)/.exec(line)
+    if (heading) out.push({ text: heading[2], fg: theme.tokens.accent })
+    else out.push({ text: line })
+  }
+  return out
+}
 
 export function ShellHost(props: { deps: ShellHostDeps }) {
   const t = props.deps.t
@@ -37,6 +83,17 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [usage, setUsage] = createSignal({ prompt: 0, completion: 0, turns: 0 })
   const [label, setLabel] = createSignal(props.deps.session.label)
   const [snapshot, setSnapshot] = createSignal(store.snapshot)
+  // Theme: plugin config < env < host-mode default (catppuccin-mocha)
+  const initialTheme =
+    process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha"
+  const [themeName, setThemeName] = createSignal(
+    themes[initialTheme] ? initialTheme : "catppuccin-mocha",
+  )
+  const theme = () => getTheme(themeName())
+  // Slash palette state: menuOpen tracks an explicit esc dismissal; any
+  // further input edit reopens the menu while the line starts with "/".
+  const [menuOpen, setMenuOpen] = createSignal(true)
+  const [menuSel, setMenuSel] = createSignal(0)
 
   let approveResolve: ((ok: boolean) => void) | null = null
 
@@ -48,17 +105,38 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
 
   const spinner = () => ["⠋", "⠙", "⠹", "⠸"][spin()]
 
+  // Slash palette: the menu lists COMMANDS matching the "/token" prefix of
+  // the input line; it hides while busy (navigation is disabled then too).
+  const filteredCommands = createMemo(() => {
+    const m = /^\/(\S*)/.exec(input())
+    if (!m) return []
+    return COMMANDS.filter((c) => c.name.slice(1).startsWith(m[1]))
+  })
+  const clampedSel = createMemo(() => {
+    const n = filteredCommands().length
+    return n === 0 ? 0 : Math.min(menuSel(), n - 1)
+  })
+  const menuVisible = createMemo(() => !busy() && menuOpen() && filteredCommands().length > 0)
+
   const lines = createMemo(() => {
+    const th = theme()
     const out: { text: string; fg?: string }[] = []
     for (const it of items()) {
-      if (it.kind === "user") out.push({ text: `你 › ${it.text}`, fg: defaultTheme.tokens.accent })
-      else if (it.kind === "assistant") for (const l of it.text.split("\n")) out.push({ text: l })
-      else if (it.kind === "thinking")
-        out.push({ text: `${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`, fg: defaultTheme.tokens.dim })
-      else if (it.kind === "tool")
-        out.push({ text: `  ⚒ ${it.name} ${it.args.slice(0, 80)} → ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 100)}`, fg: it.ok ? defaultTheme.tokens.warn : defaultTheme.tokens.danger })
-      else if (it.kind === "error") out.push({ text: `✗ ${t("agent.error")}: ${it.text}`, fg: defaultTheme.tokens.danger })
-      else if (it.kind === "system") out.push({ text: `· ${it.text}`, fg: defaultTheme.tokens.dim })
+      if (it.kind === "user") {
+        out.push({ text: `❯ ${it.text}`, fg: th.tokens.userMark ?? th.tokens.accent })
+      } else if (it.kind === "assistant") {
+        out.push(...renderAssistant(it.text, th))
+        out.push({ text: "" })
+      } else if (it.kind === "thinking") {
+        out.push({ text: `${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`, fg: th.tokens.dim })
+      } else if (it.kind === "tool") {
+        out.push({ text: ` ⚒ ${it.name} ${it.args.slice(0, 90)}`, fg: th.tokens.toolOk ?? th.tokens.warn })
+        out.push({ text: ` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`, fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger })
+      } else if (it.kind === "error") {
+        out.push({ text: `✗ ${t("agent.error")}: ${it.text}`, fg: th.tokens.danger })
+      } else if (it.kind === "system") {
+        out.push({ text: `· ${it.text}`, fg: th.tokens.dim })
+      }
     }
     return out.slice(-MAX_VISIBLE_LINES)
   })
@@ -72,6 +150,48 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
   }
   const push = (it: TItem) => setItems((arr) => [...arr, it])
+
+  /** Execute a "/cmd ..." input line (shared by Enter and the palette). */
+  function runCommand(text: string) {
+    const parts = text.slice(1).trim().split(/\s+/)
+    const cmd = parts[0]
+    const arg = parts.slice(1).join(" ")
+    if (cmd === "quit" || cmd === "exit") process.exit(0)
+    if (cmd === "help" || cmd === "?") {
+      push({ kind: "system", text: t("cmd.help.lines") })
+    } else if (cmd === "clear") {
+      setItems([])
+      push({ kind: "system", text: t("cmd.cleared") })
+    } else if (cmd === "usage") {
+      const u = usage()
+      push({ kind: "system", text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens` })
+    } else if (cmd === "theme") {
+      const i = THEME_ORDER.indexOf(themeName())
+      const next = THEME_ORDER[(i + 1) % THEME_ORDER.length]
+      setThemeName(next)
+      push({ kind: "system", text: `theme → ${next}` })
+    } else if (cmd === "model") {
+      if (!arg) {
+        push({ kind: "system", text: `model: ${props.deps.session.label}` })
+        const catalog = props.deps.session.listProviders()
+        for (const p of catalog) {
+          push({ kind: "system", text: `  ${p.provider}: ${p.models.slice(0, 8).join(", ")}${p.models.length > 8 ? ` …(+${p.models.length - 8})` : ""}` })
+        }
+        push({ kind: "system", text: "switch: /model provider/model-id (applies to the next message)" })
+      } else {
+        const [provider, model] = arg.split("/")
+        if (!provider || !model) {
+          push({ kind: "error", text: "usage: /model provider/model-id" })
+        } else {
+          props.deps.session.switchModel(provider, model)
+          setLabel(props.deps.session.label)
+          push({ kind: "system", text: `model → ${provider}/${model} (next message)` })
+        }
+      }
+    } else {
+      push({ kind: "system", text: `unknown command: /${cmd} (try /help)` })
+    }
+  }
 
   async function send(text: string) {
     if (busy()) return
@@ -149,57 +269,109 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       return
     }
     if (busy()) return
+    // Slash palette keys: arrows move the highlight (disabled while busy
+    // via the early return above), tab completes, enter runs, esc closes.
+    if (menuVisible() && (key.name === "up" || key.name === "down")) {
+      const n = filteredCommands().length
+      setMenuSel((s) => (key.name === "up" ? (s - 1 + n) % n : (s + 1) % n))
+      return
+    }
+    if (key.name === "tab") {
+      const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined
+      if (cmd) {
+        setInput(cmd.name + " ")
+        setMenuSel(0)
+      }
+      return
+    }
     if (key.name === "return") {
       const text = input().trim()
+      const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined
       setInput("")
+      setMenuOpen(true)
+      setMenuSel(0)
+      if (cmd) {
+        runCommand(cmd.name)
+        return
+      }
       if (!text) return
       if (text.startsWith("/")) {
-        const cmd = text.slice(1).split(/\s+/)[0]
-        if (cmd === "quit" || cmd === "exit") process.exit(0)
-        if (cmd === "help" || cmd === "?") push({ kind: "system", text: t("cmd.help.lines") })
-        else if (cmd === "clear") {
-          setItems([])
-          push({ kind: "system", text: t("cmd.cleared") })
-        } else if (cmd === "usage") {
-          const u = usage()
-          push({ kind: "system", text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens` })
-        }
+        runCommand(text)
         return
       }
       send(text)
       return
     }
-    if (key.name === "backspace") return setInput((s) => s.slice(0, -1))
-    if (key.name === "escape") return setInput("")
+    if (key.name === "backspace") {
+      setInput((s) => s.slice(0, -1))
+      setMenuOpen(true)
+      setMenuSel(0)
+      return
+    }
+    if (key.name === "escape") {
+      if (menuVisible()) return setMenuOpen(false)
+      return setInput("")
+    }
     const ch = key.sequence
-    if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) setInput((s) => s + ch)
+    if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) {
+      setInput((s) => s + ch)
+      setMenuOpen(true)
+      setMenuSel(0)
+    }
   })
 
   const widgets = () => snapshot().filter((d): d is SurfaceWidgetDecl => d.kind === "widget")
+  const th = () => theme()
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-        <For each={lines()} fallback={<text style={{ fg: defaultTheme.tokens.dim }}>{t("shell.transcript.empty")}</text>}>
+        <For each={lines()} fallback={<text style={{ fg: th().tokens.dim }}>{t("shell.transcript.empty")}</text>}>
           {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
         </For>
       </box>
       <For each={approval() ? [approval()!] : []}>
         {(ap) => (
-          <box style={{ border: true, borderColor: defaultTheme.tokens.warn, flexDirection: "column", padding: 1 }}>
-            <text style={{ fg: defaultTheme.tokens.warn }}>⚠ {t("agent.approve.title")}: {ap.name}</text>
+          <box style={{ border: true, borderColor: th().tokens.approvalBorder ?? th().tokens.warn, flexDirection: "column", padding: 1 }}>
+            <text style={{ fg: th().tokens.warn }}>⚠ {t("agent.approve.title")}: {ap.name}</text>
             <text>{ap.args.slice(0, 200)}</text>
-            <text style={{ fg: defaultTheme.tokens.dim }}>{t("agent.approve.hint")}</text>
+            <text style={{ fg: th().tokens.dim }}>{t("agent.approve.hint")}</text>
           </box>
         )}
       </For>
-      <box style={{ border: true, borderColor: defaultTheme.tokens.border, flexDirection: "row" }}>
-        <text style={{ fg: defaultTheme.tokens.accent }}>{busy() ? `${spinner()} ` : "› "}</text>
-        <text>{busy() ? t("shell.input.busy") : input() || t("shell.input.placeholder")}</text>
+      <For each={menuVisible() ? [0] : []}>
+        {() => (
+          <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "column", padding: 0 }}>
+            <For each={filteredCommands()}>
+              {(c, i) => (
+                <text style={{ fg: i() === clampedSel() ? th().tokens.accent : undefined }}>
+                  {i() === clampedSel() ? "› " : "  "}
+                  {c.name}  {c.desc}
+                </text>
+              )}
+            </For>
+          </box>
+        )}
+      </For>
+      <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "row" }}>
+        <text style={{ fg: th().tokens.accent }}>{busy() ? `${spinner()} ` : "❯ "}</text>
+        <text style={{ fg: input() ? th().tokens.text : th().tokens.dim }}>
+          {busy() ? t("shell.input.busy") : input() || t("shell.input.placeholder")}
+        </text>
+      </box>
+      <box style={{ flexDirection: "row", paddingLeft: 2, paddingRight: 2 }}>
+        <For each={footerHints}>
+          {(h, i) => (
+            <text style={{ fg: th().tokens.dim }}>
+              {i() > 0 ? " · " : ""}
+              {h.key} {h.label}
+            </text>
+          )}
+        </For>
       </box>
       <StatusBar
         widgets={[
-          { kind: "widget", slot: "status", id: "model", order: 10, parts: [{ text: label(), color: defaultTheme.tokens.accent }] },
+          { kind: "widget", slot: "status", id: "model", order: 10, parts: [{ text: label(), color: th().tokens.accent }] },
           { kind: "widget", slot: "status", id: "usage", order: 20, parts: [{ text: `p${usage().prompt}/c${usage().completion}`, dim: true }] },
           ...widgets(),
         ]}
