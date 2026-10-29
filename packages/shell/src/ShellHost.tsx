@@ -11,11 +11,11 @@
 import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { SyntaxStyle } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
-import { getTheme, themes, type I18n } from "@dsh-opentui/kit"
+import { getTheme, themeNames, themes, type I18n } from "@dsh-opentui/kit"
 import { Transcript, InputLine, FooterHints, ApprovalCard, type TranscriptItem } from "@dsh-opentui/kit"
-import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, type PowerlineSegment } from "@dsh-opentui/kit"
+import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, speedSegment, type PowerlineSegment } from "@dsh-opentui/kit"
 import { ThinkWidget, ToolWidget, type ThinkWidgetState, type ToolWidgetEntry } from "@dsh-opentui/kit"
-import { AutoScroll, Select, type SelectItem } from "@dsh-opentui/kit"
+import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem } from "@dsh-opentui/kit"
 import type { SurfaceStore } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
@@ -43,9 +43,8 @@ type Overlay =
   | { kind: "model" } // items come from the reactive modelItems catalog
   | { kind: "sessions"; items: SelectItem[] }
   | { kind: "effort"; provider: string; model: string }
+  | { kind: "theme"; items: SelectItem[] }
   | { kind: "ask"; title: string; questionId: string; items: SelectItem[]; resolve: AskResolve }
-
-const THEME_ORDER = ["catppuccin-mocha", "default"]
 
 /** Credential refs reported by the bare /login //logout status dump. */
 const CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"]
@@ -63,10 +62,11 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/usage", desc: "show token usage summary" },
   { name: "/new", desc: "start a fresh session" },
   { name: "/sessions", desc: "list and resume stored sessions" },
-  { name: "/theme", desc: "cycle theme" },
+  { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
   { name: "/logout", desc: "remove an api key (/logout REF)" },
+  { name: "/attach", desc: "attach an image to the next message (/attach path)" },
   { name: "/quit", desc: "exit the shell" },
 ]
 
@@ -82,12 +82,16 @@ const fmtClock = () => {
 export function ShellHost(props: { deps: ShellHostDeps }) {
   const t = props.deps.t
   const [input, setInput] = createSignal("")
-  // Caret position within the input line (0..input().length).
-  const [cursor, setCursor] = createSignal(0)
   // Command history for up/down recall; historyIdx === history().length is
   // the draft slot (below the newest entry, i.e. the empty line).
   const [history, setHistory] = createSignal<string[]>([])
   const [historyIdx, setHistoryIdx] = createSignal(0)
+  // Editor buffer control (InputLine v2): resetKey bump = full clear (for
+  // /clear); setKey bump = replace the buffer with setValueText (history
+  // recall + post-submit clear).
+  const [resetKey, setResetKey] = createSignal(0)
+  const [setKey, setSetKey] = createSignal(0)
+  const [setValueText, setSetValueText] = createSignal("")
   const [items, setItems] = createSignal<TItem[]>([])
   const [busy, setBusy] = createSignal(false)
   const [approval, setApproval] = createSignal<{ name: string; args: string } | null>(null)
@@ -98,6 +102,15 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // Dock widgets (clean transcript): live thinking state + tool ledger.
   const [thinkState, setThinkState] = createSignal<ThinkWidgetState>({ active: false, text: "", elapsed: 0 })
   const [toolEntries, setToolEntries] = createSignal<ToolWidgetEntry[]>([])
+  // Detail re-expand: after a turn collapses the docks, ctrl+t / ctrl+o
+  // re-open the last thought / tool ledger in their expanded form.
+  const [thinkExpanded, setThinkExpanded] = createSignal(false)
+  const [toolExpanded, setToolExpanded] = createSignal(false)
+  // Agent todo list (host todo tool's todo/write snapshots; the host
+  // projection clears them at every turn start) and subagent activity rows
+  // (tool-workflow/agent-start/end pairs keyed runId:seq).
+  const [todos, setTodos] = createSignal<TodoItem[]>([])
+  const [agentRows, setAgentRows] = createSignal<{ key: string; label: string; status: string; elapsed: number }[]>([])
   // Modal Select overlay (model/sessions/effort/ask); see the Overlay type.
   const [overlay, setOverlay] = createSignal<Overlay | null>(null)
   // Model catalog for the Select (reactive: the host list loads async).
@@ -115,6 +128,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [menuSel, setMenuSel] = createSignal(0)
   // 24h wall clock for the powerline right side.
   const [clock, setClock] = createSignal(fmtClock())
+  // Live streaming speed for the powerline ⚡ segment (chars/4 estimate
+  // over elapsed time; shown only while a turn is running).
+  const [liveTps, setLiveTps] = createSignal<number | null>(null)
+  let turnStartAt = 0
 
   let approveResolve: ((ok: boolean) => void) | null = null
 
@@ -127,6 +144,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       setToolEntries((arr) =>
         arr.some((e) => e.status === "running")
           ? arr.map((e) => (e.status === "running" ? { ...e, elapsed: (e.elapsed ?? 0) + 1 } : e))
+          : arr,
+      )
+      setAgentRows((arr) =>
+        arr.some((r) => r.status === "running")
+          ? arr.map((r) => (r.status === "running" ? { ...r, elapsed: r.elapsed + 1 } : r))
           : arr,
       )
     }, 1000)
@@ -200,6 +222,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     if (!ov) return ""
     if (ov.kind === "model") return t("picker.model.title")
     if (ov.kind === "sessions") return t("picker.sessions.title")
+    if (ov.kind === "theme") return t("picker.theme.title")
     if (ov.kind === "effort") return t("picker.effort.title", { model: ov.model })
     return ov.title
   }
@@ -221,6 +244,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       props.deps.session.switchModel(ov.provider, ov.model, effort)
       setLabel(props.deps.session.label)
       push({ kind: "system", text: `${t("cmd.model.set")} ${ov.provider}/${ov.model}${effort ? ` (${effort})` : ""} ${t("cmd.model.next")}` })
+      return
+    }
+    if (ov.kind === "theme") {
+      setThemeName(value)
+      push({ kind: "system", text: `theme → ${value}` })
       return
     }
     if (ov.kind === "sessions") {
@@ -267,22 +295,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   }
   const push = (it: TItem) => setItems((arr) => [...arr, it])
 
-  // ---- line editor: cursor-based editing + history recall ----
-  /** Start of the word before `pos` (skips trailing whitespace, then the word). */
-  const wordStart = (s: string, pos: number): number => {
-    const cut = s.slice(0, pos).replace(/\s+$/, "").replace(/\S+$/, "").length
-    return Math.min(cut, pos)
-  }
-  /** Return to the draft slot after any manual edit. */
-  const resetHistoryNav = () => setHistoryIdx(history().length)
-  /** Insert a character at the cursor. */
-  const insertChar = (ch: string) => {
-    const s = input()
-    const c = Math.min(cursor(), s.length)
-    setInput(s.slice(0, c) + ch + s.slice(c))
-    setCursor(c + ch.length)
-    resetHistoryNav()
-  }
+  // ---- input flow: submission + history recall (buffer lives in InputLine) ----
   /** Record a submitted line in history (dedupe consecutive duplicates). */
   const commitHistory = (text: string) => {
     if (!text) return
@@ -291,18 +304,80 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     setHistory(next)
     setHistoryIdx(next.length)
   }
-  /** up/down recall; the draft slot (index === length) restores the empty line. */
-  const historyNav = (dir: -1 | 1) => {
-    const h = history()
-    if (h.length === 0) return
-    let idx = Math.min(historyIdx(), h.length)
-    if (dir === -1 && idx > 0) idx -= 1
-    else if (dir === 1 && idx < h.length) idx += 1
-    else return
-    setHistoryIdx(idx)
-    const text = idx === h.length ? "" : h[idx]
+  /** Replace the editor buffer (undoable, cursor at end). */
+  const setBuffer = (text: string) => {
+    setSetValueText(text)
+    setSetKey((k) => k + 1)
     setInput(text)
-    setCursor(text.length)
+  }
+  /** up/down recall at the editor's first/last line; the draft slot
+   * (index === length) restores the empty buffer. Returns whether the key
+   * was consumed (InputLine then suppresses its cursor move). */
+  const historyNav = (dir: "up" | "down"): boolean => {
+    const h = history()
+    if (h.length === 0) return false
+    let idx = Math.min(historyIdx(), h.length)
+    if (dir === "up" && idx > 0) idx -= 1
+    else if (dir === "down" && idx < h.length) idx += 1
+    else return false
+    setHistoryIdx(idx)
+    setBuffer(idx === h.length ? "" : h[idx]!)
+    return true
+  }
+  /** Clear the editor buffer without touching history (post-submit / clear). */
+  const clearBuffer = () => setBuffer("")
+
+  /** Enter on the editor: palette entry executes, "/" lines run as
+   * commands, plain text sends (or STEERS when a turn is running). */
+  const submitLine = () => {
+    const text = input().trim()
+    const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined
+    setMenuOpen(true)
+    setMenuSel(0)
+    if (cmd) {
+      // a typed line with arguments beats the bare highlighted command —
+      // "/model provider/id" must not be hijacked by the palette's "/model"
+      const full = text === cmd.name || !text.startsWith("/") ? cmd.name : text
+      commitHistory(full)
+      clearBuffer()
+      void runCommand(full)
+      return
+    }
+    if (!text) return
+    commitHistory(text)
+    clearBuffer()
+    if (text.startsWith("/")) {
+      void runCommand(text)
+      return
+    }
+    // Steering: mid-turn enter injects into the running turn instead of
+    // waiting for it to finish.
+    if (busy()) return steerText(text)
+    send(text)
+  }
+
+  /** Slash-palette keys consumed ahead of editor actions while the menu is
+   * open (up/down highlight, tab completes, enter runs). */
+  const paletteKeyFilter = (key: { name: string }): boolean => {
+    if (!menuVisible()) return false
+    if (key.name === "up" || key.name === "down") {
+      const n = filteredCommands().length
+      setMenuSel((s) => (key.name === "up" ? (s - 1 + n) % n : (s + 1) % n))
+      return true
+    }
+    if (key.name === "tab") {
+      const cmd = filteredCommands()[clampedSel()]
+      if (cmd) {
+        setBuffer(`${cmd.name} `)
+        setMenuSel(0)
+      }
+      return true
+    }
+    if (key.name === "return") {
+      submitLine()
+      return true
+    }
+    return false
   }
 
   /** Push one "REF: configured|missing" system row per common credential ref. */
@@ -335,10 +410,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       push({ kind: "system", text: t("cmd.help.lines") })
     } else if (cmd === "clear") {
       setItems([])
+      setResetKey((k) => k + 1)
       push({ kind: "system", text: t("cmd.cleared") })
     } else if (cmd === "usage") {
-      const u = usage()
-      push({ kind: "system", text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens` })
+      // Rich per-session summary (turns / prompt / completion / last-turn
+      // speed) from the host session's telemetry.
+      for (const line of props.deps.session.usageSummary()) push({ kind: "system", text: line })
       push({ kind: "system", text: `model: ${label()}` })
     } else if (cmd === "new") {
       props.deps.session.newSession()
@@ -359,10 +436,17 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         })
       }
     } else if (cmd === "theme") {
-      const i = THEME_ORDER.indexOf(themeName())
-      const next = THEME_ORDER[(i + 1) % THEME_ORDER.length]
-      setThemeName(next)
-      push({ kind: "system", text: `theme → ${next}` })
+      // Theme picker: all shipped palettes in a Select, grouped dark/light,
+      // the current one tagged in its description.
+      setOverlay({
+        kind: "theme",
+        items: themeNames().map((x) => ({
+          label: x.name,
+          group: x.dark ? "dark" : "light",
+          value: x.name,
+          ...(x.name === themeName() ? { description: t("cmd.model.current") } : {}),
+        })),
+      })
     } else if (cmd === "model") {
       if (!arg) {
         // Bare /model opens the Select overlay instead of printing the list.
@@ -404,6 +488,17 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       } else {
         push({ kind: "error", text: t("cmd.logout.usage") })
       }
+    } else if (cmd === "attach") {
+      if (!arg) {
+        push({ kind: "error", text: "usage: /attach /path/to/image.png" })
+      } else {
+        try {
+          const desc = await props.deps.session.attachImage(arg)
+          push({ kind: "system", text: `📎 attached ${desc} — sends with your next message` })
+        } catch (e) {
+          push({ kind: "error", text: errText(e) })
+        }
+      }
     } else {
       push({ kind: "system", text: `unknown command: /${cmd} (try /help)` })
     }
@@ -421,9 +516,14 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     push({ kind: "user", text })
     setBusy(true)
     // Fresh dock state: the think panel expands empty; tool entries keep
-    // accumulating across turns (they are the session's tool ledger).
+    // accumulating across turns (they are the session's tool ledger). Any
+    // manually re-expanded detail view closes for the new turn.
     thinkBuf = ""
     setThinkState({ active: true, text: "", elapsed: 0 })
+    setThinkExpanded(false)
+    setToolExpanded(false)
+    setLiveTps(null)
+    turnStartAt = Date.now()
     let replyItem: Extract<TItem, { kind: "assistant" }> | null = null
     streamingReply = null
     try {
@@ -450,6 +550,22 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             }
             setLabel(props.deps.session.label)
             setUsage((v) => ({ prompt: v.prompt + u.prompt, completion: v.completion + u.completion, turns: v.turns + 1 }))
+          },
+          onStreamTick: ({ chars, at }) => {
+            // live tok/s for the powerline ⚡ segment (chars/4 estimate)
+            const sec = (at - turnStartAt) / 1000
+            if (sec > 0.3 && chars > 0) setLiveTps(Math.round(chars / 4 / sec))
+          },
+          onTodos: (list) => setTodos(list),
+          onAgentEvent: (e) => {
+            setAgentRows((arr) => {
+              const idx = arr.findIndex((r) => r.key === e.key)
+              if (idx === -1) {
+                if (!e.label) return arr
+                return [...arr, { key: e.key, label: e.label, status: e.status, elapsed: 0 }]
+              }
+              return arr.map((r, i) => (i === idx ? { ...r, status: e.status } : r))
+            })
           },
           onApprove: (name: string, args: Record<string, unknown>) => {
             // Only the modal card lives here; the dock entry is filed by
@@ -497,16 +613,23 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       setApproval(null)
       approveResolve = null
       setBusy(false)
+      setLiveTps(null)
     }
   }
 
+  // Global/modal keys ONLY — every editing key (chars, cursor moves,
+  // enter-submit, history up/down, palette nav) flows through the focused
+  // textarea inside InputLine (its onKeyFilter/onHistoryNav/onSubmit
+  // callbacks route back into the handlers above). useKeyboard runs before
+  // the focused renderable, so these handlers must never act on keys the
+  // editor should own: ctrl-combos and modal-state keys only.
   useKeyboard((key) => {
     if (process.env.DSH_OPENTUI_DEBUG) {
       import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-keys.log", JSON.stringify({ name: key.name, seq: key.sequence }) + "\n")).catch(() => {})
     }
     if (key.sequence === "\x03" || ((key.name === "c" || key.name === "C") && key.ctrl)) process.exit(0)
     // Approval card: y/enter allows, n/esc rejects (highest modal priority
-    // — the turn is waiting on us).
+    // — the turn is waiting on us; the editor is blurred under it).
     const ap = approval()
     if (ap) {
       if (key.sequence === "y" || key.name === "return") {
@@ -522,127 +645,24 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
     // Select overlay: the focused native select owns arrows/enter; escape
     // is the one key it leaves for us (Select maps it to onCancel too —
-    // both paths close idempotently). Swallow everything else so the line
+    // both paths close idempotently). Swallow everything else so the
     // editor and palette never react under a modal.
     if (overlay()) {
       if (key.name === "escape") onOverlayCancel()
       return
     }
-    // NOTE: no busy gate — the input line stays unlocked mid-turn so the
-    // user can type and STEER (enter below routes to steerText while busy).
-    // Slash palette keys: arrows move the highlight, tab completes, enter
-    // runs, esc closes.
-    if (menuVisible() && (key.name === "up" || key.name === "down")) {
-      const n = filteredCommands().length
-      setMenuSel((s) => (key.name === "up" ? (s - 1 + n) % n : (s + 1) % n))
+    // Dock detail re-expand: ctrl+t (last thought) / ctrl+o (tool ledger)
+    // re-open the collapsed dock panels; a fresh turn closes them again.
+    if (key.ctrl && key.name === "t") {
+      setThinkExpanded((v) => !v)
       return
     }
-    // History recall on up/down — but a "/" line keeps the palette in
-    // charge of those keys even when the menu is not visible.
-    if (key.name === "up" || key.name === "down") {
-      if (input().startsWith("/")) return
-      return historyNav(key.name === "up" ? -1 : 1)
-    }
-    // Cursor movement: left/right, home/ctrl+a, end/ctrl+e.
-    if (key.name === "left") return setCursor((c) => Math.max(0, c - 1))
-    if (key.name === "right") return setCursor((c) => Math.min(input().length, c + 1))
-    if (key.name === "home" || (key.ctrl && key.name === "a")) return setCursor(0)
-    if (key.name === "end" || (key.ctrl && key.name === "e")) return setCursor(input().length)
-    if (key.name === "tab") {
-      const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined
-      if (cmd) {
-        setInput(cmd.name + " ")
-        setCursor(cmd.name.length + 1)
-        resetHistoryNav()
-        setMenuSel(0)
-      }
+    if (key.ctrl && key.name === "o") {
+      setToolExpanded((v) => !v)
       return
     }
-    if (key.name === "return") {
-      const text = input().trim()
-      const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined
-      setInput("")
-      setCursor(0)
-      setMenuOpen(true)
-      setMenuSel(0)
-      if (cmd) {
-        // a typed line with arguments beats the bare highlighted command —
-        // "/model provider/id" must not be hijacked by the palette's "/model"
-        const full = text === cmd.name || !text.startsWith("/") ? cmd.name : text
-        commitHistory(full)
-        void runCommand(full)
-        return
-      }
-      if (!text) return
-      commitHistory(text)
-      if (text.startsWith("/")) {
-        void runCommand(text)
-        return
-      }
-      // Steering: mid-turn enter injects into the running turn instead of
-      // waiting for it to finish.
-      if (busy()) return steerText(text)
-      send(text)
-      return
-    }
-    if (key.name === "backspace") {
-      const c = cursor()
-      if (c > 0) {
-        const s = input()
-        setInput(s.slice(0, c - 1) + s.slice(c))
-        setCursor(c - 1)
-        resetHistoryNav()
-        setMenuOpen(true)
-        setMenuSel(0)
-      }
-      return
-    }
-    // delete / ctrl+d: remove the character under the caret.
-    if (key.name === "delete" || (key.ctrl && key.name === "d")) {
-      const c = cursor()
-      const s = input()
-      if (c < s.length) {
-        setInput(s.slice(0, c) + s.slice(c + 1))
-        resetHistoryNav()
-        setMenuOpen(true)
-        setMenuSel(0)
-      }
-      return
-    }
-    // ctrl+u: clear the whole line; ctrl+w: kill the word before the caret.
-    if (key.ctrl && key.name === "u") {
-      setInput("")
-      setCursor(0)
-      resetHistoryNav()
-      setMenuOpen(true)
-      setMenuSel(0)
-      return
-    }
-    if (key.ctrl && key.name === "w") {
-      const c = cursor()
-      const cut = wordStart(input(), c)
-      if (cut < c) {
-        const s = input()
-        setInput(s.slice(0, cut) + s.slice(c))
-        setCursor(cut)
-        resetHistoryNav()
-        setMenuOpen(true)
-        setMenuSel(0)
-      }
-      return
-    }
-    if (key.name === "escape") {
-      if (menuVisible()) return setMenuOpen(false)
-      setInput("")
-      setCursor(0)
-      return
-    }
-    const ch = key.sequence
-    if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) {
-      insertChar(ch)
-      setMenuOpen(true)
-      setMenuSel(0)
-    }
+    // esc closes the slash palette (the editor keeps its buffer).
+    if (key.name === "escape" && menuVisible()) setMenuOpen(false)
   })
 
   // ---- powerline footer ----
@@ -674,6 +694,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     ]
     if (msgCount() > 0) segs.push({ text: `💬 ${msgCount()}`, bg: POWERLINE_COLORS.messages })
     if (toolCount() > 0) segs.push({ text: `⚒ ${toolCount()}`, bg: POWERLINE_COLORS.tools })
+    // Streaming speed: live while the turn runs (the closing rate lives in
+    // /usage via lastTurnStats).
+    const speed = speedSegment(busy() ? liveTps() : null, th())
+    if (speed) segs.push(speed)
     return segs
   }
 
@@ -688,8 +712,16 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           <Transcript items={items()} theme={th()} t={t} spinnerFrame="" mdStyle={mdStyle} />
         </AutoScroll>
       )}
-      <ThinkWidget state={thinkState()} theme={th()} />
-      <ToolWidget entries={toolEntries()} active={toolActive()} theme={th()} />
+      <TodosWidget todos={todos()} theme={th()} />
+      <For each={agentRows()}>
+        {(r) => (
+          <text style={{ fg: r.status === "running" ? th().tokens.accent : th().tokens.dim }}>
+            {`◇ ${r.label}${r.status === "running" ? ` · ${r.elapsed}s` : ` · ${r.status}`}`}
+          </text>
+        )}
+      </For>
+      <ThinkWidget state={{ ...thinkState(), active: thinkState().active || thinkExpanded() }} theme={th()} />
+      <ToolWidget entries={toolEntries()} active={toolActive() || toolExpanded()} theme={th()} />
       {approval() ? (
         <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
       ) : null}
@@ -715,15 +747,26 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         </box>
       ) : null}
       {/* busy stays false on purpose: the line is never locked — mid-turn
-          typing STEERS, and the busy state reads from the dock widgets. */}
+          typing STEERS, and the busy state reads from the dock widgets.
+          The editor blurs under modals (approval/overlay) so their keys
+          never leak into the buffer. */}
       <InputLine
-        value={input()}
-        cursor={cursor()}
+        focused={!(approval() || overlay())}
         busy={false}
-        spinnerFrame=""
         placeholder={busy() ? t("shell.input.steer") : t("shell.input.placeholder")}
         busyLabel={t("shell.input.busy")}
         theme={th()}
+        onSubmit={submitLine}
+        onContentChange={(v) => {
+          setInput(v)
+          setMenuOpen(true)
+          setMenuSel(0)
+        }}
+        onHistoryNav={historyNav}
+        onKeyFilter={paletteKeyFilter}
+        resetKey={resetKey()}
+        setKey={setKey()}
+        setValue={setValueText()}
       />
       <FooterHints theme={th()} />
       <PowerlineFooter left={powerlineSegments()} right={clock()} theme={th()} />

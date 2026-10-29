@@ -55,6 +55,8 @@ export const POWERLINE_COLORS = {
   messages: "#1565C0",
   /** Tool-count segment orange. */
   tools: "#E65100",
+  /** Tokens-per-second segment teal (same Material family as the rest). */
+  speed: "#00897B",
 }
 
 /** The powerline arrow separator (U+E0B0, nerdfont). */
@@ -127,4 +129,18 @@ export function PowerlineFooter(props: {
       </Show>
     </box>
   )
+}
+
+/**
+ * The tokens-per-second segment (⚡ N tok/s) on the speed fill. Built like
+ * every other segment — plain {text, bg} with the label color left to
+ * autoContrast. Returns null when tps is unknown (no measurable turn yet),
+ * so callers omit the segment: `const s = speedSegment(tps); if (s) segs.push(s)`.
+ * `theme` is accepted for signature parity with future theme-aware builders;
+ * the fill comes from the fixed POWERLINE_COLORS palette like the rest.
+ */
+export function speedSegment(tps: number | null, theme: Theme): PowerlineSegment | null {
+  void theme
+  if (tps === null || !Number.isFinite(tps) || tps < 0) return null
+  return { text: `⚡ ${Math.round(tps)} tok/s`, bg: POWERLINE_COLORS.speed }
 }

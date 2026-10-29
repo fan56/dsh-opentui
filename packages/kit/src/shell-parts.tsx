@@ -1,13 +1,13 @@
 /**
  * Shell building blocks extracted from the Shell host: the transcript
  * renderer (per-item layout), a scrollback line-window over the same
- * items, the input line with inverse-video caret, and the footer
- * key-hint strip. Presentation only — state and keyboard handling stay
- * in the Shell; the spinner frame and translator arrive as props so
- * these parts render whatever the host feeds them.
+ * items, the multi-line input editor (an OpenTUI <textarea> in a
+ * rounded box), and the footer key-hint strip. Presentation only —
+ * session state stays in the Shell; the spinner frame and translator
+ * arrive as props so these parts render whatever the host feeds them.
  */
-import { For, Show, type JSX } from "solid-js"
-import { createTextAttributes } from "@opentui/core"
+import { createEffect, For, on, Show, type JSX } from "solid-js"
+import { defaultTextareaKeyBindings, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import type { Theme } from "./theme.ts"
 
 export type TranscriptItem =
@@ -225,43 +225,134 @@ export function TranscriptWindow(props: {
   return <Show when={offset() === 0} fallback={scrolledView()}>{bottomView()}</Show>
 }
 
-export function InputLine(props: {
-  value: string
-  cursor: number
-  busy: boolean
-  spinnerFrame: string
-  placeholder: string
-  busyLabel: string
+export interface InputLineProps {
   theme: Theme
-}): JSX.Element {
-  /** Split the input line at the cursor for caret rendering. */
-  const inputChunks = () => {
-    const s = props.value
-    const c = Math.min(props.cursor, s.length)
-    return {
-      before: s.slice(0, c),
-      at: c < s.length ? s.charAt(c) : " ",
-      after: c < s.length ? s.slice(c + 1) : "",
+  placeholder: string
+  /** Visual "steering" mode: the textarea is blurred and a dim busy row is shown. */
+  busy: boolean
+  busyLabel: string
+  /** Legacy spinner glyph, still shown next to busyLabel when busy. */
+  spinnerFrame?: string
+  /** Focus the editor (default true); blurred while busy regardless. */
+  focused?: boolean
+  /** Editor rows (default 3). 1 gives the old single-line look. */
+  height?: number
+  /** Enter pressed with content in the buffer. */
+  onSubmit?: () => void
+  /** Fires after every content mutation (typing, paste, newline, clear). */
+  onContentChange?: (value: string) => void
+  /** Up/down pressed while the cursor sits on the first/last visual line.
+   * Return true when the key is consumed (history recall) — the editor
+   * then suppresses its default cursor movement for that key. */
+  onHistoryNav?: (dir: "up" | "down") => boolean
+  /** First say on every unmodified key: return true to consume it (the
+   * editor suppresses its own action — the slash palette uses this for
+   * up/down/tab/enter while the menu is open). Runs before the history
+   * routing below. */
+  onKeyFilter?: (key: { name: string }) => boolean
+  /** When this number changes, the buffer is fully reset (undo history
+   * included) — bump it for /clear. */
+  resetKey?: number
+  /** When setKey changes, the buffer is replaced with setValue (undoable,
+   * cursor at end) — the history-recall write path. */
+  setKey?: number
+  setValue?: string
+  /** Legacy single-line props, kept so old call sites compile. Ignored. */
+  value?: string
+  cursor?: number
+}
+
+/** Key bindings on top of defaultTextareaKeyBindings: plain Enter submits,
+ * Shift+Enter / Alt(Option)+Enter insert a newline. mergeKeyBindings keys
+ * entries on name + modifier flags, so these entries override the defaults
+ * ("return" -> newline, "return"+meta -> submit). Behavior verified against
+ * @opentui/solid's <textarea> with a headless testRender probe. */
+const INPUT_KEY_BINDINGS = [
+  ...defaultTextareaKeyBindings,
+  { name: "return", action: "submit" as const },
+  { name: "kpenter", action: "submit" as const },
+  { name: "return", shift: true, action: "newline" as const },
+  { name: "kpenter", shift: true, action: "newline" as const },
+  { name: "return", meta: true, action: "newline" as const },
+  { name: "kpenter", meta: true, action: "newline" as const },
+]
+
+/** Multi-line input editor on the OpenTUI native <textarea> intrinsic,
+ * inside the same rounded border box the old hand-rolled caret row used.
+ * The Shell owns submission/history via the callback props; this
+ * component owns the buffer, caret rendering, char-wrap and paste.
+ *
+ * Busy mode keeps the textarea MOUNTED (toggling mount would lose the
+ * draft mid-steering) and only blurs it, adding a dim status row below.
+ *
+ * History routing: up/down arrive in onKeyDown BEFORE the renderable's
+ * default action lookup (focus dispatch calls _keyListeners["down"], then
+ * handleKeyPress only if the event was not defaultPrevented). When the
+ * cursor is on the first/last visual line and onHistoryNav consumes the
+ * key we preventDefault() — no default binding surgery needed. */
+export function InputLine(props: InputLineProps): JSX.Element {
+  let ta: TextareaRenderable | undefined
+
+  // resetKey change -> full buffer reset (clears undo history too).
+  createEffect(
+    on(
+      () => props.resetKey,
+      () => {
+        ta?.setText("")
+      },
+      { defer: true },
+    ),
+  )
+
+  // setKey change -> replace buffer content undoably, cursor at the end.
+  createEffect(
+    on(
+      () => props.setKey,
+      () => {
+        if (!ta) return
+        ta.replaceText(props.setValue ?? "")
+        ta.gotoBufferEnd()
+      },
+      { defer: true },
+    ),
+  )
+
+  const onKeyDown = (key: KeyEvent) => {
+    // host-level key consumption (slash palette) beats editor actions
+    if (props.onKeyFilter?.(key)) {
+      key.preventDefault()
+      return
+    }
+    if (!ta || key.shift || key.ctrl || key.meta) return
+    const row = ta.visualCursor.visualRow
+    if (key.name === "up" && row === 0) {
+      if (props.onHistoryNav?.("up")) key.preventDefault()
+    } else if (key.name === "down" && row >= Math.max(0, ta.virtualLineCount - 1)) {
+      if (props.onHistoryNav?.("down")) key.preventDefault()
     }
   }
 
   return (
-    <box style={{ border: true, borderStyle: "rounded", borderColor: props.theme.tokens.border, flexDirection: "row" }}>
-      <text style={{ fg: props.theme.tokens.accent }}>{props.busy ? `${props.spinnerFrame} ` : "❯ "}</text>
-      {props.busy ? (
-        <text style={{ fg: props.theme.tokens.dim }}>{props.busyLabel}</text>
-      ) : props.value === "" ? (
-        <>
-          <text style={{ fg: props.theme.tokens.accent, attributes: createTextAttributes({ inverse: true }) }}> </text>
-          <text style={{ fg: props.theme.tokens.dim }}>{props.placeholder}</text>
-        </>
-      ) : (
-        <>
-          <text style={{ fg: props.theme.tokens.text }}>{inputChunks().before}</text>
-          <text style={{ fg: props.theme.tokens.text, attributes: createTextAttributes({ inverse: true }) }}>{inputChunks().at}</text>
-          <text style={{ fg: props.theme.tokens.text }}>{inputChunks().after}</text>
-        </>
-      )}
+    <box style={{ border: true, borderStyle: "rounded", borderColor: props.theme.tokens.border, flexDirection: "column" }}>
+      <box style={{ flexDirection: "row" }}>
+        <text style={{ fg: props.theme.tokens.accent }}>{"❯ "}</text>
+        <textarea
+          ref={(el: TextareaRenderable) => (ta = el)}
+          focused={!props.busy && (props.focused ?? true)}
+          placeholder={props.placeholder}
+          keyBindings={INPUT_KEY_BINDINGS}
+          textColor={props.theme.tokens.text}
+          focusedTextColor={props.theme.tokens.text}
+          placeholderColor={props.theme.tokens.dim}
+          style={{ flexGrow: 1, height: props.height ?? 3, wrapMode: "char" }}
+          onContentChange={() => props.onContentChange?.(ta?.plainText ?? "")}
+          onSubmit={() => props.onSubmit?.()}
+          onKeyDown={onKeyDown}
+        />
+      </box>
+      <Show when={props.busy}>
+        <text style={{ fg: props.theme.tokens.dim }}>{`${props.spinnerFrame ? `${props.spinnerFrame} ` : ""}${props.busyLabel}`}</text>
+      </Show>
     </box>
   )
 }

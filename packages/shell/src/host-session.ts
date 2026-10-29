@@ -8,7 +8,14 @@
 import { createUserMessage } from "@deepseek-ai/dsh-llm"
 import type { Context } from "@deepseek-ai/cordis"
 import { randomUUID } from "node:crypto"
-import type { TurnCallbacks } from "./agent/loop.ts"
+import {
+  createStreamTicker,
+  emptyTurnStats,
+  estimateTokens,
+  tokensPerSecond,
+  type TurnCallbacks,
+  type TurnStats,
+} from "./agent/loop.ts"
 
 /** Minimal structural types — the real ones live in the host closure. */
 type StreamFrame = {
@@ -32,6 +39,14 @@ export class HostSession {
   #override?: { provider: string; model: string; reasoningEffort?: string }
   #resumeId?: string
   usage = { prompt: 0, completion: 0 }
+  /** Telemetry of the last completed turn: duration, streamed chars and
+   * tokens-per-second (real completion tokens when usage was reported,
+   * chars/4 estimate otherwise — see `estimated`). */
+  lastTurnStats: TurnStats = emptyTurnStats()
+  #turns = 0
+  #ticker = createStreamTicker((t) => this.#cb?.onStreamTick?.(t))
+  #turnStartedAt = 0
+  #turnUsageStart = { prompt: 0, completion: 0 }
 
   constructor(ctx: Context) {
     this.#ctx = ctx
@@ -186,8 +201,33 @@ export class HostSession {
     await c.unset(ref)
   }
 
+  /** Compact /usage lines: cumulative token totals plus the last turn's
+   * throughput, e.g. ["turns 3", "prompt 1.2k tok", "completion 4.5k tok",
+   * "last turn 18.2s · 31 tok/s (estimated)"]. Pure — reads only usage,
+   * #turns and lastTurnStats. */
+  usageSummary(): string[] {
+    const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
+    const lines = [
+      `turns ${this.#turns}`,
+      `prompt ${fmt(this.usage.prompt)} tok`,
+      `completion ${fmt(this.usage.completion)} tok`,
+    ]
+    const s = this.lastTurnStats
+    if (s.ms > 0) {
+      const rate = s.tps === null ? "" : ` · ${Math.round(s.tps)} tok/s${s.estimated ? " (estimated)" : ""}`
+      lines.push(`last turn ${(s.ms / 1000).toFixed(1)}s${rate}`)
+    }
+    return lines
+  }
+
   async turn(userText: string, cb: TurnCallbacks, _signal?: AbortSignal): Promise<void> {
     this.#cb = cb
+    // Fresh telemetry window for this turn (ticks reset, timing restarts,
+    // usage delta baseline taken in case usage is cumulative over the session)
+    this.#turns++
+    this.#ticker.reset()
+    this.#turnStartedAt = Date.now()
+    this.#turnUsageStart = { prompt: this.usage.prompt, completion: this.usage.completion }
     if (!this.#handle) {
       // fresh session, or a one-shot resume of a picked historical one
       this.#sessionId = this.#resumeId ?? randomUUID()
@@ -208,13 +248,37 @@ export class HostSession {
       DBG(`session created ${this.#sessionId} agent=${this.#agentId}`)
     }
     const message = createUserMessage({
-      content: [{ type: "text", text: userText }],
+      // /attach stashed image refs ride along with the next prompt (the
+      // host stores bytes; messages only ever carry the persistent ref).
+      content: [
+        { type: "text", text: userText },
+        ...this.#pendingImages.map((ref) => ({ type: "image", attachment: ref })),
+      ],
       source: { kind: "user" },
     })
+    this.#pendingImages = []
     this.#handle.agent.followup(message)
     await new Promise<void>((resolve) => {
       this.#resolveTurn = resolve
     })
+  }
+
+  /** Image refs staged by /attach, sent with the next prompt. */
+  #pendingImages: any[] = []
+
+  /** Stage a local image file for the next message via the host attachment
+   * store (bytes land in $DSH_HOME/attachments/v1; the message later only
+   * carries the sha256 ref). Returns a short description for the echo. */
+  async attachImage(path: string): Promise<string> {
+    const store = (this.#ctx as any).get?.("attachments")
+    if (!store?.saveImages) throw new Error("attachment service unavailable in this host")
+    const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase()
+    const mediaType: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" }
+    if (!mediaType[ext]) throw new Error(`unsupported image type .${ext} (png/jpg/webp/gif)`)
+    const data = await (await import("node:fs/promises")).readFile(path)
+    const [ref] = await store.saveImages([{ data: new Uint8Array(data), mediaType: mediaType[ext], name: path.split("/").pop() }])
+    this.#pendingImages.push(ref)
+    return `${ref.name ?? path} (${(ref.bytes / 1024).toFixed(0)} KB)`
   }
 
   /** Steer the RUNNING agent with a mid-turn message (Kimi-style inject). */
@@ -229,6 +293,24 @@ export class HostSession {
 
   #finishTurn() {
     DBG("finishTurn")
+    const endedAt = Date.now()
+    // One final tick (unthrottled) so the closing rate is accurate, then
+    // freeze this turn's stats BEFORE onTurnEnd so UI handlers can read them.
+    this.#ticker.finish()
+    const chars = this.#ticker.chars()
+    const ms = Math.max(0, endedAt - this.#turnStartedAt)
+    const completion = this.usage.completion - this.#turnUsageStart.completion
+    const real = completion > 0
+    const tokens = real ? completion : estimateTokens(chars)
+    this.lastTurnStats = {
+      startedAt: this.#turnStartedAt,
+      endedAt,
+      ms,
+      chars,
+      tokens,
+      tps: tokensPerSecond(tokens, ms),
+      estimated: !real,
+    }
     const r = this.#resolveTurn
     this.#resolveTurn = undefined
     this.#cb?.onTurnEnd({ prompt: this.usage.prompt, completion: this.usage.completion })
@@ -244,11 +326,16 @@ export class HostSession {
       if (!cb || frame.type !== "chunk" || !frame.chunk) return
       const c = frame.chunk
       try {
-        if (c.type === "reasoning-delta" && c.text) cb.onThinkingDelta(c.text)
-        else if (c.type === "text-delta" && c.text) cb.onContentDelta(c.text)
-        else if (c.type === "tool-call-delta" && c.name) {
+        if (c.type === "reasoning-delta" && c.text) {
+          cb.onThinkingDelta(c.text)
+          this.#ticker.add(c.text.length)
+        } else if (c.type === "text-delta" && c.text) {
+          cb.onContentDelta(c.text)
+          this.#ticker.add(c.text.length)
+        } else if (c.type === "tool-call-delta" && c.name) {
           // name arrives with the first delta; the rendered tool block comes
           // from the durable tool/call + tool/result events below
+          // (argumentsDelta is tool plumbing, not streamed content — not counted)
         }
       } catch {
         /* a UI callback must never take the host listener down */
@@ -279,6 +366,18 @@ export class HostSession {
           // The real "tool started" signal — fires for auto-allowed calls too,
           // which never hit the approval waterfall.
           cb.onToolStart?.({ callId, name, args })
+        } else if (event.type === "todo/write") {
+          // host todo tool: whole-list snapshot, cleared at turn start
+          cb.onTodos?.((event.data?.todos ?? []) as { content: string; status: "pending" | "in_progress" | "completed" }[])
+        } else if (event.type === "tool-workflow/agent-start" && event.data) {
+          cb.onAgentEvent?.({
+            key: `${event.data.runId}:${event.data.seq}`,
+            status: "running",
+            label: String(event.data.label ?? "subagent"),
+          })
+        } else if (event.type === "tool-workflow/agent-end" && event.data) {
+          const outcome = event.data.outcome === "failed" || event.data.outcome === "cancelled" ? event.data.outcome : "completed"
+          cb.onAgentEvent?.({ key: `${event.data.runId}:${event.data.seq}`, status: outcome })
         } else if (event.type === "tool/result" && event.data) {
           const callId = String(event.data.callId ?? event.data.message?.toolCallId ?? "")
           const known = this.#toolCalls.get(callId)

@@ -1,5 +1,5 @@
 // src/host-entry.tsx
-import { createComponent as _$createComponent10 } from "@opentui/solid";
+import { createComponent as _$createComponent11 } from "@opentui/solid";
 import { render } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -120,6 +120,7 @@ var dict = {
   "cmd.cred.configured": { "zh-CN": "已配置", en: "configured" },
   "cmd.cred.missing": { "zh-CN": "未配置", en: "missing" },
   "picker.model.title": { "zh-CN": "选择模型", en: "select model" },
+  "picker.theme.title": { "zh-CN": "选择主题", en: "select theme" },
   "panel.tools.title": { "zh-CN": "工具", en: "tools" },
   "panel.think.title": { "zh-CN": "思考", en: "thinking" }
 };
@@ -137,15 +138,419 @@ function createI18n(locale = "zh-CN") {
 // src/ShellHost.tsx
 import { createTextNode as _$createTextNode9 } from "@opentui/solid";
 import { insertNode as _$insertNode10 } from "@opentui/solid";
-import { effect as _$effect11 } from "@opentui/solid";
-import { insert as _$insert11 } from "@opentui/solid";
-import { createComponent as _$createComponent9 } from "@opentui/solid";
+import { effect as _$effect12 } from "@opentui/solid";
+import { insert as _$insert12 } from "@opentui/solid";
+import { createComponent as _$createComponent10 } from "@opentui/solid";
 import { memo as _$memo5 } from "@opentui/solid";
-import { setProp as _$setProp11 } from "@opentui/solid";
-import { createElement as _$createElement11 } from "@opentui/solid";
-import { For as For8, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { setProp as _$setProp12 } from "@opentui/solid";
+import { createElement as _$createElement12 } from "@opentui/solid";
+import { For as For9, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { SyntaxStyle } from "@opentui/core";
 import { useKeyboard as useKeyboard2, useRenderer } from "@opentui/solid";
+// ../kit/src/themes-data.ts
+var ayuLight = {
+  name: "ayu-light",
+  dark: false,
+  tokens: {
+    accent: "#ff9940",
+    dim: "#9099a2",
+    danger: "#cf3e4f",
+    ok: "#6b9900",
+    warn: "#b57d2e",
+    text: "#5c6773",
+    border: "#d8d7d4",
+    selection: "#f2f1f0",
+    userMark: "#ff9940",
+    toolOk: "#b57d2e",
+    toolFail: "#cf3e4f",
+    approvalBorder: "#b57d2e",
+    thinking: "#a37acc"
+  }
+};
+var catppuccinLatte = {
+  name: "catppuccin-latte",
+  dark: false,
+  tokens: {
+    accent: "#1e66f5",
+    dim: "#8c8fa1",
+    danger: "#d20f39",
+    ok: "#3b9433",
+    warn: "#b06f00",
+    text: "#4c4f69",
+    border: "#ccd0da",
+    selection: "#e6e9ef",
+    userMark: "#1e66f5",
+    toolOk: "#b06f00",
+    toolFail: "#d20f39",
+    approvalBorder: "#b06f00",
+    thinking: "#8839ef"
+  }
+};
+var catppuccinMocha = {
+  name: "catppuccin-mocha",
+  dark: true,
+  tokens: {
+    accent: "#89b4fa",
+    dim: "#6c708f",
+    danger: "#f38ba8",
+    ok: "#a6e3a1",
+    warn: "#f9e2af",
+    text: "#cdd6f4",
+    border: "#45475a",
+    selection: "#313244",
+    userMark: "#89b4fa",
+    toolOk: "#f9e2af",
+    toolFail: "#f38ba8",
+    approvalBorder: "#f9e2af",
+    thinking: "#cba6f7"
+  }
+};
+var draculaLight = {
+  name: "dracula-light",
+  dark: false,
+  tokens: {
+    accent: "#6272a4",
+    dim: "#7a7d92",
+    danger: "#c23b4c",
+    ok: "#178b48",
+    warn: "#9a7e0d",
+    text: "#282a36",
+    border: "#d0d0d8",
+    selection: "#ececf0",
+    userMark: "#6272a4",
+    toolOk: "#9a7e0d",
+    toolFail: "#c23b4c",
+    approvalBorder: "#9a7e0d",
+    thinking: "#7c52c0"
+  }
+};
+var dracula = {
+  name: "dracula",
+  dark: true,
+  tokens: {
+    accent: "#bd93f9",
+    dim: "#6272a4",
+    danger: "#ff5555",
+    ok: "#50fa7b",
+    warn: "#f1fa8c",
+    text: "#f8f8f2",
+    border: "#3a3d4d",
+    selection: "#2f313e",
+    userMark: "#bd93f9",
+    toolOk: "#f1fa8c",
+    toolFail: "#ff5555",
+    approvalBorder: "#f1fa8c",
+    thinking: "#ff79c6"
+  }
+};
+var githubDark = {
+  name: "github-dark",
+  dark: true,
+  tokens: {
+    accent: "#79c0ff",
+    dim: "#6e7681",
+    danger: "#ffa198",
+    ok: "#56d364",
+    warn: "#e3b341",
+    text: "#e6edf3",
+    border: "#3d444d",
+    selection: "#161b22",
+    userMark: "#79c0ff",
+    toolOk: "#e3b341",
+    toolFail: "#ffa198",
+    approvalBorder: "#e3b341",
+    thinking: "#d2a8ff"
+  }
+};
+var githubLight = {
+  name: "github-light",
+  dark: false,
+  tokens: {
+    accent: "#0a60b5",
+    dim: "#829087",
+    danger: "#b64550",
+    ok: "#1e843b",
+    warn: "#9a6700",
+    text: "#1f2a24",
+    border: "#b8c1b9",
+    selection: "#eef3ee",
+    userMark: "#0a60b5",
+    toolOk: "#9a6700",
+    toolFail: "#b64550",
+    approvalBorder: "#9a6700",
+    thinking: "#7b4fae"
+  }
+};
+var gruvboxDark = {
+  name: "gruvbox-dark",
+  dark: true,
+  tokens: {
+    accent: "#83a598",
+    dim: "#7c6f64",
+    danger: "#fb4934",
+    ok: "#b8bb26",
+    warn: "#fabd2f",
+    text: "#ebdbb2",
+    border: "#504945",
+    selection: "#3c3836",
+    userMark: "#83a598",
+    toolOk: "#fabd2f",
+    toolFail: "#fb4934",
+    approvalBorder: "#fabd2f",
+    thinking: "#d3869b"
+  }
+};
+var gruvboxLight = {
+  name: "gruvbox-light",
+  dark: false,
+  tokens: {
+    accent: "#458588",
+    dim: "#928374",
+    danger: "#cc241d",
+    ok: "#79740e",
+    warn: "#b57614",
+    text: "#3c3836",
+    border: "#d5c4a1",
+    selection: "#ebdbb2",
+    userMark: "#458588",
+    toolOk: "#b57614",
+    toolFail: "#cc241d",
+    approvalBorder: "#b57614",
+    thinking: "#8f3f71"
+  }
+};
+var materialLight = {
+  name: "material-light",
+  dark: false,
+  tokens: {
+    accent: "#009688",
+    dim: "#78909c",
+    danger: "#c62828",
+    ok: "#2e7d32",
+    warn: "#b26a00",
+    text: "#37474f",
+    border: "#cfd8dc",
+    selection: "#eceff1",
+    userMark: "#009688",
+    toolOk: "#b26a00",
+    toolFail: "#c62828",
+    approvalBorder: "#b26a00",
+    thinking: "#6a1b9a"
+  }
+};
+var monokai = {
+  name: "monokai",
+  dark: true,
+  tokens: {
+    accent: "#66d9ef",
+    dim: "#75715e",
+    danger: "#f92672",
+    ok: "#a6e22e",
+    warn: "#e6db74",
+    text: "#f8f8f2",
+    border: "#3e3d32",
+    selection: "#33332c",
+    userMark: "#66d9ef",
+    toolOk: "#e6db74",
+    toolFail: "#f92672",
+    approvalBorder: "#e6db74",
+    thinking: "#ae81ff"
+  }
+};
+var nordDark = {
+  name: "nord-dark",
+  dark: true,
+  tokens: {
+    accent: "#88c0d0",
+    dim: "#667289",
+    danger: "#bf616a",
+    ok: "#a3be8c",
+    warn: "#ebcb8b",
+    text: "#eceff4",
+    border: "#434c5e",
+    selection: "#3b4252",
+    userMark: "#88c0d0",
+    toolOk: "#ebcb8b",
+    toolFail: "#bf616a",
+    approvalBorder: "#ebcb8b",
+    thinking: "#b48ead"
+  }
+};
+var nordLight = {
+  name: "nord-light",
+  dark: false,
+  tokens: {
+    accent: "#5e81ac",
+    dim: "#6c7994",
+    danger: "#a9444f",
+    ok: "#4e7a34",
+    warn: "#a0700a",
+    text: "#2e3440",
+    border: "#c3cad6",
+    selection: "#d8dee9",
+    userMark: "#5e81ac",
+    toolOk: "#a0700a",
+    toolFail: "#a9444f",
+    approvalBorder: "#a0700a",
+    thinking: "#8453a8"
+  }
+};
+var oneDark = {
+  name: "one-dark",
+  dark: true,
+  tokens: {
+    accent: "#61afef",
+    dim: "#616a7b",
+    danger: "#e06c75",
+    ok: "#98c379",
+    warn: "#e5c07b",
+    text: "#b6bdc9",
+    border: "#363c46",
+    selection: "#2f343d",
+    userMark: "#61afef",
+    toolOk: "#e5c07b",
+    toolFail: "#e06c75",
+    approvalBorder: "#e5c07b",
+    thinking: "#c678dd"
+  }
+};
+var oneLight = {
+  name: "one-light",
+  dark: false,
+  tokens: {
+    accent: "#4078f2",
+    dim: "#9a9ea8",
+    danger: "#e45649",
+    ok: "#50a14f",
+    warn: "#b18401",
+    text: "#383a42",
+    border: "#d4d4da",
+    selection: "#f0f0f0",
+    userMark: "#4078f2",
+    toolOk: "#b18401",
+    toolFail: "#e45649",
+    approvalBorder: "#b18401",
+    thinking: "#a626a4"
+  }
+};
+var solarizedDark = {
+  name: "solarized-dark",
+  dark: true,
+  tokens: {
+    accent: "#268bd2",
+    dim: "#586e75",
+    danger: "#dc322f",
+    ok: "#859900",
+    warn: "#b58900",
+    text: "#b0bcbc",
+    border: "#0a3a47",
+    selection: "#073642",
+    userMark: "#268bd2",
+    toolOk: "#b58900",
+    toolFail: "#dc322f",
+    approvalBorder: "#b58900",
+    thinking: "#6c71c4"
+  }
+};
+var solarizedLight = {
+  name: "solarized-light",
+  dark: false,
+  tokens: {
+    accent: "#268bd2",
+    dim: "#839496",
+    danger: "#dc322f",
+    ok: "#667400",
+    warn: "#9a7500",
+    text: "#586e75",
+    border: "#d3ccb4",
+    selection: "#eee8d5",
+    userMark: "#268bd2",
+    toolOk: "#9a7500",
+    toolFail: "#dc322f",
+    approvalBorder: "#9a7500",
+    thinking: "#6c71c4"
+  }
+};
+var synthwave = {
+  name: "synthwave",
+  dark: true,
+  tokens: {
+    accent: "#36f9f6",
+    dim: "#6d6288",
+    danger: "#fe4450",
+    ok: "#72f1b8",
+    warn: "#ff8b39",
+    text: "#f8f8f2",
+    border: "#3a3350",
+    selection: "#302a3d",
+    userMark: "#36f9f6",
+    toolOk: "#ff8b39",
+    toolFail: "#fe4450",
+    approvalBorder: "#ff8b39",
+    thinking: "#ff7edb"
+  }
+};
+var tokyoNightLight = {
+  name: "tokyo-night-light",
+  dark: false,
+  tokens: {
+    accent: "#2e7de9",
+    dim: "#7c8291",
+    danger: "#c32d5c",
+    ok: "#587539",
+    warn: "#8c6c3e",
+    text: "#3760bf",
+    border: "#b7bac3",
+    selection: "#d5d6db",
+    userMark: "#2e7de9",
+    toolOk: "#8c6c3e",
+    toolFail: "#c32d5c",
+    approvalBorder: "#8c6c3e",
+    thinking: "#7847bd"
+  }
+};
+var tokyoNight = {
+  name: "tokyo-night",
+  dark: true,
+  tokens: {
+    accent: "#7aa2f7",
+    dim: "#565f89",
+    danger: "#f7768e",
+    ok: "#9ece6a",
+    warn: "#e0af68",
+    text: "#c0caf5",
+    border: "#3b4261",
+    selection: "#292e42",
+    userMark: "#7aa2f7",
+    toolOk: "#e0af68",
+    toolFail: "#f7768e",
+    approvalBorder: "#e0af68",
+    thinking: "#bb9af7"
+  }
+};
+var generatedThemes = {
+  "ayu-light": ayuLight,
+  "catppuccin-latte": catppuccinLatte,
+  "catppuccin-mocha": catppuccinMocha,
+  "dracula-light": draculaLight,
+  dracula,
+  "github-dark": githubDark,
+  "github-light": githubLight,
+  "gruvbox-dark": gruvboxDark,
+  "gruvbox-light": gruvboxLight,
+  "material-light": materialLight,
+  monokai,
+  "nord-dark": nordDark,
+  "nord-light": nordLight,
+  "one-dark": oneDark,
+  "one-light": oneLight,
+  "solarized-dark": solarizedDark,
+  "solarized-light": solarizedLight,
+  synthwave,
+  "tokyo-night-light": tokyoNightLight,
+  "tokyo-night": tokyoNight
+};
+
 // ../kit/src/theme.ts
 var defaultTheme = {
   name: "default",
@@ -159,8 +564,9 @@ var defaultTheme = {
     border: "#444444"
   }
 };
-var catppuccinMocha = {
+var catppuccinMocha2 = {
   name: "catppuccin-mocha",
+  dark: true,
   tokens: {
     accent: "#a6e3a1",
     dim: "#6c7086",
@@ -173,17 +579,22 @@ var catppuccinMocha = {
     userMark: "#89b4fa",
     toolOk: "#f9e2af",
     toolFail: "#f38ba8",
-    approvalBorder: "#f9e2af"
+    approvalBorder: "#f9e2af",
+    thinking: "#cba6f7"
   }
 };
 var themes = {
   default: defaultTheme,
-  "catppuccin-mocha": catppuccinMocha
+  ...generatedThemes,
+  "catppuccin-mocha": catppuccinMocha2
 };
 function getTheme(name) {
   if (name && themes[name])
     return themes[name];
   return defaultTheme;
+}
+function themeNames() {
+  return Object.values(themes).map((theme) => ({ name: theme.name, dark: theme.dark ?? true }));
 }
 // ../kit/src/components.tsx
 import { createTextNode as _$createTextNode } from "@opentui/solid";
@@ -195,6 +606,7 @@ import { createElement as _$createElement } from "@opentui/solid";
 import { createComponent as _$createComponent } from "@opentui/solid";
 import { For } from "solid-js";
 // ../kit/src/shell-parts.tsx
+import { use as _$use } from "@opentui/solid";
 import { memo as _$memo } from "@opentui/solid";
 import { createComponent as _$createComponent2 } from "@opentui/solid";
 import { setProp as _$setProp2 } from "@opentui/solid";
@@ -203,8 +615,8 @@ import { insert as _$insert2 } from "@opentui/solid";
 import { createTextNode as _$createTextNode2 } from "@opentui/solid";
 import { insertNode as _$insertNode2 } from "@opentui/solid";
 import { createElement as _$createElement2 } from "@opentui/solid";
-import { For as For2, Show } from "solid-js";
-import { createTextAttributes } from "@opentui/core";
+import { createEffect, For as For2, on, Show } from "solid-js";
+import { defaultTextareaKeyBindings } from "@opentui/core";
 var MAX_VISIBLE_ITEMS = 120;
 var footerHints = [{
   key: "enter",
@@ -400,117 +812,145 @@ function Transcript(props) {
     return _el$16;
   })();
 }
+var INPUT_KEY_BINDINGS = [...defaultTextareaKeyBindings, {
+  name: "return",
+  action: "submit"
+}, {
+  name: "kpenter",
+  action: "submit"
+}, {
+  name: "return",
+  shift: true,
+  action: "newline"
+}, {
+  name: "kpenter",
+  shift: true,
+  action: "newline"
+}, {
+  name: "return",
+  meta: true,
+  action: "newline"
+}, {
+  name: "kpenter",
+  meta: true,
+  action: "newline"
+}];
 function InputLine(props) {
-  const inputChunks = () => {
-    const s = props.value;
-    const c = Math.min(props.cursor, s.length);
-    return {
-      before: s.slice(0, c),
-      at: c < s.length ? s.charAt(c) : " ",
-      after: c < s.length ? s.slice(c + 1) : ""
-    };
+  let ta;
+  createEffect(on(() => props.resetKey, () => {
+    ta?.setText("");
+  }, {
+    defer: true
+  }));
+  createEffect(on(() => props.setKey, () => {
+    if (!ta)
+      return;
+    ta.replaceText(props.setValue ?? "");
+    ta.gotoBufferEnd();
+  }, {
+    defer: true
+  }));
+  const onKeyDown = (key) => {
+    if (props.onKeyFilter?.(key)) {
+      key.preventDefault();
+      return;
+    }
+    if (!ta || key.shift || key.ctrl || key.meta)
+      return;
+    const row = ta.visualCursor.visualRow;
+    if (key.name === "up" && row === 0) {
+      if (props.onHistoryNav?.("up"))
+        key.preventDefault();
+    } else if (key.name === "down" && row >= Math.max(0, ta.virtualLineCount - 1)) {
+      if (props.onHistoryNav?.("down"))
+        key.preventDefault();
+    }
   };
   return (() => {
-    var _el$21 = _$createElement2("box"), _el$22 = _$createElement2("text");
+    var _el$21 = _$createElement2("box"), _el$22 = _$createElement2("box"), _el$23 = _$createElement2("text"), _el$25 = _$createElement2("textarea");
     _$insertNode2(_el$21, _el$22);
-    _$insert2(_el$22, (() => {
-      var _c$ = _$memo(() => !!props.busy);
-      return () => _c$() ? `${props.spinnerFrame} ` : "❯ ";
-    })());
-    _$insert2(_el$21, (() => {
-      var _c$2 = _$memo(() => !!props.busy);
-      return () => _c$2() ? (() => {
-        var _el$23 = _$createElement2("text");
-        _$insert2(_el$23, () => props.busyLabel);
-        _$effect2((_$p) => _$setProp2(_el$23, "style", {
-          fg: props.theme.tokens.dim
-        }, _$p));
-        return _el$23;
-      })() : _$memo(() => props.value === "")() ? [(() => {
-        var _el$24 = _$createElement2("text");
-        _$insertNode2(_el$24, _$createTextNode2(` `));
-        _$effect2((_$p) => _$setProp2(_el$24, "style", {
-          fg: props.theme.tokens.accent,
-          attributes: createTextAttributes({
-            inverse: true
-          })
-        }, _$p));
-        return _el$24;
-      })(), (() => {
+    _$insertNode2(_el$22, _el$23);
+    _$insertNode2(_el$22, _el$25);
+    _$setProp2(_el$22, "style", {
+      flexDirection: "row"
+    });
+    _$insertNode2(_el$23, _$createTextNode2(`❯ `));
+    _$use((el) => ta = el, _el$25);
+    _$setProp2(_el$25, "keyBindings", INPUT_KEY_BINDINGS);
+    _$setProp2(_el$25, "onContentChange", () => props.onContentChange?.(ta?.plainText ?? ""));
+    _$setProp2(_el$25, "onSubmit", () => props.onSubmit?.());
+    _$setProp2(_el$25, "onKeyDown", onKeyDown);
+    _$insert2(_el$21, _$createComponent2(Show, {
+      get when() {
+        return props.busy;
+      },
+      get children() {
         var _el$26 = _$createElement2("text");
-        _$insert2(_el$26, () => props.placeholder);
+        _$insert2(_el$26, () => `${props.spinnerFrame ? `${props.spinnerFrame} ` : ""}${props.busyLabel}`);
         _$effect2((_$p) => _$setProp2(_el$26, "style", {
           fg: props.theme.tokens.dim
         }, _$p));
         return _el$26;
-      })()] : [(() => {
-        var _el$27 = _$createElement2("text");
-        _$insert2(_el$27, () => inputChunks().before);
-        _$effect2((_$p) => _$setProp2(_el$27, "style", {
-          fg: props.theme.tokens.text
-        }, _$p));
-        return _el$27;
-      })(), (() => {
-        var _el$28 = _$createElement2("text");
-        _$insert2(_el$28, () => inputChunks().at);
-        _$effect2((_$p) => _$setProp2(_el$28, "style", {
-          fg: props.theme.tokens.text,
-          attributes: createTextAttributes({
-            inverse: true
-          })
-        }, _$p));
-        return _el$28;
-      })(), (() => {
-        var _el$29 = _$createElement2("text");
-        _$insert2(_el$29, () => inputChunks().after);
-        _$effect2((_$p) => _$setProp2(_el$29, "style", {
-          fg: props.theme.tokens.text
-        }, _$p));
-        return _el$29;
-      })()];
-    })(), null);
+      }
+    }), null);
     _$effect2((_p$) => {
       var _v$5 = {
         border: true,
         borderStyle: "rounded",
         borderColor: props.theme.tokens.border,
-        flexDirection: "row"
+        flexDirection: "column"
       }, _v$6 = {
         fg: props.theme.tokens.accent
+      }, _v$7 = !props.busy && (props.focused ?? true), _v$8 = props.placeholder, _v$9 = props.theme.tokens.text, _v$0 = props.theme.tokens.text, _v$1 = props.theme.tokens.dim, _v$10 = {
+        flexGrow: 1,
+        height: props.height ?? 3,
+        wrapMode: "char"
       };
       _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$21, "style", _v$5, _p$.e));
-      _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$22, "style", _v$6, _p$.t));
+      _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$23, "style", _v$6, _p$.t));
+      _v$7 !== _p$.a && (_p$.a = _$setProp2(_el$25, "focused", _v$7, _p$.a));
+      _v$8 !== _p$.o && (_p$.o = _$setProp2(_el$25, "placeholder", _v$8, _p$.o));
+      _v$9 !== _p$.i && (_p$.i = _$setProp2(_el$25, "textColor", _v$9, _p$.i));
+      _v$0 !== _p$.n && (_p$.n = _$setProp2(_el$25, "focusedTextColor", _v$0, _p$.n));
+      _v$1 !== _p$.s && (_p$.s = _$setProp2(_el$25, "placeholderColor", _v$1, _p$.s));
+      _v$10 !== _p$.h && (_p$.h = _$setProp2(_el$25, "style", _v$10, _p$.h));
       return _p$;
     }, {
       e: undefined,
-      t: undefined
+      t: undefined,
+      a: undefined,
+      o: undefined,
+      i: undefined,
+      n: undefined,
+      s: undefined,
+      h: undefined
     });
     return _el$21;
   })();
 }
 function FooterHints(props) {
   return (() => {
-    var _el$30 = _$createElement2("box");
-    _$setProp2(_el$30, "style", {
+    var _el$27 = _$createElement2("box");
+    _$setProp2(_el$27, "style", {
       flexDirection: "row",
       paddingLeft: 2,
       paddingRight: 2
     });
-    _$insert2(_el$30, _$createComponent2(For2, {
+    _$insert2(_el$27, _$createComponent2(For2, {
       each: footerHints,
       children: (h, i) => (() => {
-        var _el$31 = _$createElement2("text"), _el$32 = _$createTextNode2(` `);
-        _$insertNode2(_el$31, _el$32);
-        _$insert2(_el$31, () => i() > 0 ? " · " : "", _el$32);
-        _$insert2(_el$31, () => h.key, _el$32);
-        _$insert2(_el$31, () => h.label, null);
-        _$effect2((_$p) => _$setProp2(_el$31, "style", {
+        var _el$28 = _$createElement2("text"), _el$29 = _$createTextNode2(` `);
+        _$insertNode2(_el$28, _el$29);
+        _$insert2(_el$28, () => i() > 0 ? " · " : "", _el$29);
+        _$insert2(_el$28, () => h.key, _el$29);
+        _$insert2(_el$28, () => h.label, null);
+        _$effect2((_$p) => _$setProp2(_el$28, "style", {
           fg: props.theme.tokens.dim
         }, _$p));
-        return _el$31;
+        return _el$28;
       })()
     }));
-    return _el$30;
+    return _el$27;
   })();
 }
 // ../kit/src/overlays.tsx
@@ -602,7 +1042,8 @@ var POWERLINE_COLORS = {
   contextOrange: "#FF9800",
   contextDanger: "#F44336",
   messages: "#1565C0",
-  tools: "#E65100"
+  tools: "#E65100",
+  speed: "#00897B"
 };
 var AUTO_FG_DARK = "#1a1a2e";
 var AUTO_FG_LIGHT = "#ffffff";
@@ -689,6 +1130,14 @@ function PowerlineFooter(props) {
     }), null);
     return _el$;
   })();
+}
+function speedSegment(tps, theme) {
+  if (tps === null || !Number.isFinite(tps) || tps < 0)
+    return null;
+  return {
+    text: `⚡ ${Math.round(tps)} tok/s`,
+    bg: POWERLINE_COLORS.speed
+  };
 }
 // ../kit/src/welcome.tsx
 import { effect as _$effect7 } from "@opentui/solid";
@@ -865,6 +1314,7 @@ var THINK_TAIL = 3;
 var THINK_SUMMARY_HEAD = 60;
 function ThinkWidget(props) {
   const th = () => props.theme;
+  const thinkFg = () => th().tokens.thinking ?? th().tokens.accent;
   const summary = () => {
     const head = props.state.text.slice(0, THINK_SUMMARY_HEAD).replace(/\s+/g, " ").trim();
     return `\uD83D\uDCAD thought · ${props.state.elapsed}s · ${head}...`;
@@ -909,11 +1359,11 @@ function ThinkWidget(props) {
       _$effect8((_p$) => {
         var _v$ = {
           border: true,
-          borderColor: th().tokens.accent,
+          borderColor: thinkFg(),
           flexDirection: "column",
           padding: 1
         }, _v$2 = {
-          fg: th().tokens.accent
+          fg: thinkFg()
         };
         _v$ !== _p$.e && (_p$.e = _$setProp8(_el$, "style", _v$, _p$.e));
         _v$2 !== _p$.t && (_p$.t = _$setProp8(_el$2, "style", _v$2, _p$.t));
@@ -1198,8 +1648,44 @@ function Select(props) {
     }
   });
 }
+// ../kit/src/todos.tsx
+import { setProp as _$setProp11 } from "@opentui/solid";
+import { effect as _$effect11 } from "@opentui/solid";
+import { insert as _$insert11 } from "@opentui/solid";
+import { createElement as _$createElement11 } from "@opentui/solid";
+import { createComponent as _$createComponent9 } from "@opentui/solid";
+import { For as For8 } from "solid-js";
+var MAX_ROWS = 5;
+var STATUS_GLYPH = {
+  pending: "☐",
+  in_progress: "▶",
+  completed: "☑"
+};
+function sortTodos(todos) {
+  const rank = (t) => t.status === "in_progress" ? 0 : t.status === "pending" ? 1 : 2;
+  const completed = todos.filter((t) => t.status === "completed");
+  return [...todos].sort((a, b) => rank(a) - rank(b) || completed.indexOf(b) - completed.indexOf(a));
+}
+function TodosWidget(props) {
+  const th = () => props.theme;
+  const visible = () => sortTodos(props.todos).slice(0, MAX_ROWS);
+  const remaining = () => Math.max(0, props.todos.length - visible().length);
+  const active = () => props.todos.some((t) => t.status === "in_progress" || t.status === "pending");
+  return _$createComponent9(For8, {
+    get each() {
+      return visible();
+    },
+    children: (t, i) => (() => {
+      var _el$ = _$createElement11("text");
+      _$insert11(_el$, () => `${i() === 0 && active() ? "\uD83D\uDCCB " : "   "}${STATUS_GLYPH[t.status]} ${t.content}${i() === visible().length - 1 && remaining() > 0 ? ` (+${remaining()})` : ""}`);
+      _$effect11((_$p) => _$setProp11(_el$, "style", {
+        fg: t.status === "completed" ? th().tokens.dim : t.status === "in_progress" ? th().tokens.accent : th().tokens.text
+      }, _$p));
+      return _el$;
+    })()
+  });
+}
 // src/ShellHost.tsx
-var THEME_ORDER = ["catppuccin-mocha", "default"];
 var CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
 var EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"];
 var CONTEXT_WINDOW_TOKENS = 128000;
@@ -1220,7 +1706,7 @@ var COMMANDS = [{
   desc: "list and resume stored sessions"
 }, {
   name: "/theme",
-  desc: "cycle theme"
+  desc: "pick theme"
 }, {
   name: "/model",
   desc: "pick or switch model (/model provider/id)"
@@ -1230,6 +1716,9 @@ var COMMANDS = [{
 }, {
   name: "/logout",
   desc: "remove an api key (/logout REF)"
+}, {
+  name: "/attach",
+  desc: "attach an image to the next message (/attach path)"
 }, {
   name: "/quit",
   desc: "exit the shell"
@@ -1242,9 +1731,11 @@ var fmtClock = () => {
 function ShellHost(props) {
   const t = props.deps.t;
   const [input, setInput] = createSignal("");
-  const [cursor, setCursor] = createSignal(0);
   const [history, setHistory] = createSignal([]);
   const [historyIdx, setHistoryIdx] = createSignal(0);
+  const [resetKey, setResetKey] = createSignal(0);
+  const [setKey, setSetKey] = createSignal(0);
+  const [setValueText, setSetValueText] = createSignal("");
   const [items, setItems] = createSignal([]);
   const [busy, setBusy] = createSignal(false);
   const [approval, setApproval] = createSignal(null);
@@ -1261,6 +1752,10 @@ function ShellHost(props) {
     elapsed: 0
   });
   const [toolEntries, setToolEntries] = createSignal([]);
+  const [thinkExpanded, setThinkExpanded] = createSignal(false);
+  const [toolExpanded, setToolExpanded] = createSignal(false);
+  const [todos, setTodos] = createSignal([]);
+  const [agentRows, setAgentRows] = createSignal([]);
   const [overlay, setOverlay] = createSignal(null);
   const [modelItems, setModelItems] = createSignal([]);
   const initialTheme = process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha";
@@ -1269,6 +1764,8 @@ function ShellHost(props) {
   const [menuOpen, setMenuOpen] = createSignal(true);
   const [menuSel, setMenuSel] = createSignal(0);
   const [clock, setClock] = createSignal(fmtClock());
+  const [liveTps, setLiveTps] = createSignal(null);
+  let turnStartAt = 0;
   let approveResolve = null;
   onMount(() => {
     const tick = setInterval(() => {
@@ -1281,6 +1778,10 @@ function ShellHost(props) {
         ...e,
         elapsed: (e.elapsed ?? 0) + 1
       } : e) : arr);
+      setAgentRows((arr) => arr.some((r) => r.status === "running") ? arr.map((r) => r.status === "running" ? {
+        ...r,
+        elapsed: r.elapsed + 1
+      } : r) : arr);
     }, 1000);
     onCleanup(() => clearInterval(tick));
     if (!process.env.DSH_OPENTUI_NO_ASK)
@@ -1362,6 +1863,8 @@ function ShellHost(props) {
       return t("picker.model.title");
     if (ov.kind === "sessions")
       return t("picker.sessions.title");
+    if (ov.kind === "theme")
+      return t("picker.theme.title");
     if (ov.kind === "effort")
       return t("picker.effort.title", {
         model: ov.model
@@ -1390,6 +1893,14 @@ function ShellHost(props) {
       push({
         kind: "system",
         text: `${t("cmd.model.set")} ${ov.provider}/${ov.model}${effort ? ` (${effort})` : ""} ${t("cmd.model.next")}`
+      });
+      return;
+    }
+    if (ov.kind === "theme") {
+      setThemeName(value);
+      push({
+        kind: "system",
+        text: `theme → ${value}`
       });
       return;
     }
@@ -1439,18 +1950,6 @@ function ShellHost(props) {
       } : x));
   };
   const push = (it) => setItems((arr) => [...arr, it]);
-  const wordStart = (s, pos) => {
-    const cut = s.slice(0, pos).replace(/\s+$/, "").replace(/\S+$/, "").length;
-    return Math.min(cut, pos);
-  };
-  const resetHistoryNav = () => setHistoryIdx(history().length);
-  const insertChar = (ch) => {
-    const s = input();
-    const c = Math.min(cursor(), s.length);
-    setInput(s.slice(0, c) + ch + s.slice(c));
-    setCursor(c + ch.length);
-    resetHistoryNav();
-  };
   const commitHistory = (text) => {
     if (!text)
       return;
@@ -1459,21 +1958,72 @@ function ShellHost(props) {
     setHistory(next);
     setHistoryIdx(next.length);
   };
+  const setBuffer = (text) => {
+    setSetValueText(text);
+    setSetKey((k) => k + 1);
+    setInput(text);
+  };
   const historyNav = (dir) => {
     const h = history();
     if (h.length === 0)
-      return;
+      return false;
     let idx = Math.min(historyIdx(), h.length);
-    if (dir === -1 && idx > 0)
+    if (dir === "up" && idx > 0)
       idx -= 1;
-    else if (dir === 1 && idx < h.length)
+    else if (dir === "down" && idx < h.length)
       idx += 1;
     else
-      return;
+      return false;
     setHistoryIdx(idx);
-    const text = idx === h.length ? "" : h[idx];
-    setInput(text);
-    setCursor(text.length);
+    setBuffer(idx === h.length ? "" : h[idx]);
+    return true;
+  };
+  const clearBuffer = () => setBuffer("");
+  const submitLine = () => {
+    const text = input().trim();
+    const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined;
+    setMenuOpen(true);
+    setMenuSel(0);
+    if (cmd) {
+      const full = text === cmd.name || !text.startsWith("/") ? cmd.name : text;
+      commitHistory(full);
+      clearBuffer();
+      runCommand(full);
+      return;
+    }
+    if (!text)
+      return;
+    commitHistory(text);
+    clearBuffer();
+    if (text.startsWith("/")) {
+      runCommand(text);
+      return;
+    }
+    if (busy())
+      return steerText(text);
+    send(text);
+  };
+  const paletteKeyFilter = (key) => {
+    if (!menuVisible())
+      return false;
+    if (key.name === "up" || key.name === "down") {
+      const n = filteredCommands().length;
+      setMenuSel((s) => key.name === "up" ? (s - 1 + n) % n : (s + 1) % n);
+      return true;
+    }
+    if (key.name === "tab") {
+      const cmd = filteredCommands()[clampedSel()];
+      if (cmd) {
+        setBuffer(`${cmd.name} `);
+        setMenuSel(0);
+      }
+      return true;
+    }
+    if (key.name === "return") {
+      submitLine();
+      return true;
+    }
+    return false;
   };
   const pushCredStatus = async () => {
     for (const ref of CRED_REFS) {
@@ -1507,16 +2057,17 @@ function ShellHost(props) {
       });
     } else if (cmd === "clear") {
       setItems([]);
+      setResetKey((k) => k + 1);
       push({
         kind: "system",
         text: t("cmd.cleared")
       });
     } else if (cmd === "usage") {
-      const u = usage();
-      push({
-        kind: "system",
-        text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens`
-      });
+      for (const line of props.deps.session.usageSummary())
+        push({
+          kind: "system",
+          text: line
+        });
       push({
         kind: "system",
         text: `model: ${label()}`
@@ -1548,12 +2099,16 @@ function ShellHost(props) {
         });
       }
     } else if (cmd === "theme") {
-      const i = THEME_ORDER.indexOf(themeName());
-      const next = THEME_ORDER[(i + 1) % THEME_ORDER.length];
-      setThemeName(next);
-      push({
-        kind: "system",
-        text: `theme → ${next}`
+      setOverlay({
+        kind: "theme",
+        items: themeNames().map((x) => ({
+          label: x.name,
+          group: x.dark ? "dark" : "light",
+          value: x.name,
+          ...x.name === themeName() ? {
+            description: t("cmd.model.current")
+          } : {}
+        }))
       });
     } else if (cmd === "model") {
       if (!arg) {
@@ -1625,6 +2180,26 @@ function ShellHost(props) {
           text: t("cmd.logout.usage")
         });
       }
+    } else if (cmd === "attach") {
+      if (!arg) {
+        push({
+          kind: "error",
+          text: "usage: /attach /path/to/image.png"
+        });
+      } else {
+        try {
+          const desc = await props.deps.session.attachImage(arg);
+          push({
+            kind: "system",
+            text: `\uD83D\uDCCE attached ${desc} — sends with your next message`
+          });
+        } catch (e) {
+          push({
+            kind: "error",
+            text: errText(e)
+          });
+        }
+      }
     } else {
       push({
         kind: "system",
@@ -1652,6 +2227,10 @@ function ShellHost(props) {
       text: "",
       elapsed: 0
     });
+    setThinkExpanded(false);
+    setToolExpanded(false);
+    setLiveTps(null);
+    turnStartAt = Date.now();
     let replyItem = null;
     streamingReply = null;
     try {
@@ -1686,6 +2265,34 @@ function ShellHost(props) {
             completion: v.completion + u.completion,
             turns: v.turns + 1
           }));
+        },
+        onStreamTick: ({
+          chars,
+          at
+        }) => {
+          const sec = (at - turnStartAt) / 1000;
+          if (sec > 0.3 && chars > 0)
+            setLiveTps(Math.round(chars / 4 / sec));
+        },
+        onTodos: (list) => setTodos(list),
+        onAgentEvent: (e) => {
+          setAgentRows((arr) => {
+            const idx = arr.findIndex((r) => r.key === e.key);
+            if (idx === -1) {
+              if (!e.label)
+                return arr;
+              return [...arr, {
+                key: e.key,
+                label: e.label,
+                status: e.status,
+                elapsed: 0
+              }];
+            }
+            return arr.map((r, i) => i === idx ? {
+              ...r,
+              status: e.status
+            } : r);
+          });
         },
         onApprove: (name, args) => {
           setApproval({
@@ -1750,6 +2357,7 @@ function ShellHost(props) {
       setApproval(null);
       approveResolve = null;
       setBusy(false);
+      setLiveTps(null);
     }
   }
   useKeyboard2((key) => {
@@ -1780,116 +2388,16 @@ function ShellHost(props) {
         onOverlayCancel();
       return;
     }
-    if (menuVisible() && (key.name === "up" || key.name === "down")) {
-      const n = filteredCommands().length;
-      setMenuSel((s) => key.name === "up" ? (s - 1 + n) % n : (s + 1) % n);
+    if (key.ctrl && key.name === "t") {
+      setThinkExpanded((v) => !v);
       return;
     }
-    if (key.name === "up" || key.name === "down") {
-      if (input().startsWith("/"))
-        return;
-      return historyNav(key.name === "up" ? -1 : 1);
-    }
-    if (key.name === "left")
-      return setCursor((c) => Math.max(0, c - 1));
-    if (key.name === "right")
-      return setCursor((c) => Math.min(input().length, c + 1));
-    if (key.name === "home" || key.ctrl && key.name === "a")
-      return setCursor(0);
-    if (key.name === "end" || key.ctrl && key.name === "e")
-      return setCursor(input().length);
-    if (key.name === "tab") {
-      const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined;
-      if (cmd) {
-        setInput(cmd.name + " ");
-        setCursor(cmd.name.length + 1);
-        resetHistoryNav();
-        setMenuSel(0);
-      }
+    if (key.ctrl && key.name === "o") {
+      setToolExpanded((v) => !v);
       return;
     }
-    if (key.name === "return") {
-      const text = input().trim();
-      const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined;
-      setInput("");
-      setCursor(0);
-      setMenuOpen(true);
-      setMenuSel(0);
-      if (cmd) {
-        const full = text === cmd.name || !text.startsWith("/") ? cmd.name : text;
-        commitHistory(full);
-        runCommand(full);
-        return;
-      }
-      if (!text)
-        return;
-      commitHistory(text);
-      if (text.startsWith("/")) {
-        runCommand(text);
-        return;
-      }
-      if (busy())
-        return steerText(text);
-      send(text);
-      return;
-    }
-    if (key.name === "backspace") {
-      const c = cursor();
-      if (c > 0) {
-        const s = input();
-        setInput(s.slice(0, c - 1) + s.slice(c));
-        setCursor(c - 1);
-        resetHistoryNav();
-        setMenuOpen(true);
-        setMenuSel(0);
-      }
-      return;
-    }
-    if (key.name === "delete" || key.ctrl && key.name === "d") {
-      const c = cursor();
-      const s = input();
-      if (c < s.length) {
-        setInput(s.slice(0, c) + s.slice(c + 1));
-        resetHistoryNav();
-        setMenuOpen(true);
-        setMenuSel(0);
-      }
-      return;
-    }
-    if (key.ctrl && key.name === "u") {
-      setInput("");
-      setCursor(0);
-      resetHistoryNav();
-      setMenuOpen(true);
-      setMenuSel(0);
-      return;
-    }
-    if (key.ctrl && key.name === "w") {
-      const c = cursor();
-      const cut = wordStart(input(), c);
-      if (cut < c) {
-        const s = input();
-        setInput(s.slice(0, cut) + s.slice(c));
-        setCursor(cut);
-        resetHistoryNav();
-        setMenuOpen(true);
-        setMenuSel(0);
-      }
-      return;
-    }
-    if (key.name === "escape") {
-      if (menuVisible())
-        return setMenuOpen(false);
-      setInput("");
-      setCursor(0);
-      return;
-    }
-    const ch = key.sequence;
-    if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) {
-      insertChar(ch);
-      setMenuOpen(true);
-      setMenuSel(0);
-    }
+    if (key.name === "escape" && menuVisible())
+      setMenuOpen(false);
   });
   const route = createMemo(() => {
     const m = /^([^/]+)\/(\S+?)(?:\s*\(([\w-]+)\))?$/.exec(label());
@@ -1935,18 +2443,21 @@ function ShellHost(props) {
         text: `⚒ ${toolCount()}`,
         bg: POWERLINE_COLORS.tools
       });
+    const speed = speedSegment(busy() ? liveTps() : null, th());
+    if (speed)
+      segs.push(speed);
     return segs;
   };
   const th = () => theme();
   return (() => {
-    var _el$ = _$createElement11("box");
-    _$setProp11(_el$, "style", {
+    var _el$ = _$createElement12("box");
+    _$setProp12(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1
     });
-    _$insert11(_el$, (() => {
+    _$insert12(_el$, (() => {
       var _c$ = _$memo5(() => !!showWelcome());
-      return () => _c$() ? _$createComponent9(WelcomeBanner, {
+      return () => _c$() ? _$createComponent10(WelcomeBanner, {
         get theme() {
           return th();
         },
@@ -1956,9 +2467,9 @@ function ShellHost(props) {
         get cwd() {
           return process.cwd();
         }
-      }) : _$createComponent9(AutoScroll, {
+      }) : _$createComponent10(AutoScroll, {
         get children() {
-          return _$createComponent9(Transcript, {
+          return _$createComponent10(Transcript, {
             get items() {
               return items();
             },
@@ -1972,28 +2483,52 @@ function ShellHost(props) {
         }
       });
     })(), null);
-    _$insert11(_el$, _$createComponent9(ThinkWidget, {
-      get state() {
-        return thinkState();
+    _$insert12(_el$, _$createComponent10(TodosWidget, {
+      get todos() {
+        return todos();
       },
       get theme() {
         return th();
       }
     }), null);
-    _$insert11(_el$, _$createComponent9(ToolWidget, {
+    _$insert12(_el$, _$createComponent10(For9, {
+      get each() {
+        return agentRows();
+      },
+      children: (r) => (() => {
+        var _el$2 = _$createElement12("text");
+        _$insert12(_el$2, () => `◇ ${r.label}${r.status === "running" ? ` · ${r.elapsed}s` : ` · ${r.status}`}`);
+        _$effect12((_$p) => _$setProp12(_el$2, "style", {
+          fg: r.status === "running" ? th().tokens.accent : th().tokens.dim
+        }, _$p));
+        return _el$2;
+      })()
+    }), null);
+    _$insert12(_el$, _$createComponent10(ThinkWidget, {
+      get state() {
+        return {
+          ...thinkState(),
+          active: thinkState().active || thinkExpanded()
+        };
+      },
+      get theme() {
+        return th();
+      }
+    }), null);
+    _$insert12(_el$, _$createComponent10(ToolWidget, {
       get entries() {
         return toolEntries();
       },
       get active() {
-        return toolActive();
+        return toolActive() || toolExpanded();
       },
       get theme() {
         return th();
       }
     }), null);
-    _$insert11(_el$, (() => {
+    _$insert12(_el$, (() => {
       var _c$2 = _$memo5(() => !!approval());
-      return () => _c$2() ? _$createComponent9(ApprovalCard, {
+      return () => _c$2() ? _$createComponent10(ApprovalCard, {
         get toolName() {
           return approval().name;
         },
@@ -2008,9 +2543,9 @@ function ShellHost(props) {
         }
       }) : null;
     })(), null);
-    _$insert11(_el$, (() => {
+    _$insert12(_el$, (() => {
       var _c$3 = _$memo5(() => !!overlay());
-      return () => _c$3() ? _$createComponent9(Select, {
+      return () => _c$3() ? _$createComponent10(Select, {
         get title() {
           return overlayTitle();
         },
@@ -2024,44 +2559,40 @@ function ShellHost(props) {
         onCancel: onOverlayCancel
       }) : null;
     })(), null);
-    _$insert11(_el$, (() => {
+    _$insert12(_el$, (() => {
       var _c$4 = _$memo5(() => !!menuVisible());
       return () => _c$4() ? (() => {
-        var _el$2 = _$createElement11("box");
-        _$insert11(_el$2, _$createComponent9(For8, {
+        var _el$3 = _$createElement12("box");
+        _$insert12(_el$3, _$createComponent10(For9, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$3 = _$createElement11("text"), _el$4 = _$createTextNode9(` `);
-            _$insertNode10(_el$3, _el$4);
-            _$insert11(_el$3, () => i() === clampedSel() ? "› " : "  ", _el$4);
-            _$insert11(_el$3, () => c.name, _el$4);
-            _$insert11(_el$3, () => c.desc, null);
-            _$effect11((_$p) => _$setProp11(_el$3, "style", {
+            var _el$4 = _$createElement12("text"), _el$5 = _$createTextNode9(` `);
+            _$insertNode10(_el$4, _el$5);
+            _$insert12(_el$4, () => i() === clampedSel() ? "› " : "  ", _el$5);
+            _$insert12(_el$4, () => c.name, _el$5);
+            _$insert12(_el$4, () => c.desc, null);
+            _$effect12((_$p) => _$setProp12(_el$4, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
-            return _el$3;
+            return _el$4;
           })()
         }));
-        _$effect11((_$p) => _$setProp11(_el$2, "style", {
+        _$effect12((_$p) => _$setProp12(_el$3, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
           padding: 0
         }, _$p));
-        return _el$2;
+        return _el$3;
       })() : null;
     })(), null);
-    _$insert11(_el$, _$createComponent9(InputLine, {
-      get value() {
-        return input();
-      },
-      get cursor() {
-        return cursor();
+    _$insert12(_el$, _$createComponent10(InputLine, {
+      get focused() {
+        return !(approval() || overlay());
       },
       busy: false,
-      spinnerFrame: "",
       get placeholder() {
         return _$memo5(() => !!busy())() ? t("shell.input.steer") : t("shell.input.placeholder");
       },
@@ -2070,14 +2601,31 @@ function ShellHost(props) {
       },
       get theme() {
         return th();
+      },
+      onSubmit: submitLine,
+      onContentChange: (v) => {
+        setInput(v);
+        setMenuOpen(true);
+        setMenuSel(0);
+      },
+      onHistoryNav: historyNav,
+      onKeyFilter: paletteKeyFilter,
+      get resetKey() {
+        return resetKey();
+      },
+      get setKey() {
+        return setKey();
+      },
+      get setValue() {
+        return setValueText();
       }
     }), null);
-    _$insert11(_el$, _$createComponent9(FooterHints, {
+    _$insert12(_el$, _$createComponent10(FooterHints, {
       get theme() {
         return th();
       }
     }), null);
-    _$insert11(_el$, _$createComponent9(PowerlineFooter, {
+    _$insert12(_el$, _$createComponent10(PowerlineFooter, {
       get left() {
         return powerlineSegments();
       },
@@ -2095,6 +2643,51 @@ function ShellHost(props) {
 // src/host-session.ts
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { randomUUID } from "node:crypto";
+
+// src/agent/loop.ts
+var STREAM_TICK_MS = 250;
+var CHARS_PER_TOKEN = 4;
+function estimateTokens(chars) {
+  return Math.max(0, Math.round(chars / CHARS_PER_TOKEN));
+}
+function tokensPerSecond(tokens, ms) {
+  if (ms <= 0 || tokens <= 0)
+    return null;
+  return tokens * 1000 / ms;
+}
+function emptyTurnStats() {
+  return { startedAt: 0, endedAt: 0, ms: 0, chars: 0, tokens: 0, tps: null, estimated: true };
+}
+function createStreamTicker(onTick, intervalMs = STREAM_TICK_MS) {
+  let chars = 0;
+  let lastTickAt = 0;
+  return {
+    reset() {
+      chars = 0;
+      lastTickAt = 0;
+    },
+    add(delta) {
+      if (delta <= 0)
+        return;
+      chars += delta;
+      const now = Date.now();
+      if (now - lastTickAt >= intervalMs) {
+        lastTickAt = now;
+        onTick({ chars, at: now });
+      }
+    },
+    finish() {
+      if (chars <= 0)
+        return;
+      const now = Date.now();
+      lastTickAt = now;
+      onTick({ chars, at: now });
+    },
+    chars: () => chars
+  };
+}
+
+// src/host-session.ts
 var DBG = (_m) => {};
 
 class HostSession {
@@ -2110,6 +2703,11 @@ class HostSession {
   #override;
   #resumeId;
   usage = { prompt: 0, completion: 0 };
+  lastTurnStats = emptyTurnStats();
+  #turns = 0;
+  #ticker = createStreamTicker((t) => this.#cb?.onStreamTick?.(t));
+  #turnStartedAt = 0;
+  #turnUsageStart = { prompt: 0, completion: 0 };
   constructor(ctx) {
     this.#ctx = ctx;
     this.#wire();
@@ -2229,8 +2827,26 @@ class HostSession {
       throw new Error("credentials service unavailable in this host");
     await c.unset(ref);
   }
+  usageSummary() {
+    const fmt = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
+    const lines = [
+      `turns ${this.#turns}`,
+      `prompt ${fmt(this.usage.prompt)} tok`,
+      `completion ${fmt(this.usage.completion)} tok`
+    ];
+    const s = this.lastTurnStats;
+    if (s.ms > 0) {
+      const rate = s.tps === null ? "" : ` · ${Math.round(s.tps)} tok/s${s.estimated ? " (estimated)" : ""}`;
+      lines.push(`last turn ${(s.ms / 1000).toFixed(1)}s${rate}`);
+    }
+    return lines;
+  }
   async turn(userText, cb, _signal) {
     this.#cb = cb;
+    this.#turns++;
+    this.#ticker.reset();
+    this.#turnStartedAt = Date.now();
+    this.#turnUsageStart = { prompt: this.usage.prompt, completion: this.usage.completion };
     if (!this.#handle) {
       this.#sessionId = this.#resumeId ?? randomUUID();
       this.#resumeId = undefined;
@@ -2247,13 +2863,31 @@ class HostSession {
       DBG(`session created ${this.#sessionId} agent=${this.#agentId}`);
     }
     const message = createUserMessage({
-      content: [{ type: "text", text: userText }],
+      content: [
+        { type: "text", text: userText },
+        ...this.#pendingImages.map((ref) => ({ type: "image", attachment: ref }))
+      ],
       source: { kind: "user" }
     });
+    this.#pendingImages = [];
     this.#handle.agent.followup(message);
     await new Promise((resolve) => {
       this.#resolveTurn = resolve;
     });
+  }
+  #pendingImages = [];
+  async attachImage(path) {
+    const store = this.#ctx.get?.("attachments");
+    if (!store?.saveImages)
+      throw new Error("attachment service unavailable in this host");
+    const ext = path.slice(path.lastIndexOf(".") + 1).toLowerCase();
+    const mediaType = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+    if (!mediaType[ext])
+      throw new Error(`unsupported image type .${ext} (png/jpg/webp/gif)`);
+    const data = await (await import("node:fs/promises")).readFile(path);
+    const [ref] = await store.saveImages([{ data: new Uint8Array(data), mediaType: mediaType[ext], name: path.split("/").pop() }]);
+    this.#pendingImages.push(ref);
+    return `${ref.name ?? path} (${(ref.bytes / 1024).toFixed(0)} KB)`;
   }
   steer(userText) {
     if (!this.#handle)
@@ -2266,6 +2900,22 @@ class HostSession {
   }
   #finishTurn() {
     DBG("finishTurn");
+    const endedAt = Date.now();
+    this.#ticker.finish();
+    const chars = this.#ticker.chars();
+    const ms = Math.max(0, endedAt - this.#turnStartedAt);
+    const completion = this.usage.completion - this.#turnUsageStart.completion;
+    const real = completion > 0;
+    const tokens = real ? completion : estimateTokens(chars);
+    this.lastTurnStats = {
+      startedAt: this.#turnStartedAt,
+      endedAt,
+      ms,
+      chars,
+      tokens,
+      tps: tokensPerSecond(tokens, ms),
+      estimated: !real
+    };
     const r = this.#resolveTurn;
     this.#resolveTurn = undefined;
     this.#cb?.onTurnEnd({ prompt: this.usage.prompt, completion: this.usage.completion });
@@ -2281,11 +2931,13 @@ class HostSession {
         return;
       const c = frame.chunk;
       try {
-        if (c.type === "reasoning-delta" && c.text)
+        if (c.type === "reasoning-delta" && c.text) {
           cb.onThinkingDelta(c.text);
-        else if (c.type === "text-delta" && c.text)
+          this.#ticker.add(c.text.length);
+        } else if (c.type === "text-delta" && c.text) {
           cb.onContentDelta(c.text);
-        else if (c.type === "tool-call-delta" && c.name) {}
+          this.#ticker.add(c.text.length);
+        } else if (c.type === "tool-call-delta" && c.name) {}
       } catch {}
     });
     ctx.on("agent/status", ({ agent, status }) => {
@@ -2316,6 +2968,17 @@ class HostSession {
           const args = String(event.data.arguments ?? "");
           this.#toolCalls.set(callId, { name, args });
           cb.onToolStart?.({ callId, name, args });
+        } else if (event.type === "todo/write") {
+          cb.onTodos?.(event.data?.todos ?? []);
+        } else if (event.type === "tool-workflow/agent-start" && event.data) {
+          cb.onAgentEvent?.({
+            key: `${event.data.runId}:${event.data.seq}`,
+            status: "running",
+            label: String(event.data.label ?? "subagent")
+          });
+        } else if (event.type === "tool-workflow/agent-end" && event.data) {
+          const outcome = event.data.outcome === "failed" || event.data.outcome === "cancelled" ? event.data.outcome : "completed";
+          cb.onAgentEvent?.({ key: `${event.data.runId}:${event.data.seq}`, status: outcome });
         } else if (event.type === "tool/result" && event.data) {
           const callId = String(event.data.callId ?? event.data.message?.toolCallId ?? "");
           const known = this.#toolCalls.get(callId);
@@ -2384,7 +3047,7 @@ function apply(ctx, config) {
   mountEngine({}).then(({
     renderer
   }) => {
-    render(() => _$createComponent10(ShellHost, {
+    render(() => _$createComponent11(ShellHost, {
       get deps() {
         return {
           store,

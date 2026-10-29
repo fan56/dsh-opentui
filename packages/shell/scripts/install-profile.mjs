@@ -88,6 +88,10 @@ const patchBody = `# dsh-opentui profile patch (managed by @aiwayds/dsh-opentui 
 - insert:
     - id: tool-ask-user
       name: "@deepseek-ai/dsh-tool-ask-user"
+    - id: tool-todo
+      name: "@deepseek-ai/dsh-tool-todo"
+      config:
+        allowParallelInProgress: false
     - id: dsh-opentui
       name: "@aiwayds/dsh-opentui"
       config:

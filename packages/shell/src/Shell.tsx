@@ -39,13 +39,18 @@ export function Shell(props: { deps: ShellDeps }) {
     themes[initialTheme] ? initialTheme : "catppuccin-mocha",
   )
   const th = () => getTheme(themeName())
-  const [input, setInput] = createSignal("")
-  // Caret position within the input line (0..input().length).
-  const [cursor, setCursor] = createSignal(0)
+  // Draft mirrors the InputLine textarea buffer; the component owns the
+  // caret and all editing, the Shell only reads the value on submit.
+  const [draft, setDraft] = createSignal("")
   // Command history for up/down recall; historyIdx === history().length is
   // the draft slot (below the newest entry, i.e. the empty line).
   const [history, setHistory] = createSignal<string[]>([])
   const [historyIdx, setHistoryIdx] = createSignal(0)
+  // Imperative textarea control: resetKey bump = full buffer reset (/clear),
+  // setKey bump + setValue = undoable replace (submit-clear, history recall).
+  const [resetKey, setResetKey] = createSignal(0)
+  const [setKey, setSetKey] = createSignal(0)
+  const [setValue, setSetValue] = createSignal("")
   const [items, setItems] = createSignal<TItem[]>([])
   const [busy, setBusy] = createSignal(false)
   const [spin, setSpin] = createSignal(0)
@@ -98,22 +103,7 @@ export function Shell(props: { deps: ShellDeps }) {
   }
   const push = (it: TItem) => setItems((arr) => [...arr, it])
 
-  // ---- line editor: cursor-based editing + history recall ----
-  /** Start of the word before `pos` (skips trailing whitespace, then the word). */
-  const wordStart = (s: string, pos: number): number => {
-    const cut = s.slice(0, pos).replace(/\s+$/, "").replace(/\S+$/, "").length
-    return Math.min(cut, pos)
-  }
-  /** Return to the draft slot after any manual edit. */
-  const resetHistoryNav = () => setHistoryIdx(history().length)
-  /** Insert a character at the cursor. */
-  const insertChar = (ch: string) => {
-    const s = input()
-    const c = Math.min(cursor(), s.length)
-    setInput(s.slice(0, c) + ch + s.slice(c))
-    setCursor(c + ch.length)
-    resetHistoryNav()
-  }
+  // ---- input flow: submit + history recall over the InputLine textarea ----
   /** Record a submitted line in history (dedupe consecutive duplicates). */
   const commitHistory = (text: string) => {
     if (!text) return
@@ -122,18 +112,38 @@ export function Shell(props: { deps: ShellDeps }) {
     setHistory(next)
     setHistoryIdx(next.length)
   }
-  /** up/down recall; the draft slot (index === length) restores the empty line. */
-  const historyNav = (dir: -1 | 1) => {
+  /** History recall from InputLine's onHistoryNav. Fires only when the
+   * cursor sits on the first/last visual line. Returns true when the key
+   * was consumed so the editor suppresses its own cursor movement. */
+  const historyNav = (dir: "up" | "down"): boolean => {
     const h = history()
-    if (h.length === 0) return
+    if (h.length === 0) return false
     let idx = Math.min(historyIdx(), h.length)
-    if (dir === -1 && idx > 0) idx -= 1
-    else if (dir === 1 && idx < h.length) idx += 1
-    else return
+    if (dir === "up" && idx > 0) idx -= 1
+    else if (dir === "down" && idx < h.length) idx += 1
+    else return false
     setHistoryIdx(idx)
     const text = idx === h.length ? "" : h[idx]
-    setInput(text)
-    setCursor(text.length)
+    setSetValue(text)
+    setSetKey((k) => k + 1)
+    return true
+  }
+  /** Clear the textarea buffer (undoable replace, cursor stays in draft). */
+  const clearInput = () => {
+    setSetValue("")
+    setSetKey((k) => k + 1)
+  }
+  /** Enter in the InputLine: read the draft, clear the buffer, dispatch. */
+  const submitInput = () => {
+    const text = draft().trim()
+    clearInput()
+    if (!text) return
+    commitHistory(text)
+    if (text.startsWith("/")) {
+      handleCommand(text)
+      return
+    }
+    send(text)
   }
 
   async function send(text: string) {
@@ -210,6 +220,7 @@ export function Shell(props: { deps: ShellDeps }) {
       setItems([])
       const m = model()
       if (m) session = new AgentSession(m)
+      setResetKey((k) => k + 1)
       push({ kind: "system", text: t("cmd.cleared") })
       return true
     }
@@ -246,12 +257,16 @@ export function Shell(props: { deps: ShellDeps }) {
     return false
   }
 
+  // Global keys only. While the InputLine textarea is focused, this hook
+  // still sees every key FIRST (global listeners run before the focused
+  // renderable in OpenTUI's InternalKeyHandler), but everything it does
+  // not handle falls through to the textarea's own editing bindings.
   useKeyboard((key) => {
     // quit works from any state — raw \x03 (legacy mode) or parsed ctrl+c
     // (kitty keyboard protocol delivers it as CSI-u, OpenTUI parses to
     // name "c" + ctrl flag)
     if (key.sequence === "\x03" || ((key.name === "c" || key.name === "C") && key.ctrl)) process.exit(0)
-    // approval modal takes precedence
+    // approval modal takes precedence (busy is up, the textarea is blurred)
     const ap = approval()
     if (ap) {
       if (key.sequence === "y" || key.name === "return") {
@@ -269,72 +284,7 @@ export function Shell(props: { deps: ShellDeps }) {
       if (key.name === "escape" && abort) abort.abort()
       return
     }
-    // History recall on up/down; the draft slot restores the empty line.
-    if (key.name === "up") return historyNav(-1)
-    if (key.name === "down") return historyNav(1)
-    // Cursor movement: left/right, home/ctrl+a, end/ctrl+e.
-    if (key.name === "left") return setCursor((c) => Math.max(0, c - 1))
-    if (key.name === "right") return setCursor((c) => Math.min(input().length, c + 1))
-    if (key.name === "home" || (key.ctrl && key.name === "a")) return setCursor(0)
-    if (key.name === "end" || (key.ctrl && key.name === "e")) return setCursor(input().length)
-    if (key.name === "return") {
-      const text = input().trim()
-      setInput("")
-      setCursor(0)
-      if (!text) return
-      commitHistory(text)
-      if (text.startsWith("/")) {
-        handleCommand(text)
-        return
-      }
-      send(text)
-      return
-    }
-    if (key.name === "backspace") {
-      const c = cursor()
-      if (c > 0) {
-        const s = input()
-        setInput(s.slice(0, c - 1) + s.slice(c))
-        setCursor(c - 1)
-        resetHistoryNav()
-      }
-      return
-    }
-    // delete / ctrl+d: remove the character under the caret.
-    if (key.name === "delete" || (key.ctrl && key.name === "d")) {
-      const c = cursor()
-      const s = input()
-      if (c < s.length) {
-        setInput(s.slice(0, c) + s.slice(c + 1))
-        resetHistoryNav()
-      }
-      return
-    }
-    // ctrl+u: clear the whole line; ctrl+w: kill the word before the caret.
-    if (key.ctrl && key.name === "u") {
-      setInput("")
-      setCursor(0)
-      resetHistoryNav()
-      return
-    }
-    if (key.ctrl && key.name === "w") {
-      const c = cursor()
-      const cut = wordStart(input(), c)
-      if (cut < c) {
-        const s = input()
-        setInput(s.slice(0, cut) + s.slice(c))
-        setCursor(cut)
-        resetHistoryNav()
-      }
-      return
-    }
-    if (key.name === "escape") {
-      setInput("")
-      setCursor(0)
-      return
-    }
-    const ch = key.sequence
-    if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) insertChar(ch)
+    // Idle: all editing keys belong to the focused textarea in InputLine.
   })
 
   const widgets = () => snapshot().filter((d): d is SurfaceWidgetDecl => d.kind === "widget")
@@ -356,13 +306,17 @@ export function Shell(props: { deps: ShellDeps }) {
         )}
       </For>
       <InputLine
-        value={input()}
-        cursor={cursor()}
-        busy={busy()}
-        spinnerFrame={spinner()}
-        placeholder={t("shell.input.placeholder")}
-        busyLabel={t("shell.input.busy")}
         theme={th()}
+        placeholder={t("shell.input.placeholder")}
+        busy={busy()}
+        busyLabel={t("shell.input.busy")}
+        spinnerFrame={spinner()}
+        onSubmit={submitInput}
+        onContentChange={setDraft}
+        onHistoryNav={historyNav}
+        resetKey={resetKey()}
+        setKey={setKey()}
+        setValue={setValue()}
       />
       <FooterHints theme={th()} />
       <StatusBar

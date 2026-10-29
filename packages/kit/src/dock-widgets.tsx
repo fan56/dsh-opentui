@@ -30,6 +30,8 @@ const THINK_SUMMARY_HEAD = 60
  */
 export function ThinkWidget(props: { state: ThinkWidgetState; theme: Theme }): JSX.Element {
   const th = () => props.theme
+  // Thinking highlight when the theme carries one; accent otherwise.
+  const thinkFg = () => th().tokens.thinking ?? th().tokens.accent
 
   // Collapsed summary: head of the thought flattened to one line.
   const summary = () => {
@@ -53,12 +55,12 @@ export function ThinkWidget(props: { state: ThinkWidgetState; theme: Theme }): J
       <box
         style={{
           border: true,
-          borderColor: th().tokens.accent,
+          borderColor: thinkFg(),
           flexDirection: "column",
           padding: 1,
         }}
       >
-        <text style={{ fg: th().tokens.accent }}>{`${BUBBLE_FRAMES[props.state.elapsed % BUBBLE_FRAMES.length]} thinking · ${props.state.elapsed}s`}</text>
+        <text style={{ fg: thinkFg() }}>{`${BUBBLE_FRAMES[props.state.elapsed % BUBBLE_FRAMES.length]} thinking · ${props.state.elapsed}s`}</text>
         <For each={props.state.text.split("\n").slice(-THINK_TAIL)}>
           {(line) => <text style={{ fg: th().tokens.dim }}>{line || " "}</text>}
         </For>

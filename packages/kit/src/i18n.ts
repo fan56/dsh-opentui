@@ -55,6 +55,7 @@ const dict: Dict = {
   "cmd.cred.configured": { "zh-CN": "已配置", en: "configured" },
   "cmd.cred.missing": { "zh-CN": "未配置", en: "missing" },
   "picker.model.title": { "zh-CN": "选择模型", en: "select model" },
+  "picker.theme.title": { "zh-CN": "选择主题", en: "select theme" },
   "panel.tools.title": { "zh-CN": "工具", en: "tools" },
   "panel.think.title": { "zh-CN": "思考", en: "thinking" },
 }

@@ -43,6 +43,10 @@ export async function streamChat(opts: {
     model: opts.model.model,
     messages: opts.messages,
     stream: true,
+    // Ask OpenAI-compatible endpoints to attach the `usage` object to the
+    // final SSE chunk (OpenAI proper never sends it without this; vLLM and
+    // friends already do). The parser below picks it up for real TPS math.
+    stream_options: { include_usage: true },
   }
   if (opts.tools?.length) {
     body.tools = opts.tools

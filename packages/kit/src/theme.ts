@@ -1,9 +1,11 @@
 /**
- * Theme interface — v0 ships one default theme and the seam only.
- * The mechanism (multiple themes, file loading, live switching) is
- * deliberately deferred; components consume tokens, never raw colors,
- * so themes can arrive without touching component code.
+ * Theme interface and the shipped theme table. Most palettes come from
+ * themes-data.ts (generated from the dsh-tui-pi theme JSONs); components
+ * consume tokens, never raw colors, so themes can change without touching
+ * component code.
  */
+import { generatedThemes } from "./themes-data.ts"
+
 export interface ThemeTokens {
   /** Primary accent (titles, selection). */
   accent: string
@@ -29,10 +31,18 @@ export interface ThemeTokens {
   toolFail?: string
   /** Approval card border color (optional extension). */
   approvalBorder?: string
+  /** Thinking / reasoning highlight color (optional extension; consumed by ThinkWidget). */
+  thinking?: string
 }
 
 export interface Theme {
   name: string
+  /**
+   * Whether the theme targets dark terminals (pickers group by this flag).
+   * Defaults to true when omitted. Generated themes carry the flag from
+   * their source JSON.
+   */
+  dark?: boolean
   tokens: ThemeTokens
 }
 
@@ -52,6 +62,7 @@ export const defaultTheme: Theme = {
 /** Catppuccin Mocha palette. Background is left to the terminal itself. */
 export const catppuccinMocha: Theme = {
   name: "catppuccin-mocha",
+  dark: true,
   tokens: {
     accent: "#a6e3a1", // green
     dim: "#6c7086", // overlay0
@@ -65,12 +76,19 @@ export const catppuccinMocha: Theme = {
     toolOk: "#f9e2af", // yellow
     toolFail: "#f38ba8", // red
     approvalBorder: "#f9e2af", // yellow
+    thinking: "#cba6f7", // mauve
   },
 }
 
-/** All shipped themes, keyed by theme name. */
+/**
+ * All shipped themes, keyed by theme name: the 20 generated palettes plus
+ * the hand-tuned default. The hand-written catppuccin-mocha stays the
+ * authority over its generated twin (their accent/dim tokens differ), which
+ * is why it is assigned after the generated spread.
+ */
 export const themes: Record<string, Theme> = {
   default: defaultTheme,
+  ...generatedThemes,
   "catppuccin-mocha": catppuccinMocha,
 }
 
@@ -78,4 +96,9 @@ export const themes: Record<string, Theme> = {
 export function getTheme(name?: string): Theme {
   if (name && themes[name]) return themes[name]!
   return defaultTheme
+}
+
+/** Names of all shipped themes with their dark/light flag, for pickers. */
+export function themeNames(): { name: string; dark: boolean }[] {
+  return Object.values(themes).map((theme) => ({ name: theme.name, dark: theme.dark ?? true }))
 }
