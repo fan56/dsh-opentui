@@ -64,6 +64,15 @@ export class HostSession {
   constructor(ctx: Context) {
     this.#ctx = ctx
     this.#wire()
+    // Cold-boot label: show the configured route on the very first frame
+    // (the powerline's model segment would otherwise sit empty until the
+    // first turn resolves the live session).
+    try {
+      const sel = (ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
+      if (sel?.provider && sel?.model) this.label = `${sel.provider}/${sel.model}`
+    } catch {
+      /* optional service; keep the generic label */
+    }
   }
 
   /** Provider catalog as the host sees it (llm service), best-effort.

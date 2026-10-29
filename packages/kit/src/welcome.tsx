@@ -22,14 +22,20 @@ const WORDMARK_FONT = "block"
 /** Longest cwd display width in columns. */
 const CWD_MAX_COLUMNS = 40
 
+/** The user's home, shortened to "~" in the info line. */
+const home = (typeof process !== "undefined" && process.env.HOME) || ""
+
 /**
  * Shorten the cwd to at most CWD_MAX_COLUMNS columns, keeping the tail (the
- * leaf directories carry the identity of the path). Paths are effectively
- * ASCII, so one character is one column; "…" is the single-column ellipsis.
+ * leaf directories carry the identity of the path). Home collapses to "~"
+ * before the cut so the visible budget goes to the interesting part.
+ * Paths are effectively ASCII, so one character is one column; "…" is the
+ * single-column ellipsis.
  */
 function shortenCwd(cwd: string): string {
-  if (cwd.length <= CWD_MAX_COLUMNS) return cwd
-  return `…${cwd.slice(-(CWD_MAX_COLUMNS - 1))}`
+  const short = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
+  if (short.length <= CWD_MAX_COLUMNS) return short
+  return `…${short.slice(-(CWD_MAX_COLUMNS - 1))}`
 }
 
 /**

@@ -33,13 +33,14 @@ export function ThinkWidget(props: { state: ThinkWidgetState; theme: Theme }): J
   // Thinking highlight when the theme carries one; accent otherwise.
   const thinkFg = () => th().tokens.thinking ?? th().tokens.accent
 
-  // Collapsed summary: head of the thought flattened to one line.
+  // Collapsed summary: head of the thought flattened to one line, cut at
+  // a word boundary so it never ends mid-word.
   const summary = () => {
-    const head = props.state.text
-      .slice(0, THINK_SUMMARY_HEAD)
-      .replace(/\s+/g, " ")
-      .trim()
-    return `💭 thought · ${props.state.elapsed}s · ${head}...`
+    const flat = props.state.text.replace(/\s+/g, " ").trim()
+    if (flat.length <= THINK_SUMMARY_HEAD) return `💭 thought · ${props.state.elapsed}s · ${flat}`
+    const cut = flat.slice(0, THINK_SUMMARY_HEAD)
+    const boundary = Math.max(cut.lastIndexOf(" "), THINK_SUMMARY_HEAD - 20)
+    return `💭 thought · ${props.state.elapsed}s · ${cut.slice(0, boundary > 0 ? boundary : THINK_SUMMARY_HEAD).trimEnd()}...`
   }
 
   return (
@@ -156,50 +157,53 @@ export function ToolWidget(props: { entries: ToolWidgetEntry[]; active: boolean;
     (e.output ?? "").split("\n").slice(-TOOL_OUTPUT_TAIL).filter((l) => l.trim().length > 0)
 
   return (
-    <Show when={props.entries.length > 0}>
-      <Show
-        when={props.active}
-        fallback={
-          // Turn over: one dim summary line with the tally.
+    <Show
+      when={props.active && props.entries.length > 0}
+      fallback={
+        // Turn over: one dim summary line with the tally. The fallback
+        // keeps the PROVEN ThinkWidget shape (text nested one Show deep) —
+        // the previous outer-Show wrapper made the sibling input box lay
+        // out one row too high, overprinting this line's row.
+        <Show when={props.entries.length > 0}>
           <text style={{ fg: th().tokens.dim }}>
-            {`⚒ ${props.entries.length} tools · ${okCount()}✔ ${failCount()}✘`}
+            {`⚒ ${props.entries.length} ${props.entries.length === 1 ? "tool" : "tools"} · ${okCount()}✔ ${failCount()}✘`}
           </text>
-        }
+        </Show>
+      }
+    >
+      <box
+        style={{
+          border: true,
+          borderColor: th().tokens.border,
+          flexDirection: "column",
+          padding: 1,
+        }}
       >
-        <box
-          style={{
-            border: true,
-            borderColor: th().tokens.border,
-            flexDirection: "column",
-            padding: 1,
-          }}
-        >
-          <box style={{ flexDirection: "row" }}>
-            <Show
-              when={runningCount() > 0}
-              fallback={<text style={{ fg: th().tokens.accent }}>⚒ tools</text>}
-            >
-              <text style={{ fg: runningColor(th()) }}>
-                {`${spinnerFrame(headerElapsed())} ⚒ tools · ${runningCount()} running`}
-              </text>
-            </Show>
-            <box style={{ flexGrow: 1 }} />
-            <text style={{ fg: th().tokens.dim }}>{`${okCount()}✔ ${failCount()}✘`}</text>
-          </box>
-          <For each={props.entries}>
-            {(e, i) => (
-              <>
-                <text style={{ fg: rowFg(e) }}>{rowText(e)}</text>
-                <Show when={i() === lastRunningIndex() && e.output}>
-                  <For each={outputTail(e)}>
-                    {(line) => <text style={{ fg: th().tokens.dim }}>{`  ⎿ ${line}`}</text>}
-                  </For>
-                </Show>
-              </>
-            )}
-          </For>
+        <box style={{ flexDirection: "row" }}>
+          <Show
+            when={runningCount() > 0}
+            fallback={<text style={{ fg: th().tokens.accent }}>⚒ tools</text>}
+          >
+            <text style={{ fg: runningColor(th()) }}>
+              {`${spinnerFrame(headerElapsed())} ⚒ tools · ${runningCount()} running`}
+            </text>
+          </Show>
+          <box style={{ flexGrow: 1 }} />
+          <text style={{ fg: th().tokens.dim }}>{`${okCount()}✔ ${failCount()}✘`}</text>
         </box>
-      </Show>
+        <For each={props.entries}>
+          {(e, i) => (
+            <>
+              <text style={{ fg: rowFg(e) }}>{rowText(e)}</text>
+              <Show when={i() === lastRunningIndex() && e.output}>
+                <For each={outputTail(e)}>
+                  {(line) => <text style={{ fg: th().tokens.dim }}>{`  ⎿ ${line}`}</text>}
+                </For>
+              </Show>
+            </>
+          )}
+        </For>
+      </box>
     </Show>
   )
 }

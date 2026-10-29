@@ -27,7 +27,8 @@
     "typecheck": "tsc --noEmit",
     "build:bin": "bun build.ts",
     "postinstall": "node scripts/postinstall.mjs",
-    "smoke": "node scripts/smoke-boot.mjs"
+    "smoke": "node scripts/smoke-boot.mjs",
+    "test:e2e": "node scripts/e2e-live.mjs && node scripts/e2e-fork.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.7.0",

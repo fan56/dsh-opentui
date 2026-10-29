@@ -302,16 +302,24 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // Full reasoning text of the current turn, flushed into thinkState at a
   // throttled cadence; the assistant reply row is bumped the same way.
   let thinkBuf = ""
-  let streamingReply: TItem | null = null
+  let streamingReply: Extract<TItem, { kind: "assistant" }> | null = null
   let lastBump = 0
   const bumpSoon = () => {
     const now = Date.now()
     if (now - lastBump < 60) return
     lastBump = now
     if (thinkBuf !== thinkState().text) setThinkState((prev) => ({ ...prev, text: thinkBuf }))
-    // replace the streaming reply ref (not just the array) so the
-    // per-item <For> re-renders it
-    if (streamingReply) setItems((arr) => arr.map((x) => (x === streamingReply ? { ...x } : x)))
+    // Replace the streaming reply ref (not just the array) so the per-item
+    // <For> re-renders it — and REBIND the live ref to the copy now in the
+    // array: matching the original object stops working after the first
+    // copy, which froze the streamed text at the first bump and made the
+    // final settle below never land.
+    if (streamingReply) {
+      const prev = streamingReply
+      const next: TItem = { ...prev }
+      streamingReply = next
+      setItems((arr) => arr.map((x) => (x === prev ? next : x)))
+    }
   }
   const push = (it: TItem) => setItems((arr) => [...arr, it])
 
@@ -558,7 +566,6 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     setToolExpanded(false)
     setLiveTps(null)
     turnStartAt = Date.now()
-    let replyItem: Extract<TItem, { kind: "assistant" }> | null = null
     streamingReply = null
     try {
       await props.deps.session.turn(
@@ -569,18 +576,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             bumpSoon()
           },
           onContentDelta: (s: string) => {
-            if (!replyItem) {
-              replyItem = { kind: "assistant", text: "" }
-              streamingReply = replyItem
-              push(replyItem)
+            if (!streamingReply) {
+              streamingReply = { kind: "assistant", text: "" }
+              push(streamingReply)
             }
-            replyItem.text += s
+            streamingReply.text += s
             bumpSoon()
           },
           onTurnEnd: (u: { prompt: number; completion: number }) => {
-            if (replyItem) {
-              const final: TItem = { ...replyItem, final: true }
-              setItems((arr) => arr.map((x) => (x === replyItem ? final : x)))
+            const cur = streamingReply
+            if (cur) {
+              const final: TItem = { ...cur, final: true }
+              setItems((arr) => arr.map((x) => (x === cur ? final : x)))
             }
             setLabel(props.deps.session.label)
             setUsage((v) => ({ prompt: v.prompt + u.prompt, completion: v.completion + u.completion, turns: v.turns + 1 }))
@@ -735,12 +742,17 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       ) : (
         <AutoScroll>
           <Transcript items={items()} theme={th()} t={t} spinnerFrame="" mdStyle={mdStyle} />
+          {/* The dock widgets live INSIDE the scroll region (tui-pi's shape):
+              their 0→expanded→collapsed height churn happens in scroll
+              content, so the input box below keeps a stable Y — siblings
+              after a shrinking child misplace by one row otherwise.
+              stickyScroll keeps the bottom (widgets) in view. */}
+          <TodosWidget todos={todos()} theme={th()} />
+          <SubagentWidget entries={subagents()} theme={th()} />
+          <ThinkWidget state={{ ...thinkState(), active: thinkState().active || thinkExpanded() }} theme={th()} />
+          <ToolWidget entries={toolEntries()} active={toolActive() || toolExpanded()} theme={th()} />
         </AutoScroll>
       )}
-      <TodosWidget todos={todos()} theme={th()} />
-      <SubagentWidget entries={subagents()} theme={th()} />
-      <ThinkWidget state={{ ...thinkState(), active: thinkState().active || thinkExpanded() }} theme={th()} />
-      <ToolWidget entries={toolEntries()} active={toolActive() || toolExpanded()} theme={th()} />
       {approval() ? (
         <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
       ) : null}

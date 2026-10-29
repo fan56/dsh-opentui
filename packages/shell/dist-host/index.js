@@ -1257,10 +1257,12 @@ function pickDailyQuote() {
 
 // ../kit/src/welcome.tsx
 var CWD_MAX_COLUMNS = 40;
+var home = typeof process !== "undefined" && process.env.HOME || "";
 function shortenCwd(cwd) {
-  if (cwd.length <= CWD_MAX_COLUMNS)
-    return cwd;
-  return `…${cwd.slice(-(CWD_MAX_COLUMNS - 1))}`;
+  const short = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
+  if (short.length <= CWD_MAX_COLUMNS)
+    return short;
+  return `…${short.slice(-(CWD_MAX_COLUMNS - 1))}`;
 }
 function WelcomeBanner(props) {
   const quote = pickDailyQuote();
@@ -1302,8 +1304,8 @@ function WelcomeBanner(props) {
   })();
 }
 // ../kit/src/dock-widgets.tsx
-import { memo as _$memo4 } from "@opentui/solid";
 import { createTextNode as _$createTextNode7 } from "@opentui/solid";
+import { memo as _$memo4 } from "@opentui/solid";
 import { setProp as _$setProp8 } from "@opentui/solid";
 import { effect as _$effect8 } from "@opentui/solid";
 import { insertNode as _$insertNode8 } from "@opentui/solid";
@@ -1428,109 +1430,107 @@ function ToolWidget(props) {
 `).slice(-TOOL_OUTPUT_TAIL).filter((l) => l.trim().length > 0);
   return _$createComponent7(Show4, {
     get when() {
-      return props.entries.length > 0;
+      return _$memo4(() => !!props.active)() && props.entries.length > 0;
     },
-    get children() {
+    get fallback() {
       return _$createComponent7(Show4, {
         get when() {
-          return props.active;
+          return props.entries.length > 0;
+        },
+        get children() {
+          var _el$0 = _$createElement8("text");
+          _$insert8(_el$0, () => `⚒ ${props.entries.length} tools · ${okCount()}✔ ${failCount()}✘`);
+          _$effect8((_$p) => _$setProp8(_el$0, "style", {
+            fg: th().tokens.dim
+          }, _$p));
+          return _el$0;
+        }
+      });
+    },
+    get children() {
+      var _el$5 = _$createElement8("box"), _el$6 = _$createElement8("box"), _el$8 = _$createElement8("box"), _el$9 = _$createElement8("text");
+      _$insertNode8(_el$5, _el$6);
+      _$insertNode8(_el$6, _el$8);
+      _$insertNode8(_el$6, _el$9);
+      _$setProp8(_el$6, "style", {
+        flexDirection: "row"
+      });
+      _$insert8(_el$6, _$createComponent7(Show4, {
+        get when() {
+          return runningCount() > 0;
         },
         get fallback() {
           return (() => {
-            var _el$0 = _$createElement8("text");
-            _$insert8(_el$0, () => `⚒ ${props.entries.length} tools · ${okCount()}✔ ${failCount()}✘`);
-            _$effect8((_$p) => _$setProp8(_el$0, "style", {
-              fg: th().tokens.dim
+            var _el$1 = _$createElement8("text");
+            _$insertNode8(_el$1, _$createTextNode7(`⚒ tools`));
+            _$effect8((_$p) => _$setProp8(_el$1, "style", {
+              fg: th().tokens.accent
             }, _$p));
-            return _el$0;
+            return _el$1;
           })();
         },
         get children() {
-          var _el$5 = _$createElement8("box"), _el$6 = _$createElement8("box"), _el$8 = _$createElement8("box"), _el$9 = _$createElement8("text");
-          _$insertNode8(_el$5, _el$6);
-          _$insertNode8(_el$6, _el$8);
-          _$insertNode8(_el$6, _el$9);
-          _$setProp8(_el$6, "style", {
-            flexDirection: "row"
-          });
-          _$insert8(_el$6, _$createComponent7(Show4, {
-            get when() {
-              return runningCount() > 0;
-            },
-            get fallback() {
-              return (() => {
-                var _el$1 = _$createElement8("text");
-                _$insertNode8(_el$1, _$createTextNode7(`⚒ tools`));
-                _$effect8((_$p) => _$setProp8(_el$1, "style", {
-                  fg: th().tokens.accent
-                }, _$p));
-                return _el$1;
-              })();
-            },
-            get children() {
-              var _el$7 = _$createElement8("text");
-              _$insert8(_el$7, () => `${spinnerFrame(headerElapsed())} ⚒ tools · ${runningCount()} running`);
-              _$effect8((_$p) => _$setProp8(_el$7, "style", {
-                fg: runningColor(th())
-              }, _$p));
-              return _el$7;
-            }
-          }), _el$8);
-          _$setProp8(_el$8, "style", {
-            flexGrow: 1
-          });
-          _$insert8(_el$9, () => `${okCount()}✔ ${failCount()}✘`);
-          _$insert8(_el$5, _$createComponent7(For7, {
-            get each() {
-              return props.entries;
-            },
-            children: (e, i) => [(() => {
-              var _el$11 = _$createElement8("text");
-              _$insert8(_el$11, () => rowText(e));
-              _$effect8((_$p) => _$setProp8(_el$11, "style", {
-                fg: rowFg(e)
-              }, _$p));
-              return _el$11;
-            })(), _$createComponent7(Show4, {
-              get when() {
-                return _$memo4(() => i() === lastRunningIndex())() && e.output;
-              },
-              get children() {
-                return _$createComponent7(For7, {
-                  get each() {
-                    return outputTail(e);
-                  },
-                  children: (line) => (() => {
-                    var _el$12 = _$createElement8("text");
-                    _$insert8(_el$12, `  ⎿ ${line}`);
-                    _$effect8((_$p) => _$setProp8(_el$12, "style", {
-                      fg: th().tokens.dim
-                    }, _$p));
-                    return _el$12;
-                  })()
-                });
-              }
-            })]
-          }), null);
-          _$effect8((_p$) => {
-            var _v$3 = {
-              border: true,
-              borderColor: th().tokens.border,
-              flexDirection: "column",
-              padding: 1
-            }, _v$4 = {
-              fg: th().tokens.dim
-            };
-            _v$3 !== _p$.e && (_p$.e = _$setProp8(_el$5, "style", _v$3, _p$.e));
-            _v$4 !== _p$.t && (_p$.t = _$setProp8(_el$9, "style", _v$4, _p$.t));
-            return _p$;
-          }, {
-            e: undefined,
-            t: undefined
-          });
-          return _el$5;
+          var _el$7 = _$createElement8("text");
+          _$insert8(_el$7, () => `${spinnerFrame(headerElapsed())} ⚒ tools · ${runningCount()} running`);
+          _$effect8((_$p) => _$setProp8(_el$7, "style", {
+            fg: runningColor(th())
+          }, _$p));
+          return _el$7;
         }
+      }), _el$8);
+      _$setProp8(_el$8, "style", {
+        flexGrow: 1
       });
+      _$insert8(_el$9, () => `${okCount()}✔ ${failCount()}✘`);
+      _$insert8(_el$5, _$createComponent7(For7, {
+        get each() {
+          return props.entries;
+        },
+        children: (e, i) => [(() => {
+          var _el$11 = _$createElement8("text");
+          _$insert8(_el$11, () => rowText(e));
+          _$effect8((_$p) => _$setProp8(_el$11, "style", {
+            fg: rowFg(e)
+          }, _$p));
+          return _el$11;
+        })(), _$createComponent7(Show4, {
+          get when() {
+            return _$memo4(() => i() === lastRunningIndex())() && e.output;
+          },
+          get children() {
+            return _$createComponent7(For7, {
+              get each() {
+                return outputTail(e);
+              },
+              children: (line) => (() => {
+                var _el$12 = _$createElement8("text");
+                _$insert8(_el$12, `  ⎿ ${line}`);
+                _$effect8((_$p) => _$setProp8(_el$12, "style", {
+                  fg: th().tokens.dim
+                }, _$p));
+                return _el$12;
+              })()
+            });
+          }
+        })]
+      }), null);
+      _$effect8((_p$) => {
+        var _v$3 = {
+          border: true,
+          borderColor: th().tokens.border,
+          flexDirection: "column",
+          padding: 1
+        }, _v$4 = {
+          fg: th().tokens.dim
+        };
+        _v$3 !== _p$.e && (_p$.e = _$setProp8(_el$5, "style", _v$3, _p$.e));
+        _v$4 !== _p$.t && (_p$.t = _$setProp8(_el$9, "style", _v$4, _p$.t));
+        return _p$;
+      }, {
+        e: undefined,
+        t: undefined
+      });
+      return _el$5;
     }
   });
 }
@@ -2088,10 +2088,14 @@ function ShellHost(props) {
         ...prev,
         text: thinkBuf
       }));
-    if (streamingReply)
-      setItems((arr) => arr.map((x) => x === streamingReply ? {
-        ...x
-      } : x));
+    if (streamingReply) {
+      const prev = streamingReply;
+      const next = {
+        ...prev
+      };
+      streamingReply = next;
+      setItems((arr) => arr.map((x) => x === prev ? next : x));
+    }
   };
   const push = (it) => setItems((arr) => [...arr, it]);
   const commitHistory = (text) => {
@@ -2392,7 +2396,6 @@ function ShellHost(props) {
     setToolExpanded(false);
     setLiveTps(null);
     turnStartAt = Date.now();
-    let replyItem = null;
     streamingReply = null;
     try {
       await props.deps.session.turn(text, {
@@ -2401,24 +2404,24 @@ function ShellHost(props) {
           bumpSoon();
         },
         onContentDelta: (s) => {
-          if (!replyItem) {
-            replyItem = {
+          if (!streamingReply) {
+            streamingReply = {
               kind: "assistant",
               text: ""
             };
-            streamingReply = replyItem;
-            push(replyItem);
+            push(streamingReply);
           }
-          replyItem.text += s;
+          streamingReply.text += s;
           bumpSoon();
         },
         onTurnEnd: (u) => {
-          if (replyItem) {
+          const cur = streamingReply;
+          if (cur) {
             const final = {
-              ...replyItem,
+              ...cur,
               final: true
             };
-            setItems((arr) => arr.map((x) => x === replyItem ? final : x));
+            setItems((arr) => arr.map((x) => x === cur ? final : x));
           }
           setLabel(props.deps.session.label);
           setUsage((v) => ({
@@ -2612,7 +2615,7 @@ function ShellHost(props) {
         }
       }) : _$createComponent11(AutoScroll, {
         get children() {
-          return _$createComponent11(Transcript, {
+          return [_$createComponent11(Transcript, {
             get items() {
               return items();
             },
@@ -2622,48 +2625,44 @@ function ShellHost(props) {
             t,
             spinnerFrame: "",
             mdStyle
-          });
+          }), _$createComponent11(TodosWidget, {
+            get todos() {
+              return todos();
+            },
+            get theme() {
+              return th();
+            }
+          }), _$createComponent11(SubagentWidget, {
+            get entries() {
+              return subagents();
+            },
+            get theme() {
+              return th();
+            }
+          }), _$createComponent11(ThinkWidget, {
+            get state() {
+              return {
+                ...thinkState(),
+                active: thinkState().active || thinkExpanded()
+              };
+            },
+            get theme() {
+              return th();
+            }
+          }), _$createComponent11(ToolWidget, {
+            get entries() {
+              return toolEntries();
+            },
+            get active() {
+              return toolActive() || toolExpanded();
+            },
+            get theme() {
+              return th();
+            }
+          })];
         }
       });
     })(), null);
-    _$insert13(_el$, _$createComponent11(TodosWidget, {
-      get todos() {
-        return todos();
-      },
-      get theme() {
-        return th();
-      }
-    }), null);
-    _$insert13(_el$, _$createComponent11(SubagentWidget, {
-      get entries() {
-        return subagents();
-      },
-      get theme() {
-        return th();
-      }
-    }), null);
-    _$insert13(_el$, _$createComponent11(ThinkWidget, {
-      get state() {
-        return {
-          ...thinkState(),
-          active: thinkState().active || thinkExpanded()
-        };
-      },
-      get theme() {
-        return th();
-      }
-    }), null);
-    _$insert13(_el$, _$createComponent11(ToolWidget, {
-      get entries() {
-        return toolEntries();
-      },
-      get active() {
-        return toolActive() || toolExpanded();
-      },
-      get theme() {
-        return th();
-      }
-    }), null);
     _$insert13(_el$, (() => {
       var _c$2 = _$memo5(() => !!approval());
       return () => _c$2() ? _$createComponent11(ApprovalCard, {
@@ -2862,6 +2861,11 @@ class HostSession {
   constructor(ctx) {
     this.#ctx = ctx;
     this.#wire();
+    try {
+      const sel = ctx.get?.("agentDefaultModel")?.currentSelection?.();
+      if (sel?.provider && sel?.model)
+        this.label = `${sel.provider}/${sel.model}`;
+    } catch {}
   }
   #providerCache = null;
   async listProviders() {

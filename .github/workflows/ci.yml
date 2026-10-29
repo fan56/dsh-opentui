@@ -20,3 +20,7 @@ jobs:
           version: 10.18.3
       - run: pnpm install --frozen-lockfile
       - run: bun test
+      # Live interactive E2E (real dsh + real model turns): self-skips on
+      # runners without a global dsh / installed profile; full suite on a
+      # configured dev machine (npm run -w @aiwayds/dsh-opentui test:e2e).
+      - run: node packages/shell/scripts/e2e-live.mjs && node packages/shell/scripts/e2e-fork.mjs
