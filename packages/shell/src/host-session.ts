@@ -217,6 +217,16 @@ export class HostSession {
     })
   }
 
+  /** Steer the RUNNING agent with a mid-turn message (Kimi-style inject). */
+  steer(userText: string): void {
+    if (!this.#handle) return
+    const message = createUserMessage({
+      content: [{ type: "text", text: userText }],
+      source: { kind: "user" },
+    })
+    this.#handle.agent.steer?.(message)
+  }
+
   #finishTurn() {
     DBG("finishTurn")
     const r = this.#resolveTurn
@@ -262,10 +272,13 @@ export class HostSession {
       if (!cb) return
       try {
         if (event.type === "tool/call" && event.data) {
-          this.#toolCalls.set(String(event.data.callId ?? ""), {
-            name: String(event.data.name ?? "tool"),
-            args: String(event.data.arguments ?? ""),
-          })
+          const callId = String(event.data.callId ?? "")
+          const name = String(event.data.name ?? "tool")
+          const args = String(event.data.arguments ?? "")
+          this.#toolCalls.set(callId, { name, args })
+          // The real "tool started" signal — fires for auto-allowed calls too,
+          // which never hit the approval waterfall.
+          cb.onToolStart?.({ callId, name, args })
         } else if (event.type === "tool/result" && event.data) {
           const callId = String(event.data.callId ?? event.data.message?.toolCallId ?? "")
           const known = this.#toolCalls.get(callId)
@@ -289,6 +302,7 @@ export class HostSession {
             argsPretty: known?.args ?? "",
             output: brief,
             ok: event.data.isError !== true,
+            ...(callId ? { callId } : {}),
             ...(typeof imagePath === "string" ? { imagePath } : {}),
           })
         } else if (event.type === "turn/end") {

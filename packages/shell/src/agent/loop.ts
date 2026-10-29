@@ -17,6 +17,10 @@ export interface TurnCallbacks {
   onTurnEnd: (usage: { prompt: number; completion: number }) => void
   /** Return true to approve the tool run, false to reject it. */
   onApprove: (name: string, args: Record<string, unknown>) => Promise<boolean>
+  /** A tool call was issued — the dock's "running" signal (fires before
+   * onToolRun settles the entry; onApprove alone can't cover auto-allowed
+   * calls). Optional so thin embedders need not implement it. */
+  onToolStart?: (start: { callId?: string; name: string; args: string }) => void
   onToolRun: (run: ToolRun) => void
   onError: (message: string) => void
 }
@@ -98,6 +102,7 @@ export class AgentSession {
           continue
         }
         anyApproved = true
+        cb.onToolStart?.({ callId: call.id, name: call.name, args: call.arguments || "{}" })
         const run = await runTool(call.name, args, { cwd: process.cwd() })
         cb.onToolRun(run)
         this.#messages.push({ role: "tool", tool_call_id: call.id, content: run.output || "(no output)" })

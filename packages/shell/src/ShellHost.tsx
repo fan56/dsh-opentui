@@ -1,23 +1,28 @@
 /**
  * ShellHost — the Shell driving a HostSession (the real dsh host inside
- * this process). dsh-tui-pi-style affordances: slash palette with
- * autocomplete, themes, markdown transcript, a /model Picker overlay,
- * think/tool panels (ctrl+t / ctrl+o / ctrl+p) and /login //logout
- * credential commands. All presentational building blocks come from
- * @dsh-opentui/kit — this file owns state and keyboard routing only.
+ * this process). Clean-transcript philosophy: thinking and tool traffic
+ * NEVER enter the message flow — they are collected in the dock widgets
+ * above the input, auto-expanding while the turn runs and collapsing to a
+ * dim one-liner when it ends. The input line stays unlocked while busy:
+ * enter mid-turn STEERS the running agent (⚡-prefixed messages) instead
+ * of queueing. All visuals come from @dsh-opentui/kit — this file owns
+ * state and keyboard routing only.
  */
 import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { SyntaxStyle } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
-import { StatusBar, getTheme, themes, type I18n } from "@dsh-opentui/kit"
-import { Transcript, TranscriptWindow, InputLine, FooterHints, type TranscriptItem } from "@dsh-opentui/kit"
-import { Picker, ApprovalCard, Dialog, type PickerItem } from "@dsh-opentui/kit"
-import { ToolPanel, ThinkPanel, type ToolPanelEntry } from "@dsh-opentui/kit"
-import type { SurfaceStore, SurfaceWidgetDecl } from "@dsh-opentui/runtime"
+import { getTheme, themes, type I18n } from "@dsh-opentui/kit"
+import { Transcript, InputLine, FooterHints, ApprovalCard, type TranscriptItem } from "@dsh-opentui/kit"
+import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, type PowerlineSegment } from "@dsh-opentui/kit"
+import { ThinkWidget, ToolWidget, type ThinkWidgetState, type ToolWidgetEntry } from "@dsh-opentui/kit"
+import { AutoScroll, Select, type SelectItem } from "@dsh-opentui/kit"
+import type { SurfaceStore } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
 
 export interface ShellHostDeps {
+  /** Reserved: surface widgets are not shown by this host (the powerline
+   * footer replaced the StatusBar slot rendering); kept for host-entry. */
   store: SurfaceStore
   t: I18n["t"]
   session: HostSession
@@ -25,14 +30,31 @@ export interface ShellHostDeps {
   themeName?: string
 }
 
-/** Transcript rows are Kit's shape now; kept as a local alias. */
-type TItem = TranscriptItem
+/** Transcript rows: the CLEAN subset of Kit's shape — thinking and tool
+ * traffic lives in the dock widgets, never in the message flow. */
+type TItem = Extract<TranscriptItem, { kind: "user" | "assistant" | "error" | "system" }>
 
-const MAX_VISIBLE_ITEMS = 120
+/** Answer plumbing for the host ask overlay. */
+type AskResolve = (v: { questionId: string; selected: string }[] | "declined") => void
+
+/** Modal Select overlays. While one is open the native <select> owns the
+ * arrow/enter keys (it is focused); escape bubbles out and closes it. */
+type Overlay =
+  | { kind: "model" } // items come from the reactive modelItems catalog
+  | { kind: "sessions"; items: SelectItem[] }
+  | { kind: "effort"; provider: string; model: string }
+  | { kind: "ask"; title: string; questionId: string; items: SelectItem[]; resolve: AskResolve }
+
 const THEME_ORDER = ["catppuccin-mocha", "default"]
 
 /** Credential refs reported by the bare /login //logout status dump. */
 const CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"]
+
+/** Reasoning-effort ladder offered after a model pick ("keep" = default). */
+const EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"]
+
+/** Context window assumed by the powerline 🧠 segment. */
+const CONTEXT_WINDOW_TOKENS = 128000
 
 /** Slash commands surfaced by the autocomplete palette (dsh-tui-pi style). */
 const COMMANDS: { name: string; desc: string }[] = [
@@ -51,9 +73,14 @@ const COMMANDS: { name: string; desc: string }[] = [
 /** Uniform error text for pushed error rows. */
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).slice(0, 300)
 
+/** 24h clock HH:MM:SS for the powerline footer's right side. */
+const fmtClock = () => {
+  const d = new Date()
+  return [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":")
+}
+
 export function ShellHost(props: { deps: ShellHostDeps }) {
   const t = props.deps.t
-  const store = props.deps.store
   const [input, setInput] = createSignal("")
   // Caret position within the input line (0..input().length).
   const [cursor, setCursor] = createSignal(0)
@@ -63,29 +90,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [historyIdx, setHistoryIdx] = createSignal(0)
   const [items, setItems] = createSignal<TItem[]>([])
   const [busy, setBusy] = createSignal(false)
-  const [spin, setSpin] = createSignal(0)
   const [approval, setApproval] = createSignal<{ name: string; args: string } | null>(null)
   const [usage, setUsage] = createSignal({ prompt: 0, completion: 0, turns: 0 })
   const [label, setLabel] = createSignal(props.deps.session.label)
-  const [snapshot, setSnapshot] = createSignal(store.snapshot)
-  // Think/tool panels: hidden by default, toggled with ctrl+t / ctrl+o.
-  const [showThink, setShowThink] = createSignal(false)
-  const [showTool, setShowTool] = createSignal(false)
-  // Which ToolPanel entry is expanded; -1 means "none" (ctrl+p cycles).
-  const [toolExpanded, setToolExpanded] = createSignal(-1)
-  // Model/sessions/effort picker overlay state; up/down/enter/esc route to
-  // it while open. "effort" carries the model the user just picked.
-  const [picker, setPicker] = createSignal<{ kind: "model" } | { kind: "sessions" } | { kind: "effort"; provider: string; model: string } | null>(null)
-  const [pickerSel, setPickerSel] = createSignal(0)
-  const [sessionItems, setSessionItems] = createSignal<PickerItem[]>([])
-  // Transcript scroll: 0 = pinned to the bottom; pageup/pagedown move it.
-  const [scrollOffset, setScrollOffset] = createSignal(0)
-  // Pending host ask (user-questions): modal Picker answered with enter/esc.
-  const [ask, setAsk] = createSignal<{ questions: { id: string; prompt: string; options: string[] }[]; resolve: (v: { questionId: string; selected: string }[] | "declined") => void } | null>(null)
-  // Full reasoning text of the current turn: accumulated in a plain buffer,
-  // mirrored into a signal so ThinkPanel re-renders without per-delta JSX.
-  let reasoningBuf = ""
-  const [lastReasoning, setLastReasoning] = createSignal("")
+  // Welcome banner: shown until the first real message is sent.
+  const [showWelcome, setShowWelcome] = createSignal(true)
+  // Dock widgets (clean transcript): live thinking state + tool ledger.
+  const [thinkState, setThinkState] = createSignal<ThinkWidgetState>({ active: false, text: "", elapsed: 0 })
+  const [toolEntries, setToolEntries] = createSignal<ToolWidgetEntry[]>([])
+  // Modal Select overlay (model/sessions/effort/ask); see the Overlay type.
+  const [overlay, setOverlay] = createSignal<Overlay | null>(null)
+  // Model catalog for the Select (reactive: the host list loads async).
+  const [modelItems, setModelItems] = createSignal<SelectItem[]>([])
   // Theme: plugin config < env < host-mode default (catppuccin-mocha)
   const initialTheme =
     process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha"
@@ -97,28 +113,49 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // further input edit reopens the menu while the line starts with "/".
   const [menuOpen, setMenuOpen] = createSignal(true)
   const [menuSel, setMenuSel] = createSignal(0)
+  // 24h wall clock for the powerline right side.
+  const [clock, setClock] = createSignal(fmtClock())
 
   let approveResolve: ((ok: boolean) => void) | null = null
 
   onMount(() => {
-    onCleanup(store.subscribe(() => setSnapshot(store.snapshot)))
-    const t2 = setInterval(() => setSpin((s) => (s + 1) % 4), 150)
-    onCleanup(() => clearInterval(t2))
+    // One 1s heartbeat drives the dock widgets' elapsed counters (think
+    // seconds, running-tool spinner) and the powerline clock.
+    const tick = setInterval(() => {
+      setClock(fmtClock())
+      setThinkState((s) => (s.active ? { ...s, elapsed: s.elapsed + 1 } : s))
+      setToolEntries((arr) =>
+        arr.some((e) => e.status === "running")
+          ? arr.map((e) => (e.status === "running" ? { ...e, elapsed: (e.elapsed ?? 0) + 1 } : e))
+          : arr,
+      )
+    }, 1000)
+    onCleanup(() => clearInterval(tick))
     // Answer host user-questions with the ask overlay (first question with
-    // options becomes a Picker; esc declines). Disabled via env for bisection.
+    // options becomes a Select; esc declines). Disabled via env for bisection.
     if (!process.env.DSH_OPENTUI_NO_ASK) props.deps.session.registerAskProvider(async (questions) => {
       const answer = await new Promise<{ questionId: string; selected: string }[] | "declined">((resolve) => {
-        setAsk({ questions, resolve })
+        const q0 = questions[0]
+        const options = q0?.options ?? []
+        if (!q0 || options.length === 0) {
+          resolve("declined")
+          return
+        }
+        setOverlay({
+          kind: "ask",
+          title: `${t("ask.title")}: ${q0.prompt}`.slice(0, 70),
+          questionId: q0.id,
+          items: options.map((o) => ({ label: o, value: o })),
+          resolve,
+        })
       })
       if (answer === "declined") throw new Error("declined")
       return answer
     })
   })
 
-  const spinner = () => ["⠋", "⠙", "⠹", "⠸"][spin()]
-
   // Slash palette: the menu lists COMMANDS matching the "/token" prefix of
-  // the input line; it hides while busy (navigation is disabled then too).
+  // the input line. Usable mid-turn too — the line is never locked.
   const filteredCommands = createMemo(() => {
     const m = /^\/(\S*)/.exec(input())
     if (!m) return []
@@ -128,19 +165,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     const n = filteredCommands().length
     return n === 0 ? 0 : Math.min(menuSel(), n - 1)
   })
-  const menuVisible = createMemo(() => !busy() && menuOpen() && filteredCommands().length > 0)
+  const menuVisible = createMemo(() => menuOpen() && filteredCommands().length > 0)
 
-  // Model picker feed: the provider catalog flattened to one PickerItem
-  // per model (group=provider, label=model, id="provider/model"); the row
-  // matching the live session label is tagged as the current selection.
-  const [modelItems, setModelItems] = createSignal<PickerItem[]>([])
+  // Model Select feed: the provider catalog flattened to one SelectItem
+  // per model (group=provider, label=model, value="provider/model"); the
+  // row matching the live session label is tagged as the current one.
   const refreshModelItems = () => {
     void props.deps.session.listProviders().then((catalog) => {
-      const out: PickerItem[] = []
+      const out: SelectItem[] = []
       for (const p of catalog) {
         for (const m of p.models) {
           const id = `${p.provider}/${m}`
-          out.push({ id, group: p.provider, label: m, detail: label() === id ? "current" : undefined })
+          out.push({ label: m, group: p.provider, value: id, ...(label() === id ? { description: t("cmd.model.current") } : {}) })
         }
       }
       setModelItems(out)
@@ -148,26 +184,61 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   }
   onMount(refreshModelItems)
 
-  const EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"]
+  const effortItems = (): SelectItem[] =>
+    EFFORTS.map((e) => ({ label: e, value: e, description: t(`picker.effort.${e}.desc`) }))
 
-  // The active overlay's rows/title, by picker kind.
-  const pickerData = createMemo<{ title: string; items: PickerItem[] }>(() => {
-    const p = picker()
-    if (!p) return { title: "", items: [] }
-    if (p.kind === "model") return { title: t("picker.model.title"), items: modelItems() }
-    if (p.kind === "sessions") return { title: t("picker.sessions.title"), items: sessionItems() }
-    return {
-      title: t("picker.effort.title", { model: p.model }),
-      items: EFFORTS.map((e) => ({ id: e, label: e })),
-    }
+  // The active overlay's rows/title, by kind.
+  const overlayItems = createMemo<SelectItem[]>(() => {
+    const ov = overlay()
+    if (!ov) return []
+    if (ov.kind === "model") return modelItems()
+    if (ov.kind === "effort") return effortItems()
+    return ov.items
   })
+  const overlayTitle = () => {
+    const ov = overlay()
+    if (!ov) return ""
+    if (ov.kind === "model") return t("picker.model.title")
+    if (ov.kind === "sessions") return t("picker.sessions.title")
+    if (ov.kind === "effort") return t("picker.effort.title", { model: ov.model })
+    return ov.title
+  }
 
-  // Tool panel feed: tool-kind transcript rows projected onto ToolPanelEntry.
-  const toolEntries = createMemo<ToolPanelEntry[]>(() =>
-    items()
-      .filter((it): it is Extract<TItem, { kind: "tool" }> => it.kind === "tool")
-      .map((it) => ({ name: it.name, args: it.args, ok: it.ok, output: it.brief, ...(it.imagePath ? { imagePath: it.imagePath } : {}) })),
-  )
+  /** Enter inside the overlay Select: hand the picked value to whichever
+   * flow opened it (the native select already consumed the keypress). */
+  const onOverlaySelect = (value: string) => {
+    const ov = overlay()
+    setOverlay(null)
+    if (!ov) return
+    if (ov.kind === "model") {
+      // two-stage: picked a model, now ask for the reasoning effort
+      const [provider, model] = value.split("/")
+      if (provider && model) setOverlay({ kind: "effort", provider, model })
+      return
+    }
+    if (ov.kind === "effort") {
+      const effort = value === "keep" ? undefined : value
+      props.deps.session.switchModel(ov.provider, ov.model, effort)
+      setLabel(props.deps.session.label)
+      push({ kind: "system", text: `${t("cmd.model.set")} ${ov.provider}/${ov.model}${effort ? ` (${effort})` : ""} ${t("cmd.model.next")}` })
+      return
+    }
+    if (ov.kind === "sessions") {
+      const item = ov.items.find((s) => s.value === value)
+      props.deps.session.resumeSession(value)
+      push({ kind: "system", text: `${t("cmd.sessions.resumed")}: ${item?.label ?? value.slice(0, 8)}` })
+      return
+    }
+    ov.resolve([{ questionId: ov.questionId, selected: value }])
+  }
+
+  /** Esc inside the overlay Select (also idempotent for the Select's own
+   * onCancel wiring, which fires for the same keypress). */
+  const onOverlayCancel = () => {
+    const ov = overlay()
+    setOverlay(null)
+    if (ov?.kind === "ask") ov.resolve("declined")
+  }
 
   // markdown style for finalized assistant messages (best-effort: the
   // intrinsic tolerates undefined, code blocks then render unstyled)
@@ -179,18 +250,20 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     mdStyle = undefined
   }
 
-  const visibleItems = createMemo(() => items().slice(-MAX_VISIBLE_ITEMS))
-
+  // ---- streaming buffers (clean transcript) ----
+  // Full reasoning text of the current turn, flushed into thinkState at a
+  // throttled cadence; the assistant reply row is bumped the same way.
+  let thinkBuf = ""
+  let streamingReply: TItem | null = null
   let lastBump = 0
-  let streaming: { thinking?: TItem; reply?: TItem } = {}
   const bumpSoon = () => {
     const now = Date.now()
-    if (now - lastBump > 60) {
-      lastBump = now
-      // replace the streaming item refs (not just the array) so the
-      // per-item <For> re-renders them
-      setItems((arr) => arr.map((x) => (x === streaming.thinking || x === streaming.reply ? { ...x } : x)))
-    }
+    if (now - lastBump < 60) return
+    lastBump = now
+    if (thinkBuf !== thinkState().text) setThinkState((prev) => ({ ...prev, text: thinkBuf }))
+    // replace the streaming reply ref (not just the array) so the
+    // per-item <For> re-renders it
+    if (streamingReply) setItems((arr) => arr.map((x) => (x === streamingReply ? { ...x } : x)))
   }
   const push = (it: TItem) => setItems((arr) => [...arr, it])
 
@@ -270,16 +343,20 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } else if (cmd === "new") {
       props.deps.session.newSession()
       setItems([])
-      setScrollOffset(0)
       push({ kind: "system", text: t("cmd.new.done") })
     } else if (cmd === "sessions") {
       const list = await props.deps.session.listSessions()
       if (!list.length) {
         push({ kind: "system", text: t("cmd.sessions.empty") })
       } else {
-        setSessionItems(list.map((x) => ({ id: x.id, label: x.title || x.id.slice(0, 8), detail: x.updatedAt ? String(x.updatedAt).slice(0, 19) : undefined })))
-        setPickerSel(0)
-        setPicker({ kind: "sessions" })
+        setOverlay({
+          kind: "sessions",
+          items: list.map((x) => ({
+            label: x.title || x.id.slice(0, 8),
+            value: x.id,
+            ...(x.updatedAt ? { description: String(x.updatedAt).slice(0, 19) } : {}),
+          })),
+        })
       }
     } else if (cmd === "theme") {
       const i = THEME_ORDER.indexOf(themeName())
@@ -288,10 +365,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       push({ kind: "system", text: `theme → ${next}` })
     } else if (cmd === "model") {
       if (!arg) {
-        // Bare /model opens the Picker overlay instead of printing the list.
+        // Bare /model opens the Select overlay instead of printing the list.
         refreshModelItems()
-        setPickerSel(0)
-        setPicker({ kind: "model" })
+        setOverlay({ kind: "model" })
       } else {
         const [provider, model] = arg.split("/")
         if (!provider || !model) {
@@ -333,41 +409,35 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
   }
 
+  /** Steering: inject a message into the RUNNING turn (Kimi-style) — the
+   * line stays unlocked while busy and enter feeds the agent mid-turn. */
+  const steerText = (text: string) => {
+    push({ kind: "user", text: `⚡ ${text}` })
+    props.deps.session.steer(text)
+  }
+
   async function send(text: string) {
-    if (busy()) return
-    setScrollOffset(0)
+    setShowWelcome(false)
     push({ kind: "user", text })
     setBusy(true)
-    let thinkingItem: Extract<TItem, { kind: "thinking" }> | null = null
+    // Fresh dock state: the think panel expands empty; tool entries keep
+    // accumulating across turns (they are the session's tool ledger).
+    thinkBuf = ""
+    setThinkState({ active: true, text: "", elapsed: 0 })
     let replyItem: Extract<TItem, { kind: "assistant" }> | null = null
-    streaming = {}
-    // A fresh turn replaces the think panel's contents.
-    reasoningBuf = ""
-    setLastReasoning("")
+    streamingReply = null
     try {
       await props.deps.session.turn(
         text,
         {
           onThinkingDelta: (s: string) => {
-            if (!thinkingItem) {
-              thinkingItem = { kind: "thinking", tail: "", chars: 0 }
-              streaming.thinking = thinkingItem
-              push(thinkingItem)
-            }
-            thinkingItem.tail = (thinkingItem.tail + s).split("\n").slice(-2).join(" ")
-            thinkingItem.chars += s.length
-            reasoningBuf += s
-            setLastReasoning(reasoningBuf)
+            thinkBuf += s
             bumpSoon()
           },
           onContentDelta: (s: string) => {
-            if (thinkingItem) {
-              thinkingItem.tail = `…${thinkingItem.chars}`
-              thinkingItem = null
-            }
             if (!replyItem) {
               replyItem = { kind: "assistant", text: "" }
-              streaming.reply = replyItem
+              streamingReply = replyItem
               push(replyItem)
             }
             replyItem.text += s
@@ -382,14 +452,37 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             setUsage((v) => ({ prompt: v.prompt + u.prompt, completion: v.completion + u.completion, turns: v.turns + 1 }))
           },
           onApprove: (name: string, args: Record<string, unknown>) => {
+            // Only the modal card lives here; the dock entry is filed by
+            // onToolStart (the tool/call event), which fires for
+            // auto-allowed calls that never reach this waterfall.
             setApproval({ name, args: JSON.stringify(args) })
             return new Promise<boolean>((resolve) => {
               approveResolve = resolve
             })
           },
+          onToolStart: (start) => {
+            setToolEntries((arr) => [
+              ...arr,
+              { name: start.name, args: start.args, status: "running", elapsed: 0, ...(start.callId ? { callId: start.callId } : {}) },
+            ])
+          },
           onToolRun: (run: ToolRun) => {
-            const brief = run.output.split("\n").slice(-3).join(" ⏎ ").slice(0, 200)
-            push({ kind: "tool", name: run.name, args: run.argsPretty, ok: run.ok, brief, ...( (run as any).imagePath ? { imagePath: (run as any).imagePath } : {}) } as any)
+            const brief = run.output.split("\n").slice(-2).join(" ⏎ ").slice(0, 200)
+            setToolEntries((arr) => {
+              // settle by callId when the pair is known, else the first
+              // running entry under the same tool name
+              const idx = run.callId
+                ? arr.findIndex((e) => e.callId === run.callId)
+                : arr.findIndex((e) => e.status === "running" && e.name === run.name)
+              const settled: ToolWidgetEntry = {
+                ...(run.callId ? { callId: run.callId } : {}),
+                name: run.name,
+                args: run.argsPretty,
+                status: run.ok ? "ok" : "fail",
+                output: brief,
+              }
+              return idx === -1 ? [...arr, settled] : arr.map((e, i) => (i === idx ? { ...e, ...settled } : e))
+            })
           },
           onError: (msg: string) => push({ kind: "error", text: msg }),
         },
@@ -397,6 +490,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } catch (e) {
       push({ kind: "error", text: errText(e) })
     } finally {
+      // Dock collapse: the thought folds to its summary line, entries that
+      // never produced a result (declined / aborted) settle as failed.
+      setThinkState((prev) => ({ ...prev, active: false, text: thinkBuf }))
+      setToolEntries((arr) => arr.map((e) => (e.status === "running" ? { ...e, status: "fail" } : e)))
       setApproval(null)
       approveResolve = null
       setBusy(false)
@@ -408,23 +505,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-keys.log", JSON.stringify({ name: key.name, seq: key.sequence }) + "\n")).catch(() => {})
     }
     if (key.sequence === "\x03" || ((key.name === "c" || key.name === "C") && key.ctrl)) process.exit(0)
-    // Host ask overlay: highest modal priority (the turn is waiting on us).
-    const pendingAsk = ask()
-    if (pendingAsk) {
-      const q0 = pendingAsk.questions[0]
-      const opts = q0?.options ?? []
-      if (key.name === "up" || key.name === "down") {
-        if (opts.length > 0) setPickerSel((v) => (key.name === "up" ? (v - 1 + opts.length) % opts.length : (v + 1) % opts.length))
-      } else if (key.name === "return") {
-        const sel = opts[Math.min(pickerSel(), Math.max(0, opts.length - 1))]
-        setAsk(null)
-        pendingAsk.resolve(sel ? [{ questionId: q0.id, selected: sel }] : "declined")
-      } else if (key.name === "escape") {
-        setAsk(null)
-        pendingAsk.resolve("declined")
-      }
-      return
-    }
+    // Approval card: y/enter allows, n/esc rejects (highest modal priority
+    // — the turn is waiting on us).
     const ap = approval()
     if (ap) {
       if (key.sequence === "y" || key.name === "return") {
@@ -438,64 +520,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       }
       return
     }
-    // Model picker overlay (modal): owns up/down/enter/esc while open —
-    // up/down move the highlight, they never recall history.
-    const pk = picker()
-    if (pk) {
-      const n = pickerData().items.length
-      if (key.name === "up" || key.name === "down") {
-        if (n > 0) setPickerSel((s) => (key.name === "up" ? (s - 1 + n) % n : (s + 1) % n))
-      } else if (key.name === "return") {
-        const item = n > 0 ? pickerData().items[Math.min(pickerSel(), n - 1)] : undefined
-        setPicker(null)
-        setPickerSel(0)
-        if (item && pk.kind === "model") {
-          // two-stage: picked a model, now ask for the reasoning effort
-          const [provider, model] = item.id.split("/")
-          if (provider && model) setPicker({ kind: "effort", provider, model })
-        } else if (item && pk.kind === "effort") {
-          const effort = item.id === "keep" ? undefined : item.id
-          props.deps.session.switchModel(pk.provider, pk.model, effort)
-          setLabel(props.deps.session.label)
-          push({ kind: "system", text: `${t("cmd.model.set")} ${pk.provider}/${pk.model}${effort ? ` (${effort})` : ""} ${t("cmd.model.next")}` })
-        } else if (item && pk.kind === "sessions") {
-          props.deps.session.resumeSession(item.id)
-          push({ kind: "system", text: `${t("cmd.sessions.resumed")}: ${item.label}` })
-        }
-      } else if (key.name === "escape") {
-        setPicker(null)
-        setPickerSel(0)
-      }
+    // Select overlay: the focused native select owns arrows/enter; escape
+    // is the one key it leaves for us (Select maps it to onCancel too —
+    // both paths close idempotently). Swallow everything else so the line
+    // editor and palette never react under a modal.
+    if (overlay()) {
+      if (key.name === "escape") onOverlayCancel()
       return
     }
-    // Panel hotkeys — routed after approval/picker, ahead of the busy gate,
-    // so panel inspection works in any idle state (and even mid-turn).
-    if (key.ctrl && key.name === "t") {
-      setShowThink((v) => !v)
-      return
-    }
-    if (key.ctrl && key.name === "o") {
-      setShowTool((v) => !v)
-      return
-    }
-    if (key.ctrl && key.name === "p") {
-      // Cycle the expanded ToolPanel entry: -1 (none) → 0 → … → n-1 → -1.
-      const n = toolEntries().length
-      if (n > 0) setToolExpanded((v) => (v + 1 >= n ? -1 : v + 1))
-      return
-    }
-    // Transcript scroll: pageup back in time, pagedown toward the bottom.
-    if (key.name === "pageup") {
-      setScrollOffset((o) => o + 10)
-      return
-    }
-    if (key.name === "pagedown") {
-      setScrollOffset((o) => Math.max(0, o - 10))
-      return
-    }
-    if (busy()) return
-    // Slash palette keys: arrows move the highlight (disabled while busy
-    // via the early return above), tab completes, enter runs, esc closes.
+    // NOTE: no busy gate — the input line stays unlocked mid-turn so the
+    // user can type and STEER (enter below routes to steerText while busy).
+    // Slash palette keys: arrows move the highlight, tab completes, enter
+    // runs, esc closes.
     if (menuVisible() && (key.name === "up" || key.name === "down")) {
       const n = filteredCommands().length
       setMenuSel((s) => (key.name === "up" ? (s - 1 + n) % n : (s + 1) % n))
@@ -543,6 +579,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         void runCommand(text)
         return
       }
+      // Steering: mid-turn enter injects into the running turn instead of
+      // waiting for it to finish.
+      if (busy()) return steerText(text)
       send(text)
       return
     }
@@ -606,80 +645,88 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
   })
 
-  const widgets = () => snapshot().filter((d): d is SurfaceWidgetDecl => d.kind === "widget")
+  // ---- powerline footer ----
+  // provider/model/(effort) parsed back out of the live session label.
+  const route = createMemo(() => {
+    const m = /^([^/]+)\/(\S+?)(?:\s*\(([\w-]+)\))?$/.exec(label())
+    if (!m) return { provider: label(), model: "", effort: undefined as string | undefined }
+    return { provider: m[1], model: m[2], effort: m[3] }
+  })
+  const contextPct = createMemo(() => Math.min(99, Math.round((usage().prompt / CONTEXT_WINDOW_TOKENS) * 100)))
+  const msgCount = createMemo(() => items().filter((it) => it.kind === "user" || it.kind === "assistant").length)
+  const toolCount = createMemo(() => toolEntries().length)
+  // ToolWidget stays expanded exactly while some entry is still running.
+  const toolActive = createMemo(() => toolEntries().some((e) => e.status === "running"))
+  const powerlineSegments = (): PowerlineSegment[] => {
+    const r = route()
+    const pct = contextPct()
+    const segs: PowerlineSegment[] = [
+      { text: "dsh", bg: POWERLINE_COLORS.brand },
+      { text: r.provider, bg: POWERLINE_COLORS.provider },
+      {
+        text: `${r.model || "·"}${r.effort ? ` ◕${r.effort}` : ""}`,
+        bg: POWERLINE_COLORS.thinking[r.effort ?? "high"] ?? POWERLINE_COLORS.thinking.high,
+      },
+      {
+        text: `🧠 ${pct}%`,
+        bg: pct > 80 ? POWERLINE_COLORS.contextDanger : pct > 60 ? POWERLINE_COLORS.contextOrange : pct > 40 ? POWERLINE_COLORS.contextWarn : POWERLINE_COLORS.contextOk,
+      },
+    ]
+    if (msgCount() > 0) segs.push({ text: `💬 ${msgCount()}`, bg: POWERLINE_COLORS.messages })
+    if (toolCount() > 0) segs.push({ text: `⚒ ${toolCount()}`, bg: POWERLINE_COLORS.tools })
+    return segs
+  }
+
   const th = () => theme()
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
-      <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-        <TranscriptWindow
-          items={visibleItems()}
-          theme={theme()}
-          t={t}
-          spinnerFrame={spinner()}
-          mdStyle={mdStyle}
-          offset={scrollOffset()}
-          viewportRows={24}
-        />
-      </box>
-      {showTool() ? (
-        <ToolPanel entries={toolEntries()} theme={th()} expandedIndex={toolExpanded()} />
+      {showWelcome() ? (
+        <WelcomeBanner theme={th()} model={label()} cwd={process.cwd()} />
+      ) : (
+        <AutoScroll>
+          <Transcript items={items()} theme={th()} t={t} spinnerFrame="" mdStyle={mdStyle} />
+        </AutoScroll>
+      )}
+      <ThinkWidget state={thinkState()} theme={th()} />
+      <ToolWidget entries={toolEntries()} active={toolActive()} theme={th()} />
+      {approval() ? (
+        <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
       ) : null}
-      {showThink() ? <ThinkPanel text={lastReasoning()} theme={th()} /> : null}
-      <For each={approval() ? [approval()!] : []}>
-        {(ap) => (
-          <ApprovalCard toolName={ap.name} args={ap.args} hint={t("agent.approve.hint")} theme={th()} />
-        )}
-      </For>
-      {ask() ? (
-        <Picker
-          title={`${t("ask.title")}: ${ask()!.questions[0]?.prompt ?? ""}`.slice(0, 70)}
-          items={(ask()!.questions[0]?.options ?? []).map((o) => ({ id: o, label: o }))}
-          selected={pickerSel()}
+      {overlay() ? (
+        <Select
+          title={overlayTitle()}
+          items={overlayItems()}
           theme={th()}
-          maxRows={8}
+          onSelect={onOverlaySelect}
+          onCancel={onOverlayCancel}
         />
       ) : null}
-      {picker() ? (
-        <Picker
-          title={pickerData().title}
-          items={pickerData().items}
-          selected={pickerSel()}
-          theme={th()}
-          maxRows={8}
-        />
+      {menuVisible() ? (
+        <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "column", padding: 0 }}>
+          <For each={filteredCommands()}>
+            {(c, i) => (
+              <text style={{ fg: i() === clampedSel() ? th().tokens.accent : undefined }}>
+                {i() === clampedSel() ? "› " : "  "}
+                {c.name}  {c.desc}
+              </text>
+            )}
+          </For>
+        </box>
       ) : null}
-      <For each={menuVisible() ? [0] : []}>
-        {() => (
-          <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "column", padding: 0 }}>
-            <For each={filteredCommands()}>
-              {(c, i) => (
-                <text style={{ fg: i() === clampedSel() ? th().tokens.accent : undefined }}>
-                  {i() === clampedSel() ? "› " : "  "}
-                  {c.name}  {c.desc}
-                </text>
-              )}
-            </For>
-          </box>
-        )}
-      </For>
+      {/* busy stays false on purpose: the line is never locked — mid-turn
+          typing STEERS, and the busy state reads from the dock widgets. */}
       <InputLine
         value={input()}
         cursor={cursor()}
-        busy={busy()}
-        spinnerFrame={spinner()}
-        placeholder={t("shell.input.placeholder")}
+        busy={false}
+        spinnerFrame=""
+        placeholder={busy() ? t("shell.input.steer") : t("shell.input.placeholder")}
         busyLabel={t("shell.input.busy")}
         theme={th()}
       />
       <FooterHints theme={th()} />
-      <StatusBar
-        widgets={[
-          { kind: "widget", slot: "status", id: "model", order: 10, parts: [{ text: label(), color: th().tokens.accent }] },
-          { kind: "widget", slot: "status", id: "usage", order: 20, parts: [{ text: `p${usage().prompt}/c${usage().completion}`, dim: true }] },
-          ...widgets(),
-        ]}
-      />
+      <PowerlineFooter left={powerlineSegments()} right={clock()} theme={th()} />
     </box>
   )
 }

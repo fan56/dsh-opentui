@@ -46,7 +46,7 @@ export function Picker(props: {
   }
 
   return (
-    <box style={{ border: true, borderColor: props.theme.tokens.border, flexDirection: "column", padding: 1 }}>
+    <box style={{ border: true, borderStyle: "rounded", borderColor: props.theme.tokens.border, flexDirection: "column", padding: 1 }}>
       <text style={{ fg: props.theme.tokens.accent }}>{props.title}</text>
       <For each={visible()}>
         {(it, i) => (
@@ -72,6 +72,7 @@ export function Dialog(props: { title: string; body: string[]; theme: Theme; bor
     <box
       style={{
         border: true,
+        borderStyle: "rounded",
         borderColor: props.border ?? props.theme.tokens.warn,
         flexDirection: "column",
         padding: 1,
@@ -89,6 +90,7 @@ export function ApprovalCard(props: { toolName: string; args: string; hint: stri
     <box
       style={{
         border: true,
+        borderStyle: "rounded",
         borderColor: th().tokens.approvalBorder ?? th().tokens.warn,
         flexDirection: "column",
         padding: 1,

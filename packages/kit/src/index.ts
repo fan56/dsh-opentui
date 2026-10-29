@@ -12,3 +12,10 @@ export { type ToolPanelEntry, ToolPanel, ThinkPanel } from "./panels.tsx"
 
 
 export { type TableColumn, Table } from "./table.tsx"
+
+export { type PowerlineSegment, PowerlineFooter, POWERLINE_COLORS } from "./powerline.tsx"
+export { WelcomeBanner } from "./welcome.tsx"
+export { DAILY_QUOTES, pickDailyQuote } from "./quotes.ts"
+export { type ThinkWidgetState, type ToolWidgetEntry, ThinkWidget, ToolWidget } from "./dock-widgets.tsx"
+export { AutoScroll } from "./scroll.tsx"
+export { type SelectItem, Select } from "./select.tsx"

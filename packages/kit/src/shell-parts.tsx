@@ -128,7 +128,11 @@ export function Transcript(props: {
       return (
         <box style={{ flexDirection: "column" }}>
           <For each={renderAssistant(it.text, th)}>
-            {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
+            {(l) => (
+              <text style={l.fg ? { fg: l.fg } : {}}>
+                {`┃ ${l.text || " "}`}
+              </text>
+            )}
           </For>
         </box>
       )
@@ -242,7 +246,7 @@ export function InputLine(props: {
   }
 
   return (
-    <box style={{ border: true, borderColor: props.theme.tokens.border, flexDirection: "row" }}>
+    <box style={{ border: true, borderStyle: "rounded", borderColor: props.theme.tokens.border, flexDirection: "row" }}>
       <text style={{ fg: props.theme.tokens.accent }}>{props.busy ? `${props.spinnerFrame} ` : "❯ "}</text>
       {props.busy ? (
         <text style={{ fg: props.theme.tokens.dim }}>{props.busyLabel}</text>

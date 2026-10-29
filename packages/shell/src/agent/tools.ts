@@ -52,6 +52,8 @@ export interface ToolRun {
   argsPretty: string
   output: string
   ok: boolean
+  /** Correlates the result with its tool/call event; absent in direct mode. */
+  callId?: string
 }
 
 export async function runTool(
