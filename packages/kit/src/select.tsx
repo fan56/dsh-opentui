@@ -12,7 +12,7 @@
  *   through the renderer keypress stream — `useKeyboard` turns it into
  *   onCancel.
  */
-import { Show, type JSX } from "solid-js"
+import { Show, createSignal, type JSX } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { SelectOption } from "@opentui/core"
 import type { Theme } from "./theme.ts"
@@ -29,6 +29,9 @@ const MAX_VISIBLE_ITEMS = 12
 /** Highlight background when the theme defines no selection token. */
 const FALLBACK_SELECTION_BG = "#313244"
 
+/** Keep a highlight index inside the items range. */
+const clamp = (v: number, n: number) => (n === 0 ? 0 : Math.max(0, Math.min(n - 1, v)))
+
 export function Select(props: {
   title: string
   items: SelectItem[]
@@ -36,10 +39,30 @@ export function Select(props: {
   onSelect: (value: string) => void
   onCancel: () => void
 }): JSX.Element {
-  // Escape is the one key the native select leaves alone; the hook stays
-  // live for the whole mount, so an empty picker can still be dismissed.
+  // Controlled highlight + a belt-and-suspenders key path: the native
+  // select's OWN enter handling does not fire under the real renderer
+  // (verified in a live boot — only the headless testRender probe shows
+  // it), so arrows/enter are also routed through useKeyboard, which the
+  // live boot demonstrably delivers. selectedIndex stays prop-controlled
+  // so both paths agree; onSelect dedupes within a 250ms window in case
+  // the native path ever does fire too.
+  const [index, setIndex] = createSignal(0)
+  let lastFire = 0
+  const fire = (i: number) => {
+    const opt = options()[i]
+    if (!opt) return
+    const now = Date.now()
+    if (now - lastFire < 250) return
+    lastFire = now
+    props.onSelect(String(opt.value))
+  }
   useKeyboard((key) => {
-    if (key.name === "escape") props.onCancel()
+    if (key.name === "escape") return props.onCancel()
+    const n = props.items.length
+    if (n === 0) return
+    if (key.name === "up") return setIndex((v) => (v - 1 + n) % n)
+    if (key.name === "down") return setIndex((v) => (v + 1) % n)
+    if (key.name === "return" || key.name === "enter") fire(clamp(index(), n))
   })
 
   const th = () => props.theme
@@ -78,7 +101,7 @@ export function Select(props: {
         </box>
         <select
           options={options()}
-          selectedIndex={0}
+          selectedIndex={clamp(index(), props.items.length)}
           focused={true}
           width="100%"
           height={visibleItems() * linesPerItem()}
@@ -90,8 +113,8 @@ export function Select(props: {
           selectedTextColor={th().tokens.text}
           showDescription={hasDescriptions()}
           showScrollIndicator={props.items.length > visibleItems()}
-          onSelect={(_index, option) => {
-            if (option) props.onSelect(String(option.value))
+          onSelect={(i, option) => {
+            if (option) fire(i ?? clamp(index(), props.items.length))
           }}
         />
       </box>

@@ -15,7 +15,7 @@ import { getTheme, themeNames, themes, type I18n } from "@dsh-opentui/kit"
 import { Transcript, InputLine, FooterHints, ApprovalCard, type TranscriptItem } from "@dsh-opentui/kit"
 import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, speedSegment, type PowerlineSegment } from "@dsh-opentui/kit"
 import { ThinkWidget, ToolWidget, type ThinkWidgetState, type ToolWidgetEntry } from "@dsh-opentui/kit"
-import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem } from "@dsh-opentui/kit"
+import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem, SubagentWidget, type SubagentEntry } from "@dsh-opentui/kit"
 import type { SurfaceStore } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
@@ -44,6 +44,7 @@ type Overlay =
   | { kind: "sessions"; items: SelectItem[] }
   | { kind: "effort"; provider: string; model: string }
   | { kind: "theme"; items: SelectItem[] }
+  | { kind: "history"; items: SelectItem[] }
   | { kind: "ask"; title: string; questionId: string; items: SelectItem[]; resolve: AskResolve }
 
 /** Credential refs reported by the bare /login //logout status dump. */
@@ -62,6 +63,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/usage", desc: "show token usage summary" },
   { name: "/new", desc: "start a fresh session" },
   { name: "/sessions", desc: "list and resume stored sessions" },
+  { name: "/history", desc: "fork the session at an earlier turn" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -107,10 +109,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [thinkExpanded, setThinkExpanded] = createSignal(false)
   const [toolExpanded, setToolExpanded] = createSignal(false)
   // Agent todo list (host todo tool's todo/write snapshots; the host
-  // projection clears them at every turn start) and subagent activity rows
-  // (tool-workflow/agent-start/end pairs keyed runId:seq).
+  // projection clears them at every turn start) and subagent panel entries
+  // (child-session views: header adoption + tool-workflow pairing + fold).
   const [todos, setTodos] = createSignal<TodoItem[]>([])
-  const [agentRows, setAgentRows] = createSignal<{ key: string; label: string; status: string; elapsed: number }[]>([])
+  const [subagents, setSubagents] = createSignal<SubagentEntry[]>([])
   // Modal Select overlay (model/sessions/effort/ask); see the Overlay type.
   const [overlay, setOverlay] = createSignal<Overlay | null>(null)
   // Model catalog for the Select (reactive: the host list loads async).
@@ -146,7 +148,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           ? arr.map((e) => (e.status === "running" ? { ...e, elapsed: (e.elapsed ?? 0) + 1 } : e))
           : arr,
       )
-      setAgentRows((arr) =>
+      setSubagents((arr) =>
         arr.some((r) => r.status === "running")
           ? arr.map((r) => (r.status === "running" ? { ...r, elapsed: r.elapsed + 1 } : r))
           : arr,
@@ -223,13 +225,14 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     if (ov.kind === "model") return t("picker.model.title")
     if (ov.kind === "sessions") return t("picker.sessions.title")
     if (ov.kind === "theme") return t("picker.theme.title")
+    if (ov.kind === "history") return t("picker.history.title")
     if (ov.kind === "effort") return t("picker.effort.title", { model: ov.model })
     return ov.title
   }
 
   /** Enter inside the overlay Select: hand the picked value to whichever
    * flow opened it (the native select already consumed the keypress). */
-  const onOverlaySelect = (value: string) => {
+  const onOverlaySelect = async (value: string) => {
     const ov = overlay()
     setOverlay(null)
     if (!ov) return
@@ -249,6 +252,23 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     if (ov.kind === "theme") {
       setThemeName(value)
       push({ kind: "system", text: `theme → ${value}` })
+      return
+    }
+    if (ov.kind === "history") {
+      // fork at the picked turn boundary: the host seeds a NEW session with
+      // the parent's event prefix and hands back the rebuilt transcript
+      try {
+        const forked = await props.deps.session.forkAtTurn(Number(value))
+        setItems(forked.items.map((it) => (it.kind === "assistant" ? { kind: "assistant", text: it.text, final: true } as TItem : it as TItem)))
+        setToolEntries([])
+        setTodos([])
+        setSubagents([])
+        setShowWelcome(false)
+        setBusy(false)
+        push({ kind: "system", text: `⑂ forked at turn boundary — reply continues from here` })
+      } catch (e) {
+        push({ kind: "error", text: errText(e) })
+      }
       return
     }
     if (ov.kind === "sessions") {
@@ -417,6 +437,20 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       // speed) from the host session's telemetry.
       for (const line of props.deps.session.usageSummary()) push({ kind: "system", text: line })
       push({ kind: "system", text: `model: ${label()}` })
+    } else if (cmd === "history") {
+      const turns = props.deps.session.historyTurns()
+      if (turns.length === 0) {
+        push({ kind: "system", text: "no completed turns yet" })
+      } else {
+        setOverlay({
+          kind: "history",
+          items: [...turns].reverse().map((tn) => ({
+            label: `#${tn.turn} ${tn.preview.slice(0, 46) || "(no text)"}`,
+            value: String(tn.seqEnd),
+            description: `fork before this turn`,
+          })),
+        })
+      }
     } else if (cmd === "new") {
       props.deps.session.newSession()
       setItems([])
@@ -557,16 +591,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             if (sec > 0.3 && chars > 0) setLiveTps(Math.round(chars / 4 / sec))
           },
           onTodos: (list) => setTodos(list),
-          onAgentEvent: (e) => {
-            setAgentRows((arr) => {
-              const idx = arr.findIndex((r) => r.key === e.key)
-              if (idx === -1) {
-                if (!e.label) return arr
-                return [...arr, { key: e.key, label: e.label, status: e.status, elapsed: 0 }]
-              }
-              return arr.map((r, i) => (i === idx ? { ...r, status: e.status } : r))
-            })
-          },
+          onSubagentUpdate: (entries) => setSubagents(entries),
           onApprove: (name: string, args: Record<string, unknown>) => {
             // Only the modal card lives here; the dock entry is filed by
             // onToolStart (the tool/call event), which fires for
@@ -713,13 +738,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         </AutoScroll>
       )}
       <TodosWidget todos={todos()} theme={th()} />
-      <For each={agentRows()}>
-        {(r) => (
-          <text style={{ fg: r.status === "running" ? th().tokens.accent : th().tokens.dim }}>
-            {`◇ ${r.label}${r.status === "running" ? ` · ${r.elapsed}s` : ` · ${r.status}`}`}
-          </text>
-        )}
-      </For>
+      <SubagentWidget entries={subagents()} theme={th()} />
       <ThinkWidget state={{ ...thinkState(), active: thinkState().active || thinkExpanded() }} theme={th()} />
       <ToolWidget entries={toolEntries()} active={toolActive() || toolExpanded()} theme={th()} />
       {approval() ? (

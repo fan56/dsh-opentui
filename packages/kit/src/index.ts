@@ -17,6 +17,7 @@ export { type PowerlineSegment, PowerlineFooter, POWERLINE_COLORS, speedSegment 
 export { WelcomeBanner } from "./welcome.tsx"
 export { DAILY_QUOTES, pickDailyQuote } from "./quotes.ts"
 export { type ThinkWidgetState, type ToolWidgetEntry, ThinkWidget, ToolWidget } from "./dock-widgets.tsx"
+export { type SubagentEntry, SubagentWidget } from "./subagent-widget.tsx"
 export { AutoScroll } from "./scroll.tsx"
 export { type SelectItem, Select } from "./select.tsx"
 export { type TodoItem, TodosWidget } from "./todos.tsx"

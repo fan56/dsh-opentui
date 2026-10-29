@@ -26,6 +26,19 @@ type SessionEvent = { type: string; data?: any }
 
 const DBG = (_m: string) => {} // stderr mid-render corrupts the frame stream; keep a no-op hook
 
+/** Concatenated text of the text blocks in a message content array. */
+function blocksText(content: unknown): string {
+  if (!Array.isArray(content)) return ""
+  let text = ""
+  for (const block of content) {
+    const typed = block as { type?: unknown; text?: unknown } | null
+    if (typed?.type === "text" && typeof typed.text === "string") {
+      text += (text === "" ? "" : "\n") + typed.text
+    }
+  }
+  return text.trim()
+}
+
 export class HostSession {
   label = "dsh-host"
   readonly #ctx: Context
@@ -232,13 +245,7 @@ export class HostSession {
       // fresh session, or a one-shot resume of a picked historical one
       this.#sessionId = this.#resumeId ?? randomUUID()
       this.#resumeId = undefined
-      // Model precedence: an explicit /model override wins over the composed
-      // agent-default-model selection (the host does NOT auto-apply either).
-      const sel = this.#override ?? (this.#ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
-      const agentOptions = sel
-        ? { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}) }
-        : {}
-      if (sel) this.label = `${sel.provider}/${sel.model}`
+      const agentOptions = this.#modelSelection() ?? {}
       this.#handle = await (this.#ctx as any).agents.create({
         sessionId: this.#sessionId,
         meta: { cwd: process.cwd() },
@@ -265,6 +272,195 @@ export class HostSession {
 
   /** Image refs staged by /attach, sent with the next prompt. */
   #pendingImages: any[] = []
+
+  // ---- subagent panel state ----
+  /** Live view per adopted child session (tui-pi AgentView, minimal). */
+  #children = new Map<
+    string,
+    { label: string; model?: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; tokens?: number; startedAt: number; lastLine?: string }
+  >()
+  /** tool-workflow/agent-start ↔ agent-end pairing (runId:seq → child). */
+  #runSeqToChild = new Map<string, string>()
+
+  /** Adopt a child session by its header (any firehose event carries it). */
+  #adoptChild(session: any, sessionKey: string): boolean {
+    if (this.#children.has(sessionKey)) return false
+    const header = session?.header
+    if (!header || String(header.parentSession) !== this.#sessionId) return false
+    // value tests, not existence: jsonl backends materialize delegationDepth: 0
+    if (header.origin !== "subagent" && (header.delegationDepth ?? 0) <= 0) return false
+    this.#children.set(sessionKey, {
+      label: `subagent ${sessionKey.slice(0, 8)}`,
+      status: "running",
+      rounds: 0,
+      startedAt: Date.now(),
+    })
+    return true
+  }
+
+  /** Register a child from the parent's tool-workflow/agent-start row. */
+  #registerChild(childId: string, label: string): void {
+    if (!childId) return
+    const existing = this.#children.get(childId)
+    if (existing) {
+      if (label && label !== existing.label) this.#children.set(childId, { ...existing, label })
+    } else {
+      this.#children.set(childId, { label: label || `subagent ${childId.slice(0, 8)}`, status: "running", rounds: 0, startedAt: Date.now() })
+    }
+    this.#emitChildren()
+  }
+
+  #settleChild(childId: string, outcome: "completed" | "failed" | "cancelled"): void {
+    const existing = this.#children.get(childId)
+    if (existing && existing.status === "running") {
+      this.#children.set(childId, { ...existing, status: outcome })
+      this.#emitChildren()
+    }
+  }
+
+  /** Fold one event from a (possibly adopted) child session into its view. */
+  #foldChildEvent(session: any, sessionKey: string, event: SessionEvent): void {
+    let changed = this.#adoptChild(session, sessionKey)
+    const view = this.#children.get(sessionKey)
+    if (!view) return
+    const d = event.data ?? {}
+    if (event.type === "subagent/descriptor") {
+      const label = typeof d.label === "string" && d.label ? d.label : undefined
+      const model = [d.agentProvider, d.agentModel].filter(Boolean).join("/") || (typeof d.provider === "string" ? String(d.provider) : undefined)
+      const next = { ...view, ...(label ? { label } : {}), ...(model ? { model } : {}) }
+      this.#children.set(sessionKey, next)
+      changed = true
+    } else if (event.type === "request/header") {
+      const cfg = d.header?.config ?? d.config
+      const model = cfg && (cfg.provider || cfg.model) ? `${cfg.provider ?? ""}/${cfg.model ?? ""}`.replace(/^\//, "") : undefined
+      if (model) {
+        this.#children.set(sessionKey, { ...view, model })
+        changed = true
+      }
+    } else if (event.type === "assistant/message") {
+      // rounds are assistant/message-counted (one-shot children never turn/end)
+      const text = blocksText(d.message?.content ?? d.content)
+      const usage = d.usage?.totalTokens ?? d.message?.usage?.totalTokens ?? d.message?.usage?.total_tokens
+      this.#children.set(sessionKey, {
+        ...view,
+        rounds: view.rounds + 1,
+        ...(usage ? { tokens: (view.tokens ?? 0) + Number(usage) } : {}),
+        ...(text ? { lastLine: text.split("\n").pop()?.slice(0, 80) } : {}),
+      })
+      changed = true
+    }
+    if (changed) this.#emitChildren()
+  }
+
+  /** Snapshot the child views to the UI (elapsed computed at read time). */
+  #emitChildren(): void {
+    const cb = this.#cb
+    if (!cb?.onSubagentUpdate) return
+    cb.onSubagentUpdate(
+      [...this.#children.entries()].map(([id, v]) => ({
+        id,
+        label: v.label,
+        ...(v.model ? { model: v.model } : {}),
+        status: v.status,
+        rounds: v.rounds,
+        ...(v.tokens !== undefined ? { tokens: v.tokens } : {}),
+        elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
+        ...(v.lastLine ? { lastLine: v.lastLine } : {}),
+      })),
+    )
+  }
+
+  // ---- /history: turn grouping + fork-at-turn ----
+  /** Completed turns of the live session, oldest first, for the picker. */
+  historyTurns(): { turn: number; seqEnd: number; preview: string }[] {
+    const events = this.#snapshot()
+    const turns: { turn: number; seqEnd: number; preview: string }[] = []
+    let open: { turn: number; seqEnd: number; preview: string } | undefined
+    for (const event of events) {
+      if (event.type === "turn/start") {
+        // an unclosed previous bracket is dropped (live turn mid-flight)
+        open = { turn: Number((event.data as any)?.turn ?? turns.length), seqEnd: Number((event as any).seq ?? 0), preview: "" }
+        continue
+      }
+      if (!open) continue
+      if (event.type === "user/message") {
+        // host-injected runtime-context snapshots are user/message events
+        // without a user source — previews want the human's words only
+        const kind = (event.data as any)?.source?.kind
+        if (kind === undefined || kind === "user") {
+          const text = blocksText((event.data as any)?.content)
+          if (text && !open.preview) open.preview = text
+        }
+      } else if (event.type === "turn/end") {
+        open.seqEnd = Number((event as any).seq ?? open.seqEnd)
+        turns.push(open)
+        open = undefined
+      }
+    }
+    return turns
+  }
+
+  /** Raw event snapshot of the live session (soft-deprecated upstream, but
+   * the only raw-replay path — same call tui-pi keeps for /history). */
+  #snapshot(): any[] {
+    const session = this.#handle?.agent?.session
+    const snap = session?.snapshotEvents?.()
+    return Array.isArray(snap) ? snap : []
+  }
+
+  /** Fork the live session at a completed turn boundary: seed a NEW session
+   * with the parent's event prefix up to `seqEnd` (contiguous from seq 0),
+   * replacing our handle. Returns the rebuilt transcript rows. The seed is
+   * snapshotted at construction and never re-emitted as session/event, so
+   * the caller rebuilds the transcript from the returned rows. */
+  async forkAtTurn(seqEnd: number): Promise<{ items: { kind: "user" | "assistant"; text: string }[]; turn: number }> {
+    const events = this.#snapshot()
+    if (events.length === 0) throw new Error("no live session to fork")
+    const seed = events.slice(0, seqEnd + 1)
+    if (seed.length === 0) throw new Error("fork point before the first event")
+    const parentSession = this.#sessionId
+    const sel = this.#modelSelection()
+    try {
+      this.#handle?.dispose?.()
+    } catch {
+      /* already gone */
+    }
+    this.#handle = undefined
+    this.#agentId = undefined
+    this.#sessionId = randomUUID()
+    this.#children.clear()
+    this.#runSeqToChild.clear()
+    this.#toolCalls.clear()
+    this.#handle = await (this.#ctx as any).agents.create({
+      sessionId: this.#sessionId,
+      meta: { cwd: process.cwd(), ...(parentSession ? { parentSession, isSeeded: true } : {}) },
+      ...(seed ? { seed, inheritedEventCount: seed.length } : {}),
+      ...(sel ? { agentOptions: sel } : {}),
+    })
+    this.#agentId = this.#handle.agent.id
+    const items: { kind: "user" | "assistant"; text: string }[] = []
+    for (const event of seed) {
+      if (event.type === "user/message") {
+        const kind = (event.data as any)?.source?.kind
+        if (kind !== undefined && kind !== "user") continue
+        const text = blocksText((event.data as any)?.content)
+        if (text) items.push({ kind: "user", text })
+      } else if (event.type === "assistant/message") {
+        const text = blocksText((event.data as any)?.message?.content)
+        if (text) items.push({ kind: "assistant", text })
+      }
+    }
+    return { items, turn: seed.length }
+  }
+
+  /** The model route for a (re)creation: explicit override wins over the
+   * composed agent-default-model selection. */
+  #modelSelection(): Record<string, unknown> | undefined {
+    const sel = this.#override ?? (this.#ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
+    if (!sel) return undefined
+    if (this.#handle === undefined) this.label = `${sel.provider}/${sel.model}`
+    return { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}) }
+  }
 
   /** Stage a local image file for the next message via the host attachment
    * store (bytes land in $DSH_HOME/attachments/v1; the message later only
@@ -350,11 +546,19 @@ export class HostSession {
       if (wasRunning && !this.#running && this.#resolveTurn) this.#finishTurn()
     })
 
-    ctx.on("session/event", (session: { id: string | { toString(): string } }, event: SessionEvent) => {
+    ctx.on("session/event", (session: any, event: SessionEvent) => {
       if (process.env.DSH_OPENTUI_DEBUG && (event.type === "turn/end" || event.type === "turn/start")) {
         try { process.stderr.write(`[hs] session/event ${event.type} sessionMatch=${String(session.id) === this.#sessionId} my=${this.#sessionId}\n`) } catch {}
       }
-      if (this.#sessionId === undefined || String(session.id) !== this.#sessionId) return
+      const sessionKey = String(session.id)
+      if (this.#sessionId === undefined) return
+      if (sessionKey !== this.#sessionId) {
+        // Not ours: it may be a subagent child — adopt by header (the
+        // firehose is not scope-filtered, children arrive here) and fold
+        // their refinement events into the panel view.
+        this.#foldChildEvent(session, sessionKey, event)
+        return
+      }
       const cb = this.#cb
       if (!cb) return
       try {
@@ -370,14 +574,13 @@ export class HostSession {
           // host todo tool: whole-list snapshot, cleared at turn start
           cb.onTodos?.((event.data?.todos ?? []) as { content: string; status: "pending" | "in_progress" | "completed" }[])
         } else if (event.type === "tool-workflow/agent-start" && event.data) {
-          cb.onAgentEvent?.({
-            key: `${event.data.runId}:${event.data.seq}`,
-            status: "running",
-            label: String(event.data.label ?? "subagent"),
-          })
+          // rich registration: the start row carries the child session id
+          this.#registerChild(String(event.data.childId ?? ""), String(event.data.label ?? "subagent"))
+          this.#runSeqToChild.set(`${event.data.runId}:${event.data.seq}`, String(event.data.childId ?? ""))
         } else if (event.type === "tool-workflow/agent-end" && event.data) {
+          const childId = this.#runSeqToChild.get(`${event.data.runId}:${event.data.seq}`)
           const outcome = event.data.outcome === "failed" || event.data.outcome === "cancelled" ? event.data.outcome : "completed"
-          cb.onAgentEvent?.({ key: `${event.data.runId}:${event.data.seq}`, status: outcome })
+          if (childId) this.#settleChild(childId, outcome)
         } else if (event.type === "tool/result" && event.data) {
           const callId = String(event.data.callId ?? event.data.message?.toolCallId ?? "")
           const known = this.#toolCalls.get(callId)

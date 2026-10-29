@@ -1,5 +1,5 @@
 // src/host-entry.tsx
-import { createComponent as _$createComponent11 } from "@opentui/solid";
+import { createComponent as _$createComponent12 } from "@opentui/solid";
 import { render } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -121,6 +121,7 @@ var dict = {
   "cmd.cred.missing": { "zh-CN": "未配置", en: "missing" },
   "picker.model.title": { "zh-CN": "选择模型", en: "select model" },
   "picker.theme.title": { "zh-CN": "选择主题", en: "select theme" },
+  "picker.history.title": { "zh-CN": "选择分叉点（回车 fork · esc 取消）", en: "pick a fork point (enter forks · esc cancels)" },
   "panel.tools.title": { "zh-CN": "工具", en: "tools" },
   "panel.think.title": { "zh-CN": "思考", en: "thinking" }
 };
@@ -138,13 +139,13 @@ function createI18n(locale = "zh-CN") {
 // src/ShellHost.tsx
 import { createTextNode as _$createTextNode9 } from "@opentui/solid";
 import { insertNode as _$insertNode10 } from "@opentui/solid";
-import { effect as _$effect12 } from "@opentui/solid";
-import { insert as _$insert12 } from "@opentui/solid";
-import { createComponent as _$createComponent10 } from "@opentui/solid";
+import { effect as _$effect13 } from "@opentui/solid";
+import { insert as _$insert13 } from "@opentui/solid";
+import { createComponent as _$createComponent11 } from "@opentui/solid";
 import { memo as _$memo5 } from "@opentui/solid";
-import { setProp as _$setProp12 } from "@opentui/solid";
-import { createElement as _$createElement12 } from "@opentui/solid";
-import { For as For9, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { setProp as _$setProp13 } from "@opentui/solid";
+import { createElement as _$createElement13 } from "@opentui/solid";
+import { For as For10, createMemo, createSignal as createSignal2, onCleanup, onMount } from "solid-js";
 import { SyntaxStyle } from "@opentui/core";
 import { useKeyboard as useKeyboard2, useRenderer } from "@opentui/solid";
 // ../kit/src/themes-data.ts
@@ -1533,18 +1534,108 @@ function ToolWidget(props) {
     }
   });
 }
-// ../kit/src/scroll.tsx
+// ../kit/src/subagent-widget.tsx
+import { setProp as _$setProp9 } from "@opentui/solid";
 import { effect as _$effect9 } from "@opentui/solid";
 import { insert as _$insert9 } from "@opentui/solid";
-import { setProp as _$setProp9 } from "@opentui/solid";
 import { createElement as _$createElement9 } from "@opentui/solid";
+import { createComponent as _$createComponent8 } from "@opentui/solid";
+import { For as For8, Show as Show5 } from "solid-js";
+var SPINNER_FRAMES2 = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+var SPINNER_FPS2 = 8;
+var ID_TAIL = 8;
+var LAST_LINE_WIDTH = 80;
+function spinnerFrame2(elapsed) {
+  return SPINNER_FRAMES2[Math.floor(elapsed * SPINNER_FPS2) % SPINNER_FRAMES2.length];
+}
+function displayName(e) {
+  if (e.label)
+    return e.label;
+  return e.id.length > ID_TAIL ? e.id.slice(-ID_TAIL) : e.id;
+}
+function metaSuffix(e) {
+  const parts = [];
+  if (e.model)
+    parts.push(e.model);
+  parts.push(`↻${e.rounds}`);
+  parts.push(`${e.elapsed}s`);
+  if (e.tokens !== undefined)
+    parts.push(`${e.tokens} tok`);
+  return parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
+}
+function tailLine(e) {
+  return (e.lastLine ?? "").replace(/\s+/g, " ").trim().slice(0, LAST_LINE_WIDTH);
+}
+function SubagentWidget(props) {
+  const th = () => props.theme;
+  return _$createComponent8(Show5, {
+    get when() {
+      return props.entries.length > 0;
+    },
+    get children() {
+      return _$createComponent8(For8, {
+        get each() {
+          return props.entries;
+        },
+        children: (e, i) => {
+          const branch = () => i() === props.entries.length - 1 ? "└─" : "├─";
+          const name = () => displayName(e);
+          const meta = () => metaSuffix(e);
+          const glyph = () => e.status === "completed" ? "✔" : e.status === "failed" ? "✘" : "⊘";
+          return _$createComponent8(Show5, {
+            get when() {
+              return e.status === "running";
+            },
+            get fallback() {
+              return (() => {
+                var _el$3 = _$createElement9("text");
+                _$insert9(_el$3, () => `${branch()} ${glyph()} ${name()}${meta()}`);
+                _$effect9((_$p) => _$setProp9(_el$3, "style", {
+                  fg: th().tokens.dim
+                }, _$p));
+                return _el$3;
+              })();
+            },
+            get children() {
+              return [(() => {
+                var _el$ = _$createElement9("text");
+                _$insert9(_el$, () => `${branch()} ${spinnerFrame2(e.elapsed)} ${name()}${meta()}`);
+                _$effect9((_$p) => _$setProp9(_el$, "style", {
+                  fg: th().tokens.accent
+                }, _$p));
+                return _el$;
+              })(), _$createComponent8(Show5, {
+                get when() {
+                  return tailLine(e).length > 0;
+                },
+                get children() {
+                  var _el$2 = _$createElement9("text");
+                  _$insert9(_el$2, () => `│   ${tailLine(e)}`);
+                  _$effect9((_$p) => _$setProp9(_el$2, "style", {
+                    fg: th().tokens.dim
+                  }, _$p));
+                  return _el$2;
+                }
+              })];
+            }
+          });
+        }
+      });
+    }
+  });
+}
+// ../kit/src/scroll.tsx
+import { effect as _$effect10 } from "@opentui/solid";
+import { insert as _$insert10 } from "@opentui/solid";
+import { setProp as _$setProp10 } from "@opentui/solid";
+import { createElement as _$createElement10 } from "@opentui/solid";
 function AutoScroll(props) {
   return (() => {
-    var _el$ = _$createElement9("scrollbox");
-    _$setProp9(_el$, "stickyScroll", true);
-    _$setProp9(_el$, "scrollY", true);
-    _$insert9(_el$, () => props.children);
-    _$effect9((_$p) => _$setProp9(_el$, "style", {
+    var _el$ = _$createElement10("scrollbox");
+    _$setProp10(_el$, "stickyScroll", true);
+    _$setProp10(_el$, "scrollY", true);
+    _$insert10(_el$, () => props.children);
+    _$effect10((_$p) => _$setProp10(_el$, "style", {
       flexGrow: 1,
       maxHeight: props.maxHeight
     }, _$p));
@@ -1552,21 +1643,43 @@ function AutoScroll(props) {
   })();
 }
 // ../kit/src/select.tsx
-import { createComponent as _$createComponent8 } from "@opentui/solid";
-import { effect as _$effect10 } from "@opentui/solid";
+import { createComponent as _$createComponent9 } from "@opentui/solid";
+import { effect as _$effect11 } from "@opentui/solid";
 import { createTextNode as _$createTextNode8 } from "@opentui/solid";
 import { insertNode as _$insertNode9 } from "@opentui/solid";
-import { insert as _$insert10 } from "@opentui/solid";
-import { setProp as _$setProp10 } from "@opentui/solid";
-import { createElement as _$createElement10 } from "@opentui/solid";
-import { Show as Show5 } from "solid-js";
+import { insert as _$insert11 } from "@opentui/solid";
+import { setProp as _$setProp11 } from "@opentui/solid";
+import { createElement as _$createElement11 } from "@opentui/solid";
+import { Show as Show6, createSignal } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 var MAX_VISIBLE_ITEMS2 = 12;
 var FALLBACK_SELECTION_BG = "#313244";
+var clamp = (v, n) => n === 0 ? 0 : Math.max(0, Math.min(n - 1, v));
 function Select(props) {
+  const [index, setIndex] = createSignal(0);
+  let lastFire = 0;
+  const fire = (i) => {
+    const opt = options()[i];
+    if (!opt)
+      return;
+    const now = Date.now();
+    if (now - lastFire < 250)
+      return;
+    lastFire = now;
+    props.onSelect(String(opt.value));
+  };
   useKeyboard((key) => {
     if (key.name === "escape")
-      props.onCancel();
+      return props.onCancel();
+    const n = props.items.length;
+    if (n === 0)
+      return;
+    if (key.name === "up")
+      return setIndex((v) => (v - 1 + n) % n);
+    if (key.name === "down")
+      return setIndex((v) => (v + 1) % n);
+    if (key.name === "return" || key.name === "enter")
+      fire(clamp(index(), n));
   });
   const th = () => props.theme;
   const options = () => props.items.map((it) => ({
@@ -1577,33 +1690,32 @@ function Select(props) {
   const hasDescriptions = () => props.items.some((it) => Boolean(it.description || it.group));
   const linesPerItem = () => hasDescriptions() ? 2 : 1;
   const visibleItems = () => Math.min(props.items.length, MAX_VISIBLE_ITEMS2);
-  return _$createComponent8(Show5, {
+  return _$createComponent9(Show6, {
     get when() {
       return props.items.length > 0;
     },
     get children() {
-      var _el$ = _$createElement10("box"), _el$2 = _$createElement10("box"), _el$3 = _$createElement10("text"), _el$4 = _$createElement10("box"), _el$5 = _$createElement10("text"), _el$7 = _$createElement10("select");
+      var _el$ = _$createElement11("box"), _el$2 = _$createElement11("box"), _el$3 = _$createElement11("text"), _el$4 = _$createElement11("box"), _el$5 = _$createElement11("text"), _el$7 = _$createElement11("select");
       _$insertNode9(_el$, _el$2);
       _$insertNode9(_el$, _el$7);
       _$insertNode9(_el$2, _el$3);
       _$insertNode9(_el$2, _el$4);
       _$insertNode9(_el$2, _el$5);
-      _$setProp10(_el$2, "style", {
+      _$setProp11(_el$2, "style", {
         flexDirection: "row"
       });
-      _$insert10(_el$3, () => props.title);
-      _$setProp10(_el$4, "style", {
+      _$insert11(_el$3, () => props.title);
+      _$setProp11(_el$4, "style", {
         flexGrow: 1
       });
       _$insertNode9(_el$5, _$createTextNode8(`↑↓ move · enter select · esc cancel`));
-      _$setProp10(_el$7, "selectedIndex", 0);
-      _$setProp10(_el$7, "focused", true);
-      _$setProp10(_el$7, "width", "100%");
-      _$setProp10(_el$7, "onSelect", (_index, option) => {
+      _$setProp11(_el$7, "focused", true);
+      _$setProp11(_el$7, "width", "100%");
+      _$setProp11(_el$7, "onSelect", (i, option) => {
         if (option)
-          props.onSelect(String(option.value));
+          fire(i ?? clamp(index(), props.items.length));
       });
-      _$effect10((_p$) => {
+      _$effect11((_p$) => {
         var _v$ = {
           border: true,
           borderStyle: "rounded",
@@ -1614,20 +1726,21 @@ function Select(props) {
           fg: th().tokens.accent
         }, _v$3 = {
           fg: th().tokens.dim
-        }, _v$4 = options(), _v$5 = visibleItems() * linesPerItem(), _v$6 = th().tokens.text, _v$7 = th().tokens.dim, _v$8 = th().tokens.selection ?? FALLBACK_SELECTION_BG, _v$9 = th().tokens.text, _v$0 = th().tokens.selection ?? FALLBACK_SELECTION_BG, _v$1 = th().tokens.text, _v$10 = hasDescriptions(), _v$11 = props.items.length > visibleItems();
-        _v$ !== _p$.e && (_p$.e = _$setProp10(_el$, "style", _v$, _p$.e));
-        _v$2 !== _p$.t && (_p$.t = _$setProp10(_el$3, "style", _v$2, _p$.t));
-        _v$3 !== _p$.a && (_p$.a = _$setProp10(_el$5, "style", _v$3, _p$.a));
-        _v$4 !== _p$.o && (_p$.o = _$setProp10(_el$7, "options", _v$4, _p$.o));
-        _v$5 !== _p$.i && (_p$.i = _$setProp10(_el$7, "height", _v$5, _p$.i));
-        _v$6 !== _p$.n && (_p$.n = _$setProp10(_el$7, "textColor", _v$6, _p$.n));
-        _v$7 !== _p$.s && (_p$.s = _$setProp10(_el$7, "descriptionColor", _v$7, _p$.s));
-        _v$8 !== _p$.h && (_p$.h = _$setProp10(_el$7, "focusedBackgroundColor", _v$8, _p$.h));
-        _v$9 !== _p$.r && (_p$.r = _$setProp10(_el$7, "focusedTextColor", _v$9, _p$.r));
-        _v$0 !== _p$.d && (_p$.d = _$setProp10(_el$7, "selectedBackgroundColor", _v$0, _p$.d));
-        _v$1 !== _p$.l && (_p$.l = _$setProp10(_el$7, "selectedTextColor", _v$1, _p$.l));
-        _v$10 !== _p$.u && (_p$.u = _$setProp10(_el$7, "showDescription", _v$10, _p$.u));
-        _v$11 !== _p$.c && (_p$.c = _$setProp10(_el$7, "showScrollIndicator", _v$11, _p$.c));
+        }, _v$4 = options(), _v$5 = clamp(index(), props.items.length), _v$6 = visibleItems() * linesPerItem(), _v$7 = th().tokens.text, _v$8 = th().tokens.dim, _v$9 = th().tokens.selection ?? FALLBACK_SELECTION_BG, _v$0 = th().tokens.text, _v$1 = th().tokens.selection ?? FALLBACK_SELECTION_BG, _v$10 = th().tokens.text, _v$11 = hasDescriptions(), _v$12 = props.items.length > visibleItems();
+        _v$ !== _p$.e && (_p$.e = _$setProp11(_el$, "style", _v$, _p$.e));
+        _v$2 !== _p$.t && (_p$.t = _$setProp11(_el$3, "style", _v$2, _p$.t));
+        _v$3 !== _p$.a && (_p$.a = _$setProp11(_el$5, "style", _v$3, _p$.a));
+        _v$4 !== _p$.o && (_p$.o = _$setProp11(_el$7, "options", _v$4, _p$.o));
+        _v$5 !== _p$.i && (_p$.i = _$setProp11(_el$7, "selectedIndex", _v$5, _p$.i));
+        _v$6 !== _p$.n && (_p$.n = _$setProp11(_el$7, "height", _v$6, _p$.n));
+        _v$7 !== _p$.s && (_p$.s = _$setProp11(_el$7, "textColor", _v$7, _p$.s));
+        _v$8 !== _p$.h && (_p$.h = _$setProp11(_el$7, "descriptionColor", _v$8, _p$.h));
+        _v$9 !== _p$.r && (_p$.r = _$setProp11(_el$7, "focusedBackgroundColor", _v$9, _p$.r));
+        _v$0 !== _p$.d && (_p$.d = _$setProp11(_el$7, "focusedTextColor", _v$0, _p$.d));
+        _v$1 !== _p$.l && (_p$.l = _$setProp11(_el$7, "selectedBackgroundColor", _v$1, _p$.l));
+        _v$10 !== _p$.u && (_p$.u = _$setProp11(_el$7, "selectedTextColor", _v$10, _p$.u));
+        _v$11 !== _p$.c && (_p$.c = _$setProp11(_el$7, "showDescription", _v$11, _p$.c));
+        _v$12 !== _p$.w && (_p$.w = _$setProp11(_el$7, "showScrollIndicator", _v$12, _p$.w));
         return _p$;
       }, {
         e: undefined,
@@ -1642,19 +1755,20 @@ function Select(props) {
         d: undefined,
         l: undefined,
         u: undefined,
-        c: undefined
+        c: undefined,
+        w: undefined
       });
       return _el$;
     }
   });
 }
 // ../kit/src/todos.tsx
-import { setProp as _$setProp11 } from "@opentui/solid";
-import { effect as _$effect11 } from "@opentui/solid";
-import { insert as _$insert11 } from "@opentui/solid";
-import { createElement as _$createElement11 } from "@opentui/solid";
-import { createComponent as _$createComponent9 } from "@opentui/solid";
-import { For as For8 } from "solid-js";
+import { setProp as _$setProp12 } from "@opentui/solid";
+import { effect as _$effect12 } from "@opentui/solid";
+import { insert as _$insert12 } from "@opentui/solid";
+import { createElement as _$createElement12 } from "@opentui/solid";
+import { createComponent as _$createComponent10 } from "@opentui/solid";
+import { For as For9 } from "solid-js";
 var MAX_ROWS = 5;
 var STATUS_GLYPH = {
   pending: "☐",
@@ -1671,14 +1785,14 @@ function TodosWidget(props) {
   const visible = () => sortTodos(props.todos).slice(0, MAX_ROWS);
   const remaining = () => Math.max(0, props.todos.length - visible().length);
   const active = () => props.todos.some((t) => t.status === "in_progress" || t.status === "pending");
-  return _$createComponent9(For8, {
+  return _$createComponent10(For9, {
     get each() {
       return visible();
     },
     children: (t, i) => (() => {
-      var _el$ = _$createElement11("text");
-      _$insert11(_el$, () => `${i() === 0 && active() ? "\uD83D\uDCCB " : "   "}${STATUS_GLYPH[t.status]} ${t.content}${i() === visible().length - 1 && remaining() > 0 ? ` (+${remaining()})` : ""}`);
-      _$effect11((_$p) => _$setProp11(_el$, "style", {
+      var _el$ = _$createElement12("text");
+      _$insert12(_el$, () => `${i() === 0 && active() ? "\uD83D\uDCCB " : "   "}${STATUS_GLYPH[t.status]} ${t.content}${i() === visible().length - 1 && remaining() > 0 ? ` (+${remaining()})` : ""}`);
+      _$effect12((_$p) => _$setProp12(_el$, "style", {
         fg: t.status === "completed" ? th().tokens.dim : t.status === "in_progress" ? th().tokens.accent : th().tokens.text
       }, _$p));
       return _el$;
@@ -1705,6 +1819,9 @@ var COMMANDS = [{
   name: "/sessions",
   desc: "list and resume stored sessions"
 }, {
+  name: "/history",
+  desc: "fork the session at an earlier turn"
+}, {
   name: "/theme",
   desc: "pick theme"
 }, {
@@ -1730,41 +1847,41 @@ var fmtClock = () => {
 };
 function ShellHost(props) {
   const t = props.deps.t;
-  const [input, setInput] = createSignal("");
-  const [history, setHistory] = createSignal([]);
-  const [historyIdx, setHistoryIdx] = createSignal(0);
-  const [resetKey, setResetKey] = createSignal(0);
-  const [setKey, setSetKey] = createSignal(0);
-  const [setValueText, setSetValueText] = createSignal("");
-  const [items, setItems] = createSignal([]);
-  const [busy, setBusy] = createSignal(false);
-  const [approval, setApproval] = createSignal(null);
-  const [usage, setUsage] = createSignal({
+  const [input, setInput] = createSignal2("");
+  const [history, setHistory] = createSignal2([]);
+  const [historyIdx, setHistoryIdx] = createSignal2(0);
+  const [resetKey, setResetKey] = createSignal2(0);
+  const [setKey, setSetKey] = createSignal2(0);
+  const [setValueText, setSetValueText] = createSignal2("");
+  const [items, setItems] = createSignal2([]);
+  const [busy, setBusy] = createSignal2(false);
+  const [approval, setApproval] = createSignal2(null);
+  const [usage, setUsage] = createSignal2({
     prompt: 0,
     completion: 0,
     turns: 0
   });
-  const [label, setLabel] = createSignal(props.deps.session.label);
-  const [showWelcome, setShowWelcome] = createSignal(true);
-  const [thinkState, setThinkState] = createSignal({
+  const [label, setLabel] = createSignal2(props.deps.session.label);
+  const [showWelcome, setShowWelcome] = createSignal2(true);
+  const [thinkState, setThinkState] = createSignal2({
     active: false,
     text: "",
     elapsed: 0
   });
-  const [toolEntries, setToolEntries] = createSignal([]);
-  const [thinkExpanded, setThinkExpanded] = createSignal(false);
-  const [toolExpanded, setToolExpanded] = createSignal(false);
-  const [todos, setTodos] = createSignal([]);
-  const [agentRows, setAgentRows] = createSignal([]);
-  const [overlay, setOverlay] = createSignal(null);
-  const [modelItems, setModelItems] = createSignal([]);
+  const [toolEntries, setToolEntries] = createSignal2([]);
+  const [thinkExpanded, setThinkExpanded] = createSignal2(false);
+  const [toolExpanded, setToolExpanded] = createSignal2(false);
+  const [todos, setTodos] = createSignal2([]);
+  const [subagents, setSubagents] = createSignal2([]);
+  const [overlay, setOverlay] = createSignal2(null);
+  const [modelItems, setModelItems] = createSignal2([]);
   const initialTheme = process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha";
-  const [themeName, setThemeName] = createSignal(themes[initialTheme] ? initialTheme : "catppuccin-mocha");
+  const [themeName, setThemeName] = createSignal2(themes[initialTheme] ? initialTheme : "catppuccin-mocha");
   const theme = () => getTheme(themeName());
-  const [menuOpen, setMenuOpen] = createSignal(true);
-  const [menuSel, setMenuSel] = createSignal(0);
-  const [clock, setClock] = createSignal(fmtClock());
-  const [liveTps, setLiveTps] = createSignal(null);
+  const [menuOpen, setMenuOpen] = createSignal2(true);
+  const [menuSel, setMenuSel] = createSignal2(0);
+  const [clock, setClock] = createSignal2(fmtClock());
+  const [liveTps, setLiveTps] = createSignal2(null);
   let turnStartAt = 0;
   let approveResolve = null;
   onMount(() => {
@@ -1778,7 +1895,7 @@ function ShellHost(props) {
         ...e,
         elapsed: (e.elapsed ?? 0) + 1
       } : e) : arr);
-      setAgentRows((arr) => arr.some((r) => r.status === "running") ? arr.map((r) => r.status === "running" ? {
+      setSubagents((arr) => arr.some((r) => r.status === "running") ? arr.map((r) => r.status === "running" ? {
         ...r,
         elapsed: r.elapsed + 1
       } : r) : arr);
@@ -1865,13 +1982,15 @@ function ShellHost(props) {
       return t("picker.sessions.title");
     if (ov.kind === "theme")
       return t("picker.theme.title");
+    if (ov.kind === "history")
+      return t("picker.history.title");
     if (ov.kind === "effort")
       return t("picker.effort.title", {
         model: ov.model
       });
     return ov.title;
   };
-  const onOverlaySelect = (value) => {
+  const onOverlaySelect = async (value) => {
     const ov = overlay();
     setOverlay(null);
     if (!ov)
@@ -1902,6 +2021,31 @@ function ShellHost(props) {
         kind: "system",
         text: `theme → ${value}`
       });
+      return;
+    }
+    if (ov.kind === "history") {
+      try {
+        const forked = await props.deps.session.forkAtTurn(Number(value));
+        setItems(forked.items.map((it) => it.kind === "assistant" ? {
+          kind: "assistant",
+          text: it.text,
+          final: true
+        } : it));
+        setToolEntries([]);
+        setTodos([]);
+        setSubagents([]);
+        setShowWelcome(false);
+        setBusy(false);
+        push({
+          kind: "system",
+          text: `⑂ forked at turn boundary — reply continues from here`
+        });
+      } catch (e) {
+        push({
+          kind: "error",
+          text: errText(e)
+        });
+      }
       return;
     }
     if (ov.kind === "sessions") {
@@ -2072,6 +2216,23 @@ function ShellHost(props) {
         kind: "system",
         text: `model: ${label()}`
       });
+    } else if (cmd === "history") {
+      const turns = props.deps.session.historyTurns();
+      if (turns.length === 0) {
+        push({
+          kind: "system",
+          text: "no completed turns yet"
+        });
+      } else {
+        setOverlay({
+          kind: "history",
+          items: [...turns].reverse().map((tn) => ({
+            label: `#${tn.turn} ${tn.preview.slice(0, 46) || "(no text)"}`,
+            value: String(tn.seqEnd),
+            description: `fork before this turn`
+          }))
+        });
+      }
     } else if (cmd === "new") {
       props.deps.session.newSession();
       setItems([]);
@@ -2275,25 +2436,7 @@ function ShellHost(props) {
             setLiveTps(Math.round(chars / 4 / sec));
         },
         onTodos: (list) => setTodos(list),
-        onAgentEvent: (e) => {
-          setAgentRows((arr) => {
-            const idx = arr.findIndex((r) => r.key === e.key);
-            if (idx === -1) {
-              if (!e.label)
-                return arr;
-              return [...arr, {
-                key: e.key,
-                label: e.label,
-                status: e.status,
-                elapsed: 0
-              }];
-            }
-            return arr.map((r, i) => i === idx ? {
-              ...r,
-              status: e.status
-            } : r);
-          });
-        },
+        onSubagentUpdate: (entries) => setSubagents(entries),
         onApprove: (name, args) => {
           setApproval({
             name,
@@ -2450,14 +2593,14 @@ function ShellHost(props) {
   };
   const th = () => theme();
   return (() => {
-    var _el$ = _$createElement12("box");
-    _$setProp12(_el$, "style", {
+    var _el$ = _$createElement13("box");
+    _$setProp13(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1
     });
-    _$insert12(_el$, (() => {
+    _$insert13(_el$, (() => {
       var _c$ = _$memo5(() => !!showWelcome());
-      return () => _c$() ? _$createComponent10(WelcomeBanner, {
+      return () => _c$() ? _$createComponent11(WelcomeBanner, {
         get theme() {
           return th();
         },
@@ -2467,9 +2610,9 @@ function ShellHost(props) {
         get cwd() {
           return process.cwd();
         }
-      }) : _$createComponent10(AutoScroll, {
+      }) : _$createComponent11(AutoScroll, {
         get children() {
-          return _$createComponent10(Transcript, {
+          return _$createComponent11(Transcript, {
             get items() {
               return items();
             },
@@ -2483,7 +2626,7 @@ function ShellHost(props) {
         }
       });
     })(), null);
-    _$insert12(_el$, _$createComponent10(TodosWidget, {
+    _$insert13(_el$, _$createComponent11(TodosWidget, {
       get todos() {
         return todos();
       },
@@ -2491,20 +2634,15 @@ function ShellHost(props) {
         return th();
       }
     }), null);
-    _$insert12(_el$, _$createComponent10(For9, {
-      get each() {
-        return agentRows();
+    _$insert13(_el$, _$createComponent11(SubagentWidget, {
+      get entries() {
+        return subagents();
       },
-      children: (r) => (() => {
-        var _el$2 = _$createElement12("text");
-        _$insert12(_el$2, () => `◇ ${r.label}${r.status === "running" ? ` · ${r.elapsed}s` : ` · ${r.status}`}`);
-        _$effect12((_$p) => _$setProp12(_el$2, "style", {
-          fg: r.status === "running" ? th().tokens.accent : th().tokens.dim
-        }, _$p));
-        return _el$2;
-      })()
+      get theme() {
+        return th();
+      }
     }), null);
-    _$insert12(_el$, _$createComponent10(ThinkWidget, {
+    _$insert13(_el$, _$createComponent11(ThinkWidget, {
       get state() {
         return {
           ...thinkState(),
@@ -2515,7 +2653,7 @@ function ShellHost(props) {
         return th();
       }
     }), null);
-    _$insert12(_el$, _$createComponent10(ToolWidget, {
+    _$insert13(_el$, _$createComponent11(ToolWidget, {
       get entries() {
         return toolEntries();
       },
@@ -2526,9 +2664,9 @@ function ShellHost(props) {
         return th();
       }
     }), null);
-    _$insert12(_el$, (() => {
+    _$insert13(_el$, (() => {
       var _c$2 = _$memo5(() => !!approval());
-      return () => _c$2() ? _$createComponent10(ApprovalCard, {
+      return () => _c$2() ? _$createComponent11(ApprovalCard, {
         get toolName() {
           return approval().name;
         },
@@ -2543,9 +2681,9 @@ function ShellHost(props) {
         }
       }) : null;
     })(), null);
-    _$insert12(_el$, (() => {
+    _$insert13(_el$, (() => {
       var _c$3 = _$memo5(() => !!overlay());
-      return () => _c$3() ? _$createComponent10(Select, {
+      return () => _c$3() ? _$createComponent11(Select, {
         get title() {
           return overlayTitle();
         },
@@ -2559,36 +2697,36 @@ function ShellHost(props) {
         onCancel: onOverlayCancel
       }) : null;
     })(), null);
-    _$insert12(_el$, (() => {
+    _$insert13(_el$, (() => {
       var _c$4 = _$memo5(() => !!menuVisible());
       return () => _c$4() ? (() => {
-        var _el$3 = _$createElement12("box");
-        _$insert12(_el$3, _$createComponent10(For9, {
+        var _el$2 = _$createElement13("box");
+        _$insert13(_el$2, _$createComponent11(For10, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$4 = _$createElement12("text"), _el$5 = _$createTextNode9(` `);
-            _$insertNode10(_el$4, _el$5);
-            _$insert12(_el$4, () => i() === clampedSel() ? "› " : "  ", _el$5);
-            _$insert12(_el$4, () => c.name, _el$5);
-            _$insert12(_el$4, () => c.desc, null);
-            _$effect12((_$p) => _$setProp12(_el$4, "style", {
+            var _el$3 = _$createElement13("text"), _el$4 = _$createTextNode9(` `);
+            _$insertNode10(_el$3, _el$4);
+            _$insert13(_el$3, () => i() === clampedSel() ? "› " : "  ", _el$4);
+            _$insert13(_el$3, () => c.name, _el$4);
+            _$insert13(_el$3, () => c.desc, null);
+            _$effect13((_$p) => _$setProp13(_el$3, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
-            return _el$4;
+            return _el$3;
           })()
         }));
-        _$effect12((_$p) => _$setProp12(_el$3, "style", {
+        _$effect13((_$p) => _$setProp13(_el$2, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
           padding: 0
         }, _$p));
-        return _el$3;
+        return _el$2;
       })() : null;
     })(), null);
-    _$insert12(_el$, _$createComponent10(InputLine, {
+    _$insert13(_el$, _$createComponent11(InputLine, {
       get focused() {
         return !(approval() || overlay());
       },
@@ -2620,12 +2758,12 @@ function ShellHost(props) {
         return setValueText();
       }
     }), null);
-    _$insert12(_el$, _$createComponent10(FooterHints, {
+    _$insert13(_el$, _$createComponent11(FooterHints, {
       get theme() {
         return th();
       }
     }), null);
-    _$insert12(_el$, _$createComponent10(PowerlineFooter, {
+    _$insert13(_el$, _$createComponent11(PowerlineFooter, {
       get left() {
         return powerlineSegments();
       },
@@ -2689,6 +2827,19 @@ function createStreamTicker(onTick, intervalMs = STREAM_TICK_MS) {
 
 // src/host-session.ts
 var DBG = (_m) => {};
+function blocksText(content) {
+  if (!Array.isArray(content))
+    return "";
+  let text = "";
+  for (const block of content) {
+    const typed = block;
+    if (typed?.type === "text" && typeof typed.text === "string") {
+      text += (text === "" ? "" : `
+`) + typed.text;
+    }
+  }
+  return text.trim();
+}
 
 class HostSession {
   label = "dsh-host";
@@ -2850,10 +3001,7 @@ class HostSession {
     if (!this.#handle) {
       this.#sessionId = this.#resumeId ?? randomUUID();
       this.#resumeId = undefined;
-      const sel = this.#override ?? this.#ctx.get?.("agentDefaultModel")?.currentSelection?.();
-      const agentOptions = sel ? { provider: sel.provider, model: sel.model, ...sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {} } : {};
-      if (sel)
-        this.label = `${sel.provider}/${sel.model}`;
+      const agentOptions = this.#modelSelection() ?? {};
       this.#handle = await this.#ctx.agents.create({
         sessionId: this.#sessionId,
         meta: { cwd: process.cwd() },
@@ -2876,6 +3024,173 @@ class HostSession {
     });
   }
   #pendingImages = [];
+  #children = new Map;
+  #runSeqToChild = new Map;
+  #adoptChild(session, sessionKey) {
+    if (this.#children.has(sessionKey))
+      return false;
+    const header = session?.header;
+    if (!header || String(header.parentSession) !== this.#sessionId)
+      return false;
+    if (header.origin !== "subagent" && (header.delegationDepth ?? 0) <= 0)
+      return false;
+    this.#children.set(sessionKey, {
+      label: `subagent ${sessionKey.slice(0, 8)}`,
+      status: "running",
+      rounds: 0,
+      startedAt: Date.now()
+    });
+    return true;
+  }
+  #registerChild(childId, label) {
+    if (!childId)
+      return;
+    const existing = this.#children.get(childId);
+    if (existing) {
+      if (label && label !== existing.label)
+        this.#children.set(childId, { ...existing, label });
+    } else {
+      this.#children.set(childId, { label: label || `subagent ${childId.slice(0, 8)}`, status: "running", rounds: 0, startedAt: Date.now() });
+    }
+    this.#emitChildren();
+  }
+  #settleChild(childId, outcome) {
+    const existing = this.#children.get(childId);
+    if (existing && existing.status === "running") {
+      this.#children.set(childId, { ...existing, status: outcome });
+      this.#emitChildren();
+    }
+  }
+  #foldChildEvent(session, sessionKey, event) {
+    let changed = this.#adoptChild(session, sessionKey);
+    const view = this.#children.get(sessionKey);
+    if (!view)
+      return;
+    const d = event.data ?? {};
+    if (event.type === "subagent/descriptor") {
+      const label = typeof d.label === "string" && d.label ? d.label : undefined;
+      const model = [d.agentProvider, d.agentModel].filter(Boolean).join("/") || (typeof d.provider === "string" ? String(d.provider) : undefined);
+      const next = { ...view, ...label ? { label } : {}, ...model ? { model } : {} };
+      this.#children.set(sessionKey, next);
+      changed = true;
+    } else if (event.type === "request/header") {
+      const cfg = d.header?.config ?? d.config;
+      const model = cfg && (cfg.provider || cfg.model) ? `${cfg.provider ?? ""}/${cfg.model ?? ""}`.replace(/^\//, "") : undefined;
+      if (model) {
+        this.#children.set(sessionKey, { ...view, model });
+        changed = true;
+      }
+    } else if (event.type === "assistant/message") {
+      const text = blocksText(d.message?.content ?? d.content);
+      const usage = d.usage?.totalTokens ?? d.message?.usage?.totalTokens ?? d.message?.usage?.total_tokens;
+      this.#children.set(sessionKey, {
+        ...view,
+        rounds: view.rounds + 1,
+        ...usage ? { tokens: (view.tokens ?? 0) + Number(usage) } : {},
+        ...text ? { lastLine: text.split(`
+`).pop()?.slice(0, 80) } : {}
+      });
+      changed = true;
+    }
+    if (changed)
+      this.#emitChildren();
+  }
+  #emitChildren() {
+    const cb = this.#cb;
+    if (!cb?.onSubagentUpdate)
+      return;
+    cb.onSubagentUpdate([...this.#children.entries()].map(([id, v]) => ({
+      id,
+      label: v.label,
+      ...v.model ? { model: v.model } : {},
+      status: v.status,
+      rounds: v.rounds,
+      ...v.tokens !== undefined ? { tokens: v.tokens } : {},
+      elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
+      ...v.lastLine ? { lastLine: v.lastLine } : {}
+    })));
+  }
+  historyTurns() {
+    const events = this.#snapshot();
+    const turns = [];
+    let open;
+    for (const event of events) {
+      if (event.type === "turn/start") {
+        open = { turn: Number(event.data?.turn ?? turns.length), seqEnd: Number(event.seq ?? 0), preview: "" };
+        continue;
+      }
+      if (!open)
+        continue;
+      if (event.type === "user/message") {
+        const kind = event.data?.source?.kind;
+        if (kind === undefined || kind === "user") {
+          const text = blocksText(event.data?.content);
+          if (text && !open.preview)
+            open.preview = text;
+        }
+      } else if (event.type === "turn/end") {
+        open.seqEnd = Number(event.seq ?? open.seqEnd);
+        turns.push(open);
+        open = undefined;
+      }
+    }
+    return turns;
+  }
+  #snapshot() {
+    const session = this.#handle?.agent?.session;
+    const snap = session?.snapshotEvents?.();
+    return Array.isArray(snap) ? snap : [];
+  }
+  async forkAtTurn(seqEnd) {
+    const events = this.#snapshot();
+    if (events.length === 0)
+      throw new Error("no live session to fork");
+    const seed = events.slice(0, seqEnd + 1);
+    if (seed.length === 0)
+      throw new Error("fork point before the first event");
+    const parentSession = this.#sessionId;
+    const sel = this.#modelSelection();
+    try {
+      this.#handle?.dispose?.();
+    } catch {}
+    this.#handle = undefined;
+    this.#agentId = undefined;
+    this.#sessionId = randomUUID();
+    this.#children.clear();
+    this.#runSeqToChild.clear();
+    this.#toolCalls.clear();
+    this.#handle = await this.#ctx.agents.create({
+      sessionId: this.#sessionId,
+      meta: { cwd: process.cwd(), ...parentSession ? { parentSession, isSeeded: true } : {} },
+      ...seed ? { seed, inheritedEventCount: seed.length } : {},
+      ...sel ? { agentOptions: sel } : {}
+    });
+    this.#agentId = this.#handle.agent.id;
+    const items = [];
+    for (const event of seed) {
+      if (event.type === "user/message") {
+        const kind = event.data?.source?.kind;
+        if (kind !== undefined && kind !== "user")
+          continue;
+        const text = blocksText(event.data?.content);
+        if (text)
+          items.push({ kind: "user", text });
+      } else if (event.type === "assistant/message") {
+        const text = blocksText(event.data?.message?.content);
+        if (text)
+          items.push({ kind: "assistant", text });
+      }
+    }
+    return { items, turn: seed.length };
+  }
+  #modelSelection() {
+    const sel = this.#override ?? this.#ctx.get?.("agentDefaultModel")?.currentSelection?.();
+    if (!sel)
+      return;
+    if (this.#handle === undefined)
+      this.label = `${sel.provider}/${sel.model}`;
+    return { provider: sel.provider, model: sel.model, ...sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {} };
+  }
   async attachImage(path) {
     const store = this.#ctx.get?.("attachments");
     if (!store?.saveImages)
@@ -2956,8 +3271,13 @@ class HostSession {
 `);
         } catch {}
       }
-      if (this.#sessionId === undefined || String(session.id) !== this.#sessionId)
+      const sessionKey = String(session.id);
+      if (this.#sessionId === undefined)
         return;
+      if (sessionKey !== this.#sessionId) {
+        this.#foldChildEvent(session, sessionKey, event);
+        return;
+      }
       const cb = this.#cb;
       if (!cb)
         return;
@@ -2971,14 +3291,13 @@ class HostSession {
         } else if (event.type === "todo/write") {
           cb.onTodos?.(event.data?.todos ?? []);
         } else if (event.type === "tool-workflow/agent-start" && event.data) {
-          cb.onAgentEvent?.({
-            key: `${event.data.runId}:${event.data.seq}`,
-            status: "running",
-            label: String(event.data.label ?? "subagent")
-          });
+          this.#registerChild(String(event.data.childId ?? ""), String(event.data.label ?? "subagent"));
+          this.#runSeqToChild.set(`${event.data.runId}:${event.data.seq}`, String(event.data.childId ?? ""));
         } else if (event.type === "tool-workflow/agent-end" && event.data) {
+          const childId = this.#runSeqToChild.get(`${event.data.runId}:${event.data.seq}`);
           const outcome = event.data.outcome === "failed" || event.data.outcome === "cancelled" ? event.data.outcome : "completed";
-          cb.onAgentEvent?.({ key: `${event.data.runId}:${event.data.seq}`, status: outcome });
+          if (childId)
+            this.#settleChild(childId, outcome);
         } else if (event.type === "tool/result" && event.data) {
           const callId = String(event.data.callId ?? event.data.message?.toolCallId ?? "");
           const known = this.#toolCalls.get(callId);
@@ -3047,7 +3366,7 @@ function apply(ctx, config) {
   mountEngine({}).then(({
     renderer
   }) => {
-    render(() => _$createComponent11(ShellHost, {
+    render(() => _$createComponent12(ShellHost, {
       get deps() {
         return {
           store,

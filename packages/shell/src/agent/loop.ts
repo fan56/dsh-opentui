@@ -33,9 +33,18 @@ export interface TurnCallbacks {
    * whole-list replacement, cleared by the host at every turn start).
    * Host mode only; the direct session has no todo tool. */
   onTodos?: (todos: { content: string; status: "pending" | "in_progress" | "completed" }[]) => void
-  /** Subagent lifecycle for the activity dock: agent-start/agent-end pairs
-   * correlate on `key` (runId:seq). Host mode only. */
-  onAgentEvent?: (e: { key: string; status: "running" | "completed" | "failed" | "cancelled"; label?: string }) => void
+  /** Subagent panel snapshot: every adopted child session's live view
+   * (label/model/status/rounds/tokens/elapsed/lastLine). Host mode only. */
+  onSubagentUpdate?: (entries: {
+    id: string
+    label: string
+    model?: string
+    status: "running" | "completed" | "failed" | "cancelled"
+    rounds: number
+    tokens?: number
+    elapsed: number
+    lastLine?: string
+  }[]) => void
 }
 
 /**
