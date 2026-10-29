@@ -14,11 +14,15 @@ import { useKeyboard, useRenderer } from "@opentui/solid"
 import { getTheme, themeNames, themes, type I18n } from "@dsh-opentui/kit"
 import { Transcript, InputLine, FooterHints, ApprovalCard, type TranscriptItem } from "@dsh-opentui/kit"
 import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, speedSegment, type PowerlineSegment } from "@dsh-opentui/kit"
-import { ThinkWidget, ToolWidget, type ThinkWidgetState, type ToolWidgetEntry } from "@dsh-opentui/kit"
 import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem, SubagentWidget, type SubagentEntry } from "@dsh-opentui/kit"
 import type { SurfaceStore } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
+import { createModelSelectFeature } from "./features/model-select.tsx"
+import { createThemeSelectFeature } from "./features/theme-select.tsx"
+import { createHistoryForkFeature } from "./features/history-fork.tsx"
+import { createLoginFeature } from "./features/login.tsx"
+import { createDockFeature } from "./features/dock.tsx"
 
 export interface ShellHostDeps {
   /** Reserved: surface widgets are not shown by this host (the powerline
@@ -39,19 +43,20 @@ type AskResolve = (v: { questionId: string; selected: string }[] | "declined") =
 
 /** Modal Select overlays. While one is open the native <select> owns the
  * arrow/enter keys (it is focused); escape bubbles out and closes it. */
-type Overlay =
-  | { kind: "model" } // items come from the reactive modelItems catalog
-  | { kind: "sessions"; items: SelectItem[] }
-  | { kind: "effort"; provider: string; model: string }
-  | { kind: "theme"; items: SelectItem[] }
-  | { kind: "history"; items: SelectItem[] }
-  | { kind: "ask"; title: string; questionId: string; items: SelectItem[]; resolve: AskResolve }
+/** A generic overlay request: features hand these to the Shell, which
+ * knows nothing about their semantics (pure routing). The ask envelope is
+ * the one special case — cancelling it must answer "declined". */
+type Overlay = {
+  title: string
+  items: SelectItem[]
+  onSelect: (value: string) => void
+  ask?: { questionId: string; resolve: AskResolve }
+}
 
 /** Credential refs reported by the bare /login //logout status dump. */
 const CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"]
 
 /** Reasoning-effort ladder offered after a model pick ("keep" = default). */
-const EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"]
 
 /** Context window assumed by the powerline 🧠 segment. */
 const CONTEXT_WINDOW_TOKENS = 128000
@@ -102,12 +107,6 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // Welcome banner: shown until the first real message is sent.
   const [showWelcome, setShowWelcome] = createSignal(true)
   // Dock widgets (clean transcript): live thinking state + tool ledger.
-  const [thinkState, setThinkState] = createSignal<ThinkWidgetState>({ active: false, text: "", elapsed: 0 })
-  const [toolEntries, setToolEntries] = createSignal<ToolWidgetEntry[]>([])
-  // Detail re-expand: after a turn collapses the docks, ctrl+t / ctrl+o
-  // re-open the last thought / tool ledger in their expanded form.
-  const [thinkExpanded, setThinkExpanded] = createSignal(false)
-  const [toolExpanded, setToolExpanded] = createSignal(false)
   // Agent todo list (host todo tool's todo/write snapshots; the host
   // projection clears them at every turn start) and subagent panel entries
   // (child-session views: header adoption + tool-workflow pairing + fold).
@@ -116,7 +115,6 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // Modal Select overlay (model/sessions/effort/ask); see the Overlay type.
   const [overlay, setOverlay] = createSignal<Overlay | null>(null)
   // Model catalog for the Select (reactive: the host list loads async).
-  const [modelItems, setModelItems] = createSignal<SelectItem[]>([])
   // Theme: plugin config < env < host-mode default (catppuccin-mocha)
   const initialTheme =
     process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha"
@@ -142,12 +140,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     // seconds, running-tool spinner) and the powerline clock.
     const tick = setInterval(() => {
       setClock(fmtClock())
-      setThinkState((s) => (s.active ? { ...s, elapsed: s.elapsed + 1 } : s))
-      setToolEntries((arr) =>
-        arr.some((e) => e.status === "running")
-          ? arr.map((e) => (e.status === "running" ? { ...e, elapsed: (e.elapsed ?? 0) + 1 } : e))
-          : arr,
-      )
+      dock.tick()
       setSubagents((arr) =>
         arr.some((r) => r.status === "running")
           ? arr.map((r) => (r.status === "running" ? { ...r, elapsed: r.elapsed + 1 } : r))
@@ -165,12 +158,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           resolve("declined")
           return
         }
-        setOverlay({
-          kind: "ask",
+        openOverlay({
           title: `${t("ask.title")}: ${q0.prompt}`.slice(0, 70),
-          questionId: q0.id,
           items: options.map((o) => ({ label: o, value: o })),
-          resolve,
+          ask: { questionId: q0.id, resolve },
+          onSelect: (value) => resolve([{ questionId: q0.id, selected: value }]),
         })
       })
       if (answer === "declined") throw new Error("declined")
@@ -191,101 +183,48 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   })
   const menuVisible = createMemo(() => menuOpen() && filteredCommands().length > 0)
 
-  // Model Select feed: the provider catalog flattened to one SelectItem
-  // per model (group=provider, label=model, value="provider/model"); the
-  // row matching the live session label is tagged as the current one.
-  const refreshModelItems = () => {
-    void props.deps.session.listProviders().then((catalog) => {
-      const out: SelectItem[] = []
-      for (const p of catalog) {
-        for (const m of p.models) {
-          const id = `${p.provider}/${m}`
-          out.push({ label: m, group: p.provider, value: id, ...(label() === id ? { description: t("cmd.model.current") } : {}) })
-        }
-      }
-      setModelItems(out)
-    })
-  }
-  onMount(refreshModelItems)
-
-  const effortItems = (): SelectItem[] =>
-    EFFORTS.map((e) => ({ label: e, value: e, description: t(`picker.effort.${e}.desc`) }))
-
-  // The active overlay's rows/title, by kind.
-  const overlayItems = createMemo<SelectItem[]>(() => {
-    const ov = overlay()
-    if (!ov) return []
-    if (ov.kind === "model") return modelItems()
-    if (ov.kind === "effort") return effortItems()
-    return ov.items
+  // ---- feature modules (the architecture's composition layer) ----
+  // Each feature owns its flow; the Shell only routes: overlays are generic
+  // {title, items, onSelect} payloads and commands delegate.
+  const openOverlay = (req: { title: string; items: SelectItem[]; onSelect: (v: string) => void; ask?: { questionId: string; resolve: AskResolve } }) =>
+    setOverlay(req)
+  // think/tool dock phase machine (ported from tui-pi live-widgets)
+  const dock = createDockFeature({ theme })
+  const modelSelect = createModelSelectFeature({
+    session: props.deps.session,
+    t,
+    label,
+    setLabel,
+    push: (it) => push(it),
   })
-  const overlayTitle = () => {
-    const ov = overlay()
-    if (!ov) return ""
-    if (ov.kind === "model") return t("picker.model.title")
-    if (ov.kind === "sessions") return t("picker.sessions.title")
-    if (ov.kind === "theme") return t("picker.theme.title")
-    if (ov.kind === "history") return t("picker.history.title")
-    if (ov.kind === "effort") return t("picker.effort.title", { model: ov.model })
-    return ov.title
-  }
+  const themeSelect = createThemeSelectFeature({ t, themeName, setThemeName })
+  const historyFork = createHistoryForkFeature({
+    session: props.deps.session,
+    t,
+    push: (it) => push(it),
+    setItems: (rows) => setItems(rows as TItem[]),
+    resetDock: () => {
+      dock.reset()
+      setTodos([])
+      setSubagents([])
+    },
+    onForked: () => {
+      setShowWelcome(false)
+      setBusy(false)
+    },
+  })
+  const loginFeature = createLoginFeature({ session: props.deps.session, theme, push: (it) => push(it) })
 
-  /** Enter inside the overlay Select: hand the picked value to whichever
-   * flow opened it (the native select already consumed the keypress). */
-  const onOverlaySelect = async (value: string) => {
+  const onOverlaySelect = (value: string) => {
     const ov = overlay()
     setOverlay(null)
-    if (!ov) return
-    if (ov.kind === "model") {
-      // two-stage: picked a model, now ask for the reasoning effort
-      const [provider, model] = value.split("/")
-      if (provider && model) setOverlay({ kind: "effort", provider, model })
-      return
-    }
-    if (ov.kind === "effort") {
-      const effort = value === "keep" ? undefined : value
-      props.deps.session.switchModel(ov.provider, ov.model, effort)
-      setLabel(props.deps.session.label)
-      push({ kind: "system", text: `${t("cmd.model.set")} ${ov.provider}/${ov.model}${effort ? ` (${effort})` : ""} ${t("cmd.model.next")}` })
-      return
-    }
-    if (ov.kind === "theme") {
-      setThemeName(value)
-      push({ kind: "system", text: `theme → ${value}` })
-      return
-    }
-    if (ov.kind === "history") {
-      // fork at the picked turn boundary: the host seeds a NEW session with
-      // the parent's event prefix and hands back the rebuilt transcript
-      try {
-        const forked = await props.deps.session.forkAtTurn(Number(value))
-        setItems(forked.items.map((it) => (it.kind === "assistant" ? { kind: "assistant", text: it.text, final: true } as TItem : it as TItem)))
-        setToolEntries([])
-        setTodos([])
-        setSubagents([])
-        setShowWelcome(false)
-        setBusy(false)
-        push({ kind: "system", text: `⑂ forked at turn boundary — reply continues from here` })
-      } catch (e) {
-        push({ kind: "error", text: errText(e) })
-      }
-      return
-    }
-    if (ov.kind === "sessions") {
-      const item = ov.items.find((s) => s.value === value)
-      props.deps.session.resumeSession(value)
-      push({ kind: "system", text: `${t("cmd.sessions.resumed")}: ${item?.label ?? value.slice(0, 8)}` })
-      return
-    }
-    ov.resolve([{ questionId: ov.questionId, selected: value }])
+    ov?.onSelect(value)
   }
-
-  /** Esc inside the overlay Select (also idempotent for the Select's own
-   * onCancel wiring, which fires for the same keypress). */
+  /** Esc inside the overlay Select (idempotent with the Select's own onCancel). */
   const onOverlayCancel = () => {
     const ov = overlay()
     setOverlay(null)
-    if (ov?.kind === "ask") ov.resolve("declined")
+    ov?.ask?.resolve("declined")
   }
 
   // markdown style for finalized assistant messages (best-effort: the
@@ -299,16 +238,14 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   }
 
   // ---- streaming buffers (clean transcript) ----
-  // Full reasoning text of the current turn, flushed into thinkState at a
-  // throttled cadence; the assistant reply row is bumped the same way.
-  let thinkBuf = ""
+  // The streaming reply row is bumped at a throttled cadence (the think
+  // text now lives in the dock feature).
   let streamingReply: Extract<TItem, { kind: "assistant" }> | null = null
   let lastBump = 0
   const bumpSoon = () => {
     const now = Date.now()
     if (now - lastBump < 60) return
     lastBump = now
-    if (thinkBuf !== thinkState().text) setThinkState((prev) => ({ ...prev, text: thinkBuf }))
     // Replace the streaming reply ref (not just the array) so the per-item
     // <For> re-renders it — and REBIND the live ref to the copy now in the
     // array: matching the original object stops working after the first
@@ -446,19 +383,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       for (const line of props.deps.session.usageSummary()) push({ kind: "system", text: line })
       push({ kind: "system", text: `model: ${label()}` })
     } else if (cmd === "history") {
-      const turns = props.deps.session.historyTurns()
-      if (turns.length === 0) {
-        push({ kind: "system", text: "no completed turns yet" })
-      } else {
-        setOverlay({
-          kind: "history",
-          items: [...turns].reverse().map((tn) => ({
-            label: `#${tn.turn} ${tn.preview.slice(0, 46) || "(no text)"}`,
-            value: String(tn.seqEnd),
-            description: `fork before this turn`,
-          })),
-        })
-      }
+      historyFork.open(openOverlay)
     } else if (cmd === "new") {
       props.deps.session.newSession()
       setItems([])
@@ -468,43 +393,30 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       if (!list.length) {
         push({ kind: "system", text: t("cmd.sessions.empty") })
       } else {
-        setOverlay({
-          kind: "sessions",
+        openOverlay({
+          title: t("picker.sessions.title"),
           items: list.map((x) => ({
             label: x.title || x.id.slice(0, 8),
             value: x.id,
             ...(x.updatedAt ? { description: String(x.updatedAt).slice(0, 19) } : {}),
           })),
+          onSelect: (value) => {
+            props.deps.session.resumeSession(value)
+            push({ kind: "system", text: `${t("cmd.sessions.resumed")}: ${value.slice(0, 8)}` })
+          },
         })
       }
     } else if (cmd === "theme") {
-      // Theme picker: all shipped palettes in a Select, grouped dark/light,
-      // the current one tagged in its description.
-      setOverlay({
-        kind: "theme",
-        items: themeNames().map((x) => ({
-          label: x.name,
-          group: x.dark ? "dark" : "light",
-          value: x.name,
-          ...(x.name === themeName() ? { description: t("cmd.model.current") } : {}),
-        })),
-      })
+      themeSelect.open(openOverlay)
     } else if (cmd === "model") {
       if (!arg) {
-        // Bare /model opens the Select overlay instead of printing the list.
-        refreshModelItems()
-        setOverlay({ kind: "model" })
+        await modelSelect.open(openOverlay)
       } else {
         const [provider, model] = arg.split("/")
-        if (!provider || !model) {
-          push({ kind: "error", text: "usage: /model provider/model-id" })
-        } else {
-          props.deps.session.switchModel(provider, model)
-          setLabel(props.deps.session.label)
-          push({ kind: "system", text: `${t("cmd.model.set")} ${provider}/${model} ${t("cmd.model.next")}` })
-        }
+        modelSelect.direct(provider, model)
       }
     } else if (cmd === "login") {
+      // /login REF KEY still works headlessly; bare /login opens the panel
       if (parts.length === 3) {
         try {
           await props.deps.session.login(parts[1], parts[2])
@@ -512,10 +424,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         } catch (e) {
           push({ kind: "error", text: errText(e) })
         }
-      } else if (parts.length === 1) {
-        await pushCredStatus()
       } else {
-        push({ kind: "error", text: t("cmd.login.usage") })
+        await loginFeature.open("login")
       }
     } else if (cmd === "logout") {
       if (parts.length === 2) {
@@ -525,10 +435,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         } catch (e) {
           push({ kind: "error", text: errText(e) })
         }
-      } else if (parts.length === 1) {
-        await pushCredStatus()
       } else {
-        push({ kind: "error", text: t("cmd.logout.usage") })
+        await loginFeature.open("logout")
       }
     } else if (cmd === "attach") {
       if (!arg) {
@@ -560,10 +468,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     // Fresh dock state: the think panel expands empty; tool entries keep
     // accumulating across turns (they are the session's tool ledger). Any
     // manually re-expanded detail view closes for the new turn.
-    thinkBuf = ""
-    setThinkState({ active: true, text: "", elapsed: 0 })
-    setThinkExpanded(false)
-    setToolExpanded(false)
+    dock.onTurnStart()
     setLiveTps(null)
     turnStartAt = Date.now()
     streamingReply = null
@@ -572,10 +477,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         text,
         {
           onThinkingDelta: (s: string) => {
-            thinkBuf += s
+            dock.onThinkingDelta(s)
             bumpSoon()
           },
           onContentDelta: (s: string) => {
+            dock.onContentDelta(s)
             if (!streamingReply) {
               streamingReply = { kind: "assistant", text: "" }
               push(streamingReply)
@@ -609,28 +515,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             })
           },
           onToolStart: (start) => {
-            setToolEntries((arr) => [
-              ...arr,
-              { name: start.name, args: start.args, status: "running", elapsed: 0, ...(start.callId ? { callId: start.callId } : {}) },
-            ])
+            dock.onToolStart(start)
           },
           onToolRun: (run: ToolRun) => {
-            const brief = run.output.split("\n").slice(-2).join(" ⏎ ").slice(0, 200)
-            setToolEntries((arr) => {
-              // settle by callId when the pair is known, else the first
-              // running entry under the same tool name
-              const idx = run.callId
-                ? arr.findIndex((e) => e.callId === run.callId)
-                : arr.findIndex((e) => e.status === "running" && e.name === run.name)
-              const settled: ToolWidgetEntry = {
-                ...(run.callId ? { callId: run.callId } : {}),
-                name: run.name,
-                args: run.argsPretty,
-                status: run.ok ? "ok" : "fail",
-                output: brief,
-              }
-              return idx === -1 ? [...arr, settled] : arr.map((e, i) => (i === idx ? { ...e, ...settled } : e))
-            })
+            dock.onToolRun(run)
           },
           onError: (msg: string) => push({ kind: "error", text: msg }),
         },
@@ -640,8 +528,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } finally {
       // Dock collapse: the thought folds to its summary line, entries that
       // never produced a result (declined / aborted) settle as failed.
-      setThinkState((prev) => ({ ...prev, active: false, text: thinkBuf }))
-      setToolEntries((arr) => arr.map((e) => (e.status === "running" ? { ...e, status: "fail" } : e)))
+      dock.onTurnEnd()
       setApproval(null)
       approveResolve = null
       setBusy(false)
@@ -685,12 +572,15 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
     // Dock detail re-expand: ctrl+t (last thought) / ctrl+o (tool ledger)
     // re-open the collapsed dock panels; a fresh turn closes them again.
+    // login feature's key stages (key entry / logout confirm) come before
+    // everything else while its panel is up
+    if (loginFeature.active() && loginFeature.handleKey(key)) return
     if (key.ctrl && key.name === "t") {
-      setThinkExpanded((v) => !v)
+      dock.reexpandThink()
       return
     }
     if (key.ctrl && key.name === "o") {
-      setToolExpanded((v) => !v)
+      dock.reexpandTools()
       return
     }
     // esc closes the slash palette (the editor keeps its buffer).
@@ -706,9 +596,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   })
   const contextPct = createMemo(() => Math.min(99, Math.round((usage().prompt / CONTEXT_WINDOW_TOKENS) * 100)))
   const msgCount = createMemo(() => items().filter((it) => it.kind === "user" || it.kind === "assistant").length)
-  const toolCount = createMemo(() => toolEntries().length)
-  // ToolWidget stays expanded exactly while some entry is still running.
-  const toolActive = createMemo(() => toolEntries().some((e) => e.status === "running"))
+  const toolCount = createMemo(() => dock.toolCount())
   const powerlineSegments = (): PowerlineSegment[] => {
     const r = route()
     const pct = contextPct()
@@ -749,17 +637,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
               stickyScroll keeps the bottom (widgets) in view. */}
           <TodosWidget todos={todos()} theme={th()} />
           <SubagentWidget entries={subagents()} theme={th()} />
-          <ThinkWidget state={{ ...thinkState(), active: thinkState().active || thinkExpanded() }} theme={th()} />
-          <ToolWidget entries={toolEntries()} active={toolActive() || toolExpanded()} theme={th()} />
+          {dock.thinkView()}
+          {dock.toolView()}
         </AutoScroll>
       )}
       {approval() ? (
         <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
       ) : null}
+      {loginFeature.view()}
       {overlay() ? (
         <Select
-          title={overlayTitle()}
-          items={overlayItems()}
+          title={overlay()?.title ?? ""}
+          items={overlay()?.items ?? []}
           theme={th()}
           onSelect={onOverlaySelect}
           onCancel={onOverlayCancel}
@@ -782,7 +671,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           The editor blurs under modals (approval/overlay) so their keys
           never leak into the buffer. */}
       <InputLine
-        focused={!(approval() || overlay())}
+        focused={!(approval() || overlay() || loginFeature.panelOpen())}
         busy={false}
         placeholder={busy() ? t("shell.input.steer") : t("shell.input.placeholder")}
         busyLabel={t("shell.input.busy")}

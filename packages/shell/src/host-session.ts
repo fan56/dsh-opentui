@@ -8,6 +8,7 @@
 import { createUserMessage } from "@deepseek-ai/dsh-llm"
 import type { Context } from "@deepseek-ai/cordis"
 import { randomUUID } from "node:crypto"
+import { appendFileSync } from "node:fs"
 import {
   createStreamTicker,
   emptyTurnStats,
@@ -530,6 +531,9 @@ export class HostSession {
       const cb = this.#cb
       if (!cb || frame.type !== "chunk" || !frame.chunk) return
       const c = frame.chunk
+      if (process.env.DSH_OPENTUI_DEBUG) {
+        try { appendFileSync("/tmp/otui-stream.log", `${Date.now()} ${c.type} ${(c.text ?? "").length}ch\n`) } catch {}
+      }
       try {
         if (c.type === "reasoning-delta" && c.text) {
           cb.onThinkingDelta(c.text)

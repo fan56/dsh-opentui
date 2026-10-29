@@ -1,5 +1,5 @@
 // src/host-entry.tsx
-import { createComponent as _$createComponent12 } from "@opentui/solid";
+import { createComponent as _$createComponent14 } from "@opentui/solid";
 import { render } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -137,15 +137,15 @@ function createI18n(locale = "zh-CN") {
 }
 
 // src/ShellHost.tsx
-import { createTextNode as _$createTextNode9 } from "@opentui/solid";
-import { insertNode as _$insertNode10 } from "@opentui/solid";
-import { effect as _$effect13 } from "@opentui/solid";
-import { insert as _$insert13 } from "@opentui/solid";
-import { createComponent as _$createComponent11 } from "@opentui/solid";
-import { memo as _$memo5 } from "@opentui/solid";
-import { setProp as _$setProp13 } from "@opentui/solid";
-import { createElement as _$createElement13 } from "@opentui/solid";
-import { For as For10, createMemo, createSignal as createSignal2, onCleanup, onMount } from "solid-js";
+import { createTextNode as _$createTextNode10 } from "@opentui/solid";
+import { insertNode as _$insertNode11 } from "@opentui/solid";
+import { effect as _$effect14 } from "@opentui/solid";
+import { insert as _$insert14 } from "@opentui/solid";
+import { createComponent as _$createComponent13 } from "@opentui/solid";
+import { memo as _$memo7 } from "@opentui/solid";
+import { setProp as _$setProp14 } from "@opentui/solid";
+import { createElement as _$createElement14 } from "@opentui/solid";
+import { For as For10, createMemo, createSignal as createSignal4, onCleanup, onMount } from "solid-js";
 import { SyntaxStyle } from "@opentui/core";
 import { useKeyboard as useKeyboard2, useRenderer } from "@opentui/solid";
 // ../kit/src/themes-data.ts
@@ -1319,8 +1319,12 @@ function ThinkWidget(props) {
   const th = () => props.theme;
   const thinkFg = () => th().tokens.thinking ?? th().tokens.accent;
   const summary = () => {
-    const head = props.state.text.slice(0, THINK_SUMMARY_HEAD).replace(/\s+/g, " ").trim();
-    return `\uD83D\uDCAD thought · ${props.state.elapsed}s · ${head}...`;
+    const flat = props.state.text.replace(/\s+/g, " ").trim();
+    if (flat.length <= THINK_SUMMARY_HEAD)
+      return `\uD83D\uDCAD thought · ${props.state.elapsed}s · ${flat}`;
+    const cut = flat.slice(0, THINK_SUMMARY_HEAD);
+    const boundary = Math.max(cut.lastIndexOf(" "), THINK_SUMMARY_HEAD - 20);
+    return `\uD83D\uDCAD thought · ${props.state.elapsed}s · ${cut.slice(0, boundary > 0 ? boundary : THINK_SUMMARY_HEAD).trimEnd()}...`;
   };
   return _$createComponent7(Show4, {
     get when() {
@@ -1439,7 +1443,7 @@ function ToolWidget(props) {
         },
         get children() {
           var _el$0 = _$createElement8("text");
-          _$insert8(_el$0, () => `⚒ ${props.entries.length} tools · ${okCount()}✔ ${failCount()}✘`);
+          _$insert8(_el$0, () => `⚒ ${props.entries.length} ${props.entries.length === 1 ? "tool" : "tools"} · ${okCount()}✔ ${failCount()}✘`);
           _$effect8((_$p) => _$setProp8(_el$0, "style", {
             fg: th().tokens.dim
           }, _$p));
@@ -1669,17 +1673,25 @@ function Select(props) {
     props.onSelect(String(opt.value));
   };
   useKeyboard((key) => {
-    if (key.name === "escape")
-      return props.onCancel();
     const n = props.items.length;
+    if (key.name === "escape") {
+      key.preventDefault?.();
+      return props.onCancel();
+    }
     if (n === 0)
       return;
-    if (key.name === "up")
+    if (key.name === "up") {
+      key.preventDefault?.();
       return setIndex((v) => (v - 1 + n) % n);
-    if (key.name === "down")
+    }
+    if (key.name === "down") {
+      key.preventDefault?.();
       return setIndex((v) => (v + 1) % n);
-    if (key.name === "return" || key.name === "enter")
+    }
+    if (key.name === "return" || key.name === "enter") {
+      key.preventDefault?.();
       fire(clamp(index(), n));
+    }
   });
   const th = () => props.theme;
   const options = () => props.items.map((it) => ({
@@ -1799,9 +1811,609 @@ function TodosWidget(props) {
     })()
   });
 }
-// src/ShellHost.tsx
-var CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
+// src/features/model-select.tsx
+function createModelSelectFeature(deps) {
+  let catalog = [];
+  const refresh = async () => {
+    try {
+      catalog = await deps.session.listProviders();
+    } catch {
+      catalog = [];
+    }
+  };
+  return {
+    async open(openOverlay) {
+      await refresh();
+      const current = deps.label();
+      openOverlay({
+        title: deps.t("picker.model.title"),
+        items: catalog.flatMap((p) => p.models.map((m) => {
+          const id = `${p.provider}/${m}`;
+          return {
+            label: m,
+            group: p.provider,
+            value: id,
+            ...id === current ? {
+              description: deps.t("cmd.model.current")
+            } : {}
+          };
+        })),
+        onSelect: (value) => {
+          const [provider, model] = value.split("/");
+          if (!provider || !model)
+            return;
+          openOverlay({
+            title: deps.t("picker.effort.title", {
+              model
+            }),
+            items: EFFORTS.map((e) => ({
+              label: e,
+              value: e,
+              description: deps.t(`picker.effort.${e}.desc`)
+            })),
+            onSelect: (effortValue) => {
+              const effort = effortValue === "keep" ? undefined : effortValue;
+              deps.session.switchModel(provider, model, effort);
+              deps.setLabel(deps.session.label);
+              deps.push({
+                kind: "system",
+                text: `${deps.t("cmd.model.set")} ${provider}/${model}${effort ? ` (${effort})` : ""} ${deps.t("cmd.model.next")}`
+              });
+            }
+          });
+        }
+      });
+    },
+    direct(provider, model) {
+      if (!provider || !model) {
+        deps.push({
+          kind: "error",
+          text: "usage: /model provider/model-id"
+        });
+        return;
+      }
+      deps.session.switchModel(provider, model);
+      deps.setLabel(deps.session.label);
+      deps.push({
+        kind: "system",
+        text: `${deps.t("cmd.model.set")} ${provider}/${model} ${deps.t("cmd.model.next")}`
+      });
+    }
+  };
+}
 var EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"];
+
+// src/features/theme-select.tsx
+function createThemeSelectFeature(deps) {
+  return {
+    open(openOverlay) {
+      openOverlay({
+        title: deps.t("picker.theme.title"),
+        items: themeNames().map((x) => ({
+          label: x.name,
+          group: x.dark ? "dark" : "light",
+          value: x.name,
+          ...x.name === deps.themeName() ? {
+            description: deps.t("cmd.model.current")
+          } : {}
+        })),
+        onSelect: (value) => {
+          deps.setThemeName(value);
+        }
+      });
+    }
+  };
+}
+
+// src/features/history-fork.tsx
+function createHistoryForkFeature(deps) {
+  return {
+    open(openOverlay) {
+      const turns = deps.session.historyTurns();
+      if (turns.length === 0) {
+        deps.push({
+          kind: "system",
+          text: "no completed turns yet"
+        });
+        return;
+      }
+      openOverlay({
+        title: deps.t("picker.history.title"),
+        items: [...turns].reverse().map((tn) => ({
+          label: `#${tn.turn} ${tn.preview.slice(0, 46) || "(no text)"}`,
+          value: String(tn.seqEnd),
+          description: "fork before this turn"
+        })),
+        onSelect: async (value) => {
+          try {
+            const forked = await deps.session.forkAtTurn(Number(value));
+            deps.setItems(forked.items.map((it) => it.kind === "assistant" ? {
+              kind: "assistant",
+              text: it.text,
+              final: true
+            } : {
+              kind: "user",
+              text: it.text
+            }));
+            deps.resetDock();
+            deps.onForked();
+            deps.push({
+              kind: "system",
+              text: `⑂ forked at turn boundary — reply continues from here`
+            });
+          } catch (e) {
+            deps.push({
+              kind: "error",
+              text: String(e instanceof Error ? e.message : e).slice(0, 300)
+            });
+          }
+        }
+      });
+    }
+  };
+}
+
+// src/features/login.tsx
+import { effect as _$effect13 } from "@opentui/solid";
+import { memo as _$memo5 } from "@opentui/solid";
+import { createTextNode as _$createTextNode9 } from "@opentui/solid";
+import { insertNode as _$insertNode10 } from "@opentui/solid";
+import { setProp as _$setProp13 } from "@opentui/solid";
+import { insert as _$insert13 } from "@opentui/solid";
+import { createElement as _$createElement13 } from "@opentui/solid";
+import { createComponent as _$createComponent11 } from "@opentui/solid";
+import { createSignal as createSignal2 } from "solid-js";
+var CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
+function createLoginFeature(deps) {
+  const [stage, setStage] = createSignal2({
+    kind: "closed"
+  });
+  const [keyBuf, setKeyBuf] = createSignal2("");
+  const [status, setStatus] = createSignal2({});
+  const refreshStatus = async () => {
+    const next = {};
+    for (const ref of CRED_REFS) {
+      try {
+        next[ref] = (await deps.session.credentialStatus(ref)).configured;
+      } catch {
+        next[ref] = false;
+      }
+    }
+    setStatus(next);
+  };
+  const openMenu = async (mode) => {
+    await refreshStatus();
+    const st = status();
+    if (mode === "logout") {
+      const configured = CRED_REFS.filter((r) => st[r]);
+      if (configured.length === 0) {
+        setStage({
+          kind: "notice",
+          text: "no configured credentials to log out"
+        });
+        return;
+      }
+      setStage({
+        kind: "menu",
+        mode,
+        title: "log out — pick a credential",
+        items: configured.map((r) => ({
+          label: r,
+          value: r,
+          description: st[r] ? "configured" : "missing"
+        })),
+        onPick: (value) => setStage({
+          kind: "confirm-logout",
+          ref: value
+        })
+      });
+      return;
+    }
+    setStage({
+      kind: "menu",
+      mode,
+      title: "log in — pick a credential ref",
+      items: CRED_REFS.map((r) => ({
+        label: r,
+        value: r,
+        description: st[r] ? "configured — re-login overwrites" : "missing"
+      })),
+      onPick: (value) => {
+        setKeyBuf("");
+        setStage({
+          kind: "key",
+          ref: value
+        });
+      }
+    });
+  };
+  const commitLogin = async () => {
+    const ref = stage().ref;
+    const key = keyBuf().trim();
+    setStage({
+      kind: "closed"
+    });
+    if (!key)
+      return;
+    try {
+      await deps.session.login(ref, key);
+      deps.push({
+        kind: "system",
+        text: `credential saved: ${ref}`
+      });
+    } catch (e) {
+      deps.push({
+        kind: "error",
+        text: String(e instanceof Error ? e.message : e).slice(0, 300)
+      });
+    }
+  };
+  const commitLogout = async (ref) => {
+    setStage({
+      kind: "closed"
+    });
+    try {
+      await deps.session.logout(ref);
+      deps.push({
+        kind: "system",
+        text: `credential removed: ${ref}`
+      });
+    } catch (e) {
+      deps.push({
+        kind: "error",
+        text: String(e instanceof Error ? e.message : e).slice(0, 300)
+      });
+    }
+  };
+  const view = () => {
+    const st = stage();
+    const th = deps.theme();
+    if (st.kind === "menu") {
+      return _$createComponent11(Select, {
+        get title() {
+          return st.title;
+        },
+        get items() {
+          return st.items;
+        },
+        theme: th,
+        onSelect: (value) => {
+          setStage({
+            kind: "closed"
+          });
+          st.onPick(value);
+        },
+        onCancel: () => setStage({
+          kind: "closed"
+        })
+      });
+    }
+    if (st.kind === "key") {
+      return (() => {
+        var _el$ = _$createElement13("box"), _el$2 = _$createElement13("text"), _el$3 = _$createElement13("box"), _el$4 = _$createElement13("text"), _el$6 = _$createElement13("text"), _el$7 = _$createElement13("text");
+        _$insertNode10(_el$, _el$2);
+        _$insertNode10(_el$, _el$3);
+        _$insertNode10(_el$, _el$7);
+        _$insert13(_el$2, () => `API key for ${st.ref}`);
+        _$insertNode10(_el$3, _el$4);
+        _$insertNode10(_el$3, _el$6);
+        _$setProp13(_el$3, "style", {
+          flexDirection: "row"
+        });
+        _$insertNode10(_el$4, _$createTextNode9(`key: `));
+        _$insert13(_el$6, () => keyBuf().replace(/./g, "*") || " ");
+        _$insertNode10(_el$7, _$createTextNode9(`type the key · enter saves · esc cancels`));
+        _$effect13((_p$) => {
+          var _v$ = {
+            border: true,
+            borderStyle: "rounded",
+            borderColor: th.tokens.border,
+            flexDirection: "column",
+            padding: 1
+          }, _v$2 = {
+            fg: th.tokens.accent
+          }, _v$3 = {
+            fg: th.tokens.dim
+          }, _v$4 = {
+            fg: th.tokens.text
+          }, _v$5 = {
+            fg: th.tokens.dim
+          };
+          _v$ !== _p$.e && (_p$.e = _$setProp13(_el$, "style", _v$, _p$.e));
+          _v$2 !== _p$.t && (_p$.t = _$setProp13(_el$2, "style", _v$2, _p$.t));
+          _v$3 !== _p$.a && (_p$.a = _$setProp13(_el$4, "style", _v$3, _p$.a));
+          _v$4 !== _p$.o && (_p$.o = _$setProp13(_el$6, "style", _v$4, _p$.o));
+          _v$5 !== _p$.i && (_p$.i = _$setProp13(_el$7, "style", _v$5, _p$.i));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined,
+          a: undefined,
+          o: undefined,
+          i: undefined
+        });
+        return _el$;
+      })();
+    }
+    if (st.kind === "confirm-logout") {
+      return (() => {
+        var _el$9 = _$createElement13("box"), _el$0 = _$createElement13("text"), _el$1 = _$createElement13("text");
+        _$insertNode10(_el$9, _el$0);
+        _$insertNode10(_el$9, _el$1);
+        _$insert13(_el$0, () => `remove credential ${st.ref}?`);
+        _$insertNode10(_el$1, _$createTextNode9(`y removes · n/esc cancels`));
+        _$effect13((_p$) => {
+          var _v$6 = {
+            border: true,
+            borderStyle: "rounded",
+            borderColor: th.tokens.warn,
+            flexDirection: "column",
+            padding: 1
+          }, _v$7 = {
+            fg: th.tokens.warn
+          }, _v$8 = {
+            fg: th.tokens.dim
+          };
+          _v$6 !== _p$.e && (_p$.e = _$setProp13(_el$9, "style", _v$6, _p$.e));
+          _v$7 !== _p$.t && (_p$.t = _$setProp13(_el$0, "style", _v$7, _p$.t));
+          _v$8 !== _p$.a && (_p$.a = _$setProp13(_el$1, "style", _v$8, _p$.a));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined,
+          a: undefined
+        });
+        return _el$9;
+      })();
+    }
+    if (st.kind === "notice") {
+      return (() => {
+        var _el$11 = _$createElement13("box"), _el$12 = _$createElement13("text");
+        _$insertNode10(_el$11, _el$12);
+        _$insert13(_el$12, () => st.text);
+        _$effect13((_p$) => {
+          var _v$9 = {
+            border: true,
+            borderStyle: "rounded",
+            borderColor: th.tokens.border,
+            flexDirection: "column",
+            padding: 1
+          }, _v$0 = {
+            fg: th.tokens.dim
+          };
+          _v$9 !== _p$.e && (_p$.e = _$setProp13(_el$11, "style", _v$9, _p$.e));
+          _v$0 !== _p$.t && (_p$.t = _$setProp13(_el$12, "style", _v$0, _p$.t));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined
+        });
+        return _el$11;
+      })();
+    }
+    return null;
+  };
+  const handleKey = (key) => {
+    const st = stage();
+    if (st.kind === "closed")
+      return false;
+    if (st.kind === "key") {
+      if (key.name === "escape") {
+        setStage({
+          kind: "closed"
+        });
+        return true;
+      }
+      if (key.name === "return") {
+        commitLogin();
+        return true;
+      }
+      if (key.name === "backspace") {
+        setKeyBuf((v) => v.slice(0, -1));
+        return true;
+      }
+      const ch = key.sequence ?? "";
+      if (ch.length === 1 && !key.name?.startsWith("shift") && /[\x20-\x7e]/.test(ch)) {
+        setKeyBuf((v) => v + ch);
+        return true;
+      }
+      return true;
+    }
+    if (st.kind === "confirm-logout") {
+      if (key.sequence === "y") {
+        commitLogout(st.ref);
+        return true;
+      }
+      if (key.sequence === "n" || key.name === "escape") {
+        setStage({
+          kind: "closed"
+        });
+        return true;
+      }
+      return true;
+    }
+    if (st.kind === "notice") {
+      setStage({
+        kind: "closed"
+      });
+      return true;
+    }
+    return false;
+  };
+  return {
+    view,
+    open: openMenu,
+    handleKey,
+    active: () => stage().kind !== "closed" && stage().kind !== "menu",
+    panelOpen: () => stage().kind !== "closed"
+  };
+}
+
+// src/features/dock.tsx
+import { memo as _$memo6 } from "@opentui/solid";
+import { createComponent as _$createComponent12 } from "@opentui/solid";
+import { createSignal as createSignal3 } from "solid-js";
+var FLUSH_MS = 60;
+function createDockFeature(deps) {
+  const [think, setThink] = createSignal3({
+    active: false,
+    text: "",
+    elapsed: 0
+  });
+  const [tools, setTools] = createSignal3([]);
+  const [thinkRe, setThinkRe] = createSignal3(false);
+  const [toolRe, setToolRe] = createSignal3(false);
+  let thinkBuf = "";
+  let lastFlush = 0;
+  let thinkOpenedAt = 0;
+  const flush = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastFlush < FLUSH_MS)
+      return;
+    lastFlush = now;
+    if (think().active && thinkBuf !== think().text)
+      setThink((prev) => ({
+        ...prev,
+        text: thinkBuf
+      }));
+  };
+  const hideThink = () => {
+    thinkBuf = "";
+    setThinkRe(false);
+    setThink({
+      active: false,
+      text: "",
+      elapsed: 0
+    });
+  };
+  return {
+    thinkView: () => _$createComponent12(ThinkWidget, {
+      get state() {
+        return {
+          ...think(),
+          active: think().active || thinkRe()
+        };
+      },
+      get theme() {
+        return deps.theme();
+      }
+    }),
+    toolView: () => _$createComponent12(ToolWidget, {
+      get entries() {
+        return tools();
+      },
+      get active() {
+        return tools().some((e) => e.status === "running") || toolRe();
+      },
+      get theme() {
+        return deps.theme();
+      }
+    }),
+    onThinkingDelta(text) {
+      if (text === "")
+        return;
+      if (!think().active) {
+        thinkOpenedAt = Date.now();
+        thinkBuf = text;
+        setThink({
+          active: true,
+          text: "",
+          elapsed: 0
+        });
+        lastFlush = 0;
+        flush(true);
+        return;
+      }
+      thinkBuf += text;
+      flush();
+    },
+    onContentDelta() {
+      if (think().active)
+        hideThink();
+    },
+    onToolStart(start) {
+      setToolRe(false);
+      setTools((arr) => [...arr, {
+        name: start.name,
+        args: start.args,
+        status: "running",
+        elapsed: 0,
+        ...start.callId ? {
+          callId: start.callId
+        } : {}
+      }]);
+    },
+    onToolRun(run) {
+      const brief = (run.output ?? "").split(`
+`).slice(-2).join(" ⏎ ").slice(0, 200);
+      setTools((arr) => {
+        const idx = run.callId ? arr.findIndex((e) => e.callId === run.callId) : arr.findIndex((e) => e.status === "running" && e.name === run.name);
+        const settled = {
+          ...run.callId ? {
+            callId: run.callId
+          } : {},
+          name: run.name,
+          args: run.argsPretty ?? "",
+          status: run.ok ? "ok" : "fail",
+          output: brief
+        };
+        return idx === -1 ? [...arr, settled] : arr.map((e, i) => i === idx ? {
+          ...e,
+          ...settled
+        } : e);
+      });
+    },
+    onTurnStart() {
+      hideThink();
+      setThinkRe(false);
+      setToolRe(false);
+    },
+    onTurnEnd() {
+      const hadThink = think().active || thinkBuf !== "";
+      const text = thinkBuf;
+      thinkBuf = "";
+      setThink((prev) => prev.active ? {
+        active: false,
+        text,
+        elapsed: prev.elapsed
+      } : prev);
+      setTools((arr) => arr.map((e) => e.status === "running" ? {
+        ...e,
+        status: "fail"
+      } : e));
+      return;
+    },
+    tick() {
+      setThink((s) => s.active ? {
+        ...s,
+        elapsed: s.elapsed + 1
+      } : s);
+      setTools((arr) => arr.some((e) => e.status === "running") ? arr.map((e) => e.status === "running" ? {
+        ...e,
+        elapsed: (e.elapsed ?? 0) + 1
+      } : e) : arr);
+    },
+    reexpandThink() {
+      if (!think().active)
+        setThinkRe((v) => !v);
+    },
+    reexpandTools() {
+      if (!tools().some((e) => e.status === "running"))
+        setToolRe((v) => !v);
+    },
+    reset() {
+      hideThink();
+      setTools([]);
+      setThinkRe(false);
+      setToolRe(false);
+    },
+    toolCount: () => tools().length,
+    toolActive: () => tools().some((e) => e.status === "running")
+  };
+}
+
+// src/ShellHost.tsx
+var CRED_REFS2 = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
 var CONTEXT_WINDOW_TOKENS = 128000;
 var COMMANDS = [{
   name: "/help",
@@ -1847,54 +2459,38 @@ var fmtClock = () => {
 };
 function ShellHost(props) {
   const t = props.deps.t;
-  const [input, setInput] = createSignal2("");
-  const [history, setHistory] = createSignal2([]);
-  const [historyIdx, setHistoryIdx] = createSignal2(0);
-  const [resetKey, setResetKey] = createSignal2(0);
-  const [setKey, setSetKey] = createSignal2(0);
-  const [setValueText, setSetValueText] = createSignal2("");
-  const [items, setItems] = createSignal2([]);
-  const [busy, setBusy] = createSignal2(false);
-  const [approval, setApproval] = createSignal2(null);
-  const [usage, setUsage] = createSignal2({
+  const [input, setInput] = createSignal4("");
+  const [history, setHistory] = createSignal4([]);
+  const [historyIdx, setHistoryIdx] = createSignal4(0);
+  const [resetKey, setResetKey] = createSignal4(0);
+  const [setKey, setSetKey] = createSignal4(0);
+  const [setValueText, setSetValueText] = createSignal4("");
+  const [items, setItems] = createSignal4([]);
+  const [busy, setBusy] = createSignal4(false);
+  const [approval, setApproval] = createSignal4(null);
+  const [usage, setUsage] = createSignal4({
     prompt: 0,
     completion: 0,
     turns: 0
   });
-  const [label, setLabel] = createSignal2(props.deps.session.label);
-  const [showWelcome, setShowWelcome] = createSignal2(true);
-  const [thinkState, setThinkState] = createSignal2({
-    active: false,
-    text: "",
-    elapsed: 0
-  });
-  const [toolEntries, setToolEntries] = createSignal2([]);
-  const [thinkExpanded, setThinkExpanded] = createSignal2(false);
-  const [toolExpanded, setToolExpanded] = createSignal2(false);
-  const [todos, setTodos] = createSignal2([]);
-  const [subagents, setSubagents] = createSignal2([]);
-  const [overlay, setOverlay] = createSignal2(null);
-  const [modelItems, setModelItems] = createSignal2([]);
+  const [label, setLabel] = createSignal4(props.deps.session.label);
+  const [showWelcome, setShowWelcome] = createSignal4(true);
+  const [todos, setTodos] = createSignal4([]);
+  const [subagents, setSubagents] = createSignal4([]);
+  const [overlay, setOverlay] = createSignal4(null);
   const initialTheme = process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha";
-  const [themeName, setThemeName] = createSignal2(themes[initialTheme] ? initialTheme : "catppuccin-mocha");
+  const [themeName, setThemeName] = createSignal4(themes[initialTheme] ? initialTheme : "catppuccin-mocha");
   const theme = () => getTheme(themeName());
-  const [menuOpen, setMenuOpen] = createSignal2(true);
-  const [menuSel, setMenuSel] = createSignal2(0);
-  const [clock, setClock] = createSignal2(fmtClock());
-  const [liveTps, setLiveTps] = createSignal2(null);
+  const [menuOpen, setMenuOpen] = createSignal4(true);
+  const [menuSel, setMenuSel] = createSignal4(0);
+  const [clock, setClock] = createSignal4(fmtClock());
+  const [liveTps, setLiveTps] = createSignal4(null);
   let turnStartAt = 0;
   let approveResolve = null;
   onMount(() => {
     const tick = setInterval(() => {
       setClock(fmtClock());
-      setThinkState((s) => s.active ? {
-        ...s,
-        elapsed: s.elapsed + 1
-      } : s);
-      setToolEntries((arr) => arr.some((e) => e.status === "running") ? arr.map((e) => e.status === "running" ? {
-        ...e,
-        elapsed: (e.elapsed ?? 0) + 1
-      } : e) : arr);
+      dock.tick();
       setSubagents((arr) => arr.some((r) => r.status === "running") ? arr.map((r) => r.status === "running" ? {
         ...r,
         elapsed: r.elapsed + 1
@@ -1910,15 +2506,20 @@ function ShellHost(props) {
             resolve("declined");
             return;
           }
-          setOverlay({
-            kind: "ask",
+          openOverlay({
             title: `${t("ask.title")}: ${q0.prompt}`.slice(0, 70),
-            questionId: q0.id,
             items: options.map((o) => ({
               label: o,
               value: o
             })),
-            resolve
+            ask: {
+              questionId: q0.id,
+              resolve
+            },
+            onSelect: (value) => resolve([{
+              questionId: q0.id,
+              selected: value
+            }])
           });
         });
         if (answer === "declined")
@@ -1937,136 +2538,51 @@ function ShellHost(props) {
     return n === 0 ? 0 : Math.min(menuSel(), n - 1);
   });
   const menuVisible = createMemo(() => menuOpen() && filteredCommands().length > 0);
-  const refreshModelItems = () => {
-    props.deps.session.listProviders().then((catalog) => {
-      const out = [];
-      for (const p of catalog) {
-        for (const m of p.models) {
-          const id = `${p.provider}/${m}`;
-          out.push({
-            label: m,
-            group: p.provider,
-            value: id,
-            ...label() === id ? {
-              description: t("cmd.model.current")
-            } : {}
-          });
-        }
-      }
-      setModelItems(out);
-    });
-  };
-  onMount(refreshModelItems);
-  const effortItems = () => EFFORTS.map((e) => ({
-    label: e,
-    value: e,
-    description: t(`picker.effort.${e}.desc`)
-  }));
-  const overlayItems = createMemo(() => {
-    const ov = overlay();
-    if (!ov)
-      return [];
-    if (ov.kind === "model")
-      return modelItems();
-    if (ov.kind === "effort")
-      return effortItems();
-    return ov.items;
+  const openOverlay = (req) => setOverlay(req);
+  const dock = createDockFeature({
+    theme
   });
-  const overlayTitle = () => {
-    const ov = overlay();
-    if (!ov)
-      return "";
-    if (ov.kind === "model")
-      return t("picker.model.title");
-    if (ov.kind === "sessions")
-      return t("picker.sessions.title");
-    if (ov.kind === "theme")
-      return t("picker.theme.title");
-    if (ov.kind === "history")
-      return t("picker.history.title");
-    if (ov.kind === "effort")
-      return t("picker.effort.title", {
-        model: ov.model
-      });
-    return ov.title;
-  };
-  const onOverlaySelect = async (value) => {
+  const modelSelect = createModelSelectFeature({
+    session: props.deps.session,
+    t,
+    label,
+    setLabel,
+    push: (it) => push(it)
+  });
+  const themeSelect = createThemeSelectFeature({
+    t,
+    themeName,
+    setThemeName
+  });
+  const historyFork = createHistoryForkFeature({
+    session: props.deps.session,
+    t,
+    push: (it) => push(it),
+    setItems: (rows) => setItems(rows),
+    resetDock: () => {
+      dock.reset();
+      setTodos([]);
+      setSubagents([]);
+    },
+    onForked: () => {
+      setShowWelcome(false);
+      setBusy(false);
+    }
+  });
+  const loginFeature = createLoginFeature({
+    session: props.deps.session,
+    theme,
+    push: (it) => push(it)
+  });
+  const onOverlaySelect = (value) => {
     const ov = overlay();
     setOverlay(null);
-    if (!ov)
-      return;
-    if (ov.kind === "model") {
-      const [provider, model] = value.split("/");
-      if (provider && model)
-        setOverlay({
-          kind: "effort",
-          provider,
-          model
-        });
-      return;
-    }
-    if (ov.kind === "effort") {
-      const effort = value === "keep" ? undefined : value;
-      props.deps.session.switchModel(ov.provider, ov.model, effort);
-      setLabel(props.deps.session.label);
-      push({
-        kind: "system",
-        text: `${t("cmd.model.set")} ${ov.provider}/${ov.model}${effort ? ` (${effort})` : ""} ${t("cmd.model.next")}`
-      });
-      return;
-    }
-    if (ov.kind === "theme") {
-      setThemeName(value);
-      push({
-        kind: "system",
-        text: `theme → ${value}`
-      });
-      return;
-    }
-    if (ov.kind === "history") {
-      try {
-        const forked = await props.deps.session.forkAtTurn(Number(value));
-        setItems(forked.items.map((it) => it.kind === "assistant" ? {
-          kind: "assistant",
-          text: it.text,
-          final: true
-        } : it));
-        setToolEntries([]);
-        setTodos([]);
-        setSubagents([]);
-        setShowWelcome(false);
-        setBusy(false);
-        push({
-          kind: "system",
-          text: `⑂ forked at turn boundary — reply continues from here`
-        });
-      } catch (e) {
-        push({
-          kind: "error",
-          text: errText(e)
-        });
-      }
-      return;
-    }
-    if (ov.kind === "sessions") {
-      const item = ov.items.find((s) => s.value === value);
-      props.deps.session.resumeSession(value);
-      push({
-        kind: "system",
-        text: `${t("cmd.sessions.resumed")}: ${item?.label ?? value.slice(0, 8)}`
-      });
-      return;
-    }
-    ov.resolve([{
-      questionId: ov.questionId,
-      selected: value
-    }]);
+    ov?.onSelect(value);
   };
   const onOverlayCancel = () => {
     const ov = overlay();
     setOverlay(null);
-    if (ov?.kind === "ask")
-      ov.resolve("declined");
+    ov?.ask?.resolve("declined");
   };
   const rendererCtx = useRenderer();
   let mdStyle;
@@ -2075,7 +2591,6 @@ function ShellHost(props) {
   } catch {
     mdStyle = undefined;
   }
-  let thinkBuf = "";
   let streamingReply = null;
   let lastBump = 0;
   const bumpSoon = () => {
@@ -2083,11 +2598,6 @@ function ShellHost(props) {
     if (now - lastBump < 60)
       return;
     lastBump = now;
-    if (thinkBuf !== thinkState().text)
-      setThinkState((prev) => ({
-        ...prev,
-        text: thinkBuf
-      }));
     if (streamingReply) {
       const prev = streamingReply;
       const next = {
@@ -2174,7 +2684,7 @@ function ShellHost(props) {
     return false;
   };
   const pushCredStatus = async () => {
-    for (const ref of CRED_REFS) {
+    for (const ref of CRED_REFS2) {
       try {
         const st = await props.deps.session.credentialStatus(ref);
         push({
@@ -2221,22 +2731,7 @@ function ShellHost(props) {
         text: `model: ${label()}`
       });
     } else if (cmd === "history") {
-      const turns = props.deps.session.historyTurns();
-      if (turns.length === 0) {
-        push({
-          kind: "system",
-          text: "no completed turns yet"
-        });
-      } else {
-        setOverlay({
-          kind: "history",
-          items: [...turns].reverse().map((tn) => ({
-            label: `#${tn.turn} ${tn.preview.slice(0, 46) || "(no text)"}`,
-            value: String(tn.seqEnd),
-            description: `fork before this turn`
-          }))
-        });
-      }
+      historyFork.open(openOverlay);
     } else if (cmd === "new") {
       props.deps.session.newSession();
       setItems([]);
@@ -2252,50 +2747,32 @@ function ShellHost(props) {
           text: t("cmd.sessions.empty")
         });
       } else {
-        setOverlay({
-          kind: "sessions",
+        openOverlay({
+          title: t("picker.sessions.title"),
           items: list.map((x) => ({
             label: x.title || x.id.slice(0, 8),
             value: x.id,
             ...x.updatedAt ? {
               description: String(x.updatedAt).slice(0, 19)
             } : {}
-          }))
+          })),
+          onSelect: (value) => {
+            props.deps.session.resumeSession(value);
+            push({
+              kind: "system",
+              text: `${t("cmd.sessions.resumed")}: ${value.slice(0, 8)}`
+            });
+          }
         });
       }
     } else if (cmd === "theme") {
-      setOverlay({
-        kind: "theme",
-        items: themeNames().map((x) => ({
-          label: x.name,
-          group: x.dark ? "dark" : "light",
-          value: x.name,
-          ...x.name === themeName() ? {
-            description: t("cmd.model.current")
-          } : {}
-        }))
-      });
+      themeSelect.open(openOverlay);
     } else if (cmd === "model") {
       if (!arg) {
-        refreshModelItems();
-        setOverlay({
-          kind: "model"
-        });
+        await modelSelect.open(openOverlay);
       } else {
         const [provider, model] = arg.split("/");
-        if (!provider || !model) {
-          push({
-            kind: "error",
-            text: "usage: /model provider/model-id"
-          });
-        } else {
-          props.deps.session.switchModel(provider, model);
-          setLabel(props.deps.session.label);
-          push({
-            kind: "system",
-            text: `${t("cmd.model.set")} ${provider}/${model} ${t("cmd.model.next")}`
-          });
-        }
+        modelSelect.direct(provider, model);
       }
     } else if (cmd === "login") {
       if (parts.length === 3) {
@@ -2313,13 +2790,8 @@ function ShellHost(props) {
             text: errText(e)
           });
         }
-      } else if (parts.length === 1) {
-        await pushCredStatus();
       } else {
-        push({
-          kind: "error",
-          text: t("cmd.login.usage")
-        });
+        await loginFeature.open("login");
       }
     } else if (cmd === "logout") {
       if (parts.length === 2) {
@@ -2337,13 +2809,8 @@ function ShellHost(props) {
             text: errText(e)
           });
         }
-      } else if (parts.length === 1) {
-        await pushCredStatus();
       } else {
-        push({
-          kind: "error",
-          text: t("cmd.logout.usage")
-        });
+        await loginFeature.open("logout");
       }
     } else if (cmd === "attach") {
       if (!arg) {
@@ -2386,24 +2853,18 @@ function ShellHost(props) {
       text
     });
     setBusy(true);
-    thinkBuf = "";
-    setThinkState({
-      active: true,
-      text: "",
-      elapsed: 0
-    });
-    setThinkExpanded(false);
-    setToolExpanded(false);
+    dock.onTurnStart();
     setLiveTps(null);
     turnStartAt = Date.now();
     streamingReply = null;
     try {
       await props.deps.session.turn(text, {
         onThinkingDelta: (s) => {
-          thinkBuf += s;
+          dock.onThinkingDelta(s);
           bumpSoon();
         },
         onContentDelta: (s) => {
+          dock.onContentDelta(s);
           if (!streamingReply) {
             streamingReply = {
               kind: "assistant",
@@ -2450,35 +2911,10 @@ function ShellHost(props) {
           });
         },
         onToolStart: (start) => {
-          setToolEntries((arr) => [...arr, {
-            name: start.name,
-            args: start.args,
-            status: "running",
-            elapsed: 0,
-            ...start.callId ? {
-              callId: start.callId
-            } : {}
-          }]);
+          dock.onToolStart(start);
         },
         onToolRun: (run) => {
-          const brief = run.output.split(`
-`).slice(-2).join(" ⏎ ").slice(0, 200);
-          setToolEntries((arr) => {
-            const idx = run.callId ? arr.findIndex((e) => e.callId === run.callId) : arr.findIndex((e) => e.status === "running" && e.name === run.name);
-            const settled = {
-              ...run.callId ? {
-                callId: run.callId
-              } : {},
-              name: run.name,
-              args: run.argsPretty,
-              status: run.ok ? "ok" : "fail",
-              output: brief
-            };
-            return idx === -1 ? [...arr, settled] : arr.map((e, i) => i === idx ? {
-              ...e,
-              ...settled
-            } : e);
-          });
+          dock.onToolRun(run);
         },
         onError: (msg) => push({
           kind: "error",
@@ -2491,15 +2927,7 @@ function ShellHost(props) {
         text: errText(e)
       });
     } finally {
-      setThinkState((prev) => ({
-        ...prev,
-        active: false,
-        text: thinkBuf
-      }));
-      setToolEntries((arr) => arr.map((e) => e.status === "running" ? {
-        ...e,
-        status: "fail"
-      } : e));
+      dock.onTurnEnd();
       setApproval(null);
       approveResolve = null;
       setBusy(false);
@@ -2534,12 +2962,14 @@ function ShellHost(props) {
         onOverlayCancel();
       return;
     }
+    if (loginFeature.active() && loginFeature.handleKey(key))
+      return;
     if (key.ctrl && key.name === "t") {
-      setThinkExpanded((v) => !v);
+      dock.reexpandThink();
       return;
     }
     if (key.ctrl && key.name === "o") {
-      setToolExpanded((v) => !v);
+      dock.reexpandTools();
       return;
     }
     if (key.name === "escape" && menuVisible())
@@ -2561,8 +2991,7 @@ function ShellHost(props) {
   });
   const contextPct = createMemo(() => Math.min(99, Math.round(usage().prompt / CONTEXT_WINDOW_TOKENS * 100)));
   const msgCount = createMemo(() => items().filter((it) => it.kind === "user" || it.kind === "assistant").length);
-  const toolCount = createMemo(() => toolEntries().length);
-  const toolActive = createMemo(() => toolEntries().some((e) => e.status === "running"));
+  const toolCount = createMemo(() => dock.toolCount());
   const powerlineSegments = () => {
     const r = route();
     const pct = contextPct();
@@ -2596,14 +3025,14 @@ function ShellHost(props) {
   };
   const th = () => theme();
   return (() => {
-    var _el$ = _$createElement13("box");
-    _$setProp13(_el$, "style", {
+    var _el$ = _$createElement14("box");
+    _$setProp14(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1
     });
-    _$insert13(_el$, (() => {
-      var _c$ = _$memo5(() => !!showWelcome());
-      return () => _c$() ? _$createComponent11(WelcomeBanner, {
+    _$insert14(_el$, (() => {
+      var _c$ = _$memo7(() => !!showWelcome());
+      return () => _c$() ? _$createComponent13(WelcomeBanner, {
         get theme() {
           return th();
         },
@@ -2613,9 +3042,9 @@ function ShellHost(props) {
         get cwd() {
           return process.cwd();
         }
-      }) : _$createComponent11(AutoScroll, {
+      }) : _$createComponent13(AutoScroll, {
         get children() {
-          return [_$createComponent11(Transcript, {
+          return [_$createComponent13(Transcript, {
             get items() {
               return items();
             },
@@ -2625,47 +3054,27 @@ function ShellHost(props) {
             t,
             spinnerFrame: "",
             mdStyle
-          }), _$createComponent11(TodosWidget, {
+          }), _$createComponent13(TodosWidget, {
             get todos() {
               return todos();
             },
             get theme() {
               return th();
             }
-          }), _$createComponent11(SubagentWidget, {
+          }), _$createComponent13(SubagentWidget, {
             get entries() {
               return subagents();
             },
             get theme() {
               return th();
             }
-          }), _$createComponent11(ThinkWidget, {
-            get state() {
-              return {
-                ...thinkState(),
-                active: thinkState().active || thinkExpanded()
-              };
-            },
-            get theme() {
-              return th();
-            }
-          }), _$createComponent11(ToolWidget, {
-            get entries() {
-              return toolEntries();
-            },
-            get active() {
-              return toolActive() || toolExpanded();
-            },
-            get theme() {
-              return th();
-            }
-          })];
+          }), _$memo7(() => dock.thinkView()), _$memo7(() => dock.toolView())];
         }
       });
     })(), null);
-    _$insert13(_el$, (() => {
-      var _c$2 = _$memo5(() => !!approval());
-      return () => _c$2() ? _$createComponent11(ApprovalCard, {
+    _$insert14(_el$, (() => {
+      var _c$2 = _$memo7(() => !!approval());
+      return () => _c$2() ? _$createComponent13(ApprovalCard, {
         get toolName() {
           return approval().name;
         },
@@ -2680,14 +3089,15 @@ function ShellHost(props) {
         }
       }) : null;
     })(), null);
-    _$insert13(_el$, (() => {
-      var _c$3 = _$memo5(() => !!overlay());
-      return () => _c$3() ? _$createComponent11(Select, {
+    _$insert14(_el$, () => loginFeature.view(), null);
+    _$insert14(_el$, (() => {
+      var _c$3 = _$memo7(() => !!overlay());
+      return () => _c$3() ? _$createComponent13(Select, {
         get title() {
-          return overlayTitle();
+          return overlay()?.title ?? "";
         },
         get items() {
-          return overlayItems();
+          return overlay()?.items ?? [];
         },
         get theme() {
           return th();
@@ -2696,27 +3106,27 @@ function ShellHost(props) {
         onCancel: onOverlayCancel
       }) : null;
     })(), null);
-    _$insert13(_el$, (() => {
-      var _c$4 = _$memo5(() => !!menuVisible());
+    _$insert14(_el$, (() => {
+      var _c$4 = _$memo7(() => !!menuVisible());
       return () => _c$4() ? (() => {
-        var _el$2 = _$createElement13("box");
-        _$insert13(_el$2, _$createComponent11(For10, {
+        var _el$2 = _$createElement14("box");
+        _$insert14(_el$2, _$createComponent13(For10, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$3 = _$createElement13("text"), _el$4 = _$createTextNode9(` `);
-            _$insertNode10(_el$3, _el$4);
-            _$insert13(_el$3, () => i() === clampedSel() ? "› " : "  ", _el$4);
-            _$insert13(_el$3, () => c.name, _el$4);
-            _$insert13(_el$3, () => c.desc, null);
-            _$effect13((_$p) => _$setProp13(_el$3, "style", {
+            var _el$3 = _$createElement14("text"), _el$4 = _$createTextNode10(` `);
+            _$insertNode11(_el$3, _el$4);
+            _$insert14(_el$3, () => i() === clampedSel() ? "› " : "  ", _el$4);
+            _$insert14(_el$3, () => c.name, _el$4);
+            _$insert14(_el$3, () => c.desc, null);
+            _$effect14((_$p) => _$setProp14(_el$3, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
             return _el$3;
           })()
         }));
-        _$effect13((_$p) => _$setProp13(_el$2, "style", {
+        _$effect14((_$p) => _$setProp14(_el$2, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
@@ -2725,13 +3135,13 @@ function ShellHost(props) {
         return _el$2;
       })() : null;
     })(), null);
-    _$insert13(_el$, _$createComponent11(InputLine, {
+    _$insert14(_el$, _$createComponent13(InputLine, {
       get focused() {
-        return !(approval() || overlay());
+        return !(approval() || overlay() || loginFeature.panelOpen());
       },
       busy: false,
       get placeholder() {
-        return _$memo5(() => !!busy())() ? t("shell.input.steer") : t("shell.input.placeholder");
+        return _$memo7(() => !!busy())() ? t("shell.input.steer") : t("shell.input.placeholder");
       },
       get busyLabel() {
         return t("shell.input.busy");
@@ -2757,12 +3167,12 @@ function ShellHost(props) {
         return setValueText();
       }
     }), null);
-    _$insert13(_el$, _$createComponent11(FooterHints, {
+    _$insert14(_el$, _$createComponent13(FooterHints, {
       get theme() {
         return th();
       }
     }), null);
-    _$insert13(_el$, _$createComponent11(PowerlineFooter, {
+    _$insert14(_el$, _$createComponent13(PowerlineFooter, {
       get left() {
         return powerlineSegments();
       },
@@ -2780,6 +3190,7 @@ function ShellHost(props) {
 // src/host-session.ts
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { randomUUID } from "node:crypto";
+import { appendFileSync } from "node:fs";
 
 // src/agent/loop.ts
 var STREAM_TICK_MS = 250;
@@ -3249,6 +3660,12 @@ class HostSession {
       if (!cb || frame.type !== "chunk" || !frame.chunk)
         return;
       const c = frame.chunk;
+      if (process.env.DSH_OPENTUI_DEBUG) {
+        try {
+          appendFileSync("/tmp/otui-stream.log", `${Date.now()} ${c.type} ${(c.text ?? "").length}ch
+`);
+        } catch {}
+      }
       try {
         if (c.type === "reasoning-delta" && c.text) {
           cb.onThinkingDelta(c.text);
@@ -3370,7 +3787,7 @@ function apply(ctx, config) {
   mountEngine({}).then(({
     renderer
   }) => {
-    render(() => _$createComponent12(ShellHost, {
+    render(() => _$createComponent14(ShellHost, {
       get deps() {
         return {
           store,

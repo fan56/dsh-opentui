@@ -39,13 +39,15 @@ export function Select(props: {
   onSelect: (value: string) => void
   onCancel: () => void
 }): JSX.Element {
-  // Controlled highlight + a belt-and-suspenders key path: the native
-  // select's OWN enter handling does not fire under the real renderer
-  // (verified in a live boot — only the headless testRender probe shows
-  // it), so arrows/enter are also routed through useKeyboard, which the
-  // live boot demonstrably delivers. selectedIndex stays prop-controlled
-  // so both paths agree; onSelect dedupes within a 250ms window in case
-  // the native path ever does fire too.
+  // Controlled highlight + exclusive key ownership: the native select's
+  // OWN enter handling does not fire under the real renderer (verified in
+  // a live boot), while its arrow handling DOES — so routing arrows
+  // through BOTH paths double-advances the highlight (observed +4 per
+  // key). Global listeners run before the focused renderable, and a
+  // preventDefault() in them makes the renderable skip the key entirely
+  // (the mechanism InputLine's onKeyDown already relies on) — so we claim
+  // arrows/enter/escape here and the native select becomes display-only.
+  // onSelect dedupes within a 250ms window as a final safety.
   const [index, setIndex] = createSignal(0)
   let lastFire = 0
   const fire = (i: number) => {
@@ -57,12 +59,24 @@ export function Select(props: {
     props.onSelect(String(opt.value))
   }
   useKeyboard((key) => {
-    if (key.name === "escape") return props.onCancel()
     const n = props.items.length
+    if (key.name === "escape") {
+      key.preventDefault?.()
+      return props.onCancel()
+    }
     if (n === 0) return
-    if (key.name === "up") return setIndex((v) => (v - 1 + n) % n)
-    if (key.name === "down") return setIndex((v) => (v + 1) % n)
-    if (key.name === "return" || key.name === "enter") fire(clamp(index(), n))
+    if (key.name === "up") {
+      key.preventDefault?.()
+      return setIndex((v) => (v - 1 + n) % n)
+    }
+    if (key.name === "down") {
+      key.preventDefault?.()
+      return setIndex((v) => (v + 1) % n)
+    }
+    if (key.name === "return" || key.name === "enter") {
+      key.preventDefault?.()
+      fire(clamp(index(), n))
+    }
   })
 
   const th = () => props.theme

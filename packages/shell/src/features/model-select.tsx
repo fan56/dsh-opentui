@@ -1,0 +1,81 @@
+/**
+ * Feature: model selection (/model) — the two-stage picker (provider/model
+ * row → reasoning effort), composed from Kit's Select. Owns its overlay
+ * payload and selection handling; the Shell opens generic overlays with
+ * whatever this feature hands it.
+ */
+import type { SelectItem } from "@dsh-opentui/kit"
+import type { HostSession } from "../host-session.ts"
+
+export interface ModelSelectDeps {
+  session: HostSession
+  t: (key: string, vars?: Record<string, string>) => string
+  /** Current live route label ("provider/model (effort)"). */
+  label: () => string
+  setLabel: (v: string) => void
+  push: (it: { kind: "system" | "error"; text: string }) => void
+}
+
+export interface OverlayRequest {
+  title: string
+  items: SelectItem[]
+  onSelect: (value: string) => void
+}
+
+export function createModelSelectFeature(deps: ModelSelectDeps) {
+  /** Provider catalog flattened to one row per model (async, cached by the session). */
+  let catalog: { provider: string; models: string[] }[] = []
+
+  const refresh = async () => {
+    try {
+      catalog = await deps.session.listProviders()
+    } catch {
+      catalog = []
+    }
+  }
+
+  return {
+    /** /model bare: open stage 1 after refreshing the catalog. */
+    async open(openOverlay: (req: OverlayRequest) => void) {
+      await refresh()
+      const current = deps.label()
+      openOverlay({
+        title: deps.t("picker.model.title"),
+        items: catalog.flatMap((p) =>
+          p.models.map((m) => {
+            const id = `${p.provider}/${m}`
+            return { label: m, group: p.provider, value: id, ...(id === current ? { description: deps.t("cmd.model.current") } : {}) }
+          }),
+        ),
+        onSelect: (value) => {
+          const [provider, model] = value.split("/")
+          if (!provider || !model) return
+          // stage 2: reasoning effort for the picked route
+          openOverlay({
+            title: deps.t("picker.effort.title", { model }),
+            items: EFFORTS.map((e) => ({ label: e, value: e, description: deps.t(`picker.effort.${e}.desc`) })),
+            onSelect: (effortValue) => {
+              const effort = effortValue === "keep" ? undefined : effortValue
+              deps.session.switchModel(provider, model, effort)
+              deps.setLabel(deps.session.label)
+              deps.push({ kind: "system", text: `${deps.t("cmd.model.set")} ${provider}/${model}${effort ? ` (${effort})` : ""} ${deps.t("cmd.model.next")}` })
+            },
+          })
+        },
+      })
+    },
+    /** /model provider/id direct form. */
+    direct(provider: string, model: string) {
+      if (!provider || !model) {
+        deps.push({ kind: "error", text: "usage: /model provider/model-id" })
+        return
+      }
+      deps.session.switchModel(provider, model)
+      deps.setLabel(deps.session.label)
+      deps.push({ kind: "system", text: `${deps.t("cmd.model.set")} ${provider}/${model} ${deps.t("cmd.model.next")}` })
+    },
+  }
+}
+
+/** Reasoning-effort ladder offered after a model pick ("keep" = default). */
+const EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"]
