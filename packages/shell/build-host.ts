@@ -84,7 +84,7 @@ const manifest = {
   dependencies: {
     "@opentui/core": "0.7.0",
     "@opentui/solid": "0.7.0",
-    "solid-js": "^1.9.12",
+    "solid-js": "1.9.12",
   },
 }
 await Bun.write(join(outDir, "package.json"), JSON.stringify(manifest, null, 2))

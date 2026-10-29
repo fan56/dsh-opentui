@@ -13,10 +13,10 @@ importers:
         version: 0.7.0(typescript@5.9.3)(web-tree-sitter@0.25.10)
       '@opentui/solid':
         specifier: 0.7.0
-        version: 0.7.0(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+        version: 0.7.0(solid-js@1.9.12)(typescript@5.9.3)(web-tree-sitter@0.25.10)
       solid-js:
-        specifier: ^1.9.12
-        version: 1.9.17
+        specifier: 1.9.12
+        version: 1.9.12
 
 packages:
 
@@ -438,18 +438,18 @@ packages:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
 
-  seroval-plugins@1.6.12:
-    resolution: {integrity: sha512-+reiwp/lYxiyctSrdvX7OQ1YLrcbWYgBiZrhSFL+V43b0/DGRLNVSDyZINbQe+tWplPOI2fw2dPrdv6hcc09kQ==}
+  seroval-plugins@1.5.6:
+    resolution: {integrity: sha512-HXuLAX2pu/UByPpaeo/TaMfvMIi+1QqIoPJYCcAtU8QkVNwgR6MPlGuCQTErV1JwraaMbYaWVIBX7mppzGLATQ==}
     engines: {node: '>=10'}
     peerDependencies:
       seroval: ^1.0
 
-  seroval@1.6.12:
-    resolution: {integrity: sha512-CqbIVfk/7GL3ITwZI55lcPbpQbjHZ2DD5cUj4iH7E9YsCfHNJV1mx7yNp86Z84w5IpmkZZS/2s5vPOWmVWSdQg==}
+  seroval@1.5.6:
+    resolution: {integrity: sha512-rVQVWjjSvlINzaQPZH5JFqsqEsIWdTxY3iJZCnTL/5gQbXIRooVZKI60tVCkOVfzcRPejboxO2t0P89dg5mQaA==}
     engines: {node: '>=10'}
 
-  solid-js@1.9.17:
-    resolution: {integrity: sha512-4GAmLOWPfNV8H9Jfn2LSFTpNEG6jiOKPiwd5lnLGQtehHaX6l3TOLzJqQ7mqwB/3k1Yy3zyumFVopmc/tm34ow==}
+  solid-js@1.9.12:
+    resolution: {integrity: sha512-QzKaSJq2/iDrWR1As6MHZQ8fQkdOBf8GReYb7L5iKwMGceg7HxDcaOHk0at66tNgn9U2U7dXo8ZZpLIAmGMzgw==}
 
   string-width@7.2.0:
     resolution: {integrity: sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ==}
@@ -739,16 +739,16 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
-  '@opentui/solid@0.7.0(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)':
+  '@opentui/solid@0.7.0(solid-js@1.9.12)(typescript@5.9.3)(web-tree-sitter@0.25.10)':
     dependencies:
       '@babel/core': 7.29.7
       '@babel/preset-typescript': 7.27.1(@babel/core@7.29.7)
       '@opentui/core': 0.7.0(typescript@5.9.3)(web-tree-sitter@0.25.10)
       babel-plugin-module-resolver: 5.0.2
-      babel-preset-solid: 1.9.12(@babel/core@7.29.7)(solid-js@1.9.17)
+      babel-preset-solid: 1.9.12(@babel/core@7.29.7)(solid-js@1.9.12)
       entities: 7.0.1
       s-js: 0.4.9
-      solid-js: 1.9.17
+      solid-js: 1.9.12
     transitivePeerDependencies:
       - supports-color
       - typescript
@@ -773,12 +773,12 @@ snapshots:
       reselect: 4.1.8
       resolve: 1.22.13
 
-  babel-preset-solid@1.9.12(@babel/core@7.29.7)(solid-js@1.9.17):
+  babel-preset-solid@1.9.12(@babel/core@7.29.7)(solid-js@1.9.12):
     dependencies:
       '@babel/core': 7.29.7
       babel-plugin-jsx-dom-expressions: 0.40.11(@babel/core@7.29.7)
     optionalDependencies:
-      solid-js: 1.9.17
+      solid-js: 1.9.12
 
   balanced-match@1.0.2: {}
 
@@ -930,17 +930,17 @@ snapshots:
 
   semver@6.3.1: {}
 
-  seroval-plugins@1.6.12(seroval@1.6.12):
+  seroval-plugins@1.5.6(seroval@1.5.6):
     dependencies:
-      seroval: 1.6.12
+      seroval: 1.5.6
 
-  seroval@1.6.12: {}
+  seroval@1.5.6: {}
 
-  solid-js@1.9.17:
+  solid-js@1.9.12:
     dependencies:
       csstype: 3.2.3
-      seroval: 1.6.12
-      seroval-plugins: 1.6.12(seroval@1.6.12)
+      seroval: 1.5.6
+      seroval-plugins: 1.5.6(seroval@1.5.6)
 
   string-width@7.2.0:
     dependencies:

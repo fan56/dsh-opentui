@@ -21,7 +21,7 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 const args = process.argv.slice(2)
 const flag = (name) => {
@@ -92,7 +92,7 @@ const patchBody = `# dsh-opentui profile patch (managed by @aiwayds/dsh-opentui 
         theme: catppuccin-mocha
 `
 const existing = existsSync(patchPath) ? readFileSync(patchPath, 'utf8') : ''
-if (!existing.includes('id: dsh-opentui')) {
+if (!(existing.includes('id: dsh-opentui') && existing.includes('name: "@aiwayds/dsh-opentui"'))) {
   if (existing) backup(patchPath)
   writeFileSync(patchPath, patchBody)
 }
