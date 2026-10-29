@@ -14,7 +14,7 @@ export type TranscriptItem =
   | { kind: "user"; text: string }
   | { kind: "assistant"; text: string; final?: boolean }
   | { kind: "thinking"; tail: string; chars: number }
-  | { kind: "tool"; name: string; args: string; ok: boolean; brief: string }
+  | { kind: "tool"; name: string; args: string; ok: boolean; brief: string; imagePath?: string }
   | { kind: "error"; text: string }
   | { kind: "system"; text: string }
 

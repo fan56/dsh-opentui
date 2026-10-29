@@ -166,7 +166,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const toolEntries = createMemo<ToolPanelEntry[]>(() =>
     items()
       .filter((it): it is Extract<TItem, { kind: "tool" }> => it.kind === "tool")
-      .map((it) => ({ name: it.name, args: it.args, ok: it.ok, output: it.brief })),
+      .map((it) => ({ name: it.name, args: it.args, ok: it.ok, output: it.brief, ...(it.imagePath ? { imagePath: it.imagePath } : {}) })),
   )
 
   // markdown style for finalized assistant messages (best-effort: the
@@ -266,6 +266,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } else if (cmd === "usage") {
       const u = usage()
       push({ kind: "system", text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens` })
+      push({ kind: "system", text: `model: ${label()}` })
     } else if (cmd === "new") {
       props.deps.session.newSession()
       setItems([])
@@ -388,7 +389,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           },
           onToolRun: (run: ToolRun) => {
             const brief = run.output.split("\n").slice(-3).join(" ⏎ ").slice(0, 200)
-            push({ kind: "tool", name: run.name, args: run.argsPretty, ok: run.ok, brief })
+            push({ kind: "tool", name: run.name, args: run.argsPretty, ok: run.ok, brief, ...( (run as any).imagePath ? { imagePath: (run as any).imagePath } : {}) } as any)
           },
           onError: (msg: string) => push({ kind: "error", text: msg }),
         },
@@ -486,9 +487,6 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     // Transcript scroll: pageup back in time, pagedown toward the bottom.
     if (key.name === "pageup") {
       setScrollOffset((o) => o + 10)
-      if (process.env.DSH_OPENTUI_DEBUG) {
-        import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-keys.log", `pageup handled offset=${scrollOffset()}\n`)).catch(() => {})
-      }
       return
     }
     if (key.name === "pagedown") {
@@ -532,8 +530,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       setMenuOpen(true)
       setMenuSel(0)
       if (cmd) {
-        commitHistory(cmd.name)
-        void runCommand(cmd.name)
+        // a typed line with arguments beats the bare highlighted command —
+        // "/model provider/id" must not be hijacked by the palette's "/model"
+        const full = text === cmd.name || !text.startsWith("/") ? cmd.name : text
+        commitHistory(full)
+        void runCommand(full)
         return
       }
       if (!text) return

@@ -4,15 +4,10 @@
  * Both are pure presentation — no keyboard handling, open/close keys
  * only appear as dim hints in the header row.
  */
-import { For, type JSX } from "solid-js"
+import { For, Show, type JSX } from "solid-js"
 import type { Theme } from "./theme.ts"
 
-export interface ToolPanelEntry {
-  name: string
-  args: string
-  ok: boolean
-  output: string
-}
+export interface ToolPanelEntry { name: string; args: string; ok: boolean; output: string; imagePath?: string }
 
 /** Total row budget for the tool list (entries plus expanded output). */
 const TOOL_MAX_ROWS = 14
@@ -54,10 +49,18 @@ export function ToolPanel(props: { entries: ToolPanelEntry[]; theme: Theme; expa
     return out
   }
 
+  const expandedImage = () => {
+    const e = props.entries[props.expandedIndex ?? -1]
+    return e?.imagePath
+  }
+
   return (
     <box style={{ border: true, borderColor: props.theme.tokens.border, flexDirection: "column", padding: 1 }}>
       {dockHeader(props.theme, ` Tools (${props.entries.length})`, "ctrl+o close")}
       <For each={rows()}>{(r) => <text style={{ fg: r.fg }}>{r.text}</text>}</For>
+      <Show when={expandedImage()}>
+        <image source={expandedImage()} fit="fit" />
+      </Show>
     </box>
   )
 }

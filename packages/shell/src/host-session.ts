@@ -267,14 +267,29 @@ export class HostSession {
             args: String(event.data.arguments ?? ""),
           })
         } else if (event.type === "tool/result" && event.data) {
-          const callId = String(event.data.callId ?? "")
+          const callId = String(event.data.callId ?? event.data.message?.toolCallId ?? "")
           const known = this.#toolCalls.get(callId)
           const brief = JSON.stringify(event.data.output ?? event.data).slice(0, 300)
+          // image content blocks render as pictures in the tool panel
+          const content = (event.data.message?.content ?? event.data.content ?? []) as any[]
+          const imageBlock = content.find?.((c: any) => c?.type === "image")
+          // the host tool result carries the file path in a sibling <path>
+          // text block; the image block itself only references an attachment id
+          const pathMatch = /<path>([^<]+)<\/path>/.exec(
+            content.find?.((c: any) => c?.type === "text")?.text ?? "",
+          )
+          const imagePath =
+            (typeof imageBlock?.source === "string" ? imageBlock.source : undefined) ??
+            imageBlock?.path ??
+            imageBlock?.file_path ??
+            imageBlock?.url ??
+            (imageBlock ? pathMatch?.[1] : undefined)
           cb.onToolRun({
             name: known?.name ?? "tool",
             argsPretty: known?.args ?? "",
             output: brief,
             ok: event.data.isError !== true,
+            ...(typeof imagePath === "string" ? { imagePath } : {}),
           })
         } else if (event.type === "turn/end") {
           DBG(`turn/end seen resolve=${!!this.#resolveTurn}`)

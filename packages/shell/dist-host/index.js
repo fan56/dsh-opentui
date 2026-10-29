@@ -803,7 +803,7 @@ import { insertNode as _$insertNode4 } from "@opentui/solid";
 import { insert as _$insert4 } from "@opentui/solid";
 import { setProp as _$setProp4 } from "@opentui/solid";
 import { createElement as _$createElement4 } from "@opentui/solid";
-import { For as For4 } from "solid-js";
+import { For as For4, Show as Show2 } from "solid-js";
 var TOOL_MAX_ROWS = 14;
 var TOOL_OUTPUT_TAIL = 6;
 var THINK_TAIL = 10;
@@ -864,6 +864,10 @@ function ToolPanel(props) {
     }
     return out;
   };
+  const expandedImage = () => {
+    const e = props.entries[props.expandedIndex ?? -1];
+    return e?.imagePath;
+  };
   return (() => {
     var _el$5 = _$createElement4("box");
     _$insert4(_el$5, () => dockHeader(props.theme, ` Tools (${props.entries.length})`, "ctrl+o close"), null);
@@ -872,13 +876,24 @@ function ToolPanel(props) {
         return rows();
       },
       children: (r) => (() => {
-        var _el$6 = _$createElement4("text");
-        _$insert4(_el$6, () => r.text);
-        _$effect4((_$p) => _$setProp4(_el$6, "style", {
+        var _el$7 = _$createElement4("text");
+        _$insert4(_el$7, () => r.text);
+        _$effect4((_$p) => _$setProp4(_el$7, "style", {
           fg: r.fg
         }, _$p));
-        return _el$6;
+        return _el$7;
       })()
+    }), null);
+    _$insert4(_el$5, _$createComponent4(Show2, {
+      get when() {
+        return expandedImage();
+      },
+      get children() {
+        var _el$6 = _$createElement4("image");
+        _$setProp4(_el$6, "fit", "fit");
+        _$effect4((_$p) => _$setProp4(_el$6, "source", expandedImage(), _$p));
+        return _el$6;
+      }
     }), null);
     _$effect4((_$p) => _$setProp4(_el$5, "style", {
       border: true,
@@ -895,39 +910,39 @@ function ThinkPanel(props) {
   const tail = () => lines().slice(-THINK_TAIL);
   const truncated = () => lines().length > tail().length;
   return (() => {
-    var _el$7 = _$createElement4("box");
-    _$insert4(_el$7, () => dockHeader(props.theme, " Thinking ", "ctrl+t close"), null);
-    _$insert4(_el$7, (() => {
+    var _el$8 = _$createElement4("box");
+    _$insert4(_el$8, () => dockHeader(props.theme, " Thinking ", "ctrl+t close"), null);
+    _$insert4(_el$8, (() => {
       var _c$ = _$memo3(() => !!truncated());
       return () => _c$() ? (() => {
-        var _el$8 = _$createElement4("text");
-        _$insertNode4(_el$8, _$createTextNode4(`…`));
-        _$effect4((_$p) => _$setProp4(_el$8, "style", {
+        var _el$9 = _$createElement4("text");
+        _$insertNode4(_el$9, _$createTextNode4(`…`));
+        _$effect4((_$p) => _$setProp4(_el$9, "style", {
           fg: props.theme.tokens.dim
         }, _$p));
-        return _el$8;
+        return _el$9;
       })() : null;
     })(), null);
-    _$insert4(_el$7, _$createComponent4(For4, {
+    _$insert4(_el$8, _$createComponent4(For4, {
       get each() {
         return tail();
       },
       children: (l) => (() => {
-        var _el$0 = _$createElement4("text");
-        _$insert4(_el$0, l);
-        _$effect4((_$p) => _$setProp4(_el$0, "style", {
+        var _el$1 = _$createElement4("text");
+        _$insert4(_el$1, l);
+        _$effect4((_$p) => _$setProp4(_el$1, "style", {
           fg: props.theme.tokens.dim
         }, _$p));
-        return _el$0;
+        return _el$1;
       })()
     }), null);
-    _$effect4((_$p) => _$setProp4(_el$7, "style", {
+    _$effect4((_$p) => _$setProp4(_el$8, "style", {
       border: true,
       borderColor: props.theme.tokens.border,
       flexDirection: "column",
       padding: 1
     }, _$p));
-    return _el$7;
+    return _el$8;
   })();
 }
 // ../kit/src/table.tsx
@@ -1088,7 +1103,10 @@ function ShellHost(props) {
     name: it.name,
     args: it.args,
     ok: it.ok,
-    output: it.brief
+    output: it.brief,
+    ...it.imagePath ? {
+      imagePath: it.imagePath
+    } : {}
   })));
   const rendererCtx = useRenderer();
   let mdStyle;
@@ -1187,6 +1205,10 @@ function ShellHost(props) {
       push({
         kind: "system",
         text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens`
+      });
+      push({
+        kind: "system",
+        text: `model: ${label()}`
       });
     } else if (cmd === "new") {
       props.deps.session.newSession();
@@ -1381,7 +1403,10 @@ function ShellHost(props) {
             name: run.name,
             args: run.argsPretty,
             ok: run.ok,
-            brief
+            brief,
+            ...run.imagePath ? {
+              imagePath: run.imagePath
+            } : {}
           });
         },
         onError: (msg) => push({
@@ -1498,10 +1523,6 @@ function ShellHost(props) {
     }
     if (key.name === "pageup") {
       setScrollOffset((o) => o + 10);
-      if (process.env.DSH_OPENTUI_DEBUG) {
-        import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-keys.log", `pageup handled offset=${scrollOffset()}
-`)).catch(() => {});
-      }
       return;
     }
     if (key.name === "pagedown") {
@@ -1546,8 +1567,9 @@ function ShellHost(props) {
       setMenuOpen(true);
       setMenuSel(0);
       if (cmd) {
-        commitHistory(cmd.name);
-        runCommand(cmd.name);
+        const full = text === cmd.name || !text.startsWith("/") ? cmd.name : text;
+        commitHistory(full);
+        runCommand(full);
         return;
       }
       if (!text)
@@ -2033,14 +2055,19 @@ class HostSession {
             args: String(event.data.arguments ?? "")
           });
         } else if (event.type === "tool/result" && event.data) {
-          const callId = String(event.data.callId ?? "");
+          const callId = String(event.data.callId ?? event.data.message?.toolCallId ?? "");
           const known = this.#toolCalls.get(callId);
           const brief = JSON.stringify(event.data.output ?? event.data).slice(0, 300);
+          const content = event.data.message?.content ?? event.data.content ?? [];
+          const imageBlock = content.find?.((c) => c?.type === "image");
+          const pathMatch = /<path>([^<]+)<\/path>/.exec(content.find?.((c) => c?.type === "text")?.text ?? "");
+          const imagePath = (typeof imageBlock?.source === "string" ? imageBlock.source : undefined) ?? imageBlock?.path ?? imageBlock?.file_path ?? imageBlock?.url ?? (imageBlock ? pathMatch?.[1] : undefined);
           cb.onToolRun({
             name: known?.name ?? "tool",
             argsPretty: known?.args ?? "",
             output: brief,
-            ok: event.data.isError !== true
+            ok: event.data.isError !== true,
+            ...typeof imagePath === "string" ? { imagePath } : {}
           });
         } else if (event.type === "turn/end") {
           DBG(`turn/end seen resolve=${!!this.#resolveTurn}`);
