@@ -54,6 +54,16 @@ importers:
 
   packages/shell:
     dependencies:
+      '@opentui/core':
+        specifier: 0.7.0
+        version: 0.7.0(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      '@opentui/solid':
+        specifier: 0.7.0
+        version: 0.7.0(solid-js@1.9.12)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      solid-js:
+        specifier: ^1.9.12
+        version: 1.9.12
+    devDependencies:
       '@deepseek-ai/cordis':
         specifier: 4.0.5
         version: 4.0.5
@@ -63,16 +73,6 @@ importers:
       '@dsh-opentui/runtime':
         specifier: workspace:*
         version: link:../runtime
-      '@opentui/core':
-        specifier: 0.7.0
-        version: 0.7.0(typescript@5.9.3)(web-tree-sitter@0.25.10)
-      '@opentui/solid':
-        specifier: 0.7.0
-        version: 0.7.0(solid-js@1.9.12)(typescript@5.9.3)(web-tree-sitter@0.25.10)
-      solid-js:
-        specifier: 1.9.12
-        version: 1.9.12
-    devDependencies:
       '@types/bun':
         specifier: latest
         version: 1.4.4
@@ -276,6 +276,7 @@ packages:
     resolution: {integrity: sha512-BkTn+WLf9OPR4KhBnuOki+R/cgk2qwbL49eQn5fEYPeiJD4HPalGbEZDea59UjwNEJ7rqKq2yuPAXQjkDZ6y3w==}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@opentui/core-linux-arm64@0.7.0':
     resolution: {integrity: sha512-/u+Kalzkz8NntUW5zjypgt9fnzeKohLG9YMEas7n98KvyaYScrtO4Mdj5iv/STNB3IfocJOChzYAbO6C8TmlPQ==}
@@ -286,6 +287,7 @@ packages:
     resolution: {integrity: sha512-HrJbcAIuayzQmWVzv+cjez37fNHL9FDoHmjwxAb4iK5GTjl89FZCxeKopyua14RA6WpP8/zUJQi8U16mm6XptA==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@opentui/core-linux-x64@0.7.0':
     resolution: {integrity: sha512-OD2tGl1r27zcgCsuc+TYU5e+qhrbsRSI0YUBEb0ebQo8P6Ps2FL9LFenH9om4fddCh06G9Zd45ekJMhlDrGD3Q==}

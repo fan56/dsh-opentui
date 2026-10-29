@@ -19,30 +19,52 @@ See [CONTEXT.md](CONTEXT.md) for the glossary and [docs/adr/](docs/adr/)
 for decisions: Solid (0001), two integration channels with no compat shim
 (0002), Bun + compiled binary distribution (0003), host profile route (0004).
 
-## Run as a dsh profile (host mode)
+## Install
 
-The Shell can run inside the real dsh host as a profile, instead of the
-standalone binary:
+Prerequisites:
+
+- The dsh host: `npm i -g @deepseek-ai/dsh` (or your official channel)
+- Node >= 26.4 (OpenTUI's native core needs `--experimental-ffi`, injected for you)
+- pnpm
 
 ```bash
-./dsh-opentui                                        # launcher (adds the flag for you)
-NODE_OPTIONS=--experimental-ffi dsh --profile dsh-opentui   # equivalent, manual
-./try-host.sh                                        # keymap banner + launcher
+npm i -g @aiwayds/dsh-opentui
+dsh-opentui
+```
+
+The first launch idempotently installs a dsh profile at
+`~/.dsh/profiles/dsh-opentui` (bundles: `dsh-base` + this package) and pins
+the default model through a cordis patch (`llm-pi-ai` provider routing +
+`agent-default-model`: `zai-coding-cn/glm-5.3-flash/high`). Afterwards
+`dsh-opentui` is equivalent to `dsh --profile dsh-opentui`.
+
+To change the model, re-run the installer with flags
+(`--provider` / `--model` / `--reasoning-effort`) or edit the profile's
+`cordis.patch.yml` directly.
+
+Prefer to run without the host? See
+[Direct mode (development)](#direct-mode-development).
+
+## Run as a dsh profile (host mode)
+
+The Shell runs inside the real dsh host as a profile. The `dsh-opentui`
+bin handles everything: on first launch it installs the profile, then it
+execs the host with the profile flag and injects `--experimental-ffi` for
+you. After the first run, `dsh-opentui` is equivalent to:
+
+```bash
+NODE_OPTIONS=--experimental-ffi dsh --profile dsh-opentui   # manual fallback
 ```
 
 | What | Where |
 |---|---|
-| Profile | installed at `~/.dsh/profiles/dsh-opentui` (bundles: `dsh-base` + `@dsh-opentui/shell`; plugins mounted via `link:`) |
-| Runtime | OpenTUI's native core needs node >= 26.4 with `--experimental-ffi` inside the host |
-| Model & keys | fully reused from the host's own config (agent-default-model combo by default) |
+| Profile | `~/.dsh/profiles/dsh-opentui` (bundles: `dsh-base` + `@aiwayds/dsh-opentui`; model pinned via `cordis.patch.yml`) |
+| Runtime | node >= 26.4 with `--experimental-ffi` inside the host (auto-injected by the bin) |
+| Model & keys | reused from the host's own config; override the pinned default via installer flags or the patch file |
 
-After changing plugin sources, rebuild:
+## Direct mode (development)
 
-```bash
-cd packages/shell && bun build-host.ts
-```
-
-## Try the Shell (M2 demo)
+Without the host, useful for hacking on the Shell itself:
 
 ```bash
 cd ~/repo/dsh-opentui/packages/shell
@@ -91,12 +113,20 @@ bun test                                # tests (repo root)
 npx pnpm@10.18.3 -r typecheck
 ```
 
+To test host mode against local sources, point the installed profile at the
+repo via `link:` mounts, then rebuild after changing plugin sources:
+
+```bash
+cd packages/shell && bun build-host.ts
+```
+
 Requires Bun >= 1.3.14 (`bun upgrade`). Note: each package carries its own
 `bunfig.toml` (the @opentui/solid preload) — bun only reads the CWD's
 bunfig; a root-level one breaks compiled binaries ("preload not found").
 
 ## Status
 
-M3: host profile mode (`dsh --profile dsh-opentui`) + direct-LLM fallback. Roadmap: host seams
+v0.1.0: published as `@aiwayds/dsh-opentui` (host profile mode via the
+`dsh-opentui` bin, direct-mode binary). Roadmap: host seams
 (approval waterfall, ask, attachments, sessions via the real dsh host) ·
 full Kit + starter polish · linux binary release pipeline.

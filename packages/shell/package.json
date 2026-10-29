@@ -1,26 +1,47 @@
 {
-  "name": "@dsh-opentui/shell",
-  "version": "0.0.1",
-  "private": true,
+  "name": "@aiwayds/dsh-opentui",
+  "version": "0.1.0",
   "type": "module",
   "bin": {
-    "dsh-opentui": "./src/main.ts"
+    "dsh-opentui": "bin/dsh-opentui.mjs"
   },
+  "main": "./dist-host/index.js",
+  "exports": {
+    ".": "./dist-host/index.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./dist-host/plugin.patch.yml"
+    }
+  },
+  "files": [
+    "dist-host",
+    "bin",
+    "scripts",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "dev": "bun src/main.ts",
     "typecheck": "tsc --noEmit",
-    "build:bin": "bun build.ts"
+    "build:bin": "bun build.ts",
+    "postinstall": "node scripts/postinstall.mjs",
+    "smoke": "node scripts/smoke-boot.mjs"
   },
   "dependencies": {
-    "@dsh-opentui/kit": "workspace:*",
-    "@dsh-opentui/runtime": "workspace:*",
     "@opentui/core": "0.7.0",
     "@opentui/solid": "0.7.0",
-    "solid-js": "1.9.12",
-    "@deepseek-ai/cordis": "4.0.5"
+    "solid-js": "^1.9.12"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@deepseek-ai/cordis": "4.0.5",
+    "@dsh-opentui/runtime": "workspace:*",
+    "@dsh-opentui/kit": "workspace:*"
+  },
+  "engines": {
+    "node": ">=26.4.0"
   }
 }
