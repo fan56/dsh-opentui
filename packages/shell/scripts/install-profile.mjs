@@ -86,6 +86,8 @@ const patchBody = `# dsh-opentui profile patch (managed by @aiwayds/dsh-opentui 
     model: ${model}
     reasoningEffort: ${reasoningEffort}
 - insert:
+    - id: tool-ask-user
+      name: "@deepseek-ai/dsh-tool-ask-user"
     - id: dsh-opentui
       name: "@aiwayds/dsh-opentui"
       config:
