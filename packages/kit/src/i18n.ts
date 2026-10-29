@@ -19,14 +19,31 @@ const dict: Dict = {
   "agent.approve.hint": { "zh-CN": "y 允许 · n 拒绝", en: "y approve · n decline" },
   "agent.error": { "zh-CN": "出错", en: "error" },
   "cmd.help.lines": {
-    "zh-CN": "/help 命令列表 · /model 切换模型 · /usage 用量 · /clear 清空 · /quit 退出",
-    en: "/help · /model [provider/id] · /usage · /clear · /quit",
+    "zh-CN": "/help 命令列表 · /model 切换模型 · /login /logout 凭据 · /usage 用量 · /clear 清空 · /quit 退出",
+    en: "/help · /model [provider/id] · /login · /logout · /usage · /clear · /quit",
   },
   "cmd.model.current": { "zh-CN": "当前模型", en: "current model" },
   "cmd.model.available": { "zh-CN": "可用模型", en: "available" },
   "cmd.model.set": { "zh-CN": "已切换", en: "switched to" },
+  "cmd.model.next": { "zh-CN": "（下一条消息生效）", en: "(next message)" },
   "cmd.usage.summary": { "zh-CN": "累计", en: "total" },
   "cmd.cleared": { "zh-CN": "会话已清空", en: "session cleared" },
+  "cmd.login.saved": { "zh-CN": "凭据 {ref} 已保存", en: "credential {ref} saved" },
+  "cmd.login.usage": {
+    "zh-CN": "用法：/login REF KEY（裸 /login 查看凭据状态）",
+    en: "usage: /login REF KEY (bare /login shows credential status)",
+  },
+  "cmd.logout.done": { "zh-CN": "凭据 {ref} 已移除", en: "credential {ref} removed" },
+  "cmd.logout.usage": {
+    "zh-CN": "用法：/logout REF（裸 /logout 查看凭据状态）",
+    en: "usage: /logout REF (bare /logout shows credential status)",
+  },
+  "cmd.cred.status": { "zh-CN": "{ref}：{status}", en: "{ref}: {status}" },
+  "cmd.cred.configured": { "zh-CN": "已配置", en: "configured" },
+  "cmd.cred.missing": { "zh-CN": "未配置", en: "missing" },
+  "picker.model.title": { "zh-CN": "选择模型", en: "select model" },
+  "panel.tools.title": { "zh-CN": "工具", en: "tools" },
+  "panel.think.title": { "zh-CN": "思考", en: "thinking" },
 }
 
 export interface I18n {

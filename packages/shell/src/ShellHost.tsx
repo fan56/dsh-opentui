@@ -1,13 +1,18 @@
 /**
  * ShellHost — the Shell driving a HostSession (the real dsh host inside
  * this process). dsh-tui-pi-style affordances: slash palette with
- * autocomplete, themes, footer hints, markdown-ish transcript with
- * left-rail tool blocks, live /model switching across host providers.
+ * autocomplete, themes, markdown transcript, a /model Picker overlay,
+ * think/tool panels (ctrl+t / ctrl+o / ctrl+p) and /login //logout
+ * credential commands. All presentational building blocks come from
+ * @dsh-opentui/kit — this file owns state and keyboard routing only.
  */
 import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { createTextAttributes, SyntaxStyle } from "@opentui/core"
+import { SyntaxStyle } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
-import { StatusBar, getTheme, themes, type I18n, type Theme } from "@dsh-opentui/kit"
+import { StatusBar, getTheme, themes, type I18n } from "@dsh-opentui/kit"
+import { Transcript, InputLine, FooterHints, type TranscriptItem } from "@dsh-opentui/kit"
+import { Picker, ApprovalCard, Dialog, type PickerItem } from "@dsh-opentui/kit"
+import { ToolPanel, ThinkPanel, type ToolPanelEntry } from "@dsh-opentui/kit"
 import type { SurfaceStore, SurfaceWidgetDecl } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
@@ -20,16 +25,14 @@ export interface ShellHostDeps {
   themeName?: string
 }
 
-type TItem =
-  | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string; final?: boolean }
-  | { kind: "thinking"; tail: string; chars: number }
-  | { kind: "tool"; name: string; args: string; ok: boolean; brief: string }
-  | { kind: "error"; text: string }
-  | { kind: "system"; text: string }
+/** Transcript rows are Kit's shape now; kept as a local alias. */
+type TItem = TranscriptItem
 
 const MAX_VISIBLE_ITEMS = 120
 const THEME_ORDER = ["catppuccin-mocha", "default"]
+
+/** Credential refs reported by the bare /login //logout status dump. */
+const CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"]
 
 /** Slash commands surfaced by the autocomplete palette (dsh-tui-pi style). */
 const COMMANDS: { name: string; desc: string }[] = [
@@ -37,41 +40,14 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/clear", desc: "clear the transcript" },
   { name: "/usage", desc: "show token usage summary" },
   { name: "/theme", desc: "cycle theme" },
-  { name: "/model", desc: "show or switch model (/model provider/id)" },
+  { name: "/model", desc: "pick or switch model (/model provider/id)" },
+  { name: "/login", desc: "set an api key (/login REF KEY)" },
+  { name: "/logout", desc: "remove an api key (/logout REF)" },
   { name: "/quit", desc: "exit the shell" },
 ]
 
-/** Hint strip rendered above the status bar (dsh-tui-pi style). */
-const footerHints: { key: string; label: string }[] = [
-  { key: "enter", label: "send" },
-  { key: "y/n", label: "approve" },
-  { key: "esc", label: "abort" },
-  { key: "/help", label: "commands" },
-  { key: "ctrl+c", label: "quit" },
-]
-
-/** Minimal markdown-ish transcript rendering: headings pop, fenced code
- * blocks get a dim left rail, everything else passes through. */
-function renderAssistant(text: string, theme: Theme): { text: string; fg?: string }[] {
-  const out: { text: string; fg?: string }[] = []
-  let inFence = false
-  for (const raw of text.split("\n")) {
-    const line = raw.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1")
-    if (/^```/.test(line)) {
-      inFence = !inFence
-      out.push({ text: inFence ? "┌─" : "└─", fg: theme.tokens.dim })
-      continue
-    }
-    if (inFence) {
-      out.push({ text: `│ ${line}`, fg: theme.tokens.dim })
-      continue
-    }
-    const heading = /^(#{1,3})\s+(.*)/.exec(line)
-    if (heading) out.push({ text: heading[2], fg: theme.tokens.accent })
-    else out.push({ text: line })
-  }
-  return out
-}
+/** Uniform error text for pushed error rows. */
+const errText = (e: unknown) => String(e instanceof Error ? e.message : e).slice(0, 300)
 
 export function ShellHost(props: { deps: ShellHostDeps }) {
   const t = props.deps.t
@@ -90,6 +66,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [usage, setUsage] = createSignal({ prompt: 0, completion: 0, turns: 0 })
   const [label, setLabel] = createSignal(props.deps.session.label)
   const [snapshot, setSnapshot] = createSignal(store.snapshot)
+  // Think/tool panels: hidden by default, toggled with ctrl+t / ctrl+o.
+  const [showThink, setShowThink] = createSignal(false)
+  const [showTool, setShowTool] = createSignal(false)
+  // Which ToolPanel entry is expanded; -1 means "none" (ctrl+p cycles).
+  const [toolExpanded, setToolExpanded] = createSignal(-1)
+  // Model picker overlay state; up/down/enter/esc route to it while open.
+  const [picker, setPicker] = createSignal<{ kind: "model" } | null>(null)
+  const [pickerSel, setPickerSel] = createSignal(0)
+  // Full reasoning text of the current turn: accumulated in a plain buffer,
+  // mirrored into a signal so ThinkPanel re-renders without per-delta JSX.
+  let reasoningBuf = ""
+  const [lastReasoning, setLastReasoning] = createSignal("")
   // Theme: plugin config < env < host-mode default (catppuccin-mocha)
   const initialTheme =
     process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha"
@@ -125,6 +113,27 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   })
   const menuVisible = createMemo(() => !busy() && menuOpen() && filteredCommands().length > 0)
 
+  // Model picker feed: the provider catalog flattened to one PickerItem
+  // per model (group=provider, label=model, id="provider/model"); the row
+  // matching the live session label is tagged as the current selection.
+  const pickerItems = createMemo<PickerItem[]>(() => {
+    const out: PickerItem[] = []
+    for (const p of props.deps.session.listProviders()) {
+      for (const m of p.models) {
+        const id = `${p.provider}/${m}`
+        out.push({ id, group: p.provider, label: m, detail: label() === id ? "current" : undefined })
+      }
+    }
+    return out
+  })
+
+  // Tool panel feed: tool-kind transcript rows projected onto ToolPanelEntry.
+  const toolEntries = createMemo<ToolPanelEntry[]>(() =>
+    items()
+      .filter((it): it is Extract<TItem, { kind: "tool" }> => it.kind === "tool")
+      .map((it) => ({ name: it.name, args: it.args, ok: it.ok, output: it.brief })),
+  )
+
   // markdown style for finalized assistant messages (best-effort: the
   // intrinsic tolerates undefined, code blocks then render unstyled)
   const rendererCtx = useRenderer()
@@ -136,46 +145,6 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   }
 
   const visibleItems = createMemo(() => items().slice(-MAX_VISIBLE_ITEMS))
-
-  /** One transcript item -> JSX (markdown for finalized assistant text). */
-  const itemNode = (it: TItem) => {
-    const th = theme()
-    if (it.kind === "user") {
-      return <text style={{ fg: th.tokens.userMark ?? th.tokens.accent }}>❯ {it.text}</text>
-    }
-    if (it.kind === "assistant") {
-      if (it.final) {
-        return (
-          <box style={{ flexDirection: "column" }}>
-            <markdown content={it.text} streaming={false} syntaxStyle={mdStyle} />
-            <text>{" "}</text>
-          </box>
-        )
-      }
-      return (
-        <box style={{ flexDirection: "column" }}>
-          <For each={renderAssistant(it.text, th)}>
-            {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
-          </For>
-        </box>
-      )
-    }
-    if (it.kind === "thinking") {
-      return <text style={{ fg: th.tokens.dim }}>{`${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`}</text>
-    }
-    if (it.kind === "tool") {
-      return (
-        <box style={{ flexDirection: "column" }}>
-          <text style={{ fg: th.tokens.toolOk ?? th.tokens.warn }}>{` ⚒ ${it.name} ${it.args.slice(0, 90)}`}</text>
-          <text style={{ fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger }}>{` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`}</text>
-        </box>
-      )
-    }
-    if (it.kind === "error") {
-      return <text style={{ fg: th.tokens.danger }}>✗ {t("agent.error")}: {it.text}</text>
-    }
-    return <text style={{ fg: th.tokens.dim }}>· {it.text}</text>
-  }
 
   let lastBump = 0
   let streaming: { thinking?: TItem; reply?: TItem } = {}
@@ -227,19 +196,29 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     setInput(text)
     setCursor(text.length)
   }
-  /** Split the input line at the cursor for caret rendering. */
-  const inputChunks = () => {
-    const s = input()
-    const c = Math.min(cursor(), s.length)
-    return {
-      before: s.slice(0, c),
-      at: c < s.length ? s.charAt(c) : " ",
-      after: c < s.length ? s.slice(c + 1) : "",
+
+  /** Push one "REF: configured|missing" system row per common credential ref. */
+  const pushCredStatus = async () => {
+    for (const ref of CRED_REFS) {
+      try {
+        const st = await props.deps.session.credentialStatus(ref)
+        push({
+          kind: "system",
+          text: t("cmd.cred.status", {
+            ref,
+            status: st.configured ? t("cmd.cred.configured") : t("cmd.cred.missing"),
+          }),
+        })
+      } catch (e) {
+        push({ kind: "error", text: `${ref}: ${errText(e)}` })
+      }
     }
   }
 
-  /** Execute a "/cmd ..." input line (shared by Enter and the palette). */
-  function runCommand(text: string) {
+  /** Execute a "/cmd ..." input line (shared by Enter and the palette).
+   * Async because /login //logout await host credential services; callers
+   * fire-and-forget it (void runCommand(...)). */
+  async function runCommand(text: string) {
     const parts = text.slice(1).trim().split(/\s+/)
     const cmd = parts[0]
     const arg = parts.slice(1).join(" ")
@@ -259,12 +238,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       push({ kind: "system", text: `theme → ${next}` })
     } else if (cmd === "model") {
       if (!arg) {
-        push({ kind: "system", text: `model: ${props.deps.session.label}` })
-        const catalog = props.deps.session.listProviders()
-        for (const p of catalog) {
-          push({ kind: "system", text: `  ${p.provider}: ${p.models.slice(0, 8).join(", ")}${p.models.length > 8 ? ` …(+${p.models.length - 8})` : ""}` })
-        }
-        push({ kind: "system", text: "switch: /model provider/model-id (applies to the next message)" })
+        // Bare /model opens the Picker overlay instead of printing the list.
+        setPickerSel(0)
+        setPicker({ kind: "model" })
       } else {
         const [provider, model] = arg.split("/")
         if (!provider || !model) {
@@ -272,8 +248,34 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         } else {
           props.deps.session.switchModel(provider, model)
           setLabel(props.deps.session.label)
-          push({ kind: "system", text: `model → ${provider}/${model} (next message)` })
+          push({ kind: "system", text: `${t("cmd.model.set")} ${provider}/${model} ${t("cmd.model.next")}` })
         }
+      }
+    } else if (cmd === "login") {
+      if (parts.length === 3) {
+        try {
+          await props.deps.session.login(parts[1], parts[2])
+          push({ kind: "system", text: t("cmd.login.saved", { ref: parts[1] }) })
+        } catch (e) {
+          push({ kind: "error", text: errText(e) })
+        }
+      } else if (parts.length === 1) {
+        await pushCredStatus()
+      } else {
+        push({ kind: "error", text: t("cmd.login.usage") })
+      }
+    } else if (cmd === "logout") {
+      if (parts.length === 2) {
+        try {
+          await props.deps.session.logout(parts[1])
+          push({ kind: "system", text: t("cmd.logout.done", { ref: parts[1] }) })
+        } catch (e) {
+          push({ kind: "error", text: errText(e) })
+        }
+      } else if (parts.length === 1) {
+        await pushCredStatus()
+      } else {
+        push({ kind: "error", text: t("cmd.logout.usage") })
       }
     } else {
       push({ kind: "system", text: `unknown command: /${cmd} (try /help)` })
@@ -284,9 +286,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     if (busy()) return
     push({ kind: "user", text })
     setBusy(true)
-    let thinkingItem: { kind: "thinking"; tail: string; chars: number } | null = null
-    let replyItem: { kind: "assistant"; text: string } | null = null
+    let thinkingItem: Extract<TItem, { kind: "thinking" }> | null = null
+    let replyItem: Extract<TItem, { kind: "assistant" }> | null = null
     streaming = {}
+    // A fresh turn replaces the think panel's contents.
+    reasoningBuf = ""
+    setLastReasoning("")
     try {
       await props.deps.session.turn(
         text,
@@ -299,6 +304,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             }
             thinkingItem.tail = (thinkingItem.tail + s).split("\n").slice(-2).join(" ")
             thinkingItem.chars += s.length
+            reasoningBuf += s
+            setLastReasoning(reasoningBuf)
             bumpSoon()
           },
           onContentDelta: (s: string) => {
@@ -336,7 +343,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         },
       )
     } catch (e) {
-      push({ kind: "error", text: String(e instanceof Error ? e.message : e).slice(0, 300) })
+      push({ kind: "error", text: errText(e) })
     } finally {
       setApproval(null)
       approveResolve = null
@@ -360,6 +367,46 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         approveResolve?.(false)
         approveResolve = null
       }
+      return
+    }
+    // Model picker overlay (modal): owns up/down/enter/esc while open —
+    // up/down move the highlight, they never recall history.
+    if (picker()) {
+      const n = pickerItems().length
+      if (key.name === "up" || key.name === "down") {
+        if (n > 0) setPickerSel((s) => (key.name === "up" ? (s - 1 + n) % n : (s + 1) % n))
+      } else if (key.name === "return") {
+        const item = n > 0 ? pickerItems()[Math.min(pickerSel(), n - 1)] : undefined
+        setPicker(null)
+        setPickerSel(0)
+        if (item) {
+          const [provider, model] = item.id.split("/")
+          if (provider && model) {
+            props.deps.session.switchModel(provider, model)
+            setLabel(props.deps.session.label)
+            push({ kind: "system", text: `${t("cmd.model.set")} ${item.id} ${t("cmd.model.next")}` })
+          }
+        }
+      } else if (key.name === "escape") {
+        setPicker(null)
+        setPickerSel(0)
+      }
+      return
+    }
+    // Panel hotkeys — routed after approval/picker, ahead of the busy gate,
+    // so panel inspection works in any idle state (and even mid-turn).
+    if (key.ctrl && key.name === "t") {
+      setShowThink((v) => !v)
+      return
+    }
+    if (key.ctrl && key.name === "o") {
+      setShowTool((v) => !v)
+      return
+    }
+    if (key.ctrl && key.name === "p") {
+      // Cycle the expanded ToolPanel entry: -1 (none) → 0 → … → n-1 → -1.
+      const n = toolEntries().length
+      if (n > 0) setToolExpanded((v) => (v + 1 >= n ? -1 : v + 1))
       return
     }
     if (busy()) return
@@ -400,13 +447,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       setMenuSel(0)
       if (cmd) {
         commitHistory(cmd.name)
-        runCommand(cmd.name)
+        void runCommand(cmd.name)
         return
       }
       if (!text) return
       commitHistory(text)
       if (text.startsWith("/")) {
-        runCommand(text)
+        void runCommand(text)
         return
       }
       send(text)
@@ -478,19 +525,32 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-        <For each={visibleItems()} fallback={<text style={{ fg: th().tokens.dim }}>{t("shell.transcript.empty")}</text>}>
-          {(it) => itemNode(it)}
-        </For>
+        <Transcript
+          items={visibleItems()}
+          theme={theme()}
+          t={t}
+          spinnerFrame={spinner()}
+          mdStyle={mdStyle}
+        />
       </box>
+      {showTool() ? (
+        <ToolPanel entries={toolEntries()} theme={th()} expandedIndex={toolExpanded()} />
+      ) : null}
+      {showThink() ? <ThinkPanel text={lastReasoning()} theme={th()} /> : null}
       <For each={approval() ? [approval()!] : []}>
         {(ap) => (
-          <box style={{ border: true, borderColor: th().tokens.approvalBorder ?? th().tokens.warn, flexDirection: "column", padding: 1 }}>
-            <text style={{ fg: th().tokens.warn }}>⚠ {t("agent.approve.title")}: {ap.name}</text>
-            <text>{ap.args.slice(0, 200)}</text>
-            <text style={{ fg: th().tokens.dim }}>{t("agent.approve.hint")}</text>
-          </box>
+          <ApprovalCard toolName={ap.name} args={ap.args} hint={t("agent.approve.hint")} theme={th()} />
         )}
       </For>
+      {picker() ? (
+        <Picker
+          title={t("picker.model.title")}
+          items={pickerItems()}
+          selected={pickerSel()}
+          theme={th()}
+          maxRows={8}
+        />
+      ) : null}
       <For each={menuVisible() ? [0] : []}>
         {() => (
           <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "column", padding: 0 }}>
@@ -505,33 +565,16 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           </box>
         )}
       </For>
-      <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "row" }}>
-        <text style={{ fg: th().tokens.accent }}>{busy() ? `${spinner()} ` : "❯ "}</text>
-        {busy() ? (
-          <text style={{ fg: th().tokens.dim }}>{t("shell.input.busy")}</text>
-        ) : input() === "" ? (
-          <>
-            <text style={{ fg: th().tokens.accent, attributes: createTextAttributes({ inverse: true }) }}> </text>
-            <text style={{ fg: th().tokens.dim }}>{t("shell.input.placeholder")}</text>
-          </>
-        ) : (
-          <>
-            <text style={{ fg: th().tokens.text }}>{inputChunks().before}</text>
-            <text style={{ fg: th().tokens.text, attributes: createTextAttributes({ inverse: true }) }}>{inputChunks().at}</text>
-            <text style={{ fg: th().tokens.text }}>{inputChunks().after}</text>
-          </>
-        )}
-      </box>
-      <box style={{ flexDirection: "row", paddingLeft: 2, paddingRight: 2 }}>
-        <For each={footerHints}>
-          {(h, i) => (
-            <text style={{ fg: th().tokens.dim }}>
-              {i() > 0 ? " · " : ""}
-              {h.key} {h.label}
-            </text>
-          )}
-        </For>
-      </box>
+      <InputLine
+        value={input()}
+        cursor={cursor()}
+        busy={busy()}
+        spinnerFrame={spinner()}
+        placeholder={t("shell.input.placeholder")}
+        busyLabel={t("shell.input.busy")}
+        theme={th()}
+      />
+      <FooterHints theme={th()} />
       <StatusBar
         widgets={[
           { kind: "widget", slot: "status", id: "model", order: 10, parts: [{ text: label(), color: th().tokens.accent }] },

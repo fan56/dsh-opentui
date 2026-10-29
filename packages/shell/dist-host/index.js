@@ -1,5 +1,5 @@
 // src/host-entry.tsx
-import { createComponent as _$createComponent3 } from "@opentui/solid";
+import { createComponent as _$createComponent6 } from "@opentui/solid";
 import { render } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -84,14 +84,31 @@ var dict = {
   "agent.approve.hint": { "zh-CN": "y 允许 · n 拒绝", en: "y approve · n decline" },
   "agent.error": { "zh-CN": "出错", en: "error" },
   "cmd.help.lines": {
-    "zh-CN": "/help 命令列表 · /model 切换模型 · /usage 用量 · /clear 清空 · /quit 退出",
-    en: "/help · /model [provider/id] · /usage · /clear · /quit"
+    "zh-CN": "/help 命令列表 · /model 切换模型 · /login /logout 凭据 · /usage 用量 · /clear 清空 · /quit 退出",
+    en: "/help · /model [provider/id] · /login · /logout · /usage · /clear · /quit"
   },
   "cmd.model.current": { "zh-CN": "当前模型", en: "current model" },
   "cmd.model.available": { "zh-CN": "可用模型", en: "available" },
   "cmd.model.set": { "zh-CN": "已切换", en: "switched to" },
+  "cmd.model.next": { "zh-CN": "（下一条消息生效）", en: "(next message)" },
   "cmd.usage.summary": { "zh-CN": "累计", en: "total" },
-  "cmd.cleared": { "zh-CN": "会话已清空", en: "session cleared" }
+  "cmd.cleared": { "zh-CN": "会话已清空", en: "session cleared" },
+  "cmd.login.saved": { "zh-CN": "凭据 {ref} 已保存", en: "credential {ref} saved" },
+  "cmd.login.usage": {
+    "zh-CN": "用法：/login REF KEY（裸 /login 查看凭据状态）",
+    en: "usage: /login REF KEY (bare /login shows credential status)"
+  },
+  "cmd.logout.done": { "zh-CN": "凭据 {ref} 已移除", en: "credential {ref} removed" },
+  "cmd.logout.usage": {
+    "zh-CN": "用法：/logout REF（裸 /logout 查看凭据状态）",
+    en: "usage: /logout REF (bare /logout shows credential status)"
+  },
+  "cmd.cred.status": { "zh-CN": "{ref}：{status}", en: "{ref}: {status}" },
+  "cmd.cred.configured": { "zh-CN": "已配置", en: "configured" },
+  "cmd.cred.missing": { "zh-CN": "未配置", en: "missing" },
+  "picker.model.title": { "zh-CN": "选择模型", en: "select model" },
+  "panel.tools.title": { "zh-CN": "工具", en: "tools" },
+  "panel.think.title": { "zh-CN": "思考", en: "thinking" }
 };
 function createI18n(locale = "zh-CN") {
   const fmt = (s, vars) => vars ? s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`)) : s;
@@ -105,16 +122,16 @@ function createI18n(locale = "zh-CN") {
 }
 
 // src/ShellHost.tsx
-import { memo as _$memo } from "@opentui/solid";
-import { createComponent as _$createComponent2 } from "@opentui/solid";
-import { setProp as _$setProp2 } from "@opentui/solid";
-import { effect as _$effect2 } from "@opentui/solid";
-import { insert as _$insert2 } from "@opentui/solid";
-import { createTextNode as _$createTextNode2 } from "@opentui/solid";
-import { insertNode as _$insertNode2 } from "@opentui/solid";
-import { createElement as _$createElement2 } from "@opentui/solid";
-import { For as For2, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { createTextAttributes, SyntaxStyle } from "@opentui/core";
+import { createTextNode as _$createTextNode5 } from "@opentui/solid";
+import { effect as _$effect5 } from "@opentui/solid";
+import { insertNode as _$insertNode5 } from "@opentui/solid";
+import { memo as _$memo4 } from "@opentui/solid";
+import { insert as _$insert5 } from "@opentui/solid";
+import { createComponent as _$createComponent5 } from "@opentui/solid";
+import { setProp as _$setProp5 } from "@opentui/solid";
+import { createElement as _$createElement5 } from "@opentui/solid";
+import { For as For5, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { SyntaxStyle } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/solid";
 // ../kit/src/theme.ts
 var defaultTheme = {
@@ -211,28 +228,18 @@ function StatusBar(props) {
     return _el$3;
   })();
 }
-// src/ShellHost.tsx
+// ../kit/src/shell-parts.tsx
+import { memo as _$memo } from "@opentui/solid";
+import { createComponent as _$createComponent2 } from "@opentui/solid";
+import { setProp as _$setProp2 } from "@opentui/solid";
+import { effect as _$effect2 } from "@opentui/solid";
+import { insert as _$insert2 } from "@opentui/solid";
+import { createTextNode as _$createTextNode2 } from "@opentui/solid";
+import { insertNode as _$insertNode2 } from "@opentui/solid";
+import { createElement as _$createElement2 } from "@opentui/solid";
+import { For as For2 } from "solid-js";
+import { createTextAttributes } from "@opentui/core";
 var MAX_VISIBLE_ITEMS = 120;
-var THEME_ORDER = ["catppuccin-mocha", "default"];
-var COMMANDS = [{
-  name: "/help",
-  desc: "show available commands"
-}, {
-  name: "/clear",
-  desc: "clear the transcript"
-}, {
-  name: "/usage",
-  desc: "show token usage summary"
-}, {
-  name: "/theme",
-  desc: "cycle theme"
-}, {
-  name: "/model",
-  desc: "show or switch model (/model provider/id)"
-}, {
-  name: "/quit",
-  desc: "exit the shell"
-}];
 var footerHints = [{
   key: "enter",
   label: "send"
@@ -283,57 +290,10 @@ function renderAssistant(text, theme) {
   }
   return out;
 }
-function ShellHost(props) {
-  const t = props.deps.t;
-  const store = props.deps.store;
-  const [input, setInput] = createSignal("");
-  const [cursor, setCursor] = createSignal(0);
-  const [history, setHistory] = createSignal([]);
-  const [historyIdx, setHistoryIdx] = createSignal(0);
-  const [items, setItems] = createSignal([]);
-  const [busy, setBusy] = createSignal(false);
-  const [spin, setSpin] = createSignal(0);
-  const [approval, setApproval] = createSignal(null);
-  const [usage, setUsage] = createSignal({
-    prompt: 0,
-    completion: 0,
-    turns: 0
-  });
-  const [label, setLabel] = createSignal(props.deps.session.label);
-  const [snapshot, setSnapshot] = createSignal(store.snapshot);
-  const initialTheme = process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha";
-  const [themeName, setThemeName] = createSignal(themes[initialTheme] ? initialTheme : "catppuccin-mocha");
-  const theme = () => getTheme(themeName());
-  const [menuOpen, setMenuOpen] = createSignal(true);
-  const [menuSel, setMenuSel] = createSignal(0);
-  let approveResolve = null;
-  onMount(() => {
-    onCleanup(store.subscribe(() => setSnapshot(store.snapshot)));
-    const t2 = setInterval(() => setSpin((s) => (s + 1) % 4), 150);
-    onCleanup(() => clearInterval(t2));
-  });
-  const spinner = () => ["⠋", "⠙", "⠹", "⠸"][spin()];
-  const filteredCommands = createMemo(() => {
-    const m = /^\/(\S*)/.exec(input());
-    if (!m)
-      return [];
-    return COMMANDS.filter((c) => c.name.slice(1).startsWith(m[1]));
-  });
-  const clampedSel = createMemo(() => {
-    const n = filteredCommands().length;
-    return n === 0 ? 0 : Math.min(menuSel(), n - 1);
-  });
-  const menuVisible = createMemo(() => !busy() && menuOpen() && filteredCommands().length > 0);
-  const rendererCtx = useRenderer();
-  let mdStyle;
-  try {
-    mdStyle = SyntaxStyle.create(rendererCtx);
-  } catch {
-    mdStyle = undefined;
-  }
-  const visibleItems = createMemo(() => items().slice(-MAX_VISIBLE_ITEMS));
+function Transcript(props) {
+  const visibleItems = () => props.items.slice(-(props.maxItems ?? MAX_VISIBLE_ITEMS));
   const itemNode = (it) => {
-    const th = theme();
+    const th = props.theme;
     if (it.kind === "user") {
       return (() => {
         var _el$ = _$createElement2("text"), _el$2 = _$createTextNode2(`❯ `);
@@ -355,9 +315,16 @@ function ShellHost(props) {
             flexDirection: "column"
           });
           _$setProp2(_el$4, "streaming", false);
-          _$setProp2(_el$4, "syntaxStyle", mdStyle);
           _$insertNode2(_el$5, _$createTextNode2(` `));
-          _$effect2((_$p) => _$setProp2(_el$4, "content", it.text, _$p));
+          _$effect2((_p$) => {
+            var _v$ = it.text, _v$2 = props.mdStyle;
+            _v$ !== _p$.e && (_p$.e = _$setProp2(_el$4, "content", _v$, _p$.e));
+            _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$4, "syntaxStyle", _v$2, _p$.t));
+            return _p$;
+          }, {
+            e: undefined,
+            t: undefined
+          });
           return _el$3;
         })();
       }
@@ -385,7 +352,7 @@ function ShellHost(props) {
     if (it.kind === "thinking") {
       return (() => {
         var _el$9 = _$createElement2("text");
-        _$insert2(_el$9, () => `${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`);
+        _$insert2(_el$9, () => `${props.spinnerFrame} ${props.t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`);
         _$effect2((_$p) => _$setProp2(_el$9, "style", {
           fg: th.tokens.dim
         }, _$p));
@@ -401,15 +368,15 @@ function ShellHost(props) {
           flexDirection: "column"
         });
         _$insert2(_el$1, () => ` ⚒ ${it.name} ${it.args.slice(0, 90)}`);
-        _$insert2(_el$10, () => ` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`);
+        _$insert2(_el$10, () => ` ⎿ ${it.ok ? props.t("agent.tool.ok") : props.t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`);
         _$effect2((_p$) => {
-          var _v$ = {
+          var _v$3 = {
             fg: th.tokens.toolOk ?? th.tokens.warn
-          }, _v$2 = {
+          }, _v$4 = {
             fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger
           };
-          _v$ !== _p$.e && (_p$.e = _$setProp2(_el$1, "style", _v$, _p$.e));
-          _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$10, "style", _v$2, _p$.t));
+          _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$1, "style", _v$3, _p$.e));
+          _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$10, "style", _v$4, _p$.t));
           return _p$;
         }, {
           e: undefined,
@@ -423,7 +390,7 @@ function ShellHost(props) {
         var _el$11 = _$createElement2("text"), _el$12 = _$createTextNode2(`✗ `), _el$13 = _$createTextNode2(`: `);
         _$insertNode2(_el$11, _el$12);
         _$insertNode2(_el$11, _el$13);
-        _$insert2(_el$11, () => t("agent.error"), _el$13);
+        _$insert2(_el$11, () => props.t("agent.error"), _el$13);
         _$insert2(_el$11, () => it.text, null);
         _$effect2((_$p) => _$setProp2(_el$11, "style", {
           fg: th.tokens.danger
@@ -441,6 +408,518 @@ function ShellHost(props) {
       return _el$14;
     })();
   };
+  return (() => {
+    var _el$16 = _$createElement2("box");
+    _$setProp2(_el$16, "style", {
+      flexDirection: "column",
+      flexGrow: 1,
+      padding: 1
+    });
+    _$insert2(_el$16, _$createComponent2(For2, {
+      get each() {
+        return visibleItems();
+      },
+      get fallback() {
+        return (() => {
+          var _el$17 = _$createElement2("text");
+          _$insert2(_el$17, () => props.t("shell.transcript.empty"));
+          _$effect2((_$p) => _$setProp2(_el$17, "style", {
+            fg: props.theme.tokens.dim
+          }, _$p));
+          return _el$17;
+        })();
+      },
+      children: (it) => itemNode(it)
+    }));
+    return _el$16;
+  })();
+}
+function InputLine(props) {
+  const inputChunks = () => {
+    const s = props.value;
+    const c = Math.min(props.cursor, s.length);
+    return {
+      before: s.slice(0, c),
+      at: c < s.length ? s.charAt(c) : " ",
+      after: c < s.length ? s.slice(c + 1) : ""
+    };
+  };
+  return (() => {
+    var _el$18 = _$createElement2("box"), _el$19 = _$createElement2("text");
+    _$insertNode2(_el$18, _el$19);
+    _$insert2(_el$19, (() => {
+      var _c$ = _$memo(() => !!props.busy);
+      return () => _c$() ? `${props.spinnerFrame} ` : "❯ ";
+    })());
+    _$insert2(_el$18, (() => {
+      var _c$2 = _$memo(() => !!props.busy);
+      return () => _c$2() ? (() => {
+        var _el$20 = _$createElement2("text");
+        _$insert2(_el$20, () => props.busyLabel);
+        _$effect2((_$p) => _$setProp2(_el$20, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$20;
+      })() : _$memo(() => props.value === "")() ? [(() => {
+        var _el$21 = _$createElement2("text");
+        _$insertNode2(_el$21, _$createTextNode2(` `));
+        _$effect2((_$p) => _$setProp2(_el$21, "style", {
+          fg: props.theme.tokens.accent,
+          attributes: createTextAttributes({
+            inverse: true
+          })
+        }, _$p));
+        return _el$21;
+      })(), (() => {
+        var _el$23 = _$createElement2("text");
+        _$insert2(_el$23, () => props.placeholder);
+        _$effect2((_$p) => _$setProp2(_el$23, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$23;
+      })()] : [(() => {
+        var _el$24 = _$createElement2("text");
+        _$insert2(_el$24, () => inputChunks().before);
+        _$effect2((_$p) => _$setProp2(_el$24, "style", {
+          fg: props.theme.tokens.text
+        }, _$p));
+        return _el$24;
+      })(), (() => {
+        var _el$25 = _$createElement2("text");
+        _$insert2(_el$25, () => inputChunks().at);
+        _$effect2((_$p) => _$setProp2(_el$25, "style", {
+          fg: props.theme.tokens.text,
+          attributes: createTextAttributes({
+            inverse: true
+          })
+        }, _$p));
+        return _el$25;
+      })(), (() => {
+        var _el$26 = _$createElement2("text");
+        _$insert2(_el$26, () => inputChunks().after);
+        _$effect2((_$p) => _$setProp2(_el$26, "style", {
+          fg: props.theme.tokens.text
+        }, _$p));
+        return _el$26;
+      })()];
+    })(), null);
+    _$effect2((_p$) => {
+      var _v$5 = {
+        border: true,
+        borderColor: props.theme.tokens.border,
+        flexDirection: "row"
+      }, _v$6 = {
+        fg: props.theme.tokens.accent
+      };
+      _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$18, "style", _v$5, _p$.e));
+      _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$19, "style", _v$6, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$18;
+  })();
+}
+function FooterHints(props) {
+  return (() => {
+    var _el$27 = _$createElement2("box");
+    _$setProp2(_el$27, "style", {
+      flexDirection: "row",
+      paddingLeft: 2,
+      paddingRight: 2
+    });
+    _$insert2(_el$27, _$createComponent2(For2, {
+      each: footerHints,
+      children: (h, i) => (() => {
+        var _el$28 = _$createElement2("text"), _el$29 = _$createTextNode2(` `);
+        _$insertNode2(_el$28, _el$29);
+        _$insert2(_el$28, () => i() > 0 ? " · " : "", _el$29);
+        _$insert2(_el$28, () => h.key, _el$29);
+        _$insert2(_el$28, () => h.label, null);
+        _$effect2((_$p) => _$setProp2(_el$28, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$28;
+      })()
+    }));
+    return _el$27;
+  })();
+}
+// ../kit/src/overlays.tsx
+import { createTextNode as _$createTextNode3 } from "@opentui/solid";
+import { setProp as _$setProp3 } from "@opentui/solid";
+import { effect as _$effect3 } from "@opentui/solid";
+import { insertNode as _$insertNode3 } from "@opentui/solid";
+import { memo as _$memo2 } from "@opentui/solid";
+import { createComponent as _$createComponent3 } from "@opentui/solid";
+import { insert as _$insert3 } from "@opentui/solid";
+import { createElement as _$createElement3 } from "@opentui/solid";
+import { For as For3 } from "solid-js";
+function Picker(props) {
+  const maxRows = () => props.maxRows ?? 12;
+  const visible = () => props.items.slice(0, maxRows());
+  const hiddenCount = () => props.items.length - visible().length;
+  const rowStyle = (sel) => {
+    if (!sel)
+      return {
+        fg: props.theme.tokens.dim
+      };
+    return {
+      fg: props.theme.tokens.text,
+      ...props.theme.tokens.selection ? {
+        bg: props.theme.tokens.selection
+      } : {}
+    };
+  };
+  const needsHeader = (idx) => {
+    const it = visible()[idx];
+    if (!it || it.group === undefined)
+      return false;
+    const prev = idx > 0 ? visible()[idx - 1] : undefined;
+    return prev?.group !== it.group;
+  };
+  return (() => {
+    var _el$ = _$createElement3("box"), _el$2 = _$createElement3("text");
+    _$insertNode3(_el$, _el$2);
+    _$insert3(_el$2, () => props.title);
+    _$insert3(_el$, _$createComponent3(For3, {
+      get each() {
+        return visible();
+      },
+      children: (it, i) => [_$memo2(() => _$memo2(() => !!needsHeader(i()))() ? (() => {
+        var _el$4 = _$createElement3("text");
+        _$insert3(_el$4, () => it.group);
+        _$effect3((_$p) => _$setProp3(_el$4, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$4;
+      })() : null), (() => {
+        var _el$3 = _$createElement3("text");
+        _$insert3(_el$3, () => i() === props.selected ? "› " : "  ", null);
+        _$insert3(_el$3, () => it.label, null);
+        _$insert3(_el$3, (() => {
+          var _c$2 = _$memo2(() => !!it.detail);
+          return () => _c$2() ? (() => {
+            var _el$5 = _$createElement3("span");
+            _$insert3(_el$5, () => `  ${it.detail}`);
+            _$effect3((_$p) => _$setProp3(_el$5, "style", {
+              fg: props.theme.tokens.dim
+            }, _$p));
+            return _el$5;
+          })() : null;
+        })(), null);
+        _$effect3((_$p) => _$setProp3(_el$3, "style", rowStyle(i() === props.selected), _$p));
+        return _el$3;
+      })()]
+    }), null);
+    _$insert3(_el$, (() => {
+      var _c$ = _$memo2(() => hiddenCount() > 0);
+      return () => _c$() ? (() => {
+        var _el$6 = _$createElement3("text");
+        _$insert3(_el$6, () => `… ${hiddenCount()} more`);
+        _$effect3((_$p) => _$setProp3(_el$6, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$6;
+      })() : null;
+    })(), null);
+    _$effect3((_p$) => {
+      var _v$ = {
+        border: true,
+        borderColor: props.theme.tokens.border,
+        flexDirection: "column",
+        padding: 1
+      }, _v$2 = {
+        fg: props.theme.tokens.accent
+      };
+      _v$ !== _p$.e && (_p$.e = _$setProp3(_el$, "style", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp3(_el$2, "style", _v$2, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$;
+  })();
+}
+function ApprovalCard(props) {
+  const th = () => props.theme;
+  return (() => {
+    var _el$0 = _$createElement3("box"), _el$1 = _$createElement3("text"), _el$10 = _$createTextNode3(`⚠ `), _el$11 = _$createElement3("text"), _el$12 = _$createElement3("text");
+    _$insertNode3(_el$0, _el$1);
+    _$insertNode3(_el$0, _el$11);
+    _$insertNode3(_el$0, _el$12);
+    _$insertNode3(_el$1, _el$10);
+    _$insert3(_el$1, () => props.toolName, null);
+    _$insert3(_el$11, () => props.args.slice(0, 200));
+    _$insert3(_el$12, () => props.hint);
+    _$effect3((_p$) => {
+      var _v$5 = {
+        border: true,
+        borderColor: th().tokens.approvalBorder ?? th().tokens.warn,
+        flexDirection: "column",
+        padding: 1
+      }, _v$6 = {
+        fg: th().tokens.warn
+      }, _v$7 = {
+        fg: th().tokens.dim
+      };
+      _v$5 !== _p$.e && (_p$.e = _$setProp3(_el$0, "style", _v$5, _p$.e));
+      _v$6 !== _p$.t && (_p$.t = _$setProp3(_el$1, "style", _v$6, _p$.t));
+      _v$7 !== _p$.a && (_p$.a = _$setProp3(_el$12, "style", _v$7, _p$.a));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined
+    });
+    return _el$0;
+  })();
+}
+// ../kit/src/panels.tsx
+import { createTextNode as _$createTextNode4 } from "@opentui/solid";
+import { memo as _$memo3 } from "@opentui/solid";
+import { createComponent as _$createComponent4 } from "@opentui/solid";
+import { effect as _$effect4 } from "@opentui/solid";
+import { insertNode as _$insertNode4 } from "@opentui/solid";
+import { insert as _$insert4 } from "@opentui/solid";
+import { setProp as _$setProp4 } from "@opentui/solid";
+import { createElement as _$createElement4 } from "@opentui/solid";
+import { For as For4 } from "solid-js";
+var TOOL_MAX_ROWS = 14;
+var TOOL_OUTPUT_TAIL = 6;
+var THINK_TAIL = 10;
+function dockHeader(theme, title, closeHint) {
+  return (() => {
+    var _el$ = _$createElement4("box"), _el$2 = _$createElement4("text"), _el$3 = _$createElement4("box"), _el$4 = _$createElement4("text");
+    _$insertNode4(_el$, _el$2);
+    _$insertNode4(_el$, _el$3);
+    _$insertNode4(_el$, _el$4);
+    _$setProp4(_el$, "style", {
+      flexDirection: "row"
+    });
+    _$insert4(_el$2, title);
+    _$setProp4(_el$3, "style", {
+      flexGrow: 1
+    });
+    _$insert4(_el$4, closeHint);
+    _$effect4((_p$) => {
+      var _v$ = {
+        fg: theme.tokens.accent
+      }, _v$2 = {
+        fg: theme.tokens.dim
+      };
+      _v$ !== _p$.e && (_p$.e = _$setProp4(_el$2, "style", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp4(_el$4, "style", _v$2, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$;
+  })();
+}
+function ToolPanel(props) {
+  const rows = () => {
+    const th = props.theme;
+    const out = [];
+    for (let i = 0;i < props.entries.length && out.length < TOOL_MAX_ROWS; i++) {
+      const e = props.entries[i];
+      if (!e)
+        continue;
+      const fg = e.ok ? th.tokens.toolOk ?? th.tokens.ok : th.tokens.toolFail ?? th.tokens.danger;
+      out.push({
+        text: `⚒ ${e.name} ${e.ok ? "ok" : "fail"}`,
+        fg
+      });
+      if (i === props.expandedIndex) {
+        for (const line of e.output.split(`
+`).slice(-TOOL_OUTPUT_TAIL)) {
+          if (out.length >= TOOL_MAX_ROWS)
+            break;
+          out.push({
+            text: `  ${line}`,
+            fg: th.tokens.dim
+          });
+        }
+      }
+    }
+    return out;
+  };
+  return (() => {
+    var _el$5 = _$createElement4("box");
+    _$insert4(_el$5, () => dockHeader(props.theme, ` Tools (${props.entries.length})`, "ctrl+o close"), null);
+    _$insert4(_el$5, _$createComponent4(For4, {
+      get each() {
+        return rows();
+      },
+      children: (r) => (() => {
+        var _el$6 = _$createElement4("text");
+        _$insert4(_el$6, () => r.text);
+        _$effect4((_$p) => _$setProp4(_el$6, "style", {
+          fg: r.fg
+        }, _$p));
+        return _el$6;
+      })()
+    }), null);
+    _$effect4((_$p) => _$setProp4(_el$5, "style", {
+      border: true,
+      borderColor: props.theme.tokens.border,
+      flexDirection: "column",
+      padding: 1
+    }, _$p));
+    return _el$5;
+  })();
+}
+function ThinkPanel(props) {
+  const lines = () => props.text.split(`
+`);
+  const tail = () => lines().slice(-THINK_TAIL);
+  const truncated = () => lines().length > tail().length;
+  return (() => {
+    var _el$7 = _$createElement4("box");
+    _$insert4(_el$7, () => dockHeader(props.theme, " Thinking ", "ctrl+t close"), null);
+    _$insert4(_el$7, (() => {
+      var _c$ = _$memo3(() => !!truncated());
+      return () => _c$() ? (() => {
+        var _el$8 = _$createElement4("text");
+        _$insertNode4(_el$8, _$createTextNode4(`…`));
+        _$effect4((_$p) => _$setProp4(_el$8, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$8;
+      })() : null;
+    })(), null);
+    _$insert4(_el$7, _$createComponent4(For4, {
+      get each() {
+        return tail();
+      },
+      children: (l) => (() => {
+        var _el$0 = _$createElement4("text");
+        _$insert4(_el$0, l);
+        _$effect4((_$p) => _$setProp4(_el$0, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$0;
+      })()
+    }), null);
+    _$effect4((_$p) => _$setProp4(_el$7, "style", {
+      border: true,
+      borderColor: props.theme.tokens.border,
+      flexDirection: "column",
+      padding: 1
+    }, _$p));
+    return _el$7;
+  })();
+}
+// src/ShellHost.tsx
+var MAX_VISIBLE_ITEMS2 = 120;
+var THEME_ORDER = ["catppuccin-mocha", "default"];
+var CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
+var COMMANDS = [{
+  name: "/help",
+  desc: "show available commands"
+}, {
+  name: "/clear",
+  desc: "clear the transcript"
+}, {
+  name: "/usage",
+  desc: "show token usage summary"
+}, {
+  name: "/theme",
+  desc: "cycle theme"
+}, {
+  name: "/model",
+  desc: "pick or switch model (/model provider/id)"
+}, {
+  name: "/login",
+  desc: "set an api key (/login REF KEY)"
+}, {
+  name: "/logout",
+  desc: "remove an api key (/logout REF)"
+}, {
+  name: "/quit",
+  desc: "exit the shell"
+}];
+var errText = (e) => String(e instanceof Error ? e.message : e).slice(0, 300);
+function ShellHost(props) {
+  const t = props.deps.t;
+  const store = props.deps.store;
+  const [input, setInput] = createSignal("");
+  const [cursor, setCursor] = createSignal(0);
+  const [history, setHistory] = createSignal([]);
+  const [historyIdx, setHistoryIdx] = createSignal(0);
+  const [items, setItems] = createSignal([]);
+  const [busy, setBusy] = createSignal(false);
+  const [spin, setSpin] = createSignal(0);
+  const [approval, setApproval] = createSignal(null);
+  const [usage, setUsage] = createSignal({
+    prompt: 0,
+    completion: 0,
+    turns: 0
+  });
+  const [label, setLabel] = createSignal(props.deps.session.label);
+  const [snapshot, setSnapshot] = createSignal(store.snapshot);
+  const [showThink, setShowThink] = createSignal(false);
+  const [showTool, setShowTool] = createSignal(false);
+  const [toolExpanded, setToolExpanded] = createSignal(-1);
+  const [picker, setPicker] = createSignal(null);
+  const [pickerSel, setPickerSel] = createSignal(0);
+  let reasoningBuf = "";
+  const [lastReasoning, setLastReasoning] = createSignal("");
+  const initialTheme = process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha";
+  const [themeName, setThemeName] = createSignal(themes[initialTheme] ? initialTheme : "catppuccin-mocha");
+  const theme = () => getTheme(themeName());
+  const [menuOpen, setMenuOpen] = createSignal(true);
+  const [menuSel, setMenuSel] = createSignal(0);
+  let approveResolve = null;
+  onMount(() => {
+    onCleanup(store.subscribe(() => setSnapshot(store.snapshot)));
+    const t2 = setInterval(() => setSpin((s) => (s + 1) % 4), 150);
+    onCleanup(() => clearInterval(t2));
+  });
+  const spinner = () => ["⠋", "⠙", "⠹", "⠸"][spin()];
+  const filteredCommands = createMemo(() => {
+    const m = /^\/(\S*)/.exec(input());
+    if (!m)
+      return [];
+    return COMMANDS.filter((c) => c.name.slice(1).startsWith(m[1]));
+  });
+  const clampedSel = createMemo(() => {
+    const n = filteredCommands().length;
+    return n === 0 ? 0 : Math.min(menuSel(), n - 1);
+  });
+  const menuVisible = createMemo(() => !busy() && menuOpen() && filteredCommands().length > 0);
+  const pickerItems = createMemo(() => {
+    const out = [];
+    for (const p of props.deps.session.listProviders()) {
+      for (const m of p.models) {
+        const id = `${p.provider}/${m}`;
+        out.push({
+          id,
+          group: p.provider,
+          label: m,
+          detail: label() === id ? "current" : undefined
+        });
+      }
+    }
+    return out;
+  });
+  const toolEntries = createMemo(() => items().filter((it) => it.kind === "tool").map((it) => ({
+    name: it.name,
+    args: it.args,
+    ok: it.ok,
+    output: it.brief
+  })));
+  const rendererCtx = useRenderer();
+  let mdStyle;
+  try {
+    mdStyle = SyntaxStyle.create(rendererCtx);
+  } catch {
+    mdStyle = undefined;
+  }
+  const visibleItems = createMemo(() => items().slice(-MAX_VISIBLE_ITEMS2));
   let lastBump = 0;
   let streaming = {};
   const bumpSoon = () => {
@@ -489,16 +968,26 @@ function ShellHost(props) {
     setInput(text);
     setCursor(text.length);
   };
-  const inputChunks = () => {
-    const s = input();
-    const c = Math.min(cursor(), s.length);
-    return {
-      before: s.slice(0, c),
-      at: c < s.length ? s.charAt(c) : " ",
-      after: c < s.length ? s.slice(c + 1) : ""
-    };
+  const pushCredStatus = async () => {
+    for (const ref of CRED_REFS) {
+      try {
+        const st = await props.deps.session.credentialStatus(ref);
+        push({
+          kind: "system",
+          text: t("cmd.cred.status", {
+            ref,
+            status: st.configured ? t("cmd.cred.configured") : t("cmd.cred.missing")
+          })
+        });
+      } catch (e) {
+        push({
+          kind: "error",
+          text: `${ref}: ${errText(e)}`
+        });
+      }
+    }
   };
-  function runCommand(text) {
+  async function runCommand(text) {
     const parts = text.slice(1).trim().split(/\s+/);
     const cmd = parts[0];
     const arg = parts.slice(1).join(" ");
@@ -531,20 +1020,9 @@ function ShellHost(props) {
       });
     } else if (cmd === "model") {
       if (!arg) {
-        push({
-          kind: "system",
-          text: `model: ${props.deps.session.label}`
-        });
-        const catalog = props.deps.session.listProviders();
-        for (const p of catalog) {
-          push({
-            kind: "system",
-            text: `  ${p.provider}: ${p.models.slice(0, 8).join(", ")}${p.models.length > 8 ? ` …(+${p.models.length - 8})` : ""}`
-          });
-        }
-        push({
-          kind: "system",
-          text: "switch: /model provider/model-id (applies to the next message)"
+        setPickerSel(0);
+        setPicker({
+          kind: "model"
         });
       } else {
         const [provider, model] = arg.split("/");
@@ -558,9 +1036,57 @@ function ShellHost(props) {
           setLabel(props.deps.session.label);
           push({
             kind: "system",
-            text: `model → ${provider}/${model} (next message)`
+            text: `${t("cmd.model.set")} ${provider}/${model} ${t("cmd.model.next")}`
           });
         }
+      }
+    } else if (cmd === "login") {
+      if (parts.length === 3) {
+        try {
+          await props.deps.session.login(parts[1], parts[2]);
+          push({
+            kind: "system",
+            text: t("cmd.login.saved", {
+              ref: parts[1]
+            })
+          });
+        } catch (e) {
+          push({
+            kind: "error",
+            text: errText(e)
+          });
+        }
+      } else if (parts.length === 1) {
+        await pushCredStatus();
+      } else {
+        push({
+          kind: "error",
+          text: t("cmd.login.usage")
+        });
+      }
+    } else if (cmd === "logout") {
+      if (parts.length === 2) {
+        try {
+          await props.deps.session.logout(parts[1]);
+          push({
+            kind: "system",
+            text: t("cmd.logout.done", {
+              ref: parts[1]
+            })
+          });
+        } catch (e) {
+          push({
+            kind: "error",
+            text: errText(e)
+          });
+        }
+      } else if (parts.length === 1) {
+        await pushCredStatus();
+      } else {
+        push({
+          kind: "error",
+          text: t("cmd.logout.usage")
+        });
       }
     } else {
       push({
@@ -580,6 +1106,8 @@ function ShellHost(props) {
     let thinkingItem = null;
     let replyItem = null;
     streaming = {};
+    reasoningBuf = "";
+    setLastReasoning("");
     try {
       await props.deps.session.turn(text, {
         onThinkingDelta: (s) => {
@@ -595,6 +1123,8 @@ function ShellHost(props) {
           thinkingItem.tail = (thinkingItem.tail + s).split(`
 `).slice(-2).join(" ");
           thinkingItem.chars += s.length;
+          reasoningBuf += s;
+          setLastReasoning(reasoningBuf);
           bumpSoon();
         },
         onContentDelta: (s) => {
@@ -656,7 +1186,7 @@ function ShellHost(props) {
     } catch (e) {
       push({
         kind: "error",
-        text: String(e instanceof Error ? e.message : e).slice(0, 300)
+        text: errText(e)
       });
     } finally {
       setApproval(null);
@@ -685,6 +1215,46 @@ function ShellHost(props) {
         approveResolve?.(false);
         approveResolve = null;
       }
+      return;
+    }
+    if (picker()) {
+      const n = pickerItems().length;
+      if (key.name === "up" || key.name === "down") {
+        if (n > 0)
+          setPickerSel((s) => key.name === "up" ? (s - 1 + n) % n : (s + 1) % n);
+      } else if (key.name === "return") {
+        const item = n > 0 ? pickerItems()[Math.min(pickerSel(), n - 1)] : undefined;
+        setPicker(null);
+        setPickerSel(0);
+        if (item) {
+          const [provider, model] = item.id.split("/");
+          if (provider && model) {
+            props.deps.session.switchModel(provider, model);
+            setLabel(props.deps.session.label);
+            push({
+              kind: "system",
+              text: `${t("cmd.model.set")} ${item.id} ${t("cmd.model.next")}`
+            });
+          }
+        }
+      } else if (key.name === "escape") {
+        setPicker(null);
+        setPickerSel(0);
+      }
+      return;
+    }
+    if (key.ctrl && key.name === "t") {
+      setShowThink((v) => !v);
+      return;
+    }
+    if (key.ctrl && key.name === "o") {
+      setShowTool((v) => !v);
+      return;
+    }
+    if (key.ctrl && key.name === "p") {
+      const n = toolEntries().length;
+      if (n > 0)
+        setToolExpanded((v) => v + 1 >= n ? -1 : v + 1);
       return;
     }
     if (busy())
@@ -800,181 +1370,152 @@ function ShellHost(props) {
   const widgets = () => snapshot().filter((d) => d.kind === "widget");
   const th = () => theme();
   return (() => {
-    var _el$16 = _$createElement2("box"), _el$17 = _$createElement2("box"), _el$18 = _$createElement2("box"), _el$19 = _$createElement2("text"), _el$20 = _$createElement2("box");
-    _$insertNode2(_el$16, _el$17);
-    _$insertNode2(_el$16, _el$18);
-    _$insertNode2(_el$16, _el$20);
-    _$setProp2(_el$16, "style", {
+    var _el$ = _$createElement5("box"), _el$2 = _$createElement5("box");
+    _$insertNode5(_el$, _el$2);
+    _$setProp5(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1
     });
-    _$setProp2(_el$17, "style", {
+    _$setProp5(_el$2, "style", {
       flexDirection: "column",
       flexGrow: 1,
       padding: 1
     });
-    _$insert2(_el$17, _$createComponent2(For2, {
-      get each() {
+    _$insert5(_el$2, _$createComponent5(Transcript, {
+      get items() {
         return visibleItems();
       },
-      get fallback() {
-        return (() => {
-          var _el$21 = _$createElement2("text");
-          _$insert2(_el$21, () => t("shell.transcript.empty"));
-          _$effect2((_$p) => _$setProp2(_el$21, "style", {
-            fg: th().tokens.dim
-          }, _$p));
-          return _el$21;
-        })();
+      get theme() {
+        return theme();
       },
-      children: (it) => itemNode(it)
+      t,
+      get spinnerFrame() {
+        return spinner();
+      },
+      mdStyle
     }));
-    _$insert2(_el$16, _$createComponent2(For2, {
+    _$insert5(_el$, (() => {
+      var _c$ = _$memo4(() => !!showTool());
+      return () => _c$() ? _$createComponent5(ToolPanel, {
+        get entries() {
+          return toolEntries();
+        },
+        get theme() {
+          return th();
+        },
+        get expandedIndex() {
+          return toolExpanded();
+        }
+      }) : null;
+    })(), null);
+    _$insert5(_el$, (() => {
+      var _c$2 = _$memo4(() => !!showThink());
+      return () => _c$2() ? _$createComponent5(ThinkPanel, {
+        get text() {
+          return lastReasoning();
+        },
+        get theme() {
+          return th();
+        }
+      }) : null;
+    })(), null);
+    _$insert5(_el$, _$createComponent5(For5, {
       get each() {
-        return _$memo(() => !!approval())() ? [approval()] : [];
+        return _$memo4(() => !!approval())() ? [approval()] : [];
       },
-      children: (ap) => (() => {
-        var _el$22 = _$createElement2("box"), _el$23 = _$createElement2("text"), _el$24 = _$createTextNode2(`⚠ `), _el$25 = _$createTextNode2(`: `), _el$26 = _$createElement2("text"), _el$27 = _$createElement2("text");
-        _$insertNode2(_el$22, _el$23);
-        _$insertNode2(_el$22, _el$26);
-        _$insertNode2(_el$22, _el$27);
-        _$insertNode2(_el$23, _el$24);
-        _$insertNode2(_el$23, _el$25);
-        _$insert2(_el$23, () => t("agent.approve.title"), _el$25);
-        _$insert2(_el$23, () => ap.name, null);
-        _$insert2(_el$26, () => ap.args.slice(0, 200));
-        _$insert2(_el$27, () => t("agent.approve.hint"));
-        _$effect2((_p$) => {
-          var _v$5 = {
-            border: true,
-            borderColor: th().tokens.approvalBorder ?? th().tokens.warn,
-            flexDirection: "column",
-            padding: 1
-          }, _v$6 = {
-            fg: th().tokens.warn
-          }, _v$7 = {
-            fg: th().tokens.dim
-          };
-          _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$22, "style", _v$5, _p$.e));
-          _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$23, "style", _v$6, _p$.t));
-          _v$7 !== _p$.a && (_p$.a = _$setProp2(_el$27, "style", _v$7, _p$.a));
-          return _p$;
-        }, {
-          e: undefined,
-          t: undefined,
-          a: undefined
-        });
-        return _el$22;
-      })()
-    }), _el$18);
-    _$insert2(_el$16, _$createComponent2(For2, {
+      children: (ap) => _$createComponent5(ApprovalCard, {
+        get toolName() {
+          return ap.name;
+        },
+        get args() {
+          return ap.args;
+        },
+        get hint() {
+          return t("agent.approve.hint");
+        },
+        get theme() {
+          return th();
+        }
+      })
+    }), null);
+    _$insert5(_el$, (() => {
+      var _c$3 = _$memo4(() => !!picker());
+      return () => _c$3() ? _$createComponent5(Picker, {
+        get title() {
+          return t("picker.model.title");
+        },
+        get items() {
+          return pickerItems();
+        },
+        get selected() {
+          return pickerSel();
+        },
+        get theme() {
+          return th();
+        },
+        maxRows: 8
+      }) : null;
+    })(), null);
+    _$insert5(_el$, _$createComponent5(For5, {
       get each() {
         return menuVisible() ? [0] : [];
       },
       children: () => (() => {
-        var _el$28 = _$createElement2("box");
-        _$insert2(_el$28, _$createComponent2(For2, {
+        var _el$3 = _$createElement5("box");
+        _$insert5(_el$3, _$createComponent5(For5, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$29 = _$createElement2("text"), _el$30 = _$createTextNode2(` `);
-            _$insertNode2(_el$29, _el$30);
-            _$insert2(_el$29, () => i() === clampedSel() ? "› " : "  ", _el$30);
-            _$insert2(_el$29, () => c.name, _el$30);
-            _$insert2(_el$29, () => c.desc, null);
-            _$effect2((_$p) => _$setProp2(_el$29, "style", {
+            var _el$4 = _$createElement5("text"), _el$5 = _$createTextNode5(` `);
+            _$insertNode5(_el$4, _el$5);
+            _$insert5(_el$4, () => i() === clampedSel() ? "› " : "  ", _el$5);
+            _$insert5(_el$4, () => c.name, _el$5);
+            _$insert5(_el$4, () => c.desc, null);
+            _$effect5((_$p) => _$setProp5(_el$4, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
-            return _el$29;
+            return _el$4;
           })()
         }));
-        _$effect2((_$p) => _$setProp2(_el$28, "style", {
+        _$effect5((_$p) => _$setProp5(_el$3, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
           padding: 0
         }, _$p));
-        return _el$28;
+        return _el$3;
       })()
-    }), _el$18);
-    _$insertNode2(_el$18, _el$19);
-    _$insert2(_el$19, (() => {
-      var _c$ = _$memo(() => !!busy());
-      return () => _c$() ? `${spinner()} ` : "❯ ";
-    })());
-    _$insert2(_el$18, (() => {
-      var _c$2 = _$memo(() => !!busy());
-      return () => _c$2() ? (() => {
-        var _el$31 = _$createElement2("text");
-        _$insert2(_el$31, () => t("shell.input.busy"));
-        _$effect2((_$p) => _$setProp2(_el$31, "style", {
-          fg: th().tokens.dim
-        }, _$p));
-        return _el$31;
-      })() : _$memo(() => input() === "")() ? [(() => {
-        var _el$32 = _$createElement2("text");
-        _$insertNode2(_el$32, _$createTextNode2(` `));
-        _$effect2((_$p) => _$setProp2(_el$32, "style", {
-          fg: th().tokens.accent,
-          attributes: createTextAttributes({
-            inverse: true
-          })
-        }, _$p));
-        return _el$32;
-      })(), (() => {
-        var _el$34 = _$createElement2("text");
-        _$insert2(_el$34, () => t("shell.input.placeholder"));
-        _$effect2((_$p) => _$setProp2(_el$34, "style", {
-          fg: th().tokens.dim
-        }, _$p));
-        return _el$34;
-      })()] : [(() => {
-        var _el$35 = _$createElement2("text");
-        _$insert2(_el$35, () => inputChunks().before);
-        _$effect2((_$p) => _$setProp2(_el$35, "style", {
-          fg: th().tokens.text
-        }, _$p));
-        return _el$35;
-      })(), (() => {
-        var _el$36 = _$createElement2("text");
-        _$insert2(_el$36, () => inputChunks().at);
-        _$effect2((_$p) => _$setProp2(_el$36, "style", {
-          fg: th().tokens.text,
-          attributes: createTextAttributes({
-            inverse: true
-          })
-        }, _$p));
-        return _el$36;
-      })(), (() => {
-        var _el$37 = _$createElement2("text");
-        _$insert2(_el$37, () => inputChunks().after);
-        _$effect2((_$p) => _$setProp2(_el$37, "style", {
-          fg: th().tokens.text
-        }, _$p));
-        return _el$37;
-      })()];
-    })(), null);
-    _$setProp2(_el$20, "style", {
-      flexDirection: "row",
-      paddingLeft: 2,
-      paddingRight: 2
-    });
-    _$insert2(_el$20, _$createComponent2(For2, {
-      each: footerHints,
-      children: (h, i) => (() => {
-        var _el$38 = _$createElement2("text"), _el$39 = _$createTextNode2(` `);
-        _$insertNode2(_el$38, _el$39);
-        _$insert2(_el$38, () => i() > 0 ? " · " : "", _el$39);
-        _$insert2(_el$38, () => h.key, _el$39);
-        _$insert2(_el$38, () => h.label, null);
-        _$effect2((_$p) => _$setProp2(_el$38, "style", {
-          fg: th().tokens.dim
-        }, _$p));
-        return _el$38;
-      })()
-    }));
-    _$insert2(_el$16, _$createComponent2(StatusBar, {
+    }), null);
+    _$insert5(_el$, _$createComponent5(InputLine, {
+      get value() {
+        return input();
+      },
+      get cursor() {
+        return cursor();
+      },
+      get busy() {
+        return busy();
+      },
+      get spinnerFrame() {
+        return spinner();
+      },
+      get placeholder() {
+        return t("shell.input.placeholder");
+      },
+      get busyLabel() {
+        return t("shell.input.busy");
+      },
+      get theme() {
+        return th();
+      }
+    }), null);
+    _$insert5(_el$, _$createComponent5(FooterHints, {
+      get theme() {
+        return th();
+      }
+    }), null);
+    _$insert5(_el$, _$createComponent5(StatusBar, {
       get widgets() {
         return [{
           kind: "widget",
@@ -997,22 +1538,7 @@ function ShellHost(props) {
         }, ...widgets()];
       }
     }), null);
-    _$effect2((_p$) => {
-      var _v$3 = {
-        border: true,
-        borderColor: th().tokens.border,
-        flexDirection: "row"
-      }, _v$4 = {
-        fg: th().tokens.accent
-      };
-      _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$18, "style", _v$3, _p$.e));
-      _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$19, "style", _v$4, _p$.t));
-      return _p$;
-    }, {
-      e: undefined,
-      t: undefined
-    });
-    return _el$16;
+    return _el$;
   })();
 }
 
@@ -1057,6 +1583,31 @@ class HostSession {
     this.#sessionId = undefined;
     this.#agentId = undefined;
     this.label = `${provider}/${model}`;
+  }
+  #credentials() {
+    try {
+      return this.#ctx.get?.("credentials");
+    } catch {
+      return;
+    }
+  }
+  async credentialStatus(ref) {
+    const c = this.#credentials();
+    if (c?.describe)
+      return c.describe(ref);
+    return { configured: false };
+  }
+  async login(ref, apiKey) {
+    const c = this.#credentials();
+    if (!c?.set)
+      throw new Error("credentials service unavailable in this host");
+    await c.set(ref, apiKey);
+  }
+  async logout(ref) {
+    const c = this.#credentials();
+    if (!c?.unset)
+      throw new Error("credentials service unavailable in this host");
+    await c.unset(ref);
   }
   async turn(userText, cb, _signal) {
     this.#cb = cb;
@@ -1186,7 +1737,7 @@ function apply(ctx, config) {
   mountEngine({}).then(({
     renderer
   }) => {
-    render(() => _$createComponent3(ShellHost, {
+    render(() => _$createComponent6(ShellHost, {
       get deps() {
         return {
           store,

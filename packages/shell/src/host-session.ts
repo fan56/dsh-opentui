@@ -68,6 +68,35 @@ export class HostSession {
     this.label = `${provider}/${model}`
   }
 
+  // ---- credentials seam (/login, /logout) ----
+  // ctx.get needs no inject; structural faces mirror tui-pi's login.ts seams.
+
+  #credentials(): any | undefined {
+    try {
+      return (this.#ctx as any).get?.("credentials")
+    } catch {
+      return undefined
+    }
+  }
+
+  async credentialStatus(ref: string): Promise<{ configured: boolean }> {
+    const c = this.#credentials()
+    if (c?.describe) return c.describe(ref)
+    return { configured: false }
+  }
+
+  async login(ref: string, apiKey: string): Promise<void> {
+    const c = this.#credentials()
+    if (!c?.set) throw new Error("credentials service unavailable in this host")
+    await c.set(ref, apiKey)
+  }
+
+  async logout(ref: string): Promise<void> {
+    const c = this.#credentials()
+    if (!c?.unset) throw new Error("credentials service unavailable in this host")
+    await c.unset(ref)
+  }
+
   async turn(userText: string, cb: TurnCallbacks, _signal?: AbortSignal): Promise<void> {
     this.#cb = cb
     if (!this.#handle) {
