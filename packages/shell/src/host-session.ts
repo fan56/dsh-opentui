@@ -17,6 +17,8 @@ type StreamFrame = {
 }
 type SessionEvent = { type: string; data?: any }
 
+const DBG = (_m: string) => {} // stderr mid-render corrupts the frame stream; keep a no-op hook
+
 export class HostSession {
   label = "dsh-host"
   readonly #ctx: Context
@@ -27,7 +29,8 @@ export class HostSession {
   #resolveTurn?: () => void
   #running = false
   #toolCalls = new Map<string, { name: string; args: string }>()
-  #override?: { provider: string; model: string }
+  #override?: { provider: string; model: string; reasoningEffort?: string }
+  #resumeId?: string
   usage = { prompt: 0, completion: 0 }
 
   constructor(ctx: Context) {
@@ -35,27 +38,38 @@ export class HostSession {
     this.#wire()
   }
 
-  /** Provider catalog as the host sees it (llm service), best-effort. */
-  listProviders(): { provider: string; models: string[] }[] {
+  /** Provider catalog as the host sees it (llm service), best-effort.
+   * Cached: the host list is static between route commits. */
+  #providerCache: { provider: string; models: string[] }[] | null = null
+
+  async listProviders(): Promise<{ provider: string; models: string[] }[]> {
+    if (this.#providerCache) return this.#providerCache
     try {
       const llm = (this.#ctx as any).get?.("llm")
-      const providers = llm?.listConfigurableProviders?.() ?? []
-      return providers
-        .map((p: any) => ({
-          provider: String(p?.provider ?? p?.id ?? p ?? ""),
-          models: (p?.models ?? [])
-            .map((m: any) => String(m?.id ?? m?.model ?? m ?? ""))
-            .filter(Boolean),
-        }))
-        .filter((p: { provider: string }) => p.provider)
+      if (!llm?.listConfigurableProviders) return (this.#providerCache = [])
+      const configurable = (await llm.listConfigurableProviders()) as any[]
+      const out: { provider: string; models: string[] }[] = []
+      for (const p of configurable) {
+        const provider = String(p?.provider ?? "")
+        if (!provider) continue
+        let models: string[] = []
+        try {
+          const list = (await llm.listModels(provider)) as any[]
+          models = list.map((m) => String(m?.id ?? m?.model ?? m ?? "")).filter(Boolean)
+        } catch {
+          /* provider without an adapter yet: show it model-less */
+        }
+        out.push({ provider, models })
+      }
+      return (this.#providerCache = out)
     } catch {
-      return []
+      return (this.#providerCache = [])
     }
   }
 
   /** Switch model for the NEXT session (the current one keeps its route). */
-  switchModel(provider: string, model: string): void {
-    this.#override = { provider, model }
+  switchModel(provider: string, model: string, reasoningEffort?: string): void {
+    this.#override = { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) }
     // drop the live session so the next turn re-creates with the new route
     try {
       this.#handle?.dispose?.()
@@ -65,7 +79,82 @@ export class HostSession {
     this.#handle = undefined
     this.#sessionId = undefined
     this.#agentId = undefined
-    this.label = `${provider}/${model}`
+    this.label = `${provider}/${model}${reasoningEffort ? ` (${reasoningEffort})` : ""}`
+  }
+
+  /** Start a FRESH session on the next turn (keeps the current model route). */
+  newSession(): void {
+    try {
+      this.#handle?.dispose?.()
+    } catch {
+      /* already gone */
+    }
+    this.#handle = undefined
+    this.#sessionId = undefined
+    this.#agentId = undefined
+  }
+
+  /** Resume a historical session on the next turn (best-effort: the host
+   * re-attaches by session id; whether history replays into the new agent
+   * depends on the persistence layer). */
+  resumeSession(id: string): void {
+    this.newSession()
+    this.#resumeId = id
+  }
+
+  /** Stored sessions for the current workspace (newest first, capped). */
+  async listSessions(limit = 12): Promise<{ id: string; title: string; updatedAt?: string }[]> {
+    const persistence = (this.#ctx as any).get?.("sessionPersistence")
+    if (!persistence?.list) return []
+    try {
+      const headers = (await persistence.list()) as any[]
+      return headers
+        .map((h) => ({
+          id: String(h?.id ?? ""),
+          title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
+          updatedAt: h?.updatedAt ?? h?.lastEventAt ?? h?.mtime,
+        }))
+        .filter((s) => s.id)
+        .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")))
+        .slice(0, limit)
+    } catch {
+      return []
+    }
+  }
+
+  /**
+   * Register the user-questions answerer: claims requests for our session
+   * (or unowned ones when no session exists yet) and forwards them to the
+   * UI callback. The UI answers {questionId, selected} pairs; declining
+   * returns the tui-pi-style declined envelope (empty selected + marker).
+   */
+  registerAskProvider(onAsk: (q: { id: string; prompt: string; options: string[] }[]) => Promise<{ questionId: string; selected: string }[]>): void {
+    ;(this.#ctx as any).on(
+      "user-questions/request",
+      async (request: any, next: () => Promise<any>) => {
+        const asking = request?.agent?.session?.id
+        if (this.#sessionId !== undefined && asking !== undefined && String(asking) !== this.#sessionId) return next()
+        const questions = (request?.questions ?? []) as any[]
+        if (!questions.length) return next()
+        const simplified = questions.map((q) => ({
+          id: String(q?.id ?? ""),
+          prompt: String(q?.prompt ?? q?.question ?? q?.header ?? ""),
+          options: (q?.options ?? []).map((o: any) => String(o?.label ?? o?.value ?? o)),
+        }))
+        let picks: { questionId: string; selected: string }[]
+        try {
+          picks = await onAsk(simplified)
+        } catch {
+          return { answers: simplified.map((q) => ({ id: q.id, selected: [], custom: "declined" })) }
+        }
+        return {
+          answers: simplified.map((q) => {
+            const pick = picks.find((p) => p.questionId === q.id)
+            return pick ? { id: q.id, selected: [pick.selected] } : { id: q.id, selected: [], custom: "declined" }
+          }),
+        }
+      },
+    )
   }
 
   // ---- credentials seam (/login, /logout) ----
@@ -100,7 +189,9 @@ export class HostSession {
   async turn(userText: string, cb: TurnCallbacks, _signal?: AbortSignal): Promise<void> {
     this.#cb = cb
     if (!this.#handle) {
-      this.#sessionId = randomUUID()
+      // fresh session, or a one-shot resume of a picked historical one
+      this.#sessionId = this.#resumeId ?? randomUUID()
+      this.#resumeId = undefined
       // Model precedence: an explicit /model override wins over the composed
       // agent-default-model selection (the host does NOT auto-apply either).
       const sel = this.#override ?? (this.#ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
@@ -114,6 +205,7 @@ export class HostSession {
         agentOptions,
       })
       this.#agentId = this.#handle.agent.id
+      DBG(`session created ${this.#sessionId} agent=${this.#agentId}`)
     }
     const message = createUserMessage({
       content: [{ type: "text", text: userText }],
@@ -126,6 +218,7 @@ export class HostSession {
   }
 
   #finishTurn() {
+    DBG("finishTurn")
     const r = this.#resolveTurn
     this.#resolveTurn = undefined
     this.#cb?.onTurnEnd({ prompt: this.usage.prompt, completion: this.usage.completion })
@@ -156,10 +249,14 @@ export class HostSession {
       if (this.#agentId === undefined || agent.id !== this.#agentId) return
       const wasRunning = this.#running
       this.#running = status === "running"
+      DBG(`agent/status ${status} wasRunning=${wasRunning} resolve=${!!this.#resolveTurn}`)
       if (wasRunning && !this.#running && this.#resolveTurn) this.#finishTurn()
     })
 
     ctx.on("session/event", (session: { id: string | { toString(): string } }, event: SessionEvent) => {
+      if (process.env.DSH_OPENTUI_DEBUG && (event.type === "turn/end" || event.type === "turn/start")) {
+        try { process.stderr.write(`[hs] session/event ${event.type} sessionMatch=${String(session.id) === this.#sessionId} my=${this.#sessionId}\n`) } catch {}
+      }
       if (this.#sessionId === undefined || String(session.id) !== this.#sessionId) return
       const cb = this.#cb
       if (!cb) return
@@ -180,6 +277,7 @@ export class HostSession {
             ok: event.data.isError !== true,
           })
         } else if (event.type === "turn/end") {
+          DBG(`turn/end seen resolve=${!!this.#resolveTurn}`)
           const reason = event.data?.reason
           if (reason?.kind === "error") {
             cb.onError(String(reason.error?.message ?? reason.error ?? "turn error").slice(0, 300))

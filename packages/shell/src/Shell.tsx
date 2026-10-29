@@ -2,11 +2,15 @@
  * The M2 Shell: a usable chat TUI. Ask a question → the model thinks
  * (live dim stream), calls tools (approval card → tool block), replies.
  * Model/provider config is reused from ~/.dsh (see agent/config.ts).
+ * All presentational building blocks come from @dsh-opentui/kit — this
+ * file owns state and keyboard routing only.
  */
 import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { createTextAttributes, SyntaxStyle } from "@opentui/core"
+import { SyntaxStyle } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
-import { StatusBar, getTheme, themes, type I18n, type Theme } from "@dsh-opentui/kit"
+import { StatusBar, getTheme, themes, type I18n } from "@dsh-opentui/kit"
+import { Transcript, InputLine, FooterHints, type TranscriptItem } from "@dsh-opentui/kit"
+import { ApprovalCard } from "@dsh-opentui/kit"
 import type { SurfaceStore, SurfaceWidgetDecl } from "@dsh-opentui/runtime"
 import { AgentSession } from "./agent/loop.ts"
 import { listModels, resolveModel, type ResolvedModel } from "./agent/config.ts"
@@ -20,40 +24,11 @@ export interface ShellDeps {
   themeName?: string
 }
 
-type TItem =
-  | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string; final?: boolean }
-  | { kind: "thinking"; tail: string; chars: number }
-  | { kind: "tool"; name: string; args: string; ok: boolean; brief: string }
-  | { kind: "error"; text: string }
-  | { kind: "system"; text: string }
-
+/** Transcript rows are Kit's shape now; kept as a local alias. */
+type TItem = TranscriptItem
 
 const MAX_VISIBLE_ITEMS = 120
 const THEME_ORDER = ["catppuccin-mocha", "default"]
-
-/** Minimal markdown-ish streaming rendering (finalized messages upgrade to
- * the <markdown> intrinsic). */
-function renderAssistant(text: string, theme: Theme): { text: string; fg?: string }[] {
-  const out: { text: string; fg?: string }[] = []
-  let inFence = false
-  for (const raw of text.split("\n")) {
-    const line = raw.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1")
-    if (/^```/.test(line)) {
-      inFence = !inFence
-      out.push({ text: inFence ? "┌─" : "└─", fg: theme.tokens.dim })
-      continue
-    }
-    if (inFence) {
-      out.push({ text: `│ ${line}`, fg: theme.tokens.dim })
-      continue
-    }
-    const heading = /^(#{1,3})\s+(.*)/.exec(line)
-    if (heading) out.push({ text: heading[2], fg: theme.tokens.accent })
-    else out.push({ text: line })
-  }
-  return out
-}
 
 export function Shell(props: { deps: ShellDeps }) {
   const t = props.deps.t
@@ -100,7 +75,8 @@ export function Shell(props: { deps: ShellDeps }) {
 
   const spinner = () => ["⠋", "⠙", "⠹", "⠸"][spin()]
 
-  // ---- transcript rendering (plain lines) ----
+  // markdown style for finalized assistant messages (best-effort: the
+  // intrinsic tolerates undefined, code blocks then render unstyled)
   const rendererCtx = useRenderer()
   let mdStyle: any
   try {
@@ -110,45 +86,6 @@ export function Shell(props: { deps: ShellDeps }) {
   }
 
   const visibleItems = createMemo(() => items().slice(-MAX_VISIBLE_ITEMS))
-
-  const itemNode = (it: TItem) => {
-    const thc = th()
-    if (it.kind === "user") {
-      return <text style={{ fg: thc.tokens.userMark ?? thc.tokens.accent }}>❯ {it.text}</text>
-    }
-    if (it.kind === "assistant") {
-      if (it.final) {
-        return (
-          <box style={{ flexDirection: "column" }}>
-            <markdown content={it.text} streaming={false} syntaxStyle={mdStyle} />
-            <text>{" "}</text>
-          </box>
-        )
-      }
-      return (
-        <box style={{ flexDirection: "column" }}>
-          <For each={renderAssistant(it.text, thc)}>
-            {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
-          </For>
-        </box>
-      )
-    }
-    if (it.kind === "thinking") {
-      return <text style={{ fg: thc.tokens.dim }}>{`${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`}</text>
-    }
-    if (it.kind === "tool") {
-      return (
-        <box style={{ flexDirection: "column" }}>
-          <text style={{ fg: thc.tokens.toolOk ?? thc.tokens.warn }}>{` ⚒ ${it.name} ${it.args.slice(0, 90)}`}</text>
-          <text style={{ fg: it.ok ? thc.tokens.dim : thc.tokens.toolFail ?? thc.tokens.danger }}>{` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`}</text>
-        </box>
-      )
-    }
-    if (it.kind === "error") {
-      return <text style={{ fg: thc.tokens.danger }}>✗ {t("agent.error")}: {it.text}</text>
-    }
-    return <text style={{ fg: thc.tokens.dim }}>· {it.text}</text>
-  }
 
   let lastBump = 0
   let streaming: { thinking?: TItem; reply?: TItem } = {}
@@ -198,16 +135,6 @@ export function Shell(props: { deps: ShellDeps }) {
     setInput(text)
     setCursor(text.length)
   }
-  /** Split the input line at the cursor for caret rendering. */
-  const inputChunks = () => {
-    const s = input()
-    const c = Math.min(cursor(), s.length)
-    return {
-      before: s.slice(0, c),
-      at: c < s.length ? s.charAt(c) : " ",
-      after: c < s.length ? s.slice(c + 1) : "",
-    }
-  }
 
   async function send(text: string) {
     if (!session || busy()) return
@@ -215,8 +142,8 @@ export function Shell(props: { deps: ShellDeps }) {
     setBusy(true)
     abort = new AbortController()
 
-    let thinkingItem: { kind: "thinking"; tail: string; chars: number } | null = null
-    let replyItem: { kind: "assistant"; text: string } | null = null
+    let thinkingItem: Extract<TItem, { kind: "thinking" }> | null = null
+    let replyItem: Extract<TItem, { kind: "assistant" }> | null = null
 
     try {
       await session.turn(
@@ -415,36 +342,29 @@ export function Shell(props: { deps: ShellDeps }) {
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-        <For each={visibleItems()} fallback={<text style={{ fg: th().tokens.dim }}>{t("shell.transcript.empty")}</text>}>
-          {(it) => itemNode(it)}
-        </For>
+        <Transcript
+          items={visibleItems()}
+          theme={th()}
+          t={t}
+          spinnerFrame={spinner()}
+          mdStyle={mdStyle}
+        />
       </box>
       <For each={approval() ? [approval()!] : []}>
         {(ap) => (
-          <box style={{ border: true, borderColor: th().tokens.warn, flexDirection: "column", padding: 1 }}>
-            <text style={{ fg: th().tokens.warn }}>⚠ {t("agent.approve.title")}: {ap.name}</text>
-            <text>{ap.args.slice(0, 200)}</text>
-            <text style={{ fg: th().tokens.dim }}>{t("agent.approve.hint")}</text>
-          </box>
+          <ApprovalCard toolName={ap.name} args={ap.args} hint={t("agent.approve.hint")} theme={th()} />
         )}
       </For>
-      <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "row" }}>
-        <text style={{ fg: th().tokens.accent }}>{busy() ? `${spinner()} ` : "› "}</text>
-        {busy() ? (
-          <text style={{ fg: th().tokens.dim }}>{t("shell.input.busy")}</text>
-        ) : input() === "" ? (
-          <>
-            <text style={{ fg: th().tokens.accent, attributes: createTextAttributes({ inverse: true }) }}> </text>
-            <text style={{ fg: th().tokens.dim }}>{t("shell.input.placeholder")}</text>
-          </>
-        ) : (
-          <>
-            <text style={{ fg: th().tokens.text }}>{inputChunks().before}</text>
-            <text style={{ fg: th().tokens.text, attributes: createTextAttributes({ inverse: true }) }}>{inputChunks().at}</text>
-            <text style={{ fg: th().tokens.text }}>{inputChunks().after}</text>
-          </>
-        )}
-      </box>
+      <InputLine
+        value={input()}
+        cursor={cursor()}
+        busy={busy()}
+        spinnerFrame={spinner()}
+        placeholder={t("shell.input.placeholder")}
+        busyLabel={t("shell.input.busy")}
+        theme={th()}
+      />
+      <FooterHints theme={th()} />
       <StatusBar
         widgets={[
           ...(model() ? [{ kind: "widget" as const, slot: "status" as const, id: "model", order: 10, parts: [{ text: `${model()!.provider}/${model()!.model}`, color: th().tokens.accent }] }] : []),

@@ -1,6 +1,6 @@
 {
   "name": "@aiwayds/dsh-opentui",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "type": "module",
   "bin": {
     "dsh-opentui": "bin/dsh-opentui.mjs"

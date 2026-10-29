@@ -1,5 +1,5 @@
 // src/host-entry.tsx
-import { createComponent as _$createComponent6 } from "@opentui/solid";
+import { createComponent as _$createComponent7 } from "@opentui/solid";
 import { render } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -91,6 +91,12 @@ var dict = {
   "cmd.model.available": { "zh-CN": "可用模型", en: "available" },
   "cmd.model.set": { "zh-CN": "已切换", en: "switched to" },
   "cmd.model.next": { "zh-CN": "（下一条消息生效）", en: "(next message)" },
+  "picker.sessions.title": { "zh-CN": "会话（回车恢复 · esc 取消）", en: "sessions (enter resume · esc cancel)" },
+  "picker.effort.title": { "zh-CN": "{model} 思考档位", en: "{model} reasoning effort" },
+  "cmd.new.done": { "zh-CN": "已开新会话", en: "new session started" },
+  "cmd.sessions.empty": { "zh-CN": "没有可恢复的会话", en: "no stored sessions" },
+  "cmd.sessions.resumed": { "zh-CN": "已挂载会话（下条消息生效）", en: "session attached (applies to next message)" },
+  "ask.title": { "zh-CN": "模型提问", en: "model asks" },
   "cmd.usage.summary": { "zh-CN": "累计", en: "total" },
   "cmd.cleared": { "zh-CN": "会话已清空", en: "session cleared" },
   "cmd.login.saved": { "zh-CN": "凭据 {ref} 已保存", en: "credential {ref} saved" },
@@ -123,14 +129,14 @@ function createI18n(locale = "zh-CN") {
 
 // src/ShellHost.tsx
 import { createTextNode as _$createTextNode5 } from "@opentui/solid";
-import { effect as _$effect5 } from "@opentui/solid";
-import { insertNode as _$insertNode5 } from "@opentui/solid";
+import { effect as _$effect6 } from "@opentui/solid";
+import { insertNode as _$insertNode6 } from "@opentui/solid";
 import { memo as _$memo4 } from "@opentui/solid";
-import { insert as _$insert5 } from "@opentui/solid";
-import { createComponent as _$createComponent5 } from "@opentui/solid";
-import { setProp as _$setProp5 } from "@opentui/solid";
-import { createElement as _$createElement5 } from "@opentui/solid";
-import { For as For5, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { insert as _$insert6 } from "@opentui/solid";
+import { createComponent as _$createComponent6 } from "@opentui/solid";
+import { setProp as _$setProp6 } from "@opentui/solid";
+import { createElement as _$createElement6 } from "@opentui/solid";
+import { For as For6, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { SyntaxStyle } from "@opentui/core";
 import { useKeyboard, useRenderer } from "@opentui/solid";
 // ../kit/src/theme.ts
@@ -237,7 +243,7 @@ import { insert as _$insert2 } from "@opentui/solid";
 import { createTextNode as _$createTextNode2 } from "@opentui/solid";
 import { insertNode as _$insertNode2 } from "@opentui/solid";
 import { createElement as _$createElement2 } from "@opentui/solid";
-import { For as For2 } from "solid-js";
+import { For as For2, Show } from "solid-js";
 import { createTextAttributes } from "@opentui/core";
 var MAX_VISIBLE_ITEMS = 120;
 var footerHints = [{
@@ -287,6 +293,48 @@ function renderAssistant(text, theme) {
       out.push({
         text: line
       });
+  }
+  return out;
+}
+function itemsToLines(items, theme, t, spinnerFrame, _mdStyle) {
+  const out = [];
+  for (const it of items) {
+    if (it.kind === "user") {
+      out.push({
+        text: `❯ ${it.text}`,
+        fg: theme.tokens.userMark ?? theme.tokens.accent
+      });
+    } else if (it.kind === "assistant") {
+      out.push(...renderAssistant(it.text, theme));
+      if (it.final)
+        out.push({
+          text: ""
+        });
+    } else if (it.kind === "thinking") {
+      out.push({
+        text: `${spinnerFrame} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`,
+        fg: theme.tokens.dim
+      });
+    } else if (it.kind === "tool") {
+      out.push({
+        text: ` ⚒ ${it.name} ${it.args.slice(0, 90)}`,
+        fg: theme.tokens.toolOk ?? theme.tokens.warn
+      });
+      out.push({
+        text: ` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`,
+        fg: it.ok ? theme.tokens.dim : theme.tokens.toolFail ?? theme.tokens.danger
+      });
+    } else if (it.kind === "error") {
+      out.push({
+        text: `✗ ${t("agent.error")}: ${it.text}`,
+        fg: theme.tokens.danger
+      });
+    } else {
+      out.push({
+        text: `· ${it.text}`,
+        fg: theme.tokens.dim
+      });
+    }
   }
   return out;
 }
@@ -434,6 +482,75 @@ function Transcript(props) {
     return _el$16;
   })();
 }
+function TranscriptWindow(props) {
+  const offset = () => props.offset ?? 0;
+  const bottomView = () => _$createComponent2(Transcript, {
+    get items() {
+      return props.items;
+    },
+    get theme() {
+      return props.theme;
+    },
+    get t() {
+      return props.t;
+    },
+    get spinnerFrame() {
+      return props.spinnerFrame;
+    },
+    get maxItems() {
+      return props.maxItems;
+    },
+    get mdStyle() {
+      return props.mdStyle;
+    }
+  });
+  const windowLines = () => {
+    const visible = props.items.slice(-(props.maxItems ?? MAX_VISIBLE_ITEMS));
+    const all = itemsToLines(visible, props.theme, props.t, props.spinnerFrame, props.mdStyle);
+    const rows = props.viewportRows ?? 30;
+    const start = Math.max(0, all.length - rows - offset());
+    const end = Math.max(1, all.length - offset());
+    return all.slice(start, end);
+  };
+  const scrolledView = () => (() => {
+    var _el$18 = _$createElement2("box"), _el$19 = _$createElement2("text");
+    _$insertNode2(_el$18, _el$19);
+    _$setProp2(_el$18, "style", {
+      flexDirection: "column",
+      flexGrow: 1,
+      padding: 1
+    });
+    _$insert2(_el$18, _$createComponent2(For2, {
+      get each() {
+        return windowLines();
+      },
+      children: (l) => (() => {
+        var _el$20 = _$createElement2("text");
+        _$insert2(_el$20, () => l.text || " ");
+        _$effect2((_$p) => _$setProp2(_el$20, "style", l.fg ? {
+          fg: l.fg
+        } : {}, _$p));
+        return _el$20;
+      })()
+    }), _el$19);
+    _$insert2(_el$19, () => `↑ scrolled ${offset()} rows (PgDn = bottom)`);
+    _$effect2((_$p) => _$setProp2(_el$19, "style", {
+      fg: props.theme.tokens.dim
+    }, _$p));
+    return _el$18;
+  })();
+  return _$createComponent2(Show, {
+    get when() {
+      return offset() === 0;
+    },
+    get fallback() {
+      return scrolledView();
+    },
+    get children() {
+      return bottomView();
+    }
+  });
+}
 function InputLine(props) {
   const inputChunks = () => {
     const s = props.value;
@@ -445,62 +562,62 @@ function InputLine(props) {
     };
   };
   return (() => {
-    var _el$18 = _$createElement2("box"), _el$19 = _$createElement2("text");
-    _$insertNode2(_el$18, _el$19);
-    _$insert2(_el$19, (() => {
+    var _el$21 = _$createElement2("box"), _el$22 = _$createElement2("text");
+    _$insertNode2(_el$21, _el$22);
+    _$insert2(_el$22, (() => {
       var _c$ = _$memo(() => !!props.busy);
       return () => _c$() ? `${props.spinnerFrame} ` : "❯ ";
     })());
-    _$insert2(_el$18, (() => {
+    _$insert2(_el$21, (() => {
       var _c$2 = _$memo(() => !!props.busy);
       return () => _c$2() ? (() => {
-        var _el$20 = _$createElement2("text");
-        _$insert2(_el$20, () => props.busyLabel);
-        _$effect2((_$p) => _$setProp2(_el$20, "style", {
+        var _el$23 = _$createElement2("text");
+        _$insert2(_el$23, () => props.busyLabel);
+        _$effect2((_$p) => _$setProp2(_el$23, "style", {
           fg: props.theme.tokens.dim
         }, _$p));
-        return _el$20;
+        return _el$23;
       })() : _$memo(() => props.value === "")() ? [(() => {
-        var _el$21 = _$createElement2("text");
-        _$insertNode2(_el$21, _$createTextNode2(` `));
-        _$effect2((_$p) => _$setProp2(_el$21, "style", {
+        var _el$24 = _$createElement2("text");
+        _$insertNode2(_el$24, _$createTextNode2(` `));
+        _$effect2((_$p) => _$setProp2(_el$24, "style", {
           fg: props.theme.tokens.accent,
           attributes: createTextAttributes({
             inverse: true
           })
         }, _$p));
-        return _el$21;
-      })(), (() => {
-        var _el$23 = _$createElement2("text");
-        _$insert2(_el$23, () => props.placeholder);
-        _$effect2((_$p) => _$setProp2(_el$23, "style", {
-          fg: props.theme.tokens.dim
-        }, _$p));
-        return _el$23;
-      })()] : [(() => {
-        var _el$24 = _$createElement2("text");
-        _$insert2(_el$24, () => inputChunks().before);
-        _$effect2((_$p) => _$setProp2(_el$24, "style", {
-          fg: props.theme.tokens.text
-        }, _$p));
         return _el$24;
       })(), (() => {
-        var _el$25 = _$createElement2("text");
-        _$insert2(_el$25, () => inputChunks().at);
-        _$effect2((_$p) => _$setProp2(_el$25, "style", {
+        var _el$26 = _$createElement2("text");
+        _$insert2(_el$26, () => props.placeholder);
+        _$effect2((_$p) => _$setProp2(_el$26, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$26;
+      })()] : [(() => {
+        var _el$27 = _$createElement2("text");
+        _$insert2(_el$27, () => inputChunks().before);
+        _$effect2((_$p) => _$setProp2(_el$27, "style", {
+          fg: props.theme.tokens.text
+        }, _$p));
+        return _el$27;
+      })(), (() => {
+        var _el$28 = _$createElement2("text");
+        _$insert2(_el$28, () => inputChunks().at);
+        _$effect2((_$p) => _$setProp2(_el$28, "style", {
           fg: props.theme.tokens.text,
           attributes: createTextAttributes({
             inverse: true
           })
         }, _$p));
-        return _el$25;
+        return _el$28;
       })(), (() => {
-        var _el$26 = _$createElement2("text");
-        _$insert2(_el$26, () => inputChunks().after);
-        _$effect2((_$p) => _$setProp2(_el$26, "style", {
+        var _el$29 = _$createElement2("text");
+        _$insert2(_el$29, () => inputChunks().after);
+        _$effect2((_$p) => _$setProp2(_el$29, "style", {
           fg: props.theme.tokens.text
         }, _$p));
-        return _el$26;
+        return _el$29;
       })()];
     })(), null);
     _$effect2((_p$) => {
@@ -511,39 +628,39 @@ function InputLine(props) {
       }, _v$6 = {
         fg: props.theme.tokens.accent
       };
-      _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$18, "style", _v$5, _p$.e));
-      _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$19, "style", _v$6, _p$.t));
+      _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$21, "style", _v$5, _p$.e));
+      _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$22, "style", _v$6, _p$.t));
       return _p$;
     }, {
       e: undefined,
       t: undefined
     });
-    return _el$18;
+    return _el$21;
   })();
 }
 function FooterHints(props) {
   return (() => {
-    var _el$27 = _$createElement2("box");
-    _$setProp2(_el$27, "style", {
+    var _el$30 = _$createElement2("box");
+    _$setProp2(_el$30, "style", {
       flexDirection: "row",
       paddingLeft: 2,
       paddingRight: 2
     });
-    _$insert2(_el$27, _$createComponent2(For2, {
+    _$insert2(_el$30, _$createComponent2(For2, {
       each: footerHints,
       children: (h, i) => (() => {
-        var _el$28 = _$createElement2("text"), _el$29 = _$createTextNode2(` `);
-        _$insertNode2(_el$28, _el$29);
-        _$insert2(_el$28, () => i() > 0 ? " · " : "", _el$29);
-        _$insert2(_el$28, () => h.key, _el$29);
-        _$insert2(_el$28, () => h.label, null);
-        _$effect2((_$p) => _$setProp2(_el$28, "style", {
+        var _el$31 = _$createElement2("text"), _el$32 = _$createTextNode2(` `);
+        _$insertNode2(_el$31, _el$32);
+        _$insert2(_el$31, () => i() > 0 ? " · " : "", _el$32);
+        _$insert2(_el$31, () => h.key, _el$32);
+        _$insert2(_el$31, () => h.label, null);
+        _$effect2((_$p) => _$setProp2(_el$31, "style", {
           fg: props.theme.tokens.dim
         }, _$p));
-        return _el$28;
+        return _el$31;
       })()
     }));
-    return _el$27;
+    return _el$30;
   })();
 }
 // ../kit/src/overlays.tsx
@@ -813,6 +930,14 @@ function ThinkPanel(props) {
     return _el$7;
   })();
 }
+// ../kit/src/table.tsx
+import { effect as _$effect5 } from "@opentui/solid";
+import { insertNode as _$insertNode5 } from "@opentui/solid";
+import { createComponent as _$createComponent5 } from "@opentui/solid";
+import { insert as _$insert5 } from "@opentui/solid";
+import { setProp as _$setProp5 } from "@opentui/solid";
+import { createElement as _$createElement5 } from "@opentui/solid";
+import { For as For5 } from "solid-js";
 // src/ShellHost.tsx
 var MAX_VISIBLE_ITEMS2 = 120;
 var THEME_ORDER = ["catppuccin-mocha", "default"];
@@ -826,6 +951,12 @@ var COMMANDS = [{
 }, {
   name: "/usage",
   desc: "show token usage summary"
+}, {
+  name: "/new",
+  desc: "start a fresh session"
+}, {
+  name: "/sessions",
+  desc: "list and resume stored sessions"
 }, {
   name: "/theme",
   desc: "cycle theme"
@@ -866,6 +997,9 @@ function ShellHost(props) {
   const [toolExpanded, setToolExpanded] = createSignal(-1);
   const [picker, setPicker] = createSignal(null);
   const [pickerSel, setPickerSel] = createSignal(0);
+  const [sessionItems, setSessionItems] = createSignal([]);
+  const [scrollOffset, setScrollOffset] = createSignal(0);
+  const [ask, setAsk] = createSignal(null);
   let reasoningBuf = "";
   const [lastReasoning, setLastReasoning] = createSignal("");
   const initialTheme = process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha";
@@ -878,6 +1012,18 @@ function ShellHost(props) {
     onCleanup(store.subscribe(() => setSnapshot(store.snapshot)));
     const t2 = setInterval(() => setSpin((s) => (s + 1) % 4), 150);
     onCleanup(() => clearInterval(t2));
+    if (!process.env.DSH_OPENTUI_NO_ASK)
+      props.deps.session.registerAskProvider(async (questions) => {
+        const answer = await new Promise((resolve) => {
+          setAsk({
+            questions,
+            resolve
+          });
+        });
+        if (answer === "declined")
+          throw new Error("declined");
+        return answer;
+      });
   });
   const spinner = () => ["⠋", "⠙", "⠹", "⠸"][spin()];
   const filteredCommands = createMemo(() => {
@@ -891,20 +1037,52 @@ function ShellHost(props) {
     return n === 0 ? 0 : Math.min(menuSel(), n - 1);
   });
   const menuVisible = createMemo(() => !busy() && menuOpen() && filteredCommands().length > 0);
-  const pickerItems = createMemo(() => {
-    const out = [];
-    for (const p of props.deps.session.listProviders()) {
-      for (const m of p.models) {
-        const id = `${p.provider}/${m}`;
-        out.push({
-          id,
-          group: p.provider,
-          label: m,
-          detail: label() === id ? "current" : undefined
-        });
+  const [modelItems, setModelItems] = createSignal([]);
+  const refreshModelItems = () => {
+    props.deps.session.listProviders().then((catalog) => {
+      const out = [];
+      for (const p of catalog) {
+        for (const m of p.models) {
+          const id = `${p.provider}/${m}`;
+          out.push({
+            id,
+            group: p.provider,
+            label: m,
+            detail: label() === id ? "current" : undefined
+          });
+        }
       }
-    }
-    return out;
+      setModelItems(out);
+    });
+  };
+  onMount(refreshModelItems);
+  const EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"];
+  const pickerData = createMemo(() => {
+    const p = picker();
+    if (!p)
+      return {
+        title: "",
+        items: []
+      };
+    if (p.kind === "model")
+      return {
+        title: t("picker.model.title"),
+        items: modelItems()
+      };
+    if (p.kind === "sessions")
+      return {
+        title: t("picker.sessions.title"),
+        items: sessionItems()
+      };
+    return {
+      title: t("picker.effort.title", {
+        model: p.model
+      }),
+      items: EFFORTS.map((e) => ({
+        id: e,
+        label: e
+      }))
+    };
   });
   const toolEntries = createMemo(() => items().filter((it) => it.kind === "tool").map((it) => ({
     name: it.name,
@@ -1010,6 +1188,32 @@ function ShellHost(props) {
         kind: "system",
         text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens`
       });
+    } else if (cmd === "new") {
+      props.deps.session.newSession();
+      setItems([]);
+      setScrollOffset(0);
+      push({
+        kind: "system",
+        text: t("cmd.new.done")
+      });
+    } else if (cmd === "sessions") {
+      const list = await props.deps.session.listSessions();
+      if (!list.length) {
+        push({
+          kind: "system",
+          text: t("cmd.sessions.empty")
+        });
+      } else {
+        setSessionItems(list.map((x) => ({
+          id: x.id,
+          label: x.title || x.id.slice(0, 8),
+          detail: x.updatedAt ? String(x.updatedAt).slice(0, 19) : undefined
+        })));
+        setPickerSel(0);
+        setPicker({
+          kind: "sessions"
+        });
+      }
     } else if (cmd === "theme") {
       const i = THEME_ORDER.indexOf(themeName());
       const next = THEME_ORDER[(i + 1) % THEME_ORDER.length];
@@ -1020,6 +1224,7 @@ function ShellHost(props) {
       });
     } else if (cmd === "model") {
       if (!arg) {
+        refreshModelItems();
         setPickerSel(0);
         setPicker({
           kind: "model"
@@ -1098,6 +1303,7 @@ function ShellHost(props) {
   async function send(text) {
     if (busy())
       return;
+    setScrollOffset(0);
     push({
       kind: "user",
       text
@@ -1204,6 +1410,26 @@ function ShellHost(props) {
     }
     if (key.sequence === "\x03" || (key.name === "c" || key.name === "C") && key.ctrl)
       process.exit(0);
+    const pendingAsk = ask();
+    if (pendingAsk) {
+      const q0 = pendingAsk.questions[0];
+      const opts = q0?.options ?? [];
+      if (key.name === "up" || key.name === "down") {
+        if (opts.length > 0)
+          setPickerSel((v) => key.name === "up" ? (v - 1 + opts.length) % opts.length : (v + 1) % opts.length);
+      } else if (key.name === "return") {
+        const sel = opts[Math.min(pickerSel(), Math.max(0, opts.length - 1))];
+        setAsk(null);
+        pendingAsk.resolve(sel ? [{
+          questionId: q0.id,
+          selected: sel
+        }] : "declined");
+      } else if (key.name === "escape") {
+        setAsk(null);
+        pendingAsk.resolve("declined");
+      }
+      return;
+    }
     const ap = approval();
     if (ap) {
       if (key.sequence === "y" || key.name === "return") {
@@ -1217,25 +1443,38 @@ function ShellHost(props) {
       }
       return;
     }
-    if (picker()) {
-      const n = pickerItems().length;
+    const pk = picker();
+    if (pk) {
+      const n = pickerData().items.length;
       if (key.name === "up" || key.name === "down") {
         if (n > 0)
           setPickerSel((s) => key.name === "up" ? (s - 1 + n) % n : (s + 1) % n);
       } else if (key.name === "return") {
-        const item = n > 0 ? pickerItems()[Math.min(pickerSel(), n - 1)] : undefined;
+        const item = n > 0 ? pickerData().items[Math.min(pickerSel(), n - 1)] : undefined;
         setPicker(null);
         setPickerSel(0);
-        if (item) {
+        if (item && pk.kind === "model") {
           const [provider, model] = item.id.split("/");
-          if (provider && model) {
-            props.deps.session.switchModel(provider, model);
-            setLabel(props.deps.session.label);
-            push({
-              kind: "system",
-              text: `${t("cmd.model.set")} ${item.id} ${t("cmd.model.next")}`
+          if (provider && model)
+            setPicker({
+              kind: "effort",
+              provider,
+              model
             });
-          }
+        } else if (item && pk.kind === "effort") {
+          const effort = item.id === "keep" ? undefined : item.id;
+          props.deps.session.switchModel(pk.provider, pk.model, effort);
+          setLabel(props.deps.session.label);
+          push({
+            kind: "system",
+            text: `${t("cmd.model.set")} ${pk.provider}/${pk.model}${effort ? ` (${effort})` : ""} ${t("cmd.model.next")}`
+          });
+        } else if (item && pk.kind === "sessions") {
+          props.deps.session.resumeSession(item.id);
+          push({
+            kind: "system",
+            text: `${t("cmd.sessions.resumed")}: ${item.label}`
+          });
         }
       } else if (key.name === "escape") {
         setPicker(null);
@@ -1255,6 +1494,18 @@ function ShellHost(props) {
       const n = toolEntries().length;
       if (n > 0)
         setToolExpanded((v) => v + 1 >= n ? -1 : v + 1);
+      return;
+    }
+    if (key.name === "pageup") {
+      setScrollOffset((o) => o + 10);
+      if (process.env.DSH_OPENTUI_DEBUG) {
+        import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-keys.log", `pageup handled offset=${scrollOffset()}
+`)).catch(() => {});
+      }
+      return;
+    }
+    if (key.name === "pagedown") {
+      setScrollOffset((o) => Math.max(0, o - 10));
       return;
     }
     if (busy())
@@ -1370,18 +1621,18 @@ function ShellHost(props) {
   const widgets = () => snapshot().filter((d) => d.kind === "widget");
   const th = () => theme();
   return (() => {
-    var _el$ = _$createElement5("box"), _el$2 = _$createElement5("box");
-    _$insertNode5(_el$, _el$2);
-    _$setProp5(_el$, "style", {
+    var _el$ = _$createElement6("box"), _el$2 = _$createElement6("box");
+    _$insertNode6(_el$, _el$2);
+    _$setProp6(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1
     });
-    _$setProp5(_el$2, "style", {
+    _$setProp6(_el$2, "style", {
       flexDirection: "column",
       flexGrow: 1,
       padding: 1
     });
-    _$insert5(_el$2, _$createComponent5(Transcript, {
+    _$insert6(_el$2, _$createComponent6(TranscriptWindow, {
       get items() {
         return visibleItems();
       },
@@ -1392,11 +1643,15 @@ function ShellHost(props) {
       get spinnerFrame() {
         return spinner();
       },
-      mdStyle
+      mdStyle,
+      get offset() {
+        return scrollOffset();
+      },
+      viewportRows: 24
     }));
-    _$insert5(_el$, (() => {
+    _$insert6(_el$, (() => {
       var _c$ = _$memo4(() => !!showTool());
-      return () => _c$() ? _$createComponent5(ToolPanel, {
+      return () => _c$() ? _$createComponent6(ToolPanel, {
         get entries() {
           return toolEntries();
         },
@@ -1408,9 +1663,9 @@ function ShellHost(props) {
         }
       }) : null;
     })(), null);
-    _$insert5(_el$, (() => {
+    _$insert6(_el$, (() => {
       var _c$2 = _$memo4(() => !!showThink());
-      return () => _c$2() ? _$createComponent5(ThinkPanel, {
+      return () => _c$2() ? _$createComponent6(ThinkPanel, {
         get text() {
           return lastReasoning();
         },
@@ -1419,11 +1674,11 @@ function ShellHost(props) {
         }
       }) : null;
     })(), null);
-    _$insert5(_el$, _$createComponent5(For5, {
+    _$insert6(_el$, _$createComponent6(For6, {
       get each() {
         return _$memo4(() => !!approval())() ? [approval()] : [];
       },
-      children: (ap) => _$createComponent5(ApprovalCard, {
+      children: (ap) => _$createComponent6(ApprovalCard, {
         get toolName() {
           return ap.name;
         },
@@ -1438,14 +1693,17 @@ function ShellHost(props) {
         }
       })
     }), null);
-    _$insert5(_el$, (() => {
-      var _c$3 = _$memo4(() => !!picker());
-      return () => _c$3() ? _$createComponent5(Picker, {
+    _$insert6(_el$, (() => {
+      var _c$3 = _$memo4(() => !!ask());
+      return () => _c$3() ? _$createComponent6(Picker, {
         get title() {
-          return t("picker.model.title");
+          return `${t("ask.title")}: ${ask().questions[0]?.prompt ?? ""}`.slice(0, 70);
         },
         get items() {
-          return pickerItems();
+          return (ask().questions[0]?.options ?? []).map((o) => ({
+            id: o,
+            label: o
+          }));
         },
         get selected() {
           return pickerSel();
@@ -1456,29 +1714,47 @@ function ShellHost(props) {
         maxRows: 8
       }) : null;
     })(), null);
-    _$insert5(_el$, _$createComponent5(For5, {
+    _$insert6(_el$, (() => {
+      var _c$4 = _$memo4(() => !!picker());
+      return () => _c$4() ? _$createComponent6(Picker, {
+        get title() {
+          return pickerData().title;
+        },
+        get items() {
+          return pickerData().items;
+        },
+        get selected() {
+          return pickerSel();
+        },
+        get theme() {
+          return th();
+        },
+        maxRows: 8
+      }) : null;
+    })(), null);
+    _$insert6(_el$, _$createComponent6(For6, {
       get each() {
         return menuVisible() ? [0] : [];
       },
       children: () => (() => {
-        var _el$3 = _$createElement5("box");
-        _$insert5(_el$3, _$createComponent5(For5, {
+        var _el$3 = _$createElement6("box");
+        _$insert6(_el$3, _$createComponent6(For6, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$4 = _$createElement5("text"), _el$5 = _$createTextNode5(` `);
-            _$insertNode5(_el$4, _el$5);
-            _$insert5(_el$4, () => i() === clampedSel() ? "› " : "  ", _el$5);
-            _$insert5(_el$4, () => c.name, _el$5);
-            _$insert5(_el$4, () => c.desc, null);
-            _$effect5((_$p) => _$setProp5(_el$4, "style", {
+            var _el$4 = _$createElement6("text"), _el$5 = _$createTextNode5(` `);
+            _$insertNode6(_el$4, _el$5);
+            _$insert6(_el$4, () => i() === clampedSel() ? "› " : "  ", _el$5);
+            _$insert6(_el$4, () => c.name, _el$5);
+            _$insert6(_el$4, () => c.desc, null);
+            _$effect6((_$p) => _$setProp6(_el$4, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
             return _el$4;
           })()
         }));
-        _$effect5((_$p) => _$setProp5(_el$3, "style", {
+        _$effect6((_$p) => _$setProp6(_el$3, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
@@ -1487,7 +1763,7 @@ function ShellHost(props) {
         return _el$3;
       })()
     }), null);
-    _$insert5(_el$, _$createComponent5(InputLine, {
+    _$insert6(_el$, _$createComponent6(InputLine, {
       get value() {
         return input();
       },
@@ -1510,12 +1786,12 @@ function ShellHost(props) {
         return th();
       }
     }), null);
-    _$insert5(_el$, _$createComponent5(FooterHints, {
+    _$insert6(_el$, _$createComponent6(FooterHints, {
       get theme() {
         return th();
       }
     }), null);
-    _$insert5(_el$, _$createComponent5(StatusBar, {
+    _$insert6(_el$, _$createComponent6(StatusBar, {
       get widgets() {
         return [{
           kind: "widget",
@@ -1545,6 +1821,7 @@ function ShellHost(props) {
 // src/host-session.ts
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { randomUUID } from "node:crypto";
+var DBG = (_m) => {};
 
 class HostSession {
   label = "dsh-host";
@@ -1557,32 +1834,101 @@ class HostSession {
   #running = false;
   #toolCalls = new Map;
   #override;
+  #resumeId;
   usage = { prompt: 0, completion: 0 };
   constructor(ctx) {
     this.#ctx = ctx;
     this.#wire();
   }
-  listProviders() {
+  #providerCache = null;
+  async listProviders() {
+    if (this.#providerCache)
+      return this.#providerCache;
     try {
       const llm = this.#ctx.get?.("llm");
-      const providers = llm?.listConfigurableProviders?.() ?? [];
-      return providers.map((p) => ({
-        provider: String(p?.provider ?? p?.id ?? p ?? ""),
-        models: (p?.models ?? []).map((m) => String(m?.id ?? m?.model ?? m ?? "")).filter(Boolean)
-      })).filter((p) => p.provider);
+      if (!llm?.listConfigurableProviders)
+        return this.#providerCache = [];
+      const configurable = await llm.listConfigurableProviders();
+      const out = [];
+      for (const p of configurable) {
+        const provider = String(p?.provider ?? "");
+        if (!provider)
+          continue;
+        let models = [];
+        try {
+          const list = await llm.listModels(provider);
+          models = list.map((m) => String(m?.id ?? m?.model ?? m ?? "")).filter(Boolean);
+        } catch {}
+        out.push({ provider, models });
+      }
+      return this.#providerCache = out;
     } catch {
-      return [];
+      return this.#providerCache = [];
     }
   }
-  switchModel(provider, model) {
-    this.#override = { provider, model };
+  switchModel(provider, model, reasoningEffort) {
+    this.#override = { provider, model, ...reasoningEffort ? { reasoningEffort } : {} };
     try {
       this.#handle?.dispose?.();
     } catch {}
     this.#handle = undefined;
     this.#sessionId = undefined;
     this.#agentId = undefined;
-    this.label = `${provider}/${model}`;
+    this.label = `${provider}/${model}${reasoningEffort ? ` (${reasoningEffort})` : ""}`;
+  }
+  newSession() {
+    try {
+      this.#handle?.dispose?.();
+    } catch {}
+    this.#handle = undefined;
+    this.#sessionId = undefined;
+    this.#agentId = undefined;
+  }
+  resumeSession(id) {
+    this.newSession();
+    this.#resumeId = id;
+  }
+  async listSessions(limit = 12) {
+    const persistence = this.#ctx.get?.("sessionPersistence");
+    if (!persistence?.list)
+      return [];
+    try {
+      const headers = await persistence.list();
+      return headers.map((h) => ({
+        id: String(h?.id ?? ""),
+        title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
+        updatedAt: h?.updatedAt ?? h?.lastEventAt ?? h?.mtime
+      })).filter((s) => s.id).sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit);
+    } catch {
+      return [];
+    }
+  }
+  registerAskProvider(onAsk) {
+    this.#ctx.on("user-questions/request", async (request, next) => {
+      const asking = request?.agent?.session?.id;
+      if (this.#sessionId !== undefined && asking !== undefined && String(asking) !== this.#sessionId)
+        return next();
+      const questions = request?.questions ?? [];
+      if (!questions.length)
+        return next();
+      const simplified = questions.map((q) => ({
+        id: String(q?.id ?? ""),
+        prompt: String(q?.prompt ?? q?.question ?? q?.header ?? ""),
+        options: (q?.options ?? []).map((o) => String(o?.label ?? o?.value ?? o))
+      }));
+      let picks;
+      try {
+        picks = await onAsk(simplified);
+      } catch {
+        return { answers: simplified.map((q) => ({ id: q.id, selected: [], custom: "declined" })) };
+      }
+      return {
+        answers: simplified.map((q) => {
+          const pick = picks.find((p) => p.questionId === q.id);
+          return pick ? { id: q.id, selected: [pick.selected] } : { id: q.id, selected: [], custom: "declined" };
+        })
+      };
+    });
   }
   #credentials() {
     try {
@@ -1612,7 +1958,8 @@ class HostSession {
   async turn(userText, cb, _signal) {
     this.#cb = cb;
     if (!this.#handle) {
-      this.#sessionId = randomUUID();
+      this.#sessionId = this.#resumeId ?? randomUUID();
+      this.#resumeId = undefined;
       const sel = this.#override ?? this.#ctx.get?.("agentDefaultModel")?.currentSelection?.();
       const agentOptions = sel ? { provider: sel.provider, model: sel.model, ...sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {} } : {};
       if (sel)
@@ -1623,6 +1970,7 @@ class HostSession {
         agentOptions
       });
       this.#agentId = this.#handle.agent.id;
+      DBG(`session created ${this.#sessionId} agent=${this.#agentId}`);
     }
     const message = createUserMessage({
       content: [{ type: "text", text: userText }],
@@ -1634,6 +1982,7 @@ class HostSession {
     });
   }
   #finishTurn() {
+    DBG("finishTurn");
     const r = this.#resolveTurn;
     this.#resolveTurn = undefined;
     this.#cb?.onTurnEnd({ prompt: this.usage.prompt, completion: this.usage.completion });
@@ -1661,10 +2010,17 @@ class HostSession {
         return;
       const wasRunning = this.#running;
       this.#running = status === "running";
+      DBG(`agent/status ${status} wasRunning=${wasRunning} resolve=${!!this.#resolveTurn}`);
       if (wasRunning && !this.#running && this.#resolveTurn)
         this.#finishTurn();
     });
     ctx.on("session/event", (session, event) => {
+      if (process.env.DSH_OPENTUI_DEBUG && (event.type === "turn/end" || event.type === "turn/start")) {
+        try {
+          process.stderr.write(`[hs] session/event ${event.type} sessionMatch=${String(session.id) === this.#sessionId} my=${this.#sessionId}
+`);
+        } catch {}
+      }
       if (this.#sessionId === undefined || String(session.id) !== this.#sessionId)
         return;
       const cb = this.#cb;
@@ -1687,6 +2043,7 @@ class HostSession {
             ok: event.data.isError !== true
           });
         } else if (event.type === "turn/end") {
+          DBG(`turn/end seen resolve=${!!this.#resolveTurn}`);
           const reason = event.data?.reason;
           if (reason?.kind === "error") {
             cb.onError(String(reason.error?.message ?? reason.error ?? "turn error").slice(0, 300));
@@ -1737,7 +2094,7 @@ function apply(ctx, config) {
   mountEngine({}).then(({
     renderer
   }) => {
-    render(() => _$createComponent6(ShellHost, {
+    render(() => _$createComponent7(ShellHost, {
       get deps() {
         return {
           store,

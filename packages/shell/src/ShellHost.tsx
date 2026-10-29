@@ -10,7 +10,7 @@ import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { SyntaxStyle } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { StatusBar, getTheme, themes, type I18n } from "@dsh-opentui/kit"
-import { Transcript, InputLine, FooterHints, type TranscriptItem } from "@dsh-opentui/kit"
+import { Transcript, TranscriptWindow, InputLine, FooterHints, type TranscriptItem } from "@dsh-opentui/kit"
 import { Picker, ApprovalCard, Dialog, type PickerItem } from "@dsh-opentui/kit"
 import { ToolPanel, ThinkPanel, type ToolPanelEntry } from "@dsh-opentui/kit"
 import type { SurfaceStore, SurfaceWidgetDecl } from "@dsh-opentui/runtime"
@@ -39,6 +39,8 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/help", desc: "show available commands" },
   { name: "/clear", desc: "clear the transcript" },
   { name: "/usage", desc: "show token usage summary" },
+  { name: "/new", desc: "start a fresh session" },
+  { name: "/sessions", desc: "list and resume stored sessions" },
   { name: "/theme", desc: "cycle theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -71,9 +73,15 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [showTool, setShowTool] = createSignal(false)
   // Which ToolPanel entry is expanded; -1 means "none" (ctrl+p cycles).
   const [toolExpanded, setToolExpanded] = createSignal(-1)
-  // Model picker overlay state; up/down/enter/esc route to it while open.
-  const [picker, setPicker] = createSignal<{ kind: "model" } | null>(null)
+  // Model/sessions/effort picker overlay state; up/down/enter/esc route to
+  // it while open. "effort" carries the model the user just picked.
+  const [picker, setPicker] = createSignal<{ kind: "model" } | { kind: "sessions" } | { kind: "effort"; provider: string; model: string } | null>(null)
   const [pickerSel, setPickerSel] = createSignal(0)
+  const [sessionItems, setSessionItems] = createSignal<PickerItem[]>([])
+  // Transcript scroll: 0 = pinned to the bottom; pageup/pagedown move it.
+  const [scrollOffset, setScrollOffset] = createSignal(0)
+  // Pending host ask (user-questions): modal Picker answered with enter/esc.
+  const [ask, setAsk] = createSignal<{ questions: { id: string; prompt: string; options: string[] }[]; resolve: (v: { questionId: string; selected: string }[] | "declined") => void } | null>(null)
   // Full reasoning text of the current turn: accumulated in a plain buffer,
   // mirrored into a signal so ThinkPanel re-renders without per-delta JSX.
   let reasoningBuf = ""
@@ -96,6 +104,15 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     onCleanup(store.subscribe(() => setSnapshot(store.snapshot)))
     const t2 = setInterval(() => setSpin((s) => (s + 1) % 4), 150)
     onCleanup(() => clearInterval(t2))
+    // Answer host user-questions with the ask overlay (first question with
+    // options becomes a Picker; esc declines). Disabled via env for bisection.
+    if (!process.env.DSH_OPENTUI_NO_ASK) props.deps.session.registerAskProvider(async (questions) => {
+      const answer = await new Promise<{ questionId: string; selected: string }[] | "declined">((resolve) => {
+        setAsk({ questions, resolve })
+      })
+      if (answer === "declined") throw new Error("declined")
+      return answer
+    })
   })
 
   const spinner = () => ["⠋", "⠙", "⠹", "⠸"][spin()]
@@ -116,15 +133,33 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // Model picker feed: the provider catalog flattened to one PickerItem
   // per model (group=provider, label=model, id="provider/model"); the row
   // matching the live session label is tagged as the current selection.
-  const pickerItems = createMemo<PickerItem[]>(() => {
-    const out: PickerItem[] = []
-    for (const p of props.deps.session.listProviders()) {
-      for (const m of p.models) {
-        const id = `${p.provider}/${m}`
-        out.push({ id, group: p.provider, label: m, detail: label() === id ? "current" : undefined })
+  const [modelItems, setModelItems] = createSignal<PickerItem[]>([])
+  const refreshModelItems = () => {
+    void props.deps.session.listProviders().then((catalog) => {
+      const out: PickerItem[] = []
+      for (const p of catalog) {
+        for (const m of p.models) {
+          const id = `${p.provider}/${m}`
+          out.push({ id, group: p.provider, label: m, detail: label() === id ? "current" : undefined })
+        }
       }
+      setModelItems(out)
+    })
+  }
+  onMount(refreshModelItems)
+
+  const EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"]
+
+  // The active overlay's rows/title, by picker kind.
+  const pickerData = createMemo<{ title: string; items: PickerItem[] }>(() => {
+    const p = picker()
+    if (!p) return { title: "", items: [] }
+    if (p.kind === "model") return { title: t("picker.model.title"), items: modelItems() }
+    if (p.kind === "sessions") return { title: t("picker.sessions.title"), items: sessionItems() }
+    return {
+      title: t("picker.effort.title", { model: p.model }),
+      items: EFFORTS.map((e) => ({ id: e, label: e })),
     }
-    return out
   })
 
   // Tool panel feed: tool-kind transcript rows projected onto ToolPanelEntry.
@@ -231,6 +266,20 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } else if (cmd === "usage") {
       const u = usage()
       push({ kind: "system", text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens` })
+    } else if (cmd === "new") {
+      props.deps.session.newSession()
+      setItems([])
+      setScrollOffset(0)
+      push({ kind: "system", text: t("cmd.new.done") })
+    } else if (cmd === "sessions") {
+      const list = await props.deps.session.listSessions()
+      if (!list.length) {
+        push({ kind: "system", text: t("cmd.sessions.empty") })
+      } else {
+        setSessionItems(list.map((x) => ({ id: x.id, label: x.title || x.id.slice(0, 8), detail: x.updatedAt ? String(x.updatedAt).slice(0, 19) : undefined })))
+        setPickerSel(0)
+        setPicker({ kind: "sessions" })
+      }
     } else if (cmd === "theme") {
       const i = THEME_ORDER.indexOf(themeName())
       const next = THEME_ORDER[(i + 1) % THEME_ORDER.length]
@@ -239,6 +288,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } else if (cmd === "model") {
       if (!arg) {
         // Bare /model opens the Picker overlay instead of printing the list.
+        refreshModelItems()
         setPickerSel(0)
         setPicker({ kind: "model" })
       } else {
@@ -284,6 +334,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
 
   async function send(text: string) {
     if (busy()) return
+    setScrollOffset(0)
     push({ kind: "user", text })
     setBusy(true)
     let thinkingItem: Extract<TItem, { kind: "thinking" }> | null = null
@@ -356,6 +407,23 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-keys.log", JSON.stringify({ name: key.name, seq: key.sequence }) + "\n")).catch(() => {})
     }
     if (key.sequence === "\x03" || ((key.name === "c" || key.name === "C") && key.ctrl)) process.exit(0)
+    // Host ask overlay: highest modal priority (the turn is waiting on us).
+    const pendingAsk = ask()
+    if (pendingAsk) {
+      const q0 = pendingAsk.questions[0]
+      const opts = q0?.options ?? []
+      if (key.name === "up" || key.name === "down") {
+        if (opts.length > 0) setPickerSel((v) => (key.name === "up" ? (v - 1 + opts.length) % opts.length : (v + 1) % opts.length))
+      } else if (key.name === "return") {
+        const sel = opts[Math.min(pickerSel(), Math.max(0, opts.length - 1))]
+        setAsk(null)
+        pendingAsk.resolve(sel ? [{ questionId: q0.id, selected: sel }] : "declined")
+      } else if (key.name === "escape") {
+        setAsk(null)
+        pendingAsk.resolve("declined")
+      }
+      return
+    }
     const ap = approval()
     if (ap) {
       if (key.sequence === "y" || key.name === "return") {
@@ -371,21 +439,27 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
     // Model picker overlay (modal): owns up/down/enter/esc while open —
     // up/down move the highlight, they never recall history.
-    if (picker()) {
-      const n = pickerItems().length
+    const pk = picker()
+    if (pk) {
+      const n = pickerData().items.length
       if (key.name === "up" || key.name === "down") {
         if (n > 0) setPickerSel((s) => (key.name === "up" ? (s - 1 + n) % n : (s + 1) % n))
       } else if (key.name === "return") {
-        const item = n > 0 ? pickerItems()[Math.min(pickerSel(), n - 1)] : undefined
+        const item = n > 0 ? pickerData().items[Math.min(pickerSel(), n - 1)] : undefined
         setPicker(null)
         setPickerSel(0)
-        if (item) {
+        if (item && pk.kind === "model") {
+          // two-stage: picked a model, now ask for the reasoning effort
           const [provider, model] = item.id.split("/")
-          if (provider && model) {
-            props.deps.session.switchModel(provider, model)
-            setLabel(props.deps.session.label)
-            push({ kind: "system", text: `${t("cmd.model.set")} ${item.id} ${t("cmd.model.next")}` })
-          }
+          if (provider && model) setPicker({ kind: "effort", provider, model })
+        } else if (item && pk.kind === "effort") {
+          const effort = item.id === "keep" ? undefined : item.id
+          props.deps.session.switchModel(pk.provider, pk.model, effort)
+          setLabel(props.deps.session.label)
+          push({ kind: "system", text: `${t("cmd.model.set")} ${pk.provider}/${pk.model}${effort ? ` (${effort})` : ""} ${t("cmd.model.next")}` })
+        } else if (item && pk.kind === "sessions") {
+          props.deps.session.resumeSession(item.id)
+          push({ kind: "system", text: `${t("cmd.sessions.resumed")}: ${item.label}` })
         }
       } else if (key.name === "escape") {
         setPicker(null)
@@ -407,6 +481,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       // Cycle the expanded ToolPanel entry: -1 (none) → 0 → … → n-1 → -1.
       const n = toolEntries().length
       if (n > 0) setToolExpanded((v) => (v + 1 >= n ? -1 : v + 1))
+      return
+    }
+    // Transcript scroll: pageup back in time, pagedown toward the bottom.
+    if (key.name === "pageup") {
+      setScrollOffset((o) => o + 10)
+      if (process.env.DSH_OPENTUI_DEBUG) {
+        import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-keys.log", `pageup handled offset=${scrollOffset()}\n`)).catch(() => {})
+      }
+      return
+    }
+    if (key.name === "pagedown") {
+      setScrollOffset((o) => Math.max(0, o - 10))
       return
     }
     if (busy()) return
@@ -525,12 +611,14 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-        <Transcript
+        <TranscriptWindow
           items={visibleItems()}
           theme={theme()}
           t={t}
           spinnerFrame={spinner()}
           mdStyle={mdStyle}
+          offset={scrollOffset()}
+          viewportRows={24}
         />
       </box>
       {showTool() ? (
@@ -542,10 +630,19 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           <ApprovalCard toolName={ap.name} args={ap.args} hint={t("agent.approve.hint")} theme={th()} />
         )}
       </For>
+      {ask() ? (
+        <Picker
+          title={`${t("ask.title")}: ${ask()!.questions[0]?.prompt ?? ""}`.slice(0, 70)}
+          items={(ask()!.questions[0]?.options ?? []).map((o) => ({ id: o, label: o }))}
+          selected={pickerSel()}
+          theme={th()}
+          maxRows={8}
+        />
+      ) : null}
       {picker() ? (
         <Picker
-          title={t("picker.model.title")}
-          items={pickerItems()}
+          title={pickerData().title}
+          items={pickerData().items}
           selected={pickerSel()}
           theme={th()}
           maxRows={8}
