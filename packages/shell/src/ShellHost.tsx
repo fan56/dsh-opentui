@@ -5,7 +5,8 @@
  * left-rail tool blocks, live /model switching across host providers.
  */
 import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { useKeyboard } from "@opentui/solid"
+import { createTextAttributes, SyntaxStyle } from "@opentui/core"
+import { useKeyboard, useRenderer } from "@opentui/solid"
 import { StatusBar, getTheme, themes, type I18n, type Theme } from "@dsh-opentui/kit"
 import type { SurfaceStore, SurfaceWidgetDecl } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
@@ -21,13 +22,13 @@ export interface ShellHostDeps {
 
 type TItem =
   | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string }
+  | { kind: "assistant"; text: string; final?: boolean }
   | { kind: "thinking"; tail: string; chars: number }
   | { kind: "tool"; name: string; args: string; ok: boolean; brief: string }
   | { kind: "error"; text: string }
   | { kind: "system"; text: string }
 
-const MAX_VISIBLE_LINES = 200
+const MAX_VISIBLE_ITEMS = 120
 const THEME_ORDER = ["catppuccin-mocha", "default"]
 
 /** Slash commands surfaced by the autocomplete palette (dsh-tui-pi style). */
@@ -76,6 +77,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const t = props.deps.t
   const store = props.deps.store
   const [input, setInput] = createSignal("")
+  // Caret position within the input line (0..input().length).
+  const [cursor, setCursor] = createSignal(0)
+  // Command history for up/down recall; historyIdx === history().length is
+  // the draft slot (below the newest entry, i.e. the empty line).
+  const [history, setHistory] = createSignal<string[]>([])
+  const [historyIdx, setHistoryIdx] = createSignal(0)
   const [items, setItems] = createSignal<TItem[]>([])
   const [busy, setBusy] = createSignal(false)
   const [spin, setSpin] = createSignal(0)
@@ -118,38 +125,118 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   })
   const menuVisible = createMemo(() => !busy() && menuOpen() && filteredCommands().length > 0)
 
-  const lines = createMemo(() => {
+  // markdown style for finalized assistant messages (best-effort: the
+  // intrinsic tolerates undefined, code blocks then render unstyled)
+  const rendererCtx = useRenderer()
+  let mdStyle: any
+  try {
+    mdStyle = SyntaxStyle.create(rendererCtx as any)
+  } catch {
+    mdStyle = undefined
+  }
+
+  const visibleItems = createMemo(() => items().slice(-MAX_VISIBLE_ITEMS))
+
+  /** One transcript item -> JSX (markdown for finalized assistant text). */
+  const itemNode = (it: TItem) => {
     const th = theme()
-    const out: { text: string; fg?: string }[] = []
-    for (const it of items()) {
-      if (it.kind === "user") {
-        out.push({ text: `❯ ${it.text}`, fg: th.tokens.userMark ?? th.tokens.accent })
-      } else if (it.kind === "assistant") {
-        out.push(...renderAssistant(it.text, th))
-        out.push({ text: "" })
-      } else if (it.kind === "thinking") {
-        out.push({ text: `${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`, fg: th.tokens.dim })
-      } else if (it.kind === "tool") {
-        out.push({ text: ` ⚒ ${it.name} ${it.args.slice(0, 90)}`, fg: th.tokens.toolOk ?? th.tokens.warn })
-        out.push({ text: ` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`, fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger })
-      } else if (it.kind === "error") {
-        out.push({ text: `✗ ${t("agent.error")}: ${it.text}`, fg: th.tokens.danger })
-      } else if (it.kind === "system") {
-        out.push({ text: `· ${it.text}`, fg: th.tokens.dim })
-      }
+    if (it.kind === "user") {
+      return <text style={{ fg: th.tokens.userMark ?? th.tokens.accent }}>❯ {it.text}</text>
     }
-    return out.slice(-MAX_VISIBLE_LINES)
-  })
+    if (it.kind === "assistant") {
+      if (it.final) {
+        return (
+          <box style={{ flexDirection: "column" }}>
+            <markdown content={it.text} streaming={false} syntaxStyle={mdStyle} />
+            <text>{" "}</text>
+          </box>
+        )
+      }
+      return (
+        <box style={{ flexDirection: "column" }}>
+          <For each={renderAssistant(it.text, th)}>
+            {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
+          </For>
+        </box>
+      )
+    }
+    if (it.kind === "thinking") {
+      return <text style={{ fg: th.tokens.dim }}>{`${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`}</text>
+    }
+    if (it.kind === "tool") {
+      return (
+        <box style={{ flexDirection: "column" }}>
+          <text style={{ fg: th.tokens.toolOk ?? th.tokens.warn }}>{` ⚒ ${it.name} ${it.args.slice(0, 90)}`}</text>
+          <text style={{ fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger }}>{` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`}</text>
+        </box>
+      )
+    }
+    if (it.kind === "error") {
+      return <text style={{ fg: th.tokens.danger }}>✗ {t("agent.error")}: {it.text}</text>
+    }
+    return <text style={{ fg: th.tokens.dim }}>· {it.text}</text>
+  }
 
   let lastBump = 0
+  let streaming: { thinking?: TItem; reply?: TItem } = {}
   const bumpSoon = () => {
     const now = Date.now()
     if (now - lastBump > 60) {
       lastBump = now
-      setItems((arr) => [...arr])
+      // replace the streaming item refs (not just the array) so the
+      // per-item <For> re-renders them
+      setItems((arr) => arr.map((x) => (x === streaming.thinking || x === streaming.reply ? { ...x } : x)))
     }
   }
   const push = (it: TItem) => setItems((arr) => [...arr, it])
+
+  // ---- line editor: cursor-based editing + history recall ----
+  /** Start of the word before `pos` (skips trailing whitespace, then the word). */
+  const wordStart = (s: string, pos: number): number => {
+    const cut = s.slice(0, pos).replace(/\s+$/, "").replace(/\S+$/, "").length
+    return Math.min(cut, pos)
+  }
+  /** Return to the draft slot after any manual edit. */
+  const resetHistoryNav = () => setHistoryIdx(history().length)
+  /** Insert a character at the cursor. */
+  const insertChar = (ch: string) => {
+    const s = input()
+    const c = Math.min(cursor(), s.length)
+    setInput(s.slice(0, c) + ch + s.slice(c))
+    setCursor(c + ch.length)
+    resetHistoryNav()
+  }
+  /** Record a submitted line in history (dedupe consecutive duplicates). */
+  const commitHistory = (text: string) => {
+    if (!text) return
+    const h = history()
+    const next = h[h.length - 1] === text ? h : [...h, text]
+    setHistory(next)
+    setHistoryIdx(next.length)
+  }
+  /** up/down recall; the draft slot (index === length) restores the empty line. */
+  const historyNav = (dir: -1 | 1) => {
+    const h = history()
+    if (h.length === 0) return
+    let idx = Math.min(historyIdx(), h.length)
+    if (dir === -1 && idx > 0) idx -= 1
+    else if (dir === 1 && idx < h.length) idx += 1
+    else return
+    setHistoryIdx(idx)
+    const text = idx === h.length ? "" : h[idx]
+    setInput(text)
+    setCursor(text.length)
+  }
+  /** Split the input line at the cursor for caret rendering. */
+  const inputChunks = () => {
+    const s = input()
+    const c = Math.min(cursor(), s.length)
+    return {
+      before: s.slice(0, c),
+      at: c < s.length ? s.charAt(c) : " ",
+      after: c < s.length ? s.slice(c + 1) : "",
+    }
+  }
 
   /** Execute a "/cmd ..." input line (shared by Enter and the palette). */
   function runCommand(text: string) {
@@ -199,6 +286,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     setBusy(true)
     let thinkingItem: { kind: "thinking"; tail: string; chars: number } | null = null
     let replyItem: { kind: "assistant"; text: string } | null = null
+    streaming = {}
     try {
       await props.deps.session.turn(
         text,
@@ -206,6 +294,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           onThinkingDelta: (s: string) => {
             if (!thinkingItem) {
               thinkingItem = { kind: "thinking", tail: "", chars: 0 }
+              streaming.thinking = thinkingItem
               push(thinkingItem)
             }
             thinkingItem.tail = (thinkingItem.tail + s).split("\n").slice(-2).join(" ")
@@ -219,12 +308,17 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             }
             if (!replyItem) {
               replyItem = { kind: "assistant", text: "" }
+              streaming.reply = replyItem
               push(replyItem)
             }
             replyItem.text += s
             bumpSoon()
           },
           onTurnEnd: (u: { prompt: number; completion: number }) => {
+            if (replyItem) {
+              const final: TItem = { ...replyItem, final: true }
+              setItems((arr) => arr.map((x) => (x === replyItem ? final : x)))
+            }
             setLabel(props.deps.session.label)
             setUsage((v) => ({ prompt: v.prompt + u.prompt, completion: v.completion + u.completion, turns: v.turns + 1 }))
           },
@@ -276,10 +370,23 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       setMenuSel((s) => (key.name === "up" ? (s - 1 + n) % n : (s + 1) % n))
       return
     }
+    // History recall on up/down — but a "/" line keeps the palette in
+    // charge of those keys even when the menu is not visible.
+    if (key.name === "up" || key.name === "down") {
+      if (input().startsWith("/")) return
+      return historyNav(key.name === "up" ? -1 : 1)
+    }
+    // Cursor movement: left/right, home/ctrl+a, end/ctrl+e.
+    if (key.name === "left") return setCursor((c) => Math.max(0, c - 1))
+    if (key.name === "right") return setCursor((c) => Math.min(input().length, c + 1))
+    if (key.name === "home" || (key.ctrl && key.name === "a")) return setCursor(0)
+    if (key.name === "end" || (key.ctrl && key.name === "e")) return setCursor(input().length)
     if (key.name === "tab") {
       const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined
       if (cmd) {
         setInput(cmd.name + " ")
+        setCursor(cmd.name.length + 1)
+        resetHistoryNav()
         setMenuSel(0)
       }
       return
@@ -288,13 +395,16 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       const text = input().trim()
       const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined
       setInput("")
+      setCursor(0)
       setMenuOpen(true)
       setMenuSel(0)
       if (cmd) {
+        commitHistory(cmd.name)
         runCommand(cmd.name)
         return
       }
       if (!text) return
+      commitHistory(text)
       if (text.startsWith("/")) {
         runCommand(text)
         return
@@ -303,18 +413,60 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       return
     }
     if (key.name === "backspace") {
-      setInput((s) => s.slice(0, -1))
+      const c = cursor()
+      if (c > 0) {
+        const s = input()
+        setInput(s.slice(0, c - 1) + s.slice(c))
+        setCursor(c - 1)
+        resetHistoryNav()
+        setMenuOpen(true)
+        setMenuSel(0)
+      }
+      return
+    }
+    // delete / ctrl+d: remove the character under the caret.
+    if (key.name === "delete" || (key.ctrl && key.name === "d")) {
+      const c = cursor()
+      const s = input()
+      if (c < s.length) {
+        setInput(s.slice(0, c) + s.slice(c + 1))
+        resetHistoryNav()
+        setMenuOpen(true)
+        setMenuSel(0)
+      }
+      return
+    }
+    // ctrl+u: clear the whole line; ctrl+w: kill the word before the caret.
+    if (key.ctrl && key.name === "u") {
+      setInput("")
+      setCursor(0)
+      resetHistoryNav()
       setMenuOpen(true)
       setMenuSel(0)
       return
     }
+    if (key.ctrl && key.name === "w") {
+      const c = cursor()
+      const cut = wordStart(input(), c)
+      if (cut < c) {
+        const s = input()
+        setInput(s.slice(0, cut) + s.slice(c))
+        setCursor(cut)
+        resetHistoryNav()
+        setMenuOpen(true)
+        setMenuSel(0)
+      }
+      return
+    }
     if (key.name === "escape") {
       if (menuVisible()) return setMenuOpen(false)
-      return setInput("")
+      setInput("")
+      setCursor(0)
+      return
     }
     const ch = key.sequence
     if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) {
-      setInput((s) => s + ch)
+      insertChar(ch)
       setMenuOpen(true)
       setMenuSel(0)
     }
@@ -326,8 +478,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-        <For each={lines()} fallback={<text style={{ fg: th().tokens.dim }}>{t("shell.transcript.empty")}</text>}>
-          {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
+        <For each={visibleItems()} fallback={<text style={{ fg: th().tokens.dim }}>{t("shell.transcript.empty")}</text>}>
+          {(it) => itemNode(it)}
         </For>
       </box>
       <For each={approval() ? [approval()!] : []}>
@@ -355,9 +507,20 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       </For>
       <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "row" }}>
         <text style={{ fg: th().tokens.accent }}>{busy() ? `${spinner()} ` : "❯ "}</text>
-        <text style={{ fg: input() ? th().tokens.text : th().tokens.dim }}>
-          {busy() ? t("shell.input.busy") : input() || t("shell.input.placeholder")}
-        </text>
+        {busy() ? (
+          <text style={{ fg: th().tokens.dim }}>{t("shell.input.busy")}</text>
+        ) : input() === "" ? (
+          <>
+            <text style={{ fg: th().tokens.accent, attributes: createTextAttributes({ inverse: true }) }}> </text>
+            <text style={{ fg: th().tokens.dim }}>{t("shell.input.placeholder")}</text>
+          </>
+        ) : (
+          <>
+            <text style={{ fg: th().tokens.text }}>{inputChunks().before}</text>
+            <text style={{ fg: th().tokens.text, attributes: createTextAttributes({ inverse: true }) }}>{inputChunks().at}</text>
+            <text style={{ fg: th().tokens.text }}>{inputChunks().after}</text>
+          </>
+        )}
       </box>
       <box style={{ flexDirection: "row", paddingLeft: 2, paddingRight: 2 }}>
         <For each={footerHints}>

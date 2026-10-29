@@ -105,16 +105,17 @@ function createI18n(locale = "zh-CN") {
 }
 
 // src/ShellHost.tsx
-import { createTextNode as _$createTextNode2 } from "@opentui/solid";
-import { effect as _$effect2 } from "@opentui/solid";
-import { insertNode as _$insertNode2 } from "@opentui/solid";
 import { memo as _$memo } from "@opentui/solid";
-import { insert as _$insert2 } from "@opentui/solid";
 import { createComponent as _$createComponent2 } from "@opentui/solid";
 import { setProp as _$setProp2 } from "@opentui/solid";
+import { effect as _$effect2 } from "@opentui/solid";
+import { insert as _$insert2 } from "@opentui/solid";
+import { createTextNode as _$createTextNode2 } from "@opentui/solid";
+import { insertNode as _$insertNode2 } from "@opentui/solid";
 import { createElement as _$createElement2 } from "@opentui/solid";
 import { For as For2, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { useKeyboard } from "@opentui/solid";
+import { createTextAttributes, SyntaxStyle } from "@opentui/core";
+import { useKeyboard, useRenderer } from "@opentui/solid";
 // ../kit/src/theme.ts
 var defaultTheme = {
   name: "default",
@@ -211,7 +212,7 @@ function StatusBar(props) {
   })();
 }
 // src/ShellHost.tsx
-var MAX_VISIBLE_LINES = 200;
+var MAX_VISIBLE_ITEMS = 120;
 var THEME_ORDER = ["catppuccin-mocha", "default"];
 var COMMANDS = [{
   name: "/help",
@@ -286,6 +287,9 @@ function ShellHost(props) {
   const t = props.deps.t;
   const store = props.deps.store;
   const [input, setInput] = createSignal("");
+  const [cursor, setCursor] = createSignal(0);
+  const [history, setHistory] = createSignal([]);
+  const [historyIdx, setHistoryIdx] = createSignal(0);
   const [items, setItems] = createSignal([]);
   const [busy, setBusy] = createSignal(false);
   const [spin, setSpin] = createSignal(0);
@@ -320,57 +324,180 @@ function ShellHost(props) {
     return n === 0 ? 0 : Math.min(menuSel(), n - 1);
   });
   const menuVisible = createMemo(() => !busy() && menuOpen() && filteredCommands().length > 0);
-  const lines = createMemo(() => {
+  const rendererCtx = useRenderer();
+  let mdStyle;
+  try {
+    mdStyle = SyntaxStyle.create(rendererCtx);
+  } catch {
+    mdStyle = undefined;
+  }
+  const visibleItems = createMemo(() => items().slice(-MAX_VISIBLE_ITEMS));
+  const itemNode = (it) => {
     const th = theme();
-    const out = [];
-    for (const it of items()) {
-      if (it.kind === "user") {
-        out.push({
-          text: `❯ ${it.text}`,
+    if (it.kind === "user") {
+      return (() => {
+        var _el$ = _$createElement2("text"), _el$2 = _$createTextNode2(`❯ `);
+        _$insertNode2(_el$, _el$2);
+        _$insert2(_el$, () => it.text, null);
+        _$effect2((_$p) => _$setProp2(_el$, "style", {
           fg: th.tokens.userMark ?? th.tokens.accent
-        });
-      } else if (it.kind === "assistant") {
-        out.push(...renderAssistant(it.text, th));
-        out.push({
-          text: ""
-        });
-      } else if (it.kind === "thinking") {
-        out.push({
-          text: `${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`,
-          fg: th.tokens.dim
-        });
-      } else if (it.kind === "tool") {
-        out.push({
-          text: ` ⚒ ${it.name} ${it.args.slice(0, 90)}`,
-          fg: th.tokens.toolOk ?? th.tokens.warn
-        });
-        out.push({
-          text: ` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`,
-          fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger
-        });
-      } else if (it.kind === "error") {
-        out.push({
-          text: `✗ ${t("agent.error")}: ${it.text}`,
-          fg: th.tokens.danger
-        });
-      } else if (it.kind === "system") {
-        out.push({
-          text: `· ${it.text}`,
-          fg: th.tokens.dim
-        });
-      }
+        }, _$p));
+        return _el$;
+      })();
     }
-    return out.slice(-MAX_VISIBLE_LINES);
-  });
+    if (it.kind === "assistant") {
+      if (it.final) {
+        return (() => {
+          var _el$3 = _$createElement2("box"), _el$4 = _$createElement2("markdown"), _el$5 = _$createElement2("text");
+          _$insertNode2(_el$3, _el$4);
+          _$insertNode2(_el$3, _el$5);
+          _$setProp2(_el$3, "style", {
+            flexDirection: "column"
+          });
+          _$setProp2(_el$4, "streaming", false);
+          _$setProp2(_el$4, "syntaxStyle", mdStyle);
+          _$insertNode2(_el$5, _$createTextNode2(` `));
+          _$effect2((_$p) => _$setProp2(_el$4, "content", it.text, _$p));
+          return _el$3;
+        })();
+      }
+      return (() => {
+        var _el$7 = _$createElement2("box");
+        _$setProp2(_el$7, "style", {
+          flexDirection: "column"
+        });
+        _$insert2(_el$7, _$createComponent2(For2, {
+          get each() {
+            return renderAssistant(it.text, th);
+          },
+          children: (l) => (() => {
+            var _el$8 = _$createElement2("text");
+            _$insert2(_el$8, () => l.text || " ");
+            _$effect2((_$p) => _$setProp2(_el$8, "style", l.fg ? {
+              fg: l.fg
+            } : {}, _$p));
+            return _el$8;
+          })()
+        }));
+        return _el$7;
+      })();
+    }
+    if (it.kind === "thinking") {
+      return (() => {
+        var _el$9 = _$createElement2("text");
+        _$insert2(_el$9, () => `${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`);
+        _$effect2((_$p) => _$setProp2(_el$9, "style", {
+          fg: th.tokens.dim
+        }, _$p));
+        return _el$9;
+      })();
+    }
+    if (it.kind === "tool") {
+      return (() => {
+        var _el$0 = _$createElement2("box"), _el$1 = _$createElement2("text"), _el$10 = _$createElement2("text");
+        _$insertNode2(_el$0, _el$1);
+        _$insertNode2(_el$0, _el$10);
+        _$setProp2(_el$0, "style", {
+          flexDirection: "column"
+        });
+        _$insert2(_el$1, () => ` ⚒ ${it.name} ${it.args.slice(0, 90)}`);
+        _$insert2(_el$10, () => ` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`);
+        _$effect2((_p$) => {
+          var _v$ = {
+            fg: th.tokens.toolOk ?? th.tokens.warn
+          }, _v$2 = {
+            fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger
+          };
+          _v$ !== _p$.e && (_p$.e = _$setProp2(_el$1, "style", _v$, _p$.e));
+          _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$10, "style", _v$2, _p$.t));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined
+        });
+        return _el$0;
+      })();
+    }
+    if (it.kind === "error") {
+      return (() => {
+        var _el$11 = _$createElement2("text"), _el$12 = _$createTextNode2(`✗ `), _el$13 = _$createTextNode2(`: `);
+        _$insertNode2(_el$11, _el$12);
+        _$insertNode2(_el$11, _el$13);
+        _$insert2(_el$11, () => t("agent.error"), _el$13);
+        _$insert2(_el$11, () => it.text, null);
+        _$effect2((_$p) => _$setProp2(_el$11, "style", {
+          fg: th.tokens.danger
+        }, _$p));
+        return _el$11;
+      })();
+    }
+    return (() => {
+      var _el$14 = _$createElement2("text"), _el$15 = _$createTextNode2(`· `);
+      _$insertNode2(_el$14, _el$15);
+      _$insert2(_el$14, () => it.text, null);
+      _$effect2((_$p) => _$setProp2(_el$14, "style", {
+        fg: th.tokens.dim
+      }, _$p));
+      return _el$14;
+    })();
+  };
   let lastBump = 0;
+  let streaming = {};
   const bumpSoon = () => {
     const now = Date.now();
     if (now - lastBump > 60) {
       lastBump = now;
-      setItems((arr) => [...arr]);
+      setItems((arr) => arr.map((x) => x === streaming.thinking || x === streaming.reply ? {
+        ...x
+      } : x));
     }
   };
   const push = (it) => setItems((arr) => [...arr, it]);
+  const wordStart = (s, pos) => {
+    const cut = s.slice(0, pos).replace(/\s+$/, "").replace(/\S+$/, "").length;
+    return Math.min(cut, pos);
+  };
+  const resetHistoryNav = () => setHistoryIdx(history().length);
+  const insertChar = (ch) => {
+    const s = input();
+    const c = Math.min(cursor(), s.length);
+    setInput(s.slice(0, c) + ch + s.slice(c));
+    setCursor(c + ch.length);
+    resetHistoryNav();
+  };
+  const commitHistory = (text) => {
+    if (!text)
+      return;
+    const h = history();
+    const next = h[h.length - 1] === text ? h : [...h, text];
+    setHistory(next);
+    setHistoryIdx(next.length);
+  };
+  const historyNav = (dir) => {
+    const h = history();
+    if (h.length === 0)
+      return;
+    let idx = Math.min(historyIdx(), h.length);
+    if (dir === -1 && idx > 0)
+      idx -= 1;
+    else if (dir === 1 && idx < h.length)
+      idx += 1;
+    else
+      return;
+    setHistoryIdx(idx);
+    const text = idx === h.length ? "" : h[idx];
+    setInput(text);
+    setCursor(text.length);
+  };
+  const inputChunks = () => {
+    const s = input();
+    const c = Math.min(cursor(), s.length);
+    return {
+      before: s.slice(0, c),
+      at: c < s.length ? s.charAt(c) : " ",
+      after: c < s.length ? s.slice(c + 1) : ""
+    };
+  };
   function runCommand(text) {
     const parts = text.slice(1).trim().split(/\s+/);
     const cmd = parts[0];
@@ -452,6 +579,7 @@ function ShellHost(props) {
     setBusy(true);
     let thinkingItem = null;
     let replyItem = null;
+    streaming = {};
     try {
       await props.deps.session.turn(text, {
         onThinkingDelta: (s) => {
@@ -461,6 +589,7 @@ function ShellHost(props) {
               tail: "",
               chars: 0
             };
+            streaming.thinking = thinkingItem;
             push(thinkingItem);
           }
           thinkingItem.tail = (thinkingItem.tail + s).split(`
@@ -478,12 +607,20 @@ function ShellHost(props) {
               kind: "assistant",
               text: ""
             };
+            streaming.reply = replyItem;
             push(replyItem);
           }
           replyItem.text += s;
           bumpSoon();
         },
         onTurnEnd: (u) => {
+          if (replyItem) {
+            const final = {
+              ...replyItem,
+              final: true
+            };
+            setItems((arr) => arr.map((x) => x === replyItem ? final : x));
+          }
           setLabel(props.deps.session.label);
           setUsage((v) => ({
             prompt: v.prompt + u.prompt,
@@ -557,10 +694,25 @@ function ShellHost(props) {
       setMenuSel((s) => key.name === "up" ? (s - 1 + n) % n : (s + 1) % n);
       return;
     }
+    if (key.name === "up" || key.name === "down") {
+      if (input().startsWith("/"))
+        return;
+      return historyNav(key.name === "up" ? -1 : 1);
+    }
+    if (key.name === "left")
+      return setCursor((c) => Math.max(0, c - 1));
+    if (key.name === "right")
+      return setCursor((c) => Math.min(input().length, c + 1));
+    if (key.name === "home" || key.ctrl && key.name === "a")
+      return setCursor(0);
+    if (key.name === "end" || key.ctrl && key.name === "e")
+      return setCursor(input().length);
     if (key.name === "tab") {
       const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined;
       if (cmd) {
         setInput(cmd.name + " ");
+        setCursor(cmd.name.length + 1);
+        resetHistoryNav();
         setMenuSel(0);
       }
       return;
@@ -569,14 +721,17 @@ function ShellHost(props) {
       const text = input().trim();
       const cmd = menuVisible() ? filteredCommands()[clampedSel()] : undefined;
       setInput("");
+      setCursor(0);
       setMenuOpen(true);
       setMenuSel(0);
       if (cmd) {
+        commitHistory(cmd.name);
         runCommand(cmd.name);
         return;
       }
       if (!text)
         return;
+      commitHistory(text);
       if (text.startsWith("/")) {
         runCommand(text);
         return;
@@ -585,19 +740,59 @@ function ShellHost(props) {
       return;
     }
     if (key.name === "backspace") {
-      setInput((s) => s.slice(0, -1));
+      const c = cursor();
+      if (c > 0) {
+        const s = input();
+        setInput(s.slice(0, c - 1) + s.slice(c));
+        setCursor(c - 1);
+        resetHistoryNav();
+        setMenuOpen(true);
+        setMenuSel(0);
+      }
+      return;
+    }
+    if (key.name === "delete" || key.ctrl && key.name === "d") {
+      const c = cursor();
+      const s = input();
+      if (c < s.length) {
+        setInput(s.slice(0, c) + s.slice(c + 1));
+        resetHistoryNav();
+        setMenuOpen(true);
+        setMenuSel(0);
+      }
+      return;
+    }
+    if (key.ctrl && key.name === "u") {
+      setInput("");
+      setCursor(0);
+      resetHistoryNav();
       setMenuOpen(true);
       setMenuSel(0);
+      return;
+    }
+    if (key.ctrl && key.name === "w") {
+      const c = cursor();
+      const cut = wordStart(input(), c);
+      if (cut < c) {
+        const s = input();
+        setInput(s.slice(0, cut) + s.slice(c));
+        setCursor(cut);
+        resetHistoryNav();
+        setMenuOpen(true);
+        setMenuSel(0);
+      }
       return;
     }
     if (key.name === "escape") {
       if (menuVisible())
         return setMenuOpen(false);
-      return setInput("");
+      setInput("");
+      setCursor(0);
+      return;
     }
     const ch = key.sequence;
     if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) {
-      setInput((s) => s + ch);
+      insertChar(ch);
       setMenuOpen(true);
       setMenuSel(0);
     }
@@ -605,141 +800,181 @@ function ShellHost(props) {
   const widgets = () => snapshot().filter((d) => d.kind === "widget");
   const th = () => theme();
   return (() => {
-    var _el$ = _$createElement2("box"), _el$2 = _$createElement2("box"), _el$3 = _$createElement2("box"), _el$4 = _$createElement2("text"), _el$5 = _$createElement2("text"), _el$6 = _$createElement2("box");
-    _$insertNode2(_el$, _el$2);
-    _$insertNode2(_el$, _el$3);
-    _$insertNode2(_el$, _el$6);
-    _$setProp2(_el$, "style", {
+    var _el$16 = _$createElement2("box"), _el$17 = _$createElement2("box"), _el$18 = _$createElement2("box"), _el$19 = _$createElement2("text"), _el$20 = _$createElement2("box");
+    _$insertNode2(_el$16, _el$17);
+    _$insertNode2(_el$16, _el$18);
+    _$insertNode2(_el$16, _el$20);
+    _$setProp2(_el$16, "style", {
       flexDirection: "column",
       flexGrow: 1
     });
-    _$setProp2(_el$2, "style", {
+    _$setProp2(_el$17, "style", {
       flexDirection: "column",
       flexGrow: 1,
       padding: 1
     });
-    _$insert2(_el$2, _$createComponent2(For2, {
+    _$insert2(_el$17, _$createComponent2(For2, {
       get each() {
-        return lines();
+        return visibleItems();
       },
       get fallback() {
         return (() => {
-          var _el$7 = _$createElement2("text");
-          _$insert2(_el$7, () => t("shell.transcript.empty"));
-          _$effect2((_$p) => _$setProp2(_el$7, "style", {
+          var _el$21 = _$createElement2("text");
+          _$insert2(_el$21, () => t("shell.transcript.empty"));
+          _$effect2((_$p) => _$setProp2(_el$21, "style", {
             fg: th().tokens.dim
           }, _$p));
-          return _el$7;
+          return _el$21;
         })();
       },
-      children: (l) => (() => {
-        var _el$8 = _$createElement2("text");
-        _$insert2(_el$8, () => l.text || " ");
-        _$effect2((_$p) => _$setProp2(_el$8, "style", l.fg ? {
-          fg: l.fg
-        } : {}, _$p));
-        return _el$8;
-      })()
+      children: (it) => itemNode(it)
     }));
-    _$insert2(_el$, _$createComponent2(For2, {
+    _$insert2(_el$16, _$createComponent2(For2, {
       get each() {
         return _$memo(() => !!approval())() ? [approval()] : [];
       },
       children: (ap) => (() => {
-        var _el$9 = _$createElement2("box"), _el$0 = _$createElement2("text"), _el$1 = _$createTextNode2(`⚠ `), _el$10 = _$createTextNode2(`: `), _el$11 = _$createElement2("text"), _el$12 = _$createElement2("text");
-        _$insertNode2(_el$9, _el$0);
-        _$insertNode2(_el$9, _el$11);
-        _$insertNode2(_el$9, _el$12);
-        _$insertNode2(_el$0, _el$1);
-        _$insertNode2(_el$0, _el$10);
-        _$insert2(_el$0, () => t("agent.approve.title"), _el$10);
-        _$insert2(_el$0, () => ap.name, null);
-        _$insert2(_el$11, () => ap.args.slice(0, 200));
-        _$insert2(_el$12, () => t("agent.approve.hint"));
+        var _el$22 = _$createElement2("box"), _el$23 = _$createElement2("text"), _el$24 = _$createTextNode2(`⚠ `), _el$25 = _$createTextNode2(`: `), _el$26 = _$createElement2("text"), _el$27 = _$createElement2("text");
+        _$insertNode2(_el$22, _el$23);
+        _$insertNode2(_el$22, _el$26);
+        _$insertNode2(_el$22, _el$27);
+        _$insertNode2(_el$23, _el$24);
+        _$insertNode2(_el$23, _el$25);
+        _$insert2(_el$23, () => t("agent.approve.title"), _el$25);
+        _$insert2(_el$23, () => ap.name, null);
+        _$insert2(_el$26, () => ap.args.slice(0, 200));
+        _$insert2(_el$27, () => t("agent.approve.hint"));
         _$effect2((_p$) => {
-          var _v$4 = {
+          var _v$5 = {
             border: true,
             borderColor: th().tokens.approvalBorder ?? th().tokens.warn,
             flexDirection: "column",
             padding: 1
-          }, _v$5 = {
-            fg: th().tokens.warn
           }, _v$6 = {
+            fg: th().tokens.warn
+          }, _v$7 = {
             fg: th().tokens.dim
           };
-          _v$4 !== _p$.e && (_p$.e = _$setProp2(_el$9, "style", _v$4, _p$.e));
-          _v$5 !== _p$.t && (_p$.t = _$setProp2(_el$0, "style", _v$5, _p$.t));
-          _v$6 !== _p$.a && (_p$.a = _$setProp2(_el$12, "style", _v$6, _p$.a));
+          _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$22, "style", _v$5, _p$.e));
+          _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$23, "style", _v$6, _p$.t));
+          _v$7 !== _p$.a && (_p$.a = _$setProp2(_el$27, "style", _v$7, _p$.a));
           return _p$;
         }, {
           e: undefined,
           t: undefined,
           a: undefined
         });
-        return _el$9;
+        return _el$22;
       })()
-    }), _el$3);
-    _$insert2(_el$, _$createComponent2(For2, {
+    }), _el$18);
+    _$insert2(_el$16, _$createComponent2(For2, {
       get each() {
         return menuVisible() ? [0] : [];
       },
       children: () => (() => {
-        var _el$13 = _$createElement2("box");
-        _$insert2(_el$13, _$createComponent2(For2, {
+        var _el$28 = _$createElement2("box");
+        _$insert2(_el$28, _$createComponent2(For2, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$14 = _$createElement2("text"), _el$15 = _$createTextNode2(` `);
-            _$insertNode2(_el$14, _el$15);
-            _$insert2(_el$14, () => i() === clampedSel() ? "› " : "  ", _el$15);
-            _$insert2(_el$14, () => c.name, _el$15);
-            _$insert2(_el$14, () => c.desc, null);
-            _$effect2((_$p) => _$setProp2(_el$14, "style", {
+            var _el$29 = _$createElement2("text"), _el$30 = _$createTextNode2(` `);
+            _$insertNode2(_el$29, _el$30);
+            _$insert2(_el$29, () => i() === clampedSel() ? "› " : "  ", _el$30);
+            _$insert2(_el$29, () => c.name, _el$30);
+            _$insert2(_el$29, () => c.desc, null);
+            _$effect2((_$p) => _$setProp2(_el$29, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
-            return _el$14;
+            return _el$29;
           })()
         }));
-        _$effect2((_$p) => _$setProp2(_el$13, "style", {
+        _$effect2((_$p) => _$setProp2(_el$28, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
           padding: 0
         }, _$p));
-        return _el$13;
+        return _el$28;
       })()
-    }), _el$3);
-    _$insertNode2(_el$3, _el$4);
-    _$insertNode2(_el$3, _el$5);
-    _$insert2(_el$4, (() => {
+    }), _el$18);
+    _$insertNode2(_el$18, _el$19);
+    _$insert2(_el$19, (() => {
       var _c$ = _$memo(() => !!busy());
       return () => _c$() ? `${spinner()} ` : "❯ ";
     })());
-    _$insert2(_el$5, (() => {
+    _$insert2(_el$18, (() => {
       var _c$2 = _$memo(() => !!busy());
-      return () => _c$2() ? t("shell.input.busy") : input() || t("shell.input.placeholder");
-    })());
-    _$setProp2(_el$6, "style", {
+      return () => _c$2() ? (() => {
+        var _el$31 = _$createElement2("text");
+        _$insert2(_el$31, () => t("shell.input.busy"));
+        _$effect2((_$p) => _$setProp2(_el$31, "style", {
+          fg: th().tokens.dim
+        }, _$p));
+        return _el$31;
+      })() : _$memo(() => input() === "")() ? [(() => {
+        var _el$32 = _$createElement2("text");
+        _$insertNode2(_el$32, _$createTextNode2(` `));
+        _$effect2((_$p) => _$setProp2(_el$32, "style", {
+          fg: th().tokens.accent,
+          attributes: createTextAttributes({
+            inverse: true
+          })
+        }, _$p));
+        return _el$32;
+      })(), (() => {
+        var _el$34 = _$createElement2("text");
+        _$insert2(_el$34, () => t("shell.input.placeholder"));
+        _$effect2((_$p) => _$setProp2(_el$34, "style", {
+          fg: th().tokens.dim
+        }, _$p));
+        return _el$34;
+      })()] : [(() => {
+        var _el$35 = _$createElement2("text");
+        _$insert2(_el$35, () => inputChunks().before);
+        _$effect2((_$p) => _$setProp2(_el$35, "style", {
+          fg: th().tokens.text
+        }, _$p));
+        return _el$35;
+      })(), (() => {
+        var _el$36 = _$createElement2("text");
+        _$insert2(_el$36, () => inputChunks().at);
+        _$effect2((_$p) => _$setProp2(_el$36, "style", {
+          fg: th().tokens.text,
+          attributes: createTextAttributes({
+            inverse: true
+          })
+        }, _$p));
+        return _el$36;
+      })(), (() => {
+        var _el$37 = _$createElement2("text");
+        _$insert2(_el$37, () => inputChunks().after);
+        _$effect2((_$p) => _$setProp2(_el$37, "style", {
+          fg: th().tokens.text
+        }, _$p));
+        return _el$37;
+      })()];
+    })(), null);
+    _$setProp2(_el$20, "style", {
       flexDirection: "row",
       paddingLeft: 2,
       paddingRight: 2
     });
-    _$insert2(_el$6, _$createComponent2(For2, {
+    _$insert2(_el$20, _$createComponent2(For2, {
       each: footerHints,
       children: (h, i) => (() => {
-        var _el$16 = _$createElement2("text"), _el$17 = _$createTextNode2(` `);
-        _$insertNode2(_el$16, _el$17);
-        _$insert2(_el$16, () => i() > 0 ? " · " : "", _el$17);
-        _$insert2(_el$16, () => h.key, _el$17);
-        _$insert2(_el$16, () => h.label, null);
-        _$effect2((_$p) => _$setProp2(_el$16, "style", {
+        var _el$38 = _$createElement2("text"), _el$39 = _$createTextNode2(` `);
+        _$insertNode2(_el$38, _el$39);
+        _$insert2(_el$38, () => i() > 0 ? " · " : "", _el$39);
+        _$insert2(_el$38, () => h.key, _el$39);
+        _$insert2(_el$38, () => h.label, null);
+        _$effect2((_$p) => _$setProp2(_el$38, "style", {
           fg: th().tokens.dim
         }, _$p));
-        return _el$16;
+        return _el$38;
       })()
     }));
-    _$insert2(_el$, _$createComponent2(StatusBar, {
+    _$insert2(_el$16, _$createComponent2(StatusBar, {
       get widgets() {
         return [{
           kind: "widget",
@@ -763,25 +998,21 @@ function ShellHost(props) {
       }
     }), null);
     _$effect2((_p$) => {
-      var _v$ = {
+      var _v$3 = {
         border: true,
         borderColor: th().tokens.border,
         flexDirection: "row"
-      }, _v$2 = {
+      }, _v$4 = {
         fg: th().tokens.accent
-      }, _v$3 = {
-        fg: input() ? th().tokens.text : th().tokens.dim
       };
-      _v$ !== _p$.e && (_p$.e = _$setProp2(_el$3, "style", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$4, "style", _v$2, _p$.t));
-      _v$3 !== _p$.a && (_p$.a = _$setProp2(_el$5, "style", _v$3, _p$.a));
+      _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$18, "style", _v$3, _p$.e));
+      _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$19, "style", _v$4, _p$.t));
       return _p$;
     }, {
       e: undefined,
-      t: undefined,
-      a: undefined
+      t: undefined
     });
-    return _el$;
+    return _el$16;
   })();
 }
 

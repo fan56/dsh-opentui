@@ -4,8 +4,9 @@
  * Model/provider config is reused from ~/.dsh (see agent/config.ts).
  */
 import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { useKeyboard } from "@opentui/solid"
-import { StatusBar, defaultTheme, type I18n } from "@dsh-opentui/kit"
+import { createTextAttributes, SyntaxStyle } from "@opentui/core"
+import { useKeyboard, useRenderer } from "@opentui/solid"
+import { StatusBar, getTheme, themes, type I18n, type Theme } from "@dsh-opentui/kit"
 import type { SurfaceStore, SurfaceWidgetDecl } from "@dsh-opentui/runtime"
 import { AgentSession } from "./agent/loop.ts"
 import { listModels, resolveModel, type ResolvedModel } from "./agent/config.ts"
@@ -16,22 +17,60 @@ export interface ShellDeps {
   t: I18n["t"]
   /** Model override from CLI, if any. */
   modelOverride?: string
+  themeName?: string
 }
 
 type TItem =
   | { kind: "user"; text: string }
-  | { kind: "assistant"; text: string }
+  | { kind: "assistant"; text: string; final?: boolean }
   | { kind: "thinking"; tail: string; chars: number }
   | { kind: "tool"; name: string; args: string; ok: boolean; brief: string }
   | { kind: "error"; text: string }
   | { kind: "system"; text: string }
 
-const MAX_VISIBLE_LINES = 200
+
+const MAX_VISIBLE_ITEMS = 120
+const THEME_ORDER = ["catppuccin-mocha", "default"]
+
+/** Minimal markdown-ish streaming rendering (finalized messages upgrade to
+ * the <markdown> intrinsic). */
+function renderAssistant(text: string, theme: Theme): { text: string; fg?: string }[] {
+  const out: { text: string; fg?: string }[] = []
+  let inFence = false
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1")
+    if (/^```/.test(line)) {
+      inFence = !inFence
+      out.push({ text: inFence ? "┌─" : "└─", fg: theme.tokens.dim })
+      continue
+    }
+    if (inFence) {
+      out.push({ text: `│ ${line}`, fg: theme.tokens.dim })
+      continue
+    }
+    const heading = /^(#{1,3})\s+(.*)/.exec(line)
+    if (heading) out.push({ text: heading[2], fg: theme.tokens.accent })
+    else out.push({ text: line })
+  }
+  return out
+}
 
 export function Shell(props: { deps: ShellDeps }) {
   const t = props.deps.t
   const store = props.deps.store
+  const initialTheme =
+    process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha"
+  const [themeName, setThemeName] = createSignal(
+    themes[initialTheme] ? initialTheme : "catppuccin-mocha",
+  )
+  const th = () => getTheme(themeName())
   const [input, setInput] = createSignal("")
+  // Caret position within the input line (0..input().length).
+  const [cursor, setCursor] = createSignal(0)
+  // Command history for up/down recall; historyIdx === history().length is
+  // the draft slot (below the newest entry, i.e. the empty line).
+  const [history, setHistory] = createSignal<string[]>([])
+  const [historyIdx, setHistoryIdx] = createSignal(0)
   const [items, setItems] = createSignal<TItem[]>([])
   const [busy, setBusy] = createSignal(false)
   const [spin, setSpin] = createSignal(0)
@@ -62,33 +101,113 @@ export function Shell(props: { deps: ShellDeps }) {
   const spinner = () => ["⠋", "⠙", "⠹", "⠸"][spin()]
 
   // ---- transcript rendering (plain lines) ----
-  const lines = createMemo(() => {
-    const out: { text: string; fg?: string }[] = []
-    for (const it of items()) {
-      if (it.kind === "user") out.push({ text: `你 › ${it.text}`, fg: defaultTheme.tokens.accent })
-      else if (it.kind === "assistant")
-        for (const l of it.text.split("\n")) out.push({ text: l })
-      else if (it.kind === "thinking")
-        out.push({ text: `${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`, fg: defaultTheme.tokens.dim })
-      else if (it.kind === "tool")
-        out.push({ text: `  ⚒ ${it.name} ${it.args.slice(0, 80)} → ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 100)}`, fg: it.ok ? defaultTheme.tokens.warn : defaultTheme.tokens.danger })
-      else if (it.kind === "error") out.push({ text: `✗ ${t("agent.error")}: ${it.text}`, fg: defaultTheme.tokens.danger })
-      else if (it.kind === "system") out.push({ text: `· ${it.text}`, fg: defaultTheme.tokens.dim })
-    }
-    return out.slice(-MAX_VISIBLE_LINES)
-  })
+  const rendererCtx = useRenderer()
+  let mdStyle: any
+  try {
+    mdStyle = SyntaxStyle.create(rendererCtx as any)
+  } catch {
+    mdStyle = undefined
+  }
 
-  // ---- streaming appends with light throttling ----
+  const visibleItems = createMemo(() => items().slice(-MAX_VISIBLE_ITEMS))
+
+  const itemNode = (it: TItem) => {
+    const thc = th()
+    if (it.kind === "user") {
+      return <text style={{ fg: thc.tokens.userMark ?? thc.tokens.accent }}>❯ {it.text}</text>
+    }
+    if (it.kind === "assistant") {
+      if (it.final) {
+        return (
+          <box style={{ flexDirection: "column" }}>
+            <markdown content={it.text} streaming={false} syntaxStyle={mdStyle} />
+            <text>{" "}</text>
+          </box>
+        )
+      }
+      return (
+        <box style={{ flexDirection: "column" }}>
+          <For each={renderAssistant(it.text, thc)}>
+            {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
+          </For>
+        </box>
+      )
+    }
+    if (it.kind === "thinking") {
+      return <text style={{ fg: thc.tokens.dim }}>{`${spinner()} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`}</text>
+    }
+    if (it.kind === "tool") {
+      return (
+        <box style={{ flexDirection: "column" }}>
+          <text style={{ fg: thc.tokens.toolOk ?? thc.tokens.warn }}>{` ⚒ ${it.name} ${it.args.slice(0, 90)}`}</text>
+          <text style={{ fg: it.ok ? thc.tokens.dim : thc.tokens.toolFail ?? thc.tokens.danger }}>{` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`}</text>
+        </box>
+      )
+    }
+    if (it.kind === "error") {
+      return <text style={{ fg: thc.tokens.danger }}>✗ {t("agent.error")}: {it.text}</text>
+    }
+    return <text style={{ fg: thc.tokens.dim }}>· {it.text}</text>
+  }
+
   let lastBump = 0
+  let streaming: { thinking?: TItem; reply?: TItem } = {}
   const bumpSoon = () => {
     const now = Date.now()
     if (now - lastBump > 60) {
       lastBump = now
-      setItems((arr) => [...arr])
+      setItems((arr) => arr.map((x) => (x === streaming.thinking || x === streaming.reply ? { ...x } : x)))
     }
   }
-
   const push = (it: TItem) => setItems((arr) => [...arr, it])
+
+  // ---- line editor: cursor-based editing + history recall ----
+  /** Start of the word before `pos` (skips trailing whitespace, then the word). */
+  const wordStart = (s: string, pos: number): number => {
+    const cut = s.slice(0, pos).replace(/\s+$/, "").replace(/\S+$/, "").length
+    return Math.min(cut, pos)
+  }
+  /** Return to the draft slot after any manual edit. */
+  const resetHistoryNav = () => setHistoryIdx(history().length)
+  /** Insert a character at the cursor. */
+  const insertChar = (ch: string) => {
+    const s = input()
+    const c = Math.min(cursor(), s.length)
+    setInput(s.slice(0, c) + ch + s.slice(c))
+    setCursor(c + ch.length)
+    resetHistoryNav()
+  }
+  /** Record a submitted line in history (dedupe consecutive duplicates). */
+  const commitHistory = (text: string) => {
+    if (!text) return
+    const h = history()
+    const next = h[h.length - 1] === text ? h : [...h, text]
+    setHistory(next)
+    setHistoryIdx(next.length)
+  }
+  /** up/down recall; the draft slot (index === length) restores the empty line. */
+  const historyNav = (dir: -1 | 1) => {
+    const h = history()
+    if (h.length === 0) return
+    let idx = Math.min(historyIdx(), h.length)
+    if (dir === -1 && idx > 0) idx -= 1
+    else if (dir === 1 && idx < h.length) idx += 1
+    else return
+    setHistoryIdx(idx)
+    const text = idx === h.length ? "" : h[idx]
+    setInput(text)
+    setCursor(text.length)
+  }
+  /** Split the input line at the cursor for caret rendering. */
+  const inputChunks = () => {
+    const s = input()
+    const c = Math.min(cursor(), s.length)
+    return {
+      before: s.slice(0, c),
+      at: c < s.length ? s.charAt(c) : " ",
+      after: c < s.length ? s.slice(c + 1) : "",
+    }
+  }
 
   async function send(text: string) {
     if (!session || busy()) return
@@ -106,6 +225,7 @@ export function Shell(props: { deps: ShellDeps }) {
           onThinkingDelta: (s) => {
             if (!thinkingItem) {
               thinkingItem = { kind: "thinking", tail: "", chars: 0 }
+              streaming.thinking = thinkingItem
               push(thinkingItem)
             }
             thinkingItem.tail = (thinkingItem.tail + s).split("\n").slice(-2).join(" ")
@@ -119,6 +239,7 @@ export function Shell(props: { deps: ShellDeps }) {
             }
             if (!replyItem) {
               replyItem = { kind: "assistant", text: "" }
+              streaming.reply = replyItem
               push(replyItem)
             }
             replyItem.text += s
@@ -170,6 +291,13 @@ export function Shell(props: { deps: ShellDeps }) {
       push({ kind: "system", text: `${t("cmd.usage.summary")}: ${u.turns} turns · prompt ${u.prompt} · completion ${u.completion} tokens` })
       return true
     }
+    if (cmd === "theme") {
+      const i = THEME_ORDER.indexOf(themeName())
+      const next = THEME_ORDER[(i + 1) % THEME_ORDER.length]
+      setThemeName(next)
+      push({ kind: "system", text: `theme → ${next}` })
+      return true
+    }
     if (cmd === "model") {
       const arg = rest.join(" ")
       if (!arg) {
@@ -214,10 +342,20 @@ export function Shell(props: { deps: ShellDeps }) {
       if (key.name === "escape" && abort) abort.abort()
       return
     }
+    // History recall on up/down; the draft slot restores the empty line.
+    if (key.name === "up") return historyNav(-1)
+    if (key.name === "down") return historyNav(1)
+    // Cursor movement: left/right, home/ctrl+a, end/ctrl+e.
+    if (key.name === "left") return setCursor((c) => Math.max(0, c - 1))
+    if (key.name === "right") return setCursor((c) => Math.min(input().length, c + 1))
+    if (key.name === "home" || (key.ctrl && key.name === "a")) return setCursor(0)
+    if (key.name === "end" || (key.ctrl && key.name === "e")) return setCursor(input().length)
     if (key.name === "return") {
       const text = input().trim()
       setInput("")
+      setCursor(0)
       if (!text) return
+      commitHistory(text)
       if (text.startsWith("/")) {
         handleCommand(text)
         return
@@ -225,10 +363,51 @@ export function Shell(props: { deps: ShellDeps }) {
       send(text)
       return
     }
-    if (key.name === "backspace") return setInput((s) => s.slice(0, -1))
-    if (key.name === "escape") return setInput("")
+    if (key.name === "backspace") {
+      const c = cursor()
+      if (c > 0) {
+        const s = input()
+        setInput(s.slice(0, c - 1) + s.slice(c))
+        setCursor(c - 1)
+        resetHistoryNav()
+      }
+      return
+    }
+    // delete / ctrl+d: remove the character under the caret.
+    if (key.name === "delete" || (key.ctrl && key.name === "d")) {
+      const c = cursor()
+      const s = input()
+      if (c < s.length) {
+        setInput(s.slice(0, c) + s.slice(c + 1))
+        resetHistoryNav()
+      }
+      return
+    }
+    // ctrl+u: clear the whole line; ctrl+w: kill the word before the caret.
+    if (key.ctrl && key.name === "u") {
+      setInput("")
+      setCursor(0)
+      resetHistoryNav()
+      return
+    }
+    if (key.ctrl && key.name === "w") {
+      const c = cursor()
+      const cut = wordStart(input(), c)
+      if (cut < c) {
+        const s = input()
+        setInput(s.slice(0, cut) + s.slice(c))
+        setCursor(cut)
+        resetHistoryNav()
+      }
+      return
+    }
+    if (key.name === "escape") {
+      setInput("")
+      setCursor(0)
+      return
+    }
     const ch = key.sequence
-    if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) setInput((s) => s + ch)
+    if (ch && ch.length === 1 && !key.ctrl && !key.meta && !/[\x00-\x1f]/.test(ch)) insertChar(ch)
   })
 
   const widgets = () => snapshot().filter((d): d is SurfaceWidgetDecl => d.kind === "widget")
@@ -236,26 +415,39 @@ export function Shell(props: { deps: ShellDeps }) {
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-        <For each={lines()} fallback={<text style={{ fg: defaultTheme.tokens.dim }}>{t("shell.transcript.empty")}</text>}>
-          {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
+        <For each={visibleItems()} fallback={<text style={{ fg: th().tokens.dim }}>{t("shell.transcript.empty")}</text>}>
+          {(it) => itemNode(it)}
         </For>
       </box>
       <For each={approval() ? [approval()!] : []}>
         {(ap) => (
-          <box style={{ border: true, borderColor: defaultTheme.tokens.warn, flexDirection: "column", padding: 1 }}>
-            <text style={{ fg: defaultTheme.tokens.warn }}>⚠ {t("agent.approve.title")}: {ap.name}</text>
+          <box style={{ border: true, borderColor: th().tokens.warn, flexDirection: "column", padding: 1 }}>
+            <text style={{ fg: th().tokens.warn }}>⚠ {t("agent.approve.title")}: {ap.name}</text>
             <text>{ap.args.slice(0, 200)}</text>
-            <text style={{ fg: defaultTheme.tokens.dim }}>{t("agent.approve.hint")}</text>
+            <text style={{ fg: th().tokens.dim }}>{t("agent.approve.hint")}</text>
           </box>
         )}
       </For>
-      <box style={{ border: true, borderColor: defaultTheme.tokens.border, flexDirection: "row" }}>
-        <text style={{ fg: defaultTheme.tokens.accent }}>{busy() ? `${spinner()} ` : "› "}</text>
-        <text>{busy() ? t("shell.input.busy") : input() || t("shell.input.placeholder")}</text>
+      <box style={{ border: true, borderColor: th().tokens.border, flexDirection: "row" }}>
+        <text style={{ fg: th().tokens.accent }}>{busy() ? `${spinner()} ` : "› "}</text>
+        {busy() ? (
+          <text style={{ fg: th().tokens.dim }}>{t("shell.input.busy")}</text>
+        ) : input() === "" ? (
+          <>
+            <text style={{ fg: th().tokens.accent, attributes: createTextAttributes({ inverse: true }) }}> </text>
+            <text style={{ fg: th().tokens.dim }}>{t("shell.input.placeholder")}</text>
+          </>
+        ) : (
+          <>
+            <text style={{ fg: th().tokens.text }}>{inputChunks().before}</text>
+            <text style={{ fg: th().tokens.text, attributes: createTextAttributes({ inverse: true }) }}>{inputChunks().at}</text>
+            <text style={{ fg: th().tokens.text }}>{inputChunks().after}</text>
+          </>
+        )}
       </box>
       <StatusBar
         widgets={[
-          ...(model() ? [{ kind: "widget" as const, slot: "status" as const, id: "model", order: 10, parts: [{ text: `${model()!.provider}/${model()!.model}`, color: defaultTheme.tokens.accent }] }] : []),
+          ...(model() ? [{ kind: "widget" as const, slot: "status" as const, id: "model", order: 10, parts: [{ text: `${model()!.provider}/${model()!.model}`, color: th().tokens.accent }] }] : []),
           { kind: "widget" as const, slot: "status" as const, id: "usage", order: 20, parts: [{ text: `p${usage().prompt}/c${usage().completion}`, dim: true }] },
           ...widgets(),
         ]}
