@@ -128,12 +128,18 @@ var dict = {
   "panel.think.title": { "zh-CN": "思考", en: "thinking" }
 };
 function createI18n(locale = "zh-CN") {
+  let current = locale;
   const fmt = (s, vars) => vars ? s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`)) : s;
   return {
-    locale,
+    get locale() {
+      return current;
+    },
+    setLocale(l) {
+      current = l;
+    },
     t: (key, vars) => {
       const entry = dict[key];
-      return entry ? fmt(entry[locale], vars) : key;
+      return entry ? fmt(entry[current], vars) : key;
     }
   };
 }
@@ -2690,6 +2696,12 @@ var COMMANDS = [{
   name: "/search",
   desc: "full-text search sessions (/search text)"
 }, {
+  name: "/language",
+  desc: "switch interface language (zh-CN/en)"
+}, {
+  name: "/hints",
+  desc: "toggle the key-hint strip"
+}, {
   name: "/theme",
   desc: "pick theme"
 }, {
@@ -2737,6 +2749,7 @@ function ShellHost(props) {
   const [viewerLines, setViewerLines] = createSignal4([]);
   const [steerFor, setSteerFor] = createSignal4(null);
   const [steerBuffer, setSteerBuffer] = createSignal4("");
+  const [hintsVisible, setHintsVisible] = createSignal4(true);
   const openViewer = (id) => {
     setViewerId(id);
     setViewerLines(props.deps.session.childTranscript(id));
@@ -3262,6 +3275,27 @@ function ShellHost(props) {
           });
         }
       }
+    } else if (cmd === "language") {
+      const i18n = props.deps.i18n;
+      if (i18n) {
+        const to = i18n.locale === "zh-CN" ? "en" : "zh-CN";
+        i18n.setLocale(to);
+        push({
+          kind: "system",
+          text: `language → ${to}`
+        });
+      } else {
+        push({
+          kind: "error",
+          text: "language switching unavailable"
+        });
+      }
+    } else if (cmd === "hints") {
+      setHintsVisible((v) => !v);
+      push({
+        kind: "system",
+        text: `key hints ${hintsVisible() ? "hidden" : "shown"}`
+      });
     } else {
       const known = hostCommands().some((c) => c.name === cmd);
       if (known) {
@@ -3826,11 +3860,14 @@ function ShellHost(props) {
         return setValueText();
       }
     }), null);
-    _$insert14(_el$, _$createComponent14(FooterHints, {
-      get theme() {
-        return th();
-      }
-    }), null);
+    _$insert14(_el$, (() => {
+      var _c$8 = _$memo8(() => !!hintsVisible());
+      return () => _c$8() ? _$createComponent14(FooterHints, {
+        get theme() {
+          return th();
+        }
+      }) : null;
+    })(), null);
     _$insert14(_el$, _$createComponent14(PowerlineFooter, {
       get left() {
         return powerlineSegments();
@@ -4675,7 +4712,8 @@ function apply(ctx, config) {
           store,
           t: i18n.t,
           session,
-          themeName: config?.theme
+          themeName: config?.theme,
+          i18n
         };
       }
     }), renderer);

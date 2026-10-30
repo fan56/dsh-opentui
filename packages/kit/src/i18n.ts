@@ -65,16 +65,25 @@ const dict: Dict = {
 export interface I18n {
   t(key: string, vars?: Record<string, string | number>): string
   locale: Locale
+  /** Live locale switch — t() reads the current locale on every call. */
+  setLocale(l: Locale): void
 }
 
 export function createI18n(locale: Locale = "zh-CN"): I18n {
+  let current: Locale = locale
   const fmt = (s: string, vars?: Record<string, string | number>) =>
     vars ? s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? `{${k}}`)) : s
   return {
-    locale,
+    get locale() {
+      return current
+    },
+    setLocale(l: Locale) {
+      current = l
+    },
+    // reads the CURRENT locale dynamically — /language switches apply live
     t: (key, vars) => {
       const entry = dict[key]
-      return entry ? fmt(entry[locale], vars) : key
+      return entry ? fmt(entry[current], vars) : key
     },
   }
 }

@@ -56,7 +56,7 @@ export function apply(ctx: Context, config?: { theme?: string }) {
 
   mountEngine({}).then(({ renderer }) => {
     render(
-      () => <ShellHost deps={{ store, t: i18n.t, session, themeName: config?.theme }} />,
+      () => <ShellHost deps={{ store, t: i18n.t, session, themeName: config?.theme, i18n }} />,
       renderer,
     )
   }).catch((e) => {

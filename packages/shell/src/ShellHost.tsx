@@ -32,6 +32,8 @@ export interface ShellHostDeps {
   session: HostSession
   /** Theme name from plugin config; env wins over this. */
   themeName?: string
+  /** The live i18n instance (/language switches it in place). */
+  i18n?: { locale: string; setLocale(l: "zh-CN" | "en"): void }
 }
 
 /** Transcript rows: the CLEAN subset of Kit's shape — thinking and tool
@@ -71,6 +73,8 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/history", desc: "fork the session at an earlier turn" },
   { name: "/preset", desc: "switch agent preset" },
   { name: "/search", desc: "full-text search sessions (/search text)" },
+  { name: "/language", desc: "switch interface language (zh-CN/en)" },
+  { name: "/hints", desc: "toggle the key-hint strip" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -120,6 +124,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [viewerLines, setViewerLines] = createSignal<string[]>([])
   const [steerFor, setSteerFor] = createSignal<string | null>(null)
   const [steerBuffer, setSteerBuffer] = createSignal("")
+  const [hintsVisible, setHintsVisible] = createSignal(true)
   const openViewer = (id: string) => {
     setViewerId(id)
     setViewerLines(props.deps.session.childTranscript(id))
@@ -598,6 +603,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           push({ kind: "error", text: errText(e) })
         }
       }
+    } else if (cmd === "language") {
+      const i18n = props.deps.i18n
+      if (i18n) {
+        const to: "zh-CN" | "en" = i18n.locale === "zh-CN" ? "en" : "zh-CN"
+        i18n.setLocale(to)
+        push({ kind: "system", text: `language → ${to}` })
+      } else {
+        push({ kind: "error", text: "language switching unavailable" })
+      }
+    } else if (cmd === "hints") {
+      setHintsVisible((v) => !v)
+      push({ kind: "system", text: `key hints ${hintsVisible() ? "hidden" : "shown"}` })
     } else {
       // not TUI-owned: try the host command registry before giving up
       const known = hostCommands().some((c) => c.name === cmd)
@@ -957,7 +974,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         setKey={setKey()}
         setValue={setValueText()}
       />
-      <FooterHints theme={th()} />
+      {hintsVisible() ? <FooterHints theme={th()} /> : null}
       <PowerlineFooter left={powerlineSegments()} right={clock()} theme={th()} />
     </box>
   )
