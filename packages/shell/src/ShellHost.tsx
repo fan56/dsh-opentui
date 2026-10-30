@@ -114,6 +114,16 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // (child-session views: header adoption + tool-workflow pairing + fold).
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   const [subagents, setSubagents] = createSignal<SubagentEntry[]>([])
+  // ctrl+G viewer: the selected child id, its rendered lines, and the
+  // one-line steer entry state
+  const [viewerId, setViewerId] = createSignal<string | null>(null)
+  const [viewerLines, setViewerLines] = createSignal<string[]>([])
+  const [steerFor, setSteerFor] = createSignal<string | null>(null)
+  const [steerBuffer, setSteerBuffer] = createSignal("")
+  const openViewer = (id: string) => {
+    setViewerId(id)
+    setViewerLines(props.deps.session.childTranscript(id))
+  }
   // Modal Select overlay (model/sessions/effort/ask); see the Overlay type.
   const [overlay, setOverlay] = createSignal<Overlay | null>(null)
   // Model catalog for the Select (reactive: the host list loads async).
@@ -187,6 +197,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           ? arr.map((r) => (r.status === "running" ? { ...r, elapsed: r.elapsed + 1 } : r))
           : arr,
       )
+      if (viewerId()) setViewerLines(props.deps.session.childTranscript(viewerId()!))
     }, 1000)
     onCleanup(() => clearInterval(tick))
     // Answer host user-questions with the ask overlay (first question with
@@ -732,6 +743,63 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       if (key.name === "escape") onOverlayCancel()
       return
     }
+    // Subagent viewer (ctrl+G opened it): esc backs out, s opens the
+    // one-line steer entry for a RUNNING child. The editor is blurred
+    // while the viewer is up so typed keys land here.
+    if (viewerId()) {
+      if (key.name === "escape") {
+        if (steerFor()) {
+          setSteerFor(null)
+          setSteerBuffer("")
+        } else {
+          setViewerId(null)
+        }
+        setFocusKey((k) => k + 1)
+        return
+      }
+      if (steerFor()) {
+        if (key.name === "return") {
+          const text = steerBuffer().trim()
+          setSteerFor(null)
+          setSteerBuffer("")
+          if (text) {
+            const ok = props.deps.session.steerChild(viewerId()!, text)
+            push({ kind: ok ? "system" : "error", text: ok ? `⚡ steered child ${viewerId()!.slice(0, 8)}` : "child is not steerable (settled or not in this process)" })
+          }
+        } else if (key.name === "backspace") {
+          setSteerBuffer((b) => b.slice(0, -1))
+        } else {
+          const ch = key.sequence ?? ""
+          if (ch.length === 1 && /[\x20-\x7e]/.test(ch)) setSteerBuffer((b) => b + ch)
+        }
+        return
+      }
+      if (key.sequence === "s") {
+        const entry = subagents().find((e) => e.id === viewerId())
+        if (entry?.status === "running") {
+          setSteerFor(viewerId())
+          setSteerBuffer("")
+        } else {
+          push({ kind: "system", text: "child is settled — only running children can be steered" })
+        }
+        return
+      }
+      return
+    }
+    // ctrl+G: subagent viewer (list → transcript)
+    if (key.ctrl && key.name === "g") {
+      const list = subagents()
+      if (list.length === 0) {
+        push({ kind: "system", text: "no subagents yet" })
+        return
+      }
+      openOverlay({
+        title: "subagents — pick to view transcript",
+        items: list.map((e) => ({ label: `${e.label}${e.model ? ` · ${e.model}` : ""}`, value: e.id, description: `${e.status} · ↻${e.rounds}` })),
+        onSelect: (value) => openViewer(value),
+      })
+      return
+    }
     // Dock detail re-expand: ctrl+t (last thought) / ctrl+o (tool ledger)
     // re-open the collapsed dock panels; a fresh turn closes them again.
     // login feature's key stages (key entry / logout confirm) come before
@@ -825,6 +893,20 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           <text style={{ fg: th().tokens.dim }}>y aborts · n/esc resumes</text>
         </box>
       ) : null}
+      {viewerId() ? (
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.border, flexDirection: "column", padding: 1, height: 10 }}>
+          <text style={{ fg: th().tokens.accent }}>{`child ${viewerId()!.slice(0, 8)} · s steer · esc back`}</text>
+          <For each={viewerLines().slice(-7)}>
+            {(l) => <text style={{ fg: th().tokens.dim }}>{l}</text>}
+          </For>
+        </box>
+      ) : null}
+      {steerFor() ? (
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.accent, flexDirection: "row", padding: 1 }}>
+          <text style={{ fg: th().tokens.accent }}>⚡ steer: </text>
+          <text style={{ fg: th().tokens.text }}>{steerBuffer() || " "}</text>
+        </box>
+      ) : null}
       {loginFeature.view()}
       {overlay() ? (
         <Select
@@ -852,7 +934,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           The editor blurs under modals (approval/overlay) so their keys
           never leak into the buffer. */}
       <InputLine
-        focused={!(approval() || overlay() || loginFeature.panelOpen())}
+        focused={!(approval() || overlay() || loginFeature.panelOpen() || viewerId() !== null)}
         height={Math.max(1, Math.min(5, input() ? input().split("\n").length : 1))}
         busy={false}
         placeholder={busy() ? t("shell.input.steer") : t("shell.input.placeholder")}

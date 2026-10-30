@@ -449,6 +449,28 @@ export class HostSession {
   >()
   /** tool-workflow/agent-start ↔ agent-end pairing (runId:seq → child). */
   #runSeqToChild = new Map<string, string>()
+  /** Per-child transcript log (viewer) and the live child agent for steer. */
+  #childLogs = new Map<string, string[]>()
+  #childAgents = new Map<string, any>()
+
+  /** Child transcript lines (viewer; capped buffer, oldest dropped). */
+  childTranscript(id: string): string[] {
+    return [...(this.#childLogs.get(id) ?? [])]
+  }
+
+  /** Steer a RUNNING child session (its live agent captured from the
+   * firehose session object). False when the child is settled or its
+   * agent is not reachable in this process. */
+  steerChild(id: string, text: string): boolean {
+    const agent = this.#childAgents.get(id)
+    if (!agent?.steer) return false
+    try {
+      agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }))
+      return true
+    } catch {
+      return false
+    }
+  }
 
   /** Adopt a child session by its header (any firehose event carries it). */
   #adoptChild(session: any, sessionKey: string): boolean {
@@ -463,6 +485,9 @@ export class HostSession {
       rounds: 0,
       startedAt: Date.now(),
     })
+    // capture the live child agent for the viewer's steer path
+    const agent = (session as any)?.agent
+    if (agent) this.#childAgents.set(sessionKey, agent)
     return true
   }
 
@@ -517,6 +542,18 @@ export class HostSession {
       })
       changed = true
     }
+    // viewer log: assistant text, tool call/result lines (capped)
+    const log = this.#childLogs.get(sessionKey) ?? []
+    if (event.type === "assistant/message") {
+      const text = blocksText(d.message?.content ?? d.content)
+      for (const line of text.split("\n")) if (line.trim()) log.push(line.slice(0, 110))
+    } else if (event.type === "tool/call") {
+      log.push(`▶ ${d.name ?? "tool"} ${String(d.arguments ?? "").slice(0, 90)}`)
+    } else if (event.type === "tool/result") {
+      log.push("  ⎿ done")
+    }
+    while (log.length > 200) log.shift()
+    if (log.length > 0) this.#childLogs.set(sessionKey, log)
     if (changed) this.#emitChildren()
   }
 

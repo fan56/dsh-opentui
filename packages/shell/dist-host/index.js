@@ -2733,6 +2733,14 @@ function ShellHost(props) {
   const [showWelcome, setShowWelcome] = createSignal4(true);
   const [todos, setTodos] = createSignal4([]);
   const [subagents, setSubagents] = createSignal4([]);
+  const [viewerId, setViewerId] = createSignal4(null);
+  const [viewerLines, setViewerLines] = createSignal4([]);
+  const [steerFor, setSteerFor] = createSignal4(null);
+  const [steerBuffer, setSteerBuffer] = createSignal4("");
+  const openViewer = (id) => {
+    setViewerId(id);
+    setViewerLines(props.deps.session.childTranscript(id));
+  };
   const [overlay, setOverlay] = createSignal4(null);
   const initialTheme = process.env.DSH_OPENTUI_THEME ?? props.deps.themeName ?? "catppuccin-mocha";
   const [themeName, setThemeName] = createSignal4(themes[initialTheme] ? initialTheme : "catppuccin-mocha");
@@ -2780,6 +2788,8 @@ function ShellHost(props) {
         ...r,
         elapsed: r.elapsed + 1
       } : r) : arr);
+      if (viewerId())
+        setViewerLines(props.deps.session.childTranscript(viewerId()));
     }, 1000);
     onCleanup(() => clearInterval(tick));
     if (!process.env.DSH_OPENTUI_NO_ASK)
@@ -3409,6 +3419,73 @@ function ShellHost(props) {
         onOverlayCancel();
       return;
     }
+    if (viewerId()) {
+      if (key.name === "escape") {
+        if (steerFor()) {
+          setSteerFor(null);
+          setSteerBuffer("");
+        } else {
+          setViewerId(null);
+        }
+        setFocusKey((k) => k + 1);
+        return;
+      }
+      if (steerFor()) {
+        if (key.name === "return") {
+          const text = steerBuffer().trim();
+          setSteerFor(null);
+          setSteerBuffer("");
+          if (text) {
+            const ok = props.deps.session.steerChild(viewerId(), text);
+            push({
+              kind: ok ? "system" : "error",
+              text: ok ? `⚡ steered child ${viewerId().slice(0, 8)}` : "child is not steerable (settled or not in this process)"
+            });
+          }
+        } else if (key.name === "backspace") {
+          setSteerBuffer((b) => b.slice(0, -1));
+        } else {
+          const ch = key.sequence ?? "";
+          if (ch.length === 1 && /[\x20-\x7e]/.test(ch))
+            setSteerBuffer((b) => b + ch);
+        }
+        return;
+      }
+      if (key.sequence === "s") {
+        const entry = subagents().find((e) => e.id === viewerId());
+        if (entry?.status === "running") {
+          setSteerFor(viewerId());
+          setSteerBuffer("");
+        } else {
+          push({
+            kind: "system",
+            text: "child is settled — only running children can be steered"
+          });
+        }
+        return;
+      }
+      return;
+    }
+    if (key.ctrl && key.name === "g") {
+      const list = subagents();
+      if (list.length === 0) {
+        push({
+          kind: "system",
+          text: "no subagents yet"
+        });
+        return;
+      }
+      openOverlay({
+        title: "subagents — pick to view transcript",
+        items: list.map((e) => ({
+          label: `${e.label}${e.model ? ` · ${e.model}` : ""}`,
+          value: e.id,
+          description: `${e.status} · ↻${e.rounds}`
+        })),
+        onSelect: (value) => openViewer(value)
+      });
+      return;
+    }
     if (loginFeature.active() && loginFeature.handleKey(key))
       return;
     if (key.ctrl && key.name === "t") {
@@ -3586,10 +3663,82 @@ function ShellHost(props) {
         return _el$2;
       })() : null;
     })(), null);
+    _$insert14(_el$, (() => {
+      var _c$4 = _$memo8(() => !!viewerId());
+      return () => _c$4() ? (() => {
+        var _el$7 = _$createElement14("box"), _el$8 = _$createElement14("text");
+        _$insertNode11(_el$7, _el$8);
+        _$insert14(_el$8, () => `child ${viewerId().slice(0, 8)} · s steer · esc back`);
+        _$insert14(_el$7, _$createComponent14(For11, {
+          get each() {
+            return viewerLines().slice(-7);
+          },
+          children: (l) => (() => {
+            var _el$9 = _$createElement14("text");
+            _$insert14(_el$9, l);
+            _$effect14((_$p) => _$setProp14(_el$9, "style", {
+              fg: th().tokens.dim
+            }, _$p));
+            return _el$9;
+          })()
+        }), null);
+        _$effect14((_p$) => {
+          var _v$4 = {
+            border: true,
+            borderStyle: "rounded",
+            borderColor: th().tokens.border,
+            flexDirection: "column",
+            padding: 1,
+            height: 10
+          }, _v$5 = {
+            fg: th().tokens.accent
+          };
+          _v$4 !== _p$.e && (_p$.e = _$setProp14(_el$7, "style", _v$4, _p$.e));
+          _v$5 !== _p$.t && (_p$.t = _$setProp14(_el$8, "style", _v$5, _p$.t));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined
+        });
+        return _el$7;
+      })() : null;
+    })(), null);
+    _$insert14(_el$, (() => {
+      var _c$5 = _$memo8(() => !!steerFor());
+      return () => _c$5() ? (() => {
+        var _el$0 = _$createElement14("box"), _el$1 = _$createElement14("text"), _el$11 = _$createElement14("text");
+        _$insertNode11(_el$0, _el$1);
+        _$insertNode11(_el$0, _el$11);
+        _$insertNode11(_el$1, _$createTextNode10(`⚡ steer: `));
+        _$insert14(_el$11, () => steerBuffer() || " ");
+        _$effect14((_p$) => {
+          var _v$6 = {
+            border: true,
+            borderStyle: "rounded",
+            borderColor: th().tokens.accent,
+            flexDirection: "row",
+            padding: 1
+          }, _v$7 = {
+            fg: th().tokens.accent
+          }, _v$8 = {
+            fg: th().tokens.text
+          };
+          _v$6 !== _p$.e && (_p$.e = _$setProp14(_el$0, "style", _v$6, _p$.e));
+          _v$7 !== _p$.t && (_p$.t = _$setProp14(_el$1, "style", _v$7, _p$.t));
+          _v$8 !== _p$.a && (_p$.a = _$setProp14(_el$11, "style", _v$8, _p$.a));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined,
+          a: undefined
+        });
+        return _el$0;
+      })() : null;
+    })(), null);
     _$insert14(_el$, () => loginFeature.view(), null);
     _$insert14(_el$, (() => {
-      var _c$4 = _$memo8(() => !!overlay());
-      return () => _c$4() ? _$createComponent14(Select, {
+      var _c$6 = _$memo8(() => !!overlay());
+      return () => _c$6() ? _$createComponent14(Select, {
         get title() {
           return overlay()?.title ?? "";
         },
@@ -3604,37 +3753,37 @@ function ShellHost(props) {
       }) : null;
     })(), null);
     _$insert14(_el$, (() => {
-      var _c$5 = _$memo8(() => !!menuVisible());
-      return () => _c$5() ? (() => {
-        var _el$7 = _$createElement14("box");
-        _$insert14(_el$7, _$createComponent14(For11, {
+      var _c$7 = _$memo8(() => !!menuVisible());
+      return () => _c$7() ? (() => {
+        var _el$12 = _$createElement14("box");
+        _$insert14(_el$12, _$createComponent14(For11, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$8 = _$createElement14("text"), _el$9 = _$createTextNode10(` `);
-            _$insertNode11(_el$8, _el$9);
-            _$insert14(_el$8, () => i() === clampedSel() ? "› " : "  ", _el$9);
-            _$insert14(_el$8, () => c.name, _el$9);
-            _$insert14(_el$8, () => c.desc, null);
-            _$effect14((_$p) => _$setProp14(_el$8, "style", {
+            var _el$13 = _$createElement14("text"), _el$14 = _$createTextNode10(` `);
+            _$insertNode11(_el$13, _el$14);
+            _$insert14(_el$13, () => i() === clampedSel() ? "› " : "  ", _el$14);
+            _$insert14(_el$13, () => c.name, _el$14);
+            _$insert14(_el$13, () => c.desc, null);
+            _$effect14((_$p) => _$setProp14(_el$13, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
-            return _el$8;
+            return _el$13;
           })()
         }));
-        _$effect14((_$p) => _$setProp14(_el$7, "style", {
+        _$effect14((_$p) => _$setProp14(_el$12, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
           padding: 0
         }, _$p));
-        return _el$7;
+        return _el$12;
       })() : null;
     })(), null);
     _$insert14(_el$, _$createComponent14(InputLine, {
       get focused() {
-        return !(approval() || overlay() || loginFeature.panelOpen());
+        return !(approval() || overlay() || loginFeature.panelOpen() || viewerId() !== null);
       },
       get height() {
         return Math.max(1, Math.min(5, input() ? input().split(`
@@ -4075,6 +4224,22 @@ class HostSession {
   #pendingImages = [];
   #children = new Map;
   #runSeqToChild = new Map;
+  #childLogs = new Map;
+  #childAgents = new Map;
+  childTranscript(id) {
+    return [...this.#childLogs.get(id) ?? []];
+  }
+  steerChild(id, text) {
+    const agent = this.#childAgents.get(id);
+    if (!agent?.steer)
+      return false;
+    try {
+      agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }));
+      return true;
+    } catch {
+      return false;
+    }
+  }
   #adoptChild(session, sessionKey) {
     if (this.#children.has(sessionKey))
       return false;
@@ -4089,6 +4254,9 @@ class HostSession {
       rounds: 0,
       startedAt: Date.now()
     });
+    const agent = session?.agent;
+    if (agent)
+      this.#childAgents.set(sessionKey, agent);
     return true;
   }
   #registerChild(childId, label) {
@@ -4141,6 +4309,22 @@ class HostSession {
       });
       changed = true;
     }
+    const log = this.#childLogs.get(sessionKey) ?? [];
+    if (event.type === "assistant/message") {
+      const text = blocksText(d.message?.content ?? d.content);
+      for (const line of text.split(`
+`))
+        if (line.trim())
+          log.push(line.slice(0, 110));
+    } else if (event.type === "tool/call") {
+      log.push(`▶ ${d.name ?? "tool"} ${String(d.arguments ?? "").slice(0, 90)}`);
+    } else if (event.type === "tool/result") {
+      log.push("  ⎿ done");
+    }
+    while (log.length > 200)
+      log.shift();
+    if (log.length > 0)
+      this.#childLogs.set(sessionKey, log);
     if (changed)
       this.#emitChildren();
   }
