@@ -4550,22 +4550,18 @@ class HostSession {
           cb.onContentDelta(c.text);
           this.#ticker.add(c.text.length);
         } else if (c.type === "usage") {
-          let p = 0;
-          let comp = 0;
-          let cRead = 0;
-          let cWrite = 0;
-          for (const [k, v] of Object.entries(c)) {
-            if (typeof v !== "number")
-              continue;
-            if (/prompt/i.test(k))
-              p = Math.max(p, v);
-            if (/completion/i.test(k))
-              comp = Math.max(comp, v);
-            if (/cacheread|cachhit/i.test(k.replace(/[_\s-]/g, "")))
-              cRead = Math.max(cRead, v);
-            if (/cachewrite|cachemiss/i.test(k.replace(/[_\s-]/g, "")))
-              cWrite = Math.max(cWrite, v);
+          if (process.env.DSH_OPENTUI_DEBUG) {
+            try {
+              appendFileSync("/tmp/otui-usage.log", JSON.stringify(c) + `
+`);
+            } catch {}
           }
+          const u = c.usage ?? {};
+          const num = (v) => typeof v === "number" ? v : 0;
+          let p = Math.max(num(u.promptTokens), num(u.inputTokens), num(u.prompt_tokens));
+          let comp = Math.max(num(u.completionTokens), num(u.outputTokens), num(u.completion_tokens));
+          const cRead = Math.max(num(u.cacheReadTokens), num(u.cache_read_tokens), num(u.cacheRead));
+          const cWrite = Math.max(num(u.cacheWriteTokens), num(u.cache_write_tokens), num(u.cacheWrite));
           if (p > 0)
             this.usage.prompt = p;
           if (comp > 0)

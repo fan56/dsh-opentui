@@ -759,20 +759,21 @@ export class HostSession {
           cb.onContentDelta(c.text)
           this.#ticker.add(c.text.length)
         } else if (c.type === "usage") {
+          if (process.env.DSH_OPENTUI_DEBUG) {
+            try { appendFileSync("/tmp/otui-usage.log", JSON.stringify(c) + "\n") } catch {}
+          }
           // usage frame: prompt = the request's context size (assignment —
           // the 🧠 segment reads latest, not additive); completion adds up
           // over the session. Field names vary by adapter — numeric scan.
-          let p = 0
-          let comp = 0
-          let cRead = 0
-          let cWrite = 0
-          for (const [k, v] of Object.entries(c as Record<string, unknown>)) {
-            if (typeof v !== "number") continue
-            if (/prompt/i.test(k)) p = Math.max(p, v)
-            if (/completion/i.test(k)) comp = Math.max(comp, v)
-            if (/cacheread|cachhit/i.test(k.replace(/[_\s-]/g, ""))) cRead = Math.max(cRead, v)
-            if (/cachewrite|cachemiss/i.test(k.replace(/[_\s-]/g, ""))) cWrite = Math.max(cWrite, v)
-          }
+          // real shape (instrumented): {usage:{inputTokens, outputTokens,
+          // totalTokens[, cacheRead/cacheWrite…?]}} — prompt = the request's
+          // context size (assignment), completion accumulates
+          const u = (c as any).usage ?? {}
+          const num = (v: unknown) => (typeof v === "number" ? v : 0)
+          let p = Math.max(num(u.promptTokens), num(u.inputTokens), num(u.prompt_tokens))
+          let comp = Math.max(num(u.completionTokens), num(u.outputTokens), num(u.completion_tokens))
+          const cRead = Math.max(num((u as any).cacheReadTokens), num((u as any).cache_read_tokens), num((u as any).cacheRead))
+          const cWrite = Math.max(num((u as any).cacheWriteTokens), num((u as any).cache_write_tokens), num((u as any).cacheWrite))
           if (p > 0) this.usage.prompt = p
           if (comp > 0) this.usage.completion += comp
           if (cRead > 0) this.usage.cacheRead = cRead
