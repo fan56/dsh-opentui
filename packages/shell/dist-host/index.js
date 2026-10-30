@@ -861,7 +861,7 @@ function InputLine(props) {
         fg: props.theme.tokens.accent
       }, _v$7 = !props.busy && (props.focused ?? true), _v$8 = props.placeholder, _v$9 = props.theme.tokens.text, _v$0 = props.theme.tokens.text, _v$1 = props.theme.tokens.dim, _v$10 = {
         flexGrow: 1,
-        height: props.height ?? 3,
+        height: props.height ?? 1,
         wrapMode: "char"
       };
       _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$22, "style", _v$5, _p$.e));
@@ -3145,6 +3145,10 @@ function ShellHost(props) {
     _$insert14(_el$, _$createComponent13(InputLine, {
       get focused() {
         return !(approval() || overlay() || loginFeature.panelOpen());
+      },
+      get height() {
+        return Math.max(1, Math.min(5, input() ? input().split(`
+`).length : 1));
       },
       busy: false,
       get placeholder() {

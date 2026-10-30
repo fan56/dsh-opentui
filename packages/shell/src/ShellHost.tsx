@@ -739,6 +739,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           never leak into the buffer. */}
       <InputLine
         focused={!(approval() || overlay() || loginFeature.panelOpen())}
+        height={Math.max(1, Math.min(5, input() ? input().split("\n").length : 1))}
         busy={false}
         placeholder={busy() ? t("shell.input.steer") : t("shell.input.placeholder")}
         busyLabel={t("shell.input.busy")}

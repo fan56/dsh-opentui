@@ -240,7 +240,8 @@ export interface InputLineProps {
   spinnerFrame?: string
   /** Focus the editor (default true); blurred while busy regardless. */
   focused?: boolean
-  /** Editor rows (default 3). 1 gives the old single-line look. */
+  /** Editor content rows. Single row when unset — the Shell passes a
+   * content-derived value so the box grows only when the text wraps. */
   height?: number
   /** Enter pressed with content in the buffer. */
   onSubmit?: () => void
@@ -350,7 +351,7 @@ export function InputLine(props: InputLineProps): JSX.Element {
           textColor={props.theme.tokens.text}
           focusedTextColor={props.theme.tokens.text}
           placeholderColor={props.theme.tokens.dim}
-          style={{ flexGrow: 1, height: props.height ?? 3, wrapMode: "char" }}
+          style={{ flexGrow: 1, height: props.height ?? 1, wrapMode: "char" }}
           onContentChange={() => props.onContentChange?.(ta?.plainText ?? "")}
           onSubmit={() => props.onSubmit?.()}
           onKeyDown={onKeyDown}
