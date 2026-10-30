@@ -37,6 +37,8 @@ export function Select(props: {
   items: SelectItem[]
   theme: Theme
   onSelect: (value: string) => void
+  /** Fires as the highlight moves (live preview); not fired on confirm. */
+  onPreview?: (value: string) => void
   onCancel: () => void
 }): JSX.Element {
   // Controlled highlight + exclusive key ownership: the native select's
@@ -67,11 +69,17 @@ export function Select(props: {
     if (n === 0) return
     if (key.name === "up") {
       key.preventDefault?.()
-      return setIndex((v) => (v - 1 + n) % n)
+      const v = (index() - 1 + n) % n
+      setIndex(v)
+      props.onPreview?.(props.items[v]?.value ?? "")
+      return
     }
     if (key.name === "down") {
       key.preventDefault?.()
-      return setIndex((v) => (v + 1) % n)
+      const v = (index() + 1) % n
+      setIndex(v)
+      props.onPreview?.(props.items[v]?.value ?? "")
+      return
     }
     if (key.name === "return" || key.name === "enter") {
       key.preventDefault?.()

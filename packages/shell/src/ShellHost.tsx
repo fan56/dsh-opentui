@@ -54,6 +54,10 @@ type Overlay = {
   title: string
   items: SelectItem[]
   onSelect: (value: string) => void
+  /** Live preview while arrows move (theme picker: apply-as-you-browse). */
+  onPreview?: (value: string) => void
+  /** Esc cancels — restore whatever onPreview changed. */
+  onHoverCancel?: () => void
   ask?: { questionId: string; resolve: AskResolve }
 }
 
@@ -288,7 +292,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     push: (it) => push(it),
     config: pluginConfig,
   })
-  const themeSelect = createThemeSelectFeature({ t, themeName, setThemeName })
+  const themeSelect = createThemeSelectFeature({ t, themeName, setThemeName, revertTheme: () => setThemeName(initialTheme) })
   const historyFork = createHistoryForkFeature({
     session: props.deps.session,
     t,
@@ -312,11 +316,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     setFocusKey((k) => k + 1)
     ov?.onSelect(value)
   }
-  /** Esc inside the overlay Select (idempotent with the Select's own onCancel). */
+  /** Esc inside the overlay Select: restore previews, then cancel
+   * (idempotent with the Select's own onCancel). */
   const onOverlayCancel = () => {
     const ov = overlay()
     setOverlay(null)
     setFocusKey((k) => k + 1)
+    ov?.onHoverCancel?.()
     ov?.ask?.resolve("declined")
   }
 
@@ -1061,6 +1067,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           items={overlay()?.items ?? []}
           theme={th()}
           onSelect={onOverlaySelect}
+          onPreview={overlay()?.onPreview}
           onCancel={onOverlayCancel}
         />
       ) : null}

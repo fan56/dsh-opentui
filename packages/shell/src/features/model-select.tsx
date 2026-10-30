@@ -23,6 +23,11 @@ export interface OverlayRequest {
   title: string
   items: SelectItem[]
   onSelect: (value: string) => void
+  /** Live preview while the highlight moves (theme picker). */
+  onPreview?: (value: string) => void
+  /** Esc restore hook (theme picker reverts its preview). */
+  onHoverCancel?: () => void
+  onCancel?: () => void
 }
 
 export function createModelSelectFeature(deps: ModelSelectDeps) {

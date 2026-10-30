@@ -1660,11 +1660,17 @@ function Select(props) {
       return;
     if (key.name === "up") {
       key.preventDefault?.();
-      return setIndex((v) => (v - 1 + n) % n);
+      const v = (index() - 1 + n) % n;
+      setIndex(v);
+      props.onPreview?.(props.items[v]?.value ?? "");
+      return;
     }
     if (key.name === "down") {
       key.preventDefault?.();
-      return setIndex((v) => (v + 1) % n);
+      const v = (index() + 1) % n;
+      setIndex(v);
+      props.onPreview?.(props.items[v]?.value ?? "");
+      return;
     }
     if (key.name === "return" || key.name === "enter") {
       key.preventDefault?.();
@@ -1868,6 +1874,7 @@ var EFFORTS = ["keep", "low", "medium", "high", "xhigh", "max"];
 function createThemeSelectFeature(deps) {
   return {
     open(openOverlay) {
+      const previous = deps.themeName();
       openOverlay({
         title: deps.t("picker.theme.title"),
         items: themeNames().map((x) => ({
@@ -1878,9 +1885,9 @@ function createThemeSelectFeature(deps) {
             description: deps.t("cmd.model.current")
           } : {}
         })),
-        onSelect: (value) => {
-          deps.setThemeName(value);
-        }
+        onPreview: (value) => deps.setThemeName(value),
+        onSelect: (value) => deps.setThemeName(value),
+        onCancel: () => deps.setThemeName(previous)
       });
     }
   };
@@ -2908,7 +2915,8 @@ function ShellHost(props) {
   const themeSelect = createThemeSelectFeature({
     t,
     themeName,
-    setThemeName
+    setThemeName,
+    revertTheme: () => setThemeName(initialTheme)
   });
   const historyFork = createHistoryForkFeature({
     session: props.deps.session,
@@ -2940,6 +2948,7 @@ function ShellHost(props) {
     const ov = overlay();
     setOverlay(null);
     setFocusKey((k) => k + 1);
+    ov?.onHoverCancel?.();
     ov?.ask?.resolve("declined");
   };
   const rendererCtx = useRenderer();
@@ -4021,6 +4030,9 @@ function ShellHost(props) {
           return th();
         },
         onSelect: onOverlaySelect,
+        get onPreview() {
+          return overlay()?.onPreview;
+        },
         onCancel: onOverlayCancel
       }) : null;
     })(), null);
