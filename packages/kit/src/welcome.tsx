@@ -1,9 +1,7 @@
 /**
- * Startup banner: the product name in plain terminal type (brand blue),
- * the model/cwd line and the daily quote under it — top-left, above the
- * input. The pixel/graphics experiments (ascii_font wordmark, half-block
- * whale, kitty image) were all reverted: plain text renders identically
- * everywhere.
+ * Startup banner: the "DSH OpenTUI" wordmark in ascii_font "block" (the
+ * ANSI-Shadow style letters), the model/cwd line and the daily quote
+ * under it — top-left, above the input.
  */
 import { type JSX } from "solid-js"
 import type { Theme } from "./theme.ts"
@@ -23,7 +21,7 @@ export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string 
   const quote = pickDailyQuote()
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-start", alignItems: "flex-start", padding: 1 }}>
-      <text style={{ fg: POWERLINE_COLORS.brand }}>DeepseekHarness</text>
+      <ascii_font text="DSH OpenTUI" font="block" color={POWERLINE_COLORS.brand} />
       <text style={{ fg: props.theme.tokens.dim }}>{`${props.model} · ${shortenCwd(props.cwd)}`}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`🐳 「${quote}」`}</text>
       <text>{" "}</text>

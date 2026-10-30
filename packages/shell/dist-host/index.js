@@ -1099,9 +1099,9 @@ function speedSegment(tps, theme) {
 }
 // ../kit/src/welcome.tsx
 import { effect as _$effect7 } from "@opentui/solid";
-import { insert as _$insert7 } from "@opentui/solid";
 import { createTextNode as _$createTextNode6 } from "@opentui/solid";
 import { insertNode as _$insertNode7 } from "@opentui/solid";
+import { insert as _$insert7 } from "@opentui/solid";
 import { setProp as _$setProp7 } from "@opentui/solid";
 import { createElement as _$createElement7 } from "@opentui/solid";
 
@@ -1223,11 +1223,11 @@ function shortenCwd(cwd) {
 function WelcomeBanner(props) {
   const quote = pickDailyQuote();
   return (() => {
-    var _el$ = _$createElement7("box"), _el$2 = _$createElement7("text"), _el$4 = _$createElement7("text"), _el$5 = _$createElement7("text"), _el$6 = _$createElement7("text");
+    var _el$ = _$createElement7("box"), _el$2 = _$createElement7("ascii_font"), _el$3 = _$createElement7("text"), _el$4 = _$createElement7("text"), _el$5 = _$createElement7("text");
     _$insertNode7(_el$, _el$2);
+    _$insertNode7(_el$, _el$3);
     _$insertNode7(_el$, _el$4);
     _$insertNode7(_el$, _el$5);
-    _$insertNode7(_el$, _el$6);
     _$setProp7(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1,
@@ -1235,21 +1235,20 @@ function WelcomeBanner(props) {
       alignItems: "flex-start",
       padding: 1
     });
-    _$insertNode7(_el$2, _$createTextNode6(`DeepseekHarness`));
-    _$insert7(_el$4, () => `${props.model} · ${shortenCwd(props.cwd)}`);
-    _$insert7(_el$5, `\uD83D\uDC33 「${quote}」`);
-    _$insertNode7(_el$6, _$createTextNode6(` `));
+    _$setProp7(_el$2, "text", "DSH OpenTUI");
+    _$setProp7(_el$2, "font", "block");
+    _$insert7(_el$3, () => `${props.model} · ${shortenCwd(props.cwd)}`);
+    _$insert7(_el$4, `\uD83D\uDC33 「${quote}」`);
+    _$insertNode7(_el$5, _$createTextNode6(` `));
     _$effect7((_p$) => {
-      var _v$ = {
-        fg: POWERLINE_COLORS.brand
-      }, _v$2 = {
+      var _v$ = POWERLINE_COLORS.brand, _v$2 = {
         fg: props.theme.tokens.dim
       }, _v$3 = {
         fg: props.theme.tokens.dim
       };
-      _v$ !== _p$.e && (_p$.e = _$setProp7(_el$2, "style", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$4, "style", _v$2, _p$.t));
-      _v$3 !== _p$.a && (_p$.a = _$setProp7(_el$5, "style", _v$3, _p$.a));
+      _v$ !== _p$.e && (_p$.e = _$setProp7(_el$2, "color", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$3, "style", _v$2, _p$.t));
+      _v$3 !== _p$.a && (_p$.a = _$setProp7(_el$4, "style", _v$3, _p$.a));
       return _p$;
     }, {
       e: undefined,
