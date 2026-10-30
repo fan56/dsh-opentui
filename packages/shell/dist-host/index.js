@@ -2732,6 +2732,9 @@ var COMMANDS = [{
   name: "/queue",
   desc: "queue a message (/queue msg, bare toggles panel)"
 }, {
+  name: "/repair",
+  desc: "scan session logs for broken files"
+}, {
   name: "/theme",
   desc: "pick theme"
 }, {
@@ -3381,6 +3384,12 @@ function ShellHost(props) {
           text: "language switching unavailable"
         });
       }
+    } else if (cmd === "repair") {
+      for (const line of props.deps.session.repairScan())
+        push({
+          kind: "system",
+          text: line
+        });
     } else if (cmd === "queue") {
       setShowWelcome(false);
       if (!arg) {
@@ -4244,7 +4253,7 @@ function ShellHost(props) {
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 
 // src/agent/loop.ts
 var STREAM_TICK_MS = 250;
@@ -4669,6 +4678,70 @@ ${snapshot.join(`
     writeFileSync(this.configPath(), JSON.stringify(merged, null, 2) + `
 `);
     return merged;
+  }
+  repairScan() {
+    const out = [];
+    try {
+      const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh");
+      const root = join(home, "sessions");
+      if (!existsSync(root))
+        return ["no sessions directory"];
+      let total = 0;
+      let ok = 0;
+      const broken = [];
+      const visit = (dir, depth) => {
+        if (depth > 4)
+          return;
+        for (const name of readdirSync(dir)) {
+          const full = join(dir, name);
+          if (statSync(full).isDirectory()) {
+            visit(full, depth + 1);
+            continue;
+          }
+          if (!(name.startsWith("session.") && (name.endsWith(".zstd") || name.endsWith(".jsonl"))))
+            continue;
+          total += 1;
+          const size = statSync(full).size;
+          if (size === 0) {
+            broken.push(`${name} (0 bytes)`);
+            continue;
+          }
+          if (name.endsWith(".zstd")) {
+            const buf = readFileSync(full);
+            const magicOk = buf[0] === 40 && buf[1] === 181 && buf[2] === 47 && buf[3] === 253;
+            if (!magicOk) {
+              broken.push(`${name} (not a zstd frame)`);
+              continue;
+            }
+            ok += 1;
+            continue;
+          }
+          try {
+            const text = readFileSync(full, "utf8").trim();
+            const last = text.split(`
+`).filter((l) => l.trim()).pop() ?? "{}";
+            JSON.parse(last);
+            ok += 1;
+          } catch {
+            broken.push(`${name} (invalid jsonl tail)`);
+          }
+        }
+      };
+      visit(root, 0);
+      out.push(`sessions: ${total} logs scanned, ${ok} healthy`);
+      if (broken.length === 0)
+        out.push("no broken logs found");
+      else {
+        out.push(`broken: ${broken.length}`);
+        for (const b of broken.slice(0, 8))
+          out.push(`  ✗ ${b}`);
+        if (broken.length > 8)
+          out.push(`  … +${broken.length - 8} more`);
+      }
+    } catch (e) {
+      out.push(`scan failed: ${String(e instanceof Error ? e.message : e).slice(0, 150)}`);
+    }
+    return out;
   }
   listPlugins() {
     try {

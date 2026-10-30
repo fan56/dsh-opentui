@@ -9,7 +9,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm"
 import type { Context } from "@deepseek-ai/cordis"
 import { randomUUID } from "node:crypto"
 import { join } from "node:path"
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import {
   createStreamTicker,
   emptyTurnStats,
@@ -473,6 +473,68 @@ export class HostSession {
     const merged = { ...this.configLoad(), ...patch }
     writeFileSync(this.configPath(), JSON.stringify(merged, null, 2) + "\n")
     return merged
+  }
+
+  /** Session-log integrity scan (the /repair report): walks the session
+   * store, flags empty logs, broken zstd frames and invalid jsonl tails. */
+  repairScan(): string[] {
+    const out: string[] = []
+    try {
+      const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh")
+      const root = join(home, "sessions")
+      if (!existsSync(root)) return ["no sessions directory"]
+      let total = 0
+      let ok = 0
+      const broken: string[] = []
+      const visit = (dir: string, depth: number): void => {
+        if (depth > 4) return
+        for (const name of readdirSync(dir)) {
+          const full = join(dir, name)
+          if (statSync(full).isDirectory()) {
+            visit(full, depth + 1)
+            continue
+          }
+          // any session log: v3/v4, plain or zstd — the layout moved to
+          // session-<uuid>/ directories with v4 zstd logs
+          if (!(name.startsWith("session.") && (name.endsWith(".zstd") || name.endsWith(".jsonl")))) continue
+          total += 1
+          const size = statSync(full).size
+          if (size === 0) {
+            broken.push(`${name} (0 bytes)`)
+            continue
+          }
+          if (name.endsWith(".zstd")) {
+            const buf = readFileSync(full)
+            const magicOk = buf[0] === 0x28 && buf[1] === 0xb5 && buf[2] === 0x2f && buf[3] === 0xfd
+            if (!magicOk) {
+              broken.push(`${name} (not a zstd frame)`)
+              continue
+            }
+            ok += 1
+            continue
+          }
+          try {
+            const text = readFileSync(full, "utf8").trim()
+            const last = text.split("\n").filter((l) => l.trim()).pop() ?? "{}"
+            JSON.parse(last)
+            ok += 1
+          } catch {
+            broken.push(`${name} (invalid jsonl tail)`)
+          }
+        }
+      }
+      visit(root, 0)
+      out.push(`sessions: ${total} logs scanned, ${ok} healthy`)
+      if (broken.length === 0) out.push("no broken logs found")
+      else {
+        out.push(`broken: ${broken.length}`)
+        for (const b of broken.slice(0, 8)) out.push(`  ✗ ${b}`)
+        if (broken.length > 8) out.push(`  … +${broken.length - 8} more`)
+      }
+    } catch (e) {
+      out.push(`scan failed: ${String(e instanceof Error ? e.message : e).slice(0, 150)}`)
+    }
+    return out
   }
 
   /** User-installed plugins (profile package.json deps, versions from

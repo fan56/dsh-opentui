@@ -84,6 +84,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/hints", desc: "toggle the key-hint strip" },
   { name: "/config", desc: "plugin settings (/config or /config key value)" },
   { name: "/queue", desc: "queue a message (/queue msg, bare toggles panel)" },
+  { name: "/repair", desc: "scan session logs for broken files" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -679,6 +680,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       } else {
         push({ kind: "error", text: "language switching unavailable" })
       }
+    } else if (cmd === "repair") {
+      // session-log integrity report (tui-pi repair-dialog's scan half —
+      // diagnostic only; nothing is deleted or rewritten)
+      for (const line of props.deps.session.repairScan()) push({ kind: "system", text: line })
     } else if (cmd === "queue") {
       setShowWelcome(false)
       if (!arg) {
