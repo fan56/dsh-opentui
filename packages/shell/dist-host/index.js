@@ -1241,8 +1241,8 @@ function WelcomeBanner(props) {
     _$setProp7(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1,
-      justifyContent: "flex-end",
-      alignItems: "center",
+      justifyContent: "flex-start",
+      alignItems: "flex-start",
       padding: 1
     });
     _$insertNode7(_el$2, _el$3);

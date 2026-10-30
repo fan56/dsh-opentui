@@ -229,7 +229,7 @@ export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string 
   // shared-row layout squeezed the wordmark). Both are self-verifiable
   // in plain terminals.
   return (
-    <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-end", alignItems: "center", padding: 1 }}>
+    <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-start", alignItems: "flex-start", padding: 1 }}>
       <box style={{ flexDirection: "row", alignItems: "center" }}>
         <box style={{ flexDirection: "column" }}>
           <For each={whaleRows()}>
