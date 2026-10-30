@@ -53,6 +53,16 @@ export class HostSession {
   #toolCalls = new Map<string, { name: string; args: string }>()
   #override?: { provider: string; model: string; reasoningEffort?: string }
   #resumeId?: string
+  // ---- idle release (the takeover contract's lock half) ----
+  // A held write handle blocks every other surface (the phone's /resume
+  // degrades to a read-only watch against US). A TUI nobody is typing into
+  // must not keep that lock: after `idleReleaseSec` without a turn the
+  // handle is disposed (the kernel lease frees with it) and the next input
+  // re-attaches the SAME session id, folding in whatever other surfaces
+  // wrote meanwhile.
+  #idleTimer?: ReturnType<typeof setTimeout>
+  /** Durable event count when the handle was released — the wake diff base. */
+  #releasedSeq = 0
   usage = { prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
 
   /** Cache hit rate in percent when the host reports cache traffic. */
@@ -125,6 +135,7 @@ export class HostSession {
     this.#handle = undefined
     this.#sessionId = undefined
     this.#agentId = undefined
+    this.#disarmIdleRelease()
     this.label = `${provider}/${model}${reasoningEffort ? ` (${reasoningEffort})` : ""}`
   }
 
@@ -138,6 +149,7 @@ export class HostSession {
     this.#handle = undefined
     this.#sessionId = undefined
     this.#agentId = undefined
+    this.#disarmIdleRelease()
     // a pending resume must not survive /new — creating with the STORED id
     // again fails with "session already exists"
     this.#resumeId = undefined
@@ -153,9 +165,11 @@ export class HostSession {
 
   /** Rebuild transcript rows from a STORED session's persisted log (the
    * /sessions resume path — the context comes back with the agent, and the
-   * transcript rows come from here). Drain pattern per tui-pi's
-   * readPersistedSession: open(id,'read') + offset loop. */
-  async storedTranscript(id: string): Promise<{ kind: "user" | "assistant"; text: string }[]> {
+   * transcript rows come from here). `skip` drops the first N durable
+   * events (the idle-release wake diff: rows painted before the release).
+   * Drain pattern per tui-pi's readPersistedSession: open(id,'read') +
+   * offset loop. */
+  async storedTranscript(id: string, skip = 0): Promise<{ kind: "user" | "assistant"; text: string }[]> {
     const persistence = (this.#ctx as any).get?.("sessionPersistence")
     if (!persistence?.open) return []
     const handle = await persistence.open(id, "read")
@@ -169,7 +183,7 @@ export class HostSession {
         offset += batch.events.length
       }
       const items: { kind: "user" | "assistant"; text: string }[] = []
-      for (const event of events) {
+      for (const event of skip > 0 ? events.slice(skip) : events) {
         if (event.type === "user/message") {
           const kind = (event.data as any)?.source?.kind
           if (kind !== undefined && kind !== "user") continue
@@ -587,6 +601,7 @@ export class HostSession {
 
   async turn(userText: string, cb: TurnCallbacks, _signal?: AbortSignal): Promise<void> {
     this.#cb = cb
+    this.#disarmIdleRelease()
     // Fresh telemetry window for this turn (ticks reset, timing restarts,
     // usage delta baseline taken in case usage is cumulative over the session)
     this.#turns++
@@ -594,17 +609,40 @@ export class HostSession {
     this.#turnStartedAt = Date.now()
     this.#turnUsageStart = { prompt: this.usage.prompt, completion: this.usage.completion }
     if (!this.#handle) {
-      // fresh session, or a one-shot resume of a picked historical one
-      this.#sessionId = this.#resumeId ?? randomUUID()
+      // fresh session, a one-shot resume of a picked historical one — or the
+      // idle-release wake: same session id re-attached after the lock was
+      // freed for other surfaces.
+      const reattach = this.#isReleasedForReattach()
+      this.#sessionId = this.#resumeId ?? this.#sessionId ?? randomUUID()
       this.#resumeId = undefined
+      // The wake continues an EXISTING session — a pending /preset choice is
+      // for the NEXT fresh session, not for re-mounting over this one's
+      // recorded composition.
+      if (reattach) this.#presetId = undefined
       const agentOptions = this.#modelSelection() ?? {}
-      this.#handle = await (this.#ctx as any).agents.create({
-        sessionId: this.#sessionId,
-        meta: { cwd: process.cwd(), ...(this.#presetId ? { agentPreset: this.#presetId } : {}) },
-        agentOptions,
-      })
+      try {
+        this.#handle = await (this.#ctx as any).agents.create({
+          sessionId: this.#sessionId,
+          meta: { cwd: process.cwd(), ...(this.#presetId ? { agentPreset: this.#presetId } : {}) },
+          agentOptions,
+        })
+      } catch (error) {
+        if (reattach && (error as { name?: string; message?: string })?.name === "SessionAlreadyOwnedError") {
+          // Another surface won the lease while we were released. The id is
+          // kept — a later send re-probes (their idle frees it); /new escapes.
+          throw new Error("session is being driven by another process (phone/web) — send again later to re-take it, or /new for a fresh session")
+        }
+        throw error
+      }
       this.#agentId = this.#handle.agent.id
       DBG(`session created ${this.#sessionId} agent=${this.#agentId}`)
+      if (reattach) {
+        // Catch-up: durable rows other surfaces wrote while we were
+        // released, painted before this turn streams.
+        const missed = await this.storedTranscript(this.#sessionId, this.#releasedSeq)
+        this.#releasedSeq = 0
+        if (missed.length > 0) cb.onReattachedMissed?.(missed)
+      }
     }
     const message = createUserMessage({
       // /attach stashed image refs ride along with the next prompt (the
@@ -624,6 +662,59 @@ export class HostSession {
 
   /** Image refs staged by /attach, sent with the next prompt. */
   #pendingImages: any[] = []
+
+  // ---- idle release mechanics ----
+
+  /** Seconds of input+turn silence before the write handle is freed.
+   * `idleReleaseSec` in the plugin config; 0 disables. Default 600 (10min):
+   * short enough to free the lock when a TUI is forgotten open, long enough
+   * to never fire under a thinking pause. */
+  #idleReleaseMs(): number {
+    const cfg = this.configLoad()
+    const sec = Number(cfg.idleReleaseSec ?? 600)
+    if (!Number.isFinite(sec) || sec <= 0) return 0
+    return sec * 1000
+  }
+
+  #armIdleRelease(): void {
+    this.#disarmIdleRelease()
+    const ms = this.#idleReleaseMs()
+    if (ms <= 0 || this.#sessionId === undefined) return
+    const timer = setTimeout(() => this.#releaseIdle(), ms)
+    timer.unref?.()
+    this.#idleTimer = timer
+  }
+
+  #disarmIdleRelease(): void {
+    if (this.#idleTimer === undefined) return
+    clearTimeout(this.#idleTimer)
+    this.#idleTimer = undefined
+  }
+
+  /** The contract's "idle releases the write": drop the write handle so the
+   * next inputting surface (phone, another TUI) wins the kernel lease. The
+   * transcript stays on screen — only the handle goes; the next send
+   * re-attaches the SAME session id (turn()'s reattach arm). */
+  #releaseIdle(): void {
+    this.#idleTimer = undefined
+    if (this.#handle === undefined || this.#running) return
+    // The wake diff base: everything durable up to now is already painted.
+    this.#releasedSeq = this.#snapshot().length
+    this.#toolCalls.clear()
+    try {
+      this.#handle?.dispose?.()
+    } catch {
+      /* already gone */
+    }
+    this.#handle = undefined
+    this.#agentId = undefined
+  }
+
+  /** True when #handle is gone but #sessionId is retained BY the idle
+   * release (not by abort or a pending resume — those want fresh/picked). */
+  #isReleasedForReattach(): boolean {
+    return this.#handle === undefined && this.#sessionId !== undefined && this.#resumeId === undefined
+  }
 
   // ---- subagent panel state ----
   /** Live view per adopted child session (tui-pi AgentView, minimal). */
@@ -809,6 +900,8 @@ export class HostSession {
     if (seed.length === 0) throw new Error("fork point before the first event")
     const parentSession = this.#sessionId
     const sel = this.#modelSelection()
+    this.#disarmIdleRelease()
+    this.#releasedSeq = 0
     try {
       this.#handle?.dispose?.()
     } catch {
@@ -870,6 +963,7 @@ export class HostSession {
    * promise (the stop-confirm flow calls this; /new semantics for the
    * next send — a fresh session is created). */
   abort(): void {
+    this.#disarmIdleRelease()
     try {
       this.#handle?.dispose?.()
     } catch {
@@ -877,6 +971,10 @@ export class HostSession {
     }
     this.#handle = undefined
     this.#agentId = undefined
+    // "/new semantics" for the next send: a FRESH session. #sessionId must
+    // not survive (the reattach arm would resume the aborted one).
+    this.#sessionId = undefined
+    this.#releasedSeq = 0
     this.#resolveTurn?.()
     this.#resolveTurn = undefined
   }
@@ -914,6 +1012,10 @@ export class HostSession {
     const r = this.#resolveTurn
     this.#resolveTurn = undefined
     this.#cb?.onTurnEnd({ prompt: this.usage.prompt, completion: this.usage.completion })
+    // The takeover contract's lock half: once idle, stop hogging the write
+    // lease — the phone's /resume (or a second TUI) gets it after the
+    // configured quiet window instead of never.
+    this.#armIdleRelease()
     r?.()
   }
 

@@ -851,6 +851,19 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           onToolRun: (run: ToolRun) => {
             dock.onToolRun(run)
           },
+          onReattachedMissed: (rows: { kind: "user" | "assistant"; text: string }[]) => {
+            // Idle-release wake: another surface drove the session while our
+            // handle was freed. The missed rows belong BEFORE the prompt row
+            // send() just pushed — splice them in ahead of it.
+            if (rows.length === 0) return
+            setItems((arr) => {
+              const painted = rows.map((it) =>
+                it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : { kind: "user" as const, text: it.text },
+              )
+              if (arr.length === 0) return painted as TItem[]
+              return [...arr.slice(0, -1), ...painted, arr[arr.length - 1]] as TItem[]
+            })
+          },
           onError: (msg: string) => push({ kind: "error", text: msg }),
         },
       )

@@ -45,6 +45,12 @@ export interface TurnCallbacks {
     elapsed: number
     lastLine?: string
   }[]) => void
+  /** Idle-release wake catch-up: durable user/assistant rows the session
+   * gained while our write handle was released (another surface — the
+   * phone, a second TUI — drove it). Fired once per wake, BEFORE the new
+   * turn streams; the rows belong BEFORE the prompt row the caller just
+   * pushed. Host mode only; no release, no callback. */
+  onReattachedMissed?: (items: { kind: "user" | "assistant"; text: string }[]) => void
 }
 
 /**

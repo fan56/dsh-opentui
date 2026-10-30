@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-30
+
+### Added
+
+- **Idle lock release (the lock half of the cross-surface takeover contract).** A dsh-opentui TUI used to hold its session's kernel write lease forever, so the phone's `/resume` against any open TUI session degraded to a read-only watch that nothing (short of quitting the TUI) ever released. After `idleReleaseSec` without input or a running turn (plugin config, default 600s, `0` disables) the write handle is disposed — the kernel lease frees with it and the transcript stays on screen. The next send re-attaches the SAME session id and folds in the durable user/assistant rows other surfaces (phone, second TUI) wrote while released (`onReattachedMissed`, spliced ahead of the prompt row); a lease meanwhile won by another surface fails the wake with an actionable error and keeps the id for a retry. `abort()` keeps its `/new` semantics (fresh id on the next send); an explicit resume still wins over the reattach. Verified: 6 new HostSession contract tests (release, same-id wake, missed-rows fold, owned-refusal, abort/resume precedence, disable switch), monorepo `bun test` green, both packages typecheck clean, and the packed-tarball real-host boot smoke.
+
 ## [0.1.0] - 2026-10-29
 
 First public release of `@aiwayds/dsh-opentui`.
