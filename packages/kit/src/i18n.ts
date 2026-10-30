@@ -3,7 +3,7 @@
  * v0 ships zh-CN and en dictionaries; adding a language means adding a file,
  * zero code changes (same posture as dsh-tui-pi's locales/).
  */
-export type Locale = "zh-CN" | "en"
+export type Locale = "zh-CN" | "en" | "ja" | "ko"
 
 type Dict = Record<string, { "zh-CN": string; en: string }>
 
@@ -80,10 +80,14 @@ export function createI18n(locale: Locale = "zh-CN"): I18n {
     setLocale(l: Locale) {
       current = l
     },
-    // reads the CURRENT locale dynamically — /language switches apply live
+    // reads the CURRENT locale dynamically with a graceful chain:
+    // requested → en → zh-CN → the key itself (ja/ko are seeded locales —
+    // untranslated keys fall through instead of breaking)
     t: (key, vars) => {
       const entry = dict[key]
-      return entry ? fmt(entry[current], vars) : key
+      if (!entry) return key
+      const v = (entry as Record<string, string>)[current] ?? entry.en ?? entry["zh-CN"]
+      return fmt(v, vars)
     },
   }
 }

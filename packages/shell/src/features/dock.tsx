@@ -17,6 +17,8 @@ import { ThinkWidget, ToolWidget, type ThinkWidgetState, type ToolWidgetEntry, t
 
 export interface DockDeps {
   theme: () => Theme
+  /** Dock icon style (plugin config iconSet): default | minimal. */
+  icons?: () => "default" | "minimal" | undefined
 }
 
 /** Text flush cadence into the reactive state (same as the old Shell). */
@@ -65,8 +67,8 @@ export function createDockFeature(deps: DockDeps): DockState {
   }
 
   return {
-    thinkView: () => <ThinkWidget state={{ ...think(), active: think().active || thinkRe() }} theme={deps.theme()} />,
-    toolView: () => <ToolWidget entries={tools()} active={tools().some((e) => e.status === "running") || toolRe()} theme={deps.theme()} />,
+    thinkView: () => <ThinkWidget state={{ ...think(), active: think().active || thinkRe() }} theme={deps.theme()} icons={deps.icons?.()} />,
+    toolView: () => <ToolWidget entries={tools()} active={tools().some((e) => e.status === "running") || toolRe()} theme={deps.theme()} icons={deps.icons?.()} />,
 
     onThinkingDelta(text) {
       if (text === "") return

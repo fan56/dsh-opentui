@@ -18,6 +18,8 @@ import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem, Subage
 import type { SurfaceStore } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
+/** Tools that spawn subagent children — gated by the maxAgents policy. */
+const SPAWN_TOOLS = ["subagent", "subagent_fork", "workflow", "ralph", "use_agent"]
 import { createModelSelectFeature } from "./features/model-select.tsx"
 import { createThemeSelectFeature } from "./features/theme-select.tsx"
 import { createHistoryForkFeature } from "./features/history-fork.tsx"
@@ -33,7 +35,7 @@ export interface ShellHostDeps {
   /** Theme name from plugin config; env wins over this. */
   themeName?: string
   /** The live i18n instance (/language switches it in place). */
-  i18n?: { locale: string; setLocale(l: "zh-CN" | "en"): void }
+  i18n?: { locale: string; setLocale(l: "zh-CN" | "en" | "ja" | "ko"): void }
 }
 
 /** Transcript rows: the CLEAN subset of Kit's shape — thinking and tool
@@ -126,6 +128,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [steerFor, setSteerFor] = createSignal<string | null>(null)
   const [steerBuffer, setSteerBuffer] = createSignal("")
   const [hintsVisible, setHintsVisible] = createSignal(true)
+  // keybindings.json (profile root, sibling of config.json): overrides for
+  // the global hotkeys — { "viewer": "ctrl+g", "think": "t", ... }; loaded
+  // once at mount via the session's keybindingsPath
+  const [kb] = createSignal<Record<string, string>>(props.deps.session.keybindingsLoad?.() ?? {})
+  const hot = (action: string, fallback: string): string => kb()[action] ?? fallback
   // plugin config (profile config.json): favorites/hidden shape /model,
   // askUserTimeoutSec auto-declines the ask overlay
   const [pluginConfig, setPluginConfig] = createSignal(props.deps.session.configLoad())
@@ -266,7 +273,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const openOverlay = (req: { title: string; items: SelectItem[]; onSelect: (v: string) => void; ask?: { questionId: string; resolve: AskResolve } }) =>
     setOverlay(req)
   // think/tool dock phase machine (ported from tui-pi live-widgets)
-  const dock = createDockFeature({ theme })
+  const dock = createDockFeature({ theme, icons: () => pluginConfig().iconSet as "default" | "minimal" | undefined })
   const modelSelect = createModelSelectFeature({
     session: props.deps.session,
     t,
@@ -623,7 +630,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } else if (cmd === "language") {
       const i18n = props.deps.i18n
       if (i18n) {
-        const to: "zh-CN" | "en" = i18n.locale === "zh-CN" ? "en" : "zh-CN"
+        const cycle: Array<"zh-CN" | "en" | "ja" | "ko"> = ["zh-CN", "en", "ja", "ko"]
+        const to = cycle[(cycle.indexOf(i18n.locale as any) + 1) % cycle.length]
         i18n.setLocale(to)
         push({ kind: "system", text: `language → ${to}` })
       } else {
@@ -639,6 +647,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         { key: "askUserTimeoutSec", desc: "ask overlay timeout seconds (0 = none)", parse: (v) => Number(v) },
         { key: "favoriteModels", desc: "favorite models (comma-separated provider/model)", parse: (v) => v.split(",").map((x) => x.trim()).filter(Boolean) },
         { key: "hiddenModels", desc: "hidden models (comma-separated provider/model)", parse: (v) => v.split(",").map((x) => x.trim()).filter(Boolean) },
+        { key: "maxAgents", desc: "max concurrently running subagents (0 = unlimited)", parse: (v) => Number(v) },
+        { key: "maxRounds", desc: "max rounds per subagent (0 = unlimited, enforced at the approval layer)", parse: (v) => Number(v) },
+        { key: "iconSet", desc: "dock icon style: default | minimal", parse: (v) => (["default", "minimal"].includes(v) ? v : "default") },
       ]
       if (parts.length >= 3) {
         const spec = KEYS.find((k) => k.key === parts[1])
@@ -723,6 +734,16 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           onTodos: (list) => setTodos(list),
           onSubagentUpdate: (entries) => setSubagents(entries),
           onApprove: (name: string, args: Record<string, unknown>) => {
+            // subagent policy (tui-pi subagent-policy concept): spawn tools
+            // over the maxAgents cap are rejected at the approval layer
+            if (SPAWN_TOOLS.includes(name)) {
+              const cap = Number(pluginConfig().maxAgents ?? 0)
+              const running = subagents().filter((e) => e.status === "running").length
+              if (cap > 0 && running >= cap) {
+                push({ kind: "error", text: `spawn rejected: maxAgents=${cap} reached (${running} running)` })
+                return Promise.resolve(false)
+              }
+            }
             // Only the modal card lives here; the dock entry is filed by
             // onToolStart (the tool/call event), which fires for
             // auto-allowed calls that never reach this waterfall.
@@ -847,8 +868,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       }
       return
     }
-    // ctrl+G: subagent viewer (list → transcript)
-    if (key.ctrl && key.name === "g") {
+    // ctrl+G: subagent viewer (list → transcript) — keybindings.json may
+    // rebind it ("viewer": "ctrl+g")
+    const viewerKey = hot("viewer", "ctrl+g")
+    const vkCtrl = viewerKey.startsWith("ctrl+")
+    const vkName = vkCtrl ? viewerKey.slice(5) : viewerKey
+    if (key.ctrl === vkCtrl && key.name === vkName) {
       const list = subagents()
       if (list.length === 0) {
         push({ kind: "system", text: "no subagents yet" })
@@ -866,20 +891,26 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     // login feature's key stages (key entry / logout confirm) come before
     // everything else while its panel is up
     if (loginFeature.active() && loginFeature.handleKey(key)) return
-    if (key.ctrl && key.name === "t") {
+    const thinkKey = hot("think", "ctrl+t")
+    const tkCtrl = thinkKey.startsWith("ctrl+")
+    if (key.ctrl === tkCtrl && key.name === (tkCtrl ? thinkKey.slice(5) : thinkKey)) {
       dock.reexpandThink()
       return
     }
-    if (key.ctrl && key.name === "o") {
+    const toolsKey = hot("tools", "ctrl+o")
+    const toCtrl = toolsKey.startsWith("ctrl+")
+    if (key.ctrl === toCtrl && key.name === (toCtrl ? toolsKey.slice(5) : toolsKey)) {
       dock.reexpandTools()
       return
     }
     // scrollback lookback: PgUp/PgDn page through the transcript region
-    if (key.name === "pageup" || (key.ctrl && key.name === "b")) {
+    const upKey = hot("scrollUp", "pageup")
+    const dnKey = hot("scrollDown", "pagedown")
+    if (key.name === upKey || (upKey.startsWith("ctrl+") && key.ctrl && key.name === upKey.slice(5))) {
       scrollUp()
       return
     }
-    if (key.name === "pagedown" || (key.ctrl && key.name === "f")) {
+    if (key.name === dnKey || (dnKey.startsWith("ctrl+") && key.ctrl && key.name === dnKey.slice(5))) {
       scrollDown()
       return
     }

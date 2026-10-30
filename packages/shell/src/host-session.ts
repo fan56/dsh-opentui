@@ -345,6 +345,15 @@ export class HostSession {
     return this.#presetId
   }
 
+  /** Path of the profile-root keybindings.json (sibling of config.json). */
+  keybindingsLoad(): Record<string, string> {
+    try {
+      return JSON.parse(readFileSync(this.configPath("keybindings.json"), "utf8"))
+    } catch {
+      return {}
+    }
+  }
+
   /** The host settings service seam (login/logout route registration). */
   get settingsSeam(): { describe(): Promise<any>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> } | undefined {
     const st = (this.#ctx as any).get?.("settings")
@@ -369,23 +378,23 @@ export class HostSession {
   /** Plugin config file (profile-local JSON, self-contained persistence):
    * retentionDays filters /sessions; askUserTimeoutSec auto-declines the
    * ask overlay; favoriteModels/hiddenModels shape the /model picker. */
-  #configPath(): string {
+  configPath(name = "config.json"): string {
     // walk up from the bundle to the PROFILE ROOT (marked by
     // cordis.patch.yml) — the bundle depth varies between layouts
     let dir = new URL(".", import.meta.url).pathname
     for (let i = 0; i < 8; i++) {
-      if (existsSync(join(dir, "cordis.patch.yml"))) return join(dir, "config.json")
+      if (existsSync(join(dir, "cordis.patch.yml"))) return join(dir, name)
       const parent = join(dir, "..")
       if (parent === dir) break
       dir = parent
     }
     const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh")
-    return join(home, "profiles", "dsh-opentui", "config.json")
+    return join(home, "profiles", "dsh-opentui", name)
   }
 
   configLoad(): Record<string, any> {
     try {
-      return JSON.parse(readFileSync(this.#configPath(), "utf8"))
+      return JSON.parse(readFileSync(this.configPath(), "utf8"))
     } catch {
       return {}
     }
@@ -393,7 +402,7 @@ export class HostSession {
 
   configSave(patch: Record<string, any>): Record<string, any> {
     const merged = { ...this.configLoad(), ...patch }
-    writeFileSync(this.#configPath(), JSON.stringify(merged, null, 2) + "\n")
+    writeFileSync(this.configPath(), JSON.stringify(merged, null, 2) + "\n")
     return merged
   }
 

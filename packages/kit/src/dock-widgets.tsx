@@ -28,7 +28,7 @@ const THINK_SUMMARY_HEAD = 60
  * the thinking text while active; a single dim line once the turn ends;
  * nothing at all when there is no thought to summarize.
  */
-export function ThinkWidget(props: { state: ThinkWidgetState; theme: Theme }): JSX.Element {
+export function ThinkWidget(props: { state: ThinkWidgetState; theme: Theme; icons?: "default" | "minimal" }): JSX.Element {
   const th = () => props.theme
   // Thinking highlight when the theme carries one; accent otherwise.
   const thinkFg = () => th().tokens.thinking ?? th().tokens.accent
@@ -37,10 +37,10 @@ export function ThinkWidget(props: { state: ThinkWidgetState; theme: Theme }): J
   // a word boundary so it never ends mid-word.
   const summary = () => {
     const flat = props.state.text.replace(/\s+/g, " ").trim()
-    if (flat.length <= THINK_SUMMARY_HEAD) return `💭 thought · ${props.state.elapsed}s · ${flat}`
+    if (flat.length <= THINK_SUMMARY_HEAD) return `${props.icons === "minimal" ? "~" : "💭"} thought · ${props.state.elapsed}s · ${flat}`
     const cut = flat.slice(0, THINK_SUMMARY_HEAD)
     const boundary = Math.max(cut.lastIndexOf(" "), THINK_SUMMARY_HEAD - 20)
-    return `💭 thought · ${props.state.elapsed}s · ${cut.slice(0, boundary > 0 ? boundary : THINK_SUMMARY_HEAD).trimEnd()}...`
+    return `${props.icons === "minimal" ? "~" : "💭"} thought · ${props.state.elapsed}s · ${cut.slice(0, boundary > 0 ? boundary : THINK_SUMMARY_HEAD).trimEnd()}...`
   }
 
   return (
@@ -116,7 +116,7 @@ function spinnerFrame(elapsed: number | undefined): string {
  * collapses to a single dim count line; with no entries it renders zero
  * rows.
  */
-export function ToolWidget(props: { entries: ToolWidgetEntry[]; active: boolean; theme: Theme }): JSX.Element {
+export function ToolWidget(props: { entries: ToolWidgetEntry[]; active: boolean; theme: Theme; icons?: "default" | "minimal" }): JSX.Element {
   const th = () => props.theme
 
   const okCount = () => props.entries.filter((e) => e.status === "ok").length
@@ -146,11 +146,12 @@ export function ToolWidget(props: { entries: ToolWidgetEntry[]; active: boolean;
     return runningColor(th())
   }
 
-  const rowText = (e: ToolWidgetEntry): string => {
-    if (e.status === "ok") return `✔ ${e.name}`
-    if (e.status === "fail") return `✘ ${e.name}`
+  const rowText = (e: ToolWidgetEntry, icons?: string): string => {
+    const mark = icons === "minimal" ? "" : e.status === "ok" ? "✔ " : e.status === "fail" ? "✘ " : "⚙ "
+    if (e.status === "ok") return `${mark}${e.name}`
+    if (e.status === "fail") return `${mark}${e.name}`
     const args = e.args.slice(0, TOOL_ARGS_WIDTH).replace(/\s+/g, " ").trim()
-    return args ? `⚙ ${e.name} ${args}` : `⚙ ${e.name}`
+    return args ? `${mark}${e.name} ${args}` : `${mark}${e.name}`
   }
 
   const outputTail = (e: ToolWidgetEntry): string[] =>
@@ -194,7 +195,7 @@ export function ToolWidget(props: { entries: ToolWidgetEntry[]; active: boolean;
         <For each={props.entries}>
           {(e, i) => (
             <>
-              <text style={{ fg: rowFg(e) }}>{rowText(e)}</text>
+              <text style={{ fg: rowFg(e) }}>{rowText(e, props.icons)}</text>
               <Show when={i() === lastRunningIndex() && e.output}>
                 <For each={outputTail(e)}>
                   {(line) => <text style={{ fg: th().tokens.dim }}>{`  ⎿ ${line}`}</text>}

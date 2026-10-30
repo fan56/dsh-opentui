@@ -139,7 +139,10 @@ function createI18n(locale = "zh-CN") {
     },
     t: (key, vars) => {
       const entry = dict[key];
-      return entry ? fmt(entry[current], vars) : key;
+      if (!entry)
+        return key;
+      const v = entry[current] ?? entry.en ?? entry["zh-CN"];
+      return fmt(v, vars);
     }
   };
 }
@@ -1307,10 +1310,10 @@ function ThinkWidget(props) {
   const summary = () => {
     const flat = props.state.text.replace(/\s+/g, " ").trim();
     if (flat.length <= THINK_SUMMARY_HEAD)
-      return `\uD83D\uDCAD thought · ${props.state.elapsed}s · ${flat}`;
+      return `${props.icons === "minimal" ? "~" : "\uD83D\uDCAD"} thought · ${props.state.elapsed}s · ${flat}`;
     const cut = flat.slice(0, THINK_SUMMARY_HEAD);
     const boundary = Math.max(cut.lastIndexOf(" "), THINK_SUMMARY_HEAD - 20);
-    return `\uD83D\uDCAD thought · ${props.state.elapsed}s · ${cut.slice(0, boundary > 0 ? boundary : THINK_SUMMARY_HEAD).trimEnd()}...`;
+    return `${props.icons === "minimal" ? "~" : "\uD83D\uDCAD"} thought · ${props.state.elapsed}s · ${cut.slice(0, boundary > 0 ? boundary : THINK_SUMMARY_HEAD).trimEnd()}...`;
   };
   return _$createComponent8(Show4, {
     get when() {
@@ -1408,13 +1411,14 @@ function ToolWidget(props) {
       return th().tokens.toolFail ?? th().tokens.danger;
     return runningColor(th());
   };
-  const rowText = (e) => {
+  const rowText = (e, icons) => {
+    const mark = icons === "minimal" ? "" : e.status === "ok" ? "✔ " : e.status === "fail" ? "✘ " : "⚙ ";
     if (e.status === "ok")
-      return `✔ ${e.name}`;
+      return `${mark}${e.name}`;
     if (e.status === "fail")
-      return `✘ ${e.name}`;
+      return `${mark}${e.name}`;
     const args = e.args.slice(0, TOOL_ARGS_WIDTH).replace(/\s+/g, " ").trim();
-    return args ? `⚙ ${e.name} ${args}` : `⚙ ${e.name}`;
+    return args ? `${mark}${e.name} ${args}` : `${mark}${e.name}`;
   };
   const outputTail = (e) => (e.output ?? "").split(`
 `).slice(-TOOL_OUTPUT_TAIL).filter((l) => l.trim().length > 0);
@@ -1478,7 +1482,7 @@ function ToolWidget(props) {
         },
         children: (e, i) => [(() => {
           var _el$11 = _$createElement8("text");
-          _$insert8(_el$11, () => rowText(e));
+          _$insert8(_el$11, () => rowText(e, props.icons));
           _$effect8((_$p) => _$setProp8(_el$11, "style", {
             fg: rowFg(e)
           }, _$p));
@@ -2555,6 +2559,9 @@ function createDockFeature(deps) {
       },
       get theme() {
         return deps.theme();
+      },
+      get icons() {
+        return deps.icons?.();
       }
     }),
     toolView: () => _$createComponent13(ToolWidget, {
@@ -2566,6 +2573,9 @@ function createDockFeature(deps) {
       },
       get theme() {
         return deps.theme();
+      },
+      get icons() {
+        return deps.icons?.();
       }
     }),
     onThinkingDelta(text) {
@@ -2672,6 +2682,7 @@ function createDockFeature(deps) {
 }
 
 // src/ShellHost.tsx
+var SPAWN_TOOLS = ["subagent", "subagent_fork", "workflow", "ralph", "use_agent"];
 var CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
 var CONTEXT_WINDOW_TOKENS = 128000;
 var COMMANDS = [{
@@ -2756,6 +2767,8 @@ function ShellHost(props) {
   const [steerFor, setSteerFor] = createSignal4(null);
   const [steerBuffer, setSteerBuffer] = createSignal4("");
   const [hintsVisible, setHintsVisible] = createSignal4(true);
+  const [kb] = createSignal4(props.deps.session.keybindingsLoad?.() ?? {});
+  const hot = (action, fallback) => kb()[action] ?? fallback;
   const [pluginConfig, setPluginConfig] = createSignal4(props.deps.session.configLoad());
   const openViewer = (id) => {
     setViewerId(id);
@@ -2875,7 +2888,8 @@ function ShellHost(props) {
   const menuVisible = createMemo(() => menuOpen() && filteredCommands().length > 0);
   const openOverlay = (req) => setOverlay(req);
   const dock = createDockFeature({
-    theme
+    theme,
+    icons: () => pluginConfig().iconSet
   });
   const modelSelect = createModelSelectFeature({
     session: props.deps.session,
@@ -3298,7 +3312,8 @@ function ShellHost(props) {
     } else if (cmd === "language") {
       const i18n = props.deps.i18n;
       if (i18n) {
-        const to = i18n.locale === "zh-CN" ? "en" : "zh-CN";
+        const cycle = ["zh-CN", "en", "ja", "ko"];
+        const to = cycle[(cycle.indexOf(i18n.locale) + 1) % cycle.length];
         i18n.setLocale(to);
         push({
           kind: "system",
@@ -3327,6 +3342,18 @@ function ShellHost(props) {
         key: "hiddenModels",
         desc: "hidden models (comma-separated provider/model)",
         parse: (v) => v.split(",").map((x) => x.trim()).filter(Boolean)
+      }, {
+        key: "maxAgents",
+        desc: "max concurrently running subagents (0 = unlimited)",
+        parse: (v) => Number(v)
+      }, {
+        key: "maxRounds",
+        desc: "max rounds per subagent (0 = unlimited, enforced at the approval layer)",
+        parse: (v) => Number(v)
+      }, {
+        key: "iconSet",
+        desc: "dock icon style: default | minimal",
+        parse: (v) => ["default", "minimal"].includes(v) ? v : "default"
       }];
       if (parts.length >= 3) {
         const spec = KEYS.find((k) => k.key === parts[1]);
@@ -3447,6 +3474,17 @@ function ShellHost(props) {
         onTodos: (list) => setTodos(list),
         onSubagentUpdate: (entries) => setSubagents(entries),
         onApprove: (name, args) => {
+          if (SPAWN_TOOLS.includes(name)) {
+            const cap = Number(pluginConfig().maxAgents ?? 0);
+            const running = subagents().filter((e) => e.status === "running").length;
+            if (cap > 0 && running >= cap) {
+              push({
+                kind: "error",
+                text: `spawn rejected: maxAgents=${cap} reached (${running} running)`
+              });
+              return Promise.resolve(false);
+            }
+          }
           setApproval({
             name,
             args: JSON.stringify(args)
@@ -3571,7 +3609,10 @@ function ShellHost(props) {
       }
       return;
     }
-    if (key.ctrl && key.name === "g") {
+    const viewerKey = hot("viewer", "ctrl+g");
+    const vkCtrl = viewerKey.startsWith("ctrl+");
+    const vkName = vkCtrl ? viewerKey.slice(5) : viewerKey;
+    if (key.ctrl === vkCtrl && key.name === vkName) {
       const list = subagents();
       if (list.length === 0) {
         push({
@@ -3593,19 +3634,25 @@ function ShellHost(props) {
     }
     if (loginFeature.active() && loginFeature.handleKey(key))
       return;
-    if (key.ctrl && key.name === "t") {
+    const thinkKey = hot("think", "ctrl+t");
+    const tkCtrl = thinkKey.startsWith("ctrl+");
+    if (key.ctrl === tkCtrl && key.name === (tkCtrl ? thinkKey.slice(5) : thinkKey)) {
       dock.reexpandThink();
       return;
     }
-    if (key.ctrl && key.name === "o") {
+    const toolsKey = hot("tools", "ctrl+o");
+    const toCtrl = toolsKey.startsWith("ctrl+");
+    if (key.ctrl === toCtrl && key.name === (toCtrl ? toolsKey.slice(5) : toolsKey)) {
       dock.reexpandTools();
       return;
     }
-    if (key.name === "pageup" || key.ctrl && key.name === "b") {
+    const upKey = hot("scrollUp", "pageup");
+    const dnKey = hot("scrollDown", "pagedown");
+    if (key.name === upKey || upKey.startsWith("ctrl+") && key.ctrl && key.name === upKey.slice(5)) {
       scrollUp();
       return;
     }
-    if (key.name === "pagedown" || key.ctrl && key.name === "f") {
+    if (key.name === dnKey || dnKey.startsWith("ctrl+") && key.ctrl && key.name === dnKey.slice(5)) {
       scrollDown();
       return;
     }
@@ -4263,6 +4310,13 @@ class HostSession {
   currentPresetId() {
     return this.#presetId;
   }
+  keybindingsLoad() {
+    try {
+      return JSON.parse(readFileSync(this.configPath("keybindings.json"), "utf8"));
+    } catch {
+      return {};
+    }
+  }
   get settingsSeam() {
     const st = this.#ctx.get?.("settings");
     return st ? { describe: () => st.describe(), mutate: (ns, ops, rev) => st.mutate(ns, ops, rev) } : undefined;
@@ -4281,29 +4335,29 @@ class HostSession {
       return [];
     }
   }
-  #configPath() {
+  configPath(name = "config.json") {
     let dir = new URL(".", import.meta.url).pathname;
     for (let i = 0;i < 8; i++) {
       if (existsSync(join(dir, "cordis.patch.yml")))
-        return join(dir, "config.json");
+        return join(dir, name);
       const parent = join(dir, "..");
       if (parent === dir)
         break;
       dir = parent;
     }
     const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh");
-    return join(home, "profiles", "dsh-opentui", "config.json");
+    return join(home, "profiles", "dsh-opentui", name);
   }
   configLoad() {
     try {
-      return JSON.parse(readFileSync(this.#configPath(), "utf8"));
+      return JSON.parse(readFileSync(this.configPath(), "utf8"));
     } catch {
       return {};
     }
   }
   configSave(patch) {
     const merged = { ...this.configLoad(), ...patch };
-    writeFileSync(this.#configPath(), JSON.stringify(merged, null, 2) + `
+    writeFileSync(this.configPath(), JSON.stringify(merged, null, 2) + `
 `);
     return merged;
   }
