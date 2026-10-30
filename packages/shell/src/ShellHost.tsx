@@ -75,6 +75,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/search", desc: "full-text search sessions (/search text)" },
   { name: "/language", desc: "switch interface language (zh-CN/en)" },
   { name: "/hints", desc: "toggle the key-hint strip" },
+  { name: "/config", desc: "plugin settings (/config or /config key value)" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -125,6 +126,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [steerFor, setSteerFor] = createSignal<string | null>(null)
   const [steerBuffer, setSteerBuffer] = createSignal("")
   const [hintsVisible, setHintsVisible] = createSignal(true)
+  // plugin config (profile config.json): favorites/hidden shape /model,
+  // askUserTimeoutSec auto-declines the ask overlay
+  const [pluginConfig, setPluginConfig] = createSignal(props.deps.session.configLoad())
   const openViewer = (id: string) => {
     setViewerId(id)
     setViewerLines(props.deps.session.childTranscript(id))
@@ -215,11 +219,23 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           resolve("declined")
           return
         }
+        let settled = false
+        const settle = (v: { questionId: string; selected: string }[] | "declined") => {
+          if (settled) return
+          settled = true
+          setOverlay(null)
+          setFocusKey((k) => k + 1)
+          resolve(v)
+        }
+        // askUserTimeoutSec (plugin config): auto-decline when unanswered —
+        // the turn keeps running either way
+        const timeoutSec = Number(pluginConfig().askUserTimeoutSec ?? 0)
+        if (timeoutSec > 0) setTimeout(() => settle("declined"), timeoutSec * 1000)
         openOverlay({
           title: `${t("ask.title")}: ${q0.prompt}`.slice(0, 70),
           items: options.map((o) => ({ label: o, value: o })),
-          ask: { questionId: q0.id, resolve },
-          onSelect: (value) => resolve([{ questionId: q0.id, selected: value }]),
+          ask: { questionId: q0.id, resolve: settle },
+          onSelect: (value) => settle([{ questionId: q0.id, selected: value }]),
         })
       })
       if (answer === "declined") throw new Error("declined")
@@ -257,6 +273,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     label,
     setLabel,
     push: (it) => push(it),
+    config: pluginConfig,
   })
   const themeSelect = createThemeSelectFeature({ t, themeName, setThemeName })
   const historyFork = createHistoryForkFeature({
@@ -611,6 +628,33 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         push({ kind: "system", text: `language → ${to}` })
       } else {
         push({ kind: "error", text: "language switching unavailable" })
+      }
+    } else if (cmd === "config") {
+      // deep settings: /config lists, /config key value writes. Persisted
+      // to the profile config.json; applied live (retention filters
+      // /sessions, favorites/hidden shape /model, askUserTimeoutSec arms
+      // the ask overlay timer)
+      const KEYS: { key: string; desc: string; parse: (v: string) => unknown }[] = [
+        { key: "retentionDays", desc: "/sessions retention days (0 = unlimited)", parse: (v) => Number(v) },
+        { key: "askUserTimeoutSec", desc: "ask overlay timeout seconds (0 = none)", parse: (v) => Number(v) },
+        { key: "favoriteModels", desc: "favorite models (comma-separated provider/model)", parse: (v) => v.split(",").map((x) => x.trim()).filter(Boolean) },
+        { key: "hiddenModels", desc: "hidden models (comma-separated provider/model)", parse: (v) => v.split(",").map((x) => x.trim()).filter(Boolean) },
+      ]
+      if (parts.length >= 3) {
+        const spec = KEYS.find((k) => k.key === parts[1])
+        if (!spec) {
+          push({ kind: "error", text: `unknown config key: ${parts[1]}` })
+        } else {
+          const merged = props.deps.session.configSave({ [spec.key]: spec.parse(parts.slice(2).join(" ")) })
+          setPluginConfig(merged)
+          push({ kind: "system", text: `${spec.key} = ${JSON.stringify(merged[spec.key])} — ${spec.desc}` })
+        }
+      } else {
+        push({ kind: "system", text: "config keys:" })
+        for (const k of KEYS) {
+          push({ kind: "system", text: `  ${k.key} = ${JSON.stringify(pluginConfig()[k.key] ?? "(unset)")} — ${k.desc}` })
+        }
+        push({ kind: "system", text: "set: /config <key> <value>" })
       }
     } else if (cmd === "hints") {
       setHintsVisible((v) => !v)

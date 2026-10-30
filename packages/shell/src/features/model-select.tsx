@@ -14,6 +14,9 @@ export interface ModelSelectDeps {
   label: () => string
   setLabel: (v: string) => void
   push: (it: { kind: "system" | "error"; text: string }) => void
+  /** Plugin config: favoriteModels pinned to the top (★), hiddenModels
+   * dropped from the picker. */
+  config: () => { favoriteModels?: string[]; hiddenModels?: string[] }
 }
 
 export interface OverlayRequest {
@@ -39,14 +42,22 @@ export function createModelSelectFeature(deps: ModelSelectDeps) {
     async open(openOverlay: (req: OverlayRequest) => void) {
       await refresh()
       const current = deps.label()
+      const fav: string[] = deps.config()?.favoriteModels ?? []
+      const hidden: string[] = deps.config()?.hiddenModels ?? []
       openOverlay({
         title: deps.t("picker.model.title"),
         items: catalog.flatMap((p) =>
-          p.models.map((m) => {
+          p.models.filter((m) => !hidden.includes(`${p.provider}/${m}`)).map((m) => {
             const id = `${p.provider}/${m}`
-            return { label: m, group: p.provider, value: id, ...(id === current ? { description: deps.t("cmd.model.current") } : {}) }
+            const isFav = fav.includes(id)
+            return {
+              label: isFav ? `★ ${m}` : m,
+              group: p.provider,
+              value: id,
+              ...(id === current ? { description: deps.t("cmd.model.current") } : {}),
+            }
           }),
-        ),
+        ).sort((a, b) => Number(fav.includes(`${b.group}/${b.value}`)) - Number(fav.includes(`${a.group}/${a.value}`))),
         onSelect: (value) => {
           const [provider, model] = value.split("/")
           if (!provider || !model) return

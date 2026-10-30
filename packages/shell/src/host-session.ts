@@ -8,7 +8,8 @@
 import { createUserMessage } from "@deepseek-ai/dsh-llm"
 import type { Context } from "@deepseek-ai/cordis"
 import { randomUUID } from "node:crypto"
-import { appendFileSync, readFileSync } from "node:fs"
+import { join } from "node:path"
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import {
   createStreamTicker,
   emptyTurnStats,
@@ -191,6 +192,9 @@ export class HostSession {
     if (!persistence?.list) return []
     try {
       const headers = (await persistence.list()) as any[]
+      const cfg = this.configLoad()
+      const retentionDays = Number(cfg.retentionDays ?? 0)
+      const cutoff = retentionDays > 0 ? Date.now() - retentionDays * 86400000 : 0
       const out: { id: string; title: string; updatedAt?: string }[] = []
       for (const entry of headers) {
         // dsh 0.1.5 wraps each entry as {header, ...}; older builds are bare
@@ -200,10 +204,12 @@ export class HostSession {
         if (h?.origin === "subagent" || (h?.delegationDepth ?? 0) > 0) continue
         const id = String(h?.id ?? "")
         if (!id) continue
+        const updatedAt = String(h?.updatedAt ?? h?.lastEventAt ?? h?.mtime ?? "")
+        if (cutoff > 0 && updatedAt && new Date(updatedAt).getTime() < cutoff) continue
         out.push({
           id,
           title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
-          updatedAt: String(h?.updatedAt ?? h?.lastEventAt ?? h?.mtime ?? ""),
+          updatedAt,
         })
       }
       return out
@@ -358,6 +364,37 @@ export class HostSession {
     } catch {
       return []
     }
+  }
+
+  /** Plugin config file (profile-local JSON, self-contained persistence):
+   * retentionDays filters /sessions; askUserTimeoutSec auto-declines the
+   * ask overlay; favoriteModels/hiddenModels shape the /model picker. */
+  #configPath(): string {
+    // walk up from the bundle to the PROFILE ROOT (marked by
+    // cordis.patch.yml) — the bundle depth varies between layouts
+    let dir = new URL(".", import.meta.url).pathname
+    for (let i = 0; i < 8; i++) {
+      if (existsSync(join(dir, "cordis.patch.yml"))) return join(dir, "config.json")
+      const parent = join(dir, "..")
+      if (parent === dir) break
+      dir = parent
+    }
+    const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh")
+    return join(home, "profiles", "dsh-opentui", "config.json")
+  }
+
+  configLoad(): Record<string, any> {
+    try {
+      return JSON.parse(readFileSync(this.#configPath(), "utf8"))
+    } catch {
+      return {}
+    }
+  }
+
+  configSave(patch: Record<string, any>): Record<string, any> {
+    const merged = { ...this.configLoad(), ...patch }
+    writeFileSync(this.#configPath(), JSON.stringify(merged, null, 2) + "\n")
+    return merged
   }
 
   /** User-installed plugins (profile package.json deps, versions from

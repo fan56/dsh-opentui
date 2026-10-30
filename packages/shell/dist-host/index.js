@@ -1799,19 +1799,22 @@ function createModelSelectFeature(deps) {
     async open(openOverlay) {
       await refresh();
       const current = deps.label();
+      const fav = deps.config()?.favoriteModels ?? [];
+      const hidden = deps.config()?.hiddenModels ?? [];
       openOverlay({
         title: deps.t("picker.model.title"),
-        items: catalog.flatMap((p) => p.models.map((m) => {
+        items: catalog.flatMap((p) => p.models.filter((m) => !hidden.includes(`${p.provider}/${m}`)).map((m) => {
           const id = `${p.provider}/${m}`;
+          const isFav = fav.includes(id);
           return {
-            label: m,
+            label: isFav ? `★ ${m}` : m,
             group: p.provider,
             value: id,
             ...id === current ? {
               description: deps.t("cmd.model.current")
             } : {}
           };
-        })),
+        })).sort((a, b) => Number(fav.includes(`${b.group}/${b.value}`)) - Number(fav.includes(`${a.group}/${a.value}`))),
         onSelect: (value) => {
           const [provider, model] = value.split("/");
           if (!provider || !model)
@@ -2702,6 +2705,9 @@ var COMMANDS = [{
   name: "/hints",
   desc: "toggle the key-hint strip"
 }, {
+  name: "/config",
+  desc: "plugin settings (/config or /config key value)"
+}, {
   name: "/theme",
   desc: "pick theme"
 }, {
@@ -2750,6 +2756,7 @@ function ShellHost(props) {
   const [steerFor, setSteerFor] = createSignal4(null);
   const [steerBuffer, setSteerBuffer] = createSignal4("");
   const [hintsVisible, setHintsVisible] = createSignal4(true);
+  const [pluginConfig, setPluginConfig] = createSignal4(props.deps.session.configLoad());
   const openViewer = (id) => {
     setViewerId(id);
     setViewerLines(props.deps.session.childTranscript(id));
@@ -2814,6 +2821,18 @@ function ShellHost(props) {
             resolve("declined");
             return;
           }
+          let settled = false;
+          const settle = (v) => {
+            if (settled)
+              return;
+            settled = true;
+            setOverlay(null);
+            setFocusKey((k) => k + 1);
+            resolve(v);
+          };
+          const timeoutSec = Number(pluginConfig().askUserTimeoutSec ?? 0);
+          if (timeoutSec > 0)
+            setTimeout(() => settle("declined"), timeoutSec * 1000);
           openOverlay({
             title: `${t("ask.title")}: ${q0.prompt}`.slice(0, 70),
             items: options.map((o) => ({
@@ -2822,9 +2841,9 @@ function ShellHost(props) {
             })),
             ask: {
               questionId: q0.id,
-              resolve
+              resolve: settle
             },
-            onSelect: (value) => resolve([{
+            onSelect: (value) => settle([{
               questionId: q0.id,
               selected: value
             }])
@@ -2863,7 +2882,8 @@ function ShellHost(props) {
     t,
     label,
     setLabel,
-    push: (it) => push(it)
+    push: (it) => push(it),
+    config: pluginConfig
   });
   const themeSelect = createThemeSelectFeature({
     t,
@@ -3288,6 +3308,57 @@ function ShellHost(props) {
         push({
           kind: "error",
           text: "language switching unavailable"
+        });
+      }
+    } else if (cmd === "config") {
+      const KEYS = [{
+        key: "retentionDays",
+        desc: "/sessions retention days (0 = unlimited)",
+        parse: (v) => Number(v)
+      }, {
+        key: "askUserTimeoutSec",
+        desc: "ask overlay timeout seconds (0 = none)",
+        parse: (v) => Number(v)
+      }, {
+        key: "favoriteModels",
+        desc: "favorite models (comma-separated provider/model)",
+        parse: (v) => v.split(",").map((x) => x.trim()).filter(Boolean)
+      }, {
+        key: "hiddenModels",
+        desc: "hidden models (comma-separated provider/model)",
+        parse: (v) => v.split(",").map((x) => x.trim()).filter(Boolean)
+      }];
+      if (parts.length >= 3) {
+        const spec = KEYS.find((k) => k.key === parts[1]);
+        if (!spec) {
+          push({
+            kind: "error",
+            text: `unknown config key: ${parts[1]}`
+          });
+        } else {
+          const merged = props.deps.session.configSave({
+            [spec.key]: spec.parse(parts.slice(2).join(" "))
+          });
+          setPluginConfig(merged);
+          push({
+            kind: "system",
+            text: `${spec.key} = ${JSON.stringify(merged[spec.key])} — ${spec.desc}`
+          });
+        }
+      } else {
+        push({
+          kind: "system",
+          text: "config keys:"
+        });
+        for (const k of KEYS) {
+          push({
+            kind: "system",
+            text: `  ${k.key} = ${JSON.stringify(pluginConfig()[k.key] ?? "(unset)")} — ${k.desc}`
+          });
+        }
+        push({
+          kind: "system",
+          text: "set: /config <key> <value>"
         });
       }
     } else if (cmd === "hints") {
@@ -3886,7 +3957,8 @@ function ShellHost(props) {
 // src/host-session.ts
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 // src/agent/loop.ts
 var STREAM_TICK_MS = 250;
@@ -4070,6 +4142,9 @@ class HostSession {
       return [];
     try {
       const headers = await persistence.list();
+      const cfg = this.configLoad();
+      const retentionDays = Number(cfg.retentionDays ?? 0);
+      const cutoff = retentionDays > 0 ? Date.now() - retentionDays * 86400000 : 0;
       const out = [];
       for (const entry of headers) {
         const h = entry?.header ?? entry;
@@ -4078,10 +4153,13 @@ class HostSession {
         const id = String(h?.id ?? "");
         if (!id)
           continue;
+        const updatedAt = String(h?.updatedAt ?? h?.lastEventAt ?? h?.mtime ?? "");
+        if (cutoff > 0 && updatedAt && new Date(updatedAt).getTime() < cutoff)
+          continue;
         out.push({
           id,
           title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
-          updatedAt: String(h?.updatedAt ?? h?.lastEventAt ?? h?.mtime ?? "")
+          updatedAt
         });
       }
       return out.filter((s) => s.id).sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit);
@@ -4202,6 +4280,32 @@ class HostSession {
     } catch {
       return [];
     }
+  }
+  #configPath() {
+    let dir = new URL(".", import.meta.url).pathname;
+    for (let i = 0;i < 8; i++) {
+      if (existsSync(join(dir, "cordis.patch.yml")))
+        return join(dir, "config.json");
+      const parent = join(dir, "..");
+      if (parent === dir)
+        break;
+      dir = parent;
+    }
+    const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh");
+    return join(home, "profiles", "dsh-opentui", "config.json");
+  }
+  configLoad() {
+    try {
+      return JSON.parse(readFileSync(this.#configPath(), "utf8"));
+    } catch {
+      return {};
+    }
+  }
+  configSave(patch) {
+    const merged = { ...this.configLoad(), ...patch };
+    writeFileSync(this.#configPath(), JSON.stringify(merged, null, 2) + `
+`);
+    return merged;
   }
   listPlugins() {
     try {
