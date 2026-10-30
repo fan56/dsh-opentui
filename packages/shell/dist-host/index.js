@@ -2386,7 +2386,6 @@ import { createSignal as createSignal3, For as For11, Show as Show8 } from "soli
 var FLUSH_MS = 60;
 var FADE_STEP_MS = 130;
 var FADE_STEPS = 5;
-var IDLE_COLLAPSE_MS = 2000;
 var SPINNER_FRAMES2 = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 function createDockFeature(deps) {
   const th = () => deps.theme();
@@ -2435,29 +2434,22 @@ function createDockFeature(deps) {
     } : s);
   };
   const fadeTimer = setInterval(() => {
-    const now = Date.now();
     setThink((s) => {
-      if (s.fading) {
-        const f = Math.min(1, s.fade + 1 / FADE_STEPS);
-        return f >= 1 ? {
-          visible: false,
-          expanded: false,
-          fading: false,
-          fade: 0,
-          text: "",
-          lastAt: 0,
-          startedAt: 0
-        } : {
-          ...s,
-          fade: f
-        };
-      }
-      if (s.visible)
-        return {
-          ...s,
-          expanded: now - s.lastAt < IDLE_COLLAPSE_MS
-        };
-      return s;
+      if (!s.fading)
+        return s;
+      const f = Math.min(1, s.fade + 1 / FADE_STEPS);
+      return f >= 1 ? {
+        visible: false,
+        expanded: false,
+        fading: false,
+        fade: 0,
+        text: "",
+        lastAt: 0,
+        startedAt: 0
+      } : {
+        ...s,
+        fade: f
+      };
     });
     if (toolFading()) {
       const f = Math.min(1, toolFade() + 1 / FADE_STEPS);
@@ -2468,8 +2460,6 @@ function createDockFeature(deps) {
         setTools([]);
       } else
         setToolFade(f);
-    } else if (toolVisible()) {
-      setToolExpanded(now - lastToolAt < IDLE_COLLAPSE_MS || tools().some((e) => e.status === "running"));
     }
   }, FADE_STEP_MS);
   const startThinkFade = () => setThink((s) => ({
@@ -2712,13 +2702,9 @@ function createDockFeature(deps) {
     },
     onTurnStart() {
       cancelThinkHide();
-      setThink((s) => s.visible ? {
-        ...s,
-        fading: true,
-        fade: 0,
-        expanded: false
-      } : s);
-      if (tools().length > 0) {
+      if (think().visible)
+        scheduleThinkHide(600);
+      if (tools().length > 0 && toolVisible()) {
         setToolFading(true);
         setToolFade(0);
       }

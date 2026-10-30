@@ -94,15 +94,15 @@ export function createDockFeature(deps: DockDeps): DockState {
 
   // fade driver: advances both widgets' fade at FADE_STEP_MS, and handles
   // the idle auto-collapse (expanded -> 1 row after a quiet period)
+  // fade driver: ONLY advances the fade animation. Expand/collapse is
+  // hotkey-only (ctrl+t / ctrl+o) — the idle auto-expand/auto-collapse
+  // here fought the manual state and produced the multi-row-by-default
+  // and blinking the user saw.
   const fadeTimer = setInterval(() => {
-    const now = Date.now()
     setThink((s) => {
-      if (s.fading) {
-        const f = Math.min(1, s.fade + 1 / FADE_STEPS)
-        return f >= 1 ? { visible: false, expanded: false, fading: false, fade: 0, text: "", lastAt: 0, startedAt: 0 } : { ...s, fade: f }
-      }
-      if (s.visible) return { ...s, expanded: now - s.lastAt < IDLE_COLLAPSE_MS }
-      return s
+      if (!s.fading) return s
+      const f = Math.min(1, s.fade + 1 / FADE_STEPS)
+      return f >= 1 ? { visible: false, expanded: false, fading: false, fade: 0, text: "", lastAt: 0, startedAt: 0 } : { ...s, fade: f }
     })
     if (toolFading()) {
       const f = Math.min(1, toolFade() + 1 / FADE_STEPS)
@@ -112,8 +112,6 @@ export function createDockFeature(deps: DockDeps): DockState {
         setToolVisible(false)
         setTools([])
       } else setToolFade(f)
-    } else if (toolVisible()) {
-      setToolExpanded(now - lastToolAt < IDLE_COLLAPSE_MS || tools().some((e) => e.status === "running"))
     }
   }, FADE_STEP_MS)
 
@@ -244,11 +242,11 @@ export function createDockFeature(deps: DockDeps): DockState {
     },
 
     onTurnStart() {
-      // fresh turn: the delayed hide is cancelled (a new think will
-      // replace in place); the tool ledger fades
+      // fresh turn: everything hides through the DELAYED path — an
+      // immediate fade here blinked the widget between quick rounds
       cancelThinkHide()
-      setThink((s) => (s.visible ? { ...s, fading: true, fade: 0, expanded: false } : s))
-      if (tools().length > 0) {
+      if (think().visible) scheduleThinkHide(600)
+      if (tools().length > 0 && toolVisible()) {
         setToolFading(true)
         setToolFade(0)
       }
