@@ -52,7 +52,14 @@ export class HostSession {
   #toolCalls = new Map<string, { name: string; args: string }>()
   #override?: { provider: string; model: string; reasoningEffort?: string }
   #resumeId?: string
-  usage = { prompt: 0, completion: 0 }
+  usage = { prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
+
+  /** Cache hit rate in percent when the host reports cache traffic. */
+  cacheHitRate(): number | null {
+    const total = this.usage.cacheRead + this.usage.cacheWrite
+    if (total <= 0) return null
+    return (this.usage.cacheRead / total) * 100
+  }
   /** Telemetry of the last completed turn: duration, streamed chars and
    * tokens-per-second (real completion tokens when usage was reported,
    * chars/4 estimate otherwise — see `estimated`). */
@@ -757,13 +764,19 @@ export class HostSession {
           // over the session. Field names vary by adapter — numeric scan.
           let p = 0
           let comp = 0
+          let cRead = 0
+          let cWrite = 0
           for (const [k, v] of Object.entries(c as Record<string, unknown>)) {
             if (typeof v !== "number") continue
             if (/prompt/i.test(k)) p = Math.max(p, v)
             if (/completion/i.test(k)) comp = Math.max(comp, v)
+            if (/cacheread|cachhit/i.test(k.replace(/[_\s-]/g, ""))) cRead = Math.max(cRead, v)
+            if (/cachewrite|cachemiss/i.test(k.replace(/[_\s-]/g, ""))) cWrite = Math.max(cWrite, v)
           }
           if (p > 0) this.usage.prompt = p
           if (comp > 0) this.usage.completion += comp
+          if (cRead > 0) this.usage.cacheRead = cRead
+          if (cWrite > 0) this.usage.cacheWrite = cWrite
         } else if (c.type === "tool-call-delta" && c.name) {
           // name arrives with the first delta; the rendered tool block comes
           // from the durable tool/call + tool/result events below

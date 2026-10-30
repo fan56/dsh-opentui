@@ -3550,6 +3550,12 @@ function ShellHost(props) {
         text: `⚒ ${toolCount()}`,
         bg: POWERLINE_COLORS.tools
       });
+    const ch = props.deps.session.cacheHitRate();
+    if (ch !== null)
+      segs.push({
+        text: `⚡ CH${ch.toFixed(1)}%`,
+        bg: POWERLINE_COLORS.speed
+      });
     const speed = speedSegment(busy() ? liveTps() : null, th());
     if (speed)
       segs.push(speed);
@@ -3916,7 +3922,13 @@ class HostSession {
   #toolCalls = new Map;
   #override;
   #resumeId;
-  usage = { prompt: 0, completion: 0 };
+  usage = { prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 };
+  cacheHitRate() {
+    const total = this.usage.cacheRead + this.usage.cacheWrite;
+    if (total <= 0)
+      return null;
+    return this.usage.cacheRead / total * 100;
+  }
   lastTurnStats = emptyTurnStats();
   #turns = 0;
   #ticker = createStreamTicker((t) => this.#cb?.onStreamTick?.(t));
@@ -4503,6 +4515,8 @@ class HostSession {
         } else if (c.type === "usage") {
           let p = 0;
           let comp = 0;
+          let cRead = 0;
+          let cWrite = 0;
           for (const [k, v] of Object.entries(c)) {
             if (typeof v !== "number")
               continue;
@@ -4510,11 +4524,19 @@ class HostSession {
               p = Math.max(p, v);
             if (/completion/i.test(k))
               comp = Math.max(comp, v);
+            if (/cacheread|cachhit/i.test(k.replace(/[_\s-]/g, "")))
+              cRead = Math.max(cRead, v);
+            if (/cachewrite|cachemiss/i.test(k.replace(/[_\s-]/g, "")))
+              cWrite = Math.max(cWrite, v);
           }
           if (p > 0)
             this.usage.prompt = p;
           if (comp > 0)
             this.usage.completion += comp;
+          if (cRead > 0)
+            this.usage.cacheRead = cRead;
+          if (cWrite > 0)
+            this.usage.cacheWrite = cWrite;
         } else if (c.type === "tool-call-delta" && c.name) {}
       } catch {}
     });

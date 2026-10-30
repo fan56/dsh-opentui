@@ -853,6 +853,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     ]
     if (msgCount() > 0) segs.push({ text: `💬 ${msgCount()}`, bg: POWERLINE_COLORS.messages })
     if (toolCount() > 0) segs.push({ text: `⚒ ${toolCount()}`, bg: POWERLINE_COLORS.tools })
+    // cache hit rate (tui-pi's ⚡ CH% segment): shown once the host
+    // reports cache traffic
+    const ch = props.deps.session.cacheHitRate()
+    if (ch !== null) segs.push({ text: `⚡ CH${ch.toFixed(1)}%`, bg: POWERLINE_COLORS.speed })
     // Streaming speed: live while the turn runs (the closing rate lives in
     // /usage via lastTurnStats).
     const speed = speedSegment(busy() ? liveTps() : null, th())
