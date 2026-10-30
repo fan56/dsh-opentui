@@ -311,7 +311,22 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const openOverlay = (req: { title: string; items: SelectItem[]; onSelect: (v: string) => void; ask?: { questionId: string; resolve: AskResolve } }) =>
     setOverlay(req)
   // think/tool dock phase machine (ported from tui-pi live-widgets)
-  const dock = createDockFeature({ theme, icons: () => pluginConfig().iconSet as "default" | "minimal" | undefined })
+  const dock = createDockFeature({
+    theme,
+    sizes: () => {
+      const c = pluginConfig()
+      const pick = (v: unknown, d: number | "full") => (typeof v === "number" || v === "full" ? (v as number | "full") : d)
+      return { think: pick(c.dockRows?.think, 7), tool: pick(c.dockRows?.tool, 7) }
+    },
+    hints: () => ({ think: hot("think", "ctrl+t"), tool: hot("tools", "ctrl+o") }),
+    style: () => {
+      const c = pluginConfig()
+      return {
+        thinkBg: typeof c.thinkBg === "string" ? c.thinkBg : undefined,
+        toolBg: typeof c.toolBg === "string" ? c.toolBg : undefined,
+      }
+    },
+  })
   const modelSelect = createModelSelectFeature({
     session: props.deps.session,
     t,
@@ -979,13 +994,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     const thinkKey = hot("think", "ctrl+t")
     const tkCtrl = thinkKey.startsWith("ctrl+")
     if (key.ctrl === tkCtrl && key.name === (tkCtrl ? thinkKey.slice(5) : thinkKey)) {
-      dock.reexpandThink()
+      dock.toggleExpand("think")
       return
     }
     const toolsKey = hot("tools", "ctrl+o")
     const toCtrl = toolsKey.startsWith("ctrl+")
     if (key.ctrl === toCtrl && key.name === (toCtrl ? toolsKey.slice(5) : toolsKey)) {
-      dock.reexpandTools()
+      dock.toggleExpand("tool")
       return
     }
     // scrollback lookback: PgUp/PgDn page through the transcript region
@@ -1064,8 +1079,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           panels never scroll away with the content. */}
       <TodosWidget todos={todos()} theme={th()} />
       <SubagentWidget entries={subagents()} theme={th()} />
-      {dock.thinkView()}
-      {dock.toolView()}
+      {dock.dockView()}
       {approval() ? (
         <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
       ) : null}
