@@ -318,22 +318,15 @@ function shortenCwd(cwd: string): string {
  */
 export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string }): JSX.Element {
   const quote = pickDailyQuote()
-  // Hero in one visual language: the fat-stroke ascii_font wordmark with
-  // the chunky half-block pixel whale under it (the same block-pixel
-  // weight — no <image>: a graphics-protocol whale came out tiny and the
-  // shared-row layout squeezed the wordmark). Both are self-verifiable
-  // in plain terminals.
+  // Hero: the ORIGINAL whale image rendered through the graphics
+  // protocol (kitty/iterm2), on its own fixed-size row, the wordmark
+  // below. Terminals without graphics show the reserved space only.
+  const whalePng = new URL("./assets/whale.png", import.meta.url).pathname
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-start", alignItems: "flex-start", padding: 1 }}>
-      {/* vertical stack — side-by-side overflowed narrow terminals and
-          pushed the whale off-screen (ascii_font is a fixed-width block) */}
-      <For each={whale3dRows()}>
-        {(spans) => (
-          <text>
-            <For each={spans}>{(sp) => <span style={{ fg: sp.fg }}>{sp.text}</span>}</For>
-          </text>
-        )}
-      </For>
+      <box style={{ width: 30, height: 13 }}>
+        <image source={whalePng} fit="fit" />
+      </box>
       <ascii_font text="DSH-OPENTUI" font="block" color={WHALE_COLOR} />
       <text>{" "}</text>
       <text>{" "}</text>

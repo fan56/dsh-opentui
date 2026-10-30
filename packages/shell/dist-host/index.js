@@ -1,5 +1,5 @@
 // src/host-entry.tsx
-import { createComponent as _$createComponent15 } from "@opentui/solid";
+import { createComponent as _$createComponent14 } from "@opentui/solid";
 import { spawn } from "node:child_process";
 import { render } from "@opentui/solid";
 
@@ -143,11 +143,11 @@ import { insertNode as _$insertNode11 } from "@opentui/solid";
 import { effect as _$effect14 } from "@opentui/solid";
 import { mergeProps as _$mergeProps } from "@opentui/solid";
 import { insert as _$insert14 } from "@opentui/solid";
-import { createComponent as _$createComponent14 } from "@opentui/solid";
+import { createComponent as _$createComponent13 } from "@opentui/solid";
 import { memo as _$memo7 } from "@opentui/solid";
 import { setProp as _$setProp14 } from "@opentui/solid";
 import { createElement as _$createElement14 } from "@opentui/solid";
-import { For as For11, createMemo, createSignal as createSignal4, onCleanup, onMount } from "solid-js";
+import { For as For10, createMemo, createSignal as createSignal4, onCleanup, onMount } from "solid-js";
 import { SyntaxStyle } from "@opentui/core";
 import { useKeyboard as useKeyboard2, useRenderer } from "@opentui/solid";
 // ../kit/src/themes-data.ts
@@ -1102,10 +1102,8 @@ import { effect as _$effect7 } from "@opentui/solid";
 import { insert as _$insert7 } from "@opentui/solid";
 import { createTextNode as _$createTextNode6 } from "@opentui/solid";
 import { insertNode as _$insertNode7 } from "@opentui/solid";
-import { createComponent as _$createComponent7 } from "@opentui/solid";
 import { setProp as _$setProp7 } from "@opentui/solid";
 import { createElement as _$createElement7 } from "@opentui/solid";
-import { For as For7 } from "solid-js";
 
 // ../kit/src/quotes.ts
 var DAILY_QUOTES = [
@@ -1224,78 +1222,6 @@ function dimHex(hex, k = 0.45) {
   return `#${f(n >> 16 & 255)}${f(n >> 8 & 255)}${f(n & 255)}`;
 }
 var SHADOW_COLOR = dimHex(WHALE_COLOR);
-var WHALE_SMALL = ["                  ▄▄▄▄▄▄ ", "   ▄▄▄▄▄▄▄▄▄▄▄▄██████████", "▄████████████████████▀▀▀ ", "█████▀▀▀▀▄▄▄▄█████████▀  ", "▀████▄      ▀▀▀██████▄   "];
-function outsideMask(px) {
-  const h = px.length;
-  const w = px[0].length;
-  const out = Array.from({
-    length: h
-  }, () => Array.from({
-    length: w
-  }, () => false));
-  const q = [];
-  for (let r = 0;r < h; r++)
-    for (const c of [0, w - 1])
-      if (!px[r][c] && !out[r][c]) {
-        out[r][c] = true;
-        q.push([r, c]);
-      }
-  for (let c = 0;c < w; c++)
-    for (const r of [0, h - 1])
-      if (!px[r][c] && !out[r][c]) {
-        out[r][c] = true;
-        q.push([r, c]);
-      }
-  while (q.length > 0) {
-    const [r, c] = q.pop();
-    for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nr = r + dr;
-      const nc = c + dc;
-      if (nr >= 0 && nr < h && nc >= 0 && nc < w && !px[nr][nc] && !out[nr][nc]) {
-        out[nr][nc] = true;
-        q.push([nr, nc]);
-      }
-    }
-  }
-  return out;
-}
-function whale3dRows() {
-  const presence = WHALE_SMALL.map((row) => [...row].map((ch) => ch !== " "));
-  const outside = outsideMask(presence);
-  const h = presence.length;
-  const w = presence[0].length;
-  const out = [];
-  for (let r = 0;r < h + 1; r++) {
-    const spans = [];
-    let run = "";
-    let runFg = "";
-    for (let c = 0;c < w + 1; c++) {
-      const lit = (presence[r]?.[c] ?? false) === true;
-      const sh = !lit && r > 0 && c > 0 && presence[r - 1][c - 1] && (outside[r]?.[c] ?? true);
-      const ch = lit ? WHALE_SMALL[r][c] : sh ? "█" : " ";
-      const fg = lit ? WHALE_COLOR : sh ? SHADOW_COLOR : runFg;
-      if (fg === runFg) {
-        run += ch;
-      } else {
-        if (run)
-          spans.push({
-            text: run,
-            fg: runFg
-          });
-        run = ch;
-        runFg = fg;
-      }
-    }
-    if (run)
-      spans.push({
-        text: run,
-        fg: runFg
-      });
-    if (spans.length > 0)
-      out.push(spans);
-  }
-  return out;
-}
 var home = typeof process !== "undefined" && process.env.HOME || "";
 function shortenCwd(cwd) {
   const short = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
@@ -1305,14 +1231,16 @@ function shortenCwd(cwd) {
 }
 function WelcomeBanner(props) {
   const quote = pickDailyQuote();
+  const whalePng = new URL("./assets/whale.png", import.meta.url).pathname;
   return (() => {
-    var _el$ = _$createElement7("box"), _el$2 = _$createElement7("ascii_font"), _el$3 = _$createElement7("text"), _el$5 = _$createElement7("text"), _el$7 = _$createElement7("text"), _el$8 = _$createElement7("text"), _el$9 = _$createElement7("text");
+    var _el$ = _$createElement7("box"), _el$2 = _$createElement7("box"), _el$3 = _$createElement7("image"), _el$4 = _$createElement7("ascii_font"), _el$5 = _$createElement7("text"), _el$7 = _$createElement7("text"), _el$9 = _$createElement7("text"), _el$0 = _$createElement7("text"), _el$1 = _$createElement7("text");
     _$insertNode7(_el$, _el$2);
-    _$insertNode7(_el$, _el$3);
+    _$insertNode7(_el$, _el$4);
     _$insertNode7(_el$, _el$5);
     _$insertNode7(_el$, _el$7);
-    _$insertNode7(_el$, _el$8);
     _$insertNode7(_el$, _el$9);
+    _$insertNode7(_el$, _el$0);
+    _$insertNode7(_el$, _el$1);
     _$setProp7(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1,
@@ -1320,42 +1248,29 @@ function WelcomeBanner(props) {
       alignItems: "flex-start",
       padding: 1
     });
-    _$insert7(_el$, _$createComponent7(For7, {
-      get each() {
-        return whale3dRows();
-      },
-      children: (spans) => (() => {
-        var _el$1 = _$createElement7("text");
-        _$insert7(_el$1, _$createComponent7(For7, {
-          each: spans,
-          children: (sp) => (() => {
-            var _el$10 = _$createElement7("span");
-            _$insert7(_el$10, () => sp.text);
-            _$effect7((_$p) => _$setProp7(_el$10, "style", {
-              fg: sp.fg
-            }, _$p));
-            return _el$10;
-          })()
-        }));
-        return _el$1;
-      })()
-    }), _el$2);
-    _$setProp7(_el$2, "text", "DSH-OPENTUI");
-    _$setProp7(_el$2, "font", "block");
-    _$setProp7(_el$2, "color", WHALE_COLOR);
-    _$insertNode7(_el$3, _$createTextNode6(` `));
+    _$insertNode7(_el$2, _el$3);
+    _$setProp7(_el$2, "style", {
+      width: 30,
+      height: 13
+    });
+    _$setProp7(_el$3, "source", whalePng);
+    _$setProp7(_el$3, "fit", "fit");
+    _$setProp7(_el$4, "text", "DSH-OPENTUI");
+    _$setProp7(_el$4, "font", "block");
+    _$setProp7(_el$4, "color", WHALE_COLOR);
     _$insertNode7(_el$5, _$createTextNode6(` `));
-    _$insert7(_el$7, () => `${props.model} · ${shortenCwd(props.cwd)}`);
-    _$insert7(_el$8, `\uD83D\uDC33 「${quote}」`);
-    _$insertNode7(_el$9, _$createTextNode6(` `));
+    _$insertNode7(_el$7, _$createTextNode6(` `));
+    _$insert7(_el$9, () => `${props.model} · ${shortenCwd(props.cwd)}`);
+    _$insert7(_el$0, `\uD83D\uDC33 「${quote}」`);
+    _$insertNode7(_el$1, _$createTextNode6(` `));
     _$effect7((_p$) => {
       var _v$ = {
         fg: props.theme.tokens.dim
       }, _v$2 = {
         fg: props.theme.tokens.dim
       };
-      _v$ !== _p$.e && (_p$.e = _$setProp7(_el$7, "style", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$8, "style", _v$2, _p$.t));
+      _v$ !== _p$.e && (_p$.e = _$setProp7(_el$9, "style", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$0, "style", _v$2, _p$.t));
       return _p$;
     }, {
       e: undefined,
@@ -1370,10 +1285,10 @@ import { memo as _$memo4 } from "@opentui/solid";
 import { setProp as _$setProp8 } from "@opentui/solid";
 import { effect as _$effect8 } from "@opentui/solid";
 import { insertNode as _$insertNode8 } from "@opentui/solid";
-import { createComponent as _$createComponent8 } from "@opentui/solid";
+import { createComponent as _$createComponent7 } from "@opentui/solid";
 import { insert as _$insert8 } from "@opentui/solid";
 import { createElement as _$createElement8 } from "@opentui/solid";
-import { For as For8, Show as Show4 } from "solid-js";
+import { For as For7, Show as Show4 } from "solid-js";
 var THINK_TAIL = 3;
 var THINK_SUMMARY_HEAD = 60;
 function ThinkWidget(props) {
@@ -1387,12 +1302,12 @@ function ThinkWidget(props) {
     const boundary = Math.max(cut.lastIndexOf(" "), THINK_SUMMARY_HEAD - 20);
     return `\uD83D\uDCAD thought · ${props.state.elapsed}s · ${cut.slice(0, boundary > 0 ? boundary : THINK_SUMMARY_HEAD).trimEnd()}...`;
   };
-  return _$createComponent8(Show4, {
+  return _$createComponent7(Show4, {
     get when() {
       return props.state.active;
     },
     get fallback() {
-      return _$createComponent8(Show4, {
+      return _$createComponent7(Show4, {
         get when() {
           return props.state.text.length > 0;
         },
@@ -1410,7 +1325,7 @@ function ThinkWidget(props) {
       var _el$ = _$createElement8("box"), _el$2 = _$createElement8("text");
       _$insertNode8(_el$, _el$2);
       _$insert8(_el$2, () => `${BUBBLE_FRAMES[props.state.elapsed % BUBBLE_FRAMES.length]} thinking · ${props.state.elapsed}s`);
-      _$insert8(_el$, _$createComponent8(For8, {
+      _$insert8(_el$, _$createComponent7(For7, {
         get each() {
           return props.state.text.split(`
 `).slice(-THINK_TAIL);
@@ -1493,12 +1408,12 @@ function ToolWidget(props) {
   };
   const outputTail = (e) => (e.output ?? "").split(`
 `).slice(-TOOL_OUTPUT_TAIL).filter((l) => l.trim().length > 0);
-  return _$createComponent8(Show4, {
+  return _$createComponent7(Show4, {
     get when() {
       return _$memo4(() => !!props.active)() && props.entries.length > 0;
     },
     get fallback() {
-      return _$createComponent8(Show4, {
+      return _$createComponent7(Show4, {
         get when() {
           return props.entries.length > 0;
         },
@@ -1520,7 +1435,7 @@ function ToolWidget(props) {
       _$setProp8(_el$6, "style", {
         flexDirection: "row"
       });
-      _$insert8(_el$6, _$createComponent8(Show4, {
+      _$insert8(_el$6, _$createComponent7(Show4, {
         get when() {
           return runningCount() > 0;
         },
@@ -1547,7 +1462,7 @@ function ToolWidget(props) {
         flexGrow: 1
       });
       _$insert8(_el$9, () => `${okCount()}✔ ${failCount()}✘`);
-      _$insert8(_el$5, _$createComponent8(For8, {
+      _$insert8(_el$5, _$createComponent7(For7, {
         get each() {
           return props.entries;
         },
@@ -1558,12 +1473,12 @@ function ToolWidget(props) {
             fg: rowFg(e)
           }, _$p));
           return _el$11;
-        })(), _$createComponent8(Show4, {
+        })(), _$createComponent7(Show4, {
           get when() {
             return _$memo4(() => i() === lastRunningIndex())() && e.output;
           },
           get children() {
-            return _$createComponent8(For8, {
+            return _$createComponent7(For7, {
               get each() {
                 return outputTail(e);
               },
@@ -1604,8 +1519,8 @@ import { setProp as _$setProp9 } from "@opentui/solid";
 import { effect as _$effect9 } from "@opentui/solid";
 import { insert as _$insert9 } from "@opentui/solid";
 import { createElement as _$createElement9 } from "@opentui/solid";
-import { createComponent as _$createComponent9 } from "@opentui/solid";
-import { For as For9, Show as Show5 } from "solid-js";
+import { createComponent as _$createComponent8 } from "@opentui/solid";
+import { For as For8, Show as Show5 } from "solid-js";
 var SPINNER_FRAMES2 = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 var SPINNER_FPS2 = 8;
 var ID_TAIL = 8;
@@ -1633,12 +1548,12 @@ function tailLine(e) {
 }
 function SubagentWidget(props) {
   const th = () => props.theme;
-  return _$createComponent9(Show5, {
+  return _$createComponent8(Show5, {
     get when() {
       return props.entries.length > 0;
     },
     get children() {
-      return _$createComponent9(For9, {
+      return _$createComponent8(For8, {
         get each() {
           return props.entries;
         },
@@ -1647,7 +1562,7 @@ function SubagentWidget(props) {
           const name = () => displayName(e);
           const meta = () => metaSuffix(e);
           const glyph = () => e.status === "completed" ? "✔" : e.status === "failed" ? "✘" : "⊘";
-          return _$createComponent9(Show5, {
+          return _$createComponent8(Show5, {
             get when() {
               return e.status === "running";
             },
@@ -1669,7 +1584,7 @@ function SubagentWidget(props) {
                   fg: th().tokens.accent
                 }, _$p));
                 return _el$;
-              })(), _$createComponent9(Show5, {
+              })(), _$createComponent8(Show5, {
                 get when() {
                   return tailLine(e).length > 0;
                 },
@@ -1696,7 +1611,7 @@ import { use as _$use2 } from "@opentui/solid";
 import { setProp as _$setProp10 } from "@opentui/solid";
 import { createElement as _$createElement10 } from "@opentui/solid";
 // ../kit/src/select.tsx
-import { createComponent as _$createComponent10 } from "@opentui/solid";
+import { createComponent as _$createComponent9 } from "@opentui/solid";
 import { effect as _$effect11 } from "@opentui/solid";
 import { createTextNode as _$createTextNode8 } from "@opentui/solid";
 import { insertNode as _$insertNode9 } from "@opentui/solid";
@@ -1751,7 +1666,7 @@ function Select(props) {
   const hasDescriptions = () => props.items.some((it) => Boolean(it.description || it.group));
   const linesPerItem = () => hasDescriptions() ? 2 : 1;
   const visibleItems = () => Math.min(props.items.length, MAX_VISIBLE_ITEMS2);
-  return _$createComponent10(Show6, {
+  return _$createComponent9(Show6, {
     get when() {
       return props.items.length > 0;
     },
@@ -1828,8 +1743,8 @@ import { setProp as _$setProp12 } from "@opentui/solid";
 import { effect as _$effect12 } from "@opentui/solid";
 import { insert as _$insert12 } from "@opentui/solid";
 import { createElement as _$createElement12 } from "@opentui/solid";
-import { createComponent as _$createComponent11 } from "@opentui/solid";
-import { For as For10 } from "solid-js";
+import { createComponent as _$createComponent10 } from "@opentui/solid";
+import { For as For9 } from "solid-js";
 var MAX_ROWS = 5;
 var STATUS_GLYPH = {
   pending: "☐",
@@ -1846,7 +1761,7 @@ function TodosWidget(props) {
   const visible = () => sortTodos(props.todos).slice(0, MAX_ROWS);
   const remaining = () => Math.max(0, props.todos.length - visible().length);
   const active = () => props.todos.some((t) => t.status === "in_progress" || t.status === "pending");
-  return _$createComponent11(For10, {
+  return _$createComponent10(For9, {
     get each() {
       return visible();
     },
@@ -2010,7 +1925,7 @@ import { insertNode as _$insertNode10 } from "@opentui/solid";
 import { setProp as _$setProp13 } from "@opentui/solid";
 import { insert as _$insert13 } from "@opentui/solid";
 import { createElement as _$createElement13 } from "@opentui/solid";
-import { createComponent as _$createComponent12 } from "@opentui/solid";
+import { createComponent as _$createComponent11 } from "@opentui/solid";
 import { createSignal as createSignal2 } from "solid-js";
 var CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
 function createLoginFeature(deps) {
@@ -2118,7 +2033,7 @@ function createLoginFeature(deps) {
     const st = stage();
     const th = deps.theme();
     if (st.kind === "menu") {
-      return _$createComponent12(Select, {
+      return _$createComponent11(Select, {
         get title() {
           return st.title;
         },
@@ -2300,7 +2215,7 @@ function createLoginFeature(deps) {
 
 // src/features/dock.tsx
 import { memo as _$memo6 } from "@opentui/solid";
-import { createComponent as _$createComponent13 } from "@opentui/solid";
+import { createComponent as _$createComponent12 } from "@opentui/solid";
 import { createSignal as createSignal3 } from "solid-js";
 var FLUSH_MS = 60;
 function createDockFeature(deps) {
@@ -2336,7 +2251,7 @@ function createDockFeature(deps) {
     });
   };
   return {
-    thinkView: () => _$createComponent13(ThinkWidget, {
+    thinkView: () => _$createComponent12(ThinkWidget, {
       get state() {
         return {
           ...think(),
@@ -2347,7 +2262,7 @@ function createDockFeature(deps) {
         return deps.theme();
       }
     }),
-    toolView: () => _$createComponent13(ToolWidget, {
+    toolView: () => _$createComponent12(ToolWidget, {
       get entries() {
         return tools();
       },
@@ -3136,7 +3051,7 @@ function ShellHost(props) {
     });
     _$insert14(_el$, (() => {
       var _c$ = _$memo7(() => !!showWelcome());
-      return () => _c$() ? _$createComponent14(WelcomeBanner, {
+      return () => _c$() ? _$createComponent13(WelcomeBanner, {
         get theme() {
           return th();
         },
@@ -3146,7 +3061,7 @@ function ShellHost(props) {
         get cwd() {
           return process.cwd();
         }
-      }) : _$createComponent14(TranscriptWindow, _$mergeProps({
+      }) : _$createComponent13(TranscriptWindow, _$mergeProps({
         get items() {
           return items();
         },
@@ -3165,7 +3080,7 @@ function ShellHost(props) {
         onLayout: (total, rows) => totalLines = total
       }));
     })(), null);
-    _$insert14(_el$, _$createComponent14(TodosWidget, {
+    _$insert14(_el$, _$createComponent13(TodosWidget, {
       get todos() {
         return todos();
       },
@@ -3173,7 +3088,7 @@ function ShellHost(props) {
         return th();
       }
     }), null);
-    _$insert14(_el$, _$createComponent14(SubagentWidget, {
+    _$insert14(_el$, _$createComponent13(SubagentWidget, {
       get entries() {
         return subagents();
       },
@@ -3185,7 +3100,7 @@ function ShellHost(props) {
     _$insert14(_el$, () => dock.toolView(), null);
     _$insert14(_el$, (() => {
       var _c$2 = _$memo7(() => !!approval());
-      return () => _c$2() ? _$createComponent14(ApprovalCard, {
+      return () => _c$2() ? _$createComponent13(ApprovalCard, {
         get toolName() {
           return approval().name;
         },
@@ -3203,7 +3118,7 @@ function ShellHost(props) {
     _$insert14(_el$, () => loginFeature.view(), null);
     _$insert14(_el$, (() => {
       var _c$3 = _$memo7(() => !!overlay());
-      return () => _c$3() ? _$createComponent14(Select, {
+      return () => _c$3() ? _$createComponent13(Select, {
         get title() {
           return overlay()?.title ?? "";
         },
@@ -3221,7 +3136,7 @@ function ShellHost(props) {
       var _c$4 = _$memo7(() => !!menuVisible());
       return () => _c$4() ? (() => {
         var _el$2 = _$createElement14("box");
-        _$insert14(_el$2, _$createComponent14(For11, {
+        _$insert14(_el$2, _$createComponent13(For10, {
           get each() {
             return filteredCommands();
           },
@@ -3246,7 +3161,7 @@ function ShellHost(props) {
         return _el$2;
       })() : null;
     })(), null);
-    _$insert14(_el$, _$createComponent14(InputLine, {
+    _$insert14(_el$, _$createComponent13(InputLine, {
       get focused() {
         return !(approval() || overlay() || loginFeature.panelOpen());
       },
@@ -3285,12 +3200,12 @@ function ShellHost(props) {
         return setValueText();
       }
     }), null);
-    _$insert14(_el$, _$createComponent14(FooterHints, {
+    _$insert14(_el$, _$createComponent13(FooterHints, {
       get theme() {
         return th();
       }
     }), null);
-    _$insert14(_el$, _$createComponent14(PowerlineFooter, {
+    _$insert14(_el$, _$createComponent13(PowerlineFooter, {
       get left() {
         return powerlineSegments();
       },
@@ -3969,7 +3884,7 @@ function apply(ctx, config) {
   mountEngine({}).then(({
     renderer
   }) => {
-    render(() => _$createComponent15(ShellHost, {
+    render(() => _$createComponent14(ShellHost, {
       get deps() {
         return {
           store,
