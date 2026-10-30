@@ -2410,6 +2410,20 @@ function createDockFeature(deps) {
   const [toolFade, setToolFade] = createSignal3(0);
   const [toolExpanded, setToolExpanded] = createSignal3(false);
   let lastToolAt = 0;
+  let thinkHideTimer;
+  const cancelThinkHide = () => {
+    if (thinkHideTimer !== undefined) {
+      clearTimeout(thinkHideTimer);
+      thinkHideTimer = undefined;
+    }
+  };
+  const scheduleThinkHide = (delayMs = 1800) => {
+    cancelThinkHide();
+    thinkHideTimer = setTimeout(() => {
+      thinkHideTimer = undefined;
+      startThinkFade();
+    }, delayMs);
+  };
   const flush = (force = false) => {
     const now = Date.now();
     if (!force && now - lastFlush < FLUSH_MS)
@@ -2641,10 +2655,13 @@ function createDockFeature(deps) {
         flush(true);
         return;
       }
-      thinkBuf += text;
+      cancelThinkHide();
+      thinkBuf = text;
       setThink((s) => ({
         ...s,
-        lastAt: now
+        text: thinkBuf,
+        lastAt: now,
+        expanded: false
       }));
       flush();
     },
@@ -2655,6 +2672,7 @@ function createDockFeature(deps) {
           expanded: false,
           lastAt: Date.now()
         }));
+      scheduleThinkHide();
     },
     onToolStart(start) {
       lastToolAt = Date.now();
@@ -2693,6 +2711,7 @@ function createDockFeature(deps) {
       lastToolAt = Date.now();
     },
     onTurnStart() {
+      cancelThinkHide();
       setThink((s) => s.visible ? {
         ...s,
         fading: true,
@@ -2708,7 +2727,7 @@ function createDockFeature(deps) {
     onTurnEnd() {
       thinkBuf = "";
       if (think().visible)
-        startThinkFade();
+        scheduleThinkHide();
       if (tools().length > 0 && toolVisible()) {
         setToolFading(true);
         setToolFade(0);
@@ -2741,6 +2760,7 @@ function createDockFeature(deps) {
       lastAt: 0,
       startedAt: 0
     });
+    cancelThinkHide();
     thinkBuf = "";
     setTools([]);
     setToolVisible(false);

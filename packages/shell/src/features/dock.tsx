@@ -67,6 +67,23 @@ export function createDockFeature(deps: DockDeps): DockState {
   const [toolFade, setToolFade] = createSignal(0)
   const [toolExpanded, setToolExpanded] = createSignal(false)
   let lastToolAt = 0
+  // anti-flicker: the hide is DELAYED — a new think arriving inside the
+  // window replaces the old content in place (clear old, show new) with
+  // no hide/show cycle
+  let thinkHideTimer: ReturnType<typeof setTimeout> | undefined
+  const cancelThinkHide = () => {
+    if (thinkHideTimer !== undefined) {
+      clearTimeout(thinkHideTimer)
+      thinkHideTimer = undefined
+    }
+  }
+  const scheduleThinkHide = (delayMs = 1800) => {
+    cancelThinkHide()
+    thinkHideTimer = setTimeout(() => {
+      thinkHideTimer = undefined
+      startThinkFade()
+    }, delayMs)
+  }
 
   const flush = (force = false) => {
     const now = Date.now()
@@ -187,14 +204,17 @@ export function createDockFeature(deps: DockDeps): DockState {
         flush(true)
         return
       }
-      thinkBuf += text
-      setThink((s) => ({ ...s, lastAt: now }))
+      // a NEW think clears the old in place — no hide/show cycle
+      cancelThinkHide()
+      thinkBuf = text
+      setThink((s) => ({ ...s, text: thinkBuf, lastAt: now, expanded: false }))
       flush()
     },
 
     onContentDelta() {
       // the answer is streaming: the thought is done — collapse to summary
       if (think().visible) setThink((s) => ({ ...s, expanded: false, lastAt: Date.now() }))
+      scheduleThinkHide()
     },
 
     onToolStart(start) {
@@ -224,7 +244,9 @@ export function createDockFeature(deps: DockDeps): DockState {
     },
 
     onTurnStart() {
-      // fresh turn: previous content fades out, panels start empty
+      // fresh turn: the delayed hide is cancelled (a new think will
+      // replace in place); the tool ledger fades
+      cancelThinkHide()
       setThink((s) => (s.visible ? { ...s, fading: true, fade: 0, expanded: false } : s))
       if (tools().length > 0) {
         setToolFading(true)
@@ -236,7 +258,7 @@ export function createDockFeature(deps: DockDeps): DockState {
     onTurnEnd() {
       thinkBuf = ""
       // content cleared → fade out whatever is still on screen
-      if (think().visible) startThinkFade()
+      if (think().visible) scheduleThinkHide()
       if (tools().length > 0 && toolVisible()) {
         setToolFading(true)
         setToolFade(0)
@@ -262,6 +284,7 @@ export function createDockFeature(deps: DockDeps): DockState {
 
   function hideAll() {
     setThink({ visible: false, expanded: false, fading: false, fade: 0, text: "", lastAt: 0, startedAt: 0 })
+    cancelThinkHide()
     thinkBuf = ""
     setTools([])
     setToolVisible(false)
