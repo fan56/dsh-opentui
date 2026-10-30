@@ -324,13 +324,13 @@ export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string 
   const logoPng = new URL("./assets/ds-logo.png", import.meta.url).pathname
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-start", alignItems: "flex-start", padding: 1 }}>
-      <box style={{ flexDirection: "row", alignItems: "center" }}>
-        <box style={{ width: 4, height: 6 }}>
-          <image source={logoPng} fit="fit" />
-        </box>
-        <box style={{ width: 2, height: 1 }} />
-        <ascii_font text="DSH-OPENTUI" font="block" color={WHALE_COLOR} />
+      {/* vertical stack: side-by-side needs ~109 cols (logo 12 + wordmark
+          96) and clipped on ~96-col terminals; stacked, both render full
+          size at any width */}
+      <box style={{ width: 12, height: 6 }}>
+        <image source={logoPng} fit="fit" />
       </box>
+      <ascii_font text="DSH-OPENTUI" font="block" color={WHALE_COLOR} />
       <text>{" "}</text>
       <text>{" "}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`${props.model} · ${shortenCwd(props.cwd)}`}</text>
