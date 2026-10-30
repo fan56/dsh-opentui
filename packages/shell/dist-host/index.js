@@ -1218,8 +1218,46 @@ function pickDailyQuote() {
 var WHALE_COLOR = POWERLINE_COLORS.brand;
 var WHALE_ART = ["           ▄▄▄▄    █        ", "   ▄██████████▄   ████ ▄▄▄█▀", " ▄██████████████▄  ████████ ", " ██▀▀█████████████▄ ▄██▀▀   ", "██      ▀▀█████▄▀██████     ", "▀██        ▀████▄ ████▀     ", " ███        ▀████████▀      ", "  ▀██▄   █▄▄  ▀█████▀       ", "   ▀▀███▄▄███▄▄▄█████▄      ", "      ▀▀▀████▀▀▀            "];
 var WHALE_ART_WIDTH = Math.max(...WHALE_ART.map((row) => row.length));
-function whaleRows() {
-  return WHALE_ART.map((row) => row);
+function dimHex(hex, k = 0.45) {
+  const n = parseInt(hex.slice(1), 16);
+  const f = (v) => Math.round(v * k).toString(16).padStart(2, "0");
+  return `#${f(n >> 16 & 255)}${f(n >> 8 & 255)}${f(n & 255)}`;
+}
+var SHADOW_COLOR = dimHex(WHALE_COLOR);
+function whale3dRows() {
+  const art = WHALE_ART.map((row) => row);
+  const w = Math.max(...art.map((r) => r.length));
+  const out = [];
+  for (let r = 0;r < art.length + 1; r++) {
+    const spans = [];
+    let run = "";
+    let runFg = "";
+    for (let c = 0;c < w + 1; c++) {
+      const main = (art[r]?.[c] ?? " ") !== " " ? art[r][c] : "";
+      const sh = (art[r - 1]?.[c - 1] ?? " ") !== " " ? art[r - 1][c - 1] : "";
+      const ch = main || sh;
+      const fg = main ? WHALE_COLOR : SHADOW_COLOR;
+      if (ch && fg === runFg) {
+        run += ch;
+      } else {
+        if (run)
+          spans.push({
+            text: run,
+            fg: runFg
+          });
+        run = ch;
+        runFg = fg;
+      }
+    }
+    if (run)
+      spans.push({
+        text: run,
+        fg: runFg
+      });
+    if (spans.length > 0)
+      out.push(spans);
+  }
+  return out;
 }
 var home = typeof process !== "undefined" && process.env.HOME || "";
 function shortenCwd(cwd) {
@@ -1257,14 +1295,21 @@ function WelcomeBanner(props) {
     });
     _$insert7(_el$3, _$createComponent7(For7, {
       get each() {
-        return whaleRows();
+        return whale3dRows();
       },
-      children: (row) => (() => {
+      children: (spans) => (() => {
         var _el$12 = _$createElement7("text");
-        _$setProp7(_el$12, "style", {
-          fg: WHALE_COLOR
-        });
-        _$insert7(_el$12, row);
+        _$insert7(_el$12, _$createComponent7(For7, {
+          each: spans,
+          children: (sp) => (() => {
+            var _el$13 = _$createElement7("span");
+            _$insert7(_el$13, () => sp.text);
+            _$effect7((_$p) => _$setProp7(_el$13, "style", {
+              fg: sp.fg
+            }, _$p));
+            return _el$13;
+          })()
+        }));
         return _el$12;
       })()
     }));

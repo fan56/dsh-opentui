@@ -183,6 +183,46 @@ function foldPixels(px: boolean[][]): string[] {
 /** The banner rows at HALF scale: the whale (28×20 px → 14×10 → 5 rows)
  * * and each wordmark letter (20×20 px → 10×10 → 5 rows), same pixel
  * language, one glyph cell per art cell. */
+
+/** Shadow layer color: the whale blue dimmed toward black (ANSI-Shadow
+ * style extrusion — the wordmark's 3D comes from the font itself; the
+ * whale gets the same front+shadow construction). */
+function dimHex(hex: string, k = 0.45): string {
+  const n = parseInt(hex.slice(1), 16)
+  const f = (v: number) => Math.round(v * k).toString(16).padStart(2, "0")
+  return `#${f((n >> 16) & 255)}${f((n >> 8) & 255)}${f(n & 255)}`
+}
+const SHADOW_COLOR = dimHex(WHALE_COLOR)
+
+/** Whale rows with an offset dark shadow (+1 col, +1 row) behind the
+ * front layer — the same extrusion the block font's letters carry. */
+function whale3dRows(): { text: string; fg: string }[][] {
+  const art = WHALE_ART.map((row) => row)
+  const w = Math.max(...art.map((r) => r.length))
+  const out: { text: string; fg: string }[][] = []
+  for (let r = 0; r < art.length + 1; r++) {
+    const spans: { text: string; fg: string }[] = []
+    let run = ""
+    let runFg = ""
+    for (let c = 0; c < w + 1; c++) {
+      const main = (art[r]?.[c] ?? " ") !== " " ? art[r]![c]! : ""
+      const sh = (art[r - 1]?.[c - 1] ?? " ") !== " " ? art[r - 1]![c - 1]! : ""
+      const ch = main || sh
+      const fg = main ? WHALE_COLOR : SHADOW_COLOR
+      if (ch && fg === runFg) {
+        run += ch
+      } else {
+        if (run) spans.push({ text: run, fg: runFg })
+        run = ch
+        runFg = fg
+      }
+    }
+    if (run) spans.push({ text: run, fg: runFg })
+    if (spans.length > 0) out.push(spans)
+  }
+  return out
+}
+
 /** The whale alone at its original chunky size (10 rows × 28 cols). */
 export function whaleRows(): readonly string[] {
   return WHALE_ART.map((row) => row)
@@ -232,8 +272,12 @@ export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string 
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-start", alignItems: "flex-start", padding: 1 }}>
       <box style={{ flexDirection: "row", alignItems: "center" }}>
         <box style={{ flexDirection: "column" }}>
-          <For each={whaleRows()}>
-            {(row) => <text style={{ fg: WHALE_COLOR }}>{row}</text>}
+          <For each={whale3dRows()}>
+            {(spans) => (
+              <text>
+                <For each={spans}>{(sp) => <span style={{ fg: sp.fg }}>{sp.text}</span>}</For>
+              </text>
+            )}
           </For>
         </box>
         <box style={{ width: 3, height: 1 }} />
