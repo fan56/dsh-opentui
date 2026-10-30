@@ -92,7 +92,4 @@ linkDshClosure()
 await pinSolidClient()
 // ship the welcome whale image inside the bundle dir — welcome.tsx
 // resolves it as ./assets/whale.png relative to dist-host/index.js
-mkdirSync(join(outDir, "assets"), { recursive: true })
-copyFileSync(join(pkgDir, "..", "kit", "assets", "whale.png"), join(outDir, "assets", "whale.png"))
-copyFileSync(join(pkgDir, "..", "kit", "assets", "ds-logo.png"), join(outDir, "assets", "ds-logo.png"))
 console.log("built -> packages/shell/dist-host (host plugin)")

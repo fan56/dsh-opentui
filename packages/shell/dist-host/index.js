@@ -1213,33 +1213,21 @@ function pickDailyQuote() {
 }
 
 // ../kit/src/welcome.tsx
-var WHALE_COLOR = POWERLINE_COLORS.brand;
-var WHALE_ART = ["           ▄▄▄▄    █        ", "   ▄██████████▄   ████ ▄▄▄█▀", " ▄██████████████▄  ████████ ", " ██▀▀█████████████▄ ▄██▀▀   ", "██      ▀▀█████▄▀██████     ", "▀██        ▀████▄ ████▀     ", " ███        ▀████████▀      ", "  ▀██▄   █▄▄  ▀█████▀       ", "   ▀▀███▄▄███▄▄▄█████▄      ", "      ▀▀▀████▀▀▀            "];
-var WHALE_ART_WIDTH = Math.max(...WHALE_ART.map((row) => row.length));
-function dimHex(hex, k = 0.45) {
-  const n = parseInt(hex.slice(1), 16);
-  const f = (v) => Math.round(v * k).toString(16).padStart(2, "0");
-  return `#${f(n >> 16 & 255)}${f(n >> 8 & 255)}${f(n & 255)}`;
-}
-var SHADOW_COLOR = dimHex(WHALE_COLOR);
 var home = typeof process !== "undefined" && process.env.HOME || "";
 function shortenCwd(cwd) {
   const short = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
-  if (short.length <= 40)
+  if (short.length <= 60)
     return short;
-  return `…${short.slice(-39)}`;
+  return `…${short.slice(-59)}`;
 }
 function WelcomeBanner(props) {
   const quote = pickDailyQuote();
-  const logoPng = new URL("./assets/ds-logo.png", import.meta.url).pathname;
   return (() => {
-    var _el$ = _$createElement7("box"), _el$2 = _$createElement7("box"), _el$3 = _$createElement7("box"), _el$4 = _$createElement7("image"), _el$5 = _$createElement7("box"), _el$6 = _$createElement7("ascii_font"), _el$7 = _$createElement7("text"), _el$9 = _$createElement7("text"), _el$1 = _$createElement7("text"), _el$10 = _$createElement7("text"), _el$11 = _$createElement7("text");
+    var _el$ = _$createElement7("box"), _el$2 = _$createElement7("text"), _el$4 = _$createElement7("text"), _el$5 = _$createElement7("text"), _el$6 = _$createElement7("text");
     _$insertNode7(_el$, _el$2);
-    _$insertNode7(_el$, _el$7);
-    _$insertNode7(_el$, _el$9);
-    _$insertNode7(_el$, _el$1);
-    _$insertNode7(_el$, _el$10);
-    _$insertNode7(_el$, _el$11);
+    _$insertNode7(_el$, _el$4);
+    _$insertNode7(_el$, _el$5);
+    _$insertNode7(_el$, _el$6);
     _$setProp7(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1,
@@ -1247,44 +1235,26 @@ function WelcomeBanner(props) {
       alignItems: "flex-start",
       padding: 1
     });
-    _$insertNode7(_el$2, _el$3);
-    _$insertNode7(_el$2, _el$5);
-    _$insertNode7(_el$2, _el$6);
-    _$setProp7(_el$2, "style", {
-      flexDirection: "row",
-      alignItems: "center"
-    });
-    _$insertNode7(_el$3, _el$4);
-    _$setProp7(_el$3, "style", {
-      width: 12,
-      height: 6
-    });
-    _$setProp7(_el$4, "source", logoPng);
-    _$setProp7(_el$4, "fit", "fit");
-    _$setProp7(_el$5, "style", {
-      width: 2,
-      height: 1
-    });
-    _$setProp7(_el$6, "text", "DeepseekHarness");
-    _$setProp7(_el$6, "font", "tiny");
-    _$setProp7(_el$6, "color", WHALE_COLOR);
-    _$insertNode7(_el$7, _$createTextNode6(` `));
-    _$insertNode7(_el$9, _$createTextNode6(` `));
-    _$insert7(_el$1, () => `${props.model} · ${shortenCwd(props.cwd)}`);
-    _$insert7(_el$10, `\uD83D\uDC33 「${quote}」`);
-    _$insertNode7(_el$11, _$createTextNode6(` `));
+    _$insertNode7(_el$2, _$createTextNode6(`DeepseekHarness`));
+    _$insert7(_el$4, () => `${props.model} · ${shortenCwd(props.cwd)}`);
+    _$insert7(_el$5, `\uD83D\uDC33 「${quote}」`);
+    _$insertNode7(_el$6, _$createTextNode6(` `));
     _$effect7((_p$) => {
       var _v$ = {
-        fg: props.theme.tokens.dim
+        fg: POWERLINE_COLORS.brand
       }, _v$2 = {
         fg: props.theme.tokens.dim
+      }, _v$3 = {
+        fg: props.theme.tokens.dim
       };
-      _v$ !== _p$.e && (_p$.e = _$setProp7(_el$1, "style", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$10, "style", _v$2, _p$.t));
+      _v$ !== _p$.e && (_p$.e = _$setProp7(_el$2, "style", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$4, "style", _v$2, _p$.t));
+      _v$3 !== _p$.a && (_p$.a = _$setProp7(_el$5, "style", _v$3, _p$.a));
       return _p$;
     }, {
       e: undefined,
-      t: undefined
+      t: undefined,
+      a: undefined
     });
     return _el$;
   })();
