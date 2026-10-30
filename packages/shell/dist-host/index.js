@@ -122,6 +122,7 @@ var dict = {
   "cmd.cred.missing": { "zh-CN": "未配置", en: "missing" },
   "picker.model.title": { "zh-CN": "选择模型", en: "select model" },
   "picker.theme.title": { "zh-CN": "选择主题", en: "select theme" },
+  "picker.preset.title": { "zh-CN": "选择预设", en: "select preset" },
   "picker.history.title": { "zh-CN": "选择分叉点（回车 fork · esc 取消）", en: "pick a fork point (enter forks · esc cancels)" },
   "panel.tools.title": { "zh-CN": "工具", en: "tools" },
   "panel.think.title": { "zh-CN": "思考", en: "thinking" }
@@ -2683,6 +2684,9 @@ var COMMANDS = [{
   name: "/history",
   desc: "fork the session at an earlier turn"
 }, {
+  name: "/preset",
+  desc: "switch agent preset"
+}, {
   name: "/theme",
   desc: "pick theme"
 }, {
@@ -3005,6 +3009,7 @@ function ShellHost(props) {
     }
   };
   async function runCommand(text) {
+    setShowWelcome(false);
     const parts = text.slice(1).trim().split(/\s+/);
     const cmd = parts[0];
     const arg = parts.slice(1).join(" ");
@@ -3042,6 +3047,34 @@ function ShellHost(props) {
         kind: "system",
         text: `model: ${label()}`
       });
+    } else if (cmd === "preset") {
+      const presets = await props.deps.session.listPresets();
+      if (presets.length === 0) {
+        push({
+          kind: "system",
+          text: "no presets in the agentPresets registry"
+        });
+      } else {
+        const cur = props.deps.session.currentPresetId();
+        openOverlay({
+          title: t("picker.preset.title"),
+          items: presets.map((p) => ({
+            label: p.name,
+            value: p.id,
+            ...p.id === cur ? {
+              description: t("cmd.model.current")
+            } : {}
+          })),
+          onSelect: (value) => {
+            const picked = presets.find((p) => p.id === value);
+            props.deps.session.switchPreset(value);
+            push({
+              kind: "system",
+              text: `preset → ${picked?.name ?? value} (fresh session on next message)`
+            });
+          }
+        });
+      }
     } else if (cmd === "history") {
       historyFork.open(openOverlay);
     } else if (cmd === "new") {
@@ -3880,6 +3913,26 @@ class HostSession {
       return { text: String(e instanceof Error ? e.message : e).slice(0, 300) };
     }
   }
+  #presetId;
+  async listPresets() {
+    try {
+      const registry = this.#ctx.get?.("agentPresets");
+      if (!registry?.remoteExportList)
+        return [];
+      const roster = await registry.remoteExportList();
+      const list = Array.isArray(roster) ? roster : roster?.entries ?? roster?.presets ?? [];
+      return (Array.isArray(list) ? list : []).map((e) => ({ id: String(e?.id ?? ""), name: String(e?.name ?? e?.id ?? "") })).filter((e) => e.id);
+    } catch {
+      return [];
+    }
+  }
+  switchPreset(presetId) {
+    this.#presetId = presetId;
+    this.newSession();
+  }
+  currentPresetId() {
+    return this.#presetId;
+  }
   get settingsSeam() {
     const st = this.#ctx.get?.("settings");
     return st ? { describe: () => st.describe(), mutate: (ns, ops, rev) => st.mutate(ns, ops, rev) } : undefined;
@@ -3932,7 +3985,7 @@ class HostSession {
       const agentOptions = this.#modelSelection() ?? {};
       this.#handle = await this.#ctx.agents.create({
         sessionId: this.#sessionId,
-        meta: { cwd: process.cwd() },
+        meta: { cwd: process.cwd(), ...this.#presetId ? { agentPreset: this.#presetId } : {} },
         agentOptions
       });
       this.#agentId = this.#handle.agent.id;

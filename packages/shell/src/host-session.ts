@@ -303,6 +303,35 @@ export class HostSession {
     }
   }
 
+  /** Selected agent preset (agentPresets registry id) — applied when the
+   * next session is created. */
+  #presetId?: string
+
+  /** Preset roster from the agentPresets registry. */
+  async listPresets(): Promise<{ id: string; name: string }[]> {
+    try {
+      const registry = (this.#ctx as any).get?.("agentPresets")
+      if (!registry?.remoteExportList) return []
+      const roster = await registry.remoteExportList()
+      const list = Array.isArray(roster) ? roster : (roster?.entries ?? roster?.presets ?? [])
+      return (Array.isArray(list) ? list : [])
+        .map((e: any) => ({ id: String(e?.id ?? ""), name: String(e?.name ?? e?.id ?? "") }))
+        .filter((e: any) => e.id)
+    } catch {
+      return []
+    }
+  }
+
+  /** Switch preset: the next session is created seeded with agentPreset. */
+  switchPreset(presetId: string): void {
+    this.#presetId = presetId
+    this.newSession()
+  }
+
+  currentPresetId(): string | undefined {
+    return this.#presetId
+  }
+
   /** The host settings service seam (login/logout route registration). */
   get settingsSeam(): { describe(): Promise<any>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> } | undefined {
     const st = (this.#ctx as any).get?.("settings")
@@ -372,7 +401,7 @@ export class HostSession {
       const agentOptions = this.#modelSelection() ?? {}
       this.#handle = await (this.#ctx as any).agents.create({
         sessionId: this.#sessionId,
-        meta: { cwd: process.cwd() },
+        meta: { cwd: process.cwd(), ...(this.#presetId ? { agentPreset: this.#presetId } : {}) },
         agentOptions,
       })
       this.#agentId = this.#handle.agent.id

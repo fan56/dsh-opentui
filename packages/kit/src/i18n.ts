@@ -56,6 +56,7 @@ const dict: Dict = {
   "cmd.cred.missing": { "zh-CN": "未配置", en: "missing" },
   "picker.model.title": { "zh-CN": "选择模型", en: "select model" },
   "picker.theme.title": { "zh-CN": "选择主题", en: "select theme" },
+  "picker.preset.title": { "zh-CN": "选择预设", en: "select preset" },
   "picker.history.title": { "zh-CN": "选择分叉点（回车 fork · esc 取消）", en: "pick a fork point (enter forks · esc cancels)" },
   "panel.tools.title": { "zh-CN": "工具", en: "tools" },
   "panel.think.title": { "zh-CN": "思考", en: "thinking" },

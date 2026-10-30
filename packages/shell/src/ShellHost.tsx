@@ -69,6 +69,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/new", desc: "start a fresh session" },
   { name: "/sessions", desc: "list and resume stored sessions" },
   { name: "/history", desc: "fork the session at an earlier turn" },
+  { name: "/preset", desc: "switch agent preset" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -423,6 +424,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
    * Async because /login //logout await host credential services; callers
    * fire-and-forget it (void runCommand(...)). */
   async function runCommand(text: string) {
+    // any command output needs the transcript visible — the welcome banner
+    // replaces it entirely while up
+    setShowWelcome(false)
     const parts = text.slice(1).trim().split(/\s+/)
     const cmd = parts[0]
     const arg = parts.slice(1).join(" ")
@@ -441,6 +445,26 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       // speed) from the host session's telemetry.
       for (const line of props.deps.session.usageSummary()) push({ kind: "system", text: line })
       push({ kind: "system", text: `model: ${label()}` })
+    } else if (cmd === "preset") {
+      const presets = await props.deps.session.listPresets()
+      if (presets.length === 0) {
+        push({ kind: "system", text: "no presets in the agentPresets registry" })
+      } else {
+        const cur = props.deps.session.currentPresetId()
+        openOverlay({
+          title: t("picker.preset.title"),
+          items: presets.map((p) => ({
+            label: p.name,
+            value: p.id,
+            ...(p.id === cur ? { description: t("cmd.model.current") } : {}),
+          })),
+          onSelect: (value) => {
+            const picked = presets.find((p) => p.id === value)
+            props.deps.session.switchPreset(value)
+            push({ kind: "system", text: `preset → ${picked?.name ?? value} (fresh session on next message)` })
+          },
+        })
+      }
     } else if (cmd === "history") {
       historyFork.open(openOverlay)
     } else if (cmd === "new") {
