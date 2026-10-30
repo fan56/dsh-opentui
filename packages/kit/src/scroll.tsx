@@ -9,9 +9,9 @@
  */
 import type { JSX } from "solid-js"
 
-export function AutoScroll(props: { children: JSX.Element; maxHeight?: number }): JSX.Element {
+export function AutoScroll(props: { children: JSX.Element; maxHeight?: number; ref?: (el: any) => void }): JSX.Element {
   return (
-    <scrollbox stickyScroll={true} scrollY={true} style={{ flexGrow: 1, maxHeight: props.maxHeight }}>
+    <scrollbox stickyScroll={true} scrollY={true} style={{ flexGrow: 1, maxHeight: props.maxHeight }} ref={props.ref}>
       {props.children}
     </scrollbox>
   )

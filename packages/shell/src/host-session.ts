@@ -130,6 +130,9 @@ export class HostSession {
     this.#handle = undefined
     this.#sessionId = undefined
     this.#agentId = undefined
+    // a pending resume must not survive /new — creating with the STORED id
+    // again fails with "session already exists"
+    this.#resumeId = undefined
   }
 
   /** Resume a historical session on the next turn (best-effort: the host
@@ -140,18 +143,63 @@ export class HostSession {
     this.#resumeId = id
   }
 
+  /** Rebuild transcript rows from a STORED session's persisted log (the
+   * /sessions resume path — the context comes back with the agent, and the
+   * transcript rows come from here). Drain pattern per tui-pi's
+   * readPersistedSession: open(id,'read') + offset loop. */
+  async storedTranscript(id: string): Promise<{ kind: "user" | "assistant"; text: string }[]> {
+    const persistence = (this.#ctx as any).get?.("sessionPersistence")
+    if (!persistence?.open) return []
+    const handle = await persistence.open(id, "read")
+    try {
+      const events: any[] = []
+      let offset = 0
+      for (;;) {
+        const batch = await handle.read(offset)
+        if (!batch?.events?.length) break
+        events.push(...batch.events)
+        offset += batch.events.length
+      }
+      const items: { kind: "user" | "assistant"; text: string }[] = []
+      for (const event of events) {
+        if (event.type === "user/message") {
+          const kind = (event.data as any)?.source?.kind
+          if (kind !== undefined && kind !== "user") continue
+          const text = blocksText((event.data as any)?.content)
+          if (text) items.push({ kind: "user", text })
+        } else if (event.type === "assistant/message") {
+          const text = blocksText((event.data as any)?.message?.content)
+          if (text) items.push({ kind: "assistant", text })
+        }
+      }
+      return items
+    } finally {
+      await handle.close?.()
+    }
+  }
+
   /** Stored sessions for the current workspace (newest first, capped). */
   async listSessions(limit = 12): Promise<{ id: string; title: string; updatedAt?: string }[]> {
     const persistence = (this.#ctx as any).get?.("sessionPersistence")
     if (!persistence?.list) return []
     try {
       const headers = (await persistence.list()) as any[]
-      return headers
-        .map((h) => ({
-          id: String(h?.id ?? ""),
+      const out: { id: string; title: string; updatedAt?: string }[] = []
+      for (const entry of headers) {
+        // dsh 0.1.5 wraps each entry as {header, ...}; older builds are bare
+        const h = entry?.header ?? entry
+        // subagent children are not user-resumable (value-test delegationDepth:
+        // the jsonl backend materializes it as 0 on every header)
+        if (h?.origin === "subagent" || (h?.delegationDepth ?? 0) > 0) continue
+        const id = String(h?.id ?? "")
+        if (!id) continue
+        out.push({
+          id,
           title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
-          updatedAt: h?.updatedAt ?? h?.lastEventAt ?? h?.mtime,
-        }))
+          updatedAt: String(h?.updatedAt ?? h?.lastEventAt ?? h?.mtime ?? ""),
+        })
+      }
+      return out
         .filter((s) => s.id)
         .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")))
         .slice(0, limit)

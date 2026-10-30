@@ -851,6 +851,12 @@ function InputLine(props) {
   }, {
     defer: true
   }));
+  createEffect(on(() => props.focusKey, () => {
+    if (!props.busy)
+      ta?.focus();
+  }, {
+    defer: true
+  }));
   const onKeyDown = (key) => {
     if (props.onKeyFilter?.(key)) {
       key.preventDefault();
@@ -1631,11 +1637,14 @@ function SubagentWidget(props) {
 // ../kit/src/scroll.tsx
 import { effect as _$effect10 } from "@opentui/solid";
 import { insert as _$insert10 } from "@opentui/solid";
+import { use as _$use2 } from "@opentui/solid";
 import { setProp as _$setProp10 } from "@opentui/solid";
 import { createElement as _$createElement10 } from "@opentui/solid";
 function AutoScroll(props) {
   return (() => {
     var _el$ = _$createElement10("scrollbox");
+    var _ref$ = props.ref;
+    typeof _ref$ === "function" ? _$use2(_ref$, _el$) : props.ref = _el$;
     _$setProp10(_el$, "stickyScroll", true);
     _$setProp10(_el$, "scrollY", true);
     _$insert10(_el$, () => props.children);
@@ -2487,6 +2496,9 @@ function ShellHost(props) {
   const [liveTps, setLiveTps] = createSignal4(null);
   let turnStartAt = 0;
   let approveResolve = null;
+  let scrollRef;
+  let replayGen = 0;
+  const [focusKey, setFocusKey] = createSignal4(0);
   onMount(() => {
     const tick = setInterval(() => {
       setClock(fmtClock());
@@ -2577,11 +2589,13 @@ function ShellHost(props) {
   const onOverlaySelect = (value) => {
     const ov = overlay();
     setOverlay(null);
+    setFocusKey((k) => k + 1);
     ov?.onSelect(value);
   };
   const onOverlayCancel = () => {
     const ov = overlay();
     setOverlay(null);
+    setFocusKey((k) => k + 1);
     ov?.ask?.resolve("declined");
   };
   const rendererCtx = useRenderer();
@@ -2733,6 +2747,7 @@ function ShellHost(props) {
     } else if (cmd === "history") {
       historyFork.open(openOverlay);
     } else if (cmd === "new") {
+      replayGen++;
       props.deps.session.newSession();
       setItems([]);
       push({
@@ -2756,8 +2771,28 @@ function ShellHost(props) {
               description: String(x.updatedAt).slice(0, 19)
             } : {}
           })),
-          onSelect: (value) => {
+          onSelect: async (value) => {
             props.deps.session.resumeSession(value);
+            setBusy(false);
+            setShowWelcome(false);
+            const gen = ++replayGen;
+            try {
+              const rows = await props.deps.session.storedTranscript(value);
+              if (gen !== replayGen)
+                return;
+              await new Promise((r2) => setTimeout(r2, 50));
+              if (gen !== replayGen)
+                return;
+              setItems(rows.map((it) => it.kind === "assistant" ? {
+                kind: "assistant",
+                text: it.text,
+                final: true
+              } : {
+                kind: "user",
+                text: it.text
+              }));
+              scrollRef && (scrollRef.scrollTop = 1e9);
+            } catch {}
             push({
               kind: "system",
               text: `${t("cmd.sessions.resumed")}: ${value.slice(0, 8)}`
@@ -2972,6 +3007,14 @@ function ShellHost(props) {
       dock.reexpandTools();
       return;
     }
+    if (key.name === "pageup" || key.ctrl && key.name === "b") {
+      scrollRef?.scrollBy?.(-12);
+      return;
+    }
+    if (key.name === "pagedown" || key.ctrl && key.name === "f") {
+      scrollRef?.scrollBy?.(12);
+      return;
+    }
     if (key.name === "escape" && menuVisible())
       setMenuOpen(false);
   });
@@ -3043,6 +3086,7 @@ function ShellHost(props) {
           return process.cwd();
         }
       }) : _$createComponent13(AutoScroll, {
+        ref: (el) => scrollRef = el,
         get children() {
           return [_$createComponent13(Transcript, {
             get items() {
@@ -3157,6 +3201,9 @@ function ShellHost(props) {
       },
       onHistoryNav: historyNav,
       onKeyFilter: paletteKeyFilter,
+      get focusKey() {
+        return focusKey();
+      },
       get resetKey() {
         return resetKey();
       },
@@ -3321,10 +3368,46 @@ class HostSession {
     this.#handle = undefined;
     this.#sessionId = undefined;
     this.#agentId = undefined;
+    this.#resumeId = undefined;
   }
   resumeSession(id) {
     this.newSession();
     this.#resumeId = id;
+  }
+  async storedTranscript(id) {
+    const persistence = this.#ctx.get?.("sessionPersistence");
+    if (!persistence?.open)
+      return [];
+    const handle = await persistence.open(id, "read");
+    try {
+      const events = [];
+      let offset = 0;
+      for (;; ) {
+        const batch = await handle.read(offset);
+        if (!batch?.events?.length)
+          break;
+        events.push(...batch.events);
+        offset += batch.events.length;
+      }
+      const items = [];
+      for (const event of events) {
+        if (event.type === "user/message") {
+          const kind = event.data?.source?.kind;
+          if (kind !== undefined && kind !== "user")
+            continue;
+          const text = blocksText(event.data?.content);
+          if (text)
+            items.push({ kind: "user", text });
+        } else if (event.type === "assistant/message") {
+          const text = blocksText(event.data?.message?.content);
+          if (text)
+            items.push({ kind: "assistant", text });
+        }
+      }
+      return items;
+    } finally {
+      await handle.close?.();
+    }
   }
   async listSessions(limit = 12) {
     const persistence = this.#ctx.get?.("sessionPersistence");
@@ -3332,11 +3415,21 @@ class HostSession {
       return [];
     try {
       const headers = await persistence.list();
-      return headers.map((h) => ({
-        id: String(h?.id ?? ""),
-        title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
-        updatedAt: h?.updatedAt ?? h?.lastEventAt ?? h?.mtime
-      })).filter((s) => s.id).sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit);
+      const out = [];
+      for (const entry of headers) {
+        const h = entry?.header ?? entry;
+        if (h?.origin === "subagent" || (h?.delegationDepth ?? 0) > 0)
+          continue;
+        const id = String(h?.id ?? "");
+        if (!id)
+          continue;
+        out.push({
+          id,
+          title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
+          updatedAt: String(h?.updatedAt ?? h?.lastEventAt ?? h?.mtime ?? "")
+        });
+      }
+      return out.filter((s) => s.id).sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit);
     } catch {
       return [];
     }

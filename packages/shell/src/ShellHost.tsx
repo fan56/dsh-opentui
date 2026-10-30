@@ -134,6 +134,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   let turnStartAt = 0
 
   let approveResolve: ((ok: boolean) => void) | null = null
+  // scroll region handle for PgUp/PgDn lookback
+  let scrollRef: any
+  // bumps on any session switch (/new, resume, fork) — async replays check it
+  let replayGen = 0
+  // imperative editor refocus counter (overlay teardown guard)
+  const [focusKey, setFocusKey] = createSignal(0)
 
   onMount(() => {
     // One 1s heartbeat drives the dock widgets' elapsed counters (think
@@ -218,12 +224,14 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const onOverlaySelect = (value: string) => {
     const ov = overlay()
     setOverlay(null)
+    setFocusKey((k) => k + 1)
     ov?.onSelect(value)
   }
   /** Esc inside the overlay Select (idempotent with the Select's own onCancel). */
   const onOverlayCancel = () => {
     const ov = overlay()
     setOverlay(null)
+    setFocusKey((k) => k + 1)
     ov?.ask?.resolve("declined")
   }
 
@@ -385,6 +393,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } else if (cmd === "history") {
       historyFork.open(openOverlay)
     } else if (cmd === "new") {
+      replayGen++
       props.deps.session.newSession()
       setItems([])
       push({ kind: "system", text: t("cmd.new.done") })
@@ -400,8 +409,31 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             value: x.id,
             ...(x.updatedAt ? { description: String(x.updatedAt).slice(0, 19) } : {}),
           })),
-          onSelect: (value) => {
+          onSelect: async (value) => {
             props.deps.session.resumeSession(value)
+            setBusy(false)
+            setShowWelcome(false)
+            // replay the stored transcript (context returns with the agent;
+            // the rows come from the persisted log). A generation guard
+            // aborts the replay if /new or another session switch ran while
+            // the log was reading (a slow read losing to /new used to
+            // repopulate the cleared transcript with the OLD rows).
+            const gen = ++replayGen
+            try {
+              const rows = await props.deps.session.storedTranscript(value)
+              if (gen !== replayGen) return
+              // yield one tick so the overlay-close focus-flip commits
+              // BEFORE the heavy replay batch — committing them together
+              // left the editor unfocused for the whole render and keys
+              // typed in the window were lost
+              await new Promise((r2) => setTimeout(r2, 50))
+              if (gen !== replayGen) return
+              setItems(rows.map((it) => (it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : { kind: "user" as const, text: it.text })) as TItem[])
+              // bulk content swaps strand the viewport mid-scroll — pin back
+              scrollRef && (scrollRef.scrollTop = 1e9)
+            } catch {
+              /* replay is best-effort; the turn itself still resumes */
+            }
             push({ kind: "system", text: `${t("cmd.sessions.resumed")}: ${value.slice(0, 8)}` })
           },
         })
@@ -583,6 +615,15 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       dock.reexpandTools()
       return
     }
+    // scrollback lookback: PgUp/PgDn page through the transcript region
+    if (key.name === "pageup" || (key.ctrl && key.name === "b")) {
+      scrollRef?.scrollBy?.(-12)
+      return
+    }
+    if (key.name === "pagedown" || (key.ctrl && key.name === "f")) {
+      scrollRef?.scrollBy?.(12)
+      return
+    }
     // esc closes the slash palette (the editor keeps its buffer).
     if (key.name === "escape" && menuVisible()) setMenuOpen(false)
   })
@@ -628,7 +669,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       {showWelcome() ? (
         <WelcomeBanner theme={th()} model={label()} cwd={process.cwd()} />
       ) : (
-        <AutoScroll>
+        <AutoScroll ref={(el: any) => (scrollRef = el)}>
           <Transcript items={items()} theme={th()} t={t} spinnerFrame="" mdStyle={mdStyle} />
           {/* The dock widgets live INSIDE the scroll region (tui-pi's shape):
               their 0→expanded→collapsed height churn happens in scroll
@@ -684,6 +725,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         }}
         onHistoryNav={historyNav}
         onKeyFilter={paletteKeyFilter}
+        focusKey={focusKey()}
         resetKey={resetKey()}
         setKey={setKey()}
         setValue={setValueText()}

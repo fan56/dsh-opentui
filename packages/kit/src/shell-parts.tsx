@@ -257,6 +257,10 @@ export interface InputLineProps {
    * cursor at end) — the history-recall write path. */
   setKey?: number
   setValue?: string
+  /** When this changes, focus() is re-asserted imperatively — the prop
+   * flip alone does not reclaim the terminal focus singleton after a
+   * focused overlay (select) unmounted holding it. */
+  focusKey?: number
   /** Legacy single-line props, kept so old call sites compile. Ignored. */
   value?: string
   cursor?: number
@@ -312,6 +316,17 @@ export function InputLine(props: InputLineProps): JSX.Element {
         if (!ta) return
         ta.replaceText(props.setValue ?? "")
         ta.gotoBufferEnd()
+      },
+      { defer: true },
+    ),
+  )
+
+  // focusKey change -> reclaim focus imperatively (overlay teardown guard).
+  createEffect(
+    on(
+      () => props.focusKey,
+      () => {
+        if (!props.busy) ta?.focus()
       },
       { defer: true },
     ),
