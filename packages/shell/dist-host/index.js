@@ -1226,36 +1226,60 @@ var PIXEL_FONT = {
   S: [".......#############", ".......#############", ".......#############", "....###.............", "...###..............", "...###..............", "...###..............", "...#############....", "..#############.....", "..#############.....", "..#############.....", "...............###..", "..............###...", "..............###...", "..............###...", "..............###...", ".............###....", "############........", "############........", "############........"],
   H: ["....###..........###", "....###..........###", "....###..........###", "....###..........###", "...###..........###.", "...###..........###.", "...###..........###.", "...###..........###.", "..################..", "..################..", "..################..", "..################..", ".###..........###...", ".###..........###...", ".###..........###...", ".###..........###...", "###..........###....", "###..........###....", "###..........###....", "###..........###...."]
 };
-function renderPixelGlyph(px) {
+function artToPixels() {
+  const px = [];
+  for (const row of WHALE_ART) {
+    const top = [];
+    const bottom = [];
+    for (const ch of row) {
+      top.push(ch === "█" || ch === "▀");
+      bottom.push(ch === "█" || ch === "▄");
+    }
+    px.push(top, bottom);
+  }
+  return px;
+}
+function halvePixels(px) {
+  const out = [];
+  for (let r = 0;r < px.length; r += 2) {
+    const row = [];
+    for (let c = 0;c < px[0].length; c += 2)
+      row.push(px[r][c]);
+    out.push(row);
+  }
+  return out;
+}
+function foldPixels(px) {
   const rows = [];
-  for (let i = 0;i < px.length / 2; i++) {
+  for (let i = 0;i < px.length; i += 2) {
     let row = "";
     for (let c = 0;c < px[0].length; c++) {
-      const top = px[2 * i][c] === "#";
-      const bottom = px[2 * i + 1][c] === "#";
+      const top = px[i][c];
+      const bottom = px[i + 1]?.[c] ?? false;
       row += top && bottom ? "█" : top ? "▀" : bottom ? "▄" : " ";
     }
     rows.push(row);
   }
   return rows;
 }
-function wordmarkRows() {
-  const glyphRows = [...WORDMARK].map((ch) => renderPixelGlyph(PIXEL_FONT[ch]));
-  const rows = Array.from({
-    length: WHALE_ART.length
-  }, () => "");
-  for (let i = 0;i < glyphRows.length; i++) {
-    for (let r = 0;r < rows.length; r++) {
-      rows[r] += glyphRows[i][r];
-      if (i < glyphRows.length - 1)
-        rows[r] += " ".repeat(LETTER_GAP);
-    }
-  }
-  return rows;
-}
 function bannerRows() {
-  const letters = wordmarkRows();
-  return WHALE_ART.map((row, r) => row + " ".repeat(WHALE_TITLE_GAP + WHALE_ART_WIDTH - row.length) + letters[r]);
+  const whale = foldPixels(halvePixels(artToPixels()));
+  const letters = [...WORDMARK].map((ch) => {
+    const glyph = PIXEL_FONT[ch].map((row) => [...row].map((p) => p === "#"));
+    return foldPixels(halvePixels(glyph));
+  });
+  const width = Math.max(...whale.map((r) => r.length));
+  const out = [];
+  for (let r = 0;r < whale.length; r++) {
+    let line = whale[r] + " ".repeat(WHALE_TITLE_GAP + width - whale[r].length);
+    for (let i = 0;i < letters.length; i++) {
+      line += letters[i][r];
+      if (i < letters.length - 1)
+        line += " ".repeat(LETTER_GAP);
+    }
+    out.push(line);
+  }
+  return out;
 }
 var home = typeof process !== "undefined" && process.env.HOME || "";
 function shortenCwd(cwd) {

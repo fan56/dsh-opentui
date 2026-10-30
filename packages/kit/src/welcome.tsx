@@ -139,10 +139,67 @@ function wordmarkRows(): readonly string[] {
   return rows
 }
 
-/** The 10 banner rows: whale + gap + wordmark, all brand blue. */
+/** Expand a half-block art row pair into pixel booleans (2 rows per cell). */
+function artToPixels(): boolean[][] {
+  const px: boolean[][] = []
+  for (const row of WHALE_ART) {
+    const top: boolean[] = []
+    const bottom: boolean[] = []
+    for (const ch of row) {
+      top.push(ch === "█" || ch === "▀")
+      bottom.push(ch === "█" || ch === "▄")
+    }
+    px.push(top, bottom)
+  }
+  return px
+}
+
+/** Nearest-neighbor 2× downsample of a pixel matrix. */
+function halvePixels(px: boolean[][]): boolean[][] {
+  const out: boolean[][] = []
+  for (let r = 0; r < px.length; r += 2) {
+    const row: boolean[] = []
+    for (let c = 0; c < px[0]!.length; c += 2) row.push(px[r]![c]!)
+    out.push(row)
+  }
+  return out
+}
+
+/** Fold a pixel matrix into half-block terminal rows. */
+function foldPixels(px: boolean[][]): string[] {
+  const rows: string[] = []
+  for (let i = 0; i < px.length; i += 2) {
+    let row = ""
+    for (let c = 0; c < px[0]!.length; c++) {
+      const top = px[i]![c]!
+      const bottom = px[i + 1]?.[c] ?? false
+      row += top && bottom ? "█" : top ? "▀" : bottom ? "▄" : " "
+    }
+    rows.push(row)
+  }
+  return rows
+}
+
+/** The banner rows at HALF scale: the whale (28×20 px → 14×10 → 5 rows)
+ * * and each wordmark letter (20×20 px → 10×10 → 5 rows), same pixel
+ * language, one glyph cell per art cell. */
 export function bannerRows(): readonly string[] {
-  const letters = wordmarkRows()
-  return WHALE_ART.map((row, r) => row + " ".repeat(WHALE_TITLE_GAP + WHALE_ART_WIDTH - row.length) + letters[r])
+  const whale = foldPixels(halvePixels(artToPixels()))
+  const letters = [...WORDMARK].map((ch) => {
+    const glyph = PIXEL_FONT[ch]!.map((row) => [...row].map((p) => p === "#"))
+    return foldPixels(halvePixels(glyph))
+  })
+  const width = Math.max(...whale.map((r) => r.length))
+  const out: string[] = []
+  for (let r = 0; r < whale.length; r++) {
+    let line = whale[r]! + " ".repeat(WHALE_TITLE_GAP + width - whale[r]!.length)
+    for (let i = 0; i < letters.length; i++) {
+      line += letters[i]![r]
+      if (i < letters.length - 1) line += " ".repeat(LETTER_GAP)
+    }
+    out.push(line)
+  }
+  return out
 }
 
 /** The user's home, shortened to "~" in the info line. */
