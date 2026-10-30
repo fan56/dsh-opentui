@@ -218,11 +218,20 @@ function shortenCwd(cwd: string): string {
  */
 export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string }): JSX.Element {
   const quote = pickDailyQuote()
+  // The whale ships as the ORIGINAL image rendered through the kitty/
+  // iterm2 graphics path (<image>); terminals without graphics support
+  // silently show the half-block pixel whale instead (both share the row
+  // grid, so the composition holds either way).
+  const whalePng = new URL("./assets/whale.png", import.meta.url).pathname
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-end", alignItems: "center", padding: 1 }}>
-      <For each={bannerRows()}>
-        {(row) => <text style={{ fg: WHALE_COLOR }}>{row}</text>}
-      </For>
+      <box style={{ flexDirection: "row", alignItems: "center" }}>
+        <image source={whalePng} fit="fit" style={{ width: 18, height: 6 }} />
+        <box style={{ width: 3, height: 1 }} />
+        <For each={wordmarkRows()}>
+          {(row) => <text style={{ fg: WHALE_COLOR }}>{row}</text>}
+        </For>
+      </box>
       <text>{" "}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`${props.model} · ${shortenCwd(props.cwd)}`}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`🐳 「${quote}」`}</text>

@@ -7,7 +7,7 @@
  * Usage: bun build-host.ts [--only-symlink]
  */
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
 import solidPlugin from "@opentui/solid/bun-plugin"
 
@@ -90,4 +90,8 @@ const manifest = {
 await Bun.write(join(outDir, "package.json"), JSON.stringify(manifest, null, 2))
 linkDshClosure()
 await pinSolidClient()
+// ship the welcome whale image inside the bundle dir — welcome.tsx
+// resolves it as ./assets/whale.png relative to dist-host/index.js
+mkdirSync(join(outDir, "assets"), { recursive: true })
+copyFileSync(join(pkgDir, "..", "kit", "assets", "whale.png"), join(outDir, "assets", "whale.png"))
 console.log("built -> packages/shell/dist-host (host plugin)")
