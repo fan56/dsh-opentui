@@ -2419,6 +2419,7 @@ function createDockFeature(deps) {
   });
   let thinkBuf = "";
   let lastFlush = 0;
+  let thinkOpen = false;
   const [tools, setTools] = createSignal3([]);
   const [toolVisible, setToolVisible] = createSignal3(false);
   const [toolFading, setToolFading] = createSignal3(false);
@@ -2648,8 +2649,11 @@ function createDockFeature(deps) {
       if (text === "")
         return;
       const now = Date.now();
-      if (!think().visible || think().fading) {
-        thinkBuf = text;
+      cancelThinkHide();
+      const fresh = !think().visible || think().fading || !thinkOpen;
+      thinkBuf = fresh ? text : thinkBuf + text;
+      thinkOpen = true;
+      if (fresh) {
         setThink({
           visible: true,
           expanded: false,
@@ -2663,8 +2667,6 @@ function createDockFeature(deps) {
         flush(true);
         return;
       }
-      cancelThinkHide();
-      thinkBuf = text;
       setThink((s) => ({
         ...s,
         text: thinkBuf,
@@ -2681,6 +2683,7 @@ function createDockFeature(deps) {
           lastAt: Date.now()
         }));
       scheduleThinkHide();
+      thinkOpen = false;
     },
     onToolStart(start) {
       lastToolAt = Date.now();
@@ -2727,6 +2730,7 @@ function createDockFeature(deps) {
         setToolFade(0);
       }
       thinkBuf = "";
+      thinkOpen = false;
     },
     onTurnEnd() {
       thinkBuf = "";
@@ -2736,6 +2740,7 @@ function createDockFeature(deps) {
         setToolFading(true);
         setToolFade(0);
       }
+      thinkOpen = false;
     },
     tick() {},
     reset() {

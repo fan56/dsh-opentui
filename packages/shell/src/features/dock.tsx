@@ -60,6 +60,10 @@ export function createDockFeature(deps: DockDeps): DockState {
   const [think, setThink] = createSignal({ visible: false, expanded: false, fading: false, fade: 0, text: "", lastAt: 0, startedAt: 0 })
   let thinkBuf = ""
   let lastFlush = 0
+  // true while incoming deltas belong to the CURRENT think segment —
+  // deltas accumulate; only a NEW segment (closed by content/turn-end)
+  // replaces the buffer
+  let thinkOpen = false
   // ---- tool widget state ----
   const [tools, setTools] = createSignal<ToolWidgetEntry[]>([])
   const [toolVisible, setToolVisible] = createSignal(false)
@@ -195,16 +199,19 @@ export function createDockFeature(deps: DockDeps): DockState {
     onThinkingDelta(text) {
       if (text === "") return
       const now = Date.now()
-      if (!think().visible || think().fading) {
-        thinkBuf = text
+      cancelThinkHide()
+      // NEW segment (hidden/fading, or the old one closed) → replace;
+      // otherwise ACCUMULATE — replacing every delta left the buffer
+      // holding only the last fragment (a few chars)
+      const fresh = !think().visible || think().fading || !thinkOpen
+      thinkBuf = fresh ? text : thinkBuf + text
+      thinkOpen = true
+      if (fresh) {
         setThink({ visible: true, expanded: false, fading: false, fade: 0, text: thinkBuf, lastAt: now, startedAt: now })
         lastFlush = 0
         flush(true)
         return
       }
-      // a NEW think clears the old in place — no hide/show cycle
-      cancelThinkHide()
-      thinkBuf = text
       setThink((s) => ({ ...s, text: thinkBuf, lastAt: now, expanded: false }))
       flush()
     },
@@ -213,6 +220,7 @@ export function createDockFeature(deps: DockDeps): DockState {
       // the answer is streaming: the thought is done — collapse to summary
       if (think().visible) setThink((s) => ({ ...s, expanded: false, lastAt: Date.now() }))
       scheduleThinkHide()
+      thinkOpen = false
     },
 
     onToolStart(start) {
@@ -251,6 +259,7 @@ export function createDockFeature(deps: DockDeps): DockState {
         setToolFade(0)
       }
       thinkBuf = ""
+      thinkOpen = false
     },
 
     onTurnEnd() {
@@ -261,6 +270,7 @@ export function createDockFeature(deps: DockDeps): DockState {
         setToolFading(true)
         setToolFade(0)
       }
+      thinkOpen = false
     },
 
     tick() {
