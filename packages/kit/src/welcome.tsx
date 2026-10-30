@@ -194,21 +194,61 @@ function dimHex(hex: string, k = 0.45): string {
 }
 const SHADOW_COLOR = dimHex(WHALE_COLOR)
 
+/** Front layer at the font's height: the whale halved to 14×10 px → 5
+ * rows, matching the block wordmark's 6 rows (incl. its shadow row). */
+function whaleFront(): boolean[][] {
+  return halvePixels(artToPixels())
+}
+
+/**
+ * Outside mask: flood-fill the empty cells from the grid edges. Only
+ * OUTSIDE cells may show shadow — an offset copy shown through every
+ * empty cell fills the silhouette's interior holes (the eye, contour
+ * gaps) and the whale dissolves into noise.
+ */
+function outsideMask(px: boolean[][]): boolean[][] {
+  const h = px.length
+  const w = px[0]!.length
+  const out = Array.from({ length: h }, () => Array.from({ length: w }, () => false))
+  const q: [number, number][] = []
+  for (let r = 0; r < h; r++) for (const c of [0, w - 1]) if (!px[r]![c]! && !out[r]![c]) { out[r]![c] = true; q.push([r, c]) }
+  for (let c = 0; c < w; c++) for (const r of [0, h - 1]) if (!px[r]![c]! && !out[r]![c]) { out[r]![c] = true; q.push([r, c]) }
+  while (q.length > 0) {
+    const [r, c] = q.pop()!
+    for (const [dr, dc] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as [number, number][]) {
+      const nr = r + dr
+      const nc = c + dc
+      if (nr >= 0 && nr < h && nc >= 0 && nc < w && !px[nr]![nc]! && !out[nr]![nc]) {
+        out[nr]![nc] = true
+        q.push([nr, nc])
+      }
+    }
+  }
+  return out
+}
+
 /** Whale rows with an offset dark shadow (+1 col, +1 row) behind the
- * front layer — the same extrusion the block font's letters carry. */
+ * front layer — shadow only where the silhouette does NOT cover and the
+ * cell is outside the body. */
 function whale3dRows(): { text: string; fg: string }[][] {
-  const art = WHALE_ART.map((row) => row)
-  const w = Math.max(...art.map((r) => r.length))
+  const front = whaleFront()
+  const outside = outsideMask(front)
+  const h = front.length
+  const w = front[0]!.length
   const out: { text: string; fg: string }[][] = []
-  for (let r = 0; r < art.length + 1; r++) {
+  // front glyphs keep the half-block detail (▀/▄/█) — flattening them to
+  // full blocks dissolves the silhouette into a blob
+  const glyphs = foldPixels(front)
+  for (let r = 0; r < h + 1; r++) {
     const spans: { text: string; fg: string }[] = []
     let run = ""
     let runFg = ""
     for (let c = 0; c < w + 1; c++) {
-      const main = (art[r]?.[c] ?? " ") !== " " ? art[r]![c]! : ""
-      const sh = (art[r - 1]?.[c - 1] ?? " ") !== " " ? art[r - 1]![c - 1]! : ""
-      const ch = main || sh
-      const fg = main ? WHALE_COLOR : SHADOW_COLOR
+      const g = (glyphs[r]?.[c] ?? " ") !== " " ? glyphs[r]![c]! : ""
+      const lit = g !== ""
+      const sh = r > 0 && c > 0 && front[r - 1]![c - 1]! && outside[r]?.[c] !== false && !lit
+      const ch = lit ? g : sh ? "█" : ""
+      const fg = lit ? WHALE_COLOR : SHADOW_COLOR
       if (ch && fg === runFg) {
         run += ch
       } else {
