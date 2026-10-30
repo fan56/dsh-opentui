@@ -272,6 +272,37 @@ export class HostSession {
     await c.unset(ref)
   }
 
+  /** Host command registry: the packages' own slash commands (plan,
+   * compact, feedback, export, …) — listed for the palette, executed on
+   * submit. TUI-owned commands never reach here. */
+  async listHostCommands(): Promise<{ name: string; description: string }[]> {
+    try {
+      const cmds = (this.#ctx as any).get?.("commands")
+      if (!cmds?.list) return []
+      // agent-scoped list when a session exists; the registry also lists
+      // without one (boot-time palette)
+      const list = (this.#handle?.agent ? await cmds.list(this.#handle.agent) : await cmds.list?.()) as any[]
+      return (Array.isArray(list) ? list : [])
+        .map((c) => ({ name: String(c?.name ?? ""), description: String(c?.description ?? "") }))
+        .filter((c) => c.name)
+    } catch {
+      return []
+    }
+  }
+
+  async executeHostCommand(line: string): Promise<{ text?: string } | undefined> {
+    try {
+      const cmds = (this.#ctx as any).get?.("commands")
+      const agent = this.#handle?.agent
+      if (!cmds?.execute || !agent) return { text: "host command service unavailable" }
+      const result = (await cmds.execute(agent, line, new AbortController().signal)) as any
+      const text = result?.message ?? result?.text ?? result?.output
+      return text ? { text: String(text).slice(0, 300) } : {}
+    } catch (e) {
+      return { text: String(e instanceof Error ? e.message : e).slice(0, 300) }
+    }
+  }
+
   /** The host settings service seam (login/logout route registration). */
   get settingsSeam(): { describe(): Promise<any>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> } | undefined {
     const st = (this.#ctx as any).get?.("settings")

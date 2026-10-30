@@ -160,6 +160,16 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // user-installed plugins (welcome list) + tool-execution mode (powerline)
   const [plugins] = createSignal(props.deps.session.listPlugins())
   const execMode = props.deps.session.executionMode()
+  // Host command registry (plan/compact/feedback/export/…): fetched once at
+  // boot, merged into the palette below the TUI-owned commands.
+  const [hostCommands, setHostCommands] = createSignal<{ name: string; description: string }[]>([])
+  onMount(async () => {
+    try {
+      setHostCommands(await props.deps.session.listHostCommands())
+    } catch {
+      /* registry unavailable: TUI commands still work */
+    }
+  })
   // imperative editor refocus counter (overlay teardown guard)
   const [focusKey, setFocusKey] = createSignal(0)
 
@@ -200,10 +210,14 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
 
   // Slash palette: the menu lists COMMANDS matching the "/token" prefix of
   // the input line. Usable mid-turn too — the line is never locked.
+  const allCommands = createMemo(() => {
+    const tuiNames = new Set(COMMANDS.map((c) => c.name))
+    return [...COMMANDS, ...hostCommands().filter((c) => !tuiNames.has(`/${c.name}`)).map((c) => ({ name: `/${c.name}`, desc: c.description, host: true }))]
+  })
   const filteredCommands = createMemo(() => {
     const m = /^\/(\S*)/.exec(input())
     if (!m) return []
-    return COMMANDS.filter((c) => c.name.slice(1).startsWith(m[1]))
+    return allCommands().filter((c) => c.name.slice(1).startsWith(m[1]))
   })
   const clampedSel = createMemo(() => {
     const n = filteredCommands().length
@@ -339,6 +353,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       const full = text === cmd.name || !text.startsWith("/") ? cmd.name : text
       commitHistory(full)
       clearBuffer()
+      if ((cmd as any).host) {
+        // host registry command: execute in the agent, echo any feedback
+        void props.deps.session.executeHostCommand(full).then((r) => {
+          if (r?.text) push({ kind: "system", text: r.text })
+        })
+        return
+      }
       void runCommand(full)
       return
     }
@@ -407,6 +428,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     if (cmd === "quit" || cmd === "exit") process.exit(0)
     if (cmd === "help" || cmd === "?") {
       push({ kind: "system", text: t("cmd.help.lines") })
+      const hc = hostCommands()
+      if (hc.length > 0) push({ kind: "system", text: `host commands: ${hc.map((c) => `/${c.name}`).join(" ")}` })
     } else if (cmd === "clear") {
       setItems([])
       setResetKey((k) => k + 1)
@@ -507,6 +530,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         }
       }
     } else {
+      // not TUI-owned: try the host command registry before giving up
+      const known = hostCommands().some((c) => c.name === cmd)
+      if (known) {
+        const r = await props.deps.session.executeHostCommand(text)
+        if (r?.text) push({ kind: "system", text: r.text })
+        return
+      }
       push({ kind: "system", text: `unknown command: /${cmd} (try /help)` })
     }
   }

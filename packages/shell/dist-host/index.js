@@ -2757,6 +2757,12 @@ function ShellHost(props) {
   let replayGen = 0;
   const [plugins] = createSignal4(props.deps.session.listPlugins());
   const execMode = props.deps.session.executionMode();
+  const [hostCommands, setHostCommands] = createSignal4([]);
+  onMount(async () => {
+    try {
+      setHostCommands(await props.deps.session.listHostCommands());
+    } catch {}
+  });
   const [focusKey, setFocusKey] = createSignal4(0);
   onMount(() => {
     const tick = setInterval(() => {
@@ -2798,11 +2804,19 @@ function ShellHost(props) {
         return answer;
       });
   });
+  const allCommands = createMemo(() => {
+    const tuiNames = new Set(COMMANDS.map((c) => c.name));
+    return [...COMMANDS, ...hostCommands().filter((c) => !tuiNames.has(`/${c.name}`)).map((c) => ({
+      name: `/${c.name}`,
+      desc: c.description,
+      host: true
+    }))];
+  });
   const filteredCommands = createMemo(() => {
     const m = /^\/(\S*)/.exec(input());
     if (!m)
       return [];
-    return COMMANDS.filter((c) => c.name.slice(1).startsWith(m[1]));
+    return allCommands().filter((c) => c.name.slice(1).startsWith(m[1]));
   });
   const clampedSel = createMemo(() => {
     const n = filteredCommands().length;
@@ -2923,6 +2937,16 @@ function ShellHost(props) {
       const full = text === cmd.name || !text.startsWith("/") ? cmd.name : text;
       commitHistory(full);
       clearBuffer();
+      if (cmd.host) {
+        props.deps.session.executeHostCommand(full).then((r) => {
+          if (r?.text)
+            push({
+              kind: "system",
+              text: r.text
+            });
+        });
+        return;
+      }
       runCommand(full);
       return;
     }
@@ -2990,6 +3014,12 @@ function ShellHost(props) {
         kind: "system",
         text: t("cmd.help.lines")
       });
+      const hc = hostCommands();
+      if (hc.length > 0)
+        push({
+          kind: "system",
+          text: `host commands: ${hc.map((c) => `/${c.name}`).join(" ")}`
+        });
     } else if (cmd === "clear") {
       setItems([]);
       setResetKey((k) => k + 1);
@@ -3131,6 +3161,16 @@ function ShellHost(props) {
         }
       }
     } else {
+      const known = hostCommands().some((c) => c.name === cmd);
+      if (known) {
+        const r = await props.deps.session.executeHostCommand(text);
+        if (r?.text)
+          push({
+            kind: "system",
+            text: r.text
+          });
+        return;
+      }
       push({
         kind: "system",
         text: `unknown command: /${cmd} (try /help)`
@@ -3761,6 +3801,30 @@ class HostSession {
     if (!c?.unset)
       throw new Error("credentials service unavailable in this host");
     await c.unset(ref);
+  }
+  async listHostCommands() {
+    try {
+      const cmds = this.#ctx.get?.("commands");
+      if (!cmds?.list)
+        return [];
+      const list = this.#handle?.agent ? await cmds.list(this.#handle.agent) : await cmds.list?.();
+      return (Array.isArray(list) ? list : []).map((c) => ({ name: String(c?.name ?? ""), description: String(c?.description ?? "") })).filter((c) => c.name);
+    } catch {
+      return [];
+    }
+  }
+  async executeHostCommand(line) {
+    try {
+      const cmds = this.#ctx.get?.("commands");
+      const agent = this.#handle?.agent;
+      if (!cmds?.execute || !agent)
+        return { text: "host command service unavailable" };
+      const result = await cmds.execute(agent, line, new AbortController().signal);
+      const text = result?.message ?? result?.text ?? result?.output;
+      return text ? { text: String(text).slice(0, 300) } : {};
+    } catch (e) {
+      return { text: String(e instanceof Error ? e.message : e).slice(0, 300) };
+    }
   }
   get settingsSeam() {
     const st = this.#ctx.get?.("settings");
