@@ -670,11 +670,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       { text: `dsh(${execMode})`, bg: POWERLINE_COLORS.brand },
       { text: r.provider, bg: POWERLINE_COLORS.provider },
       {
-        text: `${r.model || "·"}${r.effort ? ` ◕${r.effort}` : ""}`,
+        text: `🤖 ${r.model || "·"} ◕${r.effort ?? "off"}`,
         bg: POWERLINE_COLORS.thinking[r.effort ?? "high"] ?? POWERLINE_COLORS.thinking.high,
       },
       {
-        text: `🧠 ${pct}%`,
+        text: `🧠 ${usage().prompt >= 1000 ? `${(usage().prompt / 1000).toFixed(1)}k` : usage().prompt}(${pct}%)`,
         bg: pct > 80 ? POWERLINE_COLORS.contextDanger : pct > 60 ? POWERLINE_COLORS.contextOrange : pct > 40 ? POWERLINE_COLORS.contextWarn : POWERLINE_COLORS.contextOk,
       },
     ]

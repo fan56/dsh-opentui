@@ -3026,10 +3026,10 @@ function ShellHost(props) {
       text: r.provider,
       bg: POWERLINE_COLORS.provider
     }, {
-      text: `${r.model || "·"}${r.effort ? ` ◕${r.effort}` : ""}`,
+      text: `\uD83E\uDD16 ${r.model || "·"} ◕${r.effort ?? "off"}`,
       bg: POWERLINE_COLORS.thinking[r.effort ?? "high"] ?? POWERLINE_COLORS.thinking.high
     }, {
-      text: `\uD83E\uDDE0 ${pct}%`,
+      text: `\uD83E\uDDE0 ${usage().prompt >= 1000 ? `${(usage().prompt / 1000).toFixed(1)}k` : usage().prompt}(${pct}%)`,
       bg: pct > 80 ? POWERLINE_COLORS.contextDanger : pct > 60 ? POWERLINE_COLORS.contextOrange : pct > 40 ? POWERLINE_COLORS.contextWarn : POWERLINE_COLORS.contextOk
     }];
     if (msgCount() > 0)
@@ -3316,7 +3316,7 @@ class HostSession {
     try {
       const sel = ctx.get?.("agentDefaultModel")?.currentSelection?.();
       if (sel?.provider && sel?.model)
-        this.label = `${sel.provider}/${sel.model}`;
+        this.label = `${sel.provider}/${sel.model}${sel.reasoningEffort ? ` (${sel.reasoningEffort})` : ""}`;
     } catch {}
   }
   #providerCache = null;
@@ -3712,7 +3712,7 @@ class HostSession {
     if (!sel)
       return;
     if (this.#handle === undefined)
-      this.label = `${sel.provider}/${sel.model}`;
+      this.label = `${sel.provider}/${sel.model}${sel.reasoningEffort ? ` (${sel.reasoningEffort})` : ""}`;
     return { provider: sel.provider, model: sel.model, ...sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {} };
   }
   async attachImage(path) {

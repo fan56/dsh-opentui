@@ -70,7 +70,7 @@ export class HostSession {
     // first turn resolves the live session).
     try {
       const sel = (ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
-      if (sel?.provider && sel?.model) this.label = `${sel.provider}/${sel.model}`
+      if (sel?.provider && sel?.model) this.label = `${sel.provider}/${sel.model}${sel.reasoningEffort ? ` (${sel.reasoningEffort})` : ""}`
     } catch {
       /* optional service; keep the generic label */
     }
@@ -545,7 +545,7 @@ export class HostSession {
   #modelSelection(): Record<string, unknown> | undefined {
     const sel = this.#override ?? (this.#ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
     if (!sel) return undefined
-    if (this.#handle === undefined) this.label = `${sel.provider}/${sel.model}`
+    if (this.#handle === undefined) this.label = `${sel.provider}/${sel.model}${sel.reasoningEffort ? ` (${sel.reasoningEffort})` : ""}`
     return { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}) }
   }
 
