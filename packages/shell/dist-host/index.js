@@ -1218,51 +1218,13 @@ function pickDailyQuote() {
 var WHALE_COLOR = POWERLINE_COLORS.brand;
 var WHALE_ART = ["           ▄▄▄▄    █        ", "   ▄██████████▄   ████ ▄▄▄█▀", " ▄██████████████▄  ████████ ", " ██▀▀█████████████▄ ▄██▀▀   ", "██      ▀▀█████▄▀██████     ", "▀██        ▀████▄ ████▀     ", " ███        ▀████████▀      ", "  ▀██▄   █▄▄  ▀█████▀       ", "   ▀▀███▄▄███▄▄▄█████▄      ", "      ▀▀▀████▀▀▀            "];
 var WHALE_ART_WIDTH = Math.max(...WHALE_ART.map((row) => row.length));
-function artToPixels() {
-  const px = [];
-  for (const row of WHALE_ART) {
-    const top = [];
-    const bottom = [];
-    for (const ch of row) {
-      top.push(ch === "█" || ch === "▀");
-      bottom.push(ch === "█" || ch === "▄");
-    }
-    px.push(top, bottom);
-  }
-  return px;
-}
-function halvePixels(px) {
-  const out = [];
-  for (let r = 0;r < px.length; r += 2) {
-    const row = [];
-    for (let c = 0;c < px[0].length; c += 2)
-      row.push(px[r][c]);
-    out.push(row);
-  }
-  return out;
-}
-function foldPixels(px) {
-  const rows = [];
-  for (let i = 0;i < px.length; i += 2) {
-    let row = "";
-    for (let c = 0;c < px[0].length; c++) {
-      const top = px[i][c];
-      const bottom = px[i + 1]?.[c] ?? false;
-      row += top && bottom ? "█" : top ? "▀" : bottom ? "▄" : " ";
-    }
-    rows.push(row);
-  }
-  return rows;
-}
 function dimHex(hex, k = 0.45) {
   const n = parseInt(hex.slice(1), 16);
   const f = (v) => Math.round(v * k).toString(16).padStart(2, "0");
   return `#${f(n >> 16 & 255)}${f(n >> 8 & 255)}${f(n & 255)}`;
 }
 var SHADOW_COLOR = dimHex(WHALE_COLOR);
-function whaleFront() {
-  return halvePixels(artToPixels());
-}
+var WHALE_SMALL = ["                  ▄▄▄▄▄▄ ", "   ▄▄▄▄▄▄▄▄▄▄▄▄██████████", "▄████████████████████▀▀▀ ", "█████▀▀▀▀▄▄▄▄█████████▀  ", "▀████▄      ▀▀▀██████▄   "];
 function outsideMask(px) {
   const h = px.length;
   const w = px[0].length;
@@ -1298,23 +1260,21 @@ function outsideMask(px) {
   return out;
 }
 function whale3dRows() {
-  const front = whaleFront();
-  const outside = outsideMask(front);
-  const h = front.length;
-  const w = front[0].length;
+  const presence = WHALE_SMALL.map((row) => [...row].map((ch) => ch !== " "));
+  const outside = outsideMask(presence);
+  const h = presence.length;
+  const w = presence[0].length;
   const out = [];
-  const glyphs = foldPixels(front);
   for (let r = 0;r < h + 1; r++) {
     const spans = [];
     let run = "";
     let runFg = "";
     for (let c = 0;c < w + 1; c++) {
-      const g = (glyphs[r]?.[c] ?? " ") !== " " ? glyphs[r][c] : "";
-      const lit = g !== "";
-      const sh = r > 0 && c > 0 && front[r - 1][c - 1] && outside[r]?.[c] !== false && !lit;
-      const ch = lit ? g : sh ? "█" : "";
-      const fg = lit ? WHALE_COLOR : SHADOW_COLOR;
-      if (ch && fg === runFg) {
+      const lit = (presence[r]?.[c] ?? false) === true;
+      const sh = !lit && r > 0 && c > 0 && presence[r - 1][c - 1] && (outside[r]?.[c] ?? true);
+      const ch = lit ? WHALE_SMALL[r][c] : sh ? "█" : " ";
+      const fg = lit ? WHALE_COLOR : sh ? SHADOW_COLOR : runFg;
+      if (fg === runFg) {
         run += ch;
       } else {
         if (run)

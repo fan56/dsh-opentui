@@ -206,6 +206,21 @@ function whaleFront(): boolean[][] {
  * empty cell fills the silhouette's interior holes (the eye, contour
  * gaps) and the whale dissolves into noise.
  */
+/**
+ * Hand-drawn compact whale (5 half-block rows × 25 cols) — sized to the
+ * wordmark's height (5 art rows + 1 shadow row = 6, matching ascii_font
+ * "block"). Anatomy: rounded head LEFT, eye gap, body tapering to a
+ * raised tail fluke at the RIGHT. Downsampling the 10-row original was
+ * lossy; this is drawn at the target size directly.
+ */
+const WHALE_SMALL: readonly string[] = [
+  '                  ▄▄▄▄▄▄ ',
+  '   ▄▄▄▄▄▄▄▄▄▄▄▄██████████',
+  '▄████████████████████▀▀▀ ',
+  '█████▀▀▀▀▄▄▄▄█████████▀  ',
+  '▀████▄      ▀▀▀██████▄   ',
+]
+
 function outsideMask(px: boolean[][]): boolean[][] {
   const h = px.length
   const w = px[0]!.length
@@ -228,28 +243,28 @@ function outsideMask(px: boolean[][]): boolean[][] {
 }
 
 /** Whale rows with an offset dark shadow (+1 col, +1 row) behind the
- * front layer — shadow only where the silhouette does NOT cover and the
- * cell is outside the body. */
+ * front layer. BOTH layers live on the FOLDED glyph grid (5 rows) — the
+ * halved pixel grid is 10 rows and mixing the two scales drew the lower
+ * pixel half as a spurious shadow trail that shredded the silhouette.
+ * Shadow only lands on OUTSIDE cells (flood-fill), never in the body's
+ * interior holes. Empty cells keep their column (a dropped space shifts
+ * every later cell left and scatters the shape). */
 function whale3dRows(): { text: string; fg: string }[][] {
-  const front = whaleFront()
-  const outside = outsideMask(front)
-  const h = front.length
-  const w = front[0]!.length
+  const presence = WHALE_SMALL.map((row) => [...row].map((ch) => ch !== " "))
+  const outside = outsideMask(presence)
+  const h = presence.length
+  const w = presence[0]!.length
   const out: { text: string; fg: string }[][] = []
-  // front glyphs keep the half-block detail (▀/▄/█) — flattening them to
-  // full blocks dissolves the silhouette into a blob
-  const glyphs = foldPixels(front)
   for (let r = 0; r < h + 1; r++) {
     const spans: { text: string; fg: string }[] = []
     let run = ""
     let runFg = ""
     for (let c = 0; c < w + 1; c++) {
-      const g = (glyphs[r]?.[c] ?? " ") !== " " ? glyphs[r]![c]! : ""
-      const lit = g !== ""
-      const sh = r > 0 && c > 0 && front[r - 1]![c - 1]! && outside[r]?.[c] !== false && !lit
-      const ch = lit ? g : sh ? "█" : ""
-      const fg = lit ? WHALE_COLOR : SHADOW_COLOR
-      if (ch && fg === runFg) {
+      const lit = (presence[r]?.[c] ?? false) === true
+      const sh = !lit && r > 0 && c > 0 && presence[r - 1]![c - 1]! && (outside[r]?.[c] ?? true)
+      const ch = lit ? WHALE_SMALL[r]![c]! : sh ? "█" : " "
+      const fg = lit ? WHALE_COLOR : sh ? SHADOW_COLOR : runFg
+      if (fg === runFg) {
         run += ch
       } else {
         if (run) spans.push({ text: run, fg: runFg })
