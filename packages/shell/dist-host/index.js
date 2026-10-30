@@ -2729,6 +2729,9 @@ var COMMANDS = [{
   name: "/config",
   desc: "plugin settings (/config or /config key value)"
 }, {
+  name: "/queue",
+  desc: "queue a message (/queue msg, bare toggles panel)"
+}, {
   name: "/theme",
   desc: "pick theme"
 }, {
@@ -2777,6 +2780,8 @@ function ShellHost(props) {
   const [steerFor, setSteerFor] = createSignal4(null);
   const [steerBuffer, setSteerBuffer] = createSignal4("");
   const [hintsVisible, setHintsVisible] = createSignal4(true);
+  const [queueMsgs, setQueueMsgs] = createSignal4([]);
+  const [queueOpen, setQueueOpen] = createSignal4(false);
   const [btwPairs, setBtwPairs] = createSignal4([]);
   const [btwLive, setBtwLive] = createSignal4(null);
   const [btwOpen, setBtwOpen] = createSignal4(false);
@@ -3343,6 +3348,17 @@ function ShellHost(props) {
           text: "language switching unavailable"
         });
       }
+    } else if (cmd === "queue") {
+      setShowWelcome(false);
+      if (!arg) {
+        setQueueOpen((v) => !v);
+        return;
+      }
+      setQueueMsgs((arr) => [...arr, arg]);
+      push({
+        kind: "system",
+        text: `queued (${queueMsgs().length} waiting) — sends after the current turn`
+      });
     } else if (cmd === "config") {
       const KEYS = [{
         key: "retentionDays",
@@ -3566,6 +3582,11 @@ function ShellHost(props) {
       approveResolve = null;
       setBusy(false);
       setLiveTps(null);
+      const nextQueued = queueMsgs()[0];
+      if (nextQueued !== undefined) {
+        setQueueMsgs((arr) => arr.slice(1));
+        setTimeout(() => void send(nextQueued), 400);
+      }
     }
   }
   useKeyboard2((key) => {
@@ -4016,10 +4037,64 @@ function ShellHost(props) {
         return _el$12;
       })() : null;
     })(), null);
+    _$insert14(_el$, (() => {
+      var _c$7 = _$memo8(() => !!(queueOpen() || queueMsgs().length > 0));
+      return () => _c$7() ? (() => {
+        var _el$22 = _$createElement14("box"), _el$23 = _$createElement14("box"), _el$24 = _$createElement14("text"), _el$26 = _$createElement14("box"), _el$27 = _$createElement14("text");
+        _$insertNode11(_el$22, _el$23);
+        _$insertNode11(_el$23, _el$24);
+        _$insertNode11(_el$23, _el$26);
+        _$insertNode11(_el$23, _el$27);
+        _$setProp14(_el$23, "style", {
+          flexDirection: "row"
+        });
+        _$insertNode11(_el$24, _$createTextNode10(`queue`));
+        _$setProp14(_el$26, "style", {
+          flexGrow: 1
+        });
+        _$insertNode11(_el$27, _$createTextNode10(`/queue &lt;msg&gt; enqueue · bare toggle`));
+        _$insert14(_el$22, _$createComponent14(For11, {
+          get each() {
+            return queueMsgs();
+          },
+          children: (m, i) => (() => {
+            var _el$29 = _$createElement14("text");
+            _$insert14(_el$29, () => `${i() + 1}. ${m.slice(0, 80)}`);
+            _$effect14((_$p) => _$setProp14(_el$29, "style", {
+              fg: th().tokens.text
+            }, _$p));
+            return _el$29;
+          })()
+        }), null);
+        _$effect14((_p$) => {
+          var _v$10 = {
+            border: true,
+            borderStyle: "rounded",
+            borderColor: th().tokens.border,
+            flexDirection: "column",
+            padding: 1,
+            maxHeight: 8
+          }, _v$11 = {
+            fg: th().tokens.accent
+          }, _v$12 = {
+            fg: th().tokens.dim
+          };
+          _v$10 !== _p$.e && (_p$.e = _$setProp14(_el$22, "style", _v$10, _p$.e));
+          _v$11 !== _p$.t && (_p$.t = _$setProp14(_el$24, "style", _v$11, _p$.t));
+          _v$12 !== _p$.a && (_p$.a = _$setProp14(_el$27, "style", _v$12, _p$.a));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined,
+          a: undefined
+        });
+        return _el$22;
+      })() : null;
+    })(), null);
     _$insert14(_el$, () => loginFeature.view(), null);
     _$insert14(_el$, (() => {
-      var _c$7 = _$memo8(() => !!overlay());
-      return () => _c$7() ? _$createComponent14(Select, {
+      var _c$8 = _$memo8(() => !!overlay());
+      return () => _c$8() ? _$createComponent14(Select, {
         get title() {
           return overlay()?.title ?? "";
         },
@@ -4037,32 +4112,32 @@ function ShellHost(props) {
       }) : null;
     })(), null);
     _$insert14(_el$, (() => {
-      var _c$8 = _$memo8(() => !!menuVisible());
-      return () => _c$8() ? (() => {
-        var _el$22 = _$createElement14("box");
-        _$insert14(_el$22, _$createComponent14(For11, {
+      var _c$9 = _$memo8(() => !!menuVisible());
+      return () => _c$9() ? (() => {
+        var _el$30 = _$createElement14("box");
+        _$insert14(_el$30, _$createComponent14(For11, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$23 = _$createElement14("text"), _el$24 = _$createTextNode10(` `);
-            _$insertNode11(_el$23, _el$24);
-            _$insert14(_el$23, () => i() === clampedSel() ? "› " : "  ", _el$24);
-            _$insert14(_el$23, () => c.name, _el$24);
-            _$insert14(_el$23, () => c.desc, null);
-            _$effect14((_$p) => _$setProp14(_el$23, "style", {
+            var _el$31 = _$createElement14("text"), _el$32 = _$createTextNode10(` `);
+            _$insertNode11(_el$31, _el$32);
+            _$insert14(_el$31, () => i() === clampedSel() ? "› " : "  ", _el$32);
+            _$insert14(_el$31, () => c.name, _el$32);
+            _$insert14(_el$31, () => c.desc, null);
+            _$effect14((_$p) => _$setProp14(_el$31, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
-            return _el$23;
+            return _el$31;
           })()
         }));
-        _$effect14((_$p) => _$setProp14(_el$22, "style", {
+        _$effect14((_$p) => _$setProp14(_el$30, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
           padding: 0
         }, _$p));
-        return _el$22;
+        return _el$30;
       })() : null;
     })(), null);
     _$insert14(_el$, _$createComponent14(InputLine, {
@@ -4105,8 +4180,8 @@ function ShellHost(props) {
       }
     }), null);
     _$insert14(_el$, (() => {
-      var _c$9 = _$memo8(() => !!hintsVisible());
-      return () => _c$9() ? _$createComponent14(FooterHints, {
+      var _c$0 = _$memo8(() => !!hintsVisible());
+      return () => _c$0() ? _$createComponent14(FooterHints, {
         get theme() {
           return th();
         }

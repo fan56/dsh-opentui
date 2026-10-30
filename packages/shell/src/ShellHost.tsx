@@ -83,6 +83,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/language", desc: "switch interface language (zh-CN/en)" },
   { name: "/hints", desc: "toggle the key-hint strip" },
   { name: "/config", desc: "plugin settings (/config or /config key value)" },
+  { name: "/queue", desc: "queue a message (/queue msg, bare toggles panel)" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -133,6 +134,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [steerFor, setSteerFor] = createSignal<string | null>(null)
   const [steerBuffer, setSteerBuffer] = createSignal("")
   const [hintsVisible, setHintsVisible] = createSignal(true)
+  // message queue: /queue <msg> enqueues while busy (steering stays the
+  // primary mid-turn path); the turn-end drain sends them in order
+  const [queueMsgs, setQueueMsgs] = createSignal<string[]>([])
+  const [queueOpen, setQueueOpen] = createSignal(false)
   // btw side questions: finished Q/A pairs (bare /btw reviews) + a live
   // running entry + the panel toggle
   const [btwPairs, setBtwPairs] = createSignal<{ q: string; a: string }[]>([])
@@ -652,6 +657,14 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       } else {
         push({ kind: "error", text: "language switching unavailable" })
       }
+    } else if (cmd === "queue") {
+      setShowWelcome(false)
+      if (!arg) {
+        setQueueOpen((v) => !v)
+        return
+      }
+      setQueueMsgs((arr) => [...arr, arg])
+      push({ kind: "system", text: `queued (${queueMsgs().length} waiting) — sends after the current turn` })
     } else if (cmd === "config") {
       // deep settings: /config lists, /config key value writes. Persisted
       // to the profile config.json; applied live (retention filters
@@ -809,6 +822,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       approveResolve = null
       setBusy(false)
       setLiveTps(null)
+      // queue drain: the next queued message goes out right after the
+      // turn settles (400ms beat so the dock collapse renders first)
+      const nextQueued = queueMsgs()[0]
+      if (nextQueued !== undefined) {
+        setQueueMsgs((arr) => arr.slice(1))
+        setTimeout(() => void send(nextQueued), 400)
+      }
     }
   }
 
@@ -1057,6 +1077,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
                 </For>
               </box>
             )}
+          </For>
+        </box>
+      ) : null}
+      {queueOpen() || queueMsgs().length > 0 ? (
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.border, flexDirection: "column", padding: 1, maxHeight: 8 }}>
+          <box style={{ flexDirection: "row" }}>
+            <text style={{ fg: th().tokens.accent }}>queue</text>
+            <box style={{ flexGrow: 1 }} />
+            <text style={{ fg: th().tokens.dim }}>/queue &lt;msg&gt; enqueue · bare toggle</text>
+          </box>
+          <For each={queueMsgs()}>
+            {(m, i) => <text style={{ fg: th().tokens.text }}>{`${i() + 1}. ${m.slice(0, 80)}`}</text>}
           </For>
         </box>
       ) : null}
