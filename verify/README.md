@@ -14,6 +14,11 @@
 4. **视觉审核**：tmux capture -e → PNG 渲染 → 亲眼 Read 验收（禁 grep-only 收尾）
 5. **parity 对照**：与 dsh-tui-pi 同场景对拍（见 run-parity.mjs）
 
+## 当前状态
+- UT 层：packages/kit/src/widget-frame.test.ts — 4 tests / 16 asserts GREEN
+- E2E+parity：verify/run-parity.mjs — 9/9 GREEN
+- FT 层：packages/kit/test/widget-frame.frame.test.tsx — 三个回归锁断言已写，被 testRender 的 Orphan text error 挡住（探针过的是 textarea 根，Show 根触引擎约束，待查）；标记 skip 不删
+
 ## 运行
 ```
 cd packages/shell && npm run verify        # UT+FT+E2E 全链
