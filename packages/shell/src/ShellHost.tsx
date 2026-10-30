@@ -158,6 +158,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // bumps on any session switch (/new, resume, fork) — async replays check it
   let replayGen = 0
   // user-installed plugins (welcome list) + tool-execution mode (powerline)
+  const [stopConfirm, setStopConfirm] = createSignal(false)
   const [plugins] = createSignal(props.deps.session.listPlugins())
   const execMode = props.deps.session.executionMode()
   // Host command registry (plan/compact/feedback/export/…): fetched once at
@@ -428,6 +429,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     if (cmd === "quit" || cmd === "exit") process.exit(0)
     if (cmd === "help" || cmd === "?") {
       push({ kind: "system", text: t("cmd.help.lines") })
+      push({ kind: "system", text: "keys: PgUp/PgDn or ctrl+b/f scroll · ctrl+t think detail · ctrl+o tool ledger · esc stop-confirm while busy · alt+enter newline · / palette" })
       const hc = hostCommands()
       if (hc.length > 0) push({ kind: "system", text: `host commands: ${hc.map((c) => `/${c.name}`).join(" ")}` })
     } else if (cmd === "clear") {
@@ -634,6 +636,23 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-keys.log", JSON.stringify({ name: key.name, seq: key.sequence }) + "\n")).catch(() => {})
     }
     if (key.sequence === "\x03" || ((key.name === "c" || key.name === "C") && key.ctrl)) process.exit(0)
+    // abort confirm (tui-pi stop-dialog): a bare esc while busy arms the
+    // stop card instead of killing the turn — accidental esc no longer
+    // throws away a long answer. y aborts, n/esc resumes.
+    if (stopConfirm()) {
+      if (key.sequence === "y") {
+        setStopConfirm(false)
+        props.deps.session.abort?.()
+        push({ kind: "system", text: "turn aborted" })
+      } else if (key.sequence === "n" || key.name === "escape") {
+        setStopConfirm(false)
+      }
+      return
+    }
+    if (key.name === "escape" && busy() && !stopConfirm()) {
+      setStopConfirm(true)
+      return
+    }
     // Approval card: y/enter allows, n/esc rejects (highest modal priority
     // — the turn is waiting on us; the editor is blurred under it).
     const ap = approval()
@@ -743,6 +762,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       {dock.toolView()}
       {approval() ? (
         <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
+      ) : null}
+      {stopConfirm() ? (
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.warn, flexDirection: "column", padding: 1 }}>
+          <text style={{ fg: th().tokens.warn }}>abort this turn?</text>
+          <text style={{ fg: th().tokens.dim }}>y aborts · n/esc resumes</text>
+        </box>
       ) : null}
       {loginFeature.view()}
       {overlay() ? (

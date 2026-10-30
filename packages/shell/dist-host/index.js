@@ -138,9 +138,9 @@ function createI18n(locale = "zh-CN") {
 }
 
 // src/ShellHost.tsx
+import { effect as _$effect14 } from "@opentui/solid";
 import { createTextNode as _$createTextNode10 } from "@opentui/solid";
 import { insertNode as _$insertNode11 } from "@opentui/solid";
-import { effect as _$effect14 } from "@opentui/solid";
 import { mergeProps as _$mergeProps } from "@opentui/solid";
 import { insert as _$insert14 } from "@opentui/solid";
 import { createComponent as _$createComponent14 } from "@opentui/solid";
@@ -2755,6 +2755,7 @@ function ShellHost(props) {
   };
   const pinIfFollowing = () => {};
   let replayGen = 0;
+  const [stopConfirm, setStopConfirm] = createSignal4(false);
   const [plugins] = createSignal4(props.deps.session.listPlugins());
   const execMode = props.deps.session.executionMode();
   const [hostCommands, setHostCommands] = createSignal4([]);
@@ -3013,6 +3014,10 @@ function ShellHost(props) {
       push({
         kind: "system",
         text: t("cmd.help.lines")
+      });
+      push({
+        kind: "system",
+        text: "keys: PgUp/PgDn or ctrl+b/f scroll · ctrl+t think detail · ctrl+o tool ledger · esc stop-confirm while busy · alt+enter newline · / palette"
       });
       const hc = hostCommands();
       if (hc.length > 0)
@@ -3282,6 +3287,23 @@ function ShellHost(props) {
     }
     if (key.sequence === "\x03" || (key.name === "c" || key.name === "C") && key.ctrl)
       process.exit(0);
+    if (stopConfirm()) {
+      if (key.sequence === "y") {
+        setStopConfirm(false);
+        props.deps.session.abort?.();
+        push({
+          kind: "system",
+          text: "turn aborted"
+        });
+      } else if (key.sequence === "n" || key.name === "escape") {
+        setStopConfirm(false);
+      }
+      return;
+    }
+    if (key.name === "escape" && busy() && !stopConfirm()) {
+      setStopConfirm(true);
+      return;
+    }
     const ap = approval();
     if (ap) {
       if (key.sequence === "y" || key.name === "return") {
@@ -3445,10 +3467,42 @@ function ShellHost(props) {
         }
       }) : null;
     })(), null);
+    _$insert14(_el$, (() => {
+      var _c$3 = _$memo8(() => !!stopConfirm());
+      return () => _c$3() ? (() => {
+        var _el$2 = _$createElement14("box"), _el$3 = _$createElement14("text"), _el$5 = _$createElement14("text");
+        _$insertNode11(_el$2, _el$3);
+        _$insertNode11(_el$2, _el$5);
+        _$insertNode11(_el$3, _$createTextNode10(`abort this turn?`));
+        _$insertNode11(_el$5, _$createTextNode10(`y aborts · n/esc resumes`));
+        _$effect14((_p$) => {
+          var _v$ = {
+            border: true,
+            borderStyle: "rounded",
+            borderColor: th().tokens.warn,
+            flexDirection: "column",
+            padding: 1
+          }, _v$2 = {
+            fg: th().tokens.warn
+          }, _v$3 = {
+            fg: th().tokens.dim
+          };
+          _v$ !== _p$.e && (_p$.e = _$setProp14(_el$2, "style", _v$, _p$.e));
+          _v$2 !== _p$.t && (_p$.t = _$setProp14(_el$3, "style", _v$2, _p$.t));
+          _v$3 !== _p$.a && (_p$.a = _$setProp14(_el$5, "style", _v$3, _p$.a));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined,
+          a: undefined
+        });
+        return _el$2;
+      })() : null;
+    })(), null);
     _$insert14(_el$, () => loginFeature.view(), null);
     _$insert14(_el$, (() => {
-      var _c$3 = _$memo8(() => !!overlay());
-      return () => _c$3() ? _$createComponent14(Select, {
+      var _c$4 = _$memo8(() => !!overlay());
+      return () => _c$4() ? _$createComponent14(Select, {
         get title() {
           return overlay()?.title ?? "";
         },
@@ -3463,32 +3517,32 @@ function ShellHost(props) {
       }) : null;
     })(), null);
     _$insert14(_el$, (() => {
-      var _c$4 = _$memo8(() => !!menuVisible());
-      return () => _c$4() ? (() => {
-        var _el$2 = _$createElement14("box");
-        _$insert14(_el$2, _$createComponent14(For11, {
+      var _c$5 = _$memo8(() => !!menuVisible());
+      return () => _c$5() ? (() => {
+        var _el$7 = _$createElement14("box");
+        _$insert14(_el$7, _$createComponent14(For11, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$3 = _$createElement14("text"), _el$4 = _$createTextNode10(` `);
-            _$insertNode11(_el$3, _el$4);
-            _$insert14(_el$3, () => i() === clampedSel() ? "› " : "  ", _el$4);
-            _$insert14(_el$3, () => c.name, _el$4);
-            _$insert14(_el$3, () => c.desc, null);
-            _$effect14((_$p) => _$setProp14(_el$3, "style", {
+            var _el$8 = _$createElement14("text"), _el$9 = _$createTextNode10(` `);
+            _$insertNode11(_el$8, _el$9);
+            _$insert14(_el$8, () => i() === clampedSel() ? "› " : "  ", _el$9);
+            _$insert14(_el$8, () => c.name, _el$9);
+            _$insert14(_el$8, () => c.desc, null);
+            _$effect14((_$p) => _$setProp14(_el$8, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
-            return _el$3;
+            return _el$8;
           })()
         }));
-        _$effect14((_$p) => _$setProp14(_el$2, "style", {
+        _$effect14((_$p) => _$setProp14(_el$7, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
           padding: 0
         }, _$p));
-        return _el$2;
+        return _el$7;
       })() : null;
     })(), null);
     _$insert14(_el$, _$createComponent14(InputLine, {
@@ -4078,6 +4132,15 @@ class HostSession {
     this.#pendingImages.push(ref);
     return `${ref.name ?? path} (${(ref.bytes / 1024).toFixed(0)} KB)`;
   }
+  abort() {
+    try {
+      this.#handle?.dispose?.();
+    } catch {}
+    this.#handle = undefined;
+    this.#agentId = undefined;
+    this.#resolveTurn?.();
+    this.#resolveTurn = undefined;
+  }
   steer(userText) {
     if (!this.#handle)
       return;
@@ -4132,6 +4195,21 @@ class HostSession {
         } else if (c.type === "text-delta" && c.text) {
           cb.onContentDelta(c.text);
           this.#ticker.add(c.text.length);
+        } else if (c.type === "usage") {
+          let p = 0;
+          let comp = 0;
+          for (const [k, v] of Object.entries(c)) {
+            if (typeof v !== "number")
+              continue;
+            if (/prompt/i.test(k))
+              p = Math.max(p, v);
+            if (/completion/i.test(k))
+              comp = Math.max(comp, v);
+          }
+          if (p > 0)
+            this.usage.prompt = p;
+          if (comp > 0)
+            this.usage.completion += comp;
         } else if (c.type === "tool-call-delta" && c.name) {}
       } catch {}
     });

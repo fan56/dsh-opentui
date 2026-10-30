@@ -601,6 +601,21 @@ export class HostSession {
     return `${ref.name ?? path} (${(ref.bytes / 1024).toFixed(0)} KB)`
   }
 
+  /** Abort the running turn: dispose the live agent and settle the turn
+   * promise (the stop-confirm flow calls this; /new semantics for the
+   * next send — a fresh session is created). */
+  abort(): void {
+    try {
+      this.#handle?.dispose?.()
+    } catch {
+      /* already gone */
+    }
+    this.#handle = undefined
+    this.#agentId = undefined
+    this.#resolveTurn?.()
+    this.#resolveTurn = undefined
+  }
+
   /** Steer the RUNNING agent with a mid-turn message (Kimi-style inject). */
   steer(userText: string): void {
     if (!this.#handle) return
@@ -655,6 +670,19 @@ export class HostSession {
         } else if (c.type === "text-delta" && c.text) {
           cb.onContentDelta(c.text)
           this.#ticker.add(c.text.length)
+        } else if (c.type === "usage") {
+          // usage frame: prompt = the request's context size (assignment —
+          // the 🧠 segment reads latest, not additive); completion adds up
+          // over the session. Field names vary by adapter — numeric scan.
+          let p = 0
+          let comp = 0
+          for (const [k, v] of Object.entries(c as Record<string, unknown>)) {
+            if (typeof v !== "number") continue
+            if (/prompt/i.test(k)) p = Math.max(p, v)
+            if (/completion/i.test(k)) comp = Math.max(comp, v)
+          }
+          if (p > 0) this.usage.prompt = p
+          if (comp > 0) this.usage.completion += comp
         } else if (c.type === "tool-call-delta" && c.name) {
           // name arrives with the first delta; the rendered tool block comes
           // from the durable tool/call + tool/result events below
