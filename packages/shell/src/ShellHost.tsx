@@ -157,6 +157,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const pinIfFollowing = () => {} // window is bottom-anchored; nothing to pin
   // bumps on any session switch (/new, resume, fork) — async replays check it
   let replayGen = 0
+  // user-installed plugins (welcome list) + tool-execution mode (powerline)
+  const [plugins] = createSignal(props.deps.session.listPlugins())
+  const execMode = props.deps.session.executionMode()
   // imperative editor refocus counter (overlay teardown guard)
   const [focusKey, setFocusKey] = createSignal(0)
 
@@ -664,7 +667,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     const r = route()
     const pct = contextPct()
     const segs: PowerlineSegment[] = [
-      { text: "dsh", bg: POWERLINE_COLORS.brand },
+      { text: `dsh(${execMode})`, bg: POWERLINE_COLORS.brand },
       { text: r.provider, bg: POWERLINE_COLORS.provider },
       {
         text: `${r.model || "·"}${r.effort ? ` ◕${r.effort}` : ""}`,
@@ -689,7 +692,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       {showWelcome() ? (
-        <WelcomeBanner theme={th()} model={label()} cwd={process.cwd()} />
+        <WelcomeBanner theme={th()} model={label()} cwd={process.cwd()} plugins={plugins()} />
       ) : (
         <TranscriptWindow
           items={items()}

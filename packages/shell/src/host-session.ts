@@ -8,7 +8,7 @@
 import { createUserMessage } from "@deepseek-ai/dsh-llm"
 import type { Context } from "@deepseek-ai/cordis"
 import { randomUUID } from "node:crypto"
-import { appendFileSync } from "node:fs"
+import { appendFileSync, readFileSync } from "node:fs"
 import {
   createStreamTicker,
   emptyTurnStats,
@@ -270,6 +270,35 @@ export class HostSession {
     const c = this.#credentials()
     if (!c?.unset) throw new Error("credentials service unavailable in this host")
     await c.unset(ref)
+  }
+
+  /** User-installed plugins (profile package.json deps, versions from
+   * the installed copies) — dsh built-ins (@deepseek-ai/*) excluded. */
+  listPlugins(): { name: string; version: string }[] {
+    try {
+      const root = new URL("../../../../package.json", import.meta.url).pathname
+      const pkg = JSON.parse(readFileSync(root, "utf8"))
+      const out: { name: string; version: string }[] = []
+      for (const [name, range] of Object.entries((pkg.dependencies ?? {}) as Record<string, string>)) {
+        if (name.startsWith("@deepseek-ai/")) continue
+        let version = range
+        try {
+          version = JSON.parse(readFileSync(new URL(`../../../../node_modules/${name}/package.json`, import.meta.url).pathname, "utf8")).version
+        } catch {
+          /* keep the range as the label */
+        }
+        out.push({ name, version })
+      }
+      return out
+    } catch {
+      return []
+    }
+  }
+
+  /** Tool-execution mode for the powerline brand segment: "ptc" when a
+   * codemode/ptc plugin is mounted, "native" otherwise. */
+  executionMode(): "native" | "ptc" {
+    return this.listPlugins().some((p) => /ptc|codemode/i.test(p.name)) ? "ptc" : "native"
   }
 
   /** Compact /usage lines: cumulative token totals plus the last turn's

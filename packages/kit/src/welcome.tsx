@@ -3,7 +3,7 @@
  * ANSI-Shadow style letters), the model/cwd line and the daily quote
  * under it — top-left, above the input.
  */
-import { type JSX } from "solid-js"
+import { For, type JSX } from "solid-js"
 import type { Theme } from "./theme.ts"
 import { POWERLINE_COLORS } from "./powerline.tsx"
 import { pickDailyQuote } from "./quotes.ts"
@@ -17,11 +17,18 @@ function shortenCwd(cwd: string): string {
   return `…${short.slice(-59)}`
 }
 
-export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string }): JSX.Element {
+export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string; plugins?: { name: string; version: string }[] }): JSX.Element {
   const quote = pickDailyQuote()
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-start", alignItems: "flex-start", padding: 1 }}>
-      <ascii_font text="DSH OpenTUI" font="block" color={POWERLINE_COLORS.brand} />
+      <ascii_font text="DSH OPENTUI" font="block" color={POWERLINE_COLORS.brand} />
+      <text style={{ fg: props.theme.tokens.dim }}>{"plugins:"}</text>
+      <For each={props.plugins ?? []}>
+        {(p) => (
+          <text style={{ fg: props.theme.tokens.dim }}>{`  ● ${p.name}@${p.version}`}</text>
+        )}
+      </For>
+      <text>{" "}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`${props.model} · ${shortenCwd(props.cwd)}`}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`🐳 「${quote}」`}</text>
       <text>{" "}</text>
