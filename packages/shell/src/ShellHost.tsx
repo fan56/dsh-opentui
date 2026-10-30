@@ -12,7 +12,7 @@ import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { SyntaxStyle } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { getTheme, themeNames, themes, type I18n } from "@dsh-opentui/kit"
-import { Transcript, InputLine, FooterHints, ApprovalCard, type TranscriptItem } from "@dsh-opentui/kit"
+import { Transcript, TranscriptWindow, InputLine, FooterHints, ApprovalCard, type TranscriptItem } from "@dsh-opentui/kit"
 import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, speedSegment, type PowerlineSegment } from "@dsh-opentui/kit"
 import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem, SubagentWidget, type SubagentEntry } from "@dsh-opentui/kit"
 import type { SurfaceStore } from "@dsh-opentui/runtime"
@@ -134,8 +134,27 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   let turnStartAt = 0
 
   let approveResolve: ((ok: boolean) => void) | null = null
-  // scroll region handle for PgUp/PgDn lookback
-  let scrollRef: any
+  // Transcript lookback: a bottom-anchored line window (tui-pi's shape —
+  // the native scrollbox never re-measures streaming text growth, so every
+  // scroll API on it clamps to a stale height). offset 0 shows the newest
+  // lines and follows the stream by construction; scrolling up switches to
+  // a top-anchored window that stays put while content grows; reaching the
+  // bottom resumes following.
+  const [scrollTopLine, setScrollTopLine] = createSignal<number | null>(null)
+  let totalLines = 0
+  const VIEWPORT_ROWS = 18
+  const scrollUp = () => {
+    const cur = scrollTopLine() ?? Math.max(0, totalLines - VIEWPORT_ROWS)
+    setScrollTopLine(Math.max(0, cur - 12))
+  }
+  const scrollDown = () => {
+    const cur = scrollTopLine()
+    if (cur === null) return
+    const next = cur + 12
+    if (next + VIEWPORT_ROWS >= totalLines) setScrollTopLine(null)
+    else setScrollTopLine(next)
+  }
+  const pinIfFollowing = () => {} // window is bottom-anchored; nothing to pin
   // bumps on any session switch (/new, resume, fork) — async replays check it
   let replayGen = 0
   // imperative editor refocus counter (overlay teardown guard)
@@ -254,6 +273,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     const now = Date.now()
     if (now - lastBump < 60) return
     lastBump = now
+    pinIfFollowing()
     // Replace the streaming reply ref (not just the array) so the per-item
     // <For> re-renders it — and REBIND the live ref to the copy now in the
     // array: matching the original object stops working after the first
@@ -266,7 +286,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       setItems((arr) => arr.map((x) => (x === prev ? next : x)))
     }
   }
-  const push = (it: TItem) => setItems((arr) => [...arr, it])
+  const push = (it: TItem) => {
+    setItems((arr) => [...arr, it])
+    pinIfFollowing()
+  }
 
   // ---- input flow: submission + history recall (buffer lives in InputLine) ----
   /** Record a submitted line in history (dedupe consecutive duplicates). */
@@ -429,8 +452,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
               await new Promise((r2) => setTimeout(r2, 50))
               if (gen !== replayGen) return
               setItems(rows.map((it) => (it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : { kind: "user" as const, text: it.text })) as TItem[])
-              // bulk content swaps strand the viewport mid-scroll — pin back
-              scrollRef && (scrollRef.scrollTop = 1e9)
+              setScrollTopLine(null)
             } catch {
               /* replay is best-effort; the turn itself still resumes */
             }
@@ -617,11 +639,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
     // scrollback lookback: PgUp/PgDn page through the transcript region
     if (key.name === "pageup" || (key.ctrl && key.name === "b")) {
-      scrollRef?.scrollBy?.(-12)
+      scrollUp()
       return
     }
     if (key.name === "pagedown" || (key.ctrl && key.name === "f")) {
-      scrollRef?.scrollBy?.(12)
+      scrollDown()
       return
     }
     // esc closes the slash palette (the editor keeps its buffer).
@@ -669,19 +691,23 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       {showWelcome() ? (
         <WelcomeBanner theme={th()} model={label()} cwd={process.cwd()} />
       ) : (
-        <AutoScroll ref={(el: any) => (scrollRef = el)}>
-          <Transcript items={items()} theme={th()} t={t} spinnerFrame="" mdStyle={mdStyle} />
-          {/* The dock widgets live INSIDE the scroll region (tui-pi's shape):
-              their 0→expanded→collapsed height churn happens in scroll
-              content, so the input box below keeps a stable Y — siblings
-              after a shrinking child misplace by one row otherwise.
-              stickyScroll keeps the bottom (widgets) in view. */}
-          <TodosWidget todos={todos()} theme={th()} />
-          <SubagentWidget entries={subagents()} theme={th()} />
-          {dock.thinkView()}
-          {dock.toolView()}
-        </AutoScroll>
+        <TranscriptWindow
+          items={items()}
+          theme={th()}
+          t={t}
+          spinnerFrame=""
+          mdStyle={mdStyle}
+          viewportRows={VIEWPORT_ROWS}
+          {...(scrollTopLine() !== null ? { startIndex: scrollTopLine()! } : { offset: 0 })}
+          onLayout={(total, rows) => (totalLines = total)}
+        />
       )}
+      {/* Fixed dock below the transcript window (tui-pi's shape): the
+          panels never scroll away with the content. */}
+      <TodosWidget todos={todos()} theme={th()} />
+      <SubagentWidget entries={subagents()} theme={th()} />
+      {dock.thinkView()}
+      {dock.toolView()}
       {approval() ? (
         <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
       ) : null}

@@ -183,46 +183,51 @@ export function TranscriptWindow(props: {
   spinnerFrame: string
   maxItems?: number
   mdStyle?: any
+  /** Rows scrolled up from the bottom (0 = pinned to the newest line). */
   offset?: number
+  /** Explicit top-anchored start line — when set, the window stays put
+   * while content grows (offset alone re-anchors to the moving end). */
+  startIndex?: number
   viewportRows?: number
+  /** Reports the flattened line count + the window size (key boundary math). */
+  onLayout?: (totalLines: number, viewportRows: number) => void
 }): JSX.Element {
   const offset = () => props.offset ?? 0
 
-  // Bottom-anchored: delegate to the untouched JSX path, so behavior is
-  // identical to Transcript when the user is not scrolled back. The branch
-  // must live INSIDE the JSX: a component body runs once in Solid, so an
-  // early `return` here would pin the offset-0 branch forever.
-  const bottomView = () => (
-    <Transcript
-      items={props.items}
-      theme={props.theme}
-      t={props.t}
-      spinnerFrame={props.spinnerFrame}
-      maxItems={props.maxItems}
-      mdStyle={props.mdStyle}
-    />
-  )
-
-  // Scrolled back: window over the flattened plain-text lines.
+  // The flattened line window — bottom-anchored when following (offset 0
+  // slices the NEWEST rows), top-anchored while the user is scrolled back
+  // (startIndex stays put while content grows).
   const windowLines = () => {
     const visible = props.items.slice(-(props.maxItems ?? MAX_VISIBLE_ITEMS))
     const all = itemsToLines(visible, props.theme, props.t, props.spinnerFrame, props.mdStyle)
-    const rows = props.viewportRows ?? 30
-    const start = Math.max(0, all.length - rows - offset())
+    const vrows = props.viewportRows ?? 30
+    props.onLayout?.(all.length, vrows)
+    if (props.startIndex !== undefined) {
+      const start = Math.max(0, Math.min(props.startIndex, Math.max(0, all.length - vrows)))
+      return all.slice(start, start + vrows)
+    }
+    const start = Math.max(0, all.length - vrows - offset())
     const end = Math.max(1, all.length - offset())
     return all.slice(start, end)
   }
 
-  const scrolledView = () => (
+  // Both modes render the flattened line window — bottom-anchored when
+  // following (offset 0 slices the NEWEST rows), top-anchored while the
+  // user is scrolled back. The full-JSX path (per-item markdown) is not
+  // windowable and used to overflow the box from the top, which read as
+  // "stuck at the oldest lines".
+  return (
     <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
+      {/* reactive call — a component body runs once in Solid, so the window
+          must be derived inside the JSX expression, never in a body const */}
       <For each={windowLines()}>
         {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
       </For>
-      <text style={{ fg: props.theme.tokens.dim }}>{`↑ scrolled ${offset()} rows (PgDn = bottom)`}</text>
+      <Show when={(props.offset ?? 0) > 0 || props.startIndex !== undefined}>
+        <text style={{ fg: props.theme.tokens.dim }}>{`↑ scrolled (PgDn = follow latest)`}</text>
+      </Show>
     </box>
   )
-
-  return <Show when={offset() === 0} fallback={scrolledView()}>{bottomView()}</Show>
 }
 
 export interface InputLineProps {
@@ -246,9 +251,8 @@ export interface InputLineProps {
    * then suppresses its default cursor movement for that key. */
   onHistoryNav?: (dir: "up" | "down") => boolean
   /** First say on every unmodified key: return true to consume it (the
-   * editor suppresses its own action — the slash palette uses this for
-   * up/down/tab/enter while the menu is open). Runs before the history
-   * routing below. */
+   * slash palette uses this for up/down/tab/enter while the menu is
+   * open). Runs before the history routing below. */
   onKeyFilter?: (key: { name: string }) => boolean
   /** When this number changes, the buffer is fully reset (undo history
    * included) — bump it for /clear. */
@@ -281,19 +285,6 @@ const INPUT_KEY_BINDINGS = [
   { name: "kpenter", meta: true, action: "newline" as const },
 ]
 
-/** Multi-line input editor on the OpenTUI native <textarea> intrinsic,
- * inside the same rounded border box the old hand-rolled caret row used.
- * The Shell owns submission/history via the callback props; this
- * component owns the buffer, caret rendering, char-wrap and paste.
- *
- * Busy mode keeps the textarea MOUNTED (toggling mount would lose the
- * draft mid-steering) and only blurs it, adding a dim status row below.
- *
- * History routing: up/down arrive in onKeyDown BEFORE the renderable's
- * default action lookup (focus dispatch calls _keyListeners["down"], then
- * handleKeyPress only if the event was not defaultPrevented). When the
- * cursor is on the first/last visual line and onHistoryNav consumes the
- * key we preventDefault() — no default binding surgery needed. */
 export function InputLine(props: InputLineProps): JSX.Element {
   let ta: TextareaRenderable | undefined
 

@@ -141,6 +141,7 @@ function createI18n(locale = "zh-CN") {
 import { createTextNode as _$createTextNode10 } from "@opentui/solid";
 import { insertNode as _$insertNode11 } from "@opentui/solid";
 import { effect as _$effect14 } from "@opentui/solid";
+import { mergeProps as _$mergeProps } from "@opentui/solid";
 import { insert as _$insert14 } from "@opentui/solid";
 import { createComponent as _$createComponent13 } from "@opentui/solid";
 import { memo as _$memo7 } from "@opentui/solid";
@@ -670,148 +671,97 @@ function renderAssistant(text, theme) {
   }
   return out;
 }
-function Transcript(props) {
-  const visibleItems = () => props.items.slice(-(props.maxItems ?? MAX_VISIBLE_ITEMS));
-  const itemNode = (it) => {
-    const th = props.theme;
+function itemsToLines(items, theme, t, spinnerFrame, _mdStyle) {
+  const out = [];
+  for (const it of items) {
     if (it.kind === "user") {
-      return (() => {
-        var _el$ = _$createElement2("text"), _el$2 = _$createTextNode2(`❯ `);
-        _$insertNode2(_el$, _el$2);
-        _$insert2(_el$, () => it.text, null);
-        _$effect2((_$p) => _$setProp2(_el$, "style", {
-          fg: th.tokens.userMark ?? th.tokens.accent
-        }, _$p));
-        return _el$;
-      })();
-    }
-    if (it.kind === "assistant") {
-      if (it.final) {
-        return (() => {
-          var _el$3 = _$createElement2("box"), _el$4 = _$createElement2("markdown"), _el$5 = _$createElement2("text");
-          _$insertNode2(_el$3, _el$4);
-          _$insertNode2(_el$3, _el$5);
-          _$setProp2(_el$3, "style", {
-            flexDirection: "column"
-          });
-          _$setProp2(_el$4, "streaming", false);
-          _$insertNode2(_el$5, _$createTextNode2(` `));
-          _$effect2((_p$) => {
-            var _v$ = it.text, _v$2 = props.mdStyle;
-            _v$ !== _p$.e && (_p$.e = _$setProp2(_el$4, "content", _v$, _p$.e));
-            _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$4, "syntaxStyle", _v$2, _p$.t));
-            return _p$;
-          }, {
-            e: undefined,
-            t: undefined
-          });
-          return _el$3;
-        })();
-      }
-      return (() => {
-        var _el$7 = _$createElement2("box");
-        _$setProp2(_el$7, "style", {
-          flexDirection: "column"
+      out.push({
+        text: `❯ ${it.text}`,
+        fg: theme.tokens.userMark ?? theme.tokens.accent
+      });
+    } else if (it.kind === "assistant") {
+      out.push(...renderAssistant(it.text, theme));
+      if (it.final)
+        out.push({
+          text: ""
         });
-        _$insert2(_el$7, _$createComponent2(For2, {
-          get each() {
-            return renderAssistant(it.text, th);
-          },
-          children: (l) => (() => {
-            var _el$8 = _$createElement2("text");
-            _$insert2(_el$8, () => `┃ ${l.text || " "}`);
-            _$effect2((_$p) => _$setProp2(_el$8, "style", l.fg ? {
-              fg: l.fg
-            } : {}, _$p));
-            return _el$8;
-          })()
-        }));
-        return _el$7;
-      })();
+    } else if (it.kind === "thinking") {
+      out.push({
+        text: `${spinnerFrame} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`,
+        fg: theme.tokens.dim
+      });
+    } else if (it.kind === "tool") {
+      out.push({
+        text: ` ⚒ ${it.name} ${it.args.slice(0, 90)}`,
+        fg: theme.tokens.toolOk ?? theme.tokens.warn
+      });
+      out.push({
+        text: ` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`,
+        fg: it.ok ? theme.tokens.dim : theme.tokens.toolFail ?? theme.tokens.danger
+      });
+    } else if (it.kind === "error") {
+      out.push({
+        text: `✗ ${t("agent.error")}: ${it.text}`,
+        fg: theme.tokens.danger
+      });
+    } else {
+      out.push({
+        text: `· ${it.text}`,
+        fg: theme.tokens.dim
+      });
     }
-    if (it.kind === "thinking") {
-      return (() => {
-        var _el$9 = _$createElement2("text");
-        _$insert2(_el$9, () => `${props.spinnerFrame} ${props.t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`);
-        _$effect2((_$p) => _$setProp2(_el$9, "style", {
-          fg: th.tokens.dim
-        }, _$p));
-        return _el$9;
-      })();
+  }
+  return out;
+}
+function TranscriptWindow(props) {
+  const offset = () => props.offset ?? 0;
+  const windowLines = () => {
+    const visible = props.items.slice(-(props.maxItems ?? MAX_VISIBLE_ITEMS));
+    const all = itemsToLines(visible, props.theme, props.t, props.spinnerFrame, props.mdStyle);
+    const vrows = props.viewportRows ?? 30;
+    props.onLayout?.(all.length, vrows);
+    if (props.startIndex !== undefined) {
+      const start = Math.max(0, Math.min(props.startIndex, Math.max(0, all.length - vrows)));
+      return all.slice(start, start + vrows);
     }
-    if (it.kind === "tool") {
-      return (() => {
-        var _el$0 = _$createElement2("box"), _el$1 = _$createElement2("text"), _el$10 = _$createElement2("text");
-        _$insertNode2(_el$0, _el$1);
-        _$insertNode2(_el$0, _el$10);
-        _$setProp2(_el$0, "style", {
-          flexDirection: "column"
-        });
-        _$insert2(_el$1, () => ` ⚒ ${it.name} ${it.args.slice(0, 90)}`);
-        _$insert2(_el$10, () => ` ⎿ ${it.ok ? props.t("agent.tool.ok") : props.t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`);
-        _$effect2((_p$) => {
-          var _v$3 = {
-            fg: th.tokens.toolOk ?? th.tokens.warn
-          }, _v$4 = {
-            fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger
-          };
-          _v$3 !== _p$.e && (_p$.e = _$setProp2(_el$1, "style", _v$3, _p$.e));
-          _v$4 !== _p$.t && (_p$.t = _$setProp2(_el$10, "style", _v$4, _p$.t));
-          return _p$;
-        }, {
-          e: undefined,
-          t: undefined
-        });
-        return _el$0;
-      })();
-    }
-    if (it.kind === "error") {
-      return (() => {
-        var _el$11 = _$createElement2("text"), _el$12 = _$createTextNode2(`✗ `), _el$13 = _$createTextNode2(`: `);
-        _$insertNode2(_el$11, _el$12);
-        _$insertNode2(_el$11, _el$13);
-        _$insert2(_el$11, () => props.t("agent.error"), _el$13);
-        _$insert2(_el$11, () => it.text, null);
-        _$effect2((_$p) => _$setProp2(_el$11, "style", {
-          fg: th.tokens.danger
-        }, _$p));
-        return _el$11;
-      })();
-    }
-    return (() => {
-      var _el$14 = _$createElement2("text"), _el$15 = _$createTextNode2(`· `);
-      _$insertNode2(_el$14, _el$15);
-      _$insert2(_el$14, () => it.text, null);
-      _$effect2((_$p) => _$setProp2(_el$14, "style", {
-        fg: th.tokens.dim
-      }, _$p));
-      return _el$14;
-    })();
+    const start = Math.max(0, all.length - vrows - offset());
+    const end = Math.max(1, all.length - offset());
+    return all.slice(start, end);
   };
   return (() => {
-    var _el$16 = _$createElement2("box");
-    _$setProp2(_el$16, "style", {
+    var _el$18 = _$createElement2("box");
+    _$setProp2(_el$18, "style", {
       flexDirection: "column",
       flexGrow: 1,
       padding: 1
     });
-    _$insert2(_el$16, _$createComponent2(For2, {
+    _$insert2(_el$18, _$createComponent2(For2, {
       get each() {
-        return visibleItems();
+        return windowLines();
       },
-      get fallback() {
-        return (() => {
-          var _el$17 = _$createElement2("text");
-          _$insert2(_el$17, () => props.t("shell.transcript.empty"));
-          _$effect2((_$p) => _$setProp2(_el$17, "style", {
-            fg: props.theme.tokens.dim
-          }, _$p));
-          return _el$17;
-        })();
+      children: (l) => (() => {
+        var _el$21 = _$createElement2("text");
+        _$insert2(_el$21, () => l.text || " ");
+        _$effect2((_$p) => _$setProp2(_el$21, "style", l.fg ? {
+          fg: l.fg
+        } : {}, _$p));
+        return _el$21;
+      })()
+    }), null);
+    _$insert2(_el$18, _$createComponent2(Show, {
+      get when() {
+        return (props.offset ?? 0) > 0 || props.startIndex !== undefined;
       },
-      children: (it) => itemNode(it)
-    }));
-    return _el$16;
+      get children() {
+        var _el$19 = _$createElement2("text");
+        _$insertNode2(_el$19, _$createTextNode2(`↑ scrolled (PgDn = follow latest)`));
+        _$effect2((_$p) => _$setProp2(_el$19, "style", {
+          fg: props.theme.tokens.dim
+        }, _$p));
+        return _el$19;
+      }
+    }), null);
+    return _el$18;
   })();
 }
 var INPUT_KEY_BINDINGS = [...defaultTextareaKeyBindings, {
@@ -875,30 +825,30 @@ function InputLine(props) {
     }
   };
   return (() => {
-    var _el$21 = _$createElement2("box"), _el$22 = _$createElement2("box"), _el$23 = _$createElement2("text"), _el$25 = _$createElement2("textarea");
-    _$insertNode2(_el$21, _el$22);
+    var _el$22 = _$createElement2("box"), _el$23 = _$createElement2("box"), _el$24 = _$createElement2("text"), _el$26 = _$createElement2("textarea");
     _$insertNode2(_el$22, _el$23);
-    _$insertNode2(_el$22, _el$25);
-    _$setProp2(_el$22, "style", {
+    _$insertNode2(_el$23, _el$24);
+    _$insertNode2(_el$23, _el$26);
+    _$setProp2(_el$23, "style", {
       flexDirection: "row"
     });
-    _$insertNode2(_el$23, _$createTextNode2(`❯ `));
-    _$use((el) => ta = el, _el$25);
-    _$setProp2(_el$25, "keyBindings", INPUT_KEY_BINDINGS);
-    _$setProp2(_el$25, "onContentChange", () => props.onContentChange?.(ta?.plainText ?? ""));
-    _$setProp2(_el$25, "onSubmit", () => props.onSubmit?.());
-    _$setProp2(_el$25, "onKeyDown", onKeyDown);
-    _$insert2(_el$21, _$createComponent2(Show, {
+    _$insertNode2(_el$24, _$createTextNode2(`❯ `));
+    _$use((el) => ta = el, _el$26);
+    _$setProp2(_el$26, "keyBindings", INPUT_KEY_BINDINGS);
+    _$setProp2(_el$26, "onContentChange", () => props.onContentChange?.(ta?.plainText ?? ""));
+    _$setProp2(_el$26, "onSubmit", () => props.onSubmit?.());
+    _$setProp2(_el$26, "onKeyDown", onKeyDown);
+    _$insert2(_el$22, _$createComponent2(Show, {
       get when() {
         return props.busy;
       },
       get children() {
-        var _el$26 = _$createElement2("text");
-        _$insert2(_el$26, () => `${props.spinnerFrame ? `${props.spinnerFrame} ` : ""}${props.busyLabel}`);
-        _$effect2((_$p) => _$setProp2(_el$26, "style", {
+        var _el$27 = _$createElement2("text");
+        _$insert2(_el$27, () => `${props.spinnerFrame ? `${props.spinnerFrame} ` : ""}${props.busyLabel}`);
+        _$effect2((_$p) => _$setProp2(_el$27, "style", {
           fg: props.theme.tokens.dim
         }, _$p));
-        return _el$26;
+        return _el$27;
       }
     }), null);
     _$effect2((_p$) => {
@@ -914,14 +864,14 @@ function InputLine(props) {
         height: props.height ?? 3,
         wrapMode: "char"
       };
-      _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$21, "style", _v$5, _p$.e));
-      _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$23, "style", _v$6, _p$.t));
-      _v$7 !== _p$.a && (_p$.a = _$setProp2(_el$25, "focused", _v$7, _p$.a));
-      _v$8 !== _p$.o && (_p$.o = _$setProp2(_el$25, "placeholder", _v$8, _p$.o));
-      _v$9 !== _p$.i && (_p$.i = _$setProp2(_el$25, "textColor", _v$9, _p$.i));
-      _v$0 !== _p$.n && (_p$.n = _$setProp2(_el$25, "focusedTextColor", _v$0, _p$.n));
-      _v$1 !== _p$.s && (_p$.s = _$setProp2(_el$25, "placeholderColor", _v$1, _p$.s));
-      _v$10 !== _p$.h && (_p$.h = _$setProp2(_el$25, "style", _v$10, _p$.h));
+      _v$5 !== _p$.e && (_p$.e = _$setProp2(_el$22, "style", _v$5, _p$.e));
+      _v$6 !== _p$.t && (_p$.t = _$setProp2(_el$24, "style", _v$6, _p$.t));
+      _v$7 !== _p$.a && (_p$.a = _$setProp2(_el$26, "focused", _v$7, _p$.a));
+      _v$8 !== _p$.o && (_p$.o = _$setProp2(_el$26, "placeholder", _v$8, _p$.o));
+      _v$9 !== _p$.i && (_p$.i = _$setProp2(_el$26, "textColor", _v$9, _p$.i));
+      _v$0 !== _p$.n && (_p$.n = _$setProp2(_el$26, "focusedTextColor", _v$0, _p$.n));
+      _v$1 !== _p$.s && (_p$.s = _$setProp2(_el$26, "placeholderColor", _v$1, _p$.s));
+      _v$10 !== _p$.h && (_p$.h = _$setProp2(_el$26, "style", _v$10, _p$.h));
       return _p$;
     }, {
       e: undefined,
@@ -933,32 +883,32 @@ function InputLine(props) {
       s: undefined,
       h: undefined
     });
-    return _el$21;
+    return _el$22;
   })();
 }
 function FooterHints(props) {
   return (() => {
-    var _el$27 = _$createElement2("box");
-    _$setProp2(_el$27, "style", {
+    var _el$28 = _$createElement2("box");
+    _$setProp2(_el$28, "style", {
       flexDirection: "row",
       paddingLeft: 2,
       paddingRight: 2
     });
-    _$insert2(_el$27, _$createComponent2(For2, {
+    _$insert2(_el$28, _$createComponent2(For2, {
       each: footerHints,
       children: (h, i) => (() => {
-        var _el$28 = _$createElement2("text"), _el$29 = _$createTextNode2(` `);
-        _$insertNode2(_el$28, _el$29);
-        _$insert2(_el$28, () => i() > 0 ? " · " : "", _el$29);
-        _$insert2(_el$28, () => h.key, _el$29);
-        _$insert2(_el$28, () => h.label, null);
-        _$effect2((_$p) => _$setProp2(_el$28, "style", {
+        var _el$29 = _$createElement2("text"), _el$30 = _$createTextNode2(` `);
+        _$insertNode2(_el$29, _el$30);
+        _$insert2(_el$29, () => i() > 0 ? " · " : "", _el$30);
+        _$insert2(_el$29, () => h.key, _el$30);
+        _$insert2(_el$29, () => h.label, null);
+        _$effect2((_$p) => _$setProp2(_el$29, "style", {
           fg: props.theme.tokens.dim
         }, _$p));
-        return _el$28;
+        return _el$29;
       })()
     }));
-    return _el$27;
+    return _el$28;
   })();
 }
 // ../kit/src/overlays.tsx
@@ -1641,21 +1591,6 @@ import { insert as _$insert10 } from "@opentui/solid";
 import { use as _$use2 } from "@opentui/solid";
 import { setProp as _$setProp10 } from "@opentui/solid";
 import { createElement as _$createElement10 } from "@opentui/solid";
-function AutoScroll(props) {
-  return (() => {
-    var _el$ = _$createElement10("scrollbox");
-    var _ref$ = props.ref;
-    typeof _ref$ === "function" ? _$use2(_ref$, _el$) : props.ref = _el$;
-    _$setProp10(_el$, "stickyScroll", true);
-    _$setProp10(_el$, "scrollY", true);
-    _$insert10(_el$, () => props.children);
-    _$effect10((_$p) => _$setProp10(_el$, "style", {
-      flexGrow: 1,
-      maxHeight: props.maxHeight
-    }, _$p));
-    return _el$;
-  })();
-}
 // ../kit/src/select.tsx
 import { createComponent as _$createComponent9 } from "@opentui/solid";
 import { effect as _$effect11 } from "@opentui/solid";
@@ -2497,7 +2432,24 @@ function ShellHost(props) {
   const [liveTps, setLiveTps] = createSignal4(null);
   let turnStartAt = 0;
   let approveResolve = null;
-  let scrollRef;
+  const [scrollTopLine, setScrollTopLine] = createSignal4(null);
+  let totalLines = 0;
+  const VIEWPORT_ROWS = 18;
+  const scrollUp = () => {
+    const cur = scrollTopLine() ?? Math.max(0, totalLines - VIEWPORT_ROWS);
+    setScrollTopLine(Math.max(0, cur - 12));
+  };
+  const scrollDown = () => {
+    const cur = scrollTopLine();
+    if (cur === null)
+      return;
+    const next = cur + 12;
+    if (next + VIEWPORT_ROWS >= totalLines)
+      setScrollTopLine(null);
+    else
+      setScrollTopLine(next);
+  };
+  const pinIfFollowing = () => {};
   let replayGen = 0;
   const [focusKey, setFocusKey] = createSignal4(0);
   onMount(() => {
@@ -2613,6 +2565,7 @@ function ShellHost(props) {
     if (now - lastBump < 60)
       return;
     lastBump = now;
+    pinIfFollowing();
     if (streamingReply) {
       const prev = streamingReply;
       const next = {
@@ -2622,7 +2575,10 @@ function ShellHost(props) {
       setItems((arr) => arr.map((x) => x === prev ? next : x));
     }
   };
-  const push = (it) => setItems((arr) => [...arr, it]);
+  const push = (it) => {
+    setItems((arr) => [...arr, it]);
+    pinIfFollowing();
+  };
   const commitHistory = (text) => {
     if (!text)
       return;
@@ -2792,7 +2748,7 @@ function ShellHost(props) {
                 kind: "user",
                 text: it.text
               }));
-              scrollRef && (scrollRef.scrollTop = 1e9);
+              setScrollTopLine(null);
             } catch {}
             push({
               kind: "system",
@@ -3009,11 +2965,11 @@ function ShellHost(props) {
       return;
     }
     if (key.name === "pageup" || key.ctrl && key.name === "b") {
-      scrollRef?.scrollBy?.(-12);
+      scrollUp();
       return;
     }
     if (key.name === "pagedown" || key.ctrl && key.name === "f") {
-      scrollRef?.scrollBy?.(12);
+      scrollDown();
       return;
     }
     if (key.name === "escape" && menuVisible())
@@ -3086,37 +3042,43 @@ function ShellHost(props) {
         get cwd() {
           return process.cwd();
         }
-      }) : _$createComponent13(AutoScroll, {
-        ref: (el) => scrollRef = el,
-        get children() {
-          return [_$createComponent13(Transcript, {
-            get items() {
-              return items();
-            },
-            get theme() {
-              return th();
-            },
-            t,
-            spinnerFrame: "",
-            mdStyle
-          }), _$createComponent13(TodosWidget, {
-            get todos() {
-              return todos();
-            },
-            get theme() {
-              return th();
-            }
-          }), _$createComponent13(SubagentWidget, {
-            get entries() {
-              return subagents();
-            },
-            get theme() {
-              return th();
-            }
-          }), _$memo7(() => dock.thinkView()), _$memo7(() => dock.toolView())];
-        }
-      });
+      }) : _$createComponent13(TranscriptWindow, _$mergeProps({
+        get items() {
+          return items();
+        },
+        get theme() {
+          return th();
+        },
+        t,
+        spinnerFrame: "",
+        mdStyle,
+        viewportRows: VIEWPORT_ROWS
+      }, () => scrollTopLine() !== null ? {
+        startIndex: scrollTopLine()
+      } : {
+        offset: 0
+      }, {
+        onLayout: (total, rows) => totalLines = total
+      }));
     })(), null);
+    _$insert14(_el$, _$createComponent13(TodosWidget, {
+      get todos() {
+        return todos();
+      },
+      get theme() {
+        return th();
+      }
+    }), null);
+    _$insert14(_el$, _$createComponent13(SubagentWidget, {
+      get entries() {
+        return subagents();
+      },
+      get theme() {
+        return th();
+      }
+    }), null);
+    _$insert14(_el$, () => dock.thinkView(), null);
+    _$insert14(_el$, () => dock.toolView(), null);
     _$insert14(_el$, (() => {
       var _c$2 = _$memo7(() => !!approval());
       return () => _c$2() ? _$createComponent13(ApprovalCard, {
