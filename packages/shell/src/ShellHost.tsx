@@ -75,6 +75,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/history", desc: "fork the session at an earlier turn" },
   { name: "/preset", desc: "switch agent preset" },
   { name: "/search", desc: "full-text search sessions (/search text)" },
+  { name: "/btw", desc: "side question overlay (/btw question, bare toggles)" },
   { name: "/language", desc: "switch interface language (zh-CN/en)" },
   { name: "/hints", desc: "toggle the key-hint strip" },
   { name: "/config", desc: "plugin settings (/config or /config key value)" },
@@ -128,6 +129,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [steerFor, setSteerFor] = createSignal<string | null>(null)
   const [steerBuffer, setSteerBuffer] = createSignal("")
   const [hintsVisible, setHintsVisible] = createSignal(true)
+  // btw side questions: finished Q/A pairs (bare /btw reviews) + a live
+  // running entry + the panel toggle
+  const [btwPairs, setBtwPairs] = createSignal<{ q: string; a: string }[]>([])
+  const [btwLive, setBtwLive] = createSignal<{ q: string; a: string } | null>(null)
+  const [btwOpen, setBtwOpen] = createSignal(false)
   // keybindings.json (profile root, sibling of config.json): overrides for
   // the global hotkeys — { "viewer": "ctrl+g", "think": "t", ... }; loaded
   // once at mount via the session's keybindingsPath
@@ -543,6 +549,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       replayGen++
       props.deps.session.newSession()
       setItems([])
+      setBtwPairs([])
+      setBtwLive(null)
+      setBtwOpen(false)
       push({ kind: "system", text: t("cmd.new.done") })
     } else if (cmd === "sessions") {
       const list = await props.deps.session.listSessions()
@@ -667,6 +676,29 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         }
         push({ kind: "system", text: "set: /config <key> <value>" })
       }
+    } else if (cmd === "btw") {
+      // by-the-way side question: one-shot side call, framed overlay only —
+      // the main transcript never sees it; bare /btw toggles the review panel
+      if (!arg) {
+        setBtwOpen((v) => !v)
+        if (!btwOpen()) setShowWelcome(false)
+        return
+      }
+      if (btwLive()) {
+        push({ kind: "system", text: "a btw side call is already running — it will finish first" })
+        return
+      }
+      const snapshot = items().filter((it) => it.kind === "user" || it.kind === "assistant").slice(-8).map((it) => `${it.kind === "user" ? "Q" : "A"}: ${it.text.slice(0, 150)}`)
+      const q = arg
+      setBtwLive({ q, a: "" })
+      setShowWelcome(false)
+      void props.deps.session
+        .btwAsk(q, snapshot, (full) => setBtwLive({ q, a: full.slice(-400) }))
+        .then((a) => {
+          setBtwLive(null)
+          if (a) setBtwPairs((arr) => [...arr.slice(-4), { q, a }])
+        })
+      return
     } else if (cmd === "hints") {
       setHintsVisible((v) => !v)
       push({ kind: "system", text: `key hints ${hintsVisible() ? "hidden" : "shown"}` })
@@ -1001,6 +1033,25 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.accent, flexDirection: "row", padding: 1 }}>
           <text style={{ fg: th().tokens.accent }}>⚡ steer: </text>
           <text style={{ fg: th().tokens.text }}>{steerBuffer() || " "}</text>
+        </box>
+      ) : null}
+      {btwOpen() || btwLive() ? (
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.accent, flexDirection: "column", padding: 1, maxHeight: 10 }}>
+          <box style={{ flexDirection: "row" }}>
+            <text style={{ fg: th().tokens.accent }}>btw</text>
+            <box style={{ flexGrow: 1 }} />
+            <text style={{ fg: th().tokens.dim }}>/btw close</text>
+          </box>
+          <For each={btwLive() ? [btwLive()!] : btwPairs().slice(-2)}>
+            {(pair) => (
+              <box style={{ flexDirection: "column" }}>
+                <text style={{ fg: th().tokens.dim }}>{`Q: ${pair.q.slice(0, 90)}`}</text>
+                <For each={pair.a.split("\n").slice(0, 4)}>
+                  {(l) => <text style={{ fg: th().tokens.text }}>{`A: ${l.slice(0, 100)}`}</text>}
+                </For>
+              </box>
+            )}
+          </For>
         </box>
       ) : null}
       {loginFeature.view()}

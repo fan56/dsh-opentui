@@ -2710,6 +2710,9 @@ var COMMANDS = [{
   name: "/search",
   desc: "full-text search sessions (/search text)"
 }, {
+  name: "/btw",
+  desc: "side question overlay (/btw question, bare toggles)"
+}, {
   name: "/language",
   desc: "switch interface language (zh-CN/en)"
 }, {
@@ -2767,6 +2770,9 @@ function ShellHost(props) {
   const [steerFor, setSteerFor] = createSignal4(null);
   const [steerBuffer, setSteerBuffer] = createSignal4("");
   const [hintsVisible, setHintsVisible] = createSignal4(true);
+  const [btwPairs, setBtwPairs] = createSignal4([]);
+  const [btwLive, setBtwLive] = createSignal4(null);
+  const [btwOpen, setBtwOpen] = createSignal4(false);
   const [kb] = createSignal4(props.deps.session.keybindingsLoad?.() ?? {});
   const hot = (action, fallback) => kb()[action] ?? fallback;
   const [pluginConfig, setPluginConfig] = createSignal4(props.deps.session.configLoad());
@@ -3192,6 +3198,9 @@ function ShellHost(props) {
       replayGen++;
       props.deps.session.newSession();
       setItems([]);
+      setBtwPairs([]);
+      setBtwLive(null);
+      setBtwOpen(false);
       push({
         kind: "system",
         text: t("cmd.new.done")
@@ -3388,6 +3397,39 @@ function ShellHost(props) {
           text: "set: /config <key> <value>"
         });
       }
+    } else if (cmd === "btw") {
+      if (!arg) {
+        setBtwOpen((v) => !v);
+        if (!btwOpen())
+          setShowWelcome(false);
+        return;
+      }
+      if (btwLive()) {
+        push({
+          kind: "system",
+          text: "a btw side call is already running — it will finish first"
+        });
+        return;
+      }
+      const snapshot = items().filter((it) => it.kind === "user" || it.kind === "assistant").slice(-8).map((it) => `${it.kind === "user" ? "Q" : "A"}: ${it.text.slice(0, 150)}`);
+      const q = arg;
+      setBtwLive({
+        q,
+        a: ""
+      });
+      setShowWelcome(false);
+      props.deps.session.btwAsk(q, snapshot, (full) => setBtwLive({
+        q,
+        a: full.slice(-400)
+      })).then((a) => {
+        setBtwLive(null);
+        if (a)
+          setBtwPairs((arr) => [...arr.slice(-4), {
+            q,
+            a
+          }]);
+      });
+      return;
     } else if (cmd === "hints") {
       setHintsVisible((v) => !v);
       push({
@@ -3893,10 +3935,82 @@ function ShellHost(props) {
         return _el$0;
       })() : null;
     })(), null);
+    _$insert14(_el$, (() => {
+      var _c$6 = _$memo8(() => !!(btwOpen() || btwLive()));
+      return () => _c$6() ? (() => {
+        var _el$12 = _$createElement14("box"), _el$13 = _$createElement14("box"), _el$14 = _$createElement14("text"), _el$16 = _$createElement14("box"), _el$17 = _$createElement14("text");
+        _$insertNode11(_el$12, _el$13);
+        _$insertNode11(_el$13, _el$14);
+        _$insertNode11(_el$13, _el$16);
+        _$insertNode11(_el$13, _el$17);
+        _$setProp14(_el$13, "style", {
+          flexDirection: "row"
+        });
+        _$insertNode11(_el$14, _$createTextNode10(`btw`));
+        _$setProp14(_el$16, "style", {
+          flexGrow: 1
+        });
+        _$insertNode11(_el$17, _$createTextNode10(`/btw close`));
+        _$insert14(_el$12, _$createComponent14(For11, {
+          get each() {
+            return _$memo8(() => !!btwLive())() ? [btwLive()] : btwPairs().slice(-2);
+          },
+          children: (pair) => (() => {
+            var _el$19 = _$createElement14("box"), _el$20 = _$createElement14("text");
+            _$insertNode11(_el$19, _el$20);
+            _$setProp14(_el$19, "style", {
+              flexDirection: "column"
+            });
+            _$insert14(_el$20, () => `Q: ${pair.q.slice(0, 90)}`);
+            _$insert14(_el$19, _$createComponent14(For11, {
+              get each() {
+                return pair.a.split(`
+`).slice(0, 4);
+              },
+              children: (l) => (() => {
+                var _el$21 = _$createElement14("text");
+                _$insert14(_el$21, () => `A: ${l.slice(0, 100)}`);
+                _$effect14((_$p) => _$setProp14(_el$21, "style", {
+                  fg: th().tokens.text
+                }, _$p));
+                return _el$21;
+              })()
+            }), null);
+            _$effect14((_$p) => _$setProp14(_el$20, "style", {
+              fg: th().tokens.dim
+            }, _$p));
+            return _el$19;
+          })()
+        }), null);
+        _$effect14((_p$) => {
+          var _v$9 = {
+            border: true,
+            borderStyle: "rounded",
+            borderColor: th().tokens.accent,
+            flexDirection: "column",
+            padding: 1,
+            maxHeight: 10
+          }, _v$0 = {
+            fg: th().tokens.accent
+          }, _v$1 = {
+            fg: th().tokens.dim
+          };
+          _v$9 !== _p$.e && (_p$.e = _$setProp14(_el$12, "style", _v$9, _p$.e));
+          _v$0 !== _p$.t && (_p$.t = _$setProp14(_el$14, "style", _v$0, _p$.t));
+          _v$1 !== _p$.a && (_p$.a = _$setProp14(_el$17, "style", _v$1, _p$.a));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined,
+          a: undefined
+        });
+        return _el$12;
+      })() : null;
+    })(), null);
     _$insert14(_el$, () => loginFeature.view(), null);
     _$insert14(_el$, (() => {
-      var _c$6 = _$memo8(() => !!overlay());
-      return () => _c$6() ? _$createComponent14(Select, {
+      var _c$7 = _$memo8(() => !!overlay());
+      return () => _c$7() ? _$createComponent14(Select, {
         get title() {
           return overlay()?.title ?? "";
         },
@@ -3911,32 +4025,32 @@ function ShellHost(props) {
       }) : null;
     })(), null);
     _$insert14(_el$, (() => {
-      var _c$7 = _$memo8(() => !!menuVisible());
-      return () => _c$7() ? (() => {
-        var _el$12 = _$createElement14("box");
-        _$insert14(_el$12, _$createComponent14(For11, {
+      var _c$8 = _$memo8(() => !!menuVisible());
+      return () => _c$8() ? (() => {
+        var _el$22 = _$createElement14("box");
+        _$insert14(_el$22, _$createComponent14(For11, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
-            var _el$13 = _$createElement14("text"), _el$14 = _$createTextNode10(` `);
-            _$insertNode11(_el$13, _el$14);
-            _$insert14(_el$13, () => i() === clampedSel() ? "› " : "  ", _el$14);
-            _$insert14(_el$13, () => c.name, _el$14);
-            _$insert14(_el$13, () => c.desc, null);
-            _$effect14((_$p) => _$setProp14(_el$13, "style", {
+            var _el$23 = _$createElement14("text"), _el$24 = _$createTextNode10(` `);
+            _$insertNode11(_el$23, _el$24);
+            _$insert14(_el$23, () => i() === clampedSel() ? "› " : "  ", _el$24);
+            _$insert14(_el$23, () => c.name, _el$24);
+            _$insert14(_el$23, () => c.desc, null);
+            _$effect14((_$p) => _$setProp14(_el$23, "style", {
               fg: i() === clampedSel() ? th().tokens.accent : undefined
             }, _$p));
-            return _el$13;
+            return _el$23;
           })()
         }));
-        _$effect14((_$p) => _$setProp14(_el$12, "style", {
+        _$effect14((_$p) => _$setProp14(_el$22, "style", {
           border: true,
           borderColor: th().tokens.border,
           flexDirection: "column",
           padding: 0
         }, _$p));
-        return _el$12;
+        return _el$22;
       })() : null;
     })(), null);
     _$insert14(_el$, _$createComponent14(InputLine, {
@@ -3979,8 +4093,8 @@ function ShellHost(props) {
       }
     }), null);
     _$insert14(_el$, (() => {
-      var _c$8 = _$memo8(() => !!hintsVisible());
-      return () => _c$8() ? _$createComponent14(FooterHints, {
+      var _c$9 = _$memo8(() => !!hintsVisible());
+      return () => _c$9() ? _$createComponent14(FooterHints, {
         get theme() {
           return th();
         }
@@ -4316,6 +4430,76 @@ class HostSession {
     } catch {
       return {};
     }
+  }
+  async btwAsk(question, snapshot, onDelta) {
+    const sessionId = randomUUID();
+    const handle = await this.#ctx.agents.create({
+      sessionId,
+      meta: { cwd: process.cwd() },
+      agentOptions: this.#modelSelection() ?? undefined
+    });
+    const agentId = handle.agent.id;
+    let out = "";
+    const ctxAny = this.#ctx;
+    return new Promise((resolve) => {
+      let settled = false;
+      const settle = () => {
+        if (settled)
+          return;
+        settled = true;
+        offStream();
+        offStatus();
+        offTurn();
+        try {
+          handle.dispose();
+        } catch {}
+        resolve(out.trim());
+      };
+      const dbg = (m) => {
+        if (process.env.DSH_OPENTUI_DEBUG) {
+          try {
+            appendFileSync("/tmp/otui-btw.log", `${Date.now()} ${m}
+`);
+          } catch {}
+        }
+      };
+      dbg(`side agent ${agentId} created`);
+      const offStream = ctxAny.on("agent/assistant-stream", ({ agent, frame }) => {
+        if (agent.id !== agentId)
+          return;
+        dbg(`frame ${frame.type} ${frame.chunk?.type ?? ""} ${(frame.chunk?.text ?? "").length}ch`);
+        if (frame.type !== "chunk" || !frame.chunk)
+          return;
+        if (frame.chunk.type === "text-delta" && frame.chunk.text) {
+          out += frame.chunk.text;
+          onDelta?.(out);
+        }
+      });
+      const offTurn = ctxAny.on("session/event", (session, event) => {
+        if (String(session?.id) === sessionId && event.type === "turn/end") {
+          dbg(`turn/end reason=${JSON.stringify(event.data?.reason).slice(0, 200)}`);
+          if (event.data?.reason?.kind === "error") {
+            out = `error: ${String(event.data.reason.error?.message ?? "unknown").slice(0, 200)}`;
+          }
+          settle();
+        }
+      });
+      const offStatus = ctxAny.on("agent/status", ({ agent, status }) => {
+        if (agent.id === agentId)
+          dbg(`status ${status}`);
+      });
+      const snap = snapshot.length > 0 ? `Recent conversation context (for reference only):
+${snapshot.join(`
+`).slice(-1500)}
+
+` : "";
+      const message = createUserMessage({
+        content: [{ type: "text", text: `${snap}Side question (answer in one or two sentences, do not use tools): ${question}` }],
+        source: { kind: "user" }
+      });
+      handle.agent.followup(message);
+      setTimeout(settle, 120000);
+    });
   }
   get settingsSeam() {
     const st = this.#ctx.get?.("settings");

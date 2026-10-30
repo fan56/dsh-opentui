@@ -354,6 +354,75 @@ export class HostSession {
     }
   }
 
+  /** /btw side question: a one-shot agent on a SEPARATE session answers
+   * over a snapshot prompt — the main session never sees it. Resolves with
+   * the full answer text when the side turn ends. */
+  async btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string> {
+    const sessionId = randomUUID()
+    const handle = await (this.#ctx as any).agents.create({
+      sessionId,
+      meta: { cwd: process.cwd() },
+      agentOptions: this.#modelSelection() ?? undefined,
+    })
+    const agentId = handle.agent.id
+    let out = ""
+    const ctxAny = this.#ctx as any
+    return new Promise<string>((resolve) => {
+      let settled = false
+      const settle = () => {
+        if (settled) return
+        settled = true
+        offStream()
+        offStatus()
+        offTurn()
+        try {
+          handle.dispose()
+        } catch {
+          /* already gone */
+        }
+        resolve(out.trim())
+      }
+      const dbg = (m: string) => {
+        if (process.env.DSH_OPENTUI_DEBUG) {
+          try { appendFileSync("/tmp/otui-btw.log", `${Date.now()} ${m}\n`) } catch {}
+        }
+      }
+      dbg(`side agent ${agentId} created`)
+      const offStream = ctxAny.on("agent/assistant-stream", ({ agent, frame }: { agent: { id: string }; frame: StreamFrame }) => {
+        if (agent.id !== agentId) return
+        dbg(`frame ${frame.type} ${frame.chunk?.type ?? ""} ${(frame.chunk?.text ?? "").length}ch`)
+        if (frame.type !== "chunk" || !frame.chunk) return
+        if (frame.chunk.type === "text-delta" && frame.chunk.text) {
+          out += frame.chunk.text
+          onDelta?.(out)
+        }
+      })
+      // settle on the deterministic turn/end firehose event — the
+      // agent/status running→idle bounce at factory init raced the
+      // followup and settled the side call before it ran
+      const offTurn = ctxAny.on("session/event", (session: any, event: SessionEvent) => {
+        if (String(session?.id) === sessionId && event.type === "turn/end") {
+          dbg(`turn/end reason=${JSON.stringify(event.data?.reason).slice(0, 200)}`)
+          if (event.data?.reason?.kind === "error") {
+            out = `error: ${String(event.data.reason.error?.message ?? "unknown").slice(0, 200)}`
+          }
+          settle()
+        }
+      })
+      const offStatus = ctxAny.on("agent/status", ({ agent, status }: { agent: { id: string }; status: string }) => {
+        if (agent.id === agentId) dbg(`status ${status}`)
+      })
+      const snap = snapshot.length > 0 ? `Recent conversation context (for reference only):\n${snapshot.join("\n").slice(-1500)}\n\n` : ""
+      const message = createUserMessage({
+        content: [{ type: "text", text: `${snap}Side question (answer in one or two sentences, do not use tools): ${question}` }],
+        source: { kind: "user" },
+      })
+      handle.agent.followup(message)
+      // hard stop: a wedged side call resolves empty after 120s
+      setTimeout(settle, 120000)
+    })
+  }
+
   /** The host settings service seam (login/logout route registration). */
   get settingsSeam(): { describe(): Promise<any>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> } | undefined {
     const st = (this.#ctx as any).get?.("settings")
