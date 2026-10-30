@@ -134,6 +134,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [steerFor, setSteerFor] = createSignal<string | null>(null)
   const [steerBuffer, setSteerBuffer] = createSignal("")
   const [hintsVisible, setHintsVisible] = createSignal(true)
+  // git segment: the session cwd's branch, refreshed on the 30s tick
+  const [gitBranch, setGitBranch] = createSignal("")
   // message queue: /queue <msg> enqueues while busy (steering stays the
   // primary mid-turn path); the turn-end drain sends them in order
   const [queueMsgs, setQueueMsgs] = createSignal<string[]>([])
@@ -230,6 +232,26 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       )
       if (viewerId()) setViewerLines(props.deps.session.childTranscript(viewerId()!))
     }, 1000)
+    // git branch probe (30s cadence, silent on non-repos)
+    const gitTick = setInterval(() => {
+      import("node:child_process").then(({ execFile }) => {
+        execFile("git", ["branch", "--show-current"], { cwd: process.cwd(), timeout: 3000 }, (err, stdout) => {
+          if (!err) setGitBranch(String(stdout).trim())
+          else setGitBranch("")
+        })
+      })
+    }, 30000)
+    const gitOnce = setTimeout(() => {
+      import("node:child_process").then(({ execFile }) => {
+        execFile("git", ["branch", "--show-current"], { cwd: process.cwd(), timeout: 3000 }, (err, stdout) => {
+          if (!err) setGitBranch(String(stdout).trim())
+        })
+      })
+    }, 1200)
+    onCleanup(() => {
+      clearInterval(gitTick)
+      clearTimeout(gitOnce)
+    })
     onCleanup(() => clearInterval(tick))
     // Answer host user-questions with the ask overlay (first question with
     // options becomes a Select; esc declines). Disabled via env for bisection.
@@ -1001,6 +1023,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         bg: pct > 80 ? POWERLINE_COLORS.contextDanger : pct > 60 ? POWERLINE_COLORS.contextOrange : pct > 40 ? POWERLINE_COLORS.contextWarn : POWERLINE_COLORS.contextOk,
       },
     ]
+    if (gitBranch()) segs.push({ text: `⎇ ${gitBranch()}`, bg: POWERLINE_COLORS.provider })
     if (msgCount() > 0) segs.push({ text: `💬 ${msgCount()}`, bg: POWERLINE_COLORS.messages })
     if (toolCount() > 0) segs.push({ text: `⚒ ${toolCount()}`, bg: POWERLINE_COLORS.tools })
     // cache hit rate (tui-pi's ⚡ CH% segment): shown once the host

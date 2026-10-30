@@ -2780,6 +2780,7 @@ function ShellHost(props) {
   const [steerFor, setSteerFor] = createSignal4(null);
   const [steerBuffer, setSteerBuffer] = createSignal4("");
   const [hintsVisible, setHintsVisible] = createSignal4(true);
+  const [gitBranch, setGitBranch] = createSignal4("");
   const [queueMsgs, setQueueMsgs] = createSignal4([]);
   const [queueOpen, setQueueOpen] = createSignal4(false);
   const [btwPairs, setBtwPairs] = createSignal4([]);
@@ -2842,6 +2843,38 @@ function ShellHost(props) {
       if (viewerId())
         setViewerLines(props.deps.session.childTranscript(viewerId()));
     }, 1000);
+    const gitTick = setInterval(() => {
+      import("node:child_process").then(({
+        execFile
+      }) => {
+        execFile("git", ["branch", "--show-current"], {
+          cwd: process.cwd(),
+          timeout: 3000
+        }, (err, stdout) => {
+          if (!err)
+            setGitBranch(String(stdout).trim());
+          else
+            setGitBranch("");
+        });
+      });
+    }, 30000);
+    const gitOnce = setTimeout(() => {
+      import("node:child_process").then(({
+        execFile
+      }) => {
+        execFile("git", ["branch", "--show-current"], {
+          cwd: process.cwd(),
+          timeout: 3000
+        }, (err, stdout) => {
+          if (!err)
+            setGitBranch(String(stdout).trim());
+        });
+      });
+    }, 1200);
+    onCleanup(() => {
+      clearInterval(gitTick);
+      clearTimeout(gitOnce);
+    });
     onCleanup(() => clearInterval(tick));
     if (!process.env.DSH_OPENTUI_NO_ASK)
       props.deps.session.registerAskProvider(async (questions) => {
@@ -3764,6 +3797,11 @@ function ShellHost(props) {
       text: `\uD83E\uDDE0 ${usage().prompt >= 1000 ? `${(usage().prompt / 1000).toFixed(1)}k` : usage().prompt}(${pct}%)`,
       bg: pct > 80 ? POWERLINE_COLORS.contextDanger : pct > 60 ? POWERLINE_COLORS.contextOrange : pct > 40 ? POWERLINE_COLORS.contextWarn : POWERLINE_COLORS.contextOk
     }];
+    if (gitBranch())
+      segs.push({
+        text: `⎇ ${gitBranch()}`,
+        bg: POWERLINE_COLORS.provider
+      });
     if (msgCount() > 0)
       segs.push({
         text: `\uD83D\uDCAC ${msgCount()}`,
