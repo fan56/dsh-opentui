@@ -272,6 +272,12 @@ export class HostSession {
     await c.unset(ref)
   }
 
+  /** The host settings service seam (login/logout route registration). */
+  get settingsSeam(): { describe(): Promise<any>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> } | undefined {
+    const st = (this.#ctx as any).get?.("settings")
+    return st ? { describe: () => st.describe(), mutate: (ns: string, ops: unknown[], rev?: number) => st.mutate(ns, ops, rev) } : undefined
+  }
+
   /** User-installed plugins (profile package.json deps, versions from
    * the installed copies) — dsh built-ins (@deepseek-ai/*) excluded. */
   listPlugins(): { name: string; version: string }[] {

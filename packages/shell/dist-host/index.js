@@ -1921,116 +1921,398 @@ function createHistoryForkFeature(deps) {
 }
 
 // src/features/login.tsx
+import { setProp as _$setProp13 } from "@opentui/solid";
 import { effect as _$effect13 } from "@opentui/solid";
-import { memo as _$memo6 } from "@opentui/solid";
 import { createTextNode as _$createTextNode9 } from "@opentui/solid";
 import { insertNode as _$insertNode10 } from "@opentui/solid";
-import { setProp as _$setProp13 } from "@opentui/solid";
+import { memo as _$memo6 } from "@opentui/solid";
 import { insert as _$insert13 } from "@opentui/solid";
 import { createElement as _$createElement13 } from "@opentui/solid";
 import { createComponent as _$createComponent12 } from "@opentui/solid";
 import { createSignal as createSignal2 } from "solid-js";
-var CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
+var PROVIDER_CATALOG = [{
+  id: "amazon-bedrock",
+  name: "Amazon Bedrock",
+  hint: "aws route",
+  catalogRoute: true
+}, {
+  id: "ant-ling",
+  name: "Ant Ling",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "anthropic",
+  name: "Anthropic",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "azure-openai-responses",
+  name: "Azure OpenAI",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "cerebras",
+  name: "Cerebras",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "cloudflare-ai-gateway",
+  name: "Cloudflare AI Gateway",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "cloudflare-workers-ai",
+  name: "Cloudflare Workers AI",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "deepseek",
+  name: "DeepSeek",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "fireworks",
+  name: "Fireworks",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "github-copilot",
+  name: "GitHub Copilot",
+  hint: "provcatalog.hint.copilot",
+  catalogRoute: true
+}, {
+  id: "google",
+  name: "Google Gemini",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "google-vertex",
+  name: "Google Vertex AI",
+  hint: "provcatalog.hint.googleCloud",
+  catalogRoute: true
+}, {
+  id: "groq",
+  name: "Groq",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "huggingface",
+  name: "Hugging Face",
+  hint: "provcatalog.hint.huggingface",
+  catalogRoute: true
+}, {
+  id: "kimi-coding",
+  name: "Kimi For Coding",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "minimax",
+  name: "MiniMax",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "minimax-cn",
+  name: "MiniMax CN",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "mistral",
+  name: "Mistral",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "moonshotai",
+  name: "Moonshot AI",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "moonshotai-cn",
+  name: "Moonshot AI CN",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "nvidia",
+  name: "NVIDIA",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "openai",
+  name: "OpenAI",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "opencode-go",
+  name: "OpenCode Go",
+  hint: "api key.gateway",
+  catalogRoute: true
+}, {
+  id: "opencode",
+  name: "OpenCode Zen",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "openrouter",
+  name: "OpenRouter",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "qwen-token-plan",
+  name: "Qwen Token Plan",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "qwen-token-plan-cn",
+  name: "Qwen Token Plan CN",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "together",
+  name: "Together AI",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "vercel-ai-gateway",
+  name: "Vercel AI Gateway",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "xiaomi",
+  name: "Xiaomi",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "xiaomi-token-plan-ams",
+  name: "Xiaomi Token Plan AMS",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "xiaomi-token-plan-cn",
+  name: "Xiaomi Token Plan CN",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "xiaomi-token-plan-sgp",
+  name: "Xiaomi Token Plan SGP",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "zai",
+  name: "Z.AI",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "zai-coding-cn",
+  name: "Z.AI Coding CN",
+  hint: "api key",
+  catalogRoute: true
+}, {
+  id: "xai",
+  name: "xAI",
+  hint: "api key",
+  catalogRoute: true
+}];
+var CUSTOM = {
+  id: "custom",
+  name: "Custom provider",
+  hint: "baseUrl + model + key",
+  catalogRoute: false
+};
+function deriveKeyRef(provider) {
+  return `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+}
+function providerProfileFor(entry) {
+  const profile = {
+    apiKeyEnv: deriveKeyRef(entry.id)
+  };
+  if (!entry.catalogRoute) {
+    if (entry.api)
+      profile.api = entry.api;
+    if (entry.baseURL)
+      profile.baseURL = entry.baseURL;
+    if (entry.models)
+      profile.models = entry.models;
+    if (entry.displayName)
+      profile.displayName = entry.displayName;
+  }
+  return profile;
+}
 function createLoginFeature(deps) {
   const [stage, setStage] = createSignal2({
     kind: "closed"
   });
-  const [keyBuf, setKeyBuf] = createSignal2("");
-  const [status, setStatus] = createSignal2({});
-  const refreshStatus = async () => {
-    const next = {};
-    for (const ref of CRED_REFS) {
-      try {
-        next[ref] = (await deps.session.credentialStatus(ref)).configured;
-      } catch {
-        next[ref] = false;
-      }
+  const settings = () => deps.session.settingsSeam;
+  const writeRoute = async (op, entry) => {
+    const st = settings();
+    if (!st)
+      return;
+    try {
+      const entries = await st.describe();
+      const desc = Array.isArray(entries) ? entries.find((e) => e?.ns === "llm-pi-ai") : undefined;
+      const ops = op === "set" ? [{
+        op: "set",
+        path: ["providers", entry.id],
+        value: providerProfileFor(entry)
+      }] : [{
+        op: "unset",
+        path: ["providers", entry.id]
+      }];
+      await st.mutate("llm-pi-ai", ops, desc?.revision);
+      return;
+    } catch (e) {
+      return String(e instanceof Error ? e.message : e).slice(0, 200);
     }
-    setStatus(next);
+  };
+  const commitLogin = async (entry, key) => {
+    setStage({
+      kind: "closed"
+    });
+    const routeError = await writeRoute("set", entry);
+    if (routeError) {
+      deps.push({
+        kind: "error",
+        text: `${entry.id}: ${routeError}`
+      });
+      return;
+    }
+    try {
+      await deps.session.login(deriveKeyRef(entry.id), key);
+      deps.push({
+        kind: "system",
+        text: `${entry.name} subscribed — key stored, route registered (in /model next session)`
+      });
+    } catch (e) {
+      deps.push({
+        kind: "error",
+        text: String(e instanceof Error ? e.message : e).slice(0, 200)
+      });
+    }
+  };
+  const commitLogout = async (id) => {
+    setStage({
+      kind: "closed"
+    });
+    const routeError = await writeRoute("unset", {
+      id,
+      name: id,
+      hint: "",
+      catalogRoute: true
+    });
+    try {
+      await deps.session.logout(deriveKeyRef(id));
+    } catch (e) {
+      deps.push({
+        kind: "error",
+        text: `key removal failed: ${String(e instanceof Error ? e.message : e).slice(0, 150)}`
+      });
+    }
+    if (routeError)
+      deps.push({
+        kind: "error",
+        text: `${id}: ${routeError}`
+      });
+    else
+      deps.push({
+        kind: "system",
+        text: `${id} unsubscribed — route and key removed`
+      });
   };
   const openMenu = async (mode) => {
-    await refreshStatus();
-    const st = status();
+    const st = settings();
+    let configuredRoutes = [];
+    try {
+      const entries = await st?.describe();
+      const desc = Array.isArray(entries) ? entries.find((e) => e?.ns === "llm-pi-ai") : undefined;
+      configuredRoutes = Object.keys(desc?.value?.providers ?? {});
+    } catch {}
     if (mode === "logout") {
-      const configured = CRED_REFS.filter((r) => st[r]);
-      if (configured.length === 0) {
+      if (configuredRoutes.length === 0) {
         setStage({
           kind: "notice",
-          text: "no configured credentials to log out"
+          text: "no subscribed providers to log out"
         });
         return;
       }
       setStage({
         kind: "menu",
-        mode,
-        title: "log out — pick a credential",
-        items: configured.map((r) => ({
-          label: r,
-          value: r,
-          description: st[r] ? "configured" : "missing"
+        title: "log out — pick a provider (removes route + key)",
+        items: configuredRoutes.map((id) => ({
+          label: id,
+          value: id
         })),
-        onPick: (value) => setStage({
-          kind: "confirm-logout",
-          ref: value
+        onPick: (id) => setStage({
+          kind: "confirm",
+          text: `unsubscribe ${id}? (route + key removed)`,
+          onYes: () => void commitLogout(id)
         })
       });
       return;
     }
     setStage({
       kind: "menu",
-      mode,
-      title: "log in — pick a credential ref",
-      items: CRED_REFS.map((r) => ({
-        label: r,
-        value: r,
-        description: st[r] ? "configured — re-login overwrites" : "missing"
+      title: "log in — pick a provider",
+      items: [...PROVIDER_CATALOG, CUSTOM].map((e) => ({
+        label: e.name,
+        group: e.catalogRoute ? "api key" : "hand-declared",
+        value: e.id,
+        description: e.hint
       })),
-      onPick: (value) => {
-        setKeyBuf("");
+      onPick: (id) => {
+        if (id === CUSTOM.id) {
+          setStage({
+            kind: "entry",
+            title: "custom provider baseUrl",
+            mask: false,
+            buffer: "",
+            onCommit: (base) => {
+              setStage({
+                kind: "entry",
+                title: "model ids (comma-separated)",
+                mask: false,
+                buffer: "",
+                onCommit: (models) => {
+                  setStage({
+                    kind: "entry",
+                    title: "custom provider id (route key)",
+                    mask: false,
+                    buffer: "",
+                    onCommit: (pid) => {
+                      const entry = {
+                        id: pid.trim() || "custom",
+                        name: pid.trim() || "custom",
+                        hint: "custom",
+                        catalogRoute: false,
+                        api: "openai-completions",
+                        baseURL: base.trim(),
+                        models: models.split(",").map((m) => ({
+                          id: m.trim()
+                        })).filter((m) => m.id),
+                        displayName: pid.trim()
+                      };
+                      setStage({
+                        kind: "entry",
+                        title: `API key for ${entry.id}`,
+                        mask: true,
+                        buffer: "",
+                        onCommit: (key) => void commitLogin(entry, key)
+                      });
+                    }
+                  });
+                }
+              });
+            }
+          });
+          return;
+        }
+        const entry = PROVIDER_CATALOG.find((e) => e.id === id);
         setStage({
-          kind: "key",
-          ref: value
+          kind: "entry",
+          title: `API key for ${entry.name} (${deriveKeyRef(entry.id)})`,
+          mask: true,
+          buffer: "",
+          onCommit: (key) => void commitLogin(entry, key)
         });
       }
     });
-  };
-  const commitLogin = async () => {
-    const ref = stage().ref;
-    const key = keyBuf().trim();
-    setStage({
-      kind: "closed"
-    });
-    if (!key)
-      return;
-    try {
-      await deps.session.login(ref, key);
-      deps.push({
-        kind: "system",
-        text: `credential saved: ${ref}`
-      });
-    } catch (e) {
-      deps.push({
-        kind: "error",
-        text: String(e instanceof Error ? e.message : e).slice(0, 300)
-      });
-    }
-  };
-  const commitLogout = async (ref) => {
-    setStage({
-      kind: "closed"
-    });
-    try {
-      await deps.session.logout(ref);
-      deps.push({
-        kind: "system",
-        text: `credential removed: ${ref}`
-      });
-    } catch (e) {
-      deps.push({
-        kind: "error",
-        text: String(e instanceof Error ? e.message : e).slice(0, 300)
-      });
-    }
   };
   const view = () => {
     const st = stage();
@@ -2044,32 +2326,29 @@ function createLoginFeature(deps) {
           return st.items;
         },
         theme: th,
-        onSelect: (value) => {
+        onSelect: (v) => {
           setStage({
             kind: "closed"
           });
-          st.onPick(value);
+          st.onPick(v);
         },
         onCancel: () => setStage({
           kind: "closed"
         })
       });
     }
-    if (st.kind === "key") {
+    if (st.kind === "entry") {
       return (() => {
-        var _el$ = _$createElement13("box"), _el$2 = _$createElement13("text"), _el$3 = _$createElement13("box"), _el$4 = _$createElement13("text"), _el$6 = _$createElement13("text"), _el$7 = _$createElement13("text");
+        var _el$ = _$createElement13("box"), _el$2 = _$createElement13("text"), _el$3 = _$createElement13("text"), _el$4 = _$createElement13("text");
         _$insertNode10(_el$, _el$2);
         _$insertNode10(_el$, _el$3);
-        _$insertNode10(_el$, _el$7);
-        _$insert13(_el$2, () => `API key for ${st.ref}`);
-        _$insertNode10(_el$3, _el$4);
-        _$insertNode10(_el$3, _el$6);
-        _$setProp13(_el$3, "style", {
-          flexDirection: "row"
-        });
-        _$insertNode10(_el$4, _$createTextNode9(`key: `));
-        _$insert13(_el$6, () => keyBuf().replace(/./g, "*") || " ");
-        _$insertNode10(_el$7, _$createTextNode9(`type the key · enter saves · esc cancels`));
+        _$insertNode10(_el$, _el$4);
+        _$insert13(_el$2, () => st.title);
+        _$insert13(_el$3, (() => {
+          var _c$ = _$memo6(() => !!st.mask);
+          return () => _c$() ? st.buffer.replace(/./g, "*") || " " : st.buffer || " ";
+        })());
+        _$insertNode10(_el$4, _$createTextNode9(`type · enter saves · esc cancels`));
         _$effect13((_p$) => {
           var _v$ = {
             border: true,
@@ -2080,82 +2359,78 @@ function createLoginFeature(deps) {
           }, _v$2 = {
             fg: th.tokens.accent
           }, _v$3 = {
-            fg: th.tokens.dim
-          }, _v$4 = {
             fg: th.tokens.text
-          }, _v$5 = {
+          }, _v$4 = {
             fg: th.tokens.dim
           };
           _v$ !== _p$.e && (_p$.e = _$setProp13(_el$, "style", _v$, _p$.e));
           _v$2 !== _p$.t && (_p$.t = _$setProp13(_el$2, "style", _v$2, _p$.t));
-          _v$3 !== _p$.a && (_p$.a = _$setProp13(_el$4, "style", _v$3, _p$.a));
-          _v$4 !== _p$.o && (_p$.o = _$setProp13(_el$6, "style", _v$4, _p$.o));
-          _v$5 !== _p$.i && (_p$.i = _$setProp13(_el$7, "style", _v$5, _p$.i));
+          _v$3 !== _p$.a && (_p$.a = _$setProp13(_el$3, "style", _v$3, _p$.a));
+          _v$4 !== _p$.o && (_p$.o = _$setProp13(_el$4, "style", _v$4, _p$.o));
           return _p$;
         }, {
           e: undefined,
           t: undefined,
           a: undefined,
-          o: undefined,
-          i: undefined
+          o: undefined
         });
         return _el$;
       })();
     }
-    if (st.kind === "confirm-logout") {
+    if (st.kind === "confirm") {
       return (() => {
-        var _el$9 = _$createElement13("box"), _el$0 = _$createElement13("text"), _el$1 = _$createElement13("text");
-        _$insertNode10(_el$9, _el$0);
-        _$insertNode10(_el$9, _el$1);
-        _$insert13(_el$0, () => `remove credential ${st.ref}?`);
-        _$insertNode10(_el$1, _$createTextNode9(`y removes · n/esc cancels`));
+        var _el$6 = _$createElement13("box"), _el$7 = _$createElement13("text"), _el$8 = _$createElement13("text");
+        _$insertNode10(_el$6, _el$7);
+        _$insertNode10(_el$6, _el$8);
+        _$insert13(_el$7, () => st.text);
+        _$insertNode10(_el$8, _$createTextNode9(`y confirm · n/esc cancels`));
         _$effect13((_p$) => {
-          var _v$6 = {
+          var _v$5 = {
             border: true,
             borderStyle: "rounded",
             borderColor: th.tokens.warn,
             flexDirection: "column",
             padding: 1
-          }, _v$7 = {
+          }, _v$6 = {
             fg: th.tokens.warn
-          }, _v$8 = {
+          }, _v$7 = {
             fg: th.tokens.dim
           };
-          _v$6 !== _p$.e && (_p$.e = _$setProp13(_el$9, "style", _v$6, _p$.e));
-          _v$7 !== _p$.t && (_p$.t = _$setProp13(_el$0, "style", _v$7, _p$.t));
-          _v$8 !== _p$.a && (_p$.a = _$setProp13(_el$1, "style", _v$8, _p$.a));
+          _v$5 !== _p$.e && (_p$.e = _$setProp13(_el$6, "style", _v$5, _p$.e));
+          _v$6 !== _p$.t && (_p$.t = _$setProp13(_el$7, "style", _v$6, _p$.t));
+          _v$7 !== _p$.a && (_p$.a = _$setProp13(_el$8, "style", _v$7, _p$.a));
           return _p$;
         }, {
           e: undefined,
           t: undefined,
           a: undefined
         });
-        return _el$9;
+        return _el$6;
       })();
     }
     if (st.kind === "notice") {
       return (() => {
-        var _el$11 = _$createElement13("box"), _el$12 = _$createElement13("text");
-        _$insertNode10(_el$11, _el$12);
-        _$insert13(_el$12, () => st.text);
+        var _el$0 = _$createElement13("box"), _el$1 = _$createElement13("text");
+        _$insertNode10(_el$0, _el$1);
+        _$insert13(_el$1, () => st.text);
         _$effect13((_p$) => {
-          var _v$9 = {
+          var _v$8 = {
             border: true,
             borderStyle: "rounded",
             borderColor: th.tokens.border,
             flexDirection: "column",
             padding: 1
-          }, _v$0 = {
+          }, _v$9 = {
             fg: th.tokens.dim
           };
-          _v$9 !== _p$.e && (_p$.e = _$setProp13(_el$11, "style", _v$9, _p$.e));
-          _v$0 !== _p$.t && (_p$.t = _$setProp13(_el$12, "style", _v$0, _p$.t));
+          _v$8 !== _p$.e && (_p$.e = _$setProp13(_el$0, "style", _v$8, _p$.e));
+          _v$9 !== _p$.t && (_p$.t = _$setProp13(_el$1, "style", _v$9, _p$.t));
           return _p$;
         }, {
           e: undefined,
           t: undefined
         });
-        return _el$11;
+        return _el$0;
       })();
     }
     return null;
@@ -2164,7 +2439,7 @@ function createLoginFeature(deps) {
     const st = stage();
     if (st.kind === "closed")
       return false;
-    if (st.kind === "key") {
+    if (st.kind === "entry") {
       if (key.name === "escape") {
         setStage({
           kind: "closed"
@@ -2172,23 +2447,30 @@ function createLoginFeature(deps) {
         return true;
       }
       if (key.name === "return") {
-        commitLogin();
+        const v = st.buffer;
+        st.onCommit(v);
         return true;
       }
       if (key.name === "backspace") {
-        setKeyBuf((v) => v.slice(0, -1));
+        setStage({
+          ...st,
+          buffer: st.buffer.slice(0, -1)
+        });
         return true;
       }
       const ch = key.sequence ?? "";
-      if (ch.length === 1 && !key.name?.startsWith("shift") && /[\x20-\x7e]/.test(ch)) {
-        setKeyBuf((v) => v + ch);
+      if (ch.length === 1 && /[\x20-\x7e]/.test(ch)) {
+        setStage({
+          ...st,
+          buffer: st.buffer + ch
+        });
         return true;
       }
       return true;
     }
-    if (st.kind === "confirm-logout") {
+    if (st.kind === "confirm") {
       if (key.sequence === "y") {
-        commitLogout(st.ref);
+        st.onYes();
         return true;
       }
       if (key.sequence === "n" || key.name === "escape") {
@@ -2380,7 +2662,7 @@ function createDockFeature(deps) {
 }
 
 // src/ShellHost.tsx
-var CRED_REFS2 = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
+var CRED_REFS = ["ZAI_CODING_CN_API_KEY", "DEEPSEEK_API_KEY", "MINIMAX_CN_API_KEY"];
 var CONTEXT_WINDOW_TOKENS = 128000;
 var COMMANDS = [{
   name: "/help",
@@ -2679,7 +2961,7 @@ function ShellHost(props) {
     return false;
   };
   const pushCredStatus = async () => {
-    for (const ref of CRED_REFS2) {
+    for (const ref of CRED_REFS) {
       try {
         const st = await props.deps.session.credentialStatus(ref);
         push({
@@ -3479,6 +3761,10 @@ class HostSession {
     if (!c?.unset)
       throw new Error("credentials service unavailable in this host");
     await c.unset(ref);
+  }
+  get settingsSeam() {
+    const st = this.#ctx.get?.("settings");
+    return st ? { describe: () => st.describe(), mutate: (ns, ops, rev) => st.mutate(ns, ops, rev) } : undefined;
   }
   listPlugins() {
     try {
