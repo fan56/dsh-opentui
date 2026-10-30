@@ -1,5 +1,6 @@
 // src/host-entry.tsx
 import { createComponent as _$createComponent14 } from "@opentui/solid";
+import { spawn } from "node:child_process";
 import { render } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -3873,6 +3874,24 @@ class HostSession {
 
 // src/host-entry.tsx
 var inject = ["agents"];
+function hasFfiFlag() {
+  return (process.env.NODE_OPTIONS ?? "").includes("--experimental-ffi");
+}
+function reExecWithFfi() {
+  if (hasFfiFlag())
+    return false;
+  const env = {
+    ...process.env,
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --experimental-ffi`.trim()
+  };
+  const child = spawn(process.argv[1], process.argv.slice(2), {
+    env,
+    stdio: "inherit",
+    cwd: process.cwd()
+  });
+  child.on("exit", (code) => process.exit(code ?? 0));
+  return true;
+}
 function apply(ctx, config) {
   const i18n = createI18n("zh-CN");
   const store = new SurfaceStore;
@@ -3891,7 +3910,10 @@ function apply(ctx, config) {
       }
     }), renderer);
   }).catch((e) => {
-    process.stderr.write("dsh-opentui boot failed: " + String(e) + `
+    const msg = String(e);
+    if (/native FFI is not available/.test(msg) && reExecWithFfi())
+      return;
+    process.stderr.write("dsh-opentui boot failed: " + msg + `
 `);
   });
 }

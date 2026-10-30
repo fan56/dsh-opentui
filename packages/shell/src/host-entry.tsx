@@ -7,6 +7,7 @@
  * external (resolved from the profile's node_modules); dsh-llm resolves
  * from the global dsh closure via symlink.
  */
+import { spawn } from "node:child_process"
 import type { Context } from "@deepseek-ai/cordis"
 import { render } from "@opentui/solid"
 // source-imports are inlined by the bundler; none of them import cordis at runtime
@@ -21,6 +22,33 @@ import { HostSession } from "./host-session.ts"
 // export object, not as a sibling named export
 const inject = ["agents"]
 
+/** True when this process already carries the FFI flag (guards re-exec). */
+function hasFfiFlag(): boolean {
+  return (process.env.NODE_OPTIONS ?? "").includes("--experimental-ffi")
+}
+
+/**
+ * OpenTUI's native layer needs --experimental-ffi, which a bare
+ * `dsh --profile dsh-opentui` does not carry (only the dsh-opentui launcher
+ * injects it). Instead of dying, re-exec the SAME dsh command with the flag
+ * merged into NODE_OPTIONS: the child reaches this path again WITH the flag
+ * and boots normally. Guarded by hasFfiFlag so it never loops.
+ */
+function reExecWithFfi(): boolean {
+  if (hasFfiFlag()) return false
+  const env = {
+    ...process.env,
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --experimental-ffi`.trim(),
+  }
+  const child = spawn(process.argv[1]!, process.argv.slice(2), {
+    env,
+    stdio: "inherit",
+    cwd: process.cwd(),
+  })
+  child.on("exit", (code) => process.exit(code ?? 0))
+  return true
+}
+
 export function apply(ctx: Context, config?: { theme?: string }) {
   const i18n = createI18n("zh-CN")
   const store = new SurfaceStore()
@@ -32,7 +60,9 @@ export function apply(ctx: Context, config?: { theme?: string }) {
       renderer,
     )
   }).catch((e) => {
-    process.stderr.write("dsh-opentui boot failed: " + String(e) + "\n")
+    const msg = String(e)
+    if (/native FFI is not available/.test(msg) && reExecWithFfi()) return
+    process.stderr.write("dsh-opentui boot failed: " + msg + "\n")
   })
 }
 
