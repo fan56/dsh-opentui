@@ -32,7 +32,6 @@ const FADE_STEP_MS = 130
 const FADE_STEPS = 5
 const IDLE_COLLAPSE_MS = 2000
 
-const BUBBLE_FRAMES = ["╹", "╹▀", "╹▀▄", " ▀▄"]
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 export interface DockState {
@@ -129,16 +128,16 @@ export function createDockFeature(deps: DockDeps): DockState {
             size={t.expanded ? rowsT : 1}
             accent={thinkFg()}
             fade={t.fading ? t.fade : 0}
-            title={`${BUBBLE_FRAMES[Math.floor(Date.now() / 300) % BUBBLE_FRAMES.length]} thinking · ${elapsed}s`}
+            title={`💭 thinking · ${elapsed}s`}
             hint={hints.think}
           >
             <Show when={t.expanded}>
               <For each={t.text.split("\n").slice(-Math.max(1, (typeof rowsT === "number" ? rowsT : 7) - 2))}>
-                {(line) => <text style={{ fg: dimColor(thinkFg(), 0.2) }}>{line.slice(0, 100) || " "}</text>}
+                {(line) => <text style={{ fg: dimColor(thinkFg(), 0.2), wrapMode: "none", truncate: true }}>{line || " "}</text>}
               </For>
             </Show>
             <Show when={!t.expanded}>
-              <text style={{ fg: dimColor(thinkFg(), 0.2) }}>{thinkBuf.split("\n").pop()?.slice(0, 80) || " "}</text>
+              <text style={{ fg: dimColor(thinkFg(), 0.2), wrapMode: "none", truncate: true }}>💭 {thinkBuf.split("\n").pop() || " "}</text>
             </Show>
           </WidgetFrame>
         </Show>
@@ -148,25 +147,25 @@ export function createDockFeature(deps: DockDeps): DockState {
             size={toolExpanded() ? rowsTool : 1}
             accent={toolFg()}
             fade={toolFading() ? toolFade() : 0}
-            title={`${running.length > 0 ? `${frame} ⚒ ${running.length} running` : `⚒ ${list.length} tools`} · ${list.filter((e) => e.status === "ok").length}✔ ${list.filter((e) => e.status === "fail").length}✘`}
+            title={`🔧 ${running.length > 0 ? `${SPINNER_FRAMES[Math.floor((Date.now() / 125) % SPINNER_FRAMES.length)]} ${running.length} running` : `${list.length} tools`} · ${list.filter((e) => e.status === "ok").length}✔ ${list.filter((e) => e.status === "fail").length}✘`}
             hint={hints.tool}
           >
             <Show when={toolExpanded()}>
               <For each={list.slice(-(Math.max(1, (typeof rowsTool === "number" ? rowsTool : 7) - 2)))}>
                 {(e) => (
-                  <text style={{ fg: e.status === "running" ? toolFg() : e.status === "fail" ? th().tokens.toolFail ?? th().tokens.danger : th().tokens.toolOk ?? th().tokens.ok }}>
+                  <text style={{ fg: e.status === "running" ? toolFg() : e.status === "fail" ? th().tokens.toolFail ?? th().tokens.danger : th().tokens.toolOk ?? th().tokens.ok, wrapMode: "none", truncate: true }}>
                     {e.status === "running"
-                      ? `${SPINNER_FRAMES[Math.floor((Date.now() / 125) % SPINNER_FRAMES.length)]} ⚙ ${e.name} ${e.args.slice(0, 64)}`
-                      : `${e.status === "ok" ? "✔" : "✘"} ${e.name} ${e.args.slice(0, 50)}`}
+                      ? `⚙ ${e.name} ${e.args}`
+                      : `${e.status === "ok" ? "✔" : "✘"} ${e.name} ${e.args}`}
                   </text>
                 )}
               </For>
             </Show>
             <Show when={!toolExpanded()}>
-              <text style={{ fg: dimColor(toolFg(), 0.2) }}>
-                {running.length > 0
-                  ? `${running[0]!.name} ${running[0]!.args.slice(0, 60)}`
-                  : `${list[0]?.name ?? ""} ${list[0]?.args?.slice(0, 50) ?? ""}`}
+              <text style={{ fg: dimColor(toolFg(), 0.2), wrapMode: "none", truncate: true }}>
+                🔧 {running.length > 0
+                  ? `⚙ ${running[0]!.name} ${running[0]!.args}`
+                  : `${list[0]?.name ?? ""} ${list[0]?.args ?? ""}`}
               </text>
             </Show>
           </WidgetFrame>
@@ -183,13 +182,13 @@ export function createDockFeature(deps: DockDeps): DockState {
       const now = Date.now()
       if (!think().visible || think().fading) {
         thinkBuf = text
-        setThink({ visible: true, expanded: true, fading: false, fade: 0, text: thinkBuf, lastAt: now, startedAt: now })
+        setThink({ visible: true, expanded: false, fading: false, fade: 0, text: thinkBuf, lastAt: now, startedAt: now })
         lastFlush = 0
         flush(true)
         return
       }
       thinkBuf += text
-      setThink((s) => ({ ...s, lastAt: now, expanded: true }))
+      setThink((s) => ({ ...s, lastAt: now }))
       flush()
     },
 
@@ -203,7 +202,6 @@ export function createDockFeature(deps: DockDeps): DockState {
       setToolVisible(true)
       setToolFading(false)
       setToolFade(0)
-      setToolExpanded(true)
       setTools((arr) => [...arr, { name: start.name, args: start.args, status: "running", elapsed: 0, ...(start.callId ? { callId: start.callId } : {}) }])
     },
 

@@ -53,7 +53,7 @@ export function WidgetFrame(props: {
       >
         {props.title || props.hint ? (
           <box style={{ flexDirection: "row" }}>
-            <text style={{ fg: accent() }}>{props.title}</text>
+            <text style={{ fg: accent(), wrapMode: "none", truncate: true }}>{props.title}</text>
             <box style={{ flexGrow: 1 }} />
             <text style={{ fg: dimColor(accent(), 0.25) }}>{props.hint}</text>
           </box>
