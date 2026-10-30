@@ -51,14 +51,27 @@ export function WidgetFrame(props: {
           padding: 0,
         }}
       >
-        {props.title || props.hint ? (
+        {/* Single-row mode: NO header row — the children ARE the line
+            (truncated right), hint right-aligned on the same row. A
+            separate title row here overflowed the 1-row box into the
+            input line. */}
+        {rows() === 1 ? (
           <box style={{ flexDirection: "row" }}>
-            <text style={{ fg: accent(), wrapMode: "none", truncate: true }}>{props.title}</text>
-            <box style={{ flexGrow: 1 }} />
-            <text style={{ fg: dimColor(accent(), 0.25) }}>{props.hint}</text>
+            <box style={{ flexDirection: "row", flexGrow: 1 }}>{props.children}</box>
+            <text style={{ fg: dimColor(accent(), 0.25) }}>{props.hint ?? ""}</text>
           </box>
-        ) : null}
-        {props.children}
+        ) : (
+          <>
+            {props.title || props.hint ? (
+              <box style={{ flexDirection: "row" }}>
+                <text style={{ fg: accent(), wrapMode: "none", truncate: true }}>{props.title}</text>
+                <box style={{ flexGrow: 1 }} />
+                <text style={{ fg: dimColor(accent(), 0.25) }}>{props.hint}</text>
+              </box>
+            ) : null}
+            {props.children}
+          </>
+        )}
       </box>
     </Show>
   )

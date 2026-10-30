@@ -152,7 +152,7 @@ export function createDockFeature(deps: DockDeps): DockState {
               </For>
             </Show>
             <Show when={!t.expanded}>
-              <text style={{ fg: dimColor(thinkFg(), 0.2), wrapMode: "none", truncate: true }}>💭 {thinkBuf.split("\n").pop() || " "}</text>
+              <text style={{ fg: dimColor(thinkFg(), 0.2), wrapMode: "none", truncate: true }}>💭 {elapsed}s {thinkBuf.split("\n").pop() || " "}</text>
             </Show>
           </WidgetFrame>
         </Show>

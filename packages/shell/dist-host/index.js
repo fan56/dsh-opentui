@@ -1598,20 +1598,37 @@ function WidgetFrame(props) {
     get children() {
       var _el$ = _$createElement13("box");
       _$insert13(_el$, (() => {
-        var _c$ = _$memo6(() => !!(props.title || props.hint));
+        var _c$ = _$memo6(() => rows() === 1);
         return () => _c$() ? (() => {
-          var _el$2 = _$createElement13("box"), _el$3 = _$createElement13("text"), _el$4 = _$createElement13("box"), _el$5 = _$createElement13("text");
+          var _el$2 = _$createElement13("box"), _el$3 = _$createElement13("box"), _el$4 = _$createElement13("text");
           _$insertNode10(_el$2, _el$3);
           _$insertNode10(_el$2, _el$4);
-          _$insertNode10(_el$2, _el$5);
           _$setProp13(_el$2, "style", {
             flexDirection: "row"
           });
-          _$insert13(_el$3, () => props.title);
-          _$setProp13(_el$4, "style", {
+          _$setProp13(_el$3, "style", {
+            flexDirection: "row",
             flexGrow: 1
           });
-          _$insert13(_el$5, () => props.hint);
+          _$insert13(_el$3, () => props.children);
+          _$insert13(_el$4, () => props.hint ?? "");
+          _$effect13((_$p) => _$setProp13(_el$4, "style", {
+            fg: dimColor(accent(), 0.25)
+          }, _$p));
+          return _el$2;
+        })() : [_$memo6(() => _$memo6(() => !!(props.title || props.hint))() ? (() => {
+          var _el$5 = _$createElement13("box"), _el$6 = _$createElement13("text"), _el$7 = _$createElement13("box"), _el$8 = _$createElement13("text");
+          _$insertNode10(_el$5, _el$6);
+          _$insertNode10(_el$5, _el$7);
+          _$insertNode10(_el$5, _el$8);
+          _$setProp13(_el$5, "style", {
+            flexDirection: "row"
+          });
+          _$insert13(_el$6, () => props.title);
+          _$setProp13(_el$7, "style", {
+            flexGrow: 1
+          });
+          _$insert13(_el$8, () => props.hint);
           _$effect13((_p$) => {
             var _v$ = {
               fg: accent(),
@@ -1620,17 +1637,16 @@ function WidgetFrame(props) {
             }, _v$2 = {
               fg: dimColor(accent(), 0.25)
             };
-            _v$ !== _p$.e && (_p$.e = _$setProp13(_el$3, "style", _v$, _p$.e));
-            _v$2 !== _p$.t && (_p$.t = _$setProp13(_el$5, "style", _v$2, _p$.t));
+            _v$ !== _p$.e && (_p$.e = _$setProp13(_el$6, "style", _v$, _p$.e));
+            _v$2 !== _p$.t && (_p$.t = _$setProp13(_el$8, "style", _v$2, _p$.t));
             return _p$;
           }, {
             e: undefined,
             t: undefined
           });
-          return _el$2;
-        })() : null;
-      })(), null);
-      _$insert13(_el$, () => props.children, null);
+          return _el$5;
+        })() : null), _$memo6(() => props.children)];
+      })());
       _$effect13((_$p) => _$setProp13(_el$, "style", {
         flexDirection: "column",
         flexGrow: 0,
@@ -2520,14 +2536,14 @@ function createDockFeature(deps) {
 `).slice(-Math.max(1, (typeof rowsT === "number" ? rowsT : 7) - 2));
                   },
                   children: (line) => (() => {
-                    var _el$5 = _$createElement15("text");
-                    _$insert15(_el$5, line || " ");
-                    _$effect15((_$p) => _$setProp15(_el$5, "style", {
+                    var _el$6 = _$createElement15("text");
+                    _$insert15(_el$6, line || " ");
+                    _$effect15((_$p) => _$setProp15(_el$6, "style", {
                       fg: dimColor(thinkFg(), 0.2),
                       wrapMode: "none",
                       truncate: true
                     }, _$p));
-                    return _el$5;
+                    return _el$6;
                   })()
                 });
               }
@@ -2536,8 +2552,10 @@ function createDockFeature(deps) {
                 return !t.expanded;
               },
               get children() {
-                var _el$ = _$createElement15("text"), _el$2 = _$createTextNode10(`\uD83D\uDCAD `);
+                var _el$ = _$createElement15("text"), _el$2 = _$createTextNode10(`\uD83D\uDCAD `), _el$3 = _$createTextNode10(`s `);
                 _$insertNode12(_el$, _el$2);
+                _$insertNode12(_el$, _el$3);
+                _$insert15(_el$, elapsed, _el$3);
                 _$insert15(_el$, () => thinkBuf.split(`
 `).pop() || " ", null);
                 _$effect15((_$p) => _$setProp15(_el$, "style", {
@@ -2586,17 +2604,17 @@ function createDockFeature(deps) {
                     return list.slice(-Math.max(1, (typeof rowsTool === "number" ? rowsTool : 7) - 2));
                   },
                   children: (e) => (() => {
-                    var _el$6 = _$createElement15("text");
-                    _$insert15(_el$6, (() => {
+                    var _el$7 = _$createElement15("text");
+                    _$insert15(_el$7, (() => {
                       var _c$2 = _$memo8(() => e.status === "running");
                       return () => _c$2() ? `⚙ ${e.name} ${e.args}` : `${e.status === "ok" ? "✔" : "✘"} ${e.name} ${e.args}`;
                     })());
-                    _$effect15((_$p) => _$setProp15(_el$6, "style", {
+                    _$effect15((_$p) => _$setProp15(_el$7, "style", {
                       fg: e.status === "running" ? toolFg() : e.status === "fail" ? th().tokens.toolFail ?? th().tokens.danger : th().tokens.toolOk ?? th().tokens.ok,
                       wrapMode: "none",
                       truncate: true
                     }, _$p));
-                    return _el$6;
+                    return _el$7;
                   })()
                 });
               }
@@ -2605,18 +2623,18 @@ function createDockFeature(deps) {
                 return !toolExpanded();
               },
               get children() {
-                var _el$3 = _$createElement15("text"), _el$4 = _$createTextNode10(`\uD83D\uDD27 `);
-                _$insertNode12(_el$3, _el$4);
-                _$insert15(_el$3, (() => {
+                var _el$4 = _$createElement15("text"), _el$5 = _$createTextNode10(`\uD83D\uDD27 `);
+                _$insertNode12(_el$4, _el$5);
+                _$insert15(_el$4, (() => {
                   var _c$ = _$memo8(() => running.length > 0);
                   return () => _c$() ? `⚙ ${running[0].name} ${running[0].args}` : `${list[0]?.name ?? ""} ${list[0]?.args ?? ""}`;
                 })(), null);
-                _$effect15((_$p) => _$setProp15(_el$3, "style", {
+                _$effect15((_$p) => _$setProp15(_el$4, "style", {
                   fg: dimColor(toolFg(), 0.2),
                   wrapMode: "none",
                   truncate: true
                 }, _$p));
-                return _el$3;
+                return _el$4;
               }
             })];
           }
