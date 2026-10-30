@@ -183,6 +183,11 @@ function foldPixels(px: boolean[][]): string[] {
 /** The banner rows at HALF scale: the whale (28×20 px → 14×10 → 5 rows)
  * * and each wordmark letter (20×20 px → 10×10 → 5 rows), same pixel
  * language, one glyph cell per art cell. */
+/** The whale alone at its original chunky size (10 rows × 28 cols). */
+export function whaleRows(): readonly string[] {
+  return WHALE_ART.map((row) => row)
+}
+
 export function bannerRows(): readonly string[] {
   const whale = foldPixels(halvePixels(artToPixels()))
   const letters = [...WORDMARK].map((ch) => {
@@ -218,20 +223,23 @@ function shortenCwd(cwd: string): string {
  */
 export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string }): JSX.Element {
   const quote = pickDailyQuote()
-  // The whale ships as the ORIGINAL image rendered through the kitty/
-  // iterm2 graphics path (<image>); terminals without graphics support
-  // silently show the half-block pixel whale instead (both share the row
-  // grid, so the composition holds either way).
-  const whalePng = new URL("./assets/whale.png", import.meta.url).pathname
+  // Hero in one visual language: the fat-stroke ascii_font wordmark with
+  // the chunky half-block pixel whale under it (the same block-pixel
+  // weight — no <image>: a graphics-protocol whale came out tiny and the
+  // shared-row layout squeezed the wordmark). Both are self-verifiable
+  // in plain terminals.
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-end", alignItems: "center", padding: 1 }}>
       <box style={{ flexDirection: "row", alignItems: "center" }}>
-        <image source={whalePng} fit="fit" style={{ width: 18, height: 6 }} />
+        <box style={{ flexDirection: "column" }}>
+          <For each={whaleRows()}>
+            {(row) => <text style={{ fg: WHALE_COLOR }}>{row}</text>}
+          </For>
+        </box>
         <box style={{ width: 3, height: 1 }} />
-        <For each={wordmarkRows()}>
-          {(row) => <text style={{ fg: WHALE_COLOR }}>{row}</text>}
-        </For>
+        <ascii_font text="DSH-OPENTUI" font="block" color={WHALE_COLOR} />
       </box>
+      <text>{" "}</text>
       <text>{" "}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`${props.model} · ${shortenCwd(props.cwd)}`}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`🐳 「${quote}」`}</text>

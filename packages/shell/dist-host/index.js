@@ -1100,8 +1100,8 @@ function speedSegment(tps, theme) {
 // ../kit/src/welcome.tsx
 import { effect as _$effect7 } from "@opentui/solid";
 import { createTextNode as _$createTextNode6 } from "@opentui/solid";
-import { insert as _$insert7 } from "@opentui/solid";
 import { insertNode as _$insertNode7 } from "@opentui/solid";
+import { insert as _$insert7 } from "@opentui/solid";
 import { createComponent as _$createComponent7 } from "@opentui/solid";
 import { setProp as _$setProp7 } from "@opentui/solid";
 import { createElement as _$createElement7 } from "@opentui/solid";
@@ -1217,40 +1217,9 @@ function pickDailyQuote() {
 // ../kit/src/welcome.tsx
 var WHALE_COLOR = POWERLINE_COLORS.brand;
 var WHALE_ART = ["           ▄▄▄▄    █        ", "   ▄██████████▄   ████ ▄▄▄█▀", " ▄██████████████▄  ████████ ", " ██▀▀█████████████▄ ▄██▀▀   ", "██      ▀▀█████▄▀██████     ", "▀██        ▀████▄ ████▀     ", " ███        ▀████████▀      ", "  ▀██▄   █▄▄  ▀█████▀       ", "   ▀▀███▄▄███▄▄▄█████▄      ", "      ▀▀▀████▀▀▀            "];
-var LETTER_GAP = 2;
-var WORDMARK = "DSH";
 var WHALE_ART_WIDTH = Math.max(...WHALE_ART.map((row) => row.length));
-var PIXEL_FONT = {
-  D: ["....#############...", "....#############...", "....#############...", "....###.........###.", "...###.........###..", "...###...........###", "...###...........###", "...###...........###", "..###...........###.", "..###...........###.", "..###...........###.", "..###...........###.", ".###...........###..", ".###...........###..", ".###...........###..", ".###.........###....", "###.........###.....", "#############.......", "#############.......", "#############......."],
-  S: [".......#############", ".......#############", ".......#############", "....###.............", "...###..............", "...###..............", "...###..............", "...#############....", "..#############.....", "..#############.....", "..#############.....", "...............###..", "..............###...", "..............###...", "..............###...", "..............###...", ".............###....", "############........", "############........", "############........"],
-  H: ["....###..........###", "....###..........###", "....###..........###", "....###..........###", "...###..........###.", "...###..........###.", "...###..........###.", "...###..........###.", "..################..", "..################..", "..################..", "..################..", ".###..........###...", ".###..........###...", ".###..........###...", ".###..........###...", "###..........###....", "###..........###....", "###..........###....", "###..........###...."]
-};
-function renderPixelGlyph(px) {
-  const rows = [];
-  for (let i = 0;i < px.length / 2; i++) {
-    let row = "";
-    for (let c = 0;c < px[0].length; c++) {
-      const top = px[2 * i][c] === "#";
-      const bottom = px[2 * i + 1][c] === "#";
-      row += top && bottom ? "█" : top ? "▀" : bottom ? "▄" : " ";
-    }
-    rows.push(row);
-  }
-  return rows;
-}
-function wordmarkRows() {
-  const glyphRows = [...WORDMARK].map((ch) => renderPixelGlyph(PIXEL_FONT[ch]));
-  const rows = Array.from({
-    length: WHALE_ART.length
-  }, () => "");
-  for (let i = 0;i < glyphRows.length; i++) {
-    for (let r = 0;r < rows.length; r++) {
-      rows[r] += glyphRows[i][r];
-      if (i < glyphRows.length - 1)
-        rows[r] += " ".repeat(LETTER_GAP);
-    }
-  }
-  return rows;
+function whaleRows() {
+  return WHALE_ART.map((row) => row);
 }
 var home = typeof process !== "undefined" && process.env.HOME || "";
 function shortenCwd(cwd) {
@@ -1261,14 +1230,14 @@ function shortenCwd(cwd) {
 }
 function WelcomeBanner(props) {
   const quote = pickDailyQuote();
-  const whalePng = new URL("./assets/whale.png", import.meta.url).pathname;
   return (() => {
-    var _el$ = _$createElement7("box"), _el$2 = _$createElement7("box"), _el$3 = _$createElement7("image"), _el$4 = _$createElement7("box"), _el$5 = _$createElement7("text"), _el$7 = _$createElement7("text"), _el$8 = _$createElement7("text"), _el$9 = _$createElement7("text");
+    var _el$ = _$createElement7("box"), _el$2 = _$createElement7("box"), _el$3 = _$createElement7("box"), _el$4 = _$createElement7("box"), _el$5 = _$createElement7("ascii_font"), _el$6 = _$createElement7("text"), _el$8 = _$createElement7("text"), _el$0 = _$createElement7("text"), _el$1 = _$createElement7("text"), _el$10 = _$createElement7("text");
     _$insertNode7(_el$, _el$2);
-    _$insertNode7(_el$, _el$5);
-    _$insertNode7(_el$, _el$7);
+    _$insertNode7(_el$, _el$6);
     _$insertNode7(_el$, _el$8);
-    _$insertNode7(_el$, _el$9);
+    _$insertNode7(_el$, _el$0);
+    _$insertNode7(_el$, _el$1);
+    _$insertNode7(_el$, _el$10);
     _$setProp7(_el$, "style", {
       flexDirection: "column",
       flexGrow: 1,
@@ -1278,45 +1247,47 @@ function WelcomeBanner(props) {
     });
     _$insertNode7(_el$2, _el$3);
     _$insertNode7(_el$2, _el$4);
+    _$insertNode7(_el$2, _el$5);
     _$setProp7(_el$2, "style", {
       flexDirection: "row",
       alignItems: "center"
     });
-    _$setProp7(_el$3, "source", whalePng);
-    _$setProp7(_el$3, "fit", "fit");
     _$setProp7(_el$3, "style", {
-      width: 18,
-      height: 6
+      flexDirection: "column"
     });
+    _$insert7(_el$3, _$createComponent7(For7, {
+      get each() {
+        return whaleRows();
+      },
+      children: (row) => (() => {
+        var _el$12 = _$createElement7("text");
+        _$setProp7(_el$12, "style", {
+          fg: WHALE_COLOR
+        });
+        _$insert7(_el$12, row);
+        return _el$12;
+      })()
+    }));
     _$setProp7(_el$4, "style", {
       width: 3,
       height: 1
     });
-    _$insert7(_el$2, _$createComponent7(For7, {
-      get each() {
-        return wordmarkRows();
-      },
-      children: (row) => (() => {
-        var _el$1 = _$createElement7("text");
-        _$setProp7(_el$1, "style", {
-          fg: WHALE_COLOR
-        });
-        _$insert7(_el$1, row);
-        return _el$1;
-      })()
-    }), null);
-    _$insertNode7(_el$5, _$createTextNode6(` `));
-    _$insert7(_el$7, () => `${props.model} · ${shortenCwd(props.cwd)}`);
-    _$insert7(_el$8, `\uD83D\uDC33 「${quote}」`);
-    _$insertNode7(_el$9, _$createTextNode6(` `));
+    _$setProp7(_el$5, "text", "DSH-OPENTUI");
+    _$setProp7(_el$5, "font", "block");
+    _$setProp7(_el$5, "color", WHALE_COLOR);
+    _$insertNode7(_el$6, _$createTextNode6(` `));
+    _$insertNode7(_el$8, _$createTextNode6(` `));
+    _$insert7(_el$0, () => `${props.model} · ${shortenCwd(props.cwd)}`);
+    _$insert7(_el$1, `\uD83D\uDC33 「${quote}」`);
+    _$insertNode7(_el$10, _$createTextNode6(` `));
     _$effect7((_p$) => {
       var _v$ = {
         fg: props.theme.tokens.dim
       }, _v$2 = {
         fg: props.theme.tokens.dim
       };
-      _v$ !== _p$.e && (_p$.e = _$setProp7(_el$7, "style", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$8, "style", _v$2, _p$.t));
+      _v$ !== _p$.e && (_p$.e = _$setProp7(_el$0, "style", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$1, "style", _v$2, _p$.t));
       return _p$;
     }, {
       e: undefined,
