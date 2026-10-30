@@ -3708,6 +3708,23 @@ function ShellHost(props) {
         onToolRun: (run) => {
           dock.onToolRun(run);
         },
+        onReattachedMissed: (rows) => {
+          if (rows.length === 0)
+            return;
+          setItems((arr) => {
+            const painted = rows.map((it) => it.kind === "assistant" ? {
+              kind: "assistant",
+              text: it.text,
+              final: true
+            } : {
+              kind: "user",
+              text: it.text
+            });
+            if (arr.length === 0)
+              return painted;
+            return [...arr.slice(0, -1), ...painted, arr[arr.length - 1]];
+          });
+        },
         onError: (msg) => push({
           kind: "error",
           text: msg
@@ -4425,6 +4442,8 @@ class HostSession {
   #toolCalls = new Map;
   #override;
   #resumeId;
+  #idleTimer;
+  #releasedSeq = 0;
   usage = { prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 };
   cacheHitRate() {
     const total = this.usage.cacheRead + this.usage.cacheWrite;
@@ -4480,6 +4499,7 @@ class HostSession {
     this.#handle = undefined;
     this.#sessionId = undefined;
     this.#agentId = undefined;
+    this.#disarmIdleRelease();
     this.label = `${provider}/${model}${reasoningEffort ? ` (${reasoningEffort})` : ""}`;
   }
   newSession() {
@@ -4489,13 +4509,14 @@ class HostSession {
     this.#handle = undefined;
     this.#sessionId = undefined;
     this.#agentId = undefined;
+    this.#disarmIdleRelease();
     this.#resumeId = undefined;
   }
   resumeSession(id) {
     this.newSession();
     this.#resumeId = id;
   }
-  async storedTranscript(id) {
+  async storedTranscript(id, skip = 0) {
     const persistence = this.#ctx.get?.("sessionPersistence");
     if (!persistence?.open)
       return [];
@@ -4511,7 +4532,7 @@ class HostSession {
         offset += batch.events.length;
       }
       const items = [];
-      for (const event of events) {
+      for (const event of skip > 0 ? events.slice(skip) : events) {
         if (event.type === "user/message") {
           const kind = event.data?.source?.kind;
           if (kind !== undefined && kind !== "user")
@@ -4880,21 +4901,38 @@ ${snapshot.join(`
   }
   async turn(userText, cb, _signal) {
     this.#cb = cb;
+    this.#disarmIdleRelease();
     this.#turns++;
     this.#ticker.reset();
     this.#turnStartedAt = Date.now();
     this.#turnUsageStart = { prompt: this.usage.prompt, completion: this.usage.completion };
     if (!this.#handle) {
-      this.#sessionId = this.#resumeId ?? randomUUID();
+      const reattach = this.#isReleasedForReattach();
+      this.#sessionId = this.#resumeId ?? this.#sessionId ?? randomUUID();
       this.#resumeId = undefined;
+      if (reattach)
+        this.#presetId = undefined;
       const agentOptions = this.#modelSelection() ?? {};
-      this.#handle = await this.#ctx.agents.create({
-        sessionId: this.#sessionId,
-        meta: { cwd: process.cwd(), ...this.#presetId ? { agentPreset: this.#presetId } : {} },
-        agentOptions
-      });
+      try {
+        this.#handle = await this.#ctx.agents.create({
+          sessionId: this.#sessionId,
+          meta: { cwd: process.cwd(), ...this.#presetId ? { agentPreset: this.#presetId } : {} },
+          agentOptions
+        });
+      } catch (error) {
+        if (reattach && error?.name === "SessionAlreadyOwnedError") {
+          throw new Error("session is being driven by another process (phone/web) — send again later to re-take it, or /new for a fresh session");
+        }
+        throw error;
+      }
       this.#agentId = this.#handle.agent.id;
       DBG(`session created ${this.#sessionId} agent=${this.#agentId}`);
+      if (reattach) {
+        const missed = await this.storedTranscript(this.#sessionId, this.#releasedSeq);
+        this.#releasedSeq = 0;
+        if (missed.length > 0)
+          cb.onReattachedMissed?.(missed);
+      }
     }
     const message = createUserMessage({
       content: [
@@ -4910,6 +4948,43 @@ ${snapshot.join(`
     });
   }
   #pendingImages = [];
+  #idleReleaseMs() {
+    const cfg = this.configLoad();
+    const sec = Number(cfg.idleReleaseSec ?? 600);
+    if (!Number.isFinite(sec) || sec <= 0)
+      return 0;
+    return sec * 1000;
+  }
+  #armIdleRelease() {
+    this.#disarmIdleRelease();
+    const ms = this.#idleReleaseMs();
+    if (ms <= 0 || this.#sessionId === undefined)
+      return;
+    const timer = setTimeout(() => this.#releaseIdle(), ms);
+    timer.unref?.();
+    this.#idleTimer = timer;
+  }
+  #disarmIdleRelease() {
+    if (this.#idleTimer === undefined)
+      return;
+    clearTimeout(this.#idleTimer);
+    this.#idleTimer = undefined;
+  }
+  #releaseIdle() {
+    this.#idleTimer = undefined;
+    if (this.#handle === undefined || this.#running)
+      return;
+    this.#releasedSeq = this.#snapshot().length;
+    this.#toolCalls.clear();
+    try {
+      this.#handle?.dispose?.();
+    } catch {}
+    this.#handle = undefined;
+    this.#agentId = undefined;
+  }
+  #isReleasedForReattach() {
+    return this.#handle === undefined && this.#sessionId !== undefined && this.#resumeId === undefined;
+  }
   #children = new Map;
   #runSeqToChild = new Map;
   #childLogs = new Map;
@@ -5071,6 +5146,8 @@ ${snapshot.join(`
       throw new Error("fork point before the first event");
     const parentSession = this.#sessionId;
     const sel = this.#modelSelection();
+    this.#disarmIdleRelease();
+    this.#releasedSeq = 0;
     try {
       this.#handle?.dispose?.();
     } catch {}
@@ -5126,11 +5203,14 @@ ${snapshot.join(`
     return `${ref.name ?? path} (${(ref.bytes / 1024).toFixed(0)} KB)`;
   }
   abort() {
+    this.#disarmIdleRelease();
     try {
       this.#handle?.dispose?.();
     } catch {}
     this.#handle = undefined;
     this.#agentId = undefined;
+    this.#sessionId = undefined;
+    this.#releasedSeq = 0;
     this.#resolveTurn?.();
     this.#resolveTurn = undefined;
   }
@@ -5164,6 +5244,7 @@ ${snapshot.join(`
     const r = this.#resolveTurn;
     this.#resolveTurn = undefined;
     this.#cb?.onTurnEnd({ prompt: this.usage.prompt, completion: this.usage.completion });
+    this.#armIdleRelease();
     r?.();
   }
   #wire() {
