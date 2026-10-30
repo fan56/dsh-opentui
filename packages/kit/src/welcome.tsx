@@ -310,19 +310,16 @@ export function WelcomeBanner(props: { theme: Theme; model: string; cwd: string 
   // in plain terminals.
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-start", alignItems: "flex-start", padding: 1 }}>
-      <box style={{ flexDirection: "row", alignItems: "center" }}>
-        <box style={{ flexDirection: "column" }}>
-          <For each={whale3dRows()}>
-            {(spans) => (
-              <text>
-                <For each={spans}>{(sp) => <span style={{ fg: sp.fg }}>{sp.text}</span>}</For>
-              </text>
-            )}
-          </For>
-        </box>
-        <box style={{ width: 3, height: 1 }} />
-        <ascii_font text="DSH-OPENTUI" font="block" color={WHALE_COLOR} />
-      </box>
+      {/* vertical stack — side-by-side overflowed narrow terminals and
+          pushed the whale off-screen (ascii_font is a fixed-width block) */}
+      <For each={whale3dRows()}>
+        {(spans) => (
+          <text>
+            <For each={spans}>{(sp) => <span style={{ fg: sp.fg }}>{sp.text}</span>}</For>
+          </text>
+        )}
+      </For>
+      <ascii_font text="DSH-OPENTUI" font="block" color={WHALE_COLOR} />
       <text>{" "}</text>
       <text>{" "}</text>
       <text style={{ fg: props.theme.tokens.dim }}>{`${props.model} · ${shortenCwd(props.cwd)}`}</text>
