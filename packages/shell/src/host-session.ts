@@ -338,6 +338,21 @@ export class HostSession {
     return st ? { describe: () => st.describe(), mutate: (ns: string, ops: unknown[], rev?: number) => st.mutate(ns, ops, rev) } : undefined
   }
 
+  /** Full-text session search via the host sessionQuery FTS index. */
+  async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
+    try {
+      const q = (this.#ctx as any).get?.("sessionQuery")
+      if (!q?.searchSessions) return []
+      const res = await q.searchSessions({ query, limit: 10 })
+      return ((res?.items ?? []) as any[]).map((it) => ({
+        id: String(it?.header?.id ?? ""),
+        snippet: String(it?.bestMatch?.snippet ?? "").replace(/\s+/g, " ").slice(0, 80),
+      })).filter((it) => it.id)
+    } catch {
+      return []
+    }
+  }
+
   /** User-installed plugins (profile package.json deps, versions from
    * the installed copies) — dsh built-ins (@deepseek-ai/*) excluded. */
   listPlugins(): { name: string; version: string }[] {

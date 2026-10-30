@@ -70,6 +70,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/sessions", desc: "list and resume stored sessions" },
   { name: "/history", desc: "fork the session at an earlier turn" },
   { name: "/preset", desc: "switch agent preset" },
+  { name: "/search", desc: "full-text search sessions (/search text)" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -445,6 +446,37 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       // speed) from the host session's telemetry.
       for (const line of props.deps.session.usageSummary()) push({ kind: "system", text: line })
       push({ kind: "system", text: `model: ${label()}` })
+    } else if (cmd === "search") {
+      if (!arg) {
+        push({ kind: "error", text: "usage: /search <text>" })
+      } else {
+        const hits = await props.deps.session.searchSessions(arg)
+        if (hits.length === 0) {
+          push({ kind: "system", text: `no sessions matching "${arg}"` })
+        } else {
+          openOverlay({
+            title: `search: ${arg}`,
+            items: hits.map((hit) => ({ label: hit.snippet || hit.id.slice(0, 8), value: hit.id, description: hit.id.slice(0, 8) })),
+            onSelect: async (value) => {
+              props.deps.session.resumeSession(value)
+              setBusy(false)
+              setShowWelcome(false)
+              const gen = ++replayGen
+              try {
+                const rows = await props.deps.session.storedTranscript(value)
+                if (gen !== replayGen) return
+                await new Promise((r2) => setTimeout(r2, 50))
+                if (gen !== replayGen) return
+                setItems(rows.map((it) => (it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : { kind: "user" as const, text: it.text })) as TItem[])
+                setScrollTopLine(null)
+              } catch {
+                /* replay best-effort */
+              }
+              push({ kind: "system", text: `${t("cmd.sessions.resumed")}: ${value.slice(0, 8)}` })
+            },
+          })
+        }
+      }
     } else if (cmd === "preset") {
       const presets = await props.deps.session.listPresets()
       if (presets.length === 0) {

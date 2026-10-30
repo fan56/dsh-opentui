@@ -2687,6 +2687,9 @@ var COMMANDS = [{
   name: "/preset",
   desc: "switch agent preset"
 }, {
+  name: "/search",
+  desc: "full-text search sessions (/search text)"
+}, {
   name: "/theme",
   desc: "pick theme"
 }, {
@@ -3047,6 +3050,57 @@ function ShellHost(props) {
         kind: "system",
         text: `model: ${label()}`
       });
+    } else if (cmd === "search") {
+      if (!arg) {
+        push({
+          kind: "error",
+          text: "usage: /search <text>"
+        });
+      } else {
+        const hits = await props.deps.session.searchSessions(arg);
+        if (hits.length === 0) {
+          push({
+            kind: "system",
+            text: `no sessions matching "${arg}"`
+          });
+        } else {
+          openOverlay({
+            title: `search: ${arg}`,
+            items: hits.map((hit) => ({
+              label: hit.snippet || hit.id.slice(0, 8),
+              value: hit.id,
+              description: hit.id.slice(0, 8)
+            })),
+            onSelect: async (value) => {
+              props.deps.session.resumeSession(value);
+              setBusy(false);
+              setShowWelcome(false);
+              const gen = ++replayGen;
+              try {
+                const rows = await props.deps.session.storedTranscript(value);
+                if (gen !== replayGen)
+                  return;
+                await new Promise((r2) => setTimeout(r2, 50));
+                if (gen !== replayGen)
+                  return;
+                setItems(rows.map((it) => it.kind === "assistant" ? {
+                  kind: "assistant",
+                  text: it.text,
+                  final: true
+                } : {
+                  kind: "user",
+                  text: it.text
+                }));
+                setScrollTopLine(null);
+              } catch {}
+              push({
+                kind: "system",
+                text: `${t("cmd.sessions.resumed")}: ${value.slice(0, 8)}`
+              });
+            }
+          });
+        }
+      }
     } else if (cmd === "preset") {
       const presets = await props.deps.session.listPresets();
       if (presets.length === 0) {
@@ -3936,6 +3990,20 @@ class HostSession {
   get settingsSeam() {
     const st = this.#ctx.get?.("settings");
     return st ? { describe: () => st.describe(), mutate: (ns, ops, rev) => st.mutate(ns, ops, rev) } : undefined;
+  }
+  async searchSessions(query) {
+    try {
+      const q = this.#ctx.get?.("sessionQuery");
+      if (!q?.searchSessions)
+        return [];
+      const res = await q.searchSessions({ query, limit: 10 });
+      return (res?.items ?? []).map((it) => ({
+        id: String(it?.header?.id ?? ""),
+        snippet: String(it?.bestMatch?.snippet ?? "").replace(/\s+/g, " ").slice(0, 80)
+      })).filter((it) => it.id);
+    } catch {
+      return [];
+    }
   }
   listPlugins() {
     try {
