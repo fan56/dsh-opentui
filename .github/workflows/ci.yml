@@ -19,7 +19,9 @@ jobs:
         with:
           version: 10.18.3
       - run: pnpm install --frozen-lockfile
-      - run: bun test
+      # bun reads bunfig.toml from the cwd, and each package preloads the
+      # opentui solid compiler there — run the suite per package, not at root.
+      - run: for p in packages/*/; do (cd "$p" && bun test); done
       # Live interactive E2E (real dsh + real model turns): self-skips on
       # runners without a global dsh / installed profile; full suite on a
       # configured dev machine (npm run -w @aiwayds/dsh-opentui test:e2e).

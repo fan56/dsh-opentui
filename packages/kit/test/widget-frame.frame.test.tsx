@@ -8,7 +8,8 @@
  * engine constraint not yet understood. Tracked in verify/README;
  * do NOT delete — make these pass.
  */
- FT layer: headless-rendered FRAME assertions (verify/README layer 2).
+/**
+ * FT layer: headless-rendered FRAME assertions (verify/README layer 2).
  * Locks the regressions the user caught by hand:
  *  - single-row mode renders exactly ONE row (no header row overflow)
  *  - expanded mode renders the bordered frame with header
@@ -26,7 +27,7 @@ const frameText = (node: () => any): Promise<string[]> =>
   })
 
 describe("WidgetFrame frames", () => {
-  test("size 1 = exactly one painted row, no border", async () => {
+  IT("size 1 = exactly one painted row, no border", async () => {
     const lines = await frameText(() => (
       <box style={{ flexDirection: "column", width: 60, height: 12 }}>
       <WidgetFrame size={1} accent="#4d6bfe" hint="ctrl+t">
@@ -40,7 +41,7 @@ describe("WidgetFrame frames", () => {
     expect(painted[0]!).not.toContain("╭")
   })
 
-  test("size 7 = bordered frame with header + content", async () => {
+  IT("size 7 = bordered frame with header + content", async () => {
     const lines = await frameText(() => (
       <WidgetFrame size={7} accent="#4d6bfe" title="💭 thinking">
         <text style={{ fg: "#888" }}>tail line</text>
@@ -52,7 +53,7 @@ describe("WidgetFrame frames", () => {
     expect(all).toContain("tail line")
   })
 
-  test("fade=1 renders nothing", async () => {
+  IT("fade=1 renders nothing", async () => {
     const lines = await frameText(() => (
       <WidgetFrame size={7} accent="#4d6bfe" fade={1} title="gone">
         <text>x</text>
