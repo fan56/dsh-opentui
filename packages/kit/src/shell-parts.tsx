@@ -110,9 +110,29 @@ export function Transcript(props: {
   // Keep only the trailing window of items so long sessions stay cheap.
   const visibleItems = () => props.items.slice(-(props.maxItems ?? MAX_VISIBLE_ITEMS))
 
+  return (
+    <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
+      <For
+        each={visibleItems()}
+        fallback={<text style={{ fg: props.theme.tokens.dim }}>{props.t("shell.transcript.empty")}</text>}
+      >
+        {(it) => itemNode(it, props.theme, props.t, props.mdStyle)}
+      </For>
+    </box>
+  )
+}
+
+/** Transcript with a scrollback window bolted on. `offset` 0 means
+ * bottom-anchored: renders exactly like <Transcript> (finalized markdown
+ * keeps its real JSX renderer, spinner stays live). offset > 0 switches
+ * to a line-level window over the items flattened to plain text — line
+ * slicing is the whole point of scrollback, and rich JSX blocks cannot
+ * be split that way, so in that mode every item (markdown included)
+ * degrades to its stripped plain-text lines. Keyboard handling stays in
+ * the Shell; this component only renders whatever offset it is given. */
   /** One transcript item -> JSX (markdown for finalized assistant text). */
-  const itemNode = (it: TranscriptItem) => {
-    const th = props.theme
+  const itemNode = (it: TranscriptItem, theme: Theme, t: (k: string) => string, mdStyle?: any, spinnerFrame = "") => {
+    const th = theme
     if (it.kind === "user") {
       return <text style={{ fg: th.tokens.userMark ?? th.tokens.accent }}>❯ {it.text}</text>
     }
@@ -120,7 +140,7 @@ export function Transcript(props: {
       if (it.final) {
         return (
           <box style={{ flexDirection: "column" }}>
-            <markdown content={it.text} streaming={false} syntaxStyle={props.mdStyle} />
+            <markdown content={it.text} streaming={false} syntaxStyle={mdStyle} />
             <text>{" "}</text>
           </box>
         )
@@ -139,43 +159,23 @@ export function Transcript(props: {
     }
     if (it.kind === "thinking") {
       return (
-        <text style={{ fg: th.tokens.dim }}>{`${props.spinnerFrame} ${props.t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`}</text>
+        <text style={{ fg: th.tokens.dim }}>{`${spinnerFrame} ${t("agent.thinking")} (${it.chars}) ${it.tail.slice(-120)}`}</text>
       )
     }
     if (it.kind === "tool") {
       return (
         <box style={{ flexDirection: "column" }}>
           <text style={{ fg: th.tokens.toolOk ?? th.tokens.warn }}>{` ⚒ ${it.name} ${it.args.slice(0, 90)}`}</text>
-          <text style={{ fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger }}>{` ⎿ ${it.ok ? props.t("agent.tool.ok") : props.t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`}</text>
+          <text style={{ fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger }}>{` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`}</text>
         </box>
       )
     }
     if (it.kind === "error") {
-      return <text style={{ fg: th.tokens.danger }}>✗ {props.t("agent.error")}: {it.text}</text>
+      return <text style={{ fg: th.tokens.danger }}>✗ {t("agent.error")}: {it.text}</text>
     }
     return <text style={{ fg: th.tokens.dim }}>· {it.text}</text>
   }
 
-  return (
-    <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-      <For
-        each={visibleItems()}
-        fallback={<text style={{ fg: props.theme.tokens.dim }}>{props.t("shell.transcript.empty")}</text>}
-      >
-        {(it) => itemNode(it)}
-      </For>
-    </box>
-  )
-}
-
-/** Transcript with a scrollback window bolted on. `offset` 0 means
- * bottom-anchored: renders exactly like <Transcript> (finalized markdown
- * keeps its real JSX renderer, spinner stays live). offset > 0 switches
- * to a line-level window over the items flattened to plain text — line
- * slicing is the whole point of scrollback, and rich JSX blocks cannot
- * be split that way, so in that mode every item (markdown included)
- * degrades to its stripped plain-text lines. Keyboard handling stays in
- * the Shell; this component only renders whatever offset it is given. */
 export function TranscriptWindow(props: {
   items: TranscriptItem[]
   theme: Theme
@@ -216,6 +216,26 @@ export function TranscriptWindow(props: {
   // user is scrolled back. The full-JSX path (per-item markdown) is not
   // windowable and used to overflow the box from the top, which read as
   // "stuck at the oldest lines".
+  // FOLLOWING mode (no startIndex, offset 0): the RICH per-item
+  // transcript — real <markdown> tables/bullets, spacers between items —
+  // inside the flex-end container. Overflow grows upward and the oldest
+  // rows clip at the box top: newest content hugs the dock, which is the
+  // chat-correct anchor. The plain-text line window serves ONLY the
+  // scrolled-back mode.
+  if (props.startIndex === undefined && (props.offset ?? 0) === 0) {
+    return (
+      <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-end", padding: 1 }}>
+        <For each={props.items.slice(-(props.maxItems ?? MAX_VISIBLE_ITEMS))}>
+          {(it) => (
+            <box style={{ flexDirection: "column" }}>
+              {itemNode(it, props.theme, props.t, props.mdStyle, props.spinnerFrame)}
+              <text>{" "}</text>
+            </box>
+          )}
+        </For>
+      </box>
+    )
+  }
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-end", padding: 1 }}>
       {/* reactive call — a component body runs once in Solid, so the window

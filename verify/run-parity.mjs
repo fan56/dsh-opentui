@@ -81,6 +81,7 @@ spawn('tmux', ['new-session', '-d', '-s', session, '-x', String(TERM_W), '-y', S
   `cd ~/.dsh/profiles/${profile === 'tui' ? 'tui' : 'dsh-opentui'} && NODE_OPTIONS=${profile === 'tui' ? '' : '--experimental-ffi '}dsh --profile ${profile}`], { stdio: 'ignore' })
 await sleep(BOOT + 2000)
 
+const v = (name, ok, detail) => { if (!ok) fails++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : '  ← ' + detail}`) }
 const results = []
 // wait until the dock is quiet (turn truly finished) — scenario 1's
 // high-effort thinking can run 60s+ and overlapping scenarios samples a
@@ -100,6 +101,19 @@ await waitQuiet()
 const s2 = await runScenario(session, { toolPrompt: '用 bash 运行 sleep 5 然后回复 done', thinkMs: 12000, settleMs: 5000 })
 results.push(['tool-turn', s2])
 await waitQuiet()
+// scenario 3: markdown rendering (table borders in the LIVE grid)
+spawn('tmux', ['send-keys', '-t', session, '-l', '用一个markdown表格列出两种语言和创建年份，再写一句总结'], { stdio: 'ignore' })
+await sleep(400)
+spawn('tmux', ['send-keys', '-t', session, 'Enter'], { stdio: 'ignore' })
+let tableOk = false
+for (let i = 0; i < 30 && !tableOk; i++) {
+  await sleep(1000)
+  const g = await capture(session)
+  tableOk = g.includes('┌') && g.includes('│') && (g.includes('└') || g.includes('├'))
+}
+v('markdown table renders (┌│ borders in live grid)', tableOk, 'no table borders in 30s')
+await waitQuiet()
+
 // post-turn clear check: poll until the dock empties (the settle budget
 // above can fire mid-turn on slow models — a hard sleep here produced
 // false leftovers)
@@ -113,7 +127,6 @@ spawn('tmux', ['kill-session', '-t', session], { stdio: 'ignore' })
 
 // ---- verdicts ----
 let fails = 0
-const v = (name, ok, detail) => { if (!ok) fails++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : '  ← ' + detail}`) }
 for (const [name, r] of results) {
   v(`${name}: no flicker (mounts<=2 incl tool phase)`, r.mounts <= 2, `mounts=${r.mounts}`)
   v(`${name}: no mid-turn disappear (unmounts=0 while active)`, r.unmounts <= 1, `unmounts=${r.unmounts}`)
