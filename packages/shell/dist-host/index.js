@@ -743,6 +743,7 @@ function TranscriptWindow(props) {
     _$setProp2(_el$18, "style", {
       flexDirection: "column",
       flexGrow: 1,
+      justifyContent: "flex-end",
       padding: 1
     });
     _$insert2(_el$18, _$createComponent2(For2, {

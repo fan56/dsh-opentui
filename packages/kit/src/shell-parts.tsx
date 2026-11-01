@@ -217,9 +217,11 @@ export function TranscriptWindow(props: {
   // windowable and used to overflow the box from the top, which read as
   // "stuck at the oldest lines".
   return (
-    <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
+    <box style={{ flexDirection: "column", flexGrow: 1, justifyContent: "flex-end", padding: 1 }}>
       {/* reactive call — a component body runs once in Solid, so the window
-          must be derived inside the JSX expression, never in a body const */}
+          must be derived inside the JSX expression, never in a body const.
+          justifyContent flex-end anchors short content to the BOTTOM — the
+          newest line hugs the dock instead of hanging at the top-left */}
       <For each={windowLines()}>
         {(l) => <text style={l.fg ? { fg: l.fg } : {}}>{l.text || " "}</text>}
       </For>
