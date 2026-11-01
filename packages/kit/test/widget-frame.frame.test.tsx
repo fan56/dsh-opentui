@@ -1,12 +1,12 @@
 /**
- * FT layer (verify/README layer 2) — STATUS: harness-blocked.
- * The assertions below encode the three user-caught regressions
- * (single-row overflow / bordered expanded / fade unmount), but
- * testRender rejects this tree with "Orphan text error" even with the
- * probe's exact options and root-box shape — the passing probes used
- * InputLine (textarea) roots, so a WidgetFrame(Show-root) tree hits an
- * engine constraint not yet understood. Tracked in verify/README;
- * do NOT delete — make these pass.
+ * FT layer (verify/README layer 2) — runs now, blocked on one engine rule.
+ * Harness fixed this round: tsconfig include now covers test/ (the file
+ * was silently REACT-compiled before — the original mystery), and the
+ * frame capture uses setup.captureCharFrame(). Three tests execute and
+ * two fail on a genuine reconciler rule: text-node renderables may not
+ * sit directly under a box in this path (isTextNodeRenderable parent
+ * check throws). Needs reconciler source reading — assertions are
+ * correct, keep them.
  */
 /**
  * FT layer: headless-rendered FRAME assertions (verify/README layer 2).
@@ -15,19 +15,19 @@
  *  - expanded mode renders the bordered frame with header
  *  - fade=1 renders nothing */
 import { describe, expect, test } from "bun:test"
-/* eslint-disable */
-const IT = test.skip
 import { testRender } from "@opentui/solid"
 import { WidgetFrame } from "../src/widget-frame.tsx"
 
-const frameText = (node: () => any): Promise<string[]> =>
-  testRender(node, { width: 60, height: 12, kittyKeyboard: true, exitOnCtrlC: false }).then((setup: any) => {
-    const text: string[] = setup.frame.map((r: any) => r.map((c: any) => c.char ?? " ").join(""))
-    return setup.dispose().then(() => text)
-  })
+const frameText = async (node: () => any): Promise<string[]> => {
+  const setup = await testRender(node, { width: 60, height: 12, kittyKeyboard: true, exitOnCtrlC: false })
+  const grid: string[][] = setup.captureCharFrame()
+  const text = grid.map((r: any) => r.map((c: any) => c.char ?? " ").join(""))
+  await setup.dispose()
+  return text
+}
 
 describe("WidgetFrame frames", () => {
-  IT("size 1 = exactly one painted row, no border", async () => {
+  test("size 1 = exactly one painted row, no border", async () => {
     const lines = await frameText(() => (
       <box style={{ flexDirection: "column", width: 60, height: 12 }}>
       <WidgetFrame size={1} accent="#4d6bfe" hint="ctrl+t">
@@ -41,7 +41,7 @@ describe("WidgetFrame frames", () => {
     expect(painted[0]!).not.toContain("╭")
   })
 
-  IT("size 7 = bordered frame with header + content", async () => {
+  test("size 7 = bordered frame with header + content", async () => {
     const lines = await frameText(() => (
       <WidgetFrame size={7} accent="#4d6bfe" title="💭 thinking">
         <text style={{ fg: "#888" }}>tail line</text>
@@ -53,7 +53,7 @@ describe("WidgetFrame frames", () => {
     expect(all).toContain("tail line")
   })
 
-  IT("fade=1 renders nothing", async () => {
+  test("fade=1 renders nothing", async () => {
     const lines = await frameText(() => (
       <WidgetFrame size={7} accent="#4d6bfe" fade={1} title="gone">
         <text>x</text>
