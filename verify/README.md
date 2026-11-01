@@ -17,7 +17,7 @@
 ## 当前状态
 - UT 层：packages/kit/src/widget-frame.test.ts — 4 tests / 16 asserts GREEN
 - E2E+parity：verify/run-parity.mjs — 9/9 GREEN
-- FT 层：packages/kit/test/widget-frame.frame.test.tsx — 三个回归锁断言已写，被 testRender 的 Orphan text error 挡住（探针过的是 textarea 根，Show 根触引擎约束，待查）；标记 skip 不删
+- FT 层：packages/kit/test/widget-frame.frame.test.tsx — **已破案**：原 Orphan error 是 tsconfig include 不含 test/ 致整个文件被 react-JSX 静默编译；修 include + captureCharFrame 后测试真正运行，现卡 reconciler 的 text-node-under-box 规则（待读引擎源码）；断言保留
 
 ## 运行
 ```
