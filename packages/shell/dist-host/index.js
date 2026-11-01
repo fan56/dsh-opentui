@@ -1433,14 +1433,14 @@ function Select(props) {
     }
     if (n === 0)
       return;
-    if (key.name === "up") {
+    if (key.name === "up" || key.name === "left") {
       key.preventDefault?.();
       const v = (index() - 1 + n) % n;
       setIndex(v);
       props.onPreview?.(props.items[v]?.value ?? "");
       return;
     }
-    if (key.name === "down") {
+    if (key.name === "down" || key.name === "right") {
       key.preventDefault?.();
       const v = (index() + 1) % n;
       setIndex(v);

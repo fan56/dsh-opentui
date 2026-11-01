@@ -67,14 +67,16 @@ export function Select(props: {
       return props.onCancel()
     }
     if (n === 0) return
-    if (key.name === "up") {
+    // left/right navigate too — horizontal pickers (few options) read
+    // naturally with arrows in both axes (left = previous, right = next)
+    if (key.name === "up" || key.name === "left") {
       key.preventDefault?.()
       const v = (index() - 1 + n) % n
       setIndex(v)
       props.onPreview?.(props.items[v]?.value ?? "")
       return
     }
-    if (key.name === "down") {
+    if (key.name === "down" || key.name === "right") {
       key.preventDefault?.()
       const v = (index() + 1) % n
       setIndex(v)
