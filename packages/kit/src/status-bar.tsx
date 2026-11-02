@@ -18,10 +18,10 @@ export type StatusPhase = "think" | "tool" | "stream" | "approve"
 
 /** Rotating verb pools per phase (zh). Config can override via statusVerbs. */
 const DEFAULT_VERBS: Record<StatusPhase, string[]> = {
-  think: ["思考中", "钻研中", "推演中", "构思中", "酝酿中", "琢磨中"],
-  tool: ["执行中", "处理中", "运行中", "操作中", "施工中"],
-  stream: ["撰写中", "输出中", "落笔中", "整理中"],
-  approve: ["等待确认"],
+  think: ["Thinking", "Pondering", "Reasoning", "Reflecting", "Deliberating", "Mulling"],
+  tool: ["Working", "Executing", "Running", "Processing", "Building"],
+  stream: ["Writing", "Composing", "Typing", "Drafting"],
+  approve: ["Waiting"],
 }
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -64,7 +64,7 @@ export function StatusBar(props: {
     const pool = pools()[phase]
     const verb = pool[Math.floor((tick() * SPINNER_MS) / VERB_MS) % pool.length]
     const detail = props.detail?.() ?? ""
-    return `${spinner} ${PHASE_ICON[phase]} ${verb}… ${props.elapsed()}s${detail ? ` · ${detail}` : ""}`
+    return `${spinner} ${PHASE_ICON[phase]} ${verb}...  ${props.elapsed()}s${detail ? ` · ${detail}` : ""}`
   }
 
   const fg = () => {
