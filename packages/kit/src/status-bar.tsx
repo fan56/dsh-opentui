@@ -49,7 +49,7 @@ export function StatusBar(props: {
   detail?: () => string
   /** Verb pool override: { think?: string[], tool?: string[], … }. */
   verbs?: Partial<Record<StatusPhase, string[]>>
-  /** Total row width (text left + comet bar to the right edge). */
+  /** Unused now (fixed track); kept for API compat. */
   width?: number
 }): JSX.Element {
   const [tick, setTick] = createSignal(0)
@@ -71,31 +71,24 @@ export function StatusBar(props: {
     return th.accent
   }
 
-  const spinner = () => SPINNER_FRAMES[Math.floor(tick() / (VERB_MS / BAR_MS / 8)) % SPINNER_FRAMES.length]
-
-  /** One row: [text] left + comet bar filling the rest to the right edge. */
+  /** Fixed-width comet track: the PHASE ICON is the moving head with a
+   * density-ramp tail behind it, ping-ponging over 15 cells; the label
+   * follows the track (no braille spinner, no full-width track). */
+  const TRACK_CELLS = 15
   const row = (): { text: string; fg: string }[] => {
     const phase = props.phase
     if (phase === null) return []
-    const total = props.width ?? 80
-    const spinner = SPINNER_FRAMES[tick() % SPINNER_FRAMES.length]
     const pool = pools()[phase]
     const verb = pool[Math.floor((tick() * BAR_MS) / VERB_MS) % pool.length]
     const detail = props.detail?.() ?? ""
-    const label = ` ${spinner} ${PHASE_ICON[phase]} ${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""} `
+    const label = `${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""}`
     const trackFg = props.theme.tokens.border
     const headFg = fg()
 
-    // comet geometry over the FULL row width (behind the label too)
-    const cells = Math.max(8, total - 2)
-    const head = Math.floor((tick() * 1) % (cells * 2))
-    const pos = head < cells ? head : cells * 2 - 1 - head // ping-pong
-    const dir = head < cells ? 1 : -1
+    const head = Math.floor(tick() % (TRACK_CELLS * 2))
+    const pos = head < TRACK_CELLS ? head : TRACK_CELLS * 2 - 1 - head
+    const dir = head < TRACK_CELLS ? 1 : -1
 
-    // text INSIDE the track: the ░ track spans the FULL width, the label
-    // occupies the leading cells, and the comet travels the whole width —
-    // passing BEHIND the label (label cells win; the comet emerges on
-    // either side)
     const runs: { text: string; fg: string }[] = []
     let buf = ""
     let bufFg = trackFg
@@ -104,15 +97,11 @@ export function StatusBar(props: {
       buf = ""
       bufFg = f
     }
-    const labelChars = [...label]
-    for (let c = 0; c < cells; c++) {
+    for (let c = 0; c < TRACK_CELLS; c++) {
       let ch: string
       let cellFg = trackFg
-      if (c < labelChars.length) {
-        ch = labelChars[c]!
-        cellFg = headFg
-      } else if (c === pos) {
-        ch = RAMP[0]!
+      if (c === pos) {
+        ch = PHASE_ICON[phase]!
         cellFg = headFg
       } else {
         ch = "░"
@@ -128,12 +117,13 @@ export function StatusBar(props: {
       buf += ch
     }
     flush(trackFg)
+    runs.push({ text: ` ${PHASE_ICON[phase]} ${label}`, fg: headFg })
     return runs
   }
 
   return (
     <Show when={props.phase !== null}>
-      <box style={{ flexDirection: "row", paddingLeft: 1, paddingRight: 1, height: 1, flexGrow: 0, width: props.width ?? 80 }}>
+      <box style={{ flexDirection: "row", paddingLeft: 1, paddingRight: 1, height: 1, flexGrow: 0 }}>
         <For each={row()}>
           {(r) => (
             <text style={{ fg: r.fg }} wrapMode="none">

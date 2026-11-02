@@ -1803,10 +1803,10 @@ function WidgetFrame(props) {
   });
 }
 // ../kit/src/status-bar.tsx
-import { setProp as _$setProp14 } from "@opentui/solid";
 import { effect as _$effect14 } from "@opentui/solid";
 import { insert as _$insert14 } from "@opentui/solid";
 import { createComponent as _$createComponent13 } from "@opentui/solid";
+import { setProp as _$setProp14 } from "@opentui/solid";
 import { createElement as _$createElement14 } from "@opentui/solid";
 import { createSignal as createSignal2, onCleanup, For as For11, Show as Show8 } from "solid-js";
 var DEFAULT_VERBS = {
@@ -1815,7 +1815,6 @@ var DEFAULT_VERBS = {
   stream: ["Writing", "Composing", "Typing", "Drafting"],
   approve: ["Waiting"]
 };
-var SPINNER_FRAMES2 = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 var VERB_MS = 2500;
 var PHASE_ICON = {
   think: "\uD83D\uDCAD",
@@ -1846,23 +1845,20 @@ function StatusBar(props) {
       return th.warn;
     return th.accent;
   };
-  const spinner = () => SPINNER_FRAMES2[Math.floor(tick() / (VERB_MS / BAR_MS / 8)) % SPINNER_FRAMES2.length];
+  const TRACK_CELLS = 15;
   const row = () => {
     const phase = props.phase;
     if (phase === null)
       return [];
-    const total = props.width ?? 80;
-    const spinner = SPINNER_FRAMES2[tick() % SPINNER_FRAMES2.length];
     const pool = pools()[phase];
     const verb = pool[Math.floor(tick() * BAR_MS / VERB_MS) % pool.length];
     const detail = props.detail?.() ?? "";
-    const label = ` ${spinner} ${PHASE_ICON[phase]} ${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""} `;
+    const label = `${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""}`;
     const trackFg = props.theme.tokens.border;
     const headFg = fg();
-    const cells = Math.max(8, total - 2);
-    const head = Math.floor(tick() * 1 % (cells * 2));
-    const pos = head < cells ? head : cells * 2 - 1 - head;
-    const dir = head < cells ? 1 : -1;
+    const head = Math.floor(tick() % (TRACK_CELLS * 2));
+    const pos = head < TRACK_CELLS ? head : TRACK_CELLS * 2 - 1 - head;
+    const dir = head < TRACK_CELLS ? 1 : -1;
     const runs = [];
     let buf = "";
     let bufFg = trackFg;
@@ -1875,15 +1871,11 @@ function StatusBar(props) {
       buf = "";
       bufFg = f;
     };
-    const labelChars = [...label];
-    for (let c = 0;c < cells; c++) {
+    for (let c = 0;c < TRACK_CELLS; c++) {
       let ch;
       let cellFg = trackFg;
-      if (c < labelChars.length) {
-        ch = labelChars[c];
-        cellFg = headFg;
-      } else if (c === pos) {
-        ch = RAMP[0];
+      if (c === pos) {
+        ch = PHASE_ICON[phase];
         cellFg = headFg;
       } else {
         ch = "░";
@@ -1900,6 +1892,10 @@ function StatusBar(props) {
       buf += ch;
     }
     flush(trackFg);
+    runs.push({
+      text: ` ${PHASE_ICON[phase]} ${label}`,
+      fg: headFg
+    });
     return runs;
   };
   return _$createComponent13(Show8, {
@@ -1908,6 +1904,13 @@ function StatusBar(props) {
     },
     get children() {
       var _el$ = _$createElement14("box");
+      _$setProp14(_el$, "style", {
+        flexDirection: "row",
+        paddingLeft: 1,
+        paddingRight: 1,
+        height: 1,
+        flexGrow: 0
+      });
       _$insert14(_el$, _$createComponent13(For11, {
         get each() {
           return row();
@@ -1922,14 +1925,6 @@ function StatusBar(props) {
           return _el$2;
         })()
       }));
-      _$effect14((_$p) => _$setProp14(_el$, "style", {
-        flexDirection: "row",
-        paddingLeft: 1,
-        paddingRight: 1,
-        height: 1,
-        flexGrow: 0,
-        width: props.width ?? 80
-      }, _$p));
       return _el$;
     }
   });
@@ -2678,7 +2673,7 @@ import { createSignal as createSignal5, For as For13, Show as Show10 } from "sol
 var FLUSH_MS = 60;
 var FADE_STEP_MS = 130;
 var FADE_STEPS = 5;
-var SPINNER_FRAMES3 = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+var SPINNER_FRAMES2 = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 function createDockFeature(deps) {
   const th = () => deps.theme();
   const thinkFg = () => th().tokens.thinking ?? th().tokens.accent;
@@ -2770,7 +2765,7 @@ function createDockFeature(deps) {
     const hints = deps.hints?.() ?? {};
     const elapsed = t.startedAt ? Math.floor((Date.now() - t.startedAt) / 1000) : 0;
     const running = list.filter((e) => e.status === "running");
-    const frame = SPINNER_FRAMES3[Math.floor(Date.now() / 125 % SPINNER_FRAMES3.length)];
+    const frame = SPINNER_FRAMES2[Math.floor(Date.now() / 125 % SPINNER_FRAMES2.length)];
     const bgTint = () => {
       const st = deps.style?.() ?? {};
       const override = t.visible ? st.thinkBg : st.toolBg;
@@ -2865,7 +2860,7 @@ function createDockFeature(deps) {
             return _$memo8(() => !!toolFading())() ? toolFade() : 0;
           },
           get title() {
-            return `\uD83D\uDD27 ${running.length > 0 ? `${SPINNER_FRAMES3[Math.floor(Date.now() / 125 % SPINNER_FRAMES3.length)]} ${running.length} running` : `${list.length} tools`} · ${list.filter((e) => e.status === "ok").length}✔ ${list.filter((e) => e.status === "fail").length}✘`;
+            return `\uD83D\uDD27 ${running.length > 0 ? `${SPINNER_FRAMES2[Math.floor(Date.now() / 125 % SPINNER_FRAMES2.length)]} ${running.length} running` : `${list.length} tools`} · ${list.filter((e) => e.status === "ok").length}✔ ${list.filter((e) => e.status === "fail").length}✘`;
           },
           get hint() {
             return hints.tool;
