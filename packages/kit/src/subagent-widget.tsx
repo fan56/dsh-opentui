@@ -91,12 +91,9 @@ export function SubagentWidget(props: { entries: SubagentEntry[]; theme: Theme }
                   <text style={{ fg: th().tokens.dim }}>{`${branch()} ${glyph()} ${name()}${meta()}`}</text>
                 }
               >
-                <text style={{ fg: th().tokens.accent }}>
-                  {`${branch()} ${spinnerFrame(e.elapsed)} ${name()}${meta()}`}
+                <text style={{ fg: th().tokens.accent, wrapMode: "none", truncate: true }}>
+                  {`${branch()} ${spinnerFrame(e.elapsed)} ${name()}${meta()}  ${tailLine(e)}`.trimEnd()}
                 </text>
-                <Show when={tailLine(e).length > 0}>
-                  <text style={{ fg: th().tokens.dim, wrapMode: "none", truncate: true }}>{`│   ${tailLine(e)}`}</text>
-                </Show>
               </Show>
             </>
           )

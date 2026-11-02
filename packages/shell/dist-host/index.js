@@ -1493,37 +1493,23 @@ function SubagentWidget(props) {
             },
             get fallback() {
               return (() => {
-                var _el$3 = _$createElement9("text");
-                _$insert9(_el$3, () => `${branch()} ${glyph()} ${name()}${meta()}`);
-                _$effect9((_$p) => _$setProp9(_el$3, "style", {
+                var _el$2 = _$createElement9("text");
+                _$insert9(_el$2, () => `${branch()} ${glyph()} ${name()}${meta()}`);
+                _$effect9((_$p) => _$setProp9(_el$2, "style", {
                   fg: th().tokens.dim
                 }, _$p));
-                return _el$3;
+                return _el$2;
               })();
             },
             get children() {
-              return [(() => {
-                var _el$ = _$createElement9("text");
-                _$insert9(_el$, () => `${branch()} ${spinnerFrame(e.elapsed)} ${name()}${meta()}`);
-                _$effect9((_$p) => _$setProp9(_el$, "style", {
-                  fg: th().tokens.accent
-                }, _$p));
-                return _el$;
-              })(), _$createComponent9(Show5, {
-                get when() {
-                  return tailLine(e).length > 0;
-                },
-                get children() {
-                  var _el$2 = _$createElement9("text");
-                  _$insert9(_el$2, () => `│   ${tailLine(e)}`);
-                  _$effect9((_$p) => _$setProp9(_el$2, "style", {
-                    fg: th().tokens.dim,
-                    wrapMode: "none",
-                    truncate: true
-                  }, _$p));
-                  return _el$2;
-                }
-              })];
+              var _el$ = _$createElement9("text");
+              _$insert9(_el$, () => `${branch()} ${spinnerFrame(e.elapsed)} ${name()}${meta()}  ${tailLine(e)}`.trimEnd());
+              _$effect9((_$p) => _$setProp9(_el$, "style", {
+                fg: th().tokens.accent,
+                wrapMode: "none",
+                truncate: true
+              }, _$p));
+              return _el$;
             }
           });
         }
