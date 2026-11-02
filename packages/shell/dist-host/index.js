@@ -1893,7 +1893,7 @@ function StatusBar(props) {
     }
     flush(trackFg);
     runs.push({
-      text: ` ${PHASE_ICON[phase]} ${label}`,
+      text: ` ${label}`,
       fg: headFg
     });
     return runs;

@@ -117,7 +117,7 @@ export function StatusBar(props: {
       buf += ch
     }
     flush(trackFg)
-    runs.push({ text: ` ${PHASE_ICON[phase]} ${label}`, fg: headFg })
+    runs.push({ text: ` ${label}`, fg: headFg })
     return runs
   }
 
