@@ -128,6 +128,16 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // (child-session views: header adoption + tool-workflow pairing + fold).
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   const [subagents, setSubagents] = createSignal<SubagentEntry[]>([])
+  // subagent panel lifecycle: when every child settles, clear the panel
+  // 1s later (user spec — done means gone, brief linger to read results)
+  let subagentClearTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleSubagentClear = () => {
+    if (subagentClearTimer !== undefined) clearTimeout(subagentClearTimer)
+    subagentClearTimer = setTimeout(() => {
+      subagentClearTimer = undefined
+      setSubagents([])
+    }, 1000)
+  }
   // ctrl+G viewer: the selected child id, its rendered lines, and the
   // one-line steer entry state
   const [viewerId, setViewerId] = createSignal<string | null>(null)
@@ -802,6 +812,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     dock.onTurnStart()
     setTurnElapsed(0)
     setStreaming(false)
+    if (subagentClearTimer !== undefined) {
+      clearTimeout(subagentClearTimer)
+      subagentClearTimer = undefined
+    }
     setLiveTps(null)
     turnStartAt = Date.now()
     streamingReply = null
@@ -838,7 +852,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             if (sec > 0.3 && chars > 0) setLiveTps(Math.round(chars / 4 / sec))
           },
           onTodos: (list) => setTodos(list),
-          onSubagentUpdate: (entries) => setSubagents(entries),
+          onSubagentUpdate: (entries) => {
+            setSubagents(entries)
+            if (entries.length > 0 && entries.every((e) => e.status !== "running")) scheduleSubagentClear()
+          },
           onApprove: (name: string, args: Record<string, unknown>) => {
             // subagent policy (tui-pi subagent-policy concept): spawn tools
             // over the maxAgents cap are rejected at the approval layer
@@ -1113,8 +1130,6 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       )}
       {/* Fixed dock below the transcript window (tui-pi's shape): the
           panels never scroll away with the content. */}
-      <TodosWidget todos={todos()} theme={th()} />
-      <SubagentWidget entries={subagents()} theme={th()} />
       {dock.dockView()}
       {approval() ? (
         <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
@@ -1227,6 +1242,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         setKey={setKey()}
         setValue={setValueText()}
       />
+      {/* subagent + todo panels BELOW the input line (user spec) */}
+      <TodosWidget todos={todos()} theme={th()} />
+      <SubagentWidget entries={subagents()} theme={th()} />
       {hintsVisible() ? <FooterHints theme={th()} /> : null}
       <PowerlineFooter left={powerlineSegments()} right={clock()} theme={th()} />
     </box>

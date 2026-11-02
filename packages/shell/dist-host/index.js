@@ -3149,6 +3149,15 @@ function ShellHost(props) {
   const [showWelcome, setShowWelcome] = createSignal6(true);
   const [todos, setTodos] = createSignal6([]);
   const [subagents, setSubagents] = createSignal6([]);
+  let subagentClearTimer;
+  const scheduleSubagentClear = () => {
+    if (subagentClearTimer !== undefined)
+      clearTimeout(subagentClearTimer);
+    subagentClearTimer = setTimeout(() => {
+      subagentClearTimer = undefined;
+      setSubagents([]);
+    }, 1000);
+  };
   const [viewerId, setViewerId] = createSignal6(null);
   const [viewerLines, setViewerLines] = createSignal6([]);
   const [steerFor, setSteerFor] = createSignal6(null);
@@ -3932,6 +3941,10 @@ function ShellHost(props) {
     dock.onTurnStart();
     setTurnElapsed(0);
     setStreaming(false);
+    if (subagentClearTimer !== undefined) {
+      clearTimeout(subagentClearTimer);
+      subagentClearTimer = undefined;
+    }
     setLiveTps(null);
     turnStartAt = Date.now();
     streamingReply = null;
@@ -3979,7 +3992,11 @@ function ShellHost(props) {
             setLiveTps(Math.round(chars / 4 / sec));
         },
         onTodos: (list) => setTodos(list),
-        onSubagentUpdate: (entries) => setSubagents(entries),
+        onSubagentUpdate: (entries) => {
+          setSubagents(entries);
+          if (entries.length > 0 && entries.every((e) => e.status !== "running"))
+            scheduleSubagentClear();
+        },
         onApprove: (name, args) => {
           if (SPAWN_TOOLS.includes(name)) {
             const cap = Number(pluginConfig().maxAgents ?? 0);
@@ -4300,22 +4317,6 @@ function ShellHost(props) {
         onLayout: (total, rows) => totalLines = total
       }));
     })(), null);
-    _$insert18(_el$, _$createComponent17(TodosWidget, {
-      get todos() {
-        return todos();
-      },
-      get theme() {
-        return th();
-      }
-    }), null);
-    _$insert18(_el$, _$createComponent17(SubagentWidget, {
-      get entries() {
-        return subagents();
-      },
-      get theme() {
-        return th();
-      }
-    }), null);
     _$insert18(_el$, () => dock.dockView(), null);
     _$insert18(_el$, (() => {
       var _c$2 = _$memo9(() => !!approval());
@@ -4666,6 +4667,22 @@ function ShellHost(props) {
       },
       get setValue() {
         return setValueText();
+      }
+    }), null);
+    _$insert18(_el$, _$createComponent17(TodosWidget, {
+      get todos() {
+        return todos();
+      },
+      get theme() {
+        return th();
+      }
+    }), null);
+    _$insert18(_el$, _$createComponent17(SubagentWidget, {
+      get entries() {
+        return subagents();
+      },
+      get theme() {
+        return th();
       }
     }), null);
     _$insert18(_el$, (() => {
