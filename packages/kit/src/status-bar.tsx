@@ -28,11 +28,14 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
 const SPINNER_MS = 125
 const VERB_MS = 2500
 
+// the BRAND WHALE is the comet head for every phase (emoji cannot be
+// horizontally mirrored in terminals — direction reads from the tail
+// side + movement; phases still differ by color and verb)
 const PHASE_ICON: Record<StatusPhase, string> = {
-  think: "💭",
-  tool: "🔧",
-  stream: "✍",
-  approve: "⚠",
+  think: "🐳",
+  tool: "🐳",
+  stream: "🐳",
+  approve: "🐳",
 }
 
 const TAIL = 5

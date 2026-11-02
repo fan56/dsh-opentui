@@ -1817,10 +1817,10 @@ var DEFAULT_VERBS = {
 };
 var VERB_MS = 2500;
 var PHASE_ICON = {
-  think: "\uD83D\uDCAD",
-  tool: "\uD83D\uDD27",
-  stream: "✍",
-  approve: "⚠"
+  think: "\uD83D\uDC33",
+  tool: "\uD83D\uDC33",
+  stream: "\uD83D\uDC33",
+  approve: "\uD83D\uDC33"
 };
 var TAIL = 5;
 var RAMP = ["█", "▓", "▒", "░"];
