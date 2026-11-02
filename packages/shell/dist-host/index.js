@@ -3175,6 +3175,7 @@ function ShellHost(props) {
   const [menuSel, setMenuSel] = createSignal6(0);
   const [clock, setClock] = createSignal6(fmtClock());
   const [turnElapsed, setTurnElapsed] = createSignal6(0);
+  const [streaming, setStreaming] = createSignal6(false);
   const [termCols, setTermCols] = createSignal6(process.stdout.columns ?? 100);
   const [liveTps, setLiveTps] = createSignal6(null);
   let turnStartAt = 0;
@@ -3930,6 +3931,7 @@ function ShellHost(props) {
     setBusy(true);
     dock.onTurnStart();
     setTurnElapsed(0);
+    setStreaming(false);
     setLiveTps(null);
     turnStartAt = Date.now();
     streamingReply = null;
@@ -3941,6 +3943,7 @@ function ShellHost(props) {
         },
         onContentDelta: (s) => {
           dock.onContentDelta(s);
+          setStreaming(true);
           if (!streamingReply) {
             streamingReply = {
               kind: "assistant",
@@ -4032,6 +4035,7 @@ function ShellHost(props) {
       });
     } finally {
       dock.onTurnEnd();
+      setStreaming(false);
       setApproval(null);
       approveResolve = null;
       setBusy(false);
@@ -4251,7 +4255,7 @@ function ShellHost(props) {
       return "approve";
     if (dock.toolActive())
       return "tool";
-    if (streamingReply !== null)
+    if (streaming())
       return "stream";
     return "think";
   });

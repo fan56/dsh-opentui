@@ -176,6 +176,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [clock, setClock] = createSignal(fmtClock())
   // turn elapsed seconds (status bar timer readout)
   const [turnElapsed, setTurnElapsed] = createSignal(0)
+  // streaming-reply state as a SIGNAL (streamingReply is a plain let — a
+  // memo reading it never recomputes when the reply starts, so the 📝
+  // phase never lit)
+  const [streaming, setStreaming] = createSignal(false)
   // terminal width for full-bleed rows (status bar reaches the right edge)
   const [termCols, setTermCols] = createSignal(process.stdout.columns ?? 100)
   // Live streaming speed for the powerline ⚡ segment (chars/4 estimate
@@ -797,6 +801,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     // manually re-expanded detail view closes for the new turn.
     dock.onTurnStart()
     setTurnElapsed(0)
+    setStreaming(false)
     setLiveTps(null)
     turnStartAt = Date.now()
     streamingReply = null
@@ -810,6 +815,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           },
           onContentDelta: (s: string) => {
             dock.onContentDelta(s)
+            setStreaming(true)
             if (!streamingReply) {
               streamingReply = { kind: "assistant", text: "" }
               push(streamingReply)
@@ -880,6 +886,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       // Dock collapse: the thought folds to its summary line, entries that
       // never produced a result (declined / aborted) settle as failed.
       dock.onTurnEnd()
+      setStreaming(false)
       setApproval(null)
       approveResolve = null
       setBusy(false)
@@ -1082,7 +1089,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     if (!busy()) return null
     if (approval()) return "approve"
     if (dock.toolActive()) return "tool"
-    if (streamingReply !== null) return "stream"
+    if (streaming()) return "stream"
     return "think"
   })
 
