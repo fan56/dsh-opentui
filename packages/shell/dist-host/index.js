@@ -1859,14 +1859,11 @@ function StatusBar(props) {
     const label = ` ${spinner} ${PHASE_ICON[phase]} ${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""} `;
     const trackFg = props.theme.tokens.border;
     const headFg = fg();
-    const cells = Math.max(8, total - label.length - 2);
+    const cells = Math.max(8, total - 2);
     const head = Math.floor(tick() * 1 % (cells * 2));
     const pos = head < cells ? head : cells * 2 - 1 - head;
     const dir = head < cells ? 1 : -1;
-    const runs = [{
-      text: label,
-      fg: headFg
-    }];
+    const runs = [];
     let buf = "";
     let bufFg = trackFg;
     const flush = (f) => {
@@ -1878,13 +1875,18 @@ function StatusBar(props) {
       buf = "";
       bufFg = f;
     };
+    const labelChars = [...label];
     for (let c = 0;c < cells; c++) {
-      let ch = "░";
+      let ch;
       let cellFg = trackFg;
-      if (c === pos) {
+      if (c < labelChars.length) {
+        ch = labelChars[c];
+        cellFg = headFg;
+      } else if (c === pos) {
         ch = RAMP[0];
         cellFg = headFg;
       } else {
+        ch = "░";
         for (let i = 1;i <= TAIL; i++) {
           if (c === pos - dir * i) {
             ch = RAMP[Math.min(RAMP.length - 1, Math.floor(i / 2) + 1)];

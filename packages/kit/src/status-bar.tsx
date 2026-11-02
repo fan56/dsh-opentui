@@ -86,13 +86,17 @@ export function StatusBar(props: {
     const trackFg = props.theme.tokens.border
     const headFg = fg()
 
-    // comet geometry over the bar cells
-    const cells = Math.max(8, total - label.length - 2)
+    // comet geometry over the FULL row width (behind the label too)
+    const cells = Math.max(8, total - 2)
     const head = Math.floor((tick() * 1) % (cells * 2))
     const pos = head < cells ? head : cells * 2 - 1 - head // ping-pong
     const dir = head < cells ? 1 : -1
 
-    const runs: { text: string; fg: string }[] = [{ text: label, fg: headFg }]
+    // text INSIDE the track: the ░ track spans the FULL width, the label
+    // occupies the leading cells, and the comet travels the whole width —
+    // passing BEHIND the label (label cells win; the comet emerges on
+    // either side)
+    const runs: { text: string; fg: string }[] = []
     let buf = ""
     let bufFg = trackFg
     const flush = (f: string) => {
@@ -100,13 +104,18 @@ export function StatusBar(props: {
       buf = ""
       bufFg = f
     }
+    const labelChars = [...label]
     for (let c = 0; c < cells; c++) {
-      let ch = "░"
+      let ch: string
       let cellFg = trackFg
-      if (c === pos) {
+      if (c < labelChars.length) {
+        ch = labelChars[c]!
+        cellFg = headFg
+      } else if (c === pos) {
         ch = RAMP[0]!
         cellFg = headFg
       } else {
+        ch = "░"
         for (let i = 1; i <= TAIL; i++) {
           if (c === pos - dir * i) {
             ch = RAMP[Math.min(RAMP.length - 1, Math.floor(i / 2) + 1)]!
