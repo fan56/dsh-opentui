@@ -1,4 +1,4 @@
-/** FT: the busy-state line paints spinner + phase verb + elapsed, hides idle. */
+/** FT: idle (phase null) paints nothing. */
 import { expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { StatusBar } from "../../src/status-bar.tsx"
