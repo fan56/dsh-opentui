@@ -45,6 +45,8 @@ export interface DockState {
   tick(): void
   toolCount(): number
   toolActive(): boolean
+  /** Name of the currently running tool (status bar detail), if any. */
+  runningToolName(): string | null
   /** Manual expand/collapse toggle (the widget's hotkey). */
   toggleExpand(which: "think" | "tool"): void
   reset(): void
@@ -287,6 +289,7 @@ export function createDockFeature(deps: DockDeps): DockState {
     },
 
     toolCount: () => tools().length,
+    runningToolName: () => tools().find((e) => e.status === "running")?.name ?? null,
     toolActive: () => tools().some((e) => e.status === "running"),
   }
 

@@ -320,11 +320,10 @@ export function Shell(props: { deps: ShellDeps }) {
       />
       <FooterHints theme={th()} />
       <StatusBar
-        widgets={[
-          ...(model() ? [{ kind: "widget" as const, slot: "status" as const, id: "model", order: 10, parts: [{ text: `${model()!.provider}/${model()!.model}`, color: th().tokens.accent }] }] : []),
-          { kind: "widget" as const, slot: "status" as const, id: "usage", order: 20, parts: [{ text: `p${usage().prompt}/c${usage().completion}`, dim: true }] },
-          ...widgets(),
-        ]}
+        theme={th()}
+        phase={busy() ? (approval() ? "approve" : "tool") : null}
+        elapsed={() => 0}
+        detail={() => approval()?.name ?? ""}
       />
     </box>
   )
