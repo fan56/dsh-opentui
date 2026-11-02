@@ -19,7 +19,7 @@ export type StatusPhase = "think" | "tool" | "stream" | "approve"
 /** Rotating verb pools per phase (zh). Config can override via statusVerbs. */
 const DEFAULT_VERBS: Record<StatusPhase, string[]> = {
   think: ["Thinking", "Pondering", "Reasoning", "Reflecting", "Deliberating", "Mulling"],
-  tool: ["Working", "Executing", "Running", "Processing", "Building"],
+  tool: ["Executing", "Running", "Processing", "Building"],
   stream: ["Writing", "Composing", "Typing", "Drafting"],
   approve: ["Waiting"],
 }
@@ -32,10 +32,10 @@ const VERB_MS = 2500
 // horizontally mirrored in terminals — direction reads from the tail
 // side + movement; phases still differ by color and verb)
 const PHASE_ICON: Record<StatusPhase, string> = {
-  think: "🐳",
-  tool: "🐳",
-  stream: "🐳",
-  approve: "🐳",
+  think: "🧠",
+  tool: "🛠",
+  stream: "📝",
+  approve: "⏳",
 }
 
 const TAIL = 5
@@ -74,23 +74,29 @@ export function StatusBar(props: {
     return th.accent
   }
 
-  /** Fixed-width comet track: the PHASE ICON is the moving head with a
-   * density-ramp tail behind it, ping-ponging over 15 cells; the label
-   * follows the track (no braille spinner, no full-width track). */
-  const TRACK_CELLS = 15
+  /** Fixed-width comet track: the whale 🐳 is the moving head (2 display
+   * columns, no arrow — the tail side reads the travel direction).
+   * Track = FIXED 15 DISPLAY COLUMNS; the label carries the per-phase
+   * icon. */
+  const TRACK_COLS = 15
+  const ASSEMBLY = 2 // 🐳 spans two display columns
   const row = (): { text: string; fg: string }[] => {
     const phase = props.phase
     if (phase === null) return []
     const pool = pools()[phase]
     const verb = pool[Math.floor((tick() * BAR_MS) / VERB_MS) % pool.length]
     const detail = props.detail?.() ?? ""
-    const label = `${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""}`
+    const label = `${PHASE_ICON[phase]} ${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""}`
     const trackFg = props.theme.tokens.border
     const headFg = fg()
 
-    const head = Math.floor(tick() % (TRACK_CELLS * 2))
-    const pos = head < TRACK_CELLS ? head : TRACK_CELLS * 2 - 1 - head
-    const dir = head < TRACK_CELLS ? 1 : -1
+    // assembly start column ping-pongs over [0, TRACK_COLS - ASSEMBLY]
+    const span = TRACK_COLS - ASSEMBLY
+    const step = Math.floor(tick() % (span * 2))
+    const start = step < span ? step : span * 2 - step
+    const dirRight = step < span
+    const stern = dirRight ? start : start + ASSEMBLY // first tail column
+    const tailEnd = dirRight ? stern - TAIL : stern + TAIL // exclusive
 
     const runs: { text: string; fg: string }[] = []
     let buf = ""
@@ -100,24 +106,24 @@ export function StatusBar(props: {
       buf = ""
       bufFg = f
     }
-    for (let c = 0; c < TRACK_CELLS; c++) {
-      let ch: string
-      let cellFg = trackFg
-      if (c === pos) {
-        ch = PHASE_ICON[phase]!
-        cellFg = headFg
-      } else {
-        ch = "░"
-        for (let i = 1; i <= TAIL; i++) {
-          if (c === pos - dir * i) {
-            ch = RAMP[Math.min(RAMP.length - 1, Math.floor(i / 2) + 1)]!
-            cellFg = headFg
-            break
-          }
-        }
+    for (let c = 0; c < TRACK_COLS; c++) {
+      if (c === start) {
+        flush(headFg)
+        runs.push({ text: "🐳", fg: headFg })
+        bufFg = trackFg
+        c += 1 // whale spans two display columns
+        continue
       }
-      if (cellFg !== bufFg) flush(cellFg)
-      buf += ch
+      const behind = dirRight ? stern - c : c - stern
+      const inTail = dirRight ? c < stern && c > tailEnd : c > stern && c < tailEnd
+      if (inTail && behind >= 0) {
+        const ch = RAMP[Math.min(RAMP.length - 1, Math.floor(behind / 2) + 1)]!
+        if (headFg !== bufFg) flush(headFg)
+        buf += ch
+      } else {
+        if (trackFg !== bufFg) flush(trackFg)
+        buf += "░"
+      }
     }
     flush(trackFg)
     runs.push({ text: ` ${label}`, fg: headFg })
