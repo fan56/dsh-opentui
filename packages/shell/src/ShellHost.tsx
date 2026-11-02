@@ -14,7 +14,7 @@ import { useKeyboard, useRenderer } from "@opentui/solid"
 import { getTheme, themeNames, themes, type I18n } from "@dsh-opentui/kit"
 import { Transcript, TranscriptWindow, InputLine, FooterHints, ApprovalCard, type TranscriptItem } from "@dsh-opentui/kit"
 import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, speedSegment, type PowerlineSegment } from "@dsh-opentui/kit"
-import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem, SubagentWidget, type SubagentEntry, StatusBar, FlowBar, type StatusPhase } from "@dsh-opentui/kit"
+import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem, SubagentWidget, type SubagentEntry, StatusBar, type StatusPhase } from "@dsh-opentui/kit"
 import type { SurfaceStore } from "@dsh-opentui/runtime"
 import type { HostSession } from "./host-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
@@ -176,6 +176,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [clock, setClock] = createSignal(fmtClock())
   // turn elapsed seconds (status bar timer readout)
   const [turnElapsed, setTurnElapsed] = createSignal(0)
+  // terminal width for full-bleed rows (status bar reaches the right edge)
+  const [termCols, setTermCols] = createSignal(process.stdout.columns ?? 100)
   // Live streaming speed for the powerline ⚡ segment (chars/4 estimate
   // over elapsed time; shown only while a turn is running).
   const [liveTps, setLiveTps] = createSignal<number | null>(null)
@@ -227,6 +229,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     // seconds, running-tool spinner) and the powerline clock.
     const tick = setInterval(() => {
       setClock(fmtClock())
+      setTermCols(process.stdout.columns ?? 100)
       if (busy()) setTurnElapsed((s) => s + 1)
       dock.tick()
       setSubagents((arr) =>
@@ -1185,13 +1188,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       ) : null}
       {/* the busy-state line (Kimi/opencode-style): animated spinner +
           rotating verbs + elapsed, only while a turn runs */}
-      {busy() ? <FlowBar theme={th()} width={44} /> : null}
       <StatusBar
         theme={th()}
         phase={statusPhase()}
         elapsed={turnElapsed}
         detail={() => dock.runningToolName() ?? ""}
         verbs={pluginConfig().statusVerbs as Partial<Record<StatusPhase, string[]>> | undefined}
+        width={termCols()}
       />
       {/* busy stays false on purpose: the line is never locked — mid-turn
           typing STEERS, and the busy state reads from the dock widgets.

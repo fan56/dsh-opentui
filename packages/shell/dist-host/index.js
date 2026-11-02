@@ -150,14 +150,14 @@ function createI18n(locale = "zh-CN") {
 // src/ShellHost.tsx
 import { effect as _$effect18 } from "@opentui/solid";
 import { createTextNode as _$createTextNode11 } from "@opentui/solid";
-import { insertNode as _$insertNode14 } from "@opentui/solid";
+import { insertNode as _$insertNode13 } from "@opentui/solid";
 import { mergeProps as _$mergeProps } from "@opentui/solid";
 import { insert as _$insert18 } from "@opentui/solid";
 import { createComponent as _$createComponent17 } from "@opentui/solid";
-import { memo as _$memo10 } from "@opentui/solid";
+import { memo as _$memo9 } from "@opentui/solid";
 import { setProp as _$setProp18 } from "@opentui/solid";
 import { createElement as _$createElement18 } from "@opentui/solid";
-import { For as For13, createMemo, createSignal as createSignal6, onCleanup as onCleanup3, onMount } from "solid-js";
+import { For as For14, createMemo, createSignal as createSignal6, onCleanup as onCleanup3, onMount } from "solid-js";
 import { SyntaxStyle } from "@opentui/core";
 import { useKeyboard as useKeyboard2, useRenderer } from "@opentui/solid";
 // ../kit/src/themes-data.ts
@@ -1803,14 +1803,12 @@ function WidgetFrame(props) {
   });
 }
 // ../kit/src/status-bar.tsx
-import { createComponent as _$createComponent13 } from "@opentui/solid";
-import { effect as _$effect14 } from "@opentui/solid";
-import { insertNode as _$insertNode11 } from "@opentui/solid";
-import { insert as _$insert14 } from "@opentui/solid";
-import { memo as _$memo7 } from "@opentui/solid";
 import { setProp as _$setProp14 } from "@opentui/solid";
+import { effect as _$effect14 } from "@opentui/solid";
+import { insert as _$insert14 } from "@opentui/solid";
+import { createComponent as _$createComponent13 } from "@opentui/solid";
 import { createElement as _$createElement14 } from "@opentui/solid";
-import { createSignal as createSignal2, onCleanup, Show as Show8 } from "solid-js";
+import { createSignal as createSignal2, onCleanup, For as For11, Show as Show8 } from "solid-js";
 var DEFAULT_VERBS = {
   think: ["Thinking", "Pondering", "Reasoning", "Reflecting", "Deliberating", "Mulling"],
   tool: ["Working", "Executing", "Running", "Processing", "Building"],
@@ -1818,7 +1816,6 @@ var DEFAULT_VERBS = {
   approve: ["Waiting"]
 };
 var SPINNER_FRAMES2 = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-var SPINNER_MS = 125;
 var VERB_MS = 2500;
 var PHASE_ICON = {
   think: "\uD83D\uDCAD",
@@ -1826,9 +1823,12 @@ var PHASE_ICON = {
   stream: "✍",
   approve: "⚠"
 };
+var TAIL = 5;
+var RAMP = ["█", "▓", "▒", "░"];
+var BAR_MS = 80;
 function StatusBar(props) {
   const [tick, setTick] = createSignal2(0);
-  const timer = setInterval(() => setTick((t) => t + 1), SPINNER_MS);
+  const timer = setInterval(() => setTick((t) => t + 1), BAR_MS);
   onCleanup(() => clearInterval(timer));
   const pools = () => ({
     think: props.verbs?.think ?? DEFAULT_VERBS.think,
@@ -1836,16 +1836,6 @@ function StatusBar(props) {
     stream: props.verbs?.stream ?? DEFAULT_VERBS.stream,
     approve: props.verbs?.approve ?? DEFAULT_VERBS.approve
   });
-  const row = () => {
-    const phase = props.phase;
-    if (phase === null)
-      return null;
-    const spinner = SPINNER_FRAMES2[Math.floor(tick() * SPINNER_MS / SPINNER_MS) % SPINNER_FRAMES2.length];
-    const pool = pools()[phase];
-    const verb = pool[Math.floor(tick() * SPINNER_MS / VERB_MS) % pool.length];
-    const detail = props.detail?.() ?? "";
-    return `${spinner} ${PHASE_ICON[phase]} ${verb}...  ${props.elapsed()}s${detail ? ` · ${detail}` : ""}`;
-  };
   const fg = () => {
     const th = props.theme.tokens;
     if (props.phase === "think")
@@ -1856,25 +1846,87 @@ function StatusBar(props) {
       return th.warn;
     return th.accent;
   };
+  const spinner = () => SPINNER_FRAMES2[Math.floor(tick() / (VERB_MS / BAR_MS / 8)) % SPINNER_FRAMES2.length];
+  const row = () => {
+    const phase = props.phase;
+    if (phase === null)
+      return [];
+    const total = props.width ?? 80;
+    const spinner = SPINNER_FRAMES2[tick() % SPINNER_FRAMES2.length];
+    const pool = pools()[phase];
+    const verb = pool[Math.floor(tick() * BAR_MS / VERB_MS) % pool.length];
+    const detail = props.detail?.() ?? "";
+    const label = ` ${spinner} ${PHASE_ICON[phase]} ${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""} `;
+    const trackFg = props.theme.tokens.border;
+    const headFg = fg();
+    const cells = Math.max(8, total - label.length - 2);
+    const head = Math.floor(tick() * 1 % (cells * 2));
+    const pos = head < cells ? head : cells * 2 - 1 - head;
+    const dir = head < cells ? 1 : -1;
+    const runs = [{
+      text: label,
+      fg: headFg
+    }];
+    let buf = "";
+    let bufFg = trackFg;
+    const flush = (f) => {
+      if (buf)
+        runs.push({
+          text: buf,
+          fg: bufFg
+        });
+      buf = "";
+      bufFg = f;
+    };
+    for (let c = 0;c < cells; c++) {
+      let ch = "░";
+      let cellFg = trackFg;
+      if (c === pos) {
+        ch = RAMP[0];
+        cellFg = headFg;
+      } else {
+        for (let i = 1;i <= TAIL; i++) {
+          if (c === pos - dir * i) {
+            ch = RAMP[Math.min(RAMP.length - 1, Math.floor(i / 2) + 1)];
+            cellFg = headFg;
+            break;
+          }
+        }
+      }
+      if (cellFg !== bufFg)
+        flush(cellFg);
+      buf += ch;
+    }
+    flush(trackFg);
+    return runs;
+  };
   return _$createComponent13(Show8, {
     get when() {
       return props.phase !== null;
     },
     get children() {
-      var _el$ = _$createElement14("box"), _el$2 = _$createElement14("text");
-      _$insertNode11(_el$, _el$2);
-      _$setProp14(_el$, "style", {
+      var _el$ = _$createElement14("box");
+      _$insert14(_el$, _$createComponent13(For11, {
+        get each() {
+          return row();
+        },
+        children: (r) => (() => {
+          var _el$2 = _$createElement14("text");
+          _$setProp14(_el$2, "wrapMode", "none");
+          _$insert14(_el$2, () => r.text);
+          _$effect14((_$p) => _$setProp14(_el$2, "style", {
+            fg: r.fg
+          }, _$p));
+          return _el$2;
+        })()
+      }));
+      _$effect14((_$p) => _$setProp14(_el$, "style", {
         flexDirection: "row",
-        paddingLeft: 2,
-        paddingRight: 2,
+        paddingLeft: 1,
+        paddingRight: 1,
         height: 1,
-        flexGrow: 0
-      });
-      _$insert14(_el$2, () => row() ?? " ");
-      _$effect14((_$p) => _$setProp14(_el$2, "style", {
-        fg: fg(),
-        wrapMode: "none",
-        truncate: true
+        flexGrow: 0,
+        width: props.width ?? 80
       }, _$p));
       return _el$;
     }
@@ -1886,100 +1938,7 @@ import { insert as _$insert15 } from "@opentui/solid";
 import { createComponent as _$createComponent14 } from "@opentui/solid";
 import { setProp as _$setProp15 } from "@opentui/solid";
 import { createElement as _$createElement15 } from "@opentui/solid";
-import { createSignal as createSignal3, onCleanup as onCleanup2, For as For11, Show as Show9 } from "solid-js";
-var FRAME_MS = 80;
-var TAIL = 5;
-var RAMP = ["█", "▓", "▒", "░"];
-function FlowBar(props) {
-  const cells = props.width ?? 40;
-  const [pos, setPos] = createSignal3(0);
-  let dir = 1;
-  const timer = setInterval(() => {
-    setPos((p) => {
-      let next = p + dir;
-      if (next >= cells) {
-        dir = -1;
-        next = cells - 1;
-      } else if (next < 0) {
-        dir = 1;
-        next = 0;
-      }
-      return next;
-    });
-  }, FRAME_MS);
-  onCleanup2(() => clearInterval(timer));
-  const fg = () => props.color ?? props.theme.tokens.accent;
-  const trackFg = () => props.theme.tokens.border;
-  const row = () => {
-    const p = pos();
-    const head = p;
-    const tailCells = [];
-    for (let i = 1;i <= TAIL; i++) {
-      const c = head - dir * i;
-      if (c >= 0 && c < cells)
-        tailCells.push(c);
-    }
-    const runs = [];
-    let buf = "";
-    let bufFg = trackFg();
-    const flush = (fg) => {
-      if (buf)
-        runs.push({
-          text: buf,
-          fg: bufFg
-        });
-      buf = "";
-      bufFg = fg;
-    };
-    for (let c = 0;c < cells; c++) {
-      let ch = "░";
-      let cellFg = trackFg();
-      if (c === head) {
-        ch = RAMP[0];
-        cellFg = fg();
-      } else {
-        const ti = tailCells.indexOf(c);
-        if (ti >= 0) {
-          ch = RAMP[Math.min(RAMP.length - 1, Math.floor(ti / 2) + 1)];
-          cellFg = fg();
-        }
-      }
-      if (cellFg !== bufFg)
-        flush(cellFg);
-      buf += ch;
-    }
-    flush(trackFg());
-    return runs;
-  };
-  return _$createComponent14(Show9, {
-    when: true,
-    get children() {
-      var _el$ = _$createElement15("box");
-      _$setProp15(_el$, "style", {
-        flexDirection: "row",
-        paddingLeft: 1,
-        paddingRight: 1,
-        height: 1,
-        flexGrow: 0
-      });
-      _$insert15(_el$, _$createComponent14(For11, {
-        get each() {
-          return row();
-        },
-        children: (r) => (() => {
-          var _el$2 = _$createElement15("text");
-          _$setProp15(_el$2, "wrapMode", "none");
-          _$insert15(_el$2, () => r.text);
-          _$effect15((_$p) => _$setProp15(_el$2, "style", {
-            fg: r.fg
-          }, _$p));
-          return _el$2;
-        })()
-      }));
-      return _el$;
-    }
-  });
-}
+import { createSignal as createSignal3, onCleanup as onCleanup2, For as For12, Show as Show9 } from "solid-js";
 // src/features/model-select.tsx
 function createModelSelectFeature(deps) {
   let catalog = [];
@@ -2130,8 +2089,8 @@ function createHistoryForkFeature(deps) {
 import { setProp as _$setProp16 } from "@opentui/solid";
 import { effect as _$effect16 } from "@opentui/solid";
 import { createTextNode as _$createTextNode9 } from "@opentui/solid";
-import { insertNode as _$insertNode12 } from "@opentui/solid";
-import { memo as _$memo8 } from "@opentui/solid";
+import { insertNode as _$insertNode11 } from "@opentui/solid";
+import { memo as _$memo7 } from "@opentui/solid";
 import { insert as _$insert16 } from "@opentui/solid";
 import { createElement as _$createElement16 } from "@opentui/solid";
 import { createComponent as _$createComponent15 } from "@opentui/solid";
@@ -2546,15 +2505,15 @@ function createLoginFeature(deps) {
     if (st.kind === "entry") {
       return (() => {
         var _el$ = _$createElement16("box"), _el$2 = _$createElement16("text"), _el$3 = _$createElement16("text"), _el$4 = _$createElement16("text");
-        _$insertNode12(_el$, _el$2);
-        _$insertNode12(_el$, _el$3);
-        _$insertNode12(_el$, _el$4);
+        _$insertNode11(_el$, _el$2);
+        _$insertNode11(_el$, _el$3);
+        _$insertNode11(_el$, _el$4);
         _$insert16(_el$2, () => st.title);
         _$insert16(_el$3, (() => {
-          var _c$ = _$memo8(() => !!st.mask);
+          var _c$ = _$memo7(() => !!st.mask);
           return () => _c$() ? st.buffer.replace(/./g, "*") || " " : st.buffer || " ";
         })());
-        _$insertNode12(_el$4, _$createTextNode9(`type · enter saves · esc cancels`));
+        _$insertNode11(_el$4, _$createTextNode9(`type · enter saves · esc cancels`));
         _$effect16((_p$) => {
           var _v$ = {
             border: true,
@@ -2586,10 +2545,10 @@ function createLoginFeature(deps) {
     if (st.kind === "confirm") {
       return (() => {
         var _el$6 = _$createElement16("box"), _el$7 = _$createElement16("text"), _el$8 = _$createElement16("text");
-        _$insertNode12(_el$6, _el$7);
-        _$insertNode12(_el$6, _el$8);
+        _$insertNode11(_el$6, _el$7);
+        _$insertNode11(_el$6, _el$8);
         _$insert16(_el$7, () => st.text);
-        _$insertNode12(_el$8, _$createTextNode9(`y confirm · n/esc cancels`));
+        _$insertNode11(_el$8, _$createTextNode9(`y confirm · n/esc cancels`));
         _$effect16((_p$) => {
           var _v$5 = {
             border: true,
@@ -2617,7 +2576,7 @@ function createLoginFeature(deps) {
     if (st.kind === "notice") {
       return (() => {
         var _el$0 = _$createElement16("box"), _el$1 = _$createElement16("text");
-        _$insertNode12(_el$0, _el$1);
+        _$insertNode11(_el$0, _el$1);
         _$insert16(_el$1, () => st.text);
         _$effect16((_p$) => {
           var _v$8 = {
@@ -2709,11 +2668,11 @@ import { setProp as _$setProp17 } from "@opentui/solid";
 import { effect as _$effect17 } from "@opentui/solid";
 import { insert as _$insert17 } from "@opentui/solid";
 import { createTextNode as _$createTextNode10 } from "@opentui/solid";
-import { insertNode as _$insertNode13 } from "@opentui/solid";
+import { insertNode as _$insertNode12 } from "@opentui/solid";
 import { createElement as _$createElement17 } from "@opentui/solid";
 import { createComponent as _$createComponent16 } from "@opentui/solid";
-import { memo as _$memo9 } from "@opentui/solid";
-import { createSignal as createSignal5, For as For12, Show as Show10 } from "solid-js";
+import { memo as _$memo8 } from "@opentui/solid";
+import { createSignal as createSignal5, For as For13, Show as Show10 } from "solid-js";
 var FLUSH_MS = 60;
 var FADE_STEP_MS = 130;
 var FADE_STEPS = 5;
@@ -2834,7 +2793,7 @@ function createDockFeature(deps) {
             return thinkFg();
           },
           get fade() {
-            return _$memo9(() => !!t.fading)() ? t.fade : 0;
+            return _$memo8(() => !!t.fading)() ? t.fade : 0;
           },
           title: `\uD83D\uDCAD thinking · ${elapsed}s`,
           get hint() {
@@ -2846,7 +2805,7 @@ function createDockFeature(deps) {
                 return t.expanded;
               },
               get children() {
-                return _$createComponent16(For12, {
+                return _$createComponent16(For13, {
                   get each() {
                     return t.text.split(`
 `).slice(-Math.max(1, (typeof rowsT === "number" ? rowsT : 7) - 2));
@@ -2869,8 +2828,8 @@ function createDockFeature(deps) {
               },
               get children() {
                 var _el$ = _$createElement17("text"), _el$2 = _$createTextNode10(`\uD83D\uDCAD `), _el$3 = _$createTextNode10(`s `);
-                _$insertNode13(_el$, _el$2);
-                _$insertNode13(_el$, _el$3);
+                _$insertNode12(_el$, _el$2);
+                _$insertNode12(_el$, _el$3);
                 _$insert17(_el$, elapsed, _el$3);
                 _$insert17(_el$, () => thinkBuf.split(`
 `).pop() || " ", null);
@@ -2901,7 +2860,7 @@ function createDockFeature(deps) {
             return toolFg();
           },
           get fade() {
-            return _$memo9(() => !!toolFading())() ? toolFade() : 0;
+            return _$memo8(() => !!toolFading())() ? toolFade() : 0;
           },
           get title() {
             return `\uD83D\uDD27 ${running.length > 0 ? `${SPINNER_FRAMES3[Math.floor(Date.now() / 125 % SPINNER_FRAMES3.length)]} ${running.length} running` : `${list.length} tools`} · ${list.filter((e) => e.status === "ok").length}✔ ${list.filter((e) => e.status === "fail").length}✘`;
@@ -2915,14 +2874,14 @@ function createDockFeature(deps) {
                 return toolExpanded();
               },
               get children() {
-                return _$createComponent16(For12, {
+                return _$createComponent16(For13, {
                   get each() {
                     return list.slice(-Math.max(1, (typeof rowsTool === "number" ? rowsTool : 7) - 2));
                   },
                   children: (e) => (() => {
                     var _el$7 = _$createElement17("text");
                     _$insert17(_el$7, (() => {
-                      var _c$2 = _$memo9(() => e.status === "running");
+                      var _c$2 = _$memo8(() => e.status === "running");
                       return () => _c$2() ? `⚙ ${e.name} ${e.args}` : `${e.status === "ok" ? "✔" : "✘"} ${e.name} ${e.args}`;
                     })());
                     _$effect17((_$p) => _$setProp17(_el$7, "style", {
@@ -2940,9 +2899,9 @@ function createDockFeature(deps) {
               },
               get children() {
                 var _el$4 = _$createElement17("text"), _el$5 = _$createTextNode10(`\uD83D\uDD27 `);
-                _$insertNode13(_el$4, _el$5);
+                _$insertNode12(_el$4, _el$5);
                 _$insert17(_el$4, (() => {
-                  var _c$ = _$memo9(() => running.length > 0);
+                  var _c$ = _$memo8(() => running.length > 0);
                   return () => _c$() ? `⚙ ${running[0].name} ${running[0].args}` : `${list[0]?.name ?? ""} ${list[0]?.args ?? ""}`;
                 })(), null);
                 _$effect17((_$p) => _$setProp17(_el$4, "style", {
@@ -3211,6 +3170,7 @@ function ShellHost(props) {
   const [menuSel, setMenuSel] = createSignal6(0);
   const [clock, setClock] = createSignal6(fmtClock());
   const [turnElapsed, setTurnElapsed] = createSignal6(0);
+  const [termCols, setTermCols] = createSignal6(process.stdout.columns ?? 100);
   const [liveTps, setLiveTps] = createSignal6(null);
   let turnStartAt = 0;
   let approveResolve = null;
@@ -3246,6 +3206,7 @@ function ShellHost(props) {
   onMount(() => {
     const tick = setInterval(() => {
       setClock(fmtClock());
+      setTermCols(process.stdout.columns ?? 100);
       if (busy())
         setTurnElapsed((s) => s + 1);
       dock.tick();
@@ -4297,7 +4258,7 @@ function ShellHost(props) {
       flexGrow: 1
     });
     _$insert18(_el$, (() => {
-      var _c$ = _$memo10(() => !!showWelcome());
+      var _c$ = _$memo9(() => !!showWelcome());
       return () => _c$() ? _$createComponent17(WelcomeBanner, {
         get theme() {
           return th();
@@ -4348,7 +4309,7 @@ function ShellHost(props) {
     }), null);
     _$insert18(_el$, () => dock.dockView(), null);
     _$insert18(_el$, (() => {
-      var _c$2 = _$memo10(() => !!approval());
+      var _c$2 = _$memo9(() => !!approval());
       return () => _c$2() ? _$createComponent17(ApprovalCard, {
         get toolName() {
           return approval().name;
@@ -4365,13 +4326,13 @@ function ShellHost(props) {
       }) : null;
     })(), null);
     _$insert18(_el$, (() => {
-      var _c$3 = _$memo10(() => !!stopConfirm());
+      var _c$3 = _$memo9(() => !!stopConfirm());
       return () => _c$3() ? (() => {
         var _el$2 = _$createElement18("box"), _el$3 = _$createElement18("text"), _el$5 = _$createElement18("text");
-        _$insertNode14(_el$2, _el$3);
-        _$insertNode14(_el$2, _el$5);
-        _$insertNode14(_el$3, _$createTextNode11(`abort this turn?`));
-        _$insertNode14(_el$5, _$createTextNode11(`y aborts · n/esc resumes`));
+        _$insertNode13(_el$2, _el$3);
+        _$insertNode13(_el$2, _el$5);
+        _$insertNode13(_el$3, _$createTextNode11(`abort this turn?`));
+        _$insertNode13(_el$5, _$createTextNode11(`y aborts · n/esc resumes`));
         _$effect18((_p$) => {
           var _v$ = {
             border: true,
@@ -4397,12 +4358,12 @@ function ShellHost(props) {
       })() : null;
     })(), null);
     _$insert18(_el$, (() => {
-      var _c$4 = _$memo10(() => !!viewerId());
+      var _c$4 = _$memo9(() => !!viewerId());
       return () => _c$4() ? (() => {
         var _el$7 = _$createElement18("box"), _el$8 = _$createElement18("text");
-        _$insertNode14(_el$7, _el$8);
+        _$insertNode13(_el$7, _el$8);
         _$insert18(_el$8, () => `child ${viewerId().slice(0, 8)} · s steer · esc back`);
-        _$insert18(_el$7, _$createComponent17(For13, {
+        _$insert18(_el$7, _$createComponent17(For14, {
           get each() {
             return viewerLines().slice(-7);
           },
@@ -4437,12 +4398,12 @@ function ShellHost(props) {
       })() : null;
     })(), null);
     _$insert18(_el$, (() => {
-      var _c$5 = _$memo10(() => !!steerFor());
+      var _c$5 = _$memo9(() => !!steerFor());
       return () => _c$5() ? (() => {
         var _el$0 = _$createElement18("box"), _el$1 = _$createElement18("text"), _el$11 = _$createElement18("text");
-        _$insertNode14(_el$0, _el$1);
-        _$insertNode14(_el$0, _el$11);
-        _$insertNode14(_el$1, _$createTextNode11(`⚡ steer: `));
+        _$insertNode13(_el$0, _el$1);
+        _$insertNode13(_el$0, _el$11);
+        _$insertNode13(_el$1, _$createTextNode11(`⚡ steer: `));
         _$insert18(_el$11, () => steerBuffer() || " ");
         _$effect18((_p$) => {
           var _v$6 = {
@@ -4469,33 +4430,33 @@ function ShellHost(props) {
       })() : null;
     })(), null);
     _$insert18(_el$, (() => {
-      var _c$6 = _$memo10(() => !!(btwOpen() || btwLive()));
+      var _c$6 = _$memo9(() => !!(btwOpen() || btwLive()));
       return () => _c$6() ? (() => {
         var _el$12 = _$createElement18("box"), _el$13 = _$createElement18("box"), _el$14 = _$createElement18("text"), _el$16 = _$createElement18("box"), _el$17 = _$createElement18("text");
-        _$insertNode14(_el$12, _el$13);
-        _$insertNode14(_el$13, _el$14);
-        _$insertNode14(_el$13, _el$16);
-        _$insertNode14(_el$13, _el$17);
+        _$insertNode13(_el$12, _el$13);
+        _$insertNode13(_el$13, _el$14);
+        _$insertNode13(_el$13, _el$16);
+        _$insertNode13(_el$13, _el$17);
         _$setProp18(_el$13, "style", {
           flexDirection: "row"
         });
-        _$insertNode14(_el$14, _$createTextNode11(`btw`));
+        _$insertNode13(_el$14, _$createTextNode11(`btw`));
         _$setProp18(_el$16, "style", {
           flexGrow: 1
         });
-        _$insertNode14(_el$17, _$createTextNode11(`/btw close`));
-        _$insert18(_el$12, _$createComponent17(For13, {
+        _$insertNode13(_el$17, _$createTextNode11(`/btw close`));
+        _$insert18(_el$12, _$createComponent17(For14, {
           get each() {
-            return _$memo10(() => !!btwLive())() ? [btwLive()] : btwPairs().slice(-2);
+            return _$memo9(() => !!btwLive())() ? [btwLive()] : btwPairs().slice(-2);
           },
           children: (pair) => (() => {
             var _el$19 = _$createElement18("box"), _el$20 = _$createElement18("text");
-            _$insertNode14(_el$19, _el$20);
+            _$insertNode13(_el$19, _el$20);
             _$setProp18(_el$19, "style", {
               flexDirection: "column"
             });
             _$insert18(_el$20, () => `Q: ${pair.q.slice(0, 90)}`);
-            _$insert18(_el$19, _$createComponent17(For13, {
+            _$insert18(_el$19, _$createComponent17(For14, {
               get each() {
                 return pair.a.split(`
 `).slice(0, 4);
@@ -4541,22 +4502,22 @@ function ShellHost(props) {
       })() : null;
     })(), null);
     _$insert18(_el$, (() => {
-      var _c$7 = _$memo10(() => !!(queueOpen() || queueMsgs().length > 0));
+      var _c$7 = _$memo9(() => !!(queueOpen() || queueMsgs().length > 0));
       return () => _c$7() ? (() => {
         var _el$22 = _$createElement18("box"), _el$23 = _$createElement18("box"), _el$24 = _$createElement18("text"), _el$26 = _$createElement18("box"), _el$27 = _$createElement18("text");
-        _$insertNode14(_el$22, _el$23);
-        _$insertNode14(_el$23, _el$24);
-        _$insertNode14(_el$23, _el$26);
-        _$insertNode14(_el$23, _el$27);
+        _$insertNode13(_el$22, _el$23);
+        _$insertNode13(_el$23, _el$24);
+        _$insertNode13(_el$23, _el$26);
+        _$insertNode13(_el$23, _el$27);
         _$setProp18(_el$23, "style", {
           flexDirection: "row"
         });
-        _$insertNode14(_el$24, _$createTextNode11(`queue`));
+        _$insertNode13(_el$24, _$createTextNode11(`queue`));
         _$setProp18(_el$26, "style", {
           flexGrow: 1
         });
-        _$insertNode14(_el$27, _$createTextNode11(`/queue &lt;msg&gt; enqueue · bare toggle`));
-        _$insert18(_el$22, _$createComponent17(For13, {
+        _$insertNode13(_el$27, _$createTextNode11(`/queue &lt;msg&gt; enqueue · bare toggle`));
+        _$insert18(_el$22, _$createComponent17(For14, {
           get each() {
             return queueMsgs();
           },
@@ -4596,7 +4557,7 @@ function ShellHost(props) {
     })(), null);
     _$insert18(_el$, () => loginFeature.view(), null);
     _$insert18(_el$, (() => {
-      var _c$8 = _$memo10(() => !!overlay());
+      var _c$8 = _$memo9(() => !!overlay());
       return () => _c$8() ? _$createComponent17(Select, {
         get title() {
           return overlay()?.title ?? "";
@@ -4615,16 +4576,16 @@ function ShellHost(props) {
       }) : null;
     })(), null);
     _$insert18(_el$, (() => {
-      var _c$9 = _$memo10(() => !!menuVisible());
+      var _c$9 = _$memo9(() => !!menuVisible());
       return () => _c$9() ? (() => {
         var _el$30 = _$createElement18("box");
-        _$insert18(_el$30, _$createComponent17(For13, {
+        _$insert18(_el$30, _$createComponent17(For14, {
           get each() {
             return filteredCommands();
           },
           children: (c, i) => (() => {
             var _el$31 = _$createElement18("text"), _el$32 = _$createTextNode11(` `);
-            _$insertNode14(_el$31, _el$32);
+            _$insertNode13(_el$31, _el$32);
             _$insert18(_el$31, () => i() === clampedSel() ? "› " : "  ", _el$32);
             _$insert18(_el$31, () => c.name, _el$32);
             _$insert18(_el$31, () => c.desc, null);
@@ -4643,15 +4604,6 @@ function ShellHost(props) {
         return _el$30;
       })() : null;
     })(), null);
-    _$insert18(_el$, (() => {
-      var _c$0 = _$memo10(() => !!busy());
-      return () => _c$0() ? _$createComponent17(FlowBar, {
-        get theme() {
-          return th();
-        },
-        width: 44
-      }) : null;
-    })(), null);
     _$insert18(_el$, _$createComponent17(StatusBar, {
       get theme() {
         return th();
@@ -4663,6 +4615,9 @@ function ShellHost(props) {
       detail: () => dock.runningToolName() ?? "",
       get verbs() {
         return pluginConfig().statusVerbs;
+      },
+      get width() {
+        return termCols();
       }
     }), null);
     _$insert18(_el$, _$createComponent17(InputLine, {
@@ -4675,7 +4630,7 @@ function ShellHost(props) {
       },
       busy: false,
       get placeholder() {
-        return _$memo10(() => !!busy())() ? t("shell.input.steer") : t("shell.input.placeholder");
+        return _$memo9(() => !!busy())() ? t("shell.input.steer") : t("shell.input.placeholder");
       },
       get busyLabel() {
         return t("shell.input.busy");
@@ -4705,8 +4660,8 @@ function ShellHost(props) {
       }
     }), null);
     _$insert18(_el$, (() => {
-      var _c$1 = _$memo10(() => !!hintsVisible());
-      return () => _c$1() ? _$createComponent17(FooterHints, {
+      var _c$0 = _$memo9(() => !!hintsVisible());
+      return () => _c$0() ? _$createComponent17(FooterHints, {
         get theme() {
           return th();
         }

@@ -11,7 +11,7 @@
  * - idle → the line is gone (mount-on-busy); no fade state machine here,
  *   the caller unmounts it when the turn ends
  */
-import { createSignal, onCleanup, Show, type JSX } from "solid-js"
+import { createSignal, onCleanup, For, Show, type JSX } from "solid-js"
 import type { Theme } from "./theme.ts"
 
 export type StatusPhase = "think" | "tool" | "stream" | "approve"
@@ -35,6 +35,10 @@ const PHASE_ICON: Record<StatusPhase, string> = {
   approve: "⚠",
 }
 
+const TAIL = 5
+const RAMP = ["█", "▓", "▒", "░"]
+const BAR_MS = 80
+
 export function StatusBar(props: {
   theme: Theme
   /** Current busy phase (null = idle → renders nothing). */
@@ -45,9 +49,11 @@ export function StatusBar(props: {
   detail?: () => string
   /** Verb pool override: { think?: string[], tool?: string[], … }. */
   verbs?: Partial<Record<StatusPhase, string[]>>
+  /** Total row width (text left + comet bar to the right edge). */
+  width?: number
 }): JSX.Element {
   const [tick, setTick] = createSignal(0)
-  const timer = setInterval(() => setTick((t) => t + 1), SPINNER_MS)
+  const timer = setInterval(() => setTick((t) => t + 1), BAR_MS)
   onCleanup(() => clearInterval(timer))
 
   const pools = (): Record<StatusPhase, string[]> => ({
@@ -57,16 +63,6 @@ export function StatusBar(props: {
     approve: props.verbs?.approve ?? DEFAULT_VERBS.approve,
   })
 
-  const row = (): string | null => {
-    const phase = props.phase
-    if (phase === null) return null
-    const spinner = SPINNER_FRAMES[Math.floor((tick() * SPINNER_MS) / SPINNER_MS) % SPINNER_FRAMES.length]
-    const pool = pools()[phase]
-    const verb = pool[Math.floor((tick() * SPINNER_MS) / VERB_MS) % pool.length]
-    const detail = props.detail?.() ?? ""
-    return `${spinner} ${PHASE_ICON[phase]} ${verb}...  ${props.elapsed()}s${detail ? ` · ${detail}` : ""}`
-  }
-
   const fg = () => {
     const th = props.theme.tokens
     if (props.phase === "think") return th.thinking ?? th.accent
@@ -75,10 +71,67 @@ export function StatusBar(props: {
     return th.accent
   }
 
+  const spinner = () => SPINNER_FRAMES[Math.floor(tick() / (VERB_MS / BAR_MS / 8)) % SPINNER_FRAMES.length]
+
+  /** One row: [text] left + comet bar filling the rest to the right edge. */
+  const row = (): { text: string; fg: string }[] => {
+    const phase = props.phase
+    if (phase === null) return []
+    const total = props.width ?? 80
+    const spinner = SPINNER_FRAMES[tick() % SPINNER_FRAMES.length]
+    const pool = pools()[phase]
+    const verb = pool[Math.floor((tick() * BAR_MS) / VERB_MS) % pool.length]
+    const detail = props.detail?.() ?? ""
+    const label = ` ${spinner} ${PHASE_ICON[phase]} ${verb}... ${props.elapsed()}s${detail ? ` · ${detail}` : ""} `
+    const trackFg = props.theme.tokens.border
+    const headFg = fg()
+
+    // comet geometry over the bar cells
+    const cells = Math.max(8, total - label.length - 2)
+    const head = Math.floor((tick() * 1) % (cells * 2))
+    const pos = head < cells ? head : cells * 2 - 1 - head // ping-pong
+    const dir = head < cells ? 1 : -1
+
+    const runs: { text: string; fg: string }[] = [{ text: label, fg: headFg }]
+    let buf = ""
+    let bufFg = trackFg
+    const flush = (f: string) => {
+      if (buf) runs.push({ text: buf, fg: bufFg })
+      buf = ""
+      bufFg = f
+    }
+    for (let c = 0; c < cells; c++) {
+      let ch = "░"
+      let cellFg = trackFg
+      if (c === pos) {
+        ch = RAMP[0]!
+        cellFg = headFg
+      } else {
+        for (let i = 1; i <= TAIL; i++) {
+          if (c === pos - dir * i) {
+            ch = RAMP[Math.min(RAMP.length - 1, Math.floor(i / 2) + 1)]!
+            cellFg = headFg
+            break
+          }
+        }
+      }
+      if (cellFg !== bufFg) flush(cellFg)
+      buf += ch
+    }
+    flush(trackFg)
+    return runs
+  }
+
   return (
     <Show when={props.phase !== null}>
-      <box style={{ flexDirection: "row", paddingLeft: 2, paddingRight: 2, height: 1, flexGrow: 0 }}>
-        <text style={{ fg: fg(), wrapMode: "none", truncate: true }}>{row() ?? " "}</text>
+      <box style={{ flexDirection: "row", paddingLeft: 1, paddingRight: 1, height: 1, flexGrow: 0, width: props.width ?? 80 }}>
+        <For each={row()}>
+          {(r) => (
+            <text style={{ fg: r.fg }} wrapMode="none">
+              {r.text}
+            </text>
+          )}
+        </For>
       </box>
     </Show>
   )

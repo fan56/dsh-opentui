@@ -8,7 +8,7 @@ test("StatusBar busy paints spinner+verb+seconds", async () => {
   const setup = await testRender(
     () => (
       <box style={{ flexDirection: "column", width: 50, height: 4 }}>
-        <StatusBar theme={defaultTheme} phase="think" elapsed={() => 7} />
+        <StatusBar theme={defaultTheme} phase="think" elapsed={() => 7} width={50} />
       </box>
     ),
     { width: 50, height: 8, kittyKeyboard: true, exitOnCtrlC: false },
