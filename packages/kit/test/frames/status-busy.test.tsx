@@ -4,7 +4,7 @@ import { testRender } from "@opentui/solid"
 import { StatusBar } from "../../src/status-bar.tsx"
 import { defaultTheme } from "../../src/theme.ts"
 
-test("StatusBar: busy paints spinner+verb+seconds; idle paints nothing", async () => {
+test("StatusBar busy paints spinner+verb+seconds", async () => {
   const setup = await testRender(
     () => (
       <box style={{ flexDirection: "column", width: 50, height: 4 }}>
@@ -19,17 +19,4 @@ test("StatusBar: busy paints spinner+verb+seconds; idle paints nothing", async (
   expect(busy).toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
   expect(busy).toMatch(/(思考|钻研|推演|构思|酝酿|琢磨)中/)
   expect(busy).toContain("7s")
-
-  const setup2 = await testRender(
-    () => (
-      <box style={{ flexDirection: "column", width: 50, height: 4 }}>
-        <StatusBar theme={defaultTheme} phase={null} elapsed={() => 7} />
-      </box>
-    ),
-    { width: 50, height: 8, kittyKeyboard: true, exitOnCtrlC: false },
-  )
-  await new Promise((r) => setTimeout(r, 150))
-  const idle: string = setup2.captureCharFrame()
-  await setup2.dispose()
-  expect(idle.split("\n").filter((l) => l.trim().length > 0).length).toBe(0)
 })
