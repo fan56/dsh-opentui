@@ -85,6 +85,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/config", desc: "plugin settings (/config or /config key value)" },
   { name: "/queue", desc: "queue a message (/queue msg, bare toggles panel)" },
   { name: "/repair", desc: "scan session logs for broken files" },
+  { name: "/agents", desc: "list agent definitions (~/.dsh/agents)" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
   { name: "/login", desc: "set an api key (/login REF KEY)" },
@@ -714,6 +715,27 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         push({ kind: "system", text: `language → ${to}` })
       } else {
         push({ kind: "error", text: "language switching unavailable" })
+      }
+    } else if (cmd === "agents") {
+      const agents = props.deps.session.listAgents()
+      if (agents.length === 0) {
+        push({ kind: "system", text: "no agent definitions (~/.dsh/agents/*.md)" })
+      } else {
+        push({ kind: "system", text: `agents (${agents.length}):` })
+        for (const a of agents) {
+          if (a.broken) {
+            push({ kind: "error", text: `  ✗ ${a.name}: ${a.broken}` })
+            continue
+          }
+          const bits = [
+            a.displayName ?? a.name,
+            a.model ? `⚙ ${a.model}` : null,
+            a.thinking ? `◕ ${a.thinking}` : null,
+            a.deep ? `deep ${a.deep}` : null,
+          ].filter(Boolean)
+          push({ kind: "system", text: `  ● ${bits.join(" · ")}` })
+          if (a.description) push({ kind: "system", text: `    ${a.description.slice(0, 90)}` })
+        }
       }
     } else if (cmd === "repair") {
       // session-log integrity report (tui-pi repair-dialog's scan half —

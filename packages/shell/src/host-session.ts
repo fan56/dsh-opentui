@@ -443,6 +443,47 @@ export class HostSession {
     return st ? { describe: () => st.describe(), mutate: (ns: string, ops: unknown[], rev?: number) => st.mutate(ns, ops, rev) } : undefined
   }
 
+  /** Agent definitions from ~/.dsh/agents/*.md — frontmatter (name,
+   * display_name, description, model, thinking, deep) + body. Broken
+   * files are reported, not thrown. */
+  listAgents(): { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; file: string; broken?: string }[] {
+    const out: { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; file: string; broken?: string }[] = []
+    try {
+      const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh")
+      const dir = join(home, "agents")
+      if (!existsSync(dir)) return []
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith(".md")) continue
+        const full = join(dir, f)
+        try {
+          const text = readFileSync(full, "utf8")
+          const m = /^---\n([\s\S]*?)\n---/.exec(text)
+          const fm: Record<string, string> = {}
+          if (m) {
+            for (const line of m[1]!.split("\n")) {
+              const kv = /^([a-zA-Z_]+):\s*(.*)$/.exec(line.trim())
+              if (kv) fm[kv[1]!] = kv[2]!.replace(/^"|"$|'"$/g, "").trim()
+            }
+          }
+          out.push({
+            name: fm.name ?? f.replace(/\.md$/, ""),
+            displayName: fm.display_name,
+            description: fm.description,
+            model: fm.model,
+            thinking: fm.thinking,
+            deep: fm.deep,
+            file: full,
+          })
+        } catch (e) {
+          out.push({ name: f, file: full, broken: String(e instanceof Error ? e.message : e).slice(0, 100) })
+        }
+      }
+    } catch {
+      /* dir missing: empty */
+    }
+    return out
+  }
+
   /** Full-text session search via the host sessionQuery FTS index. */
   async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
     try {

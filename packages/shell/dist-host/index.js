@@ -3709,6 +3709,9 @@ var COMMANDS = [{
   name: "/repair",
   desc: "scan session logs for broken files"
 }, {
+  name: "/agents",
+  desc: "list agent definitions (~/.dsh/agents)"
+}, {
   name: "/theme",
   desc: "pick theme"
 }, {
@@ -4390,6 +4393,38 @@ function ShellHost(props) {
           kind: "error",
           text: "language switching unavailable"
         });
+      }
+    } else if (cmd === "agents") {
+      const agents = props.deps.session.listAgents();
+      if (agents.length === 0) {
+        push({
+          kind: "system",
+          text: "no agent definitions (~/.dsh/agents/*.md)"
+        });
+      } else {
+        push({
+          kind: "system",
+          text: `agents (${agents.length}):`
+        });
+        for (const a of agents) {
+          if (a.broken) {
+            push({
+              kind: "error",
+              text: `  ✗ ${a.name}: ${a.broken}`
+            });
+            continue;
+          }
+          const bits = [a.displayName ?? a.name, a.model ? `⚙ ${a.model}` : null, a.thinking ? `◕ ${a.thinking}` : null, a.deep ? `deep ${a.deep}` : null].filter(Boolean);
+          push({
+            kind: "system",
+            text: `  ● ${bits.join(" · ")}`
+          });
+          if (a.description)
+            push({
+              kind: "system",
+              text: `    ${a.description.slice(0, 90)}`
+            });
+        }
       }
     } else if (cmd === "repair") {
       for (const line of props.deps.session.repairScan())
@@ -5704,6 +5739,45 @@ ${snapshot.join(`
   get settingsSeam() {
     const st = this.#ctx.get?.("settings");
     return st ? { describe: () => st.describe(), mutate: (ns, ops, rev) => st.mutate(ns, ops, rev) } : undefined;
+  }
+  listAgents() {
+    const out = [];
+    try {
+      const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh");
+      const dir = join(home, "agents");
+      if (!existsSync(dir))
+        return [];
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith(".md"))
+          continue;
+        const full = join(dir, f);
+        try {
+          const text = readFileSync(full, "utf8");
+          const m = /^---\n([\s\S]*?)\n---/.exec(text);
+          const fm = {};
+          if (m) {
+            for (const line of m[1].split(`
+`)) {
+              const kv = /^([a-zA-Z_]+):\s*(.*)$/.exec(line.trim());
+              if (kv)
+                fm[kv[1]] = kv[2].replace(/^"|"$|'"$/g, "").trim();
+            }
+          }
+          out.push({
+            name: fm.name ?? f.replace(/\.md$/, ""),
+            displayName: fm.display_name,
+            description: fm.description,
+            model: fm.model,
+            thinking: fm.thinking,
+            deep: fm.deep,
+            file: full
+          });
+        } catch (e) {
+          out.push({ name: f, file: full, broken: String(e instanceof Error ? e.message : e).slice(0, 100) });
+        }
+      }
+    } catch {}
+    return out;
   }
   async searchSessions(query) {
     try {
