@@ -95,7 +95,7 @@ export function SubagentWidget(props: { entries: SubagentEntry[]; theme: Theme }
                   {`${branch()} ${spinnerFrame(e.elapsed)} ${name()}${meta()}`}
                 </text>
                 <Show when={tailLine(e).length > 0}>
-                  <text style={{ fg: th().tokens.dim }}>{`│   ${tailLine(e)}`}</text>
+                  <text style={{ fg: th().tokens.dim, wrapMode: "none", truncate: true }}>{`│   ${tailLine(e)}`}</text>
                 </Show>
               </Show>
             </>

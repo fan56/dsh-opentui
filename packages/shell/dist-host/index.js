@@ -1517,7 +1517,9 @@ function SubagentWidget(props) {
                   var _el$2 = _$createElement9("text");
                   _$insert9(_el$2, () => `│   ${tailLine(e)}`);
                   _$effect9((_$p) => _$setProp9(_el$2, "style", {
-                    fg: th().tokens.dim
+                    fg: th().tokens.dim,
+                    wrapMode: "none",
+                    truncate: true
                   }, _$p));
                   return _el$2;
                 }
@@ -5438,6 +5440,7 @@ ${snapshot.join(`
     const cb = this.#cb;
     if (!cb?.onSubagentUpdate)
       return;
+    const clamp = (v) => v && v.length > 240 ? v.slice(-240) : v;
     cb.onSubagentUpdate([...this.#children.entries()].map(([id, v]) => ({
       id,
       label: v.label,
@@ -5446,7 +5449,7 @@ ${snapshot.join(`
       rounds: v.rounds,
       ...v.tokens !== undefined ? { tokens: v.tokens } : {},
       elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
-      ...v.lastLine ? { lastLine: v.lastLine } : {}
+      ...v.lastLine ? { lastLine: clamp(v.lastLine) } : {}
     })));
   }
   historyTurns() {
@@ -5593,6 +5596,13 @@ ${snapshot.join(`
   #wire() {
     const ctx = this.#ctx;
     ctx.on("agent/assistant-stream", ({ agent, frame }) => {
+      if (frame.type === "chunk" && frame.chunk?.type === "text-delta" && frame.chunk.text && agent.id !== this.#agentId) {
+        const view = this.#children.get(agent.id);
+        if (view && view.status === "running") {
+          this.#children.set(agent.id, { ...view, lastLine: (view.lastLine ?? "") + frame.chunk.text });
+          this.#emitChildren();
+        }
+      }
       if (this.#agentId === undefined || agent.id !== this.#agentId)
         return;
       const cb = this.#cb;

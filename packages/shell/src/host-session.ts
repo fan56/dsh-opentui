@@ -836,6 +836,7 @@ export class HostSession {
   #emitChildren(): void {
     const cb = this.#cb
     if (!cb?.onSubagentUpdate) return
+    const clamp = (v: string | undefined) => (v && v.length > 240 ? v.slice(-240) : v)
     cb.onSubagentUpdate(
       [...this.#children.entries()].map(([id, v]) => ({
         id,
@@ -845,7 +846,7 @@ export class HostSession {
         rounds: v.rounds,
         ...(v.tokens !== undefined ? { tokens: v.tokens } : {}),
         elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
-        ...(v.lastLine ? { lastLine: v.lastLine } : {}),
+        ...(v.lastLine ? { lastLine: clamp(v.lastLine) } : {}),
       })),
     )
   }
@@ -1023,6 +1024,16 @@ export class HostSession {
     const ctx = this.#ctx as any
 
     ctx.on("agent/assistant-stream", ({ agent, frame }: { agent: { id: string }; frame: StreamFrame }) => {
+      // CHILD agents stream here too (this listener is not scope-filtered
+      // below the main-agent gate): live-update the subagent panel's
+      // lastLine so its message visibly scrolls
+      if (frame.type === "chunk" && frame.chunk?.type === "text-delta" && frame.chunk.text && agent.id !== this.#agentId) {
+        const view = this.#children.get(agent.id)
+        if (view && view.status === "running") {
+          this.#children.set(agent.id, { ...view, lastLine: (view.lastLine ?? "") + frame.chunk.text })
+          this.#emitChildren()
+        }
+      }
       if (this.#agentId === undefined || agent.id !== this.#agentId) return
       const cb = this.#cb
       if (!cb || frame.type !== "chunk" || !frame.chunk) return
