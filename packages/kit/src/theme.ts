@@ -5,6 +5,7 @@
  * component code.
  */
 import { generatedThemes } from "./themes-data.ts"
+import { opencodeThemes } from "./themes-opencode.ts"
 
 export interface ThemeTokens {
   /** Primary accent (titles, selection). */
@@ -89,6 +90,7 @@ export const catppuccinMocha: Theme = {
 export const themes: Record<string, Theme> = {
   default: defaultTheme,
   ...generatedThemes,
+  ...Object.fromEntries(opencodeThemes.map((t) => [t.name, t])),
   "catppuccin-mocha": catppuccinMocha,
 }
 
