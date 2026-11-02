@@ -37,8 +37,25 @@ test("following mode: markdown table renders with borders + item spacers", async
     ),
     { width: 60, height: 20, kittyKeyboard: true, exitOnCtrlC: false },
   )
-  await new Promise((r) => setTimeout(r, 150))
-  const frame: string = setup.captureCharFrame()
+  // The <markdown> intrinsic paints through the async tree-sitter highlight
+  // pipeline (its no-syntaxStyle fallback included), so a fixed sleep races
+  // it on slow runners — ubuntu CI caught the trailing paragraph missing at
+  // 150ms while arm64/mac had it at ~30ms. Poll real frames on a TIMER
+  // (not the renderer scheduler: its idle signal fires before the highlight
+  // fallback's final repaint, so waitForFrame exits early) until the last
+  // block paints, bounded by a deadline; captureCharFrame can throw while
+  // the renderer holds the buffer lease mid-paint — treat that as "not yet".
+  const deadline = Date.now() + 5000
+  let frame = ""
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 50))
+    try {
+      frame = setup.captureCharFrame()
+    } catch {
+      continue
+    }
+    if (frame.includes("总结一句话") || Date.now() > deadline) break
+  }
   await setup.dispose()
   const lines = frame.split("\n")
   // real table structure, not raw pipes
