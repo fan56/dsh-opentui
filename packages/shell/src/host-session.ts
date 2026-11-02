@@ -484,6 +484,24 @@ export class HostSession {
     return out
   }
 
+  /** Edit one frontmatter field of an agent definition file. */
+  agentSet(name: string, field: "model" | "thinking" | "deep", value: string): void {
+    const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh")
+    const file = join(home, "agents", `${name}.md`)
+    const text = readFileSync(file, "utf8")
+    const lineRe = new RegExp(`^(${field}):\\s*.*$`, "m")
+    let next: string
+    if (lineRe.test(text)) {
+      next = text.replace(lineRe, `$1: ${value}`)
+    } else if (/^---\\n[\\s\\S]*?\\n---/.test(text)) {
+      // insert into the frontmatter block before its closing ---
+      next = text.replace(/^---\n/, `---\n${field}: ${value}\n`)
+    } else {
+      next = `---\n${field}: ${value}\n---\n\n` + text
+    }
+    writeFileSync(file, next)
+  }
+
   /** Full-text session search via the host sessionQuery FTS index. */
   async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
     try {

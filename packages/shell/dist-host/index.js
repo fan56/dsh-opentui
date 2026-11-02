@@ -4401,31 +4401,91 @@ function ShellHost(props) {
           kind: "system",
           text: "no agent definitions (~/.dsh/agents/*.md)"
         });
-      } else {
-        push({
-          kind: "system",
-          text: `agents (${agents.length}):`
-        });
-        for (const a of agents) {
-          if (a.broken) {
-            push({
-              kind: "error",
-              text: `  ✗ ${a.name}: ${a.broken}`
-            });
-            continue;
-          }
-          const bits = [a.displayName ?? a.name, a.model ? `⚙ ${a.model}` : null, a.thinking ? `◕ ${a.thinking}` : null, a.deep ? `deep ${a.deep}` : null].filter(Boolean);
-          push({
-            kind: "system",
-            text: `  ● ${bits.join(" · ")}`
-          });
-          if (a.description)
-            push({
-              kind: "system",
-              text: `    ${a.description.slice(0, 90)}`
-            });
-        }
+        return;
       }
+      const broken = agents.filter((a) => a.broken);
+      openOverlay({
+        title: `agents (${agents.length})`,
+        items: agents.map((a) => ({
+          label: a.broken ? `✗ ${a.name}` : a.displayName ?? a.name,
+          value: a.name,
+          description: [a.model ? `⚙ ${a.model}` : null, a.thinking ? `◕ ${a.thinking}` : null, a.deep ? `deep ${a.deep}` : null, a.broken ? `broken: ${a.broken}` : null].filter(Boolean).join(" · ")
+        })),
+        onSelect: (value) => {
+          const a = agents.find((x) => x.name === value);
+          if (a.broken)
+            return;
+          openOverlay({
+            title: `${a.displayName ?? a.name} — fields`,
+            items: [{
+              label: `model: ${a.model ?? "(inherit)"}`,
+              value: "model",
+              description: "pick a model route"
+            }, {
+              label: `thinking: ${a.thinking ?? "(inherit)"}`,
+              value: "thinking",
+              description: "pick a reasoning effort"
+            }, {
+              label: `deep: ${a.deep ?? "0"}`,
+              value: "deep",
+              description: "spawn depth"
+            }],
+            onSelect: (field) => {
+              if (field === "model") {
+                props.deps.session.listProviders().then((catalog) => {
+                  openOverlay({
+                    title: `${a.name} — pick model`,
+                    items: catalog.flatMap((p) => p.models.map((m) => ({
+                      label: m,
+                      group: p.provider,
+                      value: `${p.provider}/${m}`
+                    }))),
+                    onSelect: (v) => {
+                      props.deps.session.agentSet(a.name, "model", v);
+                      push({
+                        kind: "system",
+                        text: `${a.name}: model → ${v}`
+                      });
+                    }
+                  });
+                });
+              } else if (field === "thinking") {
+                openOverlay({
+                  title: `${a.name} — thinking`,
+                  items: ["keep", "low", "medium", "high", "xhigh", "max"].map((e) => ({
+                    label: e,
+                    value: e,
+                    description: t(`picker.effort.${e}.desc`)
+                  })),
+                  onSelect: (v) => {
+                    props.deps.session.agentSet(a.name, "thinking", v === "keep" ? "" : v);
+                    push({
+                      kind: "system",
+                      text: `${a.name}: thinking → ${v}`
+                    });
+                  }
+                });
+              } else {
+                openOverlay({
+                  title: `${a.name} — deep`,
+                  items: ["0", "1", "2", "3"].map((d) => ({
+                    label: d,
+                    value: d,
+                    description: d === "0" ? "no delegation" : `depth ${d}`
+                  })),
+                  onSelect: (v) => {
+                    props.deps.session.agentSet(a.name, "deep", v);
+                    push({
+                      kind: "system",
+                      text: `${a.name}: deep → ${v}`
+                    });
+                  }
+                });
+              }
+            }
+          });
+        }
+      });
     } else if (cmd === "repair") {
       for (const line of props.deps.session.repairScan())
         push({
@@ -5778,6 +5838,27 @@ ${snapshot.join(`
       }
     } catch {}
     return out;
+  }
+  agentSet(name, field, value) {
+    const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh");
+    const file = join(home, "agents", `${name}.md`);
+    const text = readFileSync(file, "utf8");
+    const lineRe = new RegExp(`^(${field}):\\s*.*$`, "m");
+    let next;
+    if (lineRe.test(text)) {
+      next = text.replace(lineRe, `$1: ${value}`);
+    } else if (/^---\\n[\\s\\S]*?\\n---/.test(text)) {
+      next = text.replace(/^---\n/, `---
+${field}: ${value}
+`);
+    } else {
+      next = `---
+${field}: ${value}
+---
+
+` + text;
+    }
+    writeFileSync(file, next);
   }
   async searchSessions(query) {
     try {
