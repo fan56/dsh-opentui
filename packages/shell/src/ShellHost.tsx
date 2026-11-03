@@ -1256,6 +1256,17 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       return
     }
     // scrollback lookback: PgUp/PgDn page through the transcript region
+    // model picker (ctrl+l) and session search (ctrl+alt+f) hotkeys
+    const modelKey = hot("model", "ctrl+l")
+    if (key.ctrl && !key.meta && key.name === modelKey.replace("ctrl+", "")) {
+      void runCommand("/model")
+      return
+    }
+    const searchKey = hot("search", "ctrl+alt+f")
+    if (key.ctrl && (key as any).option && key.name === searchKey.replace("ctrl+alt+", "")) {
+      void runCommand("/search")
+      return
+    }
     const upKey = hot("scrollUp", "pageup")
     const dnKey = hot("scrollDown", "pagedown")
     if (key.name === upKey || (upKey.startsWith("ctrl+") && key.ctrl && key.name === upKey.slice(5))) {

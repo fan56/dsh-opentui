@@ -5122,6 +5122,16 @@ function ShellHost(props) {
       dock.toggleExpand("tool");
       return;
     }
+    const modelKey = hot("model", "ctrl+l");
+    if (key.ctrl && !key.meta && key.name === modelKey.replace("ctrl+", "")) {
+      runCommand("/model");
+      return;
+    }
+    const searchKey = hot("search", "ctrl+alt+f");
+    if (key.ctrl && key.option && key.name === searchKey.replace("ctrl+alt+", "")) {
+      runCommand("/search");
+      return;
+    }
     const upKey = hot("scrollUp", "pageup");
     const dnKey = hot("scrollDown", "pagedown");
     if (key.name === upKey || upKey.startsWith("ctrl+") && key.ctrl && key.name === upKey.slice(5)) {
