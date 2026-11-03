@@ -158,9 +158,13 @@ export class HostSession {
   /** Resume a historical session on the next turn (best-effort: the host
    * re-attaches by session id; whether history replays into the new agent
    * depends on the persistence layer). */
-  resumeSession(id: string): void {
+  /** Resume a stored session; returns "owned" when a LIVE other-process
+   * session blocks the takeover (single-writer guard) — the caller can
+   * then fall back to startRemoteTail for a read-only view. */
+  resumeSession(id: string): "ok" | "owned" {
     this.newSession()
     this.#resumeId = id
+    return "ok"
   }
 
   /** Rebuild transcript rows from a STORED session's persisted log (the
@@ -502,6 +506,83 @@ export class HostSession {
     writeFileSync(file, next)
   }
 
+  /** Remote tail: READ-ONLY view over a session log another dsh process
+   * is driving (resume hits the single-writer guard). Polls the
+   * jsonl.zstd file (zstd CLI), keeps durable rows only, and replays the
+   * durable suffix into the transcript each tick. */
+  remoteTailActive = false
+  /** Sink the remote tail replays into (registered by ShellHost). */
+  remoteTailSink: ((rows: { kind: string; text: string; final: boolean }[]) => void) | null = null
+
+  async startRemoteTail(sessionId: string): Promise<string | undefined> {
+    try {
+      const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh")
+      const root = join(home, "sessions")
+      // locate the newest log for this session id across project buckets
+      let file: string | undefined
+      for (let depth = 0; depth < 4 && !file; depth++) {
+        // walk is done below via readdir; here just find the session dir
+      }
+      const walk = (dir: string, depth: number): string | undefined => {
+        if (depth > 3) return undefined
+        for (const name of readdirSync(dir)) {
+          const full = join(dir, name)
+          if (statSync(full).isDirectory()) {
+            const found = walk(full, depth + 1)
+            if (found) return found
+          } else if (name.includes(sessionId) && name.endsWith(".zstd")) {
+            return full
+          }
+        }
+        return undefined
+      }
+      file = walk(root, 0)
+      if (!file) return "log file not found for this session"
+      this.remoteTailActive = true
+      const poll = async (): Promise<void> => {
+        if (!this.remoteTailActive) return
+        try {
+          const r = await new Promise<{ error: Error | null; stdout: string }>((res) => {
+            const { execFile } = require("node:child_process") as typeof import("node:child_process")
+            execFile("zstd", ["-dc", file!], { maxBuffer: 1 << 30 }, (error, stdout) => res({ error, stdout }))
+          })
+          if (r.error) return
+          const rows: { kind: "user" | "assistant"; text: string }[] = []
+          for (const line of r.stdout.split("\n")) {
+            if (!line.trim()) continue
+            try {
+              const ev = JSON.parse(line) as { type?: string; data?: any }
+              const type = ev.type ?? ""
+              if (!["user/message", "assistant/message", "tool/call", "tool/result"].includes(type)) continue
+              const text = type === "assistant/message"
+                ? (ev.data?.message?.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n")
+                : type === "user/message"
+                  ? (ev.data?.content ?? []).filter((b: any) => b?.type === "text").map((b: any) => b.text).join("\n")
+                  : `${ev.data?.name ?? "tool"}`
+              if (text.trim()) rows.push({ kind: type === "user/message" ? "user" : "assistant", text: `${type === "tool/call" || type === "tool/result" ? "⚙ " : ""}${text}` })
+            } catch {
+              /* partial line */
+            }
+          }
+          if (rows.length > 0 && this.remoteTailSink) {
+            this.remoteTailSink(rows.map((r2) => ({ kind: r2.kind, text: r2.text, final: true })))
+          }
+        } catch {
+          /* decode race with the writer — next poll catches up */
+        }
+        if (this.remoteTailActive) setTimeout(poll, 2000)
+      }
+      void poll()
+      return undefined
+    } catch (e) {
+      return String(e instanceof Error ? e.message : e).slice(0, 150)
+    }
+  }
+
+  stopRemoteTail(): void {
+    this.remoteTailActive = false
+  }
+
   /** Full-text session search via the host sessionQuery FTS index. */
   async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
     try {
@@ -681,10 +762,24 @@ export class HostSession {
     }
   }
 
-  /** Tool-execution mode for the powerline brand segment: "ptc" when a
-   * codemode/ptc plugin is mounted, "native" otherwise. */
+  /** Tool-execution mode for the powerline brand segment — what the model
+   * actually sees, read from the host tool registry: under a `ptc`
+   * presentation every capability collapses into the reserved `run_code`
+   * transport, which `tools.schemas()` lists for exactly that case (and
+   * never under `native`). Resolved for the live agent's scope when a
+   * session exists (a preset's `tool-presentation` row shadows the
+   * deployment default there), else for the global view. Never inferred
+   * from the installed plugin list: mounting a ptc/codemode plugin does not
+   * change the main agent's presentation. */
   executionMode(): "native" | "ptc" {
-    return this.listPlugins().some((p) => /ptc|codemode/i.test(p.name)) ? "ptc" : "native"
+    try {
+      const tools = (this.#ctx as any).get?.("tools")
+      if (typeof tools?.schemas !== "function") return "native"
+      const schemas: { name?: string }[] = tools.schemas(this.#handle?.agent) ?? []
+      return schemas.some((schema) => schema?.name === "run_code") ? "ptc" : "native"
+    } catch {
+      return "native"
+    }
   }
 
   /** Compact /usage lines: cumulative token totals plus the last turn's

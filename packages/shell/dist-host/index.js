@@ -3843,7 +3843,8 @@ function ShellHost(props) {
   let replayGen = 0;
   const [stopConfirm, setStopConfirm] = createSignal6(false);
   const [plugins] = createSignal6(props.deps.session.listPlugins());
-  const execMode = props.deps.session.executionMode();
+  const [execMode, setExecMode] = createSignal6(props.deps.session.executionMode());
+  const refreshExecMode = () => setExecMode(props.deps.session.executionMode());
   const [hostCommands, setHostCommands] = createSignal6([]);
   onMount(async () => {
     try {
@@ -4365,6 +4366,7 @@ function ShellHost(props) {
           onSelect: (value) => {
             const picked = presets.find((p) => p.id === value);
             props.deps.session.switchPreset(value);
+            refreshExecMode();
             push({
               kind: "system",
               text: `preset → ${picked?.name ?? value} (fresh session on next message)`
@@ -4377,6 +4379,7 @@ function ShellHost(props) {
     } else if (cmd === "new") {
       replayGen++;
       props.deps.session.newSession();
+      refreshExecMode();
       setItems([]);
       setBtwPairs([]);
       setBtwLive(null);
@@ -4906,6 +4909,7 @@ function ShellHost(props) {
             setItems((arr) => arr.map((x) => x === cur ? final : x));
           }
           setLabel(props.deps.session.label);
+          refreshExecMode();
           setUsage((v) => ({
             prompt: v.prompt + u.prompt,
             completion: v.completion + u.completion,
@@ -5166,7 +5170,7 @@ function ShellHost(props) {
     const r = route();
     const pct = contextPct();
     const segs = [{
-      text: `dsh(${execMode})`,
+      text: `dsh(${execMode()})`,
       bg: POWERLINE_COLORS.brand
     }, {
       text: r.provider,
@@ -6268,7 +6272,15 @@ ${field}: ${value}
     }
   }
   executionMode() {
-    return this.listPlugins().some((p) => /ptc|codemode/i.test(p.name)) ? "ptc" : "native";
+    try {
+      const tools = this.#ctx.get?.("tools");
+      if (typeof tools?.schemas !== "function")
+        return "native";
+      const schemas = tools.schemas(this.#handle?.agent) ?? [];
+      return schemas.some((schema) => schema?.name === "run_code") ? "ptc" : "native";
+    } catch {
+      return "native";
+    }
   }
   usageSummary() {
     const fmt = (n) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;

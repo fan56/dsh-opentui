@@ -94,6 +94,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/settings", desc: "browse host settings namespaces" },
   { name: "/queue", desc: "queue a message (/queue msg, bare toggles panel)" },
   { name: "/repair", desc: "scan session logs for broken files" },
+  { name: "/tail", desc: "watch a session log live (/tail sessionId)" },
   { name: "/agents", desc: "list agent definitions (~/.dsh/agents)" },
   { name: "/theme", desc: "pick theme" },
   { name: "/model", desc: "pick or switch model (/model provider/id)" },
@@ -171,6 +172,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // once at mount via the session's keybindingsPath
   const [kb] = createSignal<Record<string, string>>(props.deps.session.keybindingsLoad?.() ?? {})
   const hot = (action: string, fallback: string): string => kb()[action] ?? fallback
+  // remote tail sink: a watched (other-process) session replays durable
+  // rows straight into the transcript
+  props.deps.session.remoteTailSink = (rows) => {
+    setItems(rows.map((r) => ({ kind: r.kind, text: r.text, final: r.final })) as TItem[])
+    setScrollTopLine(null)
+  }
   // plugin config (profile config.json): favorites/hidden shape /model,
   // askUserTimeoutSec auto-declines the ask overlay
   const [pluginConfig, setPluginConfig] = createSignal(props.deps.session.configLoad())
@@ -231,10 +238,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const pinIfFollowing = () => {} // window is bottom-anchored; nothing to pin
   // bumps on any session switch (/new, resume, fork) — async replays check it
   let replayGen = 0
-  // user-installed plugins (welcome list) + tool-execution mode (powerline)
+  // user-installed plugins (welcome list) + tool-execution mode (powerline;
+  // re-read from the host after each turn and on /preset,/new — the live
+  // agent's scope decides it, not the installed plugin list)
   const [stopConfirm, setStopConfirm] = createSignal(false)
   const [plugins] = createSignal(props.deps.session.listPlugins())
-  const execMode = props.deps.session.executionMode()
+  const [execMode, setExecMode] = createSignal(props.deps.session.executionMode())
+  const refreshExecMode = () => setExecMode(props.deps.session.executionMode())
   // Host command registry (plan/compact/feedback/export/…): fetched once at
   // boot, merged into the palette below the TUI-owned commands.
   const [hostCommands, setHostCommands] = createSignal<{ name: string; description: string }[]>([])
@@ -691,6 +701,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           onSelect: (value) => {
             const picked = presets.find((p) => p.id === value)
             props.deps.session.switchPreset(value)
+            refreshExecMode()
             push({ kind: "system", text: `preset → ${picked?.name ?? value} (fresh session on next message)` })
           },
         })
@@ -700,10 +711,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } else if (cmd === "new") {
       replayGen++
       props.deps.session.newSession()
+      refreshExecMode()
       setItems([])
       setBtwPairs([])
       setBtwLive(null)
       setBtwOpen(false)
+      props.deps.session.stopRemoteTail()
       push({ kind: "system", text: t("cmd.new.done") })
     } else if (cmd === "sessions") {
       const list = await props.deps.session.listSessions()
@@ -869,6 +882,20 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           openFields(a.name)
         },
       })
+    } else if (cmd === "tail") {
+      // watch a session log LIVE (read-only, another dsh process may own
+      // it) — poll-decodes the jsonl.zstd and replays durable rows into
+      // the transcript. /tail <sessionId|prefix>
+      const target = parts[1] ?? ""
+      if (!target) {
+        push({ kind: "error", text: "usage: /tail <sessionId or prefix>" })
+        return
+      }
+      setShowWelcome(false)
+      setBusy(false)
+      const err = await props.deps.session.startRemoteTail(target)
+      if (err) push({ kind: "error", text: `tail: ${err}` })
+      else push({ kind: "system", text: `watching ${target.slice(0, 8)} (read-only, 2s poll) — /new stops` })
     } else if (cmd === "repair") {
       // session-log integrity report (tui-pi repair-dialog's scan half —
       // diagnostic only; nothing is deleted or rewritten)
@@ -1052,6 +1079,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
               setItems((arr) => arr.map((x) => (x === cur ? final : x)))
             }
             setLabel(props.deps.session.label)
+            refreshExecMode()
             setUsage((v) => ({ prompt: v.prompt + u.prompt, completion: v.completion + u.completion, turns: v.turns + 1 }))
           },
           onStreamTick: ({ chars, at }) => {
@@ -1295,7 +1323,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     const r = route()
     const pct = contextPct()
     const segs: PowerlineSegment[] = [
-      { text: `dsh(${execMode})`, bg: POWERLINE_COLORS.brand },
+      { text: `dsh(${execMode()})`, bg: POWERLINE_COLORS.brand },
       { text: r.provider, bg: POWERLINE_COLORS.provider },
       {
         text: `🤖 ${r.model || "·"} ◕${r.effort ?? "off"}`,
