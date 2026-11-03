@@ -2,9 +2,11 @@
 /**
  * Dev/publish closure linker for @aiwayds/dsh-opentui.
  *
- * The plugin imports `@deepseek-ai/dsh-llm` (createUserMessage). Those
- * packages are not consumable from the public npm registry, so they resolve
- * from the global dsh install's own closure:
+ * The plugin imports `@deepseek-ai/dsh-llm` (createUserMessage); the
+ * client-mode transport also imports `@deepseek-ai/dsh-client-connection`
+ * (ConnectionGenerationSource / installConnection). Those packages are not
+ * consumable from the public npm registry, so they resolve from the global
+ * dsh install's own closure:
  *   $(realpath $(which dsh))/node_modules/@deepseek-ai
  * via a plain symlink. ALL @deepseek-ai/* must resolve to that single
  * closure instance (one @deepseek-ai/cordis in the type/runtime graph).
@@ -44,6 +46,9 @@ function findDshClosure() {
   }
 }
 
+/** Closure packages the shell imports but npm cannot provide. */
+const CLOSURE_PACKAGES = ['dsh-llm', 'dsh-client-connection']
+
 const closure = findDshClosure()
 if (!closure) {
   if (process.env.DSH_OPENTUI_DEBUG) console.warn('[dsh-opentui] no global dsh closure found; skipping link')
@@ -56,13 +61,16 @@ const targets = [join(pkgRoot, 'node_modules', '@deepseek-ai'), join(dirname(pkg
 for (const scopeDir of targets) {
   if (!scopeDir.includes('node_modules')) continue
   mkdirSync(scopeDir, { recursive: true })
-  const link = join(scopeDir, 'dsh-llm')
-  try {
-    rmSync(link, { force: true })
-    symlinkSync(join(closure, 'dsh-llm'), link, 'dir')
-  } catch {
-    /* never fail an install over a link */
+  for (const name of CLOSURE_PACKAGES) {
+    if (!existsSync(join(closure, name))) continue // older closure — skip, never throw
+    const link = join(scopeDir, name)
+    try {
+      rmSync(link, { force: true })
+      symlinkSync(join(closure, name), link, 'dir')
+    } catch {
+      /* never fail an install over a link */
+    }
   }
 }
-if (process.env.DSH_OPENTUI_DEBUG) console.log(`[dsh-opentui] linked dsh-llm from ${closure}`)
+if (process.env.DSH_OPENTUI_DEBUG) console.log(`[dsh-opentui] linked ${CLOSURE_PACKAGES.join(', ')} from ${closure}`)
 process.exit(0)
