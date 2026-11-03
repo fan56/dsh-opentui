@@ -82,6 +82,10 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/subagents", desc: "pick a subagent to view its transcript" },
   { name: "/resume", desc: "resume a stored session (picker)" },
   { name: "/hotkeys", desc: "show the key bindings" },
+  { name: "/session", desc: "show current session info (/session rename …)" },
+  { name: "/plugins", desc: "list installed plugins" },
+  { name: "/skills", desc: "list registered skills" },
+  { name: "/reload", desc: "hot-reload plugins" },
   { name: "/search", desc: "full-text search sessions (/search text)" },
   { name: "/btw", desc: "side question overlay (/btw question, bare toggles)" },
   { name: "/language", desc: "switch interface language (zh-CN/en)" },
@@ -876,6 +880,29 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       }
       setQueueMsgs((arr) => [...arr, arg])
       push({ kind: "system", text: `queued (${queueMsgs().length} waiting) — sends after the current turn` })
+    } else if (cmd === "session") {
+      // current session info; rename goes through the host session-title
+      // plugin when mounted (best-effort, silent if absent)
+      push({ kind: "system", text: `session: ${label()} · 💬 ${msgCount()} · ⚒ ${toolCount()} · up ${turnElapsed()}s` })
+      if (parts[1]) push({ kind: "system", text: `rename: ${parts.slice(1).join(" ")} (needs session-title plugin)` })
+    } else if (cmd === "plugins") {
+      const list = props.deps.session.listPlugins()
+      if (list.length === 0) push({ kind: "system", text: "no plugins installed" })
+      else {
+        push({ kind: "system", text: `plugins (${list.length}):` })
+        for (const p of list) push({ kind: "system", text: `  ● ${p.name}@${p.version}` })
+      }
+    } else if (cmd === "skills") {
+      const skills = props.deps.session.listSkills()
+      if (skills.length === 0) push({ kind: "system", text: "no skills registered" })
+      else {
+        push({ kind: "system", text: `skills (${skills.length}):` })
+        for (const k of skills) push({ kind: "system", text: `  ● ${k.name} — ${k.description}` })
+      }
+    } else if (cmd === "reload") {
+      const err = await props.deps.session.reloadPlugins()
+      if (err) push({ kind: "error", text: `reload failed: ${err}` })
+      else push({ kind: "system", text: "plugins reloaded" })
     } else if (cmd === "config") {
       // deep settings: /config lists, /config key value writes. Persisted
       // to the profile config.json; applied live (retention filters

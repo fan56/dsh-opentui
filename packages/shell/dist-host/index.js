@@ -3700,6 +3700,18 @@ var COMMANDS = [{
   name: "/hotkeys",
   desc: "show the key bindings"
 }, {
+  name: "/session",
+  desc: "show current session info (/session rename …)"
+}, {
+  name: "/plugins",
+  desc: "list installed plugins"
+}, {
+  name: "/skills",
+  desc: "list registered skills"
+}, {
+  name: "/reload",
+  desc: "hot-reload plugins"
+}, {
   name: "/search",
   desc: "full-text search sessions (/search text)"
 }, {
@@ -4617,6 +4629,64 @@ function ShellHost(props) {
         kind: "system",
         text: `queued (${queueMsgs().length} waiting) — sends after the current turn`
       });
+    } else if (cmd === "session") {
+      push({
+        kind: "system",
+        text: `session: ${label()} · \uD83D\uDCAC ${msgCount()} · ⚒ ${toolCount()} · up ${turnElapsed()}s`
+      });
+      if (parts[1])
+        push({
+          kind: "system",
+          text: `rename: ${parts.slice(1).join(" ")} (needs session-title plugin)`
+        });
+    } else if (cmd === "plugins") {
+      const list = props.deps.session.listPlugins();
+      if (list.length === 0)
+        push({
+          kind: "system",
+          text: "no plugins installed"
+        });
+      else {
+        push({
+          kind: "system",
+          text: `plugins (${list.length}):`
+        });
+        for (const p of list)
+          push({
+            kind: "system",
+            text: `  ● ${p.name}@${p.version}`
+          });
+      }
+    } else if (cmd === "skills") {
+      const skills = props.deps.session.listSkills();
+      if (skills.length === 0)
+        push({
+          kind: "system",
+          text: "no skills registered"
+        });
+      else {
+        push({
+          kind: "system",
+          text: `skills (${skills.length}):`
+        });
+        for (const k of skills)
+          push({
+            kind: "system",
+            text: `  ● ${k.name} — ${k.description}`
+          });
+      }
+    } else if (cmd === "reload") {
+      const err = await props.deps.session.reloadPlugins();
+      if (err)
+        push({
+          kind: "error",
+          text: `reload failed: ${err}`
+        });
+      else
+        push({
+          kind: "system",
+          text: "plugins reloaded"
+        });
     } else if (cmd === "config") {
       const KEYS = [{
         key: "retentionDays",
@@ -6077,6 +6147,32 @@ ${field}: ${value}
       out.push(`scan failed: ${String(e instanceof Error ? e.message : e).slice(0, 150)}`);
     }
     return out;
+  }
+  listSkills() {
+    try {
+      const reg = this.#ctx.get?.("skills");
+      if (!reg?.list)
+        return [];
+      const list = reg.list() ?? [];
+      return list.map((x) => ({
+        name: String(x?.name ?? ""),
+        description: String(x?.description ?? "").slice(0, 90),
+        invocation: String(x?.invocation ?? "")
+      })).filter((x) => x.name);
+    } catch {
+      return [];
+    }
+  }
+  async reloadPlugins() {
+    try {
+      const loader = this.#ctx.get?.("loader");
+      if (!loader)
+        return "loader service unavailable";
+      await loader.reload?.(new URL("../dist-host/index.js", import.meta.url).href);
+      return;
+    } catch (e) {
+      return String(e instanceof Error ? e.message : e).slice(0, 200);
+    }
   }
   listPlugins() {
     try {

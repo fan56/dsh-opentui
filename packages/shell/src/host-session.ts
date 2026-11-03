@@ -610,6 +610,35 @@ export class HostSession {
     return out
   }
 
+  /** Skills from the ctx.skills registry (name/description/invocation). */
+  listSkills(): { name: string; description: string; invocation: string }[] {
+    try {
+      const reg = (this.#ctx as any).get?.("skills")
+      if (!reg?.list) return []
+      const list = (reg.list() ?? []) as any[]
+      return list.map((x) => ({
+        name: String(x?.name ?? ""),
+        description: String(x?.description ?? "").slice(0, 90),
+        invocation: String(x?.invocation ?? ""),
+      })).filter((x) => x.name)
+    } catch {
+      return []
+    }
+  }
+
+  /** Plugin hot-reload via the host loader seam. */
+  async reloadPlugins(): Promise<string | undefined> {
+    try {
+      const loader = (this.#ctx as any).get?.("loader")
+      if (!loader) return "loader service unavailable"
+      // entry url = this plugin's dist-host index
+      await loader.reload?.(new URL("../dist-host/index.js", import.meta.url).href)
+      return undefined
+    } catch (e) {
+      return String(e instanceof Error ? e.message : e).slice(0, 200)
+    }
+  }
+
   /** User-installed plugins (profile package.json deps, versions from
    * the installed copies) — dsh built-ins (@deepseek-ai/*) excluded. */
   listPlugins(): { name: string; version: string }[] {
