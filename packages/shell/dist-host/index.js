@@ -3688,6 +3688,18 @@ var COMMANDS = [{
   name: "/preset",
   desc: "switch agent preset"
 }, {
+  name: "/think",
+  desc: "cycle reasoning effort of the current model"
+}, {
+  name: "/subagents",
+  desc: "pick a subagent to view its transcript"
+}, {
+  name: "/resume",
+  desc: "resume a stored session (picker)"
+}, {
+  name: "/hotkeys",
+  desc: "show the key bindings"
+}, {
   name: "/search",
   desc: "full-text search sessions (/search text)"
 }, {
@@ -4223,6 +4235,99 @@ function ShellHost(props) {
             }
           });
         }
+      }
+    } else if (cmd === "think") {
+      const ladder = ["keep", "low", "medium", "high", "xhigh", "max"];
+      const m = /^([^/]+)\/([^/]+?)(?:\s*\(([^)]+)\))?$/.exec(label());
+      if (!m) {
+        push({
+          kind: "error",
+          text: "no live model route to cycle"
+        });
+        return;
+      }
+      const [, provider, model, cur] = m;
+      const next = cur === undefined || cur === "off" ? "low" : ladder[(ladder.indexOf(cur) + 1) % ladder.length];
+      props.deps.session.switchModel(provider, model, next === "keep" ? undefined : next);
+      setLabel(props.deps.session.label);
+      push({
+        kind: "system",
+        text: `${provider}/${model} ◕ ${next}`
+      });
+    } else if (cmd === "subagents") {
+      const list = subagents();
+      if (list.length === 0) {
+        push({
+          kind: "system",
+          text: "no subagents yet (ctrl+G works once children exist too)"
+        });
+        return;
+      }
+      openOverlay({
+        title: "subagents — pick to view transcript",
+        items: list.map((e) => ({
+          label: `${e.label}${e.model ? ` · ${e.model}` : ""}`,
+          value: e.id,
+          description: `${e.status} · ↻${e.rounds}`
+        })),
+        onSelect: (value) => openViewer(value)
+      });
+    } else if (cmd === "resume") {
+      const hits = await props.deps.session.listSessions();
+      if (hits.length === 0) {
+        push({
+          kind: "system",
+          text: "no sessions to resume"
+        });
+        return;
+      }
+      openOverlay({
+        title: t("picker.sessions.title"),
+        items: hits.map((h) => ({
+          label: h.title || h.id.slice(0, 8),
+          value: h.id,
+          description: h.updatedAt?.slice(0, 19)
+        })),
+        onSelect: async (value) => {
+          props.deps.session.resumeSession(value);
+          setBusy(false);
+          setShowWelcome(false);
+          const gen = ++replayGen;
+          try {
+            const rows = await props.deps.session.storedTranscript(value);
+            if (gen !== replayGen)
+              return;
+            await new Promise((r) => setTimeout(r, 50));
+            if (gen !== replayGen)
+              return;
+            setItems(rows.map((it) => it.kind === "assistant" ? {
+              kind: "assistant",
+              text: it.text,
+              final: true
+            } : {
+              kind: "user",
+              text: it.text
+            }));
+            setScrollTopLine(null);
+          } catch {}
+          push({
+            kind: "system",
+            text: `${t("cmd.sessions.resumed")}: ${value.slice(0, 8)}`
+          });
+        }
+      });
+    } else if (cmd === "hotkeys") {
+      const rows = [["viewer", "ctrl+g"], ["think", "ctrl+t"], ["tools", "ctrl+o"], ["scrollUp", "pageup"], ["scrollDown", "pagedown"], ["model", "ctrl+l"], ["search", "ctrl+alt+f"], ["escape", "escape"], ["ctrlC", "ctrl+c"], ["ctrlD", "ctrl+d"]];
+      push({
+        kind: "system",
+        text: "keybindings (keybindings.json overrides *):"
+      });
+      for (const [action, def] of rows) {
+        const mark = kb()[action] ? " *" : "";
+        push({
+          kind: "system",
+          text: `  ${action.padEnd(10)} ${kb()[action] ?? def}${mark}`
+        });
       }
     } else if (cmd === "preset") {
       const presets = await props.deps.session.listPresets();
