@@ -49,7 +49,10 @@ as the product path.
    defaulting to new (`/history` reaches older ones).
 5. **Host lifecycle**: the first TUI launch spawns the host service
    (single-instance lock); later TUIs only connect. When the last TUI
-   disconnects, the host exits after at most 60s.
+   disconnects, the host exits after `idleExitSec` of idleness —
+   configurable, default 60s; `0` keeps the host resident (never
+   exits), which covers background-plugin scenarios (cron / bot
+   listeners) that must outlive every TUI.
 6. **Plugin mode is retained** for the standalone direct-mode binary
    (ADR-0003) — that binary bypasses the host by design.
 
@@ -70,20 +73,29 @@ Negative / cost:
   approval waterfall, steer injection, transcript streaming, status
   signals, widgets, keybindings, session ops, attachments, model switch,
   remote-tail, subagent panel) — must be re-wired onto Remote
-  RPC/`$events`. A capability mapping audit is in flight and will size
-  this.
+  RPC/`$events`. Sized by the capability mapping audit
+  (docs/client-mode-protocol-audit.md): 27–48 person-days, no host-side
+  changes required for the core loop.
 - One network hop adds reconnect UX concerns (the protocol ships a
   reconnect policy).
 - A resident host adds a managed process on single-user machines.
 
+User decision recorded with this ADR: **v1 ships full capability
+parity, no degradations** — /agents, /repair, and the git segment go
+through client-local filesystem/process operations (valid in the
+single-machine topology where host and client share a filesystem), and
+/reload is worked around as host restart + TUI auto-reconnect. The
+protocol-level coverage behind this call, including what would degrade
+in a remote (non-local) deployment, is in
+docs/client-mode-protocol-audit.md.
+
 Risks: protocol coverage gaps may require host-side (DeepSeek-owned)
-changes we cannot ship; partial coverage may force fallbacks.
+changes we cannot ship; partial coverage may force fallbacks (see
+docs/client-mode-protocol-audit.md §4 for the flagged list).
 
 ## Open questions
 
-- **60s idle-exit vs background plugins**: a profile carrying
-  cron/feishu-bot style plugins needs the host alive with zero TUIs
-  connected. Provisional: the strict rule stands as decided (no TUI →
-  exit ≤60s). Preferred refinement, pending user decision: keep the host
-  alive while background activity exists (scheduled jobs / listeners /
-  in-flight turns).
+None open. The former "60s idle-exit vs background plugins" question is
+resolved by decision 5: `idleExitSec` is configurable with default 60s
+and `0` = resident, which covers background-plugin scenarios without a
+special case.
