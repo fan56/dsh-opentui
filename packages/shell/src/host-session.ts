@@ -517,6 +517,25 @@ export class HostSession {
     }
   }
 
+  /** Host settings namespaces (settings.describe snapshot). */
+  async settingsDescribe(): Promise<{ ns: string; revision?: number; value?: any }[]> {
+    try {
+      const st = (this.#ctx as any).get?.("settings")
+      if (!st?.describe) return []
+      const out = (await st.describe()) as any[]
+      return (Array.isArray(out) ? out : []).map((e) => ({ ns: String(e?.ns ?? ""), revision: e?.revision, value: e?.value }))
+    } catch {
+      return []
+    }
+  }
+
+  /** Host settings mutation (settings.mutate with revision). */
+  async settingsMutate(ns: string, ops: unknown[], revision?: number): Promise<void> {
+    const st = (this.#ctx as any).get?.("settings")
+    if (!st?.mutate) throw new Error("settings service unavailable")
+    await st.mutate(ns, ops, revision)
+  }
+
   /** Plugin config file (profile-local JSON, self-contained persistence):
    * retentionDays filters /sessions; askUserTimeoutSec auto-declines the
    * ask overlay; favoriteModels/hiddenModels shape the /model picker. */

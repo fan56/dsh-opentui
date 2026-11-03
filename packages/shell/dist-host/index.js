@@ -3727,6 +3727,9 @@ var COMMANDS = [{
   name: "/config",
   desc: "plugin settings (/config or /config key value)"
 }, {
+  name: "/settings",
+  desc: "browse host settings namespaces"
+}, {
   name: "/queue",
   desc: "queue a message (/queue msg, bare toggles panel)"
 }, {
@@ -4687,6 +4690,50 @@ function ShellHost(props) {
           kind: "system",
           text: "plugins reloaded"
         });
+    } else if (cmd === "settings") {
+      const descs = await props.deps.session.settingsDescribe();
+      if (descs.length === 0) {
+        push({
+          kind: "system",
+          text: "settings service unavailable"
+        });
+        return;
+      }
+      openOverlay({
+        title: `settings (${descs.length} namespaces)`,
+        items: descs.map((d) => ({
+          label: d.ns,
+          value: d.ns,
+          description: `revision ${d.revision ?? "?"}`
+        })),
+        onSelect: (ns) => {
+          const desc = descs.find((d) => d.ns === ns);
+          const value = desc?.value ?? {};
+          const keys = Object.keys(value ?? {});
+          if (keys.length === 0) {
+            push({
+              kind: "system",
+              text: `${ns}: no top-level keys`
+            });
+            return;
+          }
+          openOverlay({
+            title: `settings: ${ns}`,
+            items: keys.map((k) => ({
+              label: k,
+              value: k,
+              description: JSON.stringify(value[k]).slice(0, 70)
+            })),
+            onSelect: (key) => {
+              const cur = value[key];
+              push({
+                kind: "system",
+                text: `${ns}.${key} = ${JSON.stringify(cur)} — edit via /settings-edit ${ns} ${key} <json>`
+              });
+            }
+          });
+        }
+      });
     } else if (cmd === "config") {
       const KEYS = [{
         key: "retentionDays",
@@ -6057,6 +6104,23 @@ ${field}: ${value}
     } catch {
       return [];
     }
+  }
+  async settingsDescribe() {
+    try {
+      const st = this.#ctx.get?.("settings");
+      if (!st?.describe)
+        return [];
+      const out = await st.describe();
+      return (Array.isArray(out) ? out : []).map((e) => ({ ns: String(e?.ns ?? ""), revision: e?.revision, value: e?.value }));
+    } catch {
+      return [];
+    }
+  }
+  async settingsMutate(ns, ops, revision) {
+    const st = this.#ctx.get?.("settings");
+    if (!st?.mutate)
+      throw new Error("settings service unavailable");
+    await st.mutate(ns, ops, revision);
   }
   configPath(name = "config.json") {
     let dir = new URL(".", import.meta.url).pathname;

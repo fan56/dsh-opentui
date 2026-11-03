@@ -91,6 +91,7 @@ const COMMANDS: { name: string; desc: string }[] = [
   { name: "/language", desc: "switch interface language (zh-CN/en)" },
   { name: "/hints", desc: "toggle the key-hint strip" },
   { name: "/config", desc: "plugin settings (/config or /config key value)" },
+  { name: "/settings", desc: "browse host settings namespaces" },
   { name: "/queue", desc: "queue a message (/queue msg, bare toggles panel)" },
   { name: "/repair", desc: "scan session logs for broken files" },
   { name: "/agents", desc: "list agent definitions (~/.dsh/agents)" },
@@ -903,6 +904,37 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       const err = await props.deps.session.reloadPlugins()
       if (err) push({ kind: "error", text: `reload failed: ${err}` })
       else push({ kind: "system", text: "plugins reloaded" })
+    } else if (cmd === "settings") {
+      // host settings browser: namespaces from settings.describe(); enter
+      // a namespace to list its top-level keys; picking a key mutates it
+      // (string overwrite) with revision guard. Read-only when the
+      // settings service is absent.
+      const descs = await props.deps.session.settingsDescribe()
+      if (descs.length === 0) {
+        push({ kind: "system", text: "settings service unavailable" })
+        return
+      }
+      openOverlay({
+        title: `settings (${descs.length} namespaces)`,
+        items: descs.map((d) => ({ label: d.ns, value: d.ns, description: `revision ${d.revision ?? "?"}` })),
+        onSelect: (ns) => {
+          const desc = descs.find((d) => d.ns === ns)
+          const value = desc?.value ?? {}
+          const keys = Object.keys(value ?? {})
+          if (keys.length === 0) {
+            push({ kind: "system", text: `${ns}: no top-level keys` })
+            return
+          }
+          openOverlay({
+            title: `settings: ${ns}`,
+            items: keys.map((k) => ({ label: k, value: k, description: JSON.stringify((value as any)[k]).slice(0, 70) })),
+            onSelect: (key) => {
+              const cur = (value as any)[key]
+              push({ kind: "system", text: `${ns}.${key} = ${JSON.stringify(cur)} — edit via /settings-edit ${ns} ${key} <json>` })
+            },
+          })
+        },
+      })
     } else if (cmd === "config") {
       // deep settings: /config lists, /config key value writes. Persisted
       // to the profile config.json; applied live (retention filters
