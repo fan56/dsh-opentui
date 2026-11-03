@@ -81,6 +81,7 @@ spawn('tmux', ['new-session', '-d', '-s', session, '-x', String(TERM_W), '-y', S
   `cd ~/.dsh/profiles/${profile === 'tui' ? 'tui' : 'dsh-opentui'} && NODE_OPTIONS=${profile === 'tui' ? '' : '--experimental-ffi '}dsh --profile ${profile}`], { stdio: 'ignore' })
 await sleep(BOOT + 2000)
 
+let fails = 0
 const v = (name, ok, detail) => { if (!ok) fails++; console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : '  ← ' + detail}`) }
 const results = []
 // wait until the dock is quiet (turn truly finished) — scenario 1's
@@ -126,7 +127,7 @@ for (let i = 0; i < 20; i++) {
 spawn('tmux', ['kill-session', '-t', session], { stdio: 'ignore' })
 
 // ---- verdicts ----
-let fails = 0
+
 for (const [name, r] of results) {
   v(`${name}: no flicker (mounts<=2 incl tool phase)`, r.mounts <= 2, `mounts=${r.mounts}`)
   v(`${name}: no mid-turn disappear (unmounts=0 while active)`, r.unmounts <= 1, `unmounts=${r.unmounts}`)
