@@ -226,6 +226,8 @@ export function createDockFeature(deps: DockDeps): DockState {
     },
 
     onToolStart(start) {
+      // tool phase takes over the panel immediately — no gap between the
+      // think fade-out and the first tool row
       lastToolAt = Date.now()
       setToolVisible(true)
       setToolFading(false)
