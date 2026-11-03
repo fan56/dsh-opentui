@@ -22,6 +22,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { ensureSolidPatch, pinSolidJsExports } from './solid-js-pin.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name) => {
@@ -59,11 +60,15 @@ pkg.dsh = { profile: { bundles: [...bundles] } }
 pkg.dependencies = { ...(pkg.dependencies || {}), '@aiwayds/dsh-opentui': depSpec }
 writeFileSync(pkgPath, JSON.stringify(pkg, null, 2))
 
-// --- cordis.yml (empty root) + workspace ---
+// --- cordis.yml (empty root) + workspace + solid-js patch ---
 const cordisYml = join(profileDir, 'cordis.yml')
 if (!existsSync(cordisYml)) writeFileSync(cordisYml, '# dsh profile root — an empty entry list. The tree is composed as patches.\n[]\n')
-const wsYml = join(profileDir, 'pnpm-workspace.yaml')
-if (!existsSync(wsYml)) writeFileSync(wsYml, 'packages:\n  - .\nnodeLinker: hoisted\nautoInstallPeers: false\n')
+// pnpm-workspace.yaml (created with the hoisted layout when missing) + the
+// solid-js@1.9.12 patchedDependencies entry. This MUST run before the
+// `pnpm install` steps below: with the patch registered, every install
+// itself produces the client-build-pinned solid-js instead of wiping it.
+const { workspaceNote } = ensureSolidPatch(profileDir)
+console.log(`[dsh-opentui] ${workspaceNote}`)
 
 // --- cordis.patch.yml (provider route + model pin + our insert) ---
 const patchPath = join(profileDir, 'cordis.patch.yml')
@@ -121,26 +126,12 @@ const pnpm = (() => {
 run(pnpm[0], [...pnpm.slice(1), 'install'])
 run(pnpm[0], [...pnpm.slice(1), 'install'])
 
-// --- pin solid-js to its CLIENT build ---
-// solid-js's "node" export condition resolves to dist/server.js (SSR): the
-// first frame renders and then the screen goes dead — no reactive updates.
-// Under bun dev the @opentui/solid preload remaps this; under the host's
-// node runtime the fix is rewriting the installed package's exports.
+// --- pin solid-js to its CLIENT build (belt-and-braces; the primary fix is
+// the patchedDependencies patch registered above) ---
 {
-  const solidPkg = join(profileDir, 'node_modules', 'solid-js', 'package.json')
-  try {
-    const pkgJson = JSON.parse(readFileSync(solidPkg, 'utf8'))
-    pkgJson.exports = {
-      '.': { types: './types/index.d.ts', import: './dist/solid.js', require: './dist/solid.cjs' },
-      './dist/solid.js': './dist/solid.js',
-      './dist/solid.cjs': './dist/solid.cjs',
-      './package.json': './package.json',
-    }
-    writeFileSync(solidPkg, JSON.stringify(pkgJson, null, 2))
-    console.log('[dsh-opentui] solid-js pinned to client build (dist/solid.js)')
-  } catch {
-    console.warn('[dsh-opentui] could not pin solid-js — TUI updates may be dead')
-  }
+  const state = pinSolidJsExports(profileDir)
+  if (state === 'missing') console.warn('[dsh-opentui] could not pin solid-js — TUI updates may be dead')
+  else console.log(`[dsh-opentui] solid-js ${state === 'pinned' ? 'pinned to' : 'already pinned to'} client build (dist/solid.js)`)
 }
 
 // --- closure link for the plugin's dsh-llm import (hoisted layout: the

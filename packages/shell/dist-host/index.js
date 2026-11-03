@@ -1,3 +1,6 @@
+import { createRequire } from "node:module";
+var __require = /* @__PURE__ */ createRequire(import.meta.url);
+
 // src/host-entry.tsx
 import { createComponent as _$createComponent18 } from "@opentui/solid";
 import { spawn } from "node:child_process";
@@ -3736,6 +3739,9 @@ var COMMANDS = [{
   name: "/repair",
   desc: "scan session logs for broken files"
 }, {
+  name: "/tail",
+  desc: "watch a session log live (/tail sessionId)"
+}, {
   name: "/agents",
   desc: "list agent definitions (~/.dsh/agents)"
 }, {
@@ -3804,6 +3810,14 @@ function ShellHost(props) {
   const [btwOpen, setBtwOpen] = createSignal6(false);
   const [kb] = createSignal6(props.deps.session.keybindingsLoad?.() ?? {});
   const hot = (action, fallback) => kb()[action] ?? fallback;
+  props.deps.session.remoteTailSink = (rows) => {
+    setItems(rows.map((r) => ({
+      kind: r.kind,
+      text: r.text,
+      final: r.final
+    })));
+    setScrollTopLine(null);
+  };
   const [pluginConfig, setPluginConfig] = createSignal6(props.deps.session.configLoad());
   const openViewer = (id) => {
     setViewerId(id);
@@ -4384,6 +4398,7 @@ function ShellHost(props) {
       setBtwPairs([]);
       setBtwLive(null);
       setBtwOpen(false);
+      props.deps.session.stopRemoteTail();
       push({
         kind: "system",
         text: t("cmd.new.done")
@@ -4618,6 +4633,28 @@ function ShellHost(props) {
           openFields(a.name);
         }
       });
+    } else if (cmd === "tail") {
+      const target = parts[1] ?? "";
+      if (!target) {
+        push({
+          kind: "error",
+          text: "usage: /tail <sessionId or prefix>"
+        });
+        return;
+      }
+      setShowWelcome(false);
+      setBusy(false);
+      const err = await props.deps.session.startRemoteTail(target);
+      if (err)
+        push({
+          kind: "error",
+          text: `tail: ${err}`
+        });
+      else
+        push({
+          kind: "system",
+          text: `watching ${target.slice(0, 8)} (read-only, 2s poll) — /new stops`
+        });
     } else if (cmd === "repair") {
       for (const line of props.deps.session.repairScan())
         push({
@@ -5801,6 +5838,7 @@ class HostSession {
   resumeSession(id) {
     this.newSession();
     this.#resumeId = id;
+    return "ok";
   }
   async storedTranscript(id, skip = 0) {
     const persistence = this.#ctx.get?.("sessionPersistence");
@@ -6104,6 +6142,76 @@ ${field}: ${value}
 ` + text;
     }
     writeFileSync(file, next);
+  }
+  remoteTailActive = false;
+  remoteTailSink = null;
+  async startRemoteTail(sessionId) {
+    try {
+      const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh");
+      const root = join(home, "sessions");
+      let file;
+      for (let depth = 0;depth < 4 && !file; depth++) {}
+      const walk = (dir, depth) => {
+        if (depth > 3)
+          return;
+        for (const name of readdirSync(dir)) {
+          const full = join(dir, name);
+          if (statSync(full).isDirectory()) {
+            const found = walk(full, depth + 1);
+            if (found)
+              return found;
+          } else if (name.includes(sessionId) && name.endsWith(".zstd")) {
+            return full;
+          }
+        }
+        return;
+      };
+      file = walk(root, 0);
+      if (!file)
+        return "log file not found for this session";
+      this.remoteTailActive = true;
+      const poll = async () => {
+        if (!this.remoteTailActive)
+          return;
+        try {
+          const r = await new Promise((res) => {
+            const { execFile } = __require("node:child_process");
+            execFile("zstd", ["-dc", file], { maxBuffer: 1 << 30 }, (error, stdout) => res({ error, stdout }));
+          });
+          if (r.error)
+            return;
+          const rows = [];
+          for (const line of r.stdout.split(`
+`)) {
+            if (!line.trim())
+              continue;
+            try {
+              const ev = JSON.parse(line);
+              const type = ev.type ?? "";
+              if (!["user/message", "assistant/message", "tool/call", "tool/result"].includes(type))
+                continue;
+              const text = type === "assistant/message" ? (ev.data?.message?.content ?? []).filter((b) => b?.type === "text").map((b) => b.text).join(`
+`) : type === "user/message" ? (ev.data?.content ?? []).filter((b) => b?.type === "text").map((b) => b.text).join(`
+`) : `${ev.data?.name ?? "tool"}`;
+              if (text.trim())
+                rows.push({ kind: type === "user/message" ? "user" : "assistant", text: `${type === "tool/call" || type === "tool/result" ? "⚙ " : ""}${text}` });
+            } catch {}
+          }
+          if (rows.length > 0 && this.remoteTailSink) {
+            this.remoteTailSink(rows.map((r2) => ({ kind: r2.kind, text: r2.text, final: true })));
+          }
+        } catch {}
+        if (this.remoteTailActive)
+          setTimeout(poll, 2000);
+      };
+      poll();
+      return;
+    } catch (e) {
+      return String(e instanceof Error ? e.message : e).slice(0, 150);
+    }
+  }
+  stopRemoteTail() {
+    this.remoteTailActive = false;
   }
   async searchSessions(query) {
     try {

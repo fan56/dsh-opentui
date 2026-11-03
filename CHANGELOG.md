@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **solid-js client build pinned install-proof.** Under the host's node runtime solid-js's `node` export condition resolves to `dist/server.js` (SSR, no reactive scheduling): the TUI rendered one frame and went dead — most visible in the rich-markdown path (a markdown table froze the screen). The fix rewrites the installed package's exports to the client build, but plain `pnpm install` wiped it. Now registered as a pnpm `patchedDependencies` patch (`patches/solid-js@1.9.12.patch`) in the profile, so every install re-applies the pin; the direct rewrite stays as belt-and-braces. Also adds `packages/shell/scripts/sync-profile.mjs` (`npm run sync`) — the local deploy loop (build → rsync dist-host into the profile → keep the pin) that used to be manual shell work. Verified: two forced `pnpm install` rounds keep the pin and the dist-host overlay, 19/19 e2e, parity gate green, real-host markdown-table scenario renders a full bordered table.
+
 ## [0.4.0] - 2026-10-30
 
 ### Added
