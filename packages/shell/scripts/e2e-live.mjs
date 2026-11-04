@@ -58,6 +58,29 @@ const check = (name, ok, hint = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok ? '' : '  ← ' + hint}`)
 }
 
+// Wait for the current turn to END before driving the next phase. Fixed
+// sleeps raced provider latency: a slow counting turn (~5 tok/s that day)
+// ran past the budget and every later keystroke landed mid-turn, where the
+// TUI has no command/picker surface — 5 phantom FAILs with zero markers in
+// the stream. Detection: the live think/tool dock keeps re-painting into
+// the stream tail while a turn runs (its timer ticks every second); after
+// the turn ends only the powerline clock repaints, so a tail window free
+// of 💭/thinking/⚙ means idle. The powerline clock keeps raw length
+// growing forever, so whole-stream length quiescence never fires.
+const waitTurnEnd = async (minMs, maxMs) => {
+  await sleep(minMs)
+  const t0 = Date.now()
+  let idleStreak = 0
+  while (Date.now() - t0 < maxMs) {
+    await sleep(2000)
+    const tail = out.slice(-3000)
+    const busy = tail.includes('💭') || tail.includes('thinking') || tail.includes('⚙')
+    idleStreak = busy ? 0 : idleStreak + 1
+    if (idleStreak >= 3) return true // 6s of clock-only tail = turn over
+  }
+  return false
+}
+
 try {
   await sleep(9000) // boot + welcome + powerline
 
@@ -65,13 +88,13 @@ try {
   await send('用 bash 工具运行 date 命令，然后告诉我今天是几月几号。只回答一句话。')
   await sleep(6000) // mid-turn: TPS segment + thinking + tool active
   const midTurn = out.length
-  await sleep(22000)
+  await waitTurnEnd(10000, 120000)
 
   // --- turn 2: todos + steering
   await send('先用 todo 工具记录两个任务：测试多行、收尾，然后从 1 数到 20，每个数字单独一行。')
   await sleep(5000)
   await send('改一下：只要数到 10 就行。')
-  await sleep(55000)
+  await waitTurnEnd(30000, 300000)
 
   // --- /theme picker opens, esc closes
   await send('/theme')
@@ -91,7 +114,7 @@ try {
 
   // --- subagent turn: dispatch a child, expect panel rows (tree rail)
   await send('派一个子代理去运行 ls 命令看看当前目录有什么，然后把结果告诉我。')
-  await sleep(55000)
+  await waitTurnEnd(30000, 300000)
 
   // --- /history fork at the newest turn boundary + context probe
   await send('/history')
@@ -99,7 +122,7 @@ try {
   child.stdin.write('\r') // pick the highlighted (newest) turn
   await sleep(6000)
   await send('刚才我最后请你做的是什么？一句话回答。')
-  await sleep(45000)
+  await waitTurnEnd(30000, 240000)
 
   child.stdin.end()
   await Promise.race([sleep(4000), new Promise((r) => child.once('exit', r))])
