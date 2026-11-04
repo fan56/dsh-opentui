@@ -85,15 +85,21 @@ export function openRemoteStream(
 	const finish = () => {
 		if (finished) return
 		finished = true
-		cleanup()
 		closeQuietly(ws)
+		cleanup()
+		// Closing a still-CONNECTING socket makes `ws` emit 'error' ("closed
+		// before established") asynchronously, after cleanup removed the pump
+		// listeners — keep a noop handler attached so it can never surface as
+		// an uncaught exception (the remote tail's stop() hits this race).
+		ws.on("error", () => {})
 	}
 
 	const fail = (error: Error) => {
 		if (finished) return
 		finished = true
-		cleanup()
 		closeQuietly(ws)
+		cleanup()
+		ws.on("error", () => {})
 		safe(() => handlers.onFailed(error))
 	}
 

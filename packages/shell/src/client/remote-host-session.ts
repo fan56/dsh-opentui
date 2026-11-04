@@ -1,6 +1,6 @@
 /**
- * `RemoteHostSession` — the client-mode session core (ADR-0005 bucket (b)
- * wave 1): the SAME surface ShellHost consumes from the in-process
+ * `RemoteHostSession` — the client-mode session core (ADR-0005 bucket (b),
+ * waves 1 + 2): the SAME surface ShellHost consumes from the in-process
  * `HostSession`, driven over P1's `ClientConnection` (unary Remote RPC +
  * raw `$events` frames). The rendering layer can later swap the injection
  * point (host-entry.tsx's ShellHostDeps.session) with zero UI changes.
@@ -24,18 +24,68 @@
  *          `userQuestions/answer` + `attachWait`)
  *  34      durable `todo/write` → TurnCallbacks.onTodos
  *
- * Generation changes (reconnect): the follow stream is re-opened when the
- * connection reports `connected` again; the opening snapshot replays missed
- * transcript rows through TurnCallbacks.onReattachedMissed and an ACTIVE
- * turn's compact stream replays as deltas (basic best-effort repair; a
- * "reconnecting…" marker replaces `label` for the gap — the full status
- * surface and journal-tail page repair are wave 2).
+ * Wave-2 rows (this class + remote-session-ops/-model/-settings):
+ *  12      /new — fresh `session/create` per send (a fresh client-minted id
+ *          never matches a stored session, so blank-reuse stays host-native
+ *          and the host's returned sessionId — which may differ from the
+ *          requested one — is adopted)
+ *  13      `session/list` + the SAME client-side retention filter
+ *          (subagent rows out, retentionDays cutoff, newest-first, capped)
+ *  14      stored transcript replay — `session/page` backwards fills over
+ *          the `session/follow` opening snapshot (records + cursor)
+ *  15      /resume + single-writer guard — `session/create` on the stored
+ *          id; `session/writer-held` maps to the takeover error surface
+ *          host-session.ts:826-838 produced
+ *  16      idle-release — HOST-NATIVE. There is NO client-side lease
+ *          machinery here (no idle timer, no releasedSeq, no wake-diff
+ *          base): the host owns the writer lock, `session/follow` reads
+ *          need no lock, and the re-attach wake diff rides the follow
+ *          opening snapshot (delete-by-omission vs host-session.ts:868-919)
+ *  17      /tail — `session/follow` on a FOREIGN session id, read-only,
+ *          with journal-tail page gap repair (RemoteTailSession; strictly
+ *          better than the zstd CLI poll)
+ *  18      /history — turn grouping from the follow record ledger
+ *          (client-side, host-session.ts:1057-1084 algorithm) +
+ *          `session/fork` (`atSeq` = the turn's seqEnd; omission = latest
+ *          completed turn)
+ *  19      `session/search`
+ *  20      `session/rename` (renameSession)
+ *  21+22   model — `session/modelCatalog` (groups + failures + default),
+ *          `session/selectModel` (ModelSelection round-trip),
+ *          `llm/listProviders`/`llm/listConfigurableProviders`; the
+ *          cold-boot label comes from the catalog's `default` route (the
+ *          host-side equivalent of agentDefaultModel.currentSelection) and
+ *          a live session's route from `session/projections`
+ *          (modelSelection.next, pending folded host-side)
+ *  23      `agentPresets/list|read|select`
+ *  24      `credentials/describe|set|unset` (+ the login double-write's
+ *          settings.mutate route registration via settingsSeam)
+ *  25      `settings/describe|mutate|update|replace` + the
+ *          `settings/document-updated` push
+ *  26      `commands/list|execute` (+ `commands/change` push) — agent-scoped
+ *          on the wire: no boot-time palette without a live session
+ *  27      `skills/list` (session-scoped catalog)
+ *  28      `pluginManager/listPlugins` + `pluginInventory/list` + the
+ *          `plugin-manager/changed` push (cache auto-refresh)
+ *  5       usage polish — each usage chunk ASSIGNS the fields it reports
+ *          (never accumulates them into each other; completion is the one
+ *          accumulator across the session), verified against the live wire:
+ *          the zai adapter SPLITS the request context into a cached prefix
+ *          (cacheRead) and uncached input (prompt) — the context size is
+ *          prompt + cacheRead + cacheWrite, prompt alone is not it (the
+ *          same numeric scan and assignment the plugin-mode path runs)
  *
- * NOT in wave 1 (same shapes as HostSession, graceful stubs — see the
- * individual methods): session list/page/search/rename/fork, model catalog +
- * selectModel, presets list, credentials/settings RPCs, commands, skills,
- * plugins, /agents, /repair, /tail, subagent panel, /btw, attachments,
- * executionMode — audit rows 12–28, 30–33, 35–37, deferred to waves 2/3.
+ * Wave-2 polish: the re-attach replay resumes CLEAN at the dense chunk
+ * index already streamed (compact-stream delta-dedupe) and repairs a
+ * journal gap via `session/page` when the snapshot window cannot reach the
+ * last painted record; `status` exposes the fuller connection/turn surface
+ * (the "reconnecting…" label swap stays for UI compatibility).
+ *
+ * Still stubs (wave 3): /agents + /repair client-local FS (rows 30/31),
+ * subagent panel + /btw (rows 32/33), attachments (row 35), executionMode
+ * probe (row 37 — kept "native" rather than inferred from a preset YAML),
+ * workspace config overlay (row 41), /reload (row 29 — host restart +
+ * auto-reconnect by design).
  */
 
 import { randomUUID } from "node:crypto"
@@ -54,10 +104,20 @@ import {
 	RemoteFollowSession,
 	turnEndErrorMessage,
 	type RemoteFollowOpening,
+	type RemoteJournalEntry,
 	type RemoteTodoItem,
 	type RemoteToolRun,
 	type RemoteTranscriptRow,
 } from "./remote-follow.ts"
+import {
+	journalToTranscriptRows,
+	groupTurns,
+	sortJournal,
+	RemoteSessionOps,
+	RemoteTailSession,
+} from "./remote-session-ops.ts"
+import { RemoteModelClient, type RemoteModelSelection } from "./remote-model.ts"
+import { RemoteSettingsClient, type RemoteSettingsRow, type RemoteCredentialInfo } from "./remote-settings.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
 import {
 	WaterfallAnswerer,
@@ -65,7 +125,26 @@ import {
 	type RemoteQuestion,
 	type RemoteQuestionAnswer,
 } from "./remote-waterfall.ts"
-import { ClientConnection, RemoteRpcError, type ClientReadyInfo } from "./transport.ts"
+import { ClientConnection, RemoteRpcError, type ClientConnectionState, type ClientReadyInfo } from "./transport.ts"
+
+/** The fuller client-side status surface (wave-2 polish; `label` stays). */
+export interface RemoteSessionStatus {
+	connection: ClientConnectionState
+	/** Turn lifecycle: starting = prompt RPC in flight; running = awaiting turn/end. */
+	turn: "idle" | "starting" | "running" | "reconnecting"
+	/** True while a session id exists and its follow stream is open. */
+	sessionAttached: boolean
+	/** True while a foreign-session tail watch is active (row 17). */
+	tailActive: boolean
+}
+
+/** Push-event listener sets (audit rows 24/25/26/28). */
+export interface RemotePushListeners {
+	onSettingsUpdated?: (ns: string, revision: number) => void
+	onHostCommandsChanged?: () => void
+	onPluginsChanged?: () => void
+	onCredentialUpdated?: (ref: string) => void
+}
 
 export interface RemoteHostSessionOptions {
 	/** P1's connection carrier (frozen surface): `connect` / `rpc` / `onEvent`. */
@@ -114,8 +193,12 @@ export class RemoteHostSession {
 	#askProvider: ((questions: RemoteQuestion[]) => Promise<RemoteQuestionAnswer[]>) | undefined
 	#resolveTurn: (() => void) | undefined
 	#awaiting = false
+	/** The prompt RPC is in flight but the turn await has not armed yet. */
+	#promptInFlight = false
 	/** abort()/dispose() while the prompt RPC was still in flight. */
 	#interrupted = false
+	/** Model selection staged for the NEXT session (switchModel with no live session). */
+	#pendingModel: RemoteModelSelection | undefined
 	#turns = 0
 	#turnStartedAt = 0
 	#turnUsageStart = { prompt: 0, completion: 0 }
@@ -126,6 +209,23 @@ export class RemoteHostSession {
 	#reattachInFlight = false
 	#reattachAttempts = 0
 	#labelBackup: string | undefined
+	/** Wave-2 ops surfaces (lazy: built on first use after start()). */
+	#ops: RemoteSessionOps | undefined
+	#model: RemoteModelClient | undefined
+	#settings: RemoteSettingsClient | undefined
+	/** Durable record ledger of the LIVE session (/history + fork + gap repair). */
+	#journal: RemoteJournalEntry[] = []
+	/** Highest durable seq painted for the live session (gap-repair base). */
+	#lastDurableSeq = -1
+	/** Foreign-session tail watch (row 17). */
+	#tail: RemoteTailSession | undefined
+	/** Cached /plugins rows (sync listPlugins contract; refreshed async). */
+	#pluginsCache: { name: string; version: string }[] = []
+	/** Cached /skills rows (sync listSkills contract; refreshed async). */
+	#skillsCache: { name: string; description: string; invocation: string }[] = []
+	/** Push-event listeners (settings/commands/plugins/credentials). */
+	#pushListeners: RemotePushListeners[] = []
+	#coldBootLabelApplied = false
 
 	constructor(options: RemoteHostSessionOptions) {
 		this.#connection = options.connection
@@ -146,7 +246,9 @@ export class RemoteHostSession {
 	/**
 	 * Connect the carrier and start event/waterfall routing. Idempotent;
 	 * `turn()` calls it lazily, so ShellHost wiring can construct first and
-	 * start whenever the boot sequence is ready.
+	 * start whenever the boot sequence is ready. Applies the cold-boot label
+	 * (row 22) from `session/modelCatalog.default` — best-effort, never
+	 * throws out of start().
 	 */
 	async start(): Promise<ClientReadyInfo> {
 		if (this.#disposed) throw new Error("RemoteHostSession is disposed")
@@ -161,7 +263,20 @@ export class RemoteHostSession {
 			this.#waterfall = new WaterfallAnswerer({ connection: this.#connection, readyInfo: info })
 			return info
 		})()
-		return this.#started
+		const info = await this.#started
+		void this.#applyColdBootLabel()
+		return info
+	}
+
+	/** The fuller status surface (wave-2 polish; the `label` swap stays). */
+	get status(): RemoteSessionStatus {
+		const reconnecting = this.#labelBackup !== undefined
+		return {
+			connection: this.#connection.getState(),
+			turn: this.#awaiting ? (reconnecting ? "reconnecting" : "running") : this.#promptInFlight ? "starting" : "idle",
+			sessionAttached: this.#sessionId !== undefined && this.#follow?.attached === true,
+			tailActive: this.#tail !== undefined,
+		}
 	}
 
 	/** Stop every stream and listener; resolve an awaited turn. Idempotent. */
@@ -172,10 +287,12 @@ export class RemoteHostSession {
 			clearTimeout(this.#reattachTimer)
 			this.#reattachTimer = undefined
 		}
+		this.stopRemoteTail()
 		this.#follow?.reset()
 		this.#follow = undefined
 		for (const dispose of this.#disposers) dispose()
 		this.#disposers = []
+		this.#pushListeners = []
 		this.#interrupted = true
 		const resolve = this.#resolveTurn
 		this.#resolveTurn = undefined
@@ -204,6 +321,7 @@ export class RemoteHostSession {
 		if (this.#awaiting) throw new Error("a turn is already running")
 		this.#cb = cb
 		this.#interrupted = false
+		this.#promptInFlight = true
 		this.#turns++
 		this.#ticker.reset()
 		this.#turnStartedAt = Date.now()
@@ -219,6 +337,7 @@ export class RemoteHostSession {
 				content: [{ type: "text", text: userText }],
 			},
 		})
+		this.#promptInFlight = false
 		// abort()/dispose() raced the prompt RPC: the cancel was already sent
 		// and the turn was already settled — do not start awaiting now.
 		if (this.#interrupted || this.#disposed) return
@@ -257,23 +376,31 @@ export class RemoteHostSession {
 		this.#sessionId = undefined
 		this.#resumeId = undefined
 		this.#follow?.reset()
+		this.#resetLedger()
 		this.#interrupted = true
 		this.#settleTurnWithoutEnd()
 	}
 
-	/** Start a FRESH session on the next turn (keeps the current preset). */
+	/**
+	 * Start a FRESH session on the next turn (keeps the current preset and a
+	 * staged model override). Row 12: the send re-creates with a fresh
+	 * client-minted id — it never matches a stored session, so the host's
+	 * blank-reuse rules stay host-native and cannot silently hand back
+	 * another surface's blank.
+	 */
 	newSession(): void {
 		this.#sessionId = undefined
 		this.#resumeId = undefined
 		this.#follow?.reset()
+		this.#resetLedger()
 	}
 
 	/**
 	 * Resume a stored session on the next turn (`session/create` with the
-	 * stored id). The writer-lock probe happens at turn time — a
-	 * `session/writer-held` failure surfaces as the same friendly error the
-	 * in-process SessionAlreadyOwnedError path produced. Transcript replay
-	 * (`session/page`) is wave 2; resume works but paints no history rows.
+	 * stored id — row 15). The writer-lock probe happens at turn time: a
+	 * `session/writer-held` failure surfaces as the SAME takeover error the
+	 * in-process SessionAlreadyOwnedError path produced
+	 * (host-session.ts:826-838 parity).
 	 */
 	resumeSession(id: string): "ok" | "owned" {
 		this.newSession()
@@ -318,27 +445,139 @@ export class RemoteHostSession {
 	}
 
 	// ------------------------------------------------------------------
-	// Wave-2/3 stubs — HostSession shapes, graceful values
+	// Wave-2 model surface (rows 21 + 22)
 	// ------------------------------------------------------------------
 
-	/** wave 2 (`session/modelCatalog` — audit row 21). */
+	/**
+	 * Switch the model route (host-session.ts:127-140 parity): updates the
+	 * label immediately; with a LIVE session the route goes through
+	 * `session/selectModel` (durable per session — it applies to that
+	 * session's next request, strictly stronger than the in-process
+	 * next-session-only semantics); without one it is staged onto the
+	 * session the next turn creates.
+	 */
+	switchModel(provider: string, model: string, reasoningEffort?: string): void {
+		const selection: RemoteModelSelection = { provider, model, ...(reasoningEffort ? { reasoningEffort } : {}) }
+		this.label = `${provider}/${model}${reasoningEffort ? ` (${reasoningEffort})` : ""}`
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) {
+			this.#pendingModel = selection
+			this.newSession()
+			return
+		}
+		void this.#modelClient()
+			.selectModel(sessionId, selection)
+			.catch((error) => {
+				console.error("[remote-host-session] selectModel failed:", error)
+			})
+	}
+
+	/**
+	 * Select the model route and await the host's resolved acceptance
+	 * (`session/selectModel` round-trip, row 21). Applies to the live
+	 * session when one exists, else stages for the next create.
+	 */
+	async selectModel(selection: RemoteModelSelection): Promise<RemoteModelSelection> {
+		this.label = `${selection.provider}/${selection.model}${selection.reasoningEffort ? ` (${selection.reasoningEffort})` : ""}`
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) {
+			this.#pendingModel = selection
+			return selection
+		}
+		return this.#modelClient().selectModel(sessionId, selection)
+	}
+
+	/** The host-generation model catalog (row 21; cached host-side parity). */
+	async modelCatalog(force = false) {
+		return this.#modelClient().modelCatalog(force)
+	}
+
+	/** The cold-boot route: the catalog's `default` (row 22 mapping). */
+	async defaultModelSelection(): Promise<RemoteModelSelection | undefined> {
+		return this.#modelClient().defaultSelection()
+	}
+
+	/** A live session's effective route from `session/projections` (row 22). */
+	async currentModelSelection(): Promise<RemoteModelSelection | undefined> {
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) return this.defaultModelSelection()
+		return this.#modelClient().sessionSelection(sessionId)
+	}
+
+	/** Ask the host to resolve the default model route. */
+	async initializeDefaultModel(): Promise<void> {
+		await this.#modelClient().initializeDefaultModel()
+	}
+
+	// ------------------------------------------------------------------
+	// Wave-2 session ops (rows 12–20, 26, 27)
+	// ------------------------------------------------------------------
+
+	/** wave 2 (`llm/listConfigurableProviders` + catalog groups — row 21). */
 	async listProviders(): Promise<{ provider: string; models: string[] }[]> {
-		return []
+		return this.#modelClient().listProviders()
 	}
 
-	/** wave 2 (`session/list` — audit row 13). */
-	async listSessions(_limit = 12): Promise<{ id: string; title: string; updatedAt?: string }[]> {
-		return []
+	/** Raw configurable-provider rows (settingsNs etc. for /login routing). */
+	async configurableProviders(): Promise<Record<string, unknown>[]> {
+		return this.#modelClient().configurableProviders()
 	}
 
-	/** wave 2 (`session/page` replay — audit row 14). */
-	async storedTranscript(_id: string, _skip = 0): Promise<{ kind: "user" | "assistant"; text: string }[]> {
-		return []
+	/** wave 2 (`session/list` + retention filter — audit row 13). */
+	async listSessions(limit = 12): Promise<{ id: string; title: string; updatedAt?: string }[]> {
+		const cfg = this.configLoad()
+		const retentionDays = Number(cfg.retentionDays ?? 0)
+		return this.#opsClient().listSessions({ limit, ...(Number.isFinite(retentionDays) && retentionDays > 0 ? { retentionDays } : {}) })
+	}
+
+	/** wave 2 (`session/page` over the follow snapshot — audit row 14). */
+	async storedTranscript(id: string, skip = 0): Promise<{ kind: "user" | "assistant"; text: string }[]> {
+		return this.#opsClient().storedTranscript(id, skip)
+	}
+
+	/** Rename the live session (`session/rename` — audit row 20). */
+	async renameSession(title: string): Promise<{ title: string; seq: number } | undefined> {
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) return undefined
+		return this.#opsClient().rename(sessionId, title)
 	}
 
 	/** wave 2 (`agentPresets/list` — audit row 23). */
 	async listPresets(): Promise<{ id: string; name: string }[]> {
-		return []
+		try {
+			const roster = (await this.#rpc("agentPresets/list")) as { presets?: unknown }
+			const presets = Array.isArray(roster.presets) ? roster.presets : []
+			return presets
+				.map((p) => {
+					const row = (typeof p === "object" && p !== null ? p : {}) as Record<string, unknown>
+					return { id: String(row.id ?? ""), name: String(row.name ?? row.id ?? "") }
+				})
+				.filter((p) => p.id)
+		} catch {
+			return []
+		}
+	}
+
+	/** Read one preset's composition document (row 23; executionMode probe input). */
+	async readPreset(presetId: string): Promise<{ agentPreset: string; content: string; name?: string; description?: string } | undefined> {
+		try {
+			const doc = (await this.#rpc("agentPresets/read", { agentPreset: presetId })) as Record<string, unknown>
+			return {
+				agentPreset: String(doc.agentPreset ?? presetId),
+				content: String(doc.content ?? ""),
+				...(typeof doc.name === "string" ? { name: doc.name } : {}),
+				...(typeof doc.description === "string" ? { description: doc.description } : {}),
+			}
+		} catch {
+			return undefined
+		}
+	}
+
+	/** Select a preset for the LIVE session (`agentPresets/select`, row 23). */
+	async selectPreset(presetId: string): Promise<string | undefined> {
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) return undefined
+		return (await this.#rpc("agentPresets/select", { agentId: sessionId, agentPreset: presetId })) as string
 	}
 
 	/** Real in wave 1: the preset rides the next `session/create` (row 1). */
@@ -351,44 +590,110 @@ export class RemoteHostSession {
 		return this.#presetId
 	}
 
-	/** wave 2 (`commands/list` — audit row 26). */
+	/**
+	 * wave 2 (`commands/list` — audit row 26). Agent-scoped on the wire: no
+	 * boot-time (agent-less) list exists remotely, so without a live session
+	 * the palette gets [] (degradation vs the in-process global registry).
+	 */
 	async listHostCommands(): Promise<{ name: string; description: string }[]> {
-		return []
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) return []
+		return this.#opsClient().commandsList(sessionId)
 	}
 
 	/** wave 2 (`commands/execute` — audit row 26). */
-	async executeHostCommand(_line: string): Promise<{ text?: string } | undefined> {
-		return { text: "host commands ride commands/execute from wave 2 (client mode)" }
+	async executeHostCommand(line: string): Promise<{ text?: string } | undefined> {
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) return { text: "host command service unavailable" }
+		try {
+			return await this.#opsClient().commandsExecute(sessionId, line)
+		} catch (e) {
+			return { text: String(e instanceof Error ? e.message : e).slice(0, 300) }
+		}
 	}
 
 	/** wave 2 (`credentials/describe` — audit row 24). */
-	async credentialStatus(_ref: string): Promise<{ configured: boolean }> {
-		return { configured: false }
+	async credentialStatus(ref: string): Promise<{ configured: boolean }> {
+		try {
+			const infos = await this.#settingsClient().credentialInfo([ref])
+			return { configured: infos[ref]?.configured === true }
+		} catch {
+			return { configured: false }
+		}
 	}
 
-	/** wave 2 (`credentials/set` — audit row 24). */
-	async login(_ref: string, _apiKey: string): Promise<void> {
-		throw new Error("credentials service unavailable in client mode (wave 2: credentials/set)")
+	/** wave 2 (`credentials/set` — audit row 24; the login double-write's key half). */
+	async login(ref: string, apiKey: string): Promise<void> {
+		await this.#settingsClient().setCredential(ref, apiKey)
 	}
 
 	/** wave 2 (`credentials/unset` — audit row 24). */
-	async logout(_ref: string): Promise<void> {
-		throw new Error("credentials service unavailable in client mode (wave 2: credentials/unset)")
+	async logout(ref: string): Promise<void> {
+		await this.#settingsClient().unsetCredential(ref)
 	}
 
-	/** wave 2 (`settings/describe` + `settings/mutate` — audit row 25). */
-	get settingsSeam(): { describe(): Promise<unknown>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> } | undefined {
-		return undefined
+	/**
+	 * wave 2 (`settings/describe` + `settings/mutate` — audit row 24/25). The
+	 * login feature's route-registration double-write consumes this seam;
+	 * describe() answers the FLAT row array the in-process seam produced.
+	 */
+	get settingsSeam(): { describe(): Promise<RemoteSettingsRow[]>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> } {
+		const client = this.#settingsClient()
+		return {
+			describe: () => client.describe(),
+			mutate: async (ns: string, ops: unknown[], revision?: number) => {
+				await client.mutate(ns, ops, revision)
+			},
+		}
 	}
 
-	/** wave 2 (audit row 25). */
+	/** wave 2 (`settings/describe` — audit row 25; HostSession row shape). */
 	async settingsDescribe(): Promise<{ ns: string; revision?: number; value?: unknown }[]> {
-		return []
+		try {
+			return await this.#settingsClient().describe()
+		} catch {
+			return []
+		}
 	}
 
-	/** wave 2 (audit row 25). */
-	async settingsMutate(_ns: string, _ops: unknown[], _revision?: number): Promise<void> {
-		throw new Error("settings service unavailable in client mode (wave 2)")
+	/** wave 2 (`settings/mutate` — audit row 25). */
+	async settingsMutate(ns: string, ops: unknown[], revision?: number): Promise<void> {
+		await this.#settingsClient().mutate(ns, ops, revision)
+	}
+
+	/** wave 2 (`settings/update` — audit row 25). */
+	async settingsUpdate(ns: string, patch: Record<string, unknown>, revision?: number) {
+		return this.#settingsClient().update(ns, patch, revision)
+	}
+
+	/** wave 2 (`settings/replace` — audit row 25). */
+	async settingsReplace(ns: string, section: Record<string, unknown>, revision?: number) {
+		return this.#settingsClient().replace(ns, section, revision)
+	}
+
+	/** The raw settings document view (writable/hasDocument/namespaces). */
+	async settingsDocument() {
+		return this.#settingsClient().describeDocument()
+	}
+
+	/** Subscribe to `settings/document-updated` pushes (row 25). Returns a disposer. */
+	onSettingsUpdated(listener: (ns: string, revision: number) => void): () => void {
+		return this.#addPushListener({ onSettingsUpdated: listener })
+	}
+
+	/** Subscribe to `commands/change` pushes (row 26). Returns a disposer. */
+	onHostCommandsChanged(listener: () => void): () => void {
+		return this.#addPushListener({ onHostCommandsChanged: listener })
+	}
+
+	/** Subscribe to `plugin-manager/changed` pushes (row 28). Returns a disposer. */
+	onPluginsChanged(listener: () => void): () => void {
+		return this.#addPushListener({ onPluginsChanged: listener })
+	}
+
+	/** Subscribe to `credentials/reference-updated` pushes (row 24). Returns a disposer. */
+	onCredentialUpdated(listener: (ref: string) => void): () => void {
+		return this.#addPushListener({ onCredentialUpdated: listener })
 	}
 
 	/** wave 3 (workspace-local config overlay — bucket (d), audit row 41). */
@@ -418,9 +723,21 @@ export class RemoteHostSession {
 		/* wave 3 */
 	}
 
-	/** wave 2 (`skills/list` — audit row 27). */
+	/**
+	 * wave 2 (`skills/list` — audit row 27). Sync cached: the wire catalog is
+	 * session-scoped, so refresh with `refreshSkills()` once a session is
+	 * live ([] until then).
+	 */
 	listSkills(): { name: string; description: string; invocation: string }[] {
-		return []
+		return [...this.#skillsCache]
+	}
+
+	/** Refresh the /skills cache from `skills/list` on the live session. */
+	async refreshSkills(): Promise<{ name: string; description: string; invocation: string }[]> {
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) return [...this.#skillsCache]
+		this.#skillsCache = await this.#opsClient().skillsList(sessionId)
+		return [...this.#skillsCache]
 	}
 
 	/** Wave 3 by design: no remote live reload — host restart + auto-reconnect (audit row 29). */
@@ -428,12 +745,49 @@ export class RemoteHostSession {
 		return "plugin reload requires a host restart in client mode"
 	}
 
-	/** wave 2 (`pluginManager/listPlugins` — audit row 28). */
+	/**
+	 * wave 2 (`pluginManager/listPlugins` — audit row 28). Sync cached;
+	 * `refreshPlugins()` fetches (user-installed rows only — @deepseek-ai
+	 * built-ins excluded, HostSession parity), versions enriched from
+	 * `pluginManager/listBundles`. The `plugin-manager/changed` push
+	 * auto-refreshes.
+	 */
 	listPlugins(): { name: string; version: string }[] {
-		return []
+		return [...this.#pluginsCache]
 	}
 
-	/** wave 2 (agentPresets read / pluginInventory probe — audit row 37). */
+	async refreshPlugins(): Promise<{ name: string; version: string }[]> {
+		try {
+			const [plugins, bundles] = await Promise.all([
+				this.#rpc("pluginManager/listPlugins") as Promise<unknown>,
+				this.#rpc("pluginManager/listBundles").catch(() => undefined) as Promise<unknown>,
+			])
+			const versions = new Map<string, string>()
+			if (Array.isArray(bundles)) {
+				for (const b of bundles as Record<string, unknown>[]) {
+					const moduleName = typeof b?.moduleName === "string" ? b.moduleName : ""
+					const version = typeof b?.version === "string" ? b.version : ""
+					if (moduleName && version) versions.set(moduleName, version)
+				}
+			}
+			this.#pluginsCache = (Array.isArray(plugins) ? plugins : [])
+				.map((p) => {
+					const row = (typeof p === "object" && p !== null ? p : {}) as Record<string, unknown>
+					const moduleName = String(row.moduleName ?? "")
+					const meta = (row.meta ?? {}) as Record<string, unknown>
+					const title = typeof meta.title === "string" ? meta.title : moduleName
+					return { name: title, moduleName, version: versions.get(moduleName) ?? "" }
+				})
+				// user-installed rows only — dsh built-ins excluded (HostSession parity)
+				.filter((p) => p.name && !p.moduleName.startsWith("@deepseek-ai/"))
+				.map(({ name, version }) => ({ name, version }))
+		} catch {
+			/* keep the previous cache */
+		}
+		return [...this.#pluginsCache]
+	}
+
+	/** wave 3 (agentPresets read / pluginInventory probe — audit row 37). */
 	executionMode(): "native" | "ptc" {
 		return "native"
 	}
@@ -444,45 +798,95 @@ export class RemoteHostSession {
 	}
 
 	/** wave 2 (`session/search` — audit row 19). */
-	async searchSessions(_query: string): Promise<{ id: string; snippet: string }[]> {
-		return []
+	async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
+		return this.#opsClient().searchSessions(query)
 	}
 
-	/** wave 2 (follow-record turn grouping — audit row 18). */
+	/**
+	 * wave 2 (audit row 18): completed turns of the LIVE session from the
+	 * follow record ledger (client-side grouping, host-session.ts:1057-1084
+	 * algorithm). Empty until the session's journal has turn brackets.
+	 */
 	historyTurns(): { turn: number; seqEnd: number; preview: string }[] {
-		return []
+		return groupTurns(this.#journal)
 	}
 
-	/** wave 2 (`session/fork` — audit row 18). */
-	async forkAtTurn(_seqEnd: number): Promise<{ items: { kind: "user" | "assistant"; text: string }[]; turn: number }> {
-		throw new Error("fork rides session/fork from wave 2 (client mode)")
+	/**
+	 * wave 2 (`session/fork` — audit row 18): seed a NEW session with the
+	 * live session's event prefix through `atSeq` (a historyTurns seqEnd;
+	 * omission = latest completed turn), switch the facade onto it, and
+	 * return the rebuilt transcript rows. Unlike the in-process seed path,
+	 * the forked journal IS replayed through the follow ledger (no
+	 * re-paint: the caller rebuilds the transcript from these rows).
+	 */
+	async forkAtTurn(seqEnd?: number): Promise<{ items: { kind: "user" | "assistant"; text: string }[]; turn: number }> {
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) throw new Error("no live session to fork")
+		const forked = await this.#opsClient().fork(sessionId, seqEnd)
+		this.#sessionId = forked
+		this.#follow?.reset()
+		this.#resetLedger()
+		await this.#attachFollow(false)
+		const items = journalToTranscriptRows(this.#journal)
+		const turn = this.#journal.filter((e) => e.type === "turn/end").length
+		return { items, turn }
 	}
 
-	/** wave 2 (second-session flow — audit row 32). */
+	/** wave 3 (second-session flow — audit row 32). */
 	async btwAsk(_question: string, _snapshot: string[], _onDelta?: (full: string) => void): Promise<string> {
-		throw new Error("btw side sessions are deferred to wave 2 (client mode)")
+		throw new Error("btw side sessions are deferred to wave 3 (client mode)")
 	}
 
-	/** wave 2 (`fileUploads/upload` — audit row 35). */
+	/** wave 3 (`fileUploads/upload` — audit row 35). */
 	async attachImage(_path: string): Promise<string> {
-		throw new Error("attachment service unavailable in client mode (wave 2: fileUploads/upload)")
+		throw new Error("attachment service unavailable in client mode (wave 3: fileUploads/upload)")
 	}
 
-	/** wave 2 (`session/follow` on another session id — audit row 17). */
-	async startRemoteTail(_sessionId: string): Promise<string | undefined> {
-		return "remote tail rides session/follow from wave 2 (client mode)"
+	/**
+	 * wave 2 (audit row 17): read-only `session/follow` watch of a session
+	 * another surface drives. The durable prefix replays through the sink,
+	 * live rows stream in, and reconnects repair the journal gap. Returns
+	 * undefined on success, an error string otherwise (HostSession parity).
+	 */
+	async startRemoteTail(sessionId: string): Promise<string | undefined> {
+		this.stopRemoteTail()
+		this.#tail = new RemoteTailSession({
+			ops: this.#opsClient(),
+			socketFactory: this.#socketFactory,
+			sessionId,
+			sink: (rows) => {
+				const sink = this.remoteTailSink
+				if (sink) {
+					try {
+						sink(rows)
+					} catch {
+						/* contained */
+					}
+				}
+			},
+			connectionState: () => this.#connection.getState(),
+			onStateChange: (listener) => this.#connection.onStateChange(listener),
+		})
+		try {
+			await this.#tail.start()
+			return undefined
+		} catch (e) {
+			this.stopRemoteTail()
+			return String(e instanceof Error ? e.message : e).slice(0, 150)
+		}
 	}
 
 	stopRemoteTail(): void {
-		/* wave 2 */
+		this.#tail?.stop()
+		this.#tail = undefined
 	}
 
-	/** wave 2 (subagent panel aggregation — audit row 33). */
+	/** wave 3 (subagent panel aggregation — audit row 33). */
 	childTranscript(_id: string): string[] {
 		return []
 	}
 
-	/** wave 2 (`subagents/prompt` — audit row 33). */
+	/** wave 3 (`subagents/prompt` — audit row 33). */
 	steerChild(_id: string, _text: string): boolean {
 		return false
 	}
@@ -491,8 +895,61 @@ export class RemoteHostSession {
 	// Internals — session + follow plumbing
 	// ------------------------------------------------------------------
 
-	#rpc(method: string, args: Record<string, unknown>): Promise<unknown> {
-		return this.#connection.rpc(method, args)
+	#rpc(method: string, args?: Record<string, unknown>): Promise<unknown> {
+		return this.#connection.rpc(method, args ?? {})
+	}
+
+	#opsClient(): RemoteSessionOps {
+		if (this.#ops === undefined) {
+			this.#ops = new RemoteSessionOps({ rpc: (method, args) => this.#rpc(method, args), socketFactory: this.#socketFactory })
+		}
+		return this.#ops
+	}
+
+	#modelClient(): RemoteModelClient {
+		if (this.#model === undefined) {
+			this.#model = new RemoteModelClient({ rpc: (method, args) => this.#rpc(method, args) })
+		}
+		return this.#model
+	}
+
+	#settingsClient(): RemoteSettingsClient {
+		if (this.#settings === undefined) {
+			this.#settings = new RemoteSettingsClient({ rpc: (method, args) => this.#rpc(method, args) })
+		}
+		return this.#settings
+	}
+
+	/** Forget the live session's record ledger (fresh/resumed/forked session). */
+	#resetLedger(): void {
+		this.#journal = []
+		this.#lastDurableSeq = -1
+	}
+
+	#addPushListener(listener: RemotePushListeners): () => void {
+		this.#pushListeners.push(listener)
+		return () => {
+			this.#pushListeners = this.#pushListeners.filter((l) => l !== listener)
+		}
+	}
+
+	/**
+	 * Cold-boot label (row 22): the catalog's `default` route — the host-side
+	 * equivalent of the in-process agentDefaultModel.currentSelection read in
+	 * host-session.ts:90-94. Best-effort: only when the label is still the
+	 * generic default and no route has been chosen yet.
+	 */
+	async #applyColdBootLabel(): Promise<void> {
+		if (this.#coldBootLabelApplied || this.label !== "dsh-host" || this.#labelBackup !== undefined) return
+		this.#coldBootLabelApplied = true
+		try {
+			const def = await this.#modelClient().defaultSelection()
+			if (def && this.label === "dsh-host") {
+				this.label = `${def.provider}/${def.model}${def.reasoningEffort ? ` (${def.reasoningEffort})` : ""}`
+			}
+		} catch {
+			/* optional service; keep the generic label */
+		}
 	}
 
 	/** Create or reuse the session, then make sure its follow stream is open. */
@@ -515,8 +972,21 @@ export class RemoteHostSession {
 			}
 			throw error
 		}
+		// The host may reuse a DIFFERENT session than requested (blank-reuse
+		// rules are host-native, row 12) — its answer wins.
 		this.#sessionId = typeof value.sessionId === "string" ? value.sessionId : requestedId
 		if (typeof value.agentPreset === "string" && value.agentPreset) this.#presetId = value.agentPreset
+		// A staged model selection (switchModel with no live session) applies
+		// to the fresh session before its first prompt.
+		if (this.#pendingModel !== undefined && this.#sessionId !== undefined) {
+			const staged = this.#pendingModel
+			this.#pendingModel = undefined
+			try {
+				await this.#modelClient().selectModel(this.#sessionId, staged)
+			} catch (error) {
+				console.error("[remote-host-session] staged selectModel failed:", error)
+			}
+		}
 		// Attach BEFORE the first prompt so no live frame is missed.
 		await this.#attachFollow(false)
 		return this.#sessionId
@@ -535,6 +1005,13 @@ export class RemoteHostSession {
 
 	#followSink() {
 		return {
+			// Durable record ledger (wave 2): /history grouping + fork points +
+			// the reconnect gap-repair base all read this.
+			onRecord: (entry: RemoteJournalEntry) => {
+				if (entry.seq > this.#lastDurableSeq) this.#lastDurableSeq = entry.seq
+				this.#journal.push(entry)
+				if (this.#journal.length > 4000) this.#journal.shift()
+			},
 			onContentDelta: (text: string) => {
 				try {
 					this.#cb?.onContentDelta(text)
@@ -552,9 +1029,11 @@ export class RemoteHostSession {
 				}
 			},
 			onUsage: (usage: { prompt: number; completion: number; cacheRead: number; cacheWrite: number }) => {
-				// host-session.ts:1269-1272 semantics: prompt = the request's
-				// context size (assignment); completion accumulates over the
-				// session; cache fields are assignments when reported.
+				// host-session.ts:1269-1272 semantics, verified on the live wire:
+				// every chunk ASSIGNS the fields it reports (completion is the
+				// one session accumulator). On cache-splitting adapters (zai)
+				// prompt is the UNCACHED input only — the request's context size
+				// is prompt + cacheRead + cacheWrite.
 				if (usage.prompt > 0) this.usage.prompt = usage.prompt
 				if (usage.completion > 0) this.usage.completion += usage.completion
 				if (usage.cacheRead > 0) this.usage.cacheRead = usage.cacheRead
@@ -649,6 +1128,7 @@ export class RemoteHostSession {
 	// ------------------------------------------------------------------
 
 	#onEventsItem(item: EventsItem): void {
+		if (item.type === "emit") this.#onEmitEvent(item.event, item.args)
 		if (item.type !== "waterfall") return
 		// `cancel` items: the overlay is ShellHost's; a host-cancelled
 		// waterfall is dropped bookkeeping-free in wave 1 (a late answer to a
@@ -729,6 +1209,68 @@ export class RemoteHostSession {
 	}
 
 	// ------------------------------------------------------------------
+	// Internals — $events routing (forwarded emits)
+	// ------------------------------------------------------------------
+
+	/**
+	 * Forwarded `emit` frames (the allowlist the host forwards: rows 24/25/
+	 * 26/28 push events). Args are the emitted event's positional arguments.
+	 */
+	#onEmitEvent(event: string, args: unknown): void {
+		const argv = Array.isArray(args) ? args : []
+		if (event === "settings/document-updated") {
+			const ns = typeof argv[0] === "string" ? argv[0] : ""
+			const revision = typeof argv[1] === "number" ? argv[1] : 0
+			for (const listener of this.#pushListeners) {
+				try {
+					listener.onSettingsUpdated?.(ns, revision)
+				} catch {
+					/* contained */
+				}
+			}
+			return
+		}
+		if (event === "commands/change") {
+			for (const listener of this.#pushListeners) {
+				try {
+					listener.onHostCommandsChanged?.()
+				} catch {
+					/* contained */
+				}
+			}
+			return
+		}
+		if (event === "plugin-manager/changed") {
+			// the profile's plugins changed: refresh the sync cache, then notify
+			void this.refreshPlugins()
+				.catch(() => {})
+				.then(() => {
+					for (const listener of this.#pushListeners) {
+						try {
+							listener.onPluginsChanged?.()
+						} catch {
+							/* contained */
+						}
+					}
+				})
+			return
+		}
+		if (event === "credentials/reference-updated") {
+			const ref = typeof argv[0] === "string" ? argv[0] : ""
+			for (const listener of this.#pushListeners) {
+				try {
+					listener.onCredentialUpdated?.(ref)
+				} catch {
+					/* contained */
+				}
+			}
+			return
+		}
+		// Other forwarded emits (api-session/*, agent-preset/selected, …) have
+		// no wave-2 consumer; they stay observable through connection.onEvent.
+	}
+
+	// ------------------------------------------------------------------
 	// Internals — generation change (reconnect) re-attach
 	// ------------------------------------------------------------------
 
@@ -760,8 +1302,11 @@ export class RemoteHostSession {
 		this.#reattachInFlight = true
 		if (this.#awaiting) this.#setReconnecting(true)
 		try {
-			await this.#attachFollow(true)
+			const journalBefore = this.#journal.length
+			const seqBefore = this.#lastDurableSeq
+			const opening = await this.#attachFollow(true)
 			this.#reattachAttempts = 0
+			await this.#repairJournalGap(opening, journalBefore, seqBefore)
 			this.#setReconnecting(false)
 		} catch {
 			this.#reattachAttempts += 1
@@ -779,6 +1324,40 @@ export class RemoteHostSession {
 			}
 		} finally {
 			this.#reattachInFlight = false
+		}
+	}
+
+	/**
+	 * Journal-tail page gap repair (wave-2 polish): the follow snapshot's
+	 * opening window may not reach back to the last durable seq painted
+	 * before the gap. When it cannot, `session/page` fills the missing span
+	 * and the extra rows ride onReattachedMissed (after the snapshot rows —
+	 * ordering: page rows are OLDER, but they arrive with the snapshot's own
+	 * rows already painted, so the caller sees one batched history).
+	 */
+	async #repairJournalGap(opening: RemoteFollowOpening, journalBefore: number, seqBefore: number): Promise<void> {
+		if (seqBefore < 0 || opening.cursor <= seqBefore) return
+		const appended = this.#journal.slice(journalBefore)
+		const oldest = appended.length > 0 ? Math.min(...appended.map((e) => e.seq)) : opening.cursor + 1
+		if (oldest <= seqBefore + 1) return // snapshot window reached back; no gap
+		try {
+			const gap = await this.#opsClient().pageSpan(this.#sessionId!, seqBefore, oldest - 1)
+			const missing = gap.filter((e) => e.seq > seqBefore && !this.#journal.some((j) => j.seq === e.seq))
+			if (missing.length === 0) return
+			for (const entry of missing) {
+				if (entry.seq > this.#lastDurableSeq) this.#lastDurableSeq = entry.seq
+				this.#journal.push(entry)
+			}
+			const rows = journalToTranscriptRows(sortJournal(missing))
+			if (rows.length > 0) {
+				try {
+					this.#cb?.onReattachedMissed?.(rows)
+				} catch {
+					/* contained */
+				}
+			}
+		} catch {
+			/* gap repair is best-effort; the live stream is already back */
 		}
 	}
 

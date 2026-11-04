@@ -14,9 +14,12 @@ Remote session layer (bucket (b)) build on.
 | `events-source.ts` | The `$events` generation source: mux WebSocket pump. |
 | `transport.ts` | `ClientConnection` — the facade over `dsh-client-connection`'s installConnection. |
 | `remote-stream.ts` | One logical Remote stream on the mux WebSocket (`session/follow` et al). |
-| `remote-follow.ts` | `session/follow({assistantStream:true})` consumption → TurnCallbacks shapes (deltas/usage/tools/todos/turn-end; audit rows 2–6, 34). |
+| `remote-follow.ts` | `session/follow({assistantStream:true})` consumption → TurnCallbacks shapes (deltas/usage/tools/todos/turn-end; audit rows 2–6, 34) + the optional `onRecord` seq ledger hook and clean compact-stream replay (wave 2). |
 | `remote-waterfall.ts` | Forwarded `$events` waterfall claim + `$events/result` answering (approval + user-questions; audit rows 7–8). |
-| `remote-host-session.ts` | `RemoteHostSession` — the HostSession-shaped session facade over RPC + `$events` (bucket (b) wave 1). |
+| `remote-host-session.ts` | `RemoteHostSession` — the HostSession-shaped session facade over RPC + `$events` (bucket (b), waves 1 + 2: turn lifecycle, waterfalls, session ops, model, presets, credentials/settings, commands/skills/plugins, tail, status surface). |
+| `remote-session-ops.ts` | Session-side ops (wave 2): `session/list` + retention filter, stored transcript via page/follow snapshot, search/rename/fork, skills/commands, journal mappers (turn grouping, tail rows), `RemoteTailSession` (foreign follow + page gap repair; rows 13–20, 26, 27, 17). |
+| `remote-model.ts` | Model routes (wave 2): `session/modelCatalog` + `selectModel` round-trip, provider catalog, projections-based live selection, catalog-default cold-boot label (rows 21–22). |
+| `remote-settings.ts` | Settings + credentials (wave 2): `settings/describe|mutate|update|replace` shaped to the in-process seams, `credentials/describe|set|unset` (rows 24–25). |
 | `workspace-config.ts` | Workspace-local `./.dsh/config.yml` overlay (bucket d). |
 | `lifecycle.ts` | Host process lifecycle (separate agent; bucket (e)). |
 
@@ -116,21 +119,40 @@ Semantics:
 
 ```ts
 class RemoteHostSession {
-  label: string                  // powerline model segment; "reconnecting…" during a mid-turn gap
+  label: string                  // powerline model segment; cold-boot label from modelCatalog.default (row 22)
+  status: RemoteSessionStatus    // wave-2: {connection, turn: idle|starting|running|reconnecting, sessionAttached, tailActive}
   usage: { prompt, completion, cacheRead, cacheWrite }
   lastTurnStats: TurnStats
-  start(): Promise<ClientReadyInfo>          // connect + begin $events routing (turn() calls it lazily)
+  // — wave 1 (frozen) —
+  start(): Promise<ClientReadyInfo>          // connect + begin $events routing + cold-boot label (turn() calls it lazily)
   turn(userText, cb: TurnCallbacks, signal?): Promise<void>  // session/create + session/prompt{mode:'queue'}; awaits durable turn/end
   steer(userText): void                       // session/prompt{mode:'steer'}
   abort(): void                               // session/cancel; next send is a FRESH session (host-session parity)
-  newSession(): void                          // next send creates a new session
-  resumeSession(id): "ok"                     // next send re-creates with the stored id (writer-held → takeover error)
+  newSession(): void                          // next send creates a new session (fresh client-minted id — row 12)
+  resumeSession(id): "ok"                     // next send re-creates with the stored id (writer-held → takeover error, row 15)
   registerAskProvider(onAsk): void            // user-questions waterfall prompt target
   currentSessionId(): string | undefined
-  dispose(): Promise<void>                    // close the carrier; no listeners left behind
-  // … HostSession-shaped wave-2/3 stubs for the rest of the surface (listSessions,
-  //   storedTranscript, forkAtTurn, searchSessions, presets, credentials, settings,
-  //   commands, skills, plugins, /agents, /repair, /tail, subagents, /btw, attachImage)
+  dispose(): Promise<void>                    // close carrier + tail; no listeners left behind
+  // — wave 2 (rows 12–28 + 22) —
+  switchModel(provider, model, effort?)       // live session → session/selectModel; else staged onto the next create
+  selectModel(sel): Promise<ModelSelection>   // session/selectModel round-trip (host-resolved acceptance)
+  modelCatalog() / defaultModelSelection() / currentModelSelection() / initializeDefaultModel()
+  listSessions(limit?)                        // session/list + retention filter (subagent rows out, retentionDays, capped)
+  storedTranscript(id, skip?)                 // session/page backwards fills over the follow opening snapshot
+  renameSession(title)                        // session/rename → {title, seq}
+  searchSessions(query)                       // session/search ([] when the deployment's index is openAt:never)
+  historyTurns()                              // client-side turn grouping from the follow record ledger
+  forkAtTurn(seqEnd?)                         // session/fork (omission = latest completed turn) + facade switch
+  listPresets() / readPreset(id) / selectPreset(id)   // agentPresets/list|read|select
+  listHostCommands() / executeHostCommand(line)       // commands/list|execute (agent-scoped; [] without a session)
+  credentialStatus(ref) / login(ref, key) / logout(ref)  // credentials/describe|set|unset
+  settingsSeam / settingsDescribe() / settingsMutate() / settingsUpdate() / settingsReplace() / settingsDocument()
+  listSkills() / refreshSkills()              // skills/list (session-scoped; sync cache + async refresh)
+  listPlugins() / refreshPlugins()            // pluginManager/listPlugins (+listBundles versions; built-ins out)
+  startRemoteTail(id) / stopRemoteTail()      // read-only foreign session/follow + page gap repair (row 17)
+  onSettingsUpdated / onHostCommandsChanged / onPluginsChanged / onCredentialUpdated   // $events push listeners
+  // — wave-3 stubs (unchanged) —
+  // /agents, /repair, subagent panel, /btw, attachImage, executionMode, config overlay, /reload
 }
 ```
 
@@ -143,13 +165,28 @@ class RemoteHostSession {
   `{kind:"next"}` (delegate).
 - Generation change (reconnect): the follow stream re-opens when the carrier
   reports `connected` again; an ACTIVE turn surfaces a `label` swap
-  ("reconnecting…"), the snapshot's missed durable rows ride
-  `cb.onReattachedMissed`, and the active attempt's compact stream replays as
-  deltas below the host's dense-index baseline (journal-tail page repair is
-  wave 2).
-- Tests: `test/remote-host-session.test.ts` (fake connection + fake mux
-  sockets), `test/remote-live-smoke.test.ts` (env-gated:
-  `DSH_REMOTE_SMOKE=1 bun test test/remote-live-smoke.test.ts`).
+  ("reconnecting…") plus `status.turn === "reconnecting"`, the snapshot's
+  missed durable rows ride `cb.onReattachedMissed`, the active attempt's
+  compact stream replays CLEAN at the dense index already streamed (wave-2
+  dedupe), and a journal gap the snapshot window cannot reach is repaired
+  from `session/page` before the live frames resume.
+- Idle-release (row 16) is HOST-NATIVE: there is no client-side lease
+  machinery (no idle timer, no wake-diff base) — the host owns the writer
+  lock and the follow read needs none.
+- Usage semantics (row 5, wire-verified): every usage chunk ASSIGNS the
+  fields it reports; completion accumulates over the session; the context
+  size is prompt + cacheRead + cacheWrite (cache-splitting adapters report
+  prompt = uncached input only).
+- Push events (`$events` emit frames) are routed to listeners:
+  `settings/document-updated` (ns, revision), `commands/change`,
+  `plugin-manager/changed` (auto-refreshes the plugins cache),
+  `credentials/reference-updated`.
+- Tests: `test/remote-host-session.test.ts`, `test/remote-session-ops.test.ts`,
+  `test/remote-model-settings.test.ts` (fake connection + fake mux sockets),
+  `test/remote-live-smoke.test.ts` (env-gated:
+  `DSH_REMOTE_SMOKE=1 DSH_SMOKE_PROFILE=opentui bun test test/remote-live-smoke.test.ts` —
+  wave-1 turn + the full wave-2 capability sweep incl. the row-5 usage
+  discriminator and provider-key-rot fallback via selectModel).
 
 ## Events source decision (native vs pump)
 

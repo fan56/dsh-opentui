@@ -257,8 +257,12 @@ describe("remote follow helpers", () => {
 			{ type: "chunk", time: 9, chunk: { type: "text-delta", index: 1, text: "!" } },
 			{ type: "chunk", time: 9, chunk: { type: "usage", usage: { inputTokens: 1 } } },
 		])
+		// Wave 2: per-text deltas carrying dense indexes (the dedupe
+		// granularity) — text-chunks records spread their texts across
+		// index..index+texts.length-1; bare chunk records keep chunk.index.
 		expect(deltas).toEqual([
-			{ kind: "reasoning", text: "think more" },
+			{ kind: "reasoning", text: "think " },
+			{ kind: "reasoning", text: "more" },
 			{ kind: "text", text: "answer" },
 			{ kind: "text", text: "!" },
 		])
@@ -652,10 +656,10 @@ describe("RemoteHostSession generation-change re-attach", () => {
 			},
 		}))
 
-		// Compact stream replay: wave 1 replays the WHOLE accumulated attempt
-		// text (no-loss choice — the gap cannot be sliced per-delta), so the
-		// pre-gap "hel" is painted again; dedupe is wave-2 polish.
-		await until(() => log.content.join("") === "helhello")
+		// Compact stream replay (wave-2 dedupe): resumes CLEAN at the dense
+		// index the live stream already consumed ("hel" at index 0 stays
+		// painted once; the replay contributes only "lo" at index 1).
+		await until(() => log.content.join("") === "hello")
 		// Missed durable rows ride onReattachedMissed.
 		await until(() => log.missedRows.length === 1)
 		expect(log.missedRows[0]).toEqual([
@@ -669,7 +673,7 @@ describe("RemoteHostSession generation-change re-attach", () => {
 		second.item(streamFrame({ type: "chunk", attemptId: "a1", revision: 2, index: 2, time: 6, chunk: { type: "text-delta", index: 2, text: " world" } }))
 		second.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 9))
 		await pending
-		expect(log.content.join("")).toBe("helhello world")
+		expect(log.content.join("")).toBe("hello world")
 		expect(log.turnEnds.length).toBe(1)
 		await h.session.dispose()
 	})

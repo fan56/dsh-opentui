@@ -20,7 +20,15 @@
  * - durable `turn/end` → onTurnEnd (+ onError for `reason.kind === "error"`).
  * - snapshot records on a RE-attach → onMissedRows rows (the wake-diff
  *   callback shape) plus todo/tool ledger refill, and an active attempt's
- *   compact stream replays as deltas — the basic generation re-attach.
+ *   compact stream replays as deltas — resuming CLEAN at the dense chunk
+ *   index the live stream already consumed (wave-2 delta-dedupe; wave 1
+ *   replayed the whole accumulated attempt text and duplicated the pre-gap
+ *   content).
+ * - every durable journal record (live and snapshot) also reaches the
+ *   optional `onRecord` hook with its seq envelope — the seq-bearing surface
+ *   the /history turn grouping, fork-at-turn (`session/fork.atSeq`) and the
+ *   tail's journal-gap repair need (wave 2; wave 1 exposed data payloads
+ *   only).
  *
  * Wire facts this relies on (installed closure, dsh 0.2.1-rc.5):
  * - `dsh-api-session-controller/lib/types/types.d.ts`: SessionFollowRequest /
@@ -75,6 +83,14 @@ export interface RemoteToolRun {
 	imagePath?: string
 }
 
+/** One durable journal record (`SessionWireEvent` subset): type + seq envelope. */
+export interface RemoteJournalEntry {
+	type: string
+	seq: number
+	time: number
+	data: Record<string, unknown>
+}
+
 /** Callbacks the session layer registers (shapes mirror TurnCallbacks). */
 export interface RemoteFollowSink {
 	onContentDelta(text: string): void
@@ -88,6 +104,13 @@ export interface RemoteFollowSink {
 	onTurnEnd(data: Record<string, unknown>): void
 	/** Transcript rows recovered from a re-attach snapshot. */
 	onMissedRows(rows: RemoteTranscriptRow[]): void
+	/**
+	 * Every durable journal record, live or snapshot, with its seq envelope
+	 * (optional — wave-2 widening: the seq is what /history grouping,
+	 * fork-at-turn and the tail's gap repair need; data payloads alone
+	 * cannot address a fork point).
+	 */
+	onRecord?(entry: RemoteJournalEntry): void
 }
 
 export interface RemoteFollowOptions {
@@ -120,20 +143,46 @@ interface AssistantStreamFrameEnd {
 
 /** Convert one compact `AssistantStreamRecord[]` into (type, text) delta pairs. */
 export function expandCompactStream(records: unknown[]): { kind: "text" | "reasoning"; text: string }[] {
-	const out: { kind: "text" | "reasoning"; text: string }[] = []
+	return expandCompactStreamIndexed(records).map(({ kind, text }) => ({ kind, text }))
+}
+
+/** One compact-stream delta with its dense stream position (when recorded). */
+export interface CompactStreamDelta {
+	kind: "text" | "reasoning"
+	text: string
+	/** Dense chunk index this delta occupies (the live frame's `index` space). */
+	denseIndex?: number
+}
+
+/**
+ * Per-delta expansion of one compact `AssistantStreamRecord[]`, keeping each
+ * chunk's dense index: `text-chunks`/`reasoning-chunks` records spread their
+ * `texts` across `index .. index + texts.length - 1`, bare `chunk` records
+ * carry the chunk's own index. The reconnect replay filters on this to
+ * resume clean at the dense position the live stream already consumed.
+ */
+export function expandCompactStreamIndexed(records: unknown[]): CompactStreamDelta[] {
+	const out: CompactStreamDelta[] = []
 	if (!Array.isArray(records)) return out
 	for (const record of records) {
 		const r = record as Record<string, unknown> | null
 		if (!r) continue
 		if (r.type === "text-chunks" || r.type === "reasoning-chunks") {
 			const texts = Array.isArray(r.texts) ? r.texts : []
-			const text = texts.map((t) => (typeof t === "string" ? t : "")).join("")
-			if (text) out.push({ kind: r.type === "text-chunks" ? "text" : "reasoning", text })
+			const base = typeof r.index === "number" ? r.index : undefined
+			texts.forEach((t, i) => {
+				const text = typeof t === "string" ? t : ""
+				if (!text) return
+				const delta: CompactStreamDelta = { kind: r.type === "text-chunks" ? "text" : "reasoning", text }
+				if (base !== undefined) delta.denseIndex = base + i
+				out.push(delta)
+			})
 		} else if (r.type === "chunk") {
 			const chunk = r.chunk as Record<string, unknown> | undefined
 			const text = typeof chunk?.text === "string" ? chunk.text : ""
-			if (text && chunk?.type === "text-delta") out.push({ kind: "text", text })
-			if (text && chunk?.type === "reasoning-delta") out.push({ kind: "reasoning", text })
+			const index = typeof chunk?.index === "number" ? chunk.index : undefined
+			if (text && chunk?.type === "text-delta") out.push(index !== undefined ? { kind: "text", text, denseIndex: index } : { kind: "text", text })
+			if (text && chunk?.type === "reasoning-delta") out.push(index !== undefined ? { kind: "reasoning", text, denseIndex: index } : { kind: "reasoning", text })
 		}
 	}
 	return out
@@ -183,6 +232,13 @@ export class RemoteFollowSession {
 	#activeAttemptId: string | undefined
 	/** Dense chunk index the next live frame is expected at (re-attach baseline). */
 	#attemptBaseline = 0
+	/**
+	 * Attempt id + dense watermark of the chunks this client already PAINTED
+	 * from the live stream. Survives a detach so the next attach's compact
+	 * replay resumes at exactly that position (wave-2 delta-dedupe).
+	 */
+	#liveAttemptId: string | undefined
+	#liveWatermark = 0
 	#attached = false
 
 	constructor(options: RemoteFollowOptions) {
@@ -264,10 +320,14 @@ export class RemoteFollowSession {
 		this.#foldSnapshotRecords(opening.records, replay)
 
 		if (replay && attempt && typeof attempt.attemptId === "string") {
-			// Basic re-attach repair (wave 1): replay the compact stream that
-			// accumulated while we were away, then resume live chunks at the
-			// host's dense index baseline.
-			for (const delta of expandCompactStream(Array.isArray(attempt.stream) ? attempt.stream : [])) {
+			// Re-attach repair: replay the compact stream accumulated while we
+			// were away, resuming CLEAN at the dense position the live stream
+			// already painted before the gap (wave-2 dedupe). Chunks without a
+			// recorded index are unreplayable precisely — emit them only when
+			// nothing was streamed live (wave-1 whole-replay behavior).
+			const watermark = attempt.attemptId === this.#liveAttemptId ? this.#liveWatermark : 0
+			for (const delta of expandCompactStreamIndexed(Array.isArray(attempt.stream) ? attempt.stream : [])) {
+				if (delta.denseIndex !== undefined ? delta.denseIndex < watermark : watermark > 0) continue
 				if (delta.kind === "text") this.#options.sink.onContentDelta(delta.text)
 				else this.#options.sink.onThinkingDelta(delta.text)
 			}
@@ -299,6 +359,8 @@ export class RemoteFollowSession {
 		this.#attached = false
 		this.#activeAttemptId = undefined
 		this.#attemptBaseline = 0
+		// #liveAttemptId/#liveWatermark survive: they are the dedupe baseline
+		// the next attach's compact replay resumes from.
 	}
 
 	/**
@@ -315,13 +377,22 @@ export class RemoteFollowSession {
 		this.detach()
 		this.#sessionId = undefined
 		this.#toolCalls.clear()
+		this.#liveAttemptId = undefined
+		this.#liveWatermark = 0
 	}
 
 	#dispatch(value: unknown): void {
 		const frame = asRecord(value)
 		if (frame.type === "event") {
 			const event = asRecord(frame.event)
-			this.#durableEvent(String(event.type ?? ""), asRecord(event.data))
+			const entry: RemoteJournalEntry = {
+				type: String(event.type ?? ""),
+				seq: typeof event.seq === "number" ? event.seq : 0,
+				time: typeof event.time === "number" ? event.time : 0,
+				data: asRecord(event.data),
+			}
+			this.#options.sink.onRecord?.(entry)
+			this.#durableEvent(entry.type, entry.data)
 		} else if (frame.type === "assistant-stream") {
 			this.#assistantStreamFrame(asRecord(frame.frame))
 		}
@@ -333,12 +404,15 @@ export class RemoteFollowSession {
 			const f = frame as unknown as AssistantStreamFrameStart
 			this.#activeAttemptId = f.attemptId
 			this.#attemptBaseline = 0
+			this.#liveAttemptId = f.attemptId
+			this.#liveWatermark = 0
 			return
 		}
 		if (frame.type === "chunk") {
 			const f = frame as unknown as AssistantStreamFrameChunk
 			if (this.#activeAttemptId === undefined || f.attemptId !== this.#activeAttemptId) return
 			if (typeof f.index === "number" && f.index < this.#attemptBaseline) return
+			if (typeof f.index === "number" && f.index >= this.#liveWatermark) this.#liveWatermark = f.index + 1
 			this.#streamChunk(f.chunk)
 			return
 		}
@@ -347,6 +421,8 @@ export class RemoteFollowSession {
 			if (this.#activeAttemptId === f.attemptId) {
 				this.#activeAttemptId = undefined
 				this.#attemptBaseline = 0
+				this.#liveAttemptId = undefined
+				this.#liveWatermark = 0
 			}
 		}
 	}
@@ -375,6 +451,14 @@ export class RemoteFollowSession {
 			const event = asRecord(entry.event)
 			const type = String(event.type ?? "")
 			const data = asRecord(event.data)
+			// Seq envelope first — the ledger is current before any row/settle
+			// callback reads it.
+			this.#options.sink.onRecord?.({
+				type,
+				seq: typeof event.seq === "number" ? event.seq : 0,
+				time: typeof event.time === "number" ? event.time : 0,
+				data,
+			})
 			if (type === "user/message") {
 				const source = asRecord(data.source)
 				const kind = source.kind
