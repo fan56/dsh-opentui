@@ -20,25 +20,20 @@ jobs:
           version: 10.18.3
       - run: pnpm install --frozen-lockfile
       # CI has no global dsh: scripts/link-dsh-closure.mjs (postinstall) exits
-      # 0 silently and @deepseek-ai/* never resolve. Tests fake the SDK
-      # (test/client-fakes.ts), so resolution-only stubs suffice; they throw
-      # if actually invoked.
-      - name: stub @deepseek-ai closure packages (no global dsh on runners)
+      # 0 silently. @deepseek-ai/dsh-llm installs fine from npm (devDep,
+      # 0.2.1-rc.5); only @deepseek-ai/dsh-client-connection is not on the
+      # registry. Tests fake the connection (test/client-fakes.ts), so a
+      # resolution-only stub suffices; it throws if actually invoked.
+      - name: stub @deepseek-ai/dsh-client-connection (no global dsh on runners)
         run: |
           node -e '
             const { mkdirSync, writeFileSync } = require("node:fs");
-            const stubs = {
-              "dsh-llm": { named: ["createUserMessage"] },
-              "dsh-client-connection": { named: ["installConnection"], exports: { "./client": "./index.js" } },
-            };
-            for (const [name, cfg] of Object.entries(stubs)) {
-              const dir = "packages/shell/node_modules/@deepseek-ai/" + name;
-              mkdirSync(dir, { recursive: true });
-              const pkgJson = { type: "module", ...(cfg.exports ? { exports: cfg.exports } : { main: "./index.js" }) };
-              writeFileSync(dir + "/package.json", JSON.stringify(pkgJson));
-              writeFileSync(dir + "/index.js", cfg.named.map((n) =>
-                `export const ${n} = () => { throw new Error("CI stub: @deepseek-ai/${name} needs a global dsh install"); };`).join("\n") + "\n");
-            }
+            const dir = "packages/shell/node_modules/@deepseek-ai/dsh-client-connection";
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(dir + "/package.json",
+              JSON.stringify({ type: "module", exports: { "./client": "./index.js" } }));
+            writeFileSync(dir + "/index.js",
+              "export const installConnection = () => { throw new Error(\"CI stub: @deepseek-ai/dsh-client-connection needs a global dsh install\"); };\n");
           '
       # bun reads bunfig.toml from the cwd, and each package preloads the
       # opentui solid compiler there — run the suite per package, not at root.
