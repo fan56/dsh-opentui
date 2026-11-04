@@ -290,6 +290,22 @@ describe('aggregateTurnContext', () => {
     // would throw on #field access; the bound target does not
     expect(Array.isArray(adapted.usageSummary())).toBe(true)
   })
+
+  test('accessors read the real target (settingsSeam getter → #settingsClient, the /login crash)', () => {
+    const { session } = makeFakes()
+    const adapted = aggregateTurnContext(session as unknown as ShellSessionSurface)
+    // get settingsSeam invokes the private #settingsClient() — with the
+    // Proxy as `this` the private-brand check throws "Cannot access
+    // private method or accessor" (the /login crash via features/login.tsx).
+    // The wrapper must compute accessors on the real target.
+    const seam = adapted.settingsSeam
+    expect(seam).toBeDefined()
+    expect(typeof seam!.describe).toBe('function')
+    expect(typeof seam!.mutate).toBe('function')
+    // sibling surface members pass through the same trap
+    expect(adapted.label).toBe('provider/model')
+    expect(adapted.usage).toBe(session.usage)
+  })
 })
 
 // ---------------------------------------------------------------------------

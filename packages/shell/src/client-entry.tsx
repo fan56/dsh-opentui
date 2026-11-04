@@ -154,8 +154,14 @@ async function waitForBootLabel(session: RemoteHostSession, budgetMs: number): P
  * ShellHost stays byte-identical for plugin mode (its dist-host bundle is
  * gated to zero diff).
  *
- * The Proxy binds every method to the raw target: RemoteHostSession reads
- * private `#fields`, which a Proxy `this` would break.
+ * The Proxy binds every method AND reads every accessor on the raw target:
+ * RemoteHostSession reads private `#fields`, which a Proxy `this` would
+ * break — in methods (bound `this`) and equally in getters: an accessor
+ * invoked with `receiver` as its `this` (`Reflect.get(target, prop,
+ * receiver)`) throws "Cannot access private method or accessor" the moment
+ * it touches `#field` (the /login crash: `settingsSeam` → `#settingsClient`).
+ * Computing the value with the target as receiver fixes the whole accessor
+ * class at once; functions still bind to the target.
  */
 export function aggregateTurnContext(session: ShellSessionSurface): ShellSessionSurface {
 	const turn: ShellSessionSurface["turn"] = (userText, cb, signal) =>
@@ -174,9 +180,11 @@ export function aggregateTurnContext(session: ShellSessionSurface): ShellSession
 			signal,
 		)
 	return new Proxy(session, {
-		get(target, prop, receiver) {
+		get(target, prop) {
 			if (prop === "turn") return turn
-			const value = Reflect.get(target, prop, receiver)
+			// Accessors must run with `this` = the real target (private-field
+			// brand check); the receiver would be the Proxy and throw.
+			const value = Reflect.get(target, prop, target)
 			return typeof value === "function" ? value.bind(target) : value
 		},
 	})
