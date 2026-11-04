@@ -32,6 +32,14 @@
 //      in that cwd applies the theme (capture -e truecolor SGRs: the
 //      mocha user-row color gone, the dracula accent present) and the
 //      session carries the workspace cwd (welcome banner path).
+//   h. /login provider directory — bare `/login` opens the provider
+//      picker through the aggregateTurnContext proxy (settingsSeam →
+//      #settingsClient — the accessor class the 3dec270 fix repaired)
+//      → several known provider names render → esc closes cleanly →
+//      no TypeError/crash markers in the pane scrollback or the exit.
+//      No credential writes: opening the picker touches nothing
+//      (scratch DSH_HOME not required; the per-scenario workspace +
+//      host-reap isolation still applies). Non-turn: runs under key rot.
 //
 // Host-death UX (scenario e — the chosen design, ADR-0005 v1):
 //   A host killed mid-session leaves the carrier retrying a dead port.
@@ -952,6 +960,72 @@ const scenarioG = async () => {
   }
 }
 
+const scenarioH = async () => {
+  const notes = []
+  const ws = mkdtempSync(join(tmpdir(), 'p6-ws-h-'))
+  const name = 'p6h'
+  try {
+    newClientSession(name, ws, ROUTE ? { DSH_OPENTUI_MODEL: ROUTE } : {})
+    await waitRendered(name)
+    notes.push('client rendered')
+
+    // bare /login → the provider directory (Select overlay; only the first
+    // 12 catalog entries paint at once — assertions stay inside that window).
+    // KNOWN RENDERING NUANCE (live-verified, cosmetic, pre-existing): the kit
+    // Select's title/hint row paints BLANK in steady-state captures (the
+    // /theme picker shows the same), so the anchors here are the provider
+    // names — the deliverable's actual requirement — not the title string.
+    await submitLine(name, '/login')
+    const menu = await waitPane(
+      name,
+      (out) => out.includes('Amazon Bedrock') && out.includes('Anthropic') && out.includes('DeepSeek'),
+      20_000,
+    )
+    const named = ['Amazon Bedrock', 'Anthropic', 'Azure OpenAI', 'Cerebras', 'DeepSeek'].filter((p) => menu.includes(p))
+    notes.push(`provider directory rendered: ${named.join(', ')} · title row painted=${menu.includes('log in — pick a provider')} (blank title row = known kit Select nuance)`)
+    assert(named.length >= 3, `provider directory did not render the known provider names — capture:\n${menu.slice(-1500)}`)
+
+    // esc closes the picker; editor back to idle, powerline intact
+    sendKeys(name, 'Escape')
+    const closed = await waitPane(name, (out) => !out.includes('Amazon Bedrock'), 10_000)
+    assert(!closed.includes('Amazon Bedrock'), 'the provider picker did not close on esc')
+    assert(isIdle(closed), `editor did not return to idle after esc:\n${closed.slice(-800)}`)
+    assert(closed.includes('🧠'), 'powerline missing after esc — UI did not survive')
+    notes.push('esc closed the picker; editor idle, powerline intact')
+
+    // a second open/close cycle (proxy state-machine stability)
+    await submitLine(name, '/login')
+    await waitPane(name, (out) => out.includes('Anthropic'), 10_000)
+    sendKeys(name, 'Escape')
+    const closed2 = await waitPane(name, (out) => !out.includes('Anthropic'), 10_000)
+    assert(!closed2.includes('Anthropic'), 'the provider picker did not close on esc (second cycle)')
+    notes.push('second /login → esc cycle clean')
+
+    // no crash markers anywhere in the scrollback (the old crash painted
+    // "TypeError: Cannot access private method or accessor" exactly at the
+    // settingsSeam-through-the-proxy hop) — scanned BEFORE quitting so the
+    // scan always runs
+    const full = capture(name, { full: true })
+    assert(!/TypeError|Cannot access private|Unhandled|boot failed/i.test(full), `crash markers in the pane scrollback:\n${full.slice(0, 1200)}`)
+    notes.push(`scrollback crash-marker scan clean (${full.split('\n').length} lines)`)
+
+    const q = await quitClient(name)
+    notes.push(`quit: ${q}`)
+    if (paneAlive(name)) {
+      const tail = capture(name, { full: true })
+      assert(!/TypeError|Cannot access private|Unhandled|boot failed/i.test(tail), `crash markers in the pane after quit:\n${tail.slice(0, 1200)}`)
+    }
+    record('h. /login provider directory', 'PASS', notes)
+  } catch (e) {
+    try { writeFileSync('/tmp/p6-login.txt', capture(name, { esc: true, full: true })) } catch { /* keep whatever exists */ }
+    record('h. /login provider directory', 'FAIL', [...notes, String(e.message)])
+  } finally {
+    await quitClient(name)
+    await reapHost(readLock())
+    rmSync(ws, { recursive: true, force: true })
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main.
 // ---------------------------------------------------------------------------
@@ -999,6 +1073,8 @@ const main = async () => {
   await scenarioF()
   await preClean('between f→g')
   await scenarioG()
+  await preClean('between g→h')
+  await scenarioH()
   await preClean('final')
 
   // tmux hygiene: our sessions are already dead (every scenario quits/kills

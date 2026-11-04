@@ -7,7 +7,7 @@
 // fakes injected through ClientBootOptions; the exit-path interception is
 // exercised against a fake process-like target.
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { aggregateTurnContext, bootCallOrder, bootClient, installExitPaths, themeNameFromConfig } from '../src/client-entry.tsx'
@@ -305,6 +305,451 @@ describe('aggregateTurnContext', () => {
     // sibling surface members pass through the same trap
     expect(adapted.label).toBe('provider/model')
     expect(adapted.usage).toBe(session.usage)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Accessor audit — the class-kill gate. EVERY public accessor/method of
+// RemoteHostSession is driven through the REAL instance + the REAL
+// aggregateTurnContext wrapper (the exact object ShellHost receives in
+// client mode). Contract (the /login crash, fixed in 3dec270): each member
+// must behave IDENTICALLY through the wrapper — no "Cannot access private
+// method or accessor" anywhere, and every documented result shape holds.
+// The fake connection answers `{}` to every RPC and the socket factory
+// throws a business error, so degraded members surface their documented
+// degradation ([] / error string / business-error rejection) — the same
+// shapes the raw instance produces.
+// ---------------------------------------------------------------------------
+
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+)
+
+const auditSleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+interface AuditFakes {
+  session: RemoteHostSession
+  adapted: ShellSessionSurface
+  workspace: string
+  home: string
+  rpcs: string[]
+  cleanup(): void
+}
+
+/** The makeFakes pattern, with managed temp workspace/home dirs (the config
+ * seam and the agent files write there) and a recording fake rpc. */
+function auditFakes(): AuditFakes {
+  const workspace = mkdtempSync(join(tmpdir(), 'dsh-audit-ws-'))
+  const home = mkdtempSync(join(tmpdir(), 'dsh-audit-home-'))
+  // a real agent definition so listAgents/agentSet exercise real files (row 30)
+  mkdirSync(join(home, 'agents'), { recursive: true })
+  writeFileSync(
+    join(home, 'agents', 'audit-agent.md'),
+    '---\nname: audit-agent\nmodel: origin/model\ndescription: audit fixture\n---\n\nbody\n',
+  )
+  const rpcs: string[] = []
+  const connection = fakeConnection({
+    rpc: (method: string) => {
+      rpcs.push(method)
+      return Promise.resolve({})
+    },
+  })
+  const session = new RemoteHostSession({
+    connection,
+    cookieHeader: 'dsh-auth-audit=v1.abc',
+    cwd: workspace,
+    workspaceDir: workspace, // the config.yml overlay scope (row 41)
+    dshHome: home, // client-local clusters + /reload restart — NEVER the real home
+    socketFactory: () => {
+      throw new Error('no sockets in the audit')
+    },
+  })
+  const adapted = aggregateTurnContext(session as unknown as ShellSessionSurface)
+  return {
+    session,
+    adapted,
+    workspace,
+    home,
+    rpcs,
+    cleanup() {
+      rmSync(workspace, { recursive: true, force: true })
+      rmSync(home, { recursive: true, force: true })
+    },
+  }
+}
+
+describe('RemoteHostSession accessor audit (through aggregateTurnContext)', () => {
+  test('fields read the real target; remoteTailSink SETS land on it (ShellHost.tsx wiring)', () => {
+    const f = auditFakes()
+    try {
+      expect(f.adapted.label).toBe('dsh-host')
+      expect(f.adapted.usage).toBe(f.session.usage) // same reference — no re-wrap
+      expect(f.adapted.usage).toEqual({ prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 })
+      expect(f.adapted.lastTurnStats).toBe(f.session.lastTurnStats)
+      expect(f.adapted.lastTurnStats).toEqual({ startedAt: 0, endedAt: 0, ms: 0, chars: 0, tokens: 0, tps: null, estimated: true })
+      expect(f.adapted.remoteTailActive).toBe(false)
+      expect(f.adapted.remoteTailSink).toBeNull()
+      const sink = (_rows: { kind: string; text: string; final: boolean }[]) => {}
+      f.adapted.remoteTailSink = sink // the /tail wiring goes through the SAME wrapper
+      expect(f.session.remoteTailSink).toBe(sink)
+      f.adapted.remoteTailSink = null
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('status getter (fuller wave-2 surface)', () => {
+    const f = auditFakes()
+    try {
+      expect(f.adapted.status).toEqual({ connection: 'connected', turn: 'idle', sessionAttached: false, tailActive: false })
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('settingsSeam getter drives #settingsClient describe+mutate (the /login crash path)', async () => {
+    const f = auditFakes()
+    try {
+      const seam = f.adapted.settingsSeam
+      expect(seam).toBeDefined()
+      expect(typeof seam!.describe).toBe('function')
+      expect(typeof seam!.mutate).toBe('function')
+      // login.tsx openMenu(): describe() → the flat row array with .ns/.revision
+      expect(await seam!.describe()).toEqual([])
+      // login.tsx writeRoute(): mutate('llm-pi-ai', ops, revision?)
+      await expect(
+        seam!.mutate('llm-pi-ai', [{ op: 'set', path: ['providers', 'anthropic'], value: { apiKeyEnv: 'ANTHROPIC_API_KEY' } }]),
+      ).resolves.toBeUndefined()
+      expect(f.rpcs).toContain('settings/describe')
+      expect(f.rpcs).toContain('settings/mutate')
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('lifecycle + turn-control members', async () => {
+    const f = auditFakes()
+    try {
+      expect(f.adapted.currentSessionId()).toBeUndefined()
+      const ready = await f.adapted.start()
+      expect(ready).toEqual({ clientId: 'client-1', host: { home: '/tmp/dsh-fake-home' } })
+      expect(await f.adapted.start()).toBe(ready) // idempotent
+      f.adapted.newSession()
+      expect(f.adapted.resumeSession('stored-1')).toBe('ok')
+      f.adapted.registerAskProvider(async (qs) => qs.map((q) => ({ questionId: q.id, selected: q.options[0] ?? '' })))
+      f.adapted.steer('nudge') // no live session: documented silent no-op
+      f.adapted.stopRemoteTail()
+      f.adapted.abort() // nothing live: settles bookkeeping only
+      expect(f.adapted.currentSessionId()).toBeUndefined()
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('telemetry members', () => {
+    const f = auditFakes()
+    try {
+      expect(f.adapted.cacheHitRate()).toBeNull() // no cache traffic yet
+      const summary = f.adapted.usageSummary()
+      expect(Array.isArray(summary)).toBe(true)
+      expect(summary.length).toBeGreaterThan(0)
+      expect(summary.every((line) => typeof line === 'string')).toBe(true)
+      expect(summary.some((line) => line.startsWith('turns '))).toBe(true)
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('model surface (rows 21+22)', async () => {
+    const f = auditFakes()
+    try {
+      await f.adapted.start()
+      f.adapted.switchModel('audit-provider', 'audit-model', 'high')
+      expect(f.adapted.label).toBe('audit-provider/audit-model (high)') // immediate label swap
+      expect(await f.adapted.selectModel({ provider: 'p2', model: 'm2' })).toEqual({ provider: 'p2', model: 'm2' }) // staged, no live session
+      expect(await f.adapted.modelCatalog(true)).toEqual({ default: undefined, routableProviders: [], groups: [], failures: [] })
+      expect(await f.adapted.defaultModelSelection()).toBeUndefined()
+      expect(await f.adapted.currentModelSelection()).toBeUndefined() // cold → catalog default
+      await expect(f.adapted.initializeDefaultModel()).resolves.toBeUndefined()
+      expect(await f.adapted.listProviders()).toEqual([])
+      expect(await f.adapted.configurableProviders()).toEqual([])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('session-ops surface (rows 12-20, 26)', async () => {
+    const f = auditFakes()
+    try {
+      await f.adapted.start()
+      expect(await f.adapted.listSessions()).toEqual([])
+      expect(await f.adapted.listSessions(5)).toEqual([])
+      expect(await f.adapted.storedTranscript('any-id')).toEqual([])
+      expect(await f.adapted.storedTranscript('any-id', 2)).toEqual([])
+      expect(await f.adapted.searchSessions('needle')).toEqual([])
+      expect(await f.adapted.renameSession('new title')).toBeUndefined() // no live session
+      expect(f.adapted.historyTurns()).toEqual([])
+      expect(await f.adapted.listHostCommands()).toEqual([]) // agent-scoped: [] cold
+      expect(await f.adapted.executeHostCommand('/anything')).toEqual({ text: 'host command service unavailable' })
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('preset surface (row 23) + executionMode (row 37)', async () => {
+    const f = auditFakes()
+    try {
+      await f.adapted.start()
+      expect(await f.adapted.listPresets()).toEqual([])
+      expect(await f.adapted.readPreset('audit-preset')).toEqual({ agentPreset: 'audit-preset', content: '' })
+      expect(await f.adapted.selectPreset('audit-preset')).toBeUndefined() // no live session
+      expect(f.adapted.currentPresetId()).toBeUndefined()
+      f.adapted.switchPreset('audit-preset')
+      expect(f.adapted.currentPresetId()).toBe('audit-preset')
+      expect(f.adapted.executionMode()).toBe('native') // no preset document → deployment default
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('settings + credentials surface (rows 24+25)', async () => {
+    const f = auditFakes()
+    try {
+      await f.adapted.start()
+      expect(await f.adapted.settingsDescribe()).toEqual([])
+      await expect(f.adapted.settingsMutate('ns-1', [{ op: 'set', path: ['a'], value: 1 }])).resolves.toBeUndefined()
+      expect(await f.adapted.settingsUpdate('ns-1', { a: 1 })).toEqual({ ns: '' })
+      expect(await f.adapted.settingsReplace('ns-1', { a: 2 })).toEqual({ ns: '' })
+      expect(await f.adapted.settingsDocument()).toEqual({ writable: true, hasDocument: false, namespaces: [] })
+      expect(await f.adapted.credentialStatus('ANTHROPIC_API_KEY')).toEqual({ configured: false })
+      // login/logout ride the FAKE rpc — the fake writes nowhere
+      await expect(f.adapted.login('ANTHROPIC_API_KEY', 'sk-audit-not-a-real-key')).resolves.toBeUndefined()
+      await expect(f.adapted.logout('ANTHROPIC_API_KEY')).resolves.toBeUndefined()
+      expect(f.rpcs).toContain('credentials/set')
+      expect(f.rpcs).toContain('credentials/unset')
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('push listeners (rows 24/25/26/28) return callable disposers', () => {
+    const f = auditFakes()
+    try {
+      const disposers = [
+        f.adapted.onSettingsUpdated(() => {}),
+        f.adapted.onHostCommandsChanged(() => {}),
+        f.adapted.onPluginsChanged(() => {}),
+        f.adapted.onCredentialUpdated(() => {}),
+      ]
+      for (const dispose of disposers) expect(typeof dispose).toBe('function')
+      for (const dispose of disposers) dispose() // no throw
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('config seam (row 41): paths, load, save split, keybindings', async () => {
+    const f = auditFakes()
+    // neutralize the env layer (bucket-(d) precedence) for deterministic asserts
+    const savedTheme = process.env.DSH_OPENTUI_THEME
+    const savedModel = process.env.DSH_OPENTUI_MODEL
+    delete process.env.DSH_OPENTUI_THEME
+    delete process.env.DSH_OPENTUI_MODEL
+    try {
+      expect(f.adapted.configPath()).toBe(join(f.home, 'profiles', 'opentui', 'config.json'))
+      expect(f.adapted.configPath('config.yml')).toBe(join(f.workspace, '.dsh', 'config.yml'))
+      expect(f.adapted.configPath('keybindings.json')).toBe(join(f.home, 'profiles', 'opentui', 'keybindings.json'))
+      expect(f.adapted.keybindingsLoad()).toEqual({}) // missing file → {}
+      expect(f.adapted.configLoad()).toEqual({}) // empty base ⊕ no overlay ⊕ no env
+      const afterPluginKey = f.adapted.configSave({ retentionDays: 3 }) // plugin key → profile config.json
+      expect(afterPluginKey.retentionDays).toBe(3)
+      const afterTheme = f.adapted.configSave({ theme: 'dracula' }) // overlay key → workspace config.yml
+      expect(afterTheme.theme).toBe('dracula')
+      // the profile write is sync; the workspace write is async (optimistic
+      // cache above) — wait for the file before asserting it
+      const overlayPath = join(f.workspace, '.dsh', 'config.yml')
+      const deadline = Date.now() + 2_000
+      while (!existsSync(overlayPath) && Date.now() < deadline) await auditSleep(20)
+      expect(readFileSync(overlayPath, 'utf8')).toContain('dracula')
+      expect(JSON.parse(readFileSync(f.adapted.configPath(), 'utf8'))).toEqual({ retentionDays: 3 })
+      await expect(f.adapted.refreshWorkspaceConfig()).resolves.toBeUndefined()
+      expect(f.adapted.configLoad().theme).toBe('dracula') // the warm overlay answers
+    } finally {
+      if (savedTheme !== undefined) process.env.DSH_OPENTUI_THEME = savedTheme
+      else delete process.env.DSH_OPENTUI_THEME
+      if (savedModel !== undefined) process.env.DSH_OPENTUI_MODEL = savedModel
+      else delete process.env.DSH_OPENTUI_MODEL
+      f.cleanup()
+    }
+  })
+
+  test('client-local wave-3 (row 30/31/39): agents, repair scan, git probe', async () => {
+    const f = auditFakes()
+    try {
+      expect(f.adapted.listAgents()).toEqual([
+        { name: 'audit-agent', description: 'audit fixture', model: 'origin/model', file: join(f.home, 'agents', 'audit-agent.md') },
+      ])
+      f.adapted.agentSet('audit-agent', 'deep', 'on')
+      expect(readFileSync(join(f.home, 'agents', 'audit-agent.md'), 'utf8')).toContain('deep: on')
+      // a missing agent file throws the business error (the caller paints it)
+      // — wrapper parity: same error, never a private-brand TypeError
+      expect(() => f.adapted.agentSet('missing-agent', 'model', 'x')).toThrow(/no such file|ENOENT/)
+      expect(f.adapted.repairScan()).toEqual(['no sessions directory'])
+      expect(await f.adapted.gitBranch()).toBe('') // temp dir is not a repo
+      expect(await f.adapted.gitBranch(f.workspace)).toBe('')
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('plugins + skills + reload (rows 27/28/29)', async () => {
+    const f = auditFakes()
+    try {
+      await f.adapted.start()
+      expect(f.adapted.listPlugins()).toEqual([])
+      expect(await f.adapted.refreshPlugins()).toEqual([])
+      expect(f.adapted.listSkills()).toEqual([])
+      expect(await f.adapted.refreshSkills()).toEqual([]) // no live session → cache
+      expect(f.adapted.lastRestartPid()).toBeUndefined()
+      // the fake home has no lifecycle lockfile → the documented no-lock error
+      // STRING (never a throw), and NEVER a restart of the real host
+      const reload = await f.adapted.reloadPlugins()
+      expect(typeof reload).toBe('string')
+      expect(reload).toContain('no host lockfile')
+      expect(f.adapted.executionMode()).toBe('native')
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('remote tail + attachments (rows 17/35/36)', async () => {
+    const f = auditFakes()
+    try {
+      // the follow attach needs a socket → the documented contained error STRING
+      expect(await f.adapted.startRemoteTail('foreign-id')).toBe('no sockets in the audit')
+      expect(f.adapted.remoteTailActive).toBe(false) // ShellHost's flag, untouched
+      f.adapted.stopRemoteTail()
+      // attachImage with a REAL png (validation + staging through the wrapper)
+      const pngPath = join(f.workspace, 'audit-1x1.png')
+      writeFileSync(pngPath, PNG_1X1)
+      expect(await f.adapted.attachImage(pngPath)).toMatch(/^audit-1x1\.png \(\d+ KB\)$/)
+      // fetchHostFile → nothing listens on the fake authority → the wrapped
+      // HostFileError (business), not a TypeError
+      let fetchError: unknown
+      try {
+        await f.adapted.fetchHostFile('/tmp/whatever.png')
+      } catch (e) {
+        fetchError = e
+      }
+      expect(fetchError).toBeInstanceOf(Error)
+      expect((fetchError as Error).message).toContain('GET /api/file failed')
+      expect(f.adapted.lastAttachmentIds()).toEqual([])
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('subagent panel (row 33), cold', async () => {
+    const f = auditFakes()
+    try {
+      expect(f.adapted.childTranscript('child-x')).toEqual([])
+      expect(f.adapted.steerChild('child-x', 'go')).toBe(false) // not adopted
+      expect(await f.adapted.steerChildDetailed('child-x', 'go')).toEqual({ ok: false, reason: 'no live parent session' })
+      expect(f.adapted.subagentViews()).toEqual([])
+      await expect(f.adapted.interruptChild('child-x')).rejects.toThrow('no live parent session')
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('sync-throw parity: readSessionAttachment cold guard', () => {
+    const f = auditFakes()
+    try {
+      let thrown: unknown
+      try {
+        f.adapted.readSessionAttachment('att-1')
+      } catch (e) {
+        thrown = e
+      }
+      expect(thrown).toBeInstanceOf(Error)
+      expect((thrown as Error).message).toBe('no live session to read attachments from')
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('deep chain: failed turn adopts the session id → session-bound members run → abort clears', async () => {
+    const f = auditFakes()
+    try {
+      await f.adapted.start()
+      expect(f.adapted.resumeSession('audit-resume-id')).toBe('ok')
+      const callbacks: TurnCallbacks = {
+        onThinkingDelta: () => {},
+        onContentDelta: () => {},
+        onTurnEnd: () => {},
+        onApprove: async () => true,
+        onToolRun: () => {},
+        onError: () => {},
+      }
+      // turn through the WRAPPER (the aggregation closure): session/create
+      // rides the fake rpc, then the follow attach needs a socket → the
+      // business rejection. The wrapper's post-turn usage read never runs
+      // (no onTurnEnd), and NO private-brand TypeError surfaces anywhere.
+      let turnError: unknown
+      try {
+        await f.adapted.turn('audit prompt', callbacks)
+      } catch (e) {
+        turnError = e
+      }
+      expect(turnError).toBeInstanceOf(Error)
+      expect((turnError as Error).message).toBe('no sockets in the audit')
+      // #ensureSession adopted the requested (resume) id BEFORE the attach died
+      expect(f.adapted.currentSessionId()).toBe('audit-resume-id')
+      expect(f.adapted.status).toEqual({ connection: 'connected', turn: 'starting', sessionAttached: false, tailActive: false })
+
+      // forkAtTurn rides the live id into ops.fork (rpc {}) → business error
+      let forkError: unknown
+      try {
+        await f.adapted.forkAtTurn()
+      } catch (e) {
+        forkError = e
+      }
+      expect((forkError as Error).message).toBe('session/fork returned no sessionId')
+
+      // live-session members past their cold guards
+      expect(await f.adapted.readSessionAttachment('att-1')).toEqual({ data: '', mediaType: '', bytes: 0 })
+      expect(await f.adapted.steerChildDetailed('child-1', 'go')).toEqual({ ok: true })
+      await expect(f.adapted.interruptChild('child-1')).resolves.toBeUndefined()
+      expect(f.adapted.steerChild('child-1', 'go')).toBe(false) // listed ≠ adopted
+      f.adapted.steer('nudge') // live id: fires the steer rpc, returns void
+      // btwAsk: create rpc ok → follow attach needs a socket → business reject
+      let btwError: unknown
+      try {
+        await f.adapted.btwAsk('side question', [])
+      } catch (e) {
+        btwError = e
+      }
+      expect((btwError as Error).message).toBe('no sockets in the audit')
+      expect(f.adapted.historyTurns()).toEqual([]) // journal empty without a follow
+
+      // abort: fresh-session semantics — the id is cleared
+      f.adapted.abort()
+      expect(f.adapted.currentSessionId()).toBeUndefined()
+    } finally {
+      f.cleanup()
+    }
+  })
+
+  test('dispose through the wrapper is clean and idempotent', async () => {
+    const f = auditFakes()
+    try {
+      await f.adapted.start()
+      await expect(f.adapted.dispose()).resolves.toBeUndefined()
+      await expect(f.adapted.dispose()).resolves.toBeUndefined() // idempotent
+    } finally {
+      f.cleanup()
+    }
   })
 })
 
