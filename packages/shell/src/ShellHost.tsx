@@ -169,8 +169,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   const [subagents, setSubagents] = createSignal<SubagentEntry[]>([])
   // last-input line (tui-pi's ` ● ` last-request echo): the latest MODEL
-  // prompt submitted this turn, shown dim below the input while the turn
-  // runs; slash commands never set it, and the turn end clears it.
+  // prompt, shown dim below the input. SESSION-persistent (tui-pi
+  // semantics): set on send/steer, survives turn ends for the rest of the
+  // session; cleared only when the session changes (/new, resume, fork).
+  // Slash commands never set it.
   const [lastPrompt, setLastPrompt] = createSignal("")
   // subagent panel lifecycle: when every child settles, clear the panel
   // 1s later (user spec — done means gone, brief linger to read results)
@@ -428,6 +430,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     setItems: (rows) => setItems(rows as TItem[]),
     resetDock: () => {
       dock.reset()
+      setLastPrompt("") // fork mounts a NEW session — the ` ● ` echo resets
       setTodos([])
       setSubagents([])
     },
@@ -639,6 +642,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             items: hits.map((hit) => ({ label: hit.snippet || hit.id.slice(0, 8), value: hit.id, description: hit.id.slice(0, 8) })),
             onSelect: async (value) => {
               props.deps.session.resumeSession(value)
+              setLastPrompt("") // resumed a DIFFERENT session — echo resets
               setBusy(false)
               setShowWelcome(false)
               const gen = ++replayGen
@@ -695,6 +699,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         items: hits.map((h) => ({ label: h.title || h.id.slice(0, 8), value: h.id, description: h.updatedAt?.slice(0, 19) })),
         onSelect: async (value) => {
           props.deps.session.resumeSession(value)
+          setLastPrompt("") // resumed a DIFFERENT session — echo resets
           setBusy(false)
           setShowWelcome(false)
           const gen = ++replayGen
@@ -761,6 +766,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       // fresh session = fresh dock state (same reset the fork path runs) —
       // the todo panel shows only while the CURRENT session has todos
       dock.reset()
+      setLastPrompt("") // session change: the ` ● ` echo is session-scoped
       setTodos([])
       setSubagents([])
       setBtwPairs([])
@@ -782,6 +788,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           })),
           onSelect: async (value) => {
             props.deps.session.resumeSession(value)
+            setLastPrompt("") // resumed a DIFFERENT session — echo resets
             setBusy(false)
             setShowWelcome(false)
             // replay the stored transcript (context returns with the agent;
@@ -1214,7 +1221,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       approveResolve = null
       setBusy(false)
       setLiveTps(null)
-      setLastPrompt("") // last-input line is running-turns-only
+      // lastPrompt intentionally NOT cleared here: the ` ● ` echo is
+      // session-scoped now (tui-pi semantics) — it persists across turns
+      // and only resets when the session itself changes (/new, resume, fork).
       // queue drain: the next queued message goes out right after the
       // turn settles (400ms beat so the dock collapse renders first)
       const nextQueued = queueMsgs()[0]

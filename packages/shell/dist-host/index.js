@@ -4236,6 +4236,7 @@ function ShellHost(props) {
     setItems: (rows) => setItems(rows),
     resetDock: () => {
       dock.reset();
+      setLastPrompt("");
       setTodos([]);
       setSubagents([]);
     },
@@ -4456,6 +4457,7 @@ function ShellHost(props) {
             })),
             onSelect: async (value) => {
               props.deps.session.resumeSession(value);
+              setLastPrompt("");
               setBusy(false);
               setShowWelcome(false);
               const gen = ++replayGen;
@@ -4531,6 +4533,7 @@ function ShellHost(props) {
         })),
         onSelect: async (value) => {
           props.deps.session.resumeSession(value);
+          setLastPrompt("");
           setBusy(false);
           setShowWelcome(false);
           const gen = ++replayGen;
@@ -4600,6 +4603,7 @@ function ShellHost(props) {
       refreshExecMode();
       setItems([]);
       dock.reset();
+      setLastPrompt("");
       setTodos([]);
       setSubagents([]);
       setBtwPairs([]);
@@ -4629,6 +4633,7 @@ function ShellHost(props) {
           })),
           onSelect: async (value) => {
             props.deps.session.resumeSession(value);
+            setLastPrompt("");
             setBusy(false);
             setShowWelcome(false);
             const gen = ++replayGen;
@@ -5244,7 +5249,6 @@ function ShellHost(props) {
       approveResolve = null;
       setBusy(false);
       setLiveTps(null);
-      setLastPrompt("");
       const nextQueued = queueMsgs()[0];
       if (nextQueued !== undefined) {
         setQueueMsgs((arr) => arr.slice(1));
