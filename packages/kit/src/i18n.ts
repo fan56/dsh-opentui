@@ -39,6 +39,7 @@ const dict: Dict = {
   "cmd.sessions.empty": { "zh-CN": "没有可恢复的会话", en: "no stored sessions" , ja: "復元可能なセッションがありません", ko: "복원 가능한 세션이 없습니다" },
   "cmd.sessions.resumed": { "zh-CN": "已挂载会话（下条消息生效）", en: "session attached (applies to next message)" , ja: "復元しました", ko: "복원됨" },
   "ask.title": { "zh-CN": "模型提问", en: "model asks" , ja: "確認", ko: "확인" },
+  "ask.declined": { "zh-CN": "已拒绝", en: "declined" , ja: "辞退", ko: "거절" },
   "cmd.usage.summary": { "zh-CN": "累计", en: "total" , ja: "使用量", ko: "사용량" },
   "cmd.cleared": { "zh-CN": "会话已清空", en: "session cleared" , ja: "クリアしました", ko: "지웠습니다" },
   "cmd.login.saved": { "zh-CN": "凭据 {ref} 已保存", en: "credential {ref} saved" , ja: "資格情報を保存: {ref}", ko: "자격증명 저장됨: {ref}" },

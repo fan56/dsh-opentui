@@ -5,10 +5,10 @@
  * whatever this feature hands it.
  */
 import type { SelectItem } from "@dsh-opentui/kit"
-import type { HostSession } from "../host-session.ts"
+import type { ShellSessionSurface } from "../client/shell-session.ts"
 
 export interface ModelSelectDeps {
-  session: HostSession
+  session: ShellSessionSurface
   t: (key: string, vars?: Record<string, string>) => string
   /** Current live route label ("provider/model (effort)"). */
   label: () => string

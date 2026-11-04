@@ -15,8 +15,28 @@ export type TranscriptItem =
   | { kind: "assistant"; text: string; final?: boolean }
   | { kind: "thinking"; tail: string; chars: number }
   | { kind: "tool"; name: string; args: string; ok: boolean; brief: string; imagePath?: string }
+  | { kind: "ask"; entries: AskEntry[] }
   | { kind: "error"; text: string }
   | { kind: "system"; text: string }
+
+/** One Q&A row of an `ask_user_question` transcript block (the tool
+ * call carries the questions/options, the tool result the selection).
+ * Additive kind — persisted items without it keep rendering. */
+export interface AskEntry {
+  /** The question text. */
+  question: string
+  /** The option labels offered (rendered dimmed). */
+  options: string[]
+  /** The labels the user picked (empty when declined). */
+  selected: string[]
+  /** Free-text answer carried by the result (the declined marker lands here). */
+  custom?: string
+  /** True when the question got no user selection (declined / timed out). */
+  declined: boolean
+}
+
+/** The transcript-row subset durable replays (resume/fork) may hand back. */
+export type StoredTranscriptRow = Extract<TranscriptItem, { kind: "user" | "assistant" | "ask" }>
 
 /** Default number of trailing transcript items kept visible. */
 const MAX_VISIBLE_ITEMS = 120
@@ -51,6 +71,25 @@ function renderAssistant(text: string, theme: Theme): { text: string; fg?: strin
     const heading = /^(#{1,3})\s+(.*)/.exec(line)
     if (heading) out.push({ text: heading[2], fg: theme.tokens.accent })
     else out.push({ text: line })
+  }
+  return out
+}
+
+/** The ask Q&A block as styled lines, shared by the rich JSX path and the
+ * scrollback line window: question pops, options sit dimmed, the user's
+ * selection is marked ✓ in the user color, a declined question renders
+ * honestly as "declined". */
+export function askLines(entries: AskEntry[], theme: Theme, t: (k: string) => string): { text: string; fg?: string }[] {
+  const out: { text: string; fg?: string }[] = []
+  for (const e of entries) {
+    out.push({ text: `❓ ${e.question}`, fg: theme.tokens.accent })
+    for (const o of e.options) out.push({ text: `   · ${o}`, fg: theme.tokens.dim })
+    if (e.declined) {
+      out.push({ text: `   ⎿ ${t("ask.declined")}`, fg: theme.tokens.dim })
+    } else {
+      const parts = [...e.selected, ...(e.custom !== undefined && e.custom !== "declined" ? [e.custom] : [])]
+      if (parts.length > 0) out.push({ text: `   ⎿ ✓ ${parts.join(" + ")}`, fg: theme.tokens.userMark ?? theme.tokens.accent })
+    }
   }
   return out
 }
@@ -90,6 +129,8 @@ function itemsToLines(
         text: ` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`,
         fg: it.ok ? theme.tokens.dim : theme.tokens.toolFail ?? theme.tokens.danger,
       })
+    } else if (it.kind === "ask") {
+      out.push(...askLines(it.entries, theme, t))
     } else if (it.kind === "error") {
       out.push({ text: `✗ ${t("agent.error")}: ${it.text}`, fg: theme.tokens.danger })
     } else {
@@ -167,6 +208,19 @@ export function Transcript(props: {
         <box style={{ flexDirection: "column" }}>
           <text style={{ fg: th.tokens.toolOk ?? th.tokens.warn }}>{` ⚒ ${it.name} ${it.args.slice(0, 90)}`}</text>
           <text style={{ fg: it.ok ? th.tokens.dim : th.tokens.toolFail ?? th.tokens.danger }}>{` ⎿ ${it.ok ? t("agent.tool.ok") : t("agent.tool.fail")}: ${it.brief.slice(0, 110)}`}</text>
+        </box>
+      )
+    }
+    if (it.kind === "ask") {
+      return (
+        <box style={{ flexDirection: "column" }}>
+          <For each={askLines(it.entries, th, t)}>
+            {(l) => (
+              <text style={l.fg ? { fg: l.fg } : {}}>
+                {l.text || " "}
+              </text>
+            )}
+          </For>
         </box>
       )
     }

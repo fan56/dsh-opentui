@@ -3,14 +3,16 @@
  * session, forking at the chosen boundary via ctx.agents.create seeding
  * (see host-session.forkAtTurn). Rebuilds the transcript from the seed.
  */
+import type { StoredTranscriptRow } from "@dsh-opentui/kit"
 import type { SelectItem, TodoItem } from "@dsh-opentui/kit"
 import type { OverlayRequest } from "./model-select.tsx"
 
 export interface HistoryForkDeps {
-  session: import("../host-session.ts").HostSession
+  /** The session seam (plugin HostSession or client RemoteHostSession). */
+  session: import("../client/shell-session.ts").ShellSessionSurface
   t: (key: string, vars?: Record<string, string>) => string
   push: (it: { kind: "system" | "error"; text: string }) => void
-  setItems: (items: { kind: "user" | "assistant" | "error" | "system"; text: string; final?: boolean }[]) => void
+  setItems: (items: StoredTranscriptRow[]) => void
   resetDock: () => void
   onForked: () => void
 }
@@ -31,11 +33,10 @@ export function createHistoryForkFeature(deps: HistoryForkDeps) {
         onSelect: async (value) => {
           // fork at the picked turn boundary: the host seeds a NEW session
           // with the parent's event prefix and hands back the rebuilt rows
+          // (ask_user_question Q&A rows included — the fork replays them)
           try {
             const forked = await deps.session.forkAtTurn(Number(value))
-            deps.setItems(
-              forked.items.map((it) => (it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : { kind: "user" as const, text: it.text })),
-            )
+            deps.setItems(forked.items)
             deps.resetDock()
             deps.onForked()
             deps.push({ kind: "system", text: `⑂ forked at turn boundary — reply continues from here` })

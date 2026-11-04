@@ -166,3 +166,28 @@ export async function until(fn: () => boolean, timeoutMs = 2000): Promise<void> 
 export function rpcOf(connection: FakeConnection, method: string): Record<string, unknown> | undefined {
 	return connection.rpcCalls.find((c) => c.method === method)?.args
 }
+
+// ---------------------------------------------------------------------------
+// ask_user_question tool pair builders (the dsh-user-questions wire shapes:
+// tool/call arguments JSON + the tool/result message's answers text block)
+// ---------------------------------------------------------------------------
+
+/** The tool/call event data for one ask_user_question call. */
+export function askCallData(callId: string, questions: unknown[]): Record<string, unknown> {
+	return { turn: 1, step: 1, callId, name: "ask_user_question", arguments: JSON.stringify({ questions }) }
+}
+
+/** The tool/result event data: the answer batch as the message's text block. */
+export function askResultData(callId: string, answers: unknown[]): Record<string, unknown> {
+	return {
+		turn: 1,
+		step: 1,
+		message: {
+			id: `m-${callId}`,
+			role: "tool",
+			toolCallId: callId,
+			content: [{ type: "text", text: JSON.stringify({ answers }) }],
+			isError: false,
+		},
+	}
+}

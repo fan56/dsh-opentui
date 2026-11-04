@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { RemoteHostSession, REATTACH_RETRY_MS, REATTACH_MAX_ATTEMPTS } from "../src/client/remote-host-session.ts"
 import { RemoteFollowSession, expandCompactStream, scanUsageChunk, blocksText, type RemoteFollowSink } from "../src/client/remote-follow.ts"
 import { RemoteRpcError, type ClientConnection, type ClientConnectionState, type ClientEventDisposer, type ClientEventHandler, type ClientReadyInfo } from "../src/client/transport.ts"
+import { askCallData, askResultData } from "./client-fakes.ts"
 import type { EventsItem } from "../src/client/mux-frame.ts"
 import type { MuxSocket } from "../src/client/events-source.ts"
 import type { TurnCallbacks } from "../src/agent/loop.ts"
@@ -361,6 +362,38 @@ describe("RemoteHostSession turn lifecycle", () => {
 		expect(log.toolRuns.length).toBe(2)
 		expect(log.toolRuns[0]).toEqual({ name: "bash", ok: true, imagePath: "att-1" })
 		expect(log.toolRuns[1]!.ok).toBe(false)
+		await h.session.dispose()
+	})
+
+	test("ask_user_question tool pair rides the follow stream into the dock callbacks", async () => {
+		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-ask") })
+		const { cb, log } = callbacks()
+		const pending = h.session.turn("ask me", cb)
+		await until(() => h.sockets.length > 0)
+		const sock = h.lastSocket()
+		sock.item(snapshotFrame("sess-ask"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+
+		sock.item(eventFrame("tool/call", askCallData("a1", [
+			{ id: "q1", question: "Proceed?", options: [{ label: "allow" }, { label: "deny" }] },
+			{ id: "q2", header: "Scope", question: "Which dir?", options: ["src", "tests"] },
+		]), 2))
+		// The user answers both questions (declined envelope shape for q2 here).
+		sock.item(eventFrame("tool/result", askResultData("a1", [
+			{ id: "q1", selected: ["allow"] },
+			{ id: "q2", selected: [], custom: "declined" },
+		]), 3))
+		sock.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 4))
+
+		await pending
+		// The pair reaches ShellHost's callbacks with the full call args and
+		// the parseable result brief (ShellHost turns them into the Q&A block).
+		expect(log.toolStarts).toEqual([{ name: "ask_user_question", args: JSON.stringify({ questions: [
+			{ id: "q1", question: "Proceed?", options: [{ label: "allow" }, { label: "deny" }] },
+			{ id: "q2", header: "Scope", question: "Which dir?", options: ["src", "tests"] },
+		] }) }])
+		expect(log.toolRuns).toHaveLength(1)
+		expect(log.toolRuns[0]!.ok).toBe(true)
 		await h.session.dispose()
 	})
 

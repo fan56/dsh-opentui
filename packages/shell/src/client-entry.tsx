@@ -64,7 +64,6 @@ import { createComponent } from "solid-js"
 import { createI18n } from "@dsh-opentui/kit"
 import { bootRuntime, type RuntimeOptions, type RuntimeHandle } from "@dsh-opentui/runtime"
 import { ShellHost } from "./ShellHost.tsx"
-import type { HostSession } from "./host-session.ts"
 import { DEFAULT_IDLE_EXIT_SEC, DEFAULT_PROFILE, ensureHost, type HostHandle, type EnsureHostOptions } from "./client/lifecycle.ts"
 import { ClientConnection } from "./client/transport.ts"
 import { RemoteHostSession } from "./client/remote-host-session.ts"
@@ -221,11 +220,11 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 	await session.start()
 	await waitForBootLabel(session, options.labelBudgetMs ?? BOOT_LABEL_BUDGET_MS)
 
-	// The ShellHost surface: the remote session under the plugin-mode type.
-	// The cast is guarded by client/shell-session.ts (tsc fails on drift);
+	// The ShellHost surface (ShellSessionSurface — the same seam plugin
+	// mode satisfies; tsc conformance guards live in client/shell-session.ts).
 	// aggregateTurnContext feeds the wave-2 aggregated context shape into
 	// the turn-end hand-off (see its header — no ShellHost edit).
-	const shellSession = aggregateTurnContext(session) as unknown as HostSession
+	const shellSession = aggregateTurnContext(session)
 	const themeName = themeNameFromConfig(session)
 
 	bootCallOrder.push("render")

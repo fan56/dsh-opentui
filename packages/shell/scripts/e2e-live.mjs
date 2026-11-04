@@ -84,7 +84,7 @@ const waitTurnEnd = async (minMs, maxMs) => {
 try {
   await sleep(9000) // boot + welcome + powerline
 
-  // --- turn 1: tool use → ToolWidget ⚙, ⚒ counter, live TPS, answer
+  // --- turn 1: tool use → ToolWidget ⚙, 🛠 counter, live TPS, answer
   await send('用 bash 工具运行 date 命令，然后告诉我今天是几月几号。只回答一句话。')
   await sleep(6000) // mid-turn: TPS segment + thinking + tool active
   const midTurn = out.length
@@ -140,7 +140,7 @@ check('daily quote 「…」', full.includes('「') && full.includes('」'), 'no
 check('powerline clock ticks', /\d{1,2}:\d{2}:\d{2}/.test(full), 'no clock')
 check('ThinkWidget appears', full.includes('💭') || full.includes('thinking ·'), 'no think dock')
 check('ToolWidget ⚙ running state', full.includes('⚙'), 'no ⚙')
-check('tool counter ⚒', full.includes('⚒'), 'no ⚒')
+check('tool counter 🛠', full.includes('🛠'), 'no 🛠')
 check('live TPS segment (tok/s)', full.includes('tok/s'), 'no tok/s anywhere')
 check('answer delivered (Chinese date phrase)', /\d{1,2}月\d{1,2}日/.test(full), 'no rendered 中文日期 in reply')
 check('steer ⚡ line', full.includes('⚡'), 'no ⚡')

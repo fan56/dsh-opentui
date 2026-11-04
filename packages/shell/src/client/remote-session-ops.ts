@@ -36,6 +36,8 @@
  */
 
 import { blocksText } from "./remote-follow.ts"
+import { ASK_TOOL_NAME, parseAskCallArgs, parseAskAnswers, type ParsedAskQuestion } from "../features/ask-transcript.ts"
+import type { StoredTranscriptRow } from "@dsh-opentui/kit"
 import type { MuxSocketFactory } from "./events-source.ts"
 import { openRemoteStream } from "./remote-stream.ts"
 
@@ -62,12 +64,21 @@ export interface RemoteSessionOpsOptions {
 // Pure mappers (unit-tested standalone)
 // ---------------------------------------------------------------------------
 
-/** Transcript rows from journal records (host-session.storedTranscript parity). */
+/**
+ * Transcript rows from journal records (host-session.storedTranscript
+ * parity, plus the ask_user_question Q&A rows: a durable `tool/call`
+ * carrying the tool's questions pairs with its `tool/result` carrying
+ * the answer batch into one "ask" row — resume/fork replays the Q&A
+ * block the live turn painted. An ask call with no settled result
+ * (mid-turn replay, errored read) renders nothing — no fabricated
+ * answers).
+ */
 export function journalToTranscriptRows(
 	entries: readonly RemoteJournalEntry[],
 	skip = 0,
-): { kind: "user" | "assistant"; text: string }[] {
-	const items: { kind: "user" | "assistant"; text: string }[] = []
+): StoredTranscriptRow[] {
+	const items: StoredTranscriptRow[] = []
+	const askCalls = new Map<string, { ids: string[]; questions: ParsedAskQuestion[] }>()
 	for (const entry of skip > 0 ? entries.slice(skip) : entries) {
 		if (entry.type === "user/message") {
 			const kind = sourceKind(entry.data)
@@ -77,6 +88,36 @@ export function journalToTranscriptRows(
 		} else if (entry.type === "assistant/message") {
 			const text = assistantText(entry.data)
 			if (text) items.push({ kind: "assistant", text })
+		} else if (entry.type === "tool/call") {
+			const name = String(entry.data.name ?? "")
+			const callId = entry.data.callId === undefined ? "" : String(entry.data.callId)
+			if (name === ASK_TOOL_NAME && callId) {
+				const questions = parseAskCallArgs(typeof entry.data.arguments === "string" ? entry.data.arguments : "")
+				if (questions) askCalls.set(callId, { ids: questions.map((q) => q.id), questions })
+			}
+		} else if (entry.type === "tool/result") {
+			const message = asRecord(entry.data.message)
+			const callId = entry.data.callId !== undefined
+				? String(entry.data.callId)
+				: message.toolCallId !== undefined
+					? String(message.toolCallId)
+					: ""
+			const asked = callId ? askCalls.get(callId) : undefined
+			if (!asked) continue
+			askCalls.delete(callId)
+			const answers = parseAskAnswers(entry.data.message ?? entry.data)
+			if (!answers) continue
+			const merged = asked.questions.map(({ id, entry: q }) => {
+				const ans = answers.find((a) => a.id === id)
+				if (!ans) return { ...q, selected: [], declined: true }
+				return {
+					...q,
+					selected: ans.selected,
+					...(ans.custom !== undefined ? { custom: ans.custom } : {}),
+					declined: ans.selected.length === 0 && (ans.custom === undefined || ans.custom === "declined"),
+				}
+			})
+			items.push({ kind: "ask", entries: merged })
 		}
 	}
 	return items
@@ -271,8 +312,9 @@ export class RemoteSessionOps {
 		return sortJournal(out)
 	}
 
-	/** Stored transcript rows (row 14; host-session.storedTranscript parity). */
-	async storedTranscript(id: string, skip = 0): Promise<{ kind: "user" | "assistant"; text: string }[]> {
+	/** Stored transcript rows (row 14; host-session.storedTranscript parity,
+	 * plus the ask_user_question Q&A rows from the durable tool pair). */
+	async storedTranscript(id: string, skip = 0): Promise<StoredTranscriptRow[]> {
 		try {
 			return journalToTranscriptRows(await this.fetchJournal(id), skip)
 		} catch {

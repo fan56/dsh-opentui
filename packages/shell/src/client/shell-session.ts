@@ -15,6 +15,7 @@
  * satisfy them structurally (HostSession has extra members — the surface
  * is a subset, not a mirror).
  */
+import type { StoredTranscriptRow } from "@dsh-opentui/kit"
 import type { HostSession } from "../host-session.ts"
 import type { TurnCallbacks } from "../agent/loop.ts"
 import type { RemoteHostSession } from "./remote-host-session.ts"
@@ -55,19 +56,25 @@ export interface ShellSessionSurface {
 
 	// sessions / history
 	listSessions(limit?: number): Promise<{ id: string; title: string; updatedAt?: string }[]>
-	storedTranscript(id: string, skip?: number): Promise<{ kind: "user" | "assistant"; text: string }[]>
+	/** Replayed rows include the ask_user_question Q&A rows ("ask") —
+	 * the durable tool pair replays on resume/fork. */
+	storedTranscript(id: string, skip?: number): Promise<StoredTranscriptRow[]>
 	searchSessions(query: string): Promise<{ id: string; snippet: string }[]>
 	historyTurns(): { turn: number; seqEnd: number; preview: string }[]
-	forkAtTurn(seqEnd: number): Promise<{ items: { kind: "user" | "assistant"; text: string }[]; turn: number }>
+	forkAtTurn(seqEnd: number): Promise<{ items: StoredTranscriptRow[]; turn: number }>
 
 	// host commands / plugins / skills / settings
 	listHostCommands(): Promise<{ name: string; description: string }[]>
 	executeHostCommand(line: string): Promise<{ text?: string } | undefined>
 	listPlugins(): { name: string; version: string }[]
+	/** Cached /skills rows (sync; refreshSkills varies per mode and stays off this seam). */
+	listSkills(): { name: string; description: string; invocation: string }[]
 	credentialStatus(ref: string): Promise<{ configured: boolean }>
 	login(ref: string, apiKey: string): Promise<void>
 	logout(ref: string): Promise<void>
 	settingsDescribe(): Promise<{ ns: string; revision?: number; value?: unknown }[]>
+	/** Settings seam for the login feature's route registration (optional — absent = read-only). */
+	settingsSeam?: { describe(): Promise<any>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> }
 	reloadPlugins(): Promise<string | undefined>
 
 	// dock / panels

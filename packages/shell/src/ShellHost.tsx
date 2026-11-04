@@ -12,12 +12,13 @@ import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { SyntaxStyle } from "@opentui/core"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { getTheme, themeNames, themes, type I18n } from "@dsh-opentui/kit"
-import { Transcript, TranscriptWindow, InputLine, FooterHints, ApprovalCard, type TranscriptItem } from "@dsh-opentui/kit"
-import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, speedSegment, type PowerlineSegment } from "@dsh-opentui/kit"
-import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem, SubagentWidget, type SubagentEntry, StatusBar, type StatusPhase } from "@dsh-opentui/kit"
+import { Transcript, TranscriptWindow, InputLine, FooterHints, ApprovalCard, type TranscriptItem, type AskEntry, type StoredTranscriptRow } from "@dsh-opentui/kit"
+import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, speedSegment, toolSegment, type PowerlineSegment } from "@dsh-opentui/kit"
+import { AutoScroll, Select, type SelectItem, TodosWidget, type TodoItem, SubagentWidget, type SubagentEntry, LastPromptLine, StatusBar, type StatusPhase } from "@dsh-opentui/kit"
 import type { SurfaceStore } from "@dsh-opentui/runtime"
-import type { HostSession } from "./host-session.ts"
+import type { ShellSessionSurface } from "./client/shell-session.ts"
 import type { ToolRun } from "./agent/tools.ts"
+import { ASK_TOOL_NAME, parseAskCallArgs, parseAskAnswers, buildAskTranscriptItem, type AskPick, type ParsedAskQuestion } from "./features/ask-transcript.ts"
 /** Tools that spawn subagent children — gated by the maxAgents policy. */
 const SPAWN_TOOLS = ["subagent", "subagent_fork", "workflow", "ralph", "use_agent"]
 import { createModelSelectFeature } from "./features/model-select.tsx"
@@ -31,16 +32,44 @@ export interface ShellHostDeps {
    * footer replaced the StatusBar slot rendering); kept for host-entry. */
   store: SurfaceStore
   t: I18n["t"]
-  session: HostSession
+  /** The session seam (ShellSessionSurface): plugin mode feeds the
+   * in-process HostSession, client mode the RemoteHostSession — both
+   * satisfy it structurally. */
+  session: ShellSessionSurface
   /** Theme name from plugin config; env wins over this. */
   themeName?: string
   /** The live i18n instance (/language switches it in place). */
   i18n?: { locale: string; setLocale(l: "zh-CN" | "en" | "ja" | "ko"): void }
 }
 
-/** Transcript rows: the CLEAN subset of Kit's shape — thinking and tool
- * traffic lives in the dock widgets, never in the message flow. */
-type TItem = Extract<TranscriptItem, { kind: "user" | "assistant" | "error" | "system" }>
+/** Transcript rows: the CLEAN subset of Kit's shape — thinking and raw
+ * tool traffic lives in the dock widgets, never in the message flow.
+ * Exception: the ask_user_question Q&A block ("ask") — the one tool
+ * whose result IS user-visible context (the questions asked and the
+ * choices picked), so it joins the durable message flow and replays
+ * from the journal on resume/fork. */
+type TItem = Extract<TranscriptItem, { kind: "user" | "assistant" | "error" | "system" | "ask" }>
+
+/** Stored/replayed rows → TItems (finalized assistant, ask rows pass through).
+ * Rows structurally equal to the previous item at the same index REUSE the
+ * previous object: a replay that changes nothing must not remount the
+ * transcript — OpenTUI's diff-paint can drop an interior row when a whole
+ * sibling group unmounts+remounts in one flush (the same reconciler class
+ * bumpSoon works around with ref replacement). */
+const rowEqual = (a: TItem | undefined, b: TranscriptItem): boolean => {
+  if (a === undefined || a.kind !== b.kind) return false
+  if (a.kind === "ask" && b.kind === "ask") return JSON.stringify(a.entries) === JSON.stringify(b.entries)
+  if (a.kind === "user" || a.kind === "assistant" || a.kind === "error" || a.kind === "system") {
+    if (b.kind !== "user" && b.kind !== "assistant" && b.kind !== "error" && b.kind !== "system") return false
+    return a.text === b.text && (b.kind !== "assistant" || a.kind !== "assistant" || (a.final === (b as { final?: boolean }).final))
+  }
+  return false
+}
+const storedRowsToItems = (rows: StoredTranscriptRow[], prev: TItem[] = []): TItem[] =>
+  rows.map((it, i) => {
+    const next: TItem = it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : (it as TItem)
+    return rowEqual(prev[i], next) ? prev[i]! : next
+  })
 
 /** Answer plumbing for the host ask overlay. */
 type AskResolve = (v: { questionId: string; selected: string }[] | "declined") => void
@@ -139,6 +168,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   // (child-session views: header adoption + tool-workflow pairing + fold).
   const [todos, setTodos] = createSignal<TodoItem[]>([])
   const [subagents, setSubagents] = createSignal<SubagentEntry[]>([])
+  // last-input line (tui-pi's ` ● ` last-request echo): the latest MODEL
+  // prompt submitted this turn, shown dim below the input while the turn
+  // runs; slash commands never set it, and the turn end clears it.
+  const [lastPrompt, setLastPrompt] = createSignal("")
   // subagent panel lifecycle: when every child settles, clear the panel
   // 1s later (user spec — done means gone, brief linger to read results)
   let subagentClearTimer: ReturnType<typeof setTimeout> | undefined
@@ -215,6 +248,14 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   let turnStartAt = 0
 
   let approveResolve: ((ok: boolean) => void) | null = null
+  // ---- ask_user_question transcript record (the Q&A block) ----
+  // tool/call → parsed questions (callId-keyed); the overlay's own picks
+  // are stashed between the provider answer and the tool/result event —
+  // the result brief can be truncated (300-char cap) for multi-question
+  // batches, the stash is the local fallback. Both cleared per ask so a
+  // stale stash can never answer a newer ask.
+  const askPending = new Map<string, ParsedAskQuestion[]>()
+  let askStash: { picks: AskPick[]; declined: boolean } | null = null
   // Transcript lookback: a bottom-anchored line window (tui-pi's shape —
   // the native scrollbox never re-measures streaming text growth, so every
   // scroll API on it clamps to a stale height). offset 0 shows the newest
@@ -323,6 +364,10 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
           onSelect: (value) => settle([{ questionId: q0.id, selected: value }]),
         })
       })
+      // Stash what the user actually picked — the ask transcript block
+      // reads it when the tool result brief is truncated. Cleared when the
+      // result event consumes it (or the next ask call starts).
+      askStash = { picks: answer === "declined" ? [] : answer, declined: answer === "declined" }
       if (answer === "declined") throw new Error("declined")
       return answer
     })
@@ -354,7 +399,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   const dock = createDockFeature({
     theme,
     sizes: () => {
-      const c = pluginConfig()
+      const c = pluginConfig() as { dockRows?: { think?: unknown; tool?: unknown } }
       const pick = (v: unknown, d: number | "full") => (typeof v === "number" || v === "full" ? (v as number | "full") : d)
       return { think: pick(c.dockRows?.think, 7), tool: pick(c.dockRows?.tool, 7) }
     },
@@ -602,7 +647,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
                 if (gen !== replayGen) return
                 await new Promise((r2) => setTimeout(r2, 50))
                 if (gen !== replayGen) return
-                setItems(rows.map((it) => (it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : { kind: "user" as const, text: it.text })) as TItem[])
+                setItems((cur) => storedRowsToItems(rows, cur))
                 setScrollTopLine(null)
               } catch {
                 /* replay best-effort */
@@ -658,7 +703,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             if (gen !== replayGen) return
             await new Promise((r) => setTimeout(r, 50))
             if (gen !== replayGen) return
-            setItems(rows.map((it) => (it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : { kind: "user" as const, text: it.text })) as TItem[])
+            setItems(storedRowsToItems(rows))
             setScrollTopLine(null)
           } catch {
             /* replay best-effort */
@@ -713,6 +758,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       props.deps.session.newSession()
       refreshExecMode()
       setItems([])
+      // fresh session = fresh dock state (same reset the fork path runs) —
+      // the todo panel shows only while the CURRENT session has todos
+      dock.reset()
+      setTodos([])
+      setSubagents([])
       setBtwPairs([])
       setBtwLive(null)
       setBtwOpen(false)
@@ -749,7 +799,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
               // typed in the window were lost
               await new Promise((r2) => setTimeout(r2, 50))
               if (gen !== replayGen) return
-              setItems(rows.map((it) => (it.kind === "assistant" ? { kind: "assistant" as const, text: it.text, final: true } : { kind: "user" as const, text: it.text })) as TItem[])
+              setItems((cur) => storedRowsToItems(rows, cur))
               setScrollTopLine(null)
             } catch {
               /* replay is best-effort; the turn itself still resumes */
@@ -911,7 +961,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     } else if (cmd === "session") {
       // current session info; rename goes through the host session-title
       // plugin when mounted (best-effort, silent if absent)
-      push({ kind: "system", text: `session: ${label()} · 💬 ${msgCount()} · ⚒ ${toolCount()} · up ${turnElapsed()}s` })
+      push({ kind: "system", text: `session: ${label()} · 💬 ${msgCount()} · 🛠 ${toolCount()} · up ${turnElapsed()}s` })
       if (parts[1]) push({ kind: "system", text: `rename: ${parts.slice(1).join(" ")} (needs session-title plugin)` })
     } else if (cmd === "plugins") {
       const list = props.deps.session.listPlugins()
@@ -1031,15 +1081,19 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   }
 
   /** Steering: inject a message into the RUNNING turn (Kimi-style) — the
-   * line stays unlocked while busy and enter feeds the agent mid-turn. */
+   * line stays unlocked while busy and enter feeds the agent mid-turn.
+   * The steered text replaces the last-input line (tui-pi: a routed
+   * prompt updates the ` ● ` echo too). */
   const steerText = (text: string) => {
     push({ kind: "user", text: `⚡ ${text}` })
+    setLastPrompt(text)
     props.deps.session.steer(text)
   }
 
   async function send(text: string) {
     setShowWelcome(false)
     push({ kind: "user", text })
+    setLastPrompt(text)
     setBusy(true)
     // Fresh dock state: the think panel expands empty; tool entries keep
     // accumulating across turns (they are the session's tool ledger). Any
@@ -1112,9 +1166,25 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             })
           },
           onToolStart: (start) => {
+            // ask_user_question: parse the questions now; open a fresh
+            // stash window so only THIS ask's overlay answer can fill it.
+            if (start.name === ASK_TOOL_NAME) {
+              const parsed = parseAskCallArgs(start.args)
+              if (parsed && start.callId) askPending.set(start.callId, parsed)
+              askStash = null
+            }
             dock.onToolStart(start)
           },
           onToolRun: (run: ToolRun) => {
+            // ask_user_question result: pair it with its call and paint the
+            // Q&A transcript block (questions + options + the user's pick).
+            const asked = (run.callId !== undefined ? askPending.get(run.callId) : undefined) ?? (run.name === ASK_TOOL_NAME ? parseAskCallArgs(run.argsPretty) : undefined)
+            if (asked) {
+              if (run.callId !== undefined) askPending.delete(run.callId)
+              const item = buildAskTranscriptItem(asked, parseAskAnswers(run.output), askStash?.picks, run.ok)
+              askStash = null
+              if (item) push(item as TItem)
+            }
             dock.onToolRun(run)
           },
           onReattachedMissed: (rows: { kind: "user" | "assistant"; text: string }[]) => {
@@ -1144,6 +1214,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       approveResolve = null
       setBusy(false)
       setLiveTps(null)
+      setLastPrompt("") // last-input line is running-turns-only
       // queue drain: the next queued message goes out right after the
       // turn settles (400ms beat so the dock collapse renders first)
       const nextQueued = queueMsgs()[0]
@@ -1336,7 +1407,8 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     ]
     if (gitBranch()) segs.push({ text: `⎇ ${gitBranch()}`, bg: POWERLINE_COLORS.provider })
     if (msgCount() > 0) segs.push({ text: `💬 ${msgCount()}`, bg: POWERLINE_COLORS.messages })
-    if (toolCount() > 0) segs.push({ text: `⚒ ${toolCount()}`, bg: POWERLINE_COLORS.tools })
+    const tools = toolSegment(toolCount())
+    if (tools) segs.push(tools)
     // cache hit rate (tui-pi's ⚡ CH% segment): shown once the host
     // reports cache traffic
     const ch = props.deps.session.cacheHitRate()
@@ -1465,6 +1537,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         verbs={pluginConfig().statusVerbs as Partial<Record<StatusPhase, string[]>> | undefined}
         width={termCols()}
       />
+      {/* todo panel directly ABOVE the input box (user-spec stack); the
+          widget itself renders zero rows when the list is empty */}
+      <TodosWidget todos={todos()} theme={th()} />
       {/* busy stays false on purpose: the line is never locked — mid-turn
           typing STEERS, and the busy state reads from the dock widgets.
           The editor blurs under modals (approval/overlay) so their keys
@@ -1489,8 +1564,9 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         setKey={setKey()}
         setValue={setValueText()}
       />
-      {/* subagent + todo panels BELOW the input line (user spec) */}
-      <TodosWidget todos={todos()} theme={th()} />
+      {/* fixed dock BELOW the input line (user-spec stack): the ` ● `
+          last-input echo while the turn runs, then the subagent rail */}
+      <LastPromptLine text={lastPrompt()} theme={th()} />
       <SubagentWidget entries={subagents()} theme={th()} />
       {hintsVisible() ? <FooterHints theme={th()} /> : null}
       <PowerlineFooter left={powerlineSegments()} right={clock()} theme={th()} />

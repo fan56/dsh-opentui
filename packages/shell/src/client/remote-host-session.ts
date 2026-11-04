@@ -141,6 +141,7 @@
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join as joinPath } from "node:path"
+import type { StoredTranscriptRow } from "@dsh-opentui/kit"
 import {
 	createStreamTicker,
 	emptyTurnStats,
@@ -679,8 +680,10 @@ export class RemoteHostSession {
 		return rows.filter((row) => !row.title.startsWith(BTW_TITLE_PREFIX)).slice(0, limit)
 	}
 
-	/** wave 2 (`session/page` over the follow snapshot — audit row 14). */
-	async storedTranscript(id: string, skip = 0): Promise<{ kind: "user" | "assistant"; text: string }[]> {
+	/** wave 2 (`session/page` over the follow snapshot — audit row 14).
+	 * Rows include the ask_user_question Q&A rows ("ask") from the
+	 * durable tool pair — resume replays the Q&A block. */
+	async storedTranscript(id: string, skip = 0): Promise<StoredTranscriptRow[]> {
 		return this.#opsClient().storedTranscript(id, skip)
 	}
 
@@ -1150,7 +1153,7 @@ export class RemoteHostSession {
 	 * the forked journal IS replayed through the follow ledger (no
 	 * re-paint: the caller rebuilds the transcript from these rows).
 	 */
-	async forkAtTurn(seqEnd?: number): Promise<{ items: { kind: "user" | "assistant"; text: string }[]; turn: number }> {
+	async forkAtTurn(seqEnd?: number): Promise<{ items: StoredTranscriptRow[]; turn: number }> {
 		const sessionId = this.#sessionId
 		if (sessionId === undefined) throw new Error("no live session to fork")
 		const forked = await this.#opsClient().fork(sessionId, seqEnd)
@@ -1868,9 +1871,12 @@ export class RemoteHostSession {
 				this.#journal.push(entry)
 			}
 			const rows = journalToTranscriptRows(sortJournal(missing))
-			if (rows.length > 0) {
+			// The wake-diff callback carries user/assistant rows only (the
+			// TurnCallbacks shape); ask rows ride the /resume replay instead.
+			const painted = rows.filter((r): r is Extract<StoredTranscriptRow, { kind: "user" | "assistant" }> => r.kind !== "ask")
+			if (painted.length > 0) {
 				try {
-					this.#cb?.onReattachedMissed?.(rows)
+					this.#cb?.onReattachedMissed?.(painted)
 				} catch {
 					/* contained */
 				}

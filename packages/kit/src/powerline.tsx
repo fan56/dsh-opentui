@@ -144,3 +144,15 @@ export function speedSegment(tps: number | null, theme: Theme): PowerlineSegment
   if (tps === null || !Number.isFinite(tps) || tps < 0) return null
   return { text: `⚡ ${Math.round(tps)} tok/s`, bg: POWERLINE_COLORS.speed }
 }
+
+/**
+ * The tool-count segment (🛠 N) on the tools fill — the tui-pi footer's
+ * tool counter. Built like every other segment — plain {text, bg} with the
+ * label color left to autoContrast. Returns null while no tool has run
+ * (n <= 0), so callers omit the segment:
+ * `const tools = toolSegment(toolCount()); if (tools) segs.push(tools)`.
+ */
+export function toolSegment(n: number): PowerlineSegment | null {
+  if (!Number.isFinite(n) || n <= 0) return null
+  return { text: `🛠 ${n}`, bg: POWERLINE_COLORS.tools }
+}
