@@ -23,9 +23,18 @@
  * stream end/error/malformed frame invalidates the generation and the SDK
  * loop reconnects automatically. Consumers observe that through `getState()` /
  * `onStateChange()` (`connecting | connected | disconnected`).
+ *
+ * SDK loading is LAZY: the module below is imported with `await import()`
+ * inside the connect path (`#installAndStart`) and nowhere else — loading
+ * this module (the whole test-load graph: tests fake the connection) never
+ * pulls `@deepseek-ai/dsh-client-connection` in. That package resolves only
+ * from a global dsh closure (not on the npm registry), which is exactly why
+ * bare `bun test` on CI used to fail at module-load time; the workflow's
+ * resolution-only stub stays as belt-and-braces. Type-only imports stay
+ * static (erased at runtime; they need the package only for `tsc`, which
+ * runs where the closure is linked).
  */
 
-import { installConnection } from "@deepseek-ai/dsh-client-connection/client"
 import type {
 	ConnectionGenerationSource,
 	ConnectionHandle,
@@ -33,6 +42,7 @@ import type {
 	ConnectionRecoveryConfig,
 	ConnectionState,
 	ConnectionWebSocket,
+	installConnection,
 } from "@deepseek-ai/dsh-client-connection/client"
 import { Context } from "@deepseek-ai/cordis"
 import WS from "ws"
@@ -103,7 +113,7 @@ export class ClientConnection {
 	readonly authority: string
 	readonly baseUrl: string
 
-	#handle: ConnectionHandle
+	#handle: ConnectionHandle | undefined
 	#loop: { stop(): void } | undefined
 	#readyInfo: ClientReadyInfo | undefined
 	#connectPromise: Promise<ClientReadyInfo> | undefined
@@ -113,6 +123,14 @@ export class ClientConnection {
 	#stateListeners = new Set<(state: ClientConnectionState) => void>()
 	#state: ClientConnectionState = "connecting"
 	#closed = false
+	/** Transport seams staged by the constructor for the deferred SDK install. */
+	readonly #transport: {
+		streamBaseUrl: string
+		createWebSocket: (url: string) => ConnectionWebSocket
+		fetch: (input: string | URL, init?: RequestInit) => Promise<Response>
+	}
+	readonly #recovery: Partial<ConnectionRecoveryConfig> | undefined
+	readonly #pumpCallbacks: EventsPumpCallbacks
 
 	constructor(options: ClientConnectionOptions) {
 		const { authority, cookieHeader } = options
@@ -127,7 +145,7 @@ export class ClientConnection {
 
 		// Non-page carrier: every socket and every RPC call must carry the API
 		// cookie explicitly (no cookie jar outside a browser).
-		const transport = {
+		this.#transport = {
 			streamBaseUrl: this.baseUrl,
 			createWebSocket: (url: string): ConnectionWebSocket =>
 				new WS(url, { headers: { cookie: cookieHeader } }) as unknown as ConnectionWebSocket,
@@ -138,48 +156,71 @@ export class ClientConnection {
 				return globalThis.fetch(url, { ...init, headers })
 			},
 		}
-
-		const context = new Context()
-		// The SDK is type-declared against the dsh closure's cordis (augmented
-		// with host services); the repo resolves @deepseek-ai/cordis@4.0.5 — the
-		// same runtime version the closure ships (probe-verified end to end).
-		const sdkContext = context as unknown as Parameters<typeof installConnection>[0]
-		installConnection(sdkContext, { interactions: "answer", transport, recovery: options.recovery })
-		const handle = sdkContext.get("connection") as ConnectionHandle | undefined
-		if (!handle) throw new RpcTransportError("connection service failed to install")
-		this.#handle = handle
-
-		const pumpCallbacks: EventsPumpCallbacks = {
+		this.#recovery = options.recovery
+		this.#pumpCallbacks = {
 			onReady: (info) => {
 				this.#readyInfo = info
 			},
 			onItem: (item) => this.#dispatch(item),
 		}
-		handle.registerGenerationSource(
-			createEventsPumpSource((path) => handle.openWebSocket(path) as unknown as MuxSocket, pumpCallbacks),
-		)
 	}
 
 	/**
 	 * Start the connect/reconnect loop and resolve with the first validated
 	 * ready frame. The loop keeps reconnecting afterwards (state observable
-	 * tracks it); `connect()` never rejects except on `close()` while waiting.
+	 * tracks it); `connect()` never rejects except on `close()` while waiting
+	 * or when the lazy SDK import itself fails (package absent — a hard
+	 * environment error; the promise is reset so a later call can retry).
 	 */
 	connect(): Promise<ClientReadyInfo> {
 		if (this.#closed) return Promise.reject(new ConnectionClosedError("connection is closed"))
 		if (this.#connectPromise) return this.#connectPromise
-		this.#connectPromise = new Promise<ClientReadyInfo>((resolve, reject) => {
-			this.#resolveConnect = resolve
-			this.#rejectConnect = reject
-		})
-		this.#loop = this.#handle.start({
-			onConnected: () => {
-				const info = this.#readyInfo
-				if (info) this.#resolveConnect?.(info)
-			},
-			onStateChange: (state) => this.#publishState(state),
-		})
+		this.#connectPromise = this.#installAndStart()
 		return this.#connectPromise
+	}
+
+	/**
+	 * The connect path proper: lazily import the SDK (the ONLY load of
+	 * `@deepseek-ai/dsh-client-connection/client` — see the module header),
+	 * install it into a fresh cordis context, register the mux pump as the
+	 * generation source, and start the SDK loop. Constructor→connect order
+	 * parity: the source is registered before `start()`, exactly as the
+	 * pre-lazy constructor did.
+	 */
+	async #installAndStart(): Promise<ClientReadyInfo> {
+		try {
+			const { installConnection } = await import("@deepseek-ai/dsh-client-connection/client")
+			if (this.#closed) throw new ConnectionClosedError("connection closed before connecting")
+			// The SDK is type-declared against the dsh closure's cordis (augmented
+			// with host services); the repo resolves @deepseek-ai/cordis@4.0.5 — the
+			// same runtime version the closure ships (probe-verified end to end).
+			const context = new Context()
+			const sdkContext = context as unknown as Parameters<typeof installConnection>[0]
+			installConnection(sdkContext, { interactions: "answer", transport: this.#transport, recovery: this.#recovery })
+			const handle = sdkContext.get("connection") as ConnectionHandle | undefined
+			if (!handle) throw new RpcTransportError("connection service failed to install")
+			this.#handle = handle
+			handle.registerGenerationSource(
+				createEventsPumpSource((path) => handle.openWebSocket(path) as unknown as MuxSocket, this.#pumpCallbacks),
+			)
+			return await new Promise<ClientReadyInfo>((resolve, reject) => {
+				this.#resolveConnect = resolve
+				this.#rejectConnect = reject
+				this.#loop = handle.start({
+					onConnected: () => {
+						const info = this.#readyInfo
+						if (info) this.#resolveConnect?.(info)
+					},
+					onStateChange: (state) => this.#publishState(state),
+				})
+			})
+		} catch (error) {
+			// A failed attempt must not poison connect() forever: reset so a
+			// later call retries (a close()-originated rejection included —
+			// connect() on a closed carrier rejects at its top guard anyway).
+			this.#connectPromise = undefined
+			throw error
+		}
 	}
 
 	/**
@@ -191,6 +232,9 @@ export class ClientConnection {
 	 */
 	async rpc<T = unknown>(method: string, args?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
 		if (this.#closed) throw new ConnectionClosedError("connection is closed")
+		if (this.#handle === undefined) {
+			throw new RpcTransportError(`rpc ${method} before connect() — the connection service installs lazily on the connect path`)
+		}
 		let result
 		try {
 			result = await this.#handle.rpc.call("/api", method, { args: args ?? {} }, signal)
