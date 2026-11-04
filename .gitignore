@@ -4,3 +4,8 @@ build/
 *.log
 .DS_Store
 build/
+# publish-time copies of the root metadata files (scripts/pack-meta.mjs)
+packages/shell/LICENSE
+packages/shell/NOTICE
+packages/shell/README.md
+packages/shell/CHANGELOG.md

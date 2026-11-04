@@ -30,6 +30,7 @@
     "typecheck": "tsc --noEmit",
     "build:bin": "bun build.ts",
     "postinstall": "node scripts/postinstall.mjs",
+    "prepack": "node scripts/pack-meta.mjs",
     "smoke": "node scripts/smoke-boot.mjs",
     "sync": "node scripts/sync-profile.mjs",
     "test:e2e": "node scripts/e2e-live.mjs && node scripts/e2e-fork.mjs"
