@@ -27,8 +27,40 @@ Remote session layer (bucket (b)) build on.
 | `remote-btw.ts` | `/btw` second-session flow (create + follow + prompt), reused throwaway session, `btw:` marker rename + listSessions filter — the documented pollution cap (row 32). |
 | `remote-subagents.ts` | Subagent panel aggregation (wave 3): `session/list` adoption + `api-session/*` pushes + parent-journal tool-workflow pairing, child transcript via `session/follow` `address.kind:'subagent'`, steer via `subagents/prompt` (typed `subagent/not-resumable` policy surface), interrupt via `subagents/interruptByParent` (row 33). |
 | `remote-restart.ts` | Same-port host restart for `/reload` over the lifecycle lockfile contract: SIGTERM → same-port respawn → listener wait → cookie re-mint (row 29). |
+| `shell-session.ts` | The ShellHost-consumed session surface (bucket c): the structural subset ShellHost + its features touch, with compile-time conformance guards — the client entry passes RemoteHostSession under the plugin-mode HostSession type, and this file fails tsc on surface drift instead of letting it surface as a boot crash. |
 | `workspace-config.ts` | Workspace-local `./.dsh/config.yml` overlay (bucket d). |
 | `lifecycle.ts` | Host process lifecycle (separate agent; bucket (e)). |
+
+## Entry wiring (`src/client-entry.tsx`, bucket (c))
+
+`bootClient()` chains the boot with injectable seams (all faked in
+`test/client-entry.test.ts`): `ensureHost({profile:'opentui',
+idleExitSec:60})` → `ClientConnection({authority, cookieHeader})` →
+`RemoteHostSession` (cwd = launch workspace, dshHome/profile from the host
+handle) → `session.start()` → bounded wait for the cold-boot model label →
+`bootRuntime` render of ShellHost (zero ShellHost edits; the remote session
+rides the HostSession type under the `shell-session.ts` guard). Theme comes
+from `configLoad().theme` post-start (overlay cache warm; env still wins in
+ShellHost). The wave-2 usage finding (row 5) is injected client-side too:
+`aggregateTurnContext` rewrites the turn-end hand-off's `prompt` to
+`prompt + cacheRead + cacheWrite` — the 🧠 status-bar context percent reads
+exactly that value, and ShellHost's own bundle stays byte-identical
+(dist-host zero-diff gate). Shutdown routes every exit path (`/quit`,
+Ctrl+C via the process.exit interception, renderer exit,
+SIGINT/SIGTERM/SIGHUP) through `dispose()` → `host.release()` — never
+`host.dispose()` — and on a last-ref release spawns the DETACHED idle
+reaper (`scripts/idle-reaper.mjs`): the lifecycle's idle timer is
+unref()ed and would die with the quitting process, so the reaper idles the
+host out after `idleExitSec` (SIGTERM→SIGKILL) and clears the lockfile,
+unless a fresh boot replaced the host or a client re-attached inside the
+grace window (established connections to the host port — the adoption
+liveness marker; tested behaviorally in `test/idle-reaper.test.ts`). The
+`@opentui/solid/preload` import stays first in the entry AND the launcher
+passes it as `bun --preload`: bun transpiles the whole import graph before
+executing, so a runtime registration alone is too late for kit's .tsx
+modules, and bunfig preload only applies from packages/shell's cwd while
+the client runs from arbitrary workspaces. Tests:
+`test/client-entry.test.ts` (fakes; the real boot is the tmux gate).
 
 ## Contracts
 

@@ -24,6 +24,7 @@
   ],
   "scripts": {
     "dev": "bun src/main.ts",
+    "client": "bun src/client-entry.tsx",
     "typecheck": "tsc --noEmit",
     "build:bin": "bun build.ts",
     "postinstall": "node scripts/postinstall.mjs",
