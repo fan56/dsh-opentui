@@ -3,7 +3,8 @@
 //
 //   DSH_REMOTE_SMOKE=1 bun test test/remote-live-smoke.test.ts
 //
-// Boots a REAL `dsh --profile web` host through lifecycle.ts ensureHost,
+// Boots a REAL dsh host (profile: `web`, or DSH_SMOKE_PROFILE) through
+// lifecycle.ts ensureHost,
 // drives RemoteHostSession over P1's ClientConnection (session/create +
 // session/prompt + session/follow), waits for the first assistant chunk,
 // cancels the turn, then disposes everything (no listeners, no host left).
@@ -21,12 +22,15 @@ import { ClientConnection } from "../src/client/transport.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 
 const RUN = process.env.DSH_REMOTE_SMOKE === "1"
+// Host profile under test; defaults to `web`, override for a differently
+// routed profile (e.g. DSH_SMOKE_PROFILE=opentui after provisioning it).
+const PROFILE = process.env.DSH_SMOKE_PROFILE || "web"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 describe("remote live smoke", () => {
 	test.skipIf(!RUN)(
-		"web host boot + session/create + tiny prompt + follow + cancel",
+		`${PROFILE} host boot + session/create + tiny prompt + follow + cancel`,
 		async () => {
 			const events: string[] = []
 			const errors: string[] = []
@@ -34,7 +38,7 @@ describe("remote live smoke", () => {
 			let settled = false
 			let host: Awaited<ReturnType<typeof ensureHost>> | undefined
 			try {
-				host = await ensureHost({ profile: "web", idleExitSec: 0 })
+				host = await ensureHost({ profile: PROFILE, idleExitSec: 0 })
 				events.push(`host ready pid=${host.pid} authority=${host.authority} adopted=${host.adopted}`)
 
 				const live = new ClientConnection({ authority: host.authority, cookieHeader: host.cookieHeader })
