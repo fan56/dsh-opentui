@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-04
+
 ### Added
 
 - **Client-mode foundations (ADR-0005 P1/P5).** The TUI-as-thin-client path gets its four base layers. `src/client/cookie-mint.ts` mints the Host API cookie from the persisted `client-connection/browser-session` grant in `$DSH_HOME/.credentials.yaml`, reproducing the Host's own recipe byte-for-byte (BrowserAuth/dsh-credentials: cookie name `dsh-auth-` + base64url(sha256(authority)); value `v1.<body>.<base64url(HMAC-SHA256(secret, body))>`), fail-closed on non-owner-only credentials and with no secret/cookie material in any thrown error. `src/client/mux-frame.ts` + `events-source.ts` + `transport.ts` give a `ClientConnection` carrier over one authenticated `/api/remote.mux` WebSocket (`ws`, cookie on the upgrade — the global WebSocket cannot send headers): unary RPC via `POST /api`, and the `$events` mux pump behind `dsh-client-connection`'s `ConnectionGenerationSource` — the pump is deliberately chosen over the gateway-native `ClientRemoteEvents` client because waterfall frames must reach the consumer's `onEvent` (v1 answers them in-process), while the gateway source intercepts waterfall frames and auto-answers them itself with a stub typert service. `src/client/lifecycle.ts` is the host lifecycle manager `ensureHost`: first-TUI spawn, single-instance lock with stale-lock takeover, refcounted attach/detach, idle exit after `idleExitSec` (default 60s, `0` = resident), respawn crash cap. `scripts/provision-opentui-profile.mjs` idempotently bootstraps the fixed `opentui` host profile via `dsh opentui --from-default-profile web --dump-config` (compose-and-exit, no boot; touches only that one profile). 64 green tests in `packages/shell`; design background in `docs/adr/0005-client-mode.md` and `docs/client-mode-protocol-audit.md`.
@@ -62,3 +64,4 @@ First public release of `@aiwayds/dsh-opentui`.
 - Kitty keyboard protocol: Ctrl+C no longer kills the TUI unexpectedly; it is handled as the abort/quit key.
 
 [0.1.0]: https://github.com/fan56/dsh-opentui/releases/tag/v0.1.0
+[0.5.0]: https://github.com/fan56/dsh-opentui/releases/tag/v0.5.0
