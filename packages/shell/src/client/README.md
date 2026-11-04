@@ -20,6 +20,13 @@ Remote session layer (bucket (b)) build on.
 | `remote-session-ops.ts` | Session-side ops (wave 2): `session/list` + retention filter, stored transcript via page/follow snapshot, search/rename/fork, skills/commands, journal mappers (turn grouping, tail rows), `RemoteTailSession` (foreign follow + page gap repair; rows 13–20, 26, 27, 17). |
 | `remote-model.ts` | Model routes (wave 2): `session/modelCatalog` + `selectModel` round-trip, provider catalog, projections-based live selection, catalog-default cold-boot label (rows 21–22). |
 | `remote-settings.ts` | Settings + credentials (wave 2): `settings/describe|mutate|update|replace` shaped to the in-process seams, `credentials/describe|set|unset` (rows 24–25). |
+| `remote-local-fs.ts` | Client-local FS clusters (wave 3): `/agents` read/write over `<dshHome>/agents/*.md` + the `/repair` session-store scan — host-session.ts semantics, injectable home (rows 30–31). |
+| `remote-git.ts` | Client-local `git branch --show-current` probe (wave 3; row 39 — no VCS namespace on the wire). |
+| `remote-exec-mode.ts` | `agentPresets/read` entry-list scan for the `tool-presentation` row's `mode` — the executionMode badge discriminator, with the documented deployment-default assumption (row 37). |
+| `remote-attachments.ts` | `/attach` staging → inline `session/prompt` image parts (the wire-chosen route over upload receipts — the doc says why), `session/attachment` read-back, `GET /api/file?path=` bytes helper (rows 35–36). |
+| `remote-btw.ts` | `/btw` second-session flow (create + follow + prompt), reused throwaway session, `btw:` marker rename + listSessions filter — the documented pollution cap (row 32). |
+| `remote-subagents.ts` | Subagent panel aggregation (wave 3): `session/list` adoption + `api-session/*` pushes + parent-journal tool-workflow pairing, child transcript via `session/follow` `address.kind:'subagent'`, steer via `subagents/prompt` (typed `subagent/not-resumable` policy surface), interrupt via `subagents/interruptByParent` (row 33). |
+| `remote-restart.ts` | Same-port host restart for `/reload` over the lifecycle lockfile contract: SIGTERM → same-port respawn → listener wait → cookie re-mint (row 29). |
 | `workspace-config.ts` | Workspace-local `./.dsh/config.yml` overlay (bucket d). |
 | `lifecycle.ts` | Host process lifecycle (separate agent; bucket (e)). |
 
@@ -151,8 +158,19 @@ class RemoteHostSession {
   listPlugins() / refreshPlugins()            // pluginManager/listPlugins (+listBundles versions; built-ins out)
   startRemoteTail(id) / stopRemoteTail()      // read-only foreign session/follow + page gap repair (row 17)
   onSettingsUpdated / onHostCommandsChanged / onPluginsChanged / onCredentialUpdated   // $events push listeners
-  // — wave-3 stubs (unchanged) —
-  // /agents, /repair, subagent panel, /btw, attachImage, executionMode, config overlay, /reload
+  // — wave 3 (rows 29–37 + 39 + 41; full parity, see remote-host-session.ts header) —
+  listAgents() / agentSet(name, field, value)        // client-local ~/.dsh/agents/*.md (row 30)
+  repairScan()                                       // client-local session-store scan (row 31)
+  reloadPlugins() / lastRestartPid()                 // same-port host restart + carrier reconnect (row 29)
+  btwAsk(question, snapshot, onDelta?)               // reused throwaway session, btw: marker (row 32)
+  childTranscript(id) / steerChild(id, text)         // subagent panel (row 33; steer false =
+  steerChildDetailed(id, text) / interruptChild(id)  //   host not-resumable policy, typed reason)
+  subagentViews()                                    // panel snapshot (onSubagentUpdate rows)
+  attachImage(path) / lastAttachmentIds()            // staged image → inline prompt part (row 35)
+  readSessionAttachment(id) / fetchHostFile(path)    // durable read-back + GET /api/file (rows 35/36)
+  executionMode()                                    // cached preset-document probe (row 37)
+  gitBranch(cwd?)                                    // client-local git probe (row 39)
+  configPath / configLoad / configSave / keybindingsLoad / refreshWorkspaceConfig   // row 41
 }
 ```
 
@@ -180,13 +198,30 @@ class RemoteHostSession {
 - Push events (`$events` emit frames) are routed to listeners:
   `settings/document-updated` (ns, revision), `commands/change`,
   `plugin-manager/changed` (auto-refreshes the plugins cache),
-  `credentials/reference-updated`.
+  `credentials/reference-updated`, and — wave 3 — the subagent panel feeds
+  `api-session/status|removed|added` (adopted children only).
+- Wave-3 seam options: `dshHome` (default `$DSH_HOME`/`~/.dsh`) scopes the
+  client-local FS clusters + the restart; `workspaceDir` (default = `cwd`)
+  scopes the config overlay; `profile` (default `opentui`); `restartHost`
+  overrides the /reload action (default `restartSamePortHost`, which
+  reuses the lifecycle lockfile's pid/port and respawns
+  `dsh --profile <p> --no-open --port <same>` so the existing carrier
+  reconnects and the wave-2 re-attach machinery resumes the session).
+- Config seam (row 41): `configLoad()` = profile config.json (plugin
+  keys) ⊕ workspace `.dsh/config.yml` (theme + model, bucket-d precedence
+  env > workspace > profile) ; `configSave()` splits patches the same way
+  (overlay-managed keys never touch the profile file and vice versa).
 - Tests: `test/remote-host-session.test.ts`, `test/remote-session-ops.test.ts`,
   `test/remote-model-settings.test.ts` (fake connection + fake mux sockets),
+  `test/remote-wave3-local.test.ts`, `test/remote-btw-restart.test.ts`,
+  `test/remote-subagents.test.ts` (wave-3 clusters, tmp homes + fakes),
   `test/remote-live-smoke.test.ts` (env-gated:
   `DSH_REMOTE_SMOKE=1 DSH_SMOKE_PROFILE=opentui bun test test/remote-live-smoke.test.ts` —
   wave-1 turn + the full wave-2 capability sweep incl. the row-5 usage
-  discriminator and provider-key-rot fallback via selectModel).
+  discriminator and provider-key-rot fallback via selectModel, plus the
+  wave-3 sweep: /agents round-trip + /repair on a scratch DSH_HOME,
+  attachImage round-trip, /btw, /reload same-port restart + follow
+  re-open, git branch, /api/file bytes).
 
 ## Events source decision (native vs pump)
 

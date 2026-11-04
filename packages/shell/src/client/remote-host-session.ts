@@ -81,14 +81,66 @@
  * last painted record; `status` exposes the fuller connection/turn surface
  * (the "reconnecting…" label swap stays for UI compatibility).
  *
- * Still stubs (wave 3): /agents + /repair client-local FS (rows 30/31),
- * subagent panel + /btw (rows 32/33), attachments (row 35), executionMode
- * probe (row 37 — kept "native" rather than inferred from a preset YAML),
- * workspace config overlay (row 41), /reload (row 29 — host restart +
- * auto-reconnect by design).
+ * Wave-3 rows (this class + the remote-* helpers under src/client/) —
+ * v1 FULL parity, no degradations (ADR-0005 user decision; the
+ * single-machine topology makes client-local FS/process legitimate):
+ *  30      /agents — client-local FS over `<dshHome>/agents/*.md`
+ *          (listAgentFiles/setAgentField, host-session.ts:453-507
+ *          semantics; the write path fixes that file's dead
+ *          frontmatter-insert branch — see remote-local-fs.ts header)
+ *  31      /repair — client-local session-store scan
+ *          (repairScanSessions, host-session.ts:653-711 parity)
+ *  29      /reload — same-port host restart
+ *          (restartSamePortHost over the lifecycle lockfile contract) +
+ *          the carrier's own reconnect + the wave-2 follow re-attach;
+ *          a `restartHost` option overrides for custom topologies
+ *  32      /btw — one throwaway remote session (create + follow +
+ *          prompt), REUSED across questions, renamed `btw: …` and
+ *          filtered from listSessions (the wire has no session delete —
+ *          remote-btw.ts header documents the pollution choice)
+ *  33      subagent panel — `session/list` (parentSessionId +
+ *          origin:'subagent') + `api-session/added|removed|status`
+ *          pushes + parent-journal tool-workflow pairing
+ *          (RemoteSubagentPanel); child transcript via `session/follow`
+ *          with `address.kind:'subagent'`; steer via `subagents/prompt`
+ *          (host `subagent/not-resumable` policy on one-shot children
+ *          surfaces as the in-process steerChild false shape, typed
+ *          reason via steerChildDetailed); interrupt via
+ *          `subagents/interruptByParent`
+ *  35      /attach — local read + validation staged at call time, the
+ *          next prompt carries the INLINE image part
+ *          `{type:'image', mediaType, data, name}` (the chosen wire route:
+ *          the host admits it to a durable ImageAttachmentRef, which is
+ *          what `session/attachment` reads back — the receipt route mints
+ *          FILE refs the read-back RPC cannot serve, live-verified;
+ *          remote-attachments.ts documents the choice); admitted ids
+ *          surface via lastAttachmentIds() from the journal
+ *  36      tool-result images — `GET /api/file?path=` bytes helper
+ *          (fetchHostFile); the renderer keeps the local path (single
+ *          machine)
+ *  37      executionMode — cached probe of `agentPresets/read`'s
+ *          entry-list document for the `tool-presentation` row's
+ *          `mode` (the in-process shadowing rule); no preset row →
+ *          "native" (the deployment default is not queryable over the
+ *          wire — remote-exec-mode.ts header documents the exact
+ *          reason; pluginInventory carries no config and is NOT usable)
+ *  39      git segment — client-local `git branch --show-current` probe
+ *          in the workspace cwd (probeGitBranch, ShellHost.tsx:277-295
+ *          semantics; the renderer keeps its own identical probe)
+ *  41      config seam — the workspace overlay (bucket (d),
+ *          loadWorkspaceConfig/mergeConfig/saveWorkspaceConfig, frozen
+ *          API) wired into the HostSession config surface: configLoad()
+ *          = profile config.json (base) ⊕ workspace config.yml (theme +
+ *          model) ⊕ env; configSave splits overlay-managed keys (theme,
+ *          model) into config.yml and plugin keys (retentionDays,
+ *          favorites, …) into the profile config.json — HostSession
+ *          persistence parity on the same files plugin mode used
+ *          (single machine)
  */
 
 import { randomUUID } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join as joinPath } from "node:path"
 import {
 	createStreamTicker,
 	emptyTurnStats,
@@ -126,6 +178,28 @@ import {
 	type RemoteQuestionAnswer,
 } from "./remote-waterfall.ts"
 import { ClientConnection, RemoteRpcError, type ClientConnectionState, type ClientReadyInfo } from "./transport.ts"
+import { listAgentFiles, repairScanSessions, resolveDshHome, setAgentField } from "./remote-local-fs.ts"
+import { probeGitBranch } from "./remote-git.ts"
+import { toolPresentationModeFromPresetDocument } from "./remote-exec-mode.ts"
+import {
+	attachmentIdsOfPromptContent,
+	fetchHostFile,
+	imagePromptPart,
+	readImageAttachment,
+	readSessionAttachment,
+	type StagedImageUpload,
+} from "./remote-attachments.ts"
+import { askBtw, BTW_TITLE_PREFIX } from "./remote-btw.ts"
+import { RemoteSubagentPanel, type RemoteSubagentView } from "./remote-subagents.ts"
+import { restartSamePortHost } from "./remote-restart.ts"
+import {
+	loadWorkspaceConfig,
+	mergeConfig,
+	saveWorkspaceConfig,
+	workspaceConfigPath,
+	type ModelPrefs,
+	type WorkspaceOverlay,
+} from "./workspace-config.ts"
 
 /** The fuller client-side status surface (wave-2 polish; `label` stays). */
 export interface RemoteSessionStatus {
@@ -157,6 +231,26 @@ export interface RemoteHostSessionOptions {
 	socketFactory?: MuxSocketFactory
 	/** Workspace directory sent as `session/create.cwd`; default `process.cwd()`. */
 	cwd?: string
+	/**
+	 * Workspace for the `./.dsh/config.yml` overlay (row 41); default = the
+	 * `cwd` above (ADR-0005 decision 1: the workspace IS the launch cwd).
+	 */
+	workspaceDir?: string
+	/**
+	 * dsh home for the client-local clusters — /agents, /repair, the
+	 * profile config base and the /reload restart (rows 30/31/41/29);
+	 * default `$DSH_HOME` or `~/.dsh` (HostSession parity).
+	 */
+	dshHome?: string
+	/** Host profile name (profile config paths + restart); default `opentui`. */
+	profile?: string
+	/**
+	 * /reload override (row 29): bring the host back on the SAME authority
+	 * and resolve when it accepts connections again (the carrier reconnects
+	 * by itself; the wave-2 re-attach machinery resumes the session).
+	 * Default: restartSamePortHost over the lifecycle lockfile contract.
+	 */
+	restartHost?: (reason: string) => Promise<void>
 }
 
 const REATTACH_RETRY_MS = 1_000
@@ -181,6 +275,10 @@ export class RemoteHostSession {
 	readonly #baseUrl: string
 	readonly #socketFactory: MuxSocketFactory
 	readonly #cwd: string
+	readonly #workspaceDir: string
+	readonly #dshHome: string
+	readonly #profile: string
+	readonly #restartHost: ((reason: string) => Promise<void>) | undefined
 
 	#readyInfo: ClientReadyInfo | undefined
 	#started: Promise<ClientReadyInfo> | undefined
@@ -226,12 +324,30 @@ export class RemoteHostSession {
 	/** Push-event listeners (settings/commands/plugins/credentials). */
 	#pushListeners: RemotePushListeners[] = []
 	#coldBootLabelApplied = false
+	/** Wave-3: cached executionMode verdict (row 37; probed on preset adoption). */
+	#executionMode: "native" | "ptc" = "native"
+	/** Wave-3: staged image uploads consumed by the next turn (row 35). */
+	#pendingUploads: StagedImageUpload[] = []
+	/** Wave-3: the /btw throwaway session (reused across questions, row 32). */
+	#btwSessionId: string | undefined
+	/** Wave-3: the pid the last same-port restart spawned (row 29 supervision). */
+	#lastRestartPid: number | undefined
+	/** Wave-3: concurrent /btw guard (one side call at a time). */
+	#btwBusy = false
+	/** Wave-3: subagent panel (row 33; lazy). */
+	#subagents: RemoteSubagentPanel | undefined
+	/** Wave-3: workspace overlay cache — configLoad merges it over the base (row 41). */
+	#overlayCache: WorkspaceOverlay | undefined
 
 	constructor(options: RemoteHostSessionOptions) {
 		this.#connection = options.connection
 		this.#cookieHeader = options.cookieHeader
 		this.#baseUrl = options.baseUrl ?? options.connection.baseUrl
 		this.#cwd = options.cwd ?? process.cwd()
+		this.#workspaceDir = options.workspaceDir ?? this.#cwd
+		this.#dshHome = resolveDshHome(options.dshHome)
+		this.#profile = options.profile ?? "opentui"
+		this.#restartHost = options.restartHost
 		this.#socketFactory = options.socketFactory ?? ((path) => this.#openMuxSocket(path))
 	}
 
@@ -265,6 +381,8 @@ export class RemoteHostSession {
 		})()
 		const info = await this.#started
 		void this.#applyColdBootLabel()
+		void this.#refreshWorkspaceOverlay()
+		void this.#probeExecutionMode()
 		return info
 	}
 
@@ -288,6 +406,8 @@ export class RemoteHostSession {
 			this.#reattachTimer = undefined
 		}
 		this.stopRemoteTail()
+		this.#subagents?.stop()
+		this.#subagents = undefined
 		this.#follow?.reset()
 		this.#follow = undefined
 		for (const dispose of this.#disposers) dispose()
@@ -329,12 +449,17 @@ export class RemoteHostSession {
 		await this.start()
 		const sessionId = await this.#ensureSession()
 		const requestId = randomUUID()
+		// /attach staging (row 35): the inline image part carries the bytes
+		// on THIS prompt; the host admits them to durable references before
+		// the message is created (chosen route — see remote-attachments.ts).
+		const attachmentParts = this.#pendingUploads.map(imagePromptPart)
+		this.#pendingUploads = []
 		await this.#rpc("session/prompt", {
 			request: {
 				requestId,
 				sessionId,
 				mode: "queue",
-				content: [{ type: "text", text: userText }],
+				content: [{ type: "text", text: userText }, ...attachmentParts],
 			},
 		})
 		this.#promptInFlight = false
@@ -527,7 +652,10 @@ export class RemoteHostSession {
 	async listSessions(limit = 12): Promise<{ id: string; title: string; updatedAt?: string }[]> {
 		const cfg = this.configLoad()
 		const retentionDays = Number(cfg.retentionDays ?? 0)
-		return this.#opsClient().listSessions({ limit, ...(Number.isFinite(retentionDays) && retentionDays > 0 ? { retentionDays } : {}) })
+		const rows = await this.#opsClient().listSessions({ limit, ...(Number.isFinite(retentionDays) && retentionDays > 0 ? { retentionDays } : {}) })
+		// /btw pollution cap (row 32): marker-titled throwaway rows stay in
+		// the store (no delete RPC) but never surface in /sessions.
+		return rows.filter((row) => !row.title.startsWith(BTW_TITLE_PREFIX)).slice(0, limit)
 	}
 
 	/** wave 2 (`session/page` over the follow snapshot — audit row 14). */
@@ -584,6 +712,7 @@ export class RemoteHostSession {
 	switchPreset(presetId: string): void {
 		this.#presetId = presetId
 		this.newSession()
+		void this.#probeExecutionMode()
 	}
 
 	currentPresetId(): string | undefined {
@@ -696,31 +825,127 @@ export class RemoteHostSession {
 		return this.#addPushListener({ onCredentialUpdated: listener })
 	}
 
-	/** wave 3 (workspace-local config overlay — bucket (d), audit row 41). */
+	// ------------------------------------------------------------------
+	// Wave-3 config seam (row 41) — workspace overlay + profile base
+	// ------------------------------------------------------------------
+
+	/** Path of the profile-root keybindings.json (sibling of config.json). */
 	keybindingsLoad(): Record<string, string> {
-		return {}
+		try {
+			return JSON.parse(readFileSync(this.configPath("keybindings.json"), "utf8"))
+		} catch {
+			return {}
+		}
 	}
 
-	configPath(_name = "config.json"): string {
-		return "client-mode config overlay lands in wave 3 (bucket d)"
+	/**
+	 * Config file paths (HostSession parity with client-mode semantics):
+	 * the overlay file (`config.yml`) lives in the WORKSPACE (`./.dsh/`,
+	 * ADR-0005 decision 4); every other file (config.json base,
+	 * keybindings.json) lives in the dsh-home PROFILE root — the same files
+	 * plugin mode used (single machine shares the profile dir).
+	 */
+	configPath(name = "config.json"): string {
+		if (name === "config.yml") return workspaceConfigPath(this.#workspaceDir)
+		return joinPath(this.#dshHome, "profiles", this.#profile, name)
 	}
 
+	/**
+	 * The merged config the UI consumes (row 41): profile config.json
+	 * (plugin keys: retentionDays, favoriteModels, …) overlaid by the
+	 * workspace config.yml (theme + model) and the environment — the
+	 * bucket-(d) precedence (env > workspace > profile). The overlay cache
+	 * warms at start(); before that the base alone answers.
+	 */
 	configLoad(): Record<string, unknown> {
-		return {}
+		let base: Record<string, unknown> = {}
+		try {
+			base = JSON.parse(readFileSync(this.configPath(), "utf8")) as Record<string, unknown>
+		} catch {
+			/* missing profile config: empty base */
+		}
+		const merged = mergeConfig(base as { theme?: string; model?: ModelPrefs }, this.#overlayCache ?? {}, process.env as Record<string, string>)
+		return { ...base, ...merged }
 	}
 
+	/**
+	 * Persist a config patch (HostSession sync-merge parity): overlay-
+	 * managed keys (`theme`, `model`) go to the workspace config.yml
+	 * (saveWorkspaceConfig, frozen API — atomic 0600, credential guard),
+	 * plugin keys go to the profile config.json. The returned value is the
+	 * merged view; the workspace write is async (the cache updates
+	 * optimistically and reverts + logs on failure).
+	 */
 	configSave(patch: Record<string, unknown>): Record<string, unknown> {
-		// In-memory only until the wave-3 overlay lands; process-local merge.
-		return { ...this.configLoad(), ...patch }
+		const overlayPatch: WorkspaceOverlay = {}
+		const rest: Record<string, unknown> = {}
+		for (const [key, value] of Object.entries(patch)) {
+			if (key === "theme") overlayPatch.theme = typeof value === "string" ? value : undefined
+			else if (key === "model") overlayPatch.model = (typeof value === "object" && value !== null ? (value as ModelPrefs) : undefined)
+			else rest[key] = value
+		}
+		if (Object.keys(overlayPatch).length > 0) {
+			const previous = this.#overlayCache
+			const next = { ...(previous ?? {}), ...overlayPatch }
+			this.#overlayCache = next // optimistic; reverted below on failure
+			void saveWorkspaceConfig(this.#workspaceDir, next).catch((error: unknown) => {
+				this.#overlayCache = previous
+				console.error("[remote-host-session] workspace config save failed:", error)
+			})
+		}
+		if (Object.keys(rest).length > 0) {
+			const merged = { ...this.#readProfileConfig(), ...rest }
+			const profileDir = joinPath(this.#dshHome, "profiles", this.#profile)
+			if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true })
+			writeFileSync(this.configPath(), JSON.stringify(merged, null, 2) + "\n")
+		}
+		return this.configLoad()
+	}
+
+	/**
+	 * Re-read the workspace overlay and apply its model prefs (row 41
+	 * application point): with no live session and no user-chosen route,
+	 * the overlay's provider/model stages onto the next create (and the
+	 * label), exactly like switchModel without a session. The theme half
+	 * is renderer-facing — configLoad() reports the merged theme for the
+	 * P3 ShellHostDeps swap.
+	 */
+	async refreshWorkspaceConfig(): Promise<void> {
+		await this.#refreshWorkspaceOverlay()
+	}
+
+	#readProfileConfig(): Record<string, unknown> {
+		try {
+			return JSON.parse(readFileSync(this.configPath(), "utf8")) as Record<string, unknown>
+		} catch {
+			return {}
+		}
+	}
+
+	#refreshWorkspaceOverlay(): Promise<void> {
+		return loadWorkspaceConfig(this.#workspaceDir)
+			.then((overlay) => {
+				this.#overlayCache = overlay
+				const prefs = overlay.model
+				// application point: stage the workspace model route only while
+				// nothing else chose one (an explicit user selection wins)
+				if (prefs?.provider && prefs.model && this.#sessionId === undefined && this.#pendingModel === undefined) {
+					this.switchModel(prefs.provider, prefs.model, prefs.reasoningEffort)
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[remote-host-session] workspace config load failed:", error)
+			})
 	}
 
 	/** wave 3 (client-local FS for ~/.dsh/agents/*.md — audit row 30). */
 	listAgents(): { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; file: string; broken?: string }[] {
-		return []
+		return listAgentFiles(this.#dshHome)
 	}
 
-	agentSet(_name: string, _field: "model" | "thinking" | "deep", _value: string): void {
-		/* wave 3 */
+	/** wave 3 (row 30 write half; host-session.ts:492-507 parity). */
+	agentSet(name: string, field: "model" | "thinking" | "deep", value: string): void {
+		setAgentField(name, field, value, this.#dshHome)
 	}
 
 	/**
@@ -740,9 +965,67 @@ export class RemoteHostSession {
 		return [...this.#skillsCache]
 	}
 
-	/** Wave 3 by design: no remote live reload — host restart + auto-reconnect (audit row 29). */
+	/**
+	 * wave 3 (row 29 — FULL via lifecycle): no remote live-plugin reload
+	 * exists, so /reload restarts the host on the SAME authority and lets
+	 * the carrier reconnect + the wave-2 re-attach machinery resume the
+	 * session (ADR-0005 user decision). Default action:
+	 * restartSamePortHost over the lifecycle lockfile contract (SIGTERM →
+	 * same-port respawn → listener wait); a `restartHost` option overrides
+	 * for custom topologies. Resolves undefined on success
+	 * (host-session.ts:730-740 parity) or an error string; a turn awaiting
+	 * across the restart surfaces the usual "reconnecting…" label and
+	 * replays through onReattachedMissed.
+	 */
 	async reloadPlugins(): Promise<string | undefined> {
-		return "plugin reload requires a host restart in client mode"
+		if (this.#disposed) throw new Error("RemoteHostSession is disposed")
+		if (this.#awaiting) this.#setReconnecting(true)
+		try {
+			if (this.#restartHost !== undefined) {
+				await this.#restartHost("plugin reload")
+			} else {
+				const restarted = await restartSamePortHost({ profile: this.#profile, dshHome: this.#dshHome })
+				this.#lastRestartPid = restarted.pid
+			}
+		} catch (error) {
+			this.#setReconnecting(false)
+			return String(error instanceof Error ? error.message : error).slice(0, 200)
+		}
+		// the carrier retries its authority forever; wait for the fresh host
+		// so the caller's next RPC lands on it (not on a dead socket).
+		const ok = await this.#awaitConnected(30_000)
+		// With no live session the re-attach machinery never runs — clear
+		// the reconnecting label here (a no-op when the re-attach cleared it).
+		this.#setReconnecting(false)
+		if (!ok) return "host restarted but the connection did not come back within 30s (grant rotation? — the P3 ShellHostDeps swap re-mints)"
+		return undefined
+	}
+
+	/**
+	 * The pid of the host process the last same-port restart spawned (the
+	 * lifecycle handle keeps the OLD pid — supervisors that need to reap
+	 * the restarted process read this; undefined until a restart happens).
+	 */
+	lastRestartPid(): number | undefined {
+		return this.#lastRestartPid
+	}
+
+	/** Poll the carrier back to `connected` (reload/restart helper). */
+	#awaitConnected(budgetMs: number): Promise<boolean> {
+		if (this.#connection.getState() === "connected") return Promise.resolve(true)
+		return new Promise((resolve) => {
+			const deadline = Date.now() + budgetMs
+			const timer = setInterval(() => {
+				if (this.#connection.getState() === "connected") {
+					clearInterval(timer)
+					resolve(true)
+				} else if (this.#disposed || Date.now() > deadline) {
+					clearInterval(timer)
+					resolve(false)
+				}
+			}, 250)
+			timer.unref?.()
+		})
 	}
 
 	/**
@@ -787,14 +1070,41 @@ export class RemoteHostSession {
 		return [...this.#pluginsCache]
 	}
 
-	/** wave 3 (agentPresets read / pluginInventory probe — audit row 37). */
+	/**
+	 * wave 3 (row 37): the cached verdict of the preset-document probe
+	 * (`#probeExecutionMode`) — see remote-exec-mode.ts for why the
+	 * document scan is authoritative for preset-bound sessions and why
+	 * "native" is the honest answer everywhere else (the deployment
+	 * default composition's mode is not queryable over the wire;
+	 * pluginInventory carries no config).
+	 */
 	executionMode(): "native" | "ptc" {
-		return "native"
+		return this.#executionMode
 	}
 
-	/** Client-local scan parity is wave 3 (audit row 31). */
+	/**
+	 * Probe the active preset's composition document for its
+	 * `tool-presentation` row. Without an active preset the deployment
+	 * default applies and stays "native" (documented assumption); the
+	 * probe re-runs whenever a preset is adopted (switchPreset,
+	 * session/create value, follow header) — ShellHost's refresh cadence
+	 * (/preset, /new, post-turn) picks the verdict up.
+	 */
+	async #probeExecutionMode(): Promise<void> {
+		const presetId = this.#presetId
+		if (!presetId) return // deployment default — not queryable; keep "native"
+		try {
+			const doc = await this.readPreset(presetId)
+			const mode = doc ? toolPresentationModeFromPresetDocument(doc.content) : undefined
+			if (mode !== undefined) this.#executionMode = mode
+		} catch {
+			/* keep the previous verdict */
+		}
+	}
+
+	/** wave 3 (row 31 — client-local session-store scan, HostSession parity). */
 	repairScan(): string[] {
-		return ["repair scan runs on the client filesystem; deferred to wave 3 (client mode)"]
+		return repairScanSessions(this.#dshHome)
 	}
 
 	/** wave 2 (`session/search` — audit row 19). */
@@ -832,14 +1142,96 @@ export class RemoteHostSession {
 		return { items, turn }
 	}
 
-	/** wave 3 (second-session flow — audit row 32). */
-	async btwAsk(_question: string, _snapshot: string[], _onDelta?: (full: string) => void): Promise<string> {
-		throw new Error("btw side sessions are deferred to wave 3 (client mode)")
+	/**
+	 * wave 3 (row 32 — the shaped second-session flow; remote-btw.ts
+	 * documents the pollution choice). One throwaway session per facade,
+	 * reused across questions; resolves with the full answer text (turn
+	 * errors surface as `error: …` text, HostSession parity) or throws
+	 * when the session/prompt services refuse (create/prompt RPC failure).
+	 */
+	async btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string> {
+		if (this.#disposed) throw new Error("RemoteHostSession is disposed")
+		if (this.#btwBusy) throw new Error("a btw question is already running")
+		this.#btwBusy = true
+		try {
+			await this.start()
+			// the throwaway rides the CURRENT route (host-session.ts:383 parity
+			// — agentOptions: modelSelection()): an explicitly staged route
+			// wins, else the live session's effective projection route, else
+			// the catalog default — never a stale deployment default.
+			const staged = this.#pendingModel ?? (await this.currentModelSelection())
+			const result = await askBtw({
+				rpc: (method, args) => this.#rpc(method, args),
+				socketFactory: this.#socketFactory,
+				cwd: this.#cwd,
+				question,
+				snapshot,
+				...(onDelta ? { onDelta } : {}),
+				...(this.#btwSessionId !== undefined ? { previousSessionId: this.#btwSessionId } : {}),
+				...(staged !== undefined ? { stagedModel: staged } : {}),
+			})
+			this.#btwSessionId = result.sessionId
+			return result.answer
+		} finally {
+			this.#btwBusy = false
+		}
 	}
 
-	/** wave 3 (`fileUploads/upload` — audit row 35). */
-	async attachImage(_path: string): Promise<string> {
-		throw new Error("attachment service unavailable in client mode (wave 3: fileUploads/upload)")
+	/**
+	 * wave 3 (row 35): stage a local image for the next message. Reads +
+	 * validates NOW (host-session.ts:1153-1163 parity: extension
+	 * allowlist, whole-file bytes, leaf display name) and returns the same
+	 * `name (N KB)` echo; the receipt upload happens at TURN time against
+	 * the session the prompt rides (receipts are agent-scoped — see the
+	 * turn() comment), and the prompt carries `{type:'file', receiptId}`.
+	 */
+	async attachImage(path: string): Promise<string> {
+		const file = await readImageAttachment(path)
+		this.#pendingUploads.push(file)
+		return `${file.name} (${(file.bytes / 1024).toFixed(0)} KB)`
+	}
+
+	/**
+	 * wave 3 (row 36): fetch one host-side file's bytes through the
+	 * authenticated `GET /api/file?path=` route (the tool-result image
+	 * bytes path; 20 MiB cap). The dock renders the LOCAL path directly —
+	 * host and client share one filesystem — this is the verified bytes
+	 * route for remote-safe consumers.
+	 */
+	fetchHostFile(path: string): Promise<Uint8Array> {
+		return fetchHostFile(this.#baseUrl, this.#cookieHeader, path)
+	}
+
+	/**
+	 * wave 3 (row 35 read-back): the durable attachment ids of the last
+	 * image-carrying prompt, read from the follow journal's admitted
+	 * user/message records (`session/attachment` round-trip input).
+	 */
+	lastAttachmentIds(): string[] {
+		for (let i = this.#journal.length - 1; i >= 0; i--) {
+			const entry = this.#journal[i]!
+			if (entry.type !== "user/message") continue
+			const ids = attachmentIdsOfPromptContent(entry.data.content ?? (entry.data.message as Record<string, unknown> | undefined)?.content)
+			if (ids.length > 0) return ids
+		}
+		return []
+	}
+
+	/** Read one durable image back (row 35 round-trip; remote-attachments). */
+	readSessionAttachment(attachmentId: string): Promise<{ data: string; mediaType: string; bytes: number; width?: number; height?: number }> {
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) throw new Error("no live session to read attachments from")
+		return readSessionAttachment((method, args) => this.#rpc(method, args), sessionId, attachmentId)
+	}
+
+	/**
+	 * wave 3 (row 39): the powerline git segment's probe —
+	 * `git branch --show-current` in the workspace cwd
+	 * (ShellHost.tsx:277-295 semantics; "" on non-repos). Client-local:
+	 * no git namespace exists on the Remote surface (audit gap 4).
+	 */
+	gitBranch(cwd = this.#cwd): Promise<string> {
+		return probeGitBranch(cwd)
 	}
 
 	/**
@@ -881,14 +1273,62 @@ export class RemoteHostSession {
 		this.#tail = undefined
 	}
 
-	/** wave 3 (subagent panel aggregation — audit row 33). */
-	childTranscript(_id: string): string[] {
-		return []
+	// ------------------------------------------------------------------
+	// Wave-3 subagent panel (row 33)
+	// ------------------------------------------------------------------
+
+	#subagentPanel(): RemoteSubagentPanel {
+		if (this.#subagents === undefined) {
+			this.#subagents = new RemoteSubagentPanel({
+				rpc: (method, args) => this.#rpc(method, args),
+				socketFactory: this.#socketFactory,
+				parentId: () => this.#sessionId,
+				onUpdate: (views) => {
+					try {
+						this.#cb?.onSubagentUpdate?.(views)
+					} catch {
+						/* a UI callback must never take the pump down */
+					}
+				},
+			})
+		}
+		return this.#subagents
 	}
 
-	/** wave 3 (`subagents/prompt` — audit row 33). */
-	steerChild(_id: string, _text: string): boolean {
-		return false
+	/** Child transcript lines (viewer; capped buffer, HostSession parity). */
+	childTranscript(id: string): string[] {
+		return this.#subagentPanel().transcript(id)
+	}
+
+	/**
+	 * Steer a RUNNING child (row 33): fire-and-forget `subagents/prompt`
+	 * (delivery 'steer'). The SYNC boolean contract is HostSession parity:
+	 * true when the child is adopted (reachable), false otherwise; the
+	 * host's typed rejection (`subagent/not-resumable` — the host policy
+	 * that one-shot/non-continuable children cannot be steered, audit gap
+	 * 8) is logged with its code, and `steerChildDetailed` returns it
+	 * verbatim for the honest variant.
+	 */
+	steerChild(id: string, text: string): boolean {
+		const panel = this.#subagentPanel()
+		if (!panel.known(id)) return false
+		void panel.steer(id, text)
+		return true
+	}
+
+	/** The typed steer outcome ({ok:false, reason} carries the host policy error). */
+	steerChildDetailed(id: string, text: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+		return this.#subagentPanel().steerChildDetailed(id, text)
+	}
+
+	/** Interrupt a child (`subagents/interruptByParent`; typed errors surface). */
+	interruptChild(id: string): Promise<void> {
+		return this.#subagentPanel().interrupt(id)
+	}
+
+	/** The panel snapshot (TurnCallbacks.onSubagentUpdate row shape). */
+	subagentViews(): RemoteSubagentView[] {
+		return this.#subagentPanel().views()
 	}
 
 	// ------------------------------------------------------------------
@@ -987,8 +1427,14 @@ export class RemoteHostSession {
 				console.error("[remote-host-session] staged selectModel failed:", error)
 			}
 		}
-		// Attach BEFORE the first prompt so no live frame is missed.
-		await this.#attachFollow(false)
+		// Attach BEFORE the first prompt so no live frame is missed. The
+		// opening header's agentPreset is the session's bound composition —
+		// adopt it (it drives the row-37 executionMode probe).
+		const opening = await this.#attachFollow(false)
+		if (opening.header.agentPreset && opening.header.agentPreset !== this.#presetId) {
+			this.#presetId = opening.header.agentPreset
+			void this.#probeExecutionMode()
+		}
 		return this.#sessionId
 	}
 
@@ -1006,11 +1452,19 @@ export class RemoteHostSession {
 	#followSink() {
 		return {
 			// Durable record ledger (wave 2): /history grouping + fork points +
-			// the reconnect gap-repair base all read this.
+			// the reconnect gap-repair base all read this. Wave 3: the
+			// subagent panel pairs tool-workflow rows from the same ledger.
 			onRecord: (entry: RemoteJournalEntry) => {
 				if (entry.seq > this.#lastDurableSeq) this.#lastDurableSeq = entry.seq
 				this.#journal.push(entry)
 				if (this.#journal.length > 4000) this.#journal.shift()
+				if (entry.type === "tool-workflow/agent-start" || entry.type === "tool-workflow/agent-end") {
+					try {
+						this.#subagentPanel().foldParentRecord(entry)
+					} catch {
+						/* contained */
+					}
+				}
 			},
 			onContentDelta: (text: string) => {
 				try {
@@ -1102,7 +1556,12 @@ export class RemoteHostSession {
 		}
 		// Order parity: freeze stats, fire onTurnEnd, THEN resolve the awaited
 		// turn (a resolved await lets ShellHost's send() finally-block drain
-		// the queue into a new turn — onTurnEnd must paint first).
+		// the queue into a new turn — onTurnEnd must paint first). Wave 3:
+		// a post-turn list sweep settles children that never hit an
+		// agent-end pairing (one-shot teardown races).
+		void this.#subagentPanel()
+			.refreshFromList()
+			.catch(() => {})
 		const resolve = this.#resolveTurn
 		this.#resolveTurn = undefined
 		this.#awaiting = false
@@ -1266,8 +1725,43 @@ export class RemoteHostSession {
 			}
 			return
 		}
-		// Other forwarded emits (api-session/*, agent-preset/selected, …) have
-		// no wave-2 consumer; they stay observable through connection.onEvent.
+		// Wave-3 subagent panel feeds (row 33): the forwarded api-session
+		// emits carry live child state without a list round-trip.
+		if (event === "api-session/status") {
+			const sessionId = typeof argv[0] === "string" ? argv[0] : ""
+			const running = argv[1] === true
+			if (sessionId) {
+				try {
+					this.#subagentPanel().noteStatus(sessionId, running)
+				} catch {
+					/* contained */
+				}
+			}
+			return
+		}
+		if (event === "api-session/removed") {
+			const sessionId = typeof argv[0] === "string" ? argv[0] : ""
+			if (sessionId) {
+				try {
+					this.#subagentPanel().noteRemoved(sessionId)
+				} catch {
+					/* contained */
+				}
+			}
+			return
+		}
+		if (event === "api-session/added") {
+			// args[0] is the SessionSummary row; a cheap refresh adopts any
+			// newly published child of OUR session (the row itself is already
+			// in the list the panel re-reads).
+			const summary = (typeof argv[0] === "object" && argv[0] !== null ? argv[0] : {}) as Record<string, unknown>
+			if (summary.parentSessionId !== undefined && summary.parentSessionId === this.#sessionId) {
+				void this.#subagentPanel().refreshFromList().catch(() => {})
+			}
+			return
+		}
+		// Other forwarded emits (agent-preset/selected, …) have no consumer
+		// here; they stay observable through connection.onEvent.
 	}
 
 	// ------------------------------------------------------------------
