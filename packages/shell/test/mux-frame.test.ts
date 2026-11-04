@@ -33,6 +33,9 @@ class FakeMuxSocket implements MuxSocket {
 	readyState = 0
 	sent: string[] = []
 	closed = false
+	/** 'error' emissions that found NO listener attached — the real `ws`
+	 * socket surfaces those as uncaught exceptions. */
+	readonly uncaughtErrors: unknown[] = []
 	private listeners = new Map<string, Set<(...args: unknown[]) => void>>()
 
 	on(event: string, listener: (...args: unknown[]) => void): this {
@@ -42,15 +45,26 @@ class FakeMuxSocket implements MuxSocket {
 
 	once(event: string, listener: (...args: unknown[]) => void): this {
 		const wrapped = (...args: unknown[]) => {
-			this.removeListener(event, wrapped)
+			this.removeListener(event, listener)
 			listener(...args)
 		}
+		// Node EventEmitter parity: the wrapper remembers its original, so
+		// removeListener(original) removes the wrapper too
+		;(wrapped as { listener?: unknown }).listener = listener
 		this.register(event, wrapped)
 		return this
 	}
 
 	removeListener(event: string, listener: (...args: unknown[]) => void): this {
-		this.listeners.get(event)?.delete(listener)
+		const set = this.listeners.get(event)
+		if (!set) return this
+		if (set.delete(listener)) return this
+		for (const wrapped of set) {
+			if ((wrapped as { listener?: unknown }).listener === listener) {
+				set.delete(wrapped)
+				break
+			}
+		}
 		return this
 	}
 
@@ -59,8 +73,14 @@ class FakeMuxSocket implements MuxSocket {
 	}
 
 	close(): void {
+		const wasConnecting = this.readyState === 0
 		this.closed = true
 		this.readyState = 3
+		if (wasConnecting) {
+			// `ws` parity: closing a CONNECTING socket reports "closed before
+			// established" ASYNCHRONOUSLY, after close() has returned
+			setTimeout(() => this.emit("error", new Error("WebSocket was closed before the connection was established")), 0)
+		}
 	}
 
 	open(): void {
@@ -98,7 +118,9 @@ class FakeMuxSocket implements MuxSocket {
 	}
 
 	private emit(event: string, ...args: unknown[]): void {
-		for (const listener of [...(this.listeners.get(event) ?? [])]) listener(...args)
+		const listeners = [...(this.listeners.get(event) ?? [])]
+		if (event === "error" && listeners.length === 0) this.uncaughtErrors.push(args[0])
+		for (const listener of listeners) listener(...args)
 	}
 }
 
@@ -365,5 +387,28 @@ describe("events pump (ready gating over a fake socket)", () => {
 		controller.abort()
 		await expectRejection(done)
 		expect(socket.closed).toBe(true)
+	})
+
+	test("CONNECTING-socket close emits its async error AFTER listener cleanup — guarded, never uncaught", async () => {
+		const socket = new FakeMuxSocket()
+		const controller = new AbortController()
+		const source = createEventsPumpSource(() => socket, { onReady: () => {}, onItem: () => {} })
+		const done = source(controller.signal, () => {})
+		// abort while CONNECTING: the pump's finally removes the pump
+		// listeners and closes the socket, and only THEN does the socket's
+		// async "closed before established" error fire (the remote-stream.ts
+		// race, mirrored by the fake's CONNECTING-close behavior)
+		controller.abort()
+		await expectRejection(done)
+		expect(socket.closed).toBe(true)
+		// the cleanup removed the pump listeners; exactly the noop guard remains
+		expect(socket.listenerCount("error")).toBe(1)
+		await tick()
+		await tick()
+		// the async close-error landed on the noop guard — no uncaught surface
+		expect(socket.uncaughtErrors).toHaveLength(0)
+		// and a late manual error after settlement is swallowed the same way
+		socket.fail(new Error("late close noise"))
+		expect(socket.uncaughtErrors).toHaveLength(0)
 	})
 })

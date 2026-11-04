@@ -4,8 +4,8 @@
 // `session/follow` snapshot + durable event + assistant-stream frames) and
 // assert the HostSession-shaped callbacks ShellHost consumes.
 import { describe, expect, test } from "bun:test"
-import { RemoteHostSession } from "../src/client/remote-host-session.ts"
-import { expandCompactStream, scanUsageChunk, blocksText } from "../src/client/remote-follow.ts"
+import { RemoteHostSession, REATTACH_RETRY_MS, REATTACH_MAX_ATTEMPTS } from "../src/client/remote-host-session.ts"
+import { RemoteFollowSession, expandCompactStream, scanUsageChunk, blocksText, type RemoteFollowSink } from "../src/client/remote-follow.ts"
 import { RemoteRpcError, type ClientConnection, type ClientConnectionState, type ClientEventDisposer, type ClientEventHandler, type ClientReadyInfo } from "../src/client/transport.ts"
 import type { EventsItem } from "../src/client/mux-frame.ts"
 import type { MuxSocket } from "../src/client/events-source.ts"
@@ -170,7 +170,7 @@ interface Harness {
 	lastSocket(): FakeMuxSocket
 }
 
-function makeSession(options: { cwd?: string; rpcHandler?: RpcHandler } = {}): Harness {
+function makeSession(options: { cwd?: string; rpcHandler?: RpcHandler; reattachRetryMs?: number; reattachMaxAttempts?: number } = {}): Harness {
 	const connection = new FakeConnection()
 	if (options.rpcHandler) connection.rpcHandler = options.rpcHandler
 	const sockets: FakeMuxSocket[] = []
@@ -178,6 +178,8 @@ function makeSession(options: { cwd?: string; rpcHandler?: RpcHandler } = {}): H
 		connection: connection as unknown as ClientConnection,
 		cookieHeader: "dsh-auth-x=v1.test",
 		cwd: options.cwd ?? "/tmp/workspace",
+		...(options.reattachRetryMs !== undefined ? { reattachRetryMs: options.reattachRetryMs } : {}),
+		...(options.reattachMaxAttempts !== undefined ? { reattachMaxAttempts: options.reattachMaxAttempts } : {}),
 		socketFactory: () => {
 			const socket = new FakeMuxSocket()
 			sockets.push(socket)
@@ -678,6 +680,94 @@ describe("RemoteHostSession generation-change re-attach", () => {
 		await h.session.dispose()
 	})
 
+	// P1#1: a REALISTIC re-attach window — the snapshot contains the records
+	// the client already painted live pre-gap (seq ≤ the durable baseline)
+	// plus genuinely new records. The baseline filter must paint only the new
+	// rows: no re-painted user/assistant rows, no re-announced tool calls, no
+	// duplicated journal brackets.
+	test("re-attach replay folds against the durable baseline: already-painted records never paint twice", async () => {
+		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-r1") })
+		const { cb, log } = callbacks()
+		// Turn 1 completes live: its full record window is journaled pre-gap.
+		const first = h.session.turn("say ok", cb)
+		await until(() => h.sockets.length > 0)
+		const sock1 = h.lastSocket()
+		sock1.item(snapshotFrame("sess-r1"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		sock1.item(eventFrame("turn/start", { turn: 1 }, 1))
+		sock1.item(eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "say ok" }] }, 2))
+		sock1.item(eventFrame("tool/call", { turn: 1, step: 1, callId: "c1", name: "bash", arguments: '{"cmd":"ls"}' }, 3))
+		sock1.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 4))
+		await first
+		expect(log.toolStarts.length).toBe(1) // painted once, live
+
+		// Turn 2 starts, its prompt record lands live, one delta paints —
+		// then the follow stream dies (restart / transport loss).
+		const second = h.session.turn("go again", cb)
+		await until(() => h.connection.rpcCalls.filter((c) => c.method === "session/prompt").length >= 2)
+		sock1.item(eventFrame("turn/start", { turn: 2 }, 5))
+		sock1.item(eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "go again" }] }, 6))
+		sock1.item(streamFrame({ type: "start", attemptId: "a2", revision: 0, startedAfterSeq: 6, turn: 2, step: 1 }))
+		sock1.item(streamFrame({ type: "chunk", attemptId: "a2", revision: 0, index: 0, time: 1, chunk: { type: "text-delta", index: 0, text: "he" } }))
+		expect(log.content.join("")).toBe("he")
+		sock1.close()
+		await until(() => h.session.label === "reconnecting…")
+
+		// The fresh host answers with the FULL snapshot window: records 1-6
+		// are at/below the painted baseline (lastDurableSeq = 6) and must be
+		// skipped whole; only the gap rows replay.
+		h.connection.setState("connected")
+		await until(() => h.sockets.length > 1)
+		const sock2 = h.lastSocket()
+		sock2.item(snapshotFrame("sess-r1", {
+			records: [
+				eventFrame("turn/start", { turn: 1 }, 1),
+				eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "say ok" }] }, 2),
+				eventFrame("tool/call", { turn: 1, step: 1, callId: "c1", name: "bash", arguments: '{"cmd":"ls"}' }, 3),
+				eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 4),
+				eventFrame("turn/start", { turn: 2 }, 5),
+				eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "go again" }] }, 6),
+				eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "from the phone" }] }, 7),
+				eventFrame("assistant/message", { message: { content: [{ type: "text", text: "phone answer" }] } }, 8),
+			],
+			assistantStream: {
+				revision: 2,
+				activeAttempt: {
+					attemptId: "a2",
+					startedAfterSeq: 6,
+					turn: 2,
+					step: 1,
+					nextIndex: 2,
+					stream: [{ type: "text-chunks", time0: 2, index: 0, dt: [1, 1], texts: ["he", "llo"] }],
+				},
+			},
+		}))
+		await until(() => log.missedRows.length === 1)
+		// ONLY the gap rows replayed — the already-painted turn 1/2 rows and
+		// the announced tool call did not come back a second time.
+		expect(log.missedRows[0]).toEqual([
+			{ kind: "user", text: "from the phone" },
+			{ kind: "assistant", text: "phone answer" },
+		])
+		expect(log.toolStarts.length).toBe(1)
+		// Compact-stream dedupe still resumes clean ("he" stays painted once).
+		expect(log.content.join("")).toBe("hello")
+		expect(h.session.label).not.toBe("reconnecting…")
+
+		sock2.item(streamFrame({ type: "chunk", attemptId: "a2", revision: 2, index: 2, time: 5, chunk: { type: "text-delta", index: 2, text: " world" } }))
+		sock2.item(eventFrame("turn/end", { turn: 2, reason: { kind: "completed" } }, 9))
+		await second
+		expect(log.content.join("")).toBe("hello world")
+		expect(log.turnEnds.length).toBe(2)
+		// Journal dedupe: the snapshot re-fold must not duplicate brackets —
+		// /history still sees exactly two turns with the same fork points.
+		expect(h.session.historyTurns()).toEqual([
+			{ turn: 1, seqEnd: 4, preview: "say ok" },
+			{ turn: 2, seqEnd: 9, preview: "go again" },
+		])
+		await h.session.dispose()
+	})
+
 	test("dispose leaves no listeners and closes the carrier", async () => {
 		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-10") })
 		await h.session.start()
@@ -688,7 +778,188 @@ describe("RemoteHostSession generation-change re-attach", () => {
 		expect(h.connection.listenerCounts.events).toBe(0)
 		expect(h.connection.listenerCounts.states).toBe(0)
 	})
+
+	// P2: the awaiting turn must outlive a same-port host restart, whose own
+	// readiness budget is 30s (remote-restart.ts readinessTimeoutMs ?? 30_000).
+	// The old 10×1s budget errored the turn ~15s BEFORE a legitimate restart
+	// finished. Here a compressed 30-attempt budget rides out a 15-attempt
+	// ("15s") outage — every re-attach socket dies until the host "returns",
+	// and the turn settles via the replay, never through onError.
+	test("awaiting turn rides out a 15s outage: settles via re-attach replay, not onError", async () => {
+		// Budget alignment pin: cadence × cap >= the restart readiness budget.
+		expect(REATTACH_RETRY_MS * REATTACH_MAX_ATTEMPTS).toBeGreaterThanOrEqual(30_000)
+		// Compressed time: 20ms cadence keeps the 1s:1s ratio of the real
+		// budget, so 15 failed attempts ≈ 15s of a 30s (30-attempt) budget.
+		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-b1"), reattachRetryMs: 20, reattachMaxAttempts: 30 })
+		const { cb, log } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		const sock1 = h.lastSocket()
+		sock1.item(snapshotFrame("sess-b1"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		sock1.item(eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "go" }] }, 1))
+		sock1.item(streamFrame({ type: "start", attemptId: "a1", revision: 0, startedAfterSeq: 1, turn: 1, step: 1 }))
+		sock1.item(streamFrame({ type: "chunk", attemptId: "a1", revision: 0, index: 0, time: 1, chunk: { type: "text-delta", index: 0, text: "he" } }))
+		expect(log.content.join("")).toBe("he")
+
+		// The host goes down mid-turn (follow stream dies; the carrier keeps
+		// its last-known "connected" state — the retry loop is what drives
+		// the re-attach now).
+		sock1.close()
+		await until(() => h.session.label === "reconnecting…")
+
+		// "15s outage": kill each re-attach socket until 15 attempts (the OLD
+		// budget gave up at 10), then let the host come back on attempt 16.
+		const outage = (async () => {
+			for (let attempt = 1; attempt <= 15; attempt++) {
+				await until(() => h.sockets.length > attempt)
+				h.sockets[attempt]!.endStream()
+			}
+			await until(() => h.sockets.length > 16)
+			h.lastSocket().item(snapshotFrame("sess-b1", {
+				records: [eventFrame("assistant/message", { message: { content: [{ type: "text", text: "recovered answer" }] } }, 2)],
+				assistantStream: {
+					revision: 2,
+					activeAttempt: {
+						attemptId: "a1",
+						startedAfterSeq: 1,
+						turn: 1,
+						step: 1,
+						nextIndex: 2,
+						stream: [{ type: "text-chunks", time0: 1, index: 0, dt: [1, 1], texts: ["he", "llo"] }],
+					},
+				},
+			}))
+		})()
+
+		await outage
+		// More sockets than the old budget allowed — the turn survived past it.
+		expect(h.sockets.length).toBeGreaterThanOrEqual(17)
+		// The turn settles via the replay: gap rows + compact stream, no error.
+		// (missedRows paint inside attach; the label restores after the
+		// reattach's gap repair completes — wait for BOTH.)
+		await until(() => log.missedRows.length === 1 && h.session.label !== "reconnecting…")
+		expect(log.missedRows[0]).toEqual([{ kind: "assistant", text: "recovered answer" }])
+		expect(log.content.join("")).toBe("hello")
+		expect(h.session.label).not.toBe("reconnecting…")
+
+		h.lastSocket().item(streamFrame({ type: "chunk", attemptId: "a1", revision: 2, index: 2, time: 5, chunk: { type: "text-delta", index: 2, text: " world" } }))
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 3))
+		await pending
+		expect(log.content.join("")).toBe("hello world")
+		expect(log.turnEnds.length).toBe(1)
+		expect(log.errors).toEqual([])
+		await h.session.dispose()
+	})
 })
+
+// ---------------------------------------------------------------------------
+// P1#1 — RemoteFollowSession replay baseline + announce dedupe
+// ---------------------------------------------------------------------------
+
+describe("RemoteFollowSession replay baseline", () => {
+	test("snapshot records at/below sinceSeq skip the fold entirely (no row, no announce, no re-journal)", async () => {
+		const { follow, sink, currentSocket } = await makeFollow()
+		// Live pre-gap: one announced tool call + one journaled user row.
+		follow.attach("s1", false)
+		const sock1 = currentSocket()
+		sock1.item(snapshotFrame("s1", { records: [eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "painted" }] }, 1)] }))
+		await until(() => sink.journal.length === 1)
+		sock1.item(eventFrame("tool/call", { callId: "c1", name: "bash", arguments: "{}" }, 2))
+		await until(() => sink.toolStarts.length === 1)
+		follow.detach()
+
+		// Re-attach with the painted baseline: records 1-2 are at/below it —
+		// they go nowhere (ledgers already hold them from the live stream).
+		const reopening = follow.attach("s1", true, 2)
+		currentSocket().item(snapshotFrame("s1", {
+			records: [
+				eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "painted" }] }, 1),
+				eventFrame("tool/call", { callId: "c1", name: "bash", arguments: "{}" }, 2),
+				eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "new row" }] }, 3),
+			],
+		}))
+		const opening = await reopening
+		expect(opening.cursor).toBe(0)
+		expect(sink.missedRows).toEqual([[{ kind: "user", text: "new row" }]])
+		expect(sink.toolStarts.length).toBe(1)
+		expect(sink.journal.map((e) => e.seq)).toEqual([1, 2, 3])
+		await follow.reset()
+	})
+
+	test("belt-and-braces: a replayed tool/call above the baseline never re-announces an already-announced callId", async () => {
+		const { follow, sink, currentSocket } = await makeFollow()
+		follow.attach("s2", false)
+		const sock1 = currentSocket()
+		sock1.item(snapshotFrame("s2"))
+		await until(() => sink.journal.length >= 0)
+		sock1.item(eventFrame("tool/call", { callId: "c9", name: "bash", arguments: "{}" }, 5))
+		await until(() => sink.toolStarts.length === 1)
+		follow.detach()
+
+		// Baseline misses the record (seq 5 > sinceSeq 0) — the announced-set
+		// dedupe must still suppress the second onToolStart.
+		const reopening = follow.attach("s2", true, 0)
+		currentSocket().item(snapshotFrame("s2", { records: [eventFrame("tool/call", { callId: "c9", name: "bash", arguments: "{}" }, 5)] }))
+		await reopening
+		expect(sink.toolStarts.length).toBe(1)
+		await follow.reset()
+	})
+})
+
+/** A bare RemoteFollowSession over fresh fake mux sockets + a recording sink. */
+async function makeFollow(): Promise<{ follow: RemoteFollowSession; sink: RecordingSink; currentSocket(): FakeMuxSocket }> {
+	const sockets: FakeMuxSocket[] = []
+	const sink = makeRecordingSink()
+	const follow = new RemoteFollowSession({
+		socketFactory: () => {
+			const socket = new FakeMuxSocket()
+			sockets.push(socket)
+			return socket
+		},
+		sink,
+		onDetached: () => {},
+	})
+	return { follow, sink, currentSocket: () => sockets[sockets.length - 1]! }
+}
+
+interface RecordingSink {
+	content: string[]
+	thinking: string[]
+	usage: Record<string, number>[]
+	toolStarts: { callId?: string; name: string; args: string }[]
+	toolRuns: { name: string; ok: boolean }[]
+	todos: { content: string; status: string }[][]
+	turnEnds: Record<string, unknown>[]
+	missedRows: { kind: string; text: string }[][]
+	journal: { type: string; seq: number; time: number; data: Record<string, unknown> }[]
+}
+
+function makeRecordingSink(): RecordingSink {
+	const sink: RecordingSink = {
+		content: [],
+		thinking: [],
+		usage: [],
+		toolStarts: [],
+		toolRuns: [],
+		todos: [],
+		turnEnds: [],
+		missedRows: [],
+		journal: [],
+	}
+	// The object IS the RemoteFollowSink (methods bound below).
+	const asSink = sink as unknown as RemoteFollowSink
+	asSink.onContentDelta = (t) => sink.content.push(t)
+	asSink.onThinkingDelta = (t) => sink.thinking.push(t)
+	asSink.onUsage = (u) => sink.usage.push(u)
+	asSink.onToolStart = (s) => sink.toolStarts.push(s)
+	asSink.onToolRun = (r) => sink.toolRuns.push({ name: r.name, ok: r.ok })
+	asSink.onTodos = (t) => sink.todos.push(t)
+	asSink.onTurnEnd = (d) => sink.turnEnds.push(d)
+	asSink.onMissedRows = (rows) => sink.missedRows.push(rows)
+	asSink.onRecord = (entry) => sink.journal.push({ ...entry })
+	return asSink
+}
 
 /** Drive the current socket's follow stream to a completed turn/end. */
 function sockEndsTurn(sock: FakeMuxSocket): void {

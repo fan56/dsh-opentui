@@ -25,6 +25,22 @@
 // RESPAWN_WINDOW_MS after which HostRespawnLoopError surfaces instead of
 // looping.
 //
+// Cold-boot mutual exclusion: before spawning, the booter claims the
+// lockfile as a `booting: true` placeholder (atomic create-if-absent —
+// exactly one cold boot wins per profile across processes). Another client
+// that finds a fresh booting lock WAITS for it to flip into a real lock and
+// then adopts it (join); it takes over (removes the placeholder and boots
+// itself) when the booting pid dies or the join budget
+// (`readinessTimeoutMs + BOOT_JOIN_MARGIN_MS`) lapses. The real lock is only
+// written after readiness + mint and only while the claim is still intact —
+// a superseded booter kills its own child (HostBootSupersededError) instead
+// of clobbering the winner's lock.
+//
+// Adoption bumps the lockfile (fresh startedAt/mtime): the detached idle
+// reaper (scripts/idle-reaper.mjs) treats a recently-touched lockfile as
+// alive, so a client that adopted at the grace edge and is still minting its
+// cookie (no ESTABLISHED connection yet) is not reaped underneath.
+//
 // Idle exit (ADR-0005 decision 5): when the refcount reaches 0 a timer of
 // `idleExitSec` seconds (default 60; `0` = never exit, resident) SIGTERMs the
 // child and cleans the lockfile; an `ensureHost` inside the grace window
@@ -49,7 +65,7 @@
 // owner exit with refcount 0 shuts it down.
 
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
@@ -60,6 +76,12 @@ export const DEFAULT_READINESS_TIMEOUT_MS = 30_000
 /** How long a lock whose pid is alive but not yet listening gets to come up
  * before we declare the lock stale (covers a cold host mid-boot). */
 export const DEFAULT_STALE_PROBE_MS = 8_000
+/** Join budget over the readiness budget for a foreign booting placeholder:
+ * covers the post-readiness cookie mint (MINT_RETRY_BUDGET_MS = 15s) that
+ * still precedes the real lock write, plus slack. */
+const BOOT_JOIN_MARGIN_MS = 20_000
+/** Poll cadence while waiting out a foreign booting placeholder. */
+const BOOT_JOIN_POLL_MS = 200
 const RESPAWN_WINDOW_MS = 15_000
 const MAX_RAPID_RESPAWNS = 3
 const LISTEN_PROBE_TIMEOUT_MS = 750
@@ -115,6 +137,15 @@ export class HostRespawnLoopError extends HostLifecycleError {
     super(
       'host-respawn-loop',
       `dsh host failed ${attempts} rapid spawn attempts within ${windowMs}ms — giving up instead of looping`,
+    )
+  }
+}
+
+export class HostBootSupersededError extends HostLifecycleError {
+  constructor() {
+    super(
+      'host-boot-superseded',
+      'another client took over this boot while it was coming up — our child was shut down; retry ensureHost to join the winner',
     )
   }
 }
@@ -180,6 +211,10 @@ export interface EnsureHostOptions {
   mintCookie?: MintOwnerCookie
   /** Readiness budget. Default 30_000. */
   readinessTimeoutMs?: number
+  /** Max wait for a concurrently-booting host (another process holding the
+   * `booting` placeholder) to finish, when this client cold-boots behind it.
+   * Default `readinessTimeoutMs + 20s` (readiness + mint budget + slack). */
+  bootJoinTimeoutMs?: number
   /** Grace window for a locked-but-not-listening pid (default 8_000). */
   staleProbeMs?: number
   /** Cookie max age forwarded to mintOwnerCookie. */
@@ -250,6 +285,9 @@ interface LockFile {
   authority: string
   startedAt: string
   profile: string
+  /** True on the O_EXCL placeholder a booter holds between spawn and
+   * readiness+mint; absent (false) on the real post-boot lock. */
+  booting?: boolean
 }
 
 /** Live managed hosts, keyed by `<dshHome>\u0000<profile>`. */
@@ -326,6 +364,7 @@ function readLock(dshHome: string, profile: string): LockFile | null {
       authority: typeof raw.authority === 'string' ? raw.authority : `127.0.0.1:${raw.port}`,
       startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : '',
       profile: typeof raw.profile === 'string' ? raw.profile : profile,
+      booting: raw.booting === true,
     }
   } catch {
     return null // missing or corrupt → stale
@@ -355,6 +394,112 @@ function clearOurLock(host: ManagedHost): void {
   if (lock && lock.pid === host.pid && lock.port === host.port) {
     rmSync(lockPathFor(host.dshHome, host.profile), { force: true })
   }
+}
+
+// -- Cold-boot mutual exclusion (the `booting` placeholder) -----------------
+
+/** Atomically claim the lockfile as a booting placeholder (create-if-absent
+ * via link(2) on a fully-written tmp file — the winner's content is complete
+ * at creation, so readers never see a partial claim). Exactly one cold boot
+ * per profile wins across processes. Returns the claim's startedAt token, or
+ * null when a rival (booting placeholder or real lock) already holds the
+ * file. The placeholder's pid is the BOOTER's pid — the liveness anchor until
+ * the real lock (child pid) replaces it. */
+function claimBootLock(dshHome: string, profile: string): string | null {
+  mkdirSync(dshHome, { recursive: true })
+  const path = lockPathFor(dshHome, profile)
+  const payload: LockFile = {
+    pid: process.pid,
+    port: 0, // unknown until the bind probe; waiters never probe it
+    authority: '127.0.0.1:0',
+    startedAt: new Date().toISOString(),
+    profile,
+    booting: true,
+  }
+  const tmp = `${path}.claim-${process.pid}-${Date.now()}`
+  writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n')
+  try {
+    linkSync(tmp, path) // EEXIST when a rival holds the file
+    return payload.startedAt
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') return null
+    throw err
+  } finally {
+    rmSync(tmp, { force: true })
+  }
+}
+
+/** Remove a booting placeholder only if it still describes THIS claim (pid,
+ * optionally the startedAt token) — never a completed boot's real lock or a
+ * rival's newer claim. */
+function removeBootClaim(
+  dshHome: string,
+  profile: string,
+  claim: { pid: number; startedAt?: string },
+): boolean {
+  const path = lockPathFor(dshHome, profile)
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<LockFile>
+    if (raw.booting !== true || raw.pid !== claim.pid) return false
+    if (claim.startedAt !== undefined && raw.startedAt !== claim.startedAt) return false
+  } catch {
+    return false // gone or corrupt — nothing of ours to remove
+  }
+  rmSync(path, { force: true })
+  return true
+}
+
+/** Remove a stale REAL lock only if it still describes the lock we judged
+ * stale (never clobber a fresher write, never touch a placeholder). */
+function removeStaleLock(dshHome: string, profile: string, stale: LockFile): boolean {
+  const path = lockPathFor(dshHome, profile)
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<LockFile>
+    if (raw.booting === true || raw.pid !== stale.pid || raw.port !== stale.port) return false
+  } catch {
+    return false
+  }
+  rmSync(path, { force: true })
+  return true
+}
+
+/** True while the lockfile still holds OUR booting claim. */
+function bootClaimIntact(dshHome: string, profile: string, startedAt: string): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(lockPathFor(dshHome, profile), 'utf8')) as Partial<LockFile>
+    return raw.booting === true && raw.pid === process.pid && raw.startedAt === startedAt
+  } catch {
+    return false
+  }
+}
+
+/** Wait out a foreign booting placeholder (cross-process cold-boot mutual
+ * exclusion): poll until the claim either flips into a real lock (the boot
+ * completed — bootHost re-evaluates and adopts it) or becomes takeable
+ * (booting pid dead / join budget lapsed — bootHost re-evaluates, finds no
+ * lock and claims the boot itself). Never signals the booting pid. */
+async function waitOutBootingLock(first: LockFile, o: ResolvedOptions): Promise<void> {
+  // A booting claim naming OUR pid is a leftover from a previous incarnation
+  // of this pid (crash + pid reuse): take it over immediately.
+  if (first.pid === process.pid) {
+    removeBootClaim(o.dshHome, o.profile, { pid: first.pid })
+    return
+  }
+  const budget = o.bootJoinTimeoutMs ?? o.readinessTimeoutMs + BOOT_JOIN_MARGIN_MS
+  const deadline = Date.now() + budget
+  const claim = { pid: first.pid, startedAt: first.startedAt }
+  while (Date.now() < deadline) {
+    await sleep(BOOT_JOIN_POLL_MS)
+    if (!pidAlive(claim.pid)) {
+      // the booter died mid-boot: its claim is abandoned — take it over
+      removeBootClaim(o.dshHome, o.profile, claim)
+      return
+    }
+    const current = readLock(o.dshHome, o.profile)
+    if (!current || !current.booting) return // boot completed (or claim gone) — re-evaluate
+  }
+  // Join budget lapsed: force the takeover if the claim is unchanged.
+  removeBootClaim(o.dshHome, o.profile, claim)
 }
 
 // ---------------------------------------------------------------------------
@@ -613,6 +758,11 @@ function adoptHost(lock: LockFile, o: ResolvedOptions): ManagedHost {
     mintCookie: o.mintCookie,
   }
   registry.set(o.key, host)
+  // Adoption bump: refresh startedAt/mtime so the detached idle reaper sees
+  // recent liveness — the adopted client can spend up to MINT_RETRY_BUDGET_MS
+  // minting its cookie before its first ESTABLISHED connection, past a
+  // grace-edge adoption.
+  writeLock(o.dshHome, o.profile, host)
   return host
 }
 
@@ -621,6 +771,7 @@ interface ResolvedOptions {
   dshHome: string
   idleExitSec: number
   readinessTimeoutMs: number
+  bootJoinTimeoutMs?: number
   staleProbeMs: number
   maxAgeMs?: number
   spawnDsh: SpawnDsh
@@ -637,6 +788,7 @@ function resolveOptions(opts: EnsureHostOptions): ResolvedOptions {
     dshHome,
     idleExitSec,
     readinessTimeoutMs: opts.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS,
+    ...(opts.bootJoinTimeoutMs !== undefined ? { bootJoinTimeoutMs: opts.bootJoinTimeoutMs } : {}),
     staleProbeMs: opts.staleProbeMs ?? DEFAULT_STALE_PROBE_MS,
     ...(opts.maxAgeMs !== undefined ? { maxAgeMs: opts.maxAgeMs } : {}),
     spawnDsh: opts.spawnDsh ?? defaultSpawnDsh,
@@ -655,19 +807,48 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
   }
   respawnHistory.set(o.key, [...history, now])
 
-  // Single-instance lock: adopt a fresh lock, take over a stale one.
-  const lock = readLock(o.dshHome, o.profile)
-  if (lock && (await lockIsFresh(lock, o.staleProbeMs))) {
-    const adopted = adoptHost(lock, o)
-    respawnHistory.delete(o.key)
-    adopted.cookieHeader = await mintCookieWithRetry(adopted)
-    return adopted
+  // Phase 1 — resolve the single-instance lock. Loops until this process
+  // either adopts a live host or holds the O_EXCL booting claim.
+  let claimStartedAt = ''
+  for (;;) {
+    const lock = readLock(o.dshHome, o.profile)
+    if (lock?.booting) {
+      // Another process holds the cold-boot claim: wait it out (join on
+      // success, takeover on booter death / join-budget lapse), then
+      // re-evaluate — a completed boot is adopted below.
+      await waitOutBootingLock(lock, o)
+      continue
+    }
+    if (lock && (await lockIsFresh(lock, o.staleProbeMs))) {
+      const adopted = adoptHost(lock, o) // bumps the lockfile (reaper liveness)
+      respawnHistory.delete(o.key)
+      adopted.cookieHeader = await mintCookieWithRetry(adopted)
+      return adopted
+    }
+    // Stale lock (or none): clear the way, verify the profile, claim the
+    // boot placeholder. A rival that claimed first leaves the file in place
+    // (EEXIST) — re-evaluate against its booting claim.
+    if (lock) removeStaleLock(o.dshHome, o.profile, lock)
+    const lockPath = lockPathFor(o.dshHome, o.profile)
+    if (!existsSync(lockPath)) {
+      const profileDir = join(o.dshHome, 'profiles', o.profile)
+      if (!existsSync(profileDir)) throw new ProfileMissingError(o.profile, profileDir)
+      const claimed = claimBootLock(o.dshHome, o.profile)
+      if (claimed !== null) {
+        claimStartedAt = claimed
+        break // we hold the claim — proceed to spawn
+      }
+    } else if (readLock(o.dshHome, o.profile) === null) {
+      // File exists but is unreadable/corrupt: pre-fix semantics treat a
+      // corrupt lock as stale — remove it and re-evaluate.
+      rmSync(lockPath, { force: true })
+    }
+    await sleep(BOOT_JOIN_POLL_MS)
   }
-  // Stale lock (or none): fall through — the fresh boot replaces the file.
 
+  // Phase 2 — boot under the claim. The claim is released by writeLock on
+  // success and removed in the failure path.
   const profileDir = join(o.dshHome, 'profiles', o.profile)
-  if (!existsSync(profileDir)) throw new ProfileMissingError(o.profile, profileDir)
-
   const port = await getFreePort()
   const child = o.spawnDsh(['--profile', o.profile, '--no-open', '--port', String(port)], {
     cwd: profileDir,
@@ -717,14 +898,22 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
     }
     host.authority = ready.authority
     host.cookieHeader = await mintCookieWithRetry(host)
-    writeLock(o.dshHome, o.profile, host)
+    // Claim still ours? A join-budget takeover by another client replaced the
+    // placeholder — kill our child rather than clobber the winner's lock
+    // (which would leave two live hosts and concurrent DSH_HOME writers).
+    if (!bootClaimIntact(o.dshHome, o.profile, claimStartedAt)) {
+      throw new HostBootSupersededError()
+    }
+    writeLock(o.dshHome, o.profile, host) // replaces the booting placeholder
     host.lockOwned = true
     host.state = 'ready'
     respawnHistory.delete(o.key)
     registry.set(o.key, host)
     return host
   } catch (err) {
-    // Boot failed (timeout / death / mint): shut down what we started.
+    // Boot failed (timeout / death / mint / superseded): release the claim
+    // and shut down what we started.
+    removeBootClaim(o.dshHome, o.profile, { pid: process.pid, startedAt: claimStartedAt })
     await terminateHost(host).catch(() => {})
     throw err
   }

@@ -229,6 +229,13 @@ export class RemoteFollowSession {
 	#sessionId: string | undefined
 	#stream: RemoteStreamHandle | undefined
 	#toolCalls = new Map<string, { name: string; args: string }>()
+	/**
+	 * callIds already announced through onToolStart (live or replay). The
+	 * re-attach baseline filter is the primary dedupe (P1#1); this set is the
+	 * belt-and-braces: a replayed snapshot record above the baseline whose
+	 * call was somehow already painted never announces twice.
+	 */
+	#announcedToolCalls = new Set<string>()
 	#activeAttemptId: string | undefined
 	/** Dense chunk index the next live frame is expected at (re-attach baseline). */
 	#attemptBaseline = 0
@@ -260,8 +267,16 @@ export class RemoteFollowSession {
 	 * first attach (right after `session/create`) passes `replay: false` —
 	 * the snapshot is empty or belongs to a transcript the caller paints
 	 * through the dedicated wave-2 page path.
+	 *
+	 * `sinceSeq` is the re-attach replay baseline (P1#1): the highest durable
+	 * seq this client already painted before the gap. Snapshot records at or
+	 * below it are already on every ledger (tool-call ledger + the caller's
+	 * journal arrived live pre-gap) and are skipped ENTIRELY — never
+	 * re-announced, never replayed as missed rows, never re-journaled (a
+	 * full-window re-fold used to double-paint user/assistant rows and
+	 * re-announce every tool call after a reconnect).
 	 */
-	async attach(sessionId: string, replay: boolean): Promise<RemoteFollowOpening> {
+	async attach(sessionId: string, replay: boolean, sinceSeq?: number): Promise<RemoteFollowOpening> {
 		this.detach()
 		this.#sessionId = sessionId
 		const opening = await new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -317,7 +332,7 @@ export class RemoteFollowSession {
 
 		// Ledger refill on every attach: tool/result name lookup needs the
 		// tool/call args of calls made before (re)attach.
-		this.#foldSnapshotRecords(opening.records, replay)
+		this.#foldSnapshotRecords(opening.records, replay, sinceSeq)
 
 		if (replay && attempt && typeof attempt.attemptId === "string") {
 			// Re-attach repair: replay the compact stream accumulated while we
@@ -377,6 +392,7 @@ export class RemoteFollowSession {
 		this.detach()
 		this.#sessionId = undefined
 		this.#toolCalls.clear()
+		this.#announcedToolCalls.clear()
 		this.#liveAttemptId = undefined
 		this.#liveWatermark = 0
 	}
@@ -442,7 +458,7 @@ export class RemoteFollowSession {
 		// tool/call + tool/result events (host-session.ts:1273-1277 parity).
 	}
 
-	#foldSnapshotRecords(recordsValue: unknown, replay: boolean): void {
+	#foldSnapshotRecords(recordsValue: unknown, replay: boolean, sinceSeq?: number): void {
 		if (!Array.isArray(recordsValue)) return
 		const rows: RemoteTranscriptRow[] = []
 		for (const record of recordsValue) {
@@ -451,11 +467,16 @@ export class RemoteFollowSession {
 			const event = asRecord(entry.event)
 			const type = String(event.type ?? "")
 			const data = asRecord(event.data)
+			const seq = typeof event.seq === "number" ? event.seq : 0
+			// Re-attach baseline (P1#1): at/below the already-painted watermark
+			// the record is on every ledger from the live stream — skip it
+			// whole (no re-journal, no row, no announce).
+			if (sinceSeq !== undefined && seq > 0 && seq <= sinceSeq) continue
 			// Seq envelope first — the ledger is current before any row/settle
 			// callback reads it.
 			this.#options.sink.onRecord?.({
 				type,
-				seq: typeof event.seq === "number" ? event.seq : 0,
+				seq,
 				time: typeof event.time === "number" ? event.time : 0,
 				data,
 			})
@@ -503,6 +524,11 @@ export class RemoteFollowSession {
 		const args = String(data.arguments ?? "")
 		if (callId) this.#toolCalls.set(callId, { name, args })
 		if (announce) {
+			// Belt-and-braces dedupe (P1#1): one call paints one tool block,
+			// whatever path replays it (the baseline filter is the primary
+			// guard; this catches baseline-miss cases keyed by callId).
+			if (callId !== undefined && this.#announcedToolCalls.has(callId)) return
+			if (callId !== undefined) this.#announcedToolCalls.add(callId)
 			this.#options.sink.onToolStart({
 				...(callId ? { callId } : {}),
 				name,

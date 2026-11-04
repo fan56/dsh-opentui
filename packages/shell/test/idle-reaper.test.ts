@@ -1,19 +1,28 @@
 // The detached idle reaper (scripts/idle-reaper.mjs — ADR-0005 decision 5's
 // entry-side half): after the grace it SIGTERMs an idle host and clears the
-// lockfile, but a REPLACED host (lockfile pid moved) and a RE-ATTACHED host
-// (established connections to the port — the grace-window adoption marker)
-// must survive it. Behavioral tests: real reaper process, real fake hosts,
-// short grace.
+// lockfile, but a REPLACED host (lockfile pid moved), a RE-ATTACHED host
+// (established connections to the port — the grace-window adoption marker),
+// and an ADOPTED-BUT-NOT-YET-CONNECTED host (adoptHost bumps the lockfile;
+// the adoptee may still be minting past the grace edge) must survive it.
+// Behavioral tests: real reaper process, real fake hosts, short grace.
 import { describe, expect, test } from 'bun:test'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { once } from 'node:events'
 
 const REAPER = join(import.meta.dir, '..', 'scripts', 'idle-reaper.mjs')
 const GRACE_SEC = 1.5
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** Backdate the lockfile mtime beyond the reaper's LOCK_RECENT_MS window
+ * (30s): models a lock untouched since long before the quit. */
+function backdateLock(lockPath: string, secondsAgo = 40): void {
+  const t = new Date(Date.now() - secondsAgo * 1000)
+  utimesSync(lockPath, t, t)
+}
 
 interface FakeHost {
   pid: number
@@ -81,6 +90,7 @@ describe('idle reaper', () => {
     const host = fakeHost(false, 0) // no listener: nobody can be attached
     try {
       expect(pidAlive(host.pid)).toBe(true)
+      backdateLock(host.lockPath) // untouched since long before the quit — stale, reap it
       runReaper(host)
       await sleep(500)
       expect(pidAlive(host.pid)).toBe(false)
@@ -128,6 +138,7 @@ describe('idle reaper', () => {
       }
       expect(release).not.toBeNull() // we are attached — the reaper must see it
       await sleep(300)
+      backdateLock(host.lockPath) // the ESTABLISHED socket must be what spares, not a fresh lockfile
       runReaper(host)
       await sleep(300)
       expect(pidAlive(host.pid)).toBe(true) // adoption path keeps the host
@@ -137,4 +148,29 @@ describe('idle reaper', () => {
       host.kill()
     }
   }, 60_000)
+
+  test('spares an adopted-at-the-grace-edge host (fresh lockfile touch, no connection yet)', async () => {
+    const host = fakeHost(false, 0) // no listener: a mid-mint adoptee cannot be TCP-attached
+    try {
+      backdateLock(host.lockPath) // untouched since long before the quit…
+      const child = spawn(
+        process.execPath,
+        [REAPER, String(host.pid), String(host.port), host.lockPath, String(GRACE_SEC)],
+        { stdio: 'ignore' },
+      )
+      // …then a client adopts at the grace edge: lifecycle's adoptHost bumps
+      // the lockfile (fresh startedAt/mtime) and the adoptee now spends up to
+      // ~15s minting its cookie before its first ESTABLISHED connection.
+      await sleep((GRACE_SEC - 0.5) * 1000)
+      const bumped = JSON.parse(readFileSync(host.lockPath, 'utf8'))
+      bumped.startedAt = new Date().toISOString()
+      writeFileSync(host.lockPath, JSON.stringify(bumped, null, 2) + '\n')
+
+      await once(child, 'exit') // the reaper finished its window
+      expect(pidAlive(host.pid)).toBe(true) // spared — the fresh touch counts as alive
+      expect(existsSync(host.lockPath)).toBe(true)
+    } finally {
+      host.kill()
+    }
+  }, 40_000)
 })

@@ -6,7 +6,7 @@
 // only test that touches a real `dsh` is the guarded live smoke at the end.
 import { describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type AddressInfo } from 'node:http'
@@ -18,6 +18,7 @@ import {
   MintUnavailableError,
   ProfileMissingError,
   ensureHost,
+  pidAlive,
   __internals,
   type HostChildProcess,
   type HostHandle,
@@ -520,6 +521,200 @@ describe('ensureHost — single-instance lock', () => {
       rmSync(home, { recursive: true, force: true })
     }
   })
+
+  test('adoption bumps the lockfile (fresh startedAt/mtime) — reaper-visible liveness', async () => {
+    const home = makeHome()
+    const runner = makeRunner()
+    const sleeper = spawnSleeper()
+    const server = createServer((_req, res) => res.end('adopted-host'))
+    try {
+      const [port] = await new Promise<number[]>((resolve) =>
+        server.listen(0, '127.0.0.1', () => resolve([(server.address() as AddressInfo).port])),
+      )
+      const staleStamp = new Date(Date.now() - 120_000).toISOString()
+      writeLockFor(home, {
+        pid: sleeper.pid,
+        port,
+        authority: `127.0.0.1:${port}`,
+        startedAt: staleStamp,
+        profile: DEFAULT_PROFILE,
+      })
+      const mtimeBefore = statSync(lockPathOf(home)).mtimeMs
+
+      const handle = await ensureHost({
+        dshHome: home,
+        spawnDsh: runner.spawnDsh,
+        mintCookie: (o) => `FakeCookie ${o.authority}`,
+      })
+      expect(handle.adopted).toBe(true)
+
+      // the bump: same pid/port, refreshed startedAt + mtime (the detached
+      // idle reaper treats a recently-touched lockfile as alive even without
+      // an ESTABLISHED connection yet — the adopted client may still be
+      // minting, up to ~15s, at the reaper's grace deadline)
+      const lock = readLockFrom(home)
+      expect(lock.pid).toBe(sleeper.pid)
+      expect(lock.port).toBe(port)
+      expect(lock.startedAt).not.toBe(staleStamp)
+      expect(Date.parse(lock.startedAt)).toBeGreaterThan(Date.parse(staleStamp))
+      expect(statSync(lockPathOf(home)).mtimeMs).toBeGreaterThanOrEqual(mtimeBefore)
+
+      await handle.dispose()
+    } finally {
+      server.close()
+      sleeper.kill()
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('ensureHost — concurrent cold-boot mutual exclusion', () => {
+  test('slow boot + concurrent second ensureHost → exactly ONE spawn, second caller joins (same pid/port)', async () => {
+    const home = makeHome()
+    const runner = makeRunner()
+    try {
+      const mint: MintOwnerCookie = (o) => `FakeCookie ${o.authority}`
+      const first = ensureHost({ dshHome: home, spawnDsh: runner.spawnDsh, mintCookie: mint })
+      await waitUntil(() => runner.calls.length === 1)
+      const second = ensureHost({ dshHome: home, spawnDsh: runner.spawnDsh, mintCookie: mint })
+      await sleep(600) // the boot is still slow-pending — nobody respawns
+      expect(runner.calls.length).toBe(1)
+      runner.last.writeOut(readyLine(Number(runner.calls[0]!.argv[runner.calls[0]!.argv.indexOf('--port') + 1])))
+      const [a, b] = await Promise.all([first, second])
+      expect(a.pid).toBe(b.pid)
+      expect(a.port).toBe(b.port)
+      expect(b).toBe(a)
+      expect(a.refCount).toBe(2)
+      expect(runner.calls.length).toBe(1) // exactly one spawn
+      await a.dispose()
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  test('foreign booting placeholder: waits, joins the completed boot (no spawn of our own)', async () => {
+    const home = makeHome()
+    const runner = makeRunner()
+    const sleeper = spawnSleeper() // the foreign booter process
+    const server = createServer((_req, res) => res.end('foreign-boot'))
+    try {
+      const [port] = await new Promise<number[]>((resolve) =>
+        server.listen(0, '127.0.0.1', () => resolve([(server.address() as AddressInfo).port])),
+      )
+      writeLockFor(home, {
+        pid: sleeper.pid,
+        port,
+        authority: `127.0.0.1:${port}`,
+        startedAt: new Date().toISOString(),
+        profile: DEFAULT_PROFILE,
+        booting: true,
+      })
+      let joined: HostHandle | null = null
+      const booting = ensureHost({
+        dshHome: home,
+        spawnDsh: runner.spawnDsh,
+        mintCookie: (o) => `FakeCookie ${o.authority}`,
+      }).then((h) => {
+        joined = h
+        return h
+      })
+
+      await sleep(400) // still waiting on the foreign claim…
+      expect(runner.calls.length).toBe(0) // …never spawns its own host
+      expect(joined).toBeNull()
+
+      // the foreign boot completes: placeholder flips into a real lock
+      writeLockFor(home, {
+        pid: sleeper.pid,
+        port,
+        authority: `127.0.0.1:${port}`,
+        startedAt: new Date().toISOString(),
+        profile: DEFAULT_PROFILE,
+      })
+      const handle = await booting
+      expect(runner.calls.length).toBe(0) // joined, not re-booted
+      expect(handle.adopted).toBe(true)
+      expect(handle.pid).toBe(sleeper.pid)
+      expect(handle.port).toBe(port)
+      expect(handle.refCount).toBe(1)
+      await handle.dispose()
+    } finally {
+      server.close()
+      sleeper.kill()
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 20_000)
+
+  test('booting pid dies mid-boot → waiter takes over cleanly and boots its own host', async () => {
+    const home = makeHome()
+    const runner = makeRunner()
+    const sleeper = spawnSleeper()
+    try {
+      writeLockFor(home, {
+        pid: sleeper.pid,
+        port: 1,
+        authority: '127.0.0.1:1',
+        startedAt: new Date().toISOString(),
+        profile: DEFAULT_PROFILE,
+        booting: true,
+      })
+      const booting = ensureHost({
+        dshHome: home,
+        spawnDsh: runner.spawnDsh,
+        mintCookie: (o) => `FakeCookie ${o.authority}`,
+      })
+      await sleep(300) // entered the wait…
+      expect(runner.calls.length).toBe(0) // …without spawning
+      sleeper.kill() // the foreign booter dies mid-boot
+
+      await waitUntil(() => runner.calls.length === 1, 5_000) // takeover → we spawn
+      runner.last.writeOut(readyLine(Number(runner.calls[0]!.argv[runner.calls[0]!.argv.indexOf('--port') + 1])))
+      const handle = await booting
+      expect(handle.adopted).toBe(false)
+      expect(handle.pid).toBe(runner.last.pid)
+      const lock = readLockFrom(home)
+      expect(lock.booting).toBeUndefined() // a real lock replaced the placeholder
+      expect(lock.pid).toBe(handle.pid)
+      await handle.dispose()
+    } finally {
+      sleeper.kill()
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 20_000)
+
+  test('booting lock that never completes → join budget lapses → takeover boot (foreign pid untouched)', async () => {
+    const home = makeHome()
+    const runner = makeRunner()
+    const sleeper = spawnSleeper()
+    try {
+      writeLockFor(home, {
+        pid: sleeper.pid,
+        port: 1,
+        authority: '127.0.0.1:1',
+        startedAt: new Date().toISOString(),
+        profile: DEFAULT_PROFILE,
+        booting: true,
+      })
+      const booting = ensureHost({
+        dshHome: home,
+        spawnDsh: runner.spawnDsh,
+        mintCookie: (o) => `FakeCookie ${o.authority}`,
+        bootJoinTimeoutMs: 400,
+      })
+      await waitUntil(() => runner.calls.length === 1, 5_000) // budget lapsed → takeover spawn
+      runner.last.writeOut(readyLine(Number(runner.calls[0]!.argv[runner.calls[0]!.argv.indexOf('--port') + 1])))
+      const handle = await booting
+      expect(handle.adopted).toBe(false)
+      expect(handle.pid).toBe(runner.last.pid)
+      const lock = readLockFrom(home)
+      expect(lock.booting).toBeUndefined()
+      expect(lock.pid).toBe(handle.pid)
+      expect(pidAlive(sleeper.pid)).toBe(true) // takeover never signals the foreign booter
+    } finally {
+      sleeper.kill()
+      rmSync(home, { recursive: true, force: true })
+    }
+  }, 20_000)
 })
 
 describe('ensureHost — crash policy', () => {

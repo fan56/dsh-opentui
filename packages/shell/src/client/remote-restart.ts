@@ -15,12 +15,17 @@
  * 1. read the lifecycle lockfile (`<dshHome>/opentui-host.<profile>.json`,
  *    the single-instance contract of lifecycle.ts) for pid + port;
  * 2. SIGTERM the pid (SIGKILL escalation, terminateHost parity);
- * 3. remove the stale lockfile (it described the dead pid; the next
- *    ensureHost boots fresh — this path does not fake a managed handle);
+ * 3. remove the stale lockfile (it described the dead pid);
  * 4. respawn `dsh --profile <p> --no-open --port <same>` detached;
  * 5. wait for the listener (lifecycle's isListening probe) and re-mint
  *    the owner cookie (cookie-mint, with the first-boot grant retry
- *    window — lifecycle's mintCookieWithRetry parity).
+ *    window — lifecycle's mintCookieWithRetry parity);
+ * 6. rewrite the lockfile with the NEW pid + the same port (lifecycle's
+ *    writeLock shape): the lifecycle client owns the lockfile (the host
+ *    never writes it), so a restart that only deletes it leaves the fresh
+ *    host UNMANAGED — the next ensureHost would double-boot on the same
+ *    port and the idle reaper would hold the dead pid. With the rewritten
+ *    lock a subsequent ensureHost adopts/joins the restarted host.
  *
  * Port-reuse race (documented): between SIGTERM-completion and the fresh
  * listener, another process could bind the port — a narrow local window,
@@ -39,7 +44,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { existsSync, readFileSync, rmSync, unlinkSync } from "node:fs"
+import { existsSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { isListening, pidAlive, type HostChildProcess, type SpawnDsh } from "./lifecycle.ts"
 import { resolveDshHome } from "./remote-local-fs.ts"
@@ -107,6 +112,41 @@ function defaultSpawnDsh(argv: string[], options: { cwd: string; env: NodeJS.Pro
 }
 
 /**
+ * The lifecycle lockfile row (lifecycle.ts `LockFile`/`writeLock` shape).
+ * DUPLICATED ON PURPOSE: lifecycle.ts's writeLock is private and the file is
+ * owned by a parallel agent right now — this mirrors the minimal write
+ * contract ({ pid, port, authority, startedAt, profile }, atomic tmp+rename)
+ * with a comment instead of exporting from it. FOLLOW-UP: consolidate into
+ * one shared helper exported from lifecycle.ts once it is free.
+ */
+interface RestartLockFile {
+	pid: number
+	port: number
+	authority: string
+	startedAt: string
+	profile: string
+}
+
+/**
+ * Re-write the single-instance lockfile for the respawned host (lifecycle
+ * writeLock parity). The `<dshHome>` directory necessarily exists: step 5
+ * verified the profile dir under it.
+ */
+function writeRestartedLock(home: string, profile: string, host: { pid: number; port: number; authority: string }): void {
+	const path = join(home, `opentui-host.${profile}.json`)
+	const payload: RestartLockFile = {
+		pid: host.pid,
+		port: host.port,
+		authority: host.authority,
+		startedAt: new Date().toISOString(),
+		profile,
+	}
+	const tmp = `${path}.tmp`
+	writeFileSync(tmp, JSON.stringify(payload, null, 2) + "\n")
+	renameSync(tmp, path) // near-atomic single-instance lock write (lifecycle parity)
+}
+
+/**
  * Restart the resident host of `<dshHome>`/`<profile>` ON THE SAME PORT so
  * an existing client carrier reconnects without re-pointing. See the
  * module header for the contract and the documented races.
@@ -116,20 +156,32 @@ export async function restartSamePortHost(options: SamePortRestartOptions = {}):
 	const home = resolveDshHome(options.dshHome)
 	const lockPath = join(home, `opentui-host.${profile}.json`)
 
-	// 1. the lockfile is the single-instance contract: pid + port.
+	// 1. the lockfile is the single-instance contract: pid + port. A `booting`
+	//    placeholder (cold-boot mutual exclusion, lifecycle.ts) describes the
+	//    BOOTER's pid with port 0 — there is no managed host yet; restarting
+	//    would kill the booting client, so surface a typed error instead.
 	interface Lock {
 		pid: number
 		port: number
+		booting?: boolean
 	}
 	let lock: Lock | undefined
 	try {
 		const raw = JSON.parse(readFileSync(lockPath, "utf8")) as Partial<Lock>
-		if (typeof raw.pid === "number" && typeof raw.port === "number") lock = { pid: raw.pid, port: raw.port }
+		if (typeof raw.pid === "number" && typeof raw.port === "number") {
+			lock = { pid: raw.pid, port: raw.port, ...(raw.booting === true ? { booting: true } : {}) }
+		}
 	} catch {
 		/* missing or corrupt → nothing we manage */
 	}
 	if (lock === undefined) {
 		throw new HostRestartError("no-lock", `no host lockfile at ${lockPath} — nothing to restart (is the host lifecycle-managed?)`)
+	}
+	if (lock.booting === true) {
+		throw new HostRestartError(
+			"host-booting",
+			`host lockfile at ${lockPath} is a booting placeholder (pid ${lock.pid} still booting) — no managed host to restart yet; retry once the boot completes`,
+		)
 	}
 	const { pid, port } = lock
 
@@ -164,10 +216,11 @@ export async function restartSamePortHost(options: SamePortRestartOptions = {}):
 	}
 
 	// 3. the lockfile described a dead pid — clear it (never clobbers a
-	//    newer host's lock: we verified pid/port above and just killed it).
+	//    newer host's lock: we verified pid/port above and just killed it;
+	//    never touches a rival's booting placeholder).
 	try {
 		const current = JSON.parse(readFileSync(lockPath, "utf8")) as Partial<Lock>
-		if (current.pid === pid && current.port === port) rmSync(lockPath, { force: true })
+		if (current.booting !== true && current.pid === pid && current.port === port) rmSync(lockPath, { force: true })
 	} catch {
 		try {
 			unlinkSync(lockPath)
@@ -209,6 +262,15 @@ export async function restartSamePortHost(options: SamePortRestartOptions = {}):
 	}
 	const authority = `127.0.0.1:${port}`
 	const cookieHeader = await mintWithRetry(options.mintCookie, home, authority)
+
+	// 7. re-write the single-instance lockfile with the NEW pid (same port).
+	//    Step 3 cleared the dead-pid lock and the respawned host does not
+	//    write its own (the lifecycle CLIENT owns the lockfile) — without
+	//    this the restarted host stays unmanaged: the next ensureHost would
+	//    double-boot on the same port and the idle reaper would hold the
+	//    dead pid. Unconditional write mirrors the accepted narrow
+	//    port-reuse race documented in the header.
+	writeRestartedLock(home, profile, { pid: child.pid, port, authority })
 	return { authority, port, cookieHeader, pid: child.pid }
 }
 

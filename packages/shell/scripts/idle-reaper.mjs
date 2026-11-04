@@ -8,20 +8,32 @@
 //   bun idle-reaper.mjs <pid> <port> <lockfilePath> <graceSec>
 //
 // After the grace window it shuts the host down — unless:
-// - the lockfile now describes a DIFFERENT pid (a fresh boot replaced the
-//   host): never touch what we do not own;
+// - the lockfile now describes a DIFFERENT pid (a fresh boot — or lifecycle's
+//   `booting` placeholder, pid = the booting client — replaced the host):
+//   never touch what we do not own;
+// - the lockfile was touched RECENTLY (lifecycle adoptHost bumps
+//   startedAt/mtime on adoption): a client that adopted at the grace edge
+//   can still be minting its cookie (up to ~15s) before it opens its first
+//   ESTABLISHED connection, so a fresh lockfile touch counts as alive;
 // - a client re-attached inside the grace window (established TCP
 //   connections to the host port — the adoption path keeps the host alive
 //   under its new owner; that owner's own quit spawns the next reaper).
 // The probe is `lsof -sTCP:ESTABLISHED`; when the tool is unavailable the
 // reaper falls back to the plain lifecycle semantics (idle exit).
-import { readFileSync, rmSync } from 'node:fs'
+import { readFileSync, rmSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
 const [pidArg, portArg, lockPath, graceArg] = process.argv.slice(2)
 const pid = Number(pidArg)
 const port = Number(portArg)
 const graceSec = Number(graceArg ?? 60)
+/** A lockfile touched within this window counts as alive even without an
+ * ESTABLISHED connection (see the adoption bump above): it must cover the
+ * adopted client's whole mint budget (~15s) plus slack, while staying well
+ * below the minimum untouched-lock age at reaper time (the grace window —
+ * the lock was written before the quitting client even started using the
+ * host). */
+const LOCK_RECENT_MS = 30_000
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -58,6 +70,12 @@ await sleep(graceSec * 1000)
 
 const lock = readLock()
 if (!lock || lock.pid !== pid) process.exit(0) // replaced by a fresh boot — not ours
+
+// A client that adopted at the grace edge bumps the lockfile (fresh
+// startedAt/mtime) and may still be minting — spare recently-touched locks.
+try {
+  if (Date.now() - statSync(lockPath).mtimeMs < LOCK_RECENT_MS) process.exit(0)
+} catch {} // stat failed (lock vanished) → fall through to the TCP probe
 
 const established = establishedTo(port)
 if (established > 0) process.exit(0) // a client re-attached — the host stays under its new owner

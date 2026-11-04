@@ -130,6 +130,12 @@ export function createEventsPumpSource(
 			ws.removeListener("close", onClose)
 			ws.removeListener("error", onError)
 			closeQuietly(ws)
+			// Closing a still-CONNECTING socket makes `ws` emit 'error' ("closed
+			// before established") asynchronously, after the removals above
+			// cleaned the pump listeners — keep a noop handler attached so it can
+			// never surface as an uncaught exception (remote-stream.ts fixed the
+			// identical race the same way).
+			ws.on("error", () => {})
 		}
 	}
 }

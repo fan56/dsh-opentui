@@ -693,8 +693,12 @@ const scenarioD = async () => {
     assert(reloaded.includes('plugins reloaded'), `/reload did not complete cleanly:\n${reloaded.slice(-1200)}`)
     notes.push('"plugins reloaded" painted')
 
-    // same-port restart: old pid dead, a listener STILL on lock0.port, new pid
-    const listeners = sh('lsof', ['-ti', `tcp:${lock0.port}`])
+    // same-port restart: old pid dead, a listener STILL on lock0.port, new pid.
+    // LISTEN-only: unfiltered `-ti tcp:N` also lists every client holding an
+    // ESTABLISHED socket to the port — that once produced a false oldfox-P1#2
+    // reproduction (the client bun pid, created BEFORE the old host wrapper,
+    // looked like a "new listener" the rewritten lockfile didn't name).
+    const listeners = sh('lsof', ['-ti', `tcp:${lock0.port}`, '-sTCP:LISTEN'])
     const listenerPids = listeners.status === 0 ? listeners.stdout.split('\n').map((s) => Number(s.trim())).filter(Boolean) : []
     const newPid = listenerPids.find((p) => p !== lock0.pid) ?? listenerPids[0]
     notes.push(`restart: old pid dead=${await waitPidGone(lock0.pid, 100)} · port ${lock0.port} listener pid(s)=${listenerPids.join(',') || 'NONE'}`)

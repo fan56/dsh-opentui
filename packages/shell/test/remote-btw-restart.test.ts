@@ -3,11 +3,12 @@
 // real killable child process for the lockfile stop half.
 import { afterAll, describe, expect, test } from "bun:test"
 import { spawn as spawnNode } from "node:child_process"
-import { mkdtempSync, mkdirSync, existsSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Server } from "node:net"
 import { askBtw, BTW_TITLE_PREFIX } from "../src/client/remote-btw.ts"
+import { ensureHost } from "../src/client/lifecycle.ts"
 import { HostRestartError, restartSamePortHost } from "../src/client/remote-restart.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 import { FakeConnection, FakeMuxSocket, rpcOf, snapshotFrame, streamFrame, eventFrame, until } from "./client-fakes.ts"
@@ -22,6 +23,19 @@ function scratchDir(prefix: string): string {
 afterAll(() => {
 	for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true })
 })
+
+/** Poll until the pid is gone (backstop behind dispose's SIGTERM). */
+async function waitPidGone(pid: number, timeoutMs = 3000): Promise<void> {
+	const deadline = Date.now() + timeoutMs
+	while (Date.now() < deadline) {
+		try {
+			process.kill(pid, 0)
+		} catch {
+			return
+		}
+		await new Promise((resolve) => setTimeout(resolve, 50))
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Row 32 — /btw throwaway-session flow
@@ -299,15 +313,136 @@ describe("row 29 — /reload via lifecycle restart + carrier reconnect", () => {
 		expect(result.cookieHeader).toBe(`cookie-for-scratch-127.0.0.1:${port}`)
 		// the respawn ran the same-port boot argv in the profile dir
 		expect(spawned).toEqual([{ argv: ["--profile", "opentui", "--no-open", "--port", String(port)], cwd: join(home, "profiles", "opentui") }])
-		// the stale lockfile was cleared
-		expect(existsSync(join(home, "opentui-host.opentui.json"))).toBe(false)
+		// the lockfile was REWRITTEN for the respawned host: new pid, same
+		// port, lifecycle writeLock shape — the restarted host stays managed
+		const rewritten = JSON.parse(readFileSync(join(home, "opentui-host.opentui.json"), "utf8")) as Record<string, unknown>
+		expect(rewritten.pid).toBe(999_999)
+		expect(rewritten.port).toBe(port)
+		expect(rewritten.authority).toBe(`127.0.0.1:${port}`)
+		expect(rewritten.profile).toBe("opentui")
+		expect(typeof rewritten.startedAt).toBe("string")
+		expect(new Date(String(rewritten.startedAt)).getTime()).not.toBeNaN()
 		for (const listener of listeners) listener.close()
+	}, 20000)
+
+	test("restart rewrites the lockfile so a subsequent ensureHost joins (no double boot)", async () => {
+		const home = scratchDir("dsh-restart-home-")
+		mkdirSync(join(home, "profiles", "opentui"), { recursive: true })
+		// real killable processes: the old host (SIGTERMed by the restart) and
+		// the "fresh" host whose pid the fake spawn reports — adoption needs a
+		// live pid behind the rewritten lock
+		const victim = spawnNode(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" })
+		const fresh = spawnNode(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" })
+		const probe = new Server((socket) => socket.destroy())
+		const port = await new Promise<number>((resolve) => {
+			probe.listen(0, "127.0.0.1", () => resolve((probe.address() as { port: number }).port))
+		})
+		await new Promise<void>((resolve) => probe.close(() => resolve()))
+		writeFileSync(join(home, "opentui-host.opentui.json"), JSON.stringify({ pid: victim.pid, port, authority: `127.0.0.1:${port}`, startedAt: new Date().toISOString(), profile: "opentui" }))
+
+		const listener = new Server((socket) => socket.destroy())
+		try {
+			const result = await restartSamePortHost({
+				dshHome: home,
+				profile: "opentui",
+				spawnDsh: () => {
+					// the "fresh host" binds inside spawnDsh — after the restart's
+					// port-quiet gate, exactly where a real host would bind
+					listener.listen(port, "127.0.0.1")
+					return {
+						pid: fresh.pid!,
+						exitCode: null,
+						stdout: { on: () => {} },
+						stderr: { on: () => {} },
+						on: () => {},
+						kill: () => true,
+					}
+				},
+				mintCookie: () => "restart-cookie",
+			})
+			expect(result.pid).toBe(fresh.pid)
+			// the rewritten lockfile is the exact lifecycle shape, fresh pid
+			const lock = JSON.parse(readFileSync(join(home, "opentui-host.opentui.json"), "utf8")) as Record<string, unknown>
+			expect(lock.pid).toBe(fresh.pid)
+			expect(lock.port).toBe(port)
+
+			// a subsequent ensureHost ADOPTS the restarted host (live pid +
+			// bound listener → fresh lock): it joins instead of respawning
+			const bootSpawns: string[][] = []
+			const handle = await ensureHost({
+				dshHome: home,
+				profile: "opentui",
+				idleExitSec: 0,
+				spawnDsh: (argv) => {
+					bootSpawns.push(argv)
+					throw new Error("ensureHost must not respawn — the restarted host is managed")
+				},
+				mintCookie: () => "join-cookie",
+			})
+			expect(handle.adopted).toBe(true)
+			expect(handle.pid).toBe(fresh.pid)
+			expect(handle.port).toBe(port)
+			expect(bootSpawns).toHaveLength(0)
+			await handle.dispose()
+			await waitPidGone(fresh.pid!)
+		} finally {
+			listener.close()
+			for (const pid of [victim.pid, fresh.pid]) {
+				try {
+					process.kill(pid!, "SIGKILL")
+				} catch {
+					/* already gone */
+				}
+			}
+		}
 	}, 20000)
 
 	test("restartSamePortHost without a lockfile → typed no-lock error", async () => {
 		const home = scratchDir("dsh-restart-home-")
 		await expect(restartSamePortHost({ dshHome: home, mintCookie: () => "c" })).rejects.toThrow(HostRestartError)
 	})
+
+	test("restartSamePortHost against a booting placeholder → typed host-booting error, booter untouched", async () => {
+		const home = scratchDir("dsh-restart-home-")
+		// a live "booter" process behind the cold-boot mutual-exclusion
+		// placeholder (lifecycle.ts claimBootLock shape: booter pid, port 0)
+		const booter = spawnNode(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" })
+		const lockPath = join(home, "opentui-host.opentui.json")
+		writeFileSync(
+			lockPath,
+			JSON.stringify({ pid: booter.pid, port: 0, authority: "127.0.0.1:0", startedAt: new Date().toISOString(), profile: "opentui", booting: true }),
+		)
+		try {
+			let error: unknown
+			try {
+				await restartSamePortHost({ dshHome: home, profile: "opentui", mintCookie: () => "c" })
+			} catch (err) {
+				error = err
+			}
+			expect(error).toBeInstanceOf(HostRestartError)
+			expect((error as HostRestartError).code).toBe("host-booting")
+			expect(String((error as Error).message)).toContain("booting placeholder")
+			// the booter was never signaled — still alive behind its claim
+			let booterAlive = false
+			try {
+				process.kill(booter.pid!, 0)
+				booterAlive = true
+			} catch {
+				booterAlive = false
+			}
+			expect(booterAlive).toBe(true)
+			// the placeholder lockfile is untouched (still the booting claim)
+			const lock = JSON.parse(readFileSync(lockPath, "utf8")) as Record<string, unknown>
+			expect(lock.booting).toBe(true)
+			expect(lock.pid).toBe(booter.pid)
+		} finally {
+			try {
+				process.kill(booter.pid!, "SIGKILL")
+			} catch {
+				/* already gone */
+			}
+		}
+	}, 15000)
 
 	test("facade reloadPlugins without a lockfile returns the error string", async () => {
 		const home = scratchDir("dsh-restart-home-")

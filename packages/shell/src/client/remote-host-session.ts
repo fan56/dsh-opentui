@@ -251,10 +251,26 @@ export interface RemoteHostSessionOptions {
 	 * Default: restartSamePortHost over the lifecycle lockfile contract.
 	 */
 	restartHost?: (reason: string) => Promise<void>
+	/**
+	 * Re-attach retry cadence override (P2 budget; default REATTACH_RETRY_MS
+	 * = 1s). Injectable so the budget-alignment test can compress time.
+	 */
+	reattachRetryMs?: number
+	/** Re-attach attempt cap override (P2 budget; default REATTACH_MAX_ATTEMPTS = 30). */
+	reattachMaxAttempts?: number
 }
 
 const REATTACH_RETRY_MS = 1_000
-const REATTACH_MAX_ATTEMPTS = 10
+/**
+ * Re-attach budget (P2): must cover a same-port host restart (/reload), whose
+ * own budget is `readinessTimeoutMs ?? 30_000` (remote-restart.ts) — the
+ * fresh host may legitimately need that long to listen again, and only THEN
+ * can the carrier reconnect and these retries succeed. 10×1s used to give up
+ * (and error the awaiting turn) ~20s before the restart budget ran out.
+ * Exports exist for the budget-alignment test.
+ */
+const REATTACH_MAX_ATTEMPTS = 30
+export { REATTACH_RETRY_MS, REATTACH_MAX_ATTEMPTS }
 
 /**
  * The client-mode session facade. Wave-1 rows are fully functional; the
@@ -306,6 +322,9 @@ export class RemoteHostSession {
 	#reattachTimer: ReturnType<typeof setTimeout> | undefined
 	#reattachInFlight = false
 	#reattachAttempts = 0
+	/** P2 budget (cadence × cap); defaults match the restart readiness budget. */
+	readonly #reattachRetryMs: number
+	readonly #reattachMaxAttempts: number
 	#labelBackup: string | undefined
 	/** Wave-2 ops surfaces (lazy: built on first use after start()). */
 	#ops: RemoteSessionOps | undefined
@@ -348,6 +367,8 @@ export class RemoteHostSession {
 		this.#dshHome = resolveDshHome(options.dshHome)
 		this.#profile = options.profile ?? "opentui"
 		this.#restartHost = options.restartHost
+		this.#reattachRetryMs = options.reattachRetryMs ?? REATTACH_RETRY_MS
+		this.#reattachMaxAttempts = options.reattachMaxAttempts ?? REATTACH_MAX_ATTEMPTS
 		this.#socketFactory = options.socketFactory ?? ((path) => this.#openMuxSocket(path))
 	}
 
@@ -1438,7 +1459,7 @@ export class RemoteHostSession {
 		return this.#sessionId
 	}
 
-	#attachFollow(replay: boolean): Promise<RemoteFollowOpening> {
+	#attachFollow(replay: boolean, sinceSeq?: number): Promise<RemoteFollowOpening> {
 		if (this.#follow === undefined) {
 			this.#follow = new RemoteFollowSession({
 				socketFactory: this.#socketFactory,
@@ -1446,7 +1467,7 @@ export class RemoteHostSession {
 				onDetached: () => this.#onFollowDetached(),
 			})
 		}
-		return this.#follow.attach(this.#sessionId!, replay)
+		return this.#follow.attach(this.#sessionId!, replay, sinceSeq)
 	}
 
 	#followSink() {
@@ -1798,13 +1819,17 @@ export class RemoteHostSession {
 		try {
 			const journalBefore = this.#journal.length
 			const seqBefore = this.#lastDurableSeq
-			const opening = await this.#attachFollow(true)
+			// P1#1: the snapshot replay folds against the last durable seq this
+			// client painted before the gap — records at/below it are already
+			// on the ledgers and must never re-paint (rows) or re-announce
+			// (tool calls) after a reconnect /restart re-attach.
+			const opening = await this.#attachFollow(true, seqBefore)
 			this.#reattachAttempts = 0
 			await this.#repairJournalGap(opening, journalBefore, seqBefore)
 			this.#setReconnecting(false)
 		} catch {
 			this.#reattachAttempts += 1
-			if (this.#reattachAttempts >= REATTACH_MAX_ATTEMPTS) {
+			if (this.#reattachAttempts >= this.#reattachMaxAttempts) {
 				this.#reattachAttempts = 0
 				this.#setReconnecting(false)
 				try {
@@ -1860,11 +1885,18 @@ export class RemoteHostSession {
 		this.#reattachTimer = setTimeout(() => {
 			this.#reattachTimer = undefined
 			void this.#reattach()
-		}, REATTACH_RETRY_MS)
+		}, this.#reattachRetryMs)
 		this.#reattachTimer.unref?.()
 	}
 
-	/** The wave-1 reconnecting marker: the label swap the UI already reads. */
+	/**
+	 * The wave-1 reconnecting marker: the label swap the UI already reads.
+	 * KNOWN GAP (assess, P1#1 group): ShellHost samples `session.label` only
+	 * at onTurnEnd (ShellHost.tsx:1081) and its sole mid-turn hook,
+	 * onStreamTick (:1085), reads only {chars, at} — so "reconnecting…" never
+	 * paints mid-turn. ShellHost needs a label-change notification: an
+	 * `onLabel?: (label: string) => void` TurnCallbacks entry fired from here.
+	 */
 	#setReconnecting(on: boolean): void {
 		if (on) {
 			if (this.#labelBackup === undefined) {

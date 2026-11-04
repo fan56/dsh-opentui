@@ -1,30 +1,43 @@
 #!/bin/bash
-# dsh-opentui launcher: boots the real dsh host with the dsh-opentui profile.
-# OpenTUI's native core needs node >=26.4 with --experimental-ffi inside the host.
+# dsh-opentui launcher: CLIENT mode is the default (ADR-0005) — a thin bun TUI
+# attaching to the resident `dsh --profile opentui` host, which the client
+# spawns/joins through the single-instance lifecycle lock.
 #
-# --client: client mode (ADR-0005) — a thin bun TUI attaching to a resident
-# host (profile opentui) instead of booting the host in-process. NOTE: the
-# default below is still plugin mode; flipping the default to client mode is
-# gated on P6 (E2E topology gates) and happens then.
+# Flip decision (ADR-0005): the default moved from plugin mode to client mode
+# when the P6 two-process E2E gate (packages/shell/scripts/e2e-client.mjs —
+# 7 scenarios over the real tmux + client + resident-host + model topology)
+# passed 7/7, including the /reload same-port restart acceptance: transcript
+# rows single-painted across the re-attach and the restarted host MANAGED
+# (lockfile rewritten with the new pid).
+#
+# bun FFI: no NODE_OPTIONS needed on the client path — @opentui/solid is
+# bun-native. The solid transform MUST be preloaded (--preload): bun
+# transpiles the whole import graph before executing, so a runtime
+# registration inside the entry is too late for kit's .tsx modules, and
+# packages/shell/bunfig.toml only applies when bun runs from that dir —
+# the client launches from the workspace (any cwd).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [ "${1:-}" = "--client" ]; then
+if [ "${1:-}" = "--plugin" ]; then
   shift
-  # bun FFI: no NODE_OPTIONS needed on the client path — @opentui/solid is
-  # bun-native. The solid transform MUST be preloaded (--preload): bun
-  # transpiles the whole import graph before executing, so a runtime
-  # registration inside the entry is too late for kit's .tsx modules, and
-  # packages/shell/bunfig.toml only applies when bun runs from that dir —
-  # the client launches from the workspace (any cwd).
-  exec bun --preload "$SCRIPT_DIR/packages/shell/node_modules/@opentui/solid/scripts/preload.js" \
-    "$SCRIPT_DIR/packages/shell/src/client-entry.tsx" "$@"
+  # Transitional escape hatch: the OLD plugin-mode path — the host boots
+  # in-process (dsh --profile dsh-opentui with the host plugin). Kept until
+  # client mode is verified across every deployment; not the default anymore.
+  # OpenTUI's native core needs node >=26.4 with --experimental-ffi inside
+  # the host.
+  case " ${NODE_OPTIONS:-} " in
+    *" --experimental-ffi "*) ;;                      # already present, keep as-is
+    *) export NODE_OPTIONS="${NODE_OPTIONS:-} --experimental-ffi" ;;
+  esac
+  exec dsh --profile dsh-opentui "$@"
 fi
 
-case " ${NODE_OPTIONS:-} " in
-  *" --experimental-ffi "*) ;;                      # already present, keep as-is
-  *) export NODE_OPTIONS="${NODE_OPTIONS:-} --experimental-ffi" ;;
-esac
+# `--client` is accepted as a no-op alias for the (now default) client mode.
+if [ "${1:-}" = "--client" ]; then
+  shift
+fi
 
-exec dsh --profile dsh-opentui "$@"
+exec bun --preload "$SCRIPT_DIR/packages/shell/node_modules/@opentui/solid/scripts/preload.js" \
+  "$SCRIPT_DIR/packages/shell/src/client-entry.tsx" "$@"
