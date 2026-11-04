@@ -1,6 +1,7 @@
 {
   "name": "@aiwayds/dsh-opentui",
   "version": "0.4.3",
+  "license": "Apache-2.0",
   "type": "module",
   "bin": {
     "dsh-opentui": "bin/dsh-opentui.mjs"
@@ -20,6 +21,7 @@
     "scripts",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "CHANGELOG.md"
   ],
   "scripts": {

@@ -1,6 +1,7 @@
 {
   "name": "@dsh-opentui/starter",
   "version": "0.0.1",
+  "license": "Apache-2.0",
   "private": true,
   "type": "module",
   "description": "Example plugin consuming the dsh-opentui surface protocol \u2014 copy this directory to start a new plugin.",
