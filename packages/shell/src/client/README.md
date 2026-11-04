@@ -13,6 +13,11 @@ Remote session layer (bucket (b)) build on.
 | `mux-frame.ts` | Pure mux frame + `$events` item validation (gateway parity). |
 | `events-source.ts` | The `$events` generation source: mux WebSocket pump. |
 | `transport.ts` | `ClientConnection` — the facade over `dsh-client-connection`'s installConnection. |
+| `remote-stream.ts` | One logical Remote stream on the mux WebSocket (`session/follow` et al). |
+| `remote-follow.ts` | `session/follow({assistantStream:true})` consumption → TurnCallbacks shapes (deltas/usage/tools/todos/turn-end; audit rows 2–6, 34). |
+| `remote-waterfall.ts` | Forwarded `$events` waterfall claim + `$events/result` answering (approval + user-questions; audit rows 7–8). |
+| `remote-host-session.ts` | `RemoteHostSession` — the HostSession-shaped session facade over RPC + `$events` (bucket (b) wave 1). |
+| `workspace-config.ts` | Workspace-local `./.dsh/config.yml` overlay (bucket d). |
 | `lifecycle.ts` | Host process lifecycle (separate agent; bucket (e)). |
 
 ## Contracts
@@ -106,6 +111,45 @@ Semantics:
 - `close()` stops the loop, closes the socket, publishes `disconnected`,
   and rejects a pending `connect()` with `ConnectionClosedError`.
   Idempotent.
+
+### `RemoteHostSession` (remote-host-session.ts)
+
+```ts
+class RemoteHostSession {
+  label: string                  // powerline model segment; "reconnecting…" during a mid-turn gap
+  usage: { prompt, completion, cacheRead, cacheWrite }
+  lastTurnStats: TurnStats
+  start(): Promise<ClientReadyInfo>          // connect + begin $events routing (turn() calls it lazily)
+  turn(userText, cb: TurnCallbacks, signal?): Promise<void>  // session/create + session/prompt{mode:'queue'}; awaits durable turn/end
+  steer(userText): void                       // session/prompt{mode:'steer'}
+  abort(): void                               // session/cancel; next send is a FRESH session (host-session parity)
+  newSession(): void                          // next send creates a new session
+  resumeSession(id): "ok"                     // next send re-creates with the stored id (writer-held → takeover error)
+  registerAskProvider(onAsk): void            // user-questions waterfall prompt target
+  currentSessionId(): string | undefined
+  dispose(): Promise<void>                    // close the carrier; no listeners left behind
+  // … HostSession-shaped wave-2/3 stubs for the rest of the surface (listSessions,
+  //   storedTranscript, forkAtTurn, searchSessions, presets, credentials, settings,
+  //   commands, skills, plugins, /agents, /repair, /tail, subagents, /btw, attachImage)
+}
+```
+
+- Waterfall answers reach the UI synchronously: `approval/request` frames
+  claimed by `frame.agentId === sessionId` prompt `cb.onApprove` and answer
+  `$events/result` with `"allowed-once"` / `"rejected"` (`"unavailable"`
+  fail-closed when no callbacks); `user-questions/request` prompts the
+  registered ask provider and answers `{answers:[{id, selected[], custom?}]}`
+  (throwing UI → the declined envelope). Not-ours waterfalls answer
+  `{kind:"next"}` (delegate).
+- Generation change (reconnect): the follow stream re-opens when the carrier
+  reports `connected` again; an ACTIVE turn surfaces a `label` swap
+  ("reconnecting…"), the snapshot's missed durable rows ride
+  `cb.onReattachedMissed`, and the active attempt's compact stream replays as
+  deltas below the host's dense-index baseline (journal-tail page repair is
+  wave 2).
+- Tests: `test/remote-host-session.test.ts` (fake connection + fake mux
+  sockets), `test/remote-live-smoke.test.ts` (env-gated:
+  `DSH_REMOTE_SMOKE=1 bun test test/remote-live-smoke.test.ts`).
 
 ## Events source decision (native vs pump)
 
