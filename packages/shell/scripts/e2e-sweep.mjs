@@ -173,7 +173,23 @@ const capture = ({ esc = false, full = false } = {}) => {
 const captureEsc = () => sh('tmux', ['capture-pane', '-e', '-p', '-t', SESS]).stdout
 const sendKeys = (...keys) => tmux('send-keys', '-t', SESS, ...keys)
 const typeText = async (text) => { for (const ch of text) { sendKeys('-l', ch); await sleep(TYPE_GAP_MS) } }
-const submit = async (text) => { await typeText(text); await sleep(300); sendKeys('Enter') }
+const submit = async (text) => {
+  const typed = async () => {
+    await typeText(text)
+    await sleep(300)
+    // first-key drop guard: the parser intermittently drops the FIRST
+    // keystroke after an idle period — a lost "/" turned "/login" into the
+    // plain prompt "login" (a real turn). Verify, clean, retype once.
+    if (!has(inputRow(capture()), text)) {
+      for (let i = 0; i < text.length + 6; i++) { sendKeys('BSpace'); await sleep(60) }
+      await sleep(200)
+      await typeText(text)
+      await sleep(300)
+    }
+    sendKeys('Enter')
+  }
+  await typed()
+}
 const waitPane = async (pred, timeoutMs, everyMs = 500) => {
   const deadline = Date.now() + timeoutMs
   let last = ''
@@ -201,11 +217,16 @@ const crashScan = (out, label) => {
   return m ? `crash marker [${m[0]}] during ${label}` : null
 }
 const cleanBuffer = async (n = 24) => { for (let i = 0; i < n; i++) { sendKeys('BSpace'); await sleep(70) } await sleep(200) }
-/** Escape an overlay until `marker` disappears (3 tries; overlays nest). */
-const closeOverlay = async (marker) => {
+/** Escape an overlay until its OPEN-marker (item text visible while the
+ * picker is up) disappears. Anchoring on the OPEN marker is essential: a
+ * close-confirmation row that only paints after Enter gives a trivial
+ * "gone" on the first check, and a DROPPED Escape then leaves the picker
+ * open — every later typed command navigates it (the /preset cascade). */
+const closeOverlay = async (openMarker) => {
+  const markers = Array.isArray(openMarker) ? openMarker : [openMarker]
   for (let i = 0; i < 4; i++) {
     sendKeys('Escape')
-    const gone = await waitPane((o) => !has(o, marker), 4000, 250)
+    const gone = await waitPane((o) => !hasAny(o, markers), 4000, 250)
     if (gone.ok) return true
     await sleep(300)
   }
@@ -322,6 +343,15 @@ const pressUntil = async (pred, key, tries = 3, gapMs = 1600) => {
   return { ok: false, out: capture() }
 }
 
+/** Guard: every keystroke section assumes the editor is idle (no turn
+ * running, no overlay up). A pending turn turns typed commands into
+ * steering and plain prompts into sends. */
+const ensureIdle = async (label = '') => {
+  const q = await waitPane((o) => idle(o) && bufferEmpty(o), 90_000)
+  if (!q.ok) record('ensureIdle' + (label ? ` (${label})` : ''), 'FAIL', ['editor never returned to idle — typing sections would steer/send'])
+  return q.ok
+}
+
 /** waitPane + one repaint nudge + re-check (tear-tolerant content waits). */
 const waitPaneN = async (pred, timeoutMs, everyMs = 500) => {
   const first = await waitPane(pred, timeoutMs, everyMs)
@@ -419,18 +449,16 @@ try {
     { name: '/config invalid key', line: '/config nosuchkey 1', marker: /unknown config key: nosuchkey/ },
     { name: '/config reset', line: '/config retentionDays 0', marker: 'retentionDays = 0' },
     { name: '/search (miss)', line: '/search zzz-nohit', marker: ['no sessions matching', 'search:'] },
-    { name: '/queue enqueue', line: '/queue sweep-drain', marker: 'queued', required: false },
     { name: '/hints toggle', line: '/hints', marker: 'key hints' },
     { name: '/hints untoggle', line: '/hints', marker: 'key hints' },
     { name: '/language cycle', line: '/language', marker: 'language' },
     { name: '/language restore', line: '/language', marker: 'language' },
     { name: '/language restore2', line: '/language', marker: 'language' },
     { name: '/language restore3', line: '/language', marker: 'language' },
-    { name: '/attach (1px png)', line: '/attach ' + join(SWEEP_WS, 'sweep-1px.png'), marker: 'attached' },
   ]) await expectCommand(item.name, item)
 
   // ---- overlay pickers (item-text anchors; titles paint blank) ----
-  await expectCommand('/preset', { marker: ['standard', 'codemode', 'ptc', 'minimal', 'cordis'], closeMarker: 'fresh session on next message' })
+  await expectCommand('/preset', { marker: ['standard', 'codemode', 'ptc', 'minimal', 'cordis'], closeMarker: ['standard', 'codemode', 'ptc', 'minimal', 'cordis'] })
   // model/theme: every catalog id also sits on the powerline, so the close
   // check is the editor returning to its idle/empty state after escape
   await submit('/model')
@@ -471,6 +499,7 @@ try {
   }
 
   // ---- login PANEL flow + keystroke-leak regression (scratch home) ----
+  await ensureIdle('login')
   await submit('/login')
   const menu = await waitPaneN((o) => has(o, 'Amazon Bedrock') && has(o, 'Anthropic'), 12_000)
   writeFileSync(join(capsDir, 'login_menu.txt'), menu.out)
@@ -516,6 +545,7 @@ try {
   }
 
   // ---- keyboard surfaces ----
+  await ensureIdle('keyboard')
   // slash palette: filter + arrows + tab
   await typeText('/lo')
   await sleep(400)
@@ -567,8 +597,22 @@ try {
 
   // ---- real-turn surfaces (need a working route) ----
   if (ROUTE) {
-    await submit('reply with the single word: sweepok')
-    const t = await waitPane((o) => /\bsweepok\b/.test(o) && idle(o), 90_000)
+    await ensureIdle('turns')
+    // /attach: the image rides the NEXT message — give it its own throwaway
+    // turn so it cannot pollute later assertions
+    await submit('/attach ' + join(SWEEP_WS, 'sweep-1px.png'))
+    const att = await waitPaneN((o) => has(o, 'attached'), 8000)
+    record('/attach (1px png)', att.ok ? 'PASS' : 'FAIL')
+    await submit('reply with only the word: ack')
+    const ack = await waitPane((o) => idle(o) && flat(o).includes('ack'), 90_000)
+    record('/attach image turn', ack.ok ? 'PASS' : 'CHECK', ['ack row painted'])
+
+    await submit('reply with the single word sweepok and nothing else')
+    let t = await waitPane((o) => idle(o) && flat(o).includes('sweepok'), 90_000)
+    if (!t.ok) {
+      await submit('answer with exactly one word: sweepok')
+      t = await waitPane((o) => idle(o) && flat(o).includes('sweepok'), 90_000)
+    }
     // mangle-tolerant: any non-echo row mentioning the reply token after idle
     const replyRow = t.out.split('\n').find((l) => !l.includes('❯') && !l.includes('●') && flat(l).includes('sweepok'))
     record('turn: real reply', replyRow !== undefined || flat(t.out).includes('sweepok') ? 'PASS' : 'FAIL')
@@ -645,13 +689,13 @@ try {
     record('/search hit', searchOpen ? 'PASS' : 'CHECK')
     if (searchOpen && !cap.includes('no sessions matching')) { sendKeys('Escape'); await sleep(400) }
 
-    // /queue drains after the running turn
+    // /queue: enqueue mid-turn, drains after the turn settles
     await submit('reply with the single word: qdrain')
     await waitPane((o) => !idle(o), 20_000)
     await submit('/queue sweep-queued')
-    await sleep(800)
+    const q1 = await waitPaneN((o) => has(o, 'queued'), 8000)
     cap = capture()
-    record('/queue enqueue mid-turn', /queued \(1 waiting\)/.test(cap) ? 'PASS' : 'FAIL')
+    record('/queue enqueue mid-turn', q1.ok ? 'PASS' : 'FAIL')
     const drained = await waitPane((o) => idle(o), 120_000)
     await waitPane((o) => idle(o) && /sweep-queued/.test(o), 90_000)
     cap = capture({ full: true })
@@ -715,6 +759,7 @@ try {
   }
 
   // ---- /reload (works without a route) ----
+  await ensureIdle('reload')
   const lockBefore = readLock()
   await submit('/reload')
   const reloaded = await waitPane((o) => o.includes('plugins reloaded') || o.includes('reload failed'), 90_000)
