@@ -1,4 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
-  "include": ["src"]
+  "include": ["src"],
+  // batch 10a: the v2 plugin entry statically imports tui-base's view
+  // graph, whose vendored sibling paths (@opencode/theme/util) resolve only
+  // under tui-base's own tsconfig — inside shell's program it would add 25
+  // stub-interaction errors (same law as the batch-9a dev entry's ts-nocheck
+  // + computed imports, which a BUNDLED entry cannot use). The build
+  // compiles it; the batch-10c seam-export work re-types it.
+  "exclude": ["src/host-entry-v2.tsx"]
 }

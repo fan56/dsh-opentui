@@ -65,6 +65,30 @@ export class HostSession {
   #releasedSeq = 0
   usage = { prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
 
+  // ---- journal feed (batch 10a, additive) ----
+  // The session/event firehose for OUR session, forwarded as durable
+  // records to the v2 seam adapter's projector (client/session-seam-adapter
+  // twin: remote-host-session grew the same hook in batch 9a). One sink;
+  // records fire even when no turn callbacks are registered.
+  #journalSink?: (entry: { seq: number; type: string; data: Record<string, unknown> }) => void
+  #journalSeq = 0
+
+  /** Subscribe to our session's durable event records (user/message,
+   * assistant/message, turn/end). Returns the disposer. */
+  onJournalRecord(listener: (entry: { seq: number; type: string; data: Record<string, unknown> }) => void): () => void {
+    this.#journalSink = listener
+    return () => {
+      if (this.#journalSink === listener) this.#journalSink = undefined
+    }
+  }
+
+  /** Forward one of OUR session's durable records to the journal sink. */
+  #emitJournal(event: SessionEvent): void {
+    if (this.#journalSink === undefined) return
+    if (event.type !== "user/message" && event.type !== "assistant/message" && event.type !== "turn/end") return
+    this.#journalSink({ seq: ++this.#journalSeq, type: event.type, data: (event.data ?? {}) as Record<string, unknown> })
+  }
+
   /** Cache hit rate in percent when the host reports cache traffic. */
   cacheHitRate(): number | null {
     const total = this.usage.cacheRead + this.usage.cacheWrite
@@ -137,6 +161,22 @@ export class HostSession {
     this.#agentId = undefined
     this.#disarmIdleRelease()
     this.label = `${provider}/${model}${reasoningEffort ? ` (${reasoningEffort})` : ""}`
+  }
+
+  /** The live session id, when one exists (batch 10a, additive read: the
+   * v2 seam adapter's sessionAttached/currentSessionId reads). */
+  currentSessionId(): string | undefined {
+    return this.#sessionId
+  }
+
+  /** The composed model route — explicit override wins over the
+   * agentDefaultModel selection, the same precedence turn() applies, but
+   * read-only (no label side effect). Batch 10a, additive: the v2 seam
+   * adapter's /model picker label. */
+  currentModelSelection(): { provider: string; model: string; reasoningEffort?: string } | undefined {
+    const sel = this.#override ?? (this.#ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
+    if (!sel?.provider || !sel?.model) return undefined
+    return { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}) }
   }
 
   /** Start a FRESH session on the next turn (keeps the current model route). */
@@ -1301,6 +1341,7 @@ export class HostSession {
         this.#foldChildEvent(session, sessionKey, event)
         return
       }
+      this.#emitJournal(event)
       const cb = this.#cb
       if (!cb) return
       try {

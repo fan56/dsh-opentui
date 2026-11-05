@@ -9,7 +9,11 @@
 import { execFileSync } from "node:child_process"
 import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
-import solidPlugin from "@opentui/solid/bun-plugin"
+// batch 10a: the v2 view graph compiles with the SAME @opentui/solid the
+// runtime resolves (0.8.1, tui-base's pin) — shell's own dep is still the
+// old-stack 0.7.0 and its plugin emits for that runtime.
+// @ts-expect-error direct file import, bypassing shell's 0.7.0 resolution
+import solidPlugin from "../tui-base/node_modules/@opentui/solid/scripts/solid-plugin.js"
 
 const pkgDir = dirname(new URL(import.meta.url).pathname)
 const outDir = join(pkgDir, "dist-host")
@@ -60,12 +64,14 @@ if (process.argv.includes("--only-symlink")) {
 }
 
 const result = await Bun.build({
-  entrypoints: [join(pkgDir, "src", "host-entry.tsx")],
+  // batch 10a: the plugin entry swaps to the rebuilt tui-base view
+  // (host-entry-v2); the old host-entry/ShellHost stay in tree until 10c.
+  entrypoints: [join(pkgDir, "src", "host-entry-v2.tsx")],
   target: "node",
   format: "esm",
   outdir: outDir,
   plugins: [solidPlugin],
-  external: ["@opentui/core", "@opentui/solid", "solid-js", "@deepseek-ai/dsh-llm"],
+  external: ["@opentui/core", "@opentui/solid", "@opentui/keymap", "solid-js", "@deepseek-ai/dsh-llm"],
   naming: { entry: "index.[ext]" },
 })
 if (!result.success) {
@@ -82,9 +88,10 @@ const manifest = {
   exports: { ".": "./index.js" },
   dsh: { bundle: { patch: "./plugin.patch.yml" } },
   dependencies: {
-    "@opentui/core": "0.7.0",
-    "@opentui/solid": "0.7.0",
-    "solid-js": "1.9.12",
+    "@opentui/core": "0.8.1",
+    "@opentui/solid": "0.8.1",
+    "@opentui/keymap": "0.8.1",
+    "solid-js": "1.9.17",
   },
 }
 await Bun.write(join(outDir, "package.json"), JSON.stringify(manifest, null, 2))
