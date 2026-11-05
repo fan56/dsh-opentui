@@ -84,3 +84,21 @@ this repo's render surface.
 Architecture where the TUI is a thin rendering client attaching to a resident
 host service over the host's Remote connection protocol. Contrast: plugin
 mode (TUI in-process inside the host, today's shape).
+
+## Tui base
+
+The vendored, dependency-pruned @opencode/tui snapshot (packages/tui-base)
+that renders the UI — the base layer the view is rebuilt on (ADR-006).
+_Avoid_: library fork (vendored snapshot, not a fork), engine (the engine is
+OpenTUI underneath).
+
+## Custom layer
+
+dsh-specific panels and wiring built on the tui base: powerline, dock
+widgets, approval/ask surfaces. _Avoid_: theme (theme is base-provided).
+
+## Session layer
+
+The engine-agnostic Remote session facade (host-session /
+remote-host-session surface). Unaffected by view-layer swaps. _Avoid_: host
+(the dsh host is the process it connects to).
