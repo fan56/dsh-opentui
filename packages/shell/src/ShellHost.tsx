@@ -9,8 +9,8 @@
  * state and keyboard routing only.
  */
 import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { SyntaxStyle } from "@opentui/core"
-import { useKeyboard, useRenderer } from "@opentui/solid"
+import { SyntaxStyle, decodePasteBytes } from "@opentui/core"
+import { useKeyboard, usePaste, useRenderer } from "@opentui/solid"
 import { getTheme, themeNames, themes, type I18n } from "@dsh-opentui/kit"
 import { Transcript, TranscriptWindow, InputLine, FooterHints, ApprovalCard, type TranscriptItem, type AskEntry, type StoredTranscriptRow } from "@dsh-opentui/kit"
 import { WelcomeBanner, PowerlineFooter, POWERLINE_COLORS, speedSegment, toolSegment, type PowerlineSegment } from "@dsh-opentui/kit"
@@ -1387,6 +1387,33 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
     // esc closes the slash palette (the editor keeps its buffer).
     if (key.name === "escape" && menuVisible()) setMenuOpen(false)
+  })
+
+  // Bracketed paste (Ghostty/tmux Cmd+V wrap the burst in ESC[200~…201~
+  // because OpenTUI enables mode 2004): the parser strips the wrappers and
+  // emits a paste EVENT — which never reaches keypress-level handlers, so
+  // the custom text-capture surfaces (login entry fields, the steer line)
+  // silently dropped pasted text. Global paste listeners run before the
+  // focused renderable's, so: route to the consuming modal first; when no
+  // modal owns input, let the event fall through to the focused editor
+  // (it handles paste natively); when a non-text modal holds the screen,
+  // swallow the paste so nothing lands in the blurred editor.
+  usePaste((event) => {
+    const text = decodePasteBytes(event.bytes)
+    if (loginFeature.panelOpen()) {
+      // entry fields consume the text; other stages (menu/confirm) just
+      // swallow it — same posture as keys under the panel
+      loginFeature.handlePaste(text)
+      event.preventDefault()
+      return
+    }
+    if (viewerId() && steerFor()) {
+      const cleaned = [...text].filter((c) => c >= "\x20" && c <= "\x7e").join("")
+      if (cleaned) setSteerBuffer((b) => b + cleaned)
+      event.preventDefault()
+      return
+    }
+    if (approval() || overlay() || stopConfirm() || viewerId()) event.preventDefault()
   })
 
   // ---- powerline footer ----

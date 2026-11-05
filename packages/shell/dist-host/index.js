@@ -162,8 +162,8 @@ import { memo as _$memo10 } from "@opentui/solid";
 import { setProp as _$setProp19 } from "@opentui/solid";
 import { createElement as _$createElement19 } from "@opentui/solid";
 import { For as For15, createMemo, createSignal as createSignal6, onCleanup as onCleanup3, onMount } from "solid-js";
-import { SyntaxStyle } from "@opentui/core";
-import { useKeyboard as useKeyboard2, useRenderer } from "@opentui/solid";
+import { SyntaxStyle, decodePasteBytes } from "@opentui/core";
+import { useKeyboard as useKeyboard2, usePaste, useRenderer } from "@opentui/solid";
 // ../kit/src/themes-data.ts
 var ayuLight = {
   name: "ayu-light",
@@ -3103,6 +3103,7 @@ function providerProfileFor(entry) {
   }
   return profile;
 }
+var printableRun = (text) => [...text].filter((c) => c >= " " && c <= "~").join("");
 function createLoginFeature(deps) {
   const [stage, setStage] = createSignal4({
     kind: "closed"
@@ -3425,8 +3426,8 @@ function createLoginFeature(deps) {
         });
         return true;
       }
-      const ch = key.sequence ?? "";
-      if (ch.length === 1 && /[\x20-\x7e]/.test(ch)) {
+      const ch = printableRun(key.sequence ?? "");
+      if (ch) {
         setStage({
           ...st,
           buffer: st.buffer + ch
@@ -3456,10 +3457,23 @@ function createLoginFeature(deps) {
     }
     return false;
   };
+  const handlePaste = (text) => {
+    const st = stage();
+    if (st.kind !== "entry")
+      return false;
+    const cleaned = printableRun(text);
+    if (cleaned)
+      setStage({
+        ...st,
+        buffer: st.buffer + cleaned
+      });
+    return true;
+  };
   return {
     view,
     open: openMenu,
     handleKey,
+    handlePaste,
     active: () => stage().kind !== "closed" && stage().kind !== "menu",
     panelOpen: () => stage().kind !== "closed"
   };
@@ -5407,6 +5421,23 @@ function ShellHost(props) {
     }
     if (key.name === "escape" && menuVisible())
       setMenuOpen(false);
+  });
+  usePaste((event) => {
+    const text = decodePasteBytes(event.bytes);
+    if (loginFeature.panelOpen()) {
+      loginFeature.handlePaste(text);
+      event.preventDefault();
+      return;
+    }
+    if (viewerId() && steerFor()) {
+      const cleaned = [...text].filter((c) => c >= " " && c <= "~").join("");
+      if (cleaned)
+        setSteerBuffer((b) => b + cleaned);
+      event.preventDefault();
+      return;
+    }
+    if (approval() || overlay() || stopConfirm() || viewerId())
+      event.preventDefault();
   });
   const route = createMemo(() => {
     const m = /^([^/]+)\/(\S+?)(?:\s*\(([\w-]+)\))?$/.exec(label());

@@ -100,9 +100,17 @@ export interface LoginFeature {
   view: () => JSX.Element | null
   open(mode: "login" | "logout"): Promise<void>
   handleKey(key: { name: string; sequence?: string }): boolean
+  /** Bracketed-paste text into the active entry field (API keys are pasted,
+   * not typed). True when the paste was consumed by an entry stage. */
+  handlePaste(text: string): boolean
   active(): boolean
   panelOpen(): boolean
 }
+
+/** Printable-run filter shared by the typed-burst and paste paths: API keys
+ * and URLs are printable ASCII; control chars are dropped. */
+const printableRun = (text: string): string =>
+  [...text].filter((c) => c >= "\x20" && c <= "\x7e").join("")
 
 export function createLoginFeature(deps: LoginDeps): LoginFeature {
   const [stage, setStage] = createSignal<Stage>({ kind: "closed" })
@@ -252,8 +260,10 @@ export function createLoginFeature(deps: LoginDeps): LoginFeature {
       if (key.name === "escape") { setStage({ kind: "closed" }); return true }
       if (key.name === "return") { const v = st.buffer; st.onCommit(v); return true }
       if (key.name === "backspace") { setStage({ ...st, buffer: st.buffer.slice(0, -1) }); return true }
-      const ch = key.sequence ?? ""
-      if (ch.length === 1 && /[\x20-\x7e]/.test(ch)) { setStage({ ...st, buffer: st.buffer + ch }); return true }
+      // accept single keys AND multi-char bursts (an unwrapped paste can
+      // arrive as one keypress carrying the whole string)
+      const ch = printableRun(key.sequence ?? "")
+      if (ch) { setStage({ ...st, buffer: st.buffer + ch }); return true }
       return true
     }
     if (st.kind === "confirm") {
@@ -265,10 +275,19 @@ export function createLoginFeature(deps: LoginDeps): LoginFeature {
     return false
   }
 
+  const handlePaste = (text: string): boolean => {
+    const st = stage()
+    if (st.kind !== "entry") return false // menus/confirm don't take text
+    const cleaned = printableRun(text)
+    if (cleaned) setStage({ ...st, buffer: st.buffer + cleaned })
+    return true
+  }
+
   return {
     view,
     open: openMenu,
     handleKey,
+    handlePaste,
     active: () => stage().kind !== "closed" && stage().kind !== "menu",
     panelOpen: () => stage().kind !== "closed",
   }
