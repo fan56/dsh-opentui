@@ -30,9 +30,11 @@
 // @ts-nocheck
 import { createSignal, onCleanup, onMount, ErrorBoundary } from "solid-js"
 import { createComponent, createElement, render, spread } from "@opentui/solid"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
+import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
@@ -85,6 +87,10 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 	const [model, setModel] = createSignal<{ providerID: string; modelID: string } | undefined>()
 	const [now, setNow] = createSignal(new Date())
 	let composerRef: { focused(): boolean; focus(): void } | undefined
+	// Transcript scrollback (batch 10f): the page owns the scrollbox ref and
+	// the key layer. Focus stays in the composer; the layer is gated on an
+	// empty dialog stack (turn overlays + /model + pickOne all ride it).
+	let transcriptScroll: ScrollBoxRenderable | undefined
 	onMount(() => {
 		void projection.load()
 		void seam.currentModelSelection().then(setModel)
@@ -165,6 +171,7 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 				createComponent(Transcript, {
 					seam,
 					projection,
+					scrollRef: (value: ScrollBoxRenderable | undefined) => (transcriptScroll = value),
 					get children() {
 						return createComponent(SessionComposer, {
 							seam,
@@ -178,6 +185,13 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 							slashHeight: () => slash.controller.rows(),
 						})
 					},
+				}),
+				// Transcript scrollback keys (batch 10f, ./transcript-scroll.tsx):
+				// PgUp/PgDn scroll the transcript while the composer keeps focus;
+				// gated OFF while any dialog (approval/ask//model) is open.
+				createComponent(TranscriptScrollKeys, {
+					scroll: () => transcriptScroll,
+					enabled: () => dialog.stack.length === 0,
 				}),
 				// REACTIVE-PROP LAW (batch 10d): signal reads ride GETTERS. An
 				// eager `busy()` / `segments()` / `now()` read here is tracked by
@@ -324,6 +338,10 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 				})
 			},
 		}),
+		// Renderer options (batch 10f): mouse reporting OFF — the terminal
+		// keeps drag-select + Cmd+C (Ghostty native); the transcript
+		// scrollback moves via TranscriptScrollKeys instead of the wheel.
+		{ useMouse: false },
 	).then(() => {
 		appendDiagnostic("[v2] render promise resolved")
 	}).catch((error: unknown) => {

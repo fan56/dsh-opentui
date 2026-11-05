@@ -21,9 +21,11 @@
 // Run from packages/tui-base: bun examples/session.tsx   (ctrl+c quits)
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { createComponent, render } from "@opentui/solid"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { NullSessionSeam, type SeamAskPick, type SeamAskQuestion, type SeamProviderModel, type SeamSessionSummary, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
+import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { SessionComposer, type SessionComposerRef } from "../src/routes/session/session-composer"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
@@ -144,6 +146,10 @@ const seam = new FakeSeam()
 const overlays = new TurnOverlayController()
 registerTurnOverlays(seam, overlays)
 let composerRef: SessionComposerRef | undefined
+// Transcript scrollback (batch 10f): the page owns the scrollbox ref for
+// TranscriptScrollKeys (focus stays in the composer; layer gated on an
+// empty dialog stack).
+let transcriptScroll: ScrollBoxRenderable | undefined
 
 function SessionPage() {
 	const projection = createSeamRows(seam, () => seam.currentSessionId() ?? "", {
@@ -242,7 +248,7 @@ function SessionPage() {
 	})
 	return (
 		<box flexDirection="column" width="100%" height="100%" backgroundColor="black">
-			<Transcript seam={seam} projection={projection}>
+			<Transcript seam={seam} projection={projection} scrollRef={(value) => (transcriptScroll = value)}>
 				<SessionComposer
 					seam={seam}
 					send={send}
@@ -257,6 +263,10 @@ function SessionPage() {
 					slashHeight={() => slash.controller.rows()}
 				/>
 			</Transcript>
+			{/* Transcript scrollback keys (batch 10f, transcript-scroll.tsx):
+			    PgUp/PgDn scroll the transcript, composer keeps focus; gated OFF
+			    while any dialog (approval/ask//model) is open. */}
+			<TranscriptScrollKeys scroll={() => transcriptScroll} enabled={() => dialog.stack.length === 0} />
 			{/* REACTIVE-PROP LAW (batch 10e, the v2-entry fix family): signal
 			    reads ride getters. An eager `busy()` / `segments()` / `now()`
 			    read in a JSX prop is tracked by the root render effect (bun's
@@ -310,6 +320,8 @@ render(
 			</Keymap.Provider>
 		</ConfigProvider>
 	),
-	{ exitOnCtrlC: true },
+	// useMouse:false (batch 10f, v2-entry parity): terminal-native
+	// drag-select; scrollback via TranscriptScrollKeys.
+	{ exitOnCtrlC: true, useMouse: false },
 )
 if (EXIT_AFTER_MS > 0) setTimeout(() => process.exit(0), EXIT_AFTER_MS)

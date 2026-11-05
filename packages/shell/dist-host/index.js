@@ -12,7 +12,8 @@ async function mountEngine(options = {}) {
   const renderer = await createCliRenderer({
     externalOutputMode: "passthrough",
     exitOnCtrlC: false,
-    autoFocus: false
+    autoFocus: false,
+    useMouse: false
   });
   const capture = captureConsoleWhileMounted(options.captureStdout !== false);
   renderer.on("exit", (reason) => {

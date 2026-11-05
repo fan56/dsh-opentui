@@ -32,9 +32,9 @@
  * bottom slot is flexShrink=0 and its child (the composer) sets an explicit
  * height — auto-height boxes collapse in flex columns.
  */
-import { For, onMount, Show, type JSX } from "solid-js"
+import { For, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { useRenderer } from "@opentui/solid"
-import { SyntaxStyle } from "@opentui/core"
+import { SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
@@ -56,6 +56,11 @@ export type TranscriptProps = {
 	syntaxStyle?: SyntaxStyle
 	/** Bottom slot: the composer. */
 	children?: JSX.Element
+	/** Publishes the transcript scrollbox (vendored route's scrollRef prop
+	 * shape; undefined on teardown). Page wiring binds scroll keys to it —
+	 * the box itself is never focused (the composer holds the singleton
+	 * focus); scrolling goes through `scrollBy` + native stickyScroll. */
+	scrollRef?: (scroll: ScrollBoxRenderable | undefined) => void
 }
 
 export function Transcript(props: TranscriptProps) {
@@ -132,6 +137,10 @@ export function Transcript(props: TranscriptProps) {
 		}
 	}
 
+	onCleanup(() => {
+		props.scrollRef?.(undefined)
+	})
+
 	return (
 		<box flexDirection="column" flexGrow={1} minHeight={0} width="100%" backgroundColor={color.background()}>
 			{/* session route shape: row > flexGrow col (position relative) > scrollbox */}
@@ -142,6 +151,9 @@ export function Transcript(props: TranscriptProps) {
 						stickyScroll={true}
 						stickyStart="bottom"
 						verticalScrollbarOptions={{ paddingLeft: 1, visible: true, trackOptions: {} }}
+						ref={(value: ScrollBoxRenderable) => {
+							props.scrollRef?.(value)
+						}}
 					>
 						<For each={projection.rows as readonly SeamRow[]}>
 							{(row) => (

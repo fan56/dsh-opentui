@@ -267,7 +267,25 @@ Overrides pass through `SessionComposer`'s `keybinds` prop. Tests:
 | esc / ctrl+c (close top dialog)                 | DialogProvider modal layer | `ui/dialog.tsx` `bind: "escape"` / `"ctrl+c"`         | no (hardcoded in the vendored app too) |
 | enter / esc / ← → (approval card)               | `ui/dialog-confirm`       | `Keymap.createLayer` binds in the vendored component  | no (hardcoded in the vendored app too) |
 | ↑↓ / enter / pgup/pgdn / home/end (ask picker)  | `ui/dialog-select`        | vendored component (`dialog.select.*` in config)      | through the vendored Keymap layer, per `dialog.select.*` |
+| pgup / pagedown (transcript page, batch 10f)    | transcript scrollbox      | `session.page.up` / `session.page.down` (`pageup,ctrl+alt+b` / `pagedown,ctrl+alt+f`) → `TranscriptScrollKeys` global Keymap layer | yes (config `session.page.*`) |
+| ctrl+alt+b / ctrl+alt+f (transcript page)       | transcript scrollbox      | same ids, second chord in the defaults                 | yes (config `session.page.*`)         |
 | ctrl+c (exit example)                           | renderer                  | `render(..., { exitOnCtrlC: true })`                  | no                                   |
+
+Batch 10f transcript scrollback: `routes/session/transcript-scroll.tsx`
+registers the vendored route's global keymap layer over the Transcript's
+new `scrollRef` prop (wired in `examples/v2-entry.tsx` + the bench
+`examples/session.tsx`). Scrolling rides `scrollBy(±1, "viewport")` — the
+composer keeps focus (the layer never focuses; bindings consume the keys
+before the focused editor). The layer is gated on an empty dialog stack
+(`enabled: () => dialog.stack.length === 0`), so scroll keys are dead
+while an approval/ask//model overlay is open. Follow-on-append is the
+scrollbox's NATIVE stickyScroll (verified against @opentui 0.8.1: appends
+follow only while the viewport sits at the bottom edge — a scroll-up
+keeps its position through new rows, scrolling back re-engages; pinned by
+`test/transcript-scroll.test.ts`). Mouse wheel does nothing in-app: the
+renderer boots with `useMouse: false` (same commit — engine `mountEngine`
++ both page `render(...)` calls) so the terminal keeps native drag-select
+and Cmd+C; PgUp/PgDn replace wheel scrollback.
 
 ## Batch 9a budget note (dev entry)
 

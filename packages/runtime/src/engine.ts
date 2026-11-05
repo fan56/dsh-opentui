@@ -31,6 +31,10 @@ export async function mountEngine(options: EngineOptions = {}): Promise<{ render
     externalOutputMode: "passthrough",
     exitOnCtrlC: false,
     autoFocus: false,
+    // Terminal-native drag-select + copy (Ghostty Cmd+C): mouse reporting
+    // OFF. The TUI never claims the mouse; in-app wheel scroll is therefore
+    // unavailable (scrollback moves via PgUp/PgDn keybinds instead).
+    useMouse: false,
   })
 
   // Capture AFTER the renderer exists: the renderer holds its own stdout
