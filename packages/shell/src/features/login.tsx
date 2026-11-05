@@ -227,8 +227,14 @@ export function createLoginFeature(deps: LoginDeps): LoginFeature {
       return <Select title={st.title} items={st.items} theme={th} onSelect={(v) => { setStage({ kind: "closed" }); st.onPick(v) }} onCancel={() => setStage({ kind: "closed" })} />
     }
     if (st.kind === "entry") {
+      // Explicit width/height: auto-height boxes collapse inside the flex
+      // column once the flexGrow transcript holds content — the rows then
+      // overpaint onto a single line (title/hint interleaved into one
+      // mangled row; the same kit-Select constraint, documented there:
+      // "auto height inside a flex column collapses to zero rows").
+      // 7 = border 2 + padding 2 + title + buffer + hint.
       return (
-        <box style={{ border: true, borderStyle: "rounded", borderColor: th.tokens.border, flexDirection: "column", padding: 1 }}>
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th.tokens.border, flexDirection: "column", padding: 1, width: "100%", height: 7 }}>
           <text style={{ fg: th.tokens.accent }}>{st.title}</text>
           <text style={{ fg: th.tokens.text }}>{st.mask ? st.buffer.replace(/./g, "*") || " " : st.buffer || " "}</text>
           <text style={{ fg: th.tokens.dim }}>type · enter saves · esc cancels</text>
@@ -236,16 +242,18 @@ export function createLoginFeature(deps: LoginDeps): LoginFeature {
       )
     }
     if (st.kind === "confirm") {
+      // 6 = border 2 + padding 2 + text + hint.
       return (
-        <box style={{ border: true, borderStyle: "rounded", borderColor: th.tokens.warn, flexDirection: "column", padding: 1 }}>
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th.tokens.warn, flexDirection: "column", padding: 1, width: "100%", height: 6 }}>
           <text style={{ fg: th.tokens.warn }}>{st.text}</text>
           <text style={{ fg: th.tokens.dim }}>y confirm · n/esc cancels</text>
         </box>
       )
     }
     if (st.kind === "notice") {
+      // 5 = border 2 + padding 2 + text.
       return (
-        <box style={{ border: true, borderStyle: "rounded", borderColor: th.tokens.border, flexDirection: "column", padding: 1 }}>
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th.tokens.border, flexDirection: "column", padding: 1, width: "100%", height: 5 }}>
           <text style={{ fg: th.tokens.dim }}>{st.text}</text>
         </box>
       )
@@ -258,7 +266,18 @@ export function createLoginFeature(deps: LoginDeps): LoginFeature {
     if (st.kind === "closed") return false
     if (st.kind === "entry") {
       if (key.name === "escape") { setStage({ kind: "closed" }); return true }
-      if (key.name === "return") { const v = st.buffer; st.onCommit(v); return true }
+      if (key.name === "return") {
+        // Empty commit guard: an entry field is a required value (API key,
+        // baseUrl, model ids, provider id). Committing an empty buffer
+        // fired a credentials.set the host rejects ("invalid payload") AND
+        // registered a garbage route (writeRoute runs before the credential
+        // write) — every stage of the flow. Enter on an empty field is a
+        // swallowed no-op; escape stays the cancel path. A re-sent Enter
+        // (dropped-keypress retry) can no longer destroy the open stage.
+        if (!st.buffer.trim()) return true
+        st.onCommit(st.buffer)
+        return true
+      }
       if (key.name === "backspace") { setStage({ ...st, buffer: st.buffer.slice(0, -1) }); return true }
       // accept single keys AND multi-char bursts (an unwrapped paste can
       // arrive as one keypress carrying the whole string)

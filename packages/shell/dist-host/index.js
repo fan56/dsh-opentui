@@ -1605,6 +1605,15 @@ var INPUT_KEY_BINDINGS = [...defaultTextareaKeyBindings, {
   meta: true,
   action: "newline"
 }];
+var inputDebugTrace = (entry) => {
+  if (!process.env.DSH_OPENTUI_DEBUG)
+    return;
+  import("node:fs").then((fs) => fs.appendFileSync("/tmp/host-inputline.log", JSON.stringify({
+    t: Date.now(),
+    ...entry
+  }) + `
+`)).catch(() => {});
+};
 function InputLine(props) {
   let ta;
   createEffect(on(() => props.resetKey, () => {
@@ -1627,19 +1636,57 @@ function InputLine(props) {
     defer: true
   }));
   const onKeyDown = (key) => {
+    inputDebugTrace({
+      src: "key",
+      name: key.name,
+      seq: key.sequence,
+      ctrl: key.ctrl,
+      shift: key.shift,
+      meta: key.meta
+    });
     if (props.onKeyFilter?.(key)) {
+      inputDebugTrace({
+        src: "key.consumed",
+        by: "onKeyFilter",
+        name: key.name
+      });
       key.preventDefault();
       return;
     }
-    if (!ta || key.shift || key.ctrl || key.meta)
+    if (!ta || key.shift || key.ctrl || key.meta) {
+      inputDebugTrace({
+        src: "key.pass",
+        by: "editor",
+        name: key.name
+      });
       return;
+    }
     const row = ta.visualCursor.visualRow;
     if (key.name === "up" && row === 0) {
-      if (props.onHistoryNav?.("up"))
+      const nav = props.onHistoryNav?.("up");
+      inputDebugTrace({
+        src: "key.history",
+        dir: "up",
+        consumed: nav
+      });
+      if (nav)
         key.preventDefault();
     } else if (key.name === "down" && row >= Math.max(0, ta.virtualLineCount - 1)) {
-      if (props.onHistoryNav?.("down"))
+      const nav = props.onHistoryNav?.("down");
+      inputDebugTrace({
+        src: "key.history",
+        dir: "down",
+        consumed: nav
+      });
+      if (nav)
         key.preventDefault();
+    } else {
+      inputDebugTrace({
+        src: "key.pass",
+        by: "editor",
+        name: key.name,
+        row
+      });
     }
   };
   return (() => {
@@ -1653,8 +1700,19 @@ function InputLine(props) {
     _$insertNode2(_el$30, _$createTextNode2(`❯ `));
     _$use((el) => ta = el, _el$32);
     _$setProp2(_el$32, "keyBindings", INPUT_KEY_BINDINGS);
-    _$setProp2(_el$32, "onContentChange", () => props.onContentChange?.(ta?.plainText ?? ""));
-    _$setProp2(_el$32, "onSubmit", () => props.onSubmit?.());
+    _$setProp2(_el$32, "onContentChange", () => {
+      inputDebugTrace({
+        src: "contentChange",
+        len: (ta?.plainText ?? "").length
+      });
+      props.onContentChange?.(ta?.plainText ?? "");
+    });
+    _$setProp2(_el$32, "onSubmit", () => {
+      inputDebugTrace({
+        src: "submit"
+      });
+      props.onSubmit?.();
+    });
     _$setProp2(_el$32, "onKeyDown", onKeyDown);
     _$insert2(_el$28, _$createComponent2(Show, {
       get when() {
@@ -3323,7 +3381,9 @@ function createLoginFeature(deps) {
             borderStyle: "rounded",
             borderColor: th.tokens.border,
             flexDirection: "column",
-            padding: 1
+            padding: 1,
+            width: "100%",
+            height: 7
           }, _v$2 = {
             fg: th.tokens.accent
           }, _v$3 = {
@@ -3358,7 +3418,9 @@ function createLoginFeature(deps) {
             borderStyle: "rounded",
             borderColor: th.tokens.warn,
             flexDirection: "column",
-            padding: 1
+            padding: 1,
+            width: "100%",
+            height: 6
           }, _v$6 = {
             fg: th.tokens.warn
           }, _v$7 = {
@@ -3387,7 +3449,9 @@ function createLoginFeature(deps) {
             borderStyle: "rounded",
             borderColor: th.tokens.border,
             flexDirection: "column",
-            padding: 1
+            padding: 1,
+            width: "100%",
+            height: 5
           }, _v$9 = {
             fg: th.tokens.dim
           };
@@ -3415,8 +3479,9 @@ function createLoginFeature(deps) {
         return true;
       }
       if (key.name === "return") {
-        const v = st.buffer;
-        st.onCommit(v);
+        if (!st.buffer.trim())
+          return true;
+        st.onCommit(st.buffer);
         return true;
       }
       if (key.name === "backspace") {
@@ -5606,7 +5671,9 @@ function ShellHost(props) {
             borderStyle: "rounded",
             borderColor: th().tokens.warn,
             flexDirection: "column",
-            padding: 1
+            padding: 1,
+            width: "100%",
+            height: 6
           }, _v$2 = {
             fg: th().tokens.warn
           }, _v$3 = {
@@ -5650,7 +5717,8 @@ function ShellHost(props) {
             borderColor: th().tokens.border,
             flexDirection: "column",
             padding: 1,
-            height: 10
+            width: "100%",
+            height: 12
           }, _v$5 = {
             fg: th().tokens.accent
           };
@@ -5678,7 +5746,9 @@ function ShellHost(props) {
             borderStyle: "rounded",
             borderColor: th().tokens.accent,
             flexDirection: "row",
-            padding: 1
+            padding: 1,
+            width: "100%",
+            height: 5
           }, _v$7 = {
             fg: th().tokens.accent
           }, _v$8 = {
@@ -5699,127 +5769,133 @@ function ShellHost(props) {
     _$insert19(_el$, (() => {
       var _c$6 = _$memo10(() => !!(btwOpen() || btwLive()));
       return () => _c$6() ? (() => {
-        var _el$12 = _$createElement19("box"), _el$13 = _$createElement19("box"), _el$14 = _$createElement19("text"), _el$16 = _$createElement19("box"), _el$17 = _$createElement19("text");
-        _$insertNode13(_el$12, _el$13);
-        _$insertNode13(_el$13, _el$14);
-        _$insertNode13(_el$13, _el$16);
-        _$insertNode13(_el$13, _el$17);
-        _$setProp19(_el$13, "style", {
-          flexDirection: "row"
-        });
-        _$insertNode13(_el$14, _$createTextNode11(`btw`));
-        _$setProp19(_el$16, "style", {
-          flexGrow: 1
-        });
-        _$insertNode13(_el$17, _$createTextNode11(`/btw close`));
-        _$insert19(_el$12, _$createComponent18(For15, {
-          get each() {
-            return _$memo10(() => !!btwLive())() ? [btwLive()] : btwPairs().slice(-2);
-          },
-          children: (pair) => (() => {
-            var _el$19 = _$createElement19("box"), _el$20 = _$createElement19("text");
-            _$insertNode13(_el$19, _el$20);
-            _$setProp19(_el$19, "style", {
-              flexDirection: "column"
-            });
-            _$insert19(_el$20, () => `Q: ${pair.q.slice(0, 90)}`);
-            _$insert19(_el$19, _$createComponent18(For15, {
-              get each() {
-                return pair.a.split(`
+        const pairs = btwLive() ? [btwLive()] : btwPairs().slice(-2);
+        const rows = pairs.reduce((n, p) => n + 1 + Math.min(p.a.split(`
+`).length, 4), 0);
+        return (() => {
+          var _el$12 = _$createElement19("box"), _el$13 = _$createElement19("box"), _el$14 = _$createElement19("text"), _el$16 = _$createElement19("box"), _el$17 = _$createElement19("text");
+          _$insertNode13(_el$12, _el$13);
+          _$insertNode13(_el$13, _el$14);
+          _$insertNode13(_el$13, _el$16);
+          _$insertNode13(_el$13, _el$17);
+          _$setProp19(_el$13, "style", {
+            flexDirection: "row"
+          });
+          _$insertNode13(_el$14, _$createTextNode11(`btw`));
+          _$setProp19(_el$16, "style", {
+            flexGrow: 1
+          });
+          _$insertNode13(_el$17, _$createTextNode11(`/btw close`));
+          _$insert19(_el$12, _$createComponent18(For15, {
+            each: pairs,
+            children: (pair) => (() => {
+              var _el$19 = _$createElement19("box"), _el$20 = _$createElement19("text");
+              _$insertNode13(_el$19, _el$20);
+              _$setProp19(_el$19, "style", {
+                flexDirection: "column"
+              });
+              _$insert19(_el$20, () => `Q: ${pair.q.slice(0, 90)}`);
+              _$insert19(_el$19, _$createComponent18(For15, {
+                get each() {
+                  return pair.a.split(`
 `).slice(0, 4);
-              },
-              children: (l) => (() => {
-                var _el$21 = _$createElement19("text");
-                _$insert19(_el$21, () => `A: ${l.slice(0, 100)}`);
-                _$effect19((_$p) => _$setProp19(_el$21, "style", {
-                  fg: th().tokens.text
-                }, _$p));
-                return _el$21;
-              })()
-            }), null);
-            _$effect19((_$p) => _$setProp19(_el$20, "style", {
+                },
+                children: (l) => (() => {
+                  var _el$21 = _$createElement19("text");
+                  _$insert19(_el$21, () => `A: ${l.slice(0, 100)}`);
+                  _$effect19((_$p) => _$setProp19(_el$21, "style", {
+                    fg: th().tokens.text
+                  }, _$p));
+                  return _el$21;
+                })()
+              }), null);
+              _$effect19((_$p) => _$setProp19(_el$20, "style", {
+                fg: th().tokens.dim
+              }, _$p));
+              return _el$19;
+            })()
+          }), null);
+          _$effect19((_p$) => {
+            var _v$9 = {
+              border: true,
+              borderStyle: "rounded",
+              borderColor: th().tokens.accent,
+              flexDirection: "column",
+              padding: 1,
+              width: "100%",
+              height: 5 + rows
+            }, _v$0 = {
+              fg: th().tokens.accent
+            }, _v$1 = {
               fg: th().tokens.dim
-            }, _$p));
-            return _el$19;
-          })()
-        }), null);
-        _$effect19((_p$) => {
-          var _v$9 = {
-            border: true,
-            borderStyle: "rounded",
-            borderColor: th().tokens.accent,
-            flexDirection: "column",
-            padding: 1,
-            maxHeight: 10
-          }, _v$0 = {
-            fg: th().tokens.accent
-          }, _v$1 = {
-            fg: th().tokens.dim
-          };
-          _v$9 !== _p$.e && (_p$.e = _$setProp19(_el$12, "style", _v$9, _p$.e));
-          _v$0 !== _p$.t && (_p$.t = _$setProp19(_el$14, "style", _v$0, _p$.t));
-          _v$1 !== _p$.a && (_p$.a = _$setProp19(_el$17, "style", _v$1, _p$.a));
-          return _p$;
-        }, {
-          e: undefined,
-          t: undefined,
-          a: undefined
-        });
-        return _el$12;
+            };
+            _v$9 !== _p$.e && (_p$.e = _$setProp19(_el$12, "style", _v$9, _p$.e));
+            _v$0 !== _p$.t && (_p$.t = _$setProp19(_el$14, "style", _v$0, _p$.t));
+            _v$1 !== _p$.a && (_p$.a = _$setProp19(_el$17, "style", _v$1, _p$.a));
+            return _p$;
+          }, {
+            e: undefined,
+            t: undefined,
+            a: undefined
+          });
+          return _el$12;
+        })();
       })() : null;
     })(), null);
     _$insert19(_el$, (() => {
       var _c$7 = _$memo10(() => !!(queueOpen() || queueMsgs().length > 0));
       return () => _c$7() ? (() => {
-        var _el$22 = _$createElement19("box"), _el$23 = _$createElement19("box"), _el$24 = _$createElement19("text"), _el$26 = _$createElement19("box"), _el$27 = _$createElement19("text");
-        _$insertNode13(_el$22, _el$23);
-        _$insertNode13(_el$23, _el$24);
-        _$insertNode13(_el$23, _el$26);
-        _$insertNode13(_el$23, _el$27);
-        _$setProp19(_el$23, "style", {
-          flexDirection: "row"
-        });
-        _$insertNode13(_el$24, _$createTextNode11(`queue`));
-        _$setProp19(_el$26, "style", {
-          flexGrow: 1
-        });
-        _$insertNode13(_el$27, _$createTextNode11(`/queue &lt;msg&gt; enqueue · bare toggle`));
-        _$insert19(_el$22, _$createComponent18(For15, {
-          get each() {
-            return queueMsgs();
-          },
-          children: (m, i) => (() => {
-            var _el$29 = _$createElement19("text");
-            _$insert19(_el$29, () => `${i() + 1}. ${m.slice(0, 80)}`);
-            _$effect19((_$p) => _$setProp19(_el$29, "style", {
-              fg: th().tokens.text
-            }, _$p));
-            return _el$29;
-          })()
-        }), null);
-        _$effect19((_p$) => {
-          var _v$10 = {
-            border: true,
-            borderStyle: "rounded",
-            borderColor: th().tokens.border,
-            flexDirection: "column",
-            padding: 1,
-            maxHeight: 8
-          }, _v$11 = {
-            fg: th().tokens.accent
-          }, _v$12 = {
-            fg: th().tokens.dim
-          };
-          _v$10 !== _p$.e && (_p$.e = _$setProp19(_el$22, "style", _v$10, _p$.e));
-          _v$11 !== _p$.t && (_p$.t = _$setProp19(_el$24, "style", _v$11, _p$.t));
-          _v$12 !== _p$.a && (_p$.a = _$setProp19(_el$27, "style", _v$12, _p$.a));
-          return _p$;
-        }, {
-          e: undefined,
-          t: undefined,
-          a: undefined
-        });
-        return _el$22;
+        const msgs = queueMsgs().slice(-6);
+        return (() => {
+          var _el$22 = _$createElement19("box"), _el$23 = _$createElement19("box"), _el$24 = _$createElement19("text"), _el$26 = _$createElement19("box"), _el$27 = _$createElement19("text");
+          _$insertNode13(_el$22, _el$23);
+          _$insertNode13(_el$23, _el$24);
+          _$insertNode13(_el$23, _el$26);
+          _$insertNode13(_el$23, _el$27);
+          _$setProp19(_el$23, "style", {
+            flexDirection: "row"
+          });
+          _$insertNode13(_el$24, _$createTextNode11(`queue`));
+          _$setProp19(_el$26, "style", {
+            flexGrow: 1
+          });
+          _$insertNode13(_el$27, _$createTextNode11(`/queue &lt;msg&gt; enqueue · bare toggle`));
+          _$insert19(_el$22, _$createComponent18(For15, {
+            each: msgs,
+            children: (m, i) => (() => {
+              var _el$29 = _$createElement19("text");
+              _$insert19(_el$29, () => `${i() + 1}. ${m.slice(0, 80)}`);
+              _$effect19((_$p) => _$setProp19(_el$29, "style", {
+                fg: th().tokens.text
+              }, _$p));
+              return _el$29;
+            })()
+          }), null);
+          _$effect19((_p$) => {
+            var _v$10 = {
+              border: true,
+              borderStyle: "rounded",
+              borderColor: th().tokens.border,
+              flexDirection: "column",
+              padding: 1,
+              width: "100%",
+              height: 5 + msgs.length
+            }, _v$11 = {
+              fg: th().tokens.accent
+            }, _v$12 = {
+              fg: th().tokens.dim
+            };
+            _v$10 !== _p$.e && (_p$.e = _$setProp19(_el$22, "style", _v$10, _p$.e));
+            _v$11 !== _p$.t && (_p$.t = _$setProp19(_el$24, "style", _v$11, _p$.t));
+            _v$12 !== _p$.a && (_p$.a = _$setProp19(_el$27, "style", _v$12, _p$.a));
+            return _p$;
+          }, {
+            e: undefined,
+            t: undefined,
+            a: undefined
+          });
+          return _el$22;
+        })();
       })() : null;
     })(), null);
     _$insert19(_el$, () => loginFeature.view(), null);

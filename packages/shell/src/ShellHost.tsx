@@ -1541,14 +1541,20 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       {approval() ? (
         <ApprovalCard toolName={approval()!.name} args={approval()!.args} hint={t("agent.approve.hint")} theme={th()} />
       ) : null}
+      {/* Explicit width/height on every dock-adjacent card: auto-height
+          boxes collapse inside the flex column once the flexGrow transcript
+          holds content (the login-panel collapse; kit Select documents the
+          constraint). Heights are computed from the rendered rows, never
+          clipped mid-content — content-variable cards slice to their bound
+          and size to the bound (login.tsx pattern). */}
       {stopConfirm() ? (
-        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.warn, flexDirection: "column", padding: 1 }}>
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.warn, flexDirection: "column", padding: 1, width: "100%", height: 6 }}>
           <text style={{ fg: th().tokens.warn }}>abort this turn?</text>
           <text style={{ fg: th().tokens.dim }}>y aborts · n/esc resumes</text>
         </box>
       ) : null}
       {viewerId() ? (
-        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.border, flexDirection: "column", padding: 1, height: 10 }}>
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.border, flexDirection: "column", padding: 1, width: "100%", height: 12 }}>
           <text style={{ fg: th().tokens.accent }}>{`child ${viewerId()!.slice(0, 8)} · s steer · esc back`}</text>
           <For each={viewerLines().slice(-7)}>
             {(l) => <text style={{ fg: th().tokens.dim }}>{l}</text>}
@@ -1556,42 +1562,50 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         </box>
       ) : null}
       {steerFor() ? (
-        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.accent, flexDirection: "row", padding: 1 }}>
+        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.accent, flexDirection: "row", padding: 1, width: "100%", height: 5 }}>
           <text style={{ fg: th().tokens.accent }}>⚡ steer: </text>
           <text style={{ fg: th().tokens.text }}>{steerBuffer() || " "}</text>
         </box>
       ) : null}
-      {btwOpen() || btwLive() ? (
-        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.accent, flexDirection: "column", padding: 1, maxHeight: 10 }}>
-          <box style={{ flexDirection: "row" }}>
-            <text style={{ fg: th().tokens.accent }}>btw</text>
-            <box style={{ flexGrow: 1 }} />
-            <text style={{ fg: th().tokens.dim }}>/btw close</text>
+      {btwOpen() || btwLive() ? (() => {
+        const pairs = btwLive() ? [btwLive()!] : btwPairs().slice(-2)
+        // rows = per pair 1 Q + up to 4 A lines; +1 header; chrome = border 2 + padding 2
+        const rows = pairs.reduce((n, p) => n + 1 + Math.min(p.a.split("\n").length, 4), 0)
+        return (
+          <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.accent, flexDirection: "column", padding: 1, width: "100%", height: 5 + rows }}>
+            <box style={{ flexDirection: "row" }}>
+              <text style={{ fg: th().tokens.accent }}>btw</text>
+              <box style={{ flexGrow: 1 }} />
+              <text style={{ fg: th().tokens.dim }}>/btw close</text>
+            </box>
+            <For each={pairs}>
+              {(pair) => (
+                <box style={{ flexDirection: "column" }}>
+                  <text style={{ fg: th().tokens.dim }}>{`Q: ${pair.q.slice(0, 90)}`}</text>
+                  <For each={pair.a.split("\n").slice(0, 4)}>
+                    {(l) => <text style={{ fg: th().tokens.text }}>{`A: ${l.slice(0, 100)}`}</text>}
+                  </For>
+                </box>
+              )}
+            </For>
           </box>
-          <For each={btwLive() ? [btwLive()!] : btwPairs().slice(-2)}>
-            {(pair) => (
-              <box style={{ flexDirection: "column" }}>
-                <text style={{ fg: th().tokens.dim }}>{`Q: ${pair.q.slice(0, 90)}`}</text>
-                <For each={pair.a.split("\n").slice(0, 4)}>
-                  {(l) => <text style={{ fg: th().tokens.text }}>{`A: ${l.slice(0, 100)}`}</text>}
-                </For>
-              </box>
-            )}
-          </For>
-        </box>
-      ) : null}
-      {queueOpen() || queueMsgs().length > 0 ? (
-        <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.border, flexDirection: "column", padding: 1, maxHeight: 8 }}>
-          <box style={{ flexDirection: "row" }}>
-            <text style={{ fg: th().tokens.accent }}>queue</text>
-            <box style={{ flexGrow: 1 }} />
-            <text style={{ fg: th().tokens.dim }}>/queue &lt;msg&gt; enqueue · bare toggle</text>
+        )
+      })() : null}
+      {queueOpen() || queueMsgs().length > 0 ? (() => {
+        const msgs = queueMsgs().slice(-6) // bounded: last 6 queued, sized to the bound
+        return (
+          <box style={{ border: true, borderStyle: "rounded", borderColor: th().tokens.border, flexDirection: "column", padding: 1, width: "100%", height: 5 + msgs.length }}>
+            <box style={{ flexDirection: "row" }}>
+              <text style={{ fg: th().tokens.accent }}>queue</text>
+              <box style={{ flexGrow: 1 }} />
+              <text style={{ fg: th().tokens.dim }}>/queue &lt;msg&gt; enqueue · bare toggle</text>
+            </box>
+            <For each={msgs}>
+              {(m, i) => <text style={{ fg: th().tokens.text }}>{`${i() + 1}. ${m.slice(0, 80)}`}</text>}
+            </For>
           </box>
-          <For each={queueMsgs()}>
-            {(m, i) => <text style={{ fg: th().tokens.text }}>{`${i() + 1}. ${m.slice(0, 80)}`}</text>}
-          </For>
-        </box>
-      ) : null}
+        )
+      })() : null}
       {loginFeature.view()}
       {overlay() ? (
         <Select

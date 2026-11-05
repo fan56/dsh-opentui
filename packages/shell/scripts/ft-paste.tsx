@@ -44,8 +44,18 @@ const waitFrame = async (needle: string, tries = 20): Promise<string> => {
 const TOKEN = "sk-test-token-0123456789abcdef"
 
 const session = makeFakePromptSession()
+// spy: the empty-commit guard must keep a retry Enter from firing a
+// credentials write with an empty value (the host rejects it — "invalid
+// payload for credentials.set" — after the route was already registered)
+let loginCalls = 0
+const loginSpy = new Proxy(session, {
+  get(target, prop, recv) {
+    if (prop === "login") return async () => { loginCalls++ }
+    return Reflect.get(target, prop, recv)
+  },
+})
 const ui = await testRender(
-  () => <ShellHost deps={{ store: new SurfaceStore() as any, t: ((k: string) => k) as any, session }} />,
+  () => <ShellHost deps={{ store: new SurfaceStore() as any, t: ((k: string) => k) as any, session: loginSpy }} />,
   { width: 110, height: 40, kittyKeyboard: true, exitOnCtrlC: false },
 )
 await settle()
@@ -107,6 +117,26 @@ try {
   await settle()
   ui.mockInput.pressEscape()
   await settle()
+
+  // ---- 5. regression: empty-commit guard on the key entry stage ----
+  // A re-sent Enter (dropped-keypress retry) used to COMMIT the empty
+  // buffer: credentials.set fired with "" (host rejects: "invalid payload
+  // for credentials.set") after the route was already registered, and the
+  // panel closed — the stage became unreachable without any user input.
+  await ui.mockInput.typeText("/login")
+  ui.mockInput.pressEnter()
+  frame = await waitFrame("Amazon Bedrock")
+  ui.mockInput.pressEnter() // pick Amazon Bedrock → key entry
+  frame = await waitFrame("API key for Amazon Bedrock")
+  check(frame.includes("API key for Amazon Bedrock"), "guard: key entry stage open", JSON.stringify(frame.slice(-600)))
+  for (let i = 0; i < 3; i++) { ui.mockInput.pressEnter(); await settle() }
+  frame = ui.captureCharFrame()
+  check(frame.includes("API key for Amazon Bedrock"), "guard: empty Enter keeps the stage open (no commit)", JSON.stringify(frame.slice(-600)))
+  check(loginCalls === 0, "guard: no credentials write attempted on empty buffer", `login calls: ${loginCalls}`)
+  ui.mockInput.pressEscape() // esc is still the cancel path
+  await settle()
+  frame = ui.captureCharFrame()
+  check(!frame.includes("API key for Amazon Bedrock"), "guard: esc still cancels the entry stage")
 } finally {
   await ui.dispose()
 }

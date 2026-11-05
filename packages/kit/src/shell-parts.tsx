@@ -362,6 +362,16 @@ const INPUT_KEY_BINDINGS = [
   { name: "kpenter", meta: true, action: "newline" as const },
 ]
 
+// DSH_OPENTUI_DEBUG key-path trace: per-key JSON lines for the
+// handler→textarea→render bisect during a stall incident (same gate and
+// lazy-fs pattern as ShellHost's /tmp/host-keys.log). No-op when unset.
+const inputDebugTrace = (entry: Record<string, unknown>): void => {
+  if (!process.env.DSH_OPENTUI_DEBUG) return
+  import("node:fs")
+    .then((fs) => fs.appendFileSync("/tmp/host-inputline.log", JSON.stringify({ t: Date.now(), ...entry }) + "\n"))
+    .catch(() => {})
+}
+
 export function InputLine(props: InputLineProps): JSX.Element {
   let ta: TextareaRenderable | undefined
 
@@ -401,17 +411,28 @@ export function InputLine(props: InputLineProps): JSX.Element {
   )
 
   const onKeyDown = (key: KeyEvent) => {
+    inputDebugTrace({ src: "key", name: key.name, seq: key.sequence, ctrl: key.ctrl, shift: key.shift, meta: key.meta })
     // host-level key consumption (slash palette) beats editor actions
     if (props.onKeyFilter?.(key)) {
+      inputDebugTrace({ src: "key.consumed", by: "onKeyFilter", name: key.name })
       key.preventDefault()
       return
     }
-    if (!ta || key.shift || key.ctrl || key.meta) return
+    if (!ta || key.shift || key.ctrl || key.meta) {
+      inputDebugTrace({ src: "key.pass", by: "editor", name: key.name })
+      return
+    }
     const row = ta.visualCursor.visualRow
     if (key.name === "up" && row === 0) {
-      if (props.onHistoryNav?.("up")) key.preventDefault()
+      const nav = props.onHistoryNav?.("up")
+      inputDebugTrace({ src: "key.history", dir: "up", consumed: nav })
+      if (nav) key.preventDefault()
     } else if (key.name === "down" && row >= Math.max(0, ta.virtualLineCount - 1)) {
-      if (props.onHistoryNav?.("down")) key.preventDefault()
+      const nav = props.onHistoryNav?.("down")
+      inputDebugTrace({ src: "key.history", dir: "down", consumed: nav })
+      if (nav) key.preventDefault()
+    } else {
+      inputDebugTrace({ src: "key.pass", by: "editor", name: key.name, row })
     }
   }
 
@@ -428,8 +449,14 @@ export function InputLine(props: InputLineProps): JSX.Element {
           focusedTextColor={props.theme.tokens.text}
           placeholderColor={props.theme.tokens.dim}
           style={{ flexGrow: 1, height: props.height ?? 1, wrapMode: "char" }}
-          onContentChange={() => props.onContentChange?.(ta?.plainText ?? "")}
-          onSubmit={() => props.onSubmit?.()}
+          onContentChange={() => {
+            inputDebugTrace({ src: "contentChange", len: (ta?.plainText ?? "").length })
+            props.onContentChange?.(ta?.plainText ?? "")
+          }}
+          onSubmit={() => {
+            inputDebugTrace({ src: "submit" })
+            props.onSubmit?.()
+          }}
           onKeyDown={onKeyDown}
         />
       </box>
