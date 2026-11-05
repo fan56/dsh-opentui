@@ -21,7 +21,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # CI has no global dsh: scripts/link-dsh-closure.mjs (postinstall) exits
       # 0 silently. @deepseek-ai/dsh-llm installs fine from npm (devDep,
-      # 0.2.1-rc.5); only @deepseek-ai/dsh-client-connection is not on the
+      # 0.2.2-rc.1); only @deepseek-ai/dsh-client-connection is not on the
       # registry. Tests fake the connection (test/client-fakes.ts), so a
       # resolution-only stub suffices; it throws if actually invoked.
       - name: stub @deepseek-ai/dsh-client-connection (no global dsh on runners)
