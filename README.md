@@ -124,6 +124,29 @@ Requires Bun >= 1.3.14 (`bun upgrade`). Note: each package carries its own
 `bunfig.toml` (the @opentui/solid preload) — bun only reads the CWD's
 bunfig; a root-level one breaks compiled binaries ("preload not found").
 
+### Verification gates (client mode, live)
+
+```bash
+node packages/shell/scripts/e2e-sweep.mjs   # full command-surface sweep
+node packages/shell/scripts/e2e-client.mjs  # two-process topology gate (attach/adopt/reload)
+node packages/shell/scripts/e2e-live.mjs    # in-process live gate
+node scripts/smoke-boot.mjs                 # boot smoke
+```
+
+`e2e-sweep.mjs` drives EVERY slash command + keyboard surface through the
+real client topology in tmux 120x34 (slow typing, per-item capture): the
+read-only commands, every overlay picker, `/config` forms, the `/login`
+panel + headless forms, the palette / history-recall / alt+enter / paste /
+scroll / dock-toggle / esc stop-confirm keys — and the keystroke-leak
+regressions (modal-consumed keys must never type into the blurred editor).
+It runs under a scratch `DSH_HOME` (temp dir, mode 700) seeded from the real
+profile, so login/logout/config/preset writes never touch the user's home.
+Real turns ride the workingRoute pattern: the catalog is probed, a route is
+selected, and when no route answers the turn items report BLOCKED loudly
+while everything else still gates. Per-item captures land in a temp
+caps dir for eyeballing. Requires `dsh`, `tmux`, `bun` on PATH; otherwise
+the script self-skips (exit 0) so CI runs green.
+
 ## Status
 
 v0.1.0: published as `@aiwayds/dsh-opentui` (host profile mode via the
