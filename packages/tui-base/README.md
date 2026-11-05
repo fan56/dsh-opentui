@@ -83,7 +83,13 @@ documented: a `const` suppresses the namespace meaning of the same name;
 namespace-as-value pass-through (effect Schema namespaces) is not
 expressible — that is why schema is vendored for real.
 
-### Error budget (batch 3, exact count: 58; batch 2a was 61)
+### Error budget (batch 4, exact count: 58; batch 3 was 58)
+
+Batch 4 delta: 0. The composer path (`routes/session/session-composer.tsx`,
+`routes/session/composer-state.ts`, `examples/session.tsx`) and the
+transcript bottom-slot change add 0. The 2 queued-prompt-dialog errors in
+`routes/session/index.tsx` remain: they sit in the vendored route, which is
+not yet mounted on the seam (the rebuilt composer is a separate component).
 
 Batch 3 delta: −3. `routes/session/rows.ts` 3 → 0 (typed `Set<string>` at
 the stub boundary). `routes/session/index.tsx` stays at 4 (2 in the
@@ -130,7 +136,7 @@ dependency-direction guard).
 `src/routes/session/transcript.tsx` + `src/routes/session/seam-rows.ts`:
 the transcript viewport extracted from `routes/session/index.tsx`
 (scrollbox `stickyScroll` + `stickyStart="bottom"`, keyed `marginTop=1`
-rows, fixed bottom input box) fed by `SessionSeam` instead of
+rows, bottom slot for the composer) fed by `SessionSeam` instead of
 `useData`/`useClient`. Rows are a Solid store keyed by a stable `key`
 (`reconcile` on hydrate, in-place patch per delta). Assistant rows render
 `<markdown streaming={!final}>`, as the vendored `TextPart` does on
@@ -140,3 +146,23 @@ Tear check: `bun examples/transcript.tsx` (fake seam, 60 sentences + tool
 rows). Tests: `test/seam-rows.test.ts`. Note: `bun test` resolves
 solid-js's server build, whose `reconcile` ignores `key`; tests assert key
 stability, and object identity is covered by the runtime example.
+
+## Seam composer (batch 4)
+
+`src/routes/session/session-composer.tsx` (`SessionComposer`) +
+`src/routes/session/composer-state.ts` (`ComposerController`,
+`ComposerHistory`): the session input area on `SessionSeam`. It is a native
+`<textarea>`. Height follows the wrapped line count, capped at 1 to
+`maxHeight` lines (default 8). The box height is explicit. Keys follow the
+vendored keybind config (`input.submit` = return, `input.newline` =
+alt/shift/ctrl+return, ctrl+j). They are applied through the textarea's
+`keyBindings` prop, so the component needs no vendored Keymap context.
+Busy behavior matches the vendored prompt: Enter during a running turn is
+sent as a steer (`seam.steer`) and is not blocked. The footer shows a
+busy marker, and `onBusyChange` exposes the same state for the status
+batch. History follows the vendored `prompt/history.tsx` `move()` logic,
+kept in memory with up to 50 entries. Slot 0 holds the draft, and typed
+input is never overwritten. The ↑/↓ edge behavior also matches the vendored
+one. Paste uses the textarea's built-in handling. The transcript takes the
+composer as `children` and accepts a shared `projection`. Run the session
+page skeleton with `bun examples/session.tsx`. Tests: `test/composer.test.ts`.

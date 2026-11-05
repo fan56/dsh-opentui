@@ -7,7 +7,7 @@
  *   row > flexGrow col (position relative) > scrollbox
  *   stickyScroll + stickyStart="bottom"   (prop-sensitive; NOT stickyScrollPosition)
  *   keyed marginTop=1 rows via <For>
- *   fixed bottom box (composer placeholder until the composer batch)
+ *   bottom slot (children) — the composer (batch 4, ./session-composer.tsx)
  *
  * with its feed cut over from `useData`/`useClient` to `SessionSeam`
  * (see ./seam-rows.ts for the row projection). Rendering follows the
@@ -23,39 +23,45 @@
  *     the bare example renders without.
  *
  * OpenTUI law honored: the auto-height boxes here sit in explicit-dims
- * parents (flexGrow + minHeight=0 chain from the session route shape), and
- * the bottom input box is a fixed height=3 flexShrink=0 — auto-height boxes
- * collapse in flex columns.
+ * parents (flexGrow + minHeight=0 chain from the session route shape); the
+ * bottom slot is flexShrink=0 and its child (the composer) sets an explicit
+ * height — auto-height boxes collapse in flex columns.
  */
-import { For, onMount, Show } from "solid-js"
+import { For, onMount, Show, type JSX } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import { SyntaxStyle } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
-import { createSeamRows, type SeamRow } from "./seam-rows"
+import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
 
 export type TranscriptProps = {
 	/** The seam feeding this transcript (NullSessionSeam in tests/examples). */
 	seam: SessionSeam
 	/** Session to project; defaults to the seam's current session. */
 	sessionID?: string
+	/**
+	 * Shared projection (page wiring: the composer sends through the same
+	 * rows). The owner calls `load()`; when omitted the transcript creates
+	 * and loads its own.
+	 */
+	projection?: SeamRows
 	/** Upstream markdown plugin hook (vendored app: `plugins.markdown()`). */
 	renderNode?: (node: any) => any
 	/** Upstream syntax style (vendored app: `useThemes().currentSyntax`). */
 	syntaxStyle?: SyntaxStyle
-	/** Height reserved for the bottom input area (default 3, like dsh). */
-	inputHeight?: number
-	/** Called after the user submits the input placeholder. */
-	onSubmit?: (text: string) => void
+	/** Bottom slot: the composer. */
+	children?: JSX.Element
 }
 
 export function Transcript(props: TranscriptProps) {
 	const renderer = useRenderer()
 	const sessionID = () => props.sessionID ?? props.seam.currentSessionId() ?? ""
-	const projection = createSeamRows(props.seam, sessionID)
+	const owned = props.projection === undefined
+	const projection = props.projection ?? createSeamRows(props.seam, sessionID)
 	const syntaxStyle = () => props.syntaxStyle ?? SyntaxStyle.fromStyles({}, renderer.nativeScene)
-	let input: any
 
-	onMount(() => projection.load())
+	onMount(() => {
+		if (owned) projection.load()
+	})
 
 	const assistantRow = (row: Extract<SeamRow, { kind: "assistant" }>) => (
 		<markdown
@@ -106,14 +112,6 @@ export function Transcript(props: TranscriptProps) {
 		}
 	}
 
-	const submit = () => {
-		const value = input?.value ?? ""
-		if (!value.trim()) return
-		input.value = ""
-		props.onSubmit?.(value)
-		void projection.send(value)
-	}
-
 	return (
 		<box flexDirection="column" flexGrow={1} minHeight={0} width="100%" backgroundColor="black">
 			{/* session route shape: row > flexGrow col (position relative) > scrollbox */}
@@ -140,19 +138,12 @@ export function Transcript(props: TranscriptProps) {
 					</scrollbox>
 				</box>
 			</box>
-			{/* fixed bottom input placeholder (composer arrives in a later batch) */}
-			<box
-				border
-				borderStyle="rounded"
-				borderColor="#3b4261"
-				width="100%"
-				height={props.inputHeight ?? 3}
-				flexShrink={0}
-				flexDirection="row"
-			>
-				<text fg="#7aa2f7">{"❯ "}</text>
-				<input ref={(el) => (input = el)} flexGrow={1} textColor="#e6e6e6" focused onSubmit={submit} />
-			</box>
+			{/* bottom slot: the composer (./session-composer.tsx) sets its own explicit height */}
+			<Show when={props.children}>
+				<box width="100%" flexShrink={0}>
+					{props.children}
+				</box>
+			</Show>
 		</box>
 	)
 }

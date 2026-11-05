@@ -198,6 +198,9 @@ export function createSeamRows(seam: SessionSeam, sessionID: Accessor<string>) {
 	return { rows, hydrated, load, hydrate, apply, send }
 }
 
+/** The projection handle a page shares between transcript and composer. */
+export type SeamRows = ReturnType<typeof createSeamRows>
+
 /** The approve callback the seam turn asks for; the rebuilt transcript has
  * no permission surface yet (later batch). Auto-approving would let tools
  * run silently, rejecting stalls real turns — the example's fake seam never
