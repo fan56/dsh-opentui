@@ -14,15 +14,22 @@
 // theme-token fills (POWERLINE_COLORS only as the no-provider fallback);
 // busy/message-count/model come from the composer + seam wiring, the rest
 // (effort/context%/tok-s) stay demo props.
+// Batch 8: the slash palette — type "/" for the inline command menu (prefix
+// filter, ↑↓, enter; esc closes keeping the buffer), the batch-8 core set
+// (/help /new /model /quit /sessions /clear) on the fake seam; /model and
+// /sessions open vendored DialogSelect pickers through the dialog stack.
 // Run from packages/tui-base: bun examples/session.tsx   (ctrl+c quits)
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { render } from "@opentui/solid"
-import { NullSessionSeam, type SeamAskPick, type SeamAskQuestion, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
+import { NullSessionSeam, type SeamAskPick, type SeamAskQuestion, type SeamProviderModel, type SeamSessionSummary, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
 import { SessionComposer, type SessionComposerRef } from "../src/routes/session/session-composer"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
+import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
+import { DialogSelect } from "../src/ui/dialog-select"
+import { useDialog } from "../src/ui/dialog"
 import { PowerlineFooter, sessionFooterSegments } from "../src/routes/session/powerline"
 import { StatusBar } from "../src/routes/session/status-bar"
 import { ConfigProvider, resolve } from "../src/config"
@@ -48,13 +55,51 @@ const DEMO_QUESTIONS: SeamAskQuestion[] = [
 
 class FakeSeam extends NullSessionSeam {
 	private steers: string[] = []
+	/** Session lifecycle for /new + /sessions (batch 8). */
+	private sessionID = "ses-1"
+	readonly sessions: SeamSessionSummary[] = [
+		{ id: "ses-1", title: "batch-8 demo", updatedAt: "2026-11-06" },
+		{ id: "ses-2", title: "earlier exploration", updatedAt: "2026-11-05" },
+	]
+	readonly catalog: SeamProviderModel[] = [
+		{ providerID: "bigmodel", modelID: "glm-5.3-flash" },
+		{ providerID: "bigmodel", modelID: "glm-4.7" },
+		{ providerID: "deepseek", modelID: "v3.2" },
+	]
+	private model: SeamProviderModel = { providerID: "bigmodel", modelID: "glm-5.3-flash" }
 	override currentSessionId() {
-		return "demo"
+		return this.sessionID
+	}
+	override newSession(): void {
+		const n = Number(this.sessionID.split("-")[1] ?? 0) + 1
+		this.sessionID = `ses-${n}`
+		if (!this.sessions.some((s) => s.id === this.sessionID)) {
+			this.sessions.unshift({ id: this.sessionID, title: `fresh session ${n}`, updatedAt: "2026-11-06" })
+		}
+	}
+	override resumeSession(id: string): "ok" | "owned" {
+		this.sessionID = id
+		return "ok"
+	}
+	override async listSessions(): Promise<SeamSessionSummary[]> {
+		return [...this.sessions]
+	}
+	override async modelCatalog(): Promise<SeamProviderModel[]> {
+		return this.catalog
 	}
 	override async currentModelSelection() {
-		return { providerID: "bigmodel", modelID: "glm-5.3-flash" }
+		return { ...this.model }
 	}
-	override async storedTranscript(): Promise<SeamTranscriptRow[]> {
+	override selectModel(providerID: string, modelID: string): void {
+		this.model = { providerID, modelID }
+	}
+	override async storedTranscript(id = this.sessionID): Promise<SeamTranscriptRow[]> {
+		if (id === "ses-2") {
+			return [
+				{ kind: "user", text: "older session prompt", final: true },
+				{ kind: "assistant", text: "Older session answer.", final: true },
+			]
+		}
 		return [
 			{ kind: "user", text: "earlier question (stored history)", final: true },
 			{ kind: "assistant", text: "Earlier **answer** from stored history.", final: true },
@@ -105,6 +150,7 @@ function SessionPage() {
 		// Approval mid-turn routes through the batch-5 card.
 		onApprove: (name, args) => overlays.requestApproval(name, args),
 	})
+	const dialog = useDialog()
 	const theme = useTheme()
 	const themeSeam = createThemeSeam(useThemes())
 	if (THEME && !themeSeam.setTheme(THEME)) console.error(`unknown theme ${THEME}; bundled: ${themeSeam.list().join(", ")}`)
@@ -148,10 +194,68 @@ function SessionPage() {
 			tps: busy() ? 87 : null,
 			theme,
 		})
+	// Batch-8 slash host: command feedback lands as transcript rows through
+	// the projection's event fan-in (assistant rows under a "cmd" message);
+	// /clear resets the client-side store; /new + /sessions reload from the
+	// seam; /model + /sessions pick through the vendored DialogSelect. The
+	// settle path must ALSO drain the dialog stack — a resolved promise
+	// alone leaves the picker mounted (TurnOverlayHost drives its stack
+	// through the controller; here the promise settles it directly).
+	let cmdOrdinal = 0
+	const pickOne = (title: string, options: { title: string; value: string }[]) =>
+		new Promise<string | undefined>((resolve) => {
+			let settled = false
+			const done = (value: string | undefined) => {
+				if (settled) return
+				settled = true
+				dialog.clear()
+				resolve(value)
+			}
+			dialog.replace(
+				() => (
+					<DialogSelect<string>
+						title={title}
+						renderFilter={false}
+						options={options.map((option) => ({ title: option.title, value: option.value }))}
+						onSelect={(option) => done(option.value)}
+						onCancel={() => done(undefined)}
+					/>
+				),
+				() => done(undefined),
+			)
+		})
+	const slash = createSlashHost({
+		seam,
+		say: (text) =>
+			projection.apply({
+				type: "message.part.updated",
+				details: { messageID: "cmd", part: { type: "text", id: `cmd-${++cmdOrdinal}`, text } },
+			}),
+		clear: () => projection.hydrate([]),
+		reload: () => {
+			const settled = projection.load()
+			void seam.currentModelSelection().then(setModel)
+			return settled
+		},
+		quit: () => process.exit(0),
+		pickOne,
+	})
 	return (
 		<box flexDirection="column" width="100%" height="100%" backgroundColor="black">
 			<Transcript seam={seam} projection={projection}>
-				<SessionComposer seam={seam} send={send} onBusyChange={setComposerBusy} ref={(r) => (composerRef = r)} />
+				<SessionComposer
+					seam={seam}
+					send={send}
+					onBusyChange={setComposerBusy}
+					ref={(r) => (composerRef = r)}
+					slashKeyFilter={slash.slashKeyFilter}
+					slashSync={(buffer) => slash.controller.sync(buffer, slash.commands)}
+					interceptSubmit={slash.interceptSubmit}
+					slashPalette={() => (
+						<SlashPalette controller={slash.controller} commands={slash.commands} />
+					)}
+					slashHeight={() => slash.controller.rows()}
+				/>
 			</Transcript>
 			<StatusBar phase={busy() ? "stream" : null} elapsed={elapsed} />
 			<PowerlineFooter left={segments()} right={clock(now())} theme={theme} />

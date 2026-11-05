@@ -35,7 +35,7 @@
  * OpenTUI law: the root box gets an explicit height computed from the
  * textarea's reported height (+ footer), never auto-height in a flex column.
  */
-import { createSignal, onCleanup, Show } from "solid-js"
+import { createSignal, onCleanup, Show, type JSX } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import { measureEditText, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
@@ -68,6 +68,21 @@ export type SessionComposerProps = {
 	/** Resolved `input.submit` / `input.newline` overrides (vendored config
 	 * vocabulary); omitted = vendored defaults. */
 	keybinds?: ComposerKeybindConfig
+	/** Slash palette (batch 8): key filter consulted before history recall —
+	 * true = consumed (up/down move the menu, esc closes it; the filter owns
+	 * preventDefault). Plain typing returns false and falls through. */
+	slashKeyFilter?: (event: KeyEvent, buffer: string) => boolean
+	/** Slash palette re-sync after the buffer actually changed (keydown sees
+	 * the PRE-insertion buffer, so visibility/filtering must derive from the
+	 * content-change event instead — one-key lag otherwise). */
+	slashSync?: (buffer: string) => void
+	/** Slash palette enter path: true = the line was a command (harmless
+	 * unknowns included) — the composer clears its buffer, no send/steer. */
+	interceptSubmit?: (buffer: string) => boolean
+	/** Palette rows rendered above the textarea (inline palette host). */
+	slashPalette?: () => JSX.Element
+	/** Palette height contribution to the composer's explicit root height. */
+	slashHeight?: () => number
 }
 
 const FOOTER_HEIGHT = 1
@@ -119,12 +134,24 @@ export function SessionComposer(props: SessionComposerProps) {
 
 	function submit() {
 		if (!textarea || textarea.isDestroyed) return
+		// Slash commands resolve here (batch 8): the palette's enter path and
+		// unknown "/xxx" both come through the intercept; only plain text
+		// reaches the send/steer controller.
+		if (props.interceptSubmit?.(textarea.plainText)) {
+			textarea.setText("")
+			syncHeight()
+			return
+		}
 		const result = controller.submit(textarea.plainText)
 		if (result !== "ignored") textarea.setText("")
 	}
 
 	function recall(event: KeyEvent) {
 		if (!textarea || textarea.isDestroyed) return
+		// Slash palette keys first (batch 8): while the menu is open the
+		// arrows move its highlight and esc closes it; the filter owns
+		// preventDefault for those.
+		if (props.slashKeyFilter?.(event, textarea.plainText)) return
 		if (event.ctrl || event.meta || event.shift || event.super) return
 		const input = textarea.plainText
 		const row = textarea.scrollY + textarea.visualCursor.visualRow
@@ -165,7 +192,7 @@ export function SessionComposer(props: SessionComposerProps) {
 		<box
 			flexShrink={0}
 			width="100%"
-			height={textareaHeight() + FOOTER_HEIGHT}
+			height={textareaHeight() + FOOTER_HEIGHT + (props.slashHeight?.() ?? 0)}
 			flexDirection="column"
 			border={["left"]}
 			borderColor={busy() ? color.busy() : color.border()}
@@ -173,6 +200,7 @@ export function SessionComposer(props: SessionComposerProps) {
 			backgroundColor={color.background()}
 			paddingLeft={1}
 		>
+			{props.slashPalette?.()}
 			<textarea
 				width="100%"
 				minHeight={1}
@@ -185,7 +213,10 @@ export function SessionComposer(props: SessionComposerProps) {
 				keyBindings={keyBindings}
 				onSubmit={submit}
 				onKeyDown={recall}
-				onContentChange={syncHeight}
+				onContentChange={() => {
+					syncHeight()
+					if (textarea && !textarea.isDestroyed) props.slashSync?.(textarea.plainText)
+				}}
 				onSizeChange={syncHeight}
 				ref={(value: TextareaRenderable) => {
 					textarea = value

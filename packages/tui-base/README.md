@@ -83,7 +83,12 @@ documented: a `const` suppresses the namespace meaning of the same name;
 namespace-as-value pass-through (effect Schema namespaces) is not
 expressible — that is why schema is vendored for real.
 
-### Error budget (batch 7, exact count: 58; batch 6 was 58)
+### Error budget (batch 8, exact count: 58; batch 7 was 58)
+
+Batch 8 delta: 0. The slash-command path (`routes/session/commands.ts`,
+`routes/session/slash-palette.tsx`, the composer's palette hooks in
+`routes/session/session-composer.tsx`, the `load()` promise return in
+`routes/session/seam-rows.ts`, `examples/session.tsx`) adds 0.
 
 Batch 7 delta: 0. The powerline/status-bar path
 (`routes/session/powerline.tsx`, `routes/session/status-bar.tsx`,

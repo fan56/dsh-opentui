@@ -71,9 +71,12 @@ export function createSeamRows(
 		setHydrated(true)
 	}
 
-	function load() {
+	/** Re-hydrate from the seam. Returns the settle promise so callers can
+	 * sequence post-hydrate rows after it (a command feedback row appended
+	 * before hydrate would be wiped by the keyed reconcile). */
+	function load(): Promise<void> {
 		const id = sessionID()
-		void seam
+		return seam
 			.storedTranscript(id)
 			.then((stored) => {
 				if (sessionID() === id) hydrate(stored)
