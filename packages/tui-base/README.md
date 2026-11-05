@@ -83,7 +83,14 @@ documented: a `const` suppresses the namespace meaning of the same name;
 namespace-as-value pass-through (effect Schema namespaces) is not
 expressible — that is why schema is vendored for real.
 
-### Error budget (batch 4, exact count: 58; batch 3 was 58)
+### Error budget (batch 5, exact count: 58; batch 4 was 58)
+
+Batch 5 delta: 0. The overlay path (`routes/session/turn-overlay-controller.ts`,
+`routes/session/turn-overlays.tsx`, `examples/session.tsx`) and the seam
+verdict/ask additions (`src/seams/session.ts`) add 0. The 2
+queued-prompt-dialog errors in `routes/session/index.tsx` remain: they sit
+in the vendored route, which is not yet mounted on the seam (the rebuilt
+composer is a separate component).
 
 Batch 4 delta: 0. The composer path (`routes/session/session-composer.tsx`,
 `routes/session/composer-state.ts`, `examples/session.tsx`) and the
@@ -166,3 +173,43 @@ input is never overwritten. The ↑/↓ edge behavior also matches the vendored
 one. Paste uses the textarea's built-in handling. The transcript takes the
 composer as `children` and accepts a shared `projection`. Run the session
 page skeleton with `bun examples/session.tsx`. Tests: `test/composer.test.ts`.
+
+## Turn overlays (batch 5)
+
+`src/routes/session/turn-overlays.tsx` + `src/routes/session/turn-overlay-controller.ts`:
+the approval + ask surfaces rebuilt on the VENDORED dialog components and
+wired through `SessionSeam`. Component mapping: `ui/dialog-confirm` →
+`ApprovalCard` (tool name + one-line args summary; enter = allow, esc/
+cancel = reject), `ui/dialog-select` → `AskPicker` (question + options,
+arrows + enter, `renderFilter={false}`; esc declines the whole batch as an
+empty selection — the tui-pi declined envelope downstream). Both mount
+through the vendored `DialogProvider` stack (`dialog.replace`), in the
+vendored provider closure (ConfigProvider → Keymap → Toast → ThemeProvider →
+Clipboard → DialogProvider, the app.tsx order).
+
+The seam contract grew the exact verdict strings (`SeamApprovalVerdict`:
+"allowed-once" / "rejected" — shell parity) and `registerAskProvider`
+(`{id,prompt,options}` → `{questionId,selected}` picks; shell
+host-session parity), with `NullSessionSeam.ask()` for fakes/tests.
+`createSeamRows` takes `options.onApprove` so a page routes approvals
+through the card (default stays allow-through).
+
+Focus discipline (OpenTUI law): overlay focus must return to the composer
+on close. Three layers do it — the vendored DialogProvider captures the
+focused renderable on replace and refocuses when the stack drains; the
+controller's `onIdle` hook fires the host's `reclaimFocus` (3 ms, after the
+vendored 1 ms refocus), which re-asserts via the composer's new focused-flag
+ref (`SessionComposerRef.focused()` reads the textarea's LIVE renderable
+flag — the login-era bug was a stale flag); the controller settles each
+overlay exactly once (per-overlay `onClose` only settles while its overlay
+is the shown one, so stack pops can't orphan a pending turn — esc on the
+legacy confirm card resolves "rejected" through it).
+
+Two rebuild bugs found by the tmux run, both in the host effect: reading the
+tracked dialog stack it mutates remounted the card every frame (keymap
+layers churned, dispatch died — fixed by diffing an overlay descriptor with
+the stack read `untrack`ed), and the unregistered stack `onClose` let esc
+pop the card without resolving (turn hung). Sequential multi-question asks
+advance picker by picker via `dialog.replace`. Run with
+`bun examples/session.tsx`. Tests: `test/turn-overlays.test.ts` (verdicts,
+FIFO queue, sequential picks, declined envelope, idle/refocus point).

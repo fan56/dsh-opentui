@@ -104,13 +104,39 @@ export interface SeamProviderModel {
 	modelID: string
 }
 
+/**
+ * Tool-approval verdict — the exact strings the session layer's approval
+ * waterfall expects (shell parity: `ok ? "allowed-once" : "rejected"`, with
+ * host adapters mapping "allowed-once" to the allow branch and everything
+ * else to fail-closed). Esc on the approval card resolves "rejected".
+ */
+export type SeamApprovalVerdict = "allowed-once" | "rejected"
+
+/** One user question row (the shell registerAskProvider wire shape). */
+export interface SeamAskQuestion {
+	id: string
+	prompt: string
+	options: string[]
+}
+
+/** One answer row: the picked option. A declined batch resolves as `[]`
+ * (empty selection = the tui-pi declined envelope downstream). */
+export interface SeamAskPick {
+	questionId: string
+	selected: string
+}
+
 /** Streaming callbacks the view binds per turn (TurnCallbacks slice). */
 export interface SeamTurnCallbacks {
 	onThinkingDelta: (text: string) => void
 	onContentDelta: (text: string) => void
 	onToolStart?: (start: { callId?: string; name: string; args: string }) => void
-	/** Return true to approve the tool run, false to reject. */
-	onApprove: (name: string, args: Record<string, unknown>) => Promise<boolean>
+	/**
+	 * Fires mid-turn when a tool run needs approval. Resolve with the exact
+	 * `SeamApprovalVerdict` strings — the approval card (dialog-confirm)
+	 * resolves "allowed-once" on confirm and "rejected" on cancel/esc.
+	 */
+	onApprove: (name: string, args: Record<string, unknown>) => Promise<SeamApprovalVerdict>
 	onError: (message: string) => void
 }
 
@@ -132,6 +158,13 @@ export interface SessionSeam {
 	turn(userText: string, cb: SeamTurnCallbacks): Promise<void>
 	steer(text: string): void
 	interrupt(): void
+
+	/**
+	 * Register the user-questions answerer (shell host-session parity): the
+	 * ask picker (dialog-select) resolves each question with the picked
+	 * option; esc resolves the whole batch `[]` = declined envelope.
+	 */
+	registerAskProvider(onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void
 
 	/** Provider/model info (dialog-model, usage, model-options). */
 	listProviders(): Promise<{ provider: string; models: string[] }[]>
@@ -180,6 +213,16 @@ export class NullSessionSeam implements SessionSeam {
 	async turn(_userText: string, _cb: SeamTurnCallbacks): Promise<void> {}
 	steer(_text: string): void {}
 	interrupt(): void {}
+	/** Registered answerer; unset until a view (or test) registers one. */
+	#askProvider: ((questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>) | undefined
+	registerAskProvider(onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void {
+		this.#askProvider = onAsk
+	}
+	/** Test/fake helper: run the registered ask provider; unset = declined. */
+	async ask(questions: SeamAskQuestion[]): Promise<SeamAskPick[]> {
+		if (!this.#askProvider) return []
+		return this.#askProvider(questions)
+	}
 	async listProviders(): Promise<{ provider: string; models: string[] }[]> {
 		return []
 	}

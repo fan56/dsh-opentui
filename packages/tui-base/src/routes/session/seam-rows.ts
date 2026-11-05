@@ -23,7 +23,13 @@
  */
 import { createSignal, onCleanup, type Accessor } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
-import type { SeamSessionEvent, SeamTranscriptRow, SessionSeam } from "../../seams/session"
+import type {
+	SeamApprovalVerdict,
+	SeamSessionEvent,
+	SeamTranscriptRow,
+	SeamTurnCallbacks,
+	SessionSeam,
+} from "../../seams/session"
 
 /** One projected transcript row (the rebuilt `SessionRow` slice). */
 export type SeamRow =
@@ -49,7 +55,11 @@ export function toStoredRow(stored: SeamTranscriptRow, index: number): SeamRow {
 	return { key, kind: "assistant", text: stored.text, final: stored.final }
 }
 
-export function createSeamRows(seam: SessionSeam, sessionID: Accessor<string>) {
+export function createSeamRows(
+	seam: SessionSeam,
+	sessionID: Accessor<string>,
+	options?: { onApprove?: SeamTurnCallbacks["onApprove"] },
+) {
 	const [rows, setRows] = createStore<SeamRow[]>([])
 	const [hydrated, setHydrated] = createSignal(false)
 	let liveOrdinal = 0
@@ -170,7 +180,7 @@ export function createSeamRows(seam: SessionSeam, sessionID: Accessor<string>) {
 					status: "running",
 				})
 			},
-			onApprove: approveThrough,
+			onApprove: options?.onApprove ?? approveThrough,
 			onError: (message) => {
 				upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true })
 			},
@@ -201,10 +211,11 @@ export function createSeamRows(seam: SessionSeam, sessionID: Accessor<string>) {
 /** The projection handle a page shares between transcript and composer. */
 export type SeamRows = ReturnType<typeof createSeamRows>
 
-/** The approve callback the seam turn asks for; the rebuilt transcript has
- * no permission surface yet (later batch). Auto-approving would let tools
- * run silently, rejecting stalls real turns — the example's fake seam never
- * asks, and the shell adapter's host already gates approvals. */
-async function approveThrough(_name: string, _args: Record<string, unknown>) {
-	return true
+/** The approve callback the seam turn asks for when the page wires no
+ * overlay surface (batch 5 default). Auto-approving would let tools run
+ * silently, rejecting stalls real turns — the shell adapter's host already
+ * gates approvals, and pages pass `options.onApprove` to route through the
+ * approval card instead. */
+async function approveThrough(_name: string, _args: Record<string, unknown>): Promise<SeamApprovalVerdict> {
+	return "allowed-once"
 }

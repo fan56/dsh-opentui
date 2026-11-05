@@ -103,7 +103,7 @@ describe("seam rows projection", () => {
 			cb.onThinkingDelta("thinking")
 			cb.onContentDelta("one ")
 			cb.onToolStart?.({ callId: "c1", name: "grep", args: "x" })
-			expect(await cb.onApprove("grep", {})).toBe(true)
+			expect(await cb.onApprove("grep", {})).toBe("allowed-once")
 			cb.onContentDelta("two")
 		}
 		const { projection, dispose } = setup(seam)

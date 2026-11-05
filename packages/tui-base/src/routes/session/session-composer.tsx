@@ -38,6 +38,13 @@ import type { SessionSeam } from "../../seams/session"
 import { SplitBorder } from "../../ui/border"
 import { ComposerController, type ComposerHistory } from "./composer-state"
 
+export type SessionComposerRef = {
+	/** The textarea's live focused flag (OpenTUI renderable state, not a
+	 * cached copy — the login-era bug was a stale flag hiding a blur). */
+	focused(): boolean
+	focus(): void
+}
+
 export type SessionComposerProps = {
 	/** Seam used for steering a running turn. */
 	seam: SessionSeam
@@ -50,6 +57,8 @@ export type SessionComposerProps = {
 	/** Textarea line cap (content-driven height grows up to this). */
 	maxHeight?: number
 	placeholder?: string
+	/** Focus handle for overlay hosts: re-assert focus after a dialog drains. */
+	ref?: (ref: SessionComposerRef) => void
 }
 
 /** Vendored keybind config mapped onto the textarea's own bindings. */
@@ -175,6 +184,16 @@ export function SessionComposer(props: SessionComposerProps) {
 					queueMicrotask(() => {
 						if (value.isDestroyed) return
 						value.focus()
+					})
+					// Live focused flag for overlay hosts (vendored PromptRef shape):
+					// overlay hosts poll this after a dialog drains and re-assert
+					// focus when the vendored DialogProvider refocus missed us.
+					props.ref?.({
+						focused: () => !value.isDestroyed && value.focused,
+						focus: () => {
+							if (value.isDestroyed) return
+							value.focus()
+						},
 					})
 				}}
 			/>
