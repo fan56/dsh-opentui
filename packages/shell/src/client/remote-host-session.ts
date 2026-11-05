@@ -262,6 +262,14 @@ export interface RemoteHostSessionOptions {
 }
 
 const REATTACH_RETRY_MS = 1_000
+
+/** Turn/settle trace (DSH_OPENTUI_DEBUG): the turn-end finalization path the
+ * batch-9b hang was chased through — onTurnEnd receipt, finish/settle, follow
+ * detach/reattach. Timestamped stderr, one line per event. */
+function trace(message: string): void {
+	if (!process.env.DSH_OPENTUI_DEBUG) return
+	process.stderr.write(`[rhs ${new Date().toISOString().slice(11, 23)}] ${message}\n`)
+}
 /**
  * Re-attach budget (P2): must cover a same-port host restart (/reload), whose
  * own budget is `readinessTimeoutMs ?? 30_000` (remote-restart.ts) — the
@@ -337,6 +345,15 @@ export class RemoteHostSession {
 	#journalListeners: ((entry: RemoteJournalEntry) => void)[] = []
 	/** Highest durable seq painted for the live session (gap-repair base). */
 	#lastDurableSeq = -1
+	/**
+	 * The durable-seq watermark when the CURRENT awaited turn armed (batch 9b).
+	 * A `turn/end` journal record with `seq > #turnArmSeq` observed through the
+	 * reattach snapshot path means the awaited turn ended while the follow
+	 * stream was blind — the snapshot folds it as settled history (remote-follow
+	 * never settles a live await from a snapshot), so the reattach must settle
+	 * it here (batch-9b hang fix).
+	 */
+	#turnArmSeq = -1
 	/** Foreign-session tail watch (row 17). */
 	#tail: RemoteTailSession | undefined
 	/** Cached /plugins rows (sync listPlugins contract; refreshed async). */
@@ -504,9 +521,12 @@ export class RemoteHostSession {
 		// and the turn was already settled — do not start awaiting now.
 		if (this.#interrupted || this.#disposed) return
 		this.#awaiting = true
+		this.#turnArmSeq = this.#lastDurableSeq
+		trace(`turn armed awaiting session=${sessionId} armSeq=${this.#turnArmSeq}`)
 		await new Promise<void>((resolve) => {
 			this.#resolveTurn = resolve
 		})
+		trace("turn await RESOLVED")
 	}
 
 	/** Steer the RUNNING turn (`session/prompt` mode:'steer'). Fire-and-forget. */
@@ -1584,6 +1604,7 @@ export class RemoteHostSession {
 				}
 			},
 			onTurnEnd: (data: Record<string, unknown>) => {
+				trace(`onTurnEnd data=${JSON.stringify(data).slice(0, 200)} resolving=${this.#resolveTurn !== undefined}`)
 				const message = turnEndErrorMessage(data)
 				if (message !== undefined) {
 					try {
@@ -1606,7 +1627,10 @@ export class RemoteHostSession {
 
 	/** Turn-end telemetry + settle (host-session.ts #finishTurn parity). */
 	#finishTurn(): void {
-		if (this.#resolveTurn === undefined) return
+		if (this.#resolveTurn === undefined) {
+			trace("finishTurn EARLY-RETURN (no awaited turn)")
+			return
+		}
 		const endedAt = Date.now()
 		this.#ticker.finish()
 		const chars = this.#ticker.chars()
@@ -1645,10 +1669,30 @@ export class RemoteHostSession {
 
 	/** Resolve the awaited turn without onTurnEnd (abort/dispose parity). */
 	#settleTurnWithoutEnd(): void {
+		trace("settleTurnWithoutEnd")
 		const resolve = this.#resolveTurn
 		this.#resolveTurn = undefined
 		this.#awaiting = false
 		resolve?.()
+	}
+
+	/**
+	 * Batch-9b hang fix: settle an awaited turn whose `turn/end` arrived while
+	 * the follow stream was blind. `#reattach` folds the opening snapshot with
+	 * `turn/end`-in-snapshot = settled history (remote-follow.ts never settles
+	 * a live await from a snapshot), so without this check a stream death that
+	 * spans the turn's end leaves the awaited turn pending FOREVER (composer
+	 * locked in steer mode — the batch-9a defect). Any journal `turn/end` newer
+	 * than the arm watermark proves the awaited turn ended host-side; settle
+	 * through `#finishTurn` for its onTurnEnd/telemetry parity (it is a no-op
+	 * if a racing live frame already settled).
+	 */
+	#settleTurnIfEndedDuringGap(): void {
+		if (!this.#awaiting || this.#resolveTurn === undefined) return
+		const ended = this.#journal.some((entry) => entry.type === "turn/end" && entry.seq > this.#turnArmSeq)
+		if (!ended) return
+		trace(`turn/end found in gap-repaired journal (armSeq=${this.#turnArmSeq}) — settling awaited turn`)
+		this.#finishTurn()
 	}
 
 	// ------------------------------------------------------------------
@@ -1848,6 +1892,7 @@ export class RemoteHostSession {
 	}
 
 	#onFollowDetached(): void {
+		trace(`follow DETACHED sessionId=${this.#sessionId ?? "-"} awaiting=${this.#awaiting}`)
 		if (this.#disposed || this.#sessionId === undefined) return
 		if (this.#awaiting) this.#setReconnecting(true)
 		// If the carrier is already `connected` again, nothing else will
@@ -1857,6 +1902,7 @@ export class RemoteHostSession {
 
 	#scheduleReattach(): void {
 		if (this.#disposed || this.#sessionId === undefined) return
+		trace(`scheduleReattach attached=${this.#follow?.attached ?? "-"} awaiting=${this.#awaiting}`)
 		if (this.#follow?.attached || this.#reattachTimer !== undefined || this.#reattachInFlight) return
 		this.#reattachTimer = setTimeout(() => {
 			this.#reattachTimer = undefined
@@ -1879,9 +1925,18 @@ export class RemoteHostSession {
 			// (tool calls) after a reconnect /restart re-attach.
 			const opening = await this.#attachFollow(true, seqBefore)
 			this.#reattachAttempts = 0
+			trace(`reattach OK cursor=${opening.cursor} armSeq=${this.#turnArmSeq} awaiting=${this.#awaiting}`)
+			// Batch-9b hang fix: the follow stream died MID-TURN and the reattach
+			// replay folded the turn's `turn/end` as settled snapshot history
+			// (remote-follow never settles a live await from a snapshot). If the
+			// journal now holds a turn/end newer than the awaited turn's arm
+			// watermark, the turn ended while we were blind — settle here (the
+			// guard below makes it idempotent against a racing live frame).
+			this.#settleTurnIfEndedDuringGap()
 			await this.#repairJournalGap(opening, journalBefore, seqBefore)
 			this.#setReconnecting(false)
-		} catch {
+		} catch (error) {
+			trace(`reattach FAIL attempt=${this.#reattachAttempts + 1} err=${error instanceof Error ? error.message : String(error)}`)
 			this.#reattachAttempts += 1
 			if (this.#reattachAttempts >= this.#reattachMaxAttempts) {
 				this.#reattachAttempts = 0

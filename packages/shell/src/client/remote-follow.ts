@@ -141,6 +141,13 @@ interface AssistantStreamFrameEnd {
 	outcome: Record<string, unknown>
 }
 
+/** Follow-stream trace (DSH_OPENTUI_DEBUG): batch-9b hang chase — stream
+ * END/FAILED frames and live turn/end dispatch. Timestamped stderr. */
+function followTrace(message: string): void {
+	if (!process.env.DSH_OPENTUI_DEBUG) return
+	process.stderr.write(`[follow ${new Date().toISOString().slice(11, 23)}] ${message}\n`)
+}
+
 /** Convert one compact `AssistantStreamRecord[]` into (type, text) delta pairs. */
 export function expandCompactStream(records: unknown[]): { kind: "text" | "reasoning"; text: string }[] {
 	return expandCompactStreamIndexed(records).map(({ kind, text }) => ({ kind, text }))
@@ -301,6 +308,7 @@ export class RemoteFollowSession {
 					},
 					onEnd: () => {
 						this.#attached = false
+						followTrace(`stream END sessionId=${sessionId} settled=${settled}`)
 						if (!settled) {
 							settled = true
 							reject(new Error("session/follow ended before its opening snapshot"))
@@ -309,6 +317,7 @@ export class RemoteFollowSession {
 					onFailed: (error) => {
 						this.#attached = false
 						this.#stream = undefined
+						followTrace(`stream FAILED sessionId=${sessionId} settled=${settled} err=${error instanceof Error ? error.message : String(error)}`)
 						if (!settled) {
 							settled = true
 							reject(error)
@@ -511,6 +520,7 @@ export class RemoteFollowSession {
 		} else if (type === "tool/result") {
 			this.#toolResultEvent(data)
 		} else if (type === "turn/end") {
+			followTrace(`live turn/end dispatched`)
 			this.#options.sink.onTurnEnd(data)
 		}
 		// Live user/message + assistant/message are NOT repainted (the deltas

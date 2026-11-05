@@ -999,3 +999,66 @@ function sockEndsTurn(sock: FakeMuxSocket): void {
 	sock.item(streamFrame({ type: "end", attemptId: "a1", revision: 0, index: 1, outcome: { kind: "committed", eventType: "assistant/message", seq: 2 } }))
 	sock.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 3))
 }
+
+// ---------------------------------------------------------------------------
+// Batch 9b: turn-end finalization during a follow-stream gap
+// ---------------------------------------------------------------------------
+
+describe("RemoteHostSession batch-9b gap settlement", () => {
+	test("stream death mid-turn settles the awaited turn from the reattach snapshot's turn/end", async () => {
+		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-b9b") })
+		const { cb, log } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		const sock = h.lastSocket()
+		sock.item(snapshotFrame("sess-b9b"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		// Server-side drop mid-turn: no live turn/end on THIS socket, ever.
+		sock.close()
+		// The reattach opens a second socket; the host had already completed the
+		// turn while the stream was blind, so the turn/end rides the snapshot
+		// (seq above anything journaled live) as settled history.
+		await until(() => h.sockets.length > 1)
+		h.lastSocket().item(snapshotFrame("sess-b9b", {
+			cursor: 5,
+			records: [
+				{ type: "event", event: { type: "turn/end", seq: 5, time: Date.now(), data: { turn: 1, reason: { kind: "completed" } } } },
+			],
+		}))
+		// The awaited turn MUST settle (batch-9a defect: it hung forever here).
+		await Promise.race([
+			pending,
+			new Promise((_, reject) => setTimeout(() => reject(new Error("turn await hung: reattach snapshot turn/end did not settle")), 3000)),
+		])
+		expect(log.turnEnds.length).toBe(1)
+		await h.session.dispose()
+	})
+
+	test("a reattach whose snapshot holds no turn/end beyond the arm watermark leaves the turn pending (pre-turn history is not a settle)", async () => {
+		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-b9b2"), reattachRetryMs: 20 })
+		const { cb } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		const sock = h.lastSocket()
+		// A live record journals seq 2 BEFORE the turn arms (turn 1's tail), so
+		// the arm watermark is 2 and the snapshot's old turn/end (seq 2) must
+		// NOT settle the new turn.
+		sock.item(snapshotFrame("sess-b9b2"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		sock.item(eventFrame("assistant/message", { message: { content: [{ type: "text", text: "prev" }] } }, 2))
+		sock.close()
+		await until(() => h.sockets.length > 1)
+		h.lastSocket().item(snapshotFrame("sess-b9b2", {
+			cursor: 2,
+			records: [
+				{ type: "event", event: { type: "turn/end", seq: 2, time: Date.now(), data: { turn: 1, reason: { kind: "completed" } } } },
+			],
+		}))
+		await new Promise((resolve) => setTimeout(resolve, 150))
+		let settled = false
+		void pending.then(() => { settled = true })
+		await new Promise((resolve) => setTimeout(resolve, 150))
+		expect(settled).toBe(false)
+		await h.session.dispose()
+	})
+})
