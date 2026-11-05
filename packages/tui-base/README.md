@@ -83,7 +83,12 @@ documented: a `const` suppresses the namespace meaning of the same name;
 namespace-as-value pass-through (effect Schema namespaces) is not
 expressible — that is why schema is vendored for real.
 
-### Error budget (batch 5, exact count: 58; batch 4 was 58)
+### Error budget (batch 6, exact count: 58; batch 5 was 58)
+
+Batch 6 delta: 0. The theme/keybind path (`src/seams/theme.ts`,
+`routes/session/composer-keybinds.ts`, the token swaps in
+`routes/session/{transcript,session-composer}.tsx`, the optional hooks in
+`context/theme.tsx`, `examples/session.tsx`) adds 0.
 
 Batch 5 delta: 0. The overlay path (`routes/session/turn-overlay-controller.ts`,
 `routes/session/turn-overlays.tsx`, `examples/session.tsx`) and the seam
@@ -213,3 +218,41 @@ pop the card without resolving (turn hung). Sequential multi-question asks
 advance picker by picker via `dialog.replace`. Run with
 `bun examples/session.tsx`. Tests: `test/turn-overlays.test.ts` (verdicts,
 FIFO queue, sequential picks, declined envelope, idle/refocus point).
+
+## Theme + keybinds (batch 6)
+
+Theme source: the vendored theme system (`context/theme.tsx` ThemeProvider
+over `src/theme` + `src/vendor/theme`). Default theme: `opencode` (the
+vendored default, dark mode). The rebuilt transcript and composer now read
+tokens via `useThemeOptional()`, mapped as the vendored route maps them:
+text = `text.base`, user prompt = `text.action.primary`, reasoning =
+`text.muted` + `border.base`, tool done/running/failed =
+`text.feedback.{success,warning,error}`, loading = `text.feedback.info`,
+composer bg = `decrease(background.raised.base)` (vendored prompt). The
+transcript's default `syntaxStyle` is `useThemes().currentSyntax()`. With
+no ThemeProvider mounted, the pre-batch-6 hex constants still apply. The
+dialogs (batch 5) already used `useTheme().surface("dialog")`.
+
+Switch stub: `src/seams/theme.ts`. `createThemeSeam(useThemes())` returns
+`setTheme(name)`. It returns false and does nothing unless `name` is one of
+the 33 bundled names (32 v1 assets + `opencode`; `system` is generated,
+not bundled). It also provides `current()` and `list()`. Example:
+`S_THEME=catppuccin bun examples/session.tsx`. Tests:
+`test/theme-seam.test.ts`.
+
+Keybinds: the composer's textarea `keyBindings` are now derived from
+`config/keybind.ts` (`input.submit`, `input.newline`) by
+`routes/session/composer-keybinds.ts`. They are not a hand-written list.
+Overrides pass through `SessionComposer`'s `keybinds` prop. Tests:
+`test/composer-keybinds.test.ts`.
+
+| Key (default)                                   | Surface                   | Source                                                | Configurable                         |
+| ----------------------------------------------- | ------------------------- | ----------------------------------------------------- | ------------------------------------ |
+| enter (`return`)                                | composer submit / steer   | `input.submit` → `composerKeyBindings`                | yes (`keybinds` prop)                |
+| shift/ctrl/alt+enter, ctrl+j                    | composer newline          | `input.newline` → `composerKeyBindings`               | yes (`keybinds` prop)                |
+| numpad enter (`kpenter`)                        | composer                  | mirrors every `return` binding                        | follows `return`                     |
+| ↑ / ↓ (history recall)                          | composer                  | `onKeyDown` in `session-composer.tsx`                 | no (hardcoded; `prompt.history.*` exists in config, not read) |
+| esc / ctrl+c (close top dialog)                 | DialogProvider modal layer | `ui/dialog.tsx` `bind: "escape"` / `"ctrl+c"`         | no (hardcoded in the vendored app too) |
+| enter / esc / ← → (approval card)               | `ui/dialog-confirm`       | `Keymap.createLayer` binds in the vendored component  | no (hardcoded in the vendored app too) |
+| ↑↓ / enter / pgup/pgdn / home/end (ask picker)  | `ui/dialog-select`        | vendored component (`dialog.select.*` in config)      | through the vendored Keymap layer, per `dialog.select.*` |
+| ctrl+c (exit example)                           | renderer                  | `render(..., { exitOnCtrlC: true })`                  | no                                   |

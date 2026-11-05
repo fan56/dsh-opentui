@@ -7,6 +7,9 @@
 // must render over the transcript; enter → turn continues, esc → rejected)
 // and one two-question ask (sequential pickers; esc declines the batch).
 // After every overlay closes, typing must land in the composer (focus law).
+// Batch 6: transcript/composer/dialogs render with vendored theme tokens
+// (default "opencode"); S_THEME=<bundled name> switches via the ThemeSeam
+// stub (validated against the bundled list; unknown names are ignored).
 // Run from packages/tui-base: bun examples/session.tsx   (ctrl+c quits)
 import { createSignal, onMount } from "solid-js"
 import { render } from "@opentui/solid"
@@ -17,7 +20,8 @@ import { SessionComposer, type SessionComposerRef } from "../src/routes/session/
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
 import { ConfigProvider, resolve } from "../src/config"
-import { ThemeProvider } from "../src/context/theme"
+import { ThemeProvider, useThemes } from "../src/context/theme"
+import { createThemeSeam } from "../src/seams/theme"
 import { Keymap } from "../src/context/keymap"
 import { ToastProvider } from "../src/ui/toast"
 import { ClipboardProvider } from "../src/context/clipboard"
@@ -26,6 +30,7 @@ import { DialogProvider } from "../src/ui/dialog"
 const SENTENCES = Number(process.env.S_SENTENCES ?? 24)
 const INTERVAL_MS = Number(process.env.S_INTERVAL_MS ?? 250)
 const EXIT_AFTER_MS = Number(process.env.S_EXIT_AFTER_MS ?? 0)
+const THEME = process.env.S_THEME
 
 /** The questions the fake ask fires mid-turn (one batch, two pickers). */
 const DEMO_QUESTIONS: SeamAskQuestion[] = [
@@ -85,6 +90,8 @@ function SessionPage() {
 		onApprove: (name, args) => overlays.requestApproval(name, args),
 	})
 	const [, setBusy] = createSignal(false)
+	const themeSeam = createThemeSeam(useThemes())
+	if (THEME && !themeSeam.setTheme(THEME)) console.error(`unknown theme ${THEME}; bundled: ${themeSeam.list().join(", ")}`)
 	onMount(() => projection.load())
 	return (
 		<box flexDirection="column" width="100%" height="100%" backgroundColor="black">

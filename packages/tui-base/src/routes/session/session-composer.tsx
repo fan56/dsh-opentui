@@ -11,8 +11,12 @@
  * shift/ctrl/alt+return, ctrl+j). The raw textarea defaults are the reverse
  * (return → newline, meta+return → submit); the vendored app flips them via
  * its keymap layer. This component flips them with the textarea's own
- * `keyBindings` prop (custom entries override defaults per key combo), so it
- * needs no vendored Keymap context.
+ * `keyBindings` prop, DERIVED from the same config values
+ * (./composer-keybinds.ts; batch 6), so it needs no vendored Keymap context
+ * and a `keybinds` override reaches it through the `keybinds` prop.
+ *
+ * Colors: vendored theme tokens via `useThemeOptional()` (batch 6); the
+ * pre-batch-6 hex constants are the no-provider fallback.
  *
  *   enter              submit (idle → send a turn; busy → steer)
  *   alt/shift/ctrl+enter, ctrl+j   newline
@@ -37,6 +41,8 @@ import { measureEditText, type KeyEvent, type TextareaRenderable } from "@opentu
 import type { SessionSeam } from "../../seams/session"
 import { SplitBorder } from "../../ui/border"
 import { ComposerController, type ComposerHistory } from "./composer-state"
+import { composerKeyBindings, type ComposerKeybindConfig } from "./composer-keybinds"
+import { useThemeOptional } from "../../context/theme"
 
 export type SessionComposerRef = {
 	/** The textarea's live focused flag (OpenTUI renderable state, not a
@@ -59,23 +65,27 @@ export type SessionComposerProps = {
 	placeholder?: string
 	/** Focus handle for overlay hosts: re-assert focus after a dialog drains. */
 	ref?: (ref: SessionComposerRef) => void
+	/** Resolved `input.submit` / `input.newline` overrides (vendored config
+	 * vocabulary); omitted = vendored defaults. */
+	keybinds?: ComposerKeybindConfig
 }
-
-/** Vendored keybind config mapped onto the textarea's own bindings. */
-const COMPOSER_KEY_BINDINGS = [
-	{ name: "return", action: "submit" as const },
-	{ name: "kpenter", action: "submit" as const },
-	{ name: "return", meta: true, action: "newline" as const },
-	{ name: "kpenter", meta: true, action: "newline" as const },
-	{ name: "return", shift: true, action: "newline" as const },
-	{ name: "return", ctrl: true, action: "newline" as const },
-	{ name: "j", ctrl: true, action: "newline" as const },
-]
 
 const FOOTER_HEIGHT = 1
 
 export function SessionComposer(props: SessionComposerProps) {
 	const renderer = useRenderer()
+	const theme = useThemeOptional()
+	const color = {
+		// Vendored prompt: border = border.base tinted by the agent color
+		// (no agent here → untinted); bg = decrease(background.raised.base).
+		border: () => theme?.border.base ?? "#7aa2f7",
+		busy: () => theme?.text.feedback.warning.base ?? "#e0af68",
+		background: () => (theme ? theme.decrease(theme.background.raised.base) : "#1a1b26"),
+		text: () => theme?.text.base ?? "#e6e6e6",
+		placeholder: () => theme?.text.faint ?? "#565f89",
+		hint: () => theme?.text.muted ?? "#565f89",
+	}
+	const keyBindings = composerKeyBindings(props.keybinds)
 	const [busy, setBusy] = createSignal(false)
 	const [textareaHeight, setTextareaHeight] = createSignal(1)
 	let textarea: TextareaRenderable | undefined
@@ -158,9 +168,9 @@ export function SessionComposer(props: SessionComposerProps) {
 			height={textareaHeight() + FOOTER_HEIGHT}
 			flexDirection="column"
 			border={["left"]}
-			borderColor={busy() ? "#e0af68" : "#7aa2f7"}
+			borderColor={busy() ? color.busy() : color.border()}
 			customBorderChars={SplitBorder.customBorderChars}
-			backgroundColor="#1a1b26"
+			backgroundColor={color.background()}
 			paddingLeft={1}
 		>
 			<textarea
@@ -168,11 +178,11 @@ export function SessionComposer(props: SessionComposerProps) {
 				minHeight={1}
 				maxHeight={maxLines()}
 				placeholder={props.placeholder ?? "Type a message (enter send, alt+enter newline)"}
-				placeholderColor="#565f89"
-				textColor="#e6e6e6"
-				focusedTextColor="#e6e6e6"
-				cursorColor="#e6e6e6"
-				keyBindings={COMPOSER_KEY_BINDINGS}
+				placeholderColor={color.placeholder()}
+				textColor={color.text()}
+				focusedTextColor={color.text()}
+				cursorColor={color.text()}
+				keyBindings={keyBindings}
 				onSubmit={submit}
 				onKeyDown={recall}
 				onContentChange={syncHeight}
@@ -200,9 +210,9 @@ export function SessionComposer(props: SessionComposerProps) {
 			<box height={FOOTER_HEIGHT} flexShrink={0} flexDirection="row" gap={2}>
 				<Show
 					when={busy()}
-					fallback={<text fg="#565f89">{"enter send · alt+enter newline · ↑↓ history"}</text>}
+					fallback={<text fg={color.hint()}>{"enter send · alt+enter newline · ↑↓ history"}</text>}
 				>
-					<text fg="#e0af68">{"* streaming… enter steers the running turn"}</text>
+					<text fg={color.busy()}>{"* streaming… enter steers the running turn"}</text>
 				</Show>
 			</box>
 		</box>

@@ -21,6 +21,11 @@
  *     are injectable props; the vendored app passes `plugins.markdown()`
  *     and `useThemes().currentSyntax` — a host that has them passes them,
  *     the bare example renders without.
+ *   - colors are vendored theme tokens (batch 6) when a ThemeProvider is
+ *     mounted (`useThemeOptional()`), mapped the way the vendored route maps
+ *     them (loading = feedback.info, tool status = feedback.success/warning/
+ *     error, reasoning = text.muted); without a provider the pre-batch-6
+ *     hex constants apply.
  *
  * OpenTUI law honored: the auto-height boxes here sit in explicit-dims
  * parents (flexGrow + minHeight=0 chain from the session route shape); the
@@ -32,6 +37,7 @@ import { useRenderer } from "@opentui/solid"
 import { SyntaxStyle } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
+import { useThemeOptional, useThemesOptional } from "../../context/theme"
 
 export type TranscriptProps = {
 	/** The seam feeding this transcript (NullSessionSeam in tests/examples). */
@@ -54,10 +60,24 @@ export type TranscriptProps = {
 
 export function Transcript(props: TranscriptProps) {
 	const renderer = useRenderer()
+	const theme = useThemeOptional()
+	const color = {
+		text: () => theme?.text.base ?? "#e6e6e6",
+		user: () => theme?.text.action.primary.base ?? "#7aa2f7",
+		reasoningBorder: () => theme?.border.base ?? "#565f89",
+		reasoning: () => theme?.text.muted ?? "#9aa5ce",
+		done: () => theme?.text.feedback.success.base ?? "#9ece6a",
+		running: () => theme?.text.feedback.warning.base ?? "#e0af68",
+		failed: () => theme?.text.feedback.error.base ?? "#f7768e",
+		loading: () => theme?.text.feedback.info.base ?? "#565f89",
+		background: () => theme?.background.base ?? "black",
+	}
 	const sessionID = () => props.sessionID ?? props.seam.currentSessionId() ?? ""
 	const owned = props.projection === undefined
 	const projection = props.projection ?? createSeamRows(props.seam, sessionID)
-	const syntaxStyle = () => props.syntaxStyle ?? SyntaxStyle.fromStyles({}, renderer.nativeScene)
+	const themes = useThemesOptional()
+	const syntaxStyle = () =>
+		props.syntaxStyle ?? themes?.currentSyntax() ?? SyntaxStyle.fromStyles({}, renderer.nativeScene)
 
 	onMount(() => {
 		if (owned) projection.load()
@@ -72,7 +92,7 @@ export function Transcript(props: TranscriptProps) {
 			streaming={!row.final}
 			internalBlockMode="top-level"
 			syntaxStyle={syntaxStyle()}
-			fg="#e6e6e6"
+			fg={color.text()}
 		/>
 	)
 
@@ -81,15 +101,15 @@ export function Transcript(props: TranscriptProps) {
 			case "user":
 				return (
 					<box flexShrink={0} paddingLeft={3}>
-						<text fg="#7aa2f7" wrapMode="word">
+						<text fg={color.user()} wrapMode="word">
 							{`❯ ${row.text}`}
 						</text>
 					</box>
 				)
 			case "reasoning":
 				return (
-					<box flexShrink={0} marginLeft={3} border={["left"]} borderColor="#565f89" paddingLeft={1}>
-						<text fg="#9aa5ce" wrapMode="word">
+					<box flexShrink={0} marginLeft={3} border={["left"]} borderColor={color.reasoningBorder()} paddingLeft={1}>
+						<text fg={color.reasoning()} wrapMode="word">
 							{row.text}
 						</text>
 					</box>
@@ -98,7 +118,7 @@ export function Transcript(props: TranscriptProps) {
 				return (
 					<box flexShrink={0} paddingLeft={3}>
 						<text
-							fg={row.status === "failed" ? "#f7768e" : row.status === "running" ? "#e0af68" : "#9ece6a"}
+							fg={row.status === "failed" ? color.failed() : row.status === "running" ? color.running() : color.done()}
 							wrapMode="none"
 						>
 							{`${row.status === "done" ? "✓" : row.status === "failed" ? "✗" : "*"} ${row.name}${
@@ -113,7 +133,7 @@ export function Transcript(props: TranscriptProps) {
 	}
 
 	return (
-		<box flexDirection="column" flexGrow={1} minHeight={0} width="100%" backgroundColor="black">
+		<box flexDirection="column" flexGrow={1} minHeight={0} width="100%" backgroundColor={color.background()}>
 			{/* session route shape: row > flexGrow col (position relative) > scrollbox */}
 			<box flexDirection="row" flexGrow={1} minHeight={0}>
 				<box flexGrow={1} minHeight={0} position="relative" paddingBottom={1}>
@@ -132,7 +152,7 @@ export function Transcript(props: TranscriptProps) {
 						</For>
 						<Show when={projection.hydrated() === false}>
 							<box flexShrink={0}>
-								<text fg="#565f89">Loading session history…</text>
+								<text fg={color.loading()}>Loading session history…</text>
 							</box>
 						</Show>
 					</scrollbox>

@@ -20,7 +20,7 @@ import {
 import { generateSystem, terminalMode } from "../theme/system"
 import { discoverThemes } from "../theme/discovery"
 import { createComponentTheme, type ComponentTheme } from "../theme/component"
-import { createEffect, createMemo, createSignal, onCleanup, onMount, type Accessor, type ParentProps } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, onMount, useContext, type Accessor, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useConfig, useNewDesigns } from "../config"
@@ -369,6 +369,16 @@ export function useThemes() {
 }
 export function useTheme(): ComponentTheme {
   return themeContext.use().current
+}
+/** Theme tokens when a ThemeProvider is mounted, undefined otherwise — the
+ * rebuilt transcript/composer fall back to their pre-batch-6 hex constants
+ * in that case (same injectable law as `renderNode`/`syntaxStyle`). */
+export function useThemeOptional(): ComponentTheme | undefined {
+  return useContext(themeContext.context)?.current
+}
+/** `useThemes()` when a ThemeProvider is mounted, undefined otherwise. */
+export function useThemesOptional(): Themes | undefined {
+  return useContext(themeContext.context)?.themes
 }
 export const ThemeProvider = themeContext.provider
 
