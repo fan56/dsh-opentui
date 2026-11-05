@@ -8,7 +8,7 @@
  * of queueing. All visuals come from @dsh-opentui/kit — this file owns
  * state and keyboard routing only.
  */
-import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js"
+import { For, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js"
 import { SyntaxStyle, decodePasteBytes } from "@opentui/core"
 import { useKeyboard, usePaste, useRenderer } from "@opentui/solid"
 import { getTheme, themeNames, themes, type I18n } from "@dsh-opentui/kit"
@@ -440,6 +440,19 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     },
   })
   const loginFeature = createLoginFeature({ session: props.deps.session, theme, push: (it) => push(it) })
+  // Login panel close → imperative focus reclaim (the same teardown guard
+  // the overlay paths run): the panel's menu Select holds the engine focus
+  // while mounted, and its unmount can leave the blurred editor holding it
+  // — the focused-prop flip alone does not reclaim the focus singleton.
+  createEffect(
+    on(
+      () => loginFeature.panelOpen(),
+      (open, wasOpen) => {
+        if (wasOpen && !open) setFocusKey((k) => k + 1)
+      },
+      { defer: true },
+    ),
+  )
 
   const onOverlaySelect = (value: string) => {
     const ov = overlay()
@@ -511,7 +524,11 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
   }
   /** up/down recall at the editor's first/last line; the draft slot
    * (index === length) restores the empty buffer. Returns whether the key
-   * was consumed (InputLine then suppresses its cursor move). */
+   * was consumed (InputLine then suppresses its cursor move). A recall of
+   * a "/"-entry would otherwise leave the slash palette owning the arrows
+   * (the line starts with "/", so the menu re-arms and up/down move the
+   * menu highlight instead of walking history) — the recall closes the
+   * menu explicitly; any further typed edit reopens it. */
   const historyNav = (dir: "up" | "down"): boolean => {
     const h = history()
     if (h.length === 0) return false
@@ -521,6 +538,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     else return false
     setHistoryIdx(idx)
     setBuffer(idx === h.length ? "" : h[idx]!)
+    setMenuOpen(false)
     return true
   }
   /** Clear the editor buffer without touching history (post-submit / clear). */
@@ -1247,13 +1265,19 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     if (key.sequence === "\x03" || ((key.name === "c" || key.name === "C") && key.ctrl)) process.exit(0)
     // abort confirm (tui-pi stop-dialog): a bare esc while busy arms the
     // stop card instead of killing the turn — accidental esc no longer
-    // throws away a long answer. y aborts, n/esc resumes.
+    // throws away a long answer. y aborts, n/esc resumes. Consumed keys
+    // are preventDefault()ed: the editor keeps the ENGINE-level focus
+    // here (no modal renderable steals it), and a key consumed without
+    // preventDefault is ALSO delivered to it — the y/n would type into
+    // the buffer (the same double-delivery the login panel showed).
     if (stopConfirm()) {
       if (key.sequence === "y") {
+        key.preventDefault?.()
         setStopConfirm(false)
         props.deps.session.abort?.()
         push({ kind: "system", text: "turn aborted" })
       } else if (key.sequence === "n" || key.name === "escape") {
+        key.preventDefault?.()
         setStopConfirm(false)
       }
       return
@@ -1263,14 +1287,18 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       return
     }
     // Approval card: y/enter allows, n/esc rejects (highest modal priority
-    // — the turn is waiting on us; the editor is blurred under it).
+    // — the turn is waiting on us; the editor is blurred under it, and the
+    // consumed keys are preventDefault()ed so a double delivery can never
+    // allow a tool AND type the same character into the buffer).
     const ap = approval()
     if (ap) {
       if (key.sequence === "y" || key.name === "return") {
+        key.preventDefault?.()
         setApproval(null)
         approveResolve?.(true)
         approveResolve = null
       } else if (key.sequence === "n" || key.name === "escape") {
+        key.preventDefault?.()
         setApproval(null)
         approveResolve?.(false)
         approveResolve = null
@@ -1287,9 +1315,12 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     }
     // Subagent viewer (ctrl+G opened it): esc backs out, s opens the
     // one-line steer entry for a RUNNING child. The editor is blurred
-    // while the viewer is up so typed keys land here.
+    // while the viewer is up; consumed keys are preventDefault()ed so a
+    // ghost engine focus (an unmounted picker restored it) cannot type
+    // the same key into the buffer.
     if (viewerId()) {
       if (key.name === "escape") {
+        key.preventDefault?.()
         if (steerFor()) {
           setSteerFor(null)
           setSteerBuffer("")
@@ -1301,6 +1332,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
       }
       if (steerFor()) {
         if (key.name === "return") {
+          key.preventDefault?.()
           const text = steerBuffer().trim()
           setSteerFor(null)
           setSteerBuffer("")
@@ -1309,14 +1341,19 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
             push({ kind: ok ? "system" : "error", text: ok ? `⚡ steered child ${viewerId()!.slice(0, 8)}` : "child is not steerable (settled or not in this process)" })
           }
         } else if (key.name === "backspace") {
+          key.preventDefault?.()
           setSteerBuffer((b) => b.slice(0, -1))
         } else {
           const ch = key.sequence ?? ""
-          if (ch.length === 1 && /[\x20-\x7e]/.test(ch)) setSteerBuffer((b) => b + ch)
+          if (ch.length === 1 && /[\x20-\x7e]/.test(ch)) {
+            key.preventDefault?.()
+            setSteerBuffer((b) => b + ch)
+          }
         }
         return
       }
       if (key.sequence === "s") {
+        key.preventDefault?.()
         const entry = subagents().find((e) => e.id === viewerId())
         if (entry?.status === "running") {
           setSteerFor(viewerId())
@@ -1334,6 +1371,7 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     const vkCtrl = viewerKey.startsWith("ctrl+")
     const vkName = vkCtrl ? viewerKey.slice(5) : viewerKey
     if (key.ctrl === vkCtrl && key.name === vkName) {
+      key.preventDefault?.()
       const list = subagents()
       if (list.length === 0) {
         push({ kind: "system", text: "no subagents yet" })
@@ -1349,17 +1387,27 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     // Dock detail re-expand: ctrl+t (last thought) / ctrl+o (tool ledger)
     // re-open the collapsed dock panels; a fresh turn closes them again.
     // login feature's key stages (key entry / logout confirm) come before
-    // everything else while its panel is up
-    if (loginFeature.active() && loginFeature.handleKey(key)) return
+    // everything else while its panel is up. The consumed key is
+    // preventDefault()ed: the login menu's Select held the engine focus
+    // and its unmount (menu → entry/confirm) leaves it on the blurred
+    // editor — an un-preventDefaulted key would be delivered there too
+    // (the confirm "y" typed itself into the input line, and the next
+    // submit rode the residue: "/model" went out as the prompt "y/model").
+    if (loginFeature.active() && loginFeature.handleKey(key)) {
+      key.preventDefault?.()
+      return
+    }
     const thinkKey = hot("think", "ctrl+t")
     const tkCtrl = thinkKey.startsWith("ctrl+")
     if (key.ctrl === tkCtrl && key.name === (tkCtrl ? thinkKey.slice(5) : thinkKey)) {
+      key.preventDefault?.()
       dock.toggleExpand("think")
       return
     }
     const toolsKey = hot("tools", "ctrl+o")
     const toCtrl = toolsKey.startsWith("ctrl+")
     if (key.ctrl === toCtrl && key.name === (toCtrl ? toolsKey.slice(5) : toolsKey)) {
+      key.preventDefault?.()
       dock.toggleExpand("tool")
       return
     }
@@ -1367,21 +1415,25 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
     // model picker (ctrl+l) and session search (ctrl+alt+f) hotkeys
     const modelKey = hot("model", "ctrl+l")
     if (key.ctrl && !key.meta && key.name === modelKey.replace("ctrl+", "")) {
+      key.preventDefault?.()
       void runCommand("/model")
       return
     }
     const searchKey = hot("search", "ctrl+alt+f")
     if (key.ctrl && (key as any).option && key.name === searchKey.replace("ctrl+alt+", "")) {
+      key.preventDefault?.()
       void runCommand("/search")
       return
     }
     const upKey = hot("scrollUp", "pageup")
     const dnKey = hot("scrollDown", "pagedown")
     if (key.name === upKey || (upKey.startsWith("ctrl+") && key.ctrl && key.name === upKey.slice(5))) {
+      key.preventDefault?.()
       scrollUp()
       return
     }
     if (key.name === dnKey || (dnKey.startsWith("ctrl+") && key.ctrl && key.name === dnKey.slice(5))) {
+      key.preventDefault?.()
       scrollDown()
       return
     }
@@ -1589,6 +1641,13 @@ export function ShellHost(props: { deps: ShellHostDeps }) {
         theme={th()}
         onSubmit={submitLine}
         onContentChange={(v) => {
+          // Programmatic writes (history recall, setValue) echo through the
+          // textarea's own onContentChange AFTER setBuffer already updated
+          // the signal — a typed edit never matches the current signal.
+          // Skipping the echo keeps the history recall's palette close
+          // (setMenuOpen(false) in historyNav) from being undone, which is
+          // what left the menu owning the arrows mid-history-walk.
+          if (v === input()) return
           setInput(v)
           setMenuOpen(true)
           setMenuSel(0)

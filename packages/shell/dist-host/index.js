@@ -161,7 +161,7 @@ import { createComponent as _$createComponent18 } from "@opentui/solid";
 import { memo as _$memo10 } from "@opentui/solid";
 import { setProp as _$setProp19 } from "@opentui/solid";
 import { createElement as _$createElement19 } from "@opentui/solid";
-import { For as For15, createMemo, createSignal as createSignal6, onCleanup as onCleanup3, onMount } from "solid-js";
+import { For as For15, createEffect as createEffect2, createMemo, createSignal as createSignal6, on as on2, onCleanup as onCleanup3, onMount } from "solid-js";
 import { SyntaxStyle, decodePasteBytes } from "@opentui/core";
 import { useKeyboard as useKeyboard2, usePaste, useRenderer } from "@opentui/solid";
 // ../kit/src/themes-data.ts
@@ -4264,6 +4264,12 @@ function ShellHost(props) {
     theme,
     push: (it) => push(it)
   });
+  createEffect2(on2(() => loginFeature.panelOpen(), (open, wasOpen) => {
+    if (wasOpen && !open)
+      setFocusKey((k) => k + 1);
+  }, {
+    defer: true
+  }));
   const onOverlaySelect = (value) => {
     const ov = overlay();
     setOverlay(null);
@@ -4331,6 +4337,7 @@ function ShellHost(props) {
       return false;
     setHistoryIdx(idx);
     setBuffer(idx === h.length ? "" : h[idx]);
+    setMenuOpen(false);
     return true;
   };
   const clearBuffer = () => setBuffer("");
@@ -5282,6 +5289,7 @@ function ShellHost(props) {
       process.exit(0);
     if (stopConfirm()) {
       if (key.sequence === "y") {
+        key.preventDefault?.();
         setStopConfirm(false);
         props.deps.session.abort?.();
         push({
@@ -5289,6 +5297,7 @@ function ShellHost(props) {
           text: "turn aborted"
         });
       } else if (key.sequence === "n" || key.name === "escape") {
+        key.preventDefault?.();
         setStopConfirm(false);
       }
       return;
@@ -5300,10 +5309,12 @@ function ShellHost(props) {
     const ap = approval();
     if (ap) {
       if (key.sequence === "y" || key.name === "return") {
+        key.preventDefault?.();
         setApproval(null);
         approveResolve?.(true);
         approveResolve = null;
       } else if (key.sequence === "n" || key.name === "escape") {
+        key.preventDefault?.();
         setApproval(null);
         approveResolve?.(false);
         approveResolve = null;
@@ -5317,6 +5328,7 @@ function ShellHost(props) {
     }
     if (viewerId()) {
       if (key.name === "escape") {
+        key.preventDefault?.();
         if (steerFor()) {
           setSteerFor(null);
           setSteerBuffer("");
@@ -5328,6 +5340,7 @@ function ShellHost(props) {
       }
       if (steerFor()) {
         if (key.name === "return") {
+          key.preventDefault?.();
           const text = steerBuffer().trim();
           setSteerFor(null);
           setSteerBuffer("");
@@ -5339,15 +5352,19 @@ function ShellHost(props) {
             });
           }
         } else if (key.name === "backspace") {
+          key.preventDefault?.();
           setSteerBuffer((b) => b.slice(0, -1));
         } else {
           const ch = key.sequence ?? "";
-          if (ch.length === 1 && /[\x20-\x7e]/.test(ch))
+          if (ch.length === 1 && /[\x20-\x7e]/.test(ch)) {
+            key.preventDefault?.();
             setSteerBuffer((b) => b + ch);
+          }
         }
         return;
       }
       if (key.sequence === "s") {
+        key.preventDefault?.();
         const entry = subagents().find((e) => e.id === viewerId());
         if (entry?.status === "running") {
           setSteerFor(viewerId());
@@ -5366,6 +5383,7 @@ function ShellHost(props) {
     const vkCtrl = viewerKey.startsWith("ctrl+");
     const vkName = vkCtrl ? viewerKey.slice(5) : viewerKey;
     if (key.ctrl === vkCtrl && key.name === vkName) {
+      key.preventDefault?.();
       const list = subagents();
       if (list.length === 0) {
         push({
@@ -5385,37 +5403,45 @@ function ShellHost(props) {
       });
       return;
     }
-    if (loginFeature.active() && loginFeature.handleKey(key))
+    if (loginFeature.active() && loginFeature.handleKey(key)) {
+      key.preventDefault?.();
       return;
+    }
     const thinkKey = hot("think", "ctrl+t");
     const tkCtrl = thinkKey.startsWith("ctrl+");
     if (key.ctrl === tkCtrl && key.name === (tkCtrl ? thinkKey.slice(5) : thinkKey)) {
+      key.preventDefault?.();
       dock.toggleExpand("think");
       return;
     }
     const toolsKey = hot("tools", "ctrl+o");
     const toCtrl = toolsKey.startsWith("ctrl+");
     if (key.ctrl === toCtrl && key.name === (toCtrl ? toolsKey.slice(5) : toolsKey)) {
+      key.preventDefault?.();
       dock.toggleExpand("tool");
       return;
     }
     const modelKey = hot("model", "ctrl+l");
     if (key.ctrl && !key.meta && key.name === modelKey.replace("ctrl+", "")) {
+      key.preventDefault?.();
       runCommand("/model");
       return;
     }
     const searchKey = hot("search", "ctrl+alt+f");
     if (key.ctrl && key.option && key.name === searchKey.replace("ctrl+alt+", "")) {
+      key.preventDefault?.();
       runCommand("/search");
       return;
     }
     const upKey = hot("scrollUp", "pageup");
     const dnKey = hot("scrollDown", "pagedown");
     if (key.name === upKey || upKey.startsWith("ctrl+") && key.ctrl && key.name === upKey.slice(5)) {
+      key.preventDefault?.();
       scrollUp();
       return;
     }
     if (key.name === dnKey || dnKey.startsWith("ctrl+") && key.ctrl && key.name === dnKey.slice(5)) {
+      key.preventDefault?.();
       scrollDown();
       return;
     }
@@ -5889,6 +5915,8 @@ function ShellHost(props) {
       },
       onSubmit: submitLine,
       onContentChange: (v) => {
+        if (v === input())
+          return;
         setInput(v);
         setMenuOpen(true);
         setMenuSel(0);
