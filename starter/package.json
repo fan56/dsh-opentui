@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@dsh-opentui/runtime": "workspace:*",
-    "@deepseek-ai/cordis": "4.0.5"
+    "@deepseek-ai/cordis": "4.1.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
