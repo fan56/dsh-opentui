@@ -64,6 +64,7 @@ import { createComponent } from "solid-js"
 import { createI18n } from "@dsh-opentui/kit"
 import { bootRuntime, type RuntimeOptions, type RuntimeHandle } from "@dsh-opentui/runtime"
 import { ShellHost } from "./ShellHost.tsx"
+import { createTurnHeal } from "./client/turn-heal.ts"
 import { DEFAULT_IDLE_EXIT_SEC, DEFAULT_PROFILE, ensureHost, type HostHandle, type EnsureHostOptions } from "./client/lifecycle.ts"
 import { ClientConnection } from "./client/transport.ts"
 import { RemoteHostSession } from "./client/remote-host-session.ts"
@@ -232,7 +233,16 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 	// mode satisfies; tsc conformance guards live in client/shell-session.ts).
 	// aggregateTurnContext feeds the wave-2 aggregated context shape into
 	// the turn-end hand-off (see its header — no ShellHost edit).
-	const shellSession = aggregateTurnContext(session)
+	// createTurnHeal wraps that with the Batch B tear-mitigation DETECTION:
+	// long streaming turns are churn-tracked and trip a deferred heal at
+	// turn end. The heal action itself is a deliberate no-op for now —
+	// the suspend/resume API bounce was falsified by the live repro (it
+	// froze the client; see client/turn-heal.ts), and renderer recreation
+	// needs ShellHost state externalization first (dist-host gate). When
+	// that lands, wire it here via the `heal` factory seam.
+	const shellSession = createTurnHeal(aggregateTurnContext(session), {
+		heal: () => null,
+	})
 	const themeName = themeNameFromConfig(session)
 
 	bootCallOrder.push("render")
