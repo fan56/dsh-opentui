@@ -20953,8 +20953,8 @@ function useDialog() {
 import { createStore as createStore7 } from "solid-js/store";
 import { For as For3 } from "solid-js";
 
-// ../tui-base/src/util/string-width.bun.ts
-var stringWidth = Bun.stringWidth;
+// ../tui-base/src/util/string-width.node.ts
+var graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 // ../tui-base/src/util/locale.ts
 function titlecase(str) {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
@@ -23319,7 +23319,7 @@ function apply(ctx, config) {
           }
         });
       }
-    })).catch((error) => {
+    }), renderer).catch((error) => {
       appendDiagnostic(`[v2 boot render failed] ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
       process.stderr.write("dsh-opentui boot failed: " + String(error instanceof Error ? error.message : error) + `
 `);

@@ -241,6 +241,10 @@ export function apply(ctx: Context, config?: { theme?: string }) {
   const themeName = config?.theme ?? session.configLoad().theme
 
   mountEngine({}).then(({ renderer }) => {
+    // The engine owns THE CliRenderer on stdin (0.7-era host contract, kept):
+    // solid's render() must reuse it — called renderer-less it creates a
+    // SECOND CliRenderer and dies ("stdin is already used by another
+    // CliRenderer", boot-validated).
     // The example page's provider closure, in the vendored app's order.
     // COMPILED-JSX LAW: children ride GETTERS — eager children are created
     // in the parent's owner scope and miss the provider's context.
@@ -282,6 +286,7 @@ export function apply(ctx: Context, config?: { theme?: string }) {
           })
         },
       }),
+      renderer,
     ).catch((error: unknown) => {
       appendDiagnostic(`[v2 boot render failed] ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`)
       process.stderr.write("dsh-opentui boot failed: " + String(error instanceof Error ? error.message : error) + "\n")

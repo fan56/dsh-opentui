@@ -49,6 +49,8 @@ async function pinSolidClient() {
   const pkg = JSON.parse(await Bun.file(p).text())
   pkg.exports = {
     ".": { types: "./types/index.d.ts", import: "./dist/solid.js", require: "./dist/solid.cjs" },
+    // batch 10a: the rebuilt view imports solid-js/store (seam-rows' store)
+    "./store": { types: "./store/types/index.d.ts", import: "./store/dist/store.js", require: "./store/dist/store.cjs" },
     "./dist/solid.js": "./dist/solid.js",
     "./dist/solid.cjs": "./dist/solid.cjs",
     "./package.json": "./package.json",
@@ -70,7 +72,22 @@ const result = await Bun.build({
   target: "node",
   format: "esm",
   outdir: outDir,
-  plugins: [solidPlugin],
+  plugins: [
+    solidPlugin,
+    // tui-base's #imports map resolves the BUN variants under Bun.build even
+    // with target node (builder-runtime conditions win) and `alias` does not
+    // apply to # specifiers — pin the node variant the dist-host runtime
+    // (node) needs. Only #string-width reached the bundle (Bun.stringWidth
+    // crash, boot-validated).
+    {
+      name: "tui-base-node-variants",
+      setup(build) {
+        build.onResolve({ filter: /^#string-width$/ }, () => ({
+          path: join(pkgDir, "..", "tui-base", "src", "util", "string-width.node.ts"),
+        }))
+      },
+    },
+  ],
   external: ["@opentui/core", "@opentui/solid", "@opentui/keymap", "solid-js", "@deepseek-ai/dsh-llm"],
   naming: { entry: "index.[ext]" },
 })
