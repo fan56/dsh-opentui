@@ -34,6 +34,19 @@ if [ "${1:-}" = "--plugin" ]; then
   exec dsh --profile dsh-opentui "$@"
 fi
 
+# --v2 (batch 9a dev flag): the NEW tui-base view over the REAL
+# RemoteSessionSeam adapter. Same preload as the client path (the solid
+# transform is required to compile tui-base's .tsx); the v2 entry imports
+# ONLY tui-base's own view modules + shell's preload-free boot helpers
+# (client/boot-shared.ts) — pulling the old ShellHost graph into the same
+# process breaks the 0.8.1 renderer context (two @opentui instances).
+# Default (no flag) stays the old ShellHost UI until the batch-10 cutover.
+if [ "${1:-}" = "--v2" ]; then
+  shift
+  exec bun --preload "$SCRIPT_DIR/packages/shell/node_modules/@opentui/solid/scripts/preload.js" \
+    "$SCRIPT_DIR/packages/tui-base/examples/v2-entry.tsx" "$@"
+fi
+
 # `--client` is accepted as a no-op alias for the (now default) client mode.
 if [ "${1:-}" = "--client" ]; then
   shift

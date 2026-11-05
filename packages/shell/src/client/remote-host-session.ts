@@ -333,6 +333,8 @@ export class RemoteHostSession {
 	#settings: RemoteSettingsClient | undefined
 	/** Durable record ledger of the LIVE session (/history + fork + gap repair). */
 	#journal: RemoteJournalEntry[] = []
+	/** Batch 9a: external journal observers (SessionSeam adapter event feed). */
+	#journalListeners: ((entry: RemoteJournalEntry) => void)[] = []
 	/** Highest durable seq painted for the live session (gap-repair base). */
 	#lastDurableSeq = -1
 	/** Foreign-session tail watch (row 17). */
@@ -446,6 +448,19 @@ export class RemoteHostSession {
 	/** The live session id (undefined until the first turn creates one). */
 	currentSessionId(): string | undefined {
 		return this.#sessionId
+	}
+
+	/**
+	 * Public follow-journal hook (batch 9a, additive — the SessionSeam
+	 * adapter's event feed): fires for every durable record the follow pump
+	 * appends to the live session's ledger. Listeners' exceptions are
+	 * contained. Returns a disposer.
+	 */
+	onJournalRecord(listener: (entry: RemoteJournalEntry) => void): () => void {
+		this.#journalListeners.push(listener)
+		return () => {
+			this.#journalListeners = this.#journalListeners.filter((l) => l !== listener)
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -1505,6 +1520,13 @@ export class RemoteHostSession {
 				if (entry.seq > this.#lastDurableSeq) this.#lastDurableSeq = entry.seq
 				this.#journal.push(entry)
 				if (this.#journal.length > 4000) this.#journal.shift()
+				for (const listener of this.#journalListeners) {
+					try {
+						listener(entry)
+					} catch {
+						/* contained */
+					}
+				}
 				if (entry.type === "tool-workflow/agent-start" || entry.type === "tool-workflow/agent-end") {
 					try {
 						this.#subagentPanel().foldParentRecord(entry)

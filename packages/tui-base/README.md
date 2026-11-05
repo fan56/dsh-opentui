@@ -268,3 +268,25 @@ Overrides pass through `SessionComposer`'s `keybinds` prop. Tests:
 | enter / esc / ← → (approval card)               | `ui/dialog-confirm`       | `Keymap.createLayer` binds in the vendored component  | no (hardcoded in the vendored app too) |
 | ↑↓ / enter / pgup/pgdn / home/end (ask picker)  | `ui/dialog-select`        | vendored component (`dialog.select.*` in config)      | through the vendored Keymap layer, per `dialog.select.*` |
 | ctrl+c (exit example)                           | renderer                  | `render(..., { exitOnCtrlC: true })`                  | no                                   |
+
+## Batch 9a budget note (dev entry)
+
+`examples/v2-entry.tsx` (batch 9a, dies at the batch-10 cutover) is the
+first REAL boot of the rebuilt view: `./dsh-opentui --v2` composes
+Transcript + SessionComposer + turn overlays + slash palette +
+StatusBar/PowerlineFooter over shell's `RemoteSessionSeam` adapter and a
+real resident host. Budget rules it lives under:
+
+- The file is `@ts-nocheck`: it sits in this package's tsconfig include
+  (`examples`), and its shell-side imports are COMPUTED dynamic imports so
+  the shell client graph never enters tui-base's tsc program — the
+  budgeted `tsc --noEmit` error count stays at 58.
+- Composition laws it had to learn the hard way (kept here so batch 10
+  does not rediscover them): children ride GETTERS (compiled-JSX law —
+  eager children are created in the parent's owner scope and miss every
+  context the provider sets), components compose through `@opentui/solid`'s
+  own `createComponent` (plain solid's skips the renderer's owner/context
+  glue), and the shell boot helpers must come from the preload-free
+  `shell/src/client/boot-shared.ts` (client-entry.tsx registers the solid
+  transform plugin on import and drags the old @opentui-0.7.0 graph in,
+  which breaks the 0.8.1 renderer context).
