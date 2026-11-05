@@ -5,15 +5,18 @@
  * symlink, exactly like dsh-tui-pi's link-dsh-closure mechanism.
  *
  * Usage: bun build-host.ts [--only-symlink]
+ *
+ * Batch 10c: the entrypoint is BACK on the old host-entry.tsx — the
+ * plugin stack is FROZEN on the published 0.4.3 shape (0.7.0 @opentui
+ * pins) until upstream fixes the 0.8.1-on-node frame flush. Batch 10a's
+ * host-entry-v2 swap is reverted HERE ONLY: the v2 entry
+ * (src/host-entry-v2.tsx) and its adapter stay in the tree, unused by the
+ * build, documented as the upstream-blocked plugin cutover candidate.
  */
 import { execFileSync } from "node:child_process"
 import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
-// batch 10a: the v2 view graph compiles with the SAME @opentui/solid the
-// runtime resolves (0.8.1, tui-base's pin) — shell's own dep is still the
-// old-stack 0.7.0 and its plugin emits for that runtime.
-// @ts-expect-error direct file import, bypassing shell's 0.7.0 resolution
-import solidPlugin from "../tui-base/node_modules/@opentui/solid/scripts/solid-plugin.js"
+import solidPlugin from "@opentui/solid/bun-plugin"
 
 const pkgDir = dirname(new URL(import.meta.url).pathname)
 const outDir = join(pkgDir, "dist-host")
@@ -49,8 +52,6 @@ async function pinSolidClient() {
   const pkg = JSON.parse(await Bun.file(p).text())
   pkg.exports = {
     ".": { types: "./types/index.d.ts", import: "./dist/solid.js", require: "./dist/solid.cjs" },
-    // batch 10a: the rebuilt view imports solid-js/store (seam-rows' store)
-    "./store": { types: "./store/types/index.d.ts", import: "./store/dist/store.js", require: "./store/dist/store.cjs" },
     "./dist/solid.js": "./dist/solid.js",
     "./dist/solid.cjs": "./dist/solid.cjs",
     "./package.json": "./package.json",
@@ -66,29 +67,12 @@ if (process.argv.includes("--only-symlink")) {
 }
 
 const result = await Bun.build({
-  // batch 10a: the plugin entry swaps to the rebuilt tui-base view
-  // (host-entry-v2); the old host-entry/ShellHost stay in tree until 10c.
-  entrypoints: [join(pkgDir, "src", "host-entry-v2.tsx")],
+  entrypoints: [join(pkgDir, "src", "host-entry.tsx")],
   target: "node",
   format: "esm",
   outdir: outDir,
-  plugins: [
-    solidPlugin,
-    // tui-base's #imports map resolves the BUN variants under Bun.build even
-    // with target node (builder-runtime conditions win) and `alias` does not
-    // apply to # specifiers — pin the node variant the dist-host runtime
-    // (node) needs. Only #string-width reached the bundle (Bun.stringWidth
-    // crash, boot-validated).
-    {
-      name: "tui-base-node-variants",
-      setup(build) {
-        build.onResolve({ filter: /^#string-width$/ }, () => ({
-          path: join(pkgDir, "..", "tui-base", "src", "util", "string-width.node.ts"),
-        }))
-      },
-    },
-  ],
-  external: ["@opentui/core", "@opentui/solid", "@opentui/keymap", "solid-js", "@deepseek-ai/dsh-llm"],
+  plugins: [solidPlugin],
+  external: ["@opentui/core", "@opentui/solid", "solid-js", "@deepseek-ai/dsh-llm"],
   naming: { entry: "index.[ext]" },
 })
 if (!result.success) {
@@ -105,10 +89,9 @@ const manifest = {
   exports: { ".": "./index.js" },
   dsh: { bundle: { patch: "./plugin.patch.yml" } },
   dependencies: {
-    "@opentui/core": "0.8.1",
-    "@opentui/solid": "0.8.1",
-    "@opentui/keymap": "0.8.1",
-    "solid-js": "1.9.17",
+    "@opentui/core": "0.7.0",
+    "@opentui/solid": "0.7.0",
+    "solid-js": "1.9.12",
   },
 }
 await Bun.write(join(outDir, "package.json"), JSON.stringify(manifest, null, 2))

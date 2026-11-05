@@ -16,6 +16,12 @@
 # registration inside the entry is too late for kit's .tsx modules, and
 # packages/shell/bunfig.toml only applies when bun runs from that dir —
 # the client launches from the workspace (any cwd).
+#
+# Batch 10c CUTOVER: the client entry mounts the tui-base (0.8.1) view —
+# the batch-9a `--v2` flag is gone (accepted as a no-op alias). The old
+# ShellHost stack survives ONLY in plugin mode (`--plugin`), which is
+# FROZEN on the published 0.4.3 dist-host until upstream fixes the
+# 0.8.1-on-node frame flush (see docs/upstream-opentui-paint-bug-draft.md).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,21 +40,11 @@ if [ "${1:-}" = "--plugin" ]; then
   exec dsh --profile dsh-opentui "$@"
 fi
 
-# --v2 (batch 9a dev flag): the NEW tui-base view over the REAL
-# RemoteSessionSeam adapter. Same preload as the client path (the solid
-# transform is required to compile tui-base's .tsx); the v2 entry imports
-# ONLY tui-base's own view modules + shell's preload-free boot helpers
-# (client/boot-shared.ts) — pulling the old ShellHost graph into the same
-# process breaks the 0.8.1 renderer context (two @opentui instances).
-# Default (no flag) stays the old ShellHost UI until the batch-10 cutover.
-if [ "${1:-}" = "--v2" ]; then
-  shift
-  exec bun --preload "$SCRIPT_DIR/packages/shell/node_modules/@opentui/solid/scripts/preload.js" \
-    "$SCRIPT_DIR/packages/tui-base/examples/v2-entry.tsx" "$@"
-fi
-
-# `--client` is accepted as a no-op alias for the (now default) client mode.
-if [ "${1:-}" = "--client" ]; then
+# `--client` and `--v2` are accepted as no-op aliases for the (default,
+# batch 10c cutover) tui-base view client mode: the client entry mounts
+# the rebuilt view unconditionally (its old ShellHost boot branch is
+# removed), so the flags fall through untouched.
+if [ "${1:-}" = "--client" ] || [ "${1:-}" = "--v2" ]; then
   shift
 fi
 

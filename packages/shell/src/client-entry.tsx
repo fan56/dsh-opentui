@@ -1,15 +1,28 @@
 /**
  * Client-mode entry (ADR-0005): the TUI as a thin rendering client.
  *
- *   ./dsh-opentui --client        # bun src/client-entry.tsx
+ *   ./dsh-opentui                 # bun src/client-entry.tsx (--client/--v2
+ *                                 #   are accepted no-op aliases)
  *
- * Wiring (decisions 1-3):
+ * Batch 10c CUTOVER: the tui-base (0.8.1) view is THE client render — the
+ * --v2 gate is gone and the old ShellHost boot branch is removed (client
+ * mode never mounts the old stack again; `--plugin` keeps the old stack as
+ * the FROZEN published-0.4.3 dist-host, pending the upstream node-flush
+ * fix). The default render root lives in tui-base's v2 entry (batch 9a
+ * resolution law: it must be babel-processed in tui-base's own resolution
+ * context), loaded through a COMPUTED runtime import below — opaque to
+ * tsc, resolved by bun relative to this file. This module therefore pulls
+ * NO old-stack graph statically: kit/runtime/ShellHost load lazily inside
+ * `bootClient` (kept as the tested boot seam; its default render is no
+ * longer reachable from the default client path).
+ *
+ * Wiring (decisions 1-3, unchanged):
  *   ensureHost({ profile: 'opentui', idleExitSec: 60 })  — resident host
  *     (single-instance lock, grace-window re-attach on the next client)
  *   → ClientConnection({ authority, cookieHeader })       — the carrier
  *   → RemoteHostSession                                   — HostSession-shaped
  *     facade over Remote RPC + $events
- *   → ShellHost render                                    — zero UI changes
+ *   → tui-base view render (v2 entry)                     — batch 10c
  *
  * Sourcing rules:
  * - Workspace = the launch cwd (ADR-0005 decision 1): session/create cwd,
@@ -50,18 +63,15 @@
  *   force-completed after a short grace so a stuck dispose cannot hang
  *   the process.
  *
- * The `@opentui/solid/preload` import MUST stay first: it installs bun's
- * solid transform plugin before any .tsx module loads. bunfig.toml
- * (packages/shell) only applies when bun runs from that directory; the
- * launcher runs from arbitrary workspaces (the cwd is the workspace), so
- * the preload rides in the entry itself. Idempotent (Symbol.for guard).
+ * The solid transform (`@opentui/solid`'s bun preload) is installed by the
+ * ROOT LAUNCHER's `--preload` flag, not by an import here: the entry must
+ * not statically touch shell's old-stack @opentui/solid resolution at all
+ * (it would drag the 0.7.0 graph beside the 0.8.1 renderer context the v2
+ * view runs on — two @opentui instances). The preload registrar is
+ * idempotent (Symbol.for guard).
  */
-import "@opentui/solid/preload"
-
 import { createComponent } from "solid-js"
-import { createI18n } from "@dsh-opentui/kit"
-import { bootRuntime, type RuntimeOptions, type RuntimeHandle } from "@dsh-opentui/runtime"
-import { ShellHost } from "./ShellHost.tsx"
+import type { RuntimeOptions, RuntimeHandle } from "@dsh-opentui/runtime"
 import { createTurnHeal } from "./client/turn-heal.ts"
 import {
 	BOOT_LABEL_BUDGET_MS,
@@ -194,7 +204,6 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 	const workspace = options.workspace ?? process.cwd()
 	const profile = options.profile ?? DEFAULT_PROFILE
 	const idleExitSec = options.idleExitSec ?? DEFAULT_IDLE_EXIT_SEC
-	const i18n = createI18n("zh-CN")
 
 	bootCallOrder.push("ensureHost")
 	const host = await (options.ensureHost ?? ensureHost)({
@@ -240,22 +249,46 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 	const themeName = themeNameFromConfig(session)
 
 	bootCallOrder.push("render")
-	const runtime = await (options.render ?? bootRuntime)({
-		// renderer exit (Ctrl+D / terminal close): the same clean shutdown
-		onExit: () => {
-			void shutdown()
-		},
-		root: (store) =>
-			createComponent(ShellHost, {
-				deps: {
-					store,
-					t: i18n.t,
-					session: shellSession,
-					...(themeName !== undefined ? { themeName } : {}),
-					i18n,
+	// Batch 10c: the old ShellHost render stack (kit i18n + runtime +
+	// ShellHost) loads LAZY, inside the legacy default-render seam only —
+	// the default client path never calls it (tests inject `render`). A
+	// static import would drag the 0.7.0 graph beside the 0.8.1 renderer
+	// context in every process importing this entry.
+	const defaultRender = async (opts: Omit<RuntimeOptions, "root">): Promise<RuntimeHandle> => {
+		const [{ createI18n }, runtimeMod, { ShellHost }] = await Promise.all([
+			import("@dsh-opentui/kit"),
+			import("@dsh-opentui/runtime"),
+			import("./ShellHost.tsx"),
+		])
+		const i18n = createI18n("zh-CN")
+		return runtimeMod.bootRuntime({
+			...opts,
+			root: (store) =>
+				createComponent(ShellHost, {
+					deps: {
+						store,
+						t: i18n.t,
+						session: shellSession,
+						...(themeName !== undefined ? { themeName } : {}),
+						i18n,
+					},
+				}),
+		})
+	}
+	// renderer exit (Ctrl+D / terminal close): the same clean shutdown
+	const onExit = () => {
+		void shutdown()
+	}
+	const runtime = options.render
+		? await options.render({
+				onExit,
+				// injected seams (tests) replace the whole render; the default
+				// branch below substitutes the real ShellHost root instead
+				root: () => {
+					throw new Error("render seam must provide its own root")
 				},
-			}),
-	})
+			})
+		: await defaultRender({ onExit })
 
 	let shutdownPromise: Promise<void> | null = null
 	const shutdown = (): Promise<void> => {
@@ -311,29 +344,25 @@ function defaultCreateSession(options: {
 }
 
 /** CLI main: boot and keep the process alive under the renderer loop.
- * `--v2` (batch 9a dev flag): the NEW tui-base view (transcript + composer +
- * dialogs + palette + powerline) over the REAL RemoteSessionSeam adapter —
- * same host/connection boot, different render root. Default (no flag) stays
- * the old ShellHost UI until the batch-10 cutover. The v2 entry resolves at
- * RUNTIME (non-literal dynamic import) on purpose: it lives outside this
- * package's tsconfig include so the vendored view graph never enters
- * shell's tsc program (tui-base carries its own budgeted typecheck). */
+ * Batch 10c CUTOVER: the tui-base view (transcript + composer + dialogs +
+ * palette + powerline) over the REAL RemoteSessionSeam adapter is THE
+ * client path — `--v2` is accepted as a no-op alias and the old ShellHost
+ * boot branch is removed (client mode never mounts the old stack again;
+ * `--plugin` stays the frozen published-0.4.3 stack). The v2 entry resolves
+ * at RUNTIME (non-literal dynamic import) on purpose: it lives outside
+ * this package's tsconfig include so the vendored view graph never enters
+ * shell's tsc program (tui-base carries its own budgeted typecheck), and
+ * the entry FILE lives under tui-base per the batch-9a resolution law
+ * (babel-processed in tui-base's own resolution context). */
 async function main(): Promise<void> {
-	const v2 = process.argv.includes("--v2")
 	try {
-		if (v2) {
-			// Computed specifier: opaque to tsc (the vendored view graph stays
-			// out of shell's program) while bun resolves it relative to this
-			// file through the normal loader (the solid client-build onLoad
-			// rewrite applies).
-			const v2Specifier = "../" + "v2-entry.ts"
-			const mod = (await import(v2Specifier)) as {
-				bootClientV2(): Promise<{ shutdown(): Promise<void> }>
-			}
-			await mod.bootClientV2()
-		} else {
-			await bootClient()
+		// Computed specifier: opaque to tsc while bun resolves it relative
+		// to this file through the normal loader.
+		const v2Specifier = "../../" + "tui-base/examples/v2-entry.tsx"
+		const mod = (await import(v2Specifier)) as {
+			bootClientV2(): Promise<{ shutdown(): Promise<void> }>
 		}
+		await mod.bootClientV2()
 	} catch (error) {
 		const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
 		process.stderr.write(`dsh-opentui client boot failed: ${message}\n`)
