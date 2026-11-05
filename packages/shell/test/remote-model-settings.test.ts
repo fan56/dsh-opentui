@@ -269,13 +269,130 @@ describe("credentials + settings (rows 24+25)", () => {
 					expect(args).toEqual({ ref: "DEEPSEEK_API_KEY", value: "sk-test" })
 					return {}
 				}
-				if (method === "credentials/unset") return {}
+				if (method === "credentials/unset") {
+					expect(args).toEqual({ ref: "DEEPSEEK_API_KEY" })
+					return {}
+				}
 				return {}
 			},
 		})
 		expect(await h.session.credentialStatus("DEEPSEEK_API_KEY")).toEqual({ configured: true })
 		await h.session.login("DEEPSEEK_API_KEY", "sk-test")
 		await h.session.logout("DEEPSEEK_API_KEY")
+		await h.session.dispose()
+	})
+
+	test("settingsSeam.mutate carries the unset route op — the exact logout inverse of login's set", async () => {
+		const mutations: { args: Record<string, unknown> }[] = []
+		const h = makeSession({
+			rpcHandler: (method, args) => {
+				if (method === "settings/describe") {
+					return {
+						writable: true,
+						hasDocument: false,
+						namespaces: [{ ns: "llm-pi-ai", revision: 7, value: { providers: { auditprov: { apiKeyEnv: "AUDITPROV_API_KEY" } } }, schema: {} }],
+					}
+				}
+				if (method === "settings/mutate") {
+					mutations.push({ args: args as Record<string, unknown> })
+					return { ns: "llm-pi-ai", revision: 8, value: { providers: {} } }
+				}
+				return {}
+			},
+		})
+		const seam = h.session.settingsSeam
+		// the login.tsx writeRoute("set") frame (login direction, pinned here as the inverse base)
+		await seam.mutate("llm-pi-ai", [{ op: "set", path: ["providers", "auditprov"], value: { apiKeyEnv: "AUDITPROV_API_KEY" } }], 7)
+		// the login.tsx writeRoute("unset") frame (logout direction)
+		await seam.mutate("llm-pi-ai", [{ op: "unset", path: ["providers", "auditprov"] }], 7)
+		expect(mutations).toEqual([
+			{ args: { ns: "llm-pi-ai", ops: [{ op: "set", path: ["providers", "auditprov"], value: { apiKeyEnv: "AUDITPROV_API_KEY" } }], expectedRevision: 7 } },
+			{ args: { ns: "llm-pi-ai", ops: [{ op: "unset", path: ["providers", "auditprov"] }], expectedRevision: 7 } },
+		])
+		await h.session.dispose()
+	})
+
+	test("model catalog invalidates on login/logout/settings writes and route pushes (logout leaves /model)", async () => {
+		const WITH_AUDITPROV = {
+			default: { provider: "auditprov", model: "fake-m" },
+			routableProviders: ["auditprov"],
+			groups: [{ id: "auditprov", name: "auditprov", models: [{ id: "fake-m", name: "fake-m" }] }],
+			failures: [],
+		}
+		const AFTER_LOGOUT = {
+			default: { provider: "auditprov", model: "fake-m" },
+			routableProviders: [],
+			groups: [],
+			failures: [],
+		}
+		let serving = WITH_AUDITPROV
+		let catalogCalls = 0
+		const h = makeSession({
+			rpcHandler: (method, args) => {
+				if (method === "session/modelCatalog") {
+					catalogCalls++
+					return serving
+				}
+				if (method === "credentials/unset") {
+					expect(args).toEqual({ ref: "AUDITPROV_API_KEY" })
+					return {}
+				}
+				if (method === "credentials/set") return {}
+				if (method === "settings/mutate") return { ns: "llm-pi-ai", revision: 2, value: { providers: {} } }
+				if (method === "settings/update") return { ns: "llm-pi-ai", revision: 3, value: {} }
+				if (method === "settings/replace") return { ns: "llm-pi-ai", revision: 4, value: {} }
+				return {}
+			},
+		})
+
+		// cached: the second read hits the cache (host parity), /model shows the provider
+		await h.session.modelCatalog()
+		await h.session.modelCatalog()
+		expect(catalogCalls).toBe(1)
+		expect(await h.session.listProviders()).toEqual([{ provider: "auditprov", models: ["fake-m"] }])
+
+		// logout (the credentials/unset half) drops the cache: the next read
+		// re-fetches the fresh host answer, where the provider is gone
+		serving = AFTER_LOGOUT
+		await h.session.logout("AUDITPROV_API_KEY")
+		expect(await h.session.listProviders()).toEqual([])
+		expect(catalogCalls).toBe(2)
+
+		// login invalidates too (stale-absence direction: a newly subscribed
+		// provider must appear without a restart)
+		serving = WITH_AUDITPROV
+		await h.session.login("AUDITPROV_API_KEY", "sk-fake")
+		expect((await h.session.modelCatalog()).groups.map((g) => g.id)).toEqual(["auditprov"])
+		expect(catalogCalls).toBe(3)
+		expect((await h.session.modelCatalog()).groups.map((g) => g.id)).toEqual(["auditprov"])
+		expect(catalogCalls).toBe(3) // re-cached after the invalidation
+
+		await h.session.start() // pushes need the event subscription
+		// settings/document-updated from ANOTHER surface drops the cache
+		// (the invalidation in #onEmitEvent is synchronous)
+		serving = AFTER_LOGOUT
+		h.connection.emitEvent("settings/document-updated", "llm-pi-ai", 9)
+		expect((await h.session.modelCatalog()).groups).toEqual([])
+		expect(catalogCalls).toBe(4)
+		// credentials/reference-updated flips routability the same way
+		serving = WITH_AUDITPROV
+		h.connection.emitEvent("credentials/reference-updated", "AUDITPROV_API_KEY")
+		expect((await h.session.modelCatalog()).groups.map((g) => g.id)).toEqual(["auditprov"])
+		expect(catalogCalls).toBe(5)
+		// the local settings writes invalidate as well (route half of /login //logout)
+		serving = AFTER_LOGOUT
+		await h.session.settingsSeam.mutate("llm-pi-ai", [{ op: "unset", path: ["providers", "auditprov"] }], 9)
+		expect((await h.session.modelCatalog()).groups).toEqual([])
+		expect(catalogCalls).toBe(6)
+		await h.session.settingsMutate("llm-pi-ai", [], 10)
+		expect((await h.session.modelCatalog()).groups).toEqual([])
+		expect(catalogCalls).toBe(7)
+		await h.session.settingsUpdate("llm-pi-ai", {}, 11)
+		expect((await h.session.modelCatalog()).groups).toEqual([])
+		expect(catalogCalls).toBe(8)
+		await h.session.settingsReplace("llm-pi-ai", {}, 12)
+		expect((await h.session.modelCatalog()).groups).toEqual([])
+		expect(catalogCalls).toBe(9)
 		await h.session.dispose()
 	})
 

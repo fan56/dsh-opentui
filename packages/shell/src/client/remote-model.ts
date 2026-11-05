@@ -72,6 +72,11 @@ export class RemoteModelClient {
 	/**
 	 * The host model catalog. Cached: the host list is static between route
 	 * commits (host-session.ts listProviders cache parity); `force` re-reads.
+	 * The cache is ALSO invalidated by the session facade on every route-
+	 * affecting event (credentials set/unset, settings mutations, and the
+	 * `settings/document-updated` / `credentials/reference-updated` pushes) —
+	 * the host recomputes `session/modelCatalog` per call, so after a
+	 * /logout the provider only survived here, in this cache.
 	 */
 	async modelCatalog(force = false): Promise<RemoteModelCatalog> {
 		if (this.#catalog && !force) return this.#catalog
@@ -120,6 +125,11 @@ export class RemoteModelClient {
 			}),
 		}
 		return this.#catalog
+	}
+
+	/** Drop the cached catalog: the next read re-fetches the host answer. */
+	invalidate(): void {
+		this.#catalog = undefined
 	}
 
 	/** The catalog's default route — the cold-boot label source (row 22). */

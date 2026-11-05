@@ -778,17 +778,22 @@ export class RemoteHostSession {
 	/** wave 2 (`credentials/set` — audit row 24; the login double-write's key half). */
 	async login(ref: string, apiKey: string): Promise<void> {
 		await this.#settingsClient().setCredential(ref, apiKey)
+		this.#invalidateModelCatalog()
 	}
 
 	/** wave 2 (`credentials/unset` — audit row 24). */
 	async logout(ref: string): Promise<void> {
 		await this.#settingsClient().unsetCredential(ref)
+		this.#invalidateModelCatalog()
 	}
 
 	/**
 	 * wave 2 (`settings/describe` + `settings/mutate` — audit row 24/25). The
 	 * login feature's route-registration double-write consumes this seam;
 	 * describe() answers the FLAT row array the in-process seam produced.
+	 * Every mutate invalidates the model catalog: the route registration IS
+	 * the /login (resp. removal IS the /logout) half — without the drop the
+	 * /model picker kept serving the pre-commit cached catalog.
 	 */
 	get settingsSeam(): { describe(): Promise<RemoteSettingsRow[]>; mutate(ns: string, ops: unknown[], revision?: number): Promise<void> } {
 		const client = this.#settingsClient()
@@ -796,6 +801,7 @@ export class RemoteHostSession {
 			describe: () => client.describe(),
 			mutate: async (ns: string, ops: unknown[], revision?: number) => {
 				await client.mutate(ns, ops, revision)
+				this.#invalidateModelCatalog()
 			},
 		}
 	}
@@ -812,16 +818,21 @@ export class RemoteHostSession {
 	/** wave 2 (`settings/mutate` — audit row 25). */
 	async settingsMutate(ns: string, ops: unknown[], revision?: number): Promise<void> {
 		await this.#settingsClient().mutate(ns, ops, revision)
+		this.#invalidateModelCatalog()
 	}
 
 	/** wave 2 (`settings/update` — audit row 25). */
 	async settingsUpdate(ns: string, patch: Record<string, unknown>, revision?: number) {
-		return this.#settingsClient().update(ns, patch, revision)
+		const row = await this.#settingsClient().update(ns, patch, revision)
+		this.#invalidateModelCatalog()
+		return row
 	}
 
 	/** wave 2 (`settings/replace` — audit row 25). */
 	async settingsReplace(ns: string, section: Record<string, unknown>, revision?: number) {
-		return this.#settingsClient().replace(ns, section, revision)
+		const row = await this.#settingsClient().replace(ns, section, revision)
+		this.#invalidateModelCatalog()
+		return row
 	}
 
 	/** The raw settings document view (writable/hasDocument/namespaces). */
@@ -1377,6 +1388,18 @@ export class RemoteHostSession {
 		return this.#model
 	}
 
+	/**
+	 * Drop the cached /model catalog (RemoteModelClient.invalidate). The host
+	 * recomputes `session/modelCatalog` per call — this cache was the only
+	 * place a logged-out provider survived. Fires on every route-affecting
+	 * local commit (login/logout credential halves, every settings seam
+	 * write) and on the `settings/document-updated` +
+	 * `credentials/reference-updated` pushes (commits from other surfaces).
+	 */
+	#invalidateModelCatalog(): void {
+		this.#modelClient().invalidate()
+	}
+
 	#settingsClient(): RemoteSettingsClient {
 		if (this.#settings === undefined) {
 			this.#settings = new RemoteSettingsClient({ rpc: (method, args) => this.#rpc(method, args) })
@@ -1704,6 +1727,9 @@ export class RemoteHostSession {
 		if (event === "settings/document-updated") {
 			const ns = typeof argv[0] === "string" ? argv[0] : ""
 			const revision = typeof argv[1] === "number" ? argv[1] : 0
+			// a commit from ANOTHER surface (web Models page, second client)
+			// changed routes: the cached /model catalog is stale until dropped
+			this.#invalidateModelCatalog()
 			for (const listener of this.#pushListeners) {
 				try {
 					listener.onSettingsUpdated?.(ns, revision)
@@ -1740,6 +1766,9 @@ export class RemoteHostSession {
 		}
 		if (event === "credentials/reference-updated") {
 			const ref = typeof argv[0] === "string" ? argv[0] : ""
+			// key stored/removed elsewhere flips a route's routability: drop the
+			// cached catalog the same way the local login()/logout() do
+			this.#invalidateModelCatalog()
 			for (const listener of this.#pushListeners) {
 				try {
 					listener.onCredentialUpdated?.(ref)
