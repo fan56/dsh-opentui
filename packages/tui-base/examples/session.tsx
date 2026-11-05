@@ -20,7 +20,7 @@
 // /sessions open vendored DialogSelect pickers through the dialog stack.
 // Run from packages/tui-base: bun examples/session.tsx   (ctrl+c quits)
 import { createSignal, onCleanup, onMount } from "solid-js"
-import { render } from "@opentui/solid"
+import { createComponent, render } from "@opentui/solid"
 import { NullSessionSeam, type SeamAskPick, type SeamAskQuestion, type SeamProviderModel, type SeamSessionSummary, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
@@ -257,8 +257,29 @@ function SessionPage() {
 					slashHeight={() => slash.controller.rows()}
 				/>
 			</Transcript>
-			<StatusBar phase={busy() ? "stream" : null} elapsed={elapsed} />
-			<PowerlineFooter left={segments()} right={clock(now())} theme={theme} />
+			{/* REACTIVE-PROP LAW (batch 10e, the v2-entry fix family): signal
+			    reads ride getters. An eager `busy()` / `segments()` / `now()`
+			    read in a JSX prop is tracked by the root render effect (bun's
+			    JSX emits eager prop objects), so every 1s clock tick rebuilt
+			    the whole subtree and the composer owning the in-flight turn
+			    was disposed before its busy=false — "Typing…" never settled. */}
+			{/* The `as never` bridges the vendored JSX child slot (Element) to
+			    createComponent's BaseRenderable — the v2-entry composition. */}
+			{createComponent(StatusBar, {
+				get phase() {
+					return busy() ? "stream" : null
+				},
+				elapsed,
+			}) as never}
+			{createComponent(PowerlineFooter, {
+				get left() {
+					return segments()
+				},
+				get right() {
+					return clock(now())
+				},
+				theme,
+			}) as never}
 			<TurnOverlayHost
 				controller={overlays}
 				reclaimFocus={() => {

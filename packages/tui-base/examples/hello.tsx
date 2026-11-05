@@ -3,7 +3,7 @@
 // keyed marginTop=1 rows rendered as <markdown>, fixed 3-row bordered input
 // at the bottom. Streams TOTAL rows at INTERVAL_MS, settles, quits.
 // Run from packages/tui-base: bun examples/hello.tsx
-import { render, useRenderer } from "@opentui/solid"
+import { createComponent, render, useRenderer } from "@opentui/solid"
 import { SyntaxStyle } from "@opentui/core"
 import { createSignal, For, onMount } from "solid-js"
 
@@ -40,13 +40,22 @@ const App = () => {
             stickyScroll={true}
             stickyStart="bottom"
           >
-            <For each={rows()}>
-              {(r: string, i) => (
+            {/* REACTIVE-PROP LAW (batch 10e): the rows() read rides a getter.
+                An eager `each={rows()}` is tracked by the root render effect
+                (bun's JSX emits eager props), so every streamed row rebuilt
+                the whole tree instead of just the For. */}
+            {createComponent(For, {
+              get each() {
+                return rows()
+              },
+              children: (r: string, i: () => number) => (
                 <box id={`session-row-${i()}`} marginTop={1} flexShrink={0}>
                   <markdown content={r} syntaxStyle={syntaxStyle} />
                 </box>
-              )}
-            </For>
+              ),
+              // The `as never` bridges the vendored JSX child slot (Element)
+              // to createComponent's BaseRenderable — the v2-entry composition.
+            }) as never}
           </scrollbox>
         </box>
       </box>
