@@ -62,7 +62,12 @@ const pack = spawnSync('npm', ['pack', '--json', '--pack-destination', work], { 
 if (pack.status !== 0 || pack.error) fail('npm pack failed', `${pack.stdout}\n${pack.stderr}`)
 let tarballName
 try {
-  const packed = JSON.parse(pack.stdout)
+  // Lifecycle scripts (prepack) print to stdout before the JSON array —
+  // slice from the first "[" so JSON.parse sees only the payload (the old
+  // whole-string parse fell back to the bare closing "]" line and failed).
+  const jsonStart = pack.stdout.indexOf('[')
+  if (jsonStart < 0) throw new Error('no JSON array in npm pack output')
+  const packed = JSON.parse(pack.stdout.slice(jsonStart))
   tarballName = packed.at(-1).filename
 } catch {
   tarballName = pack.stdout.trim().split('\n').at(-1)
