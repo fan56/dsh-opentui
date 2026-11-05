@@ -86,6 +86,58 @@ importers:
         specifier: ^5.7.0
         version: 5.9.3
 
+  packages/tui-base:
+    dependencies:
+      '@opentui/core':
+        specifier: 0.8.1
+        version: 0.8.1(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      '@opentui/keymap':
+        specifier: 0.8.1
+        version: 0.8.1(@opentui/solid@0.8.1(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10))(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      '@opentui/solid':
+        specifier: 0.8.1
+        version: 0.8.1(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      '@solid-primitives/event-bus':
+        specifier: 1.1.2
+        version: 1.1.2(solid-js@1.9.17)
+      '@standard-schema/spec':
+        specifier: 1.1.0
+        version: 1.1.0
+      effect:
+        specifier: 4.1.0
+        version: 4.1.0
+      fuzzysort:
+        specifier: 3.1.0
+        version: 3.1.0
+      get-east-asian-width:
+        specifier: 1.6.0
+        version: 1.6.0
+      open:
+        specifier: 11.0.4
+        version: 11.0.4
+      remeda:
+        specifier: 2.26.0
+        version: 2.26.0
+      solid-js:
+        specifier: 1.9.17
+        version: 1.9.17
+      string-width:
+        specifier: 7.2.0
+        version: 7.2.0
+      strip-ansi:
+        specifier: 7.1.2
+        version: 7.1.2
+    devDependencies:
+      '@tsconfig/bun':
+        specifier: 1.0.9
+        version: 1.0.9
+      '@types/bun':
+        specifier: 1.4.3
+        version: 1.4.3
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   starter:
     dependencies:
       '@deepseek-ai/cordis':
@@ -306,8 +358,18 @@ packages:
     cpu: [arm64]
     os: [darwin]
 
+  '@opentui/core-darwin-arm64@0.8.1':
+    resolution: {integrity: sha512-22jdbN55W9hCraw6k1y3TklzCvF90UJG7d1wvtUYwsn9LOEvOZn+i3fUyqkpP+kBgL31RBt+sB4RKsUmNzjWaw==}
+    cpu: [arm64]
+    os: [darwin]
+
   '@opentui/core-darwin-x64@0.7.0':
     resolution: {integrity: sha512-hZQ4OfAua5CtUv3hpZ81zhNTTLULbg0leQ/3eupjefityGP6163eS56IzymTWuiM/mVD/7Ad5bicH0I2JXhr1g==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@opentui/core-darwin-x64@0.8.1':
+    resolution: {integrity: sha512-rlqzXisgUl3U7WmrWySFLLZq6x9ZQiSRSGLyyULBFWTZLJY4qrs2a7y/8B0NpIFY7Ngku17qVIKcVwQZZBoLbw==}
     cpu: [x64]
     os: [darwin]
 
@@ -315,9 +377,21 @@ packages:
     resolution: {integrity: sha512-BkTn+WLf9OPR4KhBnuOki+R/cgk2qwbL49eQn5fEYPeiJD4HPalGbEZDea59UjwNEJ7rqKq2yuPAXQjkDZ6y3w==}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
+
+  '@opentui/core-linux-arm64-musl@0.8.1':
+    resolution: {integrity: sha512-BzVCOuG5Vw/nB9ffLwZq82uEg0f0BE4wkd5EvrqOET9qK5D5emT4Zo8tZJFY8NG0/xBuWj6S9xVpazQWjZR17A==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
 
   '@opentui/core-linux-arm64@0.7.0':
     resolution: {integrity: sha512-/u+Kalzkz8NntUW5zjypgt9fnzeKohLG9YMEas7n98KvyaYScrtO4Mdj5iv/STNB3IfocJOChzYAbO6C8TmlPQ==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@opentui/core-linux-arm64@0.8.1':
+    resolution: {integrity: sha512-UtJzpwvAy67RU60T1IFNBYHH3tUrmcIHsLrNI+8WFFxoOk6btwRp67NKiZd3qoDcztTz2q/yKf9KQI0yr+P6MQ==}
     cpu: [arm64]
     os: [linux]
 
@@ -325,9 +399,21 @@ packages:
     resolution: {integrity: sha512-HrJbcAIuayzQmWVzv+cjez37fNHL9FDoHmjwxAb4iK5GTjl89FZCxeKopyua14RA6WpP8/zUJQi8U16mm6XptA==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
+
+  '@opentui/core-linux-x64-musl@0.8.1':
+    resolution: {integrity: sha512-RB/u2G5X4KpW1/rT5iabCLYbmfMWKF3OASj2Z29+RAj38I7caRU3/TTntpX3CpHzjQrDTVWyMYzcnu+WFF8thg==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
 
   '@opentui/core-linux-x64@0.7.0':
     resolution: {integrity: sha512-OD2tGl1r27zcgCsuc+TYU5e+qhrbsRSI0YUBEb0ebQo8P6Ps2FL9LFenH9om4fddCh06G9Zd45ekJMhlDrGD3Q==}
+    cpu: [x64]
+    os: [linux]
+
+  '@opentui/core-linux-x64@0.8.1':
+    resolution: {integrity: sha512-du4V6YlGvCWs/ggc6Tj7Oc7qaoYdPpzwAeJMKUbjrg+Zv5zweNHFMN4YLbzIutTi6Ukz4KsW/hwEaQIjXHlUcA==}
     cpu: [x64]
     os: [linux]
 
@@ -336,8 +422,18 @@ packages:
     cpu: [arm64]
     os: [win32]
 
+  '@opentui/core-win32-arm64@0.8.1':
+    resolution: {integrity: sha512-wF5AZRWDCjkfRHT1cRfyvHkf+RI/Pxjb0oMFVg2h2ayndBu8CSgyQDhtNgZd0ON+xrP4xceikCkHDhDLe5bv1w==}
+    cpu: [arm64]
+    os: [win32]
+
   '@opentui/core-win32-x64@0.7.0':
     resolution: {integrity: sha512-OfNAX7fNFHhOiiojUkIjhVOZf+IDjpbpT5G7HrxGqhlZ+n4jITrrJzACHctteWbMUYcibieJzIIoKuLdmD5I+w==}
+    cpu: [x64]
+    os: [win32]
+
+  '@opentui/core-win32-x64@0.8.1':
+    resolution: {integrity: sha512-+rIrkvwBJMGWdXn4GGQAmM4y+RH1Xvb9nveNyJ58SOsTOBqyWyi+63qMlxe58WVl+sVAJodEjAILcWdwrzMJ3Q==}
     cpu: [x64]
     os: [win32]
 
@@ -347,13 +443,57 @@ packages:
     peerDependencies:
       web-tree-sitter: 0.25.10
 
+  '@opentui/core@0.8.1':
+    resolution: {integrity: sha512-WmnpnVZn2MdyYNEahQNn4k3OrIkQKfcwPVrX/DjguLtl/S2g5fPeXCqHZjCg2GLMf1N4HJap0LEkTPJEvfrDXw==}
+    engines: {bun: '>=1.3.14', node: '>=26.4.0'}
+    peerDependencies:
+      web-tree-sitter: 0.25.10
+
+  '@opentui/keymap@0.8.1':
+    resolution: {integrity: sha512-3fDU4EkZ3fn+sc/A9thbyqrPx1hWieFlj3EsPmxxBp2sIHdXG5ro6lDMtPYKQDlZKJ/WhbELo4Rik011hz0OwA==}
+    peerDependencies:
+      '@opentui/react': 0.8.1
+      '@opentui/solid': 0.8.1
+      react: '>=19.2.0'
+      solid-js: ^1.9.12
+    peerDependenciesMeta:
+      '@opentui/react':
+        optional: true
+      '@opentui/solid':
+        optional: true
+      react:
+        optional: true
+      solid-js:
+        optional: true
+
   '@opentui/solid@0.7.0':
     resolution: {integrity: sha512-S6SNZGRykV02UjNbM+f/6lSeAPN3dfEbjcK1jAAdFCfa+EVhJqcJVyaJgtwHLU9fI6c/O1VKXPzbbFYj2RhNVQ==}
     peerDependencies:
       solid-js: 1.9.12
 
+  '@opentui/solid@0.8.1':
+    resolution: {integrity: sha512-jnGtUnPrySoTSYkM669yGXVzps0GKLuLPkeFnmqxn9cwmelcSEMH3M8FHu4OLpRP9yF48lPg7zRVBSVQTtVxPA==}
+    peerDependencies:
+      solid-js: ^1.9.12
+
+  '@solid-primitives/event-bus@1.1.2':
+    resolution: {integrity: sha512-l+n10/51neGcMaP3ypYt21bXfoeWh8IaC8k7fYuY3ww2a8S1Zv2N2a7FF5Qn+waTu86l0V8/nRHjkyqVIZBYwA==}
+    peerDependencies:
+      solid-js: ^1.6.12
+
+  '@solid-primitives/utils@6.4.1':
+    resolution: {integrity: sha512-ISSB5QX1qP2ynrheIpYwc4oKR5Ny4siNuUyf1qZniy+Il+p/PtDB0QK1Dnle8noiHpwRD3gpPdubOC3qI/Zamg==}
+    peerDependencies:
+      solid-js: ^1.6.12
+
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@tsconfig/bun@1.0.9':
+    resolution: {integrity: sha512-4M0/Ivfwcpz325z6CwSifOBZYji3DFOEpY6zEUt0+Xi2qRhzwvmqQN9XAHJh3OVvRJuAqVTLU2abdCplvp6mwQ==}
+
+  '@types/bun@1.4.3':
+    resolution: {integrity: sha512-N67Pqy8JXbAY/j0tNraS3V5mubGvc6rrrNDmDCtZLlFzccbUJPDb0tvgUBC5q4m8ybkP93Jcn1QB+RYQ6PvBhw==}
 
   '@types/bun@1.4.4':
     resolution: {integrity: sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ==}
@@ -382,6 +522,15 @@ packages:
       solid-js:
         optional: true
 
+  babel-preset-solid@1.9.16:
+    resolution: {integrity: sha512-+0h40Qk2oBfkQ4OGDBHIDtvq/XQiOnCfzjNHmMxriAr8MmdsaIbyJgqYglDs4d70sF8O08sSpx61TKdpUt3oRw==}
+    peerDependencies:
+      '@babel/core': ^7.0.0
+      solid-js: ^1.9.16
+    peerDependenciesMeta:
+      solid-js:
+        optional: true
+
   balanced-match@1.0.2:
     resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
 
@@ -403,8 +552,15 @@ packages:
     peerDependencies:
       typescript: ^5
 
+  bun-types@1.4.3:
+    resolution: {integrity: sha512-tinRJNGOmUN+tEAsn2y2e942n9JHRHR42iUYzDH75NmhJqVBokGSQkkfSFdNWwsANIdrK6ACH9t01M452YyTwg==}
+
   bun-types@1.4.4:
     resolution: {integrity: sha512-yjrJh5oGX7mMPKGd19YXyIjmEuj4G4zNC30bs7PM9Az7NQ3ndF3j6hbeRdvJTRQEhJ/FYQwW0a2moweEi2hMxQ==}
+
+  bundle-name@4.1.1:
+    resolution: {integrity: sha512-DdH81/zPLVS11EUgWq3tEu/xn+EzljlMYooDNdzWEnFha3R3NBMpMV1UqYIpjYHV/SgpFKMIX1Oh7o06SjM/oA==}
+    engines: {node: '>=18'}
 
   caniuse-lite@1.0.30001819:
     resolution: {integrity: sha512-LFUqIIAwpzsIuevnKnsR9qnStBcgzPShTX61lBwN9uFkkf8o8zLiebEjbW8AYtZiF+1YKDWfdt/pWDtMuG8Xwg==}
@@ -424,9 +580,24 @@ packages:
       supports-color:
         optional: true
 
+  default-browser-id@5.0.1:
+    resolution: {integrity: sha512-x1VCxdX4t+8wVfd1so/9w+vQ4vx7lKd2Qp5tDRutErwmR85OgmfX7RlLRMWafRMY7hbEiXIbudNrjOAPa/hL8Q==}
+    engines: {node: '>=18'}
+
+  default-browser@5.5.1:
+    resolution: {integrity: sha512-m1pAzaJgZ/gssEqlOhJkPJp8Xly7QyW6xcrkUa2KKcDeDSEMP7X8xipU3snUcfisTQx0w1AGae+9UtJSfVnXGw==}
+    engines: {node: '>=18'}
+
+  define-lazy-prop@3.0.0:
+    resolution: {integrity: sha512-N+MeXYoqr3pOgn8xfyRPREN7gHakLYjhsHhWGT3fWAiL4IkAt0iDw14QiiEm2bE30c5XX5q0FtAA3CK5f9/BUg==}
+    engines: {node: '>=12'}
+
   diff@9.0.0:
     resolution: {integrity: sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw==}
     engines: {node: '>=0.3.1'}
+
+  effect@4.1.0:
+    resolution: {integrity: sha512-lGx2MJJyrXA8RZb2UpQ/0Nkb5Utaimby7oD92+18noBxLPE85IFOvptdzau8dvcxAOwfwHo9iqapbKeFzqQM/Q==}
 
   electron-to-chromium@1.5.467:
     resolution: {integrity: sha512-Nw9X371rtZmYcBSnEijnCDONILjs93biCZO34juC7MBOmK8E+GFnyD4T/WvyrlJkppul7oxg6TwvtKst9SODTw==}
@@ -463,12 +634,15 @@ packages:
   function-bind@1.1.2:
     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
 
+  fuzzysort@3.1.0:
+    resolution: {integrity: sha512-sR9BNCjBg6LNgwvxlBd0sBABvQitkLzoVY9MYYROQVX/FvfJ4Mai9LsGhDgd8qYdds0bY77VzYd5iuB+v5rwQQ==}
+
   gensync@1.0.0-beta.2:
     resolution: {integrity: sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==}
     engines: {node: '>=6.9.0'}
 
-  get-east-asian-width@1.7.0:
-    resolution: {integrity: sha512-XjH1AECxf0giL2V1aU8vKyRR2ppRUb5c0EvT7zuJTokQ74bNo52zOtghqdWIqrhUD79fo3x0WfKZdOqxF6LG1Q==}
+  get-east-asian-width@1.6.0:
+    resolution: {integrity: sha512-QRbvDIbx6YklUe6RxeTeleMR0yv3cYH6PsPZHcnVn7xv7zO1BHN8r0XETu8n6Ye3Q+ahtSarc3WgtNWmehIBfA==}
     engines: {node: '>=18'}
 
   glob@9.3.5:
@@ -486,6 +660,24 @@ packages:
   is-core-module@2.17.0:
     resolution: {integrity: sha512-J/vG0zBCbIKOQFfufSwyXdMrsohyJIUNkrnmo6WZGzoM7tr/lsbfW5b2BvisL6zsyMzK9UxV9L6c7AoFbyXHOA==}
     engines: {node: '>= 0.4'}
+
+  is-docker@3.0.0:
+    resolution: {integrity: sha512-eljcgEDlEns/7AXFosB5K/2nCM4P7FQPkGc/DWLy5rmFEWvZayGrik1d9/QIY5nJ4f9YsVvBkA6kJpHn9rISdQ==}
+    engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
+    hasBin: true
+
+  is-in-ssh@1.0.0:
+    resolution: {integrity: sha512-jYa6Q9rH90kR1vKB6NM7qqd1mge3Fx4Dhw5TVlK1MUBqhEOuCagrEHMevNuCcbECmXZ0ThXkRm+Ymr51HwEPAw==}
+    engines: {node: '>=20'}
+
+  is-inside-container@1.0.0:
+    resolution: {integrity: sha512-KIYLCCJghfHZxqjYBE7rEy0OBuTd5xCHS7tHVgvCLkx7StIoaxwNW3hCALgEUjFfeRk+MG/Qxmp/vtETEF3tRA==}
+    engines: {node: '>=14.16'}
+    hasBin: true
+
+  is-wsl@3.1.1:
+    resolution: {integrity: sha512-e6rvdUCiQCAuumZslxRJWR/Doq4VpPR82kqclvcS0efgt430SlGIk05vdCN58+VrzgtIcfNODjozVielycD4Sw==}
+    engines: {node: '>=16'}
 
   js-tokens@4.0.0:
     resolution: {integrity: sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==}
@@ -534,6 +726,10 @@ packages:
     resolution: {integrity: sha512-OmO8+GM1JUZqXET720VrJCwkjUCXmCMQm0Z3UDDRbfNLHS4NEAvY60j5jiFv0tkKw2PNNlqOLhahVmwJIOLDIQ==}
     engines: {node: '>=18'}
 
+  open@11.0.4:
+    resolution: {integrity: sha512-++Zlftm0kVLPmzC06t6epuWmcRMDbI4z5P3NNX979WA/k23+NtSOynEGzsVfZwguKw2mi5umVgnBlJQMwRz4Pg==}
+    engines: {node: '>=20'}
+
   p-limit@2.3.0:
     resolution: {integrity: sha512-//88mFWSJx8lxCzwdAABTJL2MyWB12+eIY7MDL2SqLmAkeKU9qxRvWuSyTjm3FUmpBEMuFfckAIqEaVGUDxb6w==}
     engines: {node: '>=6'}
@@ -567,6 +763,13 @@ packages:
     resolution: {integrity: sha512-nDywThFk1i4BQK4twPQ6TA4RT8bDY96yeuCVBWL3ePARCiEKDRSrNGbFIgUJpLp+XeIR65v8ra7WuJOFUBtkMA==}
     engines: {node: '>=8'}
 
+  powershell-utils@0.2.1:
+    resolution: {integrity: sha512-C+y9x90UElAddDZmV4qOx9W53B61PO7cIqWz2dQsWlwswuq4mr8NEwytdGKboYbQlGZ3awrkTeNvcZiZNHnQ8A==}
+    engines: {node: '>=20'}
+
+  remeda@2.26.0:
+    resolution: {integrity: sha512-lmNNwtaC6Co4m0WTTNoZ/JlpjEqAjPZO0+czC9YVRQUpkbS4x8Hmh+Mn9HPfJfiXqUQ5IXXgSXSOB2pBKAytdA==}
+
   reselect@4.1.8:
     resolution: {integrity: sha512-ab9EmR80F/zQTMNeneUr4cv+jSwPJgIlvEmVwLerwrWVbpLlBuls9XHzIeTFy4cegU2NHBp3va0LKOzU5qFEYQ==}
 
@@ -574,6 +777,10 @@ packages:
     resolution: {integrity: sha512-Dj/cW9zBV2aRj6XzCxuGIs3ESZKv02jixne3q6jFZYZ3/Tg09gHHviSMDL4kObh9pqSahdRHEnDoaP2gn8YLhA==}
     engines: {node: '>= 0.4'}
     hasBin: true
+
+  run-applescript@7.1.0:
+    resolution: {integrity: sha512-DPe5pVFaAsinSaV6QjQ6gdiedWDcRCbUuiQfQa2wmWV7+xC9bGulGI8+TdRmoFkAPaBXk8CrAbnlY2ISniJ47Q==}
+    engines: {node: '>=18'}
 
   s-js@0.4.9:
     resolution: {integrity: sha512-RtpOm+cM6O0sHg6IA70wH+UC3FZcND+rccBZpBAHzlUgNO2Bm5BN+FnM8+OBxzXdwpKWFwX11JGF0MFRkhSoIQ==}
@@ -588,24 +795,41 @@ packages:
     peerDependencies:
       seroval: ^1.0
 
+  seroval-plugins@1.6.12:
+    resolution: {integrity: sha512-+reiwp/lYxiyctSrdvX7OQ1YLrcbWYgBiZrhSFL+V43b0/DGRLNVSDyZINbQe+tWplPOI2fw2dPrdv6hcc09kQ==}
+    engines: {node: '>=10'}
+    peerDependencies:
+      seroval: ^1.0
+
   seroval@1.5.6:
     resolution: {integrity: sha512-rVQVWjjSvlINzaQPZH5JFqsqEsIWdTxY3iJZCnTL/5gQbXIRooVZKI60tVCkOVfzcRPejboxO2t0P89dg5mQaA==}
+    engines: {node: '>=10'}
+
+  seroval@1.6.12:
+    resolution: {integrity: sha512-CqbIVfk/7GL3ITwZI55lcPbpQbjHZ2DD5cUj4iH7E9YsCfHNJV1mx7yNp86Z84w5IpmkZZS/2s5vPOWmVWSdQg==}
     engines: {node: '>=10'}
 
   solid-js@1.9.12:
     resolution: {integrity: sha512-QzKaSJq2/iDrWR1As6MHZQ8fQkdOBf8GReYb7L5iKwMGceg7HxDcaOHk0at66tNgn9U2U7dXo8ZZpLIAmGMzgw==}
 
+  solid-js@1.9.17:
+    resolution: {integrity: sha512-4GAmLOWPfNV8H9Jfn2LSFTpNEG6jiOKPiwd5lnLGQtehHaX6l3TOLzJqQ7mqwB/3k1Yy3zyumFVopmc/tm34ow==}
+
   string-width@7.2.0:
     resolution: {integrity: sha512-tsaTIkKW9b4N+AEj+SVA+WhJzV7/zMhcSu78mLKWSk7cXMOSHsBKFWUs0fWwq8QyK3MgJBQRX6Gbi4kYbdvGkQ==}
     engines: {node: '>=18'}
 
-  strip-ansi@7.2.0:
-    resolution: {integrity: sha512-yDPMNjp4WyfYBkHnjIRLfca1i6KMyGCtsVgoKe/z1+6vukgaENdgGBZt+ZmKPc4gavvEZ5OgHfHdrazhgNyG7w==}
+  strip-ansi@7.1.2:
+    resolution: {integrity: sha512-gmBGslpoQJtgnMAvOVqGZpEz9dyoKTCzy2nfz/n8aIFhN/jCE/rCmcxabB6jOOHV+0WNnylOxaxBQPSvcWklhA==}
     engines: {node: '>=12'}
 
   supports-preserve-symlinks-flag@1.0.0:
     resolution: {integrity: sha512-ot0WnXS9fgdkgIcePe6RHNk1WA8+muPa6cSjeR3V8K27q9BB1rTE3R1p7Hv0z1ZyAc8s6Vvv8DIyWf681MAt0w==}
     engines: {node: '>= 0.4'}
+
+  type-fest@4.41.0:
+    resolution: {integrity: sha512-TeTSQ6H5YHvpqVwBRcnLDCBnDOHWYu7IvGbHT6N8AOymcr9PJGjc1GTtiWZTYg0NCgYwvnYWEkVChQAr9bjfwA==}
+    engines: {node: '>=16'}
 
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
@@ -643,6 +867,10 @@ packages:
         optional: true
       utf-8-validate:
         optional: true
+
+  wsl-utils@1.0.1:
+    resolution: {integrity: sha512-c16PKLIRxBYpR3jSWsdS7SFp0COm5SOQdiFjY818dYFHJbMGuLBszpF07LBWmOS1uzrHa9VGdynsEgoeKy0oOQ==}
+    engines: {node: '>=20'}
 
   yallist@3.1.1:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
@@ -909,25 +1137,49 @@ snapshots:
   '@opentui/core-darwin-arm64@0.7.0':
     optional: true
 
+  '@opentui/core-darwin-arm64@0.8.1':
+    optional: true
+
   '@opentui/core-darwin-x64@0.7.0':
+    optional: true
+
+  '@opentui/core-darwin-x64@0.8.1':
     optional: true
 
   '@opentui/core-linux-arm64-musl@0.7.0':
     optional: true
 
+  '@opentui/core-linux-arm64-musl@0.8.1':
+    optional: true
+
   '@opentui/core-linux-arm64@0.7.0':
+    optional: true
+
+  '@opentui/core-linux-arm64@0.8.1':
     optional: true
 
   '@opentui/core-linux-x64-musl@0.7.0':
     optional: true
 
+  '@opentui/core-linux-x64-musl@0.8.1':
+    optional: true
+
   '@opentui/core-linux-x64@0.7.0':
+    optional: true
+
+  '@opentui/core-linux-x64@0.8.1':
     optional: true
 
   '@opentui/core-win32-arm64@0.7.0':
     optional: true
 
+  '@opentui/core-win32-arm64@0.8.1':
+    optional: true
+
   '@opentui/core-win32-x64@0.7.0':
+    optional: true
+
+  '@opentui/core-win32-x64@0.8.1':
     optional: true
 
   '@opentui/core@0.7.0(typescript@5.9.3)(web-tree-sitter@0.25.10)':
@@ -949,6 +1201,35 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
+  '@opentui/core@0.8.1(typescript@5.9.3)(web-tree-sitter@0.25.10)':
+    dependencies:
+      bun-ffi-structs: 0.3.1(typescript@5.9.3)
+      diff: 9.0.0
+      marked: 17.0.1
+      string-width: 7.2.0
+      web-tree-sitter: 0.25.10
+    optionalDependencies:
+      '@opentui/core-darwin-arm64': 0.8.1
+      '@opentui/core-darwin-x64': 0.8.1
+      '@opentui/core-linux-arm64': 0.8.1
+      '@opentui/core-linux-arm64-musl': 0.8.1
+      '@opentui/core-linux-x64': 0.8.1
+      '@opentui/core-linux-x64-musl': 0.8.1
+      '@opentui/core-win32-arm64': 0.8.1
+      '@opentui/core-win32-x64': 0.8.1
+    transitivePeerDependencies:
+      - typescript
+
+  '@opentui/keymap@0.8.1(@opentui/solid@0.8.1(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10))(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)':
+    dependencies:
+      '@opentui/core': 0.8.1(typescript@5.9.3)(web-tree-sitter@0.25.10)
+    optionalDependencies:
+      '@opentui/solid': 0.8.1(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      solid-js: 1.9.17
+    transitivePeerDependencies:
+      - typescript
+      - web-tree-sitter
+
   '@opentui/solid@0.7.0(solid-js@1.9.12)(typescript@5.9.3)(web-tree-sitter@0.25.10)':
     dependencies:
       '@babel/core': 7.29.7
@@ -964,7 +1245,37 @@ snapshots:
       - typescript
       - web-tree-sitter
 
+  '@opentui/solid@0.8.1(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)':
+    dependencies:
+      '@babel/core': 7.29.7
+      '@babel/preset-typescript': 7.27.1(@babel/core@7.29.7)
+      '@opentui/core': 0.8.1(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      babel-plugin-module-resolver: 5.0.2
+      babel-preset-solid: 1.9.16(@babel/core@7.29.7)(solid-js@1.9.17)
+      entities: 7.0.1
+      s-js: 0.4.9
+      solid-js: 1.9.17
+    transitivePeerDependencies:
+      - supports-color
+      - typescript
+      - web-tree-sitter
+
+  '@solid-primitives/event-bus@1.1.2(solid-js@1.9.17)':
+    dependencies:
+      '@solid-primitives/utils': 6.4.1(solid-js@1.9.17)
+      solid-js: 1.9.17
+
+  '@solid-primitives/utils@6.4.1(solid-js@1.9.17)':
+    dependencies:
+      solid-js: 1.9.17
+
   '@standard-schema/spec@1.1.0': {}
+
+  '@tsconfig/bun@1.0.9': {}
+
+  '@types/bun@1.4.3':
+    dependencies:
+      bun-types: 1.4.3
 
   '@types/bun@1.4.4':
     dependencies:
@@ -1000,6 +1311,13 @@ snapshots:
     optionalDependencies:
       solid-js: 1.9.12
 
+  babel-preset-solid@1.9.16(@babel/core@7.29.7)(solid-js@1.9.17):
+    dependencies:
+      '@babel/core': 7.29.7
+      babel-plugin-jsx-dom-expressions: 0.40.11(@babel/core@7.29.7)
+    optionalDependencies:
+      solid-js: 1.9.17
+
   balanced-match@1.0.2: {}
 
   baseline-browser-mapping@2.11.34: {}
@@ -1020,10 +1338,19 @@ snapshots:
     dependencies:
       typescript: 5.9.3
 
+  bun-types@1.4.3:
+    dependencies:
+      '@types/node': 26.6.5
+      undici-types: 8.12.3
+
   bun-types@1.4.4:
     dependencies:
       '@types/node': 26.6.5
       undici-types: 8.12.3
+
+  bundle-name@4.1.1:
+    dependencies:
+      run-applescript: 7.1.0
 
   caniuse-lite@1.0.30001819: {}
 
@@ -1035,7 +1362,18 @@ snapshots:
     dependencies:
       ms: 2.1.3
 
+  default-browser-id@5.0.1: {}
+
+  default-browser@5.5.1:
+    dependencies:
+      bundle-name: 4.1.1
+      default-browser-id: 5.0.1
+
+  define-lazy-prop@3.0.0: {}
+
   diff@9.0.0: {}
+
+  effect@4.1.0: {}
 
   electron-to-chromium@1.5.467: {}
 
@@ -1061,9 +1399,11 @@ snapshots:
 
   function-bind@1.1.2: {}
 
+  fuzzysort@3.1.0: {}
+
   gensync@1.0.0-beta.2: {}
 
-  get-east-asian-width@1.7.0: {}
+  get-east-asian-width@1.6.0: {}
 
   glob@9.3.5:
     dependencies:
@@ -1081,6 +1421,18 @@ snapshots:
   is-core-module@2.17.0:
     dependencies:
       hasown: 2.0.4
+
+  is-docker@3.0.0: {}
+
+  is-in-ssh@1.0.0: {}
+
+  is-inside-container@1.0.0:
+    dependencies:
+      is-docker: 3.0.0
+
+  is-wsl@3.1.1:
+    dependencies:
+      is-inside-container: 1.0.0
 
   js-tokens@4.0.0: {}
 
@@ -1113,6 +1465,15 @@ snapshots:
 
   node-releases@2.0.60: {}
 
+  open@11.0.4:
+    dependencies:
+      default-browser: 5.5.1
+      define-lazy-prop: 3.0.0
+      is-in-ssh: 1.0.0
+      is-inside-container: 1.0.0
+      powershell-utils: 0.2.1
+      wsl-utils: 1.0.1
+
   p-limit@2.3.0:
     dependencies:
       p-try: 2.2.0
@@ -1142,6 +1503,12 @@ snapshots:
     dependencies:
       find-up: 3.0.0
 
+  powershell-utils@0.2.1: {}
+
+  remeda@2.26.0:
+    dependencies:
+      type-fest: 4.41.0
+
   reselect@4.1.8: {}
 
   resolve@1.22.13:
@@ -1151,6 +1518,8 @@ snapshots:
       path-parse: 1.0.7
       supports-preserve-symlinks-flag: 1.0.0
 
+  run-applescript@7.1.0: {}
+
   s-js@0.4.9: {}
 
   semver@6.3.1: {}
@@ -1159,7 +1528,13 @@ snapshots:
     dependencies:
       seroval: 1.5.6
 
+  seroval-plugins@1.6.12(seroval@1.6.12):
+    dependencies:
+      seroval: 1.6.12
+
   seroval@1.5.6: {}
+
+  seroval@1.6.12: {}
 
   solid-js@1.9.12:
     dependencies:
@@ -1167,17 +1542,25 @@ snapshots:
       seroval: 1.5.6
       seroval-plugins: 1.5.6(seroval@1.5.6)
 
+  solid-js@1.9.17:
+    dependencies:
+      csstype: 3.2.3
+      seroval: 1.6.12
+      seroval-plugins: 1.6.12(seroval@1.6.12)
+
   string-width@7.2.0:
     dependencies:
       emoji-regex: 10.6.0
-      get-east-asian-width: 1.7.0
-      strip-ansi: 7.2.0
+      get-east-asian-width: 1.6.0
+      strip-ansi: 7.1.2
 
-  strip-ansi@7.2.0:
+  strip-ansi@7.1.2:
     dependencies:
       ansi-regex: 6.4.0
 
   supports-preserve-symlinks-flag@1.0.0: {}
+
+  type-fest@4.41.0: {}
 
   typescript@5.9.3: {}
 
@@ -1194,6 +1577,11 @@ snapshots:
   web-tree-sitter@0.25.10: {}
 
   ws@8.22.1: {}
+
+  wsl-utils@1.0.1:
+    dependencies:
+      is-wsl: 3.1.1
+      powershell-utils: 0.2.1
 
   yallist@3.1.1: {}
 

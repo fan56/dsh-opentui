@@ -1,0 +1,27 @@
+{
+  "extends": "@tsconfig/bun/tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun"],
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "noUncheckedIndexedAccess": false,
+    "noUnusedLocals": true,
+    "noImplicitAny": false,
+    "verbatimModuleSyntax": false,
+    "baseUrl": ".",
+    "paths": {
+      "@opencode/theme/tui": ["src/vendor/theme/src/tui/index.ts"],
+      "@opencode/schema": ["src/vendor/schema/src/index.ts"],
+      "@opencode/schema/*": ["src/vendor/schema/src/*"],
+      "@opencode/theme/tui/*": ["src/vendor/theme/src/tui/*"],
+      "@opencode/util/*": ["src/vendor/util/src/*"],
+      "#global-roots": ["src/vendor/util/src/global-roots.ts"],
+      "#attention-sounds": ["src/attention-sounds.bun.ts"],
+      "#string-width": ["src/util/string-width.bun.ts"],
+      "#zed-sqlite": ["src/editor-zed-sqlite.bun.ts"],
+      "#runtime-plugin-support": ["src/plugin/runtime-plugin-support.node.ts"]
+    }
+  },
+  "include": ["src", "examples"]
+}

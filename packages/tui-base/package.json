@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@dsh-opentui/tui-base",
+  "version": "2.2.5-893e8dc",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": "./src/index.tsx",
+    "./config": "./src/config/index.tsx",
+    "./config/keybind": "./src/config/keybind.ts",
+    "./config/v1": "./src/config/v1/index.tsx",
+    "./config/v1/keybind": "./src/config/v1/keybind.ts",
+    "./plugin/discovery": "./src/plugin/discovery.ts",
+    "./editor": "./src/editor.ts",
+    "./mini": "./src/mini/index.ts",
+    "./mini/tool": "./src/mini/tool.public.ts",
+    "./model-preference": "./src/model-preference.ts",
+    "./util/form": "./src/util/form.ts",
+    "./logo": "./src/logo.ts",
+    "./component/spinner": "./src/component/spinner.tsx",
+    "./component/spinner-renderable": "./src/component/spinner-renderable.ts"
+  },
+  "imports": {
+    "#attention-sounds": {
+      "bun": "./src/attention-sounds.bun.ts",
+      "node": "./src/attention-sounds.node.ts",
+      "default": "./src/attention-sounds.bun.ts"
+    },
+    "#string-width": {
+      "bun": "./src/util/string-width.bun.ts",
+      "node": "./src/util/string-width.node.ts",
+      "default": "./src/util/string-width.bun.ts"
+    },
+    "#zed-sqlite": {
+      "bun": "./src/editor-zed-sqlite.bun.ts",
+      "node": "./src/editor-zed-sqlite.node.ts",
+      "default": "./src/editor-zed-sqlite.bun.ts"
+    },
+    "#runtime-plugin-support": {
+      "bun": "./src/plugin/runtime-plugin-support.bun.ts",
+      "node": "./src/plugin/runtime-plugin-support.node.ts",
+      "default": "./src/plugin/runtime-plugin-support.node.ts"
+    }
+  },
+  "dependencies": {
+    "@opentui/core": "0.8.1",
+    "@standard-schema/spec": "1.1.0",
+    "@opentui/keymap": "0.8.1",
+    "@opentui/solid": "0.8.1",
+    "@solid-primitives/event-bus": "1.1.2",
+    "effect": "4.1.0",
+    "fuzzysort": "3.1.0",
+    "get-east-asian-width": "1.6.0",
+    "open": "11.0.4",
+    "remeda": "2.26.0",
+    "solid-js": "1.9.17",
+    "string-width": "7.2.0",
+    "strip-ansi": "7.1.2"
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "1.0.9",
+    "@types/bun": "1.4.3",
+    "typescript": "^5.7.0"
+  }
+}
