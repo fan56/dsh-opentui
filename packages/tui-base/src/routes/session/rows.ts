@@ -59,7 +59,7 @@ export function createSessionRows(
 
   function reduce() {
     const messages = data.session.message.list(sessionID())
-    const inputs = new Set(data.session.input.list(sessionID()))
+    const inputs = new Set<string>(data.session.input.list(sessionID()))
     const pending = data.session.pending.list(sessionID())
     const queued = new Set(
       pending.flatMap((item) => (item.type === "user" && item.delivery === "queue" ? [item.id] : [])),
@@ -104,7 +104,7 @@ export function createSessionRows(
   }
 
   function pendingPermissions() {
-    return new Set(
+    return new Set<string>(
       (data.session.permission.list(sessionID()) ?? []).flatMap((request) =>
         request.source?.type === "tool" ? [request.source.id] : [],
       ),

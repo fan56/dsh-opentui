@@ -83,13 +83,22 @@ documented: a `const` suppresses the namespace meaning of the same name;
 namespace-as-value pass-through (effect Schema namespaces) is not
 expressible — that is why schema is vendored for real.
 
-### Error budget (batch 2a, exact count: 61)
+### Error budget (batch 3, exact count: 58; batch 2a was 61)
+
+Batch 3 delta: −3. `routes/session/rows.ts` 3 → 0 (typed `Set<string>` at
+the stub boundary). `routes/session/index.tsx` stays at 4 (2 in the
+queued-prompt dialog, composer batch; 2 in the provider context
+`messageIndex`/`pendingDelivery`, which read `unknown` from the stubbed
+data memos — they clear when index.tsx mounts the seam transcript). The
+rebuilt transcript path (`routes/session/seam-rows.ts`,
+`routes/session/transcript.tsx`, `examples/transcript.tsx`) adds 0.
+Bucket 1 below is now 39 (rows 3 → 0).
 
 Residual errors classified by root cause and disposition:
 
 | Bucket                                            | Count | Files                                                                                                   | Disposition                                                                                  |
 | ------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| client-stub downstream (SessionSeam resolves)      | 42    | dialog-model(10), stream-v2.subagent(6), demo(5), session/index(4), usage(4), rows(3), app(2), event(2), dialog-model-free(2), stream-v2.transport(1), stream-v2.image(1), permission.shared(1), diff-viewer(1) | Vanish when `src/seams/session.ts` gets its real adapter (typed events/rows/catalog replace the `any` stubs) |
+| client-stub downstream (SessionSeam resolves)      | 39    | dialog-model(10), stream-v2.subagent(6), demo(5), session/index(4), usage(4), app(2), event(2), dialog-model-free(2), stream-v2.transport(1), stream-v2.image(1), permission.shared(1), diff-viewer(1) | Vanish when `src/seams/session.ts` gets its real adapter (typed events/rows/catalog replace the `any` stubs) |
 | plugin-stub downstream                             | 8     | plugin/render(4), plugin/api(2), plugin/context(2)                                                       | Later seam (plugin); not touched by SessionSeam                                               |
 | strictNullChecks differential vs upstream `tsgo`   | 11    | stream-v2.transport(5), prompt/index(2), app(1), runtime(1), dialog-shell-output(1), diff-viewer(1)      | Local guards during view rebuild; not seam work                                               |
 
@@ -115,3 +124,19 @@ adapter (`RemoteHostSession` → `SessionSeam`) lives in packages/shell and is
 injected at the composition root (later batch). Tests:
 `test/session-seam.test.ts` (interface conformance, event subscribe/emit,
 dependency-direction guard).
+
+## Seam transcript (batch 3)
+
+`src/routes/session/transcript.tsx` + `src/routes/session/seam-rows.ts`:
+the transcript viewport extracted from `routes/session/index.tsx`
+(scrollbox `stickyScroll` + `stickyStart="bottom"`, keyed `marginTop=1`
+rows, fixed bottom input box) fed by `SessionSeam` instead of
+`useData`/`useClient`. Rows are a Solid store keyed by a stable `key`
+(`reconcile` on hydrate, in-place patch per delta). Assistant rows render
+`<markdown streaming={!final}>`, as the vendored `TextPart` does on
+@opentui 0.8.1; `renderNode`/`syntaxStyle` are injectable props (the
+vendored app passes `plugins.markdown()` / `useThemes().currentSyntax`).
+Tear check: `bun examples/transcript.tsx` (fake seam, 60 sentences + tool
+rows). Tests: `test/seam-rows.test.ts`. Note: `bun test` resolves
+solid-js's server build, whose `reconcile` ignores `key`; tests assert key
+stability, and object identity is covered by the runtime example.

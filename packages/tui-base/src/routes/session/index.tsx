@@ -176,7 +176,9 @@ export function Session(props: {
   const promptRef = usePromptRef()
   const session = createMemo(() => data.session.get(route.sessionID))
   const messages = () => data.session.message.list(route.sessionID)
-  const messageIndexes = createMemo(() => new Map(messages().map((message, index) => [message.id, index])))
+  const messageIndexes = createMemo(
+    () => new Map(messages().map((message, index) => [message.id as string, index] as const)),
+  )
   const legacy = createMemo(() => SessionTurn.legacy(messages()))
   const messagesBeforeRevert = () => {
     const messageID = session()?.revert?.messageID
@@ -221,7 +223,12 @@ export function Session(props: {
   const pendingUsers = createMemo(() =>
     data.session.pending.list(route.sessionID).flatMap((item) => (item.type === "user" ? [item] : [])),
   )
-  const pendingDeliveries = createMemo(() => new Map(pendingUsers().map((item) => [item.id, item.delivery])))
+  const pendingDeliveries = createMemo(
+    () =>
+      new Map(
+        pendingUsers().map((item) => [item.id as string, item.delivery as "steer" | "queue" | undefined] as const),
+      ),
+  )
   const queuedPrompts = createMemo(() =>
     pendingUsers().flatMap((item) =>
       item.delivery === "queue" ? [{ id: item.id, text: item.payload.text, payload: item.payload }] : [],

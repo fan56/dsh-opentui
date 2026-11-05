@@ -177,7 +177,7 @@ export class NullSessionSeam implements SessionSeam {
 	async renameSession(): Promise<{ title: string; seq: number } | undefined> {
 		return undefined
 	}
-	async turn(): Promise<void> {}
+	async turn(_userText: string, _cb: SeamTurnCallbacks): Promise<void> {}
 	steer(_text: string): void {}
 	interrupt(): void {}
 	async listProviders(): Promise<{ provider: string; models: string[] }[]> {
