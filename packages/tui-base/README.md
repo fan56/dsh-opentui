@@ -83,7 +83,14 @@ documented: a `const` suppresses the namespace meaning of the same name;
 namespace-as-value pass-through (effect Schema namespaces) is not
 expressible — that is why schema is vendored for real.
 
-### Error budget (batch 6, exact count: 58; batch 5 was 58)
+### Error budget (batch 7, exact count: 58; batch 6 was 58)
+
+Batch 7 delta: 0. The powerline/status-bar path
+(`routes/session/powerline.tsx`, `routes/session/status-bar.tsx`,
+`examples/session.tsx`) adds 0 — both components consume vendored theme
+tokens (RGBA) with the kit-era hex constants as no-provider fallbacks, and
+import `ComponentTheme` from `theme/component` (the source of truth; the
+context module does not re-export it).
 
 Batch 6 delta: 0. The theme/keybind path (`src/seams/theme.ts`,
 `routes/session/composer-keybinds.ts`, the token swaps in

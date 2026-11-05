@@ -10,8 +10,12 @@
 // Batch 6: transcript/composer/dialogs render with vendored theme tokens
 // (default "opencode"); S_THEME=<bundled name> switches via the ThemeSeam
 // stub (validated against the bundled list; unknown names are ignored).
+// Batch 7: a powerline footer + busy StatusBar render below the composer —
+// theme-token fills (POWERLINE_COLORS only as the no-provider fallback);
+// busy/message-count/model come from the composer + seam wiring, the rest
+// (effort/context%/tok-s) stay demo props.
 // Run from packages/tui-base: bun examples/session.tsx   (ctrl+c quits)
-import { createSignal, onMount } from "solid-js"
+import { createSignal, onCleanup, onMount } from "solid-js"
 import { render } from "@opentui/solid"
 import { NullSessionSeam, type SeamAskPick, type SeamAskQuestion, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
 import { createSeamRows } from "../src/routes/session/seam-rows"
@@ -19,8 +23,10 @@ import { Transcript } from "../src/routes/session/transcript"
 import { SessionComposer, type SessionComposerRef } from "../src/routes/session/session-composer"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
+import { PowerlineFooter, sessionFooterSegments } from "../src/routes/session/powerline"
+import { StatusBar } from "../src/routes/session/status-bar"
 import { ConfigProvider, resolve } from "../src/config"
-import { ThemeProvider, useThemes } from "../src/context/theme"
+import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
 import { createThemeSeam } from "../src/seams/theme"
 import { Keymap } from "../src/context/keymap"
 import { ToastProvider } from "../src/ui/toast"
@@ -31,6 +37,8 @@ const SENTENCES = Number(process.env.S_SENTENCES ?? 24)
 const INTERVAL_MS = Number(process.env.S_INTERVAL_MS ?? 250)
 const EXIT_AFTER_MS = Number(process.env.S_EXIT_AFTER_MS ?? 0)
 const THEME = process.env.S_THEME
+/** S_AUTO_TURN=1: fire one fake turn on mount (visual captures). */
+const AUTO_TURN = process.env.S_AUTO_TURN === "1"
 
 /** The questions the fake ask fires mid-turn (one batch, two pickers). */
 const DEMO_QUESTIONS: SeamAskQuestion[] = [
@@ -42,6 +50,9 @@ class FakeSeam extends NullSessionSeam {
 	private steers: string[] = []
 	override currentSessionId() {
 		return "demo"
+	}
+	override async currentModelSelection() {
+		return { providerID: "bigmodel", modelID: "glm-5.3-flash" }
 	}
 	override async storedTranscript(): Promise<SeamTranscriptRow[]> {
 		return [
@@ -79,6 +90,11 @@ function describePicks(picks: SeamAskPick[]): string {
 	return picks.map((p) => `${p.questionId}=${p.selected}`).join(", ")
 }
 
+/** The right-aligned footer text: the wall clock (hh:mm:ss). */
+function clock(d: Date): string {
+	return d.toTimeString().slice(0, 8)
+}
+
 const seam = new FakeSeam()
 const overlays = new TurnOverlayController()
 registerTurnOverlays(seam, overlays)
@@ -89,15 +105,56 @@ function SessionPage() {
 		// Approval mid-turn routes through the batch-5 card.
 		onApprove: (name, args) => overlays.requestApproval(name, args),
 	})
-	const [, setBusy] = createSignal(false)
+	const theme = useTheme()
 	const themeSeam = createThemeSeam(useThemes())
 	if (THEME && !themeSeam.setTheme(THEME)) console.error(`unknown theme ${THEME}; bundled: ${themeSeam.list().join(", ")}`)
-	onMount(() => projection.load())
+
+	// Batch-7 footer/status wiring (cheap seam data only):
+	// - busy is the composer's onBusyChange OR a page-driven projection turn
+	// - message count counts real sends through the projection
+	// - model label comes from seam.currentModelSelection()
+	// effort / context% / tok-s stay demo props until their seams carry them.
+	const [composerBusy, setComposerBusy] = createSignal(false)
+	const [turnBusy, setTurnBusy] = createSignal(false)
+	const busy = () => composerBusy() || turnBusy()
+	const [busySince, setBusySince] = createSignal(0)
+	const [msgs, setMsgs] = createSignal(0)
+	const [model, setModel] = createSignal<{ providerID: string; modelID: string } | undefined>()
+	const [now, setNow] = createSignal(new Date())
+	onMount(() => {
+		projection.load()
+		void seam.currentModelSelection().then(setModel)
+		const timer = setInterval(() => setNow(new Date()), 1000)
+		onCleanup(() => clearInterval(timer))
+		if (AUTO_TURN) void send("batch-7 capture turn")
+	})
+	const elapsed = () => (busy() ? Math.max(0, Math.floor((now().getTime() - busySince()) / 1000)) : 0)
+	const send = (text: string) => {
+		setMsgs((n) => n + 1)
+		setTurnBusy(true)
+		setBusySince(Date.now())
+		const done = projection.send(text)
+		void done.finally(() => setTurnBusy(false))
+		return done
+	}
+	const segments = () =>
+		sessionFooterSegments({
+			provider: model()?.providerID,
+			model: model()?.modelID,
+			effort: "high",
+			contextPct: 42,
+			messages: msgs(),
+			tools: 0,
+			tps: busy() ? 87 : null,
+			theme,
+		})
 	return (
 		<box flexDirection="column" width="100%" height="100%" backgroundColor="black">
 			<Transcript seam={seam} projection={projection}>
-				<SessionComposer seam={seam} send={projection.send} onBusyChange={setBusy} ref={(r) => (composerRef = r)} />
+				<SessionComposer seam={seam} send={send} onBusyChange={setComposerBusy} ref={(r) => (composerRef = r)} />
 			</Transcript>
+			<StatusBar phase={busy() ? "stream" : null} elapsed={elapsed} />
+			<PowerlineFooter left={segments()} right={clock(now())} theme={theme} />
 			<TurnOverlayHost
 				controller={overlays}
 				reclaimFocus={() => {
