@@ -169,8 +169,8 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 						return createComponent(SessionComposer, {
 							seam,
 							send,
-							onBusyChange: setComposerBusy,
-							ref: (r: { focused(): boolean; focus(): void }) => (composerRef = r),
+								onBusyChange: setComposerBusy,
+								ref: (r: { focused(): boolean; focus(): void }) => (composerRef = r),
 							slashKeyFilter: slash.slashKeyFilter,
 							slashSync: (buffer: string) => slash.controller.sync(buffer, slash.commands),
 							interceptSubmit: slash.interceptSubmit,
@@ -179,8 +179,27 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 						})
 					},
 				}),
-				createComponent(StatusBar, { phase: busy() ? "stream" : null, elapsed }),
-				createComponent(PowerlineFooter, { left: segments(), right: clock(now()), theme }),
+				// REACTIVE-PROP LAW (batch 10d): signal reads ride GETTERS. An
+				// eager `busy()` / `segments()` / `now()` read here is tracked by
+				// this children getter, so every 1s clock tick re-ran it and
+				// REMOUNTED the whole subtree — the SessionComposer owning the
+				// in-flight turn was disposed and its busy=false dropped by its
+				// disposed guard: "Writing…" frozen after a settled turn.
+				createComponent(StatusBar, {
+					get phase() {
+						return busy() ? "stream" : null
+					},
+					elapsed,
+				}),
+				createComponent(PowerlineFooter, {
+					get left() {
+						return segments()
+					},
+					get right() {
+						return clock(now())
+					},
+					theme,
+				}),
 				overlayHost,
 			]
 		},
