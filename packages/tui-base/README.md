@@ -82,3 +82,36 @@ implementations. Ambient-stub expressiveness limits that were probed and
 documented: a `const` suppresses the namespace meaning of the same name;
 namespace-as-value pass-through (effect Schema namespaces) is not
 expressible — that is why schema is vendored for real.
+
+### Error budget (batch 2a, exact count: 61)
+
+Residual errors classified by root cause and disposition:
+
+| Bucket                                            | Count | Files                                                                                                   | Disposition                                                                                  |
+| ------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| client-stub downstream (SessionSeam resolves)      | 42    | dialog-model(10), stream-v2.subagent(6), demo(5), session/index(4), usage(4), rows(3), app(2), event(2), dialog-model-free(2), stream-v2.transport(1), stream-v2.image(1), permission.shared(1), diff-viewer(1) | Vanish when `src/seams/session.ts` gets its real adapter (typed events/rows/catalog replace the `any` stubs) |
+| plugin-stub downstream                             | 8     | plugin/render(4), plugin/api(2), plugin/context(2)                                                       | Later seam (plugin); not touched by SessionSeam                                               |
+| strictNullChecks differential vs upstream `tsgo`   | 11    | stream-v2.transport(5), prompt/index(2), app(1), runtime(1), dialog-shell-output(1), diff-viewer(1)      | Local guards during view rebuild; not seam work                                               |
+
+Transcript-path blockers for batches 3–5 (must resolve in adapter batch, all in
+bucket 1): `routes/session/index.tsx`, `routes/session/rows.ts`,
+`mini/stream-v2.{transport,subagent,image}.ts`, `mini/permission.shared.ts` —
+23 of the 42 client-bucket errors sit in those files.
+
+Never-rebuilt files (candidates for tsconfig exclusion at rebuild time):
+`mini/demo.ts` (5 errors — demo simulation client). The remaining storybook /
+devtools files carry no errors.
+
+## SessionSeam (batch 2a)
+
+`src/seams/session.ts` declares the typed contract the vendored view needs
+from a session backend (sessions list/search/transcript, turn streaming with
+approve callback, provider/catalog/usage reads, typed event push, lifecycle),
+plus `NullSessionSeam` (test stub; drives events via `emit()`). The header
+comment carries the full vendored-surface → seam → `RemoteHostSession`
+mapping table derived from auditing all 113 `@opencode/client` import sites.
+Dependency rule: tui-base imports nothing from `@dsh-opentui/*`; the real
+adapter (`RemoteHostSession` → `SessionSeam`) lives in packages/shell and is
+injected at the composition root (later batch). Tests:
+`test/session-seam.test.ts` (interface conformance, event subscribe/emit,
+dependency-direction guard).
