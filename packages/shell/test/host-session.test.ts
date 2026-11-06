@@ -29,6 +29,7 @@ function makeCtx() {
   const creates: { sessionId: string; meta: any; agentOptions: any }[] = []
   let failNextCreateWith: string | undefined
   const handles: { disposed: boolean; agent: any }[] = []
+  const opens: string[] = []
   let agentSeq = 0
   const ctx: any = {
     on(event: string, handler: Handler) {
@@ -40,10 +41,13 @@ function makeCtx() {
       if (key === "sessionPersistence") {
         return {
           list: async () => [],
-          open: async (_id: string, _mode: string) => ({
-            read: async (offset: number) => (offset < PERSISTED.length ? { events: PERSISTED.slice(offset) } : { events: [] }),
-            close: async () => {},
-          }),
+          open: async (id: string, _mode: string) => {
+            opens.push(id)
+            return {
+              read: async (offset: number) => (offset < PERSISTED.length ? { events: PERSISTED.slice(offset) } : { events: [] }),
+              close: async () => {},
+            }
+          },
         }
       }
       return undefined
@@ -73,7 +77,7 @@ function makeCtx() {
   const emit = (event: string, payload: any) => {
     for (const handler of handlers.get(event) ?? []) handler(payload)
   }
-  return { ctx, emit, creates, handles, setFail: (name: string) => { failNextCreateWith = name } }
+  return { ctx, emit, creates, handles, opens, setFail: (name: string) => { failNextCreateWith = name } }
 }
 
 function callbacks(overrides: Partial<TurnCallbacks> = {}): TurnCallbacks {
@@ -178,5 +182,28 @@ describe("HostSession idle release", () => {
     await runTurn(session, env, "first")
     await new Promise((resolve) => setTimeout(resolve, 200))
     expect(env.handles[0].disposed).toBe(false)
+  })
+})
+
+// F1c (cold-boot attach stall): the v2 page's projection.load() passes ""
+// before the first session exists; persistence.open("") rejects with
+// `session "" not found` and the hydration loader (whose catch swallows
+// rejections) never clears. An empty id must RESOLVE [] — no session yet,
+// no stored history — and never touch the persistence layer.
+describe("storedTranscript empty-id guard (F1c)", () => {
+  test("empty id resolves [] without opening persistence", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    const rows = await session.storedTranscript("")
+    expect(rows).toEqual([])
+    expect(env.opens).toEqual([])
+  })
+
+  test("a real id still drains the persisted rows", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    const rows = await session.storedTranscript("s1")
+    expect(rows.map((r) => r.kind)).toEqual(["user", "assistant", "user", "assistant"])
+    expect(env.opens).toEqual(["s1"])
   })
 })

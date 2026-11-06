@@ -214,6 +214,12 @@ export class HostSession {
    * Drain pattern per tui-pi's readPersistedSession: open(id,'read') +
    * offset loop. */
   async storedTranscript(id: string, skip = 0): Promise<{ kind: "user" | "assistant"; text: string }[]> {
+    // Cold boot has no session (currentSessionId() undefined → the v2 page's
+    // projection.load() passes ""), and persistence.open("") rejects with
+    // `session "" not found`. The view's hydration loader only clears when
+    // load() RESOLVES (its catch swallows rejections by design), so an empty
+    // id must resolve [] — no session yet, no stored history — not reject.
+    if (!id) return []
     const persistence = (this.#ctx as any).get?.("sessionPersistence")
     if (!persistence?.open) return []
     const handle = await persistence.open(id, "read")

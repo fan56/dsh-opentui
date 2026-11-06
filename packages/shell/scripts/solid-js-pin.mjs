@@ -12,23 +12,29 @@
  *   2. an idempotent direct rewrite of the installed package.json exports —
  *      belt-and-braces for right after an install or a dist-host deploy
  *
+ * C1: generalized to the 0.8.2 v2 closure (solid-js@1.9.17). Unlike the old
+ * 1.9.12 patch, "./store" KEEPS a pinned entry (client store build): the v2
+ * view imports solid-js/store (seam-rows' store) at runtime from the
+ * profile's hoisted copy.
+ *
  * Used by scripts/install-profile.mjs (before its pnpm install steps) and
  * scripts/sync-profile.mjs (the local-dev deploy loop).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-export const SOLID_JS_VERSION = '1.9.12'
+export const SOLID_JS_VERSION = '1.9.17'
 export const SOLID_PATCH_RELPATH = `patches/solid-js@${SOLID_JS_VERSION}.patch`
 
-// pristine solid-js@1.9.12 package.json -> client-pinned variant:
+// pristine solid-js@1.9.17 package.json -> client-pinned variant:
 // - "module" points at dist/solid.js instead of dist/server.js
 // - exports["."] drops the worker/deno/node conditions (node used to win and
 //   select the SSR build) and resolves straight to dist/solid.js
-// - the SSR-flavored subpath exports (./store, ./web, ./h, ...) go away; the
-//   host bundle imports bare "solid-js" only
+// - "./store" keeps a pinned entry (client store build) for the v2 view's
+//   solid-js/store import
+// - the remaining SSR-flavored subpath exports (./web, ./h, ./html, ...)
+//   go away; the host bundle imports bare "solid-js" and "solid-js/store" only
 export const SOLID_JS_PATCH = `diff --git a/package.json b/package.json
-index ad27a1f..f3aa43a 100644
 --- a/package.json
 +++ b/package.json
 @@ -10,7 +10,7 @@
@@ -40,7 +46,7 @@ index ad27a1f..f3aa43a 100644
    "unpkg": "./dist/solid.cjs",
    "types": "types/index.d.ts",
    "sideEffects": false,
-@@ -44,164 +44,12 @@
+@@ -44,164 +44,17 @@
    ],
    "exports": {
      ".": {
@@ -88,7 +94,7 @@ index ad27a1f..f3aa43a 100644
 -      "types": "./types/jsx.d.ts",
 -      "default": "./dist/solid.js"
 -    },
--    "./store": {
+     "./store": {
 -      "worker": {
 -        "types": "./store/types/index.d.ts",
 -        "import": "./store/dist/server.js",
@@ -119,10 +125,10 @@ index ad27a1f..f3aa43a 100644
 -        "import": "./store/dist/dev.js",
 -        "require": "./store/dist/dev.cjs"
 -      },
--      "types": "./store/types/index.d.ts",
--      "import": "./store/dist/store.js",
--      "require": "./store/dist/store.cjs"
--    },
+       "types": "./store/types/index.d.ts",
+       "import": "./store/dist/store.js",
+       "require": "./store/dist/store.cjs"
+     },
 -    "./store/dist/*": "./store/dist/*",
 -    "./store/types/*": "./store/types/*",
 -    "./web": {
@@ -207,12 +213,21 @@ index ad27a1f..f3aa43a 100644
      "./package.json": "./package.json"
    },
    "keywords": [
+@@ -240,4 +93,4 @@
+     "coverage": "vitest run --coverage",
+     "test-types": "tsc --project tsconfig.test.json"
+   }
+-}
+\\ No newline at end of file
++}
 `
 
 // The exports object the pinned package.json must carry (also the target of
-// the direct re-pin below).
+// the direct re-pin below). "./store" rides the client store build — the v2
+// view imports solid-js/store (seam-rows' store).
 export const SOLID_JS_EXPORTS = {
   '.': { types: './types/index.d.ts', import: './dist/solid.js', require: './dist/solid.cjs' },
+  './store': { types: './store/types/index.d.ts', import: './store/dist/store.js', require: './store/dist/store.cjs' },
   './dist/solid.js': './dist/solid.js',
   './dist/solid.cjs': './dist/solid.cjs',
   './package.json': './package.json',
@@ -235,7 +250,10 @@ const PATCHED_DEPS_BLOCK = `patchedDependencies:
  *
  * Creates pnpm-workspace.yaml with the default hoisted layout when missing;
  * otherwise appends the patchedDependencies key only when not yet present
- * (user edits to the yaml are preserved). Returns what it did.
+ * (user edits to the yaml are preserved). Stale solid-js patch keys from
+ * older pins (e.g. solid-js@1.9.12) are removed whenever the yaml is
+ * rewritten, so an upgraded profile never carries two solid-js patch keys.
+ * Returns what it did.
  */
 export function ensureSolidPatch(profileDir) {
   mkdirSync(join(profileDir, 'patches'), { recursive: true })
@@ -247,17 +265,32 @@ export function ensureSolidPatch(profileDir) {
   }
 
   const wsPath = join(profileDir, 'pnpm-workspace.yaml')
+  // Any OTHER-version solid-js patch key is stale after a version bump; the
+  // current-version key is kept as-is when present.
+  const stripStale = (ws) =>
+    ws
+      .split('\n')
+      .filter((line) => !/^\s*solid-js@(?!\d+\.\d+\.\d+:).*/.test(line) || line.includes(`solid-js@${SOLID_JS_VERSION}:`))
+      .join('\n')
+
   let workspaceNote
   if (!existsSync(wsPath)) {
     writeFileSync(wsPath, WORKSPACE_DEFAULT + PATCHED_DEPS_BLOCK)
     workspaceNote = 'workspace created'
   } else {
-    const ws = readFileSync(wsPath, 'utf8')
-    if (ws.includes(`solid-js@${SOLID_JS_VERSION}:`)) {
-      workspaceNote = 'patch already registered'
-    } else {
+    const hadCurrent = readFileSync(wsPath, 'utf8').includes(`solid-js@${SOLID_JS_VERSION}:`)
+    const ws = stripStale(readFileSync(wsPath, 'utf8'))
+    const staleRemoved = ws !== readFileSync(wsPath, 'utf8')
+    if (!hadCurrent) {
       writeFileSync(wsPath, ws.replace(/\n*$/, '\n') + PATCHED_DEPS_BLOCK)
-      workspaceNote = 'patch registered in existing workspace'
+      workspaceNote = staleRemoved
+        ? 'patch registered in existing workspace; stale solid-js patch keys removed'
+        : 'patch registered in existing workspace'
+    } else {
+      if (staleRemoved) writeFileSync(wsPath, ws)
+      workspaceNote = staleRemoved
+        ? 'patch already registered; stale solid-js patch keys removed'
+        : 'patch already registered'
     }
   }
   return { patchWrote, workspaceNote }

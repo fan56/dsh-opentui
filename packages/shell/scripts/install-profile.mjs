@@ -64,9 +64,10 @@ writeFileSync(pkgPath, JSON.stringify(pkg, null, 2))
 const cordisYml = join(profileDir, 'cordis.yml')
 if (!existsSync(cordisYml)) writeFileSync(cordisYml, '# dsh profile root — an empty entry list. The tree is composed as patches.\n[]\n')
 // pnpm-workspace.yaml (created with the hoisted layout when missing) + the
-// solid-js@1.9.12 patchedDependencies entry. This MUST run before the
-// `pnpm install` steps below: with the patch registered, every install
-// itself produces the client-build-pinned solid-js instead of wiping it.
+// solid-js patchedDependencies entry (version managed by solid-js-pin.mjs).
+// This MUST run before the `pnpm install` steps below: with the patch
+// registered, every install itself produces the client-build-pinned
+// solid-js instead of wiping it.
 const { workspaceNote } = ensureSolidPatch(profileDir)
 console.log(`[dsh-opentui] ${workspaceNote}`)
 

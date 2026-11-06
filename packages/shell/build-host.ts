@@ -4,19 +4,26 @@
  * the profile); dsh-llm resolves from the global dsh closure through a
  * symlink, exactly like dsh-tui-pi's link-dsh-closure mechanism.
  *
- * Usage: bun build-host.ts [--only-symlink]
+ * Usage: bun build-host.ts [--only-symlink] [--v2]
  *
- * Batch 10c: the entrypoint is BACK on the old host-entry.tsx — the
- * plugin stack is FROZEN on the published 0.4.3 shape (0.7.0 @opentui
- * pins) until upstream fixes the 0.8.1-on-node frame flush. Batch 10a's
- * host-entry-v2 swap is reverted HERE ONLY: the v2 entry
- * (src/host-entry-v2.tsx) and its adapter stay in the tree, unused by the
- * build, documented as the upstream-blocked plugin cutover candidate.
+ * DEFAULT (C1 cutover): the rebuilt tui-base view entry (host-entry-v2.tsx)
+ * against the @opentui 0.8.2 externals — the F1b-validated node-paint stack
+ * (0.8.1 never flushes frames under node; 0.8.2 paints). `--v2` is accepted
+ * as a no-op alias from the pre-cutover days. The frozen published-0.4.3
+ * recipe (host-entry.tsx, 0.7.0 pins) stays reachable in git history.
  */
 import { execFileSync } from "node:child_process"
 import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs"
 import { dirname, join } from "node:path"
 import solidPlugin from "@opentui/solid/bun-plugin"
+// --v2: the v2 view graph must compile with the @opentui/solid the runtime
+// resolves (0.8.x, tui-base's install) — shell's own dep is the old-stack
+// 0.7.0 and its plugin emits for that runtime.
+// @ts-expect-error direct file import, bypassing shell's 0.7.0 resolution
+import solidPluginV2 from "../tui-base/node_modules/@opentui/solid/scripts/solid-plugin.js"
+
+// C1: v2 IS the default; `--v2` on the command line is a no-op alias.
+const v2 = true
 
 const pkgDir = dirname(new URL(import.meta.url).pathname)
 const outDir = join(pkgDir, "dist-host")
@@ -52,6 +59,9 @@ async function pinSolidClient() {
   const pkg = JSON.parse(await Bun.file(p).text())
   pkg.exports = {
     ".": { types: "./types/index.d.ts", import: "./dist/solid.js", require: "./dist/solid.cjs" },
+    // --v2: the rebuilt view imports solid-js/store (seam-rows' store) —
+    // route it to the client store build too (10a boot blocker 1).
+    "./store": { types: "./store/types/index.d.ts", import: "./store/dist/store.js", require: "./store/dist/store.cjs" },
     "./dist/solid.js": "./dist/solid.js",
     "./dist/solid.cjs": "./dist/solid.cjs",
     "./package.json": "./package.json",
@@ -67,12 +77,33 @@ if (process.argv.includes("--only-symlink")) {
 }
 
 const result = await Bun.build({
-  entrypoints: [join(pkgDir, "src", "host-entry.tsx")],
+  entrypoints: [join(pkgDir, "src", v2 ? "host-entry-v2.tsx" : "host-entry.tsx")],
   target: "node",
   format: "esm",
   outdir: outDir,
-  plugins: [solidPlugin],
-  external: ["@opentui/core", "@opentui/solid", "solid-js", "@deepseek-ai/dsh-llm"],
+  plugins: [
+    v2 ? solidPluginV2 : solidPlugin,
+    // --v2: tui-base's #imports map resolves the BUN variants under Bun.build
+    // even with target node (builder-runtime conditions win) and `alias` does
+    // not apply to # specifiers — pin the node variant the dist-host runtime
+    // (node) needs. Only #string-width reached the bundle (Bun.stringWidth
+    // crash under node, boot-validated in 10a).
+    ...(v2 ? [{
+      name: "tui-base-node-variants",
+      setup(build: { onResolve: (opts: object, cb: () => object) => void }) {
+        build.onResolve({ filter: /^#string-width$/ }, () => ({
+          path: join(pkgDir, "..", "tui-base", "src", "util", "string-width.node.ts"),
+        }))
+      },
+    }] : []),
+  ],
+  external: [
+    "@opentui/core",
+    "@opentui/solid",
+    ...(v2 ? ["@opentui/keymap"] : []),
+    "solid-js",
+    "@deepseek-ai/dsh-llm",
+  ],
   naming: { entry: "index.[ext]" },
 })
 if (!result.success) {
@@ -88,11 +119,18 @@ const manifest = {
   main: "index.js",
   exports: { ".": "./index.js" },
   dsh: { bundle: { patch: "./plugin.patch.yml" } },
-  dependencies: {
-    "@opentui/core": "0.7.0",
-    "@opentui/solid": "0.7.0",
-    "solid-js": "1.9.12",
-  },
+  dependencies: v2
+    ? {
+        "@opentui/core": "0.8.2",
+        "@opentui/solid": "0.8.2",
+        "@opentui/keymap": "0.8.2",
+        "solid-js": "1.9.17",
+      }
+    : {
+        "@opentui/core": "0.7.0",
+        "@opentui/solid": "0.7.0",
+        "solid-js": "1.9.12",
+      },
 }
 await Bun.write(join(outDir, "package.json"), JSON.stringify(manifest, null, 2))
 linkDshClosure()

@@ -29,6 +29,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { SOLID_JS_EXPORTS } from './solid-js-pin.mjs'
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..') // packages/shell
 const ownName = '@aiwayds/dsh-opentui'
@@ -141,16 +142,15 @@ if (install.status !== 0 || install.error) fail('pnpm install in the scratch pro
 // preload only remaps this under bun dev, so in a real dsh boot the fix is
 // rewriting the installed package's exports. Without it this smoke could pass
 // on the first frame while a real session is a dead screen.
+// C1: the export set is IMPORTED from scripts/solid-js-pin.mjs (single source
+// of truth) — the v2 view imports solid-js/store, so the pin must carry the
+// "./store" client entry; a hand-copied old shape here silently dropped it and
+// the plugin failed to import (ERR_PACKAGE_PATH_NOT_EXPORTED at boot).
 {
   const solidPkg = join(profile, 'node_modules', 'solid-js', 'package.json')
   try {
     const solidJson = JSON.parse(readFileSync(solidPkg, 'utf8'))
-    solidJson.exports = {
-      '.': { types: './types/index.d.ts', import: './dist/solid.js', require: './dist/solid.cjs' },
-      './dist/solid.js': './dist/solid.js',
-      './dist/solid.cjs': './dist/solid.cjs',
-      './package.json': './package.json',
-    }
+    solidJson.exports = SOLID_JS_EXPORTS
     writeFileSync(solidPkg, JSON.stringify(solidJson, null, 2))
   } catch (err) {
     fail(`could not pin solid-js to its client build in the scratch profile — TUI updates would be dead: ${err.message}`)

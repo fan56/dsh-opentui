@@ -36,9 +36,10 @@
     "test:e2e": "node scripts/e2e-live.mjs && node scripts/e2e-fork.mjs"
   },
   "dependencies": {
-    "@opentui/core": "0.7.0",
-    "@opentui/solid": "0.7.0",
-    "solid-js": "^1.9.12",
+    "@opentui/core": "0.8.2",
+    "@opentui/solid": "0.8.2",
+    "@opentui/keymap": "0.8.2",
+    "solid-js": "1.9.17",
     "ws": "^8.22.1"
   },
   "devDependencies": {
