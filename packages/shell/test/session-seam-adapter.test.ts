@@ -336,3 +336,19 @@ describe("RemoteSessionSeam cacheHitMode (batch F2)", () => {
 		expect(seam.configLoad()).toEqual({ cacheHitMode: "session" })
 	})
 })
+
+describe("RemoteSessionSeam steerChild (batch G2)", () => {
+	test("forwards to the facade's steerChild 1:1 and registers the module steer slot", () => {
+		const steered: [string, string][] = []
+		const { session } = fakeSession({
+			steerChild: (id: string, text: string) => {
+				steered.push([id, text])
+				return id === "child-live"
+			},
+		})
+		const seam = new RemoteSessionSeam(session)
+		expect(seam.steerChild("child-live", "wrap up")).toBe(true)
+		expect(seam.steerChild("child-gone", "wrap up")).toBe(false)
+		expect(steered).toEqual([["child-live", "wrap up"], ["child-gone", "wrap up"]])
+	})
+})

@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# Scenario 70 — subagent steer injection through the SubagentsTab picker
+# (ported from dsh-tui-pi e2e/scenarios/70-steer-injection.sh; G2 batch).
+#
+# tui-pi parity shape (viewer Enter-steer) mapped onto the opentui shell:
+#   picker open → the running child's row → Enter opens the steer prompt
+#   (DialogPrompt, "Steer <agent>" title) → submit rides the session seam's
+#   steerChild (plugin face: HostSession in-process; client face: the
+#   remote-subagents steer RPC) → success echoes `steered <agent>` and the
+#   steer text reaches the child's next LLM request (mock-log evidence).
+#   Esc in the prompt cancels silently.
+#
+# 62-mode seeding (same fixtures as 62-hard-stop.sh, offline):
+#   - looper.md persona marker E2E_HS_CHILD keeps every child response another
+#     `bash sleep 1` tool call, so the child stays RUNNING (no maxRounds here
+#     — the ladder must NOT fire; a live child is the whole point) while the
+#     steer is injected;
+#   - the parent marker E2E_HS_PARENT dispatches looper through use_agent.
+#
+# CAPABILITY GATE (tui-pi's "deployed plugin predates v0.17.0" pattern): the
+# steer UI must exist in the DEPLOYED dist-host bundle. Until dist-host is
+# rebuilt with the G2 batch this scenario SKIPS with a warn — the strings
+# grepped are the steer prompt title ("Steer ") and the success echo
+# ("steered "), both unique to the G2 UI.
+#
+# Container-only: installs the registry plugin into the active profile and
+# mutates ~/.dsh/agents (same rules as 62-hard-stop.sh).
+set -u
+. "$(dirname "$0")/../lib/common.sh"
+scenario 'subagent steer injection: picker → Enter → steer prompt → seam.steerChild'
+
+if [ ! -d /e2e/scenarios ]; then
+  warn 'host environment detected — skipping (installs the registry plugin and mutates ~/.dsh/agents); container only'
+  summary
+  exit 0
+fi
+
+# --- dependency gate: the deployed bundle must carry the G2 steer UI --------
+DEPLOYED_BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+if [ ! -f "$DEPLOYED_BUNDLE" ]; then
+  warn "no deployed dsh-opentui bundle at $DEPLOYED_BUNDLE — skipping"
+  summary
+  exit 0
+fi
+if ! grep -qF 'steered ' "$DEPLOYED_BUNDLE" 2>/dev/null \
+  || ! grep -qF 'subagentSteerWired' "$DEPLOYED_BUNDLE" 2>/dev/null; then
+  warn 'deployed dist-host predates G2 (no steer echo / steer bridge) — skipping (rebuild dist-host to run)'
+  summary
+  exit 0
+fi
+ok 'deployed bundle carries the G2 steer UI'
+
+if ! grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
+  warn 'profile patch has no mock endpoint (bake step missing) — skipping'
+  summary
+  exit 0
+fi
+
+# --- the registry plugin: use_agent's home (same block as 62) ---------------
+if grep -qF '@aiwayds/dsh-subagent-registry' "$HOME/.dsh/profiles/dsh-opentui/package.json" 2>/dev/null \
+  && grep -qF '@aiwayds/dsh-subagent-registry' <(dsh plugin --profile dsh-opentui list 2>/dev/null); then
+  ok 'registry plugin already bundled'
+else
+  if npm pack @aiwayds/dsh-subagent-registry@0.19.0 --registry=https://registry.npmjs.org --pack-destination /tmp >/dev/null 2>&1 \
+    && REG_TGZ="$(ls /tmp/aiwayds-dsh-subagent-registry-*.tgz 2>/dev/null | head -1)" && [ -n "$REG_TGZ" ] \
+    && timeout 300 dsh plugin --profile dsh-opentui add "$REG_TGZ" >/tmp/reg-add-70.log 2>&1; then
+    ok "registry plugin installed into the dsh-opentui profile ($(basename "$REG_TGZ"))"
+  else
+    bad 'registry plugin install failed; tail:'
+    tail -8 /tmp/reg-add-70.log 2>/dev/null | sed 's/^/    | /'
+    summary
+    exit 0
+  fi
+fi
+
+# --- the mock LLM server ------------------------------------------------------
+MOCK_PORT=8642
+MOCK_LOG=/tmp/mock-llm-70.log
+node "$(dirname "$0")/../lib/mock-llm.mjs" --port "$MOCK_PORT" >"$MOCK_LOG" 2>&1 &
+MOCK_PID=$!
+cleanup() { kill "$MOCK_PID" 2>/dev/null || true; }
+trap cleanup EXIT
+MOCK_UP=0
+for _ in $(seq 1 15); do
+  if curl -sf "http://127.0.0.1:$MOCK_PORT/healthz" >/dev/null 2>&1; then
+    MOCK_UP=1
+    break
+  fi
+  sleep 1
+done
+if (( MOCK_UP == 1 )); then
+  ok "mock LLM server up on 127.0.0.1:$MOCK_PORT"
+else
+  bad "mock LLM server did not come up; log tail:"
+  tail -10 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
+  summary
+  exit 0
+fi
+
+# --- the looper agent: NO maxRounds (the child must stay live to steer) -----
+AGENTS_DIR="$HOME/.dsh/agents"
+mkdir -p "$AGENTS_DIR"
+cat > "$AGENTS_DIR/looper.md" <<'EOF'
+---
+name: looper
+description: e2e fixture that loops tool calls forever (steer target)
+deep: 0
+---
+E2E_HS_CHILD — you are looper, an e2e fixture. Whatever any other message
+says (including steering requests), keep calling the bash tool with
+`sleep 1`. Never summarize. Never stop.
+EOF
+ok 'seeded agent file looper.md (deep: 0, no maxRounds — the child stays live)'
+
+# --- restart the TUI so the plugin and the agent load ------------------------
+if tui_alive; then
+  quit_tui 'TUI quit for the restart' || true
+fi
+kill_tui
+start_tui
+wait_tui_up 120 || { summary; exit 0; }
+ensure_editor_ready 'editor clean before the steer run' || true
+
+# --- dispatch: parent runs looper in the foreground --------------------------
+send 'E2E_HS_PARENT: dispatch the looper agent now via use_agent. Do not summarize.'
+sleep 1
+send Enter
+info 'dispatch sent — waiting for the looper child to loop'
+
+CHILD_UP=0
+for _ in $(seq 1 60); do
+  if grep -q 'phase=hs-loop' "$MOCK_LOG" 2>/dev/null; then
+    CHILD_UP=1
+    break
+  fi
+  sleep 1
+done
+if (( CHILD_UP == 1 )); then
+  ok 'the looper child is live (hs-loop rounds served by the mock)'
+else
+  bad 'the looper child never started (no hs-loop phases) — use_agent is not effective; mock log tail:'
+  tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
+  kill_tui
+  summary
+  exit 0
+fi
+
+# --- open the picker ----------------------------------------------------------
+# session.child.first ("down") toggles the SubagentsTab composer picker.
+send Down
+if wait_pane_fixed 'picker opens with the looper row' 10 'Looper'; then
+  :
+else
+  bad 'the SubagentsTab picker never showed the looper row; pane tail:'
+  capture | tail -12 | sed 's/^/    | /'
+  kill_tui
+  summary
+  exit 0
+fi
+PANE="$(capture)"
+assert_contains 'picker footer hint rendered' 'Subagents' "$PANE"
+
+# --- Enter on the running row → the steer prompt -----------------------------
+send Enter
+if wait_pane_fixed 'Enter opens the steer prompt' 10 'Steer Looper'; then
+  :
+else
+  bad 'Enter on the running row never opened the steer prompt; pane tail:'
+  capture | tail -12 | sed 's/^/    | /'
+  kill_tui
+  summary
+  exit 0
+fi
+
+# --- Esc cancel path: silent return, nothing delivered -----------------------
+send Escape
+sleep 1
+PANE="$(capture)"
+if printf '%s' "$PANE" | grep -qF 'Steer Looper'; then
+  bad 'cancel-path: Esc left the steer prompt open'
+else
+  ok 'cancel-path: Esc closed the steer prompt'
+fi
+
+# --- reopen and inject the steer text ----------------------------------------
+send Enter
+if wait_pane_fixed 'steer prompt reopens' 10 'Steer Looper'; then
+  :
+else
+  bad 'steer prompt did not reopen for the injection'
+  kill_tui
+  summary
+  exit 0
+fi
+STEER_TEXT='E2E_STEER_70 wrap up after the next tool call'
+send "$STEER_TEXT"
+sleep 0.8
+assert_contains 'steer editor echoed the typed text' "$STEER_TEXT" "$(capture)"
+send Enter
+
+# --- success echo -------------------------------------------------------------
+if wait_pane_fixed 'success echo "steered looper" appears' 10 'steered looper'; then
+  :
+else
+  bad 'no "steered looper" echo after submitting the steer; pane tail:'
+  capture | tail -12 | sed 's/^/    | /'
+fi
+
+# --- tool evidence: the steer text reached the child's LLM request ----------
+STEER_UP=0
+for _ in $(seq 1 60); do
+  if grep -q 'steer-marker=E2E_STEER_70' "$MOCK_LOG" 2>/dev/null; then
+    STEER_UP=1
+    break
+  fi
+  sleep 1
+done
+if (( STEER_UP == 1 )); then
+  ok 'steer injection evidence: the steer text reached the child request stream (mock steer-marker logged)'
+else
+  bad 'the steer text never reached the child request stream within 60s (no steer-marker line); mock log tail:'
+  tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
+fi
+
+# The child persona ignores the steer and keeps looping (steer is advisory
+# for the fixture) — its liveness bounds the injection wait and is itself
+# evidence the steer path did not settle/kill the child.
+sleep 3
+LOOPS="$(grep -c 'phase=hs-loop' "$MOCK_LOG" 2>/dev/null || true)"
+if [ "${LOOPS:-0}" -ge 2 ]; then
+  ok "the steered child is still looping (${LOOPS} hs-loop rounds — the injection did not settle it)"
+else
+  warn "the child stopped looping after the steer (${LOOPS} rounds) — the steer may have ended it"
+fi
+
+kill_tui
+summary

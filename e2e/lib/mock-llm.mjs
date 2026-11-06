@@ -79,6 +79,12 @@ const HS_CHILD_KEY = 'E2E_HS_CHILD'
 const HS_DONE = 'E2E-HS-LADDER-DONE — the looper child was hard-stopped by the maxRounds policy and its result came back.'
 let hsLoopSeq = 0
 
+// 70-steer evidence key: the steer text the scenario injects into the
+// RUNNING looper child. When it shows up in a request body the injection
+// observably rode the delivery chain into the child's next LLM call —
+// logged as its own line so the scenario can assert it off the mock log.
+const STEER_KEY = 'E2E_STEER_70'
+
 // 71-cache-hit phases: two scripted turns with DIFFERENT cache ratios so the// footer's CH mode is observable — turn one bills 900/1000 cached (CH 90%),
 // turn two 200/1000 (CH 20%), making the session-cumulative rate over both
 // turns (55%) differ from the latest message's own rate. The usage shape
@@ -319,6 +325,7 @@ function handleChat(req, res, body) {
   const wantsUsage = bodyText.includes('include_usage')
   const stream = bodyText.includes('"stream":true') || bodyText.includes('"stream": true')
   log(`chat path=${req.url} phase=${phase} stream=${stream}`)
+  if (bodyText.includes(STEER_KEY)) log(`steer-marker=${STEER_KEY}`)
   if (process.env.MOCK_DUMP_DIR && bodyText.includes('role":"tool')) {
     writeFileSync(`${process.env.MOCK_DUMP_DIR}/last-tool-result-body.json`, bodyText)
     log(`dumped tool-result body to ${process.env.MOCK_DUMP_DIR}/last-tool-result-body.json`)

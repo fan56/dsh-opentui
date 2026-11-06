@@ -4,6 +4,9 @@ import {
 	subagentHardStopGlyph,
 	subagentMarkerSuffix,
 	subagentMarkersFor,
+	registerSubagentSteer,
+	steerSubagent,
+	subagentSteerWired,
 } from "../src/routes/session/subagent-markers"
 
 describe("subagentMarkerSuffix", () => {
@@ -41,5 +44,27 @@ describe("marker store", () => {
 		expect(subagentMarkersFor("child-a")?.injectedRound).toBe(4)
 		expect(subagentMarkersFor("child-b")?.hardStopRound).toBe(6)
 		expect(subagentMarkersFor("child-c")).toBeUndefined()
+	})
+})
+
+describe("steer slot (batch G2)", () => {
+	test("unwired slot: steerSubagent returns undefined, wired() is false", () => {
+		expect(subagentSteerWired()).toBe(false)
+		expect(steerSubagent("child-a", "wrap up")).toBeUndefined()
+	})
+
+	test("registered face: steerSubagent delegates 1:1, wired() flips true", () => {
+		const calls: [string, string][] = []
+		registerSubagentSteer((id, text) => {
+			calls.push([id, text])
+			return id === "child-a"
+		})
+		expect(subagentSteerWired()).toBe(true)
+		expect(steerSubagent("child-a", "go left")).toBe(true)
+		expect(steerSubagent("child-b", "go left")).toBe(false)
+		expect(calls).toEqual([
+			["child-a", "go left"],
+			["child-b", "go left"],
+		])
 	})
 })

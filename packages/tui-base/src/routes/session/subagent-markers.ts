@@ -64,3 +64,29 @@ export function foldSubagentMarkerViews(views: SubagentMarkerView[]): void {
 export function subagentMarkersFor(id: string): SubagentMarkerView | undefined {
 	return subagentViews().find((v) => v.id === id)
 }
+
+// ---- the steer slot (batch G2, tui-pi 70-steer parity) ----
+// Same bridge shape as the marker snapshot: the seam adapters (both faces)
+// register their steerChild here and the vendored SubagentsTab — which
+// predates the seam and reads contexts — calls through the module slot.
+
+let steerImpl: ((id: string, text: string) => boolean) | undefined
+
+/** The seam-adapter write side: register the face's steerChild (1:1). */
+export function registerSubagentSteer(fn: (id: string, text: string) => boolean): void {
+	steerImpl = fn
+}
+
+/**
+ * Steer one running child through the registered face. Returns undefined
+ * when no seam registered a steerChild (steer path dark — the picker's
+ * Enter falls back to plain navigation), else the face's boolean outcome.
+ */
+export function steerSubagent(id: string, text: string): boolean | undefined {
+	return steerImpl?.(id, text)
+}
+
+/** Whether a face registered a steerChild (the picker's steer hint gate). */
+export function subagentSteerWired(): boolean {
+	return steerImpl !== undefined
+}

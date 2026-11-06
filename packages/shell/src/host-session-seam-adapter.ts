@@ -116,7 +116,7 @@ SeamSessionEvent,
 } from "../../tui-base/src/seams/session"
 import { turnEndErrorMessage } from "./client/remote-follow.ts"
 import type { HostSession } from "./host-session.ts"
-import { foldSubagentMarkerViews } from "../../tui-base/src/routes/session/subagent-markers.ts"
+import { foldSubagentMarkerViews, registerSubagentSteer } from "../../tui-base/src/routes/session/subagent-markers.ts"
 
 /** One durable firehose record forwarded by the facade's journal hook. */
 export interface HostJournalEntry {
@@ -135,6 +135,9 @@ export class HostSessionSeam implements SessionSeam {
 
 	constructor(session: HostSession) {
 		this.#session = session
+		// Steer slot (batch G2): the vendored picker calls through the module
+		// bridge; this face's HostSession.steerChild serves it in-process.
+		registerSubagentSteer((id, text) => this.#session.steerChild(id, text))
 	}
 
 	status(): SeamStatus {
@@ -226,6 +229,11 @@ export class HostSessionSeam implements SessionSeam {
 			foldSubagentMarkerViews(views)
 			listener(views)
 		})
+	}
+
+	// ---- subagent steer face (batch G2): HostSession 1:1 ----
+	steerChild(id: string, text: string): boolean {
+		return this.#session.steerChild(id, text)
 	}
 
 	resumeSession(id: string): "ok" | "owned" {

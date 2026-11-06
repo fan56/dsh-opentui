@@ -104,7 +104,7 @@ SeamSessionEvent,
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { turnEndErrorMessage } from "./remote-follow.ts"
 import { RemoteHostSession } from "./remote-host-session.ts"
-import { foldSubagentMarkerViews } from "../../../tui-base/src/routes/session/subagent-markers.ts"
+import { foldSubagentMarkerViews, registerSubagentSteer } from "../../../tui-base/src/routes/session/subagent-markers.ts"
 
 export class RemoteSessionSeam implements SessionSeam {
 	readonly #session: RemoteHostSession
@@ -116,6 +116,9 @@ export class RemoteSessionSeam implements SessionSeam {
 
 	constructor(session: RemoteHostSession) {
 		this.#session = session
+		// Steer slot (batch G2): the vendored picker calls through the module
+		// bridge; this face's facade steerChild serves it over the steer RPC.
+		registerSubagentSteer((id, text) => this.#session.steerChild(id, text))
 	}
 
 	status(): SeamStatus {
@@ -370,6 +373,14 @@ export class RemoteSessionSeam implements SessionSeam {
 			foldSubagentMarkerViews(projected)
 			listener(projected)
 		})
+	}
+
+	// ---- subagent steer face (batch G2): RemoteHostSession 1:1 ----
+	// The facade's sync steerChild rides the remote-subagents steer RPC and
+	// surfaces `false` on settled/unreachable children (steerChildDetailed
+	// carries the typed reason; the seam keeps the boolean face).
+	steerChild(id: string, text: string): boolean {
+		return this.#session.steerChild(id, text)
 	}
 
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void {
