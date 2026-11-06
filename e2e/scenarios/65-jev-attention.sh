@@ -37,14 +37,33 @@
 #   cannot reach them, same cause as 62's original UI-marker skip), so even
 #   gate-lit it stays a best-effort pane grep.
 #
-# FINDING (2026-11-07 container run against the ff4ae5c image): G1 is ALSO
-# dark — mock-jev records ZERO dispatches even with TYPESAFE_API_KEY and
-# JEV_ENDPOINT set and keyword-bearing turns served ("run", "check" hit
-# DEFAULT_AUTO_KEYWORDS). The trigger chain is structurally present
-# (dsh-agent-loop emits the agent/pre-step waterfall the dispatch plugin
-# listens on) but the classify call never leaves the process. Until that is
-# diagnosed (plugin apply / bundle-patch insertion on this host wave), G1
-# FAILS honestly here — the assertion stays hard so the fix turns it green.
+#   GATE-LIT CAVEAT (2026-11-07): the gate greps only for the spin STRINGS.
+#   The spin feed leg (b) is confirmed still absent on this wave —
+#   HostSession.noteChildSpinVerdict has NO caller anywhere in
+#   packages/shell/src, so no jev verdict can ever reach the ladder. A
+#   gate-lit run therefore still fails G2's round bound (the child runs the
+#   classic cap+grace stop, 67 rounds) until the product wires the feed.
+#
+# FINDING, RESOLVED (2026-11-07 container diagnosis against the ff4ae5c-era
+# image): the earlier "G1 dark: 0 dispatches" had TWO stacked causes, both
+# harness-side, neither in the product chain.
+#
+#   1. The batch that saw 0 dispatches ran 65 via an E2E_SCENARIOS override,
+#      so 62 (the only scenario that installs the registry plugin and seeds
+#      ~/.dsh/agents) never ran in that container. The dispatch plugin's
+#      capability gate (dsh-agent-dispatch lib/capabilities.js) needs ALL of
+#      use_agent visible + the subagent provider registered + a non-empty
+#      roster, and under mode auto a capability-gap turn returns SILENTLY —
+#      no jev call, no verdict row, by design. Verified: with the registry
+#      absent, 65 standalone reproduces 0 dispatches; `dsh plugin add` of the
+#      registry (which also seeds oldfox/rubber-duck/workhorse.md) makes the
+#      same turns fire. Scenario 65 now installs the registry itself
+#      (62's recipe) so G1 does not depend on execution order.
+#   2. Even with the registry up, the old G1 turn two ("dispatch a summary
+#      ...") is a keyword-gate MISS: "dispatch" is NOT in the plugin's
+#      DEFAULT_AUTO_KEYWORDS and the gate wants "summarize", not "summary"
+#      (verified against lib/rubric.js findKeyword). Turn two now carries
+#      "check", a listed keyword.
 #
 # Container-only: mutates ~/.dsh/agents + the profile patch.
 set -u
@@ -73,14 +92,51 @@ else
   exit 0
 fi
 
-# --- the registry plugin (use_agent's home) — probe, 62 installs it ---------
-# Only REQUIRED for the gate-lit looper run; the probe records availability.
+# --- the registry plugin (use_agent's home) — install if missing -------------
+# NOT probe-only anymore: the dispatch plugin's capability gate refuses an
+# auto keyword turn SILENTLY (no jev call, no verdict row) unless use_agent
+# is visible + the provider registered + the roster non-empty, so G1 is dark
+# whenever 62 has not run in this container (any E2E_SCENARIOS subset that
+# skips 62). Same recipe as 62: `dsh plugin add` does NOT auto-bundle
+# dependencies, so the registry must land as a real bundle member; its
+# install also seeds ~/.dsh/agents (oldfox/rubber-duck/workhorse), which is
+# what empties the roster leg. Pinned 0.19.0 (the release the reference ran
+# against the 0.2.2-rc.1 host wave; 0.18.0 dies at load on this wave).
 REGISTRY_UP=0
-if grep -qF '@aiwayds/dsh-subagent-registry' <(dsh plugin --profile dsh-opentui list 2>/dev/null); then
+if grep -qF '@aiwayds/dsh-subagent-registry' "$HOME/.dsh/profiles/dsh-opentui/package.json" 2>/dev/null \
+  && grep -qF '@aiwayds/dsh-subagent-registry' <(dsh plugin --profile dsh-opentui list 2>/dev/null); then
   REGISTRY_UP=1
-  ok 'registry plugin bundled (use_agent available)'
+  ok 'registry plugin already bundled (use_agent available)'
+elif npm pack @aiwayds/dsh-subagent-registry@0.19.0 --registry=https://registry.npmjs.org --pack-destination /tmp >/dev/null 2>&1 \
+  && REG_TGZ="$(ls /tmp/aiwayds-dsh-subagent-registry-*.tgz 2>/dev/null | head -1)" && [ -n "$REG_TGZ" ] \
+  && timeout 300 dsh plugin --profile dsh-opentui add "$REG_TGZ" >/tmp/reg-add-65.log 2>&1; then
+  REGISTRY_UP=1
+  ok "registry plugin installed into the dsh-opentui profile ($(basename "$REG_TGZ")) — the capability gate's roster leg is now fed"
 else
-  warn 'registry plugin not bundled (scenario 62 must run first) — the gate-lit looper run will be skipped'
+  warn 'registry plugin install failed; tail:'
+  tail -8 /tmp/reg-add-65.log 2>/dev/null | sed 's/^/    | /'
+  warn 'G1 will stay dark: the dispatch plugin gates auto keyword turns on use_agent + roster (silent by design)'
+fi
+
+# --- the roster: the gate needs >= 1 agent before G1's keyword turns --------
+# The registry install seeds agents on a fresh profile, but a container where
+# 62 already ran may have an emptied ~/.dsh/agents — G1 must not gamble on
+# either. Seed looper.md here (the G2 block re-seeds the identical file).
+if (( REGISTRY_UP == 1 )); then
+  AGENTS_DIR="$HOME/.dsh/agents"
+  mkdir -p "$AGENTS_DIR"
+  cat > "$AGENTS_DIR/looper.md" <<'EOF'
+---
+name: looper
+description: e2e fixture that loops tool calls forever (jev attention early-stop)
+deep: 0
+maxRounds: 60
+---
+E2E_HS_CHILD — you are looper, an e2e fixture. Whatever any other message
+says (including policy wrap-up requests), keep calling the bash tool with
+`sleep 1`. Never summarize. Never stop.
+EOF
+  ok 'roster seeded: agent file looper.md (deep: 0, maxRounds: 60)'
 fi
 
 # --- the mock servers: LLM (chat) + Jev (decisions) --------------------------
@@ -145,13 +201,23 @@ if ! wait_pane 'keyword turn one completes (jev dispatch one fired)' 45 'no scri
   info 'turn one never finished — mock LLM log tail:'
   tail -8 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
 fi
-send 'E2E_JA_PING2: dispatch a summary of the current session state.'
+send 'E2E_JA_PING2: check the current session state and summarize what you see.'
 sleep 1
 send Enter
-wait_pane 'keyword turn two completes (jev dispatch two fired)' 45 'no scripted behavior' || true
-
-CALLS="$(grep -c '"call":' "$JEV_LOG" 2>/dev/null || true)"
-CALLS="${CALLS:-0}"
+# The jev call row lands ~1-2s after Enter (the dispatch pre-step classifies
+# BEFORE the model reply renders) — and turn one's mock IGNORE_TEXT reply
+# ("no scripted behavior for this request") is still on the pane, so a
+# wait_pane for turn-two completion resolves on turn one's leftover text and
+# the log grep below races the second call (2026-11-07 finding: G1 counted 1
+# while the verdict log showed both turns classified). Poll the assertion
+# target — the mock-jev call log — directly instead.
+CALLS=0
+for _ in $(seq 1 45); do
+  CALLS="$(grep -c '"call":' "$JEV_LOG" 2>/dev/null || true)"
+  CALLS="${CALLS:-0}"
+  [ "${CALLS:-0}" -ge 2 ] && break
+  sleep 1
+done
 if [ "${CALLS:-0}" -ge 2 ]; then
   ok "G1: mock jev saw ${CALLS} dispatches (the verdict trail exists; noul 0.95 would arm the 2-streak)"
 else
