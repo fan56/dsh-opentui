@@ -160,9 +160,15 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.currentSessionId()
 	}
 
-	/** ⚡ CH footer segment (batch F2): RemoteHostSession.cacheHitRate() 1:1. */
-	cacheHitRate(): number | null {
-		return this.#session.cacheHitRate()
+	/** ⚡ CH footer segment (batch F2): RemoteHostSession.cacheHitRate() 1:1 —
+	 * the cacheHitMode (batch F2) passes through untouched. */
+	cacheHitRate(mode?: "session" | "lastMessage"): number | null {
+		return this.#session.cacheHitRate(mode)
+	}
+
+	/** Config seam read (batch F2 cacheHitMode): RemoteHostSession.configLoad() 1:1. */
+	configLoad(): Record<string, unknown> {
+		return this.#session.configLoad()
 	}
 
 	/**

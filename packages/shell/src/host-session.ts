@@ -72,6 +72,18 @@ export class HostSession {
   #releasedSeq = 0
   usage = { prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
 
+  // ---- cacheHitMode bookkeeping (batch F2, tui-pi parity) ----
+  // Session-cumulative billing totals over ALL usage frames (tui-pi
+  // session.ts: `hit rate = ΣcacheRead / (Σinput + ΣcacheRead +
+  // ΣcacheWrite) over the whole session's input traffic`), plus the latest
+  // billed request's own hit rate for the lastMessage mode. The `usage`
+  // fields above stay assignment-semantics (the 🧠 segment reads latest);
+  // these are the accumulators.
+  #cachePromptTotal = 0
+  #cacheReadTotal = 0
+  #cacheWriteTotal = 0
+  #lastMessageCacheHitRate: number | null = null
+
   // ---- journal feed (batch 10a, additive) ----
   // The session/event firehose for OUR session, forwarded as durable
   // records to the v2 seam adapter's projector (client/session-seam-adapter
@@ -96,11 +108,22 @@ export class HostSession {
     this.#journalSink({ seq: ++this.#journalSeq, type: event.type, data: (event.data ?? {}) as Record<string, unknown> })
   }
 
-  /** Cache hit rate in percent when the host reports cache traffic. */
-  cacheHitRate(): number | null {
-    const total = this.usage.cacheRead + this.usage.cacheWrite
+  /** Cache hit rate in percent when the host reports cache traffic.
+   * The mode picks the sample (batch F2, tui-pi parity): "session" — the
+   * session-cumulative rate ΣcacheRead / (Σprompt + ΣcacheRead +
+   * ΣcacheWrite) over every usage frame this session; the default
+   * ("lastMessage") — the latest billed request's own rate
+   * cacheRead / (prompt + cacheRead + cacheWrite). The visibility gate
+   * stays session-scope in both modes (tui-pi footer parity): null until
+   * the session has seen ANY cache traffic. */
+  cacheHitRate(mode?: "session" | "lastMessage"): number | null {
+    const total = this.#cacheReadTotal + this.#cacheWriteTotal
     if (total <= 0) return null
-    return (this.usage.cacheRead / total) * 100
+    if (mode === "session") {
+      const billed = this.#cachePromptTotal + total
+      return billed > 0 ? (this.#cacheReadTotal / billed) * 100 : null
+    }
+    return this.#lastMessageCacheHitRate
   }
 
   /** One streamed delta landed — widen this turn's decode window (F4). */
@@ -1601,6 +1624,16 @@ export class HostSession {
           if (comp > 0) this.usage.completion += comp
           if (cRead > 0) this.usage.cacheRead = cRead
           if (cWrite > 0) this.usage.cacheWrite = cWrite
+          // cacheHitMode bookkeeping (batch F2, tui-pi parity): the
+          // cumulative totals add up over every usage frame, and the
+          // last-message sample is recomputed per frame — billed input =
+          // uncached prompt + cacheRead + cacheWrite (zai wire shape:
+          // prompt is the UNCACHED slice when the adapter cache-splits).
+          if (p > 0) this.#cachePromptTotal += p
+          if (cRead > 0) this.#cacheReadTotal += cRead
+          if (cWrite > 0) this.#cacheWriteTotal += cWrite
+          const billed = p + cRead + cWrite
+          if (billed > 0) this.#lastMessageCacheHitRate = (cRead / billed) * 100
         } else if (c.type === "tool-call-delta" && c.name) {
           // name arrives with the first delta; the rendered tool block comes
           // from the durable tool/call + tool/result events below

@@ -65,6 +65,8 @@
  */
 
 /** One session row as the view's lists need it (data.session.list shape). */
+import type { CacheHitMode } from "./config.ts"
+
 export interface SeamSessionSummary {
 	id: string
 	title: string
@@ -194,8 +196,19 @@ export interface SessionSeam {
 	 * ⚡ CH footer segment (batch F2): cache hit rate in percent, null until
 	 * the host reports cache traffic (usage chunk cacheReadTokens /
 	 * cacheWriteTokens). Optional — a seam without it hides the segment.
+	 *
+	 * cacheHitMode (batch F2, tui-pi parity): the optional mode picks which
+	 * usage sample the rate describes — `"session"` the session-cumulative
+	 * hit rate (ΣcacheRead / Σbilled input over the whole session), else the
+	 * latest billed request's own rate (`lastMessage`, the default).
 	 */
-	cacheHitRate?(): number | null
+	cacheHitRate?(mode?: CacheHitMode): number | null
+	/**
+	 * Config seam read (batch F2 cacheHitMode): the merged config the UI
+	 * consumes (profile config.json ⊕ workspace overlay ⊕ env). Optional —
+	 * a seam without it reads the `cacheHitMode` default (lastMessage).
+	 */
+	configLoad?(): Record<string, unknown>
 	resumeSession(id: string): "ok" | "owned"
 	newSession(): void
 	renameSession(title: string): Promise<{ title: string; seq: number } | undefined>

@@ -317,3 +317,22 @@ describe("dispose", () => {
 		expect(calls.map((c) => c.method)).toEqual(["dispose"])
 	})
 })
+
+describe("RemoteSessionSeam cacheHitMode (batch F2)", () => {
+	test("cacheHitRate forwards the mode 1:1; configLoad reads the facade config", async () => {
+		const modes: (string | undefined)[] = []
+		const { session } = fakeSession({
+			cacheHitRate: (mode?: "session" | "lastMessage") => {
+				modes.push(mode)
+				return mode === "session" ? 55 : 20
+			},
+			configLoad: () => ({ cacheHitMode: "session" }),
+		})
+		const seam = new RemoteSessionSeam(session as never)
+		expect(seam.cacheHitRate()).toBe(20)
+		expect(seam.cacheHitRate("lastMessage")).toBe(20)
+		expect(seam.cacheHitRate("session")).toBe(55)
+		expect(modes).toEqual([undefined, "lastMessage", "session"])
+		expect(seam.configLoad()).toEqual({ cacheHitMode: "session" })
+	})
+})

@@ -276,3 +276,69 @@ describe("steerChildDetailed subagents-service fallback", () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// cacheHitMode (batch F2, tui-pi parity): the CH footer rate modes over the
+// usage-frame handler. Reference numbers = e2e scenario-63/71 semantics:
+// turn one 1000 billed input with 900 cached (90%), turn two 1000 billed
+// with 200 cached (20%) — session cumulative 1100/2000 = 55%.
+// ---------------------------------------------------------------------------
+describe("HostSession cacheHitMode", () => {
+  const usageEmit = (usage: Record<string, number>) => ({
+    agent: { id: "agent-1" },
+    frame: { type: "chunk", chunk: { type: "usage", usage } },
+  })
+
+  async function turnWithUsage(env: ReturnType<typeof makeCtx>, session: HostSession, frames: Record<string, number>[]) {
+    const pending = session.turn("go", callbacks())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    env.emit("agent/status", { agent: { id: "agent-1" }, status: "running" })
+    for (const usage of frames) env.emit("agent/assistant-stream", usageEmit(usage))
+    env.emit("agent/status", { agent: { id: "agent-1" }, status: "idle" })
+    await pending
+  }
+
+  test("session mode is the cumulative rate, lastMessage the latest request's", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    const pending = session.turn("go", callbacks())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    env.emit("agent/status", { agent: { id: "agent-1" }, status: "running" })
+    // turn one (warm): 1000 billed input, 900 cached -> 90% both modes
+    env.emit("agent/assistant-stream", usageEmit({ inputTokens: 100, outputTokens: 5, cacheReadTokens: 900 }))
+    expect(session.cacheHitRate()).toBeCloseTo(90, 5)
+    expect(session.cacheHitRate("lastMessage")).toBeCloseTo(90, 5)
+    expect(session.cacheHitRate("session")).toBeCloseTo(90, 5)
+    // turn two (cold): 1000 billed, 200 cached -> latest 20%, cumulative 55%
+    env.emit("agent/assistant-stream", usageEmit({ inputTokens: 800, outputTokens: 3, cacheReadTokens: 200 }))
+    expect(session.cacheHitRate()).toBeCloseTo(20, 5)
+    expect(session.cacheHitRate("lastMessage")).toBeCloseTo(20, 5)
+    expect(session.cacheHitRate("session")).toBeCloseTo(55, 5)
+    env.emit("agent/status", { agent: { id: "agent-1" }, status: "idle" })
+    await pending
+    // the assignment-semantics `usage` view is untouched (🧠 reads latest)
+    expect(session.usage.prompt).toBe(800)
+    expect(session.usage.cacheRead).toBe(200)
+  })
+
+  test("cacheWrite bills into both denominators (tui-pi billed input)", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    await turnWithUsage(env, session, [
+      { inputTokens: 100, outputTokens: 5, cacheReadTokens: 900, cacheWriteTokens: 50 },
+      { inputTokens: 800, outputTokens: 3, cacheWriteTokens: 100 },
+    ])
+    // latest request: 0 read / 900 billed (800 + 0 + 100 write)
+    expect(session.cacheHitRate()).toBeCloseTo(0, 5)
+    // cumulative: 900 read / 1950 billed (Σ900 prompt + Σ900 read + Σ150 write)
+    expect(session.cacheHitRate("session")).toBeCloseTo((900 / 1950) * 100, 5)
+  })
+
+  test("no cache traffic gates both modes to null", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    await turnWithUsage(env, session, [{ inputTokens: 100, outputTokens: 5 }])
+    expect(session.cacheHitRate()).toBeNull()
+    expect(session.cacheHitRate("session")).toBeNull()
+  })
+})

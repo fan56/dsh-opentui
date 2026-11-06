@@ -40,6 +40,7 @@ import { TurnOverlayController } from "../src/routes/session/turn-overlay-contro
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
+import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
 import { DialogProvider, useDialog } from "../src/ui/dialog"
 import { ToastProvider } from "../src/ui/toast"
@@ -111,9 +112,13 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 	// ⚡ CH (batch F2): usage lands at turn end, so reading turnBusy() here
 	// re-runs the getter-fed segment list on each turn boundary (footer row
 	// only — PowerlineFooter's `left` prop is a getter, reactive-prop law).
+	// cacheHitMode (batch F2, tui-pi semantics): the mode is re-read off the
+	// config seam on every re-run — a profile flip applies on the next
+	// repaint without a restart.
 	const cacheRate = () => {
 		turnBusy()
-		return seam.cacheHitRate?.() ?? null
+		const mode = readCacheHitMode(seam.configLoad?.())
+		return seam.cacheHitRate?.(mode) ?? null
 	}
 	const segments = () =>
 		sessionFooterSegments({

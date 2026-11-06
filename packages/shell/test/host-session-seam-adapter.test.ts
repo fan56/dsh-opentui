@@ -221,3 +221,22 @@ describe("HostSessionSeam journal feed", () => {
 		expect(seam.status().turn).toBe("idle")
 	})
 })
+
+describe("HostSessionSeam cacheHitMode (batch F2)", () => {
+	test("cacheHitRate forwards the mode 1:1; configLoad reads the facade config", () => {
+		const modes: (string | undefined)[] = []
+		const { session } = fakeSession({
+			cacheHitRate: (mode?: "session" | "lastMessage") => {
+				modes.push(mode)
+				return mode === "session" ? 55 : 20
+			},
+			configLoad: () => ({ cacheHitMode: "session" }),
+		})
+		const seam = new HostSessionSeam(session)
+		expect(seam.cacheHitRate()).toBe(20)
+		expect(seam.cacheHitRate("lastMessage")).toBe(20)
+		expect(seam.cacheHitRate("session")).toBe(55)
+		expect(modes).toEqual([undefined, "lastMessage", "session"])
+		expect(seam.configLoad()).toEqual({ cacheHitMode: "session" })
+	})
+})

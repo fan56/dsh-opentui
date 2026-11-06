@@ -416,7 +416,36 @@ describe("RemoteHostSession turn lifecycle", () => {
 		expect(h.session.usage.prompt).toBe(200)
 		expect(h.session.usage.completion).toBe(8)
 		expect(h.session.usage.cacheRead).toBe(80)
-		expect(h.session.cacheHitRate()).toBeCloseTo(100, 0)
+		// batch F2 cacheHitMode semantics (tui-pi parity): lastMessage bills
+		// the WHOLE prompt (80 cached of 100+80=280 billed), not read/(read+write)
+		expect(h.session.cacheHitRate()).toBeCloseTo((80 / 280) * 100, 3)
+		expect(h.session.cacheHitRate("session")).toBeCloseTo((80 / 380) * 100, 3)
+		await h.session.dispose()
+	})
+
+	test("cacheHitMode: lastMessage follows the latest request, session is cumulative", async () => {
+		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-ch") })
+		const { cb } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		const sock = h.lastSocket()
+		sock.item(snapshotFrame("sess-ch"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		// turn one (warm): 1000 billed input, 900 cached -> 90% in both modes
+		sock.item(streamFrame({ type: "start", attemptId: "a1", revision: 0, startedAfterSeq: 0, turn: 1, step: 1 }))
+		sock.item(streamFrame({ type: "chunk", attemptId: "a1", revision: 0, index: 0, time: 1, chunk: { type: "usage", usage: { inputTokens: 100, outputTokens: 5, cacheReadTokens: 900 } } }))
+		sock.item(streamFrame({ type: "end", attemptId: "a1", revision: 0, index: 1, outcome: { kind: "committed", eventType: "assistant/message", seq: 2 } }))
+		expect(h.session.cacheHitRate()).toBeCloseTo(90, 5)
+		expect(h.session.cacheHitRate("session")).toBeCloseTo(90, 5)
+		// turn two (cold): 1000 billed, 200 cached -> latest 20%, cumulative 55%
+		sock.item(streamFrame({ type: "start", attemptId: "a2", revision: 0, startedAfterSeq: 2, turn: 1, step: 2 }))
+		sock.item(streamFrame({ type: "chunk", attemptId: "a2", revision: 0, index: 0, time: 4, chunk: { type: "usage", usage: { inputTokens: 800, outputTokens: 3, cacheReadTokens: 200 } } }))
+		sock.item(streamFrame({ type: "end", attemptId: "a2", revision: 0, index: 1, outcome: { kind: "committed", eventType: "assistant/message", seq: 3 } }))
+		sock.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 4))
+		await pending
+		expect(h.session.cacheHitRate()).toBeCloseTo(20, 5)
+		expect(h.session.cacheHitRate("lastMessage")).toBeCloseTo(20, 5)
+		expect(h.session.cacheHitRate("session")).toBeCloseTo(55, 5)
 		await h.session.dispose()
 	})
 

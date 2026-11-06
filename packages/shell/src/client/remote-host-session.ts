@@ -291,6 +291,15 @@ export class RemoteHostSession {
 	label = "dsh-host"
 	/** Cumulative token telemetry (assignment/addition semantics per chunk). */
 	usage = { prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
+
+	// ---- cacheHitMode bookkeeping (batch F2, tui-pi parity; host-session.ts
+	// twin): session-cumulative billing totals over ALL usage frames plus the
+	// latest billed request's own hit rate. The `usage` fields above stay
+	// assignment-semantics (the 🧠 segment reads latest); these accumulate.
+	#cachePromptTotal = 0
+	#cacheReadTotal = 0
+	#cacheWriteTotal = 0
+	#lastMessageCacheHitRate: number | null = null
 	/** Telemetry of the last completed turn (HostSession shape). */
 	lastTurnStats: TurnStats = emptyTurnStats()
 	remoteTailActive = false
@@ -618,11 +627,20 @@ export class RemoteHostSession {
 	// Telemetry parity
 	// ------------------------------------------------------------------
 
-	/** Cache hit rate in percent when the host reports cache traffic. */
-	cacheHitRate(): number | null {
-		const total = this.usage.cacheRead + this.usage.cacheWrite
+	/** Cache hit rate in percent when the host reports cache traffic.
+	 * The mode picks the sample (batch F2, tui-pi parity; host-session.ts
+	 * twin): "session" — the session-cumulative rate ΣcacheRead /
+	 * (Σprompt + ΣcacheRead + ΣcacheWrite); the default ("lastMessage") —
+	 * the latest billed request's own rate. The visibility gate stays
+	 * session-scope in both modes: null until ANY cache traffic. */
+	cacheHitRate(mode?: "session" | "lastMessage"): number | null {
+		const total = this.#cacheReadTotal + this.#cacheWriteTotal
 		if (total <= 0) return null
-		return (this.usage.cacheRead / total) * 100
+		if (mode === "session") {
+			const billed = this.#cachePromptTotal + total
+			return billed > 0 ? (this.#cacheReadTotal / billed) * 100 : null
+		}
+		return this.#lastMessageCacheHitRate
 	}
 
 	/** One streamed delta landed — widen this turn's decode window (F4). */
@@ -1678,6 +1696,15 @@ export class RemoteHostSession {
 				if (usage.completion > 0) this.usage.completion += usage.completion
 				if (usage.cacheRead > 0) this.usage.cacheRead = usage.cacheRead
 				if (usage.cacheWrite > 0) this.usage.cacheWrite = usage.cacheWrite
+				// cacheHitMode bookkeeping (batch F2, tui-pi parity; the
+				// host-session twin): cumulative totals add up per frame, the
+				// last-message sample recomputes — billed input = uncached
+				// prompt + cacheRead + cacheWrite.
+				if (usage.prompt > 0) this.#cachePromptTotal += usage.prompt
+				if (usage.cacheRead > 0) this.#cacheReadTotal += usage.cacheRead
+				if (usage.cacheWrite > 0) this.#cacheWriteTotal += usage.cacheWrite
+				const billed = usage.prompt + usage.cacheRead + usage.cacheWrite
+				if (billed > 0) this.#lastMessageCacheHitRate = (usage.cacheRead / billed) * 100
 			},
 			onToolStart: (start: { callId?: string; name: string; args: string }) => {
 				try {

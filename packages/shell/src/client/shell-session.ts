@@ -36,7 +36,7 @@ export interface ShellSessionSurface {
 	resumeSession(id: string): "ok" | "owned"
 	registerAskProvider(onAsk: (q: { id: string; prompt: string; options: string[] }[]) => Promise<{ questionId: string; selected: string }[]>): void
 
-	cacheHitRate(): number | null
+	cacheHitRate(mode?: "session" | "lastMessage"): number | null
 	usageSummary(): string[]
 
 	// config + keybindings (wave-3 seam: profile base ⊕ workspace overlay ⊕ env)

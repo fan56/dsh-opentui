@@ -47,6 +47,7 @@ import { ThemeProvider, useTheme, useThemes } from "../../tui-base/src/context/t
 import { ConfigProvider, resolve } from "../../tui-base/src/config"
 import { createThemeSeam } from "../../tui-base/src/seams/theme"
 import { PowerlineFooter, sessionFooterSegments } from "../../tui-base/src/routes/session/powerline"
+import { readCacheHitMode } from "../../tui-base/src/seams/config"
 import { StatusBar } from "../../tui-base/src/routes/session/status-bar"
 import { TurnCancelKeys } from "../../tui-base/src/routes/session/turn-cancel"
 
@@ -133,9 +134,13 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
   // ⚡ CH (batch F2): usage lands at turn end, so reading turnBusy() here
   // re-runs the getter-fed segment list on each turn boundary (footer row
   // only — PowerlineFooter's `left` prop is a getter, reactive-prop law).
+  // cacheHitMode (batch F2, tui-pi semantics): the mode is re-read off the
+  // config seam on every re-run — a profile flip applies on the next
+  // repaint without a restart.
   const cacheRate = () => {
     turnBusy()
-    return seam.cacheHitRate?.() ?? null
+    const mode = readCacheHitMode(seam.configLoad?.())
+    return seam.cacheHitRate?.(mode) ?? null
   }
   const segments = () =>
     sessionFooterSegments({

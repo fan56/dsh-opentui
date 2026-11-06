@@ -164,9 +164,15 @@ export class HostSessionSeam implements SessionSeam {
 		return this.#session.currentSessionId()
 	}
 
-	/** ⚡ CH footer segment (batch F2): HostSession.cacheHitRate() 1:1. */
-	cacheHitRate(): number | null {
-		return this.#session.cacheHitRate()
+	/** ⚡ CH footer segment (batch F2): HostSession.cacheHitRate() 1:1 —
+	 * the cacheHitMode (batch F2) passes through untouched. */
+	cacheHitRate(mode?: "session" | "lastMessage"): number | null {
+		return this.#session.cacheHitRate(mode)
+	}
+
+	/** Config seam read (batch F2 cacheHitMode): HostSession.configLoad() 1:1. */
+	configLoad(): Record<string, unknown> {
+		return this.#session.configLoad()
 	}
 
 	/** /btw side question (batch F3): HostSession.btwAsk() 1:1. */
