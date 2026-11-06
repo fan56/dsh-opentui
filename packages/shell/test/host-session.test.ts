@@ -207,3 +207,72 @@ describe("storedTranscript empty-id guard (F1c)", () => {
     expect(env.opens).toEqual(["s1"])
   })
 })
+
+// The in-process subagents service fallback in steerChildDetailed must call
+// `prompt(request, signal)` — the lib's rejectPrompt dereferences
+// `signal.aborted` unguarded, so a missing signal turns every delivery
+// rejection into `TypeError: ... (reading 'aborted')` and masks the reason.
+describe("steerChildDetailed subagents-service fallback", () => {
+  /** Install a recording fake `subagents` service on the ctx. */
+  function installService(env: ReturnType<typeof makeCtx>) {
+    const calls: { request: any; signal: unknown }[] = []
+    let failWith: Error | undefined
+    const baseGet = env.ctx.get.bind(env.ctx)
+    env.ctx.get = (key: string) => {
+      if (key === "subagents") {
+        return {
+          prompt: async (request: any, signal: unknown) => {
+            calls.push({ request, signal })
+            if (failWith !== undefined) throw failWith
+            return { messageId: "msg-1" }
+          },
+        }
+      }
+      return baseGet(key)
+    }
+    return { calls, setFail: (error: Error) => { failWith = error } }
+  }
+
+  test("service delivery rides a live (never-aborted) signal and the continuable steer shape", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    const service = installService(env)
+    await runTurn(session, env, "first")
+    const result = await session.steerChildDetailed("child-1", "wrap up now")
+    expect(result).toEqual({ ok: true })
+    expect(service.calls).toHaveLength(1)
+    const { request, signal } = service.calls[0]
+    expect(request).toMatchObject({
+      mode: "continuable",
+      delivery: "steer",
+      parentSessionId: env.creates[0].sessionId,
+      childSessionId: "child-1",
+      content: [{ type: "text", text: "wrap up now" }],
+    })
+    expect(typeof request.requestId).toBe("string")
+    expect(request.requestId).not.toBe("")
+    // the lib reads `signal.aborted` and calls `signal.throwIfAborted()`
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect((signal as AbortSignal).aborted).toBe(false)
+  })
+
+  test("a service rejection surfaces its real reason, not the missing-signal TypeError", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    const service = installService(env)
+    await runTurn(session, env, "first")
+    service.setFail(new Error("subagent follow-up is temporarily unavailable"))
+    const result = await session.steerChildDetailed("child-1", "wrap up now")
+    expect(result).toEqual({ ok: false, reason: "subagent follow-up is temporarily unavailable" })
+  })
+
+  test("no service and no adopted agent reports the unreachable reason", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    await runTurn(session, env, "first")
+    expect(await session.steerChildDetailed("child-1", "go")).toEqual({
+      ok: false,
+      reason: "child agent not reachable and no subagents service",
+    })
+  })
+})

@@ -1224,14 +1224,24 @@ export class HostSession {
       return { ok: false, reason: "child agent not reachable and no subagents service" }
     }
     try {
-      await service.prompt({
-        requestId: randomUUID(),
-        parentSessionId: this.#sessionId,
-        childSessionId: id,
-        mode: "continuable",
-        delivery: "steer",
-        content: [{ type: "text", text }],
-      })
+      // The in-process prompt face is `prompt(request, signal)`: signal rides
+      // the delivery chain (throwIfAborted in the manager's delivery loop) and
+      // rejectPrompt dereferences it unguarded (`signal.aborted`) when mapping
+      // any delivery failure — omitting it turns every internal rejection into
+      // `TypeError: Cannot read properties of undefined (reading 'aborted')`
+      // and masks the real reason. Never-cancelled signal: the wrap-up must
+      // land regardless of any caller-side cancellation.
+      await service.prompt(
+        {
+          requestId: randomUUID(),
+          parentSessionId: this.#sessionId,
+          childSessionId: id,
+          mode: "continuable",
+          delivery: "steer",
+          content: [{ type: "text", text }],
+        },
+        new AbortController().signal,
+      )
       return { ok: true }
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error)
