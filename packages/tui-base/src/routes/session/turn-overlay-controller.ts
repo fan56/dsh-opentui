@@ -7,10 +7,16 @@
  *   approval  `requestApproval` resolves with the exact verdict strings
  *             ("allowed-once" on confirm, "rejected" on cancel/esc);
  *             requests made while one is pending queue FIFO.
- *   ask       `answer(questions)` walks the batch one picker at a time;
- *             enter records a pick and advances, the last pick resolves
- *             the batch with the picks; esc at ANY question resolves `[]`
- *             (empty selection = the declined envelope downstream).
+ *   ask       `answer(questions)` shows ONE picker over the whole batch
+ *             (tui-pi parity): the picker toggles options on the focused
+ *             question (`toggle` — single-select replaces, multiSelect
+ *             toggles membership), ←/→ switch the focused tab
+ *             (`switchFocus`), a lone single-select question settles on
+ *             its pick, every other shape lands on the review phase once
+ *             all questions are answered (`enterReview`), and `submit`
+ *             resolves the batch with the picks. Esc at ANY point
+ *             resolves `[]` (empty selection = the declined envelope
+ *             downstream).
  *
  * The `onIdle` hook is the composer-refocus point: it fires every time the
  * overlay set drains to empty — the host re-asserts editor focus there
@@ -19,17 +25,23 @@
 import type { SeamApprovalVerdict, SeamAskPick, SeamAskQuestion } from "../../seams/session"
 
 export type PendingApproval = { id: number; name: string; args: Record<string, unknown> }
-export type PendingAsk = { id: number; questions: SeamAskQuestion[]; index: number }
+/** Ask batch state: `index` is the focused question tab, `picks` carries
+ * the selected labels per question (empty = unanswered), `phase` flips to
+ * `review` once every question is answered and the picker shows the
+ * before-submit listing. */
+export type PendingAsk = {
+	id: number
+	questions: SeamAskQuestion[]
+	index: number
+	picks: string[][]
+	phase: "questions" | "review"
+}
 
 type ApprovalEntry = {
 	request: PendingApproval
 	resolve: (verdict: SeamApprovalVerdict) => void
 }
-type AskEntry = {
-	id: number
-	questions: SeamAskQuestion[]
-	index: number
-	picks: SeamAskPick[]
+type AskEntry = PendingAsk & {
 	resolve: (picks: SeamAskPick[]) => void
 }
 
@@ -94,7 +106,8 @@ export class TurnOverlayController {
 
 	get pendingAsk(): PendingAsk | undefined {
 		const head = this.#asks[0]
-		return head ? { id: head.id, questions: head.questions, index: head.index } : undefined
+		if (!head) return undefined
+		return { id: head.id, questions: head.questions, index: head.index, picks: head.picks, phase: head.phase }
 	}
 
 	get currentQuestion(): SeamAskQuestion | undefined {
@@ -102,28 +115,116 @@ export class TurnOverlayController {
 		return head?.questions[head.index]
 	}
 
-	/** The seam ask provider body — sequential pickers per question. */
+	/** The seam ask provider body — one batch picker (tui-pi parity). */
 	answer(questions: SeamAskQuestion[]): Promise<SeamAskPick[]> {
 		if (questions.length === 0) return Promise.resolve([])
 		return new Promise((resolve) => {
-			this.#asks.push({ id: ++this.#seq, questions, index: 0, picks: [], resolve })
+			this.#asks.push({
+				id: ++this.#seq,
+				questions,
+				index: 0,
+				picks: questions.map(() => []),
+				phase: "questions",
+				resolve,
+			})
 			this.#changed()
 		})
 	}
 
-	/** Enter on an option: record the pick, advance; the last pick settles. */
-	pick(option: string): void {
+	/**
+	 * Space (or Enter on a single-select option): single-select REPLACES the
+	 * pick and auto-advances — to the next unanswered tab, or onto the review
+	 * phase once everything is answered (a lone single-select batch settles
+	 * immediately, the pre-F5 fast path). multiSelect TOGGLES membership and
+	 * stays put. No-op on the review phase.
+	 */
+	toggle(option: string): void {
 		const head = this.#asks[0]
 		const question = head?.questions[head.index]
-		if (!head || !question) return
-		head.picks.push({ questionId: question.id, selected: option })
-		if (head.index + 1 >= head.questions.length) {
+		if (!head || !question || head.phase === "review") return
+		if (question.multiSelect === true) {
+			const current = head.picks[head.index] ?? []
+			head.picks[head.index] = current.includes(option)
+				? current.filter((label) => label !== option)
+				: [...current, option]
+			this.#changed()
+			return
+		}
+		head.picks[head.index] = [option]
+		// Lone single-select: the pick IS the answer (legacy auto-submit).
+		if (head.questions.length === 1) {
 			this.#asks.shift()
-			head.resolve(head.picks)
+			head.resolve(this.#envelope(head))
+			this.#changed()
+			return
+		}
+		if (this.#allAnswered(head)) {
+			head.phase = "review"
 		} else {
-			head.index++
+			// Auto-advance to the nearest later unanswered tab (clamped: the
+			// last unanswered question keeps the focus).
+			const next = head.questions.findIndex((_, qi) => qi > head.index && head.picks[qi]?.length === 0)
+			if (next >= 0) head.index = next
 		}
 		this.#changed()
+	}
+
+	/** ←/→: switch the focused question tab, clamped at both ends. */
+	switchFocus(direction: 1 | -1): void {
+		const head = this.#asks[0]
+		if (!head || head.phase === "review" || head.questions.length < 2) return
+		const next = Math.max(0, Math.min(head.questions.length - 1, head.index + direction))
+		if (next !== head.index) {
+			head.index = next
+			this.#changed()
+		}
+	}
+
+	/**
+	 * Enter on the review row / multiSelect confirm: flip to the review
+	 * phase — only when every question has an answer (returns false and
+	 * leaves the state alone otherwise).
+	 */
+	enterReview(): boolean {
+		const head = this.#asks[0]
+		if (!head || head.phase === "review") return false
+		if (!this.#allAnswered(head)) return false
+		head.phase = "review"
+		this.#changed()
+		return true
+	}
+
+	/** Review → questions (← on the review page, or picking a row to edit). */
+	backToQuestions(focus?: number): void {
+		const head = this.#asks[0]
+		if (!head || head.phase !== "review") return
+		head.phase = "questions"
+		if (focus !== undefined && focus >= 0 && focus < head.questions.length) head.index = focus
+		this.#changed()
+	}
+
+	/** Enter on the review page's submit row: resolve the batch. */
+	submit(): void {
+		const head = this.#asks[0]
+		if (!head) return
+		this.#asks.shift()
+		head.resolve(this.#envelope(head))
+		this.#changed()
+	}
+
+	#allAnswered(head: AskEntry): boolean {
+		return head.picks.every((pick) => pick.length > 0)
+	}
+
+	#envelope(head: AskEntry): SeamAskPick[] {
+		return head.questions.map((question, qi) => {
+			const picks = head.picks[qi] ?? []
+			return {
+				questionId: question.id,
+				selected: picks[0] ?? "",
+				...(picks.length > 1 ? { selections: [...picks] } : {}),
+			}
+		})
 	}
 
 	/** Esc at any question: declined envelope — the batch resolves `[]`. */

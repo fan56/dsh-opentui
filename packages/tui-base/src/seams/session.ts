@@ -114,18 +114,28 @@ export interface SeamProviderModel {
  */
 export type SeamApprovalVerdict = "allowed-once" | "rejected"
 
-/** One user question row (the shell registerAskProvider wire shape). */
+/** One user question row (the shell registerAskProvider wire shape). The
+ * optional faces mirror the tui-pi ask panel: `header` is the short tab
+ * label, `description` the supporting line under the prompt, `multiSelect`
+ * marks a toggle-many question (upstream `multi_select`). */
 export interface SeamAskQuestion {
 	id: string
 	prompt: string
 	options: string[]
+	header?: string
+	description?: string
+	multiSelect?: boolean
 }
 
 /** One answer row: the picked option. A declined batch resolves as `[]`
- * (empty selection = the tui-pi declined envelope downstream). */
+ * (empty selection = the tui-pi declined envelope downstream). A
+ * multiSelect answer carries every toggled label in `selections`
+ * (display order); `selected` stays the first pick for single-select
+ * consumers. */
 export interface SeamAskPick {
 	questionId: string
 	selected: string
+	selections?: string[]
 }
 
 /**

@@ -366,7 +366,7 @@ export class HostSession {
    * UI callback. The UI answers {questionId, selected} pairs; declining
    * returns the tui-pi-style declined envelope (empty selected + marker).
    */
-  registerAskProvider(onAsk: (q: { id: string; prompt: string; options: string[] }[]) => Promise<{ questionId: string; selected: string }[]>): void {
+  registerAskProvider(onAsk: (q: { id: string; prompt: string; options: string[]; header?: string; description?: string; multiSelect?: boolean }[]) => Promise<{ questionId: string; selected: string; selections?: string[] }[]>): void {
     ;(this.#ctx as any).on(
       "user-questions/request",
       async (request: any, next: () => Promise<any>) => {
@@ -378,8 +378,11 @@ export class HostSession {
           id: String(q?.id ?? ""),
           prompt: String(q?.prompt ?? q?.question ?? q?.header ?? ""),
           options: (q?.options ?? []).map((o: any) => String(o?.label ?? o?.value ?? o)),
+          ...(q?.header !== undefined ? { header: String(q.header) } : {}),
+          ...(q?.detail !== undefined ? { description: String(q.detail) } : {}),
+          ...(q?.multi_select === true ? { multiSelect: true } : {}),
         }))
-        let picks: { questionId: string; selected: string }[]
+        let picks: { questionId: string; selected: string; selections?: string[] }[]
         try {
           picks = await onAsk(simplified)
         } catch {
@@ -388,7 +391,9 @@ export class HostSession {
         return {
           answers: simplified.map((q) => {
             const pick = picks.find((p) => p.questionId === q.id)
-            return pick ? { id: q.id, selected: [pick.selected] } : { id: q.id, selected: [], custom: "declined" }
+            if (!pick) return { id: q.id, selected: [], custom: "declined" }
+            const selected = pick.selections?.length ? pick.selections : pick.selected ? [pick.selected] : []
+            return selected.length > 0 ? { id: q.id, selected } : { id: q.id, selected: [], custom: "declined" }
           }),
         }
       },
