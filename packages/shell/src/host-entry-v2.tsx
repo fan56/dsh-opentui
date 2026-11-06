@@ -315,7 +315,13 @@ export function apply(ctx: Context, config?: { theme?: string }) {
   const session = new HostSession(ctx)
   const seam = new HostSessionSeam(session)
   registerTurnOverlays(seam, overlays)
-  const themeName = config?.theme ?? session.configLoad().theme
+  // Boot restore precedence (67-theme capture-verified 2026-11-07): the
+  // PERSISTED profile config.json choice must win over the embedder pin —
+  // the e2e image bakes `theme: catppuccin-mocha` into the plugin config
+  // (cordis.patch.yml), and with config?.theme first that pin shadowed
+  // configLoad().theme forever, making the F7b persist+restore pair
+  // dead code at boot (live apply worked, restore never repainted).
+  const themeName = session.configLoad().theme ?? config?.theme
 
   mountEngine({}).then(({ renderer }) => {
     // The engine owns THE CliRenderer on stdin (0.7-era host contract, kept):

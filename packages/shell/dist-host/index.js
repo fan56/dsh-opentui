@@ -27133,7 +27133,11 @@ function apply(ctx, config) {
   const session = new HostSession(ctx);
   const seam = new HostSessionSeam(session);
   registerTurnOverlays(seam, overlays);
-  const themeName = config?.theme ?? session.configLoad().theme;
+  // Boot restore precedence: the persisted profile config.json choice wins
+  // over the embedder pin (the e2e image bakes theme: catppuccin-mocha into
+  // the plugin config, which shadowed configLoad().theme and made the F7b
+  // persist+restore pair dead code at boot — 67-theme capture-verified).
+  const themeName = session.configLoad().theme ?? config?.theme;
   mountEngine({}).then(({
     renderer
   }) => {

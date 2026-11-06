@@ -33,10 +33,11 @@
 #     tier rows are provider data (seam thinking.efforts reads the model's
 #     reasoning.efforts) so row NAMES are never pinned — the assertion is
 #     "picker open and >= 1 option row" via a non-empty-line delta;
-#   - /hotkeys rows: generated from config/keybind.ts Definitions by
-#     routes/session/hotkeys.ts (`keys — description (name)`); asserted rows
-#     are the panel TAIL (the ~150-row block scrolls the header off the
-#     36-row pane), i.e. the which-key.* entries that close Definitions;
+#   - /hotkeys rows: painted by routes/session/hotkeys.ts from the
+#     config/keybind.ts Definitions (`keys — description (name)`); asserted
+#     rows are verbatim from a REAL in-container capture of the settled
+#     panel (36-row pane) — the panel TAIL, i.e. the which-key.* entries
+#     that close Definitions;
 #   - /plugins: '● name@version' rows or the 'no plugins installed' notice
 #     (a clean profile has no user plugins — both outcomes are legitimate).
 set -u
@@ -206,15 +207,22 @@ if (( HOTKEYS_GATE )); then
   wait_pane_fixed 'palette row /hotkeys (F7b command registered)' 10 \
     '/hotkeys show keybinds'
   send Enter
+  # Markers below are verbatim from a REAL in-container capture of the
+  # settled panel (36-row pane): the visible tail is the which-key.* block,
+  # closing with which-key.end at 'ctrl+alt+end' — NOT 'ctrl+alt+home'
+  # (that row is 'Jump to FIRST which-key binding (which-key.home)'; the
+  # F7c prewrite guessed the keys column from the Definitions source and
+  # got it backwards). The which-key.end row is the genuinely last
+  # Definitions row painted, so its arrival proves the print settled.
   wait_pane_fixed '/hotkeys panel finished printing (last Definitions row visible)' 15 \
-    'ctrl+alt+home — Jump to last which-key binding (which-key.end)'
+    'ctrl+alt+end — Jump to last which-key binding (which-key.end)'
   PANE="$(capture)"
   assert_contains 'hotkeys tail row: which-key.toggle' \
     'ctrl+alt+k — Toggle which-key panel (which-key.toggle)' "$PANE"
   assert_contains 'hotkeys tail row: which-key.layout.toggle' \
     'ctrl+alt+shift+k — Switch which-key layout (which-key.layout.toggle)' "$PANE"
   assert_contains 'hotkeys tail row: which-key.end' \
-    'ctrl+alt+home — Jump to last which-key binding (which-key.end)' "$PANE"
+    'ctrl+alt+end — Jump to last which-key binding (which-key.end)' "$PANE"
 else
   warn '/hotkeys group skipped-by-gate (dist-host rebuild pending — F7b)'
 fi

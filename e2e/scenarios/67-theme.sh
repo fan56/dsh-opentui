@@ -83,7 +83,8 @@ if (( PICKER_GATE == 0 )); then
   summary
   exit 0
 fi
-ok "dependency gate LIT: installed dist-host carries the /theme picker (persistence arm: $(( PERSIST_GATE ? 'lit' : 'DARK' )))"
+if (( PERSIST_GATE )); then PERSIST_ARM=lit; else PERSIST_ARM=DARK; fi
+ok "dependency gate LIT: installed dist-host carries the /theme picker (persistence arm: $PERSIST_ARM)"
 
 # --- G1: the picker -------------------------------------------------------------
 ensure_editor_ready 'editor clean before /theme traffic' || true
@@ -92,16 +93,25 @@ wait_pane_fixed 'palette row /theme (F7a command registered)' 10 \
   '/theme switch theme (opens the picker)'
 send Enter
 wait_pane_fixed '/theme opens the theme picker' 15 'Select theme' || { summary; exit 0; }
+# Picker rows below are verbatim from a REAL in-container capture of the
+# opened picker (36-row pane, no navigation): DialogSelect renders a centered
+# single-column list — 'aura' (row 0, what the bare Enter then picks), 'ayu',
+# 'dracula', ... The F7c prewrite guessed 'opencode'/'zenburn' as first/last
+# rows; the real capture shows neither in the visible window, and the vendored
+# pickOne carries NO current-option marker at all (options are bare titles —
+# host-entry-v2.tsx pickOne), so the 'exactly one current row' prewrite check
+# is replaced by the capture-true row-shape count: the visible window lists
+# >= 5 indented single-word theme rows.
 sleep 1
 PANE="$(capture)"
-assert_contains 'picker row: aura (bundledThemeNames sorts it first)' 'aura' "$PANE"
-assert_contains 'picker row: opencode (the vendored default)' 'opencode' "$PANE"
-assert_contains 'picker row: zenburn (bundled list tail)' 'zenburn' "$PANE"
-CUR_COUNT="$(printf '%s\n' "$PANE" | grep -cE 'current( |$)' || true)"
-if [ "$CUR_COUNT" -eq 1 ]; then
-  ok 'exactly one picker row marked current (the preselected theme name, not pinned by this scenario)'
+assert_contains 'picker row: aura (row 0 — what the bare Enter picks)' 'aura' "$PANE"
+assert_contains 'picker row: ayu (visible list, capture-verified)' 'ayu' "$PANE"
+assert_contains 'picker row: dracula (visible list, capture-verified)' 'dracula' "$PANE"
+ROW_COUNT="$(printf '%s\n' "$PANE" | grep -cE '^ {20,}[a-z0-9][a-z0-9-]* *$' || true)"
+if [ "$ROW_COUNT" -ge 5 ]; then
+  ok "picker lists >= 5 theme rows in the visible window (found $ROW_COUNT indented option rows)"
 else
-  bad "expected exactly one 'current'-marked picker row, found $CUR_COUNT"
+  bad "picker row shape count too low: $ROW_COUNT indented single-word rows (< 5)"
 fi
 
 # --- G1: the apply (row 0 = 'aura' — a non-current bundled theme) ---------------
