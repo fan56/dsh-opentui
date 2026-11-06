@@ -240,3 +240,26 @@ describe("HostSessionSeam cacheHitMode (batch F2)", () => {
 		expect(seam.configLoad()).toEqual({ cacheHitMode: "session" })
 	})
 })
+
+describe("HostSessionSeam steerChild (batch G2)", () => {
+	test("forwards to the session's steerChild 1:1 and registers the module steer slot", async () => {
+		const { registerSubagentSteer, steerSubagent } = await import("../../tui-base/src/routes/session/subagent-markers.ts")
+		const steered: [string, string][] = []
+		const { session } = fakeSession({
+			steerChild: (id: string, text: string) => {
+				steered.push([id, text])
+				return id === "child-live"
+			},
+		})
+		const seam = new HostSessionSeam(session)
+		// the seam method itself
+		expect(seam.steerChild("child-live", "wrap up")).toBe(true)
+		expect(seam.steerChild("child-gone", "wrap up")).toBe(false)
+		expect(steered).toEqual([["child-live", "wrap up"], ["child-gone", "wrap up"]])
+		// the module bridge the vendored picker calls through
+		expect(steerSubagent("child-live", "again")).toBe(true)
+		expect(steered).toEqual([["child-live", "wrap up"], ["child-gone", "wrap up"], ["child-live", "again"]])
+		// silence the unused-import lint on the direct import path
+		void registerSubagentSteer
+	})
+})

@@ -311,6 +311,14 @@ export interface SessionSeam {
 	 */
 	subagentViews?(): SeamSubagentView[]
 	onSubagentViews?(listener: (views: SeamSubagentView[]) => void): () => void
+	/**
+	 * Steer a RUNNING child subagent (batch G2, tui-pi 70-steer parity): `id`
+	 * is the SeamSubagentView.id row key, `text` the injected user message.
+	 * False when the child is settled or its agent is unreachable in this
+	 * process. Optional — a seam without it leaves the picker's Enter-steer
+	 * path dark (the vendored SubagentsTab degrades to navigation only).
+	 */
+	steerChild?(id: string, text: string): boolean
 	/** Event push (context/event.ts's subscribe/on replacement). */
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void
 

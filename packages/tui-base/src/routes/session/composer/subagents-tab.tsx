@@ -13,7 +13,16 @@ import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
 import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
 import { sessionFamily } from "../../../util/session"
-import { subagentHardStopGlyph, subagentMarkerSuffix, subagentMarkersFor } from "../subagent-markers"
+import {
+  subagentHardStopGlyph,
+  subagentMarkerSuffix,
+  subagentMarkersFor,
+  steerSubagent,
+  subagentSteerWired,
+} from "../subagent-markers"
+import { DialogPrompt } from "../../../ui/dialog-prompt"
+import { useDialog } from "../../../ui/dialog"
+import { useToast } from "../../../ui/toast"
 
 interface SubagentEntry {
   sessionID: string
@@ -33,6 +42,8 @@ export function SubagentsTab(props: { sessionID: string }) {
   const navigate = useRoute().navigate
   const composer = useComposerTab()
   const shortcuts = Keymap.useShortcuts()
+  const dialog = useDialog()
+  const toast = useToast()
 
   const session = createMemo(() => data.session.get(props.sessionID))
   const [store, setStore] = createStore({ selected: 0 })
@@ -101,6 +112,33 @@ export function SubagentsTab(props: { sessionID: string }) {
     scrollToIndex(next, center)
   }
 
+  // Batch G2 (tui-pi 70-steer parity): the viewer's Enter-steer. Enter on a
+  // RUNNING subagent opens the steer prompt (DialogPrompt); the submitted
+  // text rides the seam's steerChild through the module bridge (both faces
+  // register it). esc=cancel returns silently; a false outcome (settled /
+  // unreachable child) toasts the rejection; success toasts the
+  // `steered <agent>` echo the e2e asserts.
+  function openSteer(entry: SubagentEntry) {
+    dialog.replace(() => (
+      <DialogPrompt
+        title={`Steer ${entry.agent}`}
+        placeholder="Steer message"
+        onConfirm={(value) => {
+          const text = value.trim()
+          if (!text) return
+          const sent = steerSubagent(entry.sessionID, text)
+          dialog.clear()
+          if (sent) {
+            toast.show({ message: `steered ${entry.agent.toLowerCase()}`, variant: "success" })
+          } else {
+            toast.show({ message: `steer rejected — ${entry.agent} is not running`, variant: "error" })
+          }
+        }}
+        onCancel={() => dialog.clear()}
+      />
+    ))
+  }
+
   function scrollToIndex(index: number, center: boolean) {
     if (!scroll) return
     if (center) {
@@ -124,7 +162,12 @@ export function SubagentsTab(props: { sessionID: string }) {
         const entry = selectedEntry()
         return [
           ...(entry?.status === "running"
-            ? [{ label: "interrupt", shortcut: shortcuts.get("composer.subagent.interrupt") ?? "" }]
+            ? [
+                ...(subagentSteerWired()
+                  ? [{ label: "steer", shortcut: shortcuts.get("composer.subagent.select") ?? "enter" }]
+                  : []),
+                { label: "interrupt", shortcut: shortcuts.get("composer.subagent.interrupt") ?? "" },
+              ]
             : []),
           {
             label: `show ${filter.active ? "inactive" : "active"}`,
@@ -169,7 +212,14 @@ export function SubagentsTab(props: { sessionID: string }) {
         group: "Composer",
         run() {
           const entry = entries()[store.selected]
-          if (entry) navigate({ type: "session", sessionID: entry.sessionID })
+          if (!entry) return
+          // Batch G2: Enter on a RUNNING subagent opens the steer prompt
+          // when a seam wired steerChild; other rows keep plain navigation.
+          if (entry.status === "running" && subagentSteerWired()) {
+            openSteer(entry)
+            return
+          }
+          navigate({ type: "session", sessionID: entry.sessionID })
         },
       },
       {
