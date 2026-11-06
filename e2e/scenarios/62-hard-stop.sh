@@ -125,13 +125,14 @@ ok 'seeded agent file looper.md (deep: 0, maxRounds: 5)'
 # projected through the plugin's Config schema). A bare top-level row would
 # be a different, never-loaded entry.
 #
-# KNOWN PRODUCT GAP (updated 2026-11-07): the Config export landed (1ee62e4 —
-# verified in the rebuilt image: plugin = { name, inject, apply, Config }),
-# but the ladder STILL never fires (87 hs-loop rounds) with the limits staged
-# below. The staging remains the correct recipe shape; the surviving gap is
-# product-side (see the warn block at the DONE probe: settings-row resolution
-# or child-event folding). Until the ladder fires, the round-bound assertions
-# stay warns, not hard asserts.
+# KNOWN PRODUCT GAP (updated 2026-11-07, D4 batch): the Config export landed
+# (1ee62e4), the D4 delivery fallback landed (f7641f8), and the limits staged
+# below resolve fine — the ladder still never fires (87 hs-loop rounds). The
+# breakpoint is pinned by in-bundle instrumentation: every wrap-up delivery
+# through the in-process subagents service rejects with TypeError "Cannot
+# read properties of undefined (reading 'aborted')", so stage 1 never latches
+# and stage 2 never arms (see the warn block at the DONE probe). Until the
+# ladder fires, the round-bound assertions stay warns, not hard asserts.
 SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
 cat > /tmp/stage-hs-limits.mjs <<'EOF'
 import { createRequire } from 'node:module'
@@ -210,23 +211,23 @@ done
 if (( DONE_UP == 1 )); then
   ok 'E2E-HS-LADDER-DONE landed after the tool result — the stop surfaced to the caller'
 else
-  # OPEN PRODUCT GAP (re-diagnosed 2026-11-07 against the Config-export fix
-  # 1ee62e4): the bundle NOW exports Config (verified in-image: plugin =
-  # { name, inject, apply, Config }, maxRoundsGrace x5), yet the ladder still
-  # never fires (87 hs-loop rounds with the limits staged on BOTH dsh-opentui
-  # patch entries). Two surviving suspects, both product-side:
-  #   (a) the settings row never resolves: describe() requires
-  #       entry.fiber.state === 2 + a volatile-only form; or the duplicate
-  #       dsh-opentui entries (bundled plugin.patch.yml + user patch insert)
-  #       shadow each other in ways the staging cannot reach;
-  #   (b) the round counts never reach the ladder: SubagentRoundPolicy is fed
-  #       by HostSession #foldChildEvent, but the registry plugin's use_agent
-  #       child may run entirely inside the dsh-agent service without folding
-  #       child events through this facade — cap/grace could resolve fine and
-  #       the ladder would still never see a round to evaluate.
+  # OPEN PRODUCT GAP (breakpoint pinned 2026-11-07 by D4-batch in-bundle
+  # instrumentation, D3手法): every link upstream of the delivery sink is
+  # PROVEN good — settings describe carries dsh-opentui {maxRounds:3,
+  # maxRoundsGrace:2} and parses; all 87 child rounds reach
+  # SubagentRoundPolicy.onRoundCount with label "[fg] looper"; caps resolve
+  # {cap:5, grace:2} (per-agent maxRounds 5 wins over the global 3 — the D4
+  # label-stripping fix works); ladderDecision returns wrapup at round 5.
+  # The single surviving break is the wrap-up delivery: the use_agent child
+  # is never adopted with a live agent handle (#childAgents empty for it),
+  # so steerChildDetailed falls through to the in-process subagents service,
+  # and EVERY service.prompt({delivery:"steer"}) rejects with TypeError
+  # "Cannot read properties of undefined (reading 'aborted')" — the service
+  # dereferences an undefined abort context on this path. Stage 1 never
+  # latches, stage 2 (force-stop at cap+grace) never arms.
   # Recorded as a warn until the ladder observably fires; NOT hard-asserted
   # because the round bound cannot be proven on a dark ladder.
-  warn 'the ladder never fired (child kept looping, 87 hs-loop rounds) — PRODUCT GAP despite the Config export (1ee62e4) and limits staged on both dsh-opentui patch entries; suspects: (a) settings row never resolves (entry.fiber.state/volatile form/duplicate-ns shadowing), (b) registry use_agent child rounds never fold through HostSession #foldChildEvent so the ladder never evaluates; instrument subagent-policy ladderDecision + #refreshRoundLimits to split (a) vs (b)'
+  warn 'the ladder never fired (child kept looping, 87 hs-loop rounds) — breakpoint pinned by D4-batch in-bundle instrumentation (appendFileSync probes on the installed dist-host, one round): settings row RESOLVES (describe rows carry dsh-opentui {maxRounds:3, maxRoundsGrace:2}; parsed limits {3,2}), rounds REACH the policy (87 onRoundCount calls, label "[fg] looper"), per-agent cap WINS (caps resolved {cap:5, grace:2} — looper.md maxRounds 5 over global 3, D4 per-agent priority works), ladderDecision FIRES (action=wrapup at round 5); the surviving break is the D4 wrap-up delivery sink: steerChildDetailed falls through to the in-process subagents service (no captured firehose agent) and EVERY service.prompt({delivery:"steer"}) call REJECTS with TypeError "Cannot read properties of undefined (reading '"'"'aborted'"'"')" — stage 1 never latches (ok:false), stage 2 never arms (wrapupDelivered stays false), the ladder stays dark. Product-side fix: the subagents service prompt path dereferences an undefined context (.aborted) for host-session steer deliveries'
   info 'staged limits sit on both entries but are unenforced — mock server log tail:'
   tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
 fi

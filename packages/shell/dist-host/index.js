@@ -1947,6 +1947,15 @@ function limitsFromSettingsRows(rows) {
   }
   return { ...DEFAULT_SUBAGENT_ROUND_LIMITS };
 }
+var FOREGROUND_LABEL_PREFIXES = ["[fg] ", "[use_agent foreground] "];
+function bareAgentLabel(label) {
+  const trimmed = label.trim();
+  for (const prefix of FOREGROUND_LABEL_PREFIXES) {
+    if (trimmed.startsWith(prefix))
+      return trimmed.slice(prefix.length).trim();
+  }
+  return trimmed;
+}
 function ladderDecision(input) {
   if (input.cap <= 0)
     return "none";
@@ -2007,14 +2016,23 @@ class SubagentRoundPolicy {
         } catch {
           delivered = false;
         }
-        if (!delivered)
+        const latch = (ok) => {
+          if (this.#disposed || this.#injected.has(childId) || this.#hardStopped.has(childId))
+            return;
+          if (!ok)
+            return;
+          this.#injected.add(childId);
+          if (rememberedLabel !== undefined)
+            this.#injectedLabel.set(childId, rememberedLabel);
+          try {
+            this.#options.onWrapUp?.(childId, count);
+          } catch {}
+        };
+        if (delivered instanceof Promise) {
+          delivered.then(latch, () => {});
           return;
-        this.#injected.add(childId);
-        if (rememberedLabel !== undefined)
-          this.#injectedLabel.set(childId, rememberedLabel);
-        try {
-          this.#options.onWrapUp?.(childId, count);
-        } catch {}
+        }
+        latch(delivered);
       });
       return;
     }
@@ -2880,7 +2898,8 @@ ${field}: ${value}
       this.#roundPolicy = new SubagentRoundPolicy({
         limits: () => this.#roundLimits,
         resolveAgentCap: (label) => {
-          const row = this.listAgents().find((a) => a.name === label || a.displayName !== undefined && a.displayName === label);
+          const stripped = bareAgentLabel(label);
+          const row = this.listAgents().find((a) => a.name === label || a.name === stripped || a.displayName !== undefined && (a.displayName === label || a.displayName === stripped) || label.endsWith(` ${a.name}`));
           const raw = row?.maxRounds;
           if (raw === undefined)
             return;
@@ -2888,7 +2907,7 @@ ${field}: ${value}
           return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
         },
         isSettled: (childId) => this.#children.get(childId)?.status !== "running",
-        wrapup: (childId, message) => this.steerChild(childId, message),
+        wrapup: (childId, message) => this.steerChildDetailed(childId, message).then((r) => r.ok),
         forceStop: (childId) => this.cancelChild(childId),
         onHardStop: (record) => this.#onHardStop(record),
         onWrapUp: (childId, round) => {
@@ -2922,16 +2941,32 @@ ${field}: ${value}
   }
   cancelChild(childId) {
     const agent = this.#childAgents.get(childId);
-    if (!agent?.cancel)
+    if (agent?.cancel) {
+      try {
+        agent.cancel({ kind: "user" }, { keepInbox: true });
+      } catch {
+        try {
+          agent.cancel({ kind: "user" });
+        } catch {
+          return this.#cancelViaService(childId);
+        }
+      }
+      this.#settleChild(childId, "cancelled");
+      return true;
+    }
+    return this.#cancelViaService(childId);
+  }
+  #cancelViaService(childId) {
+    const service = this.#ctx.get?.("subagents");
+    if (!service || typeof service.interruptByParent !== "function")
+      return false;
+    if (this.#sessionId === undefined)
       return false;
     try {
-      agent.cancel({ kind: "user" }, { keepInbox: true });
-    } catch {
-      try {
-        agent.cancel({ kind: "user" });
-      } catch {
-        return false;
-      }
+      service.interruptByParent(childId, this.#sessionId, "continuable");
+    } catch (error) {
+      console.error(`[host-session] subagents service force-stop rejected for ${childId.slice(0, 8)}: ${error instanceof Error ? error.message : error}`);
+      return false;
     }
     this.#settleChild(childId, "cancelled");
     return true;
@@ -2967,6 +3002,36 @@ ${field}: ${value}
       return true;
     } catch {
       return false;
+    }
+  }
+  async steerChildDetailed(id, text) {
+    const agent = this.#childAgents.get(id);
+    if (agent?.steer) {
+      try {
+        agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }));
+        return { ok: true };
+      } catch {}
+    }
+    if (this.#sessionId === undefined)
+      return { ok: false, reason: "no live host session" };
+    const service = this.#ctx.get?.("subagents");
+    if (!service || typeof service.prompt !== "function") {
+      return { ok: false, reason: "child agent not reachable and no subagents service" };
+    }
+    try {
+      await service.prompt({
+        requestId: randomUUID(),
+        parentSessionId: this.#sessionId,
+        childSessionId: id,
+        mode: "continuable",
+        delivery: "steer",
+        content: [{ type: "text", text }]
+      });
+      return { ok: true };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[host-session] subagents service steer rejected for ${id.slice(0, 8)}: ${reason}`);
+      return { ok: false, reason };
     }
   }
   #adoptChild(session, sessionKey) {
