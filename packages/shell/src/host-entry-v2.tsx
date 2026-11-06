@@ -36,6 +36,7 @@ import { Transcript } from "../../tui-base/src/routes/session/transcript"
 import { TurnOverlayController } from "../../tui-base/src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../../tui-base/src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../../tui-base/src/routes/session/slash-palette"
+import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../../tui-base/src/routes/session/btw-overlay"
 import { DialogSelect } from "../../tui-base/src/ui/dialog-select"
 import { DialogProvider, useDialog } from "../../tui-base/src/ui/dialog"
 import { ToastProvider } from "../../tui-base/src/ui/toast"
@@ -158,6 +159,14 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
         () => done(undefined),
       )
     })
+  // /btw side-question overlay (feature batch F3): out-of-band answer over
+  // the facade's throwaway session; never touches the main turn.
+  const btw = new BtwController({
+    ask: (question, snapshot, onDelta) =>
+      seam.btwAsk ? seam.btwAsk(question, snapshot, onDelta) : Promise.resolve("error: /btw unavailable"),
+    snapshot: createBtwSnapshotBuilder(seam),
+  })
+  const openBtw = createBtwOpener({ controller: btw, dialog })
   const slash = createSlashHost({
     seam,
     say: (text: string) =>
@@ -173,6 +182,7 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
     },
     quit: props.quit,
     pickOne,
+    openBtw: (argText: string) => void openBtw(argText),
   })
   const overlayHost = createComponent(TurnOverlayHost, {
     controller: overlays,

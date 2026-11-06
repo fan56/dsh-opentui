@@ -10,8 +10,8 @@
  * those hooks, so the registry is table-testable without a renderer.
  *
  * Batch 8 carries the Q5 minimal face exactly: /help /new /model /quit
- * /sessions /clear. Later commands (/attach /btw …) are POST-CUTOVER fill —
- * they are absent from the table, not stubbed.
+ * /sessions /clear, plus /btw (feature batch F3). Later commands (/attach …)
+ * are POST-CUTOVER fill — absent from the table, not stubbed.
  *
  * Dispatch vocabulary (old ShellHost parity):
  *   "/model provider/id"  → argument form runs directly
@@ -49,6 +49,11 @@ export interface SlashCommandContext {
 		title: string,
 		options: { title: string; description?: string; value: string }[],
 	): Promise<string | undefined>
+	/**
+	 * Open the /btw side-question overlay (feature batch F3). Optional: an
+	 * entry without the overlay host gets the "unavailable" notice.
+	 */
+	openBtw?(argText: string): void
 }
 
 /** The batch-8 core set, bound to a context at call time (pure table). */
@@ -141,6 +146,19 @@ export function coreCommands(): SlashCommand[] {
 			run(ctx) {
 				ctx.clear()
 				ctx.say("transcript cleared")
+			},
+		},
+		{
+			// Feature batch F3. Never busy-gated: the side call rides a throwaway
+			// session, so a mid-turn /btw streams alongside the main turn.
+			name: "/btw",
+			description: "side question (bare reopens the last answer)",
+			run(ctx, argText) {
+				if (!ctx.seam.btwAsk || !ctx.openBtw) {
+					ctx.say("/btw unavailable in this session")
+					return
+				}
+				ctx.openBtw(argText)
 			},
 		},
 	]

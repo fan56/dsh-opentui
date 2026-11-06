@@ -175,6 +175,12 @@ export interface SessionSeam {
 	/** Usage/limits (usage.tsx, stats). */
 	usageSummary(): string[]
 
+	/**
+	 * /btw side question (feature batch F3): one out-of-band answer over a
+	 * throwaway session, streamed through onDelta (full text so far). Optional
+	 * — only the remote adapter carries it; /btw degrades to a notice without.
+	 */
+	btwAsk?(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string>
 	/** Event push (context/event.ts's subscribe/on replacement). */
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void
 

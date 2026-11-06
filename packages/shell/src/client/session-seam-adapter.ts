@@ -236,6 +236,10 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.usageSummary()
 	}
 
+	btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string> {
+		return this.#session.btwAsk(question, snapshot, onDelta)
+	}
+
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void {
 		this.#listeners.push(listener)
 		this.#ensureJournalFeed()

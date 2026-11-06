@@ -132,6 +132,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/quit",
 			"/sessions",
 			"/clear",
+			"/btw",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual([])
@@ -149,6 +150,7 @@ describe("core commands", () => {
 			"/quit — exit the app",
 			"/sessions — list and resume stored sessions",
 			"/clear — clear the transcript",
+			"/btw — side question (bare reopens the last answer)",
 		])
 	})
 
@@ -228,5 +230,35 @@ describe("core commands", () => {
 		await coreCommands()[5]!.run(ctx, "")
 		expect(ctx.hooks.cleared).toBe(1)
 		expect(ctx.lines).toEqual(["transcript cleared"])
+	})
+
+	test("/btw is registered and dispatches with its argument text", () => {
+		const result = dispatchLine(coreCommands(), "/btw what is a pec?")
+		expect(result.kind).toBe("command")
+		if (result.kind === "command") {
+			expect(result.command.name).toBe("/btw")
+			expect(result.argText).toBe("what is a pec?")
+		}
+		expect(filterCommands(coreCommands(), "/b").map((c) => c.name)).toEqual(["/btw"])
+	})
+
+	test("/btw opens the overlay through the hook when the seam has btwAsk", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		const opened: string[] = []
+		ctx.seam = { ...seam.seam, btwAsk: async () => "ok" }
+		ctx.openBtw = (argText) => opened.push(argText)
+		await coreCommands().find((c) => c.name === "/btw")!.run(ctx, "why?")
+		expect(opened).toEqual(["why?"])
+		expect(ctx.lines).toEqual([])
+	})
+
+	test("/btw without a btwAsk seam or opener says unavailable (no overlay)", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		const opened: string[] = []
+		ctx.openBtw = (argText) => opened.push(argText)
+		await coreCommands().find((c) => c.name === "/btw")!.run(ctx, "why?")
+		expect(opened).toEqual([])
+		expect(ctx.lines).toEqual(["/btw unavailable in this session"])
 	})
 })

@@ -39,6 +39,7 @@ import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
+import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
 import { DialogSelect } from "../src/ui/dialog-select"
 import { DialogProvider, useDialog } from "../src/ui/dialog"
 import { ToastProvider } from "../src/ui/toast"
@@ -137,6 +138,13 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 				() => done(undefined),
 			)
 		})
+	// /btw side-question overlay (feature batch F3) — host-entry-v2 parity.
+	const btw = new BtwController({
+		ask: (question, snapshot, onDelta) =>
+			seam.btwAsk ? seam.btwAsk(question, snapshot, onDelta) : Promise.resolve("error: /btw unavailable"),
+		snapshot: createBtwSnapshotBuilder(seam),
+	})
+	const openBtw = createBtwOpener({ controller: btw, dialog })
 	const slash = createSlashHost({
 		seam,
 		say: (text: string) =>
@@ -152,6 +160,7 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 		},
 		quit: props.quit,
 		pickOne,
+		openBtw: (argText: string) => void openBtw(argText),
 	})
 	const overlayHost = createComponent(TurnOverlayHost, {
 		controller: overlays,
