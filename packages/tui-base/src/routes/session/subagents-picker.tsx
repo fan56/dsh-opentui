@@ -112,12 +112,18 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
     ))
   }
 
-  function select() {
+  // Returns true (handled) unconditionally once the picker layer owns the
+  // key: the keymap runs layers highest-priority first and only falls through
+  // on a false return, so an explicit true TERMINATES the dispatch here and
+  // the composer's managed-textarea submit layer (priority 0, `input.submit`
+  // = return) can never also consume Enter while the picker is open.
+  function select(): boolean {
     const entry = selectedEntry()
-    if (!entry) return
+    if (!entry) return true
     if (entry.status === "running" && subagentSteerWired()) {
       openSteer(entry)
     }
+    return true
   }
 
   // Picker-open nav layer (priority above TurnCancelKeys' esc, gated off

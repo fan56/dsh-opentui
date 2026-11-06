@@ -702,9 +702,22 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                 <DialogHeader
                   title={props.title}
                   titleView={props.titleView}
-                  description={props.description}
+                  description={newDesigns() ? props.description : undefined}
                   onClose={props.onCancel}
                 />
+                {/* An EXPLICITLY passed description renders ungated (batch D7):
+                    DialogHeader only paints `description` under the
+                    new-designs experiment, and the rebuilt shell faces mount
+                    ConfigProvider with the static defaults (no service host),
+                    so useNewDesigns() is always false there — the G1
+                    /sessions UPDATED/DIR column headerLine never painted.
+                    Callers that deliberately pass a description get it below
+                    the title with the same muted styling in both modes. */}
+                <Show when={!newDesigns() && props.description}>
+                  <text fg={theme.text.muted} wrapMode="word">
+                    {props.description}
+                  </text>
+                </Show>
                 <Show when={props.renderFilter !== false}>
                   <box paddingTop={1}>{searchInput()}</box>
                 </Show>
