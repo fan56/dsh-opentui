@@ -71,6 +71,10 @@ export interface SeamSessionSummary {
 	id: string
 	title: string
 	updatedAt?: string
+	/** Workspace directory of the stored session (/sessions DIR column). */
+	cwd?: string
+	/** On-disk log size in bytes (/sessions 1KB display floor; absent = unknown, fails open). */
+	sizeBytes?: number
 	parentID?: string
 }
 

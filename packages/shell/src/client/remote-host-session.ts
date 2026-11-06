@@ -775,7 +775,7 @@ export class RemoteHostSession {
 	}
 
 	/** wave 2 (`session/list` + retention filter — audit row 13). */
-	async listSessions(limit = 12): Promise<{ id: string; title: string; updatedAt?: string }[]> {
+	async listSessions(limit = 12): Promise<{ id: string; title: string; updatedAt?: string; cwd?: string; sizeBytes?: number }[]> {
 		const cfg = this.configLoad()
 		const retentionDays = Number(cfg.retentionDays ?? 0)
 		const rows = await this.#opsClient().listSessions({ limit, ...(Number.isFinite(retentionDays) && retentionDays > 0 ? { retentionDays } : {}) })

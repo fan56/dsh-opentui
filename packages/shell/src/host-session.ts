@@ -358,7 +358,7 @@ export class HostSession {
   }
 
   /** Stored sessions for the current workspace (newest first, capped). */
-  async listSessions(limit = 12): Promise<{ id: string; title: string; updatedAt?: string }[]> {
+  async listSessions(limit = 12): Promise<{ id: string; title: string; updatedAt?: string; cwd?: string; sizeBytes?: number }[]> {
     const persistence = (this.#ctx as any).get?.("sessionPersistence")
     if (!persistence?.list) return []
     try {
@@ -366,7 +366,7 @@ export class HostSession {
       const cfg = this.configLoad()
       const retentionDays = Number(cfg.retentionDays ?? 0)
       const cutoff = retentionDays > 0 ? Date.now() - retentionDays * 86400000 : 0
-      const out: { id: string; title: string; updatedAt?: string }[] = []
+      const out: { id: string; title: string; updatedAt?: string; cwd?: string; sizeBytes?: number }[] = []
       for (const entry of headers) {
         // dsh 0.1.5 wraps each entry as {header, ...}; older builds are bare
         const h = entry?.header ?? entry
@@ -377,10 +377,17 @@ export class HostSession {
         if (!id) continue
         const updatedAt = String(h?.updatedAt ?? h?.lastEventAt ?? h?.mtime ?? "")
         if (cutoff > 0 && updatedAt && new Date(updatedAt).getTime() < cutoff) continue
+        // G1 resume-picker: the header's workspace cwd (/sessions DIR column)
+        // and the 0.1.5 snapshot's on-disk sizeBytes (the /sessions 1KB
+        // display floor judges the same stat the retention walk reads).
+        // Absent fields stay absent — the view fails open on both.
+        const sizeBytes = Number(entry?.sizeBytes)
         out.push({
           id,
           title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
           updatedAt,
+          ...(typeof h?.cwd === "string" && h.cwd ? { cwd: h.cwd } : {}),
+          ...(Number.isFinite(sizeBytes) && entry?.sizeBytes !== undefined && entry?.sizeBytes !== null ? { sizeBytes } : {}),
         })
       }
       return out

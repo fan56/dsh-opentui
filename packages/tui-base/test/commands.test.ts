@@ -10,6 +10,7 @@ import {
 	unknownCommandRow,
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
+import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
 import type { SessionSeam, SeamProviderModel, SeamSessionSummary } from "../src/seams/session"
 
 /** Recording fake: every seam method the core set touches is a spy. */
@@ -70,7 +71,7 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		cleared: 0,
 		reloaded: 0,
 		quit: 0,
-		picks: [] as { title: string; options: { title: string; description?: string }[] }[],
+		picks: [] as { title: string; headerLine?: string; options: { title: string; description?: string }[] }[],
 	}
 	const ctx: SlashCommandContext & { hooks: typeof hooks; lines: string[] } = {
 		seam: seam.seam,
@@ -78,8 +79,8 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		clear: () => hooks.cleared++,
 		reload: () => hooks.reloaded++,
 		quit: () => hooks.quit++,
-		pickOne: async (title, options) => {
-			hooks.picks.push({ title, options: options.map((o) => ({ title: o.title, description: o.description })) })
+		pickOne: async (title, options, headerLine) => {
+			hooks.picks.push({ title, headerLine, options: options.map((o) => ({ title: o.title, description: o.description })) })
 			return pickAnswer
 		},
 		hooks,
@@ -224,18 +225,50 @@ describe("core commands", () => {
 		expect(ctx.lines).toEqual([])
 	})
 
-	test("/sessions lists, picks, resumes, reloads", async () => {
+	test("/sessions lists, picks, resumes, reloads (aligned UPDATED/DIR rows)", async () => {
 		const seam = new RecordingSeam()
+		seam.sessions = [
+			{ id: "s1", title: "first", updatedAt: "2026-01-01T00:00:00Z", cwd: "/repo/alpha" },
+			{ id: "s2", title: "second" },
+		]
 		const ctx = makeCtx(seam, "s2")
 		await coreCommands()[4]!.run(ctx, "")
 		expect(seam.calls).toEqual(["listSessions", "resumeSession:s2"])
-		expect(ctx.hooks.picks[0]?.title).toBe("Resume session")
-		expect(ctx.hooks.picks[0]?.options).toEqual([
-			{ title: "first", description: "2026-01-01" },
-			{ title: "second", description: undefined },
-		])
+		const pick = ctx.hooks.picks[0]
+		expect(pick?.title).toBe("Resume session")
+		// G1 resume-picker: the fitted header line rides the optional third
+		// pickOne arg and every row is the aligned `UPDATED  DIR  SESSION` shape.
+		expect(pick?.headerLine).toMatch(/^UPDATED {2,}DIR {2,}SESSION$/)
+		expect(pick?.options).toHaveLength(2)
+		expect(pick?.options[0]?.title).toMatch(/d ago {2,}\/repo\/alpha {2,}first$/)
+		expect(pick?.options[1]?.title).toMatch(/— {2,}— {2,}second$/)
+		expect(pick?.options.map((o) => o.title.trim().split(/\s{2,}/).length)).toEqual([3, 3])
 		expect(ctx.hooks.reloaded).toBe(1)
 		expect(ctx.lines).toEqual(["resumed s2"])
+	})
+
+	test("/sessions applies the 1KB display floor with fail-open on unknown sizes", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [
+			{ id: "big", title: "big", sizeBytes: 25000, cwd: "/repo/big" },
+			{ id: "tiny", title: "tiny", sizeBytes: 200, cwd: "/repo/tiny" },
+			{ id: "unknown", title: "unknown" },
+		]
+		const ctx = makeCtx(seam, "big")
+		await coreCommands()[4]!.run(ctx, "")
+		const pick = ctx.hooks.picks[0]
+		expect(pick?.options).toHaveLength(2)
+		expect(pick?.options.map((o) => o.title.includes("big") || o.title.includes("unknown"))).toEqual([true, true])
+		expect(ctx.lines).toEqual(["resumed big"])
+	})
+
+	test("/sessions reports the empty-FILTERED copy when the floor hides everything", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "stub", title: "stub", sizeBytes: 200 }]
+		const ctx = makeCtx(seam)
+		await coreCommands()[4]!.run(ctx, "")
+		expect(ctx.hooks.picks).toEqual([])
+		expect(ctx.lines).toEqual([emptyFilteredCopy(1)])
 	})
 
 	test("/sessions with no stored sessions says so (no picker)", async () => {

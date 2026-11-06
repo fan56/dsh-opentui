@@ -21,6 +21,7 @@
  */
 import type { SessionSeam } from "../../seams/session"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
+import { emptyFilteredCopy, filterSessionsBySizeFloor, resumePickerOptions } from "./resume-picker"
 import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
 
 /** One registry row: name carries the leading slash ("/help"). */
@@ -46,10 +47,13 @@ export interface SlashCommandContext {
 	/**
 	 * One generic modal picker (the vendored dialog-select through the page's
 	 * overlay host). Resolves the picked value, or undefined on esc/cancel.
+	 * `headerLine` (G1 resume-picker batch) paints an aligned column-header
+	 * line under the dialog title (the /sessions UPDATED/DIR columns).
 	 */
 	pickOne(
 		title: string,
-		options: { title: string; description?: string; value: string }[],
+		options: { title: string; value: string; description?: string }[],
+		headerLine?: string,
 	): Promise<string | undefined>
 	/**
 	 * Open the /btw side-question overlay (feature batch F3). Optional: an
@@ -129,6 +133,13 @@ export function coreCommands(): SlashCommand[] {
 			},
 		},
 		{
+			// G1 resume-picker batch: the /sessions picker upgrades to the
+			// reference /resume column semantics (dsh-tui-pi 66 Phases C/D):
+			// aligned UPDATED (relative time) / DIR (workspace dir) columns
+			// under a fitted header line, the 1KB size display floor (rows
+			// without a size fail open), and the empty-FILTERED copy distinct
+			// from the plain empty-store one. Retention (deletion / age
+			// windows) stays host-side — out of scope here.
 			name: "/sessions",
 			description: "list and resume stored sessions",
 			async run(ctx) {
@@ -137,14 +148,13 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say("no stored sessions")
 					return
 				}
-				const picked = await ctx.pickOne(
-					"Resume session",
-					sessions.map((session) => ({
-						title: session.title,
-						value: session.id,
-						description: session.updatedAt,
-					})),
-				)
+				const visible = filterSessionsBySizeFloor(sessions)
+				if (visible.length === 0) {
+					ctx.say(emptyFilteredCopy(sessions.length))
+					return
+				}
+				const { header, options } = resumePickerOptions(visible)
+				const picked = await ctx.pickOne("Resume session", options, header)
 				if (!picked) return
 				ctx.seam.resumeSession(picked)
 				await ctx.reload()

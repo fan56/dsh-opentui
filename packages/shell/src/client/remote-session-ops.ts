@@ -212,6 +212,10 @@ export interface RemoteSessionRow {
 	id: string
 	title: string
 	updatedAt?: string
+	/** Workspace directory (/sessions DIR column) when the wire carries one. */
+	cwd?: string
+	/** On-disk log size in bytes (/sessions 1KB display floor); absent = unknown. */
+	sizeBytes?: number
 }
 
 export class RemoteSessionOps {
@@ -248,7 +252,16 @@ export class RemoteSessionOps {
 				const projections = (row.projections ?? {}) as Record<string, unknown>
 				const values = (projections.values ?? {}) as Record<string, unknown>
 				const title = typeof values.title === "string" ? values.title : ""
-				out.push({ id, title: title.slice(0, 40), ...(updatedAt ? { updatedAt } : {}) })
+				out.push({
+					id,
+					title: title.slice(0, 40),
+					...(updatedAt ? { updatedAt } : {}),
+					// G1 resume-picker: pass-through display fields — the wire may
+					// not carry them (older hosts); absent stays absent and the
+					// view fails open on both.
+					...(typeof row.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
+					...(typeof row.sizeBytes === "number" && Number.isFinite(row.sizeBytes) ? { sizeBytes: row.sizeBytes } : {}),
+				})
 			}
 			return out.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit)
 		} catch {

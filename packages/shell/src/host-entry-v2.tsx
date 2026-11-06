@@ -152,7 +152,10 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
       theme,
     })
   let cmdOrdinal = 0
-  const pickOne = (title: string, options: { title: string; value: string }[]) =>
+  // G1 resume-picker: the optional third arg paints an aligned column-header
+  // line under the dialog title (DialogSelect's muted header description) —
+  // the /sessions UPDATED/DIR columns ride it.
+  const pickOne = (title: string, options: { title: string; value: string }[], headerLine?: string) =>
     new Promise<string | undefined>((resolvePick) => {
       let settled = false
       const done = (value: string | undefined) => {
@@ -165,6 +168,7 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
         () =>
           createComponent(DialogSelect, {
             title,
+            description: headerLine,
             renderFilter: false,
             options: options.map((option) => ({ title: option.title, value: option.value })),
             onSelect: (option: { value: string }) => done(option.value),

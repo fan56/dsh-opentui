@@ -147,7 +147,13 @@ export class HostSessionSeam implements SessionSeam {
 
 	async listSessions(limit?: number): Promise<SeamSessionSummary[]> {
 		const rows = await this.#session.listSessions(limit)
-		return rows.map((row) => ({ id: row.id, title: row.title, ...(row.updatedAt !== undefined ? { updatedAt: row.updatedAt } : {}) }))
+		return rows.map((row) => ({
+			id: row.id,
+			title: row.title,
+			...(row.updatedAt !== undefined ? { updatedAt: row.updatedAt } : {}),
+			...(row.cwd !== undefined ? { cwd: row.cwd } : {}),
+			...(row.sizeBytes !== undefined ? { sizeBytes: row.sizeBytes } : {}),
+		}))
 	}
 
 	async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
