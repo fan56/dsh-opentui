@@ -1,0 +1,102 @@
+# e2e image for dsh-opentui: Ubuntu 24.04 + Node 26 + tmux + a global dsh
+# install + the opentui tarball packed from THIS source tree, with the
+# `dsh-opentui` profile baked in via the repo's own install-profile.mjs.
+#
+# Runtime choice: PLUGIN mode. The scenario suite boots the globally
+# installed `dsh-opentui` launcher (bin/dsh-opentui.mjs), which injects
+# node's --experimental-ffi into NODE_OPTIONS and execs
+# `dsh --profile dsh-opentui` (dist-host plugin, node runtime). Client mode
+# needs bun + the workspace sources and is out of scope here — the suite is
+# mode-agnostic ("the same cases pass on opentui").
+#
+# Node 26 is a HARD requirement (not 22): OpenTUI's native core needs
+# node's --experimental-ffi (shell README: node >= 26.4); node 22 rejects
+# the flag as a bad option and every boot would die.
+#
+# The base image is pulled through the DaoCloud mirror because
+# registry-1.docker.io is not reachable from the dev machine's podman VM
+# (DNS-poisoned). On a network where docker.io works, drop the
+# "docker.m.daocloud.io/" prefix.
+FROM docker.m.daocloud.io/library/ubuntu:24.04
+
+# >= 26.4 for --experimental-ffi (matches the dev machine's known-good 26.8.1).
+ARG NODE_VERSION=26.8.1
+# npmmirror's binary mirror is the default: nodejs.org's CDN is not
+# reachable from this network's podman VM (same pollution family as the
+# docker.io base image above — nodejs.org answers fine from the host).
+# On a clean network: --build-arg NODE_DIST_BASE=https://nodejs.org/dist
+ARG NODE_DIST_BASE=https://npmmirror.com/mirrors/node
+ARG PNPM_VERSION=10.18.3
+# DSH_VERSION is resolved by e2e/run-e2e.sh with the same "newest of the
+# latest/next dist-tags" rule as the dsh-tui-pi harness. Pin an exact
+# version for a deterministic rebuild with --build-arg DSH_VERSION=<version>.
+ARG DSH_VERSION=
+# npm registry for the in-build installs. Default stays the official
+# registry; point it at a mirror (e.g. https://registry.npmmirror.com) when
+# the podman VM's route to registry.npmjs.org is degraded.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TERM=xterm-256color
+
+# libatomic1: node >= 26 links libatomic.so.1 (node 22 did not) — without it
+# the dist-tarball node dies at its first exec on ubuntu 24.04.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl xz-utils tmux git libatomic1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node from the official dist tarball — no apt repository dependency,
+# arch-agnostic (x64 / arm64).
+RUN case "$(uname -m)" in \
+      x86_64)  NODE_ARCH=x64 ;; \
+      aarch64) NODE_ARCH=arm64 ;; \
+      *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL \
+      "${NODE_DIST_BASE}/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+      | tar -xJ -C /usr/local --strip-components=1 \
+ && node --version
+
+# pnpm (the profile install in the bootstrap step below runs `pnpm install`)
+# + the dsh CLI. The global dsh must exist BEFORE the profile bootstrap:
+# install-profile.mjs links @deepseek-ai/dsh-llm from the global dsh closure
+# into the profile's hoisted node_modules (not on the public registry in a
+# usable form).
+RUN test -n "${DSH_VERSION}" \
+      || (echo "DSH_VERSION build arg is required (e.g. --build-arg DSH_VERSION=0.2.2-rc.1)" >&2; exit 1) \
+ && npm install -g --no-fund --no-audit --registry "${NPM_REGISTRY}" \
+      pnpm@${PNPM_VERSION} \
+      "@deepseek-ai/dsh@${DSH_VERSION}" \
+ && (dsh --version || true)
+
+WORKDIR /app
+
+# Pack the user-facing tarball from THIS source tree into /dist. No build
+# step exists for the host bundle: dist-host/ is committed, and the prepack
+# hook (scripts/pack-meta.mjs) only copies the four root metadata files in.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml README.md LICENSE NOTICE CHANGELOG.md /src/
+COPY packages/shell/ /src/packages/shell/
+RUN mkdir -p /dist \
+ && cd /src/packages/shell \
+ && npm pack --pack-destination /dist \
+ && ls -la /dist/
+
+# Install the tarball globally (gives the `dsh-opentui` launcher bin) and
+# bake the profile in — the same flow as the repo's smoke path
+# (scripts/smoke-boot.mjs): tarball as a file: dep, patch layer with the
+# provider route + model pin + plugin insert, hoisted pnpm install, solid-js
+# client pin, dsh-llm closure link. install-profile.mjs is idempotent and
+# covers the solid pin itself; --ignore-scripts skips the global
+# postinstall's own bootstrap (which would resolve the dep from npm
+# 'latest' instead of this source tree's tarball), the explicit --dep run
+# below is the authoritative one.
+RUN TARBALL="$(ls /dist/aiwayds-dsh-opentui-*.tgz)" \
+ && npm install -g --ignore-scripts --no-fund --no-audit "$TARBALL" \
+ && NODE_OPTIONS= node /usr/local/lib/node_modules/@aiwayds/dsh-opentui/scripts/install-profile.mjs \
+      --dep "file:${TARBALL}" \
+ && ls -la /root/.dsh/profiles/dsh-opentui/
+
+# The scenario suite is bind-mounted at /e2e by e2e/run-e2e.sh so test logic
+# can iterate without an image rebuild.
+CMD ["bash", "/e2e/scenarios/run-all.sh"]
