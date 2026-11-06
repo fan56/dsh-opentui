@@ -148,6 +148,13 @@ export function Transcript(props: TranscriptProps) {
 				<box flexGrow={1} minHeight={0} position="relative" paddingBottom={1}>
 					<scrollbox
 						flexGrow={1}
+						/* Batch 11 (U1 layout finding): rows never shrink (flexShrink=0
+						 * below) and the scroll container clips paint overflow — without
+						 * the clip, overflowing content paints past the box over the
+						 * composer dock (verified: flexShrink=0 alone still bleeds;
+						 * +overflow hidden is clean). stickyScroll still owns vertical
+						 * scrolling; this only guards the paint. */
+						overflow="hidden"
 						stickyScroll={true}
 						stickyStart="bottom"
 						verticalScrollbarOptions={{ paddingLeft: 1, visible: true, trackOptions: {} }}
