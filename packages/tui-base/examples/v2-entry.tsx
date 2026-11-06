@@ -174,6 +174,26 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 		quit: props.quit,
 		pickOne,
 		openBtw: (argText: string) => void openBtw(argText),
+		// /theme switch surface (batch F7b — client-face parity with
+		// host-entry-v2): live apply + persistence through the seam's
+		// configSave (RemoteHostSession.configSave routes `theme` to the
+		// workspace config.yml); boot reads the stored name via
+		// themeNameFromConfig (shared/boot-shared.ts).
+		themes: {
+			current: () => themeSeam.current(),
+			list: () => themeSeam.list(),
+			set: (name: string) => {
+				const applied = themeSeam.setTheme(name)
+				if (applied) {
+					try {
+						seam.configSave?.({ theme: name })
+					} catch (error) {
+						console.error("[v2] theme persist failed:", error)
+					}
+				}
+				return applied
+			},
+		},
 	})
 	const overlayHost = createComponent(TurnOverlayHost, {
 		controller: overlays,

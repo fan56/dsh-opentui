@@ -197,13 +197,25 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
     quit: props.quit,
     pickOne,
     openBtw: (argText: string) => void openBtw(argText),
-    // /theme switch surface (batch F7a): the page's ThemeSeam, re-hiding the
-    // picker behind the generic pickOne modal. Session-scope apply — boot
-    // still reads the theme from config (props.themeName); no config write.
+    // /theme switch surface (batch F7a/F7b): the page's ThemeSeam, re-hiding
+    // the picker behind the generic pickOne modal. Apply is live; the picked
+    // name ALSO persists through the seam's configSave (batch F7b —
+    // HostSession.configSave upserts the profile config.json `theme` key),
+    // and boot applies the stored name (props.themeName ← configLoad().theme).
     themes: {
       current: () => themeSeam.current(),
       list: () => themeSeam.list(),
-      set: (name: string) => themeSeam.setTheme(name),
+      set: (name: string) => {
+        const applied = themeSeam.setTheme(name)
+        if (applied) {
+          try {
+            seam.configSave?.({ theme: name })
+          } catch (error) {
+            console.error("[host-entry-v2] theme persist failed:", error)
+          }
+        }
+        return applied
+      },
     },
   })
   const overlayHost = createComponent(TurnOverlayHost, {
