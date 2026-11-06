@@ -114,10 +114,33 @@ ok 'seeded agent file looper.md (deep: 0, maxRounds: 5)'
 # --- policy settings: global cap TIGHTER than the per-agent tier ------------
 # Same durable store as the tui-pi original (the active profile's
 # cordis.patch.yml, structured YAML upsert) — the patch-setting helper is
-# inlined here because e2e/lib is out of this scenario's scope. Entry id
-# `dsh-opentui` mirrors the tui-pi convention (`dsh-tui` app entry); NOTE:
-# the opentui shell reads no settings keys yet — this stages the values for
-# when the ladder lands (see the bake recipe in the report).
+# inlined here because e2e/lib is out of this scenario's scope.
+#
+# KEY PATH (container-verified): the dsh-opentui plugin arrives through the
+# patch's `insert:` array (install-profile.mjs bakes `- insert: - id:
+# dsh-opentui, name: @aiwayds/dsh-opentui, config: {theme: ...}`), so the
+# upsert must land on THAT entry's config — the settings service exposes one
+# namespace per loaded plugin entry (dsh-settings SettingsForms.describe()
+# keys rows on `entry.options.id`, value = the entry's effective config
+# projected through the plugin's Config schema). A bare top-level row would
+# be a different, never-loaded entry.
+#
+# KNOWN PRODUCT GAP that still keeps the ladder dark at HEAD 4a9e6fa: the
+# dsh-settings service only returns describe() rows for plugins that export
+# a `Config` schema (lib/index.js: schema(entry) reads entry.fiber.runtime.
+# Config; entries without one are filtered OUT of describe()). The reference
+# exports one (dsh-tui-pi src/index.ts:73 `export { Config } from
+# './theme-settings.ts'`, theme-settings.ts:201 z.object with maxRounds/
+# maxRoundsGrace), but the opentui shell bundle exports only
+# { name, inject, apply } (dist-host bundle `var plugin = { name: "dsh-opentui",
+# inject, apply }`). Consequence: no `dsh-opentui` settings namespace exists
+# at all, host-session's #refreshRoundLimits always resolves the defaults
+# {maxRounds: 0, maxRoundsGrace: 0} and the ladder stays disabled regardless
+# of this staging (observed: 87 hs-loop rounds). The staging below is the
+# exact recipe for when the Config export lands — then the row appears with
+# ns `dsh-opentui` and value {theme, maxRounds, maxRoundsGrace} and the
+# ladder fires (per-agent 5 wins over the global 3; expect force-stop at
+# round 7 = 5 + 2 and E2E-HS-LADDER-DONE).
 SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
 cat > /tmp/stage-hs-limits.mjs <<'EOF'
 import { createRequire } from 'node:module'
@@ -126,13 +149,19 @@ const { parse, stringify } = createRequire('/usr/local/lib/node_modules/@deepsee
 const patchPath = process.argv[2]
 const doc = parse(readFileSync(patchPath, 'utf8')) ?? []
 if (!Array.isArray(doc)) throw new Error('patch file is not a top-level YAML array')
-let row = doc.find(e => e && e.id === 'dsh-opentui' && e.insert === undefined)
-if (!row) { row = { id: 'dsh-opentui', config: {} }; doc.push(row) }
+// the plugin entry lives under the patch's insert: array (same id)
+let row = doc.flatMap(e => (e && Array.isArray(e.insert)) ? e.insert : []).find(e => e && e.id === 'dsh-opentui')
+if (!row) {
+  row = { id: 'dsh-opentui', name: '@aiwayds/dsh-opentui', config: {} }
+  let ins = doc.find(e => e && Array.isArray(e.insert))
+  if (!ins) { ins = { insert: [] }; doc.push(ins) }
+  ins.insert.push(row)
+}
 if (typeof row.config !== 'object' || row.config === null) row.config = {}
 row.config.maxRounds = 3
 row.config.maxRoundsGrace = 2
 writeFileSync(patchPath, stringify(doc), 'utf8')
-console.log(`staged dsh-opentui maxRounds=3 maxRoundsGrace=2 -> ${patchPath}`)
+console.log(`staged insert entry dsh-opentui maxRounds=3 maxRoundsGrace=2 -> ${patchPath}`)
 EOF
 node /tmp/stage-hs-limits.mjs "$SETTINGS" >/tmp/stage-hs-limits.log 2>&1
 if grep -q 'maxRounds: 3' "$SETTINGS" && grep -q 'maxRoundsGrace: 2' "$SETTINGS"; then
@@ -170,13 +199,18 @@ done
 if (( DONE_UP == 1 )); then
   ok 'E2E-HS-LADDER-DONE landed after the tool result — the stop surfaced to the caller'
 else
-  # KNOWN APP GAP, not an infra gap: with the ladder absent NOTHING enforces
-  # the caps (observed: 88+ hs-loop rounds against looper maxRounds 5), so
-  # the child never settles and the parent can never finish. Recorded as a
-  # warn until the opentui shell grows the subagent-policy counterpart —
-  # flip it to bad() once the ladder ships.
-  warn 'the ladder never fired (child kept looping) — the opentui shell has no maxRounds enforcement yet (dsh-tui-pi implements it in src/subagent-policy.ts); the tui-pi UI assertions (Ctrl+G picker ⏻ row, viewer hard-stop marker row, ⚡ injected / ⏻ hard-stopped @N badges) have no opentui counterpart to assert'
-  info 'staged limits were loaded but unenforced — mock server log tail:'
+  # KNOWN PRODUCT GAP, not an infra gap: the ladder code ships in the bundle
+  # (packages/shell/src/subagent-policy.ts, wired in host-session.ts
+  # #foldChildEvent), but it reads its caps from the `dsh-opentui` settings
+  # namespace — and that namespace does not exist because the bundle's plugin
+  # exports no `Config` schema (dsh-settings describe() only projects entries
+  # whose plugin module exports Config; see the staging block above for the
+  # full recipe). With the namespace absent the policy always resolves
+  # {maxRounds: 0, maxRoundsGrace: 0} and NOTHING enforces the caps (observed
+  # 87+ hs-loop rounds against looper maxRounds 5). Recorded as a warn until
+  # the Config export lands — flip it to bad() once the namespace exists.
+  warn 'the ladder never fired (child kept looping) — PRODUCT GAP: the dsh-opentui plugin bundle exports no Config schema, so settings.describe() has no dsh-opentui namespace and the shipped ladder always reads defaults {maxRounds: 0} (disabled); recipe: export Config = z.object({maxRounds, maxRoundsGrace, ...}) from the bundle plugin (reference: dsh-tui-pi src/index.ts:73 + theme-settings.ts:201); tui-pi UI assertions (Ctrl+G picker ⏻ row, viewer hard-stop marker row, ⚡/⏻ badges) still have no opentui counterpart (F6)'
+  info 'staged limits sit on the insert entry but are unenforced — mock server log tail:'
   tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
 fi
 

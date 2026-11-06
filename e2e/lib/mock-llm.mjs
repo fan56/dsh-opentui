@@ -231,7 +231,7 @@ function tpsStreamEntries() {
  * `{ delayMs, delta, finish }` steps; each write is its own setTimeout so a
  * phase can hold a wide, deterministic busy window.
  */
-function streamTimed(res, entries, wantsUsage) {
+function streamTimed(res, entries, wantsUsage, phase = 'stream') {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
@@ -240,12 +240,19 @@ function streamTimed(res, entries, wantsUsage) {
   for (const entry of entries) {
     at += entry.delayMs
     setTimeout(() => {
-      if (res.destroyed) return
+      // Client aborted mid-stream (socket gone before the final write): the
+      // completion proof must NOT log — scenarios key "the turn finished" on
+      // stream=complete.
+      if (res.destroyed) {
+        log(`stream=aborted phase=${phase}`)
+        return
+      }
       res.write(`data: ${sseChunk(entry.delta, entry.finish ?? null)}\n\n`)
       if (entry.finish !== undefined) {
         if (wantsUsage) res.write(`data: ${usageChunk()}\n\n`)
         res.write('data: [DONE]\n\n')
         res.end()
+        log(`stream=complete phase=${phase}`)
       }
     }, at)
   }
@@ -342,7 +349,7 @@ function handleChat(req, res, body) {
     return
   }
   if (phase === 'main-slow') {
-    streamTimed(res, mainSlowStreamEntries(), wantsUsage)
+    streamTimed(res, mainSlowStreamEntries(), wantsUsage, phase)
     return
   }
 
