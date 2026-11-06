@@ -3026,7 +3026,7 @@ ${field}: ${value}
         mode: "continuable",
         delivery: "steer",
         content: [{ type: "text", text }]
-      });
+      }, new AbortController().signal);
       return { ok: true };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

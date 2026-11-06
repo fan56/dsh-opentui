@@ -23,13 +23,13 @@
 # renders the ⏻/⚡ picker and viewer badges. The opentui shell has no
 # counterpart yet (grep evidence: packages/shell/src carries no maxRounds /
 # maxRoundsGrace / hard-stopped / ⏻ / Sub-agents picker), so the UI-marker
-# assertion group of the original is replaced by a capability probe keyed on
-# the MOCK LOG: hs-loop proves use_agent dispatched and the child actually
-# ran; without it the ladder assertions cannot be exercised and the scenario
-# warns with the exact bake recipe instead of failing on UI strings the app
-# cannot paint. E2E-HS-LADDER-DONE alone is NOT asserted as ladder proof
-# (the mock keys hs-final on the tool-result presence, so a failed dispatch
-# would still produce it — a false positive by construction).
+# assertion group of the original is replaced by assertions keyed on the
+# MOCK LOG. Since the D5 signal fix (476f1ef) the ladder observably fires
+# (7 hs-loop rounds = per-agent cap 5 + grace 2, E2E-HS-LADDER-DONE, hs-final
+# force-stop evidence), so the round-bound group is hard-asserted; the
+# hs-loop probe alone stays the dispatch gate (the mock keys hs-final on the
+# tool-result presence, so a failed dispatch would still produce DONE — the
+# round bound is what catches a false positive).
 #
 # Container-only: installs the registry plugin into the active profile and
 # mutates ~/.dsh/agents + the profile patch inside the container.
@@ -125,14 +125,11 @@ ok 'seeded agent file looper.md (deep: 0, maxRounds: 5)'
 # projected through the plugin's Config schema). A bare top-level row would
 # be a different, never-loaded entry.
 #
-# KNOWN PRODUCT GAP (updated 2026-11-07, D4 batch): the Config export landed
-# (1ee62e4), the D4 delivery fallback landed (f7641f8), and the limits staged
-# below resolve fine — the ladder still never fires (87 hs-loop rounds). The
-# breakpoint is pinned by in-bundle instrumentation: every wrap-up delivery
-# through the in-process subagents service rejects with TypeError "Cannot
-# read properties of undefined (reading 'aborted')", so stage 1 never latches
-# and stage 2 never arms (see the warn block at the DONE probe). Until the
-# ladder fires, the round-bound assertions stay warns, not hard asserts.
+# RESOLVED (2026-11-07, C4 batch): the D4-era product gap is closed. The
+# Config export (1ee62e4) + the D4 delivery fallback (f7641f8) + the D5
+# AbortSignal fix (476f1ef) compose: the wrap-up steer now delivers through
+# the in-process subagents service, stage 1 latches, and stage 2 force-stops
+# the child at cap + grace (observed: 7 rounds, per-agent tier winning).
 SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
 cat > /tmp/stage-hs-limits.mjs <<'EOF'
 import { createRequire } from 'node:module'
@@ -208,27 +205,20 @@ for _ in $(seq 1 90); do
   if capture | grep -qF 'E2E-HS-LADDER-DONE'; then DONE_UP=1; break; fi
   sleep 1
 done
+# LADDER FIRES on this build (C4 batch): the D5 signal fix (476f1ef) unmasked
+# the wrap-up delivery — steerChildDetailed's in-process subagents service
+# fallback now gets a real AbortSignal, stage 1 latches and stage 2 arms —
+# so the ladder assertions are HARD, no warns. The DONE probe below stays a
+# poll-only capability gate (the round-bound assertion group is the verdict).
+DONE_UP=0
+for _ in $(seq 1 90); do
+  if capture | grep -qF 'E2E-HS-LADDER-DONE'; then DONE_UP=1; break; fi
+  sleep 1
+done
 if (( DONE_UP == 1 )); then
   ok 'E2E-HS-LADDER-DONE landed after the tool result — the stop surfaced to the caller'
 else
-  # OPEN PRODUCT GAP (breakpoint pinned 2026-11-07 by D4-batch in-bundle
-  # instrumentation, D3手法): every link upstream of the delivery sink is
-  # PROVEN good — settings describe carries dsh-opentui {maxRounds:3,
-  # maxRoundsGrace:2} and parses; all 87 child rounds reach
-  # SubagentRoundPolicy.onRoundCount with label "[fg] looper"; caps resolve
-  # {cap:5, grace:2} (per-agent maxRounds 5 wins over the global 3 — the D4
-  # label-stripping fix works); ladderDecision returns wrapup at round 5.
-  # The single surviving break is the wrap-up delivery: the use_agent child
-  # is never adopted with a live agent handle (#childAgents empty for it),
-  # so steerChildDetailed falls through to the in-process subagents service,
-  # and EVERY service.prompt({delivery:"steer"}) rejects with TypeError
-  # "Cannot read properties of undefined (reading 'aborted')" — the service
-  # dereferences an undefined abort context on this path. Stage 1 never
-  # latches, stage 2 (force-stop at cap+grace) never arms.
-  # Recorded as a warn until the ladder observably fires; NOT hard-asserted
-  # because the round bound cannot be proven on a dark ladder.
-  warn 'the ladder never fired (child kept looping, 87 hs-loop rounds) — breakpoint pinned by D4-batch in-bundle instrumentation (appendFileSync probes on the installed dist-host, one round): settings row RESOLVES (describe rows carry dsh-opentui {maxRounds:3, maxRoundsGrace:2}; parsed limits {3,2}), rounds REACH the policy (87 onRoundCount calls, label "[fg] looper"), per-agent cap WINS (caps resolved {cap:5, grace:2} — looper.md maxRounds 5 over global 3, D4 per-agent priority works), ladderDecision FIRES (action=wrapup at round 5); the surviving break is the D4 wrap-up delivery sink: steerChildDetailed falls through to the in-process subagents service (no captured firehose agent) and EVERY service.prompt({delivery:"steer"}) call REJECTS with TypeError "Cannot read properties of undefined (reading '"'"'aborted'"'"')" — stage 1 never latches (ok:false), stage 2 never arms (wrapupDelivered stays false), the ladder stays dark. Product-side fix: the subagents service prompt path dereferences an undefined context (.aborted) for host-session steer deliveries'
-  info 'staged limits sit on both entries but are unenforced — mock server log tail:'
+  bad 'E2E-HS-LADDER-DONE never landed — the ladder did not fire or its result never surfaced; mock server log tail:'
   tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
 fi
 
@@ -245,6 +235,32 @@ if [ "${LOOPS:-0}" -ge 2 ]; then
 else
   bad 'the looper child never looped (fewer than 2 hs-loop phases) — use_agent is not effective in this profile'
   warn 'BAKE RECIPE: Containerfile must (a) install @aiwayds/dsh-subagent-registry as a dsh-opentui profile bundle member (npm pack 0.19.0 + dsh plugin --profile dsh-opentui add); the settings staging (entry id dsh-opentui with maxRounds/maxRoundsGrace in cordis.patch.yml) is already staged by this scenario'
+fi
+
+# ROUND-BOUND HARD ASSERTION (the ladder's final verdict): the child must be
+# force-stopped, not merely advised. Calibration:
+#   upper bound 9 = per-agent cap 5 + grace 2 (observed: exactly 7) + 2 rounds
+#     of margin for mock counting glitches;
+#   lower bound 6 separates the two tiers — the global policy (maxRounds 3 +
+#     grace 2) would stop the child one round EARLIER at 5, so >= 6 proves
+#     looper.md's per-agent maxRounds 5 won (the D4 per-agent priority), and
+#     a dark ladder ran 87+ rounds.
+LOOPS="$(grep -c 'phase=hs-loop' "$MOCK_LOG" 2>/dev/null || true)"
+if [ "${LOOPS:-0}" -ge 6 ] && [ "${LOOPS:-0}" -le 9 ]; then
+  ok "round bound held: ${LOOPS} hs-loop rounds — force-stop fired at cap 5 + grace 2 (per-agent tier won over global 3+2=5)"
+else
+  bad "round bound violated: ${LOOPS} hs-loop rounds (expected 6..9; per-agent cap 5 + grace 2 = 7 with a 2-round margin; the global tier 3+2 would stop at 5, a dark ladder ran 87+)"
+fi
+
+# FORCE-STOP EVIDENCE: after the child is force-stopped its partial output
+# rides the use_agent tool result back to the parent, whose next request
+# carries the tool message — the mock keys that as phase=hs-final. A merely
+# wrap-up-advised (never stopped) child would keep looping with no tool
+# result ever reaching the parent.
+if grep -q 'phase=hs-final' "$MOCK_LOG" 2>/dev/null; then
+  ok 'force-stop evidence: the child result returned to the parent and the parent finished (phase=hs-final served)'
+else
+  bad 'no phase=hs-final in the mock log — the child result never surfaced to the parent (ladder did not stop the child)'
 fi
 
 kill_tui
