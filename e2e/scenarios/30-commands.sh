@@ -19,6 +19,26 @@
 # "no models in the catalog" feedback row instead. The scenario asserts that
 # captured behavior AND that no picker overlay opened ('Select model' title
 # stays absent); revisit when the seam sources a catalog.
+#
+# F7c EXTENSION (2026-11-07): /think /hotkeys /plugins groups appended at the
+# tail (commands.ts F7a /plugins, F7b /think effort picker + /hotkeys panel).
+# DEPENDENCY GATE (the 65-jev-attention model): all three ride the dist-host
+# rebuild carrying F7a/F7b — NOT yet baked into the image at write time. The
+# scenario greps the INSTALLED bundle at runtime; gate dark -> only the
+# pre-verifiable G0 runs (the three palette rows must be ABSENT from the
+# stale bundle's palette) and each group is logged skipped-by-gate; gate
+# lit -> the groups hard-assert. Marker provenance:
+#   - palette rows: commands.ts names + descriptions (verbatim);
+#   - /think picker: the pickOne overlay title 'Select reasoning effort';
+#     tier rows are provider data (seam thinking.efforts reads the model's
+#     reasoning.efforts) so row NAMES are never pinned — the assertion is
+#     "picker open and >= 1 option row" via a non-empty-line delta;
+#   - /hotkeys rows: generated from config/keybind.ts Definitions by
+#     routes/session/hotkeys.ts (`keys — description (name)`); asserted rows
+#     are the panel TAIL (the ~150-row block scrolls the header off the
+#     36-row pane), i.e. the which-key.* entries that close Definitions;
+#   - /plugins: '● name@version' rows or the 'no plugins installed' notice
+#     (a clean profile has no user plugins — both outcomes are legitimate).
 set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'slash commands (palette + model + unknown over the core set)'
@@ -102,5 +122,125 @@ send '/nope' Enter
 wait_pane_fixed 'unknown /nope yields the error row (never a model send)' 15 \
   'unknown command: /nope (try /help)'
 ensure_editor_ready 'editor usable after the unknown command'
+
+# ============================================================================
+# F7c extension: /think /hotkeys /plugins (commands.ts F7a/F7b)
+# DEPENDENCY GATE (the 65 model): these commands need the dist-host rebuild
+# carrying F7a (/plugins) and F7b (/think /hotkeys). The gate greps the
+# INSTALLED bundle; gate dark -> only the pre-verifiable G0 runs and each
+# group is logged skipped-by-gate; gate lit -> the groups hard-assert.
+# ============================================================================
+NEWCMDS_BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+THINK_GATE=0
+HOTKEYS_GATE=0
+PLUGINS_GATE=0
+if [ -f "$NEWCMDS_BUNDLE" ]; then
+  grep -qF 'Select reasoning effort' "$NEWCMDS_BUNDLE" && THINK_GATE=1
+  grep -qF 'Keybinds (defaults' "$NEWCMDS_BUNDLE" && HOTKEYS_GATE=1
+  grep -qF 'no plugins installed' "$NEWCMDS_BUNDLE" && PLUGINS_GATE=1
+fi
+
+if (( THINK_GATE )) && (( HOTKEYS_GATE )) && (( PLUGINS_GATE )); then
+  ok 'dependency gate LIT: installed dist-host carries /think, /hotkeys and /plugins'
+else
+  warn 'dependency gate DARK: dist-host predates the F7a/F7b commands (rebuild pending) — new-command groups skipped-by-gate'
+fi
+
+# --- G0: pre-verifiable absence on the stale bundle (per-command gates) ------
+if (( ! THINK_GATE )) || (( ! HOTKEYS_GATE )) || (( ! PLUGINS_GATE )); then
+  ensure_editor_ready 'editor clean before the stale-bundle probe' || true
+  send '/think'
+  sleep 2
+  PANE="$(capture)"
+  (( THINK_GATE )) || assert_not_contains \
+    'G0: /think is absent from the stale bundle palette' \
+    '/think set reasoning effort' "$PANE"
+  (( HOTKEYS_GATE )) || assert_not_contains \
+    'G0: /hotkeys is absent from the stale bundle palette' \
+    '/hotkeys show keybinds' "$PANE"
+  (( PLUGINS_GATE )) || assert_not_contains \
+    'G0: /plugins is absent from the stale bundle palette' \
+    '/plugins list installed plugins' "$PANE"
+  for _ in $(seq 1 8); do send BSpace; sleep 0.3; done
+fi
+
+# --- /think: the effort picker over the model's REAL ladder -------------------
+# The ladder is provider data (seam thinking.efforts -> the llm service's
+# resolveModelInfo reasoning.efforts), so tier NAMES are never pinned: the
+# assertion is "picker open and >= 1 option row", measured as a non-empty
+# line delta over the pre-open capture (title + rows; nothing else changes
+# while the modal is up — the clock ticks stay on one already-counted line).
+if (( THINK_GATE )); then
+  ensure_editor_ready 'editor focused before /think' || true
+  BEFORE_PANE="$(capture)"
+  send '/think'
+  wait_pane_fixed 'palette row /think (F7b command registered)' 10 \
+    '/think set reasoning effort (opens the picker)'
+  send Enter
+  if wait_pane_fixed '/think opens the effort picker' 15 'Select reasoning effort'; then
+    AFTER_PANE="$(capture)"
+    BASE_ROWS="$(printf '%s\n' "$BEFORE_PANE" | grep -c '[^[:space:]]')"
+    AFTER_ROWS="$(printf '%s\n' "$AFTER_PANE" | grep -c '[^[:space:]]')"
+    DELTA=$((AFTER_ROWS - BASE_ROWS))
+    if (( DELTA >= 2 )); then
+      ok "effort picker lists >= 1 option row (non-empty line delta $DELTA = title + rows; tier names are provider data, not pinned)"
+    else
+      bad "effort picker shows no option rows (non-empty line delta $DELTA < 2)"
+    fi
+    esc_until_gone 'effort picker closes on Esc' 'Select reasoning effort'
+  else
+    info '/think picker never opened (empty-ladder degrade row or absent surface) — the row-count check is moot; see the timed-out marker above'
+  fi
+else
+  warn '/think group skipped-by-gate (dist-host rebuild pending — F7b)'
+fi
+
+# --- /hotkeys: the static keybind panel (the /help print path) ----------------
+# The panel prints ~150 rows (config/keybind.ts Definitions, none-bound
+# entries skipped) — the block scrolls, so the asserted rows are the TAIL
+# (the which-key.* entries that close Definitions); the header and the
+# early rows scroll off the 36-row pane before the paint settles.
+if (( HOTKEYS_GATE )); then
+  ensure_editor_ready 'editor focused before /hotkeys' || true
+  send '/hotkeys'
+  wait_pane_fixed 'palette row /hotkeys (F7b command registered)' 10 \
+    '/hotkeys show keybinds'
+  send Enter
+  wait_pane_fixed '/hotkeys panel finished printing (last Definitions row visible)' 15 \
+    'ctrl+alt+home — Jump to last which-key binding (which-key.end)'
+  PANE="$(capture)"
+  assert_contains 'hotkeys tail row: which-key.toggle' \
+    'ctrl+alt+k — Toggle which-key panel (which-key.toggle)' "$PANE"
+  assert_contains 'hotkeys tail row: which-key.layout.toggle' \
+    'ctrl+alt+shift+k — Switch which-key layout (which-key.layout.toggle)' "$PANE"
+  assert_contains 'hotkeys tail row: which-key.end' \
+    'ctrl+alt+home — Jump to last which-key binding (which-key.end)' "$PANE"
+else
+  warn '/hotkeys group skipped-by-gate (dist-host rebuild pending — F7b)'
+fi
+
+# --- /plugins: the installed-plugin listing -----------------------------------
+# Hero-era semantics: one '● name@version' row per user-installed plugin
+# (@deepseek-ai/* built-ins filtered); a clean profile legitimately prints
+# the 'no plugins installed' notice — both surfaces are asserted.
+if (( PLUGINS_GATE )); then
+  ensure_editor_ready 'editor focused before /plugins' || true
+  send '/plugins'
+  wait_pane_fixed 'palette row /plugins (F7a command registered)' 10 \
+    '/plugins list installed plugins'
+  send Enter
+  if wait_pane '/plugins surfaces the listing (rows or the empty notice)' 15 \
+    'no plugins installed|● [^ ]+@'; then
+    PANE="$(capture)"
+    if printf '%s' "$PANE" | grep -qF 'no plugins installed'; then
+      ok 'clean profile: the empty notice rendered (no user plugins installed)'
+    else
+      assert_matches 'plugin rows use the hero shape (● name@version)' \
+        '● [^ ]+@[0-9]' "$PANE"
+    fi
+  fi
+else
+  warn '/plugins group skipped-by-gate (dist-host rebuild pending — F7a)'
+fi
 
 summary
