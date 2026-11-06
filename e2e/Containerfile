@@ -110,6 +110,20 @@ COPY e2e/lib/bake-mock-endpoint.mjs /tmp/bake-mock-endpoint.mjs
 RUN NODE_OPTIONS= node /tmp/bake-mock-endpoint.mjs \
  && grep -n "baseURL" /root/.dsh/profiles/dsh-opentui/cordis.patch.yml
 
+# Bake the mock Jev (TypeSafe System One) endpoint as default env — the same
+# "env at boot" wiring as dsh-tui-pi's 76-attention scenario
+# (JEV_ENDPOINT + a fake TYPESAFE_API_KEY), but baked so any scenario that
+# starts e2e/lib/mock-jev.mjs on port 8643 gets the jev layer routed to it
+# with no per-boot env. e2e/ is bind-mounted at /e2e (see run-e2e.sh), so
+# mock-jev.mjs itself needs no image COPY — scenarios run
+# `node /e2e/lib/mock-jev.mjs --port 8643` directly. dsh-jev-core resolves
+# the endpoint via `env.JEV_ENDPOINT ?? DEFAULT_ENDPOINT` (lib/client.js) and
+# the key via `env TYPESAFE_API_KEY` (lib/key.js); baking a placeholder key
+# keeps the layer "configured" offline — no real credential ships in this
+# image. A scenario can still override both vars per boot.
+ENV JEV_ENDPOINT=http://127.0.0.1:8643/v1/systemone \
+    TYPESAFE_API_KEY=e2e-fake-key
+
 # The scenario suite is bind-mounted at /e2e by e2e/run-e2e.sh so test logic
 # can iterate without an image rebuild.
 CMD ["bash", "/e2e/scenarios/run-all.sh"]
