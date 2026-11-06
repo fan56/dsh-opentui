@@ -20,6 +20,7 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import type { SessionSeam } from "../../seams/session"
+import { hotkeyRows, hotkeysHeader } from "./hotkeys"
 import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
 
 /** One registry row: name carries the leading slash ("/help"). */
@@ -206,6 +207,51 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				for (const plugin of plugins) ctx.say(`● ${plugin.name}@${plugin.version}`)
+			},
+		},
+		{
+			// Feature batch F7b. Opens the reasoning-effort picker over the
+			// CURRENT model route's real ladder (seam.thinking — the adapters
+			// read provider data, never a hardcoded tier set). Picking rides
+			// /model's effort semantics (switchModel with a reasoningEffort arm
+			// — next-turn effect). Absent surface or an empty ladder = the
+			// unavailable notice (the /btw degrade contract).
+			name: "/think",
+			description: "set reasoning effort (opens the picker)",
+			async run(ctx) {
+				const thinking = ctx.seam.thinking
+				if (!thinking) {
+					ctx.say("/think unavailable in this session")
+					return
+				}
+				const efforts = await thinking.efforts()
+				if (efforts.length === 0) {
+					ctx.say("/think unavailable: the current model exposes no reasoning efforts")
+					return
+				}
+				const current = await thinking.currentEffort()
+				const picked = await ctx.pickOne(
+					"Select reasoning effort",
+					efforts.map((effort) => ({
+						title: effort.name,
+						value: effort.id,
+						description: effort.id === current ? "current" : effort.description,
+					})),
+				)
+				if (!picked || picked === current) return
+				thinking.selectEffort(picked)
+				ctx.say(`thinking → ${picked} (next turn)`)
+			},
+		},
+		{
+			// Feature batch F7b. Static keybind surface: rows generated from
+			// THIS stack's config/keybind.ts Definitions (the /help print path
+			// — aligned transcript lines, no overlay, no busy-gate).
+			name: "/hotkeys",
+			description: "show keybinds",
+			run(ctx) {
+				ctx.say(hotkeysHeader())
+				for (const row of hotkeyRows()) ctx.say(row)
 			},
 		},
 		{

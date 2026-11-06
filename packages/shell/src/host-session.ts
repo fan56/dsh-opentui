@@ -25,6 +25,12 @@ import {
   limitsFromSettingsRows,
   type SubagentRoundLimits,
 } from "./subagent-policy.ts"
+import {
+  createSpinAttentionSource,
+  spinAttentionEnabledFromRows,
+  type SpinAttentionSource,
+  type SpinChildView,
+} from "./spin-attention.ts"
 
 /** Minimal structural types — the real ones live in the host closure. */
 type StreamFrame = {
@@ -252,6 +258,32 @@ export class HostSession {
     const sel = this.#override ?? (this.#ctx as any).get?.("agentDefaultModel")?.currentSelection?.()
     if (!sel?.provider || !sel?.model) return undefined
     return { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}) }
+  }
+
+  /** The CURRENT model route's reasoning-effort ladder (batch F7b /think):
+   * the llm service's resolved model info (`reasoning.efforts`) — real
+   * provider data, never a hardcoded tier set. Best-effort: no selection,
+   * no llm service, or a failed/empty resolve = [] (the caller — the seam
+   * adapter's /think — prints the unavailable row). */
+  async currentModelEfforts(): Promise<{ id: string; name: string; description?: string }[]> {
+    try {
+      const sel = this.currentModelSelection()
+      if (!sel) return []
+      const llm = (this.#ctx as any).get?.("llm")
+      if (!llm?.resolveModelInfo) return []
+      const info = await llm.resolveModelInfo(sel.provider, sel.model)
+      const efforts = info?.reasoning?.efforts
+      if (!Array.isArray(efforts) || efforts.length === 0) return []
+      return efforts
+        .map((e: any) => ({
+          id: String(e?.id ?? ""),
+          name: String(e?.name ?? e?.id ?? ""),
+          ...(typeof e?.description === "string" && e.description ? { description: e.description } : {}),
+        }))
+        .filter((e: { id: string }) => e.id)
+    } catch {
+      return []
+    }
   }
 
   /** Start a FRESH session on the next turn (keeps the current model route). */
@@ -1068,6 +1100,13 @@ export class HostSession {
   #roundPolicy?: SubagentRoundPolicy
   #roundLimits: SubagentRoundLimits = { ...DEFAULT_SUBAGENT_ROUND_LIMITS }
   #roundLimitsRefreshing = false
+  // ---- spin attention source (the verdict feed for the early-stop legs) ----
+  // The facade's OWN jev layer (spin-attention.ts): one debounced batched
+  // classify per window over the live running children, scores pushed back
+  // through noteChildSpinVerdict. Silent without a configured jev key —
+  // unconfigured == off (dispatch parity).
+  #spinAttention?: SpinAttentionSource
+  #spinAttentionOn = true
 
   /** Create the round ladder once (sinks bound to THIS facade). */
   #ensureRoundPolicy(): SubagentRoundPolicy {
@@ -1130,13 +1169,15 @@ export class HostSession {
   }
 
   /** Lazy live-read of the settings knobs (one in-flight describe at a
-   * time; the ladder reads the latest snapshot at every decision). */
+   * time; the ladder reads the latest snapshot at every decision). Also
+   * refreshes the spin-attention toggle from the same snapshot. */
   #refreshRoundLimits(): void {
     if (this.#roundLimitsRefreshing) return
     this.#roundLimitsRefreshing = true
     void this.settingsDescribe()
       .then((rows) => {
         this.#roundLimits = limitsFromSettingsRows(rows)
+        this.#spinAttentionOn = spinAttentionEnabledFromRows(rows)
       })
       .catch(() => {
         /* keep the previous snapshot; defaults disable the ladder */
@@ -1160,6 +1201,35 @@ export class HostSession {
   noteChildSpinVerdict(childId: string, noul: number): void {
     if (!this.#children.has(childId)) return
     this.#ensureRoundPolicy().noteSpinVerdict(childId, noul)
+  }
+
+  /** The spin attention source (lazy; sink bound to THIS facade). The
+   * verdicts it produces are fresh by construction (one classify per
+   * debounce window; the answers ARE the new trail) — no replay guard
+   * beyond the debounce, and the policy's own freshness semantics own the
+   * staleness side. */
+  #ensureSpinAttention(): SpinAttentionSource {
+    if (this.#spinAttention === undefined) {
+      this.#spinAttention = createSpinAttentionSource({
+        enabledReader: () => this.#spinAttentionOn,
+        onVerdict: (childId, score) => this.noteChildSpinVerdict(childId, score),
+      })
+    }
+    return this.#spinAttention
+  }
+
+  /** One tick opportunity for the spin source, folded out of the child-event
+   * path: a looping child fires firehose events every round, which is the
+   * cadence the streak trail needs. Self-debounced inside the source; the
+   * views snapshot is rebuilt per tick (small — live children only). */
+  #tickSpinAttention(): void {
+    const cap = this.#roundLimits.maxRounds
+    const views: SpinChildView[] = []
+    for (const [childId, view] of this.#children) {
+      if (view.status !== "running") continue
+      views.push({ childId, label: view.label, rounds: view.rounds, running: true, startedAt: view.startedAt })
+    }
+    if (views.length > 0) this.#ensureSpinAttention().tick(views, cap)
   }
 
   cancelChild(childId: string): boolean {
@@ -1377,6 +1447,10 @@ export class HostSession {
       // is microtask-deferred inside the policy — no inbox reentry here.
       this.#ensureRoundPolicy().onRoundCount(sessionKey, rounds, this.#children.get(sessionKey)?.label)
       this.#refreshRoundLimits()
+      // Spin attention feed (the early-stop verdict source): a looping
+      // child fires assistant events every round — the tick cadence the
+      // debounced jev probe needs. Self-serializing inside the source.
+      this.#tickSpinAttention()
     }
     // viewer log: assistant text, tool call/result lines (capped)
     const log = this.#childLogs.get(sessionKey) ?? []

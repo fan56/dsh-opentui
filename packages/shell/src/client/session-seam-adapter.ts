@@ -171,6 +171,13 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.configLoad()
 	}
 
+	/** Config seam write (batch F7b /theme persistence): RemoteHostSession.
+	 * configSave() 1:1 — overlay-managed keys (`theme`) go to the workspace
+	 * config.yml, plugin keys to the profile config.json. */
+	configSave(patch: Record<string, unknown>): Record<string, unknown> {
+		return this.#session.configSave(patch)
+	}
+
 	/**
 	 * /session info panel (batch F4): RemoteHostSession.sessionInfo() 1:1,
 	 * plus the message count the facade can't know — a one-shot durable
@@ -263,6 +270,57 @@ export class RemoteSessionSeam implements SessionSeam {
 		void this.#session
 			.selectModel({ provider: providerID, model: modelID })
 			.catch((error) => console.error("[session-seam-adapter] selectModel failed:", error))
+	}
+
+	/** Reasoning-effort surface (batch F7b /think): the ladder reads the
+	 * CURRENT route's `reasoning.efforts` off the host model catalog (real
+	 * provider data, the wire shape RemoteModelCatalog already parses);
+	 * the apply arm rides /model's effort semantics — selectModel with a
+	 * reasoningEffort arm (undefined clears the override). */
+	thinking = {
+		efforts: async (): Promise<{ id: string; name: string; description?: string }[]> => {
+			try {
+				const selection = await this.#session.currentModelSelection()
+				if (!selection) return []
+				const catalog = (await this.#session.modelCatalog(false)) as {
+					groups?: { id?: unknown; models?: { id?: unknown; reasoning?: { efforts?: unknown } }[] }[]
+				}
+				const group = Array.isArray(catalog.groups)
+					? catalog.groups.find((g) => String(g?.id ?? "") === selection.provider)
+					: undefined
+				const model = Array.isArray(group?.models) ? group!.models!.find((m) => String(m?.id ?? "") === selection.model) : undefined
+				const efforts = model?.reasoning?.efforts
+				if (!Array.isArray(efforts) || efforts.length === 0) return []
+				return (efforts as any[])
+					.map((e) => ({
+						id: String(typeof e === "object" && e !== null ? (e?.id ?? "") : e ?? ""),
+						name: String(typeof e === "object" && e !== null ? (e?.name ?? e?.id ?? "") : e ?? ""),
+						...(typeof e === "object" && e !== null && typeof e?.description === "string" && e.description
+							? { description: e.description }
+							: {}),
+					}))
+					.filter((e: { id: string }) => e.id)
+			} catch {
+				return []
+			}
+		},
+		currentEffort: async (): Promise<string | undefined> => {
+			const selection = (await this.#session.currentModelSelection()) as { reasoningEffort?: string } | undefined
+			return selection?.reasoningEffort
+		},
+		selectEffort: (effort: string | undefined): void => {
+			void this.#session
+				.currentModelSelection()
+				.then((selection) => {
+					if (!selection) return
+					return this.#session.selectModel({
+						provider: selection.provider,
+						model: selection.model,
+						...(effort ? { reasoningEffort: effort } : {}),
+					})
+				})
+				.catch((error) => console.error("[session-seam-adapter] selectEffort failed:", error))
+		},
 	}
 
 	usageSummary(): string[] {

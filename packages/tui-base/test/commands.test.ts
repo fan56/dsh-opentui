@@ -140,6 +140,8 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/btw",
 			"/session",
 			"/plugins",
+			"/think",
+			"/hotkeys",
 			"/theme",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
@@ -162,6 +164,8 @@ describe("core commands", () => {
 			"/btw — side question (bare reopens the last answer)",
 			"/session — show session info (id, model, tokens, speed)",
 			"/plugins — list installed plugins",
+			"/think — set reasoning effort (opens the picker)",
+			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
 		])
 	})
@@ -349,5 +353,89 @@ describe("core commands", () => {
 		const ctx = makeCtx(new RecordingSeam())
 		await coreCommands().find((c) => c.name === "/theme")!.run(ctx, "")
 		expect(ctx.lines).toEqual(["/theme unavailable in this session"])
+	})
+})
+
+describe("/think (batch F7b)", () => {
+	test("opens the picker over the seam's real effort ladder and applies the pick", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "low")
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [
+					{ id: "off", name: "Off" },
+					{ id: "low", name: "Low" },
+					{ id: "high", name: "High", description: "current" },
+				],
+				currentEffort: async () => "high",
+				selectEffort: (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		expect(ctx.hooks.picks[0]?.title).toBe("Select reasoning effort")
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "Off" },
+			{ title: "Low" },
+			{ title: "High", description: "current" },
+		])
+		expect(applied).toEqual(["low"])
+		expect(ctx.lines).toEqual(["thinking → low (next turn)"])
+	})
+
+	test("without the seam thinking face says unavailable (the /btw contract)", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["/think unavailable in this session"])
+	})
+
+	test("an empty ladder (model without efforts) says unavailable", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				currentEffort: async () => undefined,
+				selectEffort: () => {},
+			},
+		}
+		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["/think unavailable: the current model exposes no reasoning efforts"])
+	})
+
+	test("esc or the current effort re-picked applies nothing", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, undefined)
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [{ id: "high", name: "High" }],
+				currentEffort: async () => "high",
+				selectEffort: (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		expect(applied).toEqual([])
+		expect(ctx.lines).toEqual([])
+	})
+})
+
+describe("/hotkeys (batch F7b)", () => {
+	test("prints the panel header plus generated rows from config/keybind Definitions", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await coreCommands().find((c) => c.name === "/hotkeys")!.run(ctx, "")
+		expect(ctx.lines.length).toBeGreaterThan(3)
+		expect(ctx.lines[0]).toContain("Keybinds")
+		// A real binding from Definitions (config/keybind.ts), leader resolved.
+		expect(ctx.lines).toContain("ctrl+c,ctrl+d,ctrl+x q — Exit the application (app.exit)")
+		// `none`-bound definitions are skipped (no row carries a bare "none —").
+		expect(ctx.lines.some((line) => line.startsWith("none —"))).toBe(false)
 	})
 })

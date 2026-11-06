@@ -106,6 +106,14 @@ export interface SeamProviderModel {
 	modelID: string
 }
 
+/** One reasoning-effort ladder entry (ModelReasoningEffort parity — the
+ * same shape the remote catalog's `reasoning.efforts` carries). */
+export interface SeamEffortOption {
+	id: string
+	name: string
+	description?: string
+}
+
 /**
  * Tool-approval verdict — the exact strings the session layer's approval
  * waterfall expects (shell parity: `ok ? "allowed-once" : "rejected"`, with
@@ -223,6 +231,14 @@ export interface SessionSeam {
 	 * a seam without it reads the `cacheHitMode` default (lastMessage).
 	 */
 	configLoad?(): Record<string, unknown>
+	/**
+	 * Config seam write (batch F7b /theme persistence): persist a config
+	 * patch and return the merged view. The adapter owns the storage split
+	 * (its configSave routes `theme` per its own rules — workspace overlay
+	 * or profile config.json). Optional — a seam without it keeps /theme
+	 * session-scoped.
+	 */
+	configSave?(patch: Record<string, unknown>): Record<string, unknown>
 	resumeSession(id: string): "ok" | "owned"
 	newSession(): void
 	renameSession(title: string): Promise<{ title: string; seq: number } | undefined>
@@ -244,6 +260,20 @@ export interface SessionSeam {
 	modelCatalog(force?: boolean): Promise<SeamProviderModel[]>
 	currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined>
 	selectModel(providerID: string, modelID: string): void
+
+	/**
+	 * Reasoning-effort surface (batch F7b /think): the CURRENT model route's
+	 * effort ladder — real provider data, never a hardcoded off/low/medium/
+	 * high set. Optional — a seam without it (or with an empty ladder) makes
+	 * /think print the unavailable row (the /btw degrade contract).
+	 * `selectEffort` rides /model's effort semantics (switchModel with a
+	 * reasoningEffort arm — next-turn effect); undefined clears the override.
+	 */
+	thinking?: {
+		efforts(): Promise<SeamEffortOption[]>
+		currentEffort(): Promise<string | undefined>
+		selectEffort(effort: string | undefined): void
+	}
 
 	/** Usage/limits (usage.tsx, stats). */
 	usageSummary(): string[]

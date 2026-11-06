@@ -175,6 +175,12 @@ export class HostSessionSeam implements SessionSeam {
 		return this.#session.configLoad()
 	}
 
+	/** Config seam write (batch F7b /theme persistence): HostSession.configSave()
+	 * 1:1 — the host's sync-merge split (profile config.json upsert). */
+	configSave(patch: Record<string, unknown>): Record<string, unknown> {
+		return this.#session.configSave(patch)
+	}
+
 	/** /btw side question (batch F3): HostSession.btwAsk() 1:1. */
 	btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string> {
 		return this.#session.btwAsk(question, snapshot, onDelta)
@@ -289,6 +295,24 @@ export class HostSessionSeam implements SessionSeam {
 		} catch (error) {
 			console.error("[host-session-seam-adapter] selectModel failed:", error)
 		}
+	}
+
+	/** Reasoning-effort surface (batch F7b /think): the ladder reads the
+	 * HostSession's llm-resolved model info (real provider data); the
+	 * current/clear arms ride /model's effort semantics — switchModel on the
+	 * composed route with (or without) a reasoningEffort arm. */
+	thinking = {
+		efforts: () => this.#session.currentModelEfforts(),
+		currentEffort: async (): Promise<string | undefined> => this.#session.currentModelSelection()?.reasoningEffort,
+		selectEffort: (effort: string | undefined): void => {
+			const selection = this.#session.currentModelSelection()
+			if (!selection) return
+			try {
+				this.#session.switchModel(selection.provider, selection.model, effort || undefined)
+			} catch (error) {
+				console.error("[host-session-seam-adapter] selectEffort failed:", error)
+			}
+		},
 	}
 
 	usageSummary(): string[] {
