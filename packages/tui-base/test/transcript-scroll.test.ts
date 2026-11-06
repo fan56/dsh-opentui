@@ -105,7 +105,8 @@ describe("transcript scroll keys wiring", () => {
 		expect(source).toMatch(/scrollRef: \(value: ScrollBoxRenderable \| undefined\) => \(transcriptScroll = value\)/)
 		expect(source).toMatch(/createComponent\(TranscriptScrollKeys, \{/)
 		expect(source).toMatch(/enabled: \(\) => dialog\.stack\.length === 0/)
-		expect(source).toMatch(/\{ useMouse: false \}/)
+		// batch V2: the render options also carry exitOnCtrlC:false (turn-cancel.test.ts)
+		expect(source).toMatch(/\{ useMouse: false(, exitOnCtrlC: false)? \}/)
 	})
 
 	test("session.tsx bench carries the same wiring (v2-entry parity)", () => {

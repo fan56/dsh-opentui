@@ -61,6 +61,8 @@ export type TranscriptProps = {
 	 * the box itself is never focused (the composer holds the singleton
 	 * focus); scrolling goes through `scrollBy` + native stickyScroll. */
 	scrollRef?: (scroll: ScrollBoxRenderable | undefined) => void
+	/** Vertical scrollbar (vendored `session.scrollbar` config; default off). */
+	scrollbar?: boolean
 }
 
 export function Transcript(props: TranscriptProps) {
@@ -157,7 +159,20 @@ export function Transcript(props: TranscriptProps) {
 						overflow="hidden"
 						stickyScroll={true}
 						stickyStart="bottom"
-						verticalScrollbarOptions={{ paddingLeft: 1, visible: true, trackOptions: {} }}
+						/* Batch V2: the vendored route's scrollbar contract —
+						 * `visible: config.session?.scrollbar ?? false` (index.tsx:251,
+						 * 1540-1547) with a THEMED track. The previous always-on bar
+						 * with empty track options painted OpenTUI's default gray █
+						 * track (fg 154,158,163 / bg 37,37,39) down the right column. */
+						viewportOptions={{ paddingRight: props.scrollbar ? 1 : 0 }}
+						verticalScrollbarOptions={{
+							paddingLeft: 1,
+							visible: props.scrollbar ?? false,
+							trackOptions: {
+								backgroundColor: color.background(),
+								foregroundColor: color.reasoningBorder(),
+							},
+						}}
 						ref={(value: ScrollBoxRenderable) => {
 							props.scrollRef?.(value)
 						}}

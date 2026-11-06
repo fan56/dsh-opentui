@@ -35,6 +35,7 @@ import { SessionComposer } from "../src/routes/session/session-composer"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
+import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
@@ -189,10 +190,20 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 				// Transcript scrollback keys (batch 10f, ./transcript-scroll.tsx):
 				// PgUp/PgDn scroll the transcript while the composer keeps focus;
 				// gated OFF while any dialog (approval/ask//model) is open.
-				createComponent(TranscriptScrollKeys, {
-					scroll: () => transcriptScroll,
-					enabled: () => dialog.stack.length === 0,
-				}),
+					createComponent(TranscriptScrollKeys, {
+						scroll: () => transcriptScroll,
+						enabled: () => dialog.stack.length === 0,
+					}),
+					// Cancel contract (batch V2, ./turn-cancel.tsx): esc interrupts
+					// the running turn; ctrl+c interrupts + arms, ctrl+c x2 quits
+					// through props.quit (the shutdown-intercepted process.exit).
+					createComponent(TurnCancelKeys, {
+						busy,
+						interrupt: () => seam.interrupt(),
+						quit: props.quit,
+						enabled: () => dialog.stack.length === 0,
+						escapeYields: () => slash.controller.open,
+					}),
 				// REACTIVE-PROP LAW (batch 10d): signal reads ride GETTERS. An
 				// eager `busy()` / `segments()` / `now()` read here is tracked by
 				// this children getter, so every 1s clock tick re-ran it and
@@ -341,7 +352,11 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 		// Renderer options (batch 10f): mouse reporting OFF — the terminal
 		// keeps drag-select + Cmd+C (Ghostty native); the transcript
 		// scrollback moves via TranscriptScrollKeys instead of the wheel.
-		{ useMouse: false },
+		// exitOnCtrlC OFF (batch V2): OpenTUI's default `true` grabs ctrl+c
+		// in the raw key handler ahead of every keymap layer and runs its
+		// own exitHandler — bypassing shutdown and leaving a wiped frame.
+		// TurnCancelKeys owns ctrl+c (vendored app.tsx / engine.ts parity).
+		{ useMouse: false, exitOnCtrlC: false },
 	).then(() => {
 		appendDiagnostic("[v2] render promise resolved")
 	}).catch((error: unknown) => {

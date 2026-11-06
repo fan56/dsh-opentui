@@ -19638,11 +19638,6 @@ function Transcript(props) {
     _$setProp2(_el$1, "overflow", "hidden");
     _$setProp2(_el$1, "stickyScroll", true);
     _$setProp2(_el$1, "stickyStart", "bottom");
-    _$setProp2(_el$1, "verticalScrollbarOptions", {
-      paddingLeft: 1,
-      visible: true,
-      trackOptions: {}
-    });
     _$insert2(_el$1, _$createComponent6(For, {
       get each() {
         return projection.rows;
@@ -19681,7 +19676,26 @@ function Transcript(props) {
         return _el$13;
       }
     }), null);
-    _$effect2((_$p) => _$setProp2(_el$8, "backgroundColor", color.background(), _$p));
+    _$effect2((_p$) => {
+      var _v$8 = color.background(), _v$9 = {
+        paddingRight: props.scrollbar ? 1 : 0
+      }, _v$0 = {
+        paddingLeft: 1,
+        visible: props.scrollbar ?? false,
+        trackOptions: {
+          backgroundColor: color.background(),
+          foregroundColor: color.reasoningBorder()
+        }
+      };
+      _v$8 !== _p$.e && (_p$.e = _$setProp2(_el$8, "backgroundColor", _v$8, _p$.e));
+      _v$9 !== _p$.t && (_p$.t = _$setProp2(_el$1, "viewportOptions", _v$9, _p$.t));
+      _v$0 !== _p$.a && (_p$.a = _$setProp2(_el$1, "verticalScrollbarOptions", _v$0, _p$.a));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined
+    });
     return _el$8;
   })();
 }

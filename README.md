@@ -81,8 +81,10 @@ agent), provider baseUrls from `~/.dsh/models-store.json`, API keys from
 
 **In the TUI**: type a question, Enter to send. The model's thinking
 streams dim; tool calls (bash / read_file / write_file) pop an approval
-card — `y` allow, `n` decline; `esc` aborts a running turn. Commands:
-`/help` `/model [provider/id]` `/usage` `/clear` `/quit` (or Ctrl+C).
+card — `y` allow, `n` decline; `esc` aborts a running turn. Ctrl+C
+interrupts a running turn and shows "Press Ctrl+C again to quit"; a second
+Ctrl+C within 500 ms quits (client mode). Commands:
+`/help` `/model [provider/id]` `/usage` `/clear` `/quit`.
 
 ## Plugin integration, 30 seconds
 
