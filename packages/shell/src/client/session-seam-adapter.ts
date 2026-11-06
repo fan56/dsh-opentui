@@ -282,6 +282,7 @@ export class RemoteSessionSeam implements SessionSeam {
 			rounds: v.rounds,
 			...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
 			...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
+			...(v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}),
 		}))
 	}
 	onSubagentViews(listener: (views: SeamSubagentView[]) => void): () => void {
@@ -297,6 +298,7 @@ export class RemoteSessionSeam implements SessionSeam {
 				rounds: v.rounds,
 				...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
 				...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
+				...(v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}),
 			}))
 			foldSubagentMarkerViews(projected)
 			listener(projected)

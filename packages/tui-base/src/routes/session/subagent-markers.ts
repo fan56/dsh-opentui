@@ -15,6 +15,9 @@ export interface SubagentMarkerView {
 	rounds: number
 	injectedRound?: number
 	hardStopRound?: number
+	/** Spin-detected early force-stop round (`⏻!` — dsh-tui-pi parity,
+	 * "spin-detected early"; exclusive with the classic hardStopRound). */
+	spinStopRound?: number
 }
 
 /**
@@ -23,15 +26,22 @@ export interface SubagentMarkerView {
  * shown even when the child LLM then ignored it). Empty string when neither
  * marker fired.
  */
-export function subagentMarkerSuffix(view: Pick<SubagentMarkerView, "injectedRound" | "hardStopRound">): string {
+export function subagentMarkerSuffix(view: Pick<SubagentMarkerView, "injectedRound" | "hardStopRound" | "spinStopRound">): string {
 	let suffix = ""
-	if (view.hardStopRound !== undefined) suffix += ` ⏻ hard-stopped @${view.hardStopRound}`
+	if (view.spinStopRound !== undefined) {
+		// The early variant replaces the classic marker: the stop fired
+		// BEFORE the grace window (reference "spin-detected early").
+		suffix += ` ⏻! spin-detected early @${view.spinStopRound}`
+	} else if (view.hardStopRound !== undefined) {
+		suffix += ` ⏻ hard-stopped @${view.hardStopRound}`
+	}
 	if (view.injectedRound !== undefined) suffix += ` ⚡ injected`
 	return suffix
 }
 
 /** The bare glyph a picker row shows for a hard-stopped child (`⏻`), or "". */
-export function subagentHardStopGlyph(view: Pick<SubagentMarkerView, "hardStopRound">): string {
+export function subagentHardStopGlyph(view: Pick<SubagentMarkerView, "hardStopRound" | "spinStopRound">): string {
+	if (view.spinStopRound !== undefined) return "⏻!"
 	return view.hardStopRound !== undefined ? "⏻" : ""
 }
 

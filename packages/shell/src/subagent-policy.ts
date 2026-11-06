@@ -31,6 +31,23 @@
  *   Stage 1 — at `cap`: one wrap-up message ("finish now, no more tools").
  *   Stage 2 — at `cap + grace` (grace > 0): force-stop. `grace: 0` keeps
  *   the historical warn-only behavior (stage 1 only, never stops).
+ *
+ * SPIN-DETECTED EARLY STOP (ported from dsh-tui-pi's wayfinder ticket 05 —
+ * the part F1 deliberately left out): jev verdicts (TypeSafe System One
+ * noul probabilities, 0–1) are fed per child through `noteSpinVerdict`. A
+ * verdict at or above SPIN_HIGH_SEGMENT_AT (0.75, the reference's spinning
+ * high-segment line) is a strike: consecutive strikes arm the ladder's
+ * TIGHTEN-ONLY legs, a non-spinning verdict zeroes the streak, and a strike
+ * older than SPIN_STRIKE_STALE_MS (90s) is stale evidence:
+ *   Early stage 1 — fresh 2-streak, round at/after the floor
+ *   `max(10, ⌊cap/3⌋)` but below the cap: the wrap-up is pulled forward
+ *   (wrapupMessageEarly — "going in circles", door left open).
+ *   Early stage 2 — wrap-up delivered, at least one more round burned, and
+ *   a FRESH strike that POSTDATES the delivery ("still judged circling
+ *   through the wrap-up"): force-stop now, grace never eaten. The stop
+ *   carries `early: true` (the `⏻!` marker) and fires the onSpinStop hook.
+ * Without a fresh verdict the ladder below is byte-for-byte the old one —
+ * the spin legs never widen a cap or add grace.
  */
 
 /** The parsed `dsh-opentui` settings knobs. */
@@ -96,6 +113,84 @@ export function bareAgentLabel(label: string): string {
 /** The pure ladder verdict, given one child's state. Unit-tested standalone. */
 export type LadderAction = "none" | "wrapup" | "force-stop"
 
+// ---- spin-detected early stop (ported from dsh-tui-pi wayfinder ticket 05) ----
+
+/** A jev noul verdict at/above this line is a spinning strike (the reference's
+ * high-segment cut — the mock-jev e2e answers 0.95 to sit comfortably past it). */
+export const SPIN_HIGH_SEGMENT_AT = 0.75
+
+/** A spinning verdict older than this is stale evidence (three debounce
+ * windows in the reference; the ladder re-checks freshness at every decision). */
+export const SPIN_STRIKE_STALE_MS = 90_000
+
+/** Consecutive spinning verdicts that arm the early legs — everything looks
+ * repetitive in a young child's first rounds, so one strike is never enough. */
+export const EARLY_STOP_SPIN_STREAK = 2
+
+/** The early wrap-up's rounds floor: `max(10, ⌊cap/3⌋)` of the child's cap. */
+export function earlyFloor(cap: number): number {
+	return Math.max(10, Math.floor(cap / 3))
+}
+
+/** Per-child spin-strike state: consecutive spinning verdicts plus the clock
+ * of the most recent one (the freshness anchor). A non-spinning verdict
+ * zeroes BOTH (progress does NOT — a circling child's rounds keep growing). */
+export interface SpinState {
+	streak: number
+	lastStrikeAt: number
+}
+
+/** The spin ladder's verdict, given one child's verdict trail. Unit-tested
+ * standalone; mirrors dsh-tui-pi's tighten-only legs:
+ *   "wrapup-early"    — stage 1 pulled forward past the floor, below the cap.
+ *   "force-stop-early" — stage 2 fired before the grace window: the wrap-up
+ *   was delivered, ≥1 round burned after it, and a fresh strike POSTDATES
+ *   the delivery (the same judgment that triggered the wrap-up must not
+ *   re-trigger; a post-wrapup strike is a NEW judgment). */
+export type SpinLadderAction = "none" | "wrapup-early" | "force-stop-early"
+
+export function spinDecision(input: {
+	/** Consecutive spinning verdicts (noteSpinVerdict's trail). */
+	streak: number
+	/** Clock of the most recent spinning verdict. */
+	lastStrikeAt: number
+	/** Now (injectable for tests). */
+	now: number
+	/** The child's current round count. */
+	count: number
+	/** The effective cap (per-agent when resolved, else global). */
+	cap: number
+	/** The grace window following the wrap-up. */
+	grace: number
+	/** Whether stage 1 (wrap-up) already fired for this child. */
+	wrapupDelivered: boolean
+	/** Wall clock of the wrap-up delivery (undefined when not delivered). */
+	wrapupDeliveredAt?: number
+	/** Rounds burned after the wrap-up delivery. */
+	roundsSinceWrapup?: number
+	/** Whether the child settled (completed/failed/cancelled). */
+	settled: boolean
+}): SpinLadderAction {
+	if (input.cap <= 0) return "none" // ladder disabled — spin legs never run alone
+	if (input.settled) return "none"
+	if (input.streak < EARLY_STOP_SPIN_STREAK) return "none"
+	if (input.now - input.lastStrikeAt >= SPIN_STRIKE_STALE_MS) return "none" // stale evidence
+	if (!input.wrapupDelivered) {
+		// Early stage 1: pull the wrap-up forward, but only past the floor
+		// (young children) and only BEFORE the cap (the classic ladder owns
+		// the at-cap wrap-up — the spin legs never widen it).
+		return input.count >= earlyFloor(input.cap) && input.count < input.cap ? "wrapup-early" : "none"
+	}
+	// Early stage 2: the wrap-up landed, the child kept burning rounds, and a
+	// FRESH strike arrived AFTER the delivery. Requires grace > 0 (pure-soft
+	// mode never stops — reference parity).
+	if (input.grace <= 0) return "none"
+	if (input.wrapupDeliveredAt === undefined) return "none"
+	if (input.lastStrikeAt <= input.wrapupDeliveredAt) return "none" // the old judgment, not a new one
+	if ((input.roundsSinceWrapup ?? 0) < 1) return "none" // no round burned yet
+	return "force-stop-early"
+}
+
 export function ladderDecision(input: {
 	/** The child's current round count (assistant messages). */
 	count: number
@@ -134,6 +229,22 @@ export function wrapupMessage(maxRounds: number, grace: number): string {
 		: base
 }
 
+/**
+ * The spin-detected early wrap-up (dsh-tui-pi parity): the jev layer judged
+ * this child circling while still far from its cap. Same ask as
+ * `wrapupMessage` — stop tools, return a summary — but the reason is
+ * unproductive repetition, not budget exhaustion, and the tone leaves a door
+ * open in case the judgment is wrong.
+ */
+export function wrapupMessageEarly(): string {
+	return (
+		"This run appears to be going in circles — repeating work without forward progress, " +
+		"as judged by the dsh-opentui attention policy. Do NOT call any more tools. Finish NOW with what you have: " +
+		"summarize what was accomplished, state clearly what remains undone, and return that summary as your final answer. " +
+		"If this judgment looks wrong, say so in the summary and stop."
+	)
+}
+
 /** One executed hard stop, surfaced through the policy's onHardStop sink. */
 export interface HardStopRecord {
 	/** The child session id the stop was issued to. */
@@ -144,6 +255,9 @@ export interface HardStopRecord {
 	cap: number
 	/** The grace window of the ladder that fired. */
 	grace: number
+	/** Set when the stop fired BEFORE the grace window — the spin-detected
+	 * early stop (the `⏻!` / "spin-detected early" marker). */
+	early?: true
 }
 
 export interface SubagentRoundPolicyOptions {
@@ -172,6 +286,11 @@ export interface SubagentRoundPolicyOptions {
 	 * Fires with the round count at the stop; same firing point as
 	 * onHardStop (which additionally carries cap/grace). */
 	onForceStop?(childId: string, round: number): void
+	/** Observation hook (spin batch): the SPIN-DETECTED early force-stop
+	 * executed (`⏻!` marker — "spin-detected early", grace never eaten).
+	 * Fires INSTEAD of onForceStop for the early variant; onHardStop still
+	 * fires with `early: true`. */
+	onSpinStop?(childId: string, round: number): void
 }
 
 /** Per-child caps frozen at the first ladder crossing (the stage-2 cap must
@@ -200,10 +319,42 @@ export class SubagentRoundPolicy {
 	readonly #resolvedCaps = new Map<string, ResolvedCaps>()
 	/** Labels remembered at wrap-up time (stage-2 may arrive off the live board). */
 	readonly #injectedLabel = new Map<string, string>()
+	/** Round count at the wrap-up delivery — the early-stop "rounds since
+	 * wrap-up" baseline. */
+	readonly #injectedRound = new Map<string, number>()
+	/** Wall clock of the wrap-up delivery — the early stop demands a FRESH
+	 * strike that POSTDATES it (a post-wrapup strike is a new judgment). */
+	readonly #injectedAt = new Map<string, number>()
+	/** Per-child spin-strike trail (noteSpinVerdict's write side). */
+	readonly #spinState = new Map<string, SpinState>()
 	#disposed = false
 
 	constructor(options: SubagentRoundPolicyOptions) {
 		this.#options = options
+	}
+
+	/**
+	 * The jev layer's write side: fold one verdict in for one child. `score`
+	 * is a noul probability (0–1); at/above {@link SPIN_HIGH_SEGMENT_AT} it is
+	 * a spinning strike (streak +1, clock stamped), below it the streak zeroes
+	 * — reference parity: progress does NOT zero the streak (a circling
+	 * child's rounds keep growing — that IS the circling), only a
+	 * non-spinning verdict or dispose does; staleness is the ladder's job.
+	 */
+	noteSpinVerdict(childId: string, score: number, now: number = Date.now()): void {
+		if (this.#disposed || !childId) return
+		if (typeof score !== "number" || !Number.isFinite(score)) return
+		const previous = this.#spinState.get(childId) ?? { streak: 0, lastStrikeAt: 0 }
+		if (score >= SPIN_HIGH_SEGMENT_AT) {
+			this.#spinState.set(childId, { streak: previous.streak + 1, lastStrikeAt: now })
+		} else {
+			this.#spinState.set(childId, { streak: 0, lastStrikeAt: 0 })
+		}
+	}
+
+	/** One child's spin-strike trail (observability/tests; zeroed when absent). */
+	getSpinState(childId: string): SpinState {
+		return this.#spinState.get(childId) ?? { streak: 0, lastStrikeAt: 0 }
 	}
 
 	/** The bridge's round-count sink: call on every child assistant message. */
@@ -217,6 +368,48 @@ export class SubagentRoundPolicy {
 		const caps = this.#resolveCaps(childId, label ?? this.#injectedLabel.get(childId))
 		if (caps === undefined) return
 		const settled = this.#options.isSettled?.(childId) ?? false
+		// Spin-detected early legs FIRST (dsh-tui-pi parity — tighten-only:
+		// they can only pull the wrap-up forward or stop before the grace
+		// window, never widen a cap or add grace). Early stage 2: the wrap-up
+		// was delivered, ≥1 round burned, and a FRESH strike POSTDATED the
+		// delivery — stop now instead of eating the grace window.
+		const spin = this.#spinState.get(childId) ?? { streak: 0, lastStrikeAt: 0 }
+		const injectedRound = this.#injectedRound.get(childId)
+		const spinAction = spinDecision({
+			streak: spin.streak,
+			lastStrikeAt: spin.lastStrikeAt,
+			now: Date.now(),
+			count,
+			cap: caps.cap,
+			grace: caps.grace,
+			wrapupDelivered: this.#injected.has(childId),
+			wrapupDeliveredAt: this.#injectedAt.get(childId),
+			roundsSinceWrapup: injectedRound !== undefined ? count - injectedRound : undefined,
+			settled,
+		})
+		if (spinAction === "force-stop-early") {
+			this.#hardStopped.add(childId)
+			let stoppedEarly = false
+			try {
+				stoppedEarly = this.#options.forceStop(childId)
+			} catch {
+				stoppedEarly = false
+			}
+			if (stoppedEarly) {
+				try {
+					this.#options.onHardStop?.({ childId, round: count, cap: caps.cap, grace: caps.grace, early: true })
+				} catch {
+					// A reporting failure must not touch the stop itself.
+				}
+				// Spin marker: observers fold `⏻!` ("spin-detected early").
+				try {
+					this.#options.onSpinStop?.(childId, count)
+				} catch {
+					// Same containment as onForceStop.
+				}
+			}
+			return
+		}
 		const action = ladderDecision({
 			count,
 			cap: caps.cap,
@@ -224,10 +417,11 @@ export class SubagentRoundPolicy {
 			wrapupDelivered: this.#injected.has(childId),
 			settled,
 		})
-		if (action === "none") return
-		if (action === "wrapup") {
+		if (action === "none" && spinAction !== "wrapup-early") return
+		if (action === "wrapup" || spinAction === "wrapup-early") {
 			if (this.#injected.has(childId)) return
 			const rememberedLabel = label ?? this.#injectedLabel.get(childId)
+			const early = spinAction === "wrapup-early"
 			// Defer out of the caller's append publication window (header).
 			queueMicrotask(() => {
 				if (this.#disposed || this.#injected.has(childId)) return
@@ -235,7 +429,7 @@ export class SubagentRoundPolicy {
 				if (this.#options.isSettled?.(childId) === true) return
 				let delivered: boolean | Promise<boolean> = false
 				try {
-					delivered = this.#options.wrapup(childId, wrapupMessage(caps.cap, caps.grace), rememberedLabel)
+					delivered = this.#options.wrapup(childId, early ? wrapupMessageEarly() : wrapupMessage(caps.cap, caps.grace), rememberedLabel)
 				} catch {
 					delivered = false
 				}
@@ -247,6 +441,8 @@ export class SubagentRoundPolicy {
 					if (!ok) return // stays eligible; next round retries
 					this.#injected.add(childId)
 					if (rememberedLabel !== undefined) this.#injectedLabel.set(childId, rememberedLabel)
+					this.#injectedRound.set(childId, count)
+					this.#injectedAt.set(childId, Date.now())
 					// F6 marker: the injection landed — observers fold `⚡`.
 					try {
 						this.#options.onWrapUp?.(childId, count)
@@ -316,5 +512,8 @@ export class SubagentRoundPolicy {
 		this.#hardStopped.clear()
 		this.#resolvedCaps.clear()
 		this.#injectedLabel.clear()
+		this.#injectedRound.clear()
+		this.#injectedAt.clear()
+		this.#spinState.clear()
 	}
 }

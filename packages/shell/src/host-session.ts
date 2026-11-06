@@ -380,7 +380,10 @@ export class HostSession {
           options: (q?.options ?? []).map((o: any) => String(o?.label ?? o?.value ?? o)),
           ...(q?.header !== undefined ? { header: String(q.header) } : {}),
           ...(q?.detail !== undefined ? { description: String(q.detail) } : {}),
-          ...(q?.multi_select === true ? { multiSelect: true } : {}),
+          // Upstream dsh-user-questions renames the tool's `multi_select` to
+          // `multiSelect` in its service vocabulary (AskUserQuestionItem);
+          // keep the raw tool field as a fallback for direct callers.
+          ...((q?.multiSelect === true || q?.multi_select === true) ? { multiSelect: true } : {}),
         }))
         let picks: { questionId: string; selected: string; selections?: string[] }[]
         try {
@@ -1049,7 +1052,7 @@ export class HostSession {
   /** Live view per adopted child session (tui-pi AgentView, minimal). */
   #children = new Map<
     string,
-    { label: string; model?: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; tokens?: number; startedAt: number; lastLine?: string; injectedRound?: number; hardStopRound?: number }
+    { label: string; model?: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; tokens?: number; startedAt: number; lastLine?: string; injectedRound?: number; hardStopRound?: number; spinStopRound?: number }
   >()
   /** tool-workflow/agent-start ↔ agent-end pairing (runId:seq → child). */
   #runSeqToChild = new Map<string, string>()
@@ -1112,6 +1115,14 @@ export class HostSession {
           this.#children.set(childId, { ...existing, hardStopRound: round })
           this.#emitChildren()
         },
+        // Spin-detected early stop (`⏻!` marker fold — the stop fired BEFORE
+        // the grace window; the classic ⏻ latch never fires for this child).
+        onSpinStop: (childId, round) => {
+          const existing = this.#children.get(childId)
+          if (!existing) return
+          this.#children.set(childId, { ...existing, spinStopRound: round })
+          this.#emitChildren()
+        },
       })
       this.#refreshRoundLimits()
     }
@@ -1140,6 +1151,17 @@ export class HostSession {
    * fall back to a bare cancel, then to the in-process `subagents`
    * service, and settle the view as cancelled. False when no delivery
    * path reaches the child. */
+  /** The spin-detection feed (jev noul verdict for one child, 0–1): forward
+   * to the round policy's streak trail. The verdict SOURCE is the mounted
+   * dsh-agent-dispatch jev chain (JEV_ENDPOINT); the firehose carries no
+   * verdict event, so callers with a verdict trail (e2e probes, a future
+   * verdicts.ndjson tail) push through here. A no-op before the first round
+   * count created the policy. */
+  noteChildSpinVerdict(childId: string, noul: number): void {
+    if (!this.#children.has(childId)) return
+    this.#ensureRoundPolicy().noteSpinVerdict(childId, noul)
+  }
+
   cancelChild(childId: string): boolean {
     const agent = this.#childAgents.get(childId)
     if (agent?.cancel) {
@@ -1180,10 +1202,12 @@ export class HostSession {
   }
 
   /** Hard-stop report (console surface; the `⏻` viewer marker folds through
-   * the policy's onForceStop hook — batch F6). */
-  #onHardStop(record: { childId: string; round: number; cap: number; grace: number }): void {
+   * the policy's onForceStop hook — batch F6; the spin-detected early
+   * variant folds `⏻!` through onSpinStop). */
+  #onHardStop(record: { childId: string; round: number; cap: number; grace: number; early?: true }): void {
+    const variant = record.early === true ? "spin-detected early" : "grace exhausted"
     console.info(
-      `[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`,
+      `[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace}, ${variant})`,
     )
   }
 
@@ -1194,7 +1218,7 @@ export class HostSession {
 
   // ---- subagent marker face (batch F6: seam → view) ----
   /** Snapshot the live subagent rows (SeamSubagentView slice). */
-  subagentViews(): { id: string; label: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; injectedRound?: number; hardStopRound?: number }[] {
+  subagentViews(): { id: string; label: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; injectedRound?: number; hardStopRound?: number; spinStopRound?: number }[] {
     return [...this.#children.entries()].map(([id, v]) => ({
       id,
       label: v.label,
@@ -1202,6 +1226,7 @@ export class HostSession {
       rounds: v.rounds,
       ...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
       ...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
+      ...(v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}),
     }))
   }
 
@@ -1394,6 +1419,7 @@ export class HostSession {
         ...(v.lastLine ? { lastLine: clamp(v.lastLine) } : {}),
         ...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
         ...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
+        ...(v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}),
       })),
     )
   }

@@ -190,6 +190,10 @@ export interface SeamSubagentView {
 	injectedRound?: number
 	/** maxRounds force-stop fired at this round (`⏻ hard-stopped @N`). */
 	hardStopRound?: number
+	/** Spin-detected early force-stop (`⏻! spin-detected early @N`) — fired
+	 * BEFORE the grace window on fresh jev spin evidence; exclusive with the
+	 * classic hardStopRound latch. */
+	spinStopRound?: number
 }
 
 /** What the vendored view needs from a session backend, no more. */

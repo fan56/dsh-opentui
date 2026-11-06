@@ -57,6 +57,9 @@ export interface RemoteSubagentView {
 	injectedRound?: number
 	/** maxRounds force-stop fired at this round (F6 `⏻ hard-stopped @N`). */
 	hardStopRound?: number
+	/** Spin-detected early force-stop fired at this round (`⏻!` marker —
+	 * grace never eaten; exclusive with the classic hardStopRound latch). */
+	spinStopRound?: number
 }
 
 /** Child steerable-mode facts from the durable `subagent/descriptor`. */
@@ -88,6 +91,8 @@ export interface RemoteSubagentPanelOptions {
 	refreshLimits?: () => void
 	/** Hard-stop report sink (the force-stop marker fold). */
 	onHardStop?(record: HardStopRecord): void
+	/** Spin-detected early stop sink (the `⏻!` marker fold). */
+	onSpinStop?(childId: string, round: number): void
 }
 
 interface ChildState {
@@ -103,6 +108,8 @@ interface ChildState {
 	/** F6 markers: wrap-up delivered / force-stop fired round counts. */
 	injectedRound?: number
 	hardStopRound?: number
+	/** Spin-detected early force-stop (`⏻!`) — exclusive with hardStopRound. */
+	spinStopRound?: number
 }
 
 export class RemoteSubagentPanel {
@@ -150,6 +157,13 @@ export class RemoteSubagentPanel {
 					const child = this.#children.get(id)
 					if (!child) return
 					this.#children.set(id, { ...child, hardStopRound: round })
+					this.#emit()
+				},
+				// Spin-detected early stop (`⏻!` marker fold).
+				onSpinStop: (id, round) => {
+					const child = this.#children.get(id)
+					if (!child) return
+					this.#children.set(id, { ...child, spinStopRound: round })
 					this.#emit()
 				},
 			})
@@ -245,6 +259,7 @@ export class RemoteSubagentPanel {
 			...(v.lastLine ? { lastLine: clamp(v.lastLine) } : {}),
 			...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
 			...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
+			...(v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}),
 		}))
 	}
 
@@ -266,6 +281,19 @@ export class RemoteSubagentPanel {
 	 * steerChild's false on settled children). `steerChildDetailed`
 	 * surfaces the typed reason verbatim.
 	 */
+	/**
+	 * The spin-detection feed (jev noul verdict for one child, 0–1): forward
+	 * to the panel's round policy streak trail. The client face has no
+	 * verdict stream of its own (verdicts live host-side — the mounted
+	 * dsh-agent-dispatch chain); callers with a verdict trail push through
+	 * here. A no-op when the ladder is disabled (no limits wired) or the
+	 * child is unknown.
+	 */
+	noteSpinVerdict(id: string, noul: number): void {
+		if (!this.#children.has(id)) return
+		this.#policy?.noteSpinVerdict(id, noul)
+	}
+
 	async steer(id: string, text: string): Promise<boolean> {
 		const parent = this.#options.parentId()
 		if (parent === undefined) return false
