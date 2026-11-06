@@ -47,7 +47,7 @@ function findDshClosure() {
 }
 
 /** Closure packages the shell imports but npm cannot provide. */
-const CLOSURE_PACKAGES = ['dsh-llm', 'dsh-client-connection']
+const CLOSURE_PACKAGES = ['dsh-llm', 'dsh-client-connection', 'schemastery']
 
 const closure = findDshClosure()
 if (!closure) {

@@ -26,6 +26,7 @@ import { createSignal, onCleanup, onMount, ErrorBoundary } from "solid-js"
 import { createComponent, createElement, render, spread } from "@opentui/solid"
 // source-imports are inlined by the bundler; none of them import cordis at runtime
 import { mountEngine } from "../../runtime/src/engine.ts"
+import { Config } from "./plugin-config.ts"
 import { HostSession } from "./host-session.ts"
 import { HostSessionSeam } from "./host-session-seam-adapter.ts"
 
@@ -349,5 +350,12 @@ export function apply(ctx: Context, config?: { theme?: string }) {
   })
 }
 
-export const plugin = { name: "dsh-opentui", inject, apply }
+// Config rides ON the default export object: the cordis-plugin-loader
+// unwraps `exports.default ?? exports`, so the runtime the host sees is this
+// object — dsh-settings SettingsForms.describe() reads
+// `entry.fiber.runtime.Config` off it and filters the entry OUT of the
+// settings surface entirely when it is missing (which kept the F1 maxRounds
+// hard-stop ladder disabled; see plugin-config.ts).
+export const plugin = { name: "dsh-opentui", inject, apply, Config }
+export { Config }
 export default plugin
