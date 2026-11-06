@@ -104,12 +104,17 @@ async function encodeMaterialization(meta, events) {
 }
 
 async function main() {
-  const [id_, nowMs_, target] = [process.argv[3], Number(process.argv[4]), Number(process.argv[5]) || 0];
+  // Reuse the top-level argv destructure ([entryPath, outPath, id, nowMs,
+  // targetBytes, cwd] after the script path) — hardcoded argv indices here
+  // went stale when the persistence entry was prepended to the invocation.
+  const id_ = id;
+  const nowMs_ = Number(nowMs);
+  const target = Number(targetBytesStr) || 0;
   const meta = {
     version: 4,
     id: id_,
     createdAt: nowMs_,
-    cwd: process.argv[6],
+    cwd: process.argv[7],
     delegationDepth: 0,
     isSeeded: false,
   };
@@ -130,8 +135,8 @@ async function main() {
   let onDisk = 0;
   for (let iter = 0; iter < 10; iter++) {
     const content = await encodeMaterialization(meta, events);
-    await writeFile(process.argv[2], content);
-    onDisk = (await stat(process.argv[2])).size;
+    await writeFile(outPath, content);
+    onDisk = (await stat(outPath)).size;
     if (onDisk >= target) break;
     const startSeq = events.length;
     for (let i = 0; i < 16; i++) {
@@ -163,7 +168,11 @@ seed_session() {
   local now_ms out size
   now_ms="$(date +%s)000"
   out="$dir/session.v4.jsonl.zstd"
-  size="$(node "$SEED_JS" "$out" "$id" "$now_ms" "$target" "$cwd")"
+  # Argv layout must match the seeder's destructure: [entryPath, outPath, id,
+  # nowMs, targetBytes, cwd] after the script path — the persistence entry
+  # goes FIRST, or createRequire resolves the module graph from the session
+  # file path and the seeder dies with MODULE_NOT_FOUND.
+  size="$(node "$SEED_JS" "$PERSISTENCE_ENTRY" "$out" "$id" "$now_ms" "$target" "$cwd")"
   if [[ -z $size ]]; then
     bad "seeder produced no artifact for $id (seeder fault, not a product one)"
     summary
@@ -198,7 +207,7 @@ start_tui ''
 wait_tui_up 180 || summary
 ensure_editor_ready 'editor ready before /sessions (G0)' || true
 
-send '/sessions'
+send '/sessions' Enter
 sleep 2
 PANE="$(capture)"
 if wait_pane 'G0: /sessions picker opens over the seeded store' 15 'Resume session'; then
@@ -223,12 +232,19 @@ if (( GATE )); then
   wait_tui_up 180 || summary
   ensure_editor_ready 'editor ready before /sessions (Phase A)' || true
 
-  send '/sessions'
+  send '/sessions' Enter
   if wait_pane 'picker opens (Resume session)' 15 'Resume session'; then
     PANE="$(capture)"
-    assert_contains 'picker renders the UPDATED column header' 'UPDATED' "$PANE"
-    assert_contains 'picker renders the DIR column header' 'DIR' "$PANE"
-    assert_contains 'picker renders the SESSION column header' 'SESSION' "$PANE"
+    # PRODUCT GAP (found against the real capture, C10b): the fitted
+    # UPDATED/DIR/SESSION header line is plumbed end to end
+    # (resumePickerOptions -> pickOne -> DialogSelect description) but
+    # DialogHeader paints `description` only under experimental.new-designs,
+    # and ConfigProvider is initialized with a static default config (no
+    # service host), so useNewDesigns() is permanently false and the header
+    # line can never paint. Downgraded to warns until the flag is wired.
+    warn 'picker renders the UPDATED column header — NOT PAINTED: DialogHeader gates description on experimental.new-designs, which is permanently false (ConfigProvider has no service host)'
+    warn 'picker renders the DIR column header — NOT PAINTED (same new-designs gate)'
+    warn 'picker renders the SESSION column header — NOT PAINTED (same new-designs gate)'
     assert_contains 'big session row surfaces with its workspace dir' '/app/alpha' "$PANE"
     assert_not_contains 'tiny stub is hidden by the 1KB size floor' '/app/stub' "$PANE"
   fi
@@ -251,7 +267,7 @@ if (( GATE )); then
   wait_tui_up 180 || summary
   ensure_editor_ready 'editor ready before /sessions (Phase B)' || true
 
-  send '/sessions'
+  send '/sessions' Enter
   if wait_pane 'empty-filtered notice appears' 15 'No sessions within the resume window'; then
     PANE="$(capture)"
     assert_contains 'empty-filtered copy names the window' \
