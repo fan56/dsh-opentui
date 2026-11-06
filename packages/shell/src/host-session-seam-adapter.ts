@@ -110,11 +110,13 @@ SeamSessionEvent,
 	SeamSessionSummary,
 	SeamStatus,
 	SeamTranscriptRow,
+	SeamSubagentView,
 	SeamTurnCallbacks,
 	SessionSeam,
 } from "../../tui-base/src/seams/session"
 import { turnEndErrorMessage } from "./client/remote-follow.ts"
 import type { HostSession } from "./host-session.ts"
+import { foldSubagentMarkerViews } from "../../tui-base/src/routes/session/subagent-markers.ts"
 
 /** One durable firehose record forwarded by the facade's journal hook. */
 export interface HostJournalEntry {
@@ -189,6 +191,20 @@ export class HostSessionSeam implements SessionSeam {
 			/* panel shows 0 rather than failing */
 		}
 		return { ...base, sessionId: base.sessionId, model: base.model ?? null, messageCount }
+	}
+
+	// ---- subagent marker face (batch F6): HostSession 1:1 ----
+	subagentViews(): SeamSubagentView[] {
+		return this.#session.subagentViews()
+	}
+	onSubagentViews(listener: (views: SeamSubagentView[]) => void): () => void {
+		// Fold into the vendored picker's module store too (batch F6, plugin
+		// face): the SubagentsTab predates the seam and reads contexts.
+		foldSubagentMarkerViews(this.#session.subagentViews())
+		return this.#session.onSubagentViews((views) => {
+			foldSubagentMarkerViews(views)
+			listener(views)
+		})
 	}
 
 	resumeSession(id: string): "ok" | "owned" {

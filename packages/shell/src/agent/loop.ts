@@ -44,6 +44,10 @@ export interface TurnCallbacks {
     tokens?: number
     elapsed: number
     lastLine?: string
+    /** maxRounds wrap-up delivered at this round (F6 `⚡ injected` marker). */
+    injectedRound?: number
+    /** maxRounds force-stop fired at this round (F6 `⏻ hard-stopped @N`). */
+    hardStopRound?: number
   }[]) => void
   /** Idle-release wake catch-up: durable user/assistant rows the session
    * gained while our write handle was released (another surface — the

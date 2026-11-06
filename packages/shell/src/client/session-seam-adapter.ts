@@ -97,12 +97,14 @@ SeamSessionEvent,
 	SeamSessionSummary,
 	SeamStatus,
 	SeamTranscriptRow,
+	SeamSubagentView,
 	SeamTurnCallbacks,
 	SessionSeam,
 } from "../../../tui-base/src/seams/session"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { turnEndErrorMessage } from "./remote-follow.ts"
 import { RemoteHostSession } from "./remote-host-session.ts"
+import { foldSubagentMarkerViews } from "../../../tui-base/src/routes/session/subagent-markers.ts"
 
 export class RemoteSessionSeam implements SessionSeam {
 	readonly #session: RemoteHostSession
@@ -263,6 +265,36 @@ export class RemoteSessionSeam implements SessionSeam {
 
 	btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string> {
 		return this.#session.btwAsk(question, snapshot, onDelta)
+	}
+
+	// ---- subagent marker face (batch F6): RemoteHostSession 1:1 ----
+	subagentViews(): SeamSubagentView[] {
+		return this.#session.subagentViews().map((v) => ({
+			id: v.id,
+			label: v.label,
+			status: v.status,
+			rounds: v.rounds,
+			...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
+			...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
+		}))
+	}
+	onSubagentViews(listener: (views: SeamSubagentView[]) => void): () => void {
+		// Fold into the vendored picker's module store too (batch F6): the
+		// SubagentsTab predates the seam and reads contexts, so the markers
+		// ride this snapshot instead of a context re-plumb.
+		foldSubagentMarkerViews(this.subagentViews())
+		return this.#session.onSubagentViews((views) => {
+			const projected = views.map((v) => ({
+				id: v.id,
+				label: v.label,
+				status: v.status,
+				rounds: v.rounds,
+				...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
+				...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
+			}))
+			foldSubagentMarkerViews(projected)
+			listener(projected)
+		})
 	}
 
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void {

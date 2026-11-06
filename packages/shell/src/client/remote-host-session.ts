@@ -1428,6 +1428,15 @@ export class RemoteHostSession {
 						`[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`,
 					),
 				onUpdate: (views) => {
+					// F6 marker face: fan out to seam subscribers alongside the
+					// turn-callbacks surface.
+					for (const listener of this.#subagentListeners) {
+						try {
+							listener(views)
+						} catch {
+							/* a UI listener must never take the pump down */
+						}
+					}
 					try {
 						this.#cb?.onSubagentUpdate?.(views)
 					} catch {
@@ -1474,6 +1483,17 @@ export class RemoteHostSession {
 	/** The panel snapshot (TurnCallbacks.onSubagentUpdate row shape). */
 	subagentViews(): RemoteSubagentView[] {
 		return this.#subagentPanel().views()
+	}
+
+	// ---- subagent marker face (batch F6: seam → view) ----
+	/** Push listener registry (the seam adapter forwards this 1:1); the panel's
+	 * onUpdate fans out here too. Fires the FULL snapshot each fold, and
+	 * replays it immediately so a late subscriber paints current state. */
+	#subagentListeners = new Set<(views: RemoteSubagentView[]) => void>()
+	onSubagentViews(listener: (views: RemoteSubagentView[]) => void): () => void {
+		this.#subagentListeners.add(listener)
+		listener(this.subagentViews())
+		return () => this.#subagentListeners.delete(listener)
 	}
 
 	// ------------------------------------------------------------------

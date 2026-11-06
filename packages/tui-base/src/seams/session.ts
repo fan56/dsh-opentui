@@ -163,6 +163,23 @@ export interface SeamTurnCallbacks {
 	onError: (message: string) => void
 }
 
+/**
+ * One live subagent row (batch F6 marker face): the TurnCallbacks
+ * .onSubagentUpdate entry shape, view-relevant slice — what a picker/viewer
+ * row renders, plus the maxRounds policy markers (`injectedRound` folds the
+ * `⚡ injected` marker, `hardStopRound` the `⏻ hard-stopped @N` one).
+ */
+export interface SeamSubagentView {
+	id: string
+	label: string
+	status: "running" | "completed" | "failed" | "cancelled"
+	rounds: number
+	/** maxRounds wrap-up delivered at this round (`⚡ injected`). */
+	injectedRound?: number
+	/** maxRounds force-stop fired at this round (`⏻ hard-stopped @N`). */
+	hardStopRound?: number
+}
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -217,6 +234,14 @@ export interface SessionSeam {
 	 * when no session is attached.
 	 */
 	sessionInfo?(): Promise<SeamSessionInfo | undefined>
+	/**
+	 * Subagent marker face (batch F6): the live subagent rows snapshot, and
+	 * a push listener that fires on every fold (adoption, round, marker,
+	 * settle). The listener receives the FULL snapshot each time; the
+	 * disposer unsubscribes. Optional — a seam without it renders no picker.
+	 */
+	subagentViews?(): SeamSubagentView[]
+	onSubagentViews?(listener: (views: SeamSubagentView[]) => void): () => void
 	/** Event push (context/event.ts's subscribe/on replacement). */
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void
 
@@ -280,6 +305,22 @@ export class NullSessionSeam implements SessionSeam {
 	}
 	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
 		return undefined
+	}
+	/** F6 marker face stub: no subagents on the null seam. */
+	subagentViews(): SeamSubagentView[] {
+		return []
+	}
+	readonly #subagentListeners: ((views: SeamSubagentView[]) => void)[] = []
+	onSubagentViews(listener: (views: SeamSubagentView[]) => void): () => void {
+		this.#subagentListeners.push(listener)
+		return () => {
+			const index = this.#subagentListeners.indexOf(listener)
+			if (index >= 0) this.#subagentListeners.splice(index, 1)
+		}
+	}
+	/** Test helper: fan a subagent snapshot out to subscribed listeners. */
+	emitSubagentViews(views: SeamSubagentView[]): void {
+		for (const listener of this.#subagentListeners) listener(views)
 	}
 	/** Records listeners so a test can drive events through the stub. */
 	readonly listeners: ((event: SeamSessionEvent) => void)[] = []
