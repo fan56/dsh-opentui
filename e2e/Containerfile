@@ -124,6 +124,30 @@ RUN NODE_OPTIONS= node /tmp/bake-mock-endpoint.mjs \
 ENV JEV_ENDPOINT=http://127.0.0.1:8643/v1/systemone \
     TYPESAFE_API_KEY=e2e-fake-key
 
+# Bake the jev consumption chain into the profile: @aiwayds/dsh-agent-dispatch
+# (the agent/pre-step plugin whose `/dispatch <task>` fires one TypeSafe Jev
+# call) plus its @aiwayds/dsh-jev-core library. Before this step the image's
+# @aiwayds closure held only dsh-opentui — JEV_ENDPOINT above had no reader
+# (A5 inventory), and the 65-attention scenario's jev layer would silently
+# degrade to heuristic-only. Versions 0.2.2 / 0.1.5 are the pins dsh-tui-pi's
+# e2e/latest-profile reference ran (also the dev machine's dsh-opentui
+# profile). Bundle membership makes `dsh plugin --profile dsh-opentui list`
+# report both; the profile-patch override row (applied after every bundle
+# layer) switches dispatch to `mode: auto` + logDir — the tui profile's
+# `mode: once` verdict-on-request is unreachable here because the opentui
+# composer intercepts leading-slash turns ("unknown command"), so the
+# plugin's default autoKeywords gate is the only way a baked chain can fire.
+# The pnpm install runs HERE (not in the script) so the NPM_REGISTRY build
+# arg applies; the trailing probes fail the build if the packages did not
+# land in the profile's hoisted closure.
+COPY e2e/lib/bake-jev-chain.mjs /tmp/bake-jev-chain.mjs
+RUN NODE_OPTIONS= node /tmp/bake-jev-chain.mjs \
+ && pnpm --dir /root/.dsh/profiles/dsh-opentui install --registry="${NPM_REGISTRY}" \
+ && node -e "const p=require('/root/.dsh/profiles/dsh-opentui/package.json'); if (!p.dependencies['@aiwayds/dsh-agent-dispatch'] || !p.dependencies['@aiwayds/dsh-jev-core']) process.exit(1)" \
+ && test -d /root/.dsh/profiles/dsh-opentui/node_modules/@aiwayds/dsh-agent-dispatch \
+ && test -d /root/.dsh/profiles/dsh-opentui/node_modules/@aiwayds/dsh-jev-core \
+ && grep -n "dsh-agent-dispatch" /root/.dsh/profiles/dsh-opentui/cordis.patch.yml
+
 # The scenario suite is bind-mounted at /e2e by e2e/run-e2e.sh so test logic
 # can iterate without an image rebuild.
 CMD ["bash", "/e2e/scenarios/run-all.sh"]
