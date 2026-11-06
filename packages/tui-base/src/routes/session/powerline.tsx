@@ -201,8 +201,14 @@ export function PowerlineFooter(props: {
 	right?: string
 	theme?: ComponentTheme
 }): JSX.Element {
+	// Batch F2: flexShrink 0 (auto-height-collapse law). The footer is an
+	// auto-height row at the end of the page column; once a long reply makes
+	// the transcript content exceed the viewport, the flex column shrinks
+	// every shrinkable child and this row collapsed to 0 rows — the footer
+	// "disappeared at settle" (live: boot/early-stream fine, gone after a
+	// 60-sentence turn, resize did not restore it). Never shrink it.
 	return (
-		<box style={{ flexDirection: "row", paddingLeft: 1 }}>
+		<box style={{ flexDirection: "row", paddingLeft: 1, flexShrink: 0 }}>
 			<For each={props.left}>
 				{(seg, i) => {
 					const next = () => props.left[i() + 1]
