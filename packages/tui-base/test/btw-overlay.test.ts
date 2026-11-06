@@ -3,6 +3,8 @@
  * open/close routing over a fake dialog stack. Renderer-free.
  */
 import { describe, expect, test } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import {
 	BtwController,
 	createBtwOpener,
@@ -131,6 +133,24 @@ describe("createBtwOpener", () => {
 		expect(btw.visible()).toBe(true)
 	})
 
+	test("input-form Esc closes through the stack entry's onClose; reopens cleanly", () => {
+		const fake = deferredAsk()
+		const btw = new BtwController({ ask: fake.ask, snapshot: async () => [] })
+		const d = fakeDialog()
+		const open = createBtwOpener({ controller: btw, dialog: d.dialog })
+		expect(open("")).toBe("input")
+		expect(d.log).toEqual(["replace"])
+		// The vendored stack's Esc pops the entry and fires its onClose — the
+		// only Esc path for the prompt, which must bind no Esc of its own
+		// (a local onCancel that only calls controller.close() left the stack
+		// entry rendered: Esc-dead, regression batch F3.1).
+		d.esc()
+		expect(btw.visible()).toBe(false)
+		expect(open("")).toBe("input")
+		d.esc()
+		expect(btw.visible()).toBe(false)
+	})
+
 	test("a full queue reports full and opens nothing", () => {
 		const fake = deferredAsk()
 		const btw = new BtwController({ ask: fake.ask, snapshot: async () => [], capacity: 0 })
@@ -157,5 +177,21 @@ describe("createBtwSnapshotBuilder", () => {
 				},
 			})(),
 		).toEqual([])
+	})
+})
+
+/**
+ * Regression guard (batch F3.1): DialogPrompt's own escape layer runs at
+ * priority 1 and shadows the dialog stack's "Close dialog" escape binding.
+ * It only calls `props.onCancel?.()` and never pops the stack, so an onCancel
+ * that merely calls controller.close() flipped a signal while the stack kept
+ * rendering the prompt — Esc was dead (Ctrl+C was the only way out). The
+ * opener must bind no Esc: the stack's escape binding closes it.
+ */
+describe("btw opener Esc law (source shape)", () => {
+	const source = readFileSync(join(import.meta.dir, "..", "src", "routes", "session", "btw-overlay.tsx"), "utf8")
+
+	test("the input prompt binds no onCancel — the dialog stack owns Esc", () => {
+		expect(source).not.toMatch(/<DialogPrompt[^>]*onCancel/)
 	})
 })

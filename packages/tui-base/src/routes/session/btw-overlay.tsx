@@ -191,8 +191,9 @@ export type BtwOpenOutcome = "usage" | "review" | "input" | "started" | "queued"
 /**
  * The `/btw` opener: argument form submits + shows the panel; bare form
  * reopens the last answer (review), or falls back to an input prompt.
- * Esc/cancel route through the vendored stack's onClose → controller.close()
- * (focus law: the stack owns capture/refocus, the panel binds no keys).
+ * Esc routes through the vendored stack's escape binding → onClose →
+ * controller.close() (focus law: the stack owns capture/refocus, the panel
+ * and the prompt bind no Esc of their own).
  */
 export function createBtwOpener(deps: {
 	controller: BtwController
@@ -219,6 +220,11 @@ export function createBtwOpener(deps: {
 			showPanel()
 			return "review"
 		}
+		// No `onCancel` here: a local one would own Esc through the prompt's
+		// priority-1 keymap layer, and one that only calls controller.close()
+		// leaves the stack entry rendered (Esc-dead — Ctrl+C was the only way
+		// out). With no onCancel the vendored stack's own escape binding closes
+		// the dialog: it pops the entry and fires the onClose below.
 		deps.dialog.replace(
 			() => (
 				<DialogPrompt
@@ -231,9 +237,6 @@ export function createBtwOpener(deps: {
 							return
 						}
 						showPanel()
-					}}
-					onCancel={() => {
-								deps.controller.close()
 					}}
 				/>
 			),
