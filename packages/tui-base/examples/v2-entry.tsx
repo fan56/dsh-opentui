@@ -32,6 +32,7 @@ import { createSignal, onCleanup, onMount, ErrorBoundary } from "solid-js"
 import { createComponent, createElement, render, spread } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
+import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
@@ -227,6 +228,16 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 							slashPalette: () => createComponent(SlashPalette, { controller: slash.controller, commands: slash.commands }),
 							slashHeight: () => slash.controller.rows(),
 						})
+					},
+				}),
+				// Subagents picker (batch C10a mount-gap fix): the seam-native
+				// edition of the vendored SubagentsTab (rows off the
+				// subagent-markers store, steer through the module bridge),
+				// toggled by the vendored `session.child.first` keybind (down).
+				// Getter-prop law: the seam rides a getter.
+				createComponent(SubagentsPicker, {
+					get seam() {
+						return seam
 					},
 				}),
 				// Transcript scrollback keys (batch 10f, ./transcript-scroll.tsx):

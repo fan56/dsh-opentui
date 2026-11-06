@@ -32,6 +32,7 @@ import { HostSessionSeam } from "./host-session-seam-adapter.ts"
 
 // tui-base view graph (bundled from source; see header)
 import { SessionComposer } from "../../tui-base/src/routes/session/session-composer"
+import { SubagentsPicker } from "../../tui-base/src/routes/session/subagents-picker"
 import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows"
 import { Transcript } from "../../tui-base/src/routes/session/transcript"
 import { TurnOverlayController } from "../../tui-base/src/routes/session/turn-overlay-controller"
@@ -253,6 +254,17 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
               slashPalette: () => createComponent(SlashPalette, { controller: slash.controller, commands: slash.commands }),
               slashHeight: () => slash.controller.rows(),
             })
+          },
+        }),
+        // Subagents picker (batch C10a mount-gap fix): the vendored
+        // SubagentsTab needs the vendored app contexts this page never
+        // mounts, so the seam-native picker (rows off the subagent-markers
+        // store, steer through the module bridge) rides here instead —
+        // toggled by the vendored `session.child.first` keybind (down).
+        // Getter-prop law: the seam rides a getter.
+        createComponent(SubagentsPicker, {
+          get seam() {
+            return seam
           },
         }),
         // Cancel contract (batch V2, ported here — plugin parity with

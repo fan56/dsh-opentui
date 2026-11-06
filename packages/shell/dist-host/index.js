@@ -810,7 +810,7 @@ var require_fuzzysort = __commonJS(function(exports, module) {
 
 // src/host-entry-v2.tsx
 import { spawn } from "node:child_process";
-import { createSignal as createSignal17, onCleanup as onCleanup15, onMount as onMount6, ErrorBoundary } from "solid-js";
+import { createSignal as createSignal18, onCleanup as onCleanup16, onMount as onMount6, ErrorBoundary } from "solid-js";
 import { createComponent as createComponent2, createElement, render, spread } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -2535,10 +2535,13 @@ class HostSession {
         const updatedAt = String(h?.updatedAt ?? h?.lastEventAt ?? h?.mtime ?? "");
         if (cutoff > 0 && updatedAt && new Date(updatedAt).getTime() < cutoff)
           continue;
+        const sizeBytes = Number(entry?.sizeBytes);
         out.push({
           id,
           title: String(h?.title ?? h?.firstPrompt ?? h?.name ?? "").slice(0, 40),
-          updatedAt
+          updatedAt,
+          ...typeof h?.cwd === "string" && h.cwd ? { cwd: h.cwd } : {},
+          ...Number.isFinite(sizeBytes) && entry?.sizeBytes !== undefined && entry?.sizeBytes !== null ? { sizeBytes } : {}
         });
       }
       return out.filter((s) => s.id).sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit);
@@ -3771,9 +3774,36 @@ function asRecord(value) {
 
 // ../tui-base/src/routes/session/subagent-markers.ts
 import { createSignal } from "solid-js";
+function subagentMarkerSuffix(view) {
+  let suffix = "";
+  if (view.spinStopRound !== undefined) {
+    suffix += ` ⏻! spin-detected early @${view.spinStopRound}`;
+  } else if (view.hardStopRound !== undefined) {
+    suffix += ` ⏻ hard-stopped @${view.hardStopRound}`;
+  }
+  if (view.injectedRound !== undefined)
+    suffix += ` ⚡ injected`;
+  return suffix;
+}
+function subagentHardStopGlyph(view) {
+  if (view.spinStopRound !== undefined)
+    return "⏻!";
+  return view.hardStopRound !== undefined ? "⏻" : "";
+}
 var [subagentViews, setSubagentViews] = createSignal([]);
+var subagentMarkerViews = subagentViews;
 function foldSubagentMarkerViews(views) {
   setSubagentViews(views);
+}
+var steerImpl;
+function registerSubagentSteer(fn) {
+  steerImpl = fn;
+}
+function steerSubagent(id, text) {
+  return steerImpl?.(id, text);
+}
+function subagentSteerWired() {
+  return steerImpl !== undefined;
 }
 
 // src/host-session-seam-adapter.ts
@@ -3784,6 +3814,7 @@ class HostSessionSeam {
   #unjournal;
   constructor(session) {
     this.#session = session;
+    registerSubagentSteer((id, text) => this.#session.steerChild(id, text));
   }
   status() {
     return {
@@ -3794,7 +3825,13 @@ class HostSessionSeam {
   }
   async listSessions(limit) {
     const rows = await this.#session.listSessions(limit);
-    return rows.map((row) => ({ id: row.id, title: row.title, ...row.updatedAt !== undefined ? { updatedAt: row.updatedAt } : {} }));
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      ...row.updatedAt !== undefined ? { updatedAt: row.updatedAt } : {},
+      ...row.cwd !== undefined ? { cwd: row.cwd } : {},
+      ...row.sizeBytes !== undefined ? { sizeBytes: row.sizeBytes } : {}
+    }));
   }
   async searchSessions(query) {
     return this.#session.searchSessions(query);
@@ -3841,6 +3878,9 @@ class HostSessionSeam {
       foldSubagentMarkerViews(views);
       listener(views);
     });
+  }
+  steerChild(id, text) {
+    return this.#session.steerChild(id, text);
   }
   resumeSession(id) {
     return this.#session.resumeSession(id);
@@ -21083,621 +21123,32 @@ function SessionComposer(props) {
   })();
 }
 
-// ../tui-base/src/routes/session/seam-rows.ts
-import { createSignal as createSignal5, onCleanup as onCleanup5 } from "solid-js";
-import { createStore as createStore4, produce as produce3, reconcile as reconcile3 } from "solid-js/store";
-function toStoredRow(stored, index) {
-  const kind = stored.kind === "user" || stored.kind === "tool" ? stored.kind : "assistant";
-  const key = `stored:${kind}:${index}`;
-  if (kind === "tool") {
-    return { key, kind: "tool", name: stored.text, args: "", status: "done" };
-  }
-  if (kind === "user")
-    return { key, kind: "user", text: stored.text, final: true };
-  return { key, kind: "assistant", text: stored.text, final: stored.final };
-}
-function createSeamRows(seam, sessionID, options) {
-  const [rows, setRows] = createStore4([]);
-  const [hydrated, setHydrated] = createSignal5(false);
-  let liveOrdinal = 0;
-  let turnOpen = false;
-  const pendingTurns = [];
-  function hydrate(stored) {
-    setRows(reconcile3(stored.map(toStoredRow), { key: "key" }));
-    setHydrated(true);
-  }
-  function load() {
-    const id = sessionID();
-    return seam.storedTranscript(id).then((stored) => {
-      if (sessionID() === id)
-        hydrate(stored);
-    }).catch(() => {
-      return;
-    });
-  }
-  function upsert(row) {
-    setRows(produce3((draft) => {
-      const index = draft.findIndex((existing) => existing.key === row.key);
-      if (index === -1) {
-        draft.push(row);
-        return;
-      }
-      Object.assign(draft[index], row);
-    }));
-  }
-  function dropRows(keys) {
-    setRows(produce3((draft) => {
-      for (let i = draft.length - 1;i >= 0; i--) {
-        if (keys.has(draft[i].key))
-          draft.splice(i, 1);
-      }
-    }));
-  }
-  function supersedeSettledTurn(group, settled) {
-    setRows(produce3((draft) => {
-      const assistantAt = draft.findIndex((row) => row.key === group.assistantKey);
-      const doomed = new Set([group.reasoningKey, group.assistantKey]);
-      let removedBefore = 0;
-      for (let i = draft.length - 1;i >= 0; i--) {
-        if (!doomed.has(draft[i].key))
-          continue;
-        draft.splice(i, 1);
-        if (i < assistantAt)
-          removedBefore += 1;
-      }
-      if (settled === undefined)
-        return;
-      let insertAt = assistantAt === -1 ? draft.length : assistantAt - removedBefore;
-      let journalUserAt = -1;
-      for (let i = draft.length - 1;i >= insertAt; i--) {
-        const row = draft[i];
-        if (row.kind === "user" && row.key.startsWith("user:") && !row.key.startsWith("user:local")) {
-          journalUserAt = i;
-          break;
-        }
-      }
-      if (journalUserAt !== -1) {
-        const prompt = draft[journalUserAt];
-        draft.splice(journalUserAt, 1);
-        draft.splice(insertAt, 0, prompt);
-        insertAt += 1;
-      }
-      draft.splice(insertAt, 0, settled);
-    }));
-  }
-  function apply(event) {
-    const details = event.details ?? {};
-    if (typeof details.sessionID === "string" && details.sessionID !== sessionID())
-      return;
-    if (event.type === "message.updated" && details.role === "user") {
-      const id = typeof details.id === "string" ? details.id : `local-${++liveOrdinal}`;
-      const text = typeof details.text === "string" ? details.text : "";
-      if (!turnOpen && pendingTurns.length > 0 && typeof details.sessionID === "string") {
-        const group = pendingTurns[0];
-        const local = rows.find((row) => row.key === group.userKey);
-        if (!local || local.kind !== "user" || local.text.trim() === text.trim()) {
-          group.userSuperseded = true;
-          dropRows(new Set([group.userKey]));
-        }
-      }
-      upsert({
-        key: `user:${id}`,
-        kind: "user",
-        text,
-        final: true
-      });
-      return;
-    }
-    if (event.type === "message.part.updated") {
-      const messageID = typeof details.messageID === "string" ? details.messageID : "live";
-      const part = details.part ?? {};
-      const partType = typeof part.type === "string" ? part.type : "text";
-      const partID = typeof part.id === "string" ? part.id : `${partType}:${messageID}`;
-      if (partType === "tool") {
-        upsert({
-          key: `tool:${messageID}:${partID}`,
-          kind: "tool",
-          name: typeof part.name === "string" ? part.name : "generic",
-          args: typeof part.input === "string" ? part.input : "",
-          status: part.status === "done" || part.status === "failed" ? part.status : "running",
-          output: typeof part.output === "string" ? part.output : undefined
-        });
-        return;
-      }
-      if (partType !== "text" && partType !== "reasoning")
-        return;
-      const text = typeof part.text === "string" ? part.text : "";
-      const kind = partType === "text" ? "assistant" : "reasoning";
-      if (partType === "text" && !turnOpen && pendingTurns.length > 0 && typeof details.sessionID === "string") {
-        const group = pendingTurns.shift();
-        const settled = text.trim() ? { key: `${kind}:${messageID}:${partID}`, kind: "assistant", text, final: true } : undefined;
-        supersedeSettledTurn(group, settled);
-        return;
-      }
-      const key = `${kind}:${messageID}:${partID}`;
-      const existing = rows.find((row) => row.key === key);
-      if (!existing && !text.trim())
-        return;
-      upsert({
-        key,
-        kind,
-        text: existing && existing.kind === kind ? existing.text + text : text,
-        final: part.time?.completed !== undefined
-      });
-      return;
-    }
-    if (event.type === "session.error") {
-      const message = typeof details.message === "string" ? details.message : "unknown error";
-      upsert({ key: `error:local-${++liveOrdinal}`, kind: "assistant", text: `error: ${message}`, final: true });
-    }
-  }
-  const unsubscribe = seam.onSessionEvent(apply);
-  onCleanup5(unsubscribe);
-  async function send(text) {
-    const prompt = text.trim();
-    if (!prompt)
-      return;
-    const userKey = `user:local-${++liveOrdinal}`;
-    upsert({ key: userKey, kind: "user", text: prompt, final: true });
-    const assistantKey = `assistant:live-${++liveOrdinal}`;
-    const reasoningKey = `reasoning:live-${liveOrdinal}`;
-    const group = { userKey, reasoningKey, assistantKey, userSuperseded: false };
-    pendingTurns.push(group);
-    let assistantText = "";
-    let reasoningText = "";
-    let turnErrored = false;
-    turnOpen = true;
-    return seam.turn(prompt, {
-      onThinkingDelta: (delta) => {
-        reasoningText += delta;
-        if (reasoningText.trim())
-          upsert({ key: reasoningKey, kind: "reasoning", text: reasoningText, final: false });
-      },
-      onContentDelta: (delta) => {
-        assistantText += delta;
-        upsert({ key: assistantKey, kind: "assistant", text: assistantText, final: false });
-      },
-      onToolStart: (start) => {
-        upsert({
-          key: `tool:live:${start.callId ?? start.name}`,
-          kind: "tool",
-          name: start.name,
-          args: start.args,
-          status: "running"
-        });
-      },
-      onApprove: options?.onApprove ?? approveThrough,
-      onError: (message) => {
-        turnErrored = true;
-        upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true });
-      }
-    }).finally(() => {
-      turnOpen = false;
-    }).then(() => {
-      const finalize = (key, kind, text) => {
-        if (kind === "assistant" && turnErrored)
-          return;
-        const existing = rows.find((row) => row.key === key);
-        if (existing && existing.kind === kind)
-          upsert({ ...existing, text, final: true });
-      };
-      finalize(reasoningKey, "reasoning", reasoningText);
-      finalize(assistantKey, "assistant", assistantText);
-      setRows(produce3((draft) => {
-        for (const row of draft) {
-          if (row.kind === "tool" && row.status === "running" && row.key.startsWith("tool:live:"))
-            row.status = "done";
-        }
-      }));
-      if (turnErrored)
-        return;
-      const id = sessionID();
-      return seam.storedTranscript(id).then((stored) => {
-        const nowId = sessionID();
-        if (turnOpen || nowId !== id && nowId !== "")
-          return;
-        const durable = [...stored].reverse().find((row) => row.kind === "assistant" && row.text.trim());
-        if (!durable)
-          return;
-        const live = rows.find((row) => row.key === assistantKey);
-        setRows(produce3((draft) => {
-          for (let i = draft.length - 1;i >= 0; i--) {
-            if (draft[i].key === reasoningKey)
-              draft.splice(i, 1);
-          }
-          if (durable && live && live.kind === "assistant" && live.text !== durable.text) {
-            const index = draft.findIndex((row) => row.key === assistantKey);
-            if (index !== -1)
-              Object.assign(draft[index], { text: durable.text, final: true });
-          }
-        }));
-      }).catch(() => {
-        return;
-      });
-    });
-  }
-  return { rows, hydrated, load, hydrate, apply, send };
-}
-async function approveThrough(_name, _args) {
-  return "allowed-once";
-}
-
-// ../tui-base/src/routes/session/transcript.tsx
-import { createTextNode as _$createTextNode2 } from "@opentui/solid";
-import { createComponent as _$createComponent6 } from "@opentui/solid";
-import { use as _$use2 } from "@opentui/solid";
-import { insertNode as _$insertNode2 } from "@opentui/solid";
-import { insert as _$insert2 } from "@opentui/solid";
-import { effect as _$effect2 } from "@opentui/solid";
-import { setProp as _$setProp2 } from "@opentui/solid";
-import { createElement as _$createElement2 } from "@opentui/solid";
-import { For, onCleanup as onCleanup6, onMount as onMount2, Show as Show3 } from "solid-js";
-import { useRenderer as useRenderer3 } from "@opentui/solid";
-import { SyntaxStyle as SyntaxStyle2 } from "@opentui/core";
-function Transcript(props) {
-  const renderer = useRenderer3();
-  const theme = useThemeOptional();
-  const color = {
-    text: () => theme?.text.base ?? "#e6e6e6",
-    user: () => theme?.text.action.primary.base ?? "#7aa2f7",
-    reasoningBorder: () => theme?.border.base ?? "#565f89",
-    reasoning: () => theme?.text.muted ?? "#9aa5ce",
-    done: () => theme?.text.feedback.success.base ?? "#9ece6a",
-    running: () => theme?.text.feedback.warning.base ?? "#e0af68",
-    failed: () => theme?.text.feedback.error.base ?? "#f7768e",
-    loading: () => theme?.text.feedback.info.base ?? "#565f89",
-    background: () => theme?.background.base ?? "black"
-  };
-  const sessionID = () => props.sessionID ?? props.seam.currentSessionId() ?? "";
-  const owned = props.projection === undefined;
-  const projection = props.projection ?? createSeamRows(props.seam, sessionID);
-  const themes = useThemesOptional();
-  const syntaxStyle = () => props.syntaxStyle ?? themes?.currentSyntax() ?? SyntaxStyle2.fromStyles({}, renderer.nativeScene);
-  onMount2(() => {
-    if (owned)
-      projection.load();
-  });
-  const assistantRow = (row) => (() => {
-    var _el$ = _$createElement2("markdown");
-    _$setProp2(_el$, "internalBlockMode", "top-level");
-    _$effect2((_p$) => {
-      var _v$ = props.renderNode, _v$2 = row.text, _v$3 = !row.final, _v$4 = syntaxStyle(), _v$5 = color.text();
-      _v$ !== _p$.e && (_p$.e = _$setProp2(_el$, "renderNode", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp2(_el$, "content", _v$2, _p$.t));
-      _v$3 !== _p$.a && (_p$.a = _$setProp2(_el$, "streaming", _v$3, _p$.a));
-      _v$4 !== _p$.o && (_p$.o = _$setProp2(_el$, "syntaxStyle", _v$4, _p$.o));
-      _v$5 !== _p$.i && (_p$.i = _$setProp2(_el$, "fg", _v$5, _p$.i));
-      return _p$;
-    }, {
-      e: undefined,
-      t: undefined,
-      a: undefined,
-      o: undefined,
-      i: undefined
-    });
-    return _el$;
-  })();
-  const rowView = (row) => {
-    switch (row.kind) {
-      case "user":
-        return (() => {
-          var _el$2 = _$createElement2("box"), _el$3 = _$createElement2("text");
-          _$insertNode2(_el$2, _el$3);
-          _$setProp2(_el$2, "flexShrink", 0);
-          _$setProp2(_el$2, "paddingLeft", 3);
-          _$setProp2(_el$3, "wrapMode", "word");
-          _$insert2(_el$3, () => `❯ ${row.text}`);
-          _$effect2((_$p) => _$setProp2(_el$3, "fg", color.user(), _$p));
-          return _el$2;
-        })();
-      case "reasoning":
-        return (() => {
-          var _el$4 = _$createElement2("box"), _el$5 = _$createElement2("text");
-          _$insertNode2(_el$4, _el$5);
-          _$setProp2(_el$4, "flexShrink", 0);
-          _$setProp2(_el$4, "marginLeft", 3);
-          _$setProp2(_el$4, "border", ["left"]);
-          _$setProp2(_el$4, "paddingLeft", 1);
-          _$setProp2(_el$5, "wrapMode", "word");
-          _$insert2(_el$5, () => row.text);
-          _$effect2((_p$) => {
-            var _v$6 = color.reasoningBorder(), _v$7 = color.reasoning();
-            _v$6 !== _p$.e && (_p$.e = _$setProp2(_el$4, "borderColor", _v$6, _p$.e));
-            _v$7 !== _p$.t && (_p$.t = _$setProp2(_el$5, "fg", _v$7, _p$.t));
-            return _p$;
-          }, {
-            e: undefined,
-            t: undefined
-          });
-          return _el$4;
-        })();
-      case "tool":
-        return (() => {
-          var _el$6 = _$createElement2("box"), _el$7 = _$createElement2("text");
-          _$insertNode2(_el$6, _el$7);
-          _$setProp2(_el$6, "flexShrink", 0);
-          _$setProp2(_el$6, "paddingLeft", 3);
-          _$setProp2(_el$7, "wrapMode", "none");
-          _$insert2(_el$7, () => `${row.status === "done" ? "✓" : row.status === "failed" ? "✗" : "*"} ${row.name}${row.args ? `(${row.args})` : ""}`);
-          _$effect2((_$p) => _$setProp2(_el$7, "fg", row.status === "failed" ? color.failed() : row.status === "running" ? color.running() : color.done(), _$p));
-          return _el$6;
-        })();
-      case "assistant":
-        return assistantRow(row);
-    }
-  };
-  onCleanup6(() => {
-    props.scrollRef?.(undefined);
-  });
-  return (() => {
-    var _el$8 = _$createElement2("box"), _el$9 = _$createElement2("box"), _el$0 = _$createElement2("box"), _el$1 = _$createElement2("scrollbox");
-    _$insertNode2(_el$8, _el$9);
-    _$setProp2(_el$8, "flexDirection", "column");
-    _$setProp2(_el$8, "flexGrow", 1);
-    _$setProp2(_el$8, "minHeight", 0);
-    _$setProp2(_el$8, "width", "100%");
-    _$insertNode2(_el$9, _el$0);
-    _$setProp2(_el$9, "flexDirection", "row");
-    _$setProp2(_el$9, "flexGrow", 1);
-    _$setProp2(_el$9, "minHeight", 0);
-    _$insertNode2(_el$0, _el$1);
-    _$setProp2(_el$0, "flexGrow", 1);
-    _$setProp2(_el$0, "minHeight", 0);
-    _$setProp2(_el$0, "position", "relative");
-    _$setProp2(_el$0, "paddingBottom", 1);
-    _$use2((value) => {
-      props.scrollRef?.(value);
-    }, _el$1);
-    _$setProp2(_el$1, "flexGrow", 1);
-    _$setProp2(_el$1, "overflow", "hidden");
-    _$setProp2(_el$1, "stickyScroll", true);
-    _$setProp2(_el$1, "stickyStart", "bottom");
-    _$insert2(_el$1, _$createComponent6(For, {
-      get each() {
-        return projection.rows;
-      },
-      children: (row) => (() => {
-        var _el$14 = _$createElement2("box");
-        _$setProp2(_el$14, "marginTop", 1);
-        _$setProp2(_el$14, "flexShrink", 0);
-        _$insert2(_el$14, () => rowView(row));
-        _$effect2((_$p) => _$setProp2(_el$14, "id", `seam-row-${row.key}`, _$p));
-        return _el$14;
-      })()
-    }), null);
-    _$insert2(_el$1, _$createComponent6(Show3, {
-      get when() {
-        return projection.hydrated() === false;
-      },
-      get children() {
-        var _el$10 = _$createElement2("box"), _el$11 = _$createElement2("text");
-        _$insertNode2(_el$10, _el$11);
-        _$setProp2(_el$10, "flexShrink", 0);
-        _$insertNode2(_el$11, _$createTextNode2(`Loading session history…`));
-        _$effect2((_$p) => _$setProp2(_el$11, "fg", color.loading(), _$p));
-        return _el$10;
-      }
-    }), null);
-    _$insert2(_el$8, _$createComponent6(Show3, {
-      get when() {
-        return props.children;
-      },
-      get children() {
-        var _el$13 = _$createElement2("box");
-        _$setProp2(_el$13, "width", "100%");
-        _$setProp2(_el$13, "flexShrink", 0);
-        _$insert2(_el$13, () => props.children);
-        return _el$13;
-      }
-    }), null);
-    _$effect2((_p$) => {
-      var _v$8 = color.background(), _v$9 = {
-        paddingRight: props.scrollbar ? 1 : 0
-      }, _v$0 = {
-        paddingLeft: 1,
-        visible: props.scrollbar ?? false,
-        trackOptions: {
-          backgroundColor: color.background(),
-          foregroundColor: color.reasoningBorder()
-        }
-      };
-      _v$8 !== _p$.e && (_p$.e = _$setProp2(_el$8, "backgroundColor", _v$8, _p$.e));
-      _v$9 !== _p$.t && (_p$.t = _$setProp2(_el$1, "viewportOptions", _v$9, _p$.t));
-      _v$0 !== _p$.a && (_p$.a = _$setProp2(_el$1, "verticalScrollbarOptions", _v$0, _p$.a));
-      return _p$;
-    }, {
-      e: undefined,
-      t: undefined,
-      a: undefined
-    });
-    return _el$8;
-  })();
-}
-
-// ../tui-base/src/routes/session/turn-overlay-controller.ts
-class TurnOverlayController {
-  #approvals = [];
-  #asks = [];
-  #seq = 0;
-  #listeners = new Set;
-  #idleHandlers = new Set;
-  #busy = false;
-  subscribe(fn) {
-    this.#listeners.add(fn);
-    return () => this.#listeners.delete(fn);
-  }
-  onIdle(fn) {
-    this.#idleHandlers.add(fn);
-    return () => this.#idleHandlers.delete(fn);
-  }
-  #changed() {
-    for (const listener of this.#listeners)
-      listener();
-    const busy = this.#approvals.length > 0 || this.#asks.length > 0;
-    if (this.#busy && !busy)
-      for (const handler of this.#idleHandlers)
-        handler();
-    this.#busy = busy;
-  }
-  get pendingApproval() {
-    return this.#approvals[0]?.request;
-  }
-  requestApproval(name, args) {
-    return new Promise((resolve) => {
-      this.#approvals.push({ request: { id: ++this.#seq, name, args }, resolve });
-      this.#changed();
-    });
-  }
-  confirmApproval() {
-    this.#settleApproval("allowed-once");
-  }
-  rejectApproval() {
-    this.#settleApproval("rejected");
-  }
-  #settleApproval(verdict) {
-    const head = this.#approvals.shift();
-    if (!head)
-      return;
-    head.resolve(verdict);
-    this.#changed();
-  }
-  get pendingAsk() {
-    const head = this.#asks[0];
-    if (!head)
-      return;
-    return { id: head.id, questions: head.questions, index: head.index, picks: head.picks, phase: head.phase };
-  }
-  get currentQuestion() {
-    const head = this.#asks[0];
-    return head?.questions[head.index];
-  }
-  answer(questions) {
-    if (questions.length === 0)
-      return Promise.resolve([]);
-    return new Promise((resolve) => {
-      this.#asks.push({
-        id: ++this.#seq,
-        questions,
-        index: 0,
-        picks: questions.map(() => []),
-        phase: "questions",
-        resolve
-      });
-      this.#changed();
-    });
-  }
-  toggle(option) {
-    const head = this.#asks[0];
-    const question = head?.questions[head.index];
-    if (!head || !question || head.phase === "review")
-      return;
-    if (question.multiSelect === true) {
-      const current = head.picks[head.index] ?? [];
-      head.picks[head.index] = current.includes(option) ? current.filter((label) => label !== option) : [...current, option];
-      this.#changed();
-      return;
-    }
-    head.picks[head.index] = [option];
-    if (head.questions.length === 1) {
-      this.#asks.shift();
-      head.resolve(this.#envelope(head));
-      this.#changed();
-      return;
-    }
-    if (this.#allAnswered(head)) {
-      head.phase = "review";
-    } else {
-      const next = head.questions.findIndex((_, qi) => qi > head.index && head.picks[qi]?.length === 0);
-      if (next >= 0)
-        head.index = next;
-    }
-    this.#changed();
-  }
-  switchFocus(direction) {
-    const head = this.#asks[0];
-    if (!head || head.phase === "review" || head.questions.length < 2)
-      return;
-    const next = Math.max(0, Math.min(head.questions.length - 1, head.index + direction));
-    if (next !== head.index) {
-      head.index = next;
-      this.#changed();
-    }
-  }
-  enterReview() {
-    const head = this.#asks[0];
-    if (!head || head.phase === "review")
-      return false;
-    if (!this.#allAnswered(head))
-      return false;
-    head.phase = "review";
-    this.#changed();
-    return true;
-  }
-  backToQuestions(focus) {
-    const head = this.#asks[0];
-    if (!head || head.phase !== "review")
-      return;
-    head.phase = "questions";
-    if (focus !== undefined && focus >= 0 && focus < head.questions.length)
-      head.index = focus;
-    this.#changed();
-  }
-  submit() {
-    const head = this.#asks[0];
-    if (!head)
-      return;
-    this.#asks.shift();
-    head.resolve(this.#envelope(head));
-    this.#changed();
-  }
-  #allAnswered(head) {
-    return head.picks.every((pick) => pick.length > 0);
-  }
-  #envelope(head) {
-    return head.questions.map((question, qi) => {
-      const picks = head.picks[qi] ?? [];
-      return {
-        questionId: question.id,
-        selected: picks[0] ?? "",
-        ...picks.length > 1 ? { selections: [...picks] } : {}
-      };
-    });
-  }
-  decline() {
-    const head = this.#asks.shift();
-    if (!head)
-      return;
-    head.resolve([]);
-    this.#changed();
-  }
-}
-
-// ../tui-base/src/routes/session/turn-overlays.tsx
-import { memo as _$memo5 } from "@opentui/solid";
-import { createComponent as _$createComponent14 } from "@opentui/solid";
-import { createEffect as createEffect4, createSignal as createSignal10, onCleanup as onCleanup11, onMount as onMount4, untrack, Show as Show7 } from "solid-js";
-
-// ../tui-base/src/ui/dialog-confirm.tsx
-import { insertNode as _$insertNode5 } from "@opentui/solid";
-import { createComponent as _$createComponent12 } from "@opentui/solid";
-import { setProp as _$setProp5 } from "@opentui/solid";
-import { effect as _$effect5 } from "@opentui/solid";
-import { insert as _$insert5 } from "@opentui/solid";
-import { createElement as _$createElement5 } from "@opentui/solid";
+// ../tui-base/src/routes/session/subagents-picker.tsx
+import { memo as _$memo6 } from "@opentui/solid";
+import { effect as _$effect7 } from "@opentui/solid";
+import { insert as _$insert6 } from "@opentui/solid";
+import { createTextNode as _$createTextNode4 } from "@opentui/solid";
+import { insertNode as _$insertNode6 } from "@opentui/solid";
+import { setProp as _$setProp7 } from "@opentui/solid";
+import { createElement as _$createElement8 } from "@opentui/solid";
+import { createComponent as _$createComponent13 } from "@opentui/solid";
+import { createEffect as createEffect5, createMemo as createMemo5, createSignal as createSignal10, For as For2, Show as Show7, onCleanup as onCleanup9 } from "solid-js";
+import { createStore as createStore6 } from "solid-js/store";
+import { TextAttributes as TextAttributes3 } from "@opentui/core";
 
 // ../tui-base/src/context/keymap.tsx
-import { createComponent as _$createComponent8 } from "@opentui/solid";
+import { createComponent as _$createComponent7 } from "@opentui/solid";
 import { InputRenderable, TextareaRenderable } from "@opentui/core";
 import { stringifyKeyStroke } from "@opentui/keymap";
 import { registerBackspacePopsPendingSequence, registerBaseLayoutFallback, registerCommaBindings, registerEscapeClearsPendingSequence, registerManagedTextareaLayer, registerTimedLeader } from "@opentui/keymap/addons/opentui";
 import { formatCommandBindings, formatKeySequence } from "@opentui/keymap/extras";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider, useBindings, useKeymapSelector } from "@opentui/keymap/solid";
-import { useRenderer as useRenderer4 } from "@opentui/solid";
-import { createComputed, createContext as createContext6, createMemo as createMemo4, createSignal as createSignal6, onCleanup as onCleanup7, useContext as useContext7 } from "solid-js";
+import { useRenderer as useRenderer3 } from "@opentui/solid";
+import { createComputed, createContext as createContext6, createMemo as createMemo4, createSignal as createSignal5, onCleanup as onCleanup5, useContext as useContext7 } from "solid-js";
 
 // ../tui-base/src/context/interactivity.tsx
-import { createComponent as _$createComponent7 } from "@opentui/solid";
+import { createComponent as _$createComponent6 } from "@opentui/solid";
 import { createContext as createContext5, createMemo as createMemo3, getOwner, useContext as useContext6 } from "solid-js";
 var Context3 = createContext5(() => true);
 function useInteractivity() {
@@ -21714,7 +21165,7 @@ var MODE = {
 };
 var Context4 = createContext6();
 function Provider(props) {
-  const renderer = useRenderer4();
+  const renderer = useRenderer3();
   const config = props.config ?? useConfig().data;
   const keymap = createDefaultOpenTuiKeymap(renderer);
   const mode = createMode(keymap);
@@ -21759,14 +21210,14 @@ function Provider(props) {
       timeoutMs: config.leader?.timeout ?? ("leader_timeout" in config ? config.leader_timeout : undefined) ?? 2000
     }));
   }
-  onCleanup7(() => {
+  onCleanup5(() => {
     dispose.reverse().forEach((item) => item());
     mode.dispose();
   });
-  return _$createComponent8(KeymapProvider, {
+  return _$createComponent7(KeymapProvider, {
     keymap,
     get children() {
-      return _$createComponent8(Context4.Provider, {
+      return _$createComponent7(Context4.Provider, {
         value: {
           keymap,
           config,
@@ -22059,7 +21510,7 @@ var Keymap = {
   useState
 };
 function createMode(keymap) {
-  const [stack, setStack] = createSignal6([]);
+  const [stack, setStack] = createSignal5([]);
   const current = createMemo4(() => stack().findLast((item) => item.enabled())?.mode ?? MODE.base);
   createComputed(() => keymap.setData(MODE.key, current()));
   const unregister = keymap.registerLayerFields({
@@ -22116,29 +21567,29 @@ function formatOptions(config) {
 
 // ../tui-base/src/ui/dialog.tsx
 import { memo as _$memo3 } from "@opentui/solid";
-import { createComponent as _$createComponent11 } from "@opentui/solid";
-import { effect as _$effect4 } from "@opentui/solid";
-import { insertNode as _$insertNode4 } from "@opentui/solid";
-import { insert as _$insert4 } from "@opentui/solid";
-import { setProp as _$setProp4 } from "@opentui/solid";
-import { createElement as _$createElement4 } from "@opentui/solid";
-import { useRenderer as useRenderer6, useTerminalDimensions as useTerminalDimensions2 } from "@opentui/solid";
-import { batch as batch2, children, createContext as createContext9, createEffect as createEffect2, createSignal as createSignal8, For as For2, onCleanup as onCleanup9, Show as Show5, useContext as useContext10 } from "solid-js";
-import { InputRenderable as InputRenderable2, MouseButton, RGBA as RGBA7, TextAttributes as TextAttributes2 } from "@opentui/core";
-import { createStore as createStore6 } from "solid-js/store";
-
-// ../tui-base/src/ui/toast.tsx
-import { createTextNode as _$createTextNode3 } from "@opentui/solid";
-import { createComponent as _$createComponent9 } from "@opentui/solid";
-import { insertNode as _$insertNode3 } from "@opentui/solid";
+import { createComponent as _$createComponent10 } from "@opentui/solid";
 import { effect as _$effect3 } from "@opentui/solid";
+import { insertNode as _$insertNode3 } from "@opentui/solid";
 import { insert as _$insert3 } from "@opentui/solid";
-import { memo as _$memo2 } from "@opentui/solid";
 import { setProp as _$setProp3 } from "@opentui/solid";
 import { createElement as _$createElement3 } from "@opentui/solid";
-import { createContext as createContext7, createSignal as createSignal7, onCleanup as onCleanup8, useContext as useContext8, Show as Show4 } from "solid-js";
+import { useRenderer as useRenderer5, useTerminalDimensions as useTerminalDimensions2 } from "@opentui/solid";
+import { batch as batch2, children, createContext as createContext9, createEffect as createEffect2, createSignal as createSignal7, For, onCleanup as onCleanup7, Show as Show4, useContext as useContext10 } from "solid-js";
+import { InputRenderable as InputRenderable2, MouseButton, RGBA as RGBA7, TextAttributes as TextAttributes2 } from "@opentui/core";
 import { createStore as createStore5 } from "solid-js/store";
-import { useRenderer as useRenderer5, useTerminalDimensions } from "@opentui/solid";
+
+// ../tui-base/src/ui/toast.tsx
+import { createTextNode as _$createTextNode2 } from "@opentui/solid";
+import { createComponent as _$createComponent8 } from "@opentui/solid";
+import { insertNode as _$insertNode2 } from "@opentui/solid";
+import { effect as _$effect2 } from "@opentui/solid";
+import { insert as _$insert2 } from "@opentui/solid";
+import { memo as _$memo2 } from "@opentui/solid";
+import { setProp as _$setProp2 } from "@opentui/solid";
+import { createElement as _$createElement2 } from "@opentui/solid";
+import { createContext as createContext7, createSignal as createSignal6, onCleanup as onCleanup6, useContext as useContext8, Show as Show3 } from "solid-js";
+import { createStore as createStore4 } from "solid-js/store";
+import { useRenderer as useRenderer4, useTerminalDimensions } from "@opentui/solid";
 import { TextAttributes } from "@opentui/core";
 
 // ../tui-base/src/util/record.ts
@@ -22194,7 +21645,7 @@ function errorMessage(error) {
 
 // ../tui-base/src/ui/toast.tsx
 function init() {
-  const [store, setStore] = createStore5({
+  const [store, setStore] = createStore4({
     currentToast: null,
     queue: []
   });
@@ -22272,13 +21723,13 @@ function init() {
       return store.queue.length;
     }
   };
-  onCleanup8(clear);
+  onCleanup6(clear);
   return toast;
 }
 var ctx = createContext7();
 function ToastProvider(props) {
   const value = init();
-  return _$createComponent9(ctx.Provider, {
+  return _$createComponent8(ctx.Provider, {
     value,
     get children() {
       return props.children;
@@ -22294,11 +21745,11 @@ function useToast() {
 }
 
 // ../tui-base/src/context/clipboard.tsx
-import { createComponent as _$createComponent10 } from "@opentui/solid";
+import { createComponent as _$createComponent9 } from "@opentui/solid";
 import { createContext as createContext8, useContext as useContext9 } from "solid-js";
 var ClipboardContext = createContext8();
 function ClipboardProvider(props) {
-  return _$createComponent10(ClipboardContext.Provider, {
+  return _$createComponent9(ClipboardContext.Provider, {
     get value() {
       return props.value;
     },
@@ -22348,46 +21799,46 @@ function dialogWidth(size) {
 function Dialog(props) {
   const dimensions = useTerminalDimensions2();
   const theme = useTheme().surface("dialog");
-  const renderer = useRenderer6();
+  const renderer = useRenderer5();
   let dismiss = false;
-  return _$createComponent11(ThemeContextProvider, {
+  return _$createComponent10(ThemeContextProvider, {
     context: "dialog",
     get children() {
-      var _el$ = _$createElement4("box"), _el$2 = _$createElement4("box");
-      _$insertNode4(_el$, _el$2);
-      _$setProp4(_el$, "onMouseDown", () => {
+      var _el$ = _$createElement3("box"), _el$2 = _$createElement3("box");
+      _$insertNode3(_el$, _el$2);
+      _$setProp3(_el$, "onMouseDown", () => {
         dismiss = !!renderer.getSelection();
       });
-      _$setProp4(_el$, "onMouseUp", () => {
+      _$setProp3(_el$, "onMouseUp", () => {
         if (dismiss) {
           dismiss = false;
           return;
         }
         props.onClose?.();
       });
-      _$setProp4(_el$, "alignItems", "center");
-      _$setProp4(_el$, "position", "absolute");
-      _$setProp4(_el$, "zIndex", 3000);
-      _$setProp4(_el$, "left", 0);
-      _$setProp4(_el$, "top", 0);
-      _$setProp4(_el$2, "onMouseUp", (e) => {
+      _$setProp3(_el$, "alignItems", "center");
+      _$setProp3(_el$, "position", "absolute");
+      _$setProp3(_el$, "zIndex", 3000);
+      _$setProp3(_el$, "left", 0);
+      _$setProp3(_el$, "top", 0);
+      _$setProp3(_el$2, "onMouseUp", (e) => {
         if (renderer.getSelection()?.getSelectedText())
           return;
         dismiss = false;
         e.stopPropagation();
       });
-      _$setProp4(_el$2, "paddingTop", 1);
-      _$insert4(_el$2, () => props.children);
-      _$effect4((_p$) => {
+      _$setProp3(_el$2, "paddingTop", 1);
+      _$insert3(_el$2, () => props.children);
+      _$effect3((_p$) => {
         var _v$ = dimensions().width, _v$2 = dimensions().height, _v$3 = props.centered ? "center" : undefined, _v$4 = props.centered ? 0 : dimensions().height / 4, _v$5 = RGBA7.fromInts(0, 0, 0, 150), _v$6 = dialogWidth(props.size ?? "medium"), _v$7 = dimensions().width - 2, _v$8 = theme.background.base;
-        _v$ !== _p$.e && (_p$.e = _$setProp4(_el$, "width", _v$, _p$.e));
-        _v$2 !== _p$.t && (_p$.t = _$setProp4(_el$, "height", _v$2, _p$.t));
-        _v$3 !== _p$.a && (_p$.a = _$setProp4(_el$, "justifyContent", _v$3, _p$.a));
-        _v$4 !== _p$.o && (_p$.o = _$setProp4(_el$, "paddingTop", _v$4, _p$.o));
-        _v$5 !== _p$.i && (_p$.i = _$setProp4(_el$, "backgroundColor", _v$5, _p$.i));
-        _v$6 !== _p$.n && (_p$.n = _$setProp4(_el$2, "width", _v$6, _p$.n));
-        _v$7 !== _p$.s && (_p$.s = _$setProp4(_el$2, "maxWidth", _v$7, _p$.s));
-        _v$8 !== _p$.h && (_p$.h = _$setProp4(_el$2, "backgroundColor", _v$8, _p$.h));
+        _v$ !== _p$.e && (_p$.e = _$setProp3(_el$, "width", _v$, _p$.e));
+        _v$2 !== _p$.t && (_p$.t = _$setProp3(_el$, "height", _v$2, _p$.t));
+        _v$3 !== _p$.a && (_p$.a = _$setProp3(_el$, "justifyContent", _v$3, _p$.a));
+        _v$4 !== _p$.o && (_p$.o = _$setProp3(_el$, "paddingTop", _v$4, _p$.o));
+        _v$5 !== _p$.i && (_p$.i = _$setProp3(_el$, "backgroundColor", _v$5, _p$.i));
+        _v$6 !== _p$.n && (_p$.n = _$setProp3(_el$2, "width", _v$6, _p$.n));
+        _v$7 !== _p$.s && (_p$.s = _$setProp3(_el$2, "maxWidth", _v$7, _p$.s));
+        _v$8 !== _p$.h && (_p$.h = _$setProp3(_el$2, "backgroundColor", _v$8, _p$.h));
         return _p$;
       }, {
         e: undefined,
@@ -22408,17 +21859,17 @@ function DialogHeader(props) {
   const theme = useTheme().surface("dialog");
   const newDesigns = useNewDesigns();
   const row = () => (() => {
-    var _el$3 = _$createElement4("box"), _el$4 = _$createElement4("text");
-    _$insertNode4(_el$3, _el$4);
-    _$setProp4(_el$3, "flexDirection", "row");
-    _$setProp4(_el$3, "justifyContent", "space-between");
-    _$insert4(_el$3, () => props.titleView ?? (() => {
-      var _el$5 = _$createElement4("text");
-      _$insert4(_el$5, () => props.title);
-      _$effect4((_p$) => {
+    var _el$3 = _$createElement3("box"), _el$4 = _$createElement3("text");
+    _$insertNode3(_el$3, _el$4);
+    _$setProp3(_el$3, "flexDirection", "row");
+    _$setProp3(_el$3, "justifyContent", "space-between");
+    _$insert3(_el$3, () => props.titleView ?? (() => {
+      var _el$5 = _$createElement3("text");
+      _$insert3(_el$5, () => props.title);
+      _$effect3((_p$) => {
         var _v$1 = newDesigns() ? undefined : TextAttributes2.BOLD, _v$10 = theme.text.base;
-        _v$1 !== _p$.e && (_p$.e = _$setProp4(_el$5, "attributes", _v$1, _p$.e));
-        _v$10 !== _p$.t && (_p$.t = _$setProp4(_el$5, "fg", _v$10, _p$.t));
+        _v$1 !== _p$.e && (_p$.e = _$setProp3(_el$5, "attributes", _v$1, _p$.e));
+        _v$10 !== _p$.t && (_p$.t = _$setProp3(_el$5, "fg", _v$10, _p$.t));
         return _p$;
       }, {
         e: undefined,
@@ -22426,14 +21877,14 @@ function DialogHeader(props) {
       });
       return _el$5;
     })(), _el$4);
-    _$insert4(_el$3, () => props.children, _el$4);
-    _$setProp4(_el$4, "flexShrink", 0);
-    _$setProp4(_el$4, "onMouseUp", () => (props.onClose ?? dialog.clear)());
-    _$insert4(_el$4, () => props.closeLabel ?? "esc");
-    _$effect4((_p$) => {
+    _$insert3(_el$3, () => props.children, _el$4);
+    _$setProp3(_el$4, "flexShrink", 0);
+    _$setProp3(_el$4, "onMouseUp", () => (props.onClose ?? dialog.clear)());
+    _$insert3(_el$4, () => props.closeLabel ?? "esc");
+    _$effect3((_p$) => {
       var _v$9 = props.gap, _v$0 = theme.text.muted;
-      _v$9 !== _p$.e && (_p$.e = _$setProp4(_el$3, "gap", _v$9, _p$.e));
-      _v$0 !== _p$.t && (_p$.t = _$setProp4(_el$4, "fg", _v$0, _p$.t));
+      _v$9 !== _p$.e && (_p$.e = _$setProp3(_el$3, "gap", _v$9, _p$.e));
+      _v$0 !== _p$.t && (_p$.t = _$setProp3(_el$4, "fg", _v$0, _p$.t));
       return _p$;
     }, {
       e: undefined,
@@ -22441,7 +21892,7 @@ function DialogHeader(props) {
     });
     return _el$3;
   })();
-  return _$createComponent11(Show5, {
+  return _$createComponent10(Show4, {
     get when() {
       return _$memo3(() => !!newDesigns())() && props.description;
     },
@@ -22449,12 +21900,12 @@ function DialogHeader(props) {
       return row();
     },
     get children() {
-      var _el$6 = _$createElement4("box"), _el$7 = _$createElement4("text");
-      _$insertNode4(_el$6, _el$7);
-      _$insert4(_el$6, row, _el$7);
-      _$setProp4(_el$7, "wrapMode", "word");
-      _$insert4(_el$7, () => props.description);
-      _$effect4((_$p) => _$setProp4(_el$7, "fg", theme.text.muted, _$p));
+      var _el$6 = _$createElement3("box"), _el$7 = _$createElement3("text");
+      _$insertNode3(_el$6, _el$7);
+      _$insert3(_el$6, row, _el$7);
+      _$setProp3(_el$7, "wrapMode", "word");
+      _$insert3(_el$7, () => props.description);
+      _$effect3((_$p) => _$setProp3(_el$7, "fg", theme.text.muted, _$p));
       return _el$6;
     }
   });
@@ -22463,13 +21914,13 @@ function DialogLayout(props) {
   const inset = () => props.inset ?? DIALOG_INSET;
   const newDesigns = useNewDesigns();
   return (() => {
-    var _el$8 = _$createElement4("box"), _el$9 = _$createElement4("box");
-    _$insertNode4(_el$8, _el$9);
-    _$setProp4(_el$8, "paddingBottom", 1);
-    _$setProp4(_el$8, "gap", 1);
-    _$insert4(_el$8, () => props.header, _el$9);
-    _$insert4(_el$9, () => props.children);
-    _$insert4(_el$8, _$createComponent11(Show5, {
+    var _el$8 = _$createElement3("box"), _el$9 = _$createElement3("box");
+    _$insertNode3(_el$8, _el$9);
+    _$setProp3(_el$8, "paddingBottom", 1);
+    _$setProp3(_el$8, "gap", 1);
+    _$insert3(_el$8, () => props.header, _el$9);
+    _$insert3(_el$9, () => props.children);
+    _$insert3(_el$8, _$createComponent10(Show4, {
       get when() {
         return newDesigns() || props.legacyFooter === undefined;
       },
@@ -22477,11 +21928,11 @@ function DialogLayout(props) {
         return props.legacyFooter;
       },
       get children() {
-        return _$createComponent11(Show5, {
+        return _$createComponent10(Show4, {
           get when() {
             return props.footer;
           },
-          children: (footer) => _$createComponent11(DialogFooter, {
+          children: (footer) => _$createComponent10(DialogFooter, {
             get actions() {
               return footer().actions;
             },
@@ -22495,12 +21946,12 @@ function DialogLayout(props) {
         });
       }
     }), null);
-    _$effect4((_p$) => {
+    _$effect3((_p$) => {
       var _v$11 = props.id, _v$12 = inset(), _v$13 = inset(), _v$14 = newDesigns() && props.footer ? (props.footerGap ?? 1) - 1 : 0;
-      _v$11 !== _p$.e && (_p$.e = _$setProp4(_el$8, "id", _v$11, _p$.e));
-      _v$12 !== _p$.t && (_p$.t = _$setProp4(_el$8, "paddingLeft", _v$12, _p$.t));
-      _v$13 !== _p$.a && (_p$.a = _$setProp4(_el$8, "paddingRight", _v$13, _p$.a));
-      _v$14 !== _p$.o && (_p$.o = _$setProp4(_el$9, "paddingBottom", _v$14, _p$.o));
+      _v$11 !== _p$.e && (_p$.e = _$setProp3(_el$8, "id", _v$11, _p$.e));
+      _v$12 !== _p$.t && (_p$.t = _$setProp3(_el$8, "paddingLeft", _v$12, _p$.t));
+      _v$13 !== _p$.a && (_p$.a = _$setProp3(_el$8, "paddingRight", _v$13, _p$.a));
+      _v$14 !== _p$.o && (_p$.o = _$setProp3(_el$9, "paddingBottom", _v$14, _p$.o));
       return _p$;
     }, {
       e: undefined,
@@ -22513,10 +21964,10 @@ function DialogLayout(props) {
 }
 function DialogBleed(props) {
   return (() => {
-    var _el$0 = _$createElement4("box");
-    _$setProp4(_el$0, "marginLeft", -3);
-    _$setProp4(_el$0, "marginRight", -3);
-    _$insert4(_el$0, () => props.children);
+    var _el$0 = _$createElement3("box");
+    _$setProp3(_el$0, "marginLeft", -3);
+    _$setProp3(_el$0, "marginRight", -3);
+    _$insert3(_el$0, () => props.children);
     return _el$0;
   })();
 }
@@ -22541,51 +21992,51 @@ function DialogFooter(props) {
   const band = () => newDesigns() && (secondary().length > 0 || primary().length > 0 || content.toArray().length > 0);
   const bandInset = () => DIALOG_INSET + (props.inset ?? 0) - 1;
   return (() => {
-    var _el$1 = _$createElement4("box"), _el$10 = _$createElement4("box"), _el$11 = _$createElement4("box");
-    _$insertNode4(_el$1, _el$10);
-    _$insertNode4(_el$1, _el$11);
-    _$setProp4(_el$1, "flexDirection", "row");
-    _$setProp4(_el$1, "justifyContent", "space-between");
-    _$setProp4(_el$1, "flexShrink", 0);
-    _$insert4(_el$10, content, null);
-    _$insert4(_el$10, _$createComponent11(For2, {
+    var _el$1 = _$createElement3("box"), _el$10 = _$createElement3("box"), _el$11 = _$createElement3("box");
+    _$insertNode3(_el$1, _el$10);
+    _$insertNode3(_el$1, _el$11);
+    _$setProp3(_el$1, "flexDirection", "row");
+    _$setProp3(_el$1, "justifyContent", "space-between");
+    _$setProp3(_el$1, "flexShrink", 0);
+    _$insert3(_el$10, content, null);
+    _$insert3(_el$10, _$createComponent10(For, {
       get each() {
         return secondary();
       },
-      children: (action) => _$createComponent11(DialogFooterItem, {
+      children: (action) => _$createComponent10(DialogFooterItem, {
         action,
         variant: "secondary"
       })
     }), null);
-    _$setProp4(_el$11, "flexDirection", "row");
-    _$insert4(_el$11, _$createComponent11(For2, {
+    _$setProp3(_el$11, "flexDirection", "row");
+    _$insert3(_el$11, _$createComponent10(For, {
       get each() {
         return primary();
       },
-      children: (action) => _$createComponent11(DialogFooterItem, {
+      children: (action) => _$createComponent10(DialogFooterItem, {
         action,
         variant: "primary"
       })
     }));
-    _$effect4((_p$) => {
+    _$effect3((_p$) => {
       var _v$15 = band() ? -DIALOG_INSET : undefined, _v$16 = band() ? -DIALOG_INSET : undefined, _v$17 = band() ? -1 : undefined, _v$18 = band() ? bandInset() : props.inset, _v$19 = band() ? bandInset() : props.inset, _v$20 = band() ? 1 : undefined, _v$21 = band() ? 1 : undefined, _v$22 = band() ? theme.background.raised.high : undefined, _v$23 = newDesigns() ? 2 : undefined, _v$24 = narrow() ? "column" : "row", _v$25 = narrow() || newDesigns() ? 0 : 2, _v$26 = newDesigns() && !narrow() ? 1 : undefined, _v$27 = newDesigns() ? "wrap" : undefined, _v$28 = newDesigns() ? 1 : undefined, _v$29 = newDesigns() ? 0 : undefined, _v$30 = newDesigns() ? 1 : 2, _v$31 = newDesigns() ? 0 : undefined;
-      _v$15 !== _p$.e && (_p$.e = _$setProp4(_el$1, "marginLeft", _v$15, _p$.e));
-      _v$16 !== _p$.t && (_p$.t = _$setProp4(_el$1, "marginRight", _v$16, _p$.t));
-      _v$17 !== _p$.a && (_p$.a = _$setProp4(_el$1, "marginBottom", _v$17, _p$.a));
-      _v$18 !== _p$.o && (_p$.o = _$setProp4(_el$1, "paddingLeft", _v$18, _p$.o));
-      _v$19 !== _p$.i && (_p$.i = _$setProp4(_el$1, "paddingRight", _v$19, _p$.i));
-      _v$20 !== _p$.n && (_p$.n = _$setProp4(_el$1, "paddingTop", _v$20, _p$.n));
-      _v$21 !== _p$.s && (_p$.s = _$setProp4(_el$1, "paddingBottom", _v$21, _p$.s));
-      _v$22 !== _p$.h && (_p$.h = _$setProp4(_el$1, "backgroundColor", _v$22, _p$.h));
-      _v$23 !== _p$.r && (_p$.r = _$setProp4(_el$1, "gap", _v$23, _p$.r));
-      _v$24 !== _p$.d && (_p$.d = _$setProp4(_el$10, "flexDirection", _v$24, _p$.d));
-      _v$25 !== _p$.l && (_p$.l = _$setProp4(_el$10, "gap", _v$25, _p$.l));
-      _v$26 !== _p$.u && (_p$.u = _$setProp4(_el$10, "columnGap", _v$26, _p$.u));
-      _v$27 !== _p$.c && (_p$.c = _$setProp4(_el$10, "flexWrap", _v$27, _p$.c));
-      _v$28 !== _p$.w && (_p$.w = _$setProp4(_el$10, "flexShrink", _v$28, _p$.w));
-      _v$29 !== _p$.m && (_p$.m = _$setProp4(_el$10, "minWidth", _v$29, _p$.m));
-      _v$30 !== _p$.f && (_p$.f = _$setProp4(_el$11, "gap", _v$30, _p$.f));
-      _v$31 !== _p$.y && (_p$.y = _$setProp4(_el$11, "flexShrink", _v$31, _p$.y));
+      _v$15 !== _p$.e && (_p$.e = _$setProp3(_el$1, "marginLeft", _v$15, _p$.e));
+      _v$16 !== _p$.t && (_p$.t = _$setProp3(_el$1, "marginRight", _v$16, _p$.t));
+      _v$17 !== _p$.a && (_p$.a = _$setProp3(_el$1, "marginBottom", _v$17, _p$.a));
+      _v$18 !== _p$.o && (_p$.o = _$setProp3(_el$1, "paddingLeft", _v$18, _p$.o));
+      _v$19 !== _p$.i && (_p$.i = _$setProp3(_el$1, "paddingRight", _v$19, _p$.i));
+      _v$20 !== _p$.n && (_p$.n = _$setProp3(_el$1, "paddingTop", _v$20, _p$.n));
+      _v$21 !== _p$.s && (_p$.s = _$setProp3(_el$1, "paddingBottom", _v$21, _p$.s));
+      _v$22 !== _p$.h && (_p$.h = _$setProp3(_el$1, "backgroundColor", _v$22, _p$.h));
+      _v$23 !== _p$.r && (_p$.r = _$setProp3(_el$1, "gap", _v$23, _p$.r));
+      _v$24 !== _p$.d && (_p$.d = _$setProp3(_el$10, "flexDirection", _v$24, _p$.d));
+      _v$25 !== _p$.l && (_p$.l = _$setProp3(_el$10, "gap", _v$25, _p$.l));
+      _v$26 !== _p$.u && (_p$.u = _$setProp3(_el$10, "columnGap", _v$26, _p$.u));
+      _v$27 !== _p$.c && (_p$.c = _$setProp3(_el$10, "flexWrap", _v$27, _p$.c));
+      _v$28 !== _p$.w && (_p$.w = _$setProp3(_el$10, "flexShrink", _v$28, _p$.w));
+      _v$29 !== _p$.m && (_p$.m = _$setProp3(_el$10, "minWidth", _v$29, _p$.m));
+      _v$30 !== _p$.f && (_p$.f = _$setProp3(_el$11, "gap", _v$30, _p$.f));
+      _v$31 !== _p$.y && (_p$.y = _$setProp3(_el$11, "flexShrink", _v$31, _p$.y));
       return _p$;
     }, {
       e: undefined,
@@ -22612,72 +22063,72 @@ function DialogFooter(props) {
 function DialogFooterItem(props) {
   const theme = useTheme().surface("dialog");
   const newDesigns = useNewDesigns();
-  const [hovered, setHovered] = createSignal8(false);
+  const [hovered, setHovered] = createSignal7(false);
   const trigger = () => {
     if (props.action.disabled)
       return;
     props.action.onTrigger?.();
   };
   const label = (key) => [(() => {
-    var _el$12 = _$createElement4("span");
-    _$insert4(_el$12, () => props.action.title);
-    _$effect4((_$p) => _$setProp4(_el$12, "style", {
+    var _el$12 = _$createElement3("span");
+    _$insert3(_el$12, () => props.action.title);
+    _$effect3((_$p) => _$setProp3(_el$12, "style", {
       fg: props.action.disabled ? theme.text.action.primary.disabled : props.action.color ?? theme.text.base
     }, _$p));
     return _el$12;
-  })(), _$createComponent11(Show5, {
+  })(), _$createComponent10(Show4, {
     get when() {
       return props.action.key;
     },
     get children() {
-      var _el$13 = _$createElement4("span");
-      _$insert4(_el$13, () => " " + props.action.key);
-      _$effect4((_$p) => _$setProp4(_el$13, "style", {
+      var _el$13 = _$createElement3("span");
+      _$insert3(_el$13, () => " " + props.action.key);
+      _$effect3((_$p) => _$setProp3(_el$13, "style", {
         fg: props.action.disabled ? theme.text.action.primary.disabled : props.action.color ?? key
       }, _$p));
       return _el$13;
     }
   })];
-  return _$createComponent11(Show5, {
+  return _$createComponent10(Show4, {
     get when() {
       return newDesigns();
     },
     get fallback() {
       return (() => {
-        var _el$16 = _$createElement4("text");
-        _$setProp4(_el$16, "onMouseUp", trigger);
-        _$insert4(_el$16, () => label(theme.text.muted));
+        var _el$16 = _$createElement3("text");
+        _$setProp3(_el$16, "onMouseUp", trigger);
+        _$insert3(_el$16, () => label(theme.text.muted));
         return _el$16;
       })();
     },
     get children() {
-      var _el$14 = _$createElement4("box"), _el$15 = _$createElement4("text");
-      _$insertNode4(_el$14, _el$15);
-      _$setProp4(_el$14, "paddingLeft", 1);
-      _$setProp4(_el$14, "paddingRight", 1);
-      _$setProp4(_el$14, "flexShrink", 0);
-      _$setProp4(_el$14, "onMouseOver", () => setHovered(true));
-      _$setProp4(_el$14, "onMouseOut", () => setHovered(false));
-      _$setProp4(_el$14, "onMouseUp", trigger);
-      _$insert4(_el$15, () => label(theme.text.muted));
-      _$effect4((_$p) => _$setProp4(_el$14, "backgroundColor", hovered() && !props.action.disabled ? theme.background.action[props.variant].hovered : undefined, _$p));
+      var _el$14 = _$createElement3("box"), _el$15 = _$createElement3("text");
+      _$insertNode3(_el$14, _el$15);
+      _$setProp3(_el$14, "paddingLeft", 1);
+      _$setProp3(_el$14, "paddingRight", 1);
+      _$setProp3(_el$14, "flexShrink", 0);
+      _$setProp3(_el$14, "onMouseOver", () => setHovered(true));
+      _$setProp3(_el$14, "onMouseOut", () => setHovered(false));
+      _$setProp3(_el$14, "onMouseUp", trigger);
+      _$insert3(_el$15, () => label(theme.text.muted));
+      _$effect3((_$p) => _$setProp3(_el$14, "backgroundColor", hovered() && !props.action.disabled ? theme.background.action[props.variant].hovered : undefined, _$p));
       return _el$14;
     }
   });
 }
 function init2() {
-  const [store, setStore] = createStore6({
+  const [store, setStore] = createStore5({
     stack: [],
     size: "medium",
     centered: false
   });
-  const renderer = useRenderer6();
+  const renderer = useRenderer5();
   const keymap = Keymap.use();
   createEffect2(() => {
     if (store.stack.length === 0)
       return;
     const popMode = keymap.mode.push("modal");
-    onCleanup9(popMode);
+    onCleanup7(popMode);
   });
   let focus;
   function refocus() {
@@ -22799,19 +22250,19 @@ function init2() {
 var ctx2 = createContext9();
 function DialogProvider(props) {
   const value = init2();
-  const renderer = useRenderer6();
+  const renderer = useRenderer5();
   const toast = useToast();
   const clipboard = useClipboard();
   const config = useConfig();
   const copyOnSelectEnabled = () => (config.data.terminal?.copy ?? (process.platform === "win32" ? "manual" : "select")) === "select";
-  return _$createComponent11(ctx2.Provider, {
+  return _$createComponent10(ctx2.Provider, {
     value,
     get children() {
       return [_$memo3(() => props.children), (() => {
-        var _el$17 = _$createElement4("box");
-        _$setProp4(_el$17, "position", "absolute");
-        _$setProp4(_el$17, "zIndex", 3000);
-        _$setProp4(_el$17, "onMouseDown", (evt) => {
+        var _el$17 = _$createElement3("box");
+        _$setProp3(_el$17, "position", "absolute");
+        _$setProp3(_el$17, "zIndex", 3000);
+        _$setProp3(_el$17, "onMouseDown", (evt) => {
           if (copyOnSelectEnabled())
             return;
           if (evt.button !== MouseButton.RIGHT)
@@ -22821,12 +22272,12 @@ function DialogProvider(props) {
           evt.preventDefault();
           evt.stopPropagation();
         });
-        _$insert4(_el$17, _$createComponent11(Show5, {
+        _$insert3(_el$17, _$createComponent10(Show4, {
           get when() {
             return value.stack.length;
           },
           get children() {
-            return _$createComponent11(Dialog, {
+            return _$createComponent10(Dialog, {
               onClose: () => value.clear(),
               get size() {
                 return value.size;
@@ -22835,7 +22286,7 @@ function DialogProvider(props) {
                 return value.centered;
               },
               get children() {
-                return _$createComponent11(Show5, {
+                return _$createComponent10(Show4, {
                   get when() {
                     return value.stack.at(-1);
                   },
@@ -22846,7 +22297,7 @@ function DialogProvider(props) {
             });
           }
         }));
-        _$effect4((_$p) => _$setProp4(_el$17, "onMouseUp", copyOnSelectEnabled() ? (event) => copyOnSelectRelease(event, renderer, toast, clipboard) : undefined, _$p));
+        _$effect3((_$p) => _$setProp3(_el$17, "onMouseUp", copyOnSelectEnabled() ? (event) => copyOnSelectRelease(event, renderer, toast, clipboard) : undefined, _$p));
         return _el$17;
       })()];
     }
@@ -22860,9 +22311,35 @@ function useDialog() {
   return value;
 }
 
-// ../tui-base/src/ui/dialog-confirm.tsx
-import { createStore as createStore7 } from "solid-js/store";
-import { For as For3 } from "solid-js";
+// ../tui-base/src/ui/dialog-prompt.tsx
+import { createTextNode as _$createTextNode3 } from "@opentui/solid";
+import { effect as _$effect6 } from "@opentui/solid";
+import { insertNode as _$insertNode5 } from "@opentui/solid";
+import { insert as _$insert5 } from "@opentui/solid";
+import { createComponent as _$createComponent12 } from "@opentui/solid";
+import { memo as _$memo5 } from "@opentui/solid";
+import { use as _$use2 } from "@opentui/solid";
+import { setProp as _$setProp6 } from "@opentui/solid";
+import { createElement as _$createElement7 } from "@opentui/solid";
+import { Show as Show6, createEffect as createEffect4, createSignal as createSignal9, onMount as onMount2 } from "solid-js";
+
+// ../tui-base/src/component/spinner.tsx
+import { insertNode as _$insertNode4 } from "@opentui/solid";
+import { setProp as _$setProp5 } from "@opentui/solid";
+import { effect as _$effect5 } from "@opentui/solid";
+import { insert as _$insert4 } from "@opentui/solid";
+import { createElement as _$createElement6 } from "@opentui/solid";
+import { createComponent as _$createComponent11 } from "@opentui/solid";
+import { memo as _$memo4 } from "@opentui/solid";
+import { createEffect as createEffect3, createSignal as createSignal8, onCleanup as onCleanup8, Show as Show5 } from "solid-js";
+
+// ../tui-base/src/component/spinner-renderable.ts
+import {
+  parseColor,
+  Renderable,
+  RGBA as RGBA8
+} from "@opentui/core";
+import { extend } from "@opentui/solid";
 
 // ../../node_modules/.pnpm/ansi-regex@6.4.0/node_modules/ansi-regex/index.js
 function ansiRegex({ onlyFirst = false } = {}) {
@@ -23028,2140 +22505,6 @@ function stringWidth2(value) {
     return total + 1;
   }, 0);
 }
-// ../tui-base/src/util/locale.ts
-function titlecase(str) {
-  return str.replace(/\b\w/g, (c) => c.toUpperCase());
-}
-function truncate(str, len) {
-  if (str.length <= len)
-    return str;
-  return str.slice(0, len - 1) + "…";
-}
-var graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-function truncateLeft(str, len) {
-  if (str.length <= len)
-    return str;
-  return "…" + str.slice(-(len - 1));
-}
-function truncateMiddle(str, maxLength = 35) {
-  if (maxLength <= 0)
-    return "";
-  if (str.length <= maxLength)
-    return str;
-  const ellipsis = "…";
-  const keepStart = Math.ceil((maxLength - ellipsis.length) / 2);
-  const keepEnd = Math.floor((maxLength - ellipsis.length) / 2);
-  if (keepEnd <= 0)
-    return str.slice(0, keepStart) + ellipsis;
-  return str.slice(0, keepStart) + ellipsis + str.slice(-keepEnd);
-}
-
-// ../tui-base/src/ui/dialog-confirm.tsx
-function DialogConfirm(props) {
-  const dialog = useDialog();
-  const theme = useTheme().surface("dialog");
-  const newDesigns = useNewDesigns();
-  const [store, setStore] = createStore7({
-    active: "confirm"
-  });
-  const choose = (key) => {
-    if (key === "confirm")
-      props.onConfirm?.();
-    if (key === "cancel")
-      props.onCancel?.();
-    dialog.clear();
-  };
-  Keymap.createLayer(() => ({
-    mode: "modal",
-    commands: newDesigns() ? [{
-      bind: "return",
-      title: "Confirm",
-      group: "Dialog",
-      run: () => choose("confirm")
-    }, {
-      bind: "escape",
-      title: "Cancel",
-      group: "Dialog",
-      run: () => choose("cancel")
-    }] : [{
-      bind: "return",
-      title: "Confirm dialog selection",
-      group: "Dialog",
-      run: () => choose(store.active)
-    }, {
-      bind: "left",
-      title: "Previous dialog option",
-      group: "Dialog",
-      run: () => {
-        setStore("active", store.active === "confirm" ? "cancel" : "confirm");
-      }
-    }, {
-      bind: "right",
-      title: "Next dialog option",
-      group: "Dialog",
-      run: () => {
-        setStore("active", store.active === "confirm" ? "cancel" : "confirm");
-      }
-    }]
-  }));
-  return _$createComponent12(DialogLayout, {
-    get header() {
-      return _$createComponent12(DialogHeader, {
-        get title() {
-          return props.title;
-        }
-      });
-    },
-    get footer() {
-      return {
-        actions: {
-          primary: [
-            {
-              title: (props.label?.cancel ?? "cancel").toLowerCase(),
-              key: "esc",
-              onTrigger: () => choose("cancel")
-            },
-            {
-              title: (props.label?.confirm ?? "confirm").toLowerCase(),
-              key: "enter",
-              onTrigger: () => choose("confirm")
-            }
-          ]
-        }
-      };
-    },
-    get legacyFooter() {
-      return (() => {
-        var _el$2 = _$createElement5("box");
-        _$setProp5(_el$2, "flexDirection", "row");
-        _$setProp5(_el$2, "justifyContent", "flex-end");
-        _$insert5(_el$2, _$createComponent12(For3, {
-          each: ["cancel", "confirm"],
-          children: (key) => (() => {
-            var _el$3 = _$createElement5("box"), _el$4 = _$createElement5("text");
-            _$insertNode5(_el$3, _el$4);
-            _$setProp5(_el$3, "paddingLeft", 1);
-            _$setProp5(_el$3, "paddingRight", 1);
-            _$setProp5(_el$3, "onMouseUp", () => choose(key));
-            _$insert5(_el$4, () => titlecase(props.label?.[key] ?? key));
-            _$effect5((_p$) => {
-              var _v$ = key === store.active ? theme.background.action.primary.focused : undefined, _v$2 = key === store.active ? theme.text.action.primary.focused : theme.text.muted;
-              _v$ !== _p$.e && (_p$.e = _$setProp5(_el$3, "backgroundColor", _v$, _p$.e));
-              _v$2 !== _p$.t && (_p$.t = _$setProp5(_el$4, "fg", _v$2, _p$.t));
-              return _p$;
-            }, {
-              e: undefined,
-              t: undefined
-            });
-            return _el$3;
-          })()
-        }));
-        return _el$2;
-      })();
-    },
-    get children() {
-      var _el$ = _$createElement5("text");
-      _$insert5(_el$, () => props.message);
-      _$effect5((_$p) => _$setProp5(_el$, "fg", theme.text.muted, _$p));
-      return _el$;
-    }
-  });
-}
-
-// ../tui-base/src/ui/dialog-select.tsx
-import { memo as _$memo4 } from "@opentui/solid";
-import { createTextNode as _$createTextNode4 } from "@opentui/solid";
-import { insertNode as _$insertNode6 } from "@opentui/solid";
-import { insert as _$insert6 } from "@opentui/solid";
-import { createComponent as _$createComponent13 } from "@opentui/solid";
-import { effect as _$effect6 } from "@opentui/solid";
-import { use as _$use3 } from "@opentui/solid";
-import { setProp as _$setProp6 } from "@opentui/solid";
-import { createElement as _$createElement6 } from "@opentui/solid";
-import { CliRenderEvents as CliRenderEvents2, RGBA as RGBA8, TextAttributes as TextAttributes3 } from "@opentui/core";
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-D6FCK2GA.js
-function u(o, n, a) {
-  let t = (r) => o(r, ...n);
-  return a === undefined ? t : Object.assign(t, { lazy: a, lazyArgs: n });
-}
-
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-WIMGWYZL.js
-function u2(r, n, o) {
-  let a = r.length - n.length;
-  if (a === 0)
-    return r(...n);
-  if (a === 1)
-    return u(r, n, o);
-  throw new Error("Wrong number of arguments");
-}
-
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-HVPVHFDT.js
-function i(...e) {
-  return u2(p, e);
-}
-var p = (e, d) => {
-  let r = Object.create(null);
-  for (let n = 0;n < e.length; n++) {
-    let t = e[n], y = d(t, n, e);
-    if (y !== undefined) {
-      let o = r[y];
-      o === undefined ? r[y] = [t] : o.push(t);
-    }
-  }
-  return Object.setPrototypeOf(r, Object.prototype), r;
-};
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-HGKLN5KY.js
-function k(...n) {
-  return u2(u3, n);
-}
-function u3(n, e) {
-  if (n === e || Object.is(n, e))
-    return true;
-  if (typeof n != "object" || typeof e != "object" || n === null || e === null || Object.getPrototypeOf(n) !== Object.getPrototypeOf(e))
-    return false;
-  if (Array.isArray(n))
-    return l(n, e);
-  if (n instanceof Map)
-    return a(n, e);
-  if (n instanceof Set)
-    return c(n, e);
-  if (n instanceof Date)
-    return n.getTime() === e.getTime();
-  if (n instanceof RegExp)
-    return n.toString() === e.toString();
-  if (Object.keys(n).length !== Object.keys(e).length)
-    return false;
-  for (let [r, t] of Object.entries(n))
-    if (!(r in e) || !u3(t, e[r]))
-      return false;
-  return true;
-}
-function l(n, e) {
-  if (n.length !== e.length)
-    return false;
-  for (let [r, t] of n.entries())
-    if (!u3(t, e[r]))
-      return false;
-  return true;
-}
-function a(n, e) {
-  if (n.size !== e.size)
-    return false;
-  for (let [r, t] of n.entries())
-    if (!e.has(r) || !u3(t, e.get(r)))
-      return false;
-  return true;
-}
-function c(n, e) {
-  if (n.size !== e.size)
-    return false;
-  let r = [...e];
-  for (let t of n) {
-    let o = false;
-    for (let [s, f] of r.entries())
-      if (u3(t, f)) {
-        o = true, r.splice(s, 1);
-        break;
-      }
-    if (!o)
-      return false;
-  }
-  return true;
-}
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-FRNNS7AX.js
-function u4(...a) {
-  return u2(o, a, l2);
-}
-var o = (a, r) => a.flatMap(r);
-var l2 = (a) => (r, t, y) => {
-  let n = a(r, t, y);
-  return Array.isArray(n) ? { done: false, hasNext: true, hasMany: true, next: n } : { done: false, hasNext: true, next: n };
-};
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-VVM5DH6Z.js
-function t(...r) {
-  return u2(Object.entries, r);
-}
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-ANXBDSUI.js
-var s = { done: false, hasNext: false };
-
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-7U7TOHLV.js
-function m(...e) {
-  return u2(o2, e, i2);
-}
-var o2 = (e, n) => e.filter(n);
-var i2 = (e) => (n, a, d) => e(n, a, d) ? { done: false, hasNext: true, next: n } : s;
-// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-3GOCSNFN.js
-function C(t, ...o) {
-  let n = t, u = o.map((e) => ("lazy" in e) ? y(e) : undefined), p = 0;
-  for (;p < o.length; ) {
-    if (u[p] === undefined || !B(n)) {
-      let i = o[p];
-      n = i(n), p += 1;
-      continue;
-    }
-    let r = [];
-    for (let i = p;i < o.length; i++) {
-      let l = u[i];
-      if (l === undefined || (r.push(l), l.isSingle))
-        break;
-    }
-    let a = [];
-    for (let i of n)
-      if (f(i, a, r))
-        break;
-    let { isSingle: s } = r.at(-1);
-    n = s ? a[0] : a, p += r.length;
-  }
-  return n;
-}
-function f(t, o, n) {
-  if (n.length === 0)
-    return o.push(t), false;
-  let u = t, p = s, e = false;
-  for (let [r, a] of n.entries()) {
-    let { index: s, items: i } = a;
-    if (i.push(u), p = a(u, s, i), a.index += 1, p.hasNext) {
-      if (p.hasMany ?? false) {
-        for (let l of p.next)
-          if (f(l, o, n.slice(r + 1)))
-            return true;
-        return e;
-      }
-      u = p.next;
-    }
-    if (!p.hasNext)
-      break;
-    p.done && (e = true);
-  }
-  return p.hasNext && o.push(u), e;
-}
-function y(t) {
-  let { lazy: o, lazyArgs: n } = t, u = o(...n);
-  return Object.assign(u, { isSingle: o.single ?? false, index: 0, items: [] });
-}
-function B(t) {
-  return typeof t == "string" || typeof t == "object" && t !== null && Symbol.iterator in t;
-}
-// ../tui-base/src/ui/dialog-select.tsx
-var fuzzysort = __toESM(require_fuzzysort(), 1);
-import { batch as batch3, createEffect as createEffect3, createMemo as createMemo5, createSignal as createSignal9, For as For4, Show as Show6, on, onCleanup as onCleanup10, onMount as onMount3 } from "solid-js";
-import { createStore as createStore8 } from "solid-js/store";
-import { useRenderer as useRenderer7, useTerminalDimensions as useTerminalDimensions3 } from "@opentui/solid";
-
-// ../tui-base/src/util/scroll.ts
-import { MacOSScrollAccel } from "@opentui/core";
-
-class CustomSpeedScroll {
-  speed;
-  constructor(speed) {
-    this.speed = speed;
-  }
-  tick(_now) {
-    return this.speed;
-  }
-  reset() {}
-}
-function getScrollAcceleration(config) {
-  if (config?.scroll?.acceleration) {
-    return new MacOSScrollAccel;
-  }
-  if (config?.scroll?.speed !== undefined) {
-    return new CustomSpeedScroll(config.scroll.speed);
-  }
-  return new CustomSpeedScroll(3);
-}
-
-// ../tui-base/src/ui/select-controller.ts
-function reconcileSelection(selected, count) {
-  return Math.max(0, Math.min(count - 1, selected));
-}
-function moveSelection(selected, input) {
-  if (input.count <= 0)
-    return 0;
-  const next = selected + input.delta;
-  if (input.policy === "clamp")
-    return reconcileSelection(next, input.count);
-  if (next < 0)
-    return input.count - 1;
-  if (next >= input.count)
-    return 0;
-  return next;
-}
-
-// ../tui-base/src/ui/dialog-select.tsx
-function dialogSelectContentWidth(dialogWidth) {
-  return dialogWidth - DIALOG_LIST_INSET * 2 - 4;
-}
-function DialogSelect(props) {
-  const dialog = useDialog();
-  const theme = useTheme().surface("dialog");
-  const config = useConfig().data;
-  const cursorStyle = useCursorStyle();
-  const newDesigns = useNewDesigns();
-  const scrollAcceleration = createMemo5(() => getScrollAcceleration(config));
-  const renderer = useRenderer7();
-  const [store, setStore] = createStore8({
-    selected: 0,
-    filter: ""
-  });
-  let selection;
-  let resetSelection = false;
-  let pendingScroll;
-  function scrollAfterLayout(center, value) {
-    if (pendingScroll)
-      renderer.off(CliRenderEvents2.FRAME, pendingScroll);
-    pendingScroll = () => {
-      pendingScroll = undefined;
-      if (!k(selected()?.value, value))
-        return;
-      scrollToSelection(center);
-    };
-    renderer.once(CliRenderEvents2.FRAME, pendingScroll);
-    renderer.requestRender();
-  }
-  createEffect3(on([() => props.focusTarget ?? props.current, () => props.focusTarget === undefined ? undefined : flat()], ([current]) => {
-    if (props.search || props.focusCurrent === false)
-      return;
-    if (props.focusTarget !== undefined && (props.preserveSelection || store.filter.length > 0))
-      return;
-    if (current !== undefined) {
-      const currentIndex = flat().findIndex((opt) => k(opt.value, current));
-      if (currentIndex >= 0) {
-        setStore("selected", currentIndex);
-        selection = flat()[currentIndex];
-        scrollAfterLayout(true, current);
-      }
-    }
-  }));
-  let input;
-  const actions = createMemo5(() => props.actions ?? []);
-  const shownActions = createMemo5(() => actions().filter((item) => !item.hidden));
-  const shortcuts = Keymap.useShortcuts();
-  const actionLabels = createMemo5(() => {
-    const labels = new Map;
-    for (const action of shownActions()) {
-      const label = shortcuts.all(action.command);
-      if (label)
-        labels.set(action.command, label);
-    }
-    return labels;
-  });
-  const visibleActions = createMemo5(() => [...shownActions().map((item) => ({
-    ...item,
-    label: actionLabels().get(item.command) ?? ""
-  })).filter((item) => item.label), ...props.footerHints ?? []]);
-  const filtered = createMemo5(() => {
-    if (props.search)
-      return props.search(store.filter).filter((x) => x.disabled !== true);
-    if (props.skipFilter || props.renderFilter === false)
-      return props.options.filter((x) => x.disabled !== true);
-    const needle = store.filter.toLowerCase();
-    const options = C(props.options, m((x) => x.disabled !== true));
-    if (!needle)
-      return options;
-    const result = fuzzysort.go(needle, options, {
-      keys: ["title", "category", "searchText"],
-      scoreFn: (r) => r[0].score * 2 + r[1].score + r[2].score,
-      threshold: props.filterThreshold
-    }).map((x) => x.obj);
-    return result;
-  });
-  const flatten = createMemo5(() => props.search !== undefined || props.flat && store.filter.length > 0);
-  const grouped = createMemo5(() => {
-    if (flatten())
-      return filtered().length ? [["", filtered()]] : [];
-    const result = C(filtered(), i((x) => x.category ?? ""), t());
-    return result;
-  });
-  const flat = createMemo5(() => {
-    return C(grouped(), u4(([_, options]) => options));
-  });
-  const rows = createMemo5(() => {
-    const headers = grouped().reduce((acc, [category], i) => {
-      if (!category)
-        return acc;
-      return acc + (i > 0 ? 2 : 1);
-    }, 0);
-    return flat().reduce((acc, option) => acc + 1 + (option.details?.length ?? 0), headers);
-  });
-  const dimensions = useTerminalDimensions3();
-  const limit = createMemo5(() => Math.floor(dimensions().height / 2) - 6);
-  const overflows = createMemo5(() => newDesigns() && rows() > limit());
-  const detailsWidth = createMemo5(() => dialogSelectContentWidth(Math.min(dialogWidth(dialog.size), dimensions().width)));
-  const [moreBelow, setMoreBelow] = createSignal9(false);
-  const ellipsis = () => overflows() && moreBelow();
-  const height = createMemo5(() => Math.min(rows(), limit()) - (ellipsis() ? 1 : 0));
-  function updateMoreBelow() {
-    if (!scroll || scroll.isDestroyed)
-      return;
-    setMoreBelow(scroll.scrollTop + scroll.viewport.height < scroll.scrollHeight);
-  }
-  const selected = createMemo5(() => flat()[store.selected]);
-  const detailView = () => {
-    const detail = selected()?.detail;
-    return typeof detail === "function" ? detail : undefined;
-  };
-  const detailText = () => {
-    const detail = selected()?.detail;
-    return typeof detail === "string" ? detail : undefined;
-  };
-  createEffect3(on(() => props.options, () => {
-    if (props.search)
-      return;
-    if (!props.preserveSelection && ((props.focusTarget ?? props.current) === undefined || props.focusCurrent === false)) {
-      const count = flat().length;
-      if (count === 0)
-        return;
-      const next = reconcileSelection(store.selected, count);
-      if (next !== store.selected)
-        setStore("selected", next);
-      return;
-    }
-    if (resetSelection && store.filter.length > 0) {
-      const option = flat()[0];
-      if (!option)
-        return;
-      setStore("selected", 0);
-      selection = option;
-      return;
-    }
-    if (!selection) {
-      if (props.focusCurrent !== false && (props.focusTarget ?? props.current) !== undefined) {
-        const index = flat().findIndex((option) => k(option.value, props.focusTarget ?? props.current));
-        if (index >= 0) {
-          setStore("selected", index);
-          selection = flat()[index];
-          return;
-        }
-      }
-      const option = selected();
-      if (!option)
-        return;
-      selection = option;
-      return;
-    }
-    const previous = selection;
-    const index = flat().findIndex((option) => k(option.value, previous.value));
-    if (index >= 0) {
-      const option = flat()[index];
-      const moved = index !== store.selected || option.category !== previous.category;
-      setStore("selected", index);
-      selection = option;
-      if (!moved)
-        return;
-      if (!props.preserveSelection && ((props.focusTarget ?? props.current) === undefined || props.focusCurrent === false || store.filter.length > 0))
-        return;
-      scrollAfterLayout(false, option.value);
-      return;
-    }
-    const next = reconcileSelection(store.selected, flat().length);
-    if (flat().length === 0)
-      return;
-    setStore("selected", next);
-    selection = flat()[next];
-  }));
-  createEffect3(on([flat, () => store.filter, () => props.focusCurrent === false ? undefined : props.focusTarget ?? props.current], ([options, query, current], previous) => {
-    if (!props.search)
-      return;
-    const queryChanged = previous !== undefined && query !== previous[1];
-    const currentChanged = current !== undefined && (previous === undefined || !k(current, previous[2]));
-    selection = intent();
-    const intended = selection;
-    const index = intended ? options.findIndex((option) => k(option.value, intended.value)) : -1;
-    const next = index >= 0 ? index : reconcileSelection(store.selected, options.length);
-    const option = options[next];
-    if (!option)
-      return;
-    setStore("selected", next);
-    selection = option;
-    scrollAfterLayout(queryChanged || currentChanged, option.value);
-    function intent() {
-      if (queryChanged && query)
-        return options[0];
-      if ((queryChanged || currentChanged) && current !== undefined)
-        return {
-          value: current
-        };
-      if (queryChanged)
-        return options[reconcileSelection(store.selected, options.length)];
-      return selection;
-    }
-  }));
-  onCleanup10(() => {
-    if (!pendingScroll)
-      return;
-    renderer.off(CliRenderEvents2.FRAME, pendingScroll);
-    pendingScroll = undefined;
-  });
-  createEffect3(on([() => store.filter, () => props.focusTarget ?? props.current], ([filter, current]) => {
-    if (props.search)
-      return;
-    if (filter.length > 0)
-      resetSelection = true;
-    if (filter.length > 0) {
-      const option = flat()[0];
-      if (!option)
-        return;
-      moveTo(0, true, false);
-      scrollAfterLayout(true, option.value);
-      return;
-    }
-    if (current === undefined || props.focusCurrent === false)
-      return;
-    const currentIndex = flat().findIndex((opt) => k(opt.value, current));
-    if (currentIndex < 0)
-      return;
-    moveTo(currentIndex, true);
-    scrollAfterLayout(true, current);
-  }));
-  function move(direction) {
-    if (props.locked)
-      return;
-    if (flat().length === 0)
-      return;
-    moveTo(moveSelection(store.selected, {
-      count: flat().length,
-      delta: direction,
-      policy: "wrap"
-    }), true);
-  }
-  function moveSection(direction) {
-    if (props.locked)
-      return;
-    const sections = grouped().filter(([_, options]) => options.length > 0);
-    if (sections.length === 0)
-      return;
-    const current = sections.findIndex(([category]) => category === selected()?.category);
-    const section = sections[(current + direction + sections.length) % sections.length];
-    moveTo(flat().indexOf(section[1][0]), true);
-  }
-  function moveTo(next, center = false, preserve = true) {
-    setStore("selected", next);
-    const option = selected();
-    if (option) {
-      selection = option;
-      resetSelection = !preserve;
-    }
-    if (option)
-      props.onMove?.(option);
-    scrollToSelection(center);
-  }
-  function scrollToSelection(center) {
-    if (!scroll)
-      return;
-    let remaining = store.selected;
-    let index = 0;
-    for (const [category, options] of grouped()) {
-      if (category)
-        index++;
-      if (remaining < options.length) {
-        index += remaining;
-        break;
-      }
-      index += options.length;
-      remaining -= options.length;
-    }
-    const target = scroll.getChildren()[index];
-    if (!target)
-      return;
-    const y = target.y - scroll.y;
-    if (center) {
-      const centerOffset = Math.floor(scroll.height / 2);
-      scroll.scrollBy(y - centerOffset);
-    } else {
-      if (y >= scroll.height) {
-        scroll.scrollBy(y - scroll.height + 1);
-      }
-      if (y < 0) {
-        scroll.scrollBy(y);
-        if (k(flat()[0].value, selected()?.value)) {
-          scroll.scrollTo(0);
-        }
-      }
-    }
-  }
-  function submit() {
-    if (props.locked)
-      return;
-    const option = selected();
-    if (!option)
-      return;
-    option.onSelect?.(dialog);
-    props.onSelect?.(option);
-  }
-  Keymap.createLayer(() => {
-    const visible = shownActions();
-    return {
-      mode: "modal",
-      commands: [{
-        id: "dialog.select.prev",
-        title: "Previous item",
-        group: "Dialog",
-        run() {
-          move(-1);
-        }
-      }, {
-        id: "dialog.select.next",
-        title: "Next item",
-        group: "Dialog",
-        run() {
-          move(1);
-        }
-      }, {
-        id: "dialog.select.page_up",
-        title: "Page up",
-        group: "Dialog",
-        run() {
-          move(-10);
-        }
-      }, {
-        id: "dialog.select.page_down",
-        title: "Page down",
-        group: "Dialog",
-        run() {
-          move(10);
-        }
-      }, {
-        id: "dialog.select.home",
-        title: "First item",
-        group: "Dialog",
-        run() {
-          if (props.locked)
-            return;
-          moveTo(0);
-        }
-      }, {
-        id: "dialog.select.end",
-        title: "Last item",
-        group: "Dialog",
-        run() {
-          if (props.locked)
-            return;
-          moveTo(flat().length - 1);
-        }
-      }, {
-        id: "dialog.select.submit",
-        title: "Select item",
-        group: "Dialog",
-        run: submit
-      }, ...visible.map((item) => ({
-        id: item.command,
-        title: typeof item.title === "function" ? item.title(undefined) : item.title,
-        group: "Dialog",
-        bind: item.bind,
-        run: () => trigger(item)
-      })), ...props.bindings ?? [], ...props.onCancel ? [{
-        bind: "escape",
-        title: "Back",
-        group: "Dialog",
-        run: () => {
-          if (renderer.getSelection()) {
-            renderer.clearSelection();
-            return;
-          }
-          props.onCancel?.();
-        }
-      }] : [], ...props.sectionNavigation ? [{
-        bind: "alt+up",
-        title: "Previous section",
-        group: "Dialog",
-        run: () => moveSection(-1)
-      }, {
-        bind: "alt+down",
-        title: "Next section",
-        group: "Dialog",
-        run: () => moveSection(1)
-      }] : []]
-    };
-  });
-  let scroll;
-  const ref = {
-    get filter() {
-      return store.filter;
-    },
-    get filtered() {
-      return filtered();
-    },
-    get selected() {
-      return selected();
-    },
-    setFilter(value) {
-      if (input) {
-        input.value = value;
-        return;
-      }
-      if (value === store.filter)
-        return;
-      batch3(() => {
-        setStore("filter", value);
-        props.onFilter?.(value);
-      });
-    },
-    moveTo(value) {
-      const index = flat().findIndex((option) => k(option.value, value));
-      if (index >= 0)
-        moveTo(index, true);
-    }
-  };
-  onMount3(() => props.ref?.(ref));
-  const footerActions = createMemo5(() => visibleActions().map((item) => {
-    if (!isActionItem(item))
-      return {
-        side: item.side,
-        group: item.group ?? "secondary",
-        action: {
-          title: item.title,
-          key: item.label
-        }
-      };
-    return {
-      side: item.side,
-      group: item.group ?? (item.selection === "none" ? "secondary" : "primary"),
-      action: {
-        title: actionTitle(item),
-        key: item.label,
-        disabled: isActionDisabled(item),
-        onTrigger: () => trigger(item)
-      }
-    };
-  }));
-  const footerGroup = (match) => footerActions().filter(match).map((item) => item.action);
-  function trigger(item) {
-    if (props.locked || !item || isActionDisabled(item))
-      return;
-    if (item.selection === "none") {
-      item.onTrigger();
-      return;
-    }
-    const option = selected();
-    if (!option)
-      return;
-    item.onTrigger(option);
-  }
-  function actionTitle(item) {
-    return typeof item.title === "function" ? item.title(selected()) : item.title;
-  }
-  function isActionItem(item) {
-    return "onTrigger" in item;
-  }
-  function isActionDisabled(item) {
-    const option = selected();
-    if (item.selection !== "none" && !option)
-      return true;
-    return typeof item.disabled === "function" ? item.disabled(option) : item.disabled;
-  }
-  const searchInTitle = () => newDesigns() && props.searchInTitle === true && props.renderFilter !== false;
-  const searchCursorColor = () => {
-    if (!newDesigns())
-      return theme.text.formfield.focused;
-    return store.filter.length > 0 ? theme.text.base : theme.background.action.primary.focused;
-  };
-  const searchInput = () => (() => {
-    var _el$ = _$createElement6("input");
-    _$use3((r) => {
-      input = r;
-      input.traits = {
-        status: "FILTER"
-      };
-      setTimeout(() => {
-        if (!input)
-          return;
-        if (r.isDestroyed)
-          return;
-        r.focus();
-      }, 1);
-    }, _el$);
-    _$setProp6(_el$, "flexGrow", 1);
-    _$setProp6(_el$, "onInput", (e) => {
-      if (props.locked)
-        return;
-      batch3(() => {
-        setStore("filter", e);
-        props.onFilter?.(e);
-      });
-    });
-    _$effect6((_p$) => {
-      var _v$ = theme.background.formfield.focused, _v$2 = searchCursorColor(), _v$3 = cursorStyle(), _v$4 = newDesigns() ? theme.text.formfield.base : theme.text.formfield.focused, _v$5 = (searchInTitle() ? props.titlePlaceholder : undefined) ?? props.placeholder ?? "Search", _v$6 = theme.text.muted;
-      _v$ !== _p$.e && (_p$.e = _$setProp6(_el$, "focusedBackgroundColor", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp6(_el$, "cursorColor", _v$2, _p$.t));
-      _v$3 !== _p$.a && (_p$.a = _$setProp6(_el$, "cursorStyle", _v$3, _p$.a));
-      _v$4 !== _p$.o && (_p$.o = _$setProp6(_el$, "focusedTextColor", _v$4, _p$.o));
-      _v$5 !== _p$.i && (_p$.i = _$setProp6(_el$, "placeholder", _v$5, _p$.i));
-      _v$6 !== _p$.n && (_p$.n = _$setProp6(_el$, "placeholderColor", _v$6, _p$.n));
-      return _p$;
-    }, {
-      e: undefined,
-      t: undefined,
-      a: undefined,
-      o: undefined,
-      i: undefined,
-      n: undefined
-    });
-    return _el$;
-  })();
-  return _$createComponent13(DialogLayout, {
-    get footerGap() {
-      return props.footerGap;
-    },
-    get header() {
-      return (() => {
-        var _el$7 = _$createElement6("box");
-        _$setProp6(_el$7, "paddingLeft", DIALOG_LIST_INSET - DIALOG_INSET);
-        _$setProp6(_el$7, "paddingRight", DIALOG_LIST_INSET - DIALOG_INSET);
-        _$insert6(_el$7, _$createComponent13(Show6, {
-          get when() {
-            return searchInTitle();
-          },
-          get fallback() {
-            return [_$createComponent13(DialogHeader, {
-              get title() {
-                return props.title;
-              },
-              get titleView() {
-                return props.titleView;
-              },
-              get description() {
-                return props.description;
-              },
-              get onClose() {
-                return props.onCancel;
-              }
-            }), _$createComponent13(Show6, {
-              get when() {
-                return props.renderFilter !== false;
-              },
-              get children() {
-                var _el$8 = _$createElement6("box");
-                _$setProp6(_el$8, "paddingTop", 1);
-                _$insert6(_el$8, searchInput);
-                return _el$8;
-              }
-            })];
-          },
-          get children() {
-            return _$createComponent13(DialogHeader, {
-              get titleView() {
-                return searchInput();
-              },
-              gap: 2,
-              get onClose() {
-                return props.onCancel;
-              }
-            });
-          }
-        }));
-        return _el$7;
-      })();
-    },
-    get footer() {
-      return {
-        inset: DIALOG_LIST_INSET - DIALOG_INSET,
-        actions: {
-          secondary: footerGroup((item) => item.group === "secondary"),
-          primary: footerGroup((item) => item.group === "primary")
-        },
-        get children() {
-          return props.footer;
-        }
-      };
-    },
-    get legacyFooter() {
-      return _$createComponent13(Show6, {
-        get when() {
-          return props.footer || visibleActions().length;
-        },
-        get fallback() {
-          return (() => {
-            var _el$9 = _$createElement6("box");
-            _$setProp6(_el$9, "flexShrink", 0);
-            return _el$9;
-          })();
-        },
-        get children() {
-          return _$createComponent13(DialogFooter, {
-            inset: DIALOG_LIST_INSET - DIALOG_INSET,
-            get actions() {
-              return {
-                secondary: footerGroup((item) => item.side !== "right"),
-                primary: footerGroup((item) => item.side === "right")
-              };
-            },
-            get children() {
-              return props.footer;
-            }
-          });
-        }
-      });
-    },
-    get children() {
-      return _$createComponent13(DialogBleed, {
-        get children() {
-          return _$createComponent13(Show6, {
-            get when() {
-              return grouped().length > 0;
-            },
-            get fallback() {
-              return _$createComponent13(Show6, {
-                get when() {
-                  return _$memo4(() => props.renderFilter !== false)() && store.filter.length > 0;
-                },
-                get fallback() {
-                  return props.emptyView ?? (() => {
-                    var _el$0 = _$createElement6("box"), _el$1 = _$createElement6("text");
-                    _$insertNode6(_el$0, _el$1);
-                    _$setProp6(_el$0, "paddingLeft", DIALOG_LIST_INSET);
-                    _$setProp6(_el$0, "paddingRight", DIALOG_LIST_INSET);
-                    _$insertNode6(_el$1, _$createTextNode4(`No items available`));
-                    _$effect6((_$p) => _$setProp6(_el$1, "fg", theme.text.muted, _$p));
-                    return _el$0;
-                  })();
-                },
-                get children() {
-                  return props.noMatchView ?? (() => {
-                    var _el$11 = _$createElement6("box"), _el$12 = _$createElement6("text");
-                    _$insertNode6(_el$11, _el$12);
-                    _$setProp6(_el$11, "paddingLeft", DIALOG_LIST_INSET);
-                    _$setProp6(_el$11, "paddingRight", DIALOG_LIST_INSET);
-                    _$insertNode6(_el$12, _$createTextNode4(`No results found`));
-                    _$effect6((_$p) => _$setProp6(_el$12, "fg", theme.text.muted, _$p));
-                    return _el$11;
-                  })();
-                }
-              });
-            },
-            get children() {
-              return [(() => {
-                var _el$2 = _$createElement6("scrollbox");
-                _$use3((r) => {
-                  scroll = r;
-                  r.verticalScrollBar.on("change", updateMoreBelow);
-                  r.content.on("resize", updateMoreBelow);
-                  r.viewport.on("resize", updateMoreBelow);
-                }, _el$2);
-                _$setProp6(_el$2, "scrollbarOptions", {
-                  visible: false
-                });
-                _$insert6(_el$2, _$createComponent13(For4, {
-                  get each() {
-                    return grouped();
-                  },
-                  children: ([category, options], index) => [_$createComponent13(Show6, {
-                    when: category,
-                    get children() {
-                      return _$createComponent13(DialogSelectCategory, {
-                        title: category,
-                        get first() {
-                          return index() === 0;
-                        }
-                      });
-                    }
-                  }), _$createComponent13(For4, {
-                    each: options,
-                    children: (option) => {
-                      const active = createMemo5(() => !props.locked && k(option.value, selected()?.value));
-                      const current = createMemo5(() => k(option.value, props.current));
-                      return (() => {
-                        var _el$14 = _$createElement6("box");
-                        _$setProp6(_el$14, "flexDirection", "column");
-                        _$setProp6(_el$14, "position", "relative");
-                        _$setProp6(_el$14, "onMouseMove", () => {
-                          if (props.locked)
-                            return;
-                          const index = flat().findIndex((x) => k(x.value, option.value));
-                          if (index === -1 || index === store.selected)
-                            return;
-                          moveTo(index);
-                        });
-                        _$setProp6(_el$14, "onMouseUp", () => {
-                          if (props.locked)
-                            return;
-                          option.onSelect?.(dialog);
-                          props.onSelect?.(option);
-                        });
-                        _$setProp6(_el$14, "onMouseDown", () => {
-                          if (props.locked)
-                            return;
-                          const index = flat().findIndex((x) => k(x.value, option.value));
-                          if (index === -1)
-                            return;
-                          moveTo(index);
-                        });
-                        _$insert6(_el$14, _$createComponent13(DialogSelectRow, {
-                          get title() {
-                            return option.title;
-                          },
-                          get titleView() {
-                            return option.titleView;
-                          },
-                          get footer() {
-                            return _$memo4(() => !!flatten())() ? option.searchFooter ?? option.category ?? option.footer : option.footer;
-                          },
-                          get footerColor() {
-                            return option.footerColor;
-                          },
-                          get footerOverhang() {
-                            return option.footerOverhang;
-                          },
-                          get titleWidth() {
-                            return option.titleWidth;
-                          },
-                          get truncateTitle() {
-                            return option.truncateTitle;
-                          },
-                          get description() {
-                            return _$memo4(() => option.description !== category)() ? option.description : undefined;
-                          },
-                          get active() {
-                            return active();
-                          },
-                          get current() {
-                            return current();
-                          },
-                          get activeBackground() {
-                            return option.bg;
-                          },
-                          get activeColor() {
-                            return option.fg;
-                          },
-                          get gutter() {
-                            return option.gutter;
-                          },
-                          get margin() {
-                            return option.margin;
-                          }
-                        }), null);
-                        _$insert6(_el$14, _$createComponent13(DialogSelectDetails, {
-                          get details() {
-                            return option.details;
-                          },
-                          get width() {
-                            return detailsWidth();
-                          }
-                        }), null);
-                        return _el$14;
-                      })();
-                    }
-                  })]
-                }));
-                _$effect6((_p$) => {
-                  var _v$7 = newDesigns() ? 0 : 1, _v$8 = newDesigns() ? 0 : 1, _v$9 = scrollAcceleration(), _v$0 = height();
-                  _v$7 !== _p$.e && (_p$.e = _$setProp6(_el$2, "paddingLeft", _v$7, _p$.e));
-                  _v$8 !== _p$.t && (_p$.t = _$setProp6(_el$2, "paddingRight", _v$8, _p$.t));
-                  _v$9 !== _p$.a && (_p$.a = _$setProp6(_el$2, "scrollAcceleration", _v$9, _p$.a));
-                  _v$0 !== _p$.o && (_p$.o = _$setProp6(_el$2, "maxHeight", _v$0, _p$.o));
-                  return _p$;
-                }, {
-                  e: undefined,
-                  t: undefined,
-                  a: undefined,
-                  o: undefined
-                });
-                return _el$2;
-              })(), _$createComponent13(Show6, {
-                get when() {
-                  return ellipsis();
-                },
-                get children() {
-                  var _el$3 = _$createElement6("box"), _el$4 = _$createElement6("text");
-                  _$insertNode6(_el$3, _el$4);
-                  _$setProp6(_el$3, "paddingLeft", DIALOG_LIST_INSET);
-                  _$setProp6(_el$3, "flexShrink", 0);
-                  _$insertNode6(_el$4, _$createTextNode4(`…`));
-                  _$effect6((_$p) => _$setProp6(_el$4, "fg", theme.text.muted, _$p));
-                  return _el$3;
-                }
-              }), _$createComponent13(Show6, {
-                get when() {
-                  return _$memo4(() => !!newDesigns())() && flat().some((option) => option.detail !== undefined);
-                },
-                get children() {
-                  var _el$6 = _$createElement6("box");
-                  _$setProp6(_el$6, "paddingTop", 1);
-                  _$setProp6(_el$6, "paddingLeft", DIALOG_LIST_INSET);
-                  _$setProp6(_el$6, "paddingRight", DIALOG_LIST_INSET);
-                  _$setProp6(_el$6, "flexShrink", 0);
-                  _$insert6(_el$6, _$createComponent13(Show6, {
-                    get when() {
-                      return detailView();
-                    },
-                    keyed: true,
-                    get fallback() {
-                      return (() => {
-                        var _el$15 = _$createElement6("text");
-                        _$setProp6(_el$15, "wrapMode", "word");
-                        _$insert6(_el$15, () => detailText() || " ");
-                        _$effect6((_$p) => _$setProp6(_el$15, "fg", theme.surface("dialog.footer").text.muted, _$p));
-                        return _el$15;
-                      })();
-                    },
-                    children: (render) => render()
-                  }));
-                  return _el$6;
-                }
-              })];
-            }
-          });
-        }
-      });
-    }
-  });
-}
-function DialogSelectCategory(props) {
-  const theme = useTheme().surface("dialog");
-  const newDesigns = useNewDesigns();
-  return (() => {
-    var _el$17 = _$createElement6("box"), _el$18 = _$createElement6("text");
-    _$insertNode6(_el$17, _el$18);
-    _$insert6(_el$18, () => props.title);
-    _$effect6((_p$) => {
-      var _v$1 = props.first ? 0 : 1, _v$10 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$11 = newDesigns() ? theme.text.muted : theme.hue.accent[200], _v$12 = TextAttributes3.BOLD;
-      _v$1 !== _p$.e && (_p$.e = _$setProp6(_el$17, "paddingTop", _v$1, _p$.e));
-      _v$10 !== _p$.t && (_p$.t = _$setProp6(_el$17, "paddingLeft", _v$10, _p$.t));
-      _v$11 !== _p$.a && (_p$.a = _$setProp6(_el$18, "fg", _v$11, _p$.a));
-      _v$12 !== _p$.o && (_p$.o = _$setProp6(_el$18, "attributes", _v$12, _p$.o));
-      return _p$;
-    }, {
-      e: undefined,
-      t: undefined,
-      a: undefined,
-      o: undefined
-    });
-    return _el$17;
-  })();
-}
-function DialogSelectRow(props) {
-  const theme = useTheme().surface("dialog");
-  const newDesigns = useNewDesigns();
-  const text = createMemo5(() => {
-    if (props.active)
-      return props.activeColor ?? theme.text.action.primary.focused;
-    if (props.current && !newDesigns())
-      return theme.text.formfield.selected;
-    return theme.text.base;
-  });
-  const secondary = () => {
-    if (!newDesigns())
-      return props.active ? text() : theme.text.muted;
-    return props.active ? theme.text.action.secondary.focused : theme.text.muted;
-  };
-  const row = () => (() => {
-    var _el$19 = _$createElement6("box"), _el$23 = _$createElement6("text");
-    _$insertNode6(_el$19, _el$23);
-    _$setProp6(_el$19, "flexDirection", "row");
-    _$setProp6(_el$19, "gap", 1);
-    _$insert6(_el$19, _$createComponent13(Show6, {
-      get when() {
-        return _$memo4(() => !!!props.current)() && props.margin;
-      },
-      get children() {
-        var _el$20 = _$createElement6("box");
-        _$setProp6(_el$20, "position", "absolute");
-        _$setProp6(_el$20, "left", DIALOG_LIST_INSET - 3);
-        _$setProp6(_el$20, "flexShrink", 0);
-        _$insert6(_el$20, () => props.margin);
-        return _el$20;
-      }
-    }), _el$23);
-    _$insert6(_el$19, _$createComponent13(Show6, {
-      get when() {
-        return _$memo4(() => !!props.current)() && !props.gutter;
-      },
-      get children() {
-        var _el$21 = _$createElement6("text");
-        _$setProp6(_el$21, "flexShrink", 0);
-        _$insert6(_el$21, () => newDesigns() ? "▪" : "●");
-        _$effect6((_$p) => _$setProp6(_el$21, "fg", newDesigns() ? theme.text.formfield.selected : text(), _$p));
-        return _el$21;
-      }
-    }), _el$23);
-    _$insert6(_el$19, _$createComponent13(Show6, {
-      get when() {
-        return props.gutter;
-      },
-      get children() {
-        var _el$22 = _$createElement6("box");
-        _$setProp6(_el$22, "flexShrink", 0);
-        _$insert6(_el$22, () => props.gutter?.(text()));
-        return _el$22;
-      }
-    }), _el$23);
-    _$setProp6(_el$23, "flexGrow", 1);
-    _$setProp6(_el$23, "overflow", "hidden");
-    _$setProp6(_el$23, "wrapMode", "none");
-    _$setProp6(_el$23, "paddingLeft", 3);
-    _$insert6(_el$23, () => props.titleView ?? (props.truncateTitle === false ? props.title : props.truncateTitle === "left" ? truncateLeft(props.title, props.titleWidth ?? 61) : truncate(props.title, props.titleWidth ?? 61)), null);
-    _$insert6(_el$23, _$createComponent13(Show6, {
-      get when() {
-        return props.description;
-      },
-      get children() {
-        var _el$24 = _$createElement6("span");
-        _$insert6(_el$24, () => " " + props.description);
-        _$effect6((_$p) => _$setProp6(_el$24, "style", {
-          fg: secondary()
-        }, _$p));
-        return _el$24;
-      }
-    }), null);
-    _$insert6(_el$19, _$createComponent13(Show6, {
-      get when() {
-        return props.footer;
-      },
-      get children() {
-        var _el$25 = _$createElement6("box"), _el$26 = _$createElement6("text");
-        _$insertNode6(_el$25, _el$26);
-        _$setProp6(_el$25, "flexShrink", 0);
-        _$insert6(_el$26, () => props.footer);
-        _$effect6((_p$) => {
-          var _v$13 = props.footerOverhang ? -props.footerOverhang : undefined, _v$14 = props.active || !props.footerColor ? secondary() : props.footerColor;
-          _v$13 !== _p$.e && (_p$.e = _$setProp6(_el$25, "marginRight", _v$13, _p$.e));
-          _v$14 !== _p$.t && (_p$.t = _$setProp6(_el$26, "fg", _v$14, _p$.t));
-          return _p$;
-        }, {
-          e: undefined,
-          t: undefined
-        });
-        return _el$25;
-      }
-    }), null);
-    _$effect6((_p$) => {
-      var _v$15 = newDesigns() ? 1 : undefined, _v$16 = props.current || props.gutter ? DIALOG_LIST_INSET - 3 : DIALOG_LIST_INSET - 1, _v$17 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$18 = props.active ? props.activeBackground ?? theme.background.action.primary.focused : RGBA8.fromInts(0, 0, 0, 0), _v$19 = text(), _v$20 = props.active && !newDesigns() ? TextAttributes3.BOLD : undefined;
-      _v$15 !== _p$.e && (_p$.e = _$setProp6(_el$19, "flexGrow", _v$15, _p$.e));
-      _v$16 !== _p$.t && (_p$.t = _$setProp6(_el$19, "paddingLeft", _v$16, _p$.t));
-      _v$17 !== _p$.a && (_p$.a = _$setProp6(_el$19, "paddingRight", _v$17, _p$.a));
-      _v$18 !== _p$.o && (_p$.o = _$setProp6(_el$19, "backgroundColor", _v$18, _p$.o));
-      _v$19 !== _p$.i && (_p$.i = _$setProp6(_el$23, "fg", _v$19, _p$.i));
-      _v$20 !== _p$.n && (_p$.n = _$setProp6(_el$23, "attributes", _v$20, _p$.n));
-      return _p$;
-    }, {
-      e: undefined,
-      t: undefined,
-      a: undefined,
-      o: undefined,
-      i: undefined,
-      n: undefined
-    });
-    return _el$19;
-  })();
-  return _$createComponent13(Show6, {
-    get when() {
-      return newDesigns();
-    },
-    get fallback() {
-      return row();
-    },
-    get children() {
-      var _el$27 = _$createElement6("box"), _el$28 = _$createElement6("text");
-      _$insertNode6(_el$27, _el$28);
-      _$setProp6(_el$27, "flexDirection", "row");
-      _$setProp6(_el$28, "width", 1);
-      _$setProp6(_el$28, "flexShrink", 0);
-      _$insert6(_el$28, () => props.active ? "┃" : " ");
-      _$insert6(_el$27, row, null);
-      _$effect6((_$p) => _$setProp6(_el$28, "fg", theme.text.formfield.focused, _$p));
-      return _el$27;
-    }
-  });
-}
-function DialogSelectDetails(props) {
-  const theme = useTheme().surface("dialog");
-  const newDesigns = useNewDesigns();
-  return _$createComponent13(For4, {
-    get each() {
-      return props.details;
-    },
-    children: (detail) => (() => {
-      var _el$29 = _$createElement6("box"), _el$30 = _$createElement6("text");
-      _$insertNode6(_el$29, _el$30);
-      _$setProp6(_el$30, "wrapMode", "none");
-      _$insert6(_el$30, () => truncateMiddle(detail, Math.max(1, props.width)));
-      _$effect6((_p$) => {
-        var _v$21 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$22 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$23 = theme.text.muted;
-        _v$21 !== _p$.e && (_p$.e = _$setProp6(_el$29, "paddingLeft", _v$21, _p$.e));
-        _v$22 !== _p$.t && (_p$.t = _$setProp6(_el$29, "paddingRight", _v$22, _p$.t));
-        _v$23 !== _p$.a && (_p$.a = _$setProp6(_el$30, "fg", _v$23, _p$.a));
-        return _p$;
-      }, {
-        e: undefined,
-        t: undefined,
-        a: undefined
-      });
-      return _el$29;
-    })()
-  });
-}
-
-// ../tui-base/src/routes/session/turn-overlays.tsx
-function summarizeArgs(name, args, limit = 160) {
-  let body = JSON.stringify(args);
-  if (body === undefined)
-    body = "";
-  body = body.trim();
-  if (body.length > limit)
-    body = body.slice(0, limit - 1) + "…";
-  return `${name} ${body}`.trim();
-}
-function ApprovalCard(props) {
-  return _$createComponent14(DialogConfirm, {
-    get title() {
-      return `Approval: ${props.name}`;
-    },
-    get message() {
-      return summarizeArgs(props.name, props.args);
-    },
-    label: {
-      confirm: "allow",
-      cancel: "reject"
-    },
-    onConfirm: () => props.onVerdict("allowed-once"),
-    onCancel: () => props.onVerdict("rejected")
-  });
-}
-function askTabStrip(questions, picks, index) {
-  return questions.map((_, qi) => {
-    const answered = (picks[qi]?.length ?? 0) > 0;
-    const label = `${qi + 1}${answered ? "✓" : ""}`;
-    return qi === index ? `[${label}]` : label;
-  }).join(" · ");
-}
-function askProgressTitle(questions, index) {
-  if (questions.length < 2)
-    return "Question";
-  return `Question (${index + 1}/${questions.length})`;
-}
-function askNeedsReview(questions) {
-  return questions.length >= 2 || questions.some((question) => question.multiSelect === true);
-}
-function truncate70(text) {
-  return text.length > 70 ? text.slice(0, 69) + "…" : text;
-}
-function AskPicker(props) {
-  const [version, setVersion] = createSignal10(0);
-  onMount4(() => {
-    const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1));
-    onCleanup11(unsubscribe);
-  });
-  const ask = () => {
-    version();
-    return props.controller.pendingAsk;
-  };
-  return _$createComponent14(Show7, {
-    get when() {
-      return ask()?.phase === "review";
-    },
-    get fallback() {
-      return _$createComponent14(AskQuestionsView, {
-        ask,
-        get controller() {
-          return props.controller;
-        },
-        get onDecline() {
-          return props.onDecline;
-        }
-      });
-    },
-    get children() {
-      return _$createComponent14(AskReviewView, {
-        ask,
-        get controller() {
-          return props.controller;
-        },
-        get onDecline() {
-          return props.onDecline;
-        }
-      });
-    }
-  });
-}
-function AskQuestionsView(props) {
-  const batch = () => props.ask();
-  const question = () => {
-    const b = batch();
-    return b?.questions[b.index];
-  };
-  const multi = () => question()?.multiSelect === true;
-  const picked = () => {
-    const b = batch();
-    return b?.picks[b.index] ?? [];
-  };
-  const options = () => {
-    const q = question();
-    const p = picked();
-    if (!q)
-      return [];
-    const rows = q.options.map((option) => ({
-      title: multi() ? p.includes(option) ? `[x] ${option}` : `[ ] ${option}` : option,
-      value: option
-    }));
-    if (askNeedsReview(batch()?.questions ?? []))
-      rows.push({
-        title: "⏎ Review answers",
-        value: {
-          kind: "review"
-        }
-      });
-    return rows;
-  };
-  const description = () => {
-    const b = batch();
-    if (!b)
-      return;
-    const parts = [];
-    if (b.questions.length >= 2)
-      parts.push(askTabStrip(b.questions, b.picks, b.index));
-    if (multi())
-      parts.push("space: toggle");
-    return parts.join("  ·  ") || undefined;
-  };
-  const toggleHighlighted = () => {
-    const option = selectRefRef?.selected;
-    if (option && typeof option.value === "string")
-      props.controller.toggle(option.value);
-  };
-  const bindings = () => {
-    const b = batch();
-    return [...b && b.questions.length >= 2 ? [{
-      id: "ask.prev_question",
-      title: "Previous question",
-      group: "Dialog",
-      bind: "left",
-      run: () => props.controller.switchFocus(-1)
-    }, {
-      id: "ask.next_question",
-      title: "Next question",
-      group: "Dialog",
-      bind: "right",
-      run: () => props.controller.switchFocus(1)
-    }] : [], {
-      id: "ask.toggle",
-      title: "Toggle option",
-      group: "Dialog",
-      bind: "space",
-      run: toggleHighlighted
-    }];
-  };
-  const title = () => {
-    const b = batch();
-    const q = question();
-    if (!b || !q)
-      return "";
-    return `${askProgressTitle(b.questions, b.index)}: ${truncate70(q.prompt)}`;
-  };
-  let selectRefRef;
-  return _$createComponent14(DialogSelect, {
-    get title() {
-      return title();
-    },
-    get description() {
-      return description();
-    },
-    renderFilter: false,
-    get options() {
-      return options();
-    },
-    get current() {
-      return _$memo5(() => !!multi())() ? undefined : picked()[0];
-    },
-    ref: (r) => selectRefRef = r,
-    get bindings() {
-      return bindings();
-    },
-    onSelect: (option) => {
-      if (typeof option.value === "string")
-        props.controller.toggle(option.value);
-      else
-        props.controller.enterReview();
-    },
-    get onCancel() {
-      return props.onDecline;
-    }
-  });
-}
-function AskReviewView(props) {
-  const options = () => {
-    const b = props.ask();
-    if (!b)
-      return [];
-    const rows = b.questions.map((question, qi) => {
-      const picks = b.picks[qi] ?? [];
-      return {
-        title: `${truncate70(question.prompt)}  ${picks.length > 0 ? picks.join(", ") : "—"}`,
-        value: {
-          kind: "question",
-          qi
-        }
-      };
-    });
-    rows.push({
-      title: "⏎ Submit answers",
-      value: {
-        kind: "submit"
-      }
-    });
-    return rows;
-  };
-  return _$createComponent14(DialogSelect, {
-    title: "Review answers",
-    description: "←: edit · enter: submit",
-    renderFilter: false,
-    get options() {
-      return options();
-    },
-    bindings: [{
-      id: "ask.back_to_questions",
-      title: "Edit answers",
-      group: "Dialog",
-      bind: "left",
-      run: () => props.controller.backToQuestions()
-    }],
-    onSelect: (option) => {
-      if (typeof option.value === "string")
-        return;
-      if (option.value.kind === "submit")
-        props.controller.submit();
-      else if (option.value.kind === "question")
-        props.controller.backToQuestions(option.value.qi);
-    },
-    get onCancel() {
-      return props.onDecline;
-    }
-  });
-}
-function TurnOverlayHost(props) {
-  const dialog = useDialog();
-  const [version, setVersion] = createSignal10(0);
-  onMount4(() => {
-    const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1));
-    onCleanup11(unsubscribe);
-  });
-  props.controller.onIdle(() => {
-    setTimeout(() => props.reclaimFocus?.(), 3);
-  });
-  let shown;
-  createEffect4(() => {
-    version();
-    const approval = props.controller.pendingApproval;
-    const ask = props.controller.pendingAsk;
-    const key = approval ? `approval:${approval.id}` : ask ? `ask:${ask.id}` : "";
-    if (key === shown)
-      return;
-    shown = key;
-    if (approval) {
-      const atOpen = key;
-      dialog.replace(() => _$createComponent14(ApprovalCard, {
-        get name() {
-          return approval.name;
-        },
-        get args() {
-          return approval.args;
-        },
-        onVerdict: (verdict) => {
-          if (verdict === "allowed-once")
-            props.controller.confirmApproval();
-          else
-            props.controller.rejectApproval();
-        }
-      }), () => {
-        if (shown === atOpen)
-          props.controller.rejectApproval();
-      });
-      return;
-    }
-    if (ask) {
-      const atOpen = key;
-      dialog.replace(() => _$createComponent14(AskPicker, {
-        get controller() {
-          return props.controller;
-        },
-        onDecline: () => props.controller.decline()
-      }), () => {
-        if (shown === atOpen)
-          props.controller.decline();
-      });
-      return;
-    }
-    if (untrack(() => dialog.stack.length) > 0)
-      dialog.clear();
-  });
-  return _$createComponent14(Show7, {
-    when: false,
-    children: null
-  });
-}
-function registerTurnOverlays(seam, controller) {
-  seam.registerAskProvider((questions) => controller.answer(questions));
-}
-
-// ../tui-base/src/routes/session/slash-palette.tsx
-import { createTextNode as _$createTextNode5 } from "@opentui/solid";
-import { insertNode as _$insertNode7 } from "@opentui/solid";
-import { effect as _$effect7 } from "@opentui/solid";
-import { insert as _$insert7 } from "@opentui/solid";
-import { createComponent as _$createComponent15 } from "@opentui/solid";
-import { setProp as _$setProp7 } from "@opentui/solid";
-import { createElement as _$createElement7 } from "@opentui/solid";
-import { For as For5, Show as Show8, createSignal as createSignal11 } from "solid-js";
-
-// ../tui-base/src/routes/session/hotkeys.ts
-function hotkeysHeader() {
-  return "Keybinds (defaults — override via profiles/<profile>/keybindings.json)";
-}
-function hotkeyRows() {
-  const rows = [];
-  for (const [name, definition] of Object.entries(Definitions)) {
-    if (definition.default === "none" || definition.default === false)
-      continue;
-    const keys = String(definition.default).replaceAll("<leader>", `${LeaderDefault} `);
-    rows.push(`${keys} — ${definition.description} (${name})`);
-  }
-  return rows;
-}
-
-// ../tui-base/src/routes/session/session-info.ts
-function formatTps(tps) {
-  return tps === null || tps === undefined || !(tps > 0) ? "—" : `${Math.round(tps)} tok/s`;
-}
-function sessionInfoRows(info) {
-  const speed = info.lastTurnTps == null && info.sessionAvgTps == null ? "—" : `last ${formatTps(info.lastTurnTps)} · avg ${formatTps(info.sessionAvgTps)}`;
-  return [
-    { field: "session", value: info.sessionId ?? "—" },
-    { field: "model", value: info.model ?? "—" },
-    { field: "messages", value: String(info.messageCount) },
-    { field: "turns", value: String(info.turnCount) },
-    { field: "tokens in/out", value: `${info.tokensIn} / ${info.tokensOut}` },
-    { field: "cache read/write", value: `${info.cacheRead} / ${info.cacheWrite}` },
-    { field: "speed", value: speed }
-  ];
-}
-function formatSessionInfoPanel(rows) {
-  const width = Math.max(...rows.map((row) => row.field.length));
-  return rows.map((row) => `${row.field.padEnd(width)}  ${row.value}`);
-}
-
-// ../tui-base/src/routes/session/commands.ts
-function coreCommands() {
-  return [
-    {
-      name: "/help",
-      description: "show available commands",
-      run(ctx) {
-        for (const command of coreCommands())
-          ctx.say(`${command.name} — ${command.description}`);
-      }
-    },
-    {
-      name: "/new",
-      description: "start a fresh session",
-      async run(ctx) {
-        ctx.seam.newSession();
-        await ctx.reload();
-        ctx.say(`new session ${ctx.seam.currentSessionId() ?? "(unnamed)"}`);
-      }
-    },
-    {
-      name: "/model",
-      description: "switch model (bare opens the picker)",
-      async run(ctx, argText) {
-        const arg = argText.trim();
-        if (arg) {
-          const [providerID, modelID] = arg.split("/");
-          if (!providerID || !modelID) {
-            ctx.say(`usage: /model or /model provider/model (got "${arg}")`);
-            return;
-          }
-          ctx.seam.selectModel(providerID, modelID);
-          ctx.say(`model → ${providerID}/${modelID}`);
-          return;
-        }
-        const catalog = await ctx.seam.modelCatalog();
-        if (catalog.length === 0) {
-          ctx.say("no models in the catalog");
-          return;
-        }
-        const current = await ctx.seam.currentModelSelection();
-        const picked = await ctx.pickOne("Select model", catalog.map((model) => ({
-          title: `${model.providerID}/${model.modelID}`,
-          value: `${model.providerID}/${model.modelID}`,
-          description: current?.providerID === model.providerID && current.modelID === model.modelID ? "current" : undefined
-        })));
-        if (!picked)
-          return;
-        const [providerID, modelID] = picked.split("/");
-        ctx.seam.selectModel(providerID, modelID);
-        ctx.say(`model → ${picked}`);
-      }
-    },
-    {
-      name: "/quit",
-      description: "exit the app",
-      run(ctx) {
-        ctx.quit();
-      }
-    },
-    {
-      name: "/sessions",
-      description: "list and resume stored sessions",
-      async run(ctx) {
-        const sessions = await ctx.seam.listSessions();
-        if (sessions.length === 0) {
-          ctx.say("no stored sessions");
-          return;
-        }
-        const picked = await ctx.pickOne("Resume session", sessions.map((session) => ({
-          title: session.title,
-          value: session.id,
-          description: session.updatedAt
-        })));
-        if (!picked)
-          return;
-        ctx.seam.resumeSession(picked);
-        await ctx.reload();
-        ctx.say(`resumed ${picked}`);
-      }
-    },
-    {
-      name: "/clear",
-      description: "clear the transcript",
-      run(ctx) {
-        ctx.clear();
-        ctx.say("transcript cleared");
-      }
-    },
-    {
-      name: "/btw",
-      description: "side question (bare reopens the last answer)",
-      run(ctx, argText) {
-        if (!ctx.seam.btwAsk || !ctx.openBtw) {
-          ctx.say("/btw unavailable in this session");
-          return;
-        }
-        ctx.openBtw(argText);
-      }
-    },
-    {
-      name: "/session",
-      description: "show session info (id, model, tokens, speed)",
-      async run(ctx) {
-        if (!ctx.seam.sessionInfo) {
-          ctx.say("/session unavailable in this session");
-          return;
-        }
-        const info = await ctx.seam.sessionInfo();
-        if (!info || info.sessionId === null) {
-          ctx.say("no active session");
-          return;
-        }
-        for (const line of formatSessionInfoPanel(sessionInfoRows(info)))
-          ctx.say(line);
-      }
-    },
-    {
-      name: "/plugins",
-      description: "list installed plugins",
-      run(ctx) {
-        if (!ctx.seam.plugins) {
-          ctx.say("/plugins unavailable in this session");
-          return;
-        }
-        const plugins = ctx.seam.plugins();
-        if (plugins.length === 0) {
-          ctx.say("no plugins installed");
-          return;
-        }
-        for (const plugin of plugins)
-          ctx.say(`● ${plugin.name}@${plugin.version}`);
-      }
-    },
-    {
-      name: "/think",
-      description: "set reasoning effort (opens the picker)",
-      async run(ctx) {
-        const thinking = ctx.seam.thinking;
-        if (!thinking) {
-          ctx.say("/think unavailable in this session");
-          return;
-        }
-        const efforts = await thinking.efforts();
-        if (efforts.length === 0) {
-          ctx.say("/think unavailable: the current model exposes no reasoning efforts");
-          return;
-        }
-        const current = await thinking.currentEffort();
-        const picked = await ctx.pickOne("Select reasoning effort", efforts.map((effort) => ({
-          title: effort.name,
-          value: effort.id,
-          description: effort.id === current ? "current" : effort.description
-        })));
-        if (!picked || picked === current)
-          return;
-        thinking.selectEffort(picked);
-        ctx.say(`thinking → ${picked} (next turn)`);
-      }
-    },
-    {
-      name: "/hotkeys",
-      description: "show keybinds",
-      run(ctx) {
-        ctx.say(hotkeysHeader());
-        for (const row of hotkeyRows())
-          ctx.say(row);
-      }
-    },
-    {
-      name: "/theme",
-      description: "switch theme (opens the picker)",
-      async run(ctx) {
-        if (!ctx.themes) {
-          ctx.say("/theme unavailable in this session");
-          return;
-        }
-        const current = ctx.themes.current();
-        const picked = await ctx.pickOne("Select theme", ctx.themes.list().map((name) => ({
-          title: name,
-          value: name,
-          description: name === current ? "current" : undefined
-        })));
-        if (!picked || picked === current)
-          return;
-        if (ctx.themes.set(picked))
-          ctx.say(`Theme: ${picked} — applied`);
-        else
-          ctx.say(`unknown theme: ${picked}`);
-      }
-    }
-  ];
-}
-function filterCommands(commands, query) {
-  if (!query.startsWith("/"))
-    return [];
-  const needle = query.toLowerCase();
-  return commands.filter((command) => command.name.toLowerCase().startsWith(needle));
-}
-function dispatchLine(commands, line) {
-  const text = line.trim();
-  if (!text.startsWith("/"))
-    return { kind: "text" };
-  const [head, ...rest] = text.split(/\s+/);
-  const needle = head.toLowerCase();
-  const match = commands.find((command) => command.name.toLowerCase() === needle) ?? commands.filter((command) => command.name.toLowerCase().startsWith(needle)).sort((a, b) => b.name.length - a.name.length)[0];
-  if (!match)
-    return { kind: "unknown", name: head };
-  return { kind: "command", command: match, argText: rest.join(" ") };
-}
-function unknownCommandRow(name) {
-  return `unknown command: ${name} (try /help)`;
-}
-
-// ../tui-base/src/routes/session/slash-palette.tsx
-var MAX_ROWS = 6;
-
-class SlashPaletteController {
-  #rows = createSignal11(0);
-  #selected = createSignal11(0);
-  #query = createSignal11("");
-  #suppressed = false;
-  #lastBuffer = "";
-  rows() {
-    return this.#rows[0]();
-  }
-  selected() {
-    return this.#selected[0]();
-  }
-  query() {
-    return this.#query[0]();
-  }
-  sync(buffer, commands) {
-    if (buffer !== this.#lastBuffer) {
-      this.#lastBuffer = buffer;
-      this.#suppressed = false;
-    }
-    const next = buffer.startsWith("/") && !buffer.includes(" ") ? buffer : "";
-    this.#query[1](next);
-    if (!next || this.#suppressed) {
-      this.#rows[1](0);
-      return;
-    }
-    const count = filterCommands(commands, next).length;
-    this.#rows[1](Math.min(MAX_ROWS, count));
-    this.#selected[1]((current) => Math.min(current, Math.max(0, count - 1)));
-  }
-  filtered(commands) {
-    return filterCommands(commands, this.#query[0]());
-  }
-  move(delta, commands) {
-    const count = this.filtered(commands).length;
-    if (count === 0)
-      return;
-    const n = this.#selected[0]();
-    this.#selected[1]((n + delta + count) % count);
-  }
-  current(commands) {
-    return this.filtered(commands)[this.#selected[0]()];
-  }
-  close() {
-    this.#suppressed = true;
-    this.#query[1]("");
-    this.#rows[1](0);
-  }
-  get open() {
-    return this.rows() > 0;
-  }
-}
-function SlashPalette(props) {
-  const theme = useThemeOptional();
-  const color = {
-    active: () => theme?.border.base ?? "#7aa2f7",
-    base: () => theme?.text.base ?? "#e6e6e6",
-    muted: () => theme?.text.muted ?? "#565f89",
-    background: () => theme ? theme.decrease(theme.background.raised.base) : "#1a1b26"
-  };
-  return _$createComponent15(Show8, {
-    get when() {
-      return props.controller.rows() > 0;
-    },
-    get children() {
-      var _el$ = _$createElement7("box");
-      _$setProp7(_el$, "flexShrink", 0);
-      _$setProp7(_el$, "width", "100%");
-      _$setProp7(_el$, "flexDirection", "column");
-      _$setProp7(_el$, "paddingLeft", 2);
-      _$insert7(_el$, _$createComponent15(For5, {
-        get each() {
-          return props.controller.filtered(props.commands);
-        },
-        children: (command, index) => (() => {
-          var _el$2 = _$createElement7("text"), _el$3 = _$createTextNode5(` `), _el$4 = _$createElement7("span");
-          _$insertNode7(_el$2, _el$3);
-          _$insertNode7(_el$2, _el$4);
-          _$setProp7(_el$2, "flexShrink", 0);
-          _$insert7(_el$2, () => command.name, _el$3);
-          _$insert7(_el$4, () => command.description);
-          _$effect7((_p$) => {
-            var _v$3 = index() === props.controller.selected() ? color.active() : color.base(), _v$4 = {
-              fg: color.muted()
-            };
-            _v$3 !== _p$.e && (_p$.e = _$setProp7(_el$2, "fg", _v$3, _p$.e));
-            _v$4 !== _p$.t && (_p$.t = _$setProp7(_el$4, "style", _v$4, _p$.t));
-            return _p$;
-          }, {
-            e: undefined,
-            t: undefined
-          });
-          return _el$2;
-        })()
-      }));
-      _$effect7((_p$) => {
-        var _v$ = props.controller.rows(), _v$2 = color.background();
-        _v$ !== _p$.e && (_p$.e = _$setProp7(_el$, "height", _v$, _p$.e));
-        _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$, "backgroundColor", _v$2, _p$.t));
-        return _p$;
-      }, {
-        e: undefined,
-        t: undefined
-      });
-      return _el$;
-    }
-  });
-}
-function createSlashHost(deps) {
-  const commands = deps.commands ?? coreCommands();
-  const controller = new SlashPaletteController;
-  const ctx = {
-    seam: deps.seam,
-    say: deps.say,
-    clear: deps.clear,
-    reload: deps.reload,
-    quit: deps.quit,
-    pickOne: deps.pickOne,
-    ...deps.openBtw ? {
-      openBtw: deps.openBtw
-    } : {},
-    ...deps.themes ? {
-      themes: deps.themes
-    } : {}
-  };
-  function run(command, argText) {
-    command.run(ctx, argText);
-    return true;
-  }
-  return {
-    commands,
-    controller,
-    slashKeyFilter(event, buffer) {
-      controller.sync(buffer, commands);
-      if (!controller.open)
-        return false;
-      if (event.name === "up" || event.name === "down") {
-        event.preventDefault();
-        controller.move(event.name === "up" ? -1 : 1, commands);
-        return true;
-      }
-      if (event.name === "escape") {
-        event.preventDefault();
-        controller.close();
-        return true;
-      }
-      return false;
-    },
-    interceptSubmit(buffer) {
-      controller.sync(buffer, commands);
-      const highlighted = controller.current(commands);
-      controller.close();
-      if (highlighted)
-        return run(highlighted, "");
-      const dispatch = dispatchLine(commands, buffer);
-      if (dispatch.kind === "command")
-        return run(dispatch.command, dispatch.argText);
-      if (dispatch.kind === "unknown") {
-        deps.say(unknownCommandRow(dispatch.name));
-        return true;
-      }
-      return false;
-    }
-  };
-}
-
-// ../tui-base/src/routes/session/btw-overlay.tsx
-import { effect as _$effect11 } from "@opentui/solid";
-import { insert as _$insert10 } from "@opentui/solid";
-import { memo as _$memo8 } from "@opentui/solid";
-import { createComponent as _$createComponent18 } from "@opentui/solid";
-import { createTextNode as _$createTextNode7 } from "@opentui/solid";
-import { insertNode as _$insertNode10 } from "@opentui/solid";
-import { setProp as _$setProp11 } from "@opentui/solid";
-import { createElement as _$createElement12 } from "@opentui/solid";
-import { Show as Show11, createSignal as createSignal14 } from "solid-js";
-
-// ../tui-base/src/ui/dialog-prompt.tsx
-import { createTextNode as _$createTextNode6 } from "@opentui/solid";
-import { effect as _$effect10 } from "@opentui/solid";
-import { insertNode as _$insertNode9 } from "@opentui/solid";
-import { insert as _$insert9 } from "@opentui/solid";
-import { createComponent as _$createComponent17 } from "@opentui/solid";
-import { memo as _$memo7 } from "@opentui/solid";
-import { use as _$use4 } from "@opentui/solid";
-import { setProp as _$setProp10 } from "@opentui/solid";
-import { createElement as _$createElement11 } from "@opentui/solid";
-import { Show as Show10, createEffect as createEffect6, createSignal as createSignal13, onMount as onMount5 } from "solid-js";
-
-// ../tui-base/src/component/spinner.tsx
-import { insertNode as _$insertNode8 } from "@opentui/solid";
-import { setProp as _$setProp9 } from "@opentui/solid";
-import { effect as _$effect9 } from "@opentui/solid";
-import { insert as _$insert8 } from "@opentui/solid";
-import { createElement as _$createElement10 } from "@opentui/solid";
-import { createComponent as _$createComponent16 } from "@opentui/solid";
-import { memo as _$memo6 } from "@opentui/solid";
-import { createEffect as createEffect5, createSignal as createSignal12, onCleanup as onCleanup12, Show as Show9 } from "solid-js";
-
-// ../tui-base/src/component/spinner-renderable.ts
-import {
-  parseColor,
-  Renderable,
-  RGBA as RGBA9
-} from "@opentui/core";
-import { extend } from "@opentui/solid";
-
 // ../tui-base/src/component/spinner-frames.ts
 var SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -25181,7 +22524,7 @@ class SpinnerRenderable extends Renderable {
     super(ctx, options);
     this._interval = options.interval ?? 80;
     this._autoplay = options.autoplay ?? true;
-    this._color = toColor(options.color ?? RGBA9.defaultForeground());
+    this._color = toColor(options.color ?? RGBA8.defaultForeground());
     this._backgroundColor = parseColor(options.backgroundColor ?? "transparent");
     this.setMeasureProvider(() => ({ width: this.frameWidth, height: 1 }));
     this.frames = options.frames ?? SPINNER_FRAMES;
@@ -25247,14 +22590,14 @@ extend({ spinner: SpinnerRenderable });
 // ../tui-base/src/component/shimmer-text.tsx
 import { spread as _$spread } from "@opentui/solid";
 import { mergeProps as _$mergeProps } from "@opentui/solid";
-import { createElement as _$createElement9 } from "@opentui/solid";
-import { RGBA as RGBA12 } from "@opentui/core";
+import { createElement as _$createElement5 } from "@opentui/solid";
+import { RGBA as RGBA11 } from "@opentui/core";
 import { extend as extend3 } from "@opentui/solid";
 import { splitProps } from "solid-js";
 
 // ../tui-base/src/component/masked-text.ts
-import { OptimizedBuffer, RGBA as RGBA10, TargetChannel, TextRenderable } from "@opentui/core";
-var TRANSPARENT = RGBA10.fromValues(0, 0, 0, 0);
+import { OptimizedBuffer, RGBA as RGBA9, TargetChannel, TextRenderable } from "@opentui/core";
+var TRANSPARENT = RGBA9.fromValues(0, 0, 0, 0);
 var CONTINUATION = 3221225472 | 0;
 
 class MaskedTextRenderable extends TextRenderable {
@@ -25304,10 +22647,10 @@ class MaskedTextRenderable extends TextRenderable {
 }
 
 // ../tui-base/src/component/tab-pulse.tsx
-import { effect as _$effect8 } from "@opentui/solid";
-import { setProp as _$setProp8 } from "@opentui/solid";
-import { createElement as _$createElement8 } from "@opentui/solid";
-import { Renderable as Renderable2, RGBA as RGBA11 } from "@opentui/core";
+import { effect as _$effect4 } from "@opentui/solid";
+import { setProp as _$setProp4 } from "@opentui/solid";
+import { createElement as _$createElement4 } from "@opentui/solid";
+import { Renderable as Renderable2, RGBA as RGBA10 } from "@opentui/core";
 import { extend as extend2 } from "@opentui/solid";
 var clamp3 = (value) => Math.max(0, Math.min(1, value));
 var smootherstep = (value) => value * value * value * (value * (value * 6 - 15) + 10);
@@ -25332,7 +22675,7 @@ var GLOW_RELEASE_ATTACK = 0.12;
 var GLOW_RELEASE_PEAK = 1.25;
 var GLOW_TAIL = 12;
 var GLOW_OPACITY = 0.16;
-var DEFAULT_FOREGROUND = RGBA11.defaultForeground();
+var DEFAULT_FOREGROUND = RGBA10.defaultForeground();
 var PULSE_FPS = 20;
 var intensityAt = (index, front, head, tail) => {
   const distance = front - index;
@@ -25628,8 +22971,8 @@ class PulseState {
 }
 
 class TabPulseRenderable extends Renderable2 {
-  renderColor = RGBA11.fromInts(0, 0, 0);
-  outerRenderColor = RGBA11.fromInts(0, 0, 0);
+  renderColor = RGBA10.fromInts(0, 0, 0);
+  outerRenderColor = RGBA10.fromInts(0, 0, 0);
   lastLevel = 0;
   constructor(ctx, options = {}) {
     const enabled = options.enabled ?? true;
@@ -25657,7 +23000,7 @@ class TabPulseRenderable extends Renderable2 {
       complete: options.outerComplete ?? options.complete ?? false,
       glow: outerGlow
     });
-    this._color = options.color ?? RGBA11.defaultForeground();
+    this._color = options.color ?? RGBA10.defaultForeground();
     this._outerColor = options.outerColor ?? this._color;
     this._glowColor = options.glowColor ?? this._color;
     this._outerGlowColor = options.outerGlowColor ?? this._glowColor;
@@ -25670,7 +23013,7 @@ class TabPulseRenderable extends Renderable2 {
     this._outerFlashTail = options.outerFlashTail ?? options.flashTail;
     this._completionColor = options.completionColor ?? this._color;
     this._outerCompletionColor = options.outerCompletionColor ?? options.completionColor ?? this._outerColor;
-    this._backgroundColor = options.backgroundColor ?? RGBA11.defaultBackground();
+    this._backgroundColor = options.backgroundColor ?? RGBA10.defaultBackground();
     this._onLevel = options.onLevel;
     this.changed();
   }
@@ -25875,7 +23218,7 @@ extend2({
 var DURATION = 1200;
 
 class ShimmerTextRenderable extends MaskedTextRenderable {
-  _shimmer = RGBA12.defaultForeground();
+  _shimmer = RGBA11.defaultForeground();
   elapsed = 0;
   constructor(ctx, options) {
     super(ctx, options);
@@ -25912,7 +23255,7 @@ extend3({
 function ShimmerText(props) {
   const [local, text] = splitProps(props, ["shimmer"]);
   return (() => {
-    var _el$ = _$createElement9("shimmer_text");
+    var _el$ = _$createElement5("shimmer_text");
     _$spread(_el$, _$mergeProps(text, {
       get shimmer() {
         return local.shimmer;
@@ -25927,58 +23270,58 @@ function Spinner(props) {
   const theme = useTheme();
   const config = useConfig().data;
   const color = () => props.color ?? theme.text.muted;
-  const [frame, setFrame] = createSignal12(0);
-  createEffect5(() => {
+  const [frame, setFrame] = createSignal8(0);
+  createEffect3(() => {
     if (!(config.animations ?? true) || !props.shimmer)
       return;
     const timer = setInterval(() => setFrame((value) => (value + 1) % SPINNER_FRAMES.length), 80);
-    onCleanup12(() => clearInterval(timer));
+    onCleanup8(() => clearInterval(timer));
   });
-  return _$createComponent16(Show9, {
+  return _$createComponent11(Show5, {
     get when() {
       return config.animations ?? true;
     },
     get fallback() {
       return (() => {
-        var _el$ = _$createElement10("text");
-        _$insert8(_el$, (() => {
-          var _c$ = _$memo6(() => !!props.children);
-          return () => _c$() ? ["⋯ ", _$memo6(() => props.children)] : "⋯";
+        var _el$ = _$createElement6("text");
+        _$insert4(_el$, (() => {
+          var _c$ = _$memo4(() => !!props.children);
+          return () => _c$() ? ["⋯ ", _$memo4(() => props.children)] : "⋯";
         })());
-        _$effect9((_$p) => _$setProp9(_el$, "fg", color(), _$p));
+        _$effect5((_$p) => _$setProp5(_el$, "fg", color(), _$p));
         return _el$;
       })();
     },
     get children() {
-      return _$createComponent16(Show9, {
+      return _$createComponent11(Show5, {
         get when() {
           return props.shimmer;
         },
         get fallback() {
           return (() => {
-            var _el$2 = _$createElement10("box"), _el$3 = _$createElement10("box"), _el$4 = _$createElement10("spinner");
-            _$insertNode8(_el$2, _el$3);
-            _$setProp9(_el$2, "flexDirection", "row");
-            _$setProp9(_el$2, "gap", 1);
-            _$insertNode8(_el$3, _el$4);
-            _$setProp9(_el$3, "flexShrink", 0);
-            _$setProp9(_el$4, "frames", SPINNER_FRAMES);
-            _$setProp9(_el$4, "interval", 80);
-            _$insert8(_el$2, _$createComponent16(Show9, {
+            var _el$2 = _$createElement6("box"), _el$3 = _$createElement6("box"), _el$4 = _$createElement6("spinner");
+            _$insertNode4(_el$2, _el$3);
+            _$setProp5(_el$2, "flexDirection", "row");
+            _$setProp5(_el$2, "gap", 1);
+            _$insertNode4(_el$3, _el$4);
+            _$setProp5(_el$3, "flexShrink", 0);
+            _$setProp5(_el$4, "frames", SPINNER_FRAMES);
+            _$setProp5(_el$4, "interval", 80);
+            _$insert4(_el$2, _$createComponent11(Show5, {
               get when() {
                 return props.children;
               },
               get children() {
-                var _el$5 = _$createElement10("text");
-                _$insert8(_el$5, () => props.children);
-                _$effect9((_$p) => _$setProp9(_el$5, "fg", color(), _$p));
+                var _el$5 = _$createElement6("text");
+                _$insert4(_el$5, () => props.children);
+                _$effect5((_$p) => _$setProp5(_el$5, "fg", color(), _$p));
                 return _el$5;
               }
             }), null);
-            _$effect9((_p$) => {
+            _$effect5((_p$) => {
               var _v$ = props.children ? 1 : 0, _v$2 = color();
-              _v$ !== _p$.e && (_p$.e = _$setProp9(_el$2, "flexShrink", _v$, _p$.e));
-              _v$2 !== _p$.t && (_p$.t = _$setProp9(_el$4, "color", _v$2, _p$.t));
+              _v$ !== _p$.e && (_p$.e = _$setProp5(_el$2, "flexShrink", _v$, _p$.e));
+              _v$2 !== _p$.t && (_p$.t = _$setProp5(_el$4, "color", _v$2, _p$.t));
               return _p$;
             }, {
               e: undefined,
@@ -25987,7 +23330,7 @@ function Spinner(props) {
             return _el$2;
           })();
         },
-        children: (shimmer) => _$createComponent16(ShimmerText, {
+        children: (shimmer) => _$createComponent11(ShimmerText, {
           get fg() {
             return color();
           },
@@ -25995,7 +23338,7 @@ function Spinner(props) {
             return shimmer();
           },
           get children() {
-            return [_$memo6(() => SPINNER_FRAMES[frame()]), " ", _$memo6(() => props.children)];
+            return [_$memo4(() => SPINNER_FRAMES[frame()]), " ", _$memo4(() => props.children)];
           }
         })
       });
@@ -26004,13 +23347,13 @@ function Spinner(props) {
 }
 
 // ../tui-base/src/ui/dialog-prompt.tsx
-import { useRenderer as useRenderer8 } from "@opentui/solid";
+import { useRenderer as useRenderer6 } from "@opentui/solid";
 function DialogPrompt(props) {
   const dialog = useDialog();
-  const renderer = useRenderer8();
+  const renderer = useRenderer6();
   const theme = useTheme().surface("dialog");
   const cursorStyle = useCursorStyle();
-  const [textareaTarget, setTextareaTarget] = createSignal13();
+  const [textareaTarget, setTextareaTarget] = createSignal9();
   let textarea;
   function confirm() {
     if (props.busy)
@@ -26064,7 +23407,7 @@ function DialogPrompt(props) {
       }
     }]
   }));
-  onMount5(() => {
+  onMount2(() => {
     dialog.setSize(props.size ?? "medium");
     setTimeout(() => {
       if (!textarea || textarea.isDestroyed)
@@ -26075,7 +23418,7 @@ function DialogPrompt(props) {
     }, 1);
     textarea.gotoLineEnd();
   });
-  createEffect6(() => {
+  createEffect4(() => {
     if (!textarea || textarea.isDestroyed)
       return;
     const traits = props.busy ? {
@@ -26089,10 +23432,10 @@ function DialogPrompt(props) {
     }
     textarea.focus();
   });
-  return _$createComponent17(DialogLayout, {
+  return _$createComponent12(DialogLayout, {
     footerGap: 2,
     get header() {
-      return _$createComponent17(DialogHeader, {
+      return _$createComponent12(DialogHeader, {
         get title() {
           return props.title;
         },
@@ -26118,20 +23461,20 @@ function DialogPrompt(props) {
       };
     },
     get legacyFooter() {
-      return _$createComponent17(Show10, {
+      return _$createComponent12(Show6, {
         get when() {
           return !props.busy;
         },
         get fallback() {
           return (() => {
-            var _el$3 = _$createElement11("text");
-            _$insertNode9(_el$3, _$createTextNode6(`processing…`));
-            _$effect10((_$p) => _$setProp10(_el$3, "fg", theme.text.muted, _$p));
+            var _el$3 = _$createElement7("text");
+            _$insertNode5(_el$3, _$createTextNode3(`processing…`));
+            _$effect6((_$p) => _$setProp6(_el$3, "fg", theme.text.muted, _$p));
             return _el$3;
           })();
         },
         get children() {
-          return _$createComponent17(DialogFooter, {
+          return _$createComponent12(DialogFooter, {
             get actions() {
               return {
                 secondary: [{
@@ -26146,22 +23489,22 @@ function DialogPrompt(props) {
       });
     },
     get children() {
-      var _el$ = _$createElement11("box"), _el$2 = _$createElement11("textarea");
-      _$insertNode9(_el$, _el$2);
-      _$setProp10(_el$, "gap", 1);
-      _$insert9(_el$, () => props.description?.(), _el$2);
-      _$use4((val) => {
+      var _el$ = _$createElement7("box"), _el$2 = _$createElement7("textarea");
+      _$insertNode5(_el$, _el$2);
+      _$setProp6(_el$, "gap", 1);
+      _$insert5(_el$, () => props.description?.(), _el$2);
+      _$use2((val) => {
         textarea = val;
         setTextareaTarget(val);
       }, _el$2);
-      _$setProp10(_el$2, "height", 1);
-      _$setProp10(_el$2, "wrapMode", "none");
-      _$insert9(_el$, _$createComponent17(Show10, {
+      _$setProp6(_el$2, "height", 1);
+      _$setProp6(_el$2, "wrapMode", "none");
+      _$insert5(_el$, _$createComponent12(Show6, {
         get when() {
           return props.busy;
         },
         get children() {
-          return _$createComponent17(Spinner, {
+          return _$createComponent12(Spinner, {
             get color() {
               return theme.text.muted;
             },
@@ -26171,15 +23514,15 @@ function DialogPrompt(props) {
           });
         }
       }), null);
-      _$effect10((_p$) => {
+      _$effect6((_p$) => {
         var _v$ = props.value, _v$2 = props.placeholder ?? "Enter text", _v$3 = theme.text.muted, _v$4 = props.busy ? theme.text.formfield.disabled : theme.text.formfield.base, _v$5 = props.busy ? theme.text.formfield.disabled : theme.text.formfield.base, _v$6 = props.busy ? theme.background.formfield.disabled : theme.text.base, _v$7 = cursorStyle();
-        _v$ !== _p$.e && (_p$.e = _$setProp10(_el$2, "initialValue", _v$, _p$.e));
-        _v$2 !== _p$.t && (_p$.t = _$setProp10(_el$2, "placeholder", _v$2, _p$.t));
-        _v$3 !== _p$.a && (_p$.a = _$setProp10(_el$2, "placeholderColor", _v$3, _p$.a));
-        _v$4 !== _p$.o && (_p$.o = _$setProp10(_el$2, "textColor", _v$4, _p$.o));
-        _v$5 !== _p$.i && (_p$.i = _$setProp10(_el$2, "focusedTextColor", _v$5, _p$.i));
-        _v$6 !== _p$.n && (_p$.n = _$setProp10(_el$2, "cursorColor", _v$6, _p$.n));
-        _v$7 !== _p$.s && (_p$.s = _$setProp10(_el$2, "cursorStyle", _v$7, _p$.s));
+        _v$ !== _p$.e && (_p$.e = _$setProp6(_el$2, "initialValue", _v$, _p$.e));
+        _v$2 !== _p$.t && (_p$.t = _$setProp6(_el$2, "placeholder", _v$2, _p$.t));
+        _v$3 !== _p$.a && (_p$.a = _$setProp6(_el$2, "placeholderColor", _v$3, _p$.a));
+        _v$4 !== _p$.o && (_p$.o = _$setProp6(_el$2, "textColor", _v$4, _p$.o));
+        _v$5 !== _p$.i && (_p$.i = _$setProp6(_el$2, "focusedTextColor", _v$5, _p$.i));
+        _v$6 !== _p$.n && (_p$.n = _$setProp6(_el$2, "cursorColor", _v$6, _p$.n));
+        _v$7 !== _p$.s && (_p$.s = _$setProp6(_el$2, "cursorStyle", _v$7, _p$.s));
         return _p$;
       }, {
         e: undefined,
@@ -26195,7 +23538,3033 @@ function DialogPrompt(props) {
   });
 }
 
+// ../tui-base/src/util/locale.ts
+function titlecase(str) {
+  return str.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+function truncate(str, len) {
+  if (str.length <= len)
+    return str;
+  return str.slice(0, len - 1) + "…";
+}
+var graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+function truncateLeft(str, len) {
+  if (str.length <= len)
+    return str;
+  return "…" + str.slice(-(len - 1));
+}
+function truncateMiddle(str, maxLength = 35) {
+  if (maxLength <= 0)
+    return "";
+  if (str.length <= maxLength)
+    return str;
+  const ellipsis = "…";
+  const keepStart = Math.ceil((maxLength - ellipsis.length) / 2);
+  const keepEnd = Math.floor((maxLength - ellipsis.length) / 2);
+  if (keepEnd <= 0)
+    return str.slice(0, keepStart) + ellipsis;
+  return str.slice(0, keepStart) + ellipsis + str.slice(-keepEnd);
+}
+
+// ../tui-base/src/routes/session/subagents-picker.tsx
+var ROW_CAP = 5;
+function SubagentsPicker(props) {
+  const theme = useThemeOptional();
+  const dialog = useDialog();
+  const toast = useToast();
+  const [open, setOpen] = createSignal10(false);
+  const [showAll, setShowAll] = createSignal10(false);
+  const [store, setStore] = createStore6({
+    selected: 0
+  });
+  if (props.seam.onSubagentViews) {
+    onCleanup9(props.seam.onSubagentViews(() => {}));
+  }
+  const entries = createMemo5(() => {
+    const views = subagentMarkerViews();
+    return showAll() ? views : views.filter((view) => view.status === "running");
+  });
+  const selectedEntry = createMemo5(() => entries()[store.selected]);
+  const visibleRows = createMemo5(() => Math.min(ROW_CAP, Math.max(1, entries().length)));
+  createEffect5(() => {
+    if (!open())
+      return;
+    setStore("selected", 0);
+  });
+  function moveTo(next) {
+    const count = entries().length;
+    if (count === 0)
+      return;
+    setStore("selected", (next + count) % count);
+  }
+  function openSteer(entry) {
+    const agent = titlecase(entry.label);
+    dialog.replace(() => _$createComponent13(DialogPrompt, {
+      title: `Steer ${agent}`,
+      placeholder: "Steer message",
+      onConfirm: (value) => {
+        const text = value.trim();
+        if (!text)
+          return;
+        const sent = steerSubagent(entry.id, text);
+        dialog.clear();
+        if (sent) {
+          toast.show({
+            message: `steered ${agent.toLowerCase()}`,
+            variant: "success"
+          });
+        } else {
+          toast.show({
+            message: `steer rejected — ${agent} is not running`,
+            variant: "error"
+          });
+        }
+      },
+      onCancel: () => dialog.clear()
+    }));
+  }
+  function select() {
+    const entry = selectedEntry();
+    if (!entry)
+      return;
+    if (entry.status === "running" && subagentSteerWired()) {
+      openSteer(entry);
+    }
+  }
+  Keymap.createLayer(() => ({
+    mode: "global",
+    enabled: open() && dialog.stack.length === 0,
+    priority: 2,
+    commands: [{
+      bind: "down",
+      title: "Next subagent",
+      group: "Subagents",
+      run: () => moveTo(store.selected + 1)
+    }, {
+      bind: "up",
+      title: "Previous subagent",
+      group: "Subagents",
+      run: () => moveTo(store.selected - 1)
+    }, {
+      bind: "return",
+      title: "Steer / select subagent",
+      group: "Subagents",
+      run: select
+    }, {
+      bind: "ctrl+a",
+      title: "Toggle active subagents",
+      group: "Subagents",
+      run: () => {
+        setShowAll((value) => !value);
+        setStore("selected", 0);
+      }
+    }, {
+      bind: "escape",
+      title: "Close subagents picker",
+      group: "Subagents",
+      run: () => setOpen(false)
+    }]
+  }));
+  Keymap.createLayer(() => ({
+    mode: "global",
+    enabled: !open() && dialog.stack.length === 0 && subagentMarkerViews().length > 0,
+    commands: [{
+      id: "session.child.first",
+      title: "Toggle subagent picker",
+      group: "Session",
+      run: () => setOpen(true)
+    }]
+  }));
+  return _$createComponent13(Show7, {
+    get when() {
+      return open();
+    },
+    get children() {
+      var _el$ = _$createElement8("box"), _el$2 = _$createElement8("box"), _el$3 = _$createElement8("text"), _el$5 = _$createElement8("text"), _el$7 = _$createElement8("box"), _el$8 = _$createElement8("text"), _el$9 = _$createElement8("span"), _el$0 = _$createElement8("b"), _el$10 = _$createTextNode4(` `), _el$11 = _$createElement8("span"), _el$13 = _$createElement8("text"), _el$14 = _$createElement8("span"), _el$15 = _$createElement8("b"), _el$16 = _$createTextNode4(` `), _el$17 = _$createElement8("span");
+      _$insertNode6(_el$, _el$2);
+      _$insertNode6(_el$, _el$7);
+      _$setProp7(_el$, "flexShrink", 0);
+      _$setProp7(_el$, "width", "100%");
+      _$setProp7(_el$, "flexDirection", "column");
+      _$setProp7(_el$, "border", ["left"]);
+      _$setProp7(_el$, "paddingLeft", 1);
+      _$setProp7(_el$, "paddingRight", 2);
+      _$setProp7(_el$, "paddingTop", 1);
+      _$setProp7(_el$, "paddingBottom", 1);
+      _$insertNode6(_el$2, _el$3);
+      _$insertNode6(_el$2, _el$5);
+      _$setProp7(_el$2, "height", 1);
+      _$setProp7(_el$2, "flexShrink", 0);
+      _$setProp7(_el$2, "flexDirection", "row");
+      _$setProp7(_el$2, "justifyContent", "space-between");
+      _$setProp7(_el$2, "paddingLeft", 1);
+      _$insertNode6(_el$3, _$createTextNode4(`Subagents`));
+      _$insertNode6(_el$5, _$createTextNode4(`esc`));
+      _$insert6(_el$, _$createComponent13(Show7, {
+        get when() {
+          return entries().length > 0;
+        },
+        get fallback() {
+          return (() => {
+            var _el$19 = _$createElement8("box"), _el$20 = _$createElement8("text"), _el$21 = _$createTextNode4(`No `), _el$22 = _$createTextNode4(` subagents`);
+            _$insertNode6(_el$19, _el$20);
+            _$setProp7(_el$19, "height", 1);
+            _$setProp7(_el$19, "flexShrink", 0);
+            _$setProp7(_el$19, "paddingLeft", 1);
+            _$insertNode6(_el$20, _el$21);
+            _$insertNode6(_el$20, _el$22);
+            _$insert6(_el$20, () => showAll() ? "inactive" : "active", _el$22);
+            _$effect7((_$p) => _$setProp7(_el$20, "fg", theme?.text.muted ?? "#565f89", _$p));
+            return _el$19;
+          })();
+        },
+        get children() {
+          return _$createComponent13(For2, {
+            get each() {
+              return entries().slice(0, ROW_CAP);
+            },
+            children: (entry, index) => {
+              const active = createMemo5(() => index() === store.selected);
+              return (() => {
+                var _el$23 = _$createElement8("box"), _el$24 = _$createElement8("text");
+                _$insertNode6(_el$23, _el$24);
+                _$setProp7(_el$23, "height", 1);
+                _$setProp7(_el$23, "flexShrink", 0);
+                _$setProp7(_el$23, "flexDirection", "row");
+                _$setProp7(_el$23, "paddingLeft", 1);
+                _$setProp7(_el$23, "paddingRight", 1);
+                _$setProp7(_el$24, "wrapMode", "none");
+                _$insert6(_el$24, () => subagentHardStopGlyph(entry), null);
+                _$insert6(_el$24, () => subagentHardStopGlyph(entry) ? " " : "", null);
+                _$insert6(_el$24, () => titlecase(entry.label), null);
+                _$insert6(_el$23, _$createComponent13(Show7, {
+                  get when() {
+                    return entry.status === "running";
+                  },
+                  get children() {
+                    var _el$25 = _$createElement8("text");
+                    _$insertNode6(_el$25, _$createTextNode4(`  Running`));
+                    _$setProp7(_el$25, "wrapMode", "none");
+                    _$effect7((_$p) => _$setProp7(_el$25, "fg", active() ? theme?.text.action.primary.focused ?? "#e6e6e6" : theme?.text.muted ?? "#565f89", _$p));
+                    return _el$25;
+                  }
+                }), null);
+                _$insert6(_el$23, _$createComponent13(Show7, {
+                  get when() {
+                    return subagentMarkerSuffix(entry);
+                  },
+                  get children() {
+                    var _el$27 = _$createElement8("text");
+                    _$setProp7(_el$27, "wrapMode", "none");
+                    _$insert6(_el$27, () => subagentMarkerSuffix(entry));
+                    _$effect7((_$p) => _$setProp7(_el$27, "fg", theme?.text.muted ?? "#565f89", _$p));
+                    return _el$27;
+                  }
+                }), null);
+                _$effect7((_p$) => {
+                  var _v$1 = active() ? theme?.text.action.primary.focused ?? "#e6e6e6" : theme?.text.action.primary.base ?? "#e6e6e6", _v$10 = active() ? TextAttributes3.BOLD : undefined;
+                  _v$1 !== _p$.e && (_p$.e = _$setProp7(_el$24, "fg", _v$1, _p$.e));
+                  _v$10 !== _p$.t && (_p$.t = _$setProp7(_el$24, "attributes", _v$10, _p$.t));
+                  return _p$;
+                }, {
+                  e: undefined,
+                  t: undefined
+                });
+                return _el$23;
+              })();
+            }
+          });
+        }
+      }), _el$7);
+      _$insertNode6(_el$7, _el$8);
+      _$insertNode6(_el$7, _el$13);
+      _$setProp7(_el$7, "height", 1);
+      _$setProp7(_el$7, "flexShrink", 0);
+      _$setProp7(_el$7, "flexDirection", "row");
+      _$setProp7(_el$7, "gap", 2);
+      _$setProp7(_el$7, "paddingLeft", 1);
+      _$insertNode6(_el$8, _el$9);
+      _$insertNode6(_el$8, _el$11);
+      _$insertNode6(_el$9, _el$0);
+      _$insertNode6(_el$9, _el$10);
+      _$insertNode6(_el$0, _$createTextNode4(`steer`));
+      _$insertNode6(_el$11, _$createTextNode4(`enter`));
+      _$insertNode6(_el$13, _el$14);
+      _$insertNode6(_el$13, _el$17);
+      _$insertNode6(_el$14, _el$15);
+      _$insertNode6(_el$14, _el$16);
+      _$insert6(_el$15, () => `show ${showAll() ? "inactive" : "active"}`);
+      _$insertNode6(_el$17, _$createTextNode4(`ctrl+a`));
+      _$effect7((_p$) => {
+        var _v$ = 1 + visibleRows() + 1 + 2, _v$2 = theme?.border.base ?? "#7aa2f7", _v$3 = theme?.background.raised.base ?? "#1a1b26", _v$4 = theme?.text.base ?? "#e6e6e6", _v$5 = TextAttributes3.BOLD, _v$6 = theme?.text.muted ?? "#565f89", _v$7 = {
+          fg: theme?.text.base ?? "#e6e6e6"
+        }, _v$8 = {
+          fg: theme?.text.muted ?? "#565f89"
+        }, _v$9 = {
+          fg: theme?.text.base ?? "#e6e6e6"
+        }, _v$0 = {
+          fg: theme?.text.muted ?? "#565f89"
+        };
+        _v$ !== _p$.e && (_p$.e = _$setProp7(_el$, "height", _v$, _p$.e));
+        _v$2 !== _p$.t && (_p$.t = _$setProp7(_el$, "borderColor", _v$2, _p$.t));
+        _v$3 !== _p$.a && (_p$.a = _$setProp7(_el$, "backgroundColor", _v$3, _p$.a));
+        _v$4 !== _p$.o && (_p$.o = _$setProp7(_el$3, "fg", _v$4, _p$.o));
+        _v$5 !== _p$.i && (_p$.i = _$setProp7(_el$3, "attributes", _v$5, _p$.i));
+        _v$6 !== _p$.n && (_p$.n = _$setProp7(_el$5, "fg", _v$6, _p$.n));
+        _v$7 !== _p$.s && (_p$.s = _$setProp7(_el$9, "style", _v$7, _p$.s));
+        _v$8 !== _p$.h && (_p$.h = _$setProp7(_el$11, "style", _v$8, _p$.h));
+        _v$9 !== _p$.r && (_p$.r = _$setProp7(_el$14, "style", _v$9, _p$.r));
+        _v$0 !== _p$.d && (_p$.d = _$setProp7(_el$17, "style", _v$0, _p$.d));
+        return _p$;
+      }, {
+        e: undefined,
+        t: undefined,
+        a: undefined,
+        o: undefined,
+        i: undefined,
+        n: undefined,
+        s: undefined,
+        h: undefined,
+        r: undefined,
+        d: undefined
+      });
+      return _el$;
+    }
+  });
+}
+
+// ../tui-base/src/routes/session/seam-rows.ts
+import { createSignal as createSignal11, onCleanup as onCleanup10 } from "solid-js";
+import { createStore as createStore7, produce as produce3, reconcile as reconcile3 } from "solid-js/store";
+function toStoredRow(stored, index) {
+  const kind = stored.kind === "user" || stored.kind === "tool" ? stored.kind : "assistant";
+  const key = `stored:${kind}:${index}`;
+  if (kind === "tool") {
+    return { key, kind: "tool", name: stored.text, args: "", status: "done" };
+  }
+  if (kind === "user")
+    return { key, kind: "user", text: stored.text, final: true };
+  return { key, kind: "assistant", text: stored.text, final: stored.final };
+}
+function createSeamRows(seam, sessionID, options) {
+  const [rows, setRows] = createStore7([]);
+  const [hydrated, setHydrated] = createSignal11(false);
+  let liveOrdinal = 0;
+  let turnOpen = false;
+  const pendingTurns = [];
+  function hydrate(stored) {
+    setRows(reconcile3(stored.map(toStoredRow), { key: "key" }));
+    setHydrated(true);
+  }
+  function load() {
+    const id = sessionID();
+    return seam.storedTranscript(id).then((stored) => {
+      if (sessionID() === id)
+        hydrate(stored);
+    }).catch(() => {
+      return;
+    });
+  }
+  function upsert(row) {
+    setRows(produce3((draft) => {
+      const index = draft.findIndex((existing) => existing.key === row.key);
+      if (index === -1) {
+        draft.push(row);
+        return;
+      }
+      Object.assign(draft[index], row);
+    }));
+  }
+  function dropRows(keys) {
+    setRows(produce3((draft) => {
+      for (let i = draft.length - 1;i >= 0; i--) {
+        if (keys.has(draft[i].key))
+          draft.splice(i, 1);
+      }
+    }));
+  }
+  function supersedeSettledTurn(group, settled) {
+    setRows(produce3((draft) => {
+      const assistantAt = draft.findIndex((row) => row.key === group.assistantKey);
+      const doomed = new Set([group.reasoningKey, group.assistantKey]);
+      let removedBefore = 0;
+      for (let i = draft.length - 1;i >= 0; i--) {
+        if (!doomed.has(draft[i].key))
+          continue;
+        draft.splice(i, 1);
+        if (i < assistantAt)
+          removedBefore += 1;
+      }
+      if (settled === undefined)
+        return;
+      let insertAt = assistantAt === -1 ? draft.length : assistantAt - removedBefore;
+      let journalUserAt = -1;
+      for (let i = draft.length - 1;i >= insertAt; i--) {
+        const row = draft[i];
+        if (row.kind === "user" && row.key.startsWith("user:") && !row.key.startsWith("user:local")) {
+          journalUserAt = i;
+          break;
+        }
+      }
+      if (journalUserAt !== -1) {
+        const prompt = draft[journalUserAt];
+        draft.splice(journalUserAt, 1);
+        draft.splice(insertAt, 0, prompt);
+        insertAt += 1;
+      }
+      draft.splice(insertAt, 0, settled);
+    }));
+  }
+  function apply(event) {
+    const details = event.details ?? {};
+    if (typeof details.sessionID === "string" && details.sessionID !== sessionID())
+      return;
+    if (event.type === "message.updated" && details.role === "user") {
+      const id = typeof details.id === "string" ? details.id : `local-${++liveOrdinal}`;
+      const text = typeof details.text === "string" ? details.text : "";
+      if (!turnOpen && pendingTurns.length > 0 && typeof details.sessionID === "string") {
+        const group = pendingTurns[0];
+        const local = rows.find((row) => row.key === group.userKey);
+        if (!local || local.kind !== "user" || local.text.trim() === text.trim()) {
+          group.userSuperseded = true;
+          dropRows(new Set([group.userKey]));
+        }
+      }
+      upsert({
+        key: `user:${id}`,
+        kind: "user",
+        text,
+        final: true
+      });
+      return;
+    }
+    if (event.type === "message.part.updated") {
+      const messageID = typeof details.messageID === "string" ? details.messageID : "live";
+      const part = details.part ?? {};
+      const partType = typeof part.type === "string" ? part.type : "text";
+      const partID = typeof part.id === "string" ? part.id : `${partType}:${messageID}`;
+      if (partType === "tool") {
+        upsert({
+          key: `tool:${messageID}:${partID}`,
+          kind: "tool",
+          name: typeof part.name === "string" ? part.name : "generic",
+          args: typeof part.input === "string" ? part.input : "",
+          status: part.status === "done" || part.status === "failed" ? part.status : "running",
+          output: typeof part.output === "string" ? part.output : undefined
+        });
+        return;
+      }
+      if (partType !== "text" && partType !== "reasoning")
+        return;
+      const text = typeof part.text === "string" ? part.text : "";
+      const kind = partType === "text" ? "assistant" : "reasoning";
+      if (partType === "text" && !turnOpen && pendingTurns.length > 0 && typeof details.sessionID === "string") {
+        const group = pendingTurns.shift();
+        const settled = text.trim() ? { key: `${kind}:${messageID}:${partID}`, kind: "assistant", text, final: true } : undefined;
+        supersedeSettledTurn(group, settled);
+        return;
+      }
+      const key = `${kind}:${messageID}:${partID}`;
+      const existing = rows.find((row) => row.key === key);
+      if (!existing && !text.trim())
+        return;
+      upsert({
+        key,
+        kind,
+        text: existing && existing.kind === kind ? existing.text + text : text,
+        final: part.time?.completed !== undefined
+      });
+      return;
+    }
+    if (event.type === "session.error") {
+      const message = typeof details.message === "string" ? details.message : "unknown error";
+      upsert({ key: `error:local-${++liveOrdinal}`, kind: "assistant", text: `error: ${message}`, final: true });
+    }
+  }
+  const unsubscribe = seam.onSessionEvent(apply);
+  onCleanup10(unsubscribe);
+  async function send(text) {
+    const prompt = text.trim();
+    if (!prompt)
+      return;
+    const userKey = `user:local-${++liveOrdinal}`;
+    upsert({ key: userKey, kind: "user", text: prompt, final: true });
+    const assistantKey = `assistant:live-${++liveOrdinal}`;
+    const reasoningKey = `reasoning:live-${liveOrdinal}`;
+    const group = { userKey, reasoningKey, assistantKey, userSuperseded: false };
+    pendingTurns.push(group);
+    let assistantText = "";
+    let reasoningText = "";
+    let turnErrored = false;
+    turnOpen = true;
+    return seam.turn(prompt, {
+      onThinkingDelta: (delta) => {
+        reasoningText += delta;
+        if (reasoningText.trim())
+          upsert({ key: reasoningKey, kind: "reasoning", text: reasoningText, final: false });
+      },
+      onContentDelta: (delta) => {
+        assistantText += delta;
+        upsert({ key: assistantKey, kind: "assistant", text: assistantText, final: false });
+      },
+      onToolStart: (start) => {
+        upsert({
+          key: `tool:live:${start.callId ?? start.name}`,
+          kind: "tool",
+          name: start.name,
+          args: start.args,
+          status: "running"
+        });
+      },
+      onApprove: options?.onApprove ?? approveThrough,
+      onError: (message) => {
+        turnErrored = true;
+        upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true });
+      }
+    }).finally(() => {
+      turnOpen = false;
+    }).then(() => {
+      const finalize = (key, kind, text) => {
+        if (kind === "assistant" && turnErrored)
+          return;
+        const existing = rows.find((row) => row.key === key);
+        if (existing && existing.kind === kind)
+          upsert({ ...existing, text, final: true });
+      };
+      finalize(reasoningKey, "reasoning", reasoningText);
+      finalize(assistantKey, "assistant", assistantText);
+      setRows(produce3((draft) => {
+        for (const row of draft) {
+          if (row.kind === "tool" && row.status === "running" && row.key.startsWith("tool:live:"))
+            row.status = "done";
+        }
+      }));
+      if (turnErrored)
+        return;
+      const id = sessionID();
+      return seam.storedTranscript(id).then((stored) => {
+        const nowId = sessionID();
+        if (turnOpen || nowId !== id && nowId !== "")
+          return;
+        const durable = [...stored].reverse().find((row) => row.kind === "assistant" && row.text.trim());
+        if (!durable)
+          return;
+        const live = rows.find((row) => row.key === assistantKey);
+        setRows(produce3((draft) => {
+          for (let i = draft.length - 1;i >= 0; i--) {
+            if (draft[i].key === reasoningKey)
+              draft.splice(i, 1);
+          }
+          if (durable && live && live.kind === "assistant" && live.text !== durable.text) {
+            const index = draft.findIndex((row) => row.key === assistantKey);
+            if (index !== -1)
+              Object.assign(draft[index], { text: durable.text, final: true });
+          }
+        }));
+      }).catch(() => {
+        return;
+      });
+    });
+  }
+  return { rows, hydrated, load, hydrate, apply, send };
+}
+async function approveThrough(_name, _args) {
+  return "allowed-once";
+}
+
+// ../tui-base/src/routes/session/transcript.tsx
+import { createTextNode as _$createTextNode5 } from "@opentui/solid";
+import { createComponent as _$createComponent14 } from "@opentui/solid";
+import { use as _$use3 } from "@opentui/solid";
+import { insertNode as _$insertNode7 } from "@opentui/solid";
+import { insert as _$insert7 } from "@opentui/solid";
+import { effect as _$effect8 } from "@opentui/solid";
+import { setProp as _$setProp8 } from "@opentui/solid";
+import { createElement as _$createElement9 } from "@opentui/solid";
+import { For as For3, onCleanup as onCleanup11, onMount as onMount3, Show as Show8 } from "solid-js";
+import { useRenderer as useRenderer7 } from "@opentui/solid";
+import { SyntaxStyle as SyntaxStyle2 } from "@opentui/core";
+function Transcript(props) {
+  const renderer = useRenderer7();
+  const theme = useThemeOptional();
+  const color = {
+    text: () => theme?.text.base ?? "#e6e6e6",
+    user: () => theme?.text.action.primary.base ?? "#7aa2f7",
+    reasoningBorder: () => theme?.border.base ?? "#565f89",
+    reasoning: () => theme?.text.muted ?? "#9aa5ce",
+    done: () => theme?.text.feedback.success.base ?? "#9ece6a",
+    running: () => theme?.text.feedback.warning.base ?? "#e0af68",
+    failed: () => theme?.text.feedback.error.base ?? "#f7768e",
+    loading: () => theme?.text.feedback.info.base ?? "#565f89",
+    background: () => theme?.background.base ?? "black"
+  };
+  const sessionID = () => props.sessionID ?? props.seam.currentSessionId() ?? "";
+  const owned = props.projection === undefined;
+  const projection = props.projection ?? createSeamRows(props.seam, sessionID);
+  const themes = useThemesOptional();
+  const syntaxStyle = () => props.syntaxStyle ?? themes?.currentSyntax() ?? SyntaxStyle2.fromStyles({}, renderer.nativeScene);
+  onMount3(() => {
+    if (owned)
+      projection.load();
+  });
+  const assistantRow = (row) => (() => {
+    var _el$ = _$createElement9("markdown");
+    _$setProp8(_el$, "internalBlockMode", "top-level");
+    _$effect8((_p$) => {
+      var _v$ = props.renderNode, _v$2 = row.text, _v$3 = !row.final, _v$4 = syntaxStyle(), _v$5 = color.text();
+      _v$ !== _p$.e && (_p$.e = _$setProp8(_el$, "renderNode", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp8(_el$, "content", _v$2, _p$.t));
+      _v$3 !== _p$.a && (_p$.a = _$setProp8(_el$, "streaming", _v$3, _p$.a));
+      _v$4 !== _p$.o && (_p$.o = _$setProp8(_el$, "syntaxStyle", _v$4, _p$.o));
+      _v$5 !== _p$.i && (_p$.i = _$setProp8(_el$, "fg", _v$5, _p$.i));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined,
+      o: undefined,
+      i: undefined
+    });
+    return _el$;
+  })();
+  const rowView = (row) => {
+    switch (row.kind) {
+      case "user":
+        return (() => {
+          var _el$2 = _$createElement9("box"), _el$3 = _$createElement9("text");
+          _$insertNode7(_el$2, _el$3);
+          _$setProp8(_el$2, "flexShrink", 0);
+          _$setProp8(_el$2, "paddingLeft", 3);
+          _$setProp8(_el$3, "wrapMode", "word");
+          _$insert7(_el$3, () => `❯ ${row.text}`);
+          _$effect8((_$p) => _$setProp8(_el$3, "fg", color.user(), _$p));
+          return _el$2;
+        })();
+      case "reasoning":
+        return (() => {
+          var _el$4 = _$createElement9("box"), _el$5 = _$createElement9("text");
+          _$insertNode7(_el$4, _el$5);
+          _$setProp8(_el$4, "flexShrink", 0);
+          _$setProp8(_el$4, "marginLeft", 3);
+          _$setProp8(_el$4, "border", ["left"]);
+          _$setProp8(_el$4, "paddingLeft", 1);
+          _$setProp8(_el$5, "wrapMode", "word");
+          _$insert7(_el$5, () => row.text);
+          _$effect8((_p$) => {
+            var _v$6 = color.reasoningBorder(), _v$7 = color.reasoning();
+            _v$6 !== _p$.e && (_p$.e = _$setProp8(_el$4, "borderColor", _v$6, _p$.e));
+            _v$7 !== _p$.t && (_p$.t = _$setProp8(_el$5, "fg", _v$7, _p$.t));
+            return _p$;
+          }, {
+            e: undefined,
+            t: undefined
+          });
+          return _el$4;
+        })();
+      case "tool":
+        return (() => {
+          var _el$6 = _$createElement9("box"), _el$7 = _$createElement9("text");
+          _$insertNode7(_el$6, _el$7);
+          _$setProp8(_el$6, "flexShrink", 0);
+          _$setProp8(_el$6, "paddingLeft", 3);
+          _$setProp8(_el$7, "wrapMode", "none");
+          _$insert7(_el$7, () => `${row.status === "done" ? "✓" : row.status === "failed" ? "✗" : "*"} ${row.name}${row.args ? `(${row.args})` : ""}`);
+          _$effect8((_$p) => _$setProp8(_el$7, "fg", row.status === "failed" ? color.failed() : row.status === "running" ? color.running() : color.done(), _$p));
+          return _el$6;
+        })();
+      case "assistant":
+        return assistantRow(row);
+    }
+  };
+  onCleanup11(() => {
+    props.scrollRef?.(undefined);
+  });
+  return (() => {
+    var _el$8 = _$createElement9("box"), _el$9 = _$createElement9("box"), _el$0 = _$createElement9("box"), _el$1 = _$createElement9("scrollbox");
+    _$insertNode7(_el$8, _el$9);
+    _$setProp8(_el$8, "flexDirection", "column");
+    _$setProp8(_el$8, "flexGrow", 1);
+    _$setProp8(_el$8, "minHeight", 0);
+    _$setProp8(_el$8, "width", "100%");
+    _$insertNode7(_el$9, _el$0);
+    _$setProp8(_el$9, "flexDirection", "row");
+    _$setProp8(_el$9, "flexGrow", 1);
+    _$setProp8(_el$9, "minHeight", 0);
+    _$insertNode7(_el$0, _el$1);
+    _$setProp8(_el$0, "flexGrow", 1);
+    _$setProp8(_el$0, "minHeight", 0);
+    _$setProp8(_el$0, "position", "relative");
+    _$setProp8(_el$0, "paddingBottom", 1);
+    _$use3((value) => {
+      props.scrollRef?.(value);
+    }, _el$1);
+    _$setProp8(_el$1, "flexGrow", 1);
+    _$setProp8(_el$1, "overflow", "hidden");
+    _$setProp8(_el$1, "stickyScroll", true);
+    _$setProp8(_el$1, "stickyStart", "bottom");
+    _$insert7(_el$1, _$createComponent14(For3, {
+      get each() {
+        return projection.rows;
+      },
+      children: (row) => (() => {
+        var _el$14 = _$createElement9("box");
+        _$setProp8(_el$14, "marginTop", 1);
+        _$setProp8(_el$14, "flexShrink", 0);
+        _$insert7(_el$14, () => rowView(row));
+        _$effect8((_$p) => _$setProp8(_el$14, "id", `seam-row-${row.key}`, _$p));
+        return _el$14;
+      })()
+    }), null);
+    _$insert7(_el$1, _$createComponent14(Show8, {
+      get when() {
+        return projection.hydrated() === false;
+      },
+      get children() {
+        var _el$10 = _$createElement9("box"), _el$11 = _$createElement9("text");
+        _$insertNode7(_el$10, _el$11);
+        _$setProp8(_el$10, "flexShrink", 0);
+        _$insertNode7(_el$11, _$createTextNode5(`Loading session history…`));
+        _$effect8((_$p) => _$setProp8(_el$11, "fg", color.loading(), _$p));
+        return _el$10;
+      }
+    }), null);
+    _$insert7(_el$8, _$createComponent14(Show8, {
+      get when() {
+        return props.children;
+      },
+      get children() {
+        var _el$13 = _$createElement9("box");
+        _$setProp8(_el$13, "width", "100%");
+        _$setProp8(_el$13, "flexShrink", 0);
+        _$insert7(_el$13, () => props.children);
+        return _el$13;
+      }
+    }), null);
+    _$effect8((_p$) => {
+      var _v$8 = color.background(), _v$9 = {
+        paddingRight: props.scrollbar ? 1 : 0
+      }, _v$0 = {
+        paddingLeft: 1,
+        visible: props.scrollbar ?? false,
+        trackOptions: {
+          backgroundColor: color.background(),
+          foregroundColor: color.reasoningBorder()
+        }
+      };
+      _v$8 !== _p$.e && (_p$.e = _$setProp8(_el$8, "backgroundColor", _v$8, _p$.e));
+      _v$9 !== _p$.t && (_p$.t = _$setProp8(_el$1, "viewportOptions", _v$9, _p$.t));
+      _v$0 !== _p$.a && (_p$.a = _$setProp8(_el$1, "verticalScrollbarOptions", _v$0, _p$.a));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined
+    });
+    return _el$8;
+  })();
+}
+
+// ../tui-base/src/routes/session/turn-overlay-controller.ts
+class TurnOverlayController {
+  #approvals = [];
+  #asks = [];
+  #seq = 0;
+  #listeners = new Set;
+  #idleHandlers = new Set;
+  #busy = false;
+  subscribe(fn) {
+    this.#listeners.add(fn);
+    return () => this.#listeners.delete(fn);
+  }
+  onIdle(fn) {
+    this.#idleHandlers.add(fn);
+    return () => this.#idleHandlers.delete(fn);
+  }
+  #changed() {
+    for (const listener of this.#listeners)
+      listener();
+    const busy = this.#approvals.length > 0 || this.#asks.length > 0;
+    if (this.#busy && !busy)
+      for (const handler of this.#idleHandlers)
+        handler();
+    this.#busy = busy;
+  }
+  get pendingApproval() {
+    return this.#approvals[0]?.request;
+  }
+  requestApproval(name, args) {
+    return new Promise((resolve) => {
+      this.#approvals.push({ request: { id: ++this.#seq, name, args }, resolve });
+      this.#changed();
+    });
+  }
+  confirmApproval() {
+    this.#settleApproval("allowed-once");
+  }
+  rejectApproval() {
+    this.#settleApproval("rejected");
+  }
+  #settleApproval(verdict) {
+    const head = this.#approvals.shift();
+    if (!head)
+      return;
+    head.resolve(verdict);
+    this.#changed();
+  }
+  get pendingAsk() {
+    const head = this.#asks[0];
+    if (!head)
+      return;
+    return { id: head.id, questions: head.questions, index: head.index, picks: head.picks, phase: head.phase };
+  }
+  get currentQuestion() {
+    const head = this.#asks[0];
+    return head?.questions[head.index];
+  }
+  answer(questions) {
+    if (questions.length === 0)
+      return Promise.resolve([]);
+    return new Promise((resolve) => {
+      this.#asks.push({
+        id: ++this.#seq,
+        questions,
+        index: 0,
+        picks: questions.map(() => []),
+        phase: "questions",
+        resolve
+      });
+      this.#changed();
+    });
+  }
+  toggle(option) {
+    const head = this.#asks[0];
+    const question = head?.questions[head.index];
+    if (!head || !question || head.phase === "review")
+      return;
+    if (question.multiSelect === true) {
+      const current = head.picks[head.index] ?? [];
+      head.picks[head.index] = current.includes(option) ? current.filter((label) => label !== option) : [...current, option];
+      this.#changed();
+      return;
+    }
+    head.picks[head.index] = [option];
+    if (head.questions.length === 1) {
+      this.#asks.shift();
+      head.resolve(this.#envelope(head));
+      this.#changed();
+      return;
+    }
+    if (this.#allAnswered(head)) {
+      head.phase = "review";
+    } else {
+      const next = head.questions.findIndex((_, qi) => qi > head.index && head.picks[qi]?.length === 0);
+      if (next >= 0)
+        head.index = next;
+    }
+    this.#changed();
+  }
+  switchFocus(direction) {
+    const head = this.#asks[0];
+    if (!head || head.phase === "review" || head.questions.length < 2)
+      return;
+    const next = Math.max(0, Math.min(head.questions.length - 1, head.index + direction));
+    if (next !== head.index) {
+      head.index = next;
+      this.#changed();
+    }
+  }
+  enterReview() {
+    const head = this.#asks[0];
+    if (!head || head.phase === "review")
+      return false;
+    if (!this.#allAnswered(head))
+      return false;
+    head.phase = "review";
+    this.#changed();
+    return true;
+  }
+  backToQuestions(focus) {
+    const head = this.#asks[0];
+    if (!head || head.phase !== "review")
+      return;
+    head.phase = "questions";
+    if (focus !== undefined && focus >= 0 && focus < head.questions.length)
+      head.index = focus;
+    this.#changed();
+  }
+  submit() {
+    const head = this.#asks[0];
+    if (!head)
+      return;
+    this.#asks.shift();
+    head.resolve(this.#envelope(head));
+    this.#changed();
+  }
+  #allAnswered(head) {
+    return head.picks.every((pick) => pick.length > 0);
+  }
+  #envelope(head) {
+    return head.questions.map((question, qi) => {
+      const picks = head.picks[qi] ?? [];
+      return {
+        questionId: question.id,
+        selected: picks[0] ?? "",
+        ...picks.length > 1 ? { selections: [...picks] } : {}
+      };
+    });
+  }
+  decline() {
+    const head = this.#asks.shift();
+    if (!head)
+      return;
+    head.resolve([]);
+    this.#changed();
+  }
+}
+
+// ../tui-base/src/routes/session/turn-overlays.tsx
+import { memo as _$memo8 } from "@opentui/solid";
+import { createComponent as _$createComponent17 } from "@opentui/solid";
+import { createEffect as createEffect7, createSignal as createSignal13, onCleanup as onCleanup13, onMount as onMount5, untrack, Show as Show10 } from "solid-js";
+
+// ../tui-base/src/ui/dialog-confirm.tsx
+import { insertNode as _$insertNode8 } from "@opentui/solid";
+import { createComponent as _$createComponent15 } from "@opentui/solid";
+import { setProp as _$setProp9 } from "@opentui/solid";
+import { effect as _$effect9 } from "@opentui/solid";
+import { insert as _$insert8 } from "@opentui/solid";
+import { createElement as _$createElement10 } from "@opentui/solid";
+import { createStore as createStore8 } from "solid-js/store";
+import { For as For4 } from "solid-js";
+function DialogConfirm(props) {
+  const dialog = useDialog();
+  const theme = useTheme().surface("dialog");
+  const newDesigns = useNewDesigns();
+  const [store, setStore] = createStore8({
+    active: "confirm"
+  });
+  const choose = (key) => {
+    if (key === "confirm")
+      props.onConfirm?.();
+    if (key === "cancel")
+      props.onCancel?.();
+    dialog.clear();
+  };
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    commands: newDesigns() ? [{
+      bind: "return",
+      title: "Confirm",
+      group: "Dialog",
+      run: () => choose("confirm")
+    }, {
+      bind: "escape",
+      title: "Cancel",
+      group: "Dialog",
+      run: () => choose("cancel")
+    }] : [{
+      bind: "return",
+      title: "Confirm dialog selection",
+      group: "Dialog",
+      run: () => choose(store.active)
+    }, {
+      bind: "left",
+      title: "Previous dialog option",
+      group: "Dialog",
+      run: () => {
+        setStore("active", store.active === "confirm" ? "cancel" : "confirm");
+      }
+    }, {
+      bind: "right",
+      title: "Next dialog option",
+      group: "Dialog",
+      run: () => {
+        setStore("active", store.active === "confirm" ? "cancel" : "confirm");
+      }
+    }]
+  }));
+  return _$createComponent15(DialogLayout, {
+    get header() {
+      return _$createComponent15(DialogHeader, {
+        get title() {
+          return props.title;
+        }
+      });
+    },
+    get footer() {
+      return {
+        actions: {
+          primary: [
+            {
+              title: (props.label?.cancel ?? "cancel").toLowerCase(),
+              key: "esc",
+              onTrigger: () => choose("cancel")
+            },
+            {
+              title: (props.label?.confirm ?? "confirm").toLowerCase(),
+              key: "enter",
+              onTrigger: () => choose("confirm")
+            }
+          ]
+        }
+      };
+    },
+    get legacyFooter() {
+      return (() => {
+        var _el$2 = _$createElement10("box");
+        _$setProp9(_el$2, "flexDirection", "row");
+        _$setProp9(_el$2, "justifyContent", "flex-end");
+        _$insert8(_el$2, _$createComponent15(For4, {
+          each: ["cancel", "confirm"],
+          children: (key) => (() => {
+            var _el$3 = _$createElement10("box"), _el$4 = _$createElement10("text");
+            _$insertNode8(_el$3, _el$4);
+            _$setProp9(_el$3, "paddingLeft", 1);
+            _$setProp9(_el$3, "paddingRight", 1);
+            _$setProp9(_el$3, "onMouseUp", () => choose(key));
+            _$insert8(_el$4, () => titlecase(props.label?.[key] ?? key));
+            _$effect9((_p$) => {
+              var _v$ = key === store.active ? theme.background.action.primary.focused : undefined, _v$2 = key === store.active ? theme.text.action.primary.focused : theme.text.muted;
+              _v$ !== _p$.e && (_p$.e = _$setProp9(_el$3, "backgroundColor", _v$, _p$.e));
+              _v$2 !== _p$.t && (_p$.t = _$setProp9(_el$4, "fg", _v$2, _p$.t));
+              return _p$;
+            }, {
+              e: undefined,
+              t: undefined
+            });
+            return _el$3;
+          })()
+        }));
+        return _el$2;
+      })();
+    },
+    get children() {
+      var _el$ = _$createElement10("text");
+      _$insert8(_el$, () => props.message);
+      _$effect9((_$p) => _$setProp9(_el$, "fg", theme.text.muted, _$p));
+      return _el$;
+    }
+  });
+}
+
+// ../tui-base/src/ui/dialog-select.tsx
+import { memo as _$memo7 } from "@opentui/solid";
+import { createTextNode as _$createTextNode6 } from "@opentui/solid";
+import { insertNode as _$insertNode9 } from "@opentui/solid";
+import { insert as _$insert9 } from "@opentui/solid";
+import { createComponent as _$createComponent16 } from "@opentui/solid";
+import { effect as _$effect10 } from "@opentui/solid";
+import { use as _$use4 } from "@opentui/solid";
+import { setProp as _$setProp10 } from "@opentui/solid";
+import { createElement as _$createElement11 } from "@opentui/solid";
+import { CliRenderEvents as CliRenderEvents2, RGBA as RGBA12, TextAttributes as TextAttributes4 } from "@opentui/core";
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-D6FCK2GA.js
+function u(o, n, a) {
+  let t = (r) => o(r, ...n);
+  return a === undefined ? t : Object.assign(t, { lazy: a, lazyArgs: n });
+}
+
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-WIMGWYZL.js
+function u2(r, n, o) {
+  let a = r.length - n.length;
+  if (a === 0)
+    return r(...n);
+  if (a === 1)
+    return u(r, n, o);
+  throw new Error("Wrong number of arguments");
+}
+
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-HVPVHFDT.js
+function i(...e) {
+  return u2(p, e);
+}
+var p = (e, d) => {
+  let r = Object.create(null);
+  for (let n = 0;n < e.length; n++) {
+    let t = e[n], y = d(t, n, e);
+    if (y !== undefined) {
+      let o = r[y];
+      o === undefined ? r[y] = [t] : o.push(t);
+    }
+  }
+  return Object.setPrototypeOf(r, Object.prototype), r;
+};
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-HGKLN5KY.js
+function k(...n) {
+  return u2(u3, n);
+}
+function u3(n, e) {
+  if (n === e || Object.is(n, e))
+    return true;
+  if (typeof n != "object" || typeof e != "object" || n === null || e === null || Object.getPrototypeOf(n) !== Object.getPrototypeOf(e))
+    return false;
+  if (Array.isArray(n))
+    return l(n, e);
+  if (n instanceof Map)
+    return a(n, e);
+  if (n instanceof Set)
+    return c(n, e);
+  if (n instanceof Date)
+    return n.getTime() === e.getTime();
+  if (n instanceof RegExp)
+    return n.toString() === e.toString();
+  if (Object.keys(n).length !== Object.keys(e).length)
+    return false;
+  for (let [r, t] of Object.entries(n))
+    if (!(r in e) || !u3(t, e[r]))
+      return false;
+  return true;
+}
+function l(n, e) {
+  if (n.length !== e.length)
+    return false;
+  for (let [r, t] of n.entries())
+    if (!u3(t, e[r]))
+      return false;
+  return true;
+}
+function a(n, e) {
+  if (n.size !== e.size)
+    return false;
+  for (let [r, t] of n.entries())
+    if (!e.has(r) || !u3(t, e.get(r)))
+      return false;
+  return true;
+}
+function c(n, e) {
+  if (n.size !== e.size)
+    return false;
+  let r = [...e];
+  for (let t of n) {
+    let o = false;
+    for (let [s, f] of r.entries())
+      if (u3(t, f)) {
+        o = true, r.splice(s, 1);
+        break;
+      }
+    if (!o)
+      return false;
+  }
+  return true;
+}
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-FRNNS7AX.js
+function u4(...a) {
+  return u2(o, a, l2);
+}
+var o = (a, r) => a.flatMap(r);
+var l2 = (a) => (r, t, y) => {
+  let n = a(r, t, y);
+  return Array.isArray(n) ? { done: false, hasNext: true, hasMany: true, next: n } : { done: false, hasNext: true, next: n };
+};
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-VVM5DH6Z.js
+function t(...r) {
+  return u2(Object.entries, r);
+}
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-ANXBDSUI.js
+var s = { done: false, hasNext: false };
+
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-7U7TOHLV.js
+function m(...e) {
+  return u2(o2, e, i2);
+}
+var o2 = (e, n) => e.filter(n);
+var i2 = (e) => (n, a, d) => e(n, a, d) ? { done: false, hasNext: true, next: n } : s;
+// ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-3GOCSNFN.js
+function C(t, ...o) {
+  let n = t, u = o.map((e) => ("lazy" in e) ? y(e) : undefined), p = 0;
+  for (;p < o.length; ) {
+    if (u[p] === undefined || !B(n)) {
+      let i = o[p];
+      n = i(n), p += 1;
+      continue;
+    }
+    let r = [];
+    for (let i = p;i < o.length; i++) {
+      let l = u[i];
+      if (l === undefined || (r.push(l), l.isSingle))
+        break;
+    }
+    let a = [];
+    for (let i of n)
+      if (f(i, a, r))
+        break;
+    let { isSingle: s } = r.at(-1);
+    n = s ? a[0] : a, p += r.length;
+  }
+  return n;
+}
+function f(t, o, n) {
+  if (n.length === 0)
+    return o.push(t), false;
+  let u = t, p = s, e = false;
+  for (let [r, a] of n.entries()) {
+    let { index: s, items: i } = a;
+    if (i.push(u), p = a(u, s, i), a.index += 1, p.hasNext) {
+      if (p.hasMany ?? false) {
+        for (let l of p.next)
+          if (f(l, o, n.slice(r + 1)))
+            return true;
+        return e;
+      }
+      u = p.next;
+    }
+    if (!p.hasNext)
+      break;
+    p.done && (e = true);
+  }
+  return p.hasNext && o.push(u), e;
+}
+function y(t) {
+  let { lazy: o, lazyArgs: n } = t, u = o(...n);
+  return Object.assign(u, { isSingle: o.single ?? false, index: 0, items: [] });
+}
+function B(t) {
+  return typeof t == "string" || typeof t == "object" && t !== null && Symbol.iterator in t;
+}
+// ../tui-base/src/ui/dialog-select.tsx
+var fuzzysort = __toESM(require_fuzzysort(), 1);
+import { batch as batch3, createEffect as createEffect6, createMemo as createMemo6, createSignal as createSignal12, For as For5, Show as Show9, on, onCleanup as onCleanup12, onMount as onMount4 } from "solid-js";
+import { createStore as createStore9 } from "solid-js/store";
+import { useRenderer as useRenderer8, useTerminalDimensions as useTerminalDimensions3 } from "@opentui/solid";
+
+// ../tui-base/src/util/scroll.ts
+import { MacOSScrollAccel } from "@opentui/core";
+
+class CustomSpeedScroll {
+  speed;
+  constructor(speed) {
+    this.speed = speed;
+  }
+  tick(_now) {
+    return this.speed;
+  }
+  reset() {}
+}
+function getScrollAcceleration(config) {
+  if (config?.scroll?.acceleration) {
+    return new MacOSScrollAccel;
+  }
+  if (config?.scroll?.speed !== undefined) {
+    return new CustomSpeedScroll(config.scroll.speed);
+  }
+  return new CustomSpeedScroll(3);
+}
+
+// ../tui-base/src/ui/select-controller.ts
+function reconcileSelection(selected, count) {
+  return Math.max(0, Math.min(count - 1, selected));
+}
+function moveSelection(selected, input) {
+  if (input.count <= 0)
+    return 0;
+  const next = selected + input.delta;
+  if (input.policy === "clamp")
+    return reconcileSelection(next, input.count);
+  if (next < 0)
+    return input.count - 1;
+  if (next >= input.count)
+    return 0;
+  return next;
+}
+
+// ../tui-base/src/ui/dialog-select.tsx
+function dialogSelectContentWidth(dialogWidth) {
+  return dialogWidth - DIALOG_LIST_INSET * 2 - 4;
+}
+function DialogSelect(props) {
+  const dialog = useDialog();
+  const theme = useTheme().surface("dialog");
+  const config = useConfig().data;
+  const cursorStyle = useCursorStyle();
+  const newDesigns = useNewDesigns();
+  const scrollAcceleration = createMemo6(() => getScrollAcceleration(config));
+  const renderer = useRenderer8();
+  const [store, setStore] = createStore9({
+    selected: 0,
+    filter: ""
+  });
+  let selection;
+  let resetSelection = false;
+  let pendingScroll;
+  function scrollAfterLayout(center, value) {
+    if (pendingScroll)
+      renderer.off(CliRenderEvents2.FRAME, pendingScroll);
+    pendingScroll = () => {
+      pendingScroll = undefined;
+      if (!k(selected()?.value, value))
+        return;
+      scrollToSelection(center);
+    };
+    renderer.once(CliRenderEvents2.FRAME, pendingScroll);
+    renderer.requestRender();
+  }
+  createEffect6(on([() => props.focusTarget ?? props.current, () => props.focusTarget === undefined ? undefined : flat()], ([current]) => {
+    if (props.search || props.focusCurrent === false)
+      return;
+    if (props.focusTarget !== undefined && (props.preserveSelection || store.filter.length > 0))
+      return;
+    if (current !== undefined) {
+      const currentIndex = flat().findIndex((opt) => k(opt.value, current));
+      if (currentIndex >= 0) {
+        setStore("selected", currentIndex);
+        selection = flat()[currentIndex];
+        scrollAfterLayout(true, current);
+      }
+    }
+  }));
+  let input;
+  const actions = createMemo6(() => props.actions ?? []);
+  const shownActions = createMemo6(() => actions().filter((item) => !item.hidden));
+  const shortcuts = Keymap.useShortcuts();
+  const actionLabels = createMemo6(() => {
+    const labels = new Map;
+    for (const action of shownActions()) {
+      const label = shortcuts.all(action.command);
+      if (label)
+        labels.set(action.command, label);
+    }
+    return labels;
+  });
+  const visibleActions = createMemo6(() => [...shownActions().map((item) => ({
+    ...item,
+    label: actionLabels().get(item.command) ?? ""
+  })).filter((item) => item.label), ...props.footerHints ?? []]);
+  const filtered = createMemo6(() => {
+    if (props.search)
+      return props.search(store.filter).filter((x) => x.disabled !== true);
+    if (props.skipFilter || props.renderFilter === false)
+      return props.options.filter((x) => x.disabled !== true);
+    const needle = store.filter.toLowerCase();
+    const options = C(props.options, m((x) => x.disabled !== true));
+    if (!needle)
+      return options;
+    const result = fuzzysort.go(needle, options, {
+      keys: ["title", "category", "searchText"],
+      scoreFn: (r) => r[0].score * 2 + r[1].score + r[2].score,
+      threshold: props.filterThreshold
+    }).map((x) => x.obj);
+    return result;
+  });
+  const flatten = createMemo6(() => props.search !== undefined || props.flat && store.filter.length > 0);
+  const grouped = createMemo6(() => {
+    if (flatten())
+      return filtered().length ? [["", filtered()]] : [];
+    const result = C(filtered(), i((x) => x.category ?? ""), t());
+    return result;
+  });
+  const flat = createMemo6(() => {
+    return C(grouped(), u4(([_, options]) => options));
+  });
+  const rows = createMemo6(() => {
+    const headers = grouped().reduce((acc, [category], i) => {
+      if (!category)
+        return acc;
+      return acc + (i > 0 ? 2 : 1);
+    }, 0);
+    return flat().reduce((acc, option) => acc + 1 + (option.details?.length ?? 0), headers);
+  });
+  const dimensions = useTerminalDimensions3();
+  const limit = createMemo6(() => Math.floor(dimensions().height / 2) - 6);
+  const overflows = createMemo6(() => newDesigns() && rows() > limit());
+  const detailsWidth = createMemo6(() => dialogSelectContentWidth(Math.min(dialogWidth(dialog.size), dimensions().width)));
+  const [moreBelow, setMoreBelow] = createSignal12(false);
+  const ellipsis = () => overflows() && moreBelow();
+  const height = createMemo6(() => Math.min(rows(), limit()) - (ellipsis() ? 1 : 0));
+  function updateMoreBelow() {
+    if (!scroll || scroll.isDestroyed)
+      return;
+    setMoreBelow(scroll.scrollTop + scroll.viewport.height < scroll.scrollHeight);
+  }
+  const selected = createMemo6(() => flat()[store.selected]);
+  const detailView = () => {
+    const detail = selected()?.detail;
+    return typeof detail === "function" ? detail : undefined;
+  };
+  const detailText = () => {
+    const detail = selected()?.detail;
+    return typeof detail === "string" ? detail : undefined;
+  };
+  createEffect6(on(() => props.options, () => {
+    if (props.search)
+      return;
+    if (!props.preserveSelection && ((props.focusTarget ?? props.current) === undefined || props.focusCurrent === false)) {
+      const count = flat().length;
+      if (count === 0)
+        return;
+      const next = reconcileSelection(store.selected, count);
+      if (next !== store.selected)
+        setStore("selected", next);
+      return;
+    }
+    if (resetSelection && store.filter.length > 0) {
+      const option = flat()[0];
+      if (!option)
+        return;
+      setStore("selected", 0);
+      selection = option;
+      return;
+    }
+    if (!selection) {
+      if (props.focusCurrent !== false && (props.focusTarget ?? props.current) !== undefined) {
+        const index = flat().findIndex((option) => k(option.value, props.focusTarget ?? props.current));
+        if (index >= 0) {
+          setStore("selected", index);
+          selection = flat()[index];
+          return;
+        }
+      }
+      const option = selected();
+      if (!option)
+        return;
+      selection = option;
+      return;
+    }
+    const previous = selection;
+    const index = flat().findIndex((option) => k(option.value, previous.value));
+    if (index >= 0) {
+      const option = flat()[index];
+      const moved = index !== store.selected || option.category !== previous.category;
+      setStore("selected", index);
+      selection = option;
+      if (!moved)
+        return;
+      if (!props.preserveSelection && ((props.focusTarget ?? props.current) === undefined || props.focusCurrent === false || store.filter.length > 0))
+        return;
+      scrollAfterLayout(false, option.value);
+      return;
+    }
+    const next = reconcileSelection(store.selected, flat().length);
+    if (flat().length === 0)
+      return;
+    setStore("selected", next);
+    selection = flat()[next];
+  }));
+  createEffect6(on([flat, () => store.filter, () => props.focusCurrent === false ? undefined : props.focusTarget ?? props.current], ([options, query, current], previous) => {
+    if (!props.search)
+      return;
+    const queryChanged = previous !== undefined && query !== previous[1];
+    const currentChanged = current !== undefined && (previous === undefined || !k(current, previous[2]));
+    selection = intent();
+    const intended = selection;
+    const index = intended ? options.findIndex((option) => k(option.value, intended.value)) : -1;
+    const next = index >= 0 ? index : reconcileSelection(store.selected, options.length);
+    const option = options[next];
+    if (!option)
+      return;
+    setStore("selected", next);
+    selection = option;
+    scrollAfterLayout(queryChanged || currentChanged, option.value);
+    function intent() {
+      if (queryChanged && query)
+        return options[0];
+      if ((queryChanged || currentChanged) && current !== undefined)
+        return {
+          value: current
+        };
+      if (queryChanged)
+        return options[reconcileSelection(store.selected, options.length)];
+      return selection;
+    }
+  }));
+  onCleanup12(() => {
+    if (!pendingScroll)
+      return;
+    renderer.off(CliRenderEvents2.FRAME, pendingScroll);
+    pendingScroll = undefined;
+  });
+  createEffect6(on([() => store.filter, () => props.focusTarget ?? props.current], ([filter, current]) => {
+    if (props.search)
+      return;
+    if (filter.length > 0)
+      resetSelection = true;
+    if (filter.length > 0) {
+      const option = flat()[0];
+      if (!option)
+        return;
+      moveTo(0, true, false);
+      scrollAfterLayout(true, option.value);
+      return;
+    }
+    if (current === undefined || props.focusCurrent === false)
+      return;
+    const currentIndex = flat().findIndex((opt) => k(opt.value, current));
+    if (currentIndex < 0)
+      return;
+    moveTo(currentIndex, true);
+    scrollAfterLayout(true, current);
+  }));
+  function move(direction) {
+    if (props.locked)
+      return;
+    if (flat().length === 0)
+      return;
+    moveTo(moveSelection(store.selected, {
+      count: flat().length,
+      delta: direction,
+      policy: "wrap"
+    }), true);
+  }
+  function moveSection(direction) {
+    if (props.locked)
+      return;
+    const sections = grouped().filter(([_, options]) => options.length > 0);
+    if (sections.length === 0)
+      return;
+    const current = sections.findIndex(([category]) => category === selected()?.category);
+    const section = sections[(current + direction + sections.length) % sections.length];
+    moveTo(flat().indexOf(section[1][0]), true);
+  }
+  function moveTo(next, center = false, preserve = true) {
+    setStore("selected", next);
+    const option = selected();
+    if (option) {
+      selection = option;
+      resetSelection = !preserve;
+    }
+    if (option)
+      props.onMove?.(option);
+    scrollToSelection(center);
+  }
+  function scrollToSelection(center) {
+    if (!scroll)
+      return;
+    let remaining = store.selected;
+    let index = 0;
+    for (const [category, options] of grouped()) {
+      if (category)
+        index++;
+      if (remaining < options.length) {
+        index += remaining;
+        break;
+      }
+      index += options.length;
+      remaining -= options.length;
+    }
+    const target = scroll.getChildren()[index];
+    if (!target)
+      return;
+    const y = target.y - scroll.y;
+    if (center) {
+      const centerOffset = Math.floor(scroll.height / 2);
+      scroll.scrollBy(y - centerOffset);
+    } else {
+      if (y >= scroll.height) {
+        scroll.scrollBy(y - scroll.height + 1);
+      }
+      if (y < 0) {
+        scroll.scrollBy(y);
+        if (k(flat()[0].value, selected()?.value)) {
+          scroll.scrollTo(0);
+        }
+      }
+    }
+  }
+  function submit() {
+    if (props.locked)
+      return;
+    const option = selected();
+    if (!option)
+      return;
+    option.onSelect?.(dialog);
+    props.onSelect?.(option);
+  }
+  Keymap.createLayer(() => {
+    const visible = shownActions();
+    return {
+      mode: "modal",
+      commands: [{
+        id: "dialog.select.prev",
+        title: "Previous item",
+        group: "Dialog",
+        run() {
+          move(-1);
+        }
+      }, {
+        id: "dialog.select.next",
+        title: "Next item",
+        group: "Dialog",
+        run() {
+          move(1);
+        }
+      }, {
+        id: "dialog.select.page_up",
+        title: "Page up",
+        group: "Dialog",
+        run() {
+          move(-10);
+        }
+      }, {
+        id: "dialog.select.page_down",
+        title: "Page down",
+        group: "Dialog",
+        run() {
+          move(10);
+        }
+      }, {
+        id: "dialog.select.home",
+        title: "First item",
+        group: "Dialog",
+        run() {
+          if (props.locked)
+            return;
+          moveTo(0);
+        }
+      }, {
+        id: "dialog.select.end",
+        title: "Last item",
+        group: "Dialog",
+        run() {
+          if (props.locked)
+            return;
+          moveTo(flat().length - 1);
+        }
+      }, {
+        id: "dialog.select.submit",
+        title: "Select item",
+        group: "Dialog",
+        run: submit
+      }, ...visible.map((item) => ({
+        id: item.command,
+        title: typeof item.title === "function" ? item.title(undefined) : item.title,
+        group: "Dialog",
+        bind: item.bind,
+        run: () => trigger(item)
+      })), ...props.bindings ?? [], ...props.onCancel ? [{
+        bind: "escape",
+        title: "Back",
+        group: "Dialog",
+        run: () => {
+          if (renderer.getSelection()) {
+            renderer.clearSelection();
+            return;
+          }
+          props.onCancel?.();
+        }
+      }] : [], ...props.sectionNavigation ? [{
+        bind: "alt+up",
+        title: "Previous section",
+        group: "Dialog",
+        run: () => moveSection(-1)
+      }, {
+        bind: "alt+down",
+        title: "Next section",
+        group: "Dialog",
+        run: () => moveSection(1)
+      }] : []]
+    };
+  });
+  let scroll;
+  const ref = {
+    get filter() {
+      return store.filter;
+    },
+    get filtered() {
+      return filtered();
+    },
+    get selected() {
+      return selected();
+    },
+    setFilter(value) {
+      if (input) {
+        input.value = value;
+        return;
+      }
+      if (value === store.filter)
+        return;
+      batch3(() => {
+        setStore("filter", value);
+        props.onFilter?.(value);
+      });
+    },
+    moveTo(value) {
+      const index = flat().findIndex((option) => k(option.value, value));
+      if (index >= 0)
+        moveTo(index, true);
+    }
+  };
+  onMount4(() => props.ref?.(ref));
+  const footerActions = createMemo6(() => visibleActions().map((item) => {
+    if (!isActionItem(item))
+      return {
+        side: item.side,
+        group: item.group ?? "secondary",
+        action: {
+          title: item.title,
+          key: item.label
+        }
+      };
+    return {
+      side: item.side,
+      group: item.group ?? (item.selection === "none" ? "secondary" : "primary"),
+      action: {
+        title: actionTitle(item),
+        key: item.label,
+        disabled: isActionDisabled(item),
+        onTrigger: () => trigger(item)
+      }
+    };
+  }));
+  const footerGroup = (match) => footerActions().filter(match).map((item) => item.action);
+  function trigger(item) {
+    if (props.locked || !item || isActionDisabled(item))
+      return;
+    if (item.selection === "none") {
+      item.onTrigger();
+      return;
+    }
+    const option = selected();
+    if (!option)
+      return;
+    item.onTrigger(option);
+  }
+  function actionTitle(item) {
+    return typeof item.title === "function" ? item.title(selected()) : item.title;
+  }
+  function isActionItem(item) {
+    return "onTrigger" in item;
+  }
+  function isActionDisabled(item) {
+    const option = selected();
+    if (item.selection !== "none" && !option)
+      return true;
+    return typeof item.disabled === "function" ? item.disabled(option) : item.disabled;
+  }
+  const searchInTitle = () => newDesigns() && props.searchInTitle === true && props.renderFilter !== false;
+  const searchCursorColor = () => {
+    if (!newDesigns())
+      return theme.text.formfield.focused;
+    return store.filter.length > 0 ? theme.text.base : theme.background.action.primary.focused;
+  };
+  const searchInput = () => (() => {
+    var _el$ = _$createElement11("input");
+    _$use4((r) => {
+      input = r;
+      input.traits = {
+        status: "FILTER"
+      };
+      setTimeout(() => {
+        if (!input)
+          return;
+        if (r.isDestroyed)
+          return;
+        r.focus();
+      }, 1);
+    }, _el$);
+    _$setProp10(_el$, "flexGrow", 1);
+    _$setProp10(_el$, "onInput", (e) => {
+      if (props.locked)
+        return;
+      batch3(() => {
+        setStore("filter", e);
+        props.onFilter?.(e);
+      });
+    });
+    _$effect10((_p$) => {
+      var _v$ = theme.background.formfield.focused, _v$2 = searchCursorColor(), _v$3 = cursorStyle(), _v$4 = newDesigns() ? theme.text.formfield.base : theme.text.formfield.focused, _v$5 = (searchInTitle() ? props.titlePlaceholder : undefined) ?? props.placeholder ?? "Search", _v$6 = theme.text.muted;
+      _v$ !== _p$.e && (_p$.e = _$setProp10(_el$, "focusedBackgroundColor", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp10(_el$, "cursorColor", _v$2, _p$.t));
+      _v$3 !== _p$.a && (_p$.a = _$setProp10(_el$, "cursorStyle", _v$3, _p$.a));
+      _v$4 !== _p$.o && (_p$.o = _$setProp10(_el$, "focusedTextColor", _v$4, _p$.o));
+      _v$5 !== _p$.i && (_p$.i = _$setProp10(_el$, "placeholder", _v$5, _p$.i));
+      _v$6 !== _p$.n && (_p$.n = _$setProp10(_el$, "placeholderColor", _v$6, _p$.n));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined,
+      o: undefined,
+      i: undefined,
+      n: undefined
+    });
+    return _el$;
+  })();
+  return _$createComponent16(DialogLayout, {
+    get footerGap() {
+      return props.footerGap;
+    },
+    get header() {
+      return (() => {
+        var _el$7 = _$createElement11("box");
+        _$setProp10(_el$7, "paddingLeft", DIALOG_LIST_INSET - DIALOG_INSET);
+        _$setProp10(_el$7, "paddingRight", DIALOG_LIST_INSET - DIALOG_INSET);
+        _$insert9(_el$7, _$createComponent16(Show9, {
+          get when() {
+            return searchInTitle();
+          },
+          get fallback() {
+            return [_$createComponent16(DialogHeader, {
+              get title() {
+                return props.title;
+              },
+              get titleView() {
+                return props.titleView;
+              },
+              get description() {
+                return props.description;
+              },
+              get onClose() {
+                return props.onCancel;
+              }
+            }), _$createComponent16(Show9, {
+              get when() {
+                return props.renderFilter !== false;
+              },
+              get children() {
+                var _el$8 = _$createElement11("box");
+                _$setProp10(_el$8, "paddingTop", 1);
+                _$insert9(_el$8, searchInput);
+                return _el$8;
+              }
+            })];
+          },
+          get children() {
+            return _$createComponent16(DialogHeader, {
+              get titleView() {
+                return searchInput();
+              },
+              gap: 2,
+              get onClose() {
+                return props.onCancel;
+              }
+            });
+          }
+        }));
+        return _el$7;
+      })();
+    },
+    get footer() {
+      return {
+        inset: DIALOG_LIST_INSET - DIALOG_INSET,
+        actions: {
+          secondary: footerGroup((item) => item.group === "secondary"),
+          primary: footerGroup((item) => item.group === "primary")
+        },
+        get children() {
+          return props.footer;
+        }
+      };
+    },
+    get legacyFooter() {
+      return _$createComponent16(Show9, {
+        get when() {
+          return props.footer || visibleActions().length;
+        },
+        get fallback() {
+          return (() => {
+            var _el$9 = _$createElement11("box");
+            _$setProp10(_el$9, "flexShrink", 0);
+            return _el$9;
+          })();
+        },
+        get children() {
+          return _$createComponent16(DialogFooter, {
+            inset: DIALOG_LIST_INSET - DIALOG_INSET,
+            get actions() {
+              return {
+                secondary: footerGroup((item) => item.side !== "right"),
+                primary: footerGroup((item) => item.side === "right")
+              };
+            },
+            get children() {
+              return props.footer;
+            }
+          });
+        }
+      });
+    },
+    get children() {
+      return _$createComponent16(DialogBleed, {
+        get children() {
+          return _$createComponent16(Show9, {
+            get when() {
+              return grouped().length > 0;
+            },
+            get fallback() {
+              return _$createComponent16(Show9, {
+                get when() {
+                  return _$memo7(() => props.renderFilter !== false)() && store.filter.length > 0;
+                },
+                get fallback() {
+                  return props.emptyView ?? (() => {
+                    var _el$0 = _$createElement11("box"), _el$1 = _$createElement11("text");
+                    _$insertNode9(_el$0, _el$1);
+                    _$setProp10(_el$0, "paddingLeft", DIALOG_LIST_INSET);
+                    _$setProp10(_el$0, "paddingRight", DIALOG_LIST_INSET);
+                    _$insertNode9(_el$1, _$createTextNode6(`No items available`));
+                    _$effect10((_$p) => _$setProp10(_el$1, "fg", theme.text.muted, _$p));
+                    return _el$0;
+                  })();
+                },
+                get children() {
+                  return props.noMatchView ?? (() => {
+                    var _el$11 = _$createElement11("box"), _el$12 = _$createElement11("text");
+                    _$insertNode9(_el$11, _el$12);
+                    _$setProp10(_el$11, "paddingLeft", DIALOG_LIST_INSET);
+                    _$setProp10(_el$11, "paddingRight", DIALOG_LIST_INSET);
+                    _$insertNode9(_el$12, _$createTextNode6(`No results found`));
+                    _$effect10((_$p) => _$setProp10(_el$12, "fg", theme.text.muted, _$p));
+                    return _el$11;
+                  })();
+                }
+              });
+            },
+            get children() {
+              return [(() => {
+                var _el$2 = _$createElement11("scrollbox");
+                _$use4((r) => {
+                  scroll = r;
+                  r.verticalScrollBar.on("change", updateMoreBelow);
+                  r.content.on("resize", updateMoreBelow);
+                  r.viewport.on("resize", updateMoreBelow);
+                }, _el$2);
+                _$setProp10(_el$2, "scrollbarOptions", {
+                  visible: false
+                });
+                _$insert9(_el$2, _$createComponent16(For5, {
+                  get each() {
+                    return grouped();
+                  },
+                  children: ([category, options], index) => [_$createComponent16(Show9, {
+                    when: category,
+                    get children() {
+                      return _$createComponent16(DialogSelectCategory, {
+                        title: category,
+                        get first() {
+                          return index() === 0;
+                        }
+                      });
+                    }
+                  }), _$createComponent16(For5, {
+                    each: options,
+                    children: (option) => {
+                      const active = createMemo6(() => !props.locked && k(option.value, selected()?.value));
+                      const current = createMemo6(() => k(option.value, props.current));
+                      return (() => {
+                        var _el$14 = _$createElement11("box");
+                        _$setProp10(_el$14, "flexDirection", "column");
+                        _$setProp10(_el$14, "position", "relative");
+                        _$setProp10(_el$14, "onMouseMove", () => {
+                          if (props.locked)
+                            return;
+                          const index = flat().findIndex((x) => k(x.value, option.value));
+                          if (index === -1 || index === store.selected)
+                            return;
+                          moveTo(index);
+                        });
+                        _$setProp10(_el$14, "onMouseUp", () => {
+                          if (props.locked)
+                            return;
+                          option.onSelect?.(dialog);
+                          props.onSelect?.(option);
+                        });
+                        _$setProp10(_el$14, "onMouseDown", () => {
+                          if (props.locked)
+                            return;
+                          const index = flat().findIndex((x) => k(x.value, option.value));
+                          if (index === -1)
+                            return;
+                          moveTo(index);
+                        });
+                        _$insert9(_el$14, _$createComponent16(DialogSelectRow, {
+                          get title() {
+                            return option.title;
+                          },
+                          get titleView() {
+                            return option.titleView;
+                          },
+                          get footer() {
+                            return _$memo7(() => !!flatten())() ? option.searchFooter ?? option.category ?? option.footer : option.footer;
+                          },
+                          get footerColor() {
+                            return option.footerColor;
+                          },
+                          get footerOverhang() {
+                            return option.footerOverhang;
+                          },
+                          get titleWidth() {
+                            return option.titleWidth;
+                          },
+                          get truncateTitle() {
+                            return option.truncateTitle;
+                          },
+                          get description() {
+                            return _$memo7(() => option.description !== category)() ? option.description : undefined;
+                          },
+                          get active() {
+                            return active();
+                          },
+                          get current() {
+                            return current();
+                          },
+                          get activeBackground() {
+                            return option.bg;
+                          },
+                          get activeColor() {
+                            return option.fg;
+                          },
+                          get gutter() {
+                            return option.gutter;
+                          },
+                          get margin() {
+                            return option.margin;
+                          }
+                        }), null);
+                        _$insert9(_el$14, _$createComponent16(DialogSelectDetails, {
+                          get details() {
+                            return option.details;
+                          },
+                          get width() {
+                            return detailsWidth();
+                          }
+                        }), null);
+                        return _el$14;
+                      })();
+                    }
+                  })]
+                }));
+                _$effect10((_p$) => {
+                  var _v$7 = newDesigns() ? 0 : 1, _v$8 = newDesigns() ? 0 : 1, _v$9 = scrollAcceleration(), _v$0 = height();
+                  _v$7 !== _p$.e && (_p$.e = _$setProp10(_el$2, "paddingLeft", _v$7, _p$.e));
+                  _v$8 !== _p$.t && (_p$.t = _$setProp10(_el$2, "paddingRight", _v$8, _p$.t));
+                  _v$9 !== _p$.a && (_p$.a = _$setProp10(_el$2, "scrollAcceleration", _v$9, _p$.a));
+                  _v$0 !== _p$.o && (_p$.o = _$setProp10(_el$2, "maxHeight", _v$0, _p$.o));
+                  return _p$;
+                }, {
+                  e: undefined,
+                  t: undefined,
+                  a: undefined,
+                  o: undefined
+                });
+                return _el$2;
+              })(), _$createComponent16(Show9, {
+                get when() {
+                  return ellipsis();
+                },
+                get children() {
+                  var _el$3 = _$createElement11("box"), _el$4 = _$createElement11("text");
+                  _$insertNode9(_el$3, _el$4);
+                  _$setProp10(_el$3, "paddingLeft", DIALOG_LIST_INSET);
+                  _$setProp10(_el$3, "flexShrink", 0);
+                  _$insertNode9(_el$4, _$createTextNode6(`…`));
+                  _$effect10((_$p) => _$setProp10(_el$4, "fg", theme.text.muted, _$p));
+                  return _el$3;
+                }
+              }), _$createComponent16(Show9, {
+                get when() {
+                  return _$memo7(() => !!newDesigns())() && flat().some((option) => option.detail !== undefined);
+                },
+                get children() {
+                  var _el$6 = _$createElement11("box");
+                  _$setProp10(_el$6, "paddingTop", 1);
+                  _$setProp10(_el$6, "paddingLeft", DIALOG_LIST_INSET);
+                  _$setProp10(_el$6, "paddingRight", DIALOG_LIST_INSET);
+                  _$setProp10(_el$6, "flexShrink", 0);
+                  _$insert9(_el$6, _$createComponent16(Show9, {
+                    get when() {
+                      return detailView();
+                    },
+                    keyed: true,
+                    get fallback() {
+                      return (() => {
+                        var _el$15 = _$createElement11("text");
+                        _$setProp10(_el$15, "wrapMode", "word");
+                        _$insert9(_el$15, () => detailText() || " ");
+                        _$effect10((_$p) => _$setProp10(_el$15, "fg", theme.surface("dialog.footer").text.muted, _$p));
+                        return _el$15;
+                      })();
+                    },
+                    children: (render) => render()
+                  }));
+                  return _el$6;
+                }
+              })];
+            }
+          });
+        }
+      });
+    }
+  });
+}
+function DialogSelectCategory(props) {
+  const theme = useTheme().surface("dialog");
+  const newDesigns = useNewDesigns();
+  return (() => {
+    var _el$17 = _$createElement11("box"), _el$18 = _$createElement11("text");
+    _$insertNode9(_el$17, _el$18);
+    _$insert9(_el$18, () => props.title);
+    _$effect10((_p$) => {
+      var _v$1 = props.first ? 0 : 1, _v$10 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$11 = newDesigns() ? theme.text.muted : theme.hue.accent[200], _v$12 = TextAttributes4.BOLD;
+      _v$1 !== _p$.e && (_p$.e = _$setProp10(_el$17, "paddingTop", _v$1, _p$.e));
+      _v$10 !== _p$.t && (_p$.t = _$setProp10(_el$17, "paddingLeft", _v$10, _p$.t));
+      _v$11 !== _p$.a && (_p$.a = _$setProp10(_el$18, "fg", _v$11, _p$.a));
+      _v$12 !== _p$.o && (_p$.o = _$setProp10(_el$18, "attributes", _v$12, _p$.o));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined,
+      o: undefined
+    });
+    return _el$17;
+  })();
+}
+function DialogSelectRow(props) {
+  const theme = useTheme().surface("dialog");
+  const newDesigns = useNewDesigns();
+  const text = createMemo6(() => {
+    if (props.active)
+      return props.activeColor ?? theme.text.action.primary.focused;
+    if (props.current && !newDesigns())
+      return theme.text.formfield.selected;
+    return theme.text.base;
+  });
+  const secondary = () => {
+    if (!newDesigns())
+      return props.active ? text() : theme.text.muted;
+    return props.active ? theme.text.action.secondary.focused : theme.text.muted;
+  };
+  const row = () => (() => {
+    var _el$19 = _$createElement11("box"), _el$23 = _$createElement11("text");
+    _$insertNode9(_el$19, _el$23);
+    _$setProp10(_el$19, "flexDirection", "row");
+    _$setProp10(_el$19, "gap", 1);
+    _$insert9(_el$19, _$createComponent16(Show9, {
+      get when() {
+        return _$memo7(() => !!!props.current)() && props.margin;
+      },
+      get children() {
+        var _el$20 = _$createElement11("box");
+        _$setProp10(_el$20, "position", "absolute");
+        _$setProp10(_el$20, "left", DIALOG_LIST_INSET - 3);
+        _$setProp10(_el$20, "flexShrink", 0);
+        _$insert9(_el$20, () => props.margin);
+        return _el$20;
+      }
+    }), _el$23);
+    _$insert9(_el$19, _$createComponent16(Show9, {
+      get when() {
+        return _$memo7(() => !!props.current)() && !props.gutter;
+      },
+      get children() {
+        var _el$21 = _$createElement11("text");
+        _$setProp10(_el$21, "flexShrink", 0);
+        _$insert9(_el$21, () => newDesigns() ? "▪" : "●");
+        _$effect10((_$p) => _$setProp10(_el$21, "fg", newDesigns() ? theme.text.formfield.selected : text(), _$p));
+        return _el$21;
+      }
+    }), _el$23);
+    _$insert9(_el$19, _$createComponent16(Show9, {
+      get when() {
+        return props.gutter;
+      },
+      get children() {
+        var _el$22 = _$createElement11("box");
+        _$setProp10(_el$22, "flexShrink", 0);
+        _$insert9(_el$22, () => props.gutter?.(text()));
+        return _el$22;
+      }
+    }), _el$23);
+    _$setProp10(_el$23, "flexGrow", 1);
+    _$setProp10(_el$23, "overflow", "hidden");
+    _$setProp10(_el$23, "wrapMode", "none");
+    _$setProp10(_el$23, "paddingLeft", 3);
+    _$insert9(_el$23, () => props.titleView ?? (props.truncateTitle === false ? props.title : props.truncateTitle === "left" ? truncateLeft(props.title, props.titleWidth ?? 61) : truncate(props.title, props.titleWidth ?? 61)), null);
+    _$insert9(_el$23, _$createComponent16(Show9, {
+      get when() {
+        return props.description;
+      },
+      get children() {
+        var _el$24 = _$createElement11("span");
+        _$insert9(_el$24, () => " " + props.description);
+        _$effect10((_$p) => _$setProp10(_el$24, "style", {
+          fg: secondary()
+        }, _$p));
+        return _el$24;
+      }
+    }), null);
+    _$insert9(_el$19, _$createComponent16(Show9, {
+      get when() {
+        return props.footer;
+      },
+      get children() {
+        var _el$25 = _$createElement11("box"), _el$26 = _$createElement11("text");
+        _$insertNode9(_el$25, _el$26);
+        _$setProp10(_el$25, "flexShrink", 0);
+        _$insert9(_el$26, () => props.footer);
+        _$effect10((_p$) => {
+          var _v$13 = props.footerOverhang ? -props.footerOverhang : undefined, _v$14 = props.active || !props.footerColor ? secondary() : props.footerColor;
+          _v$13 !== _p$.e && (_p$.e = _$setProp10(_el$25, "marginRight", _v$13, _p$.e));
+          _v$14 !== _p$.t && (_p$.t = _$setProp10(_el$26, "fg", _v$14, _p$.t));
+          return _p$;
+        }, {
+          e: undefined,
+          t: undefined
+        });
+        return _el$25;
+      }
+    }), null);
+    _$effect10((_p$) => {
+      var _v$15 = newDesigns() ? 1 : undefined, _v$16 = props.current || props.gutter ? DIALOG_LIST_INSET - 3 : DIALOG_LIST_INSET - 1, _v$17 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$18 = props.active ? props.activeBackground ?? theme.background.action.primary.focused : RGBA12.fromInts(0, 0, 0, 0), _v$19 = text(), _v$20 = props.active && !newDesigns() ? TextAttributes4.BOLD : undefined;
+      _v$15 !== _p$.e && (_p$.e = _$setProp10(_el$19, "flexGrow", _v$15, _p$.e));
+      _v$16 !== _p$.t && (_p$.t = _$setProp10(_el$19, "paddingLeft", _v$16, _p$.t));
+      _v$17 !== _p$.a && (_p$.a = _$setProp10(_el$19, "paddingRight", _v$17, _p$.a));
+      _v$18 !== _p$.o && (_p$.o = _$setProp10(_el$19, "backgroundColor", _v$18, _p$.o));
+      _v$19 !== _p$.i && (_p$.i = _$setProp10(_el$23, "fg", _v$19, _p$.i));
+      _v$20 !== _p$.n && (_p$.n = _$setProp10(_el$23, "attributes", _v$20, _p$.n));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined,
+      a: undefined,
+      o: undefined,
+      i: undefined,
+      n: undefined
+    });
+    return _el$19;
+  })();
+  return _$createComponent16(Show9, {
+    get when() {
+      return newDesigns();
+    },
+    get fallback() {
+      return row();
+    },
+    get children() {
+      var _el$27 = _$createElement11("box"), _el$28 = _$createElement11("text");
+      _$insertNode9(_el$27, _el$28);
+      _$setProp10(_el$27, "flexDirection", "row");
+      _$setProp10(_el$28, "width", 1);
+      _$setProp10(_el$28, "flexShrink", 0);
+      _$insert9(_el$28, () => props.active ? "┃" : " ");
+      _$insert9(_el$27, row, null);
+      _$effect10((_$p) => _$setProp10(_el$28, "fg", theme.text.formfield.focused, _$p));
+      return _el$27;
+    }
+  });
+}
+function DialogSelectDetails(props) {
+  const theme = useTheme().surface("dialog");
+  const newDesigns = useNewDesigns();
+  return _$createComponent16(For5, {
+    get each() {
+      return props.details;
+    },
+    children: (detail) => (() => {
+      var _el$29 = _$createElement11("box"), _el$30 = _$createElement11("text");
+      _$insertNode9(_el$29, _el$30);
+      _$setProp10(_el$30, "wrapMode", "none");
+      _$insert9(_el$30, () => truncateMiddle(detail, Math.max(1, props.width)));
+      _$effect10((_p$) => {
+        var _v$21 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$22 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$23 = theme.text.muted;
+        _v$21 !== _p$.e && (_p$.e = _$setProp10(_el$29, "paddingLeft", _v$21, _p$.e));
+        _v$22 !== _p$.t && (_p$.t = _$setProp10(_el$29, "paddingRight", _v$22, _p$.t));
+        _v$23 !== _p$.a && (_p$.a = _$setProp10(_el$30, "fg", _v$23, _p$.a));
+        return _p$;
+      }, {
+        e: undefined,
+        t: undefined,
+        a: undefined
+      });
+      return _el$29;
+    })()
+  });
+}
+
+// ../tui-base/src/routes/session/turn-overlays.tsx
+function summarizeArgs(name, args, limit = 160) {
+  let body = JSON.stringify(args);
+  if (body === undefined)
+    body = "";
+  body = body.trim();
+  if (body.length > limit)
+    body = body.slice(0, limit - 1) + "…";
+  return `${name} ${body}`.trim();
+}
+function ApprovalCard(props) {
+  return _$createComponent17(DialogConfirm, {
+    get title() {
+      return `Approval: ${props.name}`;
+    },
+    get message() {
+      return summarizeArgs(props.name, props.args);
+    },
+    label: {
+      confirm: "allow",
+      cancel: "reject"
+    },
+    onConfirm: () => props.onVerdict("allowed-once"),
+    onCancel: () => props.onVerdict("rejected")
+  });
+}
+function askTabStrip(questions, picks, index) {
+  return questions.map((_, qi) => {
+    const answered = (picks[qi]?.length ?? 0) > 0;
+    const label = `${qi + 1}${answered ? "✓" : ""}`;
+    return qi === index ? `[${label}]` : label;
+  }).join(" · ");
+}
+function askProgressTitle(questions, index) {
+  if (questions.length < 2)
+    return "Question";
+  return `Question (${index + 1}/${questions.length})`;
+}
+function askNeedsReview(questions) {
+  return questions.length >= 2 || questions.some((question) => question.multiSelect === true);
+}
+function truncate70(text) {
+  return text.length > 70 ? text.slice(0, 69) + "…" : text;
+}
+function AskPicker(props) {
+  const [version, setVersion] = createSignal13(0);
+  onMount5(() => {
+    const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1));
+    onCleanup13(unsubscribe);
+  });
+  const ask = () => {
+    version();
+    return props.controller.pendingAsk;
+  };
+  return _$createComponent17(Show10, {
+    get when() {
+      return ask()?.phase === "review";
+    },
+    get fallback() {
+      return _$createComponent17(AskQuestionsView, {
+        ask,
+        get controller() {
+          return props.controller;
+        },
+        get onDecline() {
+          return props.onDecline;
+        }
+      });
+    },
+    get children() {
+      return _$createComponent17(AskReviewView, {
+        ask,
+        get controller() {
+          return props.controller;
+        },
+        get onDecline() {
+          return props.onDecline;
+        }
+      });
+    }
+  });
+}
+function AskQuestionsView(props) {
+  const batch = () => props.ask();
+  const question = () => {
+    const b = batch();
+    return b?.questions[b.index];
+  };
+  const multi = () => question()?.multiSelect === true;
+  const picked = () => {
+    const b = batch();
+    return b?.picks[b.index] ?? [];
+  };
+  const options = () => {
+    const q = question();
+    const p = picked();
+    if (!q)
+      return [];
+    const rows = q.options.map((option) => ({
+      title: multi() ? p.includes(option) ? `[x] ${option}` : `[ ] ${option}` : option,
+      value: option
+    }));
+    if (askNeedsReview(batch()?.questions ?? []))
+      rows.push({
+        title: "⏎ Review answers",
+        value: {
+          kind: "review"
+        }
+      });
+    return rows;
+  };
+  const description = () => {
+    const b = batch();
+    if (!b)
+      return;
+    const parts = [];
+    if (b.questions.length >= 2)
+      parts.push(askTabStrip(b.questions, b.picks, b.index));
+    if (multi())
+      parts.push("space: toggle");
+    return parts.join("  ·  ") || undefined;
+  };
+  const toggleHighlighted = () => {
+    const option = selectRefRef?.selected;
+    if (option && typeof option.value === "string")
+      props.controller.toggle(option.value);
+  };
+  const bindings = () => {
+    const b = batch();
+    return [...b && b.questions.length >= 2 ? [{
+      id: "ask.prev_question",
+      title: "Previous question",
+      group: "Dialog",
+      bind: "left",
+      run: () => props.controller.switchFocus(-1)
+    }, {
+      id: "ask.next_question",
+      title: "Next question",
+      group: "Dialog",
+      bind: "right",
+      run: () => props.controller.switchFocus(1)
+    }] : [], {
+      id: "ask.toggle",
+      title: "Toggle option",
+      group: "Dialog",
+      bind: "space",
+      run: toggleHighlighted
+    }];
+  };
+  const title = () => {
+    const b = batch();
+    const q = question();
+    if (!b || !q)
+      return "";
+    return `${askProgressTitle(b.questions, b.index)}: ${truncate70(q.prompt)}`;
+  };
+  let selectRefRef;
+  return _$createComponent17(DialogSelect, {
+    get title() {
+      return title();
+    },
+    get description() {
+      return description();
+    },
+    renderFilter: false,
+    get options() {
+      return options();
+    },
+    get current() {
+      return _$memo8(() => !!multi())() ? undefined : picked()[0];
+    },
+    ref: (r) => selectRefRef = r,
+    get bindings() {
+      return bindings();
+    },
+    onSelect: (option) => {
+      if (typeof option.value === "string")
+        props.controller.toggle(option.value);
+      else
+        props.controller.enterReview();
+    },
+    get onCancel() {
+      return props.onDecline;
+    }
+  });
+}
+function AskReviewView(props) {
+  const options = () => {
+    const b = props.ask();
+    if (!b)
+      return [];
+    const rows = b.questions.map((question, qi) => {
+      const picks = b.picks[qi] ?? [];
+      return {
+        title: `${truncate70(question.prompt)}  ${picks.length > 0 ? picks.join(", ") : "—"}`,
+        value: {
+          kind: "question",
+          qi
+        }
+      };
+    });
+    rows.push({
+      title: "⏎ Submit answers",
+      value: {
+        kind: "submit"
+      }
+    });
+    return rows;
+  };
+  return _$createComponent17(DialogSelect, {
+    title: "Review answers",
+    description: "←: edit · enter: submit",
+    renderFilter: false,
+    get options() {
+      return options();
+    },
+    bindings: [{
+      id: "ask.back_to_questions",
+      title: "Edit answers",
+      group: "Dialog",
+      bind: "left",
+      run: () => props.controller.backToQuestions()
+    }],
+    onSelect: (option) => {
+      if (typeof option.value === "string")
+        return;
+      if (option.value.kind === "submit")
+        props.controller.submit();
+      else if (option.value.kind === "question")
+        props.controller.backToQuestions(option.value.qi);
+    },
+    get onCancel() {
+      return props.onDecline;
+    }
+  });
+}
+function TurnOverlayHost(props) {
+  const dialog = useDialog();
+  const [version, setVersion] = createSignal13(0);
+  onMount5(() => {
+    const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1));
+    onCleanup13(unsubscribe);
+  });
+  props.controller.onIdle(() => {
+    setTimeout(() => props.reclaimFocus?.(), 3);
+  });
+  let shown;
+  createEffect7(() => {
+    version();
+    const approval = props.controller.pendingApproval;
+    const ask = props.controller.pendingAsk;
+    const key = approval ? `approval:${approval.id}` : ask ? `ask:${ask.id}` : "";
+    if (key === shown)
+      return;
+    shown = key;
+    if (approval) {
+      const atOpen = key;
+      dialog.replace(() => _$createComponent17(ApprovalCard, {
+        get name() {
+          return approval.name;
+        },
+        get args() {
+          return approval.args;
+        },
+        onVerdict: (verdict) => {
+          if (verdict === "allowed-once")
+            props.controller.confirmApproval();
+          else
+            props.controller.rejectApproval();
+        }
+      }), () => {
+        if (shown === atOpen)
+          props.controller.rejectApproval();
+      });
+      return;
+    }
+    if (ask) {
+      const atOpen = key;
+      dialog.replace(() => _$createComponent17(AskPicker, {
+        get controller() {
+          return props.controller;
+        },
+        onDecline: () => props.controller.decline()
+      }), () => {
+        if (shown === atOpen)
+          props.controller.decline();
+      });
+      return;
+    }
+    if (untrack(() => dialog.stack.length) > 0)
+      dialog.clear();
+  });
+  return _$createComponent17(Show10, {
+    when: false,
+    children: null
+  });
+}
+function registerTurnOverlays(seam, controller) {
+  seam.registerAskProvider((questions) => controller.answer(questions));
+}
+
+// ../tui-base/src/routes/session/slash-palette.tsx
+import { createTextNode as _$createTextNode7 } from "@opentui/solid";
+import { insertNode as _$insertNode10 } from "@opentui/solid";
+import { effect as _$effect11 } from "@opentui/solid";
+import { insert as _$insert10 } from "@opentui/solid";
+import { createComponent as _$createComponent18 } from "@opentui/solid";
+import { setProp as _$setProp11 } from "@opentui/solid";
+import { createElement as _$createElement12 } from "@opentui/solid";
+import { For as For6, Show as Show11, createSignal as createSignal14 } from "solid-js";
+
+// ../tui-base/src/routes/session/hotkeys.ts
+function hotkeysHeader() {
+  return "Keybinds (defaults — override via profiles/<profile>/keybindings.json)";
+}
+function hotkeyRows() {
+  const rows = [];
+  for (const [name, definition] of Object.entries(Definitions)) {
+    if (definition.default === "none" || definition.default === false)
+      continue;
+    const keys = String(definition.default).replaceAll("<leader>", `${LeaderDefault} `);
+    rows.push(`${keys} — ${definition.description} (${name})`);
+  }
+  return rows;
+}
+
+// ../tui-base/src/routes/session/resume-picker.ts
+var SESSIONS_MIN_BYTES = 1024;
+var SESSIONS_DIR_CAP = 32;
+function relativeTime(updatedAt, now = Date.now()) {
+  if (updatedAt === undefined || updatedAt === "")
+    return "—";
+  const ms = /^\d{10,}$/.test(updatedAt) ? Number(updatedAt) : Date.parse(updatedAt);
+  if (!Number.isFinite(ms) || ms <= 0)
+    return updatedAt;
+  const diff = now - ms;
+  if (diff < 60000)
+    return "just now";
+  if (diff < 3600000)
+    return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000)
+    return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
+}
+function resumeDirLabel(cwd) {
+  if (cwd === undefined || cwd === "")
+    return "—";
+  if (cwd.length <= SESSIONS_DIR_CAP)
+    return cwd;
+  return `…${cwd.slice(-(SESSIONS_DIR_CAP - 1))}`;
+}
+function filterSessionsBySizeFloor(rows, minBytes = SESSIONS_MIN_BYTES) {
+  return rows.filter((row) => row.sizeBytes === undefined || row.sizeBytes >= minBytes);
+}
+function emptyFilteredCopy(hidden, minBytes = SESSIONS_MIN_BYTES) {
+  return `No sessions within the resume window (${hidden} hidden by the ${minBytes}B size floor)`;
+}
+function fitColumn(header, cells) {
+  let width = header.length;
+  for (const cell of cells)
+    width = Math.max(width, cell.length);
+  return { header, width };
+}
+function padCell(cell, width) {
+  return cell.length >= width ? cell : cell + " ".repeat(width - cell.length);
+}
+function resumePickerOptions(rows, now = Date.now()) {
+  const updatedCells = rows.map((row) => relativeTime(row.updatedAt, now));
+  const dirCells = rows.map((row) => resumeDirLabel(row.cwd));
+  const updated = fitColumn("UPDATED", updatedCells);
+  const dir = fitColumn("DIR", dirCells);
+  const header = `${padCell(updated.header, updated.width)}  ${padCell(dir.header, dir.width)}  SESSION`;
+  const options = rows.map((row, index) => ({
+    title: `${padCell(updatedCells[index], updated.width)}  ${padCell(dirCells[index], dir.width)}  ${row.title}`,
+    value: row.id
+  }));
+  return { header, options };
+}
+
+// ../tui-base/src/routes/session/session-info.ts
+function formatTps(tps) {
+  return tps === null || tps === undefined || !(tps > 0) ? "—" : `${Math.round(tps)} tok/s`;
+}
+function sessionInfoRows(info) {
+  const speed = info.lastTurnTps == null && info.sessionAvgTps == null ? "—" : `last ${formatTps(info.lastTurnTps)} · avg ${formatTps(info.sessionAvgTps)}`;
+  return [
+    { field: "session", value: info.sessionId ?? "—" },
+    { field: "model", value: info.model ?? "—" },
+    { field: "messages", value: String(info.messageCount) },
+    { field: "turns", value: String(info.turnCount) },
+    { field: "tokens in/out", value: `${info.tokensIn} / ${info.tokensOut}` },
+    { field: "cache read/write", value: `${info.cacheRead} / ${info.cacheWrite}` },
+    { field: "speed", value: speed }
+  ];
+}
+function formatSessionInfoPanel(rows) {
+  const width = Math.max(...rows.map((row) => row.field.length));
+  return rows.map((row) => `${row.field.padEnd(width)}  ${row.value}`);
+}
+
+// ../tui-base/src/routes/session/commands.ts
+function coreCommands() {
+  return [
+    {
+      name: "/help",
+      description: "show available commands",
+      run(ctx) {
+        for (const command of coreCommands())
+          ctx.say(`${command.name} — ${command.description}`);
+      }
+    },
+    {
+      name: "/new",
+      description: "start a fresh session",
+      async run(ctx) {
+        ctx.seam.newSession();
+        await ctx.reload();
+        ctx.say(`new session ${ctx.seam.currentSessionId() ?? "(unnamed)"}`);
+      }
+    },
+    {
+      name: "/model",
+      description: "switch model (bare opens the picker)",
+      async run(ctx, argText) {
+        const arg = argText.trim();
+        if (arg) {
+          const [providerID, modelID] = arg.split("/");
+          if (!providerID || !modelID) {
+            ctx.say(`usage: /model or /model provider/model (got "${arg}")`);
+            return;
+          }
+          ctx.seam.selectModel(providerID, modelID);
+          ctx.say(`model → ${providerID}/${modelID}`);
+          return;
+        }
+        const catalog = await ctx.seam.modelCatalog();
+        if (catalog.length === 0) {
+          ctx.say("no models in the catalog");
+          return;
+        }
+        const current = await ctx.seam.currentModelSelection();
+        const picked = await ctx.pickOne("Select model", catalog.map((model) => ({
+          title: `${model.providerID}/${model.modelID}`,
+          value: `${model.providerID}/${model.modelID}`,
+          description: current?.providerID === model.providerID && current.modelID === model.modelID ? "current" : undefined
+        })));
+        if (!picked)
+          return;
+        const [providerID, modelID] = picked.split("/");
+        ctx.seam.selectModel(providerID, modelID);
+        ctx.say(`model → ${picked}`);
+      }
+    },
+    {
+      name: "/quit",
+      description: "exit the app",
+      run(ctx) {
+        ctx.quit();
+      }
+    },
+    {
+      name: "/sessions",
+      description: "list and resume stored sessions",
+      async run(ctx) {
+        const sessions = await ctx.seam.listSessions();
+        if (sessions.length === 0) {
+          ctx.say("no stored sessions");
+          return;
+        }
+        const visible = filterSessionsBySizeFloor(sessions);
+        if (visible.length === 0) {
+          ctx.say(emptyFilteredCopy(sessions.length));
+          return;
+        }
+        const { header, options } = resumePickerOptions(visible);
+        const picked = await ctx.pickOne("Resume session", options, header);
+        if (!picked)
+          return;
+        ctx.seam.resumeSession(picked);
+        await ctx.reload();
+        ctx.say(`resumed ${picked}`);
+      }
+    },
+    {
+      name: "/clear",
+      description: "clear the transcript",
+      run(ctx) {
+        ctx.clear();
+        ctx.say("transcript cleared");
+      }
+    },
+    {
+      name: "/btw",
+      description: "side question (bare reopens the last answer)",
+      run(ctx, argText) {
+        if (!ctx.seam.btwAsk || !ctx.openBtw) {
+          ctx.say("/btw unavailable in this session");
+          return;
+        }
+        ctx.openBtw(argText);
+      }
+    },
+    {
+      name: "/session",
+      description: "show session info (id, model, tokens, speed)",
+      async run(ctx) {
+        if (!ctx.seam.sessionInfo) {
+          ctx.say("/session unavailable in this session");
+          return;
+        }
+        const info = await ctx.seam.sessionInfo();
+        if (!info || info.sessionId === null) {
+          ctx.say("no active session");
+          return;
+        }
+        for (const line of formatSessionInfoPanel(sessionInfoRows(info)))
+          ctx.say(line);
+      }
+    },
+    {
+      name: "/plugins",
+      description: "list installed plugins",
+      run(ctx) {
+        if (!ctx.seam.plugins) {
+          ctx.say("/plugins unavailable in this session");
+          return;
+        }
+        const plugins = ctx.seam.plugins();
+        if (plugins.length === 0) {
+          ctx.say("no plugins installed");
+          return;
+        }
+        for (const plugin of plugins)
+          ctx.say(`● ${plugin.name}@${plugin.version}`);
+      }
+    },
+    {
+      name: "/think",
+      description: "set reasoning effort (opens the picker)",
+      async run(ctx) {
+        const thinking = ctx.seam.thinking;
+        if (!thinking) {
+          ctx.say("/think unavailable in this session");
+          return;
+        }
+        const efforts = await thinking.efforts();
+        if (efforts.length === 0) {
+          ctx.say("/think unavailable: the current model exposes no reasoning efforts");
+          return;
+        }
+        const current = await thinking.currentEffort();
+        const picked = await ctx.pickOne("Select reasoning effort", efforts.map((effort) => ({
+          title: effort.name,
+          value: effort.id,
+          description: effort.id === current ? "current" : effort.description
+        })));
+        if (!picked || picked === current)
+          return;
+        thinking.selectEffort(picked);
+        ctx.say(`thinking → ${picked} (next turn)`);
+      }
+    },
+    {
+      name: "/hotkeys",
+      description: "show keybinds",
+      run(ctx) {
+        ctx.say(hotkeysHeader());
+        for (const row of hotkeyRows())
+          ctx.say(row);
+      }
+    },
+    {
+      name: "/theme",
+      description: "switch theme (opens the picker)",
+      async run(ctx) {
+        if (!ctx.themes) {
+          ctx.say("/theme unavailable in this session");
+          return;
+        }
+        const current = ctx.themes.current();
+        const picked = await ctx.pickOne("Select theme", ctx.themes.list().map((name) => ({
+          title: name,
+          value: name,
+          description: name === current ? "current" : undefined
+        })));
+        if (!picked || picked === current)
+          return;
+        if (ctx.themes.set(picked))
+          ctx.say(`Theme: ${picked} — applied`);
+        else
+          ctx.say(`unknown theme: ${picked}`);
+      }
+    }
+  ];
+}
+function filterCommands(commands, query) {
+  if (!query.startsWith("/"))
+    return [];
+  const needle = query.toLowerCase();
+  return commands.filter((command) => command.name.toLowerCase().startsWith(needle));
+}
+function dispatchLine(commands, line) {
+  const text = line.trim();
+  if (!text.startsWith("/"))
+    return { kind: "text" };
+  const [head, ...rest] = text.split(/\s+/);
+  const needle = head.toLowerCase();
+  const match = commands.find((command) => command.name.toLowerCase() === needle) ?? commands.filter((command) => command.name.toLowerCase().startsWith(needle)).sort((a, b) => b.name.length - a.name.length)[0];
+  if (!match)
+    return { kind: "unknown", name: head };
+  return { kind: "command", command: match, argText: rest.join(" ") };
+}
+function unknownCommandRow(name) {
+  return `unknown command: ${name} (try /help)`;
+}
+
+// ../tui-base/src/routes/session/slash-palette.tsx
+var MAX_ROWS = 6;
+
+class SlashPaletteController {
+  #rows = createSignal14(0);
+  #selected = createSignal14(0);
+  #query = createSignal14("");
+  #suppressed = false;
+  #lastBuffer = "";
+  rows() {
+    return this.#rows[0]();
+  }
+  selected() {
+    return this.#selected[0]();
+  }
+  query() {
+    return this.#query[0]();
+  }
+  sync(buffer, commands) {
+    if (buffer !== this.#lastBuffer) {
+      this.#lastBuffer = buffer;
+      this.#suppressed = false;
+    }
+    const next = buffer.startsWith("/") && !buffer.includes(" ") ? buffer : "";
+    this.#query[1](next);
+    if (!next || this.#suppressed) {
+      this.#rows[1](0);
+      return;
+    }
+    const count = filterCommands(commands, next).length;
+    this.#rows[1](Math.min(MAX_ROWS, count));
+    this.#selected[1]((current) => Math.min(current, Math.max(0, count - 1)));
+  }
+  filtered(commands) {
+    return filterCommands(commands, this.#query[0]());
+  }
+  move(delta, commands) {
+    const count = this.filtered(commands).length;
+    if (count === 0)
+      return;
+    const n = this.#selected[0]();
+    this.#selected[1]((n + delta + count) % count);
+  }
+  current(commands) {
+    return this.filtered(commands)[this.#selected[0]()];
+  }
+  close() {
+    this.#suppressed = true;
+    this.#query[1]("");
+    this.#rows[1](0);
+  }
+  get open() {
+    return this.rows() > 0;
+  }
+}
+function SlashPalette(props) {
+  const theme = useThemeOptional();
+  const color = {
+    active: () => theme?.border.base ?? "#7aa2f7",
+    base: () => theme?.text.base ?? "#e6e6e6",
+    muted: () => theme?.text.muted ?? "#565f89",
+    background: () => theme ? theme.decrease(theme.background.raised.base) : "#1a1b26"
+  };
+  return _$createComponent18(Show11, {
+    get when() {
+      return props.controller.rows() > 0;
+    },
+    get children() {
+      var _el$ = _$createElement12("box");
+      _$setProp11(_el$, "flexShrink", 0);
+      _$setProp11(_el$, "width", "100%");
+      _$setProp11(_el$, "flexDirection", "column");
+      _$setProp11(_el$, "paddingLeft", 2);
+      _$insert10(_el$, _$createComponent18(For6, {
+        get each() {
+          return props.controller.filtered(props.commands);
+        },
+        children: (command, index) => (() => {
+          var _el$2 = _$createElement12("text"), _el$3 = _$createTextNode7(` `), _el$4 = _$createElement12("span");
+          _$insertNode10(_el$2, _el$3);
+          _$insertNode10(_el$2, _el$4);
+          _$setProp11(_el$2, "flexShrink", 0);
+          _$insert10(_el$2, () => command.name, _el$3);
+          _$insert10(_el$4, () => command.description);
+          _$effect11((_p$) => {
+            var _v$3 = index() === props.controller.selected() ? color.active() : color.base(), _v$4 = {
+              fg: color.muted()
+            };
+            _v$3 !== _p$.e && (_p$.e = _$setProp11(_el$2, "fg", _v$3, _p$.e));
+            _v$4 !== _p$.t && (_p$.t = _$setProp11(_el$4, "style", _v$4, _p$.t));
+            return _p$;
+          }, {
+            e: undefined,
+            t: undefined
+          });
+          return _el$2;
+        })()
+      }));
+      _$effect11((_p$) => {
+        var _v$ = props.controller.rows(), _v$2 = color.background();
+        _v$ !== _p$.e && (_p$.e = _$setProp11(_el$, "height", _v$, _p$.e));
+        _v$2 !== _p$.t && (_p$.t = _$setProp11(_el$, "backgroundColor", _v$2, _p$.t));
+        return _p$;
+      }, {
+        e: undefined,
+        t: undefined
+      });
+      return _el$;
+    }
+  });
+}
+function createSlashHost(deps) {
+  const commands = deps.commands ?? coreCommands();
+  const controller = new SlashPaletteController;
+  const ctx = {
+    seam: deps.seam,
+    say: deps.say,
+    clear: deps.clear,
+    reload: deps.reload,
+    quit: deps.quit,
+    pickOne: deps.pickOne,
+    ...deps.openBtw ? {
+      openBtw: deps.openBtw
+    } : {},
+    ...deps.themes ? {
+      themes: deps.themes
+    } : {}
+  };
+  function run(command, argText) {
+    command.run(ctx, argText);
+    return true;
+  }
+  return {
+    commands,
+    controller,
+    slashKeyFilter(event, buffer) {
+      controller.sync(buffer, commands);
+      if (!controller.open)
+        return false;
+      if (event.name === "up" || event.name === "down") {
+        event.preventDefault();
+        controller.move(event.name === "up" ? -1 : 1, commands);
+        return true;
+      }
+      if (event.name === "escape") {
+        event.preventDefault();
+        controller.close();
+        return true;
+      }
+      return false;
+    },
+    interceptSubmit(buffer) {
+      controller.sync(buffer, commands);
+      const highlighted = controller.current(commands);
+      controller.close();
+      if (highlighted)
+        return run(highlighted, "");
+      const dispatch = dispatchLine(commands, buffer);
+      if (dispatch.kind === "command")
+        return run(dispatch.command, dispatch.argText);
+      if (dispatch.kind === "unknown") {
+        deps.say(unknownCommandRow(dispatch.name));
+        return true;
+      }
+      return false;
+    }
+  };
+}
+
 // ../tui-base/src/routes/session/btw-overlay.tsx
+import { effect as _$effect12 } from "@opentui/solid";
+import { insert as _$insert11 } from "@opentui/solid";
+import { memo as _$memo9 } from "@opentui/solid";
+import { createComponent as _$createComponent19 } from "@opentui/solid";
+import { createTextNode as _$createTextNode8 } from "@opentui/solid";
+import { insertNode as _$insertNode11 } from "@opentui/solid";
+import { setProp as _$setProp12 } from "@opentui/solid";
+import { createElement as _$createElement13 } from "@opentui/solid";
+import { Show as Show12, createSignal as createSignal15 } from "solid-js";
 var BTW_QUEUE_CAPACITY = 3;
 var BTW_SNAPSHOT_ROWS = 6;
 var BTW_SNAPSHOT_ROW_CHARS = 1000;
@@ -26204,10 +26573,10 @@ class BtwController {
   #ask;
   #snapshot;
   #capacity;
-  #run = createSignal14(undefined);
-  #last = createSignal14(undefined);
-  #queue = createSignal14([]);
-  #visible = createSignal14(false);
+  #run = createSignal15(undefined);
+  #last = createSignal15(undefined);
+  #queue = createSignal15([]);
+  #visible = createSignal15(false);
   constructor(deps) {
     this.#ask = deps.ask;
     this.#snapshot = deps.snapshot;
@@ -26291,56 +26660,56 @@ function BtwPanel(props) {
   const accent = () => theme?.border.base ?? "#7aa2f7";
   const shown = () => props.controller.run() ?? props.controller.last();
   return (() => {
-    var _el$ = _$createElement12("box"), _el$2 = _$createElement12("text"), _el$4 = _$createElement12("text");
-    _$insertNode10(_el$, _el$2);
-    _$insertNode10(_el$, _el$4);
-    _$setProp11(_el$, "flexDirection", "column");
-    _$setProp11(_el$, "gap", 1);
-    _$setProp11(_el$, "paddingBottom", 1);
-    _$insertNode10(_el$2, _$createTextNode7(`btw — side question`));
-    _$insert10(_el$, _$createComponent18(Show11, {
+    var _el$ = _$createElement13("box"), _el$2 = _$createElement13("text"), _el$4 = _$createElement13("text");
+    _$insertNode11(_el$, _el$2);
+    _$insertNode11(_el$, _el$4);
+    _$setProp12(_el$, "flexDirection", "column");
+    _$setProp12(_el$, "gap", 1);
+    _$setProp12(_el$, "paddingBottom", 1);
+    _$insertNode11(_el$2, _$createTextNode8(`btw — side question`));
+    _$insert11(_el$, _$createComponent19(Show12, {
       get when() {
         return shown();
       },
       get fallback() {
         return (() => {
-          var _el$5 = _$createElement12("text");
-          _$insertNode10(_el$5, _$createTextNode7(`no side question yet`));
-          _$effect11((_$p) => _$setProp11(_el$5, "fg", muted(), _$p));
+          var _el$5 = _$createElement13("text");
+          _$insertNode11(_el$5, _$createTextNode8(`no side question yet`));
+          _$effect12((_$p) => _$setProp12(_el$5, "fg", muted(), _$p));
           return _el$5;
         })();
       },
       children: (run) => [(() => {
-        var _el$7 = _$createElement12("text");
-        _$insert10(_el$7, () => run().question);
+        var _el$7 = _$createElement13("text");
+        _$insert11(_el$7, () => run().question);
         return _el$7;
-      })(), _$createComponent18(Show11, {
+      })(), _$createComponent19(Show12, {
         get when() {
-          return _$memo8(() => run().status === "streaming")() && run().answer === "";
+          return _$memo9(() => run().status === "streaming")() && run().answer === "";
         },
         get fallback() {
           return (() => {
-            var _el$0 = _$createElement12("text");
-            _$insert10(_el$0, () => run().answer);
+            var _el$0 = _$createElement13("text");
+            _$insert11(_el$0, () => run().answer);
             return _el$0;
           })();
         },
         get children() {
-          var _el$8 = _$createElement12("text");
-          _$insertNode10(_el$8, _$createTextNode7(`Thinking…`));
-          _$effect11((_$p) => _$setProp11(_el$8, "fg", muted(), _$p));
+          var _el$8 = _$createElement13("text");
+          _$insertNode11(_el$8, _$createTextNode8(`Thinking…`));
+          _$effect12((_$p) => _$setProp12(_el$8, "fg", muted(), _$p));
           return _el$8;
         }
       })]
     }), _el$4);
-    _$insert10(_el$4, (() => {
-      var _c$ = _$memo8(() => shown()?.status === "streaming");
+    _$insert11(_el$4, (() => {
+      var _c$ = _$memo9(() => shown()?.status === "streaming");
       return () => _c$() ? `Running alongside the main task · Esc close${props.controller.queueDepth() > 0 ? ` · ${props.controller.queueDepth()} queued` : ""}` : `Not kept in the session · /btw reopens this answer${props.controller.queueDepth() > 0 ? ` · ${props.controller.queueDepth()} queued` : ""}`;
     })());
-    _$effect11((_p$) => {
+    _$effect12((_p$) => {
       var _v$ = accent(), _v$2 = muted();
-      _v$ !== _p$.e && (_p$.e = _$setProp11(_el$2, "fg", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp11(_el$4, "fg", _v$2, _p$.t));
+      _v$ !== _p$.e && (_p$.e = _$setProp12(_el$2, "fg", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp12(_el$4, "fg", _v$2, _p$.t));
       return _p$;
     }, {
       e: undefined,
@@ -26352,7 +26721,7 @@ function BtwPanel(props) {
 function createBtwOpener(deps) {
   const showPanel = () => {
     deps.controller.markVisible();
-    deps.dialog.replace(() => _$createComponent18(BtwPanel, {
+    deps.dialog.replace(() => _$createComponent19(BtwPanel, {
       get controller() {
         return deps.controller;
       }
@@ -26373,7 +26742,7 @@ function createBtwOpener(deps) {
       showPanel();
       return "review";
     }
-    deps.dialog.replace(() => _$createComponent18(DialogPrompt, {
+    deps.dialog.replace(() => _$createComponent19(DialogPrompt, {
       title: "/btw",
       placeholder: "Ask anything",
       onConfirm: (text) => {
@@ -26425,14 +26794,14 @@ function createThemeSeam(target) {
 }
 
 // ../tui-base/src/routes/session/powerline.tsx
-import { createTextNode as _$createTextNode8 } from "@opentui/solid";
-import { insertNode as _$insertNode11 } from "@opentui/solid";
-import { effect as _$effect12 } from "@opentui/solid";
-import { insert as _$insert11 } from "@opentui/solid";
-import { createComponent as _$createComponent19 } from "@opentui/solid";
-import { setProp as _$setProp12 } from "@opentui/solid";
-import { createElement as _$createElement13 } from "@opentui/solid";
-import { For as For6, Show as Show12 } from "solid-js";
+import { createTextNode as _$createTextNode9 } from "@opentui/solid";
+import { insertNode as _$insertNode12 } from "@opentui/solid";
+import { effect as _$effect13 } from "@opentui/solid";
+import { insert as _$insert12 } from "@opentui/solid";
+import { createComponent as _$createComponent20 } from "@opentui/solid";
+import { setProp as _$setProp13 } from "@opentui/solid";
+import { createElement as _$createElement14 } from "@opentui/solid";
+import { For as For7, Show as Show13 } from "solid-js";
 var POWERLINE_COLORS = {
   brand: "#4D6BFE",
   provider: "#6A1B9A",
@@ -26568,44 +26937,44 @@ function cacheSegment(rate, theme) {
 }
 function PowerlineFooter(props) {
   return (() => {
-    var _el$ = _$createElement13("box");
-    _$setProp12(_el$, "style", {
+    var _el$ = _$createElement14("box");
+    _$setProp13(_el$, "style", {
       flexDirection: "row",
       paddingLeft: 1,
       flexShrink: 0
     });
-    _$insert11(_el$, _$createComponent19(For6, {
+    _$insert12(_el$, _$createComponent20(For7, {
       get each() {
         return props.left;
       },
       children: (seg, i) => {
         const next = () => props.left[i() + 1];
         return [(() => {
-          var _el$4 = _$createElement13("text");
-          _$insert11(_el$4, () => ` ${seg.text} `);
-          _$effect12((_$p) => _$setProp12(_el$4, "style", {
+          var _el$4 = _$createElement14("text");
+          _$insert12(_el$4, () => ` ${seg.text} `);
+          _$effect13((_$p) => _$setProp13(_el$4, "style", {
             bg: seg.bg,
             fg: seg.fg ?? autoContrast(seg.bg)
           }, _$p));
           return _el$4;
-        })(), _$createComponent19(Show12, {
+        })(), _$createComponent20(Show13, {
           get when() {
             return next();
           },
           get fallback() {
             return (() => {
-              var _el$5 = _$createElement13("text");
-              _$insertNode11(_el$5, _$createTextNode8(``));
-              _$effect12((_$p) => _$setProp12(_el$5, "style", {
+              var _el$5 = _$createElement14("text");
+              _$insertNode12(_el$5, _$createTextNode9(``));
+              _$effect13((_$p) => _$setProp13(_el$5, "style", {
                 fg: seg.bg
               }, _$p));
               return _el$5;
             })();
           },
           children: (n) => (() => {
-            var _el$7 = _$createElement13("text");
-            _$insertNode11(_el$7, _$createTextNode8(``));
-            _$effect12((_$p) => _$setProp12(_el$7, "style", {
+            var _el$7 = _$createElement14("text");
+            _$insertNode12(_el$7, _$createTextNode9(``));
+            _$effect13((_$p) => _$setProp13(_el$7, "style", {
               fg: seg.bg,
               bg: n().bg
             }, _$p));
@@ -26614,21 +26983,21 @@ function PowerlineFooter(props) {
         })];
       }
     }), null);
-    _$insert11(_el$, _$createComponent19(Show12, {
+    _$insert12(_el$, _$createComponent20(Show13, {
       get when() {
         return props.right;
       },
       get children() {
         return [(() => {
-          var _el$2 = _$createElement13("box");
-          _$setProp12(_el$2, "style", {
+          var _el$2 = _$createElement14("box");
+          _$setProp13(_el$2, "style", {
             flexGrow: 1
           });
           return _el$2;
         })(), (() => {
-          var _el$3 = _$createElement13("text");
-          _$insert11(_el$3, () => props.right);
-          _$effect12((_$p) => _$setProp12(_el$3, "style", {
+          var _el$3 = _$createElement14("text");
+          _$insert12(_el$3, () => props.right);
+          _$effect13((_$p) => _$setProp13(_el$3, "style", {
             fg: props.theme?.text.base ?? "#e6e6e6"
           }, _$p));
           return _el$3;
@@ -26665,12 +27034,12 @@ function readCacheHitMode(config) {
 }
 
 // ../tui-base/src/routes/session/status-bar.tsx
-import { effect as _$effect13 } from "@opentui/solid";
-import { insert as _$insert12 } from "@opentui/solid";
-import { createComponent as _$createComponent20 } from "@opentui/solid";
-import { setProp as _$setProp13 } from "@opentui/solid";
-import { createElement as _$createElement14 } from "@opentui/solid";
-import { createSignal as createSignal15, onCleanup as onCleanup13, For as For7, Show as Show13 } from "solid-js";
+import { effect as _$effect14 } from "@opentui/solid";
+import { insert as _$insert13 } from "@opentui/solid";
+import { createComponent as _$createComponent21 } from "@opentui/solid";
+import { setProp as _$setProp14 } from "@opentui/solid";
+import { createElement as _$createElement15 } from "@opentui/solid";
+import { createSignal as createSignal16, onCleanup as onCleanup14, For as For8, Show as Show14 } from "solid-js";
 var DEFAULT_VERBS = {
   think: ["Thinking", "Pondering", "Reasoning", "Reflecting", "Deliberating", "Mulling"],
   tool: ["Executing", "Running", "Processing", "Building"],
@@ -26691,9 +27060,9 @@ var FALLBACK_TRACK = "#565f89";
 var FALLBACK_HEAD = "#7aa2f7";
 function StatusBar(props) {
   const theme = useThemeOptional();
-  const [tick, setTick] = createSignal15(0);
+  const [tick, setTick] = createSignal16(0);
   const timer = setInterval(() => setTick((t) => t + 1), BAR_MS);
-  onCleanup13(() => clearInterval(timer));
+  onCleanup14(() => clearInterval(timer));
   const pools = () => ({
     think: props.verbs?.think ?? DEFAULT_VERBS.think,
     tool: props.verbs?.tool ?? DEFAULT_VERBS.tool,
@@ -26773,28 +27142,28 @@ function StatusBar(props) {
     });
     return runs;
   };
-  return _$createComponent20(Show13, {
+  return _$createComponent21(Show14, {
     get when() {
       return props.phase !== null;
     },
     get children() {
-      var _el$ = _$createElement14("box");
-      _$setProp13(_el$, "style", {
+      var _el$ = _$createElement15("box");
+      _$setProp14(_el$, "style", {
         flexDirection: "row",
         paddingLeft: 1,
         paddingRight: 1,
         height: 1,
         flexGrow: 0
       });
-      _$insert12(_el$, _$createComponent20(For7, {
+      _$insert13(_el$, _$createComponent21(For8, {
         get each() {
           return row();
         },
         children: (r) => (() => {
-          var _el$2 = _$createElement14("text");
-          _$setProp13(_el$2, "wrapMode", "none");
-          _$insert12(_el$2, () => r.text);
-          _$effect13((_$p) => _$setProp13(_el$2, "style", {
+          var _el$2 = _$createElement15("text");
+          _$setProp14(_el$2, "wrapMode", "none");
+          _$insert13(_el$2, () => r.text);
+          _$effect14((_$p) => _$setProp14(_el$2, "style", {
             fg: r.fg
           }, _$p));
           return _el$2;
@@ -26806,13 +27175,13 @@ function StatusBar(props) {
 }
 
 // ../tui-base/src/routes/session/turn-cancel.tsx
-import { createComponent as _$createComponent21 } from "@opentui/solid";
-import { effect as _$effect14 } from "@opentui/solid";
-import { createTextNode as _$createTextNode9 } from "@opentui/solid";
-import { insertNode as _$insertNode12 } from "@opentui/solid";
-import { setProp as _$setProp14 } from "@opentui/solid";
-import { createElement as _$createElement15 } from "@opentui/solid";
-import { createSignal as createSignal16, onCleanup as onCleanup14, Show as Show14 } from "solid-js";
+import { createComponent as _$createComponent22 } from "@opentui/solid";
+import { effect as _$effect15 } from "@opentui/solid";
+import { createTextNode as _$createTextNode10 } from "@opentui/solid";
+import { insertNode as _$insertNode13 } from "@opentui/solid";
+import { setProp as _$setProp15 } from "@opentui/solid";
+import { createElement as _$createElement16 } from "@opentui/solid";
+import { createSignal as createSignal17, onCleanup as onCleanup15, Show as Show15 } from "solid-js";
 var CTRL_C_QUIT_WINDOW_MS = 500;
 function createCtrlCGate(windowMs = CTRL_C_QUIT_WINDOW_MS, now = Date.now) {
   let armedAt;
@@ -26870,9 +27239,9 @@ function createTurnCancel(props, onArm) {
 }
 function TurnCancelKeys(props) {
   const theme = useThemeOptional();
-  const [armed, setArmed] = createSignal16(false);
+  const [armed, setArmed] = createSignal17(false);
   const cancel = createTurnCancel(props, setArmed);
-  onCleanup14(() => cancel.dispose());
+  onCleanup15(() => cancel.dispose());
   Keymap.createLayer(() => ({
     mode: "global",
     enabled: props.enabled(),
@@ -26888,19 +27257,19 @@ function TurnCancelKeys(props) {
       run: () => cancel.ctrlC()
     }]
   }));
-  return _$createComponent21(Show14, {
+  return _$createComponent22(Show15, {
     get when() {
       return armed();
     },
     get children() {
-      var _el$ = _$createElement15("box"), _el$2 = _$createElement15("text");
-      _$insertNode12(_el$, _el$2);
-      _$setProp14(_el$, "height", 1);
-      _$setProp14(_el$, "flexShrink", 0);
-      _$setProp14(_el$, "paddingLeft", 1);
-      _$insertNode12(_el$2, _$createTextNode9(`Press Ctrl+C again to quit`));
-      _$setProp14(_el$2, "wrapMode", "none");
-      _$effect14((_$p) => _$setProp14(_el$2, "fg", theme?.text.feedback.warning.base ?? "#e0af68", _$p));
+      var _el$ = _$createElement16("box"), _el$2 = _$createElement16("text");
+      _$insertNode13(_el$, _el$2);
+      _$setProp15(_el$, "height", 1);
+      _$setProp15(_el$, "flexShrink", 0);
+      _$setProp15(_el$, "paddingLeft", 1);
+      _$insertNode13(_el$2, _$createTextNode10(`Press Ctrl+C again to quit`));
+      _$setProp15(_el$2, "wrapMode", "none");
+      _$effect15((_$p) => _$setProp15(_el$2, "fg", theme?.text.feedback.warning.base ?? "#e0af68", _$p));
       return _el$;
     }
   });
@@ -26944,19 +27313,19 @@ function V2SessionPage(props) {
   if (props.themeName && !themeSeam.setTheme(props.themeName)) {
     console.error(`[host-entry-v2] unknown theme ${props.themeName}; bundled: ${themeSeam.list().join(", ")}`);
   }
-  const [composerBusy, setComposerBusy] = createSignal17(false);
-  const [turnBusy, setTurnBusy] = createSignal17(false);
+  const [composerBusy, setComposerBusy] = createSignal18(false);
+  const [turnBusy, setTurnBusy] = createSignal18(false);
   const busy = () => composerBusy() || turnBusy();
-  const [busySince, setBusySince] = createSignal17(0);
-  const [msgs, setMsgs] = createSignal17(0);
-  const [model, setModel] = createSignal17();
-  const [now, setNow] = createSignal17(new Date);
+  const [busySince, setBusySince] = createSignal18(0);
+  const [msgs, setMsgs] = createSignal18(0);
+  const [model, setModel] = createSignal18();
+  const [now, setNow] = createSignal18(new Date);
   let composerRef;
   onMount6(() => {
     projection.load();
     seam.currentModelSelection().then(setModel);
     const timer = setInterval(() => setNow(new Date), 1000);
-    onCleanup15(() => clearInterval(timer));
+    onCleanup16(() => clearInterval(timer));
   });
   const elapsed = () => busy() ? Math.max(0, Math.floor((now().getTime() - busySince()) / 1000)) : 0;
   const send = (text) => {
@@ -26981,7 +27350,7 @@ function V2SessionPage(props) {
     theme
   });
   let cmdOrdinal = 0;
-  const pickOne = (title, options) => new Promise((resolvePick) => {
+  const pickOne = (title, options, headerLine) => new Promise((resolvePick) => {
     let settled = false;
     const done = (value) => {
       if (settled)
@@ -26992,6 +27361,7 @@ function V2SessionPage(props) {
     };
     dialog.replace(() => createComponent2(DialogSelect, {
       title,
+      description: headerLine,
       renderFilter: false,
       options: options.map((option) => ({
         title: option.title,
@@ -27084,6 +27454,11 @@ function V2SessionPage(props) {
             });
           }
         }),
+        createComponent2(SubagentsPicker, {
+          get seam() {
+            return seam;
+          }
+        }),
         createComponent2(TurnCancelKeys, {
           busy,
           interrupt: () => seam.interrupt(),
@@ -27133,10 +27508,6 @@ function apply(ctx, config) {
   const session = new HostSession(ctx);
   const seam = new HostSessionSeam(session);
   registerTurnOverlays(seam, overlays);
-  // Boot restore precedence: the persisted profile config.json choice wins
-  // over the embedder pin (the e2e image bakes theme: catppuccin-mocha into
-  // the plugin config, which shadowed configLoad().theme and made the F7b
-  // persist+restore pair dead code at boot — 67-theme capture-verified).
   const themeName = session.configLoad().theme ?? config?.theme;
   mountEngine({}).then(({
     renderer
