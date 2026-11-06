@@ -4,9 +4,13 @@
 // (subagents/prompt + subagents/interruptByParent) and the plugin
 // HostSession (child agent steer + cancel, settings via ctx "settings").
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
 	DEFAULT_SUBAGENT_ROUND_LIMITS,
 	SubagentRoundPolicy,
+	bareAgentLabel,
 	ladderDecision,
 	limitsFromSettingsRows,
 	parseSubagentRoundLimits,
@@ -61,6 +65,19 @@ describe("ladderDecision (grace window / force-stop timing)", () => {
 		expect(ladderDecision({ ...base, cap: 0, count: 50 })).toBe("none")
 		expect(ladderDecision({ ...base, settled: true, count: 3 })).toBe("none")
 		expect(ladderDecision({ ...base, settled: true, wrapupDelivered: true, count: 5 })).toBe("none")
+	})
+})
+
+describe("bareAgentLabel (foreground descriptor-label namespaces)", () => {
+	test("strips the current and legacy foreground prefixes", () => {
+		expect(bareAgentLabel("[fg] looper")).toBe("looper")
+		expect(bareAgentLabel("[use_agent foreground] looper")).toBe("looper")
+		expect(bareAgentLabel("  [fg] looper ")).toBe("looper")
+	})
+	test("bare labels and other namespaces pass through", () => {
+		expect(bareAgentLabel("looper")).toBe("looper")
+		expect(bareAgentLabel("[fg]multi word name")).toBe("[fg]multi word name") // no space after ]: not the namespace
+		expect(bareAgentLabel("[fg] scout extra")).toBe("scout extra") // strips at the prefix, keeps the rest
 	})
 })
 
@@ -384,5 +401,97 @@ describe("plugin face: HostSession", () => {
 		}
 		expect(steered).toHaveLength(0)
 		expect(cancels).toHaveLength(0)
+	})
+
+	// D3's instrumented repro: firehose child session objects may never
+	// carry `.agent` (#adoptChild captures nothing), which left the wrap-up
+	// permanently undelivered and the stage-2 force-stop unreachable. The
+	// delivery now falls back to the in-process `subagents` service.
+	test("no firehose agent handle: wrap-up rides the subagents service, force-stop lands exactly once", async () => {
+		const env = makeCtx({ maxRounds: 3, maxRoundsGrace: 2 })
+		const prompts: any[] = []
+		const interrupts: unknown[][] = []
+		const baseGet = env.ctx.get.bind(env.ctx)
+		env.ctx.get = (key: string) => {
+			if (key === "subagents") {
+				return {
+					prompt: async (request: any) => {
+						prompts.push(request)
+						return {}
+					},
+					interruptByParent: (...args: unknown[]) => {
+						interrupts.push(args)
+						return {}
+					},
+				}
+			}
+			return baseGet(key)
+		}
+		const session = new HostSession(env.ctx)
+		const parentId = await startSession(env, session)
+		// The repro shape: adopted via header, NO `.agent` on the session object.
+		const child = { id: "child-9", header: { parentSession: parentId, origin: "subagent" } }
+		const round = (n: number) =>
+			env.emit("session/event", child, { type: "assistant/message", data: { message: { content: [{ type: "text", text: `r${n}` }] } } })
+		round(1)
+		await flush()
+		round(2)
+		round(3)
+		await until(() => prompts.length === 1)
+		expect(prompts[0]).toMatchObject({ parentSessionId: parentId, childSessionId: "child-9", mode: "continuable", delivery: "steer" })
+		expect(prompts[0].content[0].text).toContain("Round limit reached (3")
+		await flush()
+		// The async delivery latched: the ⚡ marker folded, stage 2 is armed.
+		expect(session.subagentViews().find((v) => v.id === "child-9")?.injectedRound).toBe(3)
+		round(4)
+		await flush()
+		expect(interrupts).toHaveLength(0)
+		round(5)
+		await flush()
+		expect(interrupts).toEqual([["child-9", parentId, "continuable"]])
+		expect(session.subagentViews().find((v) => v.id === "child-9")?.status).toBe("cancelled")
+		round(6) // the stop's own settlement re-entry
+		await flush()
+		expect(interrupts).toHaveLength(1) // exactly once
+	})
+
+	test("per-agent maxRounds resolves through the [fg] label prefix (agent file cap wins over the global)", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "dsh-opentui-agents-"))
+		const prevHome = process.env.DSH_HOME
+		process.env.DSH_HOME = tmp
+		try {
+			mkdirSync(join(tmp, "agents"), { recursive: true })
+			writeFileSync(join(tmp, "agents", "looper.md"), "---\nname: looper\nmaxRounds: 5\n---\nbody")
+			const env = makeCtx({ maxRounds: 3, maxRoundsGrace: 1 })
+			const session = new HostSession(env.ctx)
+			const parentId = await startSession(env, session)
+			const steered: string[] = []
+			const cancels: unknown[][] = []
+			const child = {
+				id: "child-l",
+				header: { parentSession: parentId, origin: "subagent" },
+				agent: { steer: (m: any) => steered.push(m.content[0].text), cancel: (...a: unknown[]) => cancels.push(a) },
+			}
+			// The descriptor label carries the foreground namespace — this is
+			// what used to make the per-agent frontmatter unresolvable.
+			env.emit("session/event", child, { type: "subagent/descriptor", data: { label: "[fg] looper" } })
+			const round = (n: number) =>
+				env.emit("session/event", child, { type: "assistant/message", data: { message: { content: [{ type: "text", text: `r${n}` }] } } })
+			for (let n = 1; n <= 4; n++) {
+				round(n)
+				await flush()
+			}
+			expect(steered).toHaveLength(0) // the global cap 3 did NOT fire
+			round(5)
+			await flush()
+			expect(steered).toHaveLength(1)
+			expect(steered[0]).toContain("Round limit reached (5")
+			round(6) // cap 5 + grace 1
+			expect(cancels).toEqual([[{ kind: "user" }, { keepInbox: true }]])
+		} finally {
+			if (prevHome === undefined) delete process.env.DSH_HOME
+			else process.env.DSH_HOME = prevHome
+			rmSync(tmp, { recursive: true, force: true })
+		}
 	})
 })

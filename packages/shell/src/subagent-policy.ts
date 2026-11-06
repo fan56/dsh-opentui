@@ -75,6 +75,24 @@ export function limitsFromSettingsRows(rows: readonly { ns?: unknown; value?: un
 	return { ...DEFAULT_SUBAGENT_ROUND_LIMITS }
 }
 
+/**
+ * Foreground descriptor-label namespaces (dsh-subagent's run-agent tool
+ * prefixes a foreground child's label with "[fg] ", legacy
+ * "[use_agent foreground] "), so a descriptor label like "[fg] looper"
+ * never string-equals the registered agent's bare name.
+ */
+const FOREGROUND_LABEL_PREFIXES = ["[fg] ", "[use_agent foreground] "]
+
+/** Strip a foreground namespace prefix from a child descriptor label
+ * ("[fg] looper" → "looper"); any other label passes through trimmed. */
+export function bareAgentLabel(label: string): string {
+	const trimmed = label.trim()
+	for (const prefix of FOREGROUND_LABEL_PREFIXES) {
+		if (trimmed.startsWith(prefix)) return trimmed.slice(prefix.length).trim()
+	}
+	return trimmed
+}
+
 /** The pure ladder verdict, given one child's state. Unit-tested standalone. */
 export type LadderAction = "none" | "wrapup" | "force-stop"
 
@@ -137,9 +155,11 @@ export interface SubagentRoundPolicyOptions {
 	resolveAgentCap?(label: string): number | undefined
 	/** Whether the child already settled (never re-awaken a settled child). */
 	isSettled?(childId: string): boolean
-	/** Stage-1 sink: deliver the wrap-up to the child. False/throw = not
-	 * delivered — the child stays eligible and the next counted round retries. */
-	wrapup(childId: string, message: string, label: string | undefined): boolean
+	/** Stage-1 sink: deliver the wrap-up to the child. False/throw (or a
+	 * rejected promise) = not delivered — the child stays eligible and the
+	 * next counted round retries. A PROMISE (the plugin facade's service
+	 * steer is async) latches the delivery when it resolves true. */
+	wrapup(childId: string, message: string, label: string | undefined): boolean | Promise<boolean>
 	/** Stage-2 sink: force-stop the child's run. False/throw = nothing was
 	 * stopped (a raced settle) — the stage marker still latches. */
 	forceStop(childId: string): boolean
@@ -213,21 +233,34 @@ export class SubagentRoundPolicy {
 				if (this.#disposed || this.#injected.has(childId)) return
 				// Re-check settle at flush time: the child may have finished.
 				if (this.#options.isSettled?.(childId) === true) return
-				let delivered = false
+				let delivered: boolean | Promise<boolean> = false
 				try {
 					delivered = this.#options.wrapup(childId, wrapupMessage(caps.cap, caps.grace), rememberedLabel)
 				} catch {
 					delivered = false
 				}
-				if (!delivered) return // stays eligible; next round retries
-				this.#injected.add(childId)
-				if (rememberedLabel !== undefined) this.#injectedLabel.set(childId, rememberedLabel)
-				// F6 marker: the injection landed — observers fold `⚡`.
-				try {
-					this.#options.onWrapUp?.(childId, count)
-				} catch {
-					// An observation failure must not touch delivery.
+				// Latch on a true delivery. Sync deliveries latch now (the
+				// historical timing); a promised delivery (service steer)
+				// latches when it resolves — a rejection means not delivered.
+				const latch = (ok: boolean) => {
+					if (this.#disposed || this.#injected.has(childId) || this.#hardStopped.has(childId)) return
+					if (!ok) return // stays eligible; next round retries
+					this.#injected.add(childId)
+					if (rememberedLabel !== undefined) this.#injectedLabel.set(childId, rememberedLabel)
+					// F6 marker: the injection landed — observers fold `⚡`.
+					try {
+						this.#options.onWrapUp?.(childId, count)
+					} catch {
+						// An observation failure must not touch delivery.
+					}
 				}
+				if (delivered instanceof Promise) {
+					void delivered.then(latch, () => {
+						/* rejected = not delivered; stays eligible */
+					})
+					return
+				}
+				latch(delivered)
 			})
 			return
 		}

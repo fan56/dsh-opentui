@@ -21,6 +21,7 @@ import {
 import {
   DEFAULT_SUBAGENT_ROUND_LIMITS,
   SubagentRoundPolicy,
+  bareAgentLabel,
   limitsFromSettingsRows,
   type SubagentRoundLimits,
 } from "./subagent-policy.ts"
@@ -1044,15 +1045,29 @@ export class HostSession {
         limits: () => this.#roundLimits,
         // Per-agent tier: the descriptor label resolves to a registered
         // agent (~/.dsh/agents/*.md) whose frontmatter carries maxRounds.
+        // Foreground children carry a namespace prefix on their label
+        // ("[fg] looper", legacy "[use_agent foreground] looper") — strip
+        // it, and fall back to a bare-name suffix match, so the agent
+        // file's per-agent cap actually resolves (an unresolvable label
+        // keeps the global cap — never widens it).
         resolveAgentCap: (label) => {
-          const row = this.listAgents().find((a) => a.name === label || (a.displayName !== undefined && a.displayName === label))
+          const stripped = bareAgentLabel(label)
+          const row = this.listAgents().find(
+            (a) =>
+              a.name === label ||
+              a.name === stripped ||
+              (a.displayName !== undefined && (a.displayName === label || a.displayName === stripped)) ||
+              label.endsWith(` ${a.name}`),
+          )
           const raw = row?.maxRounds
           if (raw === undefined) return undefined
           const n = Number(String(raw).trim())
           return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined
         },
         isSettled: (childId) => this.#children.get(childId)?.status !== "running",
-        wrapup: (childId, message) => this.steerChild(childId, message),
+        // The service steer is async (subagents prompt): the policy latches
+        // the delivery when the returned promise resolves true.
+        wrapup: (childId, message) => this.steerChildDetailed(childId, message).then((r) => r.ok),
         forceStop: (childId) => this.cancelChild(childId),
         onHardStop: (record) => this.#onHardStop(record),
         // F6 marker folds: latch the round counts onto the child's view so
@@ -1094,19 +1109,43 @@ export class HostSession {
 
   /** Force-stop one live child (the ladder's stage-2 sink): cancel the
    * captured agent (keepInbox first — session/inbox survive for resume),
-   * fall back to a bare cancel, and settle the view as cancelled. False
-   * when no live agent handle exists. */
+   * fall back to a bare cancel, then to the in-process `subagents`
+   * service, and settle the view as cancelled. False when no delivery
+   * path reaches the child. */
   cancelChild(childId: string): boolean {
     const agent = this.#childAgents.get(childId)
-    if (!agent?.cancel) return false
-    try {
-      agent.cancel({ kind: "user" }, { keepInbox: true })
-    } catch {
+    if (agent?.cancel) {
       try {
-        agent.cancel({ kind: "user" })
+        agent.cancel({ kind: "user" }, { keepInbox: true })
       } catch {
-        return false
+        try {
+          agent.cancel({ kind: "user" })
+        } catch {
+          // Stale handle — try the service before giving up.
+          return this.#cancelViaService(childId)
+        }
       }
+      this.#settleChild(childId, "cancelled")
+      return true
+    }
+    return this.#cancelViaService(childId)
+  }
+
+  /** Service-level force-stop: the host `subagents` service's
+   * `interruptByParent` (in-process, sync; throws when the address does
+   * not own a live target). Independent of the firehose session handle —
+   * firehose child objects may never carry `.agent` for adoption. */
+  #cancelViaService(childId: string): boolean {
+    const service = (this.#ctx as any).get?.("subagents")
+    if (!service || typeof service.interruptByParent !== "function") return false
+    if (this.#sessionId === undefined) return false
+    try {
+      service.interruptByParent(childId, this.#sessionId, "continuable")
+    } catch (error) {
+      console.error(
+        `[host-session] subagents service force-stop rejected for ${childId.slice(0, 8)}: ${error instanceof Error ? error.message : error}`,
+      )
+      return false
     }
     this.#settleChild(childId, "cancelled")
     return true
@@ -1159,6 +1198,45 @@ export class HostSession {
       return true
     } catch {
       return false
+    }
+  }
+
+  /** Steer a RUNNING child with a typed outcome. Tries the captured
+   * firehose agent first; firehose child session objects may never carry
+   * `.agent` (adoption is best-effort), so a miss falls back to the
+   * in-process `subagents` service (`ctx.get("subagents")` — the same
+   * subagents/prompt face the client mode rides remotely). Service-level
+   * delivery does not depend on the firehose handle, so the maxRounds
+   * wrap-up lands even when adoption never captured an agent. */
+  async steerChildDetailed(id: string, text: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const agent = this.#childAgents.get(id)
+    if (agent?.steer) {
+      try {
+        agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }))
+        return { ok: true }
+      } catch {
+        /* stale handle — fall through to the service */
+      }
+    }
+    if (this.#sessionId === undefined) return { ok: false, reason: "no live host session" }
+    const service = (this.#ctx as any).get?.("subagents")
+    if (!service || typeof service.prompt !== "function") {
+      return { ok: false, reason: "child agent not reachable and no subagents service" }
+    }
+    try {
+      await service.prompt({
+        requestId: randomUUID(),
+        parentSessionId: this.#sessionId,
+        childSessionId: id,
+        mode: "continuable",
+        delivery: "steer",
+        content: [{ type: "text", text }],
+      })
+      return { ok: true }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      console.error(`[host-session] subagents service steer rejected for ${id.slice(0, 8)}: ${reason}`)
+      return { ok: false, reason }
     }
   }
 
