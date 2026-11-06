@@ -62,6 +62,19 @@ describe("SlashPaletteController", () => {
 		controller.sync("/he", COMMANDS)
 		expect(controller.current(COMMANDS)?.name).toBe("/help")
 	})
+
+	test("a zero-match query closes the palette (batch V5: no empty 1-row strip)", () => {
+		const controller = new SlashPaletteController()
+		controller.sync("/", COMMANDS)
+		expect(controller.rows()).toBe(2)
+		controller.sync("/zz", COMMANDS)
+		expect(controller.filtered(COMMANDS)).toEqual([])
+		expect(controller.rows()).toBe(0)
+		expect(controller.open).toBe(false)
+		// narrowing back to a match re-opens
+		controller.sync("/h", COMMANDS)
+		expect(controller.rows()).toBe(1)
+	})
 })
 
 describe("createSlashHost", () => {
@@ -102,8 +115,11 @@ describe("createSlashHost", () => {
 
 	test("typing re-arms the menu after esc (old behavior)", () => {
 		const { host } = makeHost()
-		host.slashKeyFilter(key("escape"), "/help")
-		host.slashKeyFilter(key("a"), "/helpx")
+		host.slashKeyFilter(key("escape"), "/h")
+		expect(host.controller.open).toBe(false)
+		// the next edit re-arms (a MATCHING query — zero matches stay closed
+		// since batch V5)
+		host.slashKeyFilter(key("e"), "/he")
 		expect(host.controller.open).toBe(true)
 	})
 

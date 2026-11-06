@@ -206,8 +206,27 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
             })
           },
         }),
-        createComponent(StatusBar, { phase: busy() ? "stream" : null, elapsed }),
-        createComponent(PowerlineFooter, { left: segments(), right: clock(now()), theme }),
+        // Reactive-prop law (batch 10d, ported here in batch V5): sibling
+        // props ride GETTERS. An eager busy()/segments()/now() read is
+        // tracked by this children getter, so every 1s clock tick re-ran it
+        // and remounted the whole subtree — including SessionComposer, whose
+        // fresh textarea dropped the typed buffer between keystrokes (the
+        // palette-open + typing failure: "/" then "h" left the buffer "h").
+        createComponent(StatusBar, {
+          get phase() {
+            return busy() ? "stream" : null
+          },
+          elapsed,
+        }),
+        createComponent(PowerlineFooter, {
+          get left() {
+            return segments()
+          },
+          get right() {
+            return clock(now())
+          },
+          theme,
+        }),
         overlayHost,
       ]
     },

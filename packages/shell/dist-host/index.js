@@ -19378,6 +19378,8 @@ function createSeamRows(seam, sessionID, options) {
   const [rows, setRows] = createStore4([]);
   const [hydrated, setHydrated] = createSignal4(false);
   let liveOrdinal = 0;
+  let turnOpen = false;
+  const pendingTurns = [];
   function hydrate(stored) {
     setRows(reconcile3(stored.map(toStoredRow), { key: "key" }));
     setHydrated(true);
@@ -19401,16 +19403,65 @@ function createSeamRows(seam, sessionID, options) {
       Object.assign(draft[index], row);
     }));
   }
+  function dropRows(keys) {
+    setRows(produce3((draft) => {
+      for (let i = draft.length - 1;i >= 0; i--) {
+        if (keys.has(draft[i].key))
+          draft.splice(i, 1);
+      }
+    }));
+  }
+  function supersedeSettledTurn(group, settled) {
+    setRows(produce3((draft) => {
+      const assistantAt = draft.findIndex((row) => row.key === group.assistantKey);
+      const doomed = new Set([group.reasoningKey, group.assistantKey]);
+      let removedBefore = 0;
+      for (let i = draft.length - 1;i >= 0; i--) {
+        if (!doomed.has(draft[i].key))
+          continue;
+        draft.splice(i, 1);
+        if (i < assistantAt)
+          removedBefore += 1;
+      }
+      if (settled === undefined)
+        return;
+      let insertAt = assistantAt === -1 ? draft.length : assistantAt - removedBefore;
+      let journalUserAt = -1;
+      for (let i = draft.length - 1;i >= insertAt; i--) {
+        const row = draft[i];
+        if (row.kind === "user" && row.key.startsWith("user:") && !row.key.startsWith("user:local")) {
+          journalUserAt = i;
+          break;
+        }
+      }
+      if (journalUserAt !== -1) {
+        const prompt = draft[journalUserAt];
+        draft.splice(journalUserAt, 1);
+        draft.splice(insertAt, 0, prompt);
+        insertAt += 1;
+      }
+      draft.splice(insertAt, 0, settled);
+    }));
+  }
   function apply(event) {
     const details = event.details ?? {};
     if (typeof details.sessionID === "string" && details.sessionID !== sessionID())
       return;
     if (event.type === "message.updated" && details.role === "user") {
       const id = typeof details.id === "string" ? details.id : `local-${++liveOrdinal}`;
+      const text = typeof details.text === "string" ? details.text : "";
+      if (!turnOpen && pendingTurns.length > 0 && typeof details.sessionID === "string") {
+        const group = pendingTurns[0];
+        const local = rows.find((row) => row.key === group.userKey);
+        if (!local || local.kind !== "user" || local.text.trim() === text.trim()) {
+          group.userSuperseded = true;
+          dropRows(new Set([group.userKey]));
+        }
+      }
       upsert({
         key: `user:${id}`,
         kind: "user",
-        text: typeof details.text === "string" ? details.text : "",
+        text,
         final: true
       });
       return;
@@ -19435,6 +19486,12 @@ function createSeamRows(seam, sessionID, options) {
         return;
       const text = typeof part.text === "string" ? part.text : "";
       const kind = partType === "text" ? "assistant" : "reasoning";
+      if (partType === "text" && !turnOpen && pendingTurns.length > 0 && typeof details.sessionID === "string") {
+        const group = pendingTurns.shift();
+        const settled = text.trim() ? { key: `${kind}:${messageID}:${partID}`, kind: "assistant", text, final: true } : undefined;
+        supersedeSettledTurn(group, settled);
+        return;
+      }
       const key = `${kind}:${messageID}:${partID}`;
       const existing = rows.find((row) => row.key === key);
       if (!existing && !text.trim())
@@ -19458,11 +19515,16 @@ function createSeamRows(seam, sessionID, options) {
     const prompt = text.trim();
     if (!prompt)
       return;
-    upsert({ key: `user:local-${++liveOrdinal}`, kind: "user", text: prompt, final: true });
+    const userKey = `user:local-${++liveOrdinal}`;
+    upsert({ key: userKey, kind: "user", text: prompt, final: true });
     const assistantKey = `assistant:live-${++liveOrdinal}`;
     const reasoningKey = `reasoning:live-${liveOrdinal}`;
+    const group = { userKey, reasoningKey, assistantKey, userSuperseded: false };
+    pendingTurns.push(group);
     let assistantText = "";
     let reasoningText = "";
+    let turnErrored = false;
+    turnOpen = true;
     return seam.turn(prompt, {
       onThinkingDelta: (delta) => {
         reasoningText += delta;
@@ -19484,10 +19546,15 @@ function createSeamRows(seam, sessionID, options) {
       },
       onApprove: options?.onApprove ?? approveThrough,
       onError: (message) => {
+        turnErrored = true;
         upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true });
       }
+    }).finally(() => {
+      turnOpen = false;
     }).then(() => {
       const finalize = (key, kind, text) => {
+        if (kind === "assistant" && turnErrored)
+          return;
         const existing = rows.find((row) => row.key === key);
         if (existing && existing.kind === kind)
           upsert({ ...existing, text, final: true });
@@ -19500,6 +19567,31 @@ function createSeamRows(seam, sessionID, options) {
             row.status = "done";
         }
       }));
+      if (turnErrored)
+        return;
+      const id = sessionID();
+      return seam.storedTranscript(id).then((stored) => {
+        const nowId = sessionID();
+        if (turnOpen || nowId !== id && nowId !== "")
+          return;
+        const durable = [...stored].reverse().find((row) => row.kind === "assistant" && row.text.trim());
+        if (!durable)
+          return;
+        const live = rows.find((row) => row.key === assistantKey);
+        setRows(produce3((draft) => {
+          for (let i = draft.length - 1;i >= 0; i--) {
+            if (draft[i].key === reasoningKey)
+              draft.splice(i, 1);
+          }
+          if (durable && live && live.kind === "assistant" && live.text !== durable.text) {
+            const index = draft.findIndex((row) => row.key === assistantKey);
+            if (index !== -1)
+              Object.assign(draft[index], { text: durable.text, final: true });
+          }
+        }));
+      }).catch(() => {
+        return;
+      });
     });
   }
   return { rows, hydrated, load, hydrate, apply, send };
@@ -22605,7 +22697,7 @@ class SlashPaletteController {
       return;
     }
     const count = filterCommands(commands, next).length;
-    this.#rows[1](Math.min(MAX_ROWS, Math.max(1, count)));
+    this.#rows[1](Math.min(MAX_ROWS, count));
     this.#selected[1]((current) => Math.min(current, Math.max(0, count - 1)));
   }
   filtered(commands) {
@@ -23244,33 +23336,44 @@ function V2SessionPage(props) {
     height: "100%",
     backgroundColor: "black",
     get children() {
-      return [createComponent2(Transcript, {
-        seam,
-        projection,
-        get children() {
-          return createComponent2(SessionComposer, {
-            seam,
-            send,
-            onBusyChange: setComposerBusy,
-            ref: (r) => composerRef = r,
-            slashKeyFilter: slash.slashKeyFilter,
-            slashSync: (buffer) => slash.controller.sync(buffer, slash.commands),
-            interceptSubmit: slash.interceptSubmit,
-            slashPalette: () => createComponent2(SlashPalette, {
-              controller: slash.controller,
-              commands: slash.commands
-            }),
-            slashHeight: () => slash.controller.rows()
-          });
-        }
-      }), createComponent2(StatusBar, {
-        phase: busy() ? "stream" : null,
-        elapsed
-      }), createComponent2(PowerlineFooter, {
-        left: segments(),
-        right: clock(now()),
-        theme
-      }), overlayHost];
+      return [
+        createComponent2(Transcript, {
+          seam,
+          projection,
+          get children() {
+            return createComponent2(SessionComposer, {
+              seam,
+              send,
+              onBusyChange: setComposerBusy,
+              ref: (r) => composerRef = r,
+              slashKeyFilter: slash.slashKeyFilter,
+              slashSync: (buffer) => slash.controller.sync(buffer, slash.commands),
+              interceptSubmit: slash.interceptSubmit,
+              slashPalette: () => createComponent2(SlashPalette, {
+                controller: slash.controller,
+                commands: slash.commands
+              }),
+              slashHeight: () => slash.controller.rows()
+            });
+          }
+        }),
+        createComponent2(StatusBar, {
+          get phase() {
+            return busy() ? "stream" : null;
+          },
+          elapsed
+        }),
+        createComponent2(PowerlineFooter, {
+          get left() {
+            return segments();
+          },
+          get right() {
+            return clock(now());
+          },
+          theme
+        }),
+        overlayHost
+      ];
     }
   });
   return root;

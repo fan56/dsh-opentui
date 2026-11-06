@@ -71,7 +71,10 @@ export class SlashPaletteController {
 			return
 		}
 		const count = filterCommands(commands, next).length
-		this.#rows[1](Math.min(MAX_ROWS, Math.max(1, count)))
+		// Zero matches = closed (batch V5): the old max(1, count) floor left a
+		// 1-row box open with no rows in it ("/zz" painted an empty strip);
+		// Enter on such a line resolves through dispatchLine's unknown row.
+		this.#rows[1](Math.min(MAX_ROWS, count))
 		this.#selected[1]((current) => Math.min(current, Math.max(0, count - 1)))
 	}
 
