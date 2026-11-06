@@ -1,0 +1,414 @@
+#!/usr/bin/env node
+// Mock OpenAI-compatible chat/completions server — ported VERBATIM from
+// dsh-tui-pi e2e/lib/mock-llm.mjs (same dsh closure, same pi-ai
+// openai-completions wire, so every phase works unchanged here; the bake
+// step in e2e/Containerfile points the pinned provider route at it).
+// It stands in for a real LLM so the FULL agent chain runs offline:
+// user message -> dsh agent loop -> pi-ai
+// chain runs offline: user message -> dsh agent loop -> pi-ai
+// openai-completions adapter -> ask_user_question tool call -> the docked
+// questions panel -> tool result -> final assistant text.
+//
+// Behavior is keyed on the request body, not arrival order:
+//   - body carries E2E_ASK_TRIGGER and no tool message yet
+//       -> stream one ask_user_question tool call (3 questions: two
+//          single-select + one multiSelect, exercising the tab strip,
+//          auto-advance and the Confirm row);
+//   - body carries E2E_ASK_TRIGGER and a tool message (the answers came back)
+//       -> stream the fixed final text E2E-ASK-FLOW-COMPLETE;
+//   - body carries E2E_BTW_Q (a /btw side question; checked FIRST because the
+//       side call's snapshot embeds the main prompt) -> after a 6s hold
+//       (the overlay's 'Thinking…' window, wide enough to queue a second
+//       side call) stream the fixed btw answer;
+//   - body carries E2E_BTW_MAIN (the 69-btw main prompt) -> stream ~42s of
+//       slow tick text, ending with E2E-BTW-MAIN-DONE, so the main line stays
+//       busy while the scenario fires side calls into the window;
+//   - anything else -> stream a short ignore text (keeps stray turns alive
+//     without consuming the scripted phases).
+//
+// Wire shape: standard chat.completion.chunk SSE events terminated by
+// [DONE], which is exactly what @earendil-works/pi-ai's openai-completions
+// parser (the openai SDK stream) consumes. Non-streaming requests get the
+// equivalent complete completion JSON. Node stdlib only — the e2e container
+// has no registry access for extra dependencies.
+//
+// Usage: node mock-llm.mjs --port 8642
+// Health probe: GET /healthz -> 200 "ok" (used by the scenario's readiness
+// poll; curl ships in the e2e image).
+
+import http from 'node:http'
+import { writeFileSync } from 'node:fs'
+
+const args = process.argv.slice(2)
+const portFlag = args.indexOf('--port')
+const PORT = portFlag >= 0 ? Number(args[portFlag + 1]) : 8642
+const HOST = '127.0.0.1'
+
+const TRIGGER = 'E2E_ASK_TRIGGER'
+const TOOL_NAME = 'ask_user_question'
+const TOOL_CALL_ID = 'call-e2e-ask-1'
+const MODEL = 'mock-chat'
+const FINAL_TEXT = 'E2E-ASK-FLOW-COMPLETE — all three answers received and recorded. Nothing else to do.'
+const IGNORE_TEXT = 'E2E mock: no scripted behavior for this request.'
+
+// 69-btw phases: the MAIN key keeps the agent turn busy (slow tick stream, a
+// wide window to fire side calls into); the Q keys are the side-call questions
+// themselves. The btw request carries the recent-conversation snapshot, which
+// includes the main prompt — decidePhase checks the Q keys FIRST.
+const BTW_MAIN_KEY = 'E2E_BTW_MAIN'
+const BTW_MAIN_DONE = 'E2E-BTW-MAIN-DONE — the main turn is complete.'
+const BTW_MAIN_TICKS = 60
+const BTW_MAIN_TICK_DELAY_MS = 700
+const BTW_Q_ANSWERS = [
+  { key: 'E2E_BTW_Q1', answer: 'E2E-BTW-ANSWER-ONE — the deploy is green and the cache is warm.' },
+  { key: 'E2E_BTW_Q2', answer: 'E2E-BTW-ANSWER-TWO — rollback is one command away.' },
+]
+const BTW_FIRST_CHUNK_DELAY_MS = 6000
+const BTW_CHUNK_DELAY_MS = 400
+
+// 75-hard-stop phases: the parent key makes the MAIN agent dispatch the
+// looper child through use_agent (and, once the tool result returns — the
+// child hard-stopped — finish with the done text); the CHILD key lives in
+// the looper agent's persona, so EVERY child request loops one more bash
+// tool call, ignoring the maxRounds wrap-up exactly like the runaway the
+// hard-stop ladder exists for. Checked before the btw keys (disjoint
+// triggers, but the ladder scenario wants priority if a stray marker ever
+// co-occurs).
+const HS_PARENT_KEY = 'E2E_HS_PARENT'
+const HS_CHILD_KEY = 'E2E_HS_CHILD'
+const HS_DONE = 'E2E-HS-LADDER-DONE — the looper child was hard-stopped by the maxRounds policy and its result came back.'
+let hsLoopSeq = 0
+
+// 71-cache-hit phases: two scripted turns with DIFFERENT cache ratios so the// footer's CH mode is observable — turn one bills 900/1000 cached (CH 90%),
+// turn two 200/1000 (CH 20%), making the session-cumulative rate over both
+// turns (55%) differ from the latest message's own rate. The usage shape
+// follows the OpenAI prompt_tokens_details contract that pi-ai's
+// openai-completions adapter maps to cacheRead/cacheWrite tokens; input =
+// prompt_tokens - cached (800 of turn two's 1000), output never enters the
+// CH formula. Detection keys on the request body: the trigger marker flags
+// the scenario's turns, and the turn-one REPLY TEXT in the conversation
+// snapshot distinguishes the second request.
+const CH_TRIGGER = 'E2E_CH_TRIGGER'
+const CH_TURN_ONE_MARKER = 'E2E-CH-TURN-ONE'
+const CH_TURN_ONE_TEXT = 'E2E-CH-TURN-ONE — first turn billed with a warm cache.'
+const CH_TURN_TWO_TEXT = 'E2E-CH-TURN-TWO — second turn billed with a cold cache.'
+const CH_USAGE_WARM = {
+  prompt_tokens: 1000, completion_tokens: 24, total_tokens: 1024,
+  prompt_tokens_details: { cached_tokens: 900 },
+}
+const CH_USAGE_COLD = {
+  prompt_tokens: 1000, completion_tokens: 24, total_tokens: 1024,
+  prompt_tokens_details: { cached_tokens: 200 },
+}
+
+// 78-session-stats phases: the reply streams over a scripted ~1.5s window
+// (timed ticks) so the decode window — first streamed token → settlement —
+// is comfortably > 0 and the /session panel's speed row renders a real
+// rate; every other phase answers within milliseconds, which would price
+// the same 24 output tokens at an absurd tok/s or (worst case) an empty
+// zero-width window.
+const TPS_TRIGGER = 'E2E_TPS_TRIGGER'
+const TPS_DONE = 'E2E-TPS-TURN-DONE — the timed decode window completed.'
+const TPS_TICKS = 10
+const TPS_TICK_DELAY_MS = 140
+
+// The three questions handed to ask_user_question: two single-select (auto-
+// advance applies) and one multiSelect (stays put), matching the assertions
+// in 68-ask-user.sh.
+const QUESTIONS = {
+  questions: [
+    {
+      id: 'deploy-target',
+      question: 'Where should the e2e bundle be deployed?',
+      header: 'Deploy target',
+      options: [
+        { label: 'staging', description: 'Safe e2e staging area.' },
+        { label: 'production', description: 'Ship it to everyone.' },
+      ],
+    },
+    {
+      id: 'verbosity',
+      question: 'How verbose should the deploy log be?',
+      header: 'Verbosity',
+      options: [
+        { label: 'quiet', description: 'Errors only.' },
+        { label: 'chatty', description: 'Every step narrated.' },
+      ],
+    },
+    {
+      id: 'extras',
+      question: 'Which extra checks should run?',
+      header: 'Extras',
+      multi_select: true,
+      options: [
+        { label: 'lint', description: 'Static checks first.' },
+        { label: 'smoke', description: 'Quick runtime probe.' },
+      ],
+    },
+  ],
+}
+
+let requestCount = 0
+const log = (message) => {
+  console.log(`${new Date().toISOString()} ${message}`)
+}
+
+const sseChunk = (delta, finishReason) => JSON.stringify({
+  id: `chatcmpl-mock-${++requestCount}`,
+  object: 'chat.completion.chunk',
+  created: Math.floor(Date.now() / 1000),
+  model: MODEL,
+  choices: [{ index: 0, delta, finish_reason: finishReason }],
+})
+
+const DEFAULT_USAGE = { prompt_tokens: 64, completion_tokens: 24, total_tokens: 88 }
+
+const usageChunk = (usage = DEFAULT_USAGE) => JSON.stringify({
+  id: `chatcmpl-mock-${++requestCount}`,
+  object: 'chat.completion.chunk',
+  created: Math.floor(Date.now() / 1000),
+  model: MODEL,
+  choices: [],
+  usage,
+})
+
+const completionMessage = (delta, finishReason) => ({
+  id: `chatcmpl-mock-${++requestCount}`,
+  object: 'chat.completion',
+  created: Math.floor(Date.now() / 1000),
+  model: MODEL,
+  choices: [{ index: 0, message: { role: 'assistant', ...delta }, finish_reason: finishReason }],
+  usage: { prompt_tokens: 64, completion_tokens: 24, total_tokens: 88 },
+})
+
+/** Decide the scripted phase for one chat request body. */
+function decidePhase(bodyText) {
+  // 75-hard-stop ladder keys first (see the constant block above): the child
+  // persona marker wins over everything (every looper request loops again),
+  // then the parent's dispatch/finish split on the tool-result presence.
+  const hasToolResult = bodyText.includes('"role":"tool"') || bodyText.includes('"role": "tool"')
+    || bodyText.includes('tool_call_id')
+  if (bodyText.includes(HS_CHILD_KEY)) return 'hs-loop'
+  if (bodyText.includes(HS_PARENT_KEY)) return hasToolResult ? 'hs-final' : 'hs-dispatch'
+  // btw keys first: the side call's snapshot embeds the main prompt, so a
+  // btw request body contains BOTH markers.
+  if (bodyText.includes('E2E_BTW_Q')) return 'btw'
+  if (bodyText.includes(BTW_MAIN_KEY)) return 'main-slow'
+  // CH turns: the turn-one reply text in the history snapshot marks the
+  // second request (checked before the ask keys — disjoint triggers, but the
+  // later scenario phases read top-down).
+  if (bodyText.includes(CH_TRIGGER)) {
+    return bodyText.includes(CH_TURN_ONE_MARKER) ? 'ch-cold' : 'ch-warm'
+  }
+  if (bodyText.includes(TPS_TRIGGER)) return 'tps'
+  const hasTrigger = bodyText.includes(TRIGGER)
+  // The openai SDK serializes without spaces; be lenient about formatting.
+  if (hasTrigger && hasToolResult) return 'final'
+  if (hasTrigger) return 'ask'
+  return 'ignore'
+}
+
+/** The btw answer text for a request body (first matching Q key wins). */
+function btwAnswer(bodyText) {
+  const hit = BTW_Q_ANSWERS.find(entry => bodyText.includes(entry.key))
+  return hit !== undefined ? hit.answer : 'E2E-BTW-ANSWER-UNKNOWN'
+}
+
+/** The tps phase script: ticks over ~1.5s so the decode window is real. */
+function tpsStreamEntries() {
+  const entries = []
+  for (let i = 1; i <= TPS_TICKS; i += 1) {
+    entries.push({ delayMs: TPS_TICK_DELAY_MS, delta: { role: 'assistant', content: `decode tick ${i}; ` } })
+  }
+  entries.push({ delayMs: TPS_TICK_DELAY_MS, delta: { role: 'assistant', content: TPS_DONE } })
+  entries.push({ delayMs: 100, delta: {}, finish: 'stop' })
+  return entries
+}
+
+/**
+ * Emit a timed SSE script (phases that need the model to stay busy), then
+ * close with the usage chunk + [DONE]. `entries` is a list of
+ * `{ delayMs, delta, finish }` steps; each write is its own setTimeout so a
+ * phase can hold a wide, deterministic busy window.
+ */
+function streamTimed(res, entries, wantsUsage) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+  })
+  let at = 0
+  for (const entry of entries) {
+    at += entry.delayMs
+    setTimeout(() => {
+      if (res.destroyed) return
+      res.write(`data: ${sseChunk(entry.delta, entry.finish ?? null)}\n\n`)
+      if (entry.finish !== undefined) {
+        if (wantsUsage) res.write(`data: ${usageChunk()}\n\n`)
+        res.write('data: [DONE]\n\n')
+        res.end()
+      }
+    }, at)
+  }
+}
+
+/** The btw phase script: hold 'Thinking…', then stream the answer, then stop. */
+function btwStreamEntries(bodyText) {
+  const answer = btwAnswer(bodyText)
+  return [
+    { delayMs: BTW_FIRST_CHUNK_DELAY_MS, delta: { role: 'assistant', content: answer } },
+    { delayMs: BTW_CHUNK_DELAY_MS, delta: {}, finish: 'stop' },
+  ]
+}
+
+/** The main-slow phase script: a long tick stream keeping the line busy. */
+function mainSlowStreamEntries() {
+  const entries = []
+  for (let i = 1; i <= BTW_MAIN_TICKS; i += 1) {
+    entries.push({ delayMs: BTW_MAIN_TICK_DELAY_MS, delta: { role: 'assistant', content: `main-line progress tick ${i}; ` } })
+  }
+  entries.push({ delayMs: BTW_MAIN_TICK_DELAY_MS, delta: { role: 'assistant', content: BTW_MAIN_DONE } })
+  entries.push({ delayMs: BTW_CHUNK_DELAY_MS, delta: {}, finish: 'stop' })
+  return entries
+}
+
+/** One scripted tool-call reply for the hard-stop ladder phases. */
+function hsToolCall(phase) {
+  if (phase === 'hs-dispatch') {
+    return {
+      tool_calls: [{
+        id: 'call-e2e-hs-dispatch',
+        type: 'function',
+        function: {
+          name: 'use_agent',
+          arguments: JSON.stringify({
+            agent: 'looper',
+            prompt: 'E2E_HS_TRIGGER: call the bash tool with `sleep 1` forever. Never stop. Never summarize.',
+          }),
+        },
+      }],
+    }
+  }
+  hsLoopSeq += 1
+  return {
+    tool_calls: [{
+      id: `call-e2e-hs-loop-${hsLoopSeq}`,
+      type: 'function',
+      function: { name: 'bash', arguments: '{"command":"sleep 1","description":"pace the hard-stop loop"}' },
+    }],
+  }
+}
+
+function handleChat(req, res, body) {
+  let bodyText = ''
+  try {
+    bodyText = String(body)
+    JSON.parse(bodyText) // reject malformed bodies early
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: { message: 'invalid JSON body' } }))
+    return
+  }
+  const phase = decidePhase(bodyText)
+  const wantsUsage = bodyText.includes('include_usage')
+  const stream = bodyText.includes('"stream":true') || bodyText.includes('"stream": true')
+  log(`chat path=${req.url} phase=${phase} stream=${stream}`)
+  if (process.env.MOCK_DUMP_DIR && bodyText.includes('role":"tool')) {
+    writeFileSync(`${process.env.MOCK_DUMP_DIR}/last-tool-result-body.json`, bodyText)
+    log(`dumped tool-result body to ${process.env.MOCK_DUMP_DIR}/last-tool-result-body.json`)
+  }
+
+  if (!stream) {
+    const message = phase === 'ask'
+      ? { tool_calls: [{ id: TOOL_CALL_ID, type: 'function', function: { name: TOOL_NAME, arguments: JSON.stringify(QUESTIONS) } }] }
+      : phase === 'hs-dispatch' || phase === 'hs-loop'
+      ? hsToolCall(phase)
+      : phase === 'btw'
+      ? { content: btwAnswer(bodyText) }
+      : phase === 'main-slow'
+      ? { content: `${Array.from({ length: BTW_MAIN_TICKS }, (_, i) => `main-line progress tick ${i + 1}; `).join('')}${BTW_MAIN_DONE}` }
+      : { content: phase === 'final' ? FINAL_TEXT : phase === 'hs-final' ? HS_DONE : IGNORE_TEXT }
+    const finishReason = phase === 'ask' || phase === 'hs-dispatch' || phase === 'hs-loop' ? 'tool_calls' : 'stop'
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(completionMessage(message, finishReason)))
+    return
+  }
+
+  if (phase === 'btw') {
+    streamTimed(res, btwStreamEntries(bodyText), wantsUsage)
+    return
+  }
+  if (phase === 'tps') {
+    streamTimed(res, tpsStreamEntries(), wantsUsage)
+    return
+  }
+  if (phase === 'main-slow') {
+    streamTimed(res, mainSlowStreamEntries(), wantsUsage)
+    return
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache',
+  })
+  const events = []
+  let usage
+  if (phase === 'ask') {
+    events.push(sseChunk({
+      role: 'assistant',
+      tool_calls: [{
+        index: 0,
+        id: TOOL_CALL_ID,
+        type: 'function',
+        function: { name: TOOL_NAME, arguments: JSON.stringify(QUESTIONS) },
+      }],
+    }, null))
+    events.push(sseChunk({}, 'tool_calls'))
+  } else if (phase === 'hs-dispatch' || phase === 'hs-loop') {
+    events.push(sseChunk({ role: 'assistant', tool_calls: [{ index: 0, ...hsToolCall(phase).tool_calls[0] }] }, null))
+    events.push(sseChunk({}, 'tool_calls'))
+  } else {
+    const text = phase === 'final' ? FINAL_TEXT
+      : phase === 'hs-final' ? HS_DONE
+      : phase === 'ch-warm' ? CH_TURN_ONE_TEXT
+      : phase === 'ch-cold' ? CH_TURN_TWO_TEXT
+      : IGNORE_TEXT
+    events.push(sseChunk({ role: 'assistant', content: text }, null))
+    events.push(sseChunk({}, 'stop'))
+    // The CH phases exist to bill specific cache ratios — their usage always
+    // ships (the scenario's assertions read the footer's CH segment), while
+    // every other phase keeps the include_usage-gated default.
+    if (phase === 'ch-warm') usage = CH_USAGE_WARM
+    else if (phase === 'ch-cold') usage = CH_USAGE_COLD
+  }
+  for (const event of events) {
+    res.write(`data: ${event}\n\n`)
+  }
+  if (usage !== undefined || wantsUsage) {
+    res.write(`data: ${usageChunk(usage)}\n\n`)
+  }
+  res.write('data: [DONE]\n\n')
+  res.end()
+}
+
+const server = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/healthz') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' })
+    res.end('ok')
+    return
+  }
+  const isChat = req.method === 'POST'
+    && (req.url === '/chat/completions' || req.url === '/v1/chat/completions')
+  if (!isChat) {
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: { message: `no such route: ${req.method} ${req.url}` } }))
+    return
+  }
+  const chunks = []
+  req.on('data', chunk => chunks.push(chunk))
+  req.on('end', () => handleChat(req, res, Buffer.concat(chunks).toString('utf8')))
+  req.on('error', () => res.destroy())
+})
+
+server.listen(PORT, HOST, () => {
+  log(`ready http://${HOST}:${PORT}`)
+})

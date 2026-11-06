@@ -82,13 +82,18 @@ for _ in $(seq 1 4); do send BSpace; sleep 0.3; done
 # --- editor survives the palette open/close/filter cycles --------------------
 ensure_editor_ready 'editor survives the palette open/close/filter cycles'
 
-# --- /model: the in-container empty-catalog feedback row ---------------------
+# --- /model: the baked mock route makes the catalog non-empty ----------------
+# Since the mock-endpoint bake (e2e/lib/bake-mock-endpoint.mjs) the pinned
+# provider route describes glm-5.3-flash and the credential env carries the
+# baked placeholder key, so /model now surfaces the real catalog listing the
+# pinned model (pre-bake this build reported 'no models in the catalog' —
+# kept as a hard not-contains guard below).
 ensure_editor_ready 'editor focused before /model' || true
 send '/model' Enter
-wait_pane_fixed '/model reports the empty catalog (no picker)' 15 \
-  'no models in the catalog' \
-  && assert_not_contains 'no model picker overlay opened' \
-    'Select model' "$(capture)"
+wait_pane_fixed '/model surfaces the baked catalog (pinned model listed)' 15 \
+  "$MARKER_MODEL_SEG" \
+  && assert_not_contains 'the empty-catalog feedback row is gone' \
+    'no models in the catalog' "$(capture)"
 ensure_editor_ready 'editor usable after /model'
 
 # --- unknown command: the harmless error row ----------------------------------

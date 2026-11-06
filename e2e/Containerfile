@@ -97,6 +97,19 @@ RUN TARBALL="$(ls /dist/aiwayds-dsh-opentui-*.tgz)" \
       --dep "file:${TARBALL}" \
  && ls -la /root/.dsh/profiles/dsh-opentui/
 
+# Bake the mock-LLM endpoint into the profile: the pinned provider route
+# (zai-coding-cn/glm-5.3-flash — ids unchanged so the suite's footer markers
+# hold) gets baseURL http://127.0.0.1:8642/v1, served by e2e/lib/mock-llm.mjs
+# (started per scenario). The key env only ever carries the placeholder below
+# — no real provider credential ships in this image, and the mock keys its
+# phases on the request body, never on auth. Structured YAML edit via the
+# global dsh closure's yaml module (no registry access at build time).
+ENV ZAI_CODING_CN_API_KEY=sk-mock-e2e-placeholder \
+    MOCK_BASE_URL=http://127.0.0.1:8642/v1
+COPY e2e/lib/bake-mock-endpoint.mjs /tmp/bake-mock-endpoint.mjs
+RUN NODE_OPTIONS= node /tmp/bake-mock-endpoint.mjs \
+ && grep -n "baseURL" /root/.dsh/profiles/dsh-opentui/cordis.patch.yml
+
 # The scenario suite is bind-mounted at /e2e by e2e/run-e2e.sh so test logic
 # can iterate without an image rebuild.
 CMD ["bash", "/e2e/scenarios/run-all.sh"]
