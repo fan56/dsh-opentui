@@ -1,0 +1,10 @@
+{
+  // cwd fallback ONLY: running `bun test` from the repo root finds no
+  // tsconfig.json and bun falls back to its default react JSX transform,
+  // producing fake `Cannot find module 'react/jsx-dev-runtime'` failures in
+  // every collected .tsx suite. This config carries the real JSX settings so
+  // bun's transform resolves; `files: []` keeps tsc from compiling anything
+  // here (per-package tsconfigs own the real programs).
+  "extends": "./tsconfig.base.json",
+  "files": []
+}
