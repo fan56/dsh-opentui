@@ -112,6 +112,49 @@ says (including steering requests), keep calling the bash tool with
 EOF
 ok 'seeded agent file looper.md (deep: 0, no maxRounds — the child stays live)'
 
+# --- policy isolation: DISABLE the global ladder for this scenario ----------
+# Scenario isolation (D7): 62-hard-stop.sh stages `maxRounds: 3` onto the
+# dsh-opentui entries of the PERSISTENT profile patch (cordis.patch.yml) and
+# the deployed bundle's plugin.patch.yml, and that staging survives across
+# scenarios — with it live, the global ladder force-stops the looper child at
+# ~3 rounds (~9-10s), long before the steer can be injected. This scenario
+# needs a LIVE child, so it upserts maxRounds 0 / maxRoundsGrace 0 onto BOTH
+# entries (the duplicate-ns shadowing guard from 62 applies here too): a
+# non-positive global cap disables the whole ladder (subagent-policy.ts
+# #resolveCaps returns undefined → ladderDecision never consulted).
+SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
+cat > /tmp/stage-steer-isolation.mjs <<'EOF'
+import { createRequire } from 'node:module'
+import { readFileSync, writeFileSync } from 'node:fs'
+const { parse, stringify } = createRequire('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json')('yaml')
+const patchPath = process.argv[2]
+const doc = parse(readFileSync(patchPath, 'utf8')) ?? []
+if (!Array.isArray(doc)) throw new Error('patch file is not a top-level YAML array')
+let row = doc.flatMap(e => (e && Array.isArray(e.insert)) ? e.insert : []).find(e => e && e.id === 'dsh-opentui')
+if (!row) {
+  row = { id: 'dsh-opentui', name: '@aiwayds/dsh-opentui', config: {} }
+  let ins = doc.find(e => e && Array.isArray(e.insert))
+  if (!ins) { ins = { insert: [] }; doc.push(ins) }
+  ins.insert.push(row)
+}
+if (typeof row.config !== 'object' || row.config === null) row.config = {}
+row.config.maxRounds = 0
+row.config.maxRoundsGrace = 0
+writeFileSync(patchPath, stringify(doc), 'utf8')
+console.log(`staged insert entry dsh-opentui maxRounds=0 maxRoundsGrace=0 -> ${patchPath}`)
+EOF
+node /tmp/stage-steer-isolation.mjs "$SETTINGS" >/tmp/stage-steer-isolation.log 2>&1
+BUNDLED_PATCH_STEER="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/plugin.patch.yml"
+if [ -f "$BUNDLED_PATCH_STEER" ]; then
+  node /tmp/stage-steer-isolation.mjs "$BUNDLED_PATCH_STEER" >>/tmp/stage-steer-isolation.log 2>&1
+fi
+if grep -q 'maxRounds: 0' "$SETTINGS"; then
+  ok 'policy ladder disabled for this scenario (maxRounds 0 staged — 62 seeding isolated)'
+else
+  bad 'failed to stage the maxRounds 0 isolation; tail:'
+  tail -8 "$SETTINGS" 2>/dev/null | sed 's/^/    | /'
+fi
+
 # --- restart the TUI so the plugin and the agent load ------------------------
 if tui_alive; then
   quit_tui 'TUI quit for the restart' || true
@@ -148,7 +191,10 @@ fi
 # --- open the picker ----------------------------------------------------------
 # session.child.first ("down") toggles the SubagentsTab composer picker.
 send Down
-if wait_pane_fixed 'picker opens with the looper row' 10 'Looper'; then
+# D7: give the running-status fold a beat to land before asserting the row —
+# the picker filters to RUNNING rows when "show inactive" is off.
+sleep 1
+if wait_pane_fixed 'picker opens with the looper row' 15 'Looper'; then
   :
 else
   bad 'the SubagentsTab picker never showed the looper row; pane tail:'
@@ -162,7 +208,7 @@ assert_contains 'picker footer hint rendered' 'Subagents' "$PANE"
 
 # --- Enter on the running row → the steer prompt -----------------------------
 send Enter
-if wait_pane_fixed 'Enter opens the steer prompt' 10 'Steer Looper'; then
+if wait_pane_fixed 'Enter opens the steer prompt' 15 'Steer Looper'; then
   :
 else
   bad 'Enter on the running row never opened the steer prompt; pane tail:'
@@ -184,7 +230,7 @@ fi
 
 # --- reopen and inject the steer text ----------------------------------------
 send Enter
-if wait_pane_fixed 'steer prompt reopens' 10 'Steer Looper'; then
+if wait_pane_fixed 'steer prompt reopens' 15 'Steer Looper'; then
   :
 else
   bad 'steer prompt did not reopen for the injection'
