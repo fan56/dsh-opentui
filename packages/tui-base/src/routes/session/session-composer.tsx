@@ -107,6 +107,17 @@ export function SessionComposer(props: SessionComposerProps) {
 	let disposed = false
 	onCleanup(() => (disposed = true))
 
+	// Subagent marker face (batch F6): subscribe for this component's
+	// lifetime so the seam adapter keeps folding the live subagent snapshot
+	// (with the maxRounds `⚡ injected` / `⏻ hard-stopped @N` markers) into
+	// the module store the vendored SubagentsTab picker reads. Both entry
+	// faces pass the real seam here, so one subscription feeds both; the
+	// listener body is a deliberate no-op — the adapter's fold into
+	// subagent-markers.ts IS the reactive write.
+	if (props.seam.onSubagentViews) {
+		onCleanup(props.seam.onSubagentViews(() => {}))
+	}
+
 	const controller = new ComposerController({
 		send: (text) => props.send(text),
 		steer: (text) => props.seam.steer(text),

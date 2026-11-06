@@ -145,6 +145,13 @@ export interface SubagentRoundPolicyOptions {
 	forceStop(childId: string): boolean
 	/** Hard-stop report sink (viewer marker fold). */
 	onHardStop?(record: HardStopRecord): void
+	/** Observation hook (batch F6): the wrap-up message was delivered to the
+	 * child (`⚡ injected` marker). Fires with the round count at delivery. */
+	onWrapUp?(childId: string, round: number): void
+	/** Observation hook (batch F6): the force-stop executed (`⏻` marker).
+	 * Fires with the round count at the stop; same firing point as
+	 * onHardStop (which additionally carries cap/grace). */
+	onForceStop?(childId: string, round: number): void
 }
 
 /** Per-child caps frozen at the first ladder crossing (the stage-2 cap must
@@ -215,6 +222,12 @@ export class SubagentRoundPolicy {
 				if (!delivered) return // stays eligible; next round retries
 				this.#injected.add(childId)
 				if (rememberedLabel !== undefined) this.#injectedLabel.set(childId, rememberedLabel)
+				// F6 marker: the injection landed — observers fold `⚡`.
+				try {
+					this.#options.onWrapUp?.(childId, count)
+				} catch {
+					// An observation failure must not touch delivery.
+				}
 			})
 			return
 		}
@@ -232,6 +245,12 @@ export class SubagentRoundPolicy {
 				this.#options.onHardStop?.({ childId, round: count, cap: caps.cap, grace: caps.grace })
 			} catch {
 				// A reporting failure must not touch the stop itself.
+			}
+			// F6 marker: observers fold `⏻ hard-stopped @N`.
+			try {
+				this.#options.onForceStop?.(childId, count)
+			} catch {
+				// Same containment as onHardStop.
 			}
 		}
 	}

@@ -976,7 +976,7 @@ export class HostSession {
   /** Live view per adopted child session (tui-pi AgentView, minimal). */
   #children = new Map<
     string,
-    { label: string; model?: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; tokens?: number; startedAt: number; lastLine?: string }
+    { label: string; model?: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; tokens?: number; startedAt: number; lastLine?: string; injectedRound?: number; hardStopRound?: number }
   >()
   /** tool-workflow/agent-start ↔ agent-end pairing (runId:seq → child). */
   #runSeqToChild = new Map<string, string>()
@@ -1011,6 +1011,20 @@ export class HostSession {
         wrapup: (childId, message) => this.steerChild(childId, message),
         forceStop: (childId) => this.cancelChild(childId),
         onHardStop: (record) => this.#onHardStop(record),
+        // F6 marker folds: latch the round counts onto the child's view so
+        // the picker/viewer markers survive past the console.info line.
+        onWrapUp: (childId, round) => {
+          const existing = this.#children.get(childId)
+          if (!existing) return
+          this.#children.set(childId, { ...existing, injectedRound: round })
+          this.#emitChildren()
+        },
+        onForceStop: (childId, round) => {
+          const existing = this.#children.get(childId)
+          if (!existing) return
+          this.#children.set(childId, { ...existing, hardStopRound: round })
+          this.#emitChildren()
+        },
       })
       this.#refreshRoundLimits()
     }
@@ -1054,8 +1068,8 @@ export class HostSession {
     return true
   }
 
-  /** Hard-stop report (console surface — the viewer marker fold lands with
-   * the subagent viewer's next batch). */
+  /** Hard-stop report (console surface; the `⏻` viewer marker folds through
+   * the policy's onForceStop hook — batch F6). */
   #onHardStop(record: { childId: string; round: number; cap: number; grace: number }): void {
     console.info(
       `[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`,
@@ -1065,6 +1079,29 @@ export class HostSession {
   /** Child transcript lines (viewer; capped buffer, oldest dropped). */
   childTranscript(id: string): string[] {
     return [...(this.#childLogs.get(id) ?? [])]
+  }
+
+  // ---- subagent marker face (batch F6: seam → view) ----
+  /** Snapshot the live subagent rows (SeamSubagentView slice). */
+  subagentViews(): { id: string; label: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; injectedRound?: number; hardStopRound?: number }[] {
+    return [...this.#children.entries()].map(([id, v]) => ({
+      id,
+      label: v.label,
+      status: v.status,
+      rounds: v.rounds,
+      ...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
+      ...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
+    }))
+  }
+
+  /** Push listener registry (the seam adapter forwards this 1:1); fires the
+   * FULL snapshot on every fold — replay the current snapshot immediately so
+   * a late subscriber (a picker opened after the run started) paints now. */
+  #subagentListeners = new Set<(views: ReturnType<HostSession["subagentViews"]>) => void>()
+  onSubagentViews(listener: (views: ReturnType<HostSession["subagentViews"]>) => void): () => void {
+    this.#subagentListeners.add(listener)
+    listener(this.subagentViews())
+    return () => this.#subagentListeners.delete(listener)
   }
 
   /** Steer a RUNNING child session (its live agent captured from the
@@ -1173,6 +1210,15 @@ export class HostSession {
 
   /** Snapshot the child views to the UI (elapsed computed at read time). */
   #emitChildren(): void {
+    // F6 marker face: fan the snapshot out to seam subscribers too (the
+    // TurnCallbacks surface stays untouched — it may be absent between turns).
+    for (const listener of this.#subagentListeners) {
+      try {
+        listener(this.subagentViews())
+      } catch {
+        /* a UI listener must never take the firehose down */
+      }
+    }
     const cb = this.#cb
     if (!cb?.onSubagentUpdate) return
     const clamp = (v: string | undefined) => (v && v.length > 240 ? v.slice(-240) : v)
@@ -1186,6 +1232,8 @@ export class HostSession {
         ...(v.tokens !== undefined ? { tokens: v.tokens } : {}),
         elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
         ...(v.lastLine ? { lastLine: clamp(v.lastLine) } : {}),
+        ...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
+        ...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
       })),
     )
   }

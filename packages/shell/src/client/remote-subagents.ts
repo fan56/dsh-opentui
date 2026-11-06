@@ -53,6 +53,10 @@ export interface RemoteSubagentView {
 	tokens?: number
 	elapsed: number
 	lastLine?: string
+	/** maxRounds wrap-up delivered at this round (F6 `⚡ injected` marker). */
+	injectedRound?: number
+	/** maxRounds force-stop fired at this round (F6 `⏻ hard-stopped @N`). */
+	hardStopRound?: number
 }
 
 /** Child steerable-mode facts from the durable `subagent/descriptor`. */
@@ -96,6 +100,9 @@ interface ChildState {
 	lastLine?: string
 	descriptor: RemoteChildDescriptor
 	log: string[]
+	/** F6 markers: wrap-up delivered / force-stop fired round counts. */
+	injectedRound?: number
+	hardStopRound?: number
 }
 
 export class RemoteSubagentPanel {
@@ -132,6 +139,19 @@ export class RemoteSubagentPanel {
 					return true
 				},
 				onHardStop: (record) => this.#options.onHardStop?.(record),
+				// F6 marker folds: latch the round counts onto the child's view.
+				onWrapUp: (id, round) => {
+					const child = this.#children.get(id)
+					if (!child) return
+					this.#children.set(id, { ...child, injectedRound: round })
+					this.#emit()
+				},
+				onForceStop: (id, round) => {
+					const child = this.#children.get(id)
+					if (!child) return
+					this.#children.set(id, { ...child, hardStopRound: round })
+					this.#emit()
+				},
 			})
 		}
 	}
@@ -223,6 +243,8 @@ export class RemoteSubagentPanel {
 			...(v.tokens !== undefined ? { tokens: v.tokens } : {}),
 			elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
 			...(v.lastLine ? { lastLine: clamp(v.lastLine) } : {}),
+			...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
+			...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
 		}))
 	}
 

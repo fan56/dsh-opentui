@@ -13,6 +13,7 @@ import { Keymap } from "../../../context/keymap"
 import { useComposerTab } from "./context"
 import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
 import { sessionFamily } from "../../../util/session"
+import { subagentHardStopGlyph, subagentMarkerSuffix, subagentMarkersFor } from "../subagent-markers"
 
 interface SubagentEntry {
   sessionID: string
@@ -209,6 +210,9 @@ export function SubagentsTab(props: { sessionID: string }) {
                 if (entry.status === "running") return "Running"
                 return ""
               })
+              // F6 hard-stop markers: `⏻` before the label, the viewer-grade
+              // suffix (`⚡ injected` / `⏻ hard-stopped @N`) after the status.
+              const markers = createMemo(() => subagentMarkersFor(entry.sessionID))
               return (
                 <box
                   flexDirection="row"
@@ -240,6 +244,7 @@ export function SubagentsTab(props: { sessionID: string }) {
                       wrapMode="none"
                     >
                       {entry.prefix}
+                      {markers() ? `${subagentHardStopGlyph(markers()!)}${subagentHardStopGlyph(markers()!) ? " " : ""}` : ""}
                       {entry.agent}: {entry.title}
                     </text>
                   </box>
@@ -247,6 +252,13 @@ export function SubagentsTab(props: { sessionID: string }) {
                     <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="none">
                       {status()}
                     </text>
+                  </Show>
+                  <Show when={markers()}>
+                    {(m) => (
+                      <text fg={active() ? theme.text.action.primary.focused : theme.text.muted} wrapMode="none">
+                        {subagentMarkerSuffix(m())}
+                      </text>
+                    )}
                   </Show>
                 </box>
               )
