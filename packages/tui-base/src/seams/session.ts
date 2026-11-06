@@ -262,6 +262,14 @@ export interface SessionSeam {
 	 */
 	sessionInfo?(): Promise<SeamSessionInfo | undefined>
 	/**
+	 * /plugins listing (batch F7a): the user-installed plugin rows (name +
+	 * version). The adapters already exclude @deepseek-ai/* built-ins and
+	 * resolve installed versions (hero-era HostSession.listPlugins
+	 * semantics). Optional — a seam without it degrades /plugins to a
+	 * notice.
+	 */
+	plugins?(): { name: string; version: string }[]
+	/**
 	 * Subagent marker face (batch F6): the live subagent rows snapshot, and
 	 * a push listener that fires on every fold (adoption, round, marker,
 	 * settle). The listener receives the FULL snapshot each time; the
@@ -335,6 +343,10 @@ export class NullSessionSeam implements SessionSeam {
 	}
 	/** F6 marker face stub: no subagents on the null seam. */
 	subagentViews(): SeamSubagentView[] {
+		return []
+	}
+	/** F7a plugins stub: the null seam carries no plugins. */
+	plugins(): { name: string; version: string }[] {
 		return []
 	}
 	readonly #subagentListeners: ((views: SeamSubagentView[]) => void)[] = []

@@ -55,6 +55,15 @@ export interface SlashCommandContext {
 	 * entry without the overlay host gets the "unavailable" notice.
 	 */
 	openBtw?(argText: string): void
+	/**
+	 * Theme-switch surface (batch F7a): the page's ThemeSeam slice. Optional
+	 * — an entry without it gets the "unavailable" notice.
+	 */
+	themes?: {
+		current(): string
+		list(): string[]
+		set(name: string): boolean
+	}
 }
 
 /** The batch-8 core set, bound to a context at call time (pure table). */
@@ -177,7 +186,52 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say("no active session")
 					return
 				}
-				for (const line of formatSessionInfoPanel(sessionInfoRows(info))) ctx.say(line)
+			for (const line of formatSessionInfoPanel(sessionInfoRows(info))) ctx.say(line)
+		},
+		},
+		{
+			// Feature batch F7a. Hero-era semantics: one `● name@version` row
+			// per user-installed plugin (@deepseek-ai/* built-ins already
+			// filtered by the adapters). Never busy-gated — a pure read.
+			name: "/plugins",
+			description: "list installed plugins",
+			run(ctx) {
+				if (!ctx.seam.plugins) {
+					ctx.say("/plugins unavailable in this session")
+					return
+				}
+				const plugins = ctx.seam.plugins()
+				if (plugins.length === 0) {
+					ctx.say("no plugins installed")
+					return
+				}
+				for (const plugin of plugins) ctx.say(`● ${plugin.name}@${plugin.version}`)
+			},
+		},
+		{
+			// Feature batch F7a. Bare opens the picker over the bundled theme
+			// list (the generic pickOne modal — the same shape as /model), the
+			// preselected current marked; picking applies the theme live. No
+			// argument form — the picker IS the reference surface.
+			name: "/theme",
+			description: "switch theme (opens the picker)",
+			async run(ctx) {
+				if (!ctx.themes) {
+					ctx.say("/theme unavailable in this session")
+					return
+				}
+				const current = ctx.themes.current()
+				const picked = await ctx.pickOne(
+					"Select theme",
+					ctx.themes.list().map((name) => ({
+						title: name,
+						value: name,
+						description: name === current ? "current" : undefined,
+					})),
+				)
+				if (!picked || picked === current) return
+				if (ctx.themes.set(picked)) ctx.say(`Theme: ${picked} — applied`)
+				else ctx.say(`unknown theme: ${picked}`)
 			},
 		},
 	]

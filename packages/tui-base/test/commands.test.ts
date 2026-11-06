@@ -66,7 +66,12 @@ class RecordingSeam {
 
 function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 	const lines: string[] = []
-	const hooks = { cleared: 0, reloaded: 0, quit: 0, picks: [] as { title: string; options: string[] }[] }
+	const hooks = {
+		cleared: 0,
+		reloaded: 0,
+		quit: 0,
+		picks: [] as { title: string; options: { title: string; description?: string }[] }[],
+	}
 	const ctx: SlashCommandContext & { hooks: typeof hooks; lines: string[] } = {
 		seam: seam.seam,
 		say: (text) => lines.push(text),
@@ -74,7 +79,7 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		reload: () => hooks.reloaded++,
 		quit: () => hooks.quit++,
 		pickOne: async (title, options) => {
-			hooks.picks.push({ title, options: options.map((o) => o.title) })
+			hooks.picks.push({ title, options: options.map((o) => ({ title: o.title, description: o.description })) })
 			return pickAnswer
 		},
 		hooks,
@@ -134,8 +139,11 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/clear",
 			"/btw",
 			"/session",
+			"/plugins",
+			"/theme",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
+		expect(filterCommands(commands, "/pl").map((c) => c.name)).toEqual(["/plugins"])
 		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual([])
 	})
 })
@@ -153,6 +161,8 @@ describe("core commands", () => {
 			"/clear — clear the transcript",
 			"/btw — side question (bare reopens the last answer)",
 			"/session — show session info (id, model, tokens, speed)",
+			"/plugins — list installed plugins",
+			"/theme — switch theme (opens the picker)",
 		])
 	})
 
@@ -171,7 +181,10 @@ describe("core commands", () => {
 		await coreCommands()[2]!.run(ctx, "")
 		expect(seam.calls).toContain("modelCatalog")
 		expect(ctx.hooks.picks[0]?.title).toBe("Select model")
-		expect(ctx.hooks.picks[0]?.options).toEqual(["bigmodel/glm-5.3-flash", "deepseek/v3.2"])
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "bigmodel/glm-5.3-flash", description: "current" },
+			{ title: "deepseek/v3.2" },
+		])
 		expect(seam.calls).toContain("selectModel:deepseek/v3.2")
 		expect(ctx.lines).toEqual(["model → deepseek/v3.2"])
 	})
@@ -213,7 +226,10 @@ describe("core commands", () => {
 		await coreCommands()[4]!.run(ctx, "")
 		expect(seam.calls).toEqual(["listSessions", "resumeSession:s2"])
 		expect(ctx.hooks.picks[0]?.title).toBe("Resume session")
-		expect(ctx.hooks.picks[0]?.options).toEqual(["first", "second"])
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "first", description: "2026-01-01" },
+			{ title: "second", description: undefined },
+		])
 		expect(ctx.hooks.reloaded).toBe(1)
 		expect(ctx.lines).toEqual(["resumed s2"])
 	})
@@ -262,5 +278,76 @@ describe("core commands", () => {
 		await coreCommands().find((c) => c.name === "/btw")!.run(ctx, "why?")
 		expect(opened).toEqual([])
 		expect(ctx.lines).toEqual(["/btw unavailable in this session"])
+	})
+
+	test("/plugins prints one ● name@version row per installed plugin", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		ctx.seam = { ...seam.seam, plugins: () => [
+			{ name: "dsh-tui-pi", version: "0.5.0" },
+			{ name: "dsh-jev-core", version: "1.2.3" },
+		] }
+		await coreCommands().find((c) => c.name === "/plugins")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["● dsh-tui-pi@0.5.0", "● dsh-jev-core@1.2.3"])
+	})
+
+	test("/plugins with an empty list says so (no rows)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		ctx.seam = { ...seam.seam, plugins: () => [] }
+		await coreCommands().find((c) => c.name === "/plugins")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["no plugins installed"])
+	})
+
+	test("/plugins without the seam face says unavailable", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await coreCommands().find((c) => c.name === "/plugins")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["/plugins unavailable in this session"])
+	})
+
+	test("/theme bare opens the picker over the bundled list with current marked", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "github-light")
+		const applied: string[] = []
+		ctx.themes = {
+			current: () => "opencode",
+			list: () => ["github-dark", "github-light", "opencode"],
+			set: (name) => {
+				applied.push(name)
+				return true
+			},
+		}
+		await coreCommands().find((c) => c.name === "/theme")!.run(ctx, "")
+		expect(ctx.hooks.picks[0]?.title).toBe("Select theme")
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "github-dark" },
+			{ title: "github-light" },
+			{ title: "opencode", description: "current" },
+		])
+		expect(applied).toEqual(["github-light"])
+		expect(ctx.lines).toEqual(["Theme: github-light — applied"])
+	})
+
+	test("/theme with esc or the current theme re-picked applies nothing", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, undefined)
+		const applied: string[] = []
+		ctx.themes = {
+			current: () => "opencode",
+			list: () => ["opencode"],
+			set: (name) => {
+				applied.push(name)
+				return true
+			},
+		}
+		await coreCommands().find((c) => c.name === "/theme")!.run(ctx, "")
+		expect(applied).toEqual([])
+		expect(ctx.lines).toEqual([])
+	})
+
+	test("/theme without the themes face says unavailable", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await coreCommands().find((c) => c.name === "/theme")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["/theme unavailable in this session"])
 	})
 })

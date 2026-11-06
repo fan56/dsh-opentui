@@ -177,6 +177,8 @@ export function createSlashHost(deps: {
 	pickOne: SlashCommandContext["pickOne"]
 	/** /btw overlay opener (feature batch F3); absent = /btw says unavailable. */
 	openBtw?: (argText: string) => void
+	/** Theme-switch surface (batch F7a); absent = /theme says unavailable. */
+	themes?: SlashCommandContext["themes"]
 }) {
 	const commands = deps.commands ?? coreCommands()
 	const controller = new SlashPaletteController()
@@ -188,6 +190,7 @@ export function createSlashHost(deps: {
 		quit: deps.quit,
 		pickOne: deps.pickOne,
 		...(deps.openBtw ? { openBtw: deps.openBtw } : {}),
+		...(deps.themes ? { themes: deps.themes } : {}),
 	}
 
 	function run(command: SlashCommand, argText: string): boolean {

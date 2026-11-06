@@ -181,6 +181,15 @@ export class HostSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * /plugins listing (batch F7a): HostSession.listPlugins() 1:1 — the
+	 * facade already reads the profile package.json deps, resolves installed
+	 * versions and filters @deepseek-ai/* built-ins (hero-era semantics).
+	 */
+	plugins(): { name: string; version: string }[] {
+		return this.#session.listPlugins()
+	}
+
+	/**
 	 * /session info panel (batch F4): HostSession.sessionInfo() 1:1, plus the
 	 * message count the facade can't know — a one-shot durable-transcript
 	 * read (user+assistant rows). Transcript failure degrades the count to 0

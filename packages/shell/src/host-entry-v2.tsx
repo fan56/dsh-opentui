@@ -197,6 +197,14 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
     quit: props.quit,
     pickOne,
     openBtw: (argText: string) => void openBtw(argText),
+    // /theme switch surface (batch F7a): the page's ThemeSeam, re-hiding the
+    // picker behind the generic pickOne modal. Session-scope apply — boot
+    // still reads the theme from config (props.themeName); no config write.
+    themes: {
+      current: () => themeSeam.current(),
+      list: () => themeSeam.list(),
+      set: (name: string) => themeSeam.setTheme(name),
+    },
   })
   const overlayHost = createComponent(TurnOverlayHost, {
     controller: overlays,

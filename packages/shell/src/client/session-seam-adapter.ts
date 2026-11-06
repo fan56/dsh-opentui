@@ -273,6 +273,15 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.btwAsk(question, snapshot, onDelta)
 	}
 
+	/**
+	 * /plugins listing (batch F7a): RemoteHostSession.listPlugins() 1:1 —
+	 * the sync cached rows (pluginManager/listPlugins, refreshed async;
+	 * @deepseek-ai/* built-ins excluded upstream, HostSession parity).
+	 */
+	plugins(): { name: string; version: string }[] {
+		return this.#session.listPlugins()
+	}
+
 	// ---- subagent marker face (batch F6): RemoteHostSession 1:1 ----
 	subagentViews(): SeamSubagentView[] {
 		return this.#session.subagentViews().map((v) => ({
