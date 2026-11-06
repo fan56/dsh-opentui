@@ -71,6 +71,13 @@ var __callDispose = (stack, error, hasError) => {
   return next();
 };
 
+// ../../node_modules/.pnpm/emoji-regex@10.6.0/node_modules/emoji-regex/index.js
+var require_emoji_regex = __commonJS(function(exports, module) {
+  module.exports = () => {
+    return /[#*0-9]\uFE0F?\u20E3|[\xA9\xAE\u203C\u2049\u2122\u2139\u2194-\u2199\u21A9\u21AA\u231A\u231B\u2328\u23CF\u23ED-\u23EF\u23F1\u23F2\u23F8-\u23FA\u24C2\u25AA\u25AB\u25B6\u25C0\u25FB\u25FC\u25FE\u2600-\u2604\u260E\u2611\u2614\u2615\u2618\u2620\u2622\u2623\u2626\u262A\u262E\u262F\u2638-\u263A\u2640\u2642\u2648-\u2653\u265F\u2660\u2663\u2665\u2666\u2668\u267B\u267E\u267F\u2692\u2694-\u2697\u2699\u269B\u269C\u26A0\u26A7\u26AA\u26B0\u26B1\u26BD\u26BE\u26C4\u26C8\u26CF\u26D1\u26E9\u26F0-\u26F5\u26F7\u26F8\u26FA\u2702\u2708\u2709\u270F\u2712\u2714\u2716\u271D\u2721\u2733\u2734\u2744\u2747\u2757\u2763\u27A1\u2934\u2935\u2B05-\u2B07\u2B1B\u2B1C\u2B55\u3030\u303D\u3297\u3299]\uFE0F?|[\u261D\u270C\u270D](?:\uD83C[\uDFFB-\uDFFF]|\uFE0F)?|[\u270A\u270B](?:\uD83C[\uDFFB-\uDFFF])?|[\u23E9-\u23EC\u23F0\u23F3\u25FD\u2693\u26A1\u26AB\u26C5\u26CE\u26D4\u26EA\u26FD\u2705\u2728\u274C\u274E\u2753-\u2755\u2795-\u2797\u27B0\u27BF\u2B50]|\u26D3\uFE0F?(?:\u200D\uD83D\uDCA5)?|\u26F9(?:\uD83C[\uDFFB-\uDFFF]|\uFE0F)?(?:\u200D[\u2640\u2642]\uFE0F?)?|\u2764\uFE0F?(?:\u200D(?:\uD83D\uDD25|\uD83E\uDE79))?|\uD83C(?:[\uDC04\uDD70\uDD71\uDD7E\uDD7F\uDE02\uDE37\uDF21\uDF24-\uDF2C\uDF36\uDF7D\uDF96\uDF97\uDF99-\uDF9B\uDF9E\uDF9F\uDFCD\uDFCE\uDFD4-\uDFDF\uDFF5\uDFF7]\uFE0F?|[\uDF85\uDFC2\uDFC7](?:\uD83C[\uDFFB-\uDFFF])?|[\uDFC4\uDFCA](?:\uD83C[\uDFFB-\uDFFF])?(?:\u200D[\u2640\u2642]\uFE0F?)?|[\uDFCB\uDFCC](?:\uD83C[\uDFFB-\uDFFF]|\uFE0F)?(?:\u200D[\u2640\u2642]\uFE0F?)?|[\uDCCF\uDD8E\uDD91-\uDD9A\uDE01\uDE1A\uDE2F\uDE32-\uDE36\uDE38-\uDE3A\uDE50\uDE51\uDF00-\uDF20\uDF2D-\uDF35\uDF37-\uDF43\uDF45-\uDF4A\uDF4C-\uDF7C\uDF7E-\uDF84\uDF86-\uDF93\uDFA0-\uDFC1\uDFC5\uDFC6\uDFC8\uDFC9\uDFCF-\uDFD3\uDFE0-\uDFF0\uDFF8-\uDFFF]|\uDDE6\uD83C[\uDDE8-\uDDEC\uDDEE\uDDF1\uDDF2\uDDF4\uDDF6-\uDDFA\uDDFC\uDDFD\uDDFF]|\uDDE7\uD83C[\uDDE6\uDDE7\uDDE9-\uDDEF\uDDF1-\uDDF4\uDDF6-\uDDF9\uDDFB\uDDFC\uDDFE\uDDFF]|\uDDE8\uD83C[\uDDE6\uDDE8\uDDE9\uDDEB-\uDDEE\uDDF0-\uDDF7\uDDFA-\uDDFF]|\uDDE9\uD83C[\uDDEA\uDDEC\uDDEF\uDDF0\uDDF2\uDDF4\uDDFF]|\uDDEA\uD83C[\uDDE6\uDDE8\uDDEA\uDDEC\uDDED\uDDF7-\uDDFA]|\uDDEB\uD83C[\uDDEE-\uDDF0\uDDF2\uDDF4\uDDF7]|\uDDEC\uD83C[\uDDE6\uDDE7\uDDE9-\uDDEE\uDDF1-\uDDF3\uDDF5-\uDDFA\uDDFC\uDDFE]|\uDDED\uD83C[\uDDF0\uDDF2\uDDF3\uDDF7\uDDF9\uDDFA]|\uDDEE\uD83C[\uDDE8-\uDDEA\uDDF1-\uDDF4\uDDF6-\uDDF9]|\uDDEF\uD83C[\uDDEA\uDDF2\uDDF4\uDDF5]|\uDDF0\uD83C[\uDDEA\uDDEC-\uDDEE\uDDF2\uDDF3\uDDF5\uDDF7\uDDFC\uDDFE\uDDFF]|\uDDF1\uD83C[\uDDE6-\uDDE8\uDDEE\uDDF0\uDDF7-\uDDFB\uDDFE]|\uDDF2\uD83C[\uDDE6\uDDE8-\uDDED\uDDF0-\uDDFF]|\uDDF3\uD83C[\uDDE6\uDDE8\uDDEA-\uDDEC\uDDEE\uDDF1\uDDF4\uDDF5\uDDF7\uDDFA\uDDFF]|\uDDF4\uD83C\uDDF2|\uDDF5\uD83C[\uDDE6\uDDEA-\uDDED\uDDF0-\uDDF3\uDDF7-\uDDF9\uDDFC\uDDFE]|\uDDF6\uD83C\uDDE6|\uDDF7\uD83C[\uDDEA\uDDF4\uDDF8\uDDFA\uDDFC]|\uDDF8\uD83C[\uDDE6-\uDDEA\uDDEC-\uDDF4\uDDF7-\uDDF9\uDDFB\uDDFD-\uDDFF]|\uDDF9\uD83C[\uDDE6\uDDE8\uDDE9\uDDEB-\uDDED\uDDEF-\uDDF4\uDDF7\uDDF9\uDDFB\uDDFC\uDDFF]|\uDDFA\uD83C[\uDDE6\uDDEC\uDDF2\uDDF3\uDDF8\uDDFE\uDDFF]|\uDDFB\uD83C[\uDDE6\uDDE8\uDDEA\uDDEC\uDDEE\uDDF3\uDDFA]|\uDDFC\uD83C[\uDDEB\uDDF8]|\uDDFD\uD83C\uDDF0|\uDDFE\uD83C[\uDDEA\uDDF9]|\uDDFF\uD83C[\uDDE6\uDDF2\uDDFC]|\uDF44(?:\u200D\uD83D\uDFEB)?|\uDF4B(?:\u200D\uD83D\uDFE9)?|\uDFC3(?:\uD83C[\uDFFB-\uDFFF])?(?:\u200D(?:[\u2640\u2642]\uFE0F?(?:\u200D\u27A1\uFE0F?)?|\u27A1\uFE0F?))?|\uDFF3\uFE0F?(?:\u200D(?:\u26A7\uFE0F?|\uD83C\uDF08))?|\uDFF4(?:\u200D\u2620\uFE0F?|\uDB40\uDC67\uDB40\uDC62\uDB40(?:\uDC65\uDB40\uDC6E\uDB40\uDC67|\uDC73\uDB40\uDC63\uDB40\uDC74|\uDC77\uDB40\uDC6C\uDB40\uDC73)\uDB40\uDC7F)?)|\uD83D(?:[\uDC3F\uDCFD\uDD49\uDD4A\uDD6F\uDD70\uDD73\uDD76-\uDD79\uDD87\uDD8A-\uDD8D\uDDA5\uDDA8\uDDB1\uDDB2\uDDBC\uDDC2-\uDDC4\uDDD1-\uDDD3\uDDDC-\uDDDE\uDDE1\uDDE3\uDDE8\uDDEF\uDDF3\uDDFA\uDECB\uDECD-\uDECF\uDEE0-\uDEE5\uDEE9\uDEF0\uDEF3]\uFE0F?|[\uDC42\uDC43\uDC46-\uDC50\uDC66\uDC67\uDC6B-\uDC6D\uDC72\uDC74-\uDC76\uDC78\uDC7C\uDC83\uDC85\uDC8F\uDC91\uDCAA\uDD7A\uDD95\uDD96\uDE4C\uDE4F\uDEC0\uDECC](?:\uD83C[\uDFFB-\uDFFF])?|[\uDC6E-\uDC71\uDC73\uDC77\uDC81\uDC82\uDC86\uDC87\uDE45-\uDE47\uDE4B\uDE4D\uDE4E\uDEA3\uDEB4\uDEB5](?:\uD83C[\uDFFB-\uDFFF])?(?:\u200D[\u2640\u2642]\uFE0F?)?|[\uDD74\uDD90](?:\uD83C[\uDFFB-\uDFFF]|\uFE0F)?|[\uDC00-\uDC07\uDC09-\uDC14\uDC16-\uDC25\uDC27-\uDC3A\uDC3C-\uDC3E\uDC40\uDC44\uDC45\uDC51-\uDC65\uDC6A\uDC79-\uDC7B\uDC7D-\uDC80\uDC84\uDC88-\uDC8E\uDC90\uDC92-\uDCA9\uDCAB-\uDCFC\uDCFF-\uDD3D\uDD4B-\uDD4E\uDD50-\uDD67\uDDA4\uDDFB-\uDE2D\uDE2F-\uDE34\uDE37-\uDE41\uDE43\uDE44\uDE48-\uDE4A\uDE80-\uDEA2\uDEA4-\uDEB3\uDEB7-\uDEBF\uDEC1-\uDEC5\uDED0-\uDED2\uDED5-\uDED8\uDEDC-\uDEDF\uDEEB\uDEEC\uDEF4-\uDEFC\uDFE0-\uDFEB\uDFF0]|\uDC08(?:\u200D\u2B1B)?|\uDC15(?:\u200D\uD83E\uDDBA)?|\uDC26(?:\u200D(?:\u2B1B|\uD83D\uDD25))?|\uDC3B(?:\u200D\u2744\uFE0F?)?|\uDC41\uFE0F?(?:\u200D\uD83D\uDDE8\uFE0F?)?|\uDC68(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:\uDC8B\u200D\uD83D)?\uDC68|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDC68\uDC69]\u200D\uD83D(?:\uDC66(?:\u200D\uD83D\uDC66)?|\uDC67(?:\u200D\uD83D[\uDC66\uDC67])?)|[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC66(?:\u200D\uD83D\uDC66)?|\uDC67(?:\u200D\uD83D[\uDC66\uDC67])?)|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3]))|\uD83C(?:\uDFFB(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:\uDC8B\u200D\uD83D)?\uDC68\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC68\uD83C[\uDFFC-\uDFFF])|\uD83E(?:[\uDD1D\uDEEF]\u200D\uD83D\uDC68\uD83C[\uDFFC-\uDFFF]|[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3])))?|\uDFFC(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:\uDC8B\u200D\uD83D)?\uDC68\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC68\uD83C[\uDFFB\uDFFD-\uDFFF])|\uD83E(?:[\uDD1D\uDEEF]\u200D\uD83D\uDC68\uD83C[\uDFFB\uDFFD-\uDFFF]|[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3])))?|\uDFFD(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:\uDC8B\u200D\uD83D)?\uDC68\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC68\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF])|\uD83E(?:[\uDD1D\uDEEF]\u200D\uD83D\uDC68\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF]|[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3])))?|\uDFFE(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:\uDC8B\u200D\uD83D)?\uDC68\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC68\uD83C[\uDFFB-\uDFFD\uDFFF])|\uD83E(?:[\uDD1D\uDEEF]\u200D\uD83D\uDC68\uD83C[\uDFFB-\uDFFD\uDFFF]|[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3])))?|\uDFFF(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:\uDC8B\u200D\uD83D)?\uDC68\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC68\uD83C[\uDFFB-\uDFFE])|\uD83E(?:[\uDD1D\uDEEF]\u200D\uD83D\uDC68\uD83C[\uDFFB-\uDFFE]|[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3])))?))?|\uDC69(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:\uDC8B\u200D\uD83D)?[\uDC68\uDC69]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC66(?:\u200D\uD83D\uDC66)?|\uDC67(?:\u200D\uD83D[\uDC66\uDC67])?|\uDC69\u200D\uD83D(?:\uDC66(?:\u200D\uD83D\uDC66)?|\uDC67(?:\u200D\uD83D[\uDC66\uDC67])?))|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3]))|\uD83C(?:\uDFFB(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:[\uDC68\uDC69]|\uDC8B\u200D\uD83D[\uDC68\uDC69])\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC69\uD83C[\uDFFC-\uDFFF])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3]|\uDD1D\u200D\uD83D[\uDC68\uDC69]\uD83C[\uDFFC-\uDFFF]|\uDEEF\u200D\uD83D\uDC69\uD83C[\uDFFC-\uDFFF])))?|\uDFFC(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:[\uDC68\uDC69]|\uDC8B\u200D\uD83D[\uDC68\uDC69])\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC69\uD83C[\uDFFB\uDFFD-\uDFFF])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3]|\uDD1D\u200D\uD83D[\uDC68\uDC69]\uD83C[\uDFFB\uDFFD-\uDFFF]|\uDEEF\u200D\uD83D\uDC69\uD83C[\uDFFB\uDFFD-\uDFFF])))?|\uDFFD(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:[\uDC68\uDC69]|\uDC8B\u200D\uD83D[\uDC68\uDC69])\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC69\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3]|\uDD1D\u200D\uD83D[\uDC68\uDC69]\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF]|\uDEEF\u200D\uD83D\uDC69\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF])))?|\uDFFE(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:[\uDC68\uDC69]|\uDC8B\u200D\uD83D[\uDC68\uDC69])\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC69\uD83C[\uDFFB-\uDFFD\uDFFF])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3]|\uDD1D\u200D\uD83D[\uDC68\uDC69]\uD83C[\uDFFB-\uDFFD\uDFFF]|\uDEEF\u200D\uD83D\uDC69\uD83C[\uDFFB-\uDFFD\uDFFF])))?|\uDFFF(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D\uD83D(?:[\uDC68\uDC69]|\uDC8B\u200D\uD83D[\uDC68\uDC69])\uD83C[\uDFFB-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83D\uDC69\uD83C[\uDFFB-\uDFFE])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3]|\uDD1D\u200D\uD83D[\uDC68\uDC69]\uD83C[\uDFFB-\uDFFE]|\uDEEF\u200D\uD83D\uDC69\uD83C[\uDFFB-\uDFFE])))?))?|\uDD75(?:\uD83C[\uDFFB-\uDFFF]|\uFE0F)?(?:\u200D[\u2640\u2642]\uFE0F?)?|\uDE2E(?:\u200D\uD83D\uDCA8)?|\uDE35(?:\u200D\uD83D\uDCAB)?|\uDE36(?:\u200D\uD83C\uDF2B\uFE0F?)?|\uDE42(?:\u200D[\u2194\u2195]\uFE0F?)?|\uDEB6(?:\uD83C[\uDFFB-\uDFFF])?(?:\u200D(?:[\u2640\u2642]\uFE0F?(?:\u200D\u27A1\uFE0F?)?|\u27A1\uFE0F?))?)|\uD83E(?:[\uDD0C\uDD0F\uDD18-\uDD1F\uDD30-\uDD34\uDD36\uDD77\uDDB5\uDDB6\uDDBB\uDDD2\uDDD3\uDDD5\uDEC3-\uDEC5\uDEF0\uDEF2-\uDEF8](?:\uD83C[\uDFFB-\uDFFF])?|[\uDD26\uDD35\uDD37-\uDD39\uDD3C-\uDD3E\uDDB8\uDDB9\uDDCD\uDDCF\uDDD4\uDDD6-\uDDDD](?:\uD83C[\uDFFB-\uDFFF])?(?:\u200D[\u2640\u2642]\uFE0F?)?|[\uDDDE\uDDDF](?:\u200D[\u2640\u2642]\uFE0F?)?|[\uDD0D\uDD0E\uDD10-\uDD17\uDD20-\uDD25\uDD27-\uDD2F\uDD3A\uDD3F-\uDD45\uDD47-\uDD76\uDD78-\uDDB4\uDDB7\uDDBA\uDDBC-\uDDCC\uDDD0\uDDE0-\uDDFF\uDE70-\uDE7C\uDE80-\uDE8A\uDE8E-\uDEC2\uDEC6\uDEC8\uDECD-\uDEDC\uDEDF-\uDEEA\uDEEF]|\uDDCE(?:\uD83C[\uDFFB-\uDFFF])?(?:\u200D(?:[\u2640\u2642]\uFE0F?(?:\u200D\u27A1\uFE0F?)?|\u27A1\uFE0F?))?|\uDDD1(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\uD83C[\uDF3E\uDF73\uDF7C\uDF84\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3\uDE70]|\uDD1D\u200D\uD83E\uDDD1|\uDDD1\u200D\uD83E\uDDD2(?:\u200D\uD83E\uDDD2)?|\uDDD2(?:\u200D\uD83E\uDDD2)?))|\uD83C(?:\uDFFB(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D(?:\uD83D\uDC8B\u200D)?\uD83E\uDDD1\uD83C[\uDFFC-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF84\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83E\uDDD1\uD83C[\uDFFC-\uDFFF])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3\uDE70]|\uDD1D\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFF]|\uDEEF\u200D\uD83E\uDDD1\uD83C[\uDFFC-\uDFFF])))?|\uDFFC(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D(?:\uD83D\uDC8B\u200D)?\uD83E\uDDD1\uD83C[\uDFFB\uDFFD-\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF84\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83E\uDDD1\uD83C[\uDFFB\uDFFD-\uDFFF])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3\uDE70]|\uDD1D\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFF]|\uDEEF\u200D\uD83E\uDDD1\uD83C[\uDFFB\uDFFD-\uDFFF])))?|\uDFFD(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D(?:\uD83D\uDC8B\u200D)?\uD83E\uDDD1\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF84\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83E\uDDD1\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3\uDE70]|\uDD1D\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFF]|\uDEEF\u200D\uD83E\uDDD1\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF])))?|\uDFFE(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D(?:\uD83D\uDC8B\u200D)?\uD83E\uDDD1\uD83C[\uDFFB-\uDFFD\uDFFF]|\uD83C[\uDF3E\uDF73\uDF7C\uDF84\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFD\uDFFF])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3\uDE70]|\uDD1D\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFF]|\uDEEF\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFD\uDFFF])))?|\uDFFF(?:\u200D(?:[\u2695\u2696\u2708]\uFE0F?|\u2764\uFE0F?\u200D(?:\uD83D\uDC8B\u200D)?\uD83E\uDDD1\uD83C[\uDFFB-\uDFFE]|\uD83C[\uDF3E\uDF73\uDF7C\uDF84\uDF93\uDFA4\uDFA8\uDFEB\uDFED]|\uD83D(?:[\uDCBB\uDCBC\uDD27\uDD2C\uDE80\uDE92]|\uDC30\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFE])|\uD83E(?:[\uDDAF\uDDBC\uDDBD](?:\u200D\u27A1\uFE0F?)?|[\uDDB0-\uDDB3\uDE70]|\uDD1D\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFF]|\uDEEF\u200D\uD83E\uDDD1\uD83C[\uDFFB-\uDFFE])))?))?|\uDEF1(?:\uD83C(?:\uDFFB(?:\u200D\uD83E\uDEF2\uD83C[\uDFFC-\uDFFF])?|\uDFFC(?:\u200D\uD83E\uDEF2\uD83C[\uDFFB\uDFFD-\uDFFF])?|\uDFFD(?:\u200D\uD83E\uDEF2\uD83C[\uDFFB\uDFFC\uDFFE\uDFFF])?|\uDFFE(?:\u200D\uD83E\uDEF2\uD83C[\uDFFB-\uDFFD\uDFFF])?|\uDFFF(?:\u200D\uD83E\uDEF2\uD83C[\uDFFB-\uDFFE])?))?)/g;
+  };
+});
+
 // ../../node_modules/.pnpm/fuzzysort@3.1.0/node_modules/fuzzysort/fuzzysort.js
 var require_fuzzysort = __commonJS(function(exports, module) {
   ((root, UMD) => {
@@ -803,7 +810,7 @@ var require_fuzzysort = __commonJS(function(exports, module) {
 
 // src/host-entry-v2.tsx
 import { spawn } from "node:child_process";
-import { createSignal as createSignal13, onCleanup as onCleanup14, onMount as onMount5, ErrorBoundary } from "solid-js";
+import { createSignal as createSignal16, onCleanup as onCleanup15, onMount as onMount6, ErrorBoundary } from "solid-js";
 import { createComponent as createComponent2, createElement, render, spread } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -895,6 +902,144 @@ function createStreamTicker(onTick, intervalMs = STREAM_TICK_MS) {
   };
 }
 
+// src/subagent-policy.ts
+var DEFAULT_SUBAGENT_ROUND_LIMITS = { maxRounds: 0, maxRoundsGrace: 0 };
+var SUBAGENT_LIMITS_NS = "dsh-opentui";
+function nonNegativeInt(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0)
+    return Math.floor(value);
+  if (typeof value === "string" && /^\d+$/.test(value.trim()))
+    return Number(value.trim());
+  return;
+}
+function parseSubagentRoundLimits(value) {
+  if (value === null || typeof value !== "object")
+    return { ...DEFAULT_SUBAGENT_ROUND_LIMITS };
+  const record = value;
+  const maxRounds = nonNegativeInt(record.maxRounds);
+  const maxRoundsGrace = nonNegativeInt(record.maxRoundsGrace);
+  return {
+    maxRounds: maxRounds ?? DEFAULT_SUBAGENT_ROUND_LIMITS.maxRounds,
+    maxRoundsGrace: maxRoundsGrace ?? DEFAULT_SUBAGENT_ROUND_LIMITS.maxRoundsGrace
+  };
+}
+function limitsFromSettingsRows(rows) {
+  for (const row of rows) {
+    if (row?.ns === SUBAGENT_LIMITS_NS)
+      return parseSubagentRoundLimits(row.value);
+  }
+  return { ...DEFAULT_SUBAGENT_ROUND_LIMITS };
+}
+function ladderDecision(input) {
+  if (input.cap <= 0)
+    return "none";
+  if (input.settled)
+    return "none";
+  if (!input.wrapupDelivered) {
+    return input.count >= input.cap ? "wrapup" : "none";
+  }
+  if (input.grace <= 0)
+    return "none";
+  return input.count >= input.cap + input.grace ? "force-stop" : "none";
+}
+function wrapupMessage(maxRounds, grace) {
+  const base = `Round limit reached (${maxRounds} LLM round-trips, set by the dsh-opentui maxRounds policy). ` + "Do NOT call any more tools. Finish this task NOW: summarize what you have accomplished so far, " + "state clearly what remains undone, and return that summary as your final answer.";
+  return grace > 0 ? `${base} You have ${grace} more round${grace === 1 ? "" : "s"} before this run is force-stopped.` : base;
+}
+
+class SubagentRoundPolicy {
+  #options;
+  #injected = new Set;
+  #hardStopped = new Set;
+  #resolvedCaps = new Map;
+  #injectedLabel = new Map;
+  #disposed = false;
+  constructor(options) {
+    this.#options = options;
+  }
+  onRoundCount(childId, count, label) {
+    if (this.#disposed || !childId)
+      return;
+    if (this.#hardStopped.has(childId))
+      return;
+    const caps = this.#resolveCaps(childId, label ?? this.#injectedLabel.get(childId));
+    if (caps === undefined)
+      return;
+    const settled = this.#options.isSettled?.(childId) ?? false;
+    const action = ladderDecision({
+      count,
+      cap: caps.cap,
+      grace: caps.grace,
+      wrapupDelivered: this.#injected.has(childId),
+      settled
+    });
+    if (action === "none")
+      return;
+    if (action === "wrapup") {
+      if (this.#injected.has(childId))
+        return;
+      const rememberedLabel = label ?? this.#injectedLabel.get(childId);
+      queueMicrotask(() => {
+        if (this.#disposed || this.#injected.has(childId))
+          return;
+        if (this.#options.isSettled?.(childId) === true)
+          return;
+        let delivered = false;
+        try {
+          delivered = this.#options.wrapup(childId, wrapupMessage(caps.cap, caps.grace), rememberedLabel);
+        } catch {
+          delivered = false;
+        }
+        if (!delivered)
+          return;
+        this.#injected.add(childId);
+        if (rememberedLabel !== undefined)
+          this.#injectedLabel.set(childId, rememberedLabel);
+      });
+      return;
+    }
+    this.#hardStopped.add(childId);
+    let stopped = false;
+    try {
+      stopped = this.#options.forceStop(childId);
+    } catch {
+      stopped = false;
+    }
+    if (stopped) {
+      try {
+        this.#options.onHardStop?.({ childId, round: count, cap: caps.cap, grace: caps.grace });
+      } catch {}
+    }
+  }
+  #resolveCaps(childId, label) {
+    const cached = this.#resolvedCaps.get(childId);
+    if (cached !== undefined)
+      return cached;
+    const limits = this.#options.limits();
+    const globalCap = limits.maxRounds;
+    if (globalCap <= 0)
+      return;
+    let cap = globalCap;
+    if (label !== undefined && this.#options.resolveAgentCap !== undefined) {
+      try {
+        const perAgent = this.#options.resolveAgentCap(label);
+        if (perAgent !== undefined && perAgent > 0)
+          cap = perAgent;
+      } catch {}
+    }
+    const caps = { cap, grace: limits.maxRoundsGrace };
+    this.#resolvedCaps.set(childId, caps);
+    return caps;
+  }
+  dispose() {
+    this.#disposed = true;
+    this.#injected.clear();
+    this.#hardStopped.clear();
+    this.#resolvedCaps.clear();
+    this.#injectedLabel.clear();
+  }
+}
+
 // src/host-session.ts
 var DBG = (_m) => {};
 function blocksText(content) {
@@ -956,6 +1101,7 @@ class HostSession {
   constructor(ctx) {
     this.#ctx = ctx;
     this.#wire();
+    this.#ensureRoundPolicy();
     try {
       const sel = ctx.get?.("agentDefaultModel")?.currentSelection?.();
       if (sel?.provider && sel?.model)
@@ -1298,6 +1444,7 @@ ${snapshot.join(`
             model: fm.model,
             thinking: fm.thinking,
             deep: fm.deep,
+            maxRounds: fm.maxRounds,
             file: full
           });
         } catch (e) {
@@ -1679,6 +1826,59 @@ ${field}: ${value}
   #runSeqToChild = new Map;
   #childLogs = new Map;
   #childAgents = new Map;
+  #roundPolicy;
+  #roundLimits = { ...DEFAULT_SUBAGENT_ROUND_LIMITS };
+  #roundLimitsRefreshing = false;
+  #ensureRoundPolicy() {
+    if (this.#roundPolicy === undefined) {
+      this.#roundPolicy = new SubagentRoundPolicy({
+        limits: () => this.#roundLimits,
+        resolveAgentCap: (label) => {
+          const row = this.listAgents().find((a) => a.name === label || a.displayName !== undefined && a.displayName === label);
+          const raw = row?.maxRounds;
+          if (raw === undefined)
+            return;
+          const n = Number(String(raw).trim());
+          return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+        },
+        isSettled: (childId) => this.#children.get(childId)?.status !== "running",
+        wrapup: (childId, message) => this.steerChild(childId, message),
+        forceStop: (childId) => this.cancelChild(childId),
+        onHardStop: (record) => this.#onHardStop(record)
+      });
+      this.#refreshRoundLimits();
+    }
+    return this.#roundPolicy;
+  }
+  #refreshRoundLimits() {
+    if (this.#roundLimitsRefreshing)
+      return;
+    this.#roundLimitsRefreshing = true;
+    this.settingsDescribe().then((rows) => {
+      this.#roundLimits = limitsFromSettingsRows(rows);
+    }).catch(() => {}).finally(() => {
+      this.#roundLimitsRefreshing = false;
+    });
+  }
+  cancelChild(childId) {
+    const agent = this.#childAgents.get(childId);
+    if (!agent?.cancel)
+      return false;
+    try {
+      agent.cancel({ kind: "user" }, { keepInbox: true });
+    } catch {
+      try {
+        agent.cancel({ kind: "user" });
+      } catch {
+        return false;
+      }
+    }
+    this.#settleChild(childId, "cancelled");
+    return true;
+  }
+  #onHardStop(record) {
+    console.info(`[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`);
+  }
   childTranscript(id) {
     return [...this.#childLogs.get(id) ?? []];
   }
@@ -1753,14 +1953,17 @@ ${field}: ${value}
     } else if (event.type === "assistant/message") {
       const text = blocksText(d.message?.content ?? d.content);
       const usage = d.usage?.totalTokens ?? d.message?.usage?.totalTokens ?? d.message?.usage?.total_tokens;
+      const rounds = view.rounds + 1;
       this.#children.set(sessionKey, {
         ...view,
-        rounds: view.rounds + 1,
+        rounds,
         ...usage ? { tokens: (view.tokens ?? 0) + Number(usage) } : {},
         ...text ? { lastLine: text.split(`
 `).pop()?.slice(0, 80) } : {}
       });
       changed = true;
+      this.#ensureRoundPolicy().onRoundCount(sessionKey, rounds, this.#children.get(sessionKey)?.label);
+      this.#refreshRoundLimits();
     }
     const log = this.#childLogs.get(sessionKey) ?? [];
     if (event.type === "assistant/message") {
@@ -2136,6 +2339,12 @@ class HostSessionSeam {
   }
   currentSessionId() {
     return this.#session.currentSessionId();
+  }
+  cacheHitRate() {
+    return this.#session.cacheHitRate();
+  }
+  btwAsk(question, snapshot, onDelta) {
+    return this.#session.btwAsk(question, snapshot, onDelta);
   }
   resumeSession(id) {
     return this.#session.resumeSession(id);
@@ -21070,8 +21279,170 @@ function useDialog() {
 import { createStore as createStore7 } from "solid-js/store";
 import { For as For3 } from "solid-js";
 
+// ../../node_modules/.pnpm/ansi-regex@6.4.0/node_modules/ansi-regex/index.js
+function ansiRegex({ onlyFirst = false } = {}) {
+  const ST = "(?:\\u0007|\\u001B\\u005C|\\u009C)";
+  const osc = `(?:(?:\\u001B\\]|\\u009D)[^\\u0007\\u001B\\u009C\\u009D]*${ST})`;
+  const csi = "[\\u001B\\u009B][[\\]()#;?]*(?:\\d{1,4}(?:[;:]\\d{0,4})*)?[\\dA-PR-TZcf-nq-uy=><~]";
+  const pattern = `${osc}|${csi}`;
+  return new RegExp(pattern, onlyFirst ? undefined : "g");
+}
+
+// ../../node_modules/.pnpm/strip-ansi@7.1.2/node_modules/strip-ansi/index.js
+var regex = ansiRegex();
+function stripAnsi(string) {
+  if (typeof string !== "string") {
+    throw new TypeError(`Expected a \`string\`, got \`${typeof string}\``);
+  }
+  return string.replace(regex, "");
+}
+
+// ../../node_modules/.pnpm/get-east-asian-width@1.6.0/node_modules/get-east-asian-width/lookup-data.js
+var ambiguousMinimalCodePoint = 161;
+var ambiguousMaximumCodePoint = 1114109;
+var ambiguousRanges = [161, 161, 164, 164, 167, 168, 170, 170, 173, 174, 176, 180, 182, 186, 188, 191, 198, 198, 208, 208, 215, 216, 222, 225, 230, 230, 232, 234, 236, 237, 240, 240, 242, 243, 247, 250, 252, 252, 254, 254, 257, 257, 273, 273, 275, 275, 283, 283, 294, 295, 299, 299, 305, 307, 312, 312, 319, 322, 324, 324, 328, 331, 333, 333, 338, 339, 358, 359, 363, 363, 462, 462, 464, 464, 466, 466, 468, 468, 470, 470, 472, 472, 474, 474, 476, 476, 593, 593, 609, 609, 708, 708, 711, 711, 713, 715, 717, 717, 720, 720, 728, 731, 733, 733, 735, 735, 768, 879, 913, 929, 931, 937, 945, 961, 963, 969, 1025, 1025, 1040, 1103, 1105, 1105, 8208, 8208, 8211, 8214, 8216, 8217, 8220, 8221, 8224, 8226, 8228, 8231, 8240, 8240, 8242, 8243, 8245, 8245, 8251, 8251, 8254, 8254, 8308, 8308, 8319, 8319, 8321, 8324, 8364, 8364, 8451, 8451, 8453, 8453, 8457, 8457, 8467, 8467, 8470, 8470, 8481, 8482, 8486, 8486, 8491, 8491, 8531, 8532, 8539, 8542, 8544, 8555, 8560, 8569, 8585, 8585, 8592, 8601, 8632, 8633, 8658, 8658, 8660, 8660, 8679, 8679, 8704, 8704, 8706, 8707, 8711, 8712, 8715, 8715, 8719, 8719, 8721, 8721, 8725, 8725, 8730, 8730, 8733, 8736, 8739, 8739, 8741, 8741, 8743, 8748, 8750, 8750, 8756, 8759, 8764, 8765, 8776, 8776, 8780, 8780, 8786, 8786, 8800, 8801, 8804, 8807, 8810, 8811, 8814, 8815, 8834, 8835, 8838, 8839, 8853, 8853, 8857, 8857, 8869, 8869, 8895, 8895, 8978, 8978, 9312, 9449, 9451, 9547, 9552, 9587, 9600, 9615, 9618, 9621, 9632, 9633, 9635, 9641, 9650, 9651, 9654, 9655, 9660, 9661, 9664, 9665, 9670, 9672, 9675, 9675, 9678, 9681, 9698, 9701, 9711, 9711, 9733, 9734, 9737, 9737, 9742, 9743, 9756, 9756, 9758, 9758, 9792, 9792, 9794, 9794, 9824, 9825, 9827, 9829, 9831, 9834, 9836, 9837, 9839, 9839, 9886, 9887, 9919, 9919, 9926, 9933, 9935, 9939, 9941, 9953, 9955, 9955, 9960, 9961, 9963, 9969, 9972, 9972, 9974, 9977, 9979, 9980, 9982, 9983, 10045, 10045, 10102, 10111, 11094, 11097, 12872, 12879, 57344, 63743, 65024, 65039, 65533, 65533, 127232, 127242, 127248, 127277, 127280, 127337, 127344, 127373, 127375, 127376, 127387, 127404, 917760, 917999, 983040, 1048573, 1048576, 1114109];
+var fullwidthMinimalCodePoint = 12288;
+var fullwidthMaximumCodePoint = 65510;
+var fullwidthRanges = [12288, 12288, 65281, 65376, 65504, 65510];
+var wideMinimalCodePoint = 4352;
+var wideMaximumCodePoint = 262141;
+var wideRanges = [4352, 4447, 8986, 8987, 9001, 9002, 9193, 9196, 9200, 9200, 9203, 9203, 9725, 9726, 9748, 9749, 9776, 9783, 9800, 9811, 9855, 9855, 9866, 9871, 9875, 9875, 9889, 9889, 9898, 9899, 9917, 9918, 9924, 9925, 9934, 9934, 9940, 9940, 9962, 9962, 9970, 9971, 9973, 9973, 9978, 9978, 9981, 9981, 9989, 9989, 9994, 9995, 10024, 10024, 10060, 10060, 10062, 10062, 10067, 10069, 10071, 10071, 10133, 10135, 10160, 10160, 10175, 10175, 11035, 11036, 11088, 11088, 11093, 11093, 11904, 11929, 11931, 12019, 12032, 12245, 12272, 12287, 12289, 12350, 12353, 12438, 12441, 12543, 12549, 12591, 12593, 12686, 12688, 12773, 12783, 12830, 12832, 12871, 12880, 42124, 42128, 42182, 43360, 43388, 44032, 55203, 63744, 64255, 65040, 65049, 65072, 65106, 65108, 65126, 65128, 65131, 94176, 94180, 94192, 94198, 94208, 101589, 101631, 101662, 101760, 101874, 110576, 110579, 110581, 110587, 110589, 110590, 110592, 110882, 110898, 110898, 110928, 110930, 110933, 110933, 110948, 110951, 110960, 111355, 119552, 119638, 119648, 119670, 126980, 126980, 127183, 127183, 127374, 127374, 127377, 127386, 127488, 127490, 127504, 127547, 127552, 127560, 127568, 127569, 127584, 127589, 127744, 127776, 127789, 127797, 127799, 127868, 127870, 127891, 127904, 127946, 127951, 127955, 127968, 127984, 127988, 127988, 127992, 128062, 128064, 128064, 128066, 128252, 128255, 128317, 128331, 128334, 128336, 128359, 128378, 128378, 128405, 128406, 128420, 128420, 128507, 128591, 128640, 128709, 128716, 128716, 128720, 128722, 128725, 128728, 128732, 128735, 128747, 128748, 128756, 128764, 128992, 129003, 129008, 129008, 129292, 129338, 129340, 129349, 129351, 129535, 129648, 129660, 129664, 129674, 129678, 129734, 129736, 129736, 129741, 129756, 129759, 129770, 129775, 129784, 131072, 196605, 196608, 262141];
+
+// ../../node_modules/.pnpm/get-east-asian-width@1.6.0/node_modules/get-east-asian-width/utilities.js
+var isInRange = (ranges, codePoint) => {
+  let low = 0;
+  let high = Math.floor(ranges.length / 2) - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const i = mid * 2;
+    if (codePoint < ranges[i]) {
+      high = mid - 1;
+    } else if (codePoint > ranges[i + 1]) {
+      low = mid + 1;
+    } else {
+      return true;
+    }
+  }
+  return false;
+};
+
+// ../../node_modules/.pnpm/get-east-asian-width@1.6.0/node_modules/get-east-asian-width/lookup.js
+var commonCjkCodePoint = 19968;
+var [wideFastPathStart, wideFastPathEnd] = /* @__PURE__ */ findWideFastPathRange(wideRanges);
+function findWideFastPathRange(ranges) {
+  let fastPathStart = ranges[0];
+  let fastPathEnd = ranges[1];
+  for (let index = 0;index < ranges.length; index += 2) {
+    const start = ranges[index];
+    const end = ranges[index + 1];
+    if (commonCjkCodePoint >= start && commonCjkCodePoint <= end) {
+      return [start, end];
+    }
+    if (end - start > fastPathEnd - fastPathStart) {
+      fastPathStart = start;
+      fastPathEnd = end;
+    }
+  }
+  return [fastPathStart, fastPathEnd];
+}
+var isAmbiguous = (codePoint) => {
+  if (codePoint < ambiguousMinimalCodePoint || codePoint > ambiguousMaximumCodePoint) {
+    return false;
+  }
+  return isInRange(ambiguousRanges, codePoint);
+};
+var isFullWidth = (codePoint) => {
+  if (codePoint < fullwidthMinimalCodePoint || codePoint > fullwidthMaximumCodePoint) {
+    return false;
+  }
+  return isInRange(fullwidthRanges, codePoint);
+};
+var isWide = (codePoint) => {
+  if (codePoint >= wideFastPathStart && codePoint <= wideFastPathEnd) {
+    return true;
+  }
+  if (codePoint < wideMinimalCodePoint || codePoint > wideMaximumCodePoint) {
+    return false;
+  }
+  return isInRange(wideRanges, codePoint);
+};
+
+// ../../node_modules/.pnpm/get-east-asian-width@1.6.0/node_modules/get-east-asian-width/index.js
+function validate2(codePoint) {
+  if (!Number.isSafeInteger(codePoint)) {
+    throw new TypeError(`Expected a code point, got \`${typeof codePoint}\`.`);
+  }
+}
+function eastAsianWidth(codePoint, { ambiguousAsWide = false } = {}) {
+  validate2(codePoint);
+  if (isFullWidth(codePoint) || isWide(codePoint) || ambiguousAsWide && isAmbiguous(codePoint)) {
+    return 2;
+  }
+  return 1;
+}
+
+// ../../node_modules/.pnpm/string-width@7.2.0/node_modules/string-width/index.js
+var import_emoji_regex = __toESM(require_emoji_regex(), 1);
+var segmenter = new Intl.Segmenter;
+var defaultIgnorableCodePointRegex = /^\p{Default_Ignorable_Code_Point}$/u;
+function stringWidth(string, options = {}) {
+  if (typeof string !== "string" || string.length === 0) {
+    return 0;
+  }
+  const {
+    ambiguousIsNarrow = true,
+    countAnsiEscapeCodes = false
+  } = options;
+  if (!countAnsiEscapeCodes) {
+    string = stripAnsi(string);
+  }
+  if (string.length === 0) {
+    return 0;
+  }
+  let width = 0;
+  const eastAsianWidthOptions = { ambiguousAsWide: !ambiguousIsNarrow };
+  for (const { segment: character } of segmenter.segment(string)) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint <= 31 || codePoint >= 127 && codePoint <= 159) {
+      continue;
+    }
+    if (codePoint >= 8203 && codePoint <= 8207 || codePoint === 65279) {
+      continue;
+    }
+    if (codePoint >= 768 && codePoint <= 879 || codePoint >= 6832 && codePoint <= 6911 || codePoint >= 7616 && codePoint <= 7679 || codePoint >= 8400 && codePoint <= 8447 || codePoint >= 65056 && codePoint <= 65071) {
+      continue;
+    }
+    if (codePoint >= 55296 && codePoint <= 57343) {
+      continue;
+    }
+    if (codePoint >= 65024 && codePoint <= 65039) {
+      continue;
+    }
+    if (defaultIgnorableCodePointRegex.test(character)) {
+      continue;
+    }
+    if (import_emoji_regex.default().test(character)) {
+      width += 2;
+      continue;
+    }
+    width += eastAsianWidth(codePoint, eastAsianWidthOptions);
+  }
+  return width;
+}
+
 // ../tui-base/src/util/string-width.node.ts
 var graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+var textEmoji = /^\p{Emoji}\p{Mark}*$/u;
+var emojiPresentation = /^\p{Emoji_Presentation}/u;
+function stringWidth2(value) {
+  return Array.from(graphemes.segment(stripAnsi(value))).reduce((total, part) => {
+    const width = stringWidth(part.segment);
+    const codePoint = part.segment.codePointAt(0);
+    if (width !== 2 || codePoint === undefined || eastAsianWidth(codePoint) === 2 || !textEmoji.test(part.segment) || emojiPresentation.test(part.segment) || part.segment.includes("️") || part.segment.includes("⃣") || part.segment.includes("‍"))
+      return total + width;
+    return total + 1;
+  }, 0);
+}
 // ../tui-base/src/util/locale.ts
 function titlecase(str) {
   return str.replace(/\b\w/g, (c) => c.toUpperCase());
@@ -22644,6 +23015,17 @@ function coreCommands() {
         ctx.clear();
         ctx.say("transcript cleared");
       }
+    },
+    {
+      name: "/btw",
+      description: "side question (bare reopens the last answer)",
+      run(ctx, argText) {
+        if (!ctx.seam.btwAsk || !ctx.openBtw) {
+          ctx.say("/btw unavailable in this session");
+          return;
+        }
+        ctx.openBtw(argText);
+      }
     }
   ];
 }
@@ -22787,7 +23169,10 @@ function createSlashHost(deps) {
     clear: deps.clear,
     reload: deps.reload,
     quit: deps.quit,
-    pickOne: deps.pickOne
+    pickOne: deps.pickOne,
+    ...deps.openBtw ? {
+      openBtw: deps.openBtw
+    } : {}
   };
   function run(command, argText) {
     command.run(ctx, argText);
@@ -22830,6 +23215,1292 @@ function createSlashHost(deps) {
   };
 }
 
+// ../tui-base/src/routes/session/btw-overlay.tsx
+import { effect as _$effect11 } from "@opentui/solid";
+import { insert as _$insert10 } from "@opentui/solid";
+import { memo as _$memo8 } from "@opentui/solid";
+import { createComponent as _$createComponent18 } from "@opentui/solid";
+import { createTextNode as _$createTextNode7 } from "@opentui/solid";
+import { insertNode as _$insertNode10 } from "@opentui/solid";
+import { setProp as _$setProp11 } from "@opentui/solid";
+import { createElement as _$createElement12 } from "@opentui/solid";
+import { Show as Show11, createSignal as createSignal13 } from "solid-js";
+
+// ../tui-base/src/ui/dialog-prompt.tsx
+import { createTextNode as _$createTextNode6 } from "@opentui/solid";
+import { effect as _$effect10 } from "@opentui/solid";
+import { insertNode as _$insertNode9 } from "@opentui/solid";
+import { insert as _$insert9 } from "@opentui/solid";
+import { createComponent as _$createComponent17 } from "@opentui/solid";
+import { memo as _$memo7 } from "@opentui/solid";
+import { use as _$use4 } from "@opentui/solid";
+import { setProp as _$setProp10 } from "@opentui/solid";
+import { createElement as _$createElement11 } from "@opentui/solid";
+import { Show as Show10, createEffect as createEffect6, createSignal as createSignal12, onMount as onMount5 } from "solid-js";
+
+// ../tui-base/src/component/spinner.tsx
+import { insertNode as _$insertNode8 } from "@opentui/solid";
+import { setProp as _$setProp9 } from "@opentui/solid";
+import { effect as _$effect9 } from "@opentui/solid";
+import { insert as _$insert8 } from "@opentui/solid";
+import { createElement as _$createElement10 } from "@opentui/solid";
+import { createComponent as _$createComponent16 } from "@opentui/solid";
+import { memo as _$memo6 } from "@opentui/solid";
+import { createEffect as createEffect5, createSignal as createSignal11, onCleanup as onCleanup12, Show as Show9 } from "solid-js";
+
+// ../tui-base/src/component/spinner-renderable.ts
+import {
+  parseColor,
+  Renderable,
+  RGBA as RGBA9
+} from "@opentui/core";
+import { extend } from "@opentui/solid";
+
+// ../tui-base/src/component/spinner-frames.ts
+var SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// ../tui-base/src/component/spinner-renderable.ts
+var graphemes2 = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+class SpinnerRenderable extends Renderable {
+  frameTexts = [];
+  glyphs = [];
+  frameWidth = 0;
+  _interval;
+  _autoplay;
+  _color;
+  _backgroundColor;
+  index = 0;
+  constructor(ctx, options = {}) {
+    super(ctx, options);
+    this._interval = options.interval ?? 80;
+    this._autoplay = options.autoplay ?? true;
+    this._color = toColor(options.color ?? RGBA9.defaultForeground());
+    this._backgroundColor = parseColor(options.backgroundColor ?? "transparent");
+    this.setMeasureProvider(() => ({ width: this.frameWidth, height: 1 }));
+    this.frames = options.frames ?? SPINNER_FRAMES;
+  }
+  set frames(value) {
+    if (value.length === this.frameTexts.length && value.every((frame, index) => frame === this.frameTexts[index]))
+      return;
+    this.frameTexts = value;
+    this.glyphs = value.map((frame) => Array.from(graphemes2.segment(frame), (part) => ({ char: part.segment, width: stringWidth2(part.segment) })));
+    this.index = 0;
+    const width = Math.max(0, ...this.glyphs.map((glyphs) => glyphs.reduce((sum, glyph) => sum + glyph.width, 0)));
+    if (width !== this.frameWidth) {
+      this.frameWidth = width;
+      this.invalidateIntrinsicSize();
+    }
+    this.restart();
+  }
+  set interval(value) {
+    if (value === this._interval)
+      return;
+    this._interval = value;
+    this.restart();
+  }
+  set autoplay(value) {
+    if (value === this._autoplay)
+      return;
+    this._autoplay = value;
+    this.restart();
+  }
+  set color(value) {
+    this._color = toColor(value);
+    this.requestRender();
+  }
+  set backgroundColor(value) {
+    this._backgroundColor = parseColor(value);
+    this.requestRender();
+  }
+  restart() {
+    this.animationFps = this._autoplay && this.glyphs.length > 1 ? 1000 / this._interval : undefined;
+    this.requestRender();
+  }
+  onAnimationTick(_deltaTime, ticks) {
+    this.index = (this.index + ticks) % this.glyphs.length;
+    this.requestRender();
+  }
+  renderSelf(buffer) {
+    const glyphs = this.glyphs[this.index];
+    if (!glyphs)
+      return;
+    let x = this.screenX;
+    glyphs.forEach((glyph, char) => {
+      const color = typeof this._color === "function" ? parseColor(this._color(this.index, char, this.glyphs.length, glyphs.length)) : this._color;
+      buffer.drawText(glyph.char, x, this.screenY, color, this._backgroundColor);
+      x += glyph.width;
+    });
+  }
+}
+function toColor(value) {
+  return typeof value === "function" ? value : parseColor(value);
+}
+extend({ spinner: SpinnerRenderable });
+
+// ../tui-base/src/component/shimmer-text.tsx
+import { spread as _$spread } from "@opentui/solid";
+import { mergeProps as _$mergeProps } from "@opentui/solid";
+import { createElement as _$createElement9 } from "@opentui/solid";
+import { RGBA as RGBA12 } from "@opentui/core";
+import { extend as extend3 } from "@opentui/solid";
+import { splitProps } from "solid-js";
+
+// ../tui-base/src/component/masked-text.ts
+import { OptimizedBuffer, RGBA as RGBA10, TargetChannel, TextRenderable } from "@opentui/core";
+var TRANSPARENT = RGBA10.fromValues(0, 0, 0, 0);
+var CONTINUATION = 3221225472 | 0;
+
+class MaskedTextRenderable extends TextRenderable {
+  matrix = new Float32Array(16);
+  scratch;
+  mask = new Float32Array(0);
+  renderMasked(buffer, initialStrength, shade) {
+    if (!this.scratch)
+      this.scratch = OptimizedBuffer.create(this.width, this.height, this._ctx.widthMethod, {
+        owner: this._ctx.nativeScene,
+        respectAlpha: true
+      });
+    if (this.scratch.width !== this.width || this.scratch.height !== this.height)
+      this.scratch.resize(this.width, this.height);
+    this.scratch.clear(TRANSPARENT);
+    this.drawToBuffer(this.scratch, 0, 0);
+    this.scratch.withBuffers((cells) => {
+      const characters = cells.char;
+      let end = 0;
+      for (let row = 0;row < this.height; row++) {
+        let column = this.width;
+        while (column > 0 && (characters[row * this.width + column - 1] === 32 || characters[row * this.width + column - 1] === 0))
+          column--;
+        end = Math.max(end, column);
+      }
+      const intensity = shade(end);
+      if (this.mask.length !== this.width * this.height * 3)
+        this.mask = new Float32Array(this.width * this.height * 3);
+      let strength = initialStrength;
+      for (let cell = 0;cell < characters.length; cell++) {
+        const column = cell % this.width;
+        if ((characters[cell] & CONTINUATION) !== CONTINUATION)
+          strength = intensity(column);
+        this.mask[cell * 3] = column;
+        this.mask[cell * 3 + 1] = Math.floor(cell / this.width);
+        this.mask[cell * 3 + 2] = strength;
+      }
+    });
+    this.scratch.colorMatrix(this.matrix, this.mask, 1, TargetChannel.FG);
+    buffer.drawFrameBuffer(this.screenX, this.screenY, this.scratch);
+  }
+  destroySelf() {
+    this.scratch?.destroy();
+    this.scratch = undefined;
+    super.destroySelf();
+  }
+}
+
+// ../tui-base/src/component/tab-pulse.tsx
+import { effect as _$effect8 } from "@opentui/solid";
+import { setProp as _$setProp8 } from "@opentui/solid";
+import { createElement as _$createElement8 } from "@opentui/solid";
+import { Renderable as Renderable2, RGBA as RGBA11 } from "@opentui/core";
+import { extend as extend2 } from "@opentui/solid";
+var clamp3 = (value) => Math.max(0, Math.min(1, value));
+var smootherstep = (value) => value * value * value * (value * (value * 6 - 15) + 10);
+var RUN_DURATION = 2800;
+var RUN_ATTACK = 450;
+var RUN_HEAD = 4;
+var RUN_TAIL = 18;
+var RUN_FADE_OUT = 500;
+var COMPLETION_DURATION = 1200;
+var COMPLETION_ATTACK = 0.12;
+var COMPLETION_OPACITY = 0.18;
+var EDGE_FLASH_DURATION = 800;
+var EDGE_FLASH_ATTACK = 0.1;
+var EDGE_FLASH_OPACITY = 0.1;
+var PROMPT_FLASH_SCALE = 2;
+var GLOW_IGNITION_DURATION = 600;
+var GLOW_IGNITION_PEAK = 1.5;
+var GLOW_IGNITION_ATTACK = 0.3;
+var GLOW_FADE_OUT = 200;
+var GLOW_RELEASE_DURATION = 900;
+var GLOW_RELEASE_ATTACK = 0.12;
+var GLOW_RELEASE_PEAK = 1.25;
+var GLOW_TAIL = 12;
+var GLOW_OPACITY = 0.16;
+var DEFAULT_FOREGROUND = RGBA11.defaultForeground();
+var PULSE_FPS = 20;
+var intensityAt = (index, front, head, tail) => {
+  const distance = front - index;
+  return distance < 0 ? smootherstep(clamp3(1 + distance / head)) : smootherstep(clamp3(1 - distance / tail));
+};
+var coast = (value) => {
+  const ramp = 0.2;
+  if (value < ramp)
+    return value * value / (2 * ramp * (1 - ramp));
+  if (value > 1 - ramp)
+    return 1 - (1 - value) * (1 - value) / (2 * ramp * (1 - ramp));
+  return (value - ramp / 2) / (1 - ramp);
+};
+var fadeOut = (progress) => 1 - smootherstep(progress);
+var attackDecay = (progress, attack, peak, rest) => progress < attack ? peak * smootherstep(clamp3(progress / attack)) : peak - (peak - rest) * smootherstep(clamp3((progress - attack) / (1 - attack)));
+var completionPulseOpacity = (progress) => attackDecay(progress, COMPLETION_ATTACK, 1, 0);
+var glowIgnitionLevel = (progress) => attackDecay(progress, GLOW_IGNITION_ATTACK, GLOW_IGNITION_PEAK, 1);
+var glowIntensityAt = (index, tail) => smootherstep(clamp3(1 - Math.max(0, index - 1) / tail));
+var tabFlashIntensity = (index, tail) => glowIntensityAt(index, tail);
+var glowReleaseSpread = (progress, tail, width) => tail + smootherstep(progress) * width;
+var GLOW_RELEASE_DRAIN_FRACTION = GLOW_FADE_OUT / GLOW_RELEASE_DURATION;
+var glowReleaseDrain = (progress) => fadeOut(clamp3(progress / GLOW_RELEASE_DRAIN_FRACTION));
+var glowReleaseSwell = (progress) => attackDecay(progress, GLOW_RELEASE_ATTACK, GLOW_RELEASE_PEAK, 0);
+function blendTabPulseColor(output, background, glowColor, runningColor, flashColor, completionColor, glow, running, flash, completion) {
+  if (glow === 0) {
+    output.r = background.r;
+    output.g = background.g;
+    output.b = background.b;
+  } else {
+    output.r = background.r + (glowColor.r - background.r) * glow;
+    output.g = background.g + (glowColor.g - background.g) * glow;
+    output.b = background.b + (glowColor.b - background.b) * glow;
+  }
+  if (running !== 0) {
+    output.r += (runningColor.r - output.r) * running;
+    output.g += (runningColor.g - output.g) * running;
+    output.b += (runningColor.b - output.b) * running;
+  }
+  if (flash !== 0) {
+    output.r += (flashColor.r - output.r) * flash;
+    output.g += (flashColor.g - output.g) * flash;
+    output.b += (flashColor.b - output.b) * flash;
+  }
+  if (completion !== 0) {
+    output.r += (completionColor.r - output.r) * completion;
+    output.g += (completionColor.g - output.g) * completion;
+    output.b += (completionColor.b - output.b) * completion;
+  }
+}
+
+class Envelope {
+  scale = 1;
+  constructor(duration, shape) {
+    this.duration = duration;
+    this.shape = shape;
+  }
+  start(scale = 1) {
+    if (this.clock !== undefined)
+      return;
+    this.clock = 0;
+    this.scale = scale;
+  }
+  restart(scale = 1) {
+    this.clock = 0;
+    this.scale = scale;
+  }
+  stop() {
+    this.clock = undefined;
+  }
+  advance(delta) {
+    if (this.clock === undefined)
+      return;
+    this.clock += delta;
+    if (this.clock >= this.duration)
+      this.clock = undefined;
+  }
+  get active() {
+    return this.clock !== undefined;
+  }
+  level() {
+    return this.clock === undefined ? 0 : this.scale * this.shape(this.clock / this.duration);
+  }
+}
+
+class GatedEnvelope {
+  phaseClock = 0;
+  releaseScale = 1;
+  constructor(attackStage, releaseStage, initial = "idle") {
+    this.attackStage = attackStage;
+    this.releaseStage = releaseStage;
+    this.phase = initial;
+  }
+  trigger() {
+    this.phase = "attack";
+    this.phaseClock = 0;
+  }
+  release() {
+    if (this.phase === "idle")
+      return;
+    this.releaseScale = this.level;
+    this.phase = "release";
+    this.phaseClock = 0;
+  }
+  settle(phase) {
+    this.phase = phase;
+    this.phaseClock = 0;
+  }
+  advance(delta) {
+    if (this.phase === "idle" || this.phase === "sustain")
+      return;
+    this.phaseClock += delta;
+    const duration = this.phase === "attack" ? this.attackStage.duration : this.releaseStage.duration;
+    if (this.phaseClock < duration)
+      return;
+    this.phase = this.phase === "attack" ? "sustain" : "idle";
+    this.phaseClock = 0;
+  }
+  get level() {
+    if (this.phase === "idle")
+      return 0;
+    if (this.phase === "sustain")
+      return 1;
+    if (this.phase === "attack")
+      return this.attackStage.shape(this.phaseClock / this.attackStage.duration);
+    return this.releaseScale * this.releaseStage.shape(this.phaseClock / this.releaseStage.duration);
+  }
+  get animating() {
+    return this.phase === "attack" || this.phase === "release";
+  }
+  get idle() {
+    return this.phase === "idle";
+  }
+  get releaseProgress() {
+    return this.phase === "release" ? this.phaseClock / this.releaseStage.duration : undefined;
+  }
+  get noteOffLevel() {
+    return this.releaseScale;
+  }
+}
+
+class PulseState {
+  completionPending = false;
+  sweepClock = 0;
+  runEnvelope = new GatedEnvelope({
+    duration: RUN_ATTACK,
+    shape: smootherstep
+  }, {
+    duration: RUN_FADE_OUT,
+    shape: fadeOut
+  });
+  completionPulse = new Envelope(COMPLETION_DURATION, completionPulseOpacity);
+  edgeFlash = new Envelope(EDGE_FLASH_DURATION, (progress) => attackDecay(progress, EDGE_FLASH_ATTACK, 1, 0));
+  constructor(options) {
+    this.enabled = options.enabled;
+    this.active = options.active;
+    this.promptPulse = options.promptPulse;
+    this.complete = options.complete;
+    this.glow = options.glow;
+    this.glowEnvelope = new GatedEnvelope({
+      duration: GLOW_IGNITION_DURATION,
+      shape: glowIgnitionLevel
+    }, {
+      duration: GLOW_RELEASE_DURATION,
+      shape: glowReleaseDrain
+    }, options.glow ? "sustain" : "idle");
+    if (this.enabled && this.active)
+      this.runEnvelope.trigger();
+  }
+  get live() {
+    return this.enabled && (this.active || this.runEnvelope.animating || this.glowEnvelope.animating || this.completionPulse.active || this.edgeFlash.active);
+  }
+  get running() {
+    return this.runEnvelope.level;
+  }
+  get completion() {
+    return this.completionPulse.level() * COMPLETION_OPACITY;
+  }
+  get flash() {
+    return this.edgeFlash.level() * EDGE_FLASH_OPACITY;
+  }
+  get glowLevel() {
+    return this.glowEnvelope.level;
+  }
+  get glowReleaseProgress() {
+    return this.glowEnvelope.releaseProgress;
+  }
+  get glowReleaseSwell() {
+    const progress = this.glowEnvelope.releaseProgress;
+    if (progress === undefined)
+      return 0;
+    return glowReleaseSwell(progress) * Math.max(1, this.glowEnvelope.noteOffLevel);
+  }
+  setEnabled(value) {
+    if (value === this.enabled)
+      return false;
+    this.enabled = value;
+    if (!value) {
+      this.runEnvelope.settle("idle");
+      this.glowEnvelope.settle(this.glow ? "sustain" : "idle");
+      this.completionPulse.stop();
+      this.edgeFlash.stop();
+      this.completionPending = false;
+    } else if (this.active) {
+      this.runEnvelope.trigger();
+    }
+    return true;
+  }
+  setActive(value) {
+    if (value === this.active)
+      return false;
+    this.active = value;
+    if (!this.enabled)
+      return true;
+    if (value) {
+      this.sweepClock = 0;
+      this.runEnvelope.trigger();
+      this.completionPulse.stop();
+      this.completionPending = false;
+    } else {
+      this.runEnvelope.release();
+      this.completionPending = true;
+    }
+    this.edgeFlash.start();
+    return true;
+  }
+  setPromptPulse(value) {
+    if (value === this.promptPulse)
+      return false;
+    this.promptPulse = value;
+    if (this.enabled)
+      this.edgeFlash.restart(PROMPT_FLASH_SCALE);
+    return true;
+  }
+  setComplete(value) {
+    if (value === this.complete)
+      return false;
+    this.complete = value;
+    if (!value) {
+      this.completionPulse.stop();
+      this.completionPending = false;
+    }
+    if (value && this.completionPending) {
+      this.completionPending = false;
+      if (this.enabled)
+        this.completionPulse.start();
+    }
+    return true;
+  }
+  setGlow(value) {
+    if (value === this.glow)
+      return false;
+    this.glow = value;
+    if (!this.enabled) {
+      this.glowEnvelope.settle(value ? "sustain" : "idle");
+      return true;
+    }
+    if (value)
+      this.glowEnvelope.trigger();
+    else
+      this.glowEnvelope.release();
+    return true;
+  }
+  advance(deltaTime) {
+    if (!this.live)
+      return;
+    if (!this.runEnvelope.idle)
+      this.sweepClock += deltaTime;
+    this.runEnvelope.advance(deltaTime);
+    this.glowEnvelope.advance(deltaTime);
+    this.completionPulse.advance(deltaTime);
+    this.edgeFlash.advance(deltaTime);
+    if (!this.completionPending)
+      return;
+    if (this.complete) {
+      this.completionPending = false;
+      this.completionPulse.start();
+      return;
+    }
+    if (this.runEnvelope.releaseProgress === undefined)
+      this.completionPending = false;
+  }
+  sweepFronts = [0, 0];
+  fronts(width) {
+    const cycles = this.sweepClock / RUN_DURATION;
+    const progress = cycles % 1;
+    const start = -RUN_HEAD;
+    const end = width - 1 + RUN_TAIL;
+    const secondProgress = cycles < 0.5 ? 0 : (cycles + 0.5) % 1;
+    this.sweepFronts[0] = start + coast(progress) * (end - start);
+    this.sweepFronts[1] = start + coast(secondProgress) * (end - start);
+    return this.sweepFronts;
+  }
+}
+
+class TabPulseRenderable extends Renderable2 {
+  renderColor = RGBA11.fromInts(0, 0, 0);
+  outerRenderColor = RGBA11.fromInts(0, 0, 0);
+  lastLevel = 0;
+  constructor(ctx, options = {}) {
+    const enabled = options.enabled ?? true;
+    const active = options.active ?? false;
+    const glow = options.glow ?? false;
+    const edge = options.edge;
+    const outerActive = options.outerActive ?? active;
+    const outerGlow = options.outerGlow ?? glow;
+    super(ctx, {
+      ...options,
+      height: 1
+    });
+    this._enabled = enabled;
+    this.inner = new PulseState({
+      enabled,
+      active,
+      promptPulse: options.promptPulse ?? 0,
+      complete: options.complete ?? false,
+      glow
+    });
+    this.outer = new PulseState({
+      enabled: enabled && edge !== undefined,
+      active: outerActive,
+      promptPulse: options.outerPromptPulse ?? options.promptPulse ?? 0,
+      complete: options.outerComplete ?? options.complete ?? false,
+      glow: outerGlow
+    });
+    this._color = options.color ?? RGBA11.defaultForeground();
+    this._outerColor = options.outerColor ?? this._color;
+    this._glowColor = options.glowColor ?? this._color;
+    this._outerGlowColor = options.outerGlowColor ?? this._glowColor;
+    this._glowTail = options.glowTail ?? GLOW_TAIL;
+    this._outerGlowTail = options.outerGlowTail ?? this._glowTail;
+    this._edge = edge;
+    this._flashColor = options.flashColor ?? this._color;
+    this._outerFlashColor = options.outerFlashColor ?? options.flashColor ?? this._outerColor;
+    this._flashTail = options.flashTail;
+    this._outerFlashTail = options.outerFlashTail ?? options.flashTail;
+    this._completionColor = options.completionColor ?? this._color;
+    this._outerCompletionColor = options.outerCompletionColor ?? options.completionColor ?? this._outerColor;
+    this._backgroundColor = options.backgroundColor ?? RGBA11.defaultBackground();
+    this._onLevel = options.onLevel;
+    this.changed();
+  }
+  set onLevel(value) {
+    this._onLevel = value;
+  }
+  emitLevel(value) {
+    if (!this._onLevel)
+      return;
+    const quantized = Math.round(value * 32) / 32;
+    if (quantized === this.lastLevel)
+      return;
+    this.lastLevel = quantized;
+    this._onLevel?.(quantized);
+  }
+  set enabled(value) {
+    if (value === this._enabled)
+      return;
+    this._enabled = value;
+    this.inner.setEnabled(value);
+    this.outer.setEnabled(value && this._edge !== undefined);
+    this.changed();
+  }
+  set active(value) {
+    if (this.inner.setActive(value))
+      this.changed();
+  }
+  set outerActive(value) {
+    if (this.outer.setActive(value))
+      this.changed();
+  }
+  set promptPulse(value) {
+    if (this.inner.setPromptPulse(value))
+      this.changed();
+  }
+  set outerPromptPulse(value) {
+    if (this.outer.setPromptPulse(value))
+      this.changed();
+  }
+  set complete(value) {
+    if (this.inner.setComplete(value))
+      this.changed();
+  }
+  set outerComplete(value) {
+    if (this.outer.setComplete(value))
+      this.changed();
+  }
+  set glow(value) {
+    if (this.inner.setGlow(value))
+      this.changed();
+  }
+  set outerGlow(value) {
+    if (this.outer.setGlow(value))
+      this.changed();
+  }
+  changed() {
+    const animating = this.inner.live || this.outer.live;
+    this.animationFps = animating ? PULSE_FPS : undefined;
+    this.emitLevel(this.level());
+    this.requestRender();
+  }
+  level() {
+    const running = this.inner.running;
+    if (running === 0 || this.width <= 0)
+      return 0;
+    const fronts = this.inner.fronts(this.width);
+    return Math.max(intensityAt(1, fronts[0], RUN_HEAD, RUN_TAIL), intensityAt(1, fronts[1], RUN_HEAD, RUN_TAIL)) * running;
+  }
+  set color(value) {
+    if (value.equals(this._color))
+      return;
+    this._color = value;
+    this.requestRender();
+  }
+  set glowColor(value) {
+    if (value.equals(this._glowColor))
+      return;
+    this._glowColor = value;
+    this.requestRender();
+  }
+  set outerColor(value) {
+    if (value.equals(this._outerColor))
+      return;
+    this._outerColor = value;
+    this.requestRender();
+  }
+  set outerGlowColor(value) {
+    if (value.equals(this._outerGlowColor))
+      return;
+    this._outerGlowColor = value;
+    this.requestRender();
+  }
+  set glowTail(value) {
+    if (value === this._glowTail)
+      return;
+    this._glowTail = value;
+    this.requestRender();
+  }
+  set outerGlowTail(value) {
+    if (value === this._outerGlowTail)
+      return;
+    this._outerGlowTail = value;
+    this.requestRender();
+  }
+  set edge(value) {
+    if (value === this._edge)
+      return;
+    this._edge = value;
+    this.outer.setEnabled(this._enabled && value !== undefined);
+    this.changed();
+  }
+  set flashColor(value) {
+    if (value.equals(this._flashColor))
+      return;
+    this._flashColor = value;
+    this.requestRender();
+  }
+  set outerFlashColor(value) {
+    if (value.equals(this._outerFlashColor))
+      return;
+    this._outerFlashColor = value;
+    this.requestRender();
+  }
+  set flashTail(value) {
+    if (value === this._flashTail)
+      return;
+    this._flashTail = value;
+    this.requestRender();
+  }
+  set outerFlashTail(value) {
+    if (value === this._outerFlashTail)
+      return;
+    this._outerFlashTail = value;
+    this.requestRender();
+  }
+  set completionColor(value) {
+    if (value.equals(this._completionColor))
+      return;
+    this._completionColor = value;
+    this.requestRender();
+  }
+  set outerCompletionColor(value) {
+    if (value.equals(this._outerCompletionColor))
+      return;
+    this._outerCompletionColor = value;
+    this.requestRender();
+  }
+  set backgroundColor(value) {
+    if (value.equals(this._backgroundColor))
+      return;
+    this._backgroundColor = value;
+    this.requestRender();
+  }
+  onAnimationTick(deltaTime) {
+    this.inner.advance(deltaTime);
+    this.outer.advance(deltaTime);
+    this.changed();
+  }
+  renderSelf(buffer) {
+    if (!this.visible || this.isDestroyed || this.width <= 0)
+      return;
+    const running = this.inner.running;
+    const completion = this.inner.completion;
+    const flash = this.inner.flash;
+    const glowLevel = this.inner.glowLevel;
+    const releaseProgress = this.inner.glowReleaseProgress;
+    const outerRunning = this.outer.running;
+    const outerCompletion = this.outer.completion;
+    const outerFlash = this.outer.flash;
+    const outerGlowLevel = this.outer.glowLevel;
+    const outerReleaseProgress = this.outer.glowReleaseProgress;
+    if (glowLevel === 0 && releaseProgress === undefined && running === 0 && completion === 0 && flash === 0 && outerGlowLevel === 0 && outerReleaseProgress === undefined && outerRunning === 0 && outerCompletion === 0 && outerFlash === 0)
+      return;
+    const fronts = running === 0 ? undefined : this.inner.fronts(this.width);
+    const outerFronts = outerRunning === 0 ? undefined : this.outer.fronts(this.width);
+    const glowTail = Math.min(this._glowTail, Math.max(1, this.width - 2));
+    const outerGlowTail = Math.min(this._outerGlowTail, Math.max(1, this.width - 2));
+    const releaseSwell = this.inner.glowReleaseSwell;
+    const releaseSpread = releaseSwell === 0 ? 0 : glowReleaseSpread(releaseProgress, glowTail, this.width);
+    const outerReleaseSwell = this.outer.glowReleaseSwell;
+    const outerReleaseSpread = outerReleaseSwell === 0 ? 0 : glowReleaseSpread(outerReleaseProgress, outerGlowTail, this.width);
+    const flashTail = this._flashTail === undefined ? undefined : Math.min(this._flashTail, Math.max(1, this.width - 2));
+    const outerFlashTail = this._outerFlashTail === undefined ? undefined : Math.min(this._outerFlashTail, Math.max(1, this.width - 2));
+    for (let index = 0;index < this.width; index++) {
+      const sweep = running === 0 ? 0 : Math.max(intensityAt(index, fronts[0], RUN_HEAD, RUN_TAIL), intensityAt(index, fronts[1], RUN_HEAD, RUN_TAIL)) * 0.14 * running;
+      const outerSweep = outerRunning === 0 ? 0 : Math.max(intensityAt(index, outerFronts[0], RUN_HEAD, RUN_TAIL), intensityAt(index, outerFronts[1], RUN_HEAD, RUN_TAIL)) * 0.14 * outerRunning;
+      blendTabPulseColor(this.renderColor, this._backgroundColor, this._glowColor, this._color, this._flashColor, this._completionColor, Math.max(glowLevel === 0 ? 0 : glowIntensityAt(index, glowTail) * GLOW_OPACITY * glowLevel, releaseSwell === 0 ? 0 : glowIntensityAt(index, releaseSpread) * GLOW_OPACITY * releaseSwell), sweep, flashTail === undefined ? flash : flash * tabFlashIntensity(index, flashTail), completion);
+      if (!this._edge) {
+        buffer.setCell(this.screenX + index, this.screenY, " ", DEFAULT_FOREGROUND, this.renderColor);
+        continue;
+      }
+      blendTabPulseColor(this.outerRenderColor, this._backgroundColor, this._outerGlowColor, this._outerColor, this._outerFlashColor, this._outerCompletionColor, Math.max(outerGlowLevel === 0 ? 0 : glowIntensityAt(index, outerGlowTail) * GLOW_OPACITY * outerGlowLevel, outerReleaseSwell === 0 ? 0 : glowIntensityAt(index, outerReleaseSpread) * GLOW_OPACITY * outerReleaseSwell), outerSweep, outerFlashTail === undefined ? outerFlash : outerFlash * tabFlashIntensity(index, outerFlashTail), outerCompletion);
+      buffer.setCell(this.screenX + index, this.screenY, this._edge === "above" ? "▄" : "▀", this.renderColor, this.outerRenderColor);
+    }
+  }
+}
+extend2({
+  tab_pulse: TabPulseRenderable
+});
+
+// ../tui-base/src/component/shimmer-text.tsx
+var DURATION = 1200;
+
+class ShimmerTextRenderable extends MaskedTextRenderable {
+  _shimmer = RGBA12.defaultForeground();
+  elapsed = 0;
+  constructor(ctx, options) {
+    super(ctx, options);
+    this.matrix[3] = this._shimmer.r;
+    this.matrix[7] = this._shimmer.g;
+    this.matrix[11] = this._shimmer.b;
+    this.matrix[15] = 1;
+    if (options.shimmer)
+      this.shimmer = options.shimmer;
+    this.live = true;
+  }
+  set shimmer(value) {
+    if (value.equals(this._shimmer))
+      return;
+    this._shimmer = value;
+    this.matrix[3] = value.r;
+    this.matrix[7] = value.g;
+    this.matrix[11] = value.b;
+    this.requestRender();
+  }
+  renderSelf(buffer, deltaTime = 0) {
+    if (!this.visible || this.isDestroyed || !Number.isFinite(this.width) || this.width <= 0 || this.height <= 0)
+      return;
+    this.elapsed = (this.elapsed + deltaTime) % DURATION;
+    this.renderMasked(buffer, 0, (end) => {
+      const front = -4 + coast(this.elapsed / DURATION) * (end + 22);
+      return (column) => intensityAt(column, front, 4, 18);
+    });
+  }
+}
+extend3({
+  shimmer_text: ShimmerTextRenderable
+});
+function ShimmerText(props) {
+  const [local, text] = splitProps(props, ["shimmer"]);
+  return (() => {
+    var _el$ = _$createElement9("shimmer_text");
+    _$spread(_el$, _$mergeProps(text, {
+      get shimmer() {
+        return local.shimmer;
+      }
+    }), false);
+    return _el$;
+  })();
+}
+
+// ../tui-base/src/component/spinner.tsx
+function Spinner(props) {
+  const theme = useTheme();
+  const config = useConfig().data;
+  const color = () => props.color ?? theme.text.muted;
+  const [frame, setFrame] = createSignal11(0);
+  createEffect5(() => {
+    if (!(config.animations ?? true) || !props.shimmer)
+      return;
+    const timer = setInterval(() => setFrame((value) => (value + 1) % SPINNER_FRAMES.length), 80);
+    onCleanup12(() => clearInterval(timer));
+  });
+  return _$createComponent16(Show9, {
+    get when() {
+      return config.animations ?? true;
+    },
+    get fallback() {
+      return (() => {
+        var _el$ = _$createElement10("text");
+        _$insert8(_el$, (() => {
+          var _c$ = _$memo6(() => !!props.children);
+          return () => _c$() ? ["⋯ ", _$memo6(() => props.children)] : "⋯";
+        })());
+        _$effect9((_$p) => _$setProp9(_el$, "fg", color(), _$p));
+        return _el$;
+      })();
+    },
+    get children() {
+      return _$createComponent16(Show9, {
+        get when() {
+          return props.shimmer;
+        },
+        get fallback() {
+          return (() => {
+            var _el$2 = _$createElement10("box"), _el$3 = _$createElement10("box"), _el$4 = _$createElement10("spinner");
+            _$insertNode8(_el$2, _el$3);
+            _$setProp9(_el$2, "flexDirection", "row");
+            _$setProp9(_el$2, "gap", 1);
+            _$insertNode8(_el$3, _el$4);
+            _$setProp9(_el$3, "flexShrink", 0);
+            _$setProp9(_el$4, "frames", SPINNER_FRAMES);
+            _$setProp9(_el$4, "interval", 80);
+            _$insert8(_el$2, _$createComponent16(Show9, {
+              get when() {
+                return props.children;
+              },
+              get children() {
+                var _el$5 = _$createElement10("text");
+                _$insert8(_el$5, () => props.children);
+                _$effect9((_$p) => _$setProp9(_el$5, "fg", color(), _$p));
+                return _el$5;
+              }
+            }), null);
+            _$effect9((_p$) => {
+              var _v$ = props.children ? 1 : 0, _v$2 = color();
+              _v$ !== _p$.e && (_p$.e = _$setProp9(_el$2, "flexShrink", _v$, _p$.e));
+              _v$2 !== _p$.t && (_p$.t = _$setProp9(_el$4, "color", _v$2, _p$.t));
+              return _p$;
+            }, {
+              e: undefined,
+              t: undefined
+            });
+            return _el$2;
+          })();
+        },
+        children: (shimmer) => _$createComponent16(ShimmerText, {
+          get fg() {
+            return color();
+          },
+          get shimmer() {
+            return shimmer();
+          },
+          get children() {
+            return [_$memo6(() => SPINNER_FRAMES[frame()]), " ", _$memo6(() => props.children)];
+          }
+        })
+      });
+    }
+  });
+}
+
+// ../tui-base/src/ui/dialog-prompt.tsx
+import { useRenderer as useRenderer8 } from "@opentui/solid";
+function DialogPrompt(props) {
+  const dialog = useDialog();
+  const renderer = useRenderer8();
+  const theme = useTheme().surface("dialog");
+  const cursorStyle = useCursorStyle();
+  const [textareaTarget, setTextareaTarget] = createSignal12();
+  let textarea;
+  function confirm() {
+    if (props.busy)
+      return;
+    props.onConfirm?.(textarea.plainText);
+  }
+  const handle = {
+    setValue(value) {
+      textarea.setText(value);
+      textarea.gotoLineEnd();
+    }
+  };
+  const extraActions = () => (props.actions ?? []).map((action) => ({
+    title: action.title,
+    command: action.command,
+    disabled: props.busy,
+    onTrigger: () => action.onTrigger(handle)
+  }));
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    target: textareaTarget,
+    enabled: textareaTarget() !== undefined && !props.busy,
+    priority: 1,
+    commands: [{
+      id: "dialog.prompt.submit",
+      title: "Submit dialog prompt",
+      group: "Dialog",
+      run: confirm
+    }, ...(props.actions ?? []).map((action) => ({
+      id: action.command,
+      title: action.commandTitle ?? action.title,
+      group: "Dialog",
+      run: () => action.onTrigger(handle)
+    }))]
+  }));
+  Keymap.createLayer(() => ({
+    mode: "modal",
+    enabled: props.onCancel !== undefined,
+    priority: 1,
+    commands: [{
+      bind: "escape",
+      title: "Back",
+      group: "Dialog",
+      run: () => {
+        if (renderer.getSelection()) {
+          renderer.clearSelection();
+          return;
+        }
+        if (!props.busy)
+          props.onCancel?.();
+      }
+    }]
+  }));
+  onMount5(() => {
+    dialog.setSize(props.size ?? "medium");
+    setTimeout(() => {
+      if (!textarea || textarea.isDestroyed)
+        return;
+      if (props.busy)
+        return;
+      textarea.focus();
+    }, 1);
+    textarea.gotoLineEnd();
+  });
+  createEffect6(() => {
+    if (!textarea || textarea.isDestroyed)
+      return;
+    const traits = props.busy ? {
+      suspend: true,
+      status: "BUSY"
+    } : {};
+    textarea.traits = traits;
+    if (props.busy) {
+      textarea.blur();
+      return;
+    }
+    textarea.focus();
+  });
+  return _$createComponent17(DialogLayout, {
+    footerGap: 2,
+    get header() {
+      return _$createComponent17(DialogHeader, {
+        get title() {
+          return props.title;
+        },
+        get description() {
+          return props.subtitle;
+        },
+        onClose: () => {
+          if (!props.busy)
+            (props.onCancel ?? dialog.clear)();
+        }
+      });
+    },
+    get footer() {
+      return {
+        actions: {
+          primary: [...extraActions(), {
+            title: "submit",
+            command: "dialog.prompt.submit",
+            disabled: props.busy,
+            onTrigger: confirm
+          }]
+        }
+      };
+    },
+    get legacyFooter() {
+      return _$createComponent17(Show10, {
+        get when() {
+          return !props.busy;
+        },
+        get fallback() {
+          return (() => {
+            var _el$3 = _$createElement11("text");
+            _$insertNode9(_el$3, _$createTextNode6(`processing…`));
+            _$effect10((_$p) => _$setProp10(_el$3, "fg", theme.text.muted, _$p));
+            return _el$3;
+          })();
+        },
+        get children() {
+          return _$createComponent17(DialogFooter, {
+            get actions() {
+              return {
+                secondary: [{
+                  title: "submit",
+                  command: "dialog.prompt.submit",
+                  onTrigger: confirm
+                }, ...extraActions()]
+              };
+            }
+          });
+        }
+      });
+    },
+    get children() {
+      var _el$ = _$createElement11("box"), _el$2 = _$createElement11("textarea");
+      _$insertNode9(_el$, _el$2);
+      _$setProp10(_el$, "gap", 1);
+      _$insert9(_el$, () => props.description?.(), _el$2);
+      _$use4((val) => {
+        textarea = val;
+        setTextareaTarget(val);
+      }, _el$2);
+      _$setProp10(_el$2, "height", 1);
+      _$setProp10(_el$2, "wrapMode", "none");
+      _$insert9(_el$, _$createComponent17(Show10, {
+        get when() {
+          return props.busy;
+        },
+        get children() {
+          return _$createComponent17(Spinner, {
+            get color() {
+              return theme.text.muted;
+            },
+            get children() {
+              return props.busyText ?? "Working…";
+            }
+          });
+        }
+      }), null);
+      _$effect10((_p$) => {
+        var _v$ = props.value, _v$2 = props.placeholder ?? "Enter text", _v$3 = theme.text.muted, _v$4 = props.busy ? theme.text.formfield.disabled : theme.text.formfield.base, _v$5 = props.busy ? theme.text.formfield.disabled : theme.text.formfield.base, _v$6 = props.busy ? theme.background.formfield.disabled : theme.text.base, _v$7 = cursorStyle();
+        _v$ !== _p$.e && (_p$.e = _$setProp10(_el$2, "initialValue", _v$, _p$.e));
+        _v$2 !== _p$.t && (_p$.t = _$setProp10(_el$2, "placeholder", _v$2, _p$.t));
+        _v$3 !== _p$.a && (_p$.a = _$setProp10(_el$2, "placeholderColor", _v$3, _p$.a));
+        _v$4 !== _p$.o && (_p$.o = _$setProp10(_el$2, "textColor", _v$4, _p$.o));
+        _v$5 !== _p$.i && (_p$.i = _$setProp10(_el$2, "focusedTextColor", _v$5, _p$.i));
+        _v$6 !== _p$.n && (_p$.n = _$setProp10(_el$2, "cursorColor", _v$6, _p$.n));
+        _v$7 !== _p$.s && (_p$.s = _$setProp10(_el$2, "cursorStyle", _v$7, _p$.s));
+        return _p$;
+      }, {
+        e: undefined,
+        t: undefined,
+        a: undefined,
+        o: undefined,
+        i: undefined,
+        n: undefined,
+        s: undefined
+      });
+      return _el$;
+    }
+  });
+}
+
+// ../tui-base/src/routes/session/btw-overlay.tsx
+var BTW_QUEUE_CAPACITY = 3;
+var BTW_SNAPSHOT_ROWS = 6;
+var BTW_SNAPSHOT_ROW_CHARS = 1000;
+
+class BtwController {
+  #ask;
+  #snapshot;
+  #capacity;
+  #run = createSignal13(undefined);
+  #last = createSignal13(undefined);
+  #queue = createSignal13([]);
+  #visible = createSignal13(false);
+  constructor(deps) {
+    this.#ask = deps.ask;
+    this.#snapshot = deps.snapshot;
+    this.#capacity = deps.capacity ?? BTW_QUEUE_CAPACITY;
+  }
+  run() {
+    return this.#run[0]();
+  }
+  last() {
+    return this.#last[0]();
+  }
+  queueDepth() {
+    return this.#queue[0]().length;
+  }
+  visible() {
+    return this.#visible[0]();
+  }
+  get busy() {
+    return this.run()?.status === "streaming" || this.queueDepth() > 0;
+  }
+  submit(question) {
+    const text = question.trim();
+    if (text === "")
+      return "full";
+    if (this.run()?.status === "streaming") {
+      const queue = this.#queue[0]();
+      if (queue.length >= this.#capacity)
+        return "full";
+      this.#queue[1]([...queue, text]);
+      return "queued";
+    }
+    this.#start(text);
+    return "started";
+  }
+  close() {
+    this.#visible[1](false);
+  }
+  markVisible() {
+    this.#visible[1](true);
+  }
+  dropQueue() {
+    this.#queue[1]([]);
+  }
+  #start(question) {
+    const runState = {
+      question,
+      answer: "",
+      status: "streaming"
+    };
+    this.#run[1](runState);
+    this.#snapshot().catch(() => []).then((snapshot) => this.#ask(question, snapshot, (full) => {
+      this.#run[1]((prev) => prev === undefined ? prev : {
+        ...prev,
+        answer: full
+      });
+    })).then((answer) => {
+      this.#settle(answer.startsWith("error:") ? "error" : "settled", answer);
+    }).catch((error) => {
+      this.#settle("error", `error: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
+  #settle(status, answer) {
+    const finished = this.#run[0]();
+    if (finished !== undefined) {
+      this.#last[1]({
+        ...finished,
+        answer,
+        status
+      });
+      this.#run[1](undefined);
+    }
+    const [next, ...rest] = this.#queue[0]();
+    this.#queue[1](rest);
+    if (next !== undefined)
+      this.#start(next);
+  }
+}
+function BtwPanel(props) {
+  const theme = useThemeOptional();
+  const muted = () => theme?.text.muted ?? "#565f89";
+  const accent = () => theme?.border.base ?? "#7aa2f7";
+  const shown = () => props.controller.run() ?? props.controller.last();
+  return (() => {
+    var _el$ = _$createElement12("box"), _el$2 = _$createElement12("text"), _el$4 = _$createElement12("text");
+    _$insertNode10(_el$, _el$2);
+    _$insertNode10(_el$, _el$4);
+    _$setProp11(_el$, "flexDirection", "column");
+    _$setProp11(_el$, "gap", 1);
+    _$setProp11(_el$, "paddingBottom", 1);
+    _$insertNode10(_el$2, _$createTextNode7(`btw — side question`));
+    _$insert10(_el$, _$createComponent18(Show11, {
+      get when() {
+        return shown();
+      },
+      get fallback() {
+        return (() => {
+          var _el$5 = _$createElement12("text");
+          _$insertNode10(_el$5, _$createTextNode7(`no side question yet`));
+          _$effect11((_$p) => _$setProp11(_el$5, "fg", muted(), _$p));
+          return _el$5;
+        })();
+      },
+      children: (run) => [(() => {
+        var _el$7 = _$createElement12("text");
+        _$insert10(_el$7, () => run().question);
+        return _el$7;
+      })(), _$createComponent18(Show11, {
+        get when() {
+          return _$memo8(() => run().status === "streaming")() && run().answer === "";
+        },
+        get fallback() {
+          return (() => {
+            var _el$0 = _$createElement12("text");
+            _$insert10(_el$0, () => run().answer);
+            return _el$0;
+          })();
+        },
+        get children() {
+          var _el$8 = _$createElement12("text");
+          _$insertNode10(_el$8, _$createTextNode7(`Thinking…`));
+          _$effect11((_$p) => _$setProp11(_el$8, "fg", muted(), _$p));
+          return _el$8;
+        }
+      })]
+    }), _el$4);
+    _$insert10(_el$4, (() => {
+      var _c$ = _$memo8(() => shown()?.status === "streaming");
+      return () => _c$() ? `Running alongside the main task · Esc close${props.controller.queueDepth() > 0 ? ` · ${props.controller.queueDepth()} queued` : ""}` : `Not kept in the session · /btw reopens this answer${props.controller.queueDepth() > 0 ? ` · ${props.controller.queueDepth()} queued` : ""}`;
+    })());
+    _$effect11((_p$) => {
+      var _v$ = accent(), _v$2 = muted();
+      _v$ !== _p$.e && (_p$.e = _$setProp11(_el$2, "fg", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp11(_el$4, "fg", _v$2, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$;
+  })();
+}
+function createBtwOpener(deps) {
+  const showPanel = () => {
+    deps.controller.markVisible();
+    deps.dialog.replace(() => _$createComponent18(BtwPanel, {
+      get controller() {
+        return deps.controller;
+      }
+    }), () => {
+      deps.controller.close();
+    });
+  };
+  return (argText) => {
+    const question = argText.trim();
+    if (question !== "") {
+      const outcome = deps.controller.submit(question);
+      if (outcome === "full")
+        return "full";
+      showPanel();
+      return outcome;
+    }
+    if (deps.controller.last() !== undefined) {
+      showPanel();
+      return "review";
+    }
+    deps.dialog.replace(() => _$createComponent18(DialogPrompt, {
+      title: "/btw",
+      placeholder: "Ask anything",
+      onConfirm: (text) => {
+        const outcome = deps.controller.submit(text);
+        if (outcome === "full") {
+          deps.dialog.clear();
+          return;
+        }
+        showPanel();
+      },
+      onCancel: () => {
+        deps.controller.close();
+      }
+    }), () => {
+      deps.controller.close();
+    });
+    return "input";
+  };
+}
+function createBtwSnapshotBuilder(seam) {
+  return async () => {
+    const id = seam.currentSessionId();
+    if (id === undefined)
+      return [];
+    try {
+      const rows = await seam.storedTranscript(id);
+      return rows.slice(-BTW_SNAPSHOT_ROWS).map((row) => `${row.kind}: ${row.text}`.slice(0, BTW_SNAPSHOT_ROW_CHARS));
+    } catch {
+      return [];
+    }
+  };
+}
+
 // ../tui-base/src/seams/theme.ts
 var DEFAULT_THEME = "opencode";
 function bundledThemeNames() {
@@ -22851,14 +24522,14 @@ function createThemeSeam(target) {
 }
 
 // ../tui-base/src/routes/session/powerline.tsx
-import { createTextNode as _$createTextNode6 } from "@opentui/solid";
-import { insertNode as _$insertNode8 } from "@opentui/solid";
-import { effect as _$effect8 } from "@opentui/solid";
-import { insert as _$insert8 } from "@opentui/solid";
-import { createComponent as _$createComponent16 } from "@opentui/solid";
-import { setProp as _$setProp8 } from "@opentui/solid";
-import { createElement as _$createElement8 } from "@opentui/solid";
-import { For as For6, Show as Show9 } from "solid-js";
+import { createTextNode as _$createTextNode8 } from "@opentui/solid";
+import { insertNode as _$insertNode11 } from "@opentui/solid";
+import { effect as _$effect12 } from "@opentui/solid";
+import { insert as _$insert11 } from "@opentui/solid";
+import { createComponent as _$createComponent19 } from "@opentui/solid";
+import { setProp as _$setProp12 } from "@opentui/solid";
+import { createElement as _$createElement13 } from "@opentui/solid";
+import { For as For6, Show as Show12 } from "solid-js";
 var POWERLINE_COLORS = {
   brand: "#4D6BFE",
   provider: "#6A1B9A",
@@ -22877,7 +24548,8 @@ var POWERLINE_COLORS = {
   contextDanger: "#F44336",
   messages: "#1565C0",
   tools: "#E65100",
-  speed: "#00897B"
+  speed: "#00897B",
+  cache: "#00695C"
 };
 var AUTO_FG_DARK = "#1a1a2e";
 var AUTO_FG_LIGHT = "#ffffff";
@@ -22917,7 +24589,8 @@ function powerlinePalette(theme) {
     contextDanger: theme.text.feedback.error.base,
     messages: theme.hue.accent[700],
     tools: theme.text.feedback.warning.muted,
-    speed: theme.hue.interactive[600]
+    speed: theme.hue.interactive[600],
+    cache: theme.hue.interactive[700]
   };
 }
 function resolvePalette(theme) {
@@ -22982,46 +24655,54 @@ function speedSegment(tps, theme) {
     bg: resolvePalette(theme).speed
   };
 }
+function cacheSegment(rate, theme) {
+  if (rate === null || !Number.isFinite(rate) || rate < 0)
+    return null;
+  return {
+    text: `⚡ CH${rate.toFixed(1)}%`,
+    bg: resolvePalette(theme).cache
+  };
+}
 function PowerlineFooter(props) {
   return (() => {
-    var _el$ = _$createElement8("box");
-    _$setProp8(_el$, "style", {
+    var _el$ = _$createElement13("box");
+    _$setProp12(_el$, "style", {
       flexDirection: "row",
       paddingLeft: 1,
       flexShrink: 0
     });
-    _$insert8(_el$, _$createComponent16(For6, {
+    _$insert11(_el$, _$createComponent19(For6, {
       get each() {
         return props.left;
       },
       children: (seg, i) => {
         const next = () => props.left[i() + 1];
         return [(() => {
-          var _el$4 = _$createElement8("text");
-          _$insert8(_el$4, () => ` ${seg.text} `);
-          _$effect8((_$p) => _$setProp8(_el$4, "style", {
+          var _el$4 = _$createElement13("text");
+          _$insert11(_el$4, () => ` ${seg.text} `);
+          _$effect12((_$p) => _$setProp12(_el$4, "style", {
             bg: seg.bg,
             fg: seg.fg ?? autoContrast(seg.bg)
           }, _$p));
           return _el$4;
-        })(), _$createComponent16(Show9, {
+        })(), _$createComponent19(Show12, {
           get when() {
             return next();
           },
           get fallback() {
             return (() => {
-              var _el$5 = _$createElement8("text");
-              _$insertNode8(_el$5, _$createTextNode6(``));
-              _$effect8((_$p) => _$setProp8(_el$5, "style", {
+              var _el$5 = _$createElement13("text");
+              _$insertNode11(_el$5, _$createTextNode8(``));
+              _$effect12((_$p) => _$setProp12(_el$5, "style", {
                 fg: seg.bg
               }, _$p));
               return _el$5;
             })();
           },
           children: (n) => (() => {
-            var _el$7 = _$createElement8("text");
-            _$insertNode8(_el$7, _$createTextNode6(``));
-            _$effect8((_$p) => _$setProp8(_el$7, "style", {
+            var _el$7 = _$createElement13("text");
+            _$insertNode11(_el$7, _$createTextNode8(``));
+            _$effect12((_$p) => _$setProp12(_el$7, "style", {
               fg: seg.bg,
               bg: n().bg
             }, _$p));
@@ -23030,21 +24711,21 @@ function PowerlineFooter(props) {
         })];
       }
     }), null);
-    _$insert8(_el$, _$createComponent16(Show9, {
+    _$insert11(_el$, _$createComponent19(Show12, {
       get when() {
         return props.right;
       },
       get children() {
         return [(() => {
-          var _el$2 = _$createElement8("box");
-          _$setProp8(_el$2, "style", {
+          var _el$2 = _$createElement13("box");
+          _$setProp12(_el$2, "style", {
             flexGrow: 1
           });
           return _el$2;
         })(), (() => {
-          var _el$3 = _$createElement8("text");
-          _$insert8(_el$3, () => props.right);
-          _$effect8((_$p) => _$setProp8(_el$3, "style", {
+          var _el$3 = _$createElement13("text");
+          _$insert11(_el$3, () => props.right);
+          _$effect12((_$p) => _$setProp12(_el$3, "style", {
             fg: props.theme?.text.base ?? "#e6e6e6"
           }, _$p));
           return _el$3;
@@ -23064,6 +24745,7 @@ function sessionFooterSegments(data) {
   add(providerSegment(data.provider ?? "", theme));
   add(modelSegment(data.model ?? "", data.effort ?? "off", theme));
   add(contextSegment(data.contextPct ?? null, theme));
+  add(cacheSegment(data.cacheHitRate ?? null, theme));
   add(messagesSegment(data.messages ?? 0, theme));
   add(toolSegment(data.tools ?? 0, theme));
   add(speedSegment(data.tps ?? null, theme));
@@ -23071,12 +24753,12 @@ function sessionFooterSegments(data) {
 }
 
 // ../tui-base/src/routes/session/status-bar.tsx
-import { effect as _$effect9 } from "@opentui/solid";
-import { insert as _$insert9 } from "@opentui/solid";
-import { createComponent as _$createComponent17 } from "@opentui/solid";
-import { setProp as _$setProp9 } from "@opentui/solid";
-import { createElement as _$createElement9 } from "@opentui/solid";
-import { createSignal as createSignal11, onCleanup as onCleanup12, For as For7, Show as Show10 } from "solid-js";
+import { effect as _$effect13 } from "@opentui/solid";
+import { insert as _$insert12 } from "@opentui/solid";
+import { createComponent as _$createComponent20 } from "@opentui/solid";
+import { setProp as _$setProp13 } from "@opentui/solid";
+import { createElement as _$createElement14 } from "@opentui/solid";
+import { createSignal as createSignal14, onCleanup as onCleanup13, For as For7, Show as Show13 } from "solid-js";
 var DEFAULT_VERBS = {
   think: ["Thinking", "Pondering", "Reasoning", "Reflecting", "Deliberating", "Mulling"],
   tool: ["Executing", "Running", "Processing", "Building"],
@@ -23097,9 +24779,9 @@ var FALLBACK_TRACK = "#565f89";
 var FALLBACK_HEAD = "#7aa2f7";
 function StatusBar(props) {
   const theme = useThemeOptional();
-  const [tick, setTick] = createSignal11(0);
+  const [tick, setTick] = createSignal14(0);
   const timer = setInterval(() => setTick((t) => t + 1), BAR_MS);
-  onCleanup12(() => clearInterval(timer));
+  onCleanup13(() => clearInterval(timer));
   const pools = () => ({
     think: props.verbs?.think ?? DEFAULT_VERBS.think,
     tool: props.verbs?.tool ?? DEFAULT_VERBS.tool,
@@ -23179,28 +24861,28 @@ function StatusBar(props) {
     });
     return runs;
   };
-  return _$createComponent17(Show10, {
+  return _$createComponent20(Show13, {
     get when() {
       return props.phase !== null;
     },
     get children() {
-      var _el$ = _$createElement9("box");
-      _$setProp9(_el$, "style", {
+      var _el$ = _$createElement14("box");
+      _$setProp13(_el$, "style", {
         flexDirection: "row",
         paddingLeft: 1,
         paddingRight: 1,
         height: 1,
         flexGrow: 0
       });
-      _$insert9(_el$, _$createComponent17(For7, {
+      _$insert12(_el$, _$createComponent20(For7, {
         get each() {
           return row();
         },
         children: (r) => (() => {
-          var _el$2 = _$createElement9("text");
-          _$setProp9(_el$2, "wrapMode", "none");
-          _$insert9(_el$2, () => r.text);
-          _$effect9((_$p) => _$setProp9(_el$2, "style", {
+          var _el$2 = _$createElement14("text");
+          _$setProp13(_el$2, "wrapMode", "none");
+          _$insert12(_el$2, () => r.text);
+          _$effect13((_$p) => _$setProp13(_el$2, "style", {
             fg: r.fg
           }, _$p));
           return _el$2;
@@ -23212,13 +24894,13 @@ function StatusBar(props) {
 }
 
 // ../tui-base/src/routes/session/turn-cancel.tsx
-import { createComponent as _$createComponent18 } from "@opentui/solid";
-import { effect as _$effect10 } from "@opentui/solid";
-import { createTextNode as _$createTextNode7 } from "@opentui/solid";
-import { insertNode as _$insertNode9 } from "@opentui/solid";
-import { setProp as _$setProp10 } from "@opentui/solid";
-import { createElement as _$createElement10 } from "@opentui/solid";
-import { createSignal as createSignal12, onCleanup as onCleanup13, Show as Show11 } from "solid-js";
+import { createComponent as _$createComponent21 } from "@opentui/solid";
+import { effect as _$effect14 } from "@opentui/solid";
+import { createTextNode as _$createTextNode9 } from "@opentui/solid";
+import { insertNode as _$insertNode12 } from "@opentui/solid";
+import { setProp as _$setProp14 } from "@opentui/solid";
+import { createElement as _$createElement15 } from "@opentui/solid";
+import { createSignal as createSignal15, onCleanup as onCleanup14, Show as Show14 } from "solid-js";
 var CTRL_C_QUIT_WINDOW_MS = 500;
 function createCtrlCGate(windowMs = CTRL_C_QUIT_WINDOW_MS, now = Date.now) {
   let armedAt;
@@ -23276,9 +24958,9 @@ function createTurnCancel(props, onArm) {
 }
 function TurnCancelKeys(props) {
   const theme = useThemeOptional();
-  const [armed, setArmed] = createSignal12(false);
+  const [armed, setArmed] = createSignal15(false);
   const cancel = createTurnCancel(props, setArmed);
-  onCleanup13(() => cancel.dispose());
+  onCleanup14(() => cancel.dispose());
   Keymap.createLayer(() => ({
     mode: "global",
     enabled: props.enabled(),
@@ -23294,19 +24976,19 @@ function TurnCancelKeys(props) {
       run: () => cancel.ctrlC()
     }]
   }));
-  return _$createComponent18(Show11, {
+  return _$createComponent21(Show14, {
     get when() {
       return armed();
     },
     get children() {
-      var _el$ = _$createElement10("box"), _el$2 = _$createElement10("text");
-      _$insertNode9(_el$, _el$2);
-      _$setProp10(_el$, "height", 1);
-      _$setProp10(_el$, "flexShrink", 0);
-      _$setProp10(_el$, "paddingLeft", 1);
-      _$insertNode9(_el$2, _$createTextNode7(`Press Ctrl+C again to quit`));
-      _$setProp10(_el$2, "wrapMode", "none");
-      _$effect10((_$p) => _$setProp10(_el$2, "fg", theme?.text.feedback.warning.base ?? "#e0af68", _$p));
+      var _el$ = _$createElement15("box"), _el$2 = _$createElement15("text");
+      _$insertNode12(_el$, _el$2);
+      _$setProp14(_el$, "height", 1);
+      _$setProp14(_el$, "flexShrink", 0);
+      _$setProp14(_el$, "paddingLeft", 1);
+      _$insertNode12(_el$2, _$createTextNode9(`Press Ctrl+C again to quit`));
+      _$setProp14(_el$2, "wrapMode", "none");
+      _$effect14((_$p) => _$setProp14(_el$2, "fg", theme?.text.feedback.warning.base ?? "#e0af68", _$p));
       return _el$;
     }
   });
@@ -23350,19 +25032,19 @@ function V2SessionPage(props) {
   if (props.themeName && !themeSeam.setTheme(props.themeName)) {
     console.error(`[host-entry-v2] unknown theme ${props.themeName}; bundled: ${themeSeam.list().join(", ")}`);
   }
-  const [composerBusy, setComposerBusy] = createSignal13(false);
-  const [turnBusy, setTurnBusy] = createSignal13(false);
+  const [composerBusy, setComposerBusy] = createSignal16(false);
+  const [turnBusy, setTurnBusy] = createSignal16(false);
   const busy = () => composerBusy() || turnBusy();
-  const [busySince, setBusySince] = createSignal13(0);
-  const [msgs, setMsgs] = createSignal13(0);
-  const [model, setModel] = createSignal13();
-  const [now, setNow] = createSignal13(new Date);
+  const [busySince, setBusySince] = createSignal16(0);
+  const [msgs, setMsgs] = createSignal16(0);
+  const [model, setModel] = createSignal16();
+  const [now, setNow] = createSignal16(new Date);
   let composerRef;
-  onMount5(() => {
+  onMount6(() => {
     projection.load();
     seam.currentModelSelection().then(setModel);
     const timer = setInterval(() => setNow(new Date), 1000);
-    onCleanup14(() => clearInterval(timer));
+    onCleanup15(() => clearInterval(timer));
   });
   const elapsed = () => busy() ? Math.max(0, Math.floor((now().getTime() - busySince()) / 1000)) : 0;
   const send = (text) => {
@@ -23373,11 +25055,16 @@ function V2SessionPage(props) {
     done.finally(() => setTurnBusy(false));
     return done;
   };
+  const cacheRate = () => {
+    turnBusy();
+    return seam.cacheHitRate?.() ?? null;
+  };
   const segments = () => sessionFooterSegments({
     provider: model()?.providerID,
     model: model()?.modelID,
     messages: msgs(),
     tools: 0,
+    cacheHitRate: cacheRate(),
     theme
   });
   let cmdOrdinal = 0;
@@ -23401,6 +25088,14 @@ function V2SessionPage(props) {
       onCancel: () => done(undefined)
     }), () => done(undefined));
   });
+  const btw = new BtwController({
+    ask: (question, snapshot, onDelta) => seam.btwAsk ? seam.btwAsk(question, snapshot, onDelta) : Promise.resolve("error: /btw unavailable"),
+    snapshot: createBtwSnapshotBuilder(seam)
+  });
+  const openBtw = createBtwOpener({
+    controller: btw,
+    dialog
+  });
   const slash = createSlashHost({
     seam,
     say: (text) => projection.apply({
@@ -23421,7 +25116,8 @@ function V2SessionPage(props) {
       return settled;
     },
     quit: props.quit,
-    pickOne
+    pickOne,
+    openBtw: (argText) => void openBtw(argText)
   });
   const overlayHost = createComponent2(TurnOverlayHost, {
     controller: overlays,

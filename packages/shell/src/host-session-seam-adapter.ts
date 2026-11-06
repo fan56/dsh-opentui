@@ -166,6 +166,11 @@ export class HostSessionSeam implements SessionSeam {
 		return this.#session.cacheHitRate()
 	}
 
+	/** /btw side question (batch F3): HostSession.btwAsk() 1:1. */
+	btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string> {
+		return this.#session.btwAsk(question, snapshot, onDelta)
+	}
+
 	resumeSession(id: string): "ok" | "owned" {
 		return this.#session.resumeSession(id)
 	}
