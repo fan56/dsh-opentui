@@ -15,7 +15,7 @@
  * satisfy them structurally (HostSession has extra members — the surface
  * is a subset, not a mirror).
  */
-import type { StoredTranscriptRow } from "@dsh-opentui/kit"
+import type { StoredTranscriptRow } from "./seam-types.ts"
 import type { HostSession } from "../host-session.ts"
 import type { TurnCallbacks } from "../agent/loop.ts"
 import type { RemoteHostSession } from "./remote-host-session.ts"

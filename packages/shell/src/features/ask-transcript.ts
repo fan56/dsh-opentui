@@ -21,7 +21,7 @@
  * fabricated answers on the transcript (a hard-failed result renders
  * declined, the honest outcome of an errored ask).
  */
-import type { AskEntry, TranscriptItem } from "@dsh-opentui/kit"
+import type { AskEntry, TranscriptItem } from "../client/seam-types.ts"
 
 /** The dsh user-questions tool name (tool/call + tool/result events). */
 export const ASK_TOOL_NAME = "ask_user_question"

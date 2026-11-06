@@ -141,7 +141,7 @@
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join as joinPath } from "node:path"
-import type { StoredTranscriptRow } from "@dsh-opentui/kit"
+import type { StoredTranscriptRow } from "./seam-types.ts"
 import {
 	createStreamTicker,
 	emptyTurnStats,

@@ -70,9 +70,7 @@
  * view runs on — two @opentui instances). The preload registrar is
  * idempotent (Symbol.for guard).
  */
-import { createComponent } from "solid-js"
 import type { RuntimeOptions, RuntimeHandle } from "@dsh-opentui/runtime"
-import { createTurnHeal } from "./client/turn-heal.ts"
 import {
 	BOOT_LABEL_BUDGET_MS,
 	SHUTDOWN_GRACE_MS,
@@ -81,7 +79,6 @@ import {
 	hostLockPath,
 	installExitPaths,
 	spawnIdleReaper,
-	themeNameFromConfig,
 } from "./client/boot-shared.ts"
 
 // Re-exported for the tests and the --v2 dev entry (batch 9a split: the
@@ -232,63 +229,28 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 	await session.start()
 	await waitForBootLabel(session, options.labelBudgetMs ?? BOOT_LABEL_BUDGET_MS)
 
-	// The ShellHost surface (ShellSessionSurface — the same seam plugin
-	// mode satisfies; tsc conformance guards live in client/shell-session.ts).
-	// aggregateTurnContext feeds the wave-2 aggregated context shape into
-	// the turn-end hand-off (see its header — no ShellHost edit).
-	// createTurnHeal wraps that with the Batch B tear-mitigation DETECTION:
-	// long streaming turns are churn-tracked and trip a deferred heal at
-	// turn end. The heal action itself is a deliberate no-op for now —
-	// the suspend/resume API bounce was falsified by the live repro (it
-	// froze the client; see client/turn-heal.ts), and renderer recreation
-	// needs ShellHost state externalization first (dist-host gate). When
-	// that lands, wire it here via the `heal` factory seam.
-	const shellSession = createTurnHeal(aggregateTurnContext(session), {
-		heal: () => null,
-	})
-	const themeName = themeNameFromConfig(session)
-
 	bootCallOrder.push("render")
-	// Batch 10c: the old ShellHost render stack (kit i18n + runtime +
-	// ShellHost) loads LAZY, inside the legacy default-render seam only —
-	// the default client path never calls it (tests inject `render`). A
-	// static import would drag the 0.7.0 graph beside the 0.8.1 renderer
-	// context in every process importing this entry.
-	const defaultRender = async (opts: Omit<RuntimeOptions, "root">): Promise<RuntimeHandle> => {
-		const [{ createI18n }, runtimeMod, { ShellHost }] = await Promise.all([
-			import("@dsh-opentui/kit"),
-			import("@dsh-opentui/runtime"),
-			import("./ShellHost.tsx"),
-		])
-		const i18n = createI18n("zh-CN")
-		return runtimeMod.bootRuntime({
-			...opts,
-			root: (store) =>
-				createComponent(ShellHost, {
-					deps: {
-						store,
-						t: i18n.t,
-						session: shellSession,
-						...(themeName !== undefined ? { themeName } : {}),
-						i18n,
-					},
-				}),
-		})
+	// Batch C2 (ADR-0006 cutover delete): the legacy default-render seam —
+	// the lazy kit i18n + runtime + ShellHost stack — is deleted with the
+	// old view stack. The client path boots the tui-base view through
+	// bootClientV2 (main() below); this tested boot seam now REQUIRES an
+	// injected render.
+	if (!options.render) {
+		throw new Error(
+			"bootClient needs a render seam: the ShellHost default render was deleted with the old view stack (ADR-0006); the client path boots bootClientV2",
+		)
 	}
 	// renderer exit (Ctrl+D / terminal close): the same clean shutdown
 	const onExit = () => {
 		void shutdown()
 	}
-	const runtime = options.render
-		? await options.render({
-				onExit,
-				// injected seams (tests) replace the whole render; the default
-				// branch below substitutes the real ShellHost root instead
-				root: () => {
-					throw new Error("render seam must provide its own root")
-				},
-			})
-		: await defaultRender({ onExit })
+	const runtime = await options.render({
+		onExit,
+		// the injected seam replaces the whole render and owns its root
+		root: () => {
+			throw new Error("render seam must provide its own root")
+		},
+	})
 
 	let shutdownPromise: Promise<void> | null = null
 	const shutdown = (): Promise<void> => {

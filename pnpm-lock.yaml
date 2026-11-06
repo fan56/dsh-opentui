@@ -8,28 +8,6 @@ importers:
 
   .: {}
 
-  packages/kit:
-    dependencies:
-      '@dsh-opentui/runtime':
-        specifier: workspace:*
-        version: link:../runtime
-      '@opentui/core':
-        specifier: 0.7.0
-        version: 0.7.0(typescript@5.9.3)(web-tree-sitter@0.25.10)
-      '@opentui/solid':
-        specifier: 0.7.0
-        version: 0.7.0(solid-js@1.9.12)(typescript@5.9.3)(web-tree-sitter@0.25.10)
-      solid-js:
-        specifier: 1.9.12
-        version: 1.9.12
-    devDependencies:
-      '@types/bun':
-        specifier: latest
-        version: 1.4.4
-      typescript:
-        specifier: ^5.7.0
-        version: 5.9.3
-
   packages/runtime:
     dependencies:
       '@deepseek-ai/cordis':
@@ -76,9 +54,6 @@ importers:
       '@deepseek-ai/dsh-llm':
         specifier: 0.2.2-rc.1
         version: 0.2.2-rc.1(@deepseek-ai/cordis@4.1.0)
-      '@dsh-opentui/kit':
-        specifier: workspace:*
-        version: link:../kit
       '@dsh-opentui/runtime':
         specifier: workspace:*
         version: link:../runtime

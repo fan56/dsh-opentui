@@ -37,7 +37,7 @@
 
 import { blocksText } from "./remote-follow.ts"
 import { ASK_TOOL_NAME, parseAskCallArgs, parseAskAnswers, type ParsedAskQuestion } from "../features/ask-transcript.ts"
-import type { StoredTranscriptRow } from "@dsh-opentui/kit"
+import type { StoredTranscriptRow } from "./seam-types.ts"
 import type { MuxSocketFactory } from "./events-source.ts"
 import { openRemoteStream } from "./remote-stream.ts"
 
