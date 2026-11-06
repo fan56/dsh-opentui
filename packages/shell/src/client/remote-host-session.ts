@@ -192,6 +192,7 @@ import {
 } from "./remote-attachments.ts"
 import { askBtw, BTW_TITLE_PREFIX } from "./remote-btw.ts"
 import { RemoteSubagentPanel, type RemoteSubagentView } from "./remote-subagents.ts"
+import { DEFAULT_SUBAGENT_ROUND_LIMITS, limitsFromSettingsRows, type SubagentRoundLimits } from "../subagent-policy.ts"
 import { restartSamePortHost } from "./remote-restart.ts"
 import {
 	loadWorkspaceConfig,
@@ -375,6 +376,12 @@ export class RemoteHostSession {
 	#btwBusy = false
 	/** Wave-3: subagent panel (row 33; lazy). */
 	#subagents: RemoteSubagentPanel | undefined
+	// ---- maxRounds hard-stop policy knobs (batch F1) ----
+	// The `dsh-opentui` settings snapshot the subagent panel's ladder reads;
+	// refreshed lazily (one in-flight describe at a time). The client face
+	// resolves the GLOBAL cap only — agent .md files are host-side.
+	#roundLimits: SubagentRoundLimits = { ...DEFAULT_SUBAGENT_ROUND_LIMITS }
+	#roundLimitsRefreshing = false
 	/** Wave-3: workspace overlay cache — configLoad merges it over the base (row 41). */
 	#overlayCache: WorkspaceOverlay | undefined
 
@@ -1347,12 +1354,35 @@ export class RemoteHostSession {
 	// Wave-3 subagent panel (row 33)
 	// ------------------------------------------------------------------
 
+	/** Lazy live-read of the settings knobs for the subagent ladder. */
+	#refreshRoundLimits(): void {
+		if (this.#roundLimitsRefreshing) return
+		this.#roundLimitsRefreshing = true
+		void this.#settingsClient()
+			.describeDocument()
+			.then((doc) => {
+				this.#roundLimits = limitsFromSettingsRows(doc.namespaces)
+			})
+			.catch(() => {
+				/* keep the previous snapshot; defaults disable the ladder */
+			})
+			.finally(() => {
+				this.#roundLimitsRefreshing = false
+			})
+	}
+
 	#subagentPanel(): RemoteSubagentPanel {
 		if (this.#subagents === undefined) {
 			this.#subagents = new RemoteSubagentPanel({
 				rpc: (method, args) => this.#rpc(method, args),
 				socketFactory: this.#socketFactory,
 				parentId: () => this.#sessionId,
+				limits: () => this.#roundLimits,
+				refreshLimits: () => this.#refreshRoundLimits(),
+				onHardStop: (record) =>
+					console.info(
+						`[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`,
+					),
 				onUpdate: (views) => {
 					try {
 						this.#cb?.onSubagentUpdate?.(views)
@@ -1361,6 +1391,7 @@ export class RemoteHostSession {
 					}
 				},
 			})
+			this.#refreshRoundLimits()
 		}
 		return this.#subagents
 	}

@@ -41,6 +41,7 @@ import { blocksText } from "./remote-follow.ts"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
 import { RemoteRpcError } from "./transport.ts"
+import { SubagentRoundPolicy, type HardStopRecord, type SubagentRoundLimits } from "../subagent-policy.ts"
 
 /** One panel row — the exact TurnCallbacks.onSubagentUpdate entry shape. */
 export interface RemoteSubagentView {
@@ -72,6 +73,17 @@ export interface RemoteSubagentPanelOptions {
 	parentId(): string | undefined
 	/** Panel snapshot sink (wired to TurnCallbacks.onSubagentUpdate). */
 	onUpdate?(views: RemoteSubagentView[]): void
+	/**
+	 * maxRounds policy knobs (feature batch F1) — the facade's cached
+	 * `dsh-opentui` settings snapshot. Absent = the ladder is disabled on
+	 * this panel. The client face resolves the GLOBAL cap only (agent
+	 * .md files are host-side; the per-agent tier stays plugin-mode).
+	 */
+	limits?: () => SubagentRoundLimits
+	/** Kick a lazy settings refresh before each ladder decision. */
+	refreshLimits?: () => void
+	/** Hard-stop report sink (the force-stop marker fold). */
+	onHardStop?(record: HardStopRecord): void
 }
 
 interface ChildState {
@@ -93,9 +105,35 @@ export class RemoteSubagentPanel {
 	#runSeqToChild = new Map<string, string>()
 	#pumps = new Map<string, RemoteStreamHandle>()
 	#stopped = false
+	/** maxRounds round ladder (batch F1) — built only when limits are wired. */
+	readonly #policy?: SubagentRoundPolicy
 
 	constructor(options: RemoteSubagentPanelOptions) {
 		this.#options = options
+		if (options.limits !== undefined) {
+			this.#policy = new SubagentRoundPolicy({
+				limits: options.limits,
+				// No per-agent tier here: agent files live host-side.
+				isSettled: (id) => this.#children.get(id)?.status !== "running",
+				wrapup: (id, message) => {
+					if (!this.#children.has(id)) return false
+					// Fire-and-forget steer: a host rejection (typed
+					// subagent/not-resumable) is logged; the ladder's stage 2
+					// still bounds the run at cap + grace.
+					void this.steer(id, message)
+					return true
+				},
+				forceStop: (id) => {
+					if (!this.#children.has(id)) return false
+					this.interrupt(id).catch(() => {
+						/* a raced settle loses its stop — stage 2 stays latched */
+					})
+					this.#settle(id, "cancelled")
+					return true
+				},
+				onHardStop: (record) => this.#options.onHardStop?.(record),
+			})
+		}
 	}
 
 	/**
@@ -392,6 +430,12 @@ export class RemoteSubagentPanel {
 			}
 			this.#children.set(id, next)
 			changed = true
+			// maxRounds ladder feed (batch F1): wrap-up/force-stop delivery is
+			// microtask-deferred inside the policy — no reentry into this fold.
+			if (this.#policy !== undefined) {
+				this.#options.refreshLimits?.()
+				this.#policy.onRoundCount(id, next.rounds, next.label)
+			}
 			for (const line of text.split("\n")) if (line.trim()) log.push(line.slice(0, 110))
 		} else if (type === "tool/call") {
 			log.push(`▶ ${String(data.name ?? "tool")} ${String(data.arguments ?? "").slice(0, 90)}`)

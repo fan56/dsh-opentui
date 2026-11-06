@@ -18,6 +18,12 @@ import {
   type TurnCallbacks,
   type TurnStats,
 } from "./agent/loop.ts"
+import {
+  DEFAULT_SUBAGENT_ROUND_LIMITS,
+  SubagentRoundPolicy,
+  limitsFromSettingsRows,
+  type SubagentRoundLimits,
+} from "./subagent-policy.ts"
 
 /** Minimal structural types — the real ones live in the host closure. */
 type StreamFrame = {
@@ -107,6 +113,7 @@ export class HostSession {
   constructor(ctx: Context) {
     this.#ctx = ctx
     this.#wire()
+    this.#ensureRoundPolicy()
     // Cold-boot label: show the configured route on the very first frame
     // (the powerline's model segment would otherwise sit empty until the
     // first turn resolves the live session).
@@ -494,10 +501,10 @@ export class HostSession {
   }
 
   /** Agent definitions from ~/.dsh/agents/*.md — frontmatter (name,
-   * display_name, description, model, thinking, deep) + body. Broken
-   * files are reported, not thrown. */
-  listAgents(): { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; file: string; broken?: string }[] {
-    const out: { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; file: string; broken?: string }[] = []
+   * display_name, description, model, thinking, deep, maxRounds) + body.
+   * Broken files are reported, not thrown. */
+  listAgents(): { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; maxRounds?: string; file: string; broken?: string }[] {
+    const out: { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; maxRounds?: string; file: string; broken?: string }[] = []
     try {
       const home = process.env.DSH_HOME || join(process.env.HOME || "", ".dsh")
       const dir = join(home, "agents")
@@ -522,6 +529,7 @@ export class HostSession {
             model: fm.model,
             thinking: fm.thinking,
             deep: fm.deep,
+            maxRounds: fm.maxRounds,
             file: full,
           })
         } catch (e) {
@@ -975,6 +983,84 @@ export class HostSession {
   /** Per-child transcript log (viewer) and the live child agent for steer. */
   #childLogs = new Map<string, string[]>()
   #childAgents = new Map<string, any>()
+  // ---- maxRounds hard-stop policy (feature batch F1) ----
+  // The round ladder (subagent-policy.ts) fed from #foldChildEvent's
+  // assistant/message counts; wrap-up rides the live child agent's steer,
+  // force-stop rides the agent's cancel. Limits are read live from the
+  // `dsh-opentui` settings namespace (cached snapshot, refreshed lazily —
+  // the next round count picks up an edit).
+  #roundPolicy?: SubagentRoundPolicy
+  #roundLimits: SubagentRoundLimits = { ...DEFAULT_SUBAGENT_ROUND_LIMITS }
+  #roundLimitsRefreshing = false
+
+  /** Create the round ladder once (sinks bound to THIS facade). */
+  #ensureRoundPolicy(): SubagentRoundPolicy {
+    if (this.#roundPolicy === undefined) {
+      this.#roundPolicy = new SubagentRoundPolicy({
+        limits: () => this.#roundLimits,
+        // Per-agent tier: the descriptor label resolves to a registered
+        // agent (~/.dsh/agents/*.md) whose frontmatter carries maxRounds.
+        resolveAgentCap: (label) => {
+          const row = this.listAgents().find((a) => a.name === label || (a.displayName !== undefined && a.displayName === label))
+          const raw = row?.maxRounds
+          if (raw === undefined) return undefined
+          const n = Number(String(raw).trim())
+          return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined
+        },
+        isSettled: (childId) => this.#children.get(childId)?.status !== "running",
+        wrapup: (childId, message) => this.steerChild(childId, message),
+        forceStop: (childId) => this.cancelChild(childId),
+        onHardStop: (record) => this.#onHardStop(record),
+      })
+      this.#refreshRoundLimits()
+    }
+    return this.#roundPolicy
+  }
+
+  /** Lazy live-read of the settings knobs (one in-flight describe at a
+   * time; the ladder reads the latest snapshot at every decision). */
+  #refreshRoundLimits(): void {
+    if (this.#roundLimitsRefreshing) return
+    this.#roundLimitsRefreshing = true
+    void this.settingsDescribe()
+      .then((rows) => {
+        this.#roundLimits = limitsFromSettingsRows(rows)
+      })
+      .catch(() => {
+        /* keep the previous snapshot; defaults disable the ladder */
+      })
+      .finally(() => {
+        this.#roundLimitsRefreshing = false
+      })
+  }
+
+  /** Force-stop one live child (the ladder's stage-2 sink): cancel the
+   * captured agent (keepInbox first — session/inbox survive for resume),
+   * fall back to a bare cancel, and settle the view as cancelled. False
+   * when no live agent handle exists. */
+  cancelChild(childId: string): boolean {
+    const agent = this.#childAgents.get(childId)
+    if (!agent?.cancel) return false
+    try {
+      agent.cancel({ kind: "user" }, { keepInbox: true })
+    } catch {
+      try {
+        agent.cancel({ kind: "user" })
+      } catch {
+        return false
+      }
+    }
+    this.#settleChild(childId, "cancelled")
+    return true
+  }
+
+  /** Hard-stop report (console surface — the viewer marker fold lands with
+   * the subagent viewer's next batch). */
+  #onHardStop(record: { childId: string; round: number; cap: number; grace: number }): void {
+    console.info(
+      `[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`,
+    )
+  }
 
   /** Child transcript lines (viewer; capped buffer, oldest dropped). */
   childTranscript(id: string): string[] {
@@ -1057,13 +1143,18 @@ export class HostSession {
       // rounds are assistant/message-counted (one-shot children never turn/end)
       const text = blocksText(d.message?.content ?? d.content)
       const usage = d.usage?.totalTokens ?? d.message?.usage?.totalTokens ?? d.message?.usage?.total_tokens
+      const rounds = view.rounds + 1
       this.#children.set(sessionKey, {
         ...view,
-        rounds: view.rounds + 1,
+        rounds,
         ...(usage ? { tokens: (view.tokens ?? 0) + Number(usage) } : {}),
         ...(text ? { lastLine: text.split("\n").pop()?.slice(0, 80) } : {}),
       })
       changed = true
+      // maxRounds ladder feed (batch F1): the wrap-up/force-stop delivery
+      // is microtask-deferred inside the policy — no inbox reentry here.
+      this.#ensureRoundPolicy().onRoundCount(sessionKey, rounds, this.#children.get(sessionKey)?.label)
+      this.#refreshRoundLimits()
     }
     // viewer log: assistant text, tool call/result lines (capped)
     const log = this.#childLogs.get(sessionKey) ?? []
