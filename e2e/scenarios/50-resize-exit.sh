@@ -14,17 +14,14 @@
 #     blank-zombie (v1 could not quit in-container at all — see quit_tui's
 #     KNOWN LIMITATION in lib/common.sh; the batch V5 composer-remount fix
 #     is what re-opened the quit path).
-#     Ctrl+C x2 is asserted as an observed-behavior guard: on the lean v2
-#     plugin page it does NOT exit (one-layer dig, probe-verified 2026-11-06:
-#     host-entry-v2.tsx V2SessionPage mounts Transcript + SessionComposer +
-#     StatusBar + PowerlineFooter only — app.tsx's Keymap layer that binds
-#     app.exit to ctrl+c never registers on this face, and SessionComposer
-#     has no ctrl+c binding; keymap-registration gap, NOT FFI/env, NOT the
-#     stale-render family — the Enter path is proven live by /quit itself).
-#     The guard passes when the pane either quit cleanly OR the TUI is
-#     intact and still functional (composer + powerline painted, /quit
-#     still works) — and fails on crash/garbage/zombie. /quit then cleans
-#     up, which doubles as a third clean-exit proof.
+#     Ctrl+C x2 is asserted as a HARD clean-exit guard: since 7d6d2a1 the
+#     plugin entry (host-entry-v2.tsx V2SessionPage) mounts TurnCancelKeys —
+#     two Ctrl+C presses inside a 500ms window quit the app (the keymap gap
+#     probed 2026-11-06 — app.tsx's Keymap layer never registered on the lean
+#     v2 plugin page — is fixed). Two presses land ~300ms apart, inside the
+#     window; the app must quit cleanly (shell prompt back AND the pane's
+#     foreground process is bash). A hung TUI (zombie), a crashed or garbled
+#     pane, or the pre-fix swallowed-press behavior all FAIL.
 #   - one more boot after every exit path, to prove the profile still starts
 #     clean and enters the session.
 set -u
@@ -116,33 +113,36 @@ start_tui
 wait_tui_up 180 || summary
 ok 'TUI boots again after a clean quit'
 
-# --- clean exit B: Ctrl+C x2 (observed-behavior guard) --------------------------------
-# Two presses ~300ms apart (well inside tui-pi's documented 500ms double-
-# press window). On this face the presses are expected to be swallowed (no
-# app.exit keymap layer on the lean v2 plugin page — see the header): the
-# guard passes on a clean quit OR an intact, functional TUI, and fails on
-# crash/garbage/zombie.
+# --- clean exit B: Ctrl+C x2 (hard regression guard, 7d6d2a1) ----------------------
+# Two presses ~300ms apart, inside the 500ms TurnCancelKeys quit window
+# (CTRL_C_QUIT_WINDOW_MS). Poll for a clean exit: foreground bash AND the
+# shell prompt back. Anything else after 10s — TUI still in the foreground
+# (zombie / swallowed presses), a crashed or garbled pane — is a FAIL.
 send C-c
 sleep 0.3
 send C-c
-sleep 4
-PANE="$(capture)"
-if [[ "$(pane_command)" == bash ]] && printf '%s' "$PANE" | grep -q 'root@'; then
-  ok 'Ctrl+C x2 quit cleanly (shell prompt back, foreground bash)'
-elif printf '%s' "$PANE" | grep -qF -- "$MARKER_COMPOSER_PLACEHOLDER" \
-  && printf '%s' "$PANE" | grep -qF -- "$MARKER_MODEL_SEG_POWERLINE"; then
-  warn 'Ctrl+C x2 does not exit on the v2 plugin face (no app.exit keymap layer registered there) — TUI intact, functional; /quit is the exit path'
+CCX2=0
+for _ in $(seq 1 10); do
+  if [[ "$(pane_command)" == bash ]] && capture | grep -q 'root@'; then
+    CCX2=1
+    break
+  fi
+  sleep 1
+done
+if (( CCX2 )); then
+  ok 'clean exit via Ctrl+C x2 (shell prompt back, foreground bash)'
 else
-  bad 'Ctrl+C x2 left the pane neither on the shell nor an intact TUI (crash/garbage); pane tail:'
-  printf '%s\n' "$PANE" | tail -6 | sed 's/^/    | /'
+  bad "Ctrl+C x2 did not quit cleanly within 10s (zombie/crash/garbage; pane_command='$(pane_command)'); pane tail:"
+  capture | tail -6 | sed 's/^/    | /'
+  # Fall back to the working /quit path so the final boot starts from a
+  # stopped app (never type into a bare shell on the success path).
+  info 'cleaning up via /quit after the Ctrl+C x2 failure'
+  send '/quit'
+  sleep 0.4
+  send Enter
+  wait_shell_back 'cleanup: /quit still exits after the Ctrl+C x2 failure' 10 \
+    || true
 fi
-
-# Cleanup quit via the working path — a third clean-exit proof.
-send '/quit'
-sleep 0.4
-send Enter
-wait_shell_back 'clean exit via /quit after the Ctrl+C guard (shell back)' 10 \
-  || true
 
 # --- one more boot after all exit paths ---------------------------------------
 start_tui
