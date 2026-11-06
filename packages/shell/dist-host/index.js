@@ -810,7 +810,7 @@ var require_fuzzysort = __commonJS(function(exports, module) {
 
 // src/host-entry-v2.tsx
 import { spawn } from "node:child_process";
-import { createSignal as createSignal16, onCleanup as onCleanup15, onMount as onMount6, ErrorBoundary } from "solid-js";
+import { createSignal as createSignal17, onCleanup as onCleanup15, onMount as onMount6, ErrorBoundary } from "solid-js";
 import { createComponent as createComponent2, createElement, render, spread } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -852,6 +852,1023 @@ function captureConsoleWhileMounted(enabled) {
     lines: () => [...captured]
   };
 }
+
+// ../../../../../../opt/homebrew/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/cosmokit/lib/index.js
+function isNullable(value) {
+  return value === null || value === undefined;
+}
+function isPlainObject(data) {
+  return data && typeof data === "object" && !Array.isArray(data);
+}
+function filterKeys(object, filter) {
+  return Object.fromEntries(Object.entries(object).filter(([key, value]) => filter(key, value)));
+}
+function mapValues(object, transform) {
+  return Object.fromEntries(Object.entries(object).map(([key, value]) => [key, transform(value, key)]));
+}
+function pick(source, keys, forced) {
+  if (!keys)
+    return { ...source };
+  const result = {};
+  for (const key of keys)
+    if (forced || source[key] !== undefined)
+      result[key] = source[key];
+  return result;
+}
+var write = Symbol.for("cosmokit.volatile.write");
+function snapshot(value, ancestors = /* @__PURE__ */ new Set) {
+  if (typeof value === "function")
+    throw new TypeError("volatile config cannot contain functions");
+  if (value === null || typeof value !== "object")
+    return value;
+  if (ancestors.has(value))
+    throw new TypeError("volatile config cannot contain cycles");
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value))
+      return Object.freeze(value.map((item) => snapshot(item, ancestors)));
+    if (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)
+      throw new TypeError("volatile config objects must be plain objects or arrays");
+    return Object.freeze(Object.fromEntries(Object.entries(value).map(([key, item]) => [key, snapshot(item, ancestors)])));
+  } finally {
+    ancestors.delete(value);
+  }
+}
+function createVolatile(value) {
+  let current = snapshot(value);
+  return Object.freeze({
+    get: () => current,
+    [write]: (value) => {
+      current = value;
+    }
+  });
+}
+function isVolatile(value) {
+  return typeof value === "object" && value !== null && write in value;
+}
+function is(type, value) {
+  if (arguments.length === 1)
+    return (value) => is(type, value);
+  return type in globalThis && value instanceof globalThis[type] || Object.prototype.toString.call(value).slice(8, -1) === type;
+}
+function isArrayBufferLike(value) {
+  return is("ArrayBuffer", value) || is("SharedArrayBuffer", value);
+}
+function isArrayBufferSource(value) {
+  return isArrayBufferLike(value) || ArrayBuffer.isView(value);
+}
+var Binary;
+(function(Binary) {
+  Binary.is = isArrayBufferLike;
+  Binary.isSource = isArrayBufferSource;
+  function fromSource(source) {
+    if (ArrayBuffer.isView(source))
+      return source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+    else
+      return source;
+  }
+  Binary.fromSource = fromSource;
+  function toBase64(source) {
+    source = fromSource(source);
+    if (typeof Buffer !== "undefined")
+      return Buffer.from(source).toString("base64");
+    let binary = "";
+    const bytes = new Uint8Array(source);
+    for (let i = 0;i < bytes.byteLength; i++)
+      binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+  Binary.toBase64 = toBase64;
+  function fromBase64(source) {
+    if (typeof Buffer !== "undefined")
+      return fromSource(Buffer.from(source, "base64"));
+    return Uint8Array.from(atob(source), (c) => c.charCodeAt(0));
+  }
+  Binary.fromBase64 = fromBase64;
+  function toHex(source) {
+    source = fromSource(source);
+    if (typeof Buffer !== "undefined")
+      return Buffer.from(source).toString("hex");
+    return Array.from(new Uint8Array(source), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  Binary.toHex = toHex;
+  function fromHex(source) {
+    if (typeof Buffer !== "undefined")
+      return fromSource(Buffer.from(source, "hex"));
+    const hex = source.length % 2 === 0 ? source : source.slice(0, source.length - 1);
+    const buffer = [];
+    for (let i = 0;i < hex.length; i += 2)
+      buffer.push(parseInt(`${hex[i]}${hex[i + 1]}`, 16));
+    return Uint8Array.from(buffer).buffer;
+  }
+  Binary.fromHex = fromHex;
+})(Binary || (Binary = {}));
+var base64ToArrayBuffer = Binary.fromBase64;
+var arrayBufferToBase64 = Binary.toBase64;
+var hexToArrayBuffer = Binary.fromHex;
+var arrayBufferToHex = Binary.toHex;
+function clone(source, refs = /* @__PURE__ */ new Map) {
+  if (!source || typeof source !== "object")
+    return source;
+  if (is("Date", source))
+    return new Date(source.valueOf());
+  if (is("RegExp", source))
+    return new RegExp(source.source, source.flags);
+  if (isArrayBufferLike(source))
+    return source.slice(0);
+  if (ArrayBuffer.isView(source))
+    return source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+  const cached = refs.get(source);
+  if (cached)
+    return cached;
+  if (Array.isArray(source)) {
+    const result = [];
+    refs.set(source, result);
+    source.forEach((value, index) => {
+      result[index] = Reflect.apply(clone, null, [value, refs]);
+    });
+    return result;
+  }
+  const result = Object.create(Object.getPrototypeOf(source));
+  refs.set(source, result);
+  for (const key of Reflect.ownKeys(source)) {
+    const descriptor = { ...Reflect.getOwnPropertyDescriptor(source, key) };
+    if ("value" in descriptor)
+      descriptor.value = Reflect.apply(clone, null, [descriptor.value, refs]);
+    Reflect.defineProperty(result, key, descriptor);
+  }
+  return result;
+}
+function deepEqual(a, b, strict) {
+  const ancestors = /* @__PURE__ */ new Set;
+  function compare(a, b) {
+    if (a === b)
+      return true;
+    if (isVolatile(a) || isVolatile(b))
+      return isVolatile(a) && isVolatile(b);
+    if (!strict && isNullable(a) && isNullable(b))
+      return true;
+    if (typeof a !== typeof b || typeof a !== "object" || !a || !b)
+      return false;
+    if (ancestors.has(a))
+      return false;
+    function check(test, then) {
+      return test(a) ? test(b) ? then(a, b) : false : test(b) ? false : undefined;
+    }
+    ancestors.add(a);
+    try {
+      return check(Array.isArray, (a, b) => {
+        if (a.length !== b.length)
+          return false;
+        for (let index = 0;index < a.length; index++)
+          if (!compare(a[index], b[index]))
+            return false;
+        return true;
+      }) ?? check(is("Date"), (a, b) => a.valueOf() === b.valueOf()) ?? check(is("URL"), (a, b) => a.href === b.href) ?? check(is("RegExp"), (a, b) => a.source === b.source && a.flags === b.flags) ?? check(isArrayBufferLike, (a, b) => {
+        if (a.byteLength !== b.byteLength)
+          return false;
+        const viewA = new Uint8Array(a);
+        const viewB = new Uint8Array(b);
+        for (let i = 0;i < viewA.length; i++)
+          if (viewA[i] !== viewB[i])
+            return false;
+        return true;
+      }) ?? ((!strict || [a, b].every((value) => Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)) && Object.keys({
+        ...a,
+        ...b
+      }).every((key) => compare(a[key], b[key])));
+    } finally {
+      ancestors.delete(a);
+    }
+  }
+  return compare(a, b);
+}
+var Time;
+(function(Time) {
+  Time.millisecond = 1;
+  Time.second = 1000;
+  Time.minute = Time.second * 60;
+  Time.hour = Time.minute * 60;
+  Time.day = Time.hour * 24;
+  Time.week = Time.day * 7;
+  let timezoneOffset = (/* @__PURE__ */ new Date()).getTimezoneOffset();
+  function setTimezoneOffset(offset) {
+    timezoneOffset = offset;
+  }
+  Time.setTimezoneOffset = setTimezoneOffset;
+  function getTimezoneOffset() {
+    return timezoneOffset;
+  }
+  Time.getTimezoneOffset = getTimezoneOffset;
+  function getDateNumber(date = /* @__PURE__ */ new Date, offset) {
+    if (typeof date === "number")
+      date = new Date(date);
+    if (offset === undefined)
+      offset = timezoneOffset;
+    return Math.floor((date.valueOf() / Time.minute - offset) / 1440);
+  }
+  Time.getDateNumber = getDateNumber;
+  function fromDateNumber(value, offset) {
+    const date = new Date(value * Time.day);
+    if (offset === undefined)
+      offset = timezoneOffset;
+    return new Date(+date + offset * Time.minute);
+  }
+  Time.fromDateNumber = fromDateNumber;
+  const numeric = /\d+(?:\.\d+)?/.source;
+  const timeRegExp = new RegExp(`^${[
+    "w(?:eek(?:s)?)?",
+    "d(?:ay(?:s)?)?",
+    "h(?:our(?:s)?)?",
+    "m(?:in(?:ute)?(?:s)?)?",
+    "s(?:ec(?:ond)?(?:s)?)?"
+  ].map((unit) => `(${numeric}${unit})?`).join("")}$`);
+  function parseTime(source) {
+    const capture = timeRegExp.exec(source);
+    if (!capture)
+      return 0;
+    return (parseFloat(capture[1]) * Time.week || 0) + (parseFloat(capture[2]) * Time.day || 0) + (parseFloat(capture[3]) * Time.hour || 0) + (parseFloat(capture[4]) * Time.minute || 0) + (parseFloat(capture[5]) * Time.second || 0);
+  }
+  Time.parseTime = parseTime;
+  function parseDate(date) {
+    const parsed = parseTime(date);
+    if (parsed)
+      date = Date.now() + parsed;
+    else if (/^\d{1,2}(:\d{1,2}){1,2}$/.test(date))
+      date = `${(/* @__PURE__ */ new Date()).toLocaleDateString()}-${date}`;
+    else if (/^\d{1,2}-\d{1,2}-\d{1,2}(:\d{1,2}){1,2}$/.test(date))
+      date = `${(/* @__PURE__ */ new Date()).getFullYear()}-${date}`;
+    return date ? new Date(date) : /* @__PURE__ */ new Date;
+  }
+  Time.parseDate = parseDate;
+  function format(ms) {
+    const abs = Math.abs(ms);
+    if (abs >= Time.day - Time.hour / 2)
+      return Math.round(ms / Time.day) + "d";
+    else if (abs >= Time.hour - Time.minute / 2)
+      return Math.round(ms / Time.hour) + "h";
+    else if (abs >= Time.minute - Time.second / 2)
+      return Math.round(ms / Time.minute) + "m";
+    else if (abs >= Time.second)
+      return Math.round(ms / Time.second) + "s";
+    return ms + "ms";
+  }
+  Time.format = format;
+  function toDigits(source, length = 2) {
+    return source.toString().padStart(length, "0");
+  }
+  Time.toDigits = toDigits;
+  function template(template, time = /* @__PURE__ */ new Date) {
+    return template.replace("yyyy", time.getFullYear().toString()).replace("yy", time.getFullYear().toString().slice(2)).replace("MM", toDigits(time.getMonth() + 1)).replace("dd", toDigits(time.getDate())).replace("hh", toDigits(time.getHours())).replace("mm", toDigits(time.getMinutes())).replace("ss", toDigits(time.getSeconds())).replace("SSS", toDigits(time.getMilliseconds(), 3));
+  }
+  Time.template = template;
+})(Time || (Time = {}));
+
+// ../../../../../../opt/homebrew/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/schemastery/lib/index.mjs
+var kSchema = Symbol.for("schemastery");
+var kValidationError = Symbol.for("ValidationError");
+globalThis.__schemastery_index__ ??= 0;
+globalThis.__schemastery_refs__ = undefined;
+var ValidationError = class extends TypeError {
+  options;
+  name = "ValidationError";
+  constructor(message, options) {
+    let prefix = "$";
+    for (const segment of options.path || [])
+      if (typeof segment === "string")
+        prefix += "." + segment;
+      else if (typeof segment === "number")
+        prefix += "[" + segment + "]";
+      else if (typeof segment === "symbol")
+        prefix += `[Symbol(${segment.toString()})]`;
+    if (prefix.startsWith("."))
+      prefix = prefix.slice(1);
+    super((prefix === "$" ? "" : `${prefix} `) + message);
+    this.options = options;
+  }
+  static is(error) {
+    return !!error?.[kValidationError];
+  }
+};
+Object.defineProperty(ValidationError.prototype, kValidationError, { value: true });
+var Schema = function(options) {
+  const schema = function(data, options = {}) {
+    return Schema.resolve(data, schema, options)[0];
+  };
+  if (options.refs) {
+    const refs = mapValues(options.refs, (options) => new Schema(options));
+    const getRef = (uid) => refs[uid];
+    for (const key in refs) {
+      const options = refs[key];
+      options.sKey = getRef(options.sKey);
+      options.inner = getRef(options.inner);
+      options.list = options.list && options.list.map(getRef);
+      options.dict = options.dict && mapValues(options.dict, getRef);
+    }
+    return refs[options.uid];
+  }
+  Object.assign(schema, options);
+  if (typeof schema.callback === "string")
+    try {
+      schema.callback = new Function("return " + schema.callback)();
+    } catch {}
+  Object.defineProperty(schema, "uid", { value: globalThis.__schemastery_index__++ });
+  Object.setPrototypeOf(schema, Schema.prototype);
+  schema.meta ||= {};
+  schema.toString = schema.toString.bind(schema);
+  return schema;
+};
+Schema.prototype = Object.create(Function.prototype);
+Schema.prototype[kSchema] = true;
+Object.defineProperty(Schema.prototype, "~standard", { get() {
+  return {
+    version: 1,
+    vendor: "schemastery",
+    validate: (value) => {
+      try {
+        return { value: Schema.resolve(value, this, {})[0] };
+      } catch (error) {
+        if (ValidationError.is(error))
+          return { issues: [{
+            message: error.message,
+            path: error.options.path
+          }] };
+        throw error;
+      }
+    }
+  };
+} });
+Schema.ValidationError = ValidationError;
+Schema.prototype.toJSON = function toJSON() {
+  if (globalThis.__schemastery_refs__) {
+    globalThis.__schemastery_refs__[this.uid] ??= JSON.parse(JSON.stringify({ ...this }));
+    return this.uid;
+  }
+  globalThis.__schemastery_refs__ = { [this.uid]: { ...this } };
+  globalThis.__schemastery_refs__[this.uid] = JSON.parse(JSON.stringify({ ...this }));
+  const result = {
+    uid: this.uid,
+    refs: globalThis.__schemastery_refs__
+  };
+  globalThis.__schemastery_refs__ = undefined;
+  return result;
+};
+Schema.prototype.set = function set(key, value) {
+  this.dict[key] = value;
+  return this;
+};
+Schema.prototype.push = function push(value) {
+  this.list.push(value);
+  return this;
+};
+function mergeDesc(original, messages) {
+  const result = typeof original === "string" ? { "": original } : { ...original };
+  for (const locale in messages) {
+    const value = messages[locale];
+    if (value?.$description || value?.$desc)
+      result[locale] = value.$description || value.$desc;
+    else if (typeof value === "string")
+      result[locale] = value;
+  }
+  return result;
+}
+function getInner(value) {
+  return value?.$value ?? value?.$inner;
+}
+function extractKeys(data) {
+  return filterKeys(data ?? {}, (key) => !key.startsWith("$"));
+}
+Schema.prototype.i18n = function i18n(messages) {
+  const schema = Schema(this);
+  const desc = mergeDesc(schema.meta.description, messages);
+  if (Object.keys(desc).length)
+    schema.meta.description = desc;
+  if (schema.dict)
+    schema.dict = mapValues(schema.dict, (inner, key) => {
+      return inner.i18n(mapValues(messages, (data) => getInner(data)?.[key] ?? data?.[key]));
+    });
+  if (schema.list)
+    schema.list = schema.list.map((inner, index) => {
+      return inner.i18n(mapValues(messages, (data = {}) => {
+        if (Array.isArray(getInner(data)))
+          return getInner(data)[index];
+        if (Array.isArray(data))
+          return data[index];
+        return extractKeys(data);
+      }));
+    });
+  if (schema.inner)
+    schema.inner = schema.inner.i18n(mapValues(messages, (data) => {
+      if (getInner(data))
+        return getInner(data);
+      return extractKeys(data);
+    }));
+  if (schema.sKey)
+    schema.sKey = schema.sKey.i18n(mapValues(messages, (data) => data?.$key));
+  return schema;
+};
+Schema.prototype.extra = function extra(key, value) {
+  const schema = Schema(this);
+  schema.meta = {
+    ...schema.meta,
+    [key]: value
+  };
+  return schema;
+};
+for (const key of [
+  "required",
+  "disabled",
+  "collapse",
+  "hidden",
+  "loose"
+])
+  Object.assign(Schema.prototype, { [key](value = true) {
+    const schema = Schema(this);
+    schema.meta = {
+      ...schema.meta,
+      [key]: value
+    };
+    return schema;
+  } });
+Schema.prototype.deprecated = function deprecated() {
+  const schema = Schema(this);
+  schema.meta.badges ||= [];
+  schema.meta.badges.push({
+    text: "deprecated",
+    type: "danger"
+  });
+  return schema;
+};
+Schema.prototype.experimental = function experimental() {
+  const schema = Schema(this);
+  schema.meta.badges ||= [];
+  schema.meta.badges.push({
+    text: "experimental",
+    type: "warning"
+  });
+  return schema;
+};
+Schema.prototype.pattern = function pattern(regexp) {
+  const schema = Schema(this);
+  const pattern = pick(regexp, ["source", "flags"]);
+  schema.meta = {
+    ...schema.meta,
+    pattern
+  };
+  return schema;
+};
+Schema.prototype.simplify = function simplify(value) {
+  if (isVolatile(value))
+    value = value.get();
+  if (deepEqual(value, this.meta.default, this.type === "dict"))
+    return null;
+  if (isNullable(value))
+    return value;
+  if (this.type === "object" || this.type === "dict") {
+    const result = {};
+    for (const key in value) {
+      const item = (this.type === "object" ? this.dict[key] : this.inner)?.simplify(value[key]);
+      if (this.type === "dict" || !isNullable(item))
+        result[key] = item;
+    }
+    if (deepEqual(result, this.meta.default, this.type === "dict"))
+      return null;
+    return result;
+  } else if (this.type === "array" || this.type === "tuple") {
+    const result = [];
+    value.forEach((value, index) => {
+      const schema = this.type === "array" ? this.inner : this.list[index];
+      const item = schema ? schema.simplify(value) : value;
+      result.push(item);
+    });
+    return result;
+  } else if (this.type === "intersect") {
+    const result = {};
+    for (const item of this.list)
+      Object.assign(result, item.simplify(value));
+    return result;
+  } else if (this.type === "union")
+    for (const schema of this.list)
+      try {
+        Schema.resolve(value, schema, {});
+        return schema.simplify(value);
+      } catch {}
+  return value;
+};
+Schema.prototype.toString = function toString(inline) {
+  return formatters[this.type]?.(this, inline) ?? `Schema<${this.type}>`;
+};
+Schema.prototype.role = function role(role, extra) {
+  const schema = Schema(this);
+  schema.meta = {
+    ...schema.meta,
+    role,
+    extra
+  };
+  return schema;
+};
+for (const key of [
+  "default",
+  "link",
+  "comment",
+  "description",
+  "max",
+  "min",
+  "step"
+])
+  Object.assign(Schema.prototype, { [key](value) {
+    const schema = Schema(this);
+    schema.meta = {
+      ...schema.meta,
+      [key]: value
+    };
+    return schema;
+  } });
+Schema.prototype.volatile = function volatile() {
+  if (this.meta.volatile)
+    throw new TypeError("volatile schema is already wrapped");
+  return this.extra("volatile", true);
+};
+var resolvers = {};
+var checkedVolatile = Symbol("checked-volatile-schema");
+function validateVolatileSchema(schema, path = [], blocked = false, seen = /* @__PURE__ */ new Map) {
+  const states = seen.get(schema) ?? /* @__PURE__ */ new Set;
+  if (states.has(blocked))
+    return;
+  states.add(blocked);
+  seen.set(schema, states);
+  if (schema.meta?.volatile && blocked)
+    throw new ValidationError("volatile fields require a fixed object path without an enclosing volatile field", { path });
+  const nested = blocked || !!schema.meta?.volatile;
+  if (schema.dict)
+    for (const [key, child] of Object.entries(schema.dict))
+      validateVolatileSchema(child, [...path, key], nested, seen);
+  if (schema.sKey)
+    validateVolatileSchema(schema.sKey, [...path, "<key>"], true, seen);
+  if (schema.inner && (schema.type !== "lazy" || schema.inner[kSchema]))
+    validateVolatileSchema(schema.inner, [...path, "*"], true, seen);
+  if (schema.list)
+    for (let index = 0;index < schema.list.length; index++)
+      validateVolatileSchema(schema.list[index], [...path, String(index)], true, seen);
+}
+Schema.extend = function extend(type, resolve) {
+  resolvers[type] = resolve;
+};
+Schema.resolve = function resolve(data, schema, options = {}, strict = false) {
+  if (!schema)
+    return [data];
+  if (!options[checkedVolatile]) {
+    validateVolatileSchema(schema, options.path);
+    options = {
+      ...options,
+      [checkedVolatile]: true
+    };
+  }
+  if (schema.meta?.volatile) {
+    const inner = Schema(schema);
+    inner.meta = {
+      ...schema.meta,
+      volatile: false
+    };
+    const [value, adapted] = Schema.resolve(data, inner, options, strict);
+    try {
+      return [createVolatile(value), adapted];
+    } catch (error) {
+      throw new ValidationError(error instanceof Error ? error.message : String(error), options);
+    }
+  }
+  if (options.ignore?.(data, schema))
+    return [data];
+  if (isNullable(data) && schema.type !== "lazy") {
+    if (schema.meta.required)
+      throw new ValidationError(`missing required value`, options);
+    let current = schema;
+    let fallback = schema.meta.default;
+    while (current?.type === "intersect" && isNullable(fallback)) {
+      current = current.list[0];
+      fallback = current?.meta.default;
+    }
+    if (isNullable(fallback))
+      return [data];
+    data = clone(fallback);
+  }
+  const callback = resolvers[schema.type];
+  if (!callback)
+    throw new ValidationError(`unsupported type "${schema.type}"`, options);
+  try {
+    return callback(data, schema, options, strict);
+  } catch (error) {
+    if (!schema.meta.loose)
+      throw error;
+    return [schema.meta.default];
+  }
+};
+Schema.from = function from(source) {
+  if (isNullable(source))
+    return Schema.any();
+  else if ([
+    "string",
+    "number",
+    "boolean"
+  ].includes(typeof source))
+    return Schema.const(source).required();
+  else if (source[kSchema])
+    return source;
+  else if (typeof source === "function")
+    switch (source) {
+      case String:
+        return Schema.string().required();
+      case Number:
+        return Schema.number().required();
+      case Boolean:
+        return Schema.boolean().required();
+      case Function:
+        return Schema.function().required();
+      default:
+        return Schema.is(source).required();
+    }
+  else
+    throw new TypeError(`cannot infer schema from ${source}`);
+};
+Schema.lazy = function lazy(builder) {
+  const toJSON = () => {
+    if (!schema.inner[kSchema]) {
+      schema.inner = schema.builder();
+      schema.inner.meta = {
+        ...schema.meta,
+        ...schema.inner.meta
+      };
+    }
+    return schema.inner.toJSON();
+  };
+  const schema = new Schema({
+    type: "lazy",
+    builder,
+    inner: { toJSON }
+  });
+  return schema;
+};
+Schema.natural = function natural() {
+  return Schema.number().step(1).min(0);
+};
+Schema.percent = function percent() {
+  return Schema.number().step(0.01).min(0).max(1).role("slider");
+};
+Schema.date = function date() {
+  return Schema.union([Schema.is(Date), Schema.transform(Schema.string().role("datetime"), (value, options) => {
+    const date = new Date(value);
+    if (isNaN(+date))
+      throw new ValidationError(`invalid date "${value}"`, options);
+    return date;
+  }, true)]);
+};
+Schema.regExp = function regExp(flag = "") {
+  return Schema.union([Schema.is(RegExp), Schema.transform(Schema.string().role("regexp", { flag }), (value, options) => {
+    try {
+      return new RegExp(value, flag);
+    } catch (e) {
+      throw new ValidationError(e.message, options);
+    }
+  }, true)]);
+};
+Schema.arrayBuffer = function arrayBuffer(encoding) {
+  return Schema.union([
+    Schema.is(ArrayBuffer),
+    Schema.is(SharedArrayBuffer),
+    Schema.transform(Schema.any(), (value, options) => {
+      if (Binary.isSource(value))
+        return Binary.fromSource(value);
+      throw new ValidationError(`expected ArrayBufferSource but got ${value}`, options);
+    }, true),
+    ...encoding ? [Schema.transform(Schema.string(), (value, options) => {
+      try {
+        return encoding === "base64" ? Binary.fromBase64(value) : Binary.fromHex(value);
+      } catch (e) {
+        throw new ValidationError(e.message, options);
+      }
+    }, true)] : []
+  ]);
+};
+Schema.extend("lazy", (data, schema, options, strict) => {
+  if (!schema.inner[kSchema]) {
+    schema.inner = schema.builder();
+    schema.inner.meta = {
+      ...schema.meta,
+      ...schema.inner.meta
+    };
+    validateVolatileSchema(schema.inner, options.path, true);
+  }
+  return Schema.resolve(data, schema.inner, options, strict);
+});
+Schema.extend("any", (data) => {
+  return [data];
+});
+Schema.extend("never", (data, _, options) => {
+  throw new ValidationError(`expected nullable but got ${data}`, options);
+});
+Schema.extend("const", (data, { value }, options) => {
+  if (deepEqual(data, value))
+    return [value];
+  throw new ValidationError(`expected ${value} but got ${data}`, options);
+});
+function checkWithinRange(data, meta, description, options, skipMin = false) {
+  const { max = Infinity, min = -Infinity } = meta;
+  if (data > max)
+    throw new ValidationError(`expected ${description} <= ${max} but got ${data}`, options);
+  if (data < min && !skipMin)
+    throw new ValidationError(`expected ${description} >= ${min} but got ${data}`, options);
+}
+Schema.extend("string", (data, { meta }, options) => {
+  if (typeof data !== "string")
+    throw new ValidationError(`expected string but got ${data}`, options);
+  if (meta.pattern) {
+    const regexp = new RegExp(meta.pattern.source, meta.pattern.flags);
+    if (!regexp.test(data))
+      throw new ValidationError(`expect string to match regexp ${regexp}`, options);
+  }
+  checkWithinRange(data.length, meta, "string length", options);
+  return [data];
+});
+function decimalShift(data, digits) {
+  const str = data.toString();
+  if (str.includes("e"))
+    return data * Math.pow(10, digits);
+  const index = str.indexOf(".");
+  if (index === -1)
+    return data * Math.pow(10, digits);
+  const frac = str.slice(index + 1);
+  const integer = str.slice(0, index);
+  if (frac.length <= digits)
+    return +(integer + frac.padEnd(digits, "0"));
+  return +(integer + frac.slice(0, digits) + "." + frac.slice(digits));
+}
+function isMultipleOf(data, min, step) {
+  step = Math.abs(step);
+  if (!/^\d+\.\d+$/.test(step.toString()))
+    return (data - min) % step === 0;
+  const index = step.toString().indexOf(".");
+  const digits = step.toString().slice(index + 1).length;
+  return Math.abs(decimalShift(data, digits) - decimalShift(min, digits)) % decimalShift(step, digits) === 0;
+}
+Schema.extend("number", (data, { meta }, options) => {
+  if (typeof data !== "number")
+    throw new ValidationError(`expected number but got ${data}`, options);
+  checkWithinRange(data, meta, "number", options);
+  const { step } = meta;
+  if (step && !isMultipleOf(data, meta.min ?? 0, step))
+    throw new ValidationError(`expected number multiple of ${step} but got ${data}`, options);
+  return [data];
+});
+Schema.extend("boolean", (data, _, options) => {
+  if (typeof data === "boolean")
+    return [data];
+  throw new ValidationError(`expected boolean but got ${data}`, options);
+});
+Schema.extend("bitset", (data, { bits, meta }, options) => {
+  let value = 0, keys = [];
+  if (typeof data === "number") {
+    value = data;
+    for (const key in bits)
+      if (data & bits[key])
+        keys.push(key);
+  } else if (Array.isArray(data)) {
+    keys = data;
+    for (const key of keys) {
+      if (typeof key !== "string")
+        throw new ValidationError(`expected string but got ${key}`, options);
+      if (key in bits)
+        value |= bits[key];
+    }
+  } else
+    throw new ValidationError(`expected number or array but got ${data}`, options);
+  if (value === meta.default)
+    return [value];
+  return [value, keys];
+});
+Schema.extend("function", (data, _, options) => {
+  if (typeof data === "function")
+    return [data];
+  throw new ValidationError(`expected function but got ${data}`, options);
+});
+Schema.extend("is", (data, { constructor }, options) => {
+  if (typeof constructor === "function") {
+    if (data instanceof constructor)
+      return [data];
+    throw new ValidationError(`expected ${constructor.name} but got ${data}`, options);
+  } else {
+    if (isNullable(data))
+      throw new ValidationError(`expected ${constructor} but got ${data}`, options);
+    let prototype = Object.getPrototypeOf(data);
+    while (prototype) {
+      if (prototype.constructor?.name === constructor)
+        return [data];
+      prototype = Object.getPrototypeOf(prototype);
+    }
+    throw new ValidationError(`expected ${constructor} but got ${data}`, options);
+  }
+});
+function property(data, key, schema, options) {
+  try {
+    const [value, adapted] = Schema.resolve(data[key], schema, {
+      ...options,
+      path: [...options.path || [], key]
+    });
+    if (adapted !== undefined)
+      data[key] = adapted;
+    return value;
+  } catch (e) {
+    if (!options?.autofix)
+      throw e;
+    delete data[key];
+    return schema.meta.volatile ? createVolatile(schema.meta.default) : schema.meta.default;
+  }
+}
+Schema.extend("array", (data, { inner, meta }, options) => {
+  if (!Array.isArray(data))
+    throw new ValidationError(`expected array but got ${data}`, options);
+  checkWithinRange(data.length, meta, "array length", options, !isNullable(inner.meta.default));
+  return [data.map((_, index) => property(data, index, inner, options))];
+});
+Schema.extend("dict", (data, { inner, sKey }, options, strict) => {
+  if (!isPlainObject(data))
+    throw new ValidationError(`expected object but got ${data}`, options);
+  const result = {};
+  for (const key in data) {
+    let rKey;
+    try {
+      rKey = Schema.resolve(key, sKey, options)[0];
+    } catch (error) {
+      if (strict)
+        continue;
+      throw error;
+    }
+    result[rKey] = property(data, key, inner, options);
+    data[rKey] = data[key];
+    if (key !== rKey)
+      delete data[key];
+  }
+  return [result];
+});
+Schema.extend("tuple", (data, { list }, options, strict) => {
+  if (!Array.isArray(data))
+    throw new ValidationError(`expected array but got ${data}`, options);
+  const result = list.map((inner, index) => property(data, index, inner, options));
+  if (strict)
+    return [result];
+  result.push(...data.slice(list.length));
+  return [result];
+});
+function merge(result, data) {
+  for (const key in data) {
+    if (key in result)
+      continue;
+    result[key] = data[key];
+  }
+}
+Schema.extend("object", (data, { dict }, options, strict) => {
+  if (!isPlainObject(data))
+    throw new ValidationError(`expected object but got ${data}`, options);
+  const result = {};
+  for (const key in dict) {
+    const value = property(data, key, dict[key], options);
+    if (!isNullable(value) || key in data)
+      result[key] = value;
+  }
+  if (!strict)
+    merge(result, data);
+  return [result];
+});
+Schema.extend("union", (data, { list, toString }, options, strict) => {
+  const messages = [];
+  for (const inner of list)
+    try {
+      return Schema.resolve(data, inner, options, strict);
+    } catch (error) {
+      messages.push(error);
+    }
+  throw new ValidationError(`expected ${toString()} but got ${JSON.stringify(data)}`, options);
+});
+Schema.extend("intersect", (data, { list, toString }, options, strict) => {
+  if (!list.length)
+    return [data];
+  let result;
+  for (const inner of list) {
+    const value = Schema.resolve(data, inner, options, true)[0];
+    if (isNullable(value))
+      continue;
+    if (isNullable(result))
+      result = value;
+    else if (typeof result !== typeof value)
+      throw new ValidationError(`expected ${toString()} but got ${JSON.stringify(data)}`, options);
+    else if (typeof value === "object")
+      merge(result ??= {}, value);
+    else if (result !== value)
+      throw new ValidationError(`expected ${toString()} but got ${JSON.stringify(data)}`, options);
+  }
+  if (!strict && isPlainObject(data))
+    merge(result, data);
+  return [result];
+});
+Schema.extend("transform", (data, { inner, callback, preserve }, options) => {
+  const [result, adapted = data] = Schema.resolve(data, inner, options, true);
+  if (preserve)
+    return [callback(result)];
+  else
+    return [callback(result), callback(adapted)];
+});
+var formatters = {};
+function defineMethod(name, keys, format) {
+  formatters[name] = format;
+  Object.assign(Schema, { [name](...args) {
+    const schema = new Schema({ type: name });
+    keys.forEach((key, index) => {
+      switch (key) {
+        case "sKey":
+          schema.sKey = args[index] ?? Schema.string();
+          break;
+        case "inner":
+          schema.inner = Schema.from(args[index]);
+          break;
+        case "list":
+          schema.list = args[index].map(Schema.from);
+          break;
+        case "dict":
+          schema.dict = mapValues(args[index], Schema.from);
+          break;
+        case "bits":
+          schema.bits = {};
+          for (const key in args[index]) {
+            if (typeof args[index][key] !== "number")
+              continue;
+            schema.bits[key] = args[index][key];
+          }
+          break;
+        case "callback": {
+          const callback = schema.callback = args[index];
+          callback["toJSON"] ||= () => callback.toString();
+          break;
+        }
+        case "constructor": {
+          const constructor = schema.constructor = args[index];
+          if (typeof constructor === "function")
+            constructor["toJSON"] ||= () => constructor["name"];
+          break;
+        }
+        default:
+          schema[key] = args[index];
+      }
+    });
+    if (name === "object" || name === "dict")
+      schema.meta.default = {};
+    else if (name === "array" || name === "tuple")
+      schema.meta.default = [];
+    else if (name === "bitset")
+      schema.meta.default = 0;
+    return schema;
+  } });
+}
+defineMethod("is", ["constructor"], ({ constructor }) => {
+  if (typeof constructor === "function")
+    return constructor.name;
+  else
+    return constructor;
+});
+defineMethod("any", [], () => "any");
+defineMethod("never", [], () => "never");
+defineMethod("const", ["value"], ({ value }) => typeof value === "string" ? JSON.stringify(value) : value);
+defineMethod("string", [], () => "string");
+defineMethod("number", [], () => "number");
+defineMethod("boolean", [], () => "boolean");
+defineMethod("bitset", ["bits"], () => "bitset");
+defineMethod("function", [], () => "function");
+defineMethod("array", ["inner"], ({ inner }) => `${inner.toString(true)}[]`);
+defineMethod("dict", ["inner", "sKey"], ({ inner, sKey }) => `{ [key: ${sKey.toString()}]: ${inner.toString()} }`);
+defineMethod("tuple", ["list"], ({ list }) => `[${list.map((inner) => inner.toString()).join(", ")}]`);
+defineMethod("object", ["dict"], ({ dict }) => {
+  if (Object.keys(dict).length === 0)
+    return "{}";
+  return `{ ${Object.entries(dict).map(([key, inner]) => {
+    return `${key}${inner.meta.required ? "" : "?"}: ${inner.toString()}`;
+  }).join(", ")} }`;
+});
+defineMethod("union", ["list"], ({ list }, inline) => {
+  const result = list.map(({ toString: format }) => format()).join(" | ");
+  return inline ? `(${result})` : result;
+});
+defineMethod("intersect", ["list"], ({ list }) => {
+  return `${list.map((inner) => inner.toString(true)).join(" & ")}`;
+});
+defineMethod("transform", [
+  "inner",
+  "callback",
+  "preserve"
+], ({ inner }, isInner) => inner.toString(isInner));
+
+// src/plugin-config.ts
+var Config = Schema.object({
+  maxRounds: Schema.natural().default(0).volatile().description("Global cap on a subagent's LLM round-trips; at the cap a wrap-up is injected. 0 disables the hard-stop policy."),
+  maxRoundsGrace: Schema.natural().default(0).volatile().description("Wrap-up grace rounds after the cap; at cap + grace the child is force-stopped. 0 keeps pure-soft mode (wrap-up only).")
+});
 
 // src/host-session.ts
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
@@ -995,6 +2012,9 @@ class SubagentRoundPolicy {
         this.#injected.add(childId);
         if (rememberedLabel !== undefined)
           this.#injectedLabel.set(childId, rememberedLabel);
+        try {
+          this.#options.onWrapUp?.(childId, count);
+        } catch {}
       });
       return;
     }
@@ -1008,6 +2028,9 @@ class SubagentRoundPolicy {
     if (stopped) {
       try {
         this.#options.onHardStop?.({ childId, round: count, cap: caps.cap, grace: caps.grace });
+      } catch {}
+      try {
+        this.#options.onForceStop?.(childId, count);
       } catch {}
     }
   }
@@ -1093,11 +2116,34 @@ class HostSession {
       return null;
     return this.usage.cacheRead / total * 100;
   }
+  #noteDelta() {
+    const now = Date.now();
+    if (this.#firstDeltaAt === 0)
+      this.#firstDeltaAt = now;
+    this.#lastDeltaAt = now;
+  }
+  sessionInfo() {
+    return {
+      sessionId: this.currentSessionId(),
+      model: this.label === "dsh-host" ? undefined : this.label,
+      turnCount: this.#turns,
+      tokensIn: this.usage.prompt,
+      tokensOut: this.usage.completion,
+      cacheRead: this.usage.cacheRead,
+      cacheWrite: this.usage.cacheWrite,
+      lastTurnTps: this.#lastDecode.ms > 0 ? tokensPerSecond(this.#lastDecode.tokens, this.#lastDecode.ms) : this.lastTurnStats.tps,
+      sessionAvgTps: tokensPerSecond(this.#decodeTotals.tokens, this.#decodeTotals.ms)
+    };
+  }
   lastTurnStats = emptyTurnStats();
   #turns = 0;
   #ticker = createStreamTicker((t) => this.#cb?.onStreamTick?.(t));
   #turnStartedAt = 0;
   #turnUsageStart = { prompt: 0, completion: 0 };
+  #firstDeltaAt = 0;
+  #lastDeltaAt = 0;
+  #decodeTotals = { tokens: 0, ms: 0 };
+  #lastDecode = { tokens: 0, ms: 0 };
   constructor(ctx) {
     this.#ctx = ctx;
     this.#wire();
@@ -1844,7 +2890,21 @@ ${field}: ${value}
         isSettled: (childId) => this.#children.get(childId)?.status !== "running",
         wrapup: (childId, message) => this.steerChild(childId, message),
         forceStop: (childId) => this.cancelChild(childId),
-        onHardStop: (record) => this.#onHardStop(record)
+        onHardStop: (record) => this.#onHardStop(record),
+        onWrapUp: (childId, round) => {
+          const existing = this.#children.get(childId);
+          if (!existing)
+            return;
+          this.#children.set(childId, { ...existing, injectedRound: round });
+          this.#emitChildren();
+        },
+        onForceStop: (childId, round) => {
+          const existing = this.#children.get(childId);
+          if (!existing)
+            return;
+          this.#children.set(childId, { ...existing, hardStopRound: round });
+          this.#emitChildren();
+        }
       });
       this.#refreshRoundLimits();
     }
@@ -1881,6 +2941,22 @@ ${field}: ${value}
   }
   childTranscript(id) {
     return [...this.#childLogs.get(id) ?? []];
+  }
+  subagentViews() {
+    return [...this.#children.entries()].map(([id, v]) => ({
+      id,
+      label: v.label,
+      status: v.status,
+      rounds: v.rounds,
+      ...v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {},
+      ...v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}
+    }));
+  }
+  #subagentListeners = new Set;
+  onSubagentViews(listener) {
+    this.#subagentListeners.add(listener);
+    listener(this.subagentViews());
+    return () => this.#subagentListeners.delete(listener);
   }
   steerChild(id, text) {
     const agent = this.#childAgents.get(id);
@@ -1985,6 +3061,11 @@ ${field}: ${value}
       this.#emitChildren();
   }
   #emitChildren() {
+    for (const listener of this.#subagentListeners) {
+      try {
+        listener(this.subagentViews());
+      } catch {}
+    }
     const cb = this.#cb;
     if (!cb?.onSubagentUpdate)
       return;
@@ -1997,7 +3078,9 @@ ${field}: ${value}
       rounds: v.rounds,
       ...v.tokens !== undefined ? { tokens: v.tokens } : {},
       elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
-      ...v.lastLine ? { lastLine: clamp(v.lastLine) } : {}
+      ...v.lastLine ? { lastLine: clamp(v.lastLine) } : {},
+      ...v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {},
+      ...v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}
     })));
   }
   historyTurns() {
@@ -2126,6 +3209,16 @@ ${field}: ${value}
     const completion = this.usage.completion - this.#turnUsageStart.completion;
     const real = completion > 0;
     const tokens = real ? completion : estimateTokens(chars);
+    if (this.#firstDeltaAt > 0) {
+      const decodeMs = Math.max(0, (this.#lastDeltaAt || endedAt) - this.#firstDeltaAt);
+      if (decodeMs > 0) {
+        this.#lastDecode = { tokens, ms: decodeMs };
+        this.#decodeTotals.tokens += tokens;
+        this.#decodeTotals.ms += decodeMs;
+      }
+    }
+    this.#firstDeltaAt = 0;
+    this.#lastDeltaAt = 0;
     this.lastTurnStats = {
       startedAt: this.#turnStartedAt,
       endedAt,
@@ -2166,9 +3259,11 @@ ${field}: ${value}
       try {
         if (c.type === "reasoning-delta" && c.text) {
           cb.onThinkingDelta(c.text);
+          this.#noteDelta();
           this.#ticker.add(c.text.length);
         } else if (c.type === "text-delta" && c.text) {
           cb.onContentDelta(c.text);
+          this.#noteDelta();
           this.#ticker.add(c.text.length);
         } else if (c.type === "usage") {
           if (process.env.DSH_OPENTUI_DEBUG) {
@@ -2310,6 +3405,13 @@ function asRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value : {};
 }
 
+// ../tui-base/src/routes/session/subagent-markers.ts
+import { createSignal } from "solid-js";
+var [subagentViews, setSubagentViews] = createSignal([]);
+function foldSubagentMarkerViews(views) {
+  setSubagentViews(views);
+}
+
 // src/host-session-seam-adapter.ts
 class HostSessionSeam {
   #session;
@@ -2345,6 +3447,27 @@ class HostSessionSeam {
   }
   btwAsk(question, snapshot, onDelta) {
     return this.#session.btwAsk(question, snapshot, onDelta);
+  }
+  async sessionInfo() {
+    const base = this.#session.sessionInfo();
+    if (base.sessionId === undefined)
+      return;
+    let messageCount = 0;
+    try {
+      const rows = await this.#session.storedTranscript(base.sessionId);
+      messageCount = rows.filter((row) => row.kind === "user" || row.kind === "assistant").length;
+    } catch {}
+    return { ...base, sessionId: base.sessionId, model: base.model ?? null, messageCount };
+  }
+  subagentViews() {
+    return this.#session.subagentViews();
+  }
+  onSubagentViews(listener) {
+    foldSubagentMarkerViews(this.#session.subagentViews());
+    return this.#session.onSubagentViews((views) => {
+      foldSubagentMarkerViews(views);
+      listener(views);
+    });
   }
   resumeSession(id) {
     return this.#session.resumeSession(id);
@@ -2502,7 +3625,7 @@ import { insertNode as _$insertNode } from "@opentui/solid";
 import { use as _$use } from "@opentui/solid";
 import { setProp as _$setProp } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
-import { createSignal as createSignal3, onCleanup as onCleanup4, Show as Show2 } from "solid-js";
+import { createSignal as createSignal4, onCleanup as onCleanup4, Show as Show2 } from "solid-js";
 import { useRenderer as useRenderer2 } from "@opentui/solid";
 import { measureEditText } from "@opentui/core";
 
@@ -2748,7 +3871,7 @@ var getAllObjectKeys = (obj) => {
 };
 var byReferenceInstances = /* @__PURE__ */ new WeakSet;
 var viewBytes = (view) => new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-var isArrayBufferLike = (u) => u instanceof ArrayBuffer || typeof SharedArrayBuffer !== "undefined" && u instanceof SharedArrayBuffer;
+var isArrayBufferLike2 = (u) => u instanceof ArrayBuffer || typeof SharedArrayBuffer !== "undefined" && u instanceof SharedArrayBuffer;
 var bufferBytes = (buffer) => {
   try {
     return new Uint8Array(buffer);
@@ -2834,7 +3957,7 @@ var hash = (self) => {
             h = self[symbol]();
           } else if (typeof self === "function") {
             h = random(self);
-          } else if (isArrayBufferLike(self)) {
+          } else if (isArrayBufferLike2(self)) {
             const bytes = bufferBytes(self);
             h = bytes === undefined ? random(self) : array(bytes);
           } else if (self instanceof DataView) {
@@ -2999,8 +4122,8 @@ function compareStructure(self, that) {
       return false;
     }
     return compareArrays(self, that);
-  } else if (isArrayBufferLike(self)) {
-    if (!isArrayBufferLike(that) || self instanceof ArrayBuffer !== that instanceof ArrayBuffer) {
+  } else if (isArrayBufferLike2(self)) {
+    if (!isArrayBufferLike2(that) || self instanceof ArrayBuffer !== that instanceof ArrayBuffer) {
       return false;
     }
     const selfBytes = bufferBytes(self);
@@ -18265,7 +19388,7 @@ function createComponentTheme(view, surfaces = new Map) {
 }
 
 // ../tui-base/src/context/theme.tsx
-import { createEffect, createMemo as createMemo2, createSignal as createSignal2, onCleanup as onCleanup3, onMount, useContext as useContext5 } from "solid-js";
+import { createEffect, createMemo as createMemo2, createSignal as createSignal3, onCleanup as onCleanup3, onMount, useContext as useContext5 } from "solid-js";
 import { createStore as createStore3, produce as produce2 } from "solid-js/store";
 
 // ../tui-base/src/context/helper.tsx
@@ -19007,8 +20130,8 @@ function useStorageOptional() {
 }
 
 // ../tui-base/src/devtools/index.ts
-import { createSignal } from "solid-js";
-var [groups, setGroups] = createSignal([]);
+import { createSignal as createSignal2 } from "solid-js";
+var [groups, setGroups] = createSignal2([]);
 function register(input) {
   setGroups((groups) => {
     if (groups.some((group) => group.id === input.id)) {
@@ -19074,7 +20197,7 @@ var [store, setStore] = createStore3({
   active: "opencode",
   ready: false
 });
-var [themeSources, setThemeSources] = createSignal2(allThemes());
+var [themeSources, setThemeSources] = createSignal3(allThemes());
 subscribeThemes(setThemeSources);
 var themeContext = createSimpleContext({
   name: "Theme",
@@ -19401,11 +20524,14 @@ function SessionComposer(props) {
     hint: () => theme?.text.muted ?? "#565f89"
   };
   const keyBindings = composerKeyBindings(props.keybinds);
-  const [busy, setBusy] = createSignal3(false);
-  const [textareaHeight, setTextareaHeight] = createSignal3(1);
+  const [busy, setBusy] = createSignal4(false);
+  const [textareaHeight, setTextareaHeight] = createSignal4(1);
   let textarea;
   let disposed = false;
   onCleanup4(() => disposed = true);
+  if (props.seam.onSubagentViews) {
+    onCleanup4(props.seam.onSubagentViews(() => {}));
+  }
   const controller = new ComposerController({
     send: (text) => props.send(text),
     steer: (text) => props.seam.steer(text),
@@ -19571,7 +20697,7 @@ function SessionComposer(props) {
 }
 
 // ../tui-base/src/routes/session/seam-rows.ts
-import { createSignal as createSignal4, onCleanup as onCleanup5 } from "solid-js";
+import { createSignal as createSignal5, onCleanup as onCleanup5 } from "solid-js";
 import { createStore as createStore4, produce as produce3, reconcile as reconcile3 } from "solid-js/store";
 function toStoredRow(stored, index) {
   const kind = stored.kind === "user" || stored.kind === "tool" ? stored.kind : "assistant";
@@ -19585,7 +20711,7 @@ function toStoredRow(stored, index) {
 }
 function createSeamRows(seam, sessionID, options) {
   const [rows, setRows] = createStore4([]);
-  const [hydrated, setHydrated] = createSignal4(false);
+  const [hydrated, setHydrated] = createSignal5(false);
   let liveOrdinal = 0;
   let turnOpen = false;
   const pendingTurns = [];
@@ -20090,7 +21216,7 @@ class TurnOverlayController {
 // ../tui-base/src/routes/session/turn-overlays.tsx
 import { memo as _$memo5 } from "@opentui/solid";
 import { createComponent as _$createComponent14 } from "@opentui/solid";
-import { createEffect as createEffect4, createSignal as createSignal9, onCleanup as onCleanup11, onMount as onMount4, untrack, Show as Show7 } from "solid-js";
+import { createEffect as createEffect4, createSignal as createSignal10, onCleanup as onCleanup11, onMount as onMount4, untrack, Show as Show7 } from "solid-js";
 
 // ../tui-base/src/ui/dialog-confirm.tsx
 import { insertNode as _$insertNode5 } from "@opentui/solid";
@@ -20109,7 +21235,7 @@ import { formatCommandBindings, formatKeySequence } from "@opentui/keymap/extras
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider, useBindings, useKeymapSelector } from "@opentui/keymap/solid";
 import { useRenderer as useRenderer4 } from "@opentui/solid";
-import { createComputed, createContext as createContext6, createMemo as createMemo4, createSignal as createSignal5, onCleanup as onCleanup7, useContext as useContext7 } from "solid-js";
+import { createComputed, createContext as createContext6, createMemo as createMemo4, createSignal as createSignal6, onCleanup as onCleanup7, useContext as useContext7 } from "solid-js";
 
 // ../tui-base/src/context/interactivity.tsx
 import { createComponent as _$createComponent7 } from "@opentui/solid";
@@ -20474,7 +21600,7 @@ var Keymap = {
   useState
 };
 function createMode(keymap) {
-  const [stack, setStack] = createSignal5([]);
+  const [stack, setStack] = createSignal6([]);
   const current = createMemo4(() => stack().findLast((item) => item.enabled())?.mode ?? MODE.base);
   createComputed(() => keymap.setData(MODE.key, current()));
   const unregister = keymap.registerLayerFields({
@@ -20538,7 +21664,7 @@ import { insert as _$insert4 } from "@opentui/solid";
 import { setProp as _$setProp4 } from "@opentui/solid";
 import { createElement as _$createElement4 } from "@opentui/solid";
 import { useRenderer as useRenderer6, useTerminalDimensions as useTerminalDimensions2 } from "@opentui/solid";
-import { batch as batch2, children, createContext as createContext9, createEffect as createEffect2, createSignal as createSignal7, For as For2, onCleanup as onCleanup9, Show as Show5, useContext as useContext10 } from "solid-js";
+import { batch as batch2, children, createContext as createContext9, createEffect as createEffect2, createSignal as createSignal8, For as For2, onCleanup as onCleanup9, Show as Show5, useContext as useContext10 } from "solid-js";
 import { InputRenderable as InputRenderable2, MouseButton, RGBA as RGBA7, TextAttributes as TextAttributes2 } from "@opentui/core";
 import { createStore as createStore6 } from "solid-js/store";
 
@@ -20551,7 +21677,7 @@ import { insert as _$insert3 } from "@opentui/solid";
 import { memo as _$memo2 } from "@opentui/solid";
 import { setProp as _$setProp3 } from "@opentui/solid";
 import { createElement as _$createElement3 } from "@opentui/solid";
-import { createContext as createContext7, createSignal as createSignal6, onCleanup as onCleanup8, useContext as useContext8, Show as Show4 } from "solid-js";
+import { createContext as createContext7, createSignal as createSignal7, onCleanup as onCleanup8, useContext as useContext8, Show as Show4 } from "solid-js";
 import { createStore as createStore5 } from "solid-js/store";
 import { useRenderer as useRenderer5, useTerminalDimensions } from "@opentui/solid";
 import { TextAttributes } from "@opentui/core";
@@ -21027,7 +22153,7 @@ function DialogFooter(props) {
 function DialogFooterItem(props) {
   const theme = useTheme().surface("dialog");
   const newDesigns = useNewDesigns();
-  const [hovered, setHovered] = createSignal7(false);
+  const [hovered, setHovered] = createSignal8(false);
   const trigger = () => {
     if (props.action.disabled)
       return;
@@ -21759,7 +22885,7 @@ function B(t) {
 }
 // ../tui-base/src/ui/dialog-select.tsx
 var fuzzysort = __toESM(require_fuzzysort(), 1);
-import { batch as batch3, createEffect as createEffect3, createMemo as createMemo5, createSignal as createSignal8, For as For4, Show as Show6, on, onCleanup as onCleanup10, onMount as onMount3 } from "solid-js";
+import { batch as batch3, createEffect as createEffect3, createMemo as createMemo5, createSignal as createSignal9, For as For4, Show as Show6, on, onCleanup as onCleanup10, onMount as onMount3 } from "solid-js";
 import { createStore as createStore8 } from "solid-js/store";
 import { useRenderer as useRenderer7, useTerminalDimensions as useTerminalDimensions3 } from "@opentui/solid";
 
@@ -21903,7 +23029,7 @@ function DialogSelect(props) {
   const limit = createMemo5(() => Math.floor(dimensions().height / 2) - 6);
   const overflows = createMemo5(() => newDesigns() && rows() > limit());
   const detailsWidth = createMemo5(() => dialogSelectContentWidth(Math.min(dialogWidth(dialog.size), dimensions().width)));
-  const [moreBelow, setMoreBelow] = createSignal8(false);
+  const [moreBelow, setMoreBelow] = createSignal9(false);
   const ellipsis = () => overflows() && moreBelow();
   const height = createMemo5(() => Math.min(rows(), limit()) - (ellipsis() ? 1 : 0));
   function updateMoreBelow() {
@@ -22850,7 +23976,7 @@ function AskPicker(props) {
 }
 function TurnOverlayHost(props) {
   const dialog = useDialog();
-  const [version, setVersion] = createSignal9(0);
+  const [version, setVersion] = createSignal10(0);
   onMount4(() => {
     const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1));
     onCleanup11(unsubscribe);
@@ -22925,7 +24051,28 @@ import { insert as _$insert7 } from "@opentui/solid";
 import { createComponent as _$createComponent15 } from "@opentui/solid";
 import { setProp as _$setProp7 } from "@opentui/solid";
 import { createElement as _$createElement7 } from "@opentui/solid";
-import { For as For5, Show as Show8, createSignal as createSignal10 } from "solid-js";
+import { For as For5, Show as Show8, createSignal as createSignal11 } from "solid-js";
+
+// ../tui-base/src/routes/session/session-info.ts
+function formatTps(tps) {
+  return tps === null || tps === undefined || !(tps > 0) ? "—" : `${Math.round(tps)} tok/s`;
+}
+function sessionInfoRows(info) {
+  const speed = info.lastTurnTps == null && info.sessionAvgTps == null ? "—" : `last ${formatTps(info.lastTurnTps)} · avg ${formatTps(info.sessionAvgTps)}`;
+  return [
+    { field: "session", value: info.sessionId ?? "—" },
+    { field: "model", value: info.model ?? "—" },
+    { field: "messages", value: String(info.messageCount) },
+    { field: "turns", value: String(info.turnCount) },
+    { field: "tokens in/out", value: `${info.tokensIn} / ${info.tokensOut}` },
+    { field: "cache read/write", value: `${info.cacheRead} / ${info.cacheWrite}` },
+    { field: "speed", value: speed }
+  ];
+}
+function formatSessionInfoPanel(rows) {
+  const width = Math.max(...rows.map((row) => row.field.length));
+  return rows.map((row) => `${row.field.padEnd(width)}  ${row.value}`);
+}
 
 // ../tui-base/src/routes/session/commands.ts
 function coreCommands() {
@@ -23026,6 +24173,23 @@ function coreCommands() {
         }
         ctx.openBtw(argText);
       }
+    },
+    {
+      name: "/session",
+      description: "show session info (id, model, tokens, speed)",
+      async run(ctx) {
+        if (!ctx.seam.sessionInfo) {
+          ctx.say("/session unavailable in this session");
+          return;
+        }
+        const info = await ctx.seam.sessionInfo();
+        if (!info || info.sessionId === null) {
+          ctx.say("no active session");
+          return;
+        }
+        for (const line of formatSessionInfoPanel(sessionInfoRows(info)))
+          ctx.say(line);
+      }
     }
   ];
 }
@@ -23040,7 +24204,8 @@ function dispatchLine(commands, line) {
   if (!text.startsWith("/"))
     return { kind: "text" };
   const [head, ...rest] = text.split(/\s+/);
-  const match = commands.filter((command) => command.name.toLowerCase().startsWith(head.toLowerCase())).sort((a, b) => b.name.length - a.name.length)[0];
+  const needle = head.toLowerCase();
+  const match = commands.find((command) => command.name.toLowerCase() === needle) ?? commands.filter((command) => command.name.toLowerCase().startsWith(needle)).sort((a, b) => b.name.length - a.name.length)[0];
   if (!match)
     return { kind: "unknown", name: head };
   return { kind: "command", command: match, argText: rest.join(" ") };
@@ -23053,9 +24218,9 @@ function unknownCommandRow(name) {
 var MAX_ROWS = 6;
 
 class SlashPaletteController {
-  #rows = createSignal10(0);
-  #selected = createSignal10(0);
-  #query = createSignal10("");
+  #rows = createSignal11(0);
+  #selected = createSignal11(0);
+  #query = createSignal11("");
   #suppressed = false;
   #lastBuffer = "";
   rows() {
@@ -23224,7 +24389,7 @@ import { createTextNode as _$createTextNode7 } from "@opentui/solid";
 import { insertNode as _$insertNode10 } from "@opentui/solid";
 import { setProp as _$setProp11 } from "@opentui/solid";
 import { createElement as _$createElement12 } from "@opentui/solid";
-import { Show as Show11, createSignal as createSignal13 } from "solid-js";
+import { Show as Show11, createSignal as createSignal14 } from "solid-js";
 
 // ../tui-base/src/ui/dialog-prompt.tsx
 import { createTextNode as _$createTextNode6 } from "@opentui/solid";
@@ -23236,7 +24401,7 @@ import { memo as _$memo7 } from "@opentui/solid";
 import { use as _$use4 } from "@opentui/solid";
 import { setProp as _$setProp10 } from "@opentui/solid";
 import { createElement as _$createElement11 } from "@opentui/solid";
-import { Show as Show10, createEffect as createEffect6, createSignal as createSignal12, onMount as onMount5 } from "solid-js";
+import { Show as Show10, createEffect as createEffect6, createSignal as createSignal13, onMount as onMount5 } from "solid-js";
 
 // ../tui-base/src/component/spinner.tsx
 import { insertNode as _$insertNode8 } from "@opentui/solid";
@@ -23246,7 +24411,7 @@ import { insert as _$insert8 } from "@opentui/solid";
 import { createElement as _$createElement10 } from "@opentui/solid";
 import { createComponent as _$createComponent16 } from "@opentui/solid";
 import { memo as _$memo6 } from "@opentui/solid";
-import { createEffect as createEffect5, createSignal as createSignal11, onCleanup as onCleanup12, Show as Show9 } from "solid-js";
+import { createEffect as createEffect5, createSignal as createSignal12, onCleanup as onCleanup12, Show as Show9 } from "solid-js";
 
 // ../tui-base/src/component/spinner-renderable.ts
 import {
@@ -24021,7 +25186,7 @@ function Spinner(props) {
   const theme = useTheme();
   const config = useConfig().data;
   const color = () => props.color ?? theme.text.muted;
-  const [frame, setFrame] = createSignal11(0);
+  const [frame, setFrame] = createSignal12(0);
   createEffect5(() => {
     if (!(config.animations ?? true) || !props.shimmer)
       return;
@@ -24104,7 +25269,7 @@ function DialogPrompt(props) {
   const renderer = useRenderer8();
   const theme = useTheme().surface("dialog");
   const cursorStyle = useCursorStyle();
-  const [textareaTarget, setTextareaTarget] = createSignal12();
+  const [textareaTarget, setTextareaTarget] = createSignal13();
   let textarea;
   function confirm() {
     if (props.busy)
@@ -24298,10 +25463,10 @@ class BtwController {
   #ask;
   #snapshot;
   #capacity;
-  #run = createSignal13(undefined);
-  #last = createSignal13(undefined);
-  #queue = createSignal13([]);
-  #visible = createSignal13(false);
+  #run = createSignal14(undefined);
+  #last = createSignal14(undefined);
+  #queue = createSignal14([]);
+  #visible = createSignal14(false);
   constructor(deps) {
     this.#ask = deps.ask;
     this.#snapshot = deps.snapshot;
@@ -24477,9 +25642,6 @@ function createBtwOpener(deps) {
           return;
         }
         showPanel();
-      },
-      onCancel: () => {
-        deps.controller.close();
       }
     }), () => {
       deps.controller.close();
@@ -24758,7 +25920,7 @@ import { insert as _$insert12 } from "@opentui/solid";
 import { createComponent as _$createComponent20 } from "@opentui/solid";
 import { setProp as _$setProp13 } from "@opentui/solid";
 import { createElement as _$createElement14 } from "@opentui/solid";
-import { createSignal as createSignal14, onCleanup as onCleanup13, For as For7, Show as Show13 } from "solid-js";
+import { createSignal as createSignal15, onCleanup as onCleanup13, For as For7, Show as Show13 } from "solid-js";
 var DEFAULT_VERBS = {
   think: ["Thinking", "Pondering", "Reasoning", "Reflecting", "Deliberating", "Mulling"],
   tool: ["Executing", "Running", "Processing", "Building"],
@@ -24779,7 +25941,7 @@ var FALLBACK_TRACK = "#565f89";
 var FALLBACK_HEAD = "#7aa2f7";
 function StatusBar(props) {
   const theme = useThemeOptional();
-  const [tick, setTick] = createSignal14(0);
+  const [tick, setTick] = createSignal15(0);
   const timer = setInterval(() => setTick((t) => t + 1), BAR_MS);
   onCleanup13(() => clearInterval(timer));
   const pools = () => ({
@@ -24900,7 +26062,7 @@ import { createTextNode as _$createTextNode9 } from "@opentui/solid";
 import { insertNode as _$insertNode12 } from "@opentui/solid";
 import { setProp as _$setProp14 } from "@opentui/solid";
 import { createElement as _$createElement15 } from "@opentui/solid";
-import { createSignal as createSignal15, onCleanup as onCleanup14, Show as Show14 } from "solid-js";
+import { createSignal as createSignal16, onCleanup as onCleanup14, Show as Show14 } from "solid-js";
 var CTRL_C_QUIT_WINDOW_MS = 500;
 function createCtrlCGate(windowMs = CTRL_C_QUIT_WINDOW_MS, now = Date.now) {
   let armedAt;
@@ -24958,7 +26120,7 @@ function createTurnCancel(props, onArm) {
 }
 function TurnCancelKeys(props) {
   const theme = useThemeOptional();
-  const [armed, setArmed] = createSignal15(false);
+  const [armed, setArmed] = createSignal16(false);
   const cancel = createTurnCancel(props, setArmed);
   onCleanup14(() => cancel.dispose());
   Keymap.createLayer(() => ({
@@ -25032,13 +26194,13 @@ function V2SessionPage(props) {
   if (props.themeName && !themeSeam.setTheme(props.themeName)) {
     console.error(`[host-entry-v2] unknown theme ${props.themeName}; bundled: ${themeSeam.list().join(", ")}`);
   }
-  const [composerBusy, setComposerBusy] = createSignal16(false);
-  const [turnBusy, setTurnBusy] = createSignal16(false);
+  const [composerBusy, setComposerBusy] = createSignal17(false);
+  const [turnBusy, setTurnBusy] = createSignal17(false);
   const busy = () => composerBusy() || turnBusy();
-  const [busySince, setBusySince] = createSignal16(0);
-  const [msgs, setMsgs] = createSignal16(0);
-  const [model, setModel] = createSignal16();
-  const [now, setNow] = createSignal16(new Date);
+  const [busySince, setBusySince] = createSignal17(0);
+  const [msgs, setMsgs] = createSignal17(0);
+  const [model, setModel] = createSignal17();
+  const [now, setNow] = createSignal17(new Date);
   let composerRef;
   onMount6(() => {
     projection.load();
@@ -25268,10 +26430,12 @@ function apply(ctx, config) {
 var plugin = {
   name: "dsh-opentui",
   inject,
-  apply
+  apply,
+  Config
 };
 var host_entry_v2_default = plugin;
 export {
+  Config,
   apply,
   host_entry_v2_default as default,
   plugin
