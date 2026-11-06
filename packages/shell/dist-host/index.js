@@ -23626,10 +23626,11 @@ function SubagentsPicker(props) {
   function select() {
     const entry = selectedEntry();
     if (!entry)
-      return;
+      return true;
     if (entry.status === "running" && subagentSteerWired()) {
       openSteer(entry);
     }
+    return true;
   }
   Keymap.createLayer(() => ({
     mode: "global",
@@ -25300,20 +25301,31 @@ function DialogSelect(props) {
                 return props.titleView;
               },
               get description() {
-                return props.description;
+                return _$memo7(() => !!newDesigns())() ? props.description : undefined;
               },
               get onClose() {
                 return props.onCancel;
               }
             }), _$createComponent16(Show9, {
               get when() {
+                return _$memo7(() => !!!newDesigns())() && props.description;
+              },
+              get children() {
+                var _el$8 = _$createElement11("text");
+                _$setProp10(_el$8, "wrapMode", "word");
+                _$insert9(_el$8, () => props.description);
+                _$effect10((_$p) => _$setProp10(_el$8, "fg", theme.text.muted, _$p));
+                return _el$8;
+              }
+            }), _$createComponent16(Show9, {
+              get when() {
                 return props.renderFilter !== false;
               },
               get children() {
-                var _el$8 = _$createElement11("box");
-                _$setProp10(_el$8, "paddingTop", 1);
-                _$insert9(_el$8, searchInput);
-                return _el$8;
+                var _el$9 = _$createElement11("box");
+                _$setProp10(_el$9, "paddingTop", 1);
+                _$insert9(_el$9, searchInput);
+                return _el$9;
               }
             })];
           },
@@ -25351,9 +25363,9 @@ function DialogSelect(props) {
         },
         get fallback() {
           return (() => {
-            var _el$9 = _$createElement11("box");
-            _$setProp10(_el$9, "flexShrink", 0);
-            return _el$9;
+            var _el$0 = _$createElement11("box");
+            _$setProp10(_el$0, "flexShrink", 0);
+            return _el$0;
           })();
         },
         get children() {
@@ -25386,24 +25398,24 @@ function DialogSelect(props) {
                 },
                 get fallback() {
                   return props.emptyView ?? (() => {
-                    var _el$0 = _$createElement11("box"), _el$1 = _$createElement11("text");
-                    _$insertNode9(_el$0, _el$1);
-                    _$setProp10(_el$0, "paddingLeft", DIALOG_LIST_INSET);
-                    _$setProp10(_el$0, "paddingRight", DIALOG_LIST_INSET);
-                    _$insertNode9(_el$1, _$createTextNode6(`No items available`));
-                    _$effect10((_$p) => _$setProp10(_el$1, "fg", theme.text.muted, _$p));
-                    return _el$0;
+                    var _el$1 = _$createElement11("box"), _el$10 = _$createElement11("text");
+                    _$insertNode9(_el$1, _el$10);
+                    _$setProp10(_el$1, "paddingLeft", DIALOG_LIST_INSET);
+                    _$setProp10(_el$1, "paddingRight", DIALOG_LIST_INSET);
+                    _$insertNode9(_el$10, _$createTextNode6(`No items available`));
+                    _$effect10((_$p) => _$setProp10(_el$10, "fg", theme.text.muted, _$p));
+                    return _el$1;
                   })();
                 },
                 get children() {
                   return props.noMatchView ?? (() => {
-                    var _el$11 = _$createElement11("box"), _el$12 = _$createElement11("text");
-                    _$insertNode9(_el$11, _el$12);
-                    _$setProp10(_el$11, "paddingLeft", DIALOG_LIST_INSET);
-                    _$setProp10(_el$11, "paddingRight", DIALOG_LIST_INSET);
-                    _$insertNode9(_el$12, _$createTextNode6(`No results found`));
-                    _$effect10((_$p) => _$setProp10(_el$12, "fg", theme.text.muted, _$p));
-                    return _el$11;
+                    var _el$12 = _$createElement11("box"), _el$13 = _$createElement11("text");
+                    _$insertNode9(_el$12, _el$13);
+                    _$setProp10(_el$12, "paddingLeft", DIALOG_LIST_INSET);
+                    _$setProp10(_el$12, "paddingRight", DIALOG_LIST_INSET);
+                    _$insertNode9(_el$13, _$createTextNode6(`No results found`));
+                    _$effect10((_$p) => _$setProp10(_el$13, "fg", theme.text.muted, _$p));
+                    return _el$12;
                   })();
                 }
               });
@@ -25440,10 +25452,10 @@ function DialogSelect(props) {
                       const active = createMemo6(() => !props.locked && k(option.value, selected()?.value));
                       const current = createMemo6(() => k(option.value, props.current));
                       return (() => {
-                        var _el$14 = _$createElement11("box");
-                        _$setProp10(_el$14, "flexDirection", "column");
-                        _$setProp10(_el$14, "position", "relative");
-                        _$setProp10(_el$14, "onMouseMove", () => {
+                        var _el$15 = _$createElement11("box");
+                        _$setProp10(_el$15, "flexDirection", "column");
+                        _$setProp10(_el$15, "position", "relative");
+                        _$setProp10(_el$15, "onMouseMove", () => {
                           if (props.locked)
                             return;
                           const index = flat().findIndex((x) => k(x.value, option.value));
@@ -25451,13 +25463,13 @@ function DialogSelect(props) {
                             return;
                           moveTo(index);
                         });
-                        _$setProp10(_el$14, "onMouseUp", () => {
+                        _$setProp10(_el$15, "onMouseUp", () => {
                           if (props.locked)
                             return;
                           option.onSelect?.(dialog);
                           props.onSelect?.(option);
                         });
-                        _$setProp10(_el$14, "onMouseDown", () => {
+                        _$setProp10(_el$15, "onMouseDown", () => {
                           if (props.locked)
                             return;
                           const index = flat().findIndex((x) => k(x.value, option.value));
@@ -25465,7 +25477,7 @@ function DialogSelect(props) {
                             return;
                           moveTo(index);
                         });
-                        _$insert9(_el$14, _$createComponent16(DialogSelectRow, {
+                        _$insert9(_el$15, _$createComponent16(DialogSelectRow, {
                           get title() {
                             return option.title;
                           },
@@ -25509,7 +25521,7 @@ function DialogSelect(props) {
                             return option.margin;
                           }
                         }), null);
-                        _$insert9(_el$14, _$createComponent16(DialogSelectDetails, {
+                        _$insert9(_el$15, _$createComponent16(DialogSelectDetails, {
                           get details() {
                             return option.details;
                           },
@@ -25517,7 +25529,7 @@ function DialogSelect(props) {
                             return detailsWidth();
                           }
                         }), null);
-                        return _el$14;
+                        return _el$15;
                       })();
                     }
                   })]
@@ -25566,11 +25578,11 @@ function DialogSelect(props) {
                     keyed: true,
                     get fallback() {
                       return (() => {
-                        var _el$15 = _$createElement11("text");
-                        _$setProp10(_el$15, "wrapMode", "word");
-                        _$insert9(_el$15, () => detailText() || " ");
-                        _$effect10((_$p) => _$setProp10(_el$15, "fg", theme.surface("dialog.footer").text.muted, _$p));
-                        return _el$15;
+                        var _el$16 = _$createElement11("text");
+                        _$setProp10(_el$16, "wrapMode", "word");
+                        _$insert9(_el$16, () => detailText() || " ");
+                        _$effect10((_$p) => _$setProp10(_el$16, "fg", theme.surface("dialog.footer").text.muted, _$p));
+                        return _el$16;
                       })();
                     },
                     children: (render) => render()
@@ -25589,15 +25601,15 @@ function DialogSelectCategory(props) {
   const theme = useTheme().surface("dialog");
   const newDesigns = useNewDesigns();
   return (() => {
-    var _el$17 = _$createElement11("box"), _el$18 = _$createElement11("text");
-    _$insertNode9(_el$17, _el$18);
-    _$insert9(_el$18, () => props.title);
+    var _el$18 = _$createElement11("box"), _el$19 = _$createElement11("text");
+    _$insertNode9(_el$18, _el$19);
+    _$insert9(_el$19, () => props.title);
     _$effect10((_p$) => {
       var _v$1 = props.first ? 0 : 1, _v$10 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$11 = newDesigns() ? theme.text.muted : theme.hue.accent[200], _v$12 = TextAttributes4.BOLD;
-      _v$1 !== _p$.e && (_p$.e = _$setProp10(_el$17, "paddingTop", _v$1, _p$.e));
-      _v$10 !== _p$.t && (_p$.t = _$setProp10(_el$17, "paddingLeft", _v$10, _p$.t));
-      _v$11 !== _p$.a && (_p$.a = _$setProp10(_el$18, "fg", _v$11, _p$.a));
-      _v$12 !== _p$.o && (_p$.o = _$setProp10(_el$18, "attributes", _v$12, _p$.o));
+      _v$1 !== _p$.e && (_p$.e = _$setProp10(_el$18, "paddingTop", _v$1, _p$.e));
+      _v$10 !== _p$.t && (_p$.t = _$setProp10(_el$18, "paddingLeft", _v$10, _p$.t));
+      _v$11 !== _p$.a && (_p$.a = _$setProp10(_el$19, "fg", _v$11, _p$.a));
+      _v$12 !== _p$.o && (_p$.o = _$setProp10(_el$19, "attributes", _v$12, _p$.o));
       return _p$;
     }, {
       e: undefined,
@@ -25605,7 +25617,7 @@ function DialogSelectCategory(props) {
       a: undefined,
       o: undefined
     });
-    return _el$17;
+    return _el$18;
   })();
 }
 function DialogSelectRow(props) {
@@ -25624,93 +25636,93 @@ function DialogSelectRow(props) {
     return props.active ? theme.text.action.secondary.focused : theme.text.muted;
   };
   const row = () => (() => {
-    var _el$19 = _$createElement11("box"), _el$23 = _$createElement11("text");
-    _$insertNode9(_el$19, _el$23);
-    _$setProp10(_el$19, "flexDirection", "row");
-    _$setProp10(_el$19, "gap", 1);
-    _$insert9(_el$19, _$createComponent16(Show9, {
+    var _el$20 = _$createElement11("box"), _el$24 = _$createElement11("text");
+    _$insertNode9(_el$20, _el$24);
+    _$setProp10(_el$20, "flexDirection", "row");
+    _$setProp10(_el$20, "gap", 1);
+    _$insert9(_el$20, _$createComponent16(Show9, {
       get when() {
         return _$memo7(() => !!!props.current)() && props.margin;
       },
       get children() {
-        var _el$20 = _$createElement11("box");
-        _$setProp10(_el$20, "position", "absolute");
-        _$setProp10(_el$20, "left", DIALOG_LIST_INSET - 3);
-        _$setProp10(_el$20, "flexShrink", 0);
-        _$insert9(_el$20, () => props.margin);
-        return _el$20;
+        var _el$21 = _$createElement11("box");
+        _$setProp10(_el$21, "position", "absolute");
+        _$setProp10(_el$21, "left", DIALOG_LIST_INSET - 3);
+        _$setProp10(_el$21, "flexShrink", 0);
+        _$insert9(_el$21, () => props.margin);
+        return _el$21;
       }
-    }), _el$23);
-    _$insert9(_el$19, _$createComponent16(Show9, {
+    }), _el$24);
+    _$insert9(_el$20, _$createComponent16(Show9, {
       get when() {
         return _$memo7(() => !!props.current)() && !props.gutter;
       },
       get children() {
-        var _el$21 = _$createElement11("text");
-        _$setProp10(_el$21, "flexShrink", 0);
-        _$insert9(_el$21, () => newDesigns() ? "▪" : "●");
-        _$effect10((_$p) => _$setProp10(_el$21, "fg", newDesigns() ? theme.text.formfield.selected : text(), _$p));
-        return _el$21;
+        var _el$22 = _$createElement11("text");
+        _$setProp10(_el$22, "flexShrink", 0);
+        _$insert9(_el$22, () => newDesigns() ? "▪" : "●");
+        _$effect10((_$p) => _$setProp10(_el$22, "fg", newDesigns() ? theme.text.formfield.selected : text(), _$p));
+        return _el$22;
       }
-    }), _el$23);
-    _$insert9(_el$19, _$createComponent16(Show9, {
+    }), _el$24);
+    _$insert9(_el$20, _$createComponent16(Show9, {
       get when() {
         return props.gutter;
       },
       get children() {
-        var _el$22 = _$createElement11("box");
-        _$setProp10(_el$22, "flexShrink", 0);
-        _$insert9(_el$22, () => props.gutter?.(text()));
-        return _el$22;
+        var _el$23 = _$createElement11("box");
+        _$setProp10(_el$23, "flexShrink", 0);
+        _$insert9(_el$23, () => props.gutter?.(text()));
+        return _el$23;
       }
-    }), _el$23);
-    _$setProp10(_el$23, "flexGrow", 1);
-    _$setProp10(_el$23, "overflow", "hidden");
-    _$setProp10(_el$23, "wrapMode", "none");
-    _$setProp10(_el$23, "paddingLeft", 3);
-    _$insert9(_el$23, () => props.titleView ?? (props.truncateTitle === false ? props.title : props.truncateTitle === "left" ? truncateLeft(props.title, props.titleWidth ?? 61) : truncate(props.title, props.titleWidth ?? 61)), null);
-    _$insert9(_el$23, _$createComponent16(Show9, {
+    }), _el$24);
+    _$setProp10(_el$24, "flexGrow", 1);
+    _$setProp10(_el$24, "overflow", "hidden");
+    _$setProp10(_el$24, "wrapMode", "none");
+    _$setProp10(_el$24, "paddingLeft", 3);
+    _$insert9(_el$24, () => props.titleView ?? (props.truncateTitle === false ? props.title : props.truncateTitle === "left" ? truncateLeft(props.title, props.titleWidth ?? 61) : truncate(props.title, props.titleWidth ?? 61)), null);
+    _$insert9(_el$24, _$createComponent16(Show9, {
       get when() {
         return props.description;
       },
       get children() {
-        var _el$24 = _$createElement11("span");
-        _$insert9(_el$24, () => " " + props.description);
-        _$effect10((_$p) => _$setProp10(_el$24, "style", {
+        var _el$25 = _$createElement11("span");
+        _$insert9(_el$25, () => " " + props.description);
+        _$effect10((_$p) => _$setProp10(_el$25, "style", {
           fg: secondary()
         }, _$p));
-        return _el$24;
+        return _el$25;
       }
     }), null);
-    _$insert9(_el$19, _$createComponent16(Show9, {
+    _$insert9(_el$20, _$createComponent16(Show9, {
       get when() {
         return props.footer;
       },
       get children() {
-        var _el$25 = _$createElement11("box"), _el$26 = _$createElement11("text");
-        _$insertNode9(_el$25, _el$26);
-        _$setProp10(_el$25, "flexShrink", 0);
-        _$insert9(_el$26, () => props.footer);
+        var _el$26 = _$createElement11("box"), _el$27 = _$createElement11("text");
+        _$insertNode9(_el$26, _el$27);
+        _$setProp10(_el$26, "flexShrink", 0);
+        _$insert9(_el$27, () => props.footer);
         _$effect10((_p$) => {
           var _v$13 = props.footerOverhang ? -props.footerOverhang : undefined, _v$14 = props.active || !props.footerColor ? secondary() : props.footerColor;
-          _v$13 !== _p$.e && (_p$.e = _$setProp10(_el$25, "marginRight", _v$13, _p$.e));
-          _v$14 !== _p$.t && (_p$.t = _$setProp10(_el$26, "fg", _v$14, _p$.t));
+          _v$13 !== _p$.e && (_p$.e = _$setProp10(_el$26, "marginRight", _v$13, _p$.e));
+          _v$14 !== _p$.t && (_p$.t = _$setProp10(_el$27, "fg", _v$14, _p$.t));
           return _p$;
         }, {
           e: undefined,
           t: undefined
         });
-        return _el$25;
+        return _el$26;
       }
     }), null);
     _$effect10((_p$) => {
       var _v$15 = newDesigns() ? 1 : undefined, _v$16 = props.current || props.gutter ? DIALOG_LIST_INSET - 3 : DIALOG_LIST_INSET - 1, _v$17 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$18 = props.active ? props.activeBackground ?? theme.background.action.primary.focused : RGBA12.fromInts(0, 0, 0, 0), _v$19 = text(), _v$20 = props.active && !newDesigns() ? TextAttributes4.BOLD : undefined;
-      _v$15 !== _p$.e && (_p$.e = _$setProp10(_el$19, "flexGrow", _v$15, _p$.e));
-      _v$16 !== _p$.t && (_p$.t = _$setProp10(_el$19, "paddingLeft", _v$16, _p$.t));
-      _v$17 !== _p$.a && (_p$.a = _$setProp10(_el$19, "paddingRight", _v$17, _p$.a));
-      _v$18 !== _p$.o && (_p$.o = _$setProp10(_el$19, "backgroundColor", _v$18, _p$.o));
-      _v$19 !== _p$.i && (_p$.i = _$setProp10(_el$23, "fg", _v$19, _p$.i));
-      _v$20 !== _p$.n && (_p$.n = _$setProp10(_el$23, "attributes", _v$20, _p$.n));
+      _v$15 !== _p$.e && (_p$.e = _$setProp10(_el$20, "flexGrow", _v$15, _p$.e));
+      _v$16 !== _p$.t && (_p$.t = _$setProp10(_el$20, "paddingLeft", _v$16, _p$.t));
+      _v$17 !== _p$.a && (_p$.a = _$setProp10(_el$20, "paddingRight", _v$17, _p$.a));
+      _v$18 !== _p$.o && (_p$.o = _$setProp10(_el$20, "backgroundColor", _v$18, _p$.o));
+      _v$19 !== _p$.i && (_p$.i = _$setProp10(_el$24, "fg", _v$19, _p$.i));
+      _v$20 !== _p$.n && (_p$.n = _$setProp10(_el$24, "attributes", _v$20, _p$.n));
       return _p$;
     }, {
       e: undefined,
@@ -25720,7 +25732,7 @@ function DialogSelectRow(props) {
       i: undefined,
       n: undefined
     });
-    return _el$19;
+    return _el$20;
   })();
   return _$createComponent16(Show9, {
     get when() {
@@ -25730,15 +25742,15 @@ function DialogSelectRow(props) {
       return row();
     },
     get children() {
-      var _el$27 = _$createElement11("box"), _el$28 = _$createElement11("text");
-      _$insertNode9(_el$27, _el$28);
-      _$setProp10(_el$27, "flexDirection", "row");
-      _$setProp10(_el$28, "width", 1);
-      _$setProp10(_el$28, "flexShrink", 0);
-      _$insert9(_el$28, () => props.active ? "┃" : " ");
-      _$insert9(_el$27, row, null);
-      _$effect10((_$p) => _$setProp10(_el$28, "fg", theme.text.formfield.focused, _$p));
-      return _el$27;
+      var _el$28 = _$createElement11("box"), _el$29 = _$createElement11("text");
+      _$insertNode9(_el$28, _el$29);
+      _$setProp10(_el$28, "flexDirection", "row");
+      _$setProp10(_el$29, "width", 1);
+      _$setProp10(_el$29, "flexShrink", 0);
+      _$insert9(_el$29, () => props.active ? "┃" : " ");
+      _$insert9(_el$28, row, null);
+      _$effect10((_$p) => _$setProp10(_el$29, "fg", theme.text.formfield.focused, _$p));
+      return _el$28;
     }
   });
 }
@@ -25750,22 +25762,22 @@ function DialogSelectDetails(props) {
       return props.details;
     },
     children: (detail) => (() => {
-      var _el$29 = _$createElement11("box"), _el$30 = _$createElement11("text");
-      _$insertNode9(_el$29, _el$30);
-      _$setProp10(_el$30, "wrapMode", "none");
-      _$insert9(_el$30, () => truncateMiddle(detail, Math.max(1, props.width)));
+      var _el$30 = _$createElement11("box"), _el$31 = _$createElement11("text");
+      _$insertNode9(_el$30, _el$31);
+      _$setProp10(_el$31, "wrapMode", "none");
+      _$insert9(_el$31, () => truncateMiddle(detail, Math.max(1, props.width)));
       _$effect10((_p$) => {
         var _v$21 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$22 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$23 = theme.text.muted;
-        _v$21 !== _p$.e && (_p$.e = _$setProp10(_el$29, "paddingLeft", _v$21, _p$.e));
-        _v$22 !== _p$.t && (_p$.t = _$setProp10(_el$29, "paddingRight", _v$22, _p$.t));
-        _v$23 !== _p$.a && (_p$.a = _$setProp10(_el$30, "fg", _v$23, _p$.a));
+        _v$21 !== _p$.e && (_p$.e = _$setProp10(_el$30, "paddingLeft", _v$21, _p$.e));
+        _v$22 !== _p$.t && (_p$.t = _$setProp10(_el$30, "paddingRight", _v$22, _p$.t));
+        _v$23 !== _p$.a && (_p$.a = _$setProp10(_el$31, "fg", _v$23, _p$.a));
         return _p$;
       }, {
         e: undefined,
         t: undefined,
         a: undefined
       });
-      return _el$29;
+      return _el$30;
     })()
   });
 }

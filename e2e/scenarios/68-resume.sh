@@ -235,16 +235,13 @@ if (( GATE )); then
   send '/sessions' Enter
   if wait_pane 'picker opens (Resume session)' 15 'Resume session'; then
     PANE="$(capture)"
-    # PRODUCT GAP (found against the real capture, C10b): the fitted
-    # UPDATED/DIR/SESSION header line is plumbed end to end
-    # (resumePickerOptions -> pickOne -> DialogSelect description) but
-    # DialogHeader paints `description` only under experimental.new-designs,
-    # and ConfigProvider is initialized with a static default config (no
-    # service host), so useNewDesigns() is permanently false and the header
-    # line can never paint. Downgraded to warns until the flag is wired.
-    warn 'picker renders the UPDATED column header — NOT PAINTED: DialogHeader gates description on experimental.new-designs, which is permanently false (ConfigProvider has no service host)'
-    warn 'picker renders the DIR column header — NOT PAINTED (same new-designs gate)'
-    warn 'picker renders the SESSION column header — NOT PAINTED (same new-designs gate)'
+    # Hard assertions (C11): the ungated DialogSelect description (tui-base
+    # 5434f84) paints an explicitly passed description below the title even
+    # with useNewDesigns() permanently false, so the fitted UPDATED/DIR/
+    # SESSION headerLine now renders — verified against the real capture.
+    assert_contains 'picker renders the UPDATED column header' 'UPDATED' "$PANE"
+    assert_contains 'picker renders the DIR column header' 'DIR' "$PANE"
+    assert_contains 'picker renders the SESSION column header' 'SESSION' "$PANE"
     assert_contains 'big session row surfaces with its workspace dir' '/app/alpha' "$PANE"
     assert_not_contains 'tiny stub is hidden by the 1KB size floor' '/app/stub' "$PANE"
   fi

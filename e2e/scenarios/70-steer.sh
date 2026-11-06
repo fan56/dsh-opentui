@@ -207,6 +207,22 @@ PANE="$(capture)"
 assert_contains 'picker footer hint rendered' 'Subagents' "$PANE"
 
 # --- Enter on the running row → the steer prompt -----------------------------
+# C11 TERMINAL FINDING (one instrumented container iteration — in-bundle log
+# of the mode stack + picker handlers): the D7 "key delivery" hypothesis is
+# DISPROVEN. The live log shows, in order: picker.toggle-open called →
+# picker.select called (Enter DOES reach the SubagentsPicker layer; keymap
+# mode is still "base" at that point — no streaming-mode shadowing) → mode
+# flips base→modal 12ms later (openSteer ran and dialog.replace(DialogPrompt
+# "Steer Looper") pushed the prompt onto the DialogProvider stack) → modal
+# holds ~15.6s → base (cleanup esc). So keys ARE delivered, the wiring IS
+# intact, and the steer prompt OPENS — but nothing paints: the pane keeps
+# showing the picker overlay and composer, with no "Steer Looper" title and
+# no prompt input. Product break: the DialogPrompt mounted by the
+# SubagentsPicker's openSteer is a member of the dialog stack (mode=modal
+# proves it) yet renders no visible surface over the rebuilt host view.
+# Recipe: fix the DialogProvider/DialogPrompt paint path in the rebuilt
+# dist-host view graph (mount point/visibility of the dialog surface, same
+# family as the 68-resume description gate), then re-pin this scenario.
 send Enter
 if wait_pane_fixed 'Enter opens the steer prompt' 15 'Steer Looper'; then
   :
