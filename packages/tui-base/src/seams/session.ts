@@ -150,6 +150,12 @@ export interface SessionSeam {
 	searchSessions(query: string): Promise<{ id: string; snippet: string }[]>
 	storedTranscript(id: string, skip?: number): Promise<SeamTranscriptRow[]>
 	currentSessionId(): string | undefined
+	/**
+	 * ⚡ CH footer segment (batch F2): cache hit rate in percent, null until
+	 * the host reports cache traffic (usage chunk cacheReadTokens /
+	 * cacheWriteTokens). Optional — a seam without it hides the segment.
+	 */
+	cacheHitRate?(): number | null
 	resumeSession(id: string): "ok" | "owned"
 	newSession(): void
 	renameSession(title: string): Promise<{ title: string; seq: number } | undefined>

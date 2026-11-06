@@ -15,6 +15,7 @@ import {
 	resolvePalette,
 	sessionFooterSegments,
 	speedSegment,
+	cacheSegment,
 	toolSegment,
 	type EffortLevel,
 } from "../src/routes/session/powerline"
@@ -156,4 +157,14 @@ describe("palette resolution", () => {
 
 test("arrow constant survives the port", () => {
 	expect(POWERLINE_ARROW).toBe("\ue0b0")
+})
+
+test("batch F2: ⚡ CH segment — tui-pi label shape, hidden without cache traffic", () => {
+	expect(cacheSegment(null)).toBeNull()
+	expect(cacheSegment(Number.NaN)).toBeNull()
+	expect(cacheSegment(98.43)?.text).toBe("⚡ CH98.4%")
+	expect(cacheSegment(0)?.text).toBe("⚡ CH0.0%")
+	const texts = sessionFooterSegments({ provider: "p", model: "m", contextPct: 10, messages: 2, cacheHitRate: 50 }).map((s) => s.text)
+	expect(texts.indexOf("⚡ CH50.0%")).toBe(texts.indexOf("🧠 10%") + 1)
+	expect(sessionFooterSegments({ messages: 1 }).some((s) => s.text.includes("CH"))).toBe(false)
 })

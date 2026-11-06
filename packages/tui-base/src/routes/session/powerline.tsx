@@ -65,6 +65,8 @@ export const POWERLINE_COLORS = {
 	tools: "#E65100",
 	/** Tokens-per-second segment teal. */
 	speed: "#00897B",
+	/** Cache-hit-rate segment teal (batch F2, tui-pi footer parity). */
+	cache: "#00695C",
 }
 
 /** The powerline arrow separator (U+E0B0, nerdfont). */
@@ -132,6 +134,7 @@ export function powerlinePalette(theme: ComponentTheme) {
 		messages: theme.hue.accent[700],
 		tools: theme.text.feedback.warning.muted,
 		speed: theme.hue.interactive[600],
+		cache: theme.hue.interactive[700],
 	}
 }
 
@@ -190,6 +193,18 @@ export function speedSegment(tps: number | null, theme?: ComponentTheme): Powerl
 }
 
 /**
+ * The ⚡ CH cache-hit-rate segment (batch F2, tui-pi footer parity). The
+ * label shape matches tui-pi's `⚡ CHxx.x%`; the gate is "the session saw
+ * cache traffic" (rate !== null — the seam returns null until the host
+ * reports cacheRead/cacheWrite). Both faces share the builder, so the
+ * segment appears wherever the seam's rate flows in.
+ */
+export function cacheSegment(rate: number | null, theme?: ComponentTheme): PowerlineSegment | null {
+	if (rate === null || !Number.isFinite(rate) || rate < 0) return null
+	return { text: `⚡ CH${rate.toFixed(1)}%`, bg: resolvePalette(theme).cache }
+}
+
+/**
  * The powerline footer: one row of chained segments plus an optional
  * right-aligned text (the clock), pushed to the row's end by a flexGrow
  * spacer. Pure presentation — callers assemble segments via the builders
@@ -243,6 +258,8 @@ export function sessionFooterSegments(data: {
 	messages?: number
 	tools?: number
 	tps?: number | null
+	/** ⚡ CH rate (seam.cacheHitRate()); null/absent hides the segment. */
+	cacheHitRate?: number | null
 	theme?: ComponentTheme
 }): PowerlineSegment[] {
 	const theme = data.theme
@@ -253,6 +270,8 @@ export function sessionFooterSegments(data: {
 	add(providerSegment(data.provider ?? "", theme))
 	add(modelSegment(data.model ?? "", data.effort ?? "off", theme))
 	add(contextSegment(data.contextPct ?? null, theme))
+	// tui-pi footer order: 🧠 context, ⚡ CH, then msgs/tools.
+	add(cacheSegment(data.cacheHitRate ?? null, theme))
 	add(messagesSegment(data.messages ?? 0, theme))
 	add(toolSegment(data.tools ?? 0, theme))
 	add(speedSegment(data.tps ?? null, theme))

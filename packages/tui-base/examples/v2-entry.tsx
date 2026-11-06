@@ -108,12 +108,20 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 		void done.finally(() => setTurnBusy(false))
 		return done
 	}
+	// ⚡ CH (batch F2): usage lands at turn end, so reading turnBusy() here
+	// re-runs the getter-fed segment list on each turn boundary (footer row
+	// only — PowerlineFooter's `left` prop is a getter, reactive-prop law).
+	const cacheRate = () => {
+		turnBusy()
+		return seam.cacheHitRate?.() ?? null
+	}
 	const segments = () =>
 		sessionFooterSegments({
 			provider: model()?.providerID,
 			model: model()?.modelID,
 			messages: msgs(),
 			tools: 0,
+			cacheHitRate: cacheRate(),
 			theme,
 		})
 	let cmdOrdinal = 0

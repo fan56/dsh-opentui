@@ -157,6 +157,11 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.currentSessionId()
 	}
 
+	/** ⚡ CH footer segment (batch F2): RemoteHostSession.cacheHitRate() 1:1. */
+	cacheHitRate(): number | null {
+		return this.#session.cacheHitRate()
+	}
+
 	resumeSession(id: string): "ok" | "owned" {
 		return this.#session.resumeSession(id)
 	}
