@@ -246,6 +246,36 @@ describe('ensureHost — boot + contract', () => {
     }
   })
 
+  test('spawn env: NODE_OPTIONS carries --experimental-ffi (added once, inherited, never duplicated)', async () => {
+    const home = makeHome()
+    const runner = makeRunner()
+    const savedNodeOptions = process.env.NODE_OPTIONS
+    try {
+      // 1. Absent inherited NODE_OPTIONS → the flag is added.
+      delete process.env.NODE_OPTIONS
+      let handle = await fakeBoot(runner, home)
+      await handle.dispose()
+      expect(runner.calls[0]!.env.NODE_OPTIONS).toBe('--experimental-ffi')
+
+      // 2. Inherited NODE_OPTIONS without the flag → merged, existing kept.
+      process.env.NODE_OPTIONS = '--max-old-space-size=4096'
+      handle = await fakeBoot(runner, home)
+      await handle.dispose()
+      expect(runner.calls[1]!.env.NODE_OPTIONS).toBe('--max-old-space-size=4096 --experimental-ffi')
+
+      // 3. Inherited NODE_OPTIONS already carrying the flag → untouched
+      // (no duplicate; the v2 shell's hasFfiFlag then never re-execs).
+      process.env.NODE_OPTIONS = '--experimental-ffi --max-old-space-size=4096'
+      handle = await fakeBoot(runner, home)
+      await handle.dispose()
+      expect(runner.calls[2]!.env.NODE_OPTIONS).toBe('--experimental-ffi --max-old-space-size=4096')
+    } finally {
+      if (savedNodeOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = savedNodeOptions
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   test('missing profile dir → ProfileMissingError before any spawn', async () => {
     const home = mkdtempSync(join(tmpdir(), 'dsh-lifecycle-test-'))
     const runner = makeRunner()

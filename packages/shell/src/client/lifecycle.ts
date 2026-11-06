@@ -588,8 +588,25 @@ function defaultSpawnDsh(argv: string[], options: { cwd: string; env: NodeJS.Pro
   return child as unknown as HostChildProcess
 }
 
+/** OpenTUI's native layer (host-entry-v2) needs node's `--experimental-ffi`;
+ * a bare `dsh --profile <profile>` does not carry it (only the dsh-opentui
+ * launcher injects it, and client mode never runs through that launcher).
+ * Without the flag the mounted v2 shell re-execs the whole dsh command line
+ * to add it (reExecWithFfi) — a second host instance then races the booting
+ * listener (EADDRINUSE) and the client's TUI renders blank. Merge the flag
+ * into NODE_OPTIONS here, once, deduped as a space-delimited token (the same
+ * rule as the dsh-opentui launcher's `--plugin` branch) so an inherited
+ * NODE_OPTIONS that already carries the flag is passed through untouched. */
+const FFI_FLAG = '--experimental-ffi'
+
+function withFfiFlag(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const existing = env.NODE_OPTIONS ?? ''
+  if (existing.split(/\s+/).includes(FFI_FLAG)) return env
+  return { ...env, NODE_OPTIONS: `${existing} ${FFI_FLAG}`.trim() }
+}
+
 function childEnv(dshHome: string): NodeJS.ProcessEnv {
-  return { ...process.env, DSH_HOME: dshHome }
+  return withFfiFlag({ ...process.env, DSH_HOME: dshHome })
 }
 
 function attachChildWatchers(host: ManagedHost, child: HostChildProcess): void {
