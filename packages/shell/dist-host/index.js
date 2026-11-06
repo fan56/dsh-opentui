@@ -2112,6 +2112,10 @@ class HostSession {
   #idleTimer;
   #releasedSeq = 0;
   usage = { prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 };
+  #cachePromptTotal = 0;
+  #cacheReadTotal = 0;
+  #cacheWriteTotal = 0;
+  #lastMessageCacheHitRate = null;
   #journalSink;
   #journalSeq = 0;
   onJournalRecord(listener) {
@@ -2128,11 +2132,15 @@ class HostSession {
       return;
     this.#journalSink({ seq: ++this.#journalSeq, type: event.type, data: event.data ?? {} });
   }
-  cacheHitRate() {
-    const total = this.usage.cacheRead + this.usage.cacheWrite;
+  cacheHitRate(mode) {
+    const total = this.#cacheReadTotal + this.#cacheWriteTotal;
     if (total <= 0)
       return null;
-    return this.usage.cacheRead / total * 100;
+    if (mode === "session") {
+      const billed = this.#cachePromptTotal + total;
+      return billed > 0 ? this.#cacheReadTotal / billed * 100 : null;
+    }
+    return this.#lastMessageCacheHitRate;
   }
   #noteDelta() {
     const now = Date.now();
@@ -3351,6 +3359,15 @@ ${field}: ${value}
             this.usage.cacheRead = cRead;
           if (cWrite > 0)
             this.usage.cacheWrite = cWrite;
+          if (p > 0)
+            this.#cachePromptTotal += p;
+          if (cRead > 0)
+            this.#cacheReadTotal += cRead;
+          if (cWrite > 0)
+            this.#cacheWriteTotal += cWrite;
+          const billed = p + cRead + cWrite;
+          if (billed > 0)
+            this.#lastMessageCacheHitRate = cRead / billed * 100;
         } else if (c.type === "tool-call-delta" && c.name) {}
       } catch {}
     });
@@ -3507,8 +3524,11 @@ class HostSessionSeam {
   currentSessionId() {
     return this.#session.currentSessionId();
   }
-  cacheHitRate() {
-    return this.#session.cacheHitRate();
+  cacheHitRate(mode) {
+    return this.#session.cacheHitRate(mode);
+  }
+  configLoad() {
+    return this.#session.configLoad();
   }
   btwAsk(question, snapshot, onDelta) {
     return this.#session.btwAsk(question, snapshot, onDelta);
@@ -25979,6 +25999,15 @@ function sessionFooterSegments(data) {
   return segs;
 }
 
+// ../tui-base/src/seams/config.ts
+var DEFAULT_CACHE_HIT_MODE = "lastMessage";
+function narrowCacheHitMode(value) {
+  return value === "session" ? "session" : DEFAULT_CACHE_HIT_MODE;
+}
+function readCacheHitMode(config) {
+  return narrowCacheHitMode(config?.cacheHitMode);
+}
+
 // ../tui-base/src/routes/session/status-bar.tsx
 import { effect as _$effect13 } from "@opentui/solid";
 import { insert as _$insert12 } from "@opentui/solid";
@@ -26284,7 +26313,8 @@ function V2SessionPage(props) {
   };
   const cacheRate = () => {
     turnBusy();
-    return seam.cacheHitRate?.() ?? null;
+    const mode = readCacheHitMode(seam.configLoad?.());
+    return seam.cacheHitRate?.(mode) ?? null;
   };
   const segments = () => sessionFooterSegments({
     provider: model()?.providerID,

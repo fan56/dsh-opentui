@@ -2,15 +2,14 @@
 # Scenario 63 — footer CH (cache-hit) segment: lastMessage default + live
 # session-mode switch (ported from dsh-tui-pi e2e/scenarios/71-cache-hit.sh).
 #
-# *** DEPENDENCY GATE — DO NOT SCHEDULE YET ***
-# The cacheHitMode SESSION mode is NOT landed on this surface (E1 batch is
-# building it; HEAD 34fed99 carries only the raw cacheHitRate() helper in
-# packages/shell/src/host-session.ts and no CH mode setting). Until that
-# batch lands, the mode-flip leg (step 4) has no product to assert against
-# and this scenario is EXPECTED TO FAIL. Written ahead of the batch so the
-# acceptance shape is pinned; assertions are complete but NOT part of the
-# current verified suite.
-# *******************************************
+# UN-GATED (C6 batch): the cacheHitMode SESSION mode landed in 05c0664 (both
+# usage handlers + the config seam reader + both adapters). The first real
+# container run against that surface pinned two corrections that are baked
+# into step 4 below (see the REAL-CAPTURE note there):
+#   - the mode's durable store is the plugin config FILE (config.json), not
+#     the cordis.patch.yml settings namespace;
+#   - the footer getter re-runs only at reactive turn boundaries, so the
+#     live flip is driven across a failed (unbilled) third turn.
 #
 # The CH segment rates depend on REAL billed usage, and the container has no
 # provider credentials — so this scenario reuses the baked local
@@ -33,27 +32,27 @@
 #   2. after turn one the segment shows 90% (both modes agree on one sample);
 #   3. after turn two the DEFAULT mode (lastMessage) shows 20% — the stale
 #      90% and the cumulative 55% must both be absent;
-#   4. committing `cacheHitMode: session` into the container's active profile
-#      patch (an external edit, live-applied through the settings watch hook)
-#      flips the same segment to 55% without a restart.
+#   4. committing `cacheHitMode: session` into the plugin config FILE
+#      (config.json — the store HostSession.configLoad() reads) and crossing
+#      a turn boundary (a third, mock-less turn whose failure lands no usage)
+#      re-runs the footer getter in session mode: the cumulative 55% replaces
+#      the per-message 20% on the SAME running instance — no restart.
 #
-# MARKER MAP (to be pinned against a REAL capture of the E1 surface before
-# the first scheduled run — the segment's exact painted format below follows
-# the reference 'CH<rate>%' shape and is the only unpinned marker):
+# MARKER MAP (pinned against the real C6 container capture — the painted
+# format matches the reference 'CH<rate>%' shape, one decimal):
 #   'E2E_CH_TRIGGER' / 'E2E-CH-TURN-ONE' / 'E2E-CH-TURN-TWO'
 #       mock CH phase trigger + turn reply markers (mock-llm.mjs, identical
 #       in the reference).
 #   'phase=ch-warm' / 'phase=ch-cold'
 #       mock decidePhase request log lines (identical in the reference).
 #   'CH90.0%' / 'CH20.0%' / 'CH55.0%'
-#       footer CH segment rates (reference format); the E1 surface's painted
-#       format may differ — re-derive from a container capture when landing.
+#       footer CH segment rates (cacheSegment: `⚡ CH${rate.toFixed(1)}%`).
 #
 # Container-only: persists cacheHitMode into the container's throwaway
-# ~/.dsh profile patch — never run against a host config.
+# ~/.dsh profile — never run against a host config.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
-scenario 'footer CH: lastMessage default + live session-mode switch (E1-gated)'
+scenario 'footer CH: lastMessage default + live session-mode switch'
 
 # --- host guard -------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
@@ -131,43 +130,59 @@ PANE="$(capture)"
 assert_not_contains 'the previous message rate does not stick (sample follows the latest)' 'CH90\.0%' "$PANE"
 assert_not_contains 'the session-cumulative rate does not leak into lastMessage mode' 'CH55\.0%' "$PANE"
 
-# --- 4. external settings edit flips the mode live -----------------------------
-# The durable settings store is the active profile's cordis.patch.yml; the
-# edit goes through a structured YAML upsert onto the dsh-opentui insert
-# entry's config (the namespace the settings service exposes — same key path
-# 62-hard-stop stages its maxRounds through; the helper is inlined because
-# e2e/lib is out of this scenario's scope).
-SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
+# --- 4. external config edit flips the mode live (no restart) ------------------
+# REAL-CAPTURE CORRECTIONS (first scheduled run vs the 05c0664 surface,
+# container 2026-11-07):
+#
+#   a. STORE: the mode is read through HostSession.configLoad(), which reads
+#      the plugin config FILE configPath('config.json') — i.e.
+#      ~/.dsh/profiles/dsh-opentui/config.json — NOT cordis.patch.yml. The
+#      patch file is the dsh-settings namespace (62 stages maxRounds there,
+#      but that is read at boot); editing it while the TUI is LIVE re-mounts
+#      the plugin entry and the second mountEngine dies with 'Cannot create
+#      CliRenderer: stdin is already used by another CliRenderer' (observed:
+#      the old renderer kept painting the stale 20%).
+#
+#   b. RE-RUN TIMING: the footer's segments getter re-runs only at REACTIVE
+#      boundaries (turnBusy/msgs flips) — a plain repaint does not re-execute
+#      configLoad(). The flip is therefore driven across a turn boundary: the
+#      mock is stopped and a third turn is sent. It fails WITHOUT landing
+#      usage, and the boundary re-runs the getter in session mode — the
+#      cumulative rate over the two scripted turns (1100/2000 = 55%)
+#      replaces the per-message 20%, no restart in between. The failed turn
+#      also cannot skew the denominator (no usage frame), so 55% is exact.
+SETTINGS="$HOME/.dsh/profiles/dsh-opentui/config.json"
 cat > /tmp/stage-ch-mode.mjs <<'EOF'
-import { createRequire } from 'node:module'
-import { readFileSync, writeFileSync } from 'node:fs'
-const { parse, stringify } = createRequire('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json')('yaml')
-const patchPath = process.argv[2]
-const doc = parse(readFileSync(patchPath, 'utf8')) ?? []
-if (!Array.isArray(doc)) throw new Error('patch file is not a top-level YAML array')
-let row = doc.flatMap(e => (e && Array.isArray(e.insert)) ? e.insert : []).find(e => e && e.id === 'dsh-opentui')
-if (!row) {
-  row = { id: 'dsh-opentui', name: '@aiwayds/dsh-opentui', config: {} }
-  let ins = doc.find(e => e && Array.isArray(e.insert))
-  if (!ins) { ins = { insert: [] }; doc.push(ins) }
-  ins.insert.push(row)
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+const path = process.argv[2]
+let doc = {}
+if (existsSync(path)) {
+  try { doc = JSON.parse(readFileSync(path, 'utf8')) ?? {} } catch { doc = {} }
 }
-if (typeof row.config !== 'object' || row.config === null) row.config = {}
-row.config.cacheHitMode = 'session'
-writeFileSync(patchPath, stringify(doc), 'utf8')
-console.log(`staged insert entry dsh-opentui cacheHitMode=session -> ${patchPath}`)
+if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) doc = {}
+doc.cacheHitMode = 'session'
+writeFileSync(path, JSON.stringify(doc, null, 2) + '\n', 'utf8')
+console.log(`staged cacheHitMode=session -> ${path}`)
 EOF
 node /tmp/stage-ch-mode.mjs "$SETTINGS" >/tmp/stage-ch-mode.log 2>&1
-if grep -q 'cacheHitMode: session' "$SETTINGS"; then
-  ok 'profile patch now carries cacheHitMode: session'
+if grep -q '"cacheHitMode": "session"' "$SETTINGS"; then
+  ok 'plugin config file now carries cacheHitMode: session'
 else
-  bad 'cacheHitMode: session did not land in the profile patch; tail:'
+  bad 'cacheHitMode: session did not land in config.json; tail:'
   tail -6 /tmp/stage-ch-mode.log 2>/dev/null | sed 's/^/    | /'
 fi
 
+# Stop the mock so the third turn fails (no usage lands) and its turn-boundary
+# re-runs the footer getter — the session rate must already show the 2-turn
+# cumulative 55%.
+kill "$MOCK_PID" 2>/dev/null || true
+send 'Prove the session cumulative rate now. E2E_CH_TRIGGER'
+sleep 1
+send Enter
 wait_pane 'session mode flips the footer to the cumulative rate (live apply)' 15 'CH55\.0%'
 PANE="$(capture)"
 assert_not_contains 'the per-message rate does not leak into session mode' 'CH20\.0%' "$PANE"
+assert_not_contains 'the stale warm rate does not leak into session mode' 'CH90\.0%' "$PANE"
 
 # --- the mock served both scripted cache phases ----------------------------------
 if grep -q 'phase=ch-warm' "$MOCK_LOG" 2>/dev/null \
