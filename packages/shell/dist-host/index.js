@@ -2168,6 +2168,135 @@ class SubagentRoundPolicy {
   }
 }
 
+// src/spin-attention.ts
+var SPIN_JEV_MIN_INTERVAL_MS = 30000;
+var SPIN_JEV_TIMEOUT_MS = 8000;
+var SPIN_STATE_MAX_CHARS = 1000;
+var SPIN_LABEL_MAX_CHARS = 40;
+async function loadJevCore() {
+  const specifier = "@aiwayds/dsh-jev-core";
+  try {
+    const mod = await import(specifier);
+    if (typeof mod["classify"] !== "function" || typeof mod["isConfigured"] !== "function")
+      return null;
+    return mod;
+  } catch {
+    return null;
+  }
+}
+function buildSpinQuestions(id8s) {
+  const questions = {};
+  for (const id8 of id8s) {
+    questions[`spin_${id8}`] = {
+      type: "noul",
+      criteria: {
+        true: "work is UNPRODUCTIVE — repeating the same tools or circling without forward motion",
+        false: "work is productive — measurable forward progress"
+      }
+    };
+  }
+  return questions;
+}
+function buildSpinState(views, cap, now) {
+  const lines = views.map((view) => {
+    const parts = [
+      `${view.childId.slice(0, 8)} ${view.label.slice(0, SPIN_LABEL_MAX_CHARS)}`,
+      `rounds ${view.rounds}/${cap > 0 ? cap : "∞"}`,
+      ...view.startedAt !== undefined ? [`elapsed ${Math.round(Math.max(0, now - view.startedAt) / 1000)}s`] : []
+    ];
+    return `- ${parts.join(" | ")}`;
+  });
+  const head = "Subagents under supervision; judge each child on the question keyed by its id.";
+  return `${head}
+${lines.join(`
+`)}`.slice(0, SPIN_STATE_MAX_CHARS);
+}
+function parseSpinAnswers(answers, id8ToChild) {
+  const out = [];
+  for (const [id8, childId] of id8ToChild) {
+    const answer = answers[`spin_${id8}`];
+    if (answer === undefined || typeof answer.value !== "number" || !Number.isFinite(answer.value))
+      continue;
+    out.push([childId, answer.value]);
+  }
+  return out;
+}
+function spinAttentionEnabled(value) {
+  if (value === null || typeof value !== "object")
+    return true;
+  return value.spinAttention !== false;
+}
+function spinAttentionEnabledFromRows(rows) {
+  for (const row of rows) {
+    if (row?.ns === "dsh-opentui")
+      return spinAttentionEnabled(row.value);
+  }
+  return true;
+}
+function createSpinAttentionSource(options) {
+  const now = options.now ?? Date.now;
+  const minIntervalMs = options.minIntervalMs ?? SPIN_JEV_MIN_INTERVAL_MS;
+  const env = options.env ?? process.env;
+  let core;
+  let loading;
+  let lastDispatchAt = -Infinity;
+  let inFlight = false;
+  let failureCount = 0;
+  const ensureLoaded = () => {
+    if (options.module !== undefined)
+      return Promise.resolve(options.module);
+    if (core !== undefined)
+      return Promise.resolve(core);
+    loading ??= loadJevCore().then((mod) => {
+      core = mod;
+      return mod;
+    });
+    return loading;
+  };
+  return {
+    failures: () => failureCount,
+    tick(views, cap) {
+      if (inFlight)
+        return;
+      if (!options.enabledReader())
+        return;
+      const live = views.filter((view) => view.running && view.childId);
+      if (live.length === 0)
+        return;
+      const at = now();
+      if (at - lastDispatchAt < minIntervalMs)
+        return;
+      ensureLoaded().then((mod) => {
+        if (mod === null)
+          return;
+        if (!mod.isConfigured({ env }))
+          return;
+        const running = views.filter((view) => view.running && view.childId);
+        if (running.length === 0)
+          return;
+        const id8ToChild = new Map(running.map((view) => [view.childId.slice(0, 8), view.childId]));
+        const questions = buildSpinQuestions([...id8ToChild.keys()]);
+        const state = buildSpinState(running, cap, now());
+        if (state.trim() === "")
+          return;
+        inFlight = true;
+        lastDispatchAt = at;
+        mod.classify({ questions, state, env, timeoutMs: SPIN_JEV_TIMEOUT_MS }).then((result) => {
+          for (const [childId, score] of parseSpinAnswers(result.answers, id8ToChild)) {
+            try {
+              options.onVerdict(childId, score);
+            } catch {}
+          }
+        }).catch(() => {
+          failureCount += 1;
+        }).finally(() => {
+          inFlight = false;
+        });
+      });
+    }
+  };
+}
+
 // src/host-session.ts
 var DBG = (_m) => {};
 function blocksText(content) {
@@ -2312,6 +2441,27 @@ class HostSession {
     if (!sel?.provider || !sel?.model)
       return;
     return { provider: sel.provider, model: sel.model, ...sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {} };
+  }
+  async currentModelEfforts() {
+    try {
+      const sel = this.currentModelSelection();
+      if (!sel)
+        return [];
+      const llm = this.#ctx.get?.("llm");
+      if (!llm?.resolveModelInfo)
+        return [];
+      const info = await llm.resolveModelInfo(sel.provider, sel.model);
+      const efforts = info?.reasoning?.efforts;
+      if (!Array.isArray(efforts) || efforts.length === 0)
+        return [];
+      return efforts.map((e) => ({
+        id: String(e?.id ?? ""),
+        name: String(e?.name ?? e?.id ?? ""),
+        ...typeof e?.description === "string" && e.description ? { description: e.description } : {}
+      })).filter((e) => e.id);
+    } catch {
+      return [];
+    }
   }
   newSession() {
     try {
@@ -2994,6 +3144,8 @@ ${field}: ${value}
   #roundPolicy;
   #roundLimits = { ...DEFAULT_SUBAGENT_ROUND_LIMITS };
   #roundLimitsRefreshing = false;
+  #spinAttention;
+  #spinAttentionOn = true;
   #ensureRoundPolicy() {
     if (this.#roundPolicy === undefined) {
       this.#roundPolicy = new SubagentRoundPolicy({
@@ -3043,6 +3195,7 @@ ${field}: ${value}
     this.#roundLimitsRefreshing = true;
     this.settingsDescribe().then((rows) => {
       this.#roundLimits = limitsFromSettingsRows(rows);
+      this.#spinAttentionOn = spinAttentionEnabledFromRows(rows);
     }).catch(() => {}).finally(() => {
       this.#roundLimitsRefreshing = false;
     });
@@ -3051,6 +3204,26 @@ ${field}: ${value}
     if (!this.#children.has(childId))
       return;
     this.#ensureRoundPolicy().noteSpinVerdict(childId, noul);
+  }
+  #ensureSpinAttention() {
+    if (this.#spinAttention === undefined) {
+      this.#spinAttention = createSpinAttentionSource({
+        enabledReader: () => this.#spinAttentionOn,
+        onVerdict: (childId, score) => this.noteChildSpinVerdict(childId, score)
+      });
+    }
+    return this.#spinAttention;
+  }
+  #tickSpinAttention() {
+    const cap = this.#roundLimits.maxRounds;
+    const views = [];
+    for (const [childId, view] of this.#children) {
+      if (view.status !== "running")
+        continue;
+      views.push({ childId, label: view.label, rounds: view.rounds, running: true, startedAt: view.startedAt });
+    }
+    if (views.length > 0)
+      this.#ensureSpinAttention().tick(views, cap);
   }
   cancelChild(childId) {
     const agent = this.#childAgents.get(childId);
@@ -3220,6 +3393,7 @@ ${field}: ${value}
       changed = true;
       this.#ensureRoundPolicy().onRoundCount(sessionKey, rounds, this.#children.get(sessionKey)?.label);
       this.#refreshRoundLimits();
+      this.#tickSpinAttention();
     }
     const log = this.#childLogs.get(sessionKey) ?? [];
     if (event.type === "assistant/message") {
@@ -3638,8 +3812,14 @@ class HostSessionSeam {
   configLoad() {
     return this.#session.configLoad();
   }
+  configSave(patch) {
+    return this.#session.configSave(patch);
+  }
   btwAsk(question, snapshot, onDelta) {
     return this.#session.btwAsk(question, snapshot, onDelta);
+  }
+  plugins() {
+    return this.#session.listPlugins();
   }
   async sessionInfo() {
     const base = this.#session.sessionInfo();
@@ -3721,6 +3901,20 @@ class HostSessionSeam {
       console.error("[host-session-seam-adapter] selectModel failed:", error);
     }
   }
+  thinking = {
+    efforts: () => this.#session.currentModelEfforts(),
+    currentEffort: async () => this.#session.currentModelSelection()?.reasoningEffort,
+    selectEffort: (effort) => {
+      const selection = this.#session.currentModelSelection();
+      if (!selection)
+        return;
+      try {
+        this.#session.switchModel(selection.provider, selection.model, effort || undefined);
+      } catch (error) {
+        console.error("[host-session-seam-adapter] selectEffort failed:", error);
+      }
+    }
+  };
   usageSummary() {
     return this.#session.usageSummary();
   }
@@ -24508,6 +24702,21 @@ import { setProp as _$setProp7 } from "@opentui/solid";
 import { createElement as _$createElement7 } from "@opentui/solid";
 import { For as For5, Show as Show8, createSignal as createSignal11 } from "solid-js";
 
+// ../tui-base/src/routes/session/hotkeys.ts
+function hotkeysHeader() {
+  return "Keybinds (defaults — override via profiles/<profile>/keybindings.json)";
+}
+function hotkeyRows() {
+  const rows = [];
+  for (const [name, definition] of Object.entries(Definitions)) {
+    if (definition.default === "none" || definition.default === false)
+      continue;
+    const keys = String(definition.default).replaceAll("<leader>", `${LeaderDefault} `);
+    rows.push(`${keys} — ${definition.description} (${name})`);
+  }
+  return rows;
+}
+
 // ../tui-base/src/routes/session/session-info.ts
 function formatTps(tps) {
   return tps === null || tps === undefined || !(tps > 0) ? "—" : `${Math.round(tps)} tok/s`;
@@ -24644,6 +24853,80 @@ function coreCommands() {
         }
         for (const line of formatSessionInfoPanel(sessionInfoRows(info)))
           ctx.say(line);
+      }
+    },
+    {
+      name: "/plugins",
+      description: "list installed plugins",
+      run(ctx) {
+        if (!ctx.seam.plugins) {
+          ctx.say("/plugins unavailable in this session");
+          return;
+        }
+        const plugins = ctx.seam.plugins();
+        if (plugins.length === 0) {
+          ctx.say("no plugins installed");
+          return;
+        }
+        for (const plugin of plugins)
+          ctx.say(`● ${plugin.name}@${plugin.version}`);
+      }
+    },
+    {
+      name: "/think",
+      description: "set reasoning effort (opens the picker)",
+      async run(ctx) {
+        const thinking = ctx.seam.thinking;
+        if (!thinking) {
+          ctx.say("/think unavailable in this session");
+          return;
+        }
+        const efforts = await thinking.efforts();
+        if (efforts.length === 0) {
+          ctx.say("/think unavailable: the current model exposes no reasoning efforts");
+          return;
+        }
+        const current = await thinking.currentEffort();
+        const picked = await ctx.pickOne("Select reasoning effort", efforts.map((effort) => ({
+          title: effort.name,
+          value: effort.id,
+          description: effort.id === current ? "current" : effort.description
+        })));
+        if (!picked || picked === current)
+          return;
+        thinking.selectEffort(picked);
+        ctx.say(`thinking → ${picked} (next turn)`);
+      }
+    },
+    {
+      name: "/hotkeys",
+      description: "show keybinds",
+      run(ctx) {
+        ctx.say(hotkeysHeader());
+        for (const row of hotkeyRows())
+          ctx.say(row);
+      }
+    },
+    {
+      name: "/theme",
+      description: "switch theme (opens the picker)",
+      async run(ctx) {
+        if (!ctx.themes) {
+          ctx.say("/theme unavailable in this session");
+          return;
+        }
+        const current = ctx.themes.current();
+        const picked = await ctx.pickOne("Select theme", ctx.themes.list().map((name) => ({
+          title: name,
+          value: name,
+          description: name === current ? "current" : undefined
+        })));
+        if (!picked || picked === current)
+          return;
+        if (ctx.themes.set(picked))
+          ctx.say(`Theme: ${picked} — applied`);
+        else
+          ctx.say(`unknown theme: ${picked}`);
       }
     }
   ];
@@ -24792,6 +25075,9 @@ function createSlashHost(deps) {
     pickOne: deps.pickOne,
     ...deps.openBtw ? {
       openBtw: deps.openBtw
+    } : {},
+    ...deps.themes ? {
+      themes: deps.themes
     } : {}
   };
   function run(command, argText) {
@@ -26744,7 +27030,24 @@ function V2SessionPage(props) {
     },
     quit: props.quit,
     pickOne,
-    openBtw: (argText) => void openBtw(argText)
+    openBtw: (argText) => void openBtw(argText),
+    themes: {
+      current: () => themeSeam.current(),
+      list: () => themeSeam.list(),
+      set: (name) => {
+        const applied = themeSeam.setTheme(name);
+        if (applied) {
+          try {
+            seam.configSave?.({
+              theme: name
+            });
+          } catch (error) {
+            console.error("[host-entry-v2] theme persist failed:", error);
+          }
+        }
+        return applied;
+      }
+    }
   });
   const overlayHost = createComponent2(TurnOverlayHost, {
     controller: overlays,
