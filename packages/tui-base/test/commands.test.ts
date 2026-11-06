@@ -133,6 +133,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/sessions",
 			"/clear",
 			"/btw",
+			"/session",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual([])
@@ -151,6 +152,7 @@ describe("core commands", () => {
 			"/sessions — list and resume stored sessions",
 			"/clear — clear the transcript",
 			"/btw — side question (bare reopens the last answer)",
+			"/session — show session info (id, model, tokens, speed)",
 		])
 	})
 

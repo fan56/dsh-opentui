@@ -101,6 +101,42 @@ export class HostSession {
     if (total <= 0) return null
     return (this.usage.cacheRead / total) * 100
   }
+
+  /** One streamed delta landed — widen this turn's decode window (F4). */
+  #noteDelta(): void {
+    const now = Date.now()
+    if (this.#firstDeltaAt === 0) this.#firstDeltaAt = now
+    this.#lastDeltaAt = now
+  }
+
+  /** /session panel snapshot (batch F4): identity, usage, decode speeds.
+   * messageCount is adapter-side (the facade has no transcript cache). */
+  sessionInfo(): {
+    sessionId: string | undefined
+    model: string | undefined
+    turnCount: number
+    tokensIn: number
+    tokensOut: number
+    cacheRead: number
+    cacheWrite: number
+    lastTurnTps: number | null
+    sessionAvgTps: number | null
+  } {
+    return {
+      sessionId: this.currentSessionId(),
+      model: this.label === "dsh-host" ? undefined : this.label,
+      turnCount: this.#turns,
+      tokensIn: this.usage.prompt,
+      tokensOut: this.usage.completion,
+      cacheRead: this.usage.cacheRead,
+      cacheWrite: this.usage.cacheWrite,
+      lastTurnTps:
+        this.#lastDecode.ms > 0
+          ? tokensPerSecond(this.#lastDecode.tokens, this.#lastDecode.ms)
+          : this.lastTurnStats.tps,
+      sessionAvgTps: tokensPerSecond(this.#decodeTotals.tokens, this.#decodeTotals.ms),
+    }
+  }
   /** Telemetry of the last completed turn: duration, streamed chars and
    * tokens-per-second (real completion tokens when usage was reported,
    * chars/4 estimate otherwise — see `estimated`). */
@@ -109,6 +145,14 @@ export class HostSession {
   #ticker = createStreamTicker((t) => this.#cb?.onStreamTick?.(t))
   #turnStartedAt = 0
   #turnUsageStart = { prompt: 0, completion: 0 }
+  // ---- decode-window timing (batch F4, /session panel) ----
+  // First streamed delta → last delta (settle): the real decode window,
+  // excluding the pre-first-token prompt latency the whole-turn TurnStats.ms
+  // carries. Session totals feed the panel's average; unknown reads null.
+  #firstDeltaAt = 0
+  #lastDeltaAt = 0
+  #decodeTotals = { tokens: 0, ms: 0 }
+  #lastDecode = { tokens: 0, ms: 0 }
 
   constructor(ctx: Context) {
     this.#ctx = ctx
@@ -1340,6 +1384,18 @@ export class HostSession {
     const completion = this.usage.completion - this.#turnUsageStart.completion
     const real = completion > 0
     const tokens = real ? completion : estimateTokens(chars)
+    // Decode window (batch F4): first delta → last delta; a turn with no
+    // streamed deltas (pure tool round) contributes no window.
+    if (this.#firstDeltaAt > 0) {
+      const decodeMs = Math.max(0, (this.#lastDeltaAt || endedAt) - this.#firstDeltaAt)
+      if (decodeMs > 0) {
+        this.#lastDecode = { tokens, ms: decodeMs }
+        this.#decodeTotals.tokens += tokens
+        this.#decodeTotals.ms += decodeMs
+      }
+    }
+    this.#firstDeltaAt = 0
+    this.#lastDeltaAt = 0
     this.lastTurnStats = {
       startedAt: this.#turnStartedAt,
       endedAt,
@@ -1383,9 +1439,11 @@ export class HostSession {
       try {
         if (c.type === "reasoning-delta" && c.text) {
           cb.onThinkingDelta(c.text)
+          this.#noteDelta()
           this.#ticker.add(c.text.length)
         } else if (c.type === "text-delta" && c.text) {
           cb.onContentDelta(c.text)
+          this.#noteDelta()
           this.#ticker.add(c.text.length)
         } else if (c.type === "usage") {
           if (process.env.DSH_OPENTUI_DEBUG) {

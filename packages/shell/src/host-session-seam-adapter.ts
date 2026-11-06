@@ -105,7 +105,8 @@ import type {
 	SeamAskPick,
 	SeamAskQuestion,
 	SeamProviderModel,
-	SeamSessionEvent,
+SeamSessionEvent,
+	SeamSessionInfo,
 	SeamSessionSummary,
 	SeamStatus,
 	SeamTranscriptRow,
@@ -169,6 +170,25 @@ export class HostSessionSeam implements SessionSeam {
 	/** /btw side question (batch F3): HostSession.btwAsk() 1:1. */
 	btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string> {
 		return this.#session.btwAsk(question, snapshot, onDelta)
+	}
+
+	/**
+	 * /session info panel (batch F4): HostSession.sessionInfo() 1:1, plus the
+	 * message count the facade can't know — a one-shot durable-transcript
+	 * read (user+assistant rows). Transcript failure degrades the count to 0
+	 * without sinking the panel.
+	 */
+	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
+		const base = this.#session.sessionInfo()
+		if (base.sessionId === undefined) return undefined
+		let messageCount = 0
+		try {
+			const rows = await this.#session.storedTranscript(base.sessionId)
+			messageCount = rows.filter((row) => row.kind === "user" || row.kind === "assistant").length
+		} catch {
+			/* panel shows 0 rather than failing */
+		}
+		return { ...base, sessionId: base.sessionId, model: base.model ?? null, messageCount }
 	}
 
 	resumeSession(id: string): "ok" | "owned" {

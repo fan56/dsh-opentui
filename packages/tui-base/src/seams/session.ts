@@ -126,6 +126,29 @@ export interface SeamAskPick {
 	selected: string
 }
 
+/**
+ * The /session info panel's snapshot (feature batch F4). Speeds are
+ * decode-window rates (first streamed delta → settle) — `null` reads as
+ * "—" on the panel, never as a fabricated 0 tok/s.
+ */
+export interface SeamSessionInfo {
+	sessionId: string | null
+	/** "provider/model[ (effort)]" — the facade's live label. */
+	model: string | null
+	/** Durable user+assistant messages (adapter-side transcript count). */
+	messageCount: number
+	/** User turns this facade drove since attach. */
+	turnCount: number
+	tokensIn: number
+	tokensOut: number
+	cacheRead: number
+	cacheWrite: number
+	/** Last completed turn's decode-window tok/s (null when not computable). */
+	lastTurnTps: number | null
+	/** Σ output tokens / Σ decode windows over the session (null when none). */
+	sessionAvgTps: number | null
+}
+
 /** Streaming callbacks the view binds per turn (TurnCallbacks slice). */
 export interface SeamTurnCallbacks {
 	onThinkingDelta: (text: string) => void
@@ -187,6 +210,13 @@ export interface SessionSeam {
 	 * — only the remote adapter carries it; /btw degrades to a notice without.
 	 */
 	btwAsk?(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string>
+	/**
+	 * /session info panel (feature batch F4): one snapshot of the live
+	 * session's identity, token usage and decode-window speeds. Optional —
+	 * a seam without it degrades /session to a notice. Resolves undefined
+	 * when no session is attached.
+	 */
+	sessionInfo?(): Promise<SeamSessionInfo | undefined>
 	/** Event push (context/event.ts's subscribe/on replacement). */
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void
 
@@ -247,6 +277,9 @@ export class NullSessionSeam implements SessionSeam {
 	selectModel(_providerID: string, _modelID: string): void {}
 	usageSummary(): string[] {
 		return []
+	}
+	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
+		return undefined
 	}
 	/** Records listeners so a test can drive events through the stub. */
 	readonly listeners: ((event: SeamSessionEvent) => void)[] = []

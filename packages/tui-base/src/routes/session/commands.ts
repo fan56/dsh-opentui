@@ -20,6 +20,7 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import type { SessionSeam } from "../../seams/session"
+import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
 
 /** One registry row: name carries the leading slash ("/help"). */
 export interface SlashCommand {
@@ -161,6 +162,24 @@ export function coreCommands(): SlashCommand[] {
 				ctx.openBtw(argText)
 			},
 		},
+		{
+			// Feature batch F4. Prints the info panel as an aligned transcript
+			// block (the /help print path) — no overlay, no busy-gate.
+			name: "/session",
+			description: "show session info (id, model, tokens, speed)",
+			async run(ctx) {
+				if (!ctx.seam.sessionInfo) {
+					ctx.say("/session unavailable in this session")
+					return
+				}
+				const info = await ctx.seam.sessionInfo()
+				if (!info || info.sessionId === null) {
+					ctx.say("no active session")
+					return
+				}
+				for (const line of formatSessionInfoPanel(sessionInfoRows(info))) ctx.say(line)
+			},
+		},
 	]
 }
 
@@ -195,9 +214,15 @@ export function dispatchLine(commands: SlashCommand[], line: string): SlashDispa
 	const text = line.trim()
 	if (!text.startsWith("/")) return { kind: "text" }
 	const [head, ...rest] = text.split(/\s+/)
-	const match = commands
-		.filter((command) => command.name.toLowerCase().startsWith(head.toLowerCase()))
-		.sort((a, b) => b.name.length - a.name.length)[0]
+	const needle = head.toLowerCase()
+	// Exact name wins first — "/session" must not be shadowed by the longer
+	// "/sessions" (both start with the typed head); the length sort then only
+	// orders the remaining prefix matches (palette-style abbreviations).
+	const match =
+		commands.find((command) => command.name.toLowerCase() === needle) ??
+		commands
+			.filter((command) => command.name.toLowerCase().startsWith(needle))
+			.sort((a, b) => b.name.length - a.name.length)[0]
 	if (!match) return { kind: "unknown", name: head }
 	return { kind: "command", command: match, argText: rest.join(" ") }
 }
