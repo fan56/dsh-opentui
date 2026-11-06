@@ -1956,6 +1956,34 @@ function bareAgentLabel(label) {
   }
   return trimmed;
 }
+var SPIN_HIGH_SEGMENT_AT = 0.75;
+var SPIN_STRIKE_STALE_MS = 90000;
+var EARLY_STOP_SPIN_STREAK = 2;
+function earlyFloor(cap) {
+  return Math.max(10, Math.floor(cap / 3));
+}
+function spinDecision(input) {
+  if (input.cap <= 0)
+    return "none";
+  if (input.settled)
+    return "none";
+  if (input.streak < EARLY_STOP_SPIN_STREAK)
+    return "none";
+  if (input.now - input.lastStrikeAt >= SPIN_STRIKE_STALE_MS)
+    return "none";
+  if (!input.wrapupDelivered) {
+    return input.count >= earlyFloor(input.cap) && input.count < input.cap ? "wrapup-early" : "none";
+  }
+  if (input.grace <= 0)
+    return "none";
+  if (input.wrapupDeliveredAt === undefined)
+    return "none";
+  if (input.lastStrikeAt <= input.wrapupDeliveredAt)
+    return "none";
+  if ((input.roundsSinceWrapup ?? 0) < 1)
+    return "none";
+  return "force-stop-early";
+}
 function ladderDecision(input) {
   if (input.cap <= 0)
     return "none";
@@ -1972,6 +2000,9 @@ function wrapupMessage(maxRounds, grace) {
   const base = `Round limit reached (${maxRounds} LLM round-trips, set by the dsh-opentui maxRounds policy). ` + "Do NOT call any more tools. Finish this task NOW: summarize what you have accomplished so far, " + "state clearly what remains undone, and return that summary as your final answer.";
   return grace > 0 ? `${base} You have ${grace} more round${grace === 1 ? "" : "s"} before this run is force-stopped.` : base;
 }
+function wrapupMessageEarly() {
+  return "This run appears to be going in circles — repeating work without forward progress, " + "as judged by the dsh-opentui attention policy. Do NOT call any more tools. Finish NOW with what you have: " + "summarize what was accomplished, state clearly what remains undone, and return that summary as your final answer. " + "If this judgment looks wrong, say so in the summary and stop.";
+}
 
 class SubagentRoundPolicy {
   #options;
@@ -1979,9 +2010,27 @@ class SubagentRoundPolicy {
   #hardStopped = new Set;
   #resolvedCaps = new Map;
   #injectedLabel = new Map;
+  #injectedRound = new Map;
+  #injectedAt = new Map;
+  #spinState = new Map;
   #disposed = false;
   constructor(options) {
     this.#options = options;
+  }
+  noteSpinVerdict(childId, score, now = Date.now()) {
+    if (this.#disposed || !childId)
+      return;
+    if (typeof score !== "number" || !Number.isFinite(score))
+      return;
+    const previous = this.#spinState.get(childId) ?? { streak: 0, lastStrikeAt: 0 };
+    if (score >= SPIN_HIGH_SEGMENT_AT) {
+      this.#spinState.set(childId, { streak: previous.streak + 1, lastStrikeAt: now });
+    } else {
+      this.#spinState.set(childId, { streak: 0, lastStrikeAt: 0 });
+    }
+  }
+  getSpinState(childId) {
+    return this.#spinState.get(childId) ?? { streak: 0, lastStrikeAt: 0 };
   }
   onRoundCount(childId, count, label) {
     if (this.#disposed || !childId)
@@ -1992,6 +2041,38 @@ class SubagentRoundPolicy {
     if (caps === undefined)
       return;
     const settled = this.#options.isSettled?.(childId) ?? false;
+    const spin = this.#spinState.get(childId) ?? { streak: 0, lastStrikeAt: 0 };
+    const injectedRound = this.#injectedRound.get(childId);
+    const spinAction = spinDecision({
+      streak: spin.streak,
+      lastStrikeAt: spin.lastStrikeAt,
+      now: Date.now(),
+      count,
+      cap: caps.cap,
+      grace: caps.grace,
+      wrapupDelivered: this.#injected.has(childId),
+      wrapupDeliveredAt: this.#injectedAt.get(childId),
+      roundsSinceWrapup: injectedRound !== undefined ? count - injectedRound : undefined,
+      settled
+    });
+    if (spinAction === "force-stop-early") {
+      this.#hardStopped.add(childId);
+      let stoppedEarly = false;
+      try {
+        stoppedEarly = this.#options.forceStop(childId);
+      } catch {
+        stoppedEarly = false;
+      }
+      if (stoppedEarly) {
+        try {
+          this.#options.onHardStop?.({ childId, round: count, cap: caps.cap, grace: caps.grace, early: true });
+        } catch {}
+        try {
+          this.#options.onSpinStop?.(childId, count);
+        } catch {}
+      }
+      return;
+    }
     const action = ladderDecision({
       count,
       cap: caps.cap,
@@ -1999,12 +2080,13 @@ class SubagentRoundPolicy {
       wrapupDelivered: this.#injected.has(childId),
       settled
     });
-    if (action === "none")
+    if (action === "none" && spinAction !== "wrapup-early")
       return;
-    if (action === "wrapup") {
+    if (action === "wrapup" || spinAction === "wrapup-early") {
       if (this.#injected.has(childId))
         return;
       const rememberedLabel = label ?? this.#injectedLabel.get(childId);
+      const early = spinAction === "wrapup-early";
       queueMicrotask(() => {
         if (this.#disposed || this.#injected.has(childId))
           return;
@@ -2012,7 +2094,7 @@ class SubagentRoundPolicy {
           return;
         let delivered = false;
         try {
-          delivered = this.#options.wrapup(childId, wrapupMessage(caps.cap, caps.grace), rememberedLabel);
+          delivered = this.#options.wrapup(childId, early ? wrapupMessageEarly() : wrapupMessage(caps.cap, caps.grace), rememberedLabel);
         } catch {
           delivered = false;
         }
@@ -2024,6 +2106,8 @@ class SubagentRoundPolicy {
           this.#injected.add(childId);
           if (rememberedLabel !== undefined)
             this.#injectedLabel.set(childId, rememberedLabel);
+          this.#injectedRound.set(childId, count);
+          this.#injectedAt.set(childId, Date.now());
           try {
             this.#options.onWrapUp?.(childId, count);
           } catch {}
@@ -2078,6 +2162,9 @@ class SubagentRoundPolicy {
     this.#hardStopped.clear();
     this.#resolvedCaps.clear();
     this.#injectedLabel.clear();
+    this.#injectedRound.clear();
+    this.#injectedAt.clear();
+    this.#spinState.clear();
   }
 }
 
@@ -2320,7 +2407,10 @@ class HostSession {
       const simplified = questions.map((q) => ({
         id: String(q?.id ?? ""),
         prompt: String(q?.prompt ?? q?.question ?? q?.header ?? ""),
-        options: (q?.options ?? []).map((o) => String(o?.label ?? o?.value ?? o))
+        options: (q?.options ?? []).map((o) => String(o?.label ?? o?.value ?? o)),
+        ...q?.header !== undefined ? { header: String(q.header) } : {},
+        ...q?.detail !== undefined ? { description: String(q.detail) } : {},
+        ...q?.multiSelect === true || q?.multi_select === true ? { multiSelect: true } : {}
       }));
       let picks;
       try {
@@ -2331,7 +2421,10 @@ class HostSession {
       return {
         answers: simplified.map((q) => {
           const pick = picks.find((p) => p.questionId === q.id);
-          return pick ? { id: q.id, selected: [pick.selected] } : { id: q.id, selected: [], custom: "declined" };
+          if (!pick)
+            return { id: q.id, selected: [], custom: "declined" };
+          const selected = pick.selections?.length ? pick.selections : pick.selected ? [pick.selected] : [];
+          return selected.length > 0 ? { id: q.id, selected } : { id: q.id, selected: [], custom: "declined" };
         })
       };
     });
@@ -2931,6 +3024,13 @@ ${field}: ${value}
             return;
           this.#children.set(childId, { ...existing, hardStopRound: round });
           this.#emitChildren();
+        },
+        onSpinStop: (childId, round) => {
+          const existing = this.#children.get(childId);
+          if (!existing)
+            return;
+          this.#children.set(childId, { ...existing, spinStopRound: round });
+          this.#emitChildren();
         }
       });
       this.#refreshRoundLimits();
@@ -2946,6 +3046,11 @@ ${field}: ${value}
     }).catch(() => {}).finally(() => {
       this.#roundLimitsRefreshing = false;
     });
+  }
+  noteChildSpinVerdict(childId, noul) {
+    if (!this.#children.has(childId))
+      return;
+    this.#ensureRoundPolicy().noteSpinVerdict(childId, noul);
   }
   cancelChild(childId) {
     const agent = this.#childAgents.get(childId);
@@ -2980,7 +3085,8 @@ ${field}: ${value}
     return true;
   }
   #onHardStop(record) {
-    console.info(`[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`);
+    const variant = record.early === true ? "spin-detected early" : "grace exhausted";
+    console.info(`[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace}, ${variant})`);
   }
   childTranscript(id) {
     return [...this.#childLogs.get(id) ?? []];
@@ -2992,7 +3098,8 @@ ${field}: ${value}
       status: v.status,
       rounds: v.rounds,
       ...v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {},
-      ...v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}
+      ...v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {},
+      ...v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}
     }));
   }
   #subagentListeners = new Set;
@@ -3153,7 +3260,8 @@ ${field}: ${value}
       elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
       ...v.lastLine ? { lastLine: clamp(v.lastLine) } : {},
       ...v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {},
-      ...v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}
+      ...v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {},
+      ...v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}
     })));
   }
   historyTurns() {
@@ -21261,7 +21369,9 @@ class TurnOverlayController {
   }
   get pendingAsk() {
     const head = this.#asks[0];
-    return head ? { id: head.id, questions: head.questions, index: head.index } : undefined;
+    if (!head)
+      return;
+    return { id: head.id, questions: head.questions, index: head.index, picks: head.picks, phase: head.phase };
   }
   get currentQuestion() {
     const head = this.#asks[0];
@@ -21271,23 +21381,93 @@ class TurnOverlayController {
     if (questions.length === 0)
       return Promise.resolve([]);
     return new Promise((resolve) => {
-      this.#asks.push({ id: ++this.#seq, questions, index: 0, picks: [], resolve });
+      this.#asks.push({
+        id: ++this.#seq,
+        questions,
+        index: 0,
+        picks: questions.map(() => []),
+        phase: "questions",
+        resolve
+      });
       this.#changed();
     });
   }
-  pick(option) {
+  toggle(option) {
     const head = this.#asks[0];
     const question = head?.questions[head.index];
-    if (!head || !question)
+    if (!head || !question || head.phase === "review")
       return;
-    head.picks.push({ questionId: question.id, selected: option });
-    if (head.index + 1 >= head.questions.length) {
+    if (question.multiSelect === true) {
+      const current = head.picks[head.index] ?? [];
+      head.picks[head.index] = current.includes(option) ? current.filter((label) => label !== option) : [...current, option];
+      this.#changed();
+      return;
+    }
+    head.picks[head.index] = [option];
+    if (head.questions.length === 1) {
       this.#asks.shift();
-      head.resolve(head.picks);
+      head.resolve(this.#envelope(head));
+      this.#changed();
+      return;
+    }
+    if (this.#allAnswered(head)) {
+      head.phase = "review";
     } else {
-      head.index++;
+      const next = head.questions.findIndex((_, qi) => qi > head.index && head.picks[qi]?.length === 0);
+      if (next >= 0)
+        head.index = next;
     }
     this.#changed();
+  }
+  switchFocus(direction) {
+    const head = this.#asks[0];
+    if (!head || head.phase === "review" || head.questions.length < 2)
+      return;
+    const next = Math.max(0, Math.min(head.questions.length - 1, head.index + direction));
+    if (next !== head.index) {
+      head.index = next;
+      this.#changed();
+    }
+  }
+  enterReview() {
+    const head = this.#asks[0];
+    if (!head || head.phase === "review")
+      return false;
+    if (!this.#allAnswered(head))
+      return false;
+    head.phase = "review";
+    this.#changed();
+    return true;
+  }
+  backToQuestions(focus) {
+    const head = this.#asks[0];
+    if (!head || head.phase !== "review")
+      return;
+    head.phase = "questions";
+    if (focus !== undefined && focus >= 0 && focus < head.questions.length)
+      head.index = focus;
+    this.#changed();
+  }
+  submit() {
+    const head = this.#asks[0];
+    if (!head)
+      return;
+    this.#asks.shift();
+    head.resolve(this.#envelope(head));
+    this.#changed();
+  }
+  #allAnswered(head) {
+    return head.picks.every((pick) => pick.length > 0);
+  }
+  #envelope(head) {
+    return head.questions.map((question, qi) => {
+      const picks = head.picks[qi] ?? [];
+      return {
+        questionId: question.id,
+        selected: picks[0] ?? "",
+        ...picks.length > 1 ? { selections: [...picks] } : {}
+      };
+    });
   }
   decline() {
     const head = this.#asks.shift();
@@ -24043,20 +24223,214 @@ function ApprovalCard(props) {
     onCancel: () => props.onVerdict("rejected")
   });
 }
+function askTabStrip(questions, picks, index) {
+  return questions.map((_, qi) => {
+    const answered = (picks[qi]?.length ?? 0) > 0;
+    const label = `${qi + 1}${answered ? "✓" : ""}`;
+    return qi === index ? `[${label}]` : label;
+  }).join(" · ");
+}
+function askProgressTitle(questions, index) {
+  if (questions.length < 2)
+    return "Question";
+  return `Question (${index + 1}/${questions.length})`;
+}
+function askNeedsReview(questions) {
+  return questions.length >= 2 || questions.some((question) => question.multiSelect === true);
+}
+function truncate70(text) {
+  return text.length > 70 ? text.slice(0, 69) + "…" : text;
+}
 function AskPicker(props) {
+  const [version, setVersion] = createSignal10(0);
+  onMount4(() => {
+    const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1));
+    onCleanup11(unsubscribe);
+  });
+  const ask = () => {
+    version();
+    return props.controller.pendingAsk;
+  };
+  return _$createComponent14(Show7, {
+    get when() {
+      return ask()?.phase === "review";
+    },
+    get fallback() {
+      return _$createComponent14(AskQuestionsView, {
+        ask,
+        get controller() {
+          return props.controller;
+        },
+        get onDecline() {
+          return props.onDecline;
+        }
+      });
+    },
+    get children() {
+      return _$createComponent14(AskReviewView, {
+        ask,
+        get controller() {
+          return props.controller;
+        },
+        get onDecline() {
+          return props.onDecline;
+        }
+      });
+    }
+  });
+}
+function AskQuestionsView(props) {
+  const batch = () => props.ask();
+  const question = () => {
+    const b = batch();
+    return b?.questions[b.index];
+  };
+  const multi = () => question()?.multiSelect === true;
+  const picked = () => {
+    const b = batch();
+    return b?.picks[b.index] ?? [];
+  };
+  const options = () => {
+    const q = question();
+    const p = picked();
+    if (!q)
+      return [];
+    const rows = q.options.map((option) => ({
+      title: multi() ? p.includes(option) ? `[x] ${option}` : `[ ] ${option}` : option,
+      value: option
+    }));
+    if (askNeedsReview(batch()?.questions ?? []))
+      rows.push({
+        title: "⏎ Review answers",
+        value: {
+          kind: "review"
+        }
+      });
+    return rows;
+  };
+  const description = () => {
+    const b = batch();
+    if (!b)
+      return;
+    const parts = [];
+    if (b.questions.length >= 2)
+      parts.push(askTabStrip(b.questions, b.picks, b.index));
+    if (multi())
+      parts.push("space: toggle");
+    return parts.join("  ·  ") || undefined;
+  };
+  const toggleHighlighted = () => {
+    const option = selectRefRef?.selected;
+    if (option && typeof option.value === "string")
+      props.controller.toggle(option.value);
+  };
+  const bindings = () => {
+    const b = batch();
+    return [...b && b.questions.length >= 2 ? [{
+      id: "ask.prev_question",
+      title: "Previous question",
+      group: "Dialog",
+      bind: "left",
+      run: () => props.controller.switchFocus(-1)
+    }, {
+      id: "ask.next_question",
+      title: "Next question",
+      group: "Dialog",
+      bind: "right",
+      run: () => props.controller.switchFocus(1)
+    }] : [], {
+      id: "ask.toggle",
+      title: "Toggle option",
+      group: "Dialog",
+      bind: "space",
+      run: toggleHighlighted
+    }];
+  };
+  const title = () => {
+    const b = batch();
+    const q = question();
+    if (!b || !q)
+      return "";
+    return `${askProgressTitle(b.questions, b.index)}: ${truncate70(q.prompt)}`;
+  };
+  let selectRefRef;
   return _$createComponent14(DialogSelect, {
     get title() {
-      return _$memo5(() => props.question.prompt.length > 70)() ? props.question.prompt.slice(0, 69) + "…" : props.question.prompt;
+      return title();
+    },
+    get description() {
+      return description();
     },
     renderFilter: false,
     get options() {
-      return props.question.options.map((option) => ({
-        title: option,
-        value: option
-      }));
+      return options();
     },
-    onSelect: (option) => props.onPick(option.value),
-    onCancel: () => props.onPick(undefined)
+    get current() {
+      return _$memo5(() => !!multi())() ? undefined : picked()[0];
+    },
+    ref: (r) => selectRefRef = r,
+    get bindings() {
+      return bindings();
+    },
+    onSelect: (option) => {
+      if (typeof option.value === "string")
+        props.controller.toggle(option.value);
+      else
+        props.controller.enterReview();
+    },
+    get onCancel() {
+      return props.onDecline;
+    }
+  });
+}
+function AskReviewView(props) {
+  const options = () => {
+    const b = props.ask();
+    if (!b)
+      return [];
+    const rows = b.questions.map((question, qi) => {
+      const picks = b.picks[qi] ?? [];
+      return {
+        title: `${truncate70(question.prompt)}  ${picks.length > 0 ? picks.join(", ") : "—"}`,
+        value: {
+          kind: "question",
+          qi
+        }
+      };
+    });
+    rows.push({
+      title: "⏎ Submit answers",
+      value: {
+        kind: "submit"
+      }
+    });
+    return rows;
+  };
+  return _$createComponent14(DialogSelect, {
+    title: "Review answers",
+    description: "←: edit · enter: submit",
+    renderFilter: false,
+    get options() {
+      return options();
+    },
+    bindings: [{
+      id: "ask.back_to_questions",
+      title: "Edit answers",
+      group: "Dialog",
+      bind: "left",
+      run: () => props.controller.backToQuestions()
+    }],
+    onSelect: (option) => {
+      if (typeof option.value === "string")
+        return;
+      if (option.value.kind === "submit")
+        props.controller.submit();
+      else if (option.value.kind === "question")
+        props.controller.backToQuestions(option.value.qi);
+    },
+    get onCancel() {
+      return props.onDecline;
+    }
   });
 }
 function TurnOverlayHost(props) {
@@ -24074,7 +24448,7 @@ function TurnOverlayHost(props) {
     version();
     const approval = props.controller.pendingApproval;
     const ask = props.controller.pendingAsk;
-    const key = approval ? `approval:${approval.id}` : ask ? `ask:${ask.id}:${ask.index}` : "";
+    const key = approval ? `approval:${approval.id}` : ask ? `ask:${ask.id}` : "";
     if (key === shown)
       return;
     shown = key;
@@ -24099,17 +24473,13 @@ function TurnOverlayHost(props) {
       });
       return;
     }
-    const question = ask?.questions[ask.index];
-    if (question) {
+    if (ask) {
       const atOpen = key;
       dialog.replace(() => _$createComponent14(AskPicker, {
-        question,
-        onPick: (selected) => {
-          if (selected === undefined)
-            props.controller.decline();
-          else
-            props.controller.pick(selected);
-        }
+        get controller() {
+          return props.controller;
+        },
+        onDecline: () => props.controller.decline()
       }), () => {
         if (shown === atOpen)
           props.controller.decline();
