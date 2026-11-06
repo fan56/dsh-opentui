@@ -92,7 +92,8 @@ import type {
 	SeamAskPick,
 	SeamAskQuestion,
 	SeamProviderModel,
-	SeamSessionEvent,
+SeamSessionEvent,
+	SeamSessionInfo,
 	SeamSessionSummary,
 	SeamStatus,
 	SeamTranscriptRow,
@@ -160,6 +161,25 @@ export class RemoteSessionSeam implements SessionSeam {
 	/** ⚡ CH footer segment (batch F2): RemoteHostSession.cacheHitRate() 1:1. */
 	cacheHitRate(): number | null {
 		return this.#session.cacheHitRate()
+	}
+
+	/**
+	 * /session info panel (batch F4): RemoteHostSession.sessionInfo() 1:1,
+	 * plus the message count the facade can't know — a one-shot durable
+	 * transcript read (user+assistant rows). Transcript failure degrades the
+	 * count to 0 without sinking the panel.
+	 */
+	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
+		const base = this.#session.sessionInfo()
+		if (base.sessionId === undefined) return undefined
+		let messageCount = 0
+		try {
+			const rows = await this.#session.storedTranscript(base.sessionId)
+			messageCount = rows.filter((row) => row.kind === "user" || row.kind === "assistant").length
+		} catch {
+			/* panel shows 0 rather than failing */
+		}
+		return { ...base, sessionId: base.sessionId, model: base.model ?? null, messageCount }
 	}
 
 	resumeSession(id: string): "ok" | "owned" {
