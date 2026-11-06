@@ -243,17 +243,69 @@ const PATCHED_DEPS_BLOCK = `patchedDependencies:
   solid-js@${SOLID_JS_VERSION}: ${SOLID_PATCH_RELPATH}
 `
 
+const PATCH_HEADER_RE = /^patchedDependencies:\s*$/
+// A flat-map entry line: `  <key>: <value>` (keys like `solid-js@1.9.17`
+// carry no colon; values are patch relpaths). Nested-map or list lines do
+// NOT match and mark the block opaque.
+const PATCH_ENTRY_RE = /^[ \t]+([^:\s][^:]*):(?:[ \t]+(.*))?$/
+
+/**
+ * Parse every top-level `patchedDependencies:` block in the yaml into its
+ * flat `pkg@version: relpath` entries. pnpm's patchedDependencies IS a flat
+ * string map, so a line-level reader is exact here (a full YAML parser is
+ * not available in this dependency-free script). Returns the entries in
+ * first-seen order (a duplicated key — the old append bug's shape — keeps
+ * its first occurrence), the [start, end) line range of each block, and
+ * `opaque: true` when some block holds lines this reader cannot parse (the
+ * caller must not rewrite what it cannot reproduce).
+ */
+function parsePatchBlocks(lines) {
+  const entries = []
+  const seen = new Set()
+  const ranges = []
+  let opaque = false
+  let i = 0
+  while (i < lines.length) {
+    if (!PATCH_HEADER_RE.test(lines[i])) {
+      i++
+      continue
+    }
+    const start = i
+    i++
+    while (i < lines.length && /^[ \t]+\S/.test(lines[i])) {
+      const m = PATCH_ENTRY_RE.exec(lines[i])
+      if (!m) {
+        opaque = true
+        break
+      }
+      const key = m[1].trim()
+      if (!seen.has(key)) {
+        seen.add(key)
+        entries.push([key, (m[2] ?? '').trim()])
+      }
+      i++
+    }
+    ranges.push([start, i])
+  }
+  return { entries, seen, ranges, opaque }
+}
+
 /**
  * Make sure the profile carries the solid-js patch and registers it with
  * pnpm. Call BEFORE any `pnpm install` in the profile — patchedDependencies
  * must be in pnpm-workspace.yaml when install runs for the pin to survive.
  *
- * Creates pnpm-workspace.yaml with the default hoisted layout when missing;
- * otherwise appends the patchedDependencies key only when not yet present
- * (user edits to the yaml are preserved). Stale solid-js patch keys from
- * older pins (e.g. solid-js@1.9.12) are removed whenever the yaml is
- * rewritten, so an upgraded profile never carries two solid-js patch keys.
- * Returns what it did.
+ * Creates pnpm-workspace.yaml with the default hoisted layout when missing.
+ * An existing yaml is MERGED, never appended beside: all patchedDependencies
+ * blocks are read into one flat map, every solid-js key ≠ the current
+ * version is dropped (stale after a bump, e.g. a 0.4.3-era
+ * `solid-js@1.9.12:` line), every other package's key is kept verbatim, and
+ * ONE `patchedDependencies:` block is written back at the first block's
+ * position — an upgraded profile can never carry two solid-js patch keys or
+ * two patchedDependencies headers (the latter is a hard pnpm error:
+ * "duplicate mapping key"). Other top-level keys (packages, nodeLinker,
+ * user edits) are preserved byte-for-byte. A block this reader cannot parse
+ * is left untouched rather than half-rewritten. Returns what it did.
  */
 export function ensureSolidPatch(profileDir) {
   mkdirSync(join(profileDir, 'patches'), { recursive: true })
@@ -265,35 +317,62 @@ export function ensureSolidPatch(profileDir) {
   }
 
   const wsPath = join(profileDir, 'pnpm-workspace.yaml')
-  // Any OTHER-version solid-js patch key is stale after a version bump; the
-  // current-version key is kept as-is when present.
-  const stripStale = (ws) =>
-    ws
-      .split('\n')
-      .filter((line) => !/^\s*solid-js@(?!\d+\.\d+\.\d+:).*/.test(line) || line.includes(`solid-js@${SOLID_JS_VERSION}:`))
-      .join('\n')
-
-  let workspaceNote
+  const currentKey = `solid-js@${SOLID_JS_VERSION}`
   if (!existsSync(wsPath)) {
     writeFileSync(wsPath, WORKSPACE_DEFAULT + PATCHED_DEPS_BLOCK)
-    workspaceNote = 'workspace created'
-  } else {
-    const hadCurrent = readFileSync(wsPath, 'utf8').includes(`solid-js@${SOLID_JS_VERSION}:`)
-    const ws = stripStale(readFileSync(wsPath, 'utf8'))
-    const staleRemoved = ws !== readFileSync(wsPath, 'utf8')
-    if (!hadCurrent) {
-      writeFileSync(wsPath, ws.replace(/\n*$/, '\n') + PATCHED_DEPS_BLOCK)
-      workspaceNote = staleRemoved
-        ? 'patch registered in existing workspace; stale solid-js patch keys removed'
-        : 'patch registered in existing workspace'
-    } else {
-      if (staleRemoved) writeFileSync(wsPath, ws)
-      workspaceNote = staleRemoved
-        ? 'patch already registered; stale solid-js patch keys removed'
-        : 'patch already registered'
+    return { patchWrote, workspaceNote: 'workspace created' }
+  }
+
+  const original = readFileSync(wsPath, 'utf8')
+  const lines = original.split('\n')
+  const { entries, seen, ranges, opaque } = parsePatchBlocks(lines)
+  if (opaque) {
+    return {
+      patchWrote,
+      workspaceNote: 'patchedDependencies is not a flat map — pnpm-workspace.yaml left untouched',
     }
   }
-  return { patchWrote, workspaceNote }
+
+  // One merged block: non-solid-js keys verbatim, other-version solid-js
+  // keys dropped, the current key ensured (its existing value is kept when
+  // already registered).
+  const droppedStale = entries.filter(([key]) => /^solid-js@/.test(key) && key !== currentKey).length
+  const kept = entries.filter(([key]) => !/^solid-js@/.test(key) || key === currentKey)
+  const hadCurrent = seen.has(currentKey)
+  if (!hadCurrent) kept.push([currentKey, SOLID_PATCH_RELPATH])
+  const mergedBlock = [
+    'patchedDependencies:',
+    ...kept.map(([key, value]) => `  ${key}:${value ? ' ' + value : ''}`),
+  ]
+
+  let text
+  if (ranges.length === 0) {
+    // No existing block — append one at the end.
+    text = original.replace(/\n*$/, '\n') + PATCHED_DEPS_BLOCK
+  } else {
+    // Rebuild with ONE merged block at the position of the first one; the
+    // remaining block spans collapse away.
+    const out = []
+    let r = 0
+    for (let i = 0; i < lines.length; ) {
+      if (r < ranges.length && i === ranges[r][0]) {
+        if (r === 0) out.push(...mergedBlock)
+        i = ranges[r][1]
+        r++
+        continue
+      }
+      out.push(lines[i])
+      i++
+    }
+    text = out.join('\n')
+  }
+
+  const notes = []
+  if (ranges.length > 1) notes.push('duplicate patchedDependencies blocks merged')
+  if (droppedStale > 0) notes.push('stale solid-js patch keys removed')
+  notes.push(hadCurrent ? 'patch already registered' : 'patch registered in existing workspace')
+  if (text !== original) writeFileSync(wsPath, text)
+  return { patchWrote, workspaceNote: notes.join('; ') }
 }
 
 /**
@@ -316,4 +395,19 @@ export function pinSolidJsExports(profileDir) {
   pkgJson.exports = SOLID_JS_EXPORTS
   writeFileSync(solidPkg, JSON.stringify(pkgJson, null, 2))
   return 'pinned'
+}
+
+/**
+ * The installer's dependency-unfold keeps the profile's existing deps; a
+ * direct solid-js dep left by an older pin (e.g. "1.9.12" from the 0.4.3
+ * era) wins the root hoist over the patchedDependencies fix above and puts
+ * the SSR build at node_modules/solid-js. Replace any solid-js spec that is
+ * not the pinned version; an absent dep stays absent (the patch key alone
+ * owns the pin — a profile without a direct dep gains none).
+ */
+export function pinSolidJsDependency(deps) {
+  if (deps['solid-js'] !== undefined && deps['solid-js'] !== SOLID_JS_VERSION) {
+    return { ...deps, 'solid-js': SOLID_JS_VERSION }
+  }
+  return deps
 }

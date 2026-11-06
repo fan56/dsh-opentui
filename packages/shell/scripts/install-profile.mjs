@@ -22,7 +22,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { ensureSolidPatch, pinSolidJsExports } from './solid-js-pin.mjs'
+import { ensureSolidPatch, pinSolidJsDependency, pinSolidJsExports } from './solid-js-pin.mjs'
 
 const args = process.argv.slice(2)
 const flag = (name) => {
@@ -57,7 +57,10 @@ const bundles = new Set(['@deepseek-ai/dsh-base', '@aiwayds/dsh-opentui'])
 pkg.name = pkg.name || 'dsh-profile-opentui'
 pkg.private = true
 pkg.dsh = { profile: { bundles: [...bundles] } }
-pkg.dependencies = { ...(pkg.dependencies || {}), '@aiwayds/dsh-opentui': depSpec }
+// The unfold keeps the profile's existing deps EXCEPT a stale direct
+// solid-js pin: an old-profile `solid-js: "1.9.12"` would win the root
+// hoist over the patchedDependencies fix and revive the SSR build.
+pkg.dependencies = pinSolidJsDependency({ ...(pkg.dependencies || {}), '@aiwayds/dsh-opentui': depSpec })
 writeFileSync(pkgPath, JSON.stringify(pkg, null, 2))
 
 // --- cordis.yml (empty root) + workspace + solid-js patch ---
