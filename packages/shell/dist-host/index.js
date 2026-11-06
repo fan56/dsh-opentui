@@ -803,7 +803,7 @@ var require_fuzzysort = __commonJS(function(exports, module) {
 
 // src/host-entry-v2.tsx
 import { spawn } from "node:child_process";
-import { createSignal as createSignal12, onCleanup as onCleanup13, onMount as onMount5, ErrorBoundary } from "solid-js";
+import { createSignal as createSignal13, onCleanup as onCleanup14, onMount as onMount5, ErrorBoundary } from "solid-js";
 import { createComponent as createComponent2, createElement, render, spread } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -23211,6 +23211,107 @@ function StatusBar(props) {
   });
 }
 
+// ../tui-base/src/routes/session/turn-cancel.tsx
+import { createComponent as _$createComponent18 } from "@opentui/solid";
+import { effect as _$effect10 } from "@opentui/solid";
+import { createTextNode as _$createTextNode7 } from "@opentui/solid";
+import { insertNode as _$insertNode9 } from "@opentui/solid";
+import { setProp as _$setProp10 } from "@opentui/solid";
+import { createElement as _$createElement10 } from "@opentui/solid";
+import { createSignal as createSignal12, onCleanup as onCleanup13, Show as Show11 } from "solid-js";
+var CTRL_C_QUIT_WINDOW_MS = 500;
+function createCtrlCGate(windowMs = CTRL_C_QUIT_WINDOW_MS, now = Date.now) {
+  let armedAt;
+  return {
+    press() {
+      const t = now();
+      if (armedAt !== undefined && t - armedAt <= windowMs) {
+        armedAt = undefined;
+        return "quit";
+      }
+      armedAt = t;
+      return "arm";
+    },
+    reset() {
+      armedAt = undefined;
+    }
+  };
+}
+function createTurnCancel(props, onArm) {
+  const windowMs = props.windowMs ?? CTRL_C_QUIT_WINDOW_MS;
+  const gate = createCtrlCGate(windowMs);
+  let timer;
+  const disarm = () => {
+    if (timer)
+      clearTimeout(timer);
+    timer = undefined;
+    onArm(false);
+  };
+  return {
+    escape() {
+      if (!props.busy() || props.escapeYields?.())
+        return false;
+      props.interrupt();
+      return true;
+    },
+    ctrlC() {
+      if (gate.press() === "quit") {
+        disarm();
+        props.quit();
+        return true;
+      }
+      if (props.busy())
+        props.interrupt();
+      if (timer)
+        clearTimeout(timer);
+      onArm(true);
+      timer = setTimeout(() => {
+        gate.reset();
+        disarm();
+      }, windowMs);
+      return true;
+    },
+    dispose: disarm
+  };
+}
+function TurnCancelKeys(props) {
+  const theme = useThemeOptional();
+  const [armed, setArmed] = createSignal12(false);
+  const cancel = createTurnCancel(props, setArmed);
+  onCleanup13(() => cancel.dispose());
+  Keymap.createLayer(() => ({
+    mode: "global",
+    enabled: props.enabled(),
+    commands: [{
+      bind: "escape",
+      title: "Interrupt current turn",
+      group: "Session",
+      run: () => cancel.escape()
+    }, {
+      bind: "ctrl+c",
+      title: "Interrupt / quit (press twice)",
+      group: "Session",
+      run: () => cancel.ctrlC()
+    }]
+  }));
+  return _$createComponent18(Show11, {
+    get when() {
+      return armed();
+    },
+    get children() {
+      var _el$ = _$createElement10("box"), _el$2 = _$createElement10("text");
+      _$insertNode9(_el$, _el$2);
+      _$setProp10(_el$, "height", 1);
+      _$setProp10(_el$, "flexShrink", 0);
+      _$setProp10(_el$, "paddingLeft", 1);
+      _$insertNode9(_el$2, _$createTextNode7(`Press Ctrl+C again to quit`));
+      _$setProp10(_el$2, "wrapMode", "none");
+      _$effect10((_$p) => _$setProp10(_el$2, "fg", theme?.text.feedback.warning.base ?? "#e0af68", _$p));
+      return _el$;
+    }
+  });
+}
+
 // src/host-entry-v2.tsx
 var inject = ["agents"];
 function hasFfiFlag() {
@@ -23249,19 +23350,19 @@ function V2SessionPage(props) {
   if (props.themeName && !themeSeam.setTheme(props.themeName)) {
     console.error(`[host-entry-v2] unknown theme ${props.themeName}; bundled: ${themeSeam.list().join(", ")}`);
   }
-  const [composerBusy, setComposerBusy] = createSignal12(false);
-  const [turnBusy, setTurnBusy] = createSignal12(false);
+  const [composerBusy, setComposerBusy] = createSignal13(false);
+  const [turnBusy, setTurnBusy] = createSignal13(false);
   const busy = () => composerBusy() || turnBusy();
-  const [busySince, setBusySince] = createSignal12(0);
-  const [msgs, setMsgs] = createSignal12(0);
-  const [model, setModel] = createSignal12();
-  const [now, setNow] = createSignal12(new Date);
+  const [busySince, setBusySince] = createSignal13(0);
+  const [msgs, setMsgs] = createSignal13(0);
+  const [model, setModel] = createSignal13();
+  const [now, setNow] = createSignal13(new Date);
   let composerRef;
   onMount5(() => {
     projection.load();
     seam.currentModelSelection().then(setModel);
     const timer = setInterval(() => setNow(new Date), 1000);
-    onCleanup13(() => clearInterval(timer));
+    onCleanup14(() => clearInterval(timer));
   });
   const elapsed = () => busy() ? Math.max(0, Math.floor((now().getTime() - busySince()) / 1000)) : 0;
   const send = (text) => {
@@ -23356,6 +23457,13 @@ function V2SessionPage(props) {
               slashHeight: () => slash.controller.rows()
             });
           }
+        }),
+        createComponent2(TurnCancelKeys, {
+          busy,
+          interrupt: () => seam.interrupt(),
+          quit: props.quit,
+          enabled: () => dialog.stack.length === 0,
+          escapeYields: () => slash.controller.open
         }),
         createComponent2(StatusBar, {
           get phase() {

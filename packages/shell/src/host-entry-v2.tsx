@@ -46,6 +46,7 @@ import { ConfigProvider, resolve } from "../../tui-base/src/config"
 import { createThemeSeam } from "../../tui-base/src/seams/theme"
 import { PowerlineFooter, sessionFooterSegments } from "../../tui-base/src/routes/session/powerline"
 import { StatusBar } from "../../tui-base/src/routes/session/status-bar"
+import { TurnCancelKeys } from "../../tui-base/src/routes/session/turn-cancel"
 
 // cordis v4: every ctx.<service> access must be declared here — and the
 // loader unwraps `default ?? exports`, so inject must ride ON the default
@@ -205,6 +206,19 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
               slashHeight: () => slash.controller.rows(),
             })
           },
+        }),
+        // Cancel contract (batch V2, ported here — plugin parity with
+        // tui-base/examples/v2-entry.tsx): esc interrupts the running turn;
+        // ctrl+c interrupts + arms, ctrl+c x2 quits through props.quit.
+        // engine.ts runs the renderer with exitOnCtrlC: false, so without
+        // this layer ctrl+c was swallowed and never quit (only /quit did).
+        // Props are functions / stable refs only (reactive-prop law).
+        createComponent(TurnCancelKeys, {
+          busy,
+          interrupt: () => seam.interrupt(),
+          quit: props.quit,
+          enabled: () => dialog.stack.length === 0,
+          escapeYields: () => slash.controller.open,
         }),
         // Reactive-prop law (batch 10d, ported here in batch V5): sibling
         // props ride GETTERS. An eager busy()/segments()/now() read is
