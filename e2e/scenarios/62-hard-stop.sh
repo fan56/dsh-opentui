@@ -125,22 +125,13 @@ ok 'seeded agent file looper.md (deep: 0, maxRounds: 5)'
 # projected through the plugin's Config schema). A bare top-level row would
 # be a different, never-loaded entry.
 #
-# KNOWN PRODUCT GAP that still keeps the ladder dark at HEAD 4a9e6fa: the
-# dsh-settings service only returns describe() rows for plugins that export
-# a `Config` schema (lib/index.js: schema(entry) reads entry.fiber.runtime.
-# Config; entries without one are filtered OUT of describe()). The reference
-# exports one (dsh-tui-pi src/index.ts:73 `export { Config } from
-# './theme-settings.ts'`, theme-settings.ts:201 z.object with maxRounds/
-# maxRoundsGrace), but the opentui shell bundle exports only
-# { name, inject, apply } (dist-host bundle `var plugin = { name: "dsh-opentui",
-# inject, apply }`). Consequence: no `dsh-opentui` settings namespace exists
-# at all, host-session's #refreshRoundLimits always resolves the defaults
-# {maxRounds: 0, maxRoundsGrace: 0} and the ladder stays disabled regardless
-# of this staging (observed: 87 hs-loop rounds). The staging below is the
-# exact recipe for when the Config export lands — then the row appears with
-# ns `dsh-opentui` and value {theme, maxRounds, maxRoundsGrace} and the
-# ladder fires (per-agent 5 wins over the global 3; expect force-stop at
-# round 7 = 5 + 2 and E2E-HS-LADDER-DONE).
+# KNOWN PRODUCT GAP (updated 2026-11-07): the Config export landed (1ee62e4 —
+# verified in the rebuilt image: plugin = { name, inject, apply, Config }),
+# but the ladder STILL never fires (87 hs-loop rounds) with the limits staged
+# below. The staging remains the correct recipe shape; the surviving gap is
+# product-side (see the warn block at the DONE probe: settings-row resolution
+# or child-event folding). Until the ladder fires, the round-bound assertions
+# stay warns, not hard asserts.
 SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
 cat > /tmp/stage-hs-limits.mjs <<'EOF'
 import { createRequire } from 'node:module'
@@ -171,6 +162,26 @@ else
   tail -8 "$SETTINGS" | sed 's/^/    | /'
 fi
 
+# DUPLICATE NS GUARD (container-verified 2026-11-07): the tarball's own
+# dist-host/plugin.patch.yml ALSO inserts an entry with id `dsh-opentui`
+# (name @dsh-opentui/shell, no config), so the composed profile carries TWO
+# dsh-opentui entries and settings.describe() emits TWO rows with ns
+# `dsh-opentui`. limitsFromSettingsRows returns on the FIRST matching row
+# (subagent-policy.ts), and the baked layer composes before the user patch —
+# so the user-patch limits above were shadowed and the ladder stayed dark
+# (observed: 87 hs-loop rounds WITH the Config export live). Stage the same
+# limits onto the baked entry's config so whichever row wins carries them.
+BUNDLED_PATCH="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/plugin.patch.yml"
+if [ -f "$BUNDLED_PATCH" ]; then
+  node /tmp/stage-hs-limits.mjs "$BUNDLED_PATCH" >>/tmp/stage-hs-limits.log 2>&1
+  if grep -q 'maxRounds: 3' "$BUNDLED_PATCH" && grep -q 'maxRoundsGrace: 2' "$BUNDLED_PATCH"; then
+    ok 'policy limits also staged onto the bundled plugin.patch.yml entry (duplicate-ns shadowing guard)'
+  else
+    warn 'failed to stage limits onto the bundled plugin.patch.yml; tail:'
+    tail -4 /tmp/stage-hs-limits.log | sed 's/^/    | /'
+  fi
+fi
+
 # --- restart the TUI so the plugin and the limits load ----------------------
 if tui_alive; then
   quit_tui 'TUI quit for the restart' || true
@@ -199,18 +210,24 @@ done
 if (( DONE_UP == 1 )); then
   ok 'E2E-HS-LADDER-DONE landed after the tool result — the stop surfaced to the caller'
 else
-  # KNOWN PRODUCT GAP, not an infra gap: the ladder code ships in the bundle
-  # (packages/shell/src/subagent-policy.ts, wired in host-session.ts
-  # #foldChildEvent), but it reads its caps from the `dsh-opentui` settings
-  # namespace — and that namespace does not exist because the bundle's plugin
-  # exports no `Config` schema (dsh-settings describe() only projects entries
-  # whose plugin module exports Config; see the staging block above for the
-  # full recipe). With the namespace absent the policy always resolves
-  # {maxRounds: 0, maxRoundsGrace: 0} and NOTHING enforces the caps (observed
-  # 87+ hs-loop rounds against looper maxRounds 5). Recorded as a warn until
-  # the Config export lands — flip it to bad() once the namespace exists.
-  warn 'the ladder never fired (child kept looping) — PRODUCT GAP: the dsh-opentui plugin bundle exports no Config schema, so settings.describe() has no dsh-opentui namespace and the shipped ladder always reads defaults {maxRounds: 0} (disabled); recipe: export Config = z.object({maxRounds, maxRoundsGrace, ...}) from the bundle plugin (reference: dsh-tui-pi src/index.ts:73 + theme-settings.ts:201); tui-pi UI assertions (Ctrl+G picker ⏻ row, viewer hard-stop marker row, ⚡/⏻ badges) still have no opentui counterpart (F6)'
-  info 'staged limits sit on the insert entry but are unenforced — mock server log tail:'
+  # OPEN PRODUCT GAP (re-diagnosed 2026-11-07 against the Config-export fix
+  # 1ee62e4): the bundle NOW exports Config (verified in-image: plugin =
+  # { name, inject, apply, Config }, maxRoundsGrace x5), yet the ladder still
+  # never fires (87 hs-loop rounds with the limits staged on BOTH dsh-opentui
+  # patch entries). Two surviving suspects, both product-side:
+  #   (a) the settings row never resolves: describe() requires
+  #       entry.fiber.state === 2 + a volatile-only form; or the duplicate
+  #       dsh-opentui entries (bundled plugin.patch.yml + user patch insert)
+  #       shadow each other in ways the staging cannot reach;
+  #   (b) the round counts never reach the ladder: SubagentRoundPolicy is fed
+  #       by HostSession #foldChildEvent, but the registry plugin's use_agent
+  #       child may run entirely inside the dsh-agent service without folding
+  #       child events through this facade — cap/grace could resolve fine and
+  #       the ladder would still never see a round to evaluate.
+  # Recorded as a warn until the ladder observably fires; NOT hard-asserted
+  # because the round bound cannot be proven on a dark ladder.
+  warn 'the ladder never fired (child kept looping, 87 hs-loop rounds) — PRODUCT GAP despite the Config export (1ee62e4) and limits staged on both dsh-opentui patch entries; suspects: (a) settings row never resolves (entry.fiber.state/volatile form/duplicate-ns shadowing), (b) registry use_agent child rounds never fold through HostSession #foldChildEvent so the ladder never evaluates; instrument subagent-policy ladderDecision + #refreshRoundLimits to split (a) vs (b)'
+  info 'staged limits sit on both entries but are unenforced — mock server log tail:'
   tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
 fi
 

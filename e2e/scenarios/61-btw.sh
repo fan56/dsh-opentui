@@ -72,11 +72,10 @@
 #   5. IDLE REFUSALS: 'the main line is idle, so just ask directly' and the
 #      'No question after /btw --model.' argument error do not exist; idle
 #      /btw opens the input dialog (covered by the probe below).
-#   6. IDLE DIALOG ESC (live-verified product bug, 2026-11-06): Esc does not
-#      close the idle /btw input DialogPrompt — the pane keeps painting
-#      'Ask anything' after repeated Esc presses; Ctrl+C closes it. The idle
-#      probe records the Esc attempt as a documented warn and falls back to
-#      Ctrl+C (the STREAMING BtwPanel's Esc works and stays asserted).
+#   6. IDLE DIALOG ESC — FIXED (3536b45): the idle /btw input DialogPrompt now
+#      closes through the dialog stack on Esc; the former live-verified bug
+#      (Esc ignored, Ctrl+C fallback) is hard-asserted below and the Ctrl+C
+#      fallback path is retired (kept as a comment for archaeology).
 set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'btw: side questions over the mock LLM (overlay, queue, not-persisted)'
@@ -135,12 +134,10 @@ ensure_editor_ready 'editor clean before the btw probes' || true
 # usage text — PRODUCT GAP 5 in the header.
 send '/btw' Enter
 if wait_pane_fixed 'idle bare /btw opens the input dialog (Ask anything placeholder)' 10 'Ask anything'; then
-  # PRODUCT BUG (live-verified in the container, 2026-11-06): Esc does NOT
-  # close the idle input dialog — the DialogPrompt ignores Escape and the
-  # pane keeps painting 'Ask anything' after repeated Esc presses. Ctrl+C
-  # does close it. The Esc attempt is recorded as a documented warn (not a
-  # fail) and the probe falls back to Ctrl+C; restore the plain wait_gone
-  # Esc assertion when the dialog learns to close.
+  # Esc must close the idle input dialog (fixed by 3536b45: the DialogPrompt
+  # now routes Escape through the dialog stack). HARD ASSERT — the former
+  # Ctrl+C fallback is retired; kept here as a comment only:
+  #   [retired fallback] send C-c; wait for 'Ask anything' to vanish.
   send Escape
   ESC_CLOSED=0
   for _ in $(seq 1 6); do
@@ -150,18 +147,7 @@ if wait_pane_fixed 'idle bare /btw opens the input dialog (Ask anything placehol
   if (( ESC_CLOSED == 1 )); then
     ok 'Esc closes the idle input dialog'
   else
-    warn 'PRODUCT BUG: Esc does not close the idle /btw input dialog (DialogPrompt ignores Escape; live-verified) — falling back to Ctrl+C'
-    send C-c
-    CC_CLOSED=0
-    for _ in $(seq 1 6); do
-      if ! capture | grep -qF 'Ask anything'; then CC_CLOSED=1; break; fi
-      sleep 1
-    done
-    if (( CC_CLOSED == 1 )); then
-      ok 'Ctrl+C closes the idle input dialog (fallback works)'
-    else
-      bad 'the idle /btw input dialog cannot be closed at all (Esc and Ctrl+C both fail)'
-    fi
+    bad 'Esc does not close the idle /btw input dialog (regression of 3536b45; pane still paints Ask anything after Esc)'
   fi
 fi
 ensure_editor_ready 'editor clean before the busy flow' || true
