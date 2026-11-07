@@ -103,6 +103,7 @@ export const Definitions = {
   "opencode.status": keybind("<leader>s", "View status"),
   "opencode.debug": keybind("none", "View debug info"),
 
+  "session.search": keybind("ctrl+shift+f", "Search the session transcript"),
   "session.export": keybind("<leader>x", "Export session to editor"),
   "session.copy": keybind("none", "Copy session transcript"),
   "session.copy.id": keybind("none", "Copy session ID"),

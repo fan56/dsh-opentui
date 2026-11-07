@@ -33,9 +33,11 @@ import { HostSessionSeam } from "./host-session-seam-adapter.ts"
 // tui-base view graph (bundled from source; see header)
 import { SessionComposer } from "../../tui-base/src/routes/session/session-composer"
 import { SubagentsPicker } from "../../tui-base/src/routes/session/subagents-picker"
+import type { ScrollBoxRenderable } from "@opentui/core"
 import { registerSubagentSteerFeedback } from "../../tui-base/src/routes/session/subagent-markers"
 import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows"
 import { Transcript } from "../../tui-base/src/routes/session/transcript"
+import { SearchOverlay } from "../../tui-base/src/routes/session/search-overlay"
 import { TurnOverlayController } from "../../tui-base/src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../../tui-base/src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../../tui-base/src/routes/session/slash-palette"
@@ -118,6 +120,9 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
   const [model, setModel] = createSignal<{ providerID: string; modelID: string } | undefined>()
   const [now, setNow] = createSignal(new Date())
   let composerRef: { focused(): boolean; focus(): void } | undefined
+  // Transcript scrollbox ref (batch H1): published by Transcript's scrollRef,
+  // consumed by the search overlay's match jump (scrollChildIntoView).
+  let transcriptScroll: ScrollBoxRenderable | undefined
   onMount(() => {
     void projection.load()
     void seam.currentModelSelection().then(setModel)
@@ -246,9 +251,19 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
     backgroundColor: "black",
     get children() {
       return [
+        // Transcript search (batch H1, tui-pi 22-search parity): ctrl+shift+f
+        // opens the find bar over the SAME projection the Transcript paints.
+        // Getter-prop law: the scrollbox rides a getter (ref lands post-mount).
+        createComponent(SearchOverlay, {
+          projection,
+          get scroll() {
+            return transcriptScroll
+          },
+        }),
         createComponent(Transcript, {
           seam,
           projection,
+          scrollRef: (value: ScrollBoxRenderable | undefined) => (transcriptScroll = value),
           get children() {
             return createComponent(SessionComposer, {
               seam,

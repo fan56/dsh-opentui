@@ -275,5 +275,8 @@ export function sessionFooterSegments(data: {
 	add(messagesSegment(data.messages ?? 0, theme))
 	add(toolSegment(data.tools ?? 0, theme))
 	add(speedSegment(data.tps ?? null, theme))
+	// Search discoverability hint (batch H1, tui-pi 22-search parity): the
+	// reference pins a 'Ctrl+Shift+F: search' footer segment, default on.
+	add({ text: "Ctrl+Shift+F: search", bg: resolvePalette(theme).thinking.off })
 	return segs
 }

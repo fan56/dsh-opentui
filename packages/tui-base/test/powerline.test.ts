@@ -135,11 +135,13 @@ describe("footer assembly", () => {
 			"🤖 glm-5.3-flash ◕ high",
 			"🧠 42%",
 			"💬 2",
+			// Batch H1: the search hint rides the footer, default on.
+			"Ctrl+Shift+F: search",
 		])
 	})
 
-	test("empty data still yields the brand segment", () => {
-		expect(sessionFooterSegments({}).map((s) => s.text)).toEqual(["dsh"])
+	test("empty data still yields the brand segment plus the search hint", () => {
+		expect(sessionFooterSegments({}).map((s) => s.text)).toEqual(["dsh", "Ctrl+Shift+F: search"])
 	})
 })
 

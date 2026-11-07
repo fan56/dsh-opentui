@@ -36,6 +36,7 @@ import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
+import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
@@ -218,6 +219,15 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 		backgroundColor: "black",
 		get children() {
 			return [
+				// Transcript search (batch H1, tui-pi 22-search parity):
+				// ctrl+shift+f opens the find bar over the SAME projection the
+				// Transcript paints. Getter-prop law: the scrollbox rides a getter.
+				createComponent(SearchOverlay, {
+					projection,
+					get scroll() {
+						return transcriptScroll
+					},
+				}),
 				createComponent(Transcript, {
 					seam,
 					projection,
