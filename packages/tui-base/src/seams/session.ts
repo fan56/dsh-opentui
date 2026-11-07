@@ -208,6 +208,20 @@ export interface SeamSubagentView {
 	spinStopRound?: number
 }
 
+/**
+ * One agent-preset row (batch H2): the registry roster entry the /preset
+ * picker renders. `isDefault` marks the registry-designated default row
+ * (tui-pi parity — the selection falls back to it when nothing is current);
+ * broken rows stay hidden at this face (the adapters filter to composable
+ * entries).
+ */
+export interface SeamPresetRow {
+	id: string
+	name: string
+	description?: string
+	isDefault?: boolean
+}
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -303,6 +317,21 @@ export interface SessionSeam {
 	 * notice.
 	 */
 	plugins?(): { name: string; version: string }[]
+	/**
+	 * Agent-preset face (batch H2, tui-pi 60-preset parity): the deployment's
+	 * preset roster (the host `agentPresets` registry — each preset composes
+	 * a session from a different plugin/tool set) plus the current selection.
+	 * `select` rides the adapters' switchPreset semantics: the picked id is
+	 * seeded into the NEXT session creation (a live session keeps composing
+	 * under its bound preset until then). Optional — a seam without it (or a
+	 * roster that reads empty) degrades /preset to a notice.
+	 */
+	preset?: {
+		list(): Promise<SeamPresetRow[]>
+		currentId(): Promise<string | undefined>
+		/** Apply the switch; false when the backend rejected it. */
+		select(presetId: string): Promise<boolean>
+	}
 	/**
 	 * Subagent marker face (batch F6): the live subagent rows snapshot, and
 	 * a push listener that fires on every fold (adoption, round, marker,

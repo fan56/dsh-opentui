@@ -104,6 +104,7 @@
 import type {
 	SeamAskPick,
 	SeamAskQuestion,
+	SeamPresetRow,
 	SeamProviderModel,
 SeamSessionEvent,
 	SeamSessionInfo,
@@ -202,6 +203,25 @@ export class HostSessionSeam implements SessionSeam {
 	 */
 	plugins(): { name: string; version: string }[] {
 		return this.#session.listPlugins()
+	}
+
+	// ---- agent-preset face (batch H2, tui-pi 60-preset parity): HostSession 1:1 ----
+	// The roster reads the host agentPresets registry (listPresets); the
+	// switch rides switchPreset — the id is seeded into the NEXT session
+	// creation (meta.agentPreset), the reference's confirmed-switch path.
+	// listPresets already degrades to [] without the registry service.
+	preset = {
+		list: (): Promise<SeamPresetRow[]> => this.#session.listPresets(),
+		currentId: async (): Promise<string | undefined> => this.#session.currentPresetId(),
+		select: async (presetId: string): Promise<boolean> => {
+			try {
+				this.#session.switchPreset(presetId)
+				return true
+			} catch (error) {
+				console.error("[host-session-seam-adapter] preset switch failed:", error)
+				return false
+			}
+		},
 	}
 
 	/**

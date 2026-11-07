@@ -91,6 +91,7 @@
 import type {
 	SeamAskPick,
 	SeamAskQuestion,
+	SeamPresetRow,
 	SeamProviderModel,
 SeamSessionEvent,
 	SeamSessionInfo,
@@ -347,6 +348,26 @@ export class RemoteSessionSeam implements SessionSeam {
 	 */
 	plugins(): { name: string; version: string }[] {
 		return this.#session.listPlugins()
+	}
+
+	// ---- agent-preset face (batch H2, tui-pi 60-preset parity): RemoteHostSession 1:1 ----
+	// The roster reads the remote agentPresets/list RPC (listPresets, audit
+	// row 23); the switch rides switchPreset — the id rides the NEXT
+	// session/create request, the reference's confirmed-switch path. Both
+	// arms already degrade (listPresets catches into [], switchPreset
+	// re-probes the execution mode).
+	preset = {
+		list: (): Promise<SeamPresetRow[]> => this.#session.listPresets(),
+		currentId: async (): Promise<string | undefined> => this.#session.currentPresetId(),
+		select: async (presetId: string): Promise<boolean> => {
+			try {
+				this.#session.switchPreset(presetId)
+				return true
+			} catch (error) {
+				console.error("[session-seam-adapter] preset switch failed:", error)
+				return false
+			}
+		},
 	}
 
 	// ---- subagent marker face (batch F6): RemoteHostSession 1:1 ----

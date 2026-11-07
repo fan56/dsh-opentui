@@ -19,7 +19,7 @@
  *                            send to the model)
  *   plain text            → not a command; caller sends/steers as batch 4
  */
-import type { SessionSeam } from "../../seams/session"
+import type { SeamPresetRow, SessionSeam } from "../../seams/session"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
 import { emptyFilteredCopy, filterSessionsBySizeFloor, resumePickerOptions } from "./resume-picker"
 import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
@@ -69,6 +69,34 @@ export interface SlashCommandContext {
 		list(): string[]
 		set(name: string): boolean
 	}
+}
+
+// ---------------------------------------------------------- /preset helpers --
+// Batch H2 (tui-pi 60-preset parity). Pure — table-testable like the
+// resume-picker helpers.
+
+/**
+ * The row `/preset next` would switch to — the roster item after the current
+ * selection, wrapping around (tui-pi peekNextPreset semantics). Undefined
+ * with 0 or 1 rows (nothing to rotate to). When nothing is current (no
+ * session attached yet, or the selection is not in the roster) the anchor is
+ * the registry-default row, falling back to the first-listed one.
+ */
+export function presetNextRow(rows: SeamPresetRow[], currentId: string | undefined): SeamPresetRow | undefined {
+	if (rows.length <= 1) return undefined
+	const anchorId =
+		currentId ?? rows.find((row) => row.isDefault)?.id ?? rows[0]?.id
+	const index = rows.findIndex((row) => row.id === anchorId)
+	if (index < 0) return rows[0]
+	return rows[(index + 1) % rows.length]
+}
+
+/** Find a preset by id or display name, case-insensitive (tui-pi
+ * findPresetByName semantics, officialName folded into the name). */
+export function findPresetRow(rows: SeamPresetRow[], query: string): SeamPresetRow | undefined {
+	const needle = query.trim().toLowerCase()
+	if (needle === "") return undefined
+	return rows.find((row) => row.id.toLowerCase() === needle || row.name.toLowerCase() === needle)
 }
 
 /** The batch-8 core set, bound to a context at call time (pure table). */
@@ -288,6 +316,77 @@ export function coreCommands(): SlashCommand[] {
 				if (!picked || picked === current) return
 				if (ctx.themes.set(picked)) ctx.say(`Theme: ${picked} — applied`)
 				else ctx.say(`unknown theme: ${picked}`)
+			},
+		},
+		{
+			// Feature batch H2 (tui-pi 60-preset parity). The deployment's agent
+			// preset roster (seam.preset — the host agentPresets registry).
+			// Bare opens the picker over the roster (the current row marked),
+			// "/preset next" rotates one slot with wrap, "/preset <id|name>"
+			// targets directly. The switch rides the adapters' switchPreset
+			// semantics — the picked id composes the NEXT session — so a live
+			// session confirms first ("Switch preset to <name>?", the reference
+			// dialog copy; Esc/Cancel keeps everything), a fresh app (nothing
+			// attached) applies directly. Absent face or an empty roster =
+			// the degrade notices (the /plugins contract).
+			name: "/preset",
+			description: "switch agent preset (bare opens the picker, next rotates)",
+			async run(ctx, argText) {
+				const face = ctx.seam.preset
+				if (!face) {
+					ctx.say("/preset unavailable in this session")
+					return
+				}
+				const rows = await face.list()
+				if (rows.length === 0) {
+					ctx.say("no agent presets available")
+					return
+				}
+				const currentId = await face.currentId()
+				const arg = argText.trim()
+				let target: SeamPresetRow | undefined
+				if (arg === "") {
+					const picked = await ctx.pickOne(
+						"Select agent preset",
+						rows.map((row) => ({
+							title: row.name,
+							value: row.id,
+							description: row.id === currentId ? "current" : row.description,
+						})),
+					)
+					if (!picked || picked === currentId) return
+					target = rows.find((row) => row.id === picked)
+				} else if (arg === "next") {
+					target = presetNextRow(rows, currentId)
+					if (!target) {
+						ctx.say("no other preset to switch to")
+						return
+					}
+				} else {
+					target = findPresetRow(rows, arg)
+					if (!target) {
+						ctx.say(`unknown preset: ${arg}`)
+						return
+					}
+					if (target.id === currentId) {
+						ctx.say(`preset already: ${target.name}`)
+						return
+					}
+				}
+				if (!target) return
+				if (ctx.seam.status().sessionAttached) {
+					const verdict = await ctx.pickOne(`Switch preset to ${target.name}?`, [
+						{ title: `Switch to ${target.name}`, value: "switch" },
+						{ title: "Cancel", value: "cancel" },
+					])
+					if (verdict !== "switch") return
+				}
+				if (!(await face.select(target.id))) {
+					ctx.say(`preset switch failed: ${target.name}`)
+					return
+				}
+				ctx.say(`preset → ${target.name} (new session)`)
+				await ctx.reload()
 			},
 		},
 	]
