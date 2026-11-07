@@ -86,6 +86,70 @@ MARKER_MODEL_SEG='glm-5.3-flash'
 # the real capture is the model segment's emoji prefix + id.
 MARKER_MODEL_SEG_POWERLINE='🤖 glm-5.3-flash'
 
+# --- process-table hygiene (C14) -----------------------------------------------
+# Cross-scenario cascade isolation. Empirical baseline (C13 batch): the shared
+# container run failed 7 assertions across 30/40/66 while the same scenarios
+# were green standalone — a failed/timed-out scenario leaves live processes
+# that poison the next one:
+#   - the TUI node process. 10 of 15 scenarios end WITHOUT kill_tui, and the
+#     in-container quit paths are unreliable (quit_tui KNOWN LIMITATION), so
+#     the next scenario's start_tui relied on the kill-session SIGHUP — which
+#     does not reliably terminate the node process. The orphan keeps running
+#     (spinning on its dead pty, retrying the mock endpoint) alongside the
+#     next scenario's fresh boot.
+#   - the mock servers (mock-llm.mjs / mock-jev.mjs). Each scenario kills its
+#     own mock via a trap, but an orphaned earlier one holds :8642 so the next
+#     scenario's mock dies with EADDRINUSE while the health check still passes
+#     against the OLD mock (whose request-keyed phases differ) — the scenario
+#     then waits forever for a phase the old mock never serves.
+#
+# Verified cmdlines (live container boot): TUI is `node /usr/local/bin/dsh
+# --profile dsh-opentui` under launcher `node /usr/local/bin/dsh-opentui`;
+# mocks are `node .../mock-llm.mjs --port ...` / `mock-jev.mjs`. None of the
+# patterns below can match a scenario's own cmdline (`bash ./NN-*.sh`) or the
+# tmux server (`tmux new-session -d -s dsh-opentui-e2e ...`).
+TUI_PAT1='dsh --profile dsh-opentui'
+TUI_PAT2='node /usr/local/bin/dsh-opentui'
+MOCK_PATS='mock-llm.mjs mock-jev.mjs'
+
+in_e2e_container() { [ -d /e2e/scenarios ]; }
+
+# Kill processes matching the given patterns: SIGTERM, wait up to ~3s for the
+# process table to clear, then SIGKILL. Waiting matters: a mock still dying
+# holds :8642/:8643 and the next bind would race.
+kill_pats() {
+  local pat alive waited
+  for pat in "$@"; do pkill -f "$pat" 2>/dev/null || true; done
+  for waited in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    alive=0
+    for pat in "$@"; do pgrep -f "$pat" >/dev/null 2>&1 && alive=1; done
+    if (( alive == 0 )); then return 0; fi
+    sleep 0.25
+  done
+  for pat in "$@"; do pkill -9 -f "$pat" 2>/dev/null || true; done
+  sleep 0.5
+}
+
+kill_tui_procs() { in_e2e_container || return 0; kill_pats "$TUI_PAT1" "$TUI_PAT2"; }
+
+# Full pre-scenario reset: leftover TUI + leftover mocks + the tmux server.
+# Container-gated: this lib may be sourced on a host (scenarios carry host
+# guards) and must never touch host processes.
+reset_e2e_state() {
+  in_e2e_container || return 0
+  # shellcheck disable=SC2086
+  kill_pats "$TUI_PAT1" "$TUI_PAT2" $MOCK_PATS
+  tmux kill-server 2>/dev/null || true
+  sleep 0.3
+}
+
+# Run at source time — i.e. once per scenario, before its body: everything the
+# previous scenario left behind dies here, before this scenario starts its own
+# mocks or boots its own TUI. (The previous scenario cannot fully clean up
+# after itself: its EXIT trap kills only its own mock PIDs, and an EXIT trap
+# registered here would be clobbered by the scenarios' own traps.)
+reset_e2e_state
+
 # --- tmux session -------------------------------------------------------------
 TS=dsh-opentui-e2e
 # Geometry is env-overridable (same rule as the dsh-tui-pi harness).
@@ -104,7 +168,14 @@ tui_alive() {
 
 start_tui() {
   local env_prefix="${1:-}"
-  tmux kill-session -t "$TS" 2>/dev/null || true
+  if in_e2e_container; then
+    # C14: never boot beside a leftover TUI — mid-scenario reboots (62/65/67/70)
+    # would otherwise stack a second live dsh on the orphaned first one.
+    kill_tui_procs
+    tmux kill-server 2>/dev/null || true
+  else
+    tmux kill-session -t "$TS" 2>/dev/null || true
+  fi
   sleep 0.3
   # -c pins the pane shell (and thus the boot cwd) to the image WORKDIR —
   # the runner's cd into e2e/scenarios must not leak into the session cwd.
@@ -340,4 +411,9 @@ kill_tui() {
     sleep 0.8
     tmux kill-session -t "$TS" 2>/dev/null || true
   fi
+  # C14: the kill-session SIGHUP does not reliably terminate the node process
+  # (quit paths are unreliable in-container — quit_tui KNOWN LIMITATION), so
+  # enforce the process death; otherwise the orphan spins against its dead
+  # pty / the mock endpoint for the rest of the suite.
+  kill_tui_procs
 }
