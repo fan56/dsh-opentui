@@ -207,24 +207,23 @@ PANE="$(capture)"
 assert_contains 'picker footer hint rendered' 'Subagents' "$PANE"
 
 # --- Enter on the running row → the steer prompt -----------------------------
-# C11 TERMINAL FINDING (one instrumented container iteration — in-bundle log
-# of the mode stack + picker handlers): the D7 "key delivery" hypothesis is
-# DISPROVEN. The live log shows, in order: picker.toggle-open called →
-# picker.select called (Enter DOES reach the SubagentsPicker layer; keymap
-# mode is still "base" at that point — no streaming-mode shadowing) → mode
-# flips base→modal 12ms later (openSteer ran and dialog.replace(DialogPrompt
-# "Steer Looper") pushed the prompt onto the DialogProvider stack) → modal
-# holds ~15.6s → base (cleanup esc). So keys ARE delivered, the wiring IS
-# intact, and the steer prompt OPENS — but nothing paints: the pane keeps
-# showing the picker overlay and composer, with no "Steer Looper" title and
-# no prompt input. Product break: the DialogPrompt mounted by the
-# SubagentsPicker's openSteer is a member of the dialog stack (mode=modal
-# proves it) yet renders no visible surface over the rebuilt host view.
-# Recipe: fix the DialogProvider/DialogPrompt paint path in the rebuilt
-# dist-host view graph (mount point/visibility of the dialog surface, same
-# family as the 68-resume description gate), then re-pin this scenario.
+# C11b2 TERMINAL FINDING (instrumented container iteration, tmux
+# capture-pane -e -p -N around Enter): the C11 "nothing paints" break is GONE
+# in the current product batch — Enter on the running row DOES paint the
+# DialogPrompt ("Steer [Fg] Looper" title, "Steer message" textarea label,
+# "submit enter" footer), the textarea takes focus (cursor jumps onto the
+# prompt row) and echoes typed text. The scenario was red for two SCENARIO
+# reasons, both fixed here:
+#   1. stale matcher: the prompt title carries the agent display decoration
+#      ("Steer [Fg] Looper" — the deep:0 foreground marker), so the old
+#      fixed-string 'Steer Looper' never matched a fully correct render;
+#   2. scrolling input: the prompt textarea is a single-line SCROLLING input
+#      (~43 visible cols) — a 45-char steer text echoed fully into the buffer
+#      but the pane only ever shows the tail ("E_STEER_70…", cursor pinned at
+#      col 86), so a contiguous contains-assert on the full text can never
+#      match. Fixed by keeping the marker text short (see STEER_TEXT below).
 send Enter
-if wait_pane_fixed 'Enter opens the steer prompt' 15 'Steer Looper'; then
+if wait_pane 'Enter opens the steer prompt' 15 'Steer .*Looper'; then
   :
 else
   bad 'Enter on the running row never opened the steer prompt; pane tail:'
@@ -233,12 +232,13 @@ else
   summary
   exit 0
 fi
+sleep 1 # dialog mount beat: textarea focus lands a beat after the first paint
 
 # --- Esc cancel path: silent return, nothing delivered -----------------------
 send Escape
 sleep 1
 PANE="$(capture)"
-if printf '%s' "$PANE" | grep -qF 'Steer Looper'; then
+if printf '%s' "$PANE" | grep -qE 'Steer .*Looper'; then
   bad 'cancel-path: Esc left the steer prompt open'
 else
   ok 'cancel-path: Esc closed the steer prompt'
@@ -246,7 +246,7 @@ fi
 
 # --- reopen and inject the steer text ----------------------------------------
 send Enter
-if wait_pane_fixed 'steer prompt reopens' 15 'Steer Looper'; then
+if wait_pane 'steer prompt reopens' 15 'Steer .*Looper'; then
   :
 else
   bad 'steer prompt did not reopen for the injection'
@@ -254,14 +254,46 @@ else
   summary
   exit 0
 fi
-STEER_TEXT='E2E_STEER_70 wrap up after the next tool call'
+sleep 1 # dialog mount beat: focus lands after the first paint (cursor on the prompt row)
+# The steer prompt textarea is a single-line SCROLLING input (~43 visible
+# cols, instrumented cursor evidence: a 45-char text ends with the cursor at
+# col 86 and the pane showing only the tail "E_STEER_70…" — the full string
+# IS in the buffer but scrolled). Keep the marker text short enough to be
+# fully visible, or the contains-assert matches nothing.
+STEER_TEXT='E2E_STEER_70 wrap up after next call'
 send "$STEER_TEXT"
-sleep 0.8
+sleep 1
 assert_contains 'steer editor echoed the typed text' "$STEER_TEXT" "$(capture)"
 send Enter
 
 # --- success echo -------------------------------------------------------------
-if wait_pane_fixed 'success echo "steered looper" appears' 10 'steered looper'; then
+# C11b2 TERMINAL FINDING (instrumented container iterations, tmux
+# capture-pane -e -p -N before/after each key, cursor tracking): the submit
+# leg breaks the same way on the FIRST open and on a post-Esc reopen, so it
+# is not an Esc-cleanup artifact:
+#   Enter on a populated prompt closes the dialog (cursor returns to the
+#   composer) with NO "steered <agent>" echo AND no delivery — the mock LLM
+#   never sees steer-marker=E2E_STEER_70 in the child's request stream (60s
+#   window; the child keeps looping throughout).
+# The success echo also uses the decorated display name ("steered [Fg]
+# Looper"), so the matcher is deliberately loose.
+# Two candidate product breaks, both in the rebuilt dist-host (recipe):
+#   1. packages/tui-base/src/ui/dialog-prompt.tsx — Enter never reaches
+#      confirm()/onConfirm (the modal keymap at :85 binds only escape; submit
+#      rides the footer action "dialog.prompt.submit" at :146/:154 — that
+#      trigger appears dead, Enter silently cancels instead), OR
+#   2. packages/tui-base/src/routes/session/composer/subagents-tab.tsx:129
+#      onConfirm DID run but steerSubagent
+#      (packages/tui-base/src/routes/session/subagent-markers.ts:85)
+#      returned falsy — no seam registered on this face / the sessionID not
+#      matched by HostSession.steerChild (packages/shell/src/host-session.ts
+#      :1323) — and the rejection toast ("steer rejected — …", subagents-tab
+#      :141) does not paint either (same family as the 68-resume toast
+#      paint gate). No e2e scenario asserts toast rendering today, so (2)
+#      is unverifiable from the harness alone.
+# Either way the steer text never reaches the child: these assertions stay
+# red until the submit→steerChild→delivery chain is fixed product-side.
+if wait_pane 'success echo "steered looper" appears' 10 'steered .*Looper'; then
   :
 else
   bad 'no "steered looper" echo after submitting the steer; pane tail:'
