@@ -4,12 +4,20 @@
  */
 import { describe, expect, test } from "bun:test"
 import {
+	agentsProfilesPatch,
+	agentsRosterRows,
 	coreCommands,
 	dispatchLine,
 	filterCommands,
+	findAgentsProfile,
 	findPresetRow,
+	loadAgentsProfiles,
 	presetNextRow,
+	removeAgentsProfile,
 	unknownCommandRow,
+	upsertAgentsProfile,
+	validateAgentsName,
+	type AgentsProfile,
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
 import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
@@ -185,6 +193,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/session",
 			"/plugins",
 			"/search",
+			"/agents",
 			"/think",
 			"/hotkeys",
 			"/theme",
@@ -211,6 +220,7 @@ describe("core commands", () => {
 			"/session — show session info (id, model, tokens, speed)",
 			"/plugins — manage plugins (opens the panel)",
 			"/search — full-text search over stored sessions",
+			"/agents — model profiles: list / save / use / rm (named model+effort snapshots)",
 			"/think — set reasoning effort (opens the picker)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
@@ -705,5 +715,185 @@ describe("/preset (batch H2, tui-pi 60-preset parity)", () => {
 		}
 		await run(failCtx, "ptc")
 		expect(failCtx.lines).toEqual(["preset switch failed: PTC"])
+	})
+})
+
+/** The H5 config faces: an in-memory profile config.json behind the seam. */
+class AgentsSeam extends RecordingSeam {
+	store: Record<string, unknown> = {}
+	constructor() {
+		super()
+		;(this.seam as any).configLoad = () => JSON.parse(JSON.stringify(this.store))
+		;(this.seam as any).configSave = (patch: Record<string, unknown>) => {
+			this.calls.push("configSave")
+			this.store = { ...this.store, ...patch }
+			return JSON.parse(JSON.stringify(this.store))
+		}
+		;(this.seam as any).thinking = {
+			efforts: async () => [
+				{ id: "high", name: "High" },
+				{ id: "low", name: "Low" },
+			],
+			currentEffort: async () => this.effort,
+			selectEffort: (effort: string | undefined) => {
+				this.calls.push(`selectEffort:${effort ?? "undefined"}`)
+				this.effort = effort
+			},
+		}
+	}
+	effort: string | undefined = "high"
+	roster(): AgentsProfile[] {
+		return loadAgentsProfiles(this.store)
+	}
+}
+
+describe("batch H5: /agents named model profiles", () => {
+	test("absent config faces degrade to the unavailable notice", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["/agents unavailable in this session"])
+	})
+
+	test("bare on an empty roster prints the empty-roster row", async () => {
+		const ctx = makeCtx(new AgentsSeam())
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "")
+		expect(ctx.lines).toEqual([
+			"model profiles:",
+			"no saved model profiles (/agents save <name> archives the current model)",
+		])
+	})
+
+	test("save snapshots the current model route + effort through configSave", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "save work")
+		expect(seam.calls).toContain("configSave")
+		expect(seam.roster()).toEqual([{ name: "work", provider: "bigmodel", model: "glm-5.3-flash", reasoningEffort: "high" }])
+		expect(ctx.lines).toEqual(["saved profile work → bigmodel/glm-5.3-flash (high)"])
+	})
+
+	test("save over an existing name overwrites (upsert)", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		const run = coreCommands().find((c) => c.name === "/agents")!.run.bind(null, ctx)
+		await run("save work")
+		await run("save work")
+		expect(seam.roster()).toHaveLength(1)
+	})
+
+	test("save rejects a missing or invalid name", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "save")
+		expect(ctx.lines).toEqual(["usage: /agents save <name>"])
+		const ctx2 = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx2, "save bad name!")
+		expect(ctx2.lines).toEqual(["profile name must be 1-32 chars: letters, digits, - _"])
+	})
+
+	test("bare lists the roster with the current route marked", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "save work")
+		const ctx2 = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx2, "")
+		expect(ctx2.lines).toEqual(["model profiles:", "● work — bigmodel/glm-5.3-flash (high)"])
+	})
+
+	test("use applies selectModel + the effort arm when the ladder carries it", async () => {
+		const seam = new AgentsSeam()
+		await coreCommands().find((c) => c.name === "/agents")!.run(makeCtx(seam), "save work")
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "use work")
+		expect(seam.calls).toContain("selectModel:bigmodel/glm-5.3-flash")
+		expect(seam.calls).toContain("selectEffort:high")
+		expect(ctx.lines).toEqual(["model → bigmodel/glm-5.3-flash (high) [profile work]"])
+	})
+
+	test("use with a stale effort skips the arm with a note (selectModel still rides)", async () => {
+		const seam = new AgentsSeam()
+		await coreCommands().find((c) => c.name === "/agents")!.run(makeCtx(seam), "save work")
+		;(seam.seam as any).thinking.efforts = async () => [{ id: "low", name: "Low" }]
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "use work")
+		expect(seam.calls).toContain("selectModel:bigmodel/glm-5.3-flash")
+		expect(seam.calls).not.toContain("selectEffort:high")
+		expect(ctx.lines).toEqual(["model → bigmodel/glm-5.3-flash (effort high not on this model's ladder — skipped) [profile work]"])
+	})
+
+	test("use of an unknown profile is a harmless notice", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "use nope")
+		expect(ctx.lines).toEqual(["unknown profile: nope"])
+		expect(seam.calls).not.toContain("configSave")
+	})
+
+	test("rm deletes the profile from the stored roster", async () => {
+		const seam = new AgentsSeam()
+		await coreCommands().find((c) => c.name === "/agents")!.run(makeCtx(seam), "save work")
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "rm work")
+		expect(ctx.lines).toEqual(["removed profile work"])
+		expect(seam.roster()).toEqual([])
+	})
+
+	test("rm of an unknown profile is a harmless notice", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "rm nope")
+		expect(ctx.lines).toEqual(["unknown profile: nope"])
+	})
+
+	test("unknown verb prints usage", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/agents")!.run(ctx, "frobnicate")
+		expect(ctx.lines).toEqual(["usage: /agents [list | save <name> | use <name> | rm <name>]"])
+	})
+})
+
+describe("agents profile store helpers (pure)", () => {
+	test("loadAgentsProfiles degrades corrupt/wrong-shape docs to an empty roster", () => {
+		expect(loadAgentsProfiles(undefined)).toEqual([])
+		expect(loadAgentsProfiles({})).toEqual([])
+		expect(loadAgentsProfiles({ agentsProfiles: "nope" })).toEqual([])
+		expect(loadAgentsProfiles({ agentsProfiles: { profiles: [null, 3, { name: "x" }, { name: "ok", provider: "p", model: "m" }] } })).toEqual([
+			{ name: "ok", provider: "p", model: "m" },
+		])
+	})
+
+	test("upsert / remove / find / patch round-trip", () => {
+		const a: AgentsProfile = { name: "work", provider: "p", model: "m" }
+		const b: AgentsProfile = { name: "home", provider: "p2", model: "m2", reasoningEffort: "low" }
+		const roster = upsertAgentsProfile(upsertAgentsProfile([], a), b)
+		expect(roster.map((p) => p.name)).toEqual(["work", "home"])
+		expect(findAgentsProfile(roster, "home")).toEqual(b)
+		expect(upsertAgentsProfile(roster, { ...a, model: "m3" }).map((p) => p.model)).toEqual(["m3", "m2"])
+		expect(removeAgentsProfile(roster, "work")).toEqual([b])
+		expect(agentsProfilesPatch(roster)).toEqual({
+			agentsProfiles: { version: 1, profiles: roster },
+		})
+	})
+
+	test("validateAgentsName enforces transcript-safe slugs", () => {
+		expect(validateAgentsName("work")).toBeUndefined()
+		expect(validateAgentsName("a-b_9")).toBeUndefined()
+		expect(validateAgentsName("")).toBeDefined()
+		expect(validateAgentsName("bad name!")).toBeDefined()
+		expect(validateAgentsName("x".repeat(33))).toBeDefined()
+	})
+
+	test("roster rows mark the current route and degrade to the empty row", () => {
+		const profiles: AgentsProfile[] = [{ name: "work", provider: "bigmodel", model: "glm-5.3-flash", reasoningEffort: "high" }]
+		expect(agentsRosterRows([], { providerID: "p", modelID: "m" })).toEqual([
+			"no saved model profiles (/agents save <name> archives the current model)",
+		])
+		expect(agentsRosterRows(profiles, { providerID: "bigmodel", modelID: "glm-5.3-flash" })).toEqual([
+			"● work — bigmodel/glm-5.3-flash (high)",
+		])
+		expect(agentsRosterRows(profiles, { providerID: "deepseek", modelID: "v3.2" })).toEqual([
+			"○ work — bigmodel/glm-5.3-flash (high)",
+		])
 	})
 })
