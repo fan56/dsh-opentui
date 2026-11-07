@@ -3820,6 +3820,13 @@ function steerSubagent(id, text) {
 function subagentSteerWired() {
   return steerImpl !== undefined;
 }
+var steerFeedbackImpl;
+function registerSubagentSteerFeedback(fn) {
+  steerFeedbackImpl = fn;
+}
+function printSteerFeedback(line) {
+  steerFeedbackImpl?.(line);
+}
 
 // src/host-session-seam-adapter.ts
 class HostSessionSeam {
@@ -23586,7 +23593,6 @@ var ROW_CAP = 5;
 function SubagentsPicker(props) {
   const theme = useThemeOptional();
   const dialog = useDialog();
-  const toast = useToast();
   const [open, setOpen] = createSignal10(false);
   const [showAll, setShowAll] = createSignal10(false);
   const [store, setStore] = createStore6({
@@ -23624,15 +23630,9 @@ function SubagentsPicker(props) {
         const sent = steerSubagent(entry.id, text);
         dialog.clear();
         if (sent) {
-          toast.show({
-            message: `steered ${agent.toLowerCase()}`,
-            variant: "success"
-          });
+          printSteerFeedback(`steered ${agent.toLowerCase()}`);
         } else {
-          toast.show({
-            message: `steer rejected — ${agent} is not running`,
-            variant: "error"
-          });
+          printSteerFeedback(`steer rejected — ${agent} is not running`);
         }
       },
       onCancel: () => dialog.clear()
@@ -27406,19 +27406,21 @@ function V2SessionPage(props) {
     controller: btw,
     dialog
   });
+  const sayLine = (text) => projection.apply({
+    type: "message.part.updated",
+    details: {
+      messageID: "cmd",
+      part: {
+        type: "text",
+        id: `cmd-${++cmdOrdinal}`,
+        text
+      }
+    }
+  });
+  registerSubagentSteerFeedback(sayLine);
   const slash = createSlashHost({
     seam,
-    say: (text) => projection.apply({
-      type: "message.part.updated",
-      details: {
-        messageID: "cmd",
-        part: {
-          type: "text",
-          id: `cmd-${++cmdOrdinal}`,
-          text
-        }
-      }
-    }),
+    say: sayLine,
     clear: () => projection.hydrate([]),
     reload: () => {
       const settled = projection.load();

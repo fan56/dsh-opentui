@@ -275,8 +275,12 @@ send Enter
 #   composer) with NO "steered <agent>" echo AND no delivery — the mock LLM
 #   never sees steer-marker=E2E_STEER_70 in the child's request stream (60s
 #   window; the child keeps looping throughout).
-# The success echo also uses the decorated display name ("steered [Fg]
-# Looper"), so the matcher is deliberately loose.
+# C12 UPDATE: with the 9be0e6e rebuild both legs work — the steer-marker IS
+# logged (delivery OK) and the echo prints as a D9 transcript row, but the
+# row text is `steered ${agent.toLowerCase()}` (composer/subagents-tab.tsx
+# :133 — lowercase agent id, NOT the decorated display name), so the old
+# case-sensitive `steered .*Looper` never matched. Matcher loosened to a
+# case-insensitive agent word.
 # Two candidate product breaks, both in the rebuilt dist-host (recipe):
 #   1. packages/tui-base/src/ui/dialog-prompt.tsx — Enter never reaches
 #      confirm()/onConfirm (the modal keymap at :85 binds only escape; submit
@@ -293,7 +297,7 @@ send Enter
 #      is unverifiable from the harness alone.
 # Either way the steer text never reaches the child: these assertions stay
 # red until the submit→steerChild→delivery chain is fixed product-side.
-if wait_pane 'success echo "steered looper" appears' 10 'steered .*Looper'; then
+if wait_pane 'success echo "steered looper" appears' 10 'steered .*[Ll]ooper'; then
   :
 else
   bad 'no "steered looper" echo after submitting the steer; pane tail:'
