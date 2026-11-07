@@ -45,6 +45,7 @@ import { registerTurnOverlays, TurnOverlayHost } from "../../tui-base/src/routes
 import { createSlashHost, SlashPalette } from "../../tui-base/src/routes/session/slash-palette"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../../tui-base/src/routes/session/btw-overlay"
 import { DialogSelect } from "../../tui-base/src/ui/dialog-select"
+import { DialogPrompt } from "../../tui-base/src/ui/dialog-prompt"
 import { DialogProvider, useDialog } from "../../tui-base/src/ui/dialog"
 import { ToastProvider } from "../../tui-base/src/ui/toast"
 import { ClipboardProvider } from "../../tui-base/src/context/clipboard"
@@ -200,7 +201,35 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
         () => done(undefined),
       )
     })
-  // /btw side-question overlay (feature batch F3): out-of-band answer over
+  // /btw side-question overlay (feature batch F3)
+  // /login chained-form text prompt (batch H4): the DialogPrompt modal
+  // through the same dialog host as pickOne — Enter commits, esc resolves
+  // undefined (the chain aborts). The subagents-picker steer precedent.
+  const promptText = (
+    title: string,
+    opts?: { placeholder?: string; mask?: boolean; initial?: string },
+  ) =>
+    new Promise<string | undefined>((resolvePrompt) => {
+      let settled = false
+      const done = (value: string | undefined) => {
+        if (settled) return
+        settled = true
+        dialog.clear()
+        resolvePrompt(value)
+      }
+      dialog.replace(
+        () =>
+          createComponent(DialogPrompt, {
+            title,
+            placeholder: opts?.placeholder,
+            value: opts?.initial,
+            onConfirm: (value: string) => done(value),
+            onCancel: () => done(undefined),
+          }),
+        () => done(undefined),
+      )
+    })
+: out-of-band answer over
   // the facade's throwaway session; never touches the main turn.
   const btw = new BtwController({
     ask: (question, snapshot, onDelta) =>
@@ -230,6 +259,7 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
     },
     quit: props.quit,
     pickOne,
+    promptText,
     openBtw: (argText: string) => void openBtw(argText),
     // Batch H3: /search (cross-session FTS overlay) + /plugins (the manager
     // panel — table + state column + `/` filter).

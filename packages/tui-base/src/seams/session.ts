@@ -333,6 +333,29 @@ export interface SessionSeam {
 		select(presetId: string): Promise<boolean>
 	}
 	/**
+	 * /login provider face (batch H4, tui-pi 65-ux-batch parity): the
+	 * credential + route double-write behind the six-step custom-provider
+	 * form. `login`/`logout` ride the session credentials seam
+	 * (credentials/set|unset — the key half); `routes`/`registerRoute` ride
+	 * the settings seam's llm-pi-ai namespace (the route half — the
+	 * registered provider shows up in /model on the next session).
+	 * Optional — a seam without it degrades /login to a notice.
+	 */
+	login?: {
+		credentialStatus(ref: string): Promise<{ configured: boolean }>
+		/** Store one API key under its derived env-ref (credentials/set). */
+		login(ref: string, apiKey: string): Promise<void>
+		/** Remove one stored key (credentials/unset). */
+		logout(ref: string): Promise<void>
+		/** The configured provider route ids (settings llm-pi-ai providers keys). */
+		routes(): Promise<string[]>
+		/**
+		 * Register (profile) or clear (undefined) one provider route in the
+		 * llm-pi-ai settings namespace; false when the backend rejected it.
+		 */
+		registerRoute(providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean>
+	}
+	/**
 	 * Subagent marker face (batch F6): the live subagent rows snapshot, and
 	 * a push listener that fires on every fold (adoption, round, marker,
 	 * settle). The listener receives the FULL snapshot each time; the

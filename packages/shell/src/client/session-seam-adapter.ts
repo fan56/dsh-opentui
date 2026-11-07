@@ -370,6 +370,41 @@ export class RemoteSessionSeam implements SessionSeam {
 		},
 	}
 
+	// ---- /login provider face (batch H4, tui-pi 65-ux-batch parity) ----
+	// The credentials half (credentialStatus/login/logout) is RemoteHostSession
+	// 1:1 (credentials/set|unset — audit row 24); the route half rides the
+	// settings seam's llm-pi-ai namespace with the old-stack writeRoute
+	// semantics (describe → revision → mutate). Route failure keeps the key
+	// unstored — commitLoginRoute checks registerRoute's boolean first.
+	login = {
+		credentialStatus: (ref: string) => this.#session.credentialStatus(ref),
+		login: (ref: string, apiKey: string) => this.#session.login(ref, apiKey),
+		logout: (ref: string) => this.#session.logout(ref),
+		routes: async (): Promise<string[]> => {
+			try {
+				const rows = await this.#session.settingsSeam.describe()
+				const ns = Array.isArray(rows) ? rows.find((row: any) => row?.ns === "llm-pi-ai") : undefined
+				return Object.keys((ns?.value as any)?.providers ?? {})
+			} catch {
+				return []
+			}
+		},
+		registerRoute: async (providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean> => {
+			try {
+				const rows = await this.#session.settingsSeam.describe()
+				const ns = Array.isArray(rows) ? rows.find((row: any) => row?.ns === "llm-pi-ai") : undefined
+				const ops = profile
+					? [{ op: "set", path: ["providers", providerId], value: profile }]
+					: [{ op: "unset", path: ["providers", providerId] }]
+				await this.#session.settingsSeam.mutate("llm-pi-ai", ops, ns?.revision)
+				return true
+			} catch (error) {
+				console.error("[session-seam-adapter] login route registration failed:", error)
+				return false
+			}
+		},
+	}
+
 	// ---- subagent marker face (batch F6): RemoteHostSession 1:1 ----
 	subagentViews(): SeamSubagentView[] {
 		return this.#session.subagentViews().map((v) => ({
