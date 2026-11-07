@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-11-08
+
+### Fixed
+
+- **`/search` and `/plugins` client entries wired** — the batch-H3 slash deps (openSearch/openPlugins) and their overlay mounts existed only in `host-entry-v2.tsx`; the client entry (`packages/tui-base/examples/v2-entry.tsx`) now wires `openSessionsSearch`/`openPluginsPanel` deps on `createSlashHost` and mounts `SessionsSearch`/`PluginsPanel` in the root children.
+- **Slash palette prefix shadowing on Enter** — a fully typed `/session` ran the longer `/sessions` prefix row and opened the Resume picker; `interceptSubmit` now resolves an exact-name match first, so highlighted-prefix rows no longer shadow the typed command.
+- **Plugins panel cache + double solid instance on boot warm** — the plugins panel no longer rebuilds its cache per open, and the boot-warm path no longer spawns a second solid instance.
+
 ## [Unreleased]
 
 ### Changed
