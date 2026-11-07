@@ -227,8 +227,19 @@ export function createSlashHost(deps: {
 		},
 		interceptSubmit(buffer: string): boolean {
 			controller.sync(buffer, commands)
-			const highlighted = controller.current(commands)
 			controller.close()
+			// Exact-name precedence (parity with dispatchLine's rule): a buffer
+			// that IS a command's full name runs THAT command, regardless of the
+			// palette highlight — otherwise typing "/session" and hitting enter
+			// executes the highlighted "/sessions" (the longer prefix row sorts
+			// ahead in the table) and opens the Resume picker instead of the
+			// info panel. Abbreviations ("/m") still resolve through the
+			// highlight below; a closed menu (arguments present) re-parses
+			// through dispatch.
+			const needle = buffer.trim().toLowerCase()
+			const exact = commands.find((command) => command.name.toLowerCase() === needle)
+			if (exact) return run(exact, "")
+			const highlighted = controller.current(commands)
 			// A visible menu is always a pure slash prefix (a space closes it),
 			// so the highlighted entry IS the line's command — "/m" + enter runs
 			// /model, not "unknown /m". A closed menu means the line carries

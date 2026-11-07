@@ -85,7 +85,14 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 
 	// Rows come from the seam plugins face (F7a): a sync read — the adapters
 	// keep it cached. A seam without the face renders the empty copy.
+	// Re-read on every OPEN transition (the `open()` read below): the client
+	// adapter's cache warms ASYNC after boot (the pluginManager/listPlugins
+	// boot warm), so a boot-time eager evaluation sees 0 rows — and the
+	// adapter's revision signal lives in shell's solid-js, a DIFFERENT module
+	// instance than this package's solid-js, so its bump cannot invalidate
+	// this memo. Tracking open() makes every panel open re-read the cache.
 	const rows = createMemo<PluginRow[]>(() => {
+		void open()
 		try {
 			return props.seam.plugins?.() ?? []
 		} catch {

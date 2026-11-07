@@ -42,6 +42,8 @@ import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
+import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
+import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
 import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
@@ -226,6 +228,14 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 		pickOne,
 		promptText,
 		openBtw: (argText: string) => void openBtw(argText),
+		// Batch H3 client-face parity (host-entry-v2 was the only wired pair —
+		// this entry missed the deps, so /search answered "unavailable in this
+		// session" while the status bar advertised Ctrl+Shift+F): /search
+		// (cross-session FTS overlay) + /plugins (the manager panel — table +
+		// state column + `/` filter). Both open through module-signal bridges
+		// onto the overlays mounted in the root children below.
+		openSearch: () => openSessionsSearch(),
+		openPlugins: () => openPluginsPanel(),
 		// /theme switch surface (batch F7b — client-face parity with
 		// host-entry-v2): live apply + persistence through the seam's
 		// configSave (RemoteHostSession.configSave routes `theme` to the
@@ -270,6 +280,28 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 					projection,
 					get scroll() {
 						return transcriptScroll
+					},
+					onClosed: () => {
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
+				}),
+				// Cross-session FTS search (batch H3, host-entry-v2 parity):
+				// /search and ctrl+shift+f open the query overlay over the seam's
+				// searchSessions face. Getter-prop law: the seam rides a getter.
+				createComponent(SessionsSearch, {
+					get seam() {
+						return seam
+					},
+					onClosed: () => {
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
+				}),
+				// Plugins manager panel (batch H3 client-face parity): /plugins
+				// opens the bundle table with the state column and the `/` filter.
+				// Getter-prop law: the seam rides a getter.
+				createComponent(PluginsPanel, {
+					get seam() {
+						return seam
 					},
 					onClosed: () => {
 						if (composerRef && !composerRef.focused()) composerRef.focus()

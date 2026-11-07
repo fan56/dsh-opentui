@@ -448,6 +448,12 @@ export class RemoteHostSession {
 		void this.#applyColdBootLabel()
 		void this.#refreshWorkspaceOverlay()
 		void this.#probeExecutionMode()
+		// Warm the /plugins sync cache (listPlugins was push-refreshed ONLY —
+		// without a boot warm the client-face /plugins panel read an empty
+		// cache and rendered the "no plugins installed" fallback). Skipped
+		// when a push already populated the cache (no redundant RPC).
+		// Contained: an RPC miss keeps the previous (empty) cache.
+		if (this.#pluginsCache.length === 0) void this.refreshPlugins().catch(() => {})
 		return info
 	}
 
@@ -1180,6 +1186,7 @@ export class RemoteHostSession {
 
 	async refreshPlugins(): Promise<{ name: string; version: string }[]> {
 		try {
+			const before = this.#pluginsCache.length
 			const [plugins, bundles] = await Promise.all([
 				this.#rpc("pluginManager/listPlugins") as Promise<unknown>,
 				this.#rpc("pluginManager/listBundles").catch(() => undefined) as Promise<unknown>,
@@ -1187,7 +1194,10 @@ export class RemoteHostSession {
 			const versions = new Map<string, string>()
 			if (Array.isArray(bundles)) {
 				for (const b of bundles as Record<string, unknown>[]) {
-					const moduleName = typeof b?.moduleName === "string" ? b.moduleName : ""
+					// listBundles rows identify the bundle by `name` (moduleName is
+					// absent — the pre-fix key never matched, leaving versions "") —
+					// index under BOTH spellings for the listPlugins join.
+					const moduleName = typeof b?.moduleName === "string" ? b.moduleName : typeof b?.name === "string" ? b.name : ""
 					const version = typeof b?.version === "string" ? b.version : ""
 					if (moduleName && version) versions.set(moduleName, version)
 				}
@@ -1203,6 +1213,18 @@ export class RemoteHostSession {
 				// user-installed rows only — dsh built-ins excluded (HostSession parity)
 				.filter((p) => p.name && !p.moduleName.startsWith("@deepseek-ai/"))
 				.map(({ name, version }) => ({ name, version }))
+			// Notify subscribers (the seam adapter's reactive /plugins face) so a
+			// late-arriving boot warm or push refresh repaints the panel — the
+			// sync listPlugins() read is otherwise a stale-cache trap.
+			if (this.#pluginsCache.length !== before || before === 0) {
+				for (const listener of this.#pushListeners) {
+					try {
+						listener.onPluginsChanged?.()
+					} catch {
+						/* contained */
+					}
+				}
+			}
 		} catch {
 			/* keep the previous cache */
 		}

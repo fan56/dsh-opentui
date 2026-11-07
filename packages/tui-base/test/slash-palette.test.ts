@@ -78,15 +78,16 @@ describe("SlashPaletteController", () => {
 })
 
 describe("createSlashHost", () => {
-	function makeHost() {
+	function makeHost(commands?: SlashCommand[]) {
 		const lines: string[] = []
 		const hooks = { cleared: 0, reloaded: 0, quit: 0, ran: [] as string[] }
 		const host = createSlashHost({
 			seam: new Proxy({} as any, {}),
-			commands: [
-				{ name: "/help", description: "d1", run: () => hooks.ran.push("/help") },
-				{ name: "/new", description: "d2", run: () => hooks.ran.push("/new") },
-			],
+			commands:
+				commands ?? [
+					{ name: "/help", description: "d1", run: () => hooks.ran.push("/help") },
+					{ name: "/new", description: "d2", run: () => hooks.ran.push("/new") },
+				],
 			say: (text) => lines.push(text),
 			clear: () => hooks.cleared++,
 			reload: () => hooks.reloaded++,
@@ -135,6 +136,25 @@ describe("createSlashHost", () => {
 		const { host, hooks } = makeHost()
 		expect(host.interceptSubmit("/new")).toBe(true)
 		expect(hooks.ran).toEqual(["/new"])
+	})
+
+	test("interceptSubmit: an exact typed name beats the highlighted prefix row", () => {
+		// "/session" typed in full must run /session even though the longer
+		// "/sessions" prefix row is highlighted in the palette (the exact-match
+		// precedence dispatchLine already applies — parity here, or Enter opens
+		// the Resume picker instead of the info panel).
+		const ran: string[] = []
+		const commands: SlashCommand[] = [
+			{ name: "/help", description: "d1", run: () => ran.push("/help") },
+			{ name: "/sessions", description: "d2", run: () => ran.push("/sessions") },
+			{ name: "/session", description: "d3", run: () => ran.push("/session") },
+		]
+		const { host } = makeHost(commands)
+		host.slashKeyFilter(key("s"), "/session")
+		// the highlight IS the shadowing row (table order puts /sessions first)
+		expect(host.controller.current(commands)?.name).toBe("/sessions")
+		expect(host.interceptSubmit("/session")).toBe(true)
+		expect(ran).toEqual(["/session"])
 	})
 
 	test("unknown /xxx resolves as the harmless error row, never a send", () => {

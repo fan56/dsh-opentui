@@ -106,6 +106,7 @@ import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { turnEndErrorMessage } from "./remote-follow.ts"
 import { RemoteHostSession } from "./remote-host-session.ts"
 import { foldSubagentMarkerViews, registerSubagentSteer } from "../../../tui-base/src/routes/session/subagent-markers.ts"
+import { createSignal } from "solid-js"
 
 export class RemoteSessionSeam implements SessionSeam {
 	readonly #session: RemoteHostSession
@@ -114,12 +115,23 @@ export class RemoteSessionSeam implements SessionSeam {
 	#turnInFlight = false
 	/** Journal hook disposer (set lazily; the facade registers one sink). */
 	#unjournal: (() => void) | undefined
+	/** /plugins cache revision — the reactive face reads through this signal
+	 * so a boot warm or push refresh repaints the panel (the underlying
+	 * listPlugins() is a sync cached read that alone never retriggers). */
+	readonly #pluginsRevision = createSignal(0)
+	#unplugins: (() => void) | undefined
 
 	constructor(session: RemoteHostSession) {
 		this.#session = session
 		// Steer slot (batch G2): the vendored picker calls through the module
 		// bridge; this face's facade steerChild serves it over the steer RPC.
 		registerSubagentSteer((id, text) => this.#session.steerChild(id, text))
+		// /plugins reactivity (client-face panel): the facade notifies after
+		// every refreshPlugins() that lands (boot warm + plugin-manager/changed
+		// push); the panel's memo re-reads the sync cache on each bump.
+		// Optional-chained: test stubs may not carry the push-listener face.
+		this.#unplugins =
+			session.onPluginsChanged?.(() => this.#pluginsRevision[1]((n) => n + 1)) ?? undefined
 	}
 
 	status(): SeamStatus {
@@ -345,8 +357,11 @@ export class RemoteSessionSeam implements SessionSeam {
 	 * /plugins listing (batch F7a): RemoteHostSession.listPlugins() 1:1 —
 	 * the sync cached rows (pluginManager/listPlugins, refreshed async;
 	 * @deepseek-ai/* built-ins excluded upstream, HostSession parity).
+	 * Reads through #pluginsRevision so the panel's memo tracks cache
+	 * refreshes (boot warm + plugin-manager/changed push).
 	 */
 	plugins(): { name: string; version: string }[] {
+		this.#pluginsRevision[0]()
 		return this.#session.listPlugins()
 	}
 
@@ -457,6 +472,8 @@ export class RemoteSessionSeam implements SessionSeam {
 	async dispose(): Promise<void> {
 		this.#unjournal?.()
 		this.#unjournal = undefined
+		this.#unplugins?.()
+		this.#unplugins = undefined
 		this.#listeners.length = 0
 		await this.#session.dispose()
 	}
