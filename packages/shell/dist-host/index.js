@@ -810,7 +810,7 @@ var require_fuzzysort = __commonJS(function(exports, module) {
 
 // src/host-entry-v2.tsx
 import { spawn } from "node:child_process";
-import { createSignal as createSignal18, onCleanup as onCleanup16, onMount as onMount6, ErrorBoundary } from "solid-js";
+import { createSignal as createSignal19, onCleanup as onCleanup16, onMount as onMount6, ErrorBoundary } from "solid-js";
 import { createComponent as createComponent2, createElement, render, spread } from "@opentui/solid";
 
 // ../runtime/src/engine.ts
@@ -3880,6 +3880,19 @@ class HostSessionSeam {
   plugins() {
     return this.#session.listPlugins();
   }
+  preset = {
+    list: () => this.#session.listPresets(),
+    currentId: async () => this.#session.currentPresetId(),
+    select: async (presetId) => {
+      try {
+        this.#session.switchPreset(presetId);
+        return true;
+      } catch (error) {
+        console.error("[host-session-seam-adapter] preset switch failed:", error);
+        return false;
+      }
+    }
+  };
   async sessionInfo() {
     const base = this.#session.sessionInfo();
     if (base.sessionId === undefined)
@@ -10501,6 +10514,7 @@ var Definitions = {
   "session.toggle.scrollbar": keybind("none", "Toggle session scrollbar"),
   "opencode.status": keybind("<leader>s", "View status"),
   "opencode.debug": keybind("none", "View debug info"),
+  "session.search": keybind("ctrl+shift+f", "Search the session transcript"),
   "session.export": keybind("<leader>x", "Export session to editor"),
   "session.copy": keybind("none", "Copy session transcript"),
   "session.copy.id": keybind("none", "Copy session ID"),
@@ -24280,6 +24294,177 @@ function Transcript(props) {
   })();
 }
 
+// ../tui-base/src/routes/session/search-overlay.tsx
+import { insertNode as _$insertNode8 } from "@opentui/solid";
+import { createComponent as _$createComponent15 } from "@opentui/solid";
+import { effect as _$effect9 } from "@opentui/solid";
+import { insert as _$insert8 } from "@opentui/solid";
+import { use as _$use4 } from "@opentui/solid";
+import { setProp as _$setProp9 } from "@opentui/solid";
+import { createElement as _$createElement10 } from "@opentui/solid";
+import { createEffect as createEffect6, createMemo as createMemo6, createSignal as createSignal12, Show as Show9 } from "solid-js";
+function rowSearchText(row) {
+  switch (row.kind) {
+    case "user":
+    case "assistant":
+    case "reasoning":
+      return row.text;
+    case "tool":
+      return `${row.name}${row.args ? `(${row.args})` : ""}${row.output ? ` ${row.output}` : ""}`;
+  }
+}
+function findMatchRowIndices(rows, query) {
+  const needle = query.trim().toLowerCase();
+  if (!needle)
+    return [];
+  const hits = [];
+  for (let i = 0;i < rows.length; i++) {
+    if (rowSearchText(rows[i]).toLowerCase().includes(needle))
+      hits.push(i);
+  }
+  return hits;
+}
+function formatMatchStatus(query, matchCount, matchIndex) {
+  if (!query.trim())
+    return "";
+  if (matchCount === 0)
+    return "No matches";
+  const current = (matchIndex % matchCount + matchCount) % matchCount;
+  return `${current + 1}/${matchCount}`;
+}
+var MATCH_ROW_ID_PREFIX = "seam-row-";
+function SearchOverlay(props) {
+  const theme = useThemeOptional();
+  const dialog = useDialog();
+  const [open, setOpen] = createSignal12(false);
+  const [query, setQuery] = createSignal12("");
+  const [index, setIndex] = createSignal12(0);
+  const [inputTarget, setInputTarget] = createSignal12();
+  let input;
+  const matches = createMemo6(() => findMatchRowIndices(props.projection.rows, query()));
+  const count = createMemo6(() => matches().length);
+  const status = createMemo6(() => formatMatchStatus(query(), count(), index()));
+  createEffect6(() => {
+    if (!open())
+      return;
+    query();
+    setIndex(0);
+  });
+  createEffect6(() => {
+    if (!open())
+      return;
+    const rowIndex = matches()[index()];
+    if (rowIndex === undefined)
+      return;
+    const scroll = props.scroll;
+    if (!scroll)
+      return;
+    const row = props.projection.rows[rowIndex];
+    if (!row)
+      return;
+    scroll.stickyScroll = false;
+    scroll.scrollChildIntoView(`${MATCH_ROW_ID_PREFIX}${row.key}`, {
+      align: "start"
+    });
+  });
+  function openBar() {
+    setQuery("");
+    setIndex(0);
+    setOpen(true);
+  }
+  function close() {
+    setOpen(false);
+    setInputTarget(undefined);
+    setTimeout(() => props.onClosed?.(), 3);
+  }
+  function move(delta) {
+    const total = count();
+    if (total === 0)
+      return;
+    setIndex((previous) => ((previous + delta) % total + total) % total);
+  }
+  Keymap.createLayer(() => ({
+    mode: "global",
+    enabled: open() && dialog.stack.length === 0,
+    priority: 2,
+    commands: [{
+      bind: "escape",
+      title: "Close transcript search",
+      group: "Search",
+      run: close
+    }, {
+      bind: "return",
+      title: "Next match",
+      group: "Search",
+      run: () => move(1)
+    }, {
+      bind: "shift+return",
+      title: "Previous match",
+      group: "Search",
+      run: () => move(-1)
+    }]
+  }));
+  Keymap.createLayer(() => ({
+    mode: "global",
+    enabled: !open() && dialog.stack.length === 0,
+    commands: [{
+      id: "session.search",
+      title: "Search transcript",
+      group: "Session",
+      run: openBar
+    }]
+  }));
+  return _$createComponent15(Show9, {
+    get when() {
+      return open();
+    },
+    get children() {
+      var _el$ = _$createElement10("box"), _el$2 = _$createElement10("input");
+      _$insertNode8(_el$, _el$2);
+      _$setProp9(_el$, "flexShrink", 0);
+      _$setProp9(_el$, "width", "100%");
+      _$setProp9(_el$, "height", 1);
+      _$setProp9(_el$, "flexDirection", "row");
+      _$setProp9(_el$, "paddingLeft", 1);
+      _$setProp9(_el$, "paddingRight", 1);
+      _$use4((renderable) => {
+        input = renderable;
+        setInputTarget(renderable);
+        setTimeout(() => {
+          if (!input || input.isDestroyed)
+            return;
+          input.focus();
+        }, 1);
+      }, _el$2);
+      _$setProp9(_el$2, "flexGrow", 1);
+      _$setProp9(_el$2, "placeholder", "Find in transcript");
+      _$setProp9(_el$2, "onInput", (value) => setQuery(value));
+      _$insert8(_el$, _$createComponent15(Show9, {
+        get when() {
+          return status();
+        },
+        get children() {
+          var _el$3 = _$createElement10("text");
+          _$setProp9(_el$3, "wrapMode", "none");
+          _$insert8(_el$3, () => ` ${status()}`);
+          _$effect9((_$p) => _$setProp9(_el$3, "fg", theme?.text.muted ?? "#565f89", _$p));
+          return _el$3;
+        }
+      }), null);
+      _$effect9((_p$) => {
+        var _v$ = theme?.background.raised.base ?? "#1a1b26", _v$2 = theme?.text.muted ?? "#565f89";
+        _v$ !== _p$.e && (_p$.e = _$setProp9(_el$, "backgroundColor", _v$, _p$.e));
+        _v$2 !== _p$.t && (_p$.t = _$setProp9(_el$2, "placeholderColor", _v$2, _p$.t));
+        return _p$;
+      }, {
+        e: undefined,
+        t: undefined
+      });
+      return _el$;
+    }
+  });
+}
+
 // ../tui-base/src/routes/session/turn-overlay-controller.ts
 class TurnOverlayController {
   #approvals = [];
@@ -24440,16 +24625,16 @@ class TurnOverlayController {
 
 // ../tui-base/src/routes/session/turn-overlays.tsx
 import { memo as _$memo8 } from "@opentui/solid";
-import { createComponent as _$createComponent17 } from "@opentui/solid";
-import { createEffect as createEffect7, createSignal as createSignal13, onCleanup as onCleanup13, onMount as onMount5, untrack, Show as Show10 } from "solid-js";
+import { createComponent as _$createComponent18 } from "@opentui/solid";
+import { createEffect as createEffect8, createSignal as createSignal14, onCleanup as onCleanup13, onMount as onMount5, untrack, Show as Show11 } from "solid-js";
 
 // ../tui-base/src/ui/dialog-confirm.tsx
-import { insertNode as _$insertNode8 } from "@opentui/solid";
-import { createComponent as _$createComponent15 } from "@opentui/solid";
-import { setProp as _$setProp9 } from "@opentui/solid";
-import { effect as _$effect9 } from "@opentui/solid";
-import { insert as _$insert8 } from "@opentui/solid";
-import { createElement as _$createElement10 } from "@opentui/solid";
+import { insertNode as _$insertNode9 } from "@opentui/solid";
+import { createComponent as _$createComponent16 } from "@opentui/solid";
+import { setProp as _$setProp10 } from "@opentui/solid";
+import { effect as _$effect10 } from "@opentui/solid";
+import { insert as _$insert9 } from "@opentui/solid";
+import { createElement as _$createElement11 } from "@opentui/solid";
 import { createStore as createStore8 } from "solid-js/store";
 import { For as For4 } from "solid-js";
 function DialogConfirm(props) {
@@ -24499,9 +24684,9 @@ function DialogConfirm(props) {
       }
     }]
   }));
-  return _$createComponent15(DialogLayout, {
+  return _$createComponent16(DialogLayout, {
     get header() {
-      return _$createComponent15(DialogHeader, {
+      return _$createComponent16(DialogHeader, {
         get title() {
           return props.title;
         }
@@ -24527,22 +24712,22 @@ function DialogConfirm(props) {
     },
     get legacyFooter() {
       return (() => {
-        var _el$2 = _$createElement10("box");
-        _$setProp9(_el$2, "flexDirection", "row");
-        _$setProp9(_el$2, "justifyContent", "flex-end");
-        _$insert8(_el$2, _$createComponent15(For4, {
+        var _el$2 = _$createElement11("box");
+        _$setProp10(_el$2, "flexDirection", "row");
+        _$setProp10(_el$2, "justifyContent", "flex-end");
+        _$insert9(_el$2, _$createComponent16(For4, {
           each: ["cancel", "confirm"],
           children: (key) => (() => {
-            var _el$3 = _$createElement10("box"), _el$4 = _$createElement10("text");
-            _$insertNode8(_el$3, _el$4);
-            _$setProp9(_el$3, "paddingLeft", 1);
-            _$setProp9(_el$3, "paddingRight", 1);
-            _$setProp9(_el$3, "onMouseUp", () => choose(key));
-            _$insert8(_el$4, () => titlecase(props.label?.[key] ?? key));
-            _$effect9((_p$) => {
+            var _el$3 = _$createElement11("box"), _el$4 = _$createElement11("text");
+            _$insertNode9(_el$3, _el$4);
+            _$setProp10(_el$3, "paddingLeft", 1);
+            _$setProp10(_el$3, "paddingRight", 1);
+            _$setProp10(_el$3, "onMouseUp", () => choose(key));
+            _$insert9(_el$4, () => titlecase(props.label?.[key] ?? key));
+            _$effect10((_p$) => {
               var _v$ = key === store.active ? theme.background.action.primary.focused : undefined, _v$2 = key === store.active ? theme.text.action.primary.focused : theme.text.muted;
-              _v$ !== _p$.e && (_p$.e = _$setProp9(_el$3, "backgroundColor", _v$, _p$.e));
-              _v$2 !== _p$.t && (_p$.t = _$setProp9(_el$4, "fg", _v$2, _p$.t));
+              _v$ !== _p$.e && (_p$.e = _$setProp10(_el$3, "backgroundColor", _v$, _p$.e));
+              _v$2 !== _p$.t && (_p$.t = _$setProp10(_el$4, "fg", _v$2, _p$.t));
               return _p$;
             }, {
               e: undefined,
@@ -24555,9 +24740,9 @@ function DialogConfirm(props) {
       })();
     },
     get children() {
-      var _el$ = _$createElement10("text");
-      _$insert8(_el$, () => props.message);
-      _$effect9((_$p) => _$setProp9(_el$, "fg", theme.text.muted, _$p));
+      var _el$ = _$createElement11("text");
+      _$insert9(_el$, () => props.message);
+      _$effect10((_$p) => _$setProp10(_el$, "fg", theme.text.muted, _$p));
       return _el$;
     }
   });
@@ -24566,13 +24751,13 @@ function DialogConfirm(props) {
 // ../tui-base/src/ui/dialog-select.tsx
 import { memo as _$memo7 } from "@opentui/solid";
 import { createTextNode as _$createTextNode6 } from "@opentui/solid";
-import { insertNode as _$insertNode9 } from "@opentui/solid";
-import { insert as _$insert9 } from "@opentui/solid";
-import { createComponent as _$createComponent16 } from "@opentui/solid";
-import { effect as _$effect10 } from "@opentui/solid";
-import { use as _$use4 } from "@opentui/solid";
-import { setProp as _$setProp10 } from "@opentui/solid";
-import { createElement as _$createElement11 } from "@opentui/solid";
+import { insertNode as _$insertNode10 } from "@opentui/solid";
+import { insert as _$insert10 } from "@opentui/solid";
+import { createComponent as _$createComponent17 } from "@opentui/solid";
+import { effect as _$effect11 } from "@opentui/solid";
+import { use as _$use5 } from "@opentui/solid";
+import { setProp as _$setProp11 } from "@opentui/solid";
+import { createElement as _$createElement12 } from "@opentui/solid";
 import { CliRenderEvents as CliRenderEvents2, RGBA as RGBA12, TextAttributes as TextAttributes4 } from "@opentui/core";
 // ../../node_modules/.pnpm/remeda@2.26.0/node_modules/remeda/dist/chunk-D6FCK2GA.js
 function u(o, n, a) {
@@ -24739,7 +24924,7 @@ function B(t) {
 }
 // ../tui-base/src/ui/dialog-select.tsx
 var fuzzysort = __toESM(require_fuzzysort(), 1);
-import { batch as batch3, createEffect as createEffect6, createMemo as createMemo6, createSignal as createSignal12, For as For5, Show as Show9, on, onCleanup as onCleanup12, onMount as onMount4 } from "solid-js";
+import { batch as batch3, createEffect as createEffect7, createMemo as createMemo7, createSignal as createSignal13, For as For5, Show as Show10, on, onCleanup as onCleanup12, onMount as onMount4 } from "solid-js";
 import { createStore as createStore9 } from "solid-js/store";
 import { useRenderer as useRenderer8, useTerminalDimensions as useTerminalDimensions3 } from "@opentui/solid";
 
@@ -24793,7 +24978,7 @@ function DialogSelect(props) {
   const config = useConfig().data;
   const cursorStyle = useCursorStyle();
   const newDesigns = useNewDesigns();
-  const scrollAcceleration = createMemo6(() => getScrollAcceleration(config));
+  const scrollAcceleration = createMemo7(() => getScrollAcceleration(config));
   const renderer = useRenderer8();
   const [store, setStore] = createStore9({
     selected: 0,
@@ -24814,7 +24999,7 @@ function DialogSelect(props) {
     renderer.once(CliRenderEvents2.FRAME, pendingScroll);
     renderer.requestRender();
   }
-  createEffect6(on([() => props.focusTarget ?? props.current, () => props.focusTarget === undefined ? undefined : flat()], ([current]) => {
+  createEffect7(on([() => props.focusTarget ?? props.current, () => props.focusTarget === undefined ? undefined : flat()], ([current]) => {
     if (props.search || props.focusCurrent === false)
       return;
     if (props.focusTarget !== undefined && (props.preserveSelection || store.filter.length > 0))
@@ -24829,10 +25014,10 @@ function DialogSelect(props) {
     }
   }));
   let input;
-  const actions = createMemo6(() => props.actions ?? []);
-  const shownActions = createMemo6(() => actions().filter((item) => !item.hidden));
+  const actions = createMemo7(() => props.actions ?? []);
+  const shownActions = createMemo7(() => actions().filter((item) => !item.hidden));
   const shortcuts = Keymap.useShortcuts();
-  const actionLabels = createMemo6(() => {
+  const actionLabels = createMemo7(() => {
     const labels = new Map;
     for (const action of shownActions()) {
       const label = shortcuts.all(action.command);
@@ -24841,11 +25026,11 @@ function DialogSelect(props) {
     }
     return labels;
   });
-  const visibleActions = createMemo6(() => [...shownActions().map((item) => ({
+  const visibleActions = createMemo7(() => [...shownActions().map((item) => ({
     ...item,
     label: actionLabels().get(item.command) ?? ""
   })).filter((item) => item.label), ...props.footerHints ?? []]);
-  const filtered = createMemo6(() => {
+  const filtered = createMemo7(() => {
     if (props.search)
       return props.search(store.filter).filter((x) => x.disabled !== true);
     if (props.skipFilter || props.renderFilter === false)
@@ -24861,17 +25046,17 @@ function DialogSelect(props) {
     }).map((x) => x.obj);
     return result;
   });
-  const flatten = createMemo6(() => props.search !== undefined || props.flat && store.filter.length > 0);
-  const grouped = createMemo6(() => {
+  const flatten = createMemo7(() => props.search !== undefined || props.flat && store.filter.length > 0);
+  const grouped = createMemo7(() => {
     if (flatten())
       return filtered().length ? [["", filtered()]] : [];
     const result = C(filtered(), i((x) => x.category ?? ""), t());
     return result;
   });
-  const flat = createMemo6(() => {
+  const flat = createMemo7(() => {
     return C(grouped(), u4(([_, options]) => options));
   });
-  const rows = createMemo6(() => {
+  const rows = createMemo7(() => {
     const headers = grouped().reduce((acc, [category], i) => {
       if (!category)
         return acc;
@@ -24880,18 +25065,18 @@ function DialogSelect(props) {
     return flat().reduce((acc, option) => acc + 1 + (option.details?.length ?? 0), headers);
   });
   const dimensions = useTerminalDimensions3();
-  const limit = createMemo6(() => Math.floor(dimensions().height / 2) - 6);
-  const overflows = createMemo6(() => newDesigns() && rows() > limit());
-  const detailsWidth = createMemo6(() => dialogSelectContentWidth(Math.min(dialogWidth(dialog.size), dimensions().width)));
-  const [moreBelow, setMoreBelow] = createSignal12(false);
+  const limit = createMemo7(() => Math.floor(dimensions().height / 2) - 6);
+  const overflows = createMemo7(() => newDesigns() && rows() > limit());
+  const detailsWidth = createMemo7(() => dialogSelectContentWidth(Math.min(dialogWidth(dialog.size), dimensions().width)));
+  const [moreBelow, setMoreBelow] = createSignal13(false);
   const ellipsis = () => overflows() && moreBelow();
-  const height = createMemo6(() => Math.min(rows(), limit()) - (ellipsis() ? 1 : 0));
+  const height = createMemo7(() => Math.min(rows(), limit()) - (ellipsis() ? 1 : 0));
   function updateMoreBelow() {
     if (!scroll || scroll.isDestroyed)
       return;
     setMoreBelow(scroll.scrollTop + scroll.viewport.height < scroll.scrollHeight);
   }
-  const selected = createMemo6(() => flat()[store.selected]);
+  const selected = createMemo7(() => flat()[store.selected]);
   const detailView = () => {
     const detail = selected()?.detail;
     return typeof detail === "function" ? detail : undefined;
@@ -24900,7 +25085,7 @@ function DialogSelect(props) {
     const detail = selected()?.detail;
     return typeof detail === "string" ? detail : undefined;
   };
-  createEffect6(on(() => props.options, () => {
+  createEffect7(on(() => props.options, () => {
     if (props.search)
       return;
     if (!props.preserveSelection && ((props.focusTarget ?? props.current) === undefined || props.focusCurrent === false)) {
@@ -24955,7 +25140,7 @@ function DialogSelect(props) {
     setStore("selected", next);
     selection = flat()[next];
   }));
-  createEffect6(on([flat, () => store.filter, () => props.focusCurrent === false ? undefined : props.focusTarget ?? props.current], ([options, query, current], previous) => {
+  createEffect7(on([flat, () => store.filter, () => props.focusCurrent === false ? undefined : props.focusTarget ?? props.current], ([options, query, current], previous) => {
     if (!props.search)
       return;
     const queryChanged = previous !== undefined && query !== previous[1];
@@ -24988,7 +25173,7 @@ function DialogSelect(props) {
     renderer.off(CliRenderEvents2.FRAME, pendingScroll);
     pendingScroll = undefined;
   });
-  createEffect6(on([() => store.filter, () => props.focusTarget ?? props.current], ([filter, current]) => {
+  createEffect7(on([() => store.filter, () => props.focusTarget ?? props.current], ([filter, current]) => {
     if (props.search)
       return;
     if (filter.length > 0)
@@ -25199,7 +25384,7 @@ function DialogSelect(props) {
     }
   };
   onMount4(() => props.ref?.(ref));
-  const footerActions = createMemo6(() => visibleActions().map((item) => {
+  const footerActions = createMemo7(() => visibleActions().map((item) => {
     if (!isActionItem(item))
       return {
         side: item.side,
@@ -25252,8 +25437,8 @@ function DialogSelect(props) {
     return store.filter.length > 0 ? theme.text.base : theme.background.action.primary.focused;
   };
   const searchInput = () => (() => {
-    var _el$ = _$createElement11("input");
-    _$use4((r) => {
+    var _el$ = _$createElement12("input");
+    _$use5((r) => {
       input = r;
       input.traits = {
         status: "FILTER"
@@ -25266,8 +25451,8 @@ function DialogSelect(props) {
         r.focus();
       }, 1);
     }, _el$);
-    _$setProp10(_el$, "flexGrow", 1);
-    _$setProp10(_el$, "onInput", (e) => {
+    _$setProp11(_el$, "flexGrow", 1);
+    _$setProp11(_el$, "onInput", (e) => {
       if (props.locked)
         return;
       batch3(() => {
@@ -25275,14 +25460,14 @@ function DialogSelect(props) {
         props.onFilter?.(e);
       });
     });
-    _$effect10((_p$) => {
+    _$effect11((_p$) => {
       var _v$ = theme.background.formfield.focused, _v$2 = searchCursorColor(), _v$3 = cursorStyle(), _v$4 = newDesigns() ? theme.text.formfield.base : theme.text.formfield.focused, _v$5 = (searchInTitle() ? props.titlePlaceholder : undefined) ?? props.placeholder ?? "Search", _v$6 = theme.text.muted;
-      _v$ !== _p$.e && (_p$.e = _$setProp10(_el$, "focusedBackgroundColor", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp10(_el$, "cursorColor", _v$2, _p$.t));
-      _v$3 !== _p$.a && (_p$.a = _$setProp10(_el$, "cursorStyle", _v$3, _p$.a));
-      _v$4 !== _p$.o && (_p$.o = _$setProp10(_el$, "focusedTextColor", _v$4, _p$.o));
-      _v$5 !== _p$.i && (_p$.i = _$setProp10(_el$, "placeholder", _v$5, _p$.i));
-      _v$6 !== _p$.n && (_p$.n = _$setProp10(_el$, "placeholderColor", _v$6, _p$.n));
+      _v$ !== _p$.e && (_p$.e = _$setProp11(_el$, "focusedBackgroundColor", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp11(_el$, "cursorColor", _v$2, _p$.t));
+      _v$3 !== _p$.a && (_p$.a = _$setProp11(_el$, "cursorStyle", _v$3, _p$.a));
+      _v$4 !== _p$.o && (_p$.o = _$setProp11(_el$, "focusedTextColor", _v$4, _p$.o));
+      _v$5 !== _p$.i && (_p$.i = _$setProp11(_el$, "placeholder", _v$5, _p$.i));
+      _v$6 !== _p$.n && (_p$.n = _$setProp11(_el$, "placeholderColor", _v$6, _p$.n));
       return _p$;
     }, {
       e: undefined,
@@ -25294,21 +25479,21 @@ function DialogSelect(props) {
     });
     return _el$;
   })();
-  return _$createComponent16(DialogLayout, {
+  return _$createComponent17(DialogLayout, {
     get footerGap() {
       return props.footerGap;
     },
     get header() {
       return (() => {
-        var _el$7 = _$createElement11("box");
-        _$setProp10(_el$7, "paddingLeft", DIALOG_LIST_INSET - DIALOG_INSET);
-        _$setProp10(_el$7, "paddingRight", DIALOG_LIST_INSET - DIALOG_INSET);
-        _$insert9(_el$7, _$createComponent16(Show9, {
+        var _el$7 = _$createElement12("box");
+        _$setProp11(_el$7, "paddingLeft", DIALOG_LIST_INSET - DIALOG_INSET);
+        _$setProp11(_el$7, "paddingRight", DIALOG_LIST_INSET - DIALOG_INSET);
+        _$insert10(_el$7, _$createComponent17(Show10, {
           get when() {
             return searchInTitle();
           },
           get fallback() {
-            return [_$createComponent16(DialogHeader, {
+            return [_$createComponent17(DialogHeader, {
               get title() {
                 return props.title;
               },
@@ -25321,31 +25506,31 @@ function DialogSelect(props) {
               get onClose() {
                 return props.onCancel;
               }
-            }), _$createComponent16(Show9, {
+            }), _$createComponent17(Show10, {
               get when() {
                 return _$memo7(() => !!!newDesigns())() && props.description;
               },
               get children() {
-                var _el$8 = _$createElement11("text");
-                _$setProp10(_el$8, "wrapMode", "word");
-                _$insert9(_el$8, () => props.description);
-                _$effect10((_$p) => _$setProp10(_el$8, "fg", theme.text.muted, _$p));
+                var _el$8 = _$createElement12("text");
+                _$setProp11(_el$8, "wrapMode", "word");
+                _$insert10(_el$8, () => props.description);
+                _$effect11((_$p) => _$setProp11(_el$8, "fg", theme.text.muted, _$p));
                 return _el$8;
               }
-            }), _$createComponent16(Show9, {
+            }), _$createComponent17(Show10, {
               get when() {
                 return props.renderFilter !== false;
               },
               get children() {
-                var _el$9 = _$createElement11("box");
-                _$setProp10(_el$9, "paddingTop", 1);
-                _$insert9(_el$9, searchInput);
+                var _el$9 = _$createElement12("box");
+                _$setProp11(_el$9, "paddingTop", 1);
+                _$insert10(_el$9, searchInput);
                 return _el$9;
               }
             })];
           },
           get children() {
-            return _$createComponent16(DialogHeader, {
+            return _$createComponent17(DialogHeader, {
               get titleView() {
                 return searchInput();
               },
@@ -25372,19 +25557,19 @@ function DialogSelect(props) {
       };
     },
     get legacyFooter() {
-      return _$createComponent16(Show9, {
+      return _$createComponent17(Show10, {
         get when() {
           return props.footer || visibleActions().length;
         },
         get fallback() {
           return (() => {
-            var _el$0 = _$createElement11("box");
-            _$setProp10(_el$0, "flexShrink", 0);
+            var _el$0 = _$createElement12("box");
+            _$setProp11(_el$0, "flexShrink", 0);
             return _el$0;
           })();
         },
         get children() {
-          return _$createComponent16(DialogFooter, {
+          return _$createComponent17(DialogFooter, {
             inset: DIALOG_LIST_INSET - DIALOG_INSET,
             get actions() {
               return {
@@ -25400,36 +25585,36 @@ function DialogSelect(props) {
       });
     },
     get children() {
-      return _$createComponent16(DialogBleed, {
+      return _$createComponent17(DialogBleed, {
         get children() {
-          return _$createComponent16(Show9, {
+          return _$createComponent17(Show10, {
             get when() {
               return grouped().length > 0;
             },
             get fallback() {
-              return _$createComponent16(Show9, {
+              return _$createComponent17(Show10, {
                 get when() {
                   return _$memo7(() => props.renderFilter !== false)() && store.filter.length > 0;
                 },
                 get fallback() {
                   return props.emptyView ?? (() => {
-                    var _el$1 = _$createElement11("box"), _el$10 = _$createElement11("text");
-                    _$insertNode9(_el$1, _el$10);
-                    _$setProp10(_el$1, "paddingLeft", DIALOG_LIST_INSET);
-                    _$setProp10(_el$1, "paddingRight", DIALOG_LIST_INSET);
-                    _$insertNode9(_el$10, _$createTextNode6(`No items available`));
-                    _$effect10((_$p) => _$setProp10(_el$10, "fg", theme.text.muted, _$p));
+                    var _el$1 = _$createElement12("box"), _el$10 = _$createElement12("text");
+                    _$insertNode10(_el$1, _el$10);
+                    _$setProp11(_el$1, "paddingLeft", DIALOG_LIST_INSET);
+                    _$setProp11(_el$1, "paddingRight", DIALOG_LIST_INSET);
+                    _$insertNode10(_el$10, _$createTextNode6(`No items available`));
+                    _$effect11((_$p) => _$setProp11(_el$10, "fg", theme.text.muted, _$p));
                     return _el$1;
                   })();
                 },
                 get children() {
                   return props.noMatchView ?? (() => {
-                    var _el$12 = _$createElement11("box"), _el$13 = _$createElement11("text");
-                    _$insertNode9(_el$12, _el$13);
-                    _$setProp10(_el$12, "paddingLeft", DIALOG_LIST_INSET);
-                    _$setProp10(_el$12, "paddingRight", DIALOG_LIST_INSET);
-                    _$insertNode9(_el$13, _$createTextNode6(`No results found`));
-                    _$effect10((_$p) => _$setProp10(_el$13, "fg", theme.text.muted, _$p));
+                    var _el$12 = _$createElement12("box"), _el$13 = _$createElement12("text");
+                    _$insertNode10(_el$12, _el$13);
+                    _$setProp11(_el$12, "paddingLeft", DIALOG_LIST_INSET);
+                    _$setProp11(_el$12, "paddingRight", DIALOG_LIST_INSET);
+                    _$insertNode10(_el$13, _$createTextNode6(`No results found`));
+                    _$effect11((_$p) => _$setProp11(_el$13, "fg", theme.text.muted, _$p));
                     return _el$12;
                   })();
                 }
@@ -25437,40 +25622,40 @@ function DialogSelect(props) {
             },
             get children() {
               return [(() => {
-                var _el$2 = _$createElement11("scrollbox");
-                _$use4((r) => {
+                var _el$2 = _$createElement12("scrollbox");
+                _$use5((r) => {
                   scroll = r;
                   r.verticalScrollBar.on("change", updateMoreBelow);
                   r.content.on("resize", updateMoreBelow);
                   r.viewport.on("resize", updateMoreBelow);
                 }, _el$2);
-                _$setProp10(_el$2, "scrollbarOptions", {
+                _$setProp11(_el$2, "scrollbarOptions", {
                   visible: false
                 });
-                _$insert9(_el$2, _$createComponent16(For5, {
+                _$insert10(_el$2, _$createComponent17(For5, {
                   get each() {
                     return grouped();
                   },
-                  children: ([category, options], index) => [_$createComponent16(Show9, {
+                  children: ([category, options], index) => [_$createComponent17(Show10, {
                     when: category,
                     get children() {
-                      return _$createComponent16(DialogSelectCategory, {
+                      return _$createComponent17(DialogSelectCategory, {
                         title: category,
                         get first() {
                           return index() === 0;
                         }
                       });
                     }
-                  }), _$createComponent16(For5, {
+                  }), _$createComponent17(For5, {
                     each: options,
                     children: (option) => {
-                      const active = createMemo6(() => !props.locked && k(option.value, selected()?.value));
-                      const current = createMemo6(() => k(option.value, props.current));
+                      const active = createMemo7(() => !props.locked && k(option.value, selected()?.value));
+                      const current = createMemo7(() => k(option.value, props.current));
                       return (() => {
-                        var _el$15 = _$createElement11("box");
-                        _$setProp10(_el$15, "flexDirection", "column");
-                        _$setProp10(_el$15, "position", "relative");
-                        _$setProp10(_el$15, "onMouseMove", () => {
+                        var _el$15 = _$createElement12("box");
+                        _$setProp11(_el$15, "flexDirection", "column");
+                        _$setProp11(_el$15, "position", "relative");
+                        _$setProp11(_el$15, "onMouseMove", () => {
                           if (props.locked)
                             return;
                           const index = flat().findIndex((x) => k(x.value, option.value));
@@ -25478,13 +25663,13 @@ function DialogSelect(props) {
                             return;
                           moveTo(index);
                         });
-                        _$setProp10(_el$15, "onMouseUp", () => {
+                        _$setProp11(_el$15, "onMouseUp", () => {
                           if (props.locked)
                             return;
                           option.onSelect?.(dialog);
                           props.onSelect?.(option);
                         });
-                        _$setProp10(_el$15, "onMouseDown", () => {
+                        _$setProp11(_el$15, "onMouseDown", () => {
                           if (props.locked)
                             return;
                           const index = flat().findIndex((x) => k(x.value, option.value));
@@ -25492,7 +25677,7 @@ function DialogSelect(props) {
                             return;
                           moveTo(index);
                         });
-                        _$insert9(_el$15, _$createComponent16(DialogSelectRow, {
+                        _$insert10(_el$15, _$createComponent17(DialogSelectRow, {
                           get title() {
                             return option.title;
                           },
@@ -25536,7 +25721,7 @@ function DialogSelect(props) {
                             return option.margin;
                           }
                         }), null);
-                        _$insert9(_el$15, _$createComponent16(DialogSelectDetails, {
+                        _$insert10(_el$15, _$createComponent17(DialogSelectDetails, {
                           get details() {
                             return option.details;
                           },
@@ -25549,12 +25734,12 @@ function DialogSelect(props) {
                     }
                   })]
                 }));
-                _$effect10((_p$) => {
+                _$effect11((_p$) => {
                   var _v$7 = newDesigns() ? 0 : 1, _v$8 = newDesigns() ? 0 : 1, _v$9 = scrollAcceleration(), _v$0 = height();
-                  _v$7 !== _p$.e && (_p$.e = _$setProp10(_el$2, "paddingLeft", _v$7, _p$.e));
-                  _v$8 !== _p$.t && (_p$.t = _$setProp10(_el$2, "paddingRight", _v$8, _p$.t));
-                  _v$9 !== _p$.a && (_p$.a = _$setProp10(_el$2, "scrollAcceleration", _v$9, _p$.a));
-                  _v$0 !== _p$.o && (_p$.o = _$setProp10(_el$2, "maxHeight", _v$0, _p$.o));
+                  _v$7 !== _p$.e && (_p$.e = _$setProp11(_el$2, "paddingLeft", _v$7, _p$.e));
+                  _v$8 !== _p$.t && (_p$.t = _$setProp11(_el$2, "paddingRight", _v$8, _p$.t));
+                  _v$9 !== _p$.a && (_p$.a = _$setProp11(_el$2, "scrollAcceleration", _v$9, _p$.a));
+                  _v$0 !== _p$.o && (_p$.o = _$setProp11(_el$2, "maxHeight", _v$0, _p$.o));
                   return _p$;
                 }, {
                   e: undefined,
@@ -25563,40 +25748,40 @@ function DialogSelect(props) {
                   o: undefined
                 });
                 return _el$2;
-              })(), _$createComponent16(Show9, {
+              })(), _$createComponent17(Show10, {
                 get when() {
                   return ellipsis();
                 },
                 get children() {
-                  var _el$3 = _$createElement11("box"), _el$4 = _$createElement11("text");
-                  _$insertNode9(_el$3, _el$4);
-                  _$setProp10(_el$3, "paddingLeft", DIALOG_LIST_INSET);
-                  _$setProp10(_el$3, "flexShrink", 0);
-                  _$insertNode9(_el$4, _$createTextNode6(`…`));
-                  _$effect10((_$p) => _$setProp10(_el$4, "fg", theme.text.muted, _$p));
+                  var _el$3 = _$createElement12("box"), _el$4 = _$createElement12("text");
+                  _$insertNode10(_el$3, _el$4);
+                  _$setProp11(_el$3, "paddingLeft", DIALOG_LIST_INSET);
+                  _$setProp11(_el$3, "flexShrink", 0);
+                  _$insertNode10(_el$4, _$createTextNode6(`…`));
+                  _$effect11((_$p) => _$setProp11(_el$4, "fg", theme.text.muted, _$p));
                   return _el$3;
                 }
-              }), _$createComponent16(Show9, {
+              }), _$createComponent17(Show10, {
                 get when() {
                   return _$memo7(() => !!newDesigns())() && flat().some((option) => option.detail !== undefined);
                 },
                 get children() {
-                  var _el$6 = _$createElement11("box");
-                  _$setProp10(_el$6, "paddingTop", 1);
-                  _$setProp10(_el$6, "paddingLeft", DIALOG_LIST_INSET);
-                  _$setProp10(_el$6, "paddingRight", DIALOG_LIST_INSET);
-                  _$setProp10(_el$6, "flexShrink", 0);
-                  _$insert9(_el$6, _$createComponent16(Show9, {
+                  var _el$6 = _$createElement12("box");
+                  _$setProp11(_el$6, "paddingTop", 1);
+                  _$setProp11(_el$6, "paddingLeft", DIALOG_LIST_INSET);
+                  _$setProp11(_el$6, "paddingRight", DIALOG_LIST_INSET);
+                  _$setProp11(_el$6, "flexShrink", 0);
+                  _$insert10(_el$6, _$createComponent17(Show10, {
                     get when() {
                       return detailView();
                     },
                     keyed: true,
                     get fallback() {
                       return (() => {
-                        var _el$16 = _$createElement11("text");
-                        _$setProp10(_el$16, "wrapMode", "word");
-                        _$insert9(_el$16, () => detailText() || " ");
-                        _$effect10((_$p) => _$setProp10(_el$16, "fg", theme.surface("dialog.footer").text.muted, _$p));
+                        var _el$16 = _$createElement12("text");
+                        _$setProp11(_el$16, "wrapMode", "word");
+                        _$insert10(_el$16, () => detailText() || " ");
+                        _$effect11((_$p) => _$setProp11(_el$16, "fg", theme.surface("dialog.footer").text.muted, _$p));
                         return _el$16;
                       })();
                     },
@@ -25616,15 +25801,15 @@ function DialogSelectCategory(props) {
   const theme = useTheme().surface("dialog");
   const newDesigns = useNewDesigns();
   return (() => {
-    var _el$18 = _$createElement11("box"), _el$19 = _$createElement11("text");
-    _$insertNode9(_el$18, _el$19);
-    _$insert9(_el$19, () => props.title);
-    _$effect10((_p$) => {
+    var _el$18 = _$createElement12("box"), _el$19 = _$createElement12("text");
+    _$insertNode10(_el$18, _el$19);
+    _$insert10(_el$19, () => props.title);
+    _$effect11((_p$) => {
       var _v$1 = props.first ? 0 : 1, _v$10 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$11 = newDesigns() ? theme.text.muted : theme.hue.accent[200], _v$12 = TextAttributes4.BOLD;
-      _v$1 !== _p$.e && (_p$.e = _$setProp10(_el$18, "paddingTop", _v$1, _p$.e));
-      _v$10 !== _p$.t && (_p$.t = _$setProp10(_el$18, "paddingLeft", _v$10, _p$.t));
-      _v$11 !== _p$.a && (_p$.a = _$setProp10(_el$19, "fg", _v$11, _p$.a));
-      _v$12 !== _p$.o && (_p$.o = _$setProp10(_el$19, "attributes", _v$12, _p$.o));
+      _v$1 !== _p$.e && (_p$.e = _$setProp11(_el$18, "paddingTop", _v$1, _p$.e));
+      _v$10 !== _p$.t && (_p$.t = _$setProp11(_el$18, "paddingLeft", _v$10, _p$.t));
+      _v$11 !== _p$.a && (_p$.a = _$setProp11(_el$19, "fg", _v$11, _p$.a));
+      _v$12 !== _p$.o && (_p$.o = _$setProp11(_el$19, "attributes", _v$12, _p$.o));
       return _p$;
     }, {
       e: undefined,
@@ -25638,7 +25823,7 @@ function DialogSelectCategory(props) {
 function DialogSelectRow(props) {
   const theme = useTheme().surface("dialog");
   const newDesigns = useNewDesigns();
-  const text = createMemo6(() => {
+  const text = createMemo7(() => {
     if (props.active)
       return props.activeColor ?? theme.text.action.primary.focused;
     if (props.current && !newDesigns())
@@ -25651,77 +25836,77 @@ function DialogSelectRow(props) {
     return props.active ? theme.text.action.secondary.focused : theme.text.muted;
   };
   const row = () => (() => {
-    var _el$20 = _$createElement11("box"), _el$24 = _$createElement11("text");
-    _$insertNode9(_el$20, _el$24);
-    _$setProp10(_el$20, "flexDirection", "row");
-    _$setProp10(_el$20, "gap", 1);
-    _$insert9(_el$20, _$createComponent16(Show9, {
+    var _el$20 = _$createElement12("box"), _el$24 = _$createElement12("text");
+    _$insertNode10(_el$20, _el$24);
+    _$setProp11(_el$20, "flexDirection", "row");
+    _$setProp11(_el$20, "gap", 1);
+    _$insert10(_el$20, _$createComponent17(Show10, {
       get when() {
         return _$memo7(() => !!!props.current)() && props.margin;
       },
       get children() {
-        var _el$21 = _$createElement11("box");
-        _$setProp10(_el$21, "position", "absolute");
-        _$setProp10(_el$21, "left", DIALOG_LIST_INSET - 3);
-        _$setProp10(_el$21, "flexShrink", 0);
-        _$insert9(_el$21, () => props.margin);
+        var _el$21 = _$createElement12("box");
+        _$setProp11(_el$21, "position", "absolute");
+        _$setProp11(_el$21, "left", DIALOG_LIST_INSET - 3);
+        _$setProp11(_el$21, "flexShrink", 0);
+        _$insert10(_el$21, () => props.margin);
         return _el$21;
       }
     }), _el$24);
-    _$insert9(_el$20, _$createComponent16(Show9, {
+    _$insert10(_el$20, _$createComponent17(Show10, {
       get when() {
         return _$memo7(() => !!props.current)() && !props.gutter;
       },
       get children() {
-        var _el$22 = _$createElement11("text");
-        _$setProp10(_el$22, "flexShrink", 0);
-        _$insert9(_el$22, () => newDesigns() ? "▪" : "●");
-        _$effect10((_$p) => _$setProp10(_el$22, "fg", newDesigns() ? theme.text.formfield.selected : text(), _$p));
+        var _el$22 = _$createElement12("text");
+        _$setProp11(_el$22, "flexShrink", 0);
+        _$insert10(_el$22, () => newDesigns() ? "▪" : "●");
+        _$effect11((_$p) => _$setProp11(_el$22, "fg", newDesigns() ? theme.text.formfield.selected : text(), _$p));
         return _el$22;
       }
     }), _el$24);
-    _$insert9(_el$20, _$createComponent16(Show9, {
+    _$insert10(_el$20, _$createComponent17(Show10, {
       get when() {
         return props.gutter;
       },
       get children() {
-        var _el$23 = _$createElement11("box");
-        _$setProp10(_el$23, "flexShrink", 0);
-        _$insert9(_el$23, () => props.gutter?.(text()));
+        var _el$23 = _$createElement12("box");
+        _$setProp11(_el$23, "flexShrink", 0);
+        _$insert10(_el$23, () => props.gutter?.(text()));
         return _el$23;
       }
     }), _el$24);
-    _$setProp10(_el$24, "flexGrow", 1);
-    _$setProp10(_el$24, "overflow", "hidden");
-    _$setProp10(_el$24, "wrapMode", "none");
-    _$setProp10(_el$24, "paddingLeft", 3);
-    _$insert9(_el$24, () => props.titleView ?? (props.truncateTitle === false ? props.title : props.truncateTitle === "left" ? truncateLeft(props.title, props.titleWidth ?? 61) : truncate(props.title, props.titleWidth ?? 61)), null);
-    _$insert9(_el$24, _$createComponent16(Show9, {
+    _$setProp11(_el$24, "flexGrow", 1);
+    _$setProp11(_el$24, "overflow", "hidden");
+    _$setProp11(_el$24, "wrapMode", "none");
+    _$setProp11(_el$24, "paddingLeft", 3);
+    _$insert10(_el$24, () => props.titleView ?? (props.truncateTitle === false ? props.title : props.truncateTitle === "left" ? truncateLeft(props.title, props.titleWidth ?? 61) : truncate(props.title, props.titleWidth ?? 61)), null);
+    _$insert10(_el$24, _$createComponent17(Show10, {
       get when() {
         return props.description;
       },
       get children() {
-        var _el$25 = _$createElement11("span");
-        _$insert9(_el$25, () => " " + props.description);
-        _$effect10((_$p) => _$setProp10(_el$25, "style", {
+        var _el$25 = _$createElement12("span");
+        _$insert10(_el$25, () => " " + props.description);
+        _$effect11((_$p) => _$setProp11(_el$25, "style", {
           fg: secondary()
         }, _$p));
         return _el$25;
       }
     }), null);
-    _$insert9(_el$20, _$createComponent16(Show9, {
+    _$insert10(_el$20, _$createComponent17(Show10, {
       get when() {
         return props.footer;
       },
       get children() {
-        var _el$26 = _$createElement11("box"), _el$27 = _$createElement11("text");
-        _$insertNode9(_el$26, _el$27);
-        _$setProp10(_el$26, "flexShrink", 0);
-        _$insert9(_el$27, () => props.footer);
-        _$effect10((_p$) => {
+        var _el$26 = _$createElement12("box"), _el$27 = _$createElement12("text");
+        _$insertNode10(_el$26, _el$27);
+        _$setProp11(_el$26, "flexShrink", 0);
+        _$insert10(_el$27, () => props.footer);
+        _$effect11((_p$) => {
           var _v$13 = props.footerOverhang ? -props.footerOverhang : undefined, _v$14 = props.active || !props.footerColor ? secondary() : props.footerColor;
-          _v$13 !== _p$.e && (_p$.e = _$setProp10(_el$26, "marginRight", _v$13, _p$.e));
-          _v$14 !== _p$.t && (_p$.t = _$setProp10(_el$27, "fg", _v$14, _p$.t));
+          _v$13 !== _p$.e && (_p$.e = _$setProp11(_el$26, "marginRight", _v$13, _p$.e));
+          _v$14 !== _p$.t && (_p$.t = _$setProp11(_el$27, "fg", _v$14, _p$.t));
           return _p$;
         }, {
           e: undefined,
@@ -25730,14 +25915,14 @@ function DialogSelectRow(props) {
         return _el$26;
       }
     }), null);
-    _$effect10((_p$) => {
+    _$effect11((_p$) => {
       var _v$15 = newDesigns() ? 1 : undefined, _v$16 = props.current || props.gutter ? DIALOG_LIST_INSET - 3 : DIALOG_LIST_INSET - 1, _v$17 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$18 = props.active ? props.activeBackground ?? theme.background.action.primary.focused : RGBA12.fromInts(0, 0, 0, 0), _v$19 = text(), _v$20 = props.active && !newDesigns() ? TextAttributes4.BOLD : undefined;
-      _v$15 !== _p$.e && (_p$.e = _$setProp10(_el$20, "flexGrow", _v$15, _p$.e));
-      _v$16 !== _p$.t && (_p$.t = _$setProp10(_el$20, "paddingLeft", _v$16, _p$.t));
-      _v$17 !== _p$.a && (_p$.a = _$setProp10(_el$20, "paddingRight", _v$17, _p$.a));
-      _v$18 !== _p$.o && (_p$.o = _$setProp10(_el$20, "backgroundColor", _v$18, _p$.o));
-      _v$19 !== _p$.i && (_p$.i = _$setProp10(_el$24, "fg", _v$19, _p$.i));
-      _v$20 !== _p$.n && (_p$.n = _$setProp10(_el$24, "attributes", _v$20, _p$.n));
+      _v$15 !== _p$.e && (_p$.e = _$setProp11(_el$20, "flexGrow", _v$15, _p$.e));
+      _v$16 !== _p$.t && (_p$.t = _$setProp11(_el$20, "paddingLeft", _v$16, _p$.t));
+      _v$17 !== _p$.a && (_p$.a = _$setProp11(_el$20, "paddingRight", _v$17, _p$.a));
+      _v$18 !== _p$.o && (_p$.o = _$setProp11(_el$20, "backgroundColor", _v$18, _p$.o));
+      _v$19 !== _p$.i && (_p$.i = _$setProp11(_el$24, "fg", _v$19, _p$.i));
+      _v$20 !== _p$.n && (_p$.n = _$setProp11(_el$24, "attributes", _v$20, _p$.n));
       return _p$;
     }, {
       e: undefined,
@@ -25749,7 +25934,7 @@ function DialogSelectRow(props) {
     });
     return _el$20;
   })();
-  return _$createComponent16(Show9, {
+  return _$createComponent17(Show10, {
     get when() {
       return newDesigns();
     },
@@ -25757,14 +25942,14 @@ function DialogSelectRow(props) {
       return row();
     },
     get children() {
-      var _el$28 = _$createElement11("box"), _el$29 = _$createElement11("text");
-      _$insertNode9(_el$28, _el$29);
-      _$setProp10(_el$28, "flexDirection", "row");
-      _$setProp10(_el$29, "width", 1);
-      _$setProp10(_el$29, "flexShrink", 0);
-      _$insert9(_el$29, () => props.active ? "┃" : " ");
-      _$insert9(_el$28, row, null);
-      _$effect10((_$p) => _$setProp10(_el$29, "fg", theme.text.formfield.focused, _$p));
+      var _el$28 = _$createElement12("box"), _el$29 = _$createElement12("text");
+      _$insertNode10(_el$28, _el$29);
+      _$setProp11(_el$28, "flexDirection", "row");
+      _$setProp11(_el$29, "width", 1);
+      _$setProp11(_el$29, "flexShrink", 0);
+      _$insert10(_el$29, () => props.active ? "┃" : " ");
+      _$insert10(_el$28, row, null);
+      _$effect11((_$p) => _$setProp11(_el$29, "fg", theme.text.formfield.focused, _$p));
       return _el$28;
     }
   });
@@ -25772,20 +25957,20 @@ function DialogSelectRow(props) {
 function DialogSelectDetails(props) {
   const theme = useTheme().surface("dialog");
   const newDesigns = useNewDesigns();
-  return _$createComponent16(For5, {
+  return _$createComponent17(For5, {
     get each() {
       return props.details;
     },
     children: (detail) => (() => {
-      var _el$30 = _$createElement11("box"), _el$31 = _$createElement11("text");
-      _$insertNode9(_el$30, _el$31);
-      _$setProp10(_el$31, "wrapMode", "none");
-      _$insert9(_el$31, () => truncateMiddle(detail, Math.max(1, props.width)));
-      _$effect10((_p$) => {
+      var _el$30 = _$createElement12("box"), _el$31 = _$createElement12("text");
+      _$insertNode10(_el$30, _el$31);
+      _$setProp11(_el$31, "wrapMode", "none");
+      _$insert10(_el$31, () => truncateMiddle(detail, Math.max(1, props.width)));
+      _$effect11((_p$) => {
         var _v$21 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$22 = DIALOG_LIST_INSET - (newDesigns() ? 0 : 1), _v$23 = theme.text.muted;
-        _v$21 !== _p$.e && (_p$.e = _$setProp10(_el$30, "paddingLeft", _v$21, _p$.e));
-        _v$22 !== _p$.t && (_p$.t = _$setProp10(_el$30, "paddingRight", _v$22, _p$.t));
-        _v$23 !== _p$.a && (_p$.a = _$setProp10(_el$31, "fg", _v$23, _p$.a));
+        _v$21 !== _p$.e && (_p$.e = _$setProp11(_el$30, "paddingLeft", _v$21, _p$.e));
+        _v$22 !== _p$.t && (_p$.t = _$setProp11(_el$30, "paddingRight", _v$22, _p$.t));
+        _v$23 !== _p$.a && (_p$.a = _$setProp11(_el$31, "fg", _v$23, _p$.a));
         return _p$;
       }, {
         e: undefined,
@@ -25808,7 +25993,7 @@ function summarizeArgs(name, args, limit = 160) {
   return `${name} ${body}`.trim();
 }
 function ApprovalCard(props) {
-  return _$createComponent17(DialogConfirm, {
+  return _$createComponent18(DialogConfirm, {
     get title() {
       return `Approval: ${props.name}`;
     },
@@ -25842,7 +26027,7 @@ function truncate70(text) {
   return text.length > 70 ? text.slice(0, 69) + "…" : text;
 }
 function AskPicker(props) {
-  const [version, setVersion] = createSignal13(0);
+  const [version, setVersion] = createSignal14(0);
   onMount5(() => {
     const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1));
     onCleanup13(unsubscribe);
@@ -25851,12 +26036,12 @@ function AskPicker(props) {
     version();
     return props.controller.pendingAsk;
   };
-  return _$createComponent17(Show10, {
+  return _$createComponent18(Show11, {
     get when() {
       return ask()?.phase === "review";
     },
     get fallback() {
-      return _$createComponent17(AskQuestionsView, {
+      return _$createComponent18(AskQuestionsView, {
         ask,
         get controller() {
           return props.controller;
@@ -25867,7 +26052,7 @@ function AskPicker(props) {
       });
     },
     get children() {
-      return _$createComponent17(AskReviewView, {
+      return _$createComponent18(AskReviewView, {
         ask,
         get controller() {
           return props.controller;
@@ -25954,7 +26139,7 @@ function AskQuestionsView(props) {
     return `${askProgressTitle(b.questions, b.index)}: ${truncate70(q.prompt)}`;
   };
   let selectRefRef;
-  return _$createComponent17(DialogSelect, {
+  return _$createComponent18(DialogSelect, {
     get title() {
       return title();
     },
@@ -26006,7 +26191,7 @@ function AskReviewView(props) {
     });
     return rows;
   };
-  return _$createComponent17(DialogSelect, {
+  return _$createComponent18(DialogSelect, {
     title: "Review answers",
     description: "←: edit · enter: submit",
     renderFilter: false,
@@ -26035,7 +26220,7 @@ function AskReviewView(props) {
 }
 function TurnOverlayHost(props) {
   const dialog = useDialog();
-  const [version, setVersion] = createSignal13(0);
+  const [version, setVersion] = createSignal14(0);
   onMount5(() => {
     const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1));
     onCleanup13(unsubscribe);
@@ -26044,7 +26229,7 @@ function TurnOverlayHost(props) {
     setTimeout(() => props.reclaimFocus?.(), 3);
   });
   let shown;
-  createEffect7(() => {
+  createEffect8(() => {
     version();
     const approval = props.controller.pendingApproval;
     const ask = props.controller.pendingAsk;
@@ -26054,7 +26239,7 @@ function TurnOverlayHost(props) {
     shown = key;
     if (approval) {
       const atOpen = key;
-      dialog.replace(() => _$createComponent17(ApprovalCard, {
+      dialog.replace(() => _$createComponent18(ApprovalCard, {
         get name() {
           return approval.name;
         },
@@ -26075,7 +26260,7 @@ function TurnOverlayHost(props) {
     }
     if (ask) {
       const atOpen = key;
-      dialog.replace(() => _$createComponent17(AskPicker, {
+      dialog.replace(() => _$createComponent18(AskPicker, {
         get controller() {
           return props.controller;
         },
@@ -26089,7 +26274,7 @@ function TurnOverlayHost(props) {
     if (untrack(() => dialog.stack.length) > 0)
       dialog.clear();
   });
-  return _$createComponent17(Show10, {
+  return _$createComponent18(Show11, {
     when: false,
     children: null
   });
@@ -26100,13 +26285,13 @@ function registerTurnOverlays(seam, controller) {
 
 // ../tui-base/src/routes/session/slash-palette.tsx
 import { createTextNode as _$createTextNode7 } from "@opentui/solid";
-import { insertNode as _$insertNode10 } from "@opentui/solid";
-import { effect as _$effect11 } from "@opentui/solid";
-import { insert as _$insert10 } from "@opentui/solid";
-import { createComponent as _$createComponent18 } from "@opentui/solid";
-import { setProp as _$setProp11 } from "@opentui/solid";
-import { createElement as _$createElement12 } from "@opentui/solid";
-import { For as For6, Show as Show11, createSignal as createSignal14 } from "solid-js";
+import { insertNode as _$insertNode11 } from "@opentui/solid";
+import { effect as _$effect12 } from "@opentui/solid";
+import { insert as _$insert11 } from "@opentui/solid";
+import { createComponent as _$createComponent19 } from "@opentui/solid";
+import { setProp as _$setProp12 } from "@opentui/solid";
+import { createElement as _$createElement13 } from "@opentui/solid";
+import { For as For6, Show as Show12, createSignal as createSignal15 } from "solid-js";
 
 // ../tui-base/src/routes/session/hotkeys.ts
 function hotkeysHeader() {
@@ -26198,6 +26383,21 @@ function formatSessionInfoPanel(rows) {
 }
 
 // ../tui-base/src/routes/session/commands.ts
+function presetNextRow(rows, currentId) {
+  if (rows.length <= 1)
+    return;
+  const anchorId = currentId ?? rows.find((row) => row.isDefault)?.id ?? rows[0]?.id;
+  const index = rows.findIndex((row) => row.id === anchorId);
+  if (index < 0)
+    return rows[0];
+  return rows[(index + 1) % rows.length];
+}
+function findPresetRow(rows, query) {
+  const needle = query.trim().toLowerCase();
+  if (needle === "")
+    return;
+  return rows.find((row) => row.id.toLowerCase() === needle || row.name.toLowerCase() === needle);
+}
 function coreCommands() {
   return [
     {
@@ -26389,6 +26589,67 @@ function coreCommands() {
         else
           ctx.say(`unknown theme: ${picked}`);
       }
+    },
+    {
+      name: "/preset",
+      description: "switch agent preset (bare opens the picker, next rotates)",
+      async run(ctx, argText) {
+        const face = ctx.seam.preset;
+        if (!face) {
+          ctx.say("/preset unavailable in this session");
+          return;
+        }
+        const rows = await face.list();
+        if (rows.length === 0) {
+          ctx.say("no agent presets available");
+          return;
+        }
+        const currentId = await face.currentId();
+        const arg = argText.trim();
+        let target;
+        if (arg === "") {
+          const picked = await ctx.pickOne("Select agent preset", rows.map((row) => ({
+            title: row.name,
+            value: row.id,
+            description: row.id === currentId ? "current" : row.description
+          })));
+          if (!picked || picked === currentId)
+            return;
+          target = rows.find((row) => row.id === picked);
+        } else if (arg === "next") {
+          target = presetNextRow(rows, currentId);
+          if (!target) {
+            ctx.say("no other preset to switch to");
+            return;
+          }
+        } else {
+          target = findPresetRow(rows, arg);
+          if (!target) {
+            ctx.say(`unknown preset: ${arg}`);
+            return;
+          }
+          if (target.id === currentId) {
+            ctx.say(`preset already: ${target.name}`);
+            return;
+          }
+        }
+        if (!target)
+          return;
+        if (ctx.seam.status().sessionAttached) {
+          const verdict = await ctx.pickOne(`Switch preset to ${target.name}?`, [
+            { title: `Switch to ${target.name}`, value: "switch" },
+            { title: "Cancel", value: "cancel" }
+          ]);
+          if (verdict !== "switch")
+            return;
+        }
+        if (!await face.select(target.id)) {
+          ctx.say(`preset switch failed: ${target.name}`);
+          return;
+        }
+        ctx.say(`preset → ${target.name} (new session)`);
+        await ctx.reload();
+      }
     }
   ];
 }
@@ -26417,9 +26678,9 @@ function unknownCommandRow(name) {
 var MAX_ROWS = 6;
 
 class SlashPaletteController {
-  #rows = createSignal14(0);
-  #selected = createSignal14(0);
-  #query = createSignal14("");
+  #rows = createSignal15(0);
+  #selected = createSignal15(0);
+  #query = createSignal15("");
   #suppressed = false;
   #lastBuffer = "";
   rows() {
@@ -26476,33 +26737,33 @@ function SlashPalette(props) {
     muted: () => theme?.text.muted ?? "#565f89",
     background: () => theme ? theme.decrease(theme.background.raised.base) : "#1a1b26"
   };
-  return _$createComponent18(Show11, {
+  return _$createComponent19(Show12, {
     get when() {
       return props.controller.rows() > 0;
     },
     get children() {
-      var _el$ = _$createElement12("box");
-      _$setProp11(_el$, "flexShrink", 0);
-      _$setProp11(_el$, "width", "100%");
-      _$setProp11(_el$, "flexDirection", "column");
-      _$setProp11(_el$, "paddingLeft", 2);
-      _$insert10(_el$, _$createComponent18(For6, {
+      var _el$ = _$createElement13("box");
+      _$setProp12(_el$, "flexShrink", 0);
+      _$setProp12(_el$, "width", "100%");
+      _$setProp12(_el$, "flexDirection", "column");
+      _$setProp12(_el$, "paddingLeft", 2);
+      _$insert11(_el$, _$createComponent19(For6, {
         get each() {
           return props.controller.filtered(props.commands);
         },
         children: (command, index) => (() => {
-          var _el$2 = _$createElement12("text"), _el$3 = _$createTextNode7(` `), _el$4 = _$createElement12("span");
-          _$insertNode10(_el$2, _el$3);
-          _$insertNode10(_el$2, _el$4);
-          _$setProp11(_el$2, "flexShrink", 0);
-          _$insert10(_el$2, () => command.name, _el$3);
-          _$insert10(_el$4, () => command.description);
-          _$effect11((_p$) => {
+          var _el$2 = _$createElement13("text"), _el$3 = _$createTextNode7(` `), _el$4 = _$createElement13("span");
+          _$insertNode11(_el$2, _el$3);
+          _$insertNode11(_el$2, _el$4);
+          _$setProp12(_el$2, "flexShrink", 0);
+          _$insert11(_el$2, () => command.name, _el$3);
+          _$insert11(_el$4, () => command.description);
+          _$effect12((_p$) => {
             var _v$3 = index() === props.controller.selected() ? color.active() : color.base(), _v$4 = {
               fg: color.muted()
             };
-            _v$3 !== _p$.e && (_p$.e = _$setProp11(_el$2, "fg", _v$3, _p$.e));
-            _v$4 !== _p$.t && (_p$.t = _$setProp11(_el$4, "style", _v$4, _p$.t));
+            _v$3 !== _p$.e && (_p$.e = _$setProp12(_el$2, "fg", _v$3, _p$.e));
+            _v$4 !== _p$.t && (_p$.t = _$setProp12(_el$4, "style", _v$4, _p$.t));
             return _p$;
           }, {
             e: undefined,
@@ -26511,10 +26772,10 @@ function SlashPalette(props) {
           return _el$2;
         })()
       }));
-      _$effect11((_p$) => {
+      _$effect12((_p$) => {
         var _v$ = props.controller.rows(), _v$2 = color.background();
-        _v$ !== _p$.e && (_p$.e = _$setProp11(_el$, "height", _v$, _p$.e));
-        _v$2 !== _p$.t && (_p$.t = _$setProp11(_el$, "backgroundColor", _v$2, _p$.t));
+        _v$ !== _p$.e && (_p$.e = _$setProp12(_el$, "height", _v$, _p$.e));
+        _v$2 !== _p$.t && (_p$.t = _$setProp12(_el$, "backgroundColor", _v$2, _p$.t));
         return _p$;
       }, {
         e: undefined,
@@ -26583,15 +26844,15 @@ function createSlashHost(deps) {
 }
 
 // ../tui-base/src/routes/session/btw-overlay.tsx
-import { effect as _$effect12 } from "@opentui/solid";
-import { insert as _$insert11 } from "@opentui/solid";
+import { effect as _$effect13 } from "@opentui/solid";
+import { insert as _$insert12 } from "@opentui/solid";
 import { memo as _$memo9 } from "@opentui/solid";
-import { createComponent as _$createComponent19 } from "@opentui/solid";
+import { createComponent as _$createComponent20 } from "@opentui/solid";
 import { createTextNode as _$createTextNode8 } from "@opentui/solid";
-import { insertNode as _$insertNode11 } from "@opentui/solid";
-import { setProp as _$setProp12 } from "@opentui/solid";
-import { createElement as _$createElement13 } from "@opentui/solid";
-import { Show as Show12, createSignal as createSignal15 } from "solid-js";
+import { insertNode as _$insertNode12 } from "@opentui/solid";
+import { setProp as _$setProp13 } from "@opentui/solid";
+import { createElement as _$createElement14 } from "@opentui/solid";
+import { Show as Show13, createSignal as createSignal16 } from "solid-js";
 var BTW_QUEUE_CAPACITY = 3;
 var BTW_SNAPSHOT_ROWS = 6;
 var BTW_SNAPSHOT_ROW_CHARS = 1000;
@@ -26600,10 +26861,10 @@ class BtwController {
   #ask;
   #snapshot;
   #capacity;
-  #run = createSignal15(undefined);
-  #last = createSignal15(undefined);
-  #queue = createSignal15([]);
-  #visible = createSignal15(false);
+  #run = createSignal16(undefined);
+  #last = createSignal16(undefined);
+  #queue = createSignal16([]);
+  #visible = createSignal16(false);
   constructor(deps) {
     this.#ask = deps.ask;
     this.#snapshot = deps.snapshot;
@@ -26687,56 +26948,56 @@ function BtwPanel(props) {
   const accent = () => theme?.border.base ?? "#7aa2f7";
   const shown = () => props.controller.run() ?? props.controller.last();
   return (() => {
-    var _el$ = _$createElement13("box"), _el$2 = _$createElement13("text"), _el$4 = _$createElement13("text");
-    _$insertNode11(_el$, _el$2);
-    _$insertNode11(_el$, _el$4);
-    _$setProp12(_el$, "flexDirection", "column");
-    _$setProp12(_el$, "gap", 1);
-    _$setProp12(_el$, "paddingBottom", 1);
-    _$insertNode11(_el$2, _$createTextNode8(`btw — side question`));
-    _$insert11(_el$, _$createComponent19(Show12, {
+    var _el$ = _$createElement14("box"), _el$2 = _$createElement14("text"), _el$4 = _$createElement14("text");
+    _$insertNode12(_el$, _el$2);
+    _$insertNode12(_el$, _el$4);
+    _$setProp13(_el$, "flexDirection", "column");
+    _$setProp13(_el$, "gap", 1);
+    _$setProp13(_el$, "paddingBottom", 1);
+    _$insertNode12(_el$2, _$createTextNode8(`btw — side question`));
+    _$insert12(_el$, _$createComponent20(Show13, {
       get when() {
         return shown();
       },
       get fallback() {
         return (() => {
-          var _el$5 = _$createElement13("text");
-          _$insertNode11(_el$5, _$createTextNode8(`no side question yet`));
-          _$effect12((_$p) => _$setProp12(_el$5, "fg", muted(), _$p));
+          var _el$5 = _$createElement14("text");
+          _$insertNode12(_el$5, _$createTextNode8(`no side question yet`));
+          _$effect13((_$p) => _$setProp13(_el$5, "fg", muted(), _$p));
           return _el$5;
         })();
       },
       children: (run) => [(() => {
-        var _el$7 = _$createElement13("text");
-        _$insert11(_el$7, () => run().question);
+        var _el$7 = _$createElement14("text");
+        _$insert12(_el$7, () => run().question);
         return _el$7;
-      })(), _$createComponent19(Show12, {
+      })(), _$createComponent20(Show13, {
         get when() {
           return _$memo9(() => run().status === "streaming")() && run().answer === "";
         },
         get fallback() {
           return (() => {
-            var _el$0 = _$createElement13("text");
-            _$insert11(_el$0, () => run().answer);
+            var _el$0 = _$createElement14("text");
+            _$insert12(_el$0, () => run().answer);
             return _el$0;
           })();
         },
         get children() {
-          var _el$8 = _$createElement13("text");
-          _$insertNode11(_el$8, _$createTextNode8(`Thinking…`));
-          _$effect12((_$p) => _$setProp12(_el$8, "fg", muted(), _$p));
+          var _el$8 = _$createElement14("text");
+          _$insertNode12(_el$8, _$createTextNode8(`Thinking…`));
+          _$effect13((_$p) => _$setProp13(_el$8, "fg", muted(), _$p));
           return _el$8;
         }
       })]
     }), _el$4);
-    _$insert11(_el$4, (() => {
+    _$insert12(_el$4, (() => {
       var _c$ = _$memo9(() => shown()?.status === "streaming");
       return () => _c$() ? `Running alongside the main task · Esc close${props.controller.queueDepth() > 0 ? ` · ${props.controller.queueDepth()} queued` : ""}` : `Not kept in the session · /btw reopens this answer${props.controller.queueDepth() > 0 ? ` · ${props.controller.queueDepth()} queued` : ""}`;
     })());
-    _$effect12((_p$) => {
+    _$effect13((_p$) => {
       var _v$ = accent(), _v$2 = muted();
-      _v$ !== _p$.e && (_p$.e = _$setProp12(_el$2, "fg", _v$, _p$.e));
-      _v$2 !== _p$.t && (_p$.t = _$setProp12(_el$4, "fg", _v$2, _p$.t));
+      _v$ !== _p$.e && (_p$.e = _$setProp13(_el$2, "fg", _v$, _p$.e));
+      _v$2 !== _p$.t && (_p$.t = _$setProp13(_el$4, "fg", _v$2, _p$.t));
       return _p$;
     }, {
       e: undefined,
@@ -26748,7 +27009,7 @@ function BtwPanel(props) {
 function createBtwOpener(deps) {
   const showPanel = () => {
     deps.controller.markVisible();
-    deps.dialog.replace(() => _$createComponent19(BtwPanel, {
+    deps.dialog.replace(() => _$createComponent20(BtwPanel, {
       get controller() {
         return deps.controller;
       }
@@ -26769,7 +27030,7 @@ function createBtwOpener(deps) {
       showPanel();
       return "review";
     }
-    deps.dialog.replace(() => _$createComponent19(DialogPrompt, {
+    deps.dialog.replace(() => _$createComponent20(DialogPrompt, {
       title: "/btw",
       placeholder: "Ask anything",
       onConfirm: (text) => {
@@ -26822,13 +27083,13 @@ function createThemeSeam(target) {
 
 // ../tui-base/src/routes/session/powerline.tsx
 import { createTextNode as _$createTextNode9 } from "@opentui/solid";
-import { insertNode as _$insertNode12 } from "@opentui/solid";
-import { effect as _$effect13 } from "@opentui/solid";
-import { insert as _$insert12 } from "@opentui/solid";
-import { createComponent as _$createComponent20 } from "@opentui/solid";
-import { setProp as _$setProp13 } from "@opentui/solid";
-import { createElement as _$createElement14 } from "@opentui/solid";
-import { For as For7, Show as Show13 } from "solid-js";
+import { insertNode as _$insertNode13 } from "@opentui/solid";
+import { effect as _$effect14 } from "@opentui/solid";
+import { insert as _$insert13 } from "@opentui/solid";
+import { createComponent as _$createComponent21 } from "@opentui/solid";
+import { setProp as _$setProp14 } from "@opentui/solid";
+import { createElement as _$createElement15 } from "@opentui/solid";
+import { For as For7, Show as Show14 } from "solid-js";
 var POWERLINE_COLORS = {
   brand: "#4D6BFE",
   provider: "#6A1B9A",
@@ -26897,9 +27158,10 @@ function resolvePalette(theme) {
     return POWERLINE_COLORS;
   return powerlinePalette(theme);
 }
-function brandSegment(theme) {
+function brandSegment(theme, presetLabel) {
+  const label = presetLabel ? `dsh(${presetLabel})` : "dsh";
   return {
-    text: "dsh",
+    text: label,
     bg: resolvePalette(theme).brand
   };
 }
@@ -26964,44 +27226,44 @@ function cacheSegment(rate, theme) {
 }
 function PowerlineFooter(props) {
   return (() => {
-    var _el$ = _$createElement14("box");
-    _$setProp13(_el$, "style", {
+    var _el$ = _$createElement15("box");
+    _$setProp14(_el$, "style", {
       flexDirection: "row",
       paddingLeft: 1,
       flexShrink: 0
     });
-    _$insert12(_el$, _$createComponent20(For7, {
+    _$insert13(_el$, _$createComponent21(For7, {
       get each() {
         return props.left;
       },
       children: (seg, i) => {
         const next = () => props.left[i() + 1];
         return [(() => {
-          var _el$4 = _$createElement14("text");
-          _$insert12(_el$4, () => ` ${seg.text} `);
-          _$effect13((_$p) => _$setProp13(_el$4, "style", {
+          var _el$4 = _$createElement15("text");
+          _$insert13(_el$4, () => ` ${seg.text} `);
+          _$effect14((_$p) => _$setProp14(_el$4, "style", {
             bg: seg.bg,
             fg: seg.fg ?? autoContrast(seg.bg)
           }, _$p));
           return _el$4;
-        })(), _$createComponent20(Show13, {
+        })(), _$createComponent21(Show14, {
           get when() {
             return next();
           },
           get fallback() {
             return (() => {
-              var _el$5 = _$createElement14("text");
-              _$insertNode12(_el$5, _$createTextNode9(``));
-              _$effect13((_$p) => _$setProp13(_el$5, "style", {
+              var _el$5 = _$createElement15("text");
+              _$insertNode13(_el$5, _$createTextNode9(``));
+              _$effect14((_$p) => _$setProp14(_el$5, "style", {
                 fg: seg.bg
               }, _$p));
               return _el$5;
             })();
           },
           children: (n) => (() => {
-            var _el$7 = _$createElement14("text");
-            _$insertNode12(_el$7, _$createTextNode9(``));
-            _$effect13((_$p) => _$setProp13(_el$7, "style", {
+            var _el$7 = _$createElement15("text");
+            _$insertNode13(_el$7, _$createTextNode9(``));
+            _$effect14((_$p) => _$setProp14(_el$7, "style", {
               fg: seg.bg,
               bg: n().bg
             }, _$p));
@@ -27010,21 +27272,21 @@ function PowerlineFooter(props) {
         })];
       }
     }), null);
-    _$insert12(_el$, _$createComponent20(Show13, {
+    _$insert13(_el$, _$createComponent21(Show14, {
       get when() {
         return props.right;
       },
       get children() {
         return [(() => {
-          var _el$2 = _$createElement14("box");
-          _$setProp13(_el$2, "style", {
+          var _el$2 = _$createElement15("box");
+          _$setProp14(_el$2, "style", {
             flexGrow: 1
           });
           return _el$2;
         })(), (() => {
-          var _el$3 = _$createElement14("text");
-          _$insert12(_el$3, () => props.right);
-          _$effect13((_$p) => _$setProp13(_el$3, "style", {
+          var _el$3 = _$createElement15("text");
+          _$insert13(_el$3, () => props.right);
+          _$effect14((_$p) => _$setProp14(_el$3, "style", {
             fg: props.theme?.text.base ?? "#e6e6e6"
           }, _$p));
           return _el$3;
@@ -27036,7 +27298,7 @@ function PowerlineFooter(props) {
 }
 function sessionFooterSegments(data) {
   const theme = data.theme;
-  const segs = [brandSegment(theme)];
+  const segs = [brandSegment(theme, data.presetLabel)];
   const add = (s) => {
     if (s)
       segs.push(s);
@@ -27048,6 +27310,10 @@ function sessionFooterSegments(data) {
   add(messagesSegment(data.messages ?? 0, theme));
   add(toolSegment(data.tools ?? 0, theme));
   add(speedSegment(data.tps ?? null, theme));
+  add({
+    text: "Ctrl+Shift+F: search",
+    bg: resolvePalette(theme).thinking.off
+  });
   return segs;
 }
 
@@ -27061,12 +27327,12 @@ function readCacheHitMode(config) {
 }
 
 // ../tui-base/src/routes/session/status-bar.tsx
-import { effect as _$effect14 } from "@opentui/solid";
-import { insert as _$insert13 } from "@opentui/solid";
-import { createComponent as _$createComponent21 } from "@opentui/solid";
-import { setProp as _$setProp14 } from "@opentui/solid";
-import { createElement as _$createElement15 } from "@opentui/solid";
-import { createSignal as createSignal16, onCleanup as onCleanup14, For as For8, Show as Show14 } from "solid-js";
+import { effect as _$effect15 } from "@opentui/solid";
+import { insert as _$insert14 } from "@opentui/solid";
+import { createComponent as _$createComponent22 } from "@opentui/solid";
+import { setProp as _$setProp15 } from "@opentui/solid";
+import { createElement as _$createElement16 } from "@opentui/solid";
+import { createSignal as createSignal17, onCleanup as onCleanup14, For as For8, Show as Show15 } from "solid-js";
 var DEFAULT_VERBS = {
   think: ["Thinking", "Pondering", "Reasoning", "Reflecting", "Deliberating", "Mulling"],
   tool: ["Executing", "Running", "Processing", "Building"],
@@ -27087,7 +27353,7 @@ var FALLBACK_TRACK = "#565f89";
 var FALLBACK_HEAD = "#7aa2f7";
 function StatusBar(props) {
   const theme = useThemeOptional();
-  const [tick, setTick] = createSignal16(0);
+  const [tick, setTick] = createSignal17(0);
   const timer = setInterval(() => setTick((t) => t + 1), BAR_MS);
   onCleanup14(() => clearInterval(timer));
   const pools = () => ({
@@ -27169,28 +27435,28 @@ function StatusBar(props) {
     });
     return runs;
   };
-  return _$createComponent21(Show14, {
+  return _$createComponent22(Show15, {
     get when() {
       return props.phase !== null;
     },
     get children() {
-      var _el$ = _$createElement15("box");
-      _$setProp14(_el$, "style", {
+      var _el$ = _$createElement16("box");
+      _$setProp15(_el$, "style", {
         flexDirection: "row",
         paddingLeft: 1,
         paddingRight: 1,
         height: 1,
         flexGrow: 0
       });
-      _$insert13(_el$, _$createComponent21(For8, {
+      _$insert14(_el$, _$createComponent22(For8, {
         get each() {
           return row();
         },
         children: (r) => (() => {
-          var _el$2 = _$createElement15("text");
-          _$setProp14(_el$2, "wrapMode", "none");
-          _$insert13(_el$2, () => r.text);
-          _$effect14((_$p) => _$setProp14(_el$2, "style", {
+          var _el$2 = _$createElement16("text");
+          _$setProp15(_el$2, "wrapMode", "none");
+          _$insert14(_el$2, () => r.text);
+          _$effect15((_$p) => _$setProp15(_el$2, "style", {
             fg: r.fg
           }, _$p));
           return _el$2;
@@ -27202,13 +27468,13 @@ function StatusBar(props) {
 }
 
 // ../tui-base/src/routes/session/turn-cancel.tsx
-import { createComponent as _$createComponent22 } from "@opentui/solid";
-import { effect as _$effect15 } from "@opentui/solid";
+import { createComponent as _$createComponent23 } from "@opentui/solid";
+import { effect as _$effect16 } from "@opentui/solid";
 import { createTextNode as _$createTextNode10 } from "@opentui/solid";
-import { insertNode as _$insertNode13 } from "@opentui/solid";
-import { setProp as _$setProp15 } from "@opentui/solid";
-import { createElement as _$createElement16 } from "@opentui/solid";
-import { createSignal as createSignal17, onCleanup as onCleanup15, Show as Show15 } from "solid-js";
+import { insertNode as _$insertNode14 } from "@opentui/solid";
+import { setProp as _$setProp16 } from "@opentui/solid";
+import { createElement as _$createElement17 } from "@opentui/solid";
+import { createSignal as createSignal18, onCleanup as onCleanup15, Show as Show16 } from "solid-js";
 var CTRL_C_QUIT_WINDOW_MS = 500;
 function createCtrlCGate(windowMs = CTRL_C_QUIT_WINDOW_MS, now = Date.now) {
   let armedAt;
@@ -27266,7 +27532,7 @@ function createTurnCancel(props, onArm) {
 }
 function TurnCancelKeys(props) {
   const theme = useThemeOptional();
-  const [armed, setArmed] = createSignal17(false);
+  const [armed, setArmed] = createSignal18(false);
   const cancel = createTurnCancel(props, setArmed);
   onCleanup15(() => cancel.dispose());
   Keymap.createLayer(() => ({
@@ -27284,19 +27550,19 @@ function TurnCancelKeys(props) {
       run: () => cancel.ctrlC()
     }]
   }));
-  return _$createComponent22(Show15, {
+  return _$createComponent23(Show16, {
     get when() {
       return armed();
     },
     get children() {
-      var _el$ = _$createElement16("box"), _el$2 = _$createElement16("text");
-      _$insertNode13(_el$, _el$2);
-      _$setProp15(_el$, "height", 1);
-      _$setProp15(_el$, "flexShrink", 0);
-      _$setProp15(_el$, "paddingLeft", 1);
-      _$insertNode13(_el$2, _$createTextNode10(`Press Ctrl+C again to quit`));
-      _$setProp15(_el$2, "wrapMode", "none");
-      _$effect15((_$p) => _$setProp15(_el$2, "fg", theme?.text.feedback.warning.base ?? "#e0af68", _$p));
+      var _el$ = _$createElement17("box"), _el$2 = _$createElement17("text");
+      _$insertNode14(_el$, _el$2);
+      _$setProp16(_el$, "height", 1);
+      _$setProp16(_el$, "flexShrink", 0);
+      _$setProp16(_el$, "paddingLeft", 1);
+      _$insertNode14(_el$2, _$createTextNode10(`Press Ctrl+C again to quit`));
+      _$setProp16(_el$2, "wrapMode", "none");
+      _$effect16((_$p) => _$setProp16(_el$2, "fg", theme?.text.feedback.warning.base ?? "#e0af68", _$p));
       return _el$;
     }
   });
@@ -27340,17 +27606,26 @@ function V2SessionPage(props) {
   if (props.themeName && !themeSeam.setTheme(props.themeName)) {
     console.error(`[host-entry-v2] unknown theme ${props.themeName}; bundled: ${themeSeam.list().join(", ")}`);
   }
-  const [composerBusy, setComposerBusy] = createSignal18(false);
-  const [turnBusy, setTurnBusy] = createSignal18(false);
+  const [composerBusy, setComposerBusy] = createSignal19(false);
+  const [turnBusy, setTurnBusy] = createSignal19(false);
   const busy = () => composerBusy() || turnBusy();
-  const [busySince, setBusySince] = createSignal18(0);
-  const [msgs, setMsgs] = createSignal18(0);
-  const [model, setModel] = createSignal18();
-  const [now, setNow] = createSignal18(new Date);
+  const [busySince, setBusySince] = createSignal19(0);
+  const [msgs, setMsgs] = createSignal19(0);
+  const [model, setModel] = createSignal19();
+  const [now, setNow] = createSignal19(new Date);
+  const [presetLabel, setPresetLabel] = createSignal19();
+  const refreshPresetLabel = () => {
+    const face = seam.preset;
+    if (!face)
+      return;
+    Promise.all([face.list(), face.currentId()]).then(([rows, id]) => setPresetLabel(rows.find((row) => row.id === id)?.name)).catch(() => setPresetLabel(undefined));
+  };
   let composerRef;
+  let transcriptScroll;
   onMount6(() => {
     projection.load();
     seam.currentModelSelection().then(setModel);
+    refreshPresetLabel();
     const timer = setInterval(() => setNow(new Date), 1000);
     onCleanup16(() => clearInterval(timer));
   });
@@ -27374,6 +27649,7 @@ function V2SessionPage(props) {
     messages: msgs(),
     tools: 0,
     cacheHitRate: cacheRate(),
+    presetLabel: presetLabel(),
     theme
   });
   let cmdOrdinal = 0;
@@ -27425,6 +27701,7 @@ function V2SessionPage(props) {
     reload: () => {
       const settled = projection.load();
       seam.currentModelSelection().then(setModel);
+      refreshPresetLabel();
       return settled;
     },
     quit: props.quit,
@@ -27463,9 +27740,20 @@ function V2SessionPage(props) {
     backgroundColor: "black",
     get children() {
       return [
+        createComponent2(SearchOverlay, {
+          projection,
+          get scroll() {
+            return transcriptScroll;
+          },
+          onClosed: () => {
+            if (composerRef && !composerRef.focused())
+              composerRef.focus();
+          }
+        }),
         createComponent2(Transcript, {
           seam,
           projection,
+          scrollRef: (value) => transcriptScroll = value,
           get children() {
             return createComponent2(SessionComposer, {
               seam,

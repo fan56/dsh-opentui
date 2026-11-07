@@ -274,6 +274,9 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
           get scroll() {
             return transcriptScroll
           },
+          onClosed: () => {
+            if (composerRef && !composerRef.focused()) composerRef.focus()
+          },
         }),
         createComponent(Transcript, {
           seam,

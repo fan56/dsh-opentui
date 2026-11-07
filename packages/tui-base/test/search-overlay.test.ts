@@ -85,13 +85,14 @@ describe("formatMatchStatus", () => {
 })
 
 describe("SearchOverlayProps surface", () => {
-	test("the scroll prop is a getter (reactive-prop law)", async () => {
-		// Structural pin: SearchOverlayProps.scroll is an accessor returning
-		// the scrollbox, so the ref landing after mount stays reactive.
+	test("the scroll prop is the scrollbox value (getter-prop law)", async () => {
+		// Structural pin: SearchOverlayProps.scroll is a getter PROP — the
+		// callers write `get scroll()` and the overlay reads `props.scroll`
+		// as the box itself (NOT an accessor function; calling it crashed
+		// the view on the first match jump — C13 e2e 22-search).
 		const sample: SearchOverlayProps = {
 			projection: { rows: [], hydrated: () => false } as unknown as SearchOverlayProps["projection"],
-			scroll: () => undefined,
 		}
-		expect(sample.scroll?.()).toBeUndefined()
+		expect(sample.scroll).toBeUndefined()
 	})
 })

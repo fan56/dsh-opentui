@@ -20,16 +20,21 @@
  *
  * Keybind: `session.search` (config/keybind.ts Definitions, default
  * ctrl+shift+f) — the vendored Definitions table had no such binding, so
- * H1 adds it. Open state is internal; while open a priority-2 modal layer
- * (target = the find input) owns escape/return/shift+return — the same
- * layer law as the SubagentsPicker (subagents-picker.tsx): the keymap runs
- * layers highest-priority first and an explicit handled key TERMINATES
- * dispatch, so TurnCancelKeys' esc and the composer's submit layer never
- * also fire while the overlay is open.
+ * H1 adds it. Open state is internal; while open a priority-2 GLOBAL layer
+ * owns escape/return/shift+return — the same layer law as the
+ * SubagentsPicker (subagents-picker.tsx): the keymap runs layers
+ * highest-priority first and an explicit handled key TERMINATES dispatch,
+ * so TurnCancelKeys' esc and the composer's submit layer never also fire
+ * while the overlay is open. NOT mode "modal": a modal-mode layer only
+ * activates while a dialog is open (DialogProvider pushes the modal mode,
+ * ui/dialog.tsx) — outside a dialog it is inert (C13 e2e: escape and the
+ * n/N walk were dead). Typed query chars fall through to the focused find
+ * input — nothing here binds them.
  *
- * Getter-prop law: `scroll` is an accessor (the scrollbox ref is published
- * by the page after mount); `projection` is a stable handle the page
- * re-uses with its Transcript, so a plain prop keeps ONE reactive source.
+ * Getter-prop law: `scroll` rides a getter on the callers' side (the
+ * scrollbox ref is published by the page after mount); `projection` is a
+ * stable handle the page re-uses with its Transcript, so a plain prop keeps
+ * ONE reactive source.
  *
  * OpenTUI law: the find strip carries an explicit height (1 line), never
  * auto-height in a flex column.
@@ -46,9 +51,16 @@ export type SearchOverlayProps = {
 	/** The page's transcript row projection (the same handle its
 	 * Transcript mounts with — both rebuilt faces feed one store). */
 	projection: SeamRows
-	/** The transcript scrollbox (Transcript's scrollRef product). A getter:
-	 * the ref arrives after mount and may be undefined on teardown. */
-	scroll?: () => ScrollBoxRenderable | undefined
+	/** The transcript scrollbox (Transcript's scrollRef product). A getter
+	 * PROP (the callers write `get scroll()`): reading `props.scroll`
+	 * yields the box itself — the ref arrives after mount and may be
+	 * undefined on teardown. Not an accessor function. */
+	scroll?: ScrollBoxRenderable
+	/** Focus reclaim (TurnOverlayHost reclaimFocus law): called after the
+	 * find strip tears down — the destroyed input leaves NOTHING focused,
+	 * so the page hands focus back to its composer (C13 e2e 66-preset: the
+	 * editor was dead after one search close). */
+	onClosed?: () => void
 }
 
 /** The searchable text of one transcript row (lowercased by the matcher). */
@@ -116,7 +128,11 @@ export function SearchOverlay(props: SearchOverlayProps) {
 		if (!open()) return
 		const rowIndex = matches()[index()]
 		if (rowIndex === undefined) return
-		const scroll = props.scroll?.()
+		// `scroll` is a getter prop: `props.scroll` IS the scrollbox (the
+		// callers write `get scroll() { return transcriptScroll }`) — never
+		// call it (C13 e2e: `props.scroll is not a function` crashed the view
+		// on the first match jump).
+		const scroll = props.scroll
 		if (!scroll) return
 		const row = props.projection.rows[rowIndex]
 		if (!row) return
@@ -132,6 +148,13 @@ export function SearchOverlay(props: SearchOverlayProps) {
 
 	function close() {
 		setOpen(false)
+		// The Show teardown destroys the input renderable; drop the stale
+		// target signal with it so nothing holds a destroyed renderable
+		// across the closed state (the ref re-populates it on reopen).
+		setInputTarget(undefined)
+		// Refocus AFTER the strip unmounts (the DialogProvider schedules its
+		// refocus at 1ms; the turn overlays check at 3ms — same law).
+		setTimeout(() => props.onClosed?.(), 3)
 	}
 
 	function move(delta: number) {
@@ -141,12 +164,14 @@ export function SearchOverlay(props: SearchOverlayProps) {
 	}
 
 	// Active layer (priority 2, above TurnCancelKeys' esc and the
-	// composer's submit layer): modal on the find input so the typed query
-	// reaches the input while the walk keys stay owned here.
+	// composer's submit layer): the subagents-picker layer shape — mode
+	// "global", NOT "modal". A "modal"-mode layer only activates while a
+	// dialog is open (DialogProvider pushes the modal mode, ui/dialog.tsx);
+	// outside a dialog it is inert (C13 e2e: escape and the n/N walk were
+	// dead).
 	Keymap.createLayer(() => ({
-		mode: "modal",
-		target: inputTarget,
-		enabled: open() && inputTarget() !== undefined && dialog.stack.length === 0,
+		mode: "global",
+		enabled: open() && dialog.stack.length === 0,
 		priority: 2,
 		commands: [
 			{ bind: "escape", title: "Close transcript search", group: "Search", run: close },

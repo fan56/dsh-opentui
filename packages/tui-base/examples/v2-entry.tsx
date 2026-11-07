@@ -242,6 +242,9 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 					get scroll() {
 						return transcriptScroll
 					},
+					onClosed: () => {
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
 				}),
 				createComponent(Transcript, {
 					seam,
