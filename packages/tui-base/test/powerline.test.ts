@@ -168,3 +168,13 @@ test("batch F2: ⚡ CH segment — tui-pi label shape, hidden without cache traf
 	expect(texts.indexOf("⚡ CH50.0%")).toBe(texts.indexOf("🧠 10%") + 1)
 	expect(sessionFooterSegments({ messages: 1 }).some((s) => s.text.includes("CH"))).toBe(false)
 })
+
+test("batch H2: brand segment carries the agent preset label (tui-pi footer parity)", () => {
+	expect(brandSegment(undefined, "Standard").text).toBe("dsh(Standard)")
+	// No preset face / empty roster / nothing selected → the plain "dsh".
+	expect(brandSegment().text).toBe("dsh")
+	expect(brandSegment(undefined, "").text).toBe("dsh")
+	const texts = sessionFooterSegments({ presetLabel: "PTC", messages: 1 }).map((s) => s.text)
+	expect(texts[0]).toBe("dsh(PTC)")
+	expect(sessionFooterSegments({ messages: 1 })[0].text).toBe("dsh")
+})

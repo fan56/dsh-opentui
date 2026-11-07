@@ -263,3 +263,27 @@ describe("HostSessionSeam steerChild (batch G2)", () => {
 		void registerSubagentSteer
 	})
 })
+
+describe("HostSessionSeam preset face (batch H2)", () => {
+	test("list/currentId read the facade's registry view 1:1", async () => {
+		const { session } = fakeSession({
+			listPresets: async () => [{ id: "standard", name: "Standard" }, { id: "ptc", name: "PTC" }],
+			currentPresetId: () => "standard",
+		})
+		const seam = new HostSessionSeam(session)
+		expect(await seam.preset.list()).toEqual([{ id: "standard", name: "Standard" }, { id: "ptc", name: "PTC" }])
+		expect(await seam.preset.currentId()).toBe("standard")
+	})
+
+	test("select rides switchPreset (next-session seeding) and reports failure", async () => {
+		const { session, calls } = fakeSession({
+			switchPreset: (presetId: string) => calls.push({ method: "switchPreset", args: presetId }),
+		})
+		const seam = new HostSessionSeam(session)
+		expect(await seam.preset.select("ptc")).toBe(true)
+		expect(calls.some((c) => c.method === "switchPreset" && c.args === "ptc")).toBe(true)
+
+		const boom = fakeSession({ switchPreset: () => { throw new Error("no registry") } })
+		expect(await new HostSessionSeam(boom.session).preset.select("ptc")).toBe(false)
+	})
+})

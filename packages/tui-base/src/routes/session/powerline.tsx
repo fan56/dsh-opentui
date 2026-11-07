@@ -144,9 +144,14 @@ export function resolvePalette(theme?: ComponentTheme) {
 	return powerlinePalette(theme)
 }
 
-/** The fixed "dsh" brand segment. */
-export function brandSegment(theme?: ComponentTheme): PowerlineSegment {
-	return { text: "dsh", bg: resolvePalette(theme).brand }
+/**
+ * The "dsh" brand segment. `presetLabel` (batch H2, tui-pi 60-preset footer
+ * parity) appends the current agent preset — "dsh(Standard)" — and stays
+ * plain "dsh" without one (no preset face, empty roster, nothing selected).
+ */
+export function brandSegment(theme?: ComponentTheme, presetLabel?: string): PowerlineSegment {
+	const label = presetLabel ? `dsh(${presetLabel})` : "dsh"
+	return { text: label, bg: resolvePalette(theme).brand }
 }
 
 /** The provider segment (providerID on the purple/interactive fill). */
@@ -260,10 +265,12 @@ export function sessionFooterSegments(data: {
 	tps?: number | null
 	/** ⚡ CH rate (seam.cacheHitRate()); null/absent hides the segment. */
 	cacheHitRate?: number | null
+	/** Current agent preset label (batch H2); absent keeps the plain "dsh". */
+	presetLabel?: string
 	theme?: ComponentTheme
 }): PowerlineSegment[] {
 	const theme = data.theme
-	const segs: PowerlineSegment[] = [brandSegment(theme)]
+	const segs: PowerlineSegment[] = [brandSegment(theme, data.presetLabel)]
 	const add = (s: PowerlineSegment | null) => {
 		if (s) segs.push(s)
 	}

@@ -352,3 +352,27 @@ describe("RemoteSessionSeam steerChild (batch G2)", () => {
 		expect(steered).toEqual([["child-live", "wrap up"], ["child-gone", "wrap up"]])
 	})
 })
+
+describe("RemoteSessionSeam preset face (batch H2)", () => {
+	test("list/currentId read the remote agentPresets faces 1:1", async () => {
+		const { session } = fakeSession({
+			listPresets: async () => [{ id: "standard", name: "Standard" }, { id: "minimal", name: "Minimal" }],
+			currentPresetId: () => "minimal",
+		})
+		const seam = new RemoteSessionSeam(session)
+		expect(await seam.preset.list()).toEqual([{ id: "standard", name: "Standard" }, { id: "minimal", name: "Minimal" }])
+		expect(await seam.preset.currentId()).toBe("minimal")
+	})
+
+	test("select rides switchPreset (next session/create) and reports failure", async () => {
+		const { session, calls } = fakeSession({
+			switchPreset: (presetId: string) => calls.push({ method: "switchPreset", args: presetId }),
+		})
+		const seam = new RemoteSessionSeam(session)
+		expect(await seam.preset.select("standard")).toBe(true)
+		expect(calls.some((c) => c.method === "switchPreset" && c.args === "standard")).toBe(true)
+
+		const boom = fakeSession({ switchPreset: () => { throw new Error("rpc down") } })
+		expect(await new RemoteSessionSeam(boom.session).preset.select("standard")).toBe(false)
+	})
+})

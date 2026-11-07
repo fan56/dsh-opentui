@@ -18,7 +18,7 @@ printf 'e2e runner: profile — %s\n' \
 
 # E2E_SCENARIOS overrides the list (space-separated) so callers can scope a
 # run without hand-rolling podman incantations.
-E2E_SCENARIOS="${E2E_SCENARIOS:-20-start 30-commands 40-mock-llm 50-resize-exit 60-ask-user 61-btw 62-hard-stop 63-cache-hit 64-session-stats 65-jev-attention 67-theme 68-resume 70-steer}"
+E2E_SCENARIOS="${E2E_SCENARIOS:-20-start 30-commands 40-mock-llm 50-resize-exit 60-ask-user 61-btw 62-hard-stop 63-cache-hit 64-session-stats 65-jev-attention 66-preset 67-theme 68-resume 70-steer}"
 for s in $E2E_SCENARIOS; do
   bash "./$s.sh"
 done

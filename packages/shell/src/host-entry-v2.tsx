@@ -117,10 +117,23 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
   const [msgs, setMsgs] = createSignal(0)
   const [model, setModel] = createSignal<{ providerID: string; modelID: string } | undefined>()
   const [now, setNow] = createSignal(new Date())
+  // Batch H2 (tui-pi 60-preset footer parity): the current agent preset's
+  // display label for the brand segment ("dsh(<name>)"); undefined keeps the
+  // plain "dsh". Re-read on mount and on every reload hook — a /preset
+  // switch lands through reload(), so the label follows without extra wiring.
+  const [presetLabel, setPresetLabel] = createSignal<string | undefined>()
+  const refreshPresetLabel = () => {
+    const face = seam.preset
+    if (!face) return
+    void Promise.all([face.list(), face.currentId()])
+      .then(([rows, id]) => setPresetLabel(rows.find((row) => row.id === id)?.name))
+      .catch(() => setPresetLabel(undefined))
+  }
   let composerRef: { focused(): boolean; focus(): void } | undefined
   onMount(() => {
     void projection.load()
     void seam.currentModelSelection().then(setModel)
+    refreshPresetLabel()
     const timer = setInterval(() => setNow(new Date()), 1000)
     onCleanup(() => clearInterval(timer))
   })
@@ -151,6 +164,7 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
       messages: msgs(),
       tools: 0,
       cacheHitRate: cacheRate(),
+      presetLabel: presetLabel(),
       theme,
     })
   let cmdOrdinal = 0
@@ -204,6 +218,7 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
     reload: () => {
       const settled = projection.load()
       void seam.currentModelSelection().then(setModel)
+      refreshPresetLabel()
       return settled
     },
     quit: props.quit,

@@ -7,6 +7,8 @@ import {
 	coreCommands,
 	dispatchLine,
 	filterCommands,
+	findPresetRow,
+	presetNextRow,
 	unknownCommandRow,
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
@@ -144,6 +146,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/think",
 			"/hotkeys",
 			"/theme",
+			"/preset",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/pl").map((c) => c.name)).toEqual(["/plugins"])
@@ -168,6 +171,7 @@ describe("core commands", () => {
 			"/think — set reasoning effort (opens the picker)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
+			"/preset — switch agent preset (bare opens the picker, next rotates)",
 		])
 	})
 
@@ -470,5 +474,193 @@ describe("/hotkeys (batch F7b)", () => {
 		expect(ctx.lines).toContain("ctrl+c,ctrl+d,ctrl+x q — Exit the application (app.exit)")
 		// `none`-bound definitions are skipped (no row carries a bare "none —").
 		expect(ctx.lines.some((line) => line.startsWith("none —"))).toBe(false)
+	})
+})
+
+// ------------------------------------------------------------ /preset (H2) --
+
+describe("/preset rotation helpers (batch H2)", () => {
+	const roster = [
+		{ id: "standard", name: "Standard", isDefault: true },
+		{ id: "ptc", name: "PTC" },
+		{ id: "minimal", name: "Minimal" },
+	]
+
+	test("presetNextRow rotates with wrap after the current selection", () => {
+		expect(presetNextRow(roster, "standard")?.id).toBe("ptc")
+		expect(presetNextRow(roster, "ptc")?.id).toBe("minimal")
+		expect(presetNextRow(roster, "minimal")?.id).toBe("standard")
+	})
+
+	test("presetNextRow with nothing current anchors on the default row, then the first", () => {
+		expect(presetNextRow(roster, undefined)?.id).toBe("ptc")
+		expect(presetNextRow([{ id: "solo", name: "Solo" }, { id: "duo", name: "Duo" }], undefined)?.id).toBe("duo")
+	})
+
+	test("presetNextRow with 0 or 1 rows has nothing to switch to", () => {
+		expect(presetNextRow([], "standard")).toBeUndefined()
+		expect(presetNextRow([{ id: "solo", name: "Solo" }], "solo")).toBeUndefined()
+	})
+
+	test("findPresetRow matches id or display name case-insensitively", () => {
+		expect(findPresetRow(roster, "PTC")?.id).toBe("ptc")
+		expect(findPresetRow(roster, "standard")?.id).toBe("standard")
+		expect(findPresetRow(roster, "nope")).toBeUndefined()
+		expect(findPresetRow(roster, "  ")).toBeUndefined()
+	})
+})
+
+describe("/preset (batch H2, tui-pi 60-preset parity)", () => {
+	const roster = [
+		{ id: "standard", name: "Standard", isDefault: true },
+		{ id: "ptc", name: "PTC", description: "batch tools" },
+	]
+
+	function presetSeam(overrides: {
+		rows?: { id: string; name: string; description?: string; isDefault?: boolean }[]
+		currentId?: string
+		sessionAttached?: boolean
+		pickAnswer?: string
+	} = {}) {
+		const seam = new RecordingSeam()
+		const applied: string[] = []
+		const face = {
+			list: async () => overrides.rows ?? roster,
+			currentId: async () => overrides.currentId,
+			select: async (presetId: string) => {
+				applied.push(presetId)
+				return true
+			},
+		}
+		const ctx = makeCtx(seam, overrides.pickAnswer)
+		ctx.seam = {
+			...seam.seam,
+			preset: face,
+			status: () => ({
+				connection: "connected",
+				turn: "idle",
+				sessionAttached: overrides.sessionAttached ?? true,
+			}),
+		}
+		return { ctx, applied }
+	}
+
+	const run = (ctx: ReturnType<typeof makeCtx>, arg = "") =>
+		coreCommands().find((c) => c.name === "/preset")!.run(ctx, arg)
+
+	test("without the seam preset face says unavailable (the /plugins contract)", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await run(ctx)
+		expect(ctx.lines).toEqual(["/preset unavailable in this session"])
+	})
+
+	test("an empty roster degrades to the no-presets notice", async () => {
+		const { ctx } = presetSeam({ rows: [] })
+		await run(ctx)
+		expect(ctx.lines).toEqual(["no agent presets available"])
+	})
+
+	test("bare opens the picker over the roster with the current row marked", async () => {
+		const { ctx } = presetSeam({ currentId: "standard" })
+		await run(ctx)
+		expect(ctx.hooks.picks[0]?.title).toBe("Select agent preset")
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "Standard", description: "current" },
+			{ title: "PTC", description: "batch tools" },
+		])
+	})
+
+	test("a picker pick confirms (live session), applies, reloads and reports", async () => {
+		const { ctx, applied } = presetSeam({ currentId: "standard", sessionAttached: true })
+		// Two dialogs in sequence: the roster picker answers "ptc", the
+		// confirm dialog answers "switch".
+		const answers = ["ptc", "switch"]
+		ctx.pickOne = async (title, options, headerLine) => {
+			ctx.hooks.picks.push({ title, headerLine, options: options.map((o) => ({ title: o.title, description: o.description })) })
+			return answers.shift()
+		}
+		await run(ctx)
+		expect(ctx.hooks.picks[1]?.title).toBe("Switch preset to PTC?")
+		expect(applied).toEqual(["ptc"])
+		expect(ctx.hooks.reloaded).toBe(1)
+		expect(ctx.lines).toEqual(["preset → PTC (new session)"])
+	})
+
+	test("dialog cancel keeps everything as it was (no select, no reload)", async () => {
+		const { ctx, applied } = presetSeam({ currentId: "standard", pickAnswer: "cancel" })
+		await run(ctx)
+		expect(applied).toEqual([])
+		expect(ctx.hooks.reloaded).toBe(0)
+		expect(ctx.lines).toEqual([])
+	})
+
+	test("re-picking the current preset applies nothing", async () => {
+		const { ctx, applied } = presetSeam({ currentId: "standard", pickAnswer: "standard" })
+		await run(ctx)
+		expect(applied).toEqual([])
+	})
+
+	test("esc on the picker applies nothing", async () => {
+		const { ctx, applied } = presetSeam({ currentId: "standard", pickAnswer: undefined })
+		await run(ctx)
+		expect(applied).toEqual([])
+	})
+
+	test("/preset next rotates with wrap and confirms before applying", async () => {
+		const { ctx, applied } = presetSeam({ currentId: "ptc", pickAnswer: "switch" })
+		await run(ctx, "next")
+		expect(ctx.hooks.picks[0]?.title).toBe("Switch preset to Standard?")
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "Switch to Standard" },
+			{ title: "Cancel" },
+		])
+		expect(applied).toEqual(["standard"])
+		expect(ctx.lines).toEqual(["preset → Standard (new session)"])
+	})
+
+	test("/preset next on a single-preset roster says there is nothing to switch to", async () => {
+		const { ctx, applied } = presetSeam({ rows: [{ id: "solo", name: "Solo" }], currentId: "solo" })
+		await run(ctx, "next")
+		expect(ctx.lines).toEqual(["no other preset to switch to"])
+		expect(applied).toEqual([])
+	})
+
+	test("/preset next on a fresh app (nothing attached) applies directly without the dialog", async () => {
+		const { ctx, applied } = presetSeam({ currentId: "standard", sessionAttached: false })
+		await run(ctx, "next")
+		expect(ctx.hooks.picks).toEqual([])
+		expect(applied).toEqual(["ptc"])
+		expect(ctx.lines).toEqual(["preset → PTC (new session)"])
+	})
+
+	test("/preset <name> targets directly and rejects unknown names", async () => {
+		const { ctx, applied } = presetSeam({ currentId: "standard", pickAnswer: "switch" })
+		await run(ctx, "ptc")
+		expect(applied).toEqual(["ptc"])
+
+		const miss = presetSeam({ currentId: "standard" })
+		await run(miss.ctx, "nope")
+		expect(miss.ctx.lines).toEqual(["unknown preset: nope"])
+		expect(miss.applied).toEqual([])
+	})
+
+	test("/preset <current> is a no-op notice, a failed select reports failure", async () => {
+		const { ctx, applied } = presetSeam({ currentId: "ptc", pickAnswer: "switch" })
+		await run(ctx, "ptc")
+		expect(ctx.lines).toEqual(["preset already: PTC"])
+		expect(applied).toEqual([])
+
+		const seam = new RecordingSeam()
+		const failCtx = makeCtx(seam, "switch")
+		failCtx.seam = {
+			...seam.seam,
+			preset: {
+				list: async () => roster,
+				currentId: async () => "standard",
+				select: async () => false,
+			},
+		}
+		await run(failCtx, "ptc")
+		expect(failCtx.lines).toEqual(["preset switch failed: PTC"])
 	})
 })
