@@ -376,3 +376,73 @@ describe("RemoteSessionSeam preset face (batch H2)", () => {
 		expect(await new RemoteSessionSeam(boom.session).preset.select("standard")).toBe(false)
 	})
 })
+
+describe("RemoteSessionSeam login face (batch H4)", () => {
+	test("credentials half forwards 1:1 (status/login/logout)", async () => {
+		const { session, calls } = fakeSession({
+			credentialStatus: async (ref: string) => {
+				calls.push({ method: "credentialStatus", args: ref })
+				return { configured: true }
+			},
+			login: async (ref: string, apiKey: string) => {
+				calls.push({ method: "login", args: [ref, apiKey] })
+			},
+			logout: async (ref: string) => {
+				calls.push({ method: "logout", args: ref })
+			},
+		})
+		const seam = new RemoteSessionSeam(session)
+		expect(await seam.login!.credentialStatus("OPENAI_API_KEY")).toEqual({ configured: true })
+		await seam.login!.login("OPENAI_API_KEY", "sk-x")
+		await seam.login!.logout("OPENAI_API_KEY")
+		expect(calls.map((c) => c.method)).toEqual(["credentialStatus", "login", "logout"])
+	})
+
+	test("routes reads the llm-pi-ai providers keys from the settings describe rows", async () => {
+		const { session } = fakeSession({
+			settingsSeam: {
+				describe: async () => [
+					{ ns: "other", revision: 1, value: {} },
+					{ ns: "llm-pi-ai", revision: 7, value: { providers: { openai: { apiKeyEnv: "OPENAI_API_KEY" }, acme: {} } } },
+				],
+				mutate: async () => {},
+			},
+		})
+		const seam = new RemoteSessionSeam(session)
+		expect(await seam.login!.routes()).toEqual(["openai", "acme"])
+	})
+
+	test("registerRoute mutates the llm-pi-ai namespace at the described revision (set + unset)", async () => {
+		const mutations: { ns: string; ops: unknown[]; revision?: number }[] = []
+		const { session } = fakeSession({
+			settingsSeam: {
+				describe: async () => [{ ns: "llm-pi-ai", revision: 7, value: { providers: { openai: {} } } }],
+				mutate: async (ns: string, ops: unknown[], revision?: number) => {
+					mutations.push({ ns, ops, revision })
+				},
+			},
+		})
+		const seam = new RemoteSessionSeam(session)
+		expect(await seam.login!.registerRoute("acme", { apiKeyEnv: "ACME_API_KEY" })).toBe(true)
+		expect(await seam.login!.registerRoute("openai", undefined)).toBe(true)
+		expect(mutations).toEqual([
+			{ ns: "llm-pi-ai", ops: [{ op: "set", path: ["providers", "acme"], value: { apiKeyEnv: "ACME_API_KEY" } }], revision: 7 },
+			{ ns: "llm-pi-ai", ops: [{ op: "unset", path: ["providers", "openai"] }], revision: 7 },
+		])
+	})
+
+	test("registerRoute degrades false on a rejecting/mutating backend; routes degrades [] on describe failure", async () => {
+		const boom = fakeSession({
+			settingsSeam: {
+				describe: async () => [{ ns: "llm-pi-ai", revision: 7, value: {} }],
+				mutate: async () => {
+					throw new Error("rejected")
+				},
+			},
+		})
+		const seam = new RemoteSessionSeam(boom.session)
+		expect(await seam.login!.registerRoute("acme", {})).toBe(false)
+		const dead = fakeSession({ settingsSeam: { describe: async () => { throw new Error("down") }, mutate: async () => {} } })
+		expect(await new RemoteSessionSeam(dead.session).login!.routes()).toEqual([])
+	})
+})

@@ -45,6 +45,7 @@ import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palet
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
 import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
+import { DialogPrompt } from "../src/ui/dialog-prompt"
 import { DialogProvider, useDialog } from "../src/ui/dialog"
 import { ToastProvider } from "../src/ui/toast"
 import { ClipboardProvider } from "../src/context/clipboard"
@@ -168,6 +169,33 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 				() => done(undefined),
 			)
 		})
+	// /login chained-form text prompt (batch H4, host-entry-v2 parity): the
+	// DialogPrompt modal through the same dialog host as pickOne — Enter
+	// commits, esc resolves undefined (the chain aborts).
+	const promptText = (
+		title: string,
+		opts?: { placeholder?: string; mask?: boolean; initial?: string },
+	) =>
+		new Promise<string | undefined>((resolvePrompt) => {
+			let settled = false
+			const done = (value: string | undefined) => {
+				if (settled) return
+				settled = true
+				dialog.clear()
+				resolvePrompt(value)
+			}
+			dialog.replace(
+				() =>
+					createComponent(DialogPrompt, {
+						title,
+						placeholder: opts?.placeholder,
+						value: opts?.initial,
+						onConfirm: (value: string) => done(value),
+						onCancel: () => done(undefined),
+					}),
+				() => done(undefined),
+			)
+		})
 	// /btw side-question overlay (feature batch F3) — host-entry-v2 parity.
 	const btw = new BtwController({
 		ask: (question, snapshot, onDelta) =>
@@ -196,6 +224,7 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 		},
 		quit: props.quit,
 		pickOne,
+		promptText,
 		openBtw: (argText: string) => void openBtw(argText),
 		// /theme switch surface (batch F7b — client-face parity with
 		// host-entry-v2): live apply + persistence through the seam's

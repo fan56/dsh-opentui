@@ -175,6 +175,8 @@ export function createSlashHost(deps: {
 	reload(): void
 	quit(): void
 	pickOne: SlashCommandContext["pickOne"]
+	/** /login chained-form text prompt (batch H4); absent = /login says unavailable. */
+	promptText?: SlashCommandContext["promptText"]
 	/** /btw overlay opener (feature batch F3); absent = /btw says unavailable. */
 	openBtw?: (argText: string) => void
 	/** Theme-switch surface (batch F7a); absent = /theme says unavailable. */
@@ -189,6 +191,7 @@ export function createSlashHost(deps: {
 		reload: deps.reload,
 		quit: deps.quit,
 		pickOne: deps.pickOne,
+		...(deps.promptText ? { promptText: deps.promptText } : {}),
 		...(deps.openBtw ? { openBtw: deps.openBtw } : {}),
 		...(deps.themes ? { themes: deps.themes } : {}),
 	}

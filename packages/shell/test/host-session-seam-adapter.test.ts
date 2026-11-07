@@ -287,3 +287,67 @@ describe("HostSessionSeam preset face (batch H2)", () => {
 		expect(await new HostSessionSeam(boom.session).preset.select("ptc")).toBe(false)
 	})
 })
+
+describe("HostSessionSeam login face (batch H4)", () => {
+	test("credentials half forwards 1:1 (status/login/logout)", async () => {
+		const { session, calls } = fakeSession({
+			credentialStatus: async (ref: string) => {
+				calls.push({ method: "credentialStatus", args: ref })
+				return { configured: false }
+			},
+			login: async (ref: string, apiKey: string) => {
+				calls.push({ method: "login", args: [ref, apiKey] })
+			},
+			logout: async (ref: string) => {
+				calls.push({ method: "logout", args: ref })
+			},
+		})
+		const seam = new HostSessionSeam(session)
+		expect(await seam.login!.credentialStatus("OPENAI_API_KEY")).toEqual({ configured: false })
+		await seam.login!.login("OPENAI_API_KEY", "sk-x")
+		await seam.login!.logout("OPENAI_API_KEY")
+		expect(calls.map((c) => c.method)).toEqual(["credentialStatus", "login", "logout"])
+	})
+
+	test("routes reads the llm-pi-ai providers keys; settingsSeam-less degrades []", async () => {
+		const { session } = fakeSession({
+			settingsSeam: {
+				describe: async () => [{ ns: "llm-pi-ai", revision: 3, value: { providers: { acme: {} } } }],
+				mutate: async () => {},
+			},
+		})
+		const seam = new HostSessionSeam(session)
+		expect(await seam.login!.routes()).toEqual(["acme"])
+
+		const bare = fakeSession({})
+		expect(await new HostSessionSeam(bare.session).login!.routes()).toEqual([])
+		expect(await new HostSessionSeam(bare.session).login!.registerRoute("acme", {})).toBe(false)
+	})
+
+	test("registerRoute mutates llm-pi-ai at the described revision; rejection degrades false", async () => {
+		const mutations: { ns: string; ops: unknown[]; revision?: number }[] = []
+		const { session } = fakeSession({
+			settingsSeam: {
+				describe: async () => [{ ns: "llm-pi-ai", revision: 3, value: { providers: {} } }],
+				mutate: async (ns: string, ops: unknown[], revision?: number) => {
+					mutations.push({ ns, ops, revision })
+				},
+			},
+		})
+		const seam = new HostSessionSeam(session)
+		expect(await seam.login!.registerRoute("acme", { apiKeyEnv: "ACME_API_KEY" })).toBe(true)
+		expect(mutations).toEqual([
+			{ ns: "llm-pi-ai", ops: [{ op: "set", path: ["providers", "acme"], value: { apiKeyEnv: "ACME_API_KEY" } }], revision: 3 },
+		])
+
+		const boom = fakeSession({
+			settingsSeam: {
+				describe: async () => [{ ns: "llm-pi-ai", revision: 3, value: {} }],
+				mutate: async () => {
+					throw new Error("rejected")
+				},
+			},
+		})
+		expect(await new HostSessionSeam(boom.session).login!.registerRoute("acme", {})).toBe(false)
+	})
+})

@@ -224,6 +224,46 @@ export class HostSessionSeam implements SessionSeam {
 		},
 	}
 
+	// ---- /login provider face (batch H4, tui-pi 65-ux-batch parity) ----
+	// The credentials half is HostSession 1:1 (ctx.get("credentials")
+	// set/unset — structural faces mirror tui-pi's login.ts seams); the route
+	// half rides the host settings service's llm-pi-ai namespace with the
+	// old-stack writeRoute semantics (describe → revision → mutate). The
+	// settings seam is optional (undefined = no route registration; routes
+	// reads empty and registerRoute fails false).
+	login = {
+		credentialStatus: (ref: string) => this.#session.credentialStatus(ref),
+		login: (ref: string, apiKey: string) => this.#session.login(ref, apiKey),
+		logout: (ref: string) => this.#session.logout(ref),
+		routes: async (): Promise<string[]> => {
+			const settings = this.#session.settingsSeam
+			if (!settings) return []
+			try {
+				const rows = await settings.describe()
+				const ns = Array.isArray(rows) ? rows.find((row: any) => row?.ns === "llm-pi-ai") : undefined
+				return Object.keys((ns?.value as any)?.providers ?? {})
+			} catch {
+				return []
+			}
+		},
+		registerRoute: async (providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean> => {
+			const settings = this.#session.settingsSeam
+			if (!settings) return false
+			try {
+				const rows = await settings.describe()
+				const ns = Array.isArray(rows) ? rows.find((row: any) => row?.ns === "llm-pi-ai") : undefined
+				const ops = profile
+					? [{ op: "set", path: ["providers", providerId], value: profile }]
+					: [{ op: "unset", path: ["providers", providerId] }]
+				await settings.mutate("llm-pi-ai", ops, ns?.revision)
+				return true
+			} catch (error) {
+				console.error("[host-session-seam-adapter] login route registration failed:", error)
+				return false
+			}
+		},
+	}
+
 	/**
 	 * /session info panel (batch F4): HostSession.sessionInfo() 1:1, plus the
 	 * message count the facade can't know — a one-shot durable-transcript

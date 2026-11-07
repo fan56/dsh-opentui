@@ -23,6 +23,18 @@ import type { SeamPresetRow, SessionSeam } from "../../seams/session"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
 import { emptyFilteredCopy, filterSessionsBySizeFloor, resumePickerOptions } from "./resume-picker"
 import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
+import {
+	CUSTOM_ENTRY,
+	CUSTOM_STEPS,
+	LOGIN_PICKER_TITLE,
+	PROVIDER_CATALOG,
+	buildCustomEntry,
+	deriveKeyRef,
+	providerProfileFor,
+	validateBaseUrl,
+	validateRouteId,
+	type CatalogEntry,
+} from "./login"
 
 /** One registry row: name carries the leading slash ("/help"). */
 export interface SlashCommand {
@@ -54,6 +66,18 @@ export interface SlashCommandContext {
 		title: string,
 		options: { title: string; value: string; description?: string }[],
 		headerLine?: string,
+	): Promise<string | undefined>
+	/**
+	 * One generic modal text prompt (the DialogPrompt modal through the
+	 * page's overlay host, batch H4 — the subagents-picker steer precedent,
+	 * DialogPrompt stepping). Resolves the committed text, or undefined on
+	 * esc/cancel. `mask` marks a secret step: callers keep the value out of
+	 * the transcript and every persisted surface (the title carries the
+	 * masked note; the textarea itself paints plaintext).
+	 */
+	promptText?(
+		title: string,
+		opts?: { placeholder?: string; mask?: boolean; initial?: string },
 	): Promise<string | undefined>
 	/**
 	 * Open the /btw side-question overlay (feature batch F3). Optional: an
@@ -97,6 +121,118 @@ export function findPresetRow(rows: SeamPresetRow[], query: string): SeamPresetR
 	const needle = query.trim().toLowerCase()
 	if (needle === "") return undefined
 	return rows.find((row) => row.id.toLowerCase() === needle || row.name.toLowerCase() === needle)
+}
+
+// ----------------------------------------------------------- /login helpers --
+// Batch H4 (tui-pi 65-ux-batch parity). The commit is the old-stack
+// double-write; the chain is the six-step loop. Exported for table tests.
+
+export interface LoginFace {
+	credentialStatus(ref: string): Promise<{ configured: boolean }>
+	login(ref: string, apiKey: string): Promise<void>
+	logout(ref: string): Promise<void>
+	routes(): Promise<string[]>
+	registerRoute(providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean>
+}
+
+/** A step title with an inline validation error appended (re-prompt view). */
+export function loginStepTitle(stepTitle: string, error?: string): string {
+	return error ? `${stepTitle} — ${error}` : stepTitle
+}
+
+/**
+ * The commit half both flows share (old-stack commitLogin): register the
+ * route through the settings seam first, then store the key through the
+ * credentials seam. Route failure keeps the key unstored (no garbage
+ * credential without its route).
+ */
+export async function commitLoginRoute(
+	say: (text: string) => void,
+	face: LoginFace,
+	entry: CatalogEntry,
+	key: string,
+): Promise<void> {
+	// The old stack's empty-commit guard: an empty key fired a credentials.set
+	// the host rejects AND registered a garbage route. An empty key is a
+	// swallowed no-op (esc stays the cancel path).
+	if (!key.trim()) {
+		say("login cancelled — empty key")
+		return
+	}
+	const registered = await face.registerRoute(entry.id, providerProfileFor(entry))
+	if (!registered) {
+		say(`${entry.id}: route registration failed — key not stored`)
+		return
+	}
+	try {
+		await face.login(deriveKeyRef(entry.id), key)
+	} catch (e) {
+		say(`${entry.id}: key store failed — ${String(e instanceof Error ? e.message : e).slice(0, 150)}`)
+		return
+	}
+	say(`${entry.name} subscribed — key stored, route registered (in /model next session)`)
+}
+
+/** The masked key step + commit for a catalog provider. */
+export async function commitCatalogLogin(
+	ctx: Pick<SlashCommandContext, "promptText" | "say">,
+	face: LoginFace,
+	entry: CatalogEntry,
+): Promise<void> {
+	const key = await ctx.promptText?.(`API key for ${entry.name} (${deriveKeyRef(entry.id)})`, { mask: true })
+	if (key === undefined) return
+	await commitLoginRoute(ctx.say, face, entry, key)
+}
+
+/**
+ * The six-step chained form (the reference 65 flow). Each step re-prompts
+ * on an invalid value (the inline error rides the title); esc at any step
+ * aborts the WHOLE flow; the optional steps (2 display name, 3 protocol)
+ * commit on an empty Enter with their defaults.
+ */
+export async function runCustomLoginChain(
+	ctx: Pick<SlashCommandContext, "promptText" | "say">,
+	face: LoginFace,
+	existingRoutes: string[],
+): Promise<void> {
+	const answers: { routeId?: string; displayName?: string; protocol?: string; baseURL?: string; models?: string } = {}
+	for (let step = 0; step < CUSTOM_STEPS.length; step++) {
+		const def = CUSTOM_STEPS[step]!
+		// Per-step validation loop: an invalid value re-prompts the SAME step
+		// with the error inline (the reference's "keeps the form on step N"
+		// arms). undefined (esc) abandons the whole flow.
+		let error: string | undefined
+		let value: string | undefined
+		for (;;) {
+			value = await ctx.promptText?.(loginStepTitle(def.title, error), { mask: def.mask })
+			if (value === undefined) {
+				ctx.say("login cancelled")
+				return
+			}
+			const trimmed = value.trim()
+			if (!trimmed && def.optional) break
+			if (!trimmed && !def.optional) {
+				error = "this field is required"
+				continue
+			}
+			if (step === 0) error = validateRouteId(trimmed, existingRoutes)
+			else if (step === 3) error = validateBaseUrl(trimmed)
+			else error = undefined
+			if (!error) break
+		}
+		const trimmed = value!.trim()
+		if (step === 0) answers.routeId = trimmed
+		else if (step === 1) answers.displayName = trimmed
+		else if (step === 2) answers.protocol = trimmed
+		else if (step === 3) answers.baseURL = trimmed
+		else if (step === 4) answers.models = trimmed
+		else {
+			// step 6 — the masked key; the commit consumes it directly.
+			const entry = buildCustomEntry(answers as { routeId: string; baseURL: string; models: string })
+			await commitLoginRoute(ctx.say, face, entry, trimmed)
+			return
+		}
+	}
 }
 
 /** The batch-8 core set, bound to a context at call time (pure table). */
@@ -151,6 +287,54 @@ export function coreCommands(): SlashCommand[] {
 				const [providerID, modelID] = picked.split("/")
 				ctx.seam.selectModel(providerID, modelID)
 				ctx.say(`model → ${picked}`)
+			},
+		},
+		{
+			// Feature batch H4 (tui-pi 65-ux-batch parity). The provider login:
+			// bare opens the "Add provider" picker (flat catalog + the Custom
+			// provider row); a catalog row asks for its (masked) API key, the
+			// Custom row runs the six-step chained form (1 route id → 2 display
+			// name → 3 protocol → 4 base URL → 5 models → 6 API key) with
+			// per-step inline validation ("already exists" on a colliding route
+			// id, the http scheme error on a bad base URL) and esc aborting the
+			// whole flow at any step. The commit is the old-stack double-write:
+			// the llm-pi-ai route through the settings seam (registerRoute)
+			// THEN the key through the credentials seam (login) — the provider
+			// shows up in /model on the next session. "/login <id>" targets a
+			// catalog entry directly.
+			name: "/login",
+			description: "log in a provider (bare opens the picker; Custom provider opens the form)",
+			async run(ctx, argText) {
+				const face = ctx.seam.login
+				if (!face || !ctx.promptText) {
+					ctx.say("/login unavailable in this session")
+					return
+				}
+				const arg = argText.trim().toLowerCase()
+				if (arg) {
+					const entry = PROVIDER_CATALOG.find((e) => e.id === arg)
+					if (!entry) {
+						ctx.say(`unknown provider: ${arg}`)
+						return
+					}
+					await commitCatalogLogin(ctx, face, entry)
+					return
+				}
+				// Custom provider is the FIRST row (the reference's cursor-starts-
+				// there behavior — Enter on the fresh picker opens the form).
+				const picked = await ctx.pickOne(
+					LOGIN_PICKER_TITLE,
+					[CUSTOM_ENTRY, ...PROVIDER_CATALOG].map((e) => ({ title: e.name, value: e.id, description: e.hint })),
+				)
+				if (!picked) return
+				if (picked === CUSTOM_ENTRY.id) {
+					const routes = await face.routes().catch(() => [] as string[])
+					await runCustomLoginChain(ctx, face, routes)
+					return
+				}
+				const entry = PROVIDER_CATALOG.find((e) => e.id === picked)
+				if (!entry) return
+				await commitCatalogLogin(ctx, face, entry)
 			},
 		},
 		{
