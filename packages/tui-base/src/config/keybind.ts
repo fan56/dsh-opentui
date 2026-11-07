@@ -104,6 +104,7 @@ export const Definitions = {
   "opencode.debug": keybind("none", "View debug info"),
 
   "session.search": keybind("ctrl+shift+f", "Search the session transcript"),
+  "session.searchSessions": keybind("ctrl+alt+f", "Full-text search over stored sessions"),
   "session.export": keybind("<leader>x", "Export session to editor"),
   "session.copy": keybind("none", "Copy session transcript"),
   "session.copy.id": keybind("none", "Copy session ID"),

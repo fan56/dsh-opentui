@@ -91,6 +91,47 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 	return ctx
 }
 
+
+describe("batch H3: /search + /plugins panel", () => {
+	test("/search without the overlay hook degrades to the notice", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await coreCommands().find((c) => c.name === "/search")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["/search unavailable in this session"])
+	})
+
+	test("/search with the hook opens the overlay (no transcript rows)", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		let opened = 0
+		;(ctx as any).openSearch = () => {
+			opened++
+		}
+		await coreCommands().find((c) => c.name === "/search")!.run(ctx, "")
+		expect(opened).toBe(1)
+		expect(ctx.lines).toEqual([])
+	})
+
+	test("/plugins with the panel hook opens the panel", async () => {
+		const seam = new RecordingSeam()
+		;(seam.seam as any).plugins = () => [{ name: "pkg-a", version: "1.0.0" }]
+		const ctx = makeCtx(seam)
+		let opened = 0
+		;(ctx as any).openPlugins = () => {
+			opened++
+		}
+		await coreCommands().find((c) => c.name === "/plugins")!.run(ctx, "")
+		expect(opened).toBe(1)
+		expect(ctx.lines).toEqual([])
+	})
+
+	test("/plugins without the panel hook keeps the F7a listing", async () => {
+		const seam = new RecordingSeam()
+		;(seam.seam as any).plugins = () => [{ name: "pkg-a", version: "1.0.0" }]
+		const ctx = makeCtx(seam)
+		await coreCommands().find((c) => c.name === "/plugins")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["● pkg-a@1.0.0"])
+	})
+})
+
 describe("dispatchLine", () => {
 	const commands = coreCommands()
 
@@ -143,6 +184,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/btw",
 			"/session",
 			"/plugins",
+			"/search",
 			"/think",
 			"/hotkeys",
 			"/theme",
@@ -167,7 +209,8 @@ describe("core commands", () => {
 			"/clear — clear the transcript",
 			"/btw — side question (bare reopens the last answer)",
 			"/session — show session info (id, model, tokens, speed)",
-			"/plugins — list installed plugins",
+			"/plugins — manage plugins (opens the panel)",
+			"/search — full-text search over stored sessions",
 			"/think — set reasoning effort (opens the picker)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
