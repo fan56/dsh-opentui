@@ -52,7 +52,10 @@ if [ -f "$BUNDLE" ] && grep -qF 'Add provider' "$BUNDLE" && grep -qF 'Custom pro
 fi
 
 # Settings patch the login commit writes into (the reference's evidence file).
-PATCH="$HOME/.dsh/profiles/tui/cordis.patch.yml"
+# This image provisions the dsh-opentui profile (see the run-all header); the
+# reference's `tui` layout note above applies — the file arms follow the
+# deployment's profile dir.
+PATCH="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
 UNIQUE_ID='acme-gateway-h4'
 UNIQUE_KEY='sk-e2e-h4-login-key'
 

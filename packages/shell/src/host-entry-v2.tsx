@@ -186,6 +186,10 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
         if (settled) return
         settled = true
         dialog.clear()
+        // Batch C16 (69-login pass-2): the dialog host leaves nothing focused
+        // when the last dialog clears — the composer probe after /login's
+        // picker went dead. Same reclaim as the overlay onClosed precedent.
+        if (composerRef && !composerRef.focused()) composerRef.focus()
         resolvePick(value)
       }
       dialog.replace(
@@ -201,7 +205,7 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
         () => done(undefined),
       )
     })
-  // /btw side-question overlay (feature batch F3)
+  // /btw side-question overlay (feature batch F3): out-of-band answer over
   // /login chained-form text prompt (batch H4): the DialogPrompt modal
   // through the same dialog host as pickOne — Enter commits, esc resolves
   // undefined (the chain aborts). The subagents-picker steer precedent.
@@ -215,6 +219,9 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
         if (settled) return
         settled = true
         dialog.clear()
+        // Batch C16: reclaim the composer when the chained form's prompt
+        // clears (the final commit leaves the flow — no follow-up dialog).
+        if (composerRef && !composerRef.focused()) composerRef.focus()
         resolvePrompt(value)
       }
       dialog.replace(
@@ -229,8 +236,6 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
         () => done(undefined),
       )
     })
-: out-of-band answer over
-  // the facade's throwaway session; never touches the main turn.
   const btw = new BtwController({
     ask: (question, snapshot, onDelta) =>
       seam.btwAsk ? seam.btwAsk(question, snapshot, onDelta) : Promise.resolve("error: /btw unavailable"),

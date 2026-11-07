@@ -3893,6 +3893,38 @@ class HostSessionSeam {
       }
     }
   };
+  login = {
+    credentialStatus: (ref) => this.#session.credentialStatus(ref),
+    login: (ref, apiKey) => this.#session.login(ref, apiKey),
+    logout: (ref) => this.#session.logout(ref),
+    routes: async () => {
+      const settings = this.#session.settingsSeam;
+      if (!settings)
+        return [];
+      try {
+        const rows = await settings.describe();
+        const ns = Array.isArray(rows) ? rows.find((row) => row?.ns === "llm-pi-ai") : undefined;
+        return Object.keys(ns?.value?.providers ?? {});
+      } catch {
+        return [];
+      }
+    },
+    registerRoute: async (providerId, profile) => {
+      const settings = this.#session.settingsSeam;
+      if (!settings)
+        return false;
+      try {
+        const rows = await settings.describe();
+        const ns = Array.isArray(rows) ? rows.find((row) => row?.ns === "llm-pi-ai") : undefined;
+        const ops = profile ? [{ op: "set", path: ["providers", providerId], value: profile }] : [{ op: "unset", path: ["providers", providerId] }];
+        await settings.mutate("llm-pi-ai", ops, ns?.revision);
+        return true;
+      } catch (error) {
+        console.error("[host-session-seam-adapter] login route registration failed:", error);
+        return false;
+      }
+    }
+  };
   async sessionInfo() {
     const base = this.#session.sessionInfo();
     if (base.sessionId === undefined)
@@ -26777,6 +26809,104 @@ function formatSessionInfoPanel(rows) {
   return rows.map((row) => `${row.field.padEnd(width)}  ${row.value}`);
 }
 
+// ../tui-base/src/routes/session/login.ts
+var PROVIDER_CATALOG = [
+  { id: "amazon-bedrock", name: "Amazon Bedrock", hint: "aws route", catalogRoute: true },
+  { id: "ant-ling", name: "Ant Ling", hint: "api key", catalogRoute: true },
+  { id: "anthropic", name: "Anthropic", hint: "api key", catalogRoute: true },
+  { id: "azure-openai-responses", name: "Azure OpenAI", hint: "api key", catalogRoute: true },
+  { id: "cerebras", name: "Cerebras", hint: "api key", catalogRoute: true },
+  { id: "cloudflare-ai-gateway", name: "Cloudflare AI Gateway", hint: "api key", catalogRoute: true },
+  { id: "cloudflare-workers-ai", name: "Cloudflare Workers AI", hint: "api key", catalogRoute: true },
+  { id: "deepseek", name: "DeepSeek", hint: "api key", catalogRoute: true },
+  { id: "fireworks", name: "Fireworks", hint: "api key", catalogRoute: true },
+  { id: "github-copilot", name: "GitHub Copilot", hint: "provcatalog.hint.copilot", catalogRoute: true },
+  { id: "google", name: "Google Gemini", hint: "api key", catalogRoute: true },
+  { id: "google-vertex", name: "Google Vertex AI", hint: "provcatalog.hint.googleCloud", catalogRoute: true },
+  { id: "groq", name: "Groq", hint: "api key", catalogRoute: true },
+  { id: "huggingface", name: "Hugging Face", hint: "provcatalog.hint.huggingface", catalogRoute: true },
+  { id: "kimi-coding", name: "Kimi For Coding", hint: "api key", catalogRoute: true },
+  { id: "minimax", name: "MiniMax", hint: "api key", catalogRoute: true },
+  { id: "minimax-cn", name: "MiniMax CN", hint: "api key", catalogRoute: true },
+  { id: "mistral", name: "Mistral", hint: "api key", catalogRoute: true },
+  { id: "moonshotai", name: "Moonshot AI", hint: "api key", catalogRoute: true },
+  { id: "moonshotai-cn", name: "Moonshot AI CN", hint: "api key", catalogRoute: true },
+  { id: "nvidia", name: "NVIDIA", hint: "api key", catalogRoute: true },
+  { id: "openai", name: "OpenAI", hint: "api key", catalogRoute: true },
+  { id: "opencode-go", name: "OpenCode Go", hint: "api key.gateway", catalogRoute: true },
+  { id: "opencode", name: "OpenCode Zen", hint: "api key", catalogRoute: true },
+  { id: "openrouter", name: "OpenRouter", hint: "api key", catalogRoute: true },
+  { id: "qwen-token-plan", name: "Qwen Token Plan", hint: "api key", catalogRoute: true },
+  { id: "qwen-token-plan-cn", name: "Qwen Token Plan CN", hint: "api key", catalogRoute: true },
+  { id: "together", name: "Together AI", hint: "api key", catalogRoute: true },
+  { id: "vercel-ai-gateway", name: "Vercel AI Gateway", hint: "api key", catalogRoute: true },
+  { id: "xiaomi", name: "Xiaomi", hint: "api key", catalogRoute: true },
+  { id: "xiaomi-token-plan-ams", name: "Xiaomi Token Plan AMS", hint: "api key", catalogRoute: true },
+  { id: "xiaomi-token-plan-cn", name: "Xiaomi Token Plan CN", hint: "api key", catalogRoute: true },
+  { id: "xiaomi-token-plan-sgp", name: "Xiaomi Token Plan SGP", hint: "api key", catalogRoute: true },
+  { id: "zai", name: "Z.AI", hint: "api key", catalogRoute: true },
+  { id: "zai-coding-cn", name: "Z.AI Coding CN", hint: "api key", catalogRoute: true },
+  { id: "xai", name: "xAI", hint: "api key", catalogRoute: true }
+];
+var CUSTOM_ENTRY = { id: "custom", name: "Custom provider", hint: "baseUrl + model + key", catalogRoute: false };
+var LOGIN_PICKER_TITLE = "Add provider";
+var CUSTOM_STEPS = [
+  { title: "Custom provider 1/6 — route id", optional: false, mask: false },
+  { title: "Custom provider 2/6 — display name", optional: true, mask: false },
+  { title: "Custom provider 3/6 — protocol (default openai-completions)", optional: true, mask: false },
+  { title: "Custom provider 4/6 — base URL", optional: false, mask: false },
+  { title: "Custom provider 5/6 — models (comma-separated)", optional: false, mask: false },
+  { title: "Custom provider 6/6 — API key (secret, never echoed)", optional: false, mask: true }
+];
+function deriveKeyRef(provider) {
+  return `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+}
+function providerProfileFor(entry) {
+  const profile = { apiKeyEnv: deriveKeyRef(entry.id) };
+  if (!entry.catalogRoute) {
+    if (entry.api)
+      profile.api = entry.api;
+    if (entry.baseURL)
+      profile.baseURL = entry.baseURL;
+    if (entry.models)
+      profile.models = entry.models;
+    if (entry.displayName)
+      profile.displayName = entry.displayName;
+  }
+  return profile;
+}
+function validateRouteId(id, existingRoutes) {
+  const value = id.trim();
+  if (!value)
+    return "route id is required";
+  if (/[^A-Za-z0-9_-]/.test(value))
+    return "route id: letters, digits, - and _ only";
+  if (existingRoutes.includes(value))
+    return `route id "${value}" already exists`;
+  return;
+}
+function validateBaseUrl(url) {
+  const value = url.trim();
+  if (!value)
+    return "base URL is required";
+  if (!/^https?:\/\/\S+$/.test(value))
+    return "base URL must start with http:// or https://";
+  return;
+}
+function buildCustomEntry(answers) {
+  const id = answers.routeId.trim();
+  return {
+    id,
+    name: answers.displayName?.trim() || id,
+    hint: "custom",
+    catalogRoute: false,
+    api: answers.protocol?.trim() || "openai-completions",
+    baseURL: answers.baseURL.trim(),
+    models: answers.models.split(",").map((m) => ({ id: m.trim() })).filter((m) => m.id),
+    displayName: answers.displayName?.trim() || id
+  };
+}
+
 // ../tui-base/src/routes/session/commands.ts
 function presetNextRow(rows, currentId) {
   if (rows.length <= 1)
@@ -26792,6 +26922,79 @@ function findPresetRow(rows, query) {
   if (needle === "")
     return;
   return rows.find((row) => row.id.toLowerCase() === needle || row.name.toLowerCase() === needle);
+}
+function loginStepTitle(stepTitle, error) {
+  return error ? `${stepTitle} — ${error}` : stepTitle;
+}
+async function commitLoginRoute(say, face, entry, key) {
+  if (!key.trim()) {
+    say("login cancelled — empty key");
+    return;
+  }
+  const registered = await face.registerRoute(entry.id, providerProfileFor(entry));
+  if (!registered) {
+    say(`${entry.id}: route registration failed — key not stored`);
+    return;
+  }
+  try {
+    await face.login(deriveKeyRef(entry.id), key);
+  } catch (e) {
+    say(`${entry.id}: key store failed — ${String(e instanceof Error ? e.message : e).slice(0, 150)}`);
+    return;
+  }
+  say(`${entry.name} subscribed — key stored, route registered (in /model next session)`);
+}
+async function commitCatalogLogin(ctx, face, entry) {
+  const key = await ctx.promptText?.(`API key for ${entry.name} (${deriveKeyRef(entry.id)})`, { mask: true });
+  if (key === undefined)
+    return;
+  await commitLoginRoute(ctx.say, face, entry, key);
+}
+async function runCustomLoginChain(ctx, face, existingRoutes) {
+  const answers = {};
+  for (let step = 0;step < CUSTOM_STEPS.length; step++) {
+    const def = CUSTOM_STEPS[step];
+    let error;
+    let value;
+    for (;; ) {
+      value = await ctx.promptText?.(loginStepTitle(def.title, error), { mask: def.mask });
+      if (value === undefined) {
+        ctx.say("login cancelled");
+        return;
+      }
+      const trimmed = value.trim();
+      if (!trimmed && def.optional)
+        break;
+      if (!trimmed && !def.optional) {
+        error = "this field is required";
+        continue;
+      }
+      if (step === 0)
+        error = validateRouteId(trimmed, existingRoutes);
+      else if (step === 3)
+        error = validateBaseUrl(trimmed);
+      else
+        error = undefined;
+      if (!error)
+        break;
+    }
+    const trimmed = value.trim();
+    if (step === 0)
+      answers.routeId = trimmed;
+    else if (step === 1)
+      answers.displayName = trimmed;
+    else if (step === 2)
+      answers.protocol = trimmed;
+    else if (step === 3)
+      answers.baseURL = trimmed;
+    else if (step === 4)
+      answers.models = trimmed;
+    else {
+      const entry = buildCustomEntry(answers);
+      await commitLoginRoute(ctx.say, face, entry, trimmed);
+      return;
+    }
+  }
 }
 function coreCommands() {
   return [
@@ -26843,6 +27046,39 @@ function coreCommands() {
         const [providerID, modelID] = picked.split("/");
         ctx.seam.selectModel(providerID, modelID);
         ctx.say(`model → ${picked}`);
+      }
+    },
+    {
+      name: "/login",
+      description: "log in a provider (bare opens the picker; Custom provider opens the form)",
+      async run(ctx, argText) {
+        const face = ctx.seam.login;
+        if (!face || !ctx.promptText) {
+          ctx.say("/login unavailable in this session");
+          return;
+        }
+        const arg = argText.trim().toLowerCase();
+        if (arg) {
+          const entry = PROVIDER_CATALOG.find((e) => e.id === arg);
+          if (!entry) {
+            ctx.say(`unknown provider: ${arg}`);
+            return;
+          }
+          await commitCatalogLogin(ctx, face, entry);
+          return;
+        }
+        const picked = await ctx.pickOne(LOGIN_PICKER_TITLE, [CUSTOM_ENTRY, ...PROVIDER_CATALOG].map((e) => ({ title: e.name, value: e.id, description: e.hint })));
+        if (!picked)
+          return;
+        if (picked === CUSTOM_ENTRY.id) {
+          const routes = await face.routes().catch(() => []);
+          await runCustomLoginChain(ctx, face, routes);
+          return;
+        }
+        const entry = PROVIDER_CATALOG.find((e) => e.id === picked);
+        if (!entry)
+          return;
+        await commitCatalogLogin(ctx, face, entry);
       }
     },
     {
@@ -27205,6 +27441,9 @@ function createSlashHost(deps) {
     reload: deps.reload,
     quit: deps.quit,
     pickOne: deps.pickOne,
+    ...deps.promptText ? {
+      promptText: deps.promptText
+    } : {},
     ...deps.openBtw ? {
       openBtw: deps.openBtw
     } : {},
@@ -28076,6 +28315,8 @@ function V2SessionPage(props) {
         return;
       settled = true;
       dialog.clear();
+      if (composerRef && !composerRef.focused())
+        composerRef.focus();
       resolvePick(value);
     };
     dialog.replace(() => createComponent2(DialogSelect, {
@@ -28087,6 +28328,25 @@ function V2SessionPage(props) {
         value: option.value
       })),
       onSelect: (option) => done(option.value),
+      onCancel: () => done(undefined)
+    }), () => done(undefined));
+  });
+  const promptText = (title, opts) => new Promise((resolvePrompt) => {
+    let settled = false;
+    const done = (value) => {
+      if (settled)
+        return;
+      settled = true;
+      dialog.clear();
+      if (composerRef && !composerRef.focused())
+        composerRef.focus();
+      resolvePrompt(value);
+    };
+    dialog.replace(() => createComponent2(DialogPrompt, {
+      title,
+      placeholder: opts?.placeholder,
+      value: opts?.initial,
+      onConfirm: (value) => done(value),
       onCancel: () => done(undefined)
     }), () => done(undefined));
   });
@@ -28122,6 +28382,7 @@ function V2SessionPage(props) {
     },
     quit: props.quit,
     pickOne,
+    promptText,
     openBtw: (argText) => void openBtw(argText),
     openSearch: () => openSessionsSearch(),
     openPlugins: () => openPluginsPanel(),
