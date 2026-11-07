@@ -67,34 +67,43 @@ if (( PICKER_GATE == 0 )); then
 fi
 ok 'dependency gate LIT: installed dist-host carries the /preset picker'
 
-# --- detect whether presets are available (the footer brand segment) ----------
-# "dsh" (no presets / nothing selected) or "dsh(<name>)" — the reference
-# probe, verbatim semantics.
-PANE="$(capture)"
-if printf '%s' "$PANE" | grep -qoE 'dsh\([^)]+\)'; then
+# --- probe roster availability live: /preset's own reaction is the oracle -----
+# (C15: the footer brand segment was the original probe, but it reflects the
+# SELECTED preset, not roster availability — it stays plain "dsh" whenever
+# nothing is selected, even with a full roster. Empirical split: after
+# 62-hard-stop installs @aiwayds/dsh-subagent-registry into the profile the
+# agentPresets roster is non-empty and /preset opens the picker, while the
+# footer still reads plain "dsh" — the footer probe misrouted that state into
+# the degrade arm and the notice assert timed out 2/2 in the shared suite
+# (standalone, with no registry install, the roster reads empty and the
+# notice path passed). So: send /preset once and branch on what appears.)
+ensure_editor_ready 'editor focused before the /preset availability probe' || true
+send '/preset'
+sleep 1
+send Enter
+PRESET_PICKER=0
+PRESET_NOTICE=0
+for _ in $(seq 1 10); do
+  PANE="$(capture)"
+  if printf '%s' "$PANE" | grep -qF 'Select agent preset'; then PRESET_PICKER=1; break; fi
+  if printf '%s' "$PANE" | grep -qF 'no agent presets available'; then PRESET_NOTICE=1; break; fi
+  sleep 1
+done
+HAS_PRESETS=0
+if (( PRESET_PICKER )); then
   HAS_PRESETS=1
-  INITIAL_PRESET="$(printf '%s' "$PANE" | grep -oE 'dsh\([^)]+\)' | head -1)"
-  info "presets available; initial footer: $INITIAL_PRESET"
-  assert_contains 'footer shows the preset-branded segment' 'dsh(' "$PANE"
+  ok 'presets available: /preset opens the picker'
+  esc_until_gone 'preset picker closes on Esc' 'Select agent preset'
+elif (( PRESET_NOTICE )); then
+  ok '/preset reports the no-presets notice'
+  assert_contains 'footer stays plain dsh (no presets)' 'dsh' "$(capture)"
 else
-  HAS_PRESETS=0
-  INITIAL_PRESET='dsh'
-  info 'no presets detected — testing graceful degradation'
+  bad '/preset produced neither the picker nor the no-presets notice; tail:'
+  capture | tail -8 | sed 's/^/    | /'
 fi
 
-# --- /preset command ------------------------------------------------------------
+# --- /preset next (picker arm only) ---------------------------------------------
 if (( HAS_PRESETS )); then
-  # /preset bare — opens the picker overlay.
-  ensure_editor_ready 'editor focused before /preset' || true
-  send '/preset'
-  sleep 1
-  send Enter
-  if wait_pane_fixed '/preset opens the preset picker' 10 'Select agent preset'; then
-    # Close it.
-    esc_until_gone 'preset picker closes on Esc' 'Select agent preset'
-  else
-    bad 'preset picker never appeared'
-  fi
 
   # /preset next — with a live session this opens the confirmation dialog
   # ("Switch preset to <name>?"); the boot always attaches a session here
@@ -142,14 +151,9 @@ if (( HAS_PRESETS )); then
     fi
   fi
 else
-  # No presets — /preset reports the degrade notice and the footer stays
-  # plain "dsh" (the reference's graceful-degradation arm).
-  ensure_editor_ready 'editor focused before /preset (no presets)' || true
-  send '/preset'
-  sleep 1
-  send Enter
-  wait_pane_fixed '/preset reports the no-presets notice' 10 'no agent presets available'
-  assert_contains 'footer stays plain dsh (no presets)' 'dsh' "$(capture)"
+  # No presets — the degrade notice + plain-dsh footer were already asserted
+  # by the live probe above (C15 restructure: one /preset send, branched).
+  :
 fi
 
 # --- editor still usable after preset traffic ---------------------------------
