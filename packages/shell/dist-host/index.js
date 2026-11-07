@@ -3286,14 +3286,29 @@ ${field}: ${value}
   }
   steerChild(id, text) {
     const agent = this.#childAgents.get(id);
-    if (!agent?.steer)
-      return false;
-    try {
-      agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }));
-      return true;
-    } catch {
-      return false;
+    if (agent?.steer) {
+      try {
+        agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }));
+        return true;
+      } catch {}
     }
+    if (this.#sessionId === undefined)
+      return false;
+    const service = this.#ctx.get?.("subagents");
+    if (!service || typeof service.prompt !== "function")
+      return false;
+    service.prompt({
+      requestId: randomUUID(),
+      parentSessionId: this.#sessionId,
+      childSessionId: id,
+      mode: "continuable",
+      delivery: "steer",
+      content: [{ type: "text", text }]
+    }, new AbortController().signal).catch((error) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.error(`[host-session] subagents service steer rejected for ${id.slice(0, 8)}: ${reason}`);
+    });
+    return true;
   }
   async steerChildDetailed(id, text) {
     const agent = this.#childAgents.get(id);
