@@ -38,6 +38,8 @@ import { registerSubagentSteerFeedback } from "../../tui-base/src/routes/session
 import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows"
 import { Transcript } from "../../tui-base/src/routes/session/transcript"
 import { SearchOverlay } from "../../tui-base/src/routes/session/search-overlay"
+import { SessionsSearch, openSessionsSearch } from "../../tui-base/src/routes/session/sessions-search"
+import { PluginsPanel, openPluginsPanel } from "../../tui-base/src/routes/session/plugins-panel"
 import { TurnOverlayController } from "../../tui-base/src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../../tui-base/src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../../tui-base/src/routes/session/slash-palette"
@@ -229,6 +231,10 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
     quit: props.quit,
     pickOne,
     openBtw: (argText: string) => void openBtw(argText),
+    // Batch H3: /search (cross-session FTS overlay) + /plugins (the manager
+    // panel — table + state column + `/` filter).
+    openSearch: () => openSessionsSearch(),
+    openPlugins: () => openPluginsPanel(),
     // /theme switch surface (batch F7a/F7b): the page's ThemeSeam, re-hiding
     // the picker behind the generic pickOne modal. Apply is live; the picked
     // name ALSO persists through the seam's configSave (batch F7b —
@@ -276,6 +282,25 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
           },
           onClosed: () => {
             if (composerRef && !composerRef.focused()) composerRef.focus()
+          },
+        }),
+        // Cross-session FTS search (batch H3, tui-pi 77 parity): /search and
+        // ctrl+alt+f open the query overlay over the seam's searchSessions
+        // face. Getter-prop law: the seam rides a getter.
+        createComponent(SessionsSearch, {
+          get seam() {
+            return seam
+          },
+          onClosed: () => {
+            if (composerRef && !composerRef.focused()) composerRef.focus()
+          },
+        }),
+        // Plugins manager panel (batch H3): /plugins opens the bundle table
+        // with the state column and the `/` filter. Getter-prop law: the seam
+        // rides a getter.
+        createComponent(PluginsPanel, {
+          get seam() {
+            return seam
           },
         }),
         createComponent(Transcript, {

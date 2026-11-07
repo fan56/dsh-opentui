@@ -179,6 +179,10 @@ export function createSlashHost(deps: {
 	openBtw?: (argText: string) => void
 	/** Theme-switch surface (batch F7a); absent = /theme says unavailable. */
 	themes?: SlashCommandContext["themes"]
+	/** /search FTS overlay opener (batch H3); absent = /search says unavailable. */
+	openSearch?: SlashCommandContext["openSearch"]
+	/** /plugins panel opener (batch H3); absent = /plugins keeps the listing. */
+	openPlugins?: SlashCommandContext["openPlugins"]
 }) {
 	const commands = deps.commands ?? coreCommands()
 	const controller = new SlashPaletteController()
@@ -191,6 +195,8 @@ export function createSlashHost(deps: {
 		pickOne: deps.pickOne,
 		...(deps.openBtw ? { openBtw: deps.openBtw } : {}),
 		...(deps.themes ? { themes: deps.themes } : {}),
+		...(deps.openSearch ? { openSearch: deps.openSearch } : {}),
+		...(deps.openPlugins ? { openPlugins: deps.openPlugins } : {}),
 	}
 
 	function run(command: SlashCommand, argText: string): boolean {

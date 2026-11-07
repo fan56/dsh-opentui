@@ -69,6 +69,16 @@ export interface SlashCommandContext {
 		list(): string[]
 		set(name: string): boolean
 	}
+	/**
+	 * Open the cross-session FTS search overlay (batch H3). Optional — an
+	 * entry without it gets the "unavailable" notice.
+	 */
+	openSearch?(): void
+	/**
+	 * Open the plugins manager panel (batch H3 — the /plugins panel upgrade).
+	 * Optional — an entry without it keeps the F7a transcript listing.
+	 */
+	openPlugins?(): void
 }
 
 // ---------------------------------------------------------- /preset helpers --
@@ -229,14 +239,19 @@ export function coreCommands(): SlashCommand[] {
 		},
 		},
 		{
-			// Feature batch F7a. Hero-era semantics: one `● name@version` row
-			// per user-installed plugin (@deepseek-ai/* built-ins already
-			// filtered by the adapters). Never busy-gated — a pure read.
+			// Feature batch F7a → H3 panel upgrade. With the panel hook the
+			// command opens the "🔌 Plugins" manager panel (bundle table +
+			// state column + `/` filter); without it the F7a transcript
+			// listing remains the degrade path. Never busy-gated — a pure read.
 			name: "/plugins",
-			description: "list installed plugins",
+			description: "manage plugins (opens the panel)",
 			run(ctx) {
 				if (!ctx.seam.plugins) {
 					ctx.say("/plugins unavailable in this session")
+					return
+				}
+				if (ctx.openPlugins) {
+					ctx.openPlugins()
 					return
 				}
 				const plugins = ctx.seam.plugins()
@@ -245,6 +260,21 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				for (const plugin of plugins) ctx.say(`● ${plugin.name}@${plugin.version}`)
+			},
+		},
+		{
+			// Feature batch H3 (tui-pi 77 search parity). Opens the
+			// cross-session FTS overlay over the seam's searchSessions face
+			// (both adapters carry it 1:1). Never busy-gated — the query is a
+			// pure read over the stored corpus, not a model turn.
+			name: "/search",
+			description: "full-text search over stored sessions",
+			run(ctx) {
+				if (!ctx.openSearch) {
+					ctx.say("/search unavailable in this session")
+					return
+				}
+				ctx.openSearch()
 			},
 		},
 		{
