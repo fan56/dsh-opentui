@@ -19,7 +19,8 @@
  * (TurnCancelKeys' `dialog.stack.length === 0` gate — the DialogProvider owns
  * the keys). The steer prompt is the vendored DialogPrompt shape: Enter on a
  * RUNNING row opens it, esc cancels silently, submit echoes `steered <agent>`
- * (the e2e-asserted toast) or toasts the rejection.
+ * (the e2e-asserted text, printed as a transcript row — batch D9) or prints
+ * the rejection the same way.
  *
  * OpenTUI law: the root box carries an explicit height (header + capped rows
  * + hints + padding), never auto-height in a flex column.
@@ -30,10 +31,10 @@ import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
 import { useThemeOptional } from "../../context/theme"
 import { useDialog } from "../../ui/dialog"
-import { useToast } from "../../ui/toast"
 import { DialogPrompt } from "../../ui/dialog-prompt"
 import { Locale } from "../../util/locale"
 import {
+  printSteerFeedback,
   subagentHardStopGlyph,
   subagentMarkerSuffix,
   subagentMarkerViews,
@@ -56,7 +57,6 @@ const ROW_CAP = 5
 export function SubagentsPicker(props: SubagentsPickerProps) {
   const theme = useThemeOptional()
   const dialog = useDialog()
-  const toast = useToast()
 
   const [open, setOpen] = createSignal(false)
   const [showAll, setShowAll] = createSignal(false)
@@ -90,6 +90,9 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
   // Batch G2 parity (vendored openSteer): Enter on a RUNNING row opens the
   // steer prompt; the submitted text rides the module bridge (the seam
   // adapters registered their steerChild). esc=cancel returns silently.
+  // Batch D9: the outcome echoes as a transcript row through the module
+  // bridge's feedback slot (the page registered its say() — the /help print
+  // path); the useToast route never painted (the unpainted-toast family).
   function openSteer(entry: SubagentMarkerView) {
     const agent = Locale.titlecase(entry.label)
     dialog.replace(() => (
@@ -102,9 +105,9 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
           const sent = steerSubagent(entry.id, text)
           dialog.clear()
           if (sent) {
-            toast.show({ message: `steered ${agent.toLowerCase()}`, variant: "success" })
+            printSteerFeedback(`steered ${agent.toLowerCase()}`)
           } else {
-            toast.show({ message: `steer rejected — ${agent} is not running`, variant: "error" })
+            printSteerFeedback(`steer rejected — ${agent} is not running`)
           }
         }}
         onCancel={() => dialog.clear()}

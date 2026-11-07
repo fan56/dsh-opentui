@@ -33,6 +33,7 @@ import { createComponent, createElement, render, spread } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
 import { SubagentsPicker } from "../src/routes/session/subagents-picker"
+import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
@@ -159,13 +160,18 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 		snapshot: createBtwSnapshotBuilder(seam),
 	})
 	const openBtw = createBtwOpener({ controller: btw, dialog })
+	// Batch D9 (host-entry-v2 parity): the transcript print path (the slash
+	// command feedback row) shared by the slash host AND the steer outcome
+	// echo through the module bridge's feedback slot.
+	const sayLine = (text: string) =>
+		projection.apply({
+			type: "message.part.updated",
+			details: { messageID: "cmd", part: { type: "text", id: `cmd-${++cmdOrdinal}`, text } },
+		})
+	registerSubagentSteerFeedback(sayLine)
 	const slash = createSlashHost({
 		seam,
-		say: (text: string) =>
-			projection.apply({
-				type: "message.part.updated",
-				details: { messageID: "cmd", part: { type: "text", id: `cmd-${++cmdOrdinal}`, text } },
-			}),
+		say: sayLine,
 		clear: () => projection.hydrate([]),
 		reload: () => {
 			const settled = projection.load()

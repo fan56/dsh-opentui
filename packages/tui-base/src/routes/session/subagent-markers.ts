@@ -90,3 +90,29 @@ export function steerSubagent(id: string, text: string): boolean | undefined {
 export function subagentSteerWired(): boolean {
 	return steerImpl !== undefined
 }
+
+// ---- the steer feedback slot (batch D9) ----
+// The steer outcome used to ride useToast() — which never paints in the
+// rebuilt faces (the unpainted-toast family: 68-resume rejection, 70-steer
+// success echo). The transcript print path that DOES paint is the slash
+// command feedback row (SlashCommandContext.say → projection.apply, the
+// /help print path), but it lives on the page, unreachable from either
+// steer component (the picker sits outside the composer; the vendored tab
+// predates the seam). Same bridge shape as steerChild above: the pages
+// register their say() here and both onConfirm arms print through the slot.
+
+let steerFeedbackImpl: ((line: string) => void) | undefined
+
+/** The page write side: register the transcript print path (the say seam). */
+export function registerSubagentSteerFeedback(fn: (line: string) => void): void {
+	steerFeedbackImpl = fn
+}
+
+/**
+ * Print one steer feedback line into the transcript (success echo or
+ * rejection). A no-op when no page registered a printer — the previous
+ * behavior was also zero feedback (the toast never painted).
+ */
+export function printSteerFeedback(line: string): void {
+	steerFeedbackImpl?.(line)
+}

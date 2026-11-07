@@ -33,6 +33,7 @@ import { HostSessionSeam } from "./host-session-seam-adapter.ts"
 // tui-base view graph (bundled from source; see header)
 import { SessionComposer } from "../../tui-base/src/routes/session/session-composer"
 import { SubagentsPicker } from "../../tui-base/src/routes/session/subagents-picker"
+import { registerSubagentSteerFeedback } from "../../tui-base/src/routes/session/subagent-markers"
 import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows"
 import { Transcript } from "../../tui-base/src/routes/session/transcript"
 import { TurnOverlayController } from "../../tui-base/src/routes/session/turn-overlay-controller"
@@ -186,13 +187,19 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
     snapshot: createBtwSnapshotBuilder(seam),
   })
   const openBtw = createBtwOpener({ controller: btw, dialog })
+  // Batch D9: the transcript print path (the slash-command feedback row, the
+  // /help print path) shared by the slash host AND the steer outcome echo —
+  // the subagent steer components print through the module bridge's feedback
+  // slot, which registers this same printer.
+  const sayLine = (text: string) =>
+    projection.apply({
+      type: "message.part.updated",
+      details: { messageID: "cmd", part: { type: "text", id: `cmd-${++cmdOrdinal}`, text } },
+    })
+  registerSubagentSteerFeedback(sayLine)
   const slash = createSlashHost({
     seam,
-    say: (text: string) =>
-      projection.apply({
-        type: "message.part.updated",
-        details: { messageID: "cmd", part: { type: "text", id: `cmd-${++cmdOrdinal}`, text } },
-      }),
+    say: sayLine,
     clear: () => projection.hydrate([]),
     reload: () => {
       const settled = projection.load()

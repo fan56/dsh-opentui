@@ -14,6 +14,7 @@ import { useComposerTab } from "./context"
 import { withTimestampedFallback } from "@opencode/util/session-title-fallback"
 import { sessionFamily } from "../../../util/session"
 import {
+  printSteerFeedback,
   subagentHardStopGlyph,
   subagentMarkerSuffix,
   subagentMarkersFor,
@@ -22,7 +23,6 @@ import {
 } from "../subagent-markers"
 import { DialogPrompt } from "../../../ui/dialog-prompt"
 import { useDialog } from "../../../ui/dialog"
-import { useToast } from "../../../ui/toast"
 
 interface SubagentEntry {
   sessionID: string
@@ -43,7 +43,6 @@ export function SubagentsTab(props: { sessionID: string }) {
   const composer = useComposerTab()
   const shortcuts = Keymap.useShortcuts()
   const dialog = useDialog()
-  const toast = useToast()
 
   const session = createMemo(() => data.session.get(props.sessionID))
   const [store, setStore] = createStore({ selected: 0 })
@@ -116,8 +115,10 @@ export function SubagentsTab(props: { sessionID: string }) {
   // RUNNING subagent opens the steer prompt (DialogPrompt); the submitted
   // text rides the seam's steerChild through the module bridge (both faces
   // register it). esc=cancel returns silently; a false outcome (settled /
-  // unreachable child) toasts the rejection; success toasts the
-  // `steered <agent>` echo the e2e asserts.
+  // unreachable child) prints the rejection; success prints the
+  // `steered <agent>` echo the e2e asserts — both as transcript rows through
+  // the module bridge's feedback slot (batch D9; the toast route never
+  // painted — the unpainted-toast family).
   function openSteer(entry: SubagentEntry) {
     dialog.replace(() => (
       <DialogPrompt
@@ -129,9 +130,9 @@ export function SubagentsTab(props: { sessionID: string }) {
           const sent = steerSubagent(entry.sessionID, text)
           dialog.clear()
           if (sent) {
-            toast.show({ message: `steered ${entry.agent.toLowerCase()}`, variant: "success" })
+            printSteerFeedback(`steered ${entry.agent.toLowerCase()}`)
           } else {
-            toast.show({ message: `steer rejected — ${entry.agent} is not running`, variant: "error" })
+            printSteerFeedback(`steer rejected — ${entry.agent} is not running`)
           }
         }}
         onCancel={() => dialog.clear()}

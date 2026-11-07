@@ -4,7 +4,9 @@ import {
 	subagentHardStopGlyph,
 	subagentMarkerSuffix,
 	subagentMarkersFor,
+	printSteerFeedback,
 	registerSubagentSteer,
+	registerSubagentSteerFeedback,
 	steerSubagent,
 	subagentSteerWired,
 } from "../src/routes/session/subagent-markers"
@@ -66,5 +68,19 @@ describe("steer slot (batch G2)", () => {
 			["child-a", "go left"],
 			["child-b", "go left"],
 		])
+	})
+})
+
+describe("steer feedback slot (batch D9)", () => {
+	test("unregistered printer: printSteerFeedback is a silent no-op", () => {
+		expect(() => printSteerFeedback("steered explore")).not.toThrow()
+	})
+
+	test("registered printer: lines ride to the page's say path 1:1", () => {
+		const lines: string[] = []
+		registerSubagentSteerFeedback((line) => lines.push(line))
+		printSteerFeedback("steered explore")
+		printSteerFeedback("steer rejected — Plan is not running")
+		expect(lines).toEqual(["steered explore", "steer rejected — Plan is not running"])
 	})
 })
