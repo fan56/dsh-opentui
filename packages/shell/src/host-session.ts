@@ -1318,17 +1318,48 @@ export class HostSession {
   }
 
   /** Steer a RUNNING child session (its live agent captured from the
-   * firehose session object). False when the child is settled or its
-   * agent is not reachable in this process. */
+   * firehose session object). False when the child is settled or no
+   * delivery path reaches it in this process. Batch D8 (the 70-steer
+   * submit-leg fix): a miss on the captured agent no longer hard-fails —
+   * adoption is best-effort (firehose child session objects may never carry
+   * `.agent`, and #registerChild rows never capture one), and the old false
+   * turned the steer prompt into a silent no-op while the wrap-up leg
+   * (steerChildDetailed) delivered through the in-process `subagents`
+   * service. steerChild now falls back to that same service, fire-and-forget
+   * under the sync seam contract: true means a delivery path accepted the
+   * request; a service rejection logs with its reason (detailed parity). */
   steerChild(id: string, text: string): boolean {
     const agent = this.#childAgents.get(id)
-    if (!agent?.steer) return false
-    try {
-      agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }))
-      return true
-    } catch {
-      return false
+    if (agent?.steer) {
+      try {
+        agent.steer(createUserMessage({ content: [{ type: "text", text }], source: { kind: "user" } }))
+        return true
+      } catch {
+        /* stale handle — fall through to the service */
+      }
     }
+    if (this.#sessionId === undefined) return false
+    const service = (this.#ctx as any).get?.("subagents")
+    if (!service || typeof service.prompt !== "function") return false
+    void service
+      .prompt(
+        {
+          requestId: randomUUID(),
+          parentSessionId: this.#sessionId,
+          childSessionId: id,
+          mode: "continuable",
+          delivery: "steer",
+          content: [{ type: "text", text }],
+        },
+        // The lib's rejectPrompt dereferences `signal.aborted` unguarded —
+        // ride a live never-cancelled signal (steerChildDetailed parity).
+        new AbortController().signal,
+      )
+      .catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error)
+        console.error(`[host-session] subagents service steer rejected for ${id.slice(0, 8)}: ${reason}`)
+      })
+    return true
   }
 
   /** Steer a RUNNING child with a typed outcome. Tries the captured

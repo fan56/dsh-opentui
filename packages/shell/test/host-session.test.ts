@@ -74,10 +74,20 @@ function makeCtx() {
       },
     },
   }
-  const emit = (event: string, payload: any) => {
-    for (const handler of handlers.get(event) ?? []) handler(payload)
+  const emit = (event: string, payload: any, payload2?: any) => {
+    for (const handler of handlers.get(event) ?? []) handler(payload, payload2)
   }
-  return { ctx, emit, creates, handles, opens, setFail: (name: string) => { failNextCreateWith = name } }
+  return {
+    ctx,
+    emit,
+    creates,
+    handles,
+    opens,
+    /** Direct handler access (session/event carries a TWO-arg payload:
+     * handler(session, event) — emit() alone cannot express that). */
+    rawHandlers: (event: string) => handlers.get(event) ?? [],
+    setFail: (name: string) => { failNextCreateWith = name },
+  }
 }
 
 function callbacks(overrides: Partial<TurnCallbacks> = {}): TurnCallbacks {
@@ -340,5 +350,87 @@ describe("HostSession cacheHitMode", () => {
     await turnWithUsage(env, session, [{ inputTokens: 100, outputTokens: 5 }])
     expect(session.cacheHitRate()).toBeNull()
     expect(session.cacheHitRate("session")).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// steerChild service fallback (batch D8 — the 70-steer submit-leg fix).
+//
+// C11b2 container evidence: the steer prompt's onConfirm DOES run (Enter is
+// bound — see tui-base test/dialog-prompt-keys.test.ts), but the picker row's
+// session id misses #childAgents: adoption is best-effort (the firehose child
+// session object may never carry `.agent` — host-session.ts #adoptChild), and
+// #registerChild (the tool-workflow agent-start row) never captures one at
+// all. The old steerChild returned false there while steerChildDetailed — the
+// wrap-up leg — fell back to the in-process `subagents` service, so 62 landed
+// wrap-ups while 70's steer died silently with an unpainted rejection toast.
+// The sync seam contract reports DISPATCH: true once a delivery path accepts
+// the request; a service rejection logs with its reason (detailed parity).
+// ---------------------------------------------------------------------------
+describe("steerChild subagents-service fallback", () => {
+  /** Install a recording fake `subagents` service on the ctx. */
+  function installService(env: ReturnType<typeof makeCtx>) {
+    const calls: { request: any; signal: unknown }[] = []
+    const baseGet = env.ctx.get.bind(env.ctx)
+    env.ctx.get = (key: string) => {
+      if (key === "subagents") {
+        return {
+          prompt: async (request: any, signal: unknown) => {
+            calls.push({ request, signal })
+            return { messageId: "msg-1" }
+          },
+        }
+      }
+      return baseGet(key)
+    }
+    return { calls }
+  }
+
+  test("no adopted agent: the service delivers (fire-and-forget) and the seam reports dispatched", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    const service = installService(env)
+    await runTurn(session, env, "first")
+    expect(session.steerChild("child-1", "steer-marker=E2E_STEER_70")).toBe(true)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(service.calls).toHaveLength(1)
+    const { request, signal } = service.calls[0]
+    expect(request).toMatchObject({
+      mode: "continuable",
+      delivery: "steer",
+      parentSessionId: env.creates[0].sessionId,
+      childSessionId: "child-1",
+      content: [{ type: "text", text: "steer-marker=E2E_STEER_70" }],
+    })
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect((signal as AbortSignal).aborted).toBe(false)
+  })
+
+  test("a captured (adopted) agent still wins with the synchronous steer; the service is not consulted", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    const service = installService(env)
+    await runTurn(session, env, "first")
+    // Adopt the child WITH a live agent handle (the firehose session object
+    // carries `.agent` when adoption succeeds — session/event parity of
+    // host-session.ts #foldChildEvent → #adoptChild).
+    const steered: any[] = []
+    const childSession = {
+      id: "child-1",
+      header: { parentSession: env.creates[0].sessionId, origin: "subagent" },
+      agent: { steer: (message: any) => steered.push(message) },
+    }
+    for (const handler of env.rawHandlers("session/event")) handler(childSession, { type: "subagent/descriptor", data: { label: "looper" } })
+    expect(session.steerChild("child-1", "go")).toBe(true)
+    expect(steered).toHaveLength(1)
+    expect(steered[0].content?.[0]?.text).toBe("go")
+    expect(service.calls).toHaveLength(0)
+  })
+
+  test("no agent and no service: still false (the honest unreachable shape)", async () => {
+    const env = makeCtx()
+    const session = new HostSession(env.ctx)
+    await runTurn(session, env, "first")
+    expect(session.steerChild("child-1", "go")).toBe(false)
   })
 })
