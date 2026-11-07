@@ -81,7 +81,10 @@ ensure_editor_ready 'editor clean before the /agents lifecycle' || true
 send '/agents'
 sleep 1
 send Enter
-wait_pane 'bare /agents prints the roster header' 15 'model profiles:'
+# wait on the empty-roster row itself — 'model profiles:' also matches the
+# slash-palette preview row ("/agents model profiles: list / save / use / rm"),
+# which lights before the output renders
+wait_pane 'bare /agents prints the empty roster' 15 'no saved model profiles'
 PANE="$(capture)"
 assert_contains 'fresh profile shows the empty-roster row' \
   'no saved model profiles (/agents save <name> archives the current model)' "$PANE"
@@ -119,10 +122,13 @@ ensure_editor_ready 'editor clean before /agents use' || true
 send '/agents use work'
 sleep 1
 send Enter
+# one poll for the whole line: the host transcript renderer strips the
+# square brackets of the say template ("[profile work]" renders as
+# "profile work"), and the archived route carries its reasoning effort —
+# so match the rendered text, not the source template
 wait_pane 'use re-applies the archived route with the profile tag' 15 \
-  'model → zai-coding-cn/glm-5.3-flash'
-PANE="$(capture)"
-assert_contains 'the use line tags the profile name' '[profile work]' "$PANE"
+  'model → zai-coding-cn/glm-5.3-flash.*profile work'
+ok 'the use line tags the profile name'
 
 ensure_editor_ready 'editor clean before the unknown-profile probe' || true
 send '/agents use nope'

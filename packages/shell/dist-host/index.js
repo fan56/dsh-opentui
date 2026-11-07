@@ -27180,6 +27180,91 @@ function coreCommands() {
       }
     },
     {
+      name: "/agents",
+      description: "model profiles: list / save / use / rm (named model+effort snapshots)",
+      async run(ctx, argText) {
+        if (!ctx.seam.configLoad || !ctx.seam.configSave) {
+          ctx.say("/agents unavailable in this session");
+          return;
+        }
+        const [verb, ...rest] = argText.trim().split(/\s+/);
+        if (!verb || verb === "list") {
+          const profiles = loadAgentsProfiles(ctx.seam.configLoad());
+          const current = await ctx.seam.currentModelSelection();
+          ctx.say("model profiles:");
+          for (const row of agentsRosterRows(profiles, current))
+            ctx.say(row);
+          return;
+        }
+        const name = rest.join(" ").trim();
+        if (verb === "save") {
+          if (!name) {
+            ctx.say("usage: /agents save <name>");
+            return;
+          }
+          const nameError = validateAgentsName(name);
+          if (nameError) {
+            ctx.say(nameError);
+            return;
+          }
+          const sel = await ctx.seam.currentModelSelection();
+          if (!sel) {
+            ctx.say("/agents save: no current model selection");
+            return;
+          }
+          const effort = ctx.seam.thinking ? await ctx.seam.thinking.currentEffort() : undefined;
+          const profile = {
+            name,
+            provider: sel.providerID,
+            model: sel.modelID,
+            ...effort ? { reasoningEffort: effort } : {}
+          };
+          ctx.seam.configSave(agentsProfilesPatch(upsertAgentsProfile(loadAgentsProfiles(ctx.seam.configLoad()), profile)));
+          ctx.say(`saved profile ${name} → ${sel.providerID}/${sel.modelID}${effort ? ` (${effort})` : ""}`);
+          return;
+        }
+        if (verb === "use") {
+          if (!name) {
+            ctx.say("usage: /agents use <name>");
+            return;
+          }
+          const target = findAgentsProfile(loadAgentsProfiles(ctx.seam.configLoad()), name);
+          if (!target) {
+            ctx.say(`unknown profile: ${name}`);
+            return;
+          }
+          ctx.seam.selectModel(target.provider, target.model);
+          let effortNote = "";
+          if (target.reasoningEffort && ctx.seam.thinking) {
+            const efforts = await ctx.seam.thinking.efforts();
+            if (efforts.some((effort) => effort.id === target.reasoningEffort)) {
+              ctx.seam.thinking.selectEffort(target.reasoningEffort);
+              effortNote = ` (${target.reasoningEffort})`;
+            } else {
+              effortNote = ` (effort ${target.reasoningEffort} not on this model's ladder — skipped)`;
+            }
+          }
+          ctx.say(`model → ${target.provider}/${target.model}${effortNote} [profile ${target.name}]`);
+          return;
+        }
+        if (verb === "rm" || verb === "remove" || verb === "delete") {
+          if (!name) {
+            ctx.say("usage: /agents rm <name>");
+            return;
+          }
+          const profiles = loadAgentsProfiles(ctx.seam.configLoad());
+          if (!findAgentsProfile(profiles, name)) {
+            ctx.say(`unknown profile: ${name}`);
+            return;
+          }
+          ctx.seam.configSave(agentsProfilesPatch(removeAgentsProfile(profiles, name)));
+          ctx.say(`removed profile ${name}`);
+          return;
+        }
+        ctx.say("usage: /agents [list | save <name> | use <name> | rm <name>]");
+      }
+    },
+    {
       name: "/think",
       description: "set reasoning effort (opens the picker)",
       async run(ctx) {
@@ -27318,6 +27403,62 @@ function dispatchLine(commands, line) {
 }
 function unknownCommandRow(name) {
   return `unknown command: ${name} (try /help)`;
+}
+var AGENTS_PROFILES_KEY = "agentsProfiles";
+var AGENTS_PROFILES_VERSION = 1;
+function loadAgentsProfiles(cfg) {
+  const doc = cfg?.[AGENTS_PROFILES_KEY];
+  if (!doc || typeof doc !== "object" || !Array.isArray(doc.profiles))
+    return [];
+  const out = [];
+  for (const row of doc.profiles) {
+    if (!row || typeof row !== "object")
+      continue;
+    const { name, provider, model, reasoningEffort } = row;
+    if (typeof name !== "string" || !name || typeof provider !== "string" || !provider || typeof model !== "string" || !model) {
+      continue;
+    }
+    out.push({
+      name,
+      provider,
+      model,
+      ...typeof reasoningEffort === "string" && reasoningEffort ? { reasoningEffort } : {}
+    });
+  }
+  return out;
+}
+function agentsProfilesPatch(profiles) {
+  return { [AGENTS_PROFILES_KEY]: { version: AGENTS_PROFILES_VERSION, profiles } };
+}
+function upsertAgentsProfile(profiles, profile) {
+  const idx = profiles.findIndex((p) => p.name === profile.name);
+  if (idx === -1)
+    return [...profiles, profile];
+  const next = [...profiles];
+  next[idx] = profile;
+  return next;
+}
+function removeAgentsProfile(profiles, name) {
+  return profiles.filter((p) => p.name !== name);
+}
+function findAgentsProfile(profiles, name) {
+  return profiles.find((p) => p.name === name);
+}
+function validateAgentsName(name) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(name)) {
+    return "profile name must be 1-32 chars: letters, digits, - _";
+  }
+  return;
+}
+function agentsRosterRows(profiles, current) {
+  if (profiles.length === 0) {
+    return ["no saved model profiles (/agents save <name> archives the current model)"];
+  }
+  return profiles.map((p) => {
+    const route = `${p.provider}/${p.model}${p.reasoningEffort ? ` (${p.reasoningEffort})` : ""}`;
+    const mark = current && current.providerID === p.provider && current.modelID === p.model ? "●" : "○";
+    return `${mark} ${p.name} — ${route}`;
+  });
 }
 
 // ../tui-base/src/routes/session/slash-palette.tsx
