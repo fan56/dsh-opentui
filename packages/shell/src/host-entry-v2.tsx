@@ -302,6 +302,9 @@ function V2SessionPage(props: { seam: HostSessionSeam; themeName?: string; quit:
           get seam() {
             return seam
           },
+          onClosed: () => {
+            if (composerRef && !composerRef.focused()) composerRef.focus()
+          },
         }),
         createComponent(Transcript, {
           seam,

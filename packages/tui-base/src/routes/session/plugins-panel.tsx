@@ -51,7 +51,7 @@ export function filterPluginRows(rows: readonly PluginRow[], query: string): Plu
 	return rows.filter((row) => formatPluginLine(row).toLowerCase().includes(needle))
 }
 
-export function PluginsPanel(props: { seam: SessionSeam }) {
+export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }) {
 	const theme = useThemeOptional()
 	const dialog = useDialog()
 
@@ -76,6 +76,11 @@ export function PluginsPanel(props: { seam: SessionSeam }) {
 			return
 		}
 		setOpen(false)
+		// Refocus AFTER the teardown (the SearchOverlay H1 law — the destroyed
+		// filter input leaves nothing focused; the page reclaims its composer).
+		// C15: without this the plugins panel's Esc-close left the composer
+		// unfocused (71-search's post-close editor probe failed 3/3).
+		setTimeout(() => props.onClosed?.(), 3)
 	}
 
 	// Rows come from the seam plugins face (F7a): a sync read — the adapters

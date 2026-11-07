@@ -227,25 +227,27 @@ else
   warn '/hotkeys group skipped-by-gate (dist-host rebuild pending — F7b)'
 fi
 
-# --- /plugins: the installed-plugin listing -----------------------------------
-# Hero-era semantics: one '● name@version' row per user-installed plugin
-# (@deepseek-ai/* built-ins filtered); a clean profile legitimately prints
-# the 'no plugins installed' notice — both surfaces are asserted.
+# --- /plugins: the manager panel ----------------------------------------------
+# (C15 semantic merge, batch H3: /plugins no longer prints a listing — it
+# opens the manager panel overlay ('🔌 Plugins' title, bundle table +
+# state column; the panel's own empty state reads 'no plugins installed').
+# The deep panel assertions live in 71-search (H3's scenario); here we
+# assert registration + the panel opening, then close it.
 if (( PLUGINS_GATE )); then
   ensure_editor_ready 'editor focused before /plugins' || true
   send '/plugins'
   wait_pane_fixed 'palette row /plugins (F7a command registered)' 10 \
-    '/plugins list installed plugins'
+    '/plugins manage plugins (opens the panel)'
   send Enter
-  if wait_pane '/plugins surfaces the listing (rows or the empty notice)' 15 \
-    'no plugins installed|● [^ ]+@'; then
+  if wait_pane '/plugins opens the manager panel' 15 '🔌 Plugins'; then
     PANE="$(capture)"
     if printf '%s' "$PANE" | grep -qF 'no plugins installed'; then
-      ok 'clean profile: the empty notice rendered (no user plugins installed)'
+      ok 'clean profile: panel empty state rendered (no user plugins installed)'
     else
-      assert_matches 'plugin rows use the hero shape (● name@version)' \
-        '● [^ ]+@[0-9]' "$PANE"
+      assert_matches 'panel lists a bundle row (name@version)' \
+        '@[0-9]+\.[0-9]' "$PANE"
     fi
+    esc_until_gone 'plugins panel closes on Esc' '🔌 Plugins'
   fi
 else
   warn '/plugins group skipped-by-gate (dist-host rebuild pending — F7a)'

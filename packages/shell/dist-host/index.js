@@ -24705,6 +24705,7 @@ function PluginsPanel(props) {
       return;
     }
     setOpen(false);
+    setTimeout(() => props.onClosed?.(), 3);
   }
   const rows = createMemo8(() => {
     try {
@@ -28179,6 +28180,10 @@ function V2SessionPage(props) {
         createComponent2(PluginsPanel, {
           get seam() {
             return seam;
+          },
+          onClosed: () => {
+            if (composerRef && !composerRef.focused())
+              composerRef.focus();
           }
         }),
         createComponent2(Transcript, {

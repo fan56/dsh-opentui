@@ -42,8 +42,14 @@ fi
 sleep 2
 
 # --- the dependency gate --------------------------------------------------------
+# (C15: the panel marker for the BUNDLE grep must be emoji-free — the bun
+# build transpiles '🔌' in plugins-panel.tsx into a unicode escape, so the
+# literal never appears in dist-host/index.js and the gate read dark while
+# the bundle actually carried H3 (suite pass 1: gate-dark G0 asserted
+# '/search unknown command' against a bundle where /search IS registered).
+# Pane captures are tmux-rendered and keep the emoji — those greps stay.)
 PANEL_GATE=0
-if [ -f "$BUNDLE" ] && grep -qF 'Search sessions' "$BUNDLE" && grep -qF '🔌 Plugins' "$BUNDLE"; then
+if [ -f "$BUNDLE" ] && grep -qF 'Search sessions' "$BUNDLE" && grep -qF 'Close plugins manager' "$BUNDLE"; then
   PANEL_GATE=1
 fi
 
