@@ -289,7 +289,10 @@ function V2SessionPage(props: {
 				// a stable `state` object the component reads in its own scopes.
 				createComponent(WelcomeHero, {
 					state: {
-						visible: () => msgs() === 0 && projection.rows.length === 0,
+						// hydrated() gates the journal-hydration window: a boot that
+						// attaches a session with history must not flash the hero
+						// for the duration of the fetch before it fills.
+						visible: () => projection.hydrated() && msgs() === 0 && projection.rows.length === 0,
 						model: () => model()?.modelID,
 						muted: () => theme.text.muted,
 					},
