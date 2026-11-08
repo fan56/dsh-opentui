@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { getDshBlueTheme } from "../src/theme/index"
+import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
+import { createComponentTheme } from "../src/theme/component"
 import {
 	COMPOSER_BORDER_ROWS,
 	COMPOSER_COMPACT_TERMINAL_ROWS,
@@ -22,7 +25,7 @@ function stubTheme(overrides?: Partial<Record<string, string>>): ComponentTheme 
 	const at = (path: string, fallback: string) => overrides?.[path] ?? fallback
 	return {
 		border: { base: at("border.base", "#111111") },
-		hue: { accent: { 500: at("accent", "#222222") } },
+		hue: { accent: { 500: at("accent", "#222222") }, interactive: { 500: at("accent", "#222222") } },
 		text: {
 			feedback: {
 				warning: { base: at("warning", "#333333"), muted: at("warning.muted", "#33333388") },
@@ -117,5 +120,29 @@ describe("composer layout (H7 height formula + short-terminal rule)", () => {
 	test("focus blur debounce is a positive, frame-scale constant", () => {
 		expect(SKIN_FOCUS_BLUR_DEBOUNCE_MS).toBeGreaterThan(0)
 		expect(SKIN_FOCUS_BLUR_DEBOUNCE_MS).toBeLessThanOrEqual(100)
+	})
+})
+
+describe("dsh-blue current-row contrast (P0-1: the real parse chain)", () => {
+	// WCAG relative luminance / contrast on the RGBA objects the vendored
+	// resolver produces (r/g/b are 0..1 floats).
+	function luminance(color: { r: number; g: number; b: number }): number {
+		const channel = (value: number) => (value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4))
+		return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+	}
+	function contrast(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number {
+		const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+		return (hi + 0.05) / (lo + 0.05)
+	}
+
+	test("dark AND light current-row text distinguish from its background (≥ 4.5:1)", () => {
+		const document = getDshBlueTheme()
+		for (const mode of ["dark", "light"] as const) {
+			const theme = createComponentTheme(() => resolveThemeDocument(document, mode))
+			const row = currentRowColors(theme)
+			const text = row.textColor as { r: number; g: number; b: number }
+			const background = row.backgroundColor as { r: number; g: number; b: number }
+			expect(contrast(text, background)).toBeGreaterThanOrEqual(4.5)
+		}
 	})
 })

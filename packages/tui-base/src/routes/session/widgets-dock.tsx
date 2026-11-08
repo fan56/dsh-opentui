@@ -125,15 +125,30 @@ export function skinStopAt(row: { startedAt?: number; elapsedSec?: number }): nu
 
 /** Per-line entrance-fade registry (module level — CLOSURE LAW): first sight
  * timestamp per stable line id. Gated by motionDecorationsEnabled at the
- * call site; reduced/off simply read full color. */
+ * call site; reduced/off simply read full color. P2-1 (review): capped FIFO
+ * (long sessions must not grow it without bound) and `resetSkinLineFades`
+ * on session switches — the stable "dock:todos" id must re-fade for a NEW
+ * session's first todo line instead of keeping the old timestamp. */
+const LINE_FIRST_SEEN_MAX = 512
 const lineFirstSeen = new Map<string, number>()
 export function skinLineFadeT(id: string, now: number = Date.now()): number {
 	let seen = lineFirstSeen.get(id)
 	if (seen === undefined) {
 		seen = now
+		if (lineFirstSeen.size >= LINE_FIRST_SEEN_MAX) {
+			const oldest = lineFirstSeen.keys().next().value
+			if (oldest !== undefined) lineFirstSeen.delete(oldest)
+		}
 		lineFirstSeen.set(id, seen)
 	}
 	return Math.max(0, Math.min(1, (now - seen) / SKIN_FADE_IN_MS))
+}
+
+/** Session switch hook: drop every first-sight timestamp so the next paint
+ * re-runs the entrance fades (the v2 entry's clear/reload hooks call this —
+ * /new, /fork, /resume, /clear). */
+export function resetSkinLineFades(): void {
+	lineFirstSeen.clear()
 }
 
 /** Component-side line color (shared by the docks, batch δ): exit fade

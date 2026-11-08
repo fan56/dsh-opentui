@@ -57,6 +57,10 @@ type SkinBoxLike = {
 	borderStyle?: unknown
 	title?: string
 }
+// P2-2 (review): shared frozen side arrays — assigning a fresh array per
+// call churned identities on every streaming increment.
+const SIDES_RULE: string[] = ["left"]
+const SIDES_FRAME: string[] = ["top", "bottom", "left", "right"]
 export type CodeBlockForm = "rule" | "frame"
 
 /** The skin form of a code block (pure): streaming → left rule, final → frame. */
@@ -82,10 +86,10 @@ function applyCodeBlockSkin(renderable: unknown, isFinal: boolean, lang: string 
 	if (box === null || typeof box !== "object") return renderable
 	if (typeof box.border === "undefined" && typeof box.borderStyle === "undefined") return renderable
 	if (codeBlockForm(isFinal) === "rule") {
-		box.border = ["left"]
+		box.border = SIDES_RULE
 		box.title = undefined
 	} else {
-		box.border = ["top", "bottom", "left", "right"]
+		box.border = SIDES_FRAME
 		box.borderStyle = "single"
 		box.title = lang ? ` ${lang} ` : undefined
 	}
@@ -94,7 +98,10 @@ function applyCodeBlockSkin(renderable: unknown, isFinal: boolean, lang: string 
 
 /** Per-row renderNode cache (module level): stable function identity per
  * row phase so the markdown component never sees a fresh closure per
- * streaming render (identity churn would rebuild blocks per increment). */
+ * streaming render (identity churn would rebuild blocks per increment).
+ * P2-1 (review): capped FIFO — long sessions with many code rows must not
+ * grow the map without bound. */
+const CODE_RENDER_NODE_CACHE_MAX = 256
 const codeRenderNodeCache = new Map<string, (token: any, context: any) => any>()
 function skinRenderNode(rowKey: string, isFinal: boolean, hostRenderNode: ((node: any) => any) | undefined): (token: any, context: any) => any {
 	const cacheKey = `${rowKey}:${isFinal ? "final" : "streaming"}`
@@ -108,6 +115,10 @@ function skinRenderNode(rowKey: string, isFinal: boolean, hostRenderNode: ((node
 				if (defaulted) return applyCodeBlockSkin(defaulted, isFinal, typeof token.lang === "string" ? token.lang : undefined)
 			}
 			return undefined // undefined = markdown's own default rendering
+		}
+		if (codeRenderNodeCache.size >= CODE_RENDER_NODE_CACHE_MAX) {
+			const oldest = codeRenderNodeCache.keys().next().value
+			if (oldest !== undefined) codeRenderNodeCache.delete(oldest)
 		}
 		codeRenderNodeCache.set(cacheKey, fn)
 	}

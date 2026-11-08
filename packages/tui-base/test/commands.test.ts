@@ -2,7 +2,7 @@
  * Slash-command registry tests (batch 8): dispatch classification, the
  * harmless unknown row, and each core command's seam/hook call.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, beforeEach } from "bun:test"
 import {
 	agentsProfilesPatch,
 	agentsRosterRows,
@@ -21,6 +21,7 @@ import {
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
 import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
+import { setMotionTier } from "../src/skin/motion"
 import type { SessionSeam, SeamProviderModel, SeamSessionSummary } from "../src/seams/session"
 
 /** Recording fake: every seam method the core set touches is a spy. */
@@ -207,6 +208,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/agents",
 			"/think",
 			"/hints",
+			"/motion",
 			"/hotkeys",
 			"/theme",
 			"/preset",
@@ -236,6 +238,7 @@ describe("core commands", () => {
 			"/agents — model profiles: list / save / use / rm (named model+effort snapshots)",
 			"/think — set reasoning effort (opens the picker)",
 			"/hints — toggle the key hints row",
+			"/motion — animation tier: full | reduced | off | auto (bare shows current)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
 			"/preset — switch agent preset (bare opens the picker, next rotates)",
@@ -939,5 +942,47 @@ describe("agents profile store helpers (pure)", () => {
 		expect(agentsRosterRows(profiles, { providerID: "deepseek", modelID: "v3.2" })).toEqual([
 			"○ work — bigmodel/glm-5.3-flash (high)",
 		])
+	})
+})
+
+describe("/motion (α skin layer)", () => {
+	const run = coreCommands().find((command) => command.name === "/motion")!.run
+
+	beforeEach(() => setMotionTier(undefined))
+
+	test("bare reports the current tier", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await run(ctx, "")
+		expect(ctx.lines[0]).toMatch(/^motion: (full|reduced|off|auto) \(usage: \/motion full\|reduced\|off\|auto\)$/)
+	})
+
+	test("sets the tier and persists the choice to the profile config", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await run(ctx, "reduced")
+		expect(ctx.lines).toContain("motion: reduced")
+		expect(seam.calls).toContain("configSave")
+		expect(seam.store.motion).toBe("reduced")
+		await run(ctx, "off")
+		expect(ctx.lines).toContain("motion: off")
+		expect(seam.store.motion).toBe("off")
+	})
+
+	test("auto drops the explicit tier and persists the auto choice", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await run(ctx, "full")
+		expect(seam.store.motion).toBe("full")
+		await run(ctx, "auto")
+		expect(ctx.lines).toContain("motion: auto")
+		expect(seam.store.motion).toBe("auto")
+	})
+
+	test("rejects unknown args without persisting", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await run(ctx, "turbo")
+		expect(ctx.lines).toEqual(["usage: /motion full|reduced|off|auto"])
+		expect(seam.calls).not.toContain("configSave")
 	})
 })

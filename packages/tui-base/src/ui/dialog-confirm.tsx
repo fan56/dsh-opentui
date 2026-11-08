@@ -1,3 +1,4 @@
+import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../context/keymap"
 import { useTheme } from "../context/theme"
 import { useNewDesigns } from "../config"
@@ -6,6 +7,7 @@ import { createStore } from "solid-js/store"
 import { For } from "solid-js"
 import { Locale } from "../util/locale"
 import { currentRowColors } from "../skin/semantic"
+import { ReminderBadge } from "../routes/session/turn-overlays"
 
 export type DialogConfirmProps = {
   title: string
@@ -70,7 +72,28 @@ export function DialogConfirm(props: DialogConfirmProps) {
   }))
   return (
     <DialogLayout
-      header={<DialogHeader title={props.title} />}
+      // Reminder marker (skin contract §1 提醒脉冲): the `⚠` badge pulses
+      // 3 bright/dim cycles on the shared motion clock; the plain title
+      // text stays static in the header's warning tier. Lazy reference —
+      // turn-overlays imports this file for the approval card (ESM cycle,
+      // render-time use only).
+      header={
+        <DialogHeader
+          title={props.title}
+          titleView={
+            <box flexDirection="row">
+              <ReminderBadge />
+              <text
+                attributes={newDesigns() ? undefined : TextAttributes.BOLD}
+                fg={theme.text.base}
+                wrapMode="none"
+              >
+                {props.title.replace(/^⚠\s*/, "")}
+              </text>
+            </box>
+          }
+        />
+      }
       footer={{
         actions: {
           primary: [

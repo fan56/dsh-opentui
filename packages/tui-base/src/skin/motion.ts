@@ -109,6 +109,20 @@ export function setMotionTier(tier: MotionTier | undefined): void {
 	userTier = tier === "full" || tier === "reduced" || tier === "off" ? tier : undefined
 }
 
+/**
+ * Boot-time preference resolution (pure, unit-tested): `DSH_OPENTUI_MOTION`
+ * (env) beats the persisted profile `motion` key; only real tiers count —
+ * an "auto" value (or garbage) falls through to the next source, and
+ * ultimately undefined = follow the auto tier.
+ */
+export function resolveMotionPreference(env?: string, stored?: string): MotionTier | undefined {
+	const pickTier = (raw: string | undefined): MotionTier | undefined => {
+		const value = raw?.trim().toLowerCase()
+		return value === "full" || value === "reduced" || value === "off" ? value : undefined
+	}
+	return pickTier(env) ?? pickTier(stored)
+}
+
 /** Host entry: whether a turn is streaming/busy right now (caps the fps). */
 export function setMotionBusy(value: boolean): void {
 	busy = value

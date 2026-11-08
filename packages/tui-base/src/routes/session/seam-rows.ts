@@ -160,7 +160,15 @@ interface LiveTurnGroup {
 export function createSeamRows(
 	seam: SessionSeam,
 	sessionID: Accessor<string>,
-	options?: { onApprove?: SeamTurnCallbacks["onApprove"]; thinkFadeMs?: number; toolFadeMs?: number },
+	options?: {
+		onApprove?: SeamTurnCallbacks["onApprove"]
+		/** Error surface hook (skin wiring): every turn error (the stream
+		 * callback AND the `session.error` host relay) also lands here with
+		 * the bare message — the page shows it as a pulsing error notice. */
+		onError?: (message: string) => void
+		thinkFadeMs?: number
+		toolFadeMs?: number
+	},
 ) {
 	const [rows, setRows] = createStore<SeamRow[]>([])
 	const [hydrated, setHydrated] = createSignal(false)
@@ -447,6 +455,7 @@ export function createSeamRows(
 		if (event.type === "session.error") {
 			const message = typeof details.message === "string" ? details.message : "unknown error"
 			upsert({ key: `error:local-${++liveOrdinal}`, kind: "assistant", text: `error: ${message}`, final: true })
+			options?.onError?.(message)
 		}
 	}
 
@@ -556,6 +565,7 @@ export function createSeamRows(
 			onError: (message) => {
 				turnErrored = true
 				upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true })
+				options?.onError?.(message)
 			},
 		})
 			.finally(() => {

@@ -36,6 +36,7 @@ import {
 	type CatalogEntry,
 } from "./login"
 import { hintsShown, setHintsShown } from "./hints-line"
+import { getMotionTier, setMotionTier, type MotionTier } from "../../skin/motion"
 
 /** One registry row: name carries the leading slash ("/help"). */
 export interface SlashCommand {
@@ -611,6 +612,34 @@ export function coreCommands(): SlashCommand[] {
 			run(ctx) {
 				setHintsShown((shown) => !shown)
 				ctx.say(hintsShown() ? "key hints: on" : "key hints: off")
+			},
+		},
+		{
+			// α skin layer: the motion tier switch (skin contract §1 动效档位).
+			// Bare reports the current tier; `auto` drops the explicit tier and
+			// follows the capability/multiplexer detection again. The choice
+			// persists through the same configSave chain /theme uses (the
+			// profile `motion` key); the boot replays it after env
+			// `DSH_OPENTUI_MOTION` (skin/motion.ts resolveMotionPreference).
+			name: "/motion",
+			description: "animation tier: full | reduced | off | auto (bare shows current)",
+			run(ctx, argText) {
+				const arg = argText.trim().toLowerCase()
+				if (!arg) {
+					ctx.say(`motion: ${getMotionTier()} (usage: /motion full|reduced|off|auto)`)
+					return
+				}
+				if (arg !== "full" && arg !== "reduced" && arg !== "off" && arg !== "auto") {
+					ctx.say("usage: /motion full|reduced|off|auto")
+					return
+				}
+				setMotionTier(arg === "auto" ? undefined : (arg as MotionTier))
+				try {
+					ctx.seam.configSave?.({ motion: arg })
+				} catch (error) {
+					console.error("[commands] motion persist failed:", error)
+				}
+				ctx.say(`motion: ${arg === "auto" ? "auto" : getMotionTier()}`)
 			},
 		},
 		{

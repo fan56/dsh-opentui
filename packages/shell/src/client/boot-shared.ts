@@ -108,6 +108,23 @@ export function themeModeFromConfig(session: ShellSessionSurface): "dark" | "lig
 	}
 }
 
+/** Env override for the skin motion tier (α skin layer): env beats the
+ * persisted profile `motion` key, both beat the auto tier (tmux/SSH/
+ * capability probe — skin/motion.ts resolveMotionPreference). */
+export const ENV_MOTION = "DSH_OPENTUI_MOTION"
+
+/** The persisted motion tier (/motion writes the profile `motion` key):
+ * "full" | "reduced" | "off" | "auto" (auto = undefined here — follow the
+ * auto tier); anything else falls through to the auto tier. */
+export function motionFromConfig(session: ShellSessionSurface): string | undefined {
+	try {
+		const motion = session.configLoad().motion
+		return typeof motion === "string" && motion ? motion : undefined
+	} catch {
+		return undefined
+	}
+}
+
 // --- one-shot skin migration (α skin layer) ---------------------------------
 // A stored theme choice that predates the dsh-blue default (profile OR
 // workspace layer) switches to the new default once; the marker lives in
@@ -150,20 +167,21 @@ function storedTheme(value: unknown): string | undefined {
 }
 
 /** Pure migration decision (read precedence env > workspace > profile, the
- * workspace-config.ts chain): a STORED legacy `theme` key (profile or
- * workspace layer) with no `skinMigration` marker in the profile switches
- * to the dsh-blue default once. Env-pinned themes, fresh users (no theme
- * key) and already-migrated profiles → no migration. */
+ * workspace-config.ts chain — the write-back targets the layer that WINS
+ * the read, so workspace is checked FIRST): a STORED legacy `theme` key
+ * (workspace or profile layer) with no `skinMigration` marker in the
+ * profile switches to the dsh-blue default once. Env-pinned themes, fresh
+ * users (no theme key) and already-migrated profiles → no migration. */
 export function skinMigrationPlan(input: SkinMigrationInput): SkinMigrationPlan | undefined {
 	if (storedTheme(input.envTheme) !== undefined) return undefined
 	if (input.profileConfig.skinMigration !== undefined) return undefined
-	const profileTheme = storedTheme(input.profileConfig.theme)
-	if (profileTheme !== undefined && profileTheme !== SKIN_MIGRATION_THEME) {
-		return { layer: "profile", theme: SKIN_MIGRATION_THEME, skinMigration: 1, notice: SKIN_MIGRATION_NOTICE }
-	}
 	const workspaceTheme = storedTheme(input.workspaceConfig.theme)
 	if (workspaceTheme !== undefined && workspaceTheme !== SKIN_MIGRATION_THEME) {
 		return { layer: "workspace", theme: SKIN_MIGRATION_THEME, skinMigration: 1, notice: SKIN_MIGRATION_NOTICE }
+	}
+	const profileTheme = storedTheme(input.profileConfig.theme)
+	if (profileTheme !== undefined && profileTheme !== SKIN_MIGRATION_THEME) {
+		return { layer: "profile", theme: SKIN_MIGRATION_THEME, skinMigration: 1, notice: SKIN_MIGRATION_NOTICE }
 	}
 	return undefined
 }

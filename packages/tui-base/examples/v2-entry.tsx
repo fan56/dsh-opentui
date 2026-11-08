@@ -28,8 +28,8 @@
  * respected; the shell-side boot helpers are plain node code.
  */
 // @ts-nocheck
-import { createSignal, onCleanup, onMount, ErrorBoundary } from "solid-js"
-import { createComponent, createElement, render, spread } from "@opentui/solid"
+import { createSignal, createEffect, onCleanup, onMount, ErrorBoundary } from "solid-js"
+import { createComponent, createElement, render, spread, useRenderer } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
 import { WelcomeHero } from "../src/routes/welcome-hero"
@@ -38,7 +38,7 @@ import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
-import { WidgetsDock } from "../src/routes/session/widgets-dock"
+import { WidgetsDock, resetSkinLineFades } from "../src/routes/session/widgets-dock"
 import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
 import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
 import { HintsLine } from "../src/routes/session/hints-line"
@@ -61,6 +61,12 @@ import { Keymap } from "../src/context/keymap"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
 import { ConfigProvider, resolve } from "../src/config"
 import { createThemeSeam } from "../src/seams/theme"
+import {
+	confirmTerminalCapabilities,
+	resolveMotionPreference,
+	setMotionBusy,
+	setMotionTier,
+} from "../src/skin/motion"
 import { PowerlineFooter, sessionFooterSegments } from "../src/routes/session/powerline"
 import { StatusBar } from "../src/routes/session/status-bar"
 // Shell-side modules load through COMPUTED dynamic imports: a static
@@ -103,6 +109,9 @@ function V2SessionPage(props: {
 	const projection = createSeamRows(seam, () => seam.currentSessionId() ?? "", {
 		// Mid-turn approvals route through the batch-5 card.
 		onApprove: (name, args) => overlays.requestApproval(name, args),
+		// Skin wiring (contract §1 报错通知): turn errors surface as a
+		// pulsing ⚠ notice alongside the transcript error row.
+		onError: (message) => showNotice(`error: ${message}`, undefined, "error"),
 	})
 	const dialog = useDialog()
 	const theme = useTheme()
@@ -135,6 +144,24 @@ function V2SessionPage(props: {
 	// the key layer. Focus stays in the composer; the layer is gated on an
 	// empty dialog stack (turn overlays + /model + pickOne all ride it).
 	let transcriptScroll: ScrollBoxRenderable | undefined
+	// Skin wiring (contract §1 动效档位): the renderer's terminal capability
+	// probe feeds the motion gate — before the probe answers (and on
+	// non-truecolor / tmux / SSH) the auto tier is reduced; a truecolor
+	// confirmation lifts it to full. The event may fire before mount, so an
+	// already-present capabilities snapshot applies too.
+	const renderer = useRenderer()
+	onMount(() => {
+		const onCapabilities = (capabilities: { rgb: boolean } | null) => confirmTerminalCapabilities(capabilities)
+		renderer.on("capabilities", onCapabilities)
+		onCleanup(() => renderer.off("capabilities", onCapabilities))
+		if (renderer.capabilities) confirmTerminalCapabilities(renderer.capabilities)
+	})
+	// Skin wiring (contract §1): the shared motion clock's busy lane is the
+	// page's own busy window (composer + turn), replacing the temporary
+	// StatusBar effect (unmounted while idle, it dropped the stream fps cap
+	// the moment the phase ended — busy() stays the host-side truth).
+	createEffect(() => setMotionBusy(busy()))
+	onCleanup(() => setMotionBusy(false))
 	onMount(() => {
 		void projection.load()
 		void seam.currentModelSelection().then(setModel)
@@ -181,6 +208,11 @@ function V2SessionPage(props: {
 			cacheHitRate: cacheRate(),
 			presetLabel: presetLabel(),
 			theme,
+			// Skin wiring (contract §1): the dsh brand segment's identity blue
+			// follows the active theme's color mode. NO elapsedSec — the ⏱
+			// segment stays dormant (busy seconds already show in the status
+			// bar; the contract pins the powerline shape).
+			mode: themeService.mode(),
 		})
 	let cmdOrdinal = 0
 	// `currentValue` (α skin layer): marks the active row with the vendored
@@ -272,12 +304,17 @@ function V2SessionPage(props: {
 		say: sayLine,
 		// Batch D2: a session switch (/new → clear, /fork//resume → reload)
 		// drops the `●` last-request echo with the rest of the session state.
+		// Skin wiring (P2-1): the docks' first-sight fade registry resets too,
+		// so a new session's todo/think/tool lines re-run their entrance fade
+		// instead of inheriting the previous session's timestamps.
 		clear: () => {
 			projection.hydrate([])
 			setLastRequest(undefined)
+			resetSkinLineFades()
 		},
 		reload: () => {
 			setLastRequest(undefined)
+			resetSkinLineFades()
 			const settled = projection.load()
 			void seam.currentModelSelection().then(setModel)
 			refreshPresetLabel()
@@ -377,6 +414,10 @@ function V2SessionPage(props: {
 						visible: () => projection.hydrated() && msgs() === 0 && projection.rows.length === 0,
 						model: () => model()?.modelID,
 						muted: () => theme.text.muted,
+						// Skin wiring (contract §1): the identity gradient follows the
+						// active theme's color mode (light themes darken the brand
+						// ramp for contrast — skin/identity.ts).
+						mode: () => themeService.mode(),
 					},
 					cwd: props.workspace,
 				}),
@@ -435,6 +476,14 @@ function V2SessionPage(props: {
 						get rows() {
 							return projection.rows
 						},
+						// Skin wiring (contract §1 活动区): the turn-lifetime activity
+						// frame is driven by the page's busy window. PROP RECAST LAW:
+						// a `get turnActive()` GETTER here is baked to its mount-time
+						// VALUE (false) before the component body runs — the accessor
+						// must ride a STABLE FUNCTION value so WidgetsDock's own
+						// scopes keep tracking it (same pattern as WelcomeHero's
+						// state object).
+						turnActive: () => busy(),
 					}),
 					// Batch D2 lastRequest slot (dsh-tui-pi live-widgets structure):
 					// the `●` echo + running-children lines paint BELOW the editor.
@@ -593,21 +642,33 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 		envTheme,
 	})
 	if (migration) {
+		// P1-2 (review): the persist is awaited and the one-shot notice only
+		// fires when the marker actually landed — a failed write must leave
+		// NO marker so the next boot retries instead of showing the notice
+		// forever with the migration never committed.
 		try {
 			const patch: Record<string, unknown> = { skinMigration: migration.skinMigration }
 			if (migration.layer === "workspace") patch.workspaceTheme = migration.theme
 			else patch.theme = migration.theme
-			session.configSave(patch)
+			await session.configSave(patch)
+			pendingMigrationNotice = migration.notice
 		} catch (error) {
-			console.error("[v2] skin migration persist failed:", error)
+			console.error("[v2] skin migration persist failed (will retry next boot):", error)
 		}
-		pendingMigrationNotice = migration.notice
 	}
 	// The mode-pin layer mirrors the theme's layer: workspace theme → the
 	// workspace slice; profile (or env) theme → the profile config.json.
 	themeModePatchKey = migration?.layer === "workspace" || (!envTheme && workspaceConfig.theme !== undefined) ? "workspaceThemeMode" : "themeMode"
 	const themeName = migration ? migration.theme : shared.themeNameFromConfig(session)
 	const themeModeLock = shared.themeModeFromConfig(session)
+	// Skin wiring (contract §1 动效档位): replay the motion tier BEFORE the
+	// first paint — `DSH_OPENTUI_MOTION` (env) beats the persisted profile
+	// `motion` key (/motion), both beat the auto tier (reduced until the
+	// capability probe confirms truecolor; tmux/SSH stay reduced). e2e and
+	// screenshots force full through the env var.
+	setMotionTier(
+		resolveMotionPreference(process.env[shared.ENV_MOTION], shared.motionFromConfig(session)),
+	)
 
 	let shutdownPromise: Promise<void> | null = null
 	const shutdown = (): Promise<void> => {

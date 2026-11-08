@@ -250,8 +250,8 @@
     "text": {
       "action": {
         "primary": {
-          "$focused": "$hue.interactive.600",
-          "$selected": "$hue.interactive.600"
+          "$focused": "$hue.interactive.200",
+          "$selected": "$hue.interactive.200"
         },
         "destructive": {
           "base": "$hue.neutral.900"
@@ -396,6 +396,21 @@
       "accent": "$hue.blue",
       "interactive": "$hue.blue",
       "neutral": "$hue.gray"
+    },
+    "text": {
+      "action": {
+        "primary": {
+          "$focused": "$hue.neutral.600",
+          "$selected": "$hue.neutral.600"
+        }
+      }
+    },
+    "background": {
+      "action": {
+        "primary": {
+          "$focused": "$hue.interactive.200"
+        }
+      }
     }
   }
 }

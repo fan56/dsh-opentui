@@ -47,10 +47,13 @@ export function unfocusedBorderColor(theme?: ComponentTheme): SkinBorderColor {
 	return theme?.border.base ?? SKIN_FALLBACK.border
 }
 
-/** Focused surface border: the theme's accent hue (500 step, like the
- * vendored hue.accent mid picks). */
+/** Focused surface border: the theme's INTERACTIVE hue (500 step) — the
+ * same family the current-row action colors use, so focus frames and list
+ * highlights stay one color across themes (P1-1: tokyonight's accent hue
+ * is orange while its current row is blue; interactive keeps them equal).
+ * Cursors that ride the focused-border color follow automatically. */
 export function focusedBorderColor(theme?: ComponentTheme): SkinBorderColor {
-	return theme?.hue.accent[500] ?? SKIN_FALLBACK.accent
+	return theme?.hue.interactive[500] ?? SKIN_FALLBACK.accent
 }
 
 /** Warning tier (feedback.warning.base): busy composer border/cursor/title,

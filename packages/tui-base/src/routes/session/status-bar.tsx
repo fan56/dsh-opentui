@@ -26,11 +26,11 @@
  * comet track = border.base; the kit-era hex constants are the
  * no-provider fallback (same injectable law as the composer).
  */
-import { createEffect, createSignal, onCleanup, Show, type JSX } from "solid-js"
+import { createSignal, Show, type JSX } from "solid-js"
 import { parseColor, Renderable, type RGBA, type OptimizedBuffer, type RenderableOptions, type RenderContext } from "@opentui/core"
 import { extend, onAnimationTick } from "@opentui/solid"
 import { useThemeOptional } from "../../context/theme"
-import { STREAM_FPS, getMotionTier, motionDecorationsEnabled, setMotionBusy } from "../../skin/motion"
+import { STREAM_FPS, getMotionTier, motionDecorationsEnabled } from "../../skin/motion"
 import { identityHexAt, type SkinColorMode } from "../../skin/identity"
 
 /** Token RGBA or fallback hex — style colors accept both. */
@@ -206,12 +206,10 @@ export function StatusBar(props: {
 	const theme = useThemeOptional()
 	const [tick, setTick] = createSignal(0)
 
-	// Busy wiring for the shared motion clock: the StatusBar mounts exactly
-	// during busy phases, so it doubles as the host's setMotionBusy entry
-	// (idle elsewhere drops to the 24fps cap; the contract's v2-entry wiring
-	// can move this to the host later).
-	createEffect(() => setMotionBusy(props.phase !== null))
-	onCleanup(() => setMotionBusy(false))
+	// Busy wiring moved to the v2 entry (host scope): setMotionBusy now rides
+	// the page's busy() signal, so the shared clock keeps its 12.5fps stream
+	// cap across composer- AND turn-busy windows even when this StatusBar is
+	// unmounted (phase null).
 
 	// Shared animation clock (contract §2.2: no setInterval, explicit fps).
 	// Undefined pauses the clock: invisible (phase null) or tier off.

@@ -59,9 +59,11 @@ describe("skin migration plan (α skin layer, one-shot, layered)", () => {
 		expect(plan?.layer).toBe("profile")
 	})
 
-	test("profile-layer theme wins the layer decision when both layers carry one", () => {
+	test("the WORKSPACE layer wins the write-back when both layers carry a legacy theme (P0-2: read precedence env > workspace > profile — writing the profile would leave the workspace override shadowing it)", () => {
 		const plan = skinMigrationPlan({ profileConfig: { theme: "aura" }, workspaceConfig: { theme: "tokyonight" } })
-		expect(plan?.layer).toBe("profile")
+		expect(plan?.layer).toBe("workspace")
+		expect(plan?.theme).toBe(SKIN_MIGRATION_THEME)
+		expect(plan?.skinMigration).toBe(1)
 	})
 })
 

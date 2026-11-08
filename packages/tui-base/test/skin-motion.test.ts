@@ -30,6 +30,7 @@ import {
 	refreshAutoTier,
 	resolveAutoTier,
 	resolveEffectiveTier,
+	resolveMotionPreference,
 	setMotionBusy,
 	setMotionTier,
 } from "../src/skin/motion"
@@ -126,6 +127,34 @@ describe("skin/motion auto-degradation", () => {
 		expect(resolveEffectiveTier(undefined, "reduced")).toBe("reduced")
 		expect(resolveEffectiveTier("full", "reduced")).toBe("full")
 		expect(resolveEffectiveTier("off", "full")).toBe("off")
+	})
+})
+
+describe("skin/motion boot preference resolution (env > persisted > auto)", () => {
+	test("a valid env value beats everything, including the persisted key", () => {
+		expect(resolveMotionPreference("full", "reduced")).toBe("full")
+		expect(resolveMotionPreference("off", "full")).toBe("off")
+		expect(resolveMotionPreference("reduced", undefined)).toBe("reduced")
+	})
+
+	test("env `auto` (or unset) falls through to the persisted key", () => {
+		expect(resolveMotionPreference("auto", "full")).toBe("full")
+		expect(resolveMotionPreference(undefined, "reduced")).toBe("reduced")
+		expect(resolveMotionPreference(undefined, "off")).toBe("off")
+	})
+
+	test("persisted `auto` (or no source at all) resolves to the auto tier", () => {
+		expect(resolveMotionPreference(undefined, "auto")).toBeUndefined()
+		expect(resolveMotionPreference("auto", undefined)).toBeUndefined()
+		expect(resolveMotionPreference(undefined, undefined)).toBeUndefined()
+	})
+
+	test("garbage values are ignored and never shadow a valid lower source", () => {
+		expect(resolveMotionPreference("turbo", "full")).toBe("full")
+		expect(resolveMotionPreference("FULL", "reduced")).toBe("full")
+		expect(resolveMotionPreference(" full ", undefined)).toBe("full")
+		expect(resolveMotionPreference("", "off")).toBe("off")
+		expect(resolveMotionPreference("turbo", "also-garbage")).toBeUndefined()
 	})
 })
 
