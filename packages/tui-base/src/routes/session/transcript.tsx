@@ -32,11 +32,12 @@
  * bottom slot is flexShrink=0 and its child (the composer) sets an explicit
  * height — auto-height boxes collapse in flex columns.
  */
-import { For, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { For, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import { SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
+import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
 
 export type TranscriptProps = {
@@ -86,6 +87,41 @@ export function Transcript(props: TranscriptProps) {
 	const syntaxStyle = () =>
 		props.syntaxStyle ?? themes?.currentSyntax() ?? SyntaxStyle.fromStyles({}, renderer.nativeScene)
 
+	// Batch V1 tool block: shared spinner tick (one interval, one signal —
+	// only the running rows' text nodes re-render on the tick; settled rows
+	// never re-read it). dsh-tui-pi ToolPanel semantics: braille frames while
+	// pending, ✓/✗ freeze on settle.
+	const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+	const [spin, setSpin] = createSignal(0)
+	onMount(() => {
+		const timer = setInterval(() => setSpin((s) => s + 1), 120)
+		onCleanup(() => clearInterval(timer))
+	})
+
+	/** One tool row (tui-pi ToolPanel semantics, transcript-block shape):
+	 * title line = spinner/✓/✗ + Name(subject); the `⎿` track line carries
+	 * the arg detail while running and the result first line once settled. */
+	const toolRow = (row: Extract<SeamRow, { kind: "tool" }>) => {
+		const subject = toolSubject(row.args)
+		const title = subject === "" ? row.name : `${row.name}(${subject})`
+		const statusColor =
+			row.status === "failed" ? color.failed() : row.status === "running" ? color.running() : color.done()
+		const marker = row.status === "running" ? `${SPINNER_FRAMES[spin() % SPINNER_FRAMES.length]} ` : row.status === "failed" ? "✗ " : "✓ "
+		// Running shows the arg summary; settled shows the result tail (the
+		// collapse-to-summary: the raw JSON never renders on either line).
+		const track = row.status === "running" ? toolDetail(row.args) : toolResultLine(row.output)
+		return (
+			<box flexShrink={0} paddingLeft={3} flexDirection="column">
+				<text fg={statusColor} wrapMode="none">
+					{`${marker}${title}`}
+				</text>
+				<Show when={track !== ""}>
+					<text fg={color.reasoning()} wrapMode="none">{`  ⎿ ${clipToWidth(track, Math.max(20, renderer.width - 10))}`}</text>
+				</Show>
+			</box>
+		)
+	}
+
 	onMount(() => {
 		if (owned) projection.load()
 	})
@@ -122,18 +158,7 @@ export function Transcript(props: TranscriptProps) {
 					</box>
 				)
 			case "tool":
-				return (
-					<box flexShrink={0} paddingLeft={3}>
-						<text
-							fg={row.status === "failed" ? color.failed() : row.status === "running" ? color.running() : color.done()}
-							wrapMode="none"
-						>
-							{`${row.status === "done" ? "✓" : row.status === "failed" ? "✗" : "*"} ${row.name}${
-								row.args ? `(${row.args})` : ""
-							}`}
-						</text>
-					</box>
-				)
+				return toolRow(row)
 			case "assistant":
 				return assistantRow(row)
 		}

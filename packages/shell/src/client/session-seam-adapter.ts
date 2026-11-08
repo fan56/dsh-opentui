@@ -240,7 +240,9 @@ export class RemoteSessionSeam implements SessionSeam {
 				onTurnEnd: () => {}, // seam models turn end as the promise
 				onApprove: async (name, args) => (await cb.onApprove(name, args)) === "allowed-once",
 				onToolStart: (start) => cb.onToolStart?.(start),
-				onToolRun: () => {}, // required by the facade; rows finalize live
+				// Batch V1: result events settle their tool row live (was a no-op —
+				// rows finalized only at turn end, output discarded).
+				onToolRun: (run) => cb.onToolRun?.(run),
 				onError: (message) => cb.onError(message),
 			})
 		} finally {

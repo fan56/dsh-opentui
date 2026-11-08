@@ -317,6 +317,20 @@ export function createSeamRows(
 					status: "running",
 				})
 			},
+			// Batch V1: the follow stream's tool/result settles the row live —
+			// status flips here (not only at turn finalize) and the result brief
+			// rides the row for the `⎿` track. Unknown callId (result racing a
+			// fresh begin) still lands keyed by callId so it is findable.
+			onToolRun: (run) => {
+				upsert({
+					key: `tool:live:${run.callId ?? run.name}`,
+					kind: "tool",
+					name: run.name,
+					args: run.argsPretty,
+					status: run.ok ? "done" : "failed",
+					output: run.output,
+				})
+			},
 			onApprove: options?.onApprove ?? approveThrough,
 			onError: (message) => {
 				turnErrored = true

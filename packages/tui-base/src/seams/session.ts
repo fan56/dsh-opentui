@@ -178,6 +178,10 @@ export interface SeamTurnCallbacks {
 	onThinkingDelta: (text: string) => void
 	onContentDelta: (text: string) => void
 	onToolStart?: (start: { callId?: string; name: string; args: string }) => void
+	/** Fires when a tool run settles (batch V1): `ok` is the isError mirror,
+	 * `output` the follow stream's JSON-brief result slice. Optional — seam
+	 * fakes without result wiring leave rows running until turn finalize. */
+	onToolRun?: (run: { callId?: string; name: string; argsPretty: string; output: string; ok: boolean }) => void
 	/**
 	 * Fires mid-turn when a tool run needs approval. Resolve with the exact
 	 * `SeamApprovalVerdict` strings — the approval card (dialog-confirm)
