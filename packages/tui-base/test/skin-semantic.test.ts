@@ -146,3 +146,38 @@ describe("dsh-blue current-row contrast (P0-1: the real parse chain)", () => {
 		}
 	})
 })
+
+describe("dsh-blue placeholder contrast (visual acceptance P2)", () => {
+	// The composer input surface (#1E1E22 = neutral.600 in dsh-blue dark).
+	const INPUT_BG = { r: 0x1e / 255, g: 0x1e / 255, b: 0x22 / 255 }
+	// Same WCAG math as the current-row block above, scoped locally.
+	function channel(value: number) {
+		return value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4)
+	}
+	function luminance(color: { r: number; g: number; b: number }): number {
+		return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+	}
+	function contrast(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number {
+		const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+		return (hi + 0.05) / (lo + 0.05)
+	}
+
+	test("dark placeholder/hint tier ≥ 4.5:1 on the input background", () => {
+		const document = getDshBlueTheme()
+		const theme = createComponentTheme(() => resolveThemeDocument(document, "dark"))
+		const muted = theme.text.muted as { r: number; g: number; b: number }
+		expect(contrast(muted, INPUT_BG)).toBeGreaterThanOrEqual(4.5)
+		// faint falls back to muted (expand.ts) — the placeholder rides along.
+		// (RGBA has no structural equality — compare by contrast parity.)
+		const faint = theme.text.faint as { r: number; g: number; b: number }
+		expect(contrast(faint, INPUT_BG)).toBe(contrast(muted, INPUT_BG))
+	})
+
+	test("hierarchy survives: hints stay dimmer than body text", () => {
+		const document = getDshBlueTheme()
+		const theme = createComponentTheme(() => resolveThemeDocument(document, "dark"))
+		const base = theme.text.base as { r: number; g: number; b: number }
+		const muted = theme.text.muted as { r: number; g: number; b: number }
+		expect(contrast(base, INPUT_BG)).toBeGreaterThan(contrast(muted, INPUT_BG))
+	})
+})
