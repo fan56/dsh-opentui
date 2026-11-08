@@ -329,28 +329,40 @@ describe("row 41 — config seam wiring", () => {
 		await session.dispose()
 	})
 
-	test("configSave splits: overlay keys → config.yml, plugin keys → profile config.json", async () => {
+	test("configSave splits: theme + plugin keys → profile config.json, model → config.yml", async () => {
 		const home = scratchDir("dsh-wave3-home-")
 		const workspace = scratchDir("dsh-wave3-ws-")
 		const { session } = makeFacade({ dshHome: home, workspaceDir: workspace })
 		session.configSave({ retentionDays: 3, favoriteModels: ["a/b"] })
-		const profile = JSON.parse(readFileSync(join(home, "profiles", "opentui", "config.json"), "utf8")) as Record<string, unknown>
+		const profilePath = join(home, "profiles", "opentui", "config.json")
+		const profile = JSON.parse(readFileSync(profilePath, "utf8")) as Record<string, unknown>
 		expect(profile.retentionDays).toBe(3)
 		expect(profile.favoriteModels).toEqual(["a/b"])
 
+		// 67-theme regression (batch F7b contract): theme persists as the
+		// PROFILE config.json `"theme"` key (host-face parity) — the
+		// pre-fix workspace-overlay routing left the scratch home without
+		// any theme key and broke the persistence/restart e2e arms.
 		session.configSave({ theme: "catppuccin-mocha" })
+		const themed = JSON.parse(readFileSync(profilePath, "utf8")) as Record<string, unknown>
+		expect(themed.theme).toBe("catppuccin-mocha")
+		expect(session.configLoad().theme).toBe("catppuccin-mocha")
+
+		// the model key still rides the workspace overlay (async write)
+		session.configSave({ model: { provider: "deepseek", model: "deepseek-chat" } })
 		const overlayPath = join(workspace, ".dsh", "config.yml")
 		await until(() => {
 			try {
-				return readFileSync(overlayPath, "utf8").includes("catppuccin-mocha")
+				return readFileSync(overlayPath, "utf8").includes("deepseek-chat")
 			} catch {
 				return false
 			}
 		})
 		const overlayText = readFileSync(overlayPath, "utf8")
-		expect(overlayText).toContain("theme: catppuccin-mocha")
-		expect(session.configLoad().theme).toBe("catppuccin-mocha")
-		// plugin keys never leak into the workspace overlay (scope guard)
+		expect(overlayText).toContain("provider: deepseek")
+		// theme never leaks into the workspace overlay (scope guard; the
+		// baked header comment mentions the word — match the key form)
+		expect(overlayText).not.toMatch(/^theme:/m)
 		expect(overlayText).not.toContain("retentionDays")
 		await session.dispose()
 	})

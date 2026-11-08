@@ -130,12 +130,12 @@
  *  41      config seam — the workspace overlay (bucket (d),
  *          loadWorkspaceConfig/mergeConfig/saveWorkspaceConfig, frozen
  *          API) wired into the HostSession config surface: configLoad()
- *          = profile config.json (base) ⊕ workspace config.yml (theme +
- *          model) ⊕ env; configSave splits overlay-managed keys (theme,
- *          model) into config.yml and plugin keys (retentionDays,
- *          favorites, …) into the profile config.json — HostSession
- *          persistence parity on the same files plugin mode used
- *          (single machine)
+ *          = profile config.json (base) ⊕ workspace config.yml (model;
+ *          legacy theme keys still win the read) ⊕ env; configSave
+ *          routes `theme` and the plugin keys (retentionDays,
+ *          favorites, …) into the profile config.json and `model` into
+ *          config.yml — HostSession persistence parity on the same
+ *          files plugin mode used (single machine)
  */
 
 import { randomUUID } from "node:crypto"
@@ -1014,19 +1014,23 @@ export class RemoteHostSession {
 	}
 
 	/**
-	 * Persist a config patch (HostSession sync-merge parity): overlay-
-	 * managed keys (`theme`, `model`) go to the workspace config.yml
-	 * (saveWorkspaceConfig, frozen API — atomic 0600, credential guard),
-	 * plugin keys go to the profile config.json. The returned value is the
-	 * merged view; the workspace write is async (the cache updates
-	 * optimistically and reverts + logs on failure).
+	 * Persist a config patch (HostSession sync-merge parity): `theme` and
+	 * the plugin keys go to the profile config.json (the F7b contract —
+	 * /theme persists as the profile's `"theme"` key, host-entry-v2 parity;
+	 * a per-workspace theme store would hide the preference from the
+	 * profile the e2e and the host face read), `model` goes to the
+	 * workspace config.yml (saveWorkspaceConfig, frozen API — atomic 0600,
+	 * credential guard). The returned value is the merged view; the
+	 * workspace write is async (the cache updates optimistically and
+	 * reverts + logs on failure). Legacy overlays that still carry a
+	 * `theme:` key keep winning the read (mergeConfig precedence) until
+	 * the file is cleaned up — configSave no longer writes one.
 	 */
 	configSave(patch: Record<string, unknown>): Record<string, unknown> {
 		const overlayPatch: WorkspaceOverlay = {}
 		const rest: Record<string, unknown> = {}
 		for (const [key, value] of Object.entries(patch)) {
-			if (key === "theme") overlayPatch.theme = typeof value === "string" ? value : undefined
-			else if (key === "model") overlayPatch.model = (typeof value === "object" && value !== null ? (value as ModelPrefs) : undefined)
+			if (key === "model") overlayPatch.model = (typeof value === "object" && value !== null ? (value as ModelPrefs) : undefined)
 			else rest[key] = value
 		}
 		if (Object.keys(overlayPatch).length > 0) {

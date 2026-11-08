@@ -200,8 +200,8 @@ export class RemoteSessionSeam implements SessionSeam {
 	}
 
 	/** Config seam write (batch F7b /theme persistence): RemoteHostSession.
-	 * configSave() 1:1 — overlay-managed keys (`theme`) go to the workspace
-	 * config.yml, plugin keys to the profile config.json. */
+	 * configSave() 1:1 — `theme` and plugin keys go to the profile
+	 * config.json (host-face parity), `model` to the workspace config.yml. */
 	configSave(patch: Record<string, unknown>): Record<string, unknown> {
 		return this.#session.configSave(patch)
 	}

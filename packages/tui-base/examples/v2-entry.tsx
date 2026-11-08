@@ -246,8 +246,8 @@ function V2SessionPage(props: {
 		// /theme switch surface (batch F7b — client-face parity with
 		// host-entry-v2): live apply + persistence through the seam's
 		// configSave (RemoteHostSession.configSave routes `theme` to the
-		// workspace config.yml); boot reads the stored name via
-		// themeNameFromConfig (shared/boot-shared.ts).
+		// profile config.json, host-face parity); boot reads the stored
+		// name via themeNameFromConfig (shared/boot-shared.ts).
 		themes: {
 			current: () => themeSeam.current(),
 			list: () => themeSeam.list(),
