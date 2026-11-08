@@ -31,8 +31,8 @@
  *
  * Paste: native (TextareaRenderable.handlePaste, bracketed). No custom code.
  *
- * Busy marker: rendered in the footer row and pushed through `onBusyChange`
- * for the status/powerline batch.
+ * Busy marker: pushed through `onBusyChange` for the status/powerline batch
+ * (the footer hint itself is a constant row — flicker mitigation 2).
  *
  * OpenTUI law: the root box gets an explicit height computed from the
  * textarea's reported height (+ footer), never auto-height in a flex column.
@@ -64,6 +64,14 @@ export type SessionComposerRef = {
 
 /** Busy top-border title (contract §1): the steer affordance, warning-tier. */
 const STEER_TITLE = " steer "
+
+/** Flicker mitigation 2 (research/skin-flicker-analysis.md 缓解 3): the
+ * composer footer hint — the input box's bottom-edge row — is ONE CONSTANT
+ * string for idle and busy alike. The old busy↔idle swap repainted the row
+ * on every turn boundary (different text/width → full-row redraw). Busy
+ * stays visible via the cursor color, the top-border steer title, and the
+ * activity frame; this row never changes again. */
+export const COMPOSER_FOOTER_HINT = "enter send · while streaming enter steers · alt+enter newline · ↑↓ history"
 
 export type SessionComposerProps = {
 	/** Seam used for steering a running turn. */
@@ -316,12 +324,7 @@ export function SessionComposer(props: SessionComposerProps) {
 			/>
 			<Show when={FOOTER_HEIGHT > 0}>
 				<box height={FOOTER_HEIGHT} flexShrink={0} flexDirection="row" gap={2}>
-					<Show
-						when={busy()}
-						fallback={<text fg={color.hint()}>{"enter send · alt+enter newline · ↑↓ history"}</text>}
-					>
-						<text fg={busyColor()}>{"* streaming… enter steers the running turn"}</text>
-					</Show>
+					<text fg={color.hint()}>{COMPOSER_FOOTER_HINT}</text>
 				</box>
 			</Show>
 		</box>

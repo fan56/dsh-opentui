@@ -9,6 +9,11 @@
  */
 import { describe, expect, test } from "bun:test"
 import {
+	ACTIVITY_FRAME_DEFER_MS,
+	createFrameLatch,
+	frameLatchFire,
+	frameLatchNext,
+	type FrameLatch,
 	activityFrameMode,
 	activityLines,
 	activityRuleLines,
@@ -290,8 +295,7 @@ describe("skin turn-lifetime activity frame", () => {
 	})
 })
 
-describe("skin code-block forms (streaming rule → final frame)", () => {
-	test("streaming → rule (no extra rows), final → frame", async () => {
+describe("skin code-block forms (streaming rule → final frame)", () => {	test("streaming → rule (no extra rows), final → frame", async () => {
 		const mod = await import("../src/routes/session/transcript")
 		expect(mod.codeBlockForm(false)).toBe("rule")
 		expect(mod.codeBlockForm(true)).toBe("frame")
@@ -316,5 +320,68 @@ describe("skin code-block forms (streaming rule → final frame)", () => {
 		const nonBox = { content: "plain text renderable" }
 		expect(mod.applyCodeBlockSkinForTest(nonBox, true, "ts")).toBe(nonBox)
 		expect((nonBox as typeof box).border).toBeUndefined()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Flicker mitigation 1 (research/skin-flicker-analysis.md 缓解 1): the
+// turn-lifetime activity frame mounts/unmounts one render tick after the
+// turn flip, so the frame toggle never lands on the turn-boundary reflow
+// frame (the engine's diff-paint misses the border there — the `┌─activity`
+// ghost).
+// ---------------------------------------------------------------------------
+
+describe("deferred activity frame latch (flicker mitigation 1)", () => {
+	const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+	test("defer window is one render tick (50-100ms band)", () => {
+		expect(ACTIVITY_FRAME_DEFER_MS).toBeGreaterThanOrEqual(50)
+		expect(ACTIVITY_FRAME_DEFER_MS).toBeLessThanOrEqual(100)
+	})
+
+	test("pure transitions: steady states never schedule, a flip defers", () => {
+		const hidden: FrameLatch = { shown: false, pending: undefined }
+		const shown: FrameLatch = { shown: true, pending: undefined }
+		expect(frameLatchNext(hidden, false)).toEqual({ latch: hidden, schedule: false })
+		expect(frameLatchNext(shown, true)).toEqual({ latch: shown, schedule: false })
+		expect(frameLatchNext(hidden, true)).toEqual({ latch: { shown: false, pending: "show" }, schedule: true })
+		expect(frameLatchNext(shown, false)).toEqual({ latch: { shown: true, pending: "hide" }, schedule: true })
+	})
+
+	test("pure timer fire commits the pending op; nothing pending is a no-op", () => {
+		expect(frameLatchFire({ shown: false, pending: "show" })).toEqual({ shown: true, pending: undefined })
+		expect(frameLatchFire({ shown: true, pending: "hide" })).toEqual({ shown: false, pending: undefined })
+		const steady = { shown: true, pending: undefined }
+		expect(frameLatchFire(steady)).toBe(steady)
+	})
+
+	test("mount and unmount each land one tick late (real one-shot timers)", async () => {
+		const latch = createFrameLatch(10)
+		expect(latch.shown()).toBe(false)
+		latch.push(true)
+		expect(latch.shown()).toBe(false) // deferred: NOT mounted this frame
+		await wait(30)
+		expect(latch.shown()).toBe(true)
+		latch.push(false)
+		expect(latch.shown()).toBe(true) // deferred: still mounted this frame
+		await wait(30)
+		expect(latch.shown()).toBe(false)
+		latch.dispose()
+	})
+
+	test("a flip inside the window cancels the pending op (no ghost either way)", async () => {
+		const latch = createFrameLatch(10)
+		latch.push(true)
+		latch.push(false) // turn aborted within the window → never flashes on
+		await wait(30)
+		expect(latch.shown()).toBe(false)
+		latch.push(true)
+		await wait(30)
+		expect(latch.shown()).toBe(true)
+		latch.push(false)
+		latch.push(true) // turn resumed within the window → never flickers off
+		await wait(30)
+		expect(latch.shown()).toBe(true)
+		latch.dispose()
 	})
 })

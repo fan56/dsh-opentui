@@ -32,7 +32,7 @@
  * count (auto-height boxes collapse in flex columns) and flexShrink=0 so
  * the composer keeps its own height below it.
  */
-import { For, createSignal, Show, type JSX } from "solid-js"
+import { For, createEffect, createSignal, onCleanup, Show, type JSX } from "solid-js"
 import { useTerminalDimensions, onAnimationTick } from "@opentui/solid"
 import { parseColor, TextAttributes, type RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
@@ -356,12 +356,94 @@ export function dockNeedsClock(rows: readonly SeamRow[]): boolean {
 	return rows.some((row) => row.kind === "subagents" && row.children.some((child) => child.status === "running"))
 }
 
+// ---------------------------------------------------------------------------
+// Flicker mitigation 1 (research/skin-flicker-analysis.md 缓解 1): the
+// turn-lifetime activity frame MOUNT and UNMOUNT are each deferred one
+// render tick (ACTIVITY_FRAME_DEFER_MS) so neither ever lands on the same
+// frame as the turn-start reflow (transcript scroll + composer busy flip)
+// or the turn-end reflow — the engine's diff-paint misses the frame border
+// when all three coincide, leaving a 1-frame ghost (`┌─activity` remnant)
+// that self-heals a frame later. Pure latch machine + module-level instance
+// (dockSpin law: no component-scope reactive state closed over by JSX
+// props). One-shot timers only (contract §2.2: no setInterval), disposed
+// with the dock.
+// ---------------------------------------------------------------------------
+
+/** Defer window ≈ one render tick of reflow settling (analysis band
+ * 50-100ms). */
+export const ACTIVITY_FRAME_DEFER_MS = 60
+
+/** Latch state: `shown` is what the JSX renders; `pending` is the deferred
+ * op sitting on the one-shot timer. */
+export interface FrameLatch {
+	shown: boolean
+	pending: "show" | "hide" | undefined
+}
+
+/** Pure transition: apply a new turn-liveness reading. Steady → unchanged.
+ * A flip schedules the deferred op (caller arms the timer). A flip that
+ * CONTRADICTS a pending op cancels it — a turn that ends within the window
+ * of its own start never mounts the frame, and one that resumes within the
+ * end window never flickers off. */
+export function frameLatchNext(latch: FrameLatch, target: boolean): { latch: FrameLatch; schedule: boolean } {
+	if (target === latch.shown) {
+		if (latch.pending === undefined) return { latch, schedule: false }
+		return { latch: { shown: latch.shown, pending: undefined }, schedule: false }
+	}
+	return { latch: { shown: latch.shown, pending: target ? "show" : "hide" }, schedule: true }
+}
+
+/** Pure timer-fire: commit the pending op (no-op when nothing is pending). */
+export function frameLatchFire(latch: FrameLatch): FrameLatch {
+	if (latch.pending === "show") return { shown: true, pending: undefined }
+	if (latch.pending === "hide") return { shown: false, pending: undefined }
+	return latch
+}
+
+/** Latch owner: the reactive signal lives here (module scope, like
+ * `dockSpin`), the one-shot timer is cleared on every push and on dispose. */
+export function createFrameLatch(ms: number = ACTIVITY_FRAME_DEFER_MS) {
+	const [latch, setLatch] = createSignal<FrameLatch>({ shown: false, pending: undefined })
+	let timer: ReturnType<typeof setTimeout> | undefined
+	const clear = (): void => {
+		if (timer !== undefined) {
+			clearTimeout(timer)
+			timer = undefined
+		}
+	}
+	return {
+		/** Deferred turn-liveness accessor for the JSX `Show`. */
+		shown: (): boolean => latch().shown,
+		/** Feed a turn-liveness reading (an effect in the dock body). */
+		push: (target: boolean): void => {
+			const next = frameLatchNext(latch(), target)
+			clear()
+			setLatch(next.latch)
+			if (next.schedule) timer = setTimeout(() => {
+				timer = undefined
+				setLatch(frameLatchFire(latch()))
+			}, ms)
+		},
+		/** Unmount cleanup (contract §2.2: one-shot timers die with the owner). */
+		dispose: clear,
+	}
+}
+
+/** MODULE-level latch — the dock is a per-app singleton and module scope is
+ * the CLOSURE-LAW-safe home (dockSpin precedent). */
+export const activityFrameLatch = createFrameLatch()
+
+
+
 /** The dock. Mounted by the v2-entry page as the transcript's `widgets`
  * slot — directly above the composer (the editor).
  *
  * Skin (batch δ): the turn-lifetime activity frame (contract §1 活动区) —
  * `turnActive` (optional accessor prop, host wiring) wins; without it the
- * turn is derived from the rows (dockTurnActive). Inside the frame the
+ * turn is derived from the rows (dockTurnActive). The frame's mount and
+ * unmount are each DEFERRED one render tick (flicker mitigation 1,
+ * `activityFrameLatch` below the clock helpers) so they never share a frame
+ * with the turn-boundary reflows. Inside the frame the
  * content area is EXACTLY three rows (todo/think/tool, D5 semantics, blank
  * empty slots); short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS) drop the
  * box for a left rule with the title in the first line (H2). Line entrance
@@ -403,6 +485,11 @@ export function WidgetsDock(props: {
 	)
 	const width = () => Math.max(16, dimensions().width - 4)
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
+	// Mitigation 1: the frame's Show reads the DEFERRED latch, not the raw
+	// turn liveness — mount/unmount land one render tick after the flip
+	// (see createFrameLatch above). The latch timer dies with the dock.
+	createEffect(() => activityFrameLatch.push(turnActive()))
+	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
 
 	const lineView = (line: DockLine) => (
@@ -412,7 +499,10 @@ export function WidgetsDock(props: {
 	)
 
 	return (
-		<Show when={turnActive()} fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} skinCtx={skinCtx()} />}>
+		<Show
+			when={activityFrameLatch.shown()}
+			fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} skinCtx={skinCtx()} />}
+		>
 			<Show
 				when={frame() === "frame"}
 				fallback={
