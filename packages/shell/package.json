@@ -6,17 +6,7 @@
   "bin": {
     "dsh-opentui": "bin/dsh-opentui.mjs"
   },
-  "main": "./dist-host/index.js",
-  "exports": {
-    ".": "./dist-host/index.js"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./dist-host/plugin.patch.yml"
-    }
-  },
   "files": [
-    "dist-host",
     "bin",
     "scripts",
     "README.md",
@@ -29,8 +19,6 @@
     "typecheck": "tsc --noEmit",
     "postinstall": "node scripts/postinstall.mjs",
     "prepack": "node scripts/pack-meta.mjs",
-    "smoke": "node scripts/smoke-boot.mjs",
-    "sync": "node scripts/sync-profile.mjs",
     "test:e2e": "node scripts/e2e-live.mjs && node scripts/e2e-fork.mjs"
   },
   "dependencies": {

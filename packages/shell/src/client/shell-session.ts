@@ -3,20 +3,15 @@
  * ShellHostDeps seam (ADR-0005 bucket (c)).
  *
  * ShellHost + its features touch exactly these members of the session
- * object they are handed. Plugin mode feeds the in-process `HostSession`
- * (host-entry.tsx); client mode feeds `RemoteHostSession`
- * (client-entry.tsx). The entry passes the remote session under the
- * `HostSession` type so ShellHost keeps its zero-edit plugin wiring —
- * this file keeps that cast honest: `_RemoteHostSessionConforms` fails
- * tsc when RemoteHostSession drifts away from the surface ShellHost
- * actually uses, instead of letting the drift surface as a boot crash.
+ * object they are handed. Client mode feeds `RemoteHostSession`
+ * (client-entry.tsx). This file keeps that cast honest:
+ * `_RemoteHostSessionConforms` fails tsc when RemoteHostSession drifts
+ * away from the surface ShellHost actually uses, instead of letting the
+ * drift surface as a boot crash.
  *
- * Signatures are written against the consumer's needs; both sessions
- * satisfy them structurally (HostSession has extra members — the surface
- * is a subset, not a mirror).
+ * Signatures are written against the consumer's needs.
  */
 import type { StoredTranscriptRow } from "./seam-types.ts"
-import type { HostSession } from "../host-session.ts"
 import type { TurnCallbacks } from "../agent/loop.ts"
 import type { RemoteHostSession } from "./remote-host-session.ts"
 
@@ -96,7 +91,3 @@ type _RemoteHostSessionConforms = RemoteHostSession extends ShellSessionSurface 
 const _remoteHostSessionConforms: _RemoteHostSessionConforms = true
 export type { _RemoteHostSessionConforms }
 
-/** HostSession stays assignable too — the surface is the shared subset. */
-type _HostSessionConforms = HostSession extends ShellSessionSurface ? true : false
-const _hostSessionConforms: _HostSessionConforms = true
-export type { _HostSessionConforms }
