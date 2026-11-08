@@ -33,11 +33,17 @@ import type { RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import { clipToWidth } from "./tool-summarize"
 import { useThemeOptional } from "../../context/theme"
-import { dockSpin } from "./widgets-dock"
+import { motionDecorationsEnabled } from "../../skin/motion"
+import { dockSpin, skinFadeInColor, skinLineFadeT, SKIN_FADE_IN_MS } from "./widgets-dock"
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-export type LastRequestLine = { text: string; tone: "muted" | "running" }
+export type LastRequestLine = {
+	text: string
+	tone: "muted" | "running"
+	/** δ: stable entrance-fade key (spinner glyphs churn the text). */
+	id?: string
+}
 
 /** The `●` echo line (pure): first line of the prompt, `● ` prefixed. */
 export function requestEchoLine(text: string | undefined): string | undefined {
@@ -46,6 +52,7 @@ export function requestEchoLine(text: string | undefined): string | undefined {
 	if (first.trim() === "") return undefined
 	return `● ${first}`
 }
+
 
 /** One running-child line (pure): `├─/└─ ⠋ <label> · Xs · <tail>` —
  * tui-pi compactAgentLine shape, reduced to the seam's facts (label,
@@ -69,7 +76,7 @@ export function childLineText(
 export function lastRequestLines(rows: readonly SeamRow[], request: string | undefined): LastRequestLine[] {
 	const out: LastRequestLine[] = []
 	const echo = requestEchoLine(request)
-	if (echo !== undefined) out.push({ text: echo, tone: "muted" })
+	if (echo !== undefined) out.push({ text: echo, tone: "muted", id: "lr:echo" })
 	const tree = [...rows].reverse().find((row) => row.kind === "subagents")
 	if (tree?.kind === "subagents") {
 		const running = tree.children.filter((child) => child.status === "running")
@@ -77,6 +84,7 @@ export function lastRequestLines(rows: readonly SeamRow[], request: string | und
 			out.push({
 				text: childLineText(child, index === running.length - 1, dockSpin),
 				tone: "running",
+				id: `lr:child:${child.id}`,
 			})
 		})
 	}
@@ -99,12 +107,20 @@ export function LastRequestDock(props: {
 		tone === "running" ? (theme?.text.feedback.warning.base ?? "#e0af68") : (theme?.text.muted ?? "#9aa5ce")
 	const width = () => Math.max(16, dimensions().width - 5)
 	const lines = () => lastRequestLines(props.rows, props.lastRequest)
+	// δ: entrance fade (0.4s faint → target) on the shared skin palette; the
+	// re-render cadence rides the widgets dock's shared-clock dockSpin tick.
+	const lineFg = (line: LastRequestLine): string | RGBA => {
+		const target = fgFor(line.tone)
+		if (!motionDecorationsEnabled() || line.id === undefined) return target
+		const t = skinLineFadeT(line.id)
+		return t >= 1 ? target : skinFadeInColor(target, theme?.background.base ?? "#000000", t * SKIN_FADE_IN_MS)
+	}
 
 	return (
 		<box flexShrink={0} flexDirection="column" width="100%" height={lines().length} paddingLeft={3}>
 			<For each={lines()}>
 				{(line) => (
-					<text fg={fgFor(line.tone)} wrapMode="none">
+					<text fg={lineFg(line)} wrapMode="none">
 						{clipToWidth(line.text, width())}
 					</text>
 				)}

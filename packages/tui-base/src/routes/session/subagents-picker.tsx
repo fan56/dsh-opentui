@@ -32,6 +32,7 @@ import { clipToWidth } from "./tool-summarize"
 import { createStore } from "solid-js/store"
 import { Keymap } from "../../context/keymap"
 import { useThemeOptional } from "../../context/theme"
+import { currentRowColors } from "../../skin/semantic"
 import { useDialog } from "../../ui/dialog"
 import { DialogPrompt } from "../../ui/dialog-prompt"
 import { Locale } from "../../util/locale"
@@ -174,11 +175,21 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
   // The picker no longer paints its own bordered multi-row roster dock; it
   // is a single selection line (the viewer entry stays: ↓ opens, ↑↓
   // select, enter steers, ctrl+a toggles inactive, esc closes).
+  // Skin (contract §1): the line describes the CURRENT entry, so the whole
+  // line takes the current-row highlight (dialog-select token semantics).
   const dimensions = useTerminalDimensions()
+  const row = () => currentRowColors(theme ?? undefined)
   return (
     <Show when={open()}>
-      <box flexShrink={0} width="100%" height={1} flexDirection="row" paddingLeft={3}>
-        <text fg={theme?.text.base ?? "#e6e6e6"} wrapMode="none">
+      <box
+        flexShrink={0}
+        width="100%"
+        height={1}
+        flexDirection="row"
+        paddingLeft={3}
+        backgroundColor={row().backgroundColor}
+      >
+        <text fg={row().textColor} wrapMode="none">
           {clipToWidth(pickerLineText(entries(), store.selected, showAll()), Math.max(16, dimensions().width - 4))}
         </text>
       </box>

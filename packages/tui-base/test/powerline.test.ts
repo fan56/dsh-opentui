@@ -68,12 +68,15 @@ describe("color math (kit parity)", () => {
 })
 
 describe("segment builders", () => {
-	test("brand segment is always present and uses the accent token with a theme", () => {
+	test("brand segment is always present and uses the identity brand blue (skin contract)", () => {
 		const withTheme = brandSegment(fakeTheme())
 		expect(withTheme.text).toBe("dsh")
-		expect(withTheme.bg).toBeInstanceOf(RGBA)
+		// Skin contract §1: the dsh fill is the IDENTITY brand blue, not the
+		// theme accent token — dark #4D6BFE, light deepened #3B5BDB.
+		expect(withTheme.bg).toBe("#4d6bfe")
+		expect(brandSegment(fakeTheme(), undefined, "light").bg).toBe("#3b5bdb")
 		const fallback = brandSegment()
-		expect(fallback.bg).toBe(POWERLINE_COLORS.brand)
+		expect(fallback.bg).toBe(POWERLINE_COLORS.brand.toLowerCase())
 	})
 
 	test("provider / model omit on empty labels; model carries ◕ effort", () => {
