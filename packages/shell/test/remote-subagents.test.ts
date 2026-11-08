@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { RemoteSubagentPanel, descriptorOf, totalTokensOf, type RemoteSubagentView } from "../src/client/remote-subagents.ts"
+import type { HardStopRecord, SubagentRoundLimits } from "../src/subagent-policy.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 import { RemoteRpcError, type ClientConnection } from "../src/client/transport.ts"
 import { FakeConnection, FakeMuxSocket, rpcOf, snapshotFrame, streamFrame, until } from "./client-fakes.ts"
@@ -14,7 +15,7 @@ import type { TurnCallbacks } from "../src/agent/loop.ts"
 
 type RpcHandler = (method: string, args: Record<string, unknown>) => unknown | Promise<unknown>
 
-function makePanel(options: { parentId?: string; rpcHandler?: RpcHandler } = {}) {
+function makePanel(options: { parentId?: string; rpcHandler?: RpcHandler; limits?: () => SubagentRoundLimits; onHardStop?: (record: HardStopRecord) => void } = {}) {
 	const rpcCalls: { method: string; args: Record<string, unknown> }[] = []
 	const rpcHandler: RpcHandler =
 		options.rpcHandler ??
@@ -38,6 +39,8 @@ function makePanel(options: { parentId?: string; rpcHandler?: RpcHandler } = {})
 		},
 		parentId: () => options.parentId ?? "parent-1",
 		onUpdate: (views) => updates.push(views),
+		...(options.limits !== undefined ? { limits: options.limits } : {}),
+		...(options.onHardStop !== undefined ? { onHardStop: options.onHardStop } : {}),
 	})
 	return { panel, rpcCalls, sockets, updates, lastSocket: () => sockets[sockets.length - 1]! }
 }
@@ -170,6 +173,70 @@ describe("subagent panel aggregation", () => {
 		expect(updates.length).toBeGreaterThanOrEqual(4)
 		panel.stop()
 		expect(lastSocket().closed).toBe(true)
+	})
+
+	test("snapshot replay folds the journal descriptor — late join gets the label (D2 e2e finding)", async () => {
+		const { panel, lastSocket } = makePanel()
+		// the client face adopts list-swept children with the bare-id
+		// fallback: no parent-journal agent-start row carries a label
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "", childId: "child-late" }))
+		expect(panel.views()[0]!.label).toBe("subagent child-la")
+		await until(() => lastSocket() !== undefined)
+		const sock = lastSocket()
+		// the follow's first item is the snapshot: the child journal records,
+		// including the seq-0 subagent/descriptor the live stream never
+		// re-sends ("[fg] " is the run-agent foreground namespace)
+		sock.item(snapshotFrame("child-late", {
+			records: [
+				{ type: "event", event: { type: "subagent/descriptor", seq: 0, time: Date.now(), data: { version: 3, mode: "continuable", provider: "spawn", label: "[fg] looper", agentProvider: "zai", agentModel: "glm" } } },
+				{ type: "event", event: { type: "assistant/message", seq: 1, time: Date.now(), data: { message: { content: [{ type: "text", text: "rounding\nloop tick" }] } } } },
+			],
+		}))
+		await until(() => panel.views()[0]!.label === "looper")
+		const view = panel.views()[0]!
+		expect(view.label).toBe("looper")
+		expect(view.lastLine).toBe("loop tick")
+		panel.stop()
+	})
+
+	test("snapshot replay does not feed the maxRounds ladder (no force-stop re-arm)", async () => {
+		const hardStops: unknown[] = []
+		const rpcCalls: { method: string }[] = []
+		const { panel, lastSocket } = makePanel({
+			limits: () => ({ maxRounds: 1, maxRoundsGrace: 1 }),
+			onHardStop: (record) => hardStops.push(record),
+			rpcHandler: (method) => {
+				rpcCalls.push({ method })
+				if (method === "session/list") return { items: [] }
+				if (method === "subagents/prompt") return { messageId: "m-1" }
+				if (method === "subagents/interruptByParent") return { accepted: true }
+				return {}
+			},
+		})
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "", childId: "child-cap" }))
+		await until(() => lastSocket() !== undefined)
+		const sock = lastSocket()
+		// two past assistant rounds at/over the cap — a replay must count
+		// them (display) but never fire the ladder for rounds the host
+		// already ruled on
+		sock.item(snapshotFrame("child-cap", {
+			records: [
+				{ type: "event", event: { type: "assistant/message", seq: 1, time: Date.now(), data: { message: { content: [{ type: "text", text: "round one" }] } } } },
+				{ type: "event", event: { type: "assistant/message", seq: 2, time: Date.now(), data: { message: { content: [{ type: "text", text: "round two" }] } } } },
+			],
+		}))
+		await until(() => panel.views()[0]!.rounds === 2)
+		expect(panel.views()[0]!.rounds).toBe(2)
+		expect(hardStops).toEqual([])
+		expect(rpcCalls.some((c) => c.method === "subagents/prompt")).toBe(false)
+		// LIVE frames keep feeding the ladder: count 3 (≥ cap) delivers the
+		// wrap-up, count 4 (≥ cap + grace) force-stops
+		sock.item({ type: "event", event: { type: "assistant/message", seq: 3, time: Date.now(), data: { message: { content: [{ type: "text", text: "round three" }] } } } })
+		await until(() => rpcCalls.some((c) => c.method === "subagents/prompt"))
+		sock.item({ type: "event", event: { type: "assistant/message", seq: 4, time: Date.now(), data: { message: { content: [{ type: "text", text: "round four" }] } } } })
+		await until(() => hardStops.length > 0)
+		expect(hardStops.length).toBe(1)
+		panel.stop()
 	})
 
 	test("steer rides subagents/prompt with the continuable steer request", async () => {

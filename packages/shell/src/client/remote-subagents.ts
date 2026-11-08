@@ -41,7 +41,7 @@ import { blocksText } from "./remote-follow.ts"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
 import { RemoteRpcError } from "./transport.ts"
-import { SubagentRoundPolicy, type HardStopRecord, type SubagentRoundLimits } from "../subagent-policy.ts"
+import { SubagentRoundPolicy, bareAgentLabel, type HardStopRecord, type SubagentRoundLimits } from "../subagent-policy.ts"
 
 /** One panel row — the exact TurnCallbacks.onSubagentUpdate entry shape. */
 export interface RemoteSubagentView {
@@ -443,7 +443,6 @@ export class RemoteSubagentPanel {
 		if (view === undefined) return
 		const frame = (typeof value === "object" && value !== null && !Array.isArray(value) ? value : {}) as Record<string, unknown>
 		let changed = false
-		const log = view.log
 
 		if (frame.type === "assistant-stream") {
 			// live delta scroll (host-session.ts:1232-1238 parity)
@@ -457,14 +456,48 @@ export class RemoteSubagentPanel {
 			}
 			return
 		}
+		if (frame.type === "snapshot") {
+			// Late-join replay: the child's `subagent/descriptor` (the label
+			// source) is journal seq 0 — emitted before the panel even knows
+			// the child exists — so the live event stream never re-sends it.
+			// The follow's snapshot item carries the journal in `records`;
+			// fold those events through the same event path (display
+			// catch-up only: the maxRounds ladder stays live-frame fed, so a
+			// replay cannot re-arm force-stop for rounds the host already
+			// ruled on).
+			const records = Array.isArray(frame.records) ? frame.records : []
+			for (const record of records) {
+				const rec = (typeof record === "object" && record !== null ? record : {}) as Record<string, unknown>
+				if (rec.type !== "event") continue
+				const event = (typeof rec.event === "object" && rec.event !== null ? rec.event : {}) as Record<string, unknown>
+				if (this.#foldChildEvent(id, event, { feedLadder: false })) changed = true
+			}
+			if (changed) this.#emit()
+			return
+		}
 		if (frame.type !== "event") return
-		const event = (typeof frame.event === "object" && frame.event !== null ? frame.event : {}) as Record<string, unknown>
+		if (this.#foldChildEvent(id, (typeof frame.event === "object" && frame.event !== null ? frame.event : {}) as Record<string, unknown>, { feedLadder: true })) {
+			this.#emit()
+		}
+	}
+
+	/**
+	 * Fold one child follow EVENT frame (live stream item or snapshot
+	 * journal record) into the child's view. Returns whether anything
+	 * changed. `feedLadder: false` skips the maxRounds policy feed — the
+	 * snapshot replay path is display catch-up, never force-stop re-arm.
+	 */
+	#foldChildEvent(id: string, event: Record<string, unknown>, options: { feedLadder: boolean }): boolean {
+		const view = this.#children.get(id)
+		if (view === undefined) return false
+		const log = view.log
+		let changed = false
 		const type = String(event.type ?? "")
 		const data = (typeof event.data === "object" && event.data !== null ? event.data : {}) as Record<string, unknown>
 
 		if (type === "subagent/descriptor") {
 			const descriptor = descriptorOf(data)
-			const label = descriptor.label ?? view.label
+			const label = descriptor.label !== undefined ? bareAgentLabel(descriptor.label) : view.label
 			const model = descriptor.model ?? view.model
 			this.#children.set(id, { ...view, descriptor, ...(label !== view.label ? { label } : {}), ...(model !== view.model ? { model } : {}) })
 			changed = true
@@ -491,7 +524,9 @@ export class RemoteSubagentPanel {
 			changed = true
 			// maxRounds ladder feed (batch F1): wrap-up/force-stop delivery is
 			// microtask-deferred inside the policy — no reentry into this fold.
-			if (this.#policy !== undefined) {
+			// Snapshot replay (feedLadder:false) skips the feed — display
+			// catch-up must not re-arm force-stop for past rounds.
+			if (this.#policy !== undefined && options.feedLadder) {
 				this.#options.refreshLimits?.()
 				this.#policy.onRoundCount(id, next.rounds, next.label)
 			}
@@ -507,7 +542,7 @@ export class RemoteSubagentPanel {
 			changed = true
 		}
 		while (log.length > 200) log.shift()
-		if (changed) this.#emit()
+		return changed
 	}
 
 	#emit(): void {
