@@ -34,7 +34,7 @@
  */
 import { For, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { useRenderer, onAnimationTick } from "@opentui/solid"
-import { SyntaxStyle, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
+import { BoxRenderable, SyntaxStyle, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
@@ -44,12 +44,23 @@ import { skinFadeInColor, SKIN_FADE_IN_MS } from "./widgets-dock"
 
 // ---------------------------------------------------------------------------
 // Skin code-block form (batch δ, contract §1 代码块). Streaming paints the
-// left rule `┃ lang` (NO extra rows); a final block gets the single-line
-// frame with the language in the top border. Implemented as an IN-PLACE
-// mutation of the markdown renderer's own default renderable (renderNode
-// must not create nodes per streaming increment — contract §2.6): the
-// wrapper below returns `context.defaultRender()` (the same instance
-// upstream caches per block) and flips its border sides only.
+// left rule `┃` (heavy border, NO extra rows); a final block gets the
+// single-line frame with the language in the top border.
+//
+// Root-cause note (skin-codeblock fix): @opentui 0.8.x's markdown
+// `context.defaultRender()` for a `code` token returns a CodeRenderable
+// (extends TextBufferRenderable — NOT a box; it has NO border/borderStyle
+// support at all). The original in-place border flip therefore always bailed
+// on its "only bordered boxes" guard and every real code block stayed bare.
+// The skin now rides a WRAPPER BOX around that default renderable:
+//   - a bordered renderable (host custom renderer) is still flipped in place
+//     (same instance — no node churn);
+//   - a borderless default is wrapped in ONE BoxRenderable whose options
+//     carry the form. Core rebuilds a custom block through renderNode only
+//     while it is the actively-growing trailing block (stable blocks keep
+//     token identity and never re-enter renderNode), and the inner code
+//     renderable is always core's own defaultRender() product — the wrapper
+//     invents no text nodes per increment.
 // ---------------------------------------------------------------------------
 
 type SkinBoxLike = {
@@ -68,32 +79,57 @@ export function codeBlockForm(isFinal: boolean): CodeBlockForm {
 	return isFinal ? "frame" : "rule"
 }
 
-/** The streaming form's language tag (pure): `┃ lang` — painted on the code
- * block's own first line by the border-left mutation; exposed for tests and
+/** The streaming form's language tag (pure): `┃ lang` — exposed for tests and
  * future self-drawn variants. */
 export function codeBlockRuleLabel(lang: string | undefined): string {
 	return lang === undefined || lang === "" ? "┃" : `┃ ${lang}`
 }
 
-/** Apply the skin form to the markdown's default code-block renderable IN
- * PLACE (guarded: only bordered boxes are touched — anything else renders
- * the upstream default untouched). */
-export function applyCodeBlockSkinForTest(renderable: unknown, isFinal: boolean, lang: string | undefined): unknown {
-	return applyCodeBlockSkin(renderable, isFinal, lang)
+/** Apply the skin form IN PLACE to a bordered renderable; wrap a borderless
+ * one (the upstream code default) in the skin's wrapper box. `ctx` is the
+ * renderable context the wrapper box needs; without it (bare unit tests) a
+ * borderless renderable is returned untouched. */
+export function applyCodeBlockSkinForTest(renderable: unknown, isFinal: boolean, lang: string | undefined, ctx?: unknown, borderColor?: string | RGBA): unknown {
+	return applyCodeBlockSkin(renderable, isFinal, lang, ctx, borderColor)
 }
-function applyCodeBlockSkin(renderable: unknown, isFinal: boolean, lang: string | undefined): unknown {
-	const box = renderable as SkinBoxLike | null
-	if (box === null || typeof box !== "object") return renderable
-	if (typeof box.border === "undefined" && typeof box.borderStyle === "undefined") return renderable
+function skinBoxOptions(isFinal: boolean, lang: string | undefined, borderColor: string | RGBA | undefined): Record<string, unknown> {
 	if (codeBlockForm(isFinal) === "rule") {
-		box.border = SIDES_RULE
-		box.title = undefined
-	} else {
-		box.border = SIDES_FRAME
-		box.borderStyle = "single"
-		box.title = lang ? ` ${lang} ` : undefined
+		return { border: SIDES_RULE, borderStyle: "heavy", ...(borderColor !== undefined ? { borderColor } : {}), width: "100%" }
 	}
-	return renderable
+	return {
+		border: SIDES_FRAME,
+		borderStyle: "single",
+		...(borderColor !== undefined ? { borderColor } : {}),
+		title: lang ? ` ${lang} ` : undefined,
+		width: "100%",
+	}
+}
+function applyCodeBlockSkin(renderable: unknown, isFinal: boolean, lang: string | undefined, ctx?: unknown, borderColor?: string | RGBA): unknown {
+	const box = renderable as (SkinBoxLike & { marginTop?: number; marginBottom?: number }) | null
+	if (box === null || typeof box !== "object") return renderable
+	if (typeof box.border !== "undefined" || typeof box.borderStyle !== "undefined") {
+		// bordered renderable (host custom renderer / bordered default): flip
+		// the sides in place — the same instance crosses every increment.
+		if (codeBlockForm(isFinal) === "rule") {
+			box.border = SIDES_RULE
+			box.borderStyle = "heavy"
+			box.title = undefined
+		} else {
+			box.border = SIDES_FRAME
+			box.borderStyle = "single"
+			box.title = lang ? ` ${lang} ` : undefined
+		}
+		return renderable
+	}
+	if (ctx === undefined) return renderable
+	// Borderless upstream default (CodeRenderable): wrap once in the skin box.
+	// Margins are inter-block concerns core manages on the wrapper — zero the
+	// child's so the frame hugs the code.
+	box.marginTop = 0
+	box.marginBottom = 0
+	const wrapper = new BoxRenderable(ctx as never, skinBoxOptions(isFinal, lang, borderColor) as never)
+	wrapper.add(box as never)
+	return wrapper
 }
 
 /** Per-row renderNode cache (module level): stable function identity per
@@ -103,7 +139,13 @@ function applyCodeBlockSkin(renderable: unknown, isFinal: boolean, lang: string 
  * grow the map without bound. */
 const CODE_RENDER_NODE_CACHE_MAX = 256
 const codeRenderNodeCache = new Map<string, (token: any, context: any) => any>()
-function skinRenderNode(rowKey: string, isFinal: boolean, hostRenderNode: ((node: any) => any) | undefined): (token: any, context: any) => any {
+function skinRenderNode(
+	rowKey: string,
+	isFinal: boolean,
+	hostRenderNode: ((node: any) => any) | undefined,
+	ctx?: unknown,
+	borderColor?: string | RGBA,
+): (token: any, context: any) => any {
 	const cacheKey = `${rowKey}:${isFinal ? "final" : "streaming"}`
 	let fn = codeRenderNodeCache.get(cacheKey)
 	if (fn === undefined) {
@@ -112,7 +154,8 @@ function skinRenderNode(rowKey: string, isFinal: boolean, hostRenderNode: ((node
 			if (host !== undefined && host !== null) return host
 			if (token?.type === "code") {
 				const defaulted = context.defaultRender()
-				if (defaulted) return applyCodeBlockSkin(defaulted, isFinal, typeof token.lang === "string" ? token.lang : undefined)
+				if (defaulted)
+					return applyCodeBlockSkin(defaulted, isFinal, typeof token.lang === "string" ? token.lang : undefined, ctx, borderColor)
 			}
 			return undefined // undefined = markdown's own default rendering
 		}
@@ -241,10 +284,10 @@ export function Transcript(props: TranscriptProps) {
 		<markdown
 			// Vendored TextPart shape: configure plugins before content, stream
 			// until finalize so completion keeps the final tokens.
-			// Skin (batch δ): the code-block restyle wrapper (left rule while
-			// streaming, single frame + language title once final) — host
+			// Skin (batch δ): the code-block restyle wrapper (heavy left rule
+			// while streaming, single frame + language title once final) — host
 			// renderNode still wins for the tokens it handles.
-			renderNode={skinRenderNode(row.key, row.final, props.renderNode)}
+			renderNode={skinRenderNode(row.key, row.final, props.renderNode, renderer, theme?.border.base)}
 			content={row.text}
 			streaming={!row.final}
 			internalBlockMode="top-level"
