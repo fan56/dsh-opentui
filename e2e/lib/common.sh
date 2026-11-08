@@ -122,6 +122,19 @@ MOCK_PATS='mock-llm.mjs mock-jev.mjs'
 # safe even with both faces' patterns present.
 E2E_FACE="${E2E_FACE:-plugin}"
 CLIENT_DSH_HOME=/tmp/client-dsh
+# Face-aware profile identity: the plugin face runs the baked dsh-opentui
+# profile under $HOME/.dsh; the client face runs the opentui profile under
+# the scratch DSH_HOME (start_tui provisions it). Scenarios that read the
+# profile's config.json store (/theme, /agents, /preset persistence) use
+# FACE_CFG instead of a hardcoded plugin-face path.
+if [ "$E2E_FACE" = client ]; then
+  FACE_HOME="$CLIENT_DSH_HOME"
+  FACE_PROFILE=opentui
+else
+  FACE_HOME="$HOME/.dsh"
+  FACE_PROFILE=dsh-opentui
+fi
+FACE_CFG="$FACE_HOME/profiles/$FACE_PROFILE/config.json"
 CLIENT_TUI_PAT='client-entry.tsx'
 CLIENT_HOST_PAT='dsh --profile opentui'
 
