@@ -1,6 +1,6 @@
 {
   "name": "@aiwayds/dsh-opentui",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
@@ -19,8 +19,7 @@
   "scripts": {
     "client": "bun src/client-entry.tsx",
     "typecheck": "tsc --noEmit",
-    "prepack": "bun ../../scripts/build-client.mjs && node scripts/pack-meta.mjs",
-    "test:e2e": "node scripts/e2e-live.mjs && node scripts/e2e-fork.mjs"
+    "prepack": "bun ../../scripts/build-client.mjs && node scripts/pack-meta.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.8.2",
