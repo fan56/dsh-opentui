@@ -46,12 +46,20 @@ export interface RemoteQuestion {
 	id: string
 	prompt: string
 	options: string[]
+	/** Toggle-many question (upstream `multi_select`; host-session.ts keeps
+	 * both spellings). Dropped until now: the client ask picker rendered a
+	 * multiSelect question as single-select (bracket-less rows, space
+	 * replaced instead of toggled, one-element answer arrays). */
+	multiSelect?: boolean
 }
 
-/** One answer row the UI returns (host-session.ts registerAskProvider shape). */
+/** One answer row the UI returns (host-session.ts registerAskProvider shape).
+ * A multiSelect pick carries every toggled label in `selections` (display
+ * order); `selected` stays the first pick for single-select consumers. */
 export interface RemoteQuestionAnswer {
 	questionId: string
 	selected: string
+	selections?: string[]
 }
 
 export interface WaterfallAnswererOptions {
@@ -119,7 +127,9 @@ export class WaterfallAnswerer {
 	/**
 	 * The user-questions request simplified to the ask-provider shape
 	 * (host-session.ts:256-260 parity: prompt ?? question ?? header;
-	 * option label ?? value ?? raw).
+	 * option label ?? value ?? raw; multiSelect kept — the raw tool field
+	 * `multi_select` stays a fallback for direct callers, same as
+	 * host-session.ts:425).
 	 */
 	static questionsView(frame: EventsWaterfall): RemoteQuestion[] {
 		const questions = Array.isArray(frame.request.questions) ? frame.request.questions : []
@@ -130,6 +140,7 @@ export class WaterfallAnswerer {
 				id: String(item.id ?? ""),
 				prompt: String(item.prompt ?? item.question ?? item.header ?? ""),
 				options: options.map((o) => String(typeof o === "object" && o !== null ? ((o as Record<string, unknown>).label ?? (o as Record<string, unknown>).value ?? o) : o)),
+				...((item.multiSelect === true || item.multi_select === true) ? { multiSelect: true } : {}),
 			}
 		})
 	}
@@ -140,7 +151,7 @@ export class WaterfallAnswerer {
 			answers: questions.map((q) => {
 				const pick = picks.find((p) => p.questionId === q.id)
 				const answer: { [key: string]: RemoteJson } = pick
-					? { id: q.id, selected: [pick.selected] }
+					? { id: q.id, selected: pick.selections?.length ? [...pick.selections] : [pick.selected] }
 					: { id: q.id, selected: [], custom: "declined" }
 				return answer
 			}),

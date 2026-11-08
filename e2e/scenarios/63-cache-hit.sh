@@ -32,8 +32,10 @@
 #   2. after turn one the segment shows 90% (both modes agree on one sample);
 #   3. after turn two the DEFAULT mode (lastMessage) shows 20% — the stale
 #      90% and the cumulative 55% must both be absent;
-#   4. committing `cacheHitMode: session` into the plugin config FILE
-#      (config.json — the store HostSession.configLoad() reads) and crossing
+#   4. committing `cacheHitMode: session` into the FACE's config FILE
+#      (FACE_CFG from lib/common.sh — config.json, the store
+#      HostSession/RemoteHostSession.configLoad() reads; the client face
+#      runs the scratch DSH_HOME opentui profile, NOT ~/.dsh) and crossing
 #      a turn boundary (a third, mock-less turn whose failure lands no usage)
 #      re-runs the footer getter in session mode: the cumulative 55% replaces
 #      the per-message 20% on the SAME running instance — no restart.
@@ -49,18 +51,22 @@
 #       footer CH segment rates (cacheSegment: `⚡ CH${rate.toFixed(1)}%`).
 #
 # Container-only: persists cacheHitMode into the container's throwaway
-# ~/.dsh profile — never run against a host config.
+# face profile store (FACE_CFG) — never run against a host config.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'footer CH: lastMessage default + live session-mode switch'
 
 # --- host guard -------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
-  warn 'host environment detected — skipping (persists cacheHitMode into ~/.dsh; container only)'
+  warn 'host environment detected — skipping (persists cacheHitMode into the face profile; container only)'
   summary
   exit 0
 fi
-if ! grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
+# The client face's scratch profile does not exist until provisioned — bake
+# it here (idempotent; start_tui re-runs the same steps) so the gate below
+# reads a real patch. Plugin face: no-op, the image-baked patch answers.
+ensure_client_profile || { warn 'client profile provisioning failed'; summary; exit 0; }
+if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
   exit 0
@@ -135,8 +141,10 @@ assert_not_contains 'the session-cumulative rate does not leak into lastMessage 
 # container 2026-11-07):
 #
 #   a. STORE: the mode is read through HostSession.configLoad(), which reads
-#      the plugin config FILE configPath('config.json') — i.e.
-#      ~/.dsh/profiles/dsh-opentui/config.json — NOT cordis.patch.yml. The
+#      the profile config FILE configPath('config.json') — i.e. FACE_CFG
+#      ($HOME/.dsh/profiles/dsh-opentui/config.json on the plugin face,
+#      /tmp/client-dsh/profiles/opentui/config.json on the client face) —
+#      NOT cordis.patch.yml. The
 #      patch file is the dsh-settings namespace (62 stages maxRounds there,
 #      but that is read at boot); editing it while the TUI is LIVE re-mounts
 #      the plugin entry and the second mountEngine dies with 'Cannot create
@@ -151,7 +159,7 @@ assert_not_contains 'the session-cumulative rate does not leak into lastMessage 
 #      cumulative rate over the two scripted turns (1100/2000 = 55%)
 #      replaces the per-message 20%, no restart in between. The failed turn
 #      also cannot skew the denominator (no usage frame), so 55% is exact.
-SETTINGS="$HOME/.dsh/profiles/dsh-opentui/config.json"
+SETTINGS="$FACE_CFG"
 cat > /tmp/stage-ch-mode.mjs <<'EOF'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 const path = process.argv[2]
