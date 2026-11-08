@@ -314,13 +314,15 @@ function V2SessionPage(props: {
 				}
 				return applied
 			},
-			// α skin layer: auto/dark/light mode face. Pin/free rides the
-			// vendored theme service; the persistence follows the THEME's
-			// config layer (themeModePatchKey — workspaceThemeMode routes into
-			// the workspace config.yml, themeMode into the profile config.json;
-			// the v2 vendor config is resolve({}), so the configState.update
-			// path inside pin/free cannot persist anything).
-			mode: {
+			// α skin layer: auto/dark/light mode face — a FUNCTION returning the
+			// face (the SlashCommandContext.themes.mode contract; the container
+			// e2e caught an object-shape mismatch here as a picker-open crash).
+			// Pin/free rides the vendored theme service; the persistence follows
+			// the THEME's config layer (themeModePatchKey — workspaceThemeMode
+			// routes into the workspace config.yml, themeMode into the profile
+			// config.json; the v2 vendor config is resolve({}), so the
+			// configState.update path inside pin/free cannot persist anything).
+			mode: () => ({
 				current: () => (themeService.locked() ? themeService.mode() : "auto"),
 				set: (mode: "auto" | "dark" | "light") => {
 					if (mode === "auto") themeService.unlock()
@@ -332,7 +334,7 @@ function V2SessionPage(props: {
 					}
 					return true
 				},
-			},
+			}),
 		},
 	})
 	const overlayHost = createComponent(TurnOverlayHost, {
