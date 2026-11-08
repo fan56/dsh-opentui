@@ -190,12 +190,15 @@ describe("journalToTranscriptRows ask rows (resume replay)", () => {
 		expect(rows.map((r) => r.kind)).toEqual(["assistant"])
 	})
 
-	test("non-ask tool traffic stays out of the replay", () => {
+	// Batch V1: settled regular tool calls pair into a tool row (resume
+	// replays the tool block) — supersedes the old drop-the-row assertion.
+	test("settled non-ask tool traffic replays its tool row", () => {
 		const rows = journalToTranscriptRows([
 			{ type: "tool/call", seq: 2, time: 0, data: { callId: "c1", name: "bash", arguments: '{"cmd":"ls"}' } },
 			{ type: "tool/result", seq: 3, time: 0, data: { message: { toolCallId: "c1", content: [{ type: "text", text: "files" }] } } },
 		])
-		expect(rows).toEqual([])
+		expect(rows).toHaveLength(1)
+		expect(rows[0]).toMatchObject({ kind: "tool", name: "bash", args: '{"cmd":"ls"}', ok: true })
 	})
 
 	test("skip still drops the first N durable events", () => {
