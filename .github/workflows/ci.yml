@@ -19,11 +19,13 @@ jobs:
         with:
           version: 10.18.3
       - run: pnpm install --frozen-lockfile
-      # CI has no global dsh: scripts/link-dsh-closure.mjs (postinstall) exits
-      # 0 silently. @deepseek-ai/dsh-llm installs fine from npm (devDep,
-      # 0.2.2-rc.1); only @deepseek-ai/dsh-client-connection is not on the
-      # registry. Tests fake the connection (test/client-fakes.ts), so a
-      # resolution-only stub suffices; it throws if actually invoked.
+      # CI has no global dsh and there is no postinstall anymore (the retired
+      # link-dsh-closure script was removed with the plugin-mode cutover).
+      # @deepseek-ai/dsh-llm installs fine from npm (devDep, 0.2.2-rc.1);
+      # only @deepseek-ai/dsh-client-connection is not on the registry.
+      # Tests fake the connection (test/client-fakes.ts) and the transport
+      # lazy-imports the SDK, so a resolution-only stub suffices; it throws
+      # if actually invoked.
       - name: stub @deepseek-ai/dsh-client-connection (no global dsh on runners)
         run: |
           node -e '
@@ -38,7 +40,8 @@ jobs:
       # bun reads bunfig.toml from the cwd, and each package preloads the
       # opentui solid compiler there — run the suite per package, not at root.
       - run: for p in packages/*/; do (cd "$p" && bun test); done
-      # Live interactive E2E (real dsh + real model turns): self-skips on
-      # runners without a global dsh / installed profile; full suite on a
-      # configured dev machine (npm run -w @aiwayds/dsh-opentui test:e2e).
-      - run: node packages/shell/scripts/e2e-live.mjs && node packages/shell/scripts/e2e-fork.mjs
+      # Real-boot E2E (e2e-client.mjs, the client topology gate) is not a CI
+      # step: it needs a global dsh + tmux + provider keys. The release gate
+      # (fresh-install boot render check) covers the real-boot leg before
+      # every publish. The retired plugin-face scripts (e2e-live / e2e-fork)
+      # were removed with the plugin mode.
