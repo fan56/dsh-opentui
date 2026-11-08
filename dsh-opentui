@@ -1,14 +1,7 @@
 #!/bin/bash
-# dsh-opentui launcher: CLIENT mode is the default (ADR-0005) — a thin bun TUI
-# attaching to the resident `dsh --profile opentui` host, which the client
-# spawns/joins through the single-instance lifecycle lock.
-#
-# Flip decision (ADR-0005): the default moved from plugin mode to client mode
-# when the P6 two-process E2E gate (packages/shell/scripts/e2e-client.mjs —
-# 7 scenarios over the real tmux + client + resident-host + model topology)
-# passed 7/7, including the /reload same-port restart acceptance: transcript
-# rows single-painted across the re-attach and the restarted host MANAGED
-# (lockfile rewritten with the new pid).
+# dsh-opentui launcher: CLIENT mode (ADR-0005) — a thin bun TUI attaching to
+# the resident `dsh --profile opentui` host, which the client spawns/joins
+# through the single-instance lifecycle lock.
 #
 # bun FFI: no NODE_OPTIONS needed on the client path — @opentui/solid is
 # bun-native. The solid transform MUST be preloaded (--preload): bun
@@ -17,36 +10,12 @@
 # packages/shell/bunfig.toml only applies when bun runs from that dir —
 # the client launches from the workspace (any cwd).
 #
-# Batch 10c CUTOVER: the client entry mounts the tui-base (0.8.1) view —
-# the batch-9a `--v2` flag is gone (accepted as a no-op alias). The old
-# ShellHost stack survives ONLY in plugin mode (`--plugin`), which is
-# FROZEN on the published 0.4.3 dist-host until upstream fixes the
-# 0.8.1-on-node frame flush (see docs/upstream-opentui-paint-bug-draft.md).
+# Plugin mode (the TUI running as a cordis plugin inside the host, formerly
+# reachable via `--plugin`, with `--client`/`--v2` as no-op aliases) is
+# retired: client mode is the only mode.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-if [ "${1:-}" = "--plugin" ]; then
-  shift
-  # Transitional escape hatch: the OLD plugin-mode path — the host boots
-  # in-process (dsh --profile dsh-opentui with the host plugin). Kept until
-  # client mode is verified across every deployment; not the default anymore.
-  # OpenTUI's native core needs node >=26.4 with --experimental-ffi inside
-  # the host.
-  case " ${NODE_OPTIONS:-} " in
-    *" --experimental-ffi "*) ;;                      # already present, keep as-is
-    *) export NODE_OPTIONS="${NODE_OPTIONS:-} --experimental-ffi" ;;
-  esac
-  exec dsh --profile dsh-opentui "$@"
-fi
-
-# `--client` and `--v2` are accepted as no-op aliases for the (default,
-# batch 10c cutover) tui-base view client mode: the client entry mounts
-# the rebuilt view unconditionally (its old ShellHost boot branch is
-# removed), so the flags fall through untouched.
-if [ "${1:-}" = "--client" ] || [ "${1:-}" = "--v2" ]; then
-  shift
-fi
 
 exec bun --preload "$SCRIPT_DIR/packages/shell/node_modules/@opentui/solid/scripts/preload.js" \
   "$SCRIPT_DIR/packages/shell/src/client-entry.tsx" "$@"
