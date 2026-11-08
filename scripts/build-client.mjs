@@ -25,6 +25,15 @@
  *   both break when bundled into a foreign directory. The published client
  *   package depends on @opentui/core (installed beside the bundle); solid
  *   /keymap/solid-js are plain JS and ship INSIDE the bundle.
+ * - @deepseek-ai/dsh-client-connection stays EXTERNAL (red line): the SDK is
+ *   DeepSeek private code, distributed only inside a global dsh install's
+ *   node_modules closure — inlining it here would redistribute it in a
+ *   public npm tarball. It is listed explicitly so the bundler keeps the
+ *   `import("@deepseek-ai/dsh-client-connection/client")` in
+ *   src/client/transport.ts as a RUNTIME import even in a dev checkout
+ *   where a closure symlink makes the package resolvable at build time. At
+ *   runtime the bin (bin/dsh-opentui.mjs) bridges resolution by symlinking
+ *   the SDK from the global dsh closure into the package's node_modules.
  * - The idle reaper spawn resolves `join(import.meta.dir, "../scripts",
  *   "idle-reaper.mjs")` — in the bundle that is dist/scripts/, so the
  *   reaper script is copied there.
@@ -121,7 +130,7 @@ const result = await Bun.build({
     },
     solidPlugin,
   ],
-  external: ["@opentui/core"],
+  external: ["@opentui/core", "@deepseek-ai/dsh-client-connection"],
 })
 
 if (!result.success) {

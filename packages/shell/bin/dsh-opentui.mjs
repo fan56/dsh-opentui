@@ -17,7 +17,18 @@
  *      profile (only keys the target does not already have), a marker file
  *      ($DSH_HOME/.dsh-opentui-migrated) makes the step once-only. The old
  *      profile is kept untouched.
- *   5. Exec `bun <package root>/dist/client/index.js` with the user's
+ *   5. dsh-client-connection resolution guarantee — the client bundle
+ *      imports `@deepseek-ai/dsh-client-connection/client` at runtime, but
+ *      that SDK is NOT on the public npm registry (it exists only inside a
+ *      globally-installed dsh's node_modules closure, and it must NEVER be
+ *      bundled into this public package — DeepSeek private code). When the
+ *      bundle's module resolution would fail (no node_modules link in this
+ *      package), the bin creates one — a symlink from
+ *      <package root>/node_modules/@deepseek-ai/dsh-client-connection to
+ *      the SDK inside the global dsh closure. Idempotent: skipped whenever
+ *      the link already resolves; if no global dsh closure can be located,
+ *      install guidance is printed and the launch aborts (exit 1).
+ *   6. Exec `bun <package root>/dist/client/index.js` with the user's
  *      arguments forwarded verbatim, then exits with the client's status.
  *
  * Path contract for B3 (package.json wiring): the bin resolves everything
@@ -27,7 +38,7 @@
  * spawns) alongside `bin/` and `scripts/`.
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -155,7 +166,85 @@ function migrateLegacyPreferences() {
   console.log(`dsh-opentui: carried over legacy preference(s) [${keys.join(', ')}] into ${targetConfigPath}.`)
 }
 
-// --- 5. Launch the client bundle under bun ---------------------------------
+// --- 5. dsh-client-connection resolution guarantee --------------------------
+// The client bundle imports "@deepseek-ai/dsh-client-connection/client" at
+// runtime (packages/shell/src/client/transport.ts). That SDK is NOT on the
+// public npm registry — it ships only inside a globally-installed dsh's own
+// node_modules closure, and it must NEVER be bundled into this public
+// package (that would redistribute DeepSeek private code). A plain npm
+// global install of this package does not make the closure reachable: module
+// resolution from <prefix>/node_modules/@aiwayds/dsh-opentui stops at the
+// global node_modules and never enters the dsh package's nested
+// node_modules. So the bin bridges the gap itself: symlink the SDK from the
+// global dsh closure into this package's node_modules. Idempotent — a no-op
+// whenever the link already resolves.
+ensureClientConnectionSdk()
+
+function ensureClientConnectionSdk() {
+  const linkDir = join(pkgRoot, 'node_modules', '@deepseek-ai')
+  const linkPath = join(linkDir, 'dsh-client-connection')
+  if (existsSync(join(linkPath, 'package.json'))) return
+  // Stale or broken link from an earlier run (or an uninstalled closure) —
+  // clear it so the symlink below can be re-created.
+  try {
+    lstatSync(linkPath)
+    unlinkSync(linkPath)
+  } catch {
+    /* nothing to clear */
+  }
+  for (const candidate of dshClientConnectionCandidates()) {
+    if (!existsSync(join(candidate, 'package.json'))) continue
+    try {
+      mkdirSync(linkDir, { recursive: true })
+      symlinkSync(candidate, linkPath, 'dir')
+    } catch (err) {
+      console.error(`dsh-opentui: could not link @deepseek-ai/dsh-client-connection: ${err?.message ?? err}`)
+      process.exit(1)
+    }
+    console.log(`dsh-opentui: linked @deepseek-ai/dsh-client-connection from the global dsh closure (${candidate}).`)
+    return
+  }
+  console.error('dsh-opentui: the client needs @deepseek-ai/dsh-client-connection, which is not on the public npm registry —')
+  console.error('dsh-opentui: it ships inside a globally-installed dsh CLI, but no dsh installation was found.')
+  console.error('dsh-opentui: install (or reinstall) the dsh CLI first:  npm i -g @deepseek-ai/dsh')
+  process.exit(1)
+}
+
+/** Candidate paths of the SDK inside a global dsh closure, best first. */
+function dshClientConnectionCandidates() {
+  const candidates = []
+  // (a) npm's global root: <npm root -g>/@deepseek-ai/dsh/node_modules/...
+  const npmRoot = spawnSync('npm', ['root', '-g'], { encoding: 'utf8' }).stdout?.trim()
+  if (npmRoot) {
+    candidates.push(join(npmRoot, '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-client-connection'))
+  }
+  // (b) derived from the `dsh` bin on PATH (covers a dsh installed under a
+  //     different prefix than the npm on PATH resolves to): realpath the
+  //     bin, then walk up to the package dir whose package.json names
+  //     @deepseek-ai/dsh.
+  const dshBin = spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout?.trim()
+  if (dshBin) {
+    try {
+      let dir = dirname(realpathSync(dshBin))
+      for (let i = 0; i < 8 && dir !== dirname(dir); i++) {
+        try {
+          if (JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))?.name === '@deepseek-ai/dsh') {
+            candidates.push(join(dir, 'node_modules', '@deepseek-ai', 'dsh-client-connection'))
+            break
+          }
+        } catch {
+          /* not a package dir — keep walking up */
+        }
+        dir = dirname(dir)
+      }
+    } catch {
+      /* unresolvable dsh bin — candidate (a) may still hit */
+    }
+  }
+  return candidates
+}
+
+// --- 6. Launch the client bundle under bun ---------------------------------
 const clientEntry = join(pkgRoot, 'dist', 'client', 'index.js')
 if (!existsSync(clientEntry)) {
   console.error(`dsh-opentui: client bundle not found at ${clientEntry}.`)
