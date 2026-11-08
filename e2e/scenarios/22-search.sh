@@ -33,19 +33,19 @@ if [ ! -d /e2e/scenarios ]; then
 fi
 
 # --- dependency gate: the deployed bundle must carry the H1 find bar --------
-DEPLOYED_BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
-if [ ! -f "$DEPLOYED_BUNDLE" ]; then
-  warn "no deployed dsh-opentui bundle at $DEPLOYED_BUNDLE — skipping"
+DEPLOYED_BUNDLE="/src/packages/tui-base/src"
+if [ ! -d "$DEPLOYED_BUNDLE" ]; then
+  warn "no workspace snapshot at $DEPLOYED_BUNDLE — skipping"
   summary
   exit 0
 fi
-if ! grep -qF 'Find in transcript' "$DEPLOYED_BUNDLE" 2>/dev/null \
-  || ! grep -qF 'session.search' "$DEPLOYED_BUNDLE" 2>/dev/null; then
-  warn 'deployed dist-host predates H1 (no transcript search overlay) — skipping (rebuild dist-host to run)'
+if ! grep -rqF 'Find in transcript' "$DEPLOYED_BUNDLE" 2>/dev/null \
+  || ! grep -rqF 'session.search' "$DEPLOYED_BUNDLE" 2>/dev/null; then
+  warn 'workspace sources predate H1 (no transcript search overlay) — skipping'
   summary
   exit 0
 fi
-ok 'deployed bundle carries the H1 search overlay'
+ok 'workspace sources carry the H1 search overlay'
 
 # --- the mock LLM server (same port as the baked route) -------------------------
 MOCK_PORT=8642

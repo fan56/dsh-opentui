@@ -35,34 +35,27 @@ if [ ! -d /e2e/scenarios ]; then
   exit 0
 fi
 
-# --- dependency gate: the deployed bundle must carry the G2 steer UI --------
-# Face-aware: the plugin face greps the deployed dist-host; the client face
-# runs the /src workspace snapshot, so the same strings are grepped there.
-if [ "$E2E_FACE" = client ]; then
-  DEPLOYED_BUNDLE="/src/packages/tui-base/src"
-  BUNDLE_GREP=(grep -rqF)
-else
-  DEPLOYED_BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
-  BUNDLE_GREP=(grep -qF)
-fi
+# --- dependency gate: the runtime sources must carry the G2 steer UI --------
+# The client face runs the /src workspace snapshot (grep -r over the
+# sources) — the dist-host bundle is retired with the plugin face.
+DEPLOYED_BUNDLE="/src/packages/tui-base/src"
+BUNDLE_GREP=(grep -rqF)
 if [ ! -e "$DEPLOYED_BUNDLE" ]; then
-  warn "no deployed dsh-opentui bundle at $DEPLOYED_BUNDLE — skipping"
+  warn "no workspace snapshot at $DEPLOYED_BUNDLE — skipping"
   summary
   exit 0
 fi
 if ! "${BUNDLE_GREP[@]}" 'steered ' "$DEPLOYED_BUNDLE" 2>/dev/null \
   || ! "${BUNDLE_GREP[@]}" 'subagentSteerWired' "$DEPLOYED_BUNDLE" 2>/dev/null; then
-  warn 'deployed bundle predates G2 (no steer echo / steer bridge) — skipping (rebuild to run)'
+  warn 'workspace sources predate G2 (no steer echo / steer bridge) — skipping'
   summary
   exit 0
 fi
-ok 'deployed bundle carries the G2 steer UI'
+ok 'workspace sources carry the G2 steer UI'
 
 # The scratch client profile does not exist until something provisions it —
 # do it now so the gate below tests the BAKE, not the fresh-container void.
-if [ "$E2E_FACE" = client ]; then
-  ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
-fi
+ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
 if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
@@ -127,14 +120,13 @@ ok 'seeded agent file looper.md (deep: 0, no maxRounds — the child stays live)
 
 # --- policy isolation: DISABLE the global ladder for this scenario ----------
 # Scenario isolation (D7): 62-hard-stop.sh stages `maxRounds: 3` onto the
-# dsh-opentui entries of the PERSISTENT profile patch (cordis.patch.yml) and
-# the deployed bundle's plugin.patch.yml, and that staging survives across
-# scenarios — with it live, the global ladder force-stops the looper child at
-# ~3 rounds (~9-10s), long before the steer can be injected. This scenario
-# needs a LIVE child, so it upserts maxRounds 0 / maxRoundsGrace 0 onto BOTH
-# entries (the duplicate-ns shadowing guard from 62 applies here too): a
-# non-positive global cap disables the whole ladder (subagent-policy.ts
-# #resolveCaps returns undefined → ladderDecision never consulted).
+# dsh-opentui entry of the PERSISTENT profile patch (cordis.patch.yml), and
+# that staging survives across scenarios — with it live, the global ladder
+# force-stops the looper child at ~3 rounds (~9-10s), long before the steer
+# can be injected. This scenario needs a LIVE child, so it upserts
+# maxRounds 0 / maxRoundsGrace 0 onto that entry: a non-positive global cap
+# disables the whole ladder (subagent-policy.ts #resolveCaps returns
+# undefined → ladderDecision never consulted).
 SETTINGS="$FACE_PATCH"
 cat > /tmp/stage-steer-isolation.mjs <<'EOF'
 import { createRequire } from 'node:module'
@@ -157,10 +149,10 @@ writeFileSync(patchPath, stringify(doc), 'utf8')
 console.log(`staged insert entry dsh-opentui maxRounds=0 maxRoundsGrace=0 -> ${patchPath}`)
 EOF
 node /tmp/stage-steer-isolation.mjs "$SETTINGS" >/tmp/stage-steer-isolation.log 2>&1
-BUNDLED_PATCH_STEER="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/plugin.patch.yml"
-if [ "$E2E_FACE" = plugin ] && [ -f "$BUNDLED_PATCH_STEER" ]; then
-  node /tmp/stage-steer-isolation.mjs "$BUNDLED_PATCH_STEER" >>/tmp/stage-steer-isolation.log 2>&1
-fi
+# (Batch B5: the retired plugin face's second staging target — the dist-host
+# plugin.patch.yml — is gone with the dist-host artifact; the client face
+# composes ONE dsh-opentui entry, the scratch profile's cordis.patch.yml
+# staged above.)
 if grep -q 'maxRounds: 0' "$SETTINGS"; then
   ok 'policy ladder disabled for this scenario (maxRounds 0 staged — 62 seeding isolated)'
 else

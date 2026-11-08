@@ -1,17 +1,19 @@
 # e2e image for dsh-opentui: Ubuntu 24.04 + Node 26 + tmux + a global dsh
-# install + the opentui tarball packed from THIS source tree, with the
-# `dsh-opentui` profile baked in via the repo's own install-profile.mjs.
+# install + bun + the workspace snapshot at /src (batch B5: the client face
+# is the only face — ADR-0005, the --plugin chain was removed in batch B4
+# and the former plugin-face layers here (tarball global install +
+# install-profile bake + jev bake) are gone with it).
 #
-# Runtime choice: PLUGIN mode. The scenario suite boots the globally
-# installed `dsh-opentui` launcher (bin/dsh-opentui.mjs), which injects
-# node's --experimental-ffi into NODE_OPTIONS and execs
-# `dsh --profile dsh-opentui` (dist-host plugin, node runtime). Client mode
-# needs bun + the workspace sources and is out of scope here — the suite is
-# mode-agnostic ("the same cases pass on opentui").
+# Runtime choice: CLIENT mode. The scenario suite boots the repo-root
+# `./dsh-opentui` launcher (bun --preload ... client-entry.tsx), which
+# spawns/joins the resident `dsh --profile opentui` host through the
+# single-instance lifecycle (packages/shell/src/client/lifecycle.ts). The
+# opentui profile is NOT baked: start_tui / ensure_client_profile provisions
+# it at runtime into the scratch DSH_HOME from the workspace snapshot.
 #
 # Node 26 is a HARD requirement (not 22): OpenTUI's native core needs
 # node's --experimental-ffi (shell README: node >= 26.4); node 22 rejects
-# the flag as a bad option and every boot would die.
+# the flag as a bad option and the resident host would die.
 #
 # The base image is pulled through the DaoCloud mirror because
 # registry-1.docker.io is not reachable from the dev machine's podman VM
@@ -58,11 +60,10 @@ RUN case "$(uname -m)" in \
       | tar -xJ -C /usr/local --strip-components=1 \
  && node --version
 
-# pnpm (the profile install in the bootstrap step below runs `pnpm install`)
-# + the dsh CLI. The global dsh must exist BEFORE the profile bootstrap:
-# install-profile.mjs links @deepseek-ai/dsh-llm from the global dsh closure
-# into the profile's hoisted node_modules (not on the public registry in a
-# usable form).
+# pnpm (the /src workspace install + the runtime profile provisioning run
+# `pnpm install`) + the dsh CLI. The global dsh is the CLIENT face's resident
+# host runtime: ensureHost (packages/shell/src/client/lifecycle.ts) spawns
+# `dsh --profile opentui --no-open --port <n>` from this global closure.
 RUN test -n "${DSH_VERSION}" \
       || (echo "DSH_VERSION build arg is required (e.g. --build-arg DSH_VERSION=0.2.2-rc.1)" >&2; exit 1) \
  && npm install -g --no-fund --no-audit --registry "${NPM_REGISTRY}" \
@@ -72,88 +73,29 @@ RUN test -n "${DSH_VERSION}" \
 
 WORKDIR /app
 
-# Pack the user-facing tarball from THIS source tree into /dist. No build
-# step exists for the host bundle: dist-host/ is committed, and the prepack
-# hook (scripts/pack-meta.mjs) only copies the four root metadata files in.
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml README.md LICENSE NOTICE CHANGELOG.md /src/
-COPY packages/shell/ /src/packages/shell/
-RUN mkdir -p /dist \
- && cd /src/packages/shell \
- && npm pack --pack-destination /dist \
- && ls -la /dist/
-
-# Install the tarball globally (gives the `dsh-opentui` launcher bin) and
-# bake the profile in — the same flow as the repo's smoke path
-# (scripts/smoke-boot.mjs): tarball as a file: dep, patch layer with the
-# provider route + model pin + plugin insert, hoisted pnpm install, solid-js
-# client pin, dsh-llm closure link. install-profile.mjs is idempotent and
-# covers the solid pin itself; --ignore-scripts skips the global
-# postinstall's own bootstrap (which would resolve the dep from npm
-# 'latest' instead of this source tree's tarball), the explicit --dep run
-# below is the authoritative one.
-RUN TARBALL="$(ls /dist/aiwayds-dsh-opentui-*.tgz)" \
- && npm install -g --ignore-scripts --no-fund --no-audit "$TARBALL" \
- && NODE_OPTIONS= node /usr/local/lib/node_modules/@aiwayds/dsh-opentui/scripts/install-profile.mjs \
-      --dep "file:${TARBALL}" \
- && ls -la /root/.dsh/profiles/dsh-opentui/
-
-# Bake the mock-LLM endpoint into the profile: the pinned provider route
-# (zai-coding-cn/glm-5.3-flash — ids unchanged so the suite's footer markers
-# hold) gets baseURL http://127.0.0.1:8642/v1, served by e2e/lib/mock-llm.mjs
-# (started per scenario). The key env only ever carries the placeholder below
-# — no real provider credential ships in this image, and the mock keys its
-# phases on the request body, never on auth. Structured YAML edit via the
-# global dsh closure's yaml module (no registry access at build time).
+# Mock/Jev endpoint env shared by BOTH bake-time-free paths: the scratch
+# opentui profile is provisioned + baked at RUNTIME by
+# e2e/lib/common.sh:ensure_client_profile (bake-mock-endpoint.mjs reads
+# MOCK_BASE_URL; bake-jev-chain.mjs + bake-subagent-registry.mjs add the jev
+# dispatch chain and the subagent registry). The key envs only ever carry
+# placeholders — no real provider credential ships in this image, and the
+# mock keys its phases on the request body, never on auth. JEV_ENDPOINT is
+# the env dsh-jev-core resolves the decision endpoint from
+# (`env.JEV_ENDPOINT ?? DEFAULT_ENDPOINT`, lib/client.js; key via
+# env TYPESAFE_API_KEY, lib/key.js) — any scenario that starts
+# e2e/lib/mock-jev.mjs on port 8643 gets the jev layer routed to it with no
+# per-boot env; a scenario can still override both vars per boot.
 ENV ZAI_CODING_CN_API_KEY=sk-mock-e2e-placeholder \
-    MOCK_BASE_URL=http://127.0.0.1:8642/v1
-COPY e2e/lib/bake-mock-endpoint.mjs /tmp/bake-mock-endpoint.mjs
-RUN NODE_OPTIONS= node /tmp/bake-mock-endpoint.mjs \
- && grep -n "baseURL" /root/.dsh/profiles/dsh-opentui/cordis.patch.yml
-
-# Bake the mock Jev (TypeSafe System One) endpoint as default env — the same
-# "env at boot" wiring as dsh-tui-pi's 76-attention scenario
-# (JEV_ENDPOINT + a fake TYPESAFE_API_KEY), but baked so any scenario that
-# starts e2e/lib/mock-jev.mjs on port 8643 gets the jev layer routed to it
-# with no per-boot env. e2e/ is bind-mounted at /e2e (see run-e2e.sh), so
-# mock-jev.mjs itself needs no image COPY — scenarios run
-# `node /e2e/lib/mock-jev.mjs --port 8643` directly. dsh-jev-core resolves
-# the endpoint via `env.JEV_ENDPOINT ?? DEFAULT_ENDPOINT` (lib/client.js) and
-# the key via `env TYPESAFE_API_KEY` (lib/key.js); baking a placeholder key
-# keeps the layer "configured" offline — no real credential ships in this
-# image. A scenario can still override both vars per boot.
-ENV JEV_ENDPOINT=http://127.0.0.1:8643/v1/systemone \
+    MOCK_BASE_URL=http://127.0.0.1:8642/v1 \
+    JEV_ENDPOINT=http://127.0.0.1:8643/v1/systemone \
     TYPESAFE_API_KEY=e2e-fake-key
 
-# Bake the jev consumption chain into the profile: @aiwayds/dsh-agent-dispatch
-# (the agent/pre-step plugin whose `/dispatch <task>` fires one TypeSafe Jev
-# call) plus its @aiwayds/dsh-jev-core library. Before this step the image's
-# @aiwayds closure held only dsh-opentui — JEV_ENDPOINT above had no reader
-# (A5 inventory), and the 65-attention scenario's jev layer would silently
-# degrade to heuristic-only. Versions 0.2.2 / 0.1.5 are the pins dsh-tui-pi's
-# e2e/latest-profile reference ran (also the dev machine's dsh-opentui
-# profile). Bundle membership makes `dsh plugin --profile dsh-opentui list`
-# report both; the profile-patch override row (applied after every bundle
-# layer) switches dispatch to `mode: auto` + logDir — the tui profile's
-# `mode: once` verdict-on-request is unreachable here because the opentui
-# composer intercepts leading-slash turns ("unknown command"), so the
-# plugin's default autoKeywords gate is the only way a baked chain can fire.
-# The pnpm install runs HERE (not in the script) so the NPM_REGISTRY build
-# arg applies; the trailing probes fail the build if the packages did not
-# land in the profile's hoisted closure.
-COPY e2e/lib/bake-jev-chain.mjs /tmp/bake-jev-chain.mjs
-RUN NODE_OPTIONS= node /tmp/bake-jev-chain.mjs \
- && pnpm --dir /root/.dsh/profiles/dsh-opentui install --registry="${NPM_REGISTRY}" \
- && node -e "const p=require('/root/.dsh/profiles/dsh-opentui/package.json'); if (!p.dependencies['@aiwayds/dsh-agent-dispatch'] || !p.dependencies['@aiwayds/dsh-jev-core']) process.exit(1)" \
- && test -d /root/.dsh/profiles/dsh-opentui/node_modules/@aiwayds/dsh-agent-dispatch \
- && test -d /root/.dsh/profiles/dsh-opentui/node_modules/@aiwayds/dsh-jev-core \
- && grep -n "dsh-agent-dispatch" /root/.dsh/profiles/dsh-opentui/cordis.patch.yml
-
 # ---------------------------------------------------------------------------
-# CLIENT face (E2E_FACE=client): bun + a workspace snapshot at /src so the
-# repo-root `./dsh-opentui` launcher (bun --preload ... client-entry.tsx) can
-# boot, with ensureHost pulling up the resident `dsh --profile opentui` host
-# (node, from the global dsh closure installed above). The plugin face layers
-# above stay untouched — the suite picks a face at runtime via E2E_FACE.
+# CLIENT face (the only face since batch B5): bun + a workspace snapshot at
+# /src so the repo-root `./dsh-opentui` launcher (bun --preload ...
+# client-entry.tsx) can boot, with ensureHost pulling up the resident
+# `dsh --profile opentui` host (node, from the global dsh closure installed
+# above).
 #
 # bun comes from the npm registry (the `bun` package's @oven/* platform
 # binaries are regular npm packages, so NPM_REGISTRY applies — no GitHub
@@ -167,11 +109,18 @@ RUN npm install -g --no-fund --no-audit --registry "${NPM_REGISTRY}" \
 # and tsconfigs must sit at their repo-root shapes under /src. node_modules is
 # NOT copied: the host tree holds darwin natives and the container needs the
 # linux @opentui natives — a fresh pnpm install below resolves the right
-# platform binaries from the lockfile.
-COPY dsh-opentui package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json /src/
+# platform binaries from the lockfile. One exception, linked by hand after
+# the install: @deepseek-ai/dsh-client-connection resolves ONLY from the
+# global dsh closure (it is not on the npm registry — see transport.ts's
+# lazy-load note), so the client's connect path needs the same closure link
+# the dev workspace carries.
+COPY dsh-opentui package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json README.md LICENSE NOTICE CHANGELOG.md /src/
 COPY packages /src/packages
 RUN find /src -type d -name node_modules -prune -exec rm -rf {} + \
  && pnpm --dir /src install --frozen-lockfile --registry="${NPM_REGISTRY}" \
+ && mkdir -p /src/packages/shell/node_modules/@deepseek-ai \
+ && ln -sfn /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-connection \
+      /src/packages/shell/node_modules/@deepseek-ai/dsh-client-connection \
  && test -x /src/dsh-opentui \
  && test -d /src/packages/shell/node_modules/@opentui/solid \
  && bun --preload /src/packages/shell/node_modules/@opentui/solid/scripts/preload.js \

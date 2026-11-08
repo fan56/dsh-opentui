@@ -40,7 +40,7 @@ scenario 'theme switch (picker / apply / config.json persistence / restart resto
 # (plugin face: baked dsh-opentui; client face: opentui under the scratch
 # DSH_HOME common.sh provisioned). See FACE_CFG in lib/common.sh.
 CONFIG_JSON="$FACE_CFG"
-BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+BUNDLE="/src/packages/tui-base/src"
 
 # --- host guard ---------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
@@ -66,9 +66,9 @@ BASE_FP="$(sgr_fingerprint)"
 # --- the dependency gates -------------------------------------------------------
 PICKER_GATE=0
 PERSIST_GATE=0
-if [ -f "$BUNDLE" ]; then
-  grep -qF 'Select theme' "$BUNDLE" && PICKER_GATE=1
-  grep -qF 'theme persist failed' "$BUNDLE" && PERSIST_GATE=1
+if [ -d "$BUNDLE" ]; then
+  grep -rqF 'Select theme' "$BUNDLE" && PICKER_GATE=1
+  grep -rqF 'theme persist failed' "$BUNDLE" && PERSIST_GATE=1
 fi
 
 # --- G0: pre-verifiable on the stale bundle ------------------------------------
@@ -87,7 +87,7 @@ if (( PICKER_GATE == 0 )); then
   exit 0
 fi
 if (( PERSIST_GATE )); then PERSIST_ARM=lit; else PERSIST_ARM=DARK; fi
-ok "dependency gate LIT: installed dist-host carries the /theme picker (persistence arm: $PERSIST_ARM)"
+ok "dependency gate LIT: the workspace sources carry the /theme picker (persistence arm: $PERSIST_ARM)"
 
 # --- G1: the picker -------------------------------------------------------------
 ensure_editor_ready 'editor clean before /theme traffic' || true

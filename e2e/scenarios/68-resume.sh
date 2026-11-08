@@ -182,21 +182,16 @@ seed_session() {
 }
 
 # --- dependency gate ----------------------------------------------------------
-# Face-aware: the plugin face greps the deployed dist-host; the client face
-# runs the /src workspace snapshot (grep -r over the sources).
-if [ "$E2E_FACE" = client ]; then
-  BUNDLE="/src/packages/tui-base/src"
-  BUNDLE_GREP=(grep -rqF)
-else
-  BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
-  BUNDLE_GREP=(grep -qF)
-fi
+# The client face runs the /src workspace snapshot (grep -r over the
+# sources) — the dist-host bundle is retired with the plugin face.
+BUNDLE="/src/packages/tui-base/src"
+BUNDLE_GREP=(grep -rqF)
 GATE=0
 if [ -e "$BUNDLE" ] && "${BUNDLE_GREP[@]}" 'No sessions within the resume window (' "$BUNDLE" 2>/dev/null; then
   GATE=1
-  ok 'dependency gate LIT: the face bundle carries the G1 /sessions picker'
+  ok 'dependency gate LIT: the workspace sources carry the G1 /sessions picker'
 else
-  warn 'dependency gate DARK: dist-host predates the G1 /sessions picker (rebuild pending) — column groups skipped-by-gate'
+  warn 'dependency gate DARK: sources predate the G1 /sessions picker — column groups skipped-by-gate'
 fi
 
 # =============================================================================

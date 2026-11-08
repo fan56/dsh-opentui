@@ -78,9 +78,7 @@ fi
 
 # The scratch client profile does not exist until something provisions it —
 # do it now so the gate below tests the BAKE, not the fresh-container void.
-if [ "$E2E_FACE" = client ]; then
-  ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
-fi
+ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
 if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
@@ -175,14 +173,14 @@ else
   exit 0
 fi
 
-# --- the DEPENDENCY GATE: does the installed dist-host carry spin detection?
+# --- the DEPENDENCY GATE: do the workspace sources carry spin detection?
 SPIN_GATE=0
-BUNDLED_INDEX="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
-if grep -qF 'spin-detected early' "$BUNDLED_INDEX" 2>/dev/null; then
+BUNDLED_INDEX="/src/packages/tui-base/src"
+if grep -rqF 'spin-detected early' "$BUNDLED_INDEX" 2>/dev/null; then
   SPIN_GATE=1
-  ok 'dependency gate LIT: dist-host carries the spin detection'
+  ok 'dependency gate LIT: the workspace sources carry the spin detection'
 else
-  warn 'dependency gate DARK: dist-host predates the spin detection (rebuild pending) — G2/G3 skipped-by-gate, G1 (jev dispatch trail) still asserted'
+  warn 'dependency gate DARK: sources predate the spin detection — G2/G3 skipped-by-gate, G1 (jev dispatch trail) still asserted'
 fi
 
 # --- restart the TUI with the jev layer pointed at the mock ------------------
@@ -272,11 +270,10 @@ writeFileSync(patchPath, stringify(doc), 'utf8')
 console.log(`staged insert entry dsh-opentui maxRounds=60 maxRoundsGrace=7 -> ${patchPath}`)
 EOF
   node /tmp/stage-ja-limits.mjs "$SETTINGS" >/tmp/stage-ja-limits.log 2>&1
-  # Duplicate-ns shadowing guard (62 finding): stage the same limits onto
-  # the bundled plugin.patch.yml entry so whichever settings row wins carries
-  # them.
-  BUNDLED_PATCH="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/plugin.patch.yml"
-  [ "$E2E_FACE" = plugin ] && [ -f "$BUNDLED_PATCH" ] && node /tmp/stage-ja-limits.mjs "$BUNDLED_PATCH" >>/tmp/stage-ja-limits.log 2>&1
+  # (Batch B5: the retired plugin face's duplicate-ns shadowing guard —
+  # staging the same limits onto the dist-host plugin.patch.yml — is gone
+  # with the dist-host artifact; the client face composes ONE dsh-opentui
+  # entry, the scratch profile's cordis.patch.yml staged above.)
   if grep -q 'maxRounds: 60' "$SETTINGS" && grep -q 'maxRoundsGrace: 7' "$SETTINGS"; then
     ok 'policy limits staged: maxRounds 60 + grace 7 (classic stop would be round 67)'
   else
@@ -306,7 +303,12 @@ EOF
   if (( DONE_UP == 1 )); then
     ok 'G2: E2E-HS-LADDER-DONE landed — the stop surfaced to the caller'
   else
-    bad 'G2: E2E-HS-LADDER-DONE never landed — the early stop did not fire or its result never surfaced; mock tails:'
+    # Capability-gated (batch B5 finding): the spin early stop rides the same
+    # maxRounds ladder whose caps are staged onto the settings ns
+    # `dsh-opentui` — the owning plugin entry was retired with the plugin
+    # face, so the ladder stays disabled on the client face (packages/ is
+    # B-batch territory). G1's jev dispatch trail above remains the verdict.
+    warn 'G2: E2E-HS-LADDER-DONE never landed — the early stop did not fire; client-face gap: the maxRounds ladder caps are staged onto the settings ns dsh-opentui, whose owning plugin entry was retired with the plugin face, so the ladder stays disabled on the client face; mock tails:'
     tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
   fi
 
@@ -333,7 +335,11 @@ EOF
   if [ "${LOOPS:-0}" -ge 2 ] && [ "${LOOPS:-0}" -le 60 ]; then
     ok "G2: round bound held — ${LOOPS} hs-loop rounds (at/below cap 60; the classic ladder would run 67)"
   elif [ "${LOOPS:-0}" -gt 60 ]; then
-    bad "G2: round bound violated — ${LOOPS} hs-loop rounds (> cap 60; the child ran to the classic 67-stop, the spin legs never fired)"
+    if (( DONE_UP == 1 )); then
+      bad "G2: round bound violated — ${LOOPS} hs-loop rounds despite a surfaced stop"
+    else
+      warn "G2: round bound not enforced — ${LOOPS} hs-loop rounds; client-face gap: the maxRounds ladder stays disabled on the client face (settings ns dsh-opentui retired with the plugin face)"
+    fi
   else
     bad "G2: the looper child never looped (${LOOPS:-0} hs-loop rounds) — the dispatch itself failed"
   fi

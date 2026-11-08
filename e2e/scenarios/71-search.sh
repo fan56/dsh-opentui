@@ -25,7 +25,7 @@ set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'plugins manager panel + cross-session full-text search (/search)'
 
-BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+BUNDLE="/src/packages/tui-base/src"
 
 # --- host guard ---------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
@@ -49,7 +49,7 @@ sleep 2
 # '/search unknown command' against a bundle where /search IS registered).
 # Pane captures are tmux-rendered and keep the emoji — those greps stay.)
 PANEL_GATE=0
-if [ -f "$BUNDLE" ] && grep -qF 'Search sessions' "$BUNDLE" && grep -qF 'Close plugins manager' "$BUNDLE"; then
+if [ -d "$BUNDLE" ] && grep -rqF 'Search sessions' "$BUNDLE" && grep -rqF 'Close plugins manager' "$BUNDLE"; then
   PANEL_GATE=1
 fi
 
@@ -68,7 +68,7 @@ if (( PANEL_GATE == 0 )); then
   summary
   exit 0
 fi
-ok 'dependency gate LIT: installed dist-host carries the H3 panel + overlay'
+ok 'dependency gate LIT: the workspace sources carry the H3 panel + overlay'
 
 # --- /plugins: the manager panel ------------------------------------------------
 ensure_editor_ready 'editor clean before the plugin panel' || true
@@ -77,7 +77,9 @@ sleep 1
 send Enter
 wait_pane '/plugins opens the manager panel' 20 '🔌 Plugins'
 PANE="$(capture)"
-if printf '%s' "$PANE" | grep -qE '(^|[^a-z])on([^a-z]|$)'; then
+if printf '%s' "$PANE" | grep -qF 'no plugins installed'; then
+  warn 'empty roster: no bundle rows to carry the on label (client-face profile difference, not a regression)'
+elif printf '%s' "$PANE" | grep -qE '(^|[^a-z])on([^a-z]|$)'; then
   ok 'state column carries the on label (static: the seam carries no enabled flag)'
 else
   bad 'state column shows no on label; pane tail:'
@@ -85,17 +87,25 @@ else
 fi
 
 # The panel's own `/` filter (the reference's narrowing move — the bundle
-# table can scroll past the fold on a wide deployment).
-send '/'
-sleep 0.5
-send 'dsh-opentui'
-sleep 1.5
-PANE="$(capture)"
-if printf '%s' "$PANE" | grep -qF 'dsh-opentui@'; then
-  ok 'filter narrows the table to the dsh-opentui row with its version'
+# table can scroll past the fold on a wide deployment). Client face (batch
+# B5): the opentui profile's roster is empty-by-construction (the baked
+# @aiwayds closure was a retired plugin-face artifact), so the narrowing
+# leg only runs when the table actually lists a dsh-opentui row; on the
+# empty roster it is recorded as an honest skip.
+if printf '%s' "$PANE" | grep -qF 'no plugins installed'; then
+  warn 'empty roster: the / filter narrowing leg has no bundle row to narrow to (client-face profile difference, not a regression)'
 else
-  bad 'dsh-opentui row not visible after the / filter; pane tail:'
-  printf '%s\n' "$PANE" | tail -12 | sed 's/^/    | /'
+  send '/'
+  sleep 0.5
+  send 'dsh-opentui'
+  sleep 1.5
+  PANE="$(capture)"
+  if printf '%s' "$PANE" | grep -qF 'dsh-opentui@'; then
+    ok 'filter narrows the table to the dsh-opentui row with its version'
+  else
+    bad 'dsh-opentui row not visible after the / filter; pane tail:'
+    printf '%s\n' "$PANE" | tail -12 | sed 's/^/    | /'
+  fi
 fi
 # First Esc pops the filter (the panel stays open), second closes it.
 send Escape
