@@ -209,4 +209,4 @@ if (missing.length === 0) {
 console.log(`provision-opentui-profile: model pinned to ${provider}/${model} (effort ${reasoningEffort}, key env ${apiKeyEnv})`)
 console.log('provision-opentui-profile: PASS')
 console.log(`the '${PROFILE}' profile serves the host Remote protocol (web-app template)`)
-console.log(`install plugins with: dsh plugin --profile ${PROFILE} add <package>`)
+console.log(`launch the client with: dsh-opentui (the bin re-runs this provisioning idempotently)`)
