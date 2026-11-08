@@ -36,35 +36,48 @@ if [ ! -d /e2e/scenarios ]; then
 fi
 
 # --- dependency gate: the deployed bundle must carry the G2 steer UI --------
-DEPLOYED_BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
-if [ ! -f "$DEPLOYED_BUNDLE" ]; then
+# Face-aware: the plugin face greps the deployed dist-host; the client face
+# runs the /src workspace snapshot, so the same strings are grepped there.
+if [ "$E2E_FACE" = client ]; then
+  DEPLOYED_BUNDLE="/src/packages/tui-base/src"
+  BUNDLE_GREP=(grep -rqF)
+else
+  DEPLOYED_BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+  BUNDLE_GREP=(grep -qF)
+fi
+if [ ! -e "$DEPLOYED_BUNDLE" ]; then
   warn "no deployed dsh-opentui bundle at $DEPLOYED_BUNDLE — skipping"
   summary
   exit 0
 fi
-if ! grep -qF 'steered ' "$DEPLOYED_BUNDLE" 2>/dev/null \
-  || ! grep -qF 'subagentSteerWired' "$DEPLOYED_BUNDLE" 2>/dev/null; then
-  warn 'deployed dist-host predates G2 (no steer echo / steer bridge) — skipping (rebuild dist-host to run)'
+if ! "${BUNDLE_GREP[@]}" 'steered ' "$DEPLOYED_BUNDLE" 2>/dev/null \
+  || ! "${BUNDLE_GREP[@]}" 'subagentSteerWired' "$DEPLOYED_BUNDLE" 2>/dev/null; then
+  warn 'deployed bundle predates G2 (no steer echo / steer bridge) — skipping (rebuild to run)'
   summary
   exit 0
 fi
 ok 'deployed bundle carries the G2 steer UI'
 
-if ! grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
+# The scratch client profile does not exist until something provisions it —
+# do it now so the gate below tests the BAKE, not the fresh-container void.
+if [ "$E2E_FACE" = client ]; then
+  ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
+fi
+if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
   exit 0
 fi
 
 # --- the registry plugin: use_agent's home (same block as 62) ---------------
-if grep -qF '@aiwayds/dsh-subagent-registry' "$HOME/.dsh/profiles/dsh-opentui/package.json" 2>/dev/null \
-  && grep -qF '@aiwayds/dsh-subagent-registry' <(dsh plugin --profile dsh-opentui list 2>/dev/null); then
+if grep -qF '@aiwayds/dsh-subagent-registry' "$FACE_HOME/profiles/$FACE_PROFILE/package.json" 2>/dev/null \
+  && grep -qF '@aiwayds/dsh-subagent-registry' <(DSH_HOME="$FACE_HOME" dsh plugin --profile "$FACE_PROFILE" list 2>/dev/null); then
   ok 'registry plugin already bundled'
 else
   if npm pack @aiwayds/dsh-subagent-registry@0.19.0 --registry=https://registry.npmjs.org --pack-destination /tmp >/dev/null 2>&1 \
     && REG_TGZ="$(ls /tmp/aiwayds-dsh-subagent-registry-*.tgz 2>/dev/null | head -1)" && [ -n "$REG_TGZ" ] \
-    && timeout 300 dsh plugin --profile dsh-opentui add "$REG_TGZ" >/tmp/reg-add-70.log 2>&1; then
-    ok "registry plugin installed into the dsh-opentui profile ($(basename "$REG_TGZ"))"
+    && timeout 300 DSH_HOME="$FACE_HOME" dsh plugin --profile "$FACE_PROFILE" add "$REG_TGZ" >/tmp/reg-add-70.log 2>&1; then
+    ok "registry plugin installed into the $FACE_PROFILE profile ($(basename "$REG_TGZ"))"
   else
     bad 'registry plugin install failed; tail:'
     tail -8 /tmp/reg-add-70.log 2>/dev/null | sed 's/^/    | /'
@@ -98,7 +111,7 @@ else
 fi
 
 # --- the looper agent: NO maxRounds (the child must stay live to steer) -----
-AGENTS_DIR="$HOME/.dsh/agents"
+AGENTS_DIR="$FACE_AGENTS_DIR"
 mkdir -p "$AGENTS_DIR"
 cat > "$AGENTS_DIR/looper.md" <<'EOF'
 ---
@@ -122,7 +135,7 @@ ok 'seeded agent file looper.md (deep: 0, no maxRounds — the child stays live)
 # entries (the duplicate-ns shadowing guard from 62 applies here too): a
 # non-positive global cap disables the whole ladder (subagent-policy.ts
 # #resolveCaps returns undefined → ladderDecision never consulted).
-SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
+SETTINGS="$FACE_PATCH"
 cat > /tmp/stage-steer-isolation.mjs <<'EOF'
 import { createRequire } from 'node:module'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -145,7 +158,7 @@ console.log(`staged insert entry dsh-opentui maxRounds=0 maxRoundsGrace=0 -> ${p
 EOF
 node /tmp/stage-steer-isolation.mjs "$SETTINGS" >/tmp/stage-steer-isolation.log 2>&1
 BUNDLED_PATCH_STEER="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/plugin.patch.yml"
-if [ -f "$BUNDLED_PATCH_STEER" ]; then
+if [ "$E2E_FACE" = plugin ] && [ -f "$BUNDLED_PATCH_STEER" ]; then
   node /tmp/stage-steer-isolation.mjs "$BUNDLED_PATCH_STEER" >>/tmp/stage-steer-isolation.log 2>&1
 fi
 if grep -q 'maxRounds: 0' "$SETTINGS"; then

@@ -36,7 +36,10 @@ set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'theme switch (picker / apply / config.json persistence / restart restore)'
 
-CONFIG_JSON="$HOME/.dsh/profiles/dsh-opentui/config.json"
+# Face-aware: the store lives in the profile the face actually runs
+# (plugin face: baked dsh-opentui; client face: opentui under the scratch
+# DSH_HOME common.sh provisioned). See FACE_CFG in lib/common.sh.
+CONFIG_JSON="$FACE_CFG"
 BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
 
 # --- host guard ---------------------------------------------------------------

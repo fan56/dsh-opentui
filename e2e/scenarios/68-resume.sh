@@ -163,7 +163,7 @@ NODE
 # $HOME/.dsh/sessions/<project>/<id>/session.v4.jsonl.zstd.
 seed_session() {
   local project="$1" id="$2" cwd="$3" target="$4"
-  local dir="$HOME/.dsh/sessions/$project/$id"
+  local dir="$FACE_SESSIONS_DIR/$project/$id"
   mkdir -p "$dir"
   local now_ms out size
   now_ms="$(date +%s)000"
@@ -182,11 +182,19 @@ seed_session() {
 }
 
 # --- dependency gate ----------------------------------------------------------
-BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+# Face-aware: the plugin face greps the deployed dist-host; the client face
+# runs the /src workspace snapshot (grep -r over the sources).
+if [ "$E2E_FACE" = client ]; then
+  BUNDLE="/src/packages/tui-base/src"
+  BUNDLE_GREP=(grep -rqF)
+else
+  BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+  BUNDLE_GREP=(grep -qF)
+fi
 GATE=0
-if [ -f "$BUNDLE" ] && grep -qF 'No sessions within the resume window (' "$BUNDLE"; then
+if [ -e "$BUNDLE" ] && "${BUNDLE_GREP[@]}" 'No sessions within the resume window (' "$BUNDLE" 2>/dev/null; then
   GATE=1
-  ok 'dependency gate LIT: installed dist-host carries the G1 /sessions picker'
+  ok 'dependency gate LIT: the face bundle carries the G1 /sessions picker'
 else
   warn 'dependency gate DARK: dist-host predates the G1 /sessions picker (rebuild pending) — column groups skipped-by-gate'
 fi
@@ -196,8 +204,8 @@ fi
 # seeded non-empty store the OLD picker still opens and lists the big
 # session, but must NOT paint the new column headers.
 # =============================================================================
-rm -rf "$HOME/.dsh/sessions"
-mkdir -p "$HOME/.dsh/sessions"
+rm -rf "$FACE_SESSIONS_DIR"
+mkdir -p "$FACE_SESSIONS_DIR"
 BIG_ID='b1e2f3a4-0001-4000-8000-000000006801'
 STUB_ID='b1e2f3a4-0002-4000-8000-000000006802'
 seed_session '--app-alpha--' "$BIG_ID" '/app/alpha' 25000
@@ -256,8 +264,8 @@ if (( GATE )); then
 
   # Only the tiny stub remains in the store: the floor hides it, so the
   # picker resolves the empty-filtered branch, never the plain one.
-  rm -rf "$HOME/.dsh/sessions"
-  mkdir -p "$HOME/.dsh/sessions"
+  rm -rf "$FACE_SESSIONS_DIR"
+  mkdir -p "$FACE_SESSIONS_DIR"
   seed_session '--app-stub--' "$STUB_ID" '/app/stub' 0
 
   start_tui ''

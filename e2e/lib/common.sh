@@ -112,6 +112,39 @@ TUI_PAT1='dsh --profile dsh-opentui'
 TUI_PAT2='node /usr/local/bin/dsh-opentui'
 MOCK_PATS='mock-llm.mjs mock-jev.mjs'
 
+# CLIENT face (E2E_FACE=client, the daily-use topology): the repo-root
+# launcher execs `bun --preload ... client-entry.tsx` (the TUI client), which
+# via ensureHost (packages/shell/src/client/lifecycle.ts) spawns the resident
+# `dsh --profile opentui --no-open --port <n>` host (node, global dsh
+# closure). Patterns must not match a scenario's own bash cmdline or tmux.
+# The host pattern CANNOT match the plugin face's `dsh --profile
+# dsh-opentui` (the hyphen breaks the substring), so client-face cleanup is
+# safe even with both faces' patterns present.
+E2E_FACE="${E2E_FACE:-plugin}"
+CLIENT_DSH_HOME=/tmp/client-dsh
+# Face-aware profile identity: the plugin face runs the baked dsh-opentui
+# profile under $HOME/.dsh; the client face runs the opentui profile under
+# the scratch DSH_HOME (start_tui provisions it). Scenarios that read the
+# profile's config.json store (/theme, /agents, /preset persistence) use
+# FACE_CFG instead of a hardcoded plugin-face path.
+if [ "$E2E_FACE" = client ]; then
+  FACE_HOME="$CLIENT_DSH_HOME"
+  FACE_PROFILE=opentui
+else
+  FACE_HOME="$HOME/.dsh"
+  FACE_PROFILE=dsh-opentui
+fi
+FACE_CFG="$FACE_HOME/profiles/$FACE_PROFILE/config.json"
+# Face-aware evidence/store paths for the scenarios: the patch layer the
+# /login commit and the policy staging write into, and the agents + sessions
+# stores the running host reads — all derived from the face's own DSH_HOME,
+# never the hardcoded plugin-face $HOME/.dsh.
+FACE_PATCH="$FACE_HOME/profiles/$FACE_PROFILE/cordis.patch.yml"
+FACE_AGENTS_DIR="$FACE_HOME/agents"
+FACE_SESSIONS_DIR="$FACE_HOME/sessions"
+CLIENT_TUI_PAT='client-entry.tsx'
+CLIENT_HOST_PAT='dsh --profile opentui'
+
 in_e2e_container() { [ -d /e2e/scenarios ]; }
 
 # Kill processes matching the given patterns: SIGTERM, wait up to ~3s for the
@@ -130,7 +163,15 @@ kill_pats() {
   sleep 0.5
 }
 
-kill_tui_procs() { in_e2e_container || return 0; kill_pats "$TUI_PAT1" "$TUI_PAT2"; }
+kill_tui_procs() {
+  in_e2e_container || return 0
+  if [ "$E2E_FACE" = client ]; then
+    # shellcheck disable=SC2086
+    kill_pats "$CLIENT_TUI_PAT" "$CLIENT_HOST_PAT"
+  else
+    kill_pats "$TUI_PAT1" "$TUI_PAT2"
+  fi
+}
 
 # Full pre-scenario reset: leftover TUI + leftover mocks + the tmux server.
 # Container-gated: this lib may be sourced on a host (scenarios carry host
@@ -138,7 +179,7 @@ kill_tui_procs() { in_e2e_container || return 0; kill_pats "$TUI_PAT1" "$TUI_PAT
 reset_e2e_state() {
   in_e2e_container || return 0
   # shellcheck disable=SC2086
-  kill_pats "$TUI_PAT1" "$TUI_PAT2" $MOCK_PATS
+  kill_pats "$TUI_PAT1" "$TUI_PAT2" "$CLIENT_TUI_PAT" "$CLIENT_HOST_PAT" $MOCK_PATS
   tmux kill-server 2>/dev/null || true
   sleep 0.3
 }
@@ -149,6 +190,18 @@ reset_e2e_state() {
 # after itself: its EXIT trap kills only its own mock PIDs, and an EXIT trap
 # registered here would be clobbered by the scenarios' own traps.)
 reset_e2e_state
+
+# Per-face scenario gate (source-time): 10-install asserts the plugin face's
+# artifact chain — npm pack -> global launcher install -> dsh-opentui profile
+# bootstrap -> plugin-mode boot. The client face has no tarball/global-
+# launcher install path (the launcher is the workspace snapshot; the profile
+# is provisioned by start_tui), so the scenario's semantics do not apply.
+# Record honestly: 1 warn, no silent 0/0/0.
+if [ "$E2E_FACE" = client ] && [ "$SCENARIO" = "10-install" ]; then
+  warn 'plugin-face-only scenario — skipped on the client face (no tarball/global-launcher install path to assert; profile comes from provision-opentui-profile.mjs instead)'
+  summary
+  exit 0
+fi
 
 # --- tmux session -------------------------------------------------------------
 TS=dsh-opentui-e2e
@@ -166,6 +219,27 @@ tui_alive() {
     && [[ "$(pane_command)" != bash ]]
 }
 
+# Provision + bake the CLIENT face's scratch opentui profile WITHOUT booting:
+# the same steps start_tui's client branch runs, factored out for scenarios
+# whose mock-endpoint/bundle gates fire BEFORE the first start_tui on a fresh
+# container (the scratch profile does not exist until something provisions
+# it). Idempotent; the pnpm install is guarded on the registry dep so it runs
+# once per container. Plugin face: no-op.
+ensure_client_profile() {
+  [ "$E2E_FACE" = client ] || return 0
+  if [ ! -f "$FACE_PATCH" ]; then
+    DSH_HOME="$FACE_HOME" node /src/packages/shell/scripts/provision-opentui-profile.mjs || return 1
+  fi
+  if ! grep -qF '@aiwayds/dsh-subagent-registry' \
+    "$FACE_HOME/profiles/$FACE_PROFILE/package.json" 2>/dev/null; then
+    DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-jev-chain.mjs || return 1
+    DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-subagent-registry.mjs || return 1
+    pnpm --dir "$FACE_HOME/profiles/$FACE_PROFILE" install \
+      --registry="${E2E_NPM_REGISTRY:-https://registry.npmjs.org}" || return 1
+  fi
+  DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-mock-endpoint.mjs || return 1
+}
+
 start_tui() {
   local env_prefix="${1:-}"
   if in_e2e_container; then
@@ -180,10 +254,25 @@ start_tui() {
   # -c pins the pane shell (and thus the boot cwd) to the image WORKDIR —
   # the runner's cd into e2e/scenarios must not leak into the session cwd.
   tmux new-session -d -s "$TS" -x "$TUI_COLS" -y "$TUI_ROWS" -c /app
-  # The launcher injects --experimental-ffi and execs dsh --profile
-  # dsh-opentui; the profile itself is baked into the image by the
-  # Containerfile (install-profile.mjs --dep file:/dist/...).
-  tmux send-keys -t "$TS" "${env_prefix:+$env_prefix }dsh-opentui" Enter
+  if [ "$E2E_FACE" = client ]; then
+    # CLIENT face: scratch DSH_HOME (never the image's baked /root/.dsh) +
+    # the `opentui` host profile (idempotent provision from the workspace
+    # snapshot; global dsh resolves the template) + the mock baseURL baked
+    # into that profile's patch layer. The launcher (SCRIPT_DIR-relative,
+    # /src/dsh-opentui) execs bun client-entry.tsx and ensureHost pulls up
+    # the resident host, all inside this tmux pane with DSH_HOME inherited.
+    export DSH_HOME="$CLIENT_DSH_HOME"
+    # Batch-1 seg4: provision + bake the scratch profile's subagent-use
+    # bundles (registry = use_agent's home; dispatch/jev-core = the jev
+    # chain) + the mock endpoint before the boot. See ensure_client_profile.
+    ensure_client_profile || return 1
+    tmux send-keys -t "$TS" "${env_prefix:+env $env_prefix }DSH_HOME=$CLIENT_DSH_HOME /src/dsh-opentui" Enter
+  else
+    # The launcher injects --experimental-ffi and execs dsh --profile
+    # dsh-opentui; the profile itself is baked into the image by the
+    # Containerfile (install-profile.mjs --dep file:/dist/...).
+    tmux send-keys -t "$TS" "${env_prefix:+$env_prefix }dsh-opentui" Enter
+  fi
 }
 
 wait_tui_up() {

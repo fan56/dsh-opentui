@@ -76,15 +76,20 @@ if [ ! -d /e2e/scenarios ]; then
   exit 0
 fi
 
-if ! grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
+# The scratch client profile does not exist until something provisions it —
+# do it now so the gate below tests the BAKE, not the fresh-container void.
+if [ "$E2E_FACE" = client ]; then
+  ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
+fi
+if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
   exit 0
 fi
 
 # --- the jev chain gate: the baked dispatch plugin must be present ----------
-if grep -qF '@aiwayds/dsh-agent-dispatch' "$HOME/.dsh/profiles/dsh-opentui/package.json" 2>/dev/null \
-  && grep -qF 'dsh-agent-dispatch' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
+if grep -qF '@aiwayds/dsh-agent-dispatch' "$FACE_HOME/profiles/$FACE_PROFILE/package.json" 2>/dev/null \
+  && grep -qF 'dsh-agent-dispatch' "$FACE_PATCH" 2>/dev/null; then
   ok 'jev chain baked (dsh-agent-dispatch + JEV_ENDPOINT route present)'
 else
   warn 'dsh-agent-dispatch not in the profile (bake-jev-chain step missing) — skipping'
@@ -103,15 +108,15 @@ fi
 # what empties the roster leg. Pinned 0.19.0 (the release the reference ran
 # against the 0.2.2-rc.1 host wave; 0.18.0 dies at load on this wave).
 REGISTRY_UP=0
-if grep -qF '@aiwayds/dsh-subagent-registry' "$HOME/.dsh/profiles/dsh-opentui/package.json" 2>/dev/null \
-  && grep -qF '@aiwayds/dsh-subagent-registry' <(dsh plugin --profile dsh-opentui list 2>/dev/null); then
+if grep -qF '@aiwayds/dsh-subagent-registry' "$FACE_HOME/profiles/$FACE_PROFILE/package.json" 2>/dev/null \
+  && grep -qF '@aiwayds/dsh-subagent-registry' <(DSH_HOME="$FACE_HOME" dsh plugin --profile "$FACE_PROFILE" list 2>/dev/null); then
   REGISTRY_UP=1
   ok 'registry plugin already bundled (use_agent available)'
 elif npm pack @aiwayds/dsh-subagent-registry@0.19.0 --registry=https://registry.npmjs.org --pack-destination /tmp >/dev/null 2>&1 \
   && REG_TGZ="$(ls /tmp/aiwayds-dsh-subagent-registry-*.tgz 2>/dev/null | head -1)" && [ -n "$REG_TGZ" ] \
-  && timeout 300 dsh plugin --profile dsh-opentui add "$REG_TGZ" >/tmp/reg-add-65.log 2>&1; then
+  && timeout 300 DSH_HOME="$FACE_HOME" dsh plugin --profile "$FACE_PROFILE" add "$REG_TGZ" >/tmp/reg-add-65.log 2>&1; then
   REGISTRY_UP=1
-  ok "registry plugin installed into the dsh-opentui profile ($(basename "$REG_TGZ")) — the capability gate's roster leg is now fed"
+  ok "registry plugin installed into the $FACE_PROFILE profile ($(basename "$REG_TGZ")) — the capability gate's roster leg is now fed"
 else
   warn 'registry plugin install failed; tail:'
   tail -8 /tmp/reg-add-65.log 2>/dev/null | sed 's/^/    | /'
@@ -123,7 +128,7 @@ fi
 # 62 already ran may have an emptied ~/.dsh/agents — G1 must not gamble on
 # either. Seed looper.md here (the G2 block re-seeds the identical file).
 if (( REGISTRY_UP == 1 )); then
-  AGENTS_DIR="$HOME/.dsh/agents"
+  AGENTS_DIR="$FACE_AGENTS_DIR"
   mkdir -p "$AGENTS_DIR"
   cat > "$AGENTS_DIR/looper.md" <<'EOF'
 ---
@@ -229,7 +234,7 @@ fi
 # --- G2/G3: the early-stop run (gate lit AND the registry available) ---------
 if (( SPIN_GATE == 1 )) && (( REGISTRY_UP == 1 )); then
   # The looper agent: cap 60 (floor 20), persona that never complies.
-  AGENTS_DIR="$HOME/.dsh/agents"
+  AGENTS_DIR="$FACE_AGENTS_DIR"
   mkdir -p "$AGENTS_DIR"
   cat > "$AGENTS_DIR/looper.md" <<'EOF'
 ---
@@ -245,7 +250,7 @@ EOF
   ok 'seeded agent file looper.md (deep: 0, maxRounds: 60)'
 
   # Policy settings: cap 60 + grace 7 (classic stop would be round 67).
-  SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
+  SETTINGS="$FACE_PATCH"
   cat > /tmp/stage-ja-limits.mjs <<'EOF'
 import { createRequire } from 'node:module'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -271,7 +276,7 @@ EOF
   # the bundled plugin.patch.yml entry so whichever settings row wins carries
   # them.
   BUNDLED_PATCH="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/plugin.patch.yml"
-  [ -f "$BUNDLED_PATCH" ] && node /tmp/stage-ja-limits.mjs "$BUNDLED_PATCH" >>/tmp/stage-ja-limits.log 2>&1
+  [ "$E2E_FACE" = plugin ] && [ -f "$BUNDLED_PATCH" ] && node /tmp/stage-ja-limits.mjs "$BUNDLED_PATCH" >>/tmp/stage-ja-limits.log 2>&1
   if grep -q 'maxRounds: 60' "$SETTINGS" && grep -q 'maxRoundsGrace: 7' "$SETTINGS"; then
     ok 'policy limits staged: maxRounds 60 + grace 7 (classic stop would be round 67)'
   else

@@ -26,7 +26,10 @@ set -u
 scenario 'model profiles: /agents save / use / rm over the profile config store'
 
 BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
-CFG="$HOME/.dsh/profiles/dsh-opentui/config.json"
+# Face-aware profile store path (FACE_CFG from lib/common.sh): the client
+# face runs the opentui profile under the scratch DSH_HOME, not the baked
+# dsh-opentui profile.
+CFG="$FACE_CFG"
 
 # --- host guard ---------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
