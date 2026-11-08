@@ -75,13 +75,29 @@ export type SeamRow =
 			args: string
 			status: "running" | "done" | "failed"
 			output?: string
+			/** Batch V1 (gap 2): live rows stamp the start; settle freezes the
+			 * elapsed seconds (tui-pi ToolPanel semantics). Stored rows carry
+			 * neither — no fabricated elapsed on replayed history. */
+			startedAt?: number
+			elapsedSec?: number
 	  }
 
 export function toStoredRow(stored: SeamTranscriptRow, index: number): SeamRow {
 	const kind = stored.kind === "user" || stored.kind === "tool" ? stored.kind : "assistant"
 	const key = `stored:${kind}:${index}`
 	if (kind === "tool") {
-		return { key, kind: "tool", name: stored.text, args: "", status: "done" }
+		// Batch V1 (gap 3): durable tool rows now carry the args brief, the
+		// result JSON-brief and the isError mirror (journalToTranscriptRows
+		// pairs call→result). Without them (older journals), degrade to a
+		// bare settled name row — never a fabricated block.
+		return {
+			key,
+			kind: "tool",
+			name: stored.text,
+			args: typeof stored.args === "string" ? stored.args : "",
+			status: stored.ok === false ? "failed" : "done",
+			...(typeof stored.output === "string" ? { output: stored.output } : {}),
+		}
 	}
 	if (kind === "user") return { key, kind: "user", text: stored.text, final: true }
 	return { key, kind: "assistant", text: stored.text, final: stored.final }
@@ -315,6 +331,26 @@ export function createSeamRows(
 					name: start.name,
 					args: start.args,
 					status: "running",
+					startedAt: Date.now(),
+				})
+			},
+			// Batch V1: the follow stream's tool/result settles the row live —
+			// status flips here (not only at turn finalize) and the result brief
+			// rides the row for the `⎿` track. Unknown callId (result racing a
+			// fresh begin) still lands keyed by callId so it is findable.
+			// Gap 2: the elapsed freezes at settle (startedAt may be absent on a
+			// result racing a row the store has not seen — elapsed stays off).
+			onToolRun: (run) => {
+				const existing = rows.find((row) => row.key === `tool:live:${run.callId ?? run.name}`)
+				const startedAt = existing?.kind === "tool" ? existing.startedAt : undefined
+				upsert({
+					key: `tool:live:${run.callId ?? run.name}`,
+					kind: "tool",
+					name: run.name,
+					args: run.argsPretty,
+					status: run.ok ? "done" : "failed",
+					output: run.output,
+					...(startedAt !== undefined ? { elapsedSec: Number(((Date.now() - startedAt) / 1000).toFixed(1)) } : {}),
 				})
 			},
 			onApprove: options?.onApprove ?? approveThrough,
@@ -328,8 +364,11 @@ export function createSeamRows(
 				// (the settle supersede in apply() arms against them). Flips
 				// before the finalize pass so no event window opens between.
 				turnOpen = false
-			})
-			.then(() => {
+				// P2-1: the whole finalize pass lives in .finally — a REJECTING
+				// seam.turn implementation must still sweep the running tool rows
+				// and finalize the streamed text (the old .then() success arm
+				// let them spin forever on rejection).
+				void (async () => {
 				// Finalize: the vendored `<markdown streaming>` flips off when the
 				// message completes, keeping the final tokens (M4 law: streaming
 				// lightweight, markdown at finalize is unnecessary — 0.8.1 streams).
@@ -343,8 +382,13 @@ export function createSeamRows(
 				setRows(
 					produce((draft) => {
 						for (const row of draft) {
-							if (row.kind === "tool" && row.status === "running" && row.key.startsWith("tool:live:"))
+							if (row.kind === "tool" && row.status === "running" && row.key.startsWith("tool:live:")) {
 								row.status = "done"
+								// Gap 2: stragglers swept at turn end freeze their elapsed too.
+								if (row.startedAt !== undefined) {
+									row.elapsedSec = Number(((Date.now() - row.startedAt) / 1000).toFixed(1))
+								}
+							}
 						}
 					}),
 				)
@@ -367,7 +411,7 @@ export function createSeamRows(
 				// undefined), so capture here, not at send() entry. The id
 				// stays attached across a COMPLETED turn; abort detaches it.
 				const id = sessionID()
-				return seam
+				await seam
 					.storedTranscript(id)
 					.then((stored) => {
 						// A session switch to ANOTHER session voids the patch; an
@@ -393,6 +437,7 @@ export function createSeamRows(
 						)
 					})
 					.catch(() => undefined)
+				})()
 			})
 	}
 

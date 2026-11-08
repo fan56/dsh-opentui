@@ -54,8 +54,9 @@
  *     throwing UI is unreachable from the seam, whose type has no such arm).
  *   onTurnEnd: no-op — the seam models turn end as the turn() promise
  *     resolving (the facade resolves it after painting onTurnEnd).
- *   onToolRun: no-op — the facade requires the field; the rebuilt rows paint
- *     tool results via the live finalize pass (batch 3/4 documented limit).
+ *   onToolRun: passthrough (batch V1) — a durable tool/result settles its
+ *     transcript row LIVE (status + result brief ride the row); the turn
+ *     finalize sweep only catches stragglers (was a no-op through batch 3/4).
  *
  * EVENT FEED (the batch-2a row `client.event.listen/on → onSessionEvent →
  * follow-stream push (#onEventsItem → typed union)` — reconciled):
@@ -168,6 +169,11 @@ export class RemoteSessionSeam implements SessionSeam {
 					.join("\n")
 				return { kind: row.kind, text, final: true }
 			}
+			if (row.kind === "tool") {
+				// Batch V1: settled tool rows project with their args brief and
+				// result summary — the view's tool block replays them (gap 3).
+				return { kind: "tool", text: row.name, final: true, args: row.args, output: row.brief, ok: row.ok }
+			}
 			return {
 				kind: row.kind,
 				text: row.text,
@@ -240,7 +246,9 @@ export class RemoteSessionSeam implements SessionSeam {
 				onTurnEnd: () => {}, // seam models turn end as the promise
 				onApprove: async (name, args) => (await cb.onApprove(name, args)) === "allowed-once",
 				onToolStart: (start) => cb.onToolStart?.(start),
-				onToolRun: () => {}, // required by the facade; rows finalize live
+				// Batch V1: result events settle their tool row live (was a no-op —
+				// rows finalized only at turn end, output discarded).
+				onToolRun: (run) => cb.onToolRun?.(run),
 				onError: (message) => cb.onError(message),
 			})
 		} finally {

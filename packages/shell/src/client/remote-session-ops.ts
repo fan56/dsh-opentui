@@ -79,6 +79,13 @@ export function journalToTranscriptRows(
 ): StoredTranscriptRow[] {
 	const items: StoredTranscriptRow[] = []
 	const askCalls = new Map<string, { ids: string[]; questions: ParsedAskQuestion[] }>()
+	// Batch V1: regular (non-ask) tool calls pair call→result into settled
+	// tool rows — resume/fork replays the tool block with its args brief and
+	// result instead of dropping it. Result pairing mirrors the live path
+	// (remote-follow #toolResultEvent): ok is the isError mirror, brief is
+	// the JSON.stringify(output).slice(0,300) summary. Calls without a
+	// settled result (mid-turn resume) emit nothing — no fabricated rows.
+	const toolCalls = new Map<string, { name: string; args: string }>()
 	for (const entry of skip > 0 ? entries.slice(skip) : entries) {
 		if (entry.type === "user/message") {
 			const kind = sourceKind(entry.data)
@@ -94,6 +101,8 @@ export function journalToTranscriptRows(
 			if (name === ASK_TOOL_NAME && callId) {
 				const questions = parseAskCallArgs(typeof entry.data.arguments === "string" ? entry.data.arguments : "")
 				if (questions) askCalls.set(callId, { ids: questions.map((q) => q.id), questions })
+			} else if (callId) {
+				toolCalls.set(callId, { name, args: typeof entry.data.arguments === "string" ? entry.data.arguments : "" })
 			}
 		} else if (entry.type === "tool/result") {
 			const message = asRecord(entry.data.message)
@@ -103,21 +112,36 @@ export function journalToTranscriptRows(
 					? String(message.toolCallId)
 					: ""
 			const asked = callId ? askCalls.get(callId) : undefined
-			if (!asked) continue
-			askCalls.delete(callId)
-			const answers = parseAskAnswers(entry.data.message ?? entry.data)
-			if (!answers) continue
-			const merged = asked.questions.map(({ id, entry: q }) => {
-				const ans = answers.find((a) => a.id === id)
-				if (!ans) return { ...q, selected: [], declined: true }
-				return {
-					...q,
-					selected: ans.selected,
-					...(ans.custom !== undefined ? { custom: ans.custom } : {}),
-					declined: ans.selected.length === 0 && (ans.custom === undefined || ans.custom === "declined"),
-				}
-			})
-			items.push({ kind: "ask", entries: merged })
+			if (asked) {
+				askCalls.delete(callId)
+				const answers = parseAskAnswers(entry.data.message ?? entry.data)
+				if (!answers) continue
+				const merged = asked.questions.map(({ id, entry: q }) => {
+					const ans = answers.find((a) => a.id === id)
+					if (!ans) return { ...q, selected: [], declined: true }
+					return {
+						...q,
+						selected: ans.selected,
+						...(ans.custom !== undefined ? { custom: ans.custom } : {}),
+						declined: ans.selected.length === 0 && (ans.custom === undefined || ans.custom === "declined"),
+					}
+				})
+				items.push({ kind: "ask", entries: merged })
+			} else {
+				// Batch V1: a settled regular tool result replays its tool row.
+				// Unknown callId (orphan result) still renders, nameless-args.
+				const known = callId ? toolCalls.get(callId) : undefined
+				if (callId) toolCalls.delete(callId)
+				const ok = entry.data.isError !== true && message.isError !== true
+				const brief = JSON.stringify(entry.data.output ?? entry.data).slice(0, 300)
+				items.push({
+					kind: "tool",
+					name: known?.name ?? "tool",
+					args: known?.args ?? "",
+					ok,
+					brief,
+				})
+			}
 		}
 	}
 	return items

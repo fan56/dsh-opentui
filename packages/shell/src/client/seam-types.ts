@@ -32,5 +32,7 @@ export interface AskEntry {
   declined: boolean
 }
 
-/** The transcript-row subset durable replays (resume/fork) may hand back. */
-export type StoredTranscriptRow = Extract<TranscriptItem, { kind: "user" | "assistant" | "ask" }>
+/** The transcript-row subset durable replays (resume/fork) may hand back.
+ * Batch V1: settled `tool` rows join — the view's tool block replays the
+ * call's name/args brief/result instead of degrading to a bare name. */
+export type StoredTranscriptRow = Extract<TranscriptItem, { kind: "user" | "assistant" | "ask" | "tool" }>

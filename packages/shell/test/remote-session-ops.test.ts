@@ -60,6 +60,30 @@ describe("journal mappers", () => {
 		])
 	})
 
+	test("batch V1: journalToTranscriptRows pairs settled tool calls into tool rows", () => {
+		const entries = [
+			journal("tool/call", 1, { callId: "c1", name: "bash", arguments: '{"command":"ls -la"}' }),
+			journal("tool/result", 2, { callId: "c1", output: { content: [{ type: "text", text: "file1\nfile2" }] } }),
+			// c2 never settles (mid-turn resume) — no fabricated row.
+			journal("tool/call", 3, { callId: "c2", name: "read", arguments: '{"file_path":"/x"}' }),
+			// errored result keeps the ok mirror false (isError placement parity)
+			journal("tool/call", 4, { callId: "c3", name: "bash", arguments: "{}" }),
+			journal("tool/result", 5, { callId: "c3", isError: true, message: { toolCallId: "c3", isError: true } }),
+		]
+		const rows = journalToTranscriptRows(entries)
+		expect(rows).toHaveLength(2)
+		const ok = rows[0] as { kind: string; name: string; args: string; ok: boolean; brief: string }
+		expect(ok.kind).toBe("tool")
+		expect(ok.name).toBe("bash")
+		expect(ok.args).toBe('{"command":"ls -la"}')
+		expect(ok.ok).toBe(true)
+		expect(ok.brief.startsWith('{"content":[{"type":"text","text":"file1')).toBe(true)
+		const bad = rows[1] as { kind: string; name: string; ok: boolean; brief: string }
+		expect(bad.kind).toBe("tool")
+		expect(bad.name).toBe("bash")
+		expect(bad.ok).toBe(false)
+	})
+
 	test("groupTurns brackets completed turns with previews and seqEnd fork points", () => {
 		const entries = [
 			journal("turn/start", 1, { turn: 1 }),

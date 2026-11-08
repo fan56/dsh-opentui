@@ -38,6 +38,53 @@ describe("seam rows projection", () => {
 		expect(toStoredRow({ kind: "tool", text: "read", final: true }, 2)).toMatchObject({ kind: "tool", name: "read" })
 	})
 
+	test("batch V1: durable tool rows carry args/output/ok; legacy rows degrade to a bare name", () => {
+		// Gap 3: the journal projection pairs call→result — the replayed block
+		// shows its args brief and result summary, failed rows keep the ✗.
+		expect(
+			toStoredRow({ kind: "tool", text: "bash", final: true, args: '{"command":"ls"}', output: '{"content":[]}', ok: true }, 0),
+		).toMatchObject({ kind: "tool", name: "bash", args: '{"command":"ls"}', status: "done", output: '{"content":[]}' })
+		expect(
+			toStoredRow({ kind: "tool", text: "bash", final: true, args: "{}", output: "boom", ok: false }, 1),
+		).toMatchObject({ status: "failed", output: "boom" })
+		// Older journals (no tool slice): no fabricated args/output/elapsed.
+		const legacy = toStoredRow({ kind: "tool", text: "read", final: true }, 2)
+		expect(legacy).toMatchObject({ kind: "tool", name: "read", args: "", status: "done" })
+		expect(legacy.kind === "tool" && legacy.startedAt === undefined && legacy.elapsedSec === undefined).toBe(true)
+	})
+
+	test("batch V1: onToolRun settles the tool row live with output and frozen elapsed", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => {
+			cb.onToolStart?.({ callId: "c1", name: "bash", args: '{"command":"sleep 0.05"}' })
+			await Bun.sleep(60)
+			cb.onToolRun?.({ callId: "c1", name: "bash", argsPretty: '{"command":"sleep 0.05"}', output: '{"ok":true}', ok: true })
+			cb.onContentDelta("done")
+		}
+		const { projection, dispose } = setup(seam)
+		await projection.send("run it")
+		const tool = projection.rows.find((r) => r.kind === "tool")
+		expect(tool).toBeDefined()
+		// Settled DURING the turn (not swept at finalize): status, output and
+		// the frozen elapsed all ride the row.
+		expect(tool).toMatchObject({ status: "done", output: '{"ok":true}' })
+		expect(tool!.kind === "tool" && tool!.elapsedSec !== undefined).toBe(true)
+		expect(tool!.kind === "tool" && (tool!.elapsedSec ?? 0) >= 0.05).toBe(true)
+		dispose()
+	})
+
+	test("batch V1: a result racing a row-less store still lands; failed keeps ✗ semantics", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => {
+			// No onToolStart — the result arrives for an unseen callId.
+			cb.onToolRun?.({ callId: "cx", name: "bash", argsPretty: "", output: "boom", ok: false })
+		}
+		const { projection, dispose } = setup(seam)
+		await projection.send("go")
+		expect(projection.rows.find((r) => r.kind === "tool")).toMatchObject({ status: "failed", output: "boom" })
+		dispose()
+	})
+
 	test("hydrate reconciles by key: unchanged rows keep store identity", async () => {
 		const seam = new FakeSeam()
 		const { projection, dispose } = setup(seam)
