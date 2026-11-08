@@ -84,9 +84,18 @@ export function Transcript(props: TranscriptProps) {
 		done: () => theme?.text.feedback.success.base ?? "#9ece6a",
 		running: () => theme?.text.feedback.warning.base ?? "#e0af68",
 		failed: () => theme?.text.feedback.error.base ?? "#f7768e",
+		// Batch V5: the failed tool block's ⎿ track rides the error MUTED
+		// variant — the red emphasis reads as one block, not a red wall.
+		failedMuted: () => theme?.text.feedback.error.muted ?? "#8a4b5c",
 		loading: () => theme?.text.feedback.info.base ?? "#565f89",
 		background: () => theme?.background.base ?? "black",
 	}
+	// Batch V5 status-color family (the ONE mapping every transcript status
+	// line shares — tool block, think summary, subagent tree): running=warn,
+	// ok=success, fail=error, cancelled=muted. Theme tokens only; the hex
+	// literals live in the fallback map above.
+	const stateColor = (state: "running" | "ok" | "failed" | "cancelled") =>
+		state === "running" ? color.running() : state === "ok" ? color.done() : state === "failed" ? color.failed() : color.reasoning()
 	const sessionID = () => props.sessionID ?? props.seam.currentSessionId() ?? ""
 	const owned = props.projection === undefined
 	const projection = props.projection ?? createSeamRows(props.seam, sessionID)
@@ -107,12 +116,21 @@ export function Transcript(props: TranscriptProps) {
 
 	/** One tool row (tui-pi ToolPanel semantics, transcript-block shape):
 	 * title line = spinner/✓/✗ + Name(subject); the `⎿` track line carries
-	 * the arg detail while running and the result first line once settled. */
+	 * the arg detail while running and the result first line once settled.
+	 *
+	 * Batch V5 visual layering: a RUNNING or FAILED block gains a LEFT COLOR
+	 * RAIL (warn/error — the same family the think panel and the subagent
+	 * tree state lines share); the settled-ok block stays the lightweight
+	 * borderless single-line group. The failed block's track line rides the
+	 * error MUTED variant so the red emphasis reads as one block, not a wall.
+	 * paddingLeft compensates the border column — text never shifts between
+	 * states. */
 	const toolRow = (row: Extract<SeamRow, { kind: "tool" }>) => {
 		const subject = toolSubject(row.args)
 		const title = subject === "" ? row.name : `${row.name}(${subject})`
-		const statusColor =
-			row.status === "failed" ? color.failed() : row.status === "running" ? color.running() : color.done()
+		const state = row.status === "failed" ? "failed" : row.status === "running" ? "running" : "ok"
+		const statusColor = stateColor(state)
+		const rail: ("left")[] | undefined = row.status === "done" ? undefined : ["left"]
 		// Spinner + elapsed (tui-pi ToolPanel semantics): a per-row memo read in
 		// the JSX text child — the 120ms tick updates ONLY this text node; the
 		// static title/track nodes and every non-tool row never re-read `spin`.
@@ -138,12 +156,14 @@ export function Transcript(props: TranscriptProps) {
 		// collapse-to-summary: the raw JSON never renders on either line).
 		const track = row.status === "running" ? toolDetail(row.args) : toolResultLine(row.output)
 		return (
-			<box flexShrink={0} paddingLeft={3} flexDirection="column">
+			<box flexShrink={0} flexDirection="column" border={rail} borderColor={statusColor} paddingLeft={rail ? 2 : 3}>
 				<text fg={statusColor} wrapMode="none">
 					{titleLine()}
 				</text>
 				<Show when={track !== ""}>
-					<text fg={color.reasoning()} wrapMode="none">{`  ⎿ ${clipToWidth(track, Math.max(20, dimensions().width - 10))}`}</text>
+					<text fg={row.status === "failed" ? color.failedMuted() : color.reasoning()} wrapMode="none">
+						{`  ⎿ ${clipToWidth(track, Math.max(20, dimensions().width - 10))}`}
+					</text>
 				</Show>
 			</box>
 		)
@@ -152,7 +172,11 @@ export function Transcript(props: TranscriptProps) {
 	/** Batch V2a think panel (./think-panel.tsx): a live reasoning row with
 	 * panel state renders the bordered streaming panel / collapsed one-line
 	 * summary; a row WITHOUT panel state (defensive: a replay shape) keeps
-	 * the pre-V2a gray block — no fabricated chrome. */
+	 * the pre-V2a gray block — no fabricated chrome. Batch V5: the streaming
+	 * spinner joins the shared running family (warn, was info-blue) and the
+	 * collapsed summary's `💭 thought · Xs` prefix rides the ok family
+	 * (success) — the same stateColor mapping the tool block and the
+	 * subagent tree use. */
 	const thinkRow = (row: Extract<SeamRow, { kind: "reasoning" }>) => {
 		if (row.streaming !== undefined) {
 			return (
@@ -162,8 +186,9 @@ export function Transcript(props: TranscriptProps) {
 					width={() => dimensions().width}
 					color={{
 						border: color.reasoningBorder,
-						spinner: color.loading,
+						spinner: color.running,
 						text: color.reasoning,
+						summaryAccent: color.done,
 					}}
 				/>
 			)
@@ -195,14 +220,13 @@ export function Transcript(props: TranscriptProps) {
 				<For each={row.children}>
 					{(child, index) => {
 						const track = index() === row.children.length - 1 ? "└─ " : "├─ "
-						const statusColor =
-							child.status === "failed"
-								? color.failed()
-								: child.status === "running"
-									? color.running()
-									: child.status === "cancelled"
-										? color.reasoning()
-										: color.done()
+						// Batch V5: the tree's status colors route through the SAME
+						// stateColor family mapping as the tool block and the think
+						// summary (running=warn, completed=ok, failed=error,
+						// cancelled=muted) — no per-row ad-hoc mapping left.
+						const statusColor = stateColor(
+							child.status === "completed" ? "ok" : child.status === "failed" ? "failed" : child.status,
+						)
 						const label =
 							`${track}${child.label}${child.model ? `(${child.model})` : ""}` +
 							subagentMarkerSuffix(child)
