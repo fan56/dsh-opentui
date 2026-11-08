@@ -6,6 +6,7 @@ import { Show, createEffect, createSignal, onMount, type JSX } from "solid-js"
 import { Spinner } from "../component/spinner"
 import { useCursorStyle } from "../config"
 import { useRenderer } from "@opentui/solid"
+import { warningColor } from "../skin/semantic"
 
 export type DialogPromptAction = {
   title: string
@@ -171,7 +172,9 @@ export function DialogPrompt(props: DialogPromptProps) {
           placeholderColor={theme.text.muted}
           textColor={props.busy ? theme.text.formfield.disabled : theme.text.formfield.base}
           focusedTextColor={props.busy ? theme.text.formfield.disabled : theme.text.formfield.base}
-          cursorColor={props.busy ? theme.background.formfield.disabled : theme.text.base}
+          // Skin cursor rule (same as the composer): color rides cursorColor
+          // ONLY; busy swaps it to the warning tier (instant, never animated).
+          cursorColor={props.busy ? warningColor(theme) : theme.text.base}
           cursorStyle={cursorStyle()}
         />
         <Show when={props.busy}>

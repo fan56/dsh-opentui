@@ -21,7 +21,9 @@
  */
 import { For, Show, createSignal } from "solid-js"
 import type { KeyEvent } from "@opentui/core"
+import { TextAttributes } from "@opentui/core"
 import { useThemeOptional } from "../../context/theme"
+import { currentRowColors } from "../../skin/semantic"
 import type { SessionSeam } from "../../seams/session"
 import type { SlashCommand, SlashCommandContext } from "./commands"
 import { coreCommands, dispatchLine, filterCommands, unknownCommandRow } from "./commands"
@@ -126,11 +128,14 @@ export function SlashPalette(props: {
 }) {
 	const theme = useThemeOptional()
 	const color = {
-		active: () => theme?.border.base ?? "#7aa2f7",
 		base: () => theme?.text.base ?? "#e6e6e6",
 		muted: () => theme?.text.muted ?? "#565f89",
 		background: () => (theme ? theme.decrease(theme.background.raised.base) : "#1a1b26"),
 	}
+	// Current row = the skin's full-row highlight (skin/semantic.ts, the
+	// dialog-select token semantics): whole row swaps background, text goes
+	// bold in the row color (was: text-color-only highlight).
+	const row = () => currentRowColors(theme ?? undefined)
 	return (
 		<Show when={props.controller.rows() > 0}>
 			<box
@@ -142,15 +147,26 @@ export function SlashPalette(props: {
 				paddingLeft={2}
 			>
 				<For each={props.controller.filtered(props.commands)}>
-					{(command, index) => (
-						<text
-							flexShrink={0}
-							fg={index() === props.controller.selected() ? color.active() : color.base()}
-						>
-							{command.name}{" "}
-							<span style={{ fg: color.muted() }}>{command.description}</span>
-						</text>
-					)}
+					{(command, index) => {
+						const active = () => index() === props.controller.selected()
+						return (
+							<box
+								flexShrink={0}
+								width="100%"
+								flexDirection="row"
+								backgroundColor={active() ? row().backgroundColor : undefined}
+							>
+								<text
+									flexShrink={0}
+									fg={active() ? row().textColor : color.base()}
+									attributes={active() ? TextAttributes.BOLD : undefined}
+								>
+									{command.name}{" "}
+									<span style={{ fg: color.muted() }}>{command.description}</span>
+								</text>
+							</box>
+						)
+					}}
 				</For>
 			</box>
 		</Show>

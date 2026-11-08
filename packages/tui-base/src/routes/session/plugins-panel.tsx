@@ -27,6 +27,7 @@ import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
 import { useDialog } from "../../ui/dialog"
 import { useThemeOptional } from "../../context/theme"
+import { successColor } from "../../skin/semantic"
 import type { SessionSeam } from "../../seams/session"
 
 const [bridgeOpen, setBridgeOpen] = createSignal(false)
@@ -175,18 +176,18 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 						</box>
 					}
 				>
-					<For each={visible().slice(0, 12)}>
-						{(row) => (
-							<box height={1} flexShrink={0} flexDirection="row">
-								<text fg={theme?.text.base ?? "#e6e6e6"} wrapMode="none">
-									{formatPluginLine(row).padEnd(36)}
-								</text>
-								<text fg="#9ece6a" wrapMode="none">
-									on
-								</text>
-							</box>
-						)}
-					</For>
+						<For each={visible().slice(0, 12)}>
+							{(row) => (
+								<box height={1} flexShrink={0} flexDirection="row">
+									<text fg={theme?.text.base ?? "#e6e6e6"} wrapMode="none">
+										{formatPluginLine(row).padEnd(36)}
+									</text>
+									<text fg={successColor(theme ?? undefined)} wrapMode="none">
+										on
+									</text>
+								</box>
+							)}
+						</For>
 				</Show>
 			</box>
 		</Show>
