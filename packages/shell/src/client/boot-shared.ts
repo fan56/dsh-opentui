@@ -84,6 +84,7 @@ export function spawnIdleReaper(
 import { join } from "node:path"
 import { spawn } from "node:child_process"
 import type { ShellSessionSurface } from "./shell-session.ts"
+import { ENV_THEME } from "./workspace-config.ts"
 
 /** The theme ShellHost boots with: configLoad().theme (post-start, so the
  * workspace overlay cache is warm); ShellHost keeps env precedence. */
@@ -108,30 +109,61 @@ export function themeModeFromConfig(session: ShellSessionSurface): "dark" | "lig
 }
 
 // --- one-shot skin migration (α skin layer) ---------------------------------
-// A profile that predates the dsh-blue default keeps an explicit `theme`
-// key; the first boot after the skin cutover switches it to the new default
-// once, writes a marker so it never re-fires, and notifies the user.
+// A stored theme choice that predates the dsh-blue default (profile OR
+// workspace layer) switches to the new default once; the marker lives in
+// the profile so each profile migrates exactly once; dsh-blue is written
+// back to the layer the legacy theme lived in.
+
+export { ENV_THEME }
 
 export const SKIN_MIGRATION_THEME = "dsh-blue"
 export const SKIN_MIGRATION_NOTICE =
 	"Theme switched to dsh-blue (new default). Use /theme to switch back."
 
 export interface SkinMigrationPlan {
+	/** The config layer the legacy theme lived in (and dsh-blue is written
+	 * back to) — the read precedence is env > workspace > profile, so the
+	 * winning layer owns the write-back. */
+	layer: "profile" | "workspace"
 	/** The theme to apply and persist over the legacy key. */
 	theme: string
-	/** The marker value persisted as `skinMigration` in the profile config. */
+	/** The marker value persisted as `skinMigration` in the PROFILE config
+	 * (one migration per profile, regardless of the theme's layer). */
 	skinMigration: number
 	/** The one-shot notice text (the v2 notices channel). */
 	notice: string
 }
 
-/** Pure migration decision: a profile config with a legacy `theme` key and
- * no `skinMigration` marker switches to the dsh-blue default once. No theme
- * key (fresh users) or an existing marker → no migration. */
-export function skinMigrationPlan(config: Record<string, unknown>): SkinMigrationPlan | undefined {
-	const theme = config.theme
-	if (typeof theme !== "string" || theme.length === 0) return undefined
-	if (config.skinMigration !== undefined) return undefined
-	if (theme === SKIN_MIGRATION_THEME) return undefined
-	return { theme: SKIN_MIGRATION_THEME, skinMigration: 1, notice: SKIN_MIGRATION_NOTICE }
+export interface SkinMigrationInput {
+	/** The profile config.json raw contents (no overlay/env merge). */
+	profileConfig: Record<string, unknown>
+	/** The workspace config.yml overlay slice (may be empty). */
+	workspaceConfig: Record<string, unknown>
+	/** The `DSH_OPENTUI_THEME` env value when set (empty string = unset, the
+	 * mergeConfig convention): an env-pinned theme skips the migration — the
+	 * user's effective theme is not a stored choice. */
+	envTheme?: string
+}
+
+function storedTheme(value: unknown): string | undefined {
+	return typeof value === "string" && value.length > 0 ? value : undefined
+}
+
+/** Pure migration decision (read precedence env > workspace > profile, the
+ * workspace-config.ts chain): a STORED legacy `theme` key (profile or
+ * workspace layer) with no `skinMigration` marker in the profile switches
+ * to the dsh-blue default once. Env-pinned themes, fresh users (no theme
+ * key) and already-migrated profiles → no migration. */
+export function skinMigrationPlan(input: SkinMigrationInput): SkinMigrationPlan | undefined {
+	if (storedTheme(input.envTheme) !== undefined) return undefined
+	if (input.profileConfig.skinMigration !== undefined) return undefined
+	const profileTheme = storedTheme(input.profileConfig.theme)
+	if (profileTheme !== undefined && profileTheme !== SKIN_MIGRATION_THEME) {
+		return { layer: "profile", theme: SKIN_MIGRATION_THEME, skinMigration: 1, notice: SKIN_MIGRATION_NOTICE }
+	}
+	const workspaceTheme = storedTheme(input.workspaceConfig.theme)
+	if (workspaceTheme !== undefined && workspaceTheme !== SKIN_MIGRATION_THEME) {
+		return { layer: "workspace", theme: SKIN_MIGRATION_THEME, skinMigration: 1, notice: SKIN_MIGRATION_NOTICE }
+	}
+	return undefined
 }

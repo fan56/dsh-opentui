@@ -42,6 +42,10 @@ scenario 'theme switch (picker / apply / config.json persistence / restart resto
 # DSH_HOME common.sh provisioned). See FACE_CFG in lib/common.sh.
 CONFIG_JSON="$FACE_CFG"
 BUNDLE="/src/packages/tui-base/src"
+# The v2 persistence/migration code lives in examples/v2-entry.tsx (outside
+# src/) — the persistence gate greps BOTH trees so the arm actually lights
+# on the client face (α skin layer: without examples/ it stayed DARK forever).
+BUNDLE_EXAMPLES="/src/packages/tui-base/examples"
 
 # --- host guard ---------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
@@ -69,7 +73,7 @@ PICKER_GATE=0
 PERSIST_GATE=0
 if [ -d "$BUNDLE" ]; then
   grep -rqF 'Select theme' "$BUNDLE" && PICKER_GATE=1
-  grep -rqF 'theme persist failed' "$BUNDLE" && PERSIST_GATE=1
+  grep -rqF 'theme persist failed' "$BUNDLE" "$BUNDLE_EXAMPLES" && PERSIST_GATE=1
 fi
 
 # --- G0: pre-verifiable on the stale bundle ------------------------------------

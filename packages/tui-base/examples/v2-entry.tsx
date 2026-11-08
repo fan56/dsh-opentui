@@ -85,6 +85,12 @@ const overlays = new TurnOverlayController()
  * the page shows it through the notices dock once mounted (the dock reads a
  * module signal — a pre-mount showNotice would burn the TTL before paint). */
 let pendingMigrationNotice: string | undefined
+/** The config layer the theme lives in (env > workspace > profile, the
+ * workspace-config.ts precedence): the /theme mode face persists `themeMode`
+ * to the SAME layer (workspace via the workspaceThemeMode patch key, else
+ * the profile `themeMode` key). An env-pinned theme has no file layer for
+ * the mode pin either → profile (no env var carries a mode). */
+let themeModePatchKey: "themeMode" | "workspaceThemeMode" = "themeMode"
 
 /** The v2 session page: the real seam driving the rebuilt view. */
 function V2SessionPage(props: {
@@ -309,16 +315,18 @@ function V2SessionPage(props: {
 				return applied
 			},
 			// α skin layer: auto/dark/light mode face. Pin/free rides the
-			// vendored theme service; the profile `themeMode` key is the
-			// persistence (the v2 vendor config is resolve({}) — the
-			// configState.update path inside pin/free cannot persist).
+			// vendored theme service; the persistence follows the THEME's
+			// config layer (themeModePatchKey — workspaceThemeMode routes into
+			// the workspace config.yml, themeMode into the profile config.json;
+			// the v2 vendor config is resolve({}), so the configState.update
+			// path inside pin/free cannot persist anything).
 			mode: {
 				current: () => (themeService.locked() ? themeService.mode() : "auto"),
 				set: (mode: "auto" | "dark" | "light") => {
 					if (mode === "auto") themeService.unlock()
 					else if (!themeService.setMode(mode)) return false
 					try {
-						seam.configSave?.({ themeMode: mode })
+						seam.configSave?.({ [themeModePatchKey]: mode })
 					} catch (error) {
 						console.error("[v2] themeMode persist failed:", error)
 					}
@@ -567,20 +575,35 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 
 	const seam = new adapter.RemoteSessionSeam(session as never)
 	registerTurnOverlays(seam, overlays)
-	// One-shot skin migration (α skin layer): a legacy profile config that
-	// still pins a `theme` switches to the dsh-blue default once, persists
-	// the `skinMigration` marker, and queues the one-time notice. Fresh
-	// profiles (no theme key) fall to the default naturally. Best-effort: a
-	// failed persist still applies the theme for this boot.
-	const migration = shared.skinMigrationPlan(session.configLoad())
+	// One-shot skin migration (α skin layer, real precedence chain env >
+	// workspace > profile): a STORED legacy `theme` key (profile OR
+	// workspace layer) switches to the dsh-blue default once, persists the
+	// `skinMigration` marker in the PROFILE config, writes dsh-blue back to
+	// the layer the legacy key lived in, and queues the one-time notice.
+	// Env-pinned themes (DSH_OPENTUI_THEME) skip — the effective theme is
+	// not a stored choice. Fresh profiles fall to the default naturally.
+	// Best-effort: a failed persist still applies the theme for this boot.
+	const envTheme = process.env[shared.ENV_THEME]
+	const workspaceConfig = seam.workspaceConfig()
+	const migration = shared.skinMigrationPlan({
+		profileConfig: seam.configRaw(),
+		workspaceConfig,
+		envTheme,
+	})
 	if (migration) {
 		try {
-			session.configSave({ theme: migration.theme, skinMigration: migration.skinMigration })
+			const patch: Record<string, unknown> = { skinMigration: migration.skinMigration }
+			if (migration.layer === "workspace") patch.workspaceTheme = migration.theme
+			else patch.theme = migration.theme
+			session.configSave(patch)
 		} catch (error) {
 			console.error("[v2] skin migration persist failed:", error)
 		}
 		pendingMigrationNotice = migration.notice
 	}
+	// The mode-pin layer mirrors the theme's layer: workspace theme → the
+	// workspace slice; profile (or env) theme → the profile config.json.
+	themeModePatchKey = migration?.layer === "workspace" || (!envTheme && workspaceConfig.theme !== undefined) ? "workspaceThemeMode" : "themeMode"
 	const themeName = migration ? migration.theme : shared.themeNameFromConfig(session)
 	const themeModeLock = shared.themeModeFromConfig(session)
 

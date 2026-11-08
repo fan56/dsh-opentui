@@ -74,14 +74,19 @@ export interface ModelPrefs {
 }
 
 /**
- * The config slice the workspace layer touches: theme name + model
- * preferences. `mergeConfig(base)` accepts any base carrying at least this
+ * The config slice the workspace layer touches: theme name + mode pin +
+ * model preferences. `mergeConfig(base)` accepts any base carrying at least this
  * slice (a profile/global `Config` in the client's own type may carry more —
  * fields outside this slice pass through untouched because merge only sees
  * what it declares).
  */
+/** The dark/light pin for the theme (α skin layer): `auto` (or absence)
+ * follows the terminal. No env var — only the file layers carry it. */
+export type ThemeMode = "dark" | "light" | "auto"
+
 export interface Config {
 	theme?: string
+	themeMode?: ThemeMode
 	model?: ModelPrefs
 }
 
@@ -209,6 +214,7 @@ export function mergeConfig(base: Config, overlay: WorkspaceOverlay, env?: Recor
 	}
 
 	const theme = envTheme ?? nonEmpty(overlay.theme) ?? nonEmpty(base.theme)
+	const themeMode = nonEmpty(overlay.themeMode) ?? nonEmpty(base.themeMode)
 	const provider = envProvider ?? nonEmpty(overlay.model?.provider) ?? nonEmpty(base.model?.provider)
 	const model = envModel ?? nonEmpty(overlay.model?.model) ?? nonEmpty(base.model?.model)
 	const reasoningEffort = nonEmpty(overlay.model?.reasoningEffort) ?? nonEmpty(base.model?.reasoningEffort)
@@ -223,6 +229,7 @@ export function mergeConfig(base: Config, overlay: WorkspaceOverlay, env?: Recor
 			: undefined
 	return {
 		...(theme !== undefined && { theme }),
+		...(themeMode !== undefined && { themeMode: themeMode as ThemeMode }),
 		...(mergedModel !== undefined && { model: mergedModel }),
 	}
 }
@@ -312,7 +319,7 @@ function validateOverlayShape(overlay: WorkspaceOverlay): void {
 		throw new WorkspaceConfigError("workspace overlay must be an object")
 	}
 	for (const key of Object.keys(overlay)) {
-		if (key === "theme" || key === "model") continue
+		if (key === "theme" || key === "themeMode" || key === "model") continue
 		if (isCredentialKey(key)) throw new WorkspaceConfigCredentialError(key, "the workspace overlay")
 		throw new WorkspaceConfigError(
 			`unknown overlay key "${key}" — workspace config supports only theme and model preferences`,
@@ -320,6 +327,9 @@ function validateOverlayShape(overlay: WorkspaceOverlay): void {
 	}
 	if (overlay.theme !== undefined && (!isNonEmptyString(overlay.theme))) {
 		throw new WorkspaceConfigError('overlay.theme must be a non-empty string')
+	}
+	if (overlay.themeMode !== undefined && !(["dark", "light", "auto"] as const).includes(overlay.themeMode)) {
+		throw new WorkspaceConfigError('overlay.themeMode must be "dark", "light" or "auto"')
 	}
 	if (overlay.model !== undefined) {
 		if (overlay.model === null || typeof overlay.model !== "object" || Array.isArray(overlay.model)) {
@@ -580,6 +590,8 @@ function overlayFromTree(tree: RawMap, path: string): WorkspaceOverlay {
 	const overlay: WorkspaceOverlay = {}
 	const theme = tree.entries.get("theme")
 	if (theme !== undefined) overlay.theme = readStringField(tree, "theme", path)
+	const themeMode = tree.entries.get("themeMode")
+	if (themeMode !== undefined) overlay.themeMode = readStringField(tree, "themeMode", path) as ThemeMode
 	const model = tree.entries.get("model")
 	if (model !== undefined) {
 		if (model.kind !== "map") {
@@ -617,6 +629,10 @@ function applyOverlayToTree(tree: RawMap, overlay: WorkspaceOverlay): void {
 	if (Object.hasOwn(overlay, "theme")) {
 		if (overlay.theme === undefined) tree.entries.delete("theme")
 		else tree.entries.set("theme", mkScalar(overlay.theme, 0, needsQuote(overlay.theme)))
+	}
+	if (Object.hasOwn(overlay, "themeMode")) {
+		if (overlay.themeMode === undefined) tree.entries.delete("themeMode")
+		else tree.entries.set("themeMode", mkScalar(overlay.themeMode, 0, needsQuote(overlay.themeMode)))
 	}
 	if (!Object.hasOwn(overlay, "model")) return
 	if (overlay.model === undefined) {

@@ -11,29 +11,57 @@ function fakeSession(config: Record<string, unknown>): ShellSessionSurface {
 	return { configLoad: () => config } as unknown as ShellSessionSurface
 }
 
-describe("skin migration plan (α skin layer, one-shot)", () => {
-	test("a legacy theme key with no marker migrates to dsh-blue once", () => {
-		const plan = skinMigrationPlan({ theme: "aura" })
+describe("skin migration plan (α skin layer, one-shot, layered)", () => {
+	test("a legacy PROFILE theme key with no marker migrates once, at the profile layer", () => {
+		const plan = skinMigrationPlan({ profileConfig: { theme: "aura" }, workspaceConfig: {} })
 		expect(plan).toBeDefined()
+		expect(plan?.layer).toBe("profile")
 		expect(plan?.theme).toBe(SKIN_MIGRATION_THEME)
 		expect(plan?.skinMigration).toBe(1)
 		expect(plan?.notice).toBe(SKIN_MIGRATION_NOTICE)
 		expect(SKIN_MIGRATION_NOTICE).toContain("dsh-blue")
 	})
 
-	test("no theme key (fresh user) → no migration, no notice", () => {
-		expect(skinMigrationPlan({})).toBeUndefined()
-		expect(skinMigrationPlan({ theme: "" })).toBeUndefined()
-		expect(skinMigrationPlan({ theme: 42 })).toBeUndefined()
+	test("a legacy WORKSPACE theme key migrates once, written back to the workspace layer", () => {
+		const plan = skinMigrationPlan({
+			profileConfig: {},
+			workspaceConfig: { theme: "tokyonight" },
+		})
+		expect(plan).toBeDefined()
+		expect(plan?.layer).toBe("workspace")
+		expect(plan?.theme).toBe(SKIN_MIGRATION_THEME)
+	})
+
+	test("no stored theme key (fresh user) → no migration, no notice", () => {
+		expect(skinMigrationPlan({ profileConfig: {}, workspaceConfig: {} })).toBeUndefined()
+		expect(skinMigrationPlan({ profileConfig: { theme: "" }, workspaceConfig: {} })).toBeUndefined()
+		expect(skinMigrationPlan({ profileConfig: { theme: 42 }, workspaceConfig: {} })).toBeUndefined()
 	})
 
 	test("an existing marker (any value) → never re-migrates", () => {
-		expect(skinMigrationPlan({ theme: "aura", skinMigration: 1 })).toBeUndefined()
-		expect(skinMigrationPlan({ theme: "tokyonight", skinMigration: 2 })).toBeUndefined()
+		expect(skinMigrationPlan({ profileConfig: { theme: "aura", skinMigration: 1 }, workspaceConfig: {} })).toBeUndefined()
+		expect(
+			skinMigrationPlan({ profileConfig: { skinMigration: 2 }, workspaceConfig: { theme: "tokyonight" } }),
+		).toBeUndefined()
 	})
 
-	test("already on dsh-blue → no migration (no pointless notice)", () => {
-		expect(skinMigrationPlan({ theme: SKIN_MIGRATION_THEME })).toBeUndefined()
+	test("already on dsh-blue (either layer) → no migration (no pointless notice)", () => {
+		expect(skinMigrationPlan({ profileConfig: { theme: SKIN_MIGRATION_THEME }, workspaceConfig: {} })).toBeUndefined()
+		expect(skinMigrationPlan({ profileConfig: {}, workspaceConfig: { theme: SKIN_MIGRATION_THEME } })).toBeUndefined()
+	})
+
+	test("an env-pinned theme (DSH_OPENTUI_THEME) skips the migration — not a stored choice", () => {
+		expect(
+			skinMigrationPlan({ profileConfig: { theme: "aura" }, workspaceConfig: {}, envTheme: "dracula" }),
+		).toBeUndefined()
+		// empty string = unset (the mergeConfig convention) → migration proceeds
+		const plan = skinMigrationPlan({ profileConfig: { theme: "aura" }, workspaceConfig: {}, envTheme: "" })
+		expect(plan?.layer).toBe("profile")
+	})
+
+	test("profile-layer theme wins the layer decision when both layers carry one", () => {
+		const plan = skinMigrationPlan({ profileConfig: { theme: "aura" }, workspaceConfig: { theme: "tokyonight" } })
+		expect(plan?.layer).toBe("profile")
 	})
 })
 
