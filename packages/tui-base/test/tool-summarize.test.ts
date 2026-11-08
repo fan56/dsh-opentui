@@ -92,3 +92,21 @@ describe("toolResultLine", () => {
 		expect(line.endsWith("…")).toBe(true)
 	})
 })
+
+describe("toolDetail: use_agent shape (batch D1)", () => {
+	test("names the agent and leads with the prompt — never the raw-JSON fallback", () => {
+		const detail = toolDetail(JSON.stringify({ agent: "oldfox", prompt: "修复登录 bug\n然后跑测试" }))
+		expect(detail).toBe("agent: oldfox  修复登录 bug ⏎ 然后跑测试")
+	})
+	test("prompt alone still summarizes humanly (no bare JSON)", () => {
+		expect(toolDetail(JSON.stringify({ prompt: "one line" }))).toBe("one line")
+	})
+	test("non-agent args keep the existing fallback", () => {
+		expect(toolDetail('{"x":1}')).toBe('{"x":1}')
+	})
+	test("the detail budget is display columns with a CJK prompt", () => {
+		const detail = toolDetail(JSON.stringify({ agent: "oldfox", prompt: "构建".repeat(80) }))
+		expect(detail.length).toBeLessThanOrEqual(121)
+		expect(detail.endsWith("…")).toBe(true)
+	})
+})
