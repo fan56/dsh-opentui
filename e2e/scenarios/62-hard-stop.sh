@@ -43,7 +43,12 @@ if [ ! -d /e2e/scenarios ]; then
   exit 0
 fi
 
-if ! grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
+# The scratch client profile does not exist until something provisions it —
+# do it now so the gate below tests the BAKE, not the fresh-container void.
+if [ "$E2E_FACE" = client ]; then
+  ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
+fi
+if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
   exit 0
@@ -54,14 +59,14 @@ fi
 # dependencies, so the registry package must land as a real bundle member of
 # the dsh-opentui profile. Pinned 0.19.0 (the release the reference ran
 # against the 0.2.2-rc.1 host wave; 0.18.0 dies at load on this wave).
-if grep -qF '@aiwayds/dsh-subagent-registry' "$HOME/.dsh/profiles/dsh-opentui/package.json" 2>/dev/null \
-  && grep -qF '@aiwayds/dsh-subagent-registry' <(dsh plugin --profile dsh-opentui list 2>/dev/null); then
+if grep -qF '@aiwayds/dsh-subagent-registry' "$FACE_HOME/profiles/$FACE_PROFILE/package.json" 2>/dev/null \
+  && grep -qF '@aiwayds/dsh-subagent-registry' <(DSH_HOME="$FACE_HOME" dsh plugin --profile "$FACE_PROFILE" list 2>/dev/null); then
   ok 'registry plugin already bundled'
 else
   if npm pack @aiwayds/dsh-subagent-registry@0.19.0 --registry=https://registry.npmjs.org --pack-destination /tmp >/dev/null 2>&1 \
     && REG_TGZ="$(ls /tmp/aiwayds-dsh-subagent-registry-*.tgz 2>/dev/null | head -1)" && [ -n "$REG_TGZ" ] \
-    && timeout 300 dsh plugin --profile dsh-opentui add "$REG_TGZ" >/tmp/reg-add.log 2>&1; then
-    ok "registry plugin installed into the dsh-opentui profile ($(basename "$REG_TGZ"))"
+    && timeout 300 DSH_HOME="$FACE_HOME" dsh plugin --profile "$FACE_PROFILE" add "$REG_TGZ" >/tmp/reg-add.log 2>&1; then
+    ok "registry plugin installed into the $FACE_PROFILE profile ($(basename "$REG_TGZ"))"
   else
     bad 'registry plugin install failed; tail:'
     tail -8 /tmp/reg-add.log 2>/dev/null | sed 's/^/    | /'
@@ -96,7 +101,7 @@ else
 fi
 
 # --- the looper agent: per-agent cap 5, persona that never complies ---------
-AGENTS_DIR="$HOME/.dsh/agents"
+AGENTS_DIR="$FACE_AGENTS_DIR"
 mkdir -p "$AGENTS_DIR"
 cat > "$AGENTS_DIR/looper.md" <<'EOF'
 ---
@@ -130,7 +135,7 @@ ok 'seeded agent file looper.md (deep: 0, maxRounds: 5)'
 # AbortSignal fix (476f1ef) compose: the wrap-up steer now delivers through
 # the in-process subagents service, stage 1 latches, and stage 2 force-stops
 # the child at cap + grace (observed: 7 rounds, per-agent tier winning).
-SETTINGS="$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml"
+SETTINGS="$FACE_PATCH"
 cat > /tmp/stage-hs-limits.mjs <<'EOF'
 import { createRequire } from 'node:module'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -170,7 +175,9 @@ fi
 # (observed: 87 hs-loop rounds WITH the Config export live). Stage the same
 # limits onto the baked entry's config so whichever row wins carries them.
 BUNDLED_PATCH="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/plugin.patch.yml"
-if [ -f "$BUNDLED_PATCH" ]; then
+# The deployed dist-host is the PLUGIN face's runtime; on the client face the
+# TUI runs the /src workspace, whose plugin.patch.yml layer does not exist.
+if [ "$E2E_FACE" = plugin ] && [ -f "$BUNDLED_PATCH" ]; then
   node /tmp/stage-hs-limits.mjs "$BUNDLED_PATCH" >>/tmp/stage-hs-limits.log 2>&1
   if grep -q 'maxRounds: 3' "$BUNDLED_PATCH" && grep -q 'maxRoundsGrace: 2' "$BUNDLED_PATCH"; then
     ok 'policy limits also staged onto the bundled plugin.patch.yml entry (duplicate-ns shadowing guard)'

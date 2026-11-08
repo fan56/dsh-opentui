@@ -135,6 +135,13 @@ else
   FACE_PROFILE=dsh-opentui
 fi
 FACE_CFG="$FACE_HOME/profiles/$FACE_PROFILE/config.json"
+# Face-aware evidence/store paths for the scenarios: the patch layer the
+# /login commit and the policy staging write into, and the agents + sessions
+# stores the running host reads — all derived from the face's own DSH_HOME,
+# never the hardcoded plugin-face $HOME/.dsh.
+FACE_PATCH="$FACE_HOME/profiles/$FACE_PROFILE/cordis.patch.yml"
+FACE_AGENTS_DIR="$FACE_HOME/agents"
+FACE_SESSIONS_DIR="$FACE_HOME/sessions"
 CLIENT_TUI_PAT='client-entry.tsx'
 CLIENT_HOST_PAT='dsh --profile opentui'
 
@@ -212,6 +219,27 @@ tui_alive() {
     && [[ "$(pane_command)" != bash ]]
 }
 
+# Provision + bake the CLIENT face's scratch opentui profile WITHOUT booting:
+# the same steps start_tui's client branch runs, factored out for scenarios
+# whose mock-endpoint/bundle gates fire BEFORE the first start_tui on a fresh
+# container (the scratch profile does not exist until something provisions
+# it). Idempotent; the pnpm install is guarded on the registry dep so it runs
+# once per container. Plugin face: no-op.
+ensure_client_profile() {
+  [ "$E2E_FACE" = client ] || return 0
+  if [ ! -f "$FACE_PATCH" ]; then
+    DSH_HOME="$FACE_HOME" node /src/packages/shell/scripts/provision-opentui-profile.mjs || return 1
+  fi
+  if ! grep -qF '@aiwayds/dsh-subagent-registry' \
+    "$FACE_HOME/profiles/$FACE_PROFILE/package.json" 2>/dev/null; then
+    DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-jev-chain.mjs || return 1
+    DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-subagent-registry.mjs || return 1
+    pnpm --dir "$FACE_HOME/profiles/$FACE_PROFILE" install \
+      --registry="${E2E_NPM_REGISTRY:-https://registry.npmjs.org}" || return 1
+  fi
+  DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-mock-endpoint.mjs || return 1
+}
+
 start_tui() {
   local env_prefix="${1:-}"
   if in_e2e_container; then
@@ -234,10 +262,10 @@ start_tui() {
     # /src/dsh-opentui) execs bun client-entry.tsx and ensureHost pulls up
     # the resident host, all inside this tmux pane with DSH_HOME inherited.
     export DSH_HOME="$CLIENT_DSH_HOME"
-    if [ ! -d "$DSH_HOME/profiles/opentui" ]; then
-      node /src/packages/shell/scripts/provision-opentui-profile.mjs || return 1
-    fi
-    DSH_HOME="$DSH_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-mock-endpoint.mjs || return 1
+    # Batch-1 seg4: provision + bake the scratch profile's subagent-use
+    # bundles (registry = use_agent's home; dispatch/jev-core = the jev
+    # chain) + the mock endpoint before the boot. See ensure_client_profile.
+    ensure_client_profile || return 1
     tmux send-keys -t "$TS" "${env_prefix:+env $env_prefix }DSH_HOME=$CLIENT_DSH_HOME /src/dsh-opentui" Enter
   else
     # The launcher injects --experimental-ffi and execs dsh --profile

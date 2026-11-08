@@ -56,6 +56,46 @@ else
   summary
 fi
 
+# --- CLIENT face: the product's own first-run chain --------------------------
+# Legs A-C below are plugin-face paths (the /dist tarball install, the
+# registry-dep cold start of the GLOBAL dsh-opentui launcher, the bare plugin
+# profile boot). The client face has no tarball/global-launcher install path;
+# its first-run chain is: fresh scratch DSH_HOME -> the workspace's
+# provision-opentui-profile.mjs (the client-side equivalent of
+# install-profile.mjs) -> the repo-root launcher boots straight into a
+# rendered TUI. Assert that chain; legs A-C are skipped per-face (same rule
+# as 10-install).
+if [ "$E2E_FACE" = client ]; then
+  scenario 'client face: fresh DSH_HOME -> provision -> repo-root launcher boot'
+  HOME_C=/tmp/onboard-home-client
+  rm -rf "$HOME_C" && mkdir -p "$HOME_C"
+  info "client leg: provisioning $HOME_C via provision-opentui-profile.mjs (scratch DSH_HOME)"
+  if DSH_HOME="$HOME_C" timeout 300 node /src/packages/shell/scripts/provision-opentui-profile.mjs \
+    >/tmp/onboard-client-provision.log 2>&1; then
+    ok 'client onboarding provision exited 0'
+  else
+    bad "client onboarding provision failed (exit $?); tail of log:"
+    tail -10 /tmp/onboard-client-provision.log | sed 's/^/    | /'
+  fi
+  assert_contains 'provisioned patch carries the pinned route' \
+    'zai-coding-cn' "$(cat "$HOME_C/profiles/opentui/cordis.patch.yml" 2>/dev/null || true)"
+  info 'client leg: first boot through the repo-root launcher (scratch home)'
+  tmux kill-server 2>/dev/null || true
+  sleep 0.3
+  tmux new-session -d -s "$TS" -x "$TUI_COLS" -y "$TUI_ROWS" -c /app
+  tmux send-keys -t "$TS" "env DSH_HOME=$HOME_C /src/dsh-opentui" Enter
+  wait_tui_up 180 || { kill_tui; summary; }
+  PANE_C="$(capture)"
+  assert_contains 'onboarded client machine boots to the composer placeholder' \
+    "$MARKER_COMPOSER_PLACEHOLDER" "$PANE_C"
+  assert_contains 'onboarded client profile paints the pinned provider segment' \
+    "$MARKER_PROVIDER_SEG" "$PANE_C"
+  kill_tui
+  warn 'plugin-face legs A-C skipped on the client face (no tarball/global-launcher install path; see the client leg above)'
+  summary
+  exit 0
+fi
+
 # --- leg A: onboarding with THIS tree's artifact ----------------------------
 HOME_A=/tmp/onboard-home-a
 rm -rf "$HOME_A" && mkdir -p "$HOME_A"
