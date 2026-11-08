@@ -135,14 +135,53 @@ export function autoContrast(bg: PowerlineColor): PowerlineColor {
 export type EffortLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
 
 /**
+ * Minimum perceived distance (euclidean, 0-255 RGB) between two adjacent
+ * segment fills for the U+E0B0 chevron to read as a real segment boundary.
+ * Skin visual-acceptance finding: on dsh-blue the brand fill (#4D6BFE) and
+ * the provider fill (interactive[500] = the same #4D6BFE) collided — the
+ * arrow's foreground equaled its background and the strip read as one blob.
+ */
+export const POWERLINE_MIN_SEGMENT_DISTANCE = 80
+
+/** Euclidean distance between two fills on the 0-255 rgb scale. */
+export function colorDistance(a: PowerlineColor, b: PowerlineColor): number {
+	const [r1, g1, b1] = colorRgb(a)
+	const [r2, g2, b2] = colorRgb(b)
+	return Math.sqrt((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2)
+}
+
+/**
+ * Provider fill that stays theme-driven yet never collides with the brand
+ * segment: walk the interactive ramp 500→900 and take the first step at
+ * least POWERLINE_MIN_SEGMENT_DISTANCE from the brand fill (the deepest
+ * seen step when none qualifies, or 500 when the ramp is absent). On
+ * dsh-blue this shifts 500→700 (dark #2A3D9E / light #9DAFF0 vs brand
+ * #4D6BFE / #3B5BDB); tokyonight and gruvbox already clear the threshold
+ * at 500 and keep their original fill.
+ */
+export function providerFill(theme: ComponentTheme, brand: PowerlineColor): RGBA {
+	const ramp = theme.hue.interactive as unknown as Record<string, RGBA | undefined>
+	let last: RGBA | undefined
+	for (const step of ["500", "600", "700", "800", "900"]) {
+		const v = ramp[step]
+		if (!v) break
+		last = v
+		if (colorDistance(brand, v) >= POWERLINE_MIN_SEGMENT_DISTANCE) return v
+	}
+	return last ?? (theme.hue.interactive[500] as RGBA)
+}
+
+/**
  * Theme-driven fill palette for one component theme: the semantic mapping
  * the builders use when a ThemeProvider is mounted. Each entry mirrors the
- * kit-era hex of the same name using vendored tokens.
+ * kit-era hex of the same name using vendored tokens. `brand` (the actual
+ * brand-segment fill) opts the provider entry into the collision-avoiding
+ * ramp walk (providerFill); without it provider stays interactive[500].
  */
-export function powerlinePalette(theme: ComponentTheme) {
+export function powerlinePalette(theme: ComponentTheme, brand?: PowerlineColor) {
 	return {
 		brand: theme.hue.accent[500],
-		provider: theme.hue.interactive[500],
+		provider: brand ? providerFill(theme, brand) : theme.hue.interactive[500],
 		thinking: {
 			off: theme.text.faint,
 			minimal: theme.text.muted,
@@ -181,10 +220,18 @@ export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode:
 	return { text: label, bg: brandBlue(mode) }
 }
 
-/** The provider segment (providerID on the purple/interactive fill). */
-export function providerSegment(provider: string, theme?: ComponentTheme): PowerlineSegment | null {
+/**
+ * The provider segment (providerID on the purple/interactive fill). `mode`
+ * feeds providerFill's brand-collision walk (see POWERLINE_MIN_SEGMENT_DISTANCE).
+ */
+export function providerSegment(
+	provider: string,
+	theme?: ComponentTheme,
+	mode: SkinColorMode = "dark",
+): PowerlineSegment | null {
 	if (!provider) return null
-	return { text: provider, bg: resolvePalette(theme).provider }
+	if (!theme) return { text: provider, bg: POWERLINE_COLORS.provider }
+	return { text: provider, bg: powerlinePalette(theme, brandBlue(mode)).provider }
 }
 
 /** The 🤖 model segment; effort rides along (◕ level) when not "off". */
@@ -397,7 +444,7 @@ export function sessionFooterSegments(data: {
 	const add = (s: PowerlineSegment | null) => {
 		if (s) segs.push(s)
 	}
-	add(providerSegment(data.provider ?? "", theme))
+	add(providerSegment(data.provider ?? "", theme, data.mode))
 	add(modelSegment(data.model ?? "", data.effort ?? "off", theme))
 	add(contextSegment(data.contextPct ?? null, theme))
 	// tui-pi footer order: 🧠 context, ⚡ CH, then msgs/tools.
