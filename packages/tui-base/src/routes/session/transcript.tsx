@@ -37,9 +37,8 @@ import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
-import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
+import { clipToWidth } from "./tool-summarize"
 import { subagentMarkerSuffix } from "./subagent-markers"
-import { ThinkPanelRow } from "./think-panel"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
 
 export type TranscriptProps = {
@@ -57,8 +56,13 @@ export type TranscriptProps = {
 	renderNode?: (node: any) => any
 	/** Upstream syntax style (vendored app: `useThemes().currentSyntax`). */
 	syntaxStyle?: SyntaxStyle
-	/** Bottom slot: the composer. */
-	children?: JSX.Element
+		/** Bottom slot: the composer. */
+		children?: JSX.Element
+		/** Batch D1 widgets slot (dsh-tui-pi dock structure): the fixed
+		 * Todos → Think → Tool panels rendered DIRECTLY ABOVE the bottom
+		 * slot (the editor) — never in the transcript flow. See
+		 * ./widgets-dock.tsx; the page wires it with the shared projection. */
+		widgets?: JSX.Element
 	/** Publishes the transcript scrollbox (vendored route's scrollRef prop
 	 * shape; undefined on teardown). Page wiring binds scroll keys to it —
 	 * the box itself is never focused (the composer holds the singleton
@@ -114,93 +118,11 @@ export function Transcript(props: TranscriptProps) {
 		onCleanup(() => clearInterval(timer))
 	})
 
-	/** One tool row (tui-pi ToolPanel semantics, transcript-block shape):
-	 * title line = spinner/✓/✗ + Name(subject); the `⎿` track line carries
-	 * the arg detail while running and the result first line once settled.
-	 *
-	 * Batch V5 visual layering: a RUNNING or FAILED block gains a LEFT COLOR
-	 * RAIL (warn/error — the same family the think panel and the subagent
-	 * tree state lines share); the settled-ok block stays the lightweight
-	 * borderless single-line group. The failed block's track line rides the
-	 * error MUTED variant so the red emphasis reads as one block, not a wall.
-	 * paddingLeft compensates the border column — text never shifts between
-	 * states. */
-	const toolRow = (row: Extract<SeamRow, { kind: "tool" }>) => {
-		const subject = toolSubject(row.args)
-		const title = subject === "" ? row.name : `${row.name}(${subject})`
-		const state = row.status === "failed" ? "failed" : row.status === "running" ? "running" : "ok"
-		const statusColor = stateColor(state)
-		const rail: ("left")[] | undefined = row.status === "done" ? undefined : ["left"]
-		// Spinner + elapsed (tui-pi ToolPanel semantics): a per-row memo read in
-		// the JSX text child — the 120ms tick updates ONLY this text node; the
-		// static title/track nodes and every non-tool row never re-read `spin`.
-		const titleLine = createMemo(() => {
-			const marker =
-				row.status === "running" ? `${SPINNER_FRAMES[spin() % SPINNER_FRAMES.length]} ` : row.status === "failed" ? "✗ " : "✓ "
-			// Gap 2: a running row counts live off startedAt; a settled row
-			// freezes at elapsedSec. Stored rows carry neither — no fabricated time.
-			const elapsed =
-				row.status === "running"
-					? row.startedAt !== undefined
-						? ` · ${((Date.now() - row.startedAt) / 1000).toFixed(1)}s`
-						: ""
-					: row.elapsedSec !== undefined
-						? ` · ${row.elapsedSec.toFixed(1)}s`
-						: ""
-			// P1-1: the title clips by DISPLAY columns (CJK 1 code point = 2
-			// columns) to the pane width — wrapMode="none" would overflow.
-			// dimensions() read inside the memo makes the title resize-reactive.
-			return clipToWidth(`${marker}${title}${elapsed}`, Math.max(16, dimensions().width - 5))
-		})
-		// Running shows the arg summary; settled shows the result tail (the
-		// collapse-to-summary: the raw JSON never renders on either line).
-		const track = row.status === "running" ? toolDetail(row.args) : toolResultLine(row.output)
-		return (
-			<box flexShrink={0} flexDirection="column" border={rail} borderColor={statusColor} paddingLeft={rail ? 2 : 3}>
-				<text fg={statusColor} wrapMode="none">
-					{titleLine()}
-				</text>
-				<Show when={track !== ""}>
-					<text fg={row.status === "failed" ? color.failedMuted() : color.reasoning()} wrapMode="none">
-						{`  ⎿ ${clipToWidth(track, Math.max(20, dimensions().width - 10))}`}
-					</text>
-				</Show>
-			</box>
-		)
-	}
-
-	/** Batch V2a think panel (./think-panel.tsx): a live reasoning row with
-	 * panel state renders the bordered streaming panel / collapsed one-line
-	 * summary; a row WITHOUT panel state (defensive: a replay shape) keeps
-	 * the pre-V2a gray block — no fabricated chrome. Batch V5: the streaming
-	 * spinner joins the shared running family (warn, was info-blue) and the
-	 * collapsed summary's `💭 thought · Xs` prefix rides the ok family
-	 * (success) — the same stateColor mapping the tool block and the
-	 * subagent tree use. */
-	const thinkRow = (row: Extract<SeamRow, { kind: "reasoning" }>) => {
-		if (row.streaming !== undefined) {
-			return (
-				<ThinkPanelRow
-					row={() => row}
-					spin={spin}
-					width={() => dimensions().width}
-					color={{
-						border: color.reasoningBorder,
-						spinner: color.running,
-						text: color.reasoning,
-						summaryAccent: color.done,
-					}}
-				/>
-			)
-		}
-		return (
-			<box flexShrink={0} marginLeft={3} border={["left"]} borderColor={color.reasoningBorder()} paddingLeft={1}>
-				<text fg={color.reasoning()} wrapMode="word">
-					{row.text}
-				</text>
-			</box>
-		)
-	}
+	/** Batch D1 (dsh-tui-pi dock structure): tool blocks and think rows are
+	 * GONE from the transcript — they render in the fixed widgets dock above
+	 * the composer (./widgets-dock.tsx, the page wires it). The transcript
+	 * paints user/assistant/echo/notice/ask blocks only. The subagent tree
+	 * row stays here for batch D2 to move. */
 
 	/** Batch V2b subagent tree row (tui-pi subagent-tree semantics,
 	 * transcript-block shape): one line per child — `├─/└─` track + live
@@ -274,6 +196,13 @@ export function Transcript(props: TranscriptProps) {
 		/>
 	)
 
+	// Batch D1: tool/reasoning rows stay in the store (the widgets dock reads
+	// them there) but never paint in the flow — the visible feed is the
+	// tui-pi chat-clean set. The subagent tree stays until D2 moves it.
+	const visibleRows = createMemo(
+		() => projection.rows.filter((row) => row.kind !== "tool" && row.kind !== "reasoning") as readonly SeamRow[],
+	)
+
 	const rowView = (row: SeamRow) => {
 		switch (row.kind) {
 			case "user":
@@ -284,14 +213,12 @@ export function Transcript(props: TranscriptProps) {
 						</text>
 					</box>
 				)
-			case "reasoning":
-				return thinkRow(row)
-			case "tool":
-				return toolRow(row)
 			case "subagents":
 				return subagentsRow(row)
 			case "assistant":
 				return assistantRow(row)
+			default:
+				return null
 		}
 	}
 
@@ -333,7 +260,7 @@ export function Transcript(props: TranscriptProps) {
 							props.scrollRef?.(value)
 						}}
 					>
-						<For each={projection.rows as readonly SeamRow[]}>
+						<For each={visibleRows()}>
 							{(row) => (
 								<box id={`seam-row-${row.key}`} marginTop={1} flexShrink={0}>
 									{rowView(row)}
@@ -348,9 +275,13 @@ export function Transcript(props: TranscriptProps) {
 					</scrollbox>
 				</box>
 			</box>
-			{/* bottom slot: the composer (./session-composer.tsx) sets its own explicit height */}
-			<Show when={props.children}>
-				<box width="100%" flexShrink={0}>
+			{/* widgets slot (batch D1, ./widgets-dock.tsx): the fixed Todos →
+			 * Think → Tool panels directly ABOVE the bottom slot (the editor).
+			 * Each child owns its explicit height (the dock counts its lines;
+			 * the composer sets its own) — auto-height boxes collapse. */}
+			<Show when={props.widgets || props.children}>
+				<box width="100%" flexShrink={0} flexDirection="column">
+					{props.widgets}
 					{props.children}
 				</box>
 			</Show>

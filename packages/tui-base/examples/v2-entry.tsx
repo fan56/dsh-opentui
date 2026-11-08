@@ -38,6 +38,7 @@ import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
+import { WidgetsDock } from "../src/routes/session/widgets-dock"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
@@ -336,6 +337,15 @@ function V2SessionPage(props: {
 					seam,
 					projection,
 					scrollRef: (value: ScrollBoxRenderable | undefined) => (transcriptScroll = value),
+					// Batch D1 widgets slot (dsh-tui-pi dock structure): the fixed
+					// Todos → Think → Tool panels ride the SAME projection the
+					// transcript paints — the dock reads the tool/reasoning rows the
+					// transcript no longer renders. Getter-prop law: rows is a getter.
+					widgets: createComponent(WidgetsDock, {
+						get rows() {
+							return projection.rows
+						},
+					}),
 					get children() {
 						return createComponent(SessionComposer, {
 							seam,

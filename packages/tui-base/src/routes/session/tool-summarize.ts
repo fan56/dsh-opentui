@@ -83,8 +83,15 @@ export function toolDetail(rawArguments: string, limit = 120): string {
 		if (typeof parsed.pattern === "string") parts.push(`pattern: ${parsed.pattern}`)
 		if (typeof parsed.query === "string") parts.push(`query: ${parsed.query}`)
 		if (typeof parsed.url === "string") parts.push(parsed.url)
-		if (typeof parsed.description === "string" && parts.length === 0) parts.push(parsed.description)
-		if (parts.length === 0) parts.push(rawArguments.replace(/\s+/g, " "))
+	if (typeof parsed.description === "string" && parts.length === 0) parts.push(parsed.description)
+	// use_agent shape (batch D1, dsh-tui-pi parity): the delegation tools carry
+	// { agent, prompt } — the human summary names the agent and leads with the
+	// prompt's first line; the raw-JSON fallback must never fire for it.
+	if (typeof parsed.agent === "string") parts.push(`agent: ${parsed.agent}`)
+	if (typeof parsed.prompt === "string" && parsed.prompt.trim() !== "") {
+		parts.push(parsed.prompt.trim())
+	}
+	if (parts.length === 0) parts.push(rawArguments.replace(/\s+/g, " "))
 		const joined = parts.join("  ").replace(/\n/g, " ⏎ ")
 		return clipToWidth(joined, limit)
 	} catch {
