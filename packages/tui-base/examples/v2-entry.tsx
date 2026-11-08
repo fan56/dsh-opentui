@@ -39,6 +39,7 @@ import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-ma
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
 import { WidgetsDock } from "../src/routes/session/widgets-dock"
+import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
@@ -128,10 +129,16 @@ function V2SessionPage(props: {
 		onCleanup(() => clearInterval(timer))
 	})
 	const elapsed = () => (busy() ? Math.max(0, Math.floor((now().getTime() - busySince()) / 1000)) : 0)
+	// Batch D2 (tui-pi index.ts:2469 semantics): the `●` last-request echo
+	// below the editor tracks MODEL prompts only — `send` is the composer's
+	// non-slash submit path (the slash host intercepts `…` commands), it
+	// persists across turns and clears on session switch (clear/reload below).
+	const [lastRequest, setLastRequest] = createSignal<string | undefined>()
 	const send = (text: string) => {
 		setMsgs((n) => n + 1)
 		setTurnBusy(true)
 		setBusySince(Date.now())
+		setLastRequest(text)
 		const done = projection.send(text)
 		void done.finally(() => setTurnBusy(false))
 		return done
@@ -225,8 +232,14 @@ function V2SessionPage(props: {
 	const slash = createSlashHost({
 		seam,
 		say: sayLine,
-		clear: () => projection.hydrate([]),
+		// Batch D2: a session switch (/new → clear, /fork//resume → reload)
+		// drops the `●` last-request echo with the rest of the session state.
+		clear: () => {
+			projection.hydrate([])
+			setLastRequest(undefined)
+		},
 		reload: () => {
+			setLastRequest(undefined)
 			const settled = projection.load()
 			void seam.currentModelSelection().then(setModel)
 			refreshPresetLabel()
@@ -344,6 +357,17 @@ function V2SessionPage(props: {
 					widgets: createComponent(WidgetsDock, {
 						get rows() {
 							return projection.rows
+						},
+					}),
+					// Batch D2 lastRequest slot (dsh-tui-pi live-widgets structure):
+					// the `●` echo + running-children lines paint BELOW the editor.
+					// Getter-prop law: rows and lastRequest are getters.
+					footer: createComponent(LastRequestDock, {
+						get rows() {
+							return projection.rows
+						},
+						get lastRequest() {
+							return lastRequest()
 						},
 					}),
 					get children() {

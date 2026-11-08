@@ -434,7 +434,7 @@ export class RemoteSessionSeam implements SessionSeam {
 	// ticks) and `elapsedSec` (frozen at the fold for a settled child; the
 	// settle emission fires at settle time, so the freeze is the settle
 	// duration to the second).
-	#projectSubagentViews(views: { id: string; label: string; model?: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; startedAt?: number; injectedRound?: number; hardStopRound?: number; spinStopRound?: number }[]): SeamSubagentView[] {
+	#projectSubagentViews(views: { id: string; label: string; model?: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; startedAt?: number; injectedRound?: number; hardStopRound?: number; spinStopRound?: number; lastLine?: string }[]): SeamSubagentView[] {
 		return views.map((v) => ({
 			id: v.id,
 			label: v.label,
@@ -449,6 +449,8 @@ export class RemoteSessionSeam implements SessionSeam {
 			...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
 			...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
 			...(v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}),
+			// Batch D2 (lastRequest dock): the child's latest content tail.
+			...(v.lastLine !== undefined ? { lastLine: v.lastLine } : {}),
 		}))
 	}
 	subagentViews(): SeamSubagentView[] {

@@ -73,8 +73,18 @@ describe("toolResultLine", () => {
 		expect(toolResultLine(JSON.stringify({ text: "plain" }))).toBe("plain")
 		expect(toolResultLine("already plain")).toBe("already plain")
 		expect(toolResultLine(undefined)).toBe("")
-		// Degradation law: an object with no diggable text shows its JSON slice.
+		// Degradation law: an EMPTY object has no readable leaves — the JSON
+		// slice itself is the only honest line.
 		expect(toolResultLine("{}")).toBe("{}")
+	})
+
+	test("D2: a no-dig envelope renders its string leaves, never raw JSON", () => {
+		// The D1 live frame: `✘ use_agent(looper) · 0.0s · {"turn":2,...}`
+		const envelope = JSON.stringify({ turn: 2, agent: "looper", note: "child settled" })
+		expect(toolResultLine(envelope)).toBe("turn: 2 · agent: looper · note: child settled")
+		// Nested envelopes flatten one level.
+		const nested = JSON.stringify({ result: { output: "done", extra: "x" } })
+		expect(toolResultLine(nested)).toContain("output: done")
 	})
 
 	test("P2 (live finding): digs through the whole-wire envelope the follow brief carries", () => {

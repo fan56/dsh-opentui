@@ -100,6 +100,33 @@ export function toolDetail(rawArguments: string, limit = 120): string {
 }
 
 /**
+ * Depth-limited string leaf walk (batch D2): the (key, value) pairs of an
+ * envelope object's string leaves in insertion order, arrays flattened to
+ * their first readable entry. The human-readable fallback for envelopes
+ * with no text/content/output dig.
+ */
+function stringLeaves(record: Record<string, unknown>, depth: number): [string, string][] {
+	const out: [string, string][] = []
+	if (depth < 0) return out
+	for (const [key, value] of Object.entries(record)) {
+		if (typeof value === "string") {
+			if (value.trim() !== "") out.push([key, value.trim().split("\n")[0] ?? value.trim()])
+		} else if (typeof value === "number" || typeof value === "boolean") {
+			out.push([key, String(value)])
+		} else if (value !== null && typeof value === "object") {
+			const inner = Array.isArray(value) ? (value.find((v) => v !== null && typeof v === "object") as unknown) : value
+			if (inner !== null && typeof inner === "object") {
+				out.push(...stringLeaves(inner as Record<string, unknown>, depth - 1))
+			} else if (typeof inner === "string" && inner.trim() !== "") {
+				out.push([key, inner.trim()])
+			}
+		}
+		if (out.length >= 4) break
+	}
+	return out.slice(0, 4)
+}
+
+/**
  * First meaningful line of a tool result (dsh-tui-pi `resultTextLines`
  * semantics applied to the follow stream's JSON brief): the input is
  * `JSON.stringify(output).slice(0, 300)` — dig the text content out
@@ -130,8 +157,19 @@ export function toolResultLine(output: string | undefined, limit = 120): string 
 			} else if (typeof inner.text === "string") {
 				text = inner.text
 			} else if (inner !== record && typeof inner.output === "string") {
-				text = inner.output
-			}
+					text = inner.output
+				} else {
+					// Batch D2 fallback (verified live in the D1 frames: `✘
+					// use_agent(looper) · 0.0s · {"turn":2,...}`): an envelope with
+					// NO text/content/output digs shows its raw JSON — never
+					// human-readable. Collect the object's string leaf values
+					// (depth-2, insertion order) and render the first pair as
+					// `key: value · key: value` fragments instead.
+					const leaves = stringLeaves(inner, 2)
+					if (leaves.length > 0) {
+						text = leaves.map(([key, value]) => `${key}: ${value}`).join(" · ")
+					}
+				}
 		}
 	} catch {
 		// Already plain text.

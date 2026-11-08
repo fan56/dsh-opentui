@@ -222,6 +222,10 @@ export interface SeamSubagentView {
 	 * BEFORE the grace window on fresh jev spin evidence; exclusive with the
 	 * classic hardStopRound latch. */
 	spinStopRound?: number
+	/** Batch D2 (lastRequest dock): the child's latest CONTENT line — live
+	 * assistant text/reasoning tail folded by the client's child follow
+	 * pump. Absent when nothing streamed yet. */
+	lastLine?: string
 }
 
 /**

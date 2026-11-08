@@ -118,6 +118,8 @@ export type SeamRow =
 					injectedRound?: number
 					hardStopRound?: number
 					spinStopRound?: number
+					/** Batch D2: the child's latest content tail (lastRequest dock). */
+					lastLine?: string
 				}[]
 		  }
 

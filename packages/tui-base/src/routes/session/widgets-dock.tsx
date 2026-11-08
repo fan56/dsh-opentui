@@ -43,8 +43,10 @@ import { useThemeOptional } from "../../context/theme"
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 /** Shared dock spinner tick — MODULE-level so no render closure owns it
- * (one interval per dock mount flips it; every line reads it lazily). */
-const [dockSpin, setDockSpin] = createSignal(0)
+ * (one interval per dock mount flips it; every line reads it lazily).
+ * Batch D2: the lastRequest dock below the editor reads the SAME tick
+ * (one interval owns the braille cadence for both docks). */
+export const [dockSpin, setDockSpin] = createSignal(0)
 
 /** Todos summary line (pure, testable): the latest completed todowrite
  * tool brief carries the todo array (the follow stream's
