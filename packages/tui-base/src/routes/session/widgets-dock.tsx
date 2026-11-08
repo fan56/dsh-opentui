@@ -7,7 +7,7 @@
  * refreshes in place (no remount, no scroll coupling, never in the
  * transcript flow).
  *
- *   Todos  `todos [✓]2/3 · <current>`     — from the latest todowrite brief
+ *   Todos  `todos [✓]2/3 · <current>`     — from the latest todo tool call
  *   Think  `💭 thinking · Xs · <tail>`    — italic while the burst runs;
  *          collapses to `💭 thought · Xs · <first line>` (the seam-rows fade
  *          machine clears it ~1s after the burst stops — batch D5)
@@ -48,25 +48,37 @@ const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", 
  * (one interval owns the braille cadence for both docks). */
 export const [dockSpin, setDockSpin] = createSignal(0)
 
-/** Todos summary line (pure, testable): the latest completed todowrite
- * tool brief carries the todo array (the follow stream's
- * `JSON.stringify(output).slice(0, 300)` brief). No todos → ''. Batch D5b
- * hide-law: ALL completed → '' too (the tui-pi semantics — the row only
- * earns its line while work remains). */
-export function todosSummaryLine(output: string | undefined): string {
-	if (output === undefined || output.trim() === "") return ""
+/** The todo array inside one todo-tool text, or undefined when the text
+ * carries none. Two shapes: a bare array (the opencode output brief) or
+ * `{ todos: [...] }` (the dsh host's todo_write call ARGUMENTS — its
+ * tool/result wire carries only the rendered `Updated todo list: …` text,
+ * never the array). */
+function todoArray(text: string | undefined): unknown[] | undefined {
+	if (text === undefined || text.trim() === "") return undefined
 	try {
-		const parsed = JSON.parse(output) as unknown
-		const todos = parseTodos(Array.isArray(parsed) ? parsed : [])
-		if (todos.length === 0) return ""
-		const done = todos.filter((t) => t.status === "completed").length
-		if (done === todos.length) return ""
-		const active = todos.find((t) => t.status === "in_progress")
-		const head = `todos [✓]${done}/${todos.length}`
-		return active ? `${head} · ${active.content}` : head
+		const parsed = JSON.parse(text) as unknown
+		if (Array.isArray(parsed)) return parsed
+		if (parsed !== null && typeof parsed === "object" && Array.isArray((parsed as { todos?: unknown }).todos)) {
+			return (parsed as { todos: unknown[] }).todos
+		}
 	} catch {
-		return ""
+		/* not JSON — no todo array */
 	}
+	return undefined
+}
+
+/** Todos summary line (pure, testable): the todo array of the latest
+ * settled todo tool row (see todoArray for the accepted shapes). No todos
+ * → ''. Batch D5b hide-law: ALL completed → '' too (the tui-pi semantics —
+ * the row only earns its line while work remains). */
+export function todosSummaryLine(output: string | undefined): string {
+	const todos = parseTodos(todoArray(output) ?? [])
+	if (todos.length === 0) return ""
+	const done = todos.filter((t) => t.status === "completed").length
+	if (done === todos.length) return ""
+	const active = todos.find((t) => t.status === "in_progress")
+	const head = `todos [✓]${done}/${todos.length}`
+	return active ? `${head} · ${active.content}` : head
 }
 
 /** One dock tool line (pure): `✔/✘/⠋ ⚙ name(subject) · Xs · <tail>`.
@@ -111,12 +123,24 @@ export function thinkLineText(row: Extract<SeamRow, { kind: "reasoning" }>, spin
  * panel line. `tone` keys the status-color family (resolved at render). */
 export type DockLine = { text: string; tone: "ok" | "running" | "failed" | "muted"; italic?: boolean }
 
+/** The todo brief carrier: the opencode-side name is `todowrite`; the dsh
+ * host registers `tool-todo` whose model-side call name (the one the seam
+ * rows carry off the host stream events) is `todo_write`. Both spellings
+ * are the same tool — the set stays EXACT so nothing else starting with
+ * "todo" can hijack the panel. */
+const TODO_TOOL_NAMES = new Set(["todowrite", "todo_write"])
+
 export function dockLines(rows: readonly SeamRow[]): DockLine[] {
 	const out: DockLine[] = []
 	const all = rows
-	// Todos panel (single line): the latest todowrite brief.
-	const todoTool = [...all].reverse().find((row) => row.kind === "tool" && row.name === "todowrite" && row.output !== undefined)
-	const todos = todoTool?.kind === "tool" ? todosSummaryLine(todoTool.output) : ""
+	// Todos panel (single line): the latest SETTLED, non-failed todo tool
+	// row (a rejected call's args were never applied). The list comes from
+	// the call args (dsh host shape) else the output brief (opencode shape).
+	const todoTool = [...all]
+		.reverse()
+		.find((row) => row.kind === "tool" && TODO_TOOL_NAMES.has(row.name) && row.output !== undefined && row.status !== "failed")
+	const todos =
+		todoTool?.kind === "tool" ? todosSummaryLine(todoArray(todoTool.args) !== undefined ? todoTool.args : todoTool.output) : ""
 	if (todos !== "") out.push({ text: todos, tone: "muted" })
 	// Think panel (single line): the LIVE burst wins; else the collapsed
 	// summary inside its fade window (the seam-rows timer clears the row).

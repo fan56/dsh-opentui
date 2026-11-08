@@ -91,3 +91,76 @@ describe("dockLines (batch D5 widget fade)", () => {
 		expect(lines[1]).toContain("grep")
 	})
 })
+
+describe("dockLines todos panel: dsh host shape (D6)", () => {
+	type Todo = { content: string; status: string }
+	/** The REAL dsh host row (journal-verified): name `todo_write`, args =
+	 * the raw tool/call arguments `{"todos":[…]}`, output = the follow
+	 * stream's brief of a tool/result whose wire carries only the rendered
+	 * text — no todo array anywhere in it. */
+	const hostRow = (todos: Todo[], key = "tool:live:t", status: "done" | "failed" = "done"): SeamRow => {
+		const c = (s: string) => todos.filter((t) => t.status === s).length
+		const brief = JSON.stringify({
+			turn: 1,
+			message: {
+				role: "tool",
+				content: [
+					{
+						type: "text",
+						text: `Updated todo list: ${c("pending")} pending, ${c("in_progress")} in progress, ${c("completed")} completed.`,
+					},
+				],
+				isError: status === "failed",
+			},
+		}).slice(0, 300)
+		return { key, kind: "tool", name: "todo_write", args: JSON.stringify({ todos }), status, faded: true, output: brief }
+	}
+	/** The opencode shape: name `todowrite`, the brief IS the bare array. */
+	const opencodeRow = (name: string, todos: Todo[]): SeamRow => ({
+		key: "tool:live:o",
+		kind: "tool",
+		name,
+		args: "{}",
+		status: "done",
+		faded: true,
+		output: JSON.stringify(todos),
+	})
+	const two = [
+		{ content: "买咖啡", status: "pending" },
+		{ content: "写周报", status: "pending" },
+	]
+
+	test("host `todo_write`: the list comes from the call args (the result brief has no array)", () => {
+		expect(dockLines([hostRow(two)]).map((l) => l.text)).toEqual(["todos [✓]0/2"])
+	})
+	test("opencode `todowrite`: the bare-array output brief still renders", () => {
+		expect(dockLines([opencodeRow("todowrite", two)]).map((l) => l.text)).toEqual(["todos [✓]0/2"])
+	})
+	test("exact-name match: other todo-ish tools never feed the panel", () => {
+		for (const name of ["todoread", "todo_read", "todo", "todo_write_x", "my_todo_write"]) {
+			expect(dockLines([opencodeRow(name, two)])).toEqual([])
+			expect(dockLines([{ ...hostRow(two), name }])).toEqual([])
+		}
+	})
+	test("a running call (no result yet) and a failed call never feed the panel", () => {
+		const running: SeamRow = { key: "tool:live:r", kind: "tool", name: "todo_write", args: JSON.stringify({ todos: two }), status: "running" }
+		expect(dockLines([running]).map((l) => l.text)).toEqual([expect.stringContaining("todo_write")])
+		const applied = hostRow(two, "tool:live:1")
+		const rejected = hostRow([{ content: "x", status: "in_progress" }, { content: "y", status: "in_progress" }], "tool:live:2", "failed")
+		expect(dockLines([applied, rejected]).map((l) => l.text)).toEqual(["todos [✓]0/2"])
+	})
+	test("host lifecycle (journal replay): pending → one done → all done hides → cleared hides", () => {
+		const rows: SeamRow[] = [hostRow(two, "tool:live:1")]
+		expect(dockLines(rows).map((l) => l.text)).toEqual(["todos [✓]0/2"])
+		rows.push(hostRow([{ content: "买咖啡", status: "completed" }, { content: "写周报", status: "in_progress" }], "tool:live:2"))
+		expect(dockLines(rows).map((l) => l.text)).toEqual(["todos [✓]1/2 · 写周报"])
+		rows.push(hostRow([{ content: "买咖啡", status: "completed" }, { content: "写周报", status: "completed" }], "tool:live:3"))
+		expect(dockLines(rows)).toEqual([])
+		rows.push(hostRow([], "tool:live:4"))
+		expect(dockLines(rows)).toEqual([])
+	})
+	test("todosSummaryLine accepts the `{ todos }` args shape", () => {
+		expect(todosSummaryLine(JSON.stringify({ todos: [{ content: "a", status: "in_progress" }] }))).toBe("todos [✓]0/1 · a")
+		expect(todosSummaryLine(JSON.stringify({ todos: "nope" }))).toBe("")
+	})
+})
