@@ -38,6 +38,7 @@ import { SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
+import { ThinkPanelRow } from "./think-panel"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
 
 export type TranscriptProps = {
@@ -147,6 +148,34 @@ export function Transcript(props: TranscriptProps) {
 		)
 	}
 
+	/** Batch V2a think panel (./think-panel.tsx): a live reasoning row with
+	 * panel state renders the bordered streaming panel / collapsed one-line
+	 * summary; a row WITHOUT panel state (defensive: a replay shape) keeps
+	 * the pre-V2a gray block — no fabricated chrome. */
+	const thinkRow = (row: Extract<SeamRow, { kind: "reasoning" }>) => {
+		if (row.streaming !== undefined) {
+			return (
+				<ThinkPanelRow
+					row={() => row}
+					spin={spin}
+					width={() => dimensions().width}
+					color={{
+						border: color.reasoningBorder,
+						spinner: color.loading,
+						text: color.reasoning,
+					}}
+				/>
+			)
+		}
+		return (
+			<box flexShrink={0} marginLeft={3} border={["left"]} borderColor={color.reasoningBorder()} paddingLeft={1}>
+				<text fg={color.reasoning()} wrapMode="word">
+					{row.text}
+				</text>
+			</box>
+		)
+	}
+
 	onMount(() => {
 		if (owned) projection.load()
 	})
@@ -175,13 +204,7 @@ export function Transcript(props: TranscriptProps) {
 					</box>
 				)
 			case "reasoning":
-				return (
-					<box flexShrink={0} marginLeft={3} border={["left"]} borderColor={color.reasoningBorder()} paddingLeft={1}>
-						<text fg={color.reasoning()} wrapMode="word">
-							{row.text}
-						</text>
-					</box>
-				)
+				return thinkRow(row)
 			case "tool":
 				return toolRow(row)
 			case "assistant":

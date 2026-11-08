@@ -17,11 +17,11 @@ class FakeSeam extends NullSessionSeam {
 	}
 }
 
-function setup(seam: FakeSeam) {
+function setup(seam: FakeSeam, options?: { thinkFadeMs?: number }) {
 	let dispose!: () => void
 	const projection = createRoot((d) => {
 		dispose = d
-		return createSeamRows(seam, () => "s1")
+		return createSeamRows(seam, () => "s1", options)
 	})
 	return { projection, dispose }
 }
@@ -266,11 +266,13 @@ describe("seam rows projection", () => {
 			cb.onThinkingDelta("44. draft wording: smog can briefly accumulate")
 			cb.onContentDelta("42. hail - let me write: Hailstorms…\n\n1. rewritten list")
 		}
-		const { projection, dispose } = setup(seam)
+		const { projection, dispose } = setup(seam, { thinkFadeMs: 0 })
 		await projection.send("weather")
 		// One assistant body — the DURABLE text — patched into the live row's
 		// key; the streamed reasoning drafts drop (stored transcripts carry
-		// no reasoning). Settled view == reload view.
+		// no reasoning; batch V2a's fade linger is off here — the default
+		// linger is covered by the think-panel tests below). Settled view ==
+		// reload view.
 		expect(projection.rows.map((r) => r.kind)).toEqual(["user", "assistant"])
 		expect(projection.rows[1]).toMatchObject({
 			key: "assistant:live-2",
@@ -308,7 +310,9 @@ describe("seam rows projection", () => {
 		let dispose!: () => void
 		const projection = createRoot((d) => {
 			dispose = d
-			return createSeamRows(seam, () => sessionId ?? "")
+			// thinkFadeMs 0: this test asserts the converge shape, not the V2a
+			// summary linger (the default linger has its own tests).
+			return createSeamRows(seam, () => sessionId ?? "", { thinkFadeMs: 0 })
 		})
 		seam.script = async (cb) => {
 			cb.onThinkingDelta("reasoning drafts")
@@ -353,5 +357,78 @@ describe("seam rows projection", () => {
 			expect(source).not.toMatch(/from "@opencode\/client"/)
 			expect(source).not.toMatch(/from "@dsh-opentui\//)
 		}
+	})
+
+	test("batch V2a think panel: first delta opens streaming, text first char collapses, turn end fades", async () => {
+		const seam = new FakeSeam()
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("draft one")
+			cb.onThinkingDelta("draft two")
+			await gate
+			cb.onContentDelta("answer")
+		}
+		const { projection, dispose } = setup(seam, { thinkFadeMs: 40 })
+		const pending = projection.send("go")
+		await Bun.sleep(10)
+		// Mid-stream: the live bordered panel row (streaming, startedAt set).
+		expect(projection.rows[1]).toMatchObject({ key: "reasoning:live-2", kind: "reasoning", streaming: true, text: "draft onedraft two" })
+		const startedAt = (projection.rows[1] as { startedAt?: number }).startedAt
+		expect(typeof startedAt).toBe("number")
+		release()
+		await pending
+		// Text first char collapsed it: the one-line summary, elapsed frozen.
+		const collapsed = projection.rows.find((r) => r.kind === "reasoning") as
+			| { streaming?: boolean; elapsedSec?: number; text: string }
+			| undefined
+		expect(collapsed).toMatchObject({ streaming: false, text: "draft onedraft two" })
+		expect(typeof collapsed?.elapsedSec).toBe("number")
+		// 轮末渐隐: the summary lingers past the settle, then clears.
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(true)
+		await Bun.sleep(80)
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(false)
+		dispose()
+	})
+
+	test("batch V2a think panel: a new think inside the fade window clears the old summary (clear old, show new)", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("round one")
+			cb.onContentDelta("answer one")
+		}
+		const { projection, dispose } = setup(seam, { thinkFadeMs: 10_000 })
+		await projection.send("q1")
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(true)
+		// Second turn's FIRST delta clears the lingering summary immediately.
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("round two")
+		}
+		const pending = projection.send("q2")
+		expect(projection.rows.map((r) => r.key)).toEqual(["user:local-1", "assistant:live-2", "user:local-3", "reasoning:live-4"])
+		expect(projection.rows[3]).toMatchObject({ kind: "reasoning", streaming: true, text: "round two" })
+		await pending
+		dispose()
+	})
+
+	test("batch V2a think panel: thinking-only turn collapses at finalize; a tool call collapses the segment", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("pre-tool thought")
+			cb.onToolStart?.({ callId: "c1", name: "grep", args: "x" })
+		}
+		const { projection, dispose } = setup(seam, { thinkFadeMs: 0 })
+		await projection.send("go")
+		// The tool call collapsed the segment; fade 0 dropped it at turn end.
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(false)
+		// Thinking-only turn (no text/tool): the finalize pass collapses it.
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("only thought")
+		}
+		await projection.send("q2")
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(false)
+		dispose()
 	})
 })

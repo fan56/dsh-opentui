@@ -118,6 +118,25 @@ const TPS_DONE = 'E2E-TPS-TURN-DONE — the timed decode window completed.'
 const TPS_TICKS = 10
 const TPS_TICK_DELAY_MS = 140
 
+// V2a think-panel phase: stream GLM-style reasoning_content deltas FIRST
+// (the live bordered think panel's spinner + streaming tail feeds off them,
+// ~1.8s of visible thinking), then the reply text — the first content char
+// collapses the panel into its one-line summary. pi-ai's openai-completions
+// parser picks reasoning_content up as reasoning deltas (GLM wire shape).
+const THINK_TRIGGER = 'E2E_THINK_TRIGGER'
+const THINK_DONE = 'E2E-THINK-TURN-DONE — the reasoning panel collapsed into its one-line summary.'
+const THINK_TICK_DELAY_MS = 150
+const THINK_LINES = [
+  'Parse the request: the caller wants the reasoning phase observable.',
+  'Plan: enumerate the steps before touching anything.',
+  'Step one — check the current state of the target.',
+  'Step two — apply the minimal change that fixes it.',
+  'Step three — verify the change with the cheapest probe.',
+  'Risk check: the edit is scoped and reversible.',
+  'Cross-check the assumptions against the evidence gathered.',
+  'Conclusion is stable — ready to answer.',
+]
+
 // The three questions handed to ask_user_question: two single-select (auto-
 // advance applies) and one multiSelect (stays put), matching the assertions
 // in 68-ask-user.sh.
@@ -207,6 +226,7 @@ function decidePhase(bodyText) {
     return bodyText.includes(CH_TURN_ONE_MARKER) ? 'ch-cold' : 'ch-warm'
   }
   if (bodyText.includes(TPS_TRIGGER)) return 'tps'
+  if (bodyText.includes(THINK_TRIGGER)) return 'think'
   const hasTrigger = bodyText.includes(TRIGGER)
   // The openai SDK serializes without spaces; be lenient about formatting.
   if (hasTrigger && hasToolResult) return 'final'
@@ -227,6 +247,17 @@ function tpsStreamEntries() {
     entries.push({ delayMs: TPS_TICK_DELAY_MS, delta: { role: 'assistant', content: `decode tick ${i}; ` } })
   }
   entries.push({ delayMs: TPS_TICK_DELAY_MS, delta: { role: 'assistant', content: TPS_DONE } })
+  entries.push({ delayMs: 100, delta: {}, finish: 'stop' })
+  return entries
+}
+
+/** The think phase script: reasoning_content deltas, then the reply text. */
+function thinkStreamEntries() {
+  const entries = []
+  for (const line of THINK_LINES) {
+    entries.push({ delayMs: THINK_TICK_DELAY_MS, delta: { role: 'assistant', reasoning_content: `${line}\n` } })
+  }
+  entries.push({ delayMs: THINK_TICK_DELAY_MS, delta: { role: 'assistant', content: THINK_DONE } })
   entries.push({ delayMs: 100, delta: {}, finish: 'stop' })
   return entries
 }
@@ -353,6 +384,10 @@ function handleChat(req, res, body) {
   }
   if (phase === 'tps') {
     streamTimed(res, tpsStreamEntries(), wantsUsage)
+    return
+  }
+  if (phase === 'think') {
+    streamTimed(res, thinkStreamEntries(), wantsUsage, phase)
     return
   }
   if (phase === 'main-slow') {
