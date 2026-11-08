@@ -79,6 +79,12 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
     setStore("selected", 0)
   })
 
+  // Batch D5b hide-law: the bar leaves on its own once no child is running
+  // (no esc needed) — content stopped → the widget hides.
+  createEffect(() => {
+    if (open() && pickerShouldAutoClose(subagentMarkerViews())) setOpen(false)
+  })
+
   function moveTo(next: number) {
     const count = entries().length
     if (count === 0) return
@@ -147,9 +153,12 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
 
   // Toggle layer (picker closed): the vendored `session.child.first` command
   // id resolves its configured binding (down) from the shared keybind config.
+  // Batch D5b key law: ↓ only routes here while a child is RUNNING; with no
+  // running child the layer is off and ↓ falls through to the composer's
+  // history recall (the D5 finding: ↓ for history opened the bar instead).
   Keymap.createLayer(() => ({
     mode: "global",
-    enabled: !open() && dialog.stack.length === 0 && subagentMarkerViews().length > 0,
+    enabled: !open() && dialog.stack.length === 0 && pickerToggleEnabled(subagentMarkerViews()),
     commands: [
       {
         id: "session.child.first",
@@ -175,6 +184,16 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
       </box>
     </Show>
   )
+}
+
+/** Batch D5b: ↓ opens the bar only while at least one child runs (pure). */
+export function pickerToggleEnabled(views: readonly SubagentMarkerView[]): boolean {
+  return views.some((view) => view.status === "running")
+}
+
+/** Batch D5b: an open bar closes itself once no child runs (pure). */
+export function pickerShouldAutoClose(views: readonly SubagentMarkerView[]): boolean {
+  return !pickerToggleEnabled(views)
 }
 
 /** The one-line picker body (pure, testable): `Subagents ▸ <label> ·

@@ -23,7 +23,28 @@ describe("todosSummaryLine", () => {
 		expect(todosSummaryLine(brief)).toBe("todos [✓]1/3 · b")
 	})
 	test("no in-progress item: the count alone", () => {
-		expect(todosSummaryLine(JSON.stringify([{ content: "a", status: "completed" }]))).toBe("todos [✓]1/1")
+		expect(
+			todosSummaryLine(JSON.stringify([{ content: "a", status: "completed" }, { content: "b", status: "pending" }])),
+		).toBe("todos [✓]1/2")
+	})
+	test("D5b hide-law: all completed → '' (the row leaves the dock)", () => {
+		expect(todosSummaryLine(JSON.stringify([{ content: "a", status: "completed" }]))).toBe("")
+		expect(
+			dockLines([
+				{
+					key: "tool:live:t",
+					kind: "tool",
+					name: "todowrite",
+					args: "{}",
+					status: "done",
+					faded: true,
+					output: JSON.stringify([{ content: "a", status: "completed" }, { content: "b", status: "completed" }]),
+				},
+			]),
+		).toEqual([])
+	})
+	test("empty todo array → ''", () => {
+		expect(todosSummaryLine("[]")).toBe("")
 	})
 	test("degrades to '' on non-todo briefs", () => {
 		expect(todosSummaryLine(undefined)).toBe("")

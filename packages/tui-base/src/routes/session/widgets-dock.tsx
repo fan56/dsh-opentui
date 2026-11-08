@@ -50,7 +50,9 @@ export const [dockSpin, setDockSpin] = createSignal(0)
 
 /** Todos summary line (pure, testable): the latest completed todowrite
  * tool brief carries the todo array (the follow stream's
- * `JSON.stringify(output).slice(0, 300)` brief). No todos → ''. */
+ * `JSON.stringify(output).slice(0, 300)` brief). No todos → ''. Batch D5b
+ * hide-law: ALL completed → '' too (the tui-pi semantics — the row only
+ * earns its line while work remains). */
 export function todosSummaryLine(output: string | undefined): string {
 	if (output === undefined || output.trim() === "") return ""
 	try {
@@ -58,6 +60,7 @@ export function todosSummaryLine(output: string | undefined): string {
 		const todos = parseTodos(Array.isArray(parsed) ? parsed : [])
 		if (todos.length === 0) return ""
 		const done = todos.filter((t) => t.status === "completed").length
+		if (done === todos.length) return ""
 		const active = todos.find((t) => t.status === "in_progress")
 		const head = `todos [✓]${done}/${todos.length}`
 		return active ? `${head} · ${active.content}` : head
