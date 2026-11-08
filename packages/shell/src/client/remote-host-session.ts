@@ -192,7 +192,7 @@ import {
 } from "./remote-attachments.ts"
 import { askBtw, BTW_TITLE_PREFIX } from "./remote-btw.ts"
 import { RemoteSubagentPanel, type RemoteSubagentView } from "./remote-subagents.ts"
-import { DEFAULT_SUBAGENT_ROUND_LIMITS, limitsFromSettingsRows, type SubagentRoundLimits } from "../subagent-policy.ts"
+import { parseSubagentRoundLimits } from "../subagent-policy.ts"
 import { restartSamePortHost } from "./remote-restart.ts"
 import {
 	loadWorkspaceConfig,
@@ -394,11 +394,14 @@ export class RemoteHostSession {
 	/** Wave-3: subagent panel (row 33; lazy). */
 	#subagents: RemoteSubagentPanel | undefined
 	// ---- maxRounds hard-stop policy knobs (batch F1) ----
-	// The `dsh-opentui` settings snapshot the subagent panel's ladder reads;
-	// refreshed lazily (one in-flight describe at a time). The client face
-	// resolves the GLOBAL cap only — agent .md files are host-side.
-	#roundLimits: SubagentRoundLimits = { ...DEFAULT_SUBAGENT_ROUND_LIMITS }
-	#roundLimitsRefreshing = false
+	// The ladder's caps read live from the CLIENT face's real config layer:
+	// the profile config.json `maxRounds` / `maxRoundsGrace` keys through
+	// configLoad() (the same seam theme/agentsProfiles ride). The retired
+	// plugin face's settings ns `dsh-opentui` has no owning entry anymore —
+	// a describe-based provider answered defaults forever and the ladder
+	// stayed disabled (the unbounded looper of the B5 e2e finding). The
+	// client face resolves the GLOBAL cap only — agent .md files are
+	// host-side.
 	/** Wave-3: workspace overlay cache — configLoad merges it over the base (row 41). */
 	#overlayCache: WorkspaceOverlay | undefined
 
@@ -1442,31 +1445,17 @@ export class RemoteHostSession {
 	// Wave-3 subagent panel (row 33)
 	// ------------------------------------------------------------------
 
-	/** Lazy live-read of the settings knobs for the subagent ladder. */
-	#refreshRoundLimits(): void {
-		if (this.#roundLimitsRefreshing) return
-		this.#roundLimitsRefreshing = true
-		void this.#settingsClient()
-			.describeDocument()
-			.then((doc) => {
-				this.#roundLimits = limitsFromSettingsRows(doc.namespaces)
-			})
-			.catch(() => {
-				/* keep the previous snapshot; defaults disable the ladder */
-			})
-			.finally(() => {
-				this.#roundLimitsRefreshing = false
-			})
-	}
-
 	#subagentPanel(): RemoteSubagentPanel {
 		if (this.#subagents === undefined) {
 			this.#subagents = new RemoteSubagentPanel({
 				rpc: (method, args) => this.#rpc(method, args),
 				socketFactory: this.#socketFactory,
 				parentId: () => this.#sessionId,
-				limits: () => this.#roundLimits,
-				refreshLimits: () => this.#refreshRoundLimits(),
+				// Live sync read of the profile config.json caps (maxRounds /
+				// maxRoundsGrace) — every ladder decision sees the current
+				// file, the stale-snapshot window of the describe-based
+				// provider is gone with it.
+				limits: () => parseSubagentRoundLimits(this.configLoad()),
 				onHardStop: (record) =>
 					console.info(
 						`[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`,
@@ -1488,7 +1477,6 @@ export class RemoteHostSession {
 					}
 				},
 			})
-			this.#refreshRoundLimits()
 		}
 		return this.#subagents
 	}
