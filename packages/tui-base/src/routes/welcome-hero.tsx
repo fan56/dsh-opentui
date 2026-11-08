@@ -22,8 +22,10 @@
 	*/
 import { Show, type JSX } from "solid-js"
 import { pickDailyQuote } from "./quotes"
+import { GradientAsciiText } from "../component/gradient-text"
+import type { SkinColorMode } from "../skin/identity"
 
-/** The DSH brand blue for the wordmark (old-stack POWERLINE brand). */
+/** The DSH brand blue for the wordmark ramp start (skin/identity.ts). */
 export const DSH_BRAND = "#4D6BFE"
 
 /** Reactive handle the entry owns; accessors ride the stable identity. */
@@ -34,6 +36,11 @@ export interface WelcomeHeroState {
 	model: () => string | undefined
 	/** Dim color for the info/quote lines (theme.text.muted). */
 	muted?: () => string | undefined
+	/**
+	 * Active theme color mode for the identity gradient (skin contract §1);
+	 * dark default until the theme lane passes it through.
+	 */
+	mode?: () => SkinColorMode
 }
 
 /** The user's home, shortened to "~" in the info line. */
@@ -50,7 +57,10 @@ export function WelcomeHero(props: { state: WelcomeHeroState; cwd: string }): JS
 	return (
 		<Show when={props.state.visible()}>
 			<box flexDirection="column" flexShrink={0} width="100%" paddingLeft={1} paddingTop={1}>
-				<ascii_font text="DSH OPENTUI" font="block" color={DSH_BRAND} selectable={false} />
+				{/* Skin contract §1: per-cell horizontal identity gradient; the
+				    component falls back to tiny when the measured block width
+				    exceeds the terminal and repaints only on mount/resize. */}
+				<GradientAsciiText text="DSH OPENTUI" mode={props.state.mode?.() ?? "dark"} />
 				<box height={1} flexShrink={0} />
 				<text fg={props.state.muted?.()} selectable={false}>
 					{`${props.state.model() ? `${props.state.model()} · ` : ""}${shortenCwd(props.cwd)}`}

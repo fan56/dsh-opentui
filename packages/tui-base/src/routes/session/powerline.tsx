@@ -17,12 +17,35 @@
  * ThemeProvider is mounted). `bg`/`fg` accept either a hex string or an
  * RGBA token so tests and callers can mix both.
  */
-import { For, Show, type JSX } from "solid-js"
+import { createEffect, createSignal, For, on, Show, type JSX } from "solid-js"
+import { onAnimationTick } from "@opentui/solid"
 import { RGBA } from "@opentui/core"
 import type { ComponentTheme } from "../../theme/component"
+import { ROLL_MS, STREAM_FPS, getMotionTier } from "../../skin/motion"
+import { brandBlue, type SkinColorMode } from "../../skin/identity"
 
 /** A color that is either a token RGBA or a fallback hex string. */
 export type PowerlineColor = string | RGBA
+
+/**
+ * Rolling-number spec (skin contract §1 "数字滚动"): when present the
+ * footer renders the label's number through the fixed-width rolling leaf —
+ * ~0.3s eased roll to the new value at ≤12.5fps on the shared clock,
+ * instant jump on reduced/off. `text` stays the plain (already-formatted)
+ * fallback rendering.
+ */
+export interface RollingSpec {
+	/** The numeric value the label displays. */
+	value: number
+	/** Fraction digits (default 0). */
+	decimals?: number
+	/** Minimum integer-part width, space-padded (fixed-width law). */
+	width?: number
+	/** Literal text before the number ("⚡ " / "🧠 "). */
+	prefix?: string
+	/** Literal text after the number (" tok/s" / "%"). */
+	suffix?: string
+}
 
 /** One powerline segment: label text on a filled background. */
 export interface PowerlineSegment {
@@ -32,6 +55,8 @@ export interface PowerlineSegment {
 	bg: PowerlineColor
 	/** Explicit label color; defaults to autoContrast(bg). */
 	fg?: PowerlineColor
+	/** Rolling-number leaf spec; absent → static `text`. */
+	roll?: RollingSpec
 }
 
 /**
@@ -148,10 +173,12 @@ export function resolvePalette(theme?: ComponentTheme) {
  * The "dsh" brand segment. `presetLabel` (batch H2, tui-pi 60-preset footer
  * parity) appends the current agent preset — "dsh(Standard)" — and stays
  * plain "dsh" without one (no preset face, empty roster, nothing selected).
+ * Skin contract §1: the fill is the IDENTITY brand blue (dark #4D6BFE /
+ * light #3B5BDB, skin/identity.ts) instead of the theme accent token.
  */
-export function brandSegment(theme?: ComponentTheme, presetLabel?: string): PowerlineSegment {
+export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode: SkinColorMode = "dark"): PowerlineSegment {
 	const label = presetLabel ? `dsh(${presetLabel})` : "dsh"
-	return { text: label, bg: resolvePalette(theme).brand }
+	return { text: label, bg: brandBlue(mode) }
 }
 
 /** The provider segment (providerID on the purple/interactive fill). */
@@ -176,7 +203,7 @@ export function contextSegment(pct: number | null, theme?: ComponentTheme): Powe
 	if (pct === null || !Number.isFinite(pct) || pct < 0) return null
 	const p = resolvePalette(theme)
 	const bg = pct >= 90 ? p.contextDanger : pct >= 75 ? p.contextOrange : pct >= 60 ? p.contextWarn : p.contextOk
-	return { text: `🧠 ${Math.round(pct)}%`, bg }
+	return { text: `🧠 ${Math.round(pct)}%`, bg, roll: { value: pct, decimals: 0, width: 2, prefix: "🧠 ", suffix: "%" } }
 }
 
 /** The 💬 message-count segment; omitted while no message was sent. */
@@ -194,7 +221,25 @@ export function toolSegment(n: number, theme?: ComponentTheme): PowerlineSegment
 /** The ⚡ tok/s segment; omitted when tps is unknown (no measurable turn). */
 export function speedSegment(tps: number | null, theme?: ComponentTheme): PowerlineSegment | null {
 	if (tps === null || !Number.isFinite(tps) || tps < 0) return null
-	return { text: `⚡ ${Math.round(tps)} tok/s`, bg: resolvePalette(theme).speed }
+	return {
+		text: `⚡ ${Math.round(tps)} tok/s`,
+		bg: resolvePalette(theme).speed,
+		roll: { value: tps, decimals: 0, width: 3, prefix: "⚡ ", suffix: " tok/s" },
+	}
+}
+
+/**
+ * The ⏱ elapsed-turn segment (skin contract §1 "数字滚动" — the 计时
+ * number). Absent while no turn timing is provided; rolls on each new
+ * second like the other rolling numbers.
+ */
+export function elapsedSegment(seconds: number | null, theme?: ComponentTheme): PowerlineSegment | null {
+	if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return null
+	return {
+		text: `⏱ ${Math.round(seconds)}s`,
+		bg: theme?.hue.neutral[400] ?? "#616161",
+		roll: { value: seconds, decimals: 0, width: 3, prefix: "⏱ ", suffix: "s" },
+	}
 }
 
 /**
@@ -210,11 +255,83 @@ export function cacheSegment(rate: number | null, theme?: ComponentTheme): Power
 }
 
 /**
+ * Fixed-width number formatting for the rolling leaf: integer part padded
+ * to `width` display columns (space-padded, never truncated — wider values
+ * simply take more room), then the fraction digits. Pure and unit-tested.
+ */
+export function formatRolling(value: number, decimals = 0, width = 1): string {
+	const fixed = Math.abs(value).toFixed(decimals)
+	const sign = value < 0 ? "-" : ""
+	const [int, frac] = fixed.split(".")
+	const padded = (sign + (int ?? "0")).padStart(width, " ")
+	return frac !== undefined ? `${padded}.${frac}` : padded
+}
+
+/** smootherstep — the eased roll curve (tab-pulse parity), pure. */
+export function smootherstep(t: number): number {
+	const x = Math.max(0, Math.min(1, t))
+	return x * x * x * (x * (x * 6 - 15) + 10)
+}
+
+/** Interpolated roll value at progress p ∈ [0,1] (eased), pure. */
+export function rollValue(from: number, to: number, p: number): number {
+	return from + (to - from) * smootherstep(p)
+}
+
+/**
+ * The rolling-number leaf (skin contract §1 "数字滚动"): one PowerlineFooter
+ * inner leaf per rolling segment. On a value change it rolls from the shown
+ * value to the new one over ~0.3s on the renderer's SHARED animation clock
+ * (onAnimationTick at the 12.5fps cap — no setInterval, contract §2.2);
+ * reduced/off jumps straight to the new value. Fixed width via
+ * formatRolling so the powerline never re-flows mid-roll (H-risk review).
+ */
+function RollingSegmentText(props: { seg: PowerlineSegment }): JSX.Element {
+	const spec = () => props.seg.roll!
+	const [display, setDisplay] = createSignal(spec().value)
+	const [rolling, setRolling] = createSignal(false)
+	const roll = { from: 0, to: 0, started: 0 }
+	// Target watcher: reduced/off jumps straight to the new value (contract
+	// §1); full arms a ~0.3s roll.
+	createEffect(
+		on(
+			() => spec().value,
+			(target) => {
+				if (getMotionTier() !== "full") {
+					setDisplay(target)
+					return
+				}
+				roll.from = display()
+				roll.to = target
+				roll.started = performance.now()
+				if (roll.from !== roll.to) setRolling(true)
+			},
+		),
+	)
+	// The fps accessor pauses the shared clock (undefined) while idle, so
+	// the leaf only ticks during the 0.3s roll window at the 12.5fps cap.
+	onAnimationTick(
+		() => (rolling() ? STREAM_FPS : undefined),
+		() => {
+			const p = Math.min(1, (performance.now() - roll.started) / ROLL_MS)
+			setDisplay(rollValue(roll.from, roll.to, p))
+			if (p >= 1) setRolling(false)
+		},
+	)
+	const label = () => {
+		const s = spec()
+		return ` ${s.prefix ?? ""}${formatRolling(display(), s.decimals, s.width)}${s.suffix ?? ""} `
+	}
+	return <text style={{ bg: props.seg.bg, fg: props.seg.fg ?? autoContrast(props.seg.bg) }}>{label()}</text>
+}
+
+/**
  * The powerline footer: one row of chained segments plus an optional
  * right-aligned text (the clock), pushed to the row's end by a flexGrow
  * spacer. Pure presentation — callers assemble segments via the builders
- * above. The right text sits on the terminal default background, so its
- * color is theme.text.base (fallback #e6e6e6 without a provider).
+ * above; segments carrying a `roll` spec render through the fixed-width
+ * rolling leaf. The right text sits on the terminal default background, so
+ * its color is theme.text.base (fallback #e6e6e6 without a provider).
  */
 export function PowerlineFooter(props: {
 	left: PowerlineSegment[]
@@ -234,7 +351,9 @@ export function PowerlineFooter(props: {
 					const next = () => props.left[i() + 1]
 					return (
 						<>
-							<text style={{ bg: seg.bg, fg: seg.fg ?? autoContrast(seg.bg) }}>{` ${seg.text} `}</text>
+							<Show when={seg.roll} fallback={<text style={{ bg: seg.bg, fg: seg.fg ?? autoContrast(seg.bg) }}>{` ${seg.text} `}</text>}>
+								<RollingSegmentText seg={seg} />
+							</Show>
 							<Show when={next()} fallback={<text style={{ fg: seg.bg }}>{POWERLINE_ARROW}</text>}>
 								{(n) => <text style={{ fg: seg.bg, bg: n().bg }}>{POWERLINE_ARROW}</text>}
 							</Show>
@@ -267,10 +386,14 @@ export function sessionFooterSegments(data: {
 	cacheHitRate?: number | null
 	/** Current agent preset label (batch H2); absent keeps the plain "dsh". */
 	presetLabel?: string
+	/** Elapsed turn seconds for the ⏱ segment; null/absent hides it. */
+	elapsedSec?: number | null
+	/** Identity color mode (brand segment fill); dark default. */
+	mode?: SkinColorMode
 	theme?: ComponentTheme
 }): PowerlineSegment[] {
 	const theme = data.theme
-	const segs: PowerlineSegment[] = [brandSegment(theme, data.presetLabel)]
+	const segs: PowerlineSegment[] = [brandSegment(theme, data.presetLabel, data.mode)]
 	const add = (s: PowerlineSegment | null) => {
 		if (s) segs.push(s)
 	}
@@ -281,6 +404,7 @@ export function sessionFooterSegments(data: {
 	add(cacheSegment(data.cacheHitRate ?? null, theme))
 	add(messagesSegment(data.messages ?? 0, theme))
 	add(toolSegment(data.tools ?? 0, theme))
+	add(elapsedSegment(data.elapsedSec ?? null, theme))
 	add(speedSegment(data.tps ?? null, theme))
 	// Batch D3: the search discoverability hint (batch H1) left the strip —
 	// key hints live on their own last row (./hints-line.tsx, tui-pi
