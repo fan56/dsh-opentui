@@ -84,6 +84,21 @@ export function toolDetail(rawArguments: string, limit = 120): string {
 		if (typeof parsed.query === "string") parts.push(`query: ${parsed.query}`)
 		if (typeof parsed.url === "string") parts.push(parsed.url)
 	if (typeof parsed.description === "string" && parts.length === 0) parts.push(parsed.description)
+	// ask_agent shape (batch D5, real-model capture): the relay ask carries
+	// { agent_id, prompt | message } — same delegation family as use_agent.
+	// The human summary reads `→ <agent> · <content>`; the raw-JSON fallback
+	// must never fire for it.
+	const agentId = typeof parsed.agent_id === "string" ? parsed.agent_id.trim() : ""
+	if (agentId !== "") {
+		const content =
+			typeof parsed.prompt === "string" && parsed.prompt.trim() !== ""
+				? parsed.prompt
+				: typeof parsed.message === "string"
+					? parsed.message
+					: ""
+		const summary = content.trim() !== "" ? `→ ${agentId} · ${content.trim()}` : `→ ${agentId}`
+		return clipToWidth(summary.replace(/\n/g, " ⏎ "), limit)
+	}
 	// use_agent shape (batch D1, dsh-tui-pi parity): the delegation tools carry
 	// { agent, prompt } — the human summary names the agent and leads with the
 	// prompt's first line; the raw-JSON fallback must never fire for it.

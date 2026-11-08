@@ -154,3 +154,31 @@ describe("toolDetail: use_agent shape (batch D1)", () => {
 		expect(detail.endsWith("…")).toBe(true)
 	})
 })
+
+describe("toolDetail: ask_agent shape (batch D5 live finding)", () => {
+	// Real-model capture: the ask_agent tool row painted its args raw —
+	// `⚙ ask_agent · … · {"agent_id":…}` — because toolDetail only knew the
+	// use_agent keys. The human line reads `→ <agent> · <content>` (the
+	// use_agent row's style) and raw JSON must never reach the screen.
+	test("humanizes { agent_id, prompt } as → agent · content — never raw JSON", () => {
+		const detail = toolDetail(JSON.stringify({ agent_id: "oldfox", prompt: "修复登录 bug\n然后跑测试" }))
+		expect(detail).toBe("→ oldfox · 修复登录 bug ⏎ 然后跑测试")
+		expect(detail.includes("{")).toBe(false)
+	})
+	test("message carries the content when prompt is absent (the captured shape)", () => {
+		const detail = toolDetail('{"agent_id":"牛马狗","message":"检查一下构建"}')
+		expect(detail).toBe("→ 牛马狗 · 检查一下构建")
+		expect(detail.includes("agent_id")).toBe(false)
+	})
+	test("agent_id alone still names the target", () => {
+		expect(toolDetail('{"agent_id":"sa_1"}')).toBe("→ sa_1")
+	})
+	test("empty agent_id falls through — no dangling arrow", () => {
+		expect(toolDetail(JSON.stringify({ agent_id: "", prompt: "one line" }))).toBe("one line")
+	})
+	test("the detail budget is display columns with a CJK message", () => {
+		const detail = toolDetail(JSON.stringify({ agent_id: "牛马狗", message: "构建".repeat(80) }))
+		expect(detail.length).toBeLessThanOrEqual(121)
+		expect(detail.endsWith("…")).toBe(true)
+	})
+})
