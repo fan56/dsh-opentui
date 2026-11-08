@@ -3,6 +3,9 @@
 // folding, the child-follow transcript pump (address.kind:'subagent'), and
 // the steer/interrupt wire shapes — fake rpc + fake mux sockets.
 import { describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { RemoteSubagentPanel, descriptorOf, totalTokensOf, type RemoteSubagentView } from "../src/client/remote-subagents.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 import { RemoteRpcError, type ClientConnection } from "../src/client/transport.ts"
@@ -235,9 +238,66 @@ describe("facade subagent wiring", () => {
 	})
 })
 
+// maxRounds hard-stop ladder on the client face (the B5 e2e finding's fix):
+// the caps ride the CLIENT config layer — the profile config.json
+// `maxRounds`/`maxRoundsGrace` keys through configLoad() — not the retired
+// plugin face's settings ns `dsh-opentui` (no owning entry anymore → the
+// describe-based provider answered defaults forever and the ladder stayed
+// disabled: the unbounded looper of e2e 62). Real facade, real panel, real
+// policy: a scratch DSH_HOME profile drives the cap; child assistant
+// messages on the follow pump count the rounds.
+describe("maxRounds ladder caps from the client configLoad seam", () => {
+	const childAssistantMessage = (sock: FakeMuxSocket, seq: number) =>
+		sock.item({
+			type: "event",
+			event: { type: "assistant/message", seq, time: Date.now(), data: { message: { content: [{ type: "text", text: `round ${seq}` }] } } },
+		})
+
+	test("profile config.json caps drive wrap-up + force-stop (real facade path)", async () => {
+		const dshHome = mkdtempSync(join(tmpdir(), "dsh-ladder-"))
+		const profileDir = join(dshHome, "profiles", "opentui")
+		mkdirSync(profileDir, { recursive: true })
+		writeFileSync(join(profileDir, "config.json"), JSON.stringify({ maxRounds: 2, maxRoundsGrace: 1 }))
+		try {
+			const { session, connection, lastSocket } = await facadeWithChild({ dshHome })
+			await until(() => session.subagentViews().length > 0)
+			// Round 1: below the cap — nothing fires.
+			childAssistantMessage(lastSocket(), 1)
+			// Round 2 = cap: stage 1, the wrap-up steer (microtask-deferred).
+			childAssistantMessage(lastSocket(), 2)
+			await until(() => rpcOf(connection, "subagents/prompt") !== undefined)
+			expect(session.subagentViews()[0]!.injectedRound).toBe(2)
+			expect(session.subagentViews()[0]!.hardStopRound).toBeUndefined()
+			// Round 3 = cap + grace: stage 2, the force-stop.
+			childAssistantMessage(lastSocket(), 3)
+			await until(() => rpcOf(connection, "subagents/interruptByParent") !== undefined)
+			await until(() => session.subagentViews()[0]!.hardStopRound === 3)
+			expect(session.subagentViews()[0]!.status).toBe("cancelled")
+			// Stage 2 is latched — a late round never re-fires the stop.
+			childAssistantMessage(lastSocket(), 4)
+			await new Promise((resolve) => setTimeout(resolve, 20))
+			expect(connection.rpcCalls.filter((c) => c.method === "subagents/interruptByParent").length).toBe(1)
+			await session.dispose()
+		} finally {
+			rmSync(dshHome, { recursive: true, force: true })
+		}
+	})
+
+	test("no config caps = ladder disabled (defaults stay off, the staged-semantics parity)", async () => {
+		const { session, connection, lastSocket } = await facadeWithChild()
+		await until(() => session.subagentViews().length > 0)
+		for (const seq of [1, 2, 3, 4]) childAssistantMessage(lastSocket(), seq)
+		await new Promise((resolve) => setTimeout(resolve, 30))
+		expect(rpcOf(connection, "subagents/prompt")).toBeUndefined()
+		expect(rpcOf(connection, "subagents/interruptByParent")).toBeUndefined()
+		expect(session.subagentViews()[0]!.hardStopRound).toBeUndefined()
+		await session.dispose()
+	})
+})
+
 // Facade harness: drive one main turn that emits a tool-workflow/agent-start
 // journal row, so the panel adopts through the real #followSink.onRecord path.
-async function facadeWithChild() {
+async function facadeWithChild(opts: { dshHome?: string } = {}) {
 	const connection = new FakeConnection()
 	connection.rpcHandler = (method) => {
 		if (method === "session/create") return { sessionId: "main-1" }
@@ -251,6 +311,7 @@ async function facadeWithChild() {
 		connection: connection as unknown as ClientConnection,
 		cookieHeader: "dsh-auth-x=v1.test",
 		cwd: "/tmp/workspace",
+		...(opts.dshHome !== undefined ? { dshHome: opts.dshHome } : {}),
 		socketFactory: () => {
 			const socket = new FakeMuxSocket()
 			sockets.push(socket)

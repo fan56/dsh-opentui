@@ -85,13 +85,17 @@ export interface RemoteSubagentPanelOptions {
 	/** Panel snapshot sink (wired to TurnCallbacks.onSubagentUpdate). */
 	onUpdate?(views: RemoteSubagentView[]): void
 	/**
-	 * maxRounds policy knobs (feature batch F1) — the facade's cached
-	 * `dsh-opentui` settings snapshot. Absent = the ladder is disabled on
-	 * this panel. The client face resolves the GLOBAL cap only (agent
-	 * .md files are host-side; the per-agent tier stays plugin-mode).
+	 * maxRounds policy knobs (feature batch F1) — the facade's live cap
+	 * read: the profile config.json `maxRounds`/`maxRoundsGrace` keys
+	 * through configLoad (the client face's real config layer; the retired
+	 * plugin face's settings ns `dsh-opentui` has no owning entry anymore).
+	 * Absent = the ladder is disabled on this panel. The client face
+	 * resolves the GLOBAL cap only (agent .md files are host-side; the
+	 * per-agent tier stays plugin-mode).
 	 */
 	limits?: () => SubagentRoundLimits
-	/** Kick a lazy settings refresh before each ladder decision. */
+	/** Kick a lazy cap refresh before each ladder decision (optional — a
+	 * synchronous limits() provider needs no refresh kick). */
 	refreshLimits?: () => void
 	/** Hard-stop report sink (the force-stop marker fold). */
 	onHardStop?(record: HardStopRecord): void

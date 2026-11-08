@@ -13,10 +13,7 @@
  *   `subagents/prompt` (delivery 'steer'), force-stop rides
  *   `subagents/interruptByParent`.
  *
- * Three knobs, read live from the `dsh-opentui` settings namespace at every
- * decision point (the facades cache the describe() snapshot and refresh it
- * lazily — the next round count picks up an edit, same semantics as the
- * dsh-tui settings browser):
+ * Three knobs, read live by each facade at every decision point:
  * - `maxRounds` (global): caps a child's assistant messages (each LLM
  *   round-trip is one "round"). `<= 0` disables the whole ladder.
  * - `maxRoundsGrace`: the wrap-up grace window. After the wrap-up lands at
@@ -26,6 +23,15 @@
  *   files are host-side): overrides the global cap for children whose
  *   descriptor label resolves to a registered agent. An unresolvable label
  *   falls back to the global cap, never widens it.
+ *
+ * CAP SOURCE (client face, post-plugin-retirement): the profile config.json
+ * `maxRounds` / `maxRoundsGrace` keys through the client configLoad seam —
+ * the same layer theme/agentsProfiles ride. The retired plugin face's
+ * settings ns `dsh-opentui` no longer has an owning entry, so a
+ * describe-based provider answered defaults forever and the ladder stayed
+ * disabled (the B5 e2e finding: an unbounded looper child). The settings-ns
+ * row parser ({@link limitsFromSettingsRows}) is kept for the host settings
+ * describe surface, but the client ladder no longer sources from it.
  *
  * The TWO-STAGE ladder (per child, caps frozen at the first crossing):
  *   Stage 1 — at `cap`: one wrap-up message ("finish now, no more tools").
