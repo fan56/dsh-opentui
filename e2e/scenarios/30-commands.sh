@@ -126,25 +126,25 @@ ensure_editor_ready 'editor usable after the unknown command'
 
 # ============================================================================
 # F7c extension: /think /hotkeys /plugins (commands.ts F7a/F7b)
-# DEPENDENCY GATE (the 65 model): these commands need the dist-host rebuild
-# carrying F7a (/plugins) and F7b (/think /hotkeys). The gate greps the
-# INSTALLED bundle; gate dark -> only the pre-verifiable G0 runs and each
+# DEPENDENCY GATE (the 65 model): the gate greps the /src workspace snapshot
+# (the client face's runtime sources — the dist-host bundle is retired with
+# the plugin face); gate dark -> only the pre-verifiable G0 runs and each
 # group is logged skipped-by-gate; gate lit -> the groups hard-assert.
 # ============================================================================
-NEWCMDS_BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+NEWCMDS_BUNDLE="/src/packages/tui-base/src"
 THINK_GATE=0
 HOTKEYS_GATE=0
 PLUGINS_GATE=0
-if [ -f "$NEWCMDS_BUNDLE" ]; then
-  grep -qF 'Select reasoning effort' "$NEWCMDS_BUNDLE" && THINK_GATE=1
-  grep -qF 'Keybinds (defaults' "$NEWCMDS_BUNDLE" && HOTKEYS_GATE=1
-  grep -qF 'no plugins installed' "$NEWCMDS_BUNDLE" && PLUGINS_GATE=1
+if [ -d "$NEWCMDS_BUNDLE" ]; then
+  grep -rqF 'Select reasoning effort' "$NEWCMDS_BUNDLE" && THINK_GATE=1
+  grep -rqF 'Keybinds (defaults' "$NEWCMDS_BUNDLE" && HOTKEYS_GATE=1
+  grep -rqF 'no plugins installed' "$NEWCMDS_BUNDLE" && PLUGINS_GATE=1
 fi
 
 if (( THINK_GATE )) && (( HOTKEYS_GATE )) && (( PLUGINS_GATE )); then
-  ok 'dependency gate LIT: installed dist-host carries /think, /hotkeys and /plugins'
+  ok 'dependency gate LIT: the workspace sources carry /think, /hotkeys and /plugins'
 else
-  warn 'dependency gate DARK: dist-host predates the F7a/F7b commands (rebuild pending) — new-command groups skipped-by-gate'
+  warn 'dependency gate DARK: sources predate the F7a/F7b commands — new-command groups skipped-by-gate'
 fi
 
 # --- G0: pre-verifiable absence on the stale bundle (per-command gates) ------
@@ -243,16 +243,11 @@ if (( PLUGINS_GATE )); then
     PANE="$(capture)"
     if printf '%s' "$PANE" | grep -qF 'no plugins installed'; then
       ok 'clean profile: panel empty state rendered (no user plugins installed)'
-    elif [ "$E2E_FACE" = client ]; then
-      # The client face runs the provisioned opentui profile (web template)
-      # whose plugin roster is empty-by-construction — the baked @aiwayds
-      # closure is a plugin-face profile artifact. Panel OPEN is the
-      # client-face contract here; the roster content stays a warn, not a
-      # product failure.
-      warn 'client face: plugins panel opened but roster is empty (opentui profile ships no bundles — face difference, not a regression)'
     else
-      assert_matches 'panel lists a bundle row (name@version)' \
-        '@[0-9]+\.[0-9]' "$PANE"
+      # The opentui profile's plugin roster is empty-by-construction (the
+      # baked @aiwayds closure was a retired plugin-face artifact) — panel
+      # OPEN is the contract here; any roster content is unexpected.
+      warn 'plugins panel opened but roster is not the expected empty state'
     fi
     esc_until_gone 'plugins panel closes on Esc' '🔌 Plugins'
   fi

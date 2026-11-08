@@ -25,7 +25,7 @@ set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'model profiles: /agents save / use / rm over the profile config store'
 
-BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+BUNDLE="/src/packages/tui-base/src"
 # Face-aware profile store path (FACE_CFG from lib/common.sh): the client
 # face runs the opentui profile under the scratch DSH_HOME, not the baked
 # dsh-opentui profile.
@@ -58,7 +58,7 @@ sleep 2
 
 # --- the dependency gate --------------------------------------------------------
 AGENTS_GATE=0
-if [ -f "$BUNDLE" ] && grep -qF 'agentsProfiles' "$BUNDLE"; then
+if [ -d "$BUNDLE" ] && grep -rqF 'agentsProfiles' "$BUNDLE"; then
   AGENTS_GATE=1
 fi
 
@@ -77,7 +77,7 @@ if (( AGENTS_GATE == 0 )); then
   summary
   exit 0
 fi
-ok 'dependency gate LIT: installed dist-host carries the /agents store'
+ok 'dependency gate LIT: the workspace sources carry the /agents store'
 
 # --- 1. bare /agents prints the empty roster -----------------------------------
 ensure_editor_ready 'editor clean before the /agents lifecycle' || true

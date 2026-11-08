@@ -29,15 +29,10 @@ set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario '/login: add-provider picker + six-step custom form + Esc abandon'
 
-# Face-aware: the plugin face greps the deployed dist-host; the client face
-# runs the /src workspace snapshot (grep -r over the sources).
-if [ "$E2E_FACE" = client ]; then
-  BUNDLE="/src/packages/tui-base/src"
-  BUNDLE_GREP=(grep -rqF)
-else
-  BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
-  BUNDLE_GREP=(grep -qF)
-fi
+# The client face runs the /src workspace snapshot (grep -r over the
+# sources) — the dist-host bundle is retired with the plugin face.
+BUNDLE="/src/packages/tui-base/src"
+BUNDLE_GREP=(grep -rqF)
 
 # --- host guard ---------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
@@ -60,9 +55,8 @@ if [ -e "$BUNDLE" ] && "${BUNDLE_GREP[@]}" 'Add provider' "$BUNDLE" 2>/dev/null 
   FORM_GATE=1
 fi
 
-# Settings patch the login commit writes into (the reference's evidence file).
-# Face-aware: the face's own profile dir (plugin face: $HOME/.dsh/
-# dsh-opentui; client face: the scratch DSH_HOME's opentui profile).
+# Settings patch the login commit writes into (the reference's evidence
+# file): the scratch DSH_HOME's opentui profile patch.
 PATCH="$FACE_PATCH"
 UNIQUE_ID='acme-gateway-h4'
 UNIQUE_KEY='sk-e2e-h4-login-key'

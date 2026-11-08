@@ -28,7 +28,7 @@ set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'agent preset switch (/preset picker + /preset next rotation)'
 
-BUNDLE="/usr/local/lib/node_modules/@aiwayds/dsh-opentui/dist-host/index.js"
+BUNDLE="/src/packages/tui-base/src"
 
 # --- host guard ---------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
@@ -46,7 +46,7 @@ sleep 2
 
 # --- the dependency gate --------------------------------------------------------
 PICKER_GATE=0
-if [ -f "$BUNDLE" ] && grep -qF 'Select agent preset' "$BUNDLE"; then
+if [ -d "$BUNDLE" ] && grep -rqF 'Select agent preset' "$BUNDLE"; then
   PICKER_GATE=1
 fi
 
@@ -65,7 +65,7 @@ if (( PICKER_GATE == 0 )); then
   summary
   exit 0
 fi
-ok 'dependency gate LIT: installed dist-host carries the /preset picker'
+ok 'dependency gate LIT: the workspace sources carry the /preset picker'
 
 # --- probe roster availability live: /preset's own reaction is the oracle -----
 # (C15: the footer brand segment was the original probe, but it reflects the

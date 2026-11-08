@@ -10,12 +10,11 @@ RESULTS_DIR="${RESULTS_DIR:-/tmp/e2e-results}"
 rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 
-printf 'e2e runner: face — %s\n' "${E2E_FACE:-plugin}"
+printf 'e2e runner: face — %s (client only since batch B5)\n' "${E2E_FACE:-client}"
 printf 'e2e runner: image toolchain — %s | node %s | tmux %s\n' \
   "$(uname -m)" "$(node --version)" "$(tmux -V)"
-printf 'e2e runner: opentui tarball — %s\n' "$(ls /dist/ 2>/dev/null || echo none)"
-printf 'e2e runner: profile — %s\n' \
-  "$(ls /root/.dsh/profiles/dsh-opentui/cordis.patch.yml 2>/dev/null || echo MISSING)"
+printf 'e2e runner: profile — opentui under the scratch %s (provisioned per scenario by start_tui/ensure_client_profile)\n' \
+  "${CLIENT_DSH_HOME:-/tmp/client-dsh}"
 
 # E2E_SCENARIOS overrides the list (space-separated) so callers can scope a
 # run without hand-rolling podman incantations.

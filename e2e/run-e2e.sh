@@ -53,12 +53,18 @@ podman build -f "$REPO_ROOT/e2e/Containerfile" \
   -t "$IMAGE" "$REPO_ROOT"
 
 printf '==> running scenario suite (all state stays inside the container)\n'
-# Face under test: plugin (default, unchanged v1 behavior) or client
-# (E2E_FACE=client — the bun TUI + resident-host topology users run daily).
-# The client face needs the /src workspace snapshot baked by the
-# Containerfile's client-face layer; see e2e/lib/common.sh for the runtime
-# wiring (scratch DSH_HOME + provisioned opentui profile).
-FACE="${E2E_FACE:-plugin}"
+# Face under test: the client face only (batch B5) — the bun TUI client +
+# resident `dsh --profile opentui` host topology users run daily. The plugin
+# face is retired (ADR-0005 / batch B4 removed the --plugin chain): the
+# value is rejected outright so stale invocations fail loudly instead of
+# booting a dead topology. See e2e/lib/common.sh for the runtime wiring
+# (scratch DSH_HOME + provisioned opentui profile).
+FACE="${E2E_FACE:-client}"
+if [ "$FACE" = plugin ]; then
+  printf 'ERROR: E2E_FACE=plugin is retired (the --plugin mode chain was removed in batch B4).\n' >&2
+  printf '       The suite now runs the client face only; unset E2E_FACE or set it to client.\n' >&2
+  exit 1
+fi
 RUN_ARGS=(--rm --name dsh-opentui-e2e -v "$REPO_ROOT/e2e:/e2e:ro" -e "E2E_FACE=$FACE")
 # Subset override consumed by run-all.sh; forwarded so callers can scope a
 # run without hand-rolling podman incantations.

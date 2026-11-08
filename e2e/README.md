@@ -8,36 +8,30 @@ markers.
 
 ## What boots in the container
 
-Plugin mode. The image installs the tarball packed from this source tree
-globally and boots the `dsh-opentui` launcher, which injects node's
-`--experimental-ffi` into `NODE_OPTIONS` and execs
-`dsh --profile dsh-opentui` (the committed `dist-host/` plugin under the
-node runtime). Client mode (`bun src/client-entry.tsx`) needs bun + the
-workspace and is out of scope for the container; the suite is
-mode-agnostic — the goal is "the same cases pass on opentui".
+Client mode only (batch B5; the plugin face is retired — ADR-0005, batch
+B4 removed the `--plugin` chain). The image carries bun + a workspace
+snapshot at `/src`, and the suite boots the repo-root `./dsh-opentui`
+launcher, which execs `bun --preload ... client-entry.tsx` (the bun TUI).
+The client spawns/joins the resident `dsh --profile opentui` host (node,
+from the global dsh closure) through the single-instance lifecycle.
 
-Node 26 (>= 26.4) is a hard requirement of the plugin path: OpenTUI's
+Node 26 (>= 26.4) is a hard requirement of the resident host: OpenTUI's
 native core needs `--experimental-ffi`, which node 22 rejects as a bad
 option. (The `dsh-tui-pi` image runs node 22; this one cannot.)
 
-Profile provisioning mirrors the repo's own smoke path
-(`packages/shell/scripts/smoke-boot.mjs`) via the idempotent
-`scripts/install-profile.mjs`:
-
-- tarball as a `file:` dep (`--dep file:/dist/aiwayds-dsh-opentui-*.tgz`)
-- patch layer: provider route (`zai-coding-cn`), default model pin
-  (`glm-5.3-flash`, effort `high`), plugin insert (theme catppuccin-mocha)
-- hoisted `pnpm install` inside the profile
-- solid-js pinned to its client build (by install-profile.mjs itself)
-- `@deepseek-ai/dsh-llm` linked from the global dsh closure
-
-All of this runs at IMAGE BUILD time; scenarios only boot. Nothing touches
-host state — every boot happens inside the container's own `~/.dsh`.
+The `opentui` profile is NOT baked into the image: `lib/common.sh`'s
+`start_tui` / `ensure_client_profile` provisions it at runtime into the
+scratch `DSH_HOME` (`/tmp/client-dsh`) from the workspace snapshot —
+`provision-opentui-profile.mjs` for the profile, then the bake scripts
+(mock LLM endpoint into the patch layer, jev dispatch chain +
+subagent-registry bundle members, hoisted `pnpm install` inside the
+profile). Nothing touches host state — every boot happens inside the
+container's own scratch home.
 
 ## Files
 
 - `Containerfile` — ubuntu 24.04 + node 26 + tmux + global
-  `pnpm`/`dsh` + tarball pack (`/dist`) + profile bootstrap
+  `pnpm`/`dsh` + bun + the `/src` workspace snapshot
 - `lib/common.sh` — markers, tmux driving (start/wait/quit), assert
   primitives (copied as-is from dsh-tui-pi)
 - `scenarios/20-start.sh` — first screen: composer placeholder, powerline
@@ -89,12 +83,12 @@ typed seconds later. `ensure_editor_ready` proves the editor through the
 palette mirror (`/quit` echo, backspaces + trailing `/` clear), not the
 composer value row.
 
-Known anomaly: bare `/model` never opens the picker in the container — the
-plugin seam's `modelCatalog()` is built from `listProviders()`, which is
-empty on this path (`packages/shell/src/host-session-seam-adapter.ts`);
-`/model` prints `no models in the catalog`. Scenario 30 asserts the captured
-behavior and that no picker opened (it flips to FAIL once a catalog exists —
-update the scenario then).
+Known anomaly (plugin-era record, kept for history): bare `/model` used to
+never open the picker in the container — the retired plugin seam's
+`modelCatalog()` was built from an empty `listProviders()`; `/model`
+printed `no models in the catalog`. The client face resolves the catalog
+through the resident host, so scenario 30's captured-behavior assertion may
+flip once the picker opens there — update the scenario then.
 
 Known limitation: `/quit`, Ctrl+C x2 and Ctrl+D do not currently exit the
 app inside this container (same upstream bug family) — `lib/common.sh`'s
@@ -104,11 +98,15 @@ clean up via `kill_tui` + container exit.
 ## Run
 
 ```sh
-# everything (builds the image, runs the suite):
+# everything (builds the image, runs the suite — client face only):
 ./e2e/run-e2e.sh
 
 # subset only:
 E2E_SCENARIOS="20-start" ./e2e/run-e2e.sh
+
+# client face via the runtime-assembly path (no image rebuild; pulls from
+# the npmmirror — use when the podman VM cannot reach registry.npmjs.org):
+E2E_SCENARIOS="20-start" ./e2e/run-client-e2e.sh
 
 # directly against an already-built image:
 podman run --rm -v "$PWD/e2e:/e2e:ro" localhost/dsh-opentui-e2e:latest \
