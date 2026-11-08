@@ -32,7 +32,7 @@
  * count (auto-height boxes collapse in flex columns) and flexShrink=0 so
  * the composer keeps its own height below it.
  */
-import { For, createEffect, createSignal, onCleanup, Show, type JSX } from "solid-js"
+import { For, createEffect, createSignal, onCleanup, Show, untrack, type JSX } from "solid-js"
 import { useTerminalDimensions, onAnimationTick } from "@opentui/solid"
 import { parseColor, TextAttributes, type RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
@@ -414,14 +414,25 @@ export function createFrameLatch(ms: number = ACTIVITY_FRAME_DEFER_MS) {
 	return {
 		/** Deferred turn-liveness accessor for the JSX `Show`. */
 		shown: (): boolean => latch().shown,
-		/** Feed a turn-liveness reading (an effect in the dock body). */
+		/** Feed a turn-liveness reading (an effect in the dock body).
+		 * FIX (feedback-loop): the latch read here MUST be untracked. The dock
+		 * wires `createEffect(() => activityFrameLatch.push(turnActive()))` —
+		 * a tracked read of `latch()` inside push makes that effect subscribe
+		 * to the very signal push WRITES, and `frameLatchNext` returns a fresh
+		 * object on every flip, so Object.is always reports a change: the
+		 * effect re-fires synchronously, re-clears the just-armed timer and
+		 * re-arms it — infinite recursion (stack overflow in bare solid;
+		 * inside the app the render layer swallows it, the latch never leaves
+		 * `pending`, and the activity frame NEVER mounts). `untrack` keeps the
+		 * effect subscribed to turn-liveness only; the JSX `Show` still reads
+		 * `shown()` tracked, so deferred mount/unmount stay reactive. */
 		push: (target: boolean): void => {
-			const next = frameLatchNext(latch(), target)
+			const next = frameLatchNext(untrack(latch), target)
 			clear()
 			setLatch(next.latch)
 			if (next.schedule) timer = setTimeout(() => {
 				timer = undefined
-				setLatch(frameLatchFire(latch()))
+				setLatch(frameLatchFire(untrack(latch)))
 			}, ms)
 		},
 		/** Unmount cleanup (contract §2.2: one-shot timers die with the owner). */
