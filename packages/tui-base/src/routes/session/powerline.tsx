@@ -282,8 +282,8 @@ export function sessionFooterSegments(data: {
 	add(messagesSegment(data.messages ?? 0, theme))
 	add(toolSegment(data.tools ?? 0, theme))
 	add(speedSegment(data.tps ?? null, theme))
-	// Search discoverability hint (batch H1, tui-pi 22-search parity): the
-	// reference pins a 'Ctrl+Shift+F: search' footer segment, default on.
-	add({ text: "Ctrl+Shift+F: search", bg: resolvePalette(theme).thinking.off })
+	// Batch D3: the search discoverability hint (batch H1) left the strip —
+	// key hints live on their own last row (./hints-line.tsx, tui-pi
+	// FooterHint after PowerlineFooter); the powerline is pure segments.
 	return segs
 }

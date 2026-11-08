@@ -40,6 +40,8 @@ import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
 import { WidgetsDock } from "../src/routes/session/widgets-dock"
 import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
+import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
+import { HintsLine } from "../src/routes/session/hints-line"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
@@ -228,7 +230,10 @@ function V2SessionPage(props: {
 			type: "message.part.updated",
 			details: { messageID: "cmd", part: { type: "text", id: `cmd-${++cmdOrdinal}`, text } },
 		})
-	registerSubagentSteerFeedback(sayLine)
+	// Batch D3: the steer outcome echo is a TRANSIENT notice (dsh-tui-pi
+	// viewer.steer notices) — the notices slot below lastRequest, not a
+	// permanent transcript row.
+	registerSubagentSteerFeedback((line: string) => void showNotice(line))
 	const slash = createSlashHost({
 		seam,
 		say: sayLine,
@@ -350,6 +355,15 @@ function V2SessionPage(props: {
 					seam,
 					projection,
 					scrollRef: (value: ScrollBoxRenderable | undefined) => (transcriptScroll = value),
+					// Batch D3 status slot (dsh-tui-pi dock top, index.ts:846 Loader):
+					// the 🐳 comet StatusBar moved here from below the composer —
+					// mount-on-busy, zero rows idle. Getter-prop law: phase is a getter.
+					status: createComponent(StatusBar, {
+						get phase() {
+							return busy() ? "stream" : null
+						},
+						elapsed,
+					}),
 					// Batch D1 widgets slot (dsh-tui-pi dock structure): the fixed
 					// Todos → Think → Tool panels ride the SAME projection the
 					// transcript paints — the dock reads the tool/reasoning rows the
@@ -370,10 +384,14 @@ function V2SessionPage(props: {
 							return lastRequest()
 						},
 					}),
+					// Batch D3 notices slot (dsh-tui-pi tui.ts:256): stacked
+					// auto-dismissing lines below lastRequest, above the powerline.
+					notices: createComponent(NoticesDock, {}),
 					get children() {
 						return createComponent(SessionComposer, {
 							seam,
 							send,
+							footerHint: false,
 								onBusyChange: setComposerBusy,
 								ref: (r: { focused(): boolean; focus(): void }) => (composerRef = r),
 							slashKeyFilter: slash.slashKeyFilter,
@@ -417,12 +435,9 @@ function V2SessionPage(props: {
 				// REMOUNTED the whole subtree — the SessionComposer owning the
 				// in-flight turn was disposed and its busy=false dropped by its
 				// disposed guard: "Writing…" frozen after a settled turn.
-				createComponent(StatusBar, {
-					get phase() {
-						return busy() ? "stream" : null
-					},
-					elapsed,
-				}),
+				// Batch D3: the StatusBar moved to the dock top (Transcript status
+				// slot); the page bottom is the powerline, then the hints row LAST
+				// (dsh-tui-pi PowerlineFooter → FooterHint order).
 				createComponent(PowerlineFooter, {
 					get left() {
 						return segments()
@@ -431,6 +446,11 @@ function V2SessionPage(props: {
 						return clock(now())
 					},
 					theme,
+				}),
+				createComponent(HintsLine, {
+					get busy() {
+						return busy()
+					},
 				}),
 				overlayHost,
 			]

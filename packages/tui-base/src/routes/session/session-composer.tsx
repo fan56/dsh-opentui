@@ -83,11 +83,13 @@ export type SessionComposerProps = {
 	slashPalette?: () => JSX.Element
 	/** Palette height contribution to the composer's explicit root height. */
 	slashHeight?: () => number
+	/** Batch D3: false drops the composer's own hint row — the page paints
+	 * the key hints on its dedicated last row (./hints-line.tsx). */
+	footerHint?: boolean
 }
 
-const FOOTER_HEIGHT = 1
-
 export function SessionComposer(props: SessionComposerProps) {
+	const FOOTER_HEIGHT = props.footerHint === false ? 0 : 1
 	const renderer = useRenderer()
 	const theme = useThemeOptional()
 	const color = {
@@ -249,14 +251,16 @@ export function SessionComposer(props: SessionComposerProps) {
 					})
 				}}
 			/>
-			<box height={FOOTER_HEIGHT} flexShrink={0} flexDirection="row" gap={2}>
-				<Show
-					when={busy()}
-					fallback={<text fg={color.hint()}>{"enter send · alt+enter newline · ↑↓ history"}</text>}
-				>
-					<text fg={color.busy()}>{"* streaming… enter steers the running turn"}</text>
-				</Show>
-			</box>
+			<Show when={FOOTER_HEIGHT > 0}>
+				<box height={FOOTER_HEIGHT} flexShrink={0} flexDirection="row" gap={2}>
+					<Show
+						when={busy()}
+						fallback={<text fg={color.hint()}>{"enter send · alt+enter newline · ↑↓ history"}</text>}
+					>
+						<text fg={color.busy()}>{"* streaming… enter steers the running turn"}</text>
+					</Show>
+				</box>
+			</Show>
 		</box>
 	)
 }

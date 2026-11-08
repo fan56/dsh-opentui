@@ -139,7 +139,7 @@ export function StatusBar(props: {
 
 	return (
 		<Show when={props.phase !== null}>
-			<box style={{ flexDirection: "row", paddingLeft: 1, paddingRight: 1, height: 1, flexGrow: 0 }}>
+			<box style={{ flexDirection: "row", paddingLeft: 1, paddingRight: 1, height: 1, flexGrow: 0, flexShrink: 0 }}>
 				<For each={row()}>
 					{(r) => (
 						<text style={{ fg: r.fg }} wrapMode="none">

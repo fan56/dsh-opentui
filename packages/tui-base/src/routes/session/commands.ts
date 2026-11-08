@@ -35,6 +35,7 @@ import {
 	validateRouteId,
 	type CatalogEntry,
 } from "./login"
+import { hintsShown, setHintsShown } from "./hints-line"
 
 /** One registry row: name carries the leading slash ("/help"). */
 export interface SlashCommand {
@@ -595,6 +596,15 @@ export function coreCommands(): SlashCommand[] {
 			// Feature batch F7b. Static keybind surface: rows generated from
 			// THIS stack's config/keybind.ts Definitions (the /help print path
 			// — aligned transcript lines, no overlay, no busy-gate).
+			// Batch D3: the bottom key-hint row toggle (./hints-line.tsx).
+			name: "/hints",
+			description: "toggle the key hints row",
+			run(ctx) {
+				setHintsShown((shown) => !shown)
+				ctx.say(hintsShown() ? "key hints: on" : "key hints: off")
+			},
+		},
+		{
 			name: "/hotkeys",
 			description: "show keybinds",
 			run(ctx) {

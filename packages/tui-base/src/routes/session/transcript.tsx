@@ -56,6 +56,14 @@ export type TranscriptProps = {
 	syntaxStyle?: SyntaxStyle
 		/** Bottom slot: the composer. */
 		children?: JSX.Element
+		/** Batch D3 status slot (dsh-tui-pi dock top, index.ts:846 Loader):
+		 * the running indicator rendered ABOVE the widgets slot — the page
+		 * wires the 🐳 comet StatusBar (mount-on-busy, zero rows idle). */
+		status?: JSX.Element
+		/** Batch D3 notices slot (dsh-tui-pi tui.ts:256 transient notices):
+		 * stacked auto-dismissing lines BELOW the lastRequest slot (directly
+		 * above the page's powerline) — see ./notices-dock.tsx. */
+		notices?: JSX.Element
 		/** Batch D1 widgets slot (dsh-tui-pi dock structure): the fixed
 		 * Todos → Think → Tool panels rendered DIRECTLY ABOVE the bottom
 		 * slot (the editor) — never in the transcript flow. See
@@ -222,11 +230,13 @@ export function Transcript(props: TranscriptProps) {
 			 * editor — the lastRequest `●` echo + running-children lines.
 			 * Each child owns its explicit height (the dock counts its lines;
 			 * the composer sets its own) — auto-height boxes collapse. */}
-			<Show when={props.widgets || props.children || props.footer}>
+			<Show when={props.status || props.widgets || props.children || props.footer || props.notices}>
 				<box width="100%" flexShrink={0} flexDirection="column">
+					{props.status}
 					{props.widgets}
 					{props.children}
 					{props.footer}
+					{props.notices}
 				</box>
 			</Show>
 		</box>
