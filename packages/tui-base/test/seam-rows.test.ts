@@ -432,3 +432,60 @@ describe("seam rows projection", () => {
 		dispose()
 	})
 })
+
+describe("batch V2b: subagent tree row", () => {
+	test("the subagent marker face drives one live tree row; empty roster drops it", () => {
+		const seam = new FakeSeam()
+		const { projection, dispose } = setup(seam)
+		const unsub = seam.onSubagentViews(() => {})
+		// NullSessionSeam's onSubagentViews just registers — drive the
+		// projection through its exposed fold (the seam feed path is the
+		// same function the subscription calls).
+		projection.applySubagentViews([
+			{
+				id: "child-1",
+				label: "looper",
+				model: "glm-4-flash",
+				status: "running",
+				rounds: 2,
+				startedAt: Date.now() - 1500,
+			},
+		])
+		const row = projection.rows.find((r) => r.kind === "subagents")
+		expect(row).toBeDefined()
+		if (row?.kind === "subagents") {
+			expect(row.key).toBe("subagents:live")
+			expect(row.children).toHaveLength(1)
+			expect(row.children[0]).toMatchObject({ id: "child-1", label: "looper", model: "glm-4-flash", status: "running" })
+		}
+		// Settled child replaces in place (same key, frozen elapsed).
+		projection.applySubagentViews([
+			{
+				id: "child-1",
+				label: "looper",
+				status: "completed",
+				rounds: 3,
+				elapsedSec: 4.2,
+			},
+		])
+		expect(projection.rows.filter((r) => r.kind === "subagents")).toHaveLength(1)
+		const settled = projection.rows.find((r) => r.kind === "subagents")
+		if (settled?.kind === "subagents") {
+			expect(settled.children[0]).toMatchObject({ status: "completed", elapsedSec: 4.2 })
+			expect(settled.children[0].startedAt).toBeUndefined()
+		}
+		// Empty roster drops the row.
+		projection.applySubagentViews([])
+		expect(projection.rows.some((r) => r.kind === "subagents")).toBe(false)
+		unsub?.()
+		dispose()
+	})
+
+	test("a seam without the subagent face renders no tree row", () => {
+		const seam = new FakeSeam()
+		const { projection, dispose } = setup(seam)
+		// No emission ever arrives (no face wired) — the store holds no tree.
+		expect(projection.rows.some((r) => r.kind === "subagents")).toBe(false)
+		dispose()
+	})
+})

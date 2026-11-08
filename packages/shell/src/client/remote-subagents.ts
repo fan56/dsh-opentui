@@ -50,6 +50,10 @@ export interface RemoteSubagentView {
 	model?: string
 	status: "running" | "completed" | "failed" | "cancelled"
 	rounds: number
+	/** Batch V2b: the child's start wall clock (epoch ms) — the transcript
+	 * subagent tree's live duration ticks off it; `elapsed` stays the
+	 * read-time snapshot for the picker. */
+	startedAt: number
 	tokens?: number
 	elapsed: number
 	lastLine?: string
@@ -254,6 +258,7 @@ export class RemoteSubagentPanel {
 			...(v.model ? { model: v.model } : {}),
 			status: v.status,
 			rounds: v.rounds,
+			startedAt: v.startedAt,
 			...(v.tokens !== undefined ? { tokens: v.tokens } : {}),
 			elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
 			...(v.lastLine ? { lastLine: clamp(v.lastLine) } : {}),
