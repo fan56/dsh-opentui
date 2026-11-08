@@ -54,8 +54,9 @@
  *     throwing UI is unreachable from the seam, whose type has no such arm).
  *   onTurnEnd: no-op — the seam models turn end as the turn() promise
  *     resolving (the facade resolves it after painting onTurnEnd).
- *   onToolRun: no-op — the facade requires the field; the rebuilt rows paint
- *     tool results via the live finalize pass (batch 3/4 documented limit).
+ *   onToolRun: passthrough (batch V1) — a durable tool/result settles its
+ *     transcript row LIVE (status + result brief ride the row); the turn
+ *     finalize sweep only catches stragglers (was a no-op through batch 3/4).
  *
  * EVENT FEED (the batch-2a row `client.event.listen/on → onSessionEvent →
  * follow-stream push (#onEventsItem → typed union)` — reconciled):

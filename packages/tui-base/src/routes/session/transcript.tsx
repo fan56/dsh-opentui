@@ -127,7 +127,10 @@ export function Transcript(props: TranscriptProps) {
 					: row.elapsedSec !== undefined
 						? ` · ${row.elapsedSec.toFixed(1)}s`
 						: ""
-			return `${marker}${title}${elapsed}`
+			// P1-1: the title clips by DISPLAY columns (CJK 1 code point = 2
+			// columns) to the pane width — wrapMode="none" would overflow.
+			// dimensions() read inside the memo makes the title resize-reactive.
+			return clipToWidth(`${marker}${title}${elapsed}`, Math.max(16, dimensions().width - 5))
 		})
 		// Running shows the arg summary; settled shows the result tail (the
 		// collapse-to-summary: the raw JSON never renders on either line).

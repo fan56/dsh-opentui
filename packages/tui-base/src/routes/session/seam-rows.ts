@@ -364,8 +364,11 @@ export function createSeamRows(
 				// (the settle supersede in apply() arms against them). Flips
 				// before the finalize pass so no event window opens between.
 				turnOpen = false
-			})
-			.then(() => {
+				// P2-1: the whole finalize pass lives in .finally — a REJECTING
+				// seam.turn implementation must still sweep the running tool rows
+				// and finalize the streamed text (the old .then() success arm
+				// let them spin forever on rejection).
+				void (async () => {
 				// Finalize: the vendored `<markdown streaming>` flips off when the
 				// message completes, keeping the final tokens (M4 law: streaming
 				// lightweight, markdown at finalize is unnecessary — 0.8.1 streams).
@@ -408,7 +411,7 @@ export function createSeamRows(
 				// undefined), so capture here, not at send() entry. The id
 				// stays attached across a COMPLETED turn; abort detaches it.
 				const id = sessionID()
-				return seam
+				await seam
 					.storedTranscript(id)
 					.then((stored) => {
 						// A session switch to ANOTHER session voids the patch; an
@@ -434,6 +437,7 @@ export function createSeamRows(
 						)
 					})
 					.catch(() => undefined)
+				})()
 			})
 	}
 

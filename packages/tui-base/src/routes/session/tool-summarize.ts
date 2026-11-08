@@ -15,15 +15,32 @@
  * '' — a tool block renders from whatever arrives, never throws.
  */
 
-/** Visible-width clip (no ANSI sequences in these strings, so length ≈ width). */
+import { stringWidth } from "../../util/string-width"
+
+/**
+ * Display-width clip (P1-1 CJK law): limits are TERMINAL COLUMNS, measured
+ * with the package's #string-width util — a CJK code point is 2 columns, so
+ * a `.length`-based budget overflows 2x on Chinese args. No ANSI sequences
+ * in these strings.
+ */
 export function clipToWidth(text: string, limit: number): string {
 	if (limit <= 0) return ""
 	const flat = text.replace(/\s+/u, " ").trim()
-	if (flat.length <= limit) return flat
-	return limit <= 1 ? "…" : `${flat.slice(0, limit - 1)}…`
+	if (stringWidth(flat) <= limit) return flat
+	// Walk the string accumulating display width; keep room for the ellipsis.
+	let width = 0
+	for (let i = 0; i < flat.length; i++) {
+		width += stringWidth(flat[i]!)
+		if (width > limit - 1) {
+			return limit <= 1 ? "…" : `${flat.slice(0, i)}…`
+		}
+	}
+	return flat
 }
 
-/** First word of a value (dsh-tui-pi parity: `command`.split(/\s+/)[0]). */
+/** First word of a value (dsh-tui-pi parity: `command`.split(/\s+/)[0]).
+ * CJK text carries no spaces — the whole string comes back as the "word";
+ * the title/track callers clip by display width, so this stays bounded. */
 function firstWord(value: string): string {
 	return value.trim().split(/\s+/u)[0] ?? ""
 }
@@ -31,16 +48,19 @@ function firstWord(value: string): string {
 /**
  * Head-word subject of a call (dsh-tui-pi `toolSubject` parity): the first
  * string value among the known keys, else the first string value at all.
+ * Display-capped to 24 columns so an unsplit CJK value can't balloon the
+ * title before the row-level clip sees it.
  */
 export function toolSubject(rawArguments: string): string {
+	const cap = (value: string): string => clipToWidth(value, 24)
 	try {
 		const parsed = JSON.parse(rawArguments) as Record<string, unknown>
 		for (const key of ["command", "file_path", "path", "query", "url", "pattern", "description"]) {
 			const value = parsed[key]
-			if (typeof value === "string" && value.trim() !== "") return firstWord(value)
+			if (typeof value === "string" && value.trim() !== "") return cap(firstWord(value))
 		}
 		for (const value of Object.values(parsed)) {
-			if (typeof value === "string" && value.trim() !== "") return firstWord(value)
+			if (typeof value === "string" && value.trim() !== "") return cap(firstWord(value))
 		}
 	} catch {
 		// Model-controlled rawArguments; non-JSON yields no subject.

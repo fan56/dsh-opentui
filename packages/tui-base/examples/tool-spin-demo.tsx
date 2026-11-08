@@ -20,13 +20,13 @@ const toolPart = (part: Record<string, unknown>) =>
 setTimeout(async () => {
 	seam.emit({ type: "message.updated", details: { id: "u1", role: "user", text: "build the workspace" } })
 	// RUNNING: spinner frames + `⎿` args summary line.
-	toolPart({ type: "tool", name: "bash", input: '{"command":"cargo build --release --workspace"}', status: "running" })
+	toolPart({ type: "tool", name: "bash", input: JSON.stringify({ command: "构建整个生产工作区并发布全部包到内部流水线并且不停止直到全部完成为止" }), status: "running" })
 	await sleep(6000)
 	// SETTLE: ✓ + `⎿` result first line (+N lines) — envelope-shaped brief.
 	toolPart({
 		type: "tool",
 		name: "bash",
-		input: '{"command":"cargo build --release --workspace"}',
+		input: JSON.stringify({ command: "构建整个生产工作区并发布全部包到内部流水线" }),
 		status: "done",
 		output: JSON.stringify({
 			turn: 1,
