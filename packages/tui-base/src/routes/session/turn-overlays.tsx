@@ -280,6 +280,8 @@ export function TurnOverlayHost(props: {
 		shown = key
 		if (approval) {
 			const atOpen = key
+			// Warning tone (skin contract §1): approval/ask cards paint the
+			// warning tier on the panel frame + title (instant, no animation).
 			dialog.replace(
 				() => (
 					<ApprovalCard
@@ -294,6 +296,7 @@ export function TurnOverlayHost(props: {
 				() => {
 					if (shown === atOpen) props.controller.rejectApproval()
 				},
+				{ tone: "warning" },
 			)
 			return
 		}
@@ -307,6 +310,7 @@ export function TurnOverlayHost(props: {
 				() => {
 					if (shown === atOpen) props.controller.decline()
 				},
+				{ tone: "warning" },
 			)
 			return
 		}

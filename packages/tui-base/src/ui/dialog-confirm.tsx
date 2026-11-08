@@ -5,6 +5,7 @@ import { DialogHeader, DialogLayout, useDialog } from "./dialog"
 import { createStore } from "solid-js/store"
 import { For } from "solid-js"
 import { Locale } from "../util/locale"
+import { currentRowColors } from "../skin/semantic"
 
 export type DialogConfirmProps = {
   title: string
@@ -21,6 +22,10 @@ export function DialogConfirm(props: DialogConfirmProps) {
   const dialog = useDialog()
   const theme = useTheme().surface("dialog")
   const newDesigns = useNewDesigns()
+  // Active-button highlight = the skin's current-row semantics (one source,
+  // skin/semantic.ts). The confirm card itself is warning-tier via the
+  // stack's DialogTone (set by the caller's dialog.replace options).
+  const row = () => currentRowColors(theme)
   const [store, setStore] = createStore({
     active: "confirm" as "confirm" | "cancel",
   })
@@ -86,10 +91,10 @@ export function DialogConfirm(props: DialogConfirmProps) {
               <box
                 paddingLeft={1}
                 paddingRight={1}
-                backgroundColor={key === store.active ? theme.background.action.primary.focused : undefined}
+                backgroundColor={key === store.active ? row().backgroundColor : undefined}
                 onMouseUp={() => choose(key)}
               >
-                <text fg={key === store.active ? theme.text.action.primary.focused : theme.text.muted}>
+                <text fg={key === store.active ? row().textColor : theme.text.muted}>
                   {Locale.titlecase(props.label?.[key] ?? key)}
                 </text>
               </box>
