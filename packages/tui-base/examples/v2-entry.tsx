@@ -32,6 +32,8 @@ import { createSignal, onCleanup, onMount, ErrorBoundary } from "solid-js"
 import { createComponent, createElement, render, spread } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
+import { WelcomeHero } from "../src/routes/welcome-hero"
+import { pickDailyQuote } from "../src/routes/quotes"
 import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
 import { createSeamRows } from "../src/routes/session/seam-rows"
@@ -76,7 +78,12 @@ async function loadShell() {
 const overlays = new TurnOverlayController()
 
 /** The v2 session page: the real seam driving the rebuilt view. */
-function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; quit: () => void }) {
+function V2SessionPage(props: {
+	seam: RemoteSessionSeam
+	themeName?: string
+	quit: () => void
+	workspace: string
+}) {
 	const seam = props.seam
 	const projection = createSeamRows(seam, () => seam.currentSessionId() ?? "", {
 		// Mid-turn approvals route through the batch-5 card.
@@ -273,6 +280,24 @@ function V2SessionPage(props: { seam: RemoteSessionSeam; themeName?: string; qui
 		backgroundColor: "black",
 		get children() {
 			return [
+				// Startup hero (batch V3, old-stack welcome semantics): the block
+				// "DSH OPENTUI" wordmark + model/cwd + daily quote, top-left above
+				// the transcript while the session is empty; the first message
+				// hides it and the transcript takes over. PROP RECAST LAW: getter
+				// props from this children getter are baked into values before the
+				// component body runs (proven empirically), so the accessors ride
+				// a stable `state` object the component reads in its own scopes.
+				createComponent(WelcomeHero, {
+					state: {
+						// hydrated() gates the journal-hydration window: a boot that
+						// attaches a session with history must not flash the hero
+						// for the duration of the fetch before it fills.
+						visible: () => projection.hydrated() && msgs() === 0 && projection.rows.length === 0,
+						model: () => model()?.modelID,
+						muted: () => theme.text.muted,
+					},
+					cwd: props.workspace,
+				}),
 				// Transcript search (batch H1, tui-pi 22-search parity):
 				// ctrl+shift+f opens the find bar over the SAME projection the
 				// Transcript paints. Getter-prop law: the scrollbox rides a getter.
@@ -482,6 +507,7 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 																	seam,
 																	themeName,
 																	quit: () => process.exit(0),
+																	workspace,
 																})
 															},
 														})
