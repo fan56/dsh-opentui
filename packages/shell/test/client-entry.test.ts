@@ -564,17 +564,26 @@ describe('RemoteHostSession accessor audit (through aggregateTurnContext)', () =
       expect(f.adapted.configLoad()).toEqual({}) // empty base ⊕ no overlay ⊕ no env
       const afterPluginKey = f.adapted.configSave({ retentionDays: 3 }) // plugin key → profile config.json
       expect(afterPluginKey.retentionDays).toBe(3)
-      const afterTheme = f.adapted.configSave({ theme: 'dracula' }) // overlay key → workspace config.yml
+      // 67-theme regression (batch F7b contract): /theme persists to the
+      // PROFILE config.json ("theme" key, host-face parity) — never the
+      // workspace overlay (the pre-fix routing hid the key from the store
+      // the e2e and the restart boot read).
+      const afterTheme = f.adapted.configSave({ theme: 'dracula' })
       expect(afterTheme.theme).toBe('dracula')
-      // the profile write is sync; the workspace write is async (optimistic
-      // cache above) — wait for the file before asserting it
+      const profile = JSON.parse(readFileSync(f.adapted.configPath(), 'utf8')) as Record<string, unknown>
+      expect(profile).toEqual({ retentionDays: 3, theme: 'dracula' })
+      // the workspace overlay carries no theme key (scope guard)
+      await expect(f.adapted.refreshWorkspaceConfig()).resolves.toBeUndefined()
+      expect(existsSync(join(f.workspace, '.dsh', 'config.yml'))).toBe(false)
+      expect(f.adapted.configLoad().theme).toBe('dracula') // the profile base answers
+      // the model key still rides the workspace overlay (async write)
+      const afterModel = f.adapted.configSave({ model: { provider: 'deepseek' } })
+      expect(afterModel.model).toEqual({ provider: 'deepseek' })
       const overlayPath = join(f.workspace, '.dsh', 'config.yml')
       const deadline = Date.now() + 2_000
       while (!existsSync(overlayPath) && Date.now() < deadline) await auditSleep(20)
-      expect(readFileSync(overlayPath, 'utf8')).toContain('dracula')
-      expect(JSON.parse(readFileSync(f.adapted.configPath(), 'utf8'))).toEqual({ retentionDays: 3 })
-      await expect(f.adapted.refreshWorkspaceConfig()).resolves.toBeUndefined()
-      expect(f.adapted.configLoad().theme).toBe('dracula') // the warm overlay answers
+      expect(readFileSync(overlayPath, 'utf8')).not.toMatch(/^theme:/m)
+      expect(readFileSync(overlayPath, 'utf8')).toContain('provider: deepseek')
     } finally {
       if (savedTheme !== undefined) process.env.DSH_OPENTUI_THEME = savedTheme
       else delete process.env.DSH_OPENTUI_THEME

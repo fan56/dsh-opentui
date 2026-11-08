@@ -241,8 +241,10 @@ class RemoteHostSession {
   reconnects and the wave-2 re-attach machinery resumes the session).
 - Config seam (row 41): `configLoad()` = profile config.json (plugin
   keys) ⊕ workspace `.dsh/config.yml` (theme + model, bucket-d precedence
-  env > workspace > profile) ; `configSave()` splits patches the same way
-  (overlay-managed keys never touch the profile file and vice versa).
+  env > workspace > profile) ; `configSave()` routes `theme` and the
+  plugin keys to the profile config.json (host-face parity — the F7b
+  /theme contract) and `model` to the config.yml overlay. Legacy overlay
+  `theme:` keys still win the read until the file is cleaned up.
 - Tests: `test/remote-host-session.test.ts`, `test/remote-session-ops.test.ts`,
   `test/remote-model-settings.test.ts` (fake connection + fake mux sockets),
   `test/remote-wave3-local.test.ts`, `test/remote-btw-restart.test.ts`,
