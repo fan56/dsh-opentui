@@ -241,6 +241,10 @@ export function Transcript(props: TranscriptProps) {
 			content={row.text}
 			streaming={!row.final}
 			internalBlockMode="top-level"
+			// Table parity with the vendored TextPart (message-parts.tsx): without
+			// an explicit style the top-level block mode falls back to borderless
+			// "columns" tables — the grid borders never render.
+			tableOptions={{ style: "grid", cellPaddingX: 1 }}
 			syntaxStyle={syntaxStyle()}
 			fg={color.text()}
 		/>

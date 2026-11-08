@@ -137,6 +137,53 @@ const THINK_LINES = [
   'Conclusion is stable — ready to answer.',
 ]
 
+// V4 markdown phase: stream a full-markdown reply in timed chunks (so the
+// mid-stream render form is capturable) — h1/h2 headings, unordered+ordered
+// lists, a fenced code block, a markdown table, bold/italic, inline code,
+// and a link. Chunks are line-groups, not per-char, to keep the script short
+// while the stream window stays ~2.4s wide.
+const MD_TRIGGER = 'E2E_MD_TRIGGER'
+const MD_DONE = 'E2E-MD-TURN-DONE — the full markdown sample rendered.'
+const MD_CHUNK_DELAY_MS = 200
+const MD_LINES = [
+  '# Report Heading One',
+  '',
+  '## Sub Heading Two',
+  '',
+  'Intro paragraph with **bold text**, *italic text*, `inline code` and a [link](https://example.com/docs).',
+  '',
+  '- first bullet item',
+  '- second bullet item',
+  '  - nested bullet under the second',
+  '',
+  '1. ordered step one',
+  '2. ordered step two',
+  '3. ordered step three',
+  '',
+  '```ts',
+  'function greet(name: string): string {',
+  '  return `hello ${name}`',
+  '}',
+  '```',
+  '',
+  '| Column A | Column B |',
+  '| -------- | -------- |',
+  '| cell a1  | cell b1  |',
+  '| cell a2  | cell b2  |',
+  '',
+  'Closing line: ' + MD_DONE,
+]
+/** The markdown phase script: line-group chunks over a wide decode window. */
+function mdStreamEntries() {
+  const entries = []
+  for (let i = 0; i < MD_LINES.length; i += 2) {
+    const piece = MD_LINES.slice(i, i + 2).join('\n')
+    entries.push({ delayMs: MD_CHUNK_DELAY_MS, delta: { role: 'assistant', content: piece + (i + 2 < MD_LINES.length ? '\n' : '') } })
+  }
+  entries.push({ delayMs: MD_CHUNK_DELAY_MS, delta: {}, finish: 'stop' })
+  return entries
+}
+
 // The three questions handed to ask_user_question: two single-select (auto-
 // advance applies) and one multiSelect (stays put), matching the assertions
 // in 68-ask-user.sh.
@@ -227,6 +274,7 @@ function decidePhase(bodyText) {
   }
   if (bodyText.includes(TPS_TRIGGER)) return 'tps'
   if (bodyText.includes(THINK_TRIGGER)) return 'think'
+  if (bodyText.includes(MD_TRIGGER)) return 'md'
   const hasTrigger = bodyText.includes(TRIGGER)
   // The openai SDK serializes without spaces; be lenient about formatting.
   if (hasTrigger && hasToolResult) return 'final'
@@ -388,6 +436,10 @@ function handleChat(req, res, body) {
   }
   if (phase === 'think') {
     streamTimed(res, thinkStreamEntries(), wantsUsage, phase)
+    return
+  }
+  if (phase === 'md') {
+    streamTimed(res, mdStreamEntries(), wantsUsage, phase)
     return
   }
   if (phase === 'main-slow') {
