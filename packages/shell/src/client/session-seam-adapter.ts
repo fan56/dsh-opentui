@@ -532,12 +532,33 @@ export class RemoteSessionSeam implements SessionSeam {
  * Keys stay stable per record (seq-derived ids) so re-delivery upserts in
  * place instead of mounting duplicates.
  */
+/** Batch D5: user/message source kinds that are human-facing relay
+ * notices (painted as markdown notice rows, never as `❯` prompts). Every
+ * other non-user kind is a host injection and never paints. */
+export const NOTICE_SOURCE_KINDS: ReadonlySet<string> = new Set(["subagent-settled", "agent-message", "team-message", "webhook"])
+
 export function projectJournalRecord(entry: RemoteJournalEntry, sessionId: string): SeamSessionEvent[] {
 	if (entry.type === "user/message") {
 		const text = blocksText(entry.data.content)
 		if (!text) return []
 		const id = typeof entry.data.messageID === "string" ? entry.data.messageID : `journal-${entry.seq}`
-		return [{ type: "message.updated", details: { id, role: "user", text, sessionID: sessionId } }]
+		// Batch D5 (live finding: `❯ Current runtime context. This snapshot
+		// supersedes…` painted as a user prompt): only source.kind `user` (or
+		// a source-less legacy record) is the user's own words. Host-injected
+		// records (runtime-context, tool-registry, system-prompt, loop guards…)
+		// never paint; the human-facing relay notices (a subagent settling, an
+		// agent/team message, a webhook) paint as a markdown NOTICE row — not
+		// a `❯` prompt (the replay paths already apply the same user filter).
+		const source = entry.data.source
+		const kind =
+			source !== null && typeof source === "object" ? (source as Record<string, unknown>).kind : undefined
+		if (kind === undefined || kind === "user") {
+			return [{ type: "message.updated", details: { id, role: "user", text, sessionID: sessionId } }]
+		}
+		if (typeof kind === "string" && NOTICE_SOURCE_KINDS.has(kind)) {
+			return [{ type: "message.updated", details: { id, role: "notice", text, sessionID: sessionId } }]
+		}
+		return []
 	}
 	if (entry.type === "assistant/message") {
 		const text = assistantTextValue(entry.data)
@@ -565,7 +586,10 @@ function blocksText(content: unknown): string {
 	for (const block of blocks) {
 		if (typeof block === "object" && block !== null && (block as { type?: unknown }).type === "text") {
 			const value = (block as { text?: unknown }).text
-			if (typeof value === "string") text += value
+			// Batch D5b (live finding: a two-block subagent-settled notice
+			// painted `finished.It left…`): blocks join on a newline — the
+			// remote-follow blocksText parity.
+			if (typeof value === "string") text += (text === "" ? "" : "\n") + value
 		}
 	}
 	return text.trim()

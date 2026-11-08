@@ -17,7 +17,7 @@ class FakeSeam extends NullSessionSeam {
 	}
 }
 
-function setup(seam: FakeSeam, options?: { thinkFadeMs?: number }) {
+function setup(seam: FakeSeam, options?: { thinkFadeMs?: number; toolFadeMs?: number }) {
 	let dispose!: () => void
 	const projection = createRoot((d) => {
 		dispose = d
@@ -390,6 +390,91 @@ describe("seam rows projection", () => {
 		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(true)
 		await Bun.sleep(80)
 		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(false)
+		dispose()
+	})
+
+	test("batch D5 widget fade: concurrent tools fade on their own clock ~after settle; running stays", async () => {
+		const seam = new FakeSeam()
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		seam.script = async (cb) => {
+			cb.onToolStart?.({ callId: "a", name: "bash", args: "{}" })
+			cb.onToolStart?.({ callId: "b", name: "bash", args: "{}" })
+			cb.onToolRun?.({ callId: "a", name: "bash", argsPretty: "{}", output: "x", ok: true })
+			await gate
+			cb.onToolRun?.({ callId: "b", name: "bash", argsPretty: "{}", output: "y", ok: true })
+		}
+		const { projection, dispose } = setup(seam, { toolFadeMs: 30 })
+		const pending = projection.send("go")
+		const tool = (id: string) => projection.rows.find((r) => r.key === `tool:live:${id}`) as { faded?: boolean; status: string }
+		expect(tool("a")).toMatchObject({ status: "done" })
+		expect(tool("a").faded).not.toBe(true)
+		await Bun.sleep(60)
+		// `a` settled → faded; `b` still running → visible.
+		expect(tool("a").faded).toBe(true)
+		expect(tool("b")).toMatchObject({ status: "running" })
+		expect(tool("b").faded).not.toBe(true)
+		release()
+		await pending
+		await Bun.sleep(60)
+		expect(tool("b").faded).toBe(true)
+		// The row stays in the store (todos panel reads it), only hidden.
+		expect(projection.rows.some((r) => r.key === "tool:live:b")).toBe(true)
+		dispose()
+	})
+
+	test("batch D5 widget fade: a collapsed think fades ~after the burst stops, not at turn end", async () => {
+		const seam = new FakeSeam()
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("plan")
+			cb.onToolStart?.({ callId: "t", name: "bash", args: "{}" })
+			await gate
+		}
+		const { projection, dispose } = setup(seam, { thinkFadeMs: 30 })
+		const pending = projection.send("go")
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(true)
+		await Bun.sleep(60)
+		// Turn still open (tool running) — the stale `thought` line is gone.
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(false)
+		release()
+		await pending
+		dispose()
+	})
+
+	test("batch D5 widget fade: same-turn think resuming inside the window replaces in place (no drop)", async () => {
+		const seam = new FakeSeam()
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("one")
+			cb.onToolStart?.({ callId: "t", name: "bash", args: "{}" })
+			await Bun.sleep(10)
+			cb.onThinkingDelta(" two")
+			await gate
+		}
+		const { projection, dispose } = setup(seam, { thinkFadeMs: 40 })
+		const pending = projection.send("go")
+		await Bun.sleep(70)
+		// The resumed burst cancelled the pending drop: still streaming.
+		expect(projection.rows.find((r) => r.kind === "reasoning")).toMatchObject({ streaming: true, text: "one two" })
+		release()
+		await pending
+		dispose()
+	})
+
+	test("batch D5: a notice event lands as a markdown (assistant-kind) notice row, never a ❯ user row", () => {
+		const seam = new FakeSeam()
+		const { projection, dispose } = setup(seam)
+		projection.apply({ type: "message.updated", details: { id: "n1", role: "notice", text: "**done** `x`", sessionID: "s1" } })
+		expect(projection.rows).toEqual([{ key: "notice:n1", kind: "assistant", text: "**done** `x`", final: true }])
 		dispose()
 	})
 

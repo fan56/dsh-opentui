@@ -22,12 +22,14 @@
  * (the e2e-asserted text, printed as a transcript row — batch D9) or prints
  * the rejection the same way.
  *
- * OpenTUI law: the root box carries an explicit height (header + capped rows
- * + hints + padding), never auto-height in a flex column.
+ * OpenTUI law: the root box carries an explicit height (1 — batch D5 made
+ * the picker a single selection line; the roster itself paints once, in
+ * the lastRequest dock tree), never auto-height in a flex column.
  */
-import { createEffect, createMemo, createSignal, For, Show, onCleanup } from "solid-js"
+import { createEffect, createMemo, createSignal, Show, onCleanup } from "solid-js"
+import { useTerminalDimensions } from "@opentui/solid"
+import { clipToWidth } from "./tool-summarize"
 import { createStore } from "solid-js/store"
-import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
 import { useThemeOptional } from "../../context/theme"
 import { useDialog } from "../../ui/dialog"
@@ -51,9 +53,6 @@ export type SubagentsPickerProps = {
   seam: SessionSeam
 }
 
-/** Visible row cap (the vendored tab's scrollbox maxHeight). */
-const ROW_CAP = 5
-
 export function SubagentsPicker(props: SubagentsPickerProps) {
   const theme = useThemeOptional()
   const dialog = useDialog()
@@ -73,12 +72,17 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
     return showAll() ? views : views.filter((view) => view.status === "running")
   })
   const selectedEntry = createMemo(() => entries()[store.selected])
-  const visibleRows = createMemo(() => Math.min(ROW_CAP, Math.max(1, entries().length)))
 
   // Reopening resets the selection to the first row.
   createEffect(() => {
     if (!open()) return
     setStore("selected", 0)
+  })
+
+  // Batch D5b hide-law: the bar leaves on its own once no child is running
+  // (no esc needed) — content stopped → the widget hides.
+  createEffect(() => {
+    if (open() && pickerShouldAutoClose(subagentMarkerViews())) setOpen(false)
   })
 
   function moveTo(next: number) {
@@ -149,9 +153,12 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
 
   // Toggle layer (picker closed): the vendored `session.child.first` command
   // id resolves its configured binding (down) from the shared keybind config.
+  // Batch D5b key law: ↓ only routes here while a child is RUNNING; with no
+  // running child the layer is off and ↓ falls through to the composer's
+  // history recall (the D5 finding: ↓ for history opened the bar instead).
   Keymap.createLayer(() => ({
     mode: "global",
-    enabled: !open() && dialog.stack.length === 0 && subagentMarkerViews().length > 0,
+    enabled: !open() && dialog.stack.length === 0 && pickerToggleEnabled(subagentMarkerViews()),
     commands: [
       {
         id: "session.child.first",
@@ -162,86 +169,42 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
     ],
   }))
 
+  // Batch D5 (user finding: "subagent widget 好像有 2 个"): the roster is
+  // painted ONCE — by the lastRequest dock's `├─` tree below the editor.
+  // The picker no longer paints its own bordered multi-row roster dock; it
+  // is a single selection line (the viewer entry stays: ↓ opens, ↑↓
+  // select, enter steers, ctrl+a toggles inactive, esc closes).
+  const dimensions = useTerminalDimensions()
   return (
     <Show when={open()}>
-      <box
-        flexShrink={0}
-        width="100%"
-        // Explicit height (OpenTUI law): header + capped rows + hints + padding.
-        height={1 + visibleRows() + 1 + 2}
-        flexDirection="column"
-        border={["left"]}
-        borderColor={theme?.border.base ?? "#7aa2f7"}
-        backgroundColor={theme?.background.raised.base ?? "#1a1b26"}
-        paddingLeft={1}
-        paddingRight={2}
-        paddingTop={1}
-        paddingBottom={1}
-      >
-        <box height={1} flexShrink={0} flexDirection="row" justifyContent="space-between" paddingLeft={1}>
-          <text fg={theme?.text.base ?? "#e6e6e6"} attributes={TextAttributes.BOLD}>
-            Subagents
-          </text>
-          <text fg={theme?.text.muted ?? "#565f89"}>esc</text>
-        </box>
-        <Show
-          when={entries().length > 0}
-          fallback={
-            <box height={1} flexShrink={0} paddingLeft={1}>
-              <text fg={theme?.text.muted ?? "#565f89"}>
-                No {showAll() ? "inactive" : "active"} subagents
-              </text>
-            </box>
-          }
-        >
-          <For each={entries().slice(0, ROW_CAP)}>
-            {(entry, index) => {
-              const active = createMemo(() => index() === store.selected)
-              return (
-                <box height={1} flexShrink={0} flexDirection="row" paddingLeft={1} paddingRight={1}>
-                  <text
-                    fg={
-                      active()
-                        ? theme?.text.action.primary.focused ?? "#e6e6e6"
-                        : theme?.text.action.primary.base ?? "#e6e6e6"
-                    }
-                    attributes={active() ? TextAttributes.BOLD : undefined}
-                    wrapMode="none"
-                  >
-                    {subagentHardStopGlyph(entry)}
-                    {subagentHardStopGlyph(entry) ? " " : ""}
-                    {Locale.titlecase(entry.label)}
-                  </text>
-                  <Show when={entry.status === "running"}>
-                    <text fg={active() ? theme?.text.action.primary.focused ?? "#e6e6e6" : theme?.text.muted ?? "#565f89"} wrapMode="none">
-                      {"  Running"}
-                    </text>
-                  </Show>
-                  <Show when={subagentMarkerSuffix(entry)}>
-                    <text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
-                      {subagentMarkerSuffix(entry)}
-                    </text>
-                  </Show>
-                </box>
-              )
-            }}
-          </For>
-        </Show>
-        <box height={1} flexShrink={0} flexDirection="row" gap={2} paddingLeft={1}>
-          <text>
-            <span style={{ fg: theme?.text.base ?? "#e6e6e6" }}>
-              <b>steer</b>{" "}
-            </span>
-            <span style={{ fg: theme?.text.muted ?? "#565f89" }}>enter</span>
-          </text>
-          <text>
-            <span style={{ fg: theme?.text.base ?? "#e6e6e6" }}>
-              <b>{`show ${showAll() ? "inactive" : "active"}`}</b>{" "}
-            </span>
-            <span style={{ fg: theme?.text.muted ?? "#565f89" }}>ctrl+a</span>
-          </text>
-        </box>
+      <box flexShrink={0} width="100%" height={1} flexDirection="row" paddingLeft={3}>
+        <text fg={theme?.text.base ?? "#e6e6e6"} wrapMode="none">
+          {clipToWidth(pickerLineText(entries(), store.selected, showAll()), Math.max(16, dimensions().width - 4))}
+        </text>
       </box>
     </Show>
   )
+}
+
+/** Batch D5b: ↓ opens the bar only while at least one child runs (pure). */
+export function pickerToggleEnabled(views: readonly SubagentMarkerView[]): boolean {
+  return views.some((view) => view.status === "running")
+}
+
+/** Batch D5b: an open bar closes itself once no child runs (pure). */
+export function pickerShouldAutoClose(views: readonly SubagentMarkerView[]): boolean {
+  return !pickerToggleEnabled(views)
+}
+
+/** The one-line picker body (pure, testable): `Subagents ▸ <label> ·
+ * Running · i/n · enter steer · ctrl+a show inactive · esc`. */
+export function pickerLineText(entries: readonly SubagentMarkerView[], selected: number, showAll: boolean): string {
+  const toggle = `ctrl+a show ${showAll ? "active" : "inactive"}`
+  const entry = entries[selected]
+  if (entry === undefined) return `Subagents ▸ no ${showAll ? "inactive" : "active"} subagents · ${toggle} · esc`
+  const glyph = subagentHardStopGlyph(entry)
+  const suffix = subagentMarkerSuffix(entry)
+  const label = `${glyph ? `${glyph} ` : ""}${Locale.titlecase(entry.label)}`
+  const status = entry.status === "running" ? " · Running" : ""
+  return `Subagents ▸ ${label}${status}${suffix ? ` ${suffix.trim()}` : ""} · ${selected + 1}/${entries.length} · ↑↓ select · enter steer · ${toggle} · esc`
 }

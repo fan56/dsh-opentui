@@ -96,6 +96,10 @@ export type SeamRow =
 			 * neither — no fabricated elapsed on replayed history. */
 			startedAt?: number
 			elapsedSec?: number
+			/** Batch D5 (widget fade): a settled live tool row hides from the
+			 * widgets dock ~1s after settle. The row STAYS in the store (the
+			 * todos panel still reads the latest todowrite brief off it). */
+			faded?: boolean
 	  }
 		| {
 				/** Batch V2b (tui-pi subagent tree, transcript-row shape): ONE live
@@ -156,7 +160,7 @@ interface LiveTurnGroup {
 export function createSeamRows(
 	seam: SessionSeam,
 	sessionID: Accessor<string>,
-	options?: { onApprove?: SeamTurnCallbacks["onApprove"]; thinkFadeMs?: number },
+	options?: { onApprove?: SeamTurnCallbacks["onApprove"]; thinkFadeMs?: number; toolFadeMs?: number },
 ) {
 	const [rows, setRows] = createStore<SeamRow[]>([])
 	const [hydrated, setHydrated] = createSignal(false)
@@ -164,7 +168,10 @@ export function createSeamRows(
 	 * old-stack dock law: turn end schedules the clear 1.8s out so a quick
 	 * next think replaces in place instead of blinking). 0 = immediate drop
 	 * (the settle-converge tests and any synchronous replay path). */
-	const thinkFadeMs = options?.thinkFadeMs ?? 1800
+	// Batch D5: the user-set widget linger is 1s (think AND tool widgets
+	// disappear ~1s after their content stops).
+	const thinkFadeMs = options?.thinkFadeMs ?? 1000
+	const toolFadeMs = options?.toolFadeMs ?? 1000
 	let liveOrdinal = 0
 	/** A send()'s turn is awaiting the seam (journal events during this
 	 * window are the suppression contract's other half — the adapters). */
@@ -258,9 +265,39 @@ export function createSeamRows(
 		for (const key of keys) cancelThinkFade(key)
 		if (keys.length > 0) dropRows(new Set(keys))
 	}
+	// Batch D5 tool widget fade: each settled live tool row hides itself
+	// `toolFadeMs` after ITS settle (concurrent tools = independent lines,
+	// each fading on its own clock). Hide = flag flip, never a store drop.
+	const toolFades = new Map<string, ReturnType<typeof setTimeout>>()
+	function hideTool(key: string) {
+		setRows(
+			produce((draft) => {
+				const row = draft.find((r) => r.key === key)
+				if (row !== undefined && row.kind === "tool" && row.status !== "running") row.faded = true
+			}),
+		)
+	}
+	function scheduleToolFade(key: string) {
+		const prior = toolFades.get(key)
+		if (prior !== undefined) clearTimeout(prior)
+		if (toolFadeMs <= 0) {
+			toolFades.delete(key)
+			hideTool(key)
+			return
+		}
+		toolFades.set(
+			key,
+			setTimeout(() => {
+				toolFades.delete(key)
+				hideTool(key)
+			}, toolFadeMs),
+		)
+	}
 	onCleanup(() => {
 		for (const timer of thinkFades.values()) clearTimeout(timer)
 		thinkFades.clear()
+		for (const timer of toolFades.values()) clearTimeout(timer)
+		toolFades.clear()
 	})
 
 	// ---------------------------------------------------------------------
@@ -331,6 +368,16 @@ export function createSeamRows(
 	function apply(event: SeamSessionEvent) {
 		const details = (event.details ?? {}) as Record<string, unknown>
 		if (typeof details.sessionID === "string" && details.sessionID !== sessionID()) return
+		// Batch D5: a host relay notice (subagent settled, agent message…) —
+		// a markdown NOTICE row (assistant-kind so the transcript renders it
+		// through <markdown>; `notice:` key so it never takes part in the
+		// settle supersede of a streamed turn body).
+		if (event.type === "message.updated" && details.role === "notice") {
+			const id = typeof details.id === "string" ? details.id : `local-${++liveOrdinal}`
+			const text = typeof details.text === "string" ? details.text : ""
+			if (text.trim() !== "") upsert({ key: `notice:${id}`, kind: "assistant", text, final: true })
+			return
+		}
 		if (event.type === "message.updated" && details.role === "user") {
 			const id = typeof details.id === "string" ? details.id : `local-${++liveOrdinal}`
 			const text = typeof details.text === "string" ? details.text : ""
@@ -435,6 +482,10 @@ export function createSeamRows(
 				streaming: false,
 				elapsedSec: Number(((Date.now() - reasoningStartedAt) / 1000).toFixed(1)),
 			})
+			// Batch D5: the think widget disappears ~1s after its content stops
+			// (not at turn end — a long tool phase must not leave a stale
+			// `💭 thought` line parked in the dock).
+			scheduleThinkFade(reasoningKey)
 		}
 		return seam.turn(prompt, {
 			onThinkingDelta: (delta) => {
@@ -447,6 +498,9 @@ export function createSeamRows(
 					reasoningStartedAt = Date.now()
 					cancelPendingThinkFades()
 				}
+				// Same-turn think resuming inside the fade window: keep the row
+				// (replace in place, no blink) — cancel its pending drop.
+				cancelThinkFade(reasoningKey)
 				upsert({
 					key: reasoningKey,
 					kind: "reasoning",
@@ -475,6 +529,7 @@ export function createSeamRows(
 					args: start.args,
 					status: "running",
 					startedAt: Date.now(),
+					faded: false,
 				})
 			},
 			// Batch V1: the follow stream's tool/result settles the row live —
@@ -495,6 +550,7 @@ export function createSeamRows(
 					output: run.output,
 					...(startedAt !== undefined ? { elapsedSec: Number(((Date.now() - startedAt) / 1000).toFixed(1)) } : {}),
 				})
+				scheduleToolFade(`tool:live:${run.callId ?? run.name}`)
 			},
 			onApprove: options?.onApprove ?? approveThrough,
 			onError: (message) => {
@@ -527,12 +583,14 @@ export function createSeamRows(
 				collapseThinking()
 				finalize(reasoningKey, "reasoning", reasoningText)
 				finalize(assistantKey, "assistant", assistantText)
-				scheduleThinkFade(reasoningKey)
+				if (reasoningStartedAt !== undefined) scheduleThinkFade(reasoningKey)
+				const swept: string[] = []
 				setRows(
 					produce((draft) => {
 						for (const row of draft) {
 							if (row.kind === "tool" && row.status === "running" && row.key.startsWith("tool:live:")) {
 								row.status = "done"
+								swept.push(row.key)
 								// Gap 2: stragglers swept at turn end freeze their elapsed too.
 								if (row.startedAt !== undefined) {
 									row.elapsedSec = Number(((Date.now() - row.startedAt) / 1000).toFixed(1))
@@ -541,6 +599,8 @@ export function createSeamRows(
 						}
 					}),
 				)
+				// 轮末全清: swept stragglers fade on the same 1s widget clock.
+				for (const key of swept) scheduleToolFade(key)
 				// SETTLE CONVERGE (batch V4, mechanism 1): the streamed text can
 				// differ from the durable body (mid-stream revisions, leaked
 				// self-talk — the fv-07 defect), and the streamed reasoning

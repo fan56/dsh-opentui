@@ -73,9 +73,9 @@ describe("toolResultLine", () => {
 		expect(toolResultLine(JSON.stringify({ text: "plain" }))).toBe("plain")
 		expect(toolResultLine("already plain")).toBe("already plain")
 		expect(toolResultLine(undefined)).toBe("")
-		// Degradation law: an EMPTY object has no readable leaves — the JSON
-		// slice itself is the only honest line.
-		expect(toolResultLine("{}")).toBe("{}")
+		// Batch D5 law: an EMPTY object has no readable leaves — the human
+		// placeholder renders, never the raw JSON.
+		expect(toolResultLine("{}")).toBe("tool result")
 	})
 
 	test("D2: a no-dig envelope renders its string leaves, never raw JSON", () => {
@@ -94,6 +94,40 @@ describe("toolResultLine", () => {
 			message: { role: "tool", content: [{ type: "text", text: "/private/tmp" }] },
 		})
 		expect(toolResultLine(envelope)).toBe("/private/tmp")
+	})
+
+	test("D5 (live finding): the truncated follow-brief envelope never paints raw JSON", () => {
+		// The exact on-device shape: the follow brief is
+		// JSON.stringify(data).slice(0, 300) of the whole tool/result wire
+		// event — a long one is CUT, so JSON.parse fails.
+		const wire = {
+			turn: 1,
+			step: 1,
+			message: {
+				role: "tool",
+				source: { kind: "tool", callId: "call_00_abcdefghijklmnopqrstuvwx" },
+				toolCallId: "call_00_abcdefghijklmnopqrstuvwx",
+				toolCall: { id: "call_00_abcdefghijklmnopqrstuvwx", name: "use_agent", arguments: "{\"agent\":\"牛马狗\"}" },
+				content: [{ type: "text", text: "Started background subagent sa_1 (牛马狗).\nUse get_agent to poll." }],
+			},
+		}
+		// 300 cuts right at `"text":` on this shape (placeholder); a slightly
+		// longer cut lands mid-text — the decoded prefix renders.
+		expect(toolResultLine(JSON.stringify(wire).slice(0, 300))).toBe("tool result")
+		const cut = JSON.stringify(wire).slice(0, 345)
+		expect(() => JSON.parse(cut)).toThrow()
+		expect(toolResultLine(cut)).toBe("Started background subagent sa_1 (牛马狗). (+1 lines)")
+		// Cut BEFORE any text field: the placeholder, never `{"turn":1,…`.
+		const early = JSON.stringify(wire).slice(0, 120)
+		expect(toolResultLine(early)).toBe("tool result")
+		// Cut mid-string (and mid-escape): the decoded prefix.
+		expect(toolResultLine('{"message":{"content":[{"type":"text","text":"hello wor\\u00')).toBe("hello wor")
+		// Parseable role:tool envelope with a string content.
+		expect(toolResultLine(JSON.stringify({ turn: 1, message: { role: "tool", content: "done ok" } }))).toBe("done ok")
+		// A bare content-block array.
+		expect(toolResultLine(JSON.stringify([{ type: "text", text: "arr text" }]))).toBe("arr text")
+		expect(toolResultLine(JSON.stringify({ content: [] }))).toBe("tool result")
+		expect(toolResultLine("plain text stays")).toBe("plain text stays")
 	})
 
 	test("P1-1: CJK result lines clip by display columns", () => {
@@ -116,6 +150,34 @@ describe("toolDetail: use_agent shape (batch D1)", () => {
 	})
 	test("the detail budget is display columns with a CJK prompt", () => {
 		const detail = toolDetail(JSON.stringify({ agent: "oldfox", prompt: "构建".repeat(80) }))
+		expect(detail.length).toBeLessThanOrEqual(121)
+		expect(detail.endsWith("…")).toBe(true)
+	})
+})
+
+describe("toolDetail: ask_agent shape (batch D5 live finding)", () => {
+	// Real-model capture: the ask_agent tool row painted its args raw —
+	// `⚙ ask_agent · … · {"agent_id":…}` — because toolDetail only knew the
+	// use_agent keys. The human line reads `→ <agent> · <content>` (the
+	// use_agent row's style) and raw JSON must never reach the screen.
+	test("humanizes { agent_id, prompt } as → agent · content — never raw JSON", () => {
+		const detail = toolDetail(JSON.stringify({ agent_id: "oldfox", prompt: "修复登录 bug\n然后跑测试" }))
+		expect(detail).toBe("→ oldfox · 修复登录 bug ⏎ 然后跑测试")
+		expect(detail.includes("{")).toBe(false)
+	})
+	test("message carries the content when prompt is absent (the captured shape)", () => {
+		const detail = toolDetail('{"agent_id":"牛马狗","message":"检查一下构建"}')
+		expect(detail).toBe("→ 牛马狗 · 检查一下构建")
+		expect(detail.includes("agent_id")).toBe(false)
+	})
+	test("agent_id alone still names the target", () => {
+		expect(toolDetail('{"agent_id":"sa_1"}')).toBe("→ sa_1")
+	})
+	test("empty agent_id falls through — no dangling arrow", () => {
+		expect(toolDetail(JSON.stringify({ agent_id: "", prompt: "one line" }))).toBe("one line")
+	})
+	test("the detail budget is display columns with a CJK message", () => {
+		const detail = toolDetail(JSON.stringify({ agent_id: "牛马狗", message: "构建".repeat(80) }))
 		expect(detail.length).toBeLessThanOrEqual(121)
 		expect(detail.endsWith("…")).toBe(true)
 	})
