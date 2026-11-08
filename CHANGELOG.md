@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-08
+
+### Added
+
+- **Visual alignment batch (V1–V5): the client view matches the reference TUI.** Tool blocks in the transcript flow render name + subject with a spinner while running, finalize on reject, and clip CJK by display width (V1); the thinking panel is a phase machine in the transcript fed by `reasoning_content` deltas (V2a); live subagent rows appear in the transcript flow as a tree (V2b); a welcome hero with quotes gates on hydration and renders at 60 columns (V3); assistant markdown tables render with grid borders (V4); and the transcript moves to one status-color family with running/fail rails on tool blocks (V5).
+
+### Changed
+
+- **Client-only distribution (retirement batches B1–B5).** The npm package no longer ships or boots the in-process plugin mode: `scripts/build-client.mjs` bundles the self-contained client at `prepack` (B1); the `dsh-opentui` bin is a client-chain launcher — bun/dsh detection with install guidance, idempotent `opentui` profile provisioning, a one-time legacy-profile preference migration, and an SDK closure symlink for `@deepseek-ai/dsh-client-connection` (B2); `package.json` ships `bin/ + scripts/ + dist/client + dist/scripts` only (B3); the `--plugin` chain and its dist-host build are deleted (B4, −35k lines); and the e2e suite runs the client face only (B5). The retired plugin-face live scripts (`e2e-live.mjs` / `e2e-fork.mjs`) and the `test:e2e` script were removed with them; CI keeps the per-package `bun test` matrix, and the real-boot leg is covered by the release gate (fresh-install boot render check) before every publish.
+
+### Fixed
+
+- **Theme persistence** — `/theme` writes the choice to the profile `config.json` instead of evaporating on restart (67-theme).
+- **`ask` multiSelect passthrough** — multi-select ask overlays deliver the full selection set instead of dropping it (63 scenario face store path).
+- **Subagent ladder caps** — the client sources the ladder caps from the profile `config.json` (subagent-policy parity with the retired host path).
+- **CJK display width** — tool-block rows clip by display width so CJK text no longer overruns the column.
+
 ## [0.6.1] - 2026-11-08
 
 ### Fixed
