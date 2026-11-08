@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-08
+
+### Changed
+
+- **Dock layout restructure (batches D1–D3): the session page composes as fixed dock slots, and the transcript goes chat-clean.** The page order is now status → widgets → editor → lastRequest → notices → powerline → hints: the whale comet status bar moves to the dock top while busy (zero rows idle, above the widgets dock); the widgets slot renders the Todos / Think / Tool single-line panels between the transcript and the composer (one pure pass over the shared seam-rows store); the lastRequest slot sits below the editor — the sent prompt echoes as a `●` line with one `├─/└─ <label> · Xs · <tail>` row per RUNNING child, cleared when the child settles and on session switch; notices stack directly above the powerline; the hints row is the last page row and the powerline drops the `Ctrl+Shift+F: search` segment (pure segments again). The transcript renders the chat-clean set only (user/assistant/echo/notice/ask) — tool blocks, think rows and the left-rail track line are gone from the flow, and the subagent tree left it entirely in D2. Tool call args humanize: `use_agent` reads `agent: <name> <prompt…>`, `ask_agent` reads `→ agent · content`.
+
+### Added
+
+- **Notices dock slot** — transient notice rows (the subagent steer echo, subagent-settled relay notices) paint as markdown above the powerline; each line retires on its own 8s timer (timer-only, never on keypress), capped at 8 with the oldest dropped.
+- **`/hints`** — toggles the keybinding hints row (idle: enter send · alt+enter newline · ↑↓ history; busy: enter steer · esc stop; plus subagents/search/scroll/quit rows).
+- **Unified widget hide law** — think/tool dock widgets fade out ~1s after their content stops; the Todos row hides when the list is empty or all completed; the Subagents surface is a single selection line (no second bordered roster dock) and its bar opens only while a child runs, auto-closing when none does (the ↓ key falls back to history); the `↓ subagents` hint shows only while a child runs.
+
+### Fixed
+
+- **Todos dock row renders against the real dsh host** — the tool-name match covered only the opencode spelling `todowrite`; the dsh host's model-side call name is `todo_write`. Both spellings match via an exact set (no other `todo*` tool feeds the panel), and the todo list is read from the call arguments' `todos` array first (the host's result brief carries rendered text only), falling back to the bare-array output brief (opencode shape); failed calls are skipped.
+- **Subagent label bare-id fallback on late join** — the child-follow snapshot replay dropped the whole snapshot (the host only sends the delegation label in the journal records, never re-sends it on the live stream), so the running-child row showed `subagent <id8>`; the snapshot now folds its records through the same event path (display catch-up only — the maxRounds ladder stays live-frame fed so a replay cannot re-arm force-stop).
+- **ask_agent tool row no longer renders raw JSON** — `{ agent_id, prompt | message }` reads `→ agent · content`; undiggable tool-result envelopes render their depth-2 string leaves or a `tool result` placeholder, never raw JSON.
+- **Host-injected messages no longer leak into the transcript as user prompt lines** — `user/message` records with a non-user source are filtered out of the seam rows.
+
 ## [0.7.0] - 2026-11-08
 
 ### Added

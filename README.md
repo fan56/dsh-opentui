@@ -106,6 +106,8 @@ PATH; otherwise the scripts self-skip (exit 0) so CI runs green.
 
 ## Status
 
-v0.7.0: published as `@aiwayds/dsh-opentui` — client-only distribution
-(npm bin → client chain; the in-process plugin mode was retired). Roadmap:
-platform + Kit polish.
+v0.8.0: published as `@aiwayds/dsh-opentui` — client-only distribution
+(npm bin → client chain; the in-process plugin mode was retired). The
+session page composes as fixed dock slots (status / widgets / editor /
+lastRequest / notices / powerline / hints) over a chat-clean transcript.
+Roadmap: platform + Kit polish.
