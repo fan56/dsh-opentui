@@ -245,6 +245,29 @@ describe("event feed (seam-rows payload contract)", () => {
 		])
 	})
 
+	test("D5b: a multi-block notice joins its blocks on a newline (no `finished.It`)", () => {
+		const events = projectJournalRecord(
+			{
+				type: "user/message",
+				seq: 27,
+				time: 0,
+				data: {
+					messageID: "m-27",
+					source: { kind: "subagent-settled" },
+					content: [
+						{ type: "text", text: "Background subagent sa_1 was stopped before it finished." },
+						{ type: "text", text: "It left no closing message." },
+					],
+				},
+			},
+			"ses-live",
+		)
+		expect(events[0]?.details).toMatchObject({
+			role: "notice",
+			text: "Background subagent sa_1 was stopped before it finished.\nIt left no closing message.",
+		})
+	})
+
 	test("projectJournalRecord: assistant/message → message.part.updated with a text part", () => {
 		const events = projectJournalRecord(
 			{ type: "assistant/message", seq: 4, time: 0, data: { messageID: "m-4", text: "answer" } },

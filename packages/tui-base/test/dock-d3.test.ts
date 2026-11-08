@@ -33,6 +33,10 @@ describe("hintsText", () => {
 	test("toggled off → ''", () => {
 		expect(hintsText(false, false)).toBe("")
 	})
+	test("D5b: `↓ subagents` only while a child runs", () => {
+		expect(hintsText(false)).not.toContain("↓ subagents")
+		expect(hintsText(true, true, true)).toContain("↓ subagents")
+	})
 })
 
 describe("powerline is pure segments (D3)", () => {

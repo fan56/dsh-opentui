@@ -586,7 +586,10 @@ function blocksText(content: unknown): string {
 	for (const block of blocks) {
 		if (typeof block === "object" && block !== null && (block as { type?: unknown }).type === "text") {
 			const value = (block as { text?: unknown }).text
-			if (typeof value === "string") text += value
+			// Batch D5b (live finding: a two-block subagent-settled notice
+			// painted `finished.It left…`): blocks join on a newline — the
+			// remote-follow blocksText parity.
+			if (typeof value === "string") text += (text === "" ? "" : "\n") + value
 		}
 	}
 	return text.trim()
