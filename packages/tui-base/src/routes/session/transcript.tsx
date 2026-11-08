@@ -32,8 +32,8 @@
  * bottom slot is flexShrink=0 and its child (the composer) sets an explicit
  * height — auto-height boxes collapse in flex columns.
  */
-import { For, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
-import { useRenderer } from "@opentui/solid"
+import { For, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
@@ -68,6 +68,11 @@ export type TranscriptProps = {
 
 export function Transcript(props: TranscriptProps) {
 	const renderer = useRenderer()
+	// Gap 1 fix: the `⎿` track clip width rides the REACTIVE terminal
+	// dimensions (one resize listener for the whole transcript — this component
+	// mounts once; per-row reads were the warned-against pattern). renderer.
+	// width was a plain property: rows kept their stale clip until next update.
+	const dimensions = useTerminalDimensions()
 	const theme = useThemeOptional()
 	const color = {
 		text: () => theme?.text.base ?? "#e6e6e6",
@@ -106,17 +111,34 @@ export function Transcript(props: TranscriptProps) {
 		const title = subject === "" ? row.name : `${row.name}(${subject})`
 		const statusColor =
 			row.status === "failed" ? color.failed() : row.status === "running" ? color.running() : color.done()
-		const marker = row.status === "running" ? `${SPINNER_FRAMES[spin() % SPINNER_FRAMES.length]} ` : row.status === "failed" ? "✗ " : "✓ "
+		// Spinner + elapsed (tui-pi ToolPanel semantics): a per-row memo read in
+		// the JSX text child — the 120ms tick updates ONLY this text node; the
+		// static title/track nodes and every non-tool row never re-read `spin`.
+		const titleLine = createMemo(() => {
+			const marker =
+				row.status === "running" ? `${SPINNER_FRAMES[spin() % SPINNER_FRAMES.length]} ` : row.status === "failed" ? "✗ " : "✓ "
+			// Gap 2: a running row counts live off startedAt; a settled row
+			// freezes at elapsedSec. Stored rows carry neither — no fabricated time.
+			const elapsed =
+				row.status === "running"
+					? row.startedAt !== undefined
+						? ` · ${((Date.now() - row.startedAt) / 1000).toFixed(1)}s`
+						: ""
+					: row.elapsedSec !== undefined
+						? ` · ${row.elapsedSec.toFixed(1)}s`
+						: ""
+			return `${marker}${title}${elapsed}`
+		})
 		// Running shows the arg summary; settled shows the result tail (the
 		// collapse-to-summary: the raw JSON never renders on either line).
 		const track = row.status === "running" ? toolDetail(row.args) : toolResultLine(row.output)
 		return (
 			<box flexShrink={0} paddingLeft={3} flexDirection="column">
 				<text fg={statusColor} wrapMode="none">
-					{`${marker}${title}`}
+					{titleLine()}
 				</text>
 				<Show when={track !== ""}>
-					<text fg={color.reasoning()} wrapMode="none">{`  ⎿ ${clipToWidth(track, Math.max(20, renderer.width - 10))}`}</text>
+					<text fg={color.reasoning()} wrapMode="none">{`  ⎿ ${clipToWidth(track, Math.max(20, dimensions().width - 10))}`}</text>
 				</Show>
 			</box>
 		)

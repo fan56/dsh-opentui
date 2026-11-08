@@ -168,6 +168,11 @@ export class RemoteSessionSeam implements SessionSeam {
 					.join("\n")
 				return { kind: row.kind, text, final: true }
 			}
+			if (row.kind === "tool") {
+				// Batch V1: settled tool rows project with their args brief and
+				// result summary — the view's tool block replays them (gap 3).
+				return { kind: "tool", text: row.name, final: true, args: row.args, output: row.brief, ok: row.ok }
+			}
 			return {
 				kind: row.kind,
 				text: row.text,

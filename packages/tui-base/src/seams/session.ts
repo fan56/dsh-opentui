@@ -83,6 +83,11 @@ export interface SeamTranscriptRow {
 	kind: string
 	text: string
 	final: boolean
+	/** Batch V1 tool-row slice: raw args JSON, the result JSON-brief and the
+	 * isError mirror — present on durable `tool` rows only. */
+	args?: string
+	output?: string
+	ok?: boolean
 }
 
 /**

@@ -88,14 +88,22 @@ export function toolResultLine(output: string | undefined, limit = 120): string 
 			text = parsed
 		} else if (parsed !== null && typeof parsed === "object") {
 			const record = parsed as Record<string, unknown>
-			const content = record.content
+			// The follow brief can be the WHOLE wire envelope ({turn, message,
+			// …}) when data.output is absent (verified live: the ⎿ track showed
+			// the raw envelope) — dig the message record out first.
+			const inner = typeof record.message === "object" && record.message !== null
+				? (record.message as Record<string, unknown>)
+				: record
+			const content = inner.content
 			if (Array.isArray(content)) {
 				const first = content.find(
 					(block) => typeof block === "object" && block !== null && typeof (block as Record<string, unknown>).text === "string",
 				) as Record<string, unknown> | undefined
 				if (first !== undefined) text = String(first.text)
-			} else if (typeof record.text === "string") {
-				text = record.text
+			} else if (typeof inner.text === "string") {
+				text = inner.text
+			} else if (inner !== record && typeof inner.output === "string") {
+				text = inner.output
 			}
 		}
 	} catch {
