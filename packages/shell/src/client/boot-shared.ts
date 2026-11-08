@@ -95,3 +95,43 @@ export function themeNameFromConfig(session: ShellSessionSurface): string | unde
 		return undefined
 	}
 }
+
+/** The pinned theme mode (α skin layer): configLoad().themeMode. Auto
+ * (undefined) follows the terminal; only dark/light pin. */
+export function themeModeFromConfig(session: ShellSessionSurface): "dark" | "light" | undefined {
+	try {
+		const mode = session.configLoad().themeMode
+		return mode === "dark" || mode === "light" ? mode : undefined
+	} catch {
+		return undefined
+	}
+}
+
+// --- one-shot skin migration (α skin layer) ---------------------------------
+// A profile that predates the dsh-blue default keeps an explicit `theme`
+// key; the first boot after the skin cutover switches it to the new default
+// once, writes a marker so it never re-fires, and notifies the user.
+
+export const SKIN_MIGRATION_THEME = "dsh-blue"
+export const SKIN_MIGRATION_NOTICE =
+	"Theme switched to dsh-blue (new default). Use /theme to switch back."
+
+export interface SkinMigrationPlan {
+	/** The theme to apply and persist over the legacy key. */
+	theme: string
+	/** The marker value persisted as `skinMigration` in the profile config. */
+	skinMigration: number
+	/** The one-shot notice text (the v2 notices channel). */
+	notice: string
+}
+
+/** Pure migration decision: a profile config with a legacy `theme` key and
+ * no `skinMigration` marker switches to the dsh-blue default once. No theme
+ * key (fresh users) or an existing marker → no migration. */
+export function skinMigrationPlan(config: Record<string, unknown>): SkinMigrationPlan | undefined {
+	const theme = config.theme
+	if (typeof theme !== "string" || theme.length === 0) return undefined
+	if (config.skinMigration !== undefined) return undefined
+	if (theme === SKIN_MIGRATION_THEME) return undefined
+	return { theme: SKIN_MIGRATION_THEME, skinMigration: 1, notice: SKIN_MIGRATION_NOTICE }
+}

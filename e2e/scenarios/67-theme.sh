@@ -4,9 +4,10 @@
 # bundled theme list), the live-apply feedback row ('Theme: <name> — applied'),
 # the config.json persistence through the seam configSave (host-entry-v2 F7b:
 # themes.set -> seam.configSave({ theme }) -> HostSession.configSave upserts
-# the profile config.json 'theme' key), and the boot restore
-# (props.themeName <- configLoad().theme -> themeSeam.setTheme) across a full
-# TUI restart.
+# the profile config.json 'theme' key), and — α skin layer rewrite — the
+# ONE-SHOT skin migration restart (a legacy `theme` key flips to the dsh-blue
+# default, `skinMigration: 1` lands, the notice fires once) instead of the
+# old boot-restore group.
 #
 # DEPENDENCY GATE (the 65-jev-attention model): the image's dist-host
 # predates F7a/F7b — the scenario greps the INSTALLED bundle at runtime.
@@ -124,7 +125,12 @@ wait_pane_fixed 'theme apply feedback row (Theme: aura — applied)' 15 \
   'Theme: aura — applied'
 wait_gone 'theme picker closed after selection' 10 'Select theme'
 
-# --- G2: config.json persistence + restart restore -------------------------------
+# --- G2: config.json persistence + one-shot skin migration restart ----------------
+# (α skin layer rewrote this group: a restart with a legacy `theme` key no
+# longer boots that theme — the one-shot migration flips it to the dsh-blue
+# default, writes the `skinMigration` marker, and notifies once. The
+# pre-migration 'persisted theme owns the boot chrome' evidence lives in the
+# aura apply above; the restart now proves the MIGRATION contract.)
 if (( PERSIST_GATE == 0 )); then
   warn 'persistence arm DARK: dist-host predates the configSave theme write (F7b) — restart groups skipped-by-gate; the live apply row above is the apply evidence'
   summary
@@ -137,35 +143,58 @@ else
   bad 'config.json missing or carries no "theme": "aura" key'
 fi
 
-# Restart: the persisted theme must own the boot chrome (fingerprint moves).
+# Restart: the one-shot migration owns the boot — aura flips to dsh-blue,
+# the marker lands, the notice shows once, the chrome returns to the default
+# fingerprint (equal to the pre-switch baseline: same theme both sides).
 kill_tui
 start_tui
 wait_tui_up 120 || { summary; exit 0; }
 sleep 2
-RESTORED_FP="$(sgr_fingerprint)"
-if [ "$RESTORED_FP" != "$BASE_FP" ]; then
-  ok 'restarted boot chrome differs from the pre-switch fingerprint (persisted theme applied at boot)'
+wait_pane_fixed 'migration notice shown once (one-shot skin migration)' 15 \
+  'Theme switched to dsh-blue (new default). Use /theme to switch back.'
+if [ -f "$CONFIG_JSON" ] && grep -qF '"theme": "dsh-blue"' "$CONFIG_JSON" && grep -qF '"skinMigration": 1' "$CONFIG_JSON"; then
+  ok 'migration persisted ("theme": "dsh-blue" + "skinMigration": 1)'
 else
-  bad 'restarted boot chrome fingerprint matches the pre-switch default — the persisted theme did not repaint the boot'
+  bad 'config.json missing the migration write ("theme": "dsh-blue" / "skinMigration": 1)'
 fi
-if grep -qF '"theme": "aura"' "$CONFIG_JSON"; then
-  ok 'config.json keeps the theme key across the restart'
+wait_gone 'migration notice retires (transient notice channel)' 20 \
+  'Theme switched to dsh-blue'
+sleep 1
+RESTORED_FP="$(sgr_fingerprint)"
+if [ "$RESTORED_FP" = "$BASE_FP" ]; then
+  ok 'migrated boot chrome matches the pre-switch fingerprint (the dsh-blue default owns the boot again)'
 else
-  bad 'config.json lost the theme key after the restart'
+  bad 'migrated boot chrome fingerprint differs from the pre-switch baseline — the migration did not restore the default theme'
 fi
 
-# Control boot: remove the persisted theme key; the default chrome must come
-# back (fingerprint matches the pre-switch baseline again). This step is also
-# the cleanup — the profile is left theme-free for later scenarios.
-node -e 'const fs=require("fs");const f=process.argv[1];const j=JSON.parse(fs.readFileSync(f,"utf8"));delete j.theme;fs.writeFileSync(f,JSON.stringify(j,null,2)+"\n")' "$CONFIG_JSON"
-ok 'theme key removed from config.json (control step)'
+# Marker gating: a second restart must NOT re-notify (the skinMigration
+# marker fires once).
+kill_tui
+start_tui
+wait_tui_up 120 || { summary; exit 0; }
+sleep 2
+PANE="$(capture)"
+assert_not_contains 'no second migration notice after the marker' \
+  'Theme switched to dsh-blue' "$PANE"
+if grep -qF '"skinMigration": 1' "$CONFIG_JSON"; then
+  ok 'config.json keeps the migration marker across the restart'
+else
+  bad 'config.json lost the skinMigration marker after the restart'
+fi
+
+# Control boot: remove the persisted theme AND marker keys; the default
+# chrome must come back (fingerprint matches the pre-switch baseline again).
+# This step is also the cleanup — the profile is left theme-free for later
+# scenarios (a fresh profile lands on dsh-blue naturally).
+node -e 'const fs=require("fs");const f=process.argv[1];const j=JSON.parse(fs.readFileSync(f,"utf8"));delete j.theme;delete j.skinMigration;fs.writeFileSync(f,JSON.stringify(j,null,2)+"\n")' "$CONFIG_JSON"
+ok 'theme + skinMigration keys removed from config.json (control step)'
 kill_tui
 start_tui
 wait_tui_up 120 || { summary; exit 0; }
 sleep 2
 CONTROL_FP="$(sgr_fingerprint)"
 if [ "$CONTROL_FP" = "$BASE_FP" ]; then
-  ok 'control boot (theme key removed) matches the pre-switch fingerprint (default chrome restored)'
+  ok 'control boot (keys removed) matches the pre-switch fingerprint (default chrome restored)'
 else
   bad 'control boot fingerprint differs from the pre-switch baseline — the default-chrome render is not reproducible across boots'
 fi

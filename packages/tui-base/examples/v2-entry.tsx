@@ -81,6 +81,11 @@ async function loadShell() {
 
 const overlays = new TurnOverlayController()
 
+/** The one-shot skin-migration notice (α skin layer): boot writes the plan,
+ * the page shows it through the notices dock once mounted (the dock reads a
+ * module signal — a pre-mount showNotice would burn the TTL before paint). */
+let pendingMigrationNotice: string | undefined
+
 /** The v2 session page: the real seam driving the rebuilt view. */
 function V2SessionPage(props: {
 	seam: RemoteSessionSeam
@@ -95,7 +100,8 @@ function V2SessionPage(props: {
 	})
 	const dialog = useDialog()
 	const theme = useTheme()
-	const themeSeam = createThemeSeam(useThemes())
+	const themeService = useThemes()
+	const themeSeam = createThemeSeam(themeService)
 	if (props.themeName && !themeSeam.setTheme(props.themeName)) {
 		console.error(`[v2] unknown theme ${props.themeName}; bundled: ${themeSeam.list().join(", ")}`)
 	}
@@ -127,6 +133,10 @@ function V2SessionPage(props: {
 		void projection.load()
 		void seam.currentModelSelection().then(setModel)
 		refreshPresetLabel()
+		if (pendingMigrationNotice) {
+			showNotice(pendingMigrationNotice)
+			pendingMigrationNotice = undefined
+		}
 		const timer = setInterval(() => setNow(new Date()), 1000)
 		onCleanup(() => clearInterval(timer))
 	})
@@ -167,7 +177,18 @@ function V2SessionPage(props: {
 			theme,
 		})
 	let cmdOrdinal = 0
-	const pickOne = (title: string, options: { title: string; value: string }[]) =>
+	// `currentValue` (α skin layer): marks the active row with the vendored
+	// `●` marker (DialogSelectRow current) WITHOUT moving the selection to it
+	// (focusCurrent: false keeps row 0 selected — the e2e 67 bare-Enter
+	// contract). `description` rides the option mapping now: pickOne used to
+	// drop it (theme facts §5). `headerLine` stays the /sessions slot (v2
+	// does not paint it — pre-existing gap, unchanged).
+	const pickOne = (
+		title: string,
+		options: { title: string; value: string; description?: string }[],
+		headerLine?: string,
+		currentValue?: string,
+	) =>
 		new Promise<string | undefined>((resolvePick) => {
 			let settled = false
 			const done = (value: string | undefined) => {
@@ -181,7 +202,13 @@ function V2SessionPage(props: {
 					createComponent(DialogSelect, {
 						title,
 						renderFilter: false,
-						options: options.map((option) => ({ title: option.title, value: option.value })),
+						options: options.map((option) => ({
+							title: option.title,
+							value: option.value,
+							description: option.description,
+						})),
+						current: currentValue,
+						focusCurrent: false,
 						onSelect: (option: { value: string }) => done(option.value),
 						onCancel: () => done(undefined),
 					}),
@@ -281,6 +308,23 @@ function V2SessionPage(props: {
 				}
 				return applied
 			},
+			// α skin layer: auto/dark/light mode face. Pin/free rides the
+			// vendored theme service; the profile `themeMode` key is the
+			// persistence (the v2 vendor config is resolve({}) — the
+			// configState.update path inside pin/free cannot persist).
+			mode: {
+				current: () => (themeService.locked() ? themeService.mode() : "auto"),
+				set: (mode: "auto" | "dark" | "light") => {
+					if (mode === "auto") themeService.unlock()
+					else if (!themeService.setMode(mode)) return false
+					try {
+						seam.configSave?.({ themeMode: mode })
+					} catch (error) {
+						console.error("[v2] themeMode persist failed:", error)
+					}
+					return true
+				},
+			},
 		},
 	})
 	const overlayHost = createComponent(TurnOverlayHost, {
@@ -296,7 +340,16 @@ function V2SessionPage(props: {
 		flexDirection: "column",
 		width: "100%",
 		height: "100%",
-		backgroundColor: "black",
+		// α skin layer: the boot chrome follows the active theme instead of
+		// the pinned "black" (theme facts §6 — the theme background never
+		// reached the v2 root, light terminals booted dark-on-black). The
+		// getter is a PER-PROPERTY reactive prop: spreadExpression tracks it
+		// in its own render effect, so a theme/mode switch repaints the root
+		// without re-running this children getter (REACTIVE-PROP LAW,
+		// v2-entry.tsx:432-437 — no subtree remount on /theme).
+		get backgroundColor() {
+			return theme.background.base
+		},
 		get children() {
 			return [
 				// Startup hero (batch V3, old-stack welcome semantics): the block
@@ -514,7 +567,22 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 
 	const seam = new adapter.RemoteSessionSeam(session as never)
 	registerTurnOverlays(seam, overlays)
-	const themeName = shared.themeNameFromConfig(session)
+	// One-shot skin migration (α skin layer): a legacy profile config that
+	// still pins a `theme` switches to the dsh-blue default once, persists
+	// the `skinMigration` marker, and queues the one-time notice. Fresh
+	// profiles (no theme key) fall to the default naturally. Best-effort: a
+	// failed persist still applies the theme for this boot.
+	const migration = shared.skinMigrationPlan(session.configLoad())
+	if (migration) {
+		try {
+			session.configSave({ theme: migration.theme, skinMigration: migration.skinMigration })
+		} catch (error) {
+			console.error("[v2] skin migration persist failed:", error)
+		}
+		pendingMigrationNotice = migration.notice
+	}
+	const themeName = migration ? migration.theme : shared.themeNameFromConfig(session)
+	const themeModeLock = shared.themeModeFromConfig(session)
 
 	let shutdownPromise: Promise<void> | null = null
 	const shutdown = (): Promise<void> => {
@@ -546,9 +614,13 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 					get children() {
 						return createComponent(ToastProvider, {
 							get children() {
-								return createComponent(ThemeProvider, {
-									mode: "dark",
-									source: { discover: async () => ({}) },
+									return createComponent(ThemeProvider, {
+										mode: "dark",
+										// α skin layer: the profile-pinned mode (themeMode
+										// config key) arrives as the boot lock; undefined =
+										// auto (renderer.themeMode, dark fallback).
+										lock: themeModeLock,
+										source: { discover: async () => ({}) },
 									get children() {
 										return createComponent(ClipboardProvider, {
 											value: { read: async () => undefined, write: async () => {} },

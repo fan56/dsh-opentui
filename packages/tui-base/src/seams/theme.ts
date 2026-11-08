@@ -12,17 +12,18 @@
  */
 import { DEFAULT_THEMES } from "../theme"
 
-/** Default theme for the rebuilt stack (vendored default). */
-export const DEFAULT_THEME = "opencode"
+/** Default theme for the rebuilt stack: the dsh brand theme (α skin layer,
+ * v2 document with the #4D6BFE brand accent). */
+export const DEFAULT_THEME = "dsh-blue"
 
-/** The bundled theme names: 32 v1 assets + the v2 `opencode` default.
- * (`system` is generated from the terminal palette, not bundled.) */
+/** The bundled theme names: 32 v1 assets + the v2 documents (`opencode`,
+ * `dsh-blue`). (`system` is generated from the terminal palette, not bundled.) */
 export function bundledThemeNames(): string[] {
-	return [...Object.keys(DEFAULT_THEMES), DEFAULT_THEME].sort()
+	return [...Object.keys(DEFAULT_THEMES), "opencode", DEFAULT_THEME].sort()
 }
 
 export function isBundledTheme(name: string): boolean {
-	return name === DEFAULT_THEME || Object.hasOwn(DEFAULT_THEMES, name)
+	return name === DEFAULT_THEME || name === "opencode" || Object.hasOwn(DEFAULT_THEMES, name)
 }
 
 export interface ThemeSeam {

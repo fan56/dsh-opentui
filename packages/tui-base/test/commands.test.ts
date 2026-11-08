@@ -81,7 +81,12 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		cleared: 0,
 		reloaded: 0,
 		quit: 0,
-		picks: [] as { title: string; headerLine?: string; options: { title: string; description?: string }[] }[],
+		picks: [] as {
+			title: string
+			headerLine?: string
+			currentValue?: string
+			options: { title: string; description?: string }[]
+		}[],
 	}
 	const ctx: SlashCommandContext & { hooks: typeof hooks; lines: string[] } = {
 		seam: seam.seam,
@@ -89,8 +94,13 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		clear: () => hooks.cleared++,
 		reload: () => hooks.reloaded++,
 		quit: () => hooks.quit++,
-		pickOne: async (title, options, headerLine) => {
-			hooks.picks.push({ title, headerLine, options: options.map((o) => ({ title: o.title, description: o.description })) })
+		pickOne: async (title, options, headerLine, currentValue) => {
+			hooks.picks.push({
+				title,
+				headerLine,
+				currentValue,
+				options: options.map((o) => ({ title: o.title, description: o.description })),
+			})
 			return pickAnswer
 		},
 		hooks,
@@ -417,13 +427,43 @@ describe("core commands", () => {
 		}
 		await coreCommands().find((c) => c.name === "/theme")!.run(ctx, "")
 		expect(ctx.hooks.picks[0]?.title).toBe("Select theme")
+		// α skin layer: the active row rides the `currentValue` marker slot
+		// (the vendored `●`), not a description; no mode face → no mode rows.
 		expect(ctx.hooks.picks[0]?.options).toEqual([
 			{ title: "github-dark" },
 			{ title: "github-light" },
-			{ title: "opencode", description: "current" },
+			{ title: "opencode" },
 		])
+		expect(ctx.hooks.picks[0]?.currentValue).toBe("opencode")
 		expect(applied).toEqual(["github-light"])
 		expect(ctx.lines).toEqual(["Theme: github-light — applied"])
+	})
+
+	test("/theme with a mode face appends the auto/dark/light rows and applies the pick (α skin layer)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "mode:light")
+		const modes: string[] = []
+		ctx.themes = {
+			current: () => "opencode",
+			list: () => ["opencode"],
+			set: () => false,
+			mode: () => ({
+				current: () => "auto",
+				set: (mode) => {
+					modes.push(mode)
+					return true
+				},
+			}),
+		}
+		await coreCommands().find((c) => c.name === "/theme")!.run(ctx, "")
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "opencode" },
+			{ title: "mode: auto", description: "follow the terminal (default)" },
+			{ title: "mode: dark", description: "always dark" },
+			{ title: "mode: light", description: "always light" },
+		])
+		expect(modes).toEqual(["light"])
+		expect(ctx.lines).toEqual(["Theme mode: light"])
 	})
 
 	test("/theme with esc or the current theme re-picked applies nothing", async () => {

@@ -67,6 +67,9 @@ export interface SlashCommandContext {
 		title: string,
 		options: { title: string; value: string; description?: string }[],
 		headerLine?: string,
+		/** α skin layer: marks the active row with the vendored `●` current
+		 * marker without moving the selection off row 0. */
+		currentValue?: string,
 	): Promise<string | undefined>
 	/**
 	 * One generic modal text prompt (the DialogPrompt modal through the
@@ -93,6 +96,12 @@ export interface SlashCommandContext {
 		current(): string
 		list(): string[]
 		set(name: string): boolean
+		/** α skin layer: dark/light/auto mode face. Optional — an entry
+		 * without it keeps the theme-only picker (legacy hosts). */
+		mode?(): {
+			current(): "auto" | "dark" | "light"
+			set(mode: "auto" | "dark" | "light"): boolean
+		}
 	}
 	/**
 	 * Open the cross-session FTS search overlay (batch H3). Optional — an
@@ -614,9 +623,12 @@ export function coreCommands(): SlashCommand[] {
 		},
 		{
 			// Feature batch F7a. Bare opens the picker over the bundled theme
-			// list (the generic pickOne modal — the same shape as /model), the
-			// preselected current marked; picking applies the theme live. No
-			// argument form — the picker IS the reference surface.
+			// list (the generic pickOne modal — the same shape as /model); the
+			// active theme row carries the vendored `●` current marker (α skin
+			// layer — pickOne's currentValue, selection stays on row 0) and the
+			// auto/dark/light mode rows ride LAST so the bare-Enter row-0 pick
+			// (the e2e 67 contract) still lands on a theme. Picking applies
+			// live. No argument form — the picker IS the reference surface.
 			name: "/theme",
 			description: "switch theme (opens the picker)",
 			async run(ctx) {
@@ -625,15 +637,30 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				const current = ctx.themes.current()
+				const modeFace = ctx.themes.mode?.()
+				const modeOptions = modeFace
+					? [
+							{ title: "mode: auto", value: "mode:auto", description: "follow the terminal (default)" },
+							{ title: "mode: dark", value: "mode:dark", description: "always dark" },
+							{ title: "mode: light", value: "mode:light", description: "always light" },
+						]
+					: []
 				const picked = await ctx.pickOne(
 					"Select theme",
-					ctx.themes.list().map((name) => ({
-						title: name,
-						value: name,
-						description: name === current ? "current" : undefined,
-					})),
+					[
+						...ctx.themes.list().map((name) => ({ title: name, value: name })),
+						...modeOptions,
+					],
+					undefined,
+					current,
 				)
 				if (!picked || picked === current) return
+				if (picked.startsWith("mode:")) {
+					const mode = picked.slice("mode:".length) as "auto" | "dark" | "light"
+					if (modeFace?.set(mode)) ctx.say(`Theme mode: ${mode}`)
+					else ctx.say(`unknown theme mode: ${mode}`)
+					return
+				}
 				if (ctx.themes.set(picked)) ctx.say(`Theme: ${picked} — applied`)
 				else ctx.say(`unknown theme: ${picked}`)
 			},

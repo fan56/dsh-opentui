@@ -9,6 +9,7 @@ import { resolveThemeColors } from "./resolve"
 import { DEFAULT_THEMES, type Theme, type ThemeV1Json } from "./v1"
 import opencode from "./assets/v2/opencode.json" with { type: "json" }
 import opencode2 from "./assets/v2/opencode2.json" with { type: "json" }
+import dshBlue from "./assets/v2/dsh-blue.json" with { type: "json" }
 
 export { DEFAULT_THEMES, type Theme, type ThemeV1Json } from "./v1"
 
@@ -39,11 +40,26 @@ export function getOpenCode2Theme() {
   return opencode2Theme
 }
 
+let dshBlueTheme: (ThemeDocument & {
+  readonly light: ModeDefinition
+  readonly dark: ModeDefinition
+}) | undefined
+
+// The dsh brand theme (α skin layer): v2 document, accent = brand blue
+// #4D6BFE (deepened #3B5BDB on light). Bundled like `opencode` — parsed once.
+export function getDshBlueTheme() {
+  if (dshBlueTheme) return dshBlueTheme
+  const document = parseThemeDocument(dshBlue, "dsh-blue") as NonNullable<typeof dshBlueTheme>
+  dshBlueTheme = document
+  return document
+}
+
 function listThemes(): Record<string, ThemeDocumentSource> {
   // Priority: defaults < custom files < generated system.
   const themes: Record<string, ThemeDocumentSource> = {
     ...DEFAULT_THEMES,
     opencode: getOpenCodeTheme(),
+    "dsh-blue": getDshBlueTheme(),
     ...customThemes,
   }
   return {

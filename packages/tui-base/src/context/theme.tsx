@@ -20,6 +20,7 @@ import {
 import { generateSystem, terminalMode } from "../theme/system"
 import { discoverThemes } from "../theme/discovery"
 import { createComponentTheme, type ComponentTheme } from "../theme/component"
+import { DEFAULT_THEME } from "../seams/theme"
 import { createEffect, createMemo, createSignal, onCleanup, onMount, useContext, type Accessor, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createSimpleContext } from "./helper"
@@ -113,7 +114,7 @@ type ThemeContextValue = {
 const [store, setStore] = createStore<State>({
   mode: "dark",
   lock: undefined,
-  active: "opencode",
+  active: DEFAULT_THEME,
   ready: false,
 })
 const [themeSources, setThemeSources] = createSignal(allThemes())
@@ -122,7 +123,10 @@ subscribeThemes(setThemeSources)
 
 const themeContext = createSimpleContext({
   name: "Theme",
-  init: (props: { mode: "dark" | "light"; source: ThemeSource }): ThemeContextValue => {
+  // `lock` (α skin layer): a host-side pinned mode (the profile config's
+  // `themeMode` read at boot). Auto (undefined) follows renderer.themeMode,
+  // falling back to `props.mode` when the terminal palette is undetected.
+  init: (props: { mode: "dark" | "light"; source: ThemeSource; lock?: "dark" | "light" }): ThemeContextValue => {
     const renderer = useRenderer()
     const configState = useConfig()
     const newDesigns = useNewDesigns()
@@ -132,11 +136,12 @@ const themeContext = createSimpleContext({
 
     setStore(
       produce((draft) => {
-        const lock = config.theme?.mode === "dark" || config.theme?.mode === "light" ? config.theme.mode : undefined
+        const configMode = config.theme?.mode === "dark" || config.theme?.mode === "light" ? config.theme.mode : undefined
+        const lock = configMode ?? (props.lock === "dark" || props.lock === "light" ? props.lock : undefined)
         const mode = lock ?? renderer.themeMode ?? props.mode
         draft.mode = mode
         draft.lock = lock
-        draft.active = config.theme?.name ?? "opencode"
+        draft.active = config.theme?.name ?? DEFAULT_THEME
         draft.ready = false
       }),
     )
