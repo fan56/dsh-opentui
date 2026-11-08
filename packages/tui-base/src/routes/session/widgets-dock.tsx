@@ -10,10 +10,10 @@
  *   Todos  `todos [✓]2/3 · <current>`     — from the latest todowrite brief
  *   Think  `💭 thinking · Xs · <tail>`    — italic while the burst runs;
  *          collapses to `💭 thought · Xs · <first line>` (the seam-rows fade
- *          machine clears it ~1.8s after settle — nothing lingers)
+ *          machine clears it ~1s after the burst stops — batch D5)
  *   Tool   `⚙ name(subject) · Xs · <tail>` per tool line; settled freezes
- *          ✔/✘ + elapsed; multiple tools = multiple lines, each updated in
- *          place (the line set derives from the store, never re-created)
+ *          ✔/✘ + elapsed, then fades ~1s later (batch D5: `faded`);
+ *          multiple tools = multiple lines, each updated in place
  *
  * Data law: the dock is a pure VIEW over the seam-rows store — the phase
  * machine (onThinkingDelta / onToolRun / collapse / fade) is untouched.
@@ -125,6 +125,9 @@ export function dockLines(rows: readonly SeamRow[]): DockLine[] {
 	// Tool panel (one line per live tool row, in-place keyed updates).
 	for (const row of all) {
 		if (row.kind !== "tool" || !row.key.startsWith("tool:live:")) continue
+		// Batch D5: settled tools fade out ~1s after settle (seam-rows flips
+		// `faded`); running tools always show.
+		if (row.faded === true && row.status !== "running") continue
 		out.push({ text: toolLineText(row, dockSpin), tone: row.status === "running" ? "running" : row.status === "failed" ? "failed" : "ok" })
 	}
 	return out

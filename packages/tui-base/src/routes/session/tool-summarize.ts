@@ -126,21 +126,53 @@ function stringLeaves(record: Record<string, unknown>, depth: number): [string, 
 	return out.slice(0, 4)
 }
 
+/** Human placeholder when a JSON result carries no readable text (batch
+ * D5 law: a raw JSON brief NEVER reaches the screen, on any path). */
+export const TOOL_RESULT_PLACEHOLDER = "tool result"
+
+/**
+ * Truncation-tolerant dig (batch D5, verified live: the follow brief is
+ * `JSON.stringify(output).slice(0, 300)`, so a long result arrives as
+ * UNPARSEABLE cut JSON — `{"turn":1,"step":1,"message":{"role":"tool",…`
+ * — and the old parse-failure arm painted it raw). Scan for the first
+ * human-text field (`text`, then string `content`/`output`/`result`) and
+ * decode its JSON-escaped value up to the closing quote or the cut.
+ */
+function digTruncatedJson(raw: string): string | undefined {
+	for (const key of ["text", "content", "output", "result", "message"]) {
+		const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`, "u").exec(raw)
+		if (match === null) continue
+		let body = match[1]!
+		// A cut inside an escape leaves a dangling backslash — drop it.
+		body = body.replace(/\\(u[0-9a-fA-F]{0,3})?$/u, "")
+		try {
+			const decoded = JSON.parse(`"${body}"`) as string
+			if (decoded.trim() !== "") return decoded
+		} catch {
+			// Undecodable fragment — try the next key.
+		}
+	}
+	return undefined
+}
+
 /**
  * First meaningful line of a tool result (dsh-tui-pi `resultTextLines`
  * semantics applied to the follow stream's JSON brief): the input is
  * `JSON.stringify(output).slice(0, 300)` — dig the text content out
- * best-effort ({ text } or { content: [{ type: "text", text }] }), else
- * show the de-quoted JSON slice itself.
+ * best-effort ({ text }, { content: string | [{ type: "text", text }] },
+ * the `{turn, message: {role: "tool", content}}` wire envelope), else the
+ * human leaves, else the `tool result` placeholder — never raw JSON.
  */
 export function toolResultLine(output: string | undefined, limit = 120): string {
 	if (output === undefined || output.trim() === "") return ""
 	let text = output
+	const looksJson = /^\s*[{["]/u.test(output)
 	try {
 		const parsed = JSON.parse(output) as unknown
 		if (typeof parsed === "string") {
 			text = parsed
 		} else if (parsed !== null && typeof parsed === "object") {
+			text = TOOL_RESULT_PLACEHOLDER
 			const record = parsed as Record<string, unknown>
 			// The follow brief can be the WHOLE wire envelope ({turn, message,
 			// …}) when data.output is absent (verified live: the ⎿ track showed
@@ -148,31 +180,31 @@ export function toolResultLine(output: string | undefined, limit = 120): string 
 			const inner = typeof record.message === "object" && record.message !== null
 				? (record.message as Record<string, unknown>)
 				: record
-			const content = inner.content
-			if (Array.isArray(content)) {
-				const first = content.find(
-					(block) => typeof block === "object" && block !== null && typeof (block as Record<string, unknown>).text === "string",
-				) as Record<string, unknown> | undefined
-				if (first !== undefined) text = String(first.text)
+			const blocks = Array.isArray(inner.content) ? inner.content : Array.isArray(parsed) ? (parsed as unknown[]) : undefined
+			const first = blocks?.find(
+				(block) => typeof block === "object" && block !== null && typeof (block as Record<string, unknown>).text === "string",
+			) as Record<string, unknown> | undefined
+			if (first !== undefined) {
+				text = String(first.text)
+			} else if (typeof inner.content === "string" && inner.content.trim() !== "") {
+				text = inner.content
 			} else if (typeof inner.text === "string") {
 				text = inner.text
-			} else if (inner !== record && typeof inner.output === "string") {
-					text = inner.output
-				} else {
-					// Batch D2 fallback (verified live in the D1 frames: `✘
-					// use_agent(looper) · 0.0s · {"turn":2,...}`): an envelope with
-					// NO text/content/output digs shows its raw JSON — never
-					// human-readable. Collect the object's string leaf values
-					// (depth-2, insertion order) and render the first pair as
-					// `key: value · key: value` fragments instead.
-					const leaves = stringLeaves(inner, 2)
-					if (leaves.length > 0) {
-						text = leaves.map(([key, value]) => `${key}: ${value}`).join(" · ")
-					}
-				}
+			} else if (typeof inner.output === "string") {
+				text = inner.output
+			} else if (blocks === undefined) {
+				// Batch D2 fallback (verified live in the D1 frames: `✘
+				// use_agent(looper) · 0.0s · {"turn":2,...}`): an envelope with
+				// NO text/content/output digs — collect the object's string leaf
+				// values (depth-2, insertion order) as `key: value` fragments.
+				const leaves = stringLeaves(inner, 2)
+				if (leaves.length > 0) text = leaves.map(([key, value]) => `${key}: ${value}`).join(" · ")
+			}
 		}
 	} catch {
-		// Already plain text.
+		// Not parseable: plain text — or a TRUNCATED JSON brief (D5), which
+		// must be dug, never painted raw.
+		if (looksJson) text = digTruncatedJson(output) ?? TOOL_RESULT_PLACEHOLDER
 	}
 	const lines = text
 		.replace(/\s+$/u, "")

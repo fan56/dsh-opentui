@@ -8,7 +8,8 @@
  *     `💭 thought · Xs · <first line>`; panel-less replay rows → undefined.
  */
 import { describe, expect, test } from "bun:test"
-import { thinkLineText, todosSummaryLine } from "../src/routes/session/widgets-dock"
+import { dockLines, thinkLineText, todosSummaryLine } from "../src/routes/session/widgets-dock"
+import type { SeamRow } from "../src/routes/session/seam-rows"
 
 const spin = () => 0
 
@@ -52,5 +53,20 @@ describe("thinkLineText", () => {
 	test("panel-less replay rows paint nothing", () => {
 		const row = { key: "r", kind: "reasoning" as const, text: "draft", final: true }
 		expect(thinkLineText(row, spin)).toBeUndefined()
+	})
+})
+
+describe("dockLines (batch D5 widget fade)", () => {
+	test("faded settled tools leave the dock; running tools and todos stay", () => {
+		const todos = JSON.stringify([{ content: "a", status: "in_progress" }])
+		const rows: SeamRow[] = [
+			{ key: "tool:live:t", kind: "tool", name: "todowrite", args: "{}", status: "done", output: todos, faded: true },
+			{ key: "tool:live:a", kind: "tool", name: "bash", args: '{"command":"ls"}', status: "done", output: "ok", faded: true },
+			{ key: "tool:live:b", kind: "tool", name: "grep", args: '{"pattern":"x"}', status: "running", startedAt: Date.now() },
+		]
+		const lines = dockLines(rows).map((l) => l.text)
+		expect(lines[0]).toBe("todos [✓]0/1 · a")
+		expect(lines.length).toBe(2)
+		expect(lines[1]).toContain("grep")
 	})
 })
