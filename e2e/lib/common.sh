@@ -184,6 +184,18 @@ reset_e2e_state() {
 # registered here would be clobbered by the scenarios' own traps.)
 reset_e2e_state
 
+# Per-face scenario gate (source-time): 10-install asserts the plugin face's
+# artifact chain — npm pack -> global launcher install -> dsh-opentui profile
+# bootstrap -> plugin-mode boot. The client face has no tarball/global-
+# launcher install path (the launcher is the workspace snapshot; the profile
+# is provisioned by start_tui), so the scenario's semantics do not apply.
+# Record honestly: 1 warn, no silent 0/0/0.
+if [ "$E2E_FACE" = client ] && [ "$SCENARIO" = "10-install" ]; then
+  warn 'plugin-face-only scenario — skipped on the client face (no tarball/global-launcher install path to assert; profile comes from provision-opentui-profile.mjs instead)'
+  summary
+  exit 0
+fi
+
 # --- tmux session -------------------------------------------------------------
 TS=dsh-opentui-e2e
 # Geometry is env-overridable (same rule as the dsh-tui-pi harness).

@@ -43,9 +43,13 @@ const DISPATCH_VERSION = process.env.DISPATCH_VERSION || '0.2.2'
 const JEV_CORE_VERSION = process.env.JEV_CORE_VERSION || '0.1.5'
 const DISPATCH = '@aiwayds/dsh-agent-dispatch'
 const JEV_CORE = '@aiwayds/dsh-jev-core'
+// MOCK_PROFILE selects the target profile: 'dsh-opentui' (default, the
+// baked plugin-face profile) or 'opentui' (the client-face profile
+// provisioned at runtime into a scratch DSH_HOME).
+const PROFILE_NAME = process.env.MOCK_PROFILE || 'dsh-opentui'
 const profileDir = join(
   process.env.DSH_HOME || join(homedir(), '.dsh'),
-  'profiles', 'dsh-opentui',
+  'profiles', PROFILE_NAME,
 )
 
 // --- package.json: deps + bundle membership ---------------------------------
