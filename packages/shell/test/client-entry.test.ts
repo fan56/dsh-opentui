@@ -89,6 +89,12 @@ function makeFakes(label = 'provider/model') {
     connection,
     cookieHeader: handle.cookieHeader,
     cwd: '/tmp/never-used',
+    // Batch D2 fix (themeNameFromConfig failure root cause): without an
+    // explicit dshHome, resolveDshHome(undefined) fell back to the REAL
+    // ~/.dsh — a developer profile config carrying `"theme"` leaked into
+    // themeNameFromConfig (received "catppuccin-mocha"). Pin the fake home.
+    dshHome: handle.dshHome,
+    profile: handle.profile,
     socketFactory: () => {
       throw new Error('no sockets in the wiring test')
     },

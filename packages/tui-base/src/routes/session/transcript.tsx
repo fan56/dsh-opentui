@@ -32,13 +32,11 @@
  * bottom slot is flexShrink=0 and its child (the composer) sets an explicit
  * height — auto-height boxes collapse in flex columns.
  */
-import { For, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
-import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { For, createMemo, onCleanup, onMount, Show, type JSX } from "solid-js"
+import { useRenderer } from "@opentui/solid"
 import { SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
-import { clipToWidth } from "./tool-summarize"
-import { subagentMarkerSuffix } from "./subagent-markers"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
 
 export type TranscriptProps = {
@@ -63,6 +61,11 @@ export type TranscriptProps = {
 		 * slot (the editor) — never in the transcript flow. See
 		 * ./widgets-dock.tsx; the page wires it with the shared projection. */
 		widgets?: JSX.Element
+		/** Batch D2 lastRequest slot (dsh-tui-pi live-widgets structure): the
+		 * `●` last-request echo + the running-children lines rendered DIRECTLY
+		 * BELOW the composer (the editor) — see ./lastrequest-dock.tsx; the
+		 * page wires it with the shared projection + its lastRequest signal. */
+			footer?: JSX.Element
 	/** Publishes the transcript scrollbox (vendored route's scrollRef prop
 	 * shape; undefined on teardown). Page wiring binds scroll keys to it —
 	 * the box itself is never focused (the composer holds the singleton
@@ -74,11 +77,9 @@ export type TranscriptProps = {
 
 export function Transcript(props: TranscriptProps) {
 	const renderer = useRenderer()
-	// Gap 1 fix: the `⎿` track clip width rides the REACTIVE terminal
-	// dimensions (one resize listener for the whole transcript — this component
-	// mounts once; per-row reads were the warned-against pattern). renderer.
-	// width was a plain property: rows kept their stale clip until next update.
-	const dimensions = useTerminalDimensions()
+	// Batch D2: the ⎿ track clip and the tree clip left with the tool block
+	// and the subagent tree (the docks own their width budgets now) — the
+	// transcript's reactive-dimensions read left with them.
 	const theme = useThemeOptional()
 	const color = {
 		text: () => theme?.text.base ?? "#e6e6e6",
@@ -94,12 +95,9 @@ export function Transcript(props: TranscriptProps) {
 		loading: () => theme?.text.feedback.info.base ?? "#565f89",
 		background: () => theme?.background.base ?? "black",
 	}
-	// Batch V5 status-color family (the ONE mapping every transcript status
-	// line shares — tool block, think summary, subagent tree): running=warn,
-	// ok=success, fail=error, cancelled=muted. Theme tokens only; the hex
-	// literals live in the fallback map above.
-	const stateColor = (state: "running" | "ok" | "failed" | "cancelled") =>
-		state === "running" ? color.running() : state === "ok" ? color.done() : state === "failed" ? color.failed() : color.reasoning()
+	// Batch V5 status-color family — D2: the tool block, think summary and
+	// subagent tree all left the transcript flow (the docks render them);
+	// the user/assistant feed below needs no status colors.
 	const sessionID = () => props.sessionID ?? props.seam.currentSessionId() ?? ""
 	const owned = props.projection === undefined
 	const projection = props.projection ?? createSeamRows(props.seam, sessionID)
@@ -107,73 +105,16 @@ export function Transcript(props: TranscriptProps) {
 	const syntaxStyle = () =>
 		props.syntaxStyle ?? themes?.currentSyntax() ?? SyntaxStyle.fromStyles({}, renderer.nativeScene)
 
-	// Batch V1 tool block: shared spinner tick (one interval, one signal —
-	// only the running rows' text nodes re-render on the tick; settled rows
-	// never re-read it). dsh-tui-pi ToolPanel semantics: braille frames while
-	// pending, ✓/✗ freeze on settle.
-	const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-	const [spin, setSpin] = createSignal(0)
-	onMount(() => {
-		const timer = setInterval(() => setSpin((s) => s + 1), 120)
-		onCleanup(() => clearInterval(timer))
-	})
-
 	/** Batch D1 (dsh-tui-pi dock structure): tool blocks and think rows are
 	 * GONE from the transcript — they render in the fixed widgets dock above
 	 * the composer (./widgets-dock.tsx, the page wires it). The transcript
-	 * paints user/assistant/echo/notice/ask blocks only. The subagent tree
-	 * row stays here for batch D2 to move. */
+	 * paints user/assistant/echo/notice/ask blocks only. */
 
-	/** Batch V2b subagent tree row (tui-pi subagent-tree semantics,
-	 * transcript-block shape): one line per child — `├─/└─` track + live
-	 * status (braille spinner → ✔/✘/⊘) + label(agent/model) + duration
-	 * (ticks live off startedAt while running, freezes at elapsedSec on
-	 * settle) + the F6 marker suffix. The shared spinner tick re-renders
-	 * only RUNNING children's text nodes (same law as the tool block). */
-	const subagentsRow = (row: Extract<SeamRow, { kind: "subagents" }>) => {
-		const glyphs = {
-			running: () => `${SPINNER_FRAMES[spin() % SPINNER_FRAMES.length]} `,
-			completed: () => "✔ ",
-			failed: () => "✘ ",
-			cancelled: () => "⊘ ",
-		} as const
-		return (
-			<box flexShrink={0} paddingLeft={3} flexDirection="column">
-				<For each={row.children}>
-					{(child, index) => {
-						const track = index() === row.children.length - 1 ? "└─ " : "├─ "
-						// Batch V5: the tree's status colors route through the SAME
-						// stateColor family mapping as the tool block and the think
-						// summary (running=warn, completed=ok, failed=error,
-						// cancelled=muted) — no per-row ad-hoc mapping left.
-						const statusColor = stateColor(
-							child.status === "completed" ? "ok" : child.status === "failed" ? "failed" : child.status,
-						)
-						const label =
-							`${track}${child.label}${child.model ? `(${child.model})` : ""}` +
-							subagentMarkerSuffix(child)
-						const line = createMemo(() => {
-							const elapsed =
-								child.status === "running"
-									? child.startedAt !== undefined
-										? ` · ${((Date.now() - child.startedAt) / 1000).toFixed(1)}s`
-										: ""
-									: child.elapsedSec !== undefined
-										? ` · ${child.elapsedSec.toFixed(1)}s`
-										: ""
-							// Display-column clip (P1-1 CJK law) — same budget as the tool block.
-							return clipToWidth(`${glyphs[child.status]()}${label}${elapsed}`, Math.max(16, dimensions().width - 5))
-						})
-						return (
-							<text fg={statusColor} wrapMode="none">
-								{line()}
-							</text>
-						)
-					}}
-				</For>
-			</box>
-		)
-	}
+	/** Batch D2 (dsh-tui-pi live-widgets structure): the subagent tree row
+	 * is GONE from the transcript too — running children render in the
+	 * lastRequest dock BELOW the editor (./lastrequest-dock.tsx, the page
+	 * wires it as the `footer` slot). The row stays in the store; the dock
+	 * reads it there. */
 
 	onMount(() => {
 		if (owned) projection.load()
@@ -198,9 +139,11 @@ export function Transcript(props: TranscriptProps) {
 
 	// Batch D1: tool/reasoning rows stay in the store (the widgets dock reads
 	// them there) but never paint in the flow — the visible feed is the
-	// tui-pi chat-clean set. The subagent tree stays until D2 moves it.
+	// tui-pi chat-clean set. Batch D2: the subagent tree moved to the
+	// lastRequest dock below the editor — never painted in the flow.
 	const visibleRows = createMemo(
-		() => projection.rows.filter((row) => row.kind !== "tool" && row.kind !== "reasoning") as readonly SeamRow[],
+		() =>
+			projection.rows.filter((row) => row.kind !== "tool" && row.kind !== "reasoning" && row.kind !== "subagents") as readonly SeamRow[],
 	)
 
 	const rowView = (row: SeamRow) => {
@@ -213,8 +156,6 @@ export function Transcript(props: TranscriptProps) {
 						</text>
 					</box>
 				)
-			case "subagents":
-				return subagentsRow(row)
 			case "assistant":
 				return assistantRow(row)
 			default:
@@ -277,12 +218,15 @@ export function Transcript(props: TranscriptProps) {
 			</box>
 			{/* widgets slot (batch D1, ./widgets-dock.tsx): the fixed Todos →
 			 * Think → Tool panels directly ABOVE the bottom slot (the editor).
+			 * Batch D2: the `footer` (./lastrequest-dock.tsx) paints UNDER the
+			 * editor — the lastRequest `●` echo + running-children lines.
 			 * Each child owns its explicit height (the dock counts its lines;
 			 * the composer sets its own) — auto-height boxes collapse. */}
-			<Show when={props.widgets || props.children}>
+			<Show when={props.widgets || props.children || props.footer}>
 				<box width="100%" flexShrink={0} flexDirection="column">
 					{props.widgets}
 					{props.children}
+					{props.footer}
 				</box>
 			</Show>
 		</box>

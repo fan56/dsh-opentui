@@ -180,9 +180,11 @@ describe("transcript layout source shape (transcript.tsx carries the fix)", () =
 		const source = src("src/routes/session/transcript.tsx")
 		// the keyed row wrapper in the <For>
 		expect(source).toMatch(/<box id=\{`seam-row-\$\{row\.key\}`\} marginTop=\{1\} flexShrink=\{0\}>/)
-		// user / reasoning / tool rows
+		// user rows + the keyed wrapper + the hydration box + the bottom slot
+		// (batch D2: the subagent tree box moved to the lastRequest dock —
+		// one flexShrink={0} box left the transcript with it)
 		const rowBoxes = source.match(/<box[^>]*flexShrink=\{0\}[^>]*>/g) ?? []
-		expect(rowBoxes.length).toBeGreaterThanOrEqual(5)
+		expect(rowBoxes.length).toBeGreaterThanOrEqual(4)
 		// no row-rendering box is left without flexShrink
 		const rowView = source.slice(source.indexOf("const rowView"), source.indexOf("onCleanup"))
 		for (const m of rowView.matchAll(/<box(?![^>]*flexShrink)/g)) {
