@@ -429,16 +429,30 @@ export class RemoteSessionSeam implements SessionSeam {
 	}
 
 	// ---- subagent marker face (batch F6): RemoteHostSession 1:1 ----
-	subagentViews(): SeamSubagentView[] {
-		return this.#session.subagentViews().map((v) => ({
+	// Batch V2b: the projection carries the transcript-tree fields too —
+	// `model` (the label's agent/model suffix), `startedAt` (live duration
+	// ticks) and `elapsedSec` (frozen at the fold for a settled child; the
+	// settle emission fires at settle time, so the freeze is the settle
+	// duration to the second).
+	#projectSubagentViews(views: { id: string; label: string; model?: string; status: "running" | "completed" | "failed" | "cancelled"; rounds: number; startedAt?: number; injectedRound?: number; hardStopRound?: number; spinStopRound?: number }[]): SeamSubagentView[] {
+		return views.map((v) => ({
 			id: v.id,
 			label: v.label,
+			...(v.model ? { model: v.model } : {}),
 			status: v.status,
 			rounds: v.rounds,
+			...(v.startedAt !== undefined
+				? v.status === "running"
+					? { startedAt: v.startedAt }
+					: { elapsedSec: Number(((Date.now() - v.startedAt) / 1000).toFixed(1)) }
+				: {}),
 			...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
 			...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
 			...(v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}),
 		}))
+	}
+	subagentViews(): SeamSubagentView[] {
+		return this.#projectSubagentViews(this.#session.subagentViews())
 	}
 	onSubagentViews(listener: (views: SeamSubagentView[]) => void): () => void {
 		// Fold into the vendored picker's module store too (batch F6): the
@@ -446,15 +460,7 @@ export class RemoteSessionSeam implements SessionSeam {
 		// ride this snapshot instead of a context re-plumb.
 		foldSubagentMarkerViews(this.subagentViews())
 		return this.#session.onSubagentViews((views) => {
-			const projected = views.map((v) => ({
-				id: v.id,
-				label: v.label,
-				status: v.status,
-				rounds: v.rounds,
-				...(v.injectedRound !== undefined ? { injectedRound: v.injectedRound } : {}),
-				...(v.hardStopRound !== undefined ? { hardStopRound: v.hardStopRound } : {}),
-				...(v.spinStopRound !== undefined ? { spinStopRound: v.spinStopRound } : {}),
-			}))
+			const projected = this.#projectSubagentViews(views)
 			foldSubagentMarkerViews(projected)
 			listener(projected)
 		})

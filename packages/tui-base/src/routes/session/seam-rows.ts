@@ -58,6 +58,7 @@ import { createStore, produce, reconcile } from "solid-js/store"
 import type {
 	SeamApprovalVerdict,
 	SeamSessionEvent,
+	SeamSubagentView,
 	SeamTranscriptRow,
 	SeamTurnCallbacks,
 	SessionSeam,
@@ -96,6 +97,29 @@ export type SeamRow =
 			startedAt?: number
 			elapsedSec?: number
 	  }
+		| {
+				/** Batch V2b (tui-pi subagent tree, transcript-row shape): ONE live
+				 * row rendering the child roster as a `├─/└─` tree — label
+				 * (agent/model), live status (braille spinner → ✔/✘/⊘) and the
+				 * duration (ticking off `startedAt` while running, frozen
+				 * `elapsedSec` on settle). Fed by the seam's subagent marker face
+				 * (seam.onSubagentViews); an empty roster drops the row. Never
+				 * stored: replayed history carries no subagent tree. */
+				key: string
+				kind: "subagents"
+				children: {
+					id: string
+					label: string
+					model?: string
+					status: "running" | "completed" | "failed" | "cancelled"
+					rounds: number
+					startedAt?: number
+					elapsedSec?: number
+					injectedRound?: number
+					hardStopRound?: number
+					spinStopRound?: number
+				}[]
+		  }
 
 export function toStoredRow(stored: SeamTranscriptRow, index: number): SeamRow {
 	const kind = stored.kind === "user" || stored.kind === "tool" ? stored.kind : "assistant"
@@ -236,6 +260,24 @@ export function createSeamRows(
 		for (const timer of thinkFades.values()) clearTimeout(timer)
 		thinkFades.clear()
 	})
+
+	// ---------------------------------------------------------------------
+	// Batch V2b subagent tree feed: the seam's subagent marker face drives
+	// ONE live tree row (`subagents:live`) — the tui-pi transcript subtree
+	// (├─/└─ track + label + spinner/✔✘⊘ + duration). A snapshot replaces
+	// the children in place (one upsert — the keyed-row law); an empty
+	// roster drops the row. Optional face: a seam without onSubagentViews
+	// (older adapters, the null seam) renders no tree.
+	function applySubagentViews(views: readonly SeamSubagentView[]) {
+		const key = "subagents:live"
+		if (views.length === 0) {
+			dropRows(new Set([key]))
+			return
+		}
+		upsert({ key, kind: "subagents", children: views.map((v) => ({ ...v })) })
+	}
+	const unsubSubagents = seam.onSubagentViews?.(applySubagentViews)
+	if (unsubSubagents !== undefined) onCleanup(unsubSubagents)
 
 	/** Journal settle for the oldest streamed turn: drop its live rows and
 	 * take the settled body's place — one produce, so the store never
@@ -546,7 +588,7 @@ export function createSeamRows(
 			})
 	}
 
-	return { rows, hydrated, load, hydrate, apply, send }
+	return { rows, hydrated, load, hydrate, apply, send, applySubagentViews }
 }
 
 /** The projection handle a page shares between transcript and composer. */

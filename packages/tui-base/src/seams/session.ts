@@ -205,8 +205,15 @@ export interface SeamTurnCallbacks {
 export interface SeamSubagentView {
 	id: string
 	label: string
+	model?: string
 	status: "running" | "completed" | "failed" | "cancelled"
 	rounds: number
+	/** Batch V2b (transcript subagent tree): the child's start wall clock —
+	 * running rows compute the live duration off it per spinner tick. */
+	startedAt?: number
+	/** Batch V2b: frozen duration seconds of a SETTLED child (folded at the
+	 * settle emission; running rows carry none — they tick live). */
+	elapsedSec?: number
 	/** maxRounds wrap-up delivered at this round (`⚡ injected`). */
 	injectedRound?: number
 	/** maxRounds force-stop fired at this round (`⏻ hard-stopped @N`). */

@@ -72,6 +72,10 @@ export function rowSearchText(row: SeamRow): string {
 			return row.text
 		case "tool":
 			return `${row.name}${row.args ? `(${row.args})` : ""}${row.output ? ` ${row.output}` : ""}`
+		// Batch V2b: the live subagent tree row searches by child label —
+		// the tree track/glyphs/status are paint, not searchable text.
+		case "subagents":
+			return row.children.map((child) => `${child.label}${child.model ? `(${child.model})` : ""}`).join(" ")
 	}
 }
 

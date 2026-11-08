@@ -38,6 +38,7 @@ import { SyntaxStyle, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
+import { subagentMarkerSuffix } from "./subagent-markers"
 import { ThinkPanelRow } from "./think-panel"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
 
@@ -176,6 +177,58 @@ export function Transcript(props: TranscriptProps) {
 		)
 	}
 
+	/** Batch V2b subagent tree row (tui-pi subagent-tree semantics,
+	 * transcript-block shape): one line per child — `├─/└─` track + live
+	 * status (braille spinner → ✔/✘/⊘) + label(agent/model) + duration
+	 * (ticks live off startedAt while running, freezes at elapsedSec on
+	 * settle) + the F6 marker suffix. The shared spinner tick re-renders
+	 * only RUNNING children's text nodes (same law as the tool block). */
+	const subagentsRow = (row: Extract<SeamRow, { kind: "subagents" }>) => {
+		const glyphs = {
+			running: () => `${SPINNER_FRAMES[spin() % SPINNER_FRAMES.length]} `,
+			completed: () => "✔ ",
+			failed: () => "✘ ",
+			cancelled: () => "⊘ ",
+		} as const
+		return (
+			<box flexShrink={0} paddingLeft={3} flexDirection="column">
+				<For each={row.children}>
+					{(child, index) => {
+						const track = index() === row.children.length - 1 ? "└─ " : "├─ "
+						const statusColor =
+							child.status === "failed"
+								? color.failed()
+								: child.status === "running"
+									? color.running()
+									: child.status === "cancelled"
+										? color.reasoning()
+										: color.done()
+						const label =
+							`${track}${child.label}${child.model ? `(${child.model})` : ""}` +
+							subagentMarkerSuffix(child)
+						const line = createMemo(() => {
+							const elapsed =
+								child.status === "running"
+									? child.startedAt !== undefined
+										? ` · ${((Date.now() - child.startedAt) / 1000).toFixed(1)}s`
+										: ""
+									: child.elapsedSec !== undefined
+										? ` · ${child.elapsedSec.toFixed(1)}s`
+										: ""
+							// Display-column clip (P1-1 CJK law) — same budget as the tool block.
+							return clipToWidth(`${glyphs[child.status]()}${label}${elapsed}`, Math.max(16, dimensions().width - 5))
+						})
+						return (
+							<text fg={statusColor} wrapMode="none">
+								{line()}
+							</text>
+						)
+					}}
+				</For>
+			</box>
+		)
+	}
+
 	onMount(() => {
 		if (owned) projection.load()
 	})
@@ -207,6 +260,8 @@ export function Transcript(props: TranscriptProps) {
 				return thinkRow(row)
 			case "tool":
 				return toolRow(row)
+			case "subagents":
+				return subagentsRow(row)
 			case "assistant":
 				return assistantRow(row)
 		}
