@@ -67,7 +67,22 @@ import type {
 export type SeamRow =
 	| { key: string; kind: "user"; text: string; final: true }
 	| { key: string; kind: "assistant"; text: string; final: boolean }
-	| { key: string; kind: "reasoning"; text: string; final: boolean }
+	| {
+			key: string
+			kind: "reasoning"
+			text: string
+			final: boolean
+			/** Batch V2a think panel phase machine (tui-pi ThinkPanel semantics,
+			 * transcript-row shape): `streaming` = the live bordered panel (first
+			 * reasoning delta opened it; spinner + tail refresh per tick);
+			 * `elapsedSec` present without `streaming` = collapsed to the
+			 * one-line `💭 thought · Xs · <first line>` summary. Neither set =
+			 * a replayed/durable reasoning row — renders as the plain pre-V2a
+			 * gray block, no fabricated chrome. */
+			streaming?: boolean
+			startedAt?: number
+			elapsedSec?: number
+	  }
 	| {
 			key: string
 			kind: "tool"
@@ -115,10 +130,15 @@ interface LiveTurnGroup {
 export function createSeamRows(
 	seam: SessionSeam,
 	sessionID: Accessor<string>,
-	options?: { onApprove?: SeamTurnCallbacks["onApprove"] },
+	options?: { onApprove?: SeamTurnCallbacks["onApprove"]; thinkFadeMs?: number },
 ) {
 	const [rows, setRows] = createStore<SeamRow[]>([])
 	const [hydrated, setHydrated] = createSignal(false)
+	/** Batch V2a: the anti-flicker linger for collapsed think summaries (the
+	 * old-stack dock law: turn end schedules the clear 1.8s out so a quick
+	 * next think replaces in place instead of blinking). 0 = immediate drop
+	 * (the settle-converge tests and any synchronous replay path). */
+	const thinkFadeMs = options?.thinkFadeMs ?? 1800
 	let liveOrdinal = 0
 	/** A send()'s turn is awaiting the seam (journal events during this
 	 * window are the suppression contract's other half — the adapters). */
@@ -175,6 +195,47 @@ export function createSeamRows(
 			}),
 		)
 	}
+
+	// ---------------------------------------------------------------------
+	// Batch V2a think panel fade timers (the old-stack dock anti-flicker
+	// law, transcript-row shape): a collapsed `💭 thought · Xs · …` summary
+	// lingers `thinkFadeMs` past its settle, then clears. A NEW think delta
+	// inside the window clears the old summaries EARLY (clear old, show new
+	// — the quick-round replacement, no stale summary beside the fresh
+	// panel). Zero delay drops immediately (synchronous tests/replay).
+	const thinkFades = new Map<string, ReturnType<typeof setTimeout>>()
+	function cancelThinkFade(key: string) {
+		const timer = thinkFades.get(key)
+		if (timer !== undefined) {
+			clearTimeout(timer)
+			thinkFades.delete(key)
+		}
+	}
+	function scheduleThinkFade(key: string) {
+		if (thinkFadeMs <= 0) {
+			dropRows(new Set([key]))
+			return
+		}
+		cancelThinkFade(key)
+		thinkFades.set(
+			key,
+			setTimeout(() => {
+				thinkFades.delete(key)
+				dropRows(new Set([key]))
+			}, thinkFadeMs),
+		)
+	}
+	/** Clear old, show new: every fade-pending summary drops the moment a
+	 * fresh think opens (the old-stack `onThinkingDelta` replace-in-place). */
+	function cancelPendingThinkFades() {
+		const keys = [...thinkFades.keys()]
+		for (const key of keys) cancelThinkFade(key)
+		if (keys.length > 0) dropRows(new Set(keys))
+	}
+	onCleanup(() => {
+		for (const timer of thinkFades.values()) clearTimeout(timer)
+		thinkFades.clear()
+	})
 
 	/** Journal settle for the oldest streamed turn: drop its live rows and
 	 * take the settled body's place — one produce, so the store never
@@ -313,18 +374,56 @@ export function createSeamRows(
 		pendingTurns.push(group)
 		let assistantText = ""
 		let reasoningText = ""
+		/** Batch V2a think panel: the first reasoning delta's timestamp —
+		 * undefined until the panel opens (no delta, no panel, no empty box). */
+		let reasoningStartedAt: number | undefined
 		let turnErrored = false
 		turnOpen = true
+		/** Collapse the live think row to the one-line summary (text first
+		 * char / a tool call starting — the segment is done; elapsed freezes).
+		 * No-op when no panel is open or already collapsed. */
+		const collapseThinking = () => {
+			if (reasoningStartedAt === undefined) return
+			const existing = rows.find((row) => row.key === reasoningKey)
+			if (existing === undefined || existing.kind !== "reasoning" || existing.streaming !== true) return
+			upsert({
+				...existing,
+				streaming: false,
+				elapsedSec: Number(((Date.now() - reasoningStartedAt) / 1000).toFixed(1)),
+			})
+		}
 		return seam.turn(prompt, {
 			onThinkingDelta: (delta) => {
 				reasoningText += delta
-				if (reasoningText.trim()) upsert({ key: reasoningKey, kind: "reasoning", text: reasoningText, final: false })
+				if (!reasoningText.trim()) return
+				// First delta of this turn: open the panel AND clear any previous
+				// turn's summaries still inside the fade window (clear old, show
+				// new — the old-stack anti-flicker replacement).
+				if (reasoningStartedAt === undefined) {
+					reasoningStartedAt = Date.now()
+					cancelPendingThinkFades()
+				}
+				upsert({
+					key: reasoningKey,
+					kind: "reasoning",
+					text: reasoningText,
+					final: false,
+					streaming: true,
+					startedAt: reasoningStartedAt,
+				})
 			},
 			onContentDelta: (delta) => {
+				// The answer is streaming: the thought is done — collapse to the
+				// one-line summary (text first char即收).
+				collapseThinking()
 				assistantText += delta
 				upsert({ key: assistantKey, kind: "assistant", text: assistantText, final: false })
 			},
 			onToolStart: (start) => {
+				// A tool call ends the think segment — collapse to the summary
+				// the same way a text delta does (the next think delta reopens a
+				// fresh panel below the tool row).
+				collapseThinking()
 				upsert({
 					key: `tool:live:${start.callId ?? start.name}`,
 					kind: "tool",
@@ -377,8 +476,14 @@ export function createSeamRows(
 					const existing = rows.find((row) => row.key === key)
 					if (existing && existing.kind === kind) upsert({ ...existing, text, final: true })
 				}
+				// Batch V2a turn-end settle: a thinking-only turn (no text/tool
+				// delta ever collapsed it) collapses here; then the summary
+				// fades on the anti-flicker delay instead of the old immediate
+				// converge splice (轮末渐隐清空 — linger, then clear).
+				collapseThinking()
 				finalize(reasoningKey, "reasoning", reasoningText)
 				finalize(assistantKey, "assistant", assistantText)
+				scheduleThinkFade(reasoningKey)
 				setRows(
 					produce((draft) => {
 						for (const row of draft) {
@@ -426,9 +531,9 @@ export function createSeamRows(
 						const live = rows.find((row) => row.key === assistantKey)
 						setRows(
 							produce((draft) => {
-								for (let i = draft.length - 1; i >= 0; i--) {
-									if (draft[i]!.key === reasoningKey) draft.splice(i, 1)
-								}
+								// The streamed reasoning row is NOT spliced here anymore
+								// (batch V2a): the fade timer scheduled at finalize owns
+								// its removal — the summary lingers past the settle.
 								if (durable && live && live.kind === "assistant" && live.text !== durable.text) {
 									const index = draft.findIndex((row) => row.key === assistantKey)
 									if (index !== -1) Object.assign(draft[index], { text: durable.text, final: true })
