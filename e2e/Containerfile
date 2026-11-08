@@ -148,6 +148,36 @@ RUN NODE_OPTIONS= node /tmp/bake-jev-chain.mjs \
  && test -d /root/.dsh/profiles/dsh-opentui/node_modules/@aiwayds/dsh-jev-core \
  && grep -n "dsh-agent-dispatch" /root/.dsh/profiles/dsh-opentui/cordis.patch.yml
 
+# ---------------------------------------------------------------------------
+# CLIENT face (E2E_FACE=client): bun + a workspace snapshot at /src so the
+# repo-root `./dsh-opentui` launcher (bun --preload ... client-entry.tsx) can
+# boot, with ensureHost pulling up the resident `dsh --profile opentui` host
+# (node, from the global dsh closure installed above). The plugin face layers
+# above stay untouched — the suite picks a face at runtime via E2E_FACE.
+#
+# bun comes from the npm registry (the `bun` package's @oven/* platform
+# binaries are regular npm packages, so NPM_REGISTRY applies — no GitHub
+# release download, which this network's podman VM cannot reach).
+ARG BUN_VERSION=1.4.4
+RUN npm install -g --no-fund --no-audit --registry "${NPM_REGISTRY}" \
+      bun@${BUN_VERSION} \
+ && bun --version
+
+# Workspace snapshot for the client entry. The launcher (SCRIPT_DIR-relative)
+# and tsconfigs must sit at their repo-root shapes under /src. node_modules is
+# NOT copied: the host tree holds darwin natives and the container needs the
+# linux @opentui natives — a fresh pnpm install below resolves the right
+# platform binaries from the lockfile.
+COPY dsh-opentui package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json tsconfig.json /src/
+COPY packages /src/packages
+RUN find /src -type d -name node_modules -prune -exec rm -rf {} + \
+ && pnpm --dir /src install --frozen-lockfile --registry="${NPM_REGISTRY}" \
+ && test -x /src/dsh-opentui \
+ && test -d /src/packages/shell/node_modules/@opentui/solid \
+ && bun --preload /src/packages/shell/node_modules/@opentui/solid/scripts/preload.js \
+      --print '1+1' >/dev/null \
+ && echo "[client-face] /src workspace ready"
+
 # The scenario suite is bind-mounted at /e2e by e2e/run-e2e.sh so test logic
 # can iterate without an image rebuild.
 CMD ["bash", "/e2e/scenarios/run-all.sh"]

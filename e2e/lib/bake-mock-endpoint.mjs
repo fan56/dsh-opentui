@@ -23,9 +23,13 @@ import { join } from 'node:path'
 const NPM_GLOBAL_ROOT = '/usr/local/lib/node_modules/@deepseek-ai/dsh'
 const PROVIDER = process.env.MOCK_PROVIDER || 'zai-coding-cn'
 const MOCK_BASE_URL = process.env.MOCK_BASE_URL || 'http://127.0.0.1:8642/v1'
+// MOCK_PROFILE selects which profile's patch layer gets the mock baseURL:
+// 'dsh-opentui' (default, the baked plugin-face profile) or 'opentui' (the
+// client-face profile provisioned at runtime into a scratch DSH_HOME).
+const PROFILE_NAME = process.env.MOCK_PROFILE || 'dsh-opentui'
 const patchPath = join(
   process.env.DSH_HOME || join(homedir(), '.dsh'),
-  'profiles', 'dsh-opentui', 'cordis.patch.yml',
+  'profiles', PROFILE_NAME, 'cordis.patch.yml',
 )
 
 const { parse, stringify } = createRequire(join(NPM_GLOBAL_ROOT, 'package.json'))('yaml')

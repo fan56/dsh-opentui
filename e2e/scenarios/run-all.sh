@@ -10,6 +10,7 @@ RESULTS_DIR="${RESULTS_DIR:-/tmp/e2e-results}"
 rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 
+printf 'e2e runner: face — %s\n' "${E2E_FACE:-plugin}"
 printf 'e2e runner: image toolchain — %s | node %s | tmux %s\n' \
   "$(uname -m)" "$(node --version)" "$(tmux -V)"
 printf 'e2e runner: opentui tarball — %s\n' "$(ls /dist/ 2>/dev/null || echo none)"

@@ -53,7 +53,13 @@ podman build -f "$REPO_ROOT/e2e/Containerfile" \
   -t "$IMAGE" "$REPO_ROOT"
 
 printf '==> running scenario suite (all state stays inside the container)\n'
-RUN_ARGS=(--rm --name dsh-opentui-e2e -v "$REPO_ROOT/e2e:/e2e:ro")
+# Face under test: plugin (default, unchanged v1 behavior) or client
+# (E2E_FACE=client — the bun TUI + resident-host topology users run daily).
+# The client face needs the /src workspace snapshot baked by the
+# Containerfile's client-face layer; see e2e/lib/common.sh for the runtime
+# wiring (scratch DSH_HOME + provisioned opentui profile).
+FACE="${E2E_FACE:-plugin}"
+RUN_ARGS=(--rm --name dsh-opentui-e2e -v "$REPO_ROOT/e2e:/e2e:ro" -e "E2E_FACE=$FACE")
 # Subset override consumed by run-all.sh; forwarded so callers can scope a
 # run without hand-rolling podman incantations.
 if [ -n "${E2E_SCENARIOS:-}" ]; then
