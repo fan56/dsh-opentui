@@ -15,12 +15,17 @@
  * (belt and braces against the login-era bug: overlay closed, editor
  * stayed blurred because a stale focused flag said otherwise).
  */
-import { createEffect, createSignal, onCleanup, onMount, untrack, Show } from "solid-js"
+import { createEffect, createSignal, onCleanup, onMount, untrack, Show, type JSX } from "solid-js"
+import { onAnimationTick } from "@opentui/solid"
 import type { SeamApprovalVerdict, SeamAskPick, SeamAskQuestion } from "../../seams/session"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { DialogSelect, type DialogSelectOption, type DialogSelectRef } from "../../ui/dialog-select"
 import { useDialog } from "../../ui/dialog"
 import { TurnOverlayController, type PendingAsk } from "./turn-overlay-controller"
+import { useThemeOptional } from "../../context/theme"
+import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
+import { warningColor } from "../../skin/semantic"
+import { mixSkinColor, skinPulseBrightness, SKIN_PULSE_MS } from "./widgets-dock"
 
 /** One-line args summary for the approval card message. */
 export function summarizeArgs(name: string, args: Record<string, unknown>, limit = 160): string {
@@ -38,12 +43,42 @@ export function ApprovalCard(props: {
 }) {
 	return (
 		<DialogConfirm
-			title={`Approval: ${props.name}`}
+			// Reminder marker (skin contract §1 提醒脉冲): `⚠` marks the card.
+			// DialogConfirm's title is a plain string, so the PULSE (3 bright/
+			// dim cycles on the marker color only) rides the ask card's
+			// titleView path below; here the marker is static — pulsing it
+			// needs DialogConfirm to forward a titleView (vendored file, later
+			// lane).
+			title={`⚠ Approval: ${props.name}`}
 			message={summarizeArgs(props.name, props.args)}
 			label={{ confirm: "allow", cancel: "reject" }}
 			onConfirm={() => props.onVerdict("allowed-once")}
 			onCancel={() => props.onVerdict("rejected")}
 		/>
+	)
+}
+
+/** The pulsing reminder badge (skin contract §1 提醒脉冲): the `⚠` marker
+ * text dips bright→dim 3 times over ≈1.2s on the shared motion clock, then
+ * rests at full color. ONLY the marker text moves — the card frame never
+ * changes (no border animation, §2.3). reduced/off tiers rest immediately. */
+export function ReminderBadge(): JSX.Element {
+	const theme = useThemeOptional()
+	const [tick, setTick] = createSignal(0)
+	const startedAt = Date.now()
+	const pulsing = () => motionDecorationsEnabled() && Date.now() - startedAt < SKIN_PULSE_MS
+	onAnimationTick(() => (pulsing() && motionAnimationRunning() ? motionFrameRate() : undefined), () => setTick((t) => t + 1))
+	const fg = () => {
+		tick()
+		const target = warningColor(theme)
+		if (!motionDecorationsEnabled()) return target
+		const bright = skinPulseBrightness(Date.now() - startedAt)
+		return bright >= 1 ? target : mixSkinColor(target, theme?.background.base ?? "#000000", 1 - bright)
+	}
+	return (
+		<text fg={fg()} flexShrink={0}>
+			{"⚠ "}
+		</text>
 	)
 }
 
@@ -179,6 +214,14 @@ function AskQuestionsView(props: {
 	let selectRefRef: DialogSelectRef<string | AskRowValue> | undefined
 	return (
 		<DialogSelect<string | AskRowValue>
+			// Pulsing reminder marker + the title (titleView replaces the
+			// header's own title text; the frame/tone stays warning, untouched).
+			titleView={
+				<box flexDirection="row">
+					<ReminderBadge />
+					<AskTitleText title={title()} />
+				</box>
+			}
 			title={title()}
 			description={description()}
 			renderFilter={false}
@@ -192,6 +235,17 @@ function AskQuestionsView(props: {
 			}}
 			onCancel={props.onDecline}
 		/>
+	)
+}
+
+/** The ask-card title text in the header's warning tier (the titleView
+ * replaces DialogHeader's own title <text>, which would paint text.base). */
+function AskTitleText(props: { title: string }): JSX.Element {
+	const theme = useThemeOptional()
+	return (
+		<text fg={warningColor(theme)} wrapMode="none">
+			{props.title}
+		</text>
 	)
 }
 
@@ -216,6 +270,12 @@ function AskReviewView(props: {
 	}
 	return (
 		<DialogSelect<string | AskRowValue>
+			titleView={
+				<box flexDirection="row">
+					<ReminderBadge />
+					<AskTitleText title="Review answers" />
+				</box>
+			}
 			title="Review answers"
 			description="←: edit · enter: submit"
 			renderFilter={false}
