@@ -12,11 +12,17 @@
  * are memos reading them lazily — a spinner tick re-renders only the tick
  * text nodes of the ONE streaming row; settled rows and the rest of the
  * transcript never re-read `spin`.
+ *
+ * Batch V5 (UI polish, semantics unchanged): the streaming spinner and the
+ * collapsed summary's `💭 thought · Xs` prefix join the transcript's shared
+ * status-color family (running=warn, ok=success) — colors are caller-injected
+ * accessors; this component never hardcodes one.
  */
 import { For, Show, createMemo, type JSX } from "solid-js"
 import type { RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import { clipToWidth } from "./tool-summarize"
+import { stringWidth } from "../../util/string-width"
 
 export type ThinkRow = Extract<SeamRow, { kind: "reasoning" }>
 
@@ -36,6 +42,10 @@ export function ThinkPanelRow(props: {
 		border: () => string | RGBA
 		spinner: () => string | RGBA
 		text: () => string | RGBA
+		/** Batch V5: the collapsed summary's `💭 thought · Xs` prefix rides the
+		 * shared ok-state family (success) — the same stateColor mapping the
+		 * tool block and the subagent tree use; the preview tail stays muted. */
+		summaryAccent?: () => string | RGBA
 	}
 }): JSX.Element {
 	// Live while streaming (re-reads the tick so the elapsed column moves);
@@ -56,20 +66,29 @@ export function ThinkPanelRow(props: {
 			.filter((line) => line.trim() !== "")
 		return lines.slice(-TAIL_LINES).map((line) => clipToWidth(line, Math.max(16, props.width() - 8)))
 	})
-	// The collapsed summary's first line (`💭 thought · Xs · <first line>`),
-	// clipped whole so the line never wraps.
+	// The collapsed summary (`💭 thought · Xs · <first line>`), clipped whole
+	// so the line never wraps. Batch V5: split at the prefix boundary so the
+	// `💭 thought · Xs` state token can carry the accent color while the
+	// preview tail stays muted — one line budget, prefix clipped first and
+	// the tail gets whatever columns remain (never overflows the pane). The
+	// ` · ` separator lives OUTSIDE the clipped strings (clipToWidth
+	// normalizes whitespace, so it would eat the padding).
 	const summary = createMemo(() => {
 		const first = props.row().text.replace(/\r/g, "").split("\n").find((line) => line.trim() !== "") ?? ""
 		const secs = elapsed() ?? "0.0s"
-		return clipToWidth(`💭 thought · ${secs} · ${first}`, Math.max(16, props.width() - 5))
+		const budget = Math.max(16, props.width() - 5)
+		const prefix = clipToWidth(`💭 thought · ${secs}`, budget)
+		const rest = clipToWidth(first, Math.max(0, budget - stringWidth(prefix) - 3))
+		return { prefix, rest }
 	})
 	return (
 		<Show
 			when={props.row().streaming === true}
 			fallback={
 				<box flexShrink={0} paddingLeft={3}>
-					<text fg={props.color.text()} wrapMode="none">
-						{summary()}
+					<text wrapMode="none">
+						<span style={{ fg: props.color.summaryAccent?.() ?? props.color.text() }}>{summary().prefix}</span>
+						<span style={{ fg: props.color.text() }}>{summary().rest === "" ? "" : ` · ${summary().rest}`}</span>
 					</text>
 				</box>
 			}
