@@ -362,6 +362,34 @@ describe("footer gradient (multi-hue ramp, ordered deep→light)", () => {
 	/** Number of distinct 30° hue buckets across the fills. */
 	const hueBuckets = (fills: readonly Fill[]): number => new Set(fills.map((fill) => Math.floor(hueOf(fill) / 30))).size
 
+	/** RGB chroma (max−min / 255) of a fill's rendered colour. */
+	const chromaOf = (fill: Fill): number => {
+		const [r, g, b] = colorRgb(fill)
+		return (Math.max(r, g, b) - Math.min(r, g, b)) / 255
+	}
+
+	/** Signed shortest-arc hue step from one fill to the next. */
+	const hueStep = (from: Fill, to: Fill): number => {
+		let delta = hueOf(to) - hueOf(from)
+		if (delta > 180) delta -= 360
+		if (delta < -180) delta += 360
+		return delta
+	}
+
+	/** The family order is hue-monotonic: every step walks the same direction
+	 * (the ramp now runs purple→orange, i.e. decreasing). Guards the old
+	 * blue→purple→cyan bump that reversed hue mid-band. */
+	const expectMonotonicHue = (fills: readonly Fill[]): void => {
+		let sign = 0
+		for (let i = 1; i < fills.length; i++) {
+			const step = hueStep(fills[i - 1]!, fills[i]!)
+			if (Math.abs(step) < 0.5) continue
+			if (sign === 0) sign = Math.sign(step)
+			expect(Math.sign(step)).toBe(sign)
+		}
+		expect(sign).toBe(-1)
+	}
+
 	const expectOrdered = (fills: readonly Fill[], minDistance = 30): void => {
 		for (let i = 1; i < fills.length; i++) {
 			expect(relativeLuminance(fills[i]!)).toBeGreaterThan(relativeLuminance(fills[i - 1]!))
@@ -378,7 +406,11 @@ describe("footer gradient (multi-hue ramp, ordered deep→light)", () => {
 				const segs = fullStrip(theme)
 				expect(segs.length).toBe(9) // brand + 8 data segments
 				const fills = segs.map((segment) => segment.bg)
-				expectOrdered(fills)
+				// True-chroma saturation (no global HSL clamp) leaves tokyonight
+				// dark's blue→purple span ~24 euclid apart; hue still shifts across
+				// those neighbours, so the segment edges stay readable.
+				expectOrdered(fills, themeName === "tokyonight" && mode === "dark" ? 20 : 30)
+				expectMonotonicHue(fills)
 				for (const fill of fills) {
 					expect(contrastRatio(fill, autoContrast(fill))).toBeGreaterThanOrEqual(4.5)
 				}
@@ -387,17 +419,55 @@ describe("footer gradient (multi-hue ramp, ordered deep→light)", () => {
 		}
 	}
 
-	test("families follow the preferred order and skip those the theme lacks", () => {
+	test("families follow the hue-monotonic order and skip those the theme lacks", () => {
 		const names = (name: "dsh-blue" | "tokyonight" | "gruvbox", mode: "dark" | "light") =>
 			powerlineRampFamilies(themeFor(name, mode)).map((family) => family.name)
-		expect(names("dsh-blue", "dark")).toEqual(["blue", "purple", "cyan", "green", "orange"])
-		expect(names("dsh-blue", "light")).toEqual(["blue", "purple", "cyan", "green", "orange"])
+		expect(names("dsh-blue", "dark")).toEqual(["purple", "blue", "cyan", "green", "orange"])
+		expect(names("dsh-blue", "light")).toEqual(["purple", "blue", "cyan", "green", "orange"])
 		// tokyonight dark has no cyan/orange/yellow; gruvbox dark has no blue family.
-		expect(names("tokyonight", "dark")).toEqual(["blue", "purple", "green"])
+		expect(names("tokyonight", "dark")).toEqual(["purple", "blue", "green"])
 		expect(names("gruvbox", "dark")).toEqual(["green", "yellow", "orange"])
+		// Family hues decrease monotonically, so the band never reverses.
+		for (const themeName of ["dsh-blue", "tokyonight", "gruvbox"] as const) {
+			for (const mode of ["dark", "light"] as const) {
+				const hues = powerlineRampFamilies(themeFor(themeName, mode)).map((family) => family.hue)
+				for (let i = 1; i < hues.length; i++) expect(hues[i]!).toBeLessThan(hues[i - 1]!)
+			}
+		}
 	})
 
-	test("missing-family fallback: cycles what exists, then falls back to accent", () => {
+	test("representative chroma comes from RGB chroma, not a clamped HSL saturation", () => {
+		const theme = themeFor("dsh-blue", "dark")
+		const scales = theme.hue as unknown as Record<string, Record<string, RGBA | undefined>>
+		const maxChroma = (scale: Record<string, RGBA | undefined>): number =>
+			Math.max(
+				...["100", "200", "300", "400", "500", "600", "700", "800", "900"]
+					.filter((step) => scale[step])
+					.map((step) => {
+						const [r, g, b] = colorRgb(scale[step]!)
+						return (Math.max(r, g, b) - Math.min(r, g, b)) / 255
+					}),
+			)
+		const families = powerlineRampFamilies(theme)
+		for (const family of families) {
+			const scale = scales[family.name]
+			if (!scale) continue // synthetic mid anchor from a two-family fallback
+			// The selector is the widest-chroma step, so the family keeps its
+			// true colourfulness instead of a globally clamped 0.45–0.82.
+			expect(family.chroma).toBeCloseTo(maxChroma(scale), 5)
+		}
+		// dsh-blue's families used to collapse onto one clamped value; they now
+		// span their palette's real chroma range.
+		const distinct = new Set(families.map((family) => family.chroma.toFixed(2)))
+		expect(distinct.size).toBeGreaterThanOrEqual(3)
+
+		// The rendered strip inherits that spread rather than one saturation.
+		const fills = powerlineGradient(theme, 9)
+		expect(new Set(fills.map((fill) => chromaOf(fill).toFixed(2))).size).toBeGreaterThanOrEqual(3)
+		expect(Math.max(...fills.map(chromaOf))).toBeGreaterThan(0.5)
+	})
+
+	test("missing-family fallback: inserts a midpoint, then falls back to accent", () => {
 		const base = themeFor("dsh-blue", "dark")
 		const hue = base.hue
 		const themeWith = (families: string[]) =>
@@ -406,10 +476,36 @@ describe("footer gradient (multi-hue ramp, ordered deep→light)", () => {
 				hue: Object.fromEntries(families.map((name) => [name, (hue as unknown as Record<string, unknown>)[name]])),
 			}) as unknown as Parameters<typeof powerlineGradient>[0]
 
-		// Two named families → cycle to three slots (last family repeats).
+		// Two named families → interpolate the midpoint anchor [a, mid, b];
+		// the old [a, b, a] cycle reversed hue at the tail.
 		const twoFamily = themeWith(["purple", "green"])
-		expect(powerlineRampFamilies(twoFamily).map((family) => family.name)).toEqual(["purple", "green", "purple"])
-		expectOrdered(powerlineGradient(twoFamily, 9))
+		expect(powerlineRampFamilies(twoFamily).map((family) => family.name)).toEqual([
+			"purple",
+			"purple+green",
+			"green",
+		])
+		const twoFills = powerlineGradient(twoFamily, 9)
+		// A single continuous two-anchor arc naturally steps less per segment
+		// than the old [a, b, a] cycle, which re-crossed the same hues.
+		expectOrdered(twoFills, 20)
+		expectMonotonicHue(twoFills)
+
+		// One named family + red: same midpoint path, no [a, red, a] reversal.
+		const oneFamilyPlusRed = themeWith(["green", "red"])
+		expect(powerlineRampFamilies(oneFamilyPlusRed).map((family) => family.name)).toEqual(["green", "green+red", "red"])
+		const onePlusRed = powerlineGradient(oneFamilyPlusRed, 9)
+		expectOrdered(onePlusRed)
+		expectMonotonicHue(onePlusRed)
+
+		// A colourless scale must not fabricate a "red family" (chroma guard).
+		const gray = Object.fromEntries(
+			["100", "200", "300", "400", "500", "600", "700", "800", "900"].map((step) => [step, RGBA.fromHex("#808080")]),
+		)
+		const achromaticRed = {
+			...base,
+			hue: { red: gray, accent: hue.accent, interactive: hue.interactive },
+		} as unknown as Parameters<typeof powerlineGradient>[0]
+		expect(powerlineRampFamilies(achromaticRed).map((family) => family.name)).toEqual(["accent"])
 
 		// No named family → accent/interactive hue only: monochrome, still ordered.
 		const noFamily = themeWith(["accent", "interactive"])
@@ -424,6 +520,7 @@ describe("footer gradient (multi-hue ramp, ordered deep→light)", () => {
 		// No theme at all → hardcoded dsh-blue family hues; still ordered and multi-hue.
 		const fallback = powerlineGradient(undefined, 9)
 		expectOrdered(fallback)
+		expectMonotonicHue(fallback)
 		expect(hueBuckets(fallback)).toBeGreaterThanOrEqual(3)
 	})
 
