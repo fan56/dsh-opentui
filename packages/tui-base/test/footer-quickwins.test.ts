@@ -1,6 +1,6 @@
 /**
  * Footer-quickwins batch: the tui-pi parity footer pieces —
- *   - model segment's per-level effort glyph ladder (○◔◑◕●◉★, off bare)
+ *   - model segment's per-level effort glyph ladder (○◔◑◕●◉★, off = ○ off)
  *   - effortFromModelLabel: the sessionInfo().model label parse fallback
  *   - provider segment's ☁️ lead
  *   - tools / tps / durable-message wiring through sessionFooterSegments
@@ -38,8 +38,8 @@ import {
 import { stringWidth } from "../src/util/string-width"
 
 describe("effort glyph ladder (tui-pi thinkingIcon parity)", () => {
-	test("the seven levels map to the seven ramp glyphs; off is bare", () => {
-		expect(EFFORT_ICONS.off).toBe("")
+	test("the seven levels map to the seven ramp glyphs; off is ○ (tui-pi parity, not bare)", () => {
+		expect(EFFORT_ICONS.off).toBe("○")
 		expect(effortIcon("minimal")).toBe("◔")
 		expect(effortIcon("low")).toBe("◑")
 		expect(effortIcon("medium")).toBe("◕")
@@ -50,8 +50,8 @@ describe("effort glyph ladder (tui-pi thinkingIcon parity)", () => {
 	test("unknown provider-specific effort words fall to ○ (tui-pi default)", () => {
 		expect(effortIcon("thinking")).toBe("○")
 	})
-	test("model segment: off renders no level; non-off renders `<glyph> <word>`", () => {
-		expect(modelSegment("glm", "off")?.text).toBe("🤖 glm")
+	test("model segment: off renders `○ off` (tui-pi parity); non-off renders `<glyph> <word>`", () => {
+		expect(modelSegment("glm", "off")?.text).toBe("🤖 glm ○ off")
 		expect(modelSegment("glm", "xhigh")?.text).toBe("🤖 glm ◉ xhigh")
 	})
 })
@@ -82,20 +82,21 @@ describe("provider segment ☁️ lead", () => {
 })
 
 describe("footer wiring: tools / tps / durable messages", () => {
-	test("tools > 0 renders the 🛠 segment; 0 stays omitted", () => {
+	test("tools render the 🔧 segment and stay visible at 0 (tui-pi parity: `🔧 n tools`)", () => {
 		const withTools = sessionFooterSegments({ provider: "p", model: "m", tools: 3 })
-		expect(withTools.find((s) => s.text === "🛠 3")).toBeDefined()
+		expect(withTools.find((s) => s.text === "🔧 3 tools")).toBeDefined()
 		const noTools = sessionFooterSegments({ provider: "p", model: "m", tools: 0 })
-		expect(noTools.find((s) => s.text.startsWith("🛠"))).toBeUndefined()
+		expect(noTools.find((s) => s.text === "🔧 0 tools")).toBeDefined()
 	})
-	test("tps renders the ⚡ tok/s segment (last-turn or session-average source)", () => {
+	test("tps renders the tok/s segment without the ⚡ prefix (⚡ stays tui-pi's cache-hit symbol)", () => {
 		const segs = sessionFooterSegments({ provider: "p", model: "m", tps: 42.6 })
-		expect(segs.find((s) => s.text === "⚡ 43 tok/s")).toBeDefined()
+		expect(segs.find((s) => s.text === "43 tok/s")).toBeDefined()
+		expect(segs.find((s) => s.text.includes("⚡"))).toBeUndefined()
 		expect(sessionFooterSegments({ provider: "p", model: "m", tps: null }).find((s) => s.text.includes("tok/s"))).toBeUndefined()
 	})
 	test("durable message count rides the 💬 segment (sessionInfo().messageCount)", () => {
 		const segs = sessionFooterSegments({ provider: "p", model: "m", messages: 7 })
-		expect(segs.find((s) => s.text === "💬 7")).toBeDefined()
+		expect(segs.find((s) => s.text === "💬 7 msgs")).toBeDefined()
 	})
 })
 
