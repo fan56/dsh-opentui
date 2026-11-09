@@ -295,7 +295,8 @@ describe("skin turn-lifetime activity frame", () => {
 	})
 })
 
-describe("skin code-block forms (streaming rule → final frame)", () => {	test("streaming → rule (no extra rows), final → frame", async () => {
+describe("skin code-block forms (streaming rule → final frame)", () => {
+	test("streaming → rule (no extra rows), final → frame", async () => {
 		const mod = await import("../src/routes/session/transcript")
 		expect(mod.codeBlockForm(false)).toBe("rule")
 		expect(mod.codeBlockForm(true)).toBe("frame")
@@ -309,16 +310,16 @@ describe("skin code-block forms (streaming rule → final frame)", () => {	test(
 	test("applyCodeBlockSkin mutates the markdown's default renderable IN PLACE (no new nodes per increment)", async () => {
 		const mod = await import("../src/routes/session/transcript")
 		const box = { border: ["top", "bottom", "left", "right"], borderStyle: "single", title: undefined as string | undefined }
-		const streamed = mod.applyCodeBlockSkinForTest(box, false, "ts")
+		const streamed = mod.applyCodeBlockSkin(box, false, "ts")
 		expect(streamed).toBe(box) // same instance — the renderNode identity law
 		expect(box.border).toEqual(["left"])
 		expect(box.title).toBeUndefined()
-		mod.applyCodeBlockSkinForTest(box, true, "ts")
+		mod.applyCodeBlockSkin(box, true, "ts")
 		expect(box.border).toEqual(["top", "bottom", "left", "right"])
 		expect(box.borderStyle).toBe("single")
 		expect(box.title).toBe(" ts ")
 		const nonBox = { content: "plain text renderable" }
-		expect(mod.applyCodeBlockSkinForTest(nonBox, true, "ts")).toBe(nonBox)
+		expect(mod.applyCodeBlockSkin(nonBox, true, "ts")).toBe(nonBox)
 		expect((nonBox as typeof box).border).toBeUndefined()
 	})
 })

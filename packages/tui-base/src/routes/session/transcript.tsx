@@ -85,13 +85,6 @@ export function codeBlockRuleLabel(lang: string | undefined): string {
 	return lang === undefined || lang === "" ? "┃" : `┃ ${lang}`
 }
 
-/** Apply the skin form IN PLACE to a bordered renderable; wrap a borderless
- * one (the upstream code default) in the skin's wrapper box. `ctx` is the
- * renderable context the wrapper box needs; without it (bare unit tests) a
- * borderless renderable is returned untouched. */
-export function applyCodeBlockSkinForTest(renderable: unknown, isFinal: boolean, lang: string | undefined, ctx?: unknown, borderColor?: string | RGBA): unknown {
-	return applyCodeBlockSkin(renderable, isFinal, lang, ctx, borderColor)
-}
 function skinBoxOptions(isFinal: boolean, lang: string | undefined, borderColor: string | RGBA | undefined): Record<string, unknown> {
 	if (codeBlockForm(isFinal) === "rule") {
 		return { border: SIDES_RULE, borderStyle: "heavy", ...(borderColor !== undefined ? { borderColor } : {}), width: "100%" }
@@ -104,7 +97,12 @@ function skinBoxOptions(isFinal: boolean, lang: string | undefined, borderColor:
 		width: "100%",
 	}
 }
-function applyCodeBlockSkin(renderable: unknown, isFinal: boolean, lang: string | undefined, ctx?: unknown, borderColor?: string | RGBA): unknown {
+/** Apply the skin form IN PLACE to a bordered renderable; wrap a borderless
+ * one (the upstream code default) in the skin's wrapper box. `ctx` is the
+ * renderable context the wrapper box needs; without it (bare unit tests) a
+ * borderless renderable is returned untouched. Exported for tests to share
+ * the exact product path. */
+export function applyCodeBlockSkin(renderable: unknown, isFinal: boolean, lang: string | undefined, ctx?: unknown, borderColor?: string | RGBA): unknown {
 	const box = renderable as (SkinBoxLike & { marginTop?: number; marginBottom?: number }) | null
 	if (box === null || typeof box !== "object") return renderable
 	if (typeof box.border !== "undefined" || typeof box.borderStyle !== "undefined") {

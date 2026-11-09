@@ -17,13 +17,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **One-shot skin migration** — users who had already picked a theme are switched to `dsh-blue` once on upgrade, with a notice.
+- **One-shot skin migration** — users who had already picked a theme are switched to `dsh-blue` once on upgrade, with a notice. The migration is accounted per profile: once any workspace has triggered it, other workspaces' previous theme choices no longer migrate automatically (switch with `/theme`).
 
 ### Known Issues
 
 - Occasional flicker is more likely: dropped frames from the engine's reflow (paint bug upstream of the skin).
 - Wide characters can vanish behind a popup's translucent overlay.
 - Borders may flicker while typing a slash command.
+- Rolling back to 0.8.0: `theme=dsh-blue` silently falls back to the old default theme; a workspace `.dsh/config.yml` that carries a `themeMode` key fails the old version's layer overlay validation (fail-closed) — delete that key to restore.
+- With a popup open, the powerline's model emoji segment is not displayed (pre-existing engine behavior, not fixed in this release).
+- The activity frame mounts/unmounts with a deliberate 60ms delay to prevent flicker; under extreme timing a single ghost frame can still appear and self-heals on the next frame.
 
 ## [0.8.0] - 2026-11-08
 

@@ -11,7 +11,7 @@
  *   - final: single frame with the language in the top border.
  *
  * Layers, mirroring transcript-markdown-table.test.ts:
- *  - behavior: MarkdownRenderable + the module's applyCodeBlockSkinForTest
+ *  - behavior: MarkdownRenderable + the module's applyCodeBlockSkin
  *    with a live renderer paints both forms; a bare control (no skin) paints
  *    neither — the assertions have teeth;
  *  - streaming updates: content increments refresh the wrapped code rows in
@@ -22,7 +22,7 @@
 import { describe, expect, test } from "bun:test"
 import { MarkdownRenderable } from "@opentui/core"
 import { createTestRenderer } from "@opentui/core/testing"
-import { applyCodeBlockSkinForTest } from "../src/routes/session/transcript"
+import { applyCodeBlockSkin } from "../src/routes/session/transcript"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 
@@ -44,7 +44,7 @@ async function paint(content: string, isFinal: boolean) {
 		renderNode: (token: any, context: any) => {
 			if (token?.type !== "code") return undefined
 			const defaulted = context.defaultRender()
-			return applyCodeBlockSkinForTest(
+			return applyCodeBlockSkin(
 				defaulted,
 				isFinal,
 				typeof token.lang === "string" ? token.lang : undefined,
@@ -103,7 +103,7 @@ describe("skin code-block forms (real render path, @opentui 0.8.1)", () => {
 				if (token?.type !== "code") return undefined
 				codeCalls++
 				const defaulted = context.defaultRender()
-				return applyCodeBlockSkinForTest(defaulted, false, typeof token.lang === "string" ? token.lang : undefined, renderer)
+				return applyCodeBlockSkin(defaulted, false, typeof token.lang === "string" ? token.lang : undefined, renderer)
 			},
 		})
 		renderer.root.add(md)
