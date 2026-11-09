@@ -965,7 +965,10 @@ function DialogSelectRow(props: {
       <text
         flexGrow={1}
         fg={text()}
-        attributes={props.active && !newDesigns() ? TextAttributes.BOLD : undefined}
+        // The selected row's title stays bold in both faces: the description
+        // rides the same fg (secondary()), so weight is the only title/detail
+        // hierarchy left on a highlighted row — slash-palette bold parity.
+        attributes={props.active ? TextAttributes.BOLD : undefined}
         overflow="hidden"
         wrapMode="none"
         paddingLeft={3}
