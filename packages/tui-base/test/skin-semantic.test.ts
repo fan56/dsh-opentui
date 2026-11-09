@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { getDshBlueTheme } from "../src/theme/index"
+import { DEFAULT_THEMES, getDshBlueTheme, parseTheme } from "../src/theme/index"
 import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
 import { createComponentTheme } from "../src/theme/component"
 import {
@@ -145,6 +145,49 @@ describe("dsh-blue current-row contrast (P0-1: the real parse chain)", () => {
 			expect(contrast(text, background)).toBeGreaterThanOrEqual(4.5)
 		}
 	})
+})
+
+describe("current-row description contrast (P0-2: selected-row secondary text)", () => {
+	// Same WCAG math as the P0-1 block above, scoped locally.
+	function luminance(color: { r: number; g: number; b: number }): number {
+		const channel = (value: number) => (value <= 0.03928 ? value / 12.92 : Math.pow((value + 0.055) / 1.055, 2.4))
+		return 0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+	}
+	function contrast(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }): number {
+		const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+		return (hi + 0.05) / (lo + 0.05)
+	}
+
+	// The slash palette + dialog-select paint the SELECTED row's description
+	// in the row's own text color (currentRowColors().textColor) — never the
+	// page-muted gray, which on the focused action background measured
+	// 1.31:1 (dsh-blue dark), 2.28:1 (light), 3.32:1 (tokyonight), 3.67:1
+	// (gruvbox). Every theme the components can highlight must keep the
+	// selected fg — which the description shares — at ≥ 4.5:1 on the row
+	// background, through BOTH surfaces the consumers resolve (slash-palette
+	// uses the root theme, dialog-select `surface("dialog")`).
+	function v1(label: string) {
+		return () => parseTheme(DEFAULT_THEMES[label], label)
+	}
+	const CASES: { label: string; document: () => ReturnType<typeof getDshBlueTheme> }[] = [
+		{ label: "dsh-blue dark", document: getDshBlueTheme },
+		{ label: "dsh-blue light", document: getDshBlueTheme },
+		{ label: "tokyonight", document: v1("tokyonight") },
+		{ label: "gruvbox", document: v1("gruvbox") },
+	]
+
+	for (const { label, document } of CASES) {
+		const mode = label.endsWith("light") ? ("light" as const) : ("dark" as const)
+		test(`${label}: selected-row text (shared by the description) ≥ 4.5:1 on the row background`, () => {
+			const theme = createComponentTheme(() => resolveThemeDocument(document(), mode))
+			for (const surface of [theme, theme.surface("dialog")]) {
+				const row = currentRowColors(surface)
+				const text = row.textColor as { r: number; g: number; b: number }
+				const background = row.backgroundColor as { r: number; g: number; b: number }
+				expect(contrast(text, background)).toBeGreaterThanOrEqual(4.5)
+			}
+		})
+	}
 })
 
 describe("dsh-blue placeholder contrast (visual acceptance P2)", () => {

@@ -187,7 +187,14 @@ export function SlashPalette(props: {
 									attributes={active() ? TextAttributes.BOLD : undefined}
 								>
 									{command.name}{" "}
-									<span style={{ fg: color.muted() }}>{command.description}</span>
+									{/* The description rides the row's own selected fg when the
+									    row is highlighted — the page-muted gray on the focused
+									    action background fails contrast (1.31:1 dsh-blue dark,
+									    2.28:1 light, 3.32 tokyonight, 3.67 gruvbox; ≥ 4.5 required
+									    — skin-semantic.test.ts). Unselected rows keep muted. */}
+									<span style={{ fg: active() ? row().textColor : color.muted() }}>
+										{command.description}
+									</span>
 								</text>
 							</box>
 						)

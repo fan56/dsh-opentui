@@ -929,11 +929,12 @@ function DialogSelectRow(props: {
     if (props.current && !newDesigns()) return theme.text.formfield.selected
     return theme.text.base
   })
-  // Secondary text (description and footer).
-  const secondary = () => {
-    if (!newDesigns()) return props.active ? text() : theme.text.muted
-    return props.active ? theme.text.action.secondary.focused : theme.text.muted
-  }
+  // Secondary text (description and footer). The active row rides its own
+  // selected fg — `text.action.secondary.focused` resolves to the same gray
+  // as `text.muted` in every bundled theme, and muted on the focused action
+  // background fails contrast (1.31:1 dsh-blue dark, 2.28:1 light, 3.32
+  // tokyonight, 3.67 gruvbox; ≥ 4.5 required — skin-semantic.test.ts).
+  const secondary = () => (props.active ? text() : theme.text.muted)
 
   const row = () => (
     // A marker or gutter takes its cell plus the row gap out of the left padding,
@@ -964,7 +965,10 @@ function DialogSelectRow(props: {
       <text
         flexGrow={1}
         fg={text()}
-        attributes={props.active && !newDesigns() ? TextAttributes.BOLD : undefined}
+        // The selected row's title stays bold in both faces: the description
+        // rides the same fg (secondary()), so weight is the only title/detail
+        // hierarchy left on a highlighted row — slash-palette bold parity.
+        attributes={props.active ? TextAttributes.BOLD : undefined}
         overflow="hidden"
         wrapMode="none"
         paddingLeft={3}
