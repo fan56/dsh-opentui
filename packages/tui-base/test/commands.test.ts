@@ -1048,4 +1048,24 @@ describe("/hints argument parsing", () => {
 		expect(ctx.lines[0]).toContain("unknown hint segment: banana")
 		expect(ctx.lines[0]).toContain("scroll")
 	})
+
+	test("mutating runs persist footerHints + hintsLocale through the config seam (/motion parity)", () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		hints.run(ctx, "scroll off")
+		hints.run(ctx, "lang ja")
+		expect(seam.calls.filter((call) => call === "configSave").length).toBe(2)
+		// the FULL record rides each write (configSave replaces the key wholesale)
+		expect(seam.store.footerHints).toEqual({ ...DEFAULT_FOOTER_HINTS, scroll: false })
+		expect(seam.store.hintsLocale).toBe("ja")
+	})
+
+	test("usage errors and the bare bar toggle stay session-scoped (no config write)", () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		hints.run(ctx, "scroll of") // typo → usage
+		hints.run(ctx, "banana") // unknown segment
+		hints.run(ctx, "") // bare toggle flips hintsShown — not persisted
+		expect(seam.calls).not.toContain("configSave")
+	})
 })

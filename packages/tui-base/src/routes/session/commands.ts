@@ -51,6 +51,22 @@ import {
 } from "./hints-line"
 import { getMotionTier, setMotionTier, type MotionTier } from "../../skin/motion"
 
+/**
+ * Persist the hint-bar selection after a /hints mutation (/motion parity):
+ * the FULL record + locale ride the profile config.json (`footerHints` /
+ * `hintsLocale` keys — configSave routes unlisted keys to the profile), so
+ * a restart replays them (hints-line.tsx applyHintsConfig at boot). The
+ * bar toggle (`hintsShown`) stays session-scoped. Best-effort: a failed
+ * write keeps this session's state and logs.
+ */
+function persistHints(seam: SessionSeam): void {
+	try {
+		seam.configSave?.({ footerHints: footerHints(), hintsLocale: hintsLocale() })
+	} catch (error) {
+		console.error("[commands] hints persist failed:", error)
+	}
+}
+
 /** One registry row: name carries the leading slash ("/help"). */
 export interface SlashCommand {
 	name: string
@@ -647,6 +663,7 @@ export function coreCommands(): SlashCommand[] {
 						return
 					}
 					setHintsLocale(next)
+					persistHints(ctx.seam)
 					ctx.say(`hint language: ${next}`)
 					return
 				}
@@ -663,6 +680,7 @@ export function coreCommands(): SlashCommand[] {
 					const all: FooterHints = { ...DEFAULT_FOOTER_HINTS }
 					for (const seg of FOOTER_HINT_IDS) all[seg] = on
 					setFooterHints(all)
+					persistHints(ctx.seam)
 					ctx.say(`all hint segments: ${on ? "on" : "off"}`)
 					return
 				}
@@ -673,6 +691,7 @@ export function coreCommands(): SlashCommand[] {
 				const id = head as HintSegmentId
 				const on = stateOn === undefined ? !footerHints()[id] : stateOn
 				setFooterHints((hints) => ({ ...hints, [id]: on }))
+				persistHints(ctx.seam)
 				ctx.say(`hint ${id}: ${on ? "on" : "off"}${on && !hintInState(id, false) ? " (busy only)" : ""}`)
 			},
 		},
