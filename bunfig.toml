@@ -1,0 +1,11 @@
+# Workspace root bunfig. bun only reads the bunfig.toml in the CWD, so this
+# file governs a bare `bun test` run from the repo root. Same rule as the
+# packages: `bun test` only honors [test].preload — without it "solid-js"
+# resolves to the SSR build (dist/server.js, no-op createEffect) and every
+# reactive test silently vacuums. See README Develop.
+#
+# A bare specifier ("@opentui/solid/preload") does not resolve from the root
+# (@opentui/* is a per-package dependency, not hoisted), so point at the
+# installed copy directly — same file the ./dsh-opentui launcher preloads.
+[test]
+preload = ["./packages/tui-base/node_modules/@opentui/solid/scripts/preload.js"]
