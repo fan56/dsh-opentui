@@ -242,13 +242,27 @@ describe("provider fill never collides with the brand fill (real parse chain)", 
 		}
 	})
 
-	test("tokyonight / gruvbox keep interactive[500] (already distinct)", () => {
+	test("tokyonight / gruvbox keep interactive[500] unless the brand fill is too close", () => {
+		// fix/theme-legacy: v1 migration now anchors accent/interactive[500] at the exact
+		// original hex, which moved these fills. The invariant that matters is unchanged:
+		// the provider fill clears POWERLINE_MIN_SEGMENT_DISTANCE from the brand fill, and
+		// when interactive[500] already clears it, the fill stays interactive[500].
 		for (const name of ["tokyonight", "gruvbox"] as const) {
 			for (const mode of ["dark", "light"] as const) {
 				const t = themes[name](mode)
-				expect(colorDistance(providerSegment("p", t, mode)!.bg, t.hue.interactive[500])).toBe(0)
+				const brand = brandSegment(t, undefined, mode).bg
+				const provider = providerSegment("p", t, mode)!.bg
+				expect(colorDistance(brand, provider)).toBeGreaterThanOrEqual(POWERLINE_MIN_SEGMENT_DISTANCE)
+				const clearsAt500 = colorDistance(brand, t.hue.interactive[500]) >= POWERLINE_MIN_SEGMENT_DISTANCE
+				expect(colorDistance(provider, t.hue.interactive[clearsAt500 ? 500 : 700])).toBe(0)
 			}
 		}
+		// concrete walk pins: tokyonight dark (82.3), gruvbox dark (129.2) and gruvbox
+		// light (112.4) keep interactive[500]; tokyonight light (39 at 500, 78.8 at 600)
+		// walks to interactive[700].
+		expect(colorDistance(providerSegment("p", themes.tokyonight("dark"), "dark")!.bg, themes.tokyonight("dark").hue.interactive[500])).toBe(0)
+		expect(colorDistance(providerSegment("p", themes.gruvbox("light"), "light")!.bg, themes.gruvbox("light").hue.interactive[500])).toBe(0)
+		expect(colorDistance(providerSegment("p", themes.tokyonight("light"), "light")!.bg, themes.tokyonight("light").hue.interactive[700])).toBe(0)
 	})
 
 	test("concrete deltas per acceptance theme/mode (regression pins)", () => {
@@ -258,11 +272,13 @@ describe("provider fill never collides with the brand fill (real parse chain)", 
 				colorDistance(brandSegment(t, undefined, mode).bg, providerSegment("p", t, mode)!.bg),
 			)
 		}
+		// fix/theme-legacy: v1 accents are the exact original hex now, so the v1 rows moved
+		// (tokyonight 96→82/116→131, gruvbox 165→129/96→112); dsh-blue (v2) is untouched.
 		expect(delta("dsh-blue", "dark")).toBe(112)
 		expect(delta("dsh-blue", "light")).toBe(131)
-		expect(delta("tokyonight", "dark")).toBe(96)
-		expect(delta("tokyonight", "light")).toBe(116)
-		expect(delta("gruvbox", "dark")).toBe(165)
-		expect(delta("gruvbox", "light")).toBe(96)
+		expect(delta("tokyonight", "dark")).toBe(82)
+		expect(delta("tokyonight", "light")).toBe(131)
+		expect(delta("gruvbox", "dark")).toBe(129)
+		expect(delta("gruvbox", "light")).toBe(112)
 	})
 })

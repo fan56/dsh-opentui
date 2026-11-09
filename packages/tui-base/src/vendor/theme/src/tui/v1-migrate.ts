@@ -110,8 +110,16 @@ function migrateMode(theme: Theme, mode: Mode): ThemeDefinition {
           return match ? [[name, hueScale(match.color, mode)]] : []
         }),
       ),
-      accent: hues.byToken.accent ? `$hue.${hues.byToken.accent}` : "$hue.gray",
-      interactive: hues.byToken.primary ? `$hue.${hues.byToken.primary}` : "$hue.gray",
+      // DSH PATCH [fix/theme-legacy accent fidelity] — BEGIN
+      // Stock upstream aliases accent/interactive onto the inferred chromatic family
+      // (`$hue.<family>`), whose scale is anchored at step 200, so the exact V1 accent hex is
+      // lost by the time consumers read the canonical step 500 (powerline brand, prompt
+      // spinner, status bar). Give accent/interactive their own scales anchored at the
+      // original token color instead; only truly transparent tokens keep the gray fallback.
+      // If you re-vendor this file, re-apply these two lines plus `tokenScale` below.
+      accent: tokenScale(theme, theme.accent, mode),
+      interactive: tokenScale(theme, theme.primary, mode),
+      // DSH PATCH [fix/theme-legacy accent fidelity] — END
       neutral: "$hue.gray",
     } as HueDefinition,
     categorical: uniqueCategorical.length ? uniqueCategorical : ["neutral"],
@@ -235,6 +243,30 @@ export function dialogBackground(theme: Theme) {
   const [red, green, blue] = visible.toInts()
   return hexInts(red, green, blue, 255)
 }
+
+// DSH PATCH [fix/theme-legacy accent fidelity] — BEGIN
+// Anchor the accent/interactive scales so the canonical step 500 keeps the exact V1 token hex.
+// Transparent tokens cannot anchor a scale and keep the stock `$hue.gray` fallback.
+function tokenScale(theme: Theme, color: RGBA, mode: Mode) {
+  return color.toInts()[3] > 0 ? hueScale(color, mode, 500) : "$hue.gray"
+}
+// DSH PATCH [fix/theme-legacy accent fidelity] — END
+
+// DSH PATCH [fix/theme-legacy transparent surfaces] — BEGIN
+// Stock upstream feeds raw V1 colors into the neutral scale, so a transparent background family
+// (lucent-orng) anchors steps 800/700/600 on `#00000000`: light-mode text then renders on
+// effectively black surfaces. Solidify any transparent surface anchor to the theme's first
+// visible surface color, made opaque (same rule as `dialogBackground`).
+function opaqueSurface(theme: Theme, color: RGBA) {
+  if (color.a > 0) return color
+  const visible = [theme.backgroundPanel, theme.backgroundMenu, theme.backgroundElement, theme.background].find(
+    (surface) => surface.a > 0,
+  )
+  if (!visible) return luminance(theme.text) > 0.5 ? RGBA.fromInts(0, 0, 0) : RGBA.fromInts(255, 255, 255)
+  const [red, green, blue] = visible.toInts()
+  return RGBA.fromInts(red, green, blue, 255)
+}
+// DSH PATCH [fix/theme-legacy transparent surfaces] — END
 
 export function referenceHues(theme: ThemeDefinition): ThemeDefinition {
   const definitions = theme.hue as Record<string, string | Partial<Record<HueStep, string>>> | undefined
@@ -395,9 +427,12 @@ export function selectedForeground(theme: Theme, background: RGBA) {
     : RGBA.fromInts(255, 255, 255)
 }
 
-function hueScale(color: RGBA, mode: "light" | "dark") {
+// DSH PATCH [fix/theme-legacy accent fidelity] — BEGIN
+// Optional `anchor` step lets tokenScale pin step 500 to the exact V1 accent hex
+// (stock hueScale is hard-anchored at 200). Re-apply on re-vendor.
+function hueScale(color: RGBA, mode: "light" | "dark", anchor: HueStep = 200) {
+// DSH PATCH [fix/theme-legacy accent fidelity] — END
   const value = toOklch(color)
-  const anchor = 200
   const endpoint = mode === "light" ? Math.max(0.97, value.l) : Math.min(0.18, value.l)
   const alpha = color.toInts()[3]
   return Object.fromEntries(
@@ -434,10 +469,14 @@ function neutralScale(theme: Theme) {
 }
 
 function neutralAnchors(theme: Theme) {
+  // DSH PATCH [fix/theme-legacy transparent surfaces] — BEGIN
+  // Solidify transparent surface anchors, see `opaqueSurface` above.
+  // If you re-vendor this file, re-apply the three wrapped colors.
   const light: { step: HueStep; color: RGBA }[] = [
-    { step: 200, color: theme.background },
-    { step: 300, color: theme.backgroundPanel },
-    { step: 400, color: theme.backgroundElement || theme.backgroundMenu },
+    { step: 200, color: opaqueSurface(theme, theme.background) },
+    { step: 300, color: opaqueSurface(theme, theme.backgroundPanel) },
+    { step: 400, color: opaqueSurface(theme, theme.backgroundElement || theme.backgroundMenu) },
+  // DSH PATCH [fix/theme-legacy transparent surfaces] — END
     { step: 600, color: theme.textMuted },
     { step: 800, color: theme.text },
   ]

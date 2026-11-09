@@ -156,8 +156,8 @@ export function colorDistance(a: PowerlineColor, b: PowerlineColor): number {
  * least POWERLINE_MIN_SEGMENT_DISTANCE from the brand fill (the deepest
  * seen step when none qualifies, or 500 when the ramp is absent). On
  * dsh-blue this shifts 500→700 (dark #2A3D9E / light #9DAFF0 vs brand
- * #4D6BFE / #3B5BDB); tokyonight and gruvbox already clear the threshold
- * at 500 and keep their original fill.
+ * #4D6BFE / #3B5BDB); gruvbox and tokyonight dark clear it at 500, while
+ * tokyonight light walks on to 700.
  */
 export function providerFill(theme: ComponentTheme, brand: PowerlineColor): RGBA {
 	const ramp = theme.hue.interactive as unknown as Record<string, RGBA | undefined>

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-11-09
+
+### Fixed
+
+- **Slash palette height no longer shifts per keystroke** — the palette keeps a stable frame while filtering, eliminating the per-keystroke reflow flicker while typing a slash command.
+- **Palette no longer renders rows beyond its frame** — rendered rows are capped so the overflow can no longer push into / overlap the composer input (pre-existing bug).
+
+### Development
+
+- **The test suite now runs with the real solid-js reactive runtime** — a bunfig `[test].preload` fix gives every suite the real runtime instead of a no-op stub, closing a long-standing blind spot where assertions ran against nothing reactive.
+
 ## [0.9.0] - 2026-11-09
 
 ### Added
