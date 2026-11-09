@@ -38,6 +38,7 @@ import {
 	latestTodos,
 	padCell,
 	todosTableLines,
+	todosTableWidth,
 	SKIN_FADE_IN_MS,
 	SKIN_FADE_OUT_MS,
 	SKIN_HOLD_MS,
@@ -167,6 +168,45 @@ describe("todosTableLines (dsh-tui-pi TodosPanel parity)", () => {
 	test("narrow box (boxWidth < 23): the Task column shrinks, rows never overflow", () => {
 		const lines = table([toolRow([{ content: "a very long task name", status: "in_progress" }])], 16)
 		for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(16)
+	})
+
+	test("right border aligns with the composer's right border (80/120 columns)", () => {
+		const rows = [
+			toolRow([
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "in_progress" },
+				{ content: "c", status: "pending" },
+			]),
+		]
+		for (const columns of [80, 120]) {
+			const boxWidth = todosTableWidth(columns)
+			// Slot geometry: one-column left indent + the box fill the terminal,
+			// so the box's right border (last char, 0-based column
+			// `1 + boxWidth - 1`) lands on column `columns - 1` — the same column
+			// as the composer's right border.
+			expect(boxWidth).toBe(columns - 1)
+			expect(1 + boxWidth).toBe(columns)
+			expect(1 + boxWidth - 1).toBe(columns - 1)
+			const lines = table(rows, boxWidth)
+			expect(lines.length).toBeGreaterThan(0)
+			for (const line of lines) expect(stringWidth(line)).toBe(boxWidth)
+			// Every border row carries its right corner in the last column.
+			expect(lines[0]!.endsWith("┐")).toBe(true)
+			expect(lines[lines.length - 1]!.endsWith("┘")).toBe(true)
+		}
+	})
+
+	test("narrow terminal (≤30 rows) summary is unchanged and stays inside the slot", () => {
+		const rows = [
+			toolRow([
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "in_progress" },
+			]),
+		]
+		const compact = todosTableLines(rows, todosTableWidth(80), 24)
+		expect(compact).toHaveLength(1)
+		expect(compact[0]!.text).toBe("todos [✓]1/2 · b")
+		expect(stringWidth(compact[0]!.text)).toBeLessThanOrEqual(todosTableWidth(80))
 	})
 })
 

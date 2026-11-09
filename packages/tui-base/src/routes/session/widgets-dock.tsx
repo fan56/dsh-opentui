@@ -280,6 +280,20 @@ export function todosSummaryLine(rows: readonly SeamRow[]): string {
 	return active ? `${head} · ${active.content}` : head
 }
 
+/** The Todos table's box width for a `terminalColumns`-wide terminal.
+ *
+ * The dock slot is rendered with `paddingLeft=1` (the composer's left border
+ * owns column 0), so the box starts at column 1 and must be `columns - 1`
+ * wide for its right border to land on the composer's right border at column
+ * `columns - 1` (0-based). dsh-tui-pi's `panelBoxWidth` is `columns - 2`
+ * (a two-column right gutter when the panel renders at the full terminal
+ * width); here the slot is indented one column and the composer is
+ * full-bleed, so that arithmetic leaves the table's right edge one column
+ * left of the input frame (the screenshot bug). */
+export function todosTableWidth(terminalColumns: number): number {
+	return Math.max(16, terminalColumns - 1)
+}
+
 /** The Todos table (pure, dsh-tui-pi `TodosPanel` parity): a bordered box
  * with the `● Todos (done/total)` header (plus a `· showing 4-8` range hint
  * when the 5-row window hides rows), the `# │ ✓ │ Task` table header and one
@@ -870,11 +884,13 @@ export function WidgetsDock(props: {
 		() => setDockSpin((s) => s + 1),
 	)
 	const width = () => Math.max(16, dimensions().width - 4)
-	// Todos table width: the tui-pi box spans the widget slot at paddingX=1
-	// (`columns - 2`), independent of the skin's 3-column line indent.
-	// Short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS) collapse it to the
-	// one-line summary so the transcript keeps its ≥6-row floor.
-	const tableWidth = () => Math.max(16, dimensions().width - 2)
+	// Todos table width: the slot carries the one-column left indent (the
+	// composer border owns column 0), so the box spans columns 1..W-1 and its
+	// right border lands on the composer's right border (W-1). See
+	// `todosTableWidth`. Short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS)
+	// collapse it to the one-line summary so the transcript keeps its ≥6-row
+	// floor.
+	const tableWidth = () => todosTableWidth(dimensions().width)
 	const table = () => todosTableLines(props.rows, tableWidth(), dimensions().height)
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
 	// Mitigation 1: the frame's Show reads the DEFERRED latch, not the raw
