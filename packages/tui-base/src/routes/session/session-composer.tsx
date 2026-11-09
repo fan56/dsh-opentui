@@ -4,8 +4,10 @@
  * Shape follows the vendored textarea composers (component/prompt/index.tsx
  * `<textarea>` and routes/session/form.tsx): a native TextareaRenderable
  * with content-driven height capped by `minHeight`/`maxHeight`, focus taken
- * once the ref publishes, `┃` split border. Decision logic (send vs steer,
- * busy, history) lives in ./composer-state.ts.
+ * once the ref publishes, and the skin frame (skin/semantic.ts): four-side
+ * border, heavy + accent while focused, single + border.base unfocused,
+ * warning while busy; short terminals drop the top/bottom sides. Decision
+ * logic (send vs steer, busy, history) lives in ./composer-state.ts.
  *
  * Keys (vendored keybind config: `input.submit` = return, `input.newline` =
  * shift/ctrl/alt+return, ctrl+j). The raw textarea defaults are the reverse
@@ -29,20 +31,29 @@
  *
  * Paste: native (TextareaRenderable.handlePaste, bracketed). No custom code.
  *
- * Busy marker: rendered in the footer row and pushed through `onBusyChange`
- * for the status/powerline batch.
+ * Busy marker: pushed through `onBusyChange` for the status/powerline batch
+ * (the footer hint itself is a constant row — flicker mitigation 2).
  *
  * OpenTUI law: the root box gets an explicit height computed from the
  * textarea's reported height (+ footer), never auto-height in a flex column.
  */
 import { createSignal, onCleanup, Show, type JSX } from "solid-js"
-import { useRenderer } from "@opentui/solid"
-import { measureEditText, type KeyEvent, type TextareaRenderable } from "@opentui/core"
+import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { measureEditText, RenderableEvents, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
-import { SplitBorder } from "../../ui/border"
 import { ComposerController, type ComposerHistory } from "./composer-state"
 import { composerKeyBindings, type ComposerKeybindConfig } from "./composer-keybinds"
 import { useThemeOptional } from "../../context/theme"
+import { useCursorStyle } from "../../config"
+import {
+	COMPOSER_COMPACT_TERMINAL_ROWS,
+	SKIN_FOCUS_BLUR_DEBOUNCE_MS,
+	composerBorderSides,
+	composerLayout,
+	skinCursor,
+	surfaceBorder,
+	warningColor,
+} from "../../skin/semantic"
 
 export type SessionComposerRef = {
 	/** The textarea's live focused flag (OpenTUI renderable state, not a
@@ -50,6 +61,17 @@ export type SessionComposerRef = {
 	focused(): boolean
 	focus(): void
 }
+
+/** Busy top-border title (contract §1): the steer affordance, warning-tier. */
+const STEER_TITLE = " steer "
+
+/** Flicker mitigation 2 (research/skin-flicker-analysis.md 缓解 3): the
+ * composer footer hint — the input box's bottom-edge row — is ONE CONSTANT
+ * string for idle and busy alike. The old busy↔idle swap repainted the row
+ * on every turn boundary (different text/width → full-row redraw). Busy
+ * stays visible via the cursor color, the top-border steer title, and the
+ * activity frame; this row never changes again. */
+export const COMPOSER_FOOTER_HINT = "enter send · while streaming enter steers · alt+enter newline · ↑↓ history"
 
 export type SessionComposerProps = {
 	/** Seam used for steering a running turn. */
@@ -91,12 +113,19 @@ export type SessionComposerProps = {
 export function SessionComposer(props: SessionComposerProps) {
 	const FOOTER_HEIGHT = props.footerHint === false ? 0 : 1
 	const renderer = useRenderer()
+	const dimensions = useTerminalDimensions()
 	const theme = useThemeOptional()
+	// useCursorStyle needs the ConfigProvider; the FT harness mounts bare.
+	let configCursorStyle: (() => { style?: string; blinking?: boolean }) | undefined
+	try {
+		configCursorStyle = useCursorStyle()
+	} catch {
+		configCursorStyle = undefined
+	}
 	const color = {
-		// Vendored prompt: border = border.base tinted by the agent color
-		// (no agent here → untinted); bg = decrease(background.raised.base).
-		border: () => theme?.border.base ?? "#7aa2f7",
-		busy: () => theme?.text.feedback.warning.base ?? "#e0af68",
+		// Skin semantic colors (skin/semantic.ts): focused = heavy + accent,
+		// unfocused = single + border.base, busy = warning (instant swap,
+		// never animated). bg = decrease(background.raised.base).
 		background: () => (theme ? theme.decrease(theme.background.raised.base) : "#1a1b26"),
 		text: () => theme?.text.base ?? "#e6e6e6",
 		placeholder: () => theme?.text.faint ?? "#565f89",
@@ -105,9 +134,19 @@ export function SessionComposer(props: SessionComposerProps) {
 	const keyBindings = composerKeyBindings(props.keybinds)
 	const [busy, setBusy] = createSignal(false)
 	const [textareaHeight, setTextareaHeight] = createSignal(1)
+	// Visual focus with a debounce on UNFOCUS only (SKIN_FOCUS_BLUR_DEBOUNCE_MS):
+	// a dialog close blurs then refocuses the editor a frame later (vendored
+	// DialogProvider at 1ms, turn overlays at 3ms) — without the debounce the
+	// frame border would flash unfocused for exactly that frame. Focus-in
+	// applies immediately; the composer owns focus whenever no overlay does.
+	const [visuallyFocused, setVisuallyFocused] = createSignal(true)
+	let blurDebounce: ReturnType<typeof setTimeout> | undefined
 	let textarea: TextareaRenderable | undefined
 	let disposed = false
-	onCleanup(() => (disposed = true))
+	onCleanup(() => {
+		disposed = true
+		if (blurDebounce !== undefined) clearTimeout(blurDebounce)
+	})
 
 	// Subagent marker face (batch F6): subscribe for this component's
 	// lifetime so the seam adapter keeps folding the live subagent snapshot
@@ -133,6 +172,14 @@ export function SessionComposer(props: SessionComposerProps) {
 
 	const measure = (text: string) => measureEditText(text, { widthMethod: renderer.widthMethod })
 	const maxLines = () => props.maxHeight ?? 8
+
+	// Skin cursor: vertical bar (contract §1), blinking, from the user's
+	// cursor config (semantic.skinCursor). Bare FT harnesses mount without a
+	// ConfigProvider — fall back to the skin default there.
+	const cursor = () => skinCursor(configCursorStyle?.())
+	// Border state: busy recolors to warning (instant), focus sets the weight.
+	const border = () => surfaceBorder({ busy: busy(), focused: visuallyFocused(), theme: theme ?? undefined })
+	const busyColor = () => warningColor(theme ?? undefined)
 
 	/**
 	 * Content-driven height: the box height is explicit (OpenTUI law), so the
@@ -205,11 +252,18 @@ export function SessionComposer(props: SessionComposerProps) {
 		<box
 			flexShrink={0}
 			width="100%"
-			height={textareaHeight() + FOOTER_HEIGHT + (props.slashHeight?.() ?? 0)}
+			height={composerLayout({
+				textareaLines: textareaHeight(),
+				footerRows: FOOTER_HEIGHT,
+				paletteRows: props.slashHeight?.() ?? 0,
+				terminalRows: dimensions().height,
+			}).height}
 			flexDirection="column"
-			border={["left"]}
-			borderColor={busy() ? color.busy() : color.border()}
-			customBorderChars={SplitBorder.customBorderChars}
+			border={composerBorderSides(dimensions().height)}
+			borderStyle={border().borderStyle}
+			borderColor={border().borderColor}
+			title={busy() && dimensions().height > COMPOSER_COMPACT_TERMINAL_ROWS ? STEER_TITLE : undefined}
+			titleColor={busyColor()}
 			backgroundColor={color.background()}
 			paddingLeft={1}
 		>
@@ -222,7 +276,8 @@ export function SessionComposer(props: SessionComposerProps) {
 				placeholderColor={color.placeholder()}
 				textColor={color.text()}
 				focusedTextColor={color.text()}
-				cursorColor={color.text()}
+				cursorColor={busy() ? busyColor() : color.text()}
+				cursorStyle={cursor()}
 				keyBindings={keyBindings}
 				onSubmit={submit}
 				onKeyDown={recall}
@@ -233,6 +288,22 @@ export function SessionComposer(props: SessionComposerProps) {
 				onSizeChange={syncHeight}
 				ref={(value: TextareaRenderable) => {
 					textarea = value
+					// Focus events drive the skin frame (with the unfocus debounce,
+					// above). core emits these on the renderable itself.
+					value.on(RenderableEvents.FOCUSED, () => {
+						if (blurDebounce !== undefined) {
+							clearTimeout(blurDebounce)
+							blurDebounce = undefined
+						}
+						if (!disposed) setVisuallyFocused(true)
+					})
+					value.on(RenderableEvents.BLURRED, () => {
+						if (blurDebounce !== undefined) clearTimeout(blurDebounce)
+						blurDebounce = setTimeout(() => {
+							blurDebounce = undefined
+							if (!disposed && !value.isDestroyed && !value.focused) setVisuallyFocused(false)
+						}, SKIN_FOCUS_BLUR_DEBOUNCE_MS)
+					})
 					// Vendored form/prompt: focus after the ref publishes so burst
 					// typing lands once the editor is ready.
 					queueMicrotask(() => {
@@ -253,12 +324,7 @@ export function SessionComposer(props: SessionComposerProps) {
 			/>
 			<Show when={FOOTER_HEIGHT > 0}>
 				<box height={FOOTER_HEIGHT} flexShrink={0} flexDirection="row" gap={2}>
-					<Show
-						when={busy()}
-						fallback={<text fg={color.hint()}>{"enter send · alt+enter newline · ↑↓ history"}</text>}
-					>
-						<text fg={color.busy()}>{"* streaming… enter steers the running turn"}</text>
-					</Show>
+					<text fg={color.hint()}>{COMPOSER_FOOTER_HINT}</text>
 				</box>
 			</Show>
 		</box>

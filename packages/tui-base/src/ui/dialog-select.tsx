@@ -22,6 +22,7 @@ import { Locale } from "../util/locale"
 import { getScrollAcceleration } from "../util/scroll"
 import { useConfig, useCursorStyle, useNewDesigns } from "../config"
 import { moveSelection, reconcileSelection } from "./select-controller"
+import { currentRowColors } from "../skin/semantic"
 
 export interface DialogSelectProps<T> {
   title: string
@@ -919,8 +920,12 @@ function DialogSelectRow(props: {
 }) {
   const theme = useTheme().surface("dialog")
   const newDesigns = useNewDesigns()
+  // The active row IS the skin's current-row semantics (full-row background
+  // + text, one source in skin/semantic.ts); the props may still override
+  // both for special-cased rows.
+  const activeRow = () => currentRowColors(theme)
   const text = createMemo(() => {
-    if (props.active) return props.activeColor ?? theme.text.action.primary.focused
+    if (props.active) return props.activeColor ?? activeRow().textColor
     if (props.current && !newDesigns()) return theme.text.formfield.selected
     return theme.text.base
   })
@@ -940,7 +945,7 @@ function DialogSelectRow(props: {
       paddingRight={DIALOG_LIST_INSET - (newDesigns() ? 0 : 1)}
       gap={1}
       backgroundColor={
-        props.active ? (props.activeBackground ?? theme.background.action.primary.focused) : RGBA.fromInts(0, 0, 0, 0)
+        props.active ? (props.activeBackground ?? activeRow().backgroundColor) : RGBA.fromInts(0, 0, 0, 0)
       }
     >
       <Show when={!props.current && props.margin}>
@@ -954,7 +959,7 @@ function DialogSelectRow(props: {
         </text>
       </Show>
       <Show when={props.gutter}>
-        <box flexShrink={0}>{props.gutter?.(text())}</box>
+        <box flexShrink={0}>{props.gutter?.(text() as RGBA)}</box>
       </Show>
       <text
         flexGrow={1}

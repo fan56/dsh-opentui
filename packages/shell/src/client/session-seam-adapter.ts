@@ -206,6 +206,18 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.configSave(patch)
 	}
 
+	/** α skin layer: the profile config.json RAW contents (no overlay/env
+	 * merge) — the migration decision reads layers, not the merged view. */
+	configRaw(): Record<string, unknown> {
+		return this.#session.configRaw()
+	}
+
+	/** α skin layer: the workspace overlay slice (theme + model), warm
+	 * after start() — the workspace side of the migration decision. */
+	workspaceConfig(): { theme?: string; themeMode?: "dark" | "light" | "auto"; model?: unknown } {
+		return this.#session.workspaceConfig()
+	}
+
 	/**
 	 * /session info panel (batch F4): RemoteHostSession.sessionInfo() 1:1,
 	 * plus the message count the facade can't know — a one-shot durable

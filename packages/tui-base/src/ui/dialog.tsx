@@ -20,8 +20,20 @@ import { useToast } from "./toast"
 import { useClipboard } from "../context/clipboard"
 import { useConfig, useNewDesigns } from "../config"
 import { copy, copyOnSelectRelease } from "../util/selection"
+import { focusedBorderColor, warningColor } from "../skin/semantic"
 
 export type DialogSize = "medium" | "large" | "xlarge"
+
+/**
+ * Skin frame tone (skin contract §1): "accent" = the focused panel (heavy
+ * line + accent), "warning" = approval/ask cards (heavy line + warning).
+ * Selected per stack entry via the `replace` options; an open dialog always
+ * holds focus (the vendored blur/refocus law below), so its frame is always
+ * heavy. Border colors switch instantly — NEVER animated (user directive).
+ */
+export type DialogTone = "accent" | "warning"
+
+const DialogToneContext = createContext<DialogTone>("accent")
 
 export const DIALOG_INSET = 3
 // List rows reserve a 1-cell gutter for the ▌ bar / ● marker.
@@ -37,56 +49,74 @@ export function Dialog(
   props: ParentProps<{
     size?: DialogSize
     centered?: boolean
+    tone?: DialogTone
     onClose: () => void
   }>,
 ) {
   const dimensions = useTerminalDimensions()
   const theme = useTheme().surface("dialog")
   const renderer = useRenderer()
+  // Skin frame: an open dialog owns focus (init() blurred the editor when
+  // the first entry pushed), so the panel paints the focused frame — heavy
+  // line; warning tone recolors it for approval/ask cards. Explicit `border`
+  // (setting only borderColor would implicitly open all four sides).
+  const tone = () => props.tone ?? "accent"
+  const frame = () =>
+    tone() === "warning" ? warningColor(theme) : focusedBorderColor(theme)
 
   let dismiss = false
   return (
     <ThemeContextProvider context="dialog">
-      <box
-        onMouseDown={() => {
-          dismiss = !!renderer.getSelection()
-        }}
-        onMouseUp={() => {
-          if (dismiss) {
-            dismiss = false
-            return
-          }
-          props.onClose?.()
-        }}
-        width={dimensions().width}
-        height={dimensions().height}
-        alignItems="center"
-        justifyContent={props.centered ? "center" : undefined}
-        position="absolute"
-        zIndex={3000}
-        paddingTop={props.centered ? 0 : dimensions().height / 4}
-        left={0}
-        top={0}
-        backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
-      >
+      <DialogToneContext.Provider value={tone()}>
         <box
-          onMouseUp={(e: { stopPropagation(): void }) => {
-            // A selection release must bubble up to the copy-on-select handler in
-            // DialogProvider; the backdrop's dismiss flag keeps it from closing the dialog.
-            if (renderer.getSelection()?.getSelectedText()) return
-            dismiss = false
-            e.stopPropagation()
+          onMouseDown={() => {
+            dismiss = !!renderer.getSelection()
           }}
-          width={dialogWidth(props.size ?? "medium")}
-          maxWidth={dimensions().width - 2}
-          backgroundColor={theme.background.base}
-          paddingTop={1}
+          onMouseUp={() => {
+            if (dismiss) {
+              dismiss = false
+              return
+            }
+            props.onClose?.()
+          }}
+          width={dimensions().width}
+          height={dimensions().height}
+          alignItems="center"
+          justifyContent={props.centered ? "center" : undefined}
+          position="absolute"
+          zIndex={3000}
+          paddingTop={props.centered ? 0 : dimensions().height / 4}
+          left={0}
+          top={0}
+          backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
         >
-          {props.children}
+          <box
+            onMouseUp={(e: { stopPropagation(): void }) => {
+              // A selection release must bubble up to the copy-on-select handler in
+              // DialogProvider; the backdrop's dismiss flag keeps it from closing the dialog.
+              if (renderer.getSelection()?.getSelectedText()) return
+              dismiss = false
+              e.stopPropagation()
+            }}
+            width={dialogWidth(props.size ?? "medium")}
+            maxWidth={dimensions().width - 2}
+            backgroundColor={theme.background.base}
+            paddingTop={1}
+            border={["top", "bottom", "left", "right"]}
+            borderStyle="heavy"
+            borderColor={frame()}
+          >
+            {props.children}
+          </box>
         </box>
-      </box>
+      </DialogToneContext.Provider>
     </ThemeContextProvider>
   )
+}
+
+/** The active panel tone (Dialog frames + header accents). */
+export function useDialogTone(): DialogTone {
+  return useContext(DialogToneContext)
 }
 
 export function DialogHeader(
@@ -103,10 +133,14 @@ export function DialogHeader(
   const dialog = useDialog()
   const theme = useTheme().surface("dialog")
   const newDesigns = useNewDesigns()
+  // Warning-tier panels (approval/ask cards) paint their title in the
+  // warning color (skin contract: 警示档边框与标题).
+  const tone = useDialogTone()
+  const titleColor = () => (tone === "warning" ? warningColor(theme) : theme.text.base)
   const row = () => (
     <box flexDirection="row" justifyContent="space-between" gap={props.gap}>
       {props.titleView ?? (
-        <text attributes={newDesigns() ? undefined : TextAttributes.BOLD} fg={theme.text.base}>
+        <text attributes={newDesigns() ? undefined : TextAttributes.BOLD} fg={titleColor()}>
           {props.title}
         </text>
       )}
@@ -309,6 +343,7 @@ function init() {
       element: () => JSX.Element
       onClose?: () => void
       key?: unknown
+      tone?: DialogTone
     }[],
     size: "medium" as DialogSize,
     centered: false,
@@ -397,7 +432,11 @@ function init() {
       })
       refocus()
     },
-    replace(input: () => JSX.Element, onClose?: () => void, options?: { key?: unknown; size?: DialogSize }) {
+    replace(
+      input: () => JSX.Element,
+      onClose?: () => void,
+      options?: { key?: unknown; size?: DialogSize; tone?: DialogTone },
+    ) {
       if (store.stack.length === 0) {
         focus = renderer.currentFocusedRenderable
         focus?.blur()
@@ -413,6 +452,7 @@ function init() {
             element: input,
             onClose,
             key: options?.key,
+            tone: options?.tone,
           },
         ])
       })
@@ -428,6 +468,10 @@ function init() {
     },
     get key() {
       return store.stack.at(-1)?.key
+    },
+    /** Skin frame tone of the top stack entry (approval/ask = warning). */
+    get tone(): DialogTone {
+      return store.stack.at(-1)?.tone ?? "accent"
     },
     setSize(size: "medium" | "large" | "xlarge") {
       setStore("size", size)
@@ -470,7 +514,7 @@ export function DialogProvider(props: ParentProps) {
         }
       >
         <Show when={value.stack.length}>
-          <Dialog onClose={() => value.clear()} size={value.size} centered={value.centered}>
+          <Dialog onClose={() => value.clear()} size={value.size} centered={value.centered} tone={value.tone}>
             {/* Render each entry once: inserting the element function directly would re-run it, remounting
                 the dialog with fresh state, whenever a signal it reads at its root (e.g. a top-level <Show>) changes. */}
             <Show when={value.stack.at(-1)} keyed>

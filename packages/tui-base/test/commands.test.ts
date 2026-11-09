@@ -2,7 +2,7 @@
  * Slash-command registry tests (batch 8): dispatch classification, the
  * harmless unknown row, and each core command's seam/hook call.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, beforeEach } from "bun:test"
 import {
 	agentsProfilesPatch,
 	agentsRosterRows,
@@ -21,6 +21,7 @@ import {
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
 import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
+import { setMotionTier } from "../src/skin/motion"
 import type { SessionSeam, SeamProviderModel, SeamSessionSummary } from "../src/seams/session"
 
 /** Recording fake: every seam method the core set touches is a spy. */
@@ -81,7 +82,12 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		cleared: 0,
 		reloaded: 0,
 		quit: 0,
-		picks: [] as { title: string; headerLine?: string; options: { title: string; description?: string }[] }[],
+		picks: [] as {
+			title: string
+			headerLine?: string
+			currentValue?: string
+			options: { title: string; description?: string }[]
+		}[],
 	}
 	const ctx: SlashCommandContext & { hooks: typeof hooks; lines: string[] } = {
 		seam: seam.seam,
@@ -89,8 +95,13 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		clear: () => hooks.cleared++,
 		reload: () => hooks.reloaded++,
 		quit: () => hooks.quit++,
-		pickOne: async (title, options, headerLine) => {
-			hooks.picks.push({ title, headerLine, options: options.map((o) => ({ title: o.title, description: o.description })) })
+		pickOne: async (title, options, headerLine, currentValue) => {
+			hooks.picks.push({
+				title,
+				headerLine,
+				currentValue,
+				options: options.map((o) => ({ title: o.title, description: o.description })),
+			})
 			return pickAnswer
 		},
 		hooks,
@@ -197,6 +208,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/agents",
 			"/think",
 			"/hints",
+			"/motion",
 			"/hotkeys",
 			"/theme",
 			"/preset",
@@ -226,6 +238,7 @@ describe("core commands", () => {
 			"/agents — model profiles: list / save / use / rm (named model+effort snapshots)",
 			"/think — set reasoning effort (opens the picker)",
 			"/hints — toggle the key hints row",
+			"/motion — animation tier: full | reduced | off | auto (bare shows current)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
 			"/preset — switch agent preset (bare opens the picker, next rotates)",
@@ -417,13 +430,43 @@ describe("core commands", () => {
 		}
 		await coreCommands().find((c) => c.name === "/theme")!.run(ctx, "")
 		expect(ctx.hooks.picks[0]?.title).toBe("Select theme")
+		// α skin layer: the active row rides the `currentValue` marker slot
+		// (the vendored `●`), not a description; no mode face → no mode rows.
 		expect(ctx.hooks.picks[0]?.options).toEqual([
 			{ title: "github-dark" },
 			{ title: "github-light" },
-			{ title: "opencode", description: "current" },
+			{ title: "opencode" },
 		])
+		expect(ctx.hooks.picks[0]?.currentValue).toBe("opencode")
 		expect(applied).toEqual(["github-light"])
 		expect(ctx.lines).toEqual(["Theme: github-light — applied"])
+	})
+
+	test("/theme with a mode face appends the auto/dark/light rows and applies the pick (α skin layer)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "mode:light")
+		const modes: string[] = []
+		ctx.themes = {
+			current: () => "opencode",
+			list: () => ["opencode"],
+			set: () => false,
+			mode: () => ({
+				current: () => "auto",
+				set: (mode) => {
+					modes.push(mode)
+					return true
+				},
+			}),
+		}
+		await coreCommands().find((c) => c.name === "/theme")!.run(ctx, "")
+		expect(ctx.hooks.picks[0]?.options).toEqual([
+			{ title: "opencode" },
+			{ title: "mode: auto", description: "follow the terminal (default)" },
+			{ title: "mode: dark", description: "always dark" },
+			{ title: "mode: light", description: "always light" },
+		])
+		expect(modes).toEqual(["light"])
+		expect(ctx.lines).toEqual(["Theme mode: light"])
 	})
 
 	test("/theme with esc or the current theme re-picked applies nothing", async () => {
@@ -899,5 +942,47 @@ describe("agents profile store helpers (pure)", () => {
 		expect(agentsRosterRows(profiles, { providerID: "deepseek", modelID: "v3.2" })).toEqual([
 			"○ work — bigmodel/glm-5.3-flash (high)",
 		])
+	})
+})
+
+describe("/motion (α skin layer)", () => {
+	const run = coreCommands().find((command) => command.name === "/motion")!.run
+
+	beforeEach(() => setMotionTier(undefined))
+
+	test("bare reports the current tier", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await run(ctx, "")
+		expect(ctx.lines[0]).toMatch(/^motion: (full|reduced|off|auto) \(usage: \/motion full\|reduced\|off\|auto\)$/)
+	})
+
+	test("sets the tier and persists the choice to the profile config", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await run(ctx, "reduced")
+		expect(ctx.lines).toContain("motion: reduced")
+		expect(seam.calls).toContain("configSave")
+		expect(seam.store.motion).toBe("reduced")
+		await run(ctx, "off")
+		expect(ctx.lines).toContain("motion: off")
+		expect(seam.store.motion).toBe("off")
+	})
+
+	test("auto drops the explicit tier and persists the auto choice", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await run(ctx, "full")
+		expect(seam.store.motion).toBe("full")
+		await run(ctx, "auto")
+		expect(ctx.lines).toContain("motion: auto")
+		expect(seam.store.motion).toBe("auto")
+	})
+
+	test("rejects unknown args without persisting", async () => {
+		const seam = new AgentsSeam()
+		const ctx = makeCtx(seam)
+		await run(ctx, "turbo")
+		expect(ctx.lines).toEqual(["usage: /motion full|reduced|off|auto"])
+		expect(seam.calls).not.toContain("configSave")
 	})
 })

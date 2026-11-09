@@ -44,6 +44,8 @@ import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
 import { useDialog } from "../../ui/dialog"
 import { useThemeOptional } from "../../context/theme"
+import { focusedBorderColor, skinCursor } from "../../skin/semantic"
+import { useCursorStyle } from "../../config"
 import type { SeamRow } from "./seam-rows"
 import type { SeamRows } from "./seam-rows"
 
@@ -106,6 +108,16 @@ const MATCH_ROW_ID_PREFIX = "seam-row-"
 export function SearchOverlay(props: SearchOverlayProps) {
 	const theme = useThemeOptional()
 	const dialog = useDialog()
+	// Skin focus face (contract §1): the strip has no list row, so the
+	// focus lands on its input — accent cursor + the skin cursor shape
+	// (semantic.skinCursor; undefined config = bare harness → the default).
+	let configCursorStyle: (() => { style?: string; blinking?: boolean }) | undefined
+	try {
+		configCursorStyle = useCursorStyle()
+	} catch {
+		configCursorStyle = undefined
+	}
+	const cursor = () => skinCursor(configCursorStyle?.())
 
 	const [open, setOpen] = createSignal(false)
 	const [query, setQuery] = createSignal("")
@@ -214,6 +226,10 @@ export function SearchOverlay(props: SearchOverlayProps) {
 					flexGrow={1}
 					placeholder="Find in transcript"
 					placeholderColor={theme?.text.muted ?? "#565f89"}
+					focusedTextColor={theme?.text.base ?? "#e6e6e6"}
+					textColor={theme?.text.base ?? "#e6e6e6"}
+					cursorColor={focusedBorderColor(theme ?? undefined)}
+					cursorStyle={cursor()}
 					onInput={(value: string) => setQuery(value)}
 					ref={(renderable: InputRenderable) => {
 						input = renderable

@@ -62,7 +62,7 @@ describe("lastRequestLines", () => {
 		]
 		const lines = lastRequestLines(rows, "run the loop")
 		expect(lines).toHaveLength(2)
-		expect(lines[0]).toEqual({ text: "● run the loop", tone: "muted" })
+		expect(lines[0]).toEqual({ text: "● run the loop", tone: "muted", id: "lr:echo" })
 		expect(lines[1]!.tone).toBe("running")
 		expect(lines[1]!.text).toContain("live-one")
 		expect(lines[1]!.text).not.toContain("done-one")
@@ -73,6 +73,6 @@ describe("lastRequestLines", () => {
 	})
 	test("request without children: the ● line alone persists", () => {
 		const lines = lastRequestLines([{ key: "stored:user:0", kind: "user", text: "hello" }], "hello")
-		expect(lines).toEqual([{ text: "● hello", tone: "muted" }])
+		expect(lines).toEqual([{ text: "● hello", tone: "muted", id: "lr:echo" }])
 	})
 })

@@ -1017,6 +1017,27 @@ export class RemoteHostSession {
 	}
 
 	/**
+	 * The profile config.json RAW contents — no workspace overlay, no env
+	 * merge (α skin layer: the migration decision reads the layer a key
+	 * actually lives in, not the merged view).
+	 */
+	configRaw(): Record<string, unknown> {
+		try {
+			return JSON.parse(readFileSync(this.configPath(), "utf8")) as Record<string, unknown>
+		} catch {
+			return {}
+		}
+	}
+
+	/**
+	 * The workspace overlay slice (theme + model preferences), warm after
+	 * start() — the `<workspace>/.dsh/config.yml` layer for the migration.
+	 */
+	workspaceConfig(): WorkspaceOverlay {
+		return { ...(this.#overlayCache ?? {}) }
+	}
+
+	/**
 	 * Persist a config patch (HostSession sync-merge parity): `theme` and
 	 * the plugin keys go to the profile config.json (the F7b contract —
 	 * /theme persists as the profile's `"theme"` key, host-entry-v2 parity;
@@ -1034,6 +1055,12 @@ export class RemoteHostSession {
 		const rest: Record<string, unknown> = {}
 		for (const [key, value] of Object.entries(patch)) {
 			if (key === "model") overlayPatch.model = (typeof value === "object" && value !== null ? (value as ModelPrefs) : undefined)
+			// α skin layer: the migration/mode-set callers target the layer the
+			// theme actually lives in — `workspaceTheme`/`workspaceThemeMode`
+			// route into the workspace config.yml slice, everything else stays
+			// on the profile config.json.
+			else if (key === "workspaceTheme") overlayPatch.theme = typeof value === "string" && value ? value : undefined
+			else if (key === "workspaceThemeMode") overlayPatch.themeMode = value === "dark" || value === "light" || value === "auto" ? value : undefined
 			else rest[key] = value
 		}
 		if (Object.keys(overlayPatch).length > 0) {

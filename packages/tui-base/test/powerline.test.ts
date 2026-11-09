@@ -68,12 +68,15 @@ describe("color math (kit parity)", () => {
 })
 
 describe("segment builders", () => {
-	test("brand segment is always present and uses the accent token with a theme", () => {
+	test("brand segment is always present and uses the identity brand blue (skin contract)", () => {
 		const withTheme = brandSegment(fakeTheme())
 		expect(withTheme.text).toBe("dsh")
-		expect(withTheme.bg).toBeInstanceOf(RGBA)
+		// Skin contract §1: the dsh fill is the IDENTITY brand blue, not the
+		// theme accent token — dark #4D6BFE, light deepened #3B5BDB.
+		expect(withTheme.bg).toBe("#4d6bfe")
+		expect(brandSegment(fakeTheme(), undefined, "light").bg).toBe("#3b5bdb")
 		const fallback = brandSegment()
-		expect(fallback.bg).toBe(POWERLINE_COLORS.brand)
+		expect(fallback.bg).toBe(POWERLINE_COLORS.brand.toLowerCase())
 	})
 
 	test("provider / model omit on empty labels; model carries ◕ effort", () => {
@@ -178,4 +181,85 @@ test("batch H2: brand segment carries the agent preset label (tui-pi footer pari
 	const texts = sessionFooterSegments({ presetLabel: "PTC", messages: 1 }).map((s) => s.text)
 	expect(texts[0]).toBe("dsh(PTC)")
 	expect(sessionFooterSegments({ messages: 1 })[0].text).toBe("dsh")
+})
+
+/**
+ * Visual-acceptance fix (dsh brand vs provider collision): on dsh-blue the
+ * brand fill and interactive[500] are the SAME color (#4D6BFE), so the
+ * U+E0B0 chevron between the two segments was invisible. providerFill now
+ * walks the interactive ramp until the fill clears
+ * POWERLINE_MIN_SEGMENT_DISTANCE from the brand fill. These tests pin the
+ * real parse chain (bundled JSON → resolveThemeDocument → ComponentTheme)
+ * across the three acceptance themes, dark AND light.
+ */
+import { getDshBlueTheme, parseTheme } from "../src/theme/index"
+import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
+import { createComponentTheme } from "../src/theme/component"
+import dshBlueJson from "../src/theme/assets/v2/dsh-blue.json"
+import tokyonightJson from "../src/theme/assets/tokyonight.json"
+import gruvboxJson from "../src/theme/assets/gruvbox.json"
+import { POWERLINE_MIN_SEGMENT_DISTANCE, colorDistance } from "../src/routes/session/powerline"
+
+describe("provider fill never collides with the brand fill (real parse chain)", () => {
+	// v2 (dsh-blue) parses directly; tokyonight/gruvbox are v1 and migrate
+	// through parseTheme — the same dispatch listThemes()/parseTheme uses.
+	function realTheme(source: unknown, name: string) {
+		const document = name === "dsh-blue" ? getDshBlueTheme() : parseTheme(source as never, name)
+		return (mode: "dark" | "light") => createComponentTheme(() => resolveThemeDocument(document, mode))
+	}
+	const themes = {
+		"dsh-blue": realTheme(dshBlueJson, "dsh-blue"),
+		tokyonight: realTheme(tokyonightJson, "tokyonight"),
+		gruvbox: realTheme(gruvboxJson, "gruvbox"),
+	}
+
+	test("both fills always clear POWERLINE_MIN_SEGMENT_DISTANCE (80 euclid)", () => {
+		for (const [name, make] of Object.entries(themes)) {
+			for (const mode of ["dark", "light"] as const) {
+				const theme = make(mode)
+				const brand = brandSegment(theme, undefined, mode).bg
+				const provider = providerSegment("bigmodel", theme, mode)!.bg
+				const d = colorDistance(brand, provider)
+				expect(d).toBeGreaterThanOrEqual(POWERLINE_MIN_SEGMENT_DISTANCE)
+				// And the segment pair actually renders both sides of the chevron.
+				expect(providerSegment("", theme)).toBeNull()
+			}
+		}
+	})
+
+	test("dsh-blue shifts provider off interactive[500] (was brand-identical)", () => {
+		// The bug, pinned: interactive[500] equaled the brand fill exactly.
+		const theme = themes["dsh-blue"]("dark")
+		expect(colorDistance(brandSegment(theme, undefined, "dark").bg, theme.hue.interactive[500])).toBe(0)
+		// The fix: dark walks to 700 (#2a3d9e), light to 700 (#9daff0).
+		// (RGBA has no structural equality — compare by value distance.)
+		for (const mode of ["dark", "light"] as const) {
+			const t = themes["dsh-blue"](mode)
+			expect(colorDistance(providerSegment("p", t, mode)!.bg, t.hue.interactive[700])).toBe(0)
+		}
+	})
+
+	test("tokyonight / gruvbox keep interactive[500] (already distinct)", () => {
+		for (const name of ["tokyonight", "gruvbox"] as const) {
+			for (const mode of ["dark", "light"] as const) {
+				const t = themes[name](mode)
+				expect(colorDistance(providerSegment("p", t, mode)!.bg, t.hue.interactive[500])).toBe(0)
+			}
+		}
+	})
+
+	test("concrete deltas per acceptance theme/mode (regression pins)", () => {
+		const delta = (name: string, mode: "dark" | "light") => {
+			const t = themes[name](mode)
+			return Math.round(
+				colorDistance(brandSegment(t, undefined, mode).bg, providerSegment("p", t, mode)!.bg),
+			)
+		}
+		expect(delta("dsh-blue", "dark")).toBe(112)
+		expect(delta("dsh-blue", "light")).toBe(131)
+		expect(delta("tokyonight", "dark")).toBe(96)
+		expect(delta("tokyonight", "light")).toBe(116)
+		expect(delta("gruvbox", "dark")).toBe(165)
+		expect(delta("gruvbox", "light")).toBe(96)
+	})
 })

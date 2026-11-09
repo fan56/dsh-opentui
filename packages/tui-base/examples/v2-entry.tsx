@@ -28,8 +28,8 @@
  * respected; the shell-side boot helpers are plain node code.
  */
 // @ts-nocheck
-import { createSignal, onCleanup, onMount, ErrorBoundary } from "solid-js"
-import { createComponent, createElement, render, spread } from "@opentui/solid"
+import { createSignal, createEffect, onCleanup, onMount, ErrorBoundary } from "solid-js"
+import { createComponent, createElement, render, spread, useRenderer } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
 import { WelcomeHero } from "../src/routes/welcome-hero"
@@ -38,7 +38,7 @@ import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
-import { WidgetsDock } from "../src/routes/session/widgets-dock"
+import { WidgetsDock, resetSkinLineFades } from "../src/routes/session/widgets-dock"
 import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
 import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
 import { HintsLine } from "../src/routes/session/hints-line"
@@ -61,6 +61,12 @@ import { Keymap } from "../src/context/keymap"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
 import { ConfigProvider, resolve } from "../src/config"
 import { createThemeSeam } from "../src/seams/theme"
+import {
+	confirmTerminalCapabilities,
+	resolveMotionPreference,
+	setMotionBusy,
+	setMotionTier,
+} from "../src/skin/motion"
 import { PowerlineFooter, sessionFooterSegments } from "../src/routes/session/powerline"
 import { StatusBar } from "../src/routes/session/status-bar"
 // Shell-side modules load through COMPUTED dynamic imports: a static
@@ -81,6 +87,17 @@ async function loadShell() {
 
 const overlays = new TurnOverlayController()
 
+/** The one-shot skin-migration notice (α skin layer): boot writes the plan,
+ * the page shows it through the notices dock once mounted (the dock reads a
+ * module signal — a pre-mount showNotice would burn the TTL before paint). */
+let pendingMigrationNotice: string | undefined
+/** The config layer the theme lives in (env > workspace > profile, the
+ * workspace-config.ts precedence): the /theme mode face persists `themeMode`
+ * to the SAME layer (workspace via the workspaceThemeMode patch key, else
+ * the profile `themeMode` key). An env-pinned theme has no file layer for
+ * the mode pin either → profile (no env var carries a mode). */
+let themeModePatchKey: "themeMode" | "workspaceThemeMode" = "themeMode"
+
 /** The v2 session page: the real seam driving the rebuilt view. */
 function V2SessionPage(props: {
 	seam: RemoteSessionSeam
@@ -92,10 +109,14 @@ function V2SessionPage(props: {
 	const projection = createSeamRows(seam, () => seam.currentSessionId() ?? "", {
 		// Mid-turn approvals route through the batch-5 card.
 		onApprove: (name, args) => overlays.requestApproval(name, args),
+		// Skin wiring (contract §1 报错通知): turn errors surface as a
+		// pulsing ⚠ notice alongside the transcript error row.
+		onError: (message) => showNotice(`error: ${message}`, undefined, "error"),
 	})
 	const dialog = useDialog()
 	const theme = useTheme()
-	const themeSeam = createThemeSeam(useThemes())
+	const themeService = useThemes()
+	const themeSeam = createThemeSeam(themeService)
 	if (props.themeName && !themeSeam.setTheme(props.themeName)) {
 		console.error(`[v2] unknown theme ${props.themeName}; bundled: ${themeSeam.list().join(", ")}`)
 	}
@@ -123,10 +144,32 @@ function V2SessionPage(props: {
 	// the key layer. Focus stays in the composer; the layer is gated on an
 	// empty dialog stack (turn overlays + /model + pickOne all ride it).
 	let transcriptScroll: ScrollBoxRenderable | undefined
+	// Skin wiring (contract §1 动效档位): the renderer's terminal capability
+	// probe feeds the motion gate — before the probe answers (and on
+	// non-truecolor / tmux / SSH) the auto tier is reduced; a truecolor
+	// confirmation lifts it to full. The event may fire before mount, so an
+	// already-present capabilities snapshot applies too.
+	const renderer = useRenderer()
+	onMount(() => {
+		const onCapabilities = (capabilities: { rgb: boolean } | null) => confirmTerminalCapabilities(capabilities)
+		renderer.on("capabilities", onCapabilities)
+		onCleanup(() => renderer.off("capabilities", onCapabilities))
+		if (renderer.capabilities) confirmTerminalCapabilities(renderer.capabilities)
+	})
+	// Skin wiring (contract §1): the shared motion clock's busy lane is the
+	// page's own busy window (composer + turn), replacing the temporary
+	// StatusBar effect (unmounted while idle, it dropped the stream fps cap
+	// the moment the phase ended — busy() stays the host-side truth).
+	createEffect(() => setMotionBusy(busy()))
+	onCleanup(() => setMotionBusy(false))
 	onMount(() => {
 		void projection.load()
 		void seam.currentModelSelection().then(setModel)
 		refreshPresetLabel()
+		if (pendingMigrationNotice) {
+			showNotice(pendingMigrationNotice)
+			pendingMigrationNotice = undefined
+		}
 		const timer = setInterval(() => setNow(new Date()), 1000)
 		onCleanup(() => clearInterval(timer))
 	})
@@ -165,9 +208,25 @@ function V2SessionPage(props: {
 			cacheHitRate: cacheRate(),
 			presetLabel: presetLabel(),
 			theme,
+			// Skin wiring (contract §1): the dsh brand segment's identity blue
+			// follows the active theme's color mode. NO elapsedSec — the ⏱
+			// segment stays dormant (busy seconds already show in the status
+			// bar; the contract pins the powerline shape).
+			mode: themeService.mode(),
 		})
 	let cmdOrdinal = 0
-	const pickOne = (title: string, options: { title: string; value: string }[]) =>
+	// `currentValue` (α skin layer): marks the active row with the vendored
+	// `●` marker (DialogSelectRow current) WITHOUT moving the selection to it
+	// (focusCurrent: false keeps row 0 selected — the e2e 67 bare-Enter
+	// contract). `description` rides the option mapping now: pickOne used to
+	// drop it (theme facts §5). `headerLine` stays the /sessions slot (v2
+	// does not paint it — pre-existing gap, unchanged).
+	const pickOne = (
+		title: string,
+		options: { title: string; value: string; description?: string }[],
+		headerLine?: string,
+		currentValue?: string,
+	) =>
 		new Promise<string | undefined>((resolvePick) => {
 			let settled = false
 			const done = (value: string | undefined) => {
@@ -181,7 +240,13 @@ function V2SessionPage(props: {
 					createComponent(DialogSelect, {
 						title,
 						renderFilter: false,
-						options: options.map((option) => ({ title: option.title, value: option.value })),
+						options: options.map((option) => ({
+							title: option.title,
+							value: option.value,
+							description: option.description,
+						})),
+						current: currentValue,
+						focusCurrent: false,
 						onSelect: (option: { value: string }) => done(option.value),
 						onCancel: () => done(undefined),
 					}),
@@ -239,12 +304,17 @@ function V2SessionPage(props: {
 		say: sayLine,
 		// Batch D2: a session switch (/new → clear, /fork//resume → reload)
 		// drops the `●` last-request echo with the rest of the session state.
+		// Skin wiring (P2-1): the docks' first-sight fade registry resets too,
+		// so a new session's todo/think/tool lines re-run their entrance fade
+		// instead of inheriting the previous session's timestamps.
 		clear: () => {
 			projection.hydrate([])
 			setLastRequest(undefined)
+			resetSkinLineFades()
 		},
 		reload: () => {
 			setLastRequest(undefined)
+			resetSkinLineFades()
 			const settled = projection.load()
 			void seam.currentModelSelection().then(setModel)
 			refreshPresetLabel()
@@ -281,6 +351,27 @@ function V2SessionPage(props: {
 				}
 				return applied
 			},
+			// α skin layer: auto/dark/light mode face — a FUNCTION returning the
+			// face (the SlashCommandContext.themes.mode contract; the container
+			// e2e caught an object-shape mismatch here as a picker-open crash).
+			// Pin/free rides the vendored theme service; the persistence follows
+			// the THEME's config layer (themeModePatchKey — workspaceThemeMode
+			// routes into the workspace config.yml, themeMode into the profile
+			// config.json; the v2 vendor config is resolve({}), so the
+			// configState.update path inside pin/free cannot persist anything).
+			mode: () => ({
+				current: () => (themeService.locked() ? themeService.mode() : "auto"),
+				set: (mode: "auto" | "dark" | "light") => {
+					if (mode === "auto") themeService.unlock()
+					else if (!themeService.setMode(mode)) return false
+					try {
+						seam.configSave?.({ [themeModePatchKey]: mode })
+					} catch (error) {
+						console.error("[v2] themeMode persist failed:", error)
+					}
+					return true
+				},
+			}),
 		},
 	})
 	const overlayHost = createComponent(TurnOverlayHost, {
@@ -296,7 +387,16 @@ function V2SessionPage(props: {
 		flexDirection: "column",
 		width: "100%",
 		height: "100%",
-		backgroundColor: "black",
+		// α skin layer: the boot chrome follows the active theme instead of
+		// the pinned "black" (theme facts §6 — the theme background never
+		// reached the v2 root, light terminals booted dark-on-black). The
+		// getter is a PER-PROPERTY reactive prop: spreadExpression tracks it
+		// in its own render effect, so a theme/mode switch repaints the root
+		// without re-running this children getter (REACTIVE-PROP LAW,
+		// v2-entry.tsx:432-437 — no subtree remount on /theme).
+		get backgroundColor() {
+			return theme.background.base
+		},
 		get children() {
 			return [
 				// Startup hero (batch V3, old-stack welcome semantics): the block
@@ -314,6 +414,10 @@ function V2SessionPage(props: {
 						visible: () => projection.hydrated() && msgs() === 0 && projection.rows.length === 0,
 						model: () => model()?.modelID,
 						muted: () => theme.text.muted,
+						// Skin wiring (contract §1): the identity gradient follows the
+						// active theme's color mode (light themes darken the brand
+						// ramp for contrast — skin/identity.ts).
+						mode: () => themeService.mode(),
 					},
 					cwd: props.workspace,
 				}),
@@ -372,6 +476,14 @@ function V2SessionPage(props: {
 						get rows() {
 							return projection.rows
 						},
+						// Skin wiring (contract §1 活动区): the turn-lifetime activity
+						// frame is driven by the page's busy window. PROP RECAST LAW:
+						// a `get turnActive()` GETTER here is baked to its mount-time
+						// VALUE (false) before the component body runs — the accessor
+						// must ride a STABLE FUNCTION value so WidgetsDock's own
+						// scopes keep tracking it (same pattern as WelcomeHero's
+						// state object).
+						turnActive: () => busy(),
 					}),
 					// Batch D2 lastRequest slot (dsh-tui-pi live-widgets structure):
 					// the `●` echo + running-children lines paint BELOW the editor.
@@ -514,7 +626,49 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 
 	const seam = new adapter.RemoteSessionSeam(session as never)
 	registerTurnOverlays(seam, overlays)
-	const themeName = shared.themeNameFromConfig(session)
+	// One-shot skin migration (α skin layer, real precedence chain env >
+	// workspace > profile): a STORED legacy `theme` key (profile OR
+	// workspace layer) switches to the dsh-blue default once, persists the
+	// `skinMigration` marker in the PROFILE config, writes dsh-blue back to
+	// the layer the legacy key lived in, and queues the one-time notice.
+	// Env-pinned themes (DSH_OPENTUI_THEME) skip — the effective theme is
+	// not a stored choice. Fresh profiles fall to the default naturally.
+	// Best-effort: a failed persist still applies the theme for this boot.
+	const envTheme = process.env[shared.ENV_THEME]
+	const workspaceConfig = seam.workspaceConfig()
+	const migration = shared.skinMigrationPlan({
+		profileConfig: seam.configRaw(),
+		workspaceConfig,
+		envTheme,
+	})
+	if (migration) {
+		// P1-2 (review): the persist is awaited and the one-shot notice only
+		// fires when the marker actually landed — a failed write must leave
+		// NO marker so the next boot retries instead of showing the notice
+		// forever with the migration never committed.
+		try {
+			const patch: Record<string, unknown> = { skinMigration: migration.skinMigration }
+			if (migration.layer === "workspace") patch.workspaceTheme = migration.theme
+			else patch.theme = migration.theme
+			await session.configSave(patch)
+			pendingMigrationNotice = migration.notice
+		} catch (error) {
+			console.error("[v2] skin migration persist failed (will retry next boot):", error)
+		}
+	}
+	// The mode-pin layer mirrors the theme's layer: workspace theme → the
+	// workspace slice; profile (or env) theme → the profile config.json.
+	themeModePatchKey = migration?.layer === "workspace" || (!envTheme && workspaceConfig.theme !== undefined) ? "workspaceThemeMode" : "themeMode"
+	const themeName = migration ? migration.theme : shared.themeNameFromConfig(session)
+	const themeModeLock = shared.themeModeFromConfig(session)
+	// Skin wiring (contract §1 动效档位): replay the motion tier BEFORE the
+	// first paint — `DSH_OPENTUI_MOTION` (env) beats the persisted profile
+	// `motion` key (/motion), both beat the auto tier (reduced until the
+	// capability probe confirms truecolor; tmux/SSH stay reduced). e2e and
+	// screenshots force full through the env var.
+	setMotionTier(
+		resolveMotionPreference(process.env[shared.ENV_MOTION], shared.motionFromConfig(session)),
+	)
 
 	let shutdownPromise: Promise<void> | null = null
 	const shutdown = (): Promise<void> => {
@@ -546,9 +700,13 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 					get children() {
 						return createComponent(ToastProvider, {
 							get children() {
-								return createComponent(ThemeProvider, {
-									mode: "dark",
-									source: { discover: async () => ({}) },
+									return createComponent(ThemeProvider, {
+										mode: "dark",
+										// α skin layer: the profile-pinned mode (themeMode
+										// config key) arrives as the boot lock; undefined =
+										// auto (renderer.themeMode, dark fallback).
+										lock: themeModeLock,
+										source: { discover: async () => ({}) },
 									get children() {
 										return createComponent(ClipboardProvider, {
 											value: { read: async () => undefined, write: async () => {} },
