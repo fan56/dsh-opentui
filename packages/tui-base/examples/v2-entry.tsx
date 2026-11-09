@@ -41,7 +41,7 @@ import { Transcript } from "../src/routes/session/transcript"
 import { WidgetsDock, resetSkinLineFades } from "../src/routes/session/widgets-dock"
 import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
 import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
-import { HintsLine } from "../src/routes/session/hints-line"
+import { HintsLine, applyHintsConfig } from "../src/routes/session/hints-line"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
@@ -218,15 +218,23 @@ function V2SessionPage(props: {
 	// parsing the sessionInfo().model label ("provider/model (effort)");
 	// neither surface answers → undefined → the segment renders without a
 	// level. Called on mount, on session reload and at every turn end.
+	let footerRefreshSeq = 0
 	const refreshFooterData = () => {
+		// Stale-promise guard (review fix): a slow earlier refresh must never
+		// overwrite a newer refresh's answer — every then/catch below checks
+		// the ordinal before touching the signals.
+		const seq = ++footerRefreshSeq
 		void Promise.resolve(seam.thinking?.currentEffort())
 			.then((word) => {
+				if (seq !== footerRefreshSeq) return
 				const known = word && word in EFFORT_ICONS ? (word as EffortLevel) : undefined
-				if (known) setEffort(known)
+				// Unknown word CLEARS the stale level (no last-known pinning).
+				setEffort(known)
 				return known
 			})
 			.catch(() => undefined)
 		void seam.sessionInfo?.().then((info) => {
+			if (seq !== footerRefreshSeq) return
 			// Footer-quickwins review fix: a missing snapshot (fresh/cleared
 			// session before its first event) must DROP the previous session's
 			// 💬 count / ⚡ tok/s — keeping them pinned the stale numbers to the
@@ -726,6 +734,10 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 	setMotionTier(
 		resolveMotionPreference(process.env[shared.ENV_MOTION], shared.motionFromConfig(session)),
 	)
+	// Hint-bar persistence (footer-quickwins review): replay the persisted
+	// /hints selection (profile `footerHints` / `hintsLocale` keys — /motion
+	// parity) BEFORE the first paint, so a restart keeps the toggles.
+	applyHintsConfig(seam.configLoad?.())
 
 	let shutdownPromise: Promise<void> | null = null
 	const shutdown = (): Promise<void> => {

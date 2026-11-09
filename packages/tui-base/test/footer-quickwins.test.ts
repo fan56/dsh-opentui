@@ -22,6 +22,7 @@ import {
 import {
 	DEFAULT_FOOTER_HINTS,
 	FOOTER_HINT_IDS,
+	HINT_LOCALES,
 	hintInState,
 	hintLabel,
 	hintsText,
@@ -29,8 +30,12 @@ import {
 	setHintsLocale,
 	footerHints,
 	hintsLocale,
+	footerHintsFromConfig,
+	hintsLocaleFromConfig,
+	applyHintsConfig,
 	type FooterHints,
 } from "../src/routes/session/hints-line"
+import { stringWidth } from "../src/util/string-width"
 
 describe("effort glyph ladder (tui-pi thinkingIcon parity)", () => {
 	test("the seven levels map to the seven ramp glyphs; off is bare", () => {
@@ -174,6 +179,88 @@ describe("hint bar: 8 segments × 4 languages (tui-pi FooterHints parity)", () =
 	})
 })
 
+describe("hint bar width upper bounds (4 languages, terminal columns)", () => {
+	// Bounds are TERMINAL COLUMNS (stringWidth — the P1-1 CJK law: one CJK
+	// code point is 2 columns), measured per segment per language per state.
+	// The row clips at viewport-width - 2 BY DESIGN (wrapMode="none" +
+	// clipToWidth — tui-pi clips its 105-col regression row the same way,
+	// ja wording runs wider still), so these caps pin the designed ceilings:
+	// wording growth must fail here loudly instead of silently truncating
+	// mid-glyph on a narrow terminal.
+	// 20 = the widest designed label, ja scroll "pgup/pgdn スクロール"
+	// (10 ascii + 5 CJK×2); one segment never eats more than ~¼ of the
+	// common 80-column viewport's 78 usable columns.
+	const SEGMENT_CAP = 20
+	// All-on full-row ceilings measured at implementation (idle includes the
+	// conditional ↓ subagents segment live; busy likewise). ja idle (120) is
+	// the global worst case — the designed maximum row.
+	const ROW_CAPS = { en: 117, "zh-CN": 104, ja: 120, ko: 114 }
+	const BUSY_ROW_CAPS = { en: 96, "zh-CN": 88, ja: 106, ko: 100 }
+
+	test("every segment label in every language and state stays ≤ 20 columns", () => {
+		for (const locale of HINT_LOCALES) {
+			for (const id of FOOTER_HINT_IDS) {
+				for (const busy of [false, true]) {
+					const label = hintLabel(id, busy, locale)
+					if (!label) continue // segment absent from this state
+					expect(stringWidth(label)).toBeLessThanOrEqual(SEGMENT_CAP)
+				}
+			}
+		}
+	})
+
+	test("the design ceiling is hit exactly by ja scroll (the widest label)", () => {
+		expect(stringWidth(hintLabel("scroll", false, "ja"))).toBe(SEGMENT_CAP)
+	})
+
+	test("each language's all-on row stays under its pinned ceiling (idle + busy)", () => {
+		const hints: FooterHints = { ...DEFAULT_FOOTER_HINTS }
+		for (const locale of HINT_LOCALES) {
+			expect(stringWidth(hintsText(false, true, true, hints, locale))).toBeLessThanOrEqual(ROW_CAPS[locale])
+			expect(stringWidth(hintsText(true, true, true, hints, locale))).toBeLessThanOrEqual(BUSY_ROW_CAPS[locale])
+		}
+	})
+})
+
+describe("hint persistence (profile config replay — /motion parity)", () => {
+	test("footerHintsFromConfig: partial record over defaults; junk → undefined", () => {
+		expect(footerHintsFromConfig(undefined)).toBeUndefined()
+		expect(footerHintsFromConfig("all on")).toBeUndefined()
+		expect(footerHintsFromConfig([])).toBeUndefined()
+		expect(footerHintsFromConfig({})).toBeUndefined() // nothing valid stored
+		// unknown keys and non-boolean values ignored; missing keys keep on
+		expect(footerHintsFromConfig({ scroll: false, banana: true, quit: "yes" })).toEqual({ ...DEFAULT_FOOTER_HINTS, scroll: false })
+	})
+
+	test("hintsLocaleFromConfig: canonical spellings only", () => {
+		expect(hintsLocaleFromConfig("ja")).toBe("ja")
+		expect(hintsLocaleFromConfig("zh-CN")).toBe("zh-CN")
+		expect(hintsLocaleFromConfig("EN")).toBeUndefined() // stored values are canonical; replay does no case-fold
+		expect(hintsLocaleFromConfig("fr")).toBeUndefined()
+		expect(hintsLocaleFromConfig(42)).toBeUndefined()
+	})
+
+	test("applyHintsConfig replays both keys onto the module signals", () => {
+		setFooterHints({ ...DEFAULT_FOOTER_HINTS })
+		setHintsLocale("en")
+		applyHintsConfig({ footerHints: { scroll: false, search: false }, hintsLocale: "ko" })
+		expect(footerHints().scroll).toBe(false)
+		expect(footerHints().search).toBe(false)
+		expect(footerHints().send).toBe(true) // untouched keys keep the default
+		expect(hintsLocale()).toBe("ko")
+	})
+
+	test("applyHintsConfig keeps defaults on missing/garbage keys and never throws", () => {
+		setFooterHints({ ...DEFAULT_FOOTER_HINTS })
+		setHintsLocale("en")
+		applyHintsConfig(undefined)
+		applyHintsConfig({})
+		applyHintsConfig({ footerHints: 42, hintsLocale: "klingon" })
+		expect(footerHints()).toEqual({ ...DEFAULT_FOOTER_HINTS })
+		expect(hintsLocale()).toBe("en")
+	})
+})
+
 describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-nocheck)", () => {
 	const source = readFileSync(join(import.meta.dir, "..", "examples", "v2-entry.tsx"), "utf8")
 
@@ -182,5 +269,30 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 		// the guard sits inside refreshFooterData's sessionInfo chain, before setRemoteInfo({...})
 		expect(source.indexOf("if (!info) {")).toBeGreaterThan(source.indexOf("seam.sessionInfo?.()"))
 		expect(source.indexOf("if (!info) {")).toBeLessThan(source.indexOf("setRemoteInfo({ messageCount"))
+	})
+
+	test("an unknown effort word CLEARS the stale level (no last-known pinning)", () => {
+		// setEffort(known) runs UNCONDITIONALLY — known may be undefined.
+		expect(source).toMatch(/const known = word && word in EFFORT_ICONS \? \(word as EffortLevel\) : undefined\s*\n\s*\/\/ Unknown word CLEARS the stale level[^\n]*\n\s*setEffort\(known\)/)
+	})
+
+	test("a stale refresh is dropped by the ordinal guard before touching any signal", () => {
+		expect(source).toMatch(/const seq = \+\+footerRefreshSeq/)
+		// one guard at the top of each of the two promise chains
+		expect(source.match(/if \(seq !== footerRefreshSeq\) return/g)?.length).toBe(2)
+	})
+
+	test("boot replays the persisted hint selection before the first paint", () => {
+		expect(source).toContain("applyHintsConfig(seam.configLoad?.())")
+		// replay sits in the boot section, after the motion tier replay
+		expect(source.indexOf("applyHintsConfig(seam.configLoad?.())")).toBeGreaterThan(source.indexOf("setMotionTier("))
+	})
+})
+
+describe("HintsLine zero-row gate (all-off collapses to 0 lines — tui-pi parity)", () => {
+	const source = readFileSync(join(import.meta.dir, "..", "src", "routes", "session", "hints-line.tsx"), "utf8")
+
+	test("the Show gate requires non-empty row text, not just hintsShown", () => {
+		expect(source).toMatch(/<Show when=\{hintsShown\(\) && row\(\)\.length > 0\}>/)
 	})
 })

@@ -134,6 +134,52 @@ export const [footerHints, setFooterHints] = createSignal<FooterHints>({ ...DEFA
 /** The hint-bar language (module-level; `/hints lang <locale>`). */
 export const [hintsLocale, setHintsLocale] = createSignal<HintLocale>("en")
 
+/**
+ * The persisted `footerHints` config key (profile config.json — /hints
+ * writes it through the same configSave chain /theme and /motion use):
+ * a partial segment→boolean record; missing keys keep the default (on),
+ * unknown keys and non-boolean values are ignored. Returns undefined when
+ * nothing valid is stored (fresh profile / corrupt value → the default bar).
+ */
+export function footerHintsFromConfig(value: unknown): FooterHints | undefined {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined
+	const stored = value as Record<string, unknown>
+	let hints: FooterHints | undefined
+	for (const id of FOOTER_HINT_IDS) {
+		const flag = stored[id]
+		if (typeof flag !== "boolean") continue
+		hints ??= { ...DEFAULT_FOOTER_HINTS }
+		hints[id] = flag
+	}
+	return hints
+}
+
+/**
+ * The persisted `hintsLocale` config key (/hints lang): one of the four
+ * canonical spellings; anything else (legacy value, typo) → undefined →
+ * boot keeps the en default.
+ */
+export function hintsLocaleFromConfig(value: unknown): HintLocale | undefined {
+	return typeof value === "string" && (HINT_LOCALES as readonly string[]).includes(value) ? (value as HintLocale) : undefined
+}
+
+/**
+ * Boot replay (/motion's `motionFromConfig` parity): apply the persisted
+ * hint-bar selection onto the module signals BEFORE the first paint so a
+ * restart keeps the user's toggles. Unknown/missing keys leave the
+ * signals at their defaults; never throws.
+ */
+export function applyHintsConfig(config?: Record<string, unknown>): void {
+	try {
+		const hints = config && footerHintsFromConfig(config.footerHints)
+		if (hints) setFooterHints(hints)
+		const locale = config && hintsLocaleFromConfig(config.hintsLocale)
+		if (locale) setHintsLocale(locale)
+	} catch {
+		/* replay is best-effort: a bad config read keeps the defaults */
+	}
+}
+
 /** One segment's label in one language; unknown locale/wording falls to en, then ''. */
 export function hintLabel(id: HintSegmentId, busy: boolean, locale: HintLocale = hintsLocale()): string {
 	const entry = (HINT_LABEL_TABLE[locale] ?? HINT_LABEL_TABLE.en)[id]
@@ -180,11 +226,18 @@ export function HintsLine(props: {
 }): JSX.Element {
 	const dimensions = useTerminalDimensions()
 	const theme = useThemeOptional()
+	// The rendered row (getter: tracks busy / segment toggles / locale /
+	// live subagents / width). All segments off → '' → the row drops.
+	const row = () =>
+		clipToWidth(hintsText(props.busy, hintsShown(), subagentMarkerViews().some((v) => v.status === "running")), Math.max(8, dimensions().width - 2))
+	// All-off parity (tui-pi): '' renders ZERO rows — the fixed-height box
+	// must unmount with the text, not linger as a blank line above the
+	// composer.
 	return (
-		<Show when={hintsShown()}>
+		<Show when={hintsShown() && row().length > 0}>
 			<box flexShrink={0} height={1} width="100%" paddingLeft={1}>
 				<text fg={theme?.text.faint ?? "#565f89"} wrapMode="none">
-					{clipToWidth(hintsText(props.busy, hintsShown(), subagentMarkerViews().some((v) => v.status === "running")), Math.max(8, dimensions().width - 2))}
+					{row()}
 				</text>
 			</box>
 		</Show>
