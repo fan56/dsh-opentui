@@ -516,43 +516,43 @@ export function activityFrameMode(terminalRows: number, compactRows: number = CO
 	return terminalRows <= compactRows ? "rule" : "frame"
 }
 
-/** No-provider fallback for the active frame border (bright orange, not the
- * dark unfocused border.base). #fab283 on dsh-blue dark background
- * (#0a0a0f) is 11.06:1. */
-export const ACTIVITY_FRAME_BORDER_FALLBACK = "#fab283"
+/** No-provider fallback for the active frame border (bright green, not the
+ * dark unfocused border.base). #7fd88f on dsh-blue dark background
+ * (#0a0a0f) is 11.4:1. */
+export const ACTIVITY_FRAME_BORDER_FALLBACK = "#7fd88f"
 
-/** Bright orange steps in preference order for the orange hue family:
- * orange[200] is the "bright orange" step of the dark dsh-blue scale
- * (#fab283); 300/100 are the nearest neighbours. */
-const ACTIVITY_ORANGE_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
+/** Bright green steps in preference order for the green hue family:
+ * green[200] is the "bright green" step of the dark dsh-blue scale
+ * (#7fd88f); 100/300 are the nearest neighbours. */
+const ACTIVITY_GREEN_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
 
 /**
- * The orange hue window in degrees. Orange sits around 30°; the 20° floor
- * keeps coral red (~16°) and pure red (~4°) out of the family, the 45° cap
- * keeps yellow (~54°) out. The resolved theme carries no categorical hue
- * NAMES (resolve.ts maps them to scales and drops the labels), so the family
- * is identified by COLOR as the fallback; a name-priority path is impossible
- * at this layer. The saturation floor rejects near-gray swatches whose
- * numeric hue lands in range but which are not visually orange.
+ * The green hue window in degrees. Green sits around 120-133°; the 90° floor
+ * keeps yellow (~54°) out of the family, the 150° cap keeps cyan (~186°) out.
+ * The resolved theme carries no categorical hue NAMES (resolve.ts maps them to
+ * scales and drops the labels), so the family is identified by COLOR as the
+ * fallback; a name-priority path is impossible at this layer. The saturation
+ * floor rejects near-gray swatches whose numeric hue lands in range but which
+ * are not visually green.
  */
-const ORANGE_HUE_MIN = 20
-const ORANGE_HUE_MAX = 45
-const ORANGE_MIN_SATURATION = 0.25
+const GREEN_HUE_MIN = 90
+const GREEN_HUE_MAX = 150
+const GREEN_MIN_SATURATION = 0.25
 
 /** The two contrast poles the fill walk can blend toward. */
 const AUTO_POLE_LIGHT = "#ffffff"
 const AUTO_POLE_DARK = "#000000"
 
-/** True when a swatch reads orange — hue angle inside the orange window, with
- * a saturation floor so near-gray swatches whose numeric hue happens to land
- * in range are rejected. */
-function looksOrange(color: RGBA): boolean {
+/** True when a swatch reads green — hue angle inside the green window, with a
+ * saturation floor so near-gray swatches whose numeric hue happens to land in
+ * range are rejected. */
+function looksGreen(color: RGBA): boolean {
 	const [r, g, b] = colorRgb(color)
 	const max = Math.max(r, g, b)
 	const delta = max - Math.min(r, g, b)
-	if (max === 0 || delta / max < ORANGE_MIN_SATURATION) return false
+	if (max === 0 || delta / max < GREEN_MIN_SATURATION) return false
 	const hue = hueAngle(color)
-	return hue >= ORANGE_HUE_MIN && hue <= ORANGE_HUE_MAX
+	return hue >= GREEN_HUE_MIN && hue <= GREEN_HUE_MAX
 }
 
 /** HSL hue angle in degrees (0..360); achromatic swatches answer 0. */
@@ -606,23 +606,23 @@ export function boostUntilContrast(
 /**
  * Turn-lifetime activity frame border (user feedback): the frame only exists
  * WHILE a turn is in flight, so its border is always the ACTIVE state — a
- * BRIGHT ORANGE instead of the dark border.base (follow-up directive: orange,
- * not the footer blue). The orange hue family comes from the theme's
- * categorical scales (orange[200] on dsh-blue dark = #fab283, 11.06:1 against
- * the #0a0a0f background), falling back to the warning feedback token when a
- * theme carries no orange scale; a surface no stock step clears walks the
- * fill AWAY from itself (toward white on dark, toward black on light) until
- * the border still clears 4.5:1. Static per the contract: border color/weight
+ * BRIGHT GREEN instead of the dark border.base (follow-up directive: green,
+ * not the footer blue). The green hue family comes from the theme's
+ * categorical scales (green[200] on dsh-blue dark = #7fd88f, 11.4:1 against
+ * the #0a0a0f background), falling back to the success feedback token when a
+ * theme carries no green scale; a surface no stock step clears walks the fill
+ * AWAY from itself (toward white on dark, toward black on light) until the
+ * border still clears 4.5:1. Static per the contract: border color/weight
  * never animate; the heavy line is chosen at render.
  */
 export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA {
 	const background = theme?.background?.base
-	const orangeScale = (theme?.categorical ?? []).find((scale) => {
+	const greenScale = (theme?.categorical ?? []).find((scale) => {
 		const swatch = scale[500] ?? scale[400] ?? scale[300]
-		return swatch !== undefined && looksOrange(swatch)
+		return swatch !== undefined && looksGreen(swatch)
 	})
-	const candidates = orangeScale
-		? ACTIVITY_ORANGE_STEPS.map((step) => orangeScale[step]).filter((value): value is RGBA => value !== undefined)
+	const candidates = greenScale
+		? ACTIVITY_GREEN_STEPS.map((step) => greenScale[step]).filter((value): value is RGBA => value !== undefined)
 		: []
 	if (candidates.length > 0) {
 		const preferred = candidates[0]!
@@ -635,10 +635,10 @@ export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA 
 		if (contrastRatio(best, background) >= 4.5) return best
 		return boostUntilContrast(preferred, background).color
 	}
-	const warning = theme?.text?.feedback?.warning?.base
-	if (warning) {
-		if (!background || contrastRatio(warning, background) >= 4.5) return warning
-		return boostUntilContrast(warning, background).color
+	const success = theme?.text?.feedback?.success?.base
+	if (success) {
+		if (!background || contrastRatio(success, background) >= 4.5) return success
+		return boostUntilContrast(success, background).color
 	}
 	return ACTIVITY_FRAME_BORDER_FALLBACK
 }

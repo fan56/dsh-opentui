@@ -446,81 +446,81 @@ describe("deferred activity frame latch (flicker mitigation 1)", () => {
 })
 
 /**
- * Footer-polish feedback batch (item 2, follow-up): the turn-lifetime frame
- * only exists WHILE a turn is active, so its border must be a BRIGHT ORANGE
- * on a heavy line, static (border animation is forbidden), clearing 4.5:1
- * against the working background.
+ * Footer-polish feedback batch (item 2, follow-up; recolored to green): the
+ * turn-lifetime frame only exists WHILE a turn is active, so its border must
+ * be a BRIGHT GREEN on a heavy line, static (border animation is forbidden),
+ * clearing 4.5:1 against the working background.
  */
 describe("activity frame active border", () => {
-	const themeWith = (orange: Record<string, RGBA> | undefined, background: string) =>
+	const themeWith = (green: Record<string, RGBA> | undefined, background: string) =>
 		({
 			hue: { accent: {}, interactive: {}, neutral: {} },
-			categorical: orange ? [orange] : [],
-			text: { feedback: { warning: { base: RGBA.fromHex("#f5a742") } } },
+			categorical: green ? [green] : [],
+			text: { feedback: { success: { base: RGBA.fromHex("#7fd88f") } } },
 			background: { base: RGBA.fromHex(background) },
 		}) as unknown as Parameters<typeof activityFrameBorderColor>[0]
 
-	test("prefers the bright orange step (orange[200])", () => {
-		const orange = {
-			"100": RGBA.fromHex("#fddac5"),
-			"200": RGBA.fromHex("#fab283"),
-			"300": RGBA.fromHex("#d8976c"),
+	test("prefers the bright green step (green[200])", () => {
+		const green = {
+			"100": RGBA.fromHex("#96f7a7"),
+			"200": RGBA.fromHex("#7fd88f"),
+			"300": RGBA.fromHex("#68b977"),
 		}
-		const picked = activityFrameBorderColor(themeWith(orange, "#0a0a0f"))
-		expect(picked).toBe(orange["200"])
-		// Bright orange on the dsh-blue dark background clears the contract.
+		const picked = activityFrameBorderColor(themeWith(green, "#0a0a0f"))
+		expect(picked).toBe(green["200"])
+		// Bright green on the dsh-blue dark background clears the contract.
 		expect(contrastRatio(picked, "#0a0a0f")).toBeGreaterThanOrEqual(4.5)
 	})
 
-	test("real dsh-blue dark picks orange[200] #fab283 at 11.06:1", () => {
+	test("real dsh-blue dark picks green[200] #7fd88f at 11.4:1", () => {
 		const theme = createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "dark"))
 		const picked = activityFrameBorderColor(theme)
-		expect(colorRgb(picked)).toEqual([250, 178, 131]) // #fab283
+		expect(colorRgb(picked)).toEqual([127, 216, 143]) // #7fd88f
 		expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
 	})
 
-	test("fallback is the bright orange hex, not the old dark blue border", () => {
-		expect(ACTIVITY_FRAME_BORDER_FALLBACK).toBe("#fab283")
-		// 11.06:1 on the dsh-blue dark surface.
+	test("fallback is the bright green hex, not the old dark blue border", () => {
+		expect(ACTIVITY_FRAME_BORDER_FALLBACK).toBe("#7fd88f")
+		// 11.4:1 on the dsh-blue dark surface.
 		expect(contrastRatio(ACTIVITY_FRAME_BORDER_FALLBACK, "#0a0a0f")).toBeGreaterThanOrEqual(4.5)
 		expect(activityFrameBorderColor()).toBe(ACTIVITY_FRAME_BORDER_FALLBACK)
 	})
 
-	test("no orange scale → warning token; light surfaces deepen to 4.5:1", () => {
-		const warningTheme = {
+	test("no green scale → success token; light surfaces deepen to 4.5:1", () => {
+		const successTheme = {
 			hue: { accent: {}, interactive: {}, neutral: {} },
 			categorical: [],
-			text: { feedback: { warning: { base: RGBA.fromHex("#f5a742") } } },
+			text: { feedback: { success: { base: RGBA.fromHex("#7fd88f") } } },
 			background: { base: RGBA.fromHex("#0a0a0f") },
 		} as unknown as Parameters<typeof activityFrameBorderColor>[0]
-		expect(activityFrameBorderColor(warningTheme)).toBe(warningTheme.text.feedback.warning.base)
+		expect(activityFrameBorderColor(successTheme)).toBe(successTheme.text.feedback.success.base)
 
-		// Light theme: the stock orange[200] is too light against #fafafa, so
+		// Light theme: the stock green[200] is too light against #fafafa, so
 		// the helper walks it away from the surface (toward black) until the
 		// border still clears 4.5:1.
-		const lightOrange = { "200": RGBA.fromHex("#d68c27"), "300": RGBA.fromHex("#df9a44") }
-		const picked = activityFrameBorderColor(themeWith(lightOrange, "#fafafa"))
+		const lightGreen = { "200": RGBA.fromHex("#3d9a57"), "300": RGBA.fromHex("#55a96a") }
+		const picked = activityFrameBorderColor(themeWith(lightGreen, "#fafafa"))
 		expect(contrastRatio(picked, "#fafafa")).toBeGreaterThanOrEqual(4.5)
 	})
 
-	// Review 5: hue-angle identification. Coral red is r>g>b with real spread
-	// (the old test matched it as "orange"), but its hue (~16°) sits outside
-	// the orange window; the resolved theme drops categorical hue NAMES, so
-	// color (hue angle) is the fallback and must at least not misclassify.
-	test("hue angle separates orange from coral red and achromatic swatches", () => {
-		expect(hueAngle(RGBA.fromHex("#fab283"))).toBeGreaterThan(20) // warm orange: ~23.7°
-		expect(hueAngle(RGBA.fromHex("#fab283"))).toBeLessThan(45)
-		expect(hueAngle(RGBA.fromHex("#ff7f50"))).toBeLessThan(20) // coral: ~16.1°
-		expect(hueAngle(RGBA.fromHex("#f44336"))).toBeLessThan(20) // red: ~4.1°
-		expect(hueAngle(RGBA.fromHex("#ffeb3b"))).toBeGreaterThan(45) // yellow: ~53.9°
+	// Review 5: hue-angle identification. Yellow/cyan are r/g/b swatches with
+	// real spread but their hue sits outside the green window; the resolved
+	// theme drops categorical hue NAMES, so color (hue angle) is the fallback
+	// and must at least not misclassify.
+	test("hue angle separates green from yellow and cyan and achromatic swatches", () => {
+		expect(hueAngle(RGBA.fromHex("#7fd88f"))).toBeGreaterThan(90) // green: ~130.8°
+		expect(hueAngle(RGBA.fromHex("#7fd88f"))).toBeLessThan(150)
+		expect(hueAngle(RGBA.fromHex("#ffeb3b"))).toBeLessThan(90) // yellow: ~53.9°
+		expect(hueAngle(RGBA.fromHex("#ff7f50"))).toBeLessThan(90) // coral: ~16.1°
+		expect(hueAngle(RGBA.fromHex("#22d3ee"))).toBeGreaterThan(150) // cyan: ~186.9°
 		expect(hueAngle(RGBA.fromHex("#808080"))).toBe(0) // achromatic
 	})
 
-	test("a coral-red categorical scale is not mistaken for the orange family", () => {
-		const coral = { "500": RGBA.fromHex("#ff7f50"), "200": RGBA.fromHex("#ff9a7a") }
-		const theme = themeWith(coral, "#0a0a0f")
-		// No orange scale found → the warning feedback token (it clears 4.5:1).
-		expect(activityFrameBorderColor(theme)).toBe(theme.text.feedback.warning.base)
+	test("a yellow categorical scale is not mistaken for the green family", () => {
+		const yellow = { "500": RGBA.fromHex("#eab308"), "200": RGBA.fromHex("#fde047") }
+		const theme = themeWith(yellow, "#0a0a0f")
+		// No green scale found → the success feedback token (it clears 4.5:1).
+		expect(activityFrameBorderColor(theme)).toBe(theme.text.feedback.success.base)
 	})
 })
 
