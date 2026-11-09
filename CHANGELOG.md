@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-11-09
+
+### Added
+
+- **Footer aligned with `dsh-tui-pi`** — provider icon, effort ladder display, context usage segment, tools/messages counters, tok/s, and subagent lines with `round N` plus a live tail. The context usage segment reads the `session/projections` token-meter projection and renders `used/window(pct)`.
+- **Todos table with a five-row window** — terminals at 30 rows or fewer collapse the table to a single summary row.
+- **Shell-style input history recall** — `↑`/`↓` recall with draft staging and restore, plus custom keybinding overrides.
+- **Preset label in the brand segment** — the footer brand reads `dsh(preset)`.
+- **Hint bar per-segment toggles** — eight segments, four locales, and the selection persists across restarts.
+- **Semantic colors for think/tool rows** — think and tool activity lines get their own status colors.
+- **Bright blue turn-lifetime activity frame border** — the active turn frame keeps one bright blue border for the whole turn.
+- **Multi-hue luminance-ordered footer ramp** — the powerline gradient follows a hue-monotonic, luminance-ordered ramp.
+- **v1 theme accent fidelity** — every v1 accent hex value is preserved exactly (59/59).
+- **Transparent-surface fix** — the `lucent-orng` theme is readable in light mode.
+
+### Fixed
+
+- **Selected-row description contrast** — descriptions in the slash palette and dialogs go from 1.31:1 to at least 6.3:1.
+- **Footer not refreshing after `/think` and `/model`** — effort and model segments now refresh immediately.
+- **`/think` default level** — the default think level is `high` when unset.
+- **Subagent tail concatenation** — the live tail no longer concatenates across tool results.
+- **`↑`/`↓` swallowed by the keymap layer** — history recall now works in the real client.
+- **Todos table right border** — aligned with the composer frame.
+- **Stale context window denominator** — cleared and re-read after a route switch.
+- **Preset label races** — staged presets, transient read failures, and unknown ids no longer leave a wrong or sticky label.
+- **Slash palette height** — stable per keystroke, and rendered rows no longer overflow the frame.
+
+### Known Issues
+
+- Engine-level paint bugs remain: diff-paint row loss under streaming, and translucent overlays dropping wide glyphs.
+- Input history is in-memory only — it is cleared on restart.
+- Emoji in a powerline segment is hidden while an overlay is open (engine behavior).
+
 ## [0.9.1] - 2026-11-09
 
 ### Fixed

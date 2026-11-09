@@ -119,11 +119,12 @@ PATH; otherwise the scripts self-skip (exit 0) so CI runs green.
 
 ## Status
 
-v0.9.1: published as `@aiwayds/dsh-opentui` — client-only distribution
+v0.9.2: published as `@aiwayds/dsh-opentui` — client-only distribution
 (npm bin → client chain; the in-process plugin mode was retired). New
 default theme dsh-blue (dark/light, auto-selected by terminal background,
 `/theme` to pin) with focus visuals, framed composer/messages/code blocks,
 and a motion system (`/motion`, `DSH_OPENTUI_MOTION`) that reduces on
-tmux/SSH/non-truecolor. 0.9.1 stabilizes the slash palette (steady height
-while filtering, no row overflow into the composer). Roadmap: platform +
-Kit polish.
+tmux/SSH/non-truecolor. 0.9.2 aligns the footer with `dsh-tui-pi`
+(provider icon, effort ladder, context usage, counters, tok/s, subagent
+lines), adds shell-style input history recall, and fixes palette/dialog
+contrast and footer refresh. Roadmap: platform + Kit polish.
