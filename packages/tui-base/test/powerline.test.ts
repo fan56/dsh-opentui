@@ -83,7 +83,7 @@ describe("segment builders", () => {
 		expect(providerSegment("", undefined)).toBeNull()
 		expect(providerSegment("bigmodel", undefined)?.text).toBe("☁️ bigmodel")
 		expect(modelSegment("", "high")).toBeNull()
-		expect(modelSegment("glm-5.3-flash", "off")?.text).toBe("🤖 glm-5.3-flash")
+		expect(modelSegment("glm-5.3-flash", "off")?.text).toBe("🤖 glm-5.3-flash ○ off")
 		// tui-pi thinkingIcon ladder: minimal ◔ / low ◑ / medium ◕ / high ● / xhigh ◉ / max ★.
 		expect(modelSegment("glm-5.3-flash", "medium")?.text).toBe("🤖 glm-5.3-flash ◕ medium")
 		expect(modelSegment("glm-5.3-flash", "max")?.text).toBe("🤖 glm-5.3-flash ★ max")
@@ -123,14 +123,16 @@ describe("segment builders", () => {
 		expect(contextSegment(420, Number.NaN)?.text).toBe("🧠 420")
 	})
 
-	test("counters omit at zero; speed omits when unknown; negative tps omitted", () => {
-		expect(messagesSegment(0)).toBeNull()
-		expect(messagesSegment(3)?.text).toBe("💬 3")
-		expect(toolSegment(0)).toBeNull()
-		expect(toolSegment(7)?.text).toBe("🛠 7")
+	test("counters are always-on (tui-pi parity); speed omits when unknown; negative tps omitted", () => {
+		expect(messagesSegment(0)?.text).toBe("💬 0 msgs")
+		expect(messagesSegment(3)?.text).toBe("💬 3 msgs")
+		expect(toolSegment(0)?.text).toBe("🔧 0 tools")
+		expect(toolSegment(7)?.text).toBe("🔧 7 tools")
+		expect(messagesSegment(Number.NaN)).toBeNull()
+		expect(toolSegment(-1)).toBeNull()
 		expect(speedSegment(null)).toBeNull()
 		expect(speedSegment(-4)).toBeNull()
-		expect(speedSegment(87.4)?.text).toBe("⚡ 87 tok/s")
+		expect(speedSegment(87.4)?.text).toBe("87 tok/s")
 	})
 })
 
@@ -151,13 +153,14 @@ describe("footer assembly", () => {
 			"☁️ bigmodel",
 			"🤖 glm-5.3-flash ● high",
 			"🧠 420/1.0k(42.0%)",
-			"💬 2",
+			"💬 2 msgs",
+			"🔧 0 tools",
 			// Batch D3: no hint segment — hints moved to the last row.
 		])
 	})
 
-	test("empty data still yields the brand segment alone (no hint segment)", () => {
-		expect(sessionFooterSegments({}).map((s) => s.text)).toEqual(["dsh"])
+	test("empty data still yields brand plus the always-on counters (no hint segment)", () => {
+		expect(sessionFooterSegments({}).map((s) => s.text)).toEqual(["dsh", "💬 0 msgs", "🔧 0 tools"])
 	})
 })
 

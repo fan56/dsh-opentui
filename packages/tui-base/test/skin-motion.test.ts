@@ -276,9 +276,9 @@ describe("powerline rolling numbers", () => {
 		expect(rollValue(10, 20, 0.5)).toBeCloseTo(15)
 	})
 
-	test("speed segment carries the tok/s roll spec; context the % spec", () => {
+	test("speed segment carries the tok/s roll spec (no glyph prefix); context the % spec", () => {
 		const speed = speedSegment(87.4)
-		expect(speed?.roll).toEqual({ value: 87.4, decimals: 0, width: 3, prefix: "⚡ ", suffix: " tok/s" })
+		expect(speed?.roll).toEqual({ value: 87.4, decimals: 0, width: 3, suffix: " tok/s" })
 		// Footer context batch: the roll spec rides the percent (one decimal,
 		// X/Y prefix frozen so the strip never re-flows mid-roll).
 		const ctx = contextSegment(420, 1000)
@@ -296,7 +296,7 @@ describe("powerline rolling numbers", () => {
 
 	test("footer assembly keeps order with the elapsed segment", () => {
 		const segs = sessionFooterSegments({ elapsedSec: 5, tps: 10 })
-		// omitted-data builders still drop out (context/messages/tools)
-		expect(segs.map((s) => s.text)).toEqual(["dsh", "⏱ 5s", "⚡ 10 tok/s"])
+		// always-on counters (💬/🔧, tui-pi parity); context still drops out
+		expect(segs.map((s) => s.text)).toEqual(["dsh", "💬 0 msgs", "🔧 0 tools", "⏱ 5s", "10 tok/s"])
 	})
 })

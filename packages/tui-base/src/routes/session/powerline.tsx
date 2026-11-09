@@ -41,7 +41,7 @@ export interface RollingSpec {
 	decimals?: number
 	/** Minimum integer-part width, space-padded (fixed-width law). */
 	width?: number
-	/** Literal text before the number ("⚡ " / "🧠 "). */
+	/** Literal text before the number ("🧠 …(" / "⏱ "). */
 	prefix?: string
 	/** Literal text after the number (" tok/s" / "%"). */
 	suffix?: string
@@ -239,12 +239,13 @@ export function providerSegment(
 /**
  * tui-pi thinkingIcon parity: the effort ladder's seven fills get the same
  * seven-step glyph ramp (minimal ◔ → low ◑ → medium ◕ → high ● → xhigh ◉ →
- * max ★). `off` shows NO glyph (the word would be noise — tui-pi's default
- * ○ is the catch-all for UNKNOWN levels instead, so a provider-specific
- * effort string still renders something).
+ * max ★). `off` maps to ○ (fix/footer-parity, aligned with tui-pi: off is
+ * no longer bare — it renders `○ off` through thinkingIcon's default ○,
+ * footer.ts:198/232-234). The earlier "off shows NO glyph" deliberate
+ * divergence documented here is VOID. Unknown levels still catch-all to ○.
  */
 export const EFFORT_ICONS: Record<EffortLevel, string> = {
-	off: "",
+	off: "○",
 	minimal: "◔",
 	low: "◑",
 	medium: "◕",
@@ -253,7 +254,7 @@ export const EFFORT_ICONS: Record<EffortLevel, string> = {
 	max: "★",
 }
 
-/** The glyph for one effort level: `off` is empty, unknown levels fall to ○. */
+/** The glyph for one effort level: every level maps (off → ○); unknown words fall to ○. */
 export function effortIcon(effort: string): string {
 	return EFFORT_ICONS[effort as EffortLevel] ?? "○"
 }
@@ -270,14 +271,18 @@ export function effortFromModelLabel(label: string | null | undefined): EffortLe
 	return word && word in EFFORT_ICONS ? word : undefined
 }
 
-/** The 🤖 model segment; effort rides along with its ladder glyph (◔…★) when not "off". */
+/**
+ * The 🤖 model segment; the effort word ALWAYS rides along with its ladder
+ * glyph (`🤖 model ○ off` when off — fix/footer-parity, tui-pi parity:
+ * footer.ts:232-234 renders the word unconditionally; off is no longer bare).
+ */
 export function modelSegment(
 	model: string,
 	effort: EffortLevel = "off",
 	theme?: ComponentTheme,
 ): PowerlineSegment | null {
 	if (!model) return null
-	const label = effort === "off" ? `🤖 ${model}` : `🤖 ${model} ${effortIcon(effort)} ${effort}`
+	const label = `🤖 ${model} ${effortIcon(effort)} ${effort}`
 	return { text: label, bg: resolvePalette(theme).thinking[effort] }
 }
 
@@ -323,25 +328,38 @@ export function contextSegment(
 	}
 }
 
-/** The 💬 message-count segment; omitted while no message was sent. */
+/**
+ * The 💬 message-count segment (fix/footer-parity, tui-pi wording `💬 {n}
+ * msgs`, footer.ts:271); ALWAYS shown — tui-pi pushes it unconditionally,
+ * so 0 renders `💬 0 msgs` instead of omitting the segment.
+ */
 export function messagesSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
-	if (!Number.isFinite(n) || n <= 0) return null
-	return { text: `💬 ${n}`, bg: resolvePalette(theme).messages }
+	if (!Number.isFinite(n) || n < 0) return null
+	return { text: `💬 ${n} msgs`, bg: resolvePalette(theme).messages }
 }
 
-/** The 🛠 tool-count segment; omitted while no tool has run (kit parity). */
+/**
+ * The 🔧 tool-count segment (fix/footer-parity, tui-pi parity: icon 🔧 and
+ * the `{n} tools` wording, footer.ts:272; the former 🛠 bare-count with a
+ * > 0 gate is replaced). ALWAYS shown — 0 renders `🔧 0 tools`.
+ */
 export function toolSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
-	if (!Number.isFinite(n) || n <= 0) return null
-	return { text: `🛠 ${n}`, bg: resolvePalette(theme).tools }
+	if (!Number.isFinite(n) || n < 0) return null
+	return { text: `🔧 ${n} tools`, bg: resolvePalette(theme).tools }
 }
 
-/** The ⚡ tok/s segment; omitted when tps is unknown (no measurable turn). */
+/**
+ * The tok/s segment (skin-batch enhancement, kept): bare `{n} tok/s` with NO
+ * glyph. fix/footer-parity: the old `⚡ ` prefix collided with tui-pi's
+ * cache-hit symbol — ⚡ stays reserved for the `⚡ CH%` segment (tui-pi
+ * semantics, footer.ts:269). Still omitted when tps is unknown.
+ */
 export function speedSegment(tps: number | null, theme?: ComponentTheme): PowerlineSegment | null {
 	if (tps === null || !Number.isFinite(tps) || tps < 0) return null
 	return {
-		text: `⚡ ${Math.round(tps)} tok/s`,
+		text: `${Math.round(tps)} tok/s`,
 		bg: resolvePalette(theme).speed,
-		roll: { value: tps, decimals: 0, width: 3, prefix: "⚡ ", suffix: " tok/s" },
+		roll: { value: tps, decimals: 0, width: 3, suffix: " tok/s" },
 	}
 }
 
