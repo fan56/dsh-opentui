@@ -225,6 +225,7 @@ describe("model cluster (rows 21+22)", () => {
 			values: {
 				modelSelection: { lastUsed: { provider: "prov-a", model: "big" }, next: { provider: "prov-b", model: "tiny" } },
 				contextPressure: { contextWindow: 128000, projectedTokens: 45000, pressureTokens: 42000 },
+				agentPreset: "ptc",
 			},
 		}
 		const client = new RemoteModelClient({
@@ -237,6 +238,8 @@ describe("model cluster (rows 21+22)", () => {
 		expect(calls).toEqual([{ method: "session/projections", args: { request: { sessionId: "sess-p9" } } }])
 		expect(proj.selection).toEqual({ provider: "prov-b", model: "tiny" })
 		expect(proj.pressure).toEqual({ contextWindow: 128000, projectedTokens: 45000, pressureTokens: 42000 })
+		// the web header label source rides the same answer
+		expect(proj.agentPreset).toBe("ptc")
 		// sessionSelection keeps its row-22 contract over the same answer
 		expect(await client.sessionSelection("sess-p9")).toEqual({ provider: "prov-b", model: "tiny" })
 
@@ -251,11 +254,13 @@ describe("model cluster (rows 21+22)", () => {
 			values: {
 				modelSelection: { pending: { provider: "prov-a", model: "big" } },
 				contextPressure: { contextWindow: 0, projectedTokens: -5, pressureTokens: "lots", extra: true },
+				agentPreset: "",
 			},
 		}
 		const garbage = await client.sessionProjections("sess-p9")
 		expect(garbage.selection).toEqual({ provider: "prov-a", model: "big" }) // next folds → pending
 		expect(garbage.pressure).toBeUndefined()
+		expect(garbage.agentPreset).toBeUndefined() // empty string = deployment composes none
 	})
 })
 
@@ -280,7 +285,7 @@ describe("presets (row 23)", () => {
 			},
 		})
 		expect(await h.session.listPresets()).toEqual([
-			{ id: "default", name: "default" },
+			{ id: "default", name: "default", isDefault: true },
 			{ id: "reviewer", name: "Reviewer" },
 		])
 		const doc = await h.session.readPreset("reviewer")
@@ -293,6 +298,33 @@ describe("presets (row 23)", () => {
 		expect(await h.session.selectPreset("reviewer")).toBe("reviewer")
 		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
 		await pending
+		await h.session.dispose()
+	})
+
+	test("listPresets carries the display face: shipped-id English names, isDefault, description; broken rows dropped", async () => {
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "agentPresets/list") {
+					return {
+						presets: [
+							{ id: "standard", isDefault: true, description: "code and files" },
+							{ id: "ptc" },
+							{ id: "minimal", name: "Minimal", broken: "missing plugin" },
+							{ id: "audit", name: "Audit", description: "custom" },
+						],
+					}
+				}
+				return {}
+			},
+		})
+		// Shipped declarations publish no `name`; the client-side English map
+		// keeps "standard"/"ptc" from reaching the footer and the picker as
+		// bare ids (tui-pi PRESET_ENGLISH_NAMES parity).
+		expect(await h.session.listPresets()).toEqual([
+			{ id: "standard", name: "Standard", description: "code and files", isDefault: true },
+			{ id: "ptc", name: "PTC" },
+			{ id: "audit", name: "Audit", description: "custom" },
+		])
 		await h.session.dispose()
 	})
 })

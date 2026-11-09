@@ -682,6 +682,45 @@ describe("RemoteHostSession session ops", () => {
 		await pending
 		await h.session.dispose()
 	})
+
+	test("resolveCurrentPresetId: staged id wins, else the live agentPreset projection (web label source)", async () => {
+		let projectionCalls = 0
+		const h = makeSession({
+			rpcHandler: (method) => {
+				// No agentPreset on create/header: the projection is the only source.
+				if (method === "session/create") return { sessionId: "sess-p4" }
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") {
+					projectionCalls += 1
+					return { values: { agentPreset: "ptc" } }
+				}
+				return {}
+			},
+		})
+		// Nothing staged, no session yet → undefined (the caller's roster
+		// default answers, tui-pi boot rule).
+		expect(await h.session.resolveCurrentPresetId()).toBeUndefined()
+		const { cb } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		h.lastSocket().item(snapshotFrame("sess-p4"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		expect(await h.session.resolveCurrentPresetId()).toBe("ptc")
+		expect(projectionCalls).toBe(1)
+		// The resolved id is adopted: the next read is local, no new RPC.
+		expect(await h.session.resolveCurrentPresetId()).toBe("ptc")
+		expect(projectionCalls).toBe(1)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
+		await h.session.dispose()
+	})
+
+	test("resolveCurrentPresetId: a staged switch answers before the session exists", async () => {
+		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-p5") })
+		h.session.switchPreset("reviewer")
+		expect(await h.session.resolveCurrentPresetId()).toBe("reviewer")
+		await h.session.dispose()
+	})
 })
 
 describe("RemoteHostSession generation-change re-attach", () => {

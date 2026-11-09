@@ -284,6 +284,20 @@ const REATTACH_MAX_ATTEMPTS = 30
 export { REATTACH_RETRY_MS, REATTACH_MAX_ATTEMPTS }
 
 /**
+ * English display names for the shipped presets (tui-pi PRESET_ENGLISH_NAMES
+ * parity). The registry's shipped declarations publish no `name`, so without
+ * this map the bare id would reach the footer brand segment ("dsh(standard)")
+ * and the /preset picker. Unmapped (user-declared) presets keep the
+ * registry's own string, which falls back to the id.
+ */
+const PRESET_ENGLISH_NAMES: Readonly<Record<string, string>> = {
+	standard: "Standard",
+	ptc: "PTC",
+	minimal: "Minimal",
+	cordis: "Creator",
+}
+
+/**
  * The client-mode session facade. Wave-1 rows are fully functional; the
  * remaining HostSession surface is present with graceful stubs so the
  * rendering layer can swap the injection point without shape drift.
@@ -968,17 +982,30 @@ export class RemoteHostSession {
 		return this.#opsClient().rename(sessionId, title)
 	}
 
-	/** wave 2 (`agentPresets/list` — audit row 23). */
-	async listPresets(): Promise<{ id: string; name: string }[]> {
+	/**
+	 * wave 2 (`agentPresets/list` — audit row 23). Rows carry the full
+	 * selection face the seam renders: the display name (shipped ids get the
+	 * English override, tui-pi parity), `isDefault` (the label/`next` anchor
+	 * when nothing is current) and the published description. Broken rows are
+	 * dropped — the seam face only offers composable presets.
+	 */
+	async listPresets(): Promise<{ id: string; name: string; description?: string; isDefault?: boolean }[]> {
 		try {
 			const roster = (await this.#rpc("agentPresets/list")) as { presets?: unknown }
 			const presets = Array.isArray(roster.presets) ? roster.presets : []
-			return presets
-				.map((p) => {
-					const row = (typeof p === "object" && p !== null ? p : {}) as Record<string, unknown>
-					return { id: String(row.id ?? ""), name: String(row.name ?? row.id ?? "") }
-				})
-				.filter((p) => p.id)
+			return presets.flatMap((p) => {
+				const row = (typeof p === "object" && p !== null ? p : {}) as Record<string, unknown>
+				const id = String(row.id ?? "")
+				// Broken rows stay out of the selection face (uncomposable).
+				if (!id || (typeof row.broken === "string" && row.broken)) return []
+				const name = PRESET_ENGLISH_NAMES[id] ?? String(row.name ?? row.id ?? "")
+				return [{
+					id,
+					name,
+					...(typeof row.description === "string" && row.description ? { description: row.description } : {}),
+					...(row.isDefault === true ? { isDefault: true } : {}),
+				}]
+			})
 		} catch {
 			return []
 		}
@@ -1011,6 +1038,38 @@ export class RemoteHostSession {
 		this.#presetId = presetId
 		this.newSession()
 		void this.#probeExecutionMode()
+	}
+
+	/**
+	 * The preset the footer's brand segment names, resolved the way the web
+	 * client reads it plus the staged-switch rule: a locally staged/known
+	 * preset (`#presetId` — set by /preset, `session/create`'s answer or the
+	 * follow opening header) wins; otherwise the live session's
+	 * `session/projections` `agentPreset` row answers (the web header-label
+	 * source); no session / deployment without presets → undefined and the
+	 * caller falls back to the roster default (tui-pi rule). Never throws.
+	 */
+	async resolveCurrentPresetId(): Promise<string | undefined> {
+		if (this.#presetId !== undefined) return this.#presetId
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) return undefined
+		// The footer's context getters may already hold this session's
+		// projections (turn-gated); reuse the row instead of a second RPC.
+		const cached = this.#contextProjections
+		if (cached?.sessionId === sessionId && cached.agentPreset !== undefined) return cached.agentPreset
+		try {
+			const proj = await this.#modelClient().sessionProjections(sessionId)
+			if (this.#sessionId !== sessionId) return undefined // session moved on mid-await
+			if (proj.agentPreset !== undefined && proj.agentPreset !== this.#presetId) {
+				this.#presetId = proj.agentPreset
+				// Same follow-up as the opening-header adoption: the verdict
+				// drives tool presentation for the preset-bound session.
+				void this.#probeExecutionMode()
+			}
+			return proj.agentPreset
+		} catch {
+			return undefined
+		}
 	}
 
 	currentPresetId(): string | undefined {

@@ -12,6 +12,7 @@ import {
 	findAgentsProfile,
 	findPresetRow,
 	loadAgentsProfiles,
+	presetLabelFor,
 	presetNextRow,
 	removeAgentsProfile,
 	unknownCommandRow,
@@ -681,6 +682,20 @@ describe("/preset rotation helpers (batch H2)", () => {
 		expect(findPresetRow(roster, "standard")?.id).toBe("standard")
 		expect(findPresetRow(roster, "nope")).toBeUndefined()
 		expect(findPresetRow(roster, "  ")).toBeUndefined()
+	})
+
+	test("presetLabelFor reads the current row, else the default/standard/first anchor (tui-pi formatPresetLabel)", () => {
+		// current wins
+		expect(presetLabelFor(roster, "ptc")).toBe("PTC")
+		// boot: nothing staged/attached → the registry-default row (the preset
+		// the next session composes) instead of a blank brand segment
+		expect(presetLabelFor(roster, undefined)).toBe("Standard")
+		expect(presetLabelFor(roster, "gone")).toBe("Standard")
+		// no isDefault mark → the standard entry, then the first-listed row
+		expect(presetLabelFor([{ id: "ptc", name: "PTC" }, { id: "standard", name: "Standard" }], undefined)).toBe("Standard")
+		expect(presetLabelFor([{ id: "solo", name: "Solo" }], undefined)).toBe("Solo")
+		// no roster → the brand segment stays the plain "dsh"
+		expect(presetLabelFor([], undefined)).toBeUndefined()
 	})
 })
 
