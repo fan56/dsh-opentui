@@ -40,7 +40,9 @@ import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-sum
 import { parseTodos } from "../../util/todo"
 import { useThemeOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
-import { COMPOSER_COMPACT_TERMINAL_ROWS, unfocusedBorderColor } from "../../skin/semantic"
+import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../../skin/semantic"
+import type { ComponentTheme } from "../../theme/component"
+import { colorRgb, contrastRatio, mixPowerlineColor, type PowerlineColor } from "./powerline"
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
@@ -348,6 +350,72 @@ export function activityFrameMode(terminalRows: number, compactRows: number = CO
 	return terminalRows <= compactRows ? "rule" : "frame"
 }
 
+/** No-provider fallback for the active frame border (bright orange, not the
+ * dark unfocused border.base). #fab283 on dsh-blue dark background
+ * (#0a0a0f) is 11.06:1. */
+export const ACTIVITY_FRAME_BORDER_FALLBACK = "#fab283"
+
+/** Bright orange steps in preference order for the orange hue family:
+ * orange[200] is the "bright orange" step of the dark dsh-blue scale
+ * (#fab283); 300/100 are the nearest neighbours. */
+const ACTIVITY_ORANGE_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
+
+/** True when a swatch reads orange (red > green > blue, with real spread) —
+ * the resolved theme exposes categorical hue scales but names only the three
+ * semantic ones, so the orange family is identified by its color. */
+function looksOrange(color: RGBA): boolean {
+	const [r, g, b] = colorRgb(color)
+	return r > g && g > b && r - b >= 40
+}
+
+/** Deepen a fill toward black until it clears `min` against the surface
+ * (light themes have no stock orange step dark enough for a 4.5:1 border). */
+function deepenUntilContrast(color: PowerlineColor, background: PowerlineColor, min = 4.5): string {
+	let candidate = typeof color === "string" ? color : mixPowerlineColor(color, "#000000", 0)
+	for (let i = 0; i < 32 && contrastRatio(candidate, background) < min; i++) {
+		candidate = mixPowerlineColor(candidate, "#000000", 0.08)
+	}
+	return candidate
+}
+
+/**
+ * Turn-lifetime activity frame border (user feedback): the frame only exists
+ * WHILE a turn is in flight, so its border is always the ACTIVE state — a
+ * BRIGHT ORANGE instead of the dark border.base (follow-up directive: orange,
+ * not the footer blue). The orange hue family comes from the theme's
+ * categorical scales (orange[200] on dsh-blue dark = #fab283, 11.06:1 against
+ * the #0a0a0f background), falling back to the warning feedback token when a
+ * theme carries no orange scale; light surfaces deepen the orange until it
+ * still clears 4.5:1. Static per the contract: border color/weight never
+ * animate; the heavy line is chosen at render.
+ */
+export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA {
+	const background = theme?.background?.base
+	const orangeScale = (theme?.categorical ?? []).find((scale) => {
+		const swatch = scale[500] ?? scale[400] ?? scale[300]
+		return swatch !== undefined && looksOrange(swatch)
+	})
+	const candidates = orangeScale
+		? ACTIVITY_ORANGE_STEPS.map((step) => orangeScale[step]).filter((value): value is RGBA => value !== undefined)
+		: []
+	if (candidates.length > 0) {
+		const preferred = candidates[0]!
+		if (!background) return preferred
+		if (contrastRatio(preferred, background) >= 4.5) return preferred
+		// No single stock step clears a light surface; take the most readable
+		// step, then deepen toward black until the contract holds.
+		const best = candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
+		if (contrastRatio(best, background) >= 4.5) return best
+		return deepenUntilContrast(preferred, background)
+	}
+	const warning = theme?.text?.feedback?.warning?.base
+	if (warning) {
+		if (!background || contrastRatio(warning, background) >= 4.5) return warning
+		return deepenUntilContrast(warning, background)
+	}
+	return ACTIVITY_FRAME_BORDER_FALLBACK
+}
+
 /** Whether the dock needs the shared animation clock right now (pure):
  * any visible line (entrance fades / exit sweep) or a live child tree in
  * the lastRequest dock (which reads this module's dockSpin). */
@@ -531,8 +599,8 @@ export function WidgetsDock(props: {
 					width="100%"
 					height={5}
 					border={["top", "bottom", "left", "right"]}
-					borderStyle="single"
-					borderColor={unfocusedBorderColor(theme)}
+					borderStyle="heavy"
+					borderColor={activityFrameBorderColor(theme)}
 					title="activity"
 					titleAlignment="left"
 				>

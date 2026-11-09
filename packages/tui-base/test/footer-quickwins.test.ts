@@ -272,16 +272,22 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 		expect(source.indexOf("if (!info) {")).toBeLessThan(source.indexOf("setRemoteInfo({ messageCount"))
 	})
 
-	test("an unknown effort word CLEARS the stale level (no last-known pinning)", () => {
-		// setEffort(known) runs UNCONDITIONALLY — known may be undefined.
-		expect(source).toMatch(/const known = word && word in EFFORT_ICONS \? \(word as EffortLevel\) : undefined\s*\n\s*\/\/ Unknown word CLEARS the stale level[^\n]*\n\s*setEffort\(known\)/)
+	test("an unspecified effort defaults to high; an explicit word (off included) wins", () => {
+		// Display half: effectiveEffort maps undefined/unknown → high, a known
+		// word passes through untouched.
+		expect(source).toMatch(/const known = word && word in EFFORT_ICONS \? \(word as EffortLevel\) : undefined/)
+		expect(source).toMatch(/setEffort\(effectiveEffort\(known\)\)/)
+		// Behavior half: only an unspecified level on a ladder that exposes high
+		// writes the default route (defaultEffortToApply owns the precedence).
+		expect(source).toMatch(/defaultEffortToApply\(word, ladder\.map\(\(entry\) => entry\.id\)\)/)
 	})
 
 	test("a stale refresh is dropped by the ordinal guard before touching any signal", () => {
 		expect(source).toMatch(/const seq = \+\+footerRefreshSeq/)
-		// one guard at the top of each promise chain: effort, model selection,
-		// session snapshot (the model read is the /model //agents use fix)
-		expect(source.match(/if \(seq !== footerRefreshSeq\) return/g)?.length).toBe(3)
+		// one guard at the top of each promise chain: effort (plus the nested
+		// default-effort ladder read), model selection, session snapshot (the
+		// model read is the /model //agents use fix)
+		expect(source.match(/if \(seq !== footerRefreshSeq\) return/g)?.length).toBe(4)
 	})
 
 	test("boot replays the persisted hint selection before the first paint", () => {

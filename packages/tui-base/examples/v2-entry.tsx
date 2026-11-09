@@ -67,7 +67,16 @@ import {
 	setMotionBusy,
 	setMotionTier,
 } from "../src/skin/motion"
-import { PowerlineFooter, sessionFooterSegments, effortFromModelLabel, EFFORT_ICONS, type EffortLevel } from "../src/routes/session/powerline"
+import {
+	PowerlineFooter,
+	sessionFooterSegments,
+	effortFromModelLabel,
+	effectiveEffort,
+	defaultEffortToApply,
+	DEFAULT_EFFORT,
+	EFFORT_ICONS,
+	type EffortLevel,
+} from "../src/routes/session/powerline"
 import { StatusBar } from "../src/routes/session/status-bar"
 // Shell-side modules load through COMPUTED dynamic imports: a static
 // import would pull shell's client graph into tui-base's tsc program (11
@@ -226,9 +235,10 @@ function V2SessionPage(props: {
 	// effort level and the remote session snapshot (durable message count +
 	// decode-window tok/s). Effort prefers the seam's thinking face
 	// (currentEffort — read-only, no adapter/host change) and falls back to
-	// parsing the sessionInfo().model label ("provider/model (effort)");
-	// neither surface answers → undefined → the segment renders without a
-	// level. Called on mount, on session reload and at every turn end.
+	// parsing the sessionInfo().model label ("provider/model (effort)").
+	// An unspecified level defaults to HIGH (display + host route); an
+	// explicit level, "off" included, always wins (footer-polish feedback).
+	// Called on mount, on session reload and at every turn end.
 	let footerRefreshSeq = 0
 	const refreshFooterData = () => {
 		// Stale-promise guard (review fix): a slow earlier refresh must never
@@ -239,9 +249,23 @@ function V2SessionPage(props: {
 			.then((word) => {
 				if (seq !== footerRefreshSeq) return
 				const known = word && word in EFFORT_ICONS ? (word as EffortLevel) : undefined
-				// Unknown word CLEARS the stale level (no last-known pinning).
-				setEffort(known)
-				return known
+				// User directive: an unspecified think level defaults to HIGH.
+				// Display half: effectiveEffort turns undefined/unknown into high;
+				// an explicit word (INCLUDING "off") always wins and is never
+				// coerced back.
+				setEffort(effectiveEffort(known))
+				if (known !== undefined || !seam.thinking) return
+				// Behavior half: write the default to the route only when the
+				// model's real ladder exposes "high" (a non-reasoning model keeps
+				// its native behavior). Explicit levels never reach this branch.
+				void seam.thinking
+					.efforts()
+					.then((ladder) => {
+						if (seq !== footerRefreshSeq) return
+						const target = defaultEffortToApply(word, ladder.map((entry) => entry.id))
+						return target ? seam.thinking!.selectEffort(target) : undefined
+					})
+					.catch(() => undefined)
 			})
 			.catch(() => undefined)
 		// Review fix: /model and /agents use commit a new route through the

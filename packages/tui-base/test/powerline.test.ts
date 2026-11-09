@@ -17,6 +17,10 @@ import {
 	speedSegment,
 	cacheSegment,
 	toolSegment,
+	contrastRatio,
+	effectiveEffort,
+	defaultEffortToApply,
+	DEFAULT_EFFORT,
 	type EffortLevel,
 } from "../src/routes/session/powerline"
 
@@ -305,5 +309,120 @@ describe("provider fill never collides with the brand fill (real parse chain)", 
 		expect(delta("tokyonight", "light")).toBe(131)
 		expect(delta("gruvbox", "dark")).toBe(129)
 		expect(delta("gruvbox", "light")).toBe(112)
+	})
+})
+
+/**
+ * Footer-polish feedback batch (item 1): the strip must read as ONE blue
+ * ramp running deep→light left to right, labels keep ≥4.5:1, and only the
+ * >90% context danger fill is allowed to keep a warning color.
+ */
+describe("footer gradient (single blue ramp, deep→light)", () => {
+	const themeFor = (mode: "dark" | "light") =>
+		createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), mode))
+
+	const fullStrip = (theme: ReturnType<typeof themeFor>) =>
+		sessionFooterSegments({
+			provider: "bigmodel",
+			model: "glm-5.3-flash",
+			effort: "high",
+			contextTokens: 100,
+			contextWindow: 1000,
+			cacheHitRate: 50,
+			messages: 2,
+			tools: 1,
+			elapsedSec: 5,
+			tps: 10,
+			theme,
+		})
+
+	for (const mode of ["dark", "light"] as const) {
+		test(`${mode}: fills are strictly monotonic deep→light and labels stay ≥4.5:1`, () => {
+			const theme = themeFor(mode)
+			const segs = fullStrip(theme)
+			expect(segs.length).toBe(9) // brand + 8 data segments
+			const fills = segs.map((segment) => segment.bg)
+			// Brand is the DEEPEST step; every later segment is lighter.
+			for (let i = 1; i < fills.length; i++) {
+				expect(brightness(fills[i]!)).toBeGreaterThan(brightness(fills[i - 1]!))
+			}
+			// Label contrast contract on every fill.
+			for (const fill of fills) {
+				expect(contrastRatio(fill, autoContrast(fill))).toBeGreaterThanOrEqual(4.5)
+			}
+		})
+	}
+
+	test("danger context (>90%) keeps the error fill and skips the ramp", () => {
+		const theme = themeFor("dark")
+		const segs = sessionFooterSegments({
+			model: "m",
+			contextTokens: 950,
+			contextWindow: 1000,
+			theme,
+		})
+		const context = segs.find((segment) => segment.text.startsWith("🧠"))!
+		expect(context.semantic).toBe("danger")
+		expect(colorDistance(context.bg, theme.text.feedback.error.base)).toBe(0)
+		// The non-semantic neighbours still walk the gradient monotonically.
+		const ramp = segs.filter((segment) => !segment.semantic)
+		for (let i = 1; i < ramp.length; i++) {
+			expect(brightness(ramp[i]!.bg)).toBeGreaterThan(brightness(ramp[i - 1]!.bg))
+		}
+	})
+
+	test("no-provider fallback still yields one monotonic readable ramp", () => {
+		const segs = sessionFooterSegments({
+			provider: "p",
+			model: "m",
+			contextTokens: 100,
+			contextWindow: 1000,
+			messages: 1,
+			tools: 1,
+		})
+		const fills = segs.map((segment) => segment.bg)
+		for (let i = 1; i < fills.length; i++) {
+			expect(brightness(fills[i]!)).toBeGreaterThan(brightness(fills[i - 1]!))
+		}
+		for (const fill of fills) {
+			expect(contrastRatio(fill, autoContrast(fill))).toBeGreaterThanOrEqual(4.5)
+		}
+	})
+})
+
+/**
+ * Footer-polish feedback batch (item 3): an unspecified think level means
+ * "high" for display AND route; an explicit value — "off" included — is
+ * never overwritten.
+ */
+describe("default effort policy", () => {
+	test("unspecified/unknown resolves to high; explicit off is preserved", () => {
+		expect(DEFAULT_EFFORT).toBe("high")
+		expect(effectiveEffort(undefined)).toBe("high")
+		expect(effectiveEffort(null)).toBe("high")
+		expect(effectiveEffort("off")).toBe("off")
+		expect(effectiveEffort("medium")).toBe("medium")
+	})
+
+	test("the footer shows ● high when no level is specified and ○ off when it is", () => {
+		const unspecified = sessionFooterSegments({ model: "m" }).find((segment) => segment.text.startsWith("🤖"))!
+		expect(unspecified.text).toBe("🤖 m ● high")
+		const explicit = sessionFooterSegments({ model: "m", effort: "off" }).find((segment) =>
+			segment.text.startsWith("🤖"),
+		)!
+		expect(explicit.text).toBe("🤖 m ○ off")
+		// modelSegment's own default follows the same policy.
+		expect(modelSegment("m")!.text).toBe("🤖 m ● high")
+	})
+
+	test("the route write happens only for an unspecified level on a high-capable ladder", () => {
+		expect(defaultEffortToApply(undefined, ["low", "high"])).toBe("high")
+		expect(defaultEffortToApply(undefined, [{ id: "high" }])).toBe("high")
+		// Explicit levels (including off) win.
+		expect(defaultEffortToApply("off", ["low", "high"])).toBeUndefined()
+		expect(defaultEffortToApply("low", ["low", "high"])).toBeUndefined()
+		// No high on the ladder → leave the host route alone.
+		expect(defaultEffortToApply(undefined, ["low", "medium"])).toBeUndefined()
+		expect(defaultEffortToApply(undefined, [])).toBeUndefined()
 	})
 })

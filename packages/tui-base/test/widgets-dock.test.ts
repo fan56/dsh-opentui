@@ -9,7 +9,9 @@
  */
 import { describe, expect, test } from "bun:test"
 import {
+	ACTIVITY_FRAME_BORDER_FALLBACK,
 	ACTIVITY_FRAME_DEFER_MS,
+	activityFrameBorderColor,
 	createFrameLatch,
 	frameLatchFire,
 	frameLatchNext,
@@ -35,6 +37,11 @@ import {
 	SKIN_PULSE_MS,
 } from "../src/routes/session/widgets-dock"
 import type { SeamRow } from "../src/routes/session/seam-rows"
+import { RGBA } from "@opentui/core"
+import { colorRgb, contrastRatio } from "../src/routes/session/powerline"
+import { createComponentTheme } from "../src/theme/component"
+import { getDshBlueTheme } from "../src/theme/index"
+import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
 
 const spin = () => 0
 
@@ -384,5 +391,63 @@ describe("deferred activity frame latch (flicker mitigation 1)", () => {
 		await wait(30)
 		expect(latch.shown()).toBe(true)
 		latch.dispose()
+	})
+})
+
+/**
+ * Footer-polish feedback batch (item 2, follow-up): the turn-lifetime frame
+ * only exists WHILE a turn is active, so its border must be a BRIGHT ORANGE
+ * on a heavy line, static (border animation is forbidden), clearing 4.5:1
+ * against the working background.
+ */
+describe("activity frame active border", () => {
+	const themeWith = (orange: Record<string, RGBA> | undefined, background: string) =>
+		({
+			hue: { accent: {}, interactive: {}, neutral: {} },
+			categorical: orange ? [orange] : [],
+			text: { feedback: { warning: { base: RGBA.fromHex("#f5a742") } } },
+			background: { base: RGBA.fromHex(background) },
+		}) as unknown as Parameters<typeof activityFrameBorderColor>[0]
+
+	test("prefers the bright orange step (orange[200])", () => {
+		const orange = {
+			"100": RGBA.fromHex("#fddac5"),
+			"200": RGBA.fromHex("#fab283"),
+			"300": RGBA.fromHex("#d8976c"),
+		}
+		const picked = activityFrameBorderColor(themeWith(orange, "#0a0a0f"))
+		expect(picked).toBe(orange["200"])
+		// Bright orange on the dsh-blue dark background clears the contract.
+		expect(contrastRatio(picked, "#0a0a0f")).toBeGreaterThanOrEqual(4.5)
+	})
+
+	test("real dsh-blue dark picks orange[200] #fab283 at 11.06:1", () => {
+		const theme = createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "dark"))
+		const picked = activityFrameBorderColor(theme)
+		expect(colorRgb(picked)).toEqual([250, 178, 131]) // #fab283
+		expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+	})
+
+	test("fallback is the bright orange hex, not the old dark blue border", () => {
+		expect(ACTIVITY_FRAME_BORDER_FALLBACK).toBe("#fab283")
+		// 11.06:1 on the dsh-blue dark surface.
+		expect(contrastRatio(ACTIVITY_FRAME_BORDER_FALLBACK, "#0a0a0f")).toBeGreaterThanOrEqual(4.5)
+		expect(activityFrameBorderColor()).toBe(ACTIVITY_FRAME_BORDER_FALLBACK)
+	})
+
+	test("no orange scale → warning token; light surfaces deepen to 4.5:1", () => {
+		const warningTheme = {
+			hue: { accent: {}, interactive: {}, neutral: {} },
+			categorical: [],
+			text: { feedback: { warning: { base: RGBA.fromHex("#f5a742") } } },
+			background: { base: RGBA.fromHex("#0a0a0f") },
+		} as unknown as Parameters<typeof activityFrameBorderColor>[0]
+		expect(activityFrameBorderColor(warningTheme)).toBe(warningTheme.text.feedback.warning.base)
+
+		// Light theme: the stock orange[200] is too light against #fafafa, so
+		// the helper deepens it until the border still clears 4.5:1.
+		const lightOrange = { "200": RGBA.fromHex("#d68c27"), "300": RGBA.fromHex("#df9a44") }
+		const picked = activityFrameBorderColor(themeWith(lightOrange, "#fafafa"))
+		expect(contrastRatio(picked, "#fafafa")).toBeGreaterThanOrEqual(4.5)
 	})
 })
