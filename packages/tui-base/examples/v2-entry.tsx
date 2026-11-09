@@ -51,6 +51,7 @@ import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palet
 import { presetLabelFor } from "../src/routes/session/commands"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
+import { AgentsPanel, openAgentsPanel } from "../src/routes/session/agents-panel"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
 import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
@@ -294,7 +295,7 @@ function V2SessionPage(props: {
 				if (seq !== footerRefreshSeq) return
 				settleEffort()
 			})
-		// Review fix: /model and /agents use commit a new route through the
+		// Review fix: /model commits a new route through the
 		// seam but the model segment only re-read on mount/reload — refresh it
 		// here too, or the footer keeps the previous provider/model until the
 		// next turn. Same seq guard as the reads above.
@@ -482,8 +483,11 @@ function V2SessionPage(props: {
 		// onto the overlays mounted in the root children below.
 		openSearch: () => openSessionsSearch(),
 		openPlugins: () => openPluginsPanel(),
+		// tui-pi agents manager parity: table + fields layers over the
+		// client-local agent corpus (the composed model column included).
+		openAgents: (name?: string) => openAgentsPanel(name),
 		// Footer-quickwins bug fix (/think parity with tui-pi): setting commands
-		// (/think, /model, /agents use) re-run the page's footer refresh right
+		// (/think, /model) re-run the page's footer refresh right
 		// after the seam mutation settles — the same entry the turn-end effect
 		// drives, so the footerRefreshSeq stale-promise guard stays intact.
 		refreshFooter: refreshFooterData,
@@ -614,6 +618,17 @@ function V2SessionPage(props: {
 						return seam
 					},
 					onClosed: () => {
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
+				}),
+				// Agents manager panel (tui-pi agents manager parity): /agents
+				// opens the definition table; Enter drills into the fields layer.
+				createComponent(AgentsPanel, {
+					get seam() {
+						return seam
+					},
+					onClosed: (summary?: string) => {
+						if (summary !== undefined) sayLine(summary)
 						if (composerRef && !composerRef.focused()) composerRef.focus()
 					},
 				}),

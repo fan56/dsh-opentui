@@ -122,7 +122,7 @@ export interface SlashCommandContext {
 	 * Footer-refresh hook (footer-quickwins): the page's own footer data
 	 * refresh entry (the same one the mount/reload/turn-end paths drive).
 	 * Commands that mutate session settings shown in the footer (/think,
-	 * /model, /agents use) call it after the mutation settles — otherwise
+	 * /model) call it after the mutation settles — otherwise
 	 * the effort/model segments only move at the next turn boundary.
 	 * Optional — a host without it keeps the old turn-end-only behavior.
 	 */
@@ -163,6 +163,11 @@ export interface SlashCommandContext {
 	 * Optional — an entry without it keeps the F7a transcript listing.
 	 */
 	openPlugins?(): void
+	/**
+	 * Open the agents manager panel (tui-pi agents manager parity). Optional —
+	 * an entry without it degrades /agents to a notice.
+	 */
+	openAgents?(name?: string): void
 }
 
 // ---------------------------------------------------------- /preset helpers --
@@ -542,100 +547,26 @@ export function coreCommands(): SlashCommand[] {
 			},
 		},
 		{
-			// Feature batch H5 (tui-pi 74 minimal parity): named model profiles —
-			// snapshots of the CURRENT model route (provider/model + reasoning
-			// effort) saved under one name and applied back through /model's own
-			// semantics. `/agents` bare prints the roster (the /plugins print
-			// path, current route marked); `/agents save <name>` archives the
-			// current selection; `/agents use <name>` applies one (selectModel,
-			// the effort arm through the thinking face when the model's ladder
-			// carries it); `/agents rm <name>` deletes. Storage rides the F7b
-			// config seam (configSave → the profile config.json, see
-			// AGENTS_PROFILES_KEY below). Absent config faces degrade to the
-			// unavailable notice (the /theme contract). Entirely offline — no
-			// model traffic on any verb.
+			// /agents opens the agent-definition manager (tui-pi agents
+			// manager parity): the `${DSH_HOME}/agents/*.md` corpus, the
+			// composed model/thinking columns, and the table -> fields ->
+			// model/effort/deep editors. An argument preselects the EXACT
+			// `name` row (display names never match, tui-pi parity); a miss
+			// degrades to the plain table. A seam without the agents face
+			// degrades to the unavailable notice.
 			name: "/agents",
-			description: "model profiles: list / save / use / rm (named model+effort snapshots)",
-			async run(ctx, argText) {
-				if (!ctx.seam.configLoad || !ctx.seam.configSave) {
+			description: "manage agent definitions (model, think level, spawn depth)",
+			run(ctx, argText) {
+				if (!ctx.seam.agents) {
 					ctx.say("/agents unavailable in this session")
 					return
 				}
-				const [verb, ...rest] = argText.trim().split(/\s+/)
-				if (!verb || verb === "list") {
-					const profiles = loadAgentsProfiles(ctx.seam.configLoad())
-					const current = await ctx.seam.currentModelSelection()
-					ctx.say("model profiles:")
-					for (const row of agentsRosterRows(profiles, current)) ctx.say(row)
+				if (!ctx.openAgents) {
+					ctx.say("/agents: the manager panel is not mounted in this entry")
 					return
 				}
-				const name = rest.join(" ").trim()
-				if (verb === "save") {
-					if (!name) {
-						ctx.say("usage: /agents save <name>")
-						return
-					}
-					const nameError = validateAgentsName(name)
-					if (nameError) {
-						ctx.say(nameError)
-						return
-					}
-					const sel = await ctx.seam.currentModelSelection()
-					if (!sel) {
-						ctx.say("/agents save: no current model selection")
-						return
-					}
-					const effort = ctx.seam.thinking ? await ctx.seam.thinking.currentEffort() : undefined
-					const profile: AgentsProfile = {
-						name,
-						provider: sel.providerID,
-						model: sel.modelID,
-						...(effort ? { reasoningEffort: effort } : {}),
-					}
-					ctx.seam.configSave(agentsProfilesPatch(upsertAgentsProfile(loadAgentsProfiles(ctx.seam.configLoad()), profile)))
-					ctx.say(`saved profile ${name} → ${sel.providerID}/${sel.modelID}${effort ? ` (${effort})` : ""}`)
-					return
-				}
-				if (verb === "use") {
-					if (!name) {
-						ctx.say("usage: /agents use <name>")
-						return
-					}
-					const target = findAgentsProfile(loadAgentsProfiles(ctx.seam.configLoad()), name)
-					if (!target) {
-						ctx.say(`unknown profile: ${name}`)
-						return
-					}
-					await ctx.seam.selectModel(target.provider, target.model)
-					let effortNote = ""
-					if (target.reasoningEffort && ctx.seam.thinking) {
-						const efforts = await ctx.seam.thinking.efforts()
-						if (efforts.some((effort) => effort.id === target.reasoningEffort)) {
-							await ctx.seam.thinking.selectEffort(target.reasoningEffort)
-							effortNote = ` (${target.reasoningEffort})`
-						} else {
-							effortNote = ` (effort ${target.reasoningEffort} not on this model's ladder — skipped)`
-						}
-					}
-					ctx.say(`model → ${target.provider}/${target.model}${effortNote} [profile ${target.name}]`)
-					ctx.refreshFooter?.()
-					return
-				}
-				if (verb === "rm" || verb === "remove" || verb === "delete") {
-					if (!name) {
-						ctx.say("usage: /agents rm <name>")
-						return
-					}
-					const profiles = loadAgentsProfiles(ctx.seam.configLoad())
-					if (!findAgentsProfile(profiles, name)) {
-						ctx.say(`unknown profile: ${name}`)
-						return
-					}
-					ctx.seam.configSave(agentsProfilesPatch(removeAgentsProfile(profiles, name)))
-					ctx.say(`removed profile ${name}`)
-					return
-				}
-				ctx.say("usage: /agents [list | save <name> | use <name> | rm <name>]")
+				const name = argText.trim()
+				ctx.openAgents(name === "" ? undefined : name)
 			},
 		},
 		{
@@ -950,115 +881,4 @@ export function dispatchLine(commands: SlashCommand[], line: string): SlashDispa
 /** The harmless error row text for an unknown command (old ShellHost parity). */
 export function unknownCommandRow(name: string): string {
 	return `unknown command: ${name} (try /help)`
-}
-
-/**
- * Feature batch H5 (tui-pi 74 minimal parity) — named model profiles.
- *
- * A profile is a NAMED SNAPSHOT of the current model route: provider +
- * model + reasoning effort, saved with `/agents save <name>` and applied
- * back with `/agents use <name>` through /model's own semantics
- * (selectModel; the effort arm rides the thinking face's selectEffort when
- * the current model's real ladder carries it — a stale effort degrades to a
- * note, never a hard failure).
- *
- * Storage rides the F7b config seam: the whole roster lives under ONE
- * `agentsProfiles` key of the profile config.json (`configSave` is an
- * upsert patch, so the key is whole-document last-write-wins — the accepted
- * loss model for a human-paced feature, same as `theme`). Reads are
- * tolerant: a missing, corrupt or wrong-shape document degrades to an empty
- * roster.
- *
- * HONEST GAP LIST vs the tui-pi 74 reference manager:
- * - No agent FILES: the reference manages `$DSH_HOME/agents/*.md`
- *   frontmatter (per-agent model/think columns); this stack has no agents
- *   corpus to edit, so /agents here is a model-profile store only (the name
- *   keeps the cross-stack parity slot).
- * - No scope awareness: the reference's `.dsh-profile` pin and the shared
- *   `$DSH_HOME/model-profiles.json` store (profile "work" scoped edits vs
- *   frontmatter baseline) have no counterpart here — one flat roster.
- * - A `use` is session-scoped (selectModel semantics): it does NOT compose
- *   future sessions like the reference's pinned profile would.
- */
-
-/** The config key the roster lives under (whole-document last-write-wins). */
-export const AGENTS_PROFILES_KEY = "agentsProfiles"
-
-/** On-disk schema version; bump only for breaking changes. */
-export const AGENTS_PROFILES_VERSION = 1
-
-/** One named model profile: a saved /model (plus effort) selection. */
-export interface AgentsProfile {
-	/** The slug the user typed (`/agents save <name>`); unique per roster. */
-	name: string
-	provider: string
-	model: string
-	/** Reasoning effort captured at save time; absent = provider default. */
-	reasoningEffort?: string
-}
-
-/** Tolerant roster read: missing/corrupt/wrong-shape config degrades to []. */
-export function loadAgentsProfiles(cfg: Record<string, unknown> | undefined): AgentsProfile[] {
-	const doc = cfg?.[AGENTS_PROFILES_KEY] as { profiles?: unknown } | undefined
-	if (!doc || typeof doc !== "object" || !Array.isArray(doc.profiles)) return []
-	const out: AgentsProfile[] = []
-	for (const row of doc.profiles) {
-		if (!row || typeof row !== "object") continue
-		const { name, provider, model, reasoningEffort } = row as Record<string, unknown>
-		if (typeof name !== "string" || !name || typeof provider !== "string" || !provider || typeof model !== "string" || !model) {
-			continue
-		}
-		out.push({
-			name,
-			provider,
-			model,
-			...(typeof reasoningEffort === "string" && reasoningEffort ? { reasoningEffort } : {}),
-		})
-	}
-	return out
-}
-
-/** The whole-roster config patch for one write (the `agentsProfiles` key). */
-export function agentsProfilesPatch(profiles: AgentsProfile[]): Record<string, unknown> {
-	return { [AGENTS_PROFILES_KEY]: { version: AGENTS_PROFILES_VERSION, profiles } }
-}
-
-/** Insert-or-replace by name (save over an existing name overwrites). */
-export function upsertAgentsProfile(profiles: AgentsProfile[], profile: AgentsProfile): AgentsProfile[] {
-	const idx = profiles.findIndex((p) => p.name === profile.name)
-	if (idx === -1) return [...profiles, profile]
-	const next = [...profiles]
-	next[idx] = profile
-	return next
-}
-
-export function removeAgentsProfile(profiles: AgentsProfile[], name: string): AgentsProfile[] {
-	return profiles.filter((p) => p.name !== name)
-}
-
-export function findAgentsProfile(profiles: AgentsProfile[], name: string): AgentsProfile | undefined {
-	return profiles.find((p) => p.name === name)
-}
-
-/** Profile names are transcript- and key-safe slugs (1-32 chars). */
-export function validateAgentsName(name: string): string | undefined {
-	if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(name)) {
-		return "profile name must be 1-32 chars: letters, digits, - _"
-	}
-	return undefined
-}
-
-/** The roster print rows (the /plugins print path): ● current route match. */
-export function agentsRosterRows(
-	profiles: AgentsProfile[],
-	current?: { providerID: string; modelID: string },
-): string[] {
-	if (profiles.length === 0) {
-		return ["no saved model profiles (/agents save <name> archives the current model)"]
-	}
-	return profiles.map((p) => {
-		const route = `${p.provider}/${p.model}${p.reasoningEffort ? ` (${p.reasoningEffort})` : ""}`
-		const mark = current && current.providerID === p.provider && current.modelID === p.model ? "●" : "○"
-		return `${mark} ${p.name} — ${route}`
-	})
 }

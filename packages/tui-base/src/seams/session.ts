@@ -255,6 +255,33 @@ export interface SeamPresetRow {
 	isDefault?: boolean
 }
 
+/**
+ * One agent definition row for the /agents manager (tui-pi table layer).
+ * `model`/`thinking` are the COMPOSED values (frontmatter baseline (+) the
+ * workspace-pinned profile override); `pin` names the profile the workspace
+ * is pinned to when it resolves. `deep` is the numeric spawn budget.
+ */
+export interface SeamAgentRow {
+	name: string
+	displayName?: string
+	description?: string
+	model?: string
+	thinking?: string
+	deep: number
+	file: string
+	pin?: string
+	broken?: string
+}
+
+/** Where a model/thinking edit landed (drives the scope note). */
+export type SeamAgentEditTarget = { kind: "profile"; name: string } | { kind: "frontmatter" }
+
+/** Result of one agent field write. */
+export interface SeamAgentSetResult {
+	target: SeamAgentEditTarget
+	error?: string
+}
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -385,6 +412,23 @@ export interface SessionSeam {
 		currentId(): Promise<string | undefined>
 		/** Apply the switch; false when the backend rejected it. */
 		select(presetId: string): Promise<boolean>
+	}
+	/**
+	 * /agents manager face (tui-pi agents manager parity): the client-local
+	 * `<DSH_HOME>/agents/*.md` corpus with composed model/thinking values,
+	 * the one write site (pinned-profile override when the workspace pin
+	 * resolves, frontmatter otherwise), the body for the `v` viewer, and a
+	 * per-model reasoning-effort ladder for the two-stage picker. Optional —
+	 * a seam without it degrades /agents to a notice.
+	 */
+	agents?: {
+		list(): SeamAgentRow[]
+		/** `null` clears the key (inherit). Deep must be a non-negative integer. */
+		set(name: string, field: "model" | "thinking" | "deep", value: string | null): SeamAgentSetResult
+		/** System prompt body (markdown after the frontmatter fence). */
+		body(name: string): string
+		/** The model's real reasoning-effort ladder ([] when none). */
+		modelEfforts(providerID: string, modelID: string): Promise<SeamEffortOption[]>
 	}
 	/**
 	 * /login provider face (batch H4, tui-pi 65-ux-batch parity): the

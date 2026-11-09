@@ -293,7 +293,7 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 		expect(source).toMatch(/const seq = \+\+footerRefreshSeq/)
 		// One guard per promise stage: both effort sources (then + catch), the
 		// aggregate settle, the model selection, the session snapshot (then +
-		// catch; the model read is the /model //agents use fix) and the nested
+		// catch; the model read is the /model fix) and the nested
 		// default-effort ladder read.
 		expect(source.match(/seq !== footerRefreshSeq/g)?.length).toBe(7)
 	})

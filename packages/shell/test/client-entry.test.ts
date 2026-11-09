@@ -603,13 +603,23 @@ describe('RemoteHostSession accessor audit (through aggregateTurnContext)', () =
     const f = auditFakes()
     try {
       expect(f.adapted.listAgents()).toEqual([
-        { name: 'audit-agent', description: 'audit fixture', model: 'origin/model', file: join(f.home, 'agents', 'audit-agent.md') },
+        {
+          name: 'audit-agent',
+          description: 'audit fixture',
+          model: 'origin/model',
+          deep: 1,
+          body: 'body',
+          file: join(f.home, 'agents', 'audit-agent.md'),
+        },
       ])
-      f.adapted.agentSet('audit-agent', 'deep', 'on')
-      expect(readFileSync(join(f.home, 'agents', 'audit-agent.md'), 'utf8')).toContain('deep: on')
-      // a missing agent file throws the business error (the caller paints it)
-      // — wrapper parity: same error, never a private-brand TypeError
-      expect(() => f.adapted.agentSet('missing-agent', 'model', 'x')).toThrow(/no such file|ENOENT/)
+      expect(f.adapted.agentSet('audit-agent', 'deep', '3')).toEqual({ target: { kind: 'frontmatter' } })
+      expect(readFileSync(join(f.home, 'agents', 'audit-agent.md'), 'utf8')).toContain('deep: 3')
+      // a missing agent file resolves the business error in-band (the caller
+      // paints it) — never a thrown private-brand TypeError
+      expect(f.adapted.agentSet('missing-agent', 'model', 'x')).toEqual({
+        target: { kind: 'frontmatter' },
+        error: 'agent "missing-agent" not found',
+      })
       expect(f.adapted.repairScan()).toEqual(['no sessions directory'])
       expect(await f.adapted.gitBranch()).toBe('') // temp dir is not a repo
       expect(await f.adapted.gitBranch(f.workspace)).toBe('')

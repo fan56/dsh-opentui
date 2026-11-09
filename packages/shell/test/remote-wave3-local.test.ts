@@ -56,8 +56,9 @@ describe("row 30 — /agents via client-local FS", () => {
 		expect(reviewer?.model).toBe("zai-coding-cn/glm-5.3-flash")
 		expect(reviewer?.thinking).toBe("high")
 		expect(reviewer?.file).toBe(join(home, "agents", "reviewer.md"))
+		expect(reviewer?.deep).toBe(1)
 		expect(rows.find((r) => r.name === "plain")).toBeDefined()
-		expect(rows.find((r) => r.name === "broken.md")?.broken).toBeDefined()
+		expect(rows.find((r) => r.broken !== undefined)?.broken).toBeDefined()
 		expect(rows.some((r) => r.name === "skip")).toBe(false)
 	})
 
@@ -76,13 +77,21 @@ describe("row 30 — /agents via client-local FS", () => {
 
 		writeFileSync(file, "---\nname: a\n---\n\nbody\n")
 		setAgentField("a", "thinking", "high", home)
-		// insertion goes to the TOP of the existing frontmatter block
-		// (host-session.ts:502 parity)
-		expect(readFileSync(file, "utf8")).toContain("---\nthinking: high\nname: a\n---")
+		// tui-pi parity: a missing key is inserted before the closing fence
+		expect(readFileSync(file, "utf8")).toBe("---\nname: a\nthinking: high\n---\n\nbody\n")
 
+		// no frontmatter: the write is refused (never invents a block)
 		writeFileSync(file, "just a body\n")
-		setAgentField("a", "deep", "on", home)
-		expect(readFileSync(file, "utf8").startsWith("---\ndeep: on\n---\n\njust a body\n")).toBe(true)
+		expect(setAgentField("a", "deep", "3", home)).toContain("missing frontmatter")
+		expect(readFileSync(file, "utf8")).toBe("just a body\n")
+
+		// deep is a non-negative integer; null deletes the key
+		writeFileSync(file, "---\nname: a\ndeep: 2\n---\n\nbody\n")
+		expect(setAgentField("a", "deep", "on", home)).toContain("non-negative integer")
+		setAgentField("a", "deep", "3", home)
+		expect(readFileSync(file, "utf8")).toContain("deep: 3")
+		setAgentField("a", "deep", null, home)
+		expect(readFileSync(file, "utf8")).not.toContain("deep:")
 	})
 
 	test("facade listAgents/agentSet ride the dshHome option", () => {

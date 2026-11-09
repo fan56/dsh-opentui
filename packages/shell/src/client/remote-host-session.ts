@@ -180,7 +180,8 @@ import {
 	type RemoteQuestionAnswer,
 } from "./remote-waterfall.ts"
 import { ClientConnection, RemoteRpcError, type ClientConnectionState, type ClientReadyInfo } from "./transport.ts"
-import { listAgentFiles, repairScanSessions, resolveDshHome, setAgentField } from "./remote-local-fs.ts"
+import { repairScanSessions, resolveDshHome, setAgentField } from "./remote-local-fs.ts"
+import { commitAgentModelEdit, listComposedAgents, type AgentEditTarget, type ComposedAgentRow } from "./remote-agent-profiles.ts"
 import { probeGitBranch } from "./remote-git.ts"
 import { toolPresentationModeFromPresetDocument } from "./remote-exec-mode.ts"
 import {
@@ -1343,14 +1344,47 @@ export class RemoteHostSession {
 			})
 	}
 
-	/** wave 3 (client-local FS for ~/.dsh/agents/*.md — audit row 30). */
-	listAgents(): { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; file: string; broken?: string }[] {
-		return listAgentFiles(this.#dshHome)
+	/**
+	 * Agent definitions with their COMPOSED model/thinking (frontmatter
+	 * baseline (+) the workspace-pinned profile override) — the value a
+	 * spawned agent actually gets, and what the /agents table shows.
+	 */
+	listAgents(): ComposedAgentRow[] {
+		return listComposedAgents(this.#dshHome, this.#workspaceDir)
 	}
 
-	/** wave 3 (row 30 write half; host-session.ts:492-507 parity). */
-	agentSet(name: string, field: "model" | "thinking" | "deep", value: string): void {
-		setAgentField(name, field, value, this.#dshHome)
+	/**
+	 * Edit one agent field (null = clear back to inherit). `model`/`thinking`
+	 * land in the pinned profile's `agents[name]` entry when the workspace
+	 * pin resolves, else in the frontmatter; `deep` always edits the
+	 * frontmatter.
+	 */
+	agentSet(
+		name: string,
+		field: "model" | "thinking" | "deep",
+		value: string | null,
+	): { target: AgentEditTarget; error?: string } {
+		if (field === "deep") {
+			const error = setAgentField(name, "deep", value, this.#dshHome)
+			return { target: { kind: "frontmatter" }, ...(error !== undefined ? { error } : {}) }
+		}
+		const row = this.listAgents().find((agent) => agent.name === name && agent.broken === undefined)
+		if (row === undefined) return { target: { kind: "frontmatter" }, error: `agent "${name}" not found` }
+		return commitAgentModelEdit(this.#dshHome, this.#workspaceDir, row.file, name, { [field]: value })
+	}
+
+	/** The system prompt body (markdown after the frontmatter fence). */
+	agentBody(name: string): string {
+		const row = this.listAgents().find((agent) => agent.name === name && agent.broken === undefined)
+		return row?.body ?? ""
+	}
+
+	/** One model's real reasoning-effort ladder from the host catalog. */
+	async modelEfforts(providerID: string, modelID: string): Promise<{ id: string; name: string; description?: string }[]> {
+		const catalog = await this.modelCatalog()
+		const group = catalog.groups.find((entry) => entry.id === providerID)
+		const model = group?.models.find((entry) => entry.id === modelID)
+		return model?.reasoning?.efforts ?? []
 	}
 
 	/**

@@ -13,16 +13,14 @@
  *
  * Row 30 — agent definitions live at `<dshHome>/agents/*.md`, one file per
  * agent, YAML-ish frontmatter (`name`, `display_name`, `description`,
- * `model`, `thinking`, `deep`) + a body. `listAgentFiles` never throws
- * (broken files are reported in-band); `setAgentField` edits one
- * frontmatter field read-modify-write.
- *
- * One deliberate divergence from host-session.ts:500: that test
- * (`/^---\\n[\\s\\S]*?\\n---/`) matches a literal backslash-n, so its
- * "insert into existing frontmatter" branch was dead and a field added to
- * a file that already had frontmatter prepended a SECOND frontmatter
- * block (corrupting the file). The client-local write path uses the
- * intended regex — parity of the file conventions, not of the defect.
+ * `model`, `thinking`, `deep`) + a body. Parsing and write-back are tui-pi
+ * `agent-manager.ts` parity: CRLF tolerated, one quote layer stripped, a
+ * non-negative integer `deep` (absent = 1), `name` must match the file stem
+ * (the registry rule — otherwise the file is broken and never dispatched).
+ * `listAgentFiles` never throws (broken files are reported in-band);
+ * `updateAgentFrontmatter` rewrites existing lines in place, inserts missing
+ * keys before the closing fence, deletes on null, preserves comments,
+ * unknown fields, order and CRLF, and writes nothing on a no-op.
  *
  * Row 31 — the session store at `<dshHome>/sessions/` holds
  * `session-<uuid>/session.v4.jsonl.zstd` logs (older layouts: plain
@@ -34,16 +32,20 @@
 
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
-/** One agent definition row (the HostSession.listAgents shape). */
+/** One agent definition row. `model`/`thinking` are the frontmatter
+ * baseline; the composed values (baseline (+) pinned profile) are added by
+ * remote-agent-profiles.ts. Broken files are reported in-band, not thrown. */
 export interface RemoteAgentRow {
 	name: string
 	displayName?: string
 	description?: string
+	color?: string
 	model?: string
 	thinking?: string
-	deep?: string
+	deep: number
+	body: string
 	file: string
 	broken?: string
 }
@@ -53,76 +55,208 @@ export function resolveDshHome(explicit?: string): string {
 	return explicit ?? (process.env.DSH_HOME || join(homedir(), ".dsh"))
 }
 
+const FRONTMATTER_FENCE = "---"
+/** Frontmatter key pattern (same loose shape tui-pi / zcode accept). */
+const KEY_LINE = /^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/
+
+/** Strip one pair of matching surrounding quotes, if present. */
+function stripQuotes(value: string): string {
+	if (value.length >= 2) {
+		const first = value[0]
+		const last = value[value.length - 1]
+		if ((first === '"' && last === '"') || (first === "'" && last === "'")) return value.slice(1, -1)
+	}
+	return value
+}
+
+/** Find the closing fence line index of a frontmatter starting at line 0. */
+function frontmatterBounds(lines: string[]): { close: number } | undefined {
+	if (lines[0]?.trim() !== FRONTMATTER_FENCE) return undefined
+	for (let i = 1; i < lines.length; i++) {
+		if (lines[i]!.trim() === FRONTMATTER_FENCE) return { close: i }
+	}
+	return undefined
+}
+
+/** Parse a loose `key: value` frontmatter block (lines 1..close-1). */
+function parseFrontmatterValues(lines: string[], close: number): Record<string, string> {
+	const values: Record<string, string> = {}
+	for (let i = 1; i < close; i++) {
+		const match = KEY_LINE.exec(lines[i]!)
+		if (match === null) continue
+		values[match[1]!] = stripQuotes(match[2]!.trim())
+	}
+	return values
+}
+
+export type AgentParseResult = { ok: true; agent: RemoteAgentRow } | { ok: false; error: string }
+
 /**
- * Agent definitions from `<dshHome>/agents/*.md` (row 30) — frontmatter
- * (name, display_name, description, model, thinking, deep) + body. Broken
- * files are reported, not thrown (host-session.ts:453-507 parity).
+ * Parse one agent markdown file - tui-pi `parseAgentMarkdown` parity:
+ * tolerates CRLF, one layer of paired quotes and non-key lines inside the
+ * frontmatter; `name` is required; `deep` is a non-negative integer
+ * (absent = 1). A `name` that does not match the file name is broken (the
+ * registry rule - the file would never be dispatched under that id).
+ */
+export function parseAgentMarkdown(text: string, path: string): AgentParseResult {
+	const lines = text.split(/\r?\n/)
+	const bounds = frontmatterBounds(lines)
+	if (bounds === undefined) {
+		return { ok: false, error: "missing frontmatter (file must start with `---`)" }
+	}
+	const values = parseFrontmatterValues(lines, bounds.close)
+	const name = values["name"]?.trim()
+	if (name === undefined || name === "") return { ok: false, error: "missing required frontmatter key `name`" }
+	const fileBase = basename(path).replace(/\.md$/, "")
+	if (name !== fileBase) {
+		return { ok: false, error: `frontmatter name "${name}" does not match file name "${fileBase}"` }
+	}
+	let deep = 1
+	if (values["deep"] !== undefined) {
+		const raw = values["deep"]!.trim()
+		if (!/^\d+$/.test(raw)) {
+			return { ok: false, error: `invalid \`deep\`: expected a non-negative integer, got "${raw}"` }
+		}
+		deep = Number(raw)
+	}
+	const body = lines.slice(bounds.close + 1).join("\n").replace(/^\n+/, "").trimEnd()
+	const agent: RemoteAgentRow = { name, deep, body, file: path }
+	const displayName = values["display_name"]?.trim()
+	if (displayName !== undefined && displayName !== "") agent.displayName = displayName
+	const description = values["description"]?.trim()
+	if (description !== undefined && description !== "") agent.description = description
+	const color = values["color"]?.trim()
+	if (color !== undefined && color !== "") agent.color = color
+	const model = values["model"]?.trim()
+	if (model !== undefined && model !== "") agent.model = model
+	const thinking = values["thinking"]?.trim()
+	if (thinking !== undefined && thinking !== "") agent.thinking = thinking
+	return { ok: true, agent }
+}
+
+/**
+ * Agent definitions from `<dshHome>/agents/*.md` (top level only) - valid
+ * rows sorted by name (`localeCompare`, tui-pi order), broken files appended
+ * as rows carrying `broken` (never thrown).
  */
 export function listAgentFiles(explicitHome?: string): RemoteAgentRow[] {
-	const out: RemoteAgentRow[] = []
+	const agents: RemoteAgentRow[] = []
+	const broken: RemoteAgentRow[] = []
 	try {
 		const home = resolveDshHome(explicitHome)
 		const dir = join(home, "agents")
 		if (!existsSync(dir)) return []
-		for (const f of readdirSync(dir)) {
-			if (!f.endsWith(".md")) continue
-			const full = join(dir, f)
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.endsWith(".md")) continue
+			const full = join(dir, entry.name)
 			try {
-				const text = readFileSync(full, "utf8")
-				const m = /^---\n([\s\S]*?)\n---/.exec(text)
-				const fm: Record<string, string> = {}
-				if (m) {
-					for (const line of m[1]!.split("\n")) {
-						const kv = /^([a-zA-Z_]+):\s*(.*)$/.exec(line.trim())
-						if (kv) fm[kv[1]!] = kv[2]!.replace(/^"|"$|'"$/g, "").trim()
-					}
-				}
-				out.push({
-					name: fm.name ?? f.replace(/\.md$/, ""),
-					displayName: fm.display_name,
-					description: fm.description,
-					model: fm.model,
-					thinking: fm.thinking,
-					deep: fm.deep,
-					file: full,
-				})
+				const result = parseAgentMarkdown(readFileSync(full, "utf8"), full)
+				if (result.ok) agents.push(result.agent)
+				else broken.push({ name: entry.name.replace(/\.md$/, ""), deep: 1, body: "", file: full, broken: result.error })
 			} catch (e) {
-				out.push({ name: f, file: full, broken: String(e instanceof Error ? e.message : e).slice(0, 100) })
+				broken.push({
+					name: entry.name.replace(/\.md$/, ""),
+					deep: 1,
+					body: "",
+					file: full,
+					broken: String(e instanceof Error ? e.message : e).slice(0, 100),
+				})
 			}
 		}
 	} catch {
 		/* dir missing: empty */
 	}
-	return out
+	agents.sort((a, b) => a.name.localeCompare(b.name))
+	broken.sort((a, b) => a.file.localeCompare(b.file))
+	return [...agents, ...broken]
+}
+
+/** Frontmatter updates: `undefined` leaves a key untouched, `null` removes
+ * the line (the "inherit" spelling), a value writes/replaces it. */
+export interface AgentFrontmatterUpdates {
+	model?: string | null
+	thinking?: string | null
+	deep?: number | null
 }
 
 /**
- * Edit one frontmatter field of an agent definition file (row 30 write
- * half; host-session.ts:492-507 parity). Reads `<home>/agents/<name>.md`,
- * replaces the `field:` line in place, inserts into the existing
- * frontmatter block when the field is new, or prepends a frontmatter block
- * to a body-only file. Throws on a missing file (the caller paints it).
+ * Apply frontmatter updates in place (tui-pi `updateAgentFrontmatter`
+ * parity): existing lines are rewritten where they are, missing keys are
+ * inserted before the closing fence, `null` removes the line, CRLF is
+ * preserved and a no-op returns without touching the file. Resolves an
+ * error message, or `undefined` on success.
+ */
+export function updateAgentFrontmatter(path: string, updates: AgentFrontmatterUpdates): string | undefined {
+	let text: string
+	try {
+		text = readFileSync(path, "utf8")
+	} catch (e) {
+		return `cannot read ${path}: ${String(e instanceof Error ? e.message : e)}`
+	}
+	const eol = text.includes("\r\n") ? "\r\n" : "\n"
+	const lines = text.split(/\r?\n/)
+	const bounds = frontmatterBounds(lines)
+	if (bounds === undefined) return "missing frontmatter (file must start with `---`)"
+	const pending: Array<[string, string | null]> = []
+	if (updates.model !== undefined) pending.push(["model", updates.model])
+	if (updates.thinking !== undefined) pending.push(["thinking", updates.thinking])
+	if (updates.deep !== undefined) pending.push(["deep", updates.deep === null ? null : String(updates.deep)])
+	let changed = false
+	let close = bounds.close
+	for (const [key, value] of pending) {
+		let found = -1
+		for (let i = 1; i < close; i++) {
+			if (KEY_LINE.test(lines[i]!) && lines[i]!.trimStart().startsWith(`${key}:`)) {
+				found = i
+				break
+			}
+		}
+		const rendered = value === null ? null : `${key}: ${value}`
+		if (found >= 0) {
+			if (rendered === null) {
+				lines.splice(found, 1)
+				close--
+				changed = true
+			} else if (lines[found] !== rendered) {
+				lines[found] = rendered
+				changed = true
+			}
+		} else if (rendered !== null) {
+			lines.splice(close, 0, rendered)
+			close++
+			changed = true
+		}
+	}
+	if (!changed) return undefined
+	try {
+		writeFileSync(path, lines.join(eol))
+		return undefined
+	} catch (e) {
+		return String(e instanceof Error ? e.message : e)
+	}
+}
+
+/**
+ * Edit one frontmatter field of an agent definition file. `value === null`
+ * clears the key (inherit). The caller resolves the agent by its exact
+ * `name` (=== file stem after parse). Resolves an error message, else
+ * `undefined`.
  */
 export function setAgentField(
 	name: string,
 	field: "model" | "thinking" | "deep",
-	value: string,
+	value: string | null,
 	explicitHome?: string,
-): void {
+): string | undefined {
 	const home = resolveDshHome(explicitHome)
 	const file = join(home, "agents", `${name}.md`)
-	const text = readFileSync(file, "utf8")
-	const lineRe = new RegExp(`^(${field}):\\s*.*$`, "m")
-	let next: string
-	if (lineRe.test(text)) {
-		next = text.replace(lineRe, `$1: ${value}`)
-	} else if (/^---\n[\s\S]*?\n---/.test(text)) {
-		// insert into the frontmatter block before its closing ---
-		next = text.replace(/^---\n/, `---\n${field}: ${value}\n`)
-	} else {
-		next = `---\n${field}: ${value}\n---\n\n` + text
+	if (field === "deep") {
+		if (value !== null && !/^\d+$/.test(value)) {
+			return `expected a non-negative integer, got "${value}"`
+		}
+		return updateAgentFrontmatter(file, { deep: value === null ? null : Number(value) })
 	}
-	writeFileSync(file, next)
+	return updateAgentFrontmatter(file, { [field]: value })
 }
 
 /**

@@ -20,7 +20,8 @@ Remote session layer (bucket (b)) build on.
 | `remote-session-ops.ts` | Session-side ops (wave 2): `session/list` + retention filter, stored transcript via page/follow snapshot, search/rename/fork, skills/commands, journal mappers (turn grouping, tail rows), `RemoteTailSession` (foreign follow + page gap repair; rows 13–20, 26, 27, 17). |
 | `remote-model.ts` | Model routes (wave 2): `session/modelCatalog` + `selectModel` round-trip, provider catalog, projections-based live selection, catalog-default cold-boot label (rows 21–22). |
 | `remote-settings.ts` | Settings + credentials (wave 2): `settings/describe|mutate|update|replace` shaped to the in-process seams, `credentials/describe|set|unset` (rows 24–25). |
-| `remote-local-fs.ts` | Client-local FS clusters (wave 3): `/agents` read/write over `<dshHome>/agents/*.md` + the `/repair` session-store scan — host-session.ts semantics, injectable home (rows 30–31). |
+| `remote-local-fs.ts` | Client-local FS clusters (wave 3): `/agents` read/write over `<dshHome>/agents/*.md` (tui-pi frontmatter parity: CRLF/quotes/deep default/name==file, in-place write-back) + the `/repair` session-store scan — injectable home (rows 30–31). |
+| `remote-agent-profiles.ts` | Agent model/thinking composition (tui-pi agent-runtime parity): nearest `.dsh-profile` pin (+) `model-profiles.json` overrides; pinned commits write `profiles[].agents[name]` atomically, unpinned commits write the frontmatter. The store's `current` is NOT reused (that key drives `agent/config.ts`). |
 | `remote-git.ts` | Client-local `git branch --show-current` probe (wave 3; row 39 — no VCS namespace on the wire). |
 | `remote-exec-mode.ts` | `agentPresets/read` entry-list scan for the `tool-presentation` row's `mode` — the executionMode badge discriminator, with the documented deployment-default assumption (row 37). |
 | `remote-attachments.ts` | `/attach` staging → inline `session/prompt` image parts (the wire-chosen route over upload receipts — the doc says why), `session/attachment` read-back, `GET /api/file?path=` bytes helper (rows 35–36). |
@@ -191,7 +192,8 @@ class RemoteHostSession {
   startRemoteTail(id) / stopRemoteTail()      // read-only foreign session/follow + page gap repair (row 17)
   onSettingsUpdated / onHostCommandsChanged / onPluginsChanged / onCredentialUpdated   // $events push listeners
   // — wave 3 (rows 29–37 + 39 + 41; full parity, see remote-host-session.ts header) —
-  listAgents() / agentSet(name, field, value)        // client-local ~/.dsh/agents/*.md (row 30)
+  listAgents() / agentSet(name, field, value|null)    // client-local ~/.dsh/agents/*.md, COMPOSED model/thinking + pin (row 30)
+  agentBody(name) / modelEfforts(provider, model)     // /agents viewer body + the model's real effort ladder
   repairScan()                                       // client-local session-store scan (row 31)
   reloadPlugins() / lastRestartPid()                 // same-port host restart + carrier reconnect (row 29)
   btwAsk(question, snapshot, onDelta?)               // reused throwaway session, btw: marker (row 32)

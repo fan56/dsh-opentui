@@ -75,8 +75,10 @@ export interface ShellSessionSurface {
 	// dock / panels
 	childTranscript(id: string): string[]
 	steerChild(id: string, text: string): boolean
-	listAgents(): { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep?: string; file: string; broken?: string }[]
-	agentSet(name: string, field: "model" | "thinking" | "deep", value: string): void
+	listAgents(): { name: string; displayName?: string; description?: string; model?: string; thinking?: string; deep: number; body: string; file: string; pin?: string; broken?: string }[]
+	agentSet(name: string, field: "model" | "thinking" | "deep", value: string | null): { target: { kind: "profile"; name: string } | { kind: "frontmatter" }; error?: string }
+	agentBody(name: string): string
+	modelEfforts(providerID: string, modelID: string): Promise<{ id: string; name: string; description?: string }[]>
 	repairScan(): string[]
 	btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string>
 	attachImage(path: string): Promise<string>
