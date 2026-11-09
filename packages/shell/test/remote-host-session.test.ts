@@ -715,6 +715,60 @@ describe("RemoteHostSession session ops", () => {
 		await h.session.dispose()
 	})
 
+	test("resolveCurrentPresetId: a staged switch landing mid-await is not overwritten by the stale projection", async () => {
+		const releases: ((value: unknown) => void)[] = []
+		let creates = 0
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") {
+					creates += 1
+					// No preset on the first create (the footer reads it off the
+					// projection); the /preset re-create answers it. Blank-reuse:
+					// the SAME id, so the sessionId guard cannot tell the await
+					// went stale.
+					return creates === 1 ? { sessionId: "sess-p7" } : { sessionId: "sess-p7", agentPreset: "reviewer" }
+				}
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") {
+					return new Promise((resolve) => {
+						releases.push(resolve)
+					})
+				}
+				return {}
+			},
+		})
+		const { cb } = callbacks()
+		// [0] is the turn-end boundary refresh; the footer's own read is [1].
+		const first = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		h.lastSocket().item(snapshotFrame("sess-p7"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await first
+		expect(h.session.currentPresetId()).toBeUndefined()
+
+		// The footer's read hangs on the host; /preset then stages `reviewer`
+		// and its session/create re-creates sess-p7 with the new composition.
+		const resolving = h.session.resolveCurrentPresetId()
+		await until(() => releases.length >= 2)
+		h.session.switchPreset("reviewer")
+		const second = h.session.turn("go", cb)
+		await until(() => h.connection.rpcCalls.filter((c) => c.method === "session/create").length === 2)
+		await until(() => h.sockets.length > 1)
+		h.lastSocket().item(snapshotFrame("sess-p7"))
+		await until(() => h.connection.rpcCalls.filter((c) => c.method === "session/prompt").length === 2)
+		expect(h.session.currentPresetId()).toBe("reviewer")
+		// The hung projection answers the pre-switch composition: folding it
+		// in would stick the footer to `ptc` for the rest of the session.
+		releases[1]!({ values: { agentPreset: "ptc" } })
+		releases[0]!({ values: { agentPreset: "ptc" } })
+		expect(await resolving).toBe("reviewer")
+		expect(h.session.currentPresetId()).toBe("reviewer")
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await second
+		await h.session.dispose()
+	})
+
 	test("resolveCurrentPresetId: a staged switch answers before the session exists", async () => {
 		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-p5") })
 		h.session.switchPreset("reviewer")

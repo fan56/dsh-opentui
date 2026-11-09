@@ -1060,6 +1060,12 @@ export class RemoteHostSession {
 		try {
 			const proj = await this.#modelClient().sessionProjections(sessionId)
 			if (this.#sessionId !== sessionId) return undefined // session moved on mid-await
+			// A `session/create` answer may have staged the preset while this
+			// await was in flight (blank-reuse keeps the sessionId, so the guard
+			// above cannot see it). The staged id is newer than the projection
+			// we asked for: honour it instead of folding the stale row in and
+			// sticking to it forever.
+			if (this.#presetId !== undefined) return this.#presetId
 			if (proj.agentPreset !== undefined && proj.agentPreset !== this.#presetId) {
 				this.#presetId = proj.agentPreset
 				// Same follow-up as the opening-header adoption: the verdict
