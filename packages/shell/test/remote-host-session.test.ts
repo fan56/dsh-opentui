@@ -1091,3 +1091,42 @@ describe("RemoteHostSession batch-9b gap settlement", () => {
 		await h.session.dispose()
 	})
 })
+
+describe("RemoteHostSession context window", () => {
+	test("switching to a window-less route clears the previous route's window (no stale denominator)", async () => {
+		const catalog = {
+			groups: [
+				{ id: "prov-a", name: "Prov A", models: [{ id: "big", name: "Big", contextWindow: 200000 }] },
+				{ id: "prov-b", name: "Prov B", models: [{ id: "tiny", name: "Tiny" }] },
+			],
+			failures: [],
+		}
+		let selection: { provider: string; model: string } = { provider: "prov-a", model: "big" }
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") return { sessionId: "sess-cw", agentPreset: "review" }
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") return { values: { modelSelection: { next: selection } } }
+				if (method === "session/modelCatalog") return catalog
+				return {}
+			},
+		})
+		const { cb } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => h.session.currentSessionId() !== undefined)
+		// Settle the follow attach (an empty snapshot) so dispose() below can
+		// complete; the turn itself stays pending and is resolved by dispose.
+		await until(() => h.sockets.length > 0)
+		h.lastSocket().item(snapshotFrame("sess-cw"))
+
+		// Route A resolves its disclosed window.
+		await until(() => h.session.contextWindow() === 200000)
+		// Switch to route B whose catalog row names no contextWindow: the
+		// previous window must clear, not linger as the footer's denominator.
+		selection = { provider: "prov-b", model: "tiny" }
+		await until(() => h.session.contextWindow() === undefined)
+		expect(h.session.sessionInfo().contextWindow).toBeUndefined()
+		await h.session.dispose()
+		await pending.catch(() => {})
+	})
+})

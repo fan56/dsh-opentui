@@ -701,8 +701,10 @@ export class RemoteHostSession {
 			if (key === this.#contextWindowKey) return
 			this.#contextWindowKey = key
 			const window = await this.#modelClient().modelContextWindow(selection.provider, selection.model)
-			// A stale resolution (the route moved on mid-await) never lands.
-			if (key === this.#contextWindowKey && typeof window === "number") this.#contextWindow = window
+			// A stale resolution (the route moved on mid-await) never lands. A
+			// key match always lands — a window-less route must clear the
+			// previous route's window, not keep it as a stale denominator.
+			if (key === this.#contextWindowKey) this.#contextWindow = (typeof window === "number" && window > 0) ? window : undefined
 		} catch {
 			/* unknown window → the footer degrades gracefully */
 		}
