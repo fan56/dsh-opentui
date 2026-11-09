@@ -61,7 +61,8 @@ export interface PowerlineSegment {
 	/**
 	 * Semantic opt-out of the footer gradient: `danger` / `warning` / `error`
 	 * segments keep their feedback fill (context >90% is the live case) while
-	 * every other segment walks the single blue ramp. Static — no animation.
+	 * every other segment walks the multi-hue deep→light ramp. Static — no
+	 * animation.
 	 */
 	semantic?: "danger" | "warning" | "error"
 }
@@ -278,26 +279,7 @@ export function providerFill(theme: ComponentTheme, brand: PowerlineColor): RGBA
 	return last ?? (theme.hue.interactive[500] as RGBA)
 }
 
-/**
- * No-provider gradient anchors: the dsh-blue dark blue ramp, already ordered
- * deepest → lightest (#2a3d9e → #a5b9ff). With a theme the anchors are read
- * off the interactive hue scale instead (see powerlineGradientAnchors).
- */
-export const POWERLINE_GRADIENT_FALLBACK = [
-	"#2a3d9e",
-	"#3b53ce",
-	"#4d6bfe",
-	"#5c76fe",
-	"#6b82fe",
-	"#8599ff",
-	"#a5b9ff",
-] as const
-
-/** The hue steps the gradient samples. Bounded to 100..700 so every
- * interpolated fill keeps the autoContrast label ≥ 4.5:1 on dsh-blue. */
-const POWERLINE_GRADIENT_STEPS = ["100", "200", "300", "400", "500", "600", "700"] as const
-
-/** Linear sRGB interpolation → #rrggbb (for the gradient continuum). */
+/** Linear sRGB interpolation → #rrggbb (for widget fills). */
 export function mixPowerlineColor(a: PowerlineColor, b: PowerlineColor, t: number): string {
 	const [r1, g1, b1] = colorRgb(a)
 	const [r2, g2, b2] = colorRgb(b)
@@ -309,36 +291,178 @@ export function mixPowerlineColor(a: PowerlineColor, b: PowerlineColor, t: numbe
 }
 
 /**
- * Gradient endpoints for a theme: the darkest and lightest step of the
- * interactive hue scale within 100..700, sorted by WCAG luminance. Sorting
- * (instead of assuming 700→100) keeps "deep → light" true for light themes
- * too, where the numeric scale runs the other way (blue[100] is the dark
- * end on dsh-blue light).
+ * Multi-hue footer ramp (footer-ramp batch): the strip is no longer one blue
+ * family. Segments take their hue from the theme's named hue families in this
+ * deep→light order — blue → purple → cyan → green → yellow → orange — while
+ * the fill's WCAG luminance is the primary ordering. Hue is secondary; the
+ * monotonic luminance is what makes the band read as one ordered strip.
  */
-export function powerlineGradientAnchors(theme?: ComponentTheme): [PowerlineColor, PowerlineColor] {
-	const fallback: [PowerlineColor, PowerlineColor] = [
-		POWERLINE_GRADIENT_FALLBACK[0],
-		POWERLINE_GRADIENT_FALLBACK[POWERLINE_GRADIENT_FALLBACK.length - 1]!,
-	]
-	if (!theme) return fallback
-	const scale = (theme.hue.interactive ?? theme.hue.accent) as unknown as Record<string, RGBA | undefined>
-	const steps = POWERLINE_GRADIENT_STEPS.map((step) => scale[step]).filter((value): value is RGBA => value !== undefined)
-	if (steps.length < 2) return fallback
-	const sorted = [...steps].sort((a, b) => relativeLuminance(a) - relativeLuminance(b))
-	return [sorted[0]!, sorted[sorted.length - 1]!]
+export const POWERLINE_RAMP_FAMILIES = ["blue", "purple", "cyan", "green", "yellow", "orange"] as const
+
+/** Deepest / lightest WCAG relative luminance (0..1) the ramp spans. Linear
+ * spacing keeps the deep half far enough apart in RGB to read as segments
+ * (geometric spacing collapsed the first steps into near-black neighbours). */
+export const POWERLINE_RAMP_DEEP_LUMINANCE = 0.02
+export const POWERLINE_RAMP_LIGHT_LUMINANCE = 0.55
+
+/** Hue steps scanned when extracting a family's representative hue/saturation:
+ * the most saturated step carries the family's true hue angle. */
+const POWERLINE_RAMP_HUE_STEPS = ["100", "200", "300", "400", "500", "600", "700", "800", "900"] as const
+
+/** No-theme fallback hue angles (dsh-blue family hues), used when no
+ * ThemeProvider is mounted. Same order as POWERLINE_RAMP_FAMILIES. */
+const POWERLINE_RAMP_FALLBACK_HUES: Record<string, { hue: number; saturation: number }> = {
+	blue: { hue: 225, saturation: 0.75 },
+	purple: { hue: 262, saturation: 0.7 },
+	cyan: { hue: 190, saturation: 0.65 },
+	green: { hue: 140, saturation: 0.62 },
+	yellow: { hue: 75, saturation: 0.75 },
+	orange: { hue: 25, saturation: 0.72 },
+}
+
+interface PowerlineRampFamily {
+	name: string
+	hue: number
+	saturation: number
+}
+
+/** [r,g,b] (0..255) → HSL (hue degrees, saturation/lightness 0..1). */
+function rgbToHsl([r, g, b]: [number, number, number]): { hue: number; saturation: number; lightness: number } {
+	const rn = r / 255
+	const gn = g / 255
+	const bn = b / 255
+	const max = Math.max(rn, gn, bn)
+	const min = Math.min(rn, gn, bn)
+	const lightness = (max + min) / 2
+	const delta = max - min
+	if (delta === 0) return { hue: 0, saturation: 0, lightness }
+	const saturation = lightness > 0.5 ? delta / (2 - max - min) : delta / (max + min)
+	let hue: number
+	if (max === rn) hue = ((gn - bn) / delta) % 6
+	else if (max === gn) hue = (bn - rn) / delta + 2
+	else hue = (rn - gn) / delta + 4
+	hue *= 60
+	if (hue < 0) hue += 360
+	return { hue, saturation, lightness }
+}
+
+/** HSL → #rrggbb. */
+function hslToHex(hue: number, saturation: number, lightness: number): string {
+	const c = (1 - Math.abs(2 * lightness - 1)) * saturation
+	const hp = (((hue % 360) + 360) % 360) / 60
+	const x = c * (1 - Math.abs((hp % 2) - 1))
+	let r = 0
+	let g = 0
+	let b = 0
+	if (hp < 1) [r, g, b] = [c, x, 0]
+	else if (hp < 2) [r, g, b] = [x, c, 0]
+	else if (hp < 3) [r, g, b] = [0, c, x]
+	else if (hp < 4) [r, g, b] = [0, x, c]
+	else if (hp < 5) [r, g, b] = [x, 0, c]
+	else [r, g, b] = [c, 0, x]
+	const m = lightness - c / 2
+	const ch = (value: number): string => Math.round((value + m) * 255).toString(16).padStart(2, "0")
+	return `#${ch(r)}${ch(g)}${ch(b)}`
+}
+
+/** The family's representative hue/saturation: the most saturated step. */
+function rampFamilyFromScale(name: string, scale: Record<string, RGBA | undefined>): PowerlineRampFamily | undefined {
+	let best: PowerlineRampFamily | undefined
+	let bestSaturation = -1
+	for (const step of POWERLINE_RAMP_HUE_STEPS) {
+		const value = scale[step]
+		if (!value) continue
+		const { hue, saturation } = rgbToHsl(colorRgb(value))
+		if (saturation > bestSaturation) {
+			bestSaturation = saturation
+			best = { name, hue, saturation: Math.min(0.82, Math.max(0.45, saturation)) }
+		}
+	}
+	return best
 }
 
 /**
- * The single-hue footer ramp: `count` fills walking from the theme's deepest
- * blue to its lightest, left to right. Brand (index 0) is always the deepest
- * step; the continuum interpolation keeps the steps monotonic in brightness
- * for any segment count (7 or 9 segments resolve distinctly).
+ * The hue families one ramp walks, in deep→light order.
+ *
+ * Availability rule (themes differ): use the named families present in the
+ * theme, in POWERLINE_RAMP_FAMILIES order (dsh-blue has all but yellow;
+ * tokyonight dark blue/purple/green; gruvbox dark green/yellow/orange).
+ * - ≥3 families → use them as-is.
+ * - <3 families → append `red` (danger hue, last resort) when the theme has
+ *   it, then cycle the available list to fill three slots so the ramp still
+ *   spans hue transitions.
+ * - no named family at all → use the accent/interactive hue (monochrome
+ *   ramp, legacy behavior); with no theme at all, the hardcoded dsh-blue
+ *   family hues.
+ */
+export function powerlineRampFamilies(theme?: ComponentTheme): PowerlineRampFamily[] {
+	if (!theme) return POWERLINE_RAMP_FAMILIES.map((name) => ({ name, ...POWERLINE_RAMP_FALLBACK_HUES[name]! }))
+	const hues = theme.hue as unknown as Record<string, Record<string, RGBA | undefined> | undefined>
+	const available = POWERLINE_RAMP_FAMILIES.map((name) => {
+		const scale = hues[name]
+		return scale ? rampFamilyFromScale(name, scale) : undefined
+	}).filter((family): family is PowerlineRampFamily => family !== undefined)
+	if (available.length >= 3) return available
+	const redScale = hues.red
+	const red = redScale ? rampFamilyFromScale("red", redScale) : undefined
+	if (red) available.push(red)
+	if (available.length === 0) {
+		const accentScale = hues.accent ?? hues.interactive
+		const accent = accentScale ? rampFamilyFromScale("accent", accentScale) : undefined
+		return accent ? [accent] : POWERLINE_RAMP_FAMILIES.map((name) => ({ name, ...POWERLINE_RAMP_FALLBACK_HUES[name]! }))
+	}
+	// Cycle the available families to three slots (documented fallback).
+	const expanded = [...available]
+	while (expanded.length < 3) expanded.push(available[expanded.length % available.length]!)
+	return expanded
+}
+
+/** Shortest signed arc between two hue angles, −180..180. */
+function shortestHueArc(delta: number): number {
+	let arc = delta
+	if (arc > 180) arc -= 360
+	if (arc < -180) arc += 360
+	return arc
+}
+
+/** HSL lightness whose rendered fill lands on `target` relative luminance.
+ * For a fixed hue/saturation every RGB channel rises with HSL lightness, so
+ * the luminance is monotonic and the binary search is exact. */
+function lightnessForLuminance(hue: number, saturation: number, target: number): number {
+	let lo = 0
+	let hi = 1
+	for (let i = 0; i < 32; i++) {
+		const mid = (lo + hi) / 2
+		if (relativeLuminance(hslToHex(hue, saturation, mid)) < target) lo = mid
+		else hi = mid
+	}
+	return (lo + hi) / 2
+}
+
+/**
+ * The multi-hue footer ramp: `count` fills, left to right, strictly
+ * increasing in WCAG relative luminance (deep → light) and walking the
+ * theme's hue families in order. Segment i's hue/saturation is interpolated
+ * between the two neighbouring family anchors, so hue transitions smoothly
+ * between anchors; its HSL lightness is solved to hit the luminance target.
+ * The luminance law never reads a theme's numeric step direction, so light
+ * themes (whose scales run the other way) take the same deep→light order.
  */
 export function powerlineGradient(theme: ComponentTheme | undefined, count: number): PowerlineColor[] {
 	if (count <= 0) return []
-	const [deep, light] = powerlineGradientAnchors(theme)
-	if (count === 1) return [deep]
-	return Array.from({ length: count }, (_, i) => mixPowerlineColor(deep, light, i / (count - 1)))
+	const families = powerlineRampFamilies(theme)
+	return Array.from({ length: count }, (_, i) => {
+		const progress = count === 1 ? 0 : i / (count - 1)
+		const slot = progress * (families.length - 1)
+		const lower = families[Math.floor(slot)]!
+		const upper = families[Math.min(families.length - 1, Math.ceil(slot))]!
+		const blend = slot - Math.floor(slot)
+		const hue = lower.hue + shortestHueArc(upper.hue - lower.hue) * blend
+		const saturation = lower.saturation + (upper.saturation - lower.saturation) * blend
+		const target =
+			POWERLINE_RAMP_DEEP_LUMINANCE + (POWERLINE_RAMP_LIGHT_LUMINANCE - POWERLINE_RAMP_DEEP_LUMINANCE) * progress
+		return hslToHex(hue, saturation, lightnessForLuminance(hue, saturation, target))
+	})
 }
 
 /**
@@ -403,8 +527,8 @@ export function resolvePalette(theme?: ComponentTheme) {
  *
  * Footer gradient (user feedback batch): when the segment list is assembled
  * through sessionFooterSegments, applyPowerlineGradient repaints the brand
- * as the DEEPEST step of the single blue ramp. This builder keeps the
- * identity fill for standalone callers/tests.
+ * as the DEEPEST step of the multi-hue ramp. This builder keeps the identity
+ * fill for standalone callers/tests.
  */
 export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode: SkinColorMode = "dark"): PowerlineSegment {
 	const label = presetLabel ? `dsh(${presetLabel})` : "dsh"
@@ -718,9 +842,10 @@ export function PowerlineFooter(props: {
  * speed. Omitted-data builders (null) drop out.
  *
  * Two fixes from the footer-polish feedback batch ride here:
- *   - the strip is repainted through applyPowerlineGradient: one blue ramp
- *     running deep→light left to right (brand = deepest), with the >90%
- *     context danger fill as the only semantic exception;
+ *   - the strip is repainted through applyPowerlineGradient: a multi-hue ramp
+ *     (blue → purple → cyan → green → yellow → orange) running deep→light
+ *     left to right (brand = deepest), with the >90% context danger fill as
+ *     the only semantic exception;
  *   - an unspecified effort resolves to `high` (effectiveEffort), while an
  *     explicit level — `off` and provider-native ids included — always wins.
  */

@@ -11,7 +11,10 @@ import {
 	messagesSegment,
 	modelSegment,
 	powerlinePalette,
+	powerlineGradient,
+	powerlineRampFamilies,
 	providerSegment,
+	relativeLuminance,
 	resolvePalette,
 	sessionFooterSegments,
 	speedSegment,
@@ -315,13 +318,19 @@ describe("provider fill never collides with the brand fill (real parse chain)", 
 })
 
 /**
- * Footer-polish feedback batch (item 1): the strip must read as ONE blue
- * ramp running deep→light left to right, labels keep ≥4.5:1, and only the
- * >90% context danger fill is allowed to keep a warning color.
+ * Footer-ramp feedback batch (item 1; supersedes the single blue ramp): the
+ * strip keeps its segment identity/order but is no longer all blue. Hues are
+ * drawn from the theme's named hue families while the fills stay strictly
+ * ordered by WCAG relative luminance (deep→light). These tests pin the
+ * ordering, hue diversity, label contrast, the >90% danger exception and the
+ * missing-family fallback, across all three acceptance themes, dark AND light.
  */
-describe("footer gradient (single blue ramp, deep→light)", () => {
-	const themeFor = (mode: "dark" | "light") =>
-		createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), mode))
+describe("footer gradient (multi-hue ramp, ordered deep→light)", () => {
+	const themeFor = (name: "dsh-blue" | "tokyonight" | "gruvbox", mode: "dark" | "light") => {
+		const source = name === "dsh-blue" ? dshBlueJson : name === "tokyonight" ? tokyonightJson : gruvboxJson
+		const document = name === "dsh-blue" ? getDshBlueTheme() : parseTheme(source as never, name)
+		return createComponentTheme(() => resolveThemeDocument(document, mode))
+	}
 
 	const fullStrip = (theme: ReturnType<typeof themeFor>) =>
 		sessionFooterSegments({
@@ -338,25 +347,88 @@ describe("footer gradient (single blue ramp, deep→light)", () => {
 			theme,
 		})
 
-	for (const mode of ["dark", "light"] as const) {
-		test(`${mode}: fills are strictly monotonic deep→light and labels stay ≥4.5:1`, () => {
-			const theme = themeFor(mode)
-			const segs = fullStrip(theme)
-			expect(segs.length).toBe(9) // brand + 8 data segments
-			const fills = segs.map((segment) => segment.bg)
-			// Brand is the DEEPEST step; every later segment is lighter.
-			for (let i = 1; i < fills.length; i++) {
-				expect(brightness(fills[i]!)).toBeGreaterThan(brightness(fills[i - 1]!))
-			}
-			// Label contrast contract on every fill.
-			for (const fill of fills) {
-				expect(contrastRatio(fill, autoContrast(fill))).toBeGreaterThanOrEqual(4.5)
-			}
-		})
+	type Fill = ReturnType<typeof powerlineGradient>[number]
+
+	/** Hue angle in degrees (for the diversity assertion only). */
+	const hueOf = (color: Fill): number => {
+		const [r, g, b] = colorRgb(color).map((value) => value / 255) as [number, number, number]
+		const max = Math.max(r, g, b)
+		const min = Math.min(r, g, b)
+		const delta = max - min
+		if (delta === 0) return 0
+		const raw = max === r ? ((g - b) / delta) % 6 : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4
+		return (raw * 60 + 360) % 360
+	}
+	/** Number of distinct 30° hue buckets across the fills. */
+	const hueBuckets = (fills: readonly Fill[]): number => new Set(fills.map((fill) => Math.floor(hueOf(fill) / 30))).size
+
+	const expectOrdered = (fills: readonly Fill[], minDistance = 30): void => {
+		for (let i = 1; i < fills.length; i++) {
+			expect(relativeLuminance(fills[i]!)).toBeGreaterThan(relativeLuminance(fills[i - 1]!))
+			// Neighbours must still read as segments. The deep half is the tight
+			// end; the old single blue ramp measured as low as 21 euclid here.
+			expect(colorDistance(fills[i]!, fills[i - 1]!)).toBeGreaterThanOrEqual(minDistance)
+		}
 	}
 
+	for (const themeName of ["dsh-blue", "tokyonight", "gruvbox"] as const) {
+		for (const mode of ["dark", "light"] as const) {
+			test(`${themeName} ${mode}: strict luminance ascension, labels ≥4.5:1, ≥3 hues`, () => {
+				const theme = themeFor(themeName, mode)
+				const segs = fullStrip(theme)
+				expect(segs.length).toBe(9) // brand + 8 data segments
+				const fills = segs.map((segment) => segment.bg)
+				expectOrdered(fills)
+				for (const fill of fills) {
+					expect(contrastRatio(fill, autoContrast(fill))).toBeGreaterThanOrEqual(4.5)
+				}
+				expect(hueBuckets(fills)).toBeGreaterThanOrEqual(3)
+			})
+		}
+	}
+
+	test("families follow the preferred order and skip those the theme lacks", () => {
+		const names = (name: "dsh-blue" | "tokyonight" | "gruvbox", mode: "dark" | "light") =>
+			powerlineRampFamilies(themeFor(name, mode)).map((family) => family.name)
+		expect(names("dsh-blue", "dark")).toEqual(["blue", "purple", "cyan", "green", "orange"])
+		expect(names("dsh-blue", "light")).toEqual(["blue", "purple", "cyan", "green", "orange"])
+		// tokyonight dark has no cyan/orange/yellow; gruvbox dark has no blue family.
+		expect(names("tokyonight", "dark")).toEqual(["blue", "purple", "green"])
+		expect(names("gruvbox", "dark")).toEqual(["green", "yellow", "orange"])
+	})
+
+	test("missing-family fallback: cycles what exists, then falls back to accent", () => {
+		const base = themeFor("dsh-blue", "dark")
+		const hue = base.hue
+		const themeWith = (families: string[]) =>
+			({
+				...base,
+				hue: Object.fromEntries(families.map((name) => [name, (hue as unknown as Record<string, unknown>)[name]])),
+			}) as unknown as Parameters<typeof powerlineGradient>[0]
+
+		// Two named families → cycle to three slots (last family repeats).
+		const twoFamily = themeWith(["purple", "green"])
+		expect(powerlineRampFamilies(twoFamily).map((family) => family.name)).toEqual(["purple", "green", "purple"])
+		expectOrdered(powerlineGradient(twoFamily, 9))
+
+		// No named family → accent/interactive hue only: monochrome, still ordered.
+		const noFamily = themeWith(["accent", "interactive"])
+		expect(powerlineRampFamilies(noFamily).map((family) => family.name)).toEqual(["accent"])
+		const mono = powerlineGradient(noFamily, 9)
+		// Single-hue fallback: luminance is the only ordering channel, so the
+		// light half is tighter than the multi-hue ramps (the legacy blue ramp
+		// measured 19–21 euclid there).
+		expectOrdered(mono, 15)
+		expect(hueBuckets(mono)).toBe(1)
+
+		// No theme at all → hardcoded dsh-blue family hues; still ordered and multi-hue.
+		const fallback = powerlineGradient(undefined, 9)
+		expectOrdered(fallback)
+		expect(hueBuckets(fallback)).toBeGreaterThanOrEqual(3)
+	})
+
 	test("danger context (>90%) keeps the error fill and skips the ramp", () => {
-		const theme = themeFor("dark")
+		const theme = themeFor("dsh-blue", "dark")
 		const segs = sessionFooterSegments({
 			model: "m",
 			contextTokens: 950,
@@ -366,11 +438,8 @@ describe("footer gradient (single blue ramp, deep→light)", () => {
 		const context = segs.find((segment) => segment.text.startsWith("🧠"))!
 		expect(context.semantic).toBe("danger")
 		expect(colorDistance(context.bg, theme.text.feedback.error.base)).toBe(0)
-		// The non-semantic neighbours still walk the gradient monotonically.
-		const ramp = segs.filter((segment) => !segment.semantic)
-		for (let i = 1; i < ramp.length; i++) {
-			expect(brightness(ramp[i]!.bg)).toBeGreaterThan(brightness(ramp[i - 1]!.bg))
-		}
+		// The non-semantic neighbours still walk the ramp monotonically.
+		expectOrdered(segs.filter((segment) => !segment.semantic).map((segment) => segment.bg))
 	})
 
 	test("no-provider fallback still yields one monotonic readable ramp", () => {
@@ -383,9 +452,7 @@ describe("footer gradient (single blue ramp, deep→light)", () => {
 			tools: 1,
 		})
 		const fills = segs.map((segment) => segment.bg)
-		for (let i = 1; i < fills.length; i++) {
-			expect(brightness(fills[i]!)).toBeGreaterThan(brightness(fills[i - 1]!))
-		}
+		expectOrdered(fills)
 		for (const fill of fills) {
 			expect(contrastRatio(fill, autoContrast(fill))).toBeGreaterThanOrEqual(4.5)
 		}
