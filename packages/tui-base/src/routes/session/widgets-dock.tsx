@@ -43,6 +43,7 @@ import { useThemeOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../../skin/semantic"
 import type { ComponentTheme } from "../../theme/component"
+import type { HueScale } from "@opencode/theme/tui"
 import { colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type PowerlineColor } from "./powerline"
 
 // ---------------------------------------------------------------------------
@@ -277,6 +278,20 @@ export function todosSummaryLine(rows: readonly SeamRow[]): string {
 	const active = todos.find((todo) => todo.status === "in_progress")
 	const head = `todos [✓]${done}/${todos.length}`
 	return active ? `${head} · ${active.content}` : head
+}
+
+/** The Todos table's box width for a `terminalColumns`-wide terminal.
+ *
+ * The dock slot is rendered with `paddingLeft=1` (the composer's left border
+ * owns column 0), so the box starts at column 1 and must be `columns - 1`
+ * wide for its right border to land on the composer's right border at column
+ * `columns - 1` (0-based). dsh-tui-pi's `panelBoxWidth` is `columns - 2`
+ * (a two-column right gutter when the panel renders at the full terminal
+ * width); here the slot is indented one column and the composer is
+ * full-bleed, so that arithmetic leaves the table's right edge one column
+ * left of the input frame (the screenshot bug). */
+export function todosTableWidth(terminalColumns: number): number {
+	return Math.max(16, terminalColumns - 1)
 }
 
 /** The Todos table (pure, dsh-tui-pi `TodosPanel` parity): a bordered box
@@ -516,43 +531,72 @@ export function activityFrameMode(terminalRows: number, compactRows: number = CO
 	return terminalRows <= compactRows ? "rule" : "frame"
 }
 
-/** No-provider fallback for the active frame border (bright green, not the
- * dark unfocused border.base). #7fd88f on dsh-blue dark background
- * (#0a0a0f) is 11.4:1. */
-export const ACTIVITY_FRAME_BORDER_FALLBACK = "#7fd88f"
+/** No-provider fallback for the active frame border (bright blue, not the
+ * dark unfocused border.base). #7aa2f7 on dsh-blue dark background
+ * (#0a0a0f) is 7.5:1. */
+export const ACTIVITY_FRAME_BORDER_FALLBACK = "#7aa2f7"
 
-/** Bright green steps in preference order for the green hue family:
- * green[200] is the "bright green" step of the dark dsh-blue scale
- * (#7fd88f); 100/300 are the nearest neighbours. */
-const ACTIVITY_GREEN_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
+/** Minimum contrast the active border must clear against the working
+ * background. The frame only exists while a turn runs, so it is the reader's
+ * "something is happening" cue; the user asked for it to be clearly visible,
+ * which raises the old 4.5:1 floor to 6:1. */
+export const ACTIVITY_FRAME_MIN_CONTRAST = 6
+
+/** Bright blue steps in preference order for the blue hue family: blue[200]
+ * is the "bright blue" step of the dark dsh-blue scale (#8599ff, 7.5:1 on
+ * #0a0a0f); 100/300 are the nearest neighbours. 100 is lighter, but on dark
+ * surfaces it starts to wash out toward white, so 200 leads. */
+const ACTIVITY_BLUE_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
 
 /**
- * The green hue window in degrees. Green sits around 120-133°; the 90° floor
- * keeps yellow (~54°) out of the family, the 150° cap keeps cyan (~186°) out.
- * The resolved theme carries no categorical hue NAMES (resolve.ts maps them to
- * scales and drops the labels), so the family is identified by COLOR as the
- * fallback; a name-priority path is impossible at this layer. The saturation
- * floor rejects near-gray swatches whose numeric hue lands in range but which
- * are not visually green.
+ * The blue hue window in degrees. Blue sits around 227-231° in the dsh-blue
+ * scale; the 190° floor keeps cyan (~187°) out of the family, the 250° cap
+ * keeps purple (~262°) out. The resolved theme carries no categorical hue
+ * NAMES (resolve.ts maps them to scales and drops the labels), so the family
+ * is identified by COLOR; a name-priority path is impossible at this layer.
+ * The saturation floor rejects near-gray swatches whose numeric hue lands in
+ * range but which are not visually blue.
  */
-const GREEN_HUE_MIN = 90
-const GREEN_HUE_MAX = 150
-const GREEN_MIN_SATURATION = 0.25
+const BLUE_HUE_MIN = 190
+const BLUE_HUE_MAX = 250
+const BLUE_MIN_SATURATION = 0.25
 
 /** The two contrast poles the fill walk can blend toward. */
 const AUTO_POLE_LIGHT = "#ffffff"
 const AUTO_POLE_DARK = "#000000"
 
-/** True when a swatch reads green — hue angle inside the green window, with a
+/** True when a swatch reads blue — hue angle inside the blue window, with a
  * saturation floor so near-gray swatches whose numeric hue happens to land in
  * range are rejected. */
-function looksGreen(color: RGBA): boolean {
+function looksBlue(color: RGBA): boolean {
 	const [r, g, b] = colorRgb(color)
 	const max = Math.max(r, g, b)
 	const delta = max - Math.min(r, g, b)
-	if (max === 0 || delta / max < GREEN_MIN_SATURATION) return false
+	if (max === 0 || delta / max < BLUE_MIN_SATURATION) return false
 	const hue = hueAngle(color)
-	return hue >= GREEN_HUE_MIN && hue <= GREEN_HUE_MAX
+	return hue >= BLUE_HUE_MIN && hue <= BLUE_HUE_MAX
+}
+
+/** Blue steps of a hue scale in preference order, skipping missing steps. */
+function blueCandidates(scale: HueScale | undefined): RGBA[] {
+	if (!scale) return []
+	return ACTIVITY_BLUE_STEPS.map((step) => scale[step]).filter((value): value is RGBA => value !== undefined)
+}
+
+/**
+ * Pick the readable blue from a scale's steps: the preferred bright step when
+ * it already clears the surface, else the most readable step; a surface no
+ * stock step clears walks the fill AWAY from itself (toward white on dark,
+ * toward black on light) until the 6:1 border contract holds.
+ */
+function readableBlue(candidates: RGBA[], background?: PowerlineColor): string | RGBA | undefined {
+	if (candidates.length === 0) return undefined
+	const preferred = candidates[0]!
+	if (!background) return preferred
+	if (contrastRatio(preferred, background) >= ACTIVITY_FRAME_MIN_CONTRAST) return preferred
+	const best = candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
+	if (contrastRatio(best, background) >= ACTIVITY_FRAME_MIN_CONTRAST) return best
+	return boostUntilContrast(best, background, ACTIVITY_FRAME_MIN_CONTRAST).color
 }
 
 /** HSL hue angle in degrees (0..360); achromatic swatches answer 0. */
@@ -606,39 +650,36 @@ export function boostUntilContrast(
 /**
  * Turn-lifetime activity frame border (user feedback): the frame only exists
  * WHILE a turn is in flight, so its border is always the ACTIVE state — a
- * BRIGHT GREEN instead of the dark border.base (follow-up directive: green,
- * not the footer blue). The green hue family comes from the theme's
- * categorical scales (green[200] on dsh-blue dark = #7fd88f, 11.4:1 against
- * the #0a0a0f background), falling back to the success feedback token when a
- * theme carries no green scale; a surface no stock step clears walks the fill
- * AWAY from itself (toward white on dark, toward black on light) until the
- * border still clears 4.5:1. Static per the contract: border color/weight
- * never animate; the heavy line is chosen at render.
+ * BRIGHT BLUE instead of the dark border.base (latest directive: blue, bright
+ * enough to stand out against the dark surface and stay distinct from the
+ * footer's deep→light blue ramp). The blue hue family comes from the theme's
+ * categorical scales (blue[200] on dsh-blue dark = #8599ff, 7.5:1 against the
+ * #0a0a0f background), falling back to the semantic interactive ramp while it
+ * is blue, then to the action primary text token; a surface no stock step
+ * clears walks the fill AWAY from itself (toward white on dark, toward black
+ * on light) until the border still clears 6:1. Static per the contract:
+ * border color/weight never animate; the heavy line is chosen at render.
  */
 export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA {
 	const background = theme?.background?.base
-	const greenScale = (theme?.categorical ?? []).find((scale) => {
+	const blueScale = (theme?.categorical ?? []).find((scale) => {
 		const swatch = scale[500] ?? scale[400] ?? scale[300]
-		return swatch !== undefined && looksGreen(swatch)
+		return swatch !== undefined && looksBlue(swatch)
 	})
-	const candidates = greenScale
-		? ACTIVITY_GREEN_STEPS.map((step) => greenScale[step]).filter((value): value is RGBA => value !== undefined)
-		: []
-	if (candidates.length > 0) {
-		const preferred = candidates[0]!
-		if (!background) return preferred
-		if (contrastRatio(preferred, background) >= 4.5) return preferred
-		// No single stock step clears the surface; take the most readable step,
-		// then walk away from the surface (white on dark, black on light)
-		// until the contract holds.
-		const best = candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
-		if (contrastRatio(best, background) >= 4.5) return best
-		return boostUntilContrast(preferred, background).color
+	const fromCategorical = readableBlue(blueCandidates(blueScale), background)
+	if (fromCategorical) return fromCategorical
+	// No categorical blue: the semantic interactive ramp is blue in the stock
+	// themes, so keep the frame blue when it still reads blue.
+	const interactive = theme?.hue?.interactive
+	const interactiveSwatch = interactive?.[500] ?? interactive?.[400] ?? interactive?.[300]
+	if (interactiveSwatch && looksBlue(interactiveSwatch)) {
+		const fromInteractive = readableBlue(blueCandidates(interactive), background)
+		if (fromInteractive) return fromInteractive
 	}
-	const success = theme?.text?.feedback?.success?.base
-	if (success) {
-		if (!background || contrastRatio(success, background) >= 4.5) return success
-		return boostUntilContrast(success, background).color
+	const action = theme?.text?.action?.primary?.base
+	if (action) {
+		if (!background || contrastRatio(action, background) >= ACTIVITY_FRAME_MIN_CONTRAST) return action
+		return boostUntilContrast(action, background, ACTIVITY_FRAME_MIN_CONTRAST).color
 	}
 	return ACTIVITY_FRAME_BORDER_FALLBACK
 }
@@ -843,11 +884,13 @@ export function WidgetsDock(props: {
 		() => setDockSpin((s) => s + 1),
 	)
 	const width = () => Math.max(16, dimensions().width - 4)
-	// Todos table width: the tui-pi box spans the widget slot at paddingX=1
-	// (`columns - 2`), independent of the skin's 3-column line indent.
-	// Short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS) collapse it to the
-	// one-line summary so the transcript keeps its ≥6-row floor.
-	const tableWidth = () => Math.max(16, dimensions().width - 2)
+	// Todos table width: the slot carries the one-column left indent (the
+	// composer border owns column 0), so the box spans columns 1..W-1 and its
+	// right border lands on the composer's right border (W-1). See
+	// `todosTableWidth`. Short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS)
+	// collapse it to the one-line summary so the transcript keeps its ≥6-row
+	// floor.
+	const tableWidth = () => todosTableWidth(dimensions().width)
 	const table = () => todosTableLines(props.rows, tableWidth(), dimensions().height)
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
 	// Mitigation 1: the frame's Show reads the DEFERRED latch, not the raw
