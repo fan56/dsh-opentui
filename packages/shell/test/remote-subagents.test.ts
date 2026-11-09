@@ -215,6 +215,73 @@ describe("subagent panel aggregation", () => {
 		panel.stop()
 	})
 
+	test("tail: tool/result content in the STRING shape lands (adapter variance)", async () => {
+		const { panel, lastSocket } = makePanel()
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "printer", childId: "child-str" }))
+		await until(() => lastSocket() !== undefined)
+		const sock = lastSocket()
+		sock.item(snapshotFrame("child-str"))
+		// Some adapters emit the flat STRING instead of the
+		// `{type:'text',text}` block list — blocksText must not silently
+		// drop it (it would leave the row with no tail at all).
+		sock.item({
+			type: "event",
+			event: { type: "tool/result", seq: 2, time: Date.now(), data: { message: { content: "first\nsecond" }, isError: false } },
+		})
+		await until(() => panel.views()[0]!.lastLine === "second")
+		expect(panel.views()[0]!.lastLine).toBe("second")
+		panel.stop()
+	})
+
+	test("tail: a delta after a settled tail starts FRESH — no 'hiLet me' concatenation", async () => {
+		const { panel, lastSocket } = makePanel()
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "looper", childId: "child-cat" }))
+		await until(() => lastSocket() !== undefined)
+		const sock = lastSocket()
+		sock.item(snapshotFrame("child-cat"))
+		const delta = (text: string) =>
+			sock.item(streamFrame({ type: "chunk", attemptId: "a", revision: 0, index: 0, time: 2, chunk: { type: "text-delta", index: 0, text } }))
+		// 1) settled assistant/message, then the next round's first delta
+		sock.item({
+			type: "event",
+			event: { type: "assistant/message", seq: 1, time: Date.now(), data: { message: { content: [{ type: "text", text: "hi" }] } } },
+		})
+		await until(() => panel.views()[0]!.lastLine === "hi")
+		delta("Let me")
+		await until(() => panel.views()[0]!.lastLine !== "hi")
+		expect(panel.views()[0]!.lastLine).toBe("Let me")
+		// 2) same law after a tool-result tail fold
+		sock.item({
+			type: "event",
+			event: { type: "tool/result", seq: 2, time: Date.now(), data: { message: { content: [{ type: "text", text: "printed" }] }, isError: false } },
+		})
+		await until(() => panel.views()[0]!.lastLine === "printed")
+		delta("Now")
+		await until(() => panel.views()[0]!.lastLine !== "printed")
+		expect(panel.views()[0]!.lastLine).toBe("Now")
+		panel.stop()
+	})
+
+	test("tail: an isError tool result keeps the previous good tail (log still records the failure)", async () => {
+		const { panel, lastSocket } = makePanel()
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "runner", childId: "child-err" }))
+		await until(() => lastSocket() !== undefined)
+		const sock = lastSocket()
+		sock.item(snapshotFrame("child-err"))
+		sock.item({
+			type: "event",
+			event: { type: "assistant/message", seq: 1, time: Date.now(), data: { message: { content: [{ type: "text", text: "working on it" }] } } },
+		})
+		await until(() => panel.views()[0]!.lastLine === "working on it")
+		sock.item({
+			type: "event",
+			event: { type: "tool/result", seq: 2, time: Date.now(), data: { message: { content: [{ type: "text", text: "exit code 1" }] }, isError: true } },
+		})
+		await until(() => panel.transcript("child-err").includes("  ⎿ failed"))
+		expect(panel.views()[0]!.lastLine).toBe("working on it")
+		panel.stop()
+	})
+
 	test("snapshot replay folds the journal descriptor — late join gets the label (D2 e2e finding)", async () => {
 		const { panel, lastSocket } = makePanel()
 		// the client face adopts list-swept children with the bare-id

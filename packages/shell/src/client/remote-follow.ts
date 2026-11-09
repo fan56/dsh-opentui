@@ -212,8 +212,12 @@ export function scanUsageChunk(chunk: Record<string, unknown>): {
 	}
 }
 
-/** Concatenated text of the text blocks in a message content array (parity). */
+/** Concatenated text of the text blocks in a message content array (parity).
+ * A plain-string content body (some tool-result adapters emit the flat
+ * string rather than the `{type:'text',text}` block list) is the text
+ * itself — never silently dropped. */
 export function blocksText(content: unknown): string {
+	if (typeof content === "string") return content.trim()
 	if (!Array.isArray(content)) return ""
 	let text = ""
 	for (const block of content) {

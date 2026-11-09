@@ -274,6 +274,12 @@ describe("remote follow helpers", () => {
 	test("blocksText joins text blocks", () => {
 		expect(blocksText([{ type: "text", text: "a" }, { type: "image" }, { type: "text", text: "b" }])).toBe("a\nb")
 	})
+	test("blocksText reads a plain STRING content body (no silent drop)", () => {
+		expect(blocksText("flat text")).toBe("flat text")
+		expect(blocksText("")).toBe("")
+		expect(blocksText(undefined)).toBe("")
+		expect(blocksText({ type: "text", text: "not an array" })).toBe("")
+	})
 })
 
 describe("RemoteHostSession turn lifecycle", () => {

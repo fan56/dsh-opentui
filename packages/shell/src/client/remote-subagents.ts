@@ -111,6 +111,12 @@ interface ChildState {
 	tokens?: number
 	startedAt: number
 	lastLine?: string
+	/** Live delta accumulation (text + reasoning), separate from `lastLine`.
+	 * Cleared whenever a durable record (assistant/message, tool/result)
+	 * replaces the tail: the next round's deltas then start a FRESH buffer
+	 * instead of concatenating onto the settled line ("hi" + "Let me" =
+	 * "hiLet me"). tui-pi session.ts:childStreams.delete parity. */
+	streamBuffer?: string
 	descriptor: RemoteChildDescriptor
 	log: string[]
 	/** F6 markers: wrap-up delivered / force-stop fired round counts. */
@@ -457,7 +463,18 @@ export class RemoteSubagentPanel {
 					typeof chunk.text === "string" &&
 					chunk.text
 				) {
-					this.#children.set(id, { ...view, lastLine: boundTail((view.lastLine ?? "") + chunk.text) })
+					// Live deltas accumulate in their OWN buffer (never onto the
+					// settled tail — a durable record owns that). Both live and
+					// settled tails take the LAST non-blank line (line tail, not
+					// line head), so a consumer never sees the window direction
+					// flip between the two sources.
+					const buffer = boundTail((view.streamBuffer ?? "") + chunk.text)
+					const live = lastContentLine(buffer)
+					this.#children.set(id, {
+						...view,
+						streamBuffer: buffer,
+						...(live !== undefined ? { lastLine: live } : {}),
+					})
 					this.#emit()
 				}
 			}
@@ -527,6 +544,11 @@ export class RemoteSubagentPanel {
 				rounds: view.rounds + 1,
 				...(usage !== undefined ? { tokens: (view.tokens ?? 0) + usage } : {}),
 				...(tail !== undefined ? { lastLine: tail } : {}),
+				// The assembled message is authoritative for the tail — its
+				// streaming buffer is spent (tui-pi childStreams.delete parity).
+				// A next-round delta must start a new buffer, not append to the
+				// settled line.
+				streamBuffer: undefined,
 			}
 			this.#children.set(id, next)
 			changed = true
@@ -549,10 +571,22 @@ export class RemoteSubagentPanel {
 			// output event). Surface its last line as the tail so the dock
 			// shows what the child is actually doing; a tool NAME never
 			// reaches this path (tui-pi tail law kept for names).
+			// An ERROR result is not the child's content: `isError` keeps the
+			// previous good tail (a failure string would mask the last real
+			// progress line); the ⎿ failed log row still carries the outcome.
 			const message = (typeof data.message === "object" && data.message !== null ? data.message : {}) as Record<string, unknown>
-			const tail = lastContentLine(blocksText(message.content ?? data.content))
+			const tail = data.isError === true ? undefined : lastContentLine(blocksText(message.content ?? data.content))
+			// The durable result owns the tail now — drop the live buffer even
+			// when the folded line is unchanged, so the NEXT delta starts fresh
+			// (a buffer left behind would re-concatenate: see #foldChildFrame).
+			const next: ChildState = { ...view, streamBuffer: undefined }
+			let resultChanged = view.streamBuffer !== undefined
 			if (tail !== undefined && tail !== view.lastLine) {
-				this.#children.set(id, { ...view, lastLine: tail })
+				next.lastLine = tail
+				resultChanged = true
+			}
+			if (resultChanged) {
+				this.#children.set(id, next)
 				changed = true
 			}
 		} else if (type === "turn/end" && view.status === "running") {
