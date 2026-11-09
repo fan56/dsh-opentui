@@ -236,6 +236,9 @@ export function createSlashHost(deps: {
 	/** Footer-refresh hook (footer-quickwins); absent = setting commands skip
 	 * the immediate footer re-read (turn-end-only refresh, the old behavior). */
 	refreshFooter?: SlashCommandContext["refreshFooter"]
+	/** Footer-refresh cancellation (review 3.5); absent = /think keeps the
+	 * accept-then-refresh order (old hosts). */
+	invalidateFooter?: SlashCommandContext["invalidateFooter"]
 }) {
 	const commands = deps.commands ?? coreCommands()
 	const controller = new SlashPaletteController()
@@ -252,6 +255,7 @@ export function createSlashHost(deps: {
 		...(deps.openSearch ? { openSearch: deps.openSearch } : {}),
 		...(deps.openPlugins ? { openPlugins: deps.openPlugins } : {}),
 		...(deps.refreshFooter ? { refreshFooter: deps.refreshFooter } : {}),
+		...(deps.invalidateFooter ? { invalidateFooter: deps.invalidateFooter } : {}),
 	}
 
 	function run(command: SlashCommand, argText: string): boolean {

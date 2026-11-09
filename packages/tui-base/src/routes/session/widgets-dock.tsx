@@ -41,7 +41,9 @@ import { parseTodos, type Todo } from "../../util/todo"
 import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
-import { COMPOSER_COMPACT_TERMINAL_ROWS, unfocusedBorderColor } from "../../skin/semantic"
+import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../../skin/semantic"
+import type { ComponentTheme } from "../../theme/component"
+import { colorRgb, contrastRatio, mixPowerlineColor, type PowerlineColor } from "./powerline"
 
 // ---------------------------------------------------------------------------
 // Skin motion timing (skin contract §1 入场淡入/退场渐隐/提醒脉冲, batch δ).
@@ -490,6 +492,133 @@ export function activityFrameMode(terminalRows: number, compactRows: number = CO
 	return terminalRows <= compactRows ? "rule" : "frame"
 }
 
+/** No-provider fallback for the active frame border (bright orange, not the
+ * dark unfocused border.base). #fab283 on dsh-blue dark background
+ * (#0a0a0f) is 11.06:1. */
+export const ACTIVITY_FRAME_BORDER_FALLBACK = "#fab283"
+
+/** Bright orange steps in preference order for the orange hue family:
+ * orange[200] is the "bright orange" step of the dark dsh-blue scale
+ * (#fab283); 300/100 are the nearest neighbours. */
+const ACTIVITY_ORANGE_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
+
+/**
+ * The orange hue window in degrees. Orange sits around 30°; the 20° floor
+ * keeps coral red (~16°) and pure red (~4°) out of the family, the 45° cap
+ * keeps yellow (~54°) out. The resolved theme carries no categorical hue
+ * NAMES (resolve.ts maps them to scales and drops the labels), so the family
+ * is identified by COLOR as the fallback; a name-priority path is impossible
+ * at this layer. The saturation floor rejects near-gray swatches whose
+ * numeric hue lands in range but which are not visually orange.
+ */
+const ORANGE_HUE_MIN = 20
+const ORANGE_HUE_MAX = 45
+const ORANGE_MIN_SATURATION = 0.25
+
+/** The two contrast poles the fill walk can blend toward. */
+const AUTO_POLE_LIGHT = "#ffffff"
+const AUTO_POLE_DARK = "#000000"
+
+/** True when a swatch reads orange — hue angle inside the orange window, with
+ * a saturation floor so near-gray swatches whose numeric hue happens to land
+ * in range are rejected. */
+function looksOrange(color: RGBA): boolean {
+	const [r, g, b] = colorRgb(color)
+	const max = Math.max(r, g, b)
+	const delta = max - Math.min(r, g, b)
+	if (max === 0 || delta / max < ORANGE_MIN_SATURATION) return false
+	const hue = hueAngle(color)
+	return hue >= ORANGE_HUE_MIN && hue <= ORANGE_HUE_MAX
+}
+
+/** HSL hue angle in degrees (0..360); achromatic swatches answer 0. */
+export function hueAngle(color: PowerlineColor): number {
+	const [r, g, b] = colorRgb(color)
+	const max = Math.max(r, g, b)
+	const min = Math.min(r, g, b)
+	const delta = max - min
+	if (delta === 0) return 0
+	const raw = max === r ? ((g - b) / delta) % 6 : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4
+	return (raw * 60 + 360) % 360
+}
+
+/**
+ * Contrast-adjusted fill: the walked color, its measured contrast against the
+ * surface, and whether it cleared `min` (the assertion result, so callers and
+ * tests can verify the contract instead of trusting the loop).
+ */
+export interface ContrastAdjusted {
+	color: string
+	contrast: number
+	meetsContrast: boolean
+}
+
+/**
+ * Walk a fill AWAY from the surface until its contrast clears `min`
+ * (default 4.5:1): on a dark surface blend toward WHITE, on a light surface
+ * toward BLACK — the pole that maximizes contrast against the background.
+ * (The old one-way blend toward black made dark-surface borders muddier the
+ * harder it tried.) 8% steps, at most 32. The final contrast is RE-MEASURED
+ * after the walk and returned as `meetsContrast`; a mid-luminance surface
+ * where neither pole reaches `min` reports false with the best effort.
+ */
+export function boostUntilContrast(
+	color: PowerlineColor,
+	background: PowerlineColor,
+	min = 4.5,
+): ContrastAdjusted {
+	let candidate = typeof color === "string" ? color : mixPowerlineColor(color, "#000000", 0)
+	const pole =
+		contrastRatio(background, AUTO_POLE_LIGHT) >= contrastRatio(background, AUTO_POLE_DARK)
+			? AUTO_POLE_LIGHT
+			: AUTO_POLE_DARK
+	for (let i = 0; i < 32 && contrastRatio(candidate, background) < min; i++) {
+		candidate = mixPowerlineColor(candidate, pole, 0.08)
+	}
+	const contrast = contrastRatio(candidate, background)
+	return { color: candidate, contrast, meetsContrast: contrast >= min }
+}
+
+/**
+ * Turn-lifetime activity frame border (user feedback): the frame only exists
+ * WHILE a turn is in flight, so its border is always the ACTIVE state — a
+ * BRIGHT ORANGE instead of the dark border.base (follow-up directive: orange,
+ * not the footer blue). The orange hue family comes from the theme's
+ * categorical scales (orange[200] on dsh-blue dark = #fab283, 11.06:1 against
+ * the #0a0a0f background), falling back to the warning feedback token when a
+ * theme carries no orange scale; a surface no stock step clears walks the
+ * fill AWAY from itself (toward white on dark, toward black on light) until
+ * the border still clears 4.5:1. Static per the contract: border color/weight
+ * never animate; the heavy line is chosen at render.
+ */
+export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA {
+	const background = theme?.background?.base
+	const orangeScale = (theme?.categorical ?? []).find((scale) => {
+		const swatch = scale[500] ?? scale[400] ?? scale[300]
+		return swatch !== undefined && looksOrange(swatch)
+	})
+	const candidates = orangeScale
+		? ACTIVITY_ORANGE_STEPS.map((step) => orangeScale[step]).filter((value): value is RGBA => value !== undefined)
+		: []
+	if (candidates.length > 0) {
+		const preferred = candidates[0]!
+		if (!background) return preferred
+		if (contrastRatio(preferred, background) >= 4.5) return preferred
+		// No single stock step clears the surface; take the most readable step,
+		// then walk away from the surface (white on dark, black on light)
+		// until the contract holds.
+		const best = candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
+		if (contrastRatio(best, background) >= 4.5) return best
+		return boostUntilContrast(preferred, background).color
+	}
+	const warning = theme?.text?.feedback?.warning?.base
+	if (warning) {
+		if (!background || contrastRatio(warning, background) >= 4.5) return warning
+		return boostUntilContrast(warning, background).color
+	}
+	return ACTIVITY_FRAME_BORDER_FALLBACK
+}
+
 /** Whether the dock needs the shared animation clock right now (pure):
  * any visible line (entrance fades / exit sweep) or a live child tree in
  * the lastRequest dock (which reads this module's dockSpin). */
@@ -694,8 +823,8 @@ export function WidgetsDock(props: {
 						width="100%"
 						height={4}
 						border={["top", "bottom", "left", "right"]}
-						borderStyle="single"
-						borderColor={unfocusedBorderColor(theme)}
+						borderStyle="heavy"
+						borderColor={activityFrameBorderColor(theme)}
 						title="activity"
 						titleAlignment="left"
 					>
