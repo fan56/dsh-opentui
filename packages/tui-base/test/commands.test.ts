@@ -690,7 +690,13 @@ describe("/preset rotation helpers (batch H2)", () => {
 		// boot: nothing staged/attached → the registry-default row (the preset
 		// the next session composes) instead of a blank brand segment
 		expect(presetLabelFor(roster, undefined)).toBe("Standard")
-		expect(presetLabelFor(roster, "gone")).toBe("Standard")
+		// A staged id that names no listed row (a broken row was filtered out,
+		// or the preset was deleted) is NOT the default row: the live session
+		// is not composed with anything we can name, so the brand stays the
+		// plain "dsh" instead of a misleading default label.
+		expect(presetLabelFor(roster, "gone")).toBeUndefined()
+		// The roster itself answers the same way once it lists no rows.
+		expect(presetLabelFor([], "gone")).toBeUndefined()
 		// no isDefault mark → the standard entry, then the first-listed row
 		expect(presetLabelFor([{ id: "ptc", name: "PTC" }, { id: "standard", name: "Standard" }], undefined)).toBe("Standard")
 		expect(presetLabelFor([{ id: "solo", name: "Solo" }], undefined)).toBe("Solo")
