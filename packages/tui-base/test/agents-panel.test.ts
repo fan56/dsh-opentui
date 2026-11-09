@@ -5,6 +5,7 @@
  * (Esc at either stage cancels the whole change).
  */
 import { describe, expect, test } from "bun:test"
+import { createRoot } from "solid-js"
 import {
 	agentEffortLines,
 	agentEmptyLines,
@@ -13,9 +14,11 @@ import {
 	agentLimitsRows,
 	agentTableLines,
 	agentViewerLines,
+	agentsPanelOpen,
 	agentsSummary,
 	beginPickerFlow,
 	effortCursorFor,
+	initialAgentLevel,
 	limitsEscapeTarget,
 	parseDeepInput,
 	parseMaxRoundsInput,
@@ -23,6 +26,7 @@ import {
 	pickerSelectEffort,
 	pickerSelectModel,
 	preselectAgentIndex,
+	useAgentsPanelOpenState,
 } from "../src/routes/session/agents-panel"
 import type { SeamAgentRow, SeamEffortOption } from "../src/seams/session"
 
@@ -268,5 +272,30 @@ describe("model picker (two stages)", () => {
 		expect(body[0]!.text).toContain("(provider default)")
 		expect(body[1]!.text).toContain("Low")
 		expect(body[2]!.text).toContain("High")
+	})
+})
+
+describe("open landing (empty corpus)", () => {
+	test("an empty corpus opens on the limits layer, a non-empty one on the table", () => {
+		expect(initialAgentLevel([])).toBe("limits")
+		expect(initialAgentLevel(rows)).toBe("table")
+	})
+
+	test("the limits layer title is the limits heading", () => {
+		const lines = agentLimitsLines({ cursor: 0, width: 120 })
+		expect(lines[0]!.text).toBe("⚙ Limits")
+	})
+})
+
+describe("open-state lifetime", () => {
+	test("unmount resets the /agents open signal so the sidebar Esc layer recovers", () => {
+		const dispose = createRoot((dispose) => {
+			const [open, setOpen] = useAgentsPanelOpenState()
+			setOpen(true)
+			expect(open()).toBe(true)
+			return dispose
+		})
+		dispose()
+		expect(agentsPanelOpen()).toBe(false)
 	})
 })

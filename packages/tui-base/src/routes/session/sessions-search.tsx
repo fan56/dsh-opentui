@@ -23,7 +23,7 @@
  * OpenTUI law: every box carries an explicit height, never auto-height in
  * a flex column.
  */
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import type { InputRenderable } from "@opentui/core"
 import { createSignal as createBridgeSignal } from "solid-js"
 import { Keymap } from "../../context/keymap"
@@ -44,6 +44,16 @@ export function openSessionsSearch(): void {
 	setBridgeOpen(true)
 }
 
+/**
+ * The overlay's module-scope open state. Unmount resets it: the sidebar's
+ * priority-10 Esc layer yields on this signal, so a stale `true` would leave
+ * Esc dead for the rest of the session.
+ */
+export function useSessionsSearchOpenState() {
+	onCleanup(() => setPanelOpen(false))
+	return [sessionsSearchOpen, setPanelOpen] as const
+}
+
 export type SessionSearchHit = { id: string; snippet: string }
 
 /** One rendered result line: the session id, then the collapsed snippet. */
@@ -58,7 +68,7 @@ export function SessionsSearch(props: { seam: SessionSeam; onClosed?: () => void
 	const theme = useThemeOptional()
 	const dialog = useDialog()
 
-	const [open, setOpen] = [sessionsSearchOpen, setPanelOpen]
+	const [open, setOpen] = useSessionsSearchOpenState()
 	const [query, setQuery] = createSignal("")
 	const [hits, setHits] = createSignal<SessionSearchHit[]>([])
 	const [searched, setSearched] = createSignal(false)

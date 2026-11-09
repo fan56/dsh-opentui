@@ -4,8 +4,14 @@
  * table-testable without a renderer, the commands.test.ts law).
  */
 import { describe, expect, test } from "bun:test"
+import { createRoot } from "solid-js"
 import { formatSearchHitLine } from "../src/routes/session/sessions-search"
-import { filterPluginRows, formatPluginLine } from "../src/routes/session/plugins-panel"
+import {
+	filterPluginRows,
+	formatPluginLine,
+	pluginsPanelOpen,
+	usePluginsPanelOpenState,
+} from "../src/routes/session/plugins-panel"
 
 describe("sessions-search helpers", () => {
 	test("hit line joins id and snippet through an em dash", () => {
@@ -40,5 +46,18 @@ describe("plugins-panel helpers", () => {
 		expect(filterPluginRows(rows, "dsh-tui-pi")).toEqual([rows[0]])
 		expect(filterPluginRows(rows, "TUI-PI@2")).toEqual([rows[0]])
 		expect(filterPluginRows(rows, "nope")).toEqual([])
+	})
+})
+
+describe("plugins-panel open-state lifetime", () => {
+	test("unmount resets the /plugins open signal so the sidebar Esc layer recovers", () => {
+		const dispose = createRoot((dispose) => {
+			const [open, setOpen] = usePluginsPanelOpenState()
+			setOpen(true)
+			expect(open()).toBe(true)
+			return dispose
+		})
+		dispose()
+		expect(pluginsPanelOpen()).toBe(false)
 	})
 })

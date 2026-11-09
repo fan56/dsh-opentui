@@ -291,9 +291,14 @@ export function setAgentField(
 	if (field === "maxRounds") {
 		// Registry parity: positive integer only. 0 would mark the file broken
 		// on the consuming side, so it is rejected here (see remote-local-fs
-		// parse note). Empty input never reaches this function (keep).
-		if (value !== null && (!/^\d+$/.test(value) || Number(value) < 1)) {
-			return `expected a positive integer, got "${value}"`
+		// parse note). Empty input never reaches this function (keep). The
+		// safe-integer guard keeps a 20-digit input from being written as
+		// `1e+20` (Number exceeds the exact range).
+		if (value !== null) {
+			const parsed = Number(value)
+			if (!/^\d+$/.test(value) || parsed < 1 || !Number.isSafeInteger(parsed)) {
+				return `expected a positive integer, got "${value}"`
+			}
 		}
 		return updateAgentFrontmatter(file, { maxRounds: value === null ? null : Number(value) })
 	}

@@ -39,7 +39,7 @@
  * OpenTUI law: the find strip carries an explicit height (1 line), never
  * auto-height in a flex column.
  */
-import { createEffect, createMemo, createSignal, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
 import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
 import { useDialog } from "../../ui/dialog"
@@ -111,6 +111,16 @@ const [panelOpen, setPanelOpen] = createSignal(false)
 /** Whether the transcript search overlay is on screen. */
 export const searchOverlayOpen = panelOpen
 
+/**
+ * The overlay's module-scope open state. Unmount resets it: the sidebar's
+ * priority-10 Esc layer yields on this signal, so a stale `true` would leave
+ * Esc dead for the rest of the session.
+ */
+export function useSearchOverlayOpenState() {
+	onCleanup(() => setPanelOpen(false))
+	return [searchOverlayOpen, setPanelOpen] as const
+}
+
 export function SearchOverlay(props: SearchOverlayProps) {
 	const theme = useThemeOptional()
 	const dialog = useDialog()
@@ -125,7 +135,7 @@ export function SearchOverlay(props: SearchOverlayProps) {
 	}
 	const cursor = () => skinCursor(configCursorStyle?.())
 
-	const [open, setOpen] = [searchOverlayOpen, setPanelOpen]
+	const [open, setOpen] = useSearchOverlayOpenState()
 	const [query, setQuery] = createSignal("")
 	const [index, setIndex] = createSignal(0)
 	const [inputTarget, setInputTarget] = createSignal<InputRenderable>()

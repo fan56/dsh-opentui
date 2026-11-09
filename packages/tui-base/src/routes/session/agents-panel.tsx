@@ -37,7 +37,7 @@
  * focus-catcher input keeps stray printable keys out of the composer while
  * the panel is open.
  */
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import type { InputRenderable } from "@opentui/core"
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
@@ -82,6 +82,16 @@ export function openAgentsPanel(name?: string): void {
 	setBridgeOpen(name ?? "")
 }
 
+/**
+ * The panel's module-scope open state. Unmount resets it: the sidebar's
+ * priority-10 Esc layer yields on this signal, so a stale `true` would leave
+ * Esc dead for the rest of the session.
+ */
+export function useAgentsPanelOpenState() {
+	onCleanup(() => setPanelOpen(false))
+	return [agentsPanelOpen, setPanelOpen] as const
+}
+
 export type PanelTone = "accent" | "selected" | "muted" | "subtle" | "attention"
 
 export interface PanelLine {
@@ -98,6 +108,15 @@ export type PanelLevel =
 	| "effort"
 	| "deep"
 	| "viewer"
+
+/**
+ * The level a fresh open lands on. The table needs a row to render; an empty
+ * corpus goes straight to the limits layer (the official caps stay reachable)
+ * where Esc closes the manager instead of returning to an absent table.
+ */
+export function initialAgentLevel(rows: readonly SeamAgentRow[]): PanelLevel {
+	return rows.length === 0 ? "limits" : "table"
+}
 
 function padCell(text: string, width: number, align: "left" | "right" = "left"): string {
 	const clipped = clipText(text, width)
@@ -529,8 +548,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	const dimensions = useTerminalDimensions()
 
 	// The module-level open signal (shared with the sidebar Esc layer).
-	const open = agentsPanelOpen
-	const setOpen = setPanelOpen
+	const [open, setOpen] = useAgentsPanelOpenState()
 	const [level, setLevel] = createSignal<PanelLevel>("table")
 	const [rows, setRows] = createSignal<SeamAgentRow[]>([])
 	const [tableCursor, setTableCursor] = createSignal(0)
@@ -594,12 +612,18 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		if (preselected === undefined) return
 		setBridgeOpen(undefined)
 		const next = reloadRows()
-		setLevel("table")
+		setLevel(initialAgentLevel(next))
 		setStatus(undefined)
 		setChanged([])
 		const index = preselectAgentIndex(next, preselected)
 		setTableCursor(index >= 0 ? index : 0)
 		setOpen(true)
+		if (next.length === 0) {
+			setLimitsCursor(0)
+			setLimitError(undefined)
+			setCaps(undefined)
+			void loadOfficialCaps()
+		}
 	})
 
 	// Focus the catcher (or the deep editor) after every level transition so

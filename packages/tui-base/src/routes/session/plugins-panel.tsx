@@ -21,7 +21,7 @@
  * sessions-search law); the plugin rows arrive through the seam getter
  * prop (reactive-prop law: getters, never eager reads).
  */
-import { createEffect, createMemo, createSignal, For, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import type { InputRenderable } from "@opentui/core"
 import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
@@ -40,6 +40,16 @@ export const pluginsPanelOpen = panelOpen
 /** Open the plugins manager panel (the /plugins command path). */
 export function openPluginsPanel(): void {
 	setBridgeOpen(true)
+}
+
+/**
+ * The panel's module-scope open state. Unmount resets it: the sidebar's
+ * priority-10 Esc layer yields on this signal, so a stale `true` would leave
+ * Esc dead for the rest of the session.
+ */
+export function usePluginsPanelOpenState() {
+	onCleanup(() => setPanelOpen(false))
+	return [pluginsPanelOpen, setPanelOpen] as const
 }
 
 export type PluginRow = { name: string; version: string }
@@ -61,7 +71,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	const theme = useThemeOptional()
 	const dialog = useDialog()
 
-	const [open, setOpen] = [pluginsPanelOpen, setPanelOpen]
+	const [open, setOpen] = usePluginsPanelOpenState()
 	const [filterOpen, setFilterOpen] = createSignal(false)
 	const [filter, setFilter] = createSignal("")
 
