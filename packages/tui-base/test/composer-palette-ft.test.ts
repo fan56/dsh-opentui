@@ -51,17 +51,25 @@ describe("slash palette + composer on the real renderer", () => {
 		const openHeight = r.openSlash.composerHeight
 		expect(r.openSlash).toMatchObject({ buffer: "/", rows: 6, frameHasHelpRow: true, frameHasNewRow: true })
 		expect(openHeight).toBeGreaterThan(0)
+		// OVERFLOW CAP (real renderer): the table holds 9 matching commands but
+		// only the first MAX_ROWS paint — the 9th match ("/extra7") is past the
+		// cap and must not appear anywhere in the frame (used to overlap the
+		// textarea when <For> rendered the uncapped list)
+		expect(r.openSlash.frameHasOverflowRow).toBe(false)
 
 		// key-by-key into the OPEN palette: filters live, never orphans, and
 		// the composer root height is UNCHANGED per keystroke (the flicker fix)
 		expect(r.keyH).toMatchObject({ buffer: "/h", rows: 6, query: "/h", composerHeight: openHeight, frameHasHelpRow: true, frameHasNewRow: false })
 		expect(r.keyE).toMatchObject({ buffer: "/he", rows: 6, query: "/he", composerHeight: openHeight, frameHasHelpRow: true })
-		// Enter runs the highlighted /help, clears, no model send
+		// Enter runs the highlighted /help, clears, no model send; the palette
+		// closes and the composer root shrinks back below its open height
 		expect(r.enter).toMatchObject({ buffer: "", rows: 0, ran: ["/help"], sent: [] })
+		expect(r.enter.composerHeight).toBeLessThan(openHeight)
 
 		// one-write burst into the OPEN palette: same outcome
 		expect(r.burst).toMatchObject({ buffer: "/he", rows: 6, query: "/he", composerHeight: openHeight, frameHasHelpRow: true, frameHasNewRow: false })
 		expect(r.burstEnter).toMatchObject({ buffer: "", rows: 0, ran: ["/help"], sent: [] })
+		expect(r.burstEnter.composerHeight).toBeLessThan(openHeight)
 
 		// Esc: closed, buffer intact; the next edit re-arms the filtered list
 		expect(r.esc).toMatchObject({ buffer: "/h", rows: 0, frameHasHelpRow: false })
@@ -70,5 +78,6 @@ describe("slash palette + composer on the real renderer", () => {
 		// zero-match: closed (no empty strip), Enter = unknown row, never a send
 		expect(r.zeroMatch).toMatchObject({ buffer: "/zz", rows: 0, frameHasHelpRow: false })
 		expect(r.zeroMatchEnter).toMatchObject({ buffer: "", said: ["unknown command: /zz (try /help)"], sent: [] })
+		expect(r.zeroMatchEnter.composerHeight).toBeLessThan(openHeight)
 	}, 60_000)
 })

@@ -105,6 +105,65 @@ describe("SlashPaletteController", () => {
 		expect(controller.selected()).toBe(2)
 		expect(controller.filtered(commands).length).toBe(3)
 	})
+
+	test("OVERFLOW CAP: a 9-command table keeps only MAX_ROWS rows visible", () => {
+		// The box is MAX_ROWS tall, so the VISIBLE list must be capped too —
+		// an uncapped <For> painted all 9 rows out of the 6-row box onto the
+		// textarea below it.
+		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
+			name: `/cmd${i}`,
+			description: `d${i}`,
+			run: () => {},
+		}))
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands) // all 9 match "/"
+		// the rendered list (what <For> draws) is capped; the box height is not
+		expect(controller.filtered(commands).map((c) => c.name)).toEqual([
+			"/cmd0",
+			"/cmd1",
+			"/cmd2",
+			"/cmd3",
+			"/cmd4",
+			"/cmd5",
+		])
+		expect(controller.rows()).toBe(MAX_ROWS)
+	})
+
+	test("OVERFLOW CAP: wrap navigation never leaves the visible rows", () => {
+		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
+			name: `/cmd${i}`,
+			description: `d${i}`,
+			run: () => {},
+		}))
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		// forward wrap: from the LAST VISIBLE row back to 0, never into 6..8
+		for (let i = 0; i < MAX_ROWS - 1; i++) controller.move(1, commands)
+		expect(controller.selected()).toBe(MAX_ROWS - 1)
+		controller.move(1, commands)
+		expect(controller.selected()).toBe(0)
+		// backward wrap: 0 → the last VISIBLE row (5), never 8
+		controller.move(-1, commands)
+		expect(controller.selected()).toBe(MAX_ROWS - 1)
+		// the highlighted entry always resolves inside the rendered list
+		expect(controller.current(commands)?.name).toBe("/cmd5")
+	})
+
+	test("OVERFLOW CAP: sync clamps the selection to the visible list", () => {
+		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
+			name: `/cmd${i}`,
+			description: `d${i}`,
+			run: () => {},
+		}))
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		controller.move(1, commands)
+		expect(controller.selected()).toBe(1)
+		// re-sync on the same wide table keeps the highlight in 0..MAX_ROWS-1
+		controller.sync("/", commands)
+		expect(controller.selected()).toBe(1)
+		expect(controller.filtered(commands).length).toBe(MAX_ROWS)
+	})
 })
 
 describe("createSlashHost", () => {

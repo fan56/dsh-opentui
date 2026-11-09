@@ -33,6 +33,16 @@ async function mount() {
 	const commands: SlashCommand[] = [
 		{ name: "/help", description: "show available commands", run: () => void ran.push("/help") },
 		{ name: "/new", description: "start a fresh session", run: () => void ran.push("/new") },
+		// 7 more matches so an OPEN palette on "/" has 9 rows for 6 slots —
+		// pins the OVERFLOW CAP at the real renderer (an uncapped <For> painted
+		// all 9 rows out of the 6-row box onto the textarea).
+		{ name: "/extra1", description: "e1", run: () => {} },
+		{ name: "/extra2", description: "e2", run: () => {} },
+		{ name: "/extra3", description: "e3", run: () => {} },
+		{ name: "/extra4", description: "e4", run: () => {} },
+		{ name: "/extra5", description: "e5", run: () => {} },
+		{ name: "/extra6", description: "e6", run: () => {} },
+		{ name: "/extra7", description: "e7", run: () => {} },
 	]
 	const seam = { steer: (text: string) => sent.push(`steer:${text}`) } as any
 	const host = createSlashHost({
@@ -62,6 +72,12 @@ async function mount() {
 	)
 	await setup.flush()
 	const textarea = findTextarea(setup.renderer.root)
+	// Hand-run defense (fixture is also executed bare for its JSON report):
+	// a mount that lost its textarea (or its parent box) would still emit
+	// plausible-looking garbage below — null composerHeight, empty buffers.
+	// Fail loudly here instead; `textarea.parent` at :87 must be real.
+	if (!textarea) throw new Error("FT mount: no TextareaRenderable under the renderer root")
+	if (!textarea.parent) throw new Error("FT mount: textarea has no parent box (composerHeight would be null)")
 	const write = async (bytes: string) => {
 		setup.renderer.stdin.emit("data", Buffer.from(bytes))
 		await setup.flush()
@@ -76,6 +92,9 @@ async function mount() {
 		composerHeight: textarea.parent?.height ?? null,
 		frameHasHelpRow: setup.captureCharFrame().includes("/help show available commands"),
 		frameHasNewRow: setup.captureCharFrame().includes("/new start a fresh session"),
+		// OVERFLOW CAP: "/extra7" is the 9th match (7th past the 6-row cap) —
+		// it must never paint anywhere in the frame, box or no box.
+		frameHasOverflowRow: setup.captureCharFrame().includes("/extra7"),
 	})
 	return { setup, host, write, state, ran, said, sent }
 }

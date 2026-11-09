@@ -54,7 +54,7 @@ export class SlashPaletteController {
 	rows(): number {
 		return this.#rows[0]()
 	}
-	/** Selected index into the FILTERED list. */
+	/** Selected index into the VISIBLE filtered list (see filtered). */
 	selected(): number {
 		return this.#selected[0]()
 	}
@@ -79,7 +79,10 @@ export class SlashPaletteController {
 			this.#rows[1](0)
 			return
 		}
-		const count = filterCommands(commands, next).length
+		// CAPPED to MAX_ROWS so every consumer below shares ONE count — the
+		// number of VISIBLE rows (see filtered). Cap-preserves the >0 test:
+		// any raw match count above 0 stays above 0 after the cap.
+		const count = Math.min(filterCommands(commands, next).length, MAX_ROWS)
 		// Zero matches = closed (batch V5): the old max(1, count) floor left a
 		// 1-row box open with no rows in it ("/zz" painted an empty strip);
 		// Enter on such a line resolves through dispatchLine's unknown row.
@@ -93,9 +96,16 @@ export class SlashPaletteController {
 		this.#selected[1]((current) => Math.min(current, Math.max(0, count - 1)))
 	}
 
-	/** The filtered rows for the current query. */
+	/**
+	 * The VISIBLE rows for the current query — the filtered list CAPPED to
+	 * MAX_ROWS (overflow fix). This is the single row-count authority: the
+	 * <For> renders exactly this list, move() wraps modulo its length and
+	 * current() indexes into it, so the highlight can never land in an
+	 * un-rendered row past the fixed-height box (a 9-command table used to
+	 * paint all 9 rows out of the 6-row box, overlapping the textarea).
+	 */
 	filtered(commands: SlashCommand[]): SlashCommand[] {
-		return filterCommands(commands, this.#query[0]())
+		return filterCommands(commands, this.#query[0]()).slice(0, MAX_ROWS)
 	}
 
 	/** Selection move with wrap (old palette behavior). */
