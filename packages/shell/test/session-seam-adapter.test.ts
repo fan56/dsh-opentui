@@ -395,7 +395,7 @@ describe("RemoteSessionSeam preset face (batch H2)", () => {
 	test("list/currentId read the remote agentPresets faces 1:1", async () => {
 		const { session } = fakeSession({
 			listPresets: async () => [{ id: "standard", name: "Standard" }, { id: "minimal", name: "Minimal" }],
-			currentPresetId: () => "minimal",
+			resolveCurrentPresetId: async () => "minimal",
 		})
 		const seam = new RemoteSessionSeam(session)
 		expect(await seam.preset.list()).toEqual([{ id: "standard", name: "Standard" }, { id: "minimal", name: "Minimal" }])

@@ -83,6 +83,10 @@ export interface RemoteContextPressure {
 export interface RemoteSessionProjections {
 	selection?: RemoteModelSelection
 	pressure?: RemoteContextPressure
+	/** The preset the session runs (`values.agentPreset` — the web client's
+	 * header label source). Absent when the deployment composes none / on a
+	 * cold session that has not folded the header yet. */
+	agentPreset?: string
 }
 
 export interface RemoteModelOptions {
@@ -243,9 +247,11 @@ export class RemoteModelClient {
 		const values = (value.values ?? {}) as Record<string, unknown>
 		const selection = asProjectionSelection(values.modelSelection)
 		const pressure = asContextPressure(values.contextPressure)
+		const agentPreset = typeof values.agentPreset === "string" && values.agentPreset ? values.agentPreset : undefined
 		return {
 			...(selection ? { selection } : {}),
 			...(pressure ? { pressure } : {}),
+			...(agentPreset ? { agentPreset } : {}),
 		}
 	}
 

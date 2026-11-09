@@ -10,6 +10,7 @@
 import { describe, expect, test } from "bun:test"
 import {
 	ACTIVITY_FRAME_BORDER_FALLBACK,
+	ACTIVITY_FRAME_MIN_CONTRAST,
 	ACTIVITY_FRAME_DEFER_MS,
 	activityFrameBorderColor,
 	boostUntilContrast,
@@ -22,6 +23,7 @@ import {
 	activityLines,
 	activityRuleLines,
 	dockLines,
+	dockAccentColor,
 	dockTurnActive,
 	mixSkinColor,
 	skinFadeOutColor,
@@ -36,6 +38,7 @@ import {
 	latestTodos,
 	padCell,
 	todosTableLines,
+	todosTableWidth,
 	SKIN_FADE_IN_MS,
 	SKIN_FADE_OUT_MS,
 	SKIN_HOLD_MS,
@@ -45,7 +48,7 @@ import {
 import type { SeamRow } from "../src/routes/session/seam-rows"
 import { stringWidth } from "../src/util/string-width"
 import { RGBA } from "@opentui/core"
-import { colorRgb, contrastRatio } from "../src/routes/session/powerline"
+import { colorDistance, colorRgb, contrastRatio } from "../src/routes/session/powerline"
 import { createComponentTheme } from "../src/theme/component"
 import { getDshBlueTheme } from "../src/theme/index"
 import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
@@ -166,6 +169,45 @@ describe("todosTableLines (dsh-tui-pi TodosPanel parity)", () => {
 		const lines = table([toolRow([{ content: "a very long task name", status: "in_progress" }])], 16)
 		for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(16)
 	})
+
+	test("right border aligns with the composer's right border (80/120 columns)", () => {
+		const rows = [
+			toolRow([
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "in_progress" },
+				{ content: "c", status: "pending" },
+			]),
+		]
+		for (const columns of [80, 120]) {
+			const boxWidth = todosTableWidth(columns)
+			// Slot geometry: one-column left indent + the box fill the terminal,
+			// so the box's right border (last char, 0-based column
+			// `1 + boxWidth - 1`) lands on column `columns - 1` — the same column
+			// as the composer's right border.
+			expect(boxWidth).toBe(columns - 1)
+			expect(1 + boxWidth).toBe(columns)
+			expect(1 + boxWidth - 1).toBe(columns - 1)
+			const lines = table(rows, boxWidth)
+			expect(lines.length).toBeGreaterThan(0)
+			for (const line of lines) expect(stringWidth(line)).toBe(boxWidth)
+			// Every border row carries its right corner in the last column.
+			expect(lines[0]!.endsWith("┐")).toBe(true)
+			expect(lines[lines.length - 1]!.endsWith("┘")).toBe(true)
+		}
+	})
+
+	test("narrow terminal (≤30 rows) summary is unchanged and stays inside the slot", () => {
+		const rows = [
+			toolRow([
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "in_progress" },
+			]),
+		]
+		const compact = todosTableLines(rows, todosTableWidth(80), 24)
+		expect(compact).toHaveLength(1)
+		expect(compact[0]!.text).toBe("todos [✓]1/2 · b")
+		expect(stringWidth(compact[0]!.text)).toBeLessThanOrEqual(todosTableWidth(80))
+	})
 })
 
 describe("thinkLineText", () => {
@@ -212,6 +254,27 @@ describe("dockLines (batch D5 widget fade; todos live in their own table)", () =
 		expect(toolLineText(done, spin)).toBe("✔ read a.ts · 0.4s · ok")
 		const failed: SeamRow = { key: "tool:live:f", kind: "tool", name: "bash", args: '{"command":"false"}', status: "failed", elapsedSec: 1, output: "boom" }
 		expect(toolLineText(failed, spin)).toMatch(/^✘ bash false · 1\.0s/)
+	})
+	test("think/tool lines carry semantic accents; the tool marker keeps its tone", () => {
+		const rows: SeamRow[] = [
+			{ key: "reasoning:live-1", kind: "reasoning", text: "pondering", final: false, streaming: true, startedAt: Date.now() },
+			{ key: "tool:live:b", kind: "tool", name: "bash", args: '{"command":"ls"}', status: "running", startedAt: Date.now() },
+			{ key: "tool:live:d", kind: "tool", name: "read", args: '{"path":"a.ts"}', status: "done", elapsedSec: 0.4, output: "ok" },
+		]
+		const lines = dockLines(rows)
+		const think = lines.find((line) => line.id?.startsWith("dock:think:"))
+		expect(think?.accent).toBe("think")
+		expect(think?.marker).toBeUndefined()
+		const tools = lines.filter((line) => line.id?.startsWith("dock:tool:"))
+		expect(tools.map((line) => line.marker)).toEqual(["⚙", "✔"])
+		expect(tools.every((line) => line.accent === "tool")).toBe(true)
+		// Pure text builders keep the full icon-prefixed string.
+		expect(tools[0]!.text.startsWith("⚙ ")).toBe(true)
+		expect(tools[1]!.text.startsWith("✔ ")).toBe(true)
+		// The compact rule form shifts the marker past the `┃ ` prefix.
+		const [, ruledTool] = activityRuleLines(rows)
+		expect(ruledTool.markerAt).toBe(2)
+		expect(ruledTool.text.slice(2, 3)).toBe("✔")
 	})
 })
 
@@ -424,81 +487,155 @@ describe("deferred activity frame latch (flicker mitigation 1)", () => {
 })
 
 /**
- * Footer-polish feedback batch (item 2, follow-up): the turn-lifetime frame
- * only exists WHILE a turn is active, so its border must be a BRIGHT ORANGE
- * on a heavy line, static (border animation is forbidden), clearing 4.5:1
- * against the working background.
+ * Footer-polish feedback batch (item 2, follow-up; recolored green → blue):
+ * the turn-lifetime frame only exists WHILE a turn is active, so its border
+ * must be a BRIGHT BLUE on a heavy line, static (border animation is
+ * forbidden), clearing 6:1 against the working background — bright enough to
+ * read clearly on the dark surface while staying distinct from the footer's
+ * deep→light blue ramp.
  */
 describe("activity frame active border", () => {
-	const themeWith = (orange: Record<string, RGBA> | undefined, background: string) =>
+	const themeWith = (blue: Record<string, RGBA> | undefined, background: string, action = "#7aa2f7") =>
 		({
 			hue: { accent: {}, interactive: {}, neutral: {} },
-			categorical: orange ? [orange] : [],
-			text: { feedback: { warning: { base: RGBA.fromHex("#f5a742") } } },
+			categorical: blue ? [blue] : [],
+			text: { action: { primary: { base: RGBA.fromHex(action) } } },
 			background: { base: RGBA.fromHex(background) },
 		}) as unknown as Parameters<typeof activityFrameBorderColor>[0]
 
-	test("prefers the bright orange step (orange[200])", () => {
-		const orange = {
-			"100": RGBA.fromHex("#fddac5"),
-			"200": RGBA.fromHex("#fab283"),
-			"300": RGBA.fromHex("#d8976c"),
+	test("prefers the bright blue step (blue[200])", () => {
+		const blue = {
+			"100": RGBA.fromHex("#a5b9ff"),
+			"200": RGBA.fromHex("#8599ff"),
+			"300": RGBA.fromHex("#6b82fe"),
 		}
-		const picked = activityFrameBorderColor(themeWith(orange, "#0a0a0f"))
-		expect(picked).toBe(orange["200"])
-		// Bright orange on the dsh-blue dark background clears the contract.
-		expect(contrastRatio(picked, "#0a0a0f")).toBeGreaterThanOrEqual(4.5)
+		const picked = activityFrameBorderColor(themeWith(blue, "#0a0a0f"))
+		expect(picked).toBe(blue["200"])
+		// Bright blue on the dsh-blue dark background clears the 6:1 contract.
+		expect(contrastRatio(picked, "#0a0a0f")).toBeGreaterThanOrEqual(ACTIVITY_FRAME_MIN_CONTRAST)
 	})
 
-	test("real dsh-blue dark picks orange[200] #fab283 at 11.06:1", () => {
+	test("real dsh-blue dark picks blue[200] #8599ff at 7.5:1", () => {
 		const theme = createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "dark"))
 		const picked = activityFrameBorderColor(theme)
-		expect(colorRgb(picked)).toEqual([250, 178, 131]) // #fab283
-		expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+		expect(colorRgb(picked)).toEqual([133, 153, 255]) // #8599ff
+		expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(ACTIVITY_FRAME_MIN_CONTRAST)
 	})
 
-	test("fallback is the bright orange hex, not the old dark blue border", () => {
-		expect(ACTIVITY_FRAME_BORDER_FALLBACK).toBe("#fab283")
-		// 11.06:1 on the dsh-blue dark surface.
-		expect(contrastRatio(ACTIVITY_FRAME_BORDER_FALLBACK, "#0a0a0f")).toBeGreaterThanOrEqual(4.5)
+	test("real dsh-blue light picks blue[200] #24379f at 9.9:1", () => {
+		const theme = createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "light"))
+		const picked = activityFrameBorderColor(theme)
+		expect(colorRgb(picked)).toEqual([36, 55, 159]) // #24379f
+		expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(ACTIVITY_FRAME_MIN_CONTRAST)
+	})
+
+	test("fallback is the bright blue hex, not a green or dark border", () => {
+		expect(ACTIVITY_FRAME_BORDER_FALLBACK).toBe("#7aa2f7")
+		// 7.5:1 on the dsh-blue dark surface.
+		expect(contrastRatio(ACTIVITY_FRAME_BORDER_FALLBACK, "#0a0a0f")).toBeGreaterThanOrEqual(ACTIVITY_FRAME_MIN_CONTRAST)
 		expect(activityFrameBorderColor()).toBe(ACTIVITY_FRAME_BORDER_FALLBACK)
 	})
 
-	test("no orange scale → warning token; light surfaces deepen to 4.5:1", () => {
-		const warningTheme = {
+	test("no blue scale → action primary token; light surfaces deepen to 6:1", () => {
+		const actionTheme = {
 			hue: { accent: {}, interactive: {}, neutral: {} },
 			categorical: [],
-			text: { feedback: { warning: { base: RGBA.fromHex("#f5a742") } } },
+			text: { action: { primary: { base: RGBA.fromHex("#7aa2f7") } } },
 			background: { base: RGBA.fromHex("#0a0a0f") },
 		} as unknown as Parameters<typeof activityFrameBorderColor>[0]
-		expect(activityFrameBorderColor(warningTheme)).toBe(warningTheme.text.feedback.warning.base)
+		expect(activityFrameBorderColor(actionTheme)).toBe(actionTheme.text.action.primary.base)
 
-		// Light theme: the stock orange[200] is too light against #fafafa, so
-		// the helper walks it away from the surface (toward black) until the
-		// border still clears 4.5:1.
-		const lightOrange = { "200": RGBA.fromHex("#d68c27"), "300": RGBA.fromHex("#df9a44") }
-		const picked = activityFrameBorderColor(themeWith(lightOrange, "#fafafa"))
-		expect(contrastRatio(picked, "#fafafa")).toBeGreaterThanOrEqual(4.5)
+		// Light theme: every stock blue step is too light against #fafafa, so
+		// the helper picks the most readable step and walks it away from the
+		// surface (toward black) until the border still clears 6:1.
+		const lightBlue = { "100": RGBA.fromHex("#e9eefc"), "200": RGBA.fromHex("#c6d1f7"), "300": RGBA.fromHex("#9daff0") }
+		const picked = activityFrameBorderColor(themeWith(lightBlue, "#fafafa"))
+		expect(contrastRatio(picked, "#fafafa")).toBeGreaterThanOrEqual(ACTIVITY_FRAME_MIN_CONTRAST)
 	})
 
-	// Review 5: hue-angle identification. Coral red is r>g>b with real spread
-	// (the old test matched it as "orange"), but its hue (~16°) sits outside
-	// the orange window; the resolved theme drops categorical hue NAMES, so
-	// color (hue angle) is the fallback and must at least not misclassify.
-	test("hue angle separates orange from coral red and achromatic swatches", () => {
-		expect(hueAngle(RGBA.fromHex("#fab283"))).toBeGreaterThan(20) // warm orange: ~23.7°
-		expect(hueAngle(RGBA.fromHex("#fab283"))).toBeLessThan(45)
-		expect(hueAngle(RGBA.fromHex("#ff7f50"))).toBeLessThan(20) // coral: ~16.1°
-		expect(hueAngle(RGBA.fromHex("#f44336"))).toBeLessThan(20) // red: ~4.1°
-		expect(hueAngle(RGBA.fromHex("#ffeb3b"))).toBeGreaterThan(45) // yellow: ~53.9°
+	// Hue-angle identification. Cyan/purple swatches have real spread but their
+	// hue sits outside the blue window; the resolved theme drops categorical hue
+	// NAMES, so color (hue angle) is the fallback and must not misclassify.
+	test("hue angle separates blue from cyan, green, purple and achromatic swatches", () => {
+		expect(hueAngle(RGBA.fromHex("#8599ff"))).toBeGreaterThan(190) // blue: ~230.2°
+		expect(hueAngle(RGBA.fromHex("#8599ff"))).toBeLessThan(250)
+		expect(hueAngle(RGBA.fromHex("#22d3ee"))).toBeLessThan(190) // cyan: ~186.9°
+		expect(hueAngle(RGBA.fromHex("#7fd88f"))).toBeLessThan(190) // green: ~130.8°
+		expect(hueAngle(RGBA.fromHex("#9d7cd8"))).toBeGreaterThan(250) // purple: ~261.5°
+		expect(hueAngle(RGBA.fromHex("#ffeb3b"))).toBeLessThan(90) // yellow: ~53.9°
 		expect(hueAngle(RGBA.fromHex("#808080"))).toBe(0) // achromatic
 	})
 
-	test("a coral-red categorical scale is not mistaken for the orange family", () => {
-		const coral = { "500": RGBA.fromHex("#ff7f50"), "200": RGBA.fromHex("#ff9a7a") }
-		const theme = themeWith(coral, "#0a0a0f")
-		// No orange scale found → the warning feedback token (it clears 4.5:1).
-		expect(activityFrameBorderColor(theme)).toBe(theme.text.feedback.warning.base)
+	test("a yellow categorical scale is not mistaken for the blue family", () => {
+		const yellow = { "500": RGBA.fromHex("#eab308"), "200": RGBA.fromHex("#fde047") }
+		const theme = themeWith(yellow, "#0a0a0f")
+		// No blue scale found → the action primary token.
+		expect(activityFrameBorderColor(theme)).toBe(theme.text.action.primary.base)
+	})
+})
+
+/**
+ * Semantic think/tool accents: the two activity lines must read as their own
+ * panels (violet thinking, cyan/teal tool) and never collapse onto the body
+ * copy or onto each other, while each clears the 4.5:1 text floor.
+ */
+describe("dock semantic accents (think violet / tool cyan)", () => {
+	const darkTheme = () => createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "dark"))
+	const lightTheme = () => createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "light"))
+
+	test("dsh-blue dark: think purple[200] #9d7cd8, tool cyan[300] #449da7", () => {
+		const theme = darkTheme()
+		const think = colorRgb(dockAccentColor(theme, "think"))
+		const tool = colorRgb(dockAccentColor(theme, "tool"))
+		expect(think).toEqual([157, 124, 216]) // #9d7cd8
+		expect(tool).toEqual([68, 157, 167]) // #449da7
+		for (const picked of [dockAccentColor(theme, "think"), dockAccentColor(theme, "tool")]) {
+			expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+			// Distinct from the default body copy.
+			expect(colorRgb(picked)).not.toEqual(colorRgb(theme.text.base))
+		}
+		expect(think).not.toEqual(tool)
+	})
+
+	test("dsh-blue light: think purple[200] #6d47ad, tool cyan[100] #077786", () => {
+		const theme = lightTheme()
+		const think = colorRgb(dockAccentColor(theme, "think"))
+		const tool = colorRgb(dockAccentColor(theme, "tool"))
+		expect(think).toEqual([109, 71, 173]) // #6d47ad
+		expect(tool).toEqual([7, 119, 134]) // #077786
+		for (const picked of [dockAccentColor(theme, "think"), dockAccentColor(theme, "tool")]) {
+			expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+			expect(colorRgb(picked)).not.toEqual(colorRgb(theme.text.base))
+		}
+		expect(think).not.toEqual(tool)
+	})
+
+	test("the two accents stay far apart in RGB (panel identity, not just a tint)", () => {
+		const theme = darkTheme()
+		expect(colorDistance(dockAccentColor(theme, "think"), dockAccentColor(theme, "tool"))).toBeGreaterThan(40)
+	})
+
+	test("no hue ramp → polarity-aware static fallback", () => {
+		const noHues = {
+			hue: {},
+			background: { base: RGBA.fromHex("#0a0a0f") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		expect(dockAccentColor(noHues, "think")).toBe("#9d7cd8")
+		expect(dockAccentColor(noHues, "tool")).toBe("#449da7")
+		const lightNoHues = {
+			hue: {},
+			background: { base: RGBA.fromHex("#ffffff") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		expect(dockAccentColor(lightNoHues, "think")).toBe("#6d47ad")
+		expect(dockAccentColor(lightNoHues, "tool")).toBe("#077786")
+	})
+
+	test("think falls back to accent when the theme has no purple/violet ramp", () => {
+		const accentOnly = {
+			hue: { accent: { "200": RGBA.fromHex("#8599ff") } },
+			background: { base: RGBA.fromHex("#0a0a0f") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		expect(colorRgb(dockAccentColor(accentOnly, "think"))).toEqual([133, 153, 255])
 	})
 })
 

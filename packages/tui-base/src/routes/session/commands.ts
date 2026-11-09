@@ -193,6 +193,24 @@ export function findPresetRow(rows: SeamPresetRow[], query: string): SeamPresetR
 	return rows.find((row) => row.id.toLowerCase() === needle || row.name.toLowerCase() === needle)
 }
 
+/**
+ * The footer brand segment's preset label (tui-pi `formatPresetLabel`
+ * semantics): the current row's name, else the registry-default row's, else
+ * the `standard` entry, else the first-listed one — the footer shows the
+ * preset the next session will compose, so at boot (no session yet, nothing
+ * staged) the default row is the honest answer. A staged id (`currentId`)
+ * that names no listed row means the composed preset is unknown here (a
+ * broken row was filtered out, or the preset was deleted): undefined, never
+ * another row's name that the session is not actually composed with. Empty
+ * roster / no face → undefined (the brand segment stays the plain "dsh").
+ */
+export function presetLabelFor(rows: SeamPresetRow[], currentId: string | undefined): string | undefined {
+	if (rows.length === 0) return undefined
+	if (currentId !== undefined) return rows.find((row) => row.id === currentId)?.name
+	const marked = rows.find((row) => row.isDefault) ?? rows.find((row) => row.id === "standard")
+	return (marked ?? rows[0])?.name
+}
+
 // ----------------------------------------------------------- /login helpers --
 // Batch H4 (tui-pi 65-ux-batch parity). The commit is the old-stack
 // double-write; the chain is the six-step loop. Exported for table tests.

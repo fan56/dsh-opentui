@@ -43,7 +43,8 @@ import { useThemeOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../../skin/semantic"
 import type { ComponentTheme } from "../../theme/component"
-import { colorRgb, contrastRatio, mixPowerlineColor, type PowerlineColor } from "./powerline"
+import type { HueScale } from "@opencode/theme/tui"
+import { colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type PowerlineColor } from "./powerline"
 
 // ---------------------------------------------------------------------------
 // Skin motion timing (skin contract §1 入场淡入/退场渐隐/提醒脉冲, batch δ).
@@ -279,6 +280,20 @@ export function todosSummaryLine(rows: readonly SeamRow[]): string {
 	return active ? `${head} · ${active.content}` : head
 }
 
+/** The Todos table's box width for a `terminalColumns`-wide terminal.
+ *
+ * The dock slot is rendered with `paddingLeft=1` (the composer's left border
+ * owns column 0), so the box starts at column 1 and must be `columns - 1`
+ * wide for its right border to land on the composer's right border at column
+ * `columns - 1` (0-based). dsh-tui-pi's `panelBoxWidth` is `columns - 2`
+ * (a two-column right gutter when the panel renders at the full terminal
+ * width); here the slot is indented one column and the composer is
+ * full-bleed, so that arithmetic leaves the table's right edge one column
+ * left of the input frame (the screenshot bug). */
+export function todosTableWidth(terminalColumns: number): number {
+	return Math.max(16, terminalColumns - 1)
+}
+
 /** The Todos table (pure, dsh-tui-pi `TodosPanel` parity): a bordered box
  * with the `● Todos (done/total)` header (plus a `· showing 4-8` range hint
  * when the 5-row window hides rows), the `# │ ✓ │ Task` table header and one
@@ -352,6 +367,12 @@ export function todosTableLines(rows: readonly SeamRow[], width: number, termina
 	return out
 }
 
+/** Status glyph for a tool row: running ⚙, failed ✘, settled ✔. The icon
+ * keeps its own semantic tone; the line text carries the tool accent. */
+export function toolMarker(status: Extract<SeamRow, { kind: "tool" }>["status"]): string {
+	return status === "running" ? "⚙" : status === "failed" ? "✘" : "✔"
+}
+
 /** One dock tool line (pure, dsh-tui-pi ToolPanel height '1' parity):
  * `<⚙|✔|✘> <name> <subject> · Xs · <tail>`. NOT the old `⠋ ⚙ name(subject)`
  * form: the status icon IS the marker, the subject follows the name with a
@@ -368,7 +389,7 @@ export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () =
 			: row.elapsedSec !== undefined
 				? ` · ${row.elapsedSec.toFixed(1)}s`
 				: ""
-	const marker = row.status === "running" ? "⚙" : row.status === "failed" ? "✘" : "✔"
+	const marker = toolMarker(row.status)
 	void spin()
 	const tail = row.status === "running" ? toolDetail(row.args) : toolResultLine(row.output)
 	const body = `${title}${elapsed}${tail !== "" ? ` · ${tail}` : ""}`
@@ -405,6 +426,15 @@ export type DockLine = {
 	italic?: boolean
 	id?: string
 	fadeOutAt?: number
+	/** Semantic line accent (think violet / tool cyan), painted on the line
+	 * TEXT while the status marker keeps its `tone` color. A line without an
+	 * accent paints entirely in its tone. */
+	accent?: DockAccent
+	/** Leading status glyph (⚙/✔/✘) inside `text`, painted with the tone
+	 * color (running/success/failure semantics stay untouched). */
+	marker?: string
+	/** Offset of `marker` inside `text` (the compact rule form prefixes `┃ `). */
+	markerAt?: number
 }
 
 /** The todo brief carrier: the opencode-side name is `todowrite`; the dsh
@@ -424,7 +454,14 @@ export function dockLines(rows: readonly SeamRow[]): DockLine[] {
 	const thinkRow = live?.kind === "reasoning" ? live : collapsed?.kind === "reasoning" ? collapsed : undefined
 	const think = thinkRow?.kind === "reasoning" ? thinkLineText(thinkRow, dockSpin) : undefined
 	if (think !== undefined && thinkRow)
-		out.push({ text: think, tone: "running", italic: true, id: `dock:think:${thinkRow.key}`, fadeOutAt: skinStopAt(thinkRow) })
+		out.push({
+			text: think,
+			tone: "running",
+			italic: true,
+			accent: "think",
+			id: `dock:think:${thinkRow.key}`,
+			fadeOutAt: skinStopAt(thinkRow),
+		})
 	// Tool panel (one line per live tool row, in-place keyed updates).
 	for (const row of all) {
 		if (row.kind !== "tool" || !row.key.startsWith("tool:live:")) continue
@@ -434,6 +471,8 @@ export function dockLines(rows: readonly SeamRow[]): DockLine[] {
 		out.push({
 			text: toolLineText(row, dockSpin),
 			tone: row.status === "running" ? "running" : row.status === "failed" ? "failed" : "ok",
+			accent: "tool",
+			marker: toolMarker(row.status),
 			id: `dock:tool:${row.key}`,
 			fadeOutAt: row.status !== "running" ? skinStopAt(row) : undefined,
 		})
@@ -481,7 +520,7 @@ export function activityRuleLines(rows: readonly SeamRow[]): [DockLine, DockLine
 	const head = think.text === "" ? "┃ activity" : `┃ activity · ${think.text}`
 	return [
 		{ ...think, text: head, id: "dock:activity-head" },
-		{ ...tool, text: tool.text === "" ? "" : `┃ ${tool.text}` },
+		{ ...tool, text: tool.text === "" ? "" : `┃ ${tool.text}`, markerAt: (tool.markerAt ?? 0) + 2 },
 	]
 }
 
@@ -492,43 +531,72 @@ export function activityFrameMode(terminalRows: number, compactRows: number = CO
 	return terminalRows <= compactRows ? "rule" : "frame"
 }
 
-/** No-provider fallback for the active frame border (bright orange, not the
- * dark unfocused border.base). #fab283 on dsh-blue dark background
- * (#0a0a0f) is 11.06:1. */
-export const ACTIVITY_FRAME_BORDER_FALLBACK = "#fab283"
+/** No-provider fallback for the active frame border (bright blue, not the
+ * dark unfocused border.base). #7aa2f7 on dsh-blue dark background
+ * (#0a0a0f) is 7.5:1. */
+export const ACTIVITY_FRAME_BORDER_FALLBACK = "#7aa2f7"
 
-/** Bright orange steps in preference order for the orange hue family:
- * orange[200] is the "bright orange" step of the dark dsh-blue scale
- * (#fab283); 300/100 are the nearest neighbours. */
-const ACTIVITY_ORANGE_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
+/** Minimum contrast the active border must clear against the working
+ * background. The frame only exists while a turn runs, so it is the reader's
+ * "something is happening" cue; the user asked for it to be clearly visible,
+ * which raises the old 4.5:1 floor to 6:1. */
+export const ACTIVITY_FRAME_MIN_CONTRAST = 6
+
+/** Bright blue steps in preference order for the blue hue family: blue[200]
+ * is the "bright blue" step of the dark dsh-blue scale (#8599ff, 7.5:1 on
+ * #0a0a0f); 100/300 are the nearest neighbours. 100 is lighter, but on dark
+ * surfaces it starts to wash out toward white, so 200 leads. */
+const ACTIVITY_BLUE_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
 
 /**
- * The orange hue window in degrees. Orange sits around 30°; the 20° floor
- * keeps coral red (~16°) and pure red (~4°) out of the family, the 45° cap
- * keeps yellow (~54°) out. The resolved theme carries no categorical hue
+ * The blue hue window in degrees. Blue sits around 227-231° in the dsh-blue
+ * scale; the 190° floor keeps cyan (~187°) out of the family, the 250° cap
+ * keeps purple (~262°) out. The resolved theme carries no categorical hue
  * NAMES (resolve.ts maps them to scales and drops the labels), so the family
- * is identified by COLOR as the fallback; a name-priority path is impossible
- * at this layer. The saturation floor rejects near-gray swatches whose
- * numeric hue lands in range but which are not visually orange.
+ * is identified by COLOR; a name-priority path is impossible at this layer.
+ * The saturation floor rejects near-gray swatches whose numeric hue lands in
+ * range but which are not visually blue.
  */
-const ORANGE_HUE_MIN = 20
-const ORANGE_HUE_MAX = 45
-const ORANGE_MIN_SATURATION = 0.25
+const BLUE_HUE_MIN = 190
+const BLUE_HUE_MAX = 250
+const BLUE_MIN_SATURATION = 0.25
 
 /** The two contrast poles the fill walk can blend toward. */
 const AUTO_POLE_LIGHT = "#ffffff"
 const AUTO_POLE_DARK = "#000000"
 
-/** True when a swatch reads orange — hue angle inside the orange window, with
- * a saturation floor so near-gray swatches whose numeric hue happens to land
- * in range are rejected. */
-function looksOrange(color: RGBA): boolean {
+/** True when a swatch reads blue — hue angle inside the blue window, with a
+ * saturation floor so near-gray swatches whose numeric hue happens to land in
+ * range are rejected. */
+function looksBlue(color: RGBA): boolean {
 	const [r, g, b] = colorRgb(color)
 	const max = Math.max(r, g, b)
 	const delta = max - Math.min(r, g, b)
-	if (max === 0 || delta / max < ORANGE_MIN_SATURATION) return false
+	if (max === 0 || delta / max < BLUE_MIN_SATURATION) return false
 	const hue = hueAngle(color)
-	return hue >= ORANGE_HUE_MIN && hue <= ORANGE_HUE_MAX
+	return hue >= BLUE_HUE_MIN && hue <= BLUE_HUE_MAX
+}
+
+/** Blue steps of a hue scale in preference order, skipping missing steps. */
+function blueCandidates(scale: HueScale | undefined): RGBA[] {
+	if (!scale) return []
+	return ACTIVITY_BLUE_STEPS.map((step) => scale[step]).filter((value): value is RGBA => value !== undefined)
+}
+
+/**
+ * Pick the readable blue from a scale's steps: the preferred bright step when
+ * it already clears the surface, else the most readable step; a surface no
+ * stock step clears walks the fill AWAY from itself (toward white on dark,
+ * toward black on light) until the 6:1 border contract holds.
+ */
+function readableBlue(candidates: RGBA[], background?: PowerlineColor): string | RGBA | undefined {
+	if (candidates.length === 0) return undefined
+	const preferred = candidates[0]!
+	if (!background) return preferred
+	if (contrastRatio(preferred, background) >= ACTIVITY_FRAME_MIN_CONTRAST) return preferred
+	const best = candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
+	if (contrastRatio(best, background) >= ACTIVITY_FRAME_MIN_CONTRAST) return best
+	return boostUntilContrast(best, background, ACTIVITY_FRAME_MIN_CONTRAST).color
 }
 
 /** HSL hue angle in degrees (0..360); achromatic swatches answer 0. */
@@ -582,41 +650,94 @@ export function boostUntilContrast(
 /**
  * Turn-lifetime activity frame border (user feedback): the frame only exists
  * WHILE a turn is in flight, so its border is always the ACTIVE state — a
- * BRIGHT ORANGE instead of the dark border.base (follow-up directive: orange,
- * not the footer blue). The orange hue family comes from the theme's
- * categorical scales (orange[200] on dsh-blue dark = #fab283, 11.06:1 against
- * the #0a0a0f background), falling back to the warning feedback token when a
- * theme carries no orange scale; a surface no stock step clears walks the
- * fill AWAY from itself (toward white on dark, toward black on light) until
- * the border still clears 4.5:1. Static per the contract: border color/weight
- * never animate; the heavy line is chosen at render.
+ * BRIGHT BLUE instead of the dark border.base (latest directive: blue, bright
+ * enough to stand out against the dark surface and stay distinct from the
+ * footer's deep→light blue ramp). The blue hue family comes from the theme's
+ * categorical scales (blue[200] on dsh-blue dark = #8599ff, 7.5:1 against the
+ * #0a0a0f background), falling back to the semantic interactive ramp while it
+ * is blue, then to the action primary text token; a surface no stock step
+ * clears walks the fill AWAY from itself (toward white on dark, toward black
+ * on light) until the border still clears 6:1. Static per the contract:
+ * border color/weight never animate; the heavy line is chosen at render.
  */
 export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA {
 	const background = theme?.background?.base
-	const orangeScale = (theme?.categorical ?? []).find((scale) => {
+	const blueScale = (theme?.categorical ?? []).find((scale) => {
 		const swatch = scale[500] ?? scale[400] ?? scale[300]
-		return swatch !== undefined && looksOrange(swatch)
+		return swatch !== undefined && looksBlue(swatch)
 	})
-	const candidates = orangeScale
-		? ACTIVITY_ORANGE_STEPS.map((step) => orangeScale[step]).filter((value): value is RGBA => value !== undefined)
-		: []
-	if (candidates.length > 0) {
-		const preferred = candidates[0]!
-		if (!background) return preferred
-		if (contrastRatio(preferred, background) >= 4.5) return preferred
-		// No single stock step clears the surface; take the most readable step,
-		// then walk away from the surface (white on dark, black on light)
-		// until the contract holds.
-		const best = candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
-		if (contrastRatio(best, background) >= 4.5) return best
-		return boostUntilContrast(preferred, background).color
+	const fromCategorical = readableBlue(blueCandidates(blueScale), background)
+	if (fromCategorical) return fromCategorical
+	// No categorical blue: the semantic interactive ramp is blue in the stock
+	// themes, so keep the frame blue when it still reads blue.
+	const interactive = theme?.hue?.interactive
+	const interactiveSwatch = interactive?.[500] ?? interactive?.[400] ?? interactive?.[300]
+	if (interactiveSwatch && looksBlue(interactiveSwatch)) {
+		const fromInteractive = readableBlue(blueCandidates(interactive), background)
+		if (fromInteractive) return fromInteractive
 	}
-	const warning = theme?.text?.feedback?.warning?.base
-	if (warning) {
-		if (!background || contrastRatio(warning, background) >= 4.5) return warning
-		return boostUntilContrast(warning, background).color
+	const action = theme?.text?.action?.primary?.base
+	if (action) {
+		if (!background || contrastRatio(action, background) >= ACTIVITY_FRAME_MIN_CONTRAST) return action
+		return boostUntilContrast(action, background, ACTIVITY_FRAME_MIN_CONTRAST).color
 	}
 	return ACTIVITY_FRAME_BORDER_FALLBACK
+}
+
+/**
+ * Semantic dock line accents (think / tool) — the two activity lines get
+ * their own color families so they read as panels, not as default body copy:
+ *   - think: VIOLET (`purple` ramp; dsh-tui-pi's `thinking` text token),
+ *   - tool:  CYAN/TEAL (`cyan` ramp; dsh-tui-pi's blue tool panel family but
+ *     shifted off the footer blue so it never reads as chrome).
+ * Both are picked from the theme's named hue ramps, preferring a soft mid
+ * step and walking the ramp until the text clears 4.5:1 on the theme
+ * surface (dark: later steps are dimmer; light: later steps are lighter).
+ * Status glyphs (⚙/✔/✘) never use this — they keep their tone color.
+ */
+export type DockAccent = "think" | "tool"
+
+/** Preferred steps: a soft mid swatch first, then the rest of the ramp. */
+const DOCK_ACCENT_STEPS: Record<DockAccent, readonly number[]> = {
+	think: [200, 300, 100, 400, 500, 600, 700, 800, 900],
+	tool: [300, 200, 100, 400, 500, 600, 700, 800, 900],
+}
+
+/** Fallback hue ramps when the theme carries no named hue record: violet →
+ * accent (think), teal → interactive (tool). */
+const DOCK_ACCENT_HUES: Record<DockAccent, readonly string[]> = {
+	think: ["purple", "violet", "accent"],
+	tool: ["cyan", "teal", "interactive"],
+}
+
+/** No-theme fallbacks per surface polarity (dsh-blue dark indices). */
+const DOCK_ACCENT_FALLBACK: Record<DockAccent, { dark: string; light: string }> = {
+	think: { dark: "#9d7cd8", light: "#6d47ad" },
+	tool: { dark: "#449da7", light: "#077786" },
+}
+
+type HueRamp = Readonly<Record<number, RGBA | undefined>>
+
+export function dockAccentColor(theme: ComponentTheme | undefined, accent: DockAccent): string | RGBA {
+	const background = theme?.background?.base
+	const hues = theme?.hue as unknown as Readonly<Record<string, HueRamp | undefined>> | undefined
+	for (const name of DOCK_ACCENT_HUES[accent]) {
+		const ramp = hues?.[name]
+		if (ramp === undefined) continue
+		const candidates = DOCK_ACCENT_STEPS[accent]
+			.map((step) => ramp[step])
+			.filter((value): value is RGBA => value !== undefined)
+		if (candidates.length === 0) continue
+		if (background === undefined) return candidates[0]!
+		const preferred = candidates.find((value) => contrastRatio(value, background) >= 4.5)
+		if (preferred !== undefined) return preferred
+		// No stock step clears the floor (custom surface): return the most
+		// readable step rather than an unreadable stock one.
+		return candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
+	}
+	const fallback = DOCK_ACCENT_FALLBACK[accent]
+	const darkSurface = background === undefined || relativeLuminance(background) < 0.5
+	return darkSurface ? fallback.dark : fallback.light
 }
 
 /** Whether the dock needs the shared animation clock right now (pure):
@@ -755,9 +876,6 @@ export function WidgetsDock(props: {
 					: (theme?.text.muted ?? "#9aa5ce")
 	const bg = () => theme?.background.base ?? "#000000"
 	const skinCtx = () => ({ decorated: motionDecorationsEnabled(), background: bg() })
-	/** Line color: entrance fade-in (0.4s from first sight) then exit fade
-	 * (inside the seam 1s window) — see skinDockLineFg. */
-	const lineFg = (line: DockLine): string | RGBA => skinDockLineFg(skinCtx(), fgFor(line.tone), line)
 	// Shared animation clock (contract §2.2 — replaces the old 120ms
 	// setInterval): ticks only while the docks have live lines; undefined
 	// pauses the clock (tier off / idle with nothing animating).
@@ -766,11 +884,13 @@ export function WidgetsDock(props: {
 		() => setDockSpin((s) => s + 1),
 	)
 	const width = () => Math.max(16, dimensions().width - 4)
-	// Todos table width: the tui-pi box spans the widget slot at paddingX=1
-	// (`columns - 2`), independent of the skin's 3-column line indent.
-	// Short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS) collapse it to the
-	// one-line summary so the transcript keeps its ≥6-row floor.
-	const tableWidth = () => Math.max(16, dimensions().width - 2)
+	// Todos table width: the slot carries the one-column left indent (the
+	// composer border owns column 0), so the box spans columns 1..W-1 and its
+	// right border lands on the composer's right border (W-1). See
+	// `todosTableWidth`. Short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS)
+	// collapse it to the one-line summary so the transcript keeps its ≥6-row
+	// floor.
+	const tableWidth = () => todosTableWidth(dimensions().width)
 	const table = () => todosTableLines(props.rows, tableWidth(), dimensions().height)
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
 	// Mitigation 1: the frame's Show reads the DEFERRED latch, not the raw
@@ -780,11 +900,8 @@ export function WidgetsDock(props: {
 	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
 
-	const lineView = (line: DockLine) => (
-		<text fg={lineFg(line)} attributes={line.italic === true ? TextAttributes.ITALIC : undefined} wrapMode="none">
-			{clipToWidth(line.text, width())}
-		</text>
-	)
+	const accentFg = (accent: DockAccent): string | RGBA => dockAccentColor(theme, accent)
+	const lineView = (line: DockLine) => dockLineNode(line, width(), skinCtx(), fgFor, accentFg)
 
 	return (
 		<box flexShrink={0} flexDirection="column" width="100%">
@@ -804,7 +921,7 @@ export function WidgetsDock(props: {
 			</Show>
 			<Show
 				when={activityFrameLatch.shown()}
-				fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} skinCtx={skinCtx()} />}
+				fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} accentFg={accentFg} skinCtx={skinCtx()} />}
 			>
 				<Show
 					when={frame() === "frame"}
@@ -843,17 +960,52 @@ function FlatDock(props: {
 	rows: readonly SeamRow[]
 	width: number
 	fgFor: (tone: DockLine["tone"]) => string | RGBA
+	accentFg: (accent: DockAccent) => string | RGBA
 	skinCtx: SkinFgContext
 }): JSX.Element {
 	return (
 		<box flexShrink={0} flexDirection="column" width="100%" height={dockLines(props.rows).length} paddingLeft={3}>
 			<For each={dockLines(props.rows)}>
-				{(line) => (
-					<text fg={skinDockLineFg(props.skinCtx, props.fgFor(line.tone), line)} attributes={line.italic === true ? TextAttributes.ITALIC : undefined} wrapMode="none">
-						{clipToWidth(line.text, props.width)}
-					</text>
-				)}
+				{(line) => dockLineNode(line, props.width, props.skinCtx, props.fgFor, props.accentFg)}
 			</For>
 		</box>
+	)
+}
+
+/**
+ * One dock row: the status marker (⚙/✔/✘) keeps its tone color while the
+ * rest of the line paints in the semantic accent (think violet / tool cyan).
+ * `line.text` always carries the full string (pure builders/tests unchanged);
+ * the marker is cut out at `markerAt` and re-inserted as a colored span. */
+function dockLineNode(
+	line: DockLine,
+	width: number,
+	ctx: SkinFgContext,
+	fgFor: (tone: DockLine["tone"]) => string | RGBA,
+	accentFg: (accent: DockAccent) => string | RGBA,
+): JSX.Element {
+	const toneFg = fgFor(line.tone)
+	const bodyFg = skinDockLineFg(ctx, line.accent !== undefined ? accentFg(line.accent) : toneFg, line)
+	const attributes = line.italic === true ? TextAttributes.ITALIC : undefined
+	const marker = line.marker
+	const markerAt = line.markerAt ?? 0
+	if (marker === undefined || line.text.slice(markerAt, markerAt + marker.length) !== marker) {
+		return (
+			<text fg={bodyFg} attributes={attributes} wrapMode="none">
+				{clipToWidth(line.text, width)}
+			</text>
+		)
+	}
+	const before = clipToWidth(line.text.slice(0, markerAt), width)
+	const markerBudget = Math.max(0, width - stringWidth(before))
+	const clippedMarker = clipToWidth(marker, markerBudget)
+	const after = clipToWidth(line.text.slice(markerAt + marker.length), Math.max(0, markerBudget - stringWidth(clippedMarker)))
+	const markerFg = skinDockLineFg(ctx, toneFg, line)
+	return (
+		<text fg={bodyFg} attributes={attributes} wrapMode="none">
+			{before}
+			<span style={{ fg: markerFg }}>{clippedMarker}</span>
+			{after}
+		</text>
 	)
 }

@@ -48,6 +48,7 @@ import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
+import { presetLabelFor } from "../src/routes/session/commands"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
@@ -146,15 +147,23 @@ function V2SessionPage(props: {
 	const [now, setNow] = createSignal(new Date())
 	// Batch H2 (tui-pi 60-preset footer parity) — host-entry-v2 parity: the
 	// current agent preset's display label for the brand segment
-	// ("dsh(<name>)"); undefined keeps the plain "dsh". Re-read on mount and
-	// on every reload hook — a /preset switch lands through reload().
+	// ("dsh(<name>)"); undefined keeps the plain "dsh". Re-read on mount, on
+	// every reload hook (a /preset switch lands through reload()) and at each
+	// turn end — the first session/create is what names the live preset, and
+	// that only happens on the first turn.
 	const [presetLabel, setPresetLabel] = createSignal<string | undefined>()
+	// `presetLabelFor` is tui-pi's formatPresetLabel semantics: with nothing
+	// staged/attached yet the registry-default row answers, so the brand
+	// segment reads "dsh(<default>)" from the first frame.
 	const refreshPresetLabel = () => {
 		const face = seam.preset
 		if (!face) return
 		void Promise.all([face.list(), face.currentId()])
-			.then(([rows, id]) => setPresetLabel(rows.find((row) => row.id === id)?.name))
-			.catch(() => setPresetLabel(undefined))
+			.then(([rows, id]) => setPresetLabel(presetLabelFor(rows, id)))
+			// A transient list/currentId failure must not blank the brand
+			// segment back to plain "dsh" once a label is known: keep the last
+			// value (the next refresh, e.g. turn end, retries).
+			.catch(() => {})
 	}
 	let composerRef: { focused(): boolean; focus(): void } | undefined
 	// Transcript scrollback (batch 10f): the page owns the scrollbox ref and
@@ -317,9 +326,14 @@ function V2SessionPage(props: {
 			})
 	}
 	// Turn-end refresh (⚡ tok/s + 💬 message count move at turn boundaries —
-	// the same reactive trick cacheRate uses above).
+	// the same reactive trick cacheRate uses above). The preset label joins
+	// here: the live session is created (and its bound preset named by the
+	// opening header) on the first turn, after mount already read the roster.
 	createEffect(() => {
-		if (!turnBusy()) refreshFooterData()
+		if (!turnBusy()) {
+			refreshFooterData()
+			refreshPresetLabel()
+		}
 	})
 	const segments = () =>
 		sessionFooterSegments({

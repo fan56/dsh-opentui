@@ -420,7 +420,9 @@ export class RemoteSessionSeam implements SessionSeam {
 	// re-probes the execution mode).
 	preset = {
 		list: (): Promise<SeamPresetRow[]> => this.#session.listPresets(),
-		currentId: async (): Promise<string | undefined> => this.#session.currentPresetId(),
+		// Staged/known preset first, else the live session's
+		// `session/projections` agentPreset row (the web header-label source).
+		currentId: async (): Promise<string | undefined> => this.#session.resolveCurrentPresetId(),
 		select: async (presetId: string): Promise<boolean> => {
 			try {
 				this.#session.switchPreset(presetId)

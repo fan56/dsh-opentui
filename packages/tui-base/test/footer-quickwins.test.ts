@@ -309,6 +309,24 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 		// replay sits in the boot section, after the motion tier replay
 		expect(source.indexOf("applyHintsConfig(seam.configLoad?.())")).toBeGreaterThan(source.indexOf("setMotionTier("))
 	})
+
+	test("the brand preset label resolves like tui-pi and refreshes through the footer chain", () => {
+		// formatPresetLabel semantics: the default row answers at boot, before
+		// any session/create names the live preset (plain rows.find(id) showed
+		// the plain "dsh" for the whole session).
+		expect(source).toMatch(/setPresetLabel\(presetLabelFor\(rows, id\)\)/)
+		// /preset lands through reload() (already wired) AND the first turn
+		// creates the session, so the turn-end footer refresh re-reads the
+		// label too instead of keeping the boot fallback.
+		expect(source).toMatch(
+			/createEffect\(\(\) => \{\s*\n\s*if \(!turnBusy\(\)\) \{\s*\n\s*refreshFooterData\(\)\s*\n\s*refreshPresetLabel\(\)/,
+		)
+		// A transient list/currentId failure keeps the last label instead of
+		// flipping a known "dsh(<preset>)" back to the plain "dsh"; the next
+		// refresh retries.
+		expect(source).not.toMatch(/\.catch\(\(\) => setPresetLabel\(undefined\)\)/)
+		expect(source).toMatch(/\.catch\(\(\) => \{\}\)/)
+	})
 })
 
 describe("HintsLine zero-row gate (all-off collapses to 0 lines — tui-pi parity)", () => {
