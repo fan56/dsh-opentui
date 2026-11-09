@@ -236,7 +236,7 @@ function compactRanges(numbers: readonly number[]): string {
 /** Width-exact table cell (dsh-tui-pi `padCell`): flatten, clip with the
  * ellipsis, then pad to `width` columns. */
 export function padCell(text: string, width: number, align: "left" | "right" = "left"): string {
-	const flat = text.replace(/[\r\n]+/g, " ")
+	const flat = text.replace(/[\r\n]+/g, " ").trim()
 	const clipped = clipToWidth(flat, width)
 	const pad = Math.max(0, width - stringWidth(clipped))
 	return align === "right" ? " ".repeat(pad) + clipped : clipped + " ".repeat(pad)
@@ -303,7 +303,10 @@ export function todosTableLines(rows: readonly SeamRow[], width: number, termina
 	}
 	const boxWidth = Math.max(16, width)
 	const innerWidth = boxWidth - 4
-	const colWidths = [3, 2, Math.max(8, innerWidth - 5 - TABLE_SEP.length * 2)]
+	// Narrow-box guard (boxWidth < 23): the fixed columns + separators are
+	// 5 + TABLE_SEP*2 = 11 inner columns, so the Task column must shrink below
+	// 8 rather than push the row past the border (the old floor overflowed).
+	const colWidths = [3, 2, Math.max(1, innerWidth - 5 - TABLE_SEP.length * 2)]
 	const border = "─".repeat(Math.max(0, boxWidth - 2))
 
 	// The visible window (dsh-tui-pi law): at most TODO_MAX_ROWS entries

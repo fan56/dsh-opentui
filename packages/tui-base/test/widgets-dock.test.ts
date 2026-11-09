@@ -149,6 +149,13 @@ describe("todosTableLines (dsh-tui-pi TodosPanel parity)", () => {
 		expect(padCell("ab", 4)).toBe("ab  ")
 		expect(padCell("ab", 4, "right")).toBe("  ab")
 		expect(stringWidth(padCell("abcdef", 4))).toBe(4)
+		// Flatten + trim (tui-pi padClip): no stray leading/trailing columns.
+		expect(padCell("  ab\ncd  ", 6)).toBe("ab cd ")
+	})
+
+	test("narrow box (boxWidth < 23): the Task column shrinks, rows never overflow", () => {
+		const lines = table([toolRow([{ content: "a very long task name", status: "in_progress" }])], 16)
+		for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(16)
 	})
 })
 
