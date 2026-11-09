@@ -37,12 +37,11 @@ import { useTerminalDimensions, onAnimationTick } from "@opentui/solid"
 import { parseColor, TextAttributes, type RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
-import { parseTodos } from "../../util/todo"
+import { parseTodos, type Todo } from "../../util/todo"
+import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { COMPOSER_COMPACT_TERMINAL_ROWS, unfocusedBorderColor } from "../../skin/semantic"
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 // ---------------------------------------------------------------------------
 // Skin motion timing (skin contract §1 入场淡入/退场渐隐/提醒脉冲, batch δ).
@@ -193,26 +192,141 @@ function todoArray(text: string | undefined): unknown[] | undefined {
 	return undefined
 }
 
-/** Todos summary line (pure, testable): the todo array of the latest
- * settled todo tool row (see todoArray for the accepted shapes). No todos
- * → ''. Batch D5b hide-law: ALL completed → '' too (the tui-pi semantics —
- * the row only earns its line while work remains). */
-export function todosSummaryLine(output: string | undefined): string {
-	const todos = parseTodos(todoArray(output) ?? [])
-	if (todos.length === 0) return ""
-	const done = todos.filter((t) => t.status === "completed").length
-	if (done === todos.length) return ""
-	const active = todos.find((t) => t.status === "in_progress")
-	const head = `todos [✓]${done}/${todos.length}`
-	return active ? `${head} · ${active.content}` : head
+/** Max todo rows the table shows (dsh-tui-pi `TODO_MAX_ROWS`). Longer lists
+ * window onto the active items: running first, then the queue, completed
+ * last (newest-first inside the done group). */
+export const TODO_MAX_ROWS = 5
+
+/** Table cell separator (dsh-tui-pi `TABLE_SEP`). */
+const TABLE_SEP = " │ "
+
+/** Status icon of one todo (dsh-tui-pi `todoIcon`): pending / in-progress /
+ * completed. `cancelled` (opencode-only) degrades to the pending box. */
+export function todoIcon(status: string): string {
+	if (status === "completed") return "☑"
+	if (status === "in_progress") return "◐"
+	return "☐"
 }
 
-/** One dock tool line (pure): `✔/✘/⠋ ⚙ name(subject) · Xs · <tail>`.
- * Running shows the arg summary; settled shows the result tail (the raw
- * JSON never renders on the line — the collapse-to-summary law). */
+/** Window priority (dsh-tui-pi `statusRank`). */
+function statusRank(status: string): number {
+	if (status === "in_progress") return 0
+	if (status === "completed") return 2
+	return 1
+}
+
+/** `[1,2,3,7,9]` → `1-3,7,9` (dsh-tui-pi `compactRanges`). */
+function compactRanges(numbers: readonly number[]): string {
+	if (numbers.length === 0) return ""
+	const runs: string[] = []
+	let start = numbers[0]!
+	let prev = start
+	for (const n of numbers.slice(1)) {
+		if (n === prev + 1) {
+			prev = n
+			continue
+		}
+		runs.push(start === prev ? `${start}` : `${start}-${prev}`)
+		start = prev = n
+	}
+	runs.push(start === prev ? `${start}` : `${start}-${prev}`)
+	return runs.join(",")
+}
+
+/** Width-exact table cell (dsh-tui-pi `padCell`): flatten, clip with the
+ * ellipsis, then pad to `width` columns. */
+export function padCell(text: string, width: number, align: "left" | "right" = "left"): string {
+	const flat = text.replace(/[\r\n]+/g, " ")
+	const clipped = clipToWidth(flat, width)
+	const pad = Math.max(0, width - stringWidth(clipped))
+	return align === "right" ? " ".repeat(pad) + clipped : clipped + " ".repeat(pad)
+}
+
+/** One bordered table row of exactly `boxWidth` columns. */
+function borderedRow(boxWidth: number, inner: string): string {
+	const pad = Math.max(0, boxWidth - 4 - stringWidth(inner))
+	return `│ ${inner}${" ".repeat(pad)} │`
+}
+
+/** The todo list of the latest SETTLED, non-failed todo tool row (a rejected
+ * call's args were never applied). The list comes from the call args (dsh
+ * host shape) else the output brief (opencode shape). */
+export function latestTodos(rows: readonly SeamRow[]): Todo[] {
+	const todoTool = [...rows]
+		.reverse()
+		.find((row) => row.kind === "tool" && TODO_TOOL_NAMES.has(row.name) && row.output !== undefined && row.status !== "failed")
+	if (todoTool?.kind !== "tool") return []
+	const source = todoArray(todoTool.args) !== undefined ? todoTool.args : todoTool.output
+	return parseTodos(todoArray(source) ?? [])
+}
+
+/** The Todos table (pure, dsh-tui-pi `TodosPanel` parity): a bordered box
+ * with the `● Todos (done/total)` header (plus a `· showing 4-8` range hint
+ * when the 5-row window hides rows), the `# │ ✓ │ Task` table header and one
+ * row per todo in plan order with GLOBAL numbers. No todos, or every todo
+ * completed → zero rows (clear-when-done). `width` is the box's terminal
+ * columns (box drawing included).
+ *
+ * Line granularity: the dock paints one <text> per table row, so each row
+ * carries ONE tone — border/header rows are muted, a todo row takes its
+ * status color (completed → ok, in-progress → running, pending → muted). */
+export function todosTableLines(rows: readonly SeamRow[], width: number): DockLine[] {
+	const todos = latestTodos(rows)
+	if (todos.length === 0 || todos.every((todo) => todo.status === "completed")) return []
+	const boxWidth = Math.max(16, width)
+	const innerWidth = boxWidth - 4
+	const colWidths = [3, 2, Math.max(8, innerWidth - 5 - TABLE_SEP.length * 2)]
+	const border = "─".repeat(Math.max(0, boxWidth - 2))
+
+	// The visible window (dsh-tui-pi law): at most TODO_MAX_ROWS entries
+	// ranked in_progress → pending → completed (done newest-first), displayed
+	// back in plan order with their GLOBAL numbers.
+	const window = todos
+		.map((todo, index) => ({ todo, index }))
+		.sort(
+			(a, b) =>
+				statusRank(a.todo.status) - statusRank(b.todo.status) ||
+				(a.todo.status === "completed" ? b.index - a.index : a.index - b.index),
+		)
+		.slice(0, TODO_MAX_ROWS)
+		.sort((a, b) => a.index - b.index)
+
+	const done = todos.filter((todo) => todo.status === "completed").length
+	const showing = window.length < todos.length ? ` · showing ${compactRanges(window.map((entry) => entry.index + 1))}` : ""
+	const header = clipToWidth(`● Todos (${done}/${todos.length})${showing}`, innerWidth)
+	const out: DockLine[] = [
+		{ text: `┌${border}┐`, tone: "muted" },
+		{ text: borderedRow(boxWidth, header), tone: "muted" },
+		{
+			text: borderedRow(
+				boxWidth,
+				[padCell("#", colWidths[0]!, "right"), padCell("✓", colWidths[1]!), padCell("Task", colWidths[2]!)].join(TABLE_SEP),
+			),
+			tone: "muted",
+		},
+	]
+	for (const { todo, index } of window) {
+		const cells = [
+			padCell(String(index + 1), colWidths[0]!, "right"),
+			padCell(todoIcon(todo.status), colWidths[1]!),
+			padCell(todo.content, colWidths[2]!),
+		].join(TABLE_SEP)
+		const tone: DockLine["tone"] =
+			todo.status === "completed" ? "ok" : todo.status === "in_progress" ? "running" : "muted"
+		out.push({ text: borderedRow(boxWidth, cells), tone })
+	}
+	out.push({ text: `└${border}┘`, tone: "muted" })
+	return out
+}
+
+/** One dock tool line (pure, dsh-tui-pi ToolPanel height '1' parity):
+ * `<⚙|✔|✘> <name> <subject> · Xs · <tail>`. NOT the old `⠋ ⚙ name(subject)`
+ * form: the status icon IS the marker, the subject follows the name with a
+ * space, a running tool's tail is the arg summary, a settled one's the
+ * result tail (the raw JSON never renders). */
 export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () => number): string {
 	const subject = toolSubject(row.args)
-	const title = subject === "" ? row.name : `${row.name}(${subject})`
+	const title = subject === "" ? row.name : `${row.name} ${subject}`
 	const elapsed =
 		row.status === "running"
 			? row.startedAt !== undefined
@@ -221,10 +335,11 @@ export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () =
 			: row.elapsedSec !== undefined
 				? ` · ${row.elapsedSec.toFixed(1)}s`
 				: ""
-	const marker = row.status === "running" ? SPINNER_FRAMES[spin() % SPINNER_FRAMES.length] : row.status === "failed" ? "✘" : "✔"
+	const marker = row.status === "running" ? "⚙" : row.status === "failed" ? "✘" : "✔"
+	void spin()
 	const tail = row.status === "running" ? toolDetail(row.args) : toolResultLine(row.output)
 	const body = `${title}${elapsed}${tail !== "" ? ` · ${tail}` : ""}`
-	return `${marker} ⚙ ${body}`
+	return `${marker} ${body}`
 }
 
 /** The live think line (pure, testable): `💭 thinking · Xs · <tail>` while
@@ -245,10 +360,12 @@ export function thinkLineText(row: Extract<SeamRow, { kind: "reasoning" }>, spin
 	return undefined
 }
 
-/** The dock line set (pure): Todos → Think → Tool, one entry per visible
- * panel line. `tone` keys the status-color family (resolved at render).
- * `id` is the STABLE entrance-fade key (spinner glyphs churn the text —
- * the id must not); `fadeOutAt` anchors the exit fade (H5 view-side math). */
+/** The dock line set (pure): Think → Tool, one entry per visible panel line.
+ * The Todos table is NOT part of it (tui-pi parity): it owns its own
+ * multi-row block above the think/tool lines (see `todosTableLines`).
+ * `tone` keys the status-color family (resolved at render). `id` is the
+ * STABLE entrance-fade key (spinner glyphs churn the text — the id must
+ * not); `fadeOutAt` anchors the exit fade (H5 view-side math). */
 export type DockLine = {
 	text: string
 	tone: "ok" | "running" | "failed" | "muted"
@@ -267,15 +384,6 @@ const TODO_TOOL_NAMES = new Set(["todowrite", "todo_write"])
 export function dockLines(rows: readonly SeamRow[]): DockLine[] {
 	const out: DockLine[] = []
 	const all = rows
-	// Todos panel (single line): the latest SETTLED, non-failed todo tool
-	// row (a rejected call's args were never applied). The list comes from
-	// the call args (dsh host shape) else the output brief (opencode shape).
-	const todoTool = [...all]
-		.reverse()
-		.find((row) => row.kind === "tool" && TODO_TOOL_NAMES.has(row.name) && row.output !== undefined && row.status !== "failed")
-	const todos =
-		todoTool?.kind === "tool" ? todosSummaryLine(todoArray(todoTool.args) !== undefined ? todoTool.args : todoTool.output) : ""
-	if (todos !== "") out.push({ text: todos, tone: "muted", id: "dock:todos" })
 	// Think panel (single line): the LIVE burst wins; else the collapsed
 	// summary inside its fade window (the seam-rows timer clears the row).
 	const live = [...all].reverse().find((row) => row.kind === "reasoning" && row.streaming === true)
@@ -313,30 +421,29 @@ export function dockTurnActive(rows: readonly SeamRow[]): boolean {
 	)
 }
 
-/** The turn-lifetime activity frame content (pure): EXACTLY three slots —
- * todo / thinking / tool (skin contract §1 活动区) — each painted per the D5
- * laws, empty slots left blank. The fixed-3 law caps the tool slot at the
- * most recent visible tool line (multi-tool turns show the newest inside
- * the frame; the flat non-frame dock still lists every tool line). */
-export function activityLines(rows: readonly SeamRow[]): [DockLine, DockLine, DockLine] {
+/** The turn-lifetime activity frame content (pure): EXACTLY two slots —
+ * thinking / tool (skin contract §1 活动区) — each painted per the D5 laws,
+ * empty slots left blank. The fixed law caps the tool slot at the most
+ * recent visible tool line (multi-tool turns show the newest inside the
+ * frame; the flat non-frame dock still lists every tool line). The Todos
+ * table moved OUT of the frame to the widgets slot's own block (dsh-tui-pi
+ * parity: the table is persistent, not turn-lifetime). */
+export function activityLines(rows: readonly SeamRow[]): [DockLine, DockLine] {
 	const blank: DockLine = { text: "", tone: "muted" }
 	const flat = dockLines(rows)
-	const todo = flat.find((line) => line.id === "dock:todos") ?? blank
 	const think = flat.find((line) => line.id?.startsWith("dock:think:")) ?? blank
 	const tools = flat.filter((line) => line.id?.startsWith("dock:tool:"))
 	const tool = tools.length > 0 ? tools[tools.length - 1]! : blank
-	return [todo, think, tool]
+	return [think, tool]
 }
 
 /** Compact-terminal form (contract 矮终端): the frame collapses to a left
  * rule with the title written into the first line (H2 mitigation), still
- * exactly three rows. */
-export function activityRuleLines(rows: readonly SeamRow[]): [DockLine, DockLine, DockLine] {
-	const [todo, think, tool] = activityLines(rows)
-	const head = todo.text === "" ? `┃ activity` : `┃ activity · ${todo.text}`
+ * exactly two rows. */
+export function activityRuleLines(rows: readonly SeamRow[]): [DockLine, DockLine] {
+	const [think, tool] = activityLines(rows)
 	return [
-		{ ...todo, text: head, id: "dock:activity-head" },
-		{ ...think, text: think.text === "" ? "" : `┃ ${think.text}` },
+		{ ...think, text: `┃ activity`, id: "dock:activity-head" },
 		{ ...tool, text: tool.text === "" ? "" : `┃ ${tool.text}` },
 	]
 }
@@ -495,6 +602,10 @@ export function WidgetsDock(props: {
 		() => setDockSpin((s) => s + 1),
 	)
 	const width = () => Math.max(16, dimensions().width - 4)
+	// Todos table width: the tui-pi box spans the widget slot at paddingX=1
+	// (`columns - 2`), independent of the skin's 3-column line indent.
+	const tableWidth = () => Math.max(16, dimensions().width - 2)
+	const table = () => todosTableLines(props.rows, tableWidth())
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
 	// Mitigation 1: the frame's Show reads the DEFERRED latch, not the raw
 	// turn liveness — mount/unmount land one render tick after the flip
@@ -510,36 +621,52 @@ export function WidgetsDock(props: {
 	)
 
 	return (
-		<Show
-			when={activityFrameLatch.shown()}
-			fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} skinCtx={skinCtx()} />}
-		>
-			<Show
-				when={frame() === "frame"}
-				fallback={
-					<box flexShrink={0} flexDirection="column" width="100%" height={3} paddingLeft={3}>
-						<For each={activityRuleLines(props.rows)}>{lineView}</For>
-					</box>
-				}
-			>
-				{/* Explicit border (the borderColor-only trap opens four sides
-				 * implicitly — contract §2.4). Height = 2 border rows + 3 fixed
-				 * content rows (title rides the top border, adds no rows). */}
-				<box
-					flexShrink={0}
-					flexDirection="column"
-					width="100%"
-					height={5}
-					border={["top", "bottom", "left", "right"]}
-					borderStyle="single"
-					borderColor={unfocusedBorderColor(theme)}
-					title="activity"
-					titleAlignment="left"
-				>
-					<For each={activityLines(props.rows)}>{lineView}</For>
+		<box flexShrink={0} flexDirection="column" width="100%">
+			{/* Todos slot (tui-pi parity): the persistent bordered table sits
+			 * ABOVE the transient think/tool surface, outside the turn-lifetime
+			 * activity frame (the tabular todos are not per-turn activity). */}
+			<Show when={table().length > 0}>
+				<box flexShrink={0} flexDirection="column" width="100%" height={table().length} paddingLeft={1}>
+					<For each={table()}>
+						{(line) => (
+							<text fg={fgFor(line.tone)} wrapMode="none">
+								{clipToWidth(line.text, tableWidth())}
+							</text>
+						)}
+					</For>
 				</box>
 			</Show>
-		</Show>
+			<Show
+				when={activityFrameLatch.shown()}
+				fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} skinCtx={skinCtx()} />}
+			>
+				<Show
+					when={frame() === "frame"}
+					fallback={
+						<box flexShrink={0} flexDirection="column" width="100%" height={2} paddingLeft={3}>
+							<For each={activityRuleLines(props.rows)}>{lineView}</For>
+						</box>
+					}
+				>
+					{/* Explicit border (the borderColor-only trap opens four sides
+					 * implicitly — contract §2.4). Height = 2 border rows + 2 fixed
+					 * content rows (title rides the top border, adds no rows). */}
+					<box
+						flexShrink={0}
+						flexDirection="column"
+						width="100%"
+						height={4}
+						border={["top", "bottom", "left", "right"]}
+						borderStyle="single"
+						borderColor={unfocusedBorderColor(theme)}
+						title="activity"
+						titleAlignment="left"
+					>
+						<For each={activityLines(props.rows)}>{lineView}</For>
+					</box>
+				</Show>
+			</Show>
+		</box>
 	)
 }
 
