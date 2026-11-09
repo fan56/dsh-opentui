@@ -281,12 +281,46 @@ export function modelSegment(
 	return { text: label, bg: resolvePalette(theme).thinking[effort] }
 }
 
-/** The 🧠 context segment; the fill ramps green→amber→orange→red on % consumed. */
-export function contextSegment(pct: number | null, theme?: ComponentTheme): PowerlineSegment | null {
-	if (pct === null || !Number.isFinite(pct) || pct < 0) return null
+/**
+ * Compact token count (footer context batch, tui-pi `fmtNum` parity):
+ * `1.2M` / `34.5k` / plain — the 🧠 segment's X/Y pair stays one segment
+ * wide on big windows.
+ */
+export function fmtNum(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+	if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+	return `${n}`
+}
+
+/**
+ * The 🧠 context segment (footer context batch, tui-pi footer.ts:243-256
+ * parity): `🧠 {used}/{window}({x.x%})` — one decimal, percent capped at
+ * 100 (the window is a hard ceiling; the estimate can overshoot while it
+ * prices pending messages a compaction will drop). Without a window (or
+ * with a non-positive one) it degrades to the bare `🧠 {used}` shape on
+ * contextOk. The fill ramps green→amber→orange→red at 50/70/90.
+ */
+export function contextSegment(
+	used: number | null,
+	window: number | null | undefined,
+	theme?: ComponentTheme,
+): PowerlineSegment | null {
+	if (used === null || !Number.isFinite(used) || used < 0) return null
 	const p = resolvePalette(theme)
-	const bg = pct >= 90 ? p.contextDanger : pct >= 75 ? p.contextOrange : pct >= 60 ? p.contextWarn : p.contextOk
-	return { text: `🧠 ${Math.round(pct)}%`, bg, roll: { value: pct, decimals: 0, width: 2, prefix: "🧠 ", suffix: "%" } }
+	if (window !== null && window !== undefined && Number.isFinite(window) && window > 0) {
+		const percent = Math.min(100, (used / window) * 100)
+		const bg = percent >= 90 ? p.contextDanger : percent >= 70 ? p.contextOrange : percent >= 50 ? p.contextWarn : p.contextOk
+		return {
+			text: `🧠 ${fmtNum(used)}/${fmtNum(window)}(${percent.toFixed(1)}%)`,
+			bg,
+			roll: { value: percent, decimals: 1, width: 4, prefix: `🧠 ${fmtNum(used)}/${fmtNum(window)}(`, suffix: "%)" },
+		}
+	}
+	return {
+		text: `🧠 ${fmtNum(used)}`,
+		bg: p.contextOk,
+		roll: { value: used, decimals: 0, width: 4, prefix: "🧠 ", suffix: "" },
+	}
 }
 
 /** The 💬 message-count segment; omitted while no message was sent. */
@@ -461,7 +495,10 @@ export function sessionFooterSegments(data: {
 	provider?: string
 	model?: string
 	effort?: EffortLevel
-	contextPct?: number | null
+	/** 🧠 occupancy estimate (footer context batch); null/absent hides the segment. */
+	contextTokens?: number | null
+	/** 🧠 model window (footer context batch); null/absent degrades to the bare `used` shape. */
+	contextWindow?: number | null
 	messages?: number
 	tools?: number
 	tps?: number | null
@@ -482,7 +519,7 @@ export function sessionFooterSegments(data: {
 	}
 	add(providerSegment(data.provider ?? "", theme, data.mode))
 	add(modelSegment(data.model ?? "", data.effort ?? "off", theme))
-	add(contextSegment(data.contextPct ?? null, theme))
+	add(contextSegment(data.contextTokens ?? null, data.contextWindow ?? null, theme))
 	// tui-pi footer order: 🧠 context, ⚡ CH, then msgs/tools.
 	add(cacheSegment(data.cacheHitRate ?? null, theme))
 	add(messagesSegment(data.messages ?? 0, theme))

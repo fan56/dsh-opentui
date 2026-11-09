@@ -98,19 +98,29 @@ describe("segment builders", () => {
 		expect(modelSegment("m", "off", theme)!.bg).toBe(theme.text.faint)
 	})
 
-	test("context segment: ramps on % and omits unknown", () => {
-		expect(contextSegment(null)).toBeNull()
-		expect(contextSegment(-1)).toBeNull()
-		expect(contextSegment(12)?.text).toBe("🧠 12%")
+	test("context segment: X/Y(x.x%) shape, degrades without a window, ramps at 50/70/90", () => {
+		// Footer context batch (tui-pi footer.ts:243-256 parity): used-only
+		// segments hide; the bare shape (no window) renders `🧠 used` on the
+		// ok fill; the full shape is one-decimal percent capped at 100.
+		expect(contextSegment(null, 1000)).toBeNull()
+		expect(contextSegment(-1, 1000)).toBeNull()
+		expect(contextSegment(420, null)?.text).toBe("🧠 420")
+		expect(contextSegment(420, undefined)?.bg).toBe(POWERLINE_COLORS.contextOk)
+		expect(contextSegment(1200, 10000)?.text).toBe("🧠 1.2k/10.0k(12.0%)")
+		expect(contextSegment(12345, 10000)?.text).toBe("🧠 12.3k/10.0k(100.0%)")
 		const theme = fakeTheme()
-		const ramp = [30, 65, 80, 95].map((p) => contextSegment(p, theme)!.bg)
+		// 45 / 55 / 75 / 95 percent — the 50/70/90 ladder (tui-pi contextBg).
+		const ramp = [450, 550, 750, 950].map((used) => contextSegment(used, 1000, theme)!.bg)
 		expect(ramp[0]).toBe(theme.text.feedback.success.base)
 		expect(ramp[1]).toBe(theme.text.feedback.warning.base)
 		expect(ramp[2]).toBe(theme.text.feedback.error.muted)
 		expect(ramp[3]).toBe(theme.text.feedback.error.base)
 		// fallback palette (no theme): the kit hex ramp
-		expect(contextSegment(30)!.bg).toBe(POWERLINE_COLORS.contextOk)
-		expect(contextSegment(95)!.bg).toBe(POWERLINE_COLORS.contextDanger)
+		expect(contextSegment(450, 1000)!.bg).toBe(POWERLINE_COLORS.contextOk)
+		expect(contextSegment(950, 1000)!.bg).toBe(POWERLINE_COLORS.contextDanger)
+		// A non-positive/NaN window reads as "unknown" → bare shape.
+		expect(contextSegment(420, 0)?.text).toBe("🧠 420")
+		expect(contextSegment(420, Number.NaN)?.text).toBe("🧠 420")
 	})
 
 	test("counters omit at zero; speed omits when unknown; negative tps omitted", () => {
@@ -130,7 +140,8 @@ describe("footer assembly", () => {
 			provider: "bigmodel",
 			model: "glm-5.3-flash",
 			effort: "high",
-			contextPct: 42,
+			contextTokens: 420,
+			contextWindow: 1000,
 			messages: 2,
 			tools: 0,
 			tps: null,
@@ -139,7 +150,7 @@ describe("footer assembly", () => {
 			"dsh",
 			"☁️ bigmodel",
 			"🤖 glm-5.3-flash ● high",
-			"🧠 42%",
+			"🧠 420/1.0k(42.0%)",
 			"💬 2",
 			// Batch D3: no hint segment — hints moved to the last row.
 		])
@@ -171,8 +182,8 @@ test("batch F2: ⚡ CH segment — tui-pi label shape, hidden without cache traf
 	expect(cacheSegment(Number.NaN)).toBeNull()
 	expect(cacheSegment(98.43)?.text).toBe("⚡ CH98.4%")
 	expect(cacheSegment(0)?.text).toBe("⚡ CH0.0%")
-	const texts = sessionFooterSegments({ provider: "p", model: "m", contextPct: 10, messages: 2, cacheHitRate: 50 }).map((s) => s.text)
-	expect(texts.indexOf("⚡ CH50.0%")).toBe(texts.indexOf("🧠 10%") + 1)
+	const texts = sessionFooterSegments({ provider: "p", model: "m", contextTokens: 100, contextWindow: 1000, messages: 2, cacheHitRate: 50 }).map((s) => s.text)
+	expect(texts.indexOf("⚡ CH50.0%")).toBe(texts.indexOf("🧠 100/1.0k(10.0%)") + 1)
 	expect(sessionFooterSegments({ messages: 1 }).some((s) => s.text.includes("CH"))).toBe(false)
 })
 

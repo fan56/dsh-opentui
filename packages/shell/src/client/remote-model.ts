@@ -46,7 +46,14 @@ export interface RemoteReasoningEffort {
 export interface RemoteModelProviderGroup {
 	id: string
 	name: string
-	models: { id: string; name: string; reasoning?: { efforts: RemoteReasoningEffort[]; defaultEffort?: string } }[]
+	models: {
+		id: string
+		name: string
+		/** Max combined request+response context when the catalog discloses
+		 * it (dsh-llm model rows); undefined keeps the 🧠 segment degraded. */
+		contextWindow?: number
+		reasoning?: { efforts: RemoteReasoningEffort[]; defaultEffort?: string }
+	}[]
 }
 
 /** The host-generation model catalog (ModelCatalog subset the TUI reads). */
@@ -97,10 +104,14 @@ export class RemoteModelClient {
 						const model = (typeof m === "object" && m !== null ? m : {}) as Record<string, unknown>
 						const reasoning = (typeof model.reasoning === "object" && model.reasoning !== null ? model.reasoning : null) as Record<string, unknown> | null
 						const efforts = reasoning && Array.isArray(reasoning.efforts) ? reasoning.efforts : []
-						return {
-							id: String(model.id ?? ""),
-							name: String(model.name ?? model.id ?? ""),
-							...(reasoning
+					return {
+						id: String(model.id ?? ""),
+						name: String(model.name ?? model.id ?? ""),
+						// contextWindow passthrough (footer context batch): the
+						// dsh-llm catalog model rows carry it when disclosed; the
+						// 🧠 segment degrades to the bare `used` shape without.
+						...(typeof model.contextWindow === "number" ? { contextWindow: model.contextWindow } : {}),
+						...(reasoning
 								? {
 										reasoning: {
 											efforts: efforts.map((e) => {
@@ -147,6 +158,20 @@ export class RemoteModelClient {
 		return catalog.groups
 			.filter((g) => g.id)
 			.map((g) => ({ provider: g.id, models: g.models.map((m) => m.id).filter(Boolean) }))
+	}
+
+	/**
+	 * One route's context window (footer context batch — the tui-pi
+	 * `llm.resolveModelInfo(...).context.contextWindow` stand-in): the
+	 * catalog model row's disclosed `contextWindow`, served from the cached
+	 * catalog (no extra RPC beyond the first fill). Undefined when the
+	 * catalog doesn't name the route or the row omits the window — callers
+	 * degrade gracefully.
+	 */
+	async modelContextWindow(provider: string, model: string): Promise<number | undefined> {
+		const catalog = await this.modelCatalog()
+		const row = catalog.groups.find((g) => g.id === provider)?.models.find((m) => m.id === model)
+		return typeof row?.contextWindow === "number" && row.contextWindow > 0 ? row.contextWindow : undefined
 	}
 
 	/** Routes configurable through settings (raw LlmConfigurableProvider rows). */

@@ -194,6 +194,18 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.cacheHitRate(mode)
 	}
 
+	/** 🧠 context segment, occupancy numerator (footer context batch):
+	 * RemoteHostSession.contextTokens() 1:1. */
+	contextTokens(): number | null {
+		return this.#session.contextTokens()
+	}
+
+	/** 🧠 context segment, window denominator (footer context batch):
+	 * RemoteHostSession.contextWindow() 1:1; undefined → null (unknown). */
+	contextWindow(): number | null {
+		return this.#session.contextWindow() ?? null
+	}
+
 	/** Config seam read (batch F2 cacheHitMode): RemoteHostSession.configLoad() 1:1. */
 	configLoad(): Record<string, unknown> {
 		return this.#session.configLoad()
@@ -234,7 +246,16 @@ export class RemoteSessionSeam implements SessionSeam {
 		} catch {
 			/* panel shows 0 rather than failing */
 		}
-		return { ...base, sessionId: base.sessionId, model: base.model ?? null, messageCount }
+		return {
+			...base,
+			sessionId: base.sessionId,
+			model: base.model ?? null,
+			messageCount,
+			// 🧠 context row (footer context batch): the facade's occupancy
+			// estimate + resolved window (undefined → null, "unknown").
+			contextTokens: base.contextTokens,
+			contextWindow: base.contextWindow ?? null,
+		}
 	}
 
 	resumeSession(id: string): "ok" | "owned" {

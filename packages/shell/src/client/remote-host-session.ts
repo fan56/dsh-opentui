@@ -170,6 +170,7 @@ import {
 	RemoteTailSession,
 } from "./remote-session-ops.ts"
 import { RemoteModelClient, type RemoteModelSelection } from "./remote-model.ts"
+import { ContextTokenMeter } from "./token-estimate.ts"
 import { RemoteSettingsClient, type RemoteSettingsRow, type RemoteCredentialInfo } from "./remote-settings.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
 import {
@@ -300,6 +301,18 @@ export class RemoteHostSession {
 	#cacheReadTotal = 0
 	#cacheWriteTotal = 0
 	#lastMessageCacheHitRate: number | null = null
+
+	// ---- 🧠 context-occupancy bookkeeping (footer context batch, tui-pi
+	// BridgeStats.contextTokens parity): the LATEST billed request's input +
+	// output plus a CJK estimate of everything appended since — NOT a
+	// session-cumulative total, so the footer follows the current request
+	// and drops after a compaction. `#contextWindow` is the resolved model
+	// window (tui-pi llm.resolveModelInfo parity, via the cached
+	// session/modelCatalog): undefined until the catalog names it, and the
+	// footer degrades to the bare `🧠 used` shape without it.
+	readonly #contextMeter = new ContextTokenMeter()
+	#contextWindow: number | undefined
+	#contextWindowKey = ""
 	/** Telemetry of the last completed turn (HostSession shape). */
 	lastTurnStats: TurnStats = emptyTurnStats()
 	remoteTailActive = false
@@ -533,6 +546,10 @@ export class RemoteHostSession {
 		this.#ticker.reset()
 		this.#turnStartedAt = Date.now()
 		this.#turnUsageStart = { prompt: this.usage.prompt, completion: this.usage.completion }
+		// 🧠 occupancy (footer context batch): the user turn text joins the
+		// pending pool — the next billed request prices it exactly (tui-pi
+		// pending-message semantics).
+		this.#contextMeter.notePending(userText)
 		await this.start()
 		const sessionId = await this.#ensureSession()
 		const requestId = randomUUID()
@@ -659,8 +676,43 @@ export class RemoteHostSession {
 		this.#lastDeltaAt = now
 	}
 
+	/** The 🧠 segment's context-occupancy estimate (footer context batch,
+	 * tui-pi `stats.contextTokens` parity — see ContextTokenMeter). */
+	contextTokens(): number {
+		return this.#contextMeter.tokens
+	}
+
+	/** The current route's context window (footer context batch, tui-pi
+	 * `getContextWindow` semantics — the sync getter returns the cached
+	 * value and fills it in the background off the cached
+	 * `session/modelCatalog` answer; unknown → undefined, the footer
+	 * degrades to the bare `🧠 used` shape). */
+	contextWindow(): number | undefined {
+		void this.#resolveContextWindow()
+		return this.#contextWindow
+	}
+
+	async #resolveContextWindow(): Promise<void> {
+		try {
+			const sessionId = this.currentSessionId()
+			const selection = sessionId ? await this.#modelClient().sessionSelection(sessionId) : undefined
+			if (!selection) return
+			const key = `${selection.provider}/${selection.model}`
+			if (key === this.#contextWindowKey) return
+			this.#contextWindowKey = key
+			const window = await this.#modelClient().modelContextWindow(selection.provider, selection.model)
+			// A stale resolution (the route moved on mid-await) never lands.
+			if (key === this.#contextWindowKey && typeof window === "number") this.#contextWindow = window
+		} catch {
+			/* unknown window → the footer degrades gracefully */
+		}
+	}
+
 	/** /session panel snapshot (batch F4; host-session.ts twin).
-	 * messageCount is adapter-side (the facade has no transcript cache). */
+	 * messageCount is adapter-side (the facade has no transcript cache).
+	 * contextTokens/contextWindow (footer context batch) feed the 🧠
+	 * segment: the occupancy estimate and the resolved model window
+	 * (undefined while the catalog doesn't name one). */
 	sessionInfo(): {
 		sessionId: string | undefined
 		model: string | undefined
@@ -671,6 +723,8 @@ export class RemoteHostSession {
 		cacheWrite: number
 		lastTurnTps: number | null
 		sessionAvgTps: number | null
+		contextTokens: number
+		contextWindow: number | undefined
 	} {
 		return {
 			sessionId: this.currentSessionId(),
@@ -685,6 +739,8 @@ export class RemoteHostSession {
 					? tokensPerSecond(this.#lastDecode.tokens, this.#lastDecode.ms)
 					: this.lastTurnStats.tps,
 			sessionAvgTps: tokensPerSecond(this.#decodeTotals.tokens, this.#decodeTotals.ms),
+			contextTokens: this.#contextMeter.tokens,
+			contextWindow: this.#contextWindow,
 		}
 	}
 
@@ -1600,6 +1656,10 @@ export class RemoteHostSession {
 	#resetLedger(): void {
 		this.#journal = []
 		this.#lastDurableSeq = -1
+		// 🧠 occupancy (footer context batch): a fresh/resumed session
+		// restarts the estimate from zero; the window cache keeps — the
+		// catalog key check re-resolves on a route change anyway.
+		this.#contextMeter.reset()
 	}
 
 	#addPushListener(listener: RemotePushListeners): () => void {
@@ -1714,6 +1774,7 @@ export class RemoteHostSession {
 					this.#cb?.onContentDelta(text)
 					this.#noteDelta()
 					this.#ticker.add(text.length)
+					this.#contextMeter.notePending(text)
 				} catch {
 					/* a UI callback must never take the pump down */
 				}
@@ -1723,11 +1784,17 @@ export class RemoteHostSession {
 					this.#cb?.onThinkingDelta(text)
 					this.#noteDelta()
 					this.#ticker.add(text.length)
+					this.#contextMeter.notePending(text)
 				} catch {
 					/* ditto */
 				}
 			},
 			onUsage: (usage: { prompt: number; completion: number; cacheRead: number; cacheWrite: number }) => {
+				// 🧠 occupancy (footer context batch): the frame's own output is
+				// the completion accumulator's delta across THIS chunk; a billed
+				// frame prices everything pending and resets the pool (see
+				// ContextTokenMeter).
+				const completionBefore = this.usage.completion
 				// host-session.ts:1269-1272 semantics, verified on the live wire:
 				// every chunk ASSIGNS the fields it reports (completion is the
 				// one session accumulator). On cache-splitting adapters (zai)
@@ -1746,6 +1813,7 @@ export class RemoteHostSession {
 				if (usage.cacheWrite > 0) this.#cacheWriteTotal += usage.cacheWrite
 				const billed = usage.prompt + usage.cacheRead + usage.cacheWrite
 				if (billed > 0) this.#lastMessageCacheHitRate = (usage.cacheRead / billed) * 100
+				this.#contextMeter.noteUsage(usage.prompt, usage.cacheRead, usage.cacheWrite, this.usage.completion - completionBefore)
 			},
 			onToolStart: (start: { callId?: string; name: string; args: string }) => {
 				try {
@@ -1757,6 +1825,7 @@ export class RemoteHostSession {
 			onToolRun: (run: RemoteToolRun) => {
 				try {
 					this.#cb?.onToolRun(run)
+					this.#contextMeter.notePending(run.output)
 				} catch {
 					/* contained */
 				}

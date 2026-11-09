@@ -176,6 +176,19 @@ export interface SeamSessionInfo {
 	lastTurnTps: number | null
 	/** Σ output tokens / Σ decode windows over the session (null when none). */
 	sessionAvgTps: number | null
+	/**
+	 * 🧠 context-occupancy estimate (footer context batch, tui-pi
+	 * `stats.contextTokens` parity): the latest billed request's input +
+	 * output plus a CJK estimate of everything appended since. Optional —
+	 * a seam without it keeps the panel's context row absent.
+	 */
+	contextTokens?: number | null
+	/**
+	 * The current route's context window (footer context batch, tui-pi
+	 * `getContextWindow` parity). Optional/null — a seam (or catalog) that
+	 * doesn't disclose it degrades the 🧠 segment to the bare `used` shape.
+	 */
+	contextWindow?: number | null
 }
 
 /** Streaming callbacks the view binds per turn (TurnCallbacks slice). */
@@ -263,6 +276,23 @@ export interface SessionSeam {
 	 * latest billed request's own rate (`lastMessage`, the default).
 	 */
 	cacheHitRate?(mode?: CacheHitMode): number | null
+	/**
+	 * 🧠 context-occupancy estimate (footer context batch, tui-pi
+	 * `stats.contextTokens` parity): the latest billed request's input +
+	 * output plus a CJK estimate of everything appended since — NOT a
+	 * session-cumulative total (compaction drops it, like the real
+	 * request). null while no usage frame has landed. Optional — a seam
+	 * without it hides the segment.
+	 */
+	contextTokens?(): number | null
+	/**
+	 * The current route's context window (footer context batch, tui-pi
+	 * `getContextWindow` semantics): the sync getter returns the cached
+	 * resolution and fills it in the background. null while unknown — the
+	 * 🧠 segment degrades to the bare `used` shape. Optional — a seam
+	 * without it always shows the degraded shape.
+	 */
+	contextWindow?(): number | null
 	/**
 	 * Config seam read (batch F2 cacheHitMode): the merged config the UI
 	 * consumes (profile config.json ⊕ workspace overlay ⊕ env). Optional —

@@ -279,8 +279,10 @@ describe("powerline rolling numbers", () => {
 	test("speed segment carries the tok/s roll spec; context the % spec", () => {
 		const speed = speedSegment(87.4)
 		expect(speed?.roll).toEqual({ value: 87.4, decimals: 0, width: 3, prefix: "⚡ ", suffix: " tok/s" })
-		const ctx = contextSegment(42)
-		expect(ctx?.roll).toEqual({ value: 42, decimals: 0, width: 2, prefix: "🧠 ", suffix: "%" })
+		// Footer context batch: the roll spec rides the percent (one decimal,
+		// X/Y prefix frozen so the strip never re-flows mid-roll).
+		const ctx = contextSegment(420, 1000)
+		expect(ctx?.roll).toEqual({ value: 42, decimals: 1, width: 4, prefix: "🧠 420/1.0k(", suffix: "%)" })
 	})
 
 	test("elapsed segment (计时) rolls whole seconds and omits unknown", () => {

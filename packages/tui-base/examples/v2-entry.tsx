@@ -211,6 +211,17 @@ function V2SessionPage(props: {
 		const mode = readCacheHitMode(seam.configLoad?.())
 		return seam.cacheHitRate?.(mode) ?? null
 	}
+	// 🧠 context segment (footer context batch, tui-pi footer parity): the
+	// occupancy estimate + model window off the seam's live getters. Same
+	// turnBusy() re-run trigger as cacheRate() — usage lands at turn end, so
+	// the getter-fed segment list re-runs on each turn boundary (footer row
+	// only; PowerlineFooter's `left` prop is a getter, reactive-prop law).
+	// Unknown window → null → the segment degrades to the bare `🧠 used`.
+	const ctxTokens = () => {
+		turnBusy()
+		return seam.contextTokens?.() ?? null
+	}
+	const ctxWindow = () => seam.contextWindow?.() ?? null
 	// Footer-quickwins (tui-pi footer parity): refresh the model segment's
 	// effort level and the remote session snapshot (durable message count +
 	// decode-window tok/s). Effort prefers the seam's thinking face
@@ -255,6 +266,8 @@ function V2SessionPage(props: {
 			messages: remoteInfo()?.messageCount ?? msgs(),
 			tools: tools(),
 			tps: remoteInfo()?.tps ?? null,
+			contextTokens: ctxTokens(),
+			contextWindow: ctxWindow(),
 			cacheHitRate: cacheRate(),
 			presetLabel: presetLabel(),
 			theme,
