@@ -46,22 +46,26 @@ describe("slash palette + composer on the real renderer", () => {
 	test("open, type (key-by-key and burst), Enter dispatches, Esc keeps the buffer, zero-match is inert", async () => {
 		const r = await runFt()
 
-		// open: full list painted
-		expect(r.openSlash).toMatchObject({ buffer: "/", rows: 2, frameHasHelpRow: true, frameHasNewRow: true })
+		// open: the FIXED-height palette box (MAX_ROWS, blank-padded) —
+		// STABLE-HEIGHT: the composer root height must NOT follow the filter
+		const openHeight = r.openSlash.composerHeight
+		expect(r.openSlash).toMatchObject({ buffer: "/", rows: 6, frameHasHelpRow: true, frameHasNewRow: true })
+		expect(openHeight).toBeGreaterThan(0)
 
-		// key-by-key into the OPEN palette: filters live, never orphans
-		expect(r.keyH).toMatchObject({ buffer: "/h", rows: 1, query: "/h", frameHasHelpRow: true, frameHasNewRow: false })
-		expect(r.keyE).toMatchObject({ buffer: "/he", rows: 1, query: "/he", frameHasHelpRow: true })
+		// key-by-key into the OPEN palette: filters live, never orphans, and
+		// the composer root height is UNCHANGED per keystroke (the flicker fix)
+		expect(r.keyH).toMatchObject({ buffer: "/h", rows: 6, query: "/h", composerHeight: openHeight, frameHasHelpRow: true, frameHasNewRow: false })
+		expect(r.keyE).toMatchObject({ buffer: "/he", rows: 6, query: "/he", composerHeight: openHeight, frameHasHelpRow: true })
 		// Enter runs the highlighted /help, clears, no model send
 		expect(r.enter).toMatchObject({ buffer: "", rows: 0, ran: ["/help"], sent: [] })
 
 		// one-write burst into the OPEN palette: same outcome
-		expect(r.burst).toMatchObject({ buffer: "/he", rows: 1, query: "/he", frameHasHelpRow: true, frameHasNewRow: false })
+		expect(r.burst).toMatchObject({ buffer: "/he", rows: 6, query: "/he", composerHeight: openHeight, frameHasHelpRow: true, frameHasNewRow: false })
 		expect(r.burstEnter).toMatchObject({ buffer: "", rows: 0, ran: ["/help"], sent: [] })
 
 		// Esc: closed, buffer intact; the next edit re-arms the filtered list
 		expect(r.esc).toMatchObject({ buffer: "/h", rows: 0, frameHasHelpRow: false })
-		expect(r.escThenType).toMatchObject({ buffer: "/he", rows: 1, frameHasHelpRow: true })
+		expect(r.escThenType).toMatchObject({ buffer: "/he", rows: 6, composerHeight: openHeight, frameHasHelpRow: true })
 
 		// zero-match: closed (no empty strip), Enter = unknown row, never a send
 		expect(r.zeroMatch).toMatchObject({ buffer: "/zz", rows: 0, frameHasHelpRow: false })

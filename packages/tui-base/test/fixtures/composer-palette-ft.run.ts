@@ -70,6 +70,10 @@ async function mount() {
 		buffer: textarea.plainText as string,
 		rows: host.controller.rows(),
 		query: host.controller.query(),
+		// The composer ROOT box height (the textarea's parent): the flicker
+		// regression is this number changing per keystroke while the palette
+		// narrows (global reflow, border flicker). STABLE-HEIGHT pins it.
+		composerHeight: textarea.parent?.height ?? null,
 		frameHasHelpRow: setup.captureCharFrame().includes("/help show available commands"),
 		frameHasNewRow: setup.captureCharFrame().includes("/new start a fresh session"),
 	})

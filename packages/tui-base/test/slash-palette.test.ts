@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { coreCommands, type SlashCommand } from "../src/routes/session/commands"
 import {
 	createSlashHost,
+	MAX_ROWS,
 	SlashPaletteController,
 } from "../src/routes/session/slash-palette"
 
@@ -66,14 +67,43 @@ describe("SlashPaletteController", () => {
 	test("a zero-match query closes the palette (batch V5: no empty 1-row strip)", () => {
 		const controller = new SlashPaletteController()
 		controller.sync("/", COMMANDS)
-		expect(controller.rows()).toBe(2)
+		expect(controller.rows()).toBe(MAX_ROWS)
 		controller.sync("/zz", COMMANDS)
 		expect(controller.filtered(COMMANDS)).toEqual([])
 		expect(controller.rows()).toBe(0)
 		expect(controller.open).toBe(false)
 		// narrowing back to a match re-opens
 		controller.sync("/h", COMMANDS)
-		expect(controller.rows()).toBe(1)
+		expect(controller.rows()).toBe(MAX_ROWS)
+	})
+
+	test("STABLE-HEIGHT: narrowing the filter never changes the rendered height", () => {
+		// The flicker regression: a count-tracking height resized the composer
+		// root per keystroke (global reflow, border flicker). The rendered box
+		// height must stay at the MAX_ROWS cap for ANY non-zero result — the
+		// filter only decides which rows paint (open/close still transition).
+		const commands: SlashCommand[] = [
+			{ name: "/help", description: "d1", run: () => {} },
+			{ name: "/hello", description: "d2", run: () => {} },
+			{ name: "/heat", description: "d3", run: () => {} },
+			{ name: "/new", description: "d4", run: () => {} },
+		]
+		const controller = new SlashPaletteController()
+		const heights: number[] = []
+		controller.sync("/", commands)
+		heights.push(controller.rows()) // 4 matches
+		controller.sync("/he", commands)
+		heights.push(controller.rows()) // 3 matches
+		controller.sync("/hel", commands)
+		heights.push(controller.rows()) // 2 matches
+		controller.sync("/help", commands)
+		heights.push(controller.rows()) // 1 match
+		expect(heights).toEqual([MAX_ROWS, MAX_ROWS, MAX_ROWS, MAX_ROWS])
+		// the highlight still tracks the FILTERED list, not the padded box
+		controller.sync("/he", commands)
+		controller.move(2, commands)
+		expect(controller.selected()).toBe(2)
+		expect(controller.filtered(commands).length).toBe(3)
 	})
 })
 

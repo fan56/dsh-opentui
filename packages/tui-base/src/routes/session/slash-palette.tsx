@@ -28,8 +28,15 @@ import type { SessionSeam } from "../../seams/session"
 import type { SlashCommand, SlashCommandContext } from "./commands"
 import { coreCommands, dispatchLine, filterCommands, unknownCommandRow } from "./commands"
 
-/** Max rows shown before the list clamps (the old menu's cap). */
-const MAX_ROWS = 6
+/**
+ * Max rows shown before the list clamps (the old menu's cap) — and, since the
+ * stable-height fix, the FIXED height of the open palette box regardless of
+ * how many results the filter leaves (unmatched rows show the box background).
+ * A count-tracking height resized the composer root on every keystroke
+ * (global reflow, border flicker per keystroke — skin-flicker-analysis.md,
+ * family 1). Exported for the height-stability tests.
+ */
+export const MAX_ROWS = 6
 
 /** Renderer-free palette state: visibility, filter query, selection. */
 export class SlashPaletteController {
@@ -43,7 +50,7 @@ export class SlashPaletteController {
 	#suppressed = false
 	#lastBuffer = ""
 
-	/** Rows to render (0 = closed). */
+	/** Rendered box height: MAX_ROWS while open (STABLE-HEIGHT), 0 = closed. */
 	rows(): number {
 		return this.#rows[0]()
 	}
@@ -76,7 +83,13 @@ export class SlashPaletteController {
 		// Zero matches = closed (batch V5): the old max(1, count) floor left a
 		// 1-row box open with no rows in it ("/zz" painted an empty strip);
 		// Enter on such a line resolves through dispatchLine's unknown row.
-		this.#rows[1](Math.min(MAX_ROWS, count))
+		// STABLE-HEIGHT (palette flicker fix): any non-zero result renders the
+		// FULL MAX_ROWS box — the filter only decides WHICH rows paint, never
+		// how tall the box is. A count-tracking height resized the composer
+		// root per keystroke (9→5→4 …), reflowing the whole screen and
+		// flickering the border each key; now the height only transitions at
+		// open (0→MAX_ROWS) and close (→0, incl. a zero-match query, batch V5).
+		this.#rows[1](count > 0 ? MAX_ROWS : 0)
 		this.#selected[1]((current) => Math.min(current, Math.max(0, count - 1)))
 	}
 
@@ -118,9 +131,11 @@ export interface PaletteRowProps {
 }
 
 /**
- * The inline rows box. Fixed explicit height (rows or 0 when closed) so the
- * composer's root height arithmetic stays exact; the highlight follows the
- * controller's selected signal.
+ * The inline rows box. Fixed explicit height (MAX_ROWS while open, 0 closed —
+ * STABLE-HEIGHT: the filter narrows the painted rows, never the box) so the
+ * composer's root height arithmetic stays exact and keystrokes don't reflow
+ * the screen; unmatched rows leave the box's own background (blank padding).
+ * The highlight follows the controller's selected signal.
  */
 export function SlashPalette(props: {
 	controller: SlashPaletteController
