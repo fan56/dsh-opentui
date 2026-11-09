@@ -33,6 +33,11 @@ import type { SessionSeam } from "../../seams/session"
 
 /** Module bridge: /search flips this; the overlay owns the close side. */
 const [bridgeOpen, setBridgeOpen] = createBridgeSignal(false)
+// Module-scope open state: the session sidebar's priority-10 Esc layer
+// yields while this overlay owns the screen.
+const [panelOpen, setPanelOpen] = createBridgeSignal(false)
+/** Whether the cross-session search overlay is on screen. */
+export const sessionsSearchOpen = panelOpen
 
 /** Open the cross-session search overlay (the /search command path). */
 export function openSessionsSearch(): void {
@@ -53,7 +58,7 @@ export function SessionsSearch(props: { seam: SessionSeam; onClosed?: () => void
 	const theme = useThemeOptional()
 	const dialog = useDialog()
 
-	const [open, setOpen] = createSignal(false)
+	const [open, setOpen] = [sessionsSearchOpen, setPanelOpen]
 	const [query, setQuery] = createSignal("")
 	const [hits, setHits] = createSignal<SessionSearchHit[]>([])
 	const [searched, setSearched] = createSignal(false)

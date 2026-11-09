@@ -212,3 +212,53 @@ describe("workspace profile composition (tui-pi parity)", () => {
 		expect(readFileSync(agentFile, "utf8")).toContain("thinking: max")
 	})
 })
+
+describe("partial frontmatter payload (B1)", () => {
+	const BASELINE = "---\nname: reviewer\nmodel: base/m\nthinking: low\ndeep: 2\n---\n\nBody\n"
+
+	function unpinnedAgent(text = BASELINE): { home: string; workspace: string; file: string } {
+		const home = scratch()
+		const workspace = scratch()
+		const file = writeAgent(home, "reviewer.md", text)
+		return { home, workspace, file }
+	}
+
+	test("a thinking-only edit leaves the model line byte-for-byte intact", () => {
+		const { home, workspace, file } = unpinnedAgent()
+		commitAgentModelEdit(home, workspace, file, "reviewer", { thinking: "high" })
+		expect(readFileSync(file, "utf8")).toBe(
+			"---\nname: reviewer\nmodel: base/m\nthinking: high\ndeep: 2\n---\n\nBody\n",
+		)
+	})
+
+	test("only-thinking keeps the model; only-model keeps the thinking", () => {
+		const thinkingOnly = unpinnedAgent()
+		commitAgentModelEdit(thinkingOnly.home, thinkingOnly.workspace, thinkingOnly.file, "reviewer", { thinking: "max" })
+		expect(readFileSync(thinkingOnly.file, "utf8")).toContain("model: base/m")
+
+		const modelOnly = unpinnedAgent()
+		commitAgentModelEdit(modelOnly.home, modelOnly.workspace, modelOnly.file, "reviewer", { model: "next/m" })
+		expect(readFileSync(modelOnly.file, "utf8")).toContain("thinking: low")
+		expect(readFileSync(modelOnly.file, "utf8")).toContain("model: next/m")
+	})
+
+	test("the two-call commitModel sequence keeps both fields and their order", () => {
+		const { home, workspace, file } = unpinnedAgent(
+			"---\nname: reviewer\nthinking: low\nmodel: old/m\ncustom: keep\n---\n\nBody\n",
+		)
+		// agents-panel commitModel: set("model") then set("thinking") (no pin).
+		commitAgentModelEdit(home, workspace, file, "reviewer", { model: "new/m" })
+		commitAgentModelEdit(home, workspace, file, "reviewer", { thinking: "high" })
+		expect(readFileSync(file, "utf8")).toBe(
+			"---\nname: reviewer\nthinking: high\nmodel: new/m\ncustom: keep\n---\n\nBody\n",
+		)
+	})
+
+	test("picking the provider default (thinking:null) deletes only the thinking line", () => {
+		const { home, workspace, file } = unpinnedAgent()
+		commitAgentModelEdit(home, workspace, file, "reviewer", { thinking: null })
+		expect(readFileSync(file, "utf8")).toBe(
+			"---\nname: reviewer\nmodel: base/m\ndeep: 2\n---\n\nBody\n",
+		)
+	})
+})

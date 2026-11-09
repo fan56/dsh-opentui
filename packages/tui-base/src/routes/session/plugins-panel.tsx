@@ -31,6 +31,11 @@ import { successColor } from "../../skin/semantic"
 import type { SessionSeam } from "../../seams/session"
 
 const [bridgeOpen, setBridgeOpen] = createSignal(false)
+// Module-scope open state: the session sidebar Esc layer (priority 10)
+// yields while the panel owns the screen.
+const [panelOpen, setPanelOpen] = createSignal(false)
+/** Whether the /plugins manager is on screen. */
+export const pluginsPanelOpen = panelOpen
 
 /** Open the plugins manager panel (the /plugins command path). */
 export function openPluginsPanel(): void {
@@ -56,7 +61,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	const theme = useThemeOptional()
 	const dialog = useDialog()
 
-	const [open, setOpen] = createSignal(false)
+	const [open, setOpen] = [pluginsPanelOpen, setPanelOpen]
 	const [filterOpen, setFilterOpen] = createSignal(false)
 	const [filter, setFilter] = createSignal("")
 

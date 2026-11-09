@@ -239,7 +239,7 @@ describe("core commands", () => {
 			"/session — show session info (id, model, tokens, speed)",
 			"/plugins — manage plugins (opens the panel)",
 			"/search — full-text search over stored sessions",
-			"/agents — manage agent definitions (model, think level, spawn depth)",
+			"/agents — manage agent definitions (model, think level, spawn depth) from markdown files",
 			"/think — set reasoning effort (opens the picker)",
 			"/hints — key hints: toggle bar; <segment> on|off; all on|off; lang <locale>",
 			"/motion — animation tier: full | reduced | off | auto (bare shows current)",

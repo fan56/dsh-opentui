@@ -444,6 +444,7 @@ export class RemoteSessionSeam implements SessionSeam {
 	// model catalog's reasoning.efforts.
 	agents = {
 		list: (): SeamAgentRow[] => this.#session.listAgents(),
+		dir: (): string => this.#session.agentsDir(),
 		set: (name: string, field: "model" | "thinking" | "deep", value: string | null): SeamAgentSetResult => {
 			const result = this.#session.agentSet(name, field, value)
 			return { target: result.target, ...(result.error !== undefined ? { error: result.error } : {}) }

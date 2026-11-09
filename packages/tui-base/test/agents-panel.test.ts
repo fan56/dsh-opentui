@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import {
 	agentEffortLines,
+	agentEmptyLines,
 	agentFieldLines,
 	agentTableLines,
 	agentViewerLines,
@@ -75,6 +76,25 @@ describe("agents table layer", () => {
 		expect(preselectAgentIndex(rows, "Workhorse")).toBe(-1)
 		expect(preselectAgentIndex(rows, "nope")).toBe(-1)
 		expect(preselectAgentIndex(rows, undefined)).toBe(-1)
+	})
+})
+
+describe("empty corpus state", () => {
+	test("names the real agents directory and keeps the l hint visible", () => {
+		const lines = agentEmptyLines("/home/u/.dsh/agents", 120)
+		const copy = lines.find((line) => line.text.includes("no agents in"))!
+		expect(copy.text).toBe("no agents in /home/u/.dsh/agents yet — drop a markdown file to define one")
+		expect(lines.some((line) => line.text.includes("l limits"))).toBe(true)
+	})
+
+	test("renders the status line (the l notice is visible with zero agents)", () => {
+		const lines = agentEmptyLines("/home/u/.dsh/agents", 120, "limits panel — next phase")
+		expect(lines.some((line) => line.text === "limits panel — next phase" && line.tone === "attention")).toBe(true)
+	})
+
+	test("the old $DSH_HOME copy is gone", () => {
+		const lines = agentEmptyLines("/x/agents", 120)
+		expect(lines.some((line) => line.text.includes("$DSH_HOME"))).toBe(false)
 	})
 })
 

@@ -443,7 +443,7 @@ export class RemoteHostSession {
 	// ---- maxRounds hard-stop policy knobs (batch F1) ----
 	// The ladder's caps read live from the CLIENT face's real config layer:
 	// the profile config.json `maxRounds` / `maxRoundsGrace` keys through
-	// configLoad() (the same seam theme/agentsProfiles ride). The retired
+	// configLoad() (the same profile config seam the theme rides). The retired
 	// plugin face's settings ns `dsh-opentui` has no owning entry anymore —
 	// a describe-based provider answered defaults forever and the ladder
 	// stayed disabled (the unbounded looper of the B5 e2e finding). The
@@ -1351,6 +1351,11 @@ export class RemoteHostSession {
 	 */
 	listAgents(): ComposedAgentRow[] {
 		return listComposedAgents(this.#dshHome, this.#workspaceDir)
+	}
+
+	/** The agents corpus directory the panel's empty state names. */
+	agentsDir(): string {
+		return joinPath(this.#dshHome, "agents")
 	}
 
 	/**

@@ -331,9 +331,12 @@ export function commitAgentModelEdit(
 		const error = saveProfileAgentOverrides(home, profile.name, agentName, edit)
 		return { target: { kind: "profile", name: profile.name }, ...(error !== undefined ? { error } : {}) }
 	}
-	const error = updateAgentFrontmatter(agentFile, {
-		model: edit.model ?? null,
-		thinking: edit.thinking ?? null,
-	})
+	// Pass ONLY the keys this edit actually carries: `undefined` means "not
+	// part of this write", while `null` still means "delete the line". The
+	// previous `?? null` turned a thinking-only edit into a model delete.
+	const updates: { model?: string | null; thinking?: string | null } = {}
+	if (edit.model !== undefined) updates.model = edit.model
+	if (edit.thinking !== undefined) updates.thinking = edit.thinking
+	const error = updateAgentFrontmatter(agentFile, updates)
 	return { target: { kind: "frontmatter" }, ...(error !== undefined ? { error } : {}) }
 }

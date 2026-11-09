@@ -575,9 +575,9 @@ try {
   // closeAllOverlays guards the nesting; a leftover list layer would eat
   // every later typed command)
   await submit('/agents')
-  const ag = await waitPane((o) => o.includes('no agent definitions') || !idle(o), 8000)
-  const agOpen = ag.ok && !ag.out.includes('no agent definitions')
-  record('/agents list', ag.ok ? 'PASS' : 'FAIL', ag.out.includes('no agent definitions') ? ['no agents seeded'] : [])
+  const ag = await waitPane((o) => o.includes('no agents in') || !idle(o), 8000)
+  const agOpen = ag.ok && !ag.out.includes('no agents in')
+  record('/agents list', ag.ok ? 'PASS' : 'FAIL', ag.out.includes('no agents in') ? ['no agents seeded'] : [])
   writeFileSync(join(capsDir, 'agents.txt'), ag.out)
   if (agOpen) {
     const fields = await pressUntil((o) => o.includes('model:') || o.includes('thinking:'), 'Enter')

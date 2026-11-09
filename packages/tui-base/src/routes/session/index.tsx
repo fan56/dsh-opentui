@@ -72,6 +72,10 @@ import { statusLabel } from "../../component/dialog-workspace-file-changes"
 import { DialogMessage } from "./dialog-message"
 import { DialogFork } from "./dialog-fork"
 import { DialogTimeline } from "./dialog-timeline"
+import { agentsPanelOpen } from "./agents-panel"
+import { pluginsPanelOpen } from "./plugins-panel"
+import { searchOverlayOpen } from "./search-overlay"
+import { sessionsSearchOpen } from "./sessions-search"
 import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { UsageLimitNotice, useLimitNotice, useUsageAlerts } from "../../component/usage"
 import { useStorage } from "../../context/storage"
@@ -262,7 +266,17 @@ export function Session(props: {
 
   Keymap.createLayer(() => ({
     priority: 10,
-    enabled: () => props.sidebarVisible && dimensions().width - props.verticalTabsWidth <= 120 && !disabled(),
+    // The sidebar layer outranks the manager panels and search overlays
+    // (priority 10 vs 2), so on a narrow screen an open overlay would
+    // otherwise lose Esc to the sidebar. Yield while any owns the screen.
+    enabled: () =>
+      props.sidebarVisible &&
+      dimensions().width - props.verticalTabsWidth <= 120 &&
+      !disabled() &&
+      !agentsPanelOpen() &&
+      !pluginsPanelOpen() &&
+      !searchOverlayOpen() &&
+      !sessionsSearchOpen(),
     commands: [{ bind: "escape,ctrl+c", title: "Close sidebar", group: "Session", run: props.onToggleSidebar }],
   }))
   const contentWidth = createMemo(() => (props.width ?? dimensions().width - props.verticalTabsWidth) - 4)

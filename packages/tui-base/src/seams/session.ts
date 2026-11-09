@@ -423,6 +423,9 @@ export interface SessionSeam {
 	 */
 	agents?: {
 		list(): SeamAgentRow[]
+		/** The agents corpus directory (the empty state names it). Optional —
+		 * a seam without it falls back to `<DSH_HOME>/agents`. */
+		dir?(): string
 		/** `null` clears the key (inherit). Deep must be a non-negative integer. */
 		set(name: string, field: "model" | "thinking" | "deep", value: string | null): SeamAgentSetResult
 		/** System prompt body (markdown after the frontmatter fence). */

@@ -105,6 +105,12 @@ export function formatMatchStatus(query: string, matchCount: number, matchIndex:
 
 const MATCH_ROW_ID_PREFIX = "seam-row-"
 
+// Module-scope open state: the session sidebar's priority-10 Esc layer
+// yields while this overlay owns the screen.
+const [panelOpen, setPanelOpen] = createSignal(false)
+/** Whether the transcript search overlay is on screen. */
+export const searchOverlayOpen = panelOpen
+
 export function SearchOverlay(props: SearchOverlayProps) {
 	const theme = useThemeOptional()
 	const dialog = useDialog()
@@ -119,7 +125,7 @@ export function SearchOverlay(props: SearchOverlayProps) {
 	}
 	const cursor = () => skinCursor(configCursorStyle?.())
 
-	const [open, setOpen] = createSignal(false)
+	const [open, setOpen] = [searchOverlayOpen, setPanelOpen]
 	const [query, setQuery] = createSignal("")
 	const [index, setIndex] = createSignal(0)
 	const [inputTarget, setInputTarget] = createSignal<InputRenderable>()

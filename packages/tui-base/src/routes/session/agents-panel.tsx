@@ -62,6 +62,12 @@ function clipText(text: string, limit: number): string {
 }
 
 const [bridgeOpen, setBridgeOpen] = createSignal<string | undefined>(undefined)
+// The panel's own open state lives at module scope so the session's sidebar
+// Esc layer (routes/session/index.tsx, priority 10) can yield while the
+// panel owns the screen — one signal, no mirrored "is open" copy.
+const [panelOpen, setPanelOpen] = createSignal(false)
+/** Whether the /agents manager is on screen. */
+export const agentsPanelOpen = panelOpen
 
 /** Open the /agents manager; `name` preselects the exact agent `name` row. */
 export function openAgentsPanel(name?: string): void {
@@ -158,6 +164,26 @@ export function agentTableLines(
 		text: clipText(`↑↓ navigate · Enter open · Esc back · l limits${overflow}`, width),
 		tone: "subtle",
 	})
+	return lines
+}
+
+/**
+ * The zero-agent state: the spec copy names the REAL corpus directory, and
+ * the footer keeps the `l` hint reachable (the limits entry is a no-op
+ * until phase 2, but it must respond on an empty corpus).
+ */
+export function agentEmptyLines(dir: string, width: number, status?: string): PanelLine[] {
+	const lines: PanelLine[] = [
+		{ text: clipText("● Agents", width), tone: "accent" },
+		{ text: "", tone: "subtle" },
+		{ text: clipText(`no agents in ${dir} yet — drop a markdown file to define one`, width), tone: "muted" },
+	]
+	if (status !== undefined) {
+		lines.push({ text: "", tone: "subtle" })
+		lines.push({ text: clipText(status, width), tone: "attention" })
+	}
+	lines.push({ text: "", tone: "subtle" })
+	lines.push({ text: clipText("↑↓ navigate · Enter open · Esc back · l limits", width), tone: "subtle" })
 	return lines
 }
 
@@ -363,7 +389,9 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	const dialog = useDialog()
 	const dimensions = useTerminalDimensions()
 
-	const [open, setOpen] = createSignal(false)
+	// The module-level open signal (shared with the sidebar Esc layer).
+	const open = agentsPanelOpen
+	const setOpen = setPanelOpen
 	const [level, setLevel] = createSignal<PanelLevel>("table")
 	const [rows, setRows] = createSignal<SeamAgentRow[]>([])
 	const [tableCursor, setTableCursor] = createSignal(0)
@@ -761,13 +789,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const current = level()
 		if (current === "table") {
 			if (rows().length === 0) {
-				return [
-					{ text: clipText("● Agents", width()), tone: "accent" },
-					{ text: "", tone: "subtle" },
-					{ text: clipText("no agent definitions found — add a markdown file to $DSH_HOME/agents", width()), tone: "muted" },
-					{ text: "", tone: "subtle" },
-					{ text: clipText("  Esc to close", width()), tone: "subtle" },
-				]
+				return agentEmptyLines(props.seam.agents?.dir?.() ?? "$DSH_HOME/agents", width(), status())
 			}
 			return agentTableLines(rows(), tableCursor(), width(), status())
 		}

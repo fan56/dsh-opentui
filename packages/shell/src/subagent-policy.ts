@@ -26,7 +26,7 @@
  *
  * CAP SOURCE (client face, post-plugin-retirement): the profile config.json
  * `maxRounds` / `maxRoundsGrace` keys through the client configLoad seam —
- * the same layer theme/agentsProfiles ride. The retired plugin face's
+ * the same profile config layer the theme rides. The retired plugin face's
  * settings ns `dsh-opentui` no longer has an owning entry, so a
  * describe-based provider answered defaults forever and the ladder stayed
  * disabled (the B5 e2e finding: an unbounded looper child). The settings-ns

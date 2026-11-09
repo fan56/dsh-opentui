@@ -555,7 +555,7 @@ export function coreCommands(): SlashCommand[] {
 			// degrades to the plain table. A seam without the agents face
 			// degrades to the unavailable notice.
 			name: "/agents",
-			description: "manage agent definitions (model, think level, spawn depth)",
+			description: "manage agent definitions (model, think level, spawn depth) from markdown files",
 			run(ctx, argText) {
 				if (!ctx.seam.agents) {
 					ctx.say("/agents unavailable in this session")
