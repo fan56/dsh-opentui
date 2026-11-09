@@ -167,7 +167,7 @@ export function createSeamRows(
 		 * the bare message — the page shows it as a pulsing error notice. */
 		onError?: (message: string) => void
 		/** Tool-settle passthrough (footer-quickwins): the page counts live
-		 * tool runs off this hook for the 🛠 footer segment (tui-pi parity —
+		 * tool runs off this hook for the 🔧 footer segment (tui-pi parity —
 		 * the store's own onToolRun folds the row, then re-emits here). */
 		onToolRun?: SeamTurnCallbacks["onToolRun"]
 		thinkFadeMs?: number

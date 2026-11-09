@@ -90,6 +90,17 @@ describe("segment builders", () => {
 		expect(modelSegment("glm-5.3-flash", "minimal")?.text).toBe("🤖 glm-5.3-flash ◔ minimal")
 	})
 
+	test("model name clips to 24 columns (tui-pi footer.ts:229 parity)", () => {
+		// 24 columns exactly → unchanged.
+		expect(modelSegment("models/glm-5.3-flash-big", "off")?.text).toBe("🤖 models/glm-5.3-flash-big ○ off")
+		// Over budget → ellipsis at 24 columns total.
+		expect(modelSegment("very-long-model-name-0123456789", "off")?.text).toBe(
+			"🤖 very-long-model-name-01… ○ off",
+		)
+		// Short names pass through untouched.
+		expect(modelSegment("glm-5.3-flash", "off")?.text).toBe("🤖 glm-5.3-flash ○ off")
+	})
+
 	test("model fill follows the effort ramp (theme tokens)", () => {
 		const theme = fakeTheme()
 		const levels: EffortLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]

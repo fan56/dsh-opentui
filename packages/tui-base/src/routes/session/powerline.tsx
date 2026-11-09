@@ -23,6 +23,7 @@ import { RGBA } from "@opentui/core"
 import type { ComponentTheme } from "../../theme/component"
 import { ROLL_MS, STREAM_FPS, getMotionTier } from "../../skin/motion"
 import { brandBlue, type SkinColorMode } from "../../skin/identity"
+import { clipToWidth } from "./tool-summarize"
 
 /** A color that is either a token RGBA or a fallback hex string. */
 export type PowerlineColor = string | RGBA
@@ -275,6 +276,8 @@ export function effortFromModelLabel(label: string | null | undefined): EffortLe
  * The 🤖 model segment; the effort word ALWAYS rides along with its ladder
  * glyph (`🤖 model ○ off` when off — fix/footer-parity, tui-pi parity:
  * footer.ts:232-234 renders the word unconditionally; off is no longer bare).
+ * The model name is clipped to 24 terminal columns (tui-pi footer.ts:229
+ * `clipToWidth(model, 24)` parity — long ids keep the segment one row wide).
  */
 export function modelSegment(
 	model: string,
@@ -282,7 +285,7 @@ export function modelSegment(
 	theme?: ComponentTheme,
 ): PowerlineSegment | null {
 	if (!model) return null
-	const label = `🤖 ${model} ${effortIcon(effort)} ${effort}`
+	const label = `🤖 ${clipToWidth(model, 24)} ${effortIcon(effort)} ${effort}`
 	return { text: label, bg: resolvePalette(theme).thinking[effort] }
 }
 
