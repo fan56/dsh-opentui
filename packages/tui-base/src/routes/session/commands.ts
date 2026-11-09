@@ -128,6 +128,17 @@ export interface SlashCommandContext {
 	 */
 	refreshFooter?(): void
 	/**
+	 * Footer-refresh CANCELLATION hook (review 3.5): bump the page's refresh
+	 * ordinal WITHOUT re-reading, so every in-flight refreshFooterData chain
+	 * (including its pending default-effort write) bails at its next seq
+	 * check. /think calls it BEFORE the host accepts the pick: a chain from
+	 * the previous turn end can still be holding the current ordinal and
+	 * would otherwise write the default "high" AFTER the user's /think off.
+	 * Optional — a host without it keeps the old behavior (the accept-then-
+	 * refresh order still invalidates once the pick has landed).
+	 */
+	invalidateFooter?(): void
+	/**
 	 * Theme-switch surface (batch F7a): the page's ThemeSeam slice. Optional
 	 * — an entry without it gets the "unavailable" notice.
 	 */
@@ -639,6 +650,14 @@ export function coreCommands(): SlashCommand[] {
 					})),
 				)
 				if (!picked || picked === current) return
+				// Review 3.5: close the default-write window BEFORE the host
+				// accepts the pick. A refreshFooterData chain started at the last
+				// turn end still holds the current ordinal while this pick is in
+				// flight; when its ladder read lands it would write the default
+				// "high" AFTER the user's pick (e.g. /think off → flipped back to
+				// high). Bumping the ordinal first makes that pending chain bail;
+				// the refresh below then re-reads the accepted effort.
+				ctx.invalidateFooter?.()
 				// Await the host's acceptance (the seam promise) BEFORE the
 				// footer refresh — currentEffort() reads the accepted route, so
 				// refreshing first would race the old effort back onto the

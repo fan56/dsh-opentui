@@ -84,6 +84,7 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		reloaded: 0,
 		quit: 0,
 		footerRefreshes: 0,
+		footerInvalidations: 0,
 		picks: [] as {
 			title: string
 			headerLine?: string
@@ -98,6 +99,7 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		reload: () => hooks.reloaded++,
 		quit: () => hooks.quit++,
 		refreshFooter: () => hooks.footerRefreshes++,
+		invalidateFooter: () => hooks.footerInvalidations++,
 		pickOne: async (title, options, headerLine, currentValue) => {
 			hooks.picks.push({
 				title,
@@ -604,6 +606,35 @@ describe("/think (batch F7b)", () => {
 		expect(applied).toEqual([])
 		expect(ctx.lines).toEqual([])
 		expect(ctx.hooks.footerRefreshes).toBe(0)
+		expect(ctx.hooks.footerInvalidations).toBe(0)
+	})
+
+	// Review 3.5: the ordinal invalidation must fire BEFORE the host accepts
+	// the pick. A refreshFooterData chain from the previous turn end still
+	// holds the current ordinal while the pick is in flight; its pending
+	// default-effort write would otherwise flip the user's `off` back to high.
+	test("invalidates the footer BEFORE accepting the pick, then refreshes (3.5)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "off")
+		const order: string[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [
+					{ id: "off", name: "Off" },
+					{ id: "high", name: "High" },
+				],
+				currentEffort: async () => undefined,
+				selectEffort: async (effort) => {
+					order.push(`select:${effort}`)
+				},
+			},
+		}
+		ctx.invalidateFooter = () => order.push("invalidate")
+		ctx.refreshFooter = () => order.push("refresh")
+		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		expect(order).toEqual(["invalidate", "select:off", "refresh"])
+		expect(ctx.lines).toEqual(["thinking → off (next turn)"])
 	})
 })
 
