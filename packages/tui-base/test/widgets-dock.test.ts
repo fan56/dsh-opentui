@@ -22,6 +22,7 @@ import {
 	activityLines,
 	activityRuleLines,
 	dockLines,
+	dockAccentColor,
 	dockTurnActive,
 	mixSkinColor,
 	skinFadeOutColor,
@@ -45,7 +46,7 @@ import {
 import type { SeamRow } from "../src/routes/session/seam-rows"
 import { stringWidth } from "../src/util/string-width"
 import { RGBA } from "@opentui/core"
-import { colorRgb, contrastRatio } from "../src/routes/session/powerline"
+import { colorDistance, colorRgb, contrastRatio } from "../src/routes/session/powerline"
 import { createComponentTheme } from "../src/theme/component"
 import { getDshBlueTheme } from "../src/theme/index"
 import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
@@ -212,6 +213,27 @@ describe("dockLines (batch D5 widget fade; todos live in their own table)", () =
 		expect(toolLineText(done, spin)).toBe("✔ read a.ts · 0.4s · ok")
 		const failed: SeamRow = { key: "tool:live:f", kind: "tool", name: "bash", args: '{"command":"false"}', status: "failed", elapsedSec: 1, output: "boom" }
 		expect(toolLineText(failed, spin)).toMatch(/^✘ bash false · 1\.0s/)
+	})
+	test("think/tool lines carry semantic accents; the tool marker keeps its tone", () => {
+		const rows: SeamRow[] = [
+			{ key: "reasoning:live-1", kind: "reasoning", text: "pondering", final: false, streaming: true, startedAt: Date.now() },
+			{ key: "tool:live:b", kind: "tool", name: "bash", args: '{"command":"ls"}', status: "running", startedAt: Date.now() },
+			{ key: "tool:live:d", kind: "tool", name: "read", args: '{"path":"a.ts"}', status: "done", elapsedSec: 0.4, output: "ok" },
+		]
+		const lines = dockLines(rows)
+		const think = lines.find((line) => line.id?.startsWith("dock:think:"))
+		expect(think?.accent).toBe("think")
+		expect(think?.marker).toBeUndefined()
+		const tools = lines.filter((line) => line.id?.startsWith("dock:tool:"))
+		expect(tools.map((line) => line.marker)).toEqual(["⚙", "✔"])
+		expect(tools.every((line) => line.accent === "tool")).toBe(true)
+		// Pure text builders keep the full icon-prefixed string.
+		expect(tools[0]!.text.startsWith("⚙ ")).toBe(true)
+		expect(tools[1]!.text.startsWith("✔ ")).toBe(true)
+		// The compact rule form shifts the marker past the `┃ ` prefix.
+		const [, ruledTool] = activityRuleLines(rows)
+		expect(ruledTool.markerAt).toBe(2)
+		expect(ruledTool.text.slice(2, 3)).toBe("✔")
 	})
 })
 
@@ -499,6 +521,71 @@ describe("activity frame active border", () => {
 		const theme = themeWith(coral, "#0a0a0f")
 		// No orange scale found → the warning feedback token (it clears 4.5:1).
 		expect(activityFrameBorderColor(theme)).toBe(theme.text.feedback.warning.base)
+	})
+})
+
+/**
+ * Semantic think/tool accents: the two activity lines must read as their own
+ * panels (violet thinking, cyan/teal tool) and never collapse onto the body
+ * copy or onto each other, while each clears the 4.5:1 text floor.
+ */
+describe("dock semantic accents (think violet / tool cyan)", () => {
+	const darkTheme = () => createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "dark"))
+	const lightTheme = () => createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "light"))
+
+	test("dsh-blue dark: think purple[200] #9d7cd8, tool cyan[300] #449da7", () => {
+		const theme = darkTheme()
+		const think = colorRgb(dockAccentColor(theme, "think"))
+		const tool = colorRgb(dockAccentColor(theme, "tool"))
+		expect(think).toEqual([157, 124, 216]) // #9d7cd8
+		expect(tool).toEqual([68, 157, 167]) // #449da7
+		for (const picked of [dockAccentColor(theme, "think"), dockAccentColor(theme, "tool")]) {
+			expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+			// Distinct from the default body copy.
+			expect(colorRgb(picked)).not.toEqual(colorRgb(theme.text.base))
+		}
+		expect(think).not.toEqual(tool)
+	})
+
+	test("dsh-blue light: think purple[200] #6d47ad, tool cyan[100] #077786", () => {
+		const theme = lightTheme()
+		const think = colorRgb(dockAccentColor(theme, "think"))
+		const tool = colorRgb(dockAccentColor(theme, "tool"))
+		expect(think).toEqual([109, 71, 173]) // #6d47ad
+		expect(tool).toEqual([7, 119, 134]) // #077786
+		for (const picked of [dockAccentColor(theme, "think"), dockAccentColor(theme, "tool")]) {
+			expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+			expect(colorRgb(picked)).not.toEqual(colorRgb(theme.text.base))
+		}
+		expect(think).not.toEqual(tool)
+	})
+
+	test("the two accents stay far apart in RGB (panel identity, not just a tint)", () => {
+		const theme = darkTheme()
+		expect(colorDistance(dockAccentColor(theme, "think"), dockAccentColor(theme, "tool"))).toBeGreaterThan(40)
+	})
+
+	test("no hue ramp → polarity-aware static fallback", () => {
+		const noHues = {
+			hue: {},
+			background: { base: RGBA.fromHex("#0a0a0f") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		expect(dockAccentColor(noHues, "think")).toBe("#9d7cd8")
+		expect(dockAccentColor(noHues, "tool")).toBe("#449da7")
+		const lightNoHues = {
+			hue: {},
+			background: { base: RGBA.fromHex("#ffffff") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		expect(dockAccentColor(lightNoHues, "think")).toBe("#6d47ad")
+		expect(dockAccentColor(lightNoHues, "tool")).toBe("#077786")
+	})
+
+	test("think falls back to accent when the theme has no purple/violet ramp", () => {
+		const accentOnly = {
+			hue: { accent: { "200": RGBA.fromHex("#8599ff") } },
+			background: { base: RGBA.fromHex("#0a0a0f") },
+		} as unknown as Parameters<typeof dockAccentColor>[0]
+		expect(colorRgb(dockAccentColor(accentOnly, "think"))).toEqual([133, 153, 255])
 	})
 })
 

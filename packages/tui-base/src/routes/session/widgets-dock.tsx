@@ -43,7 +43,7 @@ import { useThemeOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../../skin/semantic"
 import type { ComponentTheme } from "../../theme/component"
-import { colorRgb, contrastRatio, mixPowerlineColor, type PowerlineColor } from "./powerline"
+import { colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type PowerlineColor } from "./powerline"
 
 // ---------------------------------------------------------------------------
 // Skin motion timing (skin contract §1 入场淡入/退场渐隐/提醒脉冲, batch δ).
@@ -352,6 +352,12 @@ export function todosTableLines(rows: readonly SeamRow[], width: number, termina
 	return out
 }
 
+/** Status glyph for a tool row: running ⚙, failed ✘, settled ✔. The icon
+ * keeps its own semantic tone; the line text carries the tool accent. */
+export function toolMarker(status: Extract<SeamRow, { kind: "tool" }>["status"]): string {
+	return status === "running" ? "⚙" : status === "failed" ? "✘" : "✔"
+}
+
 /** One dock tool line (pure, dsh-tui-pi ToolPanel height '1' parity):
  * `<⚙|✔|✘> <name> <subject> · Xs · <tail>`. NOT the old `⠋ ⚙ name(subject)`
  * form: the status icon IS the marker, the subject follows the name with a
@@ -368,7 +374,7 @@ export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () =
 			: row.elapsedSec !== undefined
 				? ` · ${row.elapsedSec.toFixed(1)}s`
 				: ""
-	const marker = row.status === "running" ? "⚙" : row.status === "failed" ? "✘" : "✔"
+	const marker = toolMarker(row.status)
 	void spin()
 	const tail = row.status === "running" ? toolDetail(row.args) : toolResultLine(row.output)
 	const body = `${title}${elapsed}${tail !== "" ? ` · ${tail}` : ""}`
@@ -405,6 +411,15 @@ export type DockLine = {
 	italic?: boolean
 	id?: string
 	fadeOutAt?: number
+	/** Semantic line accent (think violet / tool cyan), painted on the line
+	 * TEXT while the status marker keeps its `tone` color. A line without an
+	 * accent paints entirely in its tone. */
+	accent?: DockAccent
+	/** Leading status glyph (⚙/✔/✘) inside `text`, painted with the tone
+	 * color (running/success/failure semantics stay untouched). */
+	marker?: string
+	/** Offset of `marker` inside `text` (the compact rule form prefixes `┃ `). */
+	markerAt?: number
 }
 
 /** The todo brief carrier: the opencode-side name is `todowrite`; the dsh
@@ -424,7 +439,14 @@ export function dockLines(rows: readonly SeamRow[]): DockLine[] {
 	const thinkRow = live?.kind === "reasoning" ? live : collapsed?.kind === "reasoning" ? collapsed : undefined
 	const think = thinkRow?.kind === "reasoning" ? thinkLineText(thinkRow, dockSpin) : undefined
 	if (think !== undefined && thinkRow)
-		out.push({ text: think, tone: "running", italic: true, id: `dock:think:${thinkRow.key}`, fadeOutAt: skinStopAt(thinkRow) })
+		out.push({
+			text: think,
+			tone: "running",
+			italic: true,
+			accent: "think",
+			id: `dock:think:${thinkRow.key}`,
+			fadeOutAt: skinStopAt(thinkRow),
+		})
 	// Tool panel (one line per live tool row, in-place keyed updates).
 	for (const row of all) {
 		if (row.kind !== "tool" || !row.key.startsWith("tool:live:")) continue
@@ -434,6 +456,8 @@ export function dockLines(rows: readonly SeamRow[]): DockLine[] {
 		out.push({
 			text: toolLineText(row, dockSpin),
 			tone: row.status === "running" ? "running" : row.status === "failed" ? "failed" : "ok",
+			accent: "tool",
+			marker: toolMarker(row.status),
 			id: `dock:tool:${row.key}`,
 			fadeOutAt: row.status !== "running" ? skinStopAt(row) : undefined,
 		})
@@ -481,7 +505,7 @@ export function activityRuleLines(rows: readonly SeamRow[]): [DockLine, DockLine
 	const head = think.text === "" ? "┃ activity" : `┃ activity · ${think.text}`
 	return [
 		{ ...think, text: head, id: "dock:activity-head" },
-		{ ...tool, text: tool.text === "" ? "" : `┃ ${tool.text}` },
+		{ ...tool, text: tool.text === "" ? "" : `┃ ${tool.text}`, markerAt: (tool.markerAt ?? 0) + 2 },
 	]
 }
 
@@ -617,6 +641,62 @@ export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA 
 		return boostUntilContrast(warning, background).color
 	}
 	return ACTIVITY_FRAME_BORDER_FALLBACK
+}
+
+/**
+ * Semantic dock line accents (think / tool) — the two activity lines get
+ * their own color families so they read as panels, not as default body copy:
+ *   - think: VIOLET (`purple` ramp; dsh-tui-pi's `thinking` text token),
+ *   - tool:  CYAN/TEAL (`cyan` ramp; dsh-tui-pi's blue tool panel family but
+ *     shifted off the footer blue so it never reads as chrome).
+ * Both are picked from the theme's named hue ramps, preferring a soft mid
+ * step and walking the ramp until the text clears 4.5:1 on the theme
+ * surface (dark: later steps are dimmer; light: later steps are lighter).
+ * Status glyphs (⚙/✔/✘) never use this — they keep their tone color.
+ */
+export type DockAccent = "think" | "tool"
+
+/** Preferred steps: a soft mid swatch first, then the rest of the ramp. */
+const DOCK_ACCENT_STEPS: Record<DockAccent, readonly number[]> = {
+	think: [200, 300, 100, 400, 500, 600, 700, 800, 900],
+	tool: [300, 200, 100, 400, 500, 600, 700, 800, 900],
+}
+
+/** Fallback hue ramps when the theme carries no named hue record: violet →
+ * accent (think), teal → interactive (tool). */
+const DOCK_ACCENT_HUES: Record<DockAccent, readonly string[]> = {
+	think: ["purple", "violet", "accent"],
+	tool: ["cyan", "teal", "interactive"],
+}
+
+/** No-theme fallbacks per surface polarity (dsh-blue dark indices). */
+const DOCK_ACCENT_FALLBACK: Record<DockAccent, { dark: string; light: string }> = {
+	think: { dark: "#9d7cd8", light: "#6d47ad" },
+	tool: { dark: "#449da7", light: "#077786" },
+}
+
+type HueRamp = Readonly<Record<number, RGBA | undefined>>
+
+export function dockAccentColor(theme: ComponentTheme | undefined, accent: DockAccent): string | RGBA {
+	const background = theme?.background?.base
+	const hues = theme?.hue as unknown as Readonly<Record<string, HueRamp | undefined>> | undefined
+	for (const name of DOCK_ACCENT_HUES[accent]) {
+		const ramp = hues?.[name]
+		if (ramp === undefined) continue
+		const candidates = DOCK_ACCENT_STEPS[accent]
+			.map((step) => ramp[step])
+			.filter((value): value is RGBA => value !== undefined)
+		if (candidates.length === 0) continue
+		if (background === undefined) return candidates[0]!
+		const preferred = candidates.find((value) => contrastRatio(value, background) >= 4.5)
+		if (preferred !== undefined) return preferred
+		// No stock step clears the floor (custom surface): return the most
+		// readable step rather than an unreadable stock one.
+		return candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
+	}
+	const fallback = DOCK_ACCENT_FALLBACK[accent]
+	const darkSurface = background === undefined || relativeLuminance(background) < 0.5
+	return darkSurface ? fallback.dark : fallback.light
 }
 
 /** Whether the dock needs the shared animation clock right now (pure):
@@ -755,9 +835,6 @@ export function WidgetsDock(props: {
 					: (theme?.text.muted ?? "#9aa5ce")
 	const bg = () => theme?.background.base ?? "#000000"
 	const skinCtx = () => ({ decorated: motionDecorationsEnabled(), background: bg() })
-	/** Line color: entrance fade-in (0.4s from first sight) then exit fade
-	 * (inside the seam 1s window) — see skinDockLineFg. */
-	const lineFg = (line: DockLine): string | RGBA => skinDockLineFg(skinCtx(), fgFor(line.tone), line)
 	// Shared animation clock (contract §2.2 — replaces the old 120ms
 	// setInterval): ticks only while the docks have live lines; undefined
 	// pauses the clock (tier off / idle with nothing animating).
@@ -780,11 +857,8 @@ export function WidgetsDock(props: {
 	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
 
-	const lineView = (line: DockLine) => (
-		<text fg={lineFg(line)} attributes={line.italic === true ? TextAttributes.ITALIC : undefined} wrapMode="none">
-			{clipToWidth(line.text, width())}
-		</text>
-	)
+	const accentFg = (accent: DockAccent): string | RGBA => dockAccentColor(theme, accent)
+	const lineView = (line: DockLine) => dockLineNode(line, width(), skinCtx(), fgFor, accentFg)
 
 	return (
 		<box flexShrink={0} flexDirection="column" width="100%">
@@ -804,7 +878,7 @@ export function WidgetsDock(props: {
 			</Show>
 			<Show
 				when={activityFrameLatch.shown()}
-				fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} skinCtx={skinCtx()} />}
+				fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} accentFg={accentFg} skinCtx={skinCtx()} />}
 			>
 				<Show
 					when={frame() === "frame"}
@@ -843,17 +917,52 @@ function FlatDock(props: {
 	rows: readonly SeamRow[]
 	width: number
 	fgFor: (tone: DockLine["tone"]) => string | RGBA
+	accentFg: (accent: DockAccent) => string | RGBA
 	skinCtx: SkinFgContext
 }): JSX.Element {
 	return (
 		<box flexShrink={0} flexDirection="column" width="100%" height={dockLines(props.rows).length} paddingLeft={3}>
 			<For each={dockLines(props.rows)}>
-				{(line) => (
-					<text fg={skinDockLineFg(props.skinCtx, props.fgFor(line.tone), line)} attributes={line.italic === true ? TextAttributes.ITALIC : undefined} wrapMode="none">
-						{clipToWidth(line.text, props.width)}
-					</text>
-				)}
+				{(line) => dockLineNode(line, props.width, props.skinCtx, props.fgFor, props.accentFg)}
 			</For>
 		</box>
+	)
+}
+
+/**
+ * One dock row: the status marker (⚙/✔/✘) keeps its tone color while the
+ * rest of the line paints in the semantic accent (think violet / tool cyan).
+ * `line.text` always carries the full string (pure builders/tests unchanged);
+ * the marker is cut out at `markerAt` and re-inserted as a colored span. */
+function dockLineNode(
+	line: DockLine,
+	width: number,
+	ctx: SkinFgContext,
+	fgFor: (tone: DockLine["tone"]) => string | RGBA,
+	accentFg: (accent: DockAccent) => string | RGBA,
+): JSX.Element {
+	const toneFg = fgFor(line.tone)
+	const bodyFg = skinDockLineFg(ctx, line.accent !== undefined ? accentFg(line.accent) : toneFg, line)
+	const attributes = line.italic === true ? TextAttributes.ITALIC : undefined
+	const marker = line.marker
+	const markerAt = line.markerAt ?? 0
+	if (marker === undefined || line.text.slice(markerAt, markerAt + marker.length) !== marker) {
+		return (
+			<text fg={bodyFg} attributes={attributes} wrapMode="none">
+				{clipToWidth(line.text, width)}
+			</text>
+		)
+	}
+	const before = clipToWidth(line.text.slice(0, markerAt), width)
+	const markerBudget = Math.max(0, width - stringWidth(before))
+	const clippedMarker = clipToWidth(marker, markerBudget)
+	const after = clipToWidth(line.text.slice(markerAt + marker.length), Math.max(0, markerBudget - stringWidth(clippedMarker)))
+	const markerFg = skinDockLineFg(ctx, toneFg, line)
+	return (
+		<text fg={bodyFg} attributes={attributes} wrapMode="none">
+			{before}
+			<span style={{ fg: markerFg }}>{clippedMarker}</span>
+			{after}
+		</text>
 	)
 }
