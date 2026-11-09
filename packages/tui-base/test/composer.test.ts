@@ -76,14 +76,14 @@ describe("composer history recall (shell-style, pi editor navigateHistory parity
 		history.append("b")
 		history.append("c")
 		expect(history.browsing).toBe(false)
-		expect(history.move(-1, "")).toBe("c")
+		expect(history.move(-1, "")?.text).toBe("c")
 		expect(history.browsing).toBe(true)
-		expect(history.move(-1, "c")).toBe("b")
-		expect(history.move(-1, "b")).toBe("a")
+		expect(history.move(-1, "c")?.text).toBe("b")
+		expect(history.move(-1, "b")?.text).toBe("a")
 		expect(history.move(-1, "a")).toBeUndefined() // past oldest: stop, no wrap
-		expect(history.move(1, "a")).toBe("b")
-		expect(history.move(1, "b")).toBe("c")
-		expect(history.move(1, "c")).toBe("") // back to the (empty) draft slot
+		expect(history.move(1, "a")?.text).toBe("b")
+		expect(history.move(1, "b")?.text).toBe("c")
+		expect(history.move(1, "c")?.text).toBe("") // back to the (empty) draft slot
 		expect(history.browsing).toBe(false)
 		expect(history.move(1, "")).toBeUndefined() // nothing newer than the draft
 	})
@@ -92,40 +92,55 @@ describe("composer history recall (shell-style, pi editor navigateHistory parity
 		const history = new ComposerHistory()
 		history.append("a")
 		history.append("b")
-		expect(history.move(-1, "my draft")).toBe("b")
-		expect(history.move(-1, "b")).toBe("a")
-		expect(history.move(1, "a")).toBe("b")
-		expect(history.move(1, "b")).toBe("my draft") // the draft, not ""
+		expect(history.move(-1, "my draft")?.text).toBe("b")
+		expect(history.move(-1, "b")?.text).toBe("a")
+		expect(history.move(1, "a")?.text).toBe("b")
+		expect(history.move(1, "b")?.text).toBe("my draft") // the draft, not ""
 		expect(history.browsing).toBe(false)
+	})
+
+	test("the draft cursor rides along: stashed on the first ↑, restored with the draft", () => {
+		const history = new ComposerHistory()
+		history.append("a")
+		history.append("b")
+		const draft = "line one\nline two"
+		const cursor = "line one\nli".length // mid second line, not the end
+		// First ↑: committed entry lands at its start (cursor 0), Draft stashed whole.
+		expect(history.move(-1, draft, cursor)).toEqual({ text: "b", cursor: 0 })
+		// Committed entries leave the cursor to the caller (0 for ↑ / end for ↓).
+		expect(history.move(-1, "b")).toEqual({ text: "a" })
+		expect(history.move(1, "a")).toEqual({ text: "b" })
+		// Past the newest: the draft comes back with the exact original cursor.
+		expect(history.move(1, "b")).toEqual({ text: draft, cursor })
 	})
 
 	test("a multi-line draft round-trips intact through the walk", () => {
 		const history = new ComposerHistory()
 		history.append("old")
 		const draft = "line one\nline two\nline three"
-		expect(history.move(-1, draft)).toBe("old")
+		expect(history.move(-1, draft)?.text).toBe("old")
 		expect(history.move(-1, "old")).toBeUndefined()
-		expect(history.move(1, "old")).toBe(draft)
+		expect(history.move(1, "old")?.text).toBe(draft)
 	})
 
 	test("editing a recalled entry keeps walking; the stashed draft still wins on ↓", () => {
 		const history = new ComposerHistory()
 		history.append("a")
 		history.append("b")
-		expect(history.move(-1, "draft")).toBe("b")
-		expect(history.move(-1, "b edited")).toBe("a") // browsing ignores buffer edits
-		expect(history.move(1, "a")).toBe("b")
-		expect(history.move(1, "b")).toBe("draft")
+		expect(history.move(-1, "draft")?.text).toBe("b")
+		expect(history.move(-1, "b edited")?.text).toBe("a") // browsing ignores buffer edits
+		expect(history.move(1, "a")?.text).toBe("b")
+		expect(history.move(1, "b")?.text).toBe("draft")
 	})
 
 	test("the draft slot is per walk: a new submit resets it", () => {
 		const history = new ComposerHistory()
 		history.append("a")
-		expect(history.move(-1, "draft")).toBe("a")
+		expect(history.move(-1, "draft")?.text).toBe("a")
 		history.append("c") // submit resets the walk + stash
 		expect(history.browsing).toBe(false)
-		expect(history.move(-1, "")).toBe("c")
-		expect(history.move(1, "c")).toBe("") // a fresh empty draft, not "draft"
+		expect(history.move(-1, "")?.text).toBe("c")
+		expect(history.move(1, "c")?.text).toBe("") // a fresh empty draft, not "draft"
 	})
 
 	test("empty history recalls nothing; duplicates collapse; cap is enforced", () => {
@@ -136,7 +151,7 @@ describe("composer history recall (shell-style, pi editor navigateHistory parity
 		expect(history.size).toBe(1)
 		for (let i = 0; i < MAX_HISTORY_ENTRIES + 5; i++) history.append(`p${i}`)
 		expect(history.size).toBe(MAX_HISTORY_ENTRIES)
-		expect(history.move(-1, "")).toBe(`p${MAX_HISTORY_ENTRIES + 4}`)
+		expect(history.move(-1, "")?.text).toBe(`p${MAX_HISTORY_ENTRIES + 4}`)
 	})
 
 	test("submits (sent and steered) commit to history and reset the walk", async () => {
@@ -145,11 +160,11 @@ describe("composer history recall (shell-style, pi editor navigateHistory parity
 		controller.submit("steer line")
 		turn().resolve()
 		await controller.turn
-		expect(controller.history.move(-1, "")).toBe("steer line")
-		expect(controller.history.move(-1, "steer line")).toBe("first")
+		expect(controller.history.move(-1, "")?.text).toBe("steer line")
+		expect(controller.history.move(-1, "steer line")?.text).toBe("first")
 		controller.submit("third")
 		// append resets the walk to the draft slot
-		expect(controller.history.move(-1, "")).toBe("third")
+		expect(controller.history.move(-1, "")?.text).toBe("third")
 	})
 })
 

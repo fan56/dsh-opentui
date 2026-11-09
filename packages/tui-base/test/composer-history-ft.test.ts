@@ -8,7 +8,12 @@
  *   - ↓ walks back and past the newest restores the EMPTY draft ("最底 =
  *     新消息"), so the composer is ready for a new message;
  *   - a typed single-line draft is stashed on the first ↑ and restored
- *     verbatim on ↓ past the newest;
+ *     verbatim on ↓ past the newest, cursor included (pi stashes the whole
+ *     editor state);
+ *   - a multi-line draft with the cursor on a middle row: ↑/↓ move the
+ *     cursor natively and never recall history;
+ *   - a config override of `prompt.history.previous` (ctrl+p) recalls — the
+ *     modifier guard that made overrides silently dead is gone;
  *   - while the slash palette is open ↑/↓ move the menu only (buffer stays
  *     the slash prefix, history is not recalled).
  */
@@ -50,6 +55,21 @@ describe("shell-style ↑/↓ history under Keymap.Provider", () => {
 		expect(r.draftTyped.buffer).toBe("my draft")
 		expect(r.draftUp.buffer).toBe("committed")
 		expect(r.draftRestored.buffer).toBe("my draft")
+
+		// draft cursor: stashed mid-line on the first ↑, restored with the draft
+		expect(r.draftCursorBefore).toMatchObject({ buffer: "my draft", cursor: 3 })
+		expect(r.draftCursorUp).toMatchObject({ buffer: "committed", cursor: 0 })
+		expect(r.draftCursorRestored).toMatchObject({ buffer: "my draft", cursor: 3 })
+
+		// multi-line draft, cursor on a middle row: native cursor movement, no recall
+		expect(r.midBefore).toMatchObject({ buffer: "alpha\nbravo\ncharlie", row: 1 })
+		expect(r.midUp).toMatchObject({ buffer: "alpha\nbravo\ncharlie", row: 0 })
+		expect(r.midDown).toMatchObject({ buffer: "alpha\nbravo\ncharlie", row: 1 })
+
+		// config override (ctrl+p) reaches history recall instead of being
+		// rejected by a modifier guard
+		expect(r.overrideBefore.buffer).toBe("")
+		expect(r.overrideUp.buffer).toBe("committed")
 
 		// open slash palette: arrows move the menu, never the history
 		expect(r.slashOpen).toMatchObject({ buffer: "/", rows: 6 })

@@ -25,6 +25,12 @@
  *   ↑ at buffer start  recall previous prompt   (vendored prompt.history.previous)
  *   ↓ at buffer end    recall next / back to draft
  *
+ * ↑/↓ reach this component two ways. Under the client's Keymap.Provider the
+ * layer below binds the CONFIGURED `prompt.history.previous`/`next` strokes,
+ * so a config override (e.g. ctrl+p) is honored there. Without a provider
+ * (bare FT harness) the textarea onKeyDown fallback matches hardcoded
+ * up/down and ignores config overrides.
+ *
  * Shell-style recall (aligned with dsh-tui-pi's pi editor navigateHistory and
  * mini/prompt.shared.ts movePromptHistory): the first ↑ stashes the draft
  * (typed or empty), ↑ walks newest → oldest and stops at the oldest, ↓ walks
@@ -231,8 +237,8 @@ export function SessionComposer(props: SessionComposerProps) {
 	 * caller/keymap must suppress the native textarea movement).
 	 *
 	 * Direction -1 = ↑ (newer → older), 1 = ↓ (older → newer → draft).
-	 * Browsing state lives in the controller's ComposerHistory; the draft is
-	 * stashed by `history.move` on the first ↑.
+	 * Browsing state lives in the controller's ComposerHistory; the draft
+	 * (text + cursor) is stashed by `history.move` on the first ↑.
 	 */
 	function recallStep(direction: 1 | -1): boolean {
 		if (!textarea || textarea.isDestroyed) return false
@@ -253,10 +259,10 @@ export function SessionComposer(props: SessionComposerProps) {
 					return true
 				}
 			}
-			const item = controller.history.move(-1, input)
-			if (item === undefined) return false
-			textarea.setText(item)
-			textarea.cursorOffset = 0
+			const step = controller.history.move(-1, input, textarea.cursorOffset)
+			if (step === undefined) return false
+			textarea.setText(step.text)
+			textarea.cursorOffset = step.cursor ?? 0
 			return true
 		}
 
@@ -271,10 +277,12 @@ export function SessionComposer(props: SessionComposerProps) {
 				return true
 			}
 		}
-		const item = controller.history.move(1, input)
-		if (item === undefined) return false
-		textarea.setText(item)
-		textarea.cursorOffset = measure(item)
+		const step = controller.history.move(1, input, textarea.cursorOffset)
+		if (step === undefined) return false
+		textarea.setText(step.text)
+		// Draft restore brings its own cursor back (pi restores the whole
+		// state); a committed entry lands at the end.
+		textarea.cursorOffset = step.cursor ?? measure(step.text)
 		return true
 	}
 
@@ -282,12 +290,18 @@ export function SessionComposer(props: SessionComposerProps) {
 	 * Keymap command body (priority-1 layer, see module comment) — the path
 	 * the real client takes. On the bare FT harness (no Keymap.Provider) the
 	 * textarea's onKeyDown fallback below runs instead.
+	 *
+	 * No modifier guard here: the layer binding is the CONFIGURED stroke
+	 * (`config.keybinds.get("prompt.history.previous" | "prompt.history.next")`,
+	 * default up/down) and the keymap matches strokes exactly, so shift+up or
+	 * any other unmapped chord never reaches this body. A guard would instead
+	 * silently drop a user override such as `prompt.history.previous = ctrl+p`
+	 * on the one path where that override is read.
 	 */
 	function historyKey(direction: 1 | -1, event: KeyEvent): boolean {
 		if (!textarea || textarea.isDestroyed) return false
 		// Slash palette owns ↑/↓ while it is open (filter preventDefaults).
 		if (props.slashKeyFilter?.(event, textarea.plainText)) return true
-		if (event.ctrl || event.meta || event.shift || event.super) return false
 		return recallStep(direction)
 	}
 
@@ -325,6 +339,11 @@ export function SessionComposer(props: SessionComposerProps) {
 		// arrows move its highlight and esc closes it; the filter owns
 		// preventDefault for those.
 		if (props.slashKeyFilter?.(event, textarea.plainText)) return
+		// Bare-mount fallback only (no Keymap.Provider — the real client takes
+		// the historyKey path above). It hardcodes up/down, so it does NOT see
+		// `prompt.history.*` overrides, and the raw event carries modifiers the
+		// binding match would have filtered out: keep ctrl/meta/shift/super
+		// away from history here so shift+up stays native selection.
 		if (event.ctrl || event.meta || event.shift || event.super) return
 		if (event.name === "up") {
 			if (recallStep(-1)) event.preventDefault()

@@ -31,7 +31,7 @@ function findTextarea(node: any): any {
 	return undefined
 }
 
-async function mount() {
+async function mount(config: Record<string, unknown> = {}) {
 	const setup = await createTestRenderer({ width: 80, height: 16, useMouse: false })
 	const sent: string[] = []
 	const said: string[] = []
@@ -62,7 +62,7 @@ async function mount() {
 	render(
 		() =>
 			createComponent(ConfigProvider, {
-				config: resolve({}, { terminalSuspend: true }),
+				config: resolve(config, { terminalSuspend: true }),
 				get children() {
 					return createComponent(Keymap.Provider, {
 						get children() {
@@ -80,8 +80,14 @@ async function mount() {
 		setup.renderer.stdin.emit("data", Buffer.from(bytes))
 		await setup.flush()
 	}
-	const state = () => ({ buffer: textarea.plainText as string, rows: host.controller.rows(), sent: [...sent] })
-	return { setup, write, state }
+	const state = () => ({
+		buffer: textarea.plainText as string,
+		cursor: textarea.cursorOffset as number,
+		row: (textarea.scrollY + textarea.visualCursor.visualRow) as number,
+		rows: host.controller.rows(),
+		sent: [...sent],
+	})
+	return { setup, write, state, textarea }
 }
 
 const UP = "\x1b[A"
@@ -135,6 +141,50 @@ const report: Record<string, unknown> = {}
 	report.slashUp = m.state()
 	await m.write(DOWN)
 	report.slashDown = m.state()
+	await m.setup.dispose()
+}
+
+// 4. Draft cursor (pi keeps the WHOLE state): a typed single-line draft with
+//    the cursor mid-line is stashed whole; ↓ past the newest restores the text
+//    AND the cursor, not the line end.
+{
+	const m = await mount()
+	await m.write("committed" + ENTER)
+	m.textarea.setText("my draft")
+	m.textarea.cursorOffset = 3 // between "my " and "draft"
+	report.draftCursorBefore = m.state()
+	await m.write(UP)
+	report.draftCursorUp = m.state()
+	await m.write(DOWN)
+	report.draftCursorRestored = m.state()
+	await m.setup.dispose()
+}
+
+// 5. Multi-line draft with the cursor on a MIDDLE row: ↑/↓ move the cursor
+//    natively (row changes) and never recall history (buffer untouched).
+{
+	const m = await mount()
+	await m.write("committed" + ENTER)
+	m.textarea.setText("alpha\nbravo\ncharlie")
+	m.textarea.cursorOffset = "alpha\nbr".length // row 1, mid-line
+	report.midBefore = m.state()
+	await m.write(UP)
+	report.midUp = m.state()
+	await m.write(DOWN)
+	report.midDown = m.state()
+	await m.setup.dispose()
+}
+
+// 6. A user override of `prompt.history.previous` (ctrl+p) reaches the
+//    composer's history layer. The old modifier guard rejected ctrl/meta/
+//    shift/super and made the override silently dead on the one path where
+//    that config is read; the keymap already matches strokes exactly.
+{
+	const m = await mount({ keybinds: { "prompt.history.previous": "ctrl+p" } })
+	await m.write("committed" + ENTER)
+	report.overrideBefore = m.state()
+	await m.write("\x10") // ctrl+p
+	report.overrideUp = m.state()
 	await m.setup.dispose()
 }
 

@@ -184,12 +184,18 @@ alt/shift/ctrl+return, ctrl+j). They are applied through the textarea's
 Busy behavior matches the vendored prompt: Enter during a running turn is
 sent as a steer (`seam.steer`) and is not blocked. The footer shows a
 busy marker, and `onBusyChange` exposes the same state for the status
-batch. History follows the vendored `prompt/history.tsx` `move()` logic,
-kept in memory with up to 50 entries. Slot 0 holds the draft, and typed
-input is never overwritten. The ↑/↓ edge behavior also matches the vendored
-one. Paste uses the textarea's built-in handling. The transcript takes the
-composer as `children` and accepts a shared `projection`. Run the session
-page skeleton with `bun examples/session.tsx`. Tests: `test/composer.test.ts`.
+batch. History is shell-style, aligned with the pi editor
+(`navigateHistory`) and the mini composer: the first ↑ stashes the draft
+(whole editor state — text plus cursor), ↑ walks newest → oldest without
+wrapping, and ↓ past the newest restores that draft. Kept in memory with up
+to 50 entries; typed input is never overwritten. In the real client the
+arrows run through a priority-1 `Keymap` layer bound to
+`prompt.history.previous` / `prompt.history.next`, so a config override is
+honored; without a `Keymap.Provider` the textarea `onKeyDown` fallback
+hardcodes up/down. Paste uses the textarea's built-in handling. The
+transcript takes the composer as `children` and accepts a shared
+`projection`. Run the session page skeleton with `bun examples/session.tsx`.
+Tests: `test/composer.test.ts`, `test/composer-history-ft.test.ts`.
 
 ## Turn overlays (batch 5)
 
@@ -263,7 +269,7 @@ Overrides pass through `SessionComposer`'s `keybinds` prop. Tests:
 | enter (`return`)                                | composer submit / steer   | `input.submit` → `composerKeyBindings`                | yes (`keybinds` prop)                |
 | shift/ctrl/alt+enter, ctrl+j                    | composer newline          | `input.newline` → `composerKeyBindings`               | yes (`keybinds` prop)                |
 | numpad enter (`kpenter`)                        | composer                  | mirrors every `return` binding                        | follows `return`                     |
-| ↑ / ↓ (history recall)                          | composer                  | `onKeyDown` in `session-composer.tsx`                 | no (hardcoded; `prompt.history.*` exists in config, not read) |
+| ↑ / ↓ (history recall)                          | composer                  | `prompt.history.previous` / `prompt.history.next` → priority-1 `Keymap` layer (real client); hardcoded up/down `onKeyDown` fallback without a provider | yes on the Keymap path (`prompt.history.*`); the bare fallback is hardcoded |
 | esc / ctrl+c (close top dialog)                 | DialogProvider modal layer | `ui/dialog.tsx` `bind: "escape"` / `"ctrl+c"`         | no (hardcoded in the vendored app too) |
 | enter / esc / ← → (approval card)               | `ui/dialog-confirm`       | `Keymap.createLayer` binds in the vendored component  | no (hardcoded in the vendored app too) |
 | ↑↓ / enter / pgup/pgdn / home/end (ask picker)  | `ui/dialog-select`        | vendored component (`dialog.select.*` in config)      | through the vendored Keymap layer, per `dialog.select.*` |

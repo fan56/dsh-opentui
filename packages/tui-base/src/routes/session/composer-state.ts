@@ -16,10 +16,11 @@
  * persistence later):
  *
  *   `index === null` is the draft (not browsing). ↑ stashes the CURRENT
- *   buffer — empty or typed, multi-line included — and walks newest →
- *   oldest; ↓ walks back and, past the newest entry, restores that draft
- *   instead of clobbering it with "". Neither end wraps: ↑ past the oldest
- *   and ↓ past the draft are no-ops.
+ *   buffer — empty or typed, multi-line included, WITH its cursor offset (pi
+ *   stashes the whole editor state via `structuredClone(this.state)`) — and
+ *   walks newest → oldest; ↓ walks back and, past the newest entry, restores
+ *   that draft and its cursor instead of clobbering it with "". Neither end
+ *   wraps: ↑ past the oldest and ↓ past the draft are no-ops.
  *
  * This deliberately replaces the earlier vendored `prompt/history.tsx`
  * `move()` port, which compared the buffer against `entries[0]` and refused
@@ -29,6 +30,19 @@
 export const MAX_HISTORY_ENTRIES = 50
 
 export type ComposerSubmitResult = "sent" | "steered" | "ignored"
+
+/** One recall step: the text to place in the composer plus, when the step
+ * restores the stashed draft, the cursor offset to restore with it. Committed
+ * entries leave `cursor` unset — the caller picks 0 (↑) or end (↓), matching
+ * pi's `setTextInternal(..., "start" | "end")`. */
+export type ComposerHistoryStep = {
+	text: string
+	cursor?: number
+}
+
+/** The draft slot is the whole editor state we can cheaply restore: text and
+ * cursor offset (pi's `historyDraft = structuredClone(this.state)`). */
+type HistoryDraft = { text: string; cursor: number }
 
 export type ComposerControllerOptions = {
 	/** Starts a turn (page wiring: the transcript projection's `send`). */
@@ -45,8 +59,9 @@ export class ComposerHistory {
 	private entries: string[] = []
 	/** null = the draft slot (not browsing); otherwise an index into entries. */
 	private index: number | null = null
-	/** Buffer stashed when browsing started; restored on ↓ past the newest. */
-	private draft = ""
+	/** Buffer + cursor stashed when browsing started; restored on ↓ past the
+	 * newest. */
+	private draft: HistoryDraft = { text: "", cursor: 0 }
 
 	/** True while ↑/↓ is walking committed prompts instead of the draft. */
 	get browsing(): boolean {
@@ -54,34 +69,38 @@ export class ComposerHistory {
 	}
 
 	/**
-	 * Shell-style recall. `input` is the current buffer text.
+	 * Shell-style recall. `input` is the current buffer text and `cursor` its
+	 * cursor offset (only stashed on the first ↑, then restored with the
+	 * draft).
 	 *
-	 * Returns the text to place in the composer, or undefined when the walk
-	 * cannot move (empty history, past the oldest, at the draft).
+	 * Returns the text to place in the composer (plus the draft cursor when
+	 * this step restores the draft), or undefined when the walk cannot move
+	 * (empty history, past the oldest, at the draft).
 	 */
-	move(direction: 1 | -1, input: string): string | undefined {
+	move(direction: 1 | -1, input: string, cursor = 0): ComposerHistoryStep | undefined {
 		if (this.entries.length === 0) return undefined
 
 		if (this.index === null) {
 			// ↓ at the draft: nothing newer to walk to.
 			if (direction === 1) return undefined
-			// First ↑ from the draft: stash it (typed, multi-line or empty)
-			// exactly like pi's historyDraft / mini's movePromptHistory.
-			this.draft = input
+			// First ↑ from the draft: stash it (typed, multi-line or empty,
+			// cursor included) exactly like pi's historyDraft / mini's
+			// movePromptHistory.
+			this.draft = { text: input, cursor }
 			this.index = this.entries.length - 1
-			return this.entries[this.index]
+			return { text: this.entries[this.index], cursor: 0 }
 		}
 
 		const next = this.index + direction
 		if (next < 0) return undefined // past the oldest: stop
 		if (next >= this.entries.length) {
-			// Past the newest: back to the draft slot, restoring the stash
-			// (an empty stash clears the buffer, "最底 = 新消息").
+			// Past the newest: back to the draft slot, restoring the stash and
+			// its cursor (an empty stash clears the buffer, "最底 = 新消息").
 			this.index = null
-			return this.draft
+			return { ...this.draft }
 		}
 		this.index = next
-		return this.entries[next]
+		return { text: this.entries[next] }
 	}
 
 	/** Commit a prompt. Duplicate of the newest entry only resets the walk. */
@@ -97,7 +116,7 @@ export class ComposerHistory {
 
 	private reset(): void {
 		this.index = null
-		this.draft = ""
+		this.draft = { text: "", cursor: 0 }
 	}
 
 	get size(): number {
