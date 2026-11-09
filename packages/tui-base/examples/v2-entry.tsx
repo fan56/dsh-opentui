@@ -674,8 +674,8 @@ function V2SessionPage(props: {
 							// Tab completion is composer-only while no dialog owns the
 							// screen: an approval/dialog-select layer keeps its own Tab
 							// (undefined = fall through, do not steal the key).
-							slashComplete: (buffer: string) =>
-								dialog.stack.length > 0 ? undefined : slash.slashComplete(buffer),
+							slashComplete: (buffer: string, cursor: number) =>
+								dialog.stack.length > 0 ? undefined : slash.slashComplete(buffer, cursor),
 							slashPalette: () => createComponent(SlashPalette, { controller: slash.controller, commands: slash.commands }),
 							slashHeight: () => slash.controller.rows(),
 						})

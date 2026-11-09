@@ -16,8 +16,9 @@
  * Consumption proof: a keypress spy appended after mount sits BEHIND the
  * prepended keymap listener in the same global emitter, so a consumer key
  * never reaches it (stopPropagation). For a non-consumed Tab the spy records
- * `{ name: "tab", prevented: false }` — pinned below on the plain-text and
- * argument-phase cases, which makes "no spy record" a real signal.
+ * `{ name: "tab", prevented: false }` — pinned below on the plain-text,
+ * mid-token, gated and argument-phase cases, which makes "no spy record" a
+ * real signal.
  */
 import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
@@ -46,8 +47,13 @@ function expectConsumed(state: Record<string, any>) {
 	expect(state.buffer).not.toContain("\t")
 }
 
+/** Tab was not ours: the appended spy sees it un-prevented. */
+function expectNativeTab(state: Record<string, any>) {
+	expect(state.lastKey).toMatchObject({ name: "tab", prevented: false })
+}
+
 describe("slash Tab completion under Keymap.Provider (real client path)", () => {
-	test("completes, cycles, consumes Tab, and leaves non-slash Tab native", async () => {
+	test("completes by prefix, exact name, common prefix, gate and mid-token guard", async () => {
 		const r = await runFt()
 
 		// Unique match: "/he" → "/help " with the argument separator, menu
@@ -67,15 +73,15 @@ describe("slash Tab completion under Keymap.Provider (real client path)", () => 
 		// Plain text: Tab is NOT ours — it falls through untouched (the spy
 		// sees it un-prevented), preserving the pre-feature behavior.
 		expect(r.plain).toMatchObject({ buffer: "hello", cursor: 5, sent: [] })
-		expect(r.plain.lastKey).toMatchObject({ name: "tab", prevented: false })
+		expectNativeTab(r.plain)
 
-		// Bash menu-complete: "/session" has a same-prefix sibling, so the first
-		// Tab steps to "/sessions" WITHOUT a space (menu open, cycle alive); the
-		// next Tab finishes it with the separator once the candidate is unique.
-		expect(r.cycle1).toMatchObject({ buffer: "/sessions", cursor: 9, rows: 6, sent: [] })
-		expectConsumed(r.cycle1)
-		expect(r.cycle2).toMatchObject({ buffer: "/sessions ", cursor: 10, rows: 0, sent: [] })
-		expectConsumed(r.cycle2)
+		// Exact full name (fish model): "/session" lands on "/session " even
+		// though "/sessions" shares the prefix — same command Enter runs. A
+		// second Tab is argument-phase native (no drift, no extra space).
+		expect(r.exactName).toMatchObject({ buffer: "/session ", cursor: 9, rows: 0, sent: [] })
+		expectConsumed(r.exactName)
+		expect(r.exactNameAgain).toMatchObject({ buffer: "/session ", cursor: 9, rows: 0, sent: [] })
+		expectNativeTab(r.exactNameAgain)
 
 		// Menu open: Tab accepts the highlighted row, not just the typed prefix.
 		expect(r.acceptSelected).toMatchObject({ buffer: "/help ", cursor: 6, rows: 0, sent: [] })
@@ -84,6 +90,27 @@ describe("slash Tab completion under Keymap.Provider (real client path)", () => 
 		// Argument phase ("/help " already has its space): Tab falls through
 		// again — no second completion, no space duplication.
 		expect(r.afterComplete).toMatchObject({ buffer: "/help ", cursor: 6, sent: [] })
-		expect(r.afterComplete.lastKey).toMatchObject({ name: "tab", prevented: false })
-	}, 60_000)
+		expectNativeTab(r.afterComplete)
+
+		// Mid-token caret: the compiled path must NOT feed a fabricated buffer
+		// end. Buffer, caret and the still-open menu are all untouched.
+		expect(r.midToken).toMatchObject({ buffer: "/help", cursor: 3, rows: 6, query: "/help", sent: [] })
+		expectNativeTab(r.midToken)
+
+		// Approval/dialog gate: no completer → native Tab, buffer untouched, the
+		// menu is the pre-Tab one (the dialog owns focus in the real app).
+		expect(r.gated).toMatchObject({ buffer: "/he", cursor: 3, rows: 6, sent: [] })
+		expectNativeTab(r.gated)
+
+		// Esc closed the menu: Tab falls back to the FIRST candidate in table
+		// order ("/session"), never the now-invisible highlight ("/sessions").
+		expect(r.escThenTab).toMatchObject({ buffer: "/session ", cursor: 9, rows: 0, sent: [] })
+		expectConsumed(r.escThenTab)
+
+		// Recall re-sync: after ↑ restores "/" the host derives the CURRENT
+		// palette state; the stale pre-recall highlight ("/session") is gone.
+		// Fresh query "/" highlights index 1 → "/model".
+		expect(r.recallThenTab).toMatchObject({ buffer: "/model ", cursor: 7, rows: 0, sent: [] })
+		expectConsumed(r.recallThenTab)
+	}, 90_000)
 })

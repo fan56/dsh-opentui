@@ -908,7 +908,7 @@ export function coreCommands(): SlashCommand[] {
  * slash included ("/lo" matches "/logout"-shaped rows — here "/clear" no,
  * "/model" only from "/m…"). Empty query = the full table.
  */
-export function filterCommands(commands: SlashCommand[], query: string): SlashCommand[] {
+export function filterCommands(commands: readonly SlashCommand[], query: string): SlashCommand[] {
 	if (!query.startsWith("/")) return []
 	const needle = query.toLowerCase()
 	return commands.filter((command) => command.name.toLowerCase().startsWith(needle))

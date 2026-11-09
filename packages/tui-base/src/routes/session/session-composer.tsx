@@ -127,12 +127,15 @@ export type SessionComposerProps = {
 	/** Slash palette enter path: true = the line was a command (harmless
 	 * unknowns included) — the composer clears its buffer, no send/steer. */
 	interceptSubmit?: (buffer: string) => boolean
-	/** Slash Tab completion (bash-style). undefined = Tab is not ours and
-	 * falls through to the textarea's native handling (plain text, argument
-	 * phase, mid-token caret). A returned value ALWAYS consumes Tab —
-	 * `text === buffer` is the "no matches, do nothing" consume, so a literal
-	 * tab can never reach the editor on a slash-name line. */
-	slashComplete?: (buffer: string) => { text: string; cursor: number } | undefined
+	/** Slash Tab completion (fish-style). `cursor` is the caret as a
+	 * code-unit index into `buffer` (converted from the textarea's
+	 * `cursorOffset`, which is a DISPLAY-cell offset — see completeKey).
+	 * undefined = Tab is not ours and falls through to the textarea's native
+	 * handling (plain text, argument phase, mid-token caret). A returned value
+	 * ALWAYS consumes Tab — `text === buffer` is the "no matches, do nothing"
+	 * consume, so a literal tab can never reach the editor on a slash-name
+	 * line. */
+	slashComplete?: (buffer: string, cursor: number) => { text: string; cursor: number } | undefined
 	/** Palette rows rendered above the textarea (inline palette host). */
 	slashPalette?: () => JSX.Element
 	/** Palette height contribution to the composer's explicit root height. */
@@ -203,6 +206,23 @@ export function SessionComposer(props: SessionComposerProps) {
 	})
 
 	const measure = (text: string) => measureEditText(text, { widthMethod: renderer.widthMethod })
+	/** Caret as a code-unit index into `text`, converted from the textarea's
+	 * DISPLAY-cell offset (`cursorOffset`; wide glyphs occupy two cells, so the
+	 * two diverge). The end position is exact (that is the guard's hot case);
+	 * a mid-token caret only needs to be recognisably not the end, so the
+	 * prefix walk may land on a code-point boundary (zero-width combining
+	 * marks stay attached). */
+	function cursorCharIndex(text: string, cursorOffset: number): number {
+		if (cursorOffset >= measure(text)) return text.length
+		let cells = 0
+		let index = 0
+		for (const char of text) {
+			if (cells >= cursorOffset) return index
+			cells += measure(char)
+			index += char.length
+		}
+		return text.length
+	}
 	const maxLines = () => props.maxHeight ?? 8
 
 	// Skin cursor: vertical bar (contract §1), blinking, from the user's
@@ -322,11 +342,17 @@ export function SessionComposer(props: SessionComposerProps) {
 	function completeKey(): boolean {
 		if (!textarea || textarea.isDestroyed) return false
 		const buffer = textarea.plainText
-		const result = props.slashComplete?.(buffer)
+		// `cursorOffset` is a DISPLAY-cell offset (CJK = 2 cells), the pure
+		// rule works in code units — convert so the mid-token guard sees the
+		// real caret instead of a fabricated buffer end.
+		const cursor = cursorCharIndex(buffer, textarea.cursorOffset)
+		const result = props.slashComplete?.(buffer, cursor)
 		if (result === undefined) return false
 		if (result.text !== buffer) {
 			textarea.setText(result.text)
-			textarea.cursorOffset = result.cursor
+			// The setter takes a display offset; result.cursor is a code-unit
+			// index, so measure the prefix it points at.
+			textarea.cursorOffset = measure(result.text.slice(0, result.cursor))
 			// The native setText mutation does not emit a content change, so
 			// the palette would otherwise stay on the pre-completion buffer.
 			props.slashSync?.(result.text)

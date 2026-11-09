@@ -22,6 +22,7 @@ import { createComponent, render } from "@opentui/solid"
 import { SessionComposer } from "../../src/routes/session/session-composer"
 import { createSlashHost, SlashPalette } from "../../src/routes/session/slash-palette"
 import type { SlashCommand } from "../../src/routes/session/commands"
+import { ComposerHistory } from "../../src/routes/session/composer-state"
 import { ConfigProvider, resolve } from "../../src/config"
 import { Keymap } from "../../src/context/keymap"
 
@@ -35,7 +36,9 @@ function findTextarea(node: any): any {
 	return undefined
 }
 
-async function mount(config: Record<string, unknown> = {}) {
+async function mount(
+	options: { config?: Record<string, unknown>; history?: string[]; gated?: boolean } = {},
+) {
 	const setup = await createTestRenderer({ width: 80, height: 16, useMouse: false })
 	const sent: string[] = []
 	const commands: SlashCommand[] = [
@@ -46,6 +49,8 @@ async function mount(config: Record<string, unknown> = {}) {
 		{ name: "/search", description: "search history", run: () => {} },
 		{ name: "/think", description: "reasoning effort", run: () => {} },
 	]
+	const history = new ComposerHistory()
+	for (const entry of options.history ?? []) history.append(entry)
 	const seam = { steer: (text: string) => sent.push(`steer:${text}`) } as any
 	const host = createSlashHost({
 		seam,
@@ -63,17 +68,21 @@ async function mount(config: Record<string, unknown> = {}) {
 				sent.push(text)
 				return Promise.resolve()
 			},
+			history: options.history ? history : undefined,
 			slashKeyFilter: host.slashKeyFilter,
 			slashSync: (buffer: string) => host.controller.sync(buffer, host.commands),
 			interceptSubmit: host.interceptSubmit,
-			slashComplete: host.slashComplete,
+			// `gated` mirrors the examples' approval/dialog gate: while a dialog
+			// owns the screen the composer passes NO completer (undefined = fall
+			// through, never steal the key).
+			slashComplete: options.gated ? undefined : host.slashComplete,
 			slashPalette: () => createComponent(SlashPalette, { controller: host.controller, commands: host.commands }),
 			slashHeight: () => host.controller.rows(),
 		})
 	render(
 		() =>
 			createComponent(ConfigProvider, {
-				config: resolve(config, { terminalSuspend: true }),
+				config: resolve(options.config ?? {}, { terminalSuspend: true }),
 				get children() {
 					return createComponent(Keymap.Provider, {
 						get children() {
@@ -98,6 +107,11 @@ async function mount(config: Record<string, unknown> = {}) {
 		setup.renderer.stdin.emit("data", Buffer.from(bytes))
 		await setup.flush()
 	}
+	/** Lone ESC is ambiguous to the parser until its timeout — wait it out. */
+	const pause = async () => {
+		await new Promise((resolve) => setTimeout(resolve, 150))
+		await setup.flush()
+	}
 	const state = () => ({
 		buffer: textarea.plainText as string,
 		cursor: textarea.cursorOffset as number,
@@ -106,10 +120,13 @@ async function mount(config: Record<string, unknown> = {}) {
 		sent: [...sent],
 		lastKey,
 	})
-	return { setup, write, state, textarea }
+	return { setup, write, pause, state, textarea }
 }
 
 const TAB = "\t"
+const ESC = "\x1b"
+const DOWN = "\x1b[B"
+const UP = "\x1b[A"
 const report: Record<string, unknown> = {}
 
 // 1. Unique match: Tab fills "/help " (trailing separator), the menu closes,
@@ -153,17 +170,16 @@ const report: Record<string, unknown> = {}
 	await m.setup.dispose()
 }
 
-// 5. Bash menu-complete: a full command name with prefix siblings cycles to
-//    the next candidate (no space, menu open), then finishes with the
-//    separator once the candidate set is unique.
+// 5. Exact full name (fish model): "/session" has a longer same-prefix sibling
+//    ("/sessions"), yet Tab lands on "/session " — the same command Enter
+//    runs. A second Tab is argument-phase native (not consumed, no drift).
 {
 	const m = await mount()
-	m.textarea.setText("/session")
-	m.textarea.cursorOffset = "/session".length
+	await m.write("/session")
 	await m.write(TAB)
-	report.cycle1 = m.state()
+	report.exactName = m.state()
 	await m.write(TAB)
-	report.cycle2 = m.state()
+	report.exactNameAgain = m.state()
 	await m.setup.dispose()
 }
 
@@ -183,6 +199,59 @@ const report: Record<string, unknown> = {}
 	await m.write(TAB)
 	await m.write(TAB)
 	report.afterComplete = m.state()
+	await m.setup.dispose()
+}
+
+// 8. Mid-token caret: "/help" with the caret between "e" and "l" + Tab must
+//    leave the buffer, the caret AND the menu untouched (the guard is live in
+//    the real wiring, not fed a fabricated buffer end). Tab falls through.
+{
+	const m = await mount()
+	await m.write("/help")
+	m.textarea.cursorOffset = 3
+	await m.setup.flush()
+	await m.write(TAB)
+	report.midToken = m.state()
+	await m.setup.dispose()
+}
+
+// 9. Approval/dialog gate (examples wiring): a dialog owning the screen means
+//    NO completer is passed, so Tab is not consumed and nothing is rewritten.
+{
+	const m = await mount({ gated: true })
+	await m.write("/he")
+	await m.write(TAB)
+	report.gated = m.state()
+	await m.setup.dispose()
+}
+
+// 10. Esc closes the menu; Tab must then fall back to the first candidate
+//     (documented behavior) — the now-invisible highlight is NOT consulted.
+{
+	const m = await mount()
+	await m.write("/se")
+	await m.write(DOWN) // highlight /sessions (index 1)
+	await m.write(ESC) // close the menu, buffer untouched
+	await m.pause()
+	await m.write(TAB)
+	report.escThenTab = m.state()
+	await m.setup.dispose()
+}
+
+// 11. History recall writes the buffer without a content change; the host
+//     re-syncs before deciding. Stale state would pick the pre-recall query's
+//     highlight; the fresh state picks index 1 of "/" (now "/model").
+{
+	const m = await mount({ history: ["/"] })
+	await m.write("/se")
+	await m.write(DOWN) // stale highlight: /sessions (index 1)
+	await m.write(ESC)
+	await m.pause()
+	await m.write(UP) // recall "/" (palette closed → history owns ↑)
+	m.textarea.cursorOffset = 1 // recall lands at 0; complete from the end
+	await m.setup.flush()
+	await m.write(TAB)
+	report.recallThenTab = m.state()
 	await m.setup.dispose()
 }
 

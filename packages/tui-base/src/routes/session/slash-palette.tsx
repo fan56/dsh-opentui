@@ -74,7 +74,7 @@ export class SlashPaletteController {
 			this.#lastBuffer = buffer
 			this.#suppressed = false
 		}
-		const next = buffer.startsWith("/") && !buffer.includes(" ") ? buffer : ""
+		const next = buffer.startsWith("/") && !/\s/.test(buffer) ? buffer : ""
 		this.#query[1](next)
 		if (!next || this.#suppressed) {
 			this.#rows[1](0)
@@ -268,21 +268,26 @@ export function createSlashHost(deps: {
 		commands,
 		controller,
 		/**
-		 * Tab completion (./slash-complete.ts). undefined = Tab is not ours
-		 * (plain text / argument phase / mid-token caret) and must fall
-		 * through to the textarea's native handling. A returned value always
-		 * consumes Tab — `text === buffer` is the "no matches, do nothing"
-		 * consume (the literal tab never lands in the editor).
+		 * Tab completion (./slash-complete.ts). `cursor` is the caret as a
+		 * code-unit index into `buffer`; undefined = Tab is not ours (plain
+		 * text / argument phase / mid-token caret) and must fall through to
+		 * the textarea's native handling. A returned value always consumes
+		 * Tab — `text === buffer` is the "no matches, do nothing" consume
+		 * (the literal tab never lands in the editor).
+		 *
+		 * Re-syncs before deciding: a history recall writes the buffer with
+		 * `setText` (no content change, so no `slashSync`), leaving the
+		 * controller on the pre-recall query/selection. The sync makes the
+		 * highlight read below describe the buffer being completed.
 		 *
 		 * The highlighted row is only consulted while the menu is actually
 		 * open: after Esc the controller is suppressed, so the pure rule falls
 		 * back to the first candidate instead of an invisible highlight.
 		 */
-		slashComplete(buffer: string): { text: string; cursor: number } | undefined {
+		slashComplete(buffer: string, cursor: number): { text: string; cursor: number } | undefined {
+			controller.sync(buffer, commands)
 			const selected = controller.open ? controller.current(commands)?.name : undefined
-			const result = completeSlash(buffer, buffer.length, commands, selected === undefined ? {} : { selected })
-			if (result === undefined) return undefined
-			return { text: result.text, cursor: result.cursor }
+			return completeSlash(buffer, cursor, commands, selected === undefined ? {} : { selected })
 		},
 		slashKeyFilter(event: KeyEvent, buffer: string): boolean {
 			controller.sync(buffer, commands)
