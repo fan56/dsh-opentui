@@ -360,22 +360,81 @@ export const ACTIVITY_FRAME_BORDER_FALLBACK = "#fab283"
  * (#fab283); 300/100 are the nearest neighbours. */
 const ACTIVITY_ORANGE_STEPS = [200, 100, 300, 400, 500, 600, 700] as const
 
-/** True when a swatch reads orange (red > green > blue, with real spread) —
- * the resolved theme exposes categorical hue scales but names only the three
- * semantic ones, so the orange family is identified by its color. */
+/**
+ * The orange hue window in degrees. Orange sits around 30°; the 20° floor
+ * keeps coral red (~16°) and pure red (~4°) out of the family, the 45° cap
+ * keeps yellow (~54°) out. The resolved theme carries no categorical hue
+ * NAMES (resolve.ts maps them to scales and drops the labels), so the family
+ * is identified by COLOR as the fallback; a name-priority path is impossible
+ * at this layer. The saturation floor rejects near-gray swatches whose
+ * numeric hue lands in range but which are not visually orange.
+ */
+const ORANGE_HUE_MIN = 20
+const ORANGE_HUE_MAX = 45
+const ORANGE_MIN_SATURATION = 0.25
+
+/** The two contrast poles the fill walk can blend toward. */
+const AUTO_POLE_LIGHT = "#ffffff"
+const AUTO_POLE_DARK = "#000000"
+
+/** True when a swatch reads orange — hue angle inside the orange window, with
+ * a saturation floor so near-gray swatches whose numeric hue happens to land
+ * in range are rejected. */
 function looksOrange(color: RGBA): boolean {
 	const [r, g, b] = colorRgb(color)
-	return r > g && g > b && r - b >= 40
+	const max = Math.max(r, g, b)
+	const delta = max - Math.min(r, g, b)
+	if (max === 0 || delta / max < ORANGE_MIN_SATURATION) return false
+	const hue = hueAngle(color)
+	return hue >= ORANGE_HUE_MIN && hue <= ORANGE_HUE_MAX
 }
 
-/** Deepen a fill toward black until it clears `min` against the surface
- * (light themes have no stock orange step dark enough for a 4.5:1 border). */
-function deepenUntilContrast(color: PowerlineColor, background: PowerlineColor, min = 4.5): string {
+/** HSL hue angle in degrees (0..360); achromatic swatches answer 0. */
+export function hueAngle(color: PowerlineColor): number {
+	const [r, g, b] = colorRgb(color)
+	const max = Math.max(r, g, b)
+	const min = Math.min(r, g, b)
+	const delta = max - min
+	if (delta === 0) return 0
+	const raw = max === r ? ((g - b) / delta) % 6 : max === g ? (b - r) / delta + 2 : (r - g) / delta + 4
+	return (raw * 60 + 360) % 360
+}
+
+/**
+ * Contrast-adjusted fill: the walked color, its measured contrast against the
+ * surface, and whether it cleared `min` (the assertion result, so callers and
+ * tests can verify the contract instead of trusting the loop).
+ */
+export interface ContrastAdjusted {
+	color: string
+	contrast: number
+	meetsContrast: boolean
+}
+
+/**
+ * Walk a fill AWAY from the surface until its contrast clears `min`
+ * (default 4.5:1): on a dark surface blend toward WHITE, on a light surface
+ * toward BLACK — the pole that maximizes contrast against the background.
+ * (The old one-way blend toward black made dark-surface borders muddier the
+ * harder it tried.) 8% steps, at most 32. The final contrast is RE-MEASURED
+ * after the walk and returned as `meetsContrast`; a mid-luminance surface
+ * where neither pole reaches `min` reports false with the best effort.
+ */
+export function boostUntilContrast(
+	color: PowerlineColor,
+	background: PowerlineColor,
+	min = 4.5,
+): ContrastAdjusted {
 	let candidate = typeof color === "string" ? color : mixPowerlineColor(color, "#000000", 0)
+	const pole =
+		contrastRatio(background, AUTO_POLE_LIGHT) >= contrastRatio(background, AUTO_POLE_DARK)
+			? AUTO_POLE_LIGHT
+			: AUTO_POLE_DARK
 	for (let i = 0; i < 32 && contrastRatio(candidate, background) < min; i++) {
-		candidate = mixPowerlineColor(candidate, "#000000", 0.08)
+		candidate = mixPowerlineColor(candidate, pole, 0.08)
 	}
-	return candidate
+	const contrast = contrastRatio(candidate, background)
+	return { color: candidate, contrast, meetsContrast: contrast >= min }
 }
 
 /**
@@ -385,9 +444,10 @@ function deepenUntilContrast(color: PowerlineColor, background: PowerlineColor, 
  * not the footer blue). The orange hue family comes from the theme's
  * categorical scales (orange[200] on dsh-blue dark = #fab283, 11.06:1 against
  * the #0a0a0f background), falling back to the warning feedback token when a
- * theme carries no orange scale; light surfaces deepen the orange until it
- * still clears 4.5:1. Static per the contract: border color/weight never
- * animate; the heavy line is chosen at render.
+ * theme carries no orange scale; a surface no stock step clears walks the
+ * fill AWAY from itself (toward white on dark, toward black on light) until
+ * the border still clears 4.5:1. Static per the contract: border color/weight
+ * never animate; the heavy line is chosen at render.
  */
 export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA {
 	const background = theme?.background?.base
@@ -402,16 +462,17 @@ export function activityFrameBorderColor(theme?: ComponentTheme): string | RGBA 
 		const preferred = candidates[0]!
 		if (!background) return preferred
 		if (contrastRatio(preferred, background) >= 4.5) return preferred
-		// No single stock step clears a light surface; take the most readable
-		// step, then deepen toward black until the contract holds.
+		// No single stock step clears the surface; take the most readable step,
+		// then walk away from the surface (white on dark, black on light)
+		// until the contract holds.
 		const best = candidates.reduce((a, b) => (contrastRatio(b, background) > contrastRatio(a, background) ? b : a))
 		if (contrastRatio(best, background) >= 4.5) return best
-		return deepenUntilContrast(preferred, background)
+		return boostUntilContrast(preferred, background).color
 	}
 	const warning = theme?.text?.feedback?.warning?.base
 	if (warning) {
 		if (!background || contrastRatio(warning, background) >= 4.5) return warning
-		return deepenUntilContrast(warning, background)
+		return boostUntilContrast(warning, background).color
 	}
 	return ACTIVITY_FRAME_BORDER_FALLBACK
 }

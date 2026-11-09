@@ -12,6 +12,8 @@ import {
 	ACTIVITY_FRAME_BORDER_FALLBACK,
 	ACTIVITY_FRAME_DEFER_MS,
 	activityFrameBorderColor,
+	boostUntilContrast,
+	hueAngle,
 	createFrameLatch,
 	frameLatchFire,
 	frameLatchNext,
@@ -445,9 +447,77 @@ describe("activity frame active border", () => {
 		expect(activityFrameBorderColor(warningTheme)).toBe(warningTheme.text.feedback.warning.base)
 
 		// Light theme: the stock orange[200] is too light against #fafafa, so
-		// the helper deepens it until the border still clears 4.5:1.
+		// the helper walks it away from the surface (toward black) until the
+		// border still clears 4.5:1.
 		const lightOrange = { "200": RGBA.fromHex("#d68c27"), "300": RGBA.fromHex("#df9a44") }
 		const picked = activityFrameBorderColor(themeWith(lightOrange, "#fafafa"))
 		expect(contrastRatio(picked, "#fafafa")).toBeGreaterThanOrEqual(4.5)
+	})
+
+	// Review 5: hue-angle identification. Coral red is r>g>b with real spread
+	// (the old test matched it as "orange"), but its hue (~16°) sits outside
+	// the orange window; the resolved theme drops categorical hue NAMES, so
+	// color (hue angle) is the fallback and must at least not misclassify.
+	test("hue angle separates orange from coral red and achromatic swatches", () => {
+		expect(hueAngle(RGBA.fromHex("#fab283"))).toBeGreaterThan(20) // warm orange: ~23.7°
+		expect(hueAngle(RGBA.fromHex("#fab283"))).toBeLessThan(45)
+		expect(hueAngle(RGBA.fromHex("#ff7f50"))).toBeLessThan(20) // coral: ~16.1°
+		expect(hueAngle(RGBA.fromHex("#f44336"))).toBeLessThan(20) // red: ~4.1°
+		expect(hueAngle(RGBA.fromHex("#ffeb3b"))).toBeGreaterThan(45) // yellow: ~53.9°
+		expect(hueAngle(RGBA.fromHex("#808080"))).toBe(0) // achromatic
+	})
+
+	test("a coral-red categorical scale is not mistaken for the orange family", () => {
+		const coral = { "500": RGBA.fromHex("#ff7f50"), "200": RGBA.fromHex("#ff9a7a") }
+		const theme = themeWith(coral, "#0a0a0f")
+		// No orange scale found → the warning feedback token (it clears 4.5:1).
+		expect(activityFrameBorderColor(theme)).toBe(theme.text.feedback.warning.base)
+	})
+})
+
+/**
+ * Review 2.2: the contrast walk is bidirectional. The old one-way blend
+ * toward black made an under-contrast border muddier on a DARK surface; the
+ * walk now goes toward white on dark surfaces and black on light ones, and
+ * the final contrast is re-measured and reported as an assertion result.
+ */
+describe("contrast walk (bidirectional)", () => {
+	test("dark surface: an under-contrast fill walks toward WHITE, not black", () => {
+		const bg = "#0a0a0f"
+		const deepOrange = "#6a3a00"
+		expect(contrastRatio(deepOrange, bg)).toBeLessThan(4.5)
+		const result = boostUntilContrast(deepOrange, bg)
+		expect(result.meetsContrast).toBe(true)
+		expect(result.contrast).toBeGreaterThanOrEqual(4.5)
+		const [r, g, b] = colorRgb(result.color)
+		// Brightened, not darkened: every channel moved up (toward white).
+		expect(r).toBeGreaterThan(0x6a)
+		expect(g).toBeGreaterThan(0x3a)
+		expect(b).toBeGreaterThan(0)
+	})
+
+	test("light surface: an under-contrast fill walks toward BLACK", () => {
+		const bg = "#fafafa"
+		const lightOrange = "#f5c98a"
+		expect(contrastRatio(lightOrange, bg)).toBeLessThan(4.5)
+		const result = boostUntilContrast(lightOrange, bg)
+		expect(result.meetsContrast).toBe(true)
+		expect(result.contrast).toBeGreaterThanOrEqual(4.5)
+		const [r] = colorRgb(result.color)
+		expect(r).toBeLessThan(0xf5)
+	})
+
+	test("reports meetsContrast=false when neither pole can reach the floor", () => {
+		// Mid-gray surface: white tops out ~3.95, black ~5.28 — a 10:1 floor is
+		// unreachable, so the assertion result says so instead of lying.
+		const result = boostUntilContrast("#8a8a8a", "#808080", 10)
+		expect(result.meetsContrast).toBe(false)
+		expect(result.contrast).toBeLessThan(10)
+	})
+
+	test("a fill already clearing the floor is returned untouched", () => {
+		const result = boostUntilContrast("#fab283", "#0a0a0f")
+		expect(result.meetsContrast).toBe(true)
+		expect(result.color).toBe("#fab283")
 	})
 })
