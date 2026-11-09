@@ -2,12 +2,12 @@
 // Regression: the deferred activity-frame latch under the REAL reactive
 // runtime (flicker mitigation 1, research/skin-flicker-analysis.md).
 //
-// Why a dedicated file with mock.module: under a bare `bun test`, the bare
-// specifier "solid-js" resolves to the cached server build, whose
-// createEffect is a no-op and whose untrack is a pass-through — the latch
-// then behaves "fine" in tests while the production client (bun --preload
-// @opentui/solid, which rewrites server.js to the real solid.js) runs the
-// real reactivity. 2554f8a shipped exactly that blind spot:
+// Why a dedicated file: before the [test].preload bunfig fix, a bare
+// `bun test` resolved the bare specifier "solid-js" to the cached server
+// build, whose createEffect is a no-op and whose untrack is a pass-through
+// — the latch then behaved "fine" in tests while the production client (bun
+// --preload @opentui/solid, which rewrites server.js to the real solid.js)
+// ran the real reactivity. 2554f8a shipped exactly that blind spot:
 //
 //   createEffect(() => activityFrameLatch.push(turnActive()))   // dock body
 //   push: frameLatchNext(latch(), target) ... setLatch(next.latch)
@@ -19,24 +19,24 @@
 // app the render layer swallows it and the latch never leaves `pending`:
 // the activity frame never mounts (the 2554f8a regression this file pins).
 //
-// This file mocks "solid-js" to the real dist/solid.js BEFORE importing the
-// dock, so createFrameLatch and the driver effect share one reactive module.
+// With bunfig [test].preload in place the test runner loads the real
+// runtime, so this file imports "solid-js" plainly — the dock's
+// createFrameLatch and the driver effect below share one reactive module,
+// and the `expect(runs).toBe(1)` assertion doubles as a guard: under a
+// no-op server build the effect never runs and the test goes red.
 // ---------------------------------------------------------------------------
-import { describe, expect, mock, test } from "bun:test"
-
-const real = await import("../node_modules/solid-js/dist/solid.js")
-mock.module("solid-js", () => real)
-
-const { createFrameLatch } = await import("../src/routes/session/widgets-dock")
+import { describe, expect, test } from "bun:test"
+import { createEffect, createSignal } from "solid-js"
+import { createFrameLatch } from "../src/routes/session/widgets-dock"
 
 describe("deferred activity frame latch — real reactive runtime (regression 2554f8a)", () => {
 	const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 	test("createEffect-driven push terminates and defers (no feedback loop)", async () => {
 		const latch = createFrameLatch(10)
-		const [busy, setBusy] = real.createSignal(false)
+		const [busy, setBusy] = createSignal(false)
 		let runs = 0
-		real.createEffect(() => {
+		createEffect(() => {
 			runs += 1
 			latch.push(busy())
 		})

@@ -37,8 +37,9 @@ jobs:
             writeFileSync(dir + "/index.js",
               "export const installConnection = () => { throw new Error(\"CI stub: @deepseek-ai/dsh-client-connection needs a global dsh install\"); };\n");
           '
-      # bun reads bunfig.toml from the cwd, and each package preloads the
-      # opentui solid compiler there — run the suite per package, not at root.
+      # bun reads bunfig.toml from the cwd, and bun test only honors the
+      # [test] section's preload (the @opentui/solid real-runtime loader, see
+      # each package's bunfig.toml) — run the suite per package, not at root.
       - run: for p in packages/*/; do (cd "$p" && bun test); done
       # Real-boot E2E (e2e-client.mjs, the client topology gate) is not a CI
       # step: it needs a global dsh + tmux + provider keys. The release gate

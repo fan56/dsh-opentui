@@ -77,8 +77,21 @@ for p in packages/*/; do (cd "$p" && bun test); done   # tests, per package
 npx pnpm@10.18.3 -r typecheck
 ```
 
-Note: each package carries its own `bunfig.toml` (the @opentui/solid preload)
-— bun only reads the CWD's bunfig, so run tests per package, not at root.
+Note on the @opentui/solid preload and bunfig scope:
+
+- bun only reads the `bunfig.toml` in the CWD, and **`bun test` only honors
+  the `[test]` section's `preload`** (the top-level `preload` covers `bun
+  run` only — on bun 1.4.x it is ignored by the test runner). Every package
+  therefore carries both in its `bunfig.toml`; without `[test].preload`,
+  `bun test` resolves `"solid-js"` to the SSR build (`dist/server.js`, no-op
+  `createEffect`) and reactive tests pass vacuously. Run tests per package
+  (the loop above, same as CI).
+- A bare `bun test` from the repo root also gets the real runtime (root
+  `bunfig.toml` carries `[test].preload`), but it runs all packages in ONE
+  process, so cross-package module singletons can contaminate each other
+  (e.g. shell's session-seam-adapter wires tui-base's steer slot with no
+  reset API). Per-package runs are the supported gate; a root run is for
+  quick iteration only and is expected to show that one steer-slot failure.
 
 To rebuild the client bundle that `prepack` ships: `bun scripts/build-client.mjs`.
 
