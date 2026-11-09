@@ -10,6 +10,9 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { listAgentFiles, parseAgentMarkdown, setAgentField, updateAgentFrontmatter } from "../src/client/remote-local-fs.ts"
+import { RemoteHostSession } from "../src/client/remote-host-session.ts"
+import type { ClientConnection } from "../src/client/transport.ts"
+import { FakeConnection, FakeMuxSocket } from "./client-fakes.ts"
 import {
 	composeAgentValues,
 	commitAgentModelEdit,
@@ -260,5 +263,133 @@ describe("partial frontmatter payload (B1)", () => {
 		expect(readFileSync(file, "utf8")).toBe(
 			"---\nname: reviewer\nmodel: base/m\ndeep: 2\n---\n\nBody\n",
 		)
+	})
+})
+
+describe("limits keys: maxRounds / background (registry parity)", () => {
+	test("parse: positive integer + strict boolean; absent stays undefined", () => {
+		const home = scratch()
+		const valid = writeAgent(home, "v.md", "---\nname: v\nmaxRounds: 12\nbackground: true\n---\n")
+		expect(parseAgentMarkdown(readFileSync(valid, "utf8"), valid)).toMatchObject({
+			ok: true,
+			agent: { maxRounds: 12, background: true },
+		})
+		const off = writeAgent(home, "off.md", "---\nname: off\nbackground: false\n---\n")
+		expect(parseAgentMarkdown(readFileSync(off, "utf8"), off)).toMatchObject({ ok: true, agent: { background: false } })
+		const none = writeAgent(home, "none.md", "---\nname: none\n---\n")
+		const parsed = parseAgentMarkdown(readFileSync(none, "utf8"), none)
+		expect(parsed.ok).toBe(true)
+		if (parsed.ok) {
+			expect(parsed.agent.maxRounds).toBeUndefined()
+			expect(parsed.agent.background).toBeUndefined()
+		}
+	})
+
+	test("parse: 0 maxRounds and a non-boolean background are broken files", () => {
+		const home = scratch()
+		const zero = writeAgent(home, "zero.md", "---\nname: zero\nmaxRounds: 0\n---\n")
+		const zeroResult = parseAgentMarkdown(readFileSync(zero, "utf8"), zero)
+		expect(zeroResult.ok).toBe(false)
+		if (!zeroResult.ok) expect(zeroResult.error).toContain("expected a positive integer")
+		const badBool = writeAgent(home, "bool.md", "---\nname: bool\nbackground: yes\n---\n")
+		const boolResult = parseAgentMarkdown(readFileSync(badBool, "utf8"), badBool)
+		expect(boolResult.ok).toBe(false)
+		if (!boolResult.ok) expect(boolResult.error).toContain("expected true or false")
+	})
+
+	test("setAgentField writes exact frontmatter lines and rejects 0 / non-boolean without touching the file", () => {
+		const home = scratch()
+		const path = writeAgent(home, "a.md", "---\nname: a\nmodel: m\n---\n\nbody\n")
+		const before = readFileSync(path, "utf8")
+		expect(setAgentField("a", "maxRounds", "0", home)).toBe('expected a positive integer, got "0"')
+		expect(setAgentField("a", "maxRounds", "-3", home)).toContain("expected a positive integer")
+		expect(setAgentField("a", "maxRounds", "lots", home)).toContain("expected a positive integer")
+		expect(setAgentField("a", "background", "yes", home)).toBe('expected true or false, got "yes"')
+		expect(readFileSync(path, "utf8")).toBe(before)
+
+		expect(setAgentField("a", "maxRounds", "12", home)).toBeUndefined()
+		expect(readFileSync(path, "utf8")).toBe("---\nname: a\nmodel: m\nmaxRounds: 12\n---\n\nbody\n")
+		expect(setAgentField("a", "background", "true", home)).toBeUndefined()
+		expect(readFileSync(path, "utf8")).toBe(
+			"---\nname: a\nmodel: m\nmaxRounds: 12\nbackground: true\n---\n\nbody\n",
+		)
+		expect(setAgentField("a", "background", "false", home)).toBeUndefined()
+		expect(readFileSync(path, "utf8")).toBe(
+			"---\nname: a\nmodel: m\nmaxRounds: 12\nbackground: false\n---\n\nbody\n",
+		)
+		expect(parseAgentMarkdown(readFileSync(path, "utf8"), path)).toMatchObject({
+			ok: true,
+			agent: { maxRounds: 12, background: false },
+		})
+	})
+
+	test("maxRounds null clears the line back to inherit", () => {
+		const home = scratch()
+		const path = writeAgent(home, "a.md", "---\nname: a\nmaxRounds: 12\n---\n\nbody\n")
+		expect(setAgentField("a", "maxRounds", null, home)).toBeUndefined()
+		expect(readFileSync(path, "utf8")).toBe("---\nname: a\n---\n\nbody\n")
+	})
+})
+
+describe("official subagent caps (settings ns subagent)", () => {
+	function makeSession(rpcHandler: (method: string) => unknown): { session: RemoteHostSession; connection: FakeConnection } {
+		const connection = new FakeConnection()
+		connection.rpcHandler = (method) => rpcHandler(method) as never
+		const session = new RemoteHostSession({
+			connection: connection as unknown as ClientConnection,
+			cookieHeader: "dsh-auth-x=v1.test",
+			cwd: "/tmp/workspace",
+			dshHome: scratch(),
+			socketFactory: () => new FakeMuxSocket(),
+		})
+		return { session, connection }
+	}
+
+	test("reads maxActiveSubagents/maxDepth from the subagent namespace", async () => {
+		const { session } = makeSession((method) => {
+			if (method === "settings/describe") {
+				return {
+					writable: true,
+					hasDocument: true,
+					namespaces: [{ ns: "subagent", revision: 3, value: { maxActiveSubagents: 8, maxDepth: 1 } }],
+				}
+			}
+			return {}
+		})
+		expect(await session.agentOfficialCaps()).toEqual({ maxActiveSubagents: 8, maxDepth: 1 })
+		await session.dispose()
+	})
+
+	test("absent namespace or fields resolve to {} - n/a, never guessed defaults", async () => {
+		const { session } = makeSession((method) => {
+			if (method === "settings/describe") {
+				return { writable: true, hasDocument: true, namespaces: [{ ns: "other", revision: 1, value: {} }] }
+			}
+			return {}
+		})
+		expect(await session.agentOfficialCaps()).toEqual({})
+		await session.dispose()
+
+		const partial = makeSession((method) => {
+			if (method === "settings/describe") {
+				return {
+					writable: true,
+					hasDocument: true,
+					namespaces: [{ ns: "subagent", revision: 2, value: { maxDepth: 2 } }],
+				}
+			}
+			return {}
+		})
+		expect(await partial.session.agentOfficialCaps()).toEqual({ maxDepth: 2 })
+		await partial.session.dispose()
+	})
+
+	test("a failing settings read yields {} instead of throwing", async () => {
+		const { session } = makeSession((method) => {
+			if (method === "settings/describe") throw new Error("no document")
+			return {}
+		})
+		expect(await session.agentOfficialCaps()).toEqual({})
+		await session.dispose()
 	})
 })

@@ -20,8 +20,16 @@
  *                          ("max depth N saved — takes effect when this agent
  *                          is spawned"), Esc returns with a status line.
  *
- * The limits layer (`l`, tui-pi B3) is a second phase: `l` paints a hint
- * line, it does not open a panel.
+ * The limits layer (`l`, tui-pi B3, adapted to the surfaces opentui actually
+ * consumes — see the row builder):
+ *   maxRounds      — the selected agent's frontmatter `maxRounds` (positive
+ *                    integer; empty/inherit = the global ladder)
+ *   background     — the selected agent's frontmatter `background` toggle
+ *   maxActiveSubagents / maxDepth — READ-ONLY official subagent plugin caps
+ *                    (settings ns `subagent`), `n/a` when the host does not
+ *                    serve them; Enter points at /settings.
+ * Zero agents: only the two official rows plus the empty-corpus hint, and
+ * Esc closes the manager instead of returning to the (absent) table.
  *
  * Rows ride the seam.agents face; the panel re-reads on every open and after
  * every successful write (no I/O in render callbacks). The keymap layer is
@@ -38,7 +46,7 @@ import { useDialog } from "../../ui/dialog"
 import { useThemeOptional } from "../../context/theme"
 import { warningColor } from "../../skin/semantic"
 import { stringWidth } from "../../util/string-width"
-import type { SeamAgentRow, SeamEffortOption, SessionSeam } from "../../seams/session"
+import type { SeamAgentOfficialCaps, SeamAgentRow, SeamEffortOption, SessionSeam } from "../../seams/session"
 
 const MARKER_W = 2
 const TABLE_SEP = " │ "
@@ -81,7 +89,15 @@ export interface PanelLine {
 	tone: PanelTone
 }
 
-export type PanelLevel = "table" | "fields" | "picker" | "effort" | "deep" | "viewer"
+export type PanelLevel =
+	| "table"
+	| "fields"
+	| "limits"
+	| "limitEdit"
+	| "picker"
+	| "effort"
+	| "deep"
+	| "viewer"
 
 function padCell(text: string, width: number, align: "left" | "right" = "left"): string {
 	const clipped = clipText(text, width)
@@ -131,6 +147,7 @@ export function agentTableLines(
 	cursor: number,
 	width: number,
 	status?: string,
+	broken = 0,
 ): PanelLine[] {
 	const lines: PanelLine[] = [{ text: clipText("● Agents", width), tone: "accent" }]
 	const widths = agentTableWidths(rows, width)
@@ -157,6 +174,7 @@ export function agentTableLines(
 		}
 	}
 	lines.push({ text: rule(widths, "┴"), tone: "subtle" })
+	if (broken > 0) lines.push({ text: clipText(brokenLine(broken), width), tone: "muted" })
 	if (status !== undefined) lines.push({ text: clipText(status, width), tone: "attention" })
 	lines.push({ text: "", tone: "subtle" })
 	const overflow = rows.length > MAX_VISIBLE ? ` (${cursor + 1}/${rows.length})` : ""
@@ -169,15 +187,15 @@ export function agentTableLines(
 
 /**
  * The zero-agent state: the spec copy names the REAL corpus directory, and
- * the footer keeps the `l` hint reachable (the limits entry is a no-op
- * until phase 2, but it must respond on an empty corpus).
+ * the footer keeps `l` (limits) reachable on an empty corpus.
  */
-export function agentEmptyLines(dir: string, width: number, status?: string): PanelLine[] {
+export function agentEmptyLines(dir: string, width: number, status?: string, broken = 0): PanelLine[] {
 	const lines: PanelLine[] = [
 		{ text: clipText("● Agents", width), tone: "accent" },
 		{ text: "", tone: "subtle" },
 		{ text: clipText(`no agents in ${dir} yet — drop a markdown file to define one`, width), tone: "muted" },
 	]
+	if (broken > 0) lines.push({ text: clipText(brokenLine(broken), width), tone: "muted" })
 	if (status !== undefined) {
 		lines.push({ text: "", tone: "subtle" })
 		lines.push({ text: clipText(status, width), tone: "attention" })
@@ -231,6 +249,113 @@ export function agentFieldLines(agent: SeamAgentRow, cursor: number, width: numb
 	lines.push({ text: "", tone: "subtle" })
 	lines.push({
 		text: clipText("↑↓ field · Enter edit (m model · t think · d deep) · v full prompt · Esc back", width),
+		tone: "subtle",
+	})
+	return lines
+}
+
+/** The corpus-level broken-file notice (table + limits layers both print it). */
+export function brokenLine(count: number): string {
+	return `${count} broken file(s) ignored`
+}
+
+/** One limits-layer row: key, value phrase, and whether Enter edits it. */
+export interface AgentLimitsRow {
+	key: "maxRounds" | "background" | "maxActiveSubagents" | "maxDepth"
+	editable: boolean
+	value: string
+}
+
+const LIMIT_DESCRIPTIONS: Record<AgentLimitsRow["key"], string> = {
+	maxRounds: "assistant messages before wrap-up",
+	background: "run this agent in background sessions",
+	maxActiveSubagents: "official concurrent-children cap (subagent plugin)",
+	maxDepth: "official delegation depth (subagent plugin)",
+}
+
+/** The limits rows in FIXED order. The two official caps are always there;
+ * the per-agent rows exist only when an agent is selected (zero corpus →
+ * official caps + empty hint). Unreadable official caps render `n/a`. */
+export function agentLimitsRows(agent: SeamAgentRow | undefined, caps: SeamAgentOfficialCaps | undefined): AgentLimitsRow[] {
+	const rows: AgentLimitsRow[] = []
+	if (agent !== undefined) {
+		rows.push({
+			key: "maxRounds",
+			editable: true,
+			value: agent.maxRounds === undefined ? INHERIT : String(agent.maxRounds),
+		})
+		rows.push({ key: "background", editable: true, value: agent.background === true ? "on" : "off" })
+	}
+	rows.push({
+		key: "maxActiveSubagents",
+		editable: false,
+		value: caps?.maxActiveSubagents === undefined ? "n/a" : String(caps.maxActiveSubagents),
+	})
+	rows.push({
+		key: "maxDepth",
+		editable: false,
+		value: caps?.maxDepth === undefined ? "n/a" : String(caps.maxDepth),
+	})
+	return rows
+}
+
+/** Esc target in the limits layer: the table when agents exist, the whole
+ * manager when the corpus is empty (there is no table to go back to). */
+export function limitsEscapeTarget(validAgentCount: number): "table" | "close" {
+	return validAgentCount === 0 ? "close" : "table"
+}
+
+export interface AgentLimitsOptions {
+	/** Selected agent (undefined = zero-agent corpus). */
+	agent?: SeamAgentRow
+	caps?: SeamAgentOfficialCaps
+	cursor: number
+	width: number
+	/** Broken files in the corpus (`0 broken file(s) ignored` is hidden). */
+	broken?: number
+	/** The corpus directory the zero-agent hint names. */
+	dir?: string
+	status?: string
+}
+
+/** The limits layer as rendered lines (title + target agent + FIELD/VALUE
+ * table + broken notice + status + footer). Pure — the panel test asserts
+ * row order, copy and the read-only affordance. */
+export function agentLimitsLines(options: AgentLimitsOptions): PanelLine[] {
+	const { agent, caps, cursor, width } = options
+	const broken = options.broken ?? 0
+	const lines: PanelLine[] = [{ text: clipText("⚙ Limits", width), tone: "accent" }]
+	if (agent !== undefined) lines.push({ text: clipText(`target: ${agentName(agent)}`, width), tone: "muted" })
+	else {
+		lines.push({
+			text: clipText(`no agents in ${options.dir ?? "$DSH_HOME/agents"} yet — drop a markdown file to define one`, width),
+			tone: "muted",
+		})
+	}
+	lines.push({ text: "", tone: "subtle" })
+	const rows = agentLimitsRows(agent, caps)
+	const keyWidth = Math.max(...rows.map((row) => stringWidth(row.key)), 1)
+	const widths = [keyWidth, Math.max(8, width - MARKER_W - keyWidth - TABLE_SEP.length)]
+	lines.push({ text: rule(widths, "┬"), tone: "subtle" })
+	lines.push({ text: headerLine(["Field", "Value"], widths, ["left", "left"]), tone: "subtle" })
+	lines.push({ text: rule(widths, "┼"), tone: "subtle" })
+	for (let i = 0; i < rows.length; i++) {
+		const row = rows[i]!
+		const selected = i === cursor
+		const value = `${row.value} · ${LIMIT_DESCRIPTIONS[row.key]}`
+		const valueCell = padCell(row.editable ? `✎ ${value}` : value, widths[1]!)
+		const text = clipText(`${selected ? "▸ " : "  "}${padCell(row.key, widths[0]!)}${TABLE_SEP}${valueCell}`, width)
+		lines.push({ text, tone: selected ? "selected" : "muted" })
+	}
+	lines.push({ text: rule(widths, "┴"), tone: "subtle" })
+	if (broken > 0) lines.push({ text: clipText(brokenLine(broken), width), tone: "muted" })
+	if (options.status !== undefined) {
+		lines.push({ text: "", tone: "subtle" })
+		lines.push({ text: clipText(options.status, width), tone: "attention" })
+	}
+	lines.push({ text: "", tone: "subtle" })
+	lines.push({
+		text: clipText("↑↓ field · Enter edit · d toggle background · Esc back", width),
 		tone: "subtle",
 	})
 	return lines
@@ -321,6 +446,20 @@ export function parseDeepInput(text: string): DeepInputOutcome {
 	return { kind: "value", value: Number(trimmed) }
 }
 
+/** The same keep/error/value shape for the per-agent round cap. The value is
+ * a POSITIVE integer: the registry (the consumer of this key) rejects 0 and
+ * marks the file broken, so 0 must never be written. Empty = keep (inherit
+ * the global ladder). */
+export function parseMaxRoundsInput(text: string): DeepInputOutcome {
+	const trimmed = text.trim()
+	if (trimmed === "") return { kind: "keep" }
+	const value = Number(trimmed)
+	if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(value) || value < 1) {
+		return { kind: "error", error: `expected a positive integer, got "${trimmed}"` }
+	}
+	return { kind: "value", value }
+}
+
 /** The cursor index of an agent row for an exact `name` preselect (display
  * names never match - tui-pi parity); -1 when absent. */
 export function preselectAgentIndex(rows: readonly SeamAgentRow[], name: string | undefined): number {
@@ -408,17 +547,32 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	const [deepCommitted, setDeepCommitted] = createSignal(false)
 	const [viewerBody, setViewerBody] = createSignal("")
 	const [changed, setChanged] = createSignal<string[]>([])
+	const [limitsCursor, setLimitsCursor] = createSignal(0)
+	const [caps, setCaps] = createSignal<SeamAgentOfficialCaps | undefined>(undefined)
+	const [limitValue, setLimitValue] = createSignal("")
+	const [limitError, setLimitError] = createSignal<string | undefined>(undefined)
+	const [brokenCount, setBrokenCount] = createSignal(0)
 	let catcher: InputRenderable | undefined
 
 	const agent = createMemo(() => rows().find((row) => row.name === selectedName()))
 	const width = () => Math.max(20, dimensions().width - 4)
 
-	function readRows(): SeamAgentRow[] {
+	/** Every parsed row, broken files included (the caller splits them). */
+	function readAllRows(): SeamAgentRow[] {
 		try {
-			return props.seam.agents?.list().filter((row) => row.broken === undefined) ?? []
+			return props.seam.agents?.list() ?? []
 		} catch {
 			return []
 		}
+	}
+
+	/** Re-read the corpus; keeps the broken-file count for the notice. */
+	function reloadRows(): SeamAgentRow[] {
+		const all = readAllRows()
+		const valid = all.filter((row) => row.broken === undefined)
+		setRows(valid)
+		setBrokenCount(all.length - valid.length)
+		return valid
 	}
 
 	function markChanged(name: string) {
@@ -439,8 +593,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const preselected = bridgeOpen()
 		if (preselected === undefined) return
 		setBridgeOpen(undefined)
-		const next = readRows()
-		setRows(next)
+		const next = reloadRows()
 		setLevel("table")
 		setStatus(undefined)
 		setChanged([])
@@ -461,7 +614,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	})
 
 	function showTable() {
-		setRows(readRows())
+		reloadRows()
 		setLevel("table")
 		setStatus(undefined)
 	}
@@ -473,7 +626,91 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	}
 
 	function refreshRows() {
-		setRows(readRows())
+		reloadRows()
+	}
+
+	// ---- limits layer (l) ----
+	const limitsRows = createMemo(() => agentLimitsRows(agent(), caps()))
+
+	function showLimits() {
+		const row = rows()[tableCursor()]
+		setSelectedName(row?.name)
+		setLimitsCursor(0)
+		setLimitError(undefined)
+		setCaps(undefined)
+		setStatus(undefined)
+		setLevel("limits")
+		void loadOfficialCaps()
+	}
+
+	/** Official caps ride the host settings document; `n/a` until/unless read. */
+	async function loadOfficialCaps() {
+		let next: SeamAgentOfficialCaps = {}
+		try {
+			next = (await props.seam.agents?.officialCaps?.()) ?? {}
+		} catch {
+			next = {}
+		}
+		if (level() === "limits") setCaps(next)
+	}
+
+	function openMaxRoundsEditor() {
+		const current = agent()
+		if (current === undefined) return
+		setLimitValue(current.maxRounds === undefined ? "" : String(current.maxRounds))
+		setLimitError(undefined)
+		setLevel("limitEdit")
+	}
+
+	function toggleBackground() {
+		const current = agent()
+		const seam = props.seam.agents
+		if (current === undefined || seam === undefined) return
+		const next = current.background !== true
+		const result = seam.set(current.name, "background", next ? "true" : "false")
+		if (result.error !== undefined) {
+			setStatus(`✘ ${result.error}`)
+			return
+		}
+		setStatus(
+			next
+				? "background on — this agent runs in background sessions"
+				: "background off — foreground dispatch",
+		)
+		markChanged(current.name)
+		refreshRows()
+	}
+
+	function commitMaxRounds(text: string) {
+		const current = agent()
+		if (current === undefined) return
+		const parsed = parseMaxRoundsInput(text)
+		if (parsed.kind === "keep") {
+			setLimitError(undefined)
+			setLevel("limits")
+			return
+		}
+		if (parsed.kind === "error") {
+			setLimitError(parsed.error)
+			return
+		}
+		const seam = props.seam.agents
+		if (seam === undefined) return
+		const result = seam.set(current.name, "maxRounds", String(parsed.value))
+		if (result.error !== undefined) {
+			setLimitError(result.error)
+			return
+		}
+		setLimitError(undefined)
+		setStatus(`maxRounds → ${parsed.value} saved — applies to future subagent spawns`)
+		markChanged(current.name)
+		refreshRows()
+		setLevel("limits")
+	}
+
+	function leaveMaxRoundsEditor() {
+		setLimitError(undefined)
+		setLevel("limits")
 	}
 
 	async function openModelPicker() {
@@ -664,6 +901,11 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 					const current = level()
 					if (current === "table") close()
 					else if (current === "fields") showTable()
+					else if (current === "limits") {
+						// Zero corpus: there is no table to go back to.
+						if (limitsEscapeTarget(rows().length) === "close") close()
+						else showTable()
+					} else if (current === "limitEdit") leaveMaxRoundsEditor()
 					else if (current === "picker" || current === "effort") {
 						// Esc at either picker stage cancels the whole change.
 										setEfforts([])
@@ -716,6 +958,14 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 						if (model !== undefined) void chooseModel(model)
 					} else if (current === "effort") {
 						commitThinking()
+					} else if (current === "limits") {
+						const row = limitsRows()[limitsCursor()]
+						if (row === undefined) return
+						if (row.key === "maxRounds") openMaxRoundsEditor()
+						else if (row.key === "background") toggleBackground()
+						else setStatus("official subagent caps live in the subagent plugin entry — edit them in /settings")
+					} else if (current === "limitEdit") {
+						commitMaxRounds(limitValue())
 					} else if (current === "deep") {
 						commitDeep(deepValue())
 					} else if (current === "viewer") {
@@ -741,10 +991,12 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			},
 			{
 				bind: "d",
-				title: "Agents: spawn depth",
+				title: "Agents: spawn depth / background",
 				group: "Agents",
 				run: () => {
-					if (level() === "fields") openDeepEditor()
+					const current = level()
+					if (current === "fields") openDeepEditor()
+					else if (current === "limits") toggleBackground()
 				},
 			},
 			{
@@ -757,11 +1009,11 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			},
 			{
 				bind: "l",
-				title: "Agents: limits (next phase)",
+				title: "Agents: limits",
 				group: "Agents",
 				run: () => {
 					if (level() !== "table") return
-					setStatus("limits panel — next phase")
+					showLimits()
 				},
 			},
 		],
@@ -782,6 +1034,10 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		} else if (current === "effort") {
 			const count = efforts().length + 1
 			setEffortCursor((index) => Math.max(0, Math.min(count - 1, index + delta)))
+		} else if (current === "limits") {
+			const count = limitsRows().length
+			if (count === 0) return
+			setLimitsCursor((index) => Math.max(0, Math.min(count - 1, index + delta)))
 		}
 	}
 
@@ -789,18 +1045,47 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const current = level()
 		if (current === "table") {
 			if (rows().length === 0) {
-				return agentEmptyLines(props.seam.agents?.dir?.() ?? "$DSH_HOME/agents", width(), status())
+				return agentEmptyLines(
+					props.seam.agents?.dir?.() ?? "$DSH_HOME/agents",
+					width(),
+					status(),
+					brokenCount(),
+				)
 			}
-			return agentTableLines(rows(), tableCursor(), width(), status())
+			return agentTableLines(rows(), tableCursor(), width(), status(), brokenCount())
 		}
 		if (current === "fields") {
 			const row = agent()
 			return row === undefined ? [] : agentFieldLines(row, fieldCursor(), width(), status())
 		}
+		if (current === "limits") {
+			return agentLimitsLines({
+				agent: agent(),
+				caps: caps(),
+				cursor: limitsCursor(),
+				width: width(),
+				broken: brokenCount(),
+				dir: props.seam.agents?.dir?.(),
+				status: status(),
+			})
+		}
 		if (current === "picker") return agentPickerLines(models(), pickerCursor(), width())
 		if (current === "effort") return agentEffortLines(efforts(), effortCursor(), width())
 		if (current === "viewer") {
 			return agentViewerLines(agent()?.displayName ?? agent()?.name ?? "", viewerBody(), width())
+		}
+		if (current === "limitEdit") {
+			const currentAgent = agent()
+			const out: PanelLine[] = [
+				{ text: clipText(`Max rounds — ${currentAgent ? agentName(currentAgent) : ""}`, width()), tone: "accent" },
+				{ text: clipText("positive integer · empty = inherit the global cap", width()), tone: "muted" },
+			]
+			if (limitError() !== undefined) out.push({ text: clipText(`✘ ${limitError()}`, width()), tone: "attention" })
+			out.push({ text: "", tone: "subtle" })
+			out.push({ text: clipText(`> ${limitValue()}`, width()), tone: "accent" })
+			out.push({ text: "", tone: "subtle" })
+			out.push({ text: clipText("Enter save · Esc back", width()), tone: "subtle" })
+			return out
 		}
 		// deep editor
 		const currentAgent = agent()
@@ -860,7 +1145,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 					)}
 				</For>
 				<Show
-					when={level() === "deep"}
+					when={level() === "deep" || level() === "limitEdit"}
 					fallback={
 						<box height={1} flexShrink={0}>
 							<input
@@ -880,9 +1165,12 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 					<box height={1} flexShrink={0} flexDirection="row">
 						<input
 							flexGrow={1}
-							value={deepValue()}
-							onInput={(value: string) => setDeepValue(value)}
-							onSubmit={() => commitDeep(deepValue())}
+							value={level() === "deep" ? deepValue() : limitValue()}
+							onInput={(value: string) => {
+								if (level() === "deep") setDeepValue(value)
+								else setLimitValue(value)
+							}}
+							onSubmit={() => (level() === "deep" ? commitDeep(deepValue()) : commitMaxRounds(limitValue()))}
 							ref={(renderable: InputRenderable) => {
 								catcher = renderable
 								setTimeout(() => {

@@ -1361,21 +1361,48 @@ export class RemoteHostSession {
 	/**
 	 * Edit one agent field (null = clear back to inherit). `model`/`thinking`
 	 * land in the pinned profile's `agents[name]` entry when the workspace
-	 * pin resolves, else in the frontmatter; `deep` always edits the
-	 * frontmatter.
+	 * pin resolves, else in the frontmatter; `deep`, `maxRounds` and
+	 * `background` always edit the frontmatter (profiles only override
+	 * model/thinking — registry composition parity).
 	 */
 	agentSet(
 		name: string,
-		field: "model" | "thinking" | "deep",
+		field: "model" | "thinking" | "deep" | "maxRounds" | "background",
 		value: string | null,
 	): { target: AgentEditTarget; error?: string } {
-		if (field === "deep") {
-			const error = setAgentField(name, "deep", value, this.#dshHome)
+		if (field === "deep" || field === "maxRounds" || field === "background") {
+			const error = setAgentField(name, field, value, this.#dshHome)
 			return { target: { kind: "frontmatter" }, ...(error !== undefined ? { error } : {}) }
 		}
 		const row = this.listAgents().find((agent) => agent.name === name && agent.broken === undefined)
 		if (row === undefined) return { target: { kind: "frontmatter" }, error: `agent "${name}" not found` }
 		return commitAgentModelEdit(this.#dshHome, this.#workspaceDir, row.file, name, { [field]: value })
+	}
+
+	/**
+	 * The official subagent plugin's static caps (settings ns `subagent`:
+	 * `maxActiveSubagents` / `maxDepth`). Fields the host does not serve stay
+	 * absent — the panel prints `n/a` rather than a guessed default.
+	 */
+	async agentOfficialCaps(): Promise<{ maxActiveSubagents?: number; maxDepth?: number }> {
+		const caps: { maxActiveSubagents?: number; maxDepth?: number } = {}
+		try {
+			const rows = await this.settingsDescribe()
+			const ns = rows.find((row) => row.ns === "subagent")
+			const value = ns?.value
+			if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+				const record = value as Record<string, unknown>
+				if (typeof record.maxActiveSubagents === "number" && Number.isFinite(record.maxActiveSubagents)) {
+					caps.maxActiveSubagents = record.maxActiveSubagents
+				}
+				if (typeof record.maxDepth === "number" && Number.isFinite(record.maxDepth)) {
+					caps.maxDepth = record.maxDepth
+				}
+			}
+		} catch {
+			/* no settings document / namespace: n/a */
+		}
+		return caps
 	}
 
 	/** The system prompt body (markdown after the frontmatter fence). */

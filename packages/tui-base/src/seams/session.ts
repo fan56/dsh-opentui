@@ -268,9 +268,21 @@ export interface SeamAgentRow {
 	model?: string
 	thinking?: string
 	deep: number
+	/** Per-agent round cap (registry `maxRounds`, positive integer); absent =
+	 * inherit the global ladder. 0 is not a valid value on this surface. */
+	maxRounds?: number
+	/** Registry `background` dispatch flag (absent = false). */
+	background?: boolean
 	file: string
 	pin?: string
 	broken?: string
+}
+
+/** The official subagent plugin's caps (settings ns `subagent`); absent
+ * fields mean the host did not serve them — render `n/a`, never a guess. */
+export interface SeamAgentOfficialCaps {
+	maxActiveSubagents?: number
+	maxDepth?: number
 }
 
 /** Where a model/thinking edit landed (drives the scope note). */
@@ -426,12 +438,20 @@ export interface SessionSeam {
 		/** The agents corpus directory (the empty state names it). Optional —
 		 * a seam without it falls back to `<DSH_HOME>/agents`. */
 		dir?(): string
-		/** `null` clears the key (inherit). Deep must be a non-negative integer. */
-		set(name: string, field: "model" | "thinking" | "deep", value: string | null): SeamAgentSetResult
+		/** `null` clears the key (inherit). Deep must be a non-negative integer;
+		 * maxRounds a positive integer; background `"true"`/`"false"`. */
+		set(
+			name: string,
+			field: "model" | "thinking" | "deep" | "maxRounds" | "background",
+			value: string | null,
+		): SeamAgentSetResult
 		/** System prompt body (markdown after the frontmatter fence). */
 		body(name: string): string
 		/** The model's real reasoning-effort ladder ([] when none). */
 		modelEfforts(providerID: string, modelID: string): Promise<SeamEffortOption[]>
+		/** Official subagent plugin caps (settings ns `subagent`). Optional —
+		 * a seam without it renders `n/a` on both limits rows. */
+		officialCaps?(): Promise<SeamAgentOfficialCaps>
 	}
 	/**
 	 * /login provider face (batch H4, tui-pi 65-ux-batch parity): the

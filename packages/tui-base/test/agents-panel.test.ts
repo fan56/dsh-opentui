@@ -9,12 +9,16 @@ import {
 	agentEffortLines,
 	agentEmptyLines,
 	agentFieldLines,
+	agentLimitsLines,
+	agentLimitsRows,
 	agentTableLines,
 	agentViewerLines,
 	agentsSummary,
 	beginPickerFlow,
 	effortCursorFor,
+	limitsEscapeTarget,
 	parseDeepInput,
+	parseMaxRoundsInput,
 	pickerCancel,
 	pickerSelectEffort,
 	pickerSelectModel,
@@ -143,6 +147,82 @@ describe("agents viewer + deep editor", () => {
 		expect(parseDeepInput("abc")).toEqual({ kind: "error", error: 'expected a non-negative integer, got "abc"' })
 		expect(parseDeepInput(" 3 ")).toEqual({ kind: "value", value: 3 })
 		expect(parseDeepInput("0")).toEqual({ kind: "value", value: 0 })
+	})
+})
+
+describe("limits layer (phase 2)", () => {
+	const agent: SeamAgentRow = {
+		name: "workhorse",
+		displayName: "Workhorse",
+		maxRounds: 12,
+		background: true,
+		deep: 1,
+		file: "/tmp/workhorse.md",
+	}
+
+	test("four rows in fixed order: per-agent caps then official caps", () => {
+		const rows = agentLimitsRows(agent, { maxActiveSubagents: 8, maxDepth: 1 })
+		expect(rows.map((row) => row.key)).toEqual(["maxRounds", "background", "maxActiveSubagents", "maxDepth"])
+		expect(rows.map((row) => row.editable)).toEqual([true, true, false, false])
+		expect(rows.map((row) => row.value)).toEqual(["12", "on", "8", "1"])
+	})
+
+	test("missing per-agent values show (inherit)/off; unreadable official caps show n/a", () => {
+		const bare: SeamAgentRow = { name: "bare", deep: 1, file: "/tmp/bare.md" }
+		const rows = agentLimitsRows(bare, undefined)
+		expect(rows[0]!.value).toBe("(inherit)")
+		expect(rows[1]!.value).toBe("off")
+		expect(rows[2]!.value).toBe("n/a")
+		expect(rows[3]!.value).toBe("n/a")
+	})
+
+	test("rendered lines carry the spec copy, the target agent and ✎ only on editable rows", () => {
+		const lines = agentLimitsLines({
+			agent,
+			caps: { maxActiveSubagents: 8, maxDepth: 1 },
+			cursor: 0,
+			width: 140,
+		})
+		expect(lines[0]!.text).toBe("⚙ Limits")
+		expect(lines[1]!.text).toBe("target: Workhorse")
+		const body = lines.filter((line) => line.text.startsWith("▸ ") || (line.text.startsWith("  ") && line.text.includes("·")))
+		const byKey = (key: string) => body.find((line) => line.text.includes(key))!.text
+		expect(byKey("maxRounds")).toContain("12 · assistant messages before wrap-up")
+		expect(byKey("maxRounds")).toContain("✎")
+		expect(byKey("background")).toContain("on · run this agent in background sessions")
+		expect(byKey("background")).toContain("✎")
+		expect(byKey("maxActiveSubagents")).toContain("8 · official concurrent-children cap (subagent plugin)")
+		expect(byKey("maxActiveSubagents")).not.toContain("✎")
+		expect(byKey("maxDepth")).toContain("1 · official delegation depth (subagent plugin)")
+		expect(byKey("maxDepth")).not.toContain("✎")
+		expect(lines.at(-1)!.text).toContain("d toggle background")
+	})
+
+	test("zero agents: only the two official rows plus the empty-corpus hint; Esc closes", () => {
+		const lines = agentLimitsLines({ caps: { maxActiveSubagents: 8, maxDepth: 1 }, cursor: 0, width: 140, dir: "/h/agents" })
+		const rows = agentLimitsRows(undefined, { maxActiveSubagents: 8, maxDepth: 1 })
+		expect(rows.map((row) => row.key)).toEqual(["maxActiveSubagents", "maxDepth"])
+		expect(rows.every((row) => !row.editable)).toBe(true)
+		expect(lines.some((line) => line.text.includes("no agents in /h/agents yet"))).toBe(true)
+		expect(lines.some((line) => line.text.includes("maxRounds"))).toBe(false)
+		expect(limitsEscapeTarget(0)).toBe("close")
+		expect(limitsEscapeTarget(2)).toBe("table")
+	})
+
+	test("broken files are reported in both layers", () => {
+		expect(agentTableLines(rows, 0, 140, undefined, 2).some((line) => line.text === "2 broken file(s) ignored")).toBe(true)
+		expect(agentEmptyLines("/h/agents", 140, undefined, 1).some((line) => line.text === "1 broken file(s) ignored")).toBe(true)
+		expect(
+			agentLimitsLines({ agent, cursor: 0, width: 140, broken: 3 }).some((line) => line.text === "3 broken file(s) ignored"),
+		).toBe(true)
+	})
+
+	test("maxRounds parse: keep on empty, positive integer only (0 breaks the registry)", () => {
+		expect(parseMaxRoundsInput("  ")).toEqual({ kind: "keep" })
+		expect(parseMaxRoundsInput(" 12 ")).toEqual({ kind: "value", value: 12 })
+		expect(parseMaxRoundsInput("0")).toEqual({ kind: "error", error: 'expected a positive integer, got "0"' })
+		expect(parseMaxRoundsInput("-1")).toMatchObject({ kind: "error" })
+		expect(parseMaxRoundsInput("abc")).toMatchObject({ kind: "error" })
 	})
 })
 

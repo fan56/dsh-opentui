@@ -90,6 +90,7 @@
 // batch-10 cutover adds the proper export; ADR-0006 direction shell →
 // tui-base is respected).
 import type {
+	SeamAgentOfficialCaps,
 	SeamAgentRow,
 	SeamAgentSetResult,
 	SeamAskPick,
@@ -445,13 +446,18 @@ export class RemoteSessionSeam implements SessionSeam {
 	agents = {
 		list: (): SeamAgentRow[] => this.#session.listAgents(),
 		dir: (): string => this.#session.agentsDir(),
-		set: (name: string, field: "model" | "thinking" | "deep", value: string | null): SeamAgentSetResult => {
+		set: (
+			name: string,
+			field: "model" | "thinking" | "deep" | "maxRounds" | "background",
+			value: string | null,
+		): SeamAgentSetResult => {
 			const result = this.#session.agentSet(name, field, value)
 			return { target: result.target, ...(result.error !== undefined ? { error: result.error } : {}) }
 		},
 		body: (name: string): string => this.#session.agentBody(name),
 		modelEfforts: (providerID: string, modelID: string): Promise<SeamEffortOption[]> =>
 			this.#session.modelEfforts(providerID, modelID),
+		officialCaps: (): Promise<SeamAgentOfficialCaps> => this.#session.agentOfficialCaps(),
 	}
 
 	// ---- /login provider face (batch H4, tui-pi 65-ux-batch parity) ----

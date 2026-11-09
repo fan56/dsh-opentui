@@ -45,6 +45,12 @@ export interface RemoteAgentRow {
 	model?: string
 	thinking?: string
 	deep: number
+	/** Per-agent round cap (registry `maxRounds`: a positive integer; absent
+	 * = inherit the global ladder). 0 is NOT unlimited — the registry rejects
+	 * it and marks the file broken. */
+	maxRounds?: number
+	/** Registry `background`: strict true/false (absent = false). */
+	background?: boolean
 	body: string
 	file: string
 	broken?: string
@@ -131,6 +137,24 @@ export function parseAgentMarkdown(text: string, path: string): AgentParseResult
 	if (model !== undefined && model !== "") agent.model = model
 	const thinking = values["thinking"]?.trim()
 	if (thinking !== undefined && thinking !== "") agent.thinking = thinking
+	// Registry fail-loud parity (agents-dir.ts): a mistyped background or
+	// maxRounds drops the file from the roster instead of silently ignoring
+	// the declared value. `maxRounds` is a POSITIVE integer - 0 is broken,
+	// not "unlimited" (registry ownership of that key).
+	const background = values["background"]?.trim()
+	if (background !== undefined && background !== "") {
+		if (background !== "true" && background !== "false") {
+			return { ok: false, error: `invalid \`background\`: expected true or false, got "${background}"` }
+		}
+		agent.background = background === "true"
+	}
+	const maxRounds = values["maxRounds"]?.trim()
+	if (maxRounds !== undefined && maxRounds !== "") {
+		if (!/^\d+$/.test(maxRounds) || Number(maxRounds) < 1) {
+			return { ok: false, error: `invalid \`maxRounds\`: expected a positive integer, got "${maxRounds}"` }
+		}
+		agent.maxRounds = Number(maxRounds)
+	}
 	return { ok: true, agent }
 }
 
@@ -177,6 +201,8 @@ export interface AgentFrontmatterUpdates {
 	model?: string | null
 	thinking?: string | null
 	deep?: number | null
+	maxRounds?: number | null
+	background?: boolean | null
 }
 
 /**
@@ -201,6 +227,10 @@ export function updateAgentFrontmatter(path: string, updates: AgentFrontmatterUp
 	if (updates.model !== undefined) pending.push(["model", updates.model])
 	if (updates.thinking !== undefined) pending.push(["thinking", updates.thinking])
 	if (updates.deep !== undefined) pending.push(["deep", updates.deep === null ? null : String(updates.deep)])
+	if (updates.maxRounds !== undefined) pending.push(["maxRounds", updates.maxRounds === null ? null : String(updates.maxRounds)])
+	if (updates.background !== undefined) {
+		pending.push(["background", updates.background === null ? null : String(updates.background)])
+	}
 	let changed = false
 	let close = bounds.close
 	for (const [key, value] of pending) {
@@ -242,9 +272,11 @@ export function updateAgentFrontmatter(path: string, updates: AgentFrontmatterUp
  * `name` (=== file stem after parse). Resolves an error message, else
  * `undefined`.
  */
+export type AgentFrontmatterField = "model" | "thinking" | "deep" | "maxRounds" | "background"
+
 export function setAgentField(
 	name: string,
-	field: "model" | "thinking" | "deep",
+	field: AgentFrontmatterField,
 	value: string | null,
 	explicitHome?: string,
 ): string | undefined {
@@ -255,6 +287,21 @@ export function setAgentField(
 			return `expected a non-negative integer, got "${value}"`
 		}
 		return updateAgentFrontmatter(file, { deep: value === null ? null : Number(value) })
+	}
+	if (field === "maxRounds") {
+		// Registry parity: positive integer only. 0 would mark the file broken
+		// on the consuming side, so it is rejected here (see remote-local-fs
+		// parse note). Empty input never reaches this function (keep).
+		if (value !== null && (!/^\d+$/.test(value) || Number(value) < 1)) {
+			return `expected a positive integer, got "${value}"`
+		}
+		return updateAgentFrontmatter(file, { maxRounds: value === null ? null : Number(value) })
+	}
+	if (field === "background") {
+		if (value !== null && value !== "true" && value !== "false") {
+			return `expected true or false, got "${value}"`
+		}
+		return updateAgentFrontmatter(file, { background: value === null ? null : value === "true" })
 	}
 	return updateAgentFrontmatter(file, { [field]: value })
 }
