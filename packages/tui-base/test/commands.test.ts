@@ -237,7 +237,7 @@ describe("core commands", () => {
 			"/search — full-text search over stored sessions",
 			"/agents — model profiles: list / save / use / rm (named model+effort snapshots)",
 			"/think — set reasoning effort (opens the picker)",
-			"/hints — toggle the key hints row",
+			"/hints — key hints: bare toggles the bar; <segment> [on|off]; all on|off; lang en|zh-CN|ja|ko",
 			"/motion — animation tier: full | reduced | off | auto (bare shows current)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",

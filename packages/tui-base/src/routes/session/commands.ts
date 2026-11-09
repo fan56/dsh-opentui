@@ -35,7 +35,21 @@ import {
 	validateRouteId,
 	type CatalogEntry,
 } from "./login"
-import { hintsShown, setHintsShown } from "./hints-line"
+import {
+	hintsShown,
+	setHintsShown,
+	footerHints,
+	setFooterHints,
+	hintsLocale,
+	setHintsLocale,
+	hintInState,
+	DEFAULT_FOOTER_HINTS,
+	FOOTER_HINT_IDS,
+	HINT_LOCALES,
+	type FooterHints,
+	type HintLocale,
+	type HintSegmentId,
+} from "./hints-line"
 import { getMotionTier, setMotionTier, type MotionTier } from "../../skin/motion"
 
 /** One registry row: name carries the leading slash ("/help"). */
@@ -607,11 +621,47 @@ export function coreCommands(): SlashCommand[] {
 			// THIS stack's config/keybind.ts Definitions (the /help print path
 			// — aligned transcript lines, no overlay, no busy-gate).
 			// Batch D3: the bottom key-hint row toggle (./hints-line.tsx).
+			// Footer-quickwins (tui-pi footer.ts per-segment parity): bare
+			// toggles the bar; `<segment> [on|off]` flips ONE of the eight
+			// segments; `all on|off` bulk-sets them; `lang <locale>` switches
+			// the label language (en/zh-CN/ja/ko).
 			name: "/hints",
-			description: "toggle the key hints row",
-			run(ctx) {
-				setHintsShown((shown) => !shown)
-				ctx.say(hintsShown() ? "key hints: on" : "key hints: off")
+			description: "key hints: bare toggles the bar; <segment> [on|off]; all on|off; lang en|zh-CN|ja|ko",
+			run(ctx, argText) {
+				const words = argText.trim().split(/\s+/).filter(Boolean)
+				if (words.length === 0) {
+					setHintsShown((shown) => !shown)
+					ctx.say(hintsShown() ? "key hints: on" : "key hints: off")
+					return
+				}
+				const head = words[0]!.toLowerCase()
+				const state = words[1]?.toLowerCase()
+				if (head === "lang") {
+					const next = words[1] as HintLocale | undefined
+					if (!next || !HINT_LOCALES.includes(next)) {
+						ctx.say(`usage: /hints lang ${HINT_LOCALES.join("|")} (current: ${hintsLocale()})`)
+						return
+					}
+					setHintsLocale(next)
+					ctx.say(`hint language: ${next}`)
+					return
+				}
+				if (head === "all") {
+					const on = state !== "off"
+					const all: FooterHints = { ...DEFAULT_FOOTER_HINTS }
+					for (const seg of FOOTER_HINT_IDS) all[seg] = on
+					setFooterHints(all)
+					ctx.say(`all hint segments: ${on ? "on" : "off"}`)
+					return
+				}
+				if (!FOOTER_HINT_IDS.includes(head as HintSegmentId)) {
+					ctx.say(`unknown hint segment: ${head} (segments: ${FOOTER_HINT_IDS.join(", ")})`)
+					return
+				}
+				const id = head as HintSegmentId
+				const on = state === undefined ? !footerHints()[id] : state !== "off"
+				setFooterHints((hints) => ({ ...hints, [id]: on }))
+				ctx.say(`hint ${id}: ${on ? "on" : "off"}${on && !hintInState(id, false) ? " (busy only)" : ""}`)
 			},
 		},
 		{
