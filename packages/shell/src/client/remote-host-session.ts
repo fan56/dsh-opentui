@@ -321,8 +321,14 @@ export class RemoteHostSession {
 	 * session id matches — a fresh/resumed/forked session starts estimate-
 	 * only until its own first projection lands. */
 	#contextPressure: (RemoteContextPressure & { sessionId: string }) | undefined
-	/** The #turns value the last pressure fetch completed under (getter reads
-	 * refresh at most once per turn; the footer repaint cadence stays RPC-free). */
+	/** Session-tagged copy of the whole last `session/projections` answer: the
+	 * turn-gated refresh hands it back to a gated read, so `contextWindow()`'s
+	 * resolve path can reuse the row `contextTokens()` already fetched (its
+	 * selection drives the catalog fallback). Cleared with the pressure row. */
+	#contextProjections: (RemoteSessionProjections & { sessionId: string }) | undefined
+	/** The #turns value the last pressure fetch completed under. The per-turn
+	 * gate itself lives in #refreshContextPressure, so BOTH getters (used and
+	 * window) share it — the footer repaint cadence stays RPC-free. */
 	#contextPressureTurn = -1
 	/** Stampede guard: the in-flight projections fetch (getter reads share it). */
 	#contextPressureInFlight: Promise<RemoteSessionProjections | undefined> | undefined
@@ -697,9 +703,10 @@ export class RemoteHostSession {
 	 * ContextTokenMeter estimate (tui-pi `stats.contextTokens` parity) while
 	 * no projection exists — a fresh session before its first request, a
 	 * projection-less host, or a wire failure. Sync cached: the async fill
-	 * runs at most once per turn and repaints pick it up on a later read. */
+	 * runs at most once per turn (#refreshContextPressure's gate, shared with
+	 * contextWindow) and repaints pick it up on a later read. */
 	contextTokens(): number {
-		if (this.#needsPressureRefresh()) void this.#refreshContextPressure()
+		void this.#refreshContextPressure()
 		return this.#usedTokens()
 	}
 
@@ -737,14 +744,26 @@ export class RemoteHostSession {
 	 * projections (the contextWindow resolution reuses its modelSelection).
 	 * Failure keeps the previous cache — the meter estimate stays the
 	 * fallback numerator.
+	 *
+	 * The getter-read gate lives HERE so every path (used AND window) is
+	 * gated: when the current turn's row is already cached the call returns
+	 * the cached projections instead of an RPC (a missing/mismatched session
+	 * tag always refreshes — fresh/resumed/forked sessions must not serve the
+	 * previous session's row). `force` is for non-getter refresh points (turn
+	 * end, re-attach) where the turn counter did not move.
 	 */
-	#refreshContextPressure(): Promise<RemoteSessionProjections | undefined> {
+	#refreshContextPressure(force = false): Promise<RemoteSessionProjections | undefined> {
 		const sessionId = this.#sessionId
 		if (sessionId === undefined) return Promise.resolve(undefined)
+		if (!force && !this.#needsPressureRefresh()) {
+			const cached = this.#contextProjections
+			return Promise.resolve(cached?.sessionId === sessionId ? cached : undefined)
+		}
 		if (this.#contextPressureInFlight !== undefined) return this.#contextPressureInFlight
 		const fetch = this.#modelClient()
 			.sessionProjections(sessionId)
 			.then((proj) => {
+				this.#contextProjections = { sessionId, ...proj }
 				this.#contextPressure = { sessionId, ...(proj.pressure ?? {}) }
 				this.#contextPressureTurn = this.#turns
 				return proj
@@ -881,7 +900,12 @@ export class RemoteHostSession {
 			this.#pendingModel = selection
 			return selection
 		}
-		return this.#modelClient().selectModel(sessionId, selection)
+		const selected = await this.#modelClient().selectModel(sessionId, selection)
+		// Route commit: the turn-gated projections row now names the previous
+		// route, so reopen the gate — the next footer read re-resolves the
+		// context window (and used numerator) off the new selection.
+		this.#invalidateContextProjections()
+		return selected
 	}
 
 	/** The host-generation model catalog (row 21; cached host-side parity). */
@@ -1724,6 +1748,18 @@ export class RemoteHostSession {
 	 */
 	#invalidateModelCatalog(): void {
 		this.#modelClient().invalidate()
+		// Route-affecting commit (settings write / credential push): the
+		// projections row's selection may have moved — reopen the turn gate so
+		// the next getter read re-resolves instead of serving the old route.
+		this.#invalidateContextProjections()
+	}
+
+	/** Route committed: reopen the projections gate, keep the cached row (the
+	 * next read refreshes it; dropping the row would flicker the footer to the
+	 * meter estimate) and re-resolve the window key. */
+	#invalidateContextProjections(): void {
+		this.#contextPressureTurn = -1
+		this.#contextWindowKey = ""
 	}
 
 	#settingsClient(): RemoteSettingsClient {
@@ -1744,6 +1780,7 @@ export class RemoteHostSession {
 		// own denominator from its projection (catalog fallback).
 		this.#contextMeter.reset()
 		this.#contextPressure = undefined
+		this.#contextProjections = undefined
 		this.#contextPressureTurn = -1
 		this.#contextWindowKey = ""
 	}
@@ -1996,7 +2033,9 @@ export class RemoteHostSession {
 		// exact used/window pair instead of the estimate (poll at turn
 		// boundaries; the observeProjections stream would only add a mux
 		// socket for sub-turn granularity the footer never repaints at).
-		void this.#refreshContextPressure()
+		// Forced: the turn's row was already fetched under this same #turns,
+		// so the getter gate would answer with the pre-turn row.
+		void this.#refreshContextPressure(true)
 		const cb = this.#cb
 		try {
 			cb?.onTurnEnd({ prompt: this.usage.prompt, completion: this.usage.completion })
@@ -2277,8 +2316,8 @@ export class RemoteHostSession {
 			// 🧠 occupancy: after a host restart the projections fold fresh
 			// server-side — re-read so the footer doesn't serve a pre-restart
 			// row (the turn counter didn't move, so the getter gate alone
-			// wouldn't refresh).
-			void this.#refreshContextPressure()
+			// wouldn't refresh — force bypasses it).
+			void this.#refreshContextPressure(true)
 		} catch (error) {
 			trace(`reattach FAIL attempt=${this.#reattachAttempts + 1} err=${error instanceof Error ? error.message : String(error)}`)
 			this.#reattachAttempts += 1

@@ -1107,6 +1107,7 @@ describe("RemoteHostSession context window", () => {
 				if (method === "session/create") return { sessionId: "sess-cw", agentPreset: "review" }
 				if (method === "session/prompt") return { accepted: true }
 				if (method === "session/projections") return { values: { modelSelection: { next: selection } } }
+				if (method === "session/selectModel") return { selected: selection }
 				if (method === "session/modelCatalog") return catalog
 				return {}
 			},
@@ -1121,9 +1122,11 @@ describe("RemoteHostSession context window", () => {
 
 		// Route A resolves its disclosed window.
 		await until(() => h.session.contextWindow() === 200000)
-		// Switch to route B whose catalog row names no contextWindow: the
-		// previous window must clear, not linger as the footer's denominator.
+		// Switch to route B (a route commit reopens the per-turn projections
+		// gate) whose catalog row names no contextWindow: the previous window
+		// must clear, not linger as the footer's denominator.
 		selection = { provider: "prov-b", model: "tiny" }
+		await h.session.selectModel(selection)
 		await until(() => h.session.contextWindow() === undefined)
 		expect(h.session.sessionInfo().contextWindow).toBeUndefined()
 		await h.session.dispose()
@@ -1276,6 +1279,35 @@ describe("RemoteHostSession contextPressure projections", () => {
 			streamFrame({ type: "chunk", attemptId: "a1", revision: 0, index: 0, time: 1, chunk: { type: "usage", usage: { inputTokens: 10, outputTokens: 2 } } }),
 		])
 		expect(h.session.contextTokens()).toBe(12)
+		await h.session.dispose()
+	})
+
+	test("getter reads (used and window) share one projections RPC per turn", async () => {
+		let calls = 0
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") return { sessionId: "sess-ctx6" }
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") {
+					calls++
+					return { values: { contextPressure: { contextWindow: 128000, projectedTokens: 45000, pressureTokens: 42000 } } }
+				}
+				return {}
+			},
+		})
+		await settleTurn(h, "sess-ctx6")
+		await until(() => h.session.contextTokens() === 45000)
+		const settled = calls
+		// Repaint cadence inside the turn: both getters answer from the turn's
+		// cached row — the gate lives in #refreshContextPressure, so the window
+		// path is covered too (C1: no per-read RPC from contextWindow()).
+		for (let i = 0; i < 5; i++) {
+			h.session.contextTokens()
+			h.session.contextWindow()
+		}
+		await new Promise((resolve) => setTimeout(resolve, 20))
+		expect(calls).toBe(settled)
+		expect(h.session.contextWindow()).toBe(128000)
 		await h.session.dispose()
 	})
 })
