@@ -27,6 +27,7 @@ import { currentRowColors } from "../../skin/semantic"
 import type { SessionSeam } from "../../seams/session"
 import type { SlashCommand, SlashCommandContext } from "./commands"
 import { coreCommands, dispatchLine, filterCommands, unknownCommandRow } from "./commands"
+import { completeSlash } from "./slash-complete"
 
 /**
  * Max rows shown before the list clamps (the old menu's cap) — and, since the
@@ -266,6 +267,23 @@ export function createSlashHost(deps: {
 	return {
 		commands,
 		controller,
+		/**
+		 * Tab completion (./slash-complete.ts). undefined = Tab is not ours
+		 * (plain text / argument phase / mid-token caret) and must fall
+		 * through to the textarea's native handling. A returned value always
+		 * consumes Tab — `text === buffer` is the "no matches, do nothing"
+		 * consume (the literal tab never lands in the editor).
+		 *
+		 * The highlighted row is only consulted while the menu is actually
+		 * open: after Esc the controller is suppressed, so the pure rule falls
+		 * back to the first candidate instead of an invisible highlight.
+		 */
+		slashComplete(buffer: string): { text: string; cursor: number } | undefined {
+			const selected = controller.open ? controller.current(commands)?.name : undefined
+			const result = completeSlash(buffer, buffer.length, commands, selected === undefined ? {} : { selected })
+			if (result === undefined) return undefined
+			return { text: result.text, cursor: result.cursor }
+		},
 		slashKeyFilter(event: KeyEvent, buffer: string): boolean {
 			controller.sync(buffer, commands)
 			if (!controller.open) return false

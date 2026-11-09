@@ -127,6 +127,12 @@ export type SessionComposerProps = {
 	/** Slash palette enter path: true = the line was a command (harmless
 	 * unknowns included) — the composer clears its buffer, no send/steer. */
 	interceptSubmit?: (buffer: string) => boolean
+	/** Slash Tab completion (bash-style). undefined = Tab is not ours and
+	 * falls through to the textarea's native handling (plain text, argument
+	 * phase, mid-token caret). A returned value ALWAYS consumes Tab —
+	 * `text === buffer` is the "no matches, do nothing" consume, so a literal
+	 * tab can never reach the editor on a slash-name line. */
+	slashComplete?: (buffer: string) => { text: string; cursor: number } | undefined
 	/** Palette rows rendered above the textarea (inline palette host). */
 	slashPalette?: () => JSX.Element
 	/** Palette height contribution to the composer's explicit root height. */
@@ -305,6 +311,30 @@ export function SessionComposer(props: SessionComposerProps) {
 		return recallStep(direction)
 	}
 
+	/**
+	 * Tab completion body (priority-1 keymap layer, the path the real client
+	 * takes). The host decides whether the buffer is a slash name phase; a
+	 * returned replacement is applied here and the palette re-syncs from the
+	 * new buffer (a trailing space closes it, a common prefix keeps it open).
+	 * Returns true = Tab consumed (including the "no matches, do nothing"
+	 * replacement), false = let the native textarea handle the key.
+	 */
+	function completeKey(): boolean {
+		if (!textarea || textarea.isDestroyed) return false
+		const buffer = textarea.plainText
+		const result = props.slashComplete?.(buffer)
+		if (result === undefined) return false
+		if (result.text !== buffer) {
+			textarea.setText(result.text)
+			textarea.cursorOffset = result.cursor
+			// The native setText mutation does not emit a content change, so
+			// the palette would otherwise stay on the pre-completion buffer.
+			props.slashSync?.(result.text)
+			syncHeight()
+		}
+		return true
+	}
+
 	// The real client's Keymap.Provider binds ↑/↓ to native textarea cursor
 	// movement and consumes them before the renderable's onKeyDown. This
 	// layer (priority 1, the vendored prompt's history-layer priority) runs
@@ -329,6 +359,21 @@ export function SessionComposer(props: SessionComposerProps) {
 					bind: "down",
 					run: (_input, event) => historyKey(1, event),
 				},
+				// Tab rides the SAME priority-1 layer as history for the same
+				// reason (see the module comment): the client's Keymap.Provider
+				// prepends a renderer keypress listener that consumes keys BEFORE
+				// the textarea's onKeyDown. A bare onKeyDown Tab handler is dead in
+				// the app while a bare harness keeps passing. The id is the
+				// vendored keybind (`prompt.autocomplete.complete`, default tab),
+				// so a user override reaches this path through createLayer's
+				// configured-binding lookup.
+				{
+					id: "prompt.autocomplete.complete",
+					title: "Complete slash command",
+					group: "Prompt",
+					bind: "tab",
+					run: () => completeKey(),
+				},
 			],
 		}))
 	}
@@ -345,6 +390,13 @@ export function SessionComposer(props: SessionComposerProps) {
 		// binding match would have filtered out: keep ctrl/meta/shift/super
 		// away from history here so shift+up stays native selection.
 		if (event.ctrl || event.meta || event.shift || event.super) return
+		// Bare harness Tab completion (no Keymap.Provider); the real client's
+		// keymap layer above consumes Tab before this onKeyDown ever runs.
+		// shift+tab is deliberately not ours (back-tab stays native).
+		if (event.name === "tab") {
+			if (completeKey()) event.preventDefault()
+			return
+		}
 		if (event.name === "up") {
 			if (recallStep(-1)) event.preventDefault()
 			return

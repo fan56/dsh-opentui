@@ -259,6 +259,7 @@ function SessionPage() {
 					slashKeyFilter={slash.slashKeyFilter}
 					slashSync={(buffer) => slash.controller.sync(buffer, slash.commands)}
 					interceptSubmit={slash.interceptSubmit}
+					slashComplete={(buffer) => (dialog.stack.length > 0 ? undefined : slash.slashComplete(buffer))}
 					slashPalette={() => (
 						<SlashPalette controller={slash.controller} commands={slash.commands} />
 					)}
