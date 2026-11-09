@@ -1130,3 +1130,152 @@ describe("RemoteHostSession context window", () => {
 		await pending.catch(() => {})
 	})
 })
+
+// ---------------------------------------------------------------------------
+// 🧠 contextPressure projections (web workaround batch): the token-meter
+// projection off `session/projections` is the PRIMARY used/window source —
+// `projectedTokens ?? pressureTokens` over the meter estimate, the
+// projection's window over the catalog's, estimate/bare shapes as fallbacks.
+// ---------------------------------------------------------------------------
+
+/** Drive one settled turn: create + follow attach + prompt + turn/end.
+ * Waits are relative (new socket / new prompt RPC) so consecutive turns on
+ * the same harness settle independently. */
+async function settleTurn(h: { session: RemoteHostSession; sockets: FakeMuxSocket[]; lastSocket(): FakeMuxSocket; connection: FakeConnection }, sessionId: string, stream: Record<string, unknown>[] = []): Promise<void> {
+	const { cb } = callbacks()
+	const socketsBefore = h.sockets.length
+	const promptsBefore = h.connection.rpcCalls.filter((c) => c.method === "session/prompt").length
+	const pending = h.session.turn("go", cb)
+	await until(() => h.sockets.length > socketsBefore)
+	h.lastSocket().item(snapshotFrame(sessionId))
+	await until(() => h.connection.rpcCalls.filter((c) => c.method === "session/prompt").length > promptsBefore)
+	const sock = h.lastSocket()
+	sock.item(streamFrame({ type: "start", attemptId: "a1", revision: 0, startedAfterSeq: 0, turn: 1, step: 1 }))
+	for (const frame of stream) sock.item(frame)
+	sock.item(streamFrame({ type: "end", attemptId: "a1", revision: 0, index: stream.length, outcome: { kind: "committed", eventType: "assistant/message", seq: 2 } }))
+	sock.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+	await pending
+}
+
+describe("RemoteHostSession contextPressure projections", () => {
+	test("projectedTokens is the used numerator and the projection window the denominator (wire shape {request:{sessionId}})", async () => {
+		let projectionsArgs: Record<string, unknown> | undefined
+		const h = makeSession({
+			rpcHandler: (method, args) => {
+				if (method === "session/create") return { sessionId: "sess-ctx1" }
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") {
+					projectionsArgs = args
+					return { values: { contextPressure: { contextWindow: 128000, projectedTokens: 45000, pressureTokens: 42000 } } }
+				}
+				return {}
+			},
+		})
+		await settleTurn(h, "sess-ctx1")
+		// the unary projections query rides the shared transport, sessionId wrapped
+		expect(projectionsArgs).toEqual({ request: { sessionId: "sess-ctx1" } })
+		// web contextOccupancy: projectedTokens ?? pressureTokens
+		await until(() => h.session.contextTokens() === 45000)
+		await until(() => h.session.contextWindow() === 128000)
+		expect(h.session.sessionInfo().contextTokens).toBe(45000)
+		expect(h.session.sessionInfo().contextWindow).toBe(128000)
+		await h.session.dispose()
+	})
+
+	test("pressureTokens is the second-priority numerator when no projection exists yet", async () => {
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") return { sessionId: "sess-ctx2" }
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") {
+					return { values: { contextPressure: { pressureTokens: 42000, contextWindow: 128000 } } }
+				}
+				return {}
+			},
+		})
+		await settleTurn(h, "sess-ctx2")
+		await until(() => h.session.contextTokens() === 42000)
+		await h.session.dispose()
+	})
+
+	test("no projection (fresh session before its first request) falls back to the meter estimate and the bare shape", async () => {
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") return { sessionId: "sess-ctx3" }
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") return { values: {} }
+				return {}
+			},
+		})
+		// text-delta "ok" then usage {50, 4}: the meter ends at billed 50 +
+		// output 4 + pending 0 = 54 (the projection never lands over it).
+		await settleTurn(h, "sess-ctx3", [
+			streamFrame({ type: "chunk", attemptId: "a1", revision: 0, index: 0, time: 1, chunk: { type: "text-delta", index: 0, text: "ok" } }),
+			streamFrame({ type: "chunk", attemptId: "a1", revision: 0, index: 1, time: 2, chunk: { type: "usage", usage: { inputTokens: 50, outputTokens: 4 } } }),
+		])
+		await until(() => rpcOf(h.connection, "session/projections") !== undefined)
+		expect(h.session.contextTokens()).toBe(54)
+		// no window anywhere → the footer's bare `🧠 used` degrade
+		expect(h.session.contextWindow()).toBeUndefined()
+		expect(h.session.sessionInfo().contextTokens).toBe(54)
+		expect(h.session.sessionInfo().contextWindow).toBeUndefined()
+		await h.session.dispose()
+	})
+
+	test("the projection window outranks the catalog window (catalog stays double-insurance)", async () => {
+		const catalog = {
+			groups: [{ id: "prov-a", name: "Prov A", models: [{ id: "big", name: "Big", contextWindow: 200000 }] }],
+			failures: [],
+		}
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") return { sessionId: "sess-ctx4" }
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") {
+					return {
+						values: {
+							modelSelection: { next: { provider: "prov-a", model: "big" } },
+							contextPressure: { contextWindow: 128000, pressureTokens: 1000 },
+						},
+					}
+				}
+				if (method === "session/modelCatalog") return catalog
+				return {}
+			},
+		})
+		await settleTurn(h, "sess-ctx4")
+		await until(() => h.session.contextWindow() === 128000)
+		expect(h.session.contextTokens()).toBe(1000)
+		await h.session.dispose()
+	})
+
+	test("a new session drops the previous session's pressure row (estimate until its own projection lands)", async () => {
+		let pressure: Record<string, unknown> | undefined = { contextWindow: 128000, projectedTokens: 45000, pressureTokens: 42000 }
+		let creates = 0
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") {
+					creates++
+					return { sessionId: creates === 1 ? "sess-ctx5a" : "sess-ctx5b" }
+				}
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/projections") return { values: pressure === undefined ? {} : { contextPressure: pressure } }
+				return {}
+			},
+		})
+		await settleTurn(h, "sess-ctx5a")
+		await until(() => h.session.contextTokens() === 45000)
+		// /new: the tag check + resetLedger drop session A's row synchronously —
+		// the read falls back to the meter estimate (0 on the fresh session).
+		h.session.newSession()
+		pressure = undefined
+		expect(h.session.contextTokens()).not.toBe(45000)
+		// turn 2 settles on the fresh session; its empty projection keeps the
+		// estimate numerator (billed 10 + output 2 — never session A's 45000).
+		await settleTurn(h, "sess-ctx5b", [
+			streamFrame({ type: "chunk", attemptId: "a1", revision: 0, index: 0, time: 1, chunk: { type: "usage", usage: { inputTokens: 10, outputTokens: 2 } } }),
+		])
+		expect(h.session.contextTokens()).toBe(12)
+		await h.session.dispose()
+	})
+})
