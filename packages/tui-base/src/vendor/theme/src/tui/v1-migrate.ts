@@ -427,7 +427,11 @@ export function selectedForeground(theme: Theme, background: RGBA) {
     : RGBA.fromInts(255, 255, 255)
 }
 
+// DSH PATCH [fix/theme-legacy accent fidelity] — BEGIN
+// Optional `anchor` step lets tokenScale pin step 500 to the exact V1 accent hex
+// (stock hueScale is hard-anchored at 200). Re-apply on re-vendor.
 function hueScale(color: RGBA, mode: "light" | "dark", anchor: HueStep = 200) {
+// DSH PATCH [fix/theme-legacy accent fidelity] — END
   const value = toOklch(color)
   const endpoint = mode === "light" ? Math.max(0.97, value.l) : Math.min(0.18, value.l)
   const alpha = color.toInts()[3]
@@ -465,12 +469,14 @@ function neutralScale(theme: Theme) {
 }
 
 function neutralAnchors(theme: Theme) {
-  // DSH PATCH [fix/theme-legacy transparent surfaces]: solidify transparent surface anchors,
-  // see `opaqueSurface` above. If you re-vendor this file, re-apply the three wrapped colors.
+  // DSH PATCH [fix/theme-legacy transparent surfaces] — BEGIN
+  // Solidify transparent surface anchors, see `opaqueSurface` above.
+  // If you re-vendor this file, re-apply the three wrapped colors.
   const light: { step: HueStep; color: RGBA }[] = [
     { step: 200, color: opaqueSurface(theme, theme.background) },
     { step: 300, color: opaqueSurface(theme, theme.backgroundPanel) },
     { step: 400, color: opaqueSurface(theme, theme.backgroundElement || theme.backgroundMenu) },
+  // DSH PATCH [fix/theme-legacy transparent surfaces] — END
     { step: 600, color: theme.textMuted },
     { step: 800, color: theme.text },
   ]
