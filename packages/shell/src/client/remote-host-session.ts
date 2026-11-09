@@ -169,7 +169,7 @@ import {
 	RemoteSessionOps,
 	RemoteTailSession,
 } from "./remote-session-ops.ts"
-import { RemoteModelClient, type RemoteModelSelection } from "./remote-model.ts"
+import { RemoteModelClient, type RemoteContextPressure, type RemoteModelSelection, type RemoteSessionProjections } from "./remote-model.ts"
 import { ContextTokenMeter } from "./token-estimate.ts"
 import { RemoteSettingsClient, type RemoteSettingsRow, type RemoteCredentialInfo } from "./remote-settings.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
@@ -306,13 +306,32 @@ export class RemoteHostSession {
 	// BridgeStats.contextTokens parity): the LATEST billed request's input +
 	// output plus a CJK estimate of everything appended since — NOT a
 	// session-cumulative total, so the footer follows the current request
-	// and drops after a compaction. `#contextWindow` is the resolved model
-	// window (tui-pi llm.resolveModelInfo parity, via the cached
-	// session/modelCatalog): undefined until the catalog names it, and the
-	// footer degrades to the bare `🧠 used` shape without it.
+	// and drops after a compaction. This meter is the FALLBACK numerator:
+	// the primary source is the token-meter projection read off
+	// `session/projections` (values.contextPressure — web contextOccupancy
+	// parity; the host modelCatalog never names a window to us, so the
+	// projection's contextWindow is the primary denominator too, with the
+	// catalog kept as double-insurance). `#contextWindow` is the resolved
+	// window (undefined → the footer degrades to the bare `🧠 used` shape).
 	readonly #contextMeter = new ContextTokenMeter()
 	#contextWindow: number | undefined
 	#contextWindowKey = ""
+	/** Session-tagged contextPressure cache (footer context batch): the last
+	 * `session/projections` answer's pressure row. Only valid while the
+	 * session id matches — a fresh/resumed/forked session starts estimate-
+	 * only until its own first projection lands. */
+	#contextPressure: (RemoteContextPressure & { sessionId: string }) | undefined
+	/** Session-tagged copy of the whole last `session/projections` answer: the
+	 * turn-gated refresh hands it back to a gated read, so `contextWindow()`'s
+	 * resolve path can reuse the row `contextTokens()` already fetched (its
+	 * selection drives the catalog fallback). Cleared with the pressure row. */
+	#contextProjections: (RemoteSessionProjections & { sessionId: string }) | undefined
+	/** The #turns value the last pressure fetch completed under. The per-turn
+	 * gate itself lives in #refreshContextPressure, so BOTH getters (used and
+	 * window) share it — the footer repaint cadence stays RPC-free. */
+	#contextPressureTurn = -1
+	/** Stampede guard: the in-flight projections fetch (getter reads share it). */
+	#contextPressureInFlight: Promise<RemoteSessionProjections | undefined> | undefined
 	/** Telemetry of the last completed turn (HostSession shape). */
 	lastTurnStats: TurnStats = emptyTurnStats()
 	remoteTailActive = false
@@ -676,26 +695,104 @@ export class RemoteHostSession {
 		this.#lastDeltaAt = now
 	}
 
-	/** The 🧠 segment's context-occupancy estimate (footer context batch,
-	 * tui-pi `stats.contextTokens` parity — see ContextTokenMeter). */
+	/** The 🧠 segment's context occupancy (footer context batch): the
+	 * contextPressure projection's `projectedTokens ?? pressureTokens` when
+	 * the live session has one (web contextOccupancy parity — projected is
+	 * the anchor+increment estimate of the NEXT prompt, pressure the
+	 * provider-reported prompt of the last), falling back to the
+	 * ContextTokenMeter estimate (tui-pi `stats.contextTokens` parity) while
+	 * no projection exists — a fresh session before its first request, a
+	 * projection-less host, or a wire failure. Sync cached: the async fill
+	 * runs at most once per turn (#refreshContextPressure's gate, shared with
+	 * contextWindow) and repaints pick it up on a later read. */
 	contextTokens(): number {
-		return this.#contextMeter.tokens
+		void this.#refreshContextPressure()
+		return this.#usedTokens()
 	}
 
 	/** The current route's context window (footer context batch, tui-pi
 	 * `getContextWindow` semantics — the sync getter returns the cached
-	 * value and fills it in the background off the cached
-	 * `session/modelCatalog` answer; unknown → undefined, the footer
+	 * value and fills it in the background; unknown → undefined, the footer
 	 * degrades to the bare `🧠 used` shape). */
 	contextWindow(): number | undefined {
 		void this.#resolveContextWindow()
 		return this.#contextWindow
 	}
 
+	/** The used numerator with the web口径 (`projectedTokens ??
+	 * pressureTokens` over the session-valid cache; estimate fallback). */
+	#usedTokens(): number {
+		const cached = this.#contextPressure
+		if (cached !== undefined && cached.sessionId === this.#sessionId) {
+			const used = cached.projectedTokens ?? cached.pressureTokens
+			if (used !== undefined) return used
+		}
+		return this.#contextMeter.tokens
+	}
+
+	/** Getter-read refresh gate: at most one projections RPC per turn (a
+	 * missing/mismatched session tag always refreshes — fresh/resumed/
+	 * forked sessions must not serve the previous session's row). */
+	#needsPressureRefresh(): boolean {
+		if (this.#contextPressure?.sessionId !== this.#sessionId) return true
+		return this.#contextPressureTurn !== this.#turns
+	}
+
+	/**
+	 * One `session/projections` round-trip (stampede-guarded, contained):
+	 * fills the session-tagged pressure cache and returns the parsed
+	 * projections (the contextWindow resolution reuses its modelSelection).
+	 * Failure keeps the previous cache — the meter estimate stays the
+	 * fallback numerator.
+	 *
+	 * The getter-read gate lives HERE so every path (used AND window) is
+	 * gated: when the current turn's row is already cached the call returns
+	 * the cached projections instead of an RPC (a missing/mismatched session
+	 * tag always refreshes — fresh/resumed/forked sessions must not serve the
+	 * previous session's row). `force` is for non-getter refresh points (turn
+	 * end, re-attach) where the turn counter did not move.
+	 */
+	#refreshContextPressure(force = false): Promise<RemoteSessionProjections | undefined> {
+		const sessionId = this.#sessionId
+		if (sessionId === undefined) return Promise.resolve(undefined)
+		if (!force && !this.#needsPressureRefresh()) {
+			const cached = this.#contextProjections
+			return Promise.resolve(cached?.sessionId === sessionId ? cached : undefined)
+		}
+		if (this.#contextPressureInFlight !== undefined) return this.#contextPressureInFlight
+		const fetch = this.#modelClient()
+			.sessionProjections(sessionId)
+			.then((proj) => {
+				this.#contextProjections = { sessionId, ...proj }
+				this.#contextPressure = { sessionId, ...(proj.pressure ?? {}) }
+				this.#contextPressureTurn = this.#turns
+				return proj
+			})
+			.catch(() => undefined)
+			.finally(() => {
+				if (this.#contextPressureInFlight === fetch) this.#contextPressureInFlight = undefined
+			})
+		this.#contextPressureInFlight = fetch
+		return fetch
+	}
+
 	async #resolveContextWindow(): Promise<void> {
 		try {
 			const sessionId = this.currentSessionId()
-			const selection = sessionId ? await this.#modelClient().sessionSelection(sessionId) : undefined
+			const proj = sessionId ? await this.#refreshContextPressure() : undefined
+			// Priority 1: the projection's own window — the host resolved it for
+			// the live route off the prepared call (web parity; the catalog
+			// path below is the double-insurance for hosts that don't report
+			// contextPressure yet). A resolution whose session moved on
+			// mid-await never lands (a later getter read re-resolves).
+			const pressureWindow = proj?.pressure?.contextWindow
+			if (typeof pressureWindow === "number" && pressureWindow > 0) {
+				if (this.#sessionId !== sessionId) return
+				this.#contextWindow = pressureWindow
+				this.#contextWindowKey = proj?.selection ? `${proj.selection.provider}/${proj.selection.model}` : "@projections"
+				return
+			}
+			const selection = proj?.selection
 			if (!selection) return
 			const key = `${selection.provider}/${selection.model}`
 			if (key === this.#contextWindowKey) return
@@ -713,8 +810,9 @@ export class RemoteHostSession {
 	/** /session panel snapshot (batch F4; host-session.ts twin).
 	 * messageCount is adapter-side (the facade has no transcript cache).
 	 * contextTokens/contextWindow (footer context batch) feed the 🧠
-	 * segment: the occupancy estimate and the resolved model window
-	 * (undefined while the catalog doesn't name one). */
+	 * segment: the projection-derived occupancy (estimate fallback) and
+	 * the resolved model window (undefined while neither the projection
+	 * nor the catalog names one). Passive read — no refresh fired here. */
 	sessionInfo(): {
 		sessionId: string | undefined
 		model: string | undefined
@@ -741,7 +839,7 @@ export class RemoteHostSession {
 					? tokensPerSecond(this.#lastDecode.tokens, this.#lastDecode.ms)
 					: this.lastTurnStats.tps,
 			sessionAvgTps: tokensPerSecond(this.#decodeTotals.tokens, this.#decodeTotals.ms),
-			contextTokens: this.#contextMeter.tokens,
+			contextTokens: this.#usedTokens(),
 			contextWindow: this.#contextWindow,
 		}
 	}
@@ -802,7 +900,12 @@ export class RemoteHostSession {
 			this.#pendingModel = selection
 			return selection
 		}
-		return this.#modelClient().selectModel(sessionId, selection)
+		const selected = await this.#modelClient().selectModel(sessionId, selection)
+		// Route commit: the turn-gated projections row now names the previous
+		// route, so reopen the gate — the next footer read re-resolves the
+		// context window (and used numerator) off the new selection.
+		this.#invalidateContextProjections()
+		return selected
 	}
 
 	/** The host-generation model catalog (row 21; cached host-side parity). */
@@ -1645,6 +1748,18 @@ export class RemoteHostSession {
 	 */
 	#invalidateModelCatalog(): void {
 		this.#modelClient().invalidate()
+		// Route-affecting commit (settings write / credential push): the
+		// projections row's selection may have moved — reopen the turn gate so
+		// the next getter read re-resolves instead of serving the old route.
+		this.#invalidateContextProjections()
+	}
+
+	/** Route committed: reopen the projections gate, keep the cached row (the
+	 * next read refreshes it; dropping the row would flicker the footer to the
+	 * meter estimate) and re-resolve the window key. */
+	#invalidateContextProjections(): void {
+		this.#contextPressureTurn = -1
+		this.#contextWindowKey = ""
 	}
 
 	#settingsClient(): RemoteSettingsClient {
@@ -1659,9 +1774,15 @@ export class RemoteHostSession {
 		this.#journal = []
 		this.#lastDurableSeq = -1
 		// 🧠 occupancy (footer context batch): a fresh/resumed session
-		// restarts the estimate from zero; the window cache keeps — the
-		// catalog key check re-resolves on a route change anyway.
+		// restarts the estimate from zero, drops the previous session's
+		// pressure row (the tag check would discard it anyway) and its
+		// window key — the next getter read re-resolves the new session's
+		// own denominator from its projection (catalog fallback).
 		this.#contextMeter.reset()
+		this.#contextPressure = undefined
+		this.#contextProjections = undefined
+		this.#contextPressureTurn = -1
+		this.#contextWindowKey = ""
 	}
 
 	#addPushListener(listener: RemotePushListeners): () => void {
@@ -1906,6 +2027,15 @@ export class RemoteHostSession {
 		const resolve = this.#resolveTurn
 		this.#resolveTurn = undefined
 		this.#awaiting = false
+		// 🧠 occupancy (footer context batch): the turn boundary is the
+		// projection refresh point — the billed request folded a fresh
+		// contextPressure host-side, so the next getter read serves the
+		// exact used/window pair instead of the estimate (poll at turn
+		// boundaries; the observeProjections stream would only add a mux
+		// socket for sub-turn granularity the footer never repaints at).
+		// Forced: the turn's row was already fetched under this same #turns,
+		// so the getter gate would answer with the pre-turn row.
+		void this.#refreshContextPressure(true)
 		const cb = this.#cb
 		try {
 			cb?.onTurnEnd({ prompt: this.usage.prompt, completion: this.usage.completion })
@@ -2183,6 +2313,11 @@ export class RemoteHostSession {
 			this.#settleTurnIfEndedDuringGap()
 			await this.#repairJournalGap(opening, journalBefore, seqBefore)
 			this.#setReconnecting(false)
+			// 🧠 occupancy: after a host restart the projections fold fresh
+			// server-side — re-read so the footer doesn't serve a pre-restart
+			// row (the turn counter didn't move, so the getter gate alone
+			// wouldn't refresh — force bypasses it).
+			void this.#refreshContextPressure(true)
 		} catch (error) {
 			trace(`reattach FAIL attempt=${this.#reattachAttempts + 1} err=${error instanceof Error ? error.message : String(error)}`)
 			this.#reattachAttempts += 1

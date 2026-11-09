@@ -6,6 +6,7 @@
 // the status surface. Fake connection + fake mux sockets, real wire frames.
 import { describe, expect, test } from "bun:test"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
+import { RemoteModelClient } from "../src/client/remote-model.ts"
 import { RemoteRpcError, type ClientConnection } from "../src/client/transport.ts"
 import { FakeConnection, FakeMuxSocket, eventFrame, rpcOf, snapshotFrame, streamFrame, until, type RpcHandler } from "./client-fakes.ts"
 import type { TurnCallbacks } from "../src/agent/loop.ts"
@@ -216,6 +217,45 @@ describe("model cluster (rows 21+22)", () => {
 		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
 		await pending
 		await h.session.dispose()
+	})
+
+	test("sessionProjections parses modelSelection + contextPressure defensively in one round-trip", async () => {
+		const calls: { method: string; args: Record<string, unknown> }[] = []
+		let answer: unknown = {
+			values: {
+				modelSelection: { lastUsed: { provider: "prov-a", model: "big" }, next: { provider: "prov-b", model: "tiny" } },
+				contextPressure: { contextWindow: 128000, projectedTokens: 45000, pressureTokens: 42000 },
+			},
+		}
+		const client = new RemoteModelClient({
+			rpc: async (method, args) => {
+				calls.push({ method, args: args ?? {} })
+				return answer
+			},
+		})
+		const proj = await client.sessionProjections("sess-p9")
+		expect(calls).toEqual([{ method: "session/projections", args: { request: { sessionId: "sess-p9" } } }])
+		expect(proj.selection).toEqual({ provider: "prov-b", model: "tiny" })
+		expect(proj.pressure).toEqual({ contextWindow: 128000, projectedTokens: 45000, pressureTokens: 42000 })
+		// sessionSelection keeps its row-22 contract over the same answer
+		expect(await client.sessionSelection("sess-p9")).toEqual({ provider: "prov-b", model: "tiny" })
+
+		// no values / null answer → both rows absent
+		answer = {}
+		expect(await client.sessionProjections("sess-p9")).toEqual({})
+		answer = null
+		expect(await client.sessionProjections("sess-p9")).toEqual({})
+
+		// garbage fields read as absent: negative tokens, 0 window, wrong types
+		answer = {
+			values: {
+				modelSelection: { pending: { provider: "prov-a", model: "big" } },
+				contextPressure: { contextWindow: 0, projectedTokens: -5, pressureTokens: "lots", extra: true },
+			},
+		}
+		const garbage = await client.sessionProjections("sess-p9")
+		expect(garbage.selection).toEqual({ provider: "prov-a", model: "big" }) // next folds → pending
+		expect(garbage.pressure).toBeUndefined()
 	})
 })
 
