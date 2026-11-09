@@ -16,6 +16,8 @@ import {
 	unfocusedBorderColor,
 	warningColor,
 } from "../src/skin/semantic"
+import { activityRuleLines, TODO_MAX_ROWS, todosTableLines } from "../src/routes/session/widgets-dock"
+import type { SeamRow } from "../src/routes/session/seam-rows"
 import type { ComponentTheme } from "../src/theme/component"
 
 /** Minimal ComponentTheme stub: the resolvers only read these token paths,
@@ -120,6 +122,67 @@ describe("composer layout (H7 height formula + short-terminal rule)", () => {
 	test("focus blur debounce is a positive, frame-scale constant", () => {
 		expect(SKIN_FOCUS_BLUR_DEBOUNCE_MS).toBeGreaterThan(0)
 		expect(SKIN_FOCUS_BLUR_DEBOUNCE_MS).toBeLessThanOrEqual(100)
+	})
+})
+
+describe("80x24 budget with the persistent Todos (short-terminal form)", () => {
+	// v2 page fixed rows outside the composer: powerline 1 + hints 1.
+	const FIXED_PAGE_ROWS = 2
+	// The `●` lastRequest echo is one fixed row below the composer.
+	const ECHO_ROWS = 1
+	// The activity frame's short-terminal form is still exactly two rows.
+	const ACTIVITY_RULE_ROWS = 2
+	// 8 todos with the last in progress = the worst table window (5 shown).
+	const todoRow: SeamRow = {
+		key: "tool:live:todo",
+		kind: "tool",
+		name: "todo_write",
+		args: JSON.stringify({
+			todos: Array.from({ length: 8 }, (_, i) => ({
+				content: `t${i + 1}`,
+				status: i === 7 ? "in_progress" : "pending",
+			})),
+		}),
+		status: "done",
+		faded: true,
+		output: JSON.stringify({ message: { content: [{ type: "text", text: "Updated todo list." }] } }),
+	}
+
+	test("the wide (bordered) table blows the 8-row middle band — why the summary exists", () => {
+		const { height } = composerLayout({ textareaLines: 8, footerRows: 0, paletteRows: 6, terminalRows: 24 })
+		expect(height).toBe(14) // compact: no border rows
+		const middle = 24 - FIXED_PAGE_ROWS - height // 8
+		expect(middle).toBe(8)
+		// The reviewed commit rendered the full table at 80x24: 4 chrome rows
+		// + TODO_MAX_ROWS entries, plus activity rule + echo.
+		const wide = todosTableLines([todoRow], 80, COMPOSER_COMPACT_TERMINAL_ROWS + 1)
+		expect(wide).toHaveLength(4 + TODO_MAX_ROWS)
+		expect(middle - (wide.length + ACTIVITY_RULE_ROWS + ECHO_ROWS)).toBeLessThan(6)
+	})
+
+	test("80x24: compact form is ONE row, so the transcript floor holds", () => {
+		// Short terminals collapse the table to the single summary line.
+		const compact = todosTableLines([todoRow], 80, 24)
+		expect(compact).toHaveLength(1)
+		expect(compact[0]!.text).toBe("todos [✓]0/8 · t8")
+		const activity = activityRuleLines([todoRow])
+		expect(activity).toHaveLength(ACTIVITY_RULE_ROWS)
+
+		// Synthetic busy envelope (palette 6 + textarea 8 = 14): the chrome
+		// (summary 1 + rule 2 + echo 1 = 4) now fits the 8-row band and leaves
+		// 4 rows; the old 9-row table left −4.
+		const { height } = composerLayout({ textareaLines: 8, footerRows: 0, paletteRows: 6, terminalRows: 24 })
+		const middle = 24 - FIXED_PAGE_ROWS - height
+		const chrome = compact.length + activity.length + ECHO_ROWS
+		expect(chrome).toBe(4)
+		expect(middle - chrome).toBe(4)
+
+		// The physically simultaneous busy composer (a turn is in flight, so
+		// the slash palette is closed: textarea 8 + palette 0) keeps the full
+		// ≥6-row transcript guarantee with the same chrome.
+		const physical = composerLayout({ textareaLines: 8, footerRows: 0, paletteRows: 0, terminalRows: 24 })
+		const physicalMiddle = 24 - FIXED_PAGE_ROWS - physical.height // 14
+		expect(physicalMiddle - chrome).toBeGreaterThanOrEqual(6)
 	})
 })
 

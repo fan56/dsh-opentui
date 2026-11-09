@@ -260,6 +260,23 @@ export function latestTodos(rows: readonly SeamRow[]): Todo[] {
 	return parseTodos(todoArray(source) ?? [])
 }
 
+/** The one-line Todos summary (the pre-table form): `todos [✓]done/total`
+ * plus ` · <active item>` while an item is in progress. No todos, or every
+ * todo completed → '' (clear-when-done, same as the table). This is the
+ * SHORT-TERMINAL form: the persistent table would spend 4 chrome rows + up
+ * to TODO_MAX_ROWS entries of the 80x24 middle band, which only has 8 rows
+ * (transcript floor 6 + activity rule 2) — one summary line keeps the
+ * transcript contract intact while the todos stay visible. */
+export function todosSummaryLine(rows: readonly SeamRow[]): string {
+	const todos = latestTodos(rows)
+	if (todos.length === 0) return ""
+	const done = todos.filter((todo) => todo.status === "completed").length
+	if (done === todos.length) return ""
+	const active = todos.find((todo) => todo.status === "in_progress")
+	const head = `todos [✓]${done}/${todos.length}`
+	return active ? `${head} · ${active.content}` : head
+}
+
 /** The Todos table (pure, dsh-tui-pi `TodosPanel` parity): a bordered box
  * with the `● Todos (done/total)` header (plus a `· showing 4-8` range hint
  * when the 5-row window hides rows), the `# │ ✓ │ Task` table header and one
@@ -267,12 +284,23 @@ export function latestTodos(rows: readonly SeamRow[]): Todo[] {
  * completed → zero rows (clear-when-done). `width` is the box's terminal
  * columns (box drawing included).
  *
+ * Short terminals (`terminalRows` at or below the composer's compact
+ * threshold — the coordinated lane, skin/semantic.ts) collapse the whole
+ * box to the ONE-LINE `todosSummaryLine` instead. The bordered table's
+ * worst case is 9 rows; the 80x24 middle band is only 8 rows for the
+ * transcript (≥6) plus the activity rule (2), so the table must never
+ * render there. `terminalRows` omitted = no terminal knowledge, keep the
+ * table (pure callers/tests).
+ *
  * Line granularity: the dock paints one <text> per table row, so each row
  * carries ONE tone — border/header rows are muted, a todo row takes its
  * status color (completed → ok, in-progress → running, pending → muted). */
-export function todosTableLines(rows: readonly SeamRow[], width: number): DockLine[] {
+export function todosTableLines(rows: readonly SeamRow[], width: number, terminalRows?: number): DockLine[] {
 	const todos = latestTodos(rows)
 	if (todos.length === 0 || todos.every((todo) => todo.status === "completed")) return []
+	if (terminalRows !== undefined && terminalRows <= COMPOSER_COMPACT_TERMINAL_ROWS) {
+		return [{ text: todosSummaryLine(rows), tone: "muted", id: "dock:todos" }]
+	}
 	const boxWidth = Math.max(16, width)
 	const innerWidth = boxWidth - 4
 	const colWidths = [3, 2, Math.max(8, innerWidth - 5 - TABLE_SEP.length * 2)]
@@ -439,11 +467,15 @@ export function activityLines(rows: readonly SeamRow[]): [DockLine, DockLine] {
 
 /** Compact-terminal form (contract 矮终端): the frame collapses to a left
  * rule with the title written into the first line (H2 mitigation), still
- * exactly two rows. */
+ * exactly two rows. The think slot keeps its TEXT here — the live burst is
+ * the point of the panel, so dropping it for the bare `┃ activity` title
+ * (the pre-fix bug) hid the reasoning content whenever the frame mode
+ * flipped to the rule. */
 export function activityRuleLines(rows: readonly SeamRow[]): [DockLine, DockLine] {
 	const [think, tool] = activityLines(rows)
+	const head = think.text === "" ? "┃ activity" : `┃ activity · ${think.text}`
 	return [
-		{ ...think, text: `┃ activity`, id: "dock:activity-head" },
+		{ ...think, text: head, id: "dock:activity-head" },
 		{ ...tool, text: tool.text === "" ? "" : `┃ ${tool.text}` },
 	]
 }
@@ -604,8 +636,10 @@ export function WidgetsDock(props: {
 	const width = () => Math.max(16, dimensions().width - 4)
 	// Todos table width: the tui-pi box spans the widget slot at paddingX=1
 	// (`columns - 2`), independent of the skin's 3-column line indent.
+	// Short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS) collapse it to the
+	// one-line summary so the transcript keeps its ≥6-row floor.
 	const tableWidth = () => Math.max(16, dimensions().width - 2)
-	const table = () => todosTableLines(props.rows, tableWidth())
+	const table = () => todosTableLines(props.rows, tableWidth(), dimensions().height)
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
 	// Mitigation 1: the frame's Show reads the DEFERRED latch, not the raw
 	// turn liveness — mount/unmount land one render tick after the flip

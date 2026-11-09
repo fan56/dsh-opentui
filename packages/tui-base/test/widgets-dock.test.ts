@@ -92,6 +92,27 @@ describe("todosTableLines (dsh-tui-pi TodosPanel parity)", () => {
 		expect(lines.find((line) => line.includes("◐"))).toContain("8")
 	})
 
+	test("short terminals (≤30 rows): the table collapses to ONE summary line", () => {
+		const rows = [
+			toolRow([
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "in_progress" },
+				{ content: "c", status: "pending" },
+			]),
+		]
+		// 80x24: the persistent table's 9-row worst case cannot fit the
+		// middle band (transcript 6 + activity rule 2 = 8) — one line only.
+		const compact = todosTableLines(rows, 80, 24)
+		expect(compact).toHaveLength(1)
+		expect(compact[0]!.text).toBe("todos [✓]1/3 · b")
+		expect(compact[0]!.id).toBe("dock:todos")
+		// Same clear-when-done law in the compact form.
+		expect(todosTableLines([toolRow([{ content: "a", status: "completed" }])], 80, 24)).toEqual([])
+		// Above the threshold the bordered table returns (31 rows > 30):
+		// 4 chrome rows + one row per todo.
+		expect(todosTableLines(rows, 80, 31)).toHaveLength(4 + 3)
+	})
+
 	test("no todos / all completed → zero rows (clear-when-done)", () => {
 		expect(table([])).toEqual([])
 		expect(table([toolRow([])])).toEqual([])
@@ -272,6 +293,20 @@ describe("skin turn-lifetime activity frame", () => {
 		expect(rule).toHaveLength(2)
 		expect(rule[0]!.text).toBe("┃ activity")
 		expect(rule[1]!.text.startsWith("┃ ")).toBe(true)
+	})
+	test("compact form keeps the think text (rule head carries it, not a bare title)", () => {
+		// Tool-only turns keep the bare title (above); a streaming think burst
+		// must NOT be swallowed by it — the old form overwrote the think slot
+		// with `┃ activity` and rendered nothing of the reasoning.
+		const thinkOnly = activityRuleLines([thinkLive])
+		expect(thinkOnly[0]!.text.startsWith("┃ activity · 💭 thinking · ")).toBe(true)
+		expect(thinkOnly[0]!.text).toContain(" · x")
+		// Think + tool: the head carries the think text, row 2 the tool line.
+		const both = activityRuleLines([thinkLive, toolRun])
+		expect(both[0]!.text).toContain("thinking")
+		expect(both[1]!.text).toContain("bash")
+		// Still exactly two rows — the collapse never grew.
+		expect(both).toHaveLength(2)
 	})
 	test("frame vs rule follows the composer compact threshold (coordinated lanes)", () => {
 		expect(activityFrameMode(24)).toBe("rule")
