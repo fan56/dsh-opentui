@@ -53,7 +53,7 @@ export type LastRequestLine = {
 	id?: string
 	/** Extra leading columns (dsh-tui-pi: the ` ● ` request echo starts one
 	 * column right of the `├─ ` child rows — Text paddingX=1 + an inner
-	 * leading space). Applied at render, AFTER the width clip. */
+	 * leading space). Deducted from the echo line's clip budget at render. */
 	indent?: number
 }
 
@@ -174,8 +174,15 @@ export function LastRequestDock(props: {
 	const theme = useThemeOptional()
 	const fgFor = (tone: LastRequestLine["tone"]): string | RGBA =>
 		tone === "running" ? (theme?.text.feedback.warning.base ?? "#e0af68") : (theme?.text.muted ?? "#9aa5ce")
-	const width = () => Math.max(16, dimensions().width - 5)
-	const lines = () => lastRequestLines(props.rows, props.lastRequest, width())
+	// Width law (walign geometry × subtail tail): the dock box carries
+	// paddingLeft=1, so the content area is `columns - 1`. The echo line then
+	// spends one more column on its `indent` (the `● ` prefix is inside the
+	// text), while child lines carry their `├─ ` track inside the text and
+	// childLineText's own budget. Clip each line to the columns it really
+	// has, so neither the indent nor the track can push a row past the slot.
+	const contentWidth = () => Math.max(16, dimensions().width - 1)
+	const lineWidth = (line: LastRequestLine) => Math.max(1, contentWidth() - (line.indent ?? 0))
+	const lines = () => lastRequestLines(props.rows, props.lastRequest, contentWidth())
 	// δ: entrance fade (0.4s faint → target) on the shared skin palette; the
 	// re-render cadence rides the widgets dock's shared-clock dockSpin tick.
 	const lineFg = (line: LastRequestLine): string | RGBA => {
@@ -190,7 +197,7 @@ export function LastRequestDock(props: {
 			<For each={lines()}>
 				{(line) => (
 					<text fg={lineFg(line)} wrapMode="none">
-						{`${" ".repeat(line.indent ?? 0)}${clipToWidth(line.text, width())}`}
+						{`${" ".repeat(line.indent ?? 0)}${clipToWidth(line.text, lineWidth(line))}`}
 					</text>
 				)}
 			</For>
