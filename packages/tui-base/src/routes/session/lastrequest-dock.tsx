@@ -3,8 +3,8 @@
  * (dsh-tui-pi live-widgets activityDoc structure):
  *
  *   ● <last submitted prompt>          — muted, one row, first line only
- *   ├─ ⠋ <label> · 13.6s · ↻2 · <tail> — one line PER RUNNING child
- *   └─ ⠋ <label> · 2.1s · ↻1 · <tail>
+ *   ├─ ⠋ <label> · 13.6s · round 2 · <tail> — one line PER RUNNING child
+ *   └─ ⠋ <label> · 2.1s · round 1 · <tail>
  *
  * Semantics (tui-pi live-widgets.ts):
  *   - the `●` line tracks MODEL prompts only — slash commands never set it
@@ -40,6 +40,12 @@ import { dockSpin, skinFadeInColor, skinLineFadeT, SKIN_FADE_IN_MS } from "./wid
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+/** The ` · ` separator between the meta block and the content tail. */
+const TAIL_SEP_COLS = 3
+/** Columns of tail a narrow dock keeps before dropping it entirely — the
+ * live signal never disappears while a stub still fits. */
+const MIN_TAIL_COLS = 2
+
 export type LastRequestLine = {
 	text: string
 	tone: "muted" | "running"
@@ -56,17 +62,24 @@ export function requestEchoLine(text: string | undefined): string | undefined {
 }
 
 
-/** One running-child line (pure): `├─/└─ ⠋ <label> · Xs · ↻N · <tail>` —
- * tui-pi compactAgentLine shape, reduced to the seam's facts (label,
+/** One running-child line (pure): `├─/└─ ⠋ <label> · Xs · round N · <tail>`
+ * — tui-pi compactAgentLine shape, reduced to the seam's facts (label,
  * elapsed, assistant-message round count, content tail; NO model, NO
  * token/context meta — tui-pi keeps those for the viewer). Settled
  * children never render here.
  *
+ * Rounds: `round N` (tui-pi `misc.agent.rounds`, en locale "round {n}"). The
+ * seam row carries no maxRounds cap, so tui-pi's `/M` suffix is absent.
+ * Deliberately NOT `↻N`: that glyph is tui-pi's LLM RETRY counter
+ * (`↻retries≤max`, live-widgets.ts:510-512) — reusing it for rounds would
+ * read as "2 retries", the exact misreading this shape avoids.
+ *
  * Tail law (tui-pi live-widgets.ts compactAgentLine): the tail is the
  * child's latest CONTENT line — last non-blank line of the folded buffer,
- * whitespace-collapsed onto one row. It always wins the width fight: the
- * label is clipped first so a long delegation label can never push the
- * live signal off the right edge. */
+ * whitespace-collapsed onto one row (line TAIL, never line head — the live
+ * delta fold and the durable-record fold both take the last line). It wins
+ * the width fight: the label is clipped first, and the tail keeps at least
+ * MIN_TAIL_COLS whenever the width allows any tail at all. */
 export function childLineText(
 	child: Extract<SeamRow, { kind: "subagents" }>["children"][number],
 	isLast: boolean,
@@ -78,9 +91,9 @@ export function childLineText(
 	const elapsed =
 		child.startedAt !== undefined ? ` · ${((Date.now() - child.startedAt) / 1000).toFixed(1)}s` : ""
 	// Rounds = the child's assistant-message count (one LLM round-trip per
-	// message, tui-pi `round N` parity). Always shown — `↻0` proves the
-	// counter is live on a freshly spawned child.
-	const rounds = ` · ↻${child.rounds}`
+	// message, tui-pi `round {n}` parity). Always shown — `round 0` proves
+	// the counter is live on a freshly spawned child.
+	const rounds = ` · round ${child.rounds}`
 	const meta = `${elapsed}${rounds}`
 	const head = `${track}${glyph}`
 	const tail = lastVisibleLine(child.lastLine)
@@ -89,17 +102,20 @@ export function childLineText(
 		return width === undefined ? plain : clipToWidth(plain, width)
 	}
 	if (width === undefined) return `${head}${child.label}${meta} · ${tail}`
-	// tui-pi width law: the tail gets a reserved slice of the remainder, the
-	// label absorbs the rest (clipped) — a long delegation label can never
-	// push the live signal off the right edge. ` · ` costs 3 columns.
+	// Width law (tui-pi nameCap + tail priority): the label caps at 40% of
+	// what the meta leaves, and is further clipped so the ` · ` separator
+	// plus a MIN_TAIL_COLS tail stub always fit — a narrow dock clips the
+	// label, it never silently drops the live signal. The tail then takes
+	// everything the label leaves (it wins the width fight). tui-pi's
+	// 10-column label floor is deliberately dropped: at narrow widths it
+	// let the label eat the tail entirely.
 	const available = width - stringWidth(head) - stringWidth(meta)
 	if (available <= 0) return clipToWidth(`${head}${child.label}${meta}`, width)
-	const tailNeeded = stringWidth(tail) + 3
-	const tailShow = Math.min(tailNeeded, Math.max(0, available - 8))
-	const labelBudget = Math.max(0, available - tailShow)
-	const label = clipToWidth(child.label, labelBudget)
-	const tailBudget = available - stringWidth(label) - 3
-	if (tailBudget < 2) return clipToWidth(`${head}${label}${meta}`, width)
+	const labelCap = Math.floor(available * 0.4)
+	const labelRoom = Math.max(0, available - TAIL_SEP_COLS - MIN_TAIL_COLS)
+	const label = clipToWidth(child.label, Math.min(labelCap, labelRoom))
+	const tailBudget = available - stringWidth(label) - TAIL_SEP_COLS
+	if (tailBudget < MIN_TAIL_COLS) return clipToWidth(`${head}${label}${meta}`, width)
 	return `${head}${label}${meta} · ${clipToWidth(tail, tailBudget)}`
 }
 

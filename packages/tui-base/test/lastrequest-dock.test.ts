@@ -37,10 +37,12 @@ describe("childLineText", () => {
 			spin,
 		)
 		expect(line.startsWith("└─ ⠋ looper · ")).toBe(true)
-		expect(line).toContain(" · ↻2 · ")
+		expect(line).toContain(" · round 2 · ")
 		expect(line.endsWith(" · on it")).toBe(true)
 		// tui-pi parity: the compact line carries NO model segment.
 		expect(line).not.toContain("(")
+		// `round N`, never `↻N` — that glyph is tui-pi's llm RETRY counter.
+		expect(line).not.toContain("↻")
 	})
 	test("track: ├─ for non-final rows, └─ for the last", () => {
 		const child = { id: "c", label: "x", status: "running" as const, rounds: 0 }
@@ -49,7 +51,7 @@ describe("childLineText", () => {
 	})
 	test("no startedAt: no elapsed segment (rounds always shown)", () => {
 		const line = childLineText({ id: "c", label: "x", status: "running", rounds: 0 }, true, spin)
-		expect(line).toBe("└─ ⠋ x · ↻0")
+		expect(line).toBe("└─ ⠋ x · round 0")
 	})
 	test("tail: last NON-BLANK line (a trailing newline never blanks it)", () => {
 		const line = childLineText(
@@ -57,11 +59,11 @@ describe("childLineText", () => {
 			true,
 			spin,
 		)
-		expect(line).toBe("└─ ⠋ x · ↻1 · hi")
+		expect(line).toBe("└─ ⠋ x · round 1 · hi")
 	})
 	test("tail: whitespace folds onto one row", () => {
 		const line = childLineText({ id: "c", label: "x", status: "running", rounds: 1, lastLine: "a\t  b" }, true, spin)
-		expect(line).toBe("└─ ⠋ x · ↻1 · a b")
+		expect(line).toBe("└─ ⠋ x · round 1 · a b")
 	})
 	test("width: the tail keeps room; a long label clips first", () => {
 		const line = childLineText(
@@ -71,8 +73,23 @@ describe("childLineText", () => {
 			60,
 		)
 		expect(stringWidth(line)).toBeLessThanOrEqual(60)
-		expect(line).toContain("↻3")
+		expect(line).toContain("round 3")
 		expect(line.endsWith("hi")).toBe(true)
+	})
+	test("width: a NARROW dock keeps the tail and clips the label (never drops the tail)", () => {
+		// ` · round 0` leaves 10 columns after the 5-column `└─ ⠋ ` head; the
+		// old law reserved 8 for the label and then dropped the tail entirely.
+		const line = childLineText({ id: "c", label: "abcdefghij", status: "running", rounds: 0, lastLine: "hi" }, true, spin, 25)
+		expect(stringWidth(line)).toBeLessThanOrEqual(25)
+		expect(line.endsWith("hi")).toBe(true)
+		expect(line).toContain("round 0")
+	})
+	test("width: at the narrowest usable budget the label yields, the tail keeps its 2-column stub", () => {
+		const line = childLineText({ id: "c", label: "abcdefghij", status: "running", rounds: 0, lastLine: "hello" }, true, spin, 20)
+		expect(stringWidth(line)).toBeLessThanOrEqual(20)
+		// 2 columns of tail = one visible glyph + the clip ellipsis.
+		expect(line.endsWith("h…")).toBe(true)
+		expect(line).not.toContain("abc")
 	})
 })
 
@@ -119,7 +136,7 @@ describe("lastRequestLines", () => {
 		const lines = lastRequestLines(rows, undefined, 48)
 		expect(lines).toHaveLength(1)
 		expect(stringWidth(lines[0]!.text)).toBeLessThanOrEqual(48)
-		expect(lines[0]!.text).toContain("↻4")
+		expect(lines[0]!.text).toContain("round 4")
 		expect(lines[0]!.text.endsWith("hi")).toBe(true)
 	})
 })
