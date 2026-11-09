@@ -104,14 +104,14 @@ export class RemoteModelClient {
 						const model = (typeof m === "object" && m !== null ? m : {}) as Record<string, unknown>
 						const reasoning = (typeof model.reasoning === "object" && model.reasoning !== null ? model.reasoning : null) as Record<string, unknown> | null
 						const efforts = reasoning && Array.isArray(reasoning.efforts) ? reasoning.efforts : []
-					return {
-						id: String(model.id ?? ""),
-						name: String(model.name ?? model.id ?? ""),
-						// contextWindow passthrough (footer context batch): the
-						// dsh-llm catalog model rows carry it when disclosed; the
-						// 🧠 segment degrades to the bare `used` shape without.
-						...(typeof model.contextWindow === "number" ? { contextWindow: model.contextWindow } : {}),
-						...(reasoning
+						return {
+							id: String(model.id ?? ""),
+							name: String(model.name ?? model.id ?? ""),
+							// contextWindow passthrough (footer context batch): the
+							// dsh-llm catalog model rows carry it when disclosed; the
+							// 🧠 segment degrades to the bare `used` shape without.
+							...(typeof model.contextWindow === "number" ? { contextWindow: model.contextWindow } : {}),
+							...(reasoning
 								? {
 										reasoning: {
 											efforts: efforts.map((e) => {
