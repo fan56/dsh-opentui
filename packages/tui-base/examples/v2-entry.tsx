@@ -67,7 +67,7 @@ import {
 	setMotionBusy,
 	setMotionTier,
 } from "../src/skin/motion"
-import { PowerlineFooter, sessionFooterSegments } from "../src/routes/session/powerline"
+import { PowerlineFooter, sessionFooterSegments, effortFromModelLabel, EFFORT_ICONS, type EffortLevel } from "../src/routes/session/powerline"
 import { StatusBar } from "../src/routes/session/status-bar"
 // Shell-side modules load through COMPUTED dynamic imports: a static
 // import would pull shell's client graph into tui-base's tsc program (11
@@ -112,6 +112,10 @@ function V2SessionPage(props: {
 		// Skin wiring (contract §1 报错通知): turn errors surface as a
 		// pulsing ⚠ notice alongside the transcript error row.
 		onError: (message) => showNotice(`error: ${message}`, undefined, "error"),
+		// Footer-quickwins (tui-pi 🔧 tools parity): the 🛠 footer segment
+		// counts settled tool runs off the store's onToolRun passthrough —
+		// replaces the hardcoded `tools: 0`. Reset on session clear/reload.
+		onToolRun: () => setTools((n) => n + 1),
 	})
 	const dialog = useDialog()
 	const theme = useTheme()
@@ -126,6 +130,13 @@ function V2SessionPage(props: {
 	const [busySince, setBusySince] = createSignal(0)
 	const [msgs, setMsgs] = createSignal(0)
 	const [model, setModel] = createSignal<{ providerID: string; modelID: string } | undefined>()
+	// Footer-quickwins (tui-pi footer parity): local tool-run count (🛠, reset
+	// on session clear), the model segment's effort level, and the remote
+	// session snapshot (durable user+assistant message count + decode-window
+	// tok/s). Local msgs stays the fallback while the seam has no sessionInfo.
+	const [tools, setTools] = createSignal(0)
+	const [effort, setEffort] = createSignal<EffortLevel | undefined>()
+	const [remoteInfo, setRemoteInfo] = createSignal<{ messageCount?: number; tps?: number | null }>()
 	const [now, setNow] = createSignal(new Date())
 	// Batch H2 (tui-pi 60-preset footer parity) — host-entry-v2 parity: the
 	// current agent preset's display label for the brand segment
@@ -165,6 +176,7 @@ function V2SessionPage(props: {
 	onMount(() => {
 		void projection.load()
 		void seam.currentModelSelection().then(setModel)
+		refreshFooterData()
 		refreshPresetLabel()
 		if (pendingMigrationNotice) {
 			showNotice(pendingMigrationNotice)
@@ -199,12 +211,43 @@ function V2SessionPage(props: {
 		const mode = readCacheHitMode(seam.configLoad?.())
 		return seam.cacheHitRate?.(mode) ?? null
 	}
+	// Footer-quickwins (tui-pi footer parity): refresh the model segment's
+	// effort level and the remote session snapshot (durable message count +
+	// decode-window tok/s). Effort prefers the seam's thinking face
+	// (currentEffort — read-only, no adapter/host change) and falls back to
+	// parsing the sessionInfo().model label ("provider/model (effort)");
+	// neither surface answers → undefined → the segment renders without a
+	// level. Called on mount, on session reload and at every turn end.
+	const refreshFooterData = () => {
+		void Promise.resolve(seam.thinking?.currentEffort())
+			.then((word) => {
+				const known = word && word in EFFORT_ICONS ? (word as EffortLevel) : undefined
+				if (known) setEffort(known)
+				return known
+			})
+			.catch(() => undefined)
+		void seam.sessionInfo?.().then((info) => {
+			if (!info) return
+			setRemoteInfo({ messageCount: info.messageCount, tps: info.lastTurnTps ?? info.sessionAvgTps })
+			setEffort((current) => current ?? effortFromModelLabel(info.model))
+		}).catch(() => undefined)
+	}
+	// Turn-end refresh (⚡ tok/s + 💬 message count move at turn boundaries —
+	// the same reactive trick cacheRate uses above).
+	createEffect(() => {
+		if (!turnBusy()) refreshFooterData()
+	})
 	const segments = () =>
 		sessionFooterSegments({
 			provider: model()?.providerID,
 			model: model()?.modelID,
-			messages: msgs(),
-			tools: 0,
+			effort: effort(),
+			// Durable user+assistant count from the seam's session snapshot; the
+			// local send-count stays the fallback while the seam has no
+			// sessionInfo (or the session is too young to answer).
+			messages: remoteInfo()?.messageCount ?? msgs(),
+			tools: tools(),
+			tps: remoteInfo()?.tps ?? null,
 			cacheHitRate: cacheRate(),
 			presetLabel: presetLabel(),
 			theme,
@@ -310,13 +353,20 @@ function V2SessionPage(props: {
 		clear: () => {
 			projection.hydrate([])
 			setLastRequest(undefined)
+			// Footer-quickwins: a session switch resets the LOCAL footer counters
+			// (🛠 tool runs are per-session local; the remote 💬 count re-reads).
+			setTools(0)
+			refreshFooterData()
 			resetSkinLineFades()
 		},
 		reload: () => {
 			setLastRequest(undefined)
+			// Footer-quickwins: same per-session reset on /fork//resume switches.
+			setTools(0)
 			resetSkinLineFades()
 			const settled = projection.load()
 			void seam.currentModelSelection().then(setModel)
+			refreshFooterData()
 			refreshPresetLabel()
 			return settled
 		},

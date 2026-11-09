@@ -166,6 +166,10 @@ export function createSeamRows(
 		 * callback AND the `session.error` host relay) also lands here with
 		 * the bare message — the page shows it as a pulsing error notice. */
 		onError?: (message: string) => void
+		/** Tool-settle passthrough (footer-quickwins): the page counts live
+		 * tool runs off this hook for the 🛠 footer segment (tui-pi parity —
+		 * the store's own onToolRun folds the row, then re-emits here). */
+		onToolRun?: SeamTurnCallbacks["onToolRun"]
 		thinkFadeMs?: number
 		toolFadeMs?: number
 	},
@@ -560,6 +564,7 @@ export function createSeamRows(
 					...(startedAt !== undefined ? { elapsedSec: Number(((Date.now() - startedAt) / 1000).toFixed(1)) } : {}),
 				})
 				scheduleToolFade(`tool:live:${run.callId ?? run.name}`)
+				options?.onToolRun?.(run)
 			},
 			onApprove: options?.onApprove ?? approveThrough,
 			onError: (message) => {

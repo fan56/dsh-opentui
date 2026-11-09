@@ -79,12 +79,15 @@ describe("segment builders", () => {
 		expect(fallback.bg).toBe(POWERLINE_COLORS.brand.toLowerCase())
 	})
 
-	test("provider / model omit on empty labels; model carries ◕ effort", () => {
+	test("provider carries the ☁️ lead; model shows the per-level effort glyph (tui-pi parity)", () => {
 		expect(providerSegment("", undefined)).toBeNull()
-		expect(providerSegment("bigmodel", undefined)?.text).toBe("bigmodel")
+		expect(providerSegment("bigmodel", undefined)?.text).toBe("☁️ bigmodel")
 		expect(modelSegment("", "high")).toBeNull()
 		expect(modelSegment("glm-5.3-flash", "off")?.text).toBe("🤖 glm-5.3-flash")
-		expect(modelSegment("glm-5.3-flash", "high")?.text).toBe("🤖 glm-5.3-flash ◕ high")
+		// tui-pi thinkingIcon ladder: minimal ◔ / low ◑ / medium ◕ / high ● / xhigh ◉ / max ★.
+		expect(modelSegment("glm-5.3-flash", "medium")?.text).toBe("🤖 glm-5.3-flash ◕ medium")
+		expect(modelSegment("glm-5.3-flash", "max")?.text).toBe("🤖 glm-5.3-flash ★ max")
+		expect(modelSegment("glm-5.3-flash", "minimal")?.text).toBe("🤖 glm-5.3-flash ◔ minimal")
 	})
 
 	test("model fill follows the effort ramp (theme tokens)", () => {
@@ -134,8 +137,8 @@ describe("footer assembly", () => {
 		})
 		expect(segs.map((s) => s.text)).toEqual([
 			"dsh",
-			"bigmodel",
-			"🤖 glm-5.3-flash ◕ high",
+			"☁️ bigmodel",
+			"🤖 glm-5.3-flash ● high",
 			"🧠 42%",
 			"💬 2",
 			// Batch D3: no hint segment — hints moved to the last row.

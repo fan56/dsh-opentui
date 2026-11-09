@@ -221,8 +221,9 @@ export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode:
 }
 
 /**
- * The provider segment (providerID on the purple/interactive fill). `mode`
- * feeds providerFill's brand-collision walk (see POWERLINE_MIN_SEGMENT_DISTANCE).
+ * The provider segment (providerID on the purple/interactive fill, ☁️ lead —
+ * tui-pi footer parity). `mode` feeds providerFill's brand-collision walk
+ * (see POWERLINE_MIN_SEGMENT_DISTANCE).
  */
 export function providerSegment(
 	provider: string,
@@ -230,18 +231,53 @@ export function providerSegment(
 	mode: SkinColorMode = "dark",
 ): PowerlineSegment | null {
 	if (!provider) return null
-	if (!theme) return { text: provider, bg: POWERLINE_COLORS.provider }
-	return { text: provider, bg: powerlinePalette(theme, brandBlue(mode)).provider }
+	const label = `☁️ ${provider}`
+	if (!theme) return { text: label, bg: POWERLINE_COLORS.provider }
+	return { text: label, bg: powerlinePalette(theme, brandBlue(mode)).provider }
 }
 
-/** The 🤖 model segment; effort rides along (◕ level) when not "off". */
+/**
+ * tui-pi thinkingIcon parity: the effort ladder's seven fills get the same
+ * seven-step glyph ramp (minimal ◔ → low ◑ → medium ◕ → high ● → xhigh ◉ →
+ * max ★). `off` shows NO glyph (the word would be noise — tui-pi's default
+ * ○ is the catch-all for UNKNOWN levels instead, so a provider-specific
+ * effort string still renders something).
+ */
+export const EFFORT_ICONS: Record<EffortLevel, string> = {
+	off: "",
+	minimal: "◔",
+	low: "◑",
+	medium: "◕",
+	high: "●",
+	xhigh: "◉",
+	max: "★",
+}
+
+/** The glyph for one effort level: `off` is empty, unknown levels fall to ○. */
+export function effortIcon(effort: string): string {
+	return EFFORT_ICONS[effort as EffortLevel] ?? "○"
+}
+
+/**
+ * Parse the effort word off the sessionInfo().model label ("provider/model[
+ * (effort)]" — seams/session.ts SeamSessionInfo.model). Returns the trailing
+ * parenthesized word when it names a known effort level, else undefined —
+ * the read-side fallback where the host carries no dedicated effort getter.
+ */
+export function effortFromModelLabel(label: string | null | undefined): EffortLevel | undefined {
+	const m = /\(([^)]+)\)\s*$/.exec(label ?? "")
+	const word = m?.[1]?.trim() as EffortLevel | undefined
+	return word && word in EFFORT_ICONS ? word : undefined
+}
+
+/** The 🤖 model segment; effort rides along with its ladder glyph (◔…★) when not "off". */
 export function modelSegment(
 	model: string,
 	effort: EffortLevel = "off",
 	theme?: ComponentTheme,
 ): PowerlineSegment | null {
 	if (!model) return null
-	const label = effort === "off" ? `🤖 ${model}` : `🤖 ${model} ◕ ${effort}`
+	const label = effort === "off" ? `🤖 ${model}` : `🤖 ${model} ${effortIcon(effort)} ${effort}`
 	return { text: label, bg: resolvePalette(theme).thinking[effort] }
 }
 
