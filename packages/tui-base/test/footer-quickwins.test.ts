@@ -266,22 +266,42 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 	const source = readFileSync(join(import.meta.dir, "..", "examples", "v2-entry.tsx"), "utf8")
 
 	test("a missing sessionInfo snapshot CLEARS remoteInfo instead of keeping the stale one", () => {
-		expect(source).toMatch(/if \(!info\) \{\s*\n\s*setRemoteInfo\(undefined\)\s*\n\s*return\s*\n\s*\}/)
+		expect(source).toMatch(/if \(!info\) \{\s*\n\s*setRemoteInfo\(undefined\)\s*\n\s*settleEffort\(\)\s*\n\s*return\s*\n\s*\}/)
 		// the guard sits inside refreshFooterData's sessionInfo chain, before setRemoteInfo({...})
 		expect(source.indexOf("if (!info) {")).toBeGreaterThan(source.indexOf("seam.sessionInfo?.()"))
 		expect(source.indexOf("if (!info) {")).toBeLessThan(source.indexOf("setRemoteInfo({ messageCount"))
 	})
 
-	test("an unknown effort word CLEARS the stale level (no last-known pinning)", () => {
-		// setEffort(known) runs UNCONDITIONALLY — known may be undefined.
-		expect(source).toMatch(/const known = word && word in EFFORT_ICONS \? \(word as EffortLevel\) : undefined\s*\n\s*\/\/ Unknown word CLEARS the stale level[^\n]*\n\s*setEffort\(known\)/)
+	test("both effort sources settle before the default lands (review 3.3)", () => {
+		// The two answers are aggregated: the seam's currentEffort AND the
+		// sessionInfo label parse. Neither may decide on its own — the old code
+		// painted effectiveEffort(undefined) = high as soon as the thinking
+		// source answered and the label's explicit off never applied.
+		expect(source).toMatch(/let effortSourcesPending = 2/)
+		expect(source).toMatch(/if \(--effortSourcesPending > 0 \|\| seq !== footerRefreshSeq\) return/)
+		expect(source).toMatch(/const decision = decideEffort\(currentEffortWord, labelEffortWord\)/)
+		expect(source).toMatch(/setEffort\(decision\.display\)/)
+		expect(source).toMatch(/labelEffortWord = effortFromModelLabel\(info\.model\)/)
+		// Behavior half: only an unspecified level on a ladder that exposes high
+		// writes the default route (defaultEffortToApply owns the precedence).
+		expect(source).toMatch(/defaultEffortToApply\(decision\.explicit, ladder\.map\(\(entry\) => entry\.id\)\)/)
+		// EFFORT_ICONS is no longer an explicitness test anywhere in the entry.
+		expect(source).not.toMatch(/word in EFFORT_ICONS/)
 	})
 
 	test("a stale refresh is dropped by the ordinal guard before touching any signal", () => {
 		expect(source).toMatch(/const seq = \+\+footerRefreshSeq/)
-		// one guard at the top of each promise chain: effort, model selection,
-		// session snapshot (the model read is the /model //agents use fix)
-		expect(source.match(/if \(seq !== footerRefreshSeq\) return/g)?.length).toBe(3)
+		// One guard per promise stage: both effort sources (then + catch), the
+		// aggregate settle, the model selection, the session snapshot (then +
+		// catch; the model read is the /model //agents use fix) and the nested
+		// default-effort ladder read.
+		expect(source.match(/seq !== footerRefreshSeq/g)?.length).toBe(7)
+	})
+
+	test("the footer ordinal can be invalidated without a re-read (review 3.5)", () => {
+		// /think bumps the ordinal BEFORE the host accepts the pick, so a
+		// pending default-effort write can never land after the user's choice.
+		expect(source).toMatch(/invalidateFooter: \(\) => \{\s*\n\s*footerRefreshSeq\+\+\s*\n\s*\}/)
 	})
 
 	test("boot replays the persisted hint selection before the first paint", () => {

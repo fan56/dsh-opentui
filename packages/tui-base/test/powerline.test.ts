@@ -17,6 +17,12 @@ import {
 	speedSegment,
 	cacheSegment,
 	toolSegment,
+	contrastRatio,
+	effectiveEffort,
+	isExplicitEffort,
+	decideEffort,
+	defaultEffortToApply,
+	DEFAULT_EFFORT,
 	type EffortLevel,
 } from "../src/routes/session/powerline"
 
@@ -305,5 +311,194 @@ describe("provider fill never collides with the brand fill (real parse chain)", 
 		expect(delta("tokyonight", "light")).toBe(131)
 		expect(delta("gruvbox", "dark")).toBe(129)
 		expect(delta("gruvbox", "light")).toBe(112)
+	})
+})
+
+/**
+ * Footer-polish feedback batch (item 1): the strip must read as ONE blue
+ * ramp running deep→light left to right, labels keep ≥4.5:1, and only the
+ * >90% context danger fill is allowed to keep a warning color.
+ */
+describe("footer gradient (single blue ramp, deep→light)", () => {
+	const themeFor = (mode: "dark" | "light") =>
+		createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), mode))
+
+	const fullStrip = (theme: ReturnType<typeof themeFor>) =>
+		sessionFooterSegments({
+			provider: "bigmodel",
+			model: "glm-5.3-flash",
+			effort: "high",
+			contextTokens: 100,
+			contextWindow: 1000,
+			cacheHitRate: 50,
+			messages: 2,
+			tools: 1,
+			elapsedSec: 5,
+			tps: 10,
+			theme,
+		})
+
+	for (const mode of ["dark", "light"] as const) {
+		test(`${mode}: fills are strictly monotonic deep→light and labels stay ≥4.5:1`, () => {
+			const theme = themeFor(mode)
+			const segs = fullStrip(theme)
+			expect(segs.length).toBe(9) // brand + 8 data segments
+			const fills = segs.map((segment) => segment.bg)
+			// Brand is the DEEPEST step; every later segment is lighter.
+			for (let i = 1; i < fills.length; i++) {
+				expect(brightness(fills[i]!)).toBeGreaterThan(brightness(fills[i - 1]!))
+			}
+			// Label contrast contract on every fill.
+			for (const fill of fills) {
+				expect(contrastRatio(fill, autoContrast(fill))).toBeGreaterThanOrEqual(4.5)
+			}
+		})
+	}
+
+	test("danger context (>90%) keeps the error fill and skips the ramp", () => {
+		const theme = themeFor("dark")
+		const segs = sessionFooterSegments({
+			model: "m",
+			contextTokens: 950,
+			contextWindow: 1000,
+			theme,
+		})
+		const context = segs.find((segment) => segment.text.startsWith("🧠"))!
+		expect(context.semantic).toBe("danger")
+		expect(colorDistance(context.bg, theme.text.feedback.error.base)).toBe(0)
+		// The non-semantic neighbours still walk the gradient monotonically.
+		const ramp = segs.filter((segment) => !segment.semantic)
+		for (let i = 1; i < ramp.length; i++) {
+			expect(brightness(ramp[i]!.bg)).toBeGreaterThan(brightness(ramp[i - 1]!.bg))
+		}
+	})
+
+	test("no-provider fallback still yields one monotonic readable ramp", () => {
+		const segs = sessionFooterSegments({
+			provider: "p",
+			model: "m",
+			contextTokens: 100,
+			contextWindow: 1000,
+			messages: 1,
+			tools: 1,
+		})
+		const fills = segs.map((segment) => segment.bg)
+		for (let i = 1; i < fills.length; i++) {
+			expect(brightness(fills[i]!)).toBeGreaterThan(brightness(fills[i - 1]!))
+		}
+		for (const fill of fills) {
+			expect(contrastRatio(fill, autoContrast(fill))).toBeGreaterThanOrEqual(4.5)
+		}
+	})
+})
+
+/**
+ * Footer-polish feedback batch (item 3): an unspecified think level means
+ * "high" for display AND route; an explicit value — "off" included — is
+ * never overwritten.
+ */
+describe("default effort policy", () => {
+	test("unspecified resolves to high; explicit words (off included) are preserved", () => {
+		expect(DEFAULT_EFFORT).toBe("high")
+		expect(effectiveEffort(undefined)).toBe("high")
+		expect(effectiveEffort(null)).toBe("high")
+		expect(effectiveEffort("off")).toBe("off")
+		expect(effectiveEffort("medium")).toBe("medium")
+	})
+
+	test("the footer shows ● high when no level is specified and ○ off when it is", () => {
+		const unspecified = sessionFooterSegments({ model: "m" }).find((segment) => segment.text.startsWith("🤖"))!
+		expect(unspecified.text).toBe("🤖 m ● high")
+		const explicit = sessionFooterSegments({ model: "m", effort: "off" }).find((segment) =>
+			segment.text.startsWith("🤖"),
+		)!
+		expect(explicit.text).toBe("🤖 m ○ off")
+		// modelSegment's own default follows the same policy.
+		expect(modelSegment("m")!.text).toBe("🤖 m ● high")
+	})
+
+	test("the route write happens only for an unspecified level on a high-capable ladder", () => {
+		expect(defaultEffortToApply(undefined, ["low", "high"])).toBe("high")
+		expect(defaultEffortToApply(undefined, [{ id: "high" }])).toBe("high")
+		// Explicit levels (including off) win.
+		expect(defaultEffortToApply("off", ["low", "high"])).toBeUndefined()
+		expect(defaultEffortToApply("low", ["low", "high"])).toBeUndefined()
+		// No high on the ladder → leave the host route alone.
+		expect(defaultEffortToApply(undefined, ["low", "medium"])).toBeUndefined()
+		expect(defaultEffortToApply(undefined, [])).toBeUndefined()
+	})
+
+	// Review 3.2: the seam's ladder is PROVIDER data — native ids such as
+	// none/auto are explicit values too. EFFORT_ICONS is only the glyph
+	// vocabulary; membership in it must never decide explicitness.
+	test("provider-native ids are explicit: none/auto pass through, never coerced to high", () => {
+		expect(effectiveEffort("none")).toBe("none")
+		expect(effectiveEffort("auto")).toBe("auto")
+		expect(effectiveEffort("thinking")).toBe("thinking")
+		expect(isExplicitEffort("none")).toBe(true)
+		expect(isExplicitEffort("high")).toBe(true)
+		expect(isExplicitEffort("off")).toBe(true)
+		expect(isExplicitEffort("   ")).toBe(false)
+		expect(isExplicitEffort("")).toBe(false)
+		expect(isExplicitEffort(undefined)).toBe(false)
+		expect(isExplicitEffort(null)).toBe(false)
+	})
+
+	test("native ids suppress the default write exactly like known words", () => {
+		expect(defaultEffortToApply("none", ["none", "auto", "high"])).toBeUndefined()
+		expect(defaultEffortToApply("auto", ["none", "auto", "high"])).toBeUndefined()
+		// Only a genuinely empty current value writes.
+		expect(defaultEffortToApply("  ", ["none", "auto", "high"])).toBe("high")
+	})
+
+	test("native ids display verbatim with the ○ glyph fallback and the off fill", () => {
+		const theme = fakeTheme()
+		const none = modelSegment("m", "none", theme)!
+		expect(none.text).toBe("🤖 m ○ none")
+		expect(none.bg).toBe(resolvePalette(theme).thinking.off)
+		expect(modelSegment("m", "auto")!.text).toBe("🤖 m ○ auto")
+		expect(sessionFooterSegments({ model: "m", effort: "none" }).find((s) => s.text.startsWith("🤖"))!.text).toBe(
+			"🤖 m ○ none",
+		)
+	})
+
+	// Review 3.3: both effort sources must be consulted before the default
+	// lands; the aggregation itself is order-independent, so a label-level
+	// explicit off survives whichever source answers first.
+	test("decideEffort: current wins over label; label explicit off beats the default", () => {
+		expect(decideEffort(undefined, "off")).toEqual({ display: "off", explicit: "off" })
+		expect(decideEffort("", "off")).toEqual({ display: "off", explicit: "off" })
+		expect(decideEffort("none", "off")).toEqual({ display: "none", explicit: "none" })
+		expect(decideEffort("high", undefined)).toEqual({ display: "high", explicit: "high" })
+		expect(decideEffort(undefined, undefined)).toEqual({ display: DEFAULT_EFFORT })
+		expect(decideEffort("   ", "  ")).toEqual({ display: DEFAULT_EFFORT })
+	})
+
+	test("timing: a label answer that lands first does NOT settle the default early", async () => {
+		// Mirrors refreshFooterData's pending counter: the display is decided
+		// only after BOTH sources answer (the old code painted high off the
+		// thinking answer and the label's off never applied).
+		let currentWord: string | undefined
+		let labelWord: string | undefined
+		let pending = 2
+		let display: string | undefined
+		const settle = () => {
+			if (--pending > 0) return
+			display = decideEffort(currentWord, labelWord).display
+		}
+		const label = Promise.resolve("off").then((word) => {
+			labelWord = word
+			settle()
+		})
+		const current = new Promise<string | undefined>((resolve) => setTimeout(() => resolve(undefined), 5)).then(
+			(word) => {
+				currentWord = word
+				settle()
+			},
+		)
+		await label
+		expect(display).toBeUndefined() // label first: default must not land yet
+		await current
+		expect(display).toBe("off") // the label's explicit off survives
 	})
 })

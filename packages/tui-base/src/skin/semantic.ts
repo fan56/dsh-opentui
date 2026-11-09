@@ -124,7 +124,10 @@ export const COMPOSER_BORDER_ROWS = 2
  * worst case is palette 6 + textarea 8 (max) composer content and 2 fixed
  * page rows (powerline + hints): 24 − 2 − 14 = 8 ≥ 6 only WITHOUT the
  * border rows, so 24 must fall in the compact branch; 30 keeps normal
- * terminals (30+ rows) framed. */
+ * terminals (30+ rows) framed. The SAME threshold governs the widget lanes
+ * that share this band: the activity frame collapses to a two-row left rule
+ * and the persistent Todos table collapses to its one-line summary
+ * (routes/session/widgets-dock.tsx) — a 9-row table would blow the band. */
 export const COMPOSER_COMPACT_TERMINAL_ROWS = 30
 
 /** 50ms debounce on UNFOCUS only: a dialog close refocuses the composer a

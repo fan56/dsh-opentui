@@ -9,7 +9,11 @@
  */
 import { describe, expect, test } from "bun:test"
 import {
+	ACTIVITY_FRAME_BORDER_FALLBACK,
 	ACTIVITY_FRAME_DEFER_MS,
+	activityFrameBorderColor,
+	boostUntilContrast,
+	hueAngle,
 	createFrameLatch,
 	frameLatchFire,
 	frameLatchNext,
@@ -27,7 +31,11 @@ import {
 	skinPulseBrightness,
 	skinStopAt,
 	thinkLineText,
-	todosSummaryLine,
+	toolLineText,
+	TODO_MAX_ROWS,
+	latestTodos,
+	padCell,
+	todosTableLines,
 	SKIN_FADE_IN_MS,
 	SKIN_FADE_OUT_MS,
 	SKIN_HOLD_MS,
@@ -35,46 +43,128 @@ import {
 	SKIN_PULSE_MS,
 } from "../src/routes/session/widgets-dock"
 import type { SeamRow } from "../src/routes/session/seam-rows"
+import { stringWidth } from "../src/util/string-width"
+import { RGBA } from "@opentui/core"
+import { colorRgb, contrastRatio } from "../src/routes/session/powerline"
+import { createComponentTheme } from "../src/theme/component"
+import { getDshBlueTheme } from "../src/theme/index"
+import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
 
 const spin = () => 0
 
-describe("todosSummaryLine", () => {
-	test("summarizes done/total and names the in-progress item", () => {
-		const brief = JSON.stringify([
-			{ content: "a", status: "completed" },
-			{ content: "b", status: "in_progress" },
-			{ content: "c", status: "pending" },
-		])
-		expect(todosSummaryLine(brief)).toBe("todos [✓]1/3 · b")
+describe("todosTableLines (dsh-tui-pi TodosPanel parity)", () => {
+	type T = { content: string; status: string }
+	const toolRow = (todos: T[], key = "tool:live:t", status: "done" | "failed" = "done"): SeamRow => ({
+		key,
+		kind: "tool",
+		name: "todo_write",
+		args: JSON.stringify({ todos }),
+		status,
+		faded: true,
+		output: JSON.stringify({ message: { content: [{ type: "text", text: "Updated todo list." }] } }),
 	})
-	test("no in-progress item: the count alone", () => {
-		expect(
-			todosSummaryLine(JSON.stringify([{ content: "a", status: "completed" }, { content: "b", status: "pending" }])),
-		).toBe("todos [✓]1/2")
-	})
-	test("D5b hide-law: all completed → '' (the row leaves the dock)", () => {
-		expect(todosSummaryLine(JSON.stringify([{ content: "a", status: "completed" }]))).toBe("")
-		expect(
-			dockLines([
-				{
-					key: "tool:live:t",
-					kind: "tool",
-					name: "todowrite",
-					args: "{}",
-					status: "done",
-					faded: true,
-					output: JSON.stringify([{ content: "a", status: "completed" }, { content: "b", status: "completed" }]),
-				},
+	const table = (rows: readonly SeamRow[], width = 48): string[] => todosTableLines(rows, width).map((line) => line.text)
+
+	test("boxed table: borders + `● Todos (done/total)` header + `# │ ✓ │ Task` + rows", () => {
+		const lines = table([
+			toolRow([
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "in_progress" },
+				{ content: "c", status: "pending" },
 			]),
-		).toEqual([])
+		])
+		expect(lines[0]!.startsWith("┌")).toBe(true)
+		expect(lines[0]!.endsWith("┐")).toBe(true)
+		expect(lines[1]).toContain("● Todos (1/3)")
+		expect(lines[2]).toContain("#")
+		expect(lines[2]).toContain("✓")
+		expect(lines[2]).toContain("Task")
+		expect(lines[3]).toContain("☑")
+		expect(lines[3]).toContain("a")
+		expect(lines[4]).toContain("◐")
+		expect(lines[4]).toContain("b")
+		expect(lines[5]).toContain("☐")
+		expect(lines[5]).toContain("c")
+		expect(lines[6]!.startsWith("└")).toBe(true)
+		// One tone per row: the in-progress row is the running family.
+		expect(todosTableLines([toolRow([{ content: "b", status: "in_progress" }])], 48)[3]!.tone).toBe("running")
 	})
-	test("empty todo array → ''", () => {
-		expect(todosSummaryLine("[]")).toBe("")
+
+	test("window: TODO_MAX_ROWS rows, active first, global plan numbers + showing hint", () => {
+		const todos: T[] = Array.from({ length: 8 }, (_, i) => ({ content: `t${i + 1}`, status: "pending" }))
+		todos[7] = { content: "t8", status: "in_progress" }
+		const lines = table([toolRow(todos)])
+		// 2 borders + header + table header + 5 windowed rows.
+		expect(lines).toHaveLength(4 + TODO_MAX_ROWS)
+		expect(lines[1]).toContain("showing 1-4,8")
+		// The in-progress item keeps its GLOBAL number 8.
+		expect(lines.find((line) => line.includes("◐"))).toContain("8")
 	})
-	test("degrades to '' on non-todo briefs", () => {
-		expect(todosSummaryLine(undefined)).toBe("")
-		expect(todosSummaryLine("{}")).toBe("")
-		expect(todosSummaryLine("not json")).toBe("")
+
+	test("short terminals (≤30 rows): the table collapses to ONE summary line", () => {
+		const rows = [
+			toolRow([
+				{ content: "a", status: "completed" },
+				{ content: "b", status: "in_progress" },
+				{ content: "c", status: "pending" },
+			]),
+		]
+		// 80x24: the persistent table's 9-row worst case cannot fit the
+		// middle band (transcript 6 + activity rule 2 = 8) — one line only.
+		const compact = todosTableLines(rows, 80, 24)
+		expect(compact).toHaveLength(1)
+		expect(compact[0]!.text).toBe("todos [✓]1/3 · b")
+		expect(compact[0]!.id).toBe("dock:todos")
+		// Same clear-when-done law in the compact form.
+		expect(todosTableLines([toolRow([{ content: "a", status: "completed" }])], 80, 24)).toEqual([])
+		// Above the threshold the bordered table returns (31 rows > 30):
+		// 4 chrome rows + one row per todo.
+		expect(todosTableLines(rows, 80, 31)).toHaveLength(4 + 3)
+	})
+
+	test("no todos / all completed → zero rows (clear-when-done)", () => {
+		expect(table([])).toEqual([])
+		expect(table([toolRow([])])).toEqual([])
+		expect(table([toolRow([{ content: "a", status: "completed" }])])).toEqual([])
+	})
+
+	test("multi-line content flattens onto one row", () => {
+		const lines = table([toolRow([{ content: "first\nsecond", status: "pending" }])])
+		expect(lines[3]).toContain("first second")
+	})
+
+	test("latestTodos: host args shape wins, opencode bare-array output works", () => {
+		const two: T[] = [
+			{ content: "买咖啡", status: "pending" },
+			{ content: "写周报", status: "in_progress" },
+		]
+		expect(latestTodos([toolRow(two)]).map((todo) => todo.content)).toEqual(["买咖啡", "写周报"])
+		expect(
+			latestTodos([{ key: "tool:live:o", kind: "tool", name: "todowrite", args: "{}", status: "done", faded: true, output: JSON.stringify(two) }]).map((todo) => todo.content),
+		).toEqual(["买咖啡", "写周报"])
+	})
+
+	test("exact-name match; running and failed rows never feed the table", () => {
+		for (const name of ["todoread", "todo_read", "todo", "todo_write_x", "my_todo_write"]) {
+			expect(latestTodos([{ ...toolRow([]), name }])).toEqual([])
+		}
+		const running: SeamRow = { key: "tool:live:r", kind: "tool", name: "todo_write", args: JSON.stringify({ todos: [{ content: "a", status: "pending" }] }), status: "running" }
+		expect(latestTodos([running])).toEqual([])
+		const rejected = toolRow([{ content: "x", status: "in_progress" }], "tool:live:2", "failed")
+		expect(latestTodos([rejected])).toEqual([])
+	})
+
+	test("padCell clips with the ellipsis and pads to exact display width", () => {
+		expect(padCell("ab", 4)).toBe("ab  ")
+		expect(padCell("ab", 4, "right")).toBe("  ab")
+		expect(stringWidth(padCell("abcdef", 4))).toBe(4)
+		// Flatten + trim (tui-pi padClip): no stray leading/trailing columns.
+		expect(padCell("  ab\ncd  ", 6)).toBe("ab cd ")
+	})
+
+	test("narrow box (boxWidth < 23): the Task column shrinks, rows never overflow", () => {
+		const lines = table([toolRow([{ content: "a very long task name", status: "in_progress" }])], 16)
+		for (const line of lines) expect(stringWidth(line)).toBeLessThanOrEqual(16)
 	})
 })
 
@@ -102,8 +192,8 @@ describe("thinkLineText", () => {
 	})
 })
 
-describe("dockLines (batch D5 widget fade)", () => {
-	test("faded settled tools leave the dock; running tools and todos stay", () => {
+describe("dockLines (batch D5 widget fade; todos live in their own table)", () => {
+	test("faded settled tools leave the dock; running tools stay; todos never enter dockLines", () => {
 		const todos = JSON.stringify([{ content: "a", status: "in_progress" }])
 		const rows: SeamRow[] = [
 			{ key: "tool:live:t", kind: "tool", name: "todowrite", args: "{}", status: "done", output: todos, faded: true },
@@ -111,82 +201,17 @@ describe("dockLines (batch D5 widget fade)", () => {
 			{ key: "tool:live:b", kind: "tool", name: "grep", args: '{"pattern":"x"}', status: "running", startedAt: Date.now() },
 		]
 		const lines = dockLines(rows).map((l) => l.text)
-		expect(lines[0]).toBe("todos [✓]0/1 · a")
-		expect(lines.length).toBe(2)
-		expect(lines[1]).toContain("grep")
+		expect(lines).toHaveLength(1)
+		expect(lines[0]).toContain("grep")
+		expect(todosTableLines(rows, 40).length).toBeGreaterThan(0)
 	})
-})
-
-describe("dockLines todos panel: dsh host shape (D6)", () => {
-	type Todo = { content: string; status: string }
-	/** The REAL dsh host row (journal-verified): name `todo_write`, args =
-	 * the raw tool/call arguments `{"todos":[…]}`, output = the follow
-	 * stream's brief of a tool/result whose wire carries only the rendered
-	 * text — no todo array anywhere in it. */
-	const hostRow = (todos: Todo[], key = "tool:live:t", status: "done" | "failed" = "done"): SeamRow => {
-		const c = (s: string) => todos.filter((t) => t.status === s).length
-		const brief = JSON.stringify({
-			turn: 1,
-			message: {
-				role: "tool",
-				content: [
-					{
-						type: "text",
-						text: `Updated todo list: ${c("pending")} pending, ${c("in_progress")} in progress, ${c("completed")} completed.`,
-					},
-				],
-				isError: status === "failed",
-			},
-		}).slice(0, 300)
-		return { key, kind: "tool", name: "todo_write", args: JSON.stringify({ todos }), status, faded: true, output: brief }
-	}
-	/** The opencode shape: name `todowrite`, the brief IS the bare array. */
-	const opencodeRow = (name: string, todos: Todo[]): SeamRow => ({
-		key: "tool:live:o",
-		kind: "tool",
-		name,
-		args: "{}",
-		status: "done",
-		faded: true,
-		output: JSON.stringify(todos),
-	})
-	const two = [
-		{ content: "买咖啡", status: "pending" },
-		{ content: "写周报", status: "pending" },
-	]
-
-	test("host `todo_write`: the list comes from the call args (the result brief has no array)", () => {
-		expect(dockLines([hostRow(two)]).map((l) => l.text)).toEqual(["todos [✓]0/2"])
-	})
-	test("opencode `todowrite`: the bare-array output brief still renders", () => {
-		expect(dockLines([opencodeRow("todowrite", two)]).map((l) => l.text)).toEqual(["todos [✓]0/2"])
-	})
-	test("exact-name match: other todo-ish tools never feed the panel", () => {
-		for (const name of ["todoread", "todo_read", "todo", "todo_write_x", "my_todo_write"]) {
-			expect(dockLines([opencodeRow(name, two)])).toEqual([])
-			expect(dockLines([{ ...hostRow(two), name }])).toEqual([])
-		}
-	})
-	test("a running call (no result yet) and a failed call never feed the panel", () => {
-		const running: SeamRow = { key: "tool:live:r", kind: "tool", name: "todo_write", args: JSON.stringify({ todos: two }), status: "running" }
-		expect(dockLines([running]).map((l) => l.text)).toEqual([expect.stringContaining("todo_write")])
-		const applied = hostRow(two, "tool:live:1")
-		const rejected = hostRow([{ content: "x", status: "in_progress" }, { content: "y", status: "in_progress" }], "tool:live:2", "failed")
-		expect(dockLines([applied, rejected]).map((l) => l.text)).toEqual(["todos [✓]0/2"])
-	})
-	test("host lifecycle (journal replay): pending → one done → all done hides → cleared hides", () => {
-		const rows: SeamRow[] = [hostRow(two, "tool:live:1")]
-		expect(dockLines(rows).map((l) => l.text)).toEqual(["todos [✓]0/2"])
-		rows.push(hostRow([{ content: "买咖啡", status: "completed" }, { content: "写周报", status: "in_progress" }], "tool:live:2"))
-		expect(dockLines(rows).map((l) => l.text)).toEqual(["todos [✓]1/2 · 写周报"])
-		rows.push(hostRow([{ content: "买咖啡", status: "completed" }, { content: "写周报", status: "completed" }], "tool:live:3"))
-		expect(dockLines(rows)).toEqual([])
-		rows.push(hostRow([], "tool:live:4"))
-		expect(dockLines(rows)).toEqual([])
-	})
-	test("todosSummaryLine accepts the `{ todos }` args shape", () => {
-		expect(todosSummaryLine(JSON.stringify({ todos: [{ content: "a", status: "in_progress" }] }))).toBe("todos [✓]0/1 · a")
-		expect(todosSummaryLine(JSON.stringify({ todos: "nope" }))).toBe("")
+	test("tool line: status icon marker, `name subject` (space, tui-pi style), elapsed, arg/result tail", () => {
+		const running: SeamRow = { key: "tool:live:b", kind: "tool", name: "bash", args: '{"command":"git status"}', status: "running", startedAt: Date.now() - 1200 }
+		expect(toolLineText(running, spin)).toMatch(/^⚙ bash git · 1\.\ds · \$ git status$/)
+		const done: SeamRow = { key: "tool:live:d", kind: "tool", name: "read", args: '{"path":"a.ts"}', status: "done", elapsedSec: 0.4, output: "ok" }
+		expect(toolLineText(done, spin)).toBe("✔ read a.ts · 0.4s · ok")
+		const failed: SeamRow = { key: "tool:live:f", kind: "tool", name: "bash", args: '{"command":"false"}', status: "failed", elapsedSec: 1, output: "boom" }
+		expect(toolLineText(failed, spin)).toMatch(/^✘ bash false · 1\.0s/)
 	})
 })
 
@@ -267,26 +292,37 @@ describe("skin turn-lifetime activity frame", () => {
 		expect(dockTurnActive([{ key: "a", kind: "assistant", text: "x", final: false }])).toBe(true)
 		expect(dockTurnActive([{ key: "s", kind: "subagents", children: [{ id: "c", label: "l", status: "running", rounds: 1 }] }])).toBe(true)
 	})
-	test("frame content is EXACTLY three slots: todo/think/tool, blanks left blank", () => {
-		const [todo, think, tool] = activityLines([todoTool, thinkLive, toolRun])
-		expect(todo.text).toBe("todos [✓]0/1 · a")
+	test("frame content is EXACTLY two slots: think/tool (todos live in their own table), blanks left blank", () => {
+		const [think, tool] = activityLines([todoTool, thinkLive, toolRun])
 		expect(think.text).toContain("thinking")
 		expect(tool.text).toContain("bash")
 		const empty = activityLines([])
-		expect(empty.map((line) => line.text)).toEqual(["", "", ""])
+		expect(empty.map((line) => line.text)).toEqual(["", ""])
 	})
-	test("fixed-3 law: multi-tool turns show the most recent tool line", () => {
+	test("fixed law: multi-tool turns show the most recent tool line", () => {
 		const second: SeamRow = { key: "tool:live:t2", kind: "tool", name: "grep", args: "{}", status: "running", startedAt: Date.now() }
-		const [, , tool] = activityLines([toolRun, second])
+		const [, tool] = activityLines([toolRun, second])
 		expect(tool.text).toContain("grep")
 	})
 	test("compact form: left rule with the activity title in the first line", () => {
 		const rule = activityRuleLines([toolRun])
-		expect(rule).toHaveLength(3)
+		expect(rule).toHaveLength(2)
 		expect(rule[0]!.text).toBe("┃ activity")
-		expect(rule[2]!.text.startsWith("┃ ")).toBe(true)
-		const withTodos = activityRuleLines([todoTool, toolRun])
-		expect(withTodos[0]!.text).toBe(`┃ activity · todos [✓]0/1 · a`)
+		expect(rule[1]!.text.startsWith("┃ ")).toBe(true)
+	})
+	test("compact form keeps the think text (rule head carries it, not a bare title)", () => {
+		// Tool-only turns keep the bare title (above); a streaming think burst
+		// must NOT be swallowed by it — the old form overwrote the think slot
+		// with `┃ activity` and rendered nothing of the reasoning.
+		const thinkOnly = activityRuleLines([thinkLive])
+		expect(thinkOnly[0]!.text.startsWith("┃ activity · 💭 thinking · ")).toBe(true)
+		expect(thinkOnly[0]!.text).toContain(" · x")
+		// Think + tool: the head carries the think text, row 2 the tool line.
+		const both = activityRuleLines([thinkLive, toolRun])
+		expect(both[0]!.text).toContain("thinking")
+		expect(both[1]!.text).toContain("bash")
+		// Still exactly two rows — the collapse never grew.
+		expect(both).toHaveLength(2)
 	})
 	test("frame vs rule follows the composer compact threshold (coordinated lanes)", () => {
 		expect(activityFrameMode(24)).toBe("rule")
@@ -384,5 +420,131 @@ describe("deferred activity frame latch (flicker mitigation 1)", () => {
 		await wait(30)
 		expect(latch.shown()).toBe(true)
 		latch.dispose()
+	})
+})
+
+/**
+ * Footer-polish feedback batch (item 2, follow-up): the turn-lifetime frame
+ * only exists WHILE a turn is active, so its border must be a BRIGHT ORANGE
+ * on a heavy line, static (border animation is forbidden), clearing 4.5:1
+ * against the working background.
+ */
+describe("activity frame active border", () => {
+	const themeWith = (orange: Record<string, RGBA> | undefined, background: string) =>
+		({
+			hue: { accent: {}, interactive: {}, neutral: {} },
+			categorical: orange ? [orange] : [],
+			text: { feedback: { warning: { base: RGBA.fromHex("#f5a742") } } },
+			background: { base: RGBA.fromHex(background) },
+		}) as unknown as Parameters<typeof activityFrameBorderColor>[0]
+
+	test("prefers the bright orange step (orange[200])", () => {
+		const orange = {
+			"100": RGBA.fromHex("#fddac5"),
+			"200": RGBA.fromHex("#fab283"),
+			"300": RGBA.fromHex("#d8976c"),
+		}
+		const picked = activityFrameBorderColor(themeWith(orange, "#0a0a0f"))
+		expect(picked).toBe(orange["200"])
+		// Bright orange on the dsh-blue dark background clears the contract.
+		expect(contrastRatio(picked, "#0a0a0f")).toBeGreaterThanOrEqual(4.5)
+	})
+
+	test("real dsh-blue dark picks orange[200] #fab283 at 11.06:1", () => {
+		const theme = createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "dark"))
+		const picked = activityFrameBorderColor(theme)
+		expect(colorRgb(picked)).toEqual([250, 178, 131]) // #fab283
+		expect(contrastRatio(picked, theme.background.base)).toBeGreaterThanOrEqual(4.5)
+	})
+
+	test("fallback is the bright orange hex, not the old dark blue border", () => {
+		expect(ACTIVITY_FRAME_BORDER_FALLBACK).toBe("#fab283")
+		// 11.06:1 on the dsh-blue dark surface.
+		expect(contrastRatio(ACTIVITY_FRAME_BORDER_FALLBACK, "#0a0a0f")).toBeGreaterThanOrEqual(4.5)
+		expect(activityFrameBorderColor()).toBe(ACTIVITY_FRAME_BORDER_FALLBACK)
+	})
+
+	test("no orange scale → warning token; light surfaces deepen to 4.5:1", () => {
+		const warningTheme = {
+			hue: { accent: {}, interactive: {}, neutral: {} },
+			categorical: [],
+			text: { feedback: { warning: { base: RGBA.fromHex("#f5a742") } } },
+			background: { base: RGBA.fromHex("#0a0a0f") },
+		} as unknown as Parameters<typeof activityFrameBorderColor>[0]
+		expect(activityFrameBorderColor(warningTheme)).toBe(warningTheme.text.feedback.warning.base)
+
+		// Light theme: the stock orange[200] is too light against #fafafa, so
+		// the helper walks it away from the surface (toward black) until the
+		// border still clears 4.5:1.
+		const lightOrange = { "200": RGBA.fromHex("#d68c27"), "300": RGBA.fromHex("#df9a44") }
+		const picked = activityFrameBorderColor(themeWith(lightOrange, "#fafafa"))
+		expect(contrastRatio(picked, "#fafafa")).toBeGreaterThanOrEqual(4.5)
+	})
+
+	// Review 5: hue-angle identification. Coral red is r>g>b with real spread
+	// (the old test matched it as "orange"), but its hue (~16°) sits outside
+	// the orange window; the resolved theme drops categorical hue NAMES, so
+	// color (hue angle) is the fallback and must at least not misclassify.
+	test("hue angle separates orange from coral red and achromatic swatches", () => {
+		expect(hueAngle(RGBA.fromHex("#fab283"))).toBeGreaterThan(20) // warm orange: ~23.7°
+		expect(hueAngle(RGBA.fromHex("#fab283"))).toBeLessThan(45)
+		expect(hueAngle(RGBA.fromHex("#ff7f50"))).toBeLessThan(20) // coral: ~16.1°
+		expect(hueAngle(RGBA.fromHex("#f44336"))).toBeLessThan(20) // red: ~4.1°
+		expect(hueAngle(RGBA.fromHex("#ffeb3b"))).toBeGreaterThan(45) // yellow: ~53.9°
+		expect(hueAngle(RGBA.fromHex("#808080"))).toBe(0) // achromatic
+	})
+
+	test("a coral-red categorical scale is not mistaken for the orange family", () => {
+		const coral = { "500": RGBA.fromHex("#ff7f50"), "200": RGBA.fromHex("#ff9a7a") }
+		const theme = themeWith(coral, "#0a0a0f")
+		// No orange scale found → the warning feedback token (it clears 4.5:1).
+		expect(activityFrameBorderColor(theme)).toBe(theme.text.feedback.warning.base)
+	})
+})
+
+/**
+ * Review 2.2: the contrast walk is bidirectional. The old one-way blend
+ * toward black made an under-contrast border muddier on a DARK surface; the
+ * walk now goes toward white on dark surfaces and black on light ones, and
+ * the final contrast is re-measured and reported as an assertion result.
+ */
+describe("contrast walk (bidirectional)", () => {
+	test("dark surface: an under-contrast fill walks toward WHITE, not black", () => {
+		const bg = "#0a0a0f"
+		const deepOrange = "#6a3a00"
+		expect(contrastRatio(deepOrange, bg)).toBeLessThan(4.5)
+		const result = boostUntilContrast(deepOrange, bg)
+		expect(result.meetsContrast).toBe(true)
+		expect(result.contrast).toBeGreaterThanOrEqual(4.5)
+		const [r, g, b] = colorRgb(result.color)
+		// Brightened, not darkened: every channel moved up (toward white).
+		expect(r).toBeGreaterThan(0x6a)
+		expect(g).toBeGreaterThan(0x3a)
+		expect(b).toBeGreaterThan(0)
+	})
+
+	test("light surface: an under-contrast fill walks toward BLACK", () => {
+		const bg = "#fafafa"
+		const lightOrange = "#f5c98a"
+		expect(contrastRatio(lightOrange, bg)).toBeLessThan(4.5)
+		const result = boostUntilContrast(lightOrange, bg)
+		expect(result.meetsContrast).toBe(true)
+		expect(result.contrast).toBeGreaterThanOrEqual(4.5)
+		const [r] = colorRgb(result.color)
+		expect(r).toBeLessThan(0xf5)
+	})
+
+	test("reports meetsContrast=false when neither pole can reach the floor", () => {
+		// Mid-gray surface: white tops out ~3.95, black ~5.28 — a 10:1 floor is
+		// unreachable, so the assertion result says so instead of lying.
+		const result = boostUntilContrast("#8a8a8a", "#808080", 10)
+		expect(result.meetsContrast).toBe(false)
+		expect(result.contrast).toBeLessThan(10)
+	})
+
+	test("a fill already clearing the floor is returned untouched", () => {
+		const result = boostUntilContrast("#fab283", "#0a0a0f")
+		expect(result.meetsContrast).toBe(true)
+		expect(result.color).toBe("#fab283")
 	})
 })

@@ -58,6 +58,12 @@ export interface PowerlineSegment {
 	fg?: PowerlineColor
 	/** Rolling-number leaf spec; absent → static `text`. */
 	roll?: RollingSpec
+	/**
+	 * Semantic opt-out of the footer gradient: `danger` / `warning` / `error`
+	 * segments keep their feedback fill (context >90% is the live case) while
+	 * every other segment walks the single blue ramp. Static — no animation.
+	 */
+	semantic?: "danger" | "warning" | "error"
 }
 
 /**
@@ -117,23 +123,123 @@ export function colorRgb(color: PowerlineColor): [number, number, number] {
 }
 
 /**
- * Perceived brightness (ITU-R BT.601 weighted rgb) of a segment color,
- * 0..1. The non-linearized weighted average is deliberate: paired with the
- * 0.6 threshold below it classifies the amber contextWarn (#FFC107, 0.75)
- * as bright, so it gets dark label text — the kit's hexIsLight() behavior.
+ * Perceived brightness (ITU-R BT.601 weighted rgb), 0..1. Kept for the
+ * gradient ordering test and the kit-era callers; label contrast itself is
+ * now decided by WCAG (autoContrast below).
  */
 export function brightness(color: PowerlineColor): number {
 	const [r, g, b] = colorRgb(color)
 	return (0.299 * r + 0.587 * g + 0.114 * b) / 255
 }
 
-/** Readable label color on a filled segment (brightness threshold 0.6). */
+/**
+ * WCAG relative luminance (sRGB, 0..1) of a segment color. Used by the
+ * footer contract "段内文字对比度 ≥ 4.5:1" and by the gradient's
+ * deep→light ordering (the ramp is sorted by this, so themes whose numeric
+ * scale runs the other way still read dark→light left to right).
+ */
+export function relativeLuminance(color: PowerlineColor): number {
+	const [r, g, b] = colorRgb(color)
+	const channel = (v: number): number => {
+		const c = v / 255
+		return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+	}
+	return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/** WCAG contrast ratio between two colors (1..21). */
+export function contrastRatio(a: PowerlineColor, b: PowerlineColor): number {
+	const la = relativeLuminance(a)
+	const lb = relativeLuminance(b)
+	const hi = Math.max(la, lb)
+	const lo = Math.min(la, lb)
+	return (hi + 0.05) / (lo + 0.05)
+}
+
+/**
+ * Readable label color on a filled segment: the kit's preferred navy-black
+ * or white, whichever has more contrast; when neither reaches the contract's
+ * 4.5:1 floor (a mid-blue token can land just under it) fall back to the
+ * absolute black/white extreme. The kit-era 0.6 brightness threshold is
+ * superseded — it classified #4d6bfe as dark and then painted white at only
+ * 4.33:1.
+ */
 export function autoContrast(bg: PowerlineColor): PowerlineColor {
-	return brightness(bg) > 0.6 ? AUTO_FG_DARK : AUTO_FG_LIGHT
+	const preferred =
+		contrastRatio(bg, AUTO_FG_DARK) >= contrastRatio(bg, AUTO_FG_LIGHT) ? AUTO_FG_DARK : AUTO_FG_LIGHT
+	if (contrastRatio(bg, preferred) >= 4.5) return preferred
+	return contrastRatio(bg, "#000000") >= contrastRatio(bg, "#ffffff") ? "#000000" : "#ffffff"
 }
 
 /** Effort (thinking) levels the model segment can carry. */
 export type EffortLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+
+/** Default reasoning effort when the route carries no explicit level. */
+export const DEFAULT_EFFORT: EffortLevel = "high"
+
+/**
+ * True when the route carries an EXPLICIT effort. Any non-empty word counts —
+ * the seam's ladder is provider data, so its ids are not restricted to the
+ * seven display words (a reasoning model can expose "none", "auto",
+ * "thinking", …), and a user's /think pick of any of them must never be
+ * coerced back to the default. EFFORT_ICONS is a GLYPH vocabulary only; it is
+ * not the explicitness test.
+ */
+export function isExplicitEffort(word: string | null | undefined): boolean {
+	return (word?.trim() ?? "").length > 0
+}
+
+/**
+ * Effective effort for display: any explicit word ALWAYS wins — native
+ * provider ids and "off" included (a user's /think off choice must never be
+ * coerced back to high). Only an absent/blank word resolves to
+ * DEFAULT_EFFORT ("high").
+ */
+export function effectiveEffort(word: string | null | undefined): string {
+	const w = word?.trim()
+	return w ? w : DEFAULT_EFFORT
+}
+
+/**
+ * Aggregate the TWO effort sources into one decision (review 3.3): the seam's
+ * thinking face (currentEffort — provider-native ids) first, the
+ * sessionInfo().model label parse second, the default last. Callers must have
+ * BOTH answers in hand before calling (order-independent by construction):
+ * deciding as soon as one source answered let the thinking source's
+ * "unspecified → high" paint over an explicit label-level `off`.
+ */
+export interface EffortDecision {
+	/** Word to display: the explicit value, or the default when neither has one. */
+	display: string
+	/** The explicit source value; undefined when both sources were empty. */
+	explicit?: string
+}
+
+/** See EffortDecision: current wins over label, default only when both are empty. */
+export function decideEffort(
+	current: string | null | undefined,
+	label: string | null | undefined,
+): EffortDecision {
+	const explicit = isExplicitEffort(current) ? current!.trim() : isExplicitEffort(label) ? label!.trim() : undefined
+	return explicit === undefined ? { display: effectiveEffort(undefined) } : { display: explicit, explicit }
+}
+
+/**
+ * The effort the default policy should WRITE to the route, or undefined when
+ * the host must be left alone. Only an unspecified current level qualifies —
+ * ANY explicit word ("off" and provider-native ids like "none"/"auto"
+ * included) is never overwritten — and only when the model's real ladder
+ * exposes the default, so a non-reasoning model keeps its native behavior
+ * instead of receiving a bogus route override.
+ */
+export function defaultEffortToApply(
+	current: string | null | undefined,
+	ladder: readonly { id: string }[] | readonly string[],
+): EffortLevel | undefined {
+	if (isExplicitEffort(current)) return undefined
+	const ids = ladder.map((entry) => (typeof entry === "string" ? entry : entry.id))
+	return ids.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : undefined
+}
 
 /**
  * Minimum perceived distance (euclidean, 0-255 RGB) between two adjacent
@@ -170,6 +276,85 @@ export function providerFill(theme: ComponentTheme, brand: PowerlineColor): RGBA
 		if (colorDistance(brand, v) >= POWERLINE_MIN_SEGMENT_DISTANCE) return v
 	}
 	return last ?? (theme.hue.interactive[500] as RGBA)
+}
+
+/**
+ * No-provider gradient anchors: the dsh-blue dark blue ramp, already ordered
+ * deepest → lightest (#2a3d9e → #a5b9ff). With a theme the anchors are read
+ * off the interactive hue scale instead (see powerlineGradientAnchors).
+ */
+export const POWERLINE_GRADIENT_FALLBACK = [
+	"#2a3d9e",
+	"#3b53ce",
+	"#4d6bfe",
+	"#5c76fe",
+	"#6b82fe",
+	"#8599ff",
+	"#a5b9ff",
+] as const
+
+/** The hue steps the gradient samples. Bounded to 100..700 so every
+ * interpolated fill keeps the autoContrast label ≥ 4.5:1 on dsh-blue. */
+const POWERLINE_GRADIENT_STEPS = ["100", "200", "300", "400", "500", "600", "700"] as const
+
+/** Linear sRGB interpolation → #rrggbb (for the gradient continuum). */
+export function mixPowerlineColor(a: PowerlineColor, b: PowerlineColor, t: number): string {
+	const [r1, g1, b1] = colorRgb(a)
+	const [r2, g2, b2] = colorRgb(b)
+	const k = Math.max(0, Math.min(1, t))
+	const ch = (x: number, y: number): number => Math.round(x + (y - x) * k)
+	return `#${[ch(r1, r2), ch(g1, g2), ch(b1, b2)]
+		.map((v) => v.toString(16).padStart(2, "0"))
+		.join("")}`
+}
+
+/**
+ * Gradient endpoints for a theme: the darkest and lightest step of the
+ * interactive hue scale within 100..700, sorted by WCAG luminance. Sorting
+ * (instead of assuming 700→100) keeps "deep → light" true for light themes
+ * too, where the numeric scale runs the other way (blue[100] is the dark
+ * end on dsh-blue light).
+ */
+export function powerlineGradientAnchors(theme?: ComponentTheme): [PowerlineColor, PowerlineColor] {
+	const fallback: [PowerlineColor, PowerlineColor] = [
+		POWERLINE_GRADIENT_FALLBACK[0],
+		POWERLINE_GRADIENT_FALLBACK[POWERLINE_GRADIENT_FALLBACK.length - 1]!,
+	]
+	if (!theme) return fallback
+	const scale = (theme.hue.interactive ?? theme.hue.accent) as unknown as Record<string, RGBA | undefined>
+	const steps = POWERLINE_GRADIENT_STEPS.map((step) => scale[step]).filter((value): value is RGBA => value !== undefined)
+	if (steps.length < 2) return fallback
+	const sorted = [...steps].sort((a, b) => relativeLuminance(a) - relativeLuminance(b))
+	return [sorted[0]!, sorted[sorted.length - 1]!]
+}
+
+/**
+ * The single-hue footer ramp: `count` fills walking from the theme's deepest
+ * blue to its lightest, left to right. Brand (index 0) is always the deepest
+ * step; the continuum interpolation keeps the steps monotonic in brightness
+ * for any segment count (7 or 9 segments resolve distinctly).
+ */
+export function powerlineGradient(theme: ComponentTheme | undefined, count: number): PowerlineColor[] {
+	if (count <= 0) return []
+	const [deep, light] = powerlineGradientAnchors(theme)
+	if (count === 1) return [deep]
+	return Array.from({ length: count }, (_, i) => mixPowerlineColor(deep, light, i / (count - 1)))
+}
+
+/**
+ * Repaint a footer's segment list with the gradient. Semantic segments
+ * (`semantic`: context >90% danger, error states) keep their feedback fill
+ * and do not consume a ramp slot; every other segment takes the next step in
+ * order, so the remaining strip stays monotonically deep→light.
+ */
+export function applyPowerlineGradient(segments: readonly PowerlineSegment[], theme?: ComponentTheme): PowerlineSegment[] {
+	const gradientCount = segments.reduce((n, segment) => (segment.semantic ? n : n + 1), 0)
+	const ramp = powerlineGradient(theme, gradientCount)
+	let index = 0
+	return segments.map((segment) => {
+		if (segment.semantic) return segment
+		return { ...segment, bg: ramp[index++]! }
+	})
 }
 
 /**
@@ -215,6 +400,11 @@ export function resolvePalette(theme?: ComponentTheme) {
  * plain "dsh" without one (no preset face, empty roster, nothing selected).
  * Skin contract §1: the fill is the IDENTITY brand blue (dark #4D6BFE /
  * light #3B5BDB, skin/identity.ts) instead of the theme accent token.
+ *
+ * Footer gradient (user feedback batch): when the segment list is assembled
+ * through sessionFooterSegments, applyPowerlineGradient repaints the brand
+ * as the DEEPEST step of the single blue ramp. This builder keeps the
+ * identity fill for standalone callers/tests.
  */
 export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode: SkinColorMode = "dark"): PowerlineSegment {
 	const label = presetLabel ? `dsh(${presetLabel})` : "dsh"
@@ -273,20 +463,31 @@ export function effortFromModelLabel(label: string | null | undefined): EffortLe
 }
 
 /**
+ * Fill for one effort word: a known level takes its ramp step; a
+ * provider-native id outside the seven display words takes the `off` fill so
+ * the ○ glyph fallback and the fill agree (the word itself still renders).
+ */
+function effortFill(palette: ReturnType<typeof resolvePalette>, word: string): RGBA {
+	return (palette.thinking as Record<string, RGBA | undefined>)[word] ?? palette.thinking.off
+}
+
+/**
  * The 🤖 model segment; the effort word ALWAYS rides along with its ladder
- * glyph (`🤖 model ○ off` when off — fix/footer-parity, tui-pi parity:
- * footer.ts:232-234 renders the word unconditionally; off is no longer bare).
+ * glyph (`🤖 model ● high` when the route carries no explicit level — user
+ * directive: unspecified effort defaults to high). An explicit word — `off`
+ * included, and provider-native ids the seven-glyph ladder does not name
+ * (`🤖 model ○ none`) — renders verbatim and is never coerced back.
  * The model name is clipped to 24 terminal columns (tui-pi footer.ts:229
  * `clipToWidth(model, 24)` parity — long ids keep the segment one row wide).
  */
 export function modelSegment(
 	model: string,
-	effort: EffortLevel = "off",
+	effort: string = DEFAULT_EFFORT,
 	theme?: ComponentTheme,
 ): PowerlineSegment | null {
 	if (!model) return null
-	const label = `🤖 ${clipToWidth(model, 24)} ${effortIcon(effort)} ${effort}`
-	return { text: label, bg: resolvePalette(theme).thinking[effort] }
+	const word = effectiveEffort(effort)
+	return { text: `🤖 ${clipToWidth(model, 24)} ${effortIcon(word)} ${word}`, bg: effortFill(resolvePalette(theme), word) }
 }
 
 /**
@@ -317,11 +518,15 @@ export function contextSegment(
 	const p = resolvePalette(theme)
 	if (window !== null && window !== undefined && Number.isFinite(window) && window > 0) {
 		const percent = Math.min(100, (used / window) * 100)
-		const bg = percent >= 90 ? p.contextDanger : percent >= 70 ? p.contextOrange : percent >= 50 ? p.contextWarn : p.contextOk
+		const danger = percent >= 90
+		const bg = danger ? p.contextDanger : percent >= 70 ? p.contextOrange : percent >= 50 ? p.contextWarn : p.contextOk
 		return {
 			text: `🧠 ${fmtNum(used)}/${fmtNum(window)}(${percent.toFixed(1)}%)`,
 			bg,
 			roll: { value: percent, decimals: 1, width: 4, prefix: `🧠 ${fmtNum(used)}/${fmtNum(window)}(`, suffix: "%)" },
+			// >90% is the footer gradient's semantic exception: the danger fill
+			// survives (warning color stays a warning, not a ramp step).
+			...(danger ? { semantic: "danger" as const } : {}),
 		}
 	}
 	return {
@@ -511,11 +716,19 @@ export function PowerlineFooter(props: {
  * Assemble the standard footer row from live data (the example page's
  * seam wiring): brand, provider, model+effort, context, messages, tools,
  * speed. Omitted-data builders (null) drop out.
+ *
+ * Two fixes from the footer-polish feedback batch ride here:
+ *   - the strip is repainted through applyPowerlineGradient: one blue ramp
+ *     running deep→light left to right (brand = deepest), with the >90%
+ *     context danger fill as the only semantic exception;
+ *   - an unspecified effort resolves to `high` (effectiveEffort), while an
+ *     explicit level — `off` and provider-native ids included — always wins.
  */
 export function sessionFooterSegments(data: {
 	provider?: string
 	model?: string
-	effort?: EffortLevel
+	/** Explicit effort word (display vocabulary or a provider-native id). */
+	effort?: string
 	/** 🧠 occupancy estimate (footer context batch); null/absent hides the segment. */
 	contextTokens?: number | null
 	/** 🧠 model window (footer context batch); null/absent degrades to the bare `used` shape. */
@@ -539,7 +752,7 @@ export function sessionFooterSegments(data: {
 		if (s) segs.push(s)
 	}
 	add(providerSegment(data.provider ?? "", theme, data.mode))
-	add(modelSegment(data.model ?? "", data.effort ?? "off", theme))
+	add(modelSegment(data.model ?? "", effectiveEffort(data.effort), theme))
 	add(contextSegment(data.contextTokens ?? null, data.contextWindow ?? null, theme))
 	// tui-pi footer order: 🧠 context, ⚡ CH, then msgs/tools.
 	add(cacheSegment(data.cacheHitRate ?? null, theme))
@@ -550,5 +763,5 @@ export function sessionFooterSegments(data: {
 	// Batch D3: the search discoverability hint (batch H1) left the strip —
 	// key hints live on their own last row (./hints-line.tsx, tui-pi
 	// FooterHint after PowerlineFooter); the powerline is pure segments.
-	return segs
+	return applyPowerlineGradient(segs, theme)
 }

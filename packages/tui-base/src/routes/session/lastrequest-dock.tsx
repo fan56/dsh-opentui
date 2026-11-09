@@ -51,6 +51,10 @@ export type LastRequestLine = {
 	tone: "muted" | "running"
 	/** δ: stable entrance-fade key (spinner glyphs churn the text). */
 	id?: string
+	/** Extra leading columns (dsh-tui-pi: the ` ● ` request echo starts one
+	 * column right of the `├─ ` child rows — Text paddingX=1 + an inner
+	 * leading space). Applied at render, AFTER the width clip. */
+	indent?: number
 }
 
 /** The `●` echo line (pure): first line of the prompt, `● ` prefixed. */
@@ -141,7 +145,7 @@ export function lastRequestLines(
 ): LastRequestLine[] {
 	const out: LastRequestLine[] = []
 	const echo = requestEchoLine(request)
-	if (echo !== undefined) out.push({ text: echo, tone: "muted", id: "lr:echo" })
+	if (echo !== undefined) out.push({ text: echo, tone: "muted", id: "lr:echo", indent: 1 })
 	const tree = [...rows].reverse().find((row) => row.kind === "subagents")
 	if (tree?.kind === "subagents") {
 		const running = tree.children.filter((child) => child.status === "running")
@@ -182,11 +186,11 @@ export function LastRequestDock(props: {
 	}
 
 	return (
-		<box flexShrink={0} flexDirection="column" width="100%" height={lines().length} paddingLeft={3}>
+		<box flexShrink={0} flexDirection="column" width="100%" height={lines().length} paddingLeft={1}>
 			<For each={lines()}>
 				{(line) => (
 					<text fg={lineFg(line)} wrapMode="none">
-						{clipToWidth(line.text, width())}
+						{`${" ".repeat(line.indent ?? 0)}${clipToWidth(line.text, width())}`}
 					</text>
 				)}
 			</For>
