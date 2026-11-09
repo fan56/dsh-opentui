@@ -47,7 +47,6 @@ import {
 	FOOTER_HINT_IDS,
 	HINT_LOCALES,
 	type FooterHints,
-	type HintLocale,
 	type HintSegmentId,
 } from "./hints-line"
 import { getMotionTier, setMotionTier, type MotionTier } from "../../skin/motion"
@@ -626,7 +625,7 @@ export function coreCommands(): SlashCommand[] {
 			// segments; `all on|off` bulk-sets them; `lang <locale>` switches
 			// the label language (en/zh-CN/ja/ko).
 			name: "/hints",
-			description: "key hints: bare toggles the bar; <segment> [on|off]; all on|off; lang en|zh-CN|ja|ko",
+			description: "key hints: toggle bar; <segment> on|off; all on|off; lang <locale>",
 			run(ctx, argText) {
 				const words = argText.trim().split(/\s+/).filter(Boolean)
 				if (words.length === 0) {
@@ -637,8 +636,13 @@ export function coreCommands(): SlashCommand[] {
 				const head = words[0]!.toLowerCase()
 				const state = words[1]?.toLowerCase()
 				if (head === "lang") {
-					const next = words[1] as HintLocale | undefined
-					if (!next || !HINT_LOCALES.includes(next)) {
+					// Case-insensitive match onto the canonical locale spellings
+					// ("EN" → en, "zh-cn" → zh-CN); anything else reprints usage.
+					const raw = words[1]
+					const next = raw
+						? HINT_LOCALES.find((locale) => locale.toLowerCase() === raw.toLowerCase())
+						: undefined
+					if (!next) {
 						ctx.say(`usage: /hints lang ${HINT_LOCALES.join("|")} (current: ${hintsLocale()})`)
 						return
 					}
@@ -646,8 +650,16 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(`hint language: ${next}`)
 					return
 				}
+				// A given state word must be exactly on|off — anything else is a
+				// typo ("/hints scroll of") and errors instead of silently
+				// meaning "on".
+				const stateOn = state === undefined ? undefined : state === "on" ? true : state === "off" ? false : null
+				if (stateOn === null) {
+					ctx.say(`usage: /hints ${head} on|off (got: ${state})`)
+					return
+				}
 				if (head === "all") {
-					const on = state !== "off"
+					const on = stateOn ?? true
 					const all: FooterHints = { ...DEFAULT_FOOTER_HINTS }
 					for (const seg of FOOTER_HINT_IDS) all[seg] = on
 					setFooterHints(all)
@@ -659,7 +671,7 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				const id = head as HintSegmentId
-				const on = state === undefined ? !footerHints()[id] : state !== "off"
+				const on = stateOn === undefined ? !footerHints()[id] : stateOn
 				setFooterHints((hints) => ({ ...hints, [id]: on }))
 				ctx.say(`hint ${id}: ${on ? "on" : "off"}${on && !hintInState(id, false) ? " (busy only)" : ""}`)
 			},

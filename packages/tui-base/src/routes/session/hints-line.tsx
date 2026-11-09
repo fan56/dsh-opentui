@@ -5,7 +5,7 @@
  * strip; every key hint (the composer's old idle footer + the powerline's
  * `Ctrl+Shift+F: search` segment) lives here.
  *
- *   idle  `⌨ enter send · alt+enter newline · ↑↓ history · ↓ subagents · ctrl+shift+f search · ctrl+pgup scroll · ctrl+c ×2 quit`
+ *   idle  `⌨ enter send · alt+enter newline · ↑↓ history · ↓ subagents · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit`
  *   busy  `⌨ enter steer · esc stop · …` (the running-turn keys lead)
  *
  * Footer-quickwins batch (tui-pi footer.ts:41-98 parity): the bar is now

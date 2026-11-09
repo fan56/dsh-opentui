@@ -9,6 +9,8 @@
  *     (tui-pi locales `footer.hint.*` parity).
  */
 import { describe, expect, test, beforeEach } from "bun:test"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
 import {
 	EFFORT_ICONS,
 	effortIcon,
@@ -169,5 +171,16 @@ describe("hint bar: 8 segments × 4 languages (tui-pi FooterHints parity)", () =
 
 	test("module store starts at the tui-pi default (every segment on)", () => {
 		expect(footerHints()).toEqual({ ...DEFAULT_FOOTER_HINTS })
+	})
+})
+
+describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-nocheck)", () => {
+	const source = readFileSync(join(import.meta.dir, "..", "examples", "v2-entry.tsx"), "utf8")
+
+	test("a missing sessionInfo snapshot CLEARS remoteInfo instead of keeping the stale one", () => {
+		expect(source).toMatch(/if \(!info\) \{\s*\n\s*setRemoteInfo\(undefined\)\s*\n\s*return\s*\n\s*\}/)
+		// the guard sits inside refreshFooterData's sessionInfo chain, before setRemoteInfo({...})
+		expect(source.indexOf("if (!info) {")).toBeGreaterThan(source.indexOf("seam.sessionInfo?.()"))
+		expect(source.indexOf("if (!info) {")).toBeLessThan(source.indexOf("setRemoteInfo({ messageCount"))
 	})
 })

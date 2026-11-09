@@ -22,6 +22,7 @@ import {
 } from "../src/routes/session/commands"
 import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
 import { setMotionTier } from "../src/skin/motion"
+import { footerHints, hintsLocale, setFooterHints, setHintsLocale, DEFAULT_FOOTER_HINTS, HINT_LOCALES } from "../src/routes/session/hints-line"
 import type { SessionSeam, SeamProviderModel, SeamSessionSummary } from "../src/seams/session"
 
 /** Recording fake: every seam method the core set touches is a spy. */
@@ -237,7 +238,7 @@ describe("core commands", () => {
 			"/search — full-text search over stored sessions",
 			"/agents — model profiles: list / save / use / rm (named model+effort snapshots)",
 			"/think — set reasoning effort (opens the picker)",
-			"/hints — key hints: bare toggles the bar; <segment> [on|off]; all on|off; lang en|zh-CN|ja|ko",
+			"/hints — key hints: toggle bar; <segment> on|off; all on|off; lang <locale>",
 			"/motion — animation tier: full | reduced | off | auto (bare shows current)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
@@ -984,5 +985,67 @@ describe("/motion (α skin layer)", () => {
 		await run(ctx, "turbo")
 		expect(ctx.lines).toEqual(["usage: /motion full|reduced|off|auto"])
 		expect(seam.calls).not.toContain("configSave")
+	})
+})
+
+describe("/hints argument parsing", () => {
+	const hints = coreCommands().find((c) => c.name === "/hints")!
+	const run = (argText: string) => {
+		const ctx = makeCtx(new RecordingSeam())
+		hints.run(ctx, argText)
+		return ctx
+	}
+
+	beforeEach(() => {
+		setFooterHints({ ...DEFAULT_FOOTER_HINTS })
+		setHintsLocale("en")
+	})
+
+	test("description stays within the palette row budget (≤ /login's 78)", () => {
+		expect(hints.description.length).toBeLessThanOrEqual(70)
+	})
+
+	test("lang matches case-insensitively onto the canonical locale", () => {
+		expect(run("lang EN").lines).toEqual(["hint language: en"])
+		expect(hintsLocale()).toBe("en")
+		expect(run("lang zh-cn").lines).toEqual(["hint language: zh-CN"])
+		expect(hintsLocale()).toBe("zh-CN")
+		expect(run("lang JA").lines).toEqual(["hint language: ja"])
+		setHintsLocale("en")
+	})
+
+	test("lang with an unknown or missing locale reprints usage", () => {
+		expect(run("lang fr").lines).toEqual([`usage: /hints lang ${HINT_LOCALES.join("|")} (current: en)`])
+		expect(run("lang").lines.length).toBe(1)
+		expect(run("lang").lines[0]).toContain("usage: /hints lang")
+		expect(hintsLocale()).toBe("en")
+	})
+
+	test("bare `all` defaults every segment on (even from all-off state)", () => {
+		const off = { ...DEFAULT_FOOTER_HINTS }
+		for (const key of Object.keys(off) as (keyof typeof off)[]) off[key] = false
+		setFooterHints(off)
+		const ctx = run("all")
+		expect(ctx.lines).toEqual(["all hint segments: on"])
+		expect(footerHints()).toEqual({ ...DEFAULT_FOOTER_HINTS })
+	})
+
+	test("`all off` bulk-sets every segment off", () => {
+		const ctx = run("all off")
+		expect(ctx.lines).toEqual(["all hint segments: off"])
+		expect(Object.values(footerHints()).every((on) => !on)).toBe(true)
+	})
+
+	test("unknown state word errors without touching the store (typo ≠ on)", () => {
+		const before = footerHints()
+		expect(run("scroll of").lines).toEqual(["usage: /hints scroll on|off (got: of)"])
+		expect(run("all ONN").lines).toEqual(["usage: /hints all on|off (got: onn)"])
+		expect(footerHints()).toEqual(before)
+	})
+
+	test("unknown segment reports the error and lists the segments", () => {
+		const ctx = run("banana")
+		expect(ctx.lines[0]).toContain("unknown hint segment: banana")
+		expect(ctx.lines[0]).toContain("scroll")
 	})
 })

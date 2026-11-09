@@ -227,7 +227,14 @@ function V2SessionPage(props: {
 			})
 			.catch(() => undefined)
 		void seam.sessionInfo?.().then((info) => {
-			if (!info) return
+			// Footer-quickwins review fix: a missing snapshot (fresh/cleared
+			// session before its first event) must DROP the previous session's
+			// 💬 count / ⚡ tok/s — keeping them pinned the stale numbers to the
+			// next turn's footer until a new snapshot landed.
+			if (!info) {
+				setRemoteInfo(undefined)
+				return
+			}
 			setRemoteInfo({ messageCount: info.messageCount, tps: info.lastTurnTps ?? info.sessionAvgTps })
 			setEffort((current) => current ?? effortFromModelLabel(info.model))
 		}).catch(() => undefined)
