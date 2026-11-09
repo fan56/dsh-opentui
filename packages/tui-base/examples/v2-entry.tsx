@@ -160,7 +160,10 @@ function V2SessionPage(props: {
 		if (!face) return
 		void Promise.all([face.list(), face.currentId()])
 			.then(([rows, id]) => setPresetLabel(presetLabelFor(rows, id)))
-			.catch(() => setPresetLabel(undefined))
+			// A transient list/currentId failure must not blank the brand
+			// segment back to plain "dsh" once a label is known: keep the last
+			// value (the next refresh, e.g. turn end, retries).
+			.catch(() => {})
 	}
 	let composerRef: { focused(): boolean; focus(): void } | undefined
 	// Transcript scrollback (batch 10f): the page owns the scrollbox ref and

@@ -321,6 +321,11 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 		expect(source).toMatch(
 			/createEffect\(\(\) => \{\s*\n\s*if \(!turnBusy\(\)\) \{\s*\n\s*refreshFooterData\(\)\s*\n\s*refreshPresetLabel\(\)/,
 		)
+		// A transient list/currentId failure keeps the last label instead of
+		// flipping a known "dsh(<preset>)" back to the plain "dsh"; the next
+		// refresh retries.
+		expect(source).not.toMatch(/\.catch\(\(\) => setPresetLabel\(undefined\)\)/)
+		expect(source).toMatch(/\.catch\(\(\) => \{\}\)/)
 	})
 })
 
