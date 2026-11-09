@@ -9,15 +9,22 @@
  * separate binding and is not modeled on the seam yet). The composer clears
  * on both paths, exactly like the vendored snapshot-and-clear flow.
  *
- * History recall mirrors prompt/history.tsx `move()` semantics, in-memory
- * only (the vendored provider persists to prompt-history.jsonl — the shell
- * adapter may add persistence later):
+ * History recall is shell-style, aligned with the pi editor
+ * (`dsh-tui-pi` pi-tui `navigateHistory`) and the mini composer
+ * (`mini/prompt.shared.ts movePromptHistory`), in-memory only (the vendored
+ * provider persists to prompt-history.jsonl — the shell adapter may add
+ * persistence later):
  *
- *   index 0 is the draft slot (no recall); negative indices walk newest →
- *   oldest (−1 = last committed prompt). `move` refuses to clobber an input
- *   that was modified away from the currently-recalled entry (the draft-slot
- *   protection), refuses to walk past the oldest entry, and returns "" when
- *   stepping forward past the newest entry (back to the draft).
+ *   `index === null` is the draft (not browsing). ↑ stashes the CURRENT
+ *   buffer — empty or typed, multi-line included — and walks newest →
+ *   oldest; ↓ walks back and, past the newest entry, restores that draft
+ *   instead of clobbering it with "". Neither end wraps: ↑ past the oldest
+ *   and ↓ past the draft are no-ops.
+ *
+ * This deliberately replaces the earlier vendored `prompt/history.tsx`
+ * `move()` port, which compared the buffer against `entries[0]` and refused
+ * to recall once the user had typed a draft (the reported "↑ does nothing
+ * when I typed something" gap).
  */
 export const MAX_HISTORY_ENTRIES = 50
 
@@ -36,30 +43,61 @@ export type ComposerControllerOptions = {
 
 export class ComposerHistory {
 	private entries: string[] = []
-	private index = 0
+	/** null = the draft slot (not browsing); otherwise an index into entries. */
+	private index: number | null = null
+	/** Buffer stashed when browsing started; restored on ↓ past the newest. */
+	private draft = ""
 
-	/** Native `move(direction, input)` semantics (see module comment). */
+	/** True while ↑/↓ is walking committed prompts instead of the draft. */
+	get browsing(): boolean {
+		return this.index !== null
+	}
+
+	/**
+	 * Shell-style recall. `input` is the current buffer text.
+	 *
+	 * Returns the text to place in the composer, or undefined when the walk
+	 * cannot move (empty history, past the oldest, at the draft).
+	 */
 	move(direction: 1 | -1, input: string): string | undefined {
 		if (this.entries.length === 0) return undefined
-		const current = this.entries.at(this.index)
-		if (current === undefined) return undefined
-		if (current !== input && input.length > 0) return undefined
+
+		if (this.index === null) {
+			// ↓ at the draft: nothing newer to walk to.
+			if (direction === 1) return undefined
+			// First ↑ from the draft: stash it (typed, multi-line or empty)
+			// exactly like pi's historyDraft / mini's movePromptHistory.
+			this.draft = input
+			this.index = this.entries.length - 1
+			return this.entries[this.index]
+		}
+
 		const next = this.index + direction
-		if (Math.abs(next) > this.entries.length || next > 0) return undefined
+		if (next < 0) return undefined // past the oldest: stop
+		if (next >= this.entries.length) {
+			// Past the newest: back to the draft slot, restoring the stash
+			// (an empty stash clears the buffer, "最底 = 新消息").
+			this.index = null
+			return this.draft
+		}
 		this.index = next
-		if (next === 0) return ""
-		return this.entries.at(next)
+		return this.entries[next]
 	}
 
 	/** Commit a prompt. Duplicate of the newest entry only resets the walk. */
 	append(text: string): void {
 		if (this.entries.at(-1) === text) {
-			this.index = 0
+			this.reset()
 			return
 		}
 		this.entries.push(text)
 		if (this.entries.length > MAX_HISTORY_ENTRIES) this.entries = this.entries.slice(-MAX_HISTORY_ENTRIES)
-		this.index = 0
+		this.reset()
+	}
+
+	private reset(): void {
+		this.index = null
+		this.draft = ""
 	}
 
 	get size(): number {

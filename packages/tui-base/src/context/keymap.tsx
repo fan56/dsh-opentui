@@ -444,9 +444,20 @@ function useValue() {
   return value
 }
 
+/**
+ * Like `use()`, but returns undefined when no Keymap.Provider is above the
+ * calling component (bare FT harnesses mount the composer without the app
+ * provider tree). The provider's presence is fixed for the component's
+ * lifetime, so callers may branch on it.
+ */
+function useOptional(): Keymap | undefined {
+  return useContext(Context) ? use() : undefined
+}
+
 export const Keymap = {
   Provider,
   use,
+  useOptional,
   createLayer,
   validateCommands: (commands?: readonly KeymapCommand[]) => void groupCommands(commands),
   useShortcuts,

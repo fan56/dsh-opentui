@@ -25,9 +25,28 @@
  *   ↑ at buffer start  recall previous prompt   (vendored prompt.history.previous)
  *   ↓ at buffer end    recall next / back to draft
  *
- * Edge handling is the vendored one: ↑ off offset 0 on the first visual row
+ * Shell-style recall (aligned with dsh-tui-pi's pi editor navigateHistory and
+ * mini/prompt.shared.ts movePromptHistory): the first ↑ stashes the draft
+ * (typed or empty), ↑ walks newest → oldest and stops at the oldest, ↓ walks
+ * back and past the newest restores the draft (empty draft = "at the bottom,
+ * a new message"). A typed single-line draft recalls on the FIRST ↑; on a
+ * multi-line draft ↑ still steps the cursor to the line start first so
+ * vertical cursor movement is not eaten. While browsing, ↑/↓ at the buffer
+ * edges navigate immediately, matching pi.
+ *
+ * Edge handling: when not browsing, ↑ off offset 0 on the first visual row
  * snaps the cursor to 0 (next ↑ recalls); ↓ off the end on the last visual
  * row snaps to the end. Other rows fall through to native cursor movement.
+ *
+ * The Keymap.Provider installed by the real client maps ↑/↓ to
+ * `input.move.up/down` for the focused textarea and consumes the key BEFORE
+ * the renderable's own onKeyDown (a prepended renderer listener that calls
+ * preventDefault/stopPropagation). That is why this component registers a
+ * priority-1 Keymap layer for the history commands: without it, the native
+ * cursor layer swallows ↑/↓ and the onKeyDown fallback below never fires in
+ * the app (it only survives in the bare FT harness, which mounts no
+ * Keymap.Provider). The layer consults `slashKeyFilter` first, so an open
+ * slash palette keeps ↑/↓.
  *
  * Paste: native (TextareaRenderable.handlePaste, bracketed). No custom code.
  *
@@ -44,6 +63,7 @@ import type { SessionSeam } from "../../seams/session"
 import { ComposerController, type ComposerHistory } from "./composer-state"
 import { composerKeyBindings, type ComposerKeybindConfig } from "./composer-keybinds"
 import { useThemeOptional } from "../../context/theme"
+import { Keymap } from "../../context/keymap"
 import { useCursorStyle } from "../../config"
 import {
 	COMPOSER_COMPACT_TERMINAL_ROWS,
@@ -206,6 +226,99 @@ export function SessionComposer(props: SessionComposerProps) {
 		if (result !== "ignored") textarea.setText("")
 	}
 
+	/**
+	 * One history step. Returns true when this layer handled the key (the
+	 * caller/keymap must suppress the native textarea movement).
+	 *
+	 * Direction -1 = ↑ (newer → older), 1 = ↓ (older → newer → draft).
+	 * Browsing state lives in the controller's ComposerHistory; the draft is
+	 * stashed by `history.move` on the first ↑.
+	 */
+	function recallStep(direction: 1 | -1): boolean {
+		if (!textarea || textarea.isDestroyed) return false
+		const input = textarea.plainText
+		const row = textarea.scrollY + textarea.visualCursor.visualRow
+		const browsing = controller.history.browsing
+		const virtualRows = textarea.editorView.getTotalVirtualLineCount()
+
+		if (direction === -1) {
+			if (textarea.cursorOffset !== 0) {
+				// Not on the first visual row: native cursor-up keeps working.
+				if (row !== 0) return false
+				// A typed MULTI-LINE draft: step the cursor to the line start
+				// first (pi parity), the next ↑ recalls. A single-line draft
+				// recalls immediately (shell-style), stashing the whole draft.
+				if (!browsing && virtualRows > 1) {
+					textarea.cursorOffset = 0
+					return true
+				}
+			}
+			const item = controller.history.move(-1, input)
+			if (item === undefined) return false
+			textarea.setText(item)
+			textarea.cursorOffset = 0
+			return true
+		}
+
+		const end = measure(input)
+		if (textarea.cursorOffset !== end) {
+			// Not on the last visual row: native cursor-down keeps working.
+			if (row !== Math.max(0, virtualRows - 1)) return false
+			// Same edge rule as ↑: browsing recalls on the edge, the draft
+			// slot snaps to the end.
+			if (!browsing) {
+				textarea.cursorOffset = end
+				return true
+			}
+		}
+		const item = controller.history.move(1, input)
+		if (item === undefined) return false
+		textarea.setText(item)
+		textarea.cursorOffset = measure(item)
+		return true
+	}
+
+	/**
+	 * Keymap command body (priority-1 layer, see module comment) — the path
+	 * the real client takes. On the bare FT harness (no Keymap.Provider) the
+	 * textarea's onKeyDown fallback below runs instead.
+	 */
+	function historyKey(direction: 1 | -1, event: KeyEvent): boolean {
+		if (!textarea || textarea.isDestroyed) return false
+		// Slash palette owns ↑/↓ while it is open (filter preventDefaults).
+		if (props.slashKeyFilter?.(event, textarea.plainText)) return true
+		if (event.ctrl || event.meta || event.shift || event.super) return false
+		return recallStep(direction)
+	}
+
+	// The real client's Keymap.Provider binds ↑/↓ to native textarea cursor
+	// movement and consumes them before the renderable's onKeyDown. This
+	// layer (priority 1, the vendored prompt's history-layer priority) runs
+	// first so shell-style recall wins; it rejects (returns false) off the
+	// buffer edges, letting the managed cursor layer take over.
+	if (Keymap.useOptional()) {
+		Keymap.createLayer(() => ({
+			priority: 1,
+			enabled: () => !!textarea && !textarea.isDestroyed && textarea.focused,
+			commands: [
+				{
+					id: "prompt.history.previous",
+					title: "Previous prompt history",
+					group: "Prompt",
+					bind: "up",
+					run: (_input, event) => historyKey(-1, event),
+				},
+				{
+					id: "prompt.history.next",
+					title: "Next prompt history",
+					group: "Prompt",
+					bind: "down",
+					run: (_input, event) => historyKey(1, event),
+				},
+			],
+		}))
+	}
+
 	function recall(event: KeyEvent) {
 		if (!textarea || textarea.isDestroyed) return
 		// Slash palette keys first (batch 8): while the menu is open the
@@ -213,39 +326,11 @@ export function SessionComposer(props: SessionComposerProps) {
 		// preventDefault for those.
 		if (props.slashKeyFilter?.(event, textarea.plainText)) return
 		if (event.ctrl || event.meta || event.shift || event.super) return
-		const input = textarea.plainText
-		const row = textarea.scrollY + textarea.visualCursor.visualRow
 		if (event.name === "up") {
-			if (textarea.cursorOffset !== 0) {
-				// Vendored prompt.history.previous: first visual row snaps to 0,
-				// other rows fall through to native move-up.
-				if (row !== 0) return
-				event.preventDefault()
-				textarea.cursorOffset = 0
-				return
-			}
-			const item = controller.history.move(-1, input)
-			if (item === undefined) return
-			event.preventDefault()
-			textarea.setText(item)
-			textarea.cursorOffset = 0
+			if (recallStep(-1)) event.preventDefault()
 			return
 		}
-		if (event.name === "down") {
-			const end = measure(input)
-			if (textarea.cursorOffset !== end) {
-				// Vendored prompt.history.next: last visual row snaps to end.
-				if (row !== Math.max(0, textarea.editorView.getTotalVirtualLineCount() - 1)) return
-				event.preventDefault()
-				textarea.cursorOffset = end
-				return
-			}
-			const item = controller.history.move(1, input)
-			if (item === undefined) return
-			event.preventDefault()
-			textarea.setText(item)
-			textarea.cursorOffset = measure(item)
-		}
+		if (event.name === "down" && recallStep(1)) event.preventDefault()
 	}
 
 	return (

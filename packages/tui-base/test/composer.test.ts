@@ -69,29 +69,63 @@ describe("composer busy gating (vendored: busy submit routes as steer)", () => {
 	})
 })
 
-describe("composer history recall (vendored prompt/history.tsx move semantics)", () => {
-	test("↑ walks newest → oldest from an empty draft; ↓ returns to the draft", () => {
+describe("composer history recall (shell-style, pi editor navigateHistory parity)", () => {
+	test("↑ walks newest → oldest from an empty draft; ↓ returns to the draft and stops", () => {
 		const history = new ComposerHistory()
 		history.append("a")
 		history.append("b")
 		history.append("c")
+		expect(history.browsing).toBe(false)
 		expect(history.move(-1, "")).toBe("c")
+		expect(history.browsing).toBe(true)
 		expect(history.move(-1, "c")).toBe("b")
 		expect(history.move(-1, "b")).toBe("a")
-		expect(history.move(-1, "a")).toBeUndefined() // past oldest
+		expect(history.move(-1, "a")).toBeUndefined() // past oldest: stop, no wrap
 		expect(history.move(1, "a")).toBe("b")
 		expect(history.move(1, "b")).toBe("c")
-		expect(history.move(1, "c")).toBe("") // back to the draft slot
+		expect(history.move(1, "c")).toBe("") // back to the (empty) draft slot
+		expect(history.browsing).toBe(false)
 		expect(history.move(1, "")).toBeUndefined() // nothing newer than the draft
 	})
 
-	test("a typed draft is protected: ↑ does not clobber modified input", () => {
+	test("a typed draft is stashed on the first ↑ and restored on ↓ past the newest", () => {
 		const history = new ComposerHistory()
 		history.append("a")
 		history.append("b")
-		expect(history.move(-1, "my draft")).toBeUndefined()
-		expect(history.move(-1, "")).toBe("b")
-		expect(history.move(-1, "b edited")).toBeUndefined()
+		expect(history.move(-1, "my draft")).toBe("b")
+		expect(history.move(-1, "b")).toBe("a")
+		expect(history.move(1, "a")).toBe("b")
+		expect(history.move(1, "b")).toBe("my draft") // the draft, not ""
+		expect(history.browsing).toBe(false)
+	})
+
+	test("a multi-line draft round-trips intact through the walk", () => {
+		const history = new ComposerHistory()
+		history.append("old")
+		const draft = "line one\nline two\nline three"
+		expect(history.move(-1, draft)).toBe("old")
+		expect(history.move(-1, "old")).toBeUndefined()
+		expect(history.move(1, "old")).toBe(draft)
+	})
+
+	test("editing a recalled entry keeps walking; the stashed draft still wins on ↓", () => {
+		const history = new ComposerHistory()
+		history.append("a")
+		history.append("b")
+		expect(history.move(-1, "draft")).toBe("b")
+		expect(history.move(-1, "b edited")).toBe("a") // browsing ignores buffer edits
+		expect(history.move(1, "a")).toBe("b")
+		expect(history.move(1, "b")).toBe("draft")
+	})
+
+	test("the draft slot is per walk: a new submit resets it", () => {
+		const history = new ComposerHistory()
+		history.append("a")
+		expect(history.move(-1, "draft")).toBe("a")
+		history.append("c") // submit resets the walk + stash
+		expect(history.browsing).toBe(false)
+		expect(history.move(-1, "")).toBe("c")
+		expect(history.move(1, "c")).toBe("") // a fresh empty draft, not "draft"
 	})
 
 	test("empty history recalls nothing; duplicates collapse; cap is enforced", () => {
@@ -120,10 +154,13 @@ describe("composer history recall (vendored prompt/history.tsx move semantics)",
 })
 
 describe("composer dependency direction", () => {
-	test("rebuilt composer path uses the seam, not data/client/keymap contexts", async () => {
+	test("rebuilt composer path uses the seam, not the vendored data/client contexts", async () => {
 		for (const file of ["session-composer.tsx", "composer-state.ts"]) {
 			const source = await Bun.file(new URL(`../src/routes/session/${file}`, import.meta.url)).text()
-			expect(source).not.toMatch(/context\/(data|client|keymap)/)
+			// The optional Keymap context is allowed (history recall must outrank
+			// the managed textarea cursor layer — see session-composer's module
+			// comment); the vendored data/client contexts stay forbidden.
+			expect(source).not.toMatch(/context\/(data|client)/)
 			expect(source).not.toMatch(/from "@opencode\/client"/)
 			expect(source).not.toMatch(/from "@dsh-opentui\//)
 		}
