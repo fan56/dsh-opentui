@@ -6,7 +6,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { RemoteSubagentPanel, descriptorOf, totalTokensOf, type RemoteSubagentView } from "../src/client/remote-subagents.ts"
+import { RemoteSubagentPanel, boundTail, descriptorOf, lastContentLine, totalTokensOf, type RemoteSubagentView } from "../src/client/remote-subagents.ts"
 import type { HardStopRecord, SubagentRoundLimits } from "../src/subagent-policy.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 import { RemoteRpcError, type ClientConnection } from "../src/client/transport.ts"
@@ -68,6 +68,20 @@ describe("subagent pure mappers", () => {
 		expect(totalTokensOf({ total_tokens: 7 })).toBe(7)
 		expect(totalTokensOf({ inputTokens: 5 })).toBeUndefined()
 		expect(totalTokensOf(undefined)).toBeUndefined()
+	})
+	test("lastContentLine takes the last NON-BLANK line, folded onto one row", () => {
+		expect(lastContentLine("line one\nline two")).toBe("line two")
+		expect(lastContentLine("hi\n\n")).toBe("hi")
+		expect(lastContentLine("a\r\nb\rc")).toBe("c")
+		expect(lastContentLine("  x \t y  ")).toBe("x y")
+		expect(lastContentLine("")).toBeUndefined()
+		expect(lastContentLine(undefined)).toBeUndefined()
+	})
+	test("boundTail keeps a bounded window (last line stays intact)", () => {
+		expect(boundTail("hi")).toBe("hi")
+		const long = "a".repeat(600) + "\nhi"
+		expect(boundTail(long).endsWith("hi")).toBe(true)
+		expect(boundTail(long).length).toBeLessThanOrEqual(480)
 	})
 })
 
@@ -173,6 +187,32 @@ describe("subagent panel aggregation", () => {
 		expect(updates.length).toBeGreaterThanOrEqual(4)
 		panel.stop()
 		expect(lastSocket().closed).toBe(true)
+	})
+
+	test("tail: reasoning deltas scroll it, and a child's tool OUTPUT lands as the content tail", async () => {
+		const { panel, lastSocket } = makePanel()
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "printer", childId: "child-hi" }))
+		await until(() => lastSocket() !== undefined)
+		const sock = lastSocket()
+		sock.item(snapshotFrame("child-hi"))
+		// reasoning delta = the child's own visible output (tui-pi parity)
+		sock.item(streamFrame({ type: "chunk", attemptId: "a", revision: 0, index: 0, time: 1, chunk: { type: "reasoning-delta", index: 0, text: "thinking…" } }))
+		await until(() => panel.views()[0]!.lastLine === "thinking…")
+		// a `bash` loop printing "hi" only ever exposes its output in the
+		// durable tool/result — the tail must follow it.
+		sock.item({
+			type: "event",
+			event: {
+				type: "tool/result",
+				seq: 2,
+				time: Date.now(),
+				data: { message: { content: [{ type: "text", text: "hi\nhi\nhi\n" }] }, isError: false },
+			},
+		})
+		await until(() => panel.views()[0]!.lastLine === "hi")
+		// rounds stay assistant/message-counted; a tool result is not a round
+		expect(panel.views()[0]!.rounds).toBe(0)
+		panel.stop()
 	})
 
 	test("snapshot replay folds the journal descriptor — late join gets the label (D2 e2e finding)", async () => {

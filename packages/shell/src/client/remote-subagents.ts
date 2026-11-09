@@ -449,8 +449,15 @@ export class RemoteSubagentPanel {
 			const streamFrame = (typeof frame.frame === "object" && frame.frame !== null ? frame.frame : {}) as Record<string, unknown>
 			if (streamFrame.type === "chunk" && view.status === "running") {
 				const chunk = (typeof streamFrame.chunk === "object" && streamFrame.chunk !== null ? streamFrame.chunk : {}) as Record<string, unknown>
-				if (chunk.type === "text-delta" && typeof chunk.text === "string" && chunk.text) {
-					this.#children.set(id, { ...view, lastLine: (view.lastLine ?? "") + chunk.text })
+				// Text AND reasoning deltas scroll the tail (tui-pi
+				// session.ts:onStreamFrame parity — both are the child's own
+				// visible output, a tool name never is).
+				if (
+					(chunk.type === "text-delta" || chunk.type === "reasoning-delta") &&
+					typeof chunk.text === "string" &&
+					chunk.text
+				) {
+					this.#children.set(id, { ...view, lastLine: boundTail((view.lastLine ?? "") + chunk.text) })
 					this.#emit()
 				}
 			}
@@ -514,11 +521,12 @@ export class RemoteSubagentPanel {
 			const message = (typeof data.message === "object" && data.message !== null ? data.message : {}) as Record<string, unknown>
 			const text = blocksText(message.content ?? data.content)
 			const usage = totalTokensOf(data.usage) ?? totalTokensOf(message.usage)
+			const tail = lastContentLine(text)
 			const next: ChildState = {
 				...view,
 				rounds: view.rounds + 1,
 				...(usage !== undefined ? { tokens: (view.tokens ?? 0) + usage } : {}),
-				...(text ? { lastLine: text.split("\n").pop()?.slice(0, 80) } : {}),
+				...(tail !== undefined ? { lastLine: tail } : {}),
 			}
 			this.#children.set(id, next)
 			changed = true
@@ -535,6 +543,18 @@ export class RemoteSubagentPanel {
 			log.push(`▶ ${String(data.name ?? "tool")} ${String(data.arguments ?? "").slice(0, 90)}`)
 		} else if (type === "tool/result") {
 			log.push(data.isError === true ? "  ⎿ failed" : "  ⎿ done")
+			// The child's printed output (a `bash` loop echoing text, a search
+			// hit, …) is tool-result CONTENT — the only place a child that
+			// "prints" something exposes it (the wire has no streaming tool
+			// output event). Surface its last line as the tail so the dock
+			// shows what the child is actually doing; a tool NAME never
+			// reaches this path (tui-pi tail law kept for names).
+			const message = (typeof data.message === "object" && data.message !== null ? data.message : {}) as Record<string, unknown>
+			const tail = lastContentLine(blocksText(message.content ?? data.content))
+			if (tail !== undefined && tail !== view.lastLine) {
+				this.#children.set(id, { ...view, lastLine: tail })
+				changed = true
+			}
 		} else if (type === "turn/end" && view.status === "running") {
 			// continuable children settle here too; one-shot children rely on
 			// the agent-end pairing / list running flags
@@ -557,6 +577,28 @@ export class RemoteSubagentPanel {
 // ---------------------------------------------------------------------------
 // Pure mappers (unit-tested standalone)
 // ---------------------------------------------------------------------------
+
+/**
+ * The last non-blank line of a content body, whitespace-folded onto one row
+ * (tui-pi `lastTextLine`/`lastBufferLine` parity): a body ending in `\n`
+ * must never blank the tail, and CRLF/CR collapse first.
+ */
+export function lastContentLine(text: string | undefined): string | undefined {
+	if (text === undefined) return undefined
+	const lines = text.replace(/\r\n?/g, "\n").split("\n")
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i]!.trim()
+		if (line !== "") return line.replace(/\s+/gu, " ").slice(0, 240)
+	}
+	return undefined
+}
+
+/** Bounded live stream buffer: keep only the tail window so a long child
+ * stream never grows the panel state without bound (the last line is what
+ * the dock renders; 240 chars matches `views()`' clamp). */
+export function boundTail(text: string): string {
+	return text.length > 480 ? text.slice(-480) : text
+}
 
 /** Descriptor facts of one `subagent/descriptor` payload (v3 fields). */
 export function descriptorOf(data: Record<string, unknown>): RemoteChildDescriptor {

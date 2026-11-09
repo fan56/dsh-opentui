@@ -3,8 +3,8 @@
  * (dsh-tui-pi live-widgets activityDoc structure):
  *
  *   ● <last submitted prompt>          — muted, one row, first line only
- *   ├─ ⠋ <label> · 13.6s · <tail>      — one line PER RUNNING child
- *   └─ ⠋ <label> · 2.1s · <tail>
+ *   ├─ ⠋ <label> · 13.6s · ↻2 · <tail> — one line PER RUNNING child
+ *   └─ ⠋ <label> · 2.1s · ↻1 · <tail>
  *
  * Semantics (tui-pi live-widgets.ts):
  *   - the `●` line tracks MODEL prompts only — slash commands never set it
@@ -12,8 +12,9 @@
  *     persists across turns and clears on session switch (/new/fork/resume).
  *   - the child lines are CLEAR-WHEN-DONE: only RUNNING children render —
  *     a settled roster collapses the slot to the `●` line alone.
- *   - the compact line shows the delegation label + elapsed + content tail.
- *     NO model — that is the Ctrl+G viewer's business (tui-pi parity).
+ *   - the compact line shows the delegation label + elapsed + assistant
+ *     round count + content tail. NO model — that is the Ctrl+G viewer's
+ *     business (tui-pi parity).
  *
  * Data law: pure VIEW over the shared seam-rows store (the `subagents:live`
  * row the seam's subagent marker face drives) + the page's lastRequest
@@ -32,6 +33,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import type { RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import { clipToWidth } from "./tool-summarize"
+import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
 import { motionDecorationsEnabled } from "../../skin/motion"
 import { dockSpin, skinFadeInColor, skinLineFadeT, SKIN_FADE_IN_MS } from "./widgets-dock"
@@ -54,26 +56,73 @@ export function requestEchoLine(text: string | undefined): string | undefined {
 }
 
 
-/** One running-child line (pure): `├─/└─ ⠋ <label> · Xs · <tail>` —
+/** One running-child line (pure): `├─/└─ ⠋ <label> · Xs · ↻N · <tail>` —
  * tui-pi compactAgentLine shape, reduced to the seam's facts (label,
- * elapsed, content tail; NO model, NO token/round meta — tui-pi keeps
- * those for the viewer). Settled children never render here. */
+ * elapsed, assistant-message round count, content tail; NO model, NO
+ * token/context meta — tui-pi keeps those for the viewer). Settled
+ * children never render here.
+ *
+ * Tail law (tui-pi live-widgets.ts compactAgentLine): the tail is the
+ * child's latest CONTENT line — last non-blank line of the folded buffer,
+ * whitespace-collapsed onto one row. It always wins the width fight: the
+ * label is clipped first so a long delegation label can never push the
+ * live signal off the right edge. */
 export function childLineText(
 	child: Extract<SeamRow, { kind: "subagents" }>["children"][number],
 	isLast: boolean,
 	spin: () => number,
+	width?: number,
 ): string {
 	const track = isLast ? "└─ " : "├─ "
 	const glyph = `${SPINNER_FRAMES[spin() % SPINNER_FRAMES.length]} `
 	const elapsed =
 		child.startedAt !== undefined ? ` · ${((Date.now() - child.startedAt) / 1000).toFixed(1)}s` : ""
-	const tail = child.lastLine !== undefined ? ` · ${child.lastLine.split("\n").pop()?.trim()}` : ""
-	return `${track}${glyph}${child.label}${elapsed}${tail}`
+	// Rounds = the child's assistant-message count (one LLM round-trip per
+	// message, tui-pi `round N` parity). Always shown — `↻0` proves the
+	// counter is live on a freshly spawned child.
+	const rounds = ` · ↻${child.rounds}`
+	const meta = `${elapsed}${rounds}`
+	const head = `${track}${glyph}`
+	const tail = lastVisibleLine(child.lastLine)
+	if (tail === undefined) {
+		const plain = `${head}${child.label}${meta}`
+		return width === undefined ? plain : clipToWidth(plain, width)
+	}
+	if (width === undefined) return `${head}${child.label}${meta} · ${tail}`
+	// tui-pi width law: the tail gets a reserved slice of the remainder, the
+	// label absorbs the rest (clipped) — a long delegation label can never
+	// push the live signal off the right edge. ` · ` costs 3 columns.
+	const available = width - stringWidth(head) - stringWidth(meta)
+	if (available <= 0) return clipToWidth(`${head}${child.label}${meta}`, width)
+	const tailNeeded = stringWidth(tail) + 3
+	const tailShow = Math.min(tailNeeded, Math.max(0, available - 8))
+	const labelBudget = Math.max(0, available - tailShow)
+	const label = clipToWidth(child.label, labelBudget)
+	const tailBudget = available - stringWidth(label) - 3
+	if (tailBudget < 2) return clipToWidth(`${head}${label}${meta}`, width)
+	return `${head}${label}${meta} · ${clipToWidth(tail, tailBudget)}`
+}
+
+/** Last non-blank line of a child's content buffer, whitespace-folded onto
+ * one row (tui-pi `lastBufferLine`): a delta ending in `\n` must never
+ * blank the tail, and CRLF/CR collapse like tui-pi's strip pass. */
+export function lastVisibleLine(text: string | undefined): string | undefined {
+	if (text === undefined) return undefined
+	const lines = text.replace(/\r\n?/g, "\n").split("\n")
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i]!.trim()
+		if (line !== "") return line.replace(/\s+/gu, " ")
+	}
+	return undefined
 }
 
 /** The slot's line set (pure): the `●` echo (when a prompt was submitted)
  * followed by one line per RUNNING child (clear-when-done). */
-export function lastRequestLines(rows: readonly SeamRow[], request: string | undefined): LastRequestLine[] {
+export function lastRequestLines(
+	rows: readonly SeamRow[],
+	request: string | undefined,
+	width?: number,
+): LastRequestLine[] {
 	const out: LastRequestLine[] = []
 	const echo = requestEchoLine(request)
 	if (echo !== undefined) out.push({ text: echo, tone: "muted", id: "lr:echo" })
@@ -82,7 +131,7 @@ export function lastRequestLines(rows: readonly SeamRow[], request: string | und
 		const running = tree.children.filter((child) => child.status === "running")
 		running.forEach((child, index) => {
 			out.push({
-				text: childLineText(child, index === running.length - 1, dockSpin),
+				text: childLineText(child, index === running.length - 1, dockSpin, width),
 				tone: "running",
 				id: `lr:child:${child.id}`,
 			})
@@ -106,7 +155,7 @@ export function LastRequestDock(props: {
 	const fgFor = (tone: LastRequestLine["tone"]): string | RGBA =>
 		tone === "running" ? (theme?.text.feedback.warning.base ?? "#e0af68") : (theme?.text.muted ?? "#9aa5ce")
 	const width = () => Math.max(16, dimensions().width - 5)
-	const lines = () => lastRequestLines(props.rows, props.lastRequest)
+	const lines = () => lastRequestLines(props.rows, props.lastRequest, width())
 	// δ: entrance fade (0.4s faint → target) on the shared skin palette; the
 	// re-render cadence rides the widgets dock's shared-clock dockSpin tick.
 	const lineFg = (line: LastRequestLine): string | RGBA => {
