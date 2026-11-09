@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-11-09
+
+### Added
+
+- **New default theme `dsh-blue`** — dark and light variants, auto-selected from the terminal background; `/theme` pins an explicit choice, and the theme list marks entries with `●` and offers auto/dark/light items.
+- **Focus visuals** — the focused element carries a thick-line accent frame; the transcript's current row gets a full-row background highlight; approval/question cards take warning accents.
+- **Framed boxes** — the composer input gets a four-sided border (warning color and a steer title while busy); user messages render in a single-line frame; streaming code blocks draw a left rule while streaming that closes into a language-labeled frame when the block ends; the in-turn activity draws a frame.
+- **Motion system** — letter-by-letter welcome wordmark fade-in, comet gradient trail, rolling powerline numbers, fade in/out transitions, pulsing reminder marker; borders never color-animate. `/motion full|reduced|off|auto` and `DSH_OPENTUI_MOTION` control it; tmux/SSH/non-truecolor terminals reduce automatically.
+- **Cursor** — a vertical-bar cursor that changes color while busy.
+
+### Changed
+
+- **One-shot skin migration** — users who had already picked a theme are switched to `dsh-blue` once on upgrade, with a notice.
+
+### Known Issues
+
+- Occasional flicker is more likely: dropped frames from the engine's reflow (paint bug upstream of the skin).
+- Wide characters can vanish behind a popup's translucent overlay.
+- Borders may flicker while typing a slash command.
+
 ## [0.8.0] - 2026-11-08
 
 ### Changed

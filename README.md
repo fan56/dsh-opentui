@@ -106,8 +106,9 @@ PATH; otherwise the scripts self-skip (exit 0) so CI runs green.
 
 ## Status
 
-v0.8.0: published as `@aiwayds/dsh-opentui` — client-only distribution
-(npm bin → client chain; the in-process plugin mode was retired). The
-session page composes as fixed dock slots (status / widgets / editor /
-lastRequest / notices / powerline / hints) over a chat-clean transcript.
-Roadmap: platform + Kit polish.
+v0.9.0: published as `@aiwayds/dsh-opentui` — client-only distribution
+(npm bin → client chain; the in-process plugin mode was retired). New
+default theme dsh-blue (dark/light, auto-selected by terminal background,
+`/theme` to pin) with focus visuals, framed composer/messages/code blocks,
+and a motion system (`/motion`, `DSH_OPENTUI_MOTION`) that reduces on
+tmux/SSH/non-truecolor. Roadmap: platform + Kit polish.
