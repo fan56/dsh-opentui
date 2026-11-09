@@ -825,7 +825,7 @@ class AgentsSeam extends RecordingSeam {
 				{ id: "low", name: "Low" },
 			],
 			currentEffort: async () => this.effort,
-			selectEffort: (effort: string | undefined) => {
+			selectEffort: async (effort: string | undefined) => {
 				this.calls.push(`selectEffort:${effort ?? "undefined"}`)
 				this.effort = effort
 			},

@@ -244,6 +244,16 @@ function V2SessionPage(props: {
 				return known
 			})
 			.catch(() => undefined)
+		// Review fix: /model and /agents use commit a new route through the
+		// seam but the model segment only re-read on mount/reload — refresh it
+		// here too, or the footer keeps the previous provider/model until the
+		// next turn. Same seq guard as the reads above.
+		void seam.currentModelSelection()
+			.then((s) => {
+				if (seq !== footerRefreshSeq) return
+				setModel(s)
+			})
+			.catch(() => undefined)
 		void seam.sessionInfo?.().then((info) => {
 			if (seq !== footerRefreshSeq) return
 			// Footer-quickwins review fix: a missing snapshot (fresh/cleared

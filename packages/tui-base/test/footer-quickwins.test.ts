@@ -279,8 +279,9 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 
 	test("a stale refresh is dropped by the ordinal guard before touching any signal", () => {
 		expect(source).toMatch(/const seq = \+\+footerRefreshSeq/)
-		// one guard at the top of each of the two promise chains
-		expect(source.match(/if \(seq !== footerRefreshSeq\) return/g)?.length).toBe(2)
+		// one guard at the top of each promise chain: effort, model selection,
+		// session snapshot (the model read is the /model //agents use fix)
+		expect(source.match(/if \(seq !== footerRefreshSeq\) return/g)?.length).toBe(3)
 	})
 
 	test("boot replays the persisted hint selection before the first paint", () => {
