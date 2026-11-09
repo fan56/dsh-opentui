@@ -119,6 +119,15 @@ export interface SlashCommandContext {
 	 */
 	openBtw?(argText: string): void
 	/**
+	 * Footer-refresh hook (footer-quickwins): the page's own footer data
+	 * refresh entry (the same one the mount/reload/turn-end paths drive).
+	 * Commands that mutate session settings shown in the footer (/think,
+	 * /model, /agents use) call it after the mutation settles — otherwise
+	 * the effort/model segments only move at the next turn boundary.
+	 * Optional — a host without it keeps the old turn-end-only behavior.
+	 */
+	refreshFooter?(): void
+	/**
 	 * Theme-switch surface (batch F7a): the page's ThemeSeam slice. Optional
 	 * — an entry without it gets the "unavailable" notice.
 	 */
@@ -315,8 +324,9 @@ export function coreCommands(): SlashCommand[] {
 						ctx.say(`usage: /model or /model provider/model (got "${arg}")`)
 						return
 					}
-					ctx.seam.selectModel(providerID, modelID)
+					await ctx.seam.selectModel(providerID, modelID)
 					ctx.say(`model → ${providerID}/${modelID}`)
+					ctx.refreshFooter?.()
 					return
 				}
 				const catalog = await ctx.seam.modelCatalog()
@@ -335,8 +345,9 @@ export function coreCommands(): SlashCommand[] {
 				)
 				if (!picked) return
 				const [providerID, modelID] = picked.split("/")
-				ctx.seam.selectModel(providerID, modelID)
+				await ctx.seam.selectModel(providerID, modelID)
 				ctx.say(`model → ${picked}`)
+				ctx.refreshFooter?.()
 			},
 		},
 		{
@@ -566,18 +577,19 @@ export function coreCommands(): SlashCommand[] {
 						ctx.say(`unknown profile: ${name}`)
 						return
 					}
-					ctx.seam.selectModel(target.provider, target.model)
+					await ctx.seam.selectModel(target.provider, target.model)
 					let effortNote = ""
 					if (target.reasoningEffort && ctx.seam.thinking) {
 						const efforts = await ctx.seam.thinking.efforts()
 						if (efforts.some((effort) => effort.id === target.reasoningEffort)) {
-							ctx.seam.thinking.selectEffort(target.reasoningEffort)
+							await ctx.seam.thinking.selectEffort(target.reasoningEffort)
 							effortNote = ` (${target.reasoningEffort})`
 						} else {
 							effortNote = ` (effort ${target.reasoningEffort} not on this model's ladder — skipped)`
 						}
 					}
 					ctx.say(`model → ${target.provider}/${target.model}${effortNote} [profile ${target.name}]`)
+					ctx.refreshFooter?.()
 					return
 				}
 				if (verb === "rm" || verb === "remove" || verb === "delete") {
@@ -627,8 +639,13 @@ export function coreCommands(): SlashCommand[] {
 					})),
 				)
 				if (!picked || picked === current) return
-				thinking.selectEffort(picked)
+				// Await the host's acceptance (the seam promise) BEFORE the
+				// footer refresh — currentEffort() reads the accepted route, so
+				// refreshing first would race the old effort back onto the
+				// footer (tui-pi updates the footer segment immediately).
+				await thinking.selectEffort(picked)
 				ctx.say(`thinking → ${picked} (next turn)`)
+				ctx.refreshFooter?.()
 			},
 		},
 		{

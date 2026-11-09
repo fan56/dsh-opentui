@@ -92,8 +92,9 @@ class FakeSeam extends NullSessionSeam {
 	override async currentModelSelection() {
 		return { ...this.model }
 	}
-	override selectModel(providerID: string, modelID: string): void {
+	override selectModel(providerID: string, modelID: string): Promise<void> {
 		this.model = { providerID, modelID }
+		return Promise.resolve()
 	}
 	override async storedTranscript(id = this.sessionID): Promise<SeamTranscriptRow[]> {
 		if (id === "ses-2") {

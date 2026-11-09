@@ -226,6 +226,9 @@ export function createSlashHost(deps: {
 	openSearch?: SlashCommandContext["openSearch"]
 	/** /plugins panel opener (batch H3); absent = /plugins keeps the listing. */
 	openPlugins?: SlashCommandContext["openPlugins"]
+	/** Footer-refresh hook (footer-quickwins); absent = setting commands skip
+	 * the immediate footer re-read (turn-end-only refresh, the old behavior). */
+	refreshFooter?: SlashCommandContext["refreshFooter"]
 }) {
 	const commands = deps.commands ?? coreCommands()
 	const controller = new SlashPaletteController()
@@ -241,6 +244,7 @@ export function createSlashHost(deps: {
 		...(deps.themes ? { themes: deps.themes } : {}),
 		...(deps.openSearch ? { openSearch: deps.openSearch } : {}),
 		...(deps.openPlugins ? { openPlugins: deps.openPlugins } : {}),
+		...(deps.refreshFooter ? { refreshFooter: deps.refreshFooter } : {}),
 	}
 
 	function run(command: SlashCommand, argText: string): boolean {

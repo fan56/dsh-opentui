@@ -68,7 +68,7 @@ class RecordingSeam {
 			this.calls.push("currentModelSelection")
 			return { providerID: "bigmodel", modelID: "glm-5.3-flash" }
 		},
-		selectModel: (providerID, modelID) => {
+		selectModel: async (providerID, modelID) => {
 			this.calls.push(`selectModel:${providerID}/${modelID}`)
 		},
 		usageSummary: () => [],
@@ -83,6 +83,7 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		cleared: 0,
 		reloaded: 0,
 		quit: 0,
+		footerRefreshes: 0,
 		picks: [] as {
 			title: string
 			headerLine?: string
@@ -96,6 +97,7 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		clear: () => hooks.cleared++,
 		reload: () => hooks.reloaded++,
 		quit: () => hooks.quit++,
+		refreshFooter: () => hooks.footerRefreshes++,
 		pickOne: async (title, options, headerLine, currentValue) => {
 			hooks.picks.push({
 				title,
@@ -267,6 +269,10 @@ describe("core commands", () => {
 		])
 		expect(seam.calls).toContain("selectModel:deepseek/v3.2")
 		expect(ctx.lines).toEqual(["model → deepseek/v3.2"])
+		// Footer-quickwins bug fix: the pick re-runs the page's footer refresh
+		// after the selection settles (the provider/model segment moves now,
+		// not at the next turn boundary).
+		expect(ctx.hooks.footerRefreshes).toBe(1)
 	})
 
 	test("/model bare with esc resolves without selecting", async () => {
@@ -275,6 +281,7 @@ describe("core commands", () => {
 		await coreCommands()[2]!.run(ctx, "")
 		expect(seam.calls).not.toContain("selectModel:deepseek/v3.2")
 		expect(ctx.lines).toEqual([])
+		expect(ctx.hooks.footerRefreshes).toBe(0)
 	})
 
 	test("/model provider/model selects directly (no picker)", async () => {
@@ -283,6 +290,7 @@ describe("core commands", () => {
 		await coreCommands()[2]!.run(ctx, "bigmodel/glm-5.3-flash")
 		expect(seam.calls).toEqual(["selectModel:bigmodel/glm-5.3-flash"])
 		expect(ctx.hooks.picks).toEqual([])
+		expect(ctx.hooks.footerRefreshes).toBe(1)
 	})
 
 	test("/model with a malformed argument prints usage, no select", async () => {
@@ -508,7 +516,7 @@ describe("/think (batch F7b)", () => {
 					{ id: "high", name: "High", description: "current" },
 				],
 				currentEffort: async () => "high",
-				selectEffort: (effort) => {
+				selectEffort: async (effort) => {
 					applied.push(effort)
 				},
 			},
@@ -522,12 +530,45 @@ describe("/think (batch F7b)", () => {
 		])
 		expect(applied).toEqual(["low"])
 		expect(ctx.lines).toEqual(["thinking → low (next turn)"])
+		// Footer-quickwins bug fix: the pick re-runs the page's footer refresh
+		// (tui-pi footer parity — the effort segment moves NOW, not at the
+		// next turn boundary).
+		expect(ctx.hooks.footerRefreshes).toBe(1)
+	})
+
+	test("footer refresh waits for the seam's selectEffort acceptance (no stale-race refresh)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "low")
+		let releaseEffort: (() => void) | undefined
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [{ id: "low", name: "Low" }, { id: "high", name: "High" }],
+				currentEffort: async () => "high",
+				selectEffort: (effort) =>
+					new Promise<void>((resolve) => {
+						applied.push(effort)
+						releaseEffort = resolve
+					}),
+			},
+		}
+		const run = coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		// The host acceptance is pending: no refresh may fire yet (the refresh
+		// would read the OLD effort back off currentEffort and pin it).
+		await new Promise((resolve) => setTimeout(resolve, 0))
+		expect(applied).toEqual(["low"])
+		expect(ctx.hooks.footerRefreshes).toBe(0)
+		releaseEffort!()
+		await run
+		expect(ctx.hooks.footerRefreshes).toBe(1)
 	})
 
 	test("without the seam thinking face says unavailable (the /btw contract)", async () => {
 		const ctx = makeCtx(new RecordingSeam())
 		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
 		expect(ctx.lines).toEqual(["/think unavailable in this session"])
+		expect(ctx.hooks.footerRefreshes).toBe(0)
 	})
 
 	test("an empty ladder (model without efforts) says unavailable", async () => {
@@ -538,7 +579,7 @@ describe("/think (batch F7b)", () => {
 			thinking: {
 				efforts: async () => [],
 				currentEffort: async () => undefined,
-				selectEffort: () => {},
+				selectEffort: async () => {},
 			},
 		}
 		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
@@ -554,7 +595,7 @@ describe("/think (batch F7b)", () => {
 			thinking: {
 				efforts: async () => [{ id: "high", name: "High" }],
 				currentEffort: async () => "high",
-				selectEffort: (effort) => {
+				selectEffort: async (effort) => {
 					applied.push(effort)
 				},
 			},
@@ -562,6 +603,7 @@ describe("/think (batch F7b)", () => {
 		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
 		expect(applied).toEqual([])
 		expect(ctx.lines).toEqual([])
+		expect(ctx.hooks.footerRefreshes).toBe(0)
 	})
 })
 

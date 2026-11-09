@@ -329,10 +329,13 @@ export class RemoteSessionSeam implements SessionSeam {
 		return { providerID: selection.provider, modelID: selection.model }
 	}
 
-	selectModel(providerID: string, modelID: string): void {
-		void this.#session
+	selectModel(providerID: string, modelID: string): Promise<void> {
+		return this.#session
 			.selectModel({ provider: providerID, model: modelID })
-			.catch((error) => console.error("[session-seam-adapter] selectModel failed:", error))
+			.then(() => undefined)
+			.catch((error) => {
+				console.error("[session-seam-adapter] selectModel failed:", error)
+			})
 	}
 
 	/** Reasoning-effort surface (batch F7b /think): the ladder reads the
@@ -371,8 +374,8 @@ export class RemoteSessionSeam implements SessionSeam {
 			const selection = (await this.#session.currentModelSelection()) as { reasoningEffort?: string } | undefined
 			return selection?.reasoningEffort
 		},
-		selectEffort: (effort: string | undefined): void => {
-			void this.#session
+		selectEffort: (effort: string | undefined): Promise<void> => {
+			return this.#session
 				.currentModelSelection()
 				.then((selection) => {
 					if (!selection) return
@@ -382,7 +385,10 @@ export class RemoteSessionSeam implements SessionSeam {
 						...(effort ? { reasoningEffort: effort } : {}),
 					})
 				})
-				.catch((error) => console.error("[session-seam-adapter] selectEffort failed:", error))
+				.then(() => undefined)
+				.catch((error) => {
+					console.error("[session-seam-adapter] selectEffort failed:", error)
+				})
 		},
 	}
 

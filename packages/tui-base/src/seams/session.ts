@@ -327,7 +327,9 @@ export interface SessionSeam {
 	listProviders(): Promise<{ provider: string; models: string[] }[]>
 	modelCatalog(force?: boolean): Promise<SeamProviderModel[]>
 	currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined>
-	selectModel(providerID: string, modelID: string): void
+	/** Resolves when the host accepted the route (footer-refresh seam: the
+	 * /model command awaits it before re-reading the selection). */
+	selectModel(providerID: string, modelID: string): Promise<void>
 
 	/**
 	 * Reasoning-effort surface (batch F7b /think): the CURRENT model route's
@@ -336,11 +338,13 @@ export interface SessionSeam {
 	 * /think print the unavailable row (the /btw degrade contract).
 	 * `selectEffort` rides /model's effort semantics (switchModel with a
 	 * reasoningEffort arm — next-turn effect); undefined clears the override.
+	 * Resolves when the host accepted the effort (footer-refresh seam: the
+	 * /think command awaits it before re-reading currentEffort).
 	 */
 	thinking?: {
 		efforts(): Promise<SeamEffortOption[]>
 		currentEffort(): Promise<string | undefined>
-		selectEffort(effort: string | undefined): void
+		selectEffort(effort: string | undefined): Promise<void>
 	}
 
 	/** Usage/limits (usage.tsx, stats). */
@@ -478,7 +482,9 @@ export class NullSessionSeam implements SessionSeam {
 	async currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined> {
 		return undefined
 	}
-	selectModel(_providerID: string, _modelID: string): void {}
+	selectModel(_providerID: string, _modelID: string): Promise<void> {
+		return Promise.resolve()
+	}
 	usageSummary(): string[] {
 		return []
 	}

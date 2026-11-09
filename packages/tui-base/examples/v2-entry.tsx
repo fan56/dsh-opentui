@@ -410,6 +410,11 @@ function V2SessionPage(props: {
 		// onto the overlays mounted in the root children below.
 		openSearch: () => openSessionsSearch(),
 		openPlugins: () => openPluginsPanel(),
+		// Footer-quickwins bug fix (/think parity with tui-pi): setting commands
+		// (/think, /model, /agents use) re-run the page's footer refresh right
+		// after the seam mutation settles — the same entry the turn-end effect
+		// drives, so the footerRefreshSeq stale-promise guard stays intact.
+		refreshFooter: refreshFooterData,
 		// /theme switch surface (batch F7b — client-face parity with
 		// host-entry-v2): live apply + persistence through the seam's
 		// configSave (RemoteHostSession.configSave routes `theme` to the
