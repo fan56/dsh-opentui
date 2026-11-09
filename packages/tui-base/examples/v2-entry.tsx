@@ -71,11 +71,8 @@ import {
 	PowerlineFooter,
 	sessionFooterSegments,
 	effortFromModelLabel,
-	effectiveEffort,
+	decideEffort,
 	defaultEffortToApply,
-	DEFAULT_EFFORT,
-	EFFORT_ICONS,
-	type EffortLevel,
 } from "../src/routes/session/powerline"
 import { StatusBar } from "../src/routes/session/status-bar"
 // Shell-side modules load through COMPUTED dynamic imports: a static
@@ -144,7 +141,7 @@ function V2SessionPage(props: {
 	// session snapshot (durable user+assistant message count + decode-window
 	// tok/s). Local msgs stays the fallback while the seam has no sessionInfo.
 	const [tools, setTools] = createSignal(0)
-	const [effort, setEffort] = createSignal<EffortLevel | undefined>()
+	const [effort, setEffort] = createSignal<string | undefined>()
 	const [remoteInfo, setRemoteInfo] = createSignal<{ messageCount?: number; tps?: number | null }>()
 	const [now, setNow] = createSignal(new Date())
 	// Batch H2 (tui-pi 60-preset footer parity) — host-entry-v2 parity: the
@@ -245,29 +242,49 @@ function V2SessionPage(props: {
 		// overwrite a newer refresh's answer — every then/catch below checks
 		// the ordinal before touching the signals.
 		const seq = ++footerRefreshSeq
+		// Review 3.3 fix: the effort has TWO answer sources — the seam's
+		// thinking face (currentEffort, provider-native ids such as none/auto)
+		// and the sessionInfo().model label parse ("provider/model (effort)").
+		// Deciding the default as soon as the FIRST source answered let its
+		// "unspecified → high" paint over the other source's explicit value
+		// (an explicit label-level `off` was flipped to high). Aggregate BOTH,
+		// then decide once: current first, label second, default last.
+		let currentEffortWord: string | undefined
+		let labelEffortWord: string | undefined
+		let effortSourcesPending = 2
+		const settleEffort = () => {
+			if (--effortSourcesPending > 0 || seq !== footerRefreshSeq) return
+			// Both sources answered: aggregate, then decide once (current wins
+			// over label; the default only when both are empty).
+			const decision = decideEffort(currentEffortWord, labelEffortWord)
+			// User directive: an unspecified think level defaults to HIGH.
+			// Display half: an explicit word (INCLUDING "off" and provider-native
+			// ids) always wins and is never coerced back; decideEffort has
+			// already resolved the default for the empty case.
+			setEffort(decision.display)
+			if (decision.explicit !== undefined || !seam.thinking) return
+			// Behavior half: write the default to the route only when the
+			// model's real ladder exposes "high" (a non-reasoning model keeps
+			// its native behavior). Explicit levels never reach this branch.
+			void seam.thinking
+				.efforts()
+				.then((ladder) => {
+					if (seq !== footerRefreshSeq) return
+					const target = defaultEffortToApply(decision.explicit, ladder.map((entry) => entry.id))
+					return target ? seam.thinking!.selectEffort(target) : undefined
+				})
+				.catch(() => undefined)
+		}
 		void Promise.resolve(seam.thinking?.currentEffort())
 			.then((word) => {
 				if (seq !== footerRefreshSeq) return
-				const known = word && word in EFFORT_ICONS ? (word as EffortLevel) : undefined
-				// User directive: an unspecified think level defaults to HIGH.
-				// Display half: effectiveEffort turns undefined/unknown into high;
-				// an explicit word (INCLUDING "off") always wins and is never
-				// coerced back.
-				setEffort(effectiveEffort(known))
-				if (known !== undefined || !seam.thinking) return
-				// Behavior half: write the default to the route only when the
-				// model's real ladder exposes "high" (a non-reasoning model keeps
-				// its native behavior). Explicit levels never reach this branch.
-				void seam.thinking
-					.efforts()
-					.then((ladder) => {
-						if (seq !== footerRefreshSeq) return
-						const target = defaultEffortToApply(word, ladder.map((entry) => entry.id))
-						return target ? seam.thinking!.selectEffort(target) : undefined
-					})
-					.catch(() => undefined)
+				currentEffortWord = word
+				settleEffort()
 			})
-			.catch(() => undefined)
+			.catch(() => {
+				if (seq !== footerRefreshSeq) return
+				settleEffort()
+			})
 		// Review fix: /model and /agents use commit a new route through the
 		// seam but the model segment only re-read on mount/reload — refresh it
 		// here too, or the footer keeps the previous provider/model until the
@@ -278,19 +295,26 @@ function V2SessionPage(props: {
 				setModel(s)
 			})
 			.catch(() => undefined)
-		void seam.sessionInfo?.().then((info) => {
-			if (seq !== footerRefreshSeq) return
-			// Footer-quickwins review fix: a missing snapshot (fresh/cleared
-			// session before its first event) must DROP the previous session's
-			// 💬 count / ⚡ tok/s — keeping them pinned the stale numbers to the
-			// next turn's footer until a new snapshot landed.
-			if (!info) {
-				setRemoteInfo(undefined)
-				return
-			}
-			setRemoteInfo({ messageCount: info.messageCount, tps: info.lastTurnTps ?? info.sessionAvgTps })
-			setEffort((current) => current ?? effortFromModelLabel(info.model))
-		}).catch(() => undefined)
+		void Promise.resolve(seam.sessionInfo?.())
+			.then((info) => {
+				if (seq !== footerRefreshSeq) return
+				// Footer-quickwins review fix: a missing snapshot (fresh/cleared
+				// session before its first event) must DROP the previous session's
+				// 💬 count / ⚡ tok/s — keeping them pinned the stale numbers to the
+				// next turn's footer until a new snapshot landed.
+				if (!info) {
+					setRemoteInfo(undefined)
+					settleEffort()
+					return
+				}
+				setRemoteInfo({ messageCount: info.messageCount, tps: info.lastTurnTps ?? info.sessionAvgTps })
+				labelEffortWord = effortFromModelLabel(info.model)
+				settleEffort()
+			})
+			.catch(() => {
+				if (seq !== footerRefreshSeq) return
+				settleEffort()
+			})
 	}
 	// Turn-end refresh (⚡ tok/s + 💬 message count move at turn boundaries —
 	// the same reactive trick cacheRate uses above).
@@ -449,6 +473,13 @@ function V2SessionPage(props: {
 		// after the seam mutation settles — the same entry the turn-end effect
 		// drives, so the footerRefreshSeq stale-promise guard stays intact.
 		refreshFooter: refreshFooterData,
+		// Review 3.5: /think bumps the ordinal BEFORE the host accepts the
+		// pick, so a pending default-effort write from the last turn end can
+		// never land after the user's choice (off stays off). Bump only — no
+		// re-read, which would race the OLD effort back onto the footer.
+		invalidateFooter: () => {
+			footerRefreshSeq++
+		},
 		// /theme switch surface (batch F7b — client-face parity with
 		// host-entry-v2): live apply + persistence through the seam's
 		// configSave (RemoteHostSession.configSave routes `theme` to the

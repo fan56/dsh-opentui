@@ -19,6 +19,8 @@ import {
 	toolSegment,
 	contrastRatio,
 	effectiveEffort,
+	isExplicitEffort,
+	decideEffort,
 	defaultEffortToApply,
 	DEFAULT_EFFORT,
 	type EffortLevel,
@@ -396,7 +398,7 @@ describe("footer gradient (single blue ramp, deep→light)", () => {
  * never overwritten.
  */
 describe("default effort policy", () => {
-	test("unspecified/unknown resolves to high; explicit off is preserved", () => {
+	test("unspecified resolves to high; explicit words (off included) are preserved", () => {
 		expect(DEFAULT_EFFORT).toBe("high")
 		expect(effectiveEffort(undefined)).toBe("high")
 		expect(effectiveEffort(null)).toBe("high")
@@ -424,5 +426,79 @@ describe("default effort policy", () => {
 		// No high on the ladder → leave the host route alone.
 		expect(defaultEffortToApply(undefined, ["low", "medium"])).toBeUndefined()
 		expect(defaultEffortToApply(undefined, [])).toBeUndefined()
+	})
+
+	// Review 3.2: the seam's ladder is PROVIDER data — native ids such as
+	// none/auto are explicit values too. EFFORT_ICONS is only the glyph
+	// vocabulary; membership in it must never decide explicitness.
+	test("provider-native ids are explicit: none/auto pass through, never coerced to high", () => {
+		expect(effectiveEffort("none")).toBe("none")
+		expect(effectiveEffort("auto")).toBe("auto")
+		expect(effectiveEffort("thinking")).toBe("thinking")
+		expect(isExplicitEffort("none")).toBe(true)
+		expect(isExplicitEffort("high")).toBe(true)
+		expect(isExplicitEffort("off")).toBe(true)
+		expect(isExplicitEffort("   ")).toBe(false)
+		expect(isExplicitEffort("")).toBe(false)
+		expect(isExplicitEffort(undefined)).toBe(false)
+		expect(isExplicitEffort(null)).toBe(false)
+	})
+
+	test("native ids suppress the default write exactly like known words", () => {
+		expect(defaultEffortToApply("none", ["none", "auto", "high"])).toBeUndefined()
+		expect(defaultEffortToApply("auto", ["none", "auto", "high"])).toBeUndefined()
+		// Only a genuinely empty current value writes.
+		expect(defaultEffortToApply("  ", ["none", "auto", "high"])).toBe("high")
+	})
+
+	test("native ids display verbatim with the ○ glyph fallback and the off fill", () => {
+		const theme = fakeTheme()
+		const none = modelSegment("m", "none", theme)!
+		expect(none.text).toBe("🤖 m ○ none")
+		expect(none.bg).toBe(resolvePalette(theme).thinking.off)
+		expect(modelSegment("m", "auto")!.text).toBe("🤖 m ○ auto")
+		expect(sessionFooterSegments({ model: "m", effort: "none" }).find((s) => s.text.startsWith("🤖"))!.text).toBe(
+			"🤖 m ○ none",
+		)
+	})
+
+	// Review 3.3: both effort sources must be consulted before the default
+	// lands; the aggregation itself is order-independent, so a label-level
+	// explicit off survives whichever source answers first.
+	test("decideEffort: current wins over label; label explicit off beats the default", () => {
+		expect(decideEffort(undefined, "off")).toEqual({ display: "off", explicit: "off" })
+		expect(decideEffort("", "off")).toEqual({ display: "off", explicit: "off" })
+		expect(decideEffort("none", "off")).toEqual({ display: "none", explicit: "none" })
+		expect(decideEffort("high", undefined)).toEqual({ display: "high", explicit: "high" })
+		expect(decideEffort(undefined, undefined)).toEqual({ display: DEFAULT_EFFORT })
+		expect(decideEffort("   ", "  ")).toEqual({ display: DEFAULT_EFFORT })
+	})
+
+	test("timing: a label answer that lands first does NOT settle the default early", async () => {
+		// Mirrors refreshFooterData's pending counter: the display is decided
+		// only after BOTH sources answer (the old code painted high off the
+		// thinking answer and the label's off never applied).
+		let currentWord: string | undefined
+		let labelWord: string | undefined
+		let pending = 2
+		let display: string | undefined
+		const settle = () => {
+			if (--pending > 0) return
+			display = decideEffort(currentWord, labelWord).display
+		}
+		const label = Promise.resolve("off").then((word) => {
+			labelWord = word
+			settle()
+		})
+		const current = new Promise<string | undefined>((resolve) => setTimeout(() => resolve(undefined), 5)).then(
+			(word) => {
+				currentWord = word
+				settle()
+			},
+		)
+		await label
+		expect(display).toBeUndefined() // label first: default must not land yet
+		await current
+		expect(display).toBe("off") // the label's explicit off survives
 	})
 })

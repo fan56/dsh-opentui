@@ -178,28 +178,65 @@ export type EffortLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh
 export const DEFAULT_EFFORT: EffortLevel = "high"
 
 /**
- * Effective effort for display: a known explicit word ALWAYS wins — including
- * "off" (a user's /think off choice must never be coerced back to high).
- * An absent or unknown word resolves to DEFAULT_EFFORT ("high").
+ * True when the route carries an EXPLICIT effort. Any non-empty word counts —
+ * the seam's ladder is provider data, so its ids are not restricted to the
+ * seven display words (a reasoning model can expose "none", "auto",
+ * "thinking", …), and a user's /think pick of any of them must never be
+ * coerced back to the default. EFFORT_ICONS is a GLYPH vocabulary only; it is
+ * not the explicitness test.
  */
-export function effectiveEffort(word: string | null | undefined): EffortLevel {
-	const w = word?.trim() as EffortLevel | undefined
-	return w && w in EFFORT_ICONS ? w : DEFAULT_EFFORT
+export function isExplicitEffort(word: string | null | undefined): boolean {
+	return (word?.trim() ?? "").length > 0
+}
+
+/**
+ * Effective effort for display: any explicit word ALWAYS wins — native
+ * provider ids and "off" included (a user's /think off choice must never be
+ * coerced back to high). Only an absent/blank word resolves to
+ * DEFAULT_EFFORT ("high").
+ */
+export function effectiveEffort(word: string | null | undefined): string {
+	const w = word?.trim()
+	return w ? w : DEFAULT_EFFORT
+}
+
+/**
+ * Aggregate the TWO effort sources into one decision (review 3.3): the seam's
+ * thinking face (currentEffort — provider-native ids) first, the
+ * sessionInfo().model label parse second, the default last. Callers must have
+ * BOTH answers in hand before calling (order-independent by construction):
+ * deciding as soon as one source answered let the thinking source's
+ * "unspecified → high" paint over an explicit label-level `off`.
+ */
+export interface EffortDecision {
+	/** Word to display: the explicit value, or the default when neither has one. */
+	display: string
+	/** The explicit source value; undefined when both sources were empty. */
+	explicit?: string
+}
+
+/** See EffortDecision: current wins over label, default only when both are empty. */
+export function decideEffort(
+	current: string | null | undefined,
+	label: string | null | undefined,
+): EffortDecision {
+	const explicit = isExplicitEffort(current) ? current!.trim() : isExplicitEffort(label) ? label!.trim() : undefined
+	return explicit === undefined ? { display: effectiveEffort(undefined) } : { display: explicit, explicit }
 }
 
 /**
  * The effort the default policy should WRITE to the route, or undefined when
- * the host must be left alone. Only an unspecified current level qualifies
- * (explicit values, "off" included, are never overwritten) and only when the
- * model's real ladder exposes the default — a non-reasoning model keeps its
- * native behavior instead of receiving a bogus route override.
+ * the host must be left alone. Only an unspecified current level qualifies —
+ * ANY explicit word ("off" and provider-native ids like "none"/"auto"
+ * included) is never overwritten — and only when the model's real ladder
+ * exposes the default, so a non-reasoning model keeps its native behavior
+ * instead of receiving a bogus route override.
  */
 export function defaultEffortToApply(
 	current: string | null | undefined,
 	ladder: readonly { id: string }[] | readonly string[],
 ): EffortLevel | undefined {
-	const word = current?.trim()
-	if (word && word in EFFORT_ICONS) return undefined
+	if (isExplicitEffort(current)) return undefined
 	const ids = ladder.map((entry) => (typeof entry === "string" ? entry : entry.id))
 	return ids.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : undefined
 }
@@ -426,21 +463,31 @@ export function effortFromModelLabel(label: string | null | undefined): EffortLe
 }
 
 /**
+ * Fill for one effort word: a known level takes its ramp step; a
+ * provider-native id outside the seven display words takes the `off` fill so
+ * the ○ glyph fallback and the fill agree (the word itself still renders).
+ */
+function effortFill(palette: ReturnType<typeof resolvePalette>, word: string): RGBA {
+	return (palette.thinking as Record<string, RGBA | undefined>)[word] ?? palette.thinking.off
+}
+
+/**
  * The 🤖 model segment; the effort word ALWAYS rides along with its ladder
  * glyph (`🤖 model ● high` when the route carries no explicit level — user
- * directive: unspecified effort defaults to high). An explicit `off` renders
- * `○ off` and is never coerced back.
+ * directive: unspecified effort defaults to high). An explicit word — `off`
+ * included, and provider-native ids the seven-glyph ladder does not name
+ * (`🤖 model ○ none`) — renders verbatim and is never coerced back.
  * The model name is clipped to 24 terminal columns (tui-pi footer.ts:229
  * `clipToWidth(model, 24)` parity — long ids keep the segment one row wide).
  */
 export function modelSegment(
 	model: string,
-	effort: EffortLevel = DEFAULT_EFFORT,
+	effort: string = DEFAULT_EFFORT,
 	theme?: ComponentTheme,
 ): PowerlineSegment | null {
 	if (!model) return null
-	const label = `🤖 ${clipToWidth(model, 24)} ${effortIcon(effort)} ${effort}`
-	return { text: label, bg: resolvePalette(theme).thinking[effort] }
+	const word = effectiveEffort(effort)
+	return { text: `🤖 ${clipToWidth(model, 24)} ${effortIcon(word)} ${word}`, bg: effortFill(resolvePalette(theme), word) }
 }
 
 /**
@@ -675,12 +722,13 @@ export function PowerlineFooter(props: {
  *     running deep→light left to right (brand = deepest), with the >90%
  *     context danger fill as the only semantic exception;
  *   - an unspecified effort resolves to `high` (effectiveEffort), while an
- *     explicit level — `off` included — always wins.
+ *     explicit level — `off` and provider-native ids included — always wins.
  */
 export function sessionFooterSegments(data: {
 	provider?: string
 	model?: string
-	effort?: EffortLevel
+	/** Explicit effort word (display vocabulary or a provider-native id). */
+	effort?: string
 	/** 🧠 occupancy estimate (footer context batch); null/absent hides the segment. */
 	contextTokens?: number | null
 	/** 🧠 model window (footer context batch); null/absent degrades to the bare `used` shape. */
