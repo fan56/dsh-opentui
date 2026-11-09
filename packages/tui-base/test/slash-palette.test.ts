@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test"
 import { coreCommands, type SlashCommand } from "../src/routes/session/commands"
 import {
 	createSlashHost,
+	MAX_ROWS,
 	SlashPaletteController,
 } from "../src/routes/session/slash-palette"
 
@@ -66,14 +67,102 @@ describe("SlashPaletteController", () => {
 	test("a zero-match query closes the palette (batch V5: no empty 1-row strip)", () => {
 		const controller = new SlashPaletteController()
 		controller.sync("/", COMMANDS)
-		expect(controller.rows()).toBe(2)
+		expect(controller.rows()).toBe(MAX_ROWS)
 		controller.sync("/zz", COMMANDS)
 		expect(controller.filtered(COMMANDS)).toEqual([])
 		expect(controller.rows()).toBe(0)
 		expect(controller.open).toBe(false)
 		// narrowing back to a match re-opens
 		controller.sync("/h", COMMANDS)
-		expect(controller.rows()).toBe(1)
+		expect(controller.rows()).toBe(MAX_ROWS)
+	})
+
+	test("STABLE-HEIGHT: narrowing the filter never changes the rendered height", () => {
+		// The flicker regression: a count-tracking height resized the composer
+		// root per keystroke (global reflow, border flicker). The rendered box
+		// height must stay at the MAX_ROWS cap for ANY non-zero result — the
+		// filter only decides which rows paint (open/close still transition).
+		const commands: SlashCommand[] = [
+			{ name: "/help", description: "d1", run: () => {} },
+			{ name: "/hello", description: "d2", run: () => {} },
+			{ name: "/heat", description: "d3", run: () => {} },
+			{ name: "/new", description: "d4", run: () => {} },
+		]
+		const controller = new SlashPaletteController()
+		const heights: number[] = []
+		controller.sync("/", commands)
+		heights.push(controller.rows()) // 4 matches
+		controller.sync("/he", commands)
+		heights.push(controller.rows()) // 3 matches
+		controller.sync("/hel", commands)
+		heights.push(controller.rows()) // 2 matches
+		controller.sync("/help", commands)
+		heights.push(controller.rows()) // 1 match
+		expect(heights).toEqual([MAX_ROWS, MAX_ROWS, MAX_ROWS, MAX_ROWS])
+		// the highlight still tracks the FILTERED list, not the padded box
+		controller.sync("/he", commands)
+		controller.move(2, commands)
+		expect(controller.selected()).toBe(2)
+		expect(controller.filtered(commands).length).toBe(3)
+	})
+
+	test("OVERFLOW CAP: a 9-command table keeps only MAX_ROWS rows visible", () => {
+		// The box is MAX_ROWS tall, so the VISIBLE list must be capped too —
+		// an uncapped <For> painted all 9 rows out of the 6-row box onto the
+		// textarea below it.
+		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
+			name: `/cmd${i}`,
+			description: `d${i}`,
+			run: () => {},
+		}))
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands) // all 9 match "/"
+		// the rendered list (what <For> draws) is capped; the box height is not
+		expect(controller.filtered(commands).map((c) => c.name)).toEqual([
+			"/cmd0",
+			"/cmd1",
+			"/cmd2",
+			"/cmd3",
+			"/cmd4",
+			"/cmd5",
+		])
+		expect(controller.rows()).toBe(MAX_ROWS)
+	})
+
+	test("OVERFLOW CAP: wrap navigation never leaves the visible rows", () => {
+		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
+			name: `/cmd${i}`,
+			description: `d${i}`,
+			run: () => {},
+		}))
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		// forward wrap: from the LAST VISIBLE row back to 0, never into 6..8
+		for (let i = 0; i < MAX_ROWS - 1; i++) controller.move(1, commands)
+		expect(controller.selected()).toBe(MAX_ROWS - 1)
+		controller.move(1, commands)
+		expect(controller.selected()).toBe(0)
+		// backward wrap: 0 → the last VISIBLE row (5), never 8
+		controller.move(-1, commands)
+		expect(controller.selected()).toBe(MAX_ROWS - 1)
+		// the highlighted entry always resolves inside the rendered list
+		expect(controller.current(commands)?.name).toBe("/cmd5")
+	})
+
+	test("OVERFLOW CAP: sync clamps the selection to the visible list", () => {
+		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
+			name: `/cmd${i}`,
+			description: `d${i}`,
+			run: () => {},
+		}))
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		controller.move(1, commands)
+		expect(controller.selected()).toBe(1)
+		// re-sync on the same wide table keeps the highlight in 0..MAX_ROWS-1
+		controller.sync("/", commands)
+		expect(controller.selected()).toBe(1)
+		expect(controller.filtered(commands).length).toBe(MAX_ROWS)
 	})
 })
 
