@@ -28,6 +28,7 @@ import type { SessionSeam } from "../../seams/session"
 import type { SlashCommand, SlashCommandContext } from "./commands"
 import { coreCommands, dispatchLine, filterCommands, unknownCommandRow } from "./commands"
 import { completeSlash } from "./slash-complete"
+import { carrySlashHooks } from "./slash-deps"
 
 /**
  * Max rows shown before the list clamps (the old menu's cap) — and, since the
@@ -248,7 +249,14 @@ export function SlashPalette(props: {
  * as the harmless error row, never a model send. Plain text returns false
  * and flows to send/steer as batch 4 built.
  */
-export function createSlashHost(deps: {
+/**
+ * The deps bag `createSlashHost` accepts — the ONE gate a command hook can
+ * enter the host through. `SlashCommandContext` is the dispatch-side
+ * contract; this interface is the wiring-side contract. `./slash-deps.ts`
+ * (`buildSlashDeps`) is the entry assembly and `test/entry-slash-deps.test.ts`
+ * pins that every hook listed there lands here.
+ */
+export interface SlashHostDeps {
 	seam: SessionSeam
 	/** Registry override (tests); default = the batch-8 core set. */
 	commands?: SlashCommand[]
@@ -277,7 +285,9 @@ export function createSlashHost(deps: {
 	/** Footer-refresh cancellation (review 3.5); absent = /think keeps the
 	 * accept-then-refresh order (old hosts). */
 	invalidateFooter?: SlashCommandContext["invalidateFooter"]
-}) {
+}
+
+export function createSlashHost(deps: SlashHostDeps) {
 	const commands = deps.commands ?? coreCommands()
 	const controller = new SlashPaletteController()
 	const ctx: SlashCommandContext = {
@@ -287,14 +297,10 @@ export function createSlashHost(deps: {
 		reload: deps.reload,
 		quit: deps.quit,
 		pickOne: deps.pickOne,
-		...(deps.promptText ? { promptText: deps.promptText } : {}),
-		...(deps.openBtw ? { openBtw: deps.openBtw } : {}),
-		...(deps.themes ? { themes: deps.themes } : {}),
-		...(deps.openSearch ? { openSearch: deps.openSearch } : {}),
-		...(deps.openPlugins ? { openPlugins: deps.openPlugins } : {}),
-		...(deps.openAgents ? { openAgents: deps.openAgents } : {}),
-		...(deps.refreshFooter ? { refreshFooter: deps.refreshFooter } : {}),
-		...(deps.invalidateFooter ? { invalidateFooter: deps.invalidateFooter } : {}),
+		// Every optional hook is carried through ONE shared, exhaustively
+		// checked list (./slash-deps.ts). The /agents bug was a hand-written
+		// spread here that silently dropped a hook the deps type declared.
+		...carrySlashHooks(deps),
 	}
 
 	function run(command: SlashCommand, argText: string): boolean {

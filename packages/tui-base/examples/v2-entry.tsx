@@ -48,6 +48,7 @@ import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
+import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import { presetLabelFor } from "../src/routes/session/commands"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
@@ -443,7 +444,7 @@ function V2SessionPage(props: {
 	// viewer.steer notices) — the notices slot below lastRequest, not a
 	// permanent transcript row.
 	registerSubagentSteerFeedback((line: string) => void showNotice(line))
-	const slash = createSlashHost({
+	const slash = createSlashHost(buildSlashDeps({
 		seam,
 		say: sayLine,
 		// Batch D2: a session switch (/new → clear, /fork//resume → reload)
@@ -473,6 +474,10 @@ function V2SessionPage(props: {
 		},
 		quit: props.quit,
 		pickOne,
+	}, {
+		// Entry hooks: the typed assembly in src/routes/session/slash-deps.ts
+		// pins that every one of these reaches createSlashHost (the /agents
+		// regression was a hook that stopped at this object literal).
 		promptText,
 		openBtw: (argText: string) => void openBtw(argText),
 		// Batch H3 client-face parity (host-entry-v2 was the only wired pair —
@@ -539,7 +544,7 @@ function V2SessionPage(props: {
 				},
 			}),
 		},
-	})
+	}))
 	const overlayHost = createComponent(TurnOverlayHost, {
 		controller: overlays,
 		reclaimFocus: () => {

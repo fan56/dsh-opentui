@@ -3,6 +3,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -41,8 +42,62 @@ jobs:
       # [test] section's preload (the @opentui/solid real-runtime loader, see
       # each package's bunfig.toml) — run the suite per package, not at root.
       - run: for p in packages/*/; do (cd "$p" && bun test); done
+      # ENTRY-CHAIN TYPECHECK (docs/verification-gates.md §2). This program
+      # roots only the entry assembly chain (v2-entry + slash deps + the
+      # deps/ctx declaration chain), NOT the package-wide budget: tui-base
+      # still carries its historical errors, this leg owns zero.
+      - run: cd packages/tui-base && bun run typecheck:entry
+      # ASSEMBLY GATES (docs/verification-gates.md §1): tests named `verify:`
+      # pin entry→host wiring and run without ~/.dsh, tmux or a provider key.
+      - run: cd packages/tui-base && bun test -t 'verify:'
       # Real-boot E2E (e2e-client.mjs, the client topology gate) is not a CI
       # step: it needs a global dsh + tmux + provider keys. The release gate
       # (fresh-install boot render check) covers the real-boot leg before
       # every publish. The retired plugin-face scripts (e2e-live / e2e-fork)
       # were removed with the plugin mode.
+      # The real-machine tmux gate (verify/agents-mount-repro.mjs) is LOCAL
+      # ONLY for GitHub-hosted runners: the published runner images do not
+      # ship tmux, and the script needs a `dsh` CLI to provision
+      # ~/.dsh/profiles/opentui + a provider key for the model turn. See the
+      # conditional `real-client` job below and docs/verification-gates.md §4.
+
+  # Opt-in real-machine gate. Enable with the repository variable
+  # DSH_REAL_CLIENT_GATE=true on a SELF-HOSTED runner labelled `dsh-profile`
+  # that already has: global `dsh` on PATH, a provisioned
+  # ~/.dsh/profiles/opentui, a provider API key in env, and tmux installed.
+  # GitHub-hosted runners cannot satisfy that offline, so the job is skipped
+  # by default — absence of evidence here is NOT a pass; the local run is
+  # mandatory before merging keymap/panel/command-surface changes.
+  real-client:
+    if: vars.DSH_REAL_CLIENT_GATE == 'true'
+    runs-on: [self-hosted, dsh-profile]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.3
+      - run: pnpm install --frozen-lockfile
+      - name: stub @deepseek-ai/dsh-client-connection (same as the test job)
+        run: |
+          node -e '
+            const { mkdirSync, writeFileSync } = require("node:fs");
+            const dir = "packages/shell/node_modules/@deepseek-ai/dsh-client-connection";
+            mkdirSync(dir, { recursive: true });
+            writeFileSync(dir + "/package.json",
+              JSON.stringify({ type: "module", exports: { "./client": "./index.js" } }));
+            writeFileSync(dir + "/index.js",
+              "export const installConnection = () => { throw new Error(\"CI stub: @deepseek-ai/dsh-client-connection needs a global dsh install\"); };\n");
+          '
+      - name: real client tmux gate (/agents mount + slash palette)
+        run: DSH_AGENTS_E2E=1 bun test test/agents-mount-client.test.ts
+        working-directory: packages/shell
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agents-mount-captures
+          path: verify/agents-mount-out/
+          if-no-files-found: ignore
+

@@ -1,0 +1,25 @@
+{
+  // ENTRY-CHAIN typecheck (verification gate, 2026-11). The package-wide
+  // `typecheck` still carries tui-base's historical error budget; this
+  // program roots ONLY the entry assembly chain so "a hook declared in one
+  // layer but dropped in another" fails the build instead of shipping.
+  //
+  // Roots are deliberately files, not directories: include only decides which
+  // files are ROOTS, so adding "src" here would re-budget the whole package.
+  // Imports are still followed transitively (v2-entry pulls the view graph).
+  //
+  // `src/vendor/stubs.d.ts` is a root because the entry graph imports the
+  // un-vendored `@opencode/client` + `@opencode/plugin/*` ambient modules;
+  // without it those resolve to TS2307 in this narrower program.
+  //
+  // Scope note: v2-entry.tsx composes shell's untyped client classes and
+  // keeps `// @ts-nocheck`; its import graph, the slash deps assembly and the
+  // deps/ctx declaration chain ARE checked here.
+  "extends": "./tsconfig.json",
+  "include": [
+    "examples/v2-entry.tsx",
+    "src/routes/session/slash-deps.ts",
+    "src/routes/session/slash-palette.tsx",
+    "src/vendor/stubs.d.ts"
+  ]
+}

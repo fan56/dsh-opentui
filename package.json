@@ -9,6 +9,8 @@
   "scripts": {
     "build": "pnpm -r build",
     "test": "bun test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "typecheck:entry": "cd packages/tui-base && bun run typecheck:entry",
+    "verify:assembly": "cd packages/tui-base && bun test -t 'verify:'"
   }
 }

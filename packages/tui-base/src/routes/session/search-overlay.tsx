@@ -138,7 +138,7 @@ export function SearchOverlay(props: SearchOverlayProps) {
 	const [open, setOpen] = useSearchOverlayOpenState()
 	const [query, setQuery] = createSignal("")
 	const [index, setIndex] = createSignal(0)
-	const [inputTarget, setInputTarget] = createSignal<InputRenderable>()
+	const [, setInputTarget] = createSignal<InputRenderable>()
 	let input: InputRenderable | undefined
 
 	const matches = createMemo(() => findMatchRowIndices(props.projection.rows as readonly SeamRow[], query()))
