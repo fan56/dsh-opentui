@@ -155,6 +155,22 @@ describe("RemoteSessionOps", () => {
 		expect(await h.ops.listSessions()).toEqual([])
 	})
 
+	test("storedTranscript rejects on a failed journal read (never fakes an empty history)", async () => {
+		// Transcript-loss regression: a `catch → []` here made any transient
+		// host/RPC failure look like "this session has no history", and the
+		// view's full-replace hydrate then wiped every visible row.
+		const h = makeOps(() => ({}))
+		const settled = h.ops.storedTranscript("s1").then(
+			(rows) => ({ rows }),
+			(error: unknown) => ({ error }),
+		)
+		await until(() => h.sockets.length > 0)
+		h.lastSocket().endStream() // opening snapshot never arrives
+		const result = await settled
+		expect("error" in result).toBe(true)
+		expect(String((result as { error: unknown }).error)).toContain("opening snapshot")
+	})
+
 	test("storedTranscript drains follow snapshot + page fills into transcript rows", async () => {
 		const h = makeOps((method, args) => {
 			if (method === "session/page") {

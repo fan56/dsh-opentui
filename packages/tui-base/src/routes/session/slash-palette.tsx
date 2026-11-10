@@ -369,7 +369,7 @@ export interface SlashHostDeps {
 	commands?: SlashCommand[]
 	say(text: string): void
 	clear(): void
-	reload(): void
+	reload(sessionId?: string): void
 	quit(): void
 	pickOne: SlashCommandContext["pickOne"]
 	/** /login chained-form text prompt (batch H4); absent = /login says unavailable. */

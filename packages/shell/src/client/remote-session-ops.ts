@@ -350,13 +350,16 @@ export class RemoteSessionOps {
 	}
 
 	/** Stored transcript rows (row 14; host-session.storedTranscript parity,
-	 * plus the ask_user_question Q&A rows from the durable tool pair). */
+	 * plus the ask_user_question Q&A rows from the durable tool pair).
+	 *
+	 * Errors PROPAGATE (2026-11-10 transcript-loss fix): the old
+	 * `catch → []` turned any transient host/RPC failure into "this session
+	 * has no history", and the transcript's full-replace hydrate then wiped
+	 * every visible row. An empty journal is still an empty array; a failed
+	 * read is an error the caller decides about (SeamRows.load keeps its rows,
+	 * sessionInfo/btw degrade to their own defaults). */
 	async storedTranscript(id: string, skip = 0): Promise<StoredTranscriptRow[]> {
-		try {
-			return journalToTranscriptRows(await this.fetchJournal(id), skip)
-		} catch {
-			return []
-		}
+		return journalToTranscriptRows(await this.fetchJournal(id), skip)
 	}
 
 	/** Full-text search (row 19; host-session.searchSessions parity). */
