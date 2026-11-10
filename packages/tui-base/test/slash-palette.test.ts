@@ -18,13 +18,19 @@ const COMMANDS: SlashCommand[] = [
 	{ name: "/new", description: "d2", run: () => {} },
 ]
 
-/** MAX_ROWS + 3 matching commands — the overflow-cap fixture. */
+/** MAX_ROWS + 3 matching commands — the overflow-cap fixture. Names are
+ * zero-padded so the alphabetical order is also numeric (cmd00 < cmd09). */
 function wideCommands(): SlashCommand[] {
 	return Array.from({ length: MAX_ROWS + 3 }, (_, i) => ({
-		name: `/cmd${i}`,
+		name: `/cmd${String(i).padStart(2, "0")}`,
 		description: `d${i}`,
 		run: () => {},
 	}))
+}
+
+/** A usage view backed by a plain map (the ordering input). */
+function usageOf(counts: Record<string, number>) {
+	return { count: (name: string) => counts[name] ?? 0 }
 }
 
 /** Minimal key event stub (only what the host reads). */
@@ -117,19 +123,17 @@ describe("SlashPaletteController", () => {
 		expect(controller.filtered(commands).length).toBe(3)
 	})
 
-	test("OVERFLOW CAP: a table wider than MAX_ROWS keeps only MAX_ROWS command rows", () => {
+	test("OVERFLOW CAP: the window paints MAX_ROWS command rows, the hint counts the rest", () => {
 		// The box holds MAX_ROWS command rows (+ the reserved hint row), so the
-		// VISIBLE list must be capped too — an uncapped <For> painted every
-		// match out of the fixed-height box onto the textarea below it.
+		// VISIBLE slice is MAX_ROWS wide — an uncapped <For> painted every match
+		// out of the fixed-height box onto the textarea below it.
 		const commands: SlashCommand[] = wideCommands()
 		const controller = new SlashPaletteController()
 		controller.sync("/", commands) // every row matches "/"
-		// the rendered list (what <For> draws) is capped; the box height is not
 		expect(controller.filtered(commands)).toHaveLength(MAX_ROWS)
-		expect(controller.filtered(commands).at(-1)?.name).toBe(`/cmd${MAX_ROWS - 1}`)
+		expect(controller.filtered(commands).at(-1)?.name).toBe("/cmd09")
 		expect(controller.rows()).toBe(PALETTE_ROWS)
-		// the cap does not hide the overflow from the user: the reserved row
-		// carries the count past the cap
+		// the reserved row carries the count past the window
 		expect(controller.matches(commands)).toBe(MAX_ROWS + 3)
 		expect(overflowHint(controller.matches(commands))).toBe("… 3 more")
 	})
@@ -141,32 +145,130 @@ describe("SlashPaletteController", () => {
 		expect(overflowHint(controller.matches(COMMANDS))).toBeUndefined()
 	})
 
-	test("OVERFLOW CAP: wrap navigation never leaves the visible rows", () => {
-		const commands: SlashCommand[] = wideCommands()
+	test("WINDOW FOLLOW: ↓ walks into the hidden tail and the window scrolls with it", () => {
+		// The reported bug: ↓ could not reach commands past the visible cap.
+		// Selection indexes the FULL list; the window origin follows so the
+		// highlighted row is always painted. 19 rows = the real core set size.
+		const commands: SlashCommand[] = Array.from({ length: 19 }, (_, i) => ({
+			name: `/cmd${String(i).padStart(2, "0")}`,
+			description: `d${i}`,
+			run: () => {},
+		}))
 		const controller = new SlashPaletteController()
 		controller.sync("/", commands)
-		// forward wrap: from the LAST VISIBLE row back to 0, never past the cap
-		for (let i = 0; i < MAX_ROWS - 1; i++) controller.move(1, commands)
-		expect(controller.selected()).toBe(MAX_ROWS - 1)
-		controller.move(1, commands)
-		expect(controller.selected()).toBe(0)
-		// backward wrap: 0 → the last VISIBLE row, never the hidden tail
-		controller.move(-1, commands)
-		expect(controller.selected()).toBe(MAX_ROWS - 1)
-		// the highlighted entry always resolves inside the rendered list
-		expect(controller.current(commands)?.name).toBe(`/cmd${MAX_ROWS - 1}`)
+		// 17 downs = the 18th row (the bug report's "18th entry")
+		for (let i = 0; i < 17; i++) controller.move(1, commands)
+		expect(controller.selected()).toBe(17)
+		expect(controller.offset()).toBe(17 - MAX_ROWS + 1)
+		const visible = controller.filtered(commands)
+		expect(visible).toHaveLength(MAX_ROWS)
+		expect(visible.at(-1)?.name).toBe("/cmd17") // the highlighted row, painted
+		// the highlight resolves INSIDE the painted window (never an orphan)
+		expect(controller.isRowActive(visible.length - 1)).toBe(true)
+		expect(controller.current(commands)?.name).toBe("/cmd17")
+		// hint: 1 match below the window, 8 scrolled off the top
+		expect(overflowHint(controller.matches(commands), controller.offset())).toBe(
+			"… 8 more above · … 1 more",
+		)
 	})
 
-	test("OVERFLOW CAP: sync clamps the selection to the visible list", () => {
+	test("WINDOW FOLLOW: wrap past the last match returns to the top window", () => {
 		const commands: SlashCommand[] = wideCommands()
 		const controller = new SlashPaletteController()
 		controller.sync("/", commands)
-		controller.move(1, commands)
-		expect(controller.selected()).toBe(1)
-		// re-sync on the same wide table keeps the highlight in 0..MAX_ROWS-1
+		controller.move(-1, commands) // 0 → last (wrap)
+		expect(controller.selected()).toBe(MAX_ROWS + 2)
+		expect(controller.offset()).toBe(3)
+		expect(controller.current(commands)?.name).toBe("/cmd12")
+		controller.move(1, commands) // last → 0 (wrap)
+		expect(controller.selected()).toBe(0)
+		expect(controller.offset()).toBe(0)
+		expect(controller.current(commands)?.name).toBe("/cmd00")
+	})
+
+	test("WINDOW FOLLOW: the hint reports both hidden edges mid-list", () => {
+		const commands: SlashCommand[] = wideCommands()
+		const controller = new SlashPaletteController()
 		controller.sync("/", commands)
-		expect(controller.selected()).toBe(1)
-		expect(controller.filtered(commands).length).toBe(MAX_ROWS)
+		for (let i = 0; i < 5; i++) controller.move(1, commands) // 5: still offset 0
+		expect(overflowHint(controller.matches(commands), controller.offset())).toBe("… 3 more")
+		for (let i = 0; i < 5; i++) controller.move(1, commands) // 10 → offset 1
+		expect(controller.offset()).toBe(1)
+		expect(overflowHint(controller.matches(commands), controller.offset())).toBe("… 1 more above · … 2 more")
+	})
+
+	test("PAGE: PgUp/PgDn move one MAX_ROWS page, clamped at the edges", () => {
+		const commands: SlashCommand[] = wideCommands()
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		controller.movePage(1, commands)
+		expect(controller.selected()).toBe(MAX_ROWS)
+		expect(controller.offset()).toBe(1)
+		controller.movePage(1, commands) // clamps at the last match
+		expect(controller.selected()).toBe(MAX_ROWS + 2)
+		expect(controller.offset()).toBe(3)
+		controller.movePage(-1, commands)
+		expect(controller.selected()).toBe(2)
+		// minimal scroll: the window only moves down as far as the selection
+		expect(controller.offset()).toBe(2)
+		controller.movePage(-1, commands) // clamps at 0
+		expect(controller.selected()).toBe(0)
+	})
+
+	test("EDGE: Home/End jump to the first/last match", () => {
+		const commands: SlashCommand[] = wideCommands()
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		controller.moveEdge("end", commands)
+		expect(controller.selected()).toBe(MAX_ROWS + 2)
+		expect(controller.current(commands)?.name).toBe("/cmd12")
+		controller.moveEdge("home", commands)
+		expect(controller.selected()).toBe(0)
+		expect(controller.offset()).toBe(0)
+	})
+
+	test("sync keeps the selection on the FULL list (only missing rows clamp it)", () => {
+		const commands: SlashCommand[] = wideCommands()
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		for (let i = 0; i < 12; i++) controller.move(1, commands)
+		expect(controller.selected()).toBe(12)
+		// re-sync on the same wide table keeps the highlight where the user left it
+		controller.sync("/", commands)
+		expect(controller.selected()).toBe(12)
+		expect(controller.offset()).toBe(3)
+	})
+
+	test("DEFAULT ORDER: alphabetical, case-insensitive, `/session` before `/sessions`", () => {
+		const commands: SlashCommand[] = [
+			{ name: "/sessions", description: "d", run: () => {} },
+			{ name: "/Help", description: "d", run: () => {} },
+			{ name: "/session", description: "d", run: () => {} },
+			{ name: "/agents", description: "d", run: () => {} },
+		]
+		const controller = new SlashPaletteController()
+		controller.sync("/", commands)
+		expect(controller.filtered(commands).map((c) => c.name)).toEqual([
+			"/agents",
+			"/Help",
+			"/session",
+			"/sessions",
+		])
+	})
+
+	test("FREQUENCY ORDER: count desc, then name asc; ties fall back to alphabetical", () => {
+		const commands: SlashCommand[] = [
+			{ name: "/alpha", description: "d", run: () => {} },
+			{ name: "/beta", description: "d", run: () => {} },
+			{ name: "/gamma", description: "d", run: () => {} },
+		]
+		const controller = new SlashPaletteController(usageOf({ "/beta": 3, "/gamma": 1 }))
+		controller.sync("/", commands)
+		expect(controller.filtered(commands).map((c) => c.name)).toEqual(["/beta", "/gamma", "/alpha"])
+		// equal counts keep the alphabetical tiebreak
+		const tied = new SlashPaletteController(usageOf({ "/beta": 1, "/alpha": 1 }))
+		tied.sync("/", commands)
+		expect(tied.filtered(commands).map((c) => c.name)).toEqual(["/alpha", "/beta", "/gamma"])
 	})
 
 })
@@ -232,11 +334,10 @@ describe("createSlashHost", () => {
 		expect(hooks.ran).toEqual(["/new"])
 	})
 
-	test("interceptSubmit: an exact typed name beats the highlighted prefix row", () => {
-		// "/session" typed in full must run /session even though the longer
-		// "/sessions" prefix row is highlighted in the palette (the exact-match
-		// precedence dispatchLine already applies — parity here, or Enter opens
-		// the Resume picker instead of the info panel).
+	test("interceptSubmit: an exact typed name runs that command", () => {
+		// "/session" typed in full must run /session, never the longer
+		// "/sessions" row. Alphabetical ordering already puts the shorter name
+		// first (exact-match precedence in the host is the second guard).
 		const ran: string[] = []
 		const commands: SlashCommand[] = [
 			{ name: "/help", description: "d1", run: () => ran.push("/help") },
@@ -245,8 +346,8 @@ describe("createSlashHost", () => {
 		]
 		const { host } = makeHost(commands)
 		host.slashKeyFilter(key("s"), "/session")
-		// the highlight IS the shadowing row (table order puts /sessions first)
-		expect(host.controller.current(commands)?.name).toBe("/sessions")
+		// the highlight is the exact row itself: `/session` sorts before `/sessions`
+		expect(host.controller.current(commands)?.name).toBe("/session")
 		expect(host.interceptSubmit("/session")).toBe(true)
 		expect(ran).toEqual(["/session"])
 	})
@@ -308,6 +409,77 @@ describe("createSlashHost", () => {
 		})
 		host.interceptSubmit("/agents")
 		expect(lines).toEqual(["/agents: the manager panel is not mounted in this entry"])
+	})
+
+	test("PgDn/PgUp/End/Home are consumed while open and page the list", () => {
+		const commands = wideCommands()
+		const { host } = makeHost(commands)
+		expect(host.slashKeyFilter(key("pagedown"), "/")).toBe(true)
+		expect(host.controller.selected()).toBe(MAX_ROWS)
+		expect(host.controller.offset()).toBe(1)
+		expect(host.slashKeyFilter(key("end"), "/")).toBe(true)
+		expect(host.controller.current(commands)?.name).toBe("/cmd12")
+		expect(host.slashKeyFilter(key("home"), "/")).toBe(true)
+		expect(host.controller.selected()).toBe(0)
+		expect(host.slashKeyFilter(key("pageup"), "/")).toBe(true)
+		expect(host.controller.selected()).toBe(0)
+		// a closed palette lets the page keys fall through to the textarea
+		expect(host.slashKeyFilter(key("pagedown"), "/help")).toBe(false)
+	})
+
+	test("usage counts ONLY real dispatches: highlight/Tab are inert", () => {
+		const config: Record<string, unknown> = {}
+		const seam = { configLoad: () => config, configSave: (patch: any) => Object.assign(config, patch) } as any
+		const commands: SlashCommand[] = [
+			{ name: "/alpha", description: "d1", run: () => {} },
+			{ name: "/beta", description: "d2", run: () => {} },
+		]
+		const host = createSlashHost({
+			seam,
+			commands,
+			say: () => {},
+			clear: () => {},
+			reload: () => {},
+			quit: () => {},
+			pickOne: async () => undefined,
+		})
+		// moving the highlight and Tab-completing never touch the counter
+		host.slashKeyFilter(key("down"), "/")
+		host.slashComplete("/b", 2)
+		expect(config.slashUsage).toBeUndefined()
+		// three real dispatches (exact-name path) count three times
+		expect(host.interceptSubmit("/beta")).toBe(true)
+		expect(host.interceptSubmit("/beta")).toBe(true)
+		expect(host.interceptSubmit("/beta")).toBe(true)
+		expect(config.slashUsage).toEqual({ "/beta": 3 })
+		// the live palette now ranks /beta ahead of the alphabetically-first /alpha
+		host.controller.sync("/", commands)
+		expect(host.controller.filtered(commands).map((c) => c.name)).toEqual(["/beta", "/alpha"])
+	})
+
+	test("usage survives a host rebuild through the config seam (restart round trip)", () => {
+		const config: Record<string, unknown> = {}
+		const seam = { configLoad: () => config, configSave: (patch: any) => Object.assign(config, patch) } as any
+		const commands: SlashCommand[] = [
+			{ name: "/alpha", description: "d1", run: () => {} },
+			{ name: "/beta", description: "d2", run: () => {} },
+		]
+		const deps = {
+			seam,
+			commands,
+			say: () => {},
+			clear: () => {},
+			reload: () => {},
+			quit: () => {},
+			pickOne: async () => undefined,
+		}
+		const first = createSlashHost(deps)
+		first.interceptSubmit("/beta")
+		first.interceptSubmit("/beta")
+		// a fresh boot reads the same config back
+		const second = createSlashHost(deps)
+		second.controller.sync("/", commands)
+		expect(second.controller.filtered(commands).map((c) => c.name)).toEqual(["/beta", "/alpha"])
 	})
 
 	test("core set via the default registry: dispatch reaches the real commands", () => {

@@ -36,18 +36,20 @@ async function mount() {
 		// 11 more matches so an OPEN palette on "/" has 13 rows for MAX_ROWS
 		// slots — pins the OVERFLOW CAP at the real renderer (an uncapped <For>
 		// painted every row out of the fixed-height box onto the textarea) and
-		// the reserved `… N more` hint row.
-		{ name: "/extra1", description: "e1", run: () => {} },
-		{ name: "/extra2", description: "e2", run: () => {} },
-		{ name: "/extra3", description: "e3", run: () => {} },
-		{ name: "/extra4", description: "e4", run: () => {} },
-		{ name: "/extra5", description: "e5", run: () => {} },
-		{ name: "/extra6", description: "e6", run: () => {} },
-		{ name: "/extra7", description: "e7", run: () => {} },
-		{ name: "/extra8", description: "e8", run: () => {} },
-		{ name: "/extra9", description: "e9", run: () => {} },
-		{ name: "/extra10", description: "e10", run: () => {} },
-		{ name: "/extra11", description: "e11", run: () => {} },
+		// the reserved `… N more` hint row. Names sort AFTER /help and /new
+		// (alphabetical default; zero-padded so /x09 < /x11), so the first
+		// window paints /help and /new plus /x01../x08.
+		{ name: "/x01", description: "e1", run: () => {} },
+		{ name: "/x02", description: "e2", run: () => {} },
+		{ name: "/x03", description: "e3", run: () => {} },
+		{ name: "/x04", description: "e4", run: () => {} },
+		{ name: "/x05", description: "e5", run: () => {} },
+		{ name: "/x06", description: "e6", run: () => {} },
+		{ name: "/x07", description: "e7", run: () => {} },
+		{ name: "/x08", description: "e8", run: () => {} },
+		{ name: "/x09", description: "e9", run: () => {} },
+		{ name: "/x10", description: "e10", run: () => {} },
+		{ name: "/x11", description: "e11", run: () => {} },
 	]
 	const seam = { steer: (text: string) => sent.push(`steer:${text}`) } as any
 	const host = createSlashHost({
@@ -97,9 +99,9 @@ async function mount() {
 		composerHeight: textarea.parent?.height ?? null,
 		frameHasHelpRow: setup.captureCharFrame().includes("/help show available commands"),
 		frameHasNewRow: setup.captureCharFrame().includes("/new start a fresh session"),
-		// OVERFLOW CAP: "/extra11" is the 13th match (past the MAX_ROWS cap) —
+		// OVERFLOW CAP: "/x11" is the 13th match (past the MAX_ROWS window) —
 		// it must never paint anywhere in the frame, box or no box.
-		frameHasOverflowRow: setup.captureCharFrame().includes("/extra11"),
+		frameHasOverflowRow: setup.captureCharFrame().includes("/x11"),
 		// the reserved row reports what the cap hides
 		frameHasMoreHint: /…\s*3\s*more/.test(setup.captureCharFrame()),
 	})
