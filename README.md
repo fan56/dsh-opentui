@@ -86,6 +86,13 @@ install only the core set. These are deliberately not installed:
 `feishu` (claims the ask surface), `web-search-tavily` (needs a key),
 `agent-dispatch`, `self-improve`, `llm-proxy`, `profile-switch`.
 
+`anysearch` needs no API key: provisioning also re-enables the `tool-web` row
+(the `dsh-web-app` bundle ships it `disabled: true`) and pins
+`web.searchProvider` to `anysearch`, so the model gets `web_search`/`web_fetch`
+on a fresh profile. Both rows are written for every tier — including
+`--plugins=none`, because the tools must be visible regardless of whether the
+anysearch bundle is installed.
+
 A plugin counts as installed only when all three agree: it is in the profile
 `dependencies`, the installed `node_modules` version satisfies the pin, and its
 name is in `dsh.profile.bundles`. Missing pieces are repaired with one
@@ -104,11 +111,11 @@ every launch, set it in the environment:
 DSH_OPENTUI_PLUGINS=none dsh-opentui
 ```
 
-The profile is still created/kept, the model route still written, and the
-retired-entry cleanup still runs; only plugin installation and managed-bundle
-appends are skipped. You can always manage plugins yourself afterwards with
-`dsh plugin --profile opentui add <pkg>`. `--dry-run` prints every command
-provisioning would run without executing it.
+The profile is still created/kept, the model route still written (including the
+`tool-web` / `web` rows), and the retired-entry cleanup still runs; only plugin
+installation and managed-bundle appends are skipped. You can always manage
+plugins yourself afterwards with `dsh plugin --profile opentui add <pkg>`.
+`--dry-run` prints every command provisioning would run without executing it.
 
 **Config reuse**: the Shell reads your existing dsh config — model defaults
 from the host, provider baseUrls and API keys from `$DSH_HOME`. A

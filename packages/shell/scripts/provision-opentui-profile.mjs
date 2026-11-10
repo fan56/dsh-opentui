@@ -15,7 +15,12 @@
 //                        provider route, so without this the profile cannot
 //                        complete a real model turn. Flags: --provider <id>
 //                        --model <id> --reasoning-effort <id> (defaults
-//                        zai-coding-cn / glm-5.3-flash / high).
+//                        zai-coding-cn / glm-5.3-flash / high). The same step
+//                        re-enables `tool-web` (the dsh-web-app bundle ships
+//                        it disabled and the `native` preset never turns it
+//                        back on) and pins `web.searchProvider` to anysearch —
+//                        with or without a plugin tier: this is what makes
+//                        `web_search` visible to the model.
 //   [3/5] plugins      — install the default plugin set when a plugin is not
 //                        already satisfied (see lib/provision-plan.mjs for the
 //                        table and the idempotency rule). `--plugins=core`
@@ -69,6 +74,7 @@ import {
   parseDumpConfig,
   parseTier,
   planPluginInstall,
+  planToolPatch,
   pluginAddArgs,
   pluginAddCommand,
   selectPlugins,
@@ -243,16 +249,31 @@ const missingRoute = [
   ['llm-pi-ai', providerEntry],
   ['agent-default-model', modelEntry],
 ].filter(([id, body]) => !hasEntry(existingPatch, id))
+// The model-facing web tools are managed independently of the plugin tier:
+// re-enabling `tool-web` and pinning the provider are what make `web_search`
+// visible, and the anysearch bundle only installs the provider behind it.
+const toolPatch = planToolPatch(existingPatch)
+const pendingPatchEntries = missingRoute.length + toolPatch.append.length
+// Stable state suffix for the progress line (task-visible on a dry run too).
+const webState = `; tool-web ${toolPatch.toolWeb === 'enabled' ? 'enabled' : 'to enable'}, ` +
+  `web search ${toolPatch.web === 'pinned' ? 'pinned' : 'to pin anysearch'}`
 
-if (missingRoute.length === 0) {
-  say(2, 'model route', `${provider}/${model} (already pinned)`)
+if (pendingPatchEntries === 0) {
+  say(2, 'model route', `${provider}/${model} (already pinned)${webState}`)
 } else if (dryRun) {
-  say(2, 'model route', `${provider}/${model} (would write ${missingRoute.length} patch entries)`)
+  say(2, 'model route', `${provider}/${model} (would write ${pendingPatchEntries} patch entries)${webState}`)
 } else {
+  const routeBanner = missingRoute.length > 0
+    ? `# model route (managed by provision-opentui-profile.mjs — provider ${provider}, ` +
+      `key read by the host from ${apiKeyEnv}):\n`
+    : ''
   const routeBody = missingRoute.map(([, body]) => body).join('')
-  const banner =
-    `# model route (managed by provision-opentui-profile.mjs — provider ${provider}, ` +
-    `key read by the host from ${apiKeyEnv}):\n`
+  const webBanner = toolPatch.append.length > 0
+    ? `${missingRoute.length > 0 ? '\n' : ''}# model-facing web tools (managed by ` +
+      `provision-opentui-profile.mjs — anysearch needs no key; tool-web is disabled by ` +
+      `@deepseek-ai/dsh-web-app and re-enabled here):\n`
+    : ''
+  const patchBody = `${routeBanner}${routeBody}${webBanner}${toolPatch.append.join('')}`
   const backupPatch = () => {
     if (!existingPatch) return
     const backupPath = `${patchPath}.bak-${Date.now()}`
@@ -261,13 +282,13 @@ if (missingRoute.length === 0) {
   }
   if (existingPatch && !isEmptyListDoc(existingPatch)) {
     backupPatch()
-    writeFileSync(patchPath, `${existingPatch.replace(/\n*$/, '\n\n')}${banner}${routeBody}`)
+    writeFileSync(patchPath, `${existingPatch.replace(/\n*$/, '\n\n')}${patchBody}`)
   } else {
     backupPatch()
     mkdirSync(profileDir, { recursive: true })
-    writeFileSync(patchPath, `${banner}${routeBody}`)
+    writeFileSync(patchPath, patchBody)
   }
-  say(2, 'model route', `${provider}/${model} (wrote ${missingRoute.length} patch entries)`)
+  say(2, 'model route', `${provider}/${model} (wrote ${pendingPatchEntries} patch entries)${webState}`)
 }
 
 // ---------------------------------------------------------------------------

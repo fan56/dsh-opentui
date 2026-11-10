@@ -7,6 +7,8 @@ import {
   EXCLUDED_PLUGINS,
   PLUGIN_SET,
   RETIRED_PROFILE_ENTRIES,
+  TOOL_WEB_PATCH,
+  WEB_SEARCH_PATCH,
   cleanupDependencies,
   compareVersions,
   formatStep,
@@ -16,7 +18,9 @@ import {
   mergeBundles,
   parseDumpConfig,
   parseTier,
+  patchEntryBlock,
   planPluginInstall,
+  planToolPatch,
   pluginAddArgs,
   pluginAddCommand,
   satisfiesVersion,
@@ -227,6 +231,82 @@ describe('mergeBundles', () => {
     expect(result.removed).toEqual([])
     expect(result.reordered).toBe(false)
     expect(result.bundles).toEqual(bundles)
+  })
+})
+
+describe('web tool patch rows', () => {
+  const enabledPatch = `- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  disabled: false
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+- id: web
+  config:
+    searchProvider: anysearch
+`
+
+  test('a fresh profile needs both rows appended (已存在=no, 需追加=yes)', () => {
+    const plan = planToolPatch('[]\n')
+    expect(plan.append).toEqual([TOOL_WEB_PATCH, WEB_SEARCH_PATCH])
+    expect(plan.toolWeb).toBe('missing')
+    expect(plan.web).toBe('missing')
+    expect(plan.changed).toBe(true)
+  })
+
+  test('already enabled and already pinned is a no-op re-run (已启用)', () => {
+    const plan = planToolPatch(enabledPatch)
+    expect(plan.append).toEqual([])
+    expect(plan.toolWeb).toBe('enabled')
+    expect(plan.web).toBe('pinned')
+    expect(plan.changed).toBe(false)
+  })
+
+  test('an existing but disabled tool-web and a differently pinned web row are repaired', () => {
+    const plan = planToolPatch(`- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  disabled: true
+
+- id: web
+  config:
+    searchProvider: deepseek-official
+    fetchProvider: http
+`)
+    expect(plan.append).toEqual([TOOL_WEB_PATCH, WEB_SEARCH_PATCH])
+    expect(plan.toolWeb).toBe('disabled')
+    expect(plan.web).toBe('unpinned')
+  })
+
+  test('the appended rows are idempotent: planning them back needs nothing', () => {
+    const first = planToolPatch('')
+    expect(planToolPatch(first.append.join('')).changed).toBe(false)
+  })
+
+  test('nested ids under an insert: block and commented ids never count as top-level rows', () => {
+    const text = `# - id: tool-web
+- insert:
+    - id: tool-web
+      name: '@deepseek-ai/dsh-tool-web'
+      disabled: false
+    - id: web
+      config:
+        searchProvider: anysearch
+`
+    expect(patchEntryBlock(text, 'tool-web')).toBeNull()
+    expect(patchEntryBlock(text, 'web')).toBeNull()
+    const plan = planToolPatch(text)
+    expect(plan.toolWeb).toBe('missing')
+    expect(plan.web).toBe('missing')
+  })
+
+  test('an omitted disabled inherits the web-app true, so the row is not treated as enabled', () => {
+    const plan = planToolPatch(`- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+`)
+    expect(plan.toolWeb).toBe('disabled')
+    expect(plan.append).toContain(TOOL_WEB_PATCH)
   })
 })
 

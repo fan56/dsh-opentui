@@ -331,6 +331,117 @@ export function cleanupDependencies(dependencies, retire = RETIRED_PROFILE_ENTRI
 }
 
 // ---------------------------------------------------------------------------
+// Profile patch rows for the model-facing web tools
+//
+// The @deepseek-ai/dsh-web-app bundle disables the ambient `tool-web` row
+// (`disabled: true`) and recomposes it per agent preset. The opentui profile's
+// default preset resolves to `native` (an empty preset), so nothing turns the
+// row back on and the model sees no `web_search`/`web_fetch`. These two rows
+// are appended to the profile patch (the last layer, so they win per id):
+//
+//   - tool-web  re-enables the ambient row with the shipped tool defaults
+//   - web       pins the vendor-neutral search provider (anysearch needs no
+//               key); the identical row ships in the anysearch bundle patch,
+//               repeated here so the profile patch stays self-describing and
+//               keeps the choice when `--plugins=none` skips that bundle
+//
+// Idempotency follows the model-route rule but checks the row's *state*, not
+// just its id: a row that is already enabled / pinned is left untouched (a
+// re-run never duplicates it and never rewrites a config the user edited).
+// ---------------------------------------------------------------------------
+export const TOOL_WEB_PATCH = `- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  disabled: false
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+`
+export const WEB_SEARCH_PATCH = `- id: web
+  config:
+    searchProvider: anysearch
+`
+
+const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** The raw text of the first TOP-LEVEL `- id: <id>` entry, or null. Nested
+ *  ids (`- insert:` rows are indented) never match: the pattern anchors the
+ *  dash at column 0, the same rule the script's model-route check uses. The
+ *  block runs to the next column-0 `- ` line. */
+export function patchEntryBlock(text, id) {
+  const lines = String(text ?? '').split('\n')
+  const idPattern = new RegExp(`^- id: ${escapeRegExp(id)}\\s*$`)
+  const start = lines.findIndex((line) => idPattern.test(line))
+  if (start < 0) return null
+  let end = lines.length
+  for (let i = start + 1; i < lines.length; i += 1) {
+    if (/^- /.test(lines[i])) {
+      end = i
+      break
+    }
+  }
+  return lines.slice(start, end).join('\n')
+}
+
+/** The value of a key at the entry's own indentation (two spaces), ignoring
+ *  comments and blank lines. Nested keys are indented deeper and do not match. */
+function entryValue(block, key) {
+  const pattern = new RegExp(`^  ${escapeRegExp(key)}:[ \\t]*(.*?)[ \\t]*$`, 'm')
+  const match = pattern.exec(block)
+  return match ? match[1] : undefined
+}
+
+/** True when the row itself states `disabled: false`. An omitted `disabled`
+ *  inherits the earlier layer's value (the web-app row is `disabled: true`),
+ *  so only an explicit false counts as enabled. */
+export function isEntryEnabled(block) {
+  const value = entryValue(block, 'disabled')
+  return value !== undefined && /^(?:false|False|FALSE)$/.test(value)
+}
+
+/** True when the row's `config:` block pins `searchProvider: <provider>`. A
+ *  config block is one map replaced wholesale by an id-targeted patch row, so
+ *  only the configured provider id counts; an unset provider auto-selects. */
+export function pinsSearchProvider(block, provider) {
+  const lines = block.split('\n')
+  const configStart = lines.findIndex((line) => /^  config:[ \t]*$/.test(line))
+  if (configStart < 0) return false
+  for (let i = configStart + 1; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (line.trim() === '' || line.trim().startsWith('#')) continue
+    if ((/^\s*/.exec(line)?.[0].length ?? 0) <= 2) break
+    const match = /^ {3,}searchProvider:[ \t]*(.*?)[ \t]*$/.exec(line)
+    if (match) return match[1].replace(/^['"]|['"]$/g, '') === provider
+  }
+  return false
+}
+
+/**
+ * Plan the web-tool rows a profile patch still needs. Pure: the caller passes
+ * the patch text it read.
+ *
+ * @param {string} existingText
+ * @returns {{
+ *   append: string[],
+ *   toolWeb: 'missing'|'disabled'|'enabled',
+ *   web: 'missing'|'unpinned'|'pinned',
+ *   changed: boolean,
+ * }}
+ */
+export function planToolPatch(existingText = '') {
+  const toolWebBlock = patchEntryBlock(existingText, 'tool-web')
+  const webBlock = patchEntryBlock(existingText, 'web')
+  const toolWebEnabled = toolWebBlock !== null && isEntryEnabled(toolWebBlock)
+  const webPinned = webBlock !== null && pinsSearchProvider(webBlock, 'anysearch')
+
+  return {
+    append: [...(toolWebEnabled ? [] : [TOOL_WEB_PATCH]), ...(webPinned ? [] : [WEB_SEARCH_PATCH])],
+    toolWeb: toolWebBlock === null ? 'missing' : toolWebEnabled ? 'enabled' : 'disabled',
+    web: webBlock === null ? 'missing' : webPinned ? 'pinned' : 'unpinned',
+    changed: !toolWebEnabled || !webPinned,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Verify (dsh opentui --dump-config)
 // ---------------------------------------------------------------------------
 export function parseDumpConfig(stdout = '', stderr = '') {
