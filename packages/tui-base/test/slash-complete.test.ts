@@ -17,7 +17,7 @@ const COMMANDS: SlashCommand[] = [
 	command("/help"),
 	command("/new"),
 	command("/model"),
-	command("/sessions"),
+	command("/resume"),
 	command("/session"),
 	command("/search"),
 	command("/think"),
@@ -53,35 +53,35 @@ describe("completeSlash — unique match", () => {
 })
 
 describe("completeSlash — exact full name (fish model)", () => {
-	test("a full name finishes with the separator instead of cycling to a sibling", () => {
-		// "/session" has the longer sibling "/sessions", but Tab and Enter must
-		// agree: both land on "/session" (no drift, no cycle state).
+	test("a full name finishes with the separator instead of cycling", () => {
+		// the first sibling case (/思考 vs /思考模式) is pinned further down; here
+		// the real table has no prefix pair left after /sessions → /resume.
 		expect(run("/session")).toEqual({ text: "/session ", cursor: 9 })
-		expect(run("/sessions")).toEqual({ text: "/sessions ", cursor: 10 })
+		expect(run("/resume")).toEqual({ text: "/resume ", cursor: 8 })
 		// no sibling at all: same landing
 		expect(run("/help")).toEqual({ text: "/help ", cursor: 6 })
 	})
 
 	test("the exact name is not hijacked by the palette highlight", () => {
 		// even with another candidate highlighted, the typed full name wins
-		expect(run("/session", "/sessions")).toEqual({ text: "/session ", cursor: 9 })
+		expect(run("/session", "/search")).toEqual({ text: "/session ", cursor: 9 })
 	})
 })
 
 describe("completeSlash — several candidates", () => {
 	test("extends to the longest common prefix, menu stays open, selection not moved", () => {
-		// /sessions /session /search → "/se" (the third char differs: s/s/a)
+		// /session /search → "/se" (the third char differs: s/a)
 		expect(run("/s")).toMatchObject({ text: "/se", cursor: 3 })
 		// at the common prefix the next Tab has nothing to extend: it accepts
 		// the highlighted row (the palette's first match when none is given)
-		expect(run("/se")).toMatchObject({ text: "/sessions ", cursor: 10 })
+		expect(run("/se")).toMatchObject({ text: "/session ", cursor: 9 })
 	})
 
 	test("no extension past the common prefix: accepts the highlighted row with the separator", () => {
 		// "/se" cannot extend; the palette's selected row wins
 		expect(run("/se", "/session")).toMatchObject({ text: "/session ", cursor: 9 })
 		// menu closed (no selection): first candidate in table order
-		expect(run("/se")).toMatchObject({ text: "/sessions " })
+		expect(run("/se")).toMatchObject({ text: "/session " })
 	})
 })
 

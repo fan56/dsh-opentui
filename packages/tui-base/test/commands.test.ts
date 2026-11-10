@@ -14,7 +14,7 @@ import {
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
 import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
-import { setMotionTier } from "../src/skin/motion"
+import { getMotionTier, setMotionTier } from "../src/skin/motion"
 import { footerHints, hintsLocale, setFooterHints, setHintsLocale, DEFAULT_FOOTER_HINTS, HINT_LOCALES } from "../src/routes/session/hints-line"
 import type { SessionSeam, SeamProviderModel, SeamSessionSummary } from "../src/seams/session"
 
@@ -178,9 +178,13 @@ describe("dispatchLine", () => {
 	})
 
 	test("partial name dispatches to the longest registered prefix", () => {
+		// "/se" matches /session and /search; the longer name wins.
 		const result = dispatchLine(commands, "/se")
 		expect(result.kind).toBe("command")
-		if (result.kind === "command") expect(result.command.name).toBe("/sessions")
+		if (result.kind === "command") expect(result.command.name).toBe("/session")
+		// "/res" only has one match since the rename.
+		const resume = dispatchLine(commands, "/res")
+		if (resume.kind === "command") expect(resume.command.name).toBe("/resume")
 	})
 
 	test("unknown row text is the old ShellHost phrasing", () => {
@@ -203,7 +207,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/model",
 			"/login",
 			"/quit",
-			"/sessions",
+			"/resume",
 			"/clear",
 			"/btw",
 			"/session",
@@ -233,7 +237,7 @@ describe("core commands", () => {
 			"/model — switch model (bare opens the picker)",
 			"/login — log in a provider (bare opens the picker; Custom provider opens the form)",
 			"/quit — exit the app",
-			"/sessions — list and resume stored sessions",
+			"/resume — resume a persisted session",
 			"/clear — clear the transcript",
 			"/btw — side question (bare reopens the last answer)",
 			"/session — show session info (id, model, tokens, speed)",
@@ -242,7 +246,7 @@ describe("core commands", () => {
 			"/agents — manage agent definitions (model, think level, spawn depth) from markdown files",
 			"/think — set reasoning effort (opens the picker)",
 			"/hints — key hints: toggle bar; <segment> on|off; all on|off; lang <locale>",
-			"/motion — animation tier: full | reduced | off | auto (bare shows current)",
+			"/motion — animation tier: full | reduced | off | auto (bare shows setting → effective)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
 			"/preset — switch agent preset (bare opens the picker, next rotates)",
@@ -309,7 +313,7 @@ describe("core commands", () => {
 		expect(ctx.lines).toEqual([])
 	})
 
-	test("/sessions lists, picks, resumes, reloads (aligned UPDATED/DIR rows)", async () => {
+	test("/resume lists, picks, resumes, reloads (aligned UPDATED/DIR rows)", async () => {
 		const seam = new RecordingSeam()
 		seam.sessions = [
 			{ id: "s1", title: "first", updatedAt: "2026-01-01T00:00:00Z", cwd: "/repo/alpha" },
@@ -331,7 +335,7 @@ describe("core commands", () => {
 		expect(ctx.lines).toEqual(["resumed s2"])
 	})
 
-	test("/sessions applies the 1KB display floor with fail-open on unknown sizes", async () => {
+	test("/resume applies the 1KB display floor with fail-open on unknown sizes", async () => {
 		const seam = new RecordingSeam()
 		seam.sessions = [
 			{ id: "big", title: "big", sizeBytes: 25000, cwd: "/repo/big" },
@@ -346,7 +350,7 @@ describe("core commands", () => {
 		expect(ctx.lines).toEqual(["resumed big"])
 	})
 
-	test("/sessions reports the empty-FILTERED copy when the floor hides everything", async () => {
+	test("/resume reports the empty-FILTERED copy when the floor hides everything", async () => {
 		const seam = new RecordingSeam()
 		seam.sessions = [{ id: "stub", title: "stub", sizeBytes: 200 }]
 		const ctx = makeCtx(seam)
@@ -355,7 +359,7 @@ describe("core commands", () => {
 		expect(ctx.lines).toEqual([emptyFilteredCopy(1)])
 	})
 
-	test("/sessions with no stored sessions says so (no picker)", async () => {
+	test("/resume with no stored sessions says so (no picker)", async () => {
 		const seam = new RecordingSeam()
 		seam.sessions = []
 		const ctx = makeCtx(seam)
@@ -903,10 +907,33 @@ describe("/motion (α skin layer)", () => {
 
 	beforeEach(() => setMotionTier(undefined))
 
-	test("bare reports the current tier", async () => {
+	test("bare with an explicit tier reports that tier alone", async () => {
+		setMotionTier("full")
 		const ctx = makeCtx(new RecordingSeam())
 		await run(ctx, "")
-		expect(ctx.lines[0]).toMatch(/^motion: (full|reduced|off|auto) \(usage: \/motion full\|reduced\|off\|auto\)$/)
+		expect(ctx.lines).toEqual(["motion: full (usage: /motion full|reduced|off|auto)"])
+		setMotionTier("off")
+		const off = makeCtx(new RecordingSeam())
+		await run(off, "")
+		expect(off.lines).toEqual(["motion: off (usage: /motion full|reduced|off|auto)"])
+	})
+
+	test("bare on auto shows the setting AND the resolved tier", async () => {
+		const seam = new ConfigSeam()
+		const ctx = makeCtx(seam)
+		await run(ctx, "auto")
+		ctx.lines.length = 0
+		await run(ctx, "")
+		// The test environment has no confirmed truecolor, so auto resolves to
+		// reduced — the exact tier is asserted through getMotionTier().
+		expect(ctx.lines).toEqual([`motion: auto → ${getMotionTier()} (usage: /motion full|reduced|off|auto)`])
+		expect(ctx.lines[0]!.startsWith("motion: auto → ")).toBe(true)
+	})
+
+	test("bare with no setting at all shows auto → resolved (never a bare tier)", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await run(ctx, "")
+		expect(ctx.lines).toEqual([`motion: auto → ${getMotionTier()} (usage: /motion full|reduced|off|auto)`])
 	})
 
 	test("sets the tier and persists the choice to the profile config", async () => {

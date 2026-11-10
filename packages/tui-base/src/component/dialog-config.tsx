@@ -47,6 +47,10 @@ export const settings: Setting[] = [
     keywords: ["dark mode", "light mode", "system theme"],
   },
   {
+    // Kept for the vendored config schema/legacy callers, but the v2 client
+    // reads motion from skin/motion.ts (the `/motion` command), NOT this key —
+    // so `motion` is deliberately not a search keyword here (typing "motion"
+    // must not land on a switch that does nothing in v2).
     title: "Animations",
     category: "Appearance",
     path: ["animations"],
@@ -54,7 +58,7 @@ export const settings: Setting[] = [
     default: false,
     values: [false, true],
     labels: ["off", "on"],
-    keywords: ["motion", "effects"],
+    keywords: ["effects"],
   },
   {
     title: "Sidebar",

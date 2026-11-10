@@ -231,14 +231,14 @@ function assistantText(data: Record<string, unknown>): string {
 // Remote ops
 // ---------------------------------------------------------------------------
 
-/** One /sessions row (the HostSession listSessions shape). */
+/** One /resume row (the HostSession listSessions shape). */
 export interface RemoteSessionRow {
 	id: string
 	title: string
 	updatedAt?: string
-	/** Workspace directory (/sessions DIR column) when the wire carries one. */
+	/** Workspace directory (/resume DIR column) when the wire carries one. */
 	cwd?: string
-	/** On-disk log size in bytes (/sessions 1KB display floor); absent = unknown. */
+	/** On-disk log size in bytes (/resume 1KB display floor); absent = unknown. */
 	sizeBytes?: number
 }
 

@@ -13,8 +13,7 @@
  *   - Exact full name (case-insensitive) → the canonical name + a TRAILING
  *     SPACE, caret at end, menu closes. Same landing as a unique match, so
  *     Tab and Enter agree on the same line: "/session" + Tab gives
- *     "/session " (Enter runs /session), never "/sessions" — fish model,
- *     not bash menu-complete. The command table carries no argument
+ *     "/session " (Enter runs /session) — fish model, not bash menu-complete. The command table carries no argument
  *     metadata, so every command gets the separator (dsh-tui-pi's
  *     applyCompletion does the same); a no-argument command just ignores it.
  *   - 1 match       → "/cmd " with the trailing separator.
@@ -89,8 +88,8 @@ export function completeSlash(
 	const needle = input.toLowerCase()
 
 	// Exact full name: finish like a unique match (trailing separator), so
-	// Tab never drifts to a longer same-prefix sibling ("/session" stays
-	// "/session " even though "/sessions" shares the prefix).
+	// Tab never drifts to a longer same-prefix sibling ("/task" stays
+	// "/task " instead of extending to "/tasks").
 	const exact = candidates.find((command) => command.name.toLowerCase() === needle)
 	if (exact) {
 		const text = `${exact.name} `

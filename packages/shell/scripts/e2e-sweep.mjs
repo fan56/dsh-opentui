@@ -11,7 +11,7 @@
 //   · every TUI slash command from ShellHost's COMMANDS array (read-only
 //     forms), each with open → render → action → close-clean → crash-scan
 //   · the overlay pickers (/preset /model /theme /settings /agents /history
-//     /sessions /resume /search) with item-text anchors (kit Select title
+//     /resume /search) with item-text anchors (kit Select title
 //     rows paint BLANK — anchor on items, never the title)
 //   · /config bare + set + invalid-key forms; /login|/logout headless REF
 //     forms and the PANEL flow (directory → key entry → esc), including the
@@ -801,15 +801,15 @@ try {
     await waitPane((o) => idle(o), 180_000)
     await cleanBuffer()
 
-    // /sessions picker + resume replay
-    await submit('/sessions')
+    // /resume picker + resume replay
+    await submit('/resume')
     const sess = await waitPane((o) => !idle(o), 10_000)
     cap = capture()
-    record('/sessions picker lists stored', /sweepok|count|reply with/.test(cap) ? 'PASS' : 'FAIL')
+    record('/resume picker lists stored', /sweepok|count|reply with/.test(cap) ? 'PASS' : 'FAIL')
     if (sess.ok) {
       await pressUntil((o) => hasAny(o, ['resumed', '已恢复', '已挂载']), 'Enter', 2, 2500)
       cap = capture({ full: true })
-      record('/sessions resume replays rows', /resumed|已恢复|已挂载/.test(cap) ? 'PASS' : 'CHECK')
+      record('/resume resume replays rows', /resumed|已恢复|已挂载/.test(cap) ? 'PASS' : 'CHECK')
       await submit('/new'); await waitPane((o) => idle(o), 8000)
     }
 
@@ -885,7 +885,7 @@ try {
       }
     } catch { record('/tail sessionId', 'CHECK', ['sessions dir unreadable']) }
   } else {
-    for (const item of ['turn: real reply', 'stop-confirm arm/n/y', '/sessions resume', '/search hit', '/queue drain', '/btw', '/history fork']) {
+    for (const item of ['turn: real reply', 'stop-confirm arm/n/y', '/resume resume', '/search hit', '/queue drain', '/btw', '/history fork']) {
       record(item, 'BLOCKED', ['no route answers (probe: ' + (ROUTE_PROBE.tried.join(' | ') || 'empty') + ')'])
     }
   }

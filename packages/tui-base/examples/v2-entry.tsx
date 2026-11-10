@@ -367,7 +367,7 @@ function V2SessionPage(props: {
 	// `●` marker (DialogSelectRow current) WITHOUT moving the selection to it
 	// (focusCurrent: false keeps row 0 selected — the e2e 67 bare-Enter
 	// contract). `description` rides the option mapping now: pickOne used to
-	// drop it (theme facts §5). `headerLine` stays the /sessions slot (v2
+	// drop it (theme facts §5). `headerLine` stays the /resume slot (v2
 	// does not paint it — pre-existing gap, unchanged).
 	const pickOne = (
 		title: string,

@@ -965,7 +965,7 @@ export class RemoteHostSession {
 		const retentionDays = Number(cfg.retentionDays ?? 0)
 		const rows = await this.#opsClient().listSessions({ limit, ...(Number.isFinite(retentionDays) && retentionDays > 0 ? { retentionDays } : {}) })
 		// /btw pollution cap (row 32): marker-titled throwaway rows stay in
-		// the store (no delete RPC) but never surface in /sessions.
+		// the store (no delete RPC) but never surface in /resume.
 		return rows.filter((row) => !row.title.startsWith(BTW_TITLE_PREFIX)).slice(0, limit)
 	}
 

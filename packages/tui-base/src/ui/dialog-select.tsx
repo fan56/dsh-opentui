@@ -711,7 +711,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                     new-designs experiment, and the rebuilt shell faces mount
                     ConfigProvider with the static defaults (no service host),
                     so useNewDesigns() is always false there — the G1
-                    /sessions UPDATED/DIR column headerLine never painted.
+                    /resume UPDATED/DIR column headerLine never painted.
                     Callers that deliberately pass a description get it below
                     the title with the same muted styling in both modes. */}
                 <Show when={!newDesigns() && props.description}>

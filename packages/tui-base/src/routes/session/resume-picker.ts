@@ -1,6 +1,6 @@
 /**
- * /sessions picker helpers (G1 resume-picker batch) — the pure core of the
- * upgraded `/sessions` picker, aligned with the reference /resume picker
+ * /resume picker helpers (G1 resume-picker batch) — the pure core of the
+ * upgraded `/resume` picker, aligned with the reference /resume picker
  * column semantics (dsh-tui-pi 66-retention-resume Phase C/D):
  *
  *   UPDATED — relative last-update time ("just now" / "5m ago" / "3h ago" /

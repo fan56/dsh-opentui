@@ -10,7 +10,7 @@
  * those hooks, so the registry is table-testable without a renderer.
  *
  * Batch 8 carries the Q5 minimal face exactly: /help /new /model /quit
- * /sessions /clear, plus /btw (feature batch F3). Later commands (/attach …)
+ * /resume /clear, plus /btw (feature batch F3). Later commands (/attach …)
  * are POST-CUTOVER fill — absent from the table, not stubbed.
  *
  * Dispatch vocabulary (old ShellHost parity):
@@ -49,7 +49,7 @@ import {
 	type FooterHints,
 	type HintSegmentId,
 } from "./hints-line"
-import { getMotionTier, setMotionTier, type MotionTier } from "../../skin/motion"
+import { getMotionPreference, getMotionTier, setMotionTier, type MotionTier } from "../../skin/motion"
 
 /**
  * Persist the hint-bar selection after a /hints mutation (/motion parity):
@@ -89,7 +89,7 @@ export interface SlashCommandContext {
 	say(text: string): void
 	/** Client-side transcript reset (/clear). */
 	clear(): void
-	/** Re-hydrate the transcript from the seam (/new, /sessions resume).
+	/** Re-hydrate the transcript from the seam (/new, /resume).
 	 * May return a settle promise; commands awaiting it can append rows
 	 * AFTER the re-hydrate instead of being wiped by it. */
 	reload(): void | Promise<void>
@@ -99,7 +99,7 @@ export interface SlashCommandContext {
 	 * One generic modal picker (the vendored dialog-select through the page's
 	 * overlay host). Resolves the picked value, or undefined on esc/cancel.
 	 * `headerLine` (G1 resume-picker batch) paints an aligned column-header
-	 * line under the dialog title (the /sessions UPDATED/DIR columns).
+	 * line under the dialog title (the /resume UPDATED/DIR columns).
 	 */
 	pickOne(
 		title: string,
@@ -448,15 +448,16 @@ export function coreCommands(): SlashCommand[] {
 			},
 		},
 		{
-			// G1 resume-picker batch: the /sessions picker upgrades to the
-			// reference /resume column semantics (dsh-tui-pi 66 Phases C/D):
-			// aligned UPDATED (relative time) / DIR (workspace dir) columns
-			// under a fitted header line, the 1KB size display floor (rows
-			// without a size fail open), and the empty-FILTERED copy distinct
-			// from the plain empty-store one. Retention (deletion / age
-			// windows) stays host-side — out of scope here.
-			name: "/sessions",
-			description: "list and resume stored sessions",
+			// G1 resume-picker batch (renamed to /resume — the dsh-tui-pi
+			// command name; no /sessions alias, the old name is gone): the
+			// picker keeps the reference /resume column semantics (dsh-tui-pi
+			// 66 Phases C/D): aligned UPDATED (relative time) / DIR (workspace
+			// dir) columns under a fitted header line, the 1KB size display
+			// floor (rows without a size fail open), and the empty-FILTERED
+			// copy distinct from the plain empty-store one. Retention
+			// (deletion / age windows) stays host-side — out of scope here.
+			name: "/resume",
+			description: "resume a persisted session",
 			async run(ctx) {
 				const sessions = await ctx.seam.listSessions()
 				if (sessions.length === 0) {
@@ -690,17 +691,22 @@ export function coreCommands(): SlashCommand[] {
 		},
 		{
 			// α skin layer: the motion tier switch (skin contract §1 动效档位).
-			// Bare reports the current tier; `auto` drops the explicit tier and
-			// follows the capability/multiplexer detection again. The choice
-			// persists through the same configSave chain /theme uses (the
-			// profile `motion` key); the boot replays it after env
-			// `DSH_OPENTUI_MOTION` (skin/motion.ts resolveMotionPreference).
+			// Bare reports BOTH the setting and the effective tier: an explicit
+			// tier prints itself; auto/unset prints `auto → <resolved>`, so a
+			// profile sitting on auto is never mistaken for a fixed tier. `auto`
+			// drops the explicit tier and follows the capability/multiplexer
+			// detection again. The choice persists through the same configSave
+			// chain /theme uses (the profile `motion` key); the boot replays it
+			// after env `DSH_OPENTUI_MOTION` (skin/motion.ts
+			// resolveMotionPreference).
 			name: "/motion",
-			description: "animation tier: full | reduced | off | auto (bare shows current)",
+			description: "animation tier: full | reduced | off | auto (bare shows setting → effective)",
 			run(ctx, argText) {
 				const arg = argText.trim().toLowerCase()
 				if (!arg) {
-					ctx.say(`motion: ${getMotionTier()} (usage: /motion full|reduced|off|auto)`)
+					const preference = getMotionPreference()
+					const setting = preference === undefined ? `auto → ${getMotionTier()}` : preference
+					ctx.say(`motion: ${setting} (usage: /motion full|reduced|off|auto)`)
 					return
 				}
 				if (arg !== "full" && arg !== "reduced" && arg !== "off" && arg !== "auto") {
@@ -874,9 +880,9 @@ export function dispatchLine(commands: SlashCommand[], line: string): SlashDispa
 	if (!text.startsWith("/")) return { kind: "text" }
 	const [head, ...rest] = text.split(/\s+/)
 	const needle = head.toLowerCase()
-	// Exact name wins first — "/session" must not be shadowed by the longer
-	// "/sessions" (both start with the typed head); the length sort then only
-	// orders the remaining prefix matches (palette-style abbreviations).
+	// Exact name wins first — a typed full command must not be shadowed by a
+	// longer sibling (the old /session → /sessions bug); the length sort then
+	// only orders the remaining prefix matches (palette-style abbreviations).
 	const match =
 		commands.find((command) => command.name.toLowerCase() === needle) ??
 		commands

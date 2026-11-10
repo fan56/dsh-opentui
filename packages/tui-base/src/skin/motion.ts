@@ -15,11 +15,13 @@
  *   off     — decorative animation stops (fps undefined → clock paused);
  *             static state markers remain
  *
- * Resolution order: an explicit user tier (`setMotionTier`, wired to the
- * future `/motion full|reduced|off` + persistence by a later wave) wins;
- * otherwise the auto tier applies — reduced while the terminal capability
- * probe has not confirmed truecolor, when the probe says non-truecolor, or
- * when `$TMUX` / `$SSH_CONNECTION` / `$SSH_TTY` is present.
+ * Resolution order: an explicit user tier wins. `/motion full|reduced|off`
+ * sets it via `setMotionTier`, and the choice persists through the profile
+ * `motion` key; the boot replays it after `$DSH_OPENTUI_MOTION`
+ * (`resolveMotionPreference`). Without an explicit tier the auto tier
+ * applies — reduced while the terminal capability probe has not confirmed
+ * truecolor, when the probe says non-truecolor, or when `$TMUX` /
+ * `$SSH_CONNECTION` / `$SSH_TTY` is present.
  *
  * Usage:
  *   import { motionFrameRate, setMotionBusy, setMotionTier } from "../skin/motion"
@@ -102,6 +104,16 @@ export function refreshAutoTier(): void {
  */
 export function getMotionTier(): MotionTier {
 	return resolveEffectiveTier(userTier, autoTier)
+}
+
+/**
+ * The USER'S tier as set (undefined = auto/unset). Distinct from
+ * `getMotionTier`: that one answers what actually runs. `/motion` bare needs
+ * both to say "auto → reduced" instead of passing the resolved tier off as
+ * the setting.
+ */
+export function getMotionPreference(): MotionTier | undefined {
+	return userTier
 }
 
 /** Set the user tier (persisted `/motion` value); undefined returns to auto. */

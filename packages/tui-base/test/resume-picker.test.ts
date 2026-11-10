@@ -1,5 +1,5 @@
 /**
- * /sessions picker helper tests (G1 resume-picker batch): the pure column
+ * /resume picker helper tests (G1 resume-picker batch): the pure column
  * semantics aligned with the reference /resume picker (dsh-tui-pi 66) —
  * relative UPDATED, capped DIR, the 1KB fail-open size floor, the distinct
  * empty-filtered copy, and the fitted header/row alignment.

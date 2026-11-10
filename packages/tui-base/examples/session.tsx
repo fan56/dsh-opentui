@@ -16,8 +16,8 @@
 // (effort/context%/tok-s) stay demo props.
 // Batch 8: the slash palette — type "/" for the inline command menu (prefix
 // filter, ↑↓, enter; esc closes keeping the buffer), the batch-8 core set
-// (/help /new /model /quit /sessions /clear) on the fake seam; /model and
-// /sessions open vendored DialogSelect pickers through the dialog stack.
+// (/help /new /model /quit /resume /clear) on the fake seam; /model and
+// /resume open vendored DialogSelect pickers through the dialog stack.
 // Run from packages/tui-base: bun examples/session.tsx   (ctrl+c quits)
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { createComponent, render } from "@opentui/solid"
@@ -57,7 +57,7 @@ const DEMO_QUESTIONS: SeamAskQuestion[] = [
 
 class FakeSeam extends NullSessionSeam {
 	private steers: string[] = []
-	/** Session lifecycle for /new + /sessions (batch 8). */
+	/** Session lifecycle for /new + /resume (batch 8). */
 	private sessionID = "ses-1"
 	readonly sessions: SeamSessionSummary[] = [
 		{ id: "ses-1", title: "batch-8 demo", updatedAt: "2026-11-06" },
@@ -204,8 +204,8 @@ function SessionPage() {
 		})
 	// Batch-8 slash host: command feedback lands as transcript rows through
 	// the projection's event fan-in (assistant rows under a "cmd" message);
-	// /clear resets the client-side store; /new + /sessions reload from the
-	// seam; /model + /sessions pick through the vendored DialogSelect. The
+	// /clear resets the client-side store; /new + /resume reload from the
+	// seam; /model + /resume pick through the vendored DialogSelect. The
 	// settle path must ALSO drain the dialog stack — a resolved promise
 	// alone leaves the picker mounted (TurnOverlayHost drives its stack
 	// through the controller; here the promise settles it directly).

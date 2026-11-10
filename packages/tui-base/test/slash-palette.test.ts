@@ -239,11 +239,14 @@ describe("SlashPaletteController", () => {
 		expect(controller.offset()).toBe(3)
 	})
 
-	test("DEFAULT ORDER: alphabetical, case-insensitive, `/session` before `/sessions`", () => {
+	test("DEFAULT ORDER: alphabetical, case-insensitive, a prefix before its extension", () => {
+		// `/task` / `/tasks` is a synthetic prefix pair: it pins the tiebreak
+		// shape the real table lost with the /sessions → /resume rename (no
+		// live command is a prefix of another any more).
 		const commands: SlashCommand[] = [
-			{ name: "/sessions", description: "d", run: () => {} },
+			{ name: "/tasks", description: "d", run: () => {} },
 			{ name: "/Help", description: "d", run: () => {} },
-			{ name: "/session", description: "d", run: () => {} },
+			{ name: "/task", description: "d", run: () => {} },
 			{ name: "/agents", description: "d", run: () => {} },
 		]
 		const controller = new SlashPaletteController()
@@ -251,8 +254,8 @@ describe("SlashPaletteController", () => {
 		expect(controller.filtered(commands).map((c) => c.name)).toEqual([
 			"/agents",
 			"/Help",
-			"/session",
-			"/sessions",
+			"/task",
+			"/tasks",
 		])
 	})
 
@@ -335,21 +338,22 @@ describe("createSlashHost", () => {
 	})
 
 	test("interceptSubmit: an exact typed name runs that command", () => {
-		// "/session" typed in full must run /session, never the longer
-		// "/sessions" row. Alphabetical ordering already puts the shorter name
-		// first (exact-match precedence in the host is the second guard).
+		// "/task" typed in full must run /task, never the longer "/tasks" row.
+		// Alphabetical ordering already puts the shorter name first (exact-match
+		// precedence in the host is the second guard). Synthetic pair: it keeps
+		// the shape the real table lost with the /sessions → /resume rename.
 		const ran: string[] = []
 		const commands: SlashCommand[] = [
 			{ name: "/help", description: "d1", run: () => ran.push("/help") },
-			{ name: "/sessions", description: "d2", run: () => ran.push("/sessions") },
-			{ name: "/session", description: "d3", run: () => ran.push("/session") },
+			{ name: "/tasks", description: "d2", run: () => ran.push("/tasks") },
+			{ name: "/task", description: "d3", run: () => ran.push("/task") },
 		]
 		const { host } = makeHost(commands)
-		host.slashKeyFilter(key("s"), "/session")
-		// the highlight is the exact row itself: `/session` sorts before `/sessions`
-		expect(host.controller.current(commands)?.name).toBe("/session")
-		expect(host.interceptSubmit("/session")).toBe(true)
-		expect(ran).toEqual(["/session"])
+		host.slashKeyFilter(key("t"), "/task")
+		// the highlight is the exact row itself: `/task` sorts before `/tasks`
+		expect(host.controller.current(commands)?.name).toBe("/task")
+		expect(host.interceptSubmit("/task")).toBe(true)
+		expect(ran).toEqual(["/task"])
 	})
 
 	test("unknown /xxx resolves as the harmless error row, never a send", () => {

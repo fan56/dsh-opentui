@@ -87,13 +87,16 @@ describe("formatSessionInfoPanel", () => {
 })
 
 describe("/session command", () => {
-	test("dispatches (longest-match keeps /sessions distinct from /session)", () => {
+	test("dispatches by exact name then longest prefix", () => {
 		const commands = coreCommands()
 		expect(dispatchLine(commands, "/session")?.kind).toBe("command")
 		const bare = dispatchLine(commands, "/session")
 		if (bare.kind === "command") expect(bare.command.name).toBe("/session")
-		const list = dispatchLine(commands, "/sessions")
-		if (list.kind === "command") expect(list.command.name).toBe("/sessions")
+		// "/se" also matches /search: the longer /session wins.
+		const longest = dispatchLine(commands, "/se")
+		if (longest.kind === "command") expect(longest.command.name).toBe("/session")
+		const resume = dispatchLine(commands, "/res")
+		if (resume.kind === "command") expect(resume.command.name).toBe("/resume")
 	})
 
 	test("prints one aligned row per line through say", async () => {

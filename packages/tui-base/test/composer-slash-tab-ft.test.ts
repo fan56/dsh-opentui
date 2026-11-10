@@ -76,9 +76,9 @@ describe("slash Tab completion under Keymap.Provider (real client path)", () => 
 		expect(r.plain).toMatchObject({ buffer: "hello", cursor: 5, sent: [] })
 		expectNativeTab(r.plain)
 
-		// Exact full name (fish model): "/session" lands on "/session " even
-		// though "/sessions" shares the prefix — same command Enter runs. A
-		// second Tab is argument-phase native (no drift, no extra space).
+		// Exact full name (fish model): "/session" lands on "/session " — same
+		// command Enter runs. A second Tab is argument-phase native (no drift,
+		// no extra space).
 		expect(r.exactName).toMatchObject({ buffer: "/session ", cursor: 9, rows: 0, sent: [] })
 		expectConsumed(r.exactName)
 		expect(r.exactNameAgain).toMatchObject({ buffer: "/session ", cursor: 9, rows: 0, sent: [] })
@@ -104,7 +104,7 @@ describe("slash Tab completion under Keymap.Provider (real client path)", () => 
 		expectNativeTab(r.gated)
 
 		// Esc closed the menu: Tab falls back to the FIRST candidate in table
-		// order ("/session"), never the now-invisible highlight ("/sessions").
+		// order ("/session"), never the now-invisible highlight.
 		expect(r.escThenTab).toMatchObject({ buffer: "/session ", cursor: 9, rows: 0, sent: [] })
 		expectConsumed(r.escThenTab)
 

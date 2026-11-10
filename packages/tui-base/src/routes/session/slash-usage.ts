@@ -55,6 +55,36 @@ export function normalizeCommandUsage(value: unknown): Record<string, number> {
 	return out
 }
 
+/**
+ * Commands renamed after counts were already persisted: new name → old name.
+ * `/sessions` became `/resume` (the dsh-tui-pi name; no alias kept), so a
+ * profile written by an older build carries its executions under a key the
+ * palette no longer asks about.
+ */
+export const RENAMED_COMMANDS: Readonly<Record<string, string>> = {
+	"/resume": "/sessions",
+}
+
+/**
+ * Fold a legacy count into its renamed command, ONCE at load. The old key is
+ * dropped, never summed: the pair describes the same row, and adding both
+ * would rank it for commands the user never ran under the new build twice
+ * over. A profile that already counts the new name keeps that count (the
+ * legacy value is discarded). The next save writes only the new key — the
+ * compatibility read costs one boot, not a permanent alias in the map.
+ */
+export function migrateRenamedCommands(counts: Record<string, number>): Record<string, number> {
+	let out: Record<string, number> | undefined
+	for (const [name, legacy] of Object.entries(RENAMED_COMMANDS)) {
+		const inherited = counts[legacy]
+		if (inherited === undefined) continue
+		out ??= { ...counts }
+		delete out[legacy]
+		if (out[name] === undefined) out[name] = inherited
+	}
+	return out ?? counts
+}
+
 /** Savers with a scheduled write; one process-exit hook flushes them. */
 const pending = new Set<CommandUsage>()
 let exitHooked = false
@@ -156,7 +186,7 @@ export function createCommandUsage(
 		config = {}
 	}
 	return new CommandUsage(
-		normalizeCommandUsage(config[SLASH_USAGE_KEY]),
+		migrateRenamedCommands(normalizeCommandUsage(config[SLASH_USAGE_KEY])),
 		(counts) => {
 			seam?.configSave?.({ [SLASH_USAGE_KEY]: counts })
 		},

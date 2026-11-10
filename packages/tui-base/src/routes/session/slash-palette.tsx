@@ -74,7 +74,7 @@ export function overflowHint(total: number, offset = 0): string | undefined {
  *   2. USAGE DESC: the execution count from the slash-usage store (more
  *      executions first; both 0 on a fresh profile, so it falls through);
  *   3. NAME ASC, case-insensitive (the alphabetical default; a prefix sorts
- *      before its extension, so `/session` sits just before `/sessions`);
+ *      before its extension, e.g. `/task` before `/tasks`);
  *   4. raw name, a deterministic last resort for case-only differences.
  */
 function compareCommands(a: SlashCommand, b: SlashCommand, usage: CommandUsageView | undefined): number {
@@ -487,12 +487,10 @@ export function createSlashHost(deps: SlashHostDeps) {
 			controller.close()
 			// Exact-name precedence (parity with dispatchLine's rule): a buffer
 			// that IS a command's full name runs THAT command, regardless of the
-			// palette highlight — otherwise typing "/session" and hitting enter
-			// executes the highlighted "/sessions" (the longer prefix row sorts
-			// ahead in the table) and opens the Resume picker instead of the
-			// info panel. Abbreviations ("/m") still resolve through the
-			// highlight below; a closed menu (arguments present) re-parses
-			// through dispatch.
+			// palette highlight — otherwise a typed prefix could be executed as
+			// the longer prefix row the table sorts ahead of it. Abbreviations
+			// ("/m") still resolve through the highlight below; a closed menu
+			// (arguments present) re-parses through dispatch.
 			const needle = buffer.trim().toLowerCase()
 			const exact = commands.find((command) => command.name.toLowerCase() === needle)
 			// Skill rows resolve exactly like commands, then deliberately fall

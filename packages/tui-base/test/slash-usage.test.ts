@@ -121,4 +121,35 @@ describe("createCommandUsage (config seam)", () => {
 		bare.record("/help")
 		expect(bare.count("/help")).toBe(1)
 	})
+
+	test("a legacy /sessions count is read once as /resume and then retired", () => {
+		const config: Record<string, unknown> = {
+			[SLASH_USAGE_KEY]: { "/sessions": 4, "/help": 1 },
+		}
+		const seam = {
+			configLoad: () => config,
+			configSave: (patch: Record<string, unknown>) => Object.assign(config, patch),
+		}
+		const usage = createCommandUsage(seam)
+		// the rename keeps the ranking history: /resume now counts 4
+		expect(usage.count("/resume")).toBe(4)
+		expect(usage.counts()).toEqual({ "/resume": 4, "/help": 1 })
+		usage.record("/resume")
+		usage.flush()
+		// the next save writes the NEW key only — no stale /sessions in the map
+		expect(config[SLASH_USAGE_KEY]).toEqual({ "/resume": 5, "/help": 1 })
+	})
+
+	test("legacy and new counts never sum (new key wins the migration)", () => {
+		const config: Record<string, unknown> = {
+			[SLASH_USAGE_KEY]: { "/sessions": 9, "/resume": 2 },
+		}
+		const usage = createCommandUsage({
+			configLoad: () => config,
+			configSave: (patch: Record<string, unknown>) => Object.assign(config, patch),
+		})
+		expect(usage.count("/resume")).toBe(2)
+		expect(usage.count("/sessions")).toBe(0)
+		usage.flush()
+	})
 })

@@ -45,7 +45,7 @@ async function mount(
 		{ name: "/help", description: "show available commands", run: () => {} },
 		{ name: "/model", description: "switch model", run: () => {} },
 		{ name: "/session", description: "session info", run: () => {} },
-		{ name: "/sessions", description: "resume a session", run: () => {} },
+		{ name: "/resume", description: "resume a session", run: () => {} },
 		{ name: "/search", description: "search history", run: () => {} },
 		{ name: "/think", description: "reasoning effort", run: () => {} },
 	]
@@ -170,9 +170,9 @@ const report: Record<string, unknown> = {}
 	await m.setup.dispose()
 }
 
-// 5. Exact full name (fish model): "/session" has a longer same-prefix sibling
-//    ("/sessions"), yet Tab lands on "/session " — the same command Enter
-//    runs. A second Tab is argument-phase native (not consumed, no drift).
+// 5. Exact full name (fish model): "/session" lands on "/session " — the same
+//    command Enter runs. A second Tab is argument-phase native (not consumed,
+//    no drift).
 {
 	const m = await mount()
 	await m.write("/session")
@@ -230,7 +230,7 @@ const report: Record<string, unknown> = {}
 {
 	const m = await mount()
 	await m.write("/se")
-	await m.write(DOWN) // highlight /sessions (index 1)
+	await m.write(DOWN) // highlight /session (index 1)
 	await m.write(ESC) // close the menu, buffer untouched
 	await m.pause()
 	await m.write(TAB)
@@ -244,7 +244,7 @@ const report: Record<string, unknown> = {}
 {
 	const m = await mount({ history: ["/"] })
 	await m.write("/se")
-	await m.write(DOWN) // stale highlight: /sessions (index 1)
+	await m.write(DOWN) // stale highlight: /session (index 1)
 	await m.write(ESC)
 	await m.pause()
 	await m.write(UP) // recall "/" (palette closed → history owns ↑)
