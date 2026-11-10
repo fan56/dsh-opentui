@@ -545,12 +545,14 @@ function V2SessionPage(props: {
 			refreshFooterData()
 			resetSkinLineFades()
 		},
-		reload: () => {
+		reload: (sessionId?: string) => {
 			setLastRequest(undefined)
 			// Footer-quickwins: same per-session reset on /fork//resume switches.
 			setTools(0)
 			resetSkinLineFades()
-			const settled = projection.load()
+			// /resume stages the id (no live session yet) — read THAT session's
+			// journal; /new clears first and reads the (empty) live one.
+			const settled = projection.load(sessionId)
 			void seam.currentModelSelection().then(setModel)
 			refreshFooterData()
 			refreshPresetLabel()

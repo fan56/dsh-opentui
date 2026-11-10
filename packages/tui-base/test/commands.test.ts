@@ -81,6 +81,8 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 	const hooks = {
 		cleared: 0,
 		reloaded: 0,
+		/** The session id each reload was told to read (undefined = live one). */
+		reloadIds: [] as (string | undefined)[],
 		quit: 0,
 		footerRefreshes: 0,
 		footerInvalidations: 0,
@@ -95,7 +97,10 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 		seam: seam.seam,
 		say: (text) => lines.push(text),
 		clear: () => hooks.cleared++,
-		reload: () => hooks.reloaded++,
+		reload: (sessionId?: string) => {
+			hooks.reloaded++
+			hooks.reloadIds.push(sessionId)
+		},
 		quit: () => hooks.quit++,
 		refreshFooter: () => hooks.footerRefreshes++,
 		invalidateFooter: () => hooks.footerInvalidations++,
@@ -337,7 +342,23 @@ describe("core commands", () => {
 		expect(pick?.options[1]?.title).toMatch(/— {2,}— {2,}second$/)
 		expect(pick?.options.map((o) => o.title.trim().split(/\s{2,}/).length)).toEqual([3, 3])
 		expect(ctx.hooks.reloaded).toBe(1)
+		// Transcript-loss regression: the reload MUST name the picked session.
+		// resumeSession only stages the id (the seam's live id is undefined
+		// until the next turn), so an unnamed reload read "" and emptied the
+		// transcript.
+		expect(ctx.hooks.reloadIds).toEqual(["s2"])
 		expect(ctx.lines).toEqual(["resumed s2"])
+	})
+
+	test("/new clears the transcript explicitly, then reloads the fresh (empty) session", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		await coreCommands()[1]!.run(ctx, "")
+		expect(seam.calls).toContain("newSession")
+		// A fresh session has no history; the wipe is explicit (the old code
+		// relied on an errored "" read — the transcript-loss bug).
+		expect(ctx.hooks.cleared).toBe(1)
+		expect(ctx.hooks.reloadIds).toEqual([undefined])
 	})
 
 	test("/resume applies the 1KB display floor with fail-open on unknown sizes", async () => {

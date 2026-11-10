@@ -6,9 +6,17 @@ import { setMotionTier } from "../src/skin/motion"
 
 class FakeSeam extends NullSessionSeam {
 	stored: SeamTranscriptRow[] = []
+	/** Per-session journals (a staged /resume reads a session the seam is not
+	 * live on yet). */
+	byId: Record<string, SeamTranscriptRow[]> = {}
+	/** Simulate a host/RPC failure on the read. */
+	failRead = false
+	reads: string[] = []
 	script?: (cb: SeamTurnCallbacks) => Promise<void>
-	override async storedTranscript(): Promise<SeamTranscriptRow[]> {
-		return this.stored
+	override async storedTranscript(id = ""): Promise<SeamTranscriptRow[]> {
+		this.reads.push(id)
+		if (this.failRead) throw new Error("host gone")
+		return this.byId[id] ?? this.stored
 	}
 	override currentSessionId() {
 		return "s1"
@@ -18,11 +26,12 @@ class FakeSeam extends NullSessionSeam {
 	}
 }
 
-function setup(seam: FakeSeam, options?: { thinkFadeMs?: number; toolFadeMs?: number }) {
+function setup(seam: FakeSeam, options?: { thinkFadeMs?: number; toolFadeMs?: number; liveId?: string }) {
 	let dispose!: () => void
+	const liveId = options?.liveId ?? "s1"
 	const projection = createRoot((d) => {
 		dispose = d
-		return createSeamRows(seam, () => "s1", options)
+		return createSeamRows(seam, () => liveId, options)
 	})
 	return { projection, dispose }
 }
@@ -114,6 +123,39 @@ describe("seam rows projection", () => {
 		projection.load()
 		await Bun.sleep(0)
 		expect(projection.rows.map((r) => r.kind)).toEqual(["user"])
+		dispose()
+	})
+
+	test("load(sessionId) hydrates a STAGED resume target (live id still empty)", async () => {
+		// /resume: resumeSession(id) only records the id, so the seam's live
+		// session is still undefined when the command reloads. Reading "" used
+		// to fail and hydrate an EMPTY set (the reported "content vanished").
+		const seam = new FakeSeam()
+		seam.byId["s-old"] = [
+			{ kind: "user", text: "older question", final: true },
+			{ kind: "assistant", text: "older answer", final: true },
+		]
+		const { projection, dispose } = setup(seam, { liveId: "" })
+		await projection.load("s-old")
+		expect(seam.reads.at(-1)).toBe("s-old")
+		expect(projection.rows.map((r) => r.text)).toEqual(["older question", "older answer"])
+		expect(projection.hydrated()).toBe(true)
+		dispose()
+	})
+
+	test("a FAILED transcript read keeps the rows already on screen", async () => {
+		const seam = new FakeSeam()
+		seam.stored = [
+			{ kind: "user", text: "kept q", final: true },
+			{ kind: "assistant", text: "kept a", final: true },
+		]
+		const { projection, dispose } = setup(seam)
+		await projection.load()
+		expect(projection.rows).toHaveLength(2)
+		// Host restart / dropped RPC: the read rejects, the view must NOT blank.
+		seam.failRead = true
+		await projection.load()
+		expect(projection.rows.map((r) => r.text)).toEqual(["kept q", "kept a"])
 		dispose()
 	})
 

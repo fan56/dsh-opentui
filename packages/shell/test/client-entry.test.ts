@@ -540,8 +540,11 @@ describe('RemoteHostSession accessor audit (through aggregateTurnContext)', () =
       await f.adapted.start()
       expect(await f.adapted.listSessions()).toEqual([])
       expect(await f.adapted.listSessions(5)).toEqual([])
-      expect(await f.adapted.storedTranscript('any-id')).toEqual([])
-      expect(await f.adapted.storedTranscript('any-id', 2)).toEqual([])
+      // Transcript-loss fix: a failed journal read REJECTS instead of
+      // answering [] — "no history" and "could not read history" must not
+      // look the same to the view (the old [] emptied the transcript).
+      await expect(f.adapted.storedTranscript('any-id')).rejects.toThrow()
+      await expect(f.adapted.storedTranscript('any-id', 2)).rejects.toThrow()
       expect(await f.adapted.searchSessions('needle')).toEqual([])
       expect(await f.adapted.renameSession('new title')).toBeUndefined() // no live session
       expect(f.adapted.historyTurns()).toEqual([])

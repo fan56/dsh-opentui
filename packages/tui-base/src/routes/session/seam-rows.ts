@@ -220,13 +220,26 @@ export function createSeamRows(
 
 	/** Re-hydrate from the seam. Returns the settle promise so callers can
 	 * sequence post-hydrate rows after it (a command feedback row appended
-	 * before hydrate would be wiped by the keyed reconcile). */
-	function load(): Promise<void> {
-		const id = sessionID()
+	 * before hydrate would be wiped by the keyed reconcile).
+	 *
+	 * `sessionIdOverride` (2026-11-10 transcript-loss fix): a staged /resume
+	 * has NO live session id yet — `resumeSession(id)` only records the id and
+	 * `session/create` binds it at the NEXT turn, so `currentSessionId()` is
+	 * still undefined when the command reloads. Reading "" made the fetch
+	 * fail, and the old error-to-[] path then hydrated an EMPTY row set —
+	 * the "/resume wipes the transcript" defect. The caller passes the picked
+	 * id instead.
+	 *
+	 * A FAILED read never clears: hydrate runs only in the success branch and
+	 * the seam's read errors propagate here (remote-session-ops no longer
+	 * turns them into []), so a transient host/RPC failure keeps the rows the
+	 * view already shows. */
+	function load(sessionIdOverride?: string): Promise<void> {
+		const id = sessionIdOverride ?? sessionID()
 		return seam
 			.storedTranscript(id)
 			.then((stored) => {
-				if (sessionID() === id) hydrate(stored)
+				if (sessionIdOverride !== undefined || sessionID() === id) hydrate(stored)
 			})
 			.catch(() => undefined)
 	}

@@ -90,9 +90,11 @@ export interface SlashCommandContext {
 	/** Client-side transcript reset (/clear). */
 	clear(): void
 	/** Re-hydrate the transcript from the seam (/new, /resume).
+	 * `sessionId` names the session to read when it is not the seam's live
+	 * one yet — /resume stages an id that only binds at the next turn.
 	 * May return a settle promise; commands awaiting it can append rows
 	 * AFTER the re-hydrate instead of being wiped by it. */
-	reload(): void | Promise<void>
+	reload(sessionId?: string): void | Promise<void>
 	/** Exit the app (/quit). */
 	quit(): void
 	/**
@@ -357,6 +359,11 @@ export function coreCommands(): SlashCommand[] {
 			description: "start a fresh session",
 			async run(ctx) {
 				ctx.seam.newSession()
+				// A fresh session has no stored history: clear explicitly. The
+				// reload used to imply the wipe through an errored "" read —
+				// that path is gone (transcript-loss fix), and old rows must
+				// not survive a /new.
+				ctx.clear()
 				await ctx.reload()
 				ctx.say(`new session ${ctx.seam.currentSessionId() ?? "(unnamed)"}`)
 			},
@@ -479,7 +486,11 @@ export function coreCommands(): SlashCommand[] {
 				const picked = await ctx.pickOne("Resume session", options, header)
 				if (!picked) return
 				ctx.seam.resumeSession(picked)
-				await ctx.reload()
+				// The staged id is not the seam's live id yet (resumeSession
+				// only records it; session/create binds it at the next turn),
+				// so the reload must be told WHICH session to read. Without it
+				// the transcript read targeted "" and the view was emptied.
+				await ctx.reload(picked)
 				ctx.say(`resumed ${picked}`)
 			},
 		},
