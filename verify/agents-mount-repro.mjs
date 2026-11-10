@@ -24,7 +24,7 @@
 // survive. The scratch host is reaped through its scratch lock file.
 
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -84,6 +84,48 @@ for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.jso
   const from = join(REAL_HOME, rel)
   if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
 }
+// Isolate the CLIENT-side skill scan too: the palette reads the same roots
+// the host provider does, and without this pin it would also read the real
+// ~/.agents corpus (not copied into the scratch home).
+const AGENTS_HOME = join(HOME, 'agents-home')
+mkdirSync(AGENTS_HOME, { recursive: true })
+
+/**
+ * The user-invocable skill names the palette should discover in this scratch
+ * home (skills-source.ts: bundle <name>/SKILL.md or flat <name>.md; a
+ * `user-invocable: false` row is hidden). Read before boot so the assertion
+ * targets a real fixture name instead of hardcoding one user's home.
+ */
+const listLocalSkills = () => {
+  const names = []
+  for (const root of [join(HOME, 'skills'), join(AGENTS_HOME, 'skills')]) {
+    let entries = []
+    try { entries = readdirSync(root, { withFileTypes: true }) } catch { continue }
+    for (const entry of entries) {
+      let file
+      if (entry.isDirectory()) file = join(root, entry.name, 'SKILL.md')
+      else if (entry.isFile() && entry.name.endsWith('.md')) file = join(root, entry.name)
+      if (!file) continue
+      let text = ''
+      try { text = readFileSync(file, 'utf8') } catch { continue }
+      const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)
+      if (!block) continue
+      const field = (name) => {
+        const m = new RegExp(`^${name}\\s*:\\s*(.*)$`, 'm').exec(block[1])
+        return m ? m[1].trim().replace(/^["']|["']$/g, '') : undefined
+      }
+      const name = field('name')
+      if (!name || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) continue
+      if (field('description') === undefined) continue
+      const user = field('user-invocable')
+      if (user !== undefined && /^(false|no|off|0)$/i.test(user)) continue
+      names.push(name)
+    }
+  }
+  return [...new Set(names)]
+}
+const LOCAL_SKILLS = listLocalSkills()
+
 const LOCK = join(HOME, `opentui-host.${PROFILE}.json`)
 const readLock = () => {
   try {
@@ -158,7 +200,7 @@ const snap = (name, session = SESS) => {
 const idle = (out) => out.includes(IDLE) || composerEmpty(out)
 const launch = (session, cols, rows) => {
   tmux('kill-session', '-t', session)
-  const env = [`DSH_HOME=${HOME}`, 'DSH_OPENTUI_DEBUG=1']
+  const env = [`DSH_HOME=${HOME}`, `DSH_AGENTS_HOME=${AGENTS_HOME}`, 'DSH_OPENTUI_DEBUG=1']
   const r = tmux('new-session', '-d', '-x', String(cols), '-y', String(rows), '-s', session, '-c', WS,
     `${env.join(' ')} ${LAUNCHER} --client 2>${join(OUT, `${session}.err.log`)}`)
   if (r.status !== 0) throw new Error('tmux boot failed: ' + r.stderr)
@@ -232,6 +274,38 @@ try {
   if (!paletteUp) console.log('  note: /think row was not visible before Tab (palette filter)')
   for (let i = 0; i < 16; i++) { sendKeys(SESS, 'BSpace'); await sleep(TYPE_GAP_MS) }
   await sleep(300)
+
+  // ---------------- 2b. skills in the slash palette ----------------
+  // A user-invocable skill from the scratch home must be a `/name` row, its
+  // row must carry the italic SGR (whole-row treatment), and Tab must
+  // complete it through the same completeSlash path as a command.
+  if (LOCAL_SKILLS.length === 0) {
+    record('slash palette shows a skill row (italic)', false, ['no user-invocable skill in the scratch home'])
+  } else {
+    // Avoid a skill whose name collides with a core command (withSkillCommands
+    // keeps the command row); any distinct name is fine for the check.
+    const KNOWN_COMMANDS = ['help', 'new', 'model', 'login', 'quit', 'sessions', 'clear', 'btw', 'session', 'plugins', 'search', 'agents', 'think', 'hints', 'motion', 'hotkeys', 'theme', 'preset']
+    const skill = LOCAL_SKILLS.find((name) => !KNOWN_COMMANDS.includes(name)) ?? LOCAL_SKILLS[0]
+    await typeText(SESS, `/${skill}`)
+    await sleep(700)
+    const ansi = capture(SESS, true)
+    snap('06b-skill-row')
+    const plain = capture(SESS)
+    const skillRow = plain.split('\n').find((line) => line.includes(`/${skill}`)) ?? ''
+    const ansiRow = ansi.split('\n').find((line) => line.includes(`/${skill}`)) ?? ''
+    // SGR 3 = italic (possibly combined: \x1b[1;3m / \x1b[3;...m).
+    const italic = /\x1b\[[0-9;]*3[;m]/.test(ansiRow)
+    record('slash palette shows a skill row (italic)', skillRow.includes(`/${skill}`) && italic,
+      [`skill: /${skill}`, `row: ${JSON.stringify(skillRow.trim())}`, `italic SGR: ${italic}`])
+    sendKeys(SESS, 'Tab')
+    await sleep(600)
+    const completed = inputRow(capture(SESS))
+    snap('06c-skill-tab')
+    record('skill row completes through Tab (trailing space)', completed.trim() === `/${skill}`,
+      [`input row: ${JSON.stringify(completed.trim())}`])
+    for (let i = 0; i < skill.length + 6; i++) { sendKeys(SESS, 'BSpace'); await sleep(TYPE_GAP_MS) }
+    await sleep(300)
+  }
 
   // palette height at this geometry: `/` lists the command set
   await typeText(SESS, '/')

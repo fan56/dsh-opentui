@@ -125,8 +125,13 @@ export type SessionComposerProps = {
 	 * content-change event instead — one-key lag otherwise). */
 	slashSync?: (buffer: string) => void
 	/** Slash palette enter path: true = the line was a command (harmless
-	 * unknowns included) — the composer clears its buffer, no send/steer. */
-	interceptSubmit?: (buffer: string) => boolean
+	 * unknowns included) — the composer clears its buffer, no send/steer.
+	 * `apply` lets the interception REWRITE the buffer before a fall-through
+	 * submit: a skill row resolved from an abbreviation expands to its
+	 * canonical `/name ` line (the pi-tui autocomplete applies the selected
+	 * completion before Enter submits), and returning false then sends the
+	 * rewritten text. */
+	interceptSubmit?: (buffer: string, apply?: (text: string) => void) => boolean
 	/** Slash Tab completion (fish-style). `cursor` is the caret as a
 	 * code-unit index into `buffer` (converted from the textarea's
 	 * `cursorOffset`, which is a DISPLAY-cell offset — see completeKey).
@@ -245,17 +250,20 @@ export function SessionComposer(props: SessionComposerProps) {
 	}
 
 	function submit() {
-		if (!textarea || textarea.isDestroyed) return
+		const editor = textarea
+		if (!editor || editor.isDestroyed) return
 		// Slash commands resolve here (batch 8): the palette's enter path and
 		// unknown "/xxx" both come through the intercept; only plain text
-		// reaches the send/steer controller.
-		if (props.interceptSubmit?.(textarea.plainText)) {
-			textarea.setText("")
+		// reaches the send/steer controller. `apply` is the skill fall-through
+		// rewrite (abbreviation → canonical `/name `); it mutates only the
+		// editor text, and the normal send path below reads it back.
+		if (props.interceptSubmit?.(editor.plainText, (text) => editor.setText(text))) {
+			editor.setText("")
 			syncHeight()
 			return
 		}
-		const result = controller.submit(textarea.plainText)
-		if (result !== "ignored") textarea.setText("")
+		const result = controller.submit(editor.plainText)
+		if (result !== "ignored") editor.setText("")
 	}
 
 	/**

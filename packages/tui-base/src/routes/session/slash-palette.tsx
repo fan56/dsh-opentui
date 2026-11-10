@@ -21,7 +21,6 @@
  */
 import { For, Show, createSignal } from "solid-js"
 import type { KeyEvent } from "@opentui/core"
-import { TextAttributes } from "@opentui/core"
 import { useThemeOptional } from "../../context/theme"
 import { currentRowColors } from "../../skin/semantic"
 import type { SessionSeam } from "../../seams/session"
@@ -30,6 +29,7 @@ import { coreCommands, dispatchLine, filterCommands, unknownCommandRow } from ".
 import { completeSlash } from "./slash-complete"
 import { carrySlashHooks } from "./slash-deps"
 import { createCommandUsage, type CommandUsageView } from "./slash-usage"
+import { isSkillCommand, paletteRowAttributes } from "./skills-source"
 
 /**
  * Max rows shown before the list clamps (the old menu's cap) — and, since the
@@ -67,12 +67,17 @@ export function overflowHint(total: number, offset = 0): string | undefined {
 }
 
 /**
- * Final ordering rule: executions DESC, then name ASC (case-insensitive; a
- * prefix sorts before its extension, so `/session` sits just before
- * `/sessions`). No executions yet = pure alphabetical — the default list is
- * deterministic, not registry order.
+ * Final ordering rule: executable commands first, then skills (the skills
+ * boundary from skills-source.ts — a skill's `run` is never executed, so it
+ * must never outrank an executable row). Within each tier: executions DESC,
+ * then name ASC (case-insensitive; a prefix sorts before its extension, so
+ * `/session` sits just before `/sessions`). No executions yet = pure
+ * alphabetical — the default list is deterministic, not registry order.
  */
 function compareCommands(a: SlashCommand, b: SlashCommand, usage: CommandUsageView | undefined): number {
+	const ta = isSkillCommand(a) ? 1 : 0
+	const tb = isSkillCommand(b) ? 1 : 0
+	if (ta !== tb) return ta - tb
 	const ca = usage?.count(a.name) ?? 0
 	const cb = usage?.count(b.name) ?? 0
 	if (ca !== cb) return cb - ca
@@ -299,15 +304,22 @@ export function SlashPalette(props: {
 									flexShrink={0}
 									wrapMode="none"
 									fg={active() ? row().textColor : color.base()}
-									attributes={active() ? TextAttributes.BOLD : undefined}
+									attributes={paletteRowAttributes(command, active())}
 								>
 									{command.name}{" "}
 									{/* The description rides the row's own selected fg when the
 									    row is highlighted — the page-muted gray on the focused
 									    action background fails contrast (1.31:1 dsh-blue dark,
 									    2.28:1 light, 3.32 tokyonight, 3.67 gruvbox; ≥ 4.5 required
-									    — skin-semantic.test.ts). Unselected rows keep muted. */}
-									<span style={{ fg: active() ? row().textColor : color.muted() }}>
+									    — skin-semantic.test.ts). Unselected rows keep muted.
+									    Skill rows stay italic in both segments (whole-row
+									    treatment); command rows keep the plain span. */}
+									<span
+										style={{
+											fg: active() ? row().textColor : color.muted(),
+											...(isSkillCommand(command) ? { italic: true } : {}),
+										}}
+									>
 										{command.description}
 									</span>
 								</text>
@@ -459,8 +471,13 @@ export function createSlashHost(deps: SlashHostDeps) {
 			}
 			return false
 		},
-		interceptSubmit(buffer: string): boolean {
+		interceptSubmit(buffer: string, apply?: (text: string) => void): boolean {
 			controller.sync(buffer, commands)
+			// Capture the highlighted row BEFORE close(): close() resets the
+			// query, so a later current() would read the unfiltered first row
+			// and turn every abbreviation into "/help". The filtered highlight
+			// is what the documented "/m" + Enter → /model path needs.
+			const highlighted = controller.current(commands)
 			controller.close()
 			// Exact-name precedence (parity with dispatchLine's rule): a buffer
 			// that IS a command's full name runs THAT command, regardless of the
@@ -472,15 +489,28 @@ export function createSlashHost(deps: SlashHostDeps) {
 			// through dispatch.
 			const needle = buffer.trim().toLowerCase()
 			const exact = commands.find((command) => command.name.toLowerCase() === needle)
-			if (exact) return run(exact, "")
-			const highlighted = controller.current(commands)
+			// Skill rows resolve exactly like commands, then deliberately fall
+			// through (false): the composer sends the typed `/name` line to the
+			// model untouched, where the host's skill gesture injects the body.
+			// Running a skill row here would swallow the gesture as a no-op.
+			if (exact) return isSkillCommand(exact) ? false : run(exact, "")
 			// A visible menu is always a pure slash prefix (a space closes it),
 			// so the highlighted entry IS the line's command — "/m" + enter runs
 			// /model, not "unknown /m". A closed menu means the line carries
 			// arguments ("/model provider/id") and re-parses through dispatch.
-			if (highlighted) return run(highlighted, "")
+			if (highlighted) {
+				if (!isSkillCommand(highlighted)) return run(highlighted, "")
+				// Skill highlight: expand the abbreviation before submitting
+				// (pi-tui's editor applies the selected completion on Enter, so
+				// "/cro" + Enter sends "/cron " — a raw "/cro" would not match
+				// the host's /name gesture). An exact name needs no rewrite.
+				if (needle !== highlighted.name.toLowerCase()) apply?.(`${highlighted.name} `)
+				return false
+			}
 			const dispatch = dispatchLine(commands, buffer)
-			if (dispatch.kind === "command") return run(dispatch.command, dispatch.argText)
+			if (dispatch.kind === "command") {
+				return isSkillCommand(dispatch.command) ? false : run(dispatch.command, dispatch.argText)
+			}
 			if (dispatch.kind === "unknown") {
 				deps.say(unknownCommandRow(dispatch.name))
 				return true

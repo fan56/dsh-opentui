@@ -49,7 +49,8 @@ import { TurnOverlayController } from "../src/routes/session/turn-overlay-contro
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
-import { presetLabelFor } from "../src/routes/session/commands"
+import { presetLabelFor, coreCommands } from "../src/routes/session/commands"
+import { discoverSkills, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
 import { AgentsPanel, openAgentsPanel } from "../src/routes/session/agents-panel"
@@ -113,6 +114,8 @@ function V2SessionPage(props: {
 	themeName?: string
 	quit: () => void
 	workspace: string
+	/** Boot-time disk snapshot of user-invocable skills (skills-source.ts). */
+	skills?: SkillRow[]
 }) {
 	const seam = props.seam
 	const projection = createSeamRows(seam, () => seam.currentSessionId() ?? "", {
@@ -446,6 +449,11 @@ function V2SessionPage(props: {
 	registerSubagentSteerFeedback((line: string) => void showNotice(line))
 	const slash = createSlashHost(buildSlashDeps({
 		seam,
+		// Skills ride the SAME registry as the commands: `/name` rows share
+		// filtering, highlight navigation and Tab completion, and the host's
+		// dispatch falls them through to the model (skills-source.ts). A
+		// command-name collision keeps the command (withSkillCommands).
+		commands: withSkillCommands(coreCommands(), props.skills ?? []),
 		say: sayLine,
 		// Batch D2: a session switch (/new → clear, /fork//resume → reload)
 		// drops the `●` last-request echo with the rest of the session state.
@@ -813,6 +821,12 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 
 	const seam = new adapter.RemoteSessionSeam(session as never)
 	registerTurnOverlays(seam, overlays)
+	// Slash-menu skills (skills-source.ts): a read-only boot snapshot of the
+	// same filesystem roots the host's skill provider scans. The host RPC
+	// (`skills/list`) is session-scoped and no session exists before the
+	// first prompt, so the menu would otherwise be empty at first paint.
+	// Contained: a broken root yields the empty catalog, never a boot failure.
+	const skillRows = discoverSkills({ cwd: workspace, dshHome: host.dshHome })
 	// One-shot skin migration (α skin layer, real precedence chain env >
 	// workspace > profile): a STORED legacy `theme` key (profile OR
 	// workspace layer) switches to the dsh-blue default once, persists the
@@ -906,12 +920,13 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 													get children() {
 														return createComponent(ErrorBoundaryDiagnostics, {
 															get children() {
-																return createComponent(V2SessionPage, {
-																	seam,
-																	themeName,
-																	quit: () => process.exit(0),
-																	workspace,
-																})
+																	return createComponent(V2SessionPage, {
+																		seam,
+																		themeName,
+																		quit: () => process.exit(0),
+																		workspace,
+																		skills: skillRows,
+																	})
 															},
 														})
 													},
