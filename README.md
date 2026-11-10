@@ -37,12 +37,17 @@ dsh-opentui
 
 `dsh-opentui` starts a thin client TUI (`dist/client/index.js` under Bun) that
 connects to a resident `dsh --profile opentui` host process. The launcher
-handles everything on first run:
+handles everything on startup:
 
-- **Profile bootstrap** — if `$DSH_HOME/profiles/opentui` is missing it is
-  provisioned idempotently. Pass `--provider` / `--model` /
-  `--reasoning-effort` on first launch to pin a different default model
-  (default `zai-coding-cn/glm-5.3-flash/high`).
+- **Profile bootstrap** — `$DSH_HOME/profiles/opentui` is provisioned on
+  EVERY launch (idempotent; a no-op pass is sub-second). Pass `--provider` /
+  `--model` / `--reasoning-effort` to pin a different default model (default
+  `zai-coding-cn/glm-5.3-flash/high`).
+- **Default plugins** — the first run installs the plugin set below into the
+  profile and prints its progress (`[3/5] plugins …`). Later runs only repair
+  what is missing: nothing is reinstalled when the dependency, the installed
+  version and the bundle entry already agree. `--dry-run` (or
+  `DSH_PROVISION_DRY_RUN=1`) prints the commands without executing them.
 - **Legacy migration** — a pre-retirement `profiles/dsh-opentui` profile is
   detected once and its theme / config preferences are conservatively copied
   into the `opentui` profile (only keys the target does not already have).
@@ -56,6 +61,54 @@ Architecture: one resident host serves the workspace; a crashed or quit client
 re-attaches (or a fresh one adopts) the running host; `/reload` restarts the
 host on the same port without losing the session. Multiple clients can attach
 to the same host.
+
+### Default plugins
+
+Every launch converges the `opentui` profile to this set (pinned versions):
+
+| Tier | Package | Why |
+|---|---|---|
+| core | `@aiwayds/dsh-ask-router` | owns the ask surface; loads before every other UI/ask bundle |
+| core | `@aiwayds/dsh-subagent-registry` | subagent discovery and registration |
+| core | `@aiwayds/dsh-llm-net-retry` | retries transient provider/network failures |
+| core | `@aiwayds/dsh-web-search-anysearch` | web search without a per-provider key |
+| core | `@aiwayds/dsh-approval-policy` | tool-approval policy |
+| core | `@aiwayds/dsh-model-sync` | keeps the model list in sync with the provider catalog |
+| recommended | `@aiwayds/dsh-llm-stats` | token/cost accounting behind `/usage` |
+| recommended | `@aiwayds/dsh-topics-memory` | cross-session topic memory |
+| recommended | `@aiwayds/dsh-cron` | scheduled prompts |
+| recommended | `@aiwayds/dsh-workflow` | dynamic workflow runs |
+| recommended | `@aiwayds/dsh-vault` | secret storage used by the companions |
+
+`recommended` is the default and includes `core`. Use `--plugins=core` to
+install only the core set. These are deliberately not installed:
+`dsh-tui-pi` (takes over stdout/stdin), `dcp` (web-app-preset isolated),
+`feishu` (claims the ask surface), `web-search-tavily` (needs a key),
+`agent-dispatch`, `self-improve`, `llm-proxy`, `profile-switch`.
+
+A plugin counts as installed only when all three agree: it is in the profile
+`dependencies`, the installed `node_modules` version satisfies the pin, and its
+name is in `dsh.profile.bundles`. Missing pieces are repaired with one
+`dsh plugin --profile opentui add …`; a failing package is retried once on its
+own after approving pnpm's build scripts, then reported as a WARN without
+blocking the launch. The retired `@aiwayds/dsh-opentui` plugin entry is removed
+from existing profiles (it has no `dsh.bundle` and only produced boot warnings).
+
+### Skipping the default plugins
+
+Pass `--plugins=none` on launch to provision the profile without installing any
+plugin (`--plugins=core` narrows the set instead). To make that permanent for
+every launch, set it in the environment:
+
+```bash
+DSH_OPENTUI_PLUGINS=none dsh-opentui
+```
+
+The profile is still created/kept, the model route still written, and the
+retired-entry cleanup still runs; only plugin installation and managed-bundle
+appends are skipped. You can always manage plugins yourself afterwards with
+`dsh plugin --profile opentui add <pkg>`. `--dry-run` prints every command
+provisioning would run without executing it.
 
 **Config reuse**: the Shell reads your existing dsh config — model defaults
 from the host, provider baseUrls and API keys from `$DSH_HOME`. A

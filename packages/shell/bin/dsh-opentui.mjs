@@ -8,9 +8,14 @@
  *      bun export conditions); no bun on PATH → install guidance, exit 1.
  *   2. dsh check — the host CLI is the session carrier (profile storage,
  *      config load); no `dsh` on PATH → install guidance, exit 1.
- *   3. Profile bootstrap — when $DSH_HOME/profiles/opentui is missing, runs
- *      scripts/provision-opentui-profile.mjs (idempotent; transparently
- *      forwards --provider/--model/--reasoning-effort).
+ *   3. Profile bootstrap — runs scripts/provision-opentui-profile.mjs on
+ *      EVERY start. The script is idempotent and prints five progress steps
+ *      (profile, model route, plugins, bundles, verify); with nothing to do
+ *      it is a sub-second local pass. It transparently forwards
+ *      --provider/--model/--reasoning-effort and
+ *      --plugins=core|recommended|none (--dry-run prints the commands without
+ *      executing them). A non-zero exit is a WARN: the client still starts
+ *      with the profile as-is.
  *   4. One-time migration notice — a pre-retirement profile at
  *      $DSH_HOME/profiles/dsh-opentui is detected once, its theme /
  *      config.json preferences are conservatively copied into the opentui
@@ -62,17 +67,26 @@ if (!spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout.trim()) {
   exitWithGuidance('the dsh CLI', 'npm i -g @deepseek-ai/dsh')
 }
 
-// --- 3. Profile bootstrap (best effort, idempotent) ------------------------
+// --- 3. Profile bootstrap (every start, best effort, idempotent) -----------
+// provision-opentui-profile.mjs is idempotent and understands
+// --provider/--model/--reasoning-effort --plugins/--dry-run; forward those,
+// ignore the rest. With nothing to do this is a local, sub-second pass.
 const opentuiProfileDir = join(dshHome, 'profiles', 'opentui')
-if (!existsSync(opentuiProfileDir)) {
-  // provision-opentui-profile.mjs is idempotent and understands
-  // --provider/--model/--reasoning-effort; forward those, ignore the rest.
+{
   const userArgs = process.argv.slice(2)
   const provisionFlags = []
   for (const name of ['provider', 'model', 'reasoning-effort']) {
     const i = userArgs.indexOf(`--${name}`)
     if (i >= 0 && userArgs[i + 1]) provisionFlags.push(`--${name}`, userArgs[i + 1])
   }
+  const pluginsInline = userArgs.find((arg) => arg.startsWith('--plugins='))
+  if (pluginsInline) {
+    provisionFlags.push(pluginsInline)
+  } else {
+    const i = userArgs.indexOf('--plugins')
+    if (i >= 0 && userArgs[i + 1]) provisionFlags.push('--plugins', userArgs[i + 1])
+  }
+  if (userArgs.includes('--dry-run')) provisionFlags.push('--dry-run')
   const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-opentui-profile.mjs'), ...provisionFlags], {
     stdio: 'inherit',
   })

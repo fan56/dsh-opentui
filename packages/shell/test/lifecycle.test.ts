@@ -816,21 +816,27 @@ describe('live smoke (real dsh)', () => {
     const home = mkdtempSync(join(tmpdir(), 'dsh-lifecycle-live-'))
     const script = join(import.meta.dir, '..', 'scripts', 'provision-opentui-profile.mjs')
     try {
-      // provision via the real script (twice — the second run must be a no-op)
-      const first = Bun.spawnSync([process.execPath, script], {
+      // provision via the real script (twice — the second run must be a no-op).
+      // --plugins=none keeps this smoke offline: the plugin selection and its
+      // idempotency are covered by provision-plan.test.ts, and a real
+      // `dsh plugin add` would hit the registry.
+      const first = Bun.spawnSync([process.execPath, script, '--plugins=none'], {
         env: { ...process.env, DSH_HOME: home },
         stdout: 'pipe',
         stderr: 'pipe',
       })
       expect(first.exitCode).toBe(0)
       expect(existsSync(join(home, 'profiles', DEFAULT_PROFILE))).toBe(true)
-      const second = Bun.spawnSync([process.execPath, script], {
+      const second = Bun.spawnSync([process.execPath, script, '--plugins=none'], {
         env: { ...process.env, DSH_HOME: home },
         stdout: 'pipe',
         stderr: 'pipe',
       })
       expect(second.exitCode).toBe(0)
-      expect(second.stdout.toString()).toContain('already provisioned')
+      const secondOut = second.stdout.toString()
+      expect(secondOut).toContain('[1/5] profile        reusing')
+      expect(secondOut).toContain('[4/5] bundles        up to date')
+      expect(secondOut).toContain('provision-opentui-profile: PASS')
 
       // boot through ensureHost — real spawn, real mint when available
       let handle: HostHandle
