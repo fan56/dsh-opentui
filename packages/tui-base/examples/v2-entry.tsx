@@ -209,6 +209,7 @@ function V2SessionPage(props: {
 		focus(): void
 		node(): import("@opentui/core").TextareaRenderable | undefined
 		resetDeliveries(): void
+		flushQueue(): import("../src/routes/session/composer-state").ComposerFlushResult
 	} | undefined
 	// Transcript scrollback (batch 10f): the page owns the scrollbox ref and
 	// the key layer. Pane focus (focus batch): F6 / mouse clicks move the
@@ -650,6 +651,12 @@ function V2SessionPage(props: {
 		// /theme + /settings share ONE theme face (defined above the slash
 		// host): live apply + persistence through the same seam write.
 		themes: themeFace,
+		// /flush (steer/queue batch): deliver the client-side delivery queue
+		// NOW. The queue lives in the composer controller; the page holds the
+		// composer ref, so the hook reaches it through that ref (the ref is
+		// assigned once the composer mounts).
+		flushQueue: () =>
+			composerRef?.flushQueue() ?? { kind: "empty", started: 0, remaining: 0 },
 	}))
 	const overlayHost = createComponent(TurnOverlayHost, {
 		controller: overlays,

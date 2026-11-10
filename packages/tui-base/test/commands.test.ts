@@ -217,6 +217,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/quit",
 			"/resume",
 			"/clear",
+			"/flush",
 			"/btw",
 			"/session",
 			"/plugins",
@@ -248,6 +249,7 @@ describe("core commands", () => {
 			"/quit — exit the app",
 			"/resume — resume a persisted session",
 			"/clear — clear the transcript",
+			"/flush — deliver the queued prompts now",
 			"/btw — side question (bare reopens the last answer)",
 			"/session — show session info (id, model, tokens, speed)",
 			"/plugins — manage plugins (opens the panel)",
@@ -911,6 +913,37 @@ describe("batch H5 replacement: /agents opens the definition manager", () => {
 		const ctx = makeCtx(new RecordingSeam())
 		await run(ctx, "workhorse")
 		expect(ctx.lines).toEqual(["/agents: the manager panel is not mounted in this entry"])
+	})
+})
+
+describe("queue flush: /flush restarts the paused delivery pump", () => {
+	const run = coreCommands().find((command) => command.name === "/flush")!.run
+
+	test("a host without a client-side queue degrades to the unavailable notice", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		await run(ctx, "")
+		expect(ctx.lines).toEqual(["/flush unavailable in this session"])
+	})
+
+	test("an empty queue reports the no-op instead of staying silent", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		ctx.flushQueue = () => ({ kind: "empty", started: 0, remaining: 0 })
+		await run(ctx, "")
+		expect(ctx.lines).toEqual(["queue is empty — nothing to flush"])
+	})
+
+	test("a running turn leaves the queue to its turn end", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		ctx.flushQueue = () => ({ kind: "busy", started: 0, remaining: 2 })
+		await run(ctx, "")
+		expect(ctx.lines).toEqual(["a turn is running — 2 queued prompt(s) will be delivered when it ends"])
+	})
+
+	test("a paused queue starts its head and reports the tail", async () => {
+		const ctx = makeCtx(new RecordingSeam())
+		ctx.flushQueue = () => ({ kind: "flushed", started: 1, remaining: 1 })
+		await run(ctx, "")
+		expect(ctx.lines).toEqual(["queue flushed — 1 prompt(s) sending now, 1 still queued"])
 	})
 })
 

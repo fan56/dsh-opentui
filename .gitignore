@@ -14,3 +14,5 @@ packages/shell/CHANGELOG.md
 verify/agents-mount-out/
 # real-client gate artifacts (verify/steer-queue-repro.mjs)
 verify/steer-queue-out/
+# real-client gate artifacts (verify/queue-flush-repro.mjs)
+verify/queue-flush-out/
