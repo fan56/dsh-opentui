@@ -48,12 +48,38 @@ export function hostLockPath(dshHome: string, profile: string): string {
 }
 
 /** Detached idle-exit hand-off (decision 5): see scripts/idle-reaper.mjs.
- * The reaper survives this process; a stuck SIGTERM escalates to SIGKILL
- * inside the reaper, and the lockfile is cleared only while it still
+ * `idleMs` is the window after the LAST client disconnect; the reaper
+ * survives this process, cancels itself if a client re-attaches inside the
+ * window, escalates a stuck SIGTERM to SIGKILL, appends one
+ * `reason=idle` log line, and clears the lockfile only while it still
  * describes this host. */
-export function defaultSpawnReaper(args: { pid: number; port: number; lockPath: string; graceSec: number }): void {
-	const script = join(import.meta.dir, "..", "scripts", "idle-reaper.mjs")
-	const child = spawn(process.execPath, [script, String(args.pid), String(args.port), args.lockPath, String(args.graceSec)], {
+export interface IdleReaperArgs {
+	pid: number
+	port: number
+	lockPath: string
+	idleMs: number
+}
+
+/** Resolution of the reaper script across the two layouts this module runs
+ * in: the built bundle (`dist/client/index.js` → `dist/scripts/`, the
+ * packaged copy the bin ships) and the source tree (`src/client/` →
+ * `<pkg>/scripts/`, what tests and the --v2 dev entry import). Throws when
+ * neither exists so the spawn failure is reported instead of silently
+ * orphaning the host. */
+export function resolveReaperScript(): string {
+	const candidates = [
+		join(import.meta.dir, "..", "scripts", "idle-reaper.mjs"),
+		join(import.meta.dir, "..", "..", "scripts", "idle-reaper.mjs"),
+	]
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return candidate
+	}
+	throw new Error(`idle-reaper.mjs not found (looked in: ${candidates.join(", ")})`)
+}
+
+export function defaultSpawnReaper(args: IdleReaperArgs): void {
+	const script = resolveReaperScript()
+	const child = spawn(process.execPath, [script, String(args.pid), String(args.port), args.lockPath, String(args.idleMs)], {
 		detached: true,
 		stdio: "ignore",
 	})
@@ -61,18 +87,20 @@ export function defaultSpawnReaper(args: { pid: number; port: number; lockPath: 
 }
 
 /** Reaper hand-off wrapper (client-entry parity; injectable seam kept for
- * the old entry's tests). */
+ * the old entry's tests). `idleMs` is already resolved (see lifecycle.ts
+ * `resolveIdleExitMs`); a non-positive window never spawns a reaper. */
 export function spawnIdleReaper(
 	host: { pid: number; port: number; dshHome: string; profile: string; refCount: number },
-	idleExitSec: number,
-	spawnReaper: (args: { pid: number; port: number; lockPath: string; graceSec: number }) => void = defaultSpawnReaper,
+	idleMs: number,
+	spawnReaper: (args: IdleReaperArgs) => void = defaultSpawnReaper,
 ): void {
+	if (!(idleMs > 0)) return
 	try {
 		spawnReaper({
 			pid: host.pid,
 			port: host.port,
 			lockPath: hostLockPath(host.dshHome, host.profile),
-			graceSec: idleExitSec,
+			idleMs,
 		})
 	} catch (error) {
 		// reaper spawn is best-effort: the fallback state is the documented
@@ -82,6 +110,7 @@ export function spawnIdleReaper(
 }
 
 import { join } from "node:path"
+import { existsSync } from "node:fs"
 import { spawn } from "node:child_process"
 import type { ShellSessionSurface } from "./shell-session.ts"
 import { ENV_THEME } from "./workspace-config.ts"

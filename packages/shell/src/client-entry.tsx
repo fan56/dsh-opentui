@@ -17,8 +17,9 @@
  * longer reachable from the default client path).
  *
  * Wiring (decisions 1-3, unchanged):
- *   ensureHost({ profile: 'opentui', idleExitSec: 60 })  — resident host
- *     (single-instance lock, grace-window re-attach on the next client)
+ *   ensureHost({ profile: 'opentui', idleExitSec: 5 })   — resident host
+ *     (single-instance lock, grace-window re-attach on the next client;
+ *     DSH_OPENTUI_HOST_IDLE_MS overrides the 5000ms default)
  *   → ClientConnection({ authority, cookieHeader })       — the carrier
  *   → RemoteHostSession                                   — HostSession-shaped
  *     facade over Remote RPC + $events
@@ -54,10 +55,12 @@
  *   idleExitSec, or is adopted by the next client inside the window).
  *   The lifecycle's idle timer lives in THIS process and is unref()ed, so
  *   on a last-ref release the quitting client spawns the DETACHED idle
- *   reaper (scripts/idle-reaper.mjs): after the grace it idles the host
- *   out (SIGTERM) and clears the lockfile — unless a fresh boot replaced
- *   the host or a client re-attached inside the window (established
- *   connections to the host port — the adoption path's liveness marker).
+ *   reaper (scripts/idle-reaper.mjs): after the 5s window (or
+ *   DSH_OPENTUI_HOST_IDLE_MS) it idles the host out (SIGTERM) and clears
+ *   the lockfile — unless a fresh boot replaced the host, a client
+ *   re-attached inside the window (established connections to the host
+ *   port — the adoption path's liveness marker), or a client adopted
+ *   mid-window (lockfile generation bump while it mints its cookie).
  *   Intercepted paths: /quit + Ctrl+C (both call process.exit inside
  *   ShellHost), Ctrl+D (renderer exit), SIGINT/SIGTERM/SIGHUP. Exit is
  *   force-completed after a short grace so a stuck dispose cannot hang
@@ -79,13 +82,20 @@ import {
 	hostLockPath,
 	installExitPaths,
 	spawnIdleReaper,
+	type IdleReaperArgs,
 } from "./client/boot-shared.ts"
 
 // Re-exported for the tests and the --v2 dev entry (batch 9a split: the
 // implementations live in client/boot-shared.ts — importable WITHOUT this
 // file's @opentui/solid preload registration).
 export { bootCallOrder, installExitPaths, spawnIdleReaper, themeNameFromConfig } from "./client/boot-shared.ts"
-import { DEFAULT_IDLE_EXIT_SEC, DEFAULT_PROFILE, ensureHost, type HostHandle, type EnsureHostOptions } from "./client/lifecycle.ts"
+import {
+	DEFAULT_PROFILE,
+	ensureHost,
+	resolveIdleExitMs,
+	type HostHandle,
+	type EnsureHostOptions,
+} from "./client/lifecycle.ts"
 import { ClientConnection } from "./client/transport.ts"
 import { RemoteHostSession } from "./client/remote-host-session.ts"
 import type { ShellSessionSurface } from "./client/shell-session.ts"
@@ -110,7 +120,8 @@ export interface ClientBootOptions {
 	dshHome?: string
 	/** Host profile; default `opentui` (ADR-0005 decision 3). */
 	profile?: string
-	/** Idle-exit seconds; default 60, `0` = resident (decision 5). */
+	/** Idle-exit seconds after the last client disconnect; default 5
+	 * (DSH_OPENTUI_HOST_IDLE_MS overrides), `0` = resident (decision 5). */
 	idleExitSec?: number
 	/** Boot-label wait budget (tests shrink it). */
 	labelBudgetMs?: number
@@ -132,8 +143,8 @@ export interface ClientBootOptions {
 	 * pass false and exercise installExitPaths with a fake target). */
 	exitPaths?: boolean
 	/** Idle reaper seam (tests record instead of spawning). Default: the
-	 * detached `bun scripts/idle-reaper.mjs` spawn. */
-	spawnReaper?: (args: { pid: number; port: number; lockPath: string; graceSec: number }) => void
+	 * detached `node scripts/idle-reaper.mjs` spawn. */
+	spawnReaper?: (args: IdleReaperArgs) => void
 }
 
 /** Wait (bounded) for the cold-boot model route label — best-effort: the
@@ -200,7 +211,8 @@ export function aggregateTurnContext(session: ShellSessionSurface): ShellSession
 export async function bootClient(options: ClientBootOptions = {}): Promise<ClientBoot> {
 	const workspace = options.workspace ?? process.cwd()
 	const profile = options.profile ?? DEFAULT_PROFILE
-	const idleExitSec = options.idleExitSec ?? DEFAULT_IDLE_EXIT_SEC
+	const idleExitMs = resolveIdleExitMs(options.idleExitSec)
+	const idleExitSec = idleExitMs / 1000
 
 	bootCallOrder.push("ensureHost")
 	const host = await (options.ensureHost ?? ensureHost)({
@@ -270,10 +282,10 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 			host.release()
 			// The lifecycle's idle timer is unref()ed and dies with THIS
 			// process — hand the idle-exit to the detached reaper when the
-			// last ref was released (a resident host, idleExitSec 0, gets
+			// last ref was released (a resident host, idleExitMs 0, gets
 			// none; another live ref in this process owns the host instead).
-			if (host.refCount === 0 && idleExitSec > 0) {
-				spawnIdleReaper(host, idleExitSec, options.spawnReaper ?? defaultSpawnReaper)
+			if (host.refCount === 0 && idleExitMs > 0) {
+				spawnIdleReaper(host, idleExitMs, options.spawnReaper ?? defaultSpawnReaper)
 			}
 		})()
 		return shutdownPromise

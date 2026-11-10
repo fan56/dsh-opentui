@@ -140,8 +140,8 @@ describe('bootClient wiring', () => {
         labelBudgetMs: 50,
       })
 
-      // lifecycle: profile + idle-exit per ADR-0005 decisions 3 + 5
-      expect(recording.ensureHostOptions).toEqual({ profile: 'opentui', idleExitSec: 60 })
+      // lifecycle: profile + 5s idle-exit per ADR-0005 decisions 3 + 5
+      expect(recording.ensureHostOptions).toEqual({ profile: 'opentui', idleExitSec: 5 })
       // carrier: authority + cookie come from the host handle
       expect(recording.connectArgs).toEqual([[handle.authority, handle.cookieHeader]])
       // session facade: workspace cwd + home + profile from the handle
@@ -214,7 +214,7 @@ describe('bootClient shutdown', () => {
 
   test('last-ref release hands the idle exit to the detached reaper', async () => {
     const { handle, seams } = makeFakes()
-    const reapers: { pid: number; port: number; lockPath: string; graceSec: number }[] = []
+    const reapers: { pid: number; port: number; lockPath: string; idleMs: number }[] = []
     const boot = await bootClient({
       ensureHost: seams.ensureHost,
       connect: seams.connect,
@@ -230,9 +230,58 @@ describe('bootClient shutdown', () => {
         pid: handle.pid,
         port: handle.port,
         lockPath: join(handle.dshHome, 'opentui-host.opentui.json'),
-        graceSec: 60, // the lifecycle default — decision 5's idle window
+        idleMs: 5_000, // the lifecycle default — decision 5's idle window
       },
     ])
+  })
+
+  test('DSH_OPENTUI_HOST_IDLE_MS overrides the idle window (ms, 0 = resident)', async () => {
+    const { recording, handle, seams } = makeFakes()
+    const previous = process.env.DSH_OPENTUI_HOST_IDLE_MS
+    const reapers: unknown[] = []
+    try {
+      // 2500ms → 2.5s reaches ensureHost and the reaper unchanged
+      process.env.DSH_OPENTUI_HOST_IDLE_MS = '2500'
+      const boot = await bootClient({
+        ensureHost: seams.ensureHost,
+        connect: seams.connect,
+        createSession: seams.createSession,
+        render: seams.render as never,
+        exitPaths: false,
+        labelBudgetMs: 10,
+        spawnReaper: (args) => reapers.push(args),
+      })
+      expect(recording.ensureHostOptions).toEqual({ profile: 'opentui', idleExitSec: 2.5 })
+      await boot.shutdown()
+      expect(reapers).toEqual([
+        {
+          pid: handle.pid,
+          port: handle.port,
+          lockPath: join(handle.dshHome, 'opentui-host.opentui.json'),
+          idleMs: 2_500,
+        },
+      ])
+
+      // 0 = resident: no reaper is spawned at all
+      process.env.DSH_OPENTUI_HOST_IDLE_MS = '0'
+      reapers.length = 0
+      const residentFakes = makeFakes()
+      const resident = await bootClient({
+        ensureHost: residentFakes.seams.ensureHost,
+        connect: residentFakes.seams.connect,
+        createSession: residentFakes.seams.createSession,
+        render: residentFakes.seams.render as never,
+        exitPaths: false,
+        labelBudgetMs: 10,
+        spawnReaper: (args) => reapers.push(args),
+      })
+      expect(residentFakes.recording.ensureHostOptions).toEqual({ profile: 'opentui', idleExitSec: 0 })
+      await resident.shutdown()
+      expect(reapers).toEqual([])
+    } finally {
+      if (previous === undefined) delete process.env.DSH_OPENTUI_HOST_IDLE_MS
+      else process.env.DSH_OPENTUI_HOST_IDLE_MS = previous
+    }
   })
 
   test('no reaper while another ref in this process still holds the host', async () => {

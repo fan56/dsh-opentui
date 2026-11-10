@@ -35,8 +35,9 @@
  *   runtime the bin (bin/dsh-opentui.mjs) bridges resolution by symlinking
  *   the SDK from the global dsh closure into the package's node_modules.
  * - The idle reaper spawn resolves `join(import.meta.dir, "../scripts",
- *   "idle-reaper.mjs")` — in the bundle that is dist/scripts/, so the
- *   reaper script is copied there.
+ *   "idle-reaper.mjs")` first (in the bundle that is dist/scripts/, so the
+ *   reaper script is copied there); from the source tree it falls back to
+ *   `../../scripts/idle-reaper.mjs` (src/client/ → <pkg>/scripts/).
  *
  * The output is gitignored (root .gitignore: dist/).
  */

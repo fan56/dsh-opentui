@@ -2,7 +2,7 @@
 //
 // `ensureHost` manages ONE resident `dsh` host per profile per machine:
 //
-//   const host = await ensureHost({ profile: 'opentui', idleExitSec: 60 })
+//   const host = await ensureHost({ profile: 'opentui', idleExitSec: 5 })
 //   host.authority    // '127.0.0.1:45931' — where the host listens
 //   host.cookieHeader // minted Cookie header for /api + /connect auth
 //   host.pid          // host child process id (or adopted pid)
@@ -37,14 +37,18 @@
 // of clobbering the winner's lock.
 //
 // Adoption bumps the lockfile (fresh startedAt/mtime): the detached idle
-// reaper (scripts/idle-reaper.mjs) treats a recently-touched lockfile as
-// alive, so a client that adopted at the grace edge and is still minting its
-// cookie (no ESTABLISHED connection yet) is not reaped underneath.
+// reaper (scripts/idle-reaper.mjs) treats a lockfile generation change since
+// its own start as a live adopter, so a client that adopted at the grace edge
+// and is still minting its cookie (no ESTABLISHED connection yet) is not
+// reaped underneath.
 //
 // Idle exit (ADR-0005 decision 5): when the refcount reaches 0 a timer of
-// `idleExitSec` seconds (default 60; `0` = never exit, resident) SIGTERMs the
-// child and cleans the lockfile; an `ensureHost` inside the grace window
-// cancels the timer and re-attaches.
+// `idleExitSec` seconds (default 5, overridable with
+// DSH_OPENTUI_HOST_IDLE_MS; `0` = never exit, resident) SIGTERMs the child
+// and cleans the lockfile; an `ensureHost` inside the grace window cancels the
+// timer and re-attaches. Because the in-process timer is unref()ed and dies
+// with the client, a clean quit also hands the window to the detached reaper
+// (scripts/idle-reaper.mjs), which owns it after this process is gone.
 //
 // Readiness: the `dsh web: http://127.0.0.1:<port>/?token=...` stdout line
 // (verified against the shipped CLI) or a TCP listener probe, within
@@ -71,8 +75,37 @@ import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 
 export const DEFAULT_PROFILE = 'opentui'
-export const DEFAULT_IDLE_EXIT_SEC = 60
+/** Idle-exit window: the resident host exits this long after the LAST client
+ * disconnects, unless a client re-attaches inside the window. 5s is the
+ * product default; `0` = never exit (resident). Override per process with
+ * `DSH_OPENTUI_HOST_IDLE_MS` (milliseconds), or per call with
+ * `ensureHost({ idleExitSec })`. */
+export const DEFAULT_IDLE_EXIT_MS = 5_000
+export const DEFAULT_IDLE_EXIT_SEC = DEFAULT_IDLE_EXIT_MS / 1000
+/** Env override for the idle-exit window, in milliseconds (`0` = resident;
+ * an empty or unparsable value falls back to the default). */
+export const ENV_IDLE_EXIT_MS = 'DSH_OPENTUI_HOST_IDLE_MS'
 export const DEFAULT_READINESS_TIMEOUT_MS = 30_000
+
+/** Resolve the idle window (ms) for this process: explicit seconds option >
+ * `DSH_OPENTUI_HOST_IDLE_MS` > `DEFAULT_IDLE_EXIT_MS`. Negative values are
+ * clamped to 0 (resident); sub-millisecond values round to the nearest ms. */
+export function resolveIdleExitMs(explicitSec?: number): number {
+  if (explicitSec !== undefined && Number.isFinite(explicitSec)) {
+    return Math.max(0, Math.round(explicitSec * 1000))
+  }
+  const raw = process.env[ENV_IDLE_EXIT_MS]
+  if (raw !== undefined && raw.trim() !== '') {
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed)) return Math.max(0, Math.round(parsed))
+  }
+  return DEFAULT_IDLE_EXIT_MS
+}
+
+/** Same window in seconds (the `ensureHost`/`release()` unit). */
+export function resolveIdleExitSec(explicitSec?: number): number {
+  return resolveIdleExitMs(explicitSec) / 1000
+}
 /** How long a lock whose pid is alive but not yet listening gets to come up
  * before we declare the lock stale (covers a cold host mid-boot). */
 export const DEFAULT_STALE_PROBE_MS = 8_000
@@ -799,7 +832,7 @@ interface ResolvedOptions {
 function resolveOptions(opts: EnsureHostOptions): ResolvedOptions {
   const profile = opts.profile ?? DEFAULT_PROFILE
   const dshHome = opts.dshHome ?? defaultDshHome()
-  const idleExitSec = opts.idleExitSec ?? DEFAULT_IDLE_EXIT_SEC
+  const idleExitSec = resolveIdleExitSec(opts.idleExitSec)
   return {
     profile,
     dshHome,

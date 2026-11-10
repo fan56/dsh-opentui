@@ -49,10 +49,11 @@ as the product path.
    defaulting to new (`/history` reaches older ones).
 5. **Host lifecycle**: the first TUI launch spawns the host service
    (single-instance lock); later TUIs only connect. When the last TUI
-   disconnects, the host exits after `idleExitSec` of idleness —
-   configurable, default 60s; `0` keeps the host resident (never
-   exits), which covers background-plugin scenarios (cron / bot
-   listeners) that must outlive every TUI.
+   disconnects, the host exits after a 5s idle window unless a client
+   re-attaches inside it — configurable through
+   `DSH_OPENTUI_HOST_IDLE_MS` (default 5000ms); `0` keeps the host
+   resident (never exits), which covers background-plugin scenarios
+   (cron / bot listeners) that must outlive every TUI.
 6. **Plugin mode is retained** for the standalone direct-mode binary
    (ADR-0003) — that binary bypasses the host by design.
 
@@ -95,7 +96,7 @@ docs/client-mode-protocol-audit.md §4 for the flagged list).
 
 ## Open questions
 
-None open. The former "60s idle-exit vs background plugins" question is
-resolved by decision 5: `idleExitSec` is configurable with default 60s
-and `0` = resident, which covers background-plugin scenarios without a
-special case.
+None open. The former "idle-exit vs background plugins" question is
+resolved by decision 5: the window is configurable
+(`DSH_OPENTUI_HOST_IDLE_MS`, default 5000ms) and `0` = resident, which
+covers background-plugin scenarios without a special case.

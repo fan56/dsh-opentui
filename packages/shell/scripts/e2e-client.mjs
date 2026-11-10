@@ -600,7 +600,7 @@ const scenarioB = async () => {
     notes.push(`quits: client1=${q1} client2=${q2}`)
 
     // the idle-reaper path: the last quit spawned the detached reaper with
-    // graceSec = idleExitSec (60) — the host exits inside ~60-75s
+    // the 5s window (DSH_OPENTUI_HOST_IDLE_MS) — the host exits inside ~5-10s
     const hostGone = await waitPidGone(lock1.pid, 110_000)
     const lockAfter = readLock()
     notes.push(`host dead after grace=${hostGone} · lockfile now: ${lockAfter ? `pid=${lockAfter.pid}` : 'gone'}`)

@@ -875,7 +875,8 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 	const { shared, lifecycle, transport, rhs, adapter } = await loadShell()
 	const workspace = process.cwd()
 	const profile = lifecycle.DEFAULT_PROFILE
-	const idleExitSec = lifecycle.DEFAULT_IDLE_EXIT_SEC
+	const idleExitMs = lifecycle.resolveIdleExitMs()
+	const idleExitSec = idleExitMs / 1000
 
 	shared.bootCallOrder.push("ensureHost")
 	const host = await lifecycle.ensureHost({ profile, idleExitSec })
@@ -977,7 +978,7 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 			// Grace-window parity (client-entry): release — NOT dispose — the
 			// host, then hand the idle-exit to the detached reaper.
 			host.release()
-			if (host.refCount === 0 && idleExitSec > 0) shared.spawnIdleReaper(host, idleExitSec)
+			if (host.refCount === 0 && idleExitMs > 0) shared.spawnIdleReaper(host, idleExitMs)
 		})()
 		return shutdownPromise
 	}
