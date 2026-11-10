@@ -46,6 +46,12 @@ export const PLUGIN_SET = [
     reason: 'web search without a per-provider key',
   },
   {
+    name: '@aiwayds/dsh-mcp-adapter',
+    version: '0.8.0',
+    tier: 'core',
+    reason: 'MCP catalog/dispatch meta-tools paired with the default context7 server row',
+  },
+  {
     name: '@aiwayds/dsh-approval-policy',
     version: '0.3.0',
     tier: 'core',
@@ -438,6 +444,62 @@ export function planToolPatch(existingText = '') {
     toolWeb: toolWebBlock === null ? 'missing' : toolWebEnabled ? 'enabled' : 'disabled',
     web: webBlock === null ? 'missing' : webPinned ? 'pinned' : 'unpinned',
     changed: !toolWebEnabled || !webPinned,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Profile patch rows for MCP (adapter + one default server)
+//
+// @aiwayds/dsh-mcp-adapter is a prompt-side shim over the official
+// @deepseek-ai/dsh-mcp-client: the client owns the connection and registers
+// `mcp__<server>__<tool>` on ctx.tools, the adapter exposes the constant
+// `mcp_list` / `mcp_call` meta-tools on top of those registrations. Without at
+// least one client row the adapter's catalog is empty, so the pair ships
+// together: the plugin set installs the adapter, and this row starts one
+// server.
+//
+// The row is INSIDE an `- insert:` list (the same form the tui profile uses),
+// so the id check must match nested entries — the top-level `patchEntryBlock`
+// deliberately does not. Detection is by id alone: an existing
+// `mcp-context7` row is the user's (possibly edited) row and is never
+// rewritten or duplicated. `--plugins=none` writes no row at all: without the
+// adapter the client's tools would surface unfolded, which is not the
+// promised setup.
+//
+// context7 is the default server because it needs no API key, starts fast
+// over streamable HTTP, and is read-only documentation lookup. A failed or
+// offline connection is non-fatal by contract: mcp-client's
+// `failOnStartupError` defaults to false and the host boots without its tools.
+// ---------------------------------------------------------------------------
+export const MCP_CONTEXT7_PATCH = `- insert:
+    - id: mcp-context7
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: context7
+        transport: streamable-http
+        url: https://mcp.context7.com/mcp
+`
+
+/** True when `<id>` appears as a patch row at ANY indentation (top-level id
+ *  entries and rows nested under `- insert:`). */
+export function hasAnyEntry(text, id) {
+  return new RegExp(`^[ \\t]*- id: ${escapeRegExp(id)}[ \\t]*$`, 'm').test(String(text ?? ''))
+}
+
+/**
+ * Plan the MCP client row a profile patch still needs. Pure.
+ *
+ * @param {string} existingText
+ * @param {{enabled?: boolean}} options `enabled: false` is `--plugins=none`.
+ * @returns {{append: string[], mcp: 'configured'|'missing'|'skipped', changed: boolean}}
+ */
+export function planMcpPatch(existingText = '', { enabled = true } = {}) {
+  const present = hasAnyEntry(existingText, 'mcp-context7')
+  if (!enabled) return { append: [], mcp: 'skipped', changed: false }
+  return {
+    append: present ? [] : [MCP_CONTEXT7_PATCH],
+    mcp: present ? 'configured' : 'missing',
+    changed: !present,
   }
 }
 

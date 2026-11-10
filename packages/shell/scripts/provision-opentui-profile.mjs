@@ -20,7 +20,10 @@
 //                        it disabled and the `native` preset never turns it
 //                        back on) and pins `web.searchProvider` to anysearch —
 //                        with or without a plugin tier: this is what makes
-//                        `web_search` visible to the model.
+//                        `web_search` visible to the model. It also inserts
+//                        the default `mcp-context7` client row (streamable
+//                        HTTP, no key) so the MCP adapter's mcp_list has a
+//                        server to catalog; skipped under `--plugins=none`.
 //   [3/5] plugins      — install the default plugin set when a plugin is not
 //                        already satisfied (see lib/provision-plan.mjs for the
 //                        table and the idempotency rule). `--plugins=core`
@@ -73,6 +76,7 @@ import {
   mergeBundles,
   parseDumpConfig,
   parseTier,
+  planMcpPatch,
   planPluginInstall,
   planToolPatch,
   pluginAddArgs,
@@ -253,10 +257,15 @@ const missingRoute = [
 // re-enabling `tool-web` and pinning the provider are what make `web_search`
 // visible, and the anysearch bundle only installs the provider behind it.
 const toolPatch = planToolPatch(existingPatch)
-const pendingPatchEntries = missingRoute.length + toolPatch.append.length
+// The default MCP server row rides the adapter, so it is tier-scoped:
+// `--plugins=none` installs neither and writes neither (the client alone
+// would surface unfolded `mcp__*` schemas, which is not the promised setup).
+const mcpPatch = planMcpPatch(existingPatch, { enabled: tier !== 'none' })
+const pendingPatchEntries = missingRoute.length + toolPatch.append.length + mcpPatch.append.length
 // Stable state suffix for the progress line (task-visible on a dry run too).
 const webState = `; tool-web ${toolPatch.toolWeb === 'enabled' ? 'enabled' : 'to enable'}, ` +
-  `web search ${toolPatch.web === 'pinned' ? 'pinned' : 'to pin anysearch'}`
+  `web search ${toolPatch.web === 'pinned' ? 'pinned' : 'to pin anysearch'}, ` +
+  `mcp context7 ${mcpPatch.mcp === 'configured' ? 'configured' : mcpPatch.mcp === 'missing' ? 'to add' : 'skipped (--plugins=none)'}`
 
 if (pendingPatchEntries === 0) {
   say(2, 'model route', `${provider}/${model} (already pinned)${webState}`)
@@ -273,7 +282,12 @@ if (pendingPatchEntries === 0) {
       `provision-opentui-profile.mjs — anysearch needs no key; tool-web is disabled by ` +
       `@deepseek-ai/dsh-web-app and re-enabled here):\n`
     : ''
-  const patchBody = `${routeBanner}${routeBody}${webBanner}${toolPatch.append.join('')}`
+  const mcpBanner = mcpPatch.append.length > 0
+    ? `${missingRoute.length > 0 || toolPatch.append.length > 0 ? '\n' : ''}# MCP (managed by ` +
+      `provision-opentui-profile.mjs — the adapter's mcp_list/mcp_call need a client row; ` +
+      `context7 needs no key and a failed/offline connection is non-fatal):\n`
+    : ''
+  const patchBody = `${routeBanner}${routeBody}${webBanner}${toolPatch.append.join('')}${mcpBanner}${mcpPatch.append.join('')}`
   const backupPatch = () => {
     if (!existingPatch) return
     const backupPath = `${patchPath}.bak-${Date.now()}`
