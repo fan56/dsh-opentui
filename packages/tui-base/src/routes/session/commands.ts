@@ -20,6 +20,7 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import type { SeamPresetRow, SessionSeam } from "../../seams/session"
+import type { ComposerFlushResult } from "./composer-state"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
 import { emptyFilteredCopy, filterSessionsBySizeFloor, resumePickerOptions } from "./resume-picker"
 import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
@@ -184,6 +185,19 @@ export interface SlashCommandContext {
 	 * degrades /settings to a notice.
 	 */
 	openSettings?(): void
+	/**
+	 * Deliver the client-side delivery queue NOW (the /flush command).
+	 *
+	 * The queue is paused after a failed or aborted turn: it is KEPT (the
+	 * user-visible `⏸` row stays) but nothing pumps it — it would wait for
+	 * the next message. This restarts the pump: the head of the queue starts
+	 * a turn immediately and the rest follow one per turn end.
+	 *
+	 * Optional — an entry without a client-side queue degrades /flush to a
+	 * notice. The result tells the command what to report ("empty" = nothing
+	 * to deliver, "busy" = a turn is running, "flushed" = the pump restarted).
+	 */
+	flushQueue?(): ComposerFlushResult
 }
 
 // ---------------------------------------------------------- /preset helpers --
@@ -500,6 +514,39 @@ export function coreCommands(): SlashCommand[] {
 			run(ctx) {
 				ctx.clear()
 				ctx.say("transcript cleared")
+			},
+		},
+		{
+			// The steer/queue batch's explicit "deliver it NOW" trigger.
+			// A failed or aborted turn PAUSES the client-side queue: the
+			// prompts are KEPT (the `⏸` row stays) but nothing pumps them,
+			// so they would wait for the user's next message. This restarts
+			// the pump: the head of the queue starts a turn immediately and
+			// the rest follow one per turn end, in submission order.
+			//
+			// Never silent: an empty queue answers "nothing to flush", a
+			// running turn answers "it will be delivered when it ends".
+			name: "/flush",
+			description: "deliver the queued prompts now",
+			run(ctx) {
+				if (!ctx.flushQueue) {
+					ctx.say("/flush unavailable in this session")
+					return
+				}
+				const result = ctx.flushQueue()
+				if (result.kind === "empty") {
+					ctx.say("queue is empty — nothing to flush")
+					return
+				}
+				if (result.kind === "busy") {
+					ctx.say(
+						`a turn is running — ${result.remaining} queued prompt(s) will be delivered when it ends`,
+					)
+					return
+				}
+				ctx.say(
+					`queue flushed — ${result.started} prompt(s) sending now, ${result.remaining} still queued`,
+				)
 			},
 		},
 		{

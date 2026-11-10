@@ -68,7 +68,7 @@ import { createSignal, onCleanup, Show, type JSX } from "solid-js"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { measureEditText, RenderableEvents, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
-import { ComposerController, type ComposerDelivery, type ComposerHistory, type ComposerPendingRow, type ComposerQueuePause } from "./composer-state"
+import { ComposerController, type ComposerDelivery, type ComposerFlushResult, type ComposerHistory, type ComposerPendingRow, type ComposerQueuePause } from "./composer-state"
 import { composerKeyBindings, type ComposerKeybindConfig } from "./composer-keybinds"
 import { useThemeOptional } from "../../context/theme"
 import { Keymap } from "../../context/keymap"
@@ -93,6 +93,8 @@ export type SessionComposerRef = {
 	node(): TextareaRenderable | undefined
 	/** Session switch: drop queued prompts and delivery receipts. */
 	resetDeliveries(): void
+	/** Deliver the paused queue now (the /flush trigger). */
+	flushQueue(): ComposerFlushResult
 }
 
 /** Busy top-border title (contract §1): the steer affordance, warning-tier. */
@@ -574,6 +576,7 @@ export function SessionComposer(props: SessionComposerProps) {
 						},
 						node: () => (value.isDestroyed ? undefined : value),
 						resetDeliveries: () => controller.resetDeliveries(),
+						flushQueue: () => controller.flushQueue(),
 					})
 				}}
 			/>

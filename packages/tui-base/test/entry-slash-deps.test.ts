@@ -50,6 +50,10 @@ function makeEntryHooks() {
 		invalidateFooter: () => {
 			calls.push("invalidateFooter")
 		},
+		flushQueue: () => {
+			calls.push("flushQueue")
+			return { kind: "empty", started: 0, remaining: 0 }
+		},
 	}
 	return { hooks, calls }
 }
@@ -165,6 +169,7 @@ describe("verify: entry slash deps", () => {
 				openSettings,
 				refreshFooter,
 				invalidateFooter,
+				flushQueue,
 			}))
 		`
 		// openSettings is deliberately present above, so only openAgents is

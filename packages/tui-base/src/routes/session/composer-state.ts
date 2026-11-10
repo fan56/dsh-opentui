@@ -15,6 +15,8 @@
  *     (the next line starts only after the previous turn settles);
  *   - a failed or aborted turn PAUSES the pump and KEEPS the queue (a
  *     user-visible `⏸` line stays; the next successful turn end resumes it);
+ *   - `flushQueue()` is the explicit "deliver it NOW" trigger: a paused queue
+ *     is pumped again immediately, in order (the /flush command);
  *   - a session switch calls `resetDeliveries()` (queue and receipt lines are
  *     per-session state, never carried across).
  *
@@ -70,6 +72,19 @@ export interface ComposerPendingRow {
 export interface ComposerQueuePause {
 	remaining: number
 	reason: "failed" | "aborted"
+}
+
+/** What an explicit queue flush did (the /flush trigger). */
+export type ComposerFlushKind = "empty" | "busy" | "flushed"
+
+/** The outcome of `ComposerController.flushQueue()`. */
+export interface ComposerFlushResult {
+	kind: ComposerFlushKind
+	/** Prompts this flush put into delivery (the head; the rest follow one
+	 * per turn end). 0 for "empty"/"busy". */
+	started: number
+	/** Prompts still waiting behind the started one. */
+	remaining: number
 }
 
 /** One recall step: the text to place in the composer plus, when the step
@@ -287,6 +302,34 @@ export class ComposerController {
 		this.queueItems = []
 		this.pendingRows = []
 		this.emitPending()
+	}
+
+	/**
+	 * Explicit flush (the /flush trigger): deliver the queued prompts NOW.
+	 *
+	 * The paused queue (a failed or aborted turn kept it) has NO pump
+	 * running — it would wait for the user's next message. This restarts
+	 * the pump: the head of the queue starts a turn immediately and the
+	 * rest follow one per turn end, exactly like the normal hand-off (the
+	 * busy flag stays true across the boundary — no idle flicker).
+	 *
+	 * Outcomes:
+	 *   - "empty":   nothing queued (the caller reports the no-op);
+	 *   - "busy":    a turn is running — the queue is already scheduled
+	 *                behind it, so there is nothing to flush;
+	 *   - "flushed": the head started a turn; `remaining` lines wait
+	 *                behind it.
+	 */
+	flushQueue(): ComposerFlushResult {
+		if (this.queueItems.length === 0) return { kind: "empty", started: 0, remaining: 0 }
+		if (this.busyState) return { kind: "busy", started: 0, remaining: this.queueItems.length }
+		const next = this.queueItems.shift()!
+		// The head's wait row goes away (the projection paints the real user
+		// message); the rows behind it are live again, not paused.
+		this.dropQueueRow(next.id)
+		this.setQueuedState("queued")
+		this.startTurn(next.text)
+		return { kind: "flushed", started: 1, remaining: this.queueItems.length }
 	}
 
 	/** Exposed so a host can await turn completion (tests, page wiring). */

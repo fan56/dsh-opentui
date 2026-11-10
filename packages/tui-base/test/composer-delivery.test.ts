@@ -232,6 +232,68 @@ describe("failure/abort policy: keep the queue, pause the pump", () => {
 	})
 })
 
+describe("explicit queue flush", () => {
+	test("an empty queue flushes nothing (the caller reports the no-op)", () => {
+		const { controller, sent } = setup()
+		expect(controller.flushQueue()).toEqual({ kind: "empty", started: 0, remaining: 0 })
+		expect(sent).toEqual([])
+		expect(controller.busy).toBe(false)
+	})
+
+	test("a paused queue is delivered immediately, in order", async () => {
+		const { controller, sent, turns } = setup({ choice: async () => "queue" })
+		controller.submit("boom")
+		await controller.submitWhileBusy("q1")
+		await controller.submitWhileBusy("q2")
+		turns[0]!.reject(new Error("failed"))
+		await flush()
+		expect(controller.queued).toBe(2)
+		expect(controller.busy).toBe(false)
+
+		// The flush restarts the pump: q1 goes out now, q2 follows its turn end.
+		expect(controller.flushQueue()).toEqual({ kind: "flushed", started: 1, remaining: 1 })
+		expect(sent).toEqual(["boom", "q1"])
+		expect(controller.busy).toBe(true)
+		expect(controller.queued).toBe(1)
+		// The head's wait row is gone (the projection paints the real message);
+		// the rest are queued again, not paused.
+		expect(controller.pending).toEqual([
+			{ id: 2, kind: "queue", state: "queued", text: "q2", order: 1 },
+		])
+
+		turns[1]!.resolve()
+		await flush()
+		expect(sent).toEqual(["boom", "q1", "q2"])
+		expect(controller.queued).toBe(0)
+	})
+
+	test("a flush during a running turn leaves the queue alone (it drains at the turn end)", async () => {
+		const { controller, sent, turns } = setup({ choice: async () => "queue" })
+		controller.submit("running")
+		await controller.submitWhileBusy("q1")
+		expect(controller.flushQueue()).toEqual({ kind: "busy", started: 0, remaining: 1 })
+		expect(sent).toEqual(["running"])
+		turns[0]!.resolve()
+		await flush()
+		expect(sent).toEqual(["running", "q1"])
+	})
+
+	test("a flushed turn that fails pauses the rest again", async () => {
+		const { controller, sent, turns } = setup({ choice: async () => "queue" })
+		controller.submit("boom")
+		await controller.submitWhileBusy("q1")
+		turns[0]!.reject(new Error("failed"))
+		await flush()
+
+		expect(controller.flushQueue().kind).toBe("flushed")
+		turns[1]!.reject(new Error("failed again"))
+		await flush()
+		expect(sent).toEqual(["boom", "q1"])
+		expect(controller.queued).toBe(0)
+		expect(controller.pending).toEqual([])
+	})
+})
+
 describe("session switch", () => {
 	test("resetDeliveries drops the queue and every receipt", async () => {
 		const { controller, turns } = setup({ choice: async () => "queue" })

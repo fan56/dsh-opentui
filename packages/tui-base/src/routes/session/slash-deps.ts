@@ -46,6 +46,7 @@ export const ENTRY_SLASH_HOOKS = [
 	"openSettings",
 	"refreshFooter",
 	"invalidateFooter",
+	"flushQueue",
 ] as const satisfies readonly (keyof SlashHostDeps & keyof SlashCommandContext)[]
 
 export type EntrySlashHook = (typeof ENTRY_SLASH_HOOKS)[number]
@@ -100,6 +101,7 @@ export function buildSlashDeps(base: SlashBaseDeps, hooks: EntrySlashHooks): Sla
 		openSettings: hooks.openSettings,
 		refreshFooter: hooks.refreshFooter,
 		invalidateFooter: hooks.invalidateFooter,
+		flushQueue: hooks.flushQueue,
 	}
 }
 

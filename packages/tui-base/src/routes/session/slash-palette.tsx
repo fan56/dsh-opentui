@@ -398,6 +398,9 @@ export interface SlashHostDeps {
 	/** Footer-refresh cancellation (review 3.5); absent = /think keeps the
 	 * accept-then-refresh order (old hosts). */
 	invalidateFooter?: SlashCommandContext["invalidateFooter"]
+	/** /flush: deliver the client-side delivery queue now; absent = /flush
+	 * says "unavailable in this session". */
+	flushQueue?: SlashCommandContext["flushQueue"]
 }
 
 export function createSlashHost(deps: SlashHostDeps) {
