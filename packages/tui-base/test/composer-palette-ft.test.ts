@@ -53,7 +53,7 @@ describe("slash palette + composer on the real renderer", () => {
 		expect(r.openSlash).toMatchObject({ buffer: "/", rows: PALETTE_ROWS, frameHasHelpRow: true, frameHasNewRow: true })
 		expect(openHeight).toBeGreaterThan(0)
 		// OVERFLOW CAP (real renderer): the table holds 13 matching commands but
-		// only the first MAX_ROWS paint — "/extra11" is past the cap and must
+		// only the first MAX_ROWS paint — "/x11" is past the window and must
 		// not appear anywhere in the frame (used to overlap the textarea when
 		// <For> rendered the uncapped list); the reserved row shows the count.
 		expect(r.openSlash.frameHasOverflowRow).toBe(false)

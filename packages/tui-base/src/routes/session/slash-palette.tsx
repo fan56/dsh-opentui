@@ -29,6 +29,7 @@ import type { SlashCommand, SlashCommandContext } from "./commands"
 import { coreCommands, dispatchLine, filterCommands, unknownCommandRow } from "./commands"
 import { completeSlash } from "./slash-complete"
 import { carrySlashHooks } from "./slash-deps"
+import { createCommandUsage, type CommandUsageView } from "./slash-usage"
 
 /**
  * Max rows shown before the list clamps (the old menu's cap) — and, since the
@@ -47,39 +48,86 @@ export const MAX_ROWS = 10
  */
 export const PALETTE_ROWS = MAX_ROWS + 1
 
-/** The overflow hint for a result count past the visible cap. */
-export function overflowHint(total: number): string | undefined {
-	return total > MAX_ROWS ? `… ${total - MAX_ROWS} more` : undefined
+/**
+ * The overflow hint for a result list past the visible cap. `offset` is the
+ * first visible row, so the hint reports BOTH hidden edges: rows scrolled off
+ * the top ("… N more above") and rows still below the window ("… N more").
+ * The below-only shape stays byte-identical to the old single-sided hint
+ * (the 80×24 verify gate and the FT fixture match `… N more`).
+ */
+export function overflowHint(total: number, offset = 0): string | undefined {
+	if (total <= MAX_ROWS) return undefined
+	const maxOffset = total - MAX_ROWS
+	const above = Math.min(Math.max(0, offset), maxOffset)
+	const below = Math.max(0, total - above - MAX_ROWS)
+	const parts: string[] = []
+	if (above > 0) parts.push(`… ${above} more above`)
+	if (below > 0) parts.push(`… ${below} more`)
+	return parts.length > 0 ? parts.join(" · ") : undefined
 }
 
-/** Renderer-free palette state: visibility, filter query, selection. */
+/**
+ * Final ordering rule: executions DESC, then name ASC (case-insensitive; a
+ * prefix sorts before its extension, so `/session` sits just before
+ * `/sessions`). No executions yet = pure alphabetical — the default list is
+ * deterministic, not registry order.
+ */
+function compareCommands(a: SlashCommand, b: SlashCommand, usage: CommandUsageView | undefined): number {
+	const ca = usage?.count(a.name) ?? 0
+	const cb = usage?.count(b.name) ?? 0
+	if (ca !== cb) return cb - ca
+	const la = a.name.toLowerCase()
+	const lb = b.name.toLowerCase()
+	if (la !== lb) return la < lb ? -1 : 1
+	// Same word, different case: keep it deterministic.
+	return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
+}
+
+/** Renderer-free palette state: visibility, filter query, selection, window. */
 export class SlashPaletteController {
 	// Solid signal tuples (createSignal returns [get, set]).
 	#rows = createSignal(0)
 	#selected = createSignal(0)
+	// First VISIBLE row of the ordered match list (scroll window origin).
+	#offset = createSignal(0)
 	#query = createSignal("")
+	#usage: CommandUsageView | undefined
 	// Esc sticks the menu closed until the buffer CHANGES again (old rule:
 	// "esc closes the menu explicitly; any further typed edit reopens it") —
 	// otherwise the still-"/"-prefixed buffer would instantly re-arm it.
 	#suppressed = false
 	#lastBuffer = ""
 
+	/** `usage` supplies the execution counts for the frequent-first order;
+	 * absent = pure alphabetical (tests, seams without a config face). */
+	constructor(usage?: CommandUsageView) {
+		this.#usage = usage
+	}
+
 	/** The rendered box height: PALETTE_ROWS while open (STABLE-HEIGHT), 0 = closed. */
 	rows(): number {
 		return this.#rows[0]()
 	}
 	/** Number of commands matching the current query, BEFORE the visible cap
-	 * (the overflow hint reads this; nothing in the navigation path does). */
+	 * (the overflow hint reads this). */
 	matches(commands: SlashCommand[]): number {
-		return filterCommands(commands, this.#query[0]()).length
+		return this.ordered(commands).length
 	}
-	/** Selected index into the VISIBLE filtered list (see filtered). */
+	/** Selected index into the FULL ordered match list (0-based, not the window). */
 	selected(): number {
 		return this.#selected[0]()
+	}
+	/** First visible row of the ordered match list (window origin). */
+	offset(): number {
+		return this.#offset[0]()
 	}
 	/** The current filter query ("" when closed). */
 	query(): string {
 		return this.#query[0]()
+	}
+	/** Is the window-relative row at `index` the highlighted one? */
+	isRowActive(index: number): boolean {
+		return index + this.#offset[0]() === this.#selected[0]()
 	}
 
 	/**
@@ -96,12 +144,11 @@ export class SlashPaletteController {
 		this.#query[1](next)
 		if (!next || this.#suppressed) {
 			this.#rows[1](0)
+			this.#offset[1](0)
 			return
 		}
-		// CAPPED to MAX_ROWS so every consumer below shares ONE count — the
-		// number of VISIBLE rows (see filtered). Cap-preserves the >0 test:
-		// any raw match count above 0 stays above 0 after the cap.
-		const count = Math.min(filterCommands(commands, next).length, MAX_ROWS)
+		// FULL match count (not capped): the selection indexes the whole list,
+		// the window renders MAX_ROWS of it, and the hint reports both edges.
 		// Zero matches = closed (batch V5): the old max(1, count) floor left a
 		// 1-row box open with no rows in it ("/zz" painted an empty strip);
 		// Enter on such a line resolves through dispatchLine's unknown row.
@@ -112,33 +159,62 @@ export class SlashPaletteController {
 		// keystroke (9→5→4 …), reflowing the whole screen and flickering the
 		// border each key; now the height only transitions at open
 		// (0→PALETTE_ROWS) and close (→0, incl. a zero-match query, batch V5).
+		const count = this.ordered(commands).length
 		this.#rows[1](count > 0 ? PALETTE_ROWS : 0)
 		this.#selected[1]((current) => Math.min(current, Math.max(0, count - 1)))
+		this.#follow(count)
 	}
 
 	/**
-	 * The VISIBLE rows for the current query — the filtered list CAPPED to
-	 * MAX_ROWS (overflow fix). This is the single row-count authority: the
-	 * <For> renders exactly this list, move() wraps modulo its length and
-	 * current() indexes into it, so the highlight can never land in an
-	 * un-rendered row past the fixed-height box (a 9-command table used to
-	 * paint all 9 rows out of a shorter box, overlapping the textarea).
+	 * The ordered VISIBLE rows: the filtered list (alphabetical / frequent
+	 * first) sliced to the MAX_ROWS window starting at `offset`. This is the
+	 * single row-count authority: the <For> renders exactly this list and the
+	 * highlight compares `index + offset`, so the selection can walk the whole
+	 * match list while the box height stays fixed.
 	 */
 	filtered(commands: SlashCommand[]): SlashCommand[] {
-		return filterCommands(commands, this.#query[0]()).slice(0, MAX_ROWS)
+		const all = this.ordered(commands)
+		const start = Math.min(this.#offset[0](), Math.max(0, all.length - MAX_ROWS))
+		return all.slice(start, start + MAX_ROWS)
 	}
 
-	/** Selection move with wrap (old palette behavior). */
+	/** The FULL ordered match list (sorting applied, not windowed). */
+	ordered(commands: SlashCommand[]): SlashCommand[] {
+		const list = filterCommands(commands, this.#query[0]()).slice()
+		list.sort((a, b) => compareCommands(a, b, this.#usage))
+		return list
+	}
+
+	/** Selection move with wrap over the FULL list (old palette wrap, now
+	 * covering the rows hidden past the window). */
 	move(delta: number, commands: SlashCommand[]): void {
-		const count = this.filtered(commands).length
+		const count = this.ordered(commands).length
 		if (count === 0) return
 		const n = this.#selected[0]()
 		this.#selected[1]((n + delta + count) % count)
+		this.#follow(count)
+	}
+
+	/** PgUp/PgDn: move one MAX_ROWS page, clamped (no wrap past the edges). */
+	movePage(direction: -1 | 1, commands: SlashCommand[]): void {
+		const count = this.ordered(commands).length
+		if (count === 0) return
+		const next = this.#selected[0]() + direction * MAX_ROWS
+		this.#selected[1](Math.min(Math.max(0, next), count - 1))
+		this.#follow(count)
+	}
+
+	/** Home/End: jump to the first/last match. */
+	moveEdge(edge: "home" | "end", commands: SlashCommand[]): void {
+		const count = this.ordered(commands).length
+		if (count === 0) return
+		this.#selected[1](edge === "home" ? 0 : count - 1)
+		this.#follow(count)
 	}
 
 	/** The highlighted command, if any. */
 	current(commands: SlashCommand[]): SlashCommand | undefined {
-		return this.filtered(commands)[this.#selected[0]()]
+		return this.filtered(commands)[this.#selected[0]() - this.#offset[0]()]
 	}
 
 	/** Esc: close but keep the buffer (old behavior — the editor keeps its
@@ -147,10 +223,25 @@ export class SlashPaletteController {
 		this.#suppressed = true
 		this.#query[1]("")
 		this.#rows[1](0)
+		this.#offset[1](0)
 	}
 
 	get open(): boolean {
 		return this.rows() > 0
+	}
+
+	/** Keep the selected row inside the window (window follows selection). */
+	#follow(count: number): void {
+		if (count === 0) {
+			this.#offset[1](0)
+			return
+		}
+		const selected = this.#selected[0]()
+		let offset = this.#offset[0]()
+		if (selected < offset) offset = selected
+		else if (selected >= offset + MAX_ROWS) offset = selected - MAX_ROWS + 1
+		const maxOffset = Math.max(0, count - MAX_ROWS)
+		this.#offset[1](Math.min(Math.max(0, offset), maxOffset))
 	}
 }
 
@@ -195,7 +286,7 @@ export function SlashPalette(props: {
 			>
 				<For each={props.controller.filtered(props.commands)}>
 					{(command, index) => {
-						const active = () => index() === props.controller.selected()
+						const active = () => props.controller.isRowActive(index())
 						return (
 							<box
 								height={1}
@@ -224,9 +315,10 @@ export function SlashPalette(props: {
 						)
 					}}
 				</For>
-				{/* Reserved overflow row: `… N more` when the query matches past
-				    the visible cap, blank box background otherwise (stable height). */}
-				<Show when={overflowHint(props.controller.matches(props.commands))}>
+				{/* Reserved overflow row: `… N more` for rows below the window
+				    and/or `… N more above` for rows scrolled off the top; blank
+				    box background when everything fits (stable height). */}
+				<Show when={overflowHint(props.controller.matches(props.commands), props.controller.offset())}>
 					{(hint) => (
 						<box height={1} flexShrink={0} width="100%" flexDirection="row">
 							<text flexShrink={0} wrapMode="none" fg={color.muted()}>
@@ -289,7 +381,11 @@ export interface SlashHostDeps {
 
 export function createSlashHost(deps: SlashHostDeps) {
 	const commands = deps.commands ?? coreCommands()
-	const controller = new SlashPaletteController()
+	// Execution counts (frequent-first ordering). Reads the profile config at
+	// construction and re-saves on every dispatch; both legs degrade silently
+	// (slash-usage.ts) so a missing config face keeps the session-scoped count.
+	const usage = createCommandUsage(deps.seam)
+	const controller = new SlashPaletteController(usage)
 	const ctx: SlashCommandContext = {
 		seam: deps.seam,
 		say: deps.say,
@@ -304,6 +400,9 @@ export function createSlashHost(deps: SlashHostDeps) {
 	}
 
 	function run(command: SlashCommand, argText: string): boolean {
+		// THE counting point: an actual dispatch (exact/abbreviated/argument
+		// line). Highlighting or Tab-completing a row never reaches here.
+		usage.record(command.name)
 		void command.run(ctx, argText)
 		return true
 	}
@@ -339,6 +438,18 @@ export function createSlashHost(deps: SlashHostDeps) {
 			if (event.name === "up" || event.name === "down") {
 				event.preventDefault()
 				controller.move(event.name === "up" ? -1 : 1, commands)
+				return true
+			}
+			// Page navigation over the FULL match list (the window follows):
+			// PgUp/PgDn one MAX_ROWS page, Home/End the list edges.
+			if (event.name === "pageup" || event.name === "pagedown") {
+				event.preventDefault()
+				controller.movePage(event.name === "pageup" ? -1 : 1, commands)
+				return true
+			}
+			if (event.name === "home" || event.name === "end") {
+				event.preventDefault()
+				controller.moveEdge(event.name === "home" ? "home" : "end", commands)
 				return true
 			}
 			if (event.name === "escape") {
