@@ -55,6 +55,7 @@ import {
 } from "./hints-line"
 import { readCacheHitMode } from "../../seams/config"
 import type {
+	SeamPermissionCatalog,
 	SeamSettingsDocument,
 	SeamSettingsMutateResult,
 	SeamSettingsOp,
@@ -289,8 +290,15 @@ export function buildLocalItems(input: {
 }
 
 /** The host-settings rows (fixed whitelist order). Missing namespaces/keys
- * render `n/a` and are not editable. */
-export function buildHostItems(document: SeamSettingsDocument | undefined, writable: boolean): SettingsItem[] {
+ * render `n/a` and are not editable. `catalog` is the host's process
+ * permission catalog: when present it is the ONLY option source for
+ * `permission.defaultPreset` (the settings schema itself is a plain string);
+ * when absent the row is read-only and shows the effective value. */
+export function buildHostItems(
+	document: SeamSettingsDocument | undefined,
+	writable: boolean,
+	catalog?: SeamPermissionCatalog,
+): SettingsItem[] {
 	return HOST_SETTINGS_WHITELIST.map((spec) => {
 		const row = document?.namespaces.find((candidate) => candidate.ns === spec.ns)
 		const item: SettingsItem = {
@@ -314,14 +322,19 @@ export function buildHostItems(document: SeamSettingsDocument | undefined, writa
 		const raw = valueAtPath(row.value, spec.path)
 		const base = valueAtPath(row.base, spec.path)
 		const declared = schemaDeclaresPath(row.schema, spec.path)
+		const permissionRow = spec.id === "permission.defaultPreset"
+		const hasCatalog = permissionRow && catalog !== undefined
 		// Baseline-absent = the namespace does not exist, or the key appears in
-		// neither the resolved value, the composition base, nor the schema.
-		if (raw === undefined && base === undefined && !declared) return item
+		// neither the resolved value, the composition base, nor the schema. A
+		// permission catalog still supplies the effective default for display.
+		if (raw === undefined && base === undefined && !declared && !hasCatalog) return item
 		item.revision = row.revision
 		const effective = raw ?? base
 		item.value =
 			effective === undefined
-				? UNKNOWN
+				? hasCatalog && catalog.defaultPreset !== ""
+					? catalog.defaultPreset
+					: UNKNOWN
 				: typeof effective === "boolean"
 					? effective ? "on" : "off"
 					: String(effective)
@@ -332,9 +345,25 @@ export function buildHostItems(document: SeamSettingsDocument | undefined, writa
 			// defaultPreset's schema is a plain string; its valid values are
 			// the sibling `presets` dict keys. The schema is still the source.
 			const derived = spec.id === "permission.defaultPreset" ? presetEnumFromSchema(row.schema) : []
-			const options = info.options !== undefined && info.options.length > 0 ? info.options : derived
-			if (options.length > 0) item.options = options
-			else item.note = "schema 未声明可选项"
+			const schemaOptions = info.options !== undefined && info.options.length > 0 ? info.options : derived
+			const catalogOptions = hasCatalog ? catalog.defaultOptions.map((option) => option.value) : []
+			const options = catalogOptions.length > 0 ? catalogOptions : schemaOptions
+			if (options.length > 0) {
+				item.options = options
+				if (hasCatalog) {
+					item.source = "permissionPresets/catalog · 写入 settings.mutate"
+					if (item.value !== UNKNOWN && item.value !== NA && !options.includes(item.value)) {
+						item.note = `当前值 "${item.value}" 不在 catalog 默认选项中`
+					}
+				}
+			} else {
+				// No option source = no picker. Keep the effective value visible and
+				// say why it cannot be changed here (never an empty dropdown).
+				item.editable = false
+				item.note = hasCatalog
+					? "catalog 未声明可选项 — 只读展示生效值"
+					: "无 preset catalog（permissionPresets/catalog 不可用）— 只读展示生效值"
+			}
 		}
 		if (spec.kind === "number") {
 			const info = readSchemaField(row.schema, spec.path)
@@ -897,6 +926,7 @@ export function SettingsPanel(props: {
 	const [open, setOpen] = useSettingsPanelOpenState()
 	const [document, setDocument] = createSignal<SeamSettingsDocument | undefined>(undefined)
 	const [describeError, setDescribeError] = createSignal<string | undefined>(undefined)
+	const [permissionCatalog, setPermissionCatalog] = createSignal<SeamPermissionCatalog | undefined>(undefined)
 	const [merged, setMerged] = createSignal<Record<string, unknown>>({})
 	const [profile, setProfile] = createSignal<Record<string, unknown>>({})
 	const [workspace, setWorkspace] = createSignal<Record<string, unknown>>({})
@@ -941,7 +971,7 @@ export function SettingsPanel(props: {
 			...(props.themes !== undefined ? { themeNames: safeThemeNames() } : {}),
 			writable: writable().local,
 		}),
-		...buildHostItems(document(), writable().host),
+		...buildHostItems(document(), writable().host, permissionCatalog()),
 		...buildOtherItems(document()),
 	])
 	const visible = createMemo(() => filterSettingsItems(items(), filter()))
@@ -978,6 +1008,7 @@ export function SettingsPanel(props: {
 		if (face === undefined) {
 			setDocument(undefined)
 			setDescribeError(undefined)
+			setPermissionCatalog(undefined)
 			return
 		}
 		try {
@@ -985,6 +1016,13 @@ export function SettingsPanel(props: {
 			setDescribeError(undefined)
 		} catch (error) {
 			setDescribeError(error instanceof Error ? error.message : String(error))
+		}
+		// Permission options ride a separate catalog RPC; a failed read must not
+		// turn the whole host zone read-only — the row degrades to its note.
+		try {
+			setPermissionCatalog(await face.permissionCatalog?.())
+		} catch {
+			setPermissionCatalog(undefined)
 		}
 	}
 

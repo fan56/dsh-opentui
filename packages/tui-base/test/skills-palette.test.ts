@@ -120,4 +120,25 @@ describe("skills in the slash palette", () => {
 		expect(h.interceptSubmit("/zzz")).toBe(true)
 		expect(said[0]).toContain("unknown command: /zzz")
 	})
+
+	test("a live registry accessor picks up skills refreshed after the first message", () => {
+		let skills: typeof SKILL_ROWS = []
+		const h = createSlashHost({
+			seam: {} as SessionSeam,
+			// The entry hands a memo accessor (skills signal → registry), so a
+			// host refresh lands on the next palette read without a restart.
+			commands: () => withSkillCommands([command("/help", [])], skills),
+			say: () => {},
+			clear: () => {},
+			reload: () => {},
+			quit: () => {},
+			pickOne: async () => undefined,
+		})
+		h.controller.sync("/plugin", h.commands)
+		expect(h.controller.filtered(h.commands).map((row) => row.name)).not.toContain("/plugin-skill")
+		skills = [{ name: "plugin-skill", description: "from a plugin", path: "skills/list" }]
+		h.controller.sync("/plugin", h.commands)
+		expect(h.controller.filtered(h.commands).map((row) => row.name)).toContain("/plugin-skill")
+		expect(h.interceptSubmit("/plugin-skill")).toBe(false)
+	})
 })

@@ -126,6 +126,30 @@ export interface SeamEffortOption {
 	description?: string
 }
 
+/** One human-invocable skill from the host's session-scoped catalog
+ * (`skills/list` — the same wire row the web client reads). */
+export interface SeamSkillRow {
+	name: string
+	description: string
+	/** The `/name` gesture form when the host serves it. */
+	invocation?: string
+}
+
+/** One selectable new-session permission preset (`permissionPresets/catalog`
+ * — the same process catalog the web client's General settings reads). */
+export interface SeamPermissionPresetOption {
+	value: string
+	name?: string
+	description?: string
+}
+
+/** The host's permission catalog (`permissionPresets/catalog`). */
+export interface SeamPermissionCatalog {
+	options: SeamPermissionPresetOption[]
+	defaultOptions: SeamPermissionPresetOption[]
+	defaultPreset: string
+}
+
 /**
  * Tool-approval verdict — the exact strings the session layer's approval
  * waterfall expects (shell parity: `ok ? "allowed-once" : "rejected"`, with
@@ -348,6 +372,13 @@ export interface SeamSettingsFace {
 	onChanged?(listener: (ns: string, revision: number) => void): () => void
 	/** Profile name + dsh home (display only, never written). */
 	identity?(): { profile: string; dshHome: string }
+	/**
+	 * Process permission catalog (`permissionPresets/catalog`): the real
+	 * options for `permission.defaultPreset` plus the effective default when
+	 * the settings field is omitted. Optional — a host without the service
+	 * (or a failed read) keeps the row read-only instead of an empty picker.
+	 */
+	permissionCatalog?(): Promise<SeamPermissionCatalog | undefined>
 }
 
 /** What the vendored view needs from a session backend, no more. */
@@ -480,6 +511,16 @@ export interface SessionSeam {
 	 * notice.
 	 */
 	plugins?(): { name: string; version: string }[]
+	/**
+	 * Session-scoped skill catalog (`skills/list`): the host's composed
+	 * human-invocable skills, including plugin-provided rows a boot-time
+	 * disk scan cannot see. The RPC needs a live session id, so the entry
+	 * calls this once after the first user message; `onSkillsChanged` pushes
+	 * the refreshed rows back. Optional — a seam without it keeps the disk
+	 * snapshot.
+	 */
+	refreshSkills?(): Promise<SeamSkillRow[]>
+	onSkillsChanged?(listener: (skills: readonly SeamSkillRow[]) => void): () => void
 	/**
 	 * Agent-preset face (batch H2, tui-pi 60-preset parity): the deployment's
 	 * preset roster (the host `agentPresets` registry — each preset composes

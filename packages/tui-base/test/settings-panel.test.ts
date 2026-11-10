@@ -173,7 +173,7 @@ describe("schema extraction", () => {
 		},
 	}
 
-	test("the real host permission schema serves no preset enum (defaultPreset only)", () => {
+	test("the real host schema with no catalog: read-only effective value, never an empty picker", () => {
 		expect(presetEnumFromSchema(livePermissionSchema)).toEqual([])
 		const items = buildHostItems(
 			doc([{ ns: "permission", revision: 0, value: {}, base: {}, schema: livePermissionSchema }]),
@@ -181,8 +181,71 @@ describe("schema extraction", () => {
 		)
 		const preset = items.find((item) => item.id === "permission.defaultPreset")!
 		expect(preset.options).toBeUndefined()
-		expect(preset.note).toBe("schema 未声明可选项")
-		expect(preset.editable).toBe(true) // still declared + writable: free-text-able by the host
+		expect(preset.note).toBe("无 preset catalog（permissionPresets/catalog 不可用）— 只读展示生效值")
+		expect(preset.editable).toBe(false)
+	})
+
+	const catalogDoc = doc([
+		{ ns: "permission", revision: 4, value: { defaultPreset: "workspace-write" }, schema: livePermissionSchema },
+	])
+
+	test("the host catalog supplies the real default options and marks the current value", () => {
+		const items = buildHostItems(catalogDoc, true, {
+			options: [],
+			defaultOptions: [
+				{ value: "read-only", name: "Read only" },
+				{ value: "workspace-write", name: "Workspace write" },
+				{ value: "danger-full-access", name: "Full access" },
+			],
+			defaultPreset: "read-only",
+		})
+		const preset = items.find((item) => item.id === "permission.defaultPreset")!
+		expect(preset.options).toEqual(["read-only", "workspace-write", "danger-full-access"])
+		expect(preset.value).toBe("workspace-write") // the settings value wins as current
+		expect(preset.options).toContain(preset.value)
+		expect(preset.editable).toBe(true)
+		expect(preset.source).toContain("permissionPresets/catalog")
+		expect(preset.note).toBeUndefined()
+	})
+
+	test("catalog defaultPreset is the displayed effective value when the field is unset", () => {
+		const items = buildHostItems(
+			doc([{ ns: "permission", revision: 4, value: {}, schema: livePermissionSchema }]),
+			true,
+			{
+				options: [],
+				defaultOptions: [{ value: "read-only" }, { value: "workspace-write" }],
+				defaultPreset: "read-only",
+			},
+		)
+		const preset = items.find((item) => item.id === "permission.defaultPreset")!
+		expect(preset.value).toBe("read-only")
+		expect(preset.options).toEqual(["read-only", "workspace-write"])
+		expect(preset.editable).toBe(true)
+	})
+
+	test("a catalog with no default options degrades the row to read-only", () => {
+		const items = buildHostItems(catalogDoc, true, {
+			options: [{ value: "custom" }],
+			defaultOptions: [],
+			defaultPreset: "read-only",
+		})
+		const preset = items.find((item) => item.id === "permission.defaultPreset")!
+		expect(preset.options).toBeUndefined()
+		expect(preset.editable).toBe(false)
+		expect(preset.note).toBe("catalog 未声明可选项 — 只读展示生效值")
+		expect(preset.value).toBe("workspace-write") // still shows the effective value
+	})
+
+	test("a current value outside the catalog options is noted, not silently dropped", () => {
+		const items = buildHostItems(catalogDoc, true, {
+			options: [],
+			defaultOptions: [{ value: "read-only" }],
+			defaultPreset: "read-only",
+		})
+		const preset = items.find((item) => item.id === "permission.defaultPreset")!
+		expect(preset.value).toBe("workspace-write")
+		expect(preset.note).toContain("不在 catalog 默认选项中")
 	})
 
 	test("a schema-served presets dict is a valid-value list, returned unfiltered", () => {
