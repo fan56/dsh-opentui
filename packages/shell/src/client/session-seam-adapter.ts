@@ -102,6 +102,7 @@ import type {
 	SeamSettingsMutateResult,
 	SeamSettingsOp,
 	SeamSettingsRow,
+	SeamSkillRow,
 SeamSessionEvent,
 	SeamSessionInfo,
 	SeamSessionSummary,
@@ -421,6 +422,16 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.listPlugins()
 	}
 
+	/** Host skill catalog (`skills/list`): RemoteHostSession 1:1. */
+	async refreshSkills(): Promise<SeamSkillRow[]> {
+		return this.#session.refreshSkills()
+	}
+
+	/** Skill-catalog push (fires after a refresh lands); the disposer unsubscribes. */
+	onSkillsChanged(listener: (skills: readonly SeamSkillRow[]) => void): () => void {
+		return this.#session.onSkillsChanged(listener)
+	}
+
 	// ---- agent-preset face (batch H2, tui-pi 60-preset parity): RemoteHostSession 1:1 ----
 	// The roster reads the remote agentPresets/list RPC (listPresets, audit
 	// row 23); the switch rides switchPreset — the id rides the NEXT
@@ -499,6 +510,7 @@ export class RemoteSessionSeam implements SessionSeam {
 			profile: this.#session.profileName(),
 			dshHome: this.#session.homeDir(),
 		}),
+		permissionCatalog: () => this.#session.permissionCatalog(),
 	}
 
 	// ---- /login provider face (batch H4, tui-pi 65-ux-batch parity) ----

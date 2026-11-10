@@ -28,7 +28,7 @@
  * respected; the shell-side boot helpers are plain node code.
  */
 // @ts-nocheck
-import { createSignal, createEffect, onCleanup, onMount, ErrorBoundary } from "solid-js"
+import { createSignal, createMemo, createEffect, onCleanup, onMount, ErrorBoundary } from "solid-js"
 import { createComponent, createElement, render, spread, useRenderer } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
@@ -179,6 +179,18 @@ function V2SessionPage(props: {
 	// turn end — the first session/create is what names the live preset, and
 	// that only happens on the first turn.
 	const [presetLabel, setPresetLabel] = createSignal<string | undefined>()
+	// Slash-menu skills: the boot disk snapshot is the first paint; the host's
+	// session-scoped `skills/list` takes over after the first user message
+	// (plugin-provided skills live only there). The registry below is a memo
+	// so the palette rows and Tab completion read the CURRENT rows.
+	const [skillRows, setSkillRows] = createSignal<SkillRow[]>(props.skills ?? [])
+	const slashCommands = createMemo(() => withSkillCommands(coreCommands(), skillRows()))
+	onMount(() => {
+		const off = seam.onSkillsChanged?.((rows) =>
+			setSkillRows(rows.map((row) => ({ name: row.name, description: row.description, path: "skills/list" }))),
+		)
+		onCleanup(() => off?.())
+	})
 	// `presetLabelFor` is tui-pi's formatPresetLabel semantics: with nothing
 	// staged/attached yet the registry-default row answers, so the brand
 	// segment reads "dsh(<default>)" from the first frame.
@@ -560,7 +572,7 @@ function V2SessionPage(props: {
 		// filtering, highlight navigation and Tab completion, and the host's
 		// dispatch falls them through to the model (skills-source.ts). A
 		// command-name collision keeps the command (withSkillCommands).
-		commands: withSkillCommands(coreCommands(), props.skills ?? []),
+		commands: slashCommands,
 		say: sayLine,
 		// Batch D2: a session switch (/new → clear, /fork//resume → reload)
 		// drops the `●` last-request echo with the rest of the session state.
@@ -839,7 +851,7 @@ function V2SessionPage(props: {
 							// (undefined = fall through, do not steal the key).
 							slashComplete: (buffer: string, cursor: number) =>
 								dialog.stack.length > 0 ? undefined : slash.slashComplete(buffer, cursor),
-							slashPalette: () => createComponent(SlashPalette, { controller: slash.controller, commands: slash.commands }),
+							slashPalette: () => createComponent(SlashPalette, { controller: slash.controller, commands: () => slash.commands }),
 							slashHeight: () => slash.controller.rows(),
 						}),
 						]

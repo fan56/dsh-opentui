@@ -270,8 +270,11 @@ export interface PaletteRowProps {
  */
 export function SlashPalette(props: {
 	controller: SlashPaletteController
-	commands: SlashCommand[]
+	/** A live accessor when the registry can change (skills refresh). */
+	commands: SlashCommand[] | (() => SlashCommand[])
 }) {
+	// Read through one function so a signal-backed accessor repaints the rows.
+	const commands = () => (typeof props.commands === "function" ? props.commands() : props.commands)
 	const theme = useThemeOptional()
 	const color = {
 		base: () => theme?.text.base ?? "#e6e6e6",
@@ -292,7 +295,7 @@ export function SlashPalette(props: {
 				backgroundColor={color.background()}
 				paddingLeft={2}
 			>
-				<For each={props.controller.filtered(props.commands)}>
+				<For each={props.controller.filtered(commands())}>
 					{(command, index) => {
 						const active = () => props.controller.isRowActive(index())
 						return (
@@ -333,7 +336,7 @@ export function SlashPalette(props: {
 				{/* Reserved overflow row: `… N more` for rows below the window
 				    and/or `… N more above` for rows scrolled off the top; blank
 				    box background when everything fits (stable height). */}
-				<Show when={overflowHint(props.controller.matches(props.commands), props.controller.offset())}>
+				<Show when={overflowHint(props.controller.matches(commands()), props.controller.offset())}>
 					{(hint) => (
 						<box height={1} flexShrink={0} width="100%" flexDirection="row">
 							<text flexShrink={0} wrapMode="none" fg={color.muted()}>
@@ -365,8 +368,9 @@ export function SlashPalette(props: {
  */
 export interface SlashHostDeps {
 	seam: SessionSeam
-	/** Registry override (tests); default = the batch-8 core set. */
-	commands?: SlashCommand[]
+	/** Registry override (tests); default = the batch-8 core set. A function
+	 * keeps the palette live over a signal-backed registry (skills refresh). */
+	commands?: SlashCommand[] | (() => SlashCommand[])
 	say(text: string): void
 	clear(): void
 	reload(sessionId?: string): void
@@ -397,7 +401,9 @@ export interface SlashHostDeps {
 }
 
 export function createSlashHost(deps: SlashHostDeps) {
-	const commands = deps.commands ?? coreCommands()
+	const fallbackCommands = coreCommands()
+	const commands = (): SlashCommand[] =>
+		typeof deps.commands === "function" ? deps.commands() : (deps.commands ?? fallbackCommands)
 	// Execution counts (frequent-first ordering). Reads the profile config at
 	// construction and re-saves on every dispatch; both legs degrade silently
 	// (slash-usage.ts) so a missing config face keeps the session-scoped count.
@@ -425,7 +431,10 @@ export function createSlashHost(deps: SlashHostDeps) {
 	}
 
 	return {
-		commands,
+		/** The current registry (a getter: reads a live accessor per call). */
+		get commands(): SlashCommand[] {
+			return commands()
+		},
 		controller,
 		/** The debounced count writer (tests call `flush()`; the process-exit
 		 * hook drains it in the real client). */
@@ -448,28 +457,28 @@ export function createSlashHost(deps: SlashHostDeps) {
 		 * back to the first candidate instead of an invisible highlight.
 		 */
 		slashComplete(buffer: string, cursor: number): { text: string; cursor: number } | undefined {
-			controller.sync(buffer, commands)
-			const selected = controller.open ? controller.current(commands)?.name : undefined
-			return completeSlash(buffer, cursor, commands, selected === undefined ? {} : { selected })
+			controller.sync(buffer, commands())
+			const selected = controller.open ? controller.current(commands())?.name : undefined
+			return completeSlash(buffer, cursor, commands(), selected === undefined ? {} : { selected })
 		},
 		slashKeyFilter(event: KeyEvent, buffer: string): boolean {
-			controller.sync(buffer, commands)
+			controller.sync(buffer, commands())
 			if (!controller.open) return false
 			if (event.name === "up" || event.name === "down") {
 				event.preventDefault()
-				controller.move(event.name === "up" ? -1 : 1, commands)
+				controller.move(event.name === "up" ? -1 : 1, commands())
 				return true
 			}
 			// Page navigation over the FULL match list (the window follows):
 			// PgUp/PgDn one MAX_ROWS page, Home/End the list edges.
 			if (event.name === "pageup" || event.name === "pagedown") {
 				event.preventDefault()
-				controller.movePage(event.name === "pageup" ? -1 : 1, commands)
+				controller.movePage(event.name === "pageup" ? -1 : 1, commands())
 				return true
 			}
 			if (event.name === "home" || event.name === "end") {
 				event.preventDefault()
-				controller.moveEdge(event.name === "home" ? "home" : "end", commands)
+				controller.moveEdge(event.name === "home" ? "home" : "end", commands())
 				return true
 			}
 			if (event.name === "escape") {
@@ -480,12 +489,12 @@ export function createSlashHost(deps: SlashHostDeps) {
 			return false
 		},
 		interceptSubmit(buffer: string, apply?: (text: string) => void): boolean {
-			controller.sync(buffer, commands)
+			controller.sync(buffer, commands())
 			// Capture the highlighted row BEFORE close(): close() resets the
 			// query, so a later current() would read the unfiltered first row
 			// and turn every abbreviation into "/help". The filtered highlight
 			// is what the documented "/m" + Enter → /model path needs.
-			const highlighted = controller.current(commands)
+			const highlighted = controller.current(commands())
 			controller.close()
 			// Exact-name precedence (parity with dispatchLine's rule): a buffer
 			// that IS a command's full name runs THAT command, regardless of the
@@ -494,7 +503,7 @@ export function createSlashHost(deps: SlashHostDeps) {
 			// ("/m") still resolve through the highlight below; a closed menu
 			// (arguments present) re-parses through dispatch.
 			const needle = buffer.trim().toLowerCase()
-			const exact = commands.find((command) => command.name.toLowerCase() === needle)
+			const exact = commands().find((command) => command.name.toLowerCase() === needle)
 			// Skill rows resolve exactly like commands, then deliberately fall
 			// through (false): the composer sends the typed `/name` line to the
 			// model untouched, where the host's skill gesture injects the body.
@@ -513,7 +522,7 @@ export function createSlashHost(deps: SlashHostDeps) {
 				if (needle !== highlighted.name.toLowerCase()) apply?.(`${highlighted.name} `)
 				return false
 			}
-			const dispatch = dispatchLine(commands, buffer)
+			const dispatch = dispatchLine(commands(), buffer)
 			if (dispatch.kind === "command") {
 				return isSkillCommand(dispatch.command) ? false : run(dispatch.command, dispatch.argText)
 			}

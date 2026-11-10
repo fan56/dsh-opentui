@@ -425,6 +425,10 @@ export class RemoteHostSession {
 	#pluginsCache: { name: string; version: string }[] = []
 	/** Cached /skills rows (sync listSkills contract; refreshed async). */
 	#skillsCache: { name: string; description: string; invocation: string }[] = []
+	/** Skill-catalog push listeners (one auto refresh after a session's first prompt). */
+	#skillListeners: ((skills: { name: string; description: string; invocation: string }[]) => void)[] = []
+	/** Session whose host skill catalog was already auto-refreshed. */
+	#skillsRefreshedFor: string | undefined
 	/** Push-event listeners (settings/commands/plugins/credentials). */
 	#pushListeners: RemotePushListeners[] = []
 	#coldBootLabelApplied = false
@@ -600,6 +604,9 @@ export class RemoteHostSession {
 				content: [{ type: "text", text: userText }, ...attachmentParts],
 			},
 		})
+		// First user message of this session: the host catalog is now readable
+		// (skills/list is session-scoped) — refresh once, off the turn path.
+		this.#refreshSkillsOnce(sessionId)
 		this.#promptInFlight = false
 		// abort()/dispose() raced the prompt RPC: the cancel was already sent
 		// and the turn was already settled — do not start awaiting now.
@@ -1180,6 +1187,32 @@ export class RemoteHostSession {
 		return this.#settingsClient().describeDocument()
 	}
 
+	/**
+	 * Process permission catalog (`permissionPresets/catalog`, the same
+	 * direct invocation the web client's catalog directory reads). Returns
+	 * undefined when the service is absent or answers a malformed payload —
+	 * the /settings row then stays read-only instead of offering a fake enum.
+	 */
+	async permissionCatalog(): Promise<
+		| {
+				options: { value: string; name?: string; description?: string }[]
+				defaultOptions: { value: string; name?: string; description?: string }[]
+				defaultPreset: string
+		  }
+		| undefined
+	> {
+		try {
+			const value = (await this.#rpc("permissionPresets/catalog")) as Record<string, unknown>
+			const options = asPermissionOptions(value.options)
+			const defaultOptions = asPermissionOptions(value.defaultOptions)
+			const defaultPreset = typeof value.defaultPreset === "string" ? value.defaultPreset : ""
+			if (options.length === 0 && defaultOptions.length === 0 && defaultPreset === "") return undefined
+			return { options, defaultOptions, defaultPreset }
+		} catch {
+			return undefined
+		}
+	}
+
 	/** Read-only identity the /settings panel header shows. */
 	profileName(): string {
 		return this.#profile
@@ -1454,12 +1487,46 @@ export class RemoteHostSession {
 		return [...this.#skillsCache]
 	}
 
-	/** Refresh the /skills cache from `skills/list` on the live session. */
+	/**
+	 * Refresh the /skills cache from `skills/list` on the live session.
+	 * Publishes the refreshed rows to every listener after a successful read
+	 * (the menu's dynamic registry subscribes here).
+	 */
 	async refreshSkills(): Promise<{ name: string; description: string; invocation: string }[]> {
 		const sessionId = this.#sessionId
 		if (sessionId === undefined) return [...this.#skillsCache]
 		this.#skillsCache = await this.#opsClient().skillsList(sessionId)
-		return [...this.#skillsCache]
+		const snapshot = [...this.#skillsCache]
+		for (const listener of [...this.#skillListeners]) {
+			try {
+				listener(snapshot)
+			} catch (error) {
+				console.error("[remote-host-session] skill listener failed:", error)
+			}
+		}
+		return snapshot
+	}
+
+	/** Subscribe to host skill-catalog refreshes (the disposer unsubscribes). */
+	onSkillsChanged(listener: (skills: { name: string; description: string; invocation: string }[]) => void): () => void {
+		this.#skillListeners.push(listener)
+		return () => {
+			this.#skillListeners = this.#skillListeners.filter((entry) => entry !== listener)
+		}
+	}
+
+	/**
+	 * One auto refresh per session, after its first user message. The wire
+	 * catalog is session-scoped, so this is the earliest point plugin-provided
+	 * skills can be listed. Fire-and-forget — a failed read keeps the boot
+	 * disk snapshot and never blocks the turn.
+	 */
+	#refreshSkillsOnce(sessionId: string): void {
+		if (this.#skillsRefreshedFor === sessionId) return
+		this.#skillsRefreshedFor = sessionId
+		void this.refreshSkills().catch((error) => {
+			console.error("[remote-host-session] skill catalog refresh failed:", error)
+		})
 	}
 
 	/**
@@ -2560,6 +2627,22 @@ export class RemoteHostSession {
 			this.#labelBackup = undefined
 		}
 	}
+}
+
+/** Normalize one `permissionPresets/catalog` option list (malformed rows dropped). */
+function asPermissionOptions(value: unknown): { value: string; name?: string; description?: string }[] {
+	if (!Array.isArray(value)) return []
+	return value.flatMap((entry) => {
+		const row = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>
+		if (typeof row.value !== "string" || row.value === "") return []
+		return [
+			{
+				value: row.value,
+				...(typeof row.name === "string" ? { name: row.name } : {}),
+				...(typeof row.description === "string" ? { description: row.description } : {}),
+			},
+		]
+	})
 }
 
 /** Re-export for the tests and the future ShellHostDeps swap. */
