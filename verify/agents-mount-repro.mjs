@@ -790,6 +790,103 @@ try {
     await submit(SESSGIT, '/quit')
     await waitPane(SESSGIT, () => tmux('has-session', '-t', SESSGIT).status !== 0, 15_000)
   }
+
+  // ---------------- 5. auto-resume on startup (feat/auto-resume) ----------------
+  // The persisted session is the product's source of truth: a client restart
+  // must show the SAME transcript, not an empty screen. A REAL turn seeds the
+  // scratch store (the user message + turn/start are committed before the
+  // model answers, so this is route-agnostic); the next boot must restore it
+  // plus one `resumed …` notice, and `autoResume: "off"` must start fresh.
+  reapHost()
+  await sleep(500)
+  const FIXTURE = `zzzzAutoresume${process.pid}`
+  const sessionsRoot = join(HOME, 'sessions')
+  const storedSessionArtifact = () => {
+    try {
+      for (const project of readdirSync(sessionsRoot, { withFileTypes: true })) {
+        if (!project.isDirectory()) continue
+        for (const dir of readdirSync(join(sessionsRoot, project.name), { withFileTypes: true })) {
+          if (dir.isDirectory() && existsSync(join(sessionsRoot, project.name, dir.name, 'session.v4.jsonl.zstd'))) return true
+        }
+      }
+    } catch { /* store not created yet */ }
+    return false
+  }
+  // The seed boot (auto-resume on by default, store empty → fresh session).
+  launch(SESS, COLS, ROWS)
+  const bootSeed = await waitPane(SESS, (o) => o.includes('🧠') || idle(o), 90_000, 500)
+  if (!bootSeed.out.includes('🧠') && !idle(bootSeed.out)) {
+    record('auto-resume: a persisted session survives a client restart', false, ['client never rendered (seed)'])
+  } else {
+    await waitPane(SESS, idle, 30_000)
+    await submit(SESS, FIXTURE)
+    const echoed = await waitPane(SESS, (o) => has(o, FIXTURE), 20_000)
+    const persisted = await (async () => {
+      const deadline = Date.now() + 90_000
+      while (Date.now() < deadline) {
+        if (storedSessionArtifact()) return true
+        await sleep(500)
+      }
+      return false
+    })()
+    snap('30-autoresume-seed')
+    record('auto-resume: the seeded turn persists a session in the scratch store',
+      echoed.ok && persisted,
+      [echoed.ok ? 'fixture echoed in the transcript' : 'fixture echo not seen',
+        persisted ? 'session.v4.jsonl.zstd on disk' : 'no session artifact after 90s'])
+    await submit(SESS, '/quit')
+    await waitPane(SESS, () => tmux('has-session', '-t', SESS).status !== 0, 15_000)
+    reapHost()
+    await sleep(500)
+
+    // Restart 1: default policy (`autoResume` absent → "last") restores the
+    // stored transcript and paints the one-line resume notice. The notice
+    // lives 8s, so both markers are accumulated across early frames instead
+    // of waiting for one frame to carry a settled interface.
+    launch(SESS, COLS, ROWS)
+    let resumeNotice = false
+    let resumeHistory = false
+    let resumeFrame = ''
+    {
+      const deadline = Date.now() + 90_000
+      while (Date.now() < deadline) {
+        const frame = capture(SESS)
+        if (frame.trim().length > 0) resumeFrame = frame
+        if (has(frame, 'resumed')) resumeNotice = true
+        if (has(frame, FIXTURE)) resumeHistory = true
+        if (resumeNotice && resumeHistory) break
+        await sleep(250)
+      }
+    }
+    snap('31-autoresumed')
+    record('auto-resume: a restarted client shows the stored transcript', resumeHistory,
+      [resumeHistory ? `fixture ${FIXTURE} visible` : 'stored history missing'])
+    record('auto-resume: one `resumed <title> · <time ago>` notice is painted', resumeNotice,
+      [resumeNotice ? 'resume notice visible' : 'no resume notice in the boot frames'])
+    await submit(SESS, '/quit')
+    await waitPane(SESS, () => tmux('has-session', '-t', SESS).status !== 0, 15_000)
+    reapHost()
+    await sleep(500)
+
+    // Restart 2: `autoResume: "off"` must start fresh (no history, no notice).
+    writeFileSync(profileConfigPath, JSON.stringify({ ...readProfile(), autoResume: 'off' }, null, 2) + '\n')
+    launch(SESS, COLS, ROWS)
+    const bootOff = await waitPane(SESS, (o) => o.includes('🧠') || idle(o), 90_000, 500)
+    if (!bootOff.out.includes('🧠') && !idle(bootOff.out)) {
+      record('auto-resume: autoResume:"off" starts fresh (no restore)', false, ['client never rendered (off)'])
+    } else {
+      await waitPane(SESS, idle, 30_000)
+      await sleep(1_500)
+      const offFrame = capture(SESS)
+      snap('32-autoresume-off')
+      record('auto-resume: autoResume:"off" starts fresh (no history, no notice)',
+        !has(offFrame, FIXTURE) && !has(offFrame, 'resumed'),
+        [has(offFrame, FIXTURE) ? 'stored history leaked' : 'transcript empty',
+          has(offFrame, 'resumed') ? 'notice leaked' : 'no resume notice'])
+      await submit(SESS, '/quit')
+      await waitPane(SESS, () => tmux('has-session', '-t', SESS).status !== 0, 15_000)
+    }
+  }
 } catch (error) {
   console.error('agents-mount: ' + (error instanceof Error ? error.message : String(error)))
   results.push({ item: 'harness', ok: false, detail: [String(error).slice(0, 300)] })

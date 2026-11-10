@@ -150,6 +150,13 @@ allow, `n` decline; `esc` aborts a running turn. Ctrl+C twice quits. Commands:
 `/help` `/model [provider/id]` `/usage` `/clear` `/login` `/logout` `/resume`
 `/search` `/new` `/quit` and more — see `/help` inside the TUI.
 
+**Session restore on launch**: the client reopens the newest non-empty session
+from the launch workspace that was active within the last 7 days, with a
+`resumed <title> · <time ago>` notice. Disable it with `"autoResume": "off"` in
+`$DSH_HOME/profiles/opentui/config.json` (change the window with
+`"autoResumeDays": N`), or skip it for one launch with `--new`; `--session <id>`
+pins a specific session.
+
 ## Develop
 
 ```bash

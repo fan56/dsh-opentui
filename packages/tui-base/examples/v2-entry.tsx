@@ -35,6 +35,7 @@ import { SessionComposer } from "../src/routes/session/session-composer"
 import { ComposerContext } from "../src/routes/session/composer-context"
 import type { ComposerPendingRow } from "../src/routes/session/composer-state"
 import { openDeliveryChoice } from "../src/routes/session/delivery-choice"
+import { parseLaunchArgs, runAutoResume } from "../src/routes/session/auto-resume"
 import { WelcomeHero } from "../src/routes/welcome-hero"
 import { pickDailyQuote } from "../src/routes/quotes"
 import { SubagentsPicker } from "../src/routes/session/subagents-picker"
@@ -126,6 +127,11 @@ function V2SessionPage(props: {
 	/** Branch-or-SHA probe for the composer context row (shell's
 	 * remote-git.ts; absent = directory-only row, the silent degrade). */
 	probeBranch?: (cwd: string) => Promise<string>
+	/** feat/auto-resume: the stored session the boot staged on the seam
+	 * (`resumeSession(id)` — bound at the next turn). */
+	initialSessionId?: string
+	/** feat/auto-resume: `resumed <title> · <time ago>` notice line. */
+	resumeNotice?: string
 	/** Boot-time disk snapshot of user-invocable skills (skills-source.ts). */
 	skills?: SkillRow[]
 }) {
@@ -232,10 +238,15 @@ function V2SessionPage(props: {
 	createEffect(() => setMotionBusy(busy()))
 	onCleanup(() => setMotionBusy(false))
 	onMount(() => {
-		void projection.load()
+		// feat/auto-resume: the boot may have staged a stored session on the
+		// seam. Read THAT session's journal explicitly — `currentSessionId()`
+		// is still undefined until the first turn binds the staged id, and the
+		// transcript-loss fix pinned the rule: never rely on the live id here.
+		void projection.load(props.initialSessionId)
 		void seam.currentModelSelection().then(setModel)
 		refreshFooterData()
 		refreshPresetLabel()
+		if (props.resumeNotice) showNotice(props.resumeNotice)
 		if (pendingMigrationNotice) {
 			showNotice(pendingMigrationNotice)
 			pendingMigrationNotice = undefined
@@ -938,7 +949,7 @@ export interface ClientBootV2 {
  * RemoteSessionSeam → the rebuilt view. Shutdown semantics are client-entry
  * parity (dispose session → release host ref → idle reaper hand-off).
  */
-export async function bootClientV2(): Promise<ClientBootV2> {
+export async function bootClientV2(options: { argv?: readonly string[] } = {}): Promise<ClientBootV2> {
 	const { shared, lifecycle, transport, rhs, adapter, git } = await loadShell()
 	const workspace = process.cwd()
 	const profile = lifecycle.DEFAULT_PROFILE
@@ -971,6 +982,34 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 
 	const seam = new adapter.RemoteSessionSeam(session as never)
 	registerTurnOverlays(seam, overlays)
+	// feat/auto-resume: dsh sessions are persisted server-side — every UI must
+	// show the same transcript, so a restart restores the newest non-empty
+	// session from THIS workspace active within the window instead of landing
+	// on an empty screen. Explicit intent wins (`--session`, `--new`,
+	// `autoResume: "off"`); the list is bounded and any failure logs one WARN
+	// and keeps the fresh-session boot. The id is only STAGED here
+	// (`resumeSession` binds at the next turn), so the page reads its journal
+	// explicitly (onMount) and no writer lock is taken at boot.
+	const launchArgs = parseLaunchArgs(options.argv ?? process.argv.slice(2))
+	let initialSessionId: string | undefined
+	let resumeNotice: string | undefined
+	if (launchArgs.sessionId !== undefined) {
+		// `--session <id>`: the caller named the journal — open it as-is and
+		// stay out of the auto path (an explicit pick never needs a notice).
+		seam.resumeSession(launchArgs.sessionId)
+		initialSessionId = launchArgs.sessionId
+	} else {
+		const autoResume = await runAutoResume(
+			{ config: seam.configLoad(), launch: launchArgs, workspace },
+			{
+				listSessions: (limit) => seam.listSessions(limit),
+				resumeSession: (id) => seam.resumeSession(id),
+				warn: (message) => console.warn(message),
+			},
+		)
+		initialSessionId = autoResume?.id
+		resumeNotice = autoResume?.line
+	}
 	// Slash-menu skills (skills-source.ts): a read-only boot snapshot of the
 	// same filesystem roots the host's skill provider scans. The host RPC
 	// (`skills/list`) is session-scoped and no session exists before the
@@ -1087,6 +1126,10 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 																			// Branch-or-SHA probe (composer context row):
 																			// client-local, silent on non-repos.
 																			probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
+																			// feat/auto-resume: the staged stored session +
+																			// its one-line notice (undefined = fresh boot).
+																			initialSessionId,
+																			resumeNotice,
 																			skills: skillRows,
 																		})
 															},

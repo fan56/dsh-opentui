@@ -240,6 +240,9 @@ export interface RemoteSessionRow {
 	cwd?: string
 	/** On-disk log size in bytes (/resume 1KB display floor); absent = unknown. */
 	sizeBytes?: number
+	/** Host list metadata: `true` = created but never prompted (auto-resume
+	 * skips these; absent = older host, the view falls back to its heuristics). */
+	blank?: boolean
 }
 
 export class RemoteSessionOps {
@@ -285,6 +288,9 @@ export class RemoteSessionOps {
 					// view fails open on both.
 					...(typeof row.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
 					...(typeof row.sizeBytes === "number" && Number.isFinite(row.sizeBytes) ? { sizeBytes: row.sizeBytes } : {}),
+					// feat/auto-resume: the host's emptiness flag — an absent
+					// field stays absent (older hosts), never fabricated.
+					...(typeof row.blank === "boolean" ? { blank: row.blank } : {}),
 				})
 			}
 			return out.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit)

@@ -126,6 +126,36 @@ describe("seam rows projection", () => {
 		dispose()
 	})
 
+	test("load() with NO live session settles the EMPTY transcript (no pinned placeholder)", async () => {
+		// Fresh boot / --new / autoResume off: nothing to read. Reading ""
+		// errored, and the transcript-loss fix rightly stopped failed reads
+		// from clearing — so `hydrated` stayed false and the "Loading session
+		// history…" placeholder was pinned forever when the store held OTHER
+		// sessions. The empty id is not a session: settle the empty view.
+		const seam = new FakeSeam()
+		const { projection, dispose } = setup(seam, { liveId: "" })
+		await projection.load()
+		expect(seam.reads).toEqual([])
+		expect(projection.hydrated()).toBe(true)
+		expect(projection.rows).toEqual([])
+		dispose()
+	})
+
+	test("a FAILED FIRST read settles the empty view (unknown --session id, no pinned placeholder)", async () => {
+		// A bad/unknown `--session` id (or a transient first read) rejects.
+		// Nothing is on screen yet, so the read failure settles empty instead
+		// of pinning the loading placeholder — an already-hydrated view keeps
+		// its rows (the transcript-loss rule, asserted below).
+		const seam = new FakeSeam()
+		seam.failRead = true
+		const { projection, dispose } = setup(seam)
+		await projection.load("missing-session")
+		expect(seam.reads).toEqual(["missing-session"])
+		expect(projection.hydrated()).toBe(true)
+		expect(projection.rows).toEqual([])
+		dispose()
+	})
+
 	test("load(sessionId) hydrates a STAGED resume target (live id still empty)", async () => {
 		// /resume: resumeSession(id) only records the id, so the seam's live
 		// session is still undefined when the command reloads. Reading "" used
