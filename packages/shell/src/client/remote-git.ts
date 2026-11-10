@@ -24,3 +24,24 @@ export function probeGitBranch(cwd: string, timeoutMs = 3000): Promise<string> {
 		})
 	})
 }
+
+/**
+ * Branch name, or the short SHA on a detached HEAD (composer-context
+ * batch): `git rev-parse --abbrev-ref HEAD` names the branch, and answers
+ * the literal "HEAD" when detached — that second probe then reads
+ * `git rev-parse --short HEAD`. "" outside a repo / on any failure (the
+ * documented silent degrade, same contract as probeGitBranch).
+ */
+export function probeGitBranchOrSha(cwd: string, timeoutMs = 3000): Promise<string> {
+	return new Promise((resolve) => {
+		execFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: timeoutMs }, (err, stdout) => {
+			if (err) return resolve("")
+			const ref = String(stdout).trim()
+			if (ref === "") return resolve("")
+			if (ref !== "HEAD") return resolve(ref)
+			execFile("git", ["rev-parse", "--short", "HEAD"], { cwd, timeout: timeoutMs }, (err2, out2) => {
+				resolve(err2 ? "" : String(out2).trim())
+			})
+		})
+	})
+}

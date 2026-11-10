@@ -7,8 +7,9 @@ import { afterAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { spawnSync } from "node:child_process"
 import { listAgentFiles, repairScanSessions, setAgentField } from "../src/client/remote-local-fs.ts"
-import { probeGitBranch } from "../src/client/remote-git.ts"
+import { probeGitBranch, probeGitBranchOrSha } from "../src/client/remote-git.ts"
 import { toolPresentationModeFromPresetDocument } from "../src/client/remote-exec-mode.ts"
 import { attachmentIdsOfPromptContent, fetchHostFile, HostFileError, imagePromptPart, readImageAttachment } from "../src/client/remote-attachments.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
@@ -163,6 +164,30 @@ describe("row 39 — git branch probe", () => {
 		const { session } = makeFacade({ cwd: import.meta.dir })
 		expect(await session.gitBranch()).not.toBe("")
 		await session.dispose()
+	})
+
+	// Composer-context batch: the row's probe is branch-or-SHA. A regular
+	// checkout answers the branch (same as the row-39 probe); a detached HEAD
+	// answers the short SHA; outside a repo / on failure it stays "".
+	test("branch-or-SHA probe: branch in a repo, short SHA when detached, empty outside", async () => {
+		expect(await probeGitBranchOrSha(import.meta.dir)).toBe(await probeGitBranch(import.meta.dir))
+		expect(await probeGitBranchOrSha(tmpdir())).toBe("")
+
+		const repo = scratchDir("dsh-git-detached-")
+		const git = (...args: string[]) =>
+			spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], {
+				cwd: repo,
+				encoding: "utf8",
+			})
+		spawnSync("git", ["init", "-q"], { cwd: repo })
+		writeFileSync(join(repo, "a.txt"), "one\n")
+		expect(spawnSync("git", ["add", "."], { cwd: repo }).status).toBe(0)
+		expect(git("commit", "-q", "-m", "one").status).toBe(0)
+		const named = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim()
+		expect(await probeGitBranchOrSha(repo)).toBe(named)
+		expect(named).not.toBe("HEAD")
+		expect(spawnSync("git", ["checkout", "-q", "--detach", "HEAD"], { cwd: repo }).status).toBe(0)
+		expect(await probeGitBranchOrSha(repo)).toMatch(/^[0-9a-f]{7,}$/)
 	})
 })
 

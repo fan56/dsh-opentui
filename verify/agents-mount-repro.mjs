@@ -34,7 +34,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -50,6 +50,7 @@ const PANEL_OPEN = ['● Agents', '⚙ Limits']
 const FALLBACK = 'not mounted in this entry'
 const SESS = `agents-mount-${process.pid}`
 const SESS80 = `${SESS}-80x24`
+const SESSGIT = `${SESS}-git`
 
 const arg = (name, def) => {
   const i = process.argv.indexOf(`--${name}`)
@@ -204,6 +205,19 @@ const composerRows = (out) =>
     .map((l) => l.trim().replace(/^┃/, '').replace(/┃$/, '').trim())
 const inputRow = (out) => (composerRows(out).filter((l) => l !== '' && !l.startsWith(PLACEHOLDER)).pop() ?? '').trim()
 const composerEmpty = (out) => composerRows(out).every((l) => l === '' || l.startsWith(PLACEHOLDER))
+/** The one row DIRECTLY above the composer box (composer-context batch).
+ * Full-frame geometry (>30 rows) draws a `┏━━━┓` top border between the
+ * context row and the first `┃` interior row — skip it. Compact geometry
+ * (≤30 rows) draws left/right rules only, so the row above the first `┃`
+ * IS the context row. */
+const composerContextRow = (out) => {
+  const lines = out.split('\n')
+  const first = lines.findIndex((l) => l.trimStart().startsWith('┃'))
+  if (first < 1) return ''
+  let i = first - 1
+  while (i >= 0 && /^[┏━┳┓]+$/.test(lines[i].trim())) i--
+  return (lines[i] ?? '').trim()
+}
 /** True when the row carries an SGR run whose parameters include the italic
  * attribute (exactly `3`). Extended colors are skipped (38/48 + 5;n | 2;r;g;b),
  * so `33`/`43`/`93` and a `3` inside a 256-color index do not count. */
@@ -258,10 +272,10 @@ const snap = (name, session = SESS) => {
   return capture(session)
 }
 const idle = (out) => out.includes(IDLE) || composerEmpty(out)
-const launch = (session, cols, rows) => {
+const launch = (session, cols, rows, cwd = WS) => {
   tmux('kill-session', '-t', session)
   const env = [`DSH_HOME=${HOME}`, `DSH_AGENTS_HOME=${AGENTS_HOME}`, 'DSH_OPENTUI_DEBUG=1']
-  const r = tmux('new-session', '-d', '-x', String(cols), '-y', String(rows), '-s', session, '-c', WS,
+  const r = tmux('new-session', '-d', '-x', String(cols), '-y', String(rows), '-s', session, '-c', cwd,
     `${env.join(' ')} ${LAUNCHER} --client 2>${join(OUT, `${session}.err.log`)}`)
   if (r.status !== 0) throw new Error('tmux boot failed: ' + r.stderr)
 }
@@ -278,6 +292,15 @@ try {
   }
   await waitPane(SESS, idle, 30_000)
   snap('01-welcome')
+
+  // Composer context row (user feedback batch): the working directory sits
+  // on the ONE row directly above the input box; the scratch workspace is not
+  // a git repo, so the branch suffix must be absent (silent degrade).
+  const ctxBoot = composerContextRow(capture(SESS))
+  record('composer context: the row above the input shows the working directory',
+    ctxBoot.includes(basename(WS)), [`row: ${JSON.stringify(ctxBoot)}`])
+  record('composer context: no branch outside a git repository',
+    ctxBoot.length > 0 && !ctxBoot.includes(' · '), [`row: ${JSON.stringify(ctxBoot)}`])
 
   await submit(SESS, '/agents')
   const opened = await waitPane(SESS, (o) => rawHasAny(o, PANEL_OPEN) || has(o, FALLBACK), 20_000)
@@ -676,6 +699,12 @@ try {
     process.exit(2)
   }
   await waitPane(SESS80, idle, 30_000)
+  // 80 columns: wrapMode="none" + height 1 — the row must stay one clipped
+  // line (the tail, i.e. the workspace basename, survives the left clip).
+  const ctx80 = composerContextRow(capture(SESS80))
+  record('80x24: composer context stays one clipped row (directory tail kept)',
+    ctx80.includes(basename(WS)) && ctx80.length <= 79,
+    [`row: ${JSON.stringify(ctx80)}`, `columns: ${ctx80.length}`])
   // Compact (≤30 rows) transcript frame: left/right rules only — no `┏` top
   // row — but focused still paints the heavy `┃` rule.
   sendKeys(SESS80, 'F6')
@@ -734,12 +763,40 @@ try {
   for (let i = 0; i < 8; i++) { sendKeys(SESS80, 'BSpace'); await sleep(TYPE_GAP_MS) }
   await submit(SESS80, '/quit')
   await waitPane(SESS80, () => tmux('has-session', '-t', SESS80).status !== 0, 15_000)
+
+  // ---------------- 4. composer context row inside a git repo ----------------
+  // Same launcher, workspace = the repo checkout (a real git worktree): the
+  // branch must appear after the directory separator. The expected name is
+  // read straight from git, so a branch rename cannot make this pass by
+  // accident.
+  const expectedBranch = sh('git', ['-C', REPO, 'rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim()
+  launch(SESSGIT, COLS, ROWS, REPO)
+  const bootGit = await waitPane(SESSGIT, (o) => o.includes('🧠') || idle(o), 90_000, 500)
+  if (!bootGit.out.includes('🧠') && !idle(bootGit.out)) {
+    record('composer context: a git workspace renders the branch', false, ['client never rendered'])
+  } else {
+    await waitPane(SESSGIT, idle, 30_000)
+    const gitRow = await waitPane(
+      SESSGIT,
+      (o) => expectedBranch !== '' && composerContextRow(o).includes(` · ${expectedBranch}`),
+      15_000,
+      300,
+    )
+    const row = composerContextRow(gitRow.out)
+    snap('23-composer-context-git', SESSGIT)
+    record('composer context: a git workspace renders the branch after the directory',
+      gitRow.ok && expectedBranch !== '',
+      [`expected: " · ${expectedBranch}"`, `row: ${JSON.stringify(row)}`])
+    await submit(SESSGIT, '/quit')
+    await waitPane(SESSGIT, () => tmux('has-session', '-t', SESSGIT).status !== 0, 15_000)
+  }
 } catch (error) {
   console.error('agents-mount: ' + (error instanceof Error ? error.message : String(error)))
   results.push({ item: 'harness', ok: false, detail: [String(error).slice(0, 300)] })
 } finally {
   killSession(SESS)
   killSession(SESS80)
+  killSession(SESSGIT)
   reapHost()
   writeFileSync(join(OUT, 'summary.json'), JSON.stringify({
     cols: COLS, rows: ROWS, home: HOME, workspace: WS,

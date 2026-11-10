@@ -39,6 +39,7 @@ import { pickAsciiFont, stripFontTags } from "../src/component/gradient-text"
 import {
 	elapsedSegment,
 	formatRolling,
+	rollingWidth,
 	rollValue,
 	sessionFooterSegments,
 	smootherstep,
@@ -267,6 +268,19 @@ describe("powerline rolling numbers", () => {
 		expect(formatRolling(-5, 0, 3)).toBe(" -5")
 	})
 
+	test("rollingWidth is the value's own integer digit count (compact, no padding)", () => {
+		expect(rollingWidth(5.9, 1)).toBe(1)
+		expect(rollingWidth(42, 1)).toBe(2)
+		expect(rollingWidth(100, 1)).toBe(3)
+		expect(rollingWidth(0)).toBe(1)
+		// The compact invariant: a self-sized width reproduces toFixed exactly,
+		// so a roll leaf and its static `text` agree at rest.
+		const cases: [number, number][] = [[5.9, 1], [42, 1], [100, 1], [420, 0], [0, 0]]
+		for (const [value, decimals] of cases) {
+			expect(formatRolling(value, decimals, rollingWidth(value, decimals))).toBe(value.toFixed(decimals))
+		}
+	})
+
 	test("rollValue eases from → to through smootherstep", () => {
 		expect(smootherstep(0)).toBe(0)
 		expect(smootherstep(1)).toBe(1)
@@ -280,9 +294,14 @@ describe("powerline rolling numbers", () => {
 		const speed = speedSegment(87.4)
 		expect(speed?.roll).toEqual({ value: 87.4, decimals: 0, width: 3, suffix: " tok/s" })
 		// Footer context batch: the roll spec rides the percent (one decimal,
-		// X/Y prefix frozen so the strip never re-flows mid-roll).
+		// X/Y prefix frozen so the strip never re-flows mid-roll). User
+		// feedback: the integer width is the value's OWN digits — 42.0 → 2 —
+		// so the leaf renders `(42.0%)`, not `(  42.0%)`.
 		const ctx = contextSegment(420, 1000)
-		expect(ctx?.roll).toEqual({ value: 42, decimals: 1, width: 4, prefix: "🧠 420/1.0k(", suffix: "%)" })
+		expect(ctx?.roll).toEqual({ value: 42, decimals: 1, width: 2, prefix: "🧠 420/1.0k(", suffix: "%)" })
+		// Compact shape parity: prefix + roll value + suffix equals the static text.
+		const roll = ctx!.roll!
+		expect(`${roll.prefix}${formatRolling(roll.value, roll.decimals, roll.width)}${roll.suffix}`).toBe(ctx!.text)
 	})
 
 	test("elapsed segment (计时) rolls whole seconds and omits unknown", () => {

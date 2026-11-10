@@ -673,6 +673,13 @@ export function fmtNum(n: number): string {
  * prices pending messages a compaction will drop). Without a window (or
  * with a non-positive one) it degrades to the bare `🧠 {used}` shape on
  * contextOk. The fill ramps green→amber→orange→red at 50/70/90.
+ *
+ * Compact percent (user feedback): the roll spec's integer width is the
+ * value's OWN digit count (`rollingWidth`), not a fixed 4 — the rendered
+ * leaf is `(5.9%)`, never `(   5.9%)`. The static `text` and the roll leaf
+ * therefore agree cell-for-cell at rest; a roll keeps the target's width
+ * for its ~0.3s so the right-hand clock spacer absorbs one width step at
+ * most (the footer is left-packed, so no segment misaligns).
  */
 export function contextSegment(
 	used: number | null,
@@ -688,7 +695,7 @@ export function contextSegment(
 		return {
 			text: `🧠 ${fmtNum(used)}/${fmtNum(window)}(${percent.toFixed(1)}%)`,
 			bg,
-			roll: { value: percent, decimals: 1, width: 4, prefix: `🧠 ${fmtNum(used)}/${fmtNum(window)}(`, suffix: "%)" },
+			roll: { value: percent, decimals: 1, width: rollingWidth(percent, 1), prefix: `🧠 ${fmtNum(used)}/${fmtNum(window)}(`, suffix: "%)" },
 			// >90% is the footer gradient's semantic exception: the danger fill
 			// survives (warning color stays a warning, not a ramp step).
 			...(danger ? { semantic: "danger" as const } : {}),
@@ -697,7 +704,7 @@ export function contextSegment(
 	return {
 		text: `🧠 ${fmtNum(used)}`,
 		bg: p.contextOk,
-		roll: { value: used, decimals: 0, width: 4, prefix: "🧠 ", suffix: "" },
+		roll: { value: used, decimals: 0, width: rollingWidth(used), prefix: "🧠 ", suffix: "" },
 	}
 }
 
@@ -760,6 +767,19 @@ export function elapsedSegment(seconds: number | null, theme?: ComponentTheme): 
 export function cacheSegment(rate: number | null, theme?: ComponentTheme): PowerlineSegment | null {
 	if (rate === null || !Number.isFinite(rate) || rate < 0) return null
 	return { text: `⚡ CH${rate.toFixed(1)}%`, bg: resolvePalette(theme).cache }
+}
+
+/**
+ * Integer-part width for a rolling value: the digit count of its own
+ * integer part (minimum 1). This is the compact counterpart of a hand-picked
+ * fixed width — `formatRolling(v, d, rollingWidth(v, d))` renders exactly
+ * `v.toFixed(d)` with no space padding, so a roll leaf and its static `text`
+ * fallback occupy the same cells at rest while the width stays fixed for
+ * the duration of one roll. Pure and unit-tested.
+ */
+export function rollingWidth(value: number, decimals = 0): number {
+	const fixed = Math.abs(value).toFixed(decimals)
+	return Math.max(1, (fixed.split(".")[0] ?? "0").length)
 }
 
 /**
