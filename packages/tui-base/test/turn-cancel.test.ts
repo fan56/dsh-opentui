@@ -106,7 +106,10 @@ describe("wiring source guards", () => {
 		const entry = src("examples/v2-entry.tsx")
 		expect(entry).toMatch(/\{\s*useMouse:\s*true,\s*exitOnCtrlC:\s*false\s*\}/)
 		expect(entry).toContain("createComponent(TurnCancelKeys")
-		expect(entry).toContain("interrupt: () => seam.interrupt()")
+		// The steer/queue batch needs the abort signal too: interrupt() resolves
+		// the seam turn without an error, so the page marks it before cancelling.
+		expect(entry).toContain("turnAborted = true")
+		expect(entry).toContain("seam.interrupt()")
 		expect(entry).toContain("escapeYields: () => slash.controller.open")
 	})
 	test("cancel layer binds escape + ctrl+c on a global, gated layer", () => {
