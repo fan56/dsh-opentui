@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { createRoot } from "solid-js"
 import { NullSessionSeam, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
 import { createSeamRows, toStoredRow } from "../src/routes/session/seam-rows"
+import { setMotionTier } from "../src/skin/motion"
 
 class FakeSeam extends NullSessionSeam {
 	stored: SeamTranscriptRow[] = []
@@ -465,9 +466,39 @@ describe("seam rows projection", () => {
 		await Bun.sleep(70)
 		// The resumed burst cancelled the pending drop: still streaming.
 		expect(projection.rows.find((r) => r.kind === "reasoning")).toMatchObject({ streaming: true, text: "one two" })
+		// M2: the tool call collapsed the segment and stamped elapsedSec; the
+		// resumed upsert must CLEAR it (upsert patches in place — an omitted
+		// field would keep the stale anchor and the dock would fade instantly).
+		expect((projection.rows.find((r) => r.kind === "reasoning") as { elapsedSec?: number }).elapsedSec).toBeUndefined()
 		release()
 		await pending
 		dispose()
+	})
+
+	test("C2: off tier drops a collapsed think at the 2s linger edge (not 2.3s)", async () => {
+		// The tier is read per schedule: off paints no sweep and its clock is
+		// paused, so the store drop IS the removal moment. Docs promise 2.0s —
+		// the old fixed 2.3s retention contradicted them.
+		const seam = new FakeSeam()
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("only thought")
+			cb.onContentDelta("answer")
+		}
+		const { projection, dispose } = setup(seam) // defaults → tier-derived delay
+		setMotionTier("off")
+		try {
+			const started = Date.now()
+			await projection.send("go")
+			expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(true)
+			const lingerLeft = 1900 - (Date.now() - started)
+			if (lingerLeft > 0) await Bun.sleep(lingerLeft)
+			expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(true)
+			await Bun.sleep(2100 - (Date.now() - started))
+			expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(false)
+		} finally {
+			setMotionTier(undefined)
+			dispose()
+		}
 	})
 
 	test("batch D5: a notice event lands as a markdown (assistant-kind) notice row, never a ❯ user row", () => {
@@ -576,13 +607,15 @@ describe("batch V2b: subagent tree row", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 2026-11-10 dock directive: a settled widget row is retained for the dock's
-// 2s linger + 300ms fade (DOCK_LINE_RETENTION_MS) unless a caller overrides;
+// 2026-11-10 dock directive: a settled widget row is retained through the
+// dock's 2s linger (+ 300ms sweep when decorated) unless a caller overrides;
 // a new tool start clears the previous settled lines; a session switch drops
 // every pending fade timer so the old clock cannot hide a new session's row.
+// The default tier in the test process is non-decorated (no truecolor probe),
+// so the default retention is the 2.0s linger edge (see the C2 test above).
 // ---------------------------------------------------------------------------
 describe("dock retention and clear-old-at-new-tool", () => {
-	test("default retention is the dock's linger + fade window (2.3s)", async () => {
+	test("default retention is at least the dock's 2s linger (tier-derived)", async () => {
 		const seam = new FakeSeam()
 		let release!: () => void
 		const gate = new Promise<void>((resolve) => {

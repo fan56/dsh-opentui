@@ -63,7 +63,8 @@ import type {
 	SeamTurnCallbacks,
 	SessionSeam,
 } from "../../seams/session"
-import { DOCK_LINE_RETENTION_MS } from "./dock-visibility"
+import { dockRemovalMs } from "./dock-visibility"
+import { motionDecorationsEnabled } from "../../skin/motion"
 
 /** One projected transcript row (the rebuilt `SessionRow` slice). */
 export type SeamRow =
@@ -187,9 +188,15 @@ export function createSeamRows(
 	 * block fully visible for 2s, then fades 0.3s (dock-visibility.ts). The
 	 * store's retention is exactly that window — the view derives the fade
 	 * from the row's stop anchor on the shared clock, and the drop here is
-	 * only the backstop (think) / hard clear (tool `faded` flag). */
-	const thinkFadeMs = options?.thinkFadeMs ?? DOCK_LINE_RETENTION_MS
-	const toolFadeMs = options?.toolFadeMs ?? DOCK_LINE_RETENTION_MS
+	 * only the backstop (think) / hard clear (tool `faded` flag).
+	 *
+	 * C2 (review): the delay is resolved per schedule, not at construction.
+	 * Decorated (full) tiers keep the row through the 300ms sweep; reduced/off
+	 * paint no sweep, so the drop coincides with the 2s linger edge and the
+	 * documented removal moment (off has a paused clock — this drop is the
+	 * only thing that can remove the line). */
+	const thinkFadeMs = (): number => options?.thinkFadeMs ?? dockRemovalMs(motionDecorationsEnabled())
+	const toolFadeMs = (): number => options?.toolFadeMs ?? dockRemovalMs(motionDecorationsEnabled())
 	let liveOrdinal = 0
 	/** A send()'s turn is awaiting the seam (journal events during this
 	 * window are the suppression contract's other half — the adapters). */
@@ -270,7 +277,8 @@ export function createSeamRows(
 		}
 	}
 	function scheduleThinkFade(key: string) {
-		if (thinkFadeMs <= 0) {
+		const fadeMs = thinkFadeMs()
+		if (fadeMs <= 0) {
 			dropRows(new Set([key]))
 			return
 		}
@@ -280,7 +288,7 @@ export function createSeamRows(
 			setTimeout(() => {
 				thinkFades.delete(key)
 				dropRows(new Set([key]))
-			}, thinkFadeMs),
+			}, fadeMs),
 		)
 	}
 	/** Clear old, show new: every fade-pending summary drops the moment a
@@ -305,7 +313,8 @@ export function createSeamRows(
 	function scheduleToolFade(key: string) {
 		const prior = toolFades.get(key)
 		if (prior !== undefined) clearTimeout(prior)
-		if (toolFadeMs <= 0) {
+		const fadeMs = toolFadeMs()
+		if (fadeMs <= 0) {
 			toolFades.delete(key)
 			hideTool(key)
 			return
@@ -315,7 +324,7 @@ export function createSeamRows(
 			setTimeout(() => {
 				toolFades.delete(key)
 				hideTool(key)
-			}, toolFadeMs),
+			}, fadeMs),
 		)
 	}
 	/** Clear old, show new (tool): a tool START ends the previous settled tool
@@ -556,6 +565,12 @@ export function createSeamRows(
 					final: false,
 					streaming: true,
 					startedAt: reasoningStartedAt,
+					// M2 (store side): a resumed burst must not keep the previous
+					// segment's frozen elapsedSec — `upsert` patches in place
+					// (Object.assign), so an omitted field would survive and the
+					// view would derive a stale stop anchor → instant fade. Clear
+					// it explicitly; the next collapse stamps a fresh value.
+					elapsedSec: undefined,
 				})
 			},
 			onContentDelta: (delta) => {

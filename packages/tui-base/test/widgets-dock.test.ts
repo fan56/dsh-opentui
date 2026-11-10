@@ -58,6 +58,7 @@ import {
 	DOCK_LINE_RETENTION_MS,
 	DOCK_WIDGET_MAX_LINES,
 	dockLineVisibility,
+	dockRemovalMs,
 } from "../src/routes/session/dock-visibility"
 import type { SeamRow } from "../src/routes/session/seam-rows"
 import { stringWidth } from "../src/util/string-width"
@@ -238,9 +239,9 @@ describe("thinkLineText", () => {
 		expect(line.startsWith("💭 thinking · ")).toBe(true)
 		expect(line.endsWith(" · second")).toBe(true)
 	})
-	test("collapsed: `💭 thought · Xs · <first line>` frozen at elapsedSec", () => {
+	test("collapsed: `💭 thought · Xs · <last line>` frozen at elapsedSec", () => {
 		const row = { key: "r", kind: "reasoning" as const, text: "alpha\nbeta", final: true, elapsedSec: 2.5 }
-		expect(thinkLineText(row, spin)).toBe("💭 thought · 2.5s · alpha")
+		expect(thinkLineText(row, spin)).toBe("💭 thought · 2.5s · beta")
 	})
 	test("panel-less replay rows paint nothing", () => {
 		const row = { key: "r", kind: "reasoning" as const, text: "draft", final: true }
@@ -756,7 +757,7 @@ describe("dock display rules: 3 lines, 2s linger, replace", () => {
 		faded,
 	})
 
-	test("think: 3 lines by default; live shows the TAIL, collapsed the HEAD", () => {
+	test("think: 3 lines by default; live AND collapsed show the TAIL", () => {
 		const text = "l1\nl2\nl3\nl4\nl5"
 		expect(thinkBlockLines(liveThink(text), spin, 3, NOW)).toEqual([
 			"💭 thinking · 1.5s · l3",
@@ -765,12 +766,14 @@ describe("dock display rules: 3 lines, 2s linger, replace", () => {
 		])
 		// Single-line view keeps the old shape: live → last line.
 		expect(thinkBlockLines(liveThink(text), spin, 1, NOW)).toEqual(["💭 thinking · 1.5s · l5"])
+		// Collapsed keeps the same tail as the live burst (no head jump at the
+		// collapse instant); only the prefix changes.
 		expect(thinkBlockLines(doneThink(text), spin, 3, NOW)).toEqual([
-			"💭 thought · 1.0s · l1",
-			"   l2",
-			"   l3",
+			"💭 thought · 1.0s · l3",
+			"   l4",
+			"   l5",
 		])
-		expect(thinkLineText(doneThink(text), spin, NOW)).toBe("💭 thought · 1.0s · l1")
+		expect(thinkLineText(doneThink(text), spin, NOW)).toBe("💭 thought · 1.0s · l5")
 		// 3 non-blank lines exactly; blank lines never spend a row.
 		expect(thinkBlockLines(liveThink("a\n\nb\nc"), spin, 3, NOW)).toEqual([
 			"💭 thinking · 1.5s · a",
@@ -817,6 +820,23 @@ describe("dock display rules: 3 lines, 2s linger, replace", () => {
 		expect(dockLines([thought], { now: NOW + 2300, decorated: true })).toHaveLength(0)
 	})
 
+	test("M2: a resumed (streaming) think with a stale elapsedSec carries NO fadeOutAt", () => {
+		// The store's upsert used to leave the previous segment's frozen
+		// elapsedSec on the row; skinStopAt then derived an old stop anchor and
+		// the view faded/hid the fresh burst. Both sides now clear it — the VIEW
+		// must ignore even a stale store row.
+		const stale: ThinkRow = { ...liveThink("resumed burst"), elapsedSec: 9 }
+		expect(skinStopAt(stale)).toBe(NOW + 7500) // stale anchor, long past by staleNow
+		const staleNow = NOW + 20_000
+		expect(dockLineVisibility(skinStopAt(stale), staleNow, true).phase).toBe("hidden")
+		const blocks = dockBlocks([stale], { now: staleNow, decorated: true, maxLines: 3 })
+		expect(blocks.think.length).toBeGreaterThan(0)
+		expect(blocks.think.every((line) => line.fadeOutAt === undefined)).toBe(true)
+		// A genuinely collapsed row still anchors its fade.
+		const collapsed = dockBlocks([doneThink("done")], { now: NOW + 1000, decorated: true, maxLines: 3 })
+		expect(collapsed.think[0]!.fadeOutAt).toBe(NOW)
+	})
+
 	test("new content inside the window replaces the old block (think)", () => {
 		const old = doneThink("old summary", "reasoning:live-1")
 		const fresh = liveThink("new burst a\nnew burst b\nnew burst c", "reasoning:live-2", NOW + 500)
@@ -848,16 +868,35 @@ describe("dock display rules: 3 lines, 2s linger, replace", () => {
 		expect(dockLines([settled], { now: NOW + 2000, decorated: true })).toHaveLength(1)
 	})
 
+	test("C2: the store's removal delay matches the documented tier behaviour", () => {
+		// full: the row survives through the 300ms sweep; reduced/off: no
+		// gradient, so the drop IS the 2.0s removal moment (off's paused clock
+		// can only be removed by this drop — never 2.3s as the old doc implied).
+		expect(dockRemovalMs(true)).toBe(DOCK_LINE_RETENTION_MS)
+		expect(dockRemovalMs(false)).toBe(DOCK_LINGER_MS)
+		expect(dockRemovalMs(false)).toBe(2000)
+	})
+
 	test("compact geometry caps each widget at 1 line (80x24 footprint unchanged)", () => {
 		expect(DOCK_WIDGET_MAX_LINES).toBe(3)
 		expect(DOCK_COMPACT_MAX_LINES).toBe(1)
 		expect(dockLineCap(24)).toBe(1)
 		expect(dockLineCap(30)).toBe(1)
-		expect(dockLineCap(31)).toBe(3)
+		// C1 graded cap: 31-40 rows stay at 1 (an 8-row frame would eat the
+		// transcript floor), 41-50 get 2, > 50 the default 3.
+		expect(dockLineCap(31)).toBe(1)
+		expect(dockLineCap(36)).toBe(1)
+		expect(dockLineCap(40)).toBe(1)
+		expect(dockLineCap(41)).toBe(2)
+		expect(dockLineCap(44)).toBe(2)
+		expect(dockLineCap(50)).toBe(2)
+		expect(dockLineCap(51)).toBe(3)
 		expect(dockLineCap()).toBe(3)
 		const rows: SeamRow[] = ["a", "b", "c"].map((name) => runningTool(name))
 		expect(dockLines(rows, { maxLines: dockLineCap(24) })).toHaveLength(1)
-		expect(dockLines(rows, { maxLines: dockLineCap(34) })).toHaveLength(3)
+		expect(dockLines(rows, { maxLines: dockLineCap(36) })).toHaveLength(1)
+		expect(dockLines(rows, { maxLines: dockLineCap(44) })).toHaveLength(2)
+		expect(dockLines(rows, { maxLines: dockLineCap(60) })).toHaveLength(3)
 	})
 
 	test("session switch resets the entrance-fade registry (no ghost timestamps)", () => {

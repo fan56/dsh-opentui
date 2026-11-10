@@ -13,8 +13,13 @@
  * `live | lingering | fading | hidden` plus the fade progress. The view layer
  * reads it from the renderer's shared animation clock (onAnimationTick), so
  * there is no new setInterval/setTimeout anywhere. The seam store keeps a
- * settled row for `DOCK_LINE_RETENTION_MS` (2s + 300ms) — exactly long enough
- * for the view to finish the sweep; the store's drop is only the backstop.
+ * settled row for `DOCK_LINE_RETENTION_MS` (2s + 300ms) under the decorated
+ * (full) tier — exactly long enough for the view to finish the sweep, so the
+ * store's drop is only the backstop. The non-decorated tiers (reduced/off)
+ * paint no sweep: the view itself turns the line `hidden` at the 2s linger
+ * edge and the store's drop coincides with that edge (`dockRemovalMs(false)`
+ * → `DOCK_LINGER_MS`). For `off` — whose clock is paused, so no view repaint
+ * can land at 2.0s — that drop IS the removal moment; documented as 2.0s.
  */
 /** Hold after the round ends, fully visible (user directive: 2s). */
 export const DOCK_LINGER_MS = 2000
@@ -25,6 +30,14 @@ export const DOCK_FADE_OUT_MS = 300
 /** How long a settled row must stay in the store so the view can finish the
  * fade: the linger plus the sweep. The seam-rows fade timers use this. */
 export const DOCK_LINE_RETENTION_MS = DOCK_LINGER_MS + DOCK_FADE_OUT_MS
+
+/** The store's retention delay for the active motion tier: decorated (full)
+ * keeps the row through the 300ms sweep; reduced/off have no gradient, so
+ * the row is dropped at the 2s linger edge (removal moment == what the
+ * docs promise, and `off`'s paused clock can rely on the drop). */
+export function dockRemovalMs(decorated: boolean): number {
+	return decorated ? DOCK_LINE_RETENTION_MS : DOCK_LINGER_MS
+}
 
 /** Default lines per widget (think block / tool block), independently. */
 export const DOCK_WIDGET_MAX_LINES = 3

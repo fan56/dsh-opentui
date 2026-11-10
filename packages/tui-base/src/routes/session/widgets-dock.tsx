@@ -7,7 +7,8 @@
  *
  *   Todos  `todos [✓]2/3 · <current>`     — from the latest todo tool call
  *   Think  `💭 thinking · Xs · <tail>`    — up to DOCK_WIDGET_MAX_LINES (3)
- *          lines of the reasoning tail while live, head while collapsed;
+ *          lines of the reasoning tail (live AND collapsed — the same tail,
+ *          so collapsing never jumps the block back to the head);
  *          a finished round lingers 2s, then fades 0.3s (dock-visibility.ts)
  *   Tool   `⚙ name(subject) · Xs · <tail>` — up to 3 tool lines, newest
  *          last; settled lines freeze ✔/✘ + elapsed, then linger 2s and fade
@@ -25,7 +26,10 @@
  * The timeline is a pure function of the row's stop anchor and the wall
  * clock; the view re-renders on the renderer's shared animation clock, so
  * no timers are added here. `reduced` hides at the 2s deadline without a
- * sweep; `off` never ticks (the store's retention drop is the final clear).
+ * sweep and, together with `off`, the store's retention drop is the SAME
+ * 2.0s (`dockRemovalMs(false)` → DOCK_LINGER_MS): the non-decorated tiers
+ * have no sweep, so 2.0s is the hard removal moment. `off` never ticks, and
+ * that 2.0s drop is what actually removes the line.
  *
  * CLOSURE LAW (D1 on-device finding): the component body declares NO
  * reactive state that the JSX props close over — every render getter calls
@@ -39,9 +43,11 @@
  * Layout law: the dock sits in the transcript's bottom slot (explicit-dims
  * parent chain); the dock box sets an EXPLICIT height = its visible line
  * count (auto-height boxes collapse in flex columns) and flexShrink=0 so
- * the composer keeps its own height below it. Compact terminals (≤ 30 rows)
- * cap EACH block at one line (the old two-row activity footprint), so the
- * 80x24 middle band never grows; taller terminals get the default 3 lines.
+ * the composer keeps its own height below it. The per-block line cap is
+ * graded by terminal height (`dockLineCap`): ≤ 40 rows → 1 line (the same
+ * single-line footprint as the 80x24 band, so a 31-39 row terminal never
+ * grows the frame past 4 rows), 41-50 → 2, > 50 → 3 (the default). The
+ * active frame is therefore at most 4/6/8 content+2 rows tall.
  */
 import { For, createEffect, createSignal, onCleanup, Show, untrack, type JSX } from "solid-js"
 import { useTerminalDimensions, onAnimationTick } from "@opentui/solid"
@@ -121,14 +127,17 @@ export function skinFadeOutColor(target: string | RGBA, background: string | RGB
 	return mixSkinColor(target, background, skinFadeOutProgress(elapsedSinceStopMs))
 }
 
-/** Line cap for the widgets dock (pure): compact terminals (≤ the composer's
- * compact threshold) keep the pre-2026-11 single-line-per-widget footprint —
- * 80x24's middle band must not grow; taller terminals get the default
- * three lines per widget. Think and tool use the SAME cap independently. */
+/** Line cap for the widgets dock (pure), graded by terminal height. The
+ * active frame must never eat the transcript's floor: at 31-40 rows the
+ * worst case would be an 8-row frame (2 borders + 3 think + 3 tool), so
+ * those terminals keep the pre-2026-11 ONE-line-per-widget footprint. 41-50
+ * rows afford two lines per widget; only > 50 rows get the default three.
+ * Think and tool use the SAME cap independently. Unknown height (undefined,
+ * e.g. a unit test with no geometry) keeps the default full cap. */
 export function dockLineCap(terminalRows?: number): number {
-	if (terminalRows !== undefined && terminalRows <= COMPOSER_COMPACT_TERMINAL_ROWS) {
-		return DOCK_COMPACT_MAX_LINES
-	}
+	if (terminalRows === undefined) return DOCK_WIDGET_MAX_LINES
+	if (terminalRows <= 40) return DOCK_COMPACT_MAX_LINES
+	if (terminalRows <= 50) return 2
 	return DOCK_WIDGET_MAX_LINES
 }
 
@@ -430,13 +439,12 @@ export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () =
 
 /** Up to `maxLines` display lines for one think row (pure, testable).
  *
- * Tail vs head: a LIVE burst shows the TAIL — the last N non-blank lines,
- * the same law tui-pi's ThinkPanel uses (`TAIL_LINES = 3`); the newest text
- * is what the reader is watching. A collapsed `💭 thought` summary shows the
- * HEAD — the first N lines, so the familiar `💭 thought · Xs · <first line>`
- * stays the top line and the block reads as a summary. The first line
- * carries the `💭 … · Xs · ` prefix; continuation lines are indented 3
- * columns (the width of `💭 `) so they sit under the content.
+ * The block always shows the TAIL — the last N non-blank lines, the same law
+ * tui-pi's ThinkPanel uses (`TAIL_LINES = 3`). Live AND collapsed keep the
+ * same tail: collapsing only swaps the prefix (`💭 thinking · ` → `💭 thought · `)
+ * so the block never jumps back to the head at the collapse instant. The
+ * first displayed line carries the `💭 … · Xs · ` prefix; continuation lines
+ * are indented 3 columns (the width of `💭 `) so they sit under the content.
  *
  * Rows without panel state (replay shapes) paint nothing. */
 export function thinkBlockLines(
@@ -455,7 +463,7 @@ export function thinkBlockLines(
 	}
 	if (row.elapsedSec !== undefined) {
 		const secs = row.elapsedSec.toFixed(1)
-		const picked = lines.length === 0 ? [""] : lines.slice(0, n)
+		const picked = lines.length === 0 ? [""] : lines.slice(-n)
 		return picked.map((line, index) => (index === 0 ? `💭 thought · ${secs}s · ${line}` : `   ${line}`))
 	}
 	return []
@@ -518,8 +526,7 @@ export type DockViewOptions = {
  * think/tool lines (see `todosTableLines`).
  *
  * Think: the newest LIVE burst wins; otherwise the newest collapsed summary
- * still inside its 2s linger. Up to `maxLines` lines (tail while live, head
- * once collapsed).
+ * still inside its 2s linger. Up to `maxLines` lines, always the tail.
  *
  * Tool: live tool rows, chronological order, up to `maxLines` (the newest
  * `maxLines` survive the slice). A settled row is painted for 2s and then
@@ -527,12 +534,23 @@ export type DockViewOptions = {
  * settled rows `faded` in the store (clear old, show new). Running rows
  * always show.
  *
+ * Clock law (M1): the entry reads the shared `dockSpin` signal
+ * UNCONDITIONALLY. A collapsed/lingering/fading think block no longer reads
+ * the spinner (the streaming branch is the only one that did), so without
+ * this read the tick bumped a signal nobody tracked and a think-ONLY dock
+ * painted no intermediate fade frames — it sat at full color until the
+ * store dropped the row at 2.3s. The read makes every tick re-run the
+ * builders, and the view re-derives `skinDockLineFg` from the new clock.
+ *
  * `tone` keys the status-color family (resolved at render). `id` is the
  * STABLE entrance-fade key (spinner glyphs churn the text — the id must
  * not); `fadeOutAt` anchors the exit fade. */
 export type DockBlocks = { think: DockLine[]; tool: DockLine[]; now: number; decorated: boolean }
 
 export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = {}): DockBlocks {
+	// M1: unconditional clock consumption (see the Clock law above). Must stay
+	// the FIRST reactive read so a think-only dock repaints on every tick.
+	void dockSpin()
 	const now = options.now ?? Date.now()
 	const decorated = options.decorated ?? motionDecorationsEnabled()
 	const maxLines = Math.max(1, Math.floor(options.maxLines ?? DOCK_WIDGET_MAX_LINES))
@@ -557,6 +575,11 @@ export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = 
 	}
 	if (thinkRow !== undefined) {
 		const stopAt = skinStopAt(thinkRow)
+		// M2 (view side): a LIVE row carries no exit anchor, even when the row
+		// still has a stale `elapsedSec` from the segment that collapsed before
+		// this burst resumed (the store clears it on the upsert too — belt and
+		// braces: an old anchor would paint the fresh burst in background).
+		const fadeOutAt = thinkRow.streaming === true ? undefined : stopAt
 		for (const text of thinkBlockLines(thinkRow, dockSpin, maxLines, now)) {
 			think.push({
 				text,
@@ -564,7 +587,7 @@ export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = 
 				italic: true,
 				accent: "think",
 				id: `dock:think:${thinkRow.key}`,
-				fadeOutAt: stopAt,
+				fadeOutAt,
 			})
 		}
 	}
@@ -860,9 +883,12 @@ export function dockAccentColor(theme: ComponentTheme | undefined, accent: DockA
 
 /** Whether the dock needs the shared animation clock right now (pure):
  * any visible line (entrance fades / exit sweep) or a live child tree in
- * the lastRequest dock (which reads this module's dockSpin). */
+ * the lastRequest dock (which reads this module's dockSpin). The line read
+ * is UNTRACKED: `dockBlocks` consumes `dockSpin` unconditionally (M1), and
+ * the fps accessor that calls this is a reactive effect — tracking the tick
+ * there would re-register the renderer ticker on every bump. */
 export function dockNeedsClock(rows: readonly SeamRow[]): boolean {
-	if (dockLines(rows).length > 0) return true
+	if (untrack(() => dockLines(rows)).length > 0) return true
 	return rows.some((row) => row.kind === "subagents" && row.children.some((child) => child.status === "running"))
 }
 
@@ -965,11 +991,12 @@ export const activityFrameLatch = createFrameLatch()
  * unmount are each DEFERRED one render tick (flicker mitigation 1,
  * `activityFrameLatch` below the clock helpers) so they never share a frame
  * with the turn-boundary reflows. Inside the frame each widget block paints
- * up to the geometry's line cap (3 default, 1 at compact terminals); short
- * terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS) also drop the box for a left
- * rule with the title in the first line (H2). Line entrance fade 0.4s and
- * the 2s-linger → 300ms-sweep exit fade both ride the shared motion clock —
- * no timers are added (contract §2.2; reduced/off have no gradient). */
+ * up to the geometry's line cap (dockLineCap: 1 at ≤ 40 rows, 2 at 41-50,
+ * 3 above; short terminals ≤ COMPOSER_COMPACT_TERMINAL_ROWS also drop the
+ * box for a left rule with the title in the first line (H2)). Line entrance
+ * fade 0.4s and the 2s-linger → 300ms-sweep exit fade both ride the shared
+ * motion clock — no timers are added (contract §2.2; reduced/off have no
+ * gradient, and their hard removal coincides with the 2.0s linger edge). */
 export function WidgetsDock(props: {
 	/** The shared seam-rows store (getter-prop law: the page passes
 	 * `{ get rows() { return projection.rows } }` — the STORE ARRAY itself,
@@ -1016,8 +1043,9 @@ export function WidgetsDock(props: {
 	createEffect(() => activityFrameLatch.push(turnActive()))
 	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
-	// Per-widget line cap: 3 above the compact threshold, 1 at/below it (the
-	// 80x24 two-row activity footprint stays untouched).
+	// Per-widget line cap, graded by terminal height (≤ 40 → 1, 41-50 → 2,
+	// > 50 → 3): the middle band never grows the activity frame past the
+	// transcript floor.
 	const lineCap = () => dockLineCap(dimensions().height)
 	const frameBlocks = () => activityBlocks(props.rows, { maxLines: lineCap() })
 	// Explicit height = 2 border rows + the visible content rows (title rides
