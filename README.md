@@ -72,6 +72,7 @@ Every launch converges the `opentui` profile to this set (pinned versions):
 | core | `@aiwayds/dsh-subagent-registry` | subagent discovery and registration |
 | core | `@aiwayds/dsh-llm-net-retry` | retries transient provider/network failures |
 | core | `@aiwayds/dsh-web-search-anysearch` | web search without a per-provider key |
+| core | `@aiwayds/dsh-mcp-adapter` | MCP catalog/dispatch meta-tools (`mcp_list` / `mcp_call`) |
 | core | `@aiwayds/dsh-approval-policy` | tool-approval policy |
 | core | `@aiwayds/dsh-model-sync` | keeps the model list in sync with the provider catalog |
 | recommended | `@aiwayds/dsh-llm-stats` | token/cost accounting behind `/usage` |
@@ -93,6 +94,19 @@ on a fresh profile. Both rows are written for every tier — including
 `--plugins=none`, because the tools must be visible regardless of whether the
 anysearch bundle is installed.
 
+MCP ships as a pair: the adapter above only catalogs tools that the official
+`@deepseek-ai/dsh-mcp-client` registered, so provisioning also inserts one
+client row (`mcp-context7`, transport `streamable-http`, endpoint
+`https://mcp.context7.com/mcp`). `context7` is read-only documentation lookup,
+needs no API key, and starts fast over HTTP. `mcp_list` / `mcp_call` then
+appear in the model tool catalog, and `/mcp` shows the same catalog. A failed
+or offline connection is non-fatal: `mcp-client` logs the error, the host
+still boots, and the server's tools are simply absent until it reconnects.
+An existing `mcp-context7` row (for example one the user edited) is never
+rewritten or duplicated. Under `--plugins=none` neither the adapter nor this
+row is written — the client alone would expose unfolded `mcp__*` schemas,
+which is not the promised setup.
+
 A plugin counts as installed only when all three agree: it is in the profile
 `dependencies`, the installed `node_modules` version satisfies the pin, and its
 name is in `dsh.profile.bundles`. Missing pieces are repaired with one
@@ -113,7 +127,8 @@ DSH_OPENTUI_PLUGINS=none dsh-opentui
 
 The profile is still created/kept, the model route still written (including the
 `tool-web` / `web` rows), and the retired-entry cleanup still runs; only plugin
-installation and managed-bundle appends are skipped. You can always manage
+installation, managed-bundle appends and the default MCP server row are
+skipped (an existing `mcp-context7` row is left untouched). You can always manage
 plugins yourself afterwards with `dsh plugin --profile opentui add <pkg>`.
 `--dry-run` prints every command provisioning would run without executing it.
 

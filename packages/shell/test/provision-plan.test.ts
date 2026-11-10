@@ -5,6 +5,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   DEFAULT_TIER,
   EXCLUDED_PLUGINS,
+  MCP_CONTEXT7_PATCH,
   PLUGIN_SET,
   RETIRED_PROFILE_ENTRIES,
   TOOL_WEB_PATCH,
@@ -12,6 +13,7 @@ import {
   cleanupDependencies,
   compareVersions,
   formatStep,
+  hasAnyEntry,
   installSpecs,
   isDryRun,
   isLocalSpec,
@@ -19,6 +21,7 @@ import {
   parseDumpConfig,
   parseTier,
   patchEntryBlock,
+  planMcpPatch,
   planPluginInstall,
   planToolPatch,
   pluginAddArgs,
@@ -44,8 +47,8 @@ describe('plugin set', () => {
     const core = selectPlugins('core')
     const recommended = selectPlugins('recommended')
     expect(DEFAULT_TIER).toBe('recommended')
-    expect(core.length).toBe(6)
-    expect(recommended.length).toBe(11)
+    expect(core.length).toBe(7)
+    expect(recommended.length).toBe(12)
     for (const plugin of core) expect(recommended.some((p) => p.name === plugin.name)).toBe(true)
     expect(recommended.filter((p) => p.tier === 'recommended').length).toBe(5)
   })
@@ -108,8 +111,8 @@ describe('dependency idempotency', () => {
 describe('planPluginInstall', () => {
   test('a fresh profile installs every selected plugin in one batch', () => {
     const plan = planPluginInstall({ tier: 'recommended' })
-    expect(plan.total).toBe(11)
-    expect(plan.install.length).toBe(11)
+    expect(plan.total).toBe(12)
+    expect(plan.install.length).toBe(12)
     expect(plan.satisfied).toBe(0)
     expect(plan.install[0].spec).toBe('@aiwayds/dsh-ask-router@0.7.0')
     expect(plan.install[0].reason).toContain('ask surface')
@@ -118,7 +121,7 @@ describe('planPluginInstall', () => {
   test('a fully provisioned profile is a no-op (dep + node_modules version + bundle entry)', () => {
     const plan = planPluginInstall({ tier: 'recommended', ...fullyProvisioned() })
     expect(plan.install).toEqual([])
-    expect(plan.satisfied).toBe(11)
+    expect(plan.satisfied).toBe(12)
     expect(plan.missingBundles).toEqual([])
   })
 
@@ -143,7 +146,7 @@ describe('planPluginInstall', () => {
     const plan = planPluginInstall({ tier: 'recommended', ...fixture })
     expect(plan.install).toEqual([])
     expect(plan.missingBundles).toEqual(['@aiwayds/dsh-ask-router'])
-    expect(plan.satisfied).toBe(10)
+    expect(plan.satisfied).toBe(11)
   })
 
   test('link:/file: pins count as satisfied even when node_modules is absent', () => {
@@ -156,7 +159,7 @@ describe('planPluginInstall', () => {
   })
 
   test('tier core plans only core; tier none plans nothing', () => {
-    expect(planPluginInstall({ tier: 'core' }).install.length).toBe(6)
+    expect(planPluginInstall({ tier: 'core' }).install.length).toBe(7)
     expect(planPluginInstall({ tier: 'none' }).total).toBe(0)
   })
 
@@ -307,6 +310,62 @@ describe('web tool patch rows', () => {
 `)
     expect(plan.toolWeb).toBe('disabled')
     expect(plan.append).toContain(TOOL_WEB_PATCH)
+  })
+})
+
+describe('mcp client patch row', () => {
+  // The exact form the tui profile uses: nested under a top-level insert list.
+  const userRow = `- insert:
+    - id: mcp-context7
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: context7
+        transport: streamable-http
+        url: https://mcp.context7.com/mcp
+`
+
+  test('a fresh profile adds the client row next to the adapter', () => {
+    const plan = planMcpPatch('[]\n')
+    expect(plan.append).toEqual([MCP_CONTEXT7_PATCH])
+    expect(plan.mcp).toBe('missing')
+    expect(plan.changed).toBe(true)
+    // The row is what makes the adapter's mcp_list non-empty: the official
+    // client registers mcp__context7__* which the catalog reads.
+    expect(MCP_CONTEXT7_PATCH).toContain("name: '@deepseek-ai/dsh-mcp-client'")
+    expect(MCP_CONTEXT7_PATCH).toContain('serverName: context7')
+    expect(MCP_CONTEXT7_PATCH).toContain('url: https://mcp.context7.com/mcp')
+  })
+
+  test('a nested row counts as configured even though it is not a top-level id', () => {
+    expect(hasAnyEntry(userRow, 'mcp-context7')).toBe(true)
+    expect(patchEntryBlock(userRow, 'mcp-context7')).toBeNull()
+    const plan = planMcpPatch(userRow)
+    expect(plan.append).toEqual([])
+    expect(plan.mcp).toBe('configured')
+    expect(plan.changed).toBe(false)
+  })
+
+  test('a user-edited row is never rewritten or duplicated', () => {
+    const edited = `- insert:
+    - id: mcp-context7
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: context7
+        transport: streamable-http
+        url: https://my-proxy.example/mcp
+        failOnStartupError: true
+`
+    expect(planMcpPatch(edited).append).toEqual([])
+  })
+
+  test('the appended row is idempotent: planning it back needs nothing', () => {
+    const first = planMcpPatch('')
+    expect(planMcpPatch(first.append.join('')).changed).toBe(false)
+  })
+
+  test('--plugins=none writes no row and never removes an existing one', () => {
+    expect(planMcpPatch('', { enabled: false })).toEqual({ append: [], mcp: 'skipped', changed: false })
+    expect(planMcpPatch(userRow, { enabled: false })).toEqual({ append: [], mcp: 'skipped', changed: false })
   })
 })
 
