@@ -41,6 +41,9 @@ function makeEntryHooks() {
 		openAgents: (name?: string) => {
 			calls.push(`openAgents:${name ?? ""}`)
 		},
+		openSettings: () => {
+			calls.push("openSettings")
+		},
 		refreshFooter: () => {
 			calls.push("refreshFooter")
 		},
@@ -107,7 +110,8 @@ describe("verify: entry slash deps", () => {
 		expect(host.interceptSubmit("/search")).toBe(true)
 		expect(host.interceptSubmit("/plugins")).toBe(true)
 		expect(host.interceptSubmit("/agents workhorse")).toBe(true)
-		expect(calls).toEqual(["openSearch", "openPlugins", "openAgents:workhorse"])
+		expect(host.interceptSubmit("/settings")).toBe(true)
+		expect(calls).toEqual(["openSearch", "openPlugins", "openAgents:workhorse", "openSettings"])
 	})
 
 	test("verify: /btw reaches the entry opener", () => {
@@ -158,10 +162,13 @@ describe("verify: entry slash deps", () => {
 				themes,
 				openSearch,
 				openPlugins,
+				openSettings,
 				refreshFooter,
 				invalidateFooter,
 			}))
 		`
+		// openSettings is deliberately present above, so only openAgents is
+		// reported — the detector names exactly the moved hook.
 		expect(missingEntryHooks(source, ENTRY_SLASH_HOOKS)).toEqual(["openAgents"])
 		expect(() => assertEntryHooks(source, ENTRY_SLASH_HOOKS)).toThrow(/openAgents/)
 	})

@@ -43,6 +43,7 @@ export const ENTRY_SLASH_HOOKS = [
 	"openSearch",
 	"openPlugins",
 	"openAgents",
+	"openSettings",
 	"refreshFooter",
 	"invalidateFooter",
 ] as const satisfies readonly (keyof SlashHostDeps & keyof SlashCommandContext)[]
@@ -96,6 +97,7 @@ export function buildSlashDeps(base: SlashBaseDeps, hooks: EntrySlashHooks): Sla
 		openSearch: hooks.openSearch,
 		openPlugins: hooks.openPlugins,
 		openAgents: hooks.openAgents,
+		openSettings: hooks.openSettings,
 		refreshFooter: hooks.refreshFooter,
 		invalidateFooter: hooks.invalidateFooter,
 	}

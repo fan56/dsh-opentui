@@ -54,6 +54,7 @@ import { discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } f
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
 import { AgentsPanel, openAgentsPanel } from "../src/routes/session/agents-panel"
+import { SettingsPanel, openSettingsPanel } from "../src/routes/session/settings-panel"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
 import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
@@ -447,6 +448,48 @@ function V2SessionPage(props: {
 	// viewer.steer notices) — the notices slot below lastRequest, not a
 	// permanent transcript row.
 	registerSubagentSteerFeedback((line: string) => void showNotice(line))
+	// /theme switch surface (batch F7b — client-face parity with
+	// host-entry-v2): live apply + persistence through the seam's
+	// configSave (RemoteHostSession.configSave routes `theme` to the
+	// profile config.json, host-face parity); boot reads the stored
+	// name via themeNameFromConfig (shared/boot-shared.ts). Shared by the
+	// /theme command hooks and the /settings panel (one face, no drift).
+	const themeFace = {
+		current: () => themeSeam.current(),
+		list: () => themeSeam.list(),
+		set: (name: string) => {
+			const applied = themeSeam.setTheme(name)
+			if (applied) {
+				try {
+					seam.configSave?.({ theme: name })
+				} catch (error) {
+					console.error("[v2] theme persist failed:", error)
+				}
+			}
+			return applied
+		},
+		// α skin layer: auto/dark/light mode face — a FUNCTION returning the
+		// face (the SlashCommandContext.themes.mode contract; the container
+		// e2e caught an object-shape mismatch here as a picker-open crash).
+		// Pin/free rides the vendored theme service; the persistence follows
+		// the THEME's config layer (themeModePatchKey — workspaceThemeMode
+		// routes into the workspace config.yml, themeMode into the profile
+		// config.json; the v2 vendor config is resolve({}), so the
+		// configState.update path inside pin/free cannot persist anything).
+		mode: () => ({
+			current: () => (themeService.locked() ? themeService.mode() : "auto"),
+			set: (mode: "auto" | "dark" | "light") => {
+				if (mode === "auto") themeService.unlock()
+				else if (!themeService.setMode(mode)) return false
+				try {
+					seam.configSave?.({ [themeModePatchKey]: mode })
+				} catch (error) {
+					console.error("[v2] themeMode persist failed:", error)
+				}
+				return true
+			},
+		}),
+	}
 	const slash = createSlashHost(buildSlashDeps({
 		seam,
 		// Skills ride the SAME registry as the commands: `/name` rows share
@@ -499,6 +542,9 @@ function V2SessionPage(props: {
 		// tui-pi agents manager parity: table + fields layers over the
 		// client-local agent corpus (the composed model column included).
 		openAgents: (name?: string) => openAgentsPanel(name),
+		// /settings panel v1 (whitelist-driven): local preferences + host
+		// settings + read-only namespaces; mounted in the root children below.
+		openSettings: () => openSettingsPanel(),
 		// Footer-quickwins bug fix (/think parity with tui-pi): setting commands
 		// (/think, /model) re-run the page's footer refresh right
 		// after the seam mutation settles — the same entry the turn-end effect
@@ -511,47 +557,9 @@ function V2SessionPage(props: {
 		invalidateFooter: () => {
 			footerRefreshSeq++
 		},
-		// /theme switch surface (batch F7b — client-face parity with
-		// host-entry-v2): live apply + persistence through the seam's
-		// configSave (RemoteHostSession.configSave routes `theme` to the
-		// profile config.json, host-face parity); boot reads the stored
-		// name via themeNameFromConfig (shared/boot-shared.ts).
-		themes: {
-			current: () => themeSeam.current(),
-			list: () => themeSeam.list(),
-			set: (name: string) => {
-				const applied = themeSeam.setTheme(name)
-				if (applied) {
-					try {
-						seam.configSave?.({ theme: name })
-					} catch (error) {
-						console.error("[v2] theme persist failed:", error)
-					}
-				}
-				return applied
-			},
-			// α skin layer: auto/dark/light mode face — a FUNCTION returning the
-			// face (the SlashCommandContext.themes.mode contract; the container
-			// e2e caught an object-shape mismatch here as a picker-open crash).
-			// Pin/free rides the vendored theme service; the persistence follows
-			// the THEME's config layer (themeModePatchKey — workspaceThemeMode
-			// routes into the workspace config.yml, themeMode into the profile
-			// config.json; the v2 vendor config is resolve({}), so the
-			// configState.update path inside pin/free cannot persist anything).
-			mode: () => ({
-				current: () => (themeService.locked() ? themeService.mode() : "auto"),
-				set: (mode: "auto" | "dark" | "light") => {
-					if (mode === "auto") themeService.unlock()
-					else if (!themeService.setMode(mode)) return false
-					try {
-						seam.configSave?.({ [themeModePatchKey]: mode })
-					} catch (error) {
-						console.error("[v2] themeMode persist failed:", error)
-					}
-					return true
-				},
-			}),
-		},
+		// /theme + /settings share ONE theme face (defined above the slash
+		// host): live apply + persistence through the same seam write.
+		themes: themeFace,
 	}))
 	const overlayHost = createComponent(TurnOverlayHost, {
 		controller: overlays,
@@ -640,6 +648,20 @@ function V2SessionPage(props: {
 					get seam() {
 						return seam
 					},
+					onClosed: (summary?: string) => {
+						if (summary !== undefined) sayLine(summary)
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
+				}),
+				// Settings panel v1 (/settings): local preferences + host
+				// settings + read-only namespaces. The theme face is the SAME
+				// object the /theme commands use, so panel and command writes
+				// cannot drift.
+				createComponent(SettingsPanel, {
+					get seam() {
+						return seam
+					},
+					themes: themeFace,
 					onClosed: (summary?: string) => {
 						if (summary !== undefined) sayLine(summary)
 						if (composerRef && !composerRef.focused()) composerRef.focus()

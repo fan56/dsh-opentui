@@ -92,9 +92,9 @@ describe("/session command", () => {
 		expect(dispatchLine(commands, "/session")?.kind).toBe("command")
 		const bare = dispatchLine(commands, "/session")
 		if (bare.kind === "command") expect(bare.command.name).toBe("/session")
-		// "/se" also matches /search: the longer /session wins.
+		// "/se" also matches /search and /settings: the longest (/settings) wins.
 		const longest = dispatchLine(commands, "/se")
-		if (longest.kind === "command") expect(longest.command.name).toBe("/session")
+		if (longest.kind === "command") expect(longest.command.name).toBe("/settings")
 		const resume = dispatchLine(commands, "/res")
 		if (resume.kind === "command") expect(resume.command.name).toBe("/resume")
 	})

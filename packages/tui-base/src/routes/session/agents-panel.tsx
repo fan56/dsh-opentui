@@ -47,6 +47,7 @@ import { useThemeOptional } from "../../context/theme"
 import { warningColor } from "../../skin/semantic"
 import { stringWidth } from "../../util/string-width"
 import type { SeamAgentOfficialCaps, SeamAgentRow, SeamEffortOption, SessionSeam } from "../../seams/session"
+import { openSettingsPanel } from "./settings-panel"
 
 const MARKER_W = 2
 const TABLE_SEP = " │ "
@@ -316,6 +317,12 @@ export function agentLimitsRows(agent: SeamAgentRow | undefined, caps: SeamAgent
 		value: caps?.maxDepth === undefined ? "n/a" : String(caps.maxDepth),
 	})
 	return rows
+}
+
+/** The /settings row id an official-cap Enter jumps to (settings whitelist
+ * ids: `subagent.maxActiveSubagents` / `subagent.maxDepth`). */
+export function officialCapSettingsRow(key: "maxActiveSubagents" | "maxDepth"): string {
+	return `subagent.${key}`
 }
 
 /** Esc target in the limits layer: the table when agents exist, the whole
@@ -678,6 +685,16 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		if (level() === "limits") setCaps(next)
 	}
 
+	/**
+	 * The two official caps are host settings (ns `subagent`), so Enter jumps
+	 * to their real editor in /settings instead of a dead hint (the old copy
+	 * said "edit them in /settings" with no way to get there).
+	 */
+	function openSettingsRow(key: "maxActiveSubagents" | "maxDepth") {
+		close()
+		setTimeout(() => openSettingsPanel(officialCapSettingsRow(key)), 3)
+	}
+
 	function openMaxRoundsEditor() {
 		const current = agent()
 		if (current === undefined) return
@@ -987,7 +1004,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 						if (row === undefined) return
 						if (row.key === "maxRounds") openMaxRoundsEditor()
 						else if (row.key === "background") toggleBackground()
-						else setStatus("official subagent caps live in the subagent plugin entry — edit them in /settings")
+						else openSettingsRow(row.key)
 					} else if (current === "limitEdit") {
 						commitMaxRounds(limitValue())
 					} else if (current === "deep") {

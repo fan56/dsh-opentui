@@ -386,6 +386,8 @@ export interface SlashHostDeps {
 	 * says "not mounted in this entry" (the pre-fix symptom: the entry passed
 	 * the hook, this deps type/ctx spread never carried it). */
 	openAgents?: SlashCommandContext["openAgents"]
+	/** /settings panel opener (v1); absent = /settings says "not mounted". */
+	openSettings?: SlashCommandContext["openSettings"]
 	/** Footer-refresh hook (footer-quickwins); absent = setting commands skip
 	 * the immediate footer re-read (turn-end-only refresh, the old behavior). */
 	refreshFooter?: SlashCommandContext["refreshFooter"]

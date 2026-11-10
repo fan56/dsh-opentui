@@ -178,10 +178,13 @@ describe("dispatchLine", () => {
 	})
 
 	test("partial name dispatches to the longest registered prefix", () => {
-		// "/se" matches /session and /search; the longer name wins.
+		// "/se" matches /session, /search and /settings; the longest wins.
 		const result = dispatchLine(commands, "/se")
 		expect(result.kind).toBe("command")
-		if (result.kind === "command") expect(result.command.name).toBe("/session")
+		if (result.kind === "command") expect(result.command.name).toBe("/settings")
+		// "/sess" narrows back to /session.
+		const session = dispatchLine(commands, "/sess")
+		if (session.kind === "command") expect(session.command.name).toBe("/session")
 		// "/res" only has one match since the rename.
 		const resume = dispatchLine(commands, "/res")
 		if (resume.kind === "command") expect(resume.command.name).toBe("/resume")
@@ -214,6 +217,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/plugins",
 			"/search",
 			"/agents",
+			"/settings",
 			"/think",
 			"/hints",
 			"/motion",
@@ -244,6 +248,7 @@ describe("core commands", () => {
 			"/plugins — manage plugins (opens the panel)",
 			"/search — full-text search over stored sessions",
 			"/agents — manage agent definitions (model, think level, spawn depth) from markdown files",
+			"/settings — settings: local preferences, host settings, other namespaces",
 			"/think — set reasoning effort (opens the picker)",
 			"/hints — key hints: toggle bar; <segment> on|off; all on|off; lang <locale>",
 			"/motion — animation tier: full | reduced | off | auto (bare shows setting → effective)",

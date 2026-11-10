@@ -31,6 +31,8 @@ export interface RemoteSettingsRow {
 	ns: string
 	revision?: number
 	value?: unknown
+	/** Composition-base layer (defaults resolved), when the host serves it. */
+	base?: unknown
 	autoGenerate?: boolean
 	schema?: unknown
 	user?: unknown
@@ -137,6 +139,7 @@ function asRow(value: unknown): RemoteSettingsRow {
 		ns: String(row.ns ?? ""),
 		...(typeof row.revision === "number" ? { revision: row.revision } : {}),
 		...(row.value !== undefined ? { value: row.value } : {}),
+		...(row.base !== undefined ? { base: row.base } : {}),
 		...(row.autoGenerate !== undefined ? { autoGenerate: row.autoGenerate === true } : {}),
 		...(row.schema !== undefined ? { schema: row.schema } : {}),
 		...(row.user !== undefined ? { user: row.user } : {}),

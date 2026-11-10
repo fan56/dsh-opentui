@@ -98,6 +98,10 @@ import type {
 	SeamEffortOption,
 	SeamPresetRow,
 	SeamProviderModel,
+	SeamSettingsDocument,
+	SeamSettingsMutateResult,
+	SeamSettingsOp,
+	SeamSettingsRow,
 SeamSessionEvent,
 	SeamSessionInfo,
 	SeamSessionSummary,
@@ -460,6 +464,42 @@ export class RemoteSessionSeam implements SessionSeam {
 		officialCaps: (): Promise<SeamAgentOfficialCaps> => this.#session.agentOfficialCaps(),
 	}
 
+	// ---- /settings host document face (v1) ----
+	// RemoteHostSession settingsDescribe/settingsMutate 1:1 (settings/describe
+	// + settings/mutate over the profile patch file). Writes are PATH OPS
+	// only — the /settings panel never sends settings/replace (a whole-section
+	// replace would drop the secret slots the host redacts out of describe).
+	// A `settings/conflict` (stale expectedRevision) is an ordinary outcome,
+	// not a throw: the panel re-reads and retries once.
+	settings = {
+		describe: async (): Promise<SeamSettingsDocument> => {
+			const doc = await this.#session.settingsDocument()
+			return {
+				writable: doc.writable,
+				hasDocument: doc.hasDocument,
+				namespaces: doc.namespaces.map(asSeamSettingsRow),
+			}
+		},
+		mutate: async (ns: string, ops: SeamSettingsOp[], revision?: number): Promise<SeamSettingsMutateResult> => {
+			try {
+				await this.#session.settingsMutate(ns, ops, revision)
+				return { ok: true }
+			} catch (error) {
+				return {
+					ok: false,
+					conflict: (error as { code?: unknown } | null)?.code === "settings/conflict",
+					error: error instanceof Error ? error.message : String(error),
+				}
+			}
+		},
+		onChanged: (listener: (ns: string, revision: number) => void): (() => void) =>
+			this.#session.onSettingsUpdated(listener),
+		identity: (): { profile: string; dshHome: string } => ({
+			profile: this.#session.profileName(),
+			dshHome: this.#session.homeDir(),
+		}),
+	}
+
 	// ---- /login provider face (batch H4, tui-pi 65-ux-batch parity) ----
 	// The credentials half (credentialStatus/login/logout) is RemoteHostSession
 	// 1:1 (credentials/set|unset — audit row 24); the route half rides the
@@ -666,4 +706,30 @@ function blocksText(content: unknown): string {
 function assistantTextValue(data: Record<string, unknown>): string {
 	if (typeof data.text === "string") return data.text.trim()
 	return blocksText(data.content ?? data.parts)
+}
+
+/** Project shell's RemoteSettingsRow onto the structural seam row (the
+ * shapes are identical today; this is the one narrowing site). */
+function asSeamSettingsRow(row: {
+	ns: string
+	revision?: number
+	value?: unknown
+	base?: unknown
+	autoGenerate?: boolean
+	schema?: unknown
+	user?: unknown
+	secrets?: { path: string[]; set: boolean }[]
+}): SeamSettingsRow {
+	return {
+		ns: row.ns,
+		...(row.revision !== undefined ? { revision: row.revision } : {}),
+		...(row.value !== undefined ? { value: row.value } : {}),
+		...(row.base !== undefined ? { base: row.base } : {}),
+		...(row.autoGenerate !== undefined ? { autoGenerate: row.autoGenerate } : {}),
+		...(row.schema !== undefined ? { schema: row.schema } : {}),
+		...(row.user !== undefined ? { user: row.user } : {}),
+		...(row.secrets !== undefined
+			? { secrets: row.secrets.map((secret) => ({ path: [...secret.path], set: secret.set })) }
+			: {}),
+	}
 }

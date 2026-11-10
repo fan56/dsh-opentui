@@ -294,6 +294,59 @@ export interface SeamAgentSetResult {
 	error?: string
 }
 
+/**
+ * One settings namespace row (structural parity with shell's
+ * `RemoteSettingsRow` / the wire's `settings/describe` namespace view).
+ * Values are already REDACTED by the host: a secret slot rides only as
+ * `secrets[{path,set}]`, never as a value.
+ */
+export interface SeamSettingsRow {
+	ns: string
+	revision?: number
+	value?: unknown
+	/** Composition-base layer (defaults resolved), when the host serves it. */
+	base?: unknown
+	autoGenerate?: boolean
+	schema?: unknown
+	user?: unknown
+	secrets?: { path: string[]; set: boolean }[]
+}
+
+/** The settings document view (`settings/describe`): writes are refused
+ * wholesale when `writable` is false. */
+export interface SeamSettingsDocument {
+	writable: boolean
+	hasDocument: boolean
+	namespaces: SeamSettingsRow[]
+}
+
+/** One path-addressed write (the wire's SettingsPathOpView). Path ops only —
+ * a whole-section `replace` would drop redacted secret slots. */
+export type SeamSettingsOp =
+	| { op: "set"; path: string[]; value: unknown }
+	| { op: "unset"; path: string[] }
+
+/** One write outcome. `conflict` mirrors the host's `settings/conflict`
+ * (stale `expectedRevision`) — the caller re-reads and retries once. */
+export type SeamSettingsMutateResult =
+	| { ok: true }
+	| { ok: false; conflict: boolean; error: string }
+
+/**
+ * /settings face (v1): the host settings document behind the profile
+ * (settings.describe/mutate → the profile patch file) plus the read-only
+ * identity the panel header shows. Optional — a seam without it keeps local
+ * preferences editable and degrades the host zone to read-only.
+ */
+export interface SeamSettingsFace {
+	describe(): Promise<SeamSettingsDocument>
+	mutate(ns: string, ops: SeamSettingsOp[], revision?: number): Promise<SeamSettingsMutateResult>
+	/** Host push (`settings/document-updated`); the disposer unsubscribes. */
+	onChanged?(listener: (ns: string, revision: number) => void): () => void
+	/** Profile name + dsh home (display only, never written). */
+	identity?(): { profile: string; dshHome: string }
+}
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -346,6 +399,20 @@ export interface SessionSeam {
 	 * session-scoped.
 	 */
 	configSave?(patch: Record<string, unknown>): Record<string, unknown>
+	/**
+	 * Layered config reads for the /settings local zone: the profile
+	 * config.json RAW contents (no overlay/env merge) and the workspace
+	 * overlay slice. Optional — a seam without them renders the merged value
+	 * on both layer rows.
+	 */
+	configRaw?(): Record<string, unknown>
+	workspaceConfig?(): Record<string, unknown>
+	/**
+	 * /settings host document face (v1): describe/mutate over the profile
+	 * patch file, plus profile identity. Optional — a seam without it keeps
+	 * the local zone and shows the host zone read-only.
+	 */
+	settings?: SeamSettingsFace
 	resumeSession(id: string): "ok" | "owned"
 	newSession(): void
 	renameSession(title: string): Promise<{ title: string; seq: number } | undefined>

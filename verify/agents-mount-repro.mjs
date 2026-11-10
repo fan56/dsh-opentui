@@ -11,6 +11,10 @@
 //      "/agents: the manager panel is not mounted in this entry";
 //   2. the panel responds to keys: Enter drills into the fields layer,
 //      Esc returns, `l` opens the limits layer, Esc closes the panel;
+//   2b. `/settings` opens the v1 three-zone panel (本地偏好 / 宿主设置 /
+//      其它命名空间), a local preference edit (motion) really rewrites the
+//      scratch profile config.json (full, then back to auto), and Esc clears
+//      the filter before closing the panel;
 //   3. `/thi` + Tab completes to `/think ` (composer-side Tab), and a
 //      user-invocable skill (a scratch-home FIXTURE, not the user's corpus)
 //      renders as an italic `/name` row that Tab completes with its trailing
@@ -299,6 +303,97 @@ try {
   }
   record('/agents Esc closes the panel', closed.ok,
     [closed.ok ? 'back to the composer' : 'panel still on screen'])
+
+  // ---------------- 1b. /settings panel v1 ----------------
+  // The three fixed zones, a REAL local-preference write (motion full → auto)
+  // observed in the scratch profile config.json, and the Esc hierarchy
+  // (clear the filter first, then close).
+  const SETTINGS_ZONES = ['本地偏好', '宿主设置', '其它命名空间']
+  const profileConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
+  const readProfile = () => {
+    try { return JSON.parse(readFileSync(profileConfigPath, 'utf8')) } catch { return {} }
+  }
+  const waitProfile = async (pred, timeout = 8_000) => {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      const config = readProfile()
+      if (pred(config)) return config
+      await sleep(200)
+    }
+    return readProfile()
+  }
+  const zonesVisible = (out) => SETTINGS_ZONES.every((zone) => out.includes(zone))
+
+  await submit(SESS, '/settings')
+  const settingsUp = await waitPane(SESS, zonesVisible, 25_000)
+  snap('11-settings-open')
+  record('/settings opens the three-zone panel', settingsUp.ok,
+    [SETTINGS_ZONES.filter((zone) => settingsUp.out.includes(zone)).join(' / ') || 'no zone title'])
+  record('/settings marks other namespaces read-only ("本 TUI 不消费")',
+    settingsUp.out.includes('本 TUI 不消费'),
+    [settingsUp.out.includes('本 TUI 不消费') ? 'read-only note visible' : 'note missing'])
+
+  // Local preference write: filter to the motion row, Enter opens the enum
+  // picker, Home-ish (Up x4) + Down lands on `full` deterministically.
+  await typeText(SESS, 'motion')
+  const motionRow = await waitPane(SESS, (out) => /▸\s+motion/.test(out) && !out.includes('footerHints.motion'), 8_000)
+  snap('12-settings-motion-filter')
+  record('/settings filter narrows to the motion row', motionRow.ok,
+    [motionRow.ok ? '/▸ motion/' : motionRow.out.split('\n').find((l) => l.includes('motion')) ?? 'no motion row'])
+  sendKeys(SESS, 'Enter')
+  const motionOptions = await waitPane(SESS, (out) => out.includes('pick a value') && out.includes('off'), 8_000)
+  snap('13-settings-motion-options')
+  record('/settings Enter opens the motion enum', motionOptions.ok,
+    [motionOptions.ok ? 'auto/full/reduced/off' : 'options layer not visible'])
+  for (let i = 0; i < 4; i++) { sendKeys(SESS, 'Up'); await sleep(120) }
+  sendKeys(SESS, 'Down')
+  await sleep(150)
+  sendKeys(SESS, 'Enter')
+  const fullConfig = await waitProfile((config) => config.motion === 'full')
+  snap('14-settings-motion-full')
+  record('settings writes motion=full into the profile config.json',
+    fullConfig.motion === 'full', [`motion: ${JSON.stringify(fullConfig.motion)}`])
+
+  // Back to auto on the same row (the filter is still armed).
+  await sleep(500)
+  sendKeys(SESS, 'Enter')
+  await waitPane(SESS, (out) => out.includes('pick a value'), 8_000)
+  for (let i = 0; i < 4; i++) { sendKeys(SESS, 'Up'); await sleep(120) }
+  sendKeys(SESS, 'Enter')
+  const autoConfig = await waitProfile((config) => config.motion === 'auto')
+  snap('15-settings-motion-auto')
+  record('settings writes motion back to auto', autoConfig.motion === 'auto',
+    [`motion: ${JSON.stringify(autoConfig.motion)}`])
+
+  // The host zone rides a REAL settings/describe (the document lands async):
+  // wait for a positive namespace count, then for the whitelist rows.
+  const liveDoc = await waitPane(SESS, (out) => /document writable · [1-9]\d* namespace/.test(out), 12_000)
+  snap('15b-settings-live-document')
+  const namespaceCount = /document writable · (\d+) namespace/.exec(liveDoc.out)?.[1]
+  record('/settings reads the live host settings document', liveDoc.ok,
+    [`namespace count: ${namespaceCount ?? '0'}`])
+
+  // Esc hierarchy: a non-empty filter clears first; the panel stays up.
+  const filterCleared = await waitPane(SESS, (out) => out.includes('filter: "motion"'), 4_000)
+  sendKeys(SESS, 'Escape')
+  const clearedFrame = await waitPane(SESS, (out) => !out.includes('filter: "motion"') && zonesVisible(out), 6_000)
+  snap('16-settings-filter-cleared')
+  record('/settings Esc clears the filter before closing the panel',
+    filterCleared.ok && clearedFrame.ok,
+    [filterCleared.ok ? 'filter was armed' : 'filter line not seen',
+      clearedFrame.ok ? 'panel still open, filter cleared' : 'panel closed with the filter'])
+  const hostRows = ['subagent.maxActiveSubagen', 'subagent.maxDepth', 'permission.defaultPreset', 'session-log-deepseek.enab']
+  const hostRowsVisible = hostRows.every((row) => clearedFrame.out.includes(row))
+  record('/settings host zone renders the whitelisted rows from the live document', hostRowsVisible,
+    [hostRowsVisible ? 'all four rows visible' : `missing: ${hostRows.filter((row) => !clearedFrame.out.includes(row)).join(', ')}`])
+  record('/settings never lists dsh-tui (not part of the opentui profile)',
+    !clearedFrame.out.includes('dsh-tui'),
+    [!clearedFrame.out.includes('dsh-tui') ? 'absent' : 'dsh-tui leaked into the read-only list'])
+  sendKeys(SESS, 'Escape')
+  const settingsClosed = await waitPane(SESS, (out) => !zonesVisible(out) && idle(out), 8_000)
+  snap('17-settings-closed')
+  record('/settings Esc closes the panel', settingsClosed.ok,
+    [settingsClosed.ok ? 'back to the composer' : 'panel still on screen'])
 
   // ---------------- 2. /thi + Tab completion ----------------
   await typeText(SESS, '/thi')

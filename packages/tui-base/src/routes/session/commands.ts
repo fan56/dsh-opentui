@@ -176,6 +176,12 @@ export interface SlashCommandContext {
 	 * an entry without it degrades /agents to a notice.
 	 */
 	openAgents?(name?: string): void
+	/**
+	 * Open the /settings panel (whitelist-driven local preferences + host
+	 * settings + read-only namespaces). Optional — an entry without it
+	 * degrades /settings to a notice.
+	 */
+	openSettings?(): void
 }
 
 // ---------------------------------------------------------- /preset helpers --
@@ -576,6 +582,22 @@ export function coreCommands(): SlashCommand[] {
 				}
 				const name = argText.trim()
 				ctx.openAgents(name === "" ? undefined : name)
+			},
+		},
+		{
+			// /settings opens the whitelist-driven settings panel v1: local
+			// preferences (configSave → profile config.json, live),
+			// host settings (settings.mutate → profile patch file), and every
+			// other namespace read-only ("本 TUI 不消费"). A seam without the
+			// settings face still gets the local zone.
+			name: "/settings",
+			description: "settings: local preferences, host settings, other namespaces",
+			run(ctx) {
+				if (!ctx.openSettings) {
+					ctx.say("/settings: the panel is not mounted in this entry")
+					return
+				}
+				ctx.openSettings()
 			},
 		},
 		{

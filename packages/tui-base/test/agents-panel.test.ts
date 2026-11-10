@@ -20,6 +20,7 @@ import {
 	effortCursorFor,
 	initialAgentLevel,
 	limitsEscapeTarget,
+	officialCapSettingsRow,
 	parseDeepInput,
 	parseMaxRoundsInput,
 	pickerCancel,
@@ -211,6 +212,13 @@ describe("limits layer (phase 2)", () => {
 		expect(lines.some((line) => line.text.includes("maxRounds"))).toBe(false)
 		expect(limitsEscapeTarget(0)).toBe("close")
 		expect(limitsEscapeTarget(2)).toBe("table")
+	})
+
+	test("the official-cap Enter jumps to the real /settings whitelist row", () => {
+		// The old copy said "edit them in /settings" with no way to get there;
+		// the id must match settings-panel's whitelist exactly.
+		expect(officialCapSettingsRow("maxActiveSubagents")).toBe("subagent.maxActiveSubagents")
+		expect(officialCapSettingsRow("maxDepth")).toBe("subagent.maxDepth")
 	})
 
 	test("broken files are reported in both layers", () => {

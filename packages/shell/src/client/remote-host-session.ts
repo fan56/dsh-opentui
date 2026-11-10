@@ -1180,6 +1180,16 @@ export class RemoteHostSession {
 		return this.#settingsClient().describeDocument()
 	}
 
+	/** Read-only identity the /settings panel header shows. */
+	profileName(): string {
+		return this.#profile
+	}
+
+	/** The dsh home the profile lives under (display only). */
+	homeDir(): string {
+		return this.#dshHome
+	}
+
 	/** Subscribe to `settings/document-updated` pushes (row 25). Returns a disposer. */
 	onSettingsUpdated(listener: (ns: string, revision: number) => void): () => void {
 		return this.#addPushListener({ onSettingsUpdated: listener })

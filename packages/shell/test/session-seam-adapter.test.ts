@@ -484,3 +484,77 @@ describe("RemoteSessionSeam login face (batch H4)", () => {
 		expect(await new RemoteSessionSeam(dead.session).login!.routes()).toEqual([])
 	})
 })
+
+describe("/settings host document face (v1)", () => {
+	test("describe maps the document view and mutate maps settings/conflict to a retryable outcome", async () => {
+		const mutated: { ns: string; ops: unknown[]; revision?: number }[] = []
+		const listeners: ((ns: string, revision: number) => void)[] = []
+		const { session } = fakeSession({
+			settingsDocument: async () => ({
+				writable: true,
+				hasDocument: true,
+				namespaces: [
+					{ ns: "subagent", revision: 3, value: { maxActiveSubagents: 8 }, schema: { uid: 1, refs: {} } },
+				],
+			}),
+			settingsMutate: async (ns: string, ops: unknown[], revision?: number) => {
+				mutated.push({ ns, ops, revision })
+				if (revision === 3) {
+					const error = new Error("stale editor") as Error & { code: string; details: unknown }
+					error.code = "settings/conflict"
+					error.details = { ns, expected: 3, actual: 4 }
+					throw error
+				}
+			},
+			onSettingsUpdated: (listener: (ns: string, revision: number) => void) => {
+				listeners.push(listener)
+				return () => {
+					listeners.splice(listeners.indexOf(listener), 1)
+				}
+			},
+			profileName: () => "opentui",
+			homeDir: () => "/home/u/.dsh",
+		})
+		const seam = new RemoteSessionSeam(session)
+		const document = await seam.settings!.describe()
+		expect(document).toEqual({
+			writable: true,
+			hasDocument: true,
+			namespaces: [
+				{ ns: "subagent", revision: 3, value: { maxActiveSubagents: 8 }, schema: { uid: 1, refs: {} } },
+			],
+		})
+		const ops = [{ op: "set" as const, path: ["maxActiveSubagents"], value: 12 }]
+		const stale = await seam.settings!.mutate("subagent", ops, 3)
+		expect(stale).toEqual({ ok: false, conflict: true, error: "stale editor" })
+		expect(await seam.settings!.mutate("subagent", ops, 4)).toEqual({ ok: true })
+		expect(mutated).toEqual([
+			{ ns: "subagent", ops, revision: 3 },
+			{ ns: "subagent", ops, revision: 4 },
+		])
+		expect(seam.settings!.identity!()).toEqual({ profile: "opentui", dshHome: "/home/u/.dsh" })
+		const seen: [string, number][] = []
+		const dispose = seam.settings!.onChanged!((ns, revision) => seen.push([ns, revision]))
+		expect(listeners).toHaveLength(1)
+		listeners[0]!("subagent", 4)
+		expect(seen).toEqual([["subagent", 4]])
+		dispose()
+		expect(listeners).toHaveLength(0)
+	})
+
+	test("a non-conflict refusal is not marked retryable", async () => {
+		const { session } = fakeSession({
+			settingsMutate: async () => {
+				const error = new Error("rejected") as Error & { code: string }
+				error.code = "settings/rejected"
+				throw error
+			},
+		})
+		const seam = new RemoteSessionSeam(session)
+		expect(await seam.settings!.mutate("subagent", [])).toEqual({
+			ok: false,
+			conflict: false,
+			error: "rejected",
+		})
+	})
+})

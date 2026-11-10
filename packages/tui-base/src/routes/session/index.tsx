@@ -73,6 +73,7 @@ import { DialogMessage } from "./dialog-message"
 import { DialogFork } from "./dialog-fork"
 import { DialogTimeline } from "./dialog-timeline"
 import { agentsPanelOpen } from "./agents-panel"
+import { settingsPanelOpen } from "./settings-panel"
 import { pluginsPanelOpen } from "./plugins-panel"
 import { searchOverlayOpen } from "./search-overlay"
 import { sessionsSearchOpen } from "./sessions-search"
@@ -274,6 +275,7 @@ export function Session(props: {
       dimensions().width - props.verticalTabsWidth <= 120 &&
       !disabled() &&
       !agentsPanelOpen() &&
+      !settingsPanelOpen() &&
       !pluginsPanelOpen() &&
       !searchOverlayOpen() &&
       !sessionsSearchOpen(),
