@@ -451,6 +451,7 @@ describe("createSlashHost", () => {
 		expect(host.interceptSubmit("/beta")).toBe(true)
 		expect(host.interceptSubmit("/beta")).toBe(true)
 		expect(host.interceptSubmit("/beta")).toBe(true)
+		host.usage.flush() // writes are debounced (~1.2 s); flush = test/exit path
 		expect(config.slashUsage).toEqual({ "/beta": 3 })
 		// the live palette now ranks /beta ahead of the alphabetically-first /alpha
 		host.controller.sync("/", commands)
@@ -476,6 +477,7 @@ describe("createSlashHost", () => {
 		const first = createSlashHost(deps)
 		first.interceptSubmit("/beta")
 		first.interceptSubmit("/beta")
+		first.usage.flush() // debounced writer: persist before the "restart"
 		// a fresh boot reads the same config back
 		const second = createSlashHost(deps)
 		second.controller.sync("/", commands)

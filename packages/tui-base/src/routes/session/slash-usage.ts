@@ -8,11 +8,19 @@
  *
  * Persistence reuses the ONE config seam every other UI preference already
  * rides (`/motion`'s `motion` key, `/hints`' `footerHints`/`hintsLocale`):
- * `seam.configLoad()` at construction, `seam.configSave({ slashUsage })` on
- * every execution. The shell adapter routes unlisted keys to the profile
+ * `seam.configLoad()` at construction, `seam.configSave({ slashUsage })` after
+ * a dispatch. The shell adapter routes unlisted keys to the profile
  * `config.json`, so the counts survive a restart with no new store file and
  * no new config system. The key is namespaced (`slashUsage`) so it never
  * collides with a user-facing setting.
+ *
+ * WRITE POLICY (review C1). Every dispatch used to rewrite the whole profile
+ * config synchronously — N quick dispatches meant N full-file writes, each a
+ * torn-file window. The counter now coalesces writes in a ~1.2 s window
+ * (several dispatches = one save of the merged map) and the seam's profile
+ * write is tmp+rename atomic (remote-host-session.configSave). `flush()` is
+ * exposed for tests and the process-exit hook so a quit right after a
+ * dispatch does not lose the last count.
  *
  * Failure law: this is a convenience ranking, never a boot dependency. A
  * throw from `configLoad` starts empty; a throw from `configSave` keeps the
@@ -22,6 +30,9 @@ import type { SessionSeam } from "../../seams/session"
 
 /** Profile config key holding the `{ "/name": count }` map. */
 export const SLASH_USAGE_KEY = "slashUsage"
+
+/** Coalescing window: dispatches inside it become ONE whole-file save (ms). */
+export const SAVE_DEBOUNCE_MS = 1200
 
 /** Read-only count lookup (what the palette ordering consumes). */
 export interface CommandUsageView {
@@ -44,17 +55,37 @@ export function normalizeCommandUsage(value: unknown): Record<string, number> {
 	return out
 }
 
+/** Savers with a scheduled write; one process-exit hook flushes them. */
+const pending = new Set<CommandUsage>()
+let exitHooked = false
+function hookExit(): void {
+	if (exitHooked) return
+	exitHooked = true
+	process.once("exit", () => {
+		for (const usage of pending) usage.flush()
+	})
+}
+
 /**
- * The in-memory counter plus its best-effort writer. `save` receives the
- * whole map (the config surface merges keys, not values).
+ * The in-memory counter plus its debounced, best-effort writer. `save`
+ * receives the whole map (the config surface merges keys, not values);
+ * repeated `record` calls inside the window collapse into one `save`.
  */
 export class CommandUsage implements CommandUsageView {
 	#counts: Record<string, number>
 	#save: ((counts: Record<string, number>) => void) | undefined
+	#debounceMs: number
+	#timer: ReturnType<typeof setTimeout> | undefined
+	#dirty = false
 
-	constructor(initial: Record<string, number> = {}, save?: (counts: Record<string, number>) => void) {
+	constructor(
+		initial: Record<string, number> = {},
+		save?: (counts: Record<string, number>) => void,
+		debounceMs = SAVE_DEBOUNCE_MS,
+	) {
 		this.#counts = { ...initial }
 		this.#save = save
+		this.#debounceMs = debounceMs
 	}
 
 	/** Executions of `name` so far (0 when never run). */
@@ -74,11 +105,38 @@ export class CommandUsage implements CommandUsageView {
 	 */
 	record(name: string): void {
 		this.#counts = { ...this.#counts, [name]: this.count(name) + 1 }
+		this.#dirty = true
+		this.#schedule()
+	}
+
+	/** Write the pending map NOW (tests, process exit). No-op when clean. */
+	flush(): void {
+		if (this.#timer !== undefined) {
+			clearTimeout(this.#timer)
+			this.#timer = undefined
+		}
+		pending.delete(this)
+		if (!this.#dirty) return
+		this.#dirty = false
 		try {
 			this.#save?.(this.#counts)
 		} catch {
 			// silent degrade: frequency ranking is not worth a startup/runtime failure
 		}
+	}
+
+	#schedule(): void {
+		if (this.#save === undefined) return
+		if (this.#debounceMs <= 0) {
+			this.flush()
+			return
+		}
+		pending.add(this)
+		hookExit()
+		if (this.#timer !== undefined) clearTimeout(this.#timer)
+		this.#timer = setTimeout(() => this.flush(), this.#debounceMs)
+		// Never hold the process open for a convenience write.
+		this.#timer.unref?.()
 	}
 }
 
@@ -89,6 +147,7 @@ export class CommandUsage implements CommandUsageView {
  */
 export function createCommandUsage(
 	seam: Pick<SessionSeam, "configLoad" | "configSave"> | undefined,
+	debounceMs = SAVE_DEBOUNCE_MS,
 ): CommandUsage {
 	let config: Record<string, unknown> = {}
 	try {
@@ -96,7 +155,11 @@ export function createCommandUsage(
 	} catch {
 		config = {}
 	}
-	return new CommandUsage(normalizeCommandUsage(config[SLASH_USAGE_KEY]), (counts) => {
-		seam?.configSave?.({ [SLASH_USAGE_KEY]: counts })
-	})
+	return new CommandUsage(
+		normalizeCommandUsage(config[SLASH_USAGE_KEY]),
+		(counts) => {
+			seam?.configSave?.({ [SLASH_USAGE_KEY]: counts })
+		},
+		debounceMs,
+	)
 }

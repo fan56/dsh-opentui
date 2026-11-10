@@ -11,10 +11,14 @@
 //      "/agents: the manager panel is not mounted in this entry";
 //   2. the panel responds to keys: Enter drills into the fields layer,
 //      Esc returns, `l` opens the limits layer, Esc closes the panel;
-//   3. `/thi` + Tab completes to `/think ` (composer-side Tab);
-//   4. the slash palette at 80x24 does not overflow the viewport (the input
-//      row stays visible and the menu lists more than the old 6 rows when
-//      the command set is larger, with an `… N more` overflow hint).
+//   3. `/thi` + Tab completes to `/think ` (composer-side Tab), and a
+//      user-invocable skill (a scratch-home FIXTURE, not the user's corpus)
+//      renders as an italic `/name` row that Tab completes with its trailing
+//      space;
+//   4. the slash palette at both geometries renders >6 rows inside the
+//      composer box (not an overflow-hint fallback), and at 80x24 PgDn x2
+//      scrolls the window ("… N more above") and End reaches the last rows
+//      (the skill line).
 //
 // Exit 0 = every check passed; exit 1 = at least one failed (the pane
 // captures are printed/kept for inspection); exit 2 = environment problem.
@@ -80,15 +84,21 @@ chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'dsh-agents-mount-ws-'))
 mkdirSync(join(HOME, 'profiles'), { recursive: true })
 cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
-for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'skills', 'themes']) {
+for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
   const from = join(REAL_HOME, rel)
   if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
 }
-// Isolate the CLIENT-side skill scan too: the palette reads the same roots
-// the host provider does, and without this pin it would also read the real
-// ~/.agents corpus (not copied into the scratch home).
+// Isolate the CLIENT-side skill scan too: `resolveAgentsHome` (skills-source.ts)
+// resolves explicit config > non-empty DSH_AGENTS_HOME > ~/.agents, the SAME
+// precedence the host's dsh-skill-filesystem provider uses, so pinning the env
+// makes the palette read ONLY this scratch root. Seed the fixture skill here
+// so the assertions below never depend on the user's real corpus.
 const AGENTS_HOME = join(HOME, 'agents-home')
-mkdirSync(AGENTS_HOME, { recursive: true })
+const FIXTURE_SKILL = 'zzzz-verify-fixture'
+const fixtureDir = join(AGENTS_HOME, 'skills', FIXTURE_SKILL)
+mkdirSync(fixtureDir, { recursive: true })
+writeFileSync(join(fixtureDir, 'SKILL.md'),
+  `---\nname: ${FIXTURE_SKILL}\ndescription: verify gate fixture skill (italic row + Tab completion)\n---\n\n# ${FIXTURE_SKILL}\n`)
 
 /**
  * The user-invocable skill names the palette should discover in this scratch
@@ -125,6 +135,10 @@ const listLocalSkills = () => {
   return [...new Set(names)]
 }
 const LOCAL_SKILLS = listLocalSkills()
+if (!LOCAL_SKILLS.includes(FIXTURE_SKILL)) {
+  console.error(`agents-mount: fixture skill '${FIXTURE_SKILL}' not discovered under ${AGENTS_HOME}`)
+  process.exit(2)
+}
 
 const LOCK = join(HOME, `opentui-host.${PROFILE}.json`)
 const readLock = () => {
@@ -169,6 +183,31 @@ const composerRows = (out) =>
     .map((l) => l.trim().replace(/^┃/, '').replace(/┃$/, '').trim())
 const inputRow = (out) => (composerRows(out).filter((l) => l !== '' && !l.startsWith(PLACEHOLDER)).pop() ?? '').trim()
 const composerEmpty = (out) => composerRows(out).every((l) => l === '' || l.startsWith(PLACEHOLDER))
+/** True when the row carries an SGR run whose parameters include the italic
+ * attribute (exactly `3`). Extended colors are skipped (38/48 + 5;n | 2;r;g;b),
+ * so `33`/`43`/`93` and a `3` inside a 256-color index do not count. */
+const hasItalicSgr = (ansiRow) => {
+  for (const m of ansiRow.matchAll(/\x1b\[([0-9;]*)m/g)) {
+    const params = (m[1] === '' ? '0' : m[1]).split(';').map(Number)
+    for (let i = 0; i < params.length; i++) {
+      const p = params[i]
+      if (p === 38 || p === 48) {
+        i += params[i + 1] === 5 ? 2 : 4
+        continue
+      }
+      if (p === 3) return true
+    }
+  }
+  return false
+}
+/** The LAST composer row's SGR text runs as raw strings (each run keeps its
+ * trailing blanks). A trim()ed capture cannot tell a Tab-appended trailing
+ * space from the box padding; this can. */
+const editorRuns = (ansiOut) => {
+  const rows = ansiOut.split('\n').filter((l) => l.trimStart().startsWith('┃'))
+  if (rows.length === 0) return []
+  return rows.at(-1).replace(/\x1b\[[0-9;]*m/g, '\u0000').split('\u0000').map((run) => run.trimStart())
+}
 const submit = async (session, text) => {
   await typeText(session, text)
   await sleep(300)
@@ -282,10 +321,9 @@ try {
   if (LOCAL_SKILLS.length === 0) {
     record('slash palette shows a skill row (italic)', false, ['no user-invocable skill in the scratch home'])
   } else {
-    // Avoid a skill whose name collides with a core command (withSkillCommands
-    // keeps the command row); any distinct name is fine for the check.
-    const KNOWN_COMMANDS = ['help', 'new', 'model', 'login', 'quit', 'sessions', 'clear', 'btw', 'session', 'plugins', 'search', 'agents', 'think', 'hints', 'motion', 'hotkeys', 'theme', 'preset']
-    const skill = LOCAL_SKILLS.find((name) => !KNOWN_COMMANDS.includes(name)) ?? LOCAL_SKILLS[0]
+    // The scratch home's ONLY skill is the seeded fixture (the real corpus is
+    // not copied), so this check cannot drift with the user's ~/.dsh.
+    const skill = LOCAL_SKILLS.includes(FIXTURE_SKILL) ? FIXTURE_SKILL : LOCAL_SKILLS[0]
     await typeText(SESS, `/${skill}`)
     await sleep(700)
     const ansi = capture(SESS, true)
@@ -293,16 +331,23 @@ try {
     const plain = capture(SESS)
     const skillRow = plain.split('\n').find((line) => line.includes(`/${skill}`)) ?? ''
     const ansiRow = ansi.split('\n').find((line) => line.includes(`/${skill}`)) ?? ''
-    // SGR 3 = italic (possibly combined: \x1b[1;3m / \x1b[3;...m).
-    const italic = /\x1b\[[0-9;]*3[;m]/.test(ansiRow)
+    const italic = hasItalicSgr(ansiRow)
     record('slash palette shows a skill row (italic)', skillRow.includes(`/${skill}`) && italic,
-      [`skill: /${skill}`, `row: ${JSON.stringify(skillRow.trim())}`, `italic SGR: ${italic}`])
+      [`skill: /${skill}`, `row: ${JSON.stringify(skillRow.trim())}`, `italic SGR(3): ${italic}`])
+    const beforeTab = ansi
     sendKeys(SESS, 'Tab')
     await sleep(600)
+    const afterTabAnsi = capture(SESS, true)
     const completed = inputRow(capture(SESS))
     snap('06c-skill-tab')
-    record('skill row completes through Tab (trailing space)', completed.trim() === `/${skill}`,
-      [`input row: ${JSON.stringify(completed.trim())}`])
+    // The editor's styled run must be `<name>` + at least one REAL trailing
+    // space (the Tab completion's), not the row's blank padding: read the
+    // SGR run, do not trim the capture.
+    const run = editorRuns(afterTabAnsi).find((r) => r.trimEnd() === `/${skill}`) ?? ''
+    const trailingSpace = run.length > `/${skill}`.length && run.endsWith(' ')
+    record('skill row completes through Tab (trailing space)', completed === `/${skill}` && trailingSpace,
+      [`input row: ${JSON.stringify(completed)}`, `editor run: ${JSON.stringify(run)}`,
+        `trailing space: ${trailingSpace}`, `before Tab had it: ${editorRuns(beforeTab).some((r) => r === `/${skill} `)}`])
     for (let i = 0; i < skill.length + 6; i++) { sendKeys(SESS, 'BSpace'); await sleep(TYPE_GAP_MS) }
     await sleep(300)
   }
@@ -313,8 +358,11 @@ try {
   snap('07-palette-default')
   const brush = capture(SESS)
   const more = /…\s*(\d+)\s*more/.exec(brush)
-  const slashRows = brush.split('\n').filter((l) => /^\s*\/[a-z]/.test(l)).length
-  record('slash palette renders more than 6 rows (default geometry)', slashRows > 6 || more !== null,
+  // Count the rows INSIDE the composer box (composerRows strips the `┃ … ┃`
+  // border). The old raw-line regex saw `┃   /agents …` and counted 0, so the
+  // `|| more !== null` fallback made this gate green on nothing.
+  const slashRows = composerRows(brush).filter((l) => /^\/[a-z]/.test(l)).length
+  record('slash palette renders more than 6 rows (default geometry)', slashRows > 6,
     [`${slashRows} slash rows visible${more ? `, hint "… ${more[1]} more"` : ''}`])
   for (let i = 0; i < 8; i++) { sendKeys(SESS, 'BSpace'); await sleep(TYPE_GAP_MS) }
   await sleep(300)
@@ -355,8 +403,32 @@ try {
     boxStart >= 0 && boxEnd > boxStart && boxEnd < powerIdx && (editorRow.startsWith(PLACEHOLDER) || editorRow.startsWith('/')),
     [`composer box rows ${boxStart + 1}-${boxEnd + 1}`, `powerline row ${powerIdx + 1}/${lines.length}`,
       `editor row: ${JSON.stringify(editorRow)}`])
-  record('80x24: menu lists more than 6 rows (or shows the overflow hint)', menuRows > 6 || more80 !== null,
+  record('80x24: menu lists more than 6 rows', menuRows > 6,
     [`${menuRows} slash rows visible${more80 ? `, hint "… ${more80[1]} more"` : ''}`])
+  // Scrolling on the real client: PgDn walks the window, the top edge reports
+  // the rows scrolled off, and End lands on the LAST match — a skill row
+  // (skills sort after every executable command), i.e. the fixture seeded
+  // above. No `|| hint` escape hatch: the rows themselves must move.
+  const menuNames = (out) => composerRows(out).filter((l) => /^\/[a-z]/.test(l))
+  const initialNames = menuNames(out80)
+  sendKeys(SESS80, 'NPage')
+  await sleep(400)
+  sendKeys(SESS80, 'NPage')
+  await sleep(700)
+  const scrolled = snap('09-palette-80x24-pgdn', SESS80)
+  const scrolledNames = menuNames(scrolled)
+  const above = /…\s*(\d+)\s*more above/.exec(composerRows(scrolled).join('\n'))
+  record('80x24: PgDn scrolls the window and reports the rows above',
+    initialNames.join('|') !== scrolledNames.join('|') && above !== null,
+    [`first row: ${JSON.stringify(initialNames[0] ?? '')} → ${JSON.stringify(scrolledNames[0] ?? '')}`,
+      `hint: ${above ? `"… ${above[1]} more above"` : 'none'}`])
+  sendKeys(SESS80, 'End')
+  await sleep(700)
+  const atEnd = snap('10-palette-80x24-end', SESS80)
+  const endNames = menuNames(atEnd)
+  const fixtureVisible = endNames.some((l) => l.startsWith(`/${FIXTURE_SKILL}`))
+  record('80x24: End reaches the last rows and shows the skill line', fixtureVisible,
+    [`last visible row: ${JSON.stringify(endNames.at(-1) ?? '')}`, `fixture /${FIXTURE_SKILL} visible: ${fixtureVisible}`])
   for (let i = 0; i < 8; i++) { sendKeys(SESS80, 'BSpace'); await sleep(TYPE_GAP_MS) }
   await submit(SESS80, '/quit')
   await waitPane(SESS80, () => tmux('has-session', '-t', SESS80).status !== 0, 15_000)

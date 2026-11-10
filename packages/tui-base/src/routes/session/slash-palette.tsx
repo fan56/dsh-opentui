@@ -67,12 +67,15 @@ export function overflowHint(total: number, offset = 0): string | undefined {
 }
 
 /**
- * Final ordering rule: executable commands first, then skills (the skills
- * boundary from skills-source.ts — a skill's `run` is never executed, so it
- * must never outrank an executable row). Within each tier: executions DESC,
- * then name ASC (case-insensitive; a prefix sorts before its extension, so
- * `/session` sits just before `/sessions`). No executions yet = pure
- * alphabetical — the default list is deterministic, not registry order.
+ * Final ordering rule — the compare keys, in order:
+ *   1. TIER: executable commands first, then skills (the skills boundary
+ *      from skills-source.ts — a skill's `run` is never executed, so it must
+ *      never outrank an executable row);
+ *   2. USAGE DESC: the execution count from the slash-usage store (more
+ *      executions first; both 0 on a fresh profile, so it falls through);
+ *   3. NAME ASC, case-insensitive (the alphabetical default; a prefix sorts
+ *      before its extension, so `/session` sits just before `/sessions`);
+ *   4. raw name, a deterministic last resort for case-only differences.
  */
 function compareCommands(a: SlashCommand, b: SlashCommand, usage: CommandUsageView | undefined): number {
 	const ta = isSkillCommand(a) ? 1 : 0
@@ -422,6 +425,9 @@ export function createSlashHost(deps: SlashHostDeps) {
 	return {
 		commands,
 		controller,
+		/** The debounced count writer (tests call `flush()`; the process-exit
+		 * hook drains it in the real client). */
+		usage,
 		/**
 		 * Tab completion (./slash-complete.ts). `cursor` is the caret as a
 		 * code-unit index into `buffer`; undefined = Tab is not ours (plain

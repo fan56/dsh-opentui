@@ -4,7 +4,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { TextAttributes } from "@opentui/core"
 import type { SlashCommand } from "../src/routes/session/commands"
@@ -14,6 +14,7 @@ import {
 	frontmatterBoolean,
 	parseFrontmatter,
 	paletteRowAttributes,
+	resolveAgentsHome,
 	skillCommands,
 	skillRoots,
 	withSkillCommands,
@@ -127,17 +128,72 @@ describe("skills-source: discovery", () => {
 		expect(findProjectRoot(join(cwd, "a", "b"))).toBe(cwd)
 		cleanup()
 	})
+
+	test("project root counts a .git FILE (worktree/submodule), not only a directory", () => {
+		const worktree = tempDir("skill-worktree-")
+		// `git worktree add` writes a file: `gitdir: <main>/.git/worktrees/<name>`.
+		writeFileSync(join(worktree, ".git"), `gitdir: ${join(worktree, "main", ".git", "worktrees", "wt")}\n`)
+		const nested = join(worktree, "packages", "app")
+		mkdirSync(nested, { recursive: true })
+		expect(findProjectRoot(nested)).toBe(worktree)
+
+		// A plain directory with no .git at any depth falls back to cwd.
+		const bare = tempDir("skill-bare-")
+		mkdirSync(join(bare, "deep", "er"), { recursive: true })
+		expect(findProjectRoot(join(bare, "deep", "er"))).toBe(join(bare, "deep", "er"))
+		cleanup()
+	})
+})
+
+describe("skills-source: agents home resolution (host parity)", () => {
+	const withEnv = (value: string | undefined, fn: () => void): void => {
+		const previous = process.env.DSH_AGENTS_HOME
+		if (value === undefined) delete process.env.DSH_AGENTS_HOME
+		else process.env.DSH_AGENTS_HOME = value
+		try {
+			fn()
+		} finally {
+			if (previous === undefined) delete process.env.DSH_AGENTS_HOME
+			else process.env.DSH_AGENTS_HOME = previous
+		}
+	}
+
+	test("explicit config wins over the env", () => {
+		withEnv(join(tmpdir(), "env-agents-home"), () => {
+			expect(resolveAgentsHome(join(tmpdir(), "explicit-agents-home"))).toBe(
+				join(tmpdir(), "explicit-agents-home"),
+			)
+		})
+	})
+
+	test("non-empty DSH_AGENTS_HOME is the second leg", () => {
+		const envHome = join(tmpdir(), "env-only-agents-home")
+		withEnv(envHome, () => {
+			expect(resolveAgentsHome()).toBe(envHome)
+			expect(skillRoots({ cwd: tempDir("skill-cwd-") }).at(-1)!.path).toBe(join(envHome, "skills"))
+		})
+		cleanup()
+	})
+
+	test("an empty/blank env is unset and falls back to ~/.agents", () => {
+		withEnv("   ", () => {
+			expect(resolveAgentsHome()).toBe(join(homedir(), ".agents"))
+		})
+		withEnv("", () => {
+			expect(resolveAgentsHome()).toBe(join(homedir(), ".agents"))
+		})
+	})
 })
 
 describe("skills-source: slash rows + style", () => {
-	test("wrap skills as /name rows with the skill description (or a fallback)", () => {
+	test("wrap skills as /name rows with the skill's own description", () => {
 		const rows = skillCommands([
 			{ name: "cron", description: "schedule tasks", path: "/x/cron/SKILL.md" },
-			{ name: "bare", description: "", path: "/x/bare.md" },
+			{ name: "bare", description: "no fallback needed", path: "/x/bare.md" },
 		])
 		expect(rows.map((row) => row.name)).toEqual(["/cron", "/bare"])
 		expect(rows[0]!.description).toBe("schedule tasks")
-		expect(rows[1]!.description).toBe("invoke skill bare")
+		expect(rows[1]!.description).toBe("no fallback needed")
 		expect(rows.every((row) => row.kind === "skill")).toBe(true)
 	})
 

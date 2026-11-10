@@ -139,7 +139,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { join as joinPath } from "node:path"
 import type { StoredTranscriptRow } from "./seam-types.ts"
 import {
@@ -1303,7 +1303,23 @@ export class RemoteHostSession {
 			const merged = { ...this.#readProfileConfig(), ...rest }
 			const profileDir = joinPath(this.#dshHome, "profiles", this.#profile)
 			if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true })
-			writeFileSync(this.configPath(), JSON.stringify(merged, null, 2) + "\n")
+			// Atomic whole-file replace (review C1): a concurrent reader (host,
+			// another client, the next boot) sees either the old file or the new
+			// one, never a half-written JSON. Same-directory temp keeps the
+			// rename on one filesystem; a failed write leaves no stray temp.
+			const path = this.configPath()
+			const tmp = `${path}.${process.pid}.tmp`
+			try {
+				writeFileSync(tmp, JSON.stringify(merged, null, 2) + "\n")
+				renameSync(tmp, path)
+			} catch (error) {
+				try {
+					rmSync(tmp, { force: true })
+				} catch {
+					/* best-effort cleanup */
+				}
+				throw error
+			}
 		}
 		return this.configLoad()
 	}

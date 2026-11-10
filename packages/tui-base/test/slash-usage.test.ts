@@ -54,7 +54,31 @@ describe("CommandUsage", () => {
 			throw new Error("disk full")
 		})
 		expect(() => usage.record("/help")).not.toThrow()
+		expect(() => usage.flush()).not.toThrow()
 		expect(usage.count("/help")).toBe(1)
+	})
+
+	test("records inside the window coalesce into ONE save of the merged map", async () => {
+		const writes: Record<string, number>[] = []
+		const usage = new CommandUsage({}, (counts) => writes.push(counts), 30)
+		usage.record("/help")
+		usage.record("/help")
+		usage.record("/new")
+		expect(writes).toHaveLength(0) // still debouncing, not one write per dispatch
+		await new Promise((resolve) => setTimeout(resolve, 80))
+		expect(writes).toEqual([{ "/help": 2, "/new": 1 }])
+	})
+
+	test("flush writes immediately and clears the timer (no double save)", async () => {
+		let saves = 0
+		const usage = new CommandUsage({}, () => saves++, 30)
+		usage.record("/help")
+		usage.flush()
+		expect(saves).toBe(1)
+		await new Promise((resolve) => setTimeout(resolve, 80))
+		expect(saves).toBe(1) // the pending timer was cancelled, not re-fired
+		usage.flush()
+		expect(saves).toBe(1) // clean counter = no redundant write
 	})
 })
 
@@ -69,6 +93,7 @@ describe("createCommandUsage (config seam)", () => {
 		expect(usage.count("/help")).toBe(0)
 		usage.record("/help")
 		usage.record("/help")
+		usage.flush()
 		expect(config[SLASH_USAGE_KEY]).toEqual({ "/help": 2 })
 		// a fresh boot over the same config sees the persisted counts
 		expect(createCommandUsage(seam).count("/help")).toBe(2)

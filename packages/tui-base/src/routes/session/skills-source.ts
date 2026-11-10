@@ -13,7 +13,7 @@
  *   rank 200  <projectRoot>/.agents/skills
  *   rank 300  custom dirs (when the caller supplies them)
  *   rank 400  <dshHome>/skills          (the user root; `.system` skipped)
- *   rank 500  <DSH_AGENTS_HOME|~/.agents>/skills
+ *   rank 500  <agentsHome>/skills        (config > DSH_AGENTS_HOME > ~/.agents)
  *
  * A skill is a directory bundle `<name>/SKILL.md` or a flat `<name>.md` at the
  * top level of a root (nested bundles are deliberately not discovered), with
@@ -29,8 +29,9 @@
  * dsh-tool-skill scans user text for a whitespace-bounded `/name` token and
  * injects the rendered `<skill_content>` in `agent/pre-step`. Do not turn
  * these into ordinary commands with a `run` body — the model must receive the
- * line. (Same model as dsh-tui-pi: unknown-but-skill lines fall through to
- * the model and only a real command is executed.)
+ * line. (dsh-tui-pi parity for skills: a skill gesture falls through to the
+ * model; an UNKNOWN `/xxx` is NOT a model send — the host answers it with the
+ * harmless unknown-command row and consumes the enter.)
  *
  * STYLE: skill rows render italic (whole row: name + description) so the
  * human-facing menu distinguishes them from commands. OpenTUI has no per-row
@@ -46,7 +47,7 @@
  * refreshes the model catalog live, while this menu picks changes up on the
  * next client start.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { TextAttributes } from "@opentui/core"
@@ -79,20 +80,31 @@ const SKILL_NAME = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 /** One-line description budget (the remote RPC slices at 90 too). */
 const DESCRIPTION_MAX = 90
 
-/** Nearest ancestor containing `.git`, else `cwd` (provider parity). */
+/** Nearest ancestor containing `.git`, else `cwd` (provider parity).
+ * `pathExists`, not `isDirectory`: a git WORKTREE (and a submodule) has a
+ * `.git` FILE, and the host's `findProjectRoot` counts either kind. */
 export function findProjectRoot(cwd: string): string {
 	let dir = resolve(cwd)
 	for (let depth = 0; depth < 64; depth++) {
-		try {
-			if (statSync(join(dir, ".git")).isDirectory()) return dir
-		} catch {
-			/* not here */
-		}
+		if (existsSync(join(dir, ".git"))) return dir
 		const parent = dirname(dir)
 		if (parent === dir) break
 		dir = parent
 	}
 	return resolve(cwd)
+}
+
+/**
+ * The agents home, in the host's precedence (`dsh-skill-filesystem`):
+ * explicit config > non-empty `DSH_AGENTS_HOME` > `~/.agents`. An empty or
+ * whitespace-only value counts as unset (the host's `??` chain keeps the
+ * next leg), and the result is resolved like the provider's `resolve()`.
+ */
+export function resolveAgentsHome(explicit?: string | null): string {
+	if (typeof explicit === "string" && explicit.trim() !== "") return resolve(explicit)
+	const env = process.env.DSH_AGENTS_HOME
+	if (typeof env === "string" && env.trim() !== "") return resolve(env)
+	return resolve(join(homedir(), ".agents"))
 }
 
 /** The ranked roots, de-duplicated by resolved path (lowest rank wins). */
@@ -109,7 +121,7 @@ export function skillRoots(options: SkillScanOptions): SkillRoot[] {
 	if (options.dshHome !== undefined) {
 		roots.push({ path: join(options.dshHome, "skills"), rank: 400, skipSystem: true })
 	}
-	const agentsHome = options.agentsHome ?? join(homedir(), ".agents")
+	const agentsHome = resolveAgentsHome(options.agentsHome)
 	roots.push({ path: join(agentsHome, "skills"), rank: 500, skipSystem: false })
 
 	const seen = new Set<string>()
@@ -235,21 +247,18 @@ export function discoverSkills(options: SkillScanOptions): SkillRow[] {
 
 // ------------------------------------------------------- slash palette rows --
 
-/** Fallback description when a skill's own description is empty. */
-export function skillFallbackDescription(name: string): string {
-	return `invoke skill ${name}`
-}
-
 /**
  * Wrap skill rows as slash-menu entries under their native `/name` (the
  * host's own gesture form). `run` is intentionally a no-op: the slash host
  * recognizes `kind: "skill"` and returns false so the line falls through to
  * the model — see the module header. No trailing space lives in the name.
+ * Discovery already rejects a skill without a description, so the row's
+ * text is the skill's own (there is no fallback branch to keep alive).
  */
 export function skillCommands(skills: readonly SkillRow[]): SlashCommand[] {
 	return skills.map((skill) => ({
 		name: `/${skill.name}`,
-		description: skill.description || skillFallbackDescription(skill.name),
+		description: skill.description,
 		kind: "skill" as const,
 		run() {
 			/* never executed: the slash host falls skill rows through */

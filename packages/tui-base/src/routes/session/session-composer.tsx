@@ -91,6 +91,11 @@ export type SessionComposerRef = {
 /** Busy top-border title (contract §1): the steer affordance, warning-tier. */
 const STEER_TITLE = " steer "
 
+/** Keys the slash palette can own while open (scroll window + edge jumps).
+ * Routed through a pre-binding interceptor: the transcript page layer and the
+ * managed textarea home/end bindings would otherwise win the key. */
+const PALETTE_NAV_KEYS = new Set(["pageup", "pagedown", "home", "end"])
+
 /** Flicker mitigation 2 (research/skin-flicker-analysis.md 缓解 3): the
  * composer footer hint — the input box's bottom-edge row — is ONE CONSTANT
  * string for idle and busy alike. The old busy↔idle swap repainted the row
@@ -374,7 +379,8 @@ export function SessionComposer(props: SessionComposerProps) {
 	// layer (priority 1, the vendored prompt's history-layer priority) runs
 	// first so shell-style recall wins; it rejects (returns false) off the
 	// buffer edges, letting the managed cursor layer take over.
-	if (Keymap.useOptional()) {
+	const keymap = Keymap.useOptional()
+	if (keymap) {
 		Keymap.createLayer(() => ({
 			priority: 1,
 			enabled: () => !!textarea && !textarea.isDestroyed && textarea.focused,
@@ -410,6 +416,20 @@ export function SessionComposer(props: SessionComposerProps) {
 				},
 			],
 		}))
+		// PgUp/PgDn/Home/End must reach the palette BEFORE the keymap bindings
+		// that own them elsewhere: the transcript's page layer (global) and the
+		// managed textarea layer (input.line.home/end) are bindings, and their
+		// precedence would otherwise swallow the keys while the menu is open
+		// (real-client symptom: the palette never scrolled). An interceptor
+		// runs ahead of every binding and only consumes when the open palette
+		// reports the key as its own; otherwise the normal binding takes it.
+		onCleanup(
+			keymap.intercept("key", ({ event, consume }) => {
+				if (!textarea || textarea.isDestroyed || !textarea.focused) return
+				if (!PALETTE_NAV_KEYS.has(event.name)) return
+				if (props.slashKeyFilter?.(event, textarea.plainText)) consume()
+			}),
+		)
 	}
 
 	function recall(event: KeyEvent) {

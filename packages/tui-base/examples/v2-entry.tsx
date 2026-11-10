@@ -50,7 +50,7 @@ import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/tur
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import { presetLabelFor, coreCommands } from "../src/routes/session/commands"
-import { discoverSkills, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
+import { discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
 import { AgentsPanel, openAgentsPanel } from "../src/routes/session/agents-panel"
@@ -825,8 +825,16 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 	// same filesystem roots the host's skill provider scans. The host RPC
 	// (`skills/list`) is session-scoped and no session exists before the
 	// first prompt, so the menu would otherwise be empty at first paint.
+	// The agents home uses the HOST's precedence (explicit config > non-empty
+	// DSH_AGENTS_HOME > ~/.agents, `resolveAgentsHome`) so this scan and the
+	// provider read the same root; the client's config seam is the explicit
+	// leg it can see.
 	// Contained: a broken root yields the empty catalog, never a boot failure.
-	const skillRows = discoverSkills({ cwd: workspace, dshHome: host.dshHome })
+	const skillRows = discoverSkills({
+		cwd: workspace,
+		dshHome: host.dshHome,
+		agentsHome: resolveAgentsHome(seam.configLoad().agentsHome as string | undefined),
+	})
 	// One-shot skin migration (α skin layer, real precedence chain env >
 	// workspace > profile): a STORED legacy `theme` key (profile OR
 	// workspace layer) switches to the dsh-blue default once, persists the
