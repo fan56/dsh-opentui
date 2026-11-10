@@ -236,12 +236,30 @@ export function createSeamRows(
 	 * view already shows. */
 	function load(sessionIdOverride?: string): Promise<void> {
 		const id = sessionIdOverride ?? sessionID()
+		// No session at all (fresh boot, /new, autoResume off or --new): there
+		// is no journal to read, so settle the EMPTY transcript. Reading ""
+		// used to error out; the transcript-loss fix correctly stopped a
+		// failed read from clearing, which left `hydrated` false and pinned
+		// the "Loading session history…" placeholder forever whenever the
+		// store already held other sessions.
+		if (id === "") {
+			hydrate([])
+			return Promise.resolve()
+		}
 		return seam
 			.storedTranscript(id)
 			.then((stored) => {
 				if (sessionIdOverride !== undefined || sessionID() === id) hydrate(stored)
 			})
-			.catch(() => undefined)
+			.catch(() => {
+				// A failed read never clears rows already on screen (the
+				// transcript-loss rule). With NOTHING hydrated yet there is
+				// nothing to lose: settle the empty view so an unknown journal
+				// (a bad `--session` id, a transient first read) cannot pin the
+				// "Loading session history…" placeholder forever.
+				console.warn(`[seam-rows] transcript read failed for ${id}`)
+				if (!hydrated()) hydrate([])
+			})
 	}
 
 	/** Upsert one row by key. Reconcile semantics per row would remount on

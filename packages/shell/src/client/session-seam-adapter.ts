@@ -156,6 +156,7 @@ export class RemoteSessionSeam implements SessionSeam {
 			...(row.updatedAt !== undefined ? { updatedAt: row.updatedAt } : {}),
 			...(row.cwd !== undefined ? { cwd: row.cwd } : {}),
 			...(row.sizeBytes !== undefined ? { sizeBytes: row.sizeBytes } : {}),
+			...(row.blank !== undefined ? { blank: row.blank } : {}),
 		}))
 	}
 

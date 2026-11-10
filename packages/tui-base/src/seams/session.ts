@@ -75,6 +75,9 @@ export interface SeamSessionSummary {
 	cwd?: string
 	/** On-disk log size in bytes (/resume 1KB display floor; absent = unknown, fails open). */
 	sizeBytes?: number
+	/** Host list metadata: `true` = the session was created but never prompted
+	 * (feat/auto-resume skips these; absent = older host, heuristic falls back). */
+	blank?: boolean
 	parentID?: string
 }
 

@@ -144,6 +144,13 @@ describe("RemoteSessionOps", () => {
 		expect(rows.map((r) => r.id)).toEqual(["newest", "mid"])
 		expect(rows[0]!.title).toBe("My session")
 		expect(rows[1]!.title).toBe("")
+		// feat/auto-resume: the host `blank` flag passes through untouched
+		// (a blank session must never be restored), while an absent flag
+		// stays absent so the view keeps its old-host fallback.
+		expect(rows[0]!.blank).toBe(false)
+		const all = await h.ops.listSessions({ limit: 10 })
+		expect(all.find((r) => r.id === "untitled")!.blank).toBe(true)
+		expect(all.find((r) => r.id === "mid")!.blank).toBe(false)
 		// the wire arg key mirrors the typert parameter name
 		expect(h.connection.rpcCalls[0]).toMatchObject({ method: "session/list", args: { _request: {} } })
 	})
