@@ -63,6 +63,7 @@ import type {
 	SeamTurnCallbacks,
 	SessionSeam,
 } from "../../seams/session"
+import { DOCK_LINE_RETENTION_MS } from "./dock-visibility"
 
 /** One projected transcript row (the rebuilt `SessionRow` slice). */
 export type SeamRow =
@@ -97,7 +98,8 @@ export type SeamRow =
 			startedAt?: number
 			elapsedSec?: number
 			/** Batch D5 (widget fade): a settled live tool row hides from the
-			 * widgets dock ~1s after settle. The row STAYS in the store (the
+			 * widgets dock after its 2s linger (2026-11-10 directive; the view
+			 * owns the 300ms sweep). The row STAYS in the store (the
 			 * todos panel still reads the latest todowrite brief off it). */
 			faded?: boolean
 	  }
@@ -177,13 +179,17 @@ export function createSeamRows(
 	const [rows, setRows] = createStore<SeamRow[]>([])
 	const [hydrated, setHydrated] = createSignal(false)
 	/** Batch V2a: the anti-flicker linger for collapsed think summaries (the
-	 * old-stack dock law: turn end schedules the clear 1.8s out so a quick
-	 * next think replaces in place instead of blinking). 0 = immediate drop
-	 * (the settle-converge tests and any synchronous replay path). */
-	// Batch D5: the user-set widget linger is 1s (think AND tool widgets
-	// disappear ~1s after their content stops).
-	const thinkFadeMs = options?.thinkFadeMs ?? 1000
-	const toolFadeMs = options?.toolFadeMs ?? 1000
+	 * old-stack dock law: turn end schedules the clear so a quick next think
+	 * replaces in place instead of blinking). 0 = immediate drop (the
+	 * settle-converge tests and any synchronous replay path).
+	 *
+	 * 2026-11-10 user directive: the widgets dock keeps a finished think/tool
+	 * block fully visible for 2s, then fades 0.3s (dock-visibility.ts). The
+	 * store's retention is exactly that window — the view derives the fade
+	 * from the row's stop anchor on the shared clock, and the drop here is
+	 * only the backstop (think) / hard clear (tool `faded` flag). */
+	const thinkFadeMs = options?.thinkFadeMs ?? DOCK_LINE_RETENTION_MS
+	const toolFadeMs = options?.toolFadeMs ?? DOCK_LINE_RETENTION_MS
 	let liveOrdinal = 0
 	/** A send()'s turn is awaiting the seam (journal events during this
 	 * window are the suppression contract's other half — the adapters). */
@@ -192,8 +198,15 @@ export function createSeamRows(
 	const pendingTurns: LiveTurnGroup[] = []
 
 	/** Full replace on a keyed reconcile: matching keys patch in place, so a
-	 * re-hydrate (older page prepended) never remounts the whole transcript. */
+	 * re-hydrate (older page prepended) never remounts the whole transcript.
+	 *
+	 * Session-switch law (2026-11-10): a hydrate is a clear/reload boundary —
+	 * every pending widget fade timer dies with the old session so a stale
+	 * timer can never hide a same-key row of the next session (no ghost
+	 * lines). The docks' visibility state is timestamp-derived, so dropping
+	 * the timers plus the empty/hydrated row set is the whole cleanup. */
 	function hydrate(stored: SeamTranscriptRow[]) {
+		clearDockFadeTimers()
 		setRows(reconcile(stored.map(toStoredRow), { key: "key" }))
 		setHydrated(true)
 	}
@@ -305,12 +318,34 @@ export function createSeamRows(
 			}, toolFadeMs),
 		)
 	}
-	onCleanup(() => {
+	/** Clear old, show new (tool): a tool START ends the previous settled tool
+	 * lines' linger immediately — within the 2s window the newest call
+	 * replaces them instead of stacking beside the stale ones. Concurrent
+	 * RUNNING calls are untouched (they are current activity, not old
+	 * content); the dock still paints them. The new row is upserted after. */
+	function clearSettledToolRows() {
+		for (const key of [...toolFades.keys()]) {
+			const timer = toolFades.get(key)
+			if (timer !== undefined) clearTimeout(timer)
+			toolFades.delete(key)
+		}
+		setRows(
+			produce((draft) => {
+				for (const row of draft) {
+					if (row.kind === "tool" && row.key.startsWith("tool:live:") && row.status !== "running") row.faded = true
+				}
+			}),
+		)
+	}
+	/** Session-switch / hydrate boundary: drop every pending widget fade
+	 * timer so the old session's clock can never hide a new session's row. */
+	function clearDockFadeTimers() {
 		for (const timer of thinkFades.values()) clearTimeout(timer)
 		thinkFades.clear()
 		for (const timer of toolFades.values()) clearTimeout(timer)
 		toolFades.clear()
-	})
+	}
+	onCleanup(clearDockFadeTimers)
 
 	// ---------------------------------------------------------------------
 	// Batch V2b subagent tree feed: the seam's subagent marker face drives
@@ -495,9 +530,9 @@ export function createSeamRows(
 				streaming: false,
 				elapsedSec: Number(((Date.now() - reasoningStartedAt) / 1000).toFixed(1)),
 			})
-			// Batch D5: the think widget disappears ~1s after its content stops
-			// (not at turn end — a long tool phase must not leave a stale
-			// `💭 thought` line parked in the dock).
+			// 2026-11-10 directive: the think widget lingers 2s after its content
+			// stops, then fades 0.3s (not at turn end — a long tool phase must
+			// not leave a stale `💭 thought` line parked in the dock).
 			scheduleThinkFade(reasoningKey)
 		}
 		return seam.turn(prompt, {
@@ -535,6 +570,9 @@ export function createSeamRows(
 				// the same way a text delta does (the next think delta reopens a
 				// fresh panel below the tool row).
 				collapseThinking()
+				// Clear old, show new: the previous settled tool lines' linger
+				// ends here (they were still inside their 2s window).
+				clearSettledToolRows()
 				upsert({
 					key: `tool:live:${start.callId ?? start.name}`,
 					kind: "tool",
@@ -614,7 +652,7 @@ export function createSeamRows(
 						}
 					}),
 				)
-				// 轮末全清: swept stragglers fade on the same 1s widget clock.
+				// 轮末全清: swept stragglers fade on the same 2s widget clock.
 				for (const key of swept) scheduleToolFade(key)
 				// SETTLE CONVERGE (batch V4, mechanism 1): the streamed text can
 				// differ from the durable body (mid-stream revisions, leaked

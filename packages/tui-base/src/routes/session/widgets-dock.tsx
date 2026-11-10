@@ -3,20 +3,29 @@
  * (dsh-tui-pi dock structure). The transcript renders ONLY user/assistant/
  * echo/notice/ask blocks (never tools/thinking); the live activity that the
  * old V1/V2a build painted as transcript rows docks here instead —
- * Todos → Think → Tool, three fixed panels, each panel a SINGLE line that
- * refreshes in place (no remount, no scroll coupling, never in the
- * transcript flow).
+ * Todos → Think → Tool, fixed panels above the composer.
  *
  *   Todos  `todos [✓]2/3 · <current>`     — from the latest todo tool call
- *   Think  `💭 thinking · Xs · <tail>`    — italic while the burst runs;
- *          collapses to `💭 thought · Xs · <first line>` (the seam-rows fade
- *          machine clears it ~1s after the burst stops — batch D5)
- *   Tool   `⚙ name(subject) · Xs · <tail>` per tool line; settled freezes
- *          ✔/✘ + elapsed, then fades ~1s later (batch D5: `faded`);
- *          multiple tools = multiple lines, each updated in place
+ *   Think  `💭 thinking · Xs · <tail>`    — up to DOCK_WIDGET_MAX_LINES (3)
+ *          lines of the reasoning tail while live, head while collapsed;
+ *          a finished round lingers 2s, then fades 0.3s (dock-visibility.ts)
+ *   Tool   `⚙ name(subject) · Xs · <tail>` — up to 3 tool lines, newest
+ *          last; settled lines freeze ✔/✘ + elapsed, then linger 2s and fade
  *
  * Data law: the dock is a pure VIEW over the seam-rows store — the phase
  * machine (onThinkingDelta / onToolRun / collapse / fade) is untouched.
+ *
+ * Visibility law (2026-11-10 user directive): a finished think/tool block is
+ * NOT dropped when its stream/settle stops. It stays fully visible for 2s
+ * (`DOCK_LINGER_MS`), then fades out over 300ms (`DOCK_FADE_OUT_MS`); after
+ * that the line is `hidden`. New content of the same kind inside the window
+ * replaces the old block (think: the store drops the old summary on the next
+ * burst; tool: a starting tool flags the previous settled rows `faded`).
+ * Think and tool carry INDEPENDENT anchors — one never hides the other.
+ * The timeline is a pure function of the row's stop anchor and the wall
+ * clock; the view re-renders on the renderer's shared animation clock, so
+ * no timers are added here. `reduced` hides at the 2s deadline without a
+ * sweep; `off` never ticks (the store's retention drop is the final clear).
  *
  * CLOSURE LAW (D1 on-device finding): the component body declares NO
  * reactive state that the JSX props close over — every render getter calls
@@ -30,7 +39,9 @@
  * Layout law: the dock sits in the transcript's bottom slot (explicit-dims
  * parent chain); the dock box sets an EXPLICIT height = its visible line
  * count (auto-height boxes collapse in flex columns) and flexShrink=0 so
- * the composer keeps its own height below it.
+ * the composer keeps its own height below it. Compact terminals (≤ 30 rows)
+ * cap EACH block at one line (the old two-row activity footprint), so the
+ * 80x24 middle band never grows; taller terminals get the default 3 lines.
  */
 import { For, createEffect, createSignal, onCleanup, Show, untrack, type JSX } from "solid-js"
 import { useTerminalDimensions, onAnimationTick } from "@opentui/solid"
@@ -42,6 +53,13 @@ import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../../skin/semantic"
+import {
+	DOCK_COMPACT_MAX_LINES,
+	DOCK_FADE_OUT_MS,
+	DOCK_LINGER_MS,
+	DOCK_WIDGET_MAX_LINES,
+	dockLineVisibility,
+} from "./dock-visibility"
 import type { ComponentTheme } from "../../theme/component"
 import type { HueScale } from "@opencode/theme/tui"
 import { colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type PowerlineColor } from "./powerline"
@@ -55,11 +73,11 @@ import { colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type Pow
 
 /** Dock line entrance fade: text color faint → target, 0.4s. */
 export const SKIN_FADE_IN_MS = 400
-/** Exit fade hold: the line stays fully colored for the first 700ms of the
- * seam-rows 1s fade window (contract: 停 0.7s、淡 0.3s, clear moment unchanged). */
-export const SKIN_HOLD_MS = 700
-/** Exit fade sweep after the hold (700 + 300 = 1000 = seam-rows fade window). */
-export const SKIN_FADE_OUT_MS = 300
+/** Exit hold: a finished think/tool block stays fully colored for 2s
+ * (dock-visibility.ts, user directive). */
+export const SKIN_HOLD_MS = DOCK_LINGER_MS
+/** Exit fade sweep after the hold (2s + 300ms = the row's retention edge). */
+export const SKIN_FADE_OUT_MS = DOCK_FADE_OUT_MS
 /** Notice fade-out inside the LAST 500ms of the 8s TTL (remove moment unchanged). */
 export const SKIN_NOTICE_FADE_MS = 500
 /** Reminder pulse: 3 bright/dim cycles ≈ 1.2s, then静止 at full brightness. */
@@ -91,8 +109,8 @@ export function skinFadeInColor(target: string | RGBA, background: string | RGBA
 	return mixSkinColor(skinFaintColor(target, background), target, elapsedMs / SKIN_FADE_IN_MS)
 }
 
-/** Exit fade progress within the 1s seam window: 0 during the 700ms hold,
- * 0→1 across the 300ms sweep, 1 after (row is gone by then anyway). */
+/** Exit fade progress within the dock retention window: 0 during the 2s
+ * linger, 0→1 across the 300ms sweep, 1 after (the row is hidden then). */
 export function skinFadeOutProgress(elapsedSinceStopMs: number): number {
 	if (elapsedSinceStopMs <= SKIN_HOLD_MS) return 0
 	return Math.max(0, Math.min(1, (elapsedSinceStopMs - SKIN_HOLD_MS) / SKIN_FADE_OUT_MS))
@@ -101,6 +119,17 @@ export function skinFadeOutProgress(elapsedSinceStopMs: number): number {
 /** Exit fade color: target during the hold, → background across the sweep. */
 export function skinFadeOutColor(target: string | RGBA, background: string | RGBA, elapsedSinceStopMs: number): string {
 	return mixSkinColor(target, background, skinFadeOutProgress(elapsedSinceStopMs))
+}
+
+/** Line cap for the widgets dock (pure): compact terminals (≤ the composer's
+ * compact threshold) keep the pre-2026-11 single-line-per-widget footprint —
+ * 80x24's middle band must not grow; taller terminals get the default
+ * three lines per widget. Think and tool use the SAME cap independently. */
+export function dockLineCap(terminalRows?: number): number {
+	if (terminalRows !== undefined && terminalRows <= COMPOSER_COMPACT_TERMINAL_ROWS) {
+		return DOCK_COMPACT_MAX_LINES
+	}
+	return DOCK_WIDGET_MAX_LINES
 }
 
 /** Notice fade progress: 0 until the last SKIN_NOTICE_FADE_MS of the TTL,
@@ -153,16 +182,18 @@ export function resetSkinLineFades(): void {
 	lineFirstSeen.clear()
 }
 
-/** Component-side line color (shared by the docks, batch δ): exit fade
- * (inside the seam 1s window) wins, then the entrance fade, else the plain
- * target color. `decorated: false` (reduced/off tier) jumps straight to
- * the final color — contract §1 动效档位. */
+/** Component-side line color (shared by the docks, batch δ): the 2s-linger →
+ * 300ms-sweep exit fade wins, then the entrance fade, else the plain target
+ * color. `decorated: false` (reduced/off tier) jumps straight to the final
+ * color — contract §1 动效档位; the line itself is hidden at the 2s deadline
+ * by `dockLines`, so no gradient is ever painted. */
 export type SkinFgContext = { decorated: boolean; background: string | RGBA }
 export function skinDockLineFg(ctx: SkinFgContext, target: string | RGBA, line: { id?: string; fadeOutAt?: number }): string | RGBA {
 	if (!ctx.decorated) return target
 	if (line.fadeOutAt !== undefined) {
-		const sinceStop = Date.now() - line.fadeOutAt
-		if (sinceStop > SKIN_HOLD_MS) return skinFadeOutColor(target, ctx.background, sinceStop)
+		const visibility = dockLineVisibility(line.fadeOutAt, Date.now(), ctx.decorated)
+		if (visibility.phase === "fading") return mixSkinColor(target, ctx.background, visibility.progress)
+		if (visibility.phase === "hidden") return ctx.background
 	}
 	const id = line.id
 	if (id === undefined) return target
@@ -377,14 +408,15 @@ export function toolMarker(status: Extract<SeamRow, { kind: "tool" }>["status"])
  * `<⚙|✔|✘> <name> <subject> · Xs · <tail>`. NOT the old `⠋ ⚙ name(subject)`
  * form: the status icon IS the marker, the subject follows the name with a
  * space, a running tool's tail is the arg summary, a settled one's the
- * result tail (the raw JSON never renders). */
-export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () => number): string {
+ * result tail (the raw JSON never renders). `now` is injectable so the
+ * elapsed column (and tests) do not depend on a real wall clock. */
+export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () => number, now: number = Date.now()): string {
 	const subject = toolSubject(row.args)
 	const title = subject === "" ? row.name : `${row.name} ${subject}`
 	const elapsed =
 		row.status === "running"
 			? row.startedAt !== undefined
-				? ` · ${((Date.now() - row.startedAt) / 1000).toFixed(1)}s`
+				? ` · ${((now - row.startedAt) / 1000).toFixed(1)}s`
 				: ""
 			: row.elapsedSec !== undefined
 				? ` · ${row.elapsedSec.toFixed(1)}s`
@@ -396,22 +428,49 @@ export function toolLineText(row: Extract<SeamRow, { kind: "tool" }>, spin: () =
 	return `${marker} ${body}`
 }
 
-/** The live think line (pure, testable): `💭 thinking · Xs · <tail>` while
- * streaming, `💭 thought · Xs · <first line>` once collapsed. Rows without
- * panel state (replay shapes) paint nothing. */
-export function thinkLineText(row: Extract<SeamRow, { kind: "reasoning" }>, spin: () => number): string | undefined {
+/** Up to `maxLines` display lines for one think row (pure, testable).
+ *
+ * Tail vs head: a LIVE burst shows the TAIL — the last N non-blank lines,
+ * the same law tui-pi's ThinkPanel uses (`TAIL_LINES = 3`); the newest text
+ * is what the reader is watching. A collapsed `💭 thought` summary shows the
+ * HEAD — the first N lines, so the familiar `💭 thought · Xs · <first line>`
+ * stays the top line and the block reads as a summary. The first line
+ * carries the `💭 … · Xs · ` prefix; continuation lines are indented 3
+ * columns (the width of `💭 `) so they sit under the content.
+ *
+ * Rows without panel state (replay shapes) paint nothing. */
+export function thinkBlockLines(
+	row: Extract<SeamRow, { kind: "reasoning" }>,
+	spin: () => number,
+	maxLines: number = DOCK_WIDGET_MAX_LINES,
+	now: number = Date.now(),
+): string[] {
 	const lines = row.text.replace(/\r/g, "").split("\n").filter((line) => line.trim() !== "")
+	const n = Math.max(1, Math.floor(maxLines))
 	if (row.streaming === true) {
-		const tail = lines[lines.length - 1] ?? ""
-		const secs = row.startedAt !== undefined ? `${((Date.now() - row.startedAt) / 1000).toFixed(1)}s` : "0.0s"
+		const secs = row.startedAt !== undefined ? `${((now - row.startedAt) / 1000).toFixed(1)}s` : "0.0s"
 		void spin()
-		return `💭 thinking · ${secs} · ${tail}`
+		const picked = lines.length === 0 ? [""] : lines.slice(-n)
+		return picked.map((line, index) => (index === 0 ? `💭 thinking · ${secs} · ${line}` : `   ${line}`))
 	}
 	if (row.elapsedSec !== undefined) {
-		const first = lines[0] ?? ""
-		return `💭 thought · ${row.elapsedSec.toFixed(1)}s · ${first}`
+		const secs = row.elapsedSec.toFixed(1)
+		const picked = lines.length === 0 ? [""] : lines.slice(0, n)
+		return picked.map((line, index) => (index === 0 ? `💭 thought · ${secs}s · ${line}` : `   ${line}`))
 	}
-	return undefined
+	return []
+}
+
+/** The live think line (one line, pure): `💭 thinking · Xs · <tail>` while
+ * streaming, `💭 thought · Xs · <first line>` once collapsed. Rows without
+ * panel state (replay shapes) paint nothing. Kept as the single-line view
+ * used by callers/tests that predate the 3-line block. */
+export function thinkLineText(
+	row: Extract<SeamRow, { kind: "reasoning" }>,
+	spin: () => number,
+	now: number = Date.now(),
+): string | undefined {
+	return thinkBlockLines(row, spin, 1, now)[0]
 }
 
 /** The dock line set (pure): Think → Tool, one entry per visible panel line.
@@ -444,32 +503,87 @@ export type DockLine = {
  * "todo" can hijack the panel. */
 const TODO_TOOL_NAMES = new Set(["todowrite", "todo_write"])
 
-export function dockLines(rows: readonly SeamRow[]): DockLine[] {
-	const out: DockLine[] = []
-	const all = rows
-	// Think panel (single line): the LIVE burst wins; else the collapsed
-	// summary inside its fade window (the seam-rows timer clears the row).
-	const live = [...all].reverse().find((row) => row.kind === "reasoning" && row.streaming === true)
-	const collapsed = [...all].reverse().find((row) => row.kind === "reasoning" && row.elapsedSec !== undefined)
-	const thinkRow = live?.kind === "reasoning" ? live : collapsed?.kind === "reasoning" ? collapsed : undefined
-	const think = thinkRow?.kind === "reasoning" ? thinkLineText(thinkRow, dockSpin) : undefined
-	if (think !== undefined && thinkRow)
-		out.push({
-			text: think,
-			tone: "running",
-			italic: true,
-			accent: "think",
-			id: `dock:think:${thinkRow.key}`,
-			fadeOutAt: skinStopAt(thinkRow),
-		})
-	// Tool panel (one line per live tool row, in-place keyed updates).
-	for (const row of all) {
-		if (row.kind !== "tool" || !row.key.startsWith("tool:live:")) continue
-		// Batch D5: settled tools fade out ~1s after settle (seam-rows flips
-		// `faded`); running tools always show.
-		if (row.faded === true && row.status !== "running") continue
-		out.push({
-			text: toolLineText(row, dockSpin),
+/** Render options for the pure line builders. Defaults: wall clock, the
+ * active motion tier, and DOCK_WIDGET_MAX_LINES per widget. Tests pass a
+ * fake `now` and an explicit `decorated` tier. */
+export type DockViewOptions = {
+	now?: number
+	decorated?: boolean
+	/** Per-widget line cap (3 default, 1 at compact terminals). */
+	maxLines?: number
+}
+
+/** The dock's two widget blocks (pure): Think → Tool. The Todos table is NOT
+ * part of it (tui-pi parity): it owns its own multi-row block above the
+ * think/tool lines (see `todosTableLines`).
+ *
+ * Think: the newest LIVE burst wins; otherwise the newest collapsed summary
+ * still inside its 2s linger. Up to `maxLines` lines (tail while live, head
+ * once collapsed).
+ *
+ * Tool: live tool rows, chronological order, up to `maxLines` (the newest
+ * `maxLines` survive the slice). A settled row is painted for 2s and then
+ * fades (dock-visibility); a starting tool has already flagged the previous
+ * settled rows `faded` in the store (clear old, show new). Running rows
+ * always show.
+ *
+ * `tone` keys the status-color family (resolved at render). `id` is the
+ * STABLE entrance-fade key (spinner glyphs churn the text — the id must
+ * not); `fadeOutAt` anchors the exit fade. */
+export type DockBlocks = { think: DockLine[]; tool: DockLine[]; now: number; decorated: boolean }
+
+export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = {}): DockBlocks {
+	const now = options.now ?? Date.now()
+	const decorated = options.decorated ?? motionDecorationsEnabled()
+	const maxLines = Math.max(1, Math.floor(options.maxLines ?? DOCK_WIDGET_MAX_LINES))
+	const think: DockLine[] = []
+	const toolLines: DockLine[] = []
+
+	// Think panel: the live burst wins; else the newest collapsed summary
+	// that has not reached the retention edge (hidden rows are not painted).
+	const reasoning = rows.filter((row): row is Extract<SeamRow, { kind: "reasoning" }> => row.kind === "reasoning")
+	const live = [...reasoning].reverse().find((row) => row.streaming === true)
+	let thinkRow: Extract<SeamRow, { kind: "reasoning" }> | undefined = live
+	if (thinkRow === undefined) {
+		for (let i = reasoning.length - 1; i >= 0; i--) {
+			const candidate = reasoning[i]!
+			if (candidate.elapsedSec === undefined) continue
+			const stopAt = skinStopAt(candidate)
+			if (stopAt === undefined || dockLineVisibility(stopAt, now, decorated).phase !== "hidden") {
+				thinkRow = candidate
+				break
+			}
+		}
+	}
+	if (thinkRow !== undefined) {
+		const stopAt = skinStopAt(thinkRow)
+		for (const text of thinkBlockLines(thinkRow, dockSpin, maxLines, now)) {
+			think.push({
+				text,
+				tone: "running",
+				italic: true,
+				accent: "think",
+				id: `dock:think:${thinkRow.key}`,
+				fadeOutAt: stopAt,
+			})
+		}
+	}
+
+	// Tool panel: one line per live tool row, keyed in-place updates.
+	const tools = rows.filter(
+		(row): row is Extract<SeamRow, { kind: "tool" }> => row.kind === "tool" && row.key.startsWith("tool:live:"),
+	)
+	const visible = tools.filter((row) => {
+		// The store's `faded` flag is the hard clear (turn-end stragglers and
+		// cleared-at-new-tool rows); running tools always show.
+		if (row.faded === true && row.status !== "running") return false
+		if (row.status === "running") return true
+		const stopAt = skinStopAt(row)
+		return stopAt === undefined || dockLineVisibility(stopAt, now, decorated).phase !== "hidden"
+	})
+	for (const row of visible.slice(-maxLines)) {
+		toolLines.push({
+			text: toolLineText(row, dockSpin, now),
 			tone: row.status === "running" ? "running" : row.status === "failed" ? "failed" : "ok",
 			accent: "tool",
 			marker: toolMarker(row.status),
@@ -477,7 +591,13 @@ export function dockLines(rows: readonly SeamRow[]): DockLine[] {
 			fadeOutAt: row.status !== "running" ? skinStopAt(row) : undefined,
 		})
 	}
-	return out
+	return { think, tool: toolLines, now, decorated }
+}
+
+/** The flat line set (pure): Think block → Tool block. */
+export function dockLines(rows: readonly SeamRow[], options: DockViewOptions = {}): DockLine[] {
+	const blocks = dockBlocks(rows, options)
+	return [...blocks.think, ...blocks.tool]
 }
 
 /** Turn activity, derived (pure): any live tool, a streaming think burst, an
@@ -493,30 +613,28 @@ export function dockTurnActive(rows: readonly SeamRow[]): boolean {
 	)
 }
 
-/** The turn-lifetime activity frame content (pure): EXACTLY two slots —
- * thinking / tool (skin contract §1 活动区) — each painted per the D5 laws,
- * empty slots left blank. The fixed law caps the tool slot at the most
- * recent visible tool line (multi-tool turns show the newest inside the
- * frame; the flat non-frame dock still lists every tool line). The Todos
- * table moved OUT of the frame to the widgets slot's own block (dsh-tui-pi
- * parity: the table is persistent, not turn-lifetime). */
-export function activityLines(rows: readonly SeamRow[]): [DockLine, DockLine] {
-	const blank: DockLine = { text: "", tone: "muted" }
-	const flat = dockLines(rows)
-	const think = flat.find((line) => line.id?.startsWith("dock:think:")) ?? blank
-	const tools = flat.filter((line) => line.id?.startsWith("dock:tool:"))
-	const tool = tools.length > 0 ? tools[tools.length - 1]! : blank
-	return [think, tool]
+/** The turn-lifetime activity frame content (pure): the SAME two blocks as
+ * the flat dock — thinking / tool slots (skin contract §1 活动区), each up
+ * to `maxLines` lines (3 by default, 1 at compact terminals), empty slots
+ * left blank. Think and tool are independent: their anchors and line counts
+ * never feed each other. The Todos table moved OUT of the frame to the
+ * widgets slot's own block (dsh-tui-pi parity: the table is persistent, not
+ * turn-lifetime). */
+export function activityBlocks(rows: readonly SeamRow[], options: DockViewOptions = {}): DockBlocks {
+	return dockBlocks(rows, options)
 }
 
 /** Compact-terminal form (contract 矮终端): the frame collapses to a left
  * rule with the title written into the first line (H2 mitigation), still
- * exactly two rows. The think slot keeps its TEXT here — the live burst is
+ * exactly two rows — compact terminals cap each block at ONE line, so the
+ * rule never grows. The think slot keeps its TEXT here — the live burst is
  * the point of the panel, so dropping it for the bare `┃ activity` title
  * (the pre-fix bug) hid the reasoning content whenever the frame mode
  * flipped to the rule. */
-export function activityRuleLines(rows: readonly SeamRow[]): [DockLine, DockLine] {
-	const [think, tool] = activityLines(rows)
+export function activityRuleLines(rows: readonly SeamRow[], options: DockViewOptions = {}): [DockLine, DockLine] {
+	const blocks = activityBlocks(rows, { ...options, maxLines: Math.min(options.maxLines ?? DOCK_COMPACT_MAX_LINES, DOCK_COMPACT_MAX_LINES) })
+	const think = blocks.think[0] ?? { text: "", tone: "muted" }
+	const tool = blocks.tool[0] ?? { text: "", tone: "muted" }
 	const head = think.text === "" ? "┃ activity" : `┃ activity · ${think.text}`
 	return [
 		{ ...think, text: head, id: "dock:activity-head" },
@@ -846,13 +964,12 @@ export const activityFrameLatch = createFrameLatch()
  * turn is derived from the rows (dockTurnActive). The frame's mount and
  * unmount are each DEFERRED one render tick (flicker mitigation 1,
  * `activityFrameLatch` below the clock helpers) so they never share a frame
- * with the turn-boundary reflows. Inside the frame the
- * content area is EXACTLY three rows (todo/think/tool, D5 semantics, blank
- * empty slots); short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS) drop the
- * box for a left rule with the title in the first line (H2). Line entrance
- * fade 0.4s and exit fade inside the seam-rows 1s window both ride the
- * shared motion clock — the old 120ms setInterval is GONE (contract §2.2:
- * no new timers; reduced/off jump straight to the final color). */
+ * with the turn-boundary reflows. Inside the frame each widget block paints
+ * up to the geometry's line cap (3 default, 1 at compact terminals); short
+ * terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS) also drop the box for a left
+ * rule with the title in the first line (H2). Line entrance fade 0.4s and
+ * the 2s-linger → 300ms-sweep exit fade both ride the shared motion clock —
+ * no timers are added (contract §2.2; reduced/off have no gradient). */
 export function WidgetsDock(props: {
 	/** The shared seam-rows store (getter-prop law: the page passes
 	 * `{ get rows() { return projection.rows } }` — the STORE ARRAY itself,
@@ -899,6 +1016,14 @@ export function WidgetsDock(props: {
 	createEffect(() => activityFrameLatch.push(turnActive()))
 	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
+	// Per-widget line cap: 3 above the compact threshold, 1 at/below it (the
+	// 80x24 two-row activity footprint stays untouched).
+	const lineCap = () => dockLineCap(dimensions().height)
+	const frameBlocks = () => activityBlocks(props.rows, { maxLines: lineCap() })
+	// Explicit height = 2 border rows + the visible content rows (title rides
+	// the top border, adds no rows). Dynamic: the blocks grow/shrink as lines
+	// appear and are hidden; each row still has an explicit parent height.
+	const frameHeight = () => 2 + frameBlocks().think.length + frameBlocks().tool.length
 
 	const accentFg = (accent: DockAccent): string | RGBA => dockAccentColor(theme, accent)
 	const lineView = (line: DockLine) => dockLineNode(line, width(), skinCtx(), fgFor, accentFg)
@@ -921,7 +1046,16 @@ export function WidgetsDock(props: {
 			</Show>
 			<Show
 				when={activityFrameLatch.shown()}
-				fallback={<FlatDock rows={props.rows} width={width()} fgFor={fgFor} accentFg={accentFg} skinCtx={skinCtx()} />}
+				fallback={
+					<FlatDock
+						rows={props.rows}
+						width={width()}
+						fgFor={fgFor}
+						accentFg={accentFg}
+						skinCtx={skinCtx()}
+						maxLines={lineCap()}
+					/>
+				}
 			>
 				<Show
 					when={frame() === "frame"}
@@ -932,20 +1066,21 @@ export function WidgetsDock(props: {
 					}
 				>
 					{/* Explicit border (the borderColor-only trap opens four sides
-					 * implicitly — contract §2.4). Height = 2 border rows + 2 fixed
-					 * content rows (title rides the top border, adds no rows). */}
+					 * implicitly — contract §2.4). Height = 2 border rows + the
+					 * think/tool block rows (each capped by `lineCap`). */}
 					<box
 						flexShrink={0}
 						flexDirection="column"
 						width="100%"
-						height={4}
+						height={frameHeight()}
 						border={["top", "bottom", "left", "right"]}
 						borderStyle="heavy"
 						borderColor={activityFrameBorderColor(theme)}
 						title="activity"
 						titleAlignment="left"
 					>
-						<For each={activityLines(props.rows)}>{lineView}</For>
+						<For each={frameBlocks().think}>{lineView}</For>
+						<For each={frameBlocks().tool}>{lineView}</For>
 					</box>
 				</Show>
 			</Show>
@@ -954,18 +1089,26 @@ export function WidgetsDock(props: {
 }
 
 /** The idle fallback dock (the pre-skin flat line list): after the turn
- * ends the frame disappears and any straggler lines (fading) keep the
- * original per-line height so the composer never jumps. */
+ * ends the frame disappears and any straggler lines (lingering/fading) keep
+ * their original per-line height so the composer never jumps. `maxLines` is
+ * the geometry's per-widget cap (3 default, 1 at compact terminals). */
 function FlatDock(props: {
 	rows: readonly SeamRow[]
 	width: number
 	fgFor: (tone: DockLine["tone"]) => string | RGBA
 	accentFg: (accent: DockAccent) => string | RGBA
 	skinCtx: SkinFgContext
+	maxLines: number
 }): JSX.Element {
 	return (
-		<box flexShrink={0} flexDirection="column" width="100%" height={dockLines(props.rows).length} paddingLeft={3}>
-			<For each={dockLines(props.rows)}>
+		<box
+			flexShrink={0}
+			flexDirection="column"
+			width="100%"
+			height={dockLines(props.rows, { maxLines: props.maxLines }).length}
+			paddingLeft={3}
+		>
+			<For each={dockLines(props.rows, { maxLines: props.maxLines })}>
 				{(line) => dockLineNode(line, props.width, props.skinCtx, props.fgFor, props.accentFg)}
 			</For>
 		</box>

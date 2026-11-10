@@ -574,3 +574,81 @@ describe("batch V2b: subagent tree row", () => {
 		dispose()
 	})
 })
+
+// ---------------------------------------------------------------------------
+// 2026-11-10 dock directive: a settled widget row is retained for the dock's
+// 2s linger + 300ms fade (DOCK_LINE_RETENTION_MS) unless a caller overrides;
+// a new tool start clears the previous settled lines; a session switch drops
+// every pending fade timer so the old clock cannot hide a new session's row.
+// ---------------------------------------------------------------------------
+describe("dock retention and clear-old-at-new-tool", () => {
+	test("default retention is the dock's linger + fade window (2.3s)", async () => {
+		const seam = new FakeSeam()
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		seam.script = async (cb) => {
+			cb.onThinkingDelta("plan")
+			cb.onToolStart?.({ callId: "t", name: "bash", args: "{}" })
+			await gate
+		}
+		const { projection, dispose } = setup(seam)
+		const pending = projection.send("go")
+		// A tool start collapses the think segment; its default linger is 2s,
+		// so the summary is still in the store well after the old 1s window.
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(true)
+		await Bun.sleep(1100)
+		expect(projection.rows.some((r) => r.kind === "reasoning")).toBe(true)
+		release()
+		await pending
+		dispose()
+	})
+
+	test("a starting tool clears the previous settled tool lines (clear old, show new)", async () => {
+		const seam = new FakeSeam()
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		seam.script = async (cb) => {
+			cb.onToolStart?.({ callId: "old", name: "bash", args: "{}" })
+			cb.onToolRun?.({ callId: "old", name: "bash", argsPretty: "{}", output: "x", ok: true })
+			await gate
+			cb.onToolStart?.({ callId: "new", name: "grep", args: "{}" })
+		}
+		// Long enough that only the explicit clear (not the fade timer) can hide it.
+		const { projection, dispose } = setup(seam, { toolFadeMs: 10_000 })
+		const pending = projection.send("go")
+		const old = projection.rows.find((r) => r.key === "tool:live:old") as { faded?: boolean; status: string }
+		expect(old).toMatchObject({ status: "done" })
+		expect(old.faded).not.toBe(true)
+		release()
+		await pending
+		// The new tool start flagged the old settled row faded immediately.
+		expect((projection.rows.find((r) => r.key === "tool:live:old") as { faded?: boolean }).faded).toBe(true)
+		// The new row survives the turn-end sweep (it is the current content).
+		expect(projection.rows.find((r) => r.key === "tool:live:new")).toMatchObject({ name: "grep", faded: false })
+		dispose()
+	})
+
+	test("hydrate (session switch) clears pending fade timers: the old clock cannot hide a same-key row", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => {
+			cb.onToolStart?.({ callId: "same", name: "bash", args: "{}" })
+			cb.onToolRun?.({ callId: "same", name: "bash", argsPretty: "{}", output: "x", ok: true })
+		}
+		const { projection, dispose } = setup(seam, { toolFadeMs: 100 })
+		await projection.send("go") // settles "same" ~now; pending fade A ≈ +100ms
+		projection.hydrate([]) // session switch — must cancel A
+		await Bun.sleep(60) // still before A's deadline
+		await projection.send("again") // same callId → same key; its own timer fires ≈ +160ms
+		await Bun.sleep(60) // past A, before the new row's own timer
+		const row = projection.rows.find((r) => r.key === "tool:live:same") as { status: string; faded?: boolean }
+		expect(row).toMatchObject({ status: "done" })
+		// Without the hydrate cleanup, A would have flagged this row faded at
+		// ≈ +100ms — after it was created, before its own fade was due.
+		expect(row.faded).not.toBe(true)
+		dispose()
+	})
+})

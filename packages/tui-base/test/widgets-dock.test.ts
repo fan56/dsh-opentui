@@ -19,19 +19,25 @@ import {
 	frameLatchFire,
 	frameLatchNext,
 	type FrameLatch,
+	activityBlocks,
 	activityFrameMode,
-	activityLines,
 	activityRuleLines,
+	dockBlocks,
+	dockLineCap,
 	dockLines,
 	dockAccentColor,
 	dockTurnActive,
 	mixSkinColor,
+	resetSkinLineFades,
+	skinFadeInColor,
 	skinFadeOutColor,
 	skinFadeOutProgress,
 	skinFaintColor,
+	skinLineFadeT,
 	skinNoticeFadeProgress,
 	skinPulseBrightness,
 	skinStopAt,
+	thinkBlockLines,
 	thinkLineText,
 	toolLineText,
 	TODO_MAX_ROWS,
@@ -45,6 +51,14 @@ import {
 	SKIN_NOTICE_FADE_MS,
 	SKIN_PULSE_MS,
 } from "../src/routes/session/widgets-dock"
+import {
+	DOCK_COMPACT_MAX_LINES,
+	DOCK_FADE_OUT_MS,
+	DOCK_LINGER_MS,
+	DOCK_LINE_RETENTION_MS,
+	DOCK_WIDGET_MAX_LINES,
+	dockLineVisibility,
+} from "../src/routes/session/dock-visibility"
 import type { SeamRow } from "../src/routes/session/seam-rows"
 import { stringWidth } from "../src/util/string-width"
 import { RGBA } from "@opentui/core"
@@ -283,16 +297,21 @@ describe("dockLines (batch D5 widget fade; todos live in their own table)", () =
 // lifetime activity frame, the code-block forms, and the reminder pulse.
 // ---------------------------------------------------------------------------
 
-describe("skin exit fade timing (H5: inside the existing 1s window)", () => {
-	test("hold 700ms → sweep 300ms → done at 1000ms (clear moment unchanged)", () => {
-		expect(SKIN_HOLD_MS + SKIN_FADE_OUT_MS).toBe(1000)
+describe("skin exit fade timing (2s linger → 300ms sweep)", () => {
+	test("hold 2000ms → sweep 300ms → done at 2300ms", () => {
+		expect(DOCK_LINGER_MS).toBe(2000)
+		expect(DOCK_FADE_OUT_MS).toBe(300)
+		expect(DOCK_LINE_RETENTION_MS).toBe(2300)
+		expect(SKIN_HOLD_MS).toBe(DOCK_LINGER_MS)
+		expect(SKIN_FADE_OUT_MS).toBe(DOCK_FADE_OUT_MS)
+		expect(SKIN_HOLD_MS + SKIN_FADE_OUT_MS).toBe(DOCK_LINE_RETENTION_MS)
 		expect(skinFadeOutProgress(0)).toBe(0)
-		expect(skinFadeOutProgress(699)).toBe(0)
+		expect(skinFadeOutProgress(1999)).toBe(0)
 		expect(skinFadeOutProgress(SKIN_HOLD_MS)).toBe(0)
 		const mid = skinFadeOutProgress(SKIN_HOLD_MS + SKIN_FADE_OUT_MS / 2)
 		expect(mid).toBeGreaterThan(0.4)
 		expect(mid).toBeLessThan(0.6)
-		expect(skinFadeOutProgress(1000)).toBe(1)
+		expect(skinFadeOutProgress(DOCK_LINE_RETENTION_MS)).toBe(1)
 		expect(skinFadeOutProgress(5000)).toBe(1)
 	})
 	test("fade color: full target during the hold, half-mixed at the sweep midpoint", () => {
@@ -355,17 +374,23 @@ describe("skin turn-lifetime activity frame", () => {
 		expect(dockTurnActive([{ key: "a", kind: "assistant", text: "x", final: false }])).toBe(true)
 		expect(dockTurnActive([{ key: "s", kind: "subagents", children: [{ id: "c", label: "l", status: "running", rounds: 1 }] }])).toBe(true)
 	})
-	test("frame content is EXACTLY two slots: think/tool (todos live in their own table), blanks left blank", () => {
-		const [think, tool] = activityLines([todoTool, thinkLive, toolRun])
-		expect(think.text).toContain("thinking")
-		expect(tool.text).toContain("bash")
-		const empty = activityLines([])
-		expect(empty.map((line) => line.text)).toEqual(["", ""])
+	test("frame content is two independent blocks: think/tool (todos live in their own table), blanks left blank", () => {
+		const blocks = activityBlocks([todoTool, thinkLive, toolRun])
+		expect(blocks.think[0]!.text).toContain("thinking")
+		expect(blocks.tool[0]!.text).toContain("bash")
+		const empty = activityBlocks([])
+		expect(empty.think).toEqual([])
+		expect(empty.tool).toEqual([])
 	})
-	test("fixed law: multi-tool turns show the most recent tool line", () => {
+	test("multi-tool turns show up to 3 tool lines, newest last (cap 1 → newest only)", () => {
 		const second: SeamRow = { key: "tool:live:t2", kind: "tool", name: "grep", args: "{}", status: "running", startedAt: Date.now() }
-		const [, tool] = activityLines([toolRun, second])
-		expect(tool.text).toContain("grep")
+		const third: SeamRow = { key: "tool:live:t3", kind: "tool", name: "read", args: "{}", status: "running", startedAt: Date.now() }
+		const blocks = activityBlocks([toolRun, second, third])
+		expect(blocks.tool).toHaveLength(3)
+		expect(blocks.tool[2]!.text).toContain("read")
+		const one = activityBlocks([toolRun, second, third], { maxLines: 1 })
+		expect(one.tool).toHaveLength(1)
+		expect(one.tool[0]!.text).toContain("read")
 	})
 	test("compact form: left rule with the activity title in the first line", () => {
 		const rule = activityRuleLines([toolRun])
@@ -683,5 +708,165 @@ describe("contrast walk (bidirectional)", () => {
 		const result = boostUntilContrast("#fab283", "#0a0a0f")
 		expect(result.meetsContrast).toBe(true)
 		expect(result.color).toBe("#fab283")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 2026-11-10 user directive: think and tool each display 3 lines by default;
+// a finished round lingers 2s, then fades out; new content within the window
+// replaces the old block. All timelines are driven by a fake clock — no real
+// sleep, no new timers (the view rides the renderer's shared animation tick).
+// ---------------------------------------------------------------------------
+describe("dock display rules: 3 lines, 2s linger, replace", () => {
+	const NOW = 1_000_000
+	type ThinkRow = Extract<SeamRow, { kind: "reasoning" }>
+	type ToolRow = Extract<SeamRow, { kind: "tool" }>
+	const liveThink = (text: string, key = "reasoning:live-1", startedAt = NOW - 1500): ThinkRow => ({
+		key,
+		kind: "reasoning",
+		text,
+		final: false,
+		streaming: true,
+		startedAt,
+	})
+	const doneThink = (text: string, key = "reasoning:live-1", startedAt = NOW - 1000, elapsedSec = 1): ThinkRow => ({
+		key,
+		kind: "reasoning",
+		text,
+		final: true,
+		startedAt,
+		elapsedSec,
+	})
+	const runningTool = (name: string, key = `tool:live:${name}`): ToolRow => ({
+		key,
+		kind: "tool",
+		name,
+		args: "{}",
+		status: "running",
+		startedAt: NOW - 500,
+	})
+	const doneTool = (name: string, key = `tool:live:${name}`, faded = false): ToolRow => ({
+		key,
+		kind: "tool",
+		name,
+		args: "{}",
+		status: "done",
+		startedAt: NOW - 1000,
+		elapsedSec: 1,
+		faded,
+	})
+
+	test("think: 3 lines by default; live shows the TAIL, collapsed the HEAD", () => {
+		const text = "l1\nl2\nl3\nl4\nl5"
+		expect(thinkBlockLines(liveThink(text), spin, 3, NOW)).toEqual([
+			"💭 thinking · 1.5s · l3",
+			"   l4",
+			"   l5",
+		])
+		// Single-line view keeps the old shape: live → last line.
+		expect(thinkBlockLines(liveThink(text), spin, 1, NOW)).toEqual(["💭 thinking · 1.5s · l5"])
+		expect(thinkBlockLines(doneThink(text), spin, 3, NOW)).toEqual([
+			"💭 thought · 1.0s · l1",
+			"   l2",
+			"   l3",
+		])
+		expect(thinkLineText(doneThink(text), spin, NOW)).toBe("💭 thought · 1.0s · l1")
+		// 3 non-blank lines exactly; blank lines never spend a row.
+		expect(thinkBlockLines(liveThink("a\n\nb\nc"), spin, 3, NOW)).toEqual([
+			"💭 thinking · 1.5s · a",
+			"   b",
+			"   c",
+		])
+	})
+
+	test("tool: 3 lines by default, newest last (last 3 of the store order)", () => {
+		const rows: SeamRow[] = ["bash", "grep", "read", "write", "edit"].map((name) => runningTool(name))
+		const blocks = dockBlocks(rows, { now: NOW, decorated: true, maxLines: 3 })
+		expect(blocks.tool).toHaveLength(3)
+		expect(blocks.tool.map((line) => line.text.includes("edit"))).toContain(true)
+		expect(blocks.tool[2]!.text).toContain("edit")
+		expect(blocks.tool[0]!.text).toContain("read")
+		// Cap 1 (compact geometry) keeps only the newest.
+		const compact = dockBlocks(rows, { now: NOW, decorated: true, maxLines: 1 })
+		expect(compact.tool).toHaveLength(1)
+		expect(compact.tool[0]!.text).toContain("edit")
+	})
+
+	test("timeline: full 2s linger, then a 300ms sweep, then gone (fake clock)", () => {
+		const settled = doneTool("bash")
+		const stopAt = NOW // startedAt NOW-1000 + elapsedSec 1s
+		expect(skinStopAt(settled)).toBe(stopAt)
+		expect(dockLineVisibility(stopAt, NOW + 1999, true)).toEqual({ phase: "lingering", progress: 0 })
+		expect(dockLineVisibility(stopAt, NOW + 2000, true)).toEqual({ phase: "fading", progress: 0 })
+		expect(dockLineVisibility(stopAt, NOW + 2150, true).phase).toBe("fading")
+		expect(dockLineVisibility(stopAt, NOW + 2150, true).progress).toBeCloseTo(0.5)
+		expect(dockLineVisibility(stopAt, NOW + 2299, true).phase).toBe("fading")
+		expect(dockLineVisibility(stopAt, NOW + 2300, true)).toEqual({ phase: "hidden", progress: 1 })
+		// The line is painted through the whole linger AND the sweep…
+		expect(dockLines([settled], { now: NOW + 1999, decorated: true })).toHaveLength(1)
+		expect(dockLines([settled], { now: NOW + 2150, decorated: true })).toHaveLength(1)
+		// …and gone at the retention edge.
+		expect(dockLines([settled], { now: NOW + 2300, decorated: true })).toHaveLength(0)
+		// Fade progress drives the color (half-mixed at the sweep midpoint).
+		expect(skinFadeOutProgress(DOCK_LINGER_MS + DOCK_FADE_OUT_MS / 2)).toBeCloseTo(0.5)
+	})
+
+	test("think uses its own anchor: a collapsed thought lingers 2s after collapse", () => {
+		const thought = doneThink("done thinking")
+		expect(dockLines([thought], { now: NOW + 1999, decorated: true })).toHaveLength(1)
+		expect(dockLines([thought], { now: NOW + 2300, decorated: true })).toHaveLength(0)
+	})
+
+	test("new content inside the window replaces the old block (think)", () => {
+		const old = doneThink("old summary", "reasoning:live-1")
+		const fresh = liveThink("new burst a\nnew burst b\nnew burst c", "reasoning:live-2", NOW + 500)
+		const blocks = dockBlocks([old, fresh], { now: NOW + 1000, decorated: true, maxLines: 3 })
+		// Only the fresh block: the old summary is not painted beside it.
+		expect(blocks.think).toHaveLength(3)
+		expect(blocks.think.every((line) => line.id === "dock:think:reasoning:live-2")).toBe(true)
+		expect(blocks.think[0]!.text).toContain("new burst")
+	})
+
+	test("a starting tool clears the old settled tool lines (store flags faded)", () => {
+		// The store marks previous settled rows `faded` on the next tool start
+		// (seam-rows clearSettledToolRows); the dock must not paint them.
+		const old = doneTool("bash", "tool:live:old", true)
+		const fresh = runningTool("grep", "tool:live:new")
+		const blocks = dockBlocks([old, fresh], { now: NOW + 1000, decorated: true, maxLines: 3 })
+		expect(blocks.tool).toHaveLength(1)
+		expect(blocks.tool[0]!.id).toBe("dock:tool:tool:live:new")
+	})
+
+	test("motion tiers: full sweeps; reduced/off hide at the 2s deadline (no gradient)", () => {
+		const settled = doneTool("bash")
+		const stopAt = NOW
+		// reduced/off: the tier that forbids fades jumps straight to hidden.
+		expect(dockLineVisibility(stopAt, NOW + 1999, false)).toEqual({ phase: "lingering", progress: 0 })
+		expect(dockLineVisibility(stopAt, NOW + 2000, false)).toEqual({ phase: "hidden", progress: 1 })
+		expect(dockLines([settled], { now: NOW + 2000, decorated: false })).toHaveLength(0)
+		// full: still painted at the deadline, fading.
+		expect(dockLines([settled], { now: NOW + 2000, decorated: true })).toHaveLength(1)
+	})
+
+	test("compact geometry caps each widget at 1 line (80x24 footprint unchanged)", () => {
+		expect(DOCK_WIDGET_MAX_LINES).toBe(3)
+		expect(DOCK_COMPACT_MAX_LINES).toBe(1)
+		expect(dockLineCap(24)).toBe(1)
+		expect(dockLineCap(30)).toBe(1)
+		expect(dockLineCap(31)).toBe(3)
+		expect(dockLineCap()).toBe(3)
+		const rows: SeamRow[] = ["a", "b", "c"].map((name) => runningTool(name))
+		expect(dockLines(rows, { maxLines: dockLineCap(24) })).toHaveLength(1)
+		expect(dockLines(rows, { maxLines: dockLineCap(34) })).toHaveLength(3)
+	})
+
+	test("session switch resets the entrance-fade registry (no ghost timestamps)", () => {
+		resetSkinLineFades()
+		const id = "dock:session-switch"
+		expect(skinLineFadeT(id, 1000)).toBe(0)
+		expect(skinLineFadeT(id, 1400)).toBe(1)
+		resetSkinLineFades()
+		// A new session's first paint starts the entrance fade over.
+		expect(skinLineFadeT(id, 2000)).toBe(0)
 	})
 })
