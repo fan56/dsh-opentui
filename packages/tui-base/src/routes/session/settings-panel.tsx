@@ -28,8 +28,9 @@
  *
  * Keys (the agents-panel law): a global priority-2 keymap layer gated on the
  * module open signal + an empty dialog stack; a focus-catcher input keeps
- * printable keys out of the composer while the panel owns the screen; Esc
- * clears a non-empty filter first, then pops the level, then closes.
+ * printable keys out of the composer while the panel owns the screen; Esc on
+ * the options/input level pops that level, and on the list it clears a
+ * non-empty filter before closing.
  */
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
 import type { InputRenderable } from "@opentui/core"
@@ -187,7 +188,9 @@ export function buildLocalItems(input: {
 			id: "theme",
 			label: "theme",
 			value: str(merged.theme) ?? UNKNOWN,
-			source: "config.json · theme",
+			// The value shown is the MERGED view (profile ⊕ workspace ⊕ env);
+			// the write goes to the profile config.json only.
+			source: "合并值 · theme（写 config.json）",
 			kind: "enum",
 			...(input.themeNames !== undefined && input.themeNames.length > 0 ? { options: input.themeNames } : {}),
 			write: { via: "config", key: "theme" },
@@ -461,6 +464,17 @@ function enumOptions(node: SchemaNode, refs: Record<string, unknown> | undefined
  * `permission.defaultPreset` ships as a plain string schema whose valid values
  * ARE the sibling `presets` dict keys (the host rejects anything else). The
  * schema is the enum source here — no hardcoded preset list.
+ *
+ * Real-host fact (live `settings/describe`, opentui profile): the `permission`
+ * namespace schema is
+ * `{uid, refs:{N:{type:"string"}, M:{type:"object",dict:{defaultPreset:N}}}}`
+ * — `defaultPreset` only, NO sibling `presets` dict — so this derivation
+ * returns [] there and the row keeps the "schema 未声明可选项" note. A host
+ * that does serve a `presets` dict is a valid-value list as-is: `custom`
+ * (derived not-a-preset state) and `auto` (live integration) are RESERVED
+ * names the permission service refuses as configured preset keys
+ * (`dsh-permission-presets` throws on both), so they cannot appear in the
+ * schema and need no filtering.
  */
 export function presetEnumFromSchema(schema: unknown): string[] {
 	if (typeof schema !== "object" || schema === null) return []
@@ -470,7 +484,7 @@ export function presetEnumFromSchema(schema: unknown): string[] {
 	if (root === undefined || root.type !== "object") return []
 	const presets = deref(root.dict?.presets, refs)
 	if (presets?.type !== "dict" || presets.dict === undefined) return []
-	return Object.keys(presets.dict).filter((name) => name !== "custom" && name !== "auto")
+	return Object.keys(presets.dict)
 }
 
 // --------------------------------------------------------------- writes --
@@ -552,12 +566,22 @@ export interface HostWriteOutcome {
 	/** Fresh document after the last write (every write re-describes). */
 	document?: SeamSettingsDocument
 	describeError?: string
+	/** The write landed but the refresh after it still failed (retried once). */
+	refreshFailed?: boolean
 }
 
 /**
  * One host write with the conflict contract: write → describe → (on
  * `settings/conflict`) re-read the revision and retry ONCE → describe. Any
  * other failure is returned for the panel to display (never thrown away).
+ *
+ * Two rules the review pinned:
+ *   - a conflict whose re-read describe FAILED has no fresh revision, so the
+ *     write is NOT retried blind: the conflict is surfaced instead (C3).
+ *   - a successful write whose refresh describe failed gets ONE more describe
+ *     (refresh only — no second write); a still-failed refresh sets
+ *     `refreshFailed` so the panel says "written but not refreshed" instead of
+ *     claiming a saved value it could not read back (M2b).
  */
 export async function commitHostWrite(input: {
 	mutate(ns: string, ops: SeamSettingsOp[], revision?: number): Promise<SeamSettingsMutateResult>
@@ -578,10 +602,20 @@ export async function commitHostWrite(input: {
 	attempts++
 	let fresh = await describeOnce()
 	if (!result.ok && result.conflict && attempts === 1) {
+		// No fresh document = no fresh revision. Retrying the write without it
+		// would be a lock-free overwrite; surface the conflict instead.
+		if (fresh.document === undefined) return { result, attempts, ...fresh }
 		const revision = currentHostRevision(fresh.document, input.ns)
 		result = await input.mutate(input.ns, input.ops, revision)
 		attempts++
 		fresh = await describeOnce()
+	}
+	if (result.ok && fresh.document === undefined) {
+		const retried = await describeOnce()
+		if (retried.document === undefined) {
+			return { result, attempts, ...retried, refreshFailed: true }
+		}
+		fresh = retried
 	}
 	return { result, attempts, ...fresh }
 }
@@ -623,7 +657,9 @@ export function filterSettingsItems(items: readonly SettingsItem[], query: strin
 	)
 }
 
-/** The enabled/disabled verdict for both write halves. */
+/** The enabled/disabled verdict for both write halves. A failed
+ * `settings/describe` only costs the HOST half: local preferences are
+ * `configSave` writes and do not depend on the host document at all (C5). */
 export function settingsWritable(
 	document: SeamSettingsDocument | undefined,
 	describeError: string | undefined,
@@ -631,7 +667,11 @@ export function settingsWritable(
 ): { local: boolean; host: boolean; reason?: string } {
 	if (!hasFace) return { local: true, host: false, reason: "宿主 settings 接口不可用 — 仅本地偏好可写" }
 	if (describeError !== undefined) {
-		return { local: false, host: false, reason: `settings/describe 失败：${describeError}` }
+		return {
+			local: true,
+			host: false,
+			reason: `settings/describe 失败：${describeError} — 宿主设置不可写，本地偏好仍可写`,
+		}
 	}
 	if (document !== undefined && document.writable === false) {
 		return { local: false, host: false, reason: "profile 的 settings 文档只读（writable: false）— 已禁用全部写控件" }
@@ -726,10 +766,18 @@ export function settingsLines(input: SettingsLinesInput): SettingsLine[] {
 	return lines
 }
 
-/** The enum picker layer. */
-export function settingsOptionLines(item: SettingsItem, options: readonly string[], cursor: number, width: number): SettingsLine[] {
+/** The enum picker layer. `status` carries a failed write verbatim — the list
+ * footer is not on screen here, so a write error must render in this layer. */
+export function settingsOptionLines(
+	item: SettingsItem,
+	options: readonly string[],
+	cursor: number,
+	width: number,
+	status?: string,
+): SettingsLine[] {
 	const lines: SettingsLine[] = [{ text: clipText(`● ${item.label} — pick a value`, width), tone: "accent" }]
 	lines.push({ text: clipText(item.source, width), tone: "subtle" })
+	if (status !== undefined) lines.push({ text: clipText(status, width), tone: "attention" })
 	lines.push({ text: "", tone: "subtle" })
 	for (let index = 0; index < options.length; index++) {
 		const option = options[index]!
@@ -767,11 +815,18 @@ export function settingsInputLines(
 	if (error !== undefined) lines.push({ text: clipText(`✘ ${error}`, width), tone: "attention" })
 	lines.push({ text: clipText(`> ${value}`, width), tone: "accent" })
 	lines.push({ text: "", tone: "subtle" })
-	lines.push({ text: clipText("Enter save · empty = unset (numbers) · Esc back", width), tone: "subtle" })
+	// `empty = unset` is a LOCAL number-key rule only (planLocalWrite maps ""
+	// to an undefined value the profile writer drops). Host number rows and
+	// every text/enum row refuse an empty value.
+	const emptyHint =
+		item.kind === "number" && item.write?.via === "config" ? "empty = unset · " : "empty is refused · "
+	lines.push({ text: clipText(`Enter save · ${emptyHint}Esc back`, width), tone: "subtle" })
 	return lines
 }
 
-/** Esc hierarchy: filter first, then level, then close. */
+/** Esc hierarchy (as implemented): the editor/picker levels pop back to the
+ * list; on the list a non-empty filter clears first, then the next Esc
+ * closes. The filter only exists on the list layer. */
 export type SettingsEscape =
 	| { action: "clearFilter" }
 	| { action: "back" }
@@ -810,12 +865,22 @@ export function useSettingsPanelOpenState() {
 	return [settingsPanelOpen, setPanelOpen] as const
 }
 
+/** Persist flag for a theme-face apply: the panel persists through
+ * `configSave` itself and asks the face for the LIVE half only, so the face
+ * must not write a second time to the layer it happens to own. */
+export interface ThemeApplyOptions {
+	persist?: boolean
+}
+
 /** The theme face the entry injects (live apply + persistence is the panel's). */
 export interface SettingsThemeFace {
 	current(): string
 	list(): string[]
-	set(name: string): boolean
-	mode?(): { current(): "auto" | "dark" | "light"; set(mode: "auto" | "dark" | "light"): boolean }
+	set(name: string, options?: ThemeApplyOptions): boolean
+	mode?(): {
+		current(): "auto" | "dark" | "light"
+		set(mode: "auto" | "dark" | "light", options?: ThemeApplyOptions): boolean
+	}
 }
 
 type Level = "list" | "options" | "input"
@@ -849,6 +914,12 @@ export function SettingsPanel(props: {
 	const [preselect, setPreselect] = createSignal<string | undefined>(undefined)
 	let catcher: InputRenderable | undefined
 	let unsettings: (() => void) | undefined
+	// Unmount with the panel open: the host push listener must not survive the
+	// component (a leaked subscription keeps re-describing into dead signals).
+	onCleanup(() => {
+		unsettings?.()
+		unsettings = undefined
+	})
 
 	const width = () => Math.max(24, dimensions().width - 4)
 	const hasFace = () => props.seam.settings !== undefined
@@ -1001,6 +1072,7 @@ export function SettingsPanel(props: {
 			}
 			setOptionItem(item)
 			setOptionCursor(Math.max(0, item.options.indexOf(item.value)))
+			setInputError(undefined)
 			setStatus(undefined)
 			setLevel("options")
 			return
@@ -1047,20 +1119,39 @@ export function SettingsPanel(props: {
 					ops: plan.ops,
 					revision: currentHostRevision(document(), plan.ns),
 				})
-				if (outcome.document !== undefined) setDocument(outcome.document)
+				if (outcome.document !== undefined) {
+					setDocument(outcome.document)
+					setDescribeError(undefined)
+				}
 				if (outcome.describeError !== undefined) setDescribeError(outcome.describeError)
 				if (!outcome.result.ok) {
-					setStatus(
-						outcome.result.conflict
-							? "✘ 冲突：设置已被其它客户端修改，重试一次仍失败（未写入）"
-							: `✘ ${outcome.result.error}`,
-					)
+					const message = outcome.result.conflict
+						? outcome.attempts === 1
+							? "✘ 冲突：设置已被其它客户端修改，且 settings/describe 失败 — 没有最新 revision，未重试写入"
+							: "✘ 冲突：设置已被其它客户端修改，重试一次仍冲突（未写入）"
+						: `✘ ${outcome.result.error}`
+					setInputError(message)
+					setStatus(message)
 					return
 				}
 				markChanged(item)
+				if (outcome.refreshFailed === true) {
+					// The write landed but the read-back did not: say so, never
+					// "saved" (the displayed value would be a stale document).
+					const message = `⚠ 已写入 ${item.label} = ${String(plan.applied)}，但刷新失败：${outcome.describeError ?? "settings/describe 不可用"}`
+					setInputError(message)
+					setStatus(message)
+					backToList()
+					return
+				}
 				setStatus(`saved ${item.label} = ${String(plan.applied)}${outcome.attempts > 1 ? " (after conflict retry)" : ""}`)
 				setInputError(undefined)
 				backToList()
+			} catch (error) {
+				// Transport/handler throw (never leave an unhandled rejection).
+				const message = `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`
+				setInputError(message)
+				setStatus(message)
 			} finally {
 				setBusy(false)
 			}
@@ -1077,7 +1168,9 @@ export function SettingsPanel(props: {
 		try {
 			props.seam.configSave?.(plan.patch)
 		} catch (error) {
-			setStatus(`✘ ${error instanceof Error ? error.message : String(error)}`)
+			const message = `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`
+			setInputError(message)
+			setStatus(message)
 			return
 		}
 		applyLive(item, plan.applied, hints)
@@ -1088,7 +1181,12 @@ export function SettingsPanel(props: {
 		backToList()
 	}
 
-	/** Apply the live effect the persisted key drives in THIS process. */
+	/** Apply the live effect the persisted key drives in THIS process.
+	 *
+	 * The panel already persisted through `planLocalWrite` (+ configSave), so
+	 * every theme-face call is LIVE-only (`persist: false`): the face owns a
+	 * boot-time layer (themeModePatchKey) and its own write would land there
+	 * even while the user edits the other layer (M1). */
 	function applyLive(item: SettingsItem, applied: string | boolean | number | undefined, hints: FooterHints) {
 		try {
 			if (item.id === "motion") {
@@ -1099,10 +1197,12 @@ export function SettingsPanel(props: {
 			} else if (item.id === "hintsLocale") {
 				setHintsLocale(String(applied) as HintLocale)
 			} else if (item.id === "theme") {
-				props.themes?.set(String(applied))
+				props.themes?.set(String(applied), { persist: false })
 			} else if (item.id === "themeMode" || item.id === "workspaceThemeMode") {
 				const mode = String(applied)
-				if (mode === "auto" || mode === "dark" || mode === "light") props.themes?.mode?.().set(mode)
+				if (mode === "auto" || mode === "dark" || mode === "light") {
+					props.themes?.mode?.().set(mode, { persist: false })
+				}
 			}
 		} catch (error) {
 			console.error("[settings] live apply failed:", error)
@@ -1185,7 +1285,7 @@ export function SettingsPanel(props: {
 			const item = optionItem()
 			return item === undefined
 				? settingsLines(listInput())
-				: settingsOptionLines(item, item.options ?? [], optionCursor(), width())
+				: settingsOptionLines(item, item.options ?? [], optionCursor(), width(), inputError())
 		}
 		if (current === "input") {
 			const item = inputItem()

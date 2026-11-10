@@ -376,6 +376,22 @@ describe("row 41 — config seam wiring", () => {
 		await session.dispose()
 	})
 
+	test("configSave with an undefined value DELETES the key (settings empty = unset)", async () => {
+		const home = scratchDir("dsh-wave3-home-")
+		const { session } = makeFacade({ dshHome: home })
+		session.configSave({ retentionDays: 30, maxRounds: 4 })
+		const profilePath = join(home, "profiles", "opentui", "config.json")
+		expect((JSON.parse(readFileSync(profilePath, "utf8")) as Record<string, unknown>).retentionDays).toBe(30)
+		// planLocalWrite's empty number input builds `{ [key]: undefined }`;
+		// the profile writer merges the patch and JSON drops undefined keys —
+		// the key must be GONE from the file (not null, not present).
+		session.configSave({ retentionDays: undefined })
+		const after = JSON.parse(readFileSync(profilePath, "utf8")) as Record<string, unknown>
+		expect("retentionDays" in after).toBe(false)
+		expect(after.maxRounds).toBe(4) // sibling keys survive
+		await session.dispose()
+	})
+
 	test("keybindingsLoad reads the profile root (HostSession path semantics)", () => {
 		const home = scratchDir("dsh-wave3-home-")
 		mkdirSync(join(home, "profiles", "opentui"), { recursive: true })

@@ -457,9 +457,13 @@ function V2SessionPage(props: {
 	const themeFace = {
 		current: () => themeSeam.current(),
 		list: () => themeSeam.list(),
-		set: (name: string) => {
+		set: (name: string, options?: { persist?: boolean }) => {
 			const applied = themeSeam.setTheme(name)
-			if (applied) {
+			// `persist === false` is the /settings panel's live-only half: the
+			// panel persists through its OWN validated patch (so the edited
+			// LAYER wins), and a second write here would land on the boot-time
+			// layer slipstream — the pollution the review caught.
+			if (applied && options?.persist !== false) {
 				try {
 					seam.configSave?.({ theme: name })
 				} catch (error) {
@@ -476,15 +480,19 @@ function V2SessionPage(props: {
 		// routes into the workspace config.yml, themeMode into the profile
 		// config.json; the v2 vendor config is resolve({}), so the
 		// configState.update path inside pin/free cannot persist anything).
+		// `persist === false` skips that write for the /settings panel, which
+		// already persisted the layer-specific key it edited.
 		mode: () => ({
 			current: () => (themeService.locked() ? themeService.mode() : "auto"),
-			set: (mode: "auto" | "dark" | "light") => {
+			set: (mode: "auto" | "dark" | "light", options?: { persist?: boolean }) => {
 				if (mode === "auto") themeService.unlock()
 				else if (!themeService.setMode(mode)) return false
-				try {
-					seam.configSave?.({ [themeModePatchKey]: mode })
-				} catch (error) {
-					console.error("[v2] themeMode persist failed:", error)
+				if (options?.persist !== false) {
+					try {
+						seam.configSave?.({ [themeModePatchKey]: mode })
+					} catch (error) {
+						console.error("[v2] themeMode persist failed:", error)
+					}
 				}
 				return true
 			},

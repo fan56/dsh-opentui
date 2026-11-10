@@ -21,8 +21,10 @@ import {
 	presetEnumFromSchema,
 	readSchemaField,
 	settingsEscape,
+	settingsInputLines,
 	settingsLines,
 	settingsNamespaceCount,
+	settingsOptionLines,
 	settingsPanelOpen,
 	settingsSummary,
 	settingsWritable,
@@ -126,6 +128,13 @@ describe("host baseline (n/a, never a guessed default)", () => {
 		expect(verdict.host).toBe(false)
 		expect(verdict.reason).toContain("不可用")
 	})
+
+	test("a failed describe keeps LOCAL writes enabled (configSave is independent)", () => {
+		const verdict = settingsWritable(undefined, "connection refused", true)
+		expect(verdict.local).toBe(true)
+		expect(verdict.host).toBe(false)
+		expect(verdict.reason).toContain("本地偏好仍可写")
+	})
 })
 
 describe("schema extraction", () => {
@@ -149,6 +158,44 @@ describe("schema extraction", () => {
 			"danger-full-access",
 		])
 		expect(readSchemaField(permissionSchema, ["defaultPreset"])).toEqual({})
+	})
+
+	// Live `settings/describe` fact (opentui profile): the permission namespace
+	// schema carries ONLY defaultPreset (plain string) — there is no sibling
+	// `presets` dict, so a schema-derived enum cannot exist on the real host.
+	// `custom`/`auto` are reserved names the permission service refuses as
+	// configured preset keys, so no filter is needed either way.
+	const livePermissionSchema = {
+		uid: 5767,
+		refs: {
+			5766: { type: "string", meta: {} },
+			5767: { type: "object", meta: { default: {} }, dict: { defaultPreset: 5766 } },
+		},
+	}
+
+	test("the real host permission schema serves no preset enum (defaultPreset only)", () => {
+		expect(presetEnumFromSchema(livePermissionSchema)).toEqual([])
+		const items = buildHostItems(
+			doc([{ ns: "permission", revision: 0, value: {}, base: {}, schema: livePermissionSchema }]),
+			true,
+		)
+		const preset = items.find((item) => item.id === "permission.defaultPreset")!
+		expect(preset.options).toBeUndefined()
+		expect(preset.note).toBe("schema 未声明可选项")
+		expect(preset.editable).toBe(true) // still declared + writable: free-text-able by the host
+	})
+
+	test("a schema-served presets dict is a valid-value list, returned unfiltered", () => {
+		const schema = {
+			uid: 1,
+			refs: {
+				1: { type: "object", dict: { presets: 2, defaultPreset: 3 } },
+				2: { type: "dict", dict: { "plan-mode": 4, "workspace-write": 4 } },
+				3: { type: "string" },
+				4: { type: "object", dict: {} },
+			},
+		}
+		expect(presetEnumFromSchema(schema)).toEqual(["plan-mode", "workspace-write"])
 	})
 
 	test("a union-of-consts enum and number bounds read through the envelope", () => {
@@ -385,6 +432,65 @@ describe("conflict retry", () => {
 		expect(currentHostRevision(subagentDoc, "subagent")).toBe(3)
 		expect(currentHostRevision(subagentDoc, "permission")).toBeUndefined()
 	})
+
+	test("a conflict with a FAILED re-read describe is not retried blind (C3)", async () => {
+		let mutates = 0
+		const outcome = await commitHostWrite({
+			mutate: async () => {
+				mutates++
+				return { ok: false as const, conflict: true, error: "stale" }
+			},
+			describe: async () => {
+				throw new Error("describe down")
+			},
+			ns: "subagent",
+			ops: [...ops],
+			revision: 3,
+		})
+		expect(mutates).toBe(1) // no fresh revision → no second write
+		expect(outcome.attempts).toBe(1)
+		expect(outcome.result).toMatchObject({ ok: false, conflict: true })
+		expect(outcome.document).toBeUndefined()
+		expect(outcome.describeError).toBe("describe down")
+	})
+
+	test("a successful write with a failed refresh retries describe ONCE and flags it (M2b)", async () => {
+		let describes = 0
+		const outcome = await commitHostWrite({
+			mutate: async () => ({ ok: true as const }),
+			describe: async () => {
+				describes++
+				throw new Error("refresh down")
+			},
+			ns: "subagent",
+			ops: [...ops],
+			revision: 3,
+		})
+		expect(describes).toBe(2) // initial + exactly one refresh retry
+		expect(outcome.result.ok).toBe(true)
+		expect(outcome.refreshFailed).toBe(true)
+		expect(outcome.document).toBeUndefined()
+		expect(outcome.describeError).toBe("refresh down")
+	})
+
+	test("a refresh that succeeds on the retry is NOT flagged", async () => {
+		let describes = 0
+		const outcome = await commitHostWrite({
+			mutate: async () => ({ ok: true as const }),
+			describe: async () => {
+				describes++
+				if (describes === 1) throw new Error("transient")
+				return docAt(4)
+			},
+			ns: "subagent",
+			ops: [...ops],
+			revision: 3,
+		})
+		expect(describes).toBe(2)
+		expect(outcome.refreshFailed).toBeUndefined()
+		expect(outcome.describeError).toBeUndefined()
+		expect(outcome.document?.namespaces[0]!.revision).toBe(4)
+	})
 })
 
 describe("Esc hierarchy", () => {
@@ -435,6 +541,26 @@ describe("rendering + filtering", () => {
 		expect(filterSettingsItems(items, "cordis.patch.yml").every((item) => item.zone === "host")).toBe(true)
 		expect(filterSettingsItems(items, "本 TUI 不消费").every((item) => item.zone === "other")).toBe(true)
 		expect(filterSettingsItems(items, "").length).toBe(items.length)
+	})
+
+	test("the options layer renders a failed write's status (the list footer is off screen)", () => {
+		const item = items.find((candidate) => candidate.id === "motion")!
+		const lines = settingsOptionLines(item, item.options ?? [], 0, 120, "✘ 写入失败：disk full")
+		const text = lines.map((line) => line.text).join("\n")
+		expect(text).toContain("✘ 写入失败：disk full")
+		const clean = settingsOptionLines(item, item.options ?? [], 0, 120)
+		expect(clean.map((line) => line.text).join("\n")).not.toContain("✘")
+	})
+
+	test("the input layer's empty-value hint follows the write path (local number unsets, host number/text refuses)", () => {
+		const localNumber = items.find((candidate) => candidate.id === "retentionDays")!
+		const hostNumber = items.find((candidate) => candidate.id === "subagent.maxActiveSubagents")!
+		const hostText = items.find((candidate) => candidate.id === "permission.defaultPreset")!
+		const footer = (item: typeof localNumber) =>
+			settingsInputLines(item, "", 140).map((line) => line.text).join("\n")
+		expect(footer(localNumber)).toContain("empty = unset")
+		expect(footer(hostNumber)).toContain("empty is refused")
+		expect(footer(hostText)).toContain("empty is refused")
 	})
 
 	test("the header reports read-only + the reason", () => {

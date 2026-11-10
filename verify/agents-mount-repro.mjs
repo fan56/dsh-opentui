@@ -389,6 +389,59 @@ try {
   record('/settings never lists dsh-tui (not part of the opentui profile)',
     !clearedFrame.out.includes('dsh-tui'),
     [!clearedFrame.out.includes('dsh-tui') ? 'absent' : 'dsh-tui leaked into the read-only list'])
+
+  // Host write on a REAL host (C2): toggle session-log-deepseek.enabled
+  // true → false → true. The proof has two halves — the profile patch file the
+  // host applies (cordis.patch.yml) and the value the panel re-renders from a
+  // FRESH settings/describe. Scratch home only; the real ~/.dsh is untouched.
+  const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+  const readPatch = () => {
+    try { return readFileSync(patchPath, 'utf8') } catch { return '' }
+  }
+  // The LAST entry for one id (a restored write may append a newer entry).
+  const patchEntry = (id) => {
+    const text = readPatch()
+    const i = text.lastIndexOf(`id: ${id}`)
+    if (i < 0) return ''
+    const rest = text.slice(i)
+    const end = rest.indexOf('\n- ')
+    return end < 0 ? rest : rest.slice(0, end)
+  }
+  const waitPatch = async (pred, timeout = 8_000) => {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      if (pred(readPatch())) return true
+      await sleep(200)
+    }
+    return pred(readPatch())
+  }
+  const hostRowLine = (out) => out.split('\n').find((line) => line.includes('session-log-deepseek')) ?? ''
+  await typeText(SESS, 'session-log')
+  const hostRow = await waitPane(SESS, (out) => /▸\s+session-log-deepseek/.test(out), 8_000)
+  sendKeys(SESS, 'Enter') // toggle: on → off
+  const wroteOff = await waitPatch((text) => patchEntry('session-log-deepseek').includes('enabled: false'))
+  const offFrame = await waitPane(SESS, (out) => /▸.*session-log-deepseek.*\boff\b/.test(out), 8_000)
+  snap('18-settings-host-write-off')
+  record('settings writes a host row (session-log-deepseek.enabled=false) into cordis.patch.yml',
+    hostRow.ok && wroteOff,
+    [hostRow.ok ? 'row selected' : 'row not selected',
+      wroteOff ? 'patch entry has enabled: false' : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`])
+  record('settings re-reads the host write through settings/describe (row shows off)',
+    offFrame.ok,
+    [offFrame.ok ? 'row shows off after a fresh describe' : `row: ${JSON.stringify(hostRowLine(offFrame.out))}`])
+  sendKeys(SESS, 'Enter') // restore: off → on
+  const wroteOn = await waitPatch((text) => patchEntry('session-log-deepseek').includes('enabled: true'))
+  const onFrame = await waitPane(SESS, (out) => /▸.*session-log-deepseek.*\bon\b/.test(out), 8_000)
+  snap('19-settings-host-restore')
+  record('settings restores the host row (session-log-deepseek.enabled=true)',
+    wroteOn && onFrame.ok,
+    [wroteOn ? 'patch entry back to enabled: true' : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
+      onFrame.ok ? 'row shows on again' : `row: ${JSON.stringify(hostRowLine(onFrame.out))}`])
+  if (offFrame.ok && !onFrame.ok) sendKeys(SESS, 'Enter')
+
+  // Leave the list layer (Esc clears the filter, the next Esc closes).
+  sendKeys(SESS, 'Escape')
+  await waitPane(SESS, (out) => zonesVisible(out) && !out.includes('filter: "session-log"'), 6_000)
   sendKeys(SESS, 'Escape')
   const settingsClosed = await waitPane(SESS, (out) => !zonesVisible(out) && idle(out), 8_000)
   snap('17-settings-closed')
