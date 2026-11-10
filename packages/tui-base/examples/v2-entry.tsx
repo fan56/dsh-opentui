@@ -32,6 +32,8 @@ import { createSignal, createEffect, onCleanup, onMount, ErrorBoundary } from "s
 import { createComponent, createElement, render, spread, useRenderer } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
+import type { ComposerPendingRow } from "../src/routes/session/composer-state"
+import { openDeliveryChoice } from "../src/routes/session/delivery-choice"
 import { WelcomeHero } from "../src/routes/welcome-hero"
 import { pickDailyQuote } from "../src/routes/quotes"
 import { SubagentsPicker } from "../src/routes/session/subagents-picker"
@@ -179,6 +181,7 @@ function V2SessionPage(props: {
 		focused(): boolean
 		focus(): void
 		node(): import("@opentui/core").TextareaRenderable | undefined
+		resetDeliveries(): void
 	} | undefined
 	// Transcript scrollback (batch 10f): the page owns the scrollbox ref and
 	// the key layer. Pane focus (focus batch): F6 / mouse clicks move the
@@ -237,7 +240,15 @@ function V2SessionPage(props: {
 	// non-slash submit path (the slash host intercepts `…` commands), it
 	// persists across turns and clears on session switch (clear/reload below).
 	const [lastRequest, setLastRequest] = createSignal<string | undefined>()
+	// Busy-submit delivery lines (steer/queue batch): the composer owns the
+	// queue state; this signal is the transcript's pending slot snapshot.
+	const [composerPending, setComposerPending] = createSignal<readonly ComposerPendingRow[]>([])
+	// Abort flag for the composer's queue policy: `seam.interrupt()` RESOLVES
+	// the awaited turn without an error, so the controller cannot distinguish
+	// abort from success on its own. Each send clears it; esc/ctrl+c sets it.
+	let turnAborted = false
 	const send = (text: string) => {
+		turnAborted = false
 		setMsgs((n) => n + 1)
 		setTurnBusy(true)
 		setBusySince(Date.now())
@@ -539,6 +550,11 @@ function V2SessionPage(props: {
 		clear: () => {
 			projection.hydrate([])
 			setLastRequest(undefined)
+			// Steer/queue batch: queued prompts and delivery receipts are
+			// per-session state — a switch drops them (never leaks a stale
+			// queue into the next session).
+			composerRef?.resetDeliveries()
+			setComposerPending([])
 			// Footer-quickwins: a session switch resets the LOCAL footer counters
 			// (🛠 tool runs are per-session local; the remote 💬 count re-reads).
 			setTools(0)
@@ -547,6 +563,9 @@ function V2SessionPage(props: {
 		},
 		reload: (sessionId?: string) => {
 			setLastRequest(undefined)
+			// Steer/queue batch: same per-session reset on /fork//resume switches.
+			composerRef?.resetDeliveries()
+			setComposerPending([])
 			// Footer-quickwins: same per-session reset on /fork//resume switches.
 			setTools(0)
 			resetSkinLineFades()
@@ -752,6 +771,9 @@ function V2SessionPage(props: {
 							return lastRequest()
 						},
 					}),
+					// Steer/queue batch: queued waits and steer receipts paint at the
+					// bottom of the transcript flow (inside the scrollbox).
+					pending: () => composerPending(),
 					// Batch D3 notices slot (dsh-tui-pi tui.ts:256): stacked
 					// auto-dismissing lines below lastRequest, above the powerline.
 					notices: createComponent(NoticesDock, {}),
@@ -761,7 +783,19 @@ function V2SessionPage(props: {
 							send,
 							footerHint: false,
 								onBusyChange: setComposerBusy,
-								ref: (r: { focused(): boolean; focus(): void; node(): import("@opentui/core").TextareaRenderable | undefined }) => (composerRef = r),
+								ref: (r: { focused(): boolean; focus(): void; node(): import("@opentui/core").TextareaRenderable | undefined; resetDeliveries(): void }) => (composerRef = r),
+							// Steer/queue batch: busy Enter opens the two-row choice on
+							// the page's dialog stack (Steer highlighted first; Esc keeps
+							// the typed text). The queue lives client-side in the
+							// controller; its rows feed the transcript's pending slot.
+							chooseDelivery: (text: string) => openDeliveryChoice(dialog, text),
+							onPendingChange: (rows: readonly ComposerPendingRow[]) => setComposerPending(rows),
+							onQueuePaused: (info: { remaining: number; reason: "failed" | "aborted" }) =>
+								showNotice(
+									`队列已保留 ${info.remaining} 条:本回合${info.reason === "failed" ? "失败" : "已中止"},下回合结束后继续发送`,
+									8000,
+								),
+							isTurnAborted: () => turnAborted,
 							slashKeyFilter: slash.slashKeyFilter,
 							slashSync: (buffer: string) => slash.controller.sync(buffer, slash.commands),
 							interceptSubmit: slash.interceptSubmit,
@@ -812,7 +846,13 @@ function V2SessionPage(props: {
 					// through props.quit (the shutdown-intercepted process.exit).
 					createComponent(TurnCancelKeys, {
 						busy,
-						interrupt: () => seam.interrupt(),
+						interrupt: () => {
+							// Steer/queue batch: abort resolves the seam turn without an
+							// error, so the composer's queue policy needs this flag to
+							// keep (not silently send) the queue.
+							turnAborted = true
+							seam.interrupt()
+						},
 						quit: props.quit,
 						enabled: () => dialog.stack.length === 0,
 						escapeYields: () => slash.controller.open,

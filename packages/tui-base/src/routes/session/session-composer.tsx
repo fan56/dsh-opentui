@@ -22,7 +22,7 @@
  * Colors: vendored theme tokens via `useThemeOptional()` (batch 6); the
  * pre-batch-6 hex constants are the no-provider fallback.
  *
- *   enter              submit (idle → send a turn; busy → steer)
+ *   enter              submit (idle → send a turn; busy → dialog: steer or queue)
  *   alt/shift/ctrl+enter, ctrl+j   newline
  *   ↑ at buffer start  recall previous prompt   (vendored prompt.history.previous)
  *   ↓ at buffer end    recall next / back to draft
@@ -68,7 +68,7 @@ import { createSignal, onCleanup, Show, type JSX } from "solid-js"
 import { useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { measureEditText, RenderableEvents, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
-import { ComposerController, type ComposerHistory } from "./composer-state"
+import { ComposerController, type ComposerDelivery, type ComposerHistory, type ComposerPendingRow, type ComposerQueuePause } from "./composer-state"
 import { composerKeyBindings, type ComposerKeybindConfig } from "./composer-keybinds"
 import { useThemeOptional } from "../../context/theme"
 import { Keymap } from "../../context/keymap"
@@ -91,6 +91,8 @@ export type SessionComposerRef = {
 	/** The live textarea renderable (pane-focus: classification walks the
 	 * renderer's focused node against it; undefined after teardown). */
 	node(): TextareaRenderable | undefined
+	/** Session switch: drop queued prompts and delivery receipts. */
+	resetDeliveries(): void
 }
 
 /** Busy top-border title (contract §1): the steer affordance, warning-tier. */
@@ -116,6 +118,18 @@ export type SessionComposerProps = {
 	send: (text: string) => Promise<void>
 	/** Busy surface for the status/powerline batch. */
 	onBusyChange?: (busy: boolean) => void
+	/** Busy-submit chooser (steer vs queue) — the page opens it on the dialog
+	 * stack and resolves undefined on Esc. Omitted = vendored default (steer
+	 * immediately, no prompt). */
+	chooseDelivery?: (text: string) => Promise<ComposerDelivery | undefined>
+	/** Delivery lines changed (queue waits / steer receipts) — the page feeds
+	 * them into the transcript's pending slot. */
+	onPendingChange?: (rows: readonly ComposerPendingRow[]) => void
+	/** A failed/aborted turn kept a non-empty queue (page notice). */
+	onQueuePaused?: (info: ComposerQueuePause) => void
+	/** Page-owned abort flag (esc/ctrl+c); abort resolves the seam turn
+	 * without an error, so the controller needs this signal. */
+	isTurnAborted?: () => boolean
 	/** Injectable history (tests / persistence later). */
 	history?: ComposerHistory
 	/** Textarea line cap (content-driven height grows up to this). */
@@ -217,6 +231,10 @@ export function SessionComposer(props: SessionComposerProps) {
 		send: (text) => props.send(text),
 		steer: (text) => props.seam.steer(text),
 		history: props.history,
+		chooseDelivery: props.chooseDelivery,
+		onPendingChange: props.onPendingChange,
+		onQueuePaused: props.onQueuePaused,
+		isTurnAborted: props.isTurnAborted,
 		onBusyChange: (value) => {
 			if (disposed) return
 			setBusy(value)
@@ -276,7 +294,23 @@ export function SessionComposer(props: SessionComposerProps) {
 			syncHeight()
 			return
 		}
-		const result = controller.submit(editor.plainText)
+		const buffer = editor.plainText
+		// Busy + a dialog-backed chooser: ask steer vs queue. The input stays
+		// in the editor until the answer lands (Esc = keep it untouched); the
+		// modal owns the keys meanwhile.
+		if (controller.busy && props.chooseDelivery) {
+			void controller.submitWhileBusy(buffer).then((result) => {
+				if (result === "ignored" || result === "cancelled") return
+				if (editor.isDestroyed) return
+				// Only clear the buffer that was submitted: a programmatic edit
+				// while the dialog was open must survive.
+				if (editor.plainText !== buffer) return
+				editor.setText("")
+				syncHeight()
+			})
+			return
+		}
+		const result = controller.submit(buffer)
 		if (result !== "ignored") editor.setText("")
 	}
 
@@ -539,6 +573,7 @@ export function SessionComposer(props: SessionComposerProps) {
 							value.focus()
 						},
 						node: () => (value.isDestroyed ? undefined : value),
+						resetDeliveries: () => controller.resetDeliveries(),
 					})
 				}}
 			/>

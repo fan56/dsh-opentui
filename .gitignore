@@ -12,3 +12,5 @@ packages/shell/CHANGELOG.md
 
 # real-client gate artifacts (verify/agents-mount-repro.mjs)
 verify/agents-mount-out/
+# real-client gate artifacts (verify/steer-queue-repro.mjs)
+verify/steer-queue-out/

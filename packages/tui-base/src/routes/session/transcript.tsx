@@ -34,9 +34,10 @@
  */
 import { For, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { useRenderer, useTerminalDimensions, onAnimationTick } from "@opentui/solid"
-import { BoxRenderable, SyntaxStyle, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
+import { BoxRenderable, SyntaxStyle, TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
+import type { ComposerPendingRow } from "./composer-state"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { transcriptFrame, unfocusedBorderColor } from "../../skin/semantic"
@@ -201,6 +202,13 @@ export type TranscriptProps = {
 		 * BELOW the composer (the editor) — see ./lastrequest-dock.tsx; the
 		 * page wires it with the shared projection + its lastRequest signal. */
 			footer?: JSX.Element
+		/** Busy-submit delivery lines (steer/queue batch): queued waits paint
+		 * as muted italic `⏸ 排队等待 #N` rows, injected steers as brand
+		 * `⤵ 已注入当前回合` rows that flip to `✓ 已投递` when the turn settles.
+		 * Rendered INSIDE the scrollbox after the projection rows, so they
+		 * always sit at the bottom of the live transcript. Static text only —
+		 * nothing animates, so `/motion off` needs no gate here. */
+		pending?: () => readonly ComposerPendingRow[]
 	/** Publishes the transcript scrollbox (vendored route's scrollRef prop
 	 * shape; undefined on teardown). Page wiring binds scroll keys and the
 	 * pane-focus classification to it; the box is focusable and receives
@@ -268,6 +276,10 @@ export function Transcript(props: TranscriptProps) {
 		failedMuted: () => theme?.text.feedback.error.muted ?? "#8a4b5c",
 		loading: () => theme?.text.feedback.info.base ?? "#565f89",
 		background: () => theme?.background.base ?? "black",
+		// Busy-submit delivery lines: queue waits are low-saturation (muted +
+		// italic); steer receipts use the brand/action tier.
+		pendingQueue: () => theme?.text.muted ?? "#9aa5ce",
+		pendingSteer: () => theme?.text.action.primary.base ?? "#7aa2f7",
 	}
 	// Batch V5 status-color family — D2: the tool block, think summary and
 	// subagent tree all left the transcript flow (the docks render them);
@@ -407,6 +419,28 @@ export function Transcript(props: TranscriptProps) {
 								<text fg={color.loading()}>Loading session history…</text>
 							</box>
 						</Show>
+						{/* Busy-submit delivery lines: below the projected feed so a
+						 * queued prompt reads as "waiting behind the current turn".
+						 * Queue = muted italic `⏸`; steer = brand `⤵`/`✓`. */}
+						<For each={props.pending?.() ?? []}>
+							{(row) => (
+								<box id={`pending-row-${row.id}`} marginTop={1} flexShrink={0}>
+									{row.kind === "queue" ? (
+										<text
+											fg={color.pendingQueue()}
+											attributes={TextAttributes.ITALIC}
+											wrapMode="word"
+										>
+											{`⏸ ${row.state === "paused" ? "已暂停" : "排队等待"} #${row.order ?? 1} · ${row.text}`}
+										</text>
+									) : (
+										<text fg={color.pendingSteer()} wrapMode="word">
+											{`${row.state === "delivered" ? "✓ 已投递" : "⤵ 已注入当前回合"} · ${row.text}`}
+										</text>
+									)}
+								</box>
+							)}
+						</For>
 					</scrollbox>
 				</box>
 			</box>
