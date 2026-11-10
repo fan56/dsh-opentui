@@ -47,6 +47,15 @@ import {
 } from "./subagent-markers"
 import type { SessionSeam } from "../../seams/session"
 
+/**
+ * Module-scope open state: the pane-focus F6 layer yields while the picker
+ * owns ↑/↓ (the picker mounts once per page; the module signal lets the page
+ * gate its own keys without a new prop chain).
+ */
+const [pickerOpen, setPickerOpen] = createSignal(false)
+/** Whether the subagent picker selection line is open. */
+export const subagentsPickerOpen = pickerOpen
+
 export type SubagentsPickerProps = {
   /** The page's session seam. Rows ride the module store; the seam prop
    * keeps THIS component's subscription feeding the fold (both faces pass
@@ -58,7 +67,11 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
   const theme = useThemeOptional()
   const dialog = useDialog()
 
-  const [open, setOpen] = createSignal(false)
+  // Shared with the pane-focus layer gate (module signal, above).
+  const [open, setOpen] = [pickerOpen, setPickerOpen] as const
+  // The open flag is module-scope: a teardown while open must not leave the
+  // page's F6 gate disabled for the next session.
+  onCleanup(() => setPickerOpen(false))
   const [showAll, setShowAll] = createSignal(false)
   const [store, setStore] = createStore({ selected: 0 })
 

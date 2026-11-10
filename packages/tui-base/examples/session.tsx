@@ -19,13 +19,14 @@
 // (/help /new /model /quit /resume /clear) on the fake seam; /model and
 // /resume open vendored DialogSelect pickers through the dialog stack.
 // Run from packages/tui-base: bun examples/session.tsx   (ctrl+c quits)
-import { createSignal, onCleanup, onMount } from "solid-js"
-import { createComponent, render } from "@opentui/solid"
+import { createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { createComponent, render, useRenderer } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { NullSessionSeam, type SeamAskPick, type SeamAskQuestion, type SeamProviderModel, type SeamSessionSummary, type SeamTranscriptRow, type SeamTurnCallbacks } from "../src/seams/session"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import { Transcript } from "../src/routes/session/transcript"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
+import { createPaneFocus, PaneFocusKeys } from "../src/routes/session/pane-focus"
 import { SessionComposer, type SessionComposerRef } from "../src/routes/session/session-composer"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
@@ -34,12 +35,14 @@ import { DialogSelect } from "../src/ui/dialog-select"
 import { useDialog } from "../src/ui/dialog"
 import { PowerlineFooter, sessionFooterSegments } from "../src/routes/session/powerline"
 import { StatusBar } from "../src/routes/session/status-bar"
-import { ConfigProvider, resolve } from "../src/config"
+import { ConfigProvider, resolve, useConfig } from "../src/config"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
 import { createThemeSeam } from "../src/seams/theme"
 import { Keymap } from "../src/context/keymap"
-import { ToastProvider } from "../src/ui/toast"
-import { ClipboardProvider } from "../src/context/clipboard"
+import { ToastProvider, useToast } from "../src/ui/toast"
+import { ClipboardProvider, useClipboard } from "../src/context/clipboard"
+import { copyOnSelectEnabled, copyOnSelectRelease } from "../src/util/selection"
+import { createTuiClipboard } from "../src/clipboard"
 import { DialogProvider } from "../src/ui/dialog"
 
 const SENTENCES = Number(process.env.S_SENTENCES ?? 24)
@@ -152,6 +155,15 @@ let composerRef: SessionComposerRef | undefined
 // empty dialog stack).
 let transcriptScroll: ScrollBoxRenderable | undefined
 
+/** Real clipboard host (mouse batch — parity with v2-entry): the app owns
+ * drag-selection now, so copy-on-select needs a working clipboard. */
+function ClipboardHost(props: { children: JSX.Element }) {
+	const renderer = useRenderer()
+	const service = createTuiClipboard(renderer as never)
+	onCleanup(() => void service.dispose())
+	return <ClipboardProvider value={service}>{props.children}</ClipboardProvider>
+}
+
 function SessionPage() {
 	const projection = createSeamRows(seam, () => seam.currentSessionId() ?? "", {
 		// Approval mid-turn routes through the batch-5 card.
@@ -161,6 +173,15 @@ function SessionPage() {
 	const theme = useTheme()
 	const themeSeam = createThemeSeam(useThemes())
 	if (THEME && !themeSeam.setTheme(THEME)) console.error(`unknown theme ${THEME}; bundled: ${themeSeam.list().join(", ")}`)
+	// Pane focus (focus batch): the same renderer-truth controller as v2.
+	const paneFocus = createPaneFocus({
+		transcript: () => transcriptScroll,
+		composer: () => composerRef?.node(),
+	})
+	const renderer = useRenderer()
+	const toast = useToast()
+	const clipboard = useClipboard()
+	const config = useConfig()
 
 	// Batch-7 footer/status wiring (cheap seam data only):
 	// - busy is the composer's onBusyChange OR a page-driven projection turn
@@ -249,8 +270,21 @@ function SessionPage() {
 		pickOne,
 	})
 	return (
-		<box flexDirection="column" width="100%" height="100%" backgroundColor="black">
-			<Transcript seam={seam} projection={projection} scrollRef={(value) => (transcriptScroll = value)}>
+		<box
+			flexDirection="column"
+			width="100%"
+			height="100%"
+			backgroundColor="black"
+			onMouseUp={(event) => {
+				if (copyOnSelectEnabled(config.data.terminal)) copyOnSelectRelease(event, renderer, toast, clipboard)
+			}}
+		>
+			<Transcript
+				seam={seam}
+				projection={projection}
+				focused={paneFocus.transcriptFocused}
+				scrollRef={(value) => (transcriptScroll = value)}
+			>
 				<SessionComposer
 					seam={seam}
 					send={send}
@@ -272,6 +306,19 @@ function SessionPage() {
 			    PgUp/PgDn scroll the transcript, composer keeps focus; gated OFF
 			    while any dialog (approval/ask//model) is open. */}
 			<TranscriptScrollKeys scroll={() => transcriptScroll} enabled={() => dialog.stack.length === 0} />
+			{/* Pane focus keys (pane-focus.tsx): F6 toggles transcript/composer;
+			    transcript-focused arrows/page/home/end scroll it, Tab/idle Esc
+			    return to the composer. No subagent picker is mounted here. */}
+			<PaneFocusKeys
+				pane={paneFocus.pane}
+				keysEnabled={() => dialog.stack.length === 0}
+				slashOpen={() => slash.controller.open}
+				pickerOpen={() => false}
+				busy={busy}
+				scroll={() => transcriptScroll}
+				toggle={paneFocus.toggle}
+				focusComposer={paneFocus.focusComposer}
+			/>
 			{/* REACTIVE-PROP LAW (batch 10e, the v2-entry fix family): signal
 			    reads ride getters. An eager `busy()` / `segments()` / `now()`
 			    read in a JSX prop is tracked by the root render effect (bun's
@@ -315,18 +362,19 @@ render(
 			<Keymap.Provider>
 				<ToastProvider>
 					<ThemeProvider mode="dark" source={{ discover: async () => ({}) }}>
-						<ClipboardProvider value={{ read: async () => undefined, write: async () => {} }}>
-							<DialogProvider>
-								<SessionPage />
-							</DialogProvider>
-						</ClipboardProvider>
+							<ClipboardHost>
+								<DialogProvider>
+									<SessionPage />
+								</DialogProvider>
+							</ClipboardHost>
 					</ThemeProvider>
 				</ToastProvider>
 			</Keymap.Provider>
 		</ConfigProvider>
 	),
-	// useMouse:false (batch 10f, v2-entry parity): terminal-native
-	// drag-select; scrollback via TranscriptScrollKeys.
-	{ exitOnCtrlC: true, useMouse: false },
+	// useMouse:true (focus batch, v2-entry parity): click focuses a pane, the
+	// wheel scrolls the transcript; Shift+drag keeps the terminal's native
+	// selection for Cmd+C.
+	{ exitOnCtrlC: true, useMouse: true },
 )
 if (EXIT_AFTER_MS > 0) setTimeout(() => process.exit(0), EXIT_AFTER_MS)

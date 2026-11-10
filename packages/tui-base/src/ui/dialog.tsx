@@ -19,7 +19,7 @@ import { createStore } from "solid-js/store"
 import { useToast } from "./toast"
 import { useClipboard } from "../context/clipboard"
 import { useConfig, useNewDesigns } from "../config"
-import { copy, copyOnSelectRelease } from "../util/selection"
+import { copy, copyOnSelectEnabled, copyOnSelectRelease } from "../util/selection"
 import { focusedBorderColor, warningColor } from "../skin/semantic"
 
 export type DialogSize = "medium" | "large" | "xlarge"
@@ -492,8 +492,7 @@ export function DialogProvider(props: ParentProps) {
   const toast = useToast()
   const clipboard = useClipboard()
   const config = useConfig()
-  const copyOnSelectEnabled = () =>
-    (config.data.terminal?.copy ?? (process.platform === "win32" ? "manual" : "select")) === "select"
+  const copyOnSelect = () => copyOnSelectEnabled(config.data.terminal)
 
   return (
     <ctx.Provider value={value}>
@@ -502,7 +501,7 @@ export function DialogProvider(props: ParentProps) {
         position="absolute"
         zIndex={3000}
         onMouseDown={(evt: { button: number; preventDefault(): void; stopPropagation(): void }) => {
-          if (copyOnSelectEnabled()) return
+          if (copyOnSelect()) return
           if (evt.button !== MouseButton.RIGHT) return
 
           if (!copy(renderer, toast, clipboard)) return
@@ -510,7 +509,7 @@ export function DialogProvider(props: ParentProps) {
           evt.stopPropagation()
         }}
         onMouseUp={
-          copyOnSelectEnabled() ? (event) => copyOnSelectRelease(event, renderer, toast, clipboard) : undefined
+          copyOnSelect() ? (event) => copyOnSelectRelease(event, renderer, toast, clipboard) : undefined
         }
       >
         <Show when={value.stack.length}>

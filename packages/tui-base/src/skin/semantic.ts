@@ -147,6 +147,43 @@ export function composerBorderSides(terminalRows: number): SkinBorderSides {
 	return ["top", "bottom", "left", "right"]
 }
 
+/** Transcript frame sides (pane-focus batch): the SAME compact threshold as
+ * the composer. At or below COMPOSER_COMPACT_TERMINAL_ROWS the frame draws
+ * only its left/right rules (zero extra rows — the transcript keeps every
+ * row); above it the full frame spends two rows on top/bottom + the title. */
+export function transcriptBorderSides(terminalRows: number): SkinBorderSides {
+	return composerBorderSides(terminalRows)
+}
+
+/** The transcript frame face (static, never animated): focus drives weight +
+ * color exactly like `surfaceBorder`, and the border title follows the border
+ * (accent while focused, text.faint otherwise). Compact terminals draw no
+ * top border, so the title is suppressed there. */
+export function transcriptFrame(state: {
+	focused: boolean
+	terminalRows: number
+	theme?: ComponentTheme
+}): {
+	border: SkinBorderSides
+	borderStyle: "single" | "heavy"
+	borderColor: SkinBorderColor
+	title: string | undefined
+	titleColor: SkinBorderColor
+} {
+	const border = transcriptBorderSides(state.terminalRows)
+	const framed = border.includes("top")
+	const face = surfaceBorder({ focused: state.focused, theme: state.theme })
+	return {
+		border,
+		borderStyle: face.borderStyle,
+		borderColor: face.borderColor,
+		title: framed ? " transcript " : undefined,
+		titleColor: state.focused
+			? focusedBorderColor(state.theme)
+			: (state.theme?.text.faint ?? SKIN_FALLBACK.border),
+	}
+}
+
 /** The composer's explicit root height (OpenTUI law: never auto-height) and
  * its border sides. Height = content rows (textarea + footer + slash
  * palette) + the border rows the sides actually draw. */

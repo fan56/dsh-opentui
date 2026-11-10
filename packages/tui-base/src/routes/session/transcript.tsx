@@ -33,13 +33,13 @@
  * height — auto-height boxes collapse in flex columns.
  */
 import { For, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
-import { useRenderer, onAnimationTick } from "@opentui/solid"
+import { useRenderer, useTerminalDimensions, onAnimationTick } from "@opentui/solid"
 import { BoxRenderable, SyntaxStyle, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
-import { unfocusedBorderColor } from "../../skin/semantic"
+import { transcriptFrame, unfocusedBorderColor } from "../../skin/semantic"
 import { skinFadeInColor, SKIN_FADE_IN_MS } from "./widgets-dock"
 
 // ---------------------------------------------------------------------------
@@ -202,12 +202,19 @@ export type TranscriptProps = {
 		 * page wires it with the shared projection + its lastRequest signal. */
 			footer?: JSX.Element
 	/** Publishes the transcript scrollbox (vendored route's scrollRef prop
-	 * shape; undefined on teardown). Page wiring binds scroll keys to it —
-	 * the box itself is never focused (the composer holds the singleton
-	 * focus); scrolling goes through `scrollBy` + native stickyScroll. */
+	 * shape; undefined on teardown). Page wiring binds scroll keys and the
+	 * pane-focus classification to it; the box is focusable and receives
+	 * focus on F6/click (pane-focus batch). Scrolling stays `scrollBy` +
+	 * native stickyScroll. */
 	scrollRef?: (scroll: ScrollBoxRenderable | undefined) => void
 	/** Vertical scrollbar (vendored `session.scrollbar` config; default off). */
 	scrollbar?: boolean
+	/** Pane focus (pane-focus batch): true while the transcript owns the
+	 * renderer focus. Real renderer focus is the truth source — the page
+	 * feeds this from `createPaneFocus().transcriptFocused`; no guessed
+	 * flag. Focus flips WEIGHT + color only (heavy/accent ↔ single/
+	 * border.base); static, never animated. */
+	focused?: () => boolean
 }
 
 /** Skin user-message entrance (contract §1 入场淡入): the text color runs
@@ -239,6 +246,15 @@ export function Transcript(props: TranscriptProps) {
 	// and the subagent tree (the docks own their width budgets now) — the
 	// transcript's reactive-dimensions read left with them.
 	const theme = useThemeOptional()
+	const dimensions = useTerminalDimensions()
+	// Pane-focus frame: the SAME compact rule as the composer (≤30 rows →
+	// left/right rules only, zero rows; >30 rows → full frame + title).
+	const frame = () =>
+		transcriptFrame({
+			focused: props.focused?.() ?? false,
+			terminalRows: dimensions().height,
+			theme: theme ?? undefined,
+		})
 	const color = {
 		text: () => theme?.text.base ?? "#e6e6e6",
 		user: () => theme?.text.action.primary.base ?? "#7aa2f7",
@@ -334,8 +350,21 @@ export function Transcript(props: TranscriptProps) {
 
 	return (
 		<box flexDirection="column" flexGrow={1} minHeight={0} width="100%" backgroundColor={color.background()}>
-			{/* session route shape: row > flexGrow col (position relative) > scrollbox */}
-			<box flexDirection="row" flexGrow={1} minHeight={0}>
+			{/* session route shape: row > flexGrow col (position relative) > scrollbox.
+			 * Pane-focus frame: the border wraps the REPLY viewport only — the
+			 * composer dock below stays outside it. Focused = heavy + accent +
+			 * accent title; unfocused = single + border.base + text.faint title.
+			 * Compact terminals (≤30 rows) keep only left/right rules. */}
+			<box
+				flexDirection="row"
+				flexGrow={1}
+				minHeight={0}
+				border={frame().border}
+				borderStyle={frame().borderStyle}
+				borderColor={frame().borderColor}
+				title={frame().title}
+				titleColor={frame().titleColor}
+			>
 				<box flexGrow={1} minHeight={0} position="relative" paddingBottom={1}>
 					<scrollbox
 						flexGrow={1}

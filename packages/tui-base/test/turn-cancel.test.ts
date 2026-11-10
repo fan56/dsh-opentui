@@ -104,7 +104,7 @@ describe("turn cancel decisions", () => {
 describe("wiring source guards", () => {
 	test("client render disables OpenTUI's ctrl+c exit and mounts the cancel layer", () => {
 		const entry = src("examples/v2-entry.tsx")
-		expect(entry).toMatch(/\{\s*useMouse:\s*false,\s*exitOnCtrlC:\s*false\s*\}/)
+		expect(entry).toMatch(/\{\s*useMouse:\s*true,\s*exitOnCtrlC:\s*false\s*\}/)
 		expect(entry).toContain("createComponent(TurnCancelKeys")
 		expect(entry).toContain("interrupt: () => seam.interrupt()")
 		expect(entry).toContain("escapeYields: () => slash.controller.open")

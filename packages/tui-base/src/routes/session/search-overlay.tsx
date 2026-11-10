@@ -103,6 +103,34 @@ export function formatMatchStatus(query: string, matchCount: number, matchIndex:
 	return `${current + 1}/${matchCount}`
 }
 
+/**
+ * Sticky-follow suspension for match jumps (the close-restore fix).
+ *
+ * The jump effect must turn native `stickyScroll` OFF or the bottom follow
+ * pulls the viewport straight back; the old code never turned it back ON, so
+ * after closing search every NEW reply stopped following the bottom. This
+ * guard remembers the pre-search value the first time a jump suspends follow
+ * and restores it on close (and on unmount) — a reader who was already
+ * scrolled away keeps their position, a bottom-following reader gets follow
+ * back.
+ */
+export function createStickyScrollGuard(scroll: () => { stickyScroll: boolean } | undefined) {
+	let saved: boolean | undefined
+	return {
+		suspend(): void {
+			const box = scroll()
+			if (!box) return
+			if (saved === undefined) saved = box.stickyScroll
+			box.stickyScroll = false
+		},
+		restore(): void {
+			const box = scroll()
+			if (saved !== undefined && box) box.stickyScroll = saved
+			saved = undefined
+		},
+	}
+}
+
 const MATCH_ROW_ID_PREFIX = "seam-row-"
 
 // Module-scope open state: the session sidebar's priority-10 Esc layer
@@ -140,6 +168,9 @@ export function SearchOverlay(props: SearchOverlayProps) {
 	const [index, setIndex] = createSignal(0)
 	const [, setInputTarget] = createSignal<InputRenderable>()
 	let input: InputRenderable | undefined
+	// Jump scroll suspends follow; close/unmount restores the pre-search value.
+	const sticky = createStickyScrollGuard(() => props.scroll)
+	onCleanup(() => sticky.restore())
 
 	const matches = createMemo(() => findMatchRowIndices(props.projection.rows as readonly SeamRow[], query()))
 	const count = createMemo(() => matches().length)
@@ -168,7 +199,7 @@ export function SearchOverlay(props: SearchOverlayProps) {
 		if (!scroll) return
 		const row = props.projection.rows[rowIndex]
 		if (!row) return
-		scroll.stickyScroll = false
+		sticky.suspend()
 		scroll.scrollChildIntoView(`${MATCH_ROW_ID_PREFIX}${row.key}`, { align: "start" })
 	})
 
@@ -180,6 +211,10 @@ export function SearchOverlay(props: SearchOverlayProps) {
 
 	function close() {
 		setOpen(false)
+		// A match jump turned native sticky follow OFF; restore the value the
+		// transcript had before the search opened, or new replies stop
+		// following the bottom for the rest of the session.
+		sticky.restore()
 		// The Show teardown destroys the input renderable; drop the stale
 		// target signal with it so nothing holds a destroyed renderable
 		// across the closed state (the ref re-populates it on reopen).

@@ -100,19 +100,20 @@ describe("transcript scroll keys wiring", () => {
 		expect(source).toMatch(/props\.scrollRef\?\.\(undefined\)/)
 	})
 
-	test("v2-entry wires the layer + scrollRef and flips useMouse off (the default client path)", () => {
+	test("v2-entry wires the layer + scrollRef and enables mouse (the default client path)", () => {
 		const source = src("examples/v2-entry.tsx")
 		expect(source).toMatch(/scrollRef: \(value: ScrollBoxRenderable \| undefined\) => \(transcriptScroll = value\)/)
 		expect(source).toMatch(/createComponent\(TranscriptScrollKeys, \{/)
 		expect(source).toMatch(/enabled: \(\) => dialog\.stack\.length === 0/)
-		// batch V2: the render options also carry exitOnCtrlC:false (turn-cancel.test.ts)
-		expect(source).toMatch(/\{ useMouse: false(, exitOnCtrlC: false)? \}/)
+		// focus batch: mouse reporting is ON (click focuses a pane / wheel
+		// scrolls); batch V2's exitOnCtrlC:false stays.
+		expect(source).toMatch(/\{ useMouse: true(, exitOnCtrlC: false)? \}/)
 	})
 
 	test("session.tsx bench carries the same wiring (v2-entry parity)", () => {
 		const source = src("examples/session.tsx")
 		expect(source).toMatch(/scrollRef=\{\(value\) => \(transcriptScroll = value\)\}/)
 		expect(source).toMatch(/<TranscriptScrollKeys scroll=\{\(\) => transcriptScroll\} enabled=\{\(\) => dialog\.stack\.length === 0\} \/>/)
-		expect(source).toMatch(/useMouse: false/)
+		expect(source).toMatch(/useMouse: true/)
 	})
 })

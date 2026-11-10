@@ -30,11 +30,13 @@ export async function mountEngine(options: EngineOptions = {}): Promise<{ render
   const renderer = await createCliRenderer({
     externalOutputMode: "passthrough",
     exitOnCtrlC: false,
-    autoFocus: false,
-    // Terminal-native drag-select + copy (Ghostty Cmd+C): mouse reporting
-    // OFF. The TUI never claims the mouse; in-app wheel scroll is therefore
-    // unavailable (scrollback moves via PgUp/PgDn keybinds instead).
-    useMouse: false,
+    // Mouse reporting ON (pane-focus batch): a left press focuses the nearest
+    // focusable renderable (composer textarea / transcript scrollbox) and the
+    // wheel scrolls. autoFocus stays true for that click-to-focus path.
+    autoFocus: true,
+    // Shift+drag still bypasses to the terminal's native selection for native
+    // copy; the app owns plain drag-select (see util/selection).
+    useMouse: true,
   })
 
   // Capture AFTER the renderer exists: the renderer holds its own stdout

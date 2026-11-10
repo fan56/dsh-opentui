@@ -6,7 +6,9 @@
  * with content-driven height capped by `minHeight`/`maxHeight`, focus taken
  * once the ref publishes, and the skin frame (skin/semantic.ts): four-side
  * border, heavy + accent while focused, single + border.base unfocused,
- * warning while busy; short terminals drop the top/bottom sides. Decision
+ * warning while busy; short terminals drop the top/bottom sides. Pane focus
+ * (transcript owns the keys): the blurred editor's text dims to text.muted
+ * (`textColor` is the blurred color, `focusedTextColor` the focused one). Decision
  * logic (send vs steer, busy, history) lives in ./composer-state.ts.
  *
  * Keys (vendored keybind config: `input.submit` = return, `input.newline` =
@@ -86,6 +88,9 @@ export type SessionComposerRef = {
 	 * cached copy — the login-era bug was a stale flag hiding a blur). */
 	focused(): boolean
 	focus(): void
+	/** The live textarea renderable (pane-focus: classification walks the
+	 * renderer's focused node against it; undefined after teardown). */
+	node(): TextareaRenderable | undefined
 }
 
 /** Busy top-border title (contract §1): the steer affordance, warning-tier. */
@@ -173,6 +178,10 @@ export function SessionComposer(props: SessionComposerProps) {
 		// never animated). bg = decrease(background.raised.base).
 		background: () => (theme ? theme.decrease(theme.background.raised.base) : "#1a1b26"),
 		text: () => theme?.text.base ?? "#e6e6e6",
+		// Pane focus: an unfocused composer (transcript owns the keys) dims
+		// its text. The textarea picks `textColor` while blurred and
+		// `focusedTextColor` while focused, so this needs no extra state.
+		unfocusedText: () => theme?.text.muted ?? "#9aa5ce",
 		placeholder: () => theme?.text.faint ?? "#565f89",
 		hint: () => theme?.text.muted ?? "#565f89",
 	}
@@ -484,7 +493,7 @@ export function SessionComposer(props: SessionComposerProps) {
 				maxHeight={maxLines()}
 				placeholder={props.placeholder ?? "Type a message (enter send, alt+enter newline)"}
 				placeholderColor={color.placeholder()}
-				textColor={color.text()}
+				textColor={color.unfocusedText()}
 				focusedTextColor={color.text()}
 				cursorColor={busy() ? busyColor() : color.text()}
 				cursorStyle={cursor()}
@@ -529,6 +538,7 @@ export function SessionComposer(props: SessionComposerProps) {
 							if (value.isDestroyed) return
 							value.focus()
 						},
+						node: () => (value.isDestroyed ? undefined : value),
 					})
 				}}
 			/>

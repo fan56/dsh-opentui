@@ -25,6 +25,7 @@ import { useTerminalDimensions } from "@opentui/solid"
 import { clipToWidth } from "./tool-summarize"
 import { useThemeOptional } from "../../context/theme"
 import { subagentMarkerViews } from "./subagent-markers"
+import type { Pane } from "./pane-focus"
 
 export const [hintsShown, setHintsShown] = createSignal(true)
 
@@ -220,16 +221,45 @@ export function hintsText(
 	return `⌨ ${parts.join(" · ")}`
 }
 
+/**
+ * Pane-focus hint bar (transcript owns the keys): the composer's send/history
+ * segments no longer apply, so the row switches to the transcript's own keys.
+ * Four locales, same `⌨ <segments>` shape as `hintsText`; the `/hints` master
+ * toggle (`hintsShown`) still zeroes the row.
+ */
+const TRANSCRIPT_HINT_TABLE: Record<HintLocale, string> = {
+	en: "↑↓ scroll · pgup/pgdn page · home/end top/bottom · tab/f6 composer",
+	"zh-CN": "↑↓ 滚动 · pgup/pgdn 翻页 · home/end 顶/底 · tab/f6 输入框",
+	ja: "↑↓ スクロール · pgup/pgdn ページ · home/end 先頭/末尾 · tab/f6 入力欄",
+	ko: "↑↓ 스크롤 · pgup/pgdn 페이지 · home/end 처음/끝 · tab/f6 입력창",
+}
+
+/** The transcript-focused hint row (pure; '' when the bar is toggled off). */
+export function transcriptHintsText(shown = true, locale: HintLocale = hintsLocale()): string {
+	if (!shown) return ""
+	const body = TRANSCRIPT_HINT_TABLE[locale] ?? TRANSCRIPT_HINT_TABLE.en
+	return `⌨ ${body}`
+}
+
 export function HintsLine(props: {
 	/** Turn running (getter-prop law: the page passes a getter). */
 	busy: boolean
+	/** Focused pane (pane-focus batch): the transcript swaps the composer's
+	 * send/history wording for its scroll keys. Undefined (dialog focus /
+	 * startup) keeps the composer wording. */
+	pane?: () => Pane | undefined
 }): JSX.Element {
 	const dimensions = useTerminalDimensions()
 	const theme = useThemeOptional()
-	// The rendered row (getter: tracks busy / segment toggles / locale /
-	// live subagents / width). All segments off → '' → the row drops.
+	// The rendered row (getter: tracks busy / focus pane / segment toggles /
+	// locale / live subagents / width). All segments off → '' → the row drops.
 	const row = () =>
-		clipToWidth(hintsText(props.busy, hintsShown(), subagentMarkerViews().some((v) => v.status === "running")), Math.max(8, dimensions().width - 2))
+		clipToWidth(
+			props.pane?.() === "transcript"
+				? transcriptHintsText(hintsShown())
+				: hintsText(props.busy, hintsShown(), subagentMarkerViews().some((v) => v.status === "running")),
+			Math.max(8, dimensions().width - 2),
+		)
 	// All-off parity (tui-pi): '' renders ZERO rows — the fixed-height box
 	// must unmount with the text, not linger as a blank line above the
 	// composer.

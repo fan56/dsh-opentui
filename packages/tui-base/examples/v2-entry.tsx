@@ -44,6 +44,8 @@ import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
 import { HintsLine, applyHintsConfig } from "../src/routes/session/hints-line"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
+import { createPaneFocus, PaneFocusKeys } from "../src/routes/session/pane-focus"
+import { subagentsPickerOpen } from "../src/routes/session/subagents-picker"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
@@ -60,11 +62,13 @@ import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
 import { DialogPrompt } from "../src/ui/dialog-prompt"
 import { DialogProvider, useDialog } from "../src/ui/dialog"
-import { ToastProvider } from "../src/ui/toast"
-import { ClipboardProvider } from "../src/context/clipboard"
+import { ToastProvider, useToast } from "../src/ui/toast"
+import { ClipboardProvider, useClipboard } from "../src/context/clipboard"
+import { createTuiClipboard } from "../src/clipboard"
 import { Keymap } from "../src/context/keymap"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
-import { ConfigProvider, resolve } from "../src/config"
+import { ConfigProvider, resolve, useConfig } from "../src/config"
+import { copyOnSelectEnabled, copyOnSelectRelease } from "../src/util/selection"
 import { createThemeSeam } from "../src/seams/theme"
 import {
 	confirmTerminalCapabilities,
@@ -171,10 +175,15 @@ function V2SessionPage(props: {
 			// value (the next refresh, e.g. turn end, retries).
 			.catch(() => {})
 	}
-	let composerRef: { focused(): boolean; focus(): void } | undefined
+	let composerRef: {
+		focused(): boolean
+		focus(): void
+		node(): import("@opentui/core").TextareaRenderable | undefined
+	} | undefined
 	// Transcript scrollback (batch 10f): the page owns the scrollbox ref and
-	// the key layer. Focus stays in the composer; the layer is gated on an
-	// empty dialog stack (turn overlays + /model + pickOne all ride it).
+	// the key layer. Pane focus (focus batch): F6 / mouse clicks move the
+	// renderer focus between this scrollbox and the composer textarea; the
+	// pane signal is derived from the renderer, never guessed.
 	let transcriptScroll: ScrollBoxRenderable | undefined
 	// Skin wiring (contract §1 动效档位): the renderer's terminal capability
 	// probe feeds the motion gate — before the probe answers (and on
@@ -182,6 +191,22 @@ function V2SessionPage(props: {
 	// confirmation lifts it to full. The event may fire before mount, so an
 	// already-present capabilities snapshot applies too.
 	const renderer = useRenderer()
+	// Pane focus (focus batch): composer textarea ↔ transcript scrollbox, both
+	// focused through OpenTUI itself. `pane` is read off the renderer's
+	// FOCUSED_RENDERABLE event, so dialogs and the search input correctly
+	// classify as "neither pane" and F6 gates itself off.
+	const paneFocus = createPaneFocus({
+		transcript: () => transcriptScroll,
+		composer: () => composerRef?.node(),
+	})
+	// Copy-on-select at the page root (the vendored app.tsx root shape). With
+	// mouse reporting ON, drag-select is app-owned; this release handler is
+	// what actually copies it (the dialog host's sibling overlay never sees
+	// transcript events). Shift+drag still bypasses to the terminal's native
+	// selection for Cmd+C.
+	const toast = useToast()
+	const clipboard = useClipboard()
+	const config = useConfig()
 	onMount(() => {
 		const onCapabilities = (capabilities: { rgb: boolean } | null) => confirmTerminalCapabilities(capabilities)
 		renderer.on("capabilities", onCapabilities)
@@ -582,6 +607,12 @@ function V2SessionPage(props: {
 		flexDirection: "column",
 		width: "100%",
 		height: "100%",
+		// Copy-on-select (mouse batch): a drag release over the transcript
+		// copies the app-owned selection (util/selection). The setting is
+		// `terminal.copy` (default select outside Windows).
+		onMouseUp: (event: { isDragging?: boolean }) => {
+			if (copyOnSelectEnabled(config.data.terminal)) copyOnSelectRelease(event, renderer, toast, clipboard)
+		},
 		// α skin layer: the boot chrome follows the active theme instead of
 		// the pinned "black" (theme facts §6 — the theme background never
 		// reached the v2 root, light terminals booted dark-on-black). The
@@ -678,6 +709,9 @@ function V2SessionPage(props: {
 				createComponent(Transcript, {
 					seam,
 					projection,
+					// Pane focus: heavy/accent frame while the transcript owns
+					// the renderer focus, single/border.base otherwise.
+					focused: paneFocus.transcriptFocused,
 					scrollRef: (value: ScrollBoxRenderable | undefined) => (transcriptScroll = value),
 					// Batch D3 status slot (dsh-tui-pi dock top, index.ts:846 Loader):
 					// the 🐳 comet StatusBar moved here from below the composer —
@@ -725,7 +759,7 @@ function V2SessionPage(props: {
 							send,
 							footerHint: false,
 								onBusyChange: setComposerBusy,
-								ref: (r: { focused(): boolean; focus(): void }) => (composerRef = r),
+								ref: (r: { focused(): boolean; focus(): void; node(): import("@opentui/core").TextareaRenderable | undefined }) => (composerRef = r),
 							slashKeyFilter: slash.slashKeyFilter,
 							slashSync: (buffer: string) => slash.controller.sync(buffer, slash.commands),
 							interceptSubmit: slash.interceptSubmit,
@@ -755,6 +789,21 @@ function V2SessionPage(props: {
 					createComponent(TranscriptScrollKeys, {
 						scroll: () => transcriptScroll,
 						enabled: () => dialog.stack.length === 0,
+					}),
+					// Pane focus keys (./pane-focus.tsx): F6 toggles the two
+					// panes; while the transcript is focused ↑↓/PgUp/PgDn/Home/End
+					// scroll it, Tab and idle Esc return to the composer. The F6
+					// layer yields to dialogs, the slash menu and the subagent
+					// picker, so no overlay ever loses its keys.
+					createComponent(PaneFocusKeys, {
+						pane: paneFocus.pane,
+						keysEnabled: () => dialog.stack.length === 0,
+						slashOpen: () => slash.controller.open,
+						pickerOpen: subagentsPickerOpen,
+						busy,
+						scroll: () => transcriptScroll,
+						toggle: paneFocus.toggle,
+						focusComposer: paneFocus.focusComposer,
 					}),
 					// Cancel contract (batch V2, ./turn-cancel.tsx): esc interrupts
 					// the running turn; ctrl+c interrupts + arms, ctrl+c x2 quits
@@ -788,6 +837,9 @@ function V2SessionPage(props: {
 					get busy() {
 						return busy()
 					},
+					// Pane focus: transcript-focused swaps the row to the scroll
+					// keys (4 locales, hints-line.tsx).
+					pane: paneFocus.pane,
 				}),
 				overlayHost,
 			]
@@ -951,8 +1003,9 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 										lock: themeModeLock,
 										source: { discover: async () => ({}) },
 									get children() {
-										return createComponent(ClipboardProvider, {
-											value: { read: async () => undefined, write: async () => {} },
+										// Mouse batch: a REAL clipboard (the no-op stub was
+										// only viable while the app never owned a selection).
+										return createComponent(ClipboardHost, {
 											get children() {
 												return createComponent(DialogProvider, {
 													get children() {
@@ -979,14 +1032,16 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 				})
 			},
 		}),
-		// Renderer options (batch 10f): mouse reporting OFF — the terminal
-		// keeps drag-select + Cmd+C (Ghostty native); the transcript
-		// scrollback moves via TranscriptScrollKeys instead of the wheel.
+		// Renderer options (focus batch): mouse reporting ON — clicks focus the
+		// pane under the pointer (autoFocus, renderer default) and the wheel
+		// scrolls the transcript. Drag-select is app-owned; the page root's
+		// onMouseUp copies it on release (terminal.copy). Shift+drag bypasses
+		// to the terminal's native selection for Cmd+C.
 		// exitOnCtrlC OFF (batch V2): OpenTUI's default `true` grabs ctrl+c
 		// in the raw key handler ahead of every keymap layer and runs its
 		// own exitHandler — bypassing shutdown and leaving a wiped frame.
 		// TurnCancelKeys owns ctrl+c (vendored app.tsx / engine.ts parity).
-		{ useMouse: false, exitOnCtrlC: false },
+		{ useMouse: true, exitOnCtrlC: false },
 	).then(() => {
 		appendDiagnostic("[v2] render promise resolved")
 	}).catch((error: unknown) => {
@@ -994,6 +1049,25 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 		process.exit(1)
 	})
 	return { shutdown }
+}
+
+/**
+ * Clipboard host (mouse batch): the v2 tree used to mount a no-op clipboard
+ * (mouse reporting was off; the terminal's native selection was the copy
+ * path). With the app owning mouse selection again, copy-on-select must
+ * actually reach the clipboard — same `createTuiClipboard(renderer)` the
+ * vendored app.tsx uses (host + OSC 52 + renderer adapter).
+ */
+function ClipboardHost(props: { children: unknown }) {
+  const renderer = useRenderer()
+  const service = createTuiClipboard(renderer as never)
+  onCleanup(() => void service.dispose())
+  return createComponent(ClipboardProvider, {
+    value: service,
+    get children() {
+      return props.children
+    },
+  })
 }
 
 /** Error boundary that surfaces view crashes synchronously (dev aid). */

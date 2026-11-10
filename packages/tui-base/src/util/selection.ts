@@ -23,6 +23,13 @@ type Renderer = {
   currentFocusedEditor?: FocusableSelectionTarget | null
 }
 
+/** Copy-on-select setting: `terminal.copy === "select"` (the default outside
+ * Windows). The vendored app root, the dialog host and the rebuilt pages all
+ * gate the same release handler through this one rule. */
+export function copyOnSelectEnabled(terminal?: { copy?: "select" | "manual" }): boolean {
+	return (terminal?.copy ?? (process.platform === "win32" ? "manual" : "select")) === "select"
+}
+
 type SelectionKeyEvent = {
   ctrl?: boolean
   baseCode?: number
