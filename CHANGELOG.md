@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-11-10
+
+### Added
+
+- **MCP by default** — the core plugin set now installs `@aiwayds/dsh-mcp-adapter`, and provisioning inserts a `mcp-context7` client row (streamable HTTP, no API key) so `mcp_list` / `mcp_call` have a server to catalog on a fresh profile. An existing row is never rewritten or duplicated; `--plugins=none` writes neither.
+- **Steer or queue on a busy submit** — Enter on a busy turn opens a two-row choice (Steer is the default highlight; `esc` keeps the typed text). Queueing is client-side: one prompt per turn end in submission order. Failed or aborted turns pause the queue and notify; the next successful turn end resumes it. The transcript shows muted `⏸ 排队等待 #N` queue rows and `⤵ 已注入当前回合` steer receipts that flip to `✓ 已投递` at turn end.
+- **cwd · git branch row** — one muted row directly above the composer with the workspace directory (`~/…` abbreviation, left-clipped tail) and the git branch (short SHA on a detached HEAD). Probed on mount and on each session switch; non-repos and probe failures degrade silently to the directory only.
+- **Session restore on launch** — a fresh client reopens the newest non-empty session from the launch workspace that was active within the last 7 days and prints one `resumed <title> · <time ago>` notice. `--new` starts fresh, `--session <id>` pins a session, `autoResume: "off"` disables the restore, and `autoResumeDays` changes the window.
+
+### Changed
+
+- **Footer context percent is compact** — the value uses its own digit width, so `(5.9%)` replaces `(   5.9%)` and the rolling leaf agrees with the static text at rest.
+
+### Fixed
+
+- **Transcript loss on `/resume` and after a host reconnect** — the reload carried the live session id instead of the picked one, so the read failed and the empty result was hydrated as history; and `storedTranscript` answered `[]` for any failed journal read, making "no history" indistinguishable from a transient host/RPC error. Reload now passes the picked id, errors propagate (callers keep their rows), and `/new` clears explicitly. Disk data was never affected.
+
+### Known Issues
+
+- Engine paint defects remain: streaming diff-paint row loss, and wide-glyph loss under translucent overlays (upstream).
+- Skills are a boot-time snapshot of local directories; plugin-provided skills are not listed.
+- `permission.defaultPreset` has no options in the current host schema.
+- Input history is in-memory only.
+- CI cannot run the real-client tmux gate (no tmux/dsh on hosted runners).
+
 ## [0.9.3] - 2026-11-10
 
 ### Added

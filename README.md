@@ -208,7 +208,7 @@ PATH; otherwise the scripts self-skip (exit 0) so CI runs green.
 
 ## Status
 
-v0.9.3: published as `@aiwayds/dsh-opentui` — client-only distribution
+v0.9.4: published as `@aiwayds/dsh-opentui` — client-only distribution
 (npm bin → client chain; the in-process plugin mode was retired). New
 default theme dsh-blue (dark/light, auto-selected from terminal background,
 `/theme` to pin) with focus visuals, framed composer/messages/code blocks,
@@ -219,5 +219,8 @@ lines), adds shell-style input history recall, and fixes palette/dialog
 contrast and footer refresh. 0.9.3 adds slash-palette Tab completion with
 a 10-row window and skills, the `/agents` and `/settings` panels, F6 /
 click pane focus with a scrollable transcript, the dock fade, and default
-plugin provisioning with keyless `web_search`. Roadmap: platform + Kit
-polish.
+plugin provisioning with keyless `web_search`. 0.9.4 ships MCP by default
+(`dsh-mcp-adapter` plus a keyless context7 server), a steer-or-queue choice
+on a busy submit, the cwd · git branch composer row, session restore on
+launch, a compact footer context percent, and a fix for transcript loss on
+`/resume`. Roadmap: platform + Kit polish.
