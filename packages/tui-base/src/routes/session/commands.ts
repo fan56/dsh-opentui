@@ -525,7 +525,8 @@ export function coreCommands(): SlashCommand[] {
 			// the rest follow one per turn end, in submission order.
 			//
 			// Never silent: an empty queue answers "nothing to flush", a
-			// running turn answers "it will be delivered when it ends".
+			// running turn answers that the prompts wait for it to finish (no
+			// promise of delivery — a failed turn pauses the queue again).
 			name: "/flush",
 			description: "deliver the queued prompts now",
 			run(ctx) {
@@ -540,7 +541,7 @@ export function coreCommands(): SlashCommand[] {
 				}
 				if (result.kind === "busy") {
 					ctx.say(
-						`a turn is running — ${result.remaining} queued prompt(s) will be delivered when it ends`,
+						`a turn is running — ${result.remaining} queued prompt(s) wait for it to finish`,
 					)
 					return
 				}

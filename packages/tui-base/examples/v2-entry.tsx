@@ -593,6 +593,11 @@ function V2SessionPage(props: {
 			setTools(0)
 			refreshFooterData()
 			resetSkinLineFades()
+			// Slash-menu skills: the host catalog is session-scoped, so the
+			// previous session's `skills/list` rows must not leak into the new
+			// one — fall back to the boot snapshot until its first message
+			// triggers #refreshSkillsOnce.
+			setSkillRows(props.skills ?? [])
 			// Composer context row: re-read the branch for the new session.
 			setContextRevision((n) => n + 1)
 		},
@@ -610,6 +615,9 @@ function V2SessionPage(props: {
 			void seam.currentModelSelection().then(setModel)
 			refreshFooterData()
 			refreshPresetLabel()
+			// Slash-menu skills: same per-session reset on /fork//resume switches
+			// (the new session's catalog is listed after its first message).
+			setSkillRows(props.skills ?? [])
 			// Composer context row: /fork and /resume are session switches.
 			setContextRevision((n) => n + 1)
 			return settled
