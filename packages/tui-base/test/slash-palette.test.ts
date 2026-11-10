@@ -8,13 +8,24 @@ import { coreCommands, type SlashCommand } from "../src/routes/session/commands"
 import {
 	createSlashHost,
 	MAX_ROWS,
+	PALETTE_ROWS,
 	SlashPaletteController,
+	overflowHint,
 } from "../src/routes/session/slash-palette"
 
 const COMMANDS: SlashCommand[] = [
 	{ name: "/help", description: "d1", run: () => {} },
 	{ name: "/new", description: "d2", run: () => {} },
 ]
+
+/** MAX_ROWS + 3 matching commands — the overflow-cap fixture. */
+function wideCommands(): SlashCommand[] {
+	return Array.from({ length: MAX_ROWS + 3 }, (_, i) => ({
+		name: `/cmd${i}`,
+		description: `d${i}`,
+		run: () => {},
+	}))
+}
 
 /** Minimal key event stub (only what the host reads). */
 function key(name: string): any {
@@ -67,14 +78,14 @@ describe("SlashPaletteController", () => {
 	test("a zero-match query closes the palette (batch V5: no empty 1-row strip)", () => {
 		const controller = new SlashPaletteController()
 		controller.sync("/", COMMANDS)
-		expect(controller.rows()).toBe(MAX_ROWS)
+		expect(controller.rows()).toBe(PALETTE_ROWS)
 		controller.sync("/zz", COMMANDS)
 		expect(controller.filtered(COMMANDS)).toEqual([])
 		expect(controller.rows()).toBe(0)
 		expect(controller.open).toBe(false)
 		// narrowing back to a match re-opens
 		controller.sync("/h", COMMANDS)
-		expect(controller.rows()).toBe(MAX_ROWS)
+		expect(controller.rows()).toBe(PALETTE_ROWS)
 	})
 
 	test("STABLE-HEIGHT: narrowing the filter never changes the rendered height", () => {
@@ -98,7 +109,7 @@ describe("SlashPaletteController", () => {
 		heights.push(controller.rows()) // 2 matches
 		controller.sync("/help", commands)
 		heights.push(controller.rows()) // 1 match
-		expect(heights).toEqual([MAX_ROWS, MAX_ROWS, MAX_ROWS, MAX_ROWS])
+		expect(heights).toEqual([PALETTE_ROWS, PALETTE_ROWS, PALETTE_ROWS, PALETTE_ROWS])
 		// the highlight still tracks the FILTERED list, not the padded box
 		controller.sync("/he", commands)
 		controller.move(2, commands)
@@ -106,55 +117,48 @@ describe("SlashPaletteController", () => {
 		expect(controller.filtered(commands).length).toBe(3)
 	})
 
-	test("OVERFLOW CAP: a 9-command table keeps only MAX_ROWS rows visible", () => {
-		// The box is MAX_ROWS tall, so the VISIBLE list must be capped too —
-		// an uncapped <For> painted all 9 rows out of the 6-row box onto the
-		// textarea below it.
-		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
-			name: `/cmd${i}`,
-			description: `d${i}`,
-			run: () => {},
-		}))
+	test("OVERFLOW CAP: a table wider than MAX_ROWS keeps only MAX_ROWS command rows", () => {
+		// The box holds MAX_ROWS command rows (+ the reserved hint row), so the
+		// VISIBLE list must be capped too — an uncapped <For> painted every
+		// match out of the fixed-height box onto the textarea below it.
+		const commands: SlashCommand[] = wideCommands()
 		const controller = new SlashPaletteController()
-		controller.sync("/", commands) // all 9 match "/"
+		controller.sync("/", commands) // every row matches "/"
 		// the rendered list (what <For> draws) is capped; the box height is not
-		expect(controller.filtered(commands).map((c) => c.name)).toEqual([
-			"/cmd0",
-			"/cmd1",
-			"/cmd2",
-			"/cmd3",
-			"/cmd4",
-			"/cmd5",
-		])
-		expect(controller.rows()).toBe(MAX_ROWS)
+		expect(controller.filtered(commands)).toHaveLength(MAX_ROWS)
+		expect(controller.filtered(commands).at(-1)?.name).toBe(`/cmd${MAX_ROWS - 1}`)
+		expect(controller.rows()).toBe(PALETTE_ROWS)
+		// the cap does not hide the overflow from the user: the reserved row
+		// carries the count past the cap
+		expect(controller.matches(commands)).toBe(MAX_ROWS + 3)
+		expect(overflowHint(controller.matches(commands))).toBe("… 3 more")
+	})
+
+	test("OVERFLOW CAP: a list that fits shows no hint", () => {
+		const controller = new SlashPaletteController()
+		controller.sync("/", COMMANDS) // 2 matches
+		expect(controller.matches(COMMANDS)).toBe(2)
+		expect(overflowHint(controller.matches(COMMANDS))).toBeUndefined()
 	})
 
 	test("OVERFLOW CAP: wrap navigation never leaves the visible rows", () => {
-		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
-			name: `/cmd${i}`,
-			description: `d${i}`,
-			run: () => {},
-		}))
+		const commands: SlashCommand[] = wideCommands()
 		const controller = new SlashPaletteController()
 		controller.sync("/", commands)
-		// forward wrap: from the LAST VISIBLE row back to 0, never into 6..8
+		// forward wrap: from the LAST VISIBLE row back to 0, never past the cap
 		for (let i = 0; i < MAX_ROWS - 1; i++) controller.move(1, commands)
 		expect(controller.selected()).toBe(MAX_ROWS - 1)
 		controller.move(1, commands)
 		expect(controller.selected()).toBe(0)
-		// backward wrap: 0 → the last VISIBLE row (5), never 8
+		// backward wrap: 0 → the last VISIBLE row, never the hidden tail
 		controller.move(-1, commands)
 		expect(controller.selected()).toBe(MAX_ROWS - 1)
 		// the highlighted entry always resolves inside the rendered list
-		expect(controller.current(commands)?.name).toBe("/cmd5")
+		expect(controller.current(commands)?.name).toBe(`/cmd${MAX_ROWS - 1}`)
 	})
 
 	test("OVERFLOW CAP: sync clamps the selection to the visible list", () => {
-		const commands: SlashCommand[] = Array.from({ length: 9 }, (_, i) => ({
-			name: `/cmd${i}`,
-			description: `d${i}`,
-			run: () => {},
-		}))
+		const commands: SlashCommand[] = wideCommands()
 		const controller = new SlashPaletteController()
 		controller.sync("/", commands)
 		controller.move(1, commands)
@@ -164,6 +168,7 @@ describe("SlashPaletteController", () => {
 		expect(controller.selected()).toBe(1)
 		expect(controller.filtered(commands).length).toBe(MAX_ROWS)
 	})
+
 })
 
 describe("createSlashHost", () => {
@@ -259,6 +264,50 @@ describe("createSlashHost", () => {
 		expect(host.interceptSubmit("hello world")).toBe(false)
 		expect(lines).toEqual([])
 		expect(host.controller.open).toBe(false)
+	})
+
+	test("/agents reaches the opener passed to createSlashHost (mount-bridge regression)", () => {
+		// The live bug: v2-entry passed `openAgents` to createSlashHost but the
+		// deps type + ctx spread never carried it, so ctx.openAgents stayed
+		// undefined and /agents always answered "the manager panel is not
+		// mounted in this entry" even with the panel mounted and the seam's
+		// agents face present. Pin the whole bridge: dispatch -> ctx.openAgents.
+		const opened: (string | undefined)[] = []
+		const lines: string[] = []
+		const seam = {
+			agents: { list: () => [], officialCaps: async () => ({}) },
+		} as any
+		const host = createSlashHost({
+			seam,
+			commands: coreCommands().filter((c) => c.name === "/agents"),
+			say: (text) => lines.push(text),
+			clear: () => {},
+			reload: () => {},
+			quit: () => {},
+			pickOne: async () => undefined,
+			openAgents: (name?: string) => void opened.push(name),
+		})
+		expect(host.interceptSubmit("/agents")).toBe(true)
+		// an argument preselects the exact agent row (tui-pi parity)
+		expect(host.interceptSubmit("/agents workhorse")).toBe(true)
+		expect(opened).toEqual([undefined, "workhorse"])
+		expect(lines).toEqual([])
+	})
+
+	test("/agents without an opener still reports the mount gap honestly", () => {
+		const lines: string[] = []
+		const seam = { agents: { list: () => [] } } as any
+		const host = createSlashHost({
+			seam,
+			commands: coreCommands().filter((c) => c.name === "/agents"),
+			say: (text) => lines.push(text),
+			clear: () => {},
+			reload: () => {},
+			quit: () => {},
+			pickOne: async () => undefined,
+		})
+		host.interceptSubmit("/agents")
+		expect(lines).toEqual(["/agents: the manager panel is not mounted in this entry"])
 	})
 
 	test("core set via the default registry: dispatch reaches the real commands", () => {

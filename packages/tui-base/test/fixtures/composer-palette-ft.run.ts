@@ -33,9 +33,10 @@ async function mount() {
 	const commands: SlashCommand[] = [
 		{ name: "/help", description: "show available commands", run: () => void ran.push("/help") },
 		{ name: "/new", description: "start a fresh session", run: () => void ran.push("/new") },
-		// 7 more matches so an OPEN palette on "/" has 9 rows for 6 slots —
-		// pins the OVERFLOW CAP at the real renderer (an uncapped <For> painted
-		// all 9 rows out of the 6-row box onto the textarea).
+		// 11 more matches so an OPEN palette on "/" has 13 rows for MAX_ROWS
+		// slots — pins the OVERFLOW CAP at the real renderer (an uncapped <For>
+		// painted every row out of the fixed-height box onto the textarea) and
+		// the reserved `… N more` hint row.
 		{ name: "/extra1", description: "e1", run: () => {} },
 		{ name: "/extra2", description: "e2", run: () => {} },
 		{ name: "/extra3", description: "e3", run: () => {} },
@@ -43,6 +44,10 @@ async function mount() {
 		{ name: "/extra5", description: "e5", run: () => {} },
 		{ name: "/extra6", description: "e6", run: () => {} },
 		{ name: "/extra7", description: "e7", run: () => {} },
+		{ name: "/extra8", description: "e8", run: () => {} },
+		{ name: "/extra9", description: "e9", run: () => {} },
+		{ name: "/extra10", description: "e10", run: () => {} },
+		{ name: "/extra11", description: "e11", run: () => {} },
 	]
 	const seam = { steer: (text: string) => sent.push(`steer:${text}`) } as any
 	const host = createSlashHost({
@@ -92,9 +97,11 @@ async function mount() {
 		composerHeight: textarea.parent?.height ?? null,
 		frameHasHelpRow: setup.captureCharFrame().includes("/help show available commands"),
 		frameHasNewRow: setup.captureCharFrame().includes("/new start a fresh session"),
-		// OVERFLOW CAP: "/extra7" is the 9th match (7th past the 6-row cap) —
+		// OVERFLOW CAP: "/extra11" is the 13th match (past the MAX_ROWS cap) —
 		// it must never paint anywhere in the frame, box or no box.
-		frameHasOverflowRow: setup.captureCharFrame().includes("/extra7"),
+		frameHasOverflowRow: setup.captureCharFrame().includes("/extra11"),
+		// the reserved row reports what the cap hides
+		frameHasMoreHint: /…\s*3\s*more/.test(setup.captureCharFrame()),
 	})
 	return { setup, host, write, state, ran, said, sent }
 }

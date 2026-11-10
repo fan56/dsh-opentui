@@ -37,7 +37,19 @@ import { completeSlash } from "./slash-complete"
  * (global reflow, border flicker per keystroke — skin-flicker-analysis.md,
  * family 1). Exported for the height-stability tests.
  */
-export const MAX_ROWS = 6
+export const MAX_ROWS = 10
+
+/**
+ * Rendered box height while the palette is open: MAX_ROWS command rows plus
+ * one RESERVED row that carries the `… N more` overflow hint (blank padding
+ * when everything fits). Constant — the stable-height law is unchanged.
+ */
+export const PALETTE_ROWS = MAX_ROWS + 1
+
+/** The overflow hint for a result count past the visible cap. */
+export function overflowHint(total: number): string | undefined {
+	return total > MAX_ROWS ? `… ${total - MAX_ROWS} more` : undefined
+}
 
 /** Renderer-free palette state: visibility, filter query, selection. */
 export class SlashPaletteController {
@@ -51,9 +63,14 @@ export class SlashPaletteController {
 	#suppressed = false
 	#lastBuffer = ""
 
-	/** Rendered box height: MAX_ROWS while open (STABLE-HEIGHT), 0 = closed. */
+	/** The rendered box height: PALETTE_ROWS while open (STABLE-HEIGHT), 0 = closed. */
 	rows(): number {
 		return this.#rows[0]()
+	}
+	/** Number of commands matching the current query, BEFORE the visible cap
+	 * (the overflow hint reads this; nothing in the navigation path does). */
+	matches(commands: SlashCommand[]): number {
+		return filterCommands(commands, this.#query[0]()).length
 	}
 	/** Selected index into the VISIBLE filtered list (see filtered). */
 	selected(): number {
@@ -88,12 +105,13 @@ export class SlashPaletteController {
 		// 1-row box open with no rows in it ("/zz" painted an empty strip);
 		// Enter on such a line resolves through dispatchLine's unknown row.
 		// STABLE-HEIGHT (palette flicker fix): any non-zero result renders the
-		// FULL MAX_ROWS box — the filter only decides WHICH rows paint, never
-		// how tall the box is. A count-tracking height resized the composer
-		// root per keystroke (9→5→4 …), reflowing the whole screen and
-		// flickering the border each key; now the height only transitions at
-		// open (0→MAX_ROWS) and close (→0, incl. a zero-match query, batch V5).
-		this.#rows[1](count > 0 ? MAX_ROWS : 0)
+		// FULL PALETTE_ROWS box (MAX_ROWS rows + the reserved overflow-hint
+		// row) — the filter only decides WHICH rows paint, never how tall the
+		// box is. A count-tracking height resized the composer root per
+		// keystroke (9→5→4 …), reflowing the whole screen and flickering the
+		// border each key; now the height only transitions at open
+		// (0→PALETTE_ROWS) and close (→0, incl. a zero-match query, batch V5).
+		this.#rows[1](count > 0 ? PALETTE_ROWS : 0)
 		this.#selected[1]((current) => Math.min(current, Math.max(0, count - 1)))
 	}
 
@@ -103,7 +121,7 @@ export class SlashPaletteController {
 	 * <For> renders exactly this list, move() wraps modulo its length and
 	 * current() indexes into it, so the highlight can never land in an
 	 * un-rendered row past the fixed-height box (a 9-command table used to
-	 * paint all 9 rows out of the 6-row box, overlapping the textarea).
+	 * paint all 9 rows out of a shorter box, overlapping the textarea).
 	 */
 	filtered(commands: SlashCommand[]): SlashCommand[] {
 		return filterCommands(commands, this.#query[0]()).slice(0, MAX_ROWS)
@@ -142,11 +160,13 @@ export interface PaletteRowProps {
 }
 
 /**
- * The inline rows box. Fixed explicit height (MAX_ROWS while open, 0 closed —
- * STABLE-HEIGHT: the filter narrows the painted rows, never the box) so the
- * composer's root height arithmetic stays exact and keystrokes don't reflow
- * the screen; unmatched rows leave the box's own background (blank padding).
- * The highlight follows the controller's selected signal.
+ * The inline rows box. Fixed explicit height (PALETTE_ROWS while open, 0
+ * closed — STABLE-HEIGHT: the filter narrows the painted rows, never the box)
+ * so the composer's root height arithmetic stays exact and keystrokes don't
+ * reflow the screen; unmatched rows leave the box's own background (blank
+ * padding). The last row is reserved for the `… N more` overflow hint when
+ * the query matches more than MAX_ROWS commands (blank otherwise). The
+ * highlight follows the controller's selected signal.
  */
 export function SlashPalette(props: {
 	controller: SlashPaletteController
@@ -177,6 +197,7 @@ export function SlashPalette(props: {
 						const active = () => index() === props.controller.selected()
 						return (
 							<box
+								height={1}
 								flexShrink={0}
 								width="100%"
 								flexDirection="row"
@@ -184,6 +205,7 @@ export function SlashPalette(props: {
 							>
 								<text
 									flexShrink={0}
+									wrapMode="none"
 									fg={active() ? row().textColor : color.base()}
 									attributes={active() ? TextAttributes.BOLD : undefined}
 								>
@@ -201,6 +223,17 @@ export function SlashPalette(props: {
 						)
 					}}
 				</For>
+				{/* Reserved overflow row: `… N more` when the query matches past
+				    the visible cap, blank box background otherwise (stable height). */}
+				<Show when={overflowHint(props.controller.matches(props.commands))}>
+					{(hint) => (
+						<box height={1} flexShrink={0} width="100%" flexDirection="row">
+							<text flexShrink={0} wrapMode="none" fg={color.muted()}>
+								{hint()}
+							</text>
+						</box>
+					)}
+				</Show>
 			</box>
 		</Show>
 	)
@@ -234,6 +267,10 @@ export function createSlashHost(deps: {
 	openSearch?: SlashCommandContext["openSearch"]
 	/** /plugins panel opener (batch H3); absent = /plugins keeps the listing. */
 	openPlugins?: SlashCommandContext["openPlugins"]
+	/** /agents manager opener (tui-pi agents manager parity); absent = /agents
+	 * says "not mounted in this entry" (the pre-fix symptom: the entry passed
+	 * the hook, this deps type/ctx spread never carried it). */
+	openAgents?: SlashCommandContext["openAgents"]
 	/** Footer-refresh hook (footer-quickwins); absent = setting commands skip
 	 * the immediate footer re-read (turn-end-only refresh, the old behavior). */
 	refreshFooter?: SlashCommandContext["refreshFooter"]
@@ -255,6 +292,7 @@ export function createSlashHost(deps: {
 		...(deps.themes ? { themes: deps.themes } : {}),
 		...(deps.openSearch ? { openSearch: deps.openSearch } : {}),
 		...(deps.openPlugins ? { openPlugins: deps.openPlugins } : {}),
+		...(deps.openAgents ? { openAgents: deps.openAgents } : {}),
 		...(deps.refreshFooter ? { refreshFooter: deps.refreshFooter } : {}),
 		...(deps.invalidateFooter ? { invalidateFooter: deps.invalidateFooter } : {}),
 	}

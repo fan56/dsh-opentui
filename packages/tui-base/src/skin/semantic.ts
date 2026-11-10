@@ -120,13 +120,16 @@ export function skinCursor(config?: { style?: string; blinking?: boolean }): {
 export const COMPOSER_BORDER_ROWS = 2
 
 /** Terminal rows at or below which the composer drops its top/bottom border
- * sides. Contract: 80x24 busy must keep the transcript ≥ 6 rows — busy
- * worst case is palette 6 + textarea 8 (max) composer content and 2 fixed
- * page rows (powerline + hints): 24 − 2 − 14 = 8 ≥ 6 only WITHOUT the
- * border rows, so 24 must fall in the compact branch; 30 keeps normal
- * terminals (30+ rows) framed. The SAME threshold governs the widget lanes
- * that share this band: the activity frame collapses to a two-row left rule
- * and the persistent Todos table collapses to its one-line summary
+ * sides. Contract: 80x24 busy must keep the transcript ≥ 6 rows. Busy worst
+ * case is textarea 8 (max draft, palette closed) OR textarea 1 + palette 11
+ * (MAX_ROWS commands + the reserved overflow-hint row — a palette buffer can
+ * never hold a newline, so the two branches do not co-occur) plus 2 fixed
+ * page rows (powerline + hints): 24 − 2 − 12 = 10 (palette branch) and
+ * 24 − 2 − 14 = 8 (textarea branch) ≥ 6 only WITHOUT the border rows, so 24
+ * must fall in the compact branch; 30 keeps normal terminals (30+ rows)
+ * framed. The SAME threshold governs the widget lanes that share this band:
+ * the activity frame collapses to a two-row left rule and the persistent
+ * Todos table collapses to its one-line summary
  * (routes/session/widgets-dock.tsx) — a 9-row table would blow the band. */
 export const COMPOSER_COMPACT_TERMINAL_ROWS = 30
 

@@ -9,3 +9,6 @@ packages/shell/LICENSE
 packages/shell/NOTICE
 packages/shell/README.md
 packages/shell/CHANGELOG.md
+
+# real-client gate artifacts (verify/agents-mount-repro.mjs)
+verify/agents-mount-out/

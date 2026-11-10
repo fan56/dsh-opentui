@@ -22,6 +22,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
+import { PALETTE_ROWS } from "../src/routes/session/slash-palette"
 
 const fixture = join(import.meta.dir, "fixtures", "composer-slash-tab-ft.run.ts")
 
@@ -63,7 +64,7 @@ describe("slash Tab completion under Keymap.Provider (real client path)", () => 
 
 		// Several candidates: "/s" → the common prefix "/se"; the palette stays
 		// open on the extended query.
-		expect(r.common).toMatchObject({ buffer: "/se", cursor: 3, rows: 6, query: "/se", sent: [] })
+		expect(r.common).toMatchObject({ buffer: "/se", cursor: 3, rows: PALETTE_ROWS, query: "/se", sent: [] })
 		expectConsumed(r.common)
 
 		// No match: consumed, buffer untouched — no literal tab, no rewrite.
@@ -94,12 +95,12 @@ describe("slash Tab completion under Keymap.Provider (real client path)", () => 
 
 		// Mid-token caret: the compiled path must NOT feed a fabricated buffer
 		// end. Buffer, caret and the still-open menu are all untouched.
-		expect(r.midToken).toMatchObject({ buffer: "/help", cursor: 3, rows: 6, query: "/help", sent: [] })
+		expect(r.midToken).toMatchObject({ buffer: "/help", cursor: 3, rows: PALETTE_ROWS, query: "/help", sent: [] })
 		expectNativeTab(r.midToken)
 
 		// Approval/dialog gate: no completer → native Tab, buffer untouched, the
 		// menu is the pre-Tab one (the dialog owns focus in the real app).
-		expect(r.gated).toMatchObject({ buffer: "/he", cursor: 3, rows: 6, sent: [] })
+		expect(r.gated).toMatchObject({ buffer: "/he", cursor: 3, rows: PALETTE_ROWS, sent: [] })
 		expectNativeTab(r.gated)
 
 		// Esc closed the menu: Tab falls back to the FIRST candidate in table

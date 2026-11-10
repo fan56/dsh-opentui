@@ -19,6 +19,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { join } from "node:path"
+import { PALETTE_ROWS } from "../src/routes/session/slash-palette"
 
 const fixture = join(import.meta.dir, "fixtures", "composer-history-ft.run.ts")
 
@@ -72,8 +73,8 @@ describe("shell-style ↑/↓ history under Keymap.Provider", () => {
 		expect(r.overrideUp.buffer).toBe("committed")
 
 		// open slash palette: arrows move the menu, never the history
-		expect(r.slashOpen).toMatchObject({ buffer: "/", rows: 6 })
-		expect(r.slashUp).toMatchObject({ buffer: "/", rows: 6 })
-		expect(r.slashDown).toMatchObject({ buffer: "/", rows: 6 })
+		expect(r.slashOpen).toMatchObject({ buffer: "/", rows: PALETTE_ROWS })
+		expect(r.slashUp).toMatchObject({ buffer: "/", rows: PALETTE_ROWS })
+		expect(r.slashDown).toMatchObject({ buffer: "/", rows: PALETTE_ROWS })
 	}, 60_000)
 })
