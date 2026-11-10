@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-11-10
+
+### Added
+
+- **Slash palette upgrades** — Tab completion, a 10-row window with a `… N more` overflow row, skills listed as `/skill-name` entries in italic with Tab completion, and usage-frequency ranking persisted to the profile `config.json`.
+- **`/agents`** — an agent definition manager with table / fields / limits layers aligned with `dsh-tui-pi`; it writes the frontmatter the registry consumes (`model`, `thinking`, `deep`, `maxRounds`, `background`).
+- **`/settings`** — a panel with local preferences, host settings (subagent caps, permission preset, session log), and read-only namespaces.
+- **Pane focus** — `F6` or a click switches between transcript and composer; the transcript scrolls and draws focused/unfocused frames; the mouse is enabled (`Shift`+drag for native selection).
+- **Dock** — think/tool blocks show 3 lines, linger for 2s, then fade over 0.3s, and are replaced by newer content within the window.
+- **Provisioning** — the default plugin set (10) is installed on first launch with `[n/5]` progress; `tool-web` is enabled with the anysearch provider (keyless search); the legacy `@aiwayds/dsh-opentui` bundle entry was removed.
+- **Host idle exit** — the resident host exits 5s after the last client disconnects (`DSH_OPENTUI_HOST_IDLE_MS`).
+- **Verification gates** — `typecheck:entry`, `verify:assembly`, and a 42-check real-client tmux script.
+
+### Changed
+
+- **`/sessions` renamed to `/resume`** — no alias.
+- **`/motion` bare output** — shows the configured preference and the effective tier (`auto → reduced`).
+- **Default plugin provisioning runs on every launch** — idempotent, a no-op when already satisfied.
+
+### Fixed
+
+- **`PgUp`/`PgDn`/`Home`/`End` swallowed by the transcript and textarea layers** — the slash palette could not scroll past 6 rows.
+- **Panel/command wiring** — `openAgents` never reached the command context, so `/agents` reported "not mounted".
+- **Editing one frontmatter field deleted another** — model was lost on thinking-only edits.
+- **Empty-corpus landing state** and **overlay open-state never reset on unmount** — the sidebar `Esc` stopped working.
+- **`web_search` unavailable** — the web-app disables `tool-web` and the opentui patch never re-enabled it.
+- **Copy-on-select used a no-op clipboard stub** — search no longer restored `stickyScroll`.
+- **Idle reaper script path resolution in the source tree** — hosts were never reaped.
+- **Think-only turns never painted the fade frames** — the clock signal was not consumed when collapsed.
+- **Stale fade anchor on resumed thinking lines.**
+
+### Known Issues
+
+- Engine paint defects remain: streaming diff-paint row loss, and wide-glyph loss under translucent overlays (upstream).
+- Skills are a boot-time snapshot of local directories; plugin-provided skills are not listed.
+- `permission.defaultPreset` has no options in the current host schema.
+- Input history is in-memory only.
+- CI cannot run the real-client tmux gate (no tmux/dsh on hosted runners).
+
 ## [0.9.2] - 2026-11-09
 
 ### Added

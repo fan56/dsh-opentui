@@ -186,12 +186,16 @@ PATH; otherwise the scripts self-skip (exit 0) so CI runs green.
 
 ## Status
 
-v0.9.2: published as `@aiwayds/dsh-opentui` — client-only distribution
+v0.9.3: published as `@aiwayds/dsh-opentui` — client-only distribution
 (npm bin → client chain; the in-process plugin mode was retired). New
-default theme dsh-blue (dark/light, auto-selected by terminal background,
+default theme dsh-blue (dark/light, auto-selected from terminal background,
 `/theme` to pin) with focus visuals, framed composer/messages/code blocks,
 and a motion system (`/motion`, `DSH_OPENTUI_MOTION`) that reduces on
 tmux/SSH/non-truecolor. 0.9.2 aligns the footer with `dsh-tui-pi`
 (provider icon, effort ladder, context usage, counters, tok/s, subagent
 lines), adds shell-style input history recall, and fixes palette/dialog
-contrast and footer refresh. Roadmap: platform + Kit polish.
+contrast and footer refresh. 0.9.3 adds slash-palette Tab completion with
+a 10-row window and skills, the `/agents` and `/settings` panels, F6 /
+click pane focus with a scrollable transcript, the dock fade, and default
+plugin provisioning with keyless `web_search`. Roadmap: platform + Kit
+polish.
