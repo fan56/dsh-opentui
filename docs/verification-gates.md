@@ -27,7 +27,7 @@
 | 命令 | 入口链：`bun run typecheck:entry`（= `cd packages/tui-base && bun run typecheck:entry`，即 `tsc -p packages/tui-base/tsconfig.entry.json`）；shell 全量：`cd packages/shell && bun run typecheck` |
 | 通过标准 | 两个命令都 `0 error TS`，退出码 0 |
 | 失败长什么样 | `src/.../file.ts(行,列): error TS2322/TS2339/TS2304: ...` + `Found N errors`，退出码 2 |
-| 范围 | `tsconfig.entry.json` 只 root 入口装配链（`examples/v2-entry.tsx` + `src/routes/session/slash-deps.ts` + `slash-palette.tsx` + vendor stubs），**不**把 tui-base 全包拉进来。tui-base 的全量 `typecheck` 仍有 58 个历史错误（2026-11-10），**不是门禁**，也不许借这次改动扩围 |
+| 范围 | `tsconfig.entry.json` 只 root 入口装配链（`examples/v2-entry.tsx` + `src/routes/session/slash-deps.ts` + `slash-palette.tsx` + vendor stubs），**不**把 tui-base 全包拉进来；但 tsc 会沿 import **传递闭包全检**（v2-entry 拉进的视图图同样在程序内），"只 root 几个文件"不等于只检查这几个文件。tui-base 的全量 `typecheck` 仍有 58 个历史错误（2026-11-10），**不是门禁**，也不许借这次改动扩围 |
 | 盲区 | `// @ts-nocheck` 文件体不受检（v2-entry 的 JSX/渲染段仍是），所以入口对象写入侧另由 §1.1 的 `verify:` 契约测试兜底 |
 
 ### 1.3 真机（真实 launcher + tmux）
@@ -52,6 +52,9 @@
 - **键位 / Keymap**：新增或改动快捷键、Keymap.Provider 层级、Tab/Esc/Enter 拦截；
 - **入口装配**：`client-entry.tsx`、`v2-entry.tsx`、`buildSlashDeps` / `createSlashHost` 的 deps 变化；
 - **布局常量**：composer 高度、palette 行数、powerline/footer 高度、任何会改变首屏行占用的常量（动了就必须看 80x24 与默认两种几何）。
+
+注意：`examples/session.tsx` 是 demo，不在本门禁的入口装配链内（`typecheck:entry` 只 root
+`examples/v2-entry.tsx`，装配契约测试也只断言 v2-entry）；改 demo 不触发本节的真机要求。
 
 流程：
 
@@ -94,7 +97,7 @@ through the slash host so /agents mounts"）。
 
 ## 4. CI 判定（结论与依据）
 
-**结论：CI 不跑真机 tmux 门禁；真机是发版前/合 main 前的本地必跑项。** 依据：
+**结论：CI 默认不跑真机 tmux 门禁；真机是发版前/合 main 前的本地必跑项。** 依据：
 
 - **tmux**：`actions/runner-images` 的公开镜像清单（2026-11-10 查 `Ubuntu2404-Readme.md`、
   `macos-15-arm64-Readme.md`）**未列出 tmux**；即使临时 `apt-get/brew install tmux` 可装，
@@ -109,11 +112,13 @@ through the slash host so /agents mounts"）。
 
 - `.github/workflows/ci.yml` 的 `test` job：
   - `cd packages/tui-base && bun run typecheck:entry`（入口链类型，0 容忍）；
-  - `cd packages/tui-base && bun test -t 'verify:'`（装配契约）；
+  - `cd packages/tui-base && bun test -t '^verify:'`（装配契约，锚定前缀）；
   - 原有的 `for p in packages/*/; do (cd "$p" && bun test); done`。
-- `real-client` job：`workflow_dispatch` 可手动触发，且需要仓库变量
-  `DSH_REAL_CLIENT_GATE=true` + 带 `dsh-profile` 标签的 self-hosted runner（已装 dsh、profile、
-  provider key、tmux）。默认跳过；**跳过不是通过**。
+- `real-client` job：需要仓库变量 `DSH_REAL_CLIENT_GATE=true` + 带 `dsh-profile` 标签的
+  self-hosted runner（已装 dsh、profile、provider key、tmux），且只允许 `workflow_dispatch`
+  或**同仓** PR（fork PR 会在 runner 上用真实凭据执行不可信代码，直接不调度）。job 内先跑
+  preflight（`command -v tmux`、`command -v dsh`、`test -d ~/.dsh/profiles/opentui`），缺项即
+  fail。默认跳过；**跳过不是通过**。
 
 已知取舍：GitHub-hosted CI 上没有真机证据。这条风险由 §2 的"本地必跑 + 谁跑谁贴"承担。
 
@@ -131,8 +136,9 @@ through the slash host so /agents mounts"）。
    焦点管理；键位冲突、焦点抢回、Tab 拦截只在真机出现。
 4. **没有真实进程/终端**：真实 `dsh` host、seam adapter、真实终端几何与时序（打开面板、切层、Esc
    回收）都不在单测里；80x24 的溢出/palette 高度只有抓屏能证明。
-5. **skip 被当 pass**：`DSH_AGENTS_E2E` 未设、缺 tmux/profile 时测试是 skip（例如本机
-   `packages/shell` 套件里 4 个 skip）。skip 必须显式记录为"未验证"，不能计入通过数。
+5. **skip 被当 pass**：`DSH_AGENTS_E2E` 未设时测试 skip（例如本机 `packages/shell` 套件里
+   4 个 skip）；一旦设了运行意图，缺 tmux/bun/profile 会直接 FAIL（并列出缺失项）而不是
+   skip。skip 必须显式记录为"未验证"，不能计入通过数。
 
 一句话：**单测证明"我以为它接上了"，类型证明"声明上接上了"，只有真机证明"它真的接上了"。**
 

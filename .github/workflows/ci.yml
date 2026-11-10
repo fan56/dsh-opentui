@@ -49,7 +49,11 @@ jobs:
       - run: cd packages/tui-base && bun run typecheck:entry
       # ASSEMBLY GATES (docs/verification-gates.md §1): tests named `verify:`
       # pin entry→host wiring and run without ~/.dsh, tmux or a provider key.
-      - run: cd packages/tui-base && bun test -t 'verify:'
+      # `^verify:` anchors to the test-name prefix so a renamed/garbled prefix
+      # cannot silently widen the filter; this leg is a strict subset of the
+      # full-suite leg above — it exists to name the assembly contract, not to
+      # replace the full run.
+      - run: cd packages/tui-base && bun test -t '^verify:'
       # Real-boot E2E (e2e-client.mjs, the client topology gate) is not a CI
       # step: it needs a global dsh + tmux + provider keys. The release gate
       # (fresh-install boot render check) covers the real-boot leg before
@@ -68,8 +72,13 @@ jobs:
   # GitHub-hosted runners cannot satisfy that offline, so the job is skipped
   # by default — absence of evidence here is NOT a pass; the local run is
   # mandatory before merging keymap/panel/command-surface changes.
+  #
+  # SECURITY: never run this on a PR whose code comes from a fork. The gate
+  # needs repo variable + a self-hosted runner with real credentials; a fork
+  # PR could exfiltrate them. So the job is limited to workflow_dispatch or
+  # same-repo pull requests (fork PRs get head.repo.full_name != repository).
   real-client:
-    if: vars.DSH_REAL_CLIENT_GATE == 'true'
+    if: vars.DSH_REAL_CLIENT_GATE == 'true' && (github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, dsh-profile]
     steps:
       - uses: actions/checkout@v4
@@ -91,6 +100,16 @@ jobs:
             writeFileSync(dir + "/index.js",
               "export const installConnection = () => { throw new Error(\"CI stub: @deepseek-ai/dsh-client-connection needs a global dsh install\"); };\n");
           '
+      # Fail fast with a named missing item. Without this, the test would
+      # throw (DSH_AGENTS_E2E=1 makes a missing prerequisite a FAILURE, not a
+      # skip) but the log would point at the test, not at the environment.
+      - name: preflight (tmux, dsh, opentui profile)
+        run: |
+          missing=0
+          command -v tmux >/dev/null 2>&1 || { echo "::error::tmux not found on PATH"; missing=1; }
+          command -v dsh >/dev/null 2>&1 || { echo "::error::dsh not found on PATH"; missing=1; }
+          test -d "$HOME/.dsh/profiles/opentui" || { echo "::error::~/.dsh/profiles/opentui is not provisioned"; missing=1; }
+          exit "$missing"
       - name: real client tmux gate (/agents mount + slash palette)
         run: DSH_AGENTS_E2E=1 bun test test/agents-mount-client.test.ts
         working-directory: packages/shell

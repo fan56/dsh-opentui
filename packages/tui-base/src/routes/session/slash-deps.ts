@@ -55,7 +55,14 @@ export type EntrySlashHooks = Required<Pick<SlashHostDeps, EntrySlashHook>>
 /** Everything the host takes EXCEPT the entry hooks (seam + core callbacks). */
 export type SlashBaseDeps = Omit<SlashHostDeps, EntrySlashHook>
 
-/** Optional keys of a shape (the ones an entry/host can forget). */
+/**
+ * Optional keys of a shape (the ones an entry/host can forget).
+ *
+ * Only OPTIONAL keys need this list: a new REQUIRED key on `SlashHostDeps` is
+ * caught by the `const ctx: SlashCommandContext = { … }` literal in
+ * `createSlashHost` — a required context field missing from that object is a
+ * compile error, so it cannot silently stop at the deps→ctx boundary.
+ */
 type OptionalKeys<T> = { [K in keyof T]-?: {} extends Pick<T, K> ? K : never }[keyof T]
 
 type UnlistedDepsHook = Exclude<OptionalKeys<SlashHostDeps>, "commands" | EntrySlashHook>

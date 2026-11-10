@@ -14,6 +14,7 @@
 import { describe, expect, test } from "bun:test"
 import { createSlashHost } from "../src/routes/session/slash-palette"
 import { buildSlashDeps, carrySlashHooks, ENTRY_SLASH_HOOKS } from "../src/routes/session/slash-deps"
+import { assertEntryHooks, entryHookRegion, missingEntryHooks } from "./entry-hook-region"
 
 function makeEntryHooks() {
 	const calls: string[] = []
@@ -125,11 +126,49 @@ describe("verify: entry slash deps", () => {
 			new URL("../examples/v2-entry.tsx", import.meta.url).pathname,
 		).text()
 		expect(entry).toContain("createSlashHost(buildSlashDeps(")
+		// Match ONLY inside the second argument literal (`}, {` … `}`). A hook
+		// that drifts back into the base literal (the /agents failure shape)
+		// must fail here, not stay green because its name still occurs in the
+		// file (it also occurs in local declarations and comments).
+		const region = entryHookRegion(entry)
+		expect(region, "entry must call buildSlashDeps(<base>, <hooks>)").not.toBeNull()
 		for (const key of ENTRY_SLASH_HOOKS) {
 			// shorthand (`promptText,`) or explicit (`openAgents: …`) both count
-			expect(entry, `entry does not pass '${key}' to buildSlashDeps`).toMatch(
+			expect(region, `entry does not pass '${key}' in buildSlashDeps's second argument`).toMatch(
 				new RegExp(`(^|[\\s{,])${key}[,:]`, "m"),
 			)
 		}
+		// Same verdict through the shared detector (message lists every gap).
+		expect(() => assertEntryHooks(entry, ENTRY_SLASH_HOOKS)).not.toThrow()
+	})
+
+	test("verify: the detector rejects a hook moved into the base literal", () => {
+		// Counter-example: openAgents sits in the FIRST argument while the
+		// second argument carries the rest. The old whole-file regex passed
+		// this; the region-scoped detector must report the missing hook.
+		const source = `
+			const slash = createSlashHost(buildSlashDeps({
+				seam,
+				say: (text: string) => void text,
+				// openAgents is deliberately only here, outside the hooks literal.
+				openAgents: (name?: string) => void openAgents(name),
+			}, {
+				promptText,
+				openBtw,
+				themes,
+				openSearch,
+				openPlugins,
+				refreshFooter,
+				invalidateFooter,
+			}))
+		`
+		expect(missingEntryHooks(source, ENTRY_SLASH_HOOKS)).toEqual(["openAgents"])
+		expect(() => assertEntryHooks(source, ENTRY_SLASH_HOOKS)).toThrow(/openAgents/)
+	})
+
+	test("verify: the detector reports a missing buildSlashDeps call shape", () => {
+		expect(() => assertEntryHooks("createSlashHost({ seam })", ENTRY_SLASH_HOOKS)).toThrow(
+			/buildSlashDeps/,
+		)
 	})
 })
