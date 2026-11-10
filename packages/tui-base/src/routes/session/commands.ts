@@ -71,6 +71,14 @@ function persistHints(seam: SessionSeam): void {
 export interface SlashCommand {
 	name: string
 	description: string
+	/**
+	 * `"skill"` marks a human-invocable skill row: it participates in the
+	 * same filtering/completion/dispatch resolution as a command, but the
+	 * slash host deliberately does NOT run `run` — the line falls through to
+	 * the model, where the host's `/name` gesture injects the skill body.
+	 * Omitted (the normal case) = executable command.
+	 */
+	kind?: "command" | "skill"
 	run(ctx: SlashCommandContext, argText: string): void | Promise<void>
 }
 
