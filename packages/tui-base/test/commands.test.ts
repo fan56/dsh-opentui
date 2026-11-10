@@ -936,7 +936,7 @@ describe("queue flush: /flush restarts the paused delivery pump", () => {
 		const ctx = makeCtx(new RecordingSeam())
 		ctx.flushQueue = () => ({ kind: "busy", started: 0, remaining: 2 })
 		await run(ctx, "")
-		expect(ctx.lines).toEqual(["a turn is running — 2 queued prompt(s) will be delivered when it ends"])
+		expect(ctx.lines).toEqual(["a turn is running — 2 queued prompt(s) wait for it to finish"])
 	})
 
 	test("a paused queue starts its head and reports the tail", async () => {
