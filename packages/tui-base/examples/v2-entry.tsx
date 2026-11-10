@@ -32,6 +32,7 @@ import { createSignal, createEffect, onCleanup, onMount, ErrorBoundary } from "s
 import { createComponent, createElement, render, spread, useRenderer } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { SessionComposer } from "../src/routes/session/session-composer"
+import { ComposerContext } from "../src/routes/session/composer-context"
 import { WelcomeHero } from "../src/routes/welcome-hero"
 import { pickDailyQuote } from "../src/routes/quotes"
 import { SubagentsPicker } from "../src/routes/session/subagents-picker"
@@ -90,14 +91,15 @@ import { StatusBar } from "../src/routes/session/status-bar"
 // ts-nocheck. Runtime-only, opaque to tsc.
 const SHELL = "../../" + "shell/src/client/"
 async function loadShell() {
-	const [shared, lifecycle, transport, rhs, adapter] = await Promise.all([
+	const [shared, lifecycle, transport, rhs, adapter, git] = await Promise.all([
 		import(SHELL + "boot-shared.ts"),
 		import(SHELL + "lifecycle.ts"),
 		import(SHELL + "transport.ts"),
 		import(SHELL + "remote-host-session.ts"),
 		import(SHELL + "session-seam-adapter.ts"),
+		import(SHELL + "remote-git.ts"),
 	])
-	return { shared, lifecycle, transport, rhs, adapter }
+	return { shared, lifecycle, transport, rhs, adapter, git }
 }
 
 const overlays = new TurnOverlayController()
@@ -119,6 +121,9 @@ function V2SessionPage(props: {
 	themeName?: string
 	quit: () => void
 	workspace: string
+	/** Branch-or-SHA probe for the composer context row (shell's
+	 * remote-git.ts; absent = directory-only row, the silent degrade). */
+	probeBranch?: (cwd: string) => Promise<string>
 	/** Boot-time disk snapshot of user-invocable skills (skills-source.ts). */
 	skills?: SkillRow[]
 }) {
@@ -155,6 +160,10 @@ function V2SessionPage(props: {
 	const [effort, setEffort] = createSignal<string | undefined>()
 	const [remoteInfo, setRemoteInfo] = createSignal<{ messageCount?: number; tps?: number | null }>()
 	const [now, setNow] = createSignal(new Date())
+	// Composer context row (user feedback batch): a bump re-reads the git
+	// branch above the input box. Session switches (/new → clear, /fork /
+	// /resume → reload) are the only refresh signals — no timer, no poll.
+	const [contextRevision, setContextRevision] = createSignal(0)
 	// Batch H2 (tui-pi 60-preset footer parity) — host-entry-v2 parity: the
 	// current agent preset's display label for the brand segment
 	// ("dsh(<name>)"); undefined keeps the plain "dsh". Re-read on mount, on
@@ -544,6 +553,8 @@ function V2SessionPage(props: {
 			setTools(0)
 			refreshFooterData()
 			resetSkinLineFades()
+			// Composer context row: re-read the branch for the new session.
+			setContextRevision((n) => n + 1)
 		},
 		reload: () => {
 			setLastRequest(undefined)
@@ -554,6 +565,8 @@ function V2SessionPage(props: {
 			void seam.currentModelSelection().then(setModel)
 			refreshFooterData()
 			refreshPresetLabel()
+			// Composer context row: /fork and /resume are session switches.
+			setContextRevision((n) => n + 1)
 			return settled
 		},
 		quit: props.quit,
@@ -754,7 +767,18 @@ function V2SessionPage(props: {
 					// auto-dismissing lines below lastRequest, above the powerline.
 					notices: createComponent(NoticesDock, {}),
 					get children() {
-						return createComponent(SessionComposer, {
+						return [
+							// Composer context row (user feedback batch): the working
+							// directory + git branch, ONE row directly above the input
+							// box. The probe is shell's client-local remote-git.ts
+							// (branch, or the short SHA on a detached HEAD); a failed
+							// read resolves "" → directory-only, never an error row.
+							createComponent(ComposerContext, {
+								cwd: () => props.workspace,
+								probeBranch: props.probeBranch,
+								revision: () => contextRevision(),
+							}),
+							createComponent(SessionComposer, {
 							seam,
 							send,
 							footerHint: false,
@@ -770,7 +794,8 @@ function V2SessionPage(props: {
 								dialog.stack.length > 0 ? undefined : slash.slashComplete(buffer, cursor),
 							slashPalette: () => createComponent(SlashPalette, { controller: slash.controller, commands: slash.commands }),
 							slashHeight: () => slash.controller.rows(),
-						})
+						}),
+						]
 					},
 				}),
 				// Subagents picker (batch C10a mount-gap fix): the seam-native
@@ -872,7 +897,7 @@ export interface ClientBootV2 {
  * parity (dispose session → release host ref → idle reaper hand-off).
  */
 export async function bootClientV2(): Promise<ClientBootV2> {
-	const { shared, lifecycle, transport, rhs, adapter } = await loadShell()
+	const { shared, lifecycle, transport, rhs, adapter, git } = await loadShell()
 	const workspace = process.cwd()
 	const profile = lifecycle.DEFAULT_PROFILE
 	const idleExitMs = lifecycle.resolveIdleExitMs()
@@ -1012,13 +1037,16 @@ export async function bootClientV2(): Promise<ClientBootV2> {
 													get children() {
 														return createComponent(ErrorBoundaryDiagnostics, {
 															get children() {
-																	return createComponent(V2SessionPage, {
-																		seam,
-																		themeName,
-																		quit: () => process.exit(0),
-																		workspace,
-																		skills: skillRows,
-																	})
+																		return createComponent(V2SessionPage, {
+																			seam,
+																			themeName,
+																			quit: () => process.exit(0),
+																			workspace,
+																			// Branch-or-SHA probe (composer context row):
+																			// client-local, silent on non-repos.
+																			probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
+																			skills: skillRows,
+																		})
 															},
 														})
 													},
