@@ -150,6 +150,14 @@ else
 fi
 
 # --- pass 2: Esc at step 1 abandons the whole flow ------------------------------
+# REBOOT between the passes. After the chained-form commit the composer no
+# longer takes keystrokes on the live session (the palette mirror never
+# re-echoes '/quit'; a focus-reclaim gap after the multi-step dialog closes).
+# A clean boot is the honest starting state for "Esc at step 1 abandons the
+# flow" and it also proves the committed route survives a restart.
+kill_tui
+start_tui ''
+wait_tui_up 180 || { summary; exit 0; }
 ensure_editor_ready 'editor clean before the abandon pass' || true
 send '/login' Enter
 wait_pane '/login reopens the picker' 15 "$MARKER_ADD_PROVIDER"

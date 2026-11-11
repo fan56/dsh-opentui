@@ -127,6 +127,16 @@ RUN find /src -type d -name node_modules -prune -exec rm -rf {} + \
       --print '1+1' >/dev/null \
  && echo "[client-face] /src workspace ready"
 
+# Repo-root scripts. packages/shell's `prepack` runs
+# `bun ../../scripts/build-client.mjs` (which also drives pack-meta.mjs) —
+# scenario 10's `npm pack` dies with MODULE_NOT_FOUND without this tree, and
+# that bundle is the packaged client bin. Copied AFTER the install RUN on
+# purpose: the workspace install is the expensive, network-bound layer and
+# must stay cacheable when only scripts change.
+COPY scripts /src/scripts
+RUN test -f /src/scripts/build-client.mjs \
+ && echo "[client-face] repo scripts ready"
+
 # The scenario suite is bind-mounted at /e2e by e2e/run-e2e.sh so test logic
 # can iterate without an image rebuild.
 CMD ["bash", "/e2e/scenarios/run-all.sh"]

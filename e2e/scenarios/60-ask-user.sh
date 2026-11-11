@@ -71,9 +71,53 @@ scenario 'ask-user: F5 batch ask picker (multiSelect toggle, review page) over t
 #   "  Question (1/3): Where should the e2e bundle be   esc"
 #   "  deployed?"
 #   "  staging"
+#
+# Row shape (skin integration): the dialog stack now paints a FOCUS GUTTER —
+# the active row starts with `┃` and the dialog box closes the row with its
+# border, i.e. `┃   staging   ┃` — while the older capture was bare
+# `  staging`. option_row accepts BOTH shapes; `[^a-zA-Z0-9]*` is the
+# padding (spaces / border glyphs) around the label.
 progress_title() { printf 'Question \\(%s/3\\): %s' "$1" "$2"; }  # ERE: title prefix (wraps)
-option_row() { printf '^ +%s *$' "$1"; }                          # ERE: option row
-review_title_row() { printf '^ +Review answers +esc *$'; }        # ERE: review page header
+# The dialog box sits INSIDE the transcript's `│` border, so a row line is
+# `│   ┃    staging   ┃   │` — border/space characters only around the
+# label. The ERE accepts any such framing (bare, gutted, nested).
+option_row() { printf '^[│┃ ]*%s[│┃ ]*$' "$1"; }
+# The review PAGE marker: its header DESCRIPTION (`←: edit · enter: submit`),
+# not the title — the title row is prefixed by the pulsing ReminderBadge
+# (`⚠ Review answers … esc`) and the questions view also paints a
+# `⏎ Review answers` row, so the label alone cannot prove the page.
+review_title_row() { printf '←: edit · enter: submit'; }
+# Row assertions print the WHOLE pane on failure: the dialog sits mid-screen
+# and the shared helpers only tail the last lines (the composer), which hides
+# the very rows under test.
+# Walk the dialog selection down until the row carrying this label is the
+# ACTIVE row, then leave the cursor there. The active row is the only one
+# painted BOLD — DialogSelectRow sets attributes={active ? BOLD} — so the SGR
+# capture's `[1m` on that line identifies it. Do NOT use the row background
+# (`48;5;`) as the signal: the dialog surface paints its own bg code on every
+# line, which false-positives. Home/End are NOT usable here:
+# the ask view passes its OWN `bindings` set (ask.prev/next/toggle), so the
+# dialog's default end/home entries are not in the active keymap — Down is
+# the only reliable mover.
+select_row() {
+  local label="$1" attempts="${2:-4}" _
+  for _ in $(seq 1 "$attempts"); do
+    if capture_sgr | grep -F -- "$label" | grep -qF '[1m'; then return 0; fi
+    send Down
+    sleep 0.7
+  done
+  capture_sgr | grep -F -- "$label" | grep -qF '[1m'
+}
+assert_row() {
+  local label="$1" ere="$2" haystack="$3"
+  if printf '%s' "$haystack" | grep -qE -- "$ere"; then
+    ok "$label"
+    return 0
+  fi
+  bad "$label (ERE not matched: $ere); full pane:"
+  printf '%s\n' "$haystack" | sed 's/^/    | /'
+  return 1
+}
 assert_no_match() {
   local label="$1" ere="$2" haystack="$3"
   if printf '%s' "$haystack" | grep -qE -- "$ere"; then
@@ -85,7 +129,7 @@ assert_no_match() {
 }
 Q1='Where should'
 Q2='How verbose'
-Q3='Which extra checks should run\?'
+Q3='Which extra checks'
 
 # --- host guard -------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
@@ -123,7 +167,12 @@ else
 fi
 
 # --- baked wiring proof + TUI boot -------------------------------------------
-if grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
+# Client face (batch B5): the profile lives under the scratch DSH_HOME
+# (FACE_PATCH from lib/common.sh), not the retired baked /root/.dsh profile.
+# ensure_client_profile makes the proof order-independent (a scenario that
+# runs before the first start_tui must not skip a live assertion).
+ensure_client_profile >/dev/null 2>&1 || true
+if grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
   ok 'baked profile patch points the pinned provider at the mock endpoint'
 else
   bad 'profile patch lacks the mock baseURL (bake step missing)'
@@ -154,14 +203,16 @@ PANE="$(capture)"
 
 # --- 1. one batch dialog, one focused question ---------------------------------
 assert_matches 'question 1 renders with the (1/3) progress title' "$(progress_title 1 "$Q1")" "$PANE"
-assert_matches 'question 1 option row staging renders bracket-less' "$(option_row staging)" "$PANE"
-assert_matches 'question 1 option row production renders bracket-less' "$(option_row production)" "$PANE"
+assert_row 'question 1 option row staging renders bracket-less' "$(option_row staging)" "$PANE"
+assert_row 'question 1 option row production renders bracket-less' "$(option_row production)" "$PANE"
 assert_no_match 'single-select options render without toggle brackets' "$(option_row '\[.\] staging')" "$PANE"
-assert_matches 'the review row is offered on the multi-question batch' "$(option_row '⏎ Review answers')" "$PANE"
+assert_row 'the review row is offered on the multi-question batch' "$(option_row '⏎ Review answers')" "$PANE"
 assert_no_match 'question 2 stays unrendered while question 1 is focused' "$(progress_title 2 "$Q2")" "$PANE"
 assert_no_match 'question 3 stays unrendered while question 1 is focused' "$(progress_title 3 "$Q3")" "$PANE"
 assert_no_match 'question 2 option rows stay unrendered' "$(option_row quiet)" "$PANE"
-assert_contains 'transcript records the ask_user_question tool call' 'ask_user_question(' "$PANE"
+# (The raw tool-call row is NOT painted: a durable ask call folds into the
+# `ask` Q&A block only once its tool/result lands — asserted after the batch
+# settles, below.)
 
 # --- 2. enter on a single-select pick auto-advances to question 2 ---------------
 # The picker starts on the first row (staging); enter replaces the pick and
@@ -172,8 +223,8 @@ if ! wait_pane 'enter on question 1 auto-advances to the (2/3) title' 15 "$(prog
   exit 0
 fi
 PANE="$(capture)"
-assert_matches 'question 2 option row quiet renders' "$(option_row quiet)" "$PANE"
-assert_matches 'question 2 option row chatty renders' "$(option_row chatty)" "$PANE"
+assert_row 'question 2 option row quiet renders' "$(option_row quiet)" "$PANE"
+assert_row 'question 2 option row chatty renders' "$(option_row chatty)" "$PANE"
 assert_no_match 'question 1 title is gone after the pick' "$(progress_title 1 "$Q1")" "$PANE"
 assert_no_match 'question 1 option rows are gone after the pick' "$(option_row production)" "$PANE"
 
@@ -192,9 +243,9 @@ if ! wait_pane 'the (3/3) multiSelect question follows the second pick' 15 "$(pr
   exit 0
 fi
 PANE="$(capture)"
-assert_matches 'multiSelect rows render as bracketed UNchecked' "$(option_row '\[ \] lint')" "$PANE"
-assert_matches 'multiSelect second option renders unchecked' "$(option_row '\[ \] smoke')" "$PANE"
-assert_matches 'the review row follows the multiSelect rows' "$(option_row '⏎ Review answers')" "$PANE"
+assert_row 'multiSelect rows render as bracketed UNchecked' "$(option_row '\[ \] lint')" "$PANE"
+assert_row 'multiSelect second option renders unchecked' "$(option_row '\[ \] smoke')" "$PANE"
+assert_row 'the review row follows the multiSelect rows' "$(option_row '⏎ Review answers')" "$PANE"
 assert_no_match 'question 2 title is gone after the pick' "$(progress_title 2 "$Q2")" "$PANE"
 assert_no_match 'question 2 option rows are gone after the pick' "$(option_row chatty)" "$PANE"
 
@@ -229,20 +280,27 @@ assert_matches 'lint stays toggled after the second toggle' "$(option_row '\[x\]
 assert_matches 'the picker still stays on question 3' "$(progress_title 3 "$Q3")" "$PANE"
 
 # --- 5. the review row opens the review page -------------------------------------
-# After toggling smoke the selection sits on the smoke row; one Down lands on
-# the `⏎ Review answers` row, enter flips to the review phase.
-send Down
-sleep 1
-send Enter
+# A toggle re-renders the dialog and the preserved selection is not
+# guaranteed, so walk down until the review row IS the active row, then
+# Enter (selection-state independent; End is not bound here — see select_row).
+if select_row 'Review answers'; then
+  ok 'walked to the review row (active)'
+  send Enter
+else
+  bad 'the review row never became the active row (down-walk exhausted); pane:'
+  capture | tail -20 | sed 's/^/    | /'
+  summary
+  exit 0
+fi
 if ! wait_pane 'enter on the review row opens the review page' 15 "$(review_title_row)"; then
   summary
   exit 0
 fi
 PANE="$(capture)"
-assert_matches 'review lists question 1 with its pick' 'deployed\? +staging *$' "$PANE"
-assert_matches 'review lists question 2 with its pick' 'log be\? +quiet *$' "$PANE"
-assert_matches 'review lists question 3 with BOTH toggled picks' 'should run\? +lint, smoke *$' "$PANE"
-assert_matches 'the review page offers the submit row' "$(option_row '⏎ Submit answers')" "$PANE"
+assert_matches 'review lists question 1 with its pick' 'deployed\?[^a-zA-Z0-9]*staging[^a-zA-Z0-9]*$' "$PANE"
+assert_matches 'review lists question 2 with its pick' 'log be\?[^a-zA-Z0-9]*quiet[^a-zA-Z0-9]*$' "$PANE"
+assert_matches 'review lists question 3 with BOTH toggled picks' 'should run\?[^a-zA-Z0-9]*lint, smoke[^a-zA-Z0-9]*$' "$PANE"
+assert_row 'the review page offers the submit row' "$(option_row '⏎ Submit answers')" "$PANE"
 assert_no_match 'the questions view is gone on the review page' "$(progress_title 1 "$Q1")" "$PANE"
 
 # --- 6. ← returns to the questions view with the toggles intact ------------------
@@ -252,32 +310,34 @@ if ! wait_pane 'left on the review page returns to question 3' 15 "$(progress_ti
   exit 0
 fi
 PANE="$(capture)"
-assert_matches 'the lint toggle survived the review round-trip' "$(option_row '\[x\] lint')" "$PANE"
-assert_matches 'the smoke toggle survived the review round-trip' "$(option_row '\[x\] smoke')" "$PANE"
+assert_row 'the lint toggle survived the review round-trip' "$(option_row '\[x\] lint')" "$PANE"
+assert_row 'the smoke toggle survived the review round-trip' "$(option_row '\[x\] smoke')" "$PANE"
 
-# Re-open the review page: two Downs land on the review row whether the
-# dialog selection reset to lint or stayed on smoke.
-send Down
-sleep 0.8
-send Down
-sleep 0.8
-send Enter
+# Re-open the review page: the same down-walk to the review row.
+if select_row 'Review answers'; then
+  ok 'walked back to the review row (active)'
+  send Enter
+else
+  bad 'the review row never became active on the second pass'
+  summary
+  exit 0
+fi
 if ! wait_pane 'the review row re-opens the review page' 15 "$(review_title_row)"; then
   summary
   exit 0
 fi
 
 # --- 7. enter on the submit row settles the batch -> final answer ----------------
-# The reopened review page starts the selection on the question 1 row; three
-# Downs reach the `⏎ Submit answers` row (rows: q1, q2, q3, submit), whatever
-# the selection preserved.
-send Down
-sleep 0.8
-send Down
-sleep 0.8
-send Down
-sleep 0.8
-send Enter
+# On the review page the last row is `⏎ Submit answers`; walk down to it (the
+# selection the reopened page starts on is not guaranteed) and submit.
+if select_row 'Submit answers'; then
+  ok 'walked to the submit row (active)'
+  send Enter
+else
+  bad 'the submit row never became the active row'
+  summary
+  exit 0
+fi
 if ! wait_gone 'the ask overlay closes after the submit row' 15 "$(review_title_row)"; then
   summary
   exit 0
@@ -290,6 +350,12 @@ if ! wait_pane 'the mock final answer renders in the transcript' 60 'E2E-ASK-FLO
 fi
 PANE="$(capture)"
 assert_contains 'the final text is the scripted one' 'E2E-ASK-FLOW-COMPLETE' "$PANE"
+# The transcript records the ask as its tool/activity block (the live pane
+# renders `⚙ask_user_question · <dur> · {"questions":[…]`; the durable Q&A
+# projection `${question} → ${picks}` lives in storedTranscript and is
+# asserted by the unit tests for remote-session-ops). The pre-F5 check
+# looked for a raw `ask_user_question(` row, which the F5 batch fold removed.
+assert_contains 'transcript records the ask tool call' 'ask_user_question' "$PANE"
 assert_no_match 'no ask picker remains after the batch settles' 'esc *$' "$PANE"
 
 # --- 8. the settled envelope carries the multiSelect answer as an array ----------

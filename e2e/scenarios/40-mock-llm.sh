@@ -53,7 +53,12 @@ else
 fi
 
 # --- baked wiring proof + TUI boot -------------------------------------------
-if grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
+# Client face (batch B5): the profile lives under the scratch DSH_HOME
+# (FACE_PATCH from lib/common.sh), not the retired baked /root/.dsh profile.
+# ensure_client_profile makes the proof order-independent (a scenario that
+# runs before the first start_tui must not skip a live assertion).
+ensure_client_profile >/dev/null 2>&1 || true
+if grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
   ok 'baked profile patch points the pinned provider at the mock endpoint'
 else
   bad 'profile patch lacks the mock baseURL (bake step missing)'

@@ -110,19 +110,21 @@ wait_pane_fixed '/theme opens the theme picker' 15 'Select theme' || { summary; 
 # host-entry-v2.tsx pickOne), so the 'exactly one current row' prewrite check
 # is replaced by the capture-true row-shape count: the visible window lists
 # >= 5 indented single-word theme rows. Skin integration (final merge): the
-# dialog stack gained a FOCUSED BORDER, so each option row paints as
-# `┃<pad> name <pad>┃` — the shape count accepts BOTH the borderless capture
-# (>= 20 columns of indent, bare word) and the bordered one.
+# dialog stack gained a FOCUSED BORDER and the dialog box is nested inside
+# the transcript's `│` frame, so an option row paints as
+# `│   ┃    aura    ┃   │`. The shape count accepts any border/space framing
+# around a bare single-word row (borderless capture included).
 sleep 1
 PANE="$(capture)"
 assert_contains 'picker row: aura (row 0 — what the bare Enter picks)' 'aura' "$PANE"
 assert_contains 'picker row: ayu (visible list, capture-verified)' 'ayu' "$PANE"
 assert_contains 'picker row: dracula (visible list, capture-verified)' 'dracula' "$PANE"
-ROW_COUNT="$(printf '%s\n' "$PANE" | grep -cE '^ {20,}[a-z0-9][a-z0-9-]* *$|^ *┃ +[a-z0-9][a-z0-9-]* +┃ *$' || true)"
+ROW_COUNT="$(printf '%s\n' "$PANE" | grep -cE '^[│┃ ]*[a-z0-9][a-z0-9-]*[│┃ ]*$' || true)"
 if [ "$ROW_COUNT" -ge 5 ]; then
   ok "picker lists >= 5 theme rows in the visible window (found $ROW_COUNT indented option rows)"
 else
-  bad "picker row shape count too low: $ROW_COUNT indented single-word rows (< 5)"
+  bad "picker row shape count too low: $ROW_COUNT indented single-word rows (< 5); full pane:"
+  printf '%s\n' "$PANE" | sed 's/^/    | /'
 fi
 
 # --- G1: the apply (row 0 = 'aura' — a non-current bundled theme) ---------------

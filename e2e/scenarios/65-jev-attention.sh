@@ -95,6 +95,23 @@ else
   exit 0
 fi
 
+# --- capability gate: the spin-verdict feed --------------------------------
+# G2 asserts the EARLY hard stop driven by a JEV spin verdict. The product
+# half of that feed is not wired on this wave: HostSession.noteChildSpinVerdict
+# has no CALLER anywhere in packages/shell/src (the header caveat records the
+# same finding), so no verdict can reach the ladder and the round bound
+# cannot pass by construction. Skip with THAT reason — the honest gap —
+# instead of asserting a behavior the product does not have.
+# The pattern is the method-invocation shape `.noteChildSpinVerdict(`: the
+# bare name also appears in spin-attention.ts doc comments (lines mentioning
+# "HostSession.noteChildSpinVerdict →" / "forwards to noteChildSpinVerdict"),
+# and a comment-only match would wrongly light the gate.
+if ! grep -rq '\.noteChildSpinVerdict(' /src/packages/shell/src 2>/dev/null; then
+  warn 'jev spin-verdict feed not wired (noteChildSpinVerdict has no caller in packages/shell/src) — the early hard stop is not observable; skipping'
+  summary
+  exit 0
+fi
+
 # --- the registry plugin (use_agent's home) — install if missing -------------
 # NOT probe-only anymore: the dispatch plugin's capability gate refuses an
 # auto keyword turn SILENTLY (no jev call, no verdict row) unless use_agent

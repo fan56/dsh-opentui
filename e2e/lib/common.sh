@@ -207,10 +207,21 @@ ensure_client_profile() {
   if [ ! -f "$FACE_PATCH" ]; then
     DSH_HOME="$FACE_HOME" node /src/packages/shell/scripts/provision-opentui-profile.mjs || return 1
   fi
-  if ! grep -qF '@aiwayds/dsh-subagent-registry' \
-    "$FACE_HOME/profiles/$FACE_PROFILE/package.json" 2>/dev/null; then
-    DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-jev-chain.mjs || return 1
+  # Each bake is probed INDEPENDENTLY. They used to ride one guard keyed on
+  # the registry dep, so a scenario that had already installed the registry
+  # (62 runs before 65/70) silently skipped the jev chain bake and later
+  # scenarios saw "dsh-agent-dispatch missing" — a harness fault, not a
+  # product gap.
+  local profile_pkg="$FACE_HOME/profiles/$FACE_PROFILE/package.json" baked=0
+  if ! grep -qF '@aiwayds/dsh-subagent-registry' "$profile_pkg" 2>/dev/null; then
     DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-subagent-registry.mjs || return 1
+    baked=1
+  fi
+  if ! grep -qF '@aiwayds/dsh-agent-dispatch' "$profile_pkg" 2>/dev/null; then
+    DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-jev-chain.mjs || return 1
+    baked=1
+  fi
+  if (( baked )); then
     pnpm --dir "$FACE_HOME/profiles/$FACE_PROFILE" install \
       --registry="${E2E_NPM_REGISTRY:-https://registry.npmjs.org}" || return 1
   fi
@@ -296,9 +307,43 @@ wait_pane_fixed() {
   return 1
 }
 
-# Close the slash palette with Escape, retrying until the palette rows are
-# gone AND the composer placeholder is back (Escape presses land
-# unreliably; see above).
+# `… N more` — the palette's reserved overflow row (slash-palette.tsx
+# overflowHint), painted whenever the query matches more than MAX_ROWS (10).
+# The registered command set is 20+, so an unfiltered palette always carries
+# it; a narrowed query may not.
+PALETTE_OVERFLOW_ERE='… [0-9]+ more'
+
+# True when the slash palette is painted somewhere in the pane. Deliberately
+# does NOT require a specific row: the palette sorts usage DESC then name, so
+# on a profile where ten commands were dispatched any fixed row (/help,
+# /quit) can sit outside the 10-row window. The overflow hint is the
+# position-independent signal.
+palette_visible_in() {
+  printf '%s' "$1" | grep -qE -- "$PALETTE_OVERFLOW_ERE|/help show available commands|/quit exit the app"
+}
+
+# Poll until the UNFILTERED command list is painted: either the /help row
+# (short list / fresh profile) or the `… N more` overflow row (a full 20+
+# command list under usage ordering). Used as the "buffer is empty and the
+# trailing '/' re-opened the whole list" proof — any leftover text would
+# swallow the '/' into a non-matching (or narrowed) query with neither
+# signal.
+wait_palette_unfiltered() {
+  local label="$1" timeout="$2" waited=0 pane
+  while (( waited < timeout )); do
+    pane="$(capture)"
+    if printf '%s' "$pane" | grep -qF -- '/help show available commands' \
+      || printf '%s' "$pane" | grep -qE -- "$PALETTE_OVERFLOW_ERE"; then
+      ok "$label"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  bad "$label (timed out after ${timeout}s); haystack tail:"
+  capture | tail -8 | sed 's/^/    | /'
+  return 1
+}
 #
 # Batch V5 note: the composer no longer remounts on every clock tick, so
 # the buffer now SURVIVES the palette's Esc close (pre-fix the remount
@@ -311,13 +356,11 @@ esc_until_placeholder() {
   while (( waited < timeout )); do
     pane="$(capture)"
     if printf '%s' "$pane" | grep -qF -- "$MARKER_COMPOSER_PLACEHOLDER" \
-      && ! printf '%s' "$pane" | grep -qF -- '/help show available commands' \
-      && ! printf '%s' "$pane" | grep -qF -- '/quit exit the app'; then
+      && ! palette_visible_in "$pane"; then
       ok "$label"
       return 0
     fi
-    if printf '%s' "$pane" | grep -qF -- '/help show available commands' \
-      || printf '%s' "$pane" | grep -qF -- '/quit exit the app'; then
+    if palette_visible_in "$pane"; then
       send Escape # palette still up: close it first
     else
       local _
@@ -380,8 +423,9 @@ esc_until_gone() {
 #      leftovers (no-op on an empty buffer).
 #   2. ECHO proof: '/quit' (one write) must list the '/quit' row.
 #   3. CLEAR proof: spaced backspaces + a trailing '/' must restore the
-#      unfiltered list ('/help' row back) — any leftover text would swallow
-#      the '/' into a non-matching query with NO /help row.
+#      unfiltered list (the `… N more` overflow row, or the '/help' row on a
+#      short list) — any leftover text would swallow the '/' into a
+#      non-matching query with no such signal.
 #   4. One more spaced backspace (buffer '' again, palette closes) + Escape,
 #      so callers start from a clean, empty, overlay-free editor.
 ensure_editor_ready() {
@@ -394,8 +438,7 @@ ensure_editor_ready() {
     if wait_pane_fixed "$label: echo (/quit row listed)" 10 '/quit exit the app'; then
       for _ in $(seq 1 8); do send BSpace; sleep 0.3; done
       send '/'
-      if wait_pane_fixed "$label: clear (trailing / lists all commands)" 12 \
-        '/help show available commands'; then
+      if wait_palette_unfiltered "$label: clear (trailing / lists all commands)" 12; then
         send BSpace
         sleep 0.4
         send Escape
