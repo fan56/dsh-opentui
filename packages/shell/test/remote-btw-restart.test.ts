@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Server } from "node:net"
+import { createServer as createHttpServer } from "node:http"
 import { askBtw, BTW_TITLE_PREFIX } from "../src/client/remote-btw.ts"
 import { ensureHost } from "../src/client/lifecycle.ts"
 import { HostRestartError, restartSamePortHost } from "../src/client/remote-restart.ts"
@@ -340,7 +341,10 @@ describe("row 29 — /reload via lifecycle restart + carrier reconnect", () => {
 		await new Promise<void>((resolve) => probe.close(() => resolve()))
 		writeFileSync(join(home, "opentui-host.opentui.json"), JSON.stringify({ pid: victim.pid, port, authority: `127.0.0.1:${port}`, startedAt: new Date().toISOString(), profile: "opentui" }))
 
-		const listener = new Server((socket) => socket.destroy())
+		// The restarted host is a real dsh HTTP host; the subsequent ensureHost
+		// adoption probe requires an authenticated `GET /` to reach it (a bare
+		// TCP socket would be classified as a foreign holder of the port).
+		const listener = createHttpServer((_req, res) => res.end("restarted-host"))
 		try {
 			const result = await restartSamePortHost({
 				dshHome: home,

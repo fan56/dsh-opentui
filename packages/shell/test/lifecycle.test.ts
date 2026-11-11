@@ -306,6 +306,8 @@ describe('ensureHost — boot + contract', () => {
       const err = await rejectsWith(booting, HostDiedError)
       expect(err.exitCode).toBe(1)
       expect(err.outputTail).toContain('starting up…')
+      // the stderr tail must be readable from the surfaced error itself
+      expect(err.message).toContain('starting up…')
       expect(runner.last.kills).toContain('SIGTERM') // boot-failure cleanup
       expect(existsSync(lockPathOf(home))).toBe(false)
     } finally {
@@ -317,16 +319,17 @@ describe('ensureHost — boot + contract', () => {
     const home = makeHome()
     const runner = makeRunner()
     try {
-      const err = await rejectsWith(
-        ensureHost({
-          dshHome: home,
-          spawnDsh: runner.spawnDsh,
-          mintCookie: () => 'x',
-          readinessTimeoutMs: 120,
-        }),
-        HostBootTimeoutError,
-      )
-      expect(err.budgetMs).toBe(120)
+      const booting = ensureHost({
+        dshHome: home,
+        spawnDsh: runner.spawnDsh,
+        mintCookie: () => 'x',
+        readinessTimeoutMs: 500,
+      })
+      await waitUntil(() => runner.calls.length === 1)
+      runner.last.writeOut('plugin failed to load: boom\n')
+      const err = await rejectsWith(booting, HostBootTimeoutError)
+      expect(err.budgetMs).toBe(500)
+      expect(err.message).toContain('plugin failed to load: boom')
       expect(runner.last.kills).toContain('SIGTERM')
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -547,6 +550,41 @@ describe('ensureHost — single-instance lock', () => {
       expect(sleeper.signalCode === 'SIGTERM' || sleeper.exitCode !== null).toBe(true)
     } finally {
       server.close()
+      sleeper.kill()
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  test('lock naming a live port that rejects our cookie → stale: lock dropped, fresh boot, foreign pid untouched', async () => {
+    const home = makeHome()
+    const runner = makeRunner()
+    const sleeper = spawnSleeper()
+    // A live listener that answers 401: a host from another home / a rotated
+    // grant. Adopting it would make the carrier retry forever.
+    const foreign = createServer((_req, res) => {
+      res.statusCode = 401
+      res.end('not our host')
+    })
+    try {
+      const [port] = await new Promise<number[]>((resolve) =>
+        foreign.listen(0, '127.0.0.1', () => resolve([(foreign.address() as AddressInfo).port])),
+      )
+      writeLockFor(home, {
+        pid: sleeper.pid,
+        port,
+        authority: `127.0.0.1:${port}`,
+        startedAt: new Date().toISOString(),
+        profile: DEFAULT_PROFILE,
+      })
+      const handle = await fakeBoot(runner, home)
+      expect(runner.calls.length).toBe(1) // booted instead of adopting
+      expect(handle.adopted).toBe(false)
+      expect(handle.pid).toBe(runner.last.pid)
+      expect(readLockFrom(home).pid).toBe(runner.last.pid)
+      expect(sleeper.exitCode).toBeNull() // never signal a foreign pid
+      await handle.dispose()
+    } finally {
+      foreign.close()
       sleeper.kill()
       rmSync(home, { recursive: true, force: true })
     }

@@ -24,6 +24,14 @@
  * loop reconnects automatically. Consumers observe that through `getState()` /
  * `onStateChange()` (`connecting | connected | disconnected`).
  *
+ * First-connection policy: the SDK reconnects forever by design, which is
+ * correct AFTER a session exists but wrong during boot against a dead or
+ * unauthorized host (silent `[connection] connection lost, retry #n`). The
+ * generation counter below caps retries until the first successful
+ * connection (default 3) and a boot budget (default 30s) backstops it; the
+ * rejection carries the host's captured stderr tail. Once connected, the
+ * SDK's normal reconnect behavior is untouched.
+ *
  * SDK loading is LAZY: the module below is imported with `await import()`
  * inside the connect path (`#installAndStart`) and nowhere else — loading
  * this module (the whole test-load graph: tests fake the connection) never
@@ -67,6 +75,16 @@ export interface ClientConnectionOptions {
 	baseUrl?: string
 	/** Reconnect-timing overrides; defaults mirror the host's documented caps. */
 	recovery?: Partial<ConnectionRecoveryConfig>
+	/** Retry cap until the FIRST successful connection (default 3). A carrier
+	 * that has connected once keeps the SDK's normal reconnect policy — this
+	 * only stops a boot against a dead/unauthorized host from looping
+	 * silently forever. */
+	maxConnectAttempts?: number
+	/** Overall budget for the first connection (default 30s). */
+	connectBudgetMs?: number
+	/** Lazy host diagnostics (child output tail); quoted in the error when the
+	 * retry cap or the budget is exhausted. */
+	diagnostics?: () => string
 }
 
 /** RPC completed and the host returned a logical failure envelope. */
@@ -98,6 +116,28 @@ export class ConnectionClosedError extends Error {
 	}
 }
 
+/** The first client generation never completed: the host is dead, wedged, or
+ * rejects our cookie. Surfaced instead of retrying silently forever. */
+export class ConnectionRetryExhaustedError extends Error {
+	readonly code = "connection-retry-exhausted"
+
+	constructor(
+		readonly attempts: number,
+		readonly authority: string,
+		readonly diagnostics?: string,
+	) {
+		const tail = diagnostics?.trim()
+		super(
+			`host ${authority} never accepted the client connection after ${attempts} retr${attempts === 1 ? "y" : "ies"}` +
+				(tail ? `\n${tail}` : ""),
+		)
+		this.name = "ConnectionRetryExhaustedError"
+	}
+}
+
+const DEFAULT_MAX_CONNECT_ATTEMPTS = 3
+const DEFAULT_CONNECT_BUDGET_MS = 30_000
+
 /** Handler receiving raw `$events` items (`emit` | `waterfall` | `cancel`). */
 export type ClientEventHandler = (item: EventsItem) => void
 
@@ -123,6 +163,13 @@ export class ClientConnection {
 	#stateListeners = new Set<(state: ClientConnectionState) => void>()
 	#state: ClientConnectionState = "connecting"
 	#closed = false
+	/** First-connection retry policy (see ClientConnectionOptions). */
+	readonly #maxConnectAttempts: number
+	readonly #connectBudgetMs: number
+	readonly #diagnostics: (() => string) | undefined
+	#connectAttempts = 0
+	#connectedOnce = false
+	#budgetTimer: ReturnType<typeof setTimeout> | undefined
 	/** Transport seams staged by the constructor for the deferred SDK install. */
 	readonly #transport: {
 		streamBaseUrl: string
@@ -157,6 +204,9 @@ export class ClientConnection {
 			},
 		}
 		this.#recovery = options.recovery
+		this.#maxConnectAttempts = Math.max(0, options.maxConnectAttempts ?? DEFAULT_MAX_CONNECT_ATTEMPTS)
+		this.#connectBudgetMs = Math.max(1, options.connectBudgetMs ?? DEFAULT_CONNECT_BUDGET_MS)
+		this.#diagnostics = options.diagnostics
 		this.#pumpCallbacks = {
 			onReady: (info) => {
 				this.#readyInfo = info
@@ -200,14 +250,51 @@ export class ClientConnection {
 			const handle = sdkContext.get("connection") as ConnectionHandle | undefined
 			if (!handle) throw new RpcTransportError("connection service failed to install")
 			this.#handle = handle
-			handle.registerGenerationSource(
-				createEventsPumpSource((path) => handle.openWebSocket(path) as unknown as MuxSocket, this.#pumpCallbacks),
+			const pump = createEventsPumpSource(
+				(path) => handle.openWebSocket(path) as unknown as MuxSocket,
+				this.#pumpCallbacks,
 			)
+			// Count generation attempts until the first success. The SDK keeps
+			// reconnecting forever by design; during a BOOT that would print
+			// `[connection] connection lost, retry #n` indefinitely against a
+			// host that is dead or rejects our cookie. After the first
+			// connection the normal reconnect policy is left untouched.
+			handle.registerGenerationSource((signal, ready) => {
+				if (!this.#connectedOnce) {
+					this.#connectAttempts += 1
+					if (this.#connectAttempts > this.#maxConnectAttempts + 1) {
+						this.#failConnect(
+							new ConnectionRetryExhaustedError(
+								this.#maxConnectAttempts,
+								this.authority,
+								this.#diagnostics?.(),
+							),
+						)
+						return new Promise<void>((resolve) => {
+							if (signal.aborted) resolve()
+							else signal.addEventListener("abort", () => resolve(), { once: true })
+						})
+					}
+				}
+				return pump(signal, ready)
+			})
 			return await new Promise<ClientReadyInfo>((resolve, reject) => {
 				this.#resolveConnect = resolve
 				this.#rejectConnect = reject
+				this.#budgetTimer = setTimeout(() => {
+					this.#failConnect(
+						new ConnectionRetryExhaustedError(
+							Math.max(1, this.#connectAttempts),
+							this.authority,
+							this.#diagnostics?.(),
+						),
+					)
+				}, this.#connectBudgetMs)
+				this.#budgetTimer.unref?.()
 				this.#loop = handle.start({
 					onConnected: () => {
+						this.#connectedOnce = true
+						this.#clearBudgetTimer()
 						const info = this.#readyInfo
 						if (info) this.#resolveConnect?.(info)
 					},
@@ -284,6 +371,7 @@ export class ClientConnection {
 	async close(): Promise<void> {
 		if (this.#closed) return
 		this.#closed = true
+		this.#clearBudgetTimer()
 		this.#loop?.stop()
 		this.#loop = undefined
 		this.#rejectConnect?.(new ConnectionClosedError("connection closed before connecting"))
@@ -292,6 +380,31 @@ export class ClientConnection {
 		this.#handlers.clear()
 		this.#publishState("disconnected")
 		this.#stateListeners.clear()
+	}
+
+	#clearBudgetTimer(): void {
+		if (this.#budgetTimer !== undefined) {
+			clearTimeout(this.#budgetTimer)
+			this.#budgetTimer = undefined
+		}
+	}
+
+	/** Stop the SDK loop and reject the pending `connect()` (retry cap or
+	 * budget exhausted). Later connect() calls keep the rejected promise, so
+	 * a boot cannot silently start a second infinite loop. */
+	#failConnect(error: Error): void {
+		this.#clearBudgetTimer()
+		const loop = this.#loop
+		this.#loop = undefined
+		try {
+			loop?.stop()
+		} catch {
+			/* already stopped */
+		}
+		const reject = this.#rejectConnect
+		this.#resolveConnect = undefined
+		this.#rejectConnect = undefined
+		reject?.(error)
 	}
 
 	#dispatch(item: EventsItem): void {

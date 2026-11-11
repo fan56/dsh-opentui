@@ -19,6 +19,11 @@
 // Single-instance lock: `$DSH_HOME/opentui-host.<profile>.json` holds
 // { pid, port, authority, startedAt, profile }. A lock whose pid is dead or
 // whose listener is gone is stale and taken over (replaced by a fresh boot).
+// A lock whose pid lives and whose port listens is adopted ONLY after an
+// authenticated probe (`GET /` with the cookie minted from this home) proves
+// the process is OUR host: a foreign home / rotated grant answers 401 and
+// would otherwise leave the carrier reconnecting forever. The foreign pid is
+// never signalled; only the stale lock is removed.
 // A fresh lock is adopted (no spawn) — that is the crashed-client recovery
 // path. Unexpected child death clears the lock; the next `ensureHost`
 // respawns, capped at MAX_RAPID_RESPAWNS spawn attempts inside
@@ -51,8 +56,14 @@
 // (scripts/idle-reaper.mjs), which owns it after this process is gone.
 //
 // Readiness: the `dsh web: http://127.0.0.1:<port>/?token=...` stdout line
-// (verified against the shipped CLI) or a TCP listener probe, within
+// (verified against the shipped CLI; it prints only after the loader and the
+// connection service are mounted) or an HTTP-responds fallback, within
 // `readinessTimeoutMs` (default 30s) — a typed HostBootTimeoutError on miss.
+// The HTTP fallback is deliberately stronger than a TCP accept: a bound
+// socket that does not answer HTTP rejects the carrier's first mux upgrade.
+// After a fallback boot (and the cookie mint) the lifecycle also performs the
+// full `$events` handshake, so a returned host is always mux-serving. Boot
+// errors quote the child's output tail (last 12 lines) in their message.
 // The child is spawned detached with a bind-probed free port, so it survives
 // this process and is adopted by the next client via the lockfile.
 //
@@ -73,6 +84,7 @@ import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writ
 import { homedir } from 'node:os'
 import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
+import { probeHostHttp, probeHostMux } from './host-probe.ts'
 
 export const DEFAULT_PROFILE = 'opentui'
 /** Idle-exit window: the resident host exits this long after the LAST client
@@ -119,6 +131,15 @@ const RESPAWN_WINDOW_MS = 15_000
 const MAX_RAPID_RESPAWNS = 3
 const LISTEN_PROBE_TIMEOUT_MS = 750
 const LISTEN_POLL_MS = 200
+/** Bound for one authenticated adoption probe (a live host answers in ms). */
+const ADOPT_PROBE_TIMEOUT_MS = 2_000
+/** Cadence for the post-boot mux-readiness poll (listener-fallback boots). */
+const SERVE_PROBE_POLL_MS = 250
+/** How long a listener-ready host gets to serve the client mux after the
+ * cookie mint (the plugin tree can take seconds to mount `$events`). */
+const SERVE_PROBE_BUDGET_MS = 20_000
+/** Lines of child output quoted in surfaced error messages. */
+const ERROR_TAIL_LINES = 12
 const KILL_GRACE_MS = 5_000
 const KILL_ESCALATE_MS = 2_000
 const OUTPUT_TAIL_CAP = 8_000
@@ -139,9 +160,18 @@ export class HostLifecycleError extends Error {
   }
 }
 
+/** Last `ERROR_TAIL_LINES` lines of captured child output, for error text. */
+function errorTail(outputTail: string): string {
+  const lines = outputTail.split(/\r?\n/).filter((line) => line.length > 0)
+  if (lines.length === 0) return ''
+  return `\n--- dsh host output (last ${Math.min(lines.length, ERROR_TAIL_LINES)} lines) ---\n${lines
+    .slice(-ERROR_TAIL_LINES)
+    .join('\n')}`
+}
+
 export class HostBootTimeoutError extends HostLifecycleError {
   constructor(readonly budgetMs: number, readonly outputTail: string) {
-    super('host-boot-timeout', `dsh host did not become ready within ${budgetMs}ms`)
+    super('host-boot-timeout', `dsh host did not become ready within ${budgetMs}ms${errorTail(outputTail)}`)
   }
 }
 
@@ -153,7 +183,20 @@ export class HostDiedError extends HostLifecycleError {
   ) {
     super(
       'host-died',
-      `dsh host exited before readiness (code=${exitCode ?? 'null'}, signal=${signal ?? 'null'})`,
+      `dsh host exited before readiness (code=${exitCode ?? 'null'}, signal=${signal ?? 'null'})${errorTail(outputTail)}`,
+    )
+  }
+}
+
+/** The listener came up but the client mux never served a ready item — the
+ * host is wedged or died just after binding (a patch/plugin failure). The
+ * child's output tail is quoted so the failure is diagnosable from the TUI
+ * error line alone. */
+export class HostNotServingError extends HostLifecycleError {
+  constructor(readonly outputTail: string) {
+    super(
+      'host-not-serving',
+      `dsh host is listening but never served the client mux (${SERVE_PROBE_BUDGET_MS}ms budget)${errorTail(outputTail)}`,
     )
   }
 }
@@ -267,6 +310,8 @@ export interface HostHandle {
   readonly url: string | null
   /** Launch token parsed out of the URL, or null. */
   readonly token: string | null
+  /** Child stdout/stderr tail captured by this process ('' when adopted). */
+  diagnostics(): string
   /** True when this host was adopted from the lockfile, not spawned here. */
   readonly adopted: boolean
   readonly refCount: number
@@ -372,6 +417,28 @@ export function isListening(port: number): Promise<boolean> {
     socket.once('error', () => finish(false))
     socket.once('timeout', () => finish(false))
   })
+}
+
+/** Stronger than a bare TCP accept: the port answers HTTP. A host binds its
+ * socket before the HTTP/WS stack is mounted, so a TCP-only readiness signal
+ * hands the carrier an authority whose first mux upgrade is rejected — the
+ * `[connection] connection lost, retry #n` burst this check prevents. Any
+ * status counts (401/404 prove the HTTP stack is serving). */
+async function httpResponds(port: number): Promise<boolean> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/`, {
+      signal: AbortSignal.timeout(LISTEN_PROBE_TIMEOUT_MS),
+      redirect: 'manual',
+    })
+    try {
+      await response.body?.cancel()
+    } catch {
+      /* already drained */
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Bind-probe a free loopback port to hand to `dsh --port` (macOS has no
@@ -674,6 +741,10 @@ interface ReadyResult {
   token: string | null
   port: number
   authority: string
+  /** Which signal resolved readiness. `url` is the host's post-loader line
+   * (the full plugin tree and the connection service are mounted); `listener`
+   * is the weaker HTTP fallback and must be followed by a mux probe. */
+  via: 'url' | 'listener'
 }
 
 function readyFromUrl(urlText: string): ReadyResult {
@@ -684,6 +755,7 @@ function readyFromUrl(urlText: string): ReadyResult {
     token: url.searchParams.get('token'),
     port,
     authority: `${url.hostname}:${port}`,
+    via: 'url',
   }
 }
 
@@ -715,15 +787,18 @@ function waitForReadiness(
       const match = URL_LINE.exec(String(chunk))
       if (match) done(true, readyFromUrl(match[1]!))
     })
-    // Fallback: the listener probe (in case the stdout contract changes).
+    // Fallback: wait for the HTTP stack, not just the bound socket (in case
+    // the stdout contract changes). TCP-bind readiness is too early — the
+    // carrier's first mux upgrade would be rejected.
     const poll = setInterval(() => {
-      void isListening(expectedPort).then((up) => {
+      void httpResponds(expectedPort).then((up) => {
         if (up) {
           done(true, {
             url: null,
             token: null,
             port: expectedPort,
             authority: `127.0.0.1:${expectedPort}`,
+            via: 'listener',
           })
         }
       })
@@ -760,6 +835,9 @@ function makeHandle(host: ManagedHost): HostHandle {
     },
     get token() {
       return host.token
+    },
+    diagnostics() {
+      return errorTail(host.outputTail).replace(/^\n/, '')
     },
     get adopted() {
       return host.adopted
@@ -871,9 +949,26 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
     }
     if (lock && (await lockIsFresh(lock, o.staleProbeMs))) {
       const adopted = adoptHost(lock, o) // bumps the lockfile (reaper liveness)
-      respawnHistory.delete(o.key)
       adopted.cookieHeader = await mintCookieWithRetry(adopted)
-      return adopted
+      // A live pid + open port is not enough: the process must accept OUR
+      // cookie (same home grant) and serve the web app. A foreign/rotated
+      // host on that port answers 401/404 and would make the carrier retry
+      // forever — treat the lock as stale and boot fresh instead.
+      if (
+        await probeHostHttp({
+          authority: adopted.authority,
+          cookieHeader: adopted.cookieHeader,
+          timeoutMs: ADOPT_PROBE_TIMEOUT_MS,
+        })
+      ) {
+        respawnHistory.delete(o.key)
+        return adopted
+      }
+      // Never signal the foreign pid (it may belong to another home / user);
+      // drop only the stale lock so the fresh boot can claim it.
+      registry.delete(o.key)
+      removeStaleLock(o.dshHome, o.profile, lock)
+      continue
     }
     // Stale lock (or none): clear the way, verify the profile, claim the
     // boot placeholder. A rival that claimed first leaves the file in place
@@ -948,6 +1043,25 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
     }
     host.authority = ready.authority
     host.cookieHeader = await mintCookieWithRetry(host)
+    // The listener-fallback readiness only proves the HTTP stack answers.
+    // Gate on the actual client mux ($events ready item) so the carrier's
+    // first attempt cannot land in the retry loop; the URL line already
+    // implies the loader + connection service are mounted.
+    if (ready.via === 'listener') {
+      const deadline = Date.now() + SERVE_PROBE_BUDGET_MS
+      let serving = false
+      while (Date.now() < deadline) {
+        serving = await probeHostMux({
+          authority: host.authority,
+          cookieHeader: host.cookieHeader,
+          timeoutMs: 1_500,
+        })
+        if (serving) break
+        if (!pidAlive(child.pid)) break // died after binding: surface the tail now
+        await sleep(SERVE_PROBE_POLL_MS)
+      }
+      if (!serving) throw new HostNotServingError(host.outputTail)
+    }
     // Claim still ours? A join-budget takeover by another client replaced the
     // placeholder — kill our child rather than clobber the winner's lock
     // (which would leave two live hosts and concurrent DSH_HOME writers).

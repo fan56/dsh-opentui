@@ -986,7 +986,14 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 	shared.bootCallOrder.push("ensureHost")
 	const host = await lifecycle.ensureHost({ profile, idleExitSec })
 	shared.bootCallOrder.push("connect")
-	const connection = new transport.ClientConnection({ authority: host.authority, cookieHeader: host.cookieHeader })
+	const connection = new transport.ClientConnection({
+		authority: host.authority,
+		cookieHeader: host.cookieHeader,
+		// Surface the child's stderr tail if the first connection cannot be
+		// established (host died/wedged right after boot) instead of the SDK's
+		// silent infinite retry loop.
+		diagnostics: () => host.diagnostics(),
+	})
 	shared.bootCallOrder.push("createSession")
 	const session = new rhs.RemoteHostSession({
 		connection: connection as never,
