@@ -109,7 +109,20 @@ if [ -f "$CLIENT_BUNDLE" ]; then
   sleep 0.3
   tmux new-session -d -s "$TS" -x "$TUI_COLS" -y "$TUI_ROWS" -c /app
   tmux send-keys -t "$TS" "env DSH_HOME=$BOOT_HOME dsh-opentui" Enter
-  wait_tui_up 180 || { kill_tui; summary; }
+  # 600s, not the stock 180: this leg cold-installs the 14 plugin packages
+  # (pnpm reports `Packages: +14` / `resolved 14, reused 0` with an empty
+  # store, so every package pays a full TLS fetch). Network measured
+  # 2026-11-12 on this dev network: host -> registry.npmjs.org TLS 5.54s /
+  # 6.65s total at 1.7 KB/s; in-container -> same target TLS 4.74s /
+  # 5.41s total at 2.1 KB/s (same speed as the host — not a VM-forwarding
+  # problem); same machine -> registry.npmmirror.com 0.21s at 58 KB/s.
+  # At 1.7-2.1 KB/s a 14-package cold install cannot finish in 180s and
+  # the leg false-fails on the cross-border link alone (sibling scenarios
+  # 20/22/40/50 pass in seconds off the pre-provisioned profile). 600s is
+  # an environment-sensitivity fix for that measured link, not a mask for
+  # a product bug. The registry stays the product default on purpose —
+  # pointing this boot at npmmirror would change the environment under test.
+  wait_tui_up 600 || { kill_tui; summary; }
   PANE="$(capture)"
   assert_contains 'npm-installed client bin boots to the composer placeholder' \
     "$MARKER_COMPOSER_PLACEHOLDER" "$PANE"
