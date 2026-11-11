@@ -210,7 +210,7 @@ PATH; otherwise the scripts self-skip (exit 0) so CI runs green.
 
 ## Status
 
-v0.9.5: published as `@aiwayds/dsh-opentui` — client-only distribution
+v0.9.6: published as `@aiwayds/dsh-opentui` — client-only distribution
 (npm bin → client chain; the in-process plugin mode was retired). New
 default theme dsh-blue (dark/light, auto-selected from terminal background,
 `/theme` to pin) with focus visuals, framed composer/messages/code blocks,
@@ -228,4 +228,10 @@ launch, a compact footer context percent, and a fix for transcript loss on
 `/resume`. 0.9.5 adds `/flush` for a paused delivery queue, closes the
 settings permission-preset and skill-catalog gaps, and makes session restore
 opt-in (`--resume-last` or `autoResume: "last"`) so a plain launch starts
-fresh. Roadmap: platform + Kit polish.
+fresh. 0.9.6 adds tiered tests (`test:unit|ft|ui|e2e|all` with a geometry×
+scene UI matrix and a real-client e2e flow suite), hardens first-connect
+(stale host locks are probed over HTTP and replaced, readiness waits for
+HTTP + `$events`, retries capped at 3 with the host stderr tail surfaced),
+and fixes footer wrapping on narrow terminals, tool-dock clipping, the
+message count after `--resume-last`, and duplicate terminal-size listeners.
+Roadmap: platform + Kit polish.
