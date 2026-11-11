@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.5] - 2026-11-11
+
+### Added
+
+- **`/flush`** — delivers a paused delivery queue now. A failed or aborted turn keeps the client-side queue and pauses the pump; `/flush` starts the head prompt immediately and the rest follow one per turn end, in submission order. Every outcome is reported (an empty queue is never silent).
+- **Settings catalogs** — `permission.defaultPreset` reads the host `permissionPresets/catalog` RPC and offers its `defaultOptions` as real choices (the settings value, else the catalog default); without a catalog the row is read-only and shows the effective value plus why, never an empty picker. The slash skill registry keeps the boot disk snapshot and refreshes once after the first user message when `skills/list` becomes readable, so plugin-provided skills appear without a restart.
+
+### Changed
+
+- **A launch starts a fresh session; restore is opt-in** — a plain launch no longer reopens the last workspace session. Set `"autoResume": "last"` or pass `--resume-last` for a single launch (it overrides the config) to restore the newest non-empty session from the launch workspace that was active within the last 7 days (`autoResumeDays`); `--new` wins over both, and `--session <id>` still pins a session.
+
+### Fixed
+
+- **Skill rows survived a session switch** — the palette kept the previous session's plugin skill rows after `/new` or `/resume`; the session-scoped `skills/list` rows now reset to the boot snapshot.
+- **`/flush` during a running turn** — the notice no longer promises delivery; it says the queued prompts wait for that turn to finish, matching the pause-on-failure behavior.
+
+### Known Issues
+
+- Engine paint defects remain: streaming diff-paint row loss, and wide-glyph loss under translucent overlays (upstream).
+- Skills before the first message are the boot-time disk snapshot; plugin-provided skills appear only after the refresh.
+- `permission.defaultPreset` choices depend on the host catalog schema; without one the row is read-only.
+- The delivery queue is in-memory only and is lost on exit.
+- CI cannot run the real-client tmux gate (no tmux/dsh on hosted runners).
+
 ## [0.9.4] - 2026-11-10
 
 ### Added
