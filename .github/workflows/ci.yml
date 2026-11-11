@@ -42,6 +42,14 @@ jobs:
       # [test] section's preload (the @opentui/solid real-runtime loader, see
       # each package's bunfig.toml) — run the suite per package, not at root.
       - run: for p in packages/*/; do (cd "$p" && bun test); done
+      # TEST TIERS (docs/testing.md): ft = real renderer + real assembly
+      # (testRender / @opentui/core/testing / `verify:` contracts), no network
+      # and no tmux. The full-suite leg above already contains these files;
+      # this step names the tier so a green run cannot hide an empty ft layer.
+      # ui/e2e are deliberately NOT CI steps (no tmux, no global dsh/profile,
+      # no provider key on hosted runners). Their absence here is not a pass —
+      # see docs/testing.md §3.
+      - run: bun run test:ft
       # ENTRY-CHAIN TYPECHECK (docs/verification-gates.md §2). This program
       # roots only the entry assembly chain (v2-entry + slash deps + the
       # deps/ctx declaration chain), NOT the package-wide budget: tui-base

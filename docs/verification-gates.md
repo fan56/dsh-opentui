@@ -164,3 +164,7 @@ node verify/agents-mount-repro.mjs
 # 等价 env 门控单测：
 cd packages/shell && DSH_AGENTS_E2E=1 bun test test/agents-mount-client.test.ts
 ```
+
+分层命令（`test:unit` / `test:ft` / `test:ui` / `test:e2e` / `test:all`）、每层的前置与
+通过标准、以及"CI 不跑 ≠ 通过"的说明见 [testing.md](./testing.md)。
+
