@@ -38,8 +38,11 @@
 #     rows are verbatim from a REAL in-container capture of the settled
 #     panel (36-row pane) — the panel TAIL, i.e. the which-key.* entries
 #     that close Definitions;
-#   - /plugins: '● name@version' rows or the 'no plugins installed' notice
-#     (a clean profile has no user plugins — both outcomes are legitimate).
+#   - /plugins: palette row + the panel title '🔌 Plugins' (+ Esc close) only.
+#     Roster rows are never pinned (row text is host/plugin-meta data) and
+#     the panel's 'no plugins installed' empty copy is unreachable in this
+#     composition (provision installs the 12-plugin default set) — that copy
+#     is ft-covered and the deep panel legs live in 71-search.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'slash commands (palette + model + unknown over the core set)'
@@ -286,15 +289,22 @@ if (( PLUGINS_GATE )); then
     '/plugins manage plugins (opens the panel)'
   send Enter
   if wait_pane '/plugins opens the manager panel' 15 '🔌 Plugins'; then
-    PANE="$(capture)"
-    if printf '%s' "$PANE" | grep -qF 'no plugins installed'; then
-      ok 'clean profile: panel empty state rendered (no user plugins installed)'
-    else
-      # The opentui profile's plugin roster is empty-by-construction (the
-      # baked @aiwayds closure was a retired plugin-face artifact) — panel
-      # OPEN is the contract here; any roster content is unexpected.
-      warn 'plugins panel opened but roster is not the expected empty state'
-    fi
+    # ROSTER-CONTENT LEG SKIPPED (explicit record, not a failed expectation):
+    # the retired "empty-by-construction" note was inverted — the client-face
+    # roster is non-empty by construction: provision installs the 12-plugin
+    # default set into the scratch profile (provision-opentui-profile.mjs
+    # [3/5], one `dsh plugin add` batch — real-capture logs confirm
+    # "installed 12") and ensure_client_profile (lib/common.sh:206-222) bakes
+    # the dispatch/jev chain on top, so the panel's 'no plugins installed'
+    # empty copy is unreachable in this composition. That copy is covered by
+    # the ft (packages/tui-base/test/commands.test.ts:455-461 "/plugins with
+    # an empty list says so"); the deep panel legs (name@version rows, state
+    # column, / filter) are asserted in 71-search from real captures. Roster
+    # row TEXT is never pinned here: it is host/plugin-meta data
+    # (meta.title ?? moduleName — remote-host-session.ts refreshPlugins) and
+    # the panel paints at most 12 rows (plugins-panel.tsx), so no specific
+    # bundle row is guaranteed visible.
+    info 'roster-content leg skipped: non-empty roster is the client-face construction (provision installs the 12-plugin set; the dispatch/jev bake adds more) — the empty-state copy is ft-covered and the deep panel legs live in 71-search'
     esc_until_gone 'plugins panel closes on Esc' '🔌 Plugins'
   fi
 else

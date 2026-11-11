@@ -80,7 +80,11 @@ describe("transcript scroll native semantics (@opentui 0.8.1 contract)", () => {
 describe("transcript scroll keys wiring", () => {
 	test("keys ride the vendored keybind config vocabulary", () => {
 		expect(TuiKeybind.defaultValue("session.page.up")).toBe("pageup,ctrl+alt+b")
-		expect(TuiKeybind.defaultValue("session.page.down")).toBe("pagedown,ctrl+alt+f")
+		// ctrl+alt+f belongs to session.searchSessions (tui-pi parity) — a former
+		// ctrl+alt+f leg here double-bound the chord and shadowed the search
+		// overlay. Pin both sides so the chord cannot be re-shadowed.
+		expect(TuiKeybind.defaultValue("session.page.down")).toBe("pagedown")
+		expect(TuiKeybind.defaultValue("session.searchSessions")).toBe("ctrl+alt+f")
 	})
 
 	test("transcript-scroll.tsx: global-mode layer, dialog-stack gate, viewport page unit", () => {

@@ -299,23 +299,47 @@ const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
     process.exit(2)
   }
   // Deterministic route: re-pin the default model selection to the mocked
-  // provider inside the SCRATCH patch (the operator's real profile may or
-  // may not carry the agent-default-model row; the host catalog default is
-  // not stable across environments and would send real requests).
+  // provider inside the SCRATCH patch. The operator's real profile may carry
+  // its own agent-default-model row pointing at a REAL provider/model (e.g.
+  // written by a model switch on the host), and the host catalog default is
+  // not stable across environments either — either state would send real
+  // requests. So this key is never trusted from the copy: EVERY
+  // agent-default-model entry is stripped first, then exactly one pinned
+  // entry is appended (provider zai-coding-cn — the provider whose baseURL
+  // the patch above points at the local mock). The gate is immune to the
+  // operator's profile state by construction and stays free of any
+  // first-vs-last duplicate-entry semantics.
   patch = withWindow
-  if (!/agent-default-model/.test(patch)) {
-    patch += [
-      '',
-      '# ui-matrix: pin the default route to the mocked provider.',
-      '- id: agent-default-model',
-      '  name: "@deepseek-ai/dsh-agent-default-model"',
-      '  config:',
-      '    provider: zai-coding-cn',
-      '    model: glm-5.3-flash',
-      '    reasoningEffort: high',
-      '',
-    ].join('\n')
+  {
+    const kept = []
+    let skipping = false
+    let blockIndent = 0
+    for (const line of patch.split('\n')) {
+      if (skipping) {
+        // Inside a stripped entry: continuation keys are deeper-indented
+        // (`name:` / `config:` / `provider:` …) and blanks go with them; a
+        // sibling `- id:` or any less-indented line ends the entry.
+        const indent = /^([ \t]*)/.exec(line)[1].length
+        if (line.trim() === '' || indent > blockIndent) continue
+        skipping = false
+      }
+      const m = /^([ \t]*)- id: agent-default-model\s*$/.exec(line)
+      if (m) { skipping = true; blockIndent = m[1].length; continue }
+      kept.push(line)
+    }
+    patch = kept.join('\n').replace(/\n*$/, '\n')
   }
+  patch += [
+    '# ui-matrix: pin the default route to the mocked provider (any',
+    '# agent-default-model row copied from the real profile was removed above).',
+    '- id: agent-default-model',
+    '  name: "@deepseek-ai/dsh-agent-default-model"',
+    '  config:',
+    '    provider: zai-coding-cn',
+    '    model: glm-5.3-flash',
+    '    reasoningEffort: high',
+    '',
+  ].join('\n')
   writeFileSync(patchPath, patch)
 }
 

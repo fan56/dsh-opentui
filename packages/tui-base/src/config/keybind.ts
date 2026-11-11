@@ -181,7 +181,10 @@ export const Definitions = {
   "variant.list": keybind("none", "List model variants"),
 
   "session.page.up": keybind("pageup,ctrl+alt+b", "Scroll messages up by one page"),
-  "session.page.down": keybind("pagedown,ctrl+alt+f", "Scroll messages down by one page"),
+  // page.down's former ctrl+alt+f leg is session.searchSessions' chord (tui-pi
+  // parity): the duplicate registration shadowed the search overlay, so the
+  // chord only ever scrolled. page.down keeps pagedown.
+  "session.page.down": keybind("pagedown", "Scroll messages down by one page"),
   "session.line.up": keybind("ctrl+alt+y", "Scroll messages up by one line"),
   "session.line.down": keybind("ctrl+alt+e", "Scroll messages down by one line"),
   "session.half.page.up": keybind("ctrl+alt+u", "Scroll messages up by half page"),

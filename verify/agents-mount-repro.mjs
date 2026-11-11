@@ -31,14 +31,15 @@
 // this script never runs `tmux kill-server`, so the user's own sessions
 // survive. The scratch host is reaped through its scratch lock file.
 
-import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
+const MOCK = join(REPO, 'e2e', 'lib', 'mock-llm.mjs')
 const PROFILE = 'opentui'
 const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
 // The composer placeholder in this view stack (the old kit IDLE string is the
@@ -61,6 +62,10 @@ const ROWS = Number(arg('rows', '34'))
 const KEEP = process.argv.includes('--keep')
 const TYPE_GAP_MS = 60
 const OUT = join(REPO, 'verify', 'agents-mount-out')
+// Offline mock LLM (same infra as ui-matrix.mjs, on its own port band so the
+// two gates can never collide): the auto-resume seed turn below submits a
+// REAL turn, so the route must stay on the machine.
+const PORT = 18900 + (process.pid % 300)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const sh = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...opts })
@@ -80,7 +85,10 @@ if (!existsSync(join(REAL_HOME, 'profiles', PROFILE))) {
   console.error(`agents-mount: profile '${PROFILE}' missing under ${REAL_HOME}`)
   process.exit(2)
 }
-if (!existsSync(LAUNCHER)) { console.error(`agents-mount: launcher missing: ${LAUNCHER}`); process.exit(2) }
+if (!existsSync(LAUNCHER) || !existsSync(MOCK)) {
+  console.error(`agents-mount: launcher or mock missing (${LAUNCHER}, ${MOCK})`)
+  process.exit(2)
+}
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 
 // --- scratch home (same isolation as e2e-sweep: real writes never land in ~/.dsh) ---
@@ -92,6 +100,51 @@ cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { 
 for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
   const from = join(REAL_HOME, rel)
   if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
+}
+// Deterministic, offline model route (same pattern as ui-matrix.mjs): the
+// scratch patch's zai-coding-cn provider points at the local mock and the
+// default route is re-pinned to it. The operator's real profile may carry its
+// own agent-default-model row pointing at a REAL provider/model, and the host
+// catalog default is not stable across environments — either state would send
+// the seed turn below to the network. So this key is never trusted from the
+// copy: EVERY agent-default-model entry is stripped first, then exactly one
+// pinned entry is appended. Immune to the operator's profile state by
+// construction.
+const profilePatchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+{
+  let patch = readFileSync(profilePatchPath, 'utf8')
+  const withUrl = patch.replace(/(\n {6}zai-coding-cn:\n)/, `$1        baseURL: http://127.0.0.1:${PORT}/v1\n`)
+  if (withUrl === patch) {
+    console.error('agents-mount: could not patch provider baseURL into the scratch profile')
+    process.exit(2)
+  }
+  const kept = []
+  let skipping = false
+  let blockIndent = 0
+  for (const line of withUrl.split('\n')) {
+    if (skipping) {
+      // Inside a stripped entry: continuation keys are deeper-indented
+      // (`name:` / `config:` / `provider:` …) and blanks go with them; a
+      // sibling `- id:` or any less-indented line ends the entry.
+      const indent = /^([ \t]*)/.exec(line)[1].length
+      if (line.trim() === '' || indent > blockIndent) continue
+      skipping = false
+    }
+    const m = /^([ \t]*)- id: agent-default-model\s*$/.exec(line)
+    if (m) { skipping = true; blockIndent = m[1].length; continue }
+    kept.push(line)
+  }
+  patch = kept.join('\n').replace(/\n*$/, '\n') + [
+    '# agents-mount: pin the default route to the mocked provider (any',
+    '# agent-default-model row copied from the real profile was removed above).',
+    '- id: agent-default-model',
+    '  name: "@deepseek-ai/dsh-agent-default-model"',
+    '  config:',
+    '    provider: zai-coding-cn',
+    '    model: glm-5.3-flash',
+    '',
+  ].join('\n')
+  writeFileSync(profilePatchPath, patch)
 }
 // Isolate the CLIENT-side skill scan too: `resolveAgentsHome` (skills-source.ts)
 // resolves explicit config > non-empty DSH_AGENTS_HOME > ~/.agents, the SAME
@@ -162,6 +215,25 @@ const reapHost = () => {
   }
   try { process.kill(lock.pid, 'SIGKILL') } catch {}
   rmSync(LOCK, { force: true })
+}
+
+let mockProc = null
+const startMock = async () => {
+  const fd = openSync(join(OUT, 'mock-llm.log'), 'w')
+  mockProc = spawn('node', [MOCK, '--port', String(PORT)], { stdio: ['ignore', fd, fd] })
+  for (let i = 0; i < 50; i++) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${PORT}/healthz`)
+      if (res.ok) return
+    } catch { /* not up yet */ }
+    await sleep(100)
+  }
+  throw new Error(`mock LLM did not answer on 127.0.0.1:${PORT}`)
+}
+const stopMock = () => {
+  if (!mockProc) return
+  try { mockProc.kill('SIGTERM') } catch {}
+  mockProc = null
 }
 
 const results = []
@@ -274,7 +346,16 @@ const snap = (name, session = SESS) => {
 const idle = (out) => out.includes(IDLE) || composerEmpty(out)
 const launch = (session, cols, rows, cwd = WS) => {
   tmux('kill-session', '-t', session)
-  const env = [`DSH_HOME=${HOME}`, `DSH_AGENTS_HOME=${AGENTS_HOME}`, 'DSH_OPENTUI_DEBUG=1']
+  const env = [
+    `DSH_HOME=${HOME}`,
+    `DSH_AGENTS_HOME=${AGENTS_HOME}`,
+    'DSH_OPENTUI_DEBUG=1',
+    // Same defensive pair as ui-matrix: a dummy key satisfies the provider's
+    // apiKeyEnv requirement, and an empty BASE_URL neutralizes any operator
+    // env override so only the scratch patch's baseURL can win.
+    'ZAI_CODING_CN_API_KEY=mock-only-key',
+    'ZAI_CODING_CN_BASE_URL=',
+  ]
   const r = tmux('new-session', '-d', '-x', String(cols), '-y', String(rows), '-s', session, '-c', cwd,
     `${env.join(' ')} ${LAUNCHER} --client 2>${join(OUT, `${session}.err.log`)}`)
   if (r.status !== 0) throw new Error('tmux boot failed: ' + r.stderr)
@@ -283,6 +364,8 @@ const killSession = (session) => tmux('kill-session', '-t', session)
 
 let crashed = null
 try {
+  await startMock()
+  console.log(`agents-mount: mock LLM on 127.0.0.1:${PORT}; scratch home ${HOME}`)
   // ---------------- 1. panel mount + keys (default geometry) ----------------
   launch(SESS, COLS, ROWS)
   const boot = await waitPane(SESS, (o) => o.includes('🧠') || idle(o), 90_000, 500)
@@ -915,6 +998,7 @@ try {
   killSession(SESS80)
   killSession(SESSGIT)
   reapHost()
+  stopMock()
   writeFileSync(join(OUT, 'summary.json'), JSON.stringify({
     cols: COLS, rows: ROWS, home: HOME, workspace: WS,
     fallbackSeen: results.some((r) => r.detail.some((d) => String(d).includes(FALLBACK))),

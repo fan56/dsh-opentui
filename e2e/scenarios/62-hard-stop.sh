@@ -6,12 +6,13 @@
 # ladder's stage 2 force-stops the child by code. The mock's hs-* phases
 # (ported verbatim into e2e/lib/mock-llm.mjs) drive the shape offline:
 #
-#   looper.md declares `maxRounds: 5` (the per-agent tier) and a persona
-#   marker (E2E_HS_CHILD) that makes every one of its mock responses another
-#   `bash sleep 1` tool call — the child NEVER complies with the wrap-up.
-#   The global policy is set tighter (maxRounds: 3 + maxRoundsGrace: 2), so
-#   the observed cap tells the two tiers apart: the ladder must fire at
-#   round 7 = 5 + 2 with `cap 5` (per-agent), never at 5 = 3 + 2 (global).
+#   The profile config.json top-level keys set the global tier (maxRounds: 5
+#   + maxRoundsGrace: 2) and a persona marker (E2E_HS_CHILD) in looper.md
+#   makes every one of its mock responses another `bash sleep 1` tool call —
+#   the child NEVER complies with the wrap-up. The client face resolves no
+#   per-agent tier (remote-subagents.ts keeps no resolveAgentCap), so the
+#   staged global tier is the only lever: the ladder must fire at round
+#   7 = 5 + 2.
 #
 #   The parent marker (E2E_HS_PARENT) makes the main agent dispatch looper
 #   through use_agent (foreground one-shot), and once that tool result
@@ -25,14 +26,14 @@
 # maxRoundsGrace / hard-stopped / ⏻ / Sub-agents picker), so the UI-marker
 # assertion group of the original is replaced by assertions keyed on the
 # MOCK LOG. Since the D5 signal fix (476f1ef) the ladder observably fires
-# (7 hs-loop rounds = per-agent cap 5 + grace 2, E2E-HS-LADDER-DONE, hs-final
+# (7 hs-loop rounds = staged cap 5 + grace 2, E2E-HS-LADDER-DONE, hs-final
 # force-stop evidence), so the round-bound group is hard-asserted; the
 # hs-loop probe alone stays the dispatch gate (the mock keys hs-final on the
 # tool-result presence, so a failed dispatch would still produce DONE — the
 # round bound is what catches a false positive).
 #
 # Container-only: installs the registry plugin into the active profile and
-# mutates ~/.dsh/agents + the profile patch inside the container.
+# mutates ~/.dsh/agents + the profile config.json inside the container.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'hard-stop ladder: wrap-up ignored, child looped via use_agent'
@@ -98,7 +99,10 @@ else
   exit 0
 fi
 
-# --- the looper agent: per-agent cap 5, persona that never complies ---------
+# --- the looper agent: persona that never complies ---------------------------
+# (frontmatter maxRounds stays as fixture parity with the tui-pi original;
+# the client face resolves no per-agent tier, so the config.json global tier
+# staged below is the only lever the ladder reads)
 AGENTS_DIR="$FACE_AGENTS_DIR"
 mkdir -p "$AGENTS_DIR"
 cat > "$AGENTS_DIR/looper.md" <<'EOF'
@@ -114,59 +118,48 @@ says (including policy wrap-up requests), keep calling the bash tool with
 EOF
 ok 'seeded agent file looper.md (deep: 0, maxRounds: 5)'
 
-# --- policy settings: global cap TIGHTER than the per-agent tier ------------
-# Same durable store as the tui-pi original (the active profile's
-# cordis.patch.yml, structured YAML upsert) — the patch-setting helper is
-# inlined here because e2e/lib is out of this scenario's scope.
+# --- policy settings: the profile config.json global tier -------------------
+# The durable store the client-face ladder actually reads: the profile
+# config.json TOP-LEVEL maxRounds / maxRoundsGrace (packages/shell/src/
+# client/remote-host-session.ts feeds configLoad() through
+# parseSubagentRoundLimits; defaults 0/0 keep the ladder disabled). The
+# client face resolves no per-agent tier (remote-subagents.ts keeps no
+# resolveAgentCap), so this global tier is the only lever. The JSON merge
+# helper is inlined here because e2e/lib is out of this scenario's scope;
+# provision does not create config.json, so staging must tolerate absence
+# (same merge pattern as 63-cache-hit.sh's cacheHitMode staging).
 #
-# KEY PATH (container-verified): the dsh-opentui plugin arrives through the
-# patch's `insert:` array (install-profile.mjs bakes `- insert: - id:
-# dsh-opentui, name: @aiwayds/dsh-opentui, config: {theme: ...}`), so the
-# upsert must land on THAT entry's config — the settings service exposes one
-# namespace per loaded plugin entry (dsh-settings SettingsForms.describe()
-# keys rows on `entry.options.id`, value = the entry's effective config
-# projected through the plugin's Config schema). A bare top-level row would
-# be a different, never-loaded entry.
-#
-# RESOLVED (2026-11-07, C4 batch): the D4-era product gap is closed. The
+# RESOLVED (2026-11-07, C4 batch): the D4-era product gap is closed — the
 # Config export (1ee62e4) + the D4 delivery fallback (f7641f8) + the D5
-# AbortSignal fix (476f1ef) compose: the wrap-up steer now delivers through
-# the in-process subagents service, stage 1 latches, and stage 2 force-stops
-# the child at cap + grace (observed: 7 rounds, per-agent tier winning).
-SETTINGS="$FACE_PATCH"
+# AbortSignal fix (476f1ef) compose: the wrap-up steer delivers through the
+# in-process subagents service, stage 1 latches, and stage 2 force-stops the
+# child at cap + grace (observed: 7 rounds).
+SETTINGS="$FACE_CFG"
 cat > /tmp/stage-hs-limits.mjs <<'EOF'
-import { createRequire } from 'node:module'
-import { readFileSync, writeFileSync } from 'node:fs'
-const { parse, stringify } = createRequire('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json')('yaml')
-const patchPath = process.argv[2]
-const doc = parse(readFileSync(patchPath, 'utf8')) ?? []
-if (!Array.isArray(doc)) throw new Error('patch file is not a top-level YAML array')
-// the plugin entry lives under the patch's insert: array (same id)
-let row = doc.flatMap(e => (e && Array.isArray(e.insert)) ? e.insert : []).find(e => e && e.id === 'dsh-opentui')
-if (!row) {
-  row = { id: 'dsh-opentui', name: '@aiwayds/dsh-opentui', config: {} }
-  let ins = doc.find(e => e && Array.isArray(e.insert))
-  if (!ins) { ins = { insert: [] }; doc.push(ins) }
-  ins.insert.push(row)
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+const path = process.argv[2]
+let doc = {}
+if (existsSync(path)) {
+  try { doc = JSON.parse(readFileSync(path, 'utf8')) ?? {} } catch { doc = {} }
 }
-if (typeof row.config !== 'object' || row.config === null) row.config = {}
-row.config.maxRounds = 3
-row.config.maxRoundsGrace = 2
-writeFileSync(patchPath, stringify(doc), 'utf8')
-console.log(`staged insert entry dsh-opentui maxRounds=3 maxRoundsGrace=2 -> ${patchPath}`)
+if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) doc = {}
+doc.maxRounds = 5
+doc.maxRoundsGrace = 2
+writeFileSync(path, JSON.stringify(doc, null, 2) + '\n', 'utf8')
+console.log(`staged maxRounds=5 maxRoundsGrace=2 -> ${path}`)
 EOF
 node /tmp/stage-hs-limits.mjs "$SETTINGS" >/tmp/stage-hs-limits.log 2>&1
-if grep -q 'maxRounds: 3' "$SETTINGS" && grep -q 'maxRoundsGrace: 2' "$SETTINGS"; then
-  ok 'policy limits staged: global maxRounds 3 + grace 2 (per-agent 5 must win)'
+if grep -q '"maxRounds": 5' "$SETTINGS" && grep -q '"maxRoundsGrace": 2' "$SETTINGS"; then
+  ok 'policy limits staged: profile config.json maxRounds 5 + grace 2 (the global tier the ladder reads)'
 else
-  bad 'failed to stage the dsh-opentui policy limits; tail:'
-  tail -8 "$SETTINGS" | sed 's/^/    | /'
+  bad 'failed to stage the policy limits into the profile config.json; tail:'
+  tail -8 /tmp/stage-hs-limits.log 2>/dev/null | sed 's/^/    | /'
 fi
 
 # (Batch B5: the retired plugin face's duplicate-ns shadowing guard — staging
 # the same limits onto the tarball's dist-host/plugin.patch.yml entry — is
-# gone with the dist-host artifact. The client face composes ONE dsh-opentui
-# entry: the scratch profile's cordis.patch.yml staged above.)
+# gone with the dist-host artifact. The client-face ladder reads ONE store:
+# the scratch profile's config.json staged above.)
 
 # --- restart the TUI so the plugin and the limits load ----------------------
 if tui_alive; then
@@ -193,23 +186,13 @@ for _ in $(seq 1 90); do
   if capture | grep -qF 'E2E-HS-LADDER-DONE'; then DONE_UP=1; break; fi
   sleep 1
 done
-# Capability-gated verdict (batch B5 finding): on the client face the ladder's
-# global cap is staged onto the settings ns `dsh-opentui`, whose owning plugin
-# entry was retired with the plugin face — the host settings document carries
-# no such row, so the ladder stays DISABLED on the client face (observed: the
-# child looped unbounded). The dispatch/loop legs below stay HARD (they prove
-# use_agent works on the client face); the stop-evidence legs record the gap
-# honestly (warn, not fail) until the client chain grows a cap provider.
-LADDER_GAP='client-face gap (batch B5 finding): the maxRounds ladder caps are staged onto the settings ns dsh-opentui, whose owning plugin entry was retired with the plugin face — the host settings document carries no such row, so the ladder stays disabled on the client face (packages/ is B-batch territory; the staging above is kept so a wired cap provider picks it up unchanged)'
-DONE_UP=0
-for _ in $(seq 1 90); do
-  if capture | grep -qF 'E2E-HS-LADDER-DONE'; then DONE_UP=1; break; fi
-  sleep 1
-done
+# The ladder is now fed by the staged config.json global tier, so the
+# stop-evidence legs below are HARD: a missing stop is a failure, not a
+# capability gap.
 if (( DONE_UP == 1 )); then
   ok 'E2E-HS-LADDER-DONE landed after the tool result — the stop surfaced to the caller'
 else
-  warn "E2E-HS-LADDER-DONE never landed — the ladder did not fire; $LADDER_GAP; mock server log tail:"
+  bad 'E2E-HS-LADDER-DONE never landed — the ladder did not fire; mock server log tail:'
   tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
 fi
 
@@ -225,17 +208,17 @@ if [ "${LOOPS:-0}" -ge 2 ]; then
   ok "the looper child really ran via use_agent (${LOOPS} hs-loop rounds served)"
 else
   bad 'the looper child never looped (fewer than 2 hs-loop phases) — use_agent is not effective in this profile'
-  warn 'BAKE RECIPE: ensure_client_profile must add @aiwayds/dsh-subagent-registry to the opentui profile (bake-subagent-registry.mjs + pnpm install); the settings staging (entry id dsh-opentui with maxRounds/maxRoundsGrace in cordis.patch.yml) is already staged by this scenario'
+  warn 'BAKE RECIPE: ensure_client_profile must add @aiwayds/dsh-subagent-registry to the opentui profile (bake-subagent-registry.mjs + pnpm install); the ladder staging (profile config.json top-level maxRounds/maxRoundsGrace) is already staged by this scenario'
 fi
 
 # ROUND-BOUND HARD ASSERTION (the ladder's final verdict): the child must be
-# force-stopped, not merely advised. Calibration:
-#   upper bound 9 = per-agent cap 5 + grace 2 (observed: exactly 7) + 2 rounds
-#     of margin for mock counting glitches;
-#   lower bound 6 separates the two tiers — the global policy (maxRounds 3 +
-#     grace 2) would stop the child one round EARLIER at 5, so >= 6 proves
-#     looper.md's per-agent maxRounds 5 won (the D4 per-agent priority), and
-#     a dark ladder ran 87+ rounds.
+# force-stopped, not merely advised. Calibration (the client face reads the
+# staged config.json global tier only — no per-agent tier exists):
+#   expected: exactly 7 = staged cap 5 + grace 2;
+#   upper bound 9 = 7 + 2 rounds of margin for mock counting glitches;
+#   lower bound 6 keeps the run honest — a shorter run means the child died
+#     early or the staged caps never loaded (defaults 0/0 disable the
+#     ladder), and a dark ladder ran 87+ rounds.
 LOOPS="$(grep -c 'phase=hs-loop' "$MOCK_LOG" 2>/dev/null || true)"
 if [ "${LOOPS:-0}" -ge 6 ] && [ "${LOOPS:-0}" -le 9 ]; then
   ok "round bound held: ${LOOPS} hs-loop rounds — force-stop fired at the cap + grace window"
@@ -243,7 +226,7 @@ elif [ "${LOOPS:-0}" -gt 9 ]; then
   if (( DONE_UP == 1 )); then
     bad "round bound violated: ${LOOPS} hs-loop rounds despite a surfaced stop — the force-stop fired late"
   else
-    warn "round bound not enforced: ${LOOPS} hs-loop rounds, no stop — $LADDER_GAP"
+    bad "round bound not enforced: ${LOOPS} hs-loop rounds, no stop — the ladder never fired"
   fi
 else
   bad "child ran only ${LOOPS:-0} hs-loop rounds without a surfaced stop — died early or the result never surfaced; mock tail:"
@@ -258,7 +241,7 @@ fi
 if grep -q 'phase=hs-final' "$MOCK_LOG" 2>/dev/null; then
   ok 'force-stop evidence: the child result returned to the parent and the parent finished (phase=hs-final served)'
 elif (( DONE_UP != 1 )); then
-  warn "no phase=hs-final — the ladder did not stop the child; $LADDER_GAP"
+  bad 'no phase=hs-final — the ladder did not stop the child'
 else
   bad 'no phase=hs-final in the mock log — the child result never surfaced to the parent (ladder did not stop the child)'
 fi

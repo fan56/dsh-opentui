@@ -70,13 +70,14 @@
 #      (verified against lib/rubric.js findKeyword). Turn two now carries
 #      "check", a listed keyword.
 #
-# Container-only: mutates ~/.dsh/agents + the profile patch.
+# Container-only: mutates ~/.dsh/agents + the profile config.json (the
+# maxRounds staging); the patch layer is only written by the common.sh bake.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'jev attention: spin-detected early hard stop (mock-jev verdict trail)'
 
 if [ ! -d /e2e/scenarios ]; then
-  warn 'host environment detected — skipping (mutates ~/.dsh/agents and the profile patch; container only)'
+  warn 'host environment detected — skipping (mutates ~/.dsh/agents and the profile config.json; container only)'
   summary
   exit 0
 fi
@@ -271,36 +272,35 @@ EOF
   ok 'seeded agent file looper.md (deep: 0, maxRounds: 60)'
 
   # Policy settings: cap 60 + grace 7 (classic stop would be round 67).
-  SETTINGS="$FACE_PATCH"
+  # Staged onto the profile config.json TOP LEVEL (FACE_CFG): the client-face
+  # round policy reads maxRounds/maxRoundsGrace from the config store
+  # (packages/shell/src/client/remote-host-session.ts via subagent-policy.ts;
+  # default 0/0 == ladder disabled), NOT the settings ns `dsh-opentui` — its
+  # owning plugin entry was retired with the plugin face, so staging there
+  # would arm nothing.
+  SETTINGS="$FACE_CFG"
   cat > /tmp/stage-ja-limits.mjs <<'EOF'
-import { createRequire } from 'node:module'
-import { readFileSync, writeFileSync } from 'node:fs'
-const { parse, stringify } = createRequire('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json')('yaml')
-const patchPath = process.argv[2]
-const doc = parse(readFileSync(patchPath, 'utf8')) ?? []
-if (!Array.isArray(doc)) throw new Error('patch file is not a top-level YAML array')
-let row = doc.flatMap(e => (e && Array.isArray(e.insert)) ? e.insert : []).find(e => e && e.id === 'dsh-opentui')
-if (!row) {
-  row = { id: 'dsh-opentui', name: '@aiwayds/dsh-opentui', config: {} }
-  let ins = doc.find(e => e && Array.isArray(e.insert))
-  if (!ins) { ins = { insert: [] }; doc.push(ins) }
-  ins.insert.push(row)
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+const path = process.argv[2]
+let doc = {}
+if (existsSync(path)) {
+  try { doc = JSON.parse(readFileSync(path, 'utf8')) ?? {} } catch { doc = {} }
 }
-if (typeof row.config !== 'object' || row.config === null) row.config = {}
-row.config.maxRounds = 60
-row.config.maxRoundsGrace = 7
-writeFileSync(patchPath, stringify(doc), 'utf8')
-console.log(`staged insert entry dsh-opentui maxRounds=60 maxRoundsGrace=7 -> ${patchPath}`)
+if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) doc = {}
+doc.maxRounds = 60
+doc.maxRoundsGrace = 7
+writeFileSync(path, JSON.stringify(doc, null, 2) + '\n', 'utf8')
+console.log(`staged maxRounds=60 maxRoundsGrace=7 -> ${path}`)
 EOF
   node /tmp/stage-ja-limits.mjs "$SETTINGS" >/tmp/stage-ja-limits.log 2>&1
   # (Batch B5: the retired plugin face's duplicate-ns shadowing guard —
   # staging the same limits onto the dist-host plugin.patch.yml — is gone
-  # with the dist-host artifact; the client face composes ONE dsh-opentui
-  # entry, the scratch profile's cordis.patch.yml staged above.)
-  if grep -q 'maxRounds: 60' "$SETTINGS" && grep -q 'maxRoundsGrace: 7' "$SETTINGS"; then
-    ok 'policy limits staged: maxRounds 60 + grace 7 (classic stop would be round 67)'
+  # with the dist-host artifact; the client face reads ONE source, the
+  # profile config.json top level staged above.)
+  if grep -q '"maxRounds": 60' "$SETTINGS" && grep -q '"maxRoundsGrace": 7' "$SETTINGS"; then
+    ok 'policy limits staged: config.json maxRounds 60 + grace 7 (classic stop would be round 67)'
   else
-    bad 'failed to stage the dsh-opentui policy limits; tail:'
+    bad 'failed to stage the config.json policy limits; tail:'
     tail -6 /tmp/stage-ja-limits.log 2>/dev/null | sed 's/^/    | /'
   fi
 
@@ -326,12 +326,14 @@ EOF
   if (( DONE_UP == 1 )); then
     ok 'G2: E2E-HS-LADDER-DONE landed — the stop surfaced to the caller'
   else
-    # Capability-gated (batch B5 finding): the spin early stop rides the same
-    # maxRounds ladder whose caps are staged onto the settings ns
-    # `dsh-opentui` — the owning plugin entry was retired with the plugin
-    # face, so the ladder stays disabled on the client face (packages/ is
-    # B-batch territory). G1's jev dispatch trail above remains the verdict.
-    warn 'G2: E2E-HS-LADDER-DONE never landed — the early stop did not fire; client-face gap: the maxRounds ladder caps are staged onto the settings ns dsh-opentui, whose owning plugin entry was retired with the plugin face, so the ladder stays disabled on the client face; mock tails:'
+    # No client-face gap remains: the caps are staged onto the profile
+    # config.json top level, which the client-face round policy reads
+    # (remote-host-session.ts), and this block only runs gate-lit (the spin
+    # feed construction exists in packages/shell/src). A missing stop is a
+    # product failure — hard per the header contract ("gate lit -> G2/G3 are
+    # hard-asserted"). G1's jev dispatch trail above remains the consumption
+    # verdict; this is the enforcement verdict.
+    bad 'G2: E2E-HS-LADDER-DONE never landed — the early stop did not fire although the config.json ladder caps (60 + grace 7) are live; mock tails:'
     tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
   fi
 
@@ -361,7 +363,10 @@ EOF
     if (( DONE_UP == 1 )); then
       bad "G2: round bound violated — ${LOOPS} hs-loop rounds despite a surfaced stop"
     else
-      warn "G2: round bound not enforced — ${LOOPS} hs-loop rounds; client-face gap: the maxRounds ladder stays disabled on the client face (settings ns dsh-opentui retired with the plugin face)"
+      # Same no-gap reasoning as the DONE leg above: the config.json caps are
+      # live, so blowing past 60 with no surfaced stop is a genuine cap
+      # failure, hard per the header contract.
+      bad "G2: round bound violated — ${LOOPS} hs-loop rounds with no surfaced stop; the config.json ladder caps (60 + grace 7) are live, so the cap did not hold"
     fi
   else
     bad "G2: the looper child never looped (${LOOPS:-0} hs-loop rounds) — the dispatch itself failed"

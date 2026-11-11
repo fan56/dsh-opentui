@@ -129,23 +129,16 @@ else
   ok 'second Esc closes the plugins manager'
 fi
 
-# --- the chord: ctrl+alt+f (BINDING CONFLICT — recorded, not asserted) ----------
-# keybind.ts registers ctrl+alt+f TWICE: `session.searchSessions` (this
-# overlay) and `session.page.down` ("pagedown,ctrl+alt+f"). The scroll action
-# wins, so the overlay is unreachable through the chord on this build — a
-# product keymap conflict, not a stale expectation. The surface is covered
-# below through /search (and the transcript find bar's own ctrl+shift+f chord
-# in 22-search). Drop this skip when the conflict is resolved.
+# --- the chord: ctrl+alt+f -------------------------------------------------------
+# ctrl+alt+f is `session.searchSessions`' chord (tui-pi keymap.ts sessionSearch
+# parity). `session.page.down` carries pagedown only: its former ctrl+alt+f leg
+# double-bound the chord and shadowed this overlay (fixed in keybind.ts — the
+# previous skip branch here recorded that conflict).
 ensure_editor_ready 'editor clean before the chord check' || true
-if grep -qF '"session.searchSessions": keybind("ctrl+alt+f"' /src/packages/tui-base/src/config/keybind.ts 2>/dev/null \
-  && grep -qF '"session.page.down": keybind("pagedown,ctrl+alt+f"' /src/packages/tui-base/src/config/keybind.ts 2>/dev/null; then
-  warn 'ctrl+alt+f is bound to BOTH session.searchSessions and session.page.down (keybind.ts conflict) — the scroll action wins; the chord leg is skipped, /search covers the surface'
-else
-  send C-M-f
-  wait_pane 'ctrl+alt+f opens the search overlay' 15 'Search sessions'
-  send Escape
-  sleep 1
-fi
+send C-M-f
+wait_pane 'ctrl+alt+f opens the search overlay' 15 'Search sessions'
+send Escape
+sleep 1
 
 # --- /search: full-text over the stored corpus ------------------------------------
 ensure_editor_ready 'editor clean before the search' || true

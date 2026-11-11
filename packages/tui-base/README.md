@@ -273,8 +273,8 @@ Overrides pass through `SessionComposer`'s `keybinds` prop. Tests:
 | esc / ctrl+c (close top dialog)                 | DialogProvider modal layer | `ui/dialog.tsx` `bind: "escape"` / `"ctrl+c"`         | no (hardcoded in the vendored app too) |
 | enter / esc / ← → (approval card)               | `ui/dialog-confirm`       | `Keymap.createLayer` binds in the vendored component  | no (hardcoded in the vendored app too) |
 | ↑↓ / enter / pgup/pgdn / home/end (ask picker)  | `ui/dialog-select`        | vendored component (`dialog.select.*` in config)      | through the vendored Keymap layer, per `dialog.select.*` |
-| pgup / pagedown (transcript page, batch 10f)    | transcript scrollbox      | `session.page.up` / `session.page.down` (`pageup,ctrl+alt+b` / `pagedown,ctrl+alt+f`) → `TranscriptScrollKeys` global Keymap layer | yes (config `session.page.*`) |
-| ctrl+alt+b / ctrl+alt+f (transcript page)       | transcript scrollbox      | same ids, second chord in the defaults                 | yes (config `session.page.*`)         |
+| pgup / pagedown (transcript page, batch 10f)    | transcript scrollbox      | `session.page.up` / `session.page.down` (`pageup,ctrl+alt+b` / `pagedown`) → `TranscriptScrollKeys` global Keymap layer | yes (config `session.page.*`) |
+| ctrl+alt+b (transcript page up)                 | transcript scrollbox      | `session.page.up`, second chord in the defaults (page.down's former ctrl+alt+f leg was removed — the chord belongs to `session.searchSessions`) | yes (config `session.page.*`)         |
 | ctrl+c (exit example)                           | renderer                  | `render(..., { exitOnCtrlC: true })`                  | no                                   |
 
 Batch 10f transcript scrollback: `routes/session/transcript-scroll.tsx`

@@ -119,42 +119,38 @@ EOF
 ok 'seeded agent file looper.md (deep: 0, no maxRounds — the child stays live)'
 
 # --- policy isolation: DISABLE the global ladder for this scenario ----------
-# Scenario isolation (D7): 62-hard-stop.sh stages `maxRounds: 3` onto the
-# dsh-opentui entry of the PERSISTENT profile patch (cordis.patch.yml), and
-# that staging survives across scenarios — with it live, the global ladder
-# force-stops the looper child at ~3 rounds (~9-10s), long before the steer
-# can be injected. This scenario needs a LIVE child, so it upserts
-# maxRounds 0 / maxRoundsGrace 0 onto that entry: a non-positive global cap
-# disables the whole ladder (subagent-policy.ts #resolveCaps returns
-# undefined → ladderDecision never consulted).
-SETTINGS="$FACE_PATCH"
+# Scenario isolation (D7): 62-hard-stop.sh stages `maxRounds: 5 /
+# maxRoundsGrace: 2` as TOP-LEVEL keys of the scratch profile's config.json —
+# the live round-limits read (remote-host-session.ts parseSubagentRoundLimits
+# (this.configLoad()); the old cordis.patch.yml dsh-opentui entry is a dead
+# target) — and that staging survives across scenarios (run-all.sh shares
+# /tmp/client-dsh). With it live, the global ladder force-stops the looper
+# child at round 7 (5 + 2 grace), long before the steer can be injected. This
+# scenario needs a LIVE child, so it upserts maxRounds 0 / maxRoundsGrace 0
+# into that same config.json: a non-positive global cap disables the whole
+# ladder (subagent-policy.ts #resolveCaps returns undefined →
+# ladderDecision never consulted).
+SETTINGS="$FACE_CFG"
 cat > /tmp/stage-steer-isolation.mjs <<'EOF'
-import { createRequire } from 'node:module'
-import { readFileSync, writeFileSync } from 'node:fs'
-const { parse, stringify } = createRequire('/usr/local/lib/node_modules/@deepseek-ai/dsh/package.json')('yaml')
-const patchPath = process.argv[2]
-const doc = parse(readFileSync(patchPath, 'utf8')) ?? []
-if (!Array.isArray(doc)) throw new Error('patch file is not a top-level YAML array')
-let row = doc.flatMap(e => (e && Array.isArray(e.insert)) ? e.insert : []).find(e => e && e.id === 'dsh-opentui')
-if (!row) {
-  row = { id: 'dsh-opentui', name: '@aiwayds/dsh-opentui', config: {} }
-  let ins = doc.find(e => e && Array.isArray(e.insert))
-  if (!ins) { ins = { insert: [] }; doc.push(ins) }
-  ins.insert.push(row)
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+const path = process.argv[2]
+let doc = {}
+if (existsSync(path)) {
+  try { doc = JSON.parse(readFileSync(path, 'utf8')) ?? {} } catch { doc = {} }
 }
-if (typeof row.config !== 'object' || row.config === null) row.config = {}
-row.config.maxRounds = 0
-row.config.maxRoundsGrace = 0
-writeFileSync(patchPath, stringify(doc), 'utf8')
-console.log(`staged insert entry dsh-opentui maxRounds=0 maxRoundsGrace=0 -> ${patchPath}`)
+if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) doc = {}
+doc.maxRounds = 0
+doc.maxRoundsGrace = 0
+writeFileSync(path, JSON.stringify(doc, null, 2) + '\n', 'utf8')
+console.log(`staged maxRounds=0 maxRoundsGrace=0 -> ${path}`)
 EOF
 node /tmp/stage-steer-isolation.mjs "$SETTINGS" >/tmp/stage-steer-isolation.log 2>&1
 # (Batch B5: the retired plugin face's second staging target — the dist-host
 # plugin.patch.yml — is gone with the dist-host artifact; the client face
-# composes ONE dsh-opentui entry, the scratch profile's cordis.patch.yml
-# staged above.)
-if grep -q 'maxRounds: 0' "$SETTINGS"; then
-  ok 'policy ladder disabled for this scenario (maxRounds 0 staged — 62 seeding isolated)'
+# reads ONE round-limits source, the scratch profile's config.json top-level
+# keys staged above.)
+if grep -q '"maxRounds": 0' "$SETTINGS"; then
+  ok 'policy ladder disabled for this scenario ("maxRounds": 0 staged into config.json — 62 seeding isolated)'
 else
   bad 'failed to stage the maxRounds 0 isolation; tail:'
   tail -8 "$SETTINGS" 2>/dev/null | sed 's/^/    | /'
