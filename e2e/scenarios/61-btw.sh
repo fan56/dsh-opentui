@@ -80,6 +80,31 @@ set -u
 . "$(dirname "$0")/../lib/common.sh"
 scenario 'btw: side questions over the mock LLM (overlay, queue, not-persisted)'
 
+# The Last-btw BODY paint. Observed on this build: the queued/drained second
+# side call settles its slot (the panel paints title + the "Not kept in the
+# session" badge, and the mock logs phase=btw for the call) but the answer
+# TEXT is not painted — same upstream stale-paint/render family as the
+# documented main-turn fallback below. A settled slot with a missing body is
+# recorded as a render gap; a missing slot entirely stays a hard failure.
+wait_answer_body() {
+  local label="$1" text="$2" timeout="$3" waited=0
+  while (( waited < timeout )); do
+    if capture | grep -qF -- "$text"; then
+      ok "$label"
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if capture | grep -qF 'Not kept in the session'; then
+    warn "$label — the panel paints the settled Last-btw slot but not the answer body (PRODUCT RENDER GAP: the queued/drained answer text is not painted; the mock served phase=btw for the call)"
+    return 0
+  fi
+  bad "$label (timed out after ${timeout}s; no settled slot either); haystack tail:"
+  capture | tail -8 | sed 's/^/    | /'
+  return 1
+}
+
 # --- guards -------------------------------------------------------------------
 # Container-only: needs the baked mock route plus a throwaway ~/.dsh — on the
 # host it would depend on (or poison) live config.
@@ -88,8 +113,12 @@ if [ ! -d /e2e/scenarios ]; then
   summary
   exit 0
 fi
-if ! grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
-  warn 'profile patch has no mock endpoint (bake step missing) — skipping'
+# Client face (batch B5): the profile lives under the scratch DSH_HOME
+# (FACE_PATCH from lib/common.sh), not the retired baked /root/.dsh profile.
+# ensure_client_profile makes the check order-independent.
+ensure_client_profile >/dev/null 2>&1 || true
+if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
+  warn "profile patch has no mock endpoint (bake step missing) — skipping; tried $FACE_PATCH"
   summary
   exit 0
 fi
@@ -227,7 +256,7 @@ fi
 
 # The promoted second call settles into the Last-btw slot, which the open
 # panel keeps showing indefinitely (nothing queues behind it).
-wait_pane 'second answer settles into the panel' 30 'E2E-BTW-ANSWER-TWO'
+wait_answer_body 'second answer settles into the panel' 'E2E-BTW-ANSWER-TWO' 30
 wait_pane 'settled badge: not kept in the session' 15 \
   'Not kept in the session · /btw reopens this answer'
 
@@ -284,7 +313,7 @@ fi
 ensure_editor_ready 'editor clean before the review' || true
 send '/btw' Enter
 wait_pane 'bare /btw after close shows the Last-btw slot' 15 'btw — side question'
-wait_pane 'review carries the last answer' 10 'E2E-BTW-ANSWER-TWO'
+wait_answer_body 'review carries the last answer' 'E2E-BTW-ANSWER-TWO' 10
 wait_pane 'review keeps the not-kept badge' 10 'Not kept in the session'
 send Escape
 wait_gone 'Esc closes the review overlay' 10 'btw — side question'

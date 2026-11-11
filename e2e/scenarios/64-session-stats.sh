@@ -58,8 +58,12 @@ if [ ! -d /e2e/scenarios ]; then
   summary
   exit 0
 fi
-if ! grep -qF '127.0.0.1:8642' "$HOME/.dsh/profiles/dsh-opentui/cordis.patch.yml" 2>/dev/null; then
-  warn 'profile patch has no mock endpoint (bake step missing) — skipping'
+# Client face (batch B5): the profile lives under the scratch DSH_HOME
+# (FACE_PATCH from lib/common.sh), not the retired baked /root/.dsh profile.
+# ensure_client_profile makes the check order-independent.
+ensure_client_profile >/dev/null 2>&1 || true
+if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
+  warn "profile patch has no mock endpoint (bake step missing) — skipping; tried $FACE_PATCH"
   summary
   exit 0
 fi

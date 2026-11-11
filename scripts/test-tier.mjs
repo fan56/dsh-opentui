@@ -30,6 +30,14 @@ const BUN = process.env.BUN || "bun"
 // with the flag set, where a missing prerequisite becomes a failure.
 const LIVE_TESTS = new Set(["agents-mount-client.test.ts", "remote-live-smoke.test.ts"])
 
+// The live (real model / real provider key) e2e legs are OPT-IN: the default
+// `bun run test:e2e` is deterministic and key-free (the local e2e-flows fake
+// model + the container suite's mock model). An invalid, expired or
+// rate-limited provider key must not turn the whole tier red for a reason
+// that is not a product regression. DSH_E2E_LIVE=1 includes the real-model
+// legs, where they hard-fail.
+const LIVE_ENABLED = process.env.DSH_E2E_LIVE === "1"
+
 const FT_NAME = /-ft\.test\.tsx?$/
 const FT_MARKERS = ["@opentui/core/testing", "testRender(", "createTestRenderer("]
 
@@ -134,10 +142,10 @@ const envMissing = (kind) => {
 		missing.push(
 			`${relative(ROOT, SHELL_SDK)} missing (needs a global dsh install or the CI stub; the client cannot boot without it)`,
 		)
-	if (kind === "e2e" && process.env.DSH_E2E_LIVE !== "0" && !existsSync(join(REAL_HOME, ".credentials.yaml")))
-		missing.push(`no provider credentials at ${join(REAL_HOME, ".credentials.yaml")} (live e2e needs a real model turn)`)
+	if (kind === "e2e" && LIVE_ENABLED && !existsSync(join(REAL_HOME, ".credentials.yaml")))
+		missing.push(`no provider credentials at ${join(REAL_HOME, ".credentials.yaml")} (DSH_E2E_LIVE=1 needs a real model turn)`)
 	if (kind === "e2e" && process.env.DSH_E2E_PODMAN !== "0" && !commandExists("podman"))
-		missing.push("podman not on PATH (the container e2e suite; set DSH_E2E_PODMAN=0 to run only the local legs)")
+		missing.push("podman not on PATH (the container e2e suite; set DSH_E2E_PODMAN=0 to run only the local legs — that is a partial result, exit 2)")
 	if (!commandExists("bash") && kind === "e2e") missing.push("bash not on PATH (the container e2e driver is a bash script)")
 	return missing
 }
@@ -162,18 +170,17 @@ const runUi = () => {
 
 const runE2e = () => {
 	requireEnv("e2e")
-	const live = process.env.DSH_E2E_LIVE !== "0"
 	const podman = process.env.DSH_E2E_PODMAN !== "0"
-	if (!live && !podman) {
-		console.error(
-			"\ntest:e2e: both legs are disabled (DSH_E2E_LIVE=0 and DSH_E2E_PODMAN=0) — NOT RUN (this is not a pass)",
-		)
-		return 2
-	}
 	let failed = 0
-	const skipped = []
-	if (live) {
-		banner("test:e2e — real host + real model")
+
+	// Default leg: local flows — real client + real resident host + a local
+	// fake model in a per-scenario scratch DSH_HOME. No provider key, no
+	// network, so it is the deterministic e2e baseline for every default run.
+	banner("test:e2e — local flows (real client + real host + local fake model)")
+	failed = run(NODE, ["verify/e2e-flows/run-flows.mjs"], { cwd: ROOT }) || failed
+
+	if (LIVE_ENABLED) {
+		banner("test:e2e — live real model (opt-in: DSH_E2E_LIVE=1)")
 		failed =
 			run(BUN, ["test", "test/remote-live-smoke.test.ts"], {
 				cwd: join(ROOT, "packages/shell"),
@@ -182,22 +189,24 @@ const runE2e = () => {
 		failed = run(NODE, ["verify/steer-queue-repro.mjs"], { cwd: ROOT }) || failed
 		failed = run(NODE, ["verify/queue-flush-repro.mjs"], { cwd: ROOT }) || failed
 	} else {
-		skipped.push("live real-model legs (DSH_E2E_LIVE=0)")
-		console.log("\nLIVE real-model legs SKIPPED by DSH_E2E_LIVE=0 — explicitly NOT RUN, not counted as passed")
+		banner("test:e2e — live real model: SKIPPED (opt-in)")
+		console.log("SKIP live real-model legs — explicitly NOT RUN, not counted as passed:")
+		console.log("  - packages/shell/test/remote-live-smoke.test.ts (host lifecycle, model catalog, real turns)")
+		console.log("  - verify/steer-queue-repro.mjs (busy Enter steer/queue + abort)")
+		console.log("  - verify/queue-flush-repro.mjs (/flush delivery order)")
+		console.log("  reason: opt-in via DSH_E2E_LIVE=1 (needs a valid provider key; the default run stays deterministic)")
 	}
+
 	if (podman) {
 		banner("test:e2e — container suite (real client + scratch DSH_HOME + mock model)")
 		failed = run("bash", ["e2e/run-e2e.sh"], { cwd: ROOT, env: { ...process.env, E2E_FACE: "client" } }) || failed
 	} else {
-		skipped.push("container suite (DSH_E2E_PODMAN=0)")
-		console.log("\nCONTAINER e2e suite SKIPPED by DSH_E2E_PODMAN=0 — explicitly NOT RUN, not counted as passed")
-	}
-	if (failed) return failed
-	if (skipped.length > 0) {
-		console.error(`\ntest:e2e: PARTIAL — not a full e2e result; explicitly skipped: ${skipped.join(", ")}`)
+		console.error(
+			"\ntest:e2e: container suite disabled by DSH_E2E_PODMAN=0 — NOT RUN (this is not a pass; the container suite is the mock-model baseline)",
+		)
 		return 2
 	}
-	return 0
+	return failed
 }
 
 const printMatrix = () => {
@@ -207,7 +216,7 @@ const printMatrix = () => {
 			name === "ui"
 				? ["verify/ui-matrix.mjs", "verify/agents-mount-repro.mjs"]
 				: name === "e2e"
-					? [...tiers.e2e, "verify/steer-queue-repro.mjs", "verify/queue-flush-repro.mjs", "e2e/run-e2e.sh"]
+					? ["verify/e2e-flows/run-flows.mjs", ...tiers.e2e, "verify/steer-queue-repro.mjs", "verify/queue-flush-repro.mjs", "e2e/run-e2e.sh"]
 					: tiers[name]
 		console.log(`\n# ${name} (${files.length})`)
 		for (const file of files.sort()) console.log(`  ${relative(ROOT, file)}`)

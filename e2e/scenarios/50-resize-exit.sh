@@ -62,11 +62,13 @@ assert_contains 'powerline still rendered at 80x24 (emoji model segment)' \
 
 # --- overlay inside the 24-row pane ---------------------------------------------
 # One '/' write from the clean state opens the palette (input law: text lands
-# as one tmux write from a closed palette).
+# as one tmux write from a closed palette). The 20-command registry clamps to
+# the 10-row window, so /quit is NOT in the visible rows at this geometry —
+# the /help row and the `… N more` overflow row are.
 send '/'
-wait_pane_fixed 'slash palette opens at 24 rows' 15 '/quit exit the app' \
-  && assert_contains 'palette lists /help at 24 rows' \
-    '/help show available commands' "$(capture)"
+wait_pane_fixed 'slash palette opens at 24 rows' 15 '/help show available commands' \
+  && assert_contains 'palette lists the clamped set at 24 rows' \
+    '… 10 more' "$(capture)"
 esc_until_placeholder 'palette closes at 24 rows, placeholder back' 15
 
 # --- restore to the tuned geometry ------------------------------------------------

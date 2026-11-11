@@ -62,13 +62,13 @@ assert_not_contains 'editor echoes typed text (/help row filtered out)' \
 # Backspaces clear the query. The palette row area paints stale until the
 # next keystroke (observed in a real capture: the /quit row stays visible
 # after the buffer is already cleared), so the proof is a trailing '/':
-# appending '/' to a cleared buffer yields the unfiltered command list
-# (first row: /help), while any leftover text would swallow the '/' into a
-# non-matching query with NO /help row.
+# appending '/' to a cleared buffer yields the unfiltered command list (the
+# /help row, or the `… N more` overflow row once usage ordering pushes /help
+# out of the 10-row window), while any leftover text would swallow the '/'
+# into a non-matching query with neither signal.
 for _ in $(seq 1 8); do send BSpace; sleep 0.3; done
 send '/'
-wait_pane_fixed 'editor cleared after backspaces (trailing / lists all commands)' 12 \
-  '/help show available commands'
+wait_palette_unfiltered 'editor cleared after backspaces (trailing / lists all commands)' 12
 
 # Escape closes the palette; the composer placeholder comes back.
 esc_until_placeholder 'palette closed, composer placeholder back' 15

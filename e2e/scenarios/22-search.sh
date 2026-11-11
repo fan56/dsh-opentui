@@ -10,7 +10,7 @@
 # feed one SeamRows store); Enter / shift+Enter walk the matches (N/M
 # counter, scrollChildIntoView jump); escape closes; reopening starts a
 # FRESH query (no stale counter). The footer pins the discoverability hint
-# segment 'Ctrl+Shift+F: search' (default on, tui-pi 22-search parity).
+# segment 'ctrl+shift+f search' (default on, tui-pi 22-search parity).
 #
 # Match targets: two seeded turns whose PROMPT rows carry the deterministic
 # needle 'E2E-SEARCH-NEEDLE' (the mock's generic `ignore` phase answers
@@ -78,8 +78,11 @@ start_tui
 wait_tui_up 120 || { summary; exit 0; }
 
 # --- discoverability: the footer hint carries the search segment ----------
+# hints-line.tsx paints the segment in the configured binding's own lowercase
+# spelling ("ctrl+shift+f search", HINTS copy table), not the title-case
+# documentation form used earlier in this file's comments.
 PANE="$(capture)"
-assert_contains 'footer hint shows the search segment' 'Ctrl+Shift+F: search' "$PANE"
+assert_contains 'footer hint shows the search segment' 'ctrl+shift+f search' "$PANE"
 
 # --- seed the transcript: two needle-carrying turns (settled rows) ----------
 ensure_editor_ready 'editor clean before the seed turns' || true

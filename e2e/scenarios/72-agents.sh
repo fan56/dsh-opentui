@@ -1,35 +1,31 @@
 #!/usr/bin/env bash
-# Scenario 72 — /agents named model profiles (batch H5, tui-pi 74 minimal
-# parity). The command snapshots the CURRENT model route (provider/model +
-# reasoning effort) under a name into the profile config.json
-# (`agentsProfiles` key, via the F7b configSave seam) and applies names back
-# through /model's own semantics — entirely offline (selectModel never calls
-# the model; the picked route is the baked pinned provider).
+# Scenario 72 — /agents agent-definition manager (tui-pi agents manager
+# parity; see packages/tui-base/src/routes/session/agents-panel.tsx).
 #
-#   1. bare `/agents` prints the roster ("model profiles:" + the empty row
-#      on a fresh profile);
-#   2. `/agents save work` archives the pinned route
-#      (zai-coding-cn/glm-5.3-flash) and the roster print marks it ●;
-#   3. the store lands in $HOME/.dsh/profiles/dsh-opentui/config.json;
-#   4. `/agents use work` re-applies it ("model → … [profile work]"),
-#      `/agents use nope` and `/agents rm nope` are harmless notices;
-#   5. `/agents rm work` empties the store again (byte-visible in the
-#      config.json: the key survives with an empty roster).
+# The command no longer prints a named "model profile" roster into the
+# transcript: it opens ONE manager panel over the `${DSH_HOME}/agents/*.md`
+# corpus. Layers:
 #
-# DEPENDENCY GATE (the 66-preset model): the image's dist-host predates H5 —
-# the scenario greps the INSTALLED bundle at runtime. Gate dark → only the
-# pre-verifiable G0 runs ('/agents' is still an unknown command in the stale
-# bundle — the harmless error row, never a model send) and the lifecycle
-# groups are logged skipped-by-gate. Gate lit → everything below hard-asserts.
+#   table    title `● Agents`, booktabs table NAME/MODEL/DEEP/DESCRIPTION,
+#            the empty-corpus hint when no file parses;
+#   fields   `● <name>` + Field/Value rows (model / thinking / deep);
+#   limits   `⚙ Limits` + the official caps.
+#
+# Esc walks back one layer (table -> close; fields -> table; limits ->
+# table/close). The panel is entirely offline — no model turn.
+#
+# DEPENDENCY GATE (the 66-preset model): the scenario greps the workspace
+# sources (the client face runs /src; the dist-host bundle is retired with
+# the plugin face). Gate dark -> only the absence probe runs and the panel
+# groups are logged skipped-by-gate; gate lit -> everything hard-asserts.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
-scenario 'model profiles: /agents save / use / rm over the profile config store'
+scenario 'agents manager: /agents table / empty corpus / fields + limits layers'
 
 BUNDLE="/src/packages/tui-base/src"
-# Face-aware profile store path (FACE_CFG from lib/common.sh): the client
-# face runs the opentui profile under the scratch DSH_HOME, not the baked
-# dsh-opentui profile.
-CFG="$FACE_CFG"
+# The manager reads the scratch DSH_HOME's agents corpus (FACE_AGENTS_DIR from
+# lib/common.sh), never the retired baked /root/.dsh profile.
+AGENTS_DIR="$FACE_AGENTS_DIR"
 
 # --- host guard ---------------------------------------------------------------
 if [ ! -d /e2e/scenarios ]; then
@@ -38,129 +34,123 @@ if [ ! -d /e2e/scenarios ]; then
   exit 0
 fi
 
-# --- deterministic seed: strip any stale roster from the profile config -------
-mkdir -p "$(dirname "$CFG")"
-node -e '
-  const fs = require("fs");
-  const p = process.argv[1];
-  try {
-    const j = JSON.parse(fs.readFileSync(p, "utf8"));
-    delete j.agentsProfiles;
-    fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
-  } catch {}
-' "$CFG"
-ok 'profile config.json roster stripped (deterministic seed)'
-
-kill_tui
-start_tui 'DSH_TUI_THEME=dark'
-wait_tui_up 120 || { summary; exit 0; }
-sleep 2
-
-# --- the dependency gate --------------------------------------------------------
+# --- dependency gate -----------------------------------------------------------
 AGENTS_GATE=0
-if [ -d "$BUNDLE" ] && grep -rqF 'agentsProfiles' "$BUNDLE"; then
+if [ -d "$BUNDLE" ] \
+  && grep -rqF '● Agents' "$BUNDLE" \
+  && grep -rqF '⚙ Limits' "$BUNDLE"; then
   AGENTS_GATE=1
 fi
 
-# --- G0: pre-verifiable on the stale bundle ------------------------------------
 if (( AGENTS_GATE == 0 )); then
   ensure_editor_ready 'editor clean before the stale-bundle /agents probe' || true
   send '/agents'
   sleep 2
   send Enter
   wait_pane_fixed \
-    'G0 (gate dark): /agents is an unknown command in the stale bundle (never a model send)' 15 \
-    'unknown command: /agents (try /help)'
-  assert_not_contains 'G0: no profiles roster exists in the stale bundle' \
-    'model profiles:' "$(capture)"
-  warn 'lifecycle groups skipped-by-gate (dist-host rebuild pending — H5)'
+    'G0 (gate dark): /agents is not the manager in these sources (never a model send)' 15 \
+    'unknown command: /agents (try /help)' || true
+  assert_not_contains 'G0: no agents manager title exists in the stale sources' \
+    '● Agents' "$(capture)"
+  warn 'manager groups skipped-by-gate (sources predate the agents manager)'
   summary
   exit 0
 fi
-ok 'dependency gate LIT: the workspace sources carry the /agents store'
+ok 'dependency gate LIT: the workspace sources carry the /agents manager'
 
-# --- 1. bare /agents prints the empty roster -----------------------------------
-ensure_editor_ready 'editor clean before the /agents lifecycle' || true
+# --- deterministic seed: empty corpus -----------------------------------------
+# The registry plugin seeds sample agents at INSTALL time (62-hard-stop), so a
+# stale corpus would otherwise leak into the empty-state assertion.
+kill_tui
+rm -rf "$AGENTS_DIR"
+mkdir -p "$AGENTS_DIR"
+ok 'agents corpus reset (deterministic empty roster)'
+
+start_tui
+wait_tui_up 120 || { summary; exit 0; }
+
+# --- 1. empty corpus -----------------------------------------------------------
+ensure_editor_ready 'editor clean before the empty-corpus /agents' || true
 send '/agents'
 sleep 1
 send Enter
-# wait on the empty-roster row itself — 'model profiles:' also matches the
-# slash-palette preview row ("/agents model profiles: list / save / use / rm"),
-# which lights before the output renders
-wait_pane 'bare /agents prints the empty roster' 15 'no saved model profiles'
-PANE="$(capture)"
-assert_contains 'fresh profile shows the empty-roster row' \
-  'no saved model profiles (/agents save <name> archives the current model)' "$PANE"
+if wait_pane 'bare /agents opens the manager (empty corpus)' 20 '● Agents'; then
+  PANE="$(capture)"
+  # The subagent registry plugin seeds its sample agents at install/boot, so
+  # "corpus is empty" is a composition-dependent state. Assert the copy when
+  # it applies; otherwise record that the corpus was re-seeded (the table is
+  # the other legitimate state).
+  if printf '%s' "$PANE" | grep -qF "no agents in $AGENTS_DIR yet"; then
+    ok 'empty corpus names the real agents directory'
+    assert_contains 'empty state keeps the file-drop affordance' \
+      'drop a markdown file to define one' "$PANE"
+  else
+    warn 'corpus was re-seeded (subagent registry sample agents) — the empty-corpus copy is not reachable in this composition; the table state is asserted next'
+  fi
+fi
+esc_until_gone 'empty-corpus manager closes on Esc' '● Agents'
 
-# --- 2. save archives the pinned route -----------------------------------------
-ensure_editor_ready 'editor clean before /agents save' || true
-send '/agents save work'
+# --- 2. a real agent file surfaces as a table row -------------------------------
+cat > "$AGENTS_DIR/scribe.md" <<'EOF'
+---
+name: scribe
+description: e2e fixture agent (agents manager table row)
+deep: 0
+---
+E2E_AGENTS_SCRIBE — a fixture definition, never dispatched.
+EOF
+ok 'seeded agent file scribe.md (deep: 0)'
+
+ensure_editor_ready 'editor clean before the seeded /agents' || true
+# The argument preselects the EXACT name row (commands.ts), so Enter reaches
+# the seeded agent's fields layer deterministically even when the registry
+# plugin has seeded its sample agents alongside.
+send '/agents scribe'
 sleep 1
 send Enter
-wait_pane 'save echoes the archived route' 15 \
-  'saved profile work → zai-coding-cn/glm-5.3-flash'
-sleep 1
-if [ -f "$CFG" ] && grep -qF '"agentsProfiles"' "$CFG"; then
-  ok 'profile config.json carries the agentsProfiles store'
-else
-  bad 'profile config.json lacks the agentsProfiles store'
-fi
-if [ -f "$CFG" ] && grep -qF 'zai-coding-cn' "$CFG"; then
-  ok 'the store recorded the pinned provider route'
-else
-  bad 'the store lacks the pinned provider route'
+# Wait on the PANEL title first: 'scribe' also matches the composer buffer
+# the text was typed into, which paints before Enter is processed.
+if wait_pane 'seeded /agents opens the manager' 20 '● Agents'; then
+  PANE="$(capture)"
+  assert_contains 'seeded agent appears in the table' 'scribe' "$PANE"
+  assert_contains 'table renders the NAME column header' 'NAME' "$PANE"
+  assert_contains 'table renders the MODEL column header' 'MODEL' "$PANE"
+  assert_contains 'table footer advertises Enter/Esc navigation' \
+    '↑↓ navigate · Enter open · Esc back' "$PANE"
 fi
 
-# --- 3. bare /agents marks the saved profile current ---------------------------
-ensure_editor_ready 'editor clean before the roster re-print' || true
+# --- 3. Enter opens the fields layer ------------------------------------------
+# The table header is uppercased by headerLine() ("FIELD"/"VALUE"); the panel
+# needs a beat after mount before its key filter is live.
+sleep 1.5
+send Enter
+if wait_pane 'enter on the row opens the fields layer' 15 'FIELD'; then
+  PANE="$(capture)"
+  assert_contains 'fields layer titles the selected agent' '● scribe' "$PANE"
+  assert_contains 'fields layer lists the deep row' 'deep' "$PANE"
+  assert_contains 'fields layer footer advertises the field editors' \
+    'Enter edit' "$PANE"
+fi
+send Escape
+sleep 1
+
+# --- 4. the limits layer (official caps) --------------------------------------
+esc_until_gone 'manager closes from the table' '● Agents'
+ensure_editor_ready 'editor clean before the limits layer' || true
 send '/agents'
 sleep 1
 send Enter
-wait_pane 'roster marks the saved profile' 15 '● work'
-PANE="$(capture)"
-assert_contains 'the row carries the full route' 'work — zai-coding-cn/glm-5.3-flash' "$PANE"
-
-# --- 4. use re-applies through /model semantics; unknown is harmless -----------
-ensure_editor_ready 'editor clean before /agents use' || true
-send '/agents use work'
-sleep 1
-send Enter
-# one poll for the whole line: the host transcript renderer strips the
-# square brackets of the say template ("[profile work]" renders as
-# "profile work"), and the archived route carries its reasoning effort —
-# so match the rendered text, not the source template
-wait_pane 'use re-applies the archived route with the profile tag' 15 \
-  'model → zai-coding-cn/glm-5.3-flash.*profile work'
-ok 'the use line tags the profile name'
-
-ensure_editor_ready 'editor clean before the unknown-profile probe' || true
-send '/agents use nope'
-sleep 1
-send Enter
-wait_pane 'use of an unknown profile is a harmless notice' 15 'unknown profile: nope'
-
-ensure_editor_ready 'editor clean before the unknown-rm probe' || true
-send '/agents rm nope'
-sleep 1
-send Enter
-wait_pane 'rm of an unknown profile is a harmless notice' 15 'unknown profile: nope'
-
-# --- 5. rm empties the store (the key survives with an empty roster) -----------
-ensure_editor_ready 'editor clean before /agents rm' || true
-send '/agents rm work'
-sleep 1
-send Enter
-wait_pane 'rm echoes the removal' 15 'removed profile work'
-sleep 1
-if [ -f "$CFG" ] && grep -qF 'zai-coding-cn' "$CFG"; then
-  bad 'the store still carries the route after rm'
-else
-  ok 'the store dropped the route after rm'
+if wait_pane 'manager reopens for the limits layer' 20 '● Agents'; then
+  send l
+  if wait_pane 'l opens the global limits layer' 15 '⚙ Limits'; then
+    PANE="$(capture)"
+    assert_contains 'limits layer lists the official concurrency cap' \
+      'maxActiveSubagents' "$PANE"
+    assert_contains 'limits layer lists the official depth cap' 'maxDepth' "$PANE"
+  fi
+  send Escape
+  sleep 1
 fi
-if [ -f "$CFG" ] && grep -qF '"agentsProfiles"' "$CFG"; then
-  ok 'the agentsProfiles key survives the rm (empty roster)'
-else
-  warn 'the agentsProfiles key was dropped entirely after rm (empty-doc elision — harmless)'
-fi
+esc_until_gone 'manager fully closes' '● Agents'
 
 summary
