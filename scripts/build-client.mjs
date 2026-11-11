@@ -65,6 +65,12 @@ const SHELL_IMPORT_RE = /import\(SHELL \+ "([^"]+)"\)/g
 // tsc until cookie-mint.ts lands — under the bundler the wrapped import
 // stays a computed runtime import and breaks in the bundle.
 const MINT_NEEDLE = "await dynamicImport(specifier)"
+// spin-attention.ts loadJevCore(): the jev-optional probe holds its
+// specifier in a variable (a runtime capability probe resolved from the
+// profile node_modules, not a compile-time dependency) — under the bundler
+// the computed import stays computed and trips the leak guard below.
+const SPIN_JEV_NEEDLE = "await import(/* @vite-ignore */ specifier)"
+const SPIN_SPECIFIER_DECL = 'const specifier = "@aiwayds/dsh-jev-core"\n'
 
 const result = await Bun.build({
   entrypoints: [join(shellDir, "src", "client-entry.tsx")],
@@ -127,11 +133,41 @@ const result = await Bun.build({
             loader: "ts",
           }
         })
+        // spin-attention.ts: pin loadJevCore() to the literal jev specifier —
+        // the variable-held probe import cannot be statically resolved by the
+        // bundler and would leak a computed import into the bundle. The
+        // package stays EXTERNAL (below) so the probe keeps resolving from
+        // the profile node_modules at runtime; a missing core still degrades
+        // to classic-ladder-only via the source's try/catch.
+        build.onLoad({ filter: /src\/spin-attention\.ts$/ }, (args) => {
+          const src = readFileSync(args.path, "utf8")
+          if (!src.includes(SPIN_JEV_NEEDLE)) {
+            throw new Error(
+              `[build-client] spin-attention.ts no longer contains "${SPIN_JEV_NEEDLE}" — the jev-core dynamic-import shape changed, update this rewrite`,
+            )
+          }
+          // drop the now-dead specifier declaration line too (bun keeps
+          // unused vars; the source's "held in a variable on purpose"
+          // comment above it stays — it still describes the source file)
+          return {
+            contents: src
+              .replace(SPIN_JEV_NEEDLE, 'await import("@aiwayds/dsh-jev-core")')
+              .replace(SPIN_SPECIFIER_DECL, ""),
+            loader: "ts",
+          }
+        })
       },
     },
     solidPlugin,
   ],
-  external: ["@opentui/core", "@deepseek-ai/dsh-client-connection"],
+  // @aiwayds/dsh-jev-core stays EXTERNAL (mirrors the dsh-client-connection
+  // rationale above): the spin-attention probe resolves it at RUNTIME from
+  // the profile node_modules (honoring JEV_ENDPOINT / TYPESAFE_API_KEY) — it
+  // is deliberately not a compile-time dependency of this repo, so even in a
+  // dev checkout where a symlink makes it resolvable, the bundle must keep
+  // import("@aiwayds/dsh-jev-core") as a runtime import; the source's
+  // try/catch degrades to classic-ladder-only when the core is absent.
+  external: ["@opentui/core", "@deepseek-ai/dsh-client-connection", "@aiwayds/dsh-jev-core"],
 })
 
 if (!result.success) {
