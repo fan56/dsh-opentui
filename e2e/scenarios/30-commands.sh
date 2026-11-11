@@ -76,7 +76,7 @@ sleep 1
 for _ in $(seq 1 4); do send BSpace; sleep 0.3; done
 send '/m'
 wait_pane_fixed 'filter "/m" lists /model + /motion' 10 \
-  '/model switch model (bare opens the picker)'
+  '/model switch model (bare opens the picker, then the effort picker)'
 # One repaint tick: the row area paints stale until the next keystroke (the
 # known in-container behavior), so an instant capture can still be blank.
 sleep 1
@@ -140,7 +140,7 @@ esc_until_placeholder 'palette closes after the filter round-trip' 15
 for _ in $(seq 1 4); do send BSpace; sleep 0.3; done
 send '/mo'
 wait_pane_fixed 'filter "/mo" narrows to /model' 10 \
-  '/model switch model (bare opens the picker)'
+  '/model switch model (bare opens the picker, then the effort picker)'
 esc_until_placeholder 'palette closes after the /mo filter' 15
 for _ in $(seq 1 4); do send BSpace; sleep 0.3; done
 

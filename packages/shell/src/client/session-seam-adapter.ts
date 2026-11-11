@@ -346,12 +346,19 @@ export class RemoteSessionSeam implements SessionSeam {
 	}
 
 	selectModel(providerID: string, modelID: string): Promise<void> {
-		return this.#session
-			.selectModel({ provider: providerID, model: modelID })
-			.then(() => undefined)
-			.catch((error) => {
-				console.error("[session-seam-adapter] selectModel failed:", error)
-			})
+		// Rejections PROPAGATE (web profile dsh-client-ui-model-selection
+		// client.js:891-896 parity: a failed select is surfaced, never
+		// swallowed into console.error). The seam contract is "resolves when
+		// the host accepted the route", so a rejected promise is the only
+		// honest answer for a host refusal — the command layer reports it.
+		return this.#session.selectModel({ provider: providerID, model: modelID }).then(() => undefined)
+	}
+
+	/** The silent-path selection failure read (see
+	 * RemoteHostSession.lastSelectionError): the staged re-send / fire-and-
+	 * forget switchModel failures this adapter must NOT swallow away. */
+	lastSelectionError(): string | undefined {
+		return this.#session.lastSelectionError()
 	}
 
 	/** Reasoning-effort surface (batch F7b /think): the ladder reads the
@@ -386,11 +393,18 @@ export class RemoteSessionSeam implements SessionSeam {
 				return []
 			}
 		},
+		// The /model two-stage flow's ANY-route read: same host read as the
+		// /agents face's modelEfforts (the cached catalog's reasoning.efforts).
+		effortsFor: (providerID: string, modelID: string): Promise<SeamEffortOption[]> =>
+			this.#session.modelEfforts(providerID, modelID),
 		currentEffort: async (): Promise<string | undefined> => {
 			const selection = (await this.#session.currentModelSelection()) as { reasoningEffort?: string } | undefined
 			return selection?.reasoningEffort
 		},
 		selectEffort: (effort: string | undefined): Promise<void> => {
+			// Same propagate contract as selectModel (no silent catch): /think
+			// and /model's effort arm report the failure instead of echoing an
+			// acceptance that never happened.
 			return this.#session
 				.currentModelSelection()
 				.then((selection) => {
@@ -402,9 +416,6 @@ export class RemoteSessionSeam implements SessionSeam {
 					})
 				})
 				.then(() => undefined)
-				.catch((error) => {
-					console.error("[session-seam-adapter] selectEffort failed:", error)
-				})
 		},
 	}
 

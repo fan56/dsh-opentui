@@ -467,8 +467,18 @@ export interface SessionSeam {
 	listProviders(): Promise<{ provider: string; models: string[] }[]>
 	modelCatalog(force?: boolean): Promise<SeamProviderModel[]>
 	currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined>
+	/**
+	 * The last SILENT-path selection failure as one short line — a fire-and-
+	 * forget switchModel or the staged route's re-send onto a freshly created
+	 * session, neither of which has a caller to reject into. Cleared by the
+	 * next successful selection application. Optional — a seam without it
+	 * never carries such failures (inline-application adapters don't need it).
+	 */
+	lastSelectionError?(): string | undefined
 	/** Resolves when the host accepted the route (footer-refresh seam: the
-	 * /model command awaits it before re-reading the selection). */
+	 * /model command awaits it before re-reading the selection). REJECTS when
+	 * the host refused or the RPC failed — callers surface that failure
+	 * (web profile parity: a failed select is reported, never swallowed). */
 	selectModel(providerID: string, modelID: string): Promise<void>
 
 	/**
@@ -479,10 +489,20 @@ export interface SessionSeam {
 	 * `selectEffort` rides /model's effort semantics (switchModel with a
 	 * reasoningEffort arm — next-turn effect); undefined clears the override.
 	 * Resolves when the host accepted the effort (footer-refresh seam: the
-	 * /think command awaits it before re-reading currentEffort).
+	 * /think command awaits it before re-reading currentEffort). REJECTS when
+	 * the host refused or the RPC failed — callers surface that failure.
 	 */
 	thinking?: {
 		efforts(): Promise<SeamEffortOption[]>
+		/**
+		 * The effort ladder of ANY model route (not just the current one):
+		 * /model's two-stage flow reads the just-committed model's ladder to
+		 * decide whether the effort stage appears. Same provider data as
+		 * `efforts()` (the cached host catalog's `reasoning.efforts`, never
+		 * a hardcoded tier set). Optional — a host without it degrades to
+		 * the empty-ladder skip arm (no stage 2; the /think contract).
+		 */
+		effortsFor?(providerID: string, modelID: string): Promise<SeamEffortOption[]>
 		currentEffort(): Promise<string | undefined>
 		selectEffort(effort: string | undefined): Promise<void>
 	}

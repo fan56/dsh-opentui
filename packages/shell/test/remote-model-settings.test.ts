@@ -5,6 +5,7 @@
 // credentials/reference-updated), rename, search, history ledger + fork, and
 // the status surface. Fake connection + fake mux sockets, real wire frames.
 import { describe, expect, test } from "bun:test"
+import { RemoteSessionSeam } from "../src/client/session-seam-adapter.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 import { RemoteModelClient } from "../src/client/remote-model.ts"
 import { RemoteRpcError, type ClientConnection } from "../src/client/transport.ts"
@@ -261,6 +262,148 @@ describe("model cluster (rows 21+22)", () => {
 		expect(garbage.selection).toEqual({ provider: "prov-a", model: "big" }) // next folds → pending
 		expect(garbage.pressure).toBeUndefined()
 		expect(garbage.agentPreset).toBeUndefined() // empty string = deployment composes none
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Sessionless staged-route reads (pending beats the host default): the
+// footer's model segment and the /think face both ride
+// currentModelSelection(), which used to skip a staged sessionless /model
+// pick and answer the catalog default (footer showed the old route, and the
+// auto-default effort arm re-staged the DEFAULT route over the pick). The
+// merge order mirrors the web profile's ModelDirectory.syncInputs
+// (pending ?? projection ?? catalog.default) and tui-pi's getSelection().
+// ---------------------------------------------------------------------------
+describe("sessionless staged model pick (pending beats the host default)", () => {
+	/** Two providers so the staged pick differs from the default route in BOTH ids. */
+	const STAGED_CATALOG = {
+		default: { provider: "deepseek", model: "deepseek-chat", reasoningEffort: "high" },
+		routableProviders: ["deepseek", "opencode-go"],
+		groups: [
+			{ id: "deepseek", name: "DeepSeek", models: [{ id: "deepseek-chat", name: "DeepSeek Chat", reasoning: { efforts: [{ id: "high", name: "High" }], defaultEffort: "high" } }] },
+			{
+				id: "opencode-go",
+				name: "OpenCode Go",
+				models: [{ id: "glm-5", name: "GLM 5", reasoning: { efforts: [{ id: "low", name: "Low" }, { id: "high", name: "High" }] } }],
+			},
+		],
+		failures: [],
+	}
+
+	test("a sessionless /model pick reads back on the footer path instead of the host default", async () => {
+		const h = makeSession({ rpcHandler: (method) => (method === "session/modelCatalog" ? STAGED_CATALOG : {}) })
+		const seam = new RemoteSessionSeam(h.session)
+		// cold: nothing staged → the catalog default (unchanged contract)
+		expect(await seam.currentModelSelection()).toEqual({ providerID: "deepseek", modelID: "deepseek-chat" })
+		// the /model stage-1 commit with no live session stages, never wires
+		await seam.selectModel("opencode-go", "glm-5")
+		expect(h.session.currentSessionId()).toBeUndefined()
+		// the footer's model segment reads seam.currentModelSelection(): the pick, not the default
+		expect(await seam.currentModelSelection()).toEqual({ providerID: "opencode-go", modelID: "glm-5" })
+		expect(await h.session.currentModelSelection()).toEqual({ provider: "opencode-go", model: "glm-5" })
+		expect(rpcOf(h.connection, "session/selectModel")).toBeUndefined()
+		await h.session.dispose()
+	})
+
+	test("a sessionless /think keeps the staged provider/model and only swaps the effort", async () => {
+		const h = makeSession({ rpcHandler: (method) => (method === "session/modelCatalog" ? STAGED_CATALOG : {}) })
+		const seam = new RemoteSessionSeam(h.session)
+		await seam.selectModel("opencode-go", "glm-5")
+		// the ladder is the STAGED route's, not the default route's
+		expect((await seam.thinking.efforts()).map((e) => e.id)).toEqual(["low", "high"])
+		expect(await seam.thinking.currentEffort()).toBeUndefined()
+		await seam.thinking.selectEffort("low")
+		expect(await seam.currentModelSelection()).toEqual({ providerID: "opencode-go", modelID: "glm-5" })
+		expect(await seam.thinking.currentEffort()).toBe("low")
+		expect(await h.session.currentModelSelection()).toEqual({ provider: "opencode-go", model: "glm-5", reasoningEffort: "low" })
+		// clearing the override keeps the route too
+		await seam.thinking.selectEffort(undefined)
+		expect(await h.session.currentModelSelection()).toEqual({ provider: "opencode-go", model: "glm-5" })
+		// still staged: nothing reached the wire
+		expect(rpcOf(h.connection, "session/selectModel")).toBeUndefined()
+		await h.session.dispose()
+	})
+
+	test("the footer's unspecified→high arm lands on the staged route, which the next session then receives", async () => {
+		const h = makeSession({
+			rpcHandler: (method, args) => {
+				if (method === "session/modelCatalog") return STAGED_CATALOG
+				if (method === "session/create") return { sessionId: "sess-st1" }
+				if (method === "session/selectModel") {
+					const req = args["request"] as Record<string, unknown>
+					return { selected: { provider: req.provider, model: req.model, reasoningEffort: req.reasoningEffort } }
+				}
+				if (method === "session/prompt") return { accepted: true }
+				return {}
+			},
+		})
+		const seam = new RemoteSessionSeam(h.session)
+		await seam.selectModel("opencode-go", "glm-5")
+		// v2-entry refreshFooterData: currentEffort() unspecified → the staged
+		// route's ladder names "high" → selectEffort("high") — on the STAGED
+		// route (before the fix this re-staged the DEFAULT route + high)
+		expect(await seam.thinking.currentEffort()).toBeUndefined()
+		expect((await seam.thinking.efforts()).map((e) => e.id)).toContain("high")
+		await seam.thinking.selectEffort("high")
+		expect(await h.session.currentModelSelection()).toEqual({ provider: "opencode-go", model: "glm-5", reasoningEffort: "high" })
+		// the first turn creates the session; the staged route applies BEFORE the prompt
+		const { cb } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => rpcOf(h.connection, "session/selectModel") !== undefined)
+		expect(rpcOf(h.connection, "session/selectModel")!["request"]).toEqual({
+			sessionId: "sess-st1",
+			provider: "opencode-go",
+			model: "glm-5",
+			reasoningEffort: "high",
+		})
+		await until(() => h.sockets.length > 0)
+		h.lastSocket().item(snapshotFrame("sess-st1"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
+		await h.session.dispose()
+	})
+
+	test("with a live session the read still comes from the session projection (no pending fallback)", async () => {
+		const h = makeSession({
+			rpcHandler: (method, args) => {
+				if (method === "session/modelCatalog") return STAGED_CATALOG
+				if (method === "session/create") return { sessionId: "sess-st2" }
+				if (method === "session/prompt") return { accepted: true }
+				if (method === "session/selectModel") {
+					const req = args["request"] as Record<string, unknown>
+					return { selected: { provider: req.provider, model: req.model, reasoningEffort: req.reasoningEffort } }
+				}
+				if (method === "session/projections") {
+					// a route deliberately DIFFERENT from the staged pick
+					return { kind: "sequenced", asOfSeq: 3, values: { modelSelection: { lastUsed: { provider: "deepseek", model: "deepseek-chat", reasoningEffort: "high" } } } }
+				}
+				return {}
+			},
+		})
+		const seam = new RemoteSessionSeam(h.session)
+		await seam.selectModel("opencode-go", "glm-5")
+		const { cb } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		h.lastSocket().item(snapshotFrame("sess-st2"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		// the staged pick was consumed onto the fresh session; the live read is the projection's
+		expect(h.session.currentSessionId()).toBe("sess-st2")
+		expect(await h.session.currentModelSelection()).toEqual({ provider: "deepseek", model: "deepseek-chat", reasoningEffort: "high" })
+		expect(await seam.currentModelSelection()).toEqual({ providerID: "deepseek", modelID: "deepseek-chat" })
+		// a live /think re-selects the SESSION route on the wire (unchanged contract)
+		await seam.thinking.selectEffort("low")
+		const lastSelect = h.connection.rpcCalls.filter((c) => c.method === "session/selectModel").at(-1)!
+		expect(lastSelect.args["request"]).toEqual({
+			sessionId: "sess-st2",
+			provider: "deepseek",
+			model: "deepseek-chat",
+			reasoningEffort: "low",
+		})
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
+		await h.session.dispose()
 	})
 })
 

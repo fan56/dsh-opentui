@@ -195,6 +195,7 @@ import {
 import { askBtw, BTW_TITLE_PREFIX } from "./remote-btw.ts"
 import { RemoteSubagentPanel, type RemoteSubagentView } from "./remote-subagents.ts"
 import { parseSubagentRoundLimits } from "../subagent-policy.ts"
+import { spinAttentionEnabledFromRows } from "../spin-attention.ts"
 import { restartSamePortHost } from "./remote-restart.ts"
 import {
 	loadWorkspaceConfig,
@@ -262,6 +263,11 @@ export interface RemoteHostSessionOptions {
 	reattachRetryMs?: number
 	/** Re-attach attempt cap override (P2 budget; default REATTACH_MAX_ATTEMPTS = 30). */
 	reattachMaxAttempts?: number
+	/**
+	 * Spin-toggle refresh TTL override (default SPIN_REFRESH_TTL_MS = 5s).
+	 * Injectable so the rate-limit test can compress the window.
+	 */
+	spinRefreshTtlMs?: number
 }
 
 const REATTACH_RETRY_MS = 1_000
@@ -283,6 +289,27 @@ function trace(message: string): void {
  */
 const REATTACH_MAX_ATTEMPTS = 30
 export { REATTACH_RETRY_MS, REATTACH_MAX_ATTEMPTS }
+
+/**
+ * Spin-toggle snapshot freshness window (settings/describe rate limit): the
+ * subagent panel kicks the refresh on EVERY live assistant/message (a
+ * looping child fires one per second — without the window that is one
+ * describe per second for the whole session, jev configured or not). The
+ * cached toggle is re-describe at most once per window; a settings flip
+ * (`spinAttention` on↔off) lands within one window + one describe.
+ * Exported so the TTL test can reference the default.
+ */
+const SPIN_REFRESH_TTL_MS = 5_000
+export { SPIN_REFRESH_TTL_MS }
+
+/**
+ * One short selection-failure line for `lastSelectionError` (no stack, no
+ * key material): the /login commit convention — the error message sliced to
+ * 150 chars — so transcript surfaces stay one concise row.
+ */
+function selectionErrorText(error: unknown): string {
+	return String(error instanceof Error ? error.message : error).slice(0, 150)
+}
 
 /**
  * English display names for the shipped presets (tui-pi PRESET_ENGLISH_NAMES
@@ -379,6 +406,12 @@ export class RemoteHostSession {
 	#interrupted = false
 	/** Model selection staged for the NEXT session (switchModel with no live session). */
 	#pendingModel: RemoteModelSelection | undefined
+	/** The last SILENT-path selection failure (fire-and-forget switchModel,
+	 * the staged re-send onto a fresh session) as one short line — undefined
+	 * once a selection application succeeds again. Read through
+	 * `lastSelectionError()` so those failures stay perceivable instead of
+	 * dying in console.error while the label shows the optimistic route. */
+	#selectionError: string | undefined
 	#turns = 0
 	#turnStartedAt = 0
 	#turnUsageStart = { prompt: 0, completion: 0 }
@@ -444,6 +477,22 @@ export class RemoteHostSession {
 	#btwBusy = false
 	/** Wave-3: subagent panel (row 33; lazy). */
 	#subagents: RemoteSubagentPanel | undefined
+	/** Spin-attention toggle cache — refreshed from the settings ns
+	 * `dsh-opentui` describe rows (host-session #refreshRoundLimits parity).
+	 * Design default ON per spinAttentionEnabled: `spinAttention: false` is
+	 * what turns the feed off, and an unconfigured jev core keeps it silent
+	 * anyway (unconfigured == off, dispatch parity). */
+	#spinAttentionOn = true
+	/** One in-flight spin-toggle describe at a time (the refresh guard). */
+	#spinAttentionRefreshing = false
+	/** Freshness window for that describe (SPIN_REFRESH_TTL_MS parity, the
+	 * reattachRetryMs injection convention): one describe per window, not per
+	 * live round; a settings flip lands within one window + one describe. */
+	#spinRefreshTtlMs: number
+	/** Monotonic stamp (performance.now) of the last describe ISSUE — the
+	 * rate limit counts the kick that fired, not the answer that landed, so
+	 * a slow/failing describe never hot-retries within the window. */
+	#spinCheckedAt = -Infinity
 	// ---- maxRounds hard-stop policy knobs (batch F1) ----
 	// The ladder's caps read live from the CLIENT face's real config layer:
 	// the profile config.json `maxRounds` / `maxRoundsGrace` keys through
@@ -467,6 +516,7 @@ export class RemoteHostSession {
 		this.#restartHost = options.restartHost
 		this.#reattachRetryMs = options.reattachRetryMs ?? REATTACH_RETRY_MS
 		this.#reattachMaxAttempts = options.reattachMaxAttempts ?? REATTACH_MAX_ATTEMPTS
+		this.#spinRefreshTtlMs = options.spinRefreshTtlMs ?? SPIN_REFRESH_TTL_MS
 		this.#socketFactory = options.socketFactory ?? ((path) => this.#openMuxSocket(path))
 	}
 
@@ -917,7 +967,24 @@ export class RemoteHostSession {
 			.selectModel(sessionId, selection)
 			.catch((error) => {
 				console.error("[remote-host-session] selectModel failed:", error)
+				// No caller to reject into (fire-and-forget): record the failure
+				// so the next read/command can report it (lastSelectionError).
+				this.#selectionError = selectionErrorText(error)
 			})
+	}
+
+	/**
+	 * The last SILENT-path selection failure as one short line — a fire-and-
+	 * forget `switchModel` or the staged route's re-send onto a freshly
+	 * created session (#ensureSession), neither of which has a caller to
+	 * reject into. Cleared by the next successful selection application; the
+	 * AWAITED `selectModel` path surfaces its own failures through its
+	 * rejection and is not recorded here. Reads (commands, footer consumers)
+	 * use it to report a previously-swallowed failure instead of trusting the
+	 * optimistic label.
+	 */
+	lastSelectionError(): string | undefined {
+		return this.#selectionError
 	}
 
 	/**
@@ -933,6 +1000,9 @@ export class RemoteHostSession {
 			return selection
 		}
 		const selected = await this.#modelClient().selectModel(sessionId, selection)
+		// An accepted application retires any earlier silent-path failure —
+		// the route the label promised is now really the live one.
+		this.#selectionError = undefined
 		// Route commit: the turn-gated projections row now names the previous
 		// route, so reopen the gate — the next footer read re-resolves the
 		// context window (and used numerator) off the new selection.
@@ -950,10 +1020,17 @@ export class RemoteHostSession {
 		return this.#modelClient().defaultSelection()
 	}
 
-	/** A live session's effective route from `session/projections` (row 22). */
+	/**
+	 * A live session's effective route from `session/projections` (row 22).
+	 * With no live session the STAGED route wins over the catalog default
+	 * (tui-pi parity: `session.ts:2346 getSelection()` reads the client
+	 * selection ref directly, and `seedSelectionFromDefault` never overwrites
+	 * a user pick) — otherwise a sessionless /model pick would read back as
+	 * the host default on the footer and the /think arm.
+	 */
 	async currentModelSelection(): Promise<RemoteModelSelection | undefined> {
 		const sessionId = this.#sessionId
-		if (sessionId === undefined) return this.defaultModelSelection()
+		if (sessionId === undefined) return this.#pendingModel ?? (await this.defaultModelSelection())
 		return this.#modelClient().sessionSelection(sessionId)
 	}
 
@@ -1878,6 +1955,11 @@ export class RemoteHostSession {
 				// file, the stale-snapshot window of the describe-based
 				// provider is gone with it.
 				limits: () => parseSubagentRoundLimits(this.configLoad()),
+				// The spin-attention toggle's settings-ns read is async
+				// (settings/describe), so the cached snapshot is kicked before
+				// every ladder decision and the reader answers the latest rows.
+				refreshLimits: () => this.#refreshSpinAttention(),
+				spinEnabled: () => this.#spinAttentionOn,
 				onHardStop: (record) =>
 					console.info(
 						`[subagent-policy] force-stopped child ${record.childId} at round ${record.round} (cap ${record.cap} + grace ${record.grace})`,
@@ -1901,6 +1983,36 @@ export class RemoteHostSession {
 			})
 		}
 		return this.#subagents
+	}
+
+	/**
+	 * Lazy live-read of the spin-attention toggle (host-session
+	 * #refreshRoundLimits parity: one in-flight describe at a time; the
+	 * kicked refresh lands AFTER the decision that triggered it, so the
+	 * first decision reads the design default). Rate-limited by
+	 * SPIN_REFRESH_TTL_MS: the panel kicks on every live round (a looper
+	 * fires one per second), so repeated kicks inside the freshness window
+	 * are swallowed and the first kick outside it re-describes — a settings
+	 * flip (`spinAttention: false` in the ns `dsh-opentui` turns the feed
+	 * off; anything else keeps it on) lands within one window + one
+	 * describe. Still silent without a configured jev key.
+	 */
+	#refreshSpinAttention(): void {
+		if (this.#spinAttentionRefreshing) return
+		const now = performance.now()
+		if (now - this.#spinCheckedAt < this.#spinRefreshTtlMs) return
+		this.#spinAttentionRefreshing = true
+		this.#spinCheckedAt = now
+		void this.settingsDescribe()
+			.then((rows) => {
+				this.#spinAttentionOn = spinAttentionEnabledFromRows(rows)
+			})
+			.catch(() => {
+				/* keep the previous snapshot */
+			})
+			.finally(() => {
+				this.#spinAttentionRefreshing = false
+			})
 	}
 
 	/** Child transcript lines (viewer; capped buffer, HostSession parity). */
@@ -2076,8 +2188,13 @@ export class RemoteHostSession {
 			this.#pendingModel = undefined
 			try {
 				await this.#modelClient().selectModel(this.#sessionId, staged)
+				this.#selectionError = undefined
 			} catch (error) {
 				console.error("[remote-host-session] staged selectModel failed:", error)
+				// Not silent: the label already shows the staged route, so the
+				// failure is recorded for the next read/command
+				// (lastSelectionError) instead of dying in console.error.
+				this.#selectionError = `staged ${staged.provider}/${staged.model} — ${selectionErrorText(error)}`
 			}
 		}
 		// Attach BEFORE the first prompt so no live frame is missed. The

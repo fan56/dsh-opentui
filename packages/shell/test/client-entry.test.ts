@@ -525,7 +525,7 @@ describe('RemoteHostSession accessor audit (through aggregateTurnContext)', () =
       expect(await f.adapted.selectModel({ provider: 'p2', model: 'm2' })).toEqual({ provider: 'p2', model: 'm2' }) // staged, no live session
       expect(await f.adapted.modelCatalog(true)).toEqual({ default: undefined, routableProviders: [], groups: [], failures: [] })
       expect(await f.adapted.defaultModelSelection()).toBeUndefined()
-      expect(await f.adapted.currentModelSelection()).toBeUndefined() // cold → catalog default
+      expect(await f.adapted.currentModelSelection()).toEqual({ provider: 'p2', model: 'm2' }) // the staged pick wins over the (empty) catalog default
       await expect(f.adapted.initializeDefaultModel()).resolves.toBeUndefined()
       expect(await f.adapted.listProviders()).toEqual([])
       expect(await f.adapted.configurableProviders()).toEqual([])

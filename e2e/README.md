@@ -68,7 +68,7 @@ Scenario 30 markers (same discipline — real capture):
 
 | assertion               | text                                                   |
 | ----------------------- | ------------------------------------------------------ |
-| palette rows (6)        | `/help show available commands`, `/new start a fresh session`, `/model switch model (bare opens the picker)`, `/quit exit the app`, `/sessions list and resume stored sessions`, `/clear clear the transcript` |
+| palette rows (6)        | `/help show available commands`, `/new start a fresh session`, `/model switch model (bare opens the picker, then the effort picker)`, `/quit exit the app`, `/sessions list and resume stored sessions`, `/clear clear the transcript` |
 | first-row highlight     | SGR `38;5;238m/help` (active fg) vs `38;5;255m/new` (base fg) |
 | `/cl` / `/mo` filter    | only the `/clear` / `/model` row; `/help` row absent    |
 | bare `/model`           | `no models in the catalog`; `Select model` absent       |

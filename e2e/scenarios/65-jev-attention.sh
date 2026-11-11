@@ -27,8 +27,9 @@
 # DEPENDENCY GATE (63 model — head-documented, run what can run):
 #   G2/G3 need BOTH (a) a dist-host build that carries the spin detection
 #   (packages/shell/src/subagent-policy.ts spinDecision + the
-#   "spin-detected early" marker strings) and (b) the verdict feed wired
-#   from the dispatch chain into HostSession.noteChildSpinVerdict. The image
+#   "spin-detected early" marker strings) and (b) the verdict feed wired on
+#   the client face (RemoteSubagentPanel's spin attention source feeding
+#   noteSpinVerdict). The image
 #   this batch runs against predates both (ff4ae5c baked the jev CHAIN, not
 #   the spin consumption), so the gate below greps the installed dist-host:
 #   gate dark -> G2/G3 are skipped-by-gate and only G1 runs (it must pass);
@@ -37,12 +38,16 @@
 #   cannot reach them, same cause as 62's original UI-marker skip), so even
 #   gate-lit it stays a best-effort pane grep.
 #
-#   GATE-LIT CAVEAT (2026-11-07): the gate greps only for the spin STRINGS.
-#   The spin feed leg (b) is confirmed still absent on this wave —
-#   HostSession.noteChildSpinVerdict has NO caller anywhere in
-#   packages/shell/src, so no jev verdict can ever reach the ladder. A
-#   gate-lit run therefore still fails G2's round bound (the child runs the
-#   classic cap+grace stop, 67 rounds) until the product wires the feed.
+#   GATE-LIT CAVEAT (2026-11-07, RESOLVED 2026-11-11): the gate used to grep
+#   only for the spin STRINGS while the spin feed leg (b) had no caller —
+#   HostSession.noteChildSpinVerdict was removed with the plugin face
+#   (ADR-0005 client-mode-only), so no jev verdict could reach the ladder.
+#   The feed is now wired on the CLIENT face: RemoteSubagentPanel constructs
+#   the spin attention source (tick driven from the live round fold,
+#   noteSpinVerdict the verdict sink) and the capability gate below matches
+#   that construction. The feed stays silent without a configured jev
+#   endpoint (unconfigured == off, dispatch parity) and is hot-off via the
+#   settings ns `dsh-opentui` `spinAttention: false` knob.
 #
 # FINDING, RESOLVED (2026-11-07 container diagnosis against the ff4ae5c-era
 # image): the earlier "G1 dark: 0 dispatches" had TWO stacked causes, both
@@ -97,17 +102,18 @@ fi
 
 # --- capability gate: the spin-verdict feed --------------------------------
 # G2 asserts the EARLY hard stop driven by a JEV spin verdict. The product
-# half of that feed is not wired on this wave: HostSession.noteChildSpinVerdict
-# has no CALLER anywhere in packages/shell/src (the header caveat records the
-# same finding), so no verdict can reach the ladder and the round bound
-# cannot pass by construction. Skip with THAT reason — the honest gap —
+# half of that feed is wired on the CLIENT face: RemoteSubagentPanel
+# constructs the spin attention source and drives tick() from the live
+# round fold (packages/shell/src/client/remote-subagents.ts), with
+# noteSpinVerdict as the verdict sink into the round policy's streak trail.
+# The gate matches the CONSTRUCTION shape `createSpinAttentionSource(` in
+# packages/shell/src EXCLUDING the defining module (spin-attention.ts's own
+# export line would light the gate with zero callers); the test/ suite
+# lives outside src, so a test-only construction cannot pass it. Gate dark
+# still means the feed is absent — skip with THAT reason, the honest gap,
 # instead of asserting a behavior the product does not have.
-# The pattern is the method-invocation shape `.noteChildSpinVerdict(`: the
-# bare name also appears in spin-attention.ts doc comments (lines mentioning
-# "HostSession.noteChildSpinVerdict →" / "forwards to noteChildSpinVerdict"),
-# and a comment-only match would wrongly light the gate.
-if ! grep -rq '\.noteChildSpinVerdict(' /src/packages/shell/src 2>/dev/null; then
-  warn 'jev spin-verdict feed not wired (noteChildSpinVerdict has no caller in packages/shell/src) — the early hard stop is not observable; skipping'
+if ! grep -rq --exclude=spin-attention.ts 'createSpinAttentionSource(' /src/packages/shell/src 2>/dev/null; then
+  warn 'jev spin-verdict feed not wired (no spin attention source construction in packages/shell/src outside its defining module) — the early hard stop is not observable; skipping'
   summary
   exit 0
 fi
@@ -361,7 +367,7 @@ EOF
     bad "G2: the looper child never looped (${LOOPS:-0} hs-loop rounds) — the dispatch itself failed"
   fi
 else
-  warn 'G2/G3 skipped-by-gate: dist-host lacks spin detection or the registry plugin is absent — the early-stop assertions need the dist-host rebuild with subagent-policy spin detection + the noteChildSpinVerdict feed wired'
+  warn 'G2/G3 skipped-by-gate: dist-host lacks spin detection or the registry plugin is absent — the early-stop assertions need the dist-host rebuild with subagent-policy spin detection + the client-face spin verdict feed wired'
 fi
 
 kill_tui

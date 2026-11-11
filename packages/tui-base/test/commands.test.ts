@@ -4,6 +4,7 @@
  */
 import { describe, expect, test, beforeEach } from "bun:test"
 import {
+	MODEL_DEFAULT_EFFORT_PICK,
 	coreCommands,
 	dispatchLine,
 	filterCommands,
@@ -76,7 +77,7 @@ class RecordingSeam {
 	}
 }
 
-function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
+function makeCtx(seam: RecordingSeam, pickAnswer?: string | (string | undefined)[]) {
 	const lines: string[] = []
 	const hooks = {
 		cleared: 0,
@@ -111,6 +112,9 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string) {
 				currentValue,
 				options: options.map((o) => ({ title: o.title, description: o.description })),
 			})
+			// An array answer is a per-stage queue (the /model two-stage flow:
+			// stage 1's model pick, then stage 2's effort pick or esc).
+			if (Array.isArray(pickAnswer)) return pickAnswer.shift()
 			return pickAnswer
 		},
 		hooks,
@@ -244,7 +248,7 @@ describe("core commands", () => {
 		expect(ctx.lines).toEqual([
 			"/help — show available commands",
 			"/new — start a fresh session",
-			"/model — switch model (bare opens the picker)",
+			"/model — switch model (bare opens the picker, then the effort picker)",
 			"/login — log in a provider (bare opens the picker; Custom provider opens the form)",
 			"/quit — exit the app",
 			"/resume — resume a persisted session",
@@ -285,7 +289,11 @@ describe("core commands", () => {
 			{ title: "deepseek/v3.2" },
 		])
 		expect(seam.calls).toContain("selectModel:deepseek/v3.2")
-		expect(ctx.lines).toEqual(["model → deepseek/v3.2"])
+		// Two-stage /model (research/model-picker-think-level.md): this fake
+		// seam carries NO thinking face — the optional-`effortsFor` degrade
+		// arm — so stage 2 is skipped with the merged notice line.
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(ctx.lines).toEqual(["model → deepseek/v3.2 (no think levels)"])
 		// Footer-quickwins bug fix: the pick re-runs the page's footer refresh
 		// after the selection settles (the provider/model segment moves now,
 		// not at the next turn boundary).
@@ -666,6 +674,453 @@ describe("/think (batch F7b)", () => {
 		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
 		expect(order).toEqual(["invalidate", "select:off", "refresh"])
 		expect(ctx.lines).toEqual(["thinking → off (next turn)"])
+	})
+})
+
+describe("/model two-stage think level (one transaction, tui-pi parity)", () => {
+	test("a pick on a laddered model commits nothing at stage 1; the effort-stage confirm commits model then effort", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, ["deepseek/v3.2", "low"])
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async (providerID, modelID) => {
+					// Rides the spy transcript so the stage-1 → ladder-read →
+					// commit order is provable: the ladder read lands BEFORE
+					// any selectModel (stage 1 must not commit).
+					seam.calls.push(`effortsFor:${providerID}/${modelID}`)
+					return [
+						{ id: "low", name: "Low" },
+						{ id: "high", name: "High" },
+					]
+				},
+				currentEffort: async () => undefined,
+				selectEffort: async (effort) => {
+					seam.calls.push(`selectEffort:${effort ?? "undefined"}`)
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		// The whole selection is one deferred transaction: no selectModel at
+		// the stage-1 boundary; the commit lands model-first, effort-second.
+		expect(seam.calls).toEqual([
+			"modelCatalog",
+			"currentModelSelection",
+			"effortsFor:deepseek/v3.2",
+			"selectModel:deepseek/v3.2",
+			"selectEffort:low",
+		])
+		expect(ctx.hooks.picks).toHaveLength(2)
+		expect(ctx.hooks.picks[0]?.title).toBe("Select model")
+		expect(ctx.hooks.picks[1]?.title).toBe("Select reasoning effort — deepseek/v3.2")
+		expect(ctx.hooks.picks[1]?.options).toEqual([
+			{ title: "(model default)" },
+			{ title: "Low" },
+			{ title: "High" },
+		])
+		expect(applied).toEqual(["low"])
+		expect(ctx.lines).toEqual(["model → deepseek/v3.2", "thinking → low (next turn)"])
+		// One commit point: invalidate BEFORE the acceptance, one refresh
+		// after (the /think sequence).
+		expect(ctx.hooks.footerInvalidations).toBe(1)
+		expect(ctx.hooks.footerRefreshes).toBe(1)
+	})
+
+	test("esc on the effort stage abandons the whole selection (no model commit, no effort write)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, ["deepseek/v3.2", undefined])
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async (providerID, modelID) => {
+					seam.calls.push(`effortsFor:${providerID}/${modelID}`)
+					return [{ id: "low", name: "Low" }]
+				},
+				currentEffort: async () => undefined,
+				selectEffort: async (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		// Stage 2 DID open (two picks) but esc resolved it: the tui-pi
+		// contract (selectors.ts:508-513) is esc = abandon the WHOLE pick —
+		// stage 1 never committed, so the model is NOT switched and the
+		// effort face is untouched.
+		expect(ctx.hooks.picks).toHaveLength(2)
+		expect(seam.calls).toEqual(["modelCatalog", "currentModelSelection", "effortsFor:deepseek/v3.2"])
+		expect(applied).toEqual([])
+		expect(ctx.lines).toEqual(["model unchanged"])
+		expect(ctx.hooks.footerRefreshes).toBe(0)
+		expect(ctx.hooks.footerInvalidations).toBe(0)
+	})
+
+	test("esc on the model stage does nothing (no commit, no stage 2)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, undefined)
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async () => [{ id: "low", name: "Low" }],
+				currentEffort: async () => undefined,
+				selectEffort: async () => {},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		// Stage-1 esc keeps the old no-op behavior: no ladder read, no
+		// commit, no transcript line.
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(seam.calls).toEqual(["modelCatalog", "currentModelSelection"])
+		expect(ctx.lines).toEqual([])
+	})
+
+	test("a model with an empty ladder skips the effort stage and commits immediately", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "deepseek/v3.2")
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async (providerID, modelID) => {
+					seam.calls.push(`effortsFor:${providerID}/${modelID}`)
+					return []
+				},
+				currentEffort: async () => undefined,
+				selectEffort: async (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		// No stage 2 exists → the model pick is the whole transaction: it
+		// commits right away (the pre-two-stage behavior).
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(seam.calls).toEqual(["modelCatalog", "currentModelSelection", "effortsFor:deepseek/v3.2", "selectModel:deepseek/v3.2"])
+		expect(applied).toEqual([])
+		expect(ctx.lines).toEqual(["model → deepseek/v3.2 (no think levels)"])
+		expect(ctx.hooks.footerRefreshes).toBe(1)
+	})
+
+	test("a same-provider pick on a ladder-less model carries the current effort (tui-pi selectors.ts:489-498)", async () => {
+		const seam = new RecordingSeam()
+		seam.catalog = [
+			{ providerID: "bigmodel", modelID: "glm-5.3-flash" },
+			{ providerID: "bigmodel", modelID: "no-think" },
+		]
+		const ctx = makeCtx(seam, "bigmodel/no-think")
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async (providerID, modelID) => {
+					seam.calls.push(`effortsFor:${providerID}/${modelID}`)
+					return []
+				},
+				currentEffort: async () => {
+					seam.calls.push("currentEffort")
+					return "high"
+				},
+				selectEffort: async (effort) => {
+					seam.calls.push(`selectEffort:${effort ?? "undefined"}`)
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		// The kept effort is read off the pre-commit snapshot BEFORE the
+		// model write, then re-asserted on top of the new route — the tui-pi
+		// fallback resolve's conditional reasoningEffort arm.
+		expect(seam.calls).toEqual([
+			"modelCatalog",
+			"currentModelSelection",
+			"effortsFor:bigmodel/no-think",
+			"currentEffort",
+			"selectModel:bigmodel/no-think",
+			"selectEffort:high",
+		])
+		expect(applied).toEqual(["high"])
+		expect(ctx.lines).toEqual([
+			"model → bigmodel/no-think (no think levels)",
+			"thinking → high (next turn)",
+		])
+		expect(ctx.hooks.footerRefreshes).toBe(1)
+	})
+
+	test("a cross-provider pick on a ladder-less model never consults or carries the effort (tui-pi resets across providers)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "deepseek/v3.2")
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async (providerID, modelID) => {
+					seam.calls.push(`effortsFor:${providerID}/${modelID}`)
+					return []
+				},
+				currentEffort: async () => "high",
+				selectEffort: async (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		// Current is bigmodel/glm-5.3-flash, the pick is deepseek/v3.2: the
+		// effort is dropped — `currentEffort` is never consulted (absent
+		// from the transcript) and no effort write rides the commit.
+		expect(seam.calls).toEqual([
+			"modelCatalog",
+			"currentModelSelection",
+			"effortsFor:deepseek/v3.2",
+			"selectModel:deepseek/v3.2",
+		])
+		expect(applied).toEqual([])
+		expect(ctx.lines).toEqual(["model → deepseek/v3.2 (no think levels)"])
+	})
+
+	test("a failed ladder read degrades to the immediate single-stage commit", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "deepseek/v3.2")
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async () => {
+					throw new Error("catalog read blew up")
+				},
+				currentEffort: async () => undefined,
+				selectEffort: async (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		expect(seam.calls).toContain("selectModel:deepseek/v3.2")
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(applied).toEqual([])
+		expect(ctx.lines).toEqual(["model → deepseek/v3.2 (no think levels)"])
+	})
+
+	test("the (model default) row commits the model and clears the override via selectEffort(undefined)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, ["deepseek/v3.2", MODEL_DEFAULT_EFFORT_PICK])
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async (providerID, modelID) => {
+					seam.calls.push(`effortsFor:${providerID}/${modelID}`)
+					return [{ id: "low", name: "Low" }, { id: "high", name: "High" }]
+				},
+				currentEffort: async () => undefined,
+				selectEffort: async (effort) => {
+					seam.calls.push(`selectEffort:${effort ?? "undefined"}`)
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		expect(ctx.hooks.picks[1]?.options[0]?.title).toBe("(model default)")
+		expect(seam.calls).toEqual([
+			"modelCatalog",
+			"currentModelSelection",
+			"effortsFor:deepseek/v3.2",
+			"selectModel:deepseek/v3.2",
+			"selectEffort:undefined",
+		])
+		expect(applied).toEqual([undefined])
+		expect(ctx.lines).toEqual(["model → deepseek/v3.2", "thinking → model default (next turn)"])
+	})
+
+	test("the effort stage marks the model's current rung with the current marker", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, ["deepseek/v3.2", "high"])
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async () => [{ id: "low", name: "Low" }, { id: "high", name: "High" }],
+				currentEffort: async () => "low",
+				selectEffort: async (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		expect(ctx.hooks.picks[1]?.options).toEqual([
+			{ title: "(model default)" },
+			{ title: "Low", description: "current" },
+			{ title: "High" },
+		])
+		expect(applied).toEqual(["high"])
+	})
+
+	test("the provider/model argument form stays one-shot (no effort stage)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, ["unused-answer"])
+		const ladderReads: string[] = []
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async (providerID, modelID) => {
+					ladderReads.push(`${providerID}/${modelID}`)
+					return [{ id: "low", name: "Low" }]
+				},
+				currentEffort: async () => undefined,
+				selectEffort: async (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "deepseek/v3.2")
+		expect(seam.calls).toEqual(["selectModel:deepseek/v3.2"])
+		expect(ctx.hooks.picks).toEqual([])
+		expect(ladderReads).toEqual([])
+		expect(applied).toEqual([])
+		expect(ctx.lines).toEqual(["model → deepseek/v3.2"])
+		expect(ctx.hooks.footerRefreshes).toBe(1)
+	})
+})
+
+describe("model/effort failure surfacing (a rejected RPC never echoes success)", () => {
+	test("/model provider/model: a rejected selectModel prints the failure line, no success echo, footer untouched", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		ctx.seam = {
+			...seam.seam,
+			selectModel: async (providerID, modelID) => {
+				seam.calls.push(`selectModel:${providerID}/${modelID}`)
+				throw new Error("provider unreachable")
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "deepseek/v3.2")
+		expect(seam.calls).toEqual(["selectModel:deepseek/v3.2"])
+		// the failure line, not the acceptance echo
+		expect(ctx.lines).toEqual(["model switch failed — provider unreachable"])
+		expect(ctx.hooks.footerRefreshes).toBe(0)
+		expect(ctx.hooks.footerInvalidations).toBe(0)
+	})
+
+	test("/model two-stage: a rejected model commit abandons the whole transaction (no effort write on the old route)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, ["deepseek/v3.2", "low"])
+		const applied: (string | undefined)[] = []
+		ctx.seam = {
+			...seam.seam,
+			selectModel: async () => {
+				throw new Error("host refused the route")
+			},
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async () => [{ id: "low", name: "Low" }],
+				currentEffort: async () => undefined,
+				selectEffort: async (effort) => {
+					applied.push(effort)
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		// stage 1 stays pick-only; the commit rejection ends the transaction
+		// BEFORE the effort arm rides the OLD route
+		expect(ctx.hooks.picks).toHaveLength(2)
+		expect(seam.calls).toEqual(["modelCatalog", "currentModelSelection"])
+		expect(applied).toEqual([])
+		expect(ctx.lines).toEqual(["model switch failed — host refused the route"])
+		// review 3.5 ordering is kept (the ordinal bump precedes the commit),
+		// but the footer is never refreshed with an acceptance that never was
+		expect(ctx.hooks.footerInvalidations).toBe(1)
+		expect(ctx.hooks.footerRefreshes).toBe(0)
+	})
+
+	test("/think: a rejected selectEffort prints the failure line, no thinking echo, footer untouched", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "low")
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [{ id: "low", name: "Low" }, { id: "high", name: "High" }],
+				currentEffort: async () => "high",
+				selectEffort: async () => {
+					throw new Error("host refused the effort")
+				},
+			},
+		}
+		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["thinking switch failed — host refused the effort"])
+		// 3.5 ordering kept, but no refresh pins the old effort as if accepted
+		expect(ctx.hooks.footerInvalidations).toBe(1)
+		expect(ctx.hooks.footerRefreshes).toBe(0)
+	})
+
+	test("/model two-stage: an effort rejection after an ACCEPTED model keeps the model success line", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, ["deepseek/v3.2", "low"])
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [],
+				effortsFor: async () => [{ id: "low", name: "Low" }],
+				currentEffort: async () => undefined,
+				selectEffort: async () => {
+					throw new Error("host refused the effort")
+				},
+			},
+		}
+		await coreCommands()[2]!.run(ctx, "")
+		// the model commit was real (its echo stays), the effort arm failed
+		// (its echo is replaced by the failure line); the footer refresh is
+		// legitimate — the model segment really moved
+		expect(ctx.lines).toEqual(["model → deepseek/v3.2", "thinking switch failed — host refused the effort"])
+		expect(ctx.hooks.footerRefreshes).toBe(1)
+	})
+
+	test("/model surfaces a pending lastSelectionError note (the staged re-send failure) before the pick", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		ctx.seam = {
+			...seam.seam,
+			lastSelectionError: () => "staged deepseek/deepseek-reasoner — host refused",
+		}
+		await coreCommands()[2]!.run(ctx, "deepseek/v3.2")
+		// the previously-silent staged re-send failure is reported, then the
+		// fresh pick proceeds on its own merits
+		expect(ctx.lines).toEqual([
+			"model note: the last staged switch failed — staged deepseek/deepseek-reasoner — host refused",
+			"model → deepseek/v3.2",
+		])
+		expect(ctx.hooks.footerRefreshes).toBe(1)
+	})
+
+	test("success paths keep their original echoes (regression guard)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "low")
+		ctx.seam = {
+			...seam.seam,
+			thinking: {
+				efforts: async () => [{ id: "low", name: "Low" }],
+				currentEffort: async () => undefined,
+				selectEffort: async () => {},
+			},
+		}
+		await coreCommands().find((c) => c.name === "/think")!.run(ctx, "")
+		expect(ctx.lines).toEqual(["thinking → low (next turn)"])
+		expect(ctx.hooks.footerRefreshes).toBe(1)
+		await coreCommands()[2]!.run(ctx, "deepseek/v3.2")
+		expect(ctx.lines).toEqual(["thinking → low (next turn)", "model → deepseek/v3.2"])
+		expect(ctx.hooks.footerRefreshes).toBe(2)
 	})
 })
 

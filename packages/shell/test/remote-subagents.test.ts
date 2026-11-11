@@ -2,12 +2,13 @@
 // tool-workflow pairing, session/list adoption filters, api-session push
 // folding, the child-follow transcript pump (address.kind:'subagent'), and
 // the steer/interrupt wire shapes — fake rpc + fake mux sockets.
-import { describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, mock, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { RemoteSubagentPanel, boundTail, descriptorOf, lastContentLine, totalTokensOf, type RemoteSubagentView } from "../src/client/remote-subagents.ts"
 import type { HardStopRecord, SubagentRoundLimits } from "../src/subagent-policy.ts"
+import type { JevCoreModule } from "../src/spin-attention.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 import { RemoteRpcError, type ClientConnection } from "../src/client/transport.ts"
 import { FakeConnection, FakeMuxSocket, rpcOf, snapshotFrame, streamFrame, until } from "./client-fakes.ts"
@@ -15,7 +16,34 @@ import type { TurnCallbacks } from "../src/agent/loop.ts"
 
 type RpcHandler = (method: string, args: Record<string, unknown>) => unknown | Promise<unknown>
 
-function makePanel(options: { parentId?: string; rpcHandler?: RpcHandler; limits?: () => SubagentRoundLimits; onHardStop?: (record: HardStopRecord) => void } = {}) {
+// The facade spins its jev probe off the REAL `@aiwayds/dsh-jev-core`
+// specifier (a runtime capability probe, resolved from the profile
+// node_modules — not installed here). `mock.module` pins a fake at the
+// loader so the FACADE wiring tests can observe dispatch through the real
+// probe path. The control defaults to `configured: false` — behaviorally
+// identical to the absent core (the source returns before classify) — so a
+// bun process-global mock leaking past this file stays a no-op for every
+// other suite (bun module mocks never reset between files).
+const jevCore: { configured: boolean; calls: { questions: Record<string, unknown>; state: string }[] } = { configured: false, calls: [] }
+mock.module("@aiwayds/dsh-jev-core", () => ({
+	classify: async (options: { questions: Record<string, unknown>; state: string }) => {
+		jevCore.calls.push({ questions: options.questions, state: options.state })
+		return { answers: {}, model: "jev-fake", usage: null, latencyMs: 0 }
+	},
+	isConfigured: () => jevCore.configured,
+}))
+
+/** Records every verdict pushed through the panel's sink, then forwards to
+ * the real fold — the spin-feed wiring's observable seam. */
+class VerdictSpyPanel extends RemoteSubagentPanel {
+	verdicts: [string, number][] = []
+	override noteSpinVerdict(id: string, noul: number): void {
+		this.verdicts.push([id, noul])
+		super.noteSpinVerdict(id, noul)
+	}
+}
+
+function makePanel(options: { parentId?: string; rpcHandler?: RpcHandler; limits?: () => SubagentRoundLimits; onHardStop?: (record: HardStopRecord) => void; spinEnabled?: () => boolean; spinModule?: JevCoreModule | null } = {}) {
 	const rpcCalls: { method: string; args: Record<string, unknown> }[] = []
 	const rpcHandler: RpcHandler =
 		options.rpcHandler ??
@@ -27,7 +55,7 @@ function makePanel(options: { parentId?: string; rpcHandler?: RpcHandler; limits
 		})
 	const sockets: FakeMuxSocket[] = []
 	const updates: RemoteSubagentView[][] = []
-	const panel = new RemoteSubagentPanel({
+	const panel = new VerdictSpyPanel({
 		rpc: async (method, args) => {
 			rpcCalls.push({ method, args: args ?? {} })
 			return await rpcHandler(method, args ?? {})
@@ -41,8 +69,10 @@ function makePanel(options: { parentId?: string; rpcHandler?: RpcHandler; limits
 		onUpdate: (views) => updates.push(views),
 		...(options.limits !== undefined ? { limits: options.limits } : {}),
 		...(options.onHardStop !== undefined ? { onHardStop: options.onHardStop } : {}),
+		...(options.spinEnabled !== undefined ? { spinEnabled: options.spinEnabled } : {}),
+		...(options.spinModule !== undefined ? { spinModule: options.spinModule } : {}),
 	})
-	return { panel, rpcCalls, sockets, updates, lastSocket: () => sockets[sockets.length - 1]! }
+	return { panel, rpcCalls, sockets, updates, verdicts: panel.verdicts, lastSocket: () => sockets[sockets.length - 1]! }
 }
 
 function parentRecord(type: string, data: Record<string, unknown>): { type: string; seq: number; time: number; data: Record<string, unknown> } {
@@ -469,15 +499,194 @@ describe("maxRounds ladder caps from the client configLoad seam", () => {
 	})
 })
 
+// Spin-attention feed wiring (the client-face bridge): the panel constructs
+// the spin attention source when a spinEnabled reader is wired, ticks it
+// from the LIVE assistant/message fold (never the snapshot replay), and the
+// verdict lands in noteSpinVerdict (the round policy's streak trail sink).
+// The fake core pins the jev probe (spin-attention.test.ts style) so the
+// dispatch is deterministic.
+describe("spin attention feed wiring", () => {
+	function fakeSpinCore(overrides: { configured?: boolean; answers?: Record<string, { kind: "noul"; value: number }> } = {}): JevCoreModule & { calls: { questions: Record<string, unknown>; state: string }[] } {
+		const calls: { questions: Record<string, unknown>; state: string }[] = []
+		return {
+			calls,
+			classify: async (options: { questions: Record<string, unknown>; state: string }) => {
+				calls.push({ questions: options.questions, state: options.state })
+				return { answers: overrides.answers ?? {}, model: "jev-test", usage: null, latencyMs: 1 }
+			},
+			isConfigured: () => overrides.configured !== false,
+		} as never
+	}
+
+	const liveRound = (sock: FakeMuxSocket, seq: number) =>
+		sock.item({
+			type: "event",
+			event: { type: "assistant/message", seq, time: Date.now(), data: { message: { content: [{ type: "text", text: `round ${seq}` }] } } },
+		})
+
+	test("spinAttention off: the live round fold ticks silently — no jev dispatch, no verdict", async () => {
+		const core = fakeSpinCore({ answers: { "spin_child-sp": { kind: "noul", value: 0.95 } } })
+		const { panel, verdicts, lastSocket } = makePanel({
+			limits: () => ({ maxRounds: 60, maxRoundsGrace: 5 }),
+			spinEnabled: () => false,
+			spinModule: core,
+		})
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "looper", childId: "child-spin" }))
+		await until(() => lastSocket() !== undefined)
+		liveRound(lastSocket(), 1)
+		await until(() => panel.views()[0]!.rounds === 1)
+		// Let any (wrongly) started dispatch chain settle — none may exist.
+		await new Promise((resolve) => setTimeout(resolve, 30))
+		expect(core.calls.length).toBe(0)
+		expect(verdicts).toEqual([])
+		panel.stop()
+	})
+
+	test("spinAttention on: the live fold drives tick, the verdict reaches noteSpinVerdict (snapshot replay never ticks)", async () => {
+		const core = fakeSpinCore({ answers: { "spin_child-sp": { kind: "noul", value: 0.95 } } })
+		const { panel, verdicts, lastSocket } = makePanel({
+			limits: () => ({ maxRounds: 60, maxRoundsGrace: 5 }),
+			spinEnabled: () => true,
+			spinModule: core,
+		})
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "looper", childId: "child-spin" }))
+		await until(() => lastSocket() !== undefined)
+		const sock = lastSocket()
+		// Snapshot replay (display catch-up) must NOT tick: the past round
+		// counts, the jev probe stays silent.
+		sock.item(
+			snapshotFrame("child-spin", {
+				records: [{ type: "event", event: { type: "assistant/message", seq: 1, time: Date.now(), data: { message: { content: [{ type: "text", text: "replayed round" }] } } } }],
+			}),
+		)
+		await until(() => panel.views()[0]!.rounds === 1)
+		await new Promise((resolve) => setTimeout(resolve, 30))
+		expect(core.calls.length).toBe(0)
+		// The LIVE round fold is the tick cadence: one debounced classify, the
+		// answer read back onto the child id through the id8 map, forwarded
+		// through the panel's sink.
+		liveRound(sock, 2)
+		await until(() => verdicts.length > 0)
+		expect(verdicts).toEqual([["child-spin", 0.95]])
+		expect(core.calls.length).toBe(1)
+		expect(Object.keys(core.calls[0]!.questions)).toEqual(["spin_child-sp"])
+		expect(core.calls[0]!.state).toContain("child-sp looper")
+		expect(core.calls[0]!.state).toContain("rounds 2/60")
+		panel.stop()
+	})
+})
+
+// Facade-side spin toggle wiring (the facadeWithChild harness above, the
+// mocked jev core at the top): the settings ns `dsh-opentui` rows drive the
+// facade's cached snapshot (#refreshSpinAttention), the snapshot gates the
+// panel's ticks through `spinEnabled`, and the snapshot's settings/describe
+// refresh is TTL rate-limited (SPIN_REFRESH_TTL_MS — the panel kicks on
+// EVERY live round, a looper one per second; without the window that is one
+// describe per second for the whole session).
+describe("facade spin toggle refresh (settings/describe TTL)", () => {
+	// The mocked core starts every test UNCONFIGURED (the uninstalled-core
+	// parity): a test flipping it on must not leak into the next one — a
+	// leftover configured=true would let the FIRST round's default-on tick
+	// classify, stamping the source's 30s dispatch debounce and silently
+	// eating the toggle test's later dispatch.
+	beforeEach(() => {
+		jevCore.configured = false
+		jevCore.calls.length = 0
+	})
+
+	const liveRound = (sock: FakeMuxSocket, seq: number) =>
+		sock.item({
+			type: "event",
+			event: { type: "assistant/message", seq, time: Date.now(), data: { message: { content: [{ type: "text", text: `round ${seq}` }] } } },
+		})
+	const describeCount = (connection: FakeConnection) => connection.rpcCalls.filter((c) => c.method === "settings/describe").length
+	const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+	test("TTL gates the describe: repeated kicks inside the window fire ONE settings/describe, the first kick outside it re-fires", async () => {
+		const { session, connection, lastSocket } = await facadeWithChild({ spinRefreshTtlMs: 500 })
+		await until(() => session.subagentViews().length > 0)
+		const baseline = describeCount(connection)
+		// Five live rounds in quick succession: every one kicks, the window
+		// swallows all but the first — exactly one describe.
+		for (const seq of [1, 2, 3, 4, 5]) liveRound(lastSocket(), seq)
+		await until(() => describeCount(connection) === baseline + 1)
+		await settle(20) // let the describe's snapshot land + wrong extra describes surface
+		expect(describeCount(connection)).toBe(baseline + 1)
+		// Past the window the FIRST kick must re-describe (and rounds inside
+		// the NEW window stay swallowed again).
+		await settle(540)
+		liveRound(lastSocket(), 6)
+		await until(() => describeCount(connection) === baseline + 2)
+		expect(describeCount(connection)).toBe(baseline + 2)
+		await session.dispose()
+	})
+
+	test("spinAttention: false rows: the facade reader gates the panel's ticks — no jev dispatch even with a configured core", async () => {
+		const settings = { spinAttention: false }
+		const { session, connection, lastSocket } = await facadeWithChild({ spinRefreshTtlMs: 500, dshOpentuiSettings: settings })
+		await until(() => session.subagentViews().length > 0)
+		// Round 1: the first decision reads the design default (the kicked
+		// describe lands after it), so the core stays unconfigured until the
+		// snapshot carrying `spinAttention: false` has landed.
+		liveRound(lastSocket(), 1)
+		await until(() => describeCount(connection) > 0)
+		await settle(10)
+		jevCore.configured = true
+		jevCore.calls.length = 0
+		// Rounds 2+ tick with the reader answering false: a mis-wired facade
+		// (reader stuck true) would classify here — the mock is watching.
+		liveRound(lastSocket(), 2)
+		liveRound(lastSocket(), 3)
+		await settle(60)
+		expect(jevCore.calls.length).toBe(0)
+		await session.dispose()
+	})
+
+	test("toggle flip lands within one TTL: stale-off inside the window, re-describe + dispatch after it", async () => {
+		const settings = { spinAttention: false }
+		const { session, connection, lastSocket } = await facadeWithChild({ spinRefreshTtlMs: 500, dshOpentuiSettings: settings })
+		await until(() => session.subagentViews().length > 0)
+		liveRound(lastSocket(), 1)
+		await until(() => describeCount(connection) === 1)
+		await settle(10)
+		jevCore.configured = true
+		jevCore.calls.length = 0
+		// Flip the settings rows ON: inside the still-fresh window the cached
+		// snapshot wins — no new describe, the tick reads stale-off, silent.
+		settings.spinAttention = true
+		liveRound(lastSocket(), 2)
+		await settle(40)
+		expect(describeCount(connection)).toBe(1)
+		expect(jevCore.calls.length).toBe(0)
+		// One TTL later the kick re-describes, reads the new rows, and the
+		// next tick dispatches through the real probe path (the mock).
+		await settle(540)
+		liveRound(lastSocket(), 3)
+		await until(() => describeCount(connection) === 2)
+		await settle(10) // snapshot lands; the kick's own tick still read stale-off
+		liveRound(lastSocket(), 4)
+		await until(() => jevCore.calls.length === 1)
+		expect(Object.keys(jevCore.calls[0]!.questions)).toEqual(["spin_child-1"])
+		expect(jevCore.calls[0]!.state).toContain("child-1")
+		await session.dispose()
+	})
+})
+
 // Facade harness: drive one main turn that emits a tool-workflow/agent-start
 // journal row, so the panel adopts through the real #followSink.onRecord path.
-async function facadeWithChild(opts: { dshHome?: string } = {}) {
+// `dshOpentuiSettings` is a MUTABLE holder read at rpc time: a test flips
+// `spinAttention` on it to drive the toggle's switch path through the real
+// settings/describe answer.
+async function facadeWithChild(opts: { dshHome?: string; spinRefreshTtlMs?: number; dshOpentuiSettings?: Record<string, unknown> } = {}) {
 	const connection = new FakeConnection()
 	connection.rpcHandler = (method) => {
 		if (method === "session/create") return { sessionId: "main-1" }
 		if (method === "session/prompt") return { accepted: true }
 		if (method === "subagents/prompt") return { messageId: "m" }
 		if (method === "session/list") return { items: [] }
+		if (method === "settings/describe") {
+			return { namespaces: opts.dshOpentuiSettings !== undefined ? [{ ns: "dsh-opentui", revision: 1, value: opts.dshOpentuiSettings }] : [] }
+		}
 		return {}
 	}
 	const sockets: FakeMuxSocket[] = []
@@ -486,6 +695,7 @@ async function facadeWithChild(opts: { dshHome?: string } = {}) {
 		cookieHeader: "dsh-auth-x=v1.test",
 		cwd: "/tmp/workspace",
 		...(opts.dshHome !== undefined ? { dshHome: opts.dshHome } : {}),
+		...(opts.spinRefreshTtlMs !== undefined ? { spinRefreshTtlMs: opts.spinRefreshTtlMs } : {}),
 		socketFactory: () => {
 			const socket = new FakeMuxSocket()
 			sockets.push(socket)

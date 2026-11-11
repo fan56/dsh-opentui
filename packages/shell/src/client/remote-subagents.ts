@@ -42,6 +42,7 @@ import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
 import { RemoteRpcError } from "./transport.ts"
 import { SubagentRoundPolicy, bareAgentLabel, type HardStopRecord, type SubagentRoundLimits } from "../subagent-policy.ts"
+import { createSpinAttentionSource, type JevCoreModule, type SpinAttentionSource, type SpinChildView } from "../spin-attention.ts"
 
 /** One panel row — the exact TurnCallbacks.onSubagentUpdate entry shape. */
 export interface RemoteSubagentView {
@@ -94,13 +95,23 @@ export interface RemoteSubagentPanelOptions {
 	 * per-agent tier stays plugin-mode).
 	 */
 	limits?: () => SubagentRoundLimits
-	/** Kick a lazy cap refresh before each ladder decision (optional — a
-	 * synchronous limits() provider needs no refresh kick). */
+	/** Kick a lazy settings refresh before each ladder decision (optional —
+	 * a synchronous limits() provider needs no cap-refresh kick, but the
+	 * spin-attention toggle's settings-ns read is async, so the facade kicks
+	 * its cached-snapshot refresh here). */
 	refreshLimits?: () => void
 	/** Hard-stop report sink (the force-stop marker fold). */
 	onHardStop?(record: HardStopRecord): void
 	/** Spin-detected early stop sink (the `⏻!` marker fold). */
 	onSpinStop?(childId: string, round: number): void
+	/** Spin-attention toggle, hot-read at every tick (the settings ns
+	 * `dsh-opentui` `spinAttention` knob through the facade's cached rows
+	 * snapshot). Undefined keeps the source unconstructed — the classic
+	 * ladder byte-for-byte. */
+	spinEnabled?: () => boolean
+	/** Test seam: forwarded to the spin source's module probe (pins the jev
+	 * dispatch in unit tests; production leaves it undefined). */
+	spinModule?: JevCoreModule | null
 }
 
 interface ChildState {
@@ -135,6 +146,9 @@ export class RemoteSubagentPanel {
 	#stopped = false
 	/** maxRounds round ladder (batch F1) — built only when limits are wired. */
 	readonly #policy?: SubagentRoundPolicy
+	/** Spin attention source (the early-stop verdict feed) — built only when
+	 * a spinEnabled reader is wired; ticked from the live round fold. */
+	readonly #spinAttention?: SpinAttentionSource
 
 	constructor(options: RemoteSubagentPanelOptions) {
 		this.#options = options
@@ -180,6 +194,17 @@ export class RemoteSubagentPanel {
 					this.#children.set(id, { ...child, spinStopRound: round })
 					this.#emit()
 				},
+			})
+		}
+		// Spin attention feed (the early-stop verdict source): verdicts push
+		// through the panel's own sink (the round policy's streak trail).
+		// jev-optional by construction — the source ticks silently when the
+		// toggle is off, the core probe fails, or no key is configured.
+		if (options.spinEnabled !== undefined) {
+			this.#spinAttention = createSpinAttentionSource({
+				enabledReader: options.spinEnabled,
+				onVerdict: (childId, score) => this.noteSpinVerdict(childId, score),
+				...(options.spinModule !== undefined ? { module: options.spinModule } : {}),
 			})
 		}
 	}
@@ -298,11 +323,11 @@ export class RemoteSubagentPanel {
 	 */
 	/**
 	 * The spin-detection feed (jev noul verdict for one child, 0–1): forward
-	 * to the panel's round policy streak trail. The client face has no
-	 * verdict stream of its own (verdicts live host-side — the mounted
-	 * dsh-agent-dispatch chain); callers with a verdict trail push through
-	 * here. A no-op when the ladder is disabled (no limits wired) or the
-	 * child is unknown.
+	 * to the panel's round policy streak trail. The production caller is the
+	 * panel's spin attention source (its onVerdict lands here, one fresh
+	 * noul score per child per debounced classify); external callers with a
+	 * verdict trail (e2e probes) may push through too. A no-op when the
+	 * ladder is disabled (no limits wired) or the child is unknown.
 	 */
 	noteSpinVerdict(id: string, noul: number): void {
 		if (!this.#children.has(id)) return
@@ -559,6 +584,12 @@ export class RemoteSubagentPanel {
 			if (this.#policy !== undefined && options.feedLadder) {
 				this.#options.refreshLimits?.()
 				this.#policy.onRoundCount(id, next.rounds, next.label)
+				// Spin attention feed (the early-stop verdict source): a looping
+				// child fires assistant events every round — the tick cadence
+				// the debounced jev probe needs. Self-serializing + debounced
+				// inside the source; same live-frame gate as the ladder (a
+				// replay must not tick, and no ladder means no sink to feed).
+				this.#tickSpinAttention()
 			}
 			for (const line of text.split("\n")) if (line.trim()) log.push(line.slice(0, 110))
 		} else if (type === "tool/call") {
@@ -597,6 +628,24 @@ export class RemoteSubagentPanel {
 		}
 		while (log.length > 200) log.shift()
 		return changed
+	}
+
+	/**
+	 * One tick opportunity for the spin source, folded out of the live round
+	 * fold (host-session #tickSpinAttention parity): the views snapshot is
+	 * rebuilt per tick (small — live children only) and the state table's
+	 * cap is the settings-resolved global maxRounds (the client face has no
+	 * per-agent tier). No-op when the source was never constructed.
+	 */
+	#tickSpinAttention(): void {
+		if (this.#spinAttention === undefined) return
+		const cap = this.#options.limits?.().maxRounds ?? 0
+		const views: SpinChildView[] = []
+		for (const [childId, view] of this.#children) {
+			if (view.status !== "running") continue
+			views.push({ childId, label: view.label, rounds: view.rounds, running: true, startedAt: view.startedAt })
+		}
+		if (views.length > 0) this.#spinAttention.tick(views, cap)
 	}
 
 	#emit(): void {

@@ -19,7 +19,7 @@
  *                            send to the model)
  *   plain text            → not a command; caller sends/steers as batch 4
  */
-import type { SeamPresetRow, SessionSeam } from "../../seams/session"
+import type { SeamEffortOption, SeamPresetRow, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
 import { emptyFilteredCopy, filterSessionsBySizeFloor, resumePickerOptions } from "./resume-picker"
@@ -66,6 +66,23 @@ function persistHints(seam: SessionSeam): void {
 	} catch (error) {
 		console.error("[commands] hints persist failed:", error)
 	}
+}
+
+/**
+ * The `/model` stage-2 row-0 pick value ("(model default)"): applying it
+ * rides `selectEffort(undefined)` = clear the override (the /agents
+ * pickerSelectEffort row-0 parity) — never a real ladder id. Exported for
+ * the command tests (the fake pickOne echoes this value back).
+ */
+export const MODEL_DEFAULT_EFFORT_PICK = "__model_default__"
+
+/**
+ * One short, key-free failure line for a seam rejection (the /login commit
+ * convention — `String(e.message).slice(0, 150)`): the /model and /think
+ * failure arms print it instead of echoing an acceptance that never happened.
+ */
+function seamFailureReason(error: unknown): string {
+	return String(error instanceof Error ? error.message : error).slice(0, 150)
 }
 
 /** One registry row: name carries the leading slash ("/help"). */
@@ -384,8 +401,16 @@ export function coreCommands(): SlashCommand[] {
 		},
 		{
 			name: "/model",
-			description: "switch model (bare opens the picker)",
+			description: "switch model (bare opens the picker, then the effort picker)",
 			async run(ctx, argText) {
+				// A previously SILENT selection failure (the staged route's
+				// re-send onto the last session create, a fire-and-forget
+				// switchModel): surface it before this pick — the footer label
+				// may still name a route the host never accepted.
+				const pendingSelectionError = ctx.seam.lastSelectionError?.()
+				if (pendingSelectionError) {
+					ctx.say(`model note: the last staged switch failed — ${pendingSelectionError}`)
+				}
 				const arg = argText.trim()
 				if (arg) {
 					const [providerID, modelID] = arg.split("/")
@@ -393,7 +418,14 @@ export function coreCommands(): SlashCommand[] {
 						ctx.say(`usage: /model or /model provider/model (got "${arg}")`)
 						return
 					}
-					await ctx.seam.selectModel(providerID, modelID)
+					// Argument form stays one-shot (script/muscle-memory path):
+					// no second stage, byte-identical to the pre-two-stage flow.
+					try {
+						await ctx.seam.selectModel(providerID, modelID)
+					} catch (error) {
+						ctx.say(`model switch failed — ${seamFailureReason(error)}`)
+						return
+					}
 					ctx.say(`model → ${providerID}/${modelID}`)
 					ctx.refreshFooter?.()
 					return
@@ -414,8 +446,99 @@ export function coreCommands(): SlashCommand[] {
 				)
 				if (!picked) return
 				const [providerID, modelID] = picked.split("/")
-				await ctx.seam.selectModel(providerID, modelID)
+				// The two stages are ONE transaction (tui-pi selectors.ts:465-520
+				// parity): stage 1 only picks — nothing commits here. Stage-2
+				// prep reads the picked model's real ladder BEFORE any commit.
+				// A host without the optional `effortsFor` arm, an empty ladder,
+				// or a failed read all mean there IS no stage 2: the model pick
+				// is then the whole transaction and commits immediately (the
+				// pre-two-stage behavior) with one merged notice line.
+				const thinking = ctx.seam.thinking
+				let ladder: SeamEffortOption[] = []
+				try {
+					ladder = (await thinking?.effortsFor?.(providerID, modelID)) ?? []
+				} catch {
+					ladder = []
+				}
+				if (ladder.length === 0) {
+					// tui-pi selectors.ts:489-498 parity: the no-ladder fallback
+					// commit carries the CURRENT effort when the pick stays on
+					// the same provider (cross-provider — or no face to read
+					// with — starts from the route's own default). The read
+					// rides the pre-commit `current` snapshot and must land
+					// BEFORE the model write: afterwards the route's effort is
+					// the new model's business, not the kept one.
+					const keptEffort =
+						current?.providerID === providerID
+							? await thinking?.currentEffort()
+							: undefined
+					try {
+						await ctx.seam.selectModel(providerID, modelID)
+					} catch (error) {
+						ctx.say(`model switch failed — ${seamFailureReason(error)}`)
+						return
+					}
+					ctx.say(`model → ${picked} (no think levels)`)
+					if (keptEffort !== undefined) {
+						try {
+							await thinking?.selectEffort(keptEffort)
+						} catch (error) {
+							ctx.say(`thinking switch failed — ${seamFailureReason(error)}`)
+							ctx.refreshFooter?.()
+							return
+						}
+						ctx.say(`thinking → ${keptEffort} (next turn)`)
+					}
+					ctx.refreshFooter?.()
+					return
+				}
+				// Stage 2 — the /think effort window over the new model's
+				// ladder. Row 0 is "(model default)": picking it commits the
+				// model with the override cleared (selectEffort(undefined) =
+				// the model default). Esc here abandons the WHOLE selection —
+				// stage 1 never committed, so nothing switches (tui-pi
+				// selectors.ts:508-513).
+				const effortNow = await thinking?.currentEffort()
+				const effortPicked = await ctx.pickOne(
+					`Select reasoning effort — ${picked}`,
+					[
+						{ title: "(model default)", value: MODEL_DEFAULT_EFFORT_PICK },
+						...ladder.map((effort) => ({
+							title: effort.name,
+							value: effort.id,
+							description: effort.id === effortNow ? "current" : effort.description,
+						})),
+					],
+				)
+				if (!effortPicked) {
+					ctx.say("model unchanged")
+					return
+				}
+				const effort = effortPicked === MODEL_DEFAULT_EFFORT_PICK ? undefined : effortPicked
+				// One deferred commit at the confirmed boundary, ordered like
+				// /think's contract (review 3.5): bump the footer ordinal
+				// BEFORE the host accepts, model first, then the effort on top
+				// of it, refresh after. A failed arm reports its own error line
+				// and never echoes the acceptance it did not get: the model
+				// rejection abandons the whole transaction (no effort write on
+				// top of the OLD route), an effort rejection after an accepted
+				// model still keeps the (real) model success line.
+				ctx.invalidateFooter?.()
+				try {
+					await ctx.seam.selectModel(providerID, modelID)
+				} catch (error) {
+					ctx.say(`model switch failed — ${seamFailureReason(error)}`)
+					return
+				}
 				ctx.say(`model → ${picked}`)
+				try {
+					await thinking?.selectEffort(effort)
+				} catch (error) {
+					ctx.say(`thinking switch failed — ${seamFailureReason(error)}`)
+					ctx.refreshFooter?.()
+					return
+				}
+				ctx.say(`thinking → ${effortPicked === MODEL_DEFAULT_EFFORT_PICK ? "model default" : effortPicked} (next turn)`)
 				ctx.refreshFooter?.()
 			},
 		},
@@ -700,8 +823,15 @@ export function coreCommands(): SlashCommand[] {
 				// Await the host's acceptance (the seam promise) BEFORE the
 				// footer refresh — currentEffort() reads the accepted route, so
 				// refreshing first would race the old effort back onto the
-				// footer (tui-pi updates the footer segment immediately).
-				await thinking.selectEffort(picked)
+				// footer (tui-pi updates the footer segment immediately). A
+				// rejected acceptance prints the failure line instead of the
+				// success echo and leaves the footer on the old effort.
+				try {
+					await thinking.selectEffort(picked)
+				} catch (error) {
+					ctx.say(`thinking switch failed — ${seamFailureReason(error)}`)
+					return
+				}
 				ctx.say(`thinking → ${picked} (next turn)`)
 				ctx.refreshFooter?.()
 			},
