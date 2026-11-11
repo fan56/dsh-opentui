@@ -17,13 +17,15 @@
  * ThemeProvider is mounted). `bg`/`fg` accept either a hex string or an
  * RGBA token so tests and callers can mix both.
  */
-import { createEffect, createSignal, For, on, Show, type JSX } from "solid-js"
+import { createEffect, createMemo, createSignal, For, on, Show, type JSX } from "solid-js"
 import { onAnimationTick } from "@opentui/solid"
 import { RGBA } from "@opentui/core"
 import type { ComponentTheme } from "../../theme/component"
 import { ROLL_MS, STREAM_FPS, getMotionTier } from "../../skin/motion"
 import { brandBlue, type SkinColorMode } from "../../skin/identity"
 import { clipToWidth } from "./tool-summarize"
+import { stringWidth } from "../../util/string-width"
+import { useTerminalSize } from "./terminal-size"
 
 /** A color that is either a token RGBA or a fallback hex string. */
 export type PowerlineColor = string | RGBA
@@ -65,6 +67,17 @@ export interface PowerlineSegment {
 	 * animation.
 	 */
 	semantic?: "danger" | "warning" | "error"
+	/**
+	 * Degraded label shape used BEFORE this segment is dropped when the strip
+	 * is narrower than its segments (the 🧠 `used/window(x.x%)` → `used`
+	 * leg of the footer's narrowing chain).
+	 */
+	degrade?: string
+	/**
+	 * Keep priority when the footer must shed segments (higher survives
+	 * longer; equal priorities shed the rightmost first). Omitted = 0.
+	 */
+	priority?: number
 }
 
 /**
@@ -573,7 +586,7 @@ export function resolvePalette(theme?: ComponentTheme) {
  */
 export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode: SkinColorMode = "dark"): PowerlineSegment {
 	const label = presetLabel ? `dsh(${presetLabel})` : "dsh"
-	return { text: label, bg: brandBlue(mode) }
+	return { text: label, bg: brandBlue(mode), priority: 100 }
 }
 
 /**
@@ -588,8 +601,8 @@ export function providerSegment(
 ): PowerlineSegment | null {
 	if (!provider) return null
 	const label = `☁️ ${provider}`
-	if (!theme) return { text: label, bg: POWERLINE_COLORS.provider }
-	return { text: label, bg: powerlinePalette(theme, brandBlue(mode)).provider }
+	if (!theme) return { text: label, bg: POWERLINE_COLORS.provider, priority: 60 }
+	return { text: label, bg: powerlinePalette(theme, brandBlue(mode)).provider, priority: 60 }
 }
 
 /**
@@ -652,7 +665,7 @@ export function modelSegment(
 ): PowerlineSegment | null {
 	if (!model) return null
 	const word = effectiveEffort(effort)
-	return { text: `🤖 ${clipToWidth(model, 24)} ${effortIcon(word)} ${word}`, bg: effortFill(resolvePalette(theme), word) }
+	return { text: `🤖 ${clipToWidth(model, 24)} ${effortIcon(word)} ${word}`, bg: effortFill(resolvePalette(theme), word), priority: 70 }
 }
 
 /**
@@ -695,6 +708,8 @@ export function contextSegment(
 		return {
 			text: `🧠 ${fmtNum(used)}/${fmtNum(window)}(${percent.toFixed(1)}%)`,
 			bg,
+			degrade: `🧠 ${fmtNum(used)}`,
+			priority: 90,
 			roll: { value: percent, decimals: 1, width: rollingWidth(percent, 1), prefix: `🧠 ${fmtNum(used)}/${fmtNum(window)}(`, suffix: "%)" },
 			// >90% is the footer gradient's semantic exception: the danger fill
 			// survives (warning color stays a warning, not a ramp step).
@@ -704,6 +719,7 @@ export function contextSegment(
 	return {
 		text: `🧠 ${fmtNum(used)}`,
 		bg: p.contextOk,
+		priority: 90,
 		roll: { value: used, decimals: 0, width: rollingWidth(used), prefix: "🧠 ", suffix: "" },
 	}
 }
@@ -715,7 +731,7 @@ export function contextSegment(
  */
 export function messagesSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
 	if (!Number.isFinite(n) || n < 0) return null
-	return { text: `💬 ${n} msgs`, bg: resolvePalette(theme).messages }
+	return { text: `💬 ${n} msgs`, bg: resolvePalette(theme).messages, priority: 80 }
 }
 
 /**
@@ -725,7 +741,7 @@ export function messagesSegment(n: number, theme?: ComponentTheme): PowerlineSeg
  */
 export function toolSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
 	if (!Number.isFinite(n) || n < 0) return null
-	return { text: `🔧 ${n} tools`, bg: resolvePalette(theme).tools }
+	return { text: `🔧 ${n} tools`, bg: resolvePalette(theme).tools, priority: 50 }
 }
 
 /**
@@ -753,6 +769,7 @@ export function elapsedSegment(seconds: number | null, theme?: ComponentTheme): 
 	return {
 		text: `⏱ ${Math.round(seconds)}s`,
 		bg: theme?.hue.neutral[400] ?? "#616161",
+		priority: 30,
 		roll: { value: seconds, decimals: 0, width: 3, prefix: "⏱ ", suffix: "s" },
 	}
 }
@@ -766,7 +783,7 @@ export function elapsedSegment(seconds: number | null, theme?: ComponentTheme): 
  */
 export function cacheSegment(rate: number | null, theme?: ComponentTheme): PowerlineSegment | null {
 	if (rate === null || !Number.isFinite(rate) || rate < 0) return null
-	return { text: `⚡ CH${rate.toFixed(1)}%`, bg: resolvePalette(theme).cache }
+	return { text: `⚡ CH${rate.toFixed(1)}%`, bg: resolvePalette(theme).cache, priority: 40 }
 }
 
 /**
@@ -850,7 +867,86 @@ function RollingSegmentText(props: { seg: PowerlineSegment }): JSX.Element {
 		const s = spec()
 		return ` ${s.prefix ?? ""}${formatRolling(display(), s.decimals, s.width)}${s.suffix ?? ""} `
 	}
-	return <text style={{ bg: props.seg.bg, fg: props.seg.fg ?? autoContrast(props.seg.bg) }}>{label()}</text>
+	return <text wrapMode="none" style={{ bg: props.seg.bg, fg: props.seg.fg ?? autoContrast(props.seg.bg) }}>{label()}</text>
+}
+
+/**
+ * Width-aware segment fitting (footer no-wrap law). A powerline strip is ONE
+ * row: when the terminal is narrower than the assembled segments it must
+ * shed whole segments by keep-priority — never let the flex row squeeze the
+ * label `<text>` nodes into wrapped continuation rows (the 80/45-column
+ * defect: labels split mid-word and painted over the next row).
+ *
+ * Narrowing order:
+ *   1. drop low-priority whole segments (degradable ones and the top-priority
+ *      survivor are protected while anything else can go),
+ *   2. degrade a protected segment that carries `degrade` (🧠 full →
+ *      `🧠 used`),
+ *   3. drop the degraded survivor, then truncate the last one if even it
+ *      does not fit.
+ * The optional right text (clock) is only painted when the leftover columns
+ * hold it. `available` is the strip's column budget (terminal width minus
+ * the row's left padding); returned widths are exact display columns.
+ */
+export function fitPowerlineSegments(
+	segments: readonly PowerlineSegment[],
+	available: number,
+	right?: string,
+): { segments: PowerlineSegment[]; right?: string } {
+	const limit = Math.max(0, Math.floor(available))
+	const measure = (segment: PowerlineSegment) => stringWidth(segment.text) + 2
+	const stripWidth = (list: readonly PowerlineSegment[]) =>
+		list.reduce((n, segment) => n + measure(segment), 0) + list.length // + arrows
+	let kept = [...segments]
+	const topPriority = () => Math.max(...kept.map((segment) => segment.priority ?? 0))
+	const shedOne = (allowed: (segment: PowerlineSegment) => boolean) => {
+		// Lowest priority goes first; ties drop the rightmost.
+		let victim = -1
+		for (let i = 0; i < kept.length; i++) {
+			const segment = kept[i]!
+			if (!allowed(segment)) continue
+			if (victim < 0 || (segment.priority ?? 0) <= (kept[victim]!.priority ?? 0)) victim = i
+		}
+		if (victim < 0) return false
+		kept = kept.filter((_, i) => i !== victim)
+		return true
+	}
+	// 1) Shed whole low-priority segments (the full label is always preferred
+	//    over a shortened higher-priority one — this keeps 🧠 full at 45 cols).
+	//    Degradable segments and the top-priority survivor are protected here:
+	//    they get the degradation step below before anything drops them.
+	while (kept.length > 1 && stripWidth(kept) > limit) {
+		const top = topPriority()
+		if (!shedOne((segment) => segment.degrade === undefined && (segment.priority ?? 0) < top)) break
+	}
+	// 2) Degrade what can be degraded (🧠 `used/window(x.x%)` → `used`)
+	//    BEFORE dropping it entirely.
+	if (stripWidth(kept) > limit) {
+		for (let i = 0; i < kept.length; i++) {
+			const candidate = kept[i]!
+			if (candidate.degrade === undefined || candidate.degrade === candidate.text) continue
+			const degraded: PowerlineSegment = { ...candidate, text: candidate.degrade, roll: undefined }
+			if (measure(degraded) >= measure(candidate)) continue
+			kept = [...kept.slice(0, i), degraded, ...kept.slice(i + 1)]
+			if (stripWidth(kept) <= limit) break
+		}
+	}
+	// 3) Still over budget → keep shedding (now the degraded survivor).
+	while (kept.length > 1 && stripWidth(kept) > limit) {
+		const top = topPriority()
+		if (!shedOne((segment) => (segment.priority ?? 0) < top)) break
+	}
+	// 4) Last survivor still too wide → hard clip (padding + closing arrow).
+	if (kept.length === 1 && stripWidth(kept) > limit) {
+		const room = Math.max(0, limit - 3)
+		const only = kept[0]!
+		kept = [{ ...only, text: clipToWidth(only.text, room), roll: undefined }]
+	}
+	const rightText =
+		right !== undefined && right !== "" && stripWidth(kept) + stringWidth(right) + 1 <= limit
+			? right
+			: undefined
+	return { segments: kept, right: rightText }
 }
 
 /**
@@ -860,6 +956,10 @@ function RollingSegmentText(props: { seg: PowerlineSegment }): JSX.Element {
  * above; segments carrying a `roll` spec render through the fixed-width
  * rolling leaf. The right text sits on the terminal default background, so
  * its color is theme.text.base (fallback #e6e6e6 without a provider).
+ *
+ * No-wrap contract: `fitPowerlineSegments` runs against the terminal width
+ * first, so every surviving label fits its column budget; every `<text>` is
+ * also `wrapMode="none"` as a belt-and-braces guard.
  */
 export function PowerlineFooter(props: {
 	left: PowerlineSegment[]
@@ -872,26 +972,29 @@ export function PowerlineFooter(props: {
 	// every shrinkable child and this row collapsed to 0 rows — the footer
 	// "disappeared at settle" (live: boot/early-stream fine, gone after a
 	// 60-sentence turn, resize did not restore it). Never shrink it.
+	const dimensions = useTerminalSize()
+	// The row itself carries paddingLeft: 1, so the budget is width - 1.
+	const fitted = createMemo(() => fitPowerlineSegments(props.left, dimensions().width - 1, props.right))
 	return (
 		<box style={{ flexDirection: "row", paddingLeft: 1, flexShrink: 0 }}>
-			<For each={props.left}>
+			<For each={fitted().segments}>
 				{(seg, i) => {
-					const next = () => props.left[i() + 1]
+					const next = () => fitted().segments[i() + 1]
 					return (
 						<>
-							<Show when={seg.roll} fallback={<text style={{ bg: seg.bg, fg: seg.fg ?? autoContrast(seg.bg) }}>{` ${seg.text} `}</text>}>
+							<Show when={seg.roll} fallback={<text wrapMode="none" style={{ bg: seg.bg, fg: seg.fg ?? autoContrast(seg.bg) }}>{` ${seg.text} `}</text>}>
 								<RollingSegmentText seg={seg} />
 							</Show>
-							<Show when={next()} fallback={<text style={{ fg: seg.bg }}>{POWERLINE_ARROW}</text>}>
-								{(n) => <text style={{ fg: seg.bg, bg: n().bg }}>{POWERLINE_ARROW}</text>}
+							<Show when={next()} fallback={<text wrapMode="none" style={{ fg: seg.bg }}>{POWERLINE_ARROW}</text>}>
+								{(n) => <text wrapMode="none" style={{ fg: seg.bg, bg: n().bg }}>{POWERLINE_ARROW}</text>}
 							</Show>
 						</>
 					)
 				}}
 			</For>
-			<Show when={props.right}>
+			<Show when={fitted().right}>
 				<box style={{ flexGrow: 1 }} />
-				<text style={{ fg: props.theme?.text.base ?? "#e6e6e6" }}>{props.right}</text>
+				<text wrapMode="none" style={{ fg: props.theme?.text.base ?? "#e6e6e6" }}>{fitted().right}</text>
 			</Show>
 		</box>
 	)

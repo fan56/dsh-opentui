@@ -16,7 +16,8 @@
  * `showNotice(text)` from anywhere (the steer feedback bridge is the first).
  */
 import { For, createSignal, Show, type JSX } from "solid-js"
-import { useTerminalDimensions, onAnimationTick } from "@opentui/solid"
+import { onAnimationTick } from "@opentui/solid"
+import { useTerminalSize } from "./terminal-size"
 import type { RGBA } from "@opentui/core"
 import { clipToWidth } from "./tool-summarize"
 import { useThemeOptional } from "../../context/theme"
@@ -106,7 +107,7 @@ export function noticeAnimating(notice: Notice, now: number = Date.now()): boole
  * unchanged), error markers pulse 3× then rest — all color interpolation
  * on the shared motion clock (no opacity, no timers). */
 export function NoticesDock(): JSX.Element {
-	const dimensions = useTerminalDimensions()
+	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
 	const [tick, setTick] = createSignal(0)
 	onAnimationTick(

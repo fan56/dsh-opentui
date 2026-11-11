@@ -298,7 +298,25 @@ const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
     console.error('ui-matrix: could not patch contextWindow into the scratch profile')
     process.exit(2)
   }
-  writeFileSync(patchPath, withWindow)
+  // Deterministic route: re-pin the default model selection to the mocked
+  // provider inside the SCRATCH patch (the operator's real profile may or
+  // may not carry the agent-default-model row; the host catalog default is
+  // not stable across environments and would send real requests).
+  patch = withWindow
+  if (!/agent-default-model/.test(patch)) {
+    patch += [
+      '',
+      '# ui-matrix: pin the default route to the mocked provider.',
+      '- id: agent-default-model',
+      '  name: "@deepseek-ai/dsh-agent-default-model"',
+      '  config:',
+      '    provider: zai-coding-cn',
+      '    model: glm-5.3-flash',
+      '    reasoningEffort: high',
+      '',
+    ].join('\n')
+  }
+  writeFileSync(patchPath, patch)
 }
 
 const LOCK = join(HOME, `opentui-host.${PROFILE}.json`)
@@ -490,8 +508,7 @@ async function sceneFooter(session, geom, { compact = true } = {}) {
   record('footer', 'the powerline strip occupies one row (no wrapped continuation)',
     between.length === 0,
     between.length === 0 ? ['no continuation rows']
-      : failDetail('0 continuation rows', `${between.length}: ${JSON.stringify(between.map((l) => l.trim()))}`, frame, '\ue0b0'),
-    { known: geom.cols < 110 })
+      : failDetail('0 continuation rows', `${between.length}: ${JSON.stringify(between.map((l) => l.trim()))}`, frame, '\ue0b0'))
   const row = rows[0] ?? ''
   const within = widthOf(row) <= geom.cols
   record('footer', 'every segment stays inside the terminal width', within,
@@ -507,8 +524,7 @@ async function sceneFooter(session, geom, { compact = true } = {}) {
     const bare = /^🧠 \S+$/.test(segment.trim())
     record('footer', 'the 🧠 segment degrades to the bare `🧠 used` shape with no window',
       bare, bare ? [`segment: ${JSON.stringify(segment.trim())}`]
-        : failDetail('🧠 <used>', `segment=${JSON.stringify(segment.trim())}`, frame, '🧠'),
-      { known: geom.cols < 110 })
+        : failDetail('🧠 <used>', `segment=${JSON.stringify(segment.trim())}`, frame, '🧠'))
     return
   }
   // 🧠 compact form may be clipped at 45 cols; the inner spacing law holds
@@ -518,8 +534,7 @@ async function sceneFooter(session, geom, { compact = true } = {}) {
   record('footer', 'the 🧠 segment is the compact `used/window(x.x%)` form with no stray spaces',
     compactOk && noInnerSpace,
     (compactOk && noInnerSpace) ? [`segment: ${JSON.stringify(segment.trim())}`]
-      : failDetail('🧠 <used>/<window>(x.x%) with no inner spaces', `segment=${JSON.stringify(segment.trim())}`, frame, '🧠'),
-    { known: geom.cols < 110 })
+      : failDetail('🧠 <used>/<window>(x.x%) with no inner spaces', `segment=${JSON.stringify(segment.trim())}`, frame, '🧠'))
 }
 
 function focusFrame(frame) {
@@ -659,14 +674,20 @@ async function sceneContent(session, geom) {
   record('content', 'the assistant markdown lands in the transcript', done.ok && lines.some((l) => l.includes('Report Heading One')),
     done.ok ? ['heading visible at the top'] : failDetail('assistant reply', 'missing', frame, 'Report'))
   // Final fenced block: single frame with the language title in the top
-  // border. Scroll down until the block enters the viewport.
+  // border. Scroll down until BOTH the title row and the code body are in
+  // the viewport — stopping at the title alone can leave the body one row
+  // below the fold (the frame lands on the last visible row).
   let codeFrame = ''
-  for (let i = 0; i < 12 && codeFrame === ''; i++) {
-    const candidate = stripAnsi(capture(session)).split('\n').find((l) => /┌[─]*\sts\s[─]*┐/.test(l.trim()))
+  let codeBody = false
+  for (let i = 0; i < 16 && !(codeFrame !== '' && codeBody); i++) {
+    const plain = stripAnsi(capture(session))
+    const candidate = plain.split('\n').find((l) => /┌[─]*\sts\s[─]*┐/.test(l.trim()))
     if (candidate) codeFrame = candidate
-    else { for (let k = 0; k < 3; k++) { sendKeys(session, 'Down'); await sleep(60) }; await sleep(220) }
+    codeBody = plain.split('\n').some((l) => l.includes('function greet'))
+    if (codeFrame !== '' && codeBody) break
+    for (let k = 0; k < 2; k++) { sendKeys(session, 'Down'); await sleep(70) }
+    await sleep(200)
   }
-  const codeBody = stripAnsi(capture(session)).split('\n').some((l) => l.includes('function greet'))
   record('content', 'the final code block keeps its single frame and language title',
     codeFrame !== '' && codeBody,
     codeFrame !== '' ? [`title row: ${JSON.stringify(codeFrame.trim().slice(0, 48))}`]
@@ -831,9 +852,18 @@ async function sceneTool(session, geom) {
     await sleep(200)
     sendKeys(session, 'Enter')
     await sleep(350)
-    sendKeys(session, 'End') // last row = "⏎ Submit answers"
-    await sleep(200)
-    sendKeys(session, 'Enter')
+    // The review page exposes "⏎ Submit answers" as its last row. Settle it
+    // deterministically: keep nudging the selection down + Enter until the
+    // dialog leaves the pane (the old single End+Enter left the overlay up,
+    // hiding the dock row the check reads).
+    for (let i = 0; i < 8; i++) {
+      const pane = stripAnsi(capture(session))
+      if (!/Review answers|Question \(\d\/\d\)/.test(pane)) break
+      sendKeys(session, 'Down')
+      await sleep(120)
+      sendKeys(session, 'Enter')
+      await sleep(350)
+    }
   }
   let toolRows = 0
   let sample = ''
@@ -851,8 +881,8 @@ async function sceneTool(session, geom) {
   record('tool', 'a running tool paints one dock line inside the activity slot (never more than the cap)',
     toolRows >= 1 && toolRows <= Math.max(cap, 1),
     toolRows >= 1 ? [`${toolRows} tool row(s), cap ${cap}`, `line: ${JSON.stringify(sample)}`]
-      : failDetail('⚙ ask_user_question dock line', 'missing', capture(session), 'activity'),
-    { known: geom.cols < 110 })
+      : failDetail('⚙ ask_user_question dock line', 'missing', capture(session), 'activity'))
+  snap(`${geom.label}-03-tool`, session)
   // The dock line must fit its column band: a wider line wraps INTO the
   // frame border instead of clipping (the narrow-terminal failure).
   const dockRow = stripAnsi(capture(session)).split('\n').find((l) => l.includes('ask_user_question')) ?? ''
@@ -861,8 +891,7 @@ async function sceneTool(session, geom) {
     dockFits,
     dockFits ? [`width: ${widthOf(dockRow)}/${geom.cols}`]
       : failDetail(`one row ≤ ${geom.cols} columns, no frame glyph interleaved`,
-        `row=${JSON.stringify(dockRow.slice(0, 90))} width=${widthOf(dockRow)}`, capture(session), 'ask_user_question'),
-    { known: geom.cols < 110 })
+        `row=${JSON.stringify(dockRow.slice(0, 90))} width=${widthOf(dockRow)}`, capture(session), 'ask_user_question'))
   for (let i = 0; i < 2; i++) { sendKeys(session, 'Escape'); await sleep(300) }
   await waitPane(session, idle, 20_000)
   if (!idle(capture(session))) { sendKeys(session, 'Escape'); await sleep(500) }

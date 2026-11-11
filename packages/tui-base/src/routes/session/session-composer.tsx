@@ -65,7 +65,8 @@
  * textarea's reported height (+ footer), never auto-height in a flex column.
  */
 import { createSignal, onCleanup, Show, type JSX } from "solid-js"
-import { useRenderer, useTerminalDimensions } from "@opentui/solid"
+import { useRenderer } from "@opentui/solid"
+import { useTerminalSize } from "./terminal-size"
 import { measureEditText, RenderableEvents, type KeyEvent, type TextareaRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { ComposerController, type ComposerDelivery, type ComposerFlushResult, type ComposerHistory, type ComposerPendingRow, type ComposerQueuePause } from "./composer-state"
@@ -179,7 +180,7 @@ export type SessionComposerProps = {
 export function SessionComposer(props: SessionComposerProps) {
 	const FOOTER_HEIGHT = props.footerHint === false ? 0 : 1
 	const renderer = useRenderer()
-	const dimensions = useTerminalDimensions()
+	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
 	// useCursorStyle needs the ConfigProvider; the FT harness mounts bare.
 	let configCursorStyle: (() => { style?: string; blinking?: boolean }) | undefined

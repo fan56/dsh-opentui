@@ -50,7 +50,8 @@
  * active frame is therefore at most 4/6/8 content+2 rows tall.
  */
 import { For, createEffect, createSignal, onCleanup, Show, untrack, type JSX } from "solid-js"
-import { useTerminalDimensions, onAnimationTick } from "@opentui/solid"
+import { onAnimationTick } from "@opentui/solid"
+import { useTerminalSize } from "./terminal-size"
 import { parseColor, TextAttributes, type RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
@@ -1008,7 +1009,7 @@ export function WidgetsDock(props: {
 	 * frame, H2). Omitted → derived from the rows (dockTurnActive). */
 	turnActive?: () => boolean
 }): JSX.Element {
-	const dimensions = useTerminalDimensions()
+	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
 	const fgFor = (tone: DockLine["tone"]): string | RGBA =>
 		tone === "running"

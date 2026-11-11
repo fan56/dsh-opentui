@@ -20,7 +20,7 @@
  * Colors: the skin's muted token (no-provider fallback = the kit #565f89).
  */
 import { createEffect, createSignal, on, Show, type JSX } from "solid-js"
-import { useTerminalDimensions } from "@opentui/solid"
+import { useTerminalSize } from "./terminal-size"
 import { homedir } from "node:os"
 import { useThemeOptional } from "../../context/theme"
 import { abbreviateHome } from "../../util/path-format"
@@ -76,7 +76,7 @@ export type ComposerContextProps = {
 }
 
 export function ComposerContext(props: ComposerContextProps): JSX.Element {
-	const dimensions = useTerminalDimensions()
+	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
 	const [branch, setBranch] = createSignal("")
 

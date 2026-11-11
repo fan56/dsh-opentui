@@ -29,7 +29,7 @@
  * the ordering — footer paints UNDER the composer).
  */
 import { For, type JSX } from "solid-js"
-import { useTerminalDimensions } from "@opentui/solid"
+import { useTerminalSize } from "./terminal-size"
 import type { RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import { clipToWidth } from "./tool-summarize"
@@ -170,7 +170,7 @@ export function LastRequestDock(props: {
 	/** The last submitted model prompt (page signal; undefined → no echo). */
 	lastRequest: string | undefined
 }): JSX.Element {
-	const dimensions = useTerminalDimensions()
+	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
 	const fgFor = (tone: LastRequestLine["tone"]): string | RGBA =>
 		tone === "running" ? (theme?.text.feedback.warning.base ?? "#e0af68") : (theme?.text.muted ?? "#9aa5ce")

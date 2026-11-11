@@ -248,17 +248,23 @@ export class RemoteSessionSeam implements SessionSeam {
 	 */
 	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
 		const base = this.#session.sessionInfo()
-		if (base.sessionId === undefined) return undefined
+		// `--resume-last` / `--session`: the stored id is STAGED at boot and
+		// only bound to a live session at the next turn. Until then the facade
+		// has no sessionId, but the durable transcript is already readable —
+		// falling back to the staged id lets the footer paint the restored
+		// message count instead of 0.
+		const sessionId = base.sessionId ?? this.#session.stagedSessionId?.()
+		if (sessionId === undefined) return undefined
 		let messageCount = 0
 		try {
-			const rows = await this.#session.storedTranscript(base.sessionId)
+			const rows = await this.#session.storedTranscript(sessionId)
 			messageCount = rows.filter((row) => row.kind === "user" || row.kind === "assistant").length
 		} catch {
 			/* panel shows 0 rather than failing */
 		}
 		return {
 			...base,
-			sessionId: base.sessionId,
+			sessionId,
 			model: base.model ?? null,
 			messageCount,
 			// 🧠 context row (footer context batch): the facade's occupancy

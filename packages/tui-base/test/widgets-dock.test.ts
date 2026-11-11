@@ -61,6 +61,7 @@ import {
 	dockRemovalMs,
 } from "../src/routes/session/dock-visibility"
 import type { SeamRow } from "../src/routes/session/seam-rows"
+import { clipToWidth } from "../src/routes/session/tool-summarize"
 import { stringWidth } from "../src/util/string-width"
 import { RGBA } from "@opentui/core"
 import { colorDistance, colorRgb, contrastRatio } from "../src/routes/session/powerline"
@@ -755,6 +756,24 @@ describe("dock display rules: 3 lines, 2s linger, replace", () => {
 		startedAt: NOW - 1000,
 		elapsedSec: 1,
 		faded,
+	})
+
+	test("a long tool line clips inside the dock budget: no frame glyph, one row", () => {
+		const row: ToolRow = {
+			key: "tool:live:ask",
+			kind: "tool",
+			name: "ask_user_question",
+			args: JSON.stringify({ command: "deploy the bundle to the staging cluster and verify".repeat(4) }),
+			status: "running",
+			startedAt: NOW - 2000,
+		}
+		// widgets-dock width(): terminal minus the composer/rule chrome.
+		const budget = 80 - 4
+		const clipped = clipToWidth(toolLineText(row, spin, NOW), budget)
+		expect(stringWidth(clipped)).toBeLessThanOrEqual(budget)
+		// A clipped dock row never carries the activity frame's border glyphs.
+		expect(clipped).not.toMatch(/[┃┏┓┗┛━┌┐└┘]/)
+		expect(clipped.endsWith("…")).toBe(true)
 	})
 
 	test("think: 3 lines by default; live AND collapsed show the TAIL", () => {
