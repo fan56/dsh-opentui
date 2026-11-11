@@ -558,3 +558,62 @@ describe("/settings host document face (v1)", () => {
 		})
 	})
 })
+
+describe("sessionInfo with a staged --resume-last session", () => {
+	test("counts the staged session's durable transcript before the first turn binds it", async () => {
+		const seen: string[] = []
+		const { session } = fakeSession({
+			// No live session yet (the resume id is staged, not bound).
+			sessionInfo: () => ({
+				sessionId: undefined,
+				model: undefined,
+				turnCount: 0,
+				tokensIn: 0,
+				tokensOut: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				lastTurnTps: null,
+				sessionAvgTps: null,
+				contextTokens: 0,
+				contextWindow: undefined,
+			}),
+			stagedSessionId: () => "stored-9",
+			storedTranscript: async (id: string) => {
+				seen.push(id)
+				return [
+					{ kind: "user", text: "q1" },
+					{ kind: "assistant", text: "a1", final: true },
+					{ kind: "tool", text: "t" },
+					{ kind: "user", text: "q2" },
+				]
+			},
+		})
+		const seam = new RemoteSessionSeam(session)
+		const info = await seam.sessionInfo()
+		expect(seen).toEqual(["stored-9"])
+		expect(info?.sessionId).toBe("stored-9")
+		// user + assistant rows only — the tool row is not a message.
+		expect(info?.messageCount).toBe(3)
+	})
+
+	test("a fresh session (no live and no staged id) still reports undefined", async () => {
+		const { session } = fakeSession({
+			sessionInfo: () => ({
+				sessionId: undefined,
+				model: undefined,
+				turnCount: 0,
+				tokensIn: 0,
+				tokensOut: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				lastTurnTps: null,
+				sessionAvgTps: null,
+				contextTokens: 0,
+				contextWindow: undefined,
+			}),
+			stagedSessionId: () => undefined,
+		})
+		const seam = new RemoteSessionSeam(session)
+		expect(await seam.sessionInfo()).toBeUndefined()
+	})
+})

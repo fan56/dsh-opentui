@@ -33,7 +33,8 @@
  * height — auto-height boxes collapse in flex columns.
  */
 import { For, createMemo, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
-import { useRenderer, useTerminalDimensions, onAnimationTick } from "@opentui/solid"
+import { useRenderer, onAnimationTick } from "@opentui/solid"
+import { useTerminalSize } from "./terminal-size"
 import { BoxRenderable, SyntaxStyle, TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
 import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
@@ -254,7 +255,7 @@ export function Transcript(props: TranscriptProps) {
 	// and the subagent tree (the docks own their width budgets now) — the
 	// transcript's reactive-dimensions read left with them.
 	const theme = useThemeOptional()
-	const dimensions = useTerminalDimensions()
+	const dimensions = useTerminalSize()
 	// Pane-focus frame: the SAME compact rule as the composer (≤30 rows →
 	// left/right rules only, zero rows; >30 rows → full frame + title).
 	const frame = () =>

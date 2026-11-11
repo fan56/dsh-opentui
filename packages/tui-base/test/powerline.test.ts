@@ -8,6 +8,7 @@ import {
 	brandSegment,
 	colorRgb,
 	contextSegment,
+	fitPowerlineSegments,
 	messagesSegment,
 	modelSegment,
 	powerlinePalette,
@@ -28,6 +29,7 @@ import {
 	DEFAULT_EFFORT,
 	type EffortLevel,
 } from "../src/routes/session/powerline"
+import { stringWidth } from "../src/util/string-width"
 
 /** A token-valued fake ComponentTheme with stable, distinguishable hues. */
 function fakeTheme() {
@@ -664,5 +666,76 @@ describe("default effort policy", () => {
 		expect(display).toBeUndefined() // label first: default must not land yet
 		await current
 		expect(display).toBe("off") // the label's explicit off survives
+	})
+})
+
+/**
+ * Footer no-wrap law (ui-matrix 80x24 / 45x30 finding): the strip used to let
+ * the flex row squeeze each label `<text>` until it wrapped, so segment labels
+ * split mid-word (`🧠 205/1.` / `Native)` continuation rows). The fitter must
+ * keep the strip one row, shedding low-priority whole segments and degrading
+ * the 🧠 context label along its documented chain.
+ */
+describe("footer width fitting (single-row, priority shedding)", () => {
+	const measure = (segments: readonly { text: string }[]) =>
+		segments.reduce((n, segment) => n + stringWidth(segment.text) + 2, 0) + segments.length
+	const fixture = () =>
+		sessionFooterSegments({
+			provider: "zai-coding-cn",
+			model: "glm-5.3-flash",
+			effort: "high",
+			contextTokens: 205,
+			contextWindow: 1_000_000,
+			messages: 4,
+			tools: 1,
+			tps: 42,
+		})
+
+	test("80 columns: full context survives, low-priority segments shed, row fits", () => {
+		const fitted = fitPowerlineSegments(fixture(), 79, "12:36:44")
+		expect(measure(fitted.segments)).toBeLessThanOrEqual(79)
+		const context = fitted.segments.find((segment) => segment.text.startsWith("🧠"))
+		expect(context?.text).toBe("🧠 205/1.0M(0.0%)")
+		// The clock rides while the leftover columns hold it.
+		expect(fitted.right).toBe("12:36:44")
+		expect(measure(fitted.segments) + stringWidth("12:36:44") + 1).toBeLessThanOrEqual(79)
+		// No label is a half number / dangling paren.
+		for (const segment of fitted.segments) expect(segment.text).not.toMatch(/[/(]$/)
+	})
+
+	test("45 columns: brand + full compact context (the matrix's required shape)", () => {
+		const fitted = fitPowerlineSegments(fixture(), 44)
+		expect(measure(fitted.segments)).toBeLessThanOrEqual(44)
+		const context = fitted.segments.find((segment) => segment.text.startsWith("🧠"))
+		expect(context?.text).toBe("🧠 205/1.0M(0.0%)")
+		expect(fitted.segments[0]?.text.startsWith("dsh")).toBe(true)
+		expect(fitted.segments.some((segment) => segment.text.includes("🔧"))).toBe(false)
+	})
+
+	test("degradation chain: full → bare `🧠 used` → segment omitted", () => {
+		// 22 cols: the full label no longer fits beside the brand → bare used.
+		const degraded = fitPowerlineSegments(fixture(), 22)
+		expect(measure(degraded.segments)).toBeLessThanOrEqual(22)
+		const context = degraded.segments.find((segment) => segment.text.startsWith("🧠"))
+		expect(context?.text).toBe("🧠 205")
+		expect(context?.text).not.toContain("/")
+		expect(context?.text).not.toContain("(")
+		// 8 cols: even the bare label + brand cannot fit → context is gone.
+		const omitted = fitPowerlineSegments(fixture(), 8)
+		expect(measure(omitted.segments)).toBeLessThanOrEqual(8)
+		expect(omitted.segments.some((segment) => segment.text.includes("🧠"))).toBe(false)
+		expect(omitted.segments.length).toBeGreaterThan(0)
+	})
+
+	test("hard clip: a single survivor is truncated inside the budget", () => {
+		const fitted = fitPowerlineSegments([brandSegment(undefined, "Standard")], 8)
+		expect(fitted.segments).toHaveLength(1)
+		expect(measure(fitted.segments)).toBeLessThanOrEqual(8)
+	})
+
+	test("right text rides only while the leftover columns hold it", () => {
+		const wide = fitPowerlineSegments(fixture(), 119, "12:36:44")
+		expect(wide.right).toBe("12:36:44")
+		expect(measure(wide.segments) + stringWidth("12:36:44") + 1).toBeLessThanOrEqual(119)
 	})
 })

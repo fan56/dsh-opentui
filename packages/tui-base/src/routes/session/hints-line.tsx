@@ -21,7 +21,7 @@
  * child runs — the SubagentsPicker toggle gate) are preserved.
  */
 import { createSignal, Show, type JSX } from "solid-js"
-import { useTerminalDimensions } from "@opentui/solid"
+import { useTerminalSize } from "./terminal-size"
 import { clipToWidth } from "./tool-summarize"
 import { useThemeOptional } from "../../context/theme"
 import { subagentMarkerViews } from "./subagent-markers"
@@ -249,7 +249,7 @@ export function HintsLine(props: {
 	 * startup) keeps the composer wording. */
 	pane?: () => Pane | undefined
 }): JSX.Element {
-	const dimensions = useTerminalDimensions()
+	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
 	// The rendered row (getter: tracks busy / focus pane / segment toggles /
 	// locale / live subagents / width). All segments off → '' → the row drops.

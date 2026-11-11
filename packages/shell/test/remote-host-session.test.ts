@@ -667,6 +667,18 @@ describe("RemoteHostSession session ops", () => {
 		await h.session.dispose()
 	})
 
+	test("stagedSessionId exposes the resume id until the first turn binds it", async () => {
+		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-x") })
+		expect(h.session.stagedSessionId()).toBeUndefined()
+		h.session.resumeSession("stored-9")
+		expect(h.session.stagedSessionId()).toBe("stored-9")
+		// Still staged, not live — the footer reads the durable transcript off it.
+		expect(h.session.currentSessionId()).toBeUndefined()
+		h.session.newSession()
+		expect(h.session.stagedSessionId()).toBeUndefined()
+		await h.session.dispose()
+	})
+
 	test("preset switch feeds the next session/create", async () => {
 		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-8") })
 		const { cb } = callbacks()

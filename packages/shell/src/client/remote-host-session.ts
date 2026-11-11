@@ -552,6 +552,16 @@ export class RemoteHostSession {
 	}
 
 	/**
+	 * The stored session id staged by `resumeSession()` (`--resume-last` /
+	 * `--session`), bound to a live session only at the next turn. Read-only:
+	 * the footer uses it to paint the resumed session's durable counts before
+	 * that first turn.
+	 */
+	stagedSessionId(): string | undefined {
+		return this.#resumeId
+	}
+
+	/**
 	 * Public follow-journal hook (batch 9a, additive — the SessionSeam
 	 * adapter's event feed): fires for every durable record the follow pump
 	 * appends to the live session's ledger. Listeners' exceptions are
