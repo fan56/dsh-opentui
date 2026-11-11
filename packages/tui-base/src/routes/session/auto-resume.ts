@@ -7,8 +7,9 @@
  * the pure decision core of the startup restore:
  *
  *   boot (no explicit session, no `--new`)
- *     → read `autoResume` ("last" | "off", default "last") + `autoResumeDays`
- *       (default 7) off the merged profile config
+ *     → read `autoResume` ("last" | "off", default "off" — a plain launch is a
+ *       NEW session) + `autoResumeDays` (default 7) off the merged profile
+ *       config, or `--resume-last` on the command line (overrides the config)
  *     → list stored sessions (the /resume list: newest first, subagent rows
  *       and the /btw marker rows already filtered by the seam)
  *     → pick the newest session that is
@@ -24,8 +25,10 @@
  * or a throwing resume, logs ONE warning and leaves the boot on a fresh
  * session. The list call is bounded so a hung host cannot hold the first paint.
  *
- * Explicit intent always wins: `--new`, `--session <id>`, `autoResume: "off"`,
- * and (later) `/new` and `/resume` are untouched by this path.
+ * Explicit intent always wins: `--new` (highest priority), `--session <id>`,
+ * `--resume-last`, `autoResume: "off"`, and (later) `/new` and `/resume` are
+ * untouched by this path. With the default `off` nothing is listed, no session
+ * id is staged, and no `resumed …` notice is produced.
  */
 import { relativeTime } from "./resume-picker"
 
@@ -45,25 +48,32 @@ export const AUTO_RESUME_LIST_LIMIT = 50
 
 /** Explicit launch intent parsed off the CLI. */
 export interface LaunchArgs {
-	/** `--new`: the caller asked for a fresh session. */
+	/** `--new`: the caller asked for a fresh session (highest priority). */
 	newRequested: boolean
+	/** `--resume-last`: restore the newest session for one launch (overrides config). */
+	resumeLastRequested: boolean
 	/** `--session <id>` / `--session=<id>`: the caller pinned a session. */
 	sessionId?: string
 }
 
 /**
- * Parse the two launch flags this feature cares about. Everything else
+ * Parse the launch flags this feature cares about. Everything else
  * (`--provider`, `--model`, `--plugins`, …) belongs to provisioning and is
  * ignored here.
  */
 export function parseLaunchArgs(argv: readonly string[]): LaunchArgs {
 	let newRequested = false
+	let resumeLastRequested = false
 	let sessionId: string | undefined
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index]
 		if (arg === undefined) continue
 		if (arg === "--new") {
 			newRequested = true
+			continue
+		}
+		if (arg === "--resume-last") {
+			resumeLastRequested = true
 			continue
 		}
 		if (arg === "--session") {
@@ -79,12 +89,25 @@ export function parseLaunchArgs(argv: readonly string[]): LaunchArgs {
 			if (value !== "") sessionId = value
 		}
 	}
-	return { newRequested, ...(sessionId !== undefined ? { sessionId } : {}) }
+	return { newRequested, resumeLastRequested, ...(sessionId !== undefined ? { sessionId } : {}) }
 }
 
-/** `autoResume` off the merged config; absent/garbage keeps the default "last". */
+/** `autoResume` off the merged config; the default is "off" (a new session). */
 export function readAutoResumeMode(config: Record<string, unknown> | undefined | null): AutoResumeMode {
-	return config?.autoResume === "off" ? "off" : "last"
+	return config?.autoResume === "last" ? "last" : "off"
+}
+
+/**
+ * The effective mode for one boot: `--new` wins over everything, then an
+ * explicit `--session`, then `--resume-last`, then the stored config.
+ */
+export function resolveAutoResumeMode(
+	config: Record<string, unknown> | undefined | null,
+	launch: LaunchArgs,
+): AutoResumeMode {
+	if (launch.newRequested || launch.sessionId !== undefined) return "off"
+	if (launch.resumeLastRequested) return "last"
+	return readAutoResumeMode(config)
 }
 
 /** `autoResumeDays` off the merged config; a non-positive/NaN value keeps 7. */
@@ -224,8 +247,7 @@ export async function runAutoResume(
 	deps: AutoResumeDeps,
 ): Promise<AutoResumeDecision | undefined> {
 	const warn = deps.warn ?? (() => {})
-	if (input.launch.newRequested || input.launch.sessionId !== undefined) return undefined
-	const mode = readAutoResumeMode(input.config)
+	const mode = resolveAutoResumeMode(input.config, input.launch)
 	if (mode !== "last") return undefined
 	const timeoutMs = deps.timeoutMs ?? AUTO_RESUME_TIMEOUT_MS
 	let rows: readonly AutoResumeRow[] | undefined

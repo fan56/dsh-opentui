@@ -1009,14 +1009,17 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 
 	const seam = new adapter.RemoteSessionSeam(session as never)
 	registerTurnOverlays(seam, overlays)
-	// feat/auto-resume: dsh sessions are persisted server-side — every UI must
-	// show the same transcript, so a restart restores the newest non-empty
-	// session from THIS workspace active within the window instead of landing
-	// on an empty screen. Explicit intent wins (`--session`, `--new`,
-	// `autoResume: "off"`); the list is bounded and any failure logs one WARN
-	// and keeps the fresh-session boot. The id is only STAGED here
-	// (`resumeSession` binds at the next turn), so the page reads its journal
-	// explicitly (onMount) and no writer lock is taken at boot.
+	// feat/auto-resume: dsh sessions are persisted server-side, but a plain
+	// launch must land on a NEW session (the default is `autoResume: "off"`).
+	// Restoring the newest non-empty session from THIS workspace is an opt-in:
+	// `"autoResume": "last"` in the merged profile config, or `--resume-last`
+	// for one launch (which overrides the config). `--new` wins over both, and
+	// `--session <id>` names the journal outright. When off, nothing is listed,
+	// no id is staged and no `resumed …` notice is produced. The list is
+	// bounded and any failure logs one WARN and keeps the fresh-session boot.
+	// The id is only STAGED here (`resumeSession` binds at the next turn), so
+	// the page reads its journal explicitly (onMount) and no writer lock is
+	// taken at boot.
 	const launchArgs = parseLaunchArgs(options.argv ?? process.argv.slice(2))
 	let initialSessionId: string | undefined
 	let resumeNotice: string | undefined

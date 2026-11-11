@@ -792,11 +792,13 @@ try {
   }
 
   // ---------------- 5. auto-resume on startup (feat/auto-resume) ----------------
-  // The persisted session is the product's source of truth: a client restart
-  // must show the SAME transcript, not an empty screen. A REAL turn seeds the
-  // scratch store (the user message + turn/start are committed before the
-  // model answers, so this is route-agnostic); the next boot must restore it
-  // plus one `resumed …` notice, and `autoResume: "off"` must start fresh.
+  // The persisted session is the product's source of truth for an EXPLICIT
+  // resume, but a plain launch must start a NEW session (the default policy is
+  // `autoResume: "off"`). A REAL turn seeds the scratch store (the user message
+  // + turn/start are committed before the model answers, so this is
+  // route-agnostic); the next default boot must stay empty with no notice, and
+  // an explicit `autoResume: "last"` must restore the transcript plus one
+  // `resumed …` notice.
   reapHost()
   await sleep(500)
   const FIXTURE = `zzzzAutoresume${process.pid}`
@@ -812,7 +814,7 @@ try {
     } catch { /* store not created yet */ }
     return false
   }
-  // The seed boot (auto-resume on by default, store empty → fresh session).
+  // The seed boot (default policy = new session, store empty → fresh session).
   launch(SESS, COLS, ROWS)
   const bootSeed = await waitPane(SESS, (o) => o.includes('🧠') || idle(o), 90_000, 500)
   if (!bootSeed.out.includes('🧠') && !idle(bootSeed.out)) {
@@ -839,50 +841,68 @@ try {
     reapHost()
     await sleep(500)
 
-    // Restart 1: default policy (`autoResume` absent → "last") restores the
-    // stored transcript and paints the one-line resume notice. The notice
-    // lives 8s, so both markers are accumulated across early frames instead
-    // of waiting for one frame to carry a settled interface.
+    // Restart 1: the DEFAULT policy is a NEW session (`autoResume` absent →
+    // "off"). The stored transcript must NOT reappear and no `resumed …`
+    // notice may be painted. Frames are accumulated over the notice's 8s
+    // lifetime so a transient leak cannot slip past a single capture.
+    writeFileSync(profileConfigPath, JSON.stringify(readProfile(), null, 2) + '\n')
     launch(SESS, COLS, ROWS)
-    let resumeNotice = false
-    let resumeHistory = false
-    let resumeFrame = ''
-    {
-      const deadline = Date.now() + 90_000
-      while (Date.now() < deadline) {
-        const frame = capture(SESS)
-        if (frame.trim().length > 0) resumeFrame = frame
-        if (has(frame, 'resumed')) resumeNotice = true
-        if (has(frame, FIXTURE)) resumeHistory = true
-        if (resumeNotice && resumeHistory) break
-        await sleep(250)
+    const bootDefault = await waitPane(SESS, (o) => o.includes('🧠') || idle(o), 90_000, 500)
+    if (!bootDefault.out.includes('🧠') && !idle(bootDefault.out)) {
+      record('auto-resume: default launch starts a new session', false, ['client never rendered (default)'])
+    } else {
+      await waitPane(SESS, idle, 30_000)
+      let defaultHistory = false
+      let defaultNotice = false
+      {
+        const deadline = Date.now() + 5_000
+        while (Date.now() < deadline) {
+          const frame = capture(SESS)
+          if (has(frame, FIXTURE)) defaultHistory = true
+          if (has(frame, 'resumed')) defaultNotice = true
+          if (defaultHistory && defaultNotice) break
+          await sleep(250)
+        }
       }
+      snap('31-autoresume-default-fresh')
+      record('auto-resume: default launch starts a new session (no history, no notice)',
+        !defaultHistory && !defaultNotice,
+        [defaultHistory ? 'stored history leaked' : 'transcript empty',
+          defaultNotice ? 'resume notice leaked' : 'no resume notice in the boot frames'])
+      await submit(SESS, '/quit')
+      await waitPane(SESS, () => tmux('has-session', '-t', SESS).status !== 0, 15_000)
     }
-    snap('31-autoresumed')
-    record('auto-resume: a restarted client shows the stored transcript', resumeHistory,
-      [resumeHistory ? `fixture ${FIXTURE} visible` : 'stored history missing'])
-    record('auto-resume: one `resumed <title> · <time ago>` notice is painted', resumeNotice,
-      [resumeNotice ? 'resume notice visible' : 'no resume notice in the boot frames'])
-    await submit(SESS, '/quit')
-    await waitPane(SESS, () => tmux('has-session', '-t', SESS).status !== 0, 15_000)
     reapHost()
     await sleep(500)
 
-    // Restart 2: `autoResume: "off"` must start fresh (no history, no notice).
-    writeFileSync(profileConfigPath, JSON.stringify({ ...readProfile(), autoResume: 'off' }, null, 2) + '\n')
+    // Restart 2: the explicit opt-in (`autoResume: "last"` in the scratch
+    // profile config) restores the stored transcript and paints the one-line
+    // notice. The notice lives 8s, so both markers are accumulated across
+    // early frames instead of waiting for one frame to carry a settled
+    // interface.
+    writeFileSync(profileConfigPath, JSON.stringify({ ...readProfile(), autoResume: 'last' }, null, 2) + '\n')
     launch(SESS, COLS, ROWS)
-    const bootOff = await waitPane(SESS, (o) => o.includes('🧠') || idle(o), 90_000, 500)
-    if (!bootOff.out.includes('🧠') && !idle(bootOff.out)) {
-      record('auto-resume: autoResume:"off" starts fresh (no restore)', false, ['client never rendered (off)'])
+    const bootLast = await waitPane(SESS, (o) => o.includes('🧠') || idle(o), 90_000, 500)
+    if (!bootLast.out.includes('🧠') && !idle(bootLast.out)) {
+      record('auto-resume: autoResume:"last" restores the stored transcript', false, ['client never rendered (last)'])
     } else {
-      await waitPane(SESS, idle, 30_000)
-      await sleep(1_500)
-      const offFrame = capture(SESS)
-      snap('32-autoresume-off')
-      record('auto-resume: autoResume:"off" starts fresh (no history, no notice)',
-        !has(offFrame, FIXTURE) && !has(offFrame, 'resumed'),
-        [has(offFrame, FIXTURE) ? 'stored history leaked' : 'transcript empty',
-          has(offFrame, 'resumed') ? 'notice leaked' : 'no resume notice'])
+      let resumeNotice = false
+      let resumeHistory = false
+      {
+        const deadline = Date.now() + 90_000
+        while (Date.now() < deadline) {
+          const frame = capture(SESS)
+          if (has(frame, 'resumed')) resumeNotice = true
+          if (has(frame, FIXTURE)) resumeHistory = true
+          if (resumeNotice && resumeHistory) break
+          await sleep(250)
+        }
+      }
+      snap('32-autoresumed')
+      record('auto-resume: autoResume:"last" restores the stored transcript', resumeHistory,
+        [resumeHistory ? `fixture ${FIXTURE} visible` : 'stored history missing'])
+      record('auto-resume: autoResume:"last" paints one `resumed <title> · <time ago>` notice', resumeNotice,
+        [resumeNotice ? 'resume notice visible' : 'no resume notice in the boot frames'])
       await submit(SESS, '/quit')
       await waitPane(SESS, () => tmux('has-session', '-t', SESS).status !== 0, 15_000)
     }

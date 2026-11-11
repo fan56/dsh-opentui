@@ -2,10 +2,12 @@
  * Auto-resume startup decision tests (feat/auto-resume).
  *
  * Coverage mirrors the acceptance list: the N-day window (inclusive edge,
- * expiry, configurable), empty/blank sessions, the `autoResume: "off"` switch,
- * `--new`, explicit `--session`, workspace scoping, failure degradation (a
- * rejected/timed-out list or a throwing resume degrades to a fresh session
- * with one warning), and no interference with an explicit resume.
+ * expiry, configurable), empty/blank sessions, the OFF-BY-DEFAULT policy (a
+ * plain launch starts a new session), the explicit `autoResume: "last"` /
+ * `--resume-last` opt-ins, `--new`, explicit `--session`, workspace scoping,
+ * failure degradation (a rejected/timed-out list or a throwing resume degrades
+ * to a fresh session with one warning), and no interference with an explicit
+ * resume.
  */
 import { describe, expect, test } from "bun:test"
 import {
@@ -15,6 +17,7 @@ import {
 	parseLaunchArgs,
 	readAutoResumeDays,
 	readAutoResumeMode,
+	resolveAutoResumeMode,
 	runAutoResume,
 	selectAutoResumeSession,
 	type AutoResumeRow,
@@ -46,12 +49,12 @@ const pick = (rows: readonly AutoResumeRow[], over: { windowDays?: number; mode?
 	})
 
 describe("config readers", () => {
-	test("autoResume defaults to last; only the literal off disables", () => {
-		expect(readAutoResumeMode(undefined)).toBe("last")
-		expect(readAutoResumeMode({})).toBe("last")
+	test("autoResume defaults to off; only the literal last enables a restore", () => {
+		expect(readAutoResumeMode(undefined)).toBe("off")
+		expect(readAutoResumeMode({})).toBe("off")
 		expect(readAutoResumeMode({ autoResume: "off" })).toBe("off")
 		expect(readAutoResumeMode({ autoResume: "last" })).toBe("last")
-		expect(readAutoResumeMode({ autoResume: "banana" })).toBe("last")
+		expect(readAutoResumeMode({ autoResume: "banana" })).toBe("off")
 	})
 	test("autoResumeDays defaults to 7; non-positive/garbage keeps the default", () => {
 		expect(DEFAULT_AUTO_RESUME_DAYS).toBe(7)
@@ -65,18 +68,55 @@ describe("config readers", () => {
 })
 
 describe("parseLaunchArgs", () => {
-	const blank: LaunchArgs = { newRequested: false }
-	test("--new and --session in both spellings", () => {
+	const blank: LaunchArgs = { newRequested: false, resumeLastRequested: false }
+	test("--new, --resume-last and --session in both spellings", () => {
 		expect(parseLaunchArgs([])).toEqual(blank)
-		expect(parseLaunchArgs(["--new"])).toEqual({ newRequested: true })
-		expect(parseLaunchArgs(["--session", "abc"])).toEqual({ newRequested: false, sessionId: "abc" })
-		expect(parseLaunchArgs(["--session=abc"])).toEqual({ newRequested: false, sessionId: "abc" })
-		expect(parseLaunchArgs(["--new", "--session", "abc"])).toEqual({ newRequested: true, sessionId: "abc" })
+		expect(parseLaunchArgs(["--new"])).toEqual({ newRequested: true, resumeLastRequested: false })
+		expect(parseLaunchArgs(["--resume-last"])).toEqual({ newRequested: false, resumeLastRequested: true })
+		expect(parseLaunchArgs(["--session", "abc"])).toEqual({ newRequested: false, resumeLastRequested: false, sessionId: "abc" })
+		expect(parseLaunchArgs(["--session=abc"])).toEqual({ newRequested: false, resumeLastRequested: false, sessionId: "abc" })
+		expect(parseLaunchArgs(["--new", "--session", "abc", "--resume-last"])).toEqual({
+			newRequested: true,
+			resumeLastRequested: true,
+			sessionId: "abc",
+		})
 	})
 	test("provisioning flags and a valueless --session are ignored", () => {
 		expect(parseLaunchArgs(["--model", "zai/x", "--plugins=none", "--dry-run"])).toEqual(blank)
 		expect(parseLaunchArgs(["--session"])).toEqual(blank)
-		expect(parseLaunchArgs(["--session", "--new"])).toEqual({ newRequested: true })
+		expect(parseLaunchArgs(["--session", "--new"])).toEqual({ newRequested: true, resumeLastRequested: false })
+	})
+})
+
+describe("resolveAutoResumeMode: opt-in priority", () => {
+	const launch = (over: Partial<LaunchArgs> = {}): LaunchArgs => ({
+		newRequested: false,
+		resumeLastRequested: false,
+		...over,
+	})
+	test("a plain launch defaults to off (new session)", () => {
+		expect(resolveAutoResumeMode({}, launch())).toBe("off")
+		expect(resolveAutoResumeMode(undefined, launch())).toBe("off")
+	})
+	test("an explicit autoResume: last restores; off/garbage stays off", () => {
+		expect(resolveAutoResumeMode({ autoResume: "last" }, launch())).toBe("last")
+		expect(resolveAutoResumeMode({ autoResume: "off" }, launch())).toBe("off")
+		expect(resolveAutoResumeMode({ autoResume: "banana" }, launch())).toBe("off")
+	})
+	test("--resume-last overrides the stored config", () => {
+		expect(resolveAutoResumeMode({ autoResume: "off" }, launch({ resumeLastRequested: true }))).toBe("last")
+		expect(resolveAutoResumeMode({}, launch({ resumeLastRequested: true }))).toBe("last")
+	})
+	test("--new wins over --resume-last and the config", () => {
+		expect(resolveAutoResumeMode({ autoResume: "last" }, launch({ newRequested: true }))).toBe("off")
+		expect(
+			resolveAutoResumeMode({ autoResume: "last" }, launch({ newRequested: true, resumeLastRequested: true })),
+		).toBe("off")
+	})
+	test("an explicit --session wins over --resume-last and the config", () => {
+		expect(
+			resolveAutoResumeMode({ autoResume: "last" }, launch({ resumeLastRequested: true, sessionId: "abc" })),
+		).toBe("off")
 	})
 })
 
@@ -144,14 +184,24 @@ describe("autoResumeLine", () => {
 })
 
 describe("runAutoResume", () => {
+	const launch = (over: Partial<LaunchArgs> = {}): LaunchArgs => ({
+		newRequested: false,
+		resumeLastRequested: false,
+		...over,
+	})
 	const decision = (deps: {
+		config?: Record<string, unknown> | undefined | null
+		launch?: LaunchArgs
 		listSessions?: (limit?: number) => Promise<readonly AutoResumeRow[]>
 		resumeSession?: (id: string) => unknown
 		warnings?: string[]
 		timeoutMs?: number
-	}) =>
-		runAutoResume(
-			{ config: {}, launch: { newRequested: false }, workspace: WS },
+	}) => {
+		// The helper defaults to the opt-in config; an explicit `config` key
+		// (including `undefined`) must reach runAutoResume untouched.
+		const config = "config" in deps ? deps.config : { autoResume: "last" }
+		return runAutoResume(
+			{ config, launch: deps.launch ?? launch(), workspace: WS },
 			{
 				listSessions: deps.listSessions ?? (async () => [row()]),
 				resumeSession: deps.resumeSession ?? (() => "ok"),
@@ -160,6 +210,7 @@ describe("runAutoResume", () => {
 				...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
 			},
 		)
+	}
 
 	test("lists with the wider limit, stages the picked id and returns the notice", async () => {
 		let asked: number | undefined
@@ -177,6 +228,40 @@ describe("runAutoResume", () => {
 		expect(asked).toBe(AUTO_RESUME_LIST_LIMIT)
 		expect(resumed).toBe("picked")
 		expect(got?.id).toBe("picked")
+		expect(got?.line).toBe("resumed first prompt · 1h ago")
+	})
+
+	test("the default config starts a fresh session (no list, no stage, no notice)", async () => {
+		let listed = 0
+		let resumed = 0
+		for (const config of [undefined, {}, { autoResume: "off" }]) {
+			const got = await decision({
+				config,
+				listSessions: async () => {
+					listed++
+					return [row()]
+				},
+				resumeSession: () => {
+					resumed++
+				},
+			})
+			expect(got).toBeUndefined()
+		}
+		expect(listed).toBe(0)
+		expect(resumed).toBe(0)
+	})
+
+	test("--resume-last restores even when the config says off", async () => {
+		let resumed: string | undefined
+		const got = await decision({
+			config: { autoResume: "off" },
+			launch: launch({ resumeLastRequested: true }),
+			resumeSession: (id) => {
+				resumed = id
+				return "ok"
+			},
+		})
+		expect(resumed).toBe("s1")
 		expect(got?.line).toBe("resumed first prompt · 1h ago")
 	})
 
@@ -225,20 +310,32 @@ describe("runAutoResume", () => {
 		}
 		const deps = { listSessions, resumeSession: () => "ok" }
 		expect(
-			await runAutoResume({ config: { autoResume: "off" }, launch: { newRequested: false }, workspace: WS }, deps),
+			await runAutoResume({ config: { autoResume: "off" }, launch: launch(), workspace: WS }, deps),
 		).toBeUndefined()
 		expect(
-			await runAutoResume({ config: {}, launch: { newRequested: true }, workspace: WS }, deps),
+			await runAutoResume(
+				{ config: { autoResume: "last" }, launch: launch({ newRequested: true }), workspace: WS },
+				deps,
+			),
 		).toBeUndefined()
 		expect(
-			await runAutoResume({ config: {}, launch: { newRequested: false, sessionId: "abc" }, workspace: WS }, deps),
+			await runAutoResume(
+				{ config: {}, launch: launch({ newRequested: true, resumeLastRequested: true }), workspace: WS },
+				deps,
+			),
+		).toBeUndefined()
+		expect(
+			await runAutoResume(
+				{ config: { autoResume: "last" }, launch: launch({ sessionId: "abc" }), workspace: WS },
+				deps,
+			),
 		).toBeUndefined()
 		expect(calls).toBe(0)
 	})
 
 	test("autoResumeDays from the config widens the window", async () => {
 		const got = await runAutoResume(
-			{ config: { autoResumeDays: 30 }, launch: { newRequested: false }, workspace: WS },
+			{ config: { autoResume: "last", autoResumeDays: 30 }, launch: launch(), workspace: WS },
 			{ listSessions: async () => [row({ updatedAt: String(NOW - 20 * DAY) })], resumeSession: () => "ok", now: () => NOW },
 		)
 		expect(got?.id).toBe("s1")
