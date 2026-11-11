@@ -17,4 +17,5 @@ verify/steer-queue-out/
 # real-client gate artifacts (verify/queue-flush-repro.mjs)
 verify/queue-flush-out/
 # UI-layer capture artifacts (verify/ui-matrix.mjs)
+# geometry × scene visual matrix artifacts (verify/ui-matrix.mjs)
 verify/ui-matrix-out/
