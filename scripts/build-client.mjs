@@ -72,12 +72,17 @@ const MINT_NEEDLE = "await dynamicImport(specifier)"
 const SPIN_JEV_NEEDLE = "await import(/* @vite-ignore */ specifier)"
 const SPIN_SPECIFIER_DECL = 'const specifier = "@aiwayds/dsh-jev-core"\n'
 
+// /settings "current version" row: injected at build time (T18 decision 7).
+// A missing define keeps the row at "dev" (dev checkout / tests).
+const shellVersion = JSON.parse(readFileSync(join(shellDir, "package.json"), "utf8")).version ?? "dev"
+
 const result = await Bun.build({
   entrypoints: [join(shellDir, "src", "client-entry.tsx")],
   target: "bun",
   format: "esm",
   outdir: outDir,
   naming: { entry: "index.[ext]" },
+  define: { __DSH_CLIENT_VERSION__: JSON.stringify(shellVersion) },
   plugins: [
     // ORDER MATTERS: registered before the solid plugin — plugin onLoad
     // resolution is first-match-wins, and this rewrite must own

@@ -60,7 +60,8 @@ import { discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } f
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
 import { AgentsPanel, openAgentsPanel } from "../src/routes/session/agents-panel"
-import { SettingsPanel, openSettingsPanel } from "../src/routes/session/settings-panel"
+import { openSettingsPanel } from "../src/routes/session/settings-panel"
+import { SettingsModalHost } from "../src/routes/session/settings-modal"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
 import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
@@ -771,15 +772,22 @@ function V2SessionPage(props: {
 						if (composerRef && !composerRef.focused()) composerRef.focus()
 					},
 				}),
-				// Settings panel v1 (/settings): local preferences + host
-				// settings + read-only namespaces. The theme face is the SAME
-				// object the /theme commands use, so panel and command writes
-				// cannot drift.
-				createComponent(SettingsPanel, {
+				// Settings modal (T18): panel-kit stack layer, 6-section nav,
+				// General 12 rows. The host watches the module bridge, so
+				// /settings (and the agents jump) still call openSettingsPanel.
+				// Command-jump sections close first, then prefill the composer.
+				createComponent(SettingsModalHost, {
 					get seam() {
 						return seam
 					},
 					themes: themeFace,
+					onCommand: (command: string) => {
+						const node = composerRef?.node()
+						if (node !== undefined) {
+							node.setText(command + " ")
+							node.gotoLineEnd()
+						}
+					},
 					onClosed: (summary?: string) => {
 						if (summary !== undefined) sayLine(summary)
 						if (composerRef && !composerRef.focused()) composerRef.focus()

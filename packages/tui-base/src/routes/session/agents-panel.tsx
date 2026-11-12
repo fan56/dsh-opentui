@@ -1,59 +1,65 @@
 /**
- * AgentsPanel — the /agents agent-definition manager (tui-pi agents manager
- * parity, phase 1: table + fields layers).
+ * AgentsPanel — the /agents agent-definition manager, migrated onto the
+ * panel-kit modal stack (T18 sibling: /settings shares the same skeleton).
  *
- * Three navigation levels in one self-drawn panel:
- *   table  — NAME | MODEL | DEEP | DESCRIPTION, the model cell is the
- *            COMPOSED value (frontmatter baseline (+) workspace profile pin,
- *            resolved by the shell seam), `▸ ` marks the cursor row
- *   fields — model | thinking | deep, values composed, `✎ ` on editable rows
- *   viewer — the system prompt body (`v`), 40 lines + `… N more line(s)`
+ * Eight navigation levels map 1:1 onto PanelStack layers; depth increases with
+ * every drill-down and Esc pops exactly one layer (inner-first, panel-kit's own
+ * semantics — the consumer no longer owns an Esc chain):
  *
- * Editing:
- *   m / Enter on model   — two-stage picker: provider/model, then the
- *                          model's REAL effort ladder (first row = provider
- *                          default = clear). Esc at EITHER stage cancels the
- *                          whole change.
- *   t / Enter on thinking — the effort picker for the composed model.
- *   d / Enter on deep     — integer editor; empty keeps, non-digit errors,
- *                          success leaves the editor open with a notice
- *                          ("max depth N saved — takes effect when this agent
- *                          is spawned"), Esc returns with a status line.
+ *   table    — NAME | MODEL | THINK | DEEP | LIMITS columns (panel-kit List
+ *              columns/cells), paged through List.pageSize (PgUp/PgDn/Home/End)
+ *   fields   — model | thinking | deep (`✎` badge on every row)
+ *   limits   — maxRounds | background (editable) + the two read-only official
+ *              subagent caps (`n/a` when the host does not serve them)
+ *   limitEdit— positive-integer editor for maxRounds (raw input, autofocused)
+ *   picker   — provider/model route list
+ *   effort   — the model's real effort ladder, row 0 = provider default
+ *   deep     — spawn-depth editor (non-negative integer)
+ *   viewer   — the system prompt body, truncated to the body window
  *
- * The limits layer (`l`, tui-pi B3, adapted to the surfaces opentui actually
- * consumes — see the row builder):
- *   maxRounds      — the selected agent's frontmatter `maxRounds` (positive
- *                    integer; empty/inherit = the global ladder)
- *   background     — the selected agent's frontmatter `background` toggle
- *   maxActiveSubagents / maxDepth — READ-ONLY official subagent plugin caps
- *                    (settings ns `subagent`), `n/a` when the host does not
- *                    serve them; Enter points at /settings.
- * Zero agents: only the two official rows plus the empty-corpus hint, and
- * Esc closes the manager instead of returning to the (absent) table.
+ * Zero-agent corpus lands on `limits` (its only layer, so Esc closes the
+ * manager); this preserves the shipped behaviour and its device gate.
  *
- * Rows ride the seam.agents face; the panel re-reads on every open and after
- * every successful write (no I/O in render callbacks). The keymap layer is
- * global priority 2 and gates off while a dialog owns the screen; a
- * focus-catcher input keeps stray printable keys out of the composer while
- * the panel is open.
+ * The data face is unchanged: `seam.agents.list/set/body/modelEfforts/
+ * officialCaps`, `bridgeOpen` → `openAgentsPanel(name?)`, and
+ * `close()` → `agentsSummary(changed())` → `onClosed`. The panel re-reads the
+ * corpus after every successful write (no optimistic rows).
+ *
+ * Keys: panel-kit owns Esc / Enter / arrows / Space for the top layer. The
+ * letter hotkeys (m/t/d/v/l) stay on the consumer's own Keymap layer — they
+ * are deliberately NOT added to the kit's PANEL_KEY_IDS. The paged-list keys
+ * (PgUp/PgDn/Home/End) are bound there too: the session's global
+ * `session.page.*` layer runs before the focused List, so without this layer
+ * the table could never page; every binding returns false unless the panel is
+ * stack-top and the list overflows one page. Every List pins `query=""` so a
+ * stray printable key can never hide rows (the kit's List would otherwise
+ * treat it as a filter).
  */
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
-import type { InputRenderable } from "@opentui/core"
-import { TextAttributes } from "@opentui/core"
+import type { InputRenderable, Renderable } from "@opentui/core"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
+import {
+	List,
+	PanelActions,
+	PanelBody,
+	usePanelTheme,
+	usePanels,
+	nextListPage,
+	type ListColumn,
+	type ListItem,
+	type PanelHandle,
+} from "@dsh-opentui/panel-kit"
 import { Keymap } from "../../context/keymap"
-import { useDialog } from "../../ui/dialog"
-import { useThemeOptional } from "../../context/theme"
-import { warningColor } from "../../skin/semantic"
 import { stringWidth } from "../../util/string-width"
 import type { SeamAgentOfficialCaps, SeamAgentRow, SeamEffortOption, SessionSeam } from "../../seams/session"
 import { openSettingsPanel } from "./settings-panel"
 
-const MARKER_W = 2
-const TABLE_SEP = " │ "
-const MAX_VISIBLE = 12
 const INHERIT = "(inherit)"
 const INHERIT_DEFAULT = "(inherit — default model)"
+/** Rows per paged window (List.pageSize); the kit pages, not the consumer. */
+const PAGE_SIZE = 12
+/** Frame preset: xlarge = 116 cells, clamped to terminalWidth - 2 by the kit. */
+const PANEL_SIZE = "xlarge" as const
 
 /** Column-exact clip (keeps leading spaces and runs - layout, not prose). */
 function clipText(text: string, limit: number): string {
@@ -93,13 +99,6 @@ export function useAgentsPanelOpenState() {
 	return [agentsPanelOpen, setPanelOpen] as const
 }
 
-export type PanelTone = "accent" | "selected" | "muted" | "subtle" | "attention"
-
-export interface PanelLine {
-	text: string
-	tone: PanelTone
-}
-
 export type PanelLevel =
 	| "table"
 	| "fields"
@@ -119,110 +118,58 @@ export function initialAgentLevel(rows: readonly SeamAgentRow[]): PanelLevel {
 	return rows.length === 0 ? "limits" : "table"
 }
 
-function padCell(text: string, width: number, align: "left" | "right" = "left"): string {
-	const clipped = clipText(text, width)
-	const gap = Math.max(0, width - stringWidth(clipped))
-	return align === "right" ? " ".repeat(gap) + clipped : clipped + " ".repeat(gap)
-}
-
-function rule(widths: readonly number[], junction: "┬" | "┼" | "┴"): string {
-	return " ".repeat(MARKER_W) + widths.map((width) => "─".repeat(width)).join(`─${junction}─`)
-}
-
-function headerLine(titles: readonly string[], widths: readonly number[], aligns: readonly ("left" | "right")[]): string {
-	return (
-		" ".repeat(MARKER_W) +
-		titles.map((title, index) => padCell(title.toUpperCase(), widths[index]!, aligns[index])).join(TABLE_SEP)
-	)
-}
-
-function fitWidth(title: string, cells: readonly string[], cap = Number.POSITIVE_INFINITY): number {
-	const widest = Math.max(stringWidth(title.toUpperCase()), ...cells.map((cell) => stringWidth(cell)), 1)
-	return Math.min(cap, widest)
-}
-
-/** The four agent-table columns; DESCRIPTION takes the remaining width. */
-export function agentTableWidths(rows: readonly SeamAgentRow[], width: number): number[] {
-	const names = rows.map(agentName)
-	const models = rows.map((row) => row.model ?? INHERIT)
-	const deeps = rows.map((row) => String(row.deep))
-	const name = fitWidth("name", names, 16)
-	const model = fitWidth("model", models, 30)
-	const deep = fitWidth("deep", deeps)
-	const used = MARKER_W + name + model + deep + TABLE_SEP.length * 3
-	const description = Math.max(8, width - used)
-	return [name, model, deep, description]
-}
-
 export function agentName(row: SeamAgentRow): string {
 	return row.displayName ?? row.name
 }
 
-/**
- * The table layer as rendered lines (title + booktabs rules + rows + footer).
- * Pure: the panel test asserts row count, cell content and the `▸ ` marker.
- */
-export function agentTableLines(
-	rows: readonly SeamAgentRow[],
-	cursor: number,
-	width: number,
-	status?: string,
-	broken = 0,
-): PanelLine[] {
-	const lines: PanelLine[] = [{ text: clipText("● Agents", width), tone: "accent" }]
-	const widths = agentTableWidths(rows, width)
-	const titles = ["name", "model", "deep", "description"]
-	const aligns: ("left" | "right")[] = ["left", "left", "right", "left"]
-	lines.push({ text: rule(widths, "┬"), tone: "subtle" })
-	lines.push({ text: headerLine(titles, widths, aligns), tone: "subtle" })
-	lines.push({ text: rule(widths, "┼"), tone: "subtle" })
-	const start = Math.max(0, Math.min(cursor - MAX_VISIBLE + 1, rows.length - MAX_VISIBLE))
-	const visible = rows.slice(start, start + MAX_VISIBLE)
-	for (let i = 0; i < visible.length; i++) {
-		const row = visible[i]!
-		const selected = start + i === cursor
-		if (selected) {
-			const cells = [agentName(row), row.model ?? INHERIT, String(row.deep), row.description ?? ""]
-				.map((cell, index) => padCell(cell, widths[index]!, aligns[index]))
-				.join(TABLE_SEP)
-			lines.push({ text: clipText(`▸ ${cells}`, width), tone: "selected" })
-		} else {
-			const cells = [agentName(row), row.model ?? INHERIT, String(row.deep), row.description ?? ""]
-				.map((cell, index) => padCell(cell, widths[index]!, aligns[index]))
-				.join(TABLE_SEP)
-			lines.push({ text: clipText(`  ${cells}`, width), tone: "muted" })
-		}
-	}
-	lines.push({ text: rule(widths, "┴"), tone: "subtle" })
-	if (broken > 0) lines.push({ text: clipText(brokenLine(broken), width), tone: "muted" })
-	if (status !== undefined) lines.push({ text: clipText(status, width), tone: "attention" })
-	lines.push({ text: "", tone: "subtle" })
-	const overflow = rows.length > MAX_VISIBLE ? ` (${cursor + 1}/${rows.length})` : ""
-	lines.push({
-		text: clipText(`↑↓ navigate · Enter open · Esc back · l limits${overflow}`, width),
-		tone: "subtle",
-	})
-	return lines
+/** The corpus-level broken-file notice (table + limits layers both print it). */
+export function brokenLine(count: number): string {
+	return `${count} broken file(s) ignored`
+}
+
+// ---------------------------------------------------------------------------
+// Table / fields / limits / picker row models (panel-kit List items)
+// ---------------------------------------------------------------------------
+
+/** Fixed table columns. Widths are declared cells; List shrinks the widest
+ * first when the body budget is smaller (never overlapping). */
+export const AGENT_TABLE_COLUMNS: ListColumn[] = [
+	{ id: "name", title: "NAME", width: 18 },
+	{ id: "model", title: "MODEL", width: 30 },
+	{ id: "thinking", title: "THINK", width: 10 },
+	{ id: "deep", title: "DEEP", width: 5, align: "right" },
+	{ id: "limits", title: "LIMITS", width: 24 },
+]
+
+/** The LIMITS cell summary: per-agent frontmatter caps only. */
+export function agentLimitsCell(row: SeamAgentRow): string {
+	const parts: string[] = []
+	if (row.maxRounds !== undefined) parts.push(`rounds ${row.maxRounds}`)
+	if (row.background === true) parts.push("background")
+	return parts.join(" · ")
 }
 
 /**
- * The zero-agent state: the spec copy names the REAL corpus directory, and
- * the footer keeps `l` (limits) reachable on an empty corpus.
+ * One agent-table row. `cells` deliberately omits `name`: panel-kit's List
+ * falls back to `label` in the first column, so the display name rides the
+ * label (and the composed model/thinking/deep/limits ride `cells`).
  */
-export function agentEmptyLines(dir: string, width: number, status?: string, broken = 0): PanelLine[] {
-	const lines: PanelLine[] = [
-		{ text: clipText("● Agents", width), tone: "accent" },
-		{ text: "", tone: "subtle" },
-		{ text: clipText(`no agents in ${dir} yet — drop a markdown file to define one`, width), tone: "muted" },
-	]
-	if (broken > 0) lines.push({ text: clipText(brokenLine(broken), width), tone: "muted" })
-	if (status !== undefined) {
-		lines.push({ text: "", tone: "subtle" })
-		lines.push({ text: clipText(status, width), tone: "attention" })
+export function agentTableItem(row: SeamAgentRow): ListItem<SeamAgentRow> {
+	return {
+		id: row.name,
+		label: agentName(row),
+		value: row,
+		cells: {
+			model: row.model ?? INHERIT,
+			thinking: row.thinking ?? "—",
+			deep: String(row.deep),
+			limits: agentLimitsCell(row) || "—",
+		},
 	}
-	lines.push({ text: "", tone: "subtle" })
-	lines.push({ text: clipText("↑↓ navigate · Enter open · Esc back · l limits", width), tone: "subtle" })
-	return lines
+}
+
+export function agentTableItems(rows: readonly SeamAgentRow[]): ListItem<SeamAgentRow>[] {
+	return rows.map(agentTableItem)
 }
 
 /** The field-layer content rows (description + scope hint). */
@@ -236,47 +183,36 @@ export function agentFieldContent(agent: SeamAgentRow): string[] {
 	return lines
 }
 
-/** The fields layer as rendered lines. */
-export function agentFieldLines(agent: SeamAgentRow, cursor: number, width: number, status?: string): PanelLine[] {
-	const lines: PanelLine[] = [{ text: clipText(`● ${agentName(agent)}`, width), tone: "accent" }]
-	const content = agentFieldContent(agent)
-	lines.push({ text: "", tone: "subtle" })
-	for (const line of content) lines.push({ text: clipText(line === "" ? " " : line, width), tone: "muted" })
-	lines.push({ text: "", tone: "subtle" })
-	const fields = [
-		{ key: "model", value: agent.model ?? INHERIT_DEFAULT },
-		{ key: "thinking", value: agent.thinking ?? INHERIT },
-		{ key: "deep", value: String(agent.deep) },
-	]
-	const keyWidth = Math.max(...fields.map((field) => stringWidth(field.key)), 1)
-	const widths = [keyWidth, Math.max(8, width - MARKER_W - keyWidth - TABLE_SEP.length)]
-	lines.push({ text: rule(widths, "┬"), tone: "subtle" })
-	lines.push({ text: headerLine(["Field", "Value"], widths, ["left", "left"]), tone: "subtle" })
-	lines.push({ text: rule(widths, "┼"), tone: "subtle" })
-	for (let i = 0; i < fields.length; i++) {
-		const field = fields[i]!
-		const selected = i === cursor
-		const keyCell = padCell(field.key, widths[0]!)
-		const valueCell = padCell(`✎ ${field.value}`, widths[1]!)
-		const text = clipText(`${selected ? "▸ " : "  "}${keyCell}${TABLE_SEP}${valueCell}`, width)
-		lines.push({ text, tone: selected ? "selected" : "muted" })
-	}
-	lines.push({ text: rule(widths, "┴"), tone: "subtle" })
-	if (status !== undefined) {
-		lines.push({ text: "", tone: "subtle" })
-		lines.push({ text: clipText(status, width), tone: "attention" })
-	}
-	lines.push({ text: "", tone: "subtle" })
-	lines.push({
-		text: clipText("↑↓ field · Enter edit (m model · t think · d deep) · v full prompt · Esc back", width),
-		tone: "subtle",
-	})
-	return lines
-}
+export const AGENT_FIELD_COLUMNS: ListColumn[] = [
+	{ id: "field", title: "FIELD", width: 20 },
+	{ id: "value", title: "VALUE", width: 62 },
+]
 
-/** The corpus-level broken-file notice (table + limits layers both print it). */
-export function brokenLine(count: number): string {
-	return `${count} broken file(s) ignored`
+/** The three editable field rows (model → thinking → deep order). */
+export function agentFieldItems(agent: SeamAgentRow): ListItem<"model" | "thinking" | "deep">[] {
+	return [
+		{
+			id: "model",
+			label: "model",
+			value: "model",
+			badge: "✎",
+			cells: { value: agent.model ?? INHERIT_DEFAULT },
+		},
+		{
+			id: "thinking",
+			label: "thinking",
+			value: "thinking",
+			badge: "✎",
+			cells: { value: agent.thinking ?? INHERIT },
+		},
+		{
+			id: "deep",
+			label: "deep",
+			value: "deep",
+			badge: "✎",
+			cells: { value: String(agent.deep) },
+		},
+	]
 }
 
 /** One limits-layer row: key, value phrase, and whether Enter edits it. */
@@ -286,7 +222,7 @@ export interface AgentLimitsRow {
 	value: string
 }
 
-const LIMIT_DESCRIPTIONS: Record<AgentLimitsRow["key"], string> = {
+export const LIMIT_DESCRIPTIONS: Record<AgentLimitsRow["key"], string> = {
 	maxRounds: "assistant messages before wrap-up",
 	background: "run this agent in background sessions",
 	maxActiveSubagents: "official concurrent-children cap (subagent plugin)",
@@ -319,148 +255,97 @@ export function agentLimitsRows(agent: SeamAgentRow | undefined, caps: SeamAgent
 	return rows
 }
 
+export function agentLimitsItem(row: AgentLimitsRow): ListItem<AgentLimitsRow["key"]> {
+	return {
+		id: row.key,
+		label: row.key,
+		value: row.key,
+		...(row.editable ? { badge: "✎" } : { tone: "muted" as const }),
+		cells: { value: `${row.value} · ${LIMIT_DESCRIPTIONS[row.key]}` },
+	}
+}
+
+export function agentLimitsItems(rows: readonly AgentLimitsRow[]): ListItem<AgentLimitsRow["key"]>[] {
+	return rows.map(agentLimitsItem)
+}
+
 /** The /settings row id an official-cap Enter jumps to (settings whitelist
  * ids: `subagent.maxActiveSubagents` / `subagent.maxDepth`). */
 export function officialCapSettingsRow(key: "maxActiveSubagents" | "maxDepth"): string {
 	return `subagent.${key}`
 }
 
-/** Esc target in the limits layer: the table when agents exist, the whole
- * manager when the corpus is empty (there is no table to go back to). */
-export function limitsEscapeTarget(validAgentCount: number): "table" | "close" {
-	return validAgentCount === 0 ? "close" : "table"
-}
-
-export interface AgentLimitsOptions {
-	/** Selected agent (undefined = zero-agent corpus). */
-	agent?: SeamAgentRow
-	caps?: SeamAgentOfficialCaps
-	cursor: number
-	width: number
-	/** Broken files in the corpus (`0 broken file(s) ignored` is hidden). */
-	broken?: number
-	/** The corpus directory the zero-agent hint names. */
-	dir?: string
-	status?: string
-}
-
-/** The limits layer as rendered lines (title + target agent + FIELD/VALUE
- * table + broken notice + status + footer). Pure — the panel test asserts
- * row order, copy and the read-only affordance. */
-export function agentLimitsLines(options: AgentLimitsOptions): PanelLine[] {
-	const { agent, caps, cursor, width } = options
-	const broken = options.broken ?? 0
-	const lines: PanelLine[] = [{ text: clipText("⚙ Limits", width), tone: "accent" }]
-	if (agent !== undefined) lines.push({ text: clipText(`target: ${agentName(agent)}`, width), tone: "muted" })
-	else {
-		lines.push({
-			text: clipText(`no agents in ${options.dir ?? "$DSH_HOME/agents"} yet — drop a markdown file to define one`, width),
-			tone: "muted",
-		})
-	}
-	lines.push({ text: "", tone: "subtle" })
-	const rows = agentLimitsRows(agent, caps)
-	const keyWidth = Math.max(...rows.map((row) => stringWidth(row.key)), 1)
-	const widths = [keyWidth, Math.max(8, width - MARKER_W - keyWidth - TABLE_SEP.length)]
-	lines.push({ text: rule(widths, "┬"), tone: "subtle" })
-	lines.push({ text: headerLine(["Field", "Value"], widths, ["left", "left"]), tone: "subtle" })
-	lines.push({ text: rule(widths, "┼"), tone: "subtle" })
-	for (let i = 0; i < rows.length; i++) {
-		const row = rows[i]!
-		const selected = i === cursor
-		const value = `${row.value} · ${LIMIT_DESCRIPTIONS[row.key]}`
-		const valueCell = padCell(row.editable ? `✎ ${value}` : value, widths[1]!)
-		const text = clipText(`${selected ? "▸ " : "  "}${padCell(row.key, widths[0]!)}${TABLE_SEP}${valueCell}`, width)
-		lines.push({ text, tone: selected ? "selected" : "muted" })
-	}
-	lines.push({ text: rule(widths, "┴"), tone: "subtle" })
-	if (broken > 0) lines.push({ text: clipText(brokenLine(broken), width), tone: "muted" })
-	if (options.status !== undefined) {
-		lines.push({ text: "", tone: "subtle" })
-		lines.push({ text: clipText(options.status, width), tone: "attention" })
-	}
-	lines.push({ text: "", tone: "subtle" })
-	lines.push({
-		text: clipText("↑↓ field · Enter edit · d toggle background · Esc back", width),
-		tone: "subtle",
-	})
-	return lines
-}
-
-/** The `v` viewer (40 lines + overflow counter + Esc footer). */
-export function agentViewerLines(name: string, body: string, width: number, maxLines = 40): PanelLine[] {
-	const all = body.split("\n")
-	const lines: PanelLine[] = [
-		{ text: clipText(`ⓘ ${name} · system prompt`, width), tone: "accent" },
-		{ text: "", tone: "subtle" },
-	]
-	for (const line of all.slice(0, maxLines)) {
-		lines.push({ text: clipText(line === "" ? " " : line, width), tone: "muted" })
-	}
-	if (all.length > maxLines) {
-		lines.push({ text: clipText(`… ${all.length - maxLines} more line(s)`, width), tone: "subtle" })
-	}
-	lines.push({ text: "", tone: "subtle" })
-	lines.push({ text: clipText("  Esc to close", width), tone: "subtle" })
-	return lines
-}
+// ---------------------------------------------------------------------------
+// Model picker rows
+// ---------------------------------------------------------------------------
 
 export interface AgentModelChoice {
 	providerID: string
 	modelID: string
 }
 
-/** Stage 1: every provider/model route, MODEL + PROVIDER columns. */
-export function agentPickerLines(models: readonly AgentModelChoice[], cursor: number, width: number): PanelLine[] {
-	const lines: PanelLine[] = [{ text: clipText("● Model", width), tone: "accent" }]
-	const modelCells = models.map((model) => model.modelID)
-	const widths = [fitWidth("Model", modelCells, 40), Math.max(8, width - MARKER_W - fitWidth("Model", modelCells, 40) - TABLE_SEP.length)]
-	lines.push({ text: rule(widths, "┬"), tone: "subtle" })
-	lines.push({ text: headerLine(["Model", "Provider"], widths, ["left", "left"]), tone: "subtle" })
-	lines.push({ text: rule(widths, "┼"), tone: "subtle" })
-	const start = Math.max(0, Math.min(cursor - MAX_VISIBLE + 1, models.length - MAX_VISIBLE))
-	for (let i = start; i < Math.min(models.length, start + MAX_VISIBLE); i++) {
-		const model = models[i]!
-		const selected = i === cursor
-		const cells = `${padCell(model.modelID, widths[0]!)}${TABLE_SEP}${padCell(model.providerID, widths[1]!)}`
-		lines.push({ text: clipText(`${selected ? "▸ " : "  "}${cells}`, width), tone: selected ? "selected" : "muted" })
-	}
-	lines.push({ text: rule(widths, "┴"), tone: "subtle" })
-	lines.push({ text: "", tone: "subtle" })
-	lines.push({ text: clipText("↑↓ navigate · Enter select · Esc back", width), tone: "subtle" })
-	return lines
+export const AGENT_PICKER_COLUMNS: ListColumn[] = [
+	{ id: "model", title: "MODEL", width: 40 },
+	{ id: "provider", title: "PROVIDER", width: 24 },
+]
+
+export function agentPickerItems(models: readonly AgentModelChoice[]): ListItem<AgentModelChoice>[] {
+	return models.map((model) => ({
+		id: `${model.providerID}/${model.modelID}`,
+		label: model.modelID,
+		value: model,
+		cells: { provider: model.providerID },
+	}))
 }
 
-/**
- * Stage 2: the effort ladder, first row `(provider default)` = clear the
- * override. `current` preselects the recorded effort when the ladder has it.
- */
-export function agentEffortLines(efforts: readonly SeamEffortOption[], cursor: number, width: number): PanelLine[] {
-	const rows: { id: string; label: string; description: string }[] = [
-		{ id: "default", label: "(provider default)", description: "adapter default behavior — clears the effort override" },
+export const AGENT_EFFORT_COLUMNS: ListColumn[] = [
+	{ id: "effort", title: "EFFORT", width: 24 },
+	{ id: "description", title: "DESCRIPTION", width: 56 },
+]
+
+/** Row 0 is `(provider default)` = clear the recorded effort override. */
+export function agentEffortItems(efforts: readonly SeamEffortOption[]): ListItem<string | null>[] {
+	return [
+		{
+			id: "default",
+			label: "(provider default)",
+			value: null,
+			cells: { description: "adapter default behavior — clears the effort override" },
+		},
 		...efforts.map((effort) => ({
 			id: effort.id,
 			label: effort.name,
-			description: effort.description ?? "",
+			value: effort.id,
+			cells: { description: effort.description ?? "" },
 		})),
 	]
-	const lines: PanelLine[] = [{ text: clipText("● Reasoning effort", width), tone: "accent" }]
-	const labels = rows.map((row) => row.label)
-	const widths = [fitWidth("Effort", labels, 24), Math.max(8, width - MARKER_W - fitWidth("Effort", labels, 24) - TABLE_SEP.length)]
-	lines.push({ text: rule(widths, "┬"), tone: "subtle" })
-	lines.push({ text: headerLine(["Effort", "Description"], widths, ["left", "left"]), tone: "subtle" })
-	lines.push({ text: rule(widths, "┼"), tone: "subtle" })
-	for (let i = 0; i < rows.length; i++) {
-		const row = rows[i]!
-		const selected = i === cursor
-		const cells = `${padCell(row.label, widths[0]!)}${TABLE_SEP}${padCell(row.description, widths[1]!)}`
-		lines.push({ text: clipText(`${selected ? "▸ " : "  "}${cells}`, width), tone: selected ? "selected" : "muted" })
-	}
-	lines.push({ text: rule(widths, "┴"), tone: "subtle" })
-	lines.push({ text: "", tone: "subtle" })
-	lines.push({ text: clipText("↑↓ navigate · Enter select · Esc back", width), tone: "subtle" })
-	return lines
 }
+
+// ---------------------------------------------------------------------------
+// Viewer window
+// ---------------------------------------------------------------------------
+
+export interface ViewerWindow {
+	lines: string[]
+	/** Lines dropped by the row cap (`… N more line(s)` when > 0). */
+	hidden: number
+}
+
+/**
+ * Truncate the system-prompt body to `maxRows` lines. v1.1 ships no scroll
+ * container, so the viewer pages/truncates instead (the overflow counter keeps
+ * the loss visible).
+ */
+export function viewerWindow(body: string, maxRows: number): ViewerWindow {
+	const all = body.split("\n")
+	const cap = Math.max(0, Math.floor(maxRows))
+	if (all.length <= cap) return { lines: all, hidden: 0 }
+	return { lines: all.slice(0, cap), hidden: all.length - cap }
+}
+
+// ---------------------------------------------------------------------------
+// Editors + pure flows
+// ---------------------------------------------------------------------------
 
 /** Deep-editor parse (tui-pi parseDeepInput): empty = keep, non-digit = error. */
 export type DeepInputOutcome = { kind: "keep" } | { kind: "error"; error: string } | { kind: "value"; value: number }
@@ -493,8 +378,9 @@ export function preselectAgentIndex(rows: readonly SeamAgentRow[], name: string 
 	return rows.findIndex((row) => row.name === name)
 }
 
-/** The two-stage model picker as a pure flow (Esc at either stage cancels
- * the whole change - the surface behaviour the panel renders). */
+/** The two-stage model picker as a pure flow. The panel renders each stage as
+ * its own layer, so Esc walks back one stage at a time (effort → model →
+ * fields); only an explicit selection commits. */
 export type AgentPickerFlow =
 	| { stage: "model"; cursor: number }
 	| { stage: "effort"; model: string; efforts: SeamEffortOption[]; cursor: number }
@@ -532,11 +418,6 @@ export function pickerSelectEffort(flow: AgentPickerFlow, cursor: number): Agent
 	return { stage: "done", model: flow.model, thinking: flow.efforts[cursor - 1]?.id ?? null }
 }
 
-/** Esc at EITHER stage cancels the entire change (nothing is committed). */
-export function pickerCancel(_flow: AgentPickerFlow): AgentPickerFlow {
-	return { stage: "cancelled" }
-}
-
 function splitRoute(model: string | undefined): AgentModelChoice | undefined {
 	if (model === undefined) return undefined
 	const slash = model.indexOf("/")
@@ -549,14 +430,63 @@ export function agentsSummary(changed: readonly string[]): string {
 	return changed.length > 0 ? `Agents updated: ${changed.join(", ")}` : "Agents unchanged."
 }
 
+// ---------------------------------------------------------------------------
+// Focus helper: focus the first focusable control inside a layer
+// ---------------------------------------------------------------------------
+
+function findFocusable(node: Renderable | undefined): Renderable | undefined {
+	if (!node) return undefined
+	if (node.focusable === true) return node
+	for (const child of node.getChildren()) {
+		const hit = findFocusable(child)
+		if (hit) return hit
+	}
+	return undefined
+}
+
+/**
+ * Focus the first focusable control of a freshly mounted layer (deferred one
+ * tick so children are attached). The kit's stack blurs the previous layer's
+ * focus on push and restores it on pop, so this is the only focus owner.
+ */
+function focusWhenReady(renderable: Renderable): void {
+	const attempt = () => {
+		if (renderable.isDestroyed) return
+		findFocusable(renderable)?.focus()
+	}
+	// Children attach during the same render pass; the microtask lands right
+	// after it, the timer covers a delayed layout.
+	attempt()
+	queueMicrotask(attempt)
+	setTimeout(attempt, 1)
+}
+
+function FocusRoot(props: { children?: JSX.Element }): JSX.Element {
+	return (
+		<box flexDirection="column" flexGrow={1} ref={(renderable: Renderable) => focusWhenReady(renderable)}>
+			{props.children}
+		</box>
+	)
+}
+
+// ---------------------------------------------------------------------------
+// The panel component
+// ---------------------------------------------------------------------------
+
+interface LayerEntry {
+	id: string
+	level: PanelLevel
+	handle: PanelHandle
+}
+
 export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: string) => void }) {
-	const theme = useThemeOptional()
-	const dialog = useDialog()
+	const panels = usePanels()
+	const theme = usePanelTheme()
 	const dimensions = useTerminalDimensions()
 
 	// The module-level open signal (shared with the sidebar Esc layer).
 	const [open, setOpen] = useAgentsPanelOpenState()
-	const [level, setLevel] = createSignal<PanelLevel>("table")
+	const [layers, setLayers] = createSignal<LayerEntry[]>([])
 	const [rows, setRows] = createSignal<SeamAgentRow[]>([])
 	const [tableCursor, setTableCursor] = createSignal(0)
 	const [fieldCursor, setFieldCursor] = createSignal(0)
@@ -577,10 +507,19 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	const [limitValue, setLimitValue] = createSignal("")
 	const [limitError, setLimitError] = createSignal<string | undefined>(undefined)
 	const [brokenCount, setBrokenCount] = createSignal(0)
-	let catcher: InputRenderable | undefined
+	let sequence = 0
 
 	const agent = createMemo(() => rows().find((row) => row.name === selectedName()))
-	const width = () => Math.max(20, dimensions().width - 4)
+	const activeLevel = createMemo(() => layers().at(-1)?.level)
+	/** Body text budget in cells (List columns shrink inside it). */
+	const bodyWidth = createMemo(() => {
+		const frame = Math.min(116, dimensions().width - 2)
+		const inner = Math.max(1, frame - 2)
+		const inset = inner < 64 || dimensions().height - 4 < 20 ? 1 : 3
+		return Math.max(20, inner - inset * 2)
+	})
+	/** Viewer row cap: leave room for title/actions inside `height - 4`. */
+	const viewerRows = createMemo(() => Math.max(3, dimensions().height - 10))
 
 	/** Every parsed row, broken files included (the caller splits them). */
 	function readAllRows(): SeamAgentRow[] {
@@ -604,61 +543,107 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		setChanged((list) => (list.includes(name) ? list : [...list, name]))
 	}
 
-	function close() {
-		const summary = agentsSummary(changed())
+	// ---- stack plumbing ----
+	function finish() {
 		setOpen(false)
-		setLevel("table")
 		setStatus(undefined)
+		setSelectedName(undefined)
+		setEfforts([])
+		const summary = agentsSummary(changed())
 		setChanged([])
 		// Refocus AFTER teardown (the plugins-panel C15 law).
 		setTimeout(() => props.onClosed?.(summary), 3)
 	}
 
+	function removeLayer(id: string) {
+		setLayers((list) => list.filter((entry) => entry.id !== id))
+		if (layers().length === 0) finish()
+	}
+
+	function pushLevel(level: PanelLevel, subtitle?: string) {
+		const id = `agents-${level}-${++sequence}`
+		const handle = panels.open(() => renderLevel(level), {
+			id,
+			title: levelTitle(level),
+			...(subtitle === undefined ? {} : { subtitle }),
+			size: PANEL_SIZE,
+			onClose: () => {
+				if (level === "deep") leaveDeepEditor()
+				removeLayer(id)
+			},
+		})
+		setLayers((list) => [...list, { id, level, handle }])
+	}
+
+	/** Pop the top layer (panel-kit fades it out; its onClose runs teardown). */
+	function closeTop() {
+		panels.close()
+	}
+
+	/** Pop every layer above `level`, top-down, so Esc lands one level back. */
+	function popAbove(level: PanelLevel) {
+		const at = layers().findIndex((entry) => entry.level === level)
+		if (at < 0) return
+		const above = layers().slice(at + 1)
+		for (let index = above.length - 1; index >= 0; index -= 1) panels.close(above[index]!.handle)
+	}
+
+	function levelTitle(level: PanelLevel): string {
+		switch (level) {
+			case "table":
+				return "Agents"
+			case "fields": {
+				const current = agent()
+				return current === undefined ? "Agent" : agentName(current)
+			}
+			case "limits":
+				return "Limits"
+			case "limitEdit": {
+				const current = agent()
+				return current === undefined ? "Max rounds" : `Max rounds — ${agentName(current)}`
+			}
+			case "picker":
+				return "Model"
+			case "effort":
+				return "Reasoning effort"
+			case "deep": {
+				const current = agent()
+				return current === undefined ? "Max spawn depth" : `Max spawn depth — ${agentName(current)}`
+			}
+			case "viewer": {
+				const current = agent()
+				return current === undefined ? "System prompt" : `${agentName(current)} · system prompt`
+			}
+		}
+	}
+
+	// ---- open / close ----
 	createEffect(() => {
 		const preselected = bridgeOpen()
 		if (preselected === undefined) return
 		setBridgeOpen(undefined)
+		// A second /agents while the manager is on screen is a no-op (the
+		// command is not reachable from inside the modal anyway).
+		if (layers().length > 0) return
 		const next = reloadRows()
-		setLevel(initialAgentLevel(next))
 		setStatus(undefined)
 		setChanged([])
+		setEfforts([])
+		setLimitError(undefined)
 		const index = preselectAgentIndex(next, preselected)
 		setTableCursor(index >= 0 ? index : 0)
+		setLimitsCursor(0)
 		setOpen(true)
-		if (next.length === 0) {
-			setLimitsCursor(0)
-			setLimitError(undefined)
+		const level = initialAgentLevel(next)
+		if (level === "limits") {
+			setSelectedName(undefined)
 			setCaps(undefined)
 			void loadOfficialCaps()
+			pushLevel("limits")
+			return
 		}
+		pushLevel("table")
 	})
-
-	// Focus the catcher (or the deep editor) after every level transition so
-	// printable keys never reach the composer underneath.
-	createEffect(() => {
-		if (!open()) return
-		level()
-		setTimeout(() => {
-			if (!open()) return
-			if (catcher !== undefined && !catcher.isDestroyed) catcher.focus()
-		}, 1)
-	})
-
-	function showTable() {
-		reloadRows()
-		setLevel("table")
-		setStatus(undefined)
-	}
-
-	function showFields(name: string) {
-		setSelectedName(name)
-		setFieldCursor(0)
-		setLevel("fields")
-	}
-
-	function refreshRows() {
-		reloadRows()
-	}
 
 	// ---- limits layer (l) ----
 	const limitsRows = createMemo(() => agentLimitsRows(agent(), caps()))
@@ -670,7 +655,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		setLimitError(undefined)
 		setCaps(undefined)
 		setStatus(undefined)
-		setLevel("limits")
+		pushLevel("limits", row === undefined ? undefined : `target: ${agentName(row)}`)
 		void loadOfficialCaps()
 	}
 
@@ -682,7 +667,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		} catch {
 			next = {}
 		}
-		if (level() === "limits") setCaps(next)
+		setCaps(next)
 	}
 
 	/**
@@ -691,7 +676,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	 * said "edit them in /settings" with no way to get there).
 	 */
 	function openSettingsRow(key: "maxActiveSubagents" | "maxDepth") {
-		close()
+		panels.closeAll()
 		setTimeout(() => openSettingsPanel(officialCapSettingsRow(key)), 3)
 	}
 
@@ -700,7 +685,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		if (current === undefined) return
 		setLimitValue(current.maxRounds === undefined ? "" : String(current.maxRounds))
 		setLimitError(undefined)
-		setLevel("limitEdit")
+		pushLevel("limitEdit")
 	}
 
 	function toggleBackground() {
@@ -719,7 +704,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 				: "background off — foreground dispatch",
 		)
 		markChanged(current.name)
-		refreshRows()
+		reloadRows()
 	}
 
 	function commitMaxRounds(text: string) {
@@ -728,7 +713,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const parsed = parseMaxRoundsInput(text)
 		if (parsed.kind === "keep") {
 			setLimitError(undefined)
-			setLevel("limits")
+			closeTop()
 			return
 		}
 		if (parsed.kind === "error") {
@@ -745,13 +730,8 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		setLimitError(undefined)
 		setStatus(`maxRounds → ${parsed.value} saved — applies to future subagent spawns`)
 		markChanged(current.name)
-		refreshRows()
-		setLevel("limits")
-	}
-
-	function leaveMaxRoundsEditor() {
-		setLimitError(undefined)
-		setLevel("limits")
+		reloadRows()
+		closeTop()
 	}
 
 	async function openModelPicker() {
@@ -771,7 +751,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const index = current.model === undefined ? 0 : catalog.findIndex((model) => `${model.providerID}/${model.modelID}` === current.model)
 		setPickerCursor(index >= 0 ? index : 0)
 		setStatus(undefined)
-		setLevel("picker")
+		pushLevel("picker")
 	}
 
 	async function chooseModel(model: AgentModelChoice) {
@@ -789,7 +769,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		if (next.stage === "effort") {
 			setEfforts(next.efforts)
 			setEffortCursor(next.cursor)
-			setLevel("effort")
+			pushLevel("effort")
 		}
 	}
 
@@ -801,20 +781,24 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const modelResult = seam.set(current.name, "model", model)
 		if (modelResult.error !== undefined) {
 			setStatus(`✘ ${modelResult.error}`)
-			setLevel("fields")
+			popAbove("fields")
 			return
 		}
 		const thinkResult = thinking === null ? seam.set(current.name, "thinking", null) : seam.set(current.name, "thinking", thinking)
+		// The model write already landed, so this is a real change even when
+		// the effort write fails: mark it and re-read, then report both halves
+		// (a silent failure here used to leave "Agents unchanged." in the exit
+		// summary after a persisted model edit).
+		markChanged(current.name)
+		reloadRows()
+		const scope = modelResult.target.kind === "profile" ? ` (profile "${modelResult.target.name}")` : ""
+		const think = thinking !== null ? ` · think ${thinking}` : ""
 		if (thinkResult.error !== undefined) {
-			setStatus(`✘ ${thinkResult.error}`)
+			setStatus(`✘ thinking not saved: ${thinkResult.error} — model ${current.name} → ${model} saved`)
 		} else {
-			const scope = modelResult.target.kind === "profile" ? ` (profile "${modelResult.target.name}")` : ""
-			const think = thinking !== null ? ` · think ${thinking}` : ""
 			setStatus(`saved ${current.name} → ${model}${think}${scope}`)
-			markChanged(current.name)
-			refreshRows()
 		}
-		setLevel("fields")
+		popAbove("fields")
 	}
 
 	async function openThinkingPicker() {
@@ -843,15 +827,15 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const index = current.thinking === undefined ? 0 : ladder.findIndex((effort) => effort.id === current.thinking) + 1
 		setEffortCursor(index > 0 ? index : 0)
 		setStatus(undefined)
-		setLevel("effort")
+		pushLevel("effort")
 	}
 
-	function commitThinking() {
+	function commitThinking(cursor: number) {
 		const current = agent()
 		if (current === undefined) return
 		const seam = props.seam.agents
 		if (seam === undefined) return
-		const next = pickerSelectEffort({ stage: "effort", model: current.model ?? "", efforts: efforts(), cursor: effortCursor() }, effortCursor())
+		const next = pickerSelectEffort({ stage: "effort", model: current.model ?? "", efforts: efforts(), cursor }, cursor)
 		const thinking = next.stage === "done" ? next.thinking : null
 		const result = seam.set(current.name, "thinking", thinking)
 		if (result.error !== undefined) {
@@ -860,9 +844,9 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			const scope = result.target.kind === "profile" ? ` (profile "${result.target.name}")` : ""
 			setStatus(`saved ${current.name} → think ${thinking ?? "inherit"}${scope}`)
 			markChanged(current.name)
-			refreshRows()
+			reloadRows()
 		}
-		setLevel("fields")
+		popAbove("fields")
 	}
 
 	function openDeepEditor() {
@@ -872,7 +856,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		setDeepError(undefined)
 		setDeepNotice(undefined)
 		setDeepCommitted(false)
-		setLevel("deep")
+		pushLevel("deep")
 	}
 
 	function commitDeep(text: string) {
@@ -880,7 +864,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		if (current === undefined) return
 		const parsed = parseDeepInput(text)
 		if (parsed.kind === "keep") {
-			setLevel("fields")
+			closeTop()
 			return
 		}
 		if (parsed.kind === "error") {
@@ -902,9 +886,10 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		setDeepNotice(`max depth ${n} saved — takes effect when this agent is spawned`)
 		setDeepCommitted(true)
 		markChanged(current.name)
-		refreshRows()
+		reloadRows()
 	}
 
+	/** Esc routed through the stack still reports the committed depth. */
 	function leaveDeepEditor() {
 		const current = agent()
 		if (deepCommitted() && current !== undefined) {
@@ -912,7 +897,6 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		}
 		setDeepError(undefined)
 		setDeepNotice(undefined)
-		setLevel("fields")
 	}
 
 	function showViewer() {
@@ -925,305 +909,439 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			body = ""
 		}
 		setViewerBody(body)
-		setLevel("viewer")
+		pushLevel("viewer")
 	}
 
-	// ---- keymap layer: global, priority 2, yields while a dialog owns focus ----
-	Keymap.createLayer(() => ({
-		mode: "global",
-		enabled: open() && dialog.stack.length === 0,
-		priority: 2,
-		commands: [
-			{
-				bind: "escape",
-				title: "Agents: back",
-				group: "Agents",
-				run: () => {
-					const current = level()
-					if (current === "table") close()
-					else if (current === "fields") showTable()
-					else if (current === "limits") {
-						// Zero corpus: there is no table to go back to.
-						if (limitsEscapeTarget(rows().length) === "close") close()
-						else showTable()
-					} else if (current === "limitEdit") leaveMaxRoundsEditor()
-					else if (current === "picker" || current === "effort") {
-						// Esc at either picker stage cancels the whole change.
-										setEfforts([])
-						setStatus(undefined)
-						setLevel("fields")
-					} else if (current === "deep") leaveDeepEditor()
-					else if (current === "viewer") setLevel("fields")
-				},
-			},
-			{
-				bind: "up",
-				title: "Agents: previous row",
-				group: "Agents",
-				run: () => step(-1),
-			},
-			{
-				bind: "down",
-				title: "Agents: next row",
-				group: "Agents",
-				run: () => step(1),
-			},
-			{
-				bind: "pageup",
-				title: "Agents: page up",
-				group: "Agents",
-				run: () => step(-MAX_VISIBLE),
-			},
-			{
-				bind: "pagedown",
-				title: "Agents: page down",
-				group: "Agents",
-				run: () => step(MAX_VISIBLE),
-			},
-			{
-				bind: "return",
-				title: "Agents: open / edit",
-				group: "Agents",
-				run: () => {
-					const current = level()
-					if (current === "table") {
-						const row = rows()[tableCursor()]
-						if (row !== undefined) showFields(row.name)
-					} else if (current === "fields") {
-						const index = fieldCursor()
-						if (index === 0) void openModelPicker()
-						else if (index === 1) void openThinkingPicker()
-						else openDeepEditor()
-					} else if (current === "picker") {
-						const model = models()[pickerCursor()]
-						if (model !== undefined) void chooseModel(model)
-					} else if (current === "effort") {
-						commitThinking()
-					} else if (current === "limits") {
-						const row = limitsRows()[limitsCursor()]
-						if (row === undefined) return
-						if (row.key === "maxRounds") openMaxRoundsEditor()
-						else if (row.key === "background") toggleBackground()
-						else openSettingsRow(row.key)
-					} else if (current === "limitEdit") {
-						commitMaxRounds(limitValue())
-					} else if (current === "deep") {
-						commitDeep(deepValue())
-					} else if (current === "viewer") {
-						setLevel("fields")
-					}
-				},
-			},
+	function openFields(name: string) {
+		setSelectedName(name)
+		setFieldCursor(0)
+		setStatus(undefined)
+		pushLevel("fields")
+	}
+
+	/**
+	 * The paged List state of the current level, or undefined when the level
+	 * has no paged list. Only the table and the model picker page; the fields,
+	 * limits, effort and viewer lists are short by construction.
+	 */
+	function pagedList(): { count: number; cursor: number; setCursor: (index: number) => void } | undefined {
+		switch (activeLevel()) {
+			case "table":
+				return { count: rows().length, cursor: tableCursor(), setCursor: setTableCursor }
+			case "picker":
+				return { count: models().length, cursor: pickerCursor(), setCursor: setPickerCursor }
+			default:
+				return undefined
+		}
+	}
+
+	/**
+	 * PgUp/PgDn/Home/End for the level's paged List. The session's global
+	 * `session.page.*` bindings consume these keys before the focused
+	 * renderable, so the kit List never receives them; this layer re-applies
+	 * the same semantics. Returns false (= not consumed) when the level is not
+	 * a paged list or the list fits one page, so the transcript pager keeps the
+	 * keys on a fitting window (and never loses them to a swallowed key).
+	 *
+	 * The cursor moves to the target page's first row (`end`: the last row) and
+	 * the kit List's cursor-follow pulls the window to that row — reusing its
+	 * page/clamp logic instead of a second implementation.
+	 */
+	function pageList(action: "pageup" | "pagedown" | "home" | "end"): boolean {
+		const list = pagedList()
+		if (list === undefined || list.count <= PAGE_SIZE) return false
+		const pages = Math.max(1, Math.ceil(list.count / PAGE_SIZE))
+		const page = Math.floor(list.cursor / PAGE_SIZE)
+		const targetPage = nextListPage(action, page, pages)
+		if (targetPage === undefined) return false
+		const target = action === "end" ? list.count - 1 : action === "home" ? 0 : targetPage * PAGE_SIZE
+		list.setCursor(Math.max(0, Math.min(list.count - 1, target)))
+		return true
+	}
+
+	// ---- letter hotkeys: the consumer's own Keymap layer (not PANEL_KEY_IDS) ----
+	Keymap.createLayer(() => {
+		// Only the manager's own top layer may answer. A kit layer pushed on
+		// top (a confirm dialog, a settings dropdown) is `panels.top` while
+		// `layers` still names our last level, so the hotkeys stay parked
+		// there instead of leaking into the layer below the popup.
+		const top = panels.top
+		const ownTop = layers().at(-1)?.handle
+		return {
+			mode: "global",
+			enabled: open() && top !== undefined && top === ownTop,
+			priority: 2,
+			commands: [
 			{
 				bind: "m",
 				title: "Agents: model",
 				group: "Agents",
-				run: () => {
-					if (level() === "fields") void openModelPicker()
-				},
+				enabled: () => activeLevel() === "fields",
+				run: () => void openModelPicker(),
 			},
 			{
 				bind: "t",
 				title: "Agents: think level",
 				group: "Agents",
-				run: () => {
-					if (level() === "fields") void openThinkingPicker()
-				},
+				enabled: () => activeLevel() === "fields",
+				run: () => void openThinkingPicker(),
 			},
 			{
 				bind: "d",
 				title: "Agents: spawn depth / background",
 				group: "Agents",
+				enabled: () => activeLevel() === "fields" || activeLevel() === "limits",
 				run: () => {
-					const current = level()
-					if (current === "fields") openDeepEditor()
-					else if (current === "limits") toggleBackground()
+					if (activeLevel() === "fields") openDeepEditor()
+					else toggleBackground()
 				},
 			},
 			{
 				bind: "v",
 				title: "Agents: full prompt",
 				group: "Agents",
-				run: () => {
-					if (level() === "fields") showViewer()
-				},
+				enabled: () => activeLevel() === "fields",
+				run: () => showViewer(),
 			},
 			{
 				bind: "l",
 				title: "Agents: limits",
 				group: "Agents",
+				enabled: () => activeLevel() === "table",
+				run: () => showLimits(),
+			},
+			// The kit List pages itself, but the session's global
+			// `session.page.*` layer consumes these keys first. Bind them here
+			// (top layer + over-window only; `pageList` returns false otherwise)
+			// and let the List's cursor-follow move the window.
+			{ bind: "pageup", title: "Agents: page up", group: "Agents", run: () => pageList("pageup") },
+			{ bind: "pagedown", title: "Agents: page down", group: "Agents", run: () => pageList("pagedown") },
+			{ bind: "home", title: "Agents: first row", group: "Agents", run: () => pageList("home") },
+			{ bind: "end", title: "Agents: last row", group: "Agents", run: () => pageList("end") },
+			// The editors' Enter commit path. On every other level the binding
+			// is disabled, so panel-kit's Enter (List select) is untouched.
+			{
+				bind: "return",
+				title: "Agents: save",
+				group: "Agents",
+				enabled: () => activeLevel() === "deep" || activeLevel() === "limitEdit",
 				run: () => {
-					if (level() !== "table") return
-					showLimits()
+					if (activeLevel() === "deep") commitDeep(deepValue())
+					else commitMaxRounds(limitValue())
 				},
 			},
-		],
-	}))
+			],
+		}
+	})
 
-	function step(delta: number) {
-		const current = level()
-		if (current === "table") {
-			const count = rows().length
-			if (count === 0) return
-			setTableCursor((index) => Math.max(0, Math.min(count - 1, index + delta)))
-		} else if (current === "fields") {
-			setFieldCursor((index) => Math.max(0, Math.min(2, index + delta)))
-		} else if (current === "picker") {
-			const count = models().length
-			if (count === 0) return
-			setPickerCursor((index) => Math.max(0, Math.min(count - 1, index + delta)))
-		} else if (current === "effort") {
-			const count = efforts().length + 1
-			setEffortCursor((index) => Math.max(0, Math.min(count - 1, index + delta)))
-		} else if (current === "limits") {
-			const count = limitsRows().length
-			if (count === 0) return
-			setLimitsCursor((index) => Math.max(0, Math.min(count - 1, index + delta)))
+	// ---- layer rendering ----
+	function statusLine() {
+		return (
+			<Show when={status() !== undefined}>
+				<text fg={theme().text.warning} wrapMode="none">
+					{clipText(status()!, bodyWidth())}
+				</text>
+			</Show>
+		)
+	}
+
+	function brokenLineView() {
+		return (
+			<Show when={brokenCount() > 0}>
+				<text fg={theme().text.muted} wrapMode="none">
+					{clipText(brokenLine(brokenCount()), bodyWidth())}
+				</text>
+			</Show>
+		)
+	}
+
+	function renderLevel(level: PanelLevel): JSX.Element {
+		switch (level) {
+			case "table":
+				return renderTable()
+			case "fields":
+				return renderFields()
+			case "limits":
+				return renderLimits()
+			case "limitEdit":
+				return renderLimitEditor()
+			case "picker":
+				return renderPicker()
+			case "effort":
+				return renderEffort()
+			case "deep":
+				return renderDeepEditor()
+			case "viewer":
+				return renderViewer()
 		}
 	}
 
-	function lines(): PanelLine[] {
-		const current = level()
-		if (current === "table") {
-			if (rows().length === 0) {
-				return agentEmptyLines(
-					props.seam.agents?.dir?.() ?? "$DSH_HOME/agents",
-					width(),
-					status(),
-					brokenCount(),
-				)
-			}
-			return agentTableLines(rows(), tableCursor(), width(), status(), brokenCount())
-		}
-		if (current === "fields") {
-			const row = agent()
-			return row === undefined ? [] : agentFieldLines(row, fieldCursor(), width(), status())
-		}
-		if (current === "limits") {
-			return agentLimitsLines({
-				agent: agent(),
-				caps: caps(),
-				cursor: limitsCursor(),
-				width: width(),
-				broken: brokenCount(),
-				dir: props.seam.agents?.dir?.(),
-				status: status(),
-			})
-		}
-		if (current === "picker") return agentPickerLines(models(), pickerCursor(), width())
-		if (current === "effort") return agentEffortLines(efforts(), effortCursor(), width())
-		if (current === "viewer") {
-			return agentViewerLines(agent()?.displayName ?? agent()?.name ?? "", viewerBody(), width())
-		}
-		if (current === "limitEdit") {
-			const currentAgent = agent()
-			const out: PanelLine[] = [
-				{ text: clipText(`Max rounds — ${currentAgent ? agentName(currentAgent) : ""}`, width()), tone: "accent" },
-				{ text: clipText("positive integer · empty = inherit the global cap", width()), tone: "muted" },
-			]
-			if (limitError() !== undefined) out.push({ text: clipText(`✘ ${limitError()}`, width()), tone: "attention" })
-			out.push({ text: "", tone: "subtle" })
-			out.push({ text: clipText(`> ${limitValue()}`, width()), tone: "accent" })
-			out.push({ text: "", tone: "subtle" })
-			out.push({ text: clipText("Enter save · Esc back", width()), tone: "subtle" })
-			return out
-		}
-		// deep editor
-		const currentAgent = agent()
-		const out: PanelLine[] = [
-			{ text: clipText(`Max spawn depth — ${currentAgent ? agentName(currentAgent) : ""}`, width()), tone: "accent" },
-			{ text: clipText("0 = this agent never spawns subagents · no unlimited", width()), tone: "muted" },
-		]
-		if (deepError() !== undefined) out.push({ text: clipText(`✘ ${deepError()}`, width()), tone: "attention" })
-		else if (deepNotice() !== undefined) out.push({ text: clipText(deepNotice()!, width()), tone: "muted" })
-		out.push({ text: "", tone: "subtle" })
-		out.push({ text: clipText(`> ${deepValue()}`, width()), tone: "accent" })
-		out.push({ text: "", tone: "subtle" })
-		out.push({ text: clipText("Enter save · Esc back", width()), tone: "subtle" })
-		return out
+	function renderTable(): JSX.Element {
+		return (
+			<FocusRoot>
+				<PanelBody>
+					<List
+						items={agentTableItems(rows())}
+						columns={AGENT_TABLE_COLUMNS}
+						pageSize={PAGE_SIZE}
+						width={bodyWidth()}
+						query=""
+						onQueryChange={() => {}}
+						emptyLabel="no agents"
+						activeId={rows()[tableCursor()]?.name}
+						onActiveChange={(id) => {
+							const index = rows().findIndex((row) => row.name === id)
+							if (index >= 0) setTableCursor(clampStep(tableCursor(), index, rows().length))
+						}}
+						onSelect={(item) => openFields(item.id)}
+					/>
+					{brokenLineView()}
+					{statusLine()}
+				</PanelBody>
+				<PanelActions hint="↑↓ navigate · enter open · l limits · esc back" />
+			</FocusRoot>
+		)
 	}
 
-	function focusColor(tone: PanelTone) {
-		switch (tone) {
-			case "accent":
-			case "selected":
-				return theme?.text.action.primary.base ?? "#7aa2f7"
-			case "attention":
-				return warningColor(theme ?? undefined)
-			case "subtle":
-				return theme?.text.faint ?? "#565f89"
-			default:
-				return theme?.text.muted ?? "#565f89"
-		}
+	/** The kit's List wraps at both ends; /agents has always clamped. Recognise
+	 * the one-step wrap and pin the cursor to the edge instead. */
+	function clampStep(previous: number, next: number, count: number): number {
+		if (count <= 1) return Math.max(0, Math.min(Math.max(0, count - 1), next))
+		if (next === 0 && previous === count - 1) return count - 1
+		if (next === count - 1 && previous === 0) return 0
+		return next
 	}
 
-	const totalLines = createMemo(() => lines().length)
-
-	return (
-		<Show when={open()}>
-			<box
-				flexShrink={0}
-				width="100%"
-				height={totalLines() + 1}
-				flexDirection="column"
-				border={["left"]}
-				borderColor={theme?.border.base ?? "#7aa2f7"}
-				backgroundColor={theme?.background.raised.base ?? "#1a1b26"}
-				paddingLeft={1}
-				paddingRight={1}
-			>
-				<For each={lines()}>
-					{(line) => (
-						<box height={1} flexShrink={0}>
-							<text
-								fg={focusColor(line.tone)}
-								attributes={line.tone === "accent" || line.tone === "selected" ? TextAttributes.BOLD : TextAttributes.NONE}
-								wrapMode="none"
-							>
-								{line.text}
-							</text>
-						</box>
-					)}
-				</For>
-				<Show
-					when={level() === "deep" || level() === "limitEdit"}
-					fallback={
-						<box height={1} flexShrink={0}>
-							<input
-								width={1}
-								value=""
-								onInput={() => {}}
-								ref={(renderable: InputRenderable) => {
-									catcher = renderable
-									setTimeout(() => {
-										if (!renderable.isDestroyed) renderable.focus()
-									}, 1)
-								}}
-							/>
-						</box>
-					}
-				>
-					<box height={1} flexShrink={0} flexDirection="row">
-						<input
-							flexGrow={1}
-							value={level() === "deep" ? deepValue() : limitValue()}
-							onInput={(value: string) => {
-								if (level() === "deep") setDeepValue(value)
-								else setLimitValue(value)
+	function renderFields(): JSX.Element {
+		const current = agent()
+		return (
+			<FocusRoot>
+				<PanelBody>
+					<Show when={current !== undefined} fallback={<text fg={theme().text.muted}>agent not found</text>}>
+						<For each={agentFieldContent(current!)}>
+							{(line) => (
+								<text fg={theme().text.muted} wrapMode="none">
+									{clipText(line === "" ? " " : line, bodyWidth())}
+								</text>
+							)}
+						</For>
+						<box height={1} flexShrink={0} />
+						<List
+							items={agentFieldItems(current!)}
+							columns={AGENT_FIELD_COLUMNS}
+							width={bodyWidth()}
+							query=""
+							onQueryChange={() => {}}
+							activeId={agentFieldItems(current!)[fieldCursor()]?.id}
+							onActiveChange={(id) => {
+								const index = agentFieldItems(current!).findIndex((item) => item.id === id)
+								if (index >= 0) setFieldCursor(index)
 							}}
-							onSubmit={() => (level() === "deep" ? commitDeep(deepValue()) : commitMaxRounds(limitValue()))}
-							ref={(renderable: InputRenderable) => {
-								catcher = renderable
-								setTimeout(() => {
-									if (renderable.isDestroyed) return
-									renderable.focus()
-									renderable.gotoLineEnd()
-								}, 1)
+							onSelect={(item) => {
+								if (item.value === "model") void openModelPicker()
+								else if (item.value === "thinking") void openThinkingPicker()
+								else openDeepEditor()
 							}}
 						/>
-					</box>
+						{statusLine()}
+					</Show>
+				</PanelBody>
+				<PanelActions hint="↑↓ field · enter edit · m model · t think · d deep · v prompt · esc back" />
+			</FocusRoot>
+		)
+	}
+
+	function renderLimits(): JSX.Element {
+		const current = agent()
+		const emptyCopy = () =>
+			`no agents in ${props.seam.agents?.dir?.() ?? "$DSH_HOME/agents"} yet — drop a markdown file to define one`
+		return (
+			<FocusRoot>
+				<PanelBody>
+					<Show when={current === undefined}>
+						<text fg={theme().text.muted} wrapMode="none">
+							{clipText(emptyCopy(), bodyWidth())}
+						</text>
+						<box height={1} flexShrink={0} />
+					</Show>
+					<List
+						items={agentLimitsItems(limitsRows())}
+						columns={AGENT_FIELD_COLUMNS}
+						width={bodyWidth()}
+						query=""
+						onQueryChange={() => {}}
+						emptyLabel="no limits"
+						activeId={limitsRows()[limitsCursor()]?.key}
+						onActiveChange={(id) => {
+							const index = limitsRows().findIndex((row) => row.key === id)
+							if (index >= 0) setLimitsCursor(index)
+						}}
+						onSelect={(item) => {
+							if (item.value === "maxRounds") openMaxRoundsEditor()
+							else if (item.value === "background") toggleBackground()
+							else openSettingsRow(item.value as "maxActiveSubagents" | "maxDepth")
+						}}
+					/>
+					{brokenLineView()}
+					{statusLine()}
+				</PanelBody>
+				<PanelActions hint="↑↓ field · enter edit · d toggle background · esc back" />
+			</FocusRoot>
+		)
+	}
+
+	function renderLimitEditor(): JSX.Element {
+		return (
+			<PanelBody>
+				<text fg={theme().text.muted} wrapMode="none">
+					{"positive integer · empty = inherit the global cap"}
+				</text>
+				<Show when={limitError() !== undefined}>
+					<text fg={theme().text.danger} wrapMode="none">
+						{clipText(`✘ ${limitError()}`, bodyWidth())}
+					</text>
 				</Show>
-			</box>
-		</Show>
-	)
+				<box height={1} flexShrink={0} />
+				<box flexDirection="row" height={1} flexShrink={0}>
+					<text fg={theme().text.accent} wrapMode="none">
+						{"> "}
+					</text>
+					<input
+						flexGrow={1}
+						value={limitValue()}
+						onInput={(value: string) => setLimitValue(value)}
+						onSubmit={() => commitMaxRounds(limitValue())}
+						ref={(renderable: Renderable) => {
+							const attempt = () => {
+								if (renderable.isDestroyed) return
+								renderable.focus()
+							}
+							attempt()
+							queueMicrotask(attempt)
+							setTimeout(attempt, 1)
+						}}
+					/>
+				</box>
+				<PanelActions hint="enter save · esc back" />
+			</PanelBody>
+		)
+	}
+
+	function renderDeepEditor(): JSX.Element {
+		return (
+			<PanelBody>
+				<text fg={theme().text.muted} wrapMode="none">
+					{"0 = this agent never spawns subagents · no unlimited"}
+				</text>
+				<Show when={deepError() !== undefined}>
+					<text fg={theme().text.danger} wrapMode="none">
+						{clipText(`✘ ${deepError()}`, bodyWidth())}
+					</text>
+				</Show>
+				<Show when={deepError() === undefined && deepNotice() !== undefined}>
+					<text fg={theme().text.muted} wrapMode="none">
+						{clipText(deepNotice()!, bodyWidth())}
+					</text>
+				</Show>
+				<box height={1} flexShrink={0} />
+				<box flexDirection="row" height={1} flexShrink={0}>
+					<text fg={theme().text.accent} wrapMode="none">
+						{"> "}
+					</text>
+					<input
+						flexGrow={1}
+						value={deepValue()}
+						onInput={(value: string) => setDeepValue(value)}
+						onSubmit={() => commitDeep(deepValue())}
+						ref={(renderable: InputRenderable) => {
+							const attempt = () => {
+								if (renderable.isDestroyed) return
+								renderable.focus()
+							}
+							attempt()
+							queueMicrotask(attempt)
+							setTimeout(() => {
+								if (renderable.isDestroyed) return
+								renderable.focus()
+								renderable.gotoLineEnd()
+							}, 1)
+						}}
+					/>
+				</box>
+				<PanelActions hint="enter save · esc back" />
+			</PanelBody>
+		)
+	}
+
+	function renderPicker(): JSX.Element {
+		return (
+			<FocusRoot>
+				<PanelBody>
+					<List
+						items={agentPickerItems(models())}
+						columns={AGENT_PICKER_COLUMNS}
+						pageSize={PAGE_SIZE}
+						width={bodyWidth()}
+						query=""
+						onQueryChange={() => {}}
+						emptyLabel="no models"
+						activeId={models()[pickerCursor()] === undefined ? undefined : `${models()[pickerCursor()]!.providerID}/${models()[pickerCursor()]!.modelID}`}
+						onActiveChange={(id) => {
+							const index = models().findIndex((model) => `${model.providerID}/${model.modelID}` === id)
+							if (index >= 0) setPickerCursor(index)
+						}}
+						onSelect={(item) => void chooseModel(item.value!)}
+					/>
+				</PanelBody>
+				<PanelActions hint="↑↓ navigate · enter select · esc back" />
+			</FocusRoot>
+		)
+	}
+
+	function renderEffort(): JSX.Element {
+		const items = () => agentEffortItems(efforts())
+		return (
+			<FocusRoot>
+				<PanelBody>
+					<List
+						items={items()}
+						columns={AGENT_EFFORT_COLUMNS}
+						width={bodyWidth()}
+						query=""
+						onQueryChange={() => {}}
+						emptyLabel="no effort levels"
+						activeId={items()[effortCursor()]?.id ?? "default"}
+						onActiveChange={(id) => {
+							const index = items().findIndex((item) => item.id === id)
+							if (index >= 0) setEffortCursor(index)
+						}}
+						onSelect={(item) => commitThinking(items().findIndex((entry) => entry.id === item.id))}
+					/>
+				</PanelBody>
+				<PanelActions hint="↑↓ navigate · enter select · esc back" />
+			</FocusRoot>
+		)
+	}
+
+	function renderViewer(): JSX.Element {
+		const view = createMemo(() => viewerWindow(viewerBody(), viewerRows()))
+		return (
+			<PanelBody maxRows={viewerRows()}>
+				<For each={view().lines}>
+					{(line) => (
+						<text fg={theme().text.muted} wrapMode="none">
+							{clipText(line === "" ? " " : line, bodyWidth())}
+						</text>
+					)}
+				</For>
+				<Show when={view().hidden > 0}>
+					<text fg={theme().text.faint} wrapMode="none">
+						{clipText(`… ${view().hidden} more line(s)`, bodyWidth())}
+					</text>
+				</Show>
+			</PanelBody>
+		)
+	}
+
+	return null
 }

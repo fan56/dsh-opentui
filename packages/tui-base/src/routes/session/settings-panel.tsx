@@ -1,6 +1,8 @@
 /**
- * SettingsPanel — the /settings panel v1 (whitelist-driven, no generic
- * schema walker).
+ * /settings data layer v1 (whitelist-driven, no generic schema walker).
+ * Rendering now lives in ./settings-modal.tsx (panel-kit modal, T18): this
+ * module keeps the row builders, the write planners, the conflict contract,
+ * the live appliers and the module open bridge.
  *
  * Three fixed zones:
  *   本地偏好      configSave → profile config.json, applied live in this
@@ -32,14 +34,7 @@
  * the options/input level pops that level, and on the list it clears a
  * non-empty filter before closing.
  */
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
-import type { InputRenderable } from "@opentui/core"
-import { TextAttributes } from "@opentui/core"
-import { useTerminalDimensions } from "@opentui/solid"
-import { Keymap } from "../../context/keymap"
-import { useDialog } from "../../ui/dialog"
-import { useThemeOptional } from "../../context/theme"
-import { warningColor } from "../../skin/semantic"
+import { createSignal, onCleanup } from "solid-js"
 import { stringWidth } from "../../util/string-width"
 import { setMotionTier, type MotionTier } from "../../skin/motion"
 import {
@@ -872,7 +867,7 @@ export function settingsSummary(changed: readonly string[]): string {
 	return changed.length > 0 ? `Settings updated: ${changed.join(", ")}` : "Settings unchanged."
 }
 
-// ------------------------------------------------------------ component --
+// ------------------------------------------------- bridge + appliers --
 
 const [bridgeOpen, setBridgeOpen] = createSignal<string | undefined>(undefined)
 const [panelOpen, setPanelOpen] = createSignal(false)
@@ -912,545 +907,118 @@ export interface SettingsThemeFace {
 	}
 }
 
-type Level = "list" | "options" | "input"
-
-export function SettingsPanel(props: {
-	seam: SessionSeam
-	themes?: SettingsThemeFace
-	onClosed?: (summary?: string) => void
-}) {
-	const theme = useThemeOptional()
-	const dialog = useDialog()
-	const dimensions = useTerminalDimensions()
-
-	const [open, setOpen] = useSettingsPanelOpenState()
-	const [document, setDocument] = createSignal<SeamSettingsDocument | undefined>(undefined)
-	const [describeError, setDescribeError] = createSignal<string | undefined>(undefined)
-	const [permissionCatalog, setPermissionCatalog] = createSignal<SeamPermissionCatalog | undefined>(undefined)
-	const [merged, setMerged] = createSignal<Record<string, unknown>>({})
-	const [profile, setProfile] = createSignal<Record<string, unknown>>({})
-	const [workspace, setWorkspace] = createSignal<Record<string, unknown>>({})
-	const [level, setLevel] = createSignal<Level>("list")
-	const [cursor, setCursor] = createSignal(0)
-	const [filter, setFilter] = createSignal("")
-	const [optionItem, setOptionItem] = createSignal<SettingsItem | undefined>(undefined)
-	const [optionCursor, setOptionCursor] = createSignal(0)
-	const [inputItem, setInputItem] = createSignal<SettingsItem | undefined>(undefined)
-	const [inputValue, setInputValue] = createSignal("")
-	const [inputError, setInputError] = createSignal<string | undefined>(undefined)
-	const [status, setStatus] = createSignal<string | undefined>(undefined)
-	const [changed, setChanged] = createSignal<string[]>([])
-	const [busy, setBusy] = createSignal(false)
-	const [preselect, setPreselect] = createSignal<string | undefined>(undefined)
-	let catcher: InputRenderable | undefined
-	let unsettings: (() => void) | undefined
-	// Unmount with the panel open: the host push listener must not survive the
-	// component (a leaked subscription keeps re-describing into dead signals).
-	onCleanup(() => {
-		unsettings?.()
-		unsettings = undefined
-	})
-
-	const width = () => Math.max(24, dimensions().width - 4)
-	const hasFace = () => props.seam.settings !== undefined
-	const writable = createMemo(() => settingsWritable(document(), describeError(), hasFace()))
-
-	const identity = createMemo(() => {
-		try {
-			return props.seam.settings?.identity?.() ?? undefined
-		} catch {
-			return undefined
-		}
-	})
-
-	const items = createMemo<SettingsItem[]>(() => [
-		...buildLocalItems({
-			merged: merged(),
-			profile: profile(),
-			workspace: workspace(),
-			...(props.themes !== undefined ? { themeNames: safeThemeNames() } : {}),
-			writable: writable().local,
-		}),
-		...buildHostItems(document(), writable().host, permissionCatalog()),
-		...buildOtherItems(document()),
-	])
-	const visible = createMemo(() => filterSettingsItems(items(), filter()))
-	const active = createMemo(() => visible()[cursor()])
-
-	function safeThemeNames(): readonly string[] {
-		try {
-			return props.themes?.list() ?? []
-		} catch {
-			return []
-		}
+/** Read the merged / profile / workspace snapshots for a panel open. A broken
+ * face degrades to an empty map (the row builders never throw). */
+export function readLocalSnapshot(seam: SessionSeam): {
+	merged: Record<string, unknown>
+	profile: Record<string, unknown>
+	workspace: Record<string, unknown>
+} {
+	let merged: Record<string, unknown> = {}
+	let profile: Record<string, unknown> = {}
+	let workspace: Record<string, unknown> = {}
+	try {
+		merged = seam.configLoad?.() ?? {}
+	} catch {
+		merged = {}
 	}
-
-	function reloadLocal() {
-		try {
-			setMerged(props.seam.configLoad?.() ?? {})
-		} catch {
-			setMerged({})
-		}
-		try {
-			setProfile(props.seam.configRaw?.() ?? {})
-		} catch {
-			setProfile({})
-		}
-		try {
-			setWorkspace(props.seam.workspaceConfig?.() ?? {})
-		} catch {
-			setWorkspace({})
-		}
+	try {
+		profile = seam.configRaw?.() ?? {}
+	} catch {
+		profile = {}
 	}
-
-	async function reloadHost(): Promise<void> {
-		const face = props.seam.settings
-		if (face === undefined) {
-			setDocument(undefined)
-			setDescribeError(undefined)
-			setPermissionCatalog(undefined)
-			return
-		}
-		try {
-			setDocument(await face.describe())
-			setDescribeError(undefined)
-		} catch (error) {
-			setDescribeError(error instanceof Error ? error.message : String(error))
-		}
-		// Permission options ride a separate catalog RPC; a failed read must not
-		// turn the whole host zone read-only — the row degrades to its note.
-		try {
-			setPermissionCatalog(await face.permissionCatalog?.())
-		} catch {
-			setPermissionCatalog(undefined)
-		}
+	try {
+		workspace = seam.workspaceConfig?.() ?? {}
+	} catch {
+		workspace = {}
 	}
+	return { merged, profile, workspace }
+}
 
-	function close() {
-		unsettings?.()
-		unsettings = undefined
-		setOpen(false)
-		setLevel("list")
-		setFilter("")
-		setStatus(undefined)
-		setOptionItem(undefined)
-		setInputItem(undefined)
-		setCursor(0)
-		const summary = settingsSummary(changed())
-		setChanged([])
-		// Refocus AFTER teardown (the plugins-panel C15 law).
-		setTimeout(() => props.onClosed?.(summary), 3)
+/** Read the host settings document + permission catalog (both degrade
+ * independently: a failed catalog read must not disable the host zone). */
+export async function readHostSnapshot(seam: SessionSeam): Promise<{
+	document: SeamSettingsDocument | undefined
+	describeError: string | undefined
+	catalog: SeamPermissionCatalog | undefined
+}> {
+	const face = seam.settings
+	if (face === undefined) return { document: undefined, describeError: undefined, catalog: undefined }
+	let document: SeamSettingsDocument | undefined
+	let describeError: string | undefined
+	try {
+		document = await face.describe()
+	} catch (error) {
+		describeError = error instanceof Error ? error.message : String(error)
 	}
-
-	createEffect(() => {
-		const preselected = bridgeOpen()
-		if (preselected === undefined) return
-		setBridgeOpen(undefined)
-		setLevel("list")
-		setFilter("")
-		setStatus(undefined)
-		setChanged([])
-		setCursor(0)
-		reloadLocal()
-		void reloadHost()
-		setOpen(true)
-		unsettings?.()
-		unsettings = props.seam.settings?.onChanged?.(() => {
-			// Host push: re-read only while the panel is on screen (the
-			// module signal gates it; the listener is disposed on close).
-			if (open()) void reloadHost()
-		})
-		setPreselect(preselected === "" ? undefined : preselected)
-	})
-
-	// Resolve a preselected row once the built rows exist (host rows arrive
-	// only after the first describe).
-	createEffect(() => {
-		const target = preselect()
-		if (target === undefined || !open()) return
-		const index = visible().findIndex(
-			(item) => item.id === target || item.id.endsWith(`.${target}`) || item.label === target,
-		)
-		if (index >= 0) {
-			setCursor(index)
-			setPreselect(undefined)
-		}
-	})
-
-	// Cursor clamp when the filter narrows the list.
-	createEffect(() => {
-		const count = visible().length
-		if (count === 0) setCursor(0)
-		else if (cursor() >= count) setCursor(count - 1)
-	})
-
-	// Focus the catcher (or the editor) after every level transition.
-	createEffect(() => {
-		if (!open()) return
-		level()
-		setTimeout(() => {
-			if (!open()) return
-			if (catcher !== undefined && !catcher.isDestroyed) catcher.focus()
-		}, 1)
-	})
-
-	function openEditor(item: SettingsItem) {
-		if (!item.editable) {
-			setStatus(item.note ?? "该行只读")
-			return
-		}
-		if (item.kind === "toggle") {
-			void applyItem(item, item.value !== "on")
-			return
-		}
-		if (item.kind === "enum") {
-			if (item.options === undefined || item.options.length === 0) {
-				setStatus("no options available — this row cannot be edited here")
-				return
-			}
-			setOptionItem(item)
-			setOptionCursor(Math.max(0, item.options.indexOf(item.value)))
-			setInputError(undefined)
-			setStatus(undefined)
-			setLevel("options")
-			return
-		}
-		setInputItem(item)
-		setInputValue(item.value === UNKNOWN || item.value === NA ? "" : item.value)
-		setInputError(undefined)
-		setStatus(undefined)
-		setLevel("input")
+	let catalog: SeamPermissionCatalog | undefined
+	try {
+		catalog = await face.permissionCatalog?.()
+	} catch {
+		catalog = undefined
 	}
+	return { document, describeError, catalog }
+}
 
-	function backToList() {
-		setLevel("list")
-		setInputItem(undefined)
-		setOptionItem(undefined)
-		setInputError(undefined)
-	}
-
-	async function applyItem(item: SettingsItem, raw: string | boolean | number): Promise<void> {
-		if (!writable().local) {
-			setStatus(writable().reason ?? "setting writes are disabled")
+/**
+ * Apply the live effect a persisted local key drives in THIS process. The
+ * caller already persisted through `planLocalWrite` + `configSave`, so every
+ * theme-face call is LIVE-only (`persist: false`): the face owns a boot-time
+ * layer (themeModePatchKey) and its own write would land there even while the
+ * user edits another layer (M1).
+ *
+ * The branch key is the WRITE TARGET (`write.key`), not the row id (P1-1):
+ * the General rows carry presentation ids (`general.appearance`,
+ * `general.language`) while their writes are the local keys themeMode /
+ * hintsLocale. `footerHints` is one shared write key holding one boolean per
+ * hint id, so that branch keys the row-id segment.
+ */
+export function applySettingsLive(
+	item: SettingsItem,
+	applied: string | boolean | number | undefined,
+	hints: FooterHints,
+	themes?: SettingsThemeFace,
+): void {
+	const write = item.write
+	if (write?.via !== "config") return
+	const key = write.key
+	try {
+		if (key === "footerHints") {
+			const segment = item.id.slice("footerHints.".length) as keyof FooterHints
+			if (!(segment in DEFAULT_FOOTER_HINTS)) return
+			setFooterHints({ ...hints, [segment]: applied === true })
 			return
 		}
-		if (busy()) return
-		if (item.write?.via === "settings") {
-			if (!writable().host) {
-				setStatus(writable().reason ?? "host settings are read-only")
-				return
-			}
-			const plan = planHostWrite(item, raw)
-			if (!plan.ok) {
-				setInputError(plan.error)
-				setStatus(`✘ ${plan.error}`)
-				return
-			}
-			const face = props.seam.settings
-			if (face === undefined) return
-			setBusy(true)
-			try {
-				const outcome = await commitHostWrite({
-					mutate: (ns, ops, revision) => face.mutate(ns, ops, revision),
-					describe: () => face.describe(),
-					ns: plan.ns,
-					ops: plan.ops,
-					revision: currentHostRevision(document(), plan.ns),
-				})
-				if (outcome.document !== undefined) {
-					setDocument(outcome.document)
-					setDescribeError(undefined)
-				}
-				if (outcome.describeError !== undefined) setDescribeError(outcome.describeError)
-				if (!outcome.result.ok) {
-					const message = outcome.result.conflict
-						? outcome.attempts === 1
-							? "✘ 冲突：设置已被其它客户端修改，且 settings/describe 失败 — 没有最新 revision，未重试写入"
-							: "✘ 冲突：设置已被其它客户端修改，重试一次仍冲突（未写入）"
-						: `✘ ${outcome.result.error}`
-					setInputError(message)
-					setStatus(message)
-					return
-				}
-				markChanged(item)
-				if (outcome.refreshFailed === true) {
-					// The write landed but the read-back did not: say so, never
-					// "saved" (the displayed value would be a stale document).
-					const message = `⚠ 已写入 ${item.label} = ${String(plan.applied)}，但刷新失败：${outcome.describeError ?? "settings/describe 不可用"}`
-					setInputError(message)
-					setStatus(message)
-					backToList()
-					return
-				}
-				setStatus(`saved ${item.label} = ${String(plan.applied)}${outcome.attempts > 1 ? " (after conflict retry)" : ""}`)
-				setInputError(undefined)
-				backToList()
-			} catch (error) {
-				// Transport/handler throw (never leave an unhandled rejection).
-				const message = `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`
-				setInputError(message)
-				setStatus(message)
-			} finally {
-				setBusy(false)
-			}
-			return
-		}
-
-		const hints = footerHintsFromConfig(merged().footerHints) ?? DEFAULT_FOOTER_HINTS
-		const plan = planLocalWrite(item, raw, hints)
-		if (!plan.ok) {
-			setInputError(plan.error)
-			setStatus(`✘ ${plan.error}`)
-			return
-		}
-		try {
-			props.seam.configSave?.(plan.patch)
-		} catch (error) {
-			const message = `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`
-			setInputError(message)
-			setStatus(message)
-			return
-		}
-		applyLive(item, plan.applied, hints)
-		markChanged(item)
-		reloadLocal()
-		setStatus(`saved ${item.label} = ${plan.applied === undefined ? "(unset)" : String(plan.applied)}`)
-		setInputError(undefined)
-		backToList()
-	}
-
-	/** Apply the live effect the persisted key drives in THIS process.
-	 *
-	 * The panel already persisted through `planLocalWrite` (+ configSave), so
-	 * every theme-face call is LIVE-only (`persist: false`): the face owns a
-	 * boot-time layer (themeModePatchKey) and its own write would land there
-	 * even while the user edits the other layer (M1). */
-	function applyLive(item: SettingsItem, applied: string | boolean | number | undefined, hints: FooterHints) {
-		try {
-			if (item.id === "motion") {
+		switch (key) {
+			case "motion":
 				setMotionTier(applied === undefined || applied === "auto" ? undefined : (String(applied) as MotionTier))
-			} else if (item.id.startsWith("footerHints.")) {
-				const segment = item.id.slice("footerHints.".length) as keyof FooterHints
-				setFooterHints({ ...hints, [segment]: applied === true })
-			} else if (item.id === "hintsLocale") {
+				break
+			case "hintsLocale":
 				setHintsLocale(String(applied) as HintLocale)
-			} else if (item.id === "theme") {
-				props.themes?.set(String(applied), { persist: false })
-			} else if (item.id === "themeMode" || item.id === "workspaceThemeMode") {
+				break
+			case "theme":
+				themes?.set(String(applied), { persist: false })
+				break
+			case "themeMode":
+			case "workspaceThemeMode": {
 				const mode = String(applied)
 				if (mode === "auto" || mode === "dark" || mode === "light") {
-					props.themes?.mode?.().set(mode, { persist: false })
+					themes?.mode?.().set(mode, { persist: false })
 				}
+				break
 			}
-		} catch (error) {
-			console.error("[settings] live apply failed:", error)
 		}
+	} catch (error) {
+		console.error("[settings] live apply failed:", error)
 	}
+}
 
-	function markChanged(item: SettingsItem) {
-		setChanged((list) => (list.includes(item.label) ? list : [...list, item.label]))
-	}
+// ------------------------------------------------------------- bridge ----
 
-	function step(delta: number) {
-		const count = visible().length
-		if (count === 0) return
-		setCursor((index) => Math.max(0, Math.min(count - 1, index + delta)))
-	}
+/** The module open bridge (a string = row id to preselect, "" = none). */
+export const settingsBridgeOpen = bridgeOpen
 
-	function handleEscape() {
-		const decision = settingsEscape(level(), filter())
-		if (decision.action === "clearFilter") {
-			setFilter("")
-			setCursor(0)
-			// Reaching level 0 here (a filter typed after Esc cleared an editor).
-			backToList()
-			return
-		}
-		if (decision.action === "back") {
-			backToList()
-			return
-		}
-		close()
-	}
-
-	Keymap.createLayer(() => ({
-		mode: "global",
-		enabled: open() && dialog.stack.length === 0,
-		priority: 2,
-		commands: [
-			{ bind: "escape", title: "Settings: back", group: "Settings", run: handleEscape },
-			{ bind: "up", title: "Settings: previous row", group: "Settings", run: () => moveCursor(-1) },
-			{ bind: "down", title: "Settings: next row", group: "Settings", run: () => moveCursor(1) },
-			{ bind: "pageup", title: "Settings: page up", group: "Settings", run: () => moveCursor(-PAGE) },
-			{ bind: "pagedown", title: "Settings: page down", group: "Settings", run: () => moveCursor(PAGE) },
-			{
-				bind: "return",
-				title: "Settings: open / apply",
-				group: "Settings",
-				run: () => {
-					const current = level()
-					if (current === "options") {
-						const item = optionItem()
-						const option = item?.options?.[optionCursor()]
-						if (item !== undefined && option !== undefined) void applyItem(item, option)
-						return
-					}
-					if (current === "input") {
-						const item = inputItem()
-						if (item !== undefined) void applyItem(item, inputValue())
-						return
-					}
-					const item = active()
-					if (item !== undefined) openEditor(item)
-				},
-			},
-		],
-	}))
-
-	function moveCursor(delta: number) {
-		if (level() === "options") {
-			const count = optionItem()?.options?.length ?? 0
-			if (count === 0) return
-			setOptionCursor((index) => Math.max(0, Math.min(count - 1, index + delta)))
-			return
-		}
-		if (level() === "list") step(delta)
-	}
-
-	function lines(): SettingsLine[] {
-		const current = level()
-		if (current === "options") {
-			const item = optionItem()
-			return item === undefined
-				? settingsLines(listInput())
-				: settingsOptionLines(item, item.options ?? [], optionCursor(), width(), inputError())
-		}
-		if (current === "input") {
-			const item = inputItem()
-			return item === undefined
-				? settingsLines(listInput())
-				: settingsInputLines(item, inputValue(), width(), inputError())
-		}
-		return settingsLines(listInput())
-	}
-
-	function listInput(): SettingsLinesInput {
-		return {
-			items: items(),
-			cursor: cursor(),
-			width: width(),
-			filter: filter(),
-			...(identity() !== undefined ? { identity: identity()! } : {}),
-			writable: writable().local,
-			...(writable().reason !== undefined ? { writableReason: writable().reason } : {}),
-			namespaceCount: settingsNamespaceCount(document()),
-			hasDocument: document()?.hasDocument === true,
-			...(status() !== undefined ? { status: status() } : {}),
-		}
-	}
-
-	function focusColor(tone: SettingsTone) {
-		switch (tone) {
-			case "accent":
-			case "selected":
-				return theme?.text.action.primary.base ?? "#7aa2f7"
-			case "attention":
-				return warningColor(theme ?? undefined)
-			case "subtle":
-				return theme?.text.faint ?? "#565f89"
-			default:
-				return theme?.text.muted ?? "#565f89"
-		}
-	}
-
-	const totalLines = createMemo(() => lines().length)
-
-	return (
-		<Show when={open()}>
-			<box
-				flexShrink={0}
-				width="100%"
-				height={totalLines() + 1}
-				flexDirection="column"
-				border={["left"]}
-				borderColor={theme?.border.base ?? "#7aa2f7"}
-				backgroundColor={theme?.background.raised.base ?? "#1a1b26"}
-				paddingLeft={1}
-				paddingRight={1}
-			>
-				<For each={lines()}>
-					{(line) => (
-						<box height={1} flexShrink={0}>
-							<text
-								fg={focusColor(line.tone)}
-								attributes={line.tone === "accent" || line.tone === "selected" ? TextAttributes.BOLD : TextAttributes.NONE}
-								wrapMode="none"
-							>
-								{line.text}
-							</text>
-						</box>
-					)}
-				</For>
-				<Show
-					when={level() === "input"}
-					fallback={
-						<box height={1} flexShrink={0} flexDirection="row">
-							<Show
-								when={level() === "list"}
-								fallback={
-									<input
-										width={1}
-										value=""
-										onInput={() => {}}
-										ref={(renderable: InputRenderable) => {
-											catcher = renderable
-											setTimeout(() => {
-												if (!renderable.isDestroyed) renderable.focus()
-											}, 1)
-										}}
-									/>
-								}
-							>
-								<input
-									flexGrow={1}
-									placeholder="type to filter settings"
-									value={filter()}
-									onInput={(value: string) => {
-										setFilter(value)
-										setCursor(0)
-									}}
-									ref={(renderable: InputRenderable) => {
-										catcher = renderable
-										setTimeout(() => {
-											if (!renderable.isDestroyed) renderable.focus()
-										}, 1)
-									}}
-								/>
-							</Show>
-						</box>
-					}
-				>
-					<box height={1} flexShrink={0} flexDirection="row">
-						<input
-							flexGrow={1}
-							value={inputValue()}
-							onInput={(value: string) => setInputValue(value)}
-							onSubmit={() => {
-								const item = inputItem()
-								if (item !== undefined) void applyItem(item, inputValue())
-							}}
-							ref={(renderable: InputRenderable) => {
-								catcher = renderable
-								setTimeout(() => {
-									if (renderable.isDestroyed) return
-									renderable.focus()
-									renderable.gotoLineEnd()
-								}, 1)
-							}}
-						/>
-					</box>
-				</Show>
-			</box>
-		</Show>
-	)
+/** Consume/clear the bridge (the modal host owns the read). */
+export function setSettingsBridge(value: string | undefined): void {
+	setBridgeOpen(value)
 }
