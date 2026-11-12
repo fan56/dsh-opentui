@@ -128,6 +128,37 @@ if [ -f "$CLIENT_BUNDLE" ]; then
     "$MARKER_COMPOSER_PLACEHOLDER" "$PANE"
   assert_contains 'npm-installed client bin paints the pinned provider segment' \
     "$MARKER_PROVIDER_SEG" "$PANE"
+  # Plugin-integrity proof for this boot leg — the provisioner WARNs and
+  # continues when an install ultimately fails, and the composer/provider
+  # markers above can paint without the plugins, so the delivered state is
+  # asserted here instead: every plugin the INSTALLED package's own
+  # provision-plan PLUGIN_SET plans must be pinned in the scratch profile's
+  # dependencies AND resolve under node_modules (the same contract the
+  # provisioner's idempotency check uses). A spec still missing after the
+  # boot is a hard FAIL — a failed install is never waved through.
+  MISSING="$(node --input-type=module -e '
+import { existsSync, readFileSync } from "node:fs";
+const { selectPlugins } = await import("file://" + process.argv[1] + "/scripts/lib/provision-plan.mjs");
+const dir = process.argv[2] + "/profiles/opentui";
+const manifest = existsSync(dir + "/package.json")
+  ? JSON.parse(readFileSync(dir + "/package.json", "utf8"))
+  : null;
+const deps = manifest?.dependencies ?? {};
+const missing = [];
+for (const plugin of selectPlugins("recommended")) {
+  if (!(plugin.name in deps)) { missing.push(plugin.name + " (not pinned in the profile dependencies)"); continue; }
+  if (!existsSync(dir + "/node_modules/" + plugin.name + "/package.json")) {
+    missing.push(plugin.name + " (pinned but node_modules does not resolve)");
+  }
+}
+process.stdout.write(missing.join("\n"));
+' "$LAUNCHER_PKG" "$BOOT_HOME" 2>&1)"
+  if [ -n "$MISSING" ]; then
+    bad 'npm-installed boot: plugin set incomplete after provisioning (no silent pass); missing:'
+    printf '%s\n' "$MISSING" | sed 's/^/    | /'
+  else
+    ok 'npm-installed boot: plugin set complete (every PLUGIN_SET dep pinned and resolving)'
+  fi
   kill_tui
 else
   warn 'installed package ships no client bundle yet (dist/client/index.js missing — B2/B3 npm-bin rewiring pending); boot leg skipped honestly, pack + install + bin-resolution are the asserted contract today'

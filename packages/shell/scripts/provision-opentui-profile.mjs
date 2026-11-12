@@ -43,8 +43,10 @@
 // satisfied — a local development pin is never replaced by a registry version.
 // Missing deps/versions → ONE batched `dsh plugin --profile opentui add
 // <specs...>`; on failure the pnpm build-script skeleton is approved and each
-// package is retried once on its own; a still-failing package is a WARN, never
-// a hard stop (the client still launches).
+// package is installed on its own with bounded spaced retries (a transient
+// registry failure — TLS reset / ERR_PNPM_META_FETCH_FAIL — dies in seconds,
+// a re-attempt after a short gap rides the burst out); a still-failing
+// package is a WARN, never a hard stop (the client still launches).
 //
 // Step 4 reparses the profile manifest after the install: `dsh plugin add`
 // already reconciles bundles for new dependencies, so this only fills the gaps
@@ -86,6 +88,14 @@ import {
 
 const TEMPLATE = 'web'
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000
+// Bounded retry schedule for a single-spec install that failed (the fallback
+// loop below). A transient registry failure (TLS reset / ERR_PNPM_META_FETCH_
+// FAIL) exits within seconds, so 3 attempts spaced 5s apart ride the burst
+// out without meaningfully extending a healthy provisioning run: the worst
+// case adds ~2 fast failures + 2 x 5s per FAILING spec, and a hung `dsh
+// plugin add` is still bounded by INSTALL_TIMEOUT_MS per invocation.
+const PLUGIN_ADD_ATTEMPTS = 3
+const PLUGIN_ADD_BACKOFF_MS = 5000
 
 const args = process.argv.slice(2)
 /** --name=value or --name value. */
@@ -340,6 +350,12 @@ function runPluginAdd(specs) {
   })
 }
 
+/** Synchronous pause (this script is spawnSync end to end; there is no event
+ *  loop to await on). */
+function pauseSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
 const failedInstalls = []
 let installedCount = 0
 
@@ -374,13 +390,26 @@ if (tier === 'none') {
         say(3, 'plugins', 'approved the printed build scripts (pnpm allowBuilds) — retrying one by one…')
       }
       // Single-package fallback: one bad package must not sink the rest.
+      // Each failing spec gets bounded spaced retries (PLUGIN_ADD_ATTEMPTS /
+      // PLUGIN_ADD_BACKOFF_MS): a transient registry failure rides the burst
+      // out instead of WARN-ing the plugin away on the first drop. The
+      // terminal failure stays a WARN + failedInstalls entry — never a
+      // silent pass (the e2e npm-install boot leg asserts the delivered set).
       for (const spec of specs) {
-        const retry = runPluginAdd([spec])
-        if (!retry.error && retry.status === 0) {
-          installedCount += 1
-        } else {
-          failedInstalls.push(spec)
-          warn(`could not install ${spec}${retry.error ? `: ${retry.error.message}` : ` (exit ${retry.status})`} — continuing`)
+        let installed = false
+        for (let attempt = 1; attempt <= PLUGIN_ADD_ATTEMPTS && !installed; attempt += 1) {
+          if (attempt > 1) {
+            say(3, 'plugins', `${spec} failed — retry ${attempt - 1}/${PLUGIN_ADD_ATTEMPTS - 1} in ${PLUGIN_ADD_BACKOFF_MS / 1000}s…`)
+            pauseSync(PLUGIN_ADD_BACKOFF_MS)
+          }
+          const retry = runPluginAdd([spec])
+          if (!retry.error && retry.status === 0) {
+            installedCount += 1
+            installed = true
+          } else if (attempt === PLUGIN_ADD_ATTEMPTS) {
+            failedInstalls.push(spec)
+            warn(`could not install ${spec}${retry.error ? `: ${retry.error.message}` : ` (exit ${retry.status})`} — continuing`)
+          }
         }
       }
     }
