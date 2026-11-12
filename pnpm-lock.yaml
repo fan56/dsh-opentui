@@ -94,6 +94,9 @@ importers:
 
   packages/tui-base:
     dependencies:
+      '@dsh-opentui/panel-kit':
+        specifier: workspace:*
+        version: link:../panel-kit
       '@opentui/core':
         specifier: 0.8.1
         version: 0.8.1(typescript@5.9.3)(web-tree-sitter@0.25.10)

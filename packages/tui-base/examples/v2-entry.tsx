@@ -71,6 +71,7 @@ import { ClipboardProvider, useClipboard } from "../src/context/clipboard"
 import { createTuiClipboard } from "../src/clipboard"
 import { Keymap } from "../src/context/keymap"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
+import { PanelKitHost } from "../src/context/panel-kit-host"
 import { ConfigProvider, resolve, useConfig } from "../src/config"
 import { copyOnSelectEnabled, copyOnSelectRelease } from "../src/util/selection"
 import { createThemeSeam } from "../src/seams/theme"
@@ -1166,24 +1167,33 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 											get children() {
 												return createComponent(DialogProvider, {
 													get children() {
-														return createComponent(ErrorBoundaryDiagnostics, {
-															get children() {
-																		return createComponent(V2SessionPage, {
-																			seam,
-																			themeName,
-																			quit: () => process.exit(0),
-																			workspace,
-																			// Branch-or-SHA probe (composer context row):
-																			// client-local, silent on non-repos.
-																			probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
-																			// feat/auto-resume: the staged stored session +
-																			// its one-line notice (undefined = fresh boot).
-																			initialSessionId,
-																			resumeNotice,
-																			skills: skillRows,
-																		})
-															},
-														})
+															return createComponent(ErrorBoundaryDiagnostics, {
+																get children() {
+																	// PanelKit host (T17-INT2): inside ThemeProvider +
+																	// Keymap.Provider, wrapping the page so the stack's
+																	// layers are absolute siblings of the page root
+																	// (zIndex 3000+) and cover the transcript and every
+																	// page-level panel.
+																	return createComponent(PanelKitHost, {
+																		get children() {
+																			return createComponent(V2SessionPage, {
+																				seam,
+																				themeName,
+																				quit: () => process.exit(0),
+																				workspace,
+																				// Branch-or-SHA probe (composer context row):
+																				// client-local, silent on non-repos.
+																				probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
+																				// feat/auto-resume: the staged stored session +
+																				// its one-line notice (undefined = fresh boot).
+																				initialSessionId,
+																				resumeNotice,
+																				skills: skillRows,
+																			})
+																		},
+																	})
+																},
+															})
 													},
 												})
 											},

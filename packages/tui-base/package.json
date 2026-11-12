@@ -48,6 +48,7 @@
     }
   },
   "dependencies": {
+    "@dsh-opentui/panel-kit": "workspace:*",
     "@opentui/core": "0.8.1",
     "@standard-schema/spec": "1.1.0",
     "@opentui/keymap": "0.8.1",

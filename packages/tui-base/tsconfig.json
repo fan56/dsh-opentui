@@ -20,7 +20,9 @@
       "#attention-sounds": ["src/attention-sounds.bun.ts"],
       "#string-width": ["src/util/string-width.bun.ts"],
       "#zed-sqlite": ["src/editor-zed-sqlite.bun.ts"],
-      "#runtime-plugin-support": ["src/plugin/runtime-plugin-support.node.ts"]
+      "#runtime-plugin-support": ["src/plugin/runtime-plugin-support.node.ts"],
+      "@dsh-opentui/panel-kit": ["../panel-kit/src/index.ts"],
+      "@dsh-opentui/panel-kit/*": ["../panel-kit/src/*"]
     }
   },
   "include": ["src", "examples"]
