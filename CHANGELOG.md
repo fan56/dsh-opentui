@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7] - 2026-11-12
+
+### Fixed
+
+- **Picking a model now applies it** — the picked route was read back through the staged value but the application step swallowed it, so a selection could silently fall back to the catalog default. Selection failures now surface in the transcript instead of vanishing into a console log, and bare `/model` asks for the effort level as one flow (`esc` abandons the whole pick).
+- **The spin attention feed is back** — the per-turn attention feed lost in an earlier refactor is restored, refreshed at most once every 5 seconds.
+- **The client bundle packs reliably** — the attention feed's optional probe import tripped the bundle leak guard in prepack; the probe specifier is now pinned so packaging succeeds, and a missing `@aiwayds/dsh-jev-core` still degrades silently at runtime.
+- **Cold install retries a failed plugin add** — one flaky `pnpm add` used to be warned about and skipped, leaving the profile short a plugin; each failed spec is retried up to 3 times with a 5-second backoff and a final failure stays loud.
+- **`ctrl+alt+f` opens session search** — keybind parity with `dsh-tui-pi`; `page.down` keeps pagedown.
+
+### Changed
+
+- **Cold plugin installs no longer false-fail on slow networks** — the e2e install wait for the npm-installed bin leg now allows up to 10 minutes (registry served 1.7–2.1 KB/s when measured), replacing the 3-minute timeout that fired before the 14-package install finished; the e2e round-limit staging also targets the profile `config.json` top-level keys the client ladder actually reads.
+
 ## [0.9.6] - 2026-11-11
 
 ### Added
