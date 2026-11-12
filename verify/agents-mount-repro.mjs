@@ -6,15 +6,20 @@
 // What it proves (against the REAL launcher `./dsh-opentui`, a scratch
 // DSH_HOME seeded from the real home — same isolation pattern as
 // packages/shell/scripts/e2e-sweep.mjs, nothing is written to ~/.dsh):
-//   1. `/agents` opens the manager panel (table layer, or the limits layer
-//      when the corpus is empty) instead of the fallback notice
+//   1. `/agents` opens the panel-kit modal (title `Agents`, List columns
+//      NAME/MODEL/THINK/DEEP/LIMITS, one row per agent; the limits layer when
+//      the corpus is empty) instead of the fallback notice
 //      "/agents: the manager panel is not mounted in this entry";
-//   2. the panel responds to keys: Enter drills into the fields layer,
-//      Esc returns, `l` opens the limits layer, Esc closes the panel;
-//   2b. `/settings` opens the v1 three-zone panel (本地偏好 / 宿主设置 /
-//      其它命名空间), a local preference edit (motion) really rewrites the
-//      scratch profile config.json (full, then back to auto), and Esc clears
-//      the filter before closing the panel;
+//   2. the panel responds to keys: Enter drills into the fields layer
+//      (FIELD/VALUE + ✎ model|thinking|deep rows naming the selected agent),
+//      Esc returns one layer, `l` opens the limits layer (maxRounds /
+//      background / the two official caps), Esc closes the modal;
+//   2b. `/settings` opens the panel-kit modal (title `Settings`, seven-section
+//      nav, Host section with the four whitelist rows), a local preference
+//      edit (motion) really rewrites the scratch profile config.json (full,
+//      then back to auto), the inner-first Esc ladder (editor → browse →
+//      close) holds, and a keyboard-selected host row commits through 确定
+//      (Ctrl+S) into the scratch cordis.patch.yml;
 //   3. `/thi` + Tab completes to `/think ` (composer-side Tab), and a
 //      user-invocable skill (a scratch-home FIXTURE, not the user's corpus)
 //      renders as an italic `/name` row that Tab completes with its trailing
@@ -47,8 +52,20 @@ const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
 // driver keeps working if the skin swaps the copy.
 const IDLE = '提问，回车发送'
 const PLACEHOLDER = 'Type a message'
-const PANEL_OPEN = ['● Agents', '⚙ Limits']
 const FALLBACK = 'not mounted in this entry'
+// panel-kit modal contracts (T18 migration): the kit Panel paints a bare
+// title + `esc` hint; the List paints its own column titles. The old inline
+// panel's `● Agents` / `⚙ Limits` glyph titles and the three-zone /settings
+// frame no longer exist, so the markers below are the new ones.
+const AGENT_TABLE_HEADER = /NAME\s+MODEL\s+THINK\s+DEEP\s+LIMITS/
+const AGENT_TABLE_HINT = 'enter open · l limits'
+const AGENT_LIMITS_KEYS = ['maxRounds', 'background', 'maxActiveSubagents', 'maxDepth']
+const SETTINGS_SUBTITLE = '分节导航 · Ctrl+S 提交 · Esc 逐层返回'
+const SETTINGS_SECTIONS = ['通用', 'TUI 专有', 'Host', '模型', '插件', 'Agent 预设', '账号']
+/** Content-pane marker that only one section paints (reachability proof). */
+const SECTION_MARKERS = ['权限默认预设', 'cacheHitMode', 'subagent.maxActiveSubagents', '打开 /model', '打开 /plugins', '打开 /preset', '打开 /login']
+const HOST_ROWS = ['subagent.maxActiveSubagents', 'subagent.maxDepth', 'permission.defaultPreset', 'session-log-deepseek.enabled']
+const XLargeWidth = (cols) => Math.min(116, cols - 2)
 const SESS = `agents-mount-${process.pid}`
 const SESS80 = `${SESS}-80x24`
 const SESSGIT = `${SESS}-git`
@@ -74,10 +91,96 @@ const tmuxOut = (...a) => (tmux(...a).status === 0 ? tmux(...a).stdout : '')
 const flat = (s) => String(s).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '')
 const has = (out, marker) => flat(out).includes(flat(marker))
 const hasAny = (out, markers) => markers.some((m) => has(out, m))
-/** Raw (no letter-only flattening) marker match: the panel's close summary
- * "Agents unchanged." flattens to "Agentsunchanged", which would keep a
- * flat-matched '● Agents' predicate true forever. */
-const rawHasAny = (out, markers) => markers.some((m) => out.includes(m))
+
+// --- panel-kit frame parsing ------------------------------------------------
+/** Display cells of one grapheme (CJK/emoji occupy two). */
+const charCells = (ch) => {
+  const cp = ch.codePointAt(0) ?? 0
+  if (cp === 0x200d || (cp >= 0xfe00 && cp <= 0xfe0f)) return 0
+  const wide =
+    (cp >= 0x1100 && cp <= 0x115f) ||
+    (cp >= 0x2e80 && cp <= 0xa4cf) ||
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0xf900 && cp <= 0xfaff) ||
+    (cp >= 0xfe30 && cp <= 0xfe4f) ||
+    (cp >= 0xff00 && cp <= 0xff60) ||
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x1f300 && cp <= 0x1faff)
+  return wide ? 2 : 1
+}
+const displayColumns = (text) => {
+  const cols = []
+  for (const ch of text) {
+    cols.push(ch)
+    for (let i = charCells(ch); i > 1; i -= 1) cols.push('')
+  }
+  return cols
+}
+/** Text between the panel's own vertical borders (`┃ … ┃`), inset kept. */
+const panelInterior = (line) => {
+  const left = line.indexOf('┃')
+  const right = line.lastIndexOf('┃')
+  return left >= 0 && right > left ? line.slice(left + 1, right) : ''
+}
+/** The kit Panel header row (`<title> … esc`) as painted. */
+const panelTitle = (out) => {
+  for (const line of out.split('\n')) {
+    const m = /┃\s{2,}(\S.*?)\s{2,}esc\s*┃/.exec(line)
+    if (m) return m[1].trim()
+  }
+  return ''
+}
+/** Heavy frame width of the modal (`xlarge` preset clamps to cols - 2). */
+const panelFrameWidth = (out) => {
+  for (const line of out.split('\n')) {
+    const m = /┏([━]*)┓/.exec(line)
+    if (m) return m[1].length + 2
+  }
+  return 0
+}
+/** /agents layers. The table is the column header + its action hint; fields
+ * carries the three `✎` field rows; limits always paints both official caps. */
+const agentTableUp = (out) => AGENT_TABLE_HEADER.test(out) && out.includes(AGENT_TABLE_HINT)
+const agentFieldsUp = (out) => out.includes('✎ model') && out.includes('t think')
+const agentLimitsUp = (out) => AGENT_LIMITS_KEYS.every((key) => out.includes(key))
+const agentsPanelUp = (out) => agentTableUp(out) || agentFieldsUp(out) || agentLimitsUp(out)
+/** Body cell budget, mirroring agents-panel.tsx `bodyWidth()`. */
+const agentTableBudget = (cols, rows) => {
+  const inner = Math.max(1, XLargeWidth(cols) - 2)
+  const inset = inner < 64 || rows - 4 < 20 ? 1 : 3
+  return Math.max(20, inner - inset * 2)
+}
+const AGENT_TABLE_WIDTHS = [18, 30, 10, 5, 24]
+/** One table row split into its five declared cells (header gives the origin). */
+const agentTableCells = (headerLine, rowLine) => {
+  const origin = panelInterior(headerLine).indexOf('NAME')
+  if (origin < 0) return undefined
+  const cols = displayColumns(panelInterior(rowLine))
+  const bounds = []
+  let at = origin
+  for (const width of AGENT_TABLE_WIDTHS) {
+    bounds.push([at, at + width])
+    at += width + 1
+  }
+  const [name, model, think, deep, limits] = bounds.map(([from, to]) => cols.slice(from, to).join('').trim())
+  return { name, model, think, deep, limits }
+}
+/** Parsed table data rows (header + action-hint excluded). */
+const agentTableParsed = (out) => {
+  const lines = out.split('\n')
+  const at = lines.findIndex((line) => AGENT_TABLE_HEADER.test(line))
+  if (at < 0) return []
+  const parsed = []
+  for (let i = at + 1; i < lines.length; i += 1) {
+    if (!lines[i].includes('┃') || lines[i].includes(AGENT_TABLE_HINT)) break
+    if (panelInterior(lines[i]).trim() === '') break
+    const cells = agentTableCells(lines[at], lines[i])
+    if (cells !== undefined) parsed.push(cells)
+  }
+  return parsed
+}
+/** /settings modal: the subtitle is unique to the panel. */
+const settingsUp = (out) => out.includes(SETTINGS_SUBTITLE)
 
 for (const cmd of ['tmux', 'bun'])
   if (sh('which', [cmd]).status !== 0) { console.error(`agents-mount: ${cmd} not on PATH`); process.exit(2) }
@@ -398,33 +501,79 @@ try {
     [`row above: ${JSON.stringify(aboveBoot.slice(0, 60))}`])
 
   await submit(SESS, '/agents')
-  const opened = await waitPane(SESS, (o) => rawHasAny(o, PANEL_OPEN) || has(o, FALLBACK), 20_000)
-  const tableUp = opened.out.includes('● Agents')
-  const limitsUp = opened.out.includes('⚙ Limits')
+  const opened = await waitPane(SESS, (o) => agentsPanelUp(o) || has(o, FALLBACK), 20_000)
+  const tableUp = agentTableUp(opened.out)
+  const limitsFirst = agentLimitsUp(opened.out)
   snap('02-agents-open')
-  record('/agents opens the manager panel', tableUp || limitsUp,
-    [tableUp ? 'table layer' : limitsUp ? 'limits layer (empty corpus)' : `saw: ${has(opened.out, FALLBACK) ? FALLBACK : 'no panel marker'}`])
+  record('/agents opens the manager panel (panel-kit modal)', tableUp || limitsFirst,
+    [tableUp ? 'table layer' : limitsFirst ? 'limits layer (empty corpus)' : `saw: ${has(opened.out, FALLBACK) ? FALLBACK : 'no panel marker'}`])
+  // New contract: the kit Panel paints the bare title + esc hint and the List
+  // paints its own column titles; the old inline `● Agents` glyph is gone.
+  record('/agents modal frame uses the 116-cell xlarge preset',
+    panelFrameWidth(opened.out) === XLargeWidth(COLS),
+    [`frame width: ${panelFrameWidth(opened.out)} (expected ${XLargeWidth(COLS)} at ${COLS} cols)`])
 
+  const parsedTable = tableUp ? agentTableParsed(opened.out) : []
   if (tableUp) {
+    // Row content: every agent row must fill all five declared cells, with a
+    // numeric DEEP and a non-empty LIMITS cell. The fixed widths only hold
+    // while the body budget covers them; below that the kit shrinks columns,
+    // so the cell-level assertions are pinned to the declared-width geometry.
+    const strictCells = agentTableBudget(COLS, ROWS) >= AGENT_TABLE_WIDTHS.reduce((a, b) => a + b, 0) + AGENT_TABLE_WIDTHS.length - 1
+    if (strictCells) {
+      record('/agents table paints NAME/MODEL/THINK/DEEP/LIMITS cells for every agent row',
+        parsedTable.length >= 1 && parsedTable.every((row) => row.name !== '' && row.model !== ''),
+        [`${parsedTable.length} rows`, `first: ${JSON.stringify(parsedTable[0] ?? {})}`])
+      record('/agents table rows fill the THINK, DEEP and LIMITS cells',
+        parsedTable.every((row) => row.think !== '' && /^\d+$/.test(row.deep) && row.limits !== ''),
+        [`think cells: ${JSON.stringify(parsedTable.map((row) => row.think))}`,
+          `deep cells: ${JSON.stringify(parsedTable.map((row) => row.deep))}`,
+          `limits cells: ${JSON.stringify(parsedTable.map((row) => row.limits))}`])
+    } else {
+      record('/agents table paints its column header at a shrunk geometry',
+        parsedTable.length >= 1, [`${parsedTable.length} rows (columns shrunk)`])
+    }
+
     sendKeys(SESS, 'Enter')
-    const fields = await waitPane(SESS, (o) => has(o, 'model') && has(o, 'thinking') && has(o, 'deep'), 8_000)
+    const fields = await waitPane(SESS, agentFieldsUp, 8_000)
     snap('03-agents-fields')
-    record('/agents Enter drills into the fields layer', fields.ok, [fields.ok ? 'model/thinking/deep rows' : 'fields layer not visible'])
+    const fieldsTitle = panelTitle(fields.out)
+    record('/agents Enter drills into the fields layer', fields.ok && fieldsTitle !== '',
+      [fields.ok ? `title: ${JSON.stringify(fieldsTitle)}` : 'fields layer not visible'])
+    record('/agents fields layer opens the table row under the cursor',
+      fieldsTitle !== '' && parsedTable[0]?.name === fieldsTitle,
+      [`table row 0: ${JSON.stringify(parsedTable[0]?.name ?? '')}`, `fields title: ${JSON.stringify(fieldsTitle)}`])
+    record('/agents fields layer paints the three editable field rows (✎ model/thinking/deep)',
+      /✎\s*model/.test(fields.out) && /✎\s*thinking/.test(fields.out) && /✎\s*deep/.test(fields.out),
+      ['FIELD/VALUE list with ✎ model · ✎ thinking · ✎ deep'])
     sendKeys(SESS, 'Escape')
-    await waitPane(SESS, (o) => has(o, '● Agents') && has(o, 'l limits'), 8_000)
+    const backToTable = await waitPane(SESS, agentTableUp, 8_000)
+    record('/agents Esc returns from the fields layer to the table', backToTable.ok,
+      [backToTable.ok ? 'table layer visible again' : 'still on the fields layer'])
   }
 
   sendKeys(SESS, 'l')
-  const limits = await waitPane(SESS, (o) => o.includes('⚙ Limits'), 10_000)
+  const limits = await waitPane(SESS, agentLimitsUp, 10_000)
   snap('04-agents-limits')
-  record('/agents l opens the limits layer', limits.ok, [limits.ok ? '⚙ Limits visible' : 'limits layer not visible'])
+  const missingLimitKeys = AGENT_LIMITS_KEYS.filter((key) => !limits.out.includes(key))
+  record('/agents l opens the limits layer', limits.ok && missingLimitKeys.length === 0,
+    [limits.ok ? `rows: ${AGENT_LIMITS_KEYS.join(' / ')}` : `limits layer not visible${missingLimitKeys.length ? ` (missing ${missingLimitKeys.join(', ')})` : ''}`])
+  // The two official caps are host settings: numeric when the host serves them,
+  // `n/a` otherwise — either way the row must be painted.
+  const officialCaps = ['maxActiveSubagents', 'maxDepth'].map((key) => ({
+    key,
+    value: new RegExp(`${key}\\s+(\\S+)`).exec(limits.out)?.[1] ?? '',
+  }))
+  record('/agents limits layer paints both official subagent caps',
+    officialCaps.every((cap) => /^\d+$|^n\/a$/.test(cap.value)),
+    officialCaps.map((cap) => `${cap.key}: ${cap.value || 'missing'}`))
 
   sendKeys(SESS, 'Escape')
-  const back = await waitPane(SESS, (o) => !o.includes('⚙ Limits'), 8_000)
-  record('/agents Esc leaves the limits layer', back.ok, [back.ok ? 'limits layer closed' : 'still visible'])
+  const back = await waitPane(SESS, (o) => !agentLimitsUp(o) && agentTableUp(o), 8_000)
+  record('/agents Esc leaves the limits layer', back.ok, [back.ok ? 'back on the table layer' : 'limits layer still visible'])
   // Esc one layer at a time (limits -> table -> closed); a dropped Escape in
   // the key parser must not leave the panel parked, so retry bounded.
-  const closedPred = (o) => !rawHasAny(o, [...PANEL_OPEN, 'target:']) && idle(o)
+  const closedPred = (o) => !agentsPanelUp(o) && idle(o)
   let closed = { ok: false, out: capture(SESS) }
   for (let attempt = 0; attempt < 4 && !closed.ok; attempt++) {
     sendKeys(SESS, 'Escape')
@@ -433,22 +582,26 @@ try {
   snap('05-agents-closed')
   if (!closed.ok) {
     writeFileSync(join(OUT, '05-close-frame.txt'), closed.out)
-    console.log(`  debug close: markers=${rawHasAny(closed.out, [...PANEL_OPEN, 'target:'])} ` +
+    console.log(`  debug close: markers=${agentsPanelUp(closed.out)} ` +
       `idle=${idle(closed.out)} composerRows=${JSON.stringify(composerRows(closed.out))}`)
   }
-  record('/agents Esc closes the panel', closed.ok,
+  record('/agents Esc closes the modal', closed.ok,
     [closed.ok ? 'back to the composer' : 'panel still on screen'])
+  const agentsSummary = closed.out.split('\n').find((line) => /Agents (unchanged|updated)/.test(line)) ?? ''
+  record('/agents close prints the exit summary', /Agents (unchanged|updated)/.test(agentsSummary),
+    [agentsSummary.trim() === '' ? 'no summary row' : agentsSummary.trim()])
 
-  // ---------------- 1b. /settings panel v1 ----------------
-  // The three fixed zones, a REAL local-preference write (motion full → auto)
-  // observed in the scratch profile config.json, and the Esc hierarchy
-  // (clear the filter first, then close).
-  const SETTINGS_ZONES = ['本地偏好', '宿主设置', '其它命名空间']
+  // ---------------- 1b. /settings modal (panel-kit, T18) ----------------
+  // Seven-section nav (通用 / TUI 专有 / Host / 模型 / 插件 / Agent 预设 / 账号)
+  // with the inner-first Esc ladder (editor → browse → close), a REAL local
+  // preference write (motion full → auto) observed in the scratch profile
+  // config.json, and the Host section: the four whitelist rows from the live
+  // settings/describe plus a keyboard-selected row committed with 确定 (Ctrl+S).
   const profileConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
   const readProfile = () => {
     try { return JSON.parse(readFileSync(profileConfigPath, 'utf8')) } catch { return {} }
   }
-  const waitProfile = async (pred, timeout = 8_000) => {
+  const waitProfile = async (pred, timeout = 12_000) => {
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
       const config = readProfile()
@@ -457,78 +610,6 @@ try {
     }
     return readProfile()
   }
-  const zonesVisible = (out) => SETTINGS_ZONES.every((zone) => out.includes(zone))
-
-  await submit(SESS, '/settings')
-  const settingsUp = await waitPane(SESS, zonesVisible, 25_000)
-  snap('11-settings-open')
-  record('/settings opens the three-zone panel', settingsUp.ok,
-    [SETTINGS_ZONES.filter((zone) => settingsUp.out.includes(zone)).join(' / ') || 'no zone title'])
-  record('/settings marks other namespaces read-only ("本 TUI 不消费")',
-    settingsUp.out.includes('本 TUI 不消费'),
-    [settingsUp.out.includes('本 TUI 不消费') ? 'read-only note visible' : 'note missing'])
-
-  // Local preference write: filter to the motion row, Enter opens the enum
-  // picker, Home-ish (Up x4) + Down lands on `full` deterministically.
-  await typeText(SESS, 'motion')
-  const motionRow = await waitPane(SESS, (out) => /▸\s+motion/.test(out) && !out.includes('footerHints.motion'), 8_000)
-  snap('12-settings-motion-filter')
-  record('/settings filter narrows to the motion row', motionRow.ok,
-    [motionRow.ok ? '/▸ motion/' : motionRow.out.split('\n').find((l) => l.includes('motion')) ?? 'no motion row'])
-  sendKeys(SESS, 'Enter')
-  const motionOptions = await waitPane(SESS, (out) => out.includes('pick a value') && out.includes('off'), 8_000)
-  snap('13-settings-motion-options')
-  record('/settings Enter opens the motion enum', motionOptions.ok,
-    [motionOptions.ok ? 'auto/full/reduced/off' : 'options layer not visible'])
-  for (let i = 0; i < 4; i++) { sendKeys(SESS, 'Up'); await sleep(120) }
-  sendKeys(SESS, 'Down')
-  await sleep(150)
-  sendKeys(SESS, 'Enter')
-  const fullConfig = await waitProfile((config) => config.motion === 'full')
-  snap('14-settings-motion-full')
-  record('settings writes motion=full into the profile config.json',
-    fullConfig.motion === 'full', [`motion: ${JSON.stringify(fullConfig.motion)}`])
-
-  // Back to auto on the same row (the filter is still armed).
-  await sleep(500)
-  sendKeys(SESS, 'Enter')
-  await waitPane(SESS, (out) => out.includes('pick a value'), 8_000)
-  for (let i = 0; i < 4; i++) { sendKeys(SESS, 'Up'); await sleep(120) }
-  sendKeys(SESS, 'Enter')
-  const autoConfig = await waitProfile((config) => config.motion === 'auto')
-  snap('15-settings-motion-auto')
-  record('settings writes motion back to auto', autoConfig.motion === 'auto',
-    [`motion: ${JSON.stringify(autoConfig.motion)}`])
-
-  // The host zone rides a REAL settings/describe (the document lands async):
-  // wait for a positive namespace count, then for the whitelist rows.
-  const liveDoc = await waitPane(SESS, (out) => /document writable · [1-9]\d* namespace/.test(out), 12_000)
-  snap('15b-settings-live-document')
-  const namespaceCount = /document writable · (\d+) namespace/.exec(liveDoc.out)?.[1]
-  record('/settings reads the live host settings document', liveDoc.ok,
-    [`namespace count: ${namespaceCount ?? '0'}`])
-
-  // Esc hierarchy: a non-empty filter clears first; the panel stays up.
-  const filterCleared = await waitPane(SESS, (out) => out.includes('filter: "motion"'), 4_000)
-  sendKeys(SESS, 'Escape')
-  const clearedFrame = await waitPane(SESS, (out) => !out.includes('filter: "motion"') && zonesVisible(out), 6_000)
-  snap('16-settings-filter-cleared')
-  record('/settings Esc clears the filter before closing the panel',
-    filterCleared.ok && clearedFrame.ok,
-    [filterCleared.ok ? 'filter was armed' : 'filter line not seen',
-      clearedFrame.ok ? 'panel still open, filter cleared' : 'panel closed with the filter'])
-  const hostRows = ['subagent.maxActiveSubagen', 'subagent.maxDepth', 'permission.defaultPreset', 'session-log-deepseek.enab']
-  const hostRowsVisible = hostRows.every((row) => clearedFrame.out.includes(row))
-  record('/settings host zone renders the whitelisted rows from the live document', hostRowsVisible,
-    [hostRowsVisible ? 'all four rows visible' : `missing: ${hostRows.filter((row) => !clearedFrame.out.includes(row)).join(', ')}`])
-  record('/settings never lists dsh-tui (not part of the opentui profile)',
-    !clearedFrame.out.includes('dsh-tui'),
-    [!clearedFrame.out.includes('dsh-tui') ? 'absent' : 'dsh-tui leaked into the read-only list'])
-
-  // Host write on a REAL host (C2): toggle session-log-deepseek.enabled
-  // true → false → true. The proof has two halves — the profile patch file the
-  // host applies (cordis.patch.yml) and the value the panel re-renders from a
-  // FRESH settings/describe. Scratch home only; the real ~/.dsh is untouched.
   const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
   const readPatch = () => {
     try { return readFileSync(patchPath, 'utf8') } catch { return '' }
@@ -542,7 +623,7 @@ try {
     const end = rest.indexOf('\n- ')
     return end < 0 ? rest : rest.slice(0, end)
   }
-  const waitPatch = async (pred, timeout = 8_000) => {
+  const waitPatch = async (pred, timeout = 12_000) => {
     const deadline = Date.now() + timeout
     while (Date.now() < deadline) {
       if (pred(readPatch())) return true
@@ -550,37 +631,220 @@ try {
     }
     return pred(readPatch())
   }
-  const hostRowLine = (out) => out.split('\n').find((line) => line.includes('session-log-deepseek')) ?? ''
-  await typeText(SESS, 'session-log')
-  const hostRow = await waitPane(SESS, (out) => /▸\s+session-log-deepseek/.test(out), 8_000)
-  sendKeys(SESS, 'Enter') // toggle: on → off
-  const wroteOff = await waitPatch((text) => patchEntry('session-log-deepseek').includes('enabled: false'))
-  const offFrame = await waitPane(SESS, (out) => /▸.*session-log-deepseek.*\boff\b/.test(out), 8_000)
-  snap('18-settings-host-write-off')
-  record('settings writes a host row (session-log-deepseek.enabled=false) into cordis.patch.yml',
-    hostRow.ok && wroteOff,
-    [hostRow.ok ? 'row selected' : 'row not selected',
-      wroteOff ? 'patch entry has enabled: false' : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`])
-  record('settings re-reads the host write through settings/describe (row shows off)',
-    offFrame.ok,
-    [offFrame.ok ? 'row shows off after a fresh describe' : `row: ${JSON.stringify(hostRowLine(offFrame.out))}`])
-  sendKeys(SESS, 'Enter') // restore: off → on
-  const wroteOn = await waitPatch((text) => patchEntry('session-log-deepseek').includes('enabled: true'))
-  const onFrame = await waitPane(SESS, (out) => /▸.*session-log-deepseek.*\bon\b/.test(out), 8_000)
-  snap('19-settings-host-restore')
-  record('settings restores the host row (session-log-deepseek.enabled=true)',
-    wroteOn && onFrame.ok,
-    [wroteOn ? 'patch entry back to enabled: true' : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
-      onFrame.ok ? 'row shows on again' : `row: ${JSON.stringify(hostRowLine(onFrame.out))}`])
-  if (offFrame.ok && !onFrame.ok) sendKeys(SESS, 'Enter')
+  const hostRowLine = (out, key) => out.split('\n').find((line) => line.includes(key)) ?? ''
+  const openSettings = async () => {
+    await submit(SESS, '/settings')
+    return waitPane(SESS, settingsUp, 25_000)
+  }
+  const waitSettingsClosed = (timeout = 15_000) => waitPane(SESS, (out) => !settingsUp(out) && idle(out), timeout)
+  /** Land on one section: Up clamps at index 0, then Down walks to the target. */
+  const gotoSection = async (index) => {
+    await sleep(250) // let the modal's entrance settle before driving its keys
+    for (let i = 0; i < SETTINGS_SECTIONS.length; i++) { sendKeys(SESS, 'Up'); await sleep(110) }
+    for (let i = 0; i < index; i++) { sendKeys(SESS, 'Down'); await sleep(160) }
+  }
+  /** The Host rows pane (section 2, rows focus). */
+  const openHostRows = async () => {
+    await gotoSection(2)
+    sendKeys(SESS, 'Right')
+    return waitPane(SESS, (out) => out.includes('↑↓ 选择行') && /subagent\.maxActiveSubagents\s+\d+/.test(out), 10_000)
+  }
 
-  // Leave the list layer (Esc clears the filter, the next Esc closes).
+  const settingsOpen = await openSettings()
+  snap('11-settings-open')
+  const navLabels = SETTINGS_SECTIONS.filter((label) => settingsOpen.out.includes(label))
+  record('/settings opens the Settings modal (section nav + commit band)',
+    settingsOpen.ok && navLabels.length === SETTINGS_SECTIONS.length && settingsOpen.out.includes('确定 ctrl+s'),
+    [`nav sections: ${navLabels.join(' / ') || 'none'}`,
+      settingsOpen.out.includes('确定 ctrl+s') ? 'commit band: esc 取消 · 确定 ctrl+s' : 'commit band missing'])
+  record('/settings modal frame uses the 116-cell xlarge preset',
+    panelFrameWidth(settingsOpen.out) === XLargeWidth(COLS),
+    [`frame width: ${panelFrameWidth(settingsOpen.out)} (expected ${XLargeWidth(COLS)} at ${COLS} cols)`])
+
+  // Every section must be reachable from the nav: Down walks the seven entries
+  // and each one paints its own content marker in the right pane.
+  const sectionSeen = []
+  for (let index = 0; index < SETTINGS_SECTIONS.length; index += 1) {
+    const frame = capture(SESS)
+    sectionSeen.push(SECTION_MARKERS[index] !== undefined && frame.includes(SECTION_MARKERS[index]))
+    if (index < SETTINGS_SECTIONS.length - 1) { sendKeys(SESS, 'Down'); await sleep(320) }
+  }
+  record('/settings all seven nav sections are reachable',
+    sectionSeen.every(Boolean),
+    SETTINGS_SECTIONS.map((label, index) => `${label}: ${sectionSeen[index] ? 'ok' : 'missing'}`))
+
+  // Host section: the four whitelist rows from a LIVE settings/describe (the
+  // numeric caps prove the document landed, not just the static skeleton).
+  const hostPane = await openHostRows()
+  snap('13-settings-host-rows')
+  const missingHostRows = HOST_ROWS.filter((row) => !hostPane.out.includes(row))
+  record('/settings Host section renders the four whitelisted rows from the live document',
+    hostPane.ok && missingHostRows.length === 0,
+    [hostPane.ok ? 'section rows pane' : 'rows pane not reached',
+      missingHostRows.length === 0 ? 'all four rows visible' : `missing: ${missingHostRows.join(', ')}`,
+      `values: maxActiveSubagents=${/subagent\.maxActiveSubagents\s+(\S+)/.exec(hostPane.out)?.[1] ?? '?'} ` +
+      `maxDepth=${/subagent\.maxDepth\s+(\S+)/.exec(hostPane.out)?.[1] ?? '?'} ` +
+      `session-log-deepseek.enabled=${/session-log-deepseek\.enabled\s+(\S+)/.exec(hostPane.out)?.[1] ?? '?'}`])
+  record('/settings never lists dsh-tui (not part of the opentui profile)',
+    !hostPane.out.includes('dsh-tui'),
+    [!hostPane.out.includes('dsh-tui') ? 'absent' : 'dsh-tui leaked into the read-only list'])
+  // A section longer than one page reports its window; the old three-zone
+  // panel had no paging, so this also proves the List pager is wired.
+  const pageIndicator = /(\d+-\d+\/\d+)/.exec(hostPane.out)?.[1] ?? ''
+  record('/settings paged section reports its row window',
+    pageIndicator === '' || /^1-\d+\/\d+$/.test(pageIndicator),
+    [pageIndicator === '' ? 'section fits one page (no indicator)' : `indicator: ${pageIndicator}`])
+
+  // Describe-only namespaces are read-only: their rows carry `rev N` and the
+  // current row's note says so. Down x4 from the first whitelist row lands on
+  // the first other namespace (agent-default-model).
+  for (let i = 0; i < 4; i++) { sendKeys(SESS, 'Down'); await sleep(140) }
+  const readOnlyRow = await waitPane(SESS, (out) => out.includes('只读 · 本 TUI 不消费'), 6_000)
+  snap('14-settings-host-readonly-note')
+  record('/settings marks other namespaces read-only ("本 TUI 不消费")',
+    readOnlyRow.ok && /agent-default-model\s+rev \d+/.test(readOnlyRow.out) &&
+      !/✎\s+agent-default-model/.test(readOnlyRow.out),
+    [readOnlyRow.ok ? 'read-only note visible on a `rev N` row' : 'note missing',
+      hostRowLine(readOnlyRow.out, 'agent-default-model').trim()])
+  sendKeys(SESS, 'Up') // back onto session-log-deepseek.enabled (row 3)
+  await sleep(200)
+
+  // Host write on a REAL host: a keyboard-selected row → Enter stages a draft →
+  // 确定 (Ctrl+S) commits through settings.mutate into cordis.patch.yml. The
+  // proof has two halves — the patch file and the value a FRESH describe paints
+  // after reopening the modal. Scratch home only; the real ~/.dsh stays clean.
+  const hostRow = await waitPane(SESS, (out) => /session-log-deepseek\.enabled\s+(on|off)/.test(out), 6_000)
+  const valueBefore = /session-log-deepseek\.enabled\s+(on|off)/.exec(hostRow.out)?.[1] ?? 'on'
+  const afterToggle = valueBefore === 'on' ? 'off' : 'on'
+  record('settings selects the host row with the keyboard', hostRow.ok && hostRow.out.includes('session-log-deepseek.enabled'),
+    [hostRow.ok ? `row: ${hostRowLine(hostRow.out, 'session-log-deepseek').trim()}` : 'row not selected'])
+  sendKeys(SESS, 'Enter') // toggle: value → afterToggle (staged draft)
+  const staged = await waitPane(SESS,
+    (out) => new RegExp(`session-log-deepseek\\.enabled\\s+${afterToggle}`).test(out) && /未提交：\d+ 项/.test(out), 8_000)
+  snap('15-settings-host-staged')
+  record('settings stages the host toggle as an uncommitted draft', staged.ok,
+    staged.ok ? [`row shows ${afterToggle}; commit band: 未提交：1 项`] : ['draft not staged'])
+  sendKeys(SESS, 'C-s') // 确定
+  const wroteOff = await waitPatch((text) => patchEntry('session-log-deepseek').includes(`enabled: ${afterToggle === 'on'}`))
+  const closedAfterWrite = await waitSettingsClosed()
+  snap('16-settings-host-write-off')
+  record(`settings writes a host row (session-log-deepseek.enabled=${afterToggle}) into cordis.patch.yml`,
+    staged.ok && wroteOff && closedAfterWrite.ok,
+    [staged.ok ? 'row selected + edited' : 'row not selected',
+      wroteOff ? `patch entry has enabled: ${afterToggle === 'on'}` : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
+      closedAfterWrite.ok ? '确定 closed the modal' : 'modal still on screen'])
+  const writeSummary = closedAfterWrite.out.split('\n').find((line) => /Settings updated:/.test(line)) ?? ''
+  record('/settings commits print the exit summary', /Settings updated:/.test(writeSummary),
+    [writeSummary.trim() === '' ? 'no summary row' : writeSummary.trim()])
+
+  // Proof half 2: a fresh settings/describe after reopening shows the new value.
+  await openSettings()
+  const reread = await openHostRows()
+  const rereadRow = await waitPane(SESS,
+    (out) => new RegExp(`session-log-deepseek\\.enabled\\s+${afterToggle}`).test(out), 10_000)
+  snap('17-settings-host-reread')
+  record('settings re-reads the host write through settings/describe',
+    reread.ok && rereadRow.ok,
+    [rereadRow.ok ? `row shows ${afterToggle} after a fresh describe` : `row: ${JSON.stringify(hostRowLine(rereadRow.out, 'session-log-deepseek'))}`])
+
+  // Restore the original value (same keyboard path).
+  for (let i = 0; i < 3; i++) { sendKeys(SESS, 'Down'); await sleep(140) }
+  sendKeys(SESS, 'Enter')
+  const stagedBack = await waitPane(SESS,
+    (out) => new RegExp(`session-log-deepseek\\.enabled\\s+${valueBefore}`).test(out) && /未提交：\d+ 项/.test(out), 8_000)
+  sendKeys(SESS, 'C-s')
+  const wroteOn = await waitPatch((text) => patchEntry('session-log-deepseek').includes(`enabled: ${valueBefore === 'on'}`))
+  const restoredClose = await waitSettingsClosed()
+  snap('18-settings-host-restore')
+  record(`settings restores the host row (session-log-deepseek.enabled=${valueBefore})`,
+    stagedBack.ok && wroteOn && restoredClose.ok,
+    [wroteOn ? `patch entry back to enabled: ${valueBefore === 'on'}` : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
+      restoredClose.ok ? 'modal closed after 确定' : 'modal still on screen'])
+
+  // ---- local preference write (motion) through the TUI 专有 section ----
+  const MOTION_OPTIONS = ['auto', 'full', 'reduced', 'off']
+  /** Open the motion enum editor: TUI 专有 (section 1) → rows → row 3. The
+   * enum cursor starts on the current display value (P0-2). */
+  const openMotionEditor = async () => {
+    await gotoSection(1)
+    sendKeys(SESS, 'Right')
+    const rows = await waitPane(SESS,
+      (out) => out.includes('↑↓ 选择行') && new RegExp(`motion\\s+(${MOTION_OPTIONS.join('|')})`).test(out), 8_000)
+    const current = new RegExp(`motion\\s+(${MOTION_OPTIONS.join('|')})`).exec(rows.out)?.[1] ?? 'auto'
+    for (let i = 0; i < 3; i++) { sendKeys(SESS, 'Down'); await sleep(140) } // motion row (index 3)
+    sendKeys(SESS, 'Enter')
+    const editor = await waitPane(SESS, (out) => out.includes('motion — 选择值'), 8_000)
+    return { rows, current, editor }
+  }
+  /** ↓ to the target option (the enum cursor wraps). */
+  const moveMotionCursor = async (current, target) => {
+    const steps = (MOTION_OPTIONS.indexOf(target) - MOTION_OPTIONS.indexOf(current) + MOTION_OPTIONS.length) % MOTION_OPTIONS.length
+    for (let i = 0; i < steps; i++) { sendKeys(SESS, 'Down'); await sleep(160) }
+    return steps
+  }
+
+  await openSettings()
+  const motionFirst = await openMotionEditor()
+  // Always pick a value that differs from the snapshot, so Enter stages a real
+  // draft and 确定 writes it (a same-value choice is dropped by the modal).
+  const motionTarget = motionFirst.current === 'full' ? 'auto' : 'full'
+  const motionSteps = await moveMotionCursor(motionFirst.current, motionTarget)
+  snap('19-settings-motion-editor')
+  const optionLines = MOTION_OPTIONS.filter((option) =>
+    new RegExp(`${option}(\\s+\\(current\\))?\\s+┃`).test(motionFirst.editor.out))
+  record('/settings Enter opens the motion enum editor', motionFirst.editor.ok && optionLines.length === 4,
+    [motionFirst.editor.ok ? `title: motion — 选择值; options: ${optionLines.join('/')}` : 'editor not visible',
+      `cursor starts on the current value: ${motionFirst.current}`,
+      new RegExp(`▸\\s+${motionFirst.current}\\b`).test(motionFirst.editor.out) ? '▸ on current' : '▸ missing'])
+
+  // Inner-first Esc ladder: editor → browse (the panel stays open).
   sendKeys(SESS, 'Escape')
-  await waitPane(SESS, (out) => zonesVisible(out) && !out.includes('filter: "session-log"'), 6_000)
+  const editorBack = await waitPane(SESS,
+    (out) => !out.includes('motion — 选择值') && settingsUp(out) && /↑↓ 选择行/.test(out), 6_000)
+  snap('20-settings-motion-editor-back')
+  record('/settings Esc discards the editor and returns to the section rows', editorBack.ok,
+    [editorBack.ok ? 'editor closed, section still on screen' : 'editor did not return'])
+
+  // Re-enter the editor, aim the cursor, stage the draft, commit with 确定.
+  sendKeys(SESS, 'Enter')
+  await waitPane(SESS, (out) => out.includes('motion — 选择值'), 8_000)
+  await moveMotionCursor(motionFirst.current, motionTarget)
+  sendKeys(SESS, 'Enter')
+  const motionStaged = await waitPane(SESS,
+    (out) => new RegExp(`✎\\s*motion\\s+${motionTarget}`).test(out) && /未提交：\d+ 项/.test(out), 8_000)
+  snap('21-settings-motion-staged')
+  record(`settings stages motion=${motionTarget} as an uncommitted draft`, motionStaged.ok,
+    motionStaged.ok ? [`row: ✎ motion ${motionTarget}; commit band: 未提交：1 项`] : ['draft not staged'])
+  sendKeys(SESS, 'C-s')
+  const fullConfig = await waitProfile((config) => config.motion === motionTarget)
+  const fullClose = await waitSettingsClosed()
+  snap('22-settings-motion-write')
+  record(`settings writes motion=${motionTarget} into the profile config.json`,
+    motionStaged.ok && fullConfig.motion === motionTarget && fullClose.ok,
+    [`motion: ${JSON.stringify(fullConfig.motion)}`, `steps from ${motionFirst.current}: ${motionSteps}`,
+      fullClose.ok ? 'modal closed after 确定' : 'modal still on screen'])
+
+  // Restore the original value through the same path (cursor starts on it now).
+  await openSettings()
+  const motionBack = await openMotionEditor()
+  const restoreSteps = await moveMotionCursor(motionBack.current, motionFirst.current)
+  sendKeys(SESS, 'Enter')
+  const autoStaged = await waitPane(SESS,
+    (out) => new RegExp(`✎\\s*motion\\s+${motionFirst.current}`).test(out) && /未提交：\d+ 项/.test(out), 8_000)
+  sendKeys(SESS, 'C-s')
+  const autoConfig = await waitProfile((config) => config.motion === motionFirst.current)
+  const autoClose = await waitSettingsClosed()
+  snap('23-settings-motion-restore')
+  record(`settings writes motion back to ${motionFirst.current}`,
+    autoStaged.ok && autoConfig.motion === motionFirst.current && autoClose.ok,
+    [`motion: ${JSON.stringify(autoConfig.motion)}`, `steps from ${motionBack.current}: ${restoreSteps}`])
+
+  // Browse root Esc closes (no dirty draft → no discard confirm).
+  await openSettings()
   sendKeys(SESS, 'Escape')
-  const settingsClosed = await waitPane(SESS, (out) => !zonesVisible(out) && idle(out), 8_000)
-  snap('17-settings-closed')
-  record('/settings Esc closes the panel', settingsClosed.ok,
+  const settingsClosed = await waitSettingsClosed(8_000)
+  snap('24-settings-closed')
+  record('/settings Esc closes the modal at the browse root', settingsClosed.ok,
     [settingsClosed.ok ? 'back to the composer' : 'panel still on screen'])
 
   // ---------------- 1c. pane focus + transcript scroll (focus batch) ----------------
