@@ -1,0 +1,15 @@
+{
+  "extends": "@tsconfig/bun/tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun"],
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "noUncheckedIndexedAccess": false,
+    "noUnusedLocals": true,
+    "noImplicitAny": false,
+    "verbatimModuleSyntax": false,
+    "baseUrl": "."
+  },
+  "include": ["src", "test", "examples"]
+}

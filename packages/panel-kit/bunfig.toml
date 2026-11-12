@@ -1,0 +1,6 @@
+preload = ["@opentui/solid/preload"]
+
+# bun 1.4.x only honors [test].preload for `bun test`; without it "solid-js"
+# resolves to the SSR build (no-op createEffect) and reactive tests vacuum.
+[test]
+preload = ["@opentui/solid/preload"]

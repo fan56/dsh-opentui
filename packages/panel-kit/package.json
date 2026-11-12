@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/package.json",
+  "name": "@dsh-opentui/panel-kit",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opentui/core": "0.8.1",
+    "@opentui/solid": "0.8.1",
+    "solid-js": "1.9.17",
+    "string-width": "7.2.0"
+  },
+  "devDependencies": {
+    "@tsconfig/bun": "1.0.9",
+    "@types/bun": "1.4.3",
+    "typescript": "^5.7.0"
+  }
+}
