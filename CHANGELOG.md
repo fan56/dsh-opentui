@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2026-11-12
+
+### Fixed
+
+- Upgrading from pre-0.9.x profiles no longer breaks plugin installs: a leftover `patchedDependencies` entry whose package is gone is retired automatically during provisioning.
+- Provisioning no longer retries plugin installs that can never succeed (e.g. `ERR_PNPM_UNUSED_PATCH`); those now fail fast with an actionable hint while transient network failures keep retrying.
+
 ## [0.9.7] - 2026-11-12
 
 ### Fixed
