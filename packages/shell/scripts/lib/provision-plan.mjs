@@ -153,6 +153,119 @@ export function pluginAddCommand(profile, specs) {
   return ['dsh', ...pluginAddArgs(profile, specs)].join(' ')
 }
 
+// ---------------------------------------------------------------------------
+// Plugin-add failure classification (the bounded retry policy)
+//
+// The script's per-spec fallback retry (PLUGIN_ADD_ATTEMPTS x
+// PLUGIN_ADD_BACKOFF_MS) used to treat every failure as transient. Real 0.9.7
+// upgrades said otherwise: one orphan patchedDependencies entry makes every
+// `pnpm add` exit at once with ERR_PNPM_UNUSED_PATCH, so each spec burned 3
+// attempts x 5s and repeated the same red error. A DETERMINISTIC failure can
+// never succeed on a retry; the classification below reads only the captured
+// stderr / spawn-error text (where `dsh plugin add` surfaces pnpm's codes) and
+// maps the known shapes:
+//   deterministic — ERR_PNPM_UNUSED_PATCH, ERR_PNPM_NO_MATCHING_VERSION,
+//                   404-class (but NOT ERR_PNPM_META_FETCH_FAIL, which is
+//                   registry-side flakiness), ENOTFOUND, EACCES, EPERM
+//   transient     — ECONNRESET, ETIMEDOUT, ECONNREFUSED, socket disconnected,
+//                   TLS/SSL, HTTP 5xx, ERR_PNPM_META_FETCH_FAIL
+//   unknown       — anything else, retried: an unrecognized error is never
+//                   treated as deterministic (conservative).
+// ERR_PNPM_META_FETCH_FAIL is checked FIRST: its cause chain may print
+// ENOTFOUND/404, but pnpm's own code is authoritative for transientness.
+// ---------------------------------------------------------------------------
+
+/** Deterministic failure → one actionable fix line each. The 404 rule pairs
+ *  the status with "not found" prose (or the ERR_PNPM_FETCH_404 code) so
+ *  coincidental numbers in progress output ("reused 404") cannot stop a retry. */
+const PLUGIN_ADD_DETERMINISTIC_RULES = [
+  {
+    code: 'ERR_PNPM_UNUSED_PATCH',
+    re: /ERR_PNPM_UNUSED_PATCH/,
+    hint: 'a patchedDependencies entry in pnpm-workspace.yaml no longer matches any dependency — remove that entry, then re-run',
+  },
+  {
+    code: 'ERR_PNPM_NO_MATCHING_VERSION',
+    re: /ERR_PNPM_NO_MATCHING_VERSION/,
+    hint: 'no registry version matches the requested spec — check the pinned version against the registry, then re-run',
+  },
+  {
+    code: 'HTTP 404',
+    re: /ERR_PNPM_FETCH_404|(?<![\d.])404(?![\d.])[^\n]{0,80}not[ -]?found|not[ -]?found[^\n]{0,80}(?<![\d.])404(?![\d.])/i,
+    hint: 'the package or version was not found on the registry (404) — check the spec and the registry URL, then re-run',
+  },
+  {
+    code: 'ENOTFOUND',
+    re: /\bENOTFOUND\b/,
+    hint: 'a registry host did not resolve (ENOTFOUND) — check the registry URL and DNS, then re-run',
+  },
+  {
+    code: 'EACCES',
+    re: /\bEACCES\b/,
+    hint: 'permission denied (EACCES) — check ownership of the profile directory (node_modules, pnpm-workspace.yaml), then re-run',
+  },
+  {
+    code: 'EPERM',
+    re: /\bEPERM\b/,
+    hint: 'operation not permitted (EPERM) — check file permissions or locks in the profile directory, then re-run',
+  },
+]
+
+const PLUGIN_ADD_TRANSIENT_RULES = [
+  { code: 'ECONNRESET', re: /\bECONNRESET\b/ },
+  { code: 'ETIMEDOUT', re: /\bETIMEDOUT\b/ },
+  { code: 'ECONNREFUSED', re: /\bECONNREFUSED\b/ },
+  { code: 'disconnected', re: /disconnect/i },
+  { code: 'TLS/SSL', re: /\bTLS\b|\bSSL\b/ },
+  { code: 'HTTP 5xx', re: /(?<![\d.])5\d\d(?![\d.])/ },
+]
+
+/** Classify one failed `dsh plugin add` attempt. Pure: the captured run
+ *  output in, `{ kind, code, hint }` out. `hint` is a non-null actionable
+ *  fix only for deterministic failures. */
+export function classifyPluginAddFailure({ stderr = '', error = null } = {}) {
+  const text = [
+    typeof stderr === 'string' ? stderr : Buffer.isBuffer(stderr) ? stderr.toString() : '',
+    error?.code ?? '',
+    error?.message ?? '',
+  ]
+    .filter(Boolean)
+    .join('\n')
+  if (/ERR_PNPM_META_FETCH_FAIL/.test(text)) {
+    return { kind: 'transient', code: 'ERR_PNPM_META_FETCH_FAIL', hint: null }
+  }
+  for (const rule of PLUGIN_ADD_DETERMINISTIC_RULES) {
+    if (rule.re.test(text)) return { kind: 'deterministic', code: rule.code, hint: rule.hint }
+  }
+  for (const rule of PLUGIN_ADD_TRANSIENT_RULES) {
+    if (rule.re.test(text)) return { kind: 'transient', code: rule.code, hint: null }
+  }
+  return { kind: 'unknown', code: null, hint: null }
+}
+
+/** The next step of the bounded per-spec retry after one attempt. Pure: the
+ *  spawnSync result of one `dsh plugin add` run in, a decision out.
+ *    { action: 'installed' }
+ *    { action: 'retry' }            — transient/unknown and attempts remain
+ *    { action: 'failed', failure }  — deterministic (never retried), or the
+ *                                     attempt budget is exhausted
+ */
+export function pluginAddRetryDecision(run, { attempt, attempts } = {}) {
+  if (!run?.error && run?.status === 0) return { action: 'installed' }
+  const failure = classifyPluginAddFailure({ stderr: run?.stderr, error: run?.error })
+  if (failure.kind !== 'deterministic' && attempt < attempts) return { action: 'retry' }
+  return { action: 'failed', failure }
+}
+
+/** Terminal per-spec failures for the summary, DETERMINISTIC FIRST (each
+ *  carries the one-line fix; a stable sort keeps install order within the
+ *  groups). */
+export function orderPluginAddFailures(failures) {
+  return [...failures].sort(
+    (a, b) => (a.failure.kind === 'deterministic' ? 0 : 1) - (b.failure.kind === 'deterministic' ? 0 : 1),
+  )
+}
+
 /** Format one progress line: `[n/m] label` with the value column aligned.
  *  Mirrors dsh-tui-pi's onboarding output, with the script name as prefix. */
 export function formatStep(step, label, value = '') {

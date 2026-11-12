@@ -51,8 +51,12 @@
 // <specs...>`; on failure the pnpm build-script skeleton is approved and each
 // package is installed on its own with bounded spaced retries (a transient
 // registry failure — TLS reset / ERR_PNPM_META_FETCH_FAIL — dies in seconds,
-// a re-attempt after a short gap rides the burst out); a still-failing
-// package is a WARN, never a hard stop (the client still launches).
+// a re-attempt after a short gap rides the burst out). A DETERMINISTIC
+// failure (ERR_PNPM_UNUSED_PATCH, ERR_PNPM_NO_MATCHING_VERSION, 404-class,
+// EACCES/EPERM — classifyPluginAddFailure) skips the retries outright and is
+// reported first with an actionable hint; unknown failures still retry.
+// A still-failing package is a WARN, never a hard stop (the client still
+// launches).
 //
 // Step 4 reparses the profile manifest after the install: `dsh plugin add`
 // already reconciles bundles for new dependencies, so this only fills the gaps
@@ -82,6 +86,7 @@ import {
   formatStep,
   isDryRun,
   mergeBundles,
+  orderPluginAddFailures,
   parseDumpConfig,
   parseTier,
   planMcpPatch,
@@ -90,6 +95,7 @@ import {
   planToolPatch,
   pluginAddArgs,
   pluginAddCommand,
+  pluginAddRetryDecision,
   selectPlugins,
 } from './lib/provision-plan.mjs'
 
@@ -101,6 +107,10 @@ const INSTALL_TIMEOUT_MS = 10 * 60 * 1000
 // out without meaningfully extending a healthy provisioning run: the worst
 // case adds ~2 fast failures + 2 x 5s per FAILING spec, and a hung `dsh
 // plugin add` is still bounded by INSTALL_TIMEOUT_MS per invocation.
+// DETERMINISTIC failures (ERR_PNPM_UNUSED_PATCH, ERR_PNPM_NO_MATCHING_VERSION,
+// 404/ENOTFOUND, EACCES/EPERM — see classifyPluginAddFailure) are exempt:
+// retrying cannot fix them, so the spec gives up on the first hit and the
+// summary reports it first with an actionable hint.
 const PLUGIN_ADD_ATTEMPTS = 3
 const PLUGIN_ADD_BACKOFF_MS = 5000
 
@@ -349,12 +359,24 @@ function approvePrintedBuilds(names) {
   }
 }
 
-function runPluginAdd(specs) {
+function runPluginAdd(specs, { captureStderr = false } = {}) {
   return spawnSync('dsh', pluginAddArgs(PROFILE, specs), {
-    stdio: 'inherit',
+    // The per-spec retry captures stderr (the batch install keeps it live) so
+    // the failure classifier can read pnpm's error codes; the captured text
+    // is echoed back right after the run so nothing the user used to see is
+    // swallowed.
+    stdio: captureStderr ? ['inherit', 'inherit', 'pipe'] : 'inherit',
     env: { ...process.env, DSH_HOME: dshHome },
     timeout: INSTALL_TIMEOUT_MS,
+    maxBuffer: 16 * 1024 * 1024,
   })
+}
+
+/** Echo a captured stderr back to the terminal (tail only — pnpm banners can
+ *  be long, the error code is at the end). */
+function echoCapturedStderr(stderr) {
+  const text = typeof stderr === 'string' ? stderr : stderr?.toString() ?? ''
+  if (text.trim()) console.error(text.trimEnd().slice(-2000))
 }
 
 /** Synchronous pause (this script is spawnSync end to end; there is no event
@@ -363,7 +385,7 @@ function pauseSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-const failedInstalls = []
+const failedInstalls = [] // { spec, failure: { kind, code, hint } }
 let installedCount = 0
 
 if (tier === 'none') {
@@ -399,9 +421,11 @@ if (tier === 'none') {
       // Single-package fallback: one bad package must not sink the rest.
       // Each failing spec gets bounded spaced retries (PLUGIN_ADD_ATTEMPTS /
       // PLUGIN_ADD_BACKOFF_MS): a transient registry failure rides the burst
-      // out instead of WARN-ing the plugin away on the first drop. The
-      // terminal failure stays a WARN + failedInstalls entry — never a
-      // silent pass (the e2e npm-install boot leg asserts the delivered set).
+      // out instead of WARN-ing the plugin away on the first drop. A
+      // DETERMINISTIC failure (pluginAddRetryDecision) is exempt — retrying
+      // cannot fix it, so the spec gives up on the first hit. The terminal
+      // failure stays a WARN + failedInstalls entry — never a silent pass
+      // (the e2e npm-install boot leg asserts the delivered set).
       for (const spec of specs) {
         let installed = false
         for (let attempt = 1; attempt <= PLUGIN_ADD_ATTEMPTS && !installed; attempt += 1) {
@@ -409,16 +433,30 @@ if (tier === 'none') {
             say(3, 'plugins', `${spec} failed — retry ${attempt - 1}/${PLUGIN_ADD_ATTEMPTS - 1} in ${PLUGIN_ADD_BACKOFF_MS / 1000}s…`)
             pauseSync(PLUGIN_ADD_BACKOFF_MS)
           }
-          const retry = runPluginAdd([spec])
-          if (!retry.error && retry.status === 0) {
+          const retry = runPluginAdd([spec], { captureStderr: true })
+          echoCapturedStderr(retry.stderr)
+          const decision = pluginAddRetryDecision(retry, { attempt, attempts: PLUGIN_ADD_ATTEMPTS })
+          if (decision.action === 'installed') {
             installedCount += 1
             installed = true
-          } else if (attempt === PLUGIN_ADD_ATTEMPTS) {
-            failedInstalls.push(spec)
-            warn(`could not install ${spec}${retry.error ? `: ${retry.error.message}` : ` (exit ${retry.status})`} — continuing`)
+          } else if (decision.action === 'failed') {
+            const detail = retry.error ? retry.error.message : `(exit ${retry.status})`
+            failedInstalls.push({ spec, failure: decision.failure, detail })
+            if (decision.failure.kind === 'deterministic') {
+              say(3, 'plugins', `${spec}: ${decision.failure.code} — deterministic, not retrying`)
+            }
+            break
           }
         }
       }
+    }
+    // Summary: deterministic failures first, each with its one-line fix; the
+    // retried-then-failed ones follow without a hint.
+    for (const { spec, failure, detail } of orderPluginAddFailures(failedInstalls)) {
+      warn(
+        `could not install ${spec}${failure.code ? `: ${failure.code}` : ` ${detail}`}` +
+          ` — continuing${failure.hint ? ` — ${failure.hint}` : ''}`,
+      )
     }
     const failedSuffix = failedInstalls.length > 0 ? `, failed ${failedInstalls.length}` : ''
     say(3, 'plugins', `installed ${installedCount}, skipped ${skipped}${failedSuffix}`)

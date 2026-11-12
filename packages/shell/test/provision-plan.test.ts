@@ -11,6 +11,7 @@ import {
   RETIRED_PROFILE_ENTRIES,
   TOOL_WEB_PATCH,
   WEB_SEARCH_PATCH,
+  classifyPluginAddFailure,
   cleanupDependencies,
   compareVersions,
   formatStep,
@@ -19,6 +20,7 @@ import {
   isDryRun,
   isLocalSpec,
   mergeBundles,
+  orderPluginAddFailures,
   parseDumpConfig,
   parseTier,
   patchEntryBlock,
@@ -29,6 +31,7 @@ import {
   planToolPatch,
   pluginAddArgs,
   pluginAddCommand,
+  pluginAddRetryDecision,
   satisfiesVersion,
   selectPlugins,
 } from '../scripts/lib/provision-plan.mjs'
@@ -457,6 +460,107 @@ describe('mcp client patch row', () => {
   test('--plugins=none writes no row and never removes an existing one', () => {
     expect(planMcpPatch('', { enabled: false })).toEqual({ append: [], mcp: 'skipped', changed: false })
     expect(planMcpPatch(userRow, { enabled: false })).toEqual({ append: [], mcp: 'skipped', changed: false })
+  })
+})
+
+describe('plugin-add failure classification (bounded retry policy)', () => {
+  test('ERR_PNPM_UNUSED_PATCH is deterministic: actionable hint, no retry even on attempt 1', () => {
+    const failure = classifyPluginAddFailure({
+      stderr: ' ERR_PNPM_UNUSED_PATCH  patchedDependencies: solid-js@1.9.17 is not present in any dependency',
+    })
+    expect(failure.kind).toBe('deterministic')
+    expect(failure.code).toBe('ERR_PNPM_UNUSED_PATCH')
+    expect(failure.hint).toContain('patchedDependencies entry in pnpm-workspace.yaml')
+    expect(failure.hint).toContain('remove that entry')
+    expect(pluginAddRetryDecision({ status: 1, stderr: ' ERR_PNPM_UNUSED_PATCH …' }, { attempt: 1, attempts: 3 }).action).toBe('failed')
+    expect(pluginAddRetryDecision({ status: 1, stderr: ' ERR_PNPM_UNUSED_PATCH …' }, { attempt: 3, attempts: 3 }).action).toBe('failed')
+  })
+
+  test('the other deterministic codes map to hints; a successful run installs', () => {
+    for (const stderr of [
+      'ERR_PNPM_NO_MATCHING_VERSION  version 9.9.9 not found for @aiwayds/dsh-cron',
+      'ERR_PNPM_FETCH_404  GET https://registry.npmjs.org/nope: Not Found - 404',
+      'getaddrinfo registry.example ENOTFOUND',
+      'EACCES: permission denied, open …/node_modules/.pnpm/…',
+      'EPERM: operation not permitted, rename …',
+    ]) {
+      const failure = classifyPluginAddFailure({ stderr })
+      expect(failure.kind).toBe('deterministic')
+      expect(failure.hint).toMatch(/re-run/)
+    }
+    expect(pluginAddRetryDecision({ status: 0, stderr: '' }, { attempt: 1, attempts: 3 })).toEqual({ action: 'installed' })
+  })
+
+  test('ECONNRESET (and the other registry-side shapes) are transient: the bounded retry still runs', () => {
+    const shapes = ['request failed, reason: ECONNRESET', 'ETIMEDOUT', 'socket disconnected', 'TLS handshake failed', 'HTTP/1.1 503', 'ERR_PNPM_META_FETCH_FAIL … cause: getaddrinfo ENOTFOUND registry.npmjs.org']
+    for (const stderr of shapes) {
+      expect(classifyPluginAddFailure({ stderr }).kind).toBe('transient')
+      expect(pluginAddRetryDecision({ status: 1, stderr }, { attempt: 1, attempts: 3 }).action).toBe('retry')
+    }
+    // ERR_PNPM_META_FETCH_FAIL wins over its ENOTFOUND/404-looking cause chain
+    expect(classifyPluginAddFailure({ stderr: 'ERR_PNPM_META_FETCH_FAIL … ENOTFOUND … 404' }).code).toBe('ERR_PNPM_META_FETCH_FAIL')
+    // exhausted attempts still give up
+    expect(pluginAddRetryDecision({ status: 1, stderr: 'ECONNRESET' }, { attempt: 3, attempts: 3 }).action).toBe('failed')
+  })
+
+  test('an unrecognized failure stays unknown and is still retried (conservative)', () => {
+    expect(classifyPluginAddFailure({ stderr: 'a completely novel pnpm meltdown' })).toEqual({ kind: 'unknown', code: null, hint: null })
+    expect(pluginAddRetryDecision({ status: 1, stderr: 'a completely novel pnpm meltdown' }, { attempt: 1, attempts: 3 }).action).toBe('retry')
+    expect(pluginAddRetryDecision({ status: 1, stderr: 'a completely novel pnpm meltdown' }, { attempt: 3, attempts: 3 }).action).toBe('failed')
+    // a bare "404"/"500" inside unrelated numbers must not classify
+    expect(classifyPluginAddFailure({ stderr: 'reused 404 packages, downloaded 1503 kB' }).kind).toBe('unknown')
+  })
+
+  test('mixed batch: one deterministic failure gives up on its spec only — the rest install', () => {
+    // A faithful simulation of the script's per-spec fallback loop, with a
+    // fake runner instead of `dsh plugin add` (pure: no process spawned).
+    const runs: Record<string, Array<{ status: number, stderr?: string }>> = {
+      'good@1.0.0': [{ status: 0 }],
+      'flaky@1.0.0': [{ status: 1, stderr: 'ECONNRESET' }, { status: 1, stderr: 'ECONNRESET' }, { status: 0 }],
+      'orphan@1.0.0': [{ status: 1, stderr: 'ERR_PNPM_UNUSED_PATCH: orphan patchedDependencies entry' }],
+    }
+    const attempts = 3
+    const installed: string[] = []
+    const failed: Array<{ spec: string, kind: string, code: string | null }> = []
+    const attemptCounts: Record<string, number> = {}
+    for (const spec of Object.keys(runs)) {
+      attemptCounts[spec] = 0
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        attemptCounts[spec] = attempt
+        const decision = pluginAddRetryDecision(runs[spec][attempt - 1], { attempt, attempts })
+        if (decision.action === 'installed') {
+          installed.push(spec)
+          break
+        }
+        if (decision.action === 'failed') {
+          failed.push({ spec, kind: decision.failure.kind, code: decision.failure.code })
+          break
+        }
+      }
+    }
+    expect(installed).toEqual(['good@1.0.0', 'flaky@1.0.0'])
+    expect(failed).toEqual([{ spec: 'orphan@1.0.0', kind: 'deterministic', code: 'ERR_PNPM_UNUSED_PATCH' }])
+    // the deterministic spec never burned a retry; the transient one did
+    expect(attemptCounts['orphan@1.0.0']).toBe(1)
+    expect(attemptCounts['flaky@1.0.0']).toBe(3)
+  })
+
+  test('the summary orders deterministic failures first (stable within groups)', () => {
+    const ordered = orderPluginAddFailures([
+      { spec: 'b@1', failure: { kind: 'unknown', code: null, hint: null }, detail: '(exit 1)' },
+      { spec: 'c@1', failure: { kind: 'transient', code: 'ECONNRESET', hint: null }, detail: '(exit 1)' },
+      { spec: 'a@1', failure: { kind: 'deterministic', code: 'ERR_PNPM_UNUSED_PATCH', hint: 'remove that entry, then re-run' }, detail: '(exit 1)' },
+    ])
+    expect(ordered.map((entry) => entry.spec)).toEqual(['a@1', 'b@1', 'c@1'])
+    expect(orderPluginAddFailures([])).toEqual([])
+  })
+
+  test('provision source guard: the retry loop captures stderr, classifies, and reports deterministic failures first', () => {
+    const script = readFileSync(new URL('../scripts/provision-opentui-profile.mjs', import.meta.url), 'utf8')
+    expect(script).toContain('runPluginAdd([spec], { captureStderr: true })')
+    expect(script).toContain('pluginAddRetryDecision(retry, { attempt, attempts: PLUGIN_ADD_ATTEMPTS })')
+    expect(script).toContain("decision.failure.kind === 'deterministic'")
+    expect(script).toContain('orderPluginAddFailures(failedInstalls)')
   })
 })
 
