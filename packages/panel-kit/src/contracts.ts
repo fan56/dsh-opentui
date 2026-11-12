@@ -45,6 +45,23 @@
  *     no per-row loop; reduced/off still jump.
  *   • PanelHandle close() now fades out (FADE_MS) before unmounting.
  *
+ * v1.1 amendment (2026-11-12) — /settings + /agents migration:
+ *   • IMPLEMENTED ListItem.cells / ListProps.columns (were contract-only).
+ *     ListColumn gains optional `title` for the header row. Columns are fixed
+ *     cell widths with left/right alignment; a row without a cell falls back
+ *     to `label` in the first column; a narrow host `width` shrinks the
+ *     declared widths (widest first, floor 1) and truncates with "…", so rows
+ *     never overlap or overflow the budget. badge/description keep their v1
+ *     positions around the column block.
+ *   • IMPLEMENTED ListProps.pageSize (paged window, NOT a scroll container).
+ *     At most pageSize render rows are painted; PgUp/PgDn/Home/End page the
+ *     focused list and a right-aligned "first-last/total" indicator appears at
+ *     the tail. Keys are consumed only while the list exceeds one page.
+ *   • IMPLEMENTED PanelTitle / PanelBody / PanelActions (src/slots.tsx, now
+ *     exported). PanelBodyProps gains `maxRows`; `scroll` stays deferred to a
+ *     later version — v1.1 paginates through List.pageSize instead.
+ *   • No new motion constants, timers or dependencies.
+ *
  * Adapted from @opencode/tui (MIT), Copyright 2025 opencode.
  */
 import type { RGBA } from "@opentui/core"
@@ -379,10 +396,15 @@ export interface PanelTitleProps {
 }
 
 export interface PanelBodyProps {
-  /** Scroll when content exceeds the frame; default false. */
+  /**
+   * Scroll when content exceeds the frame; default false. Deferred: v1.1
+   * paginates through List.pageSize instead of shipping a scroll container.
+   */
   scroll?: boolean
-  /** Side/bottom padding in cells; default 3 (dialog inset). */
+  /** Side padding in cells; default 3 (dialog inset). */
   inset?: number
+  /** Row cap in terminal cells; omitted = grow with the frame. (v1.1) */
+  maxRows?: number
   children?: JSX.Element
 }
 
@@ -409,6 +431,8 @@ export interface PanelActionsProps {
 
 export interface ListColumn {
   id: string
+  /** Header label (v1.1); omitted = blank header cell. */
+  title?: string
   /** cells, fixed; no auto-sizing in v1 */
   width: number
   align?: "left" | "right"
@@ -442,8 +466,14 @@ export interface ListProps<T = unknown> {
   selected?: string[]
   /** Focus row (uncontrolled default: first enabled). */
   activeId?: string
-  /** v1.1; omitted in v1. */
+  /** v1.1; fixed columns for the row (see ListColumn). Omitted = label-only rows. */
   columns?: ListColumn[]
+  /**
+   * Paged window: paint at most this many render rows (group headers count)
+   * and page with PgUp/PgDn/Home/End while focused. Omitted = no paging.
+   * (v1.1 — replaces the deferred scroll primitive.)
+   */
+  pageSize?: number
   /**
    * Controlled fuzzy query. Omit to use the List's internal typing buffer;
    * when supplied the List paints this value and reports keystrokes through

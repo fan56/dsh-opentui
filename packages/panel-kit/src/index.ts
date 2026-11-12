@@ -70,8 +70,14 @@ export {
   buildListRows,
   firstEnabledId,
   fuzzyFilter,
+  listColumnRow,
+  listColumnValues,
+  listPageIndicator,
   listReduce,
   moveActiveId,
+  nextListPage,
+  resolveListColumns,
+  resolveListPage,
   truncateCells,
   useControlTheme,
 } from "./controls/list"
@@ -79,10 +85,16 @@ export type {
   ListAction,
   ListControlProps,
   ListOutcome,
+  ListPageWindow,
   ListReduceInput,
   ListRow,
   ListState,
+  ResolvedListColumn,
 } from "./controls/list"
+
+// -- Slots (v1.1: /settings + /agents) --------------------------------------
+export { PanelActions, PanelBody, PanelTitle, titleGradientStops } from "./slots"
+export type { TitleStop } from "./slots"
 
 // -- Controls: Button -------------------------------------------------------
 export { Button, buttonVisual, pressButton } from "./controls/button"

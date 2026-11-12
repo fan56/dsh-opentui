@@ -28,11 +28,13 @@ import {
   type JSX,
 } from "solid-js"
 import type {
+  ListColumn,
   ListGroup,
   ListItem,
   ListProps,
   PanelTheme,
 } from "../contracts"
+import { align } from "../text"
 import { usePanelTheme } from "../theme"
 
 // ---------------------------------------------------------------------------
@@ -234,6 +236,156 @@ export function firstEnabledId<T>(rows: readonly ListRow<T>[]): string | undefin
 }
 
 // ---------------------------------------------------------------------------
+// Fixed columns (v1.1, /agents)
+// ---------------------------------------------------------------------------
+
+/** One cell of gap between fixed columns. */
+const COLUMN_GAP = 1
+
+export interface ResolvedListColumn {
+  readonly id: string
+  readonly title?: string
+  /** Effective width after the optional budget shrink; 0 = omitted. */
+  readonly width: number
+  readonly align: "left" | "right"
+}
+
+/**
+ * Resolve declared columns to effective widths. Without `budget` the declared
+ * widths are used verbatim (the host clips). With a budget, excess cells are
+ * taken from the widest column first (never below one cell) so a narrow
+ * container degrades instead of overlapping; columns that cannot keep a cell
+ * become zero-width and {@link listColumnRow} omits them.
+ */
+export function resolveListColumns(
+  columns: readonly ListColumn[],
+  budget?: number,
+): ResolvedListColumn[] {
+  const base = columns.map((column) => ({
+    id: column.id,
+    title: column.title,
+    width: Math.max(0, Math.floor(column.width)),
+    align: column.align ?? "left",
+  }))
+  if (budget === undefined) return base
+
+  const available = Math.max(0, Math.floor(budget) - COLUMN_GAP * Math.max(0, base.length - 1))
+  const widths = base.map((column) => column.width)
+  let total = widths.reduce((sum, width) => sum + width, 0)
+
+  while (total > available) {
+    let widest = -1
+    for (let index = 0; index < widths.length; index += 1) {
+      const width = widths[index]!
+      if (width <= 1) continue
+      if (widest < 0 || width > widths[widest]!) widest = index
+    }
+    if (widest < 0) break
+    widths[widest] = widths[widest]! - 1
+    total -= 1
+  }
+  if (total > available) {
+    // Even one-cell columns do not fit: fill left to right, drop the rest.
+    let left = available
+    for (let index = 0; index < widths.length; index += 1) {
+      const give = Math.max(0, Math.min(widths[index]!, left))
+      widths[index] = give
+      left -= give
+    }
+  }
+  return base.map((column, index) => ({ ...column, width: widths[index]! }))
+}
+
+/**
+ * One row's column values. `cells[id]` wins; the first column falls back to
+ * `label` so a row without cells still paints something, and later missing
+ * cells stay empty (v1.1).
+ */
+export function listColumnValues<T>(
+  item: ListItem<T>,
+  columns: readonly ListColumn[],
+): string[] {
+  return columns.map((column, index) => {
+    const value = item.cells?.[column.id]
+    if (value !== undefined) return value
+    return index === 0 ? item.label : ""
+  })
+}
+
+/** Format pre-resolved values; zero-width columns are omitted entirely. */
+export function listColumnRow(
+  values: readonly string[],
+  columns: readonly ResolvedListColumn[],
+): string {
+  const parts: string[] = []
+  columns.forEach((column, index) => {
+    if (column.width <= 0) return
+    parts.push(align(values[index] ?? "", column.width, column.align))
+  })
+  return parts.join(" ".repeat(COLUMN_GAP))
+}
+
+// ---------------------------------------------------------------------------
+// Paged window (v1.1; replaces the deferred scroll primitive)
+// ---------------------------------------------------------------------------
+
+export interface ListPageWindow {
+  /** Zero-based current page, clamped into range. */
+  readonly page: number
+  readonly pages: number
+  /** 1-based inclusive row range used by the indicator. */
+  readonly start: number
+  readonly end: number
+  readonly total: number
+  /** True only when a positive page size leaves rows outside one page. */
+  readonly paged: boolean
+}
+
+/**
+ * Clamp a page index against the visible render-row count (group headers
+ * included). A missing/zero page size means "one page, no paging".
+ */
+export function resolveListPage(
+  total: number,
+  pageSize: number | undefined,
+  page: number,
+): ListPageWindow {
+  const count = Math.max(0, Math.floor(total))
+  const valid = pageSize !== undefined && Number.isFinite(pageSize) && Math.floor(pageSize) > 0
+  const size = valid ? Math.floor(pageSize) : Math.max(1, count)
+  const pages = valid ? Math.max(1, Math.ceil(count / size)) : 1
+  const current = Math.max(0, Math.min(Math.floor(page) || 0, pages - 1))
+  const start = count === 0 ? 0 : current * size + 1
+  const end = count === 0 ? 0 : Math.min(count, (current + 1) * size)
+  return { page: current, pages, start, end, total: count, paged: valid && count > size }
+}
+
+/**
+ * Map a paging key to the next page. Returns undefined when the list fits on
+ * one page (or has no rows), so the List never swallows a key it cannot use.
+ */
+export function nextListPage(id: string, page: number, pages: number): number | undefined {
+  if (pages <= 1) return undefined
+  switch (id) {
+    case "pageup":
+      return Math.max(0, page - 1)
+    case "pagedown":
+      return Math.min(pages - 1, page + 1)
+    case "home":
+      return 0
+    case "end":
+      return pages - 1
+    default:
+      return undefined
+  }
+}
+
+/** Indicator text for the page tail, e.g. "1-12/34". */
+export function listPageIndicator(window: Pick<ListPageWindow, "start" | "end" | "total">): string {
+  return `${window.start}-${window.end}/${window.total}`
+}
+
+// ---------------------------------------------------------------------------
 // Pure selection state machine
 // ---------------------------------------------------------------------------
 
@@ -362,6 +514,7 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
     selected: props.selected ?? [],
     query: "",
   })
+  const [page, setPage] = createSignal(0)
 
   const mode = () => props.mode ?? "single"
   /** Controlled query wins; otherwise the internal typing buffer (T17-INT1 B2). */
@@ -371,6 +524,28 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
   )
   const activeId = () => props.activeId ?? state().activeId
   const selectedIds = () => props.selected ?? state().selected
+
+  // Paged window (v1.1): group headers count as rows; the page index is
+  // clamped on every read so a shrinking filter never leaves a blank page.
+  const pageInfo = createMemo(() => resolveListPage(rows().length, props.pageSize, page()))
+  const pageRows = createMemo(() => {
+    const window = pageInfo()
+    if (window.total === 0) return []
+    return rows().slice(window.start - 1, window.end)
+  })
+
+  const headerCells = () => {
+    const columns = props.columns
+    if (columns === undefined || columns.length === 0) return undefined
+    if (!columns.some((column) => (column.title ?? "") !== "")) return undefined
+    const marker = mode() === "multi" ? 2 : 0
+    const budget = props.width === undefined ? undefined : props.width - marker
+    return listColumnRow(
+      columns.map((column) => column.title ?? ""),
+      resolveListColumns(columns, budget),
+    )
+  }
+  const headers = createMemo(headerCells)
 
   function dispatch(action: ListAction) {
     const outcome = listReduce(
@@ -386,6 +561,16 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
   }
 
   function onKeyDown(key: KeyEvent) {
+    // PgUp/PgDn/Home/End page only while the list exceeds one page; otherwise
+    // they fall through untouched (the key never gets swallowed).
+    const window = pageInfo()
+    const target = nextListPage(key.name, window.page, window.pages)
+    if (target !== undefined) {
+      setPage(target)
+      key.preventDefault()
+      key.stopPropagation()
+      return
+    }
     switch (key.name) {
       case "up":
         dispatch({ type: "move", delta: -1 })
@@ -429,7 +614,17 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
         when={itemRows().length > 0}
         fallback={<text fg={theme().text.muted}>{props.emptyLabel ?? "No items"}</text>}
       >
-        <For each={rows()}>
+        <Show when={headers() !== undefined}>
+          <box flexDirection="row">
+            <Show when={mode() === "multi"}>
+              <text>{"  "}</text>
+            </Show>
+            <text attributes={theme().attributes.group} fg={theme().text.muted} wrapMode="none">
+              {headers()}
+            </text>
+          </box>
+        </Show>
+        <For each={pageRows()}>
           {(row) =>
             row.kind === "group" ? (
               <text attributes={theme().attributes.group} fg={theme().text.muted}>
@@ -443,11 +638,19 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
                 selected={selectedIds().includes(row.item.id)}
                 marker={mode() === "multi"}
                 width={rowWidth()}
+                columns={props.columns}
                 footer={props.renderFooter}
               />
             )
           }
         </For>
+        <Show when={pageInfo().paged}>
+          <box flexDirection="row" justifyContent="flex-end">
+            <text fg={theme().text.faint} wrapMode="none">
+              {listPageIndicator(pageInfo()) + " · PgUp/PgDn"}
+            </text>
+          </box>
+        </Show>
       </Show>
     </box>
   )
@@ -460,6 +663,7 @@ function ListRowView<T>(props: {
   selected: boolean
   marker: boolean
   width?: number
+  columns?: readonly ListColumn[]
   footer?: (item: ListItem<T>) => JSX.Element
 }): JSX.Element {
   const { item, theme } = props
@@ -474,8 +678,24 @@ function ListRowView<T>(props: {
   const suffixCells = item.description === undefined ? 0 : stringWidth(item.description) + 1
   const labelBudget =
     props.width === undefined ? undefined : props.width - prefixCells - suffixCells
-  const label =
-    labelBudget === undefined ? item.label : truncateCells(item.label, labelBudget, "tail")
+  const hasColumns = props.columns !== undefined && props.columns.length > 0
+  const label = hasColumns
+    ? ""
+    : labelBudget === undefined
+      ? item.label
+      : truncateCells(item.label, labelBudget, "tail")
+
+  // Fixed columns (v1.1): the first column falls back to the label, badge and
+  // description keep their v1 positions, and the column block shrinks inside
+  // whatever cells the badge/description leave behind.
+  const columnText = () => {
+    if (!hasColumns) return ""
+    const budget = props.width === undefined ? undefined : props.width - prefixCells - suffixCells
+    return listColumnRow(
+      listColumnValues(item, props.columns!),
+      resolveListColumns(props.columns!, budget),
+    )
+  }
 
   return (
     <box
@@ -490,7 +710,9 @@ function ListRowView<T>(props: {
       <Show when={item.badge !== undefined}>
         <text fg={active ? theme.row.activeFg : theme.text.accent}>{item.badge} </text>
       </Show>
-      <text fg={fg}>{label}</text>
+      <Show when={hasColumns} fallback={<text fg={fg}>{label}</text>}>
+        <text fg={fg}>{columnText()}</text>
+      </Show>
       <Show when={item.description !== undefined}>
         <text fg={disabled ? theme.text.disabled : active ? theme.row.activeFg : theme.text.muted}>
           {" " + item.description}

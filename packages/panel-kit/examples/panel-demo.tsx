@@ -90,13 +90,22 @@ function ZooScene(): JSX.Element {
   // must show every widget without scrolling (round-3 capture finding).
   return (
     <box flexDirection="column" gap={1}>
+      {/* v1.1: fixed columns (title/width/align) + a paged window; the last
+          row has no description and paints its cells only. */}
       <List
         items={[
-          { id: "list", label: "List", description: "groups, fuzzy filter" },
-          { id: "check", label: "Check", description: "tri-state" },
-          { id: "drop", label: "Dropdown", description: "in-panel popup" },
-          { id: "input", label: "InputRow", description: "text / number" },
+          { id: "list", label: "List", description: "groups, fuzzy filter", cells: { kind: "selector", state: "ready" } },
+          { id: "check", label: "Check", description: "tri-state", cells: { kind: "toggle", state: "ready" } },
+          { id: "drop", label: "Dropdown", description: "in-panel popup", cells: { kind: "popup", state: "ready" } },
+          { id: "input", label: "InputRow", description: "text / number", cells: { kind: "field", state: "ready" } },
+          { id: "agents", label: "Agents", cells: { kind: "table", state: "paged" } },
         ]}
+        columns={[
+          { id: "widget", title: "Widget", width: 12 },
+          { id: "kind", title: "Kind", width: 10 },
+          { id: "state", title: "State", width: 6, align: "right" },
+        ]}
+        pageSize={2}
         mode="multi"
         selected={selected()}
         onChange={setSelected}
