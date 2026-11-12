@@ -277,11 +277,13 @@ const composerRows = (out) =>
     .map((l) => l.trim().replace(/^┃/, '').replace(/┃$/, '').trim())
 const inputRow = (out) => (composerRows(out).filter((l) => l !== '' && !l.startsWith(PLACEHOLDER)).pop() ?? '').trim()
 const composerEmpty = (out) => composerRows(out).every((l) => l === '' || l.startsWith(PLACEHOLDER))
-/** The one row DIRECTLY above the composer box (composer-context batch).
- * Full-frame geometry (>30 rows) draws a `┏━━━┓` top border between the
- * context row and the first `┃` interior row — skip it. Compact geometry
- * (≤30 rows) draws left/right rules only, so the row above the first `┃`
- * IS the context row. */
+/** The composer info-bar row (steer/dir/branch batch): the first NON-pure-
+ * border row above the first `┃` interior row. Framed geometry (>30 rows):
+ * the composer's own `┏` top border carries the cwd (· branch) embedded, so
+ * the scan lands on that border row directly. Compact geometry (≤30 rows)
+ * draws left/right rules only and the bar is intentionally absent — the row
+ * above the first `┃` is transcript content (the reverse assertions check
+ * it). */
 const composerContextRow = (out) => {
   const lines = out.split('\n')
   const first = lines.findIndex((l) => l.trimStart().startsWith('┃'))
@@ -376,14 +378,24 @@ try {
   await waitPane(SESS, idle, 30_000)
   snap('01-welcome')
 
-  // Composer context row (user feedback batch): the working directory sits
-  // on the ONE row directly above the input box; the scratch workspace is not
-  // a git repo, so the branch suffix must be absent (silent degrade).
+  // Composer info bar (steer/dir/branch batch): the cwd rides INSIDE the
+  // composer's own top border (framed geometry at the default 120x34),
+  // directly after the corner inset — space-led text, NO dash run of our
+  // own (the user's real-device "细线" rejection). The scratch workspace is
+  // not a git repo, so no branch segment (silent degrade), and no
+  // independent rule/label row may sit above that border.
   const ctxBoot = composerContextRow(capture(SESS))
-  record('composer context: the row above the input shows the working directory',
-    ctxBoot.includes(basename(WS)), [`row: ${JSON.stringify(ctxBoot)}`])
-  record('composer context: no branch outside a git repository',
-    ctxBoot.length > 0 && !ctxBoot.includes(' · '), [`row: ${JSON.stringify(ctxBoot)}`])
+  const ctxBootBare = ctxBoot.replace(/^[┏┌][━─]/, '')
+  record('composer context: the composer top border embeds the working directory',
+    ctxBoot.includes(basename(WS)) && /^ [^━─]/.test(ctxBootBare), [`row: ${JSON.stringify(ctxBoot)}`])
+  record('composer context: no branch segment outside a git repository',
+    ctxBoot.length > 0 && !/ · /.test(ctxBoot), [`row: ${JSON.stringify(ctxBoot)}`])
+  const ctxBootLines = capture(SESS).split('\n')
+  const ctxBootIdx = ctxBootLines.findIndex((l) => l === ctxBoot)
+  const aboveBoot = ctxBootIdx > 0 ? (ctxBootLines[ctxBootIdx - 1] ?? '').trim() : ''
+  record('composer context: no independent rule/label row above the border title',
+    !/^[─┏┓┌┐\s]+$/.test(aboveBoot) && !aboveBoot.includes(basename(WS)),
+    [`row above: ${JSON.stringify(aboveBoot.slice(0, 60))}`])
 
   await submit(SESS, '/agents')
   const opened = await waitPane(SESS, (o) => rawHasAny(o, PANEL_OPEN) || has(o, FALLBACK), 20_000)
@@ -782,12 +794,14 @@ try {
     process.exit(2)
   }
   await waitPane(SESS80, idle, 30_000)
-  // 80 columns: wrapMode="none" + height 1 — the row must stay one clipped
-  // line (the tail, i.e. the workspace basename, survives the left clip).
+  // 80x24 is compact (≤30 rows): the composer draws left/right rules only —
+  // no top border, so the info bar is intentionally absent (user feedback:
+  // zero extra rows anywhere). Nothing directly above the box may carry the
+  // workspace or a dash-led rule.
   const ctx80 = composerContextRow(capture(SESS80))
-  record('80x24: composer context stays one clipped row (directory tail kept)',
-    ctx80.includes(basename(WS)) && ctx80.length <= 79,
-    [`row: ${JSON.stringify(ctx80)}`, `columns: ${ctx80.length}`])
+  record('80x24: no context bar above the composer (compact has no top border)',
+    !ctx80.includes(basename(WS)) && !/^[─┏┓┌┐\s]+$/.test(ctx80),
+    [`row above composer: ${JSON.stringify(ctx80.slice(0, 60))}`])
   // Compact (≤30 rows) transcript frame: left/right rules only — no `┏` top
   // row — but focused still paints the heavy `┃` rule.
   sendKeys(SESS80, 'F6')
@@ -847,11 +861,12 @@ try {
   await submit(SESS80, '/quit')
   await waitPane(SESS80, () => tmux('has-session', '-t', SESS80).status !== 0, 15_000)
 
-  // ---------------- 4. composer context row inside a git repo ----------------
+  // ---------------- 4. composer top border inside a git repo ----------------
   // Same launcher, workspace = the repo checkout (a real git worktree): the
-  // branch must appear after the directory separator. The expected name is
-  // read straight from git, so a branch rename cannot make this pass by
-  // accident.
+  // branch must appear as its own segment after the directory (` · ` join)
+  // inside the composer's top border — on screen `┏━ ~/repo/dsh-opentui ·
+  // main ━━…┓` (space-led text, no dash prefix). The expected name is read
+  // straight from git, so a branch rename cannot make this pass by accident.
   const expectedBranch = sh('git', ['-C', REPO, 'rev-parse', '--abbrev-ref', 'HEAD']).stdout.trim()
   launch(SESSGIT, COLS, ROWS, REPO)
   const bootGit = await waitPane(SESSGIT, (o) => o.includes('🧠') || idle(o), 90_000, 500)
@@ -867,9 +882,12 @@ try {
     )
     const row = composerContextRow(gitRow.out)
     snap('23-composer-context-git', SESSGIT)
-    record('composer context: a git workspace renders the branch after the directory',
+    record('composer context: a git workspace renders the branch segment in the top border',
       gitRow.ok && expectedBranch !== '',
-      [`expected: " · ${expectedBranch}"`, `row: ${JSON.stringify(row)}`])
+      [`expected: " · ${expectedBranch}"`, `row: ${JSON.stringify(row)}`,
+        // On a miss, show the rows around the composer so the mis-located
+        // search (dock rows, missing bar) is diagnosable from the log.
+        ...(gitRow.ok ? [] : gitRow.out.split('\n').slice(-12).map((l) => `frame| ${l}`))])
     await submit(SESSGIT, '/quit')
     await waitPane(SESSGIT, () => tmux('has-session', '-t', SESSGIT).status !== 0, 15_000)
   }

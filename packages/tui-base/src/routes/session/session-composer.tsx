@@ -98,7 +98,10 @@ export type SessionComposerRef = {
 	flushQueue(): ComposerFlushResult
 }
 
-/** Busy top-border title (contract §1): the steer affordance, warning-tier. */
+/** Bare-harness busy top-border title (contract §1): the steer affordance,
+ * warning-tier. The real client replaces this with the full info bar
+ * (steer/dir/branch segments — `frameTitle`); without a page the composer
+ * still marks the steer window with the bare word. */
 const STEER_TITLE = " steer "
 
 /** Keys the slash palette can own while open (scroll window + edge jumps).
@@ -175,6 +178,11 @@ export type SessionComposerProps = {
 	/** Batch D3: false drops the composer's own hint row — the page paints
 	 * the key hints on its dedicated last row (./hints-line.tsx). */
 	footerHint?: boolean
+	/** Info bar (steer/dir/branch batch): the page's reactive frame title —
+	 * `steer? + cwd + branch` segments composed by ComposerContext and
+	 * embedded in this box's top border at full-frame geometry. Empty (bare
+	 * FT harnesses) falls back to the bare steer title on busy. */
+	frameTitle?: () => string
 }
 
 export function SessionComposer(props: SessionComposerProps) {
@@ -518,8 +526,18 @@ export function SessionComposer(props: SessionComposerProps) {
 			border={composerBorderSides(dimensions().height)}
 			borderStyle={border().borderStyle}
 			borderColor={border().borderColor}
-			title={busy() && dimensions().height > COMPOSER_COMPACT_TERMINAL_ROWS ? STEER_TITLE : undefined}
-			titleColor={busyColor()}
+			title={
+				// Info bar (steer/dir/branch batch): at full-frame geometry the
+				// top border IS the context display — segments from the page
+				// (steer segment included while busy); bare harnesses keep the
+				// steer-only title. Compact heights draw no top border at all.
+				dimensions().height > COMPOSER_COMPACT_TERMINAL_ROWS
+					? (props.frameTitle?.() || (busy() ? STEER_TITLE : undefined))
+					:	undefined
+			}
+			// One color per title: the bar follows the frame face — warning
+			// (steer orange) while busy, the frame token otherwise.
+			titleColor={border().borderColor}
 			backgroundColor={color.background()}
 			paddingLeft={1}
 		>

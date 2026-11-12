@@ -26,7 +26,10 @@
 //                           terminals add no top row
 //   5 footer              — 🧠 compact `(x.x%)` (no inner spaces), one row,
 //                           every segment inside the terminal width
-//   6 composer context    — cwd row above the box: one clipped row, tail kept
+//   6 composer context    — cwd embedded in the composer's own top border
+//                           right after the corner inset (space-led, NO dash
+//                           run of our own), tail kept; NO independent
+//                           rule/label row anywhere (compact: no bar at all)
 //   7 busy submit         — steer/queue rows with muted-italic / brand SGR
 //   8 activity frame      — heavy border, blue hue, contrast ≥ 6:1 (frame
 //                           form) / left-rule form at compact heights
@@ -486,7 +489,10 @@ async function sceneBlank(session, geom) {
     placeholder ? [`row: ${JSON.stringify(PLACEHOLDER)}`] : failDetail('composer placeholder row', `composerRows=${JSON.stringify(composerRows(plain))}`, frame, '┃'))
 }
 
-/** The one row directly above the composer box (full frame skips the top border). */
+/** The composer info-bar row (steer/dir/branch batch): the first NON-pure-
+ * border row above the first `┃` interior row. At framed geometry this is
+ * the composer's own top border with the cwd embedded; at compact heights
+ * (no bar by design) it is whatever transcript row sits above the box. */
 function contextRow(frame) {
   const lines = stripAnsi(frame).split('\n')
   const first = lines.findIndex((l) => l.trimStart().startsWith('┃'))
@@ -497,16 +503,46 @@ function contextRow(frame) {
 }
 
 async function sceneContextRow(session, geom) {
-  const row = contextRow(capture(session))
+  const frame = capture(session)
+  const lines = stripAnsi(frame).split('\n')
+  const firstBar = lines.findIndex((l) => l.trimStart().startsWith('┃'))
   const tail = 'workspace-tail-uim'
-  const keepsTail = row.includes(tail)
-  const oneRow = !row.includes('\n')
-  const within = widthOf(row) <= geom.cols - 1
-  record('context', 'the row above the input keeps the path tail and stays one clipped row',
-    keepsTail && oneRow && within,
-    (keepsTail && oneRow && within)
-      ? [`row: ${JSON.stringify(row)}`, `columns: ${widthOf(row)}/${geom.cols}`]
-      : failDetail(`row contains "${tail}", width ≤ ${geom.cols - 1}`, `row=${JSON.stringify(row)} width=${widthOf(row)}`, capture(session), tail))
+  if (geom.rows > 30) {
+    // Framed: the composer's own top border embeds the cwd (· branch when
+    // the workspace is a repo — this scratch workspace is not) right after
+    // the corner inset: space-led text, NO dash run of our own (the user's
+    // real-device "细线" rejection), no steer segment while idle, and NO
+    // independent rule/label row above it.
+    const bar = contextRow(frame)
+    // Strip the corner AND the native's one-cell border inset after it
+    // (heavy `━` on a focused frame, `─` on single) before the text checks.
+    const bare = bar.replace(/^[┏┌][━─]/, '')
+    const spaceLedNoDash = /^ [^━─]/.test(bare)
+    const idleNoSteer = !bar.includes('steer')
+    const keepsTail = bar.includes(tail)
+    record('context', 'composer top border embeds the cwd segments (space-led, no dash prefix, no steer while idle)',
+      spaceLedNoDash && idleNoSteer && keepsTail,
+      (spaceLedNoDash && idleNoSteer && keepsTail)
+        ? [`row: ${JSON.stringify(bar)}`]
+        : failDetail(`space-led border row carrying "${tail}", no dash prefix, no "steer"`, `row=${JSON.stringify(bar)}`, frame, tail))
+    const barIdx = lines.findIndex((l) => l === bar)
+    const above = barIdx > 0 ? (lines[barIdx - 1] ?? '').trim() : ''
+    const noResidual = !/^[─┏┓┌┐\s]+$/.test(above) && !above.includes(tail)
+    record('context', 'no independent rule/label row above the embedded title (zero extra rows)',
+      noResidual,
+      noResidual ? [`row above: ${JSON.stringify(above.slice(0, 60))}`]
+        : failDetail('transcript bottom / content directly above the border row', `row above=${JSON.stringify(above)}`, frame, tail))
+  } else {
+    // Compact (≤30 rows): the composer draws left/right rules only, and the
+    // bar is intentionally absent — nothing directly above the box may be a
+    // dash-led rule or carry the cwd.
+    const above = firstBar > 0 ? (lines[firstBar - 1] ?? '').trim() : ''
+    const noBar = !above.includes(tail) && !/^[─┏┓┌┐\s]+$/.test(above)
+    record('context', 'compact height paints no context bar at all (composer has no top border)',
+      noBar,
+      noBar ? [`row above composer: ${JSON.stringify(above.slice(0, 60))}`]
+        : failDetail('no dash-led cwd row directly above the box', `row=${JSON.stringify(above)}`, frame, tail))
+  }
 }
 
 /** Footer = the single row carrying the powerline arrows (U+E0B0). */

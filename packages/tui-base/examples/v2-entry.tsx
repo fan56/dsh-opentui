@@ -172,6 +172,12 @@ function V2SessionPage(props: {
 	// branch above the input box. Session switches (/new → clear, /fork /
 	// /resume → reload) are the only refresh signals — no timer, no poll.
 	const [contextRevision, setContextRevision] = createSignal(0)
+	// Info bar (steer/dir/branch batch): ComposerContext publishes its
+	// reactive frame title here at setup; SessionComposer embeds it in the
+	// top border (full-frame geometry — compact draws the one-row rule on
+	// the context component itself). Plain holder, assigned before the
+	// composer's first title read (the mount order below guarantees it).
+	let contextFrameTitle: (() => string) | undefined
 	// Batch H2 (tui-pi 60-preset footer parity) — host-entry-v2 parity: the
 	// current agent preset's display label for the brand segment
 	// ("dsh(<name>)"); undefined keeps the plain "dsh". Re-read on mount, on
@@ -830,20 +836,27 @@ function V2SessionPage(props: {
 					notices: createComponent(NoticesDock, {}),
 					get children() {
 						return [
-							// Composer context row (user feedback batch): the working
-							// directory + git branch, ONE row directly above the input
-							// box. The probe is shell's client-local remote-git.ts
-							// (branch, or the short SHA on a detached HEAD); a failed
-							// read resolves "" → directory-only, never an error row.
+							// Composer info bar (steer/dir/branch batch): the working
+							// directory + git branch embedded in the input box's top
+							// border (one-row rule at compact heights). The probe is
+							// shell's client-local remote-git.ts (branch, or the short
+							// SHA on a detached HEAD); a failed read resolves "" →
+							// directory-only, never an error row. steer = the page's
+							// composer-busy mirror — the existing steer window.
 							createComponent(ComposerContext, {
 								cwd: () => props.workspace,
 								probeBranch: props.probeBranch,
 								revision: () => contextRevision(),
+								steer: () => composerBusy(),
+								attachTitle: (get) => {
+									contextFrameTitle = get
+								},
 							}),
 							createComponent(SessionComposer, {
-							seam,
-							send,
-							footerHint: false,
+								seam,
+								send,
+								footerHint: false,
+								frameTitle: () => contextFrameTitle?.() ?? "",
 								onBusyChange: setComposerBusy,
 								ref: (r: { focused(): boolean; focus(): void; node(): import("@opentui/core").TextareaRenderable | undefined; resetDeliveries(): void }) => (composerRef = r),
 							// Steer/queue batch: busy Enter opens the two-row choice on
