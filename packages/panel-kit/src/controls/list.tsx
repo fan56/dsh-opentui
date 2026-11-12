@@ -20,6 +20,7 @@
 import type { KeyEvent } from "@opentui/core"
 import stringWidth from "string-width"
 import {
+  createEffect,
   createMemo,
   createSignal,
   For,
@@ -385,6 +386,43 @@ export function listPageIndicator(window: Pick<ListPageWindow, "start" | "end" |
   return `${window.start}-${window.end}/${window.total}`
 }
 
+/**
+ * Zero-based render-row index of `id` (group headers included), or -1 when the
+ * id is undefined, filtered out, or points at a group row. Never throws.
+ */
+export function listRowIndex<T>(rows: readonly ListRow<T>[], id: string | undefined): number {
+  if (id === undefined) return -1
+  return rows.findIndex((row) => row.kind === "item" && row.item.id === id)
+}
+
+/**
+ * Page index that holds the render row at `index` (zero-based). Returns 0 when
+ * paging is off, the list is empty, or `index` is out of range, so a cursor
+ * sync can never open a blank page.
+ */
+export function listPageOfRow(index: number, pageSize: number | undefined, total: number): number {
+  const window = resolveListPage(total, pageSize, 0)
+  if (!window.paged || index < 0) return 0
+  // Page 0 starts at row 1, so end - start + 1 is the effective page size.
+  const size = window.end - window.start + 1
+  if (size <= 0) return 0
+  return Math.min(Math.floor(index / size), window.pages - 1)
+}
+
+/**
+ * Rows of one page (render rows, group headers included), clamped through
+ * {@link resolveListPage}. Empty for an empty list or a page without rows.
+ */
+export function listPageSlice<T>(
+  rows: readonly ListRow<T>[],
+  pageSize: number | undefined,
+  page: number,
+): ListRow<T>[] {
+  const window = resolveListPage(rows.length, pageSize, page)
+  if (window.total === 0) return []
+  return rows.slice(window.start - 1, window.end)
+}
+
 // ---------------------------------------------------------------------------
 // Pure selection state machine
 // ---------------------------------------------------------------------------
@@ -528,11 +566,39 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
   // Paged window (v1.1): group headers count as rows; the page index is
   // clamped on every read so a shrinking filter never leaves a blank page.
   const pageInfo = createMemo(() => resolveListPage(rows().length, props.pageSize, page()))
-  const pageRows = createMemo(() => {
-    const window = pageInfo()
-    if (window.total === 0) return []
-    return rows().slice(window.start - 1, window.end)
+  const pageRows = createMemo(() => listPageSlice(rows(), props.pageSize, pageInfo().page))
+
+  // Cursor-follows-page: whenever the active row leaves the window — up/down,
+  // a controlled activeId change, or a filter reshuffle — pull the window to
+  // the row's page. Skipped while no visible row is active (empty list,
+  // filtered-out id); equal setPage calls are no-ops, so PgUp/PgDn do not
+  // bounce back here.
+  createEffect(() => {
+    const current = rows()
+    const index = listRowIndex(current, activeId())
+    if (index < 0) return
+    setPage(listPageOfRow(index, props.pageSize, current.length))
   })
+
+  /**
+   * Keep the cursor visible after an explicit page jump: when the active row
+   * is not inside `pageIndex`, move it to that page's first/last enabled row.
+   * No-op when the page has no selectable row (all disabled/group headers).
+   */
+  function clampActiveIntoPage(pageIndex: number, edge: "first" | "last") {
+    const current = rows()
+    const window = resolveListPage(current.length, props.pageSize, pageIndex)
+    if (window.total === 0) return
+    const index = listRowIndex(current, activeId())
+    if (index >= window.start - 1 && index < window.end) return
+    const slice = listPageSlice(current, props.pageSize, pageIndex)
+    const ordered = edge === "first" ? slice : [...slice].reverse()
+    const target = ordered.find((row) => row.kind === "item" && !row.item.disabled)
+    if (target === undefined || target.kind !== "item" || target.item.id === activeId()) return
+    const id = target.item.id
+    setState((previous) => ({ ...previous, activeId: id }))
+    props.onActiveChange?.(id)
+  }
 
   const headerCells = () => {
     const columns = props.columns
@@ -567,6 +633,10 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
     const target = nextListPage(key.name, window.page, window.pages)
     if (target !== undefined) {
       setPage(target)
+      // Page jumps never leave the window without a visible active row: the
+      // cursor is clamped into the new page (first row forward, last row back)
+      // only when it was left behind on another page.
+      clampActiveIntoPage(target, key.name === "pageup" || key.name === "end" ? "last" : "first")
       key.preventDefault()
       key.stopPropagation()
       return

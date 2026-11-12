@@ -57,6 +57,18 @@
  *     At most pageSize render rows are painted; PgUp/PgDn/Home/End page the
  *     focused list and a right-aligned "first-last/total" indicator appears at
  *     the tail. Keys are consumed only while the list exceeds one page.
+ *
+ * v1.1 amendment (2026-11-13) — List cursor/page coupling:
+ *   • UPGRADED contract: the active row must always be inside the painted page
+ *     window. When activeId moves out of the window (up/down, Home/End, a
+ *     controlled activeId change, or a filter reshuffle) the window follows to
+ *     that row's page, and the "first-last/total" indicator follows with it.
+ *   • PgUp/PgDn (and Home/End) still page, and after the jump the cursor is
+ *     clamped into the new page — first row going forward, last row going back
+ *     — so a page is never painted without a visible active row.
+ *   • An empty list, a single row, exactly one page, or an activeId filtered
+ *     out of the current query stay safe: no page is opened past the data.
+ *     Still no scroll container, no render-structure change, no new deps.
  *   • IMPLEMENTED PanelTitle / PanelBody / PanelActions (src/slots.tsx, now
  *     exported). PanelBodyProps gains `maxRows`; `scroll` stays deferred to a
  *     later version — v1.1 paginates through List.pageSize instead.
@@ -471,6 +483,8 @@ export interface ListProps<T = unknown> {
   /**
    * Paged window: paint at most this many render rows (group headers count)
    * and page with PgUp/PgDn/Home/End while focused. Omitted = no paging.
+   * The active row always stays inside the painted window: cursor movement
+   * across a page boundary scrolls the window to that row's page (v1.1).
    * (v1.1 — replaces the deferred scroll primitive.)
    */
   pageSize?: number

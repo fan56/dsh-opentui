@@ -312,6 +312,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Seam: `/reload` never acts on a `booting` placeholder.** With cold-boot mutual exclusion in place (P1#3), the lifecycle lockfile can transiently be a booting claim naming the BOOTER's pid with port 0; `restartSamePortHost` now parses `booting` and refuses with a typed `HostRestartError` (`code: "host-booting"`) instead of SIGTERMing the booting client, and its stale-lock clear step never deletes a rival's placeholder. Tested in `test/remote-btw-restart.test.ts` (booter pid stays alive, placeholder untouched).
 
+- **panel-kit List: the cursor can no longer leave the painted page window.** With `pageSize` set, up/down moved only `activeId` and never the page index, so the active row left the visible window while Enter still opened the invisible row (review P0-3 / P1-2). The window now follows the cursor: when `activeId` moves outside the current page — up/down, Home/End, a controlled `activeId` change, or a filter reshuffle — the page index and the `first-last/total` indicator move to that row's page. PgUp/PgDn still page, and after the jump the cursor is clamped into the new page (first row forward, last row back) so a page is never painted without a visible active row. Empty lists, single rows, exactly-one-page lists and an `activeId` filtered out by the query stay safe (no page past the data, no throw); keys are still consumed only while the list exceeds one page. Contract updated in `contracts.ts`, pinned by `test/list-cursor-page.test.tsx` (15 tests). No scroll container, no render-structure change, no new dependencies.
+
 ## [0.5.0] - 2026-11-04
 
 ### Added
