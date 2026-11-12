@@ -8,6 +8,31 @@ importers:
 
   .: {}
 
+  packages/panel-kit:
+    dependencies:
+      '@opentui/core':
+        specifier: 0.8.1
+        version: 0.8.1(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      '@opentui/solid':
+        specifier: 0.8.1
+        version: 0.8.1(solid-js@1.9.17)(typescript@5.9.3)(web-tree-sitter@0.25.10)
+      solid-js:
+        specifier: 1.9.17
+        version: 1.9.17
+      string-width:
+        specifier: 7.2.0
+        version: 7.2.0
+    devDependencies:
+      '@tsconfig/bun':
+        specifier: 1.0.9
+        version: 1.0.9
+      '@types/bun':
+        specifier: 1.4.3
+        version: 1.4.3
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/runtime:
     dependencies:
       '@deepseek-ai/cordis':
