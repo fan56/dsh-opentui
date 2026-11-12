@@ -2,6 +2,7 @@
 // profile on disk, no dsh process: the script's idempotency rules and the
 // ask-router-first bundle order are decided here, so they are tested here.
 import { describe, expect, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
 import {
   DEFAULT_TIER,
   EXCLUDED_PLUGINS,
@@ -21,7 +22,9 @@ import {
   parseDumpConfig,
   parseTier,
   patchEntryBlock,
+  patchTargetName,
   planMcpPatch,
+  planOrphanPatchCleanup,
   planPluginInstall,
   planToolPatch,
   pluginAddArgs,
@@ -234,6 +237,94 @@ describe('mergeBundles', () => {
     expect(result.removed).toEqual([])
     expect(result.reordered).toBe(false)
     expect(result.bundles).toEqual(bundles)
+  })
+})
+
+describe('orphan patchedDependencies cleanup', () => {
+  // The exact upgrade shape: the retired plugin-mode installer left a
+  // solid-js@1.9.17 patch behind; 0.9.7 profiles carry no solid-js dependency,
+  // and pnpm then fails EVERY install with ERR_PNPM_UNUSED_PATCH.
+  const upgradedProfile = [
+    'packages:',
+    '  - .',
+    'nodeLinker: hoisted',
+    'autoInstallPeers: false',
+    'allowBuilds:',
+    "  '@aiwayds/dsh-ask-router': true",
+    'patchedDependencies:',
+    '  solid-js@1.9.17: patches/solid-js@1.9.17.patch',
+    "  '@aiwayds/dsh-cron@0.7.0': patches/dsh-cron@0.7.0.patch",
+    '',
+  ].join('\n')
+  const depsWithCron = ['@aiwayds/dsh-cron']
+
+  test('patch key resolves its target package (scoped and bare keys included)', () => {
+    expect(patchTargetName('solid-js@1.9.17')).toBe('solid-js')
+    expect(patchTargetName('@scope/pkg@1.2.3')).toBe('@scope/pkg')
+    expect(patchTargetName('@scope/pkg')).toBe('@scope/pkg')
+    expect(patchTargetName('pkg')).toBe('pkg')
+  })
+
+  test('an orphan patch (target no longer a dependency) is dropped; other entries and keys are preserved', () => {
+    const plan = planOrphanPatchCleanup(upgradedProfile, depsWithCron)
+    expect(plan.changed).toBe(true)
+    expect(plan.removed).toEqual([['solid-js@1.9.17', 'patches/solid-js@1.9.17.patch']])
+    expect(plan.text).toContain("  '@aiwayds/dsh-cron@0.7.0': patches/dsh-cron@0.7.0.patch")
+    expect(plan.text).not.toContain('solid-js')
+    // non-patch top-level keys survive byte-for-byte, one block remains
+    expect(plan.text).toContain('nodeLinker: hoisted')
+    expect(plan.text).toContain("  '@aiwayds/dsh-ask-router': true")
+    expect(plan.text.match(/^patchedDependencies:/gm)?.length).toBe(1)
+    // re-running on the cleaned text is a no-op (idempotent)
+    expect(planOrphanPatchCleanup(plan.text, depsWithCron).changed).toBe(false)
+  })
+
+  test('a patch whose target is still a dependency is kept byte-identical', () => {
+    const plan = planOrphanPatchCleanup(upgradedProfile, [...depsWithCron, 'solid-js'])
+    expect(plan.changed).toBe(false)
+    expect(plan.removed).toEqual([])
+    expect(plan.text).toBe(upgradedProfile)
+  })
+
+  test('an all-orphan block is removed entirely; missing/empty workspace text is a no-op that fabricates nothing', () => {
+    const onlyOrphan = [
+      'packages:',
+      '  - .',
+      'patchedDependencies:',
+      '  solid-js@1.9.17: patches/solid-js@1.9.17.patch',
+      '',
+    ].join('\n')
+    const plan = planOrphanPatchCleanup(onlyOrphan, [])
+    expect(plan.changed).toBe(true)
+    expect(plan.text).not.toContain('patchedDependencies:')
+    expect(plan.text).toBe('packages:\n  - .\n')
+
+    const empty = planOrphanPatchCleanup('', depsWithCron)
+    expect(empty.changed).toBe(false)
+    expect(empty.text).toBe('')
+    expect(empty.removed).toEqual([])
+  })
+
+  test('a block this reader cannot parse (nested map) is left untouched', () => {
+    const nested = [
+      'packages:',
+      '  - .',
+      'patchedDependencies:',
+      '  solid-js@1.9.17:',
+      '    path: patches/solid-js@1.9.17.patch',
+      '',
+    ].join('\n')
+    const plan = planOrphanPatchCleanup(nested, [])
+    expect(plan.opaque).toBe(true)
+    expect(plan.changed).toBe(false)
+    expect(plan.text).toBe(nested)
+  })
+
+  test('provision source guard: step 4 plans orphan patches only against an existing workspace file', () => {
+    const script = readFileSync(new URL('../scripts/provision-opentui-profile.mjs', import.meta.url), 'utf8')
+    expect(script).toContain('planOrphanPatchCleanup(readFileSync(workspacePath')
+    expect(script).toContain('parsedManifest !== null && existsSync(workspacePath)')
+    expect(script).toContain('retired orphan patch')
   })
 })
 

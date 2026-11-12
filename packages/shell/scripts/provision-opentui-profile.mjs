@@ -30,7 +30,13 @@
 //                        narrows the set, `--plugins=none` installs nothing.
 //   [4/5] bundles      — clean retired entries out of `dsh.profile.bundles` /
 //                        `dependencies` and append missing managed bundles in
-//                        install order (ask-router first).
+//                        install order (ask-router first). Also retires
+//                        orphan patchedDependencies entries from the profile's
+//                        pnpm-workspace.yaml — a patch whose target package is
+//                        no longer a dependency fails every pnpm install with
+//                        ERR_PNPM_UNUSED_PATCH (the plugin-mode installer
+//                        registered a solid-js patch that 0.9.7 profiles no
+//                        longer need). The patch files in patches/ are kept.
 //   [5/5] verify       — `dsh opentui --dump-config`; "skipping profile
 //                        bundle" lines become WARN lines, never a failure.
 //
@@ -79,6 +85,7 @@ import {
   parseDumpConfig,
   parseTier,
   planMcpPatch,
+  planOrphanPatchCleanup,
   planPluginInstall,
   planToolPatch,
   pluginAddArgs,
@@ -420,7 +427,9 @@ if (tier === 'none') {
 
 // ---------------------------------------------------------------------------
 // 4. Bundles: clean retired entries, append missing managed bundles in the
-//    install order (ask-router first).
+//    install order (ask-router first); retire orphan pnpm patches whose
+//    target package left the dependency graph (they hard-fail every install
+//    with ERR_PNPM_UNUSED_PATCH).
 // ---------------------------------------------------------------------------
 {
   const parsedManifest = readManifest()
@@ -440,6 +449,20 @@ if (tier === 'none') {
     : selectPlugins(tier).map((plugin) => plugin.name).filter((name) => name in effectiveDependencies)
   const merged = mergeBundles(manifestBundles(manifest), { managedOrder, retire: RETIRED_PROFILE_ENTRIES })
   const changed = depClean.removed.length > 0 || merged.removed.length > 0 || merged.appended.length > 0 || merged.reordered
+
+  // Orphan pnpm patches: a patchedDependencies entry whose target package is
+  // no longer a dependency makes every `pnpm` install fail with
+  // ERR_PNPM_UNUSED_PATCH (the retired plugin-mode installer registered such
+  // a solid-js patch). The check runs against the post-cleanup dependency
+  // set — the same set pnpm sees — and is orthogonal to the manifest write
+  // below: bundles can be up to date while a stale patch still blocks
+  // installs. The patch FILE in patches/ is kept (record of what was applied);
+  // only the workspace registration is dropped. No pnpm-workspace.yaml means
+  // nothing to clean — none is created.
+  const workspacePath = join(profileDir, 'pnpm-workspace.yaml')
+  const patchPlan = parsedManifest !== null && existsSync(workspacePath)
+    ? planOrphanPatchCleanup(readFileSync(workspacePath, 'utf8'), Object.keys(depClean.dependencies))
+    : null
 
   if (parsedManifest === null && existsSync(manifestPath)) {
     warn(`${manifestPath} is not a valid JSON manifest — leaving it untouched`)
@@ -474,6 +497,27 @@ if (tier === 'none') {
       reported = true
     }
     if (!reported) say(4, 'bundles', `up to date (${merged.bundles.length} entries)`)
+  }
+
+  // Retire orphan patches AFTER the manifest write: the logs read as bundle
+  // summary first, orphan-patch retirement second. `patchPlan` is null
+  // without a readable manifest or without a pnpm-workspace.yaml — both are
+  // no-ops (a corrupt manifest already warned above; no workspace file is
+  // ever created here).
+  if (patchPlan?.opaque) {
+    warn('pnpm-workspace.yaml patchedDependencies is not a flat map — leaving it untouched')
+  } else if (patchPlan?.removed.length > 0) {
+    if (dryRun) {
+      say(4, 'bundles', `would retire ${patchPlan.removed.length} orphan patch (${patchPlan.removed.map(([key]) => key).join(', ')}) (dry run)`)
+    } else {
+      const backupPath = `${workspacePath}.bak-${Date.now()}`
+      renameSync(workspacePath, backupPath)
+      console.log(`${PREFIX}backed up ${workspacePath} to ${backupPath}`)
+      writeFileSync(workspacePath, patchPlan.text)
+      for (const [key] of patchPlan.removed) {
+        say(4, 'bundles', `retired orphan patch ${key} (its target is no longer a dependency)`)
+      }
+    }
   }
 }
 

@@ -337,6 +337,131 @@ export function cleanupDependencies(dependencies, retire = RETIRED_PROFILE_ENTRI
 }
 
 // ---------------------------------------------------------------------------
+// Orphan pnpm patches (ERR_PNPM_UNUSED_PATCH)
+//
+// The plugin-mode installer (retired with 0.9.7) registered
+// `patchedDependencies: solid-js@1.9.17: patches/...` in the profile's
+// pnpm-workspace.yaml to pin the host bundle's solid-js client build. That
+// dependency is gone from 0.9.7 profiles, and pnpm hard-fails EVERY install
+// with ERR_PNPM_UNUSED_PATCH while a patchedDependencies entry names a package
+// outside the dependency graph — one stale line blocks all plugin installs on
+// upgraded profiles. The cleanup below drops exactly those orphan entries and
+// never touches the patch files themselves (patches/ is kept for the record).
+//
+// The reader is a port of the retired solid-js-pin.mjs parsePatchBlocks (the
+// shape it merged on real 0.4.3→0.5.0 migrations), because pnpm's
+// patchedDependencies IS a flat `pkg@version: relpath` string map and no YAML
+// parser is available in this dependency-free script.
+// ---------------------------------------------------------------------------
+
+const PATCH_HEADER_RE = /^patchedDependencies:\s*$/
+// A flat-map entry line: `  <key>: <value>` (keys like `solid-js@1.9.17`
+// carry no colon; values are patch relpaths). Nested-map or list lines do
+// NOT match, and a bare `key:` with no value (nested-map form) has an empty
+// value — both mark the block opaque.
+const PATCH_ENTRY_RE = /^[ \t]+([^:\s][^:]*):(?:[ \t]+(.*))?$/
+
+/** The package a patch key patches: `solid-js@1.9.17` → `solid-js`,
+ *  `@scope/pkg@1.2.3` → `@scope/pkg` (the LAST `@` separates the version; a
+ *  bare `pkg` key names itself). A YAML-quoted key (`'@scope/pkg@1.2.3'`) is
+ *  unquoted first — the quotes are syntax, never part of the name. */
+export function patchTargetName(key) {
+  const name = String(key).replace(/^(['"])(.*)\1$/, '$2')
+  const at = name.lastIndexOf('@')
+  return at > 0 ? name.slice(0, at) : name
+}
+
+/** Parse every top-level `patchedDependencies:` block in the yaml into its
+ *  flat `pkg@version: relpath` entries, in first-seen order (a duplicated key
+ *  keeps its first occurrence), plus the [start, end) line range of each
+ *  block, and `opaque: true` when some block holds lines this reader cannot
+ *  reproduce — an unparseable line, or an entry with NO inline value (a
+ *  nested-map form such as pnpm's `key:` + `path:`/`hashed:` rows). The
+ *  caller must not rewrite what it cannot reproduce: flattening a nested
+ *  block would corrupt the file. */
+export function parsePatchedDependencies(lines) {
+  const entries = []
+  const seen = new Set()
+  const ranges = []
+  let opaque = false
+  let i = 0
+  while (i < lines.length) {
+    if (!PATCH_HEADER_RE.test(lines[i])) {
+      i += 1
+      continue
+    }
+    const start = i
+    i += 1
+    while (i < lines.length && /^[ \t]+\S/.test(lines[i])) {
+      const match = PATCH_ENTRY_RE.exec(lines[i])
+      const value = match ? (match[2] ?? '').trim() : ''
+      if (!match || value === '') {
+        opaque = true
+        break
+      }
+      const key = match[1].trim()
+      if (!seen.has(key)) {
+        seen.add(key)
+        entries.push([key, value])
+      }
+      i += 1
+    }
+    ranges.push([start, i])
+  }
+  return { entries, ranges, opaque }
+}
+
+/**
+ * Plan the orphan-patch cleanup for one pnpm-workspace.yaml text. Pure: text
+ * in, plan + rewritten text out.
+ *
+ * A patch entry is an ORPHAN when its target package (`patchTargetName(key)`)
+ * is not among `dependencyNames` — the caller passes the profile's FINAL
+ * dependency set (after retired-entry cleanup and this run's installs), the
+ * same set pnpm checks when it raises ERR_PNPM_UNUSED_PATCH.
+ *
+ * With removals, ONE block is written back at the first block's position (the
+ * duplicate-block collapse of the retired installer's merge); every other
+ * line is preserved byte-for-byte, and no entry left means no block at all.
+ * An opaque block is returned untouched. With nothing to remove the text is
+ * returned byte-identical.
+ *
+ * @param {string} text
+ * @param {string[]} dependencyNames
+ * @returns {{removed: Array<[string,string]>, kept: Array<[string,string]>, text: string, changed: boolean, opaque: boolean}}
+ */
+export function planOrphanPatchCleanup(text, dependencyNames = []) {
+  const source = String(text ?? '')
+  const lines = source.split('\n')
+  const { entries, ranges, opaque } = parsePatchedDependencies(lines)
+  if (opaque) return { removed: [], kept: entries, text: source, changed: false, opaque: true }
+  const names = new Set(dependencyNames)
+  const removed = entries.filter(([key]) => !names.has(patchTargetName(key)))
+  if (removed.length === 0) {
+    return { removed, kept: entries, text: source, changed: false, opaque: false }
+  }
+  const removedKeys = new Set(removed.map(([key]) => key))
+  const kept = entries.filter(([key]) => !removedKeys.has(key))
+  const mergedBlock = [
+    'patchedDependencies:',
+    ...kept.map(([key, value]) => `  ${key}:${value ? ` ${value}` : ''}`),
+  ]
+  const out = []
+  let range = 0
+  for (let i = 0; i < lines.length; ) {
+    if (range < ranges.length && i === ranges[range][0]) {
+      if (range === 0 && kept.length > 0) out.push(...mergedBlock)
+      i = ranges[range][1]
+      range += 1
+      continue
+    }
+    out.push(lines[i])
+    i += 1
+  }
+  return { removed, kept, text: out.join('\n'), changed: true, opaque: false }
+}
+
+// ---------------------------------------------------------------------------
 // Profile patch rows for the model-facing web tools
 //
 // The @deepseek-ai/dsh-web-app bundle disables the ambient `tool-web` row
