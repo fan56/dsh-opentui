@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9] - 2026-11-12
+
+### Added
+
+- **The composer top border is the context bar** — it embeds a `steer · directory · git branch` title (segments joined by ` · `, no dash runs of our own; the directory is left-clipped when the terminal is tight and a failed branch probe silently degrades to directory-only). While a turn is steering, the `steer` segment gains a braille spinner whose rotation frames advance on the shared animation tick.
+
 ## [0.9.8] - 2026-11-12
 
 ### Fixed
