@@ -462,12 +462,17 @@ function V2SessionPage(props: {
 				dialog.clear()
 				resolvePick(value)
 			}
-			// A4 (gap-analysis C14): the extras arming. `getOptions` is read
-			// REACTIVELY (a getter passed straight to DialogSelect — the
-			// vendored options effect reconciles the cursor onto the moved row
-			// on every change), and every action press bumps `extrasTick` so
-			// the getter re-runs: the list reorders live while the dialog
-			// stays open (tui-pi pickModel parity).
+			// A4 (gap-analysis C14): the extras arming. The rows ride a NATIVE
+			// `get options()` accessor (the exact shape JSX compilation produces
+			// for `options={rows()}`): solid's props resolve ACCESSOR properties
+			// on read but hand function-VALUED props through untouched — a
+			// `options: () => rows` function prop reaches DialogSelect's
+			// `props.options.filter` as the function itself (real-machine
+			// regression 2026-11-15, probe test in test/solid-props.test.ts).
+			// Every action press bumps `extrasTick` so the accessor re-runs: the
+			// list reorders live while the dialog stays open (tui-pi pickModel
+			// parity; the vendored options effect reconciles the cursor onto the
+			// moved row on every change).
 			const [extrasTick, bumpExtrasTick] = createSignal(0)
 			const actions = extras?.actions?.map((action) => ({
 				command: action.command,
@@ -489,22 +494,34 @@ function V2SessionPage(props: {
 					createComponent(DialogSelect, {
 						title,
 						renderFilter: false,
-						options: extras?.getOptions
-							? () => {
-									extrasTick()
-									return extras.getOptions!().map((option) => ({
-										title: option.title,
-										value: option.value,
-										description: option.description,
-										category: option.category,
-									}))
-								}
-							: options.map((option) => ({
+						get options() {
+							if (extras?.getOptions === undefined) {
+								return options.map((option) => ({
 									title: option.title,
 									value: option.value,
 									description: option.description,
-								})),
+								}))
+							}
+							extrasTick()
+							return extras.getOptions().map((option) => ({
+								title: option.title,
+								value: option.value,
+								description: option.description,
+								category: option.category,
+							}))
+						},
 						...(actions && actions.length > 0 ? { actions } : {}),
+						// Extras path only: with focusCurrent:false (the α ● marker)
+						// the vendored options-change effect would CLAMP the cursor
+						// index on every rebuild — the cursor would sit on whatever
+						// row slid into the old position (h-h-h hid three unrelated
+						// rows on the real machine). preserveSelection switches it
+						// to the by-value reconcile: the cursor FOLLOWS the toggled
+						// model across sections (tui-pi rebuild(keepKey) parity) and
+						// h on the same cursor row unhides again. The plain path
+						// passes static options — the effect never fires there, so
+						// its face is unchanged.
+						...(extras ? { preserveSelection: true } : {}),
 						current: currentValue,
 						focusCurrent: false,
 						onSelect: (option: { value: string }) => done(option.value),
