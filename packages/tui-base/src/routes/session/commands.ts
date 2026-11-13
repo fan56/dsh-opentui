@@ -375,6 +375,38 @@ export async function runCustomLoginChain(
 	}
 }
 
+// ----------------------------------------------------------- /logout helpers --
+// Gap fix (C8): the login/logout seam has existed since batch H4, but /logout
+// had no caller. Behavior mirrors the reference (dsh-tui-pi openLogoutFlow):
+// list the routes whose derived key ref holds a stored credential, pick one,
+// drop the key first (the security-critical half), then clear the route —
+// EXCEPT for custom (non-catalog) routes, whose api/baseURL/models profile the
+// catalog commit cannot re-create, so they keep the route (the reference's
+// hand-declared arm). Picker selection is the commit boundary — the reference
+// drives no extra confirm dialog.
+
+/** One actionable logout target derived from a configured route. */
+export interface LogoutTarget {
+	id: string
+	/** Catalog display name, else the raw route id. */
+	name: string
+	/** The env-ref the key is stored under (deriveKeyRef). */
+	ref: string
+	/** Non-catalog route: logout drops only the key, never the route. */
+	custom: boolean
+}
+
+/**
+ * Pure classifier: configured route ids → picker rows. Catalog rows carry
+ * their display name; anything else is a custom route (key-only logout).
+ */
+export function logoutTargets(routes: readonly string[]): LogoutTarget[] {
+	return routes.map((id) => {
+		const entry = PROVIDER_CATALOG.find((e) => e.id === id)
+		return { id, name: entry?.name ?? id, ref: deriveKeyRef(id), custom: entry === undefined }
+	})
+}
+
 /** The batch-8 core set, bound to a context at call time (pure table). */
 export function coreCommands(): SlashCommand[] {
 	return [
@@ -588,6 +620,73 @@ export function coreCommands(): SlashCommand[] {
 				const entry = PROVIDER_CATALOG.find((e) => e.id === picked)
 				if (!entry) return
 				await commitCatalogLogin(ctx, face, entry)
+			},
+		},
+		{
+			// Gap fix (C8): the logout half of the batch-H4 login face — the
+			// seam carried logout/credentialStatus all along, but nothing
+			// called them. Bare opens the picker over the routes whose derived
+			// key ref probes configured; "/logout <id>" targets one directly.
+			// Commit mirrors the reference commitLogout ordering: the key
+			// (credentials/unset) first — a failed unset never touches the
+			// route — then the route clears for catalog rows only (custom
+			// routes keep their api/baseURL/models profile: the catalog commit
+			// could not re-create it). A failed route clear keeps the key
+			// removal (it is reported, never rolled back).
+			name: "/logout",
+			description: "log out a provider (drops the stored key)",
+			async run(ctx, argText) {
+				const face = ctx.seam.login
+				if (!face) {
+					ctx.say("/logout unavailable in this session")
+					return
+				}
+				const routes = await face.routes().catch(() => [] as string[])
+				// Probe each route's key ref (the reference's credentials sweep):
+				// a failing probe reads as logged out — never breaks the list.
+				const loggedIn: LogoutTarget[] = []
+				for (const target of logoutTargets(routes)) {
+					try {
+						if ((await face.credentialStatus(target.ref)).configured) loggedIn.push(target)
+					} catch {
+						// skipped — the provider reads as logged out
+					}
+				}
+				if (loggedIn.length === 0) {
+					ctx.say("no logged-in providers")
+					return
+				}
+				const arg = argText.trim().toLowerCase()
+				let target = arg ? loggedIn.find((t) => t.id === arg) : undefined
+				if (arg && !target) {
+					ctx.say(`not logged in: ${arg}`)
+					return
+				}
+				if (!target) {
+					const picked = await ctx.pickOne(
+						"Log out provider",
+						loggedIn.map((t) => ({ title: t.name, value: t.id, description: t.ref })),
+					)
+					if (!picked) return
+					target = loggedIn.find((t) => t.id === picked)
+				}
+				if (!target) return
+				try {
+					await face.logout(target.ref)
+				} catch (error) {
+					ctx.say(`${target.id}: logout failed — ${seamFailureReason(error)}`)
+					return
+				}
+				if (target.custom) {
+					ctx.say(`${target.name} logged out — key removed (route kept)`)
+					return
+				}
+				const cleared = await face.registerRoute(target.id, undefined).catch(() => false)
+				ctx.say(
+					cleared
+						? `${target.name} logged out — key + route removed (leaves /model next session)`
+						: `${target.name} logged out — key removed, route removal failed`,
+				)
 			},
 		},
 		{

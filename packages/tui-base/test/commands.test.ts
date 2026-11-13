@@ -218,6 +218,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/new",
 			"/model",
 			"/login",
+			"/logout",
 			"/quit",
 			"/resume",
 			"/clear",
@@ -237,7 +238,8 @@ describe("filterCommands (palette prefix filter)", () => {
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/pl").map((c) => c.name)).toEqual(["/plugins"])
-		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual(["/login"])
+		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual(["/login", "/logout"])
+		expect(filterCommands(commands, "/logo").map((c) => c.name)).toEqual(["/logout"])
 	})
 })
 
@@ -250,6 +252,7 @@ describe("core commands", () => {
 			"/new — start a fresh session",
 			"/model — switch model (bare opens the picker, then the effort picker)",
 			"/login — log in a provider (bare opens the picker; Custom provider opens the form)",
+			"/logout — log out a provider (drops the stored key)",
 			"/quit — exit the app",
 			"/resume — resume a persisted session",
 			"/clear — clear the transcript",
@@ -328,7 +331,7 @@ describe("core commands", () => {
 
 	test("/quit calls the quit hook only", async () => {
 		const ctx = makeCtx(new RecordingSeam())
-		await coreCommands()[4]!.run(ctx, "")
+		await coreCommands()[5]!.run(ctx, "")
 		expect(ctx.hooks.quit).toBe(1)
 		expect(ctx.lines).toEqual([])
 	})
@@ -340,7 +343,7 @@ describe("core commands", () => {
 			{ id: "s2", title: "second" },
 		]
 		const ctx = makeCtx(seam, "s2")
-		await coreCommands()[5]!.run(ctx, "")
+		await coreCommands()[6]!.run(ctx, "")
 		expect(seam.calls).toEqual(["listSessions", "resumeSession:s2"])
 		const pick = ctx.hooks.picks[0]
 		expect(pick?.title).toBe("Resume session")
@@ -379,7 +382,7 @@ describe("core commands", () => {
 			{ id: "unknown", title: "unknown" },
 		]
 		const ctx = makeCtx(seam, "big")
-		await coreCommands()[5]!.run(ctx, "")
+		await coreCommands()[6]!.run(ctx, "")
 		const pick = ctx.hooks.picks[0]
 		expect(pick?.options).toHaveLength(2)
 		expect(pick?.options.map((o) => o.title.includes("big") || o.title.includes("unknown"))).toEqual([true, true])
@@ -390,7 +393,7 @@ describe("core commands", () => {
 		const seam = new RecordingSeam()
 		seam.sessions = [{ id: "stub", title: "stub", sizeBytes: 200 }]
 		const ctx = makeCtx(seam)
-		await coreCommands()[5]!.run(ctx, "")
+		await coreCommands()[6]!.run(ctx, "")
 		expect(ctx.hooks.picks).toEqual([])
 		expect(ctx.lines).toEqual([emptyFilteredCopy(1)])
 	})
@@ -399,14 +402,14 @@ describe("core commands", () => {
 		const seam = new RecordingSeam()
 		seam.sessions = []
 		const ctx = makeCtx(seam)
-		await coreCommands()[5]!.run(ctx, "")
+		await coreCommands()[6]!.run(ctx, "")
 		expect(ctx.hooks.picks).toEqual([])
 		expect(ctx.lines).toEqual(["no stored sessions"])
 	})
 
 	test("/clear resets the transcript client-side and says so", async () => {
 		const ctx = makeCtx(new RecordingSeam())
-		await coreCommands()[6]!.run(ctx, "")
+		await coreCommands()[7]!.run(ctx, "")
 		expect(ctx.hooks.cleared).toBe(1)
 		expect(ctx.lines).toEqual(["transcript cleared"])
 	})

@@ -10,6 +10,7 @@ import {
 	coreCommands,
 	commitLoginRoute,
 	loginStepTitle,
+	logoutTargets,
 	type LoginFace,
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
@@ -92,11 +93,14 @@ class RecordingLoginFace implements LoginFace {
 	existingRoutes: string[] = []
 	registerOk = true
 	loginError: Error | undefined
+	logoutError: Error | undefined
+	/** Key refs that probe as configured (the /logout sweep's fixture). */
+	configuredRefs: Set<string> = new Set()
 	credentialStatusResult = { configured: false }
 
 	async credentialStatus(ref: string) {
 		this.calls.push(`status:${ref}`)
-		return this.credentialStatusResult
+		return this.configuredRefs.has(ref) ? { configured: true } : this.credentialStatusResult
 	}
 	async login(ref: string, apiKey: string) {
 		this.calls.push(`login:${ref}`)
@@ -104,6 +108,7 @@ class RecordingLoginFace implements LoginFace {
 	}
 	async logout(ref: string) {
 		this.calls.push(`logout:${ref}`)
+		if (this.logoutError) throw this.logoutError
 	}
 	async routes() {
 		return this.existingRoutes
@@ -288,5 +293,133 @@ describe("commitLoginRoute (shared commit half)", () => {
 		const lines: string[] = []
 		await commitLoginRoute((t) => lines.push(t), face, PROVIDER_CATALOG[0]!, "  ")
 		expect(face.calls).toEqual([])
+	})
+})
+
+// ------------------------------------------------------------- /logout flow ----
+// Gap fix (C8): the logout half of the login face — the picker over the
+// routes whose key ref probes configured, the key-first commit ordering, and
+// the custom-route key-only arm (the reference's hand-declared parity).
+
+describe("logoutTargets (pure classifier)", () => {
+	test("catalog routes carry the display name; unknown ids are custom (key-only)", () => {
+		const targets = logoutTargets(["deepseek", "acme-gateway"])
+		expect(targets).toEqual([
+			{ id: "deepseek", name: "DeepSeek", ref: "DEEPSEEK_API_KEY", custom: false },
+			{ id: "acme-gateway", name: "acme-gateway", ref: "ACME_GATEWAY_API_KEY", custom: true },
+		])
+	})
+})
+
+describe("/logout command (C8 gap fix)", () => {
+	async function runLogout(ctx: { say: (t: string) => void }, argText: string) {
+		const command = coreCommands().find((c) => c.name === "/logout")!
+		await command.run(ctx as unknown as SlashCommandContext, argText)
+	}
+
+	test("bare: picker over only the routes whose key ref probes configured", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek", "acme-gateway", "openai"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY", "ACME_GATEWAY_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, pick: undefined, type: [] })
+		const picks: { title: string; options: { title: string; value: string; description?: string }[] }[] = []
+		;(ctx as any).pickOne = async (title: string, options: any[]) => {
+			picks.push({ title, options })
+			return undefined
+		}
+		await runLogout(ctx as any, "")
+		expect(picks[0]!.title).toBe("Log out provider")
+		expect(picks[0]!.options).toEqual([
+			{ title: "DeepSeek", value: "deepseek", description: "DEEPSEEK_API_KEY" },
+			{ title: "acme-gateway", value: "acme-gateway", description: "ACME_GATEWAY_API_KEY" },
+		])
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY", "status:ACME_GATEWAY_API_KEY", "status:OPENAI_API_KEY"])
+		expect(lines).toEqual([])
+	})
+
+	test("esc on the picker does nothing", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, pick: undefined, type: [] })
+		await runLogout(ctx as any, "")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY"])
+		expect(lines).toEqual([])
+	})
+
+	test("catalog pick: key dropped THEN route cleared (the commitLogout ordering)", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: [] })
+		await runLogout(ctx as any, "")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY", "logout:DEEPSEEK_API_KEY", "route:deepseek:unset"])
+		expect(lines).toEqual(["DeepSeek logged out — key + route removed (leaves /model next session)"])
+	})
+
+	test("custom route: key only — the route (api/baseURL/models) stays", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["acme-gateway"]
+		face.configuredRefs = new Set(["ACME_GATEWAY_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, pick: "acme-gateway", type: [] })
+		await runLogout(ctx as any, "")
+		expect(face.calls).toEqual(["status:ACME_GATEWAY_API_KEY", "logout:ACME_GATEWAY_API_KEY"])
+		expect(lines).toEqual(["acme-gateway logged out — key removed (route kept)"])
+	})
+
+	test("argument form targets one route directly", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek", "openai"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY", "OPENAI_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, type: [] })
+		await runLogout(ctx as any, "openai")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY", "status:OPENAI_API_KEY", "logout:OPENAI_API_KEY", "route:openai:unset"])
+		expect(lines[0]).toContain("OpenAI logged out")
+	})
+
+	test("argument naming a not-logged-in route is rejected with no writes", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, type: [] })
+		await runLogout(ctx as any, "openai")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY"])
+		expect(lines).toEqual(["not logged in: openai"])
+	})
+
+	test("no configured routes degrades to a plain notice", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek"]
+		const { ctx, lines } = makeLoginCtx({ face, pick: undefined, type: [] })
+		await runLogout(ctx as any, "")
+		expect(lines).toEqual(["no logged-in providers"])
+	})
+
+	test("a failed key unset reports and never touches the route", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		face.logoutError = new Error("credentials service down")
+		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: [] })
+		await runLogout(ctx as any, "")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY", "logout:DEEPSEEK_API_KEY"])
+		expect(lines).toEqual(["deepseek: logout failed — credentials service down"])
+	})
+
+	test("a failed route clear keeps the key removal and says so", async () => {
+		const face = new RecordingLoginFace()
+		face.existingRoutes = ["deepseek"]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		face.registerOk = false
+		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: [] })
+		await runLogout(ctx as any, "")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY", "logout:DEEPSEEK_API_KEY", "route:deepseek:unset"])
+		expect(lines).toEqual(["DeepSeek logged out — key removed, route removal failed"])
+	})
+
+	test("degrades to a notice without the seam face", async () => {
+		const { ctx, lines } = makeLoginCtx({ face: new RecordingLoginFace(), type: [] })
+		await runLogout({ ...ctx, seam: seamWith(undefined) } as any, "")
+		expect(lines).toEqual(["/logout unavailable in this session"])
 	})
 })
