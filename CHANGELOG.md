@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-11-13
+
+### Changed
+
+- **Default subagent registry plugin moves to 0.20.0.** The pinned default (`@aiwayds/dsh-subagent-registry`) is bumped from 0.19.1; provisioning stays idempotent, `--plugins=none` still disables it, and a failed install still degrades without blocking boot.
+
 ## [0.10.1] - 2026-11-13
 
 ### Fixed
