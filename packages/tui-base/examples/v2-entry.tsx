@@ -781,16 +781,18 @@ function V2SessionPage(props: {
 						return seam
 					},
 					themes: themeFace,
+					// Command-jump sections close first, then RUN the command
+					// (contract §3.5) through the same slash host the composer
+					// uses — 打开 /model must open the picker, not leave
+					// "/model " staged in the composer.
 					onCommand: (command: string) => {
-						const node = composerRef?.node()
-						if (node !== undefined) {
-							node.setText(command + " ")
-							node.gotoLineEnd()
-						}
+						slash.interceptSubmit(command)
 					},
 					onClosed: (summary?: string) => {
 						if (summary !== undefined) sayLine(summary)
-						if (composerRef && !composerRef.focused()) composerRef.focus()
+						// A jump may have opened a dialog (the /model picker);
+						// stealing focus back to the composer would kill its keys.
+						if (dialog.stack.length === 0 && composerRef && !composerRef.focused()) composerRef.focus()
 					},
 				}),
 				createComponent(Transcript, {

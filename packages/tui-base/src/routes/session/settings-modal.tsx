@@ -9,21 +9,25 @@
  *   - the 6-entry navigation model (General / opentui / Models / Plugins /
  *     Agent presets / Account),
  *   - the 12-row General mapping from the migration contract §3.2,
- *   - a draft buffer (edit → 确定 commits through the same write paths;
- *     Esc/取消 discards, nothing was written),
- *   - the panel-kit shell (Panel body + List + PanelActions) and its
- *     inner-first Esc ladder: editor → browse → close. Left/Right switch the
- *     focus between the section list and the section rows.
+ *   - INSTANT writes: a value chosen in an editor (or a toggled row) is
+ *     persisted immediately through the same planners the old 确定 button
+ *     used. There is no draft buffer, so a successful save flashes
+ *     「已保存 · <row>」 in the status line and a failed save keeps the editor
+ *     open with its error line,
+ *   - the panel-kit shell (Panel body + List) and its inner-first Esc ladder:
+ *     editor → browse → exit confirmation. Exiting is always confirmed (the
+ *     kit's confirm layer, default focus on 取消); nothing is pending at that
+ *     point because every edit already landed. Left/Right switch the focus
+ *     between the section list and the section rows.
  *
  * Semantics that must not drift (contract Appendix B): host writes are PATH
  * OPS only, every write re-describes, a conflict is retried once, and a
  * read-only / n/a row never offers an edit affordance.
  */
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type RGBA } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import {
-  Button,
   List,
   PanelBody,
   resolvePanelChrome,
@@ -32,6 +36,7 @@ import {
   useControlKeys,
   usePanelTheme,
   usePanels,
+  withContrastFloor,
   type ListItem,
   type PanelHandle,
 } from "@dsh-opentui/panel-kit"
@@ -295,222 +300,109 @@ export function buildSectionRows(id: SettingsSectionId, ctx: SettingsRowContext)
 	}
 }
 
-// ---------------------------------------------------------- draft model --
+// ----------------------------------------------------------- write path --
 
-export type DraftValue = string | boolean | number
-export type SettingsDrafts = Readonly<Record<string, DraftValue>>
-
-/**
- * Canonical draft key (P2-5). Drafts are keyed by the WRITE TARGET, not the
- * row id, so two rows that write the same key (General 外观 and the opentui
- * themeMode row; General 权限 and the Host permission row) always show and
- * commit the same staged value.
- *
- * `footerHints` is the one shared config key with several distinct values
- * (one boolean per hint id), so it keys per row id instead. The id is the only
- * source (the old `row.label` fallback was unreachable and would have keyed a
- * hint by its display text).
- */
-export function draftKey(row: SettingsRow): string {
-	const write = row.write
-	if (write === undefined) return row.id
-	if (write.via === "settings") return `settings:${write.ns}.${write.path.join(".")}`
-	if (write.key === "footerHints") {
-		const segment = row.id.startsWith("footerHints.")
-			? row.id.slice("footerHints.".length)
-			: row.id
-		return `footerHints.${segment}`
-	}
-	return `config:${write.key}`
-}
+export type SettingsValue = string | boolean | number
 
 /** Two modal levels: the section screen (nav + rows) and one row editor. */
 export type SettingsView = "browse" | "editor"
 export type SettingsPane = "nav" | "rows"
-/** Esc ladder: editor → browse → close (one level per press). */
+/** Esc ladder: editor → browse → exit confirmation (one level per press). */
 export function settingsBackView(view: SettingsView): SettingsView | "close" {
 	return view === "editor" ? "browse" : "close"
 }
 
-/** Stage one value; a value equal to the row's current value is dropped. */
-export function stageDraft(
-	drafts: SettingsDrafts,
-	row: SettingsRow,
-	value: DraftValue,
-): SettingsDrafts {
-	const key = draftKey(row)
-	const next = { ...drafts }
-	const sameAsSnapshot =
-		typeof value === "boolean" ? row.value === (value ? "on" : "off") : row.value === String(value)
-	// A value equal to the persisted snapshot is not a change: drop the entry.
-	if (sameAsSnapshot) {
-		delete next[key]
-		return next
-	}
-	next[key] = value
-	return next
-}
-
-export function draftFor(drafts: SettingsDrafts, row: SettingsRow): DraftValue | undefined {
-	return drafts[draftKey(row)]
-}
-
-/** Effective display value: the draft when present, the snapshot otherwise. */
-export function displayValue(drafts: SettingsDrafts, row: SettingsRow): string {
-	const draft = drafts[draftKey(row)]
-	if (draft === undefined) return row.value
-	if (typeof draft === "boolean") return draft ? "on" : "off"
-	return String(draft)
-}
-
-export function isDirty(drafts: SettingsDrafts): boolean {
-	return Object.keys(drafts).length > 0
-}
-
-// ----------------------------------------------------------- commit path --
-
-export interface SettingsCommitDeps {
+export interface SettingsWriteDeps {
 	seam: SessionSeam
 	themes?: SettingsThemeFace
-	rows: readonly SettingsRow[]
-	drafts: SettingsDrafts
 	merged: Record<string, unknown>
 	document?: SeamSettingsDocument
 	local: boolean
 	host: boolean
 }
 
-export interface SettingsCommitResult {
+export interface SettingsWriteResult {
 	ok: boolean
-	/** Rows written (labels), in commit order. */
-	saved: string[]
-	/**
-	 * Canonical draft keys (`draftKey`) this commit ATTEMPTED, in order: every
-	 * key already written plus the one that failed. Untried keys are absent so
-	 * the modal keeps their drafts after a partial failure.
-	 */
-	attempted: string[]
+	/** Row label on success (the status line's 「已保存 · <label>」). */
+	label?: string
 	error?: string
-	/** Host document after the last successful write (fresh describe). */
+	/** Host document after the write (fresh describe). */
 	document?: SeamSettingsDocument
 	/** A write landed but its read-back failed (surfaced, never "saved"). */
 	refreshFailed?: boolean
+	/** The local config patch that landed (already live-applied). */
+	patch?: Record<string, unknown>
 }
 
 /**
- * Commit every staged draft through the EXISTING writers. Order is the row
- * order (stable, deterministic). Local rows go configSave → live apply; host
- * rows go commitHostWrite (path ops, one conflict retry, fresh describe).
- * The first hard failure stops the loop and returns its message verbatim so
- * the modal can render it and keep the remaining drafts.
- *
- * Drafts are read by canonical `draftKey`, so a key shared by two rows is
- * written exactly once.
+ * Persist ONE value through the EXISTING writers. Local rows go
+ * planLocalWrite → seam.configSave → applySettingsLive; host rows go
+ * planHostWrite → commitHostWrite (path ops, one conflict retry, fresh
+ * describe). The failure message is returned verbatim, so the caller can show
+ * it and keep the editor open.
  */
-export async function commitSettingsDrafts(deps: SettingsCommitDeps): Promise<SettingsCommitResult> {
-	const saved: string[] = []
-	const attempted: string[] = []
-	const written = new Set<string>()
-	let document = deps.document
-	let refreshFailed = false
-	/**
-	 * Running local snapshot. Every local patch is folded in as it lands, so a
-	 * shared-key patch (footerHints carries the WHOLE hint object) never
-	 * rewrites an earlier write of the same commit from the stale pre-commit
-	 * snapshot — that clobber was the "first 确定 does not persist, second one
-	 * does" bug: send=true was followed by the search patch built from the old
-	 * {send:false} map.
-	 */
-	let liveMerged = deps.merged
-
-	for (const row of deps.rows) {
-		const key = draftKey(row)
-		if (written.has(key)) continue
-		const value = deps.drafts[key]
-		if (value === undefined) continue
-		written.add(key)
-		attempted.push(key)
-		if (row.detail !== undefined) {
-			for (const child of row.detail) {
-				if (deps.drafts[draftKey(child)] !== undefined) {
-					return { ok: false, saved, attempted, error: `✘ ${child.label} 不可编辑`, ...(document !== undefined ? { document } : {}) }
-				}
-			}
-		}
-		if (!row.editable || row.write === undefined) {
-			return { ok: false, saved, attempted, error: `✘ ${row.label} 不可编辑`, ...(document !== undefined ? { document } : {}) }
-		}
-		if (row.write.via === "config") {
-			if (!deps.local) {
-				return { ok: false, saved, attempted, error: "✘ 本地偏好当前不可写", ...(document !== undefined ? { document } : {}) }
-			}
-			const hints = footerHintsFromConfig(liveMerged.footerHints) ?? DEFAULT_FOOTER_HINTS
-			const plan = planLocalWrite(row as unknown as SettingsItem, value, hints)
-			if (!plan.ok) {
-				return { ok: false, saved, attempted, error: `✘ ${plan.error}`, ...(document !== undefined ? { document } : {}) }
-			}
-			try {
-				deps.seam.configSave?.(plan.patch)
-			} catch (error) {
-				return {
-					ok: false,
-					saved,
-					attempted,
-					error: `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`,
-					...(document !== undefined ? { document } : {}),
-				}
-			}
-			liveMerged = { ...liveMerged, ...plan.patch }
-			applySettingsLive(row as unknown as SettingsItem, plan.applied, hints, deps.themes)
-			saved.push(row.label)
-			continue
-		}
-		// Host row.
-		if (!deps.host) {
-			return { ok: false, saved, attempted, error: "✘ 宿主设置当前不可写", ...(document !== undefined ? { document } : {}) }
-		}
-		const plan = planHostWrite(row as unknown as SettingsItem, value)
-		if (!plan.ok) {
-			return { ok: false, saved, attempted, error: `✘ ${plan.error}`, ...(document !== undefined ? { document } : {}) }
-		}
-		const face = deps.seam.settings
-		if (face === undefined) {
-			return { ok: false, saved, attempted, error: "✘ 宿主 settings 接口不可用", ...(document !== undefined ? { document } : {}) }
-		}
+export async function writeSetting(
+	row: SettingsRow,
+	value: SettingsValue,
+	deps: SettingsWriteDeps,
+): Promise<SettingsWriteResult> {
+	if (row.detail !== undefined) {
+		return { ok: false, error: `✘ ${row.label} 不可编辑` }
+	}
+	if (!row.editable || row.write === undefined) {
+		return { ok: false, error: `✘ ${row.label} 不可编辑` }
+	}
+	if (row.write.via === "config") {
+		if (!deps.local) return { ok: false, error: "✘ 本地偏好当前不可写" }
+		const hints = footerHintsFromConfig(deps.merged.footerHints) ?? DEFAULT_FOOTER_HINTS
+		const plan = planLocalWrite(row as unknown as SettingsItem, value, hints)
+		if (!plan.ok) return { ok: false, error: `✘ ${plan.error}` }
 		try {
-			const outcome = await commitHostWrite({
-				mutate: (ns, ops, revision) => face.mutate(ns, ops, revision),
-				describe: () => face.describe(),
-				ns: plan.ns,
-				ops: plan.ops,
-				revision: currentHostRevision(document, plan.ns),
-			})
-			if (outcome.document !== undefined) document = outcome.document
-			if (!outcome.result.ok) {
-				const message = outcome.result.conflict
-					? outcome.attempts === 1
-						? "✘ 冲突：设置已被其它客户端修改，且 settings/describe 失败 — 没有最新 revision，未重试写入"
-						: "✘ 冲突：设置已被其它客户端修改，重试一次仍冲突（未写入）"
-					: `✘ ${outcome.result.error}`
-				return { ok: false, saved, attempted, error: message, ...(document !== undefined ? { document } : {}) }
-			}
-			if (outcome.refreshFailed === true) refreshFailed = true
-			saved.push(row.label)
+			deps.seam.configSave?.(plan.patch)
 		} catch (error) {
 			return {
 				ok: false,
-				saved,
-				attempted,
 				error: `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`,
-				...(document !== undefined ? { document } : {}),
 			}
 		}
+		applySettingsLive(row as unknown as SettingsItem, plan.applied, hints, deps.themes)
+		return { ok: true, label: row.label, patch: plan.patch }
 	}
-
+	// Host row.
+	if (!deps.host) return { ok: false, error: "✘ 宿主设置当前不可写" }
+	const plan = planHostWrite(row as unknown as SettingsItem, value)
+	if (!plan.ok) return { ok: false, error: `✘ ${plan.error}` }
+	const face = deps.seam.settings
+	if (face === undefined) return { ok: false, error: "✘ 宿主 settings 接口不可用" }
+	let document = deps.document
+	let refreshFailed = false
+	try {
+		const outcome = await commitHostWrite({
+			mutate: (ns, ops, revision) => face.mutate(ns, ops, revision),
+			describe: () => face.describe(),
+			ns: plan.ns,
+			ops: plan.ops,
+			revision: currentHostRevision(document, plan.ns),
+		})
+		if (outcome.document !== undefined) document = outcome.document
+		if (!outcome.result.ok) {
+			const message = outcome.result.conflict
+				? outcome.attempts === 1
+					? "✘ 冲突：设置已被其它客户端修改，且 settings/describe 失败 — 没有最新 revision，未重试写入"
+					: "✘ 冲突：设置已被其它客户端修改，重试一次仍冲突（未写入）"
+				: `✘ ${outcome.result.error}`
+			return { ok: false, error: message, ...(document !== undefined ? { document } : {}) }
+		}
+		if (outcome.refreshFailed === true) refreshFailed = true
+	} catch (error) {
+		return {
+			ok: false,
+			error: `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`,
+		}
+	}
 	return {
 		ok: true,
-		saved,
-		attempted,
+		label: row.label,
 		...(document !== undefined ? { document } : {}),
 		...(refreshFailed ? { refreshFailed } : {}),
 	}
@@ -520,7 +412,7 @@ export async function commitSettingsDrafts(deps: SettingsCommitDeps): Promise<Se
 
 export interface SettingsModalProps {
 	seam: SessionSeam
-	/** Called after a successful commit (exit summary). */
+	/** Called after each successful write with the labels saved so far (exit summary). */
 	onApplied?: (labels: readonly string[]) => void
 	themes?: SettingsThemeFace
 	/** Optional command jump dispatch (close happens first). */
@@ -530,7 +422,7 @@ export interface SettingsModalProps {
 	/**
 	 * The stack handle this body was opened under. Top-ness is an IDENTITY
 	 * comparison against `panels.top` (same object `panels.open` returned), so
-	 * a layer closing underneath can never silently disable the paging/Ctrl+S
+	 * a layer closing underneath can never silently disable the paging
 	 * layer the way a positional depth check could.
 	 */
 	layerHandle?: PanelHandle
@@ -589,12 +481,15 @@ export function bodyPageSize(panelRows: number): number {
 	return Math.max(MIN_BODY_PAGE, Math.min(MAX_BODY_PAGE, rows - SETTINGS_FIXED_CHROME_ROWS))
 }
 
-function rowListItems(rows: readonly SettingsRow[], drafts: SettingsDrafts): ListItem[] {
+function rowListItems(rows: readonly SettingsRow[]): ListItem[] {
 	return rows.map((row) => ({
 		id: row.id,
 		label: row.label,
-		description: displayValue(drafts, row),
-		...(row.editable ? { badge: "✎" } : { tone: "muted" as const }),
+		description: row.value,
+		// v1.2 roles: values are code, ✎ is the user role, a read-only row is
+		// system text (it has no editable value), › keeps the accent badge.
+		descriptionTone: "code" as const,
+		...(row.editable ? { badge: "✎", badgeTone: "user" as const } : { tone: "system" as const }),
 		...(row.kind === "jump" ? { badge: "›" } : {}),
 	}))
 }
@@ -604,15 +499,18 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	/** Live kit theme: every color below is a token of this projection. */
 	const theme = usePanelTheme()
 	const chrome = () => resolvePanelChrome(theme())
+	/** Content-pane background: every text role painted on it is floored. */
+	const contentBg = () => theme().background.content
+	/** Keep a role legible on the content pane, never below the theme's primary text. */
+	const role = (fg: RGBA): RGBA => withContrastFloor(fg, contentBg(), theme().text.base)
 	const [view, setView] = createSignal<SettingsView>("browse")
 	const [pane, setPane] = createSignal<SettingsPane>("nav")
 	const [sectionIndex, setSectionIndex] = createSignal(0)
 	const [rowIndex, setRowIndex] = createSignal(0)
 	const [editorRow, setEditorRow] = createSignal<SettingsRow | undefined>(undefined)
 	const [editorValue, setEditorValue] = createSignal<string>("")
-	/** Enum editor cursor (P0-2): the option Enter/Space will stage. */
+	/** Enum editor cursor (P0-2): the option Enter/Space saves immediately. */
 	const [optionCursor, setOptionCursor] = createSignal(0)
-	const [drafts, setDrafts] = createSignal<SettingsDrafts>({})
 	const [merged, setMerged] = createSignal<Record<string, unknown>>({})
 	const [profile, setProfile] = createSignal<Record<string, unknown>>({})
 	const [workspace, setWorkspace] = createSignal<Record<string, unknown>>({})
@@ -650,7 +548,25 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	const currentSection = createMemo(() => sections()[sectionIndex()] ?? sections()[0]!)
 	const currentRows = createMemo(() => currentSection().rows)
 	const currentRow = createMemo(() => currentRows()[rowIndex()])
-	const dirty = createMemo(() => isDirty(drafts()))
+
+	/** Labels saved in this panel session (the exit summary's input). */
+	const savedLabels: string[] = []
+	let statusTimer: ReturnType<typeof setTimeout> | undefined
+
+	/** Transient 「已保存 · X」; falls back to the resting text after 1.5 s. */
+	function flashSaved(label: string) {
+		setStatus(`已保存 · ${label}`)
+		if (statusTimer !== undefined) clearTimeout(statusTimer)
+		statusTimer = setTimeout(() => {
+			statusTimer = undefined
+			setStatus(undefined)
+		}, 1500)
+	}
+
+	onCleanup(() => {
+		if (statusTimer !== undefined) clearTimeout(statusTimer)
+		statusTimer = undefined
+	})
 
 	/** Live page size: fixed frame rows → body rows, clamped in `bodyPageSize`. */
 	const dimensions = useTerminalDimensions()
@@ -713,15 +629,20 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 		setView("browse")
 		setPane("rows")
 		setEditorRow(undefined)
-		setStatus(undefined)
+		setError(undefined)
 	}
 
 	function openRow(row: SettingsRow) {
 		setError(undefined)
 		setStatus(undefined)
 		if (row.kind === "jump") {
-			props.onCommand?.(row.command ?? "")
+			// Contract §3.5 dispatch rule: close the panel FIRST, then run the
+			// command — never dispatch while the modal key scope is active. The
+			// big sections carry exactly this one row; agent definitions are not
+			// settings, their home is /agents.
+			const command = row.command ?? ""
 			props.onRequestClose()
+			if (command !== "") props.onCommand?.(command)
 			return
 		}
 		if (row.kind === "toggle") {
@@ -729,8 +650,8 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 				setStatus(row.note ?? "该行只读")
 				return
 			}
-			const next = displayValue(drafts(), row) !== "on"
-			setDrafts((current) => stageDraft(current, row, next))
+			// Instant model: a toggle writes on the spot, no staged buffer.
+			void applyRowValue(row, row.value !== "on")
 			return
 		}
 		if (row.kind === "submenu") {
@@ -744,15 +665,58 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			return
 		}
 		setEditorRow(row)
-		setEditorValue(row.kind === "number" && (row.value === "n/a" || row.value === "(unset)") ? "" : displayValue(drafts(), row))
+		setEditorValue(row.kind === "number" && (row.value === "n/a" || row.value === "(unset)") ? "" : row.value)
 		if (row.kind === "enum") {
 			// Cursor starts on the effective value (P0-2): ↑↓ move it, Enter/Space
-			// stage and commit that option — a complete keyboard path.
+			// save that option immediately — a complete keyboard path.
 			const options = row.options ?? []
-			const at = options.indexOf(displayValue(drafts(), row))
+			const at = options.indexOf(row.value)
 			setOptionCursor(at >= 0 ? at : 0)
 		}
 		setView("editor")
+	}
+
+	/**
+	 * Persist one row value through the existing writers. Returns true when the
+	 * value landed. A failure sets the error line and leaves the editor open so
+	 * the value can be corrected or abandoned with Esc.
+	 */
+	async function applyRowValue(row: SettingsRow, value: SettingsValue): Promise<boolean> {
+		if (busy()) return false
+		setBusy(true)
+		setError(undefined)
+		setStatus(undefined)
+		try {
+			const result = await writeSetting(row, value, {
+				seam: props.seam,
+				...(props.themes !== undefined ? { themes: props.themes } : {}),
+				merged: merged(),
+				...(document() !== undefined ? { document: document() } : {}),
+				local: writable().local,
+				host: writable().host,
+			})
+			if (result.document !== undefined) setDocument(result.document)
+			if (!result.ok) {
+				setError(result.error ?? "✘ 写入失败")
+				return false
+			}
+			reloadLocal()
+			// Fold the patch in AFTER the snapshot read: a footerHints patch
+			// carries the whole hint map, so the next write is never built from
+			// the pre-write map.
+			if (result.patch !== undefined) setMerged((current) => ({ ...current, ...result.patch }))
+			void reloadHost()
+			if (result.refreshFailed === true) {
+				setError("⚠ 已写入，但设置刷新失败（显示的仍是旧文档）")
+				return true
+			}
+			savedLabels.push(row.label)
+			flashSaved(row.label)
+			props.onApplied?.([...savedLabels])
+			return true
+		} finally {
+			setBusy(false)
+		}
 	}
 
 	function moveOptionCursor(delta: number) {
@@ -761,21 +725,14 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 		setOptionCursor((current) => ((current + delta) % options.length + options.length) % options.length)
 	}
 
-	/** Choose the option under the cursor: stage it and leave the editor. */
-	function chooseOption() {
+	/** Choose the option under the cursor: save it immediately and leave the editor. */
+	async function chooseOption() {
 		const row = editorRow()
 		if (row === undefined) return
 		const option = row.options?.[optionCursor()]
 		if (option === undefined) return
 		setEditorValue(option)
-		stageEditorValue(option)
-		backToSection()
-	}
-
-	function stageEditorValue(value: DraftValue) {
-		const row = editorRow()
-		if (row === undefined) return
-		setDrafts((current) => stageDraft(current, row, value))
+		if (await applyRowValue(row, option)) backToSection()
 	}
 
 	function stepValue(direction: number) {
@@ -787,10 +744,10 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 		if (row.min !== undefined) next = Math.max(row.min, next)
 		if (row.max !== undefined) next = Math.min(row.max, next)
 		setEditorValue(String(next))
-		stageEditorValue(next)
 	}
 
-	function commitEditor() {
+	/** Enter inside an editor: write the value, then return to the section. */
+	async function commitEditor() {
 		const row = editorRow()
 		if (row === undefined) return
 		if (row.kind === "number") {
@@ -799,115 +756,42 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 				setError(`✘ ${parsed.error}`)
 				return
 			}
-			stageEditorValue(parsed.value)
-		} else {
-			stageEditorValue(editorValue())
+			if (await applyRowValue(row, parsed.value)) backToSection()
+			return
 		}
-		backToSection()
+		if (await applyRowValue(row, editorValue())) backToSection()
 	}
 
+	/** Esc inside an editor: nothing to discard — every value is already saved. */
 	function cancelEditor() {
-		const row = editorRow()
-		if (row !== undefined) {
-			setDrafts((current) => {
-				const next = { ...current }
-				delete next[draftKey(row)]
-				return next
-			})
-		}
 		backToSection()
-	}
-
-	/** 取消 / Esc at the root: discard drafts, nothing was written. */
-	function discardAndClose() {
-		setDrafts({})
-		props.onRequestClose()
 	}
 
 	const panels = usePanels()
-	let confirmingDiscard = false
+	let confirmingExit = false
 
 	/**
-	 * P1-3: a dirty buffer must not vanish on one Esc. The confirmation uses
-	 * the kit's confirm layer (destructive => focus starts on 取消), so a stray
-	 * Esc cancels and keeps both the drafts and the panel.
+	 * Esc at the root opens the exit confirmation (kit confirm layer,
+	 * destructive => focus starts on 取消). Nothing is pending here: every edit
+	 * landed the moment it was chosen, so the dialog is a courtesy, not a
+	 * discard prompt. Only an explicit 退出 closes the panel.
 	 */
-	async function requestDiscardOrClose() {
-		if (!dirty()) {
-			discardAndClose()
-			return
-		}
-		if (confirmingDiscard) return
-		confirmingDiscard = true
+	async function requestExitConfirm() {
+		if (confirmingExit) return
+		confirmingExit = true
 		try {
-			const count = Object.keys(drafts()).length
-			const discard = await panels.confirm({
-				title: "丢弃未保存的改动？",
-				message: `有 ${count} 项未保存的修改；丢弃后不会写入任何设置。`,
-				confirmLabel: "丢弃",
+			const exit = await panels.confirm({
+				title: "退出设置？",
+				message: "所有改动已即时保存。",
+				confirmLabel: "退出",
 				cancelLabel: "取消",
 				destructive: true,
-				tone: "danger",
 			})
-			if (discard) discardAndClose()
+			if (exit) props.onRequestClose()
 		} catch {
-			// A failed confirm leaves the panel and the drafts untouched.
+			// A failed confirm leaves the panel untouched.
 		} finally {
-			confirmingDiscard = false
-		}
-	}
-
-	async function confirm() {
-		if (busy()) return
-		if (!dirty()) {
-			props.onRequestClose()
-			return
-		}
-		setBusy(true)
-		setError(undefined)
-		try {
-			const result = await commitSettingsDrafts({
-				seam: props.seam,
-				...(props.themes !== undefined ? { themes: props.themes } : {}),
-				rows: sections().flatMap((section) => section.rows),
-				drafts: drafts(),
-				merged: merged(),
-				...(document() !== undefined ? { document: document() } : {}),
-				local: writable().local,
-				host: writable().host,
-			})
-			if (result.document !== undefined) setDocument(result.document)
-			if (!result.ok) {
-				// P1-3: roll back only the keys this commit touched (they were
-				// re-described above); drafts for rows not yet reached stay, so a
-				// partial failure does not throw away the user's remaining edits.
-				const attempted = new Set(result.attempted)
-				reloadLocal()
-				await reloadHost()
-				setDrafts((current) => {
-					const next: Record<string, DraftValue> = {}
-					for (const [key, value] of Object.entries(current)) {
-						if (!attempted.has(key)) next[key] = value
-					}
-					return next
-				})
-				setError(result.error ?? "✘ 写入失败")
-				return
-			}
-			setDrafts({})
-			reloadLocal()
-			await reloadHost()
-			if (result.refreshFailed === true) {
-				setError("⚠ 已写入，但设置刷新失败（显示的仍是旧文档）")
-				return
-			}
-			if (result.saved.length > 0) {
-				setStatus(settingsSummary(result.saved))
-				props.onApplied?.(result.saved)
-			}
-			props.onRequestClose()
-		} finally {
-			setBusy(false)
+			confirmingExit = false
 		}
 	}
 
@@ -973,7 +857,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 				if (view() === "editor") {
 					const row = editorRow()
 					if (row?.kind === "enum") {
-						chooseOption()
+						void chooseOption()
 						return true
 					}
 					if (row?.kind === "submenu") {
@@ -994,7 +878,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 				if (view() === "editor") {
 					const row = editorRow()
 					if (row?.kind === "enum") {
-						chooseOption()
+						void chooseOption()
 						return true
 					}
 					if (row?.kind === "submenu") {
@@ -1014,7 +898,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			escape: () => {
 				const next = settingsBackView(view())
 				if (next === "close") {
-					void requestDiscardOrClose()
+					void requestExitConfirm()
 					return true
 				}
 				backToSection()
@@ -1048,23 +932,24 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	}
 
 	/**
-	 * Paging keys + Ctrl+S live on the consumer layer (the kit's modal table
-	 * only knows escape/enter/space/arrows; the session's global `pagedown`
-	 * binding would otherwise swallow the keys). This layer:
-	 *   - is only enabled while OUR layer is the stack top (`panels.depth`),
-	 *     so a confirm/popup on top keeps the keys for itself;
+	 * Paging keys live on the consumer layer (the kit's modal table only knows
+	 * escape/enter/space/arrows; the session's global `pagedown` binding would
+	 * otherwise swallow the keys). This layer:
+	 *   - is only enabled while OUR layer is the stack top (`panels.top`), so a
+	 *     confirm/popup on top keeps the keys for itself;
 	 *   - consumes pageup/pagedown/home/end only in the rows pane and only when
 	 *     the section overflows one page — returning false lets the session's
-	 *     scroll layer keep them on a fitting section;
-	 *   - binds ctrl+s ONCE (no `useKeyboard` twin), calling the same `confirm`
-	 *     as the 确定 button; `busy()` drops a second press mid-commit.
+	 *     scroll layer keep them on a fitting section.
+	 *
+	 * There is deliberately no commit binding: every edit is already persisted,
+	 * so Ctrl+S has no meaning in this panel (and must not have one).
 	 */
 	/**
 	 * Top-ness is a handle IDENTITY check (same object `panels.open` returned,
 	 * which is also what `panels.top` yields), not a depth/position compare: a
-	 * layer closing underneath must not silently disable paging/Ctrl+S. A
-	 * foreign layer pushed on top makes `top` different, so this layer yields;
-	 * popping it restores the same comparison result.
+	 * layer closing underneath must not silently disable paging. A foreign
+	 * layer pushed on top makes `top` different, so this layer yields; popping
+	 * it restores the same comparison result.
 	 */
 	const ownsTop = () => props.layerHandle !== undefined && panels.top === props.layerHandle
 	Keymap.createLayer(() => ({
@@ -1076,15 +961,6 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			{ bind: "pagedown", title: "Settings: page down", group: "Settings", run: () => pageRows("pagedown") },
 			{ bind: "home", title: "Settings: first row", group: "Settings", run: () => pageRows("home") },
 			{ bind: "end", title: "Settings: last row", group: "Settings", run: () => pageRows("end") },
-			{
-				bind: "ctrl+s",
-				title: "Settings: commit",
-				group: "Settings",
-				run: () => {
-					void confirm()
-					return true
-				},
-			},
 		],
 	}))
 
@@ -1115,6 +991,8 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			id: section.id,
 			label: section.label,
 			description: `${section.rows.length}`,
+			// v1.2: the row count is system text, not a muted value.
+			descriptionTone: "system" as const,
 		})),
 	)
 
@@ -1125,7 +1003,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	 * nav column + column gap.
 	 */
 	const rowWidth = () => settingsRowWidth(dimensions().width, dimensions().height)
-	const rowItems = createMemo(() => rowListItems(visibleRows(), drafts()))
+	const rowItems = createMemo(() => rowListItems(visibleRows()))
 	const activeRowId = () => currentRow()?.id
 	/** "1-8/16" while a section exceeds one page. */
 	const pageIndicator = () => {
@@ -1168,9 +1046,15 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 					{/* One content cell of breathing room after the rule, so the row
 					    highlight never touches the divider and the 84-cell budget
 					    (settingsRowWidth) is exact at 120 cols. */}
-					<box flexDirection="column" flexGrow={1} flexShrink={1} paddingLeft={1}>
+					<box
+						flexDirection="column"
+						flexGrow={1}
+						flexShrink={1}
+						paddingLeft={1}
+						backgroundColor={contentBg()}
+					>
 						<box flexShrink={0} backgroundColor={chrome().titleBand}>
-							<text attributes={TextAttributes.BOLD} fg={theme().text.base}>
+							<text attributes={TextAttributes.BOLD} fg={role(theme().text.heading)}>
 								{currentSection().label}
 							</text>
 						</box>
@@ -1186,9 +1070,9 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 								}}
 							/>
 							<Show when={currentRow()?.note !== undefined}>
-								<text fg={theme().text.muted}>{`  ${currentRow()!.note!}`}</text>
+								<text fg={role(theme().text.muted)}>{`  ${currentRow()!.note!}`}</text>
 							</Show>
-							<text fg={theme().text.muted}>{`${pane() === "nav" ? "↑↓ 选择分节 · →/Enter 进入内容" : "↑↓ 选择行 · Enter 编辑 · ←/Esc 返回"}${pageIndicator()}`}</text>
+							<text fg={role(theme().text.muted)}>{`${pane() === "nav" ? "↑↓ 选择分节 · →/Enter 进入内容" : "↑↓ 选择行 · Enter 编辑 · ←/Esc 返回"}${pageIndicator()}`}</text>
 						</Show>
 						<Show when={editorRow() !== undefined}>
 							<EditorView
@@ -1197,49 +1081,35 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 								cursor={optionCursor()}
 								optionRows={Math.max(1, pageSize() - 2)}
 								onValue={setEditorValue}
-								onStage={stageEditorValue}
 								onStep={stepValue}
-								onCommit={commitEditor}
+								onCommit={() => void commitEditor()}
 								onCancel={cancelEditor}
 							/>
 						</Show>
 					</box>
 				</box>
 			</PanelBody>
-			{/* Action band (v1.2): the 确定 / esc 取消 actions are real kit Buttons
-			    inside a one-cell rule on each side, so the footer has a boundary
-			    instead of naked text; the primary action keeps the accent fill and
-			    the default action owns the accent rule. */}
-			<box flexDirection="column" flexShrink={0}>
-				<box flexDirection="row" justifyContent="space-between" flexShrink={0} gap={2}>
-					<box
-						flexShrink={0}
-						border={["left", "right"]}
-						borderStyle="single"
-						borderColor={chrome().divider}
-					>
-						<Button label="取消" keyHint="esc" variant="ghost" onPress={() => void requestDiscardOrClose()} />
-					</box>
-					<box
-						flexShrink={0}
-						border={["left", "right"]}
-						borderStyle="single"
-						borderColor={theme().text.accent}
-					>
-						<Button
-							label="确定"
-							keyHint="ctrl+s"
-							variant="primary"
-							disabled={busy()}
-							onPress={() => void confirm()}
-						/>
-					</box>
-				</box>
-				<box flexDirection="row" justifyContent="flex-end">
+			{/* Action band: no commit control (every edit is already persisted).
+			    The left cell is the Esc affordance, the right the status line:
+			    the transient 「已保存 · X」 lives here. */}
+			<box flexDirection="row" justifyContent="space-between" flexShrink={0} gap={2}>
+				<box
+					flexShrink={0}
+					border={["left", "right"]}
+					borderStyle="single"
+					borderColor={chrome().divider}
+				>
 					<text fg={theme().text.muted} attributes={theme().attributes.keyHint} wrapMode="none">
-						{error() ?? status() ?? (dirty() ? `未提交：${Object.keys(drafts()).length} 项 · 确定提交 / 取消丢弃` : "无未提交改动")}
+						{"esc 返回"}
 					</text>
 				</box>
+					<text
+						fg={role(error() !== undefined ? theme().text.danger : theme().text.system)}
+						attributes={theme().attributes.keyHint}
+						wrapMode="none"
+					>
+					{error() ?? status() ?? "改动已即时保存"}
+				</text>
 			</box>
 		</box>
 	)
@@ -1248,16 +1118,20 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 function EditorView(props: {
 	row: SettingsRow
 	value: string
-	/** Enum cursor: Enter/Space stages this option (P0-2). */
+	/** Enum cursor: Enter/Space saves this option immediately (P0-2). */
 	cursor: number
 	/** Options painted at once (a window follows the cursor; §3.2). */
 	optionRows: number
 	onValue: (value: string) => void
-	onStage: (value: DraftValue) => void
 	onStep: (direction: number) => void
 	onCommit: () => void
 	onCancel: () => void
 }) {
+	/** v1.2: every painted element below carries a PanelTheme role. */
+	const theme = usePanelTheme()
+	/** Editor lives on the content pane: role colors are floored against it. */
+	const contentBg = () => theme().background.content
+	const role = (fg: RGBA): RGBA => withContrastFloor(fg, contentBg(), theme().text.base)
 	let catcher: { focus(): void; isDestroyed?: boolean } | undefined
 
 	const options = () => props.row.options ?? []
@@ -1280,17 +1154,17 @@ function EditorView(props: {
 
 	return (
 		<box flexDirection="column" flexGrow={1}>
-			<text>{`${props.row.label} — ${props.row.kind === "number" ? "输入整数" : props.row.kind === "enum" ? "选择值" : "查看"}`}</text>
+			<text fg={role(theme().text.heading)}>{`${props.row.label} — ${props.row.kind === "number" ? "输入整数" : props.row.kind === "enum" ? "选择值" : "查看"}`}</text>
 			<Show when={props.row.note !== undefined}>
-				<text>{`  ${props.row.note!}`}</text>
+				<text fg={role(theme().text.system)}>{`  ${props.row.note!}`}</text>
 			</Show>
 			<Show when={props.row.kind === "submenu"}>
 				<For each={props.row.detail ?? []}>
 					{(child) => (
 						<box flexDirection="column">
-							<text>{`  ${child.label}  ${child.value}`}</text>
+							<text fg={role(theme().text.base)}>{`  ${child.label}  ${child.value}`}</text>
 							<Show when={child.note !== undefined}>
-								<text>{`    ${child.note!}`}</text>
+								<text fg={role(theme().text.system)}>{`    ${child.note!}`}</text>
 							</Show>
 						</box>
 					)}
@@ -1307,26 +1181,27 @@ function EditorView(props: {
 									props.onCommit()
 								}}
 							>
-								<text>{`${optionStart() + index() === props.cursor ? "▸ " : "  "}${option}${option === props.row.value ? "  (current)" : ""}`}</text>
+								<text fg={role(theme().text.accent)}>{optionStart() + index() === props.cursor ? "▸ " : "  "}</text>
+								<text fg={role(theme().text.code)}>{option}</text>
+								<Show when={option === props.row.value}>
+									<text fg={role(theme().text.system)}>{"  (current)"}</text>
+								</Show>
 							</box>
 						)}
 					</For>
 					<Show when={optionIndicator() !== ""}>
-						<text>{optionIndicator()}</text>
+						<text fg={role(theme().text.system)}>{optionIndicator()}</text>
 					</Show>
 				</box>
 			</Show>
 			<Show when={props.row.kind === "number" || props.row.kind === "text"}>
 				<box flexDirection="row">
-					<text>{`${props.row.kind === "number" ? "数值" : "值"}: `}</text>
-					<text>{props.value}</text>
+					<text fg={role(theme().text.muted)}>{`${props.row.kind === "number" ? "数值" : "值"}: `}</text>
+					<text fg={role(theme().text.code)}>{props.value}</text>
 					<input
 						flexGrow={1}
 						value={props.value}
-						onInput={(next: string) => {
-							props.onValue(next)
-							props.onStage(next)
-						}}
+						onInput={(next: string) => props.onValue(next)}
 						onSubmit={() => props.onCommit()}
 						ref={(renderable: { focus(): void; isDestroyed?: boolean }) => {
 							catcher = renderable
@@ -1337,10 +1212,10 @@ function EditorView(props: {
 					/>
 				</box>
 			</Show>
-			<text>
+			<text fg={role(theme().text.faint)}>
 				{props.row.kind === "enum"
-					? "↑↓ 选择 · Enter/Space 确认本行 · Esc 丢弃并返回"
-					: "Enter 确认本行 · Esc 丢弃并返回 · 左/右 调整数值"}
+					? "↑↓ 选择 · Enter/Space 保存并返回 · Esc 返回"
+					: "Enter 保存并返回 · Esc 返回 · 左/右 调整数值"}
 			</text>
 		</box>
 	)
@@ -1388,7 +1263,7 @@ export function SettingsModalHost(props: {
 			{
 				id: "settings-modal",
 				title: "Settings",
-				subtitle: "分节导航 · Ctrl+S 提交 · Esc 逐层返回",
+				subtitle: "分节导航 · 即时保存 · Esc 逐层返回",
 				size: "xlarge",
 				/**
 				 * A FIXED frame height (v1.2): 75% of the terminal, clamped to

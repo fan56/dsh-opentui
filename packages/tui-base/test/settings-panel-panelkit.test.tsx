@@ -4,12 +4,13 @@
  * Mounted through @opentui/solid testRender with the production host wiring
  * (Keymap.Provider → PanelKitProvider + PanelStack → SettingsModalHost), so
  * keys travel the real path: the kit's modal table for Escape/arrows/Enter,
- * the focused input for number/text rows, and the consumer's global Ctrl+S.
+ * the focused input for number/text rows, and the kit's confirm layer for the
+ * exit dialog.
  *
- * Covers the review findings: the Host section (P0-1 preselect hit), the enum
- * editor keyboard path (P0-2), the 16-row opentui walk (P0-3), the dirty-Esc
- * confirmation and partial-failure draft retention (P1-3), the write-key based
- * live apply (P1-1) and the shared draft for two rows writing one key (P2-5).
+ * Semantics under test (instant-save model): choosing a value writes it
+ * immediately through the production writers; there is no draft buffer, no
+ * 确定 control and no Ctrl+S binding; Esc walks editor → section → 退出设置？
+ * confirmation (default focus 取消).
  */
 import { beforeEach, describe, expect, test } from "bun:test"
 import { onMount } from "solid-js"
@@ -22,6 +23,7 @@ import {
 	createHostKeyAdapter,
 	resolvePanelChrome,
 	usePanels,
+	withContrastFloor,
 	type PanelStackApi,
 } from "@dsh-opentui/panel-kit"
 import { Keymap } from "../src/context/keymap"
@@ -41,13 +43,10 @@ import {
 	buildHostRows,
 	buildOpentuiRows,
 	buildSectionRows,
-	commitSettingsDrafts,
-	displayValue,
-	draftKey,
 	settingsBackView,
 	settingsPanelRows,
 	settingsRowWidth,
-	stageDraft,
+	writeSetting,
 	type SettingsRowContext,
 } from "../src/routes/session/settings-modal"
 import {
@@ -165,6 +164,8 @@ function Harness(props: {
 	seam: SessionSeam
 	themes?: SettingsThemeFace
 	onClosed?: (summary?: string) => void
+	/** Command-jump dispatch spy (the big sections' one row). */
+	onCommand?: (command: string) => void
 	/** Spy for the layer BELOW settings (the session's global pager). */
 	onSessionPageDown?: () => void
 	onStack?: (api: PanelStackApi) => void
@@ -192,6 +193,7 @@ function Harness(props: {
 				<SettingsModalHost
 					seam={props.seam}
 					{...(props.themes !== undefined ? { themes: props.themes } : {})}
+					{...(props.onCommand !== undefined ? { onCommand: props.onCommand } : {})}
 					{...(props.onClosed !== undefined ? { onClosed: props.onClosed } : {})}
 				/>
 				{props.onStack !== undefined ? <StackProbe onApi={props.onStack} /> : null}
@@ -230,6 +232,7 @@ async function mount(options: {
 	seam?: SessionSeam
 	themes?: SettingsThemeFace
 	onClosed?: (summary?: string) => void
+	onCommand?: (command: string) => void
 	onSessionPageDown?: () => void
 	onStack?: (api: PanelStackApi) => void
 	width?: number
@@ -243,6 +246,7 @@ async function mount(options: {
 				<Harness
 					seam={seam}
 					{...(options.themes !== undefined ? { themes: options.themes } : {})}
+					{...(options.onCommand !== undefined ? { onCommand: options.onCommand } : {})}
 					{...(options.onClosed !== undefined ? { onClosed: options.onClosed } : {})}
 					{...(options.onSessionPageDown !== undefined
 						? { onSessionPageDown: options.onSessionPageDown }
@@ -488,6 +492,36 @@ describe("settings modal: section model", () => {
 		expect(other.kind).toBe("readonly")
 		expect(other.editable).toBe(false)
 	})
+
+	/**
+	 * The reported bug: 模型 listed subagent definitions. Agent definitions are
+	 * NOT settings — their home is /agents — so all four big sections must stay
+	 * the contract's single command-jump row (§3.5), with no agent data source
+	 * anywhere in the builders.
+	 */
+	test("big sections are one jump row each and never carry agent definitions", () => {
+		const agentNames = ["Minimal Subagent", "老法师", "PTC Subagent", "小黄鸭", "牛马狗"]
+		const bigSections = [
+			["models", "/model"],
+			["plugins", "/plugins"],
+			["presets", "/preset"],
+			["account", "/login"],
+		] as const
+		for (const [id, command] of bigSections) {
+			const rows = buildSectionRows(id, context())
+			expect(rows).toHaveLength(1)
+			const row = rows[0]!
+			expect(row.id).toBe(`jump.${id}`)
+			expect(row.kind).toBe("jump")
+			expect(row.command).toBe(command)
+			expect(row.value).toBe(command)
+			const painted = `${row.label} ${row.value} ${row.note ?? ""}`
+			for (const name of agentNames) expect(painted).not.toContain(name)
+			// No table language either: the agents table's NAME/MODEL/THINK/
+			// DEEP/LIMITS header must never leak into a settings section.
+			expect(painted).not.toMatch(/THINK|DEEP|LIMITS/)
+		}
+	})
 })
 
 describe("settings modal: Esc ladder", () => {
@@ -497,80 +531,97 @@ describe("settings modal: Esc ladder", () => {
 	})
 })
 
-describe("settings modal: drafts", () => {
-	test("drafts key on the write target, so two rows writing one key share it (P2-5)", () => {
-		const general = buildGeneralRows(context())
-		const appearance = general.find((row) => row.id === "general.appearance")!
-		const opentuiThemeMode = buildOpentuiRows(context()).find((row) => row.id === "themeMode")!
-		expect(draftKey(appearance)).toBe("config:themeMode")
-		expect(draftKey(opentuiThemeMode)).toBe("config:themeMode")
-		const drafts = stageDraft({}, appearance, "light")
-		expect(drafts).toEqual({ "config:themeMode": "light" })
-		expect(displayValue(drafts, opentuiThemeMode)).toBe("light")
-	})
-
-	test("no footerHints row falls back to its display label (§3.4)", () => {
-		for (const section of SETTINGS_SECTIONS) {
-			for (const row of buildSectionRows(section.id, context())) {
-				const write = row.write
-				if (write?.via !== "config" || write.key !== "footerHints") continue
-				// Every footer-hint row is id-addressed; the label branch is gone.
-				expect(row.id.startsWith("footerHints.")).toBe(true)
-				expect(draftKey(row)).toBe(`footerHints.${row.id.slice("footerHints.".length)}`)
-			}
-		}
-	})
-
-	test("cancel discards: staging a draft writes nothing", () => {
+describe("settings modal: instant writes", () => {
+	test("a local value lands in configSave exactly once with the new value", async () => {
 		const calls: string[] = []
-		void fakeSeam(calls)
 		const row = buildGeneralRows(context()).find((entry) => entry.id === "general.language")!
-		const drafts = stageDraft({}, row, "zh-CN")
-		expect(drafts).toEqual({ "config:hintsLocale": "zh-CN" })
-		expect(calls).toHaveLength(0)
-	})
-
-	test("确定 commits local + host drafts through the existing writers", async () => {
-		const calls: string[] = []
-		const rows = buildGeneralRows(context())
-		const result = await commitSettingsDrafts({
+		const result = await writeSetting(row, "zh-CN", {
 			seam: fakeSeam(calls),
-			rows,
-			drafts: { "config:hintsLocale": "zh-CN", "settings:session-log-deepseek.enabled": false },
 			merged: { theme: "dsh-blue" },
-			document,
 			local: true,
 			host: true,
 		})
 		expect(result.ok).toBe(true)
-		expect(result.saved).toEqual(["语言", "Session Log 上传"])
-		expect(result.attempted).toEqual(["config:hintsLocale", "settings:session-log-deepseek.enabled"])
+		expect(result.label).toBe("语言")
+		expect(result.patch).toEqual({ hintsLocale: "zh-CN" })
+		expect(calls).toHaveLength(1)
 		expect(calls[0]).toContain("configSave:")
 		expect(calls[0]).toContain("zh-CN")
-		expect(calls[1]).toContain("mutate:session-log-deepseek:")
-		expect(calls[1]).toContain('value":false')
 	})
 
-	test("a local write failure is returned verbatim and nothing else is claimed", async () => {
+	test("a footer hint patch carries the whole map from the live snapshot", async () => {
 		const calls: string[] = []
-		const result = await commitSettingsDrafts({
-			seam: fakeSeam(calls, {
-				configSave: () => {
-					throw new Error("disk full")
-				},
-			}),
-			rows: buildGeneralRows(context()),
-			drafts: { "config:hintsLocale": "ja" },
+		const row = buildOpentuiRows(context()).find((entry) => entry.id === "footerHints.send")!
+		const result = await writeSetting(row, true, {
+			seam: fakeSeam(calls),
+			merged: { footerHints: { send: false, search: false } },
+			local: true,
+			host: true,
+		})
+		expect(result.ok).toBe(true)
+		const patch = result.patch as { footerHints: Record<string, boolean> }
+		// The patch is the WHOLE hint object (one config key), built from the
+		// live snapshot: the edited hint flips, the rest keep their values.
+		expect(patch.footerHints.send).toBe(true)
+		expect(patch.footerHints.search).toBe(false)
+		expect(Object.keys(patch.footerHints).length).toBeGreaterThan(2)
+	})
+
+	test("rows sharing a write target write exactly once per action", async () => {
+		const calls: string[] = []
+		const seam = fakeSeam(calls)
+		const appearance = buildGeneralRows(context()).find((row) => row.id === "general.appearance")!
+		const opentuiThemeMode = buildOpentuiRows(context()).find((row) => row.id === "themeMode")!
+		expect(appearance.write).toEqual(opentuiThemeMode.write)
+		const first = await writeSetting(appearance, "light", { seam, merged: {}, local: true, host: true })
+		expect(first.ok).toBe(true)
+		const second = await writeSetting(opentuiThemeMode, "auto", { seam, merged: {}, local: true, host: true })
+		expect(second.ok).toBe(true)
+		const saves = calls.filter((call) => call.startsWith("configSave:"))
+		expect(saves).toHaveLength(2)
+		expect(saves[0]).toContain('"themeMode":"light"')
+		expect(saves[1]).toContain('"themeMode":"auto"')
+	})
+
+	test("a local write failure is returned verbatim", async () => {
+		const calls: string[] = []
+		const result = await writeSetting(
+			buildGeneralRows(context()).find((row) => row.id === "general.language")!,
+			"ja",
+			{
+				seam: fakeSeam(calls, {
+					configSave: () => {
+						throw new Error("disk full")
+					},
+				}),
+				merged: {},
+				local: true,
+				host: true,
+			},
+		)
+		expect(result.ok).toBe(false)
+		expect(result.error).toContain("写入失败")
+		expect(result.error).toContain("disk full")
+		expect(result.patch).toBeUndefined()
+	})
+
+	test("a host value writes path ops through commitHostWrite", async () => {
+		const calls: string[] = []
+		const row = buildSectionRows("host", context()).find(
+			(entry) => entry.id === "session-log-deepseek.enabled",
+		)!
+		const result = await writeSetting(row, false, {
+			seam: fakeSeam(calls),
 			merged: {},
 			document,
 			local: true,
 			host: true,
 		})
-		expect(result.ok).toBe(false)
-		expect(result.error).toContain("写入失败")
-		expect(result.error).toContain("disk full")
-		expect(result.saved).toEqual([])
-		expect(result.attempted).toEqual(["config:hintsLocale"])
+		expect(result.ok).toBe(true)
+		const mutates = calls.filter((call) => call.startsWith("mutate:session-log-deepseek:"))
+		expect(mutates).toHaveLength(1)
+		expect(mutates[0]).toContain('value":false')
+		expect(result.document).toBeDefined()
 	})
 
 	test("a failed host mutate surfaces settings.mutate's message", async () => {
@@ -580,53 +631,33 @@ describe("settings modal: drafts", () => {
 			conflict: false,
 			error: "settings/rejected: bad preset",
 		})
-		const result = await commitSettingsDrafts({
-			seam,
-			rows: buildGeneralRows(context()),
-			drafts: { "settings:session-log-deepseek.enabled": true },
-			merged: {},
-			document,
-			local: true,
-			host: true,
-		})
+		const result = await writeSetting(
+			buildGeneralRows(context()).find((row) => row.id === "general.session-log")!,
+			true,
+			{
+				seam,
+				merged: {},
+				document,
+				local: true,
+				host: true,
+			},
+		)
 		expect(result.ok).toBe(false)
 		expect(result.error).toContain("settings/rejected: bad preset")
 	})
 
-	test("a partial failure reports only the attempted keys (untried stay dirty)", async () => {
-		const rows = [...buildSectionRows("general", context()), ...buildSectionRows("host", context())]
-		const result = await commitSettingsDrafts({
-			seam: fakeSeam([], { failNs: "session-log-deepseek" }),
-			rows,
-			drafts: {
-				"settings:session-log-deepseek.enabled": false,
-				"settings:subagent.maxDepth": 2,
-			},
+	test("a read-only row never writes", async () => {
+		const calls: string[] = []
+		const row = buildGeneralRows(context()).find((entry) => entry.id === "general.font-size")!
+		const result = await writeSetting(row, "12", {
+			seam: fakeSeam(calls),
 			merged: {},
-			document,
 			local: true,
 			host: true,
 		})
 		expect(result.ok).toBe(false)
-		expect(result.saved).toEqual([])
-		expect(result.attempted).toEqual(["settings:session-log-deepseek.enabled"])
-	})
-
-	test("a key shared by two rows is written exactly once", async () => {
-		const calls: string[] = []
-		const rows = [...buildSectionRows("general", context()), ...buildSectionRows("host", context())]
-		const result = await commitSettingsDrafts({
-			seam: fakeSeam(calls),
-			rows,
-			drafts: { "settings:permission.defaultPreset": "readOnly" },
-			merged: {},
-			document,
-			local: true,
-			host: true,
-		})
-		expect(result.ok).toBe(true)
-		expect(result.saved).toEqual(["权限默认预设"])
-		expect(calls.filter((call) => call.startsWith("mutate:permission:"))).toHaveLength(1)
+		expect(result.error).toContain("不可编辑")
+		expect(calls).toHaveLength(0)
 	})
 })
 
@@ -672,7 +703,76 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	
+	test("模型 paints the /model jump, no agent rows, and dispatches after closing", async () => {
+		const names = ["Minimal Subagent", "老法师", "PTC Subagent", "小黄鸭", "牛马狗"]
+		// The seam deliberately exposes the real /agents corpus: the settings
+		// modal must never read it (agent definitions live in /agents).
+		const seam = {
+			...fakeSeam([]),
+			agents: {
+				list: () =>
+					names.map((name) => ({
+						name,
+						model: "zai-coding-cn/glm-5.3-flash",
+						thinking: "high",
+						deep: 0,
+						file: `/tmp/agents/${name}.md`,
+					})),
+			},
+		} as unknown as SessionSeam
+		const dispatched: string[] = []
+		const stacks: PanelStackApi[] = []
+		let topAtDispatch: string | undefined
+		const { setup, frame } = await mount({
+			width: 120,
+			height: 40,
+			seam,
+			onStack: (api) => stacks.push(api),
+			onCommand: (command) => {
+				dispatched.push(command)
+				topAtDispatch = stacks[0]?.top?.id
+			},
+		})
+		try {
+			// Walk every big section (模型 / 插件 / Agent 预设 / 账号): each is one
+			// command jump, and none may paint the agent corpus the seam exposes.
+			const bigSections = ["打开 /model", "打开 /plugins", "打开 /preset", "打开 /login"]
+			let cursor = 0 // nav starts on 通用
+			for (let target = 3; target <= 6; target += 1) {
+				while (cursor < target) {
+					setup.mockInput.pressArrow("down")
+					cursor += 1
+				}
+				await settle(setup)
+				expect(frame()).toContain(bigSections[target - 3]!)
+				for (const name of names) expect(frame()).not.toContain(name)
+				expect(frame()).not.toMatch(/THINK|DEEP|LIMITS/)
+			}
+
+			// Back to 模型 (the section the report named) and enter its rows.
+			while (cursor > 3) {
+				setup.mockInput.pressArrow("up")
+				cursor -= 1
+			}
+			await settle(setup)
+			expect(frame()).toContain("打开 /model")
+
+			setup.mockInput.pressEnter() // nav → rows
+			await settle(setup)
+			expect(frame()).toContain("↑↓ 选择行")
+			setup.mockInput.pressEnter() // the single jump row
+			await settle(setup)
+
+			// Dispatched exactly once, and only after the modal layer is gone
+			// (contract §3.5: close first, then run the command).
+			expect(dispatched).toEqual(["/model"])
+			expect(topAtDispatch).not.toBe("settings-modal")
+			expect(frame()).not.toContain("分节导航")
+		} finally {
+			await setup.dispose()
+		}
+	})
+
 	test("a stray printable key never filters the section nav away", async () => {
 		const { setup, frame } = await mount({ width: 120, height: 40 })
 		try {
@@ -690,7 +790,7 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("Esc walks editor → section → close, one level per press (P1 ladder)", async () => {
+	test("Esc walks editor → section → exit confirmation, one level per press", async () => {
 		const closed: (string | undefined)[] = []
 		const { setup, frame } = await mount({ onClosed: (summary) => closed.push(summary) })
 		try {
@@ -706,7 +806,36 @@ describe("settings modal: real keys", () => {
 			expect(frame()).toContain("↑↓ 选择行")
 			expect(frame()).not.toContain("选择值")
 			expect(settingsPanelOpen()).toBe(true)
-			setup.mockInput.pressEscape() // browse → close (clean buffer)
+
+			// browse → exit confirmation. The panel is still there behind it.
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			expect(frame()).toContain("退出设置？")
+			expect(settingsPanelOpen()).toBe(true)
+
+			// Default focus is 取消: Esc cancels, panel stays.
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			expect(frame()).not.toContain("退出设置？")
+			expect(frame()).toContain("↑↓ 选择行")
+			expect(settingsPanelOpen()).toBe(true)
+
+			// Reopen and Enter: focus is still 取消, so Enter also cancels.
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			expect(frame()).toContain("退出设置？")
+			setup.mockInput.pressEnter()
+			await settle(setup)
+			expect(frame()).not.toContain("退出设置？")
+			expect(settingsPanelOpen()).toBe(true)
+
+			// Tab moves the focus to 退出; Enter confirms and closes.
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			expect(frame()).toContain("退出设置？")
+			setup.mockInput.pressTab()
+			await settle(setup, 1)
+			setup.mockInput.pressEnter()
 			await settleUntil(setup, () => !settingsPanelOpen())
 			expect(settingsPanelOpen()).toBe(false)
 			expect(closed).toHaveLength(1)
@@ -715,7 +844,7 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("enum editor is fully keyboard driven: ↓ moves the marker, Enter stages (P0-2)", async () => {
+	test("enum editor is fully keyboard driven: ↓ moves the marker, Enter saves (P0-2)", async () => {
 		const calls: string[] = []
 		const { setup, frame } = await mount({ preselect: "general.appearance", calls })
 		try {
@@ -729,13 +858,21 @@ describe("settings modal: real keys", () => {
 			setup.mockInput.pressArrow("down") // wraps back to the first option
 			await settle(setup)
 			expect(frame()).toContain("▸ auto")
-			setup.mockInput.pressEnter() // stage "auto" and leave the editor
+			setup.mockInput.pressEnter() // save "auto" immediately and leave the editor
 			await settle(setup)
-			expect(frame()).toContain("未提交：1 项")
 			expect(frame()).not.toContain("选择值")
-			setup.mockInput.pressKey("s", { ctrl: true })
-			await settleUntil(setup, () => !settingsPanelOpen())
-			expect(calls.some((call) => call.includes('"themeMode":"auto"'))).toBe(true)
+			// Instant save: the status line flashes the row, the panel stays open.
+			expect(frame()).toContain("已保存 · 外观")
+			expect(settingsPanelOpen()).toBe(true)
+			const saves = calls.filter((call) => call.startsWith("configSave:"))
+			expect(saves).toHaveLength(1)
+			expect(saves[0]).toContain('"themeMode":"auto"')
+
+			// The flash is transient: after 1.5 s the resting text is back.
+			await new Promise((resolve) => setTimeout(resolve, 1600))
+			await setup.renderOnce()
+			expect(frame()).not.toContain("已保存")
+			expect(frame()).toContain("改动已即时保存")
 		} finally {
 			await setup.dispose()
 		}
@@ -864,41 +1001,22 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("dirty Esc asks first: cancel keeps drafts + panel, discard closes without writes (P1-3)", async () => {
+	test("Ctrl+S has no commit side effect (instant model)", async () => {
 		const calls: string[] = []
-		const { setup, frame } = await mount({ preselect: "general.session-log", calls })
+		const { setup, frame } = await mount({ preselect: "general.appearance", calls })
 		try {
-			setup.mockInput.pressKey(" ") // toggle session-log → draft
+			setup.mockInput.pressKey("s", { ctrl: true })
 			await settle(setup)
-			expect(frame()).toContain("未提交：1 项")
-
-			setup.mockInput.pressEscape() // dirty → confirmation
-			await settle(setup)
-			expect(frame()).toContain("丢弃未保存的改动")
-			expect(frame()).toContain("1 项未保存")
+			expect(calls).toHaveLength(0)
 			expect(settingsPanelOpen()).toBe(true)
-
-			setup.mockInput.pressEscape() // confirm's Esc = cancel
-			await settle(setup)
-			expect(frame()).not.toContain("丢弃未保存的改动")
-			expect(frame()).toContain("未提交：1 项")
-			expect(settingsPanelOpen()).toBe(true)
-
-			setup.mockInput.pressEscape() // dirty again
-			await settle(setup)
-			expect(frame()).toContain("丢弃未保存的改动")
-			setup.mockInput.pressArrow("right") // destructive default focus: cancel → discard
-			await settle(setup, 1)
-			setup.mockInput.pressEnter()
-			await settleUntil(setup, () => !settingsPanelOpen())
-			expect(settingsPanelOpen()).toBe(false)
-			expect(calls).toHaveLength(0) // 取消/丢弃 never writes
+			expect(frame()).toContain("改动已即时保存")
+			expect(frame()).not.toContain("ctrl+s")
 		} finally {
 			await setup.dispose()
 		}
 	})
 
-	test("a partial commit failure keeps the untried drafts (P1-3)", async () => {
+	test("a failed write shows the error and the exit confirmation still works", async () => {
 		const calls: string[] = []
 		const { setup, frame } = await mount({
 			preselect: "general.session-log",
@@ -906,40 +1024,57 @@ describe("settings modal: real keys", () => {
 			seamOptions: { failNs: "session-log-deepseek" },
 		})
 		try {
-			setup.mockInput.pressKey(" ") // draft 1: session-log (host, will fail)
+			setup.mockInput.pressKey(" ") // toggle → immediate host write, rejected
 			await settle(setup)
-			setup.mockInput.pressArrow("left") // rows → nav
-			await settle(setup, 1)
-			setup.mockInput.pressArrow("down") // general → opentui
-			await settle(setup, 1)
-			setup.mockInput.pressArrow("down") // opentui → host
-			await settle(setup, 1)
-			setup.mockInput.pressArrow("right") // nav → rows (maxActiveSubagents)
-			await settle(setup, 1)
-			setup.mockInput.pressArrow("down") // → maxDepth
-			await settle(setup, 1)
-			setup.mockInput.pressEnter() // → number editor
-			await settle(setup)
-			setup.mockInput.pressArrow("right") // 1 → 2, staged
-			await settle(setup, 1)
-			setup.mockInput.pressKey("s", { ctrl: true })
-			await settle(setup)
-
 			expect(settingsPanelOpen()).toBe(true)
 			expect(frame()).toContain("settings/rejected")
-			// The failed row was attempted (and rolled back); the untried draft
-			// (maxDepth=2, staged by →) survives the failure: the editor still
-			// shows it because the panel keeps the failed buffer open.
-			expect(frame()).toContain("subagent.maxDepth — 输入整数")
-			expect(frame()).toContain("数值: 2")
-			expect(calls.filter((call) => call.startsWith("mutate:subagent:"))).toHaveLength(0)
+			expect(frame()).not.toContain("已保存")
 			expect(calls.filter((call) => call.startsWith("mutate:session-log-deepseek:"))).toHaveLength(1)
+
+			// The panel still navigates, and the exit dialog is still available.
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			expect(frame()).toContain("退出设置？")
+			setup.mockInput.pressTab()
+			await settle(setup, 1)
+			setup.mockInput.pressEnter()
+			await settleUntil(setup, () => !settingsPanelOpen())
+			expect(settingsPanelOpen()).toBe(false)
 		} finally {
 			await setup.dispose()
 		}
 	})
 
-	test("the appearance row live-applies themes.mode.set on commit (P1-1)", async () => {
+	test("a failed number write keeps its editor open for correction", async () => {
+		const calls: string[] = []
+		const { setup, frame } = await mount({
+			preselect: "subagent.maxDepth",
+			calls,
+			seamOptions: { failNs: "subagent" },
+		})
+		try {
+			setup.mockInput.pressEnter() // number editor, value 1
+			await settle(setup)
+			expect(frame()).toContain("subagent.maxDepth — 输入整数")
+			setup.mockInput.pressArrow("right") // 1 → 2
+			await settle(setup, 1)
+			setup.mockInput.pressEnter() // submit → rejected
+			await settle(setup)
+			expect(frame()).toContain("settings/rejected")
+			// The editor is still open with the attempted value, so it can be
+			// corrected or left with Esc.
+			expect(frame()).toContain("subagent.maxDepth — 输入整数")
+			expect(frame()).toContain("数值: 2")
+			const mutates = calls.filter((call) => call.startsWith("mutate:subagent:"))
+			expect(mutates).toHaveLength(1)
+			expect(mutates[0]).toContain('"value":2')
+			expect(settingsPanelOpen()).toBe(true)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("the appearance row live-applies themes.mode.set on save (P1-1)", async () => {
 		const modeSets: { mode: string; options: unknown }[] = []
 		const themes: SettingsThemeFace = {
 			current: () => "dsh-blue",
@@ -960,10 +1095,8 @@ describe("settings modal: real keys", () => {
 			await settle(setup)
 			setup.mockInput.pressArrow("down") // dark → light
 			await settle(setup, 1)
-			setup.mockInput.pressEnter() // stage light
+			setup.mockInput.pressEnter() // save light immediately
 			await settle(setup)
-			setup.mockInput.pressKey("s", { ctrl: true })
-			await settleUntil(setup, () => !settingsPanelOpen())
 			expect(calls.some((call) => call.includes('"themeMode":"light"'))).toBe(true)
 			expect(modeSets).toEqual([{ mode: "light", options: { persist: false } }])
 		} finally {
@@ -971,31 +1104,42 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("one commit writes once, persists, and the reopened UI shows the saved value", async () => {
+	test("one edit writes once, persists, and the reopened UI shows the saved value", async () => {
 		const store: Record<string, unknown> = {
 			theme: "dsh-blue",
 			motion: "auto",
 			footerHints: { send: false, search: false },
 		}
 		const calls: string[] = []
+		const closed: (string | undefined)[] = []
 		const seam = persistingSeam(store, calls)
-		const { setup, frame } = await mount({ preselect: "footerHints.send", seam })
+		const { setup, frame } = await mount({
+			preselect: "footerHints.send",
+			seam,
+			onClosed: (summary) => closed.push(summary),
+		})
 		try {
-			setup.mockInput.pressKey(" ") // stage send = on
+			setup.mockInput.pressKey(" ") // toggle send on → write on the spot
 			await settle(setup)
-			expect(frame()).toContain("未提交：1 项")
-			// Two presses in the same turn: the busy guard drops the second one.
-			setup.mockInput.pressKey("s", { ctrl: true })
-			setup.mockInput.pressKey("s", { ctrl: true })
-			await settleUntil(setup, () => !settingsPanelOpen())
+			expect(frame()).toContain("已保存 · footerHints.send")
+			expect(settingsPanelOpen()).toBe(true)
 
 			const saves = calls.filter((call) => call.startsWith("configSave:"))
 			expect(saves).toHaveLength(1)
 			expect(saves[0]).toContain('"send":true')
-			// On disk: the first 确定 really persisted.
 			expect((store.footerHints as Record<string, boolean>).send).toBe(true)
 
-			// Reopen: the UI reads the reloaded snapshot, never a stale draft.
+			// Close through the exit dialog, then reopen: the UI reads the
+			// reloaded snapshot (instant model has no draft to show).
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			setup.mockInput.pressTab()
+			await settle(setup, 1)
+			setup.mockInput.pressEnter()
+			await settleUntil(setup, () => !settingsPanelOpen())
+			// The exit summary contract is unchanged: onClosed receives the
+			// settingsSummary of everything this session saved.
+			expect(closed).toEqual(["Settings updated: footerHints.send"])
 			openSettingsPanel("footerHints.send")
 			await settle(setup)
 			expect(frame()).toContain("footerHints.send on")
@@ -1004,7 +1148,7 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("two footer hints in one commit do not clobber each other (first-submit bug)", async () => {
+	test("two footer hints saved back-to-back do not clobber each other", async () => {
 		const store: Record<string, unknown> = {
 			theme: "dsh-blue",
 			motion: "auto",
@@ -1014,20 +1158,17 @@ describe("settings modal: real keys", () => {
 		const seam = persistingSeam(store, calls)
 		const { setup, frame } = await mount({ preselect: "footerHints.send", seam })
 		try {
-			setup.mockInput.pressKey(" ") // send = on
+			setup.mockInput.pressKey(" ") // send = on (writes immediately)
 			await settle(setup, 1)
 			for (let index = 0; index < 5; index += 1) {
 				setup.mockInput.pressArrow("down") // send(4) → search(9)
 				await settle(setup, 1)
 			}
-			setup.mockInput.pressKey(" ") // search = on
+			setup.mockInput.pressKey(" ") // search = on (second write)
 			await settle(setup)
-			expect(frame()).toContain("未提交：2 项")
-			setup.mockInput.pressKey("s", { ctrl: true })
-			await settleUntil(setup, () => !settingsPanelOpen())
 
-			// Both writes landed: the send patch is not rewritten by a stale
-			// footerHints object built from the pre-commit snapshot.
+			// Each action wrote the WHOLE hint map built from the fresh snapshot:
+			// the second patch still carries send=true.
 			const hints = store.footerHints as Record<string, boolean>
 			expect(hints.send).toBe(true)
 			expect(hints.search).toBe(true)
@@ -1039,6 +1180,13 @@ describe("settings modal: real keys", () => {
 			expect(last.footerHints.send).toBe(true)
 			expect(last.footerHints.search).toBe(true)
 
+			// Reopen: both values come from the persisted snapshot.
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			setup.mockInput.pressTab()
+			await settle(setup, 1)
+			setup.mockInput.pressEnter()
+			await settleUntil(setup, () => !settingsPanelOpen())
 			openSettingsPanel("footerHints.send")
 			await settle(setup)
 			expect(frame()).toContain("footerHints.send on")
@@ -1048,7 +1196,7 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("paging/Ctrl+S yield to a foreign top layer and recover when it pops (§3.1)", async () => {
+	test("paging yields to a foreign top layer and recovers when it pops (§3.1)", async () => {
 		const store: Record<string, unknown> = {
 			theme: "dsh-blue",
 			motion: "auto",
@@ -1069,9 +1217,10 @@ describe("settings modal: real keys", () => {
 			},
 		})
 		try {
-			setup.mockInput.pressKey(" ") // stage a draft (send = on)
+			setup.mockInput.pressKey(" ") // send = on → one immediate write
 			await settle(setup)
 			expect(frame()).toMatch(/1-6\/16/)
+			expect(calls.filter((call) => call.startsWith("configSave:"))).toHaveLength(1)
 
 			// A foreign layer on top: our handle is no longer `panels.top`.
 			const popup = stack!.open(() => <text>foreign popup</text>, {
@@ -1091,25 +1240,19 @@ describe("settings modal: real keys", () => {
 			// not page" is proven below: the FIRST PgDn after the pop must land
 			// on page 2 (7-12/16), never page 3.
 
-			setup.mockInput.pressKey("s", { ctrl: true }) // must not commit
+			// Ctrl+S has no binding at all, top or not: no extra write.
+			setup.mockInput.pressKey("s", { ctrl: true })
 			await settle(setup)
-			expect(calls.filter((call) => call.startsWith("configSave:"))).toHaveLength(0)
+			expect(calls.filter((call) => call.startsWith("configSave:"))).toHaveLength(1)
 			expect(settingsPanelOpen()).toBe(true)
 
-			// Pop it: the same handle is top again, so both keys work.
+			// Pop it: the same handle is top again, so paging works.
 			popup.close()
 			await settle(setup)
 			setup.mockInput.pressKey("\u001b[6~")
 			await settle(setup)
 			expect(sessionPages).toBe(1)
 			expect(frame()).toMatch(/7-12\/16/)
-
-			setup.mockInput.pressKey("s", { ctrl: true })
-			await settleUntil(setup, () => !settingsPanelOpen())
-			const saves = calls.filter((call) => call.startsWith("configSave:"))
-			expect(saves).toHaveLength(1)
-			expect(saves[0]).toContain('"send":true')
-			expect((store.footerHints as Record<string, boolean>).send).toBe(true)
 		} finally {
 			await setup.dispose()
 		}
@@ -1268,27 +1411,27 @@ describe("settings modal: layered chrome (v1.2)", () => {
 		}
 	})
 
-	test("the action band is two bordered buttons with their key hints", async () => {
+	test("the action band is the esc affordance plus the status line, no commit control", async () => {
 		const { setup, frame } = await mount({ width: 120, height: 40 })
 		try {
-			expect(frame()).toContain("取消 esc")
-			expect(frame()).toContain("确定 ctrl+s")
-			expect(frame()).toContain("无未提交改动")
+			expect(frame()).toContain("esc 返回")
+			expect(frame()).toContain("改动已即时保存")
+			// The old 确定 / ctrl+s control and its 未提交 counter are gone.
+			expect(frame()).not.toContain("确定")
+			expect(frame()).not.toContain("ctrl+s")
+			expect(frame()).not.toContain("未提交")
 
 			const lines = lineSpans(setup)
-			const buttonLine = lines.find((line) => line.map((span) => span.text).join("").includes("确定"))!
-			const text = buttonLine.map((span) => span.text).join("")
-			// A rule cell on each side of each action: │ 取消 esc │   │ 确定 ctrl+s │
+			const actionLine = lines.find((line) => line.map((span) => span.text).join("").includes("esc 返回"))!
+			const text = actionLine.map((span) => span.text).join("")
+			// The esc affordance still owns a one-cell rule on each side.
 			expect(text).toContain("│")
-			expect(text.split("│").length - 1).toBeGreaterThanOrEqual(4)
-			// 确定 is the primary button: accent fill + dark foreground.
-			const confirm = buttonLine.find((span) => span.text.includes("确定"))!
-			expect(confirm.bg.toInts()).toEqual(FALLBACK_THEME.row.activeBg.toInts())
-			expect(confirm.fg.toInts()).toEqual(FALLBACK_THEME.row.activeFg.toInts())
+			expect(text.split("│").length - 1).toBeGreaterThanOrEqual(2)
 
-			// The status line is muted, not faint/hidden.
-			const hint = spanOf(setup, "无未提交改动")
-			expect(hint?.fg.toInts()).toEqual(FALLBACK_THEME.text.muted.toInts())
+			// The status line is system text (v1.2: not faint, which used to be
+			// an alias of muted and therefore carried no hierarchy).
+			const hint = spanOf(setup, "改动已即时保存")
+			expect(hint?.fg.toInts()).toEqual(FALLBACK_THEME.text.system.toInts())
 		} finally {
 			await setup.dispose()
 		}
@@ -1302,10 +1445,13 @@ describe("settings modal: layered chrome (v1.2)", () => {
 			["title on title band", panel.text.base, layers.titleBand],
 			["esc hint on title band", panel.text.muted, layers.titleBand],
 			["nav label on nav band", panel.text.base, layers.navBand],
-			["nav count on nav band", panel.text.muted, layers.navBand],
+			["nav count on nav band", panel.text.system, layers.navBand],
 			["content label on surface", panel.text.base, layers.content],
-			["content value on surface", panel.text.muted, layers.content],
-			["editable badge on surface", panel.text.accent, layers.content],
+			["content value on surface", panel.text.code, layers.content],
+			["editable badge on surface", panel.text.user, layers.content],
+			["readonly row on surface", panel.text.system, layers.content],
+			["section title on surface", panel.text.heading, layers.content],
+			["error line on surface", panel.text.danger, layers.content],
 			["selected row on accent", panel.row.activeFg, panel.row.activeBg],
 		]
 		for (const [name, fg, bg] of pairs) {
@@ -1343,6 +1489,221 @@ describe("settings modal: layered chrome (v1.2)", () => {
 				name,
 				ratio: true,
 			})
+		}
+	})
+})
+
+// ------------------------------------------------ semantic roles (v1.2) ----
+
+describe("settings modal: semantic roles (v1.2)", () => {
+	/** All three stock themes in both modes, with the role SOURCE tokens. */
+	function panels() {
+		const entries: {
+			name: string
+			mode: "dark" | "light"
+			panel: ReturnType<typeof projectPanelTheme>
+			raw: { code: unknown; user: unknown; system: unknown; heading: unknown; danger: unknown }
+		}[] = []
+		const sources = [
+			["dsh-blue", getDshBlueTheme()],
+			["tokyonight", parseTheme(tokyonightJson as never, "tokyonight")],
+			["gruvbox", parseTheme(gruvboxJson as never, "gruvbox")],
+		] as const
+		for (const [name, document] of sources) {
+			for (const mode of ["dark", "light"] as const) {
+				const theme = createComponentTheme(() => resolveThemeDocument(document, mode))
+				entries.push({
+					name,
+					mode,
+					panel: projectPanelTheme(theme),
+					raw: {
+						code: theme.markdown.code,
+						user: theme.text.action.primary.base,
+						system: theme.text.feedback.info.base,
+						heading: theme.markdown.heading,
+						danger: theme.text.feedback.error.base,
+					},
+				})
+			}
+		}
+		return entries
+	}
+
+	test("every role follows the theme: same element, different color per theme", () => {
+		const entries = panels()
+		for (const mode of ["dark", "light"] as const) {
+			for (const role of ["code", "user", "system", "heading", "danger"] as const) {
+				const values = entries
+					.filter((entry) => entry.mode === mode)
+					.map((entry) => ({
+						theme: entry.name,
+						color: entry.panel.text[role].toInts().join(),
+					}))
+				// Two of the three differ => the projection is not a constant.
+				expect({ mode, role, distinct: new Set(values.map((v) => v.color)).size }).toEqual({
+					mode,
+					role,
+					distinct: 3,
+				})
+			}
+		}
+		// Dark and light of the SAME theme also differ (mode is projected too).
+		for (const name of ["dsh-blue", "tokyonight", "gruvbox"] as const) {
+			const dark = entries.find((entry) => entry.name === name && entry.mode === "dark")!
+			const light = entries.find((entry) => entry.name === name && entry.mode === "light")!
+			expect(dark.panel.text.code.toInts().join()).not.toEqual(light.panel.text.code.toInts().join())
+			expect(dark.panel.background.content.toInts().join()).not.toEqual(
+				light.panel.background.content.toInts().join(),
+			)
+		}
+	})
+
+	test("roles clear 4.5:1 on the content surface, falling back to text.base below it", () => {
+		for (const entry of panels()) {
+			const { panel, raw } = entry
+			const content = panel.background.content
+			for (const role of ["code", "user", "system", "heading", "danger"] as const) {
+				const projected = panel.text[role]
+				const label = `${entry.name}/${entry.mode}/${role}`
+				// The guard never lands below the theme's own primary text: AA
+				// where text.base clears it, base's own ratio where the THEME's
+				// light palette sits under 4.5 (tokyonight light = 4.03).
+				const floor = Math.min(4.5, contrastRatio(panel.text.base, content))
+				expect({ label, ok: contrastRatio(projected, content) >= floor - 1e-9 }).toEqual({
+					label,
+					ok: true,
+				})
+				// The guard is exact: below 4.5 the projection IS the primary
+				// text token; at or above it the theme's own token survives.
+				const sourceOk = contrastRatio(raw[role] as never, content) >= 4.5
+				const expected = sourceOk ? (raw[role] as never) : panel.text.base
+				expect({ label, color: projected.toInts().join() }).toEqual({
+					label,
+					color: (expected as { toInts(): number[] }).toInts().join(),
+				})
+			}
+		}
+	})
+
+	test("withContrastFloor drops a role below AA and keeps a legible one", () => {
+		const base = resolveThemeDocument(getDshBlueTheme(), "dark")
+		const content = base.background.raised.base
+		// The destructive token is a BACKGROUND in every stock theme: as text it
+		// is invisible, so the guard must return the primary-text fallback.
+		expect(withContrastFloor(base.text.action.destructive.base, content, base.text.base).toInts()).toEqual(
+			base.text.base.toInts(),
+		)
+		// markdown.code clears AA on the content surface, so the guard keeps it.
+		expect(withContrastFloor(base.markdown.code, content, base.text.base).toInts()).toEqual(
+			base.markdown.code.toInts(),
+		)
+	})
+
+	test("a theme missing the v1.2 tokens falls back instead of throwing", () => {
+		const base = resolveThemeDocument(getDshBlueTheme(), "dark")
+		// Copy the resolved view, then strip every field v1.2 introduced: this is
+		// what a theme projected before the slots existed looks like at runtime.
+		const legacy = {
+			...base,
+			markdown: { ...base.markdown },
+			text: { ...base.text, feedback: { ...base.text.feedback } },
+			background: { ...base.background, raised: { ...base.background.raised } },
+			hue: { ...base.hue, interactive: { ...base.hue.interactive } },
+		}
+		delete (legacy.markdown as Record<string, unknown>).code
+		delete (legacy.markdown as Record<string, unknown>).heading
+		delete (legacy.text.feedback as Record<string, unknown>).info
+		delete (legacy.background.raised as Record<string, unknown>).base
+		delete (legacy.hue.interactive as Record<string, unknown>)[500]
+		const panel = projectPanelTheme(createComponentTheme(() => legacy as never))
+		// Content falls back to the page surface; code/heading to primary text.
+		expect(panel.background.content.toInts()).toEqual(base.background.base.toInts())
+		expect(panel.text.code.toInts()).toEqual(base.text.base.toInts())
+		expect(panel.text.heading.toInts()).toEqual(base.text.base.toInts())
+		// system falls back to muted, floored the same way the projection floors.
+		expect(panel.text.system.toInts()).toEqual(
+			withContrastFloor(base.text.muted, base.background.base, base.text.base).toInts(),
+		)
+		// Focus falls back to the idle border (visible), never to a literal.
+		expect(panel.border.focused.color.toInts()).toEqual(base.border.base.toInts())
+	})
+
+	test("the content surface is raised above the page in every theme", () => {
+		for (const entry of panels()) {
+			const { panel } = entry
+			const layers = resolvePanelChrome(panel)
+			const label = `${entry.name}/${entry.mode}`
+			// Never the near-black page surface: the content layer is its own step.
+			expect({ label, same: layers.content.toInts().join() === panel.background.surface.toInts().join() }).toEqual({
+				label,
+				same: false,
+			})
+			expect(layers.content.toInts().join()).not.toEqual(layers.navBand.toInts().join())
+		}
+	})
+
+	test("render: values are code, ✎ is user, N/A rows are system, counts are system", async () => {
+		const { setup } = await mount({ width: 120, height: 40 })
+		try {
+			const line = (needle: string) => lineSpans(setup).find((entry) => entry.map((span) => span.text).join("").includes(needle))
+			// ✎ editable marker: the user role, not the accent.
+			expect(spanOf(setup, "✎")?.fg.toInts()).toEqual(FALLBACK_THEME.text.user.toInts())
+			// Read-only row (字号): the label is system and its value is code.
+			const naLine = line("字号")!
+			const naText = naLine.map((span) => span.text).join("")
+			expect(naText).toContain("N/A")
+			expect(naLine.find((span) => span.text.includes("字号"))?.fg.toInts()).toEqual(
+				FALLBACK_THEME.text.system.toInts(),
+			)
+			expect(naLine.find((span) => span.text.includes("N/A"))?.fg.toInts()).toEqual(
+				FALLBACK_THEME.text.code.toInts(),
+			)
+			// Nav row count (unselected section) is system text.
+			const navLine = line("TUI 专有")!
+			expect(
+				navLine.some((span) => span.fg.toInts().join() === FALLBACK_THEME.text.system.toInts().join()),
+			).toBe(true)
+			// Section title is the heading role.
+			// Section title is the heading role (the nav copy of the same label is
+			// base/activeFg, so a heading-colored 通用 can only be the title).
+			expect(
+				lineSpans(setup).some((entry) =>
+					entry.some(
+						(span) =>
+							span.text.includes("通用") &&
+							span.fg.toInts().join() === FALLBACK_THEME.text.heading.toInts().join(),
+					),
+				),
+			).toBe(true)
+			// The content pane paints the raised content token, not the page.
+			expect(spanOf(setup, "权限默认预设")?.bg.toInts()).toEqual(
+				resolvePanelChrome(FALLBACK_THEME).content.toInts(),
+			)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("render: the enum editor colors options (code), cursor (accent) and current (system)", async () => {
+		const { setup, frame } = await mount({ preselect: "general.language", width: 120, height: 40 })
+		try {
+			setup.mockInput.pressEnter() // 语言 → enum editor
+			await settle(setup)
+			expect(frame()).toContain("语言 — 选择值")
+			expect(spanOf(setup, "语言 — 选择值")?.fg.toInts()).toEqual(
+				FALLBACK_THEME.text.heading.toInts(),
+			)
+			// Cursor glyph.
+			expect(spanOf(setup, "▸")?.fg.toInts()).toEqual(FALLBACK_THEME.text.accent.toInts())
+			// One option literal carries the code role.
+			const options = lineSpans(setup).filter((entry) =>
+				entry.some((span) => span.fg.toInts().join() === FALLBACK_THEME.text.code.toInts().join()),
+			)
+			expect(options.length).toBeGreaterThanOrEqual(1)
+			// The current-value suffix is system text.
+			expect(spanOf(setup, "(current)")?.fg.toInts()).toEqual(FALLBACK_THEME.text.system.toInts())
+		} finally {
+			await setup.dispose()
 		}
 	})
 })
