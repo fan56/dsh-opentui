@@ -1637,6 +1637,39 @@ describe("C13: /resume repair flow", () => {
 		expect(seam.calls).toEqual(["listSessions"])
 	})
 
+	test("NO DOOMED CONFIRM: a zstd broken log reports its reason directly — no Repair & resume dialog", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "s1", title: "first" }]
+		seam.brokenLogs = [
+			{
+				...BAD_LOG,
+				path: "/home/.dsh/sessions/ws/session-bad/session.v4.jsonl.zstd",
+				name: "session.v4.jsonl.zstd",
+				reason: "truncated or corrupt zstd frame — not repairable client-side (only plain jsonl tails are)",
+			},
+		]
+		const ctx = makeCtx(seam, ["s1", "repair"]) // even a forced "repair" pick must never be consumed
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		// stage 1 = session picker only: the doomed confirm dialog never opened
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(seam.repairCalls).toEqual([])
+		expect(seam.calls).toEqual(["listSessions"]) // no resume either
+		expect(ctx.lines[0]).toContain("cannot repair s1 client-side")
+		expect(ctx.lines[0]).toContain("not repairable client-side")
+	})
+
+	test("NO DOOMED CONFIRM: a 0-byte log is the same unrepairable category", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "s1", title: "first" }]
+		seam.brokenLogs = [{ ...BAD_LOG, reason: "0 bytes" }]
+		const ctx = makeCtx(seam, ["s1", "repair"])
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(seam.repairCalls).toEqual([])
+		expect(seam.calls).toEqual(["listSessions"])
+		expect(ctx.lines[0]).toContain("cannot repair s1 client-side")
+	})
+
 	test("explicit confirm rewrites through the seam (path handed over), reports the backup, resumes", async () => {
 		const seam = new RecordingSeam()
 		seam.sessions = [{ id: "s1", title: "first" }]

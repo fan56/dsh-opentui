@@ -27,6 +27,7 @@ import {
 	corruptSessionIds,
 	emptyFilteredCopy,
 	filterSessionsBySizeFloor,
+	isRepairableLogRow,
 	repairConfirmBody,
 	repairConfirmOptions,
 	resumePickerOptions,
@@ -374,10 +375,13 @@ export async function commitLoginRoute(
  *
  *   - Cancel (or esc) leaves the log untouched and reports the original
  *     reasons — the resume path does NOT run.
- *   - Confirm runs the guarded seam repair (original always moves to
- *     `.corrupt-bak` BEFORE any rewrite). A `failed` result keeps the log
- *     untouched-or-restored and stops the resume; `clean` (nothing needed)
- *     and `repaired` both let the resume proceed.
+ *   - Confirm runs the guarded seam repair (the repaired copy is verified
+ *     beside the original before the canonical name is touched). A `failed`
+ *     result keeps the log untouched-or-restored and stops the resume;
+ *     `clean` (nothing needed) and `repaired` both let the resume proceed.
+ *   - A non-repairable category (0-byte / zstd) NEVER reaches the confirm
+ *     dialog: no "Repair & resume" option is offered for a repair that
+ *     cannot succeed — the reason is reported plainly instead.
  *
  * Resolves true only when the resume path should re-enter.
  */
@@ -392,6 +396,15 @@ export async function offerCorruptedLogRepair(
 	}
 	if (!ctx.seam.repairSessionLog) {
 		ctx.say("/resume repair unavailable in this session — the log was left untouched")
+		return false
+	}
+	const unrepairable = broken.filter((row) => !isRepairableLogRow(row))
+	if (unrepairable.length > 0) {
+		// A doomed action gets no confirm option: report the reason directly,
+		// touch nothing, and do not resume.
+		ctx.say(
+			`cannot repair ${sessionId} client-side — ${repairConfirmBody(unrepairable).join("; ")}; only plain jsonl tails are repairable. The log was left untouched.`,
+		)
 		return false
 	}
 	const confirm = await ctx.pickOne(

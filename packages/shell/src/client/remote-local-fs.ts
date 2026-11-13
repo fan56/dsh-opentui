@@ -30,9 +30,23 @@
  * card prints them verbatim).
  */
 
-import { chmodSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs"
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	openSync,
+	readFileSync,
+	readdirSync,
+	readSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
-import { basename, join } from "node:path"
+import { basename, dirname, join } from "node:path"
+import type { Dirent } from "node:fs"
+import * as nodeZlib from "node:zlib"
 
 /** One agent definition row. `model`/`thinking` are the frontmatter
  * baseline; the composed values (baseline (+) pinned profile) are added by
@@ -313,8 +327,14 @@ export function setAgentField(
 
 /**
  * Session-log integrity scan (row 31; host-session.ts:653-711 parity):
- * walks `<dshHome>/sessions/` and flags empty logs, broken zstd frames and
- * invalid jsonl tails. Returns the report lines the /repair card prints.
+ * walks `<dshHome>/sessions/` and flags empty logs, broken/truncated zstd
+ * frames and invalid jsonl tails. Returns the report lines the /repair card
+ * prints.
+ *
+ * Hot-path note (this also backs the /resume probe): per log only a bounded
+ * TAIL window is read (plain jsonl) or a full frame verify runs once per
+ * (mtime, size) version (zstd), all behind a verdict cache — scanning a
+ * large store never re-reads unchanged bodies.
  */
 export function repairScanSessions(explicitHome?: string): string[] {
 	const out: string[] = []
@@ -325,44 +345,12 @@ export function repairScanSessions(explicitHome?: string): string[] {
 		let total = 0
 		let ok = 0
 		const broken: string[] = []
-		const visit = (dir: string, depth: number): void => {
-			if (depth > 4) return
-			for (const name of readdirSync(dir)) {
-				const full = join(dir, name)
-				if (statSync(full).isDirectory()) {
-					visit(full, depth + 1)
-					continue
-				}
-				// any session log: v3/v4, plain or zstd — the layout moved to
-				// session-<uuid>/ directories with v4 zstd logs
-				if (!(name.startsWith("session.") && (name.endsWith(".zstd") || name.endsWith(".jsonl")))) continue
-				total += 1
-				const size = statSync(full).size
-				if (size === 0) {
-					broken.push(`${name} (0 bytes)`)
-					continue
-				}
-				if (name.endsWith(".zstd")) {
-					const buf = readFileSync(full)
-					const magicOk = buf[0] === 0x28 && buf[1] === 0xb5 && buf[2] === 0x2f && buf[3] === 0xfd
-					if (!magicOk) {
-						broken.push(`${name} (not a zstd frame)`)
-						continue
-					}
-					ok += 1
-					continue
-				}
-				try {
-					const text = readFileSync(full, "utf8").trim()
-					const last = text.split("\n").filter((l) => l.trim()).pop() ?? "{}"
-					JSON.parse(last)
-					ok += 1
-				} catch {
-					broken.push(`${name} (invalid jsonl tail)`)
-				}
-			}
-		}
-		visit(root, 0)
+		visitSessionLogs(root, 0, (full, name) => {
+			total += 1
+			const verdict = probeSessionLog(full, name)
+			if (verdict.broken) broken.push(`${name} (${verdict.reason})`)
+			else ok += 1
+		})
 		out.push(`sessions: ${total} logs scanned, ${ok} healthy`)
 		if (broken.length === 0) out.push("no broken logs found")
 		else {
@@ -387,11 +375,10 @@ export interface BrokenSessionLog {
 }
 
 /**
- * Structured sibling of {@link repairScanSessions} (same walker criteria —
- * empty logs, missing zstd magic, invalid plain-jsonl tails — the base scan
- * itself is untouched): returns the broken logs with their paths so the
- * /resume repair flow can map them onto picker rows and act per log. Never
- * throws; a scan failure surfaces as a `reason`-carrying pseudo row.
+ * Structured sibling of {@link repairScanSessions} (same walker and probe
+ * criteria): returns the broken logs with their paths so the /resume repair
+ * flow can map them onto picker rows and act per log. Never throws; a
+ * scan-level failure surfaces as a `reason`-carrying pseudo row.
  */
 export function scanBrokenSessionLogs(explicitHome?: string): BrokenSessionLog[] {
 	const broken: BrokenSessionLog[] = []
@@ -399,33 +386,11 @@ export function scanBrokenSessionLogs(explicitHome?: string): BrokenSessionLog[]
 		const home = resolveDshHome(explicitHome)
 		const root = join(home, "sessions")
 		if (!existsSync(root)) return broken
-		const visit = (dir: string, depth: number): void => {
-			if (depth > 4) return
-			for (const name of readdirSync(dir)) {
-				const full = join(dir, name)
-				if (statSync(full).isDirectory()) {
-					visit(full, depth + 1)
-					continue
-				}
-				if (!(name.startsWith("session.") && (name.endsWith(".zstd") || name.endsWith(".jsonl")))) continue
-				const sessionId = /^session-(.+)$/.exec(basename(dir))?.[1]
-				const size = statSync(full).size
-				if (size === 0) {
-					broken.push({ path: full, name, reason: "0 bytes", sessionId })
-					continue
-				}
-				if (name.endsWith(".zstd")) {
-					const buf = readFileSync(full)
-					const magicOk = buf[0] === 0x28 && buf[1] === 0xb5 && buf[2] === 0x2f && buf[3] === 0xfd
-					if (!magicOk) broken.push({ path: full, name, reason: "not a zstd frame", sessionId })
-					continue
-				}
-				if (!jsonlTailParses(full)) {
-					broken.push({ path: full, name, reason: "invalid jsonl tail", sessionId })
-				}
-			}
-		}
-		visit(root, 0)
+		visitSessionLogs(root, 0, (full, name) => {
+			const sessionId = /^session-(.+)$/.exec(basename(dirname(full)))?.[1]
+			const verdict = probeSessionLog(full, name)
+			if (verdict.broken) broken.push({ path: full, name, reason: verdict.reason, sessionId })
+		})
 	} catch (e) {
 		broken.push({
 			path: "",
@@ -436,15 +401,157 @@ export function scanBrokenSessionLogs(explicitHome?: string): BrokenSessionLog[]
 	return broken
 }
 
-/** Whether the last non-empty line of a plain jsonl log parses as JSON. */
-function jsonlTailParses(path: string): boolean {
+/** Walk `<root>` to depth 4 and hand every session log (plain or zstd, any
+ * v3/v4 layout) to `onLog`. Per-entry fault tolerance: an unreadable
+ * directory or a single failing entry (dangling symlink, permission oddity,
+ * a host rotation/compaction ENOENT race) is skipped — it never aborts the
+ * whole scan and never silently truncates the result set. */
+function visitSessionLogs(dir: string, depth: number, onLog: (path: string, name: string) => void): void {
+	if (depth > 4) return
+	let entries: Dirent[]
 	try {
-		const text = readFileSync(path, "utf8").trim()
-		const last = text.split("\n").filter((l) => l.trim()).pop() ?? "{}"
-		JSON.parse(last)
-		return true
+		entries = readdirSync(dir, { withFileTypes: true })
 	} catch {
-		return false
+		return // unreadable directory: skip it, keep the rest of the scan
+	}
+	for (const entry of entries) {
+		const full = join(dir, entry.name)
+		if (entry.isDirectory()) {
+			visitSessionLogs(full, depth + 1, onLog)
+			continue
+		}
+		// any session log: v3/v4, plain or zstd — the layout moved to
+		// session-<uuid>/ directories with v4 zstd logs
+		if (!(entry.name.startsWith("session.") && (entry.name.endsWith(".zstd") || entry.name.endsWith(".jsonl")))) continue
+		try {
+			onLog(full, entry.name)
+		} catch {
+			continue // one unreadable entry must not take down the scan
+		}
+	}
+}
+
+/** Per-log integrity verdict, cached per (mtime, size) so /resume re-scans
+ * never re-read unchanged log bodies. */
+type LogVerdict = { broken: false } | { broken: true; reason: string }
+
+const logVerdictCache = new Map<string, { mtimeMs: number; size: number; verdict: LogVerdict }>()
+
+/**
+ * The zstd frame verifier. `Bun.zstdDecompressSync` THROWS on truncated or
+ * corrupt frames; the node:zlib shim only throws on Node runtimes that map
+ * the error (it silently returns partial output under Bun, so it is a
+ * fallback, never the first choice). `undefined` = this runtime has no
+ * verifier — the magic check then stands alone and the frame body is NOT
+ * verified (no claim either way).
+ */
+function zstdVerifyFn(): ((frame: Buffer) => Buffer) | undefined {
+	if (typeof Bun !== "undefined" && typeof Bun.zstdDecompressSync === "function") {
+		return Bun.zstdDecompressSync.bind(Bun)
+	}
+	if (typeof nodeZlib.zstdDecompressSync === "function") return nodeZlib.zstdDecompressSync
+	return undefined
+}
+
+/** Probe ONE session log (cached): 0-byte, broken/truncated zstd frame, or
+ * invalid plain-jsonl tail. Never throws; an unreadable log is flagged, a
+ * log that vanished mid-scan is treated as absent (rotation race). */
+function probeSessionLog(path: string, name: string): LogVerdict {
+	let size: number
+	let mtimeMs: number
+	try {
+		const st = statSync(path)
+		size = st.size
+		mtimeMs = st.mtimeMs
+	} catch {
+		return { broken: false }
+	}
+	const cached = logVerdictCache.get(path)
+	if (cached && cached.mtimeMs === mtimeMs && cached.size === size) return cached.verdict
+	let verdict: LogVerdict
+	try {
+		if (size === 0) {
+			verdict = { broken: true, reason: "0 bytes" }
+		} else if (name.endsWith(".zstd")) {
+			verdict = probeZstdFrame(path)
+		} else {
+			verdict = jsonlTailParses(path, size) ? { broken: false } : { broken: true, reason: "invalid jsonl tail" }
+		}
+	} catch (e) {
+		verdict = { broken: true, reason: `unreadable: ${String(e instanceof Error ? e.message : e).slice(0, 100)}` }
+	}
+	logVerdictCache.set(path, { mtimeMs, size, verdict })
+	return verdict
+}
+
+/**
+ * zstd probe: the magic bytes via a bounded 4-byte read (never the whole
+ * file), then — when a zstd binding is available — a full frame verify that
+ * catches TRUNCATED frames (valid magic, torn body: the realistic crash
+ * residue a magic check alone cannot see). Every flagged zstd verdict says
+ * plainly that client-side repair cannot fix it (only plain jsonl tails are
+ * repaired), so no UI ever offers a doomed action.
+ */
+function probeZstdFrame(path: string): LogVerdict {
+	const notRepairable = " — not repairable client-side (only plain jsonl tails are)"
+	const fd = openSync(path, "r")
+	try {
+		const magic = Buffer.alloc(4)
+		const read = readSync(fd, magic, 0, 4, 0)
+		if (read < 4 || magic[0] !== 0x28 || magic[1] !== 0xb5 || magic[2] !== 0x2f || magic[3] !== 0xfd) {
+			return { broken: true, reason: `not a zstd frame${notRepairable}` }
+		}
+	} finally {
+		closeSync(fd)
+	}
+	const verify = zstdVerifyFn()
+	if (verify === undefined) return { broken: false } // magic ok; body not verifiable in this runtime
+	try {
+		verify(readFileSync(path))
+		return { broken: false }
+	} catch {
+		return { broken: true, reason: `truncated or corrupt zstd frame${notRepairable}` }
+	}
+}
+
+/** Whether the last non-empty line of a plain jsonl log parses as JSON —
+ * read from the TAIL through bounded windows (64KB, growing only when the
+ * window starts mid-line), never the full body. A window that cut the last
+ * line (no preceding newline seen, window < size) grows and retries before
+ * the log is called broken. */
+function jsonlTailParses(path: string, size: number): boolean {
+	const fd = openSync(path, "r")
+	try {
+		let window = Math.min(size, 64 * 1024)
+		for (;;) {
+			const buf = Buffer.alloc(window)
+			const read = readSync(fd, buf, 0, window, size - window)
+			const lines = buf.toString("utf8", 0, read).split("\n")
+			let last = ""
+			let lastIdx = -1
+			for (let i = lines.length - 1; i >= 0; i--) {
+				if (lines[i]!.trim() !== "") {
+					last = lines[i]!
+					lastIdx = i
+					break
+				}
+			}
+			if (last === "") return true // blank tail: nothing torn
+			try {
+				JSON.parse(last)
+				return true
+			} catch {
+				// A window that starts mid-line may have cut the last line in
+				// half — grow the window and retry before flagging it broken.
+				if (lastIdx === 0 && window < size) {
+					window = Math.min(size, window * 4)
+					continue
+				}
+				return false
+			}
+		}
+	} finally {
+		closeSync(fd)
 	}
 }
 
@@ -455,22 +562,55 @@ export type RepairSessionLogResult =
 	| { kind: "clean" }
 	| { kind: "failed"; detail: string }
 
+/** Injection seams for the guarded swap (tui-pi swapRepaired parity): tests
+ * drive the fs calls and the writer probe pause directly instead of staging
+ * real permission/IO failures. Every field defaults to the real fs call. */
+export interface RepairSessionLogOptions {
+	/** The inter-sample pause of the active-writer re-check. */
+	delayFn?: (ms: number) => void
+	/** The swap-in write of the repaired copy. Defaults to writeFileSync. */
+	writeFn?: typeof writeFileSync
+	/** The two renames of the swap pair. Defaults to renameSync. */
+	renameFn?: typeof renameSync
+}
+
+/** Wall-clock gap between the two stability samples of the active-writer
+ * re-check (a log quiet for this long is treated as not being appended). */
+const ACTIVE_WRITER_PROBE_MS = 25
+
+/** Blocking pause without timers: the writer re-check samples the log twice
+ * around this gap and must not yield the render thread meanwhile. */
+function sleepSync(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
 /**
  * Guarded repair of ONE plain-jsonl session log with an invalid tail
  * (tui-pi repairSessionLog invariants, minus the offline-surgery script the
  * zstd fork case needs):
  *
- * - The ORIGINAL log is never edited in place — it first moves aside to
- *   `<name>.corrupt-bak` (epoch-suffixed when taken, never overwritten) and
- *   only then is the truncated copy written under the canonical name; a
- *   failed write restores the original best-effort.
  * - Anything but a plain `.jsonl` log (0-byte, zstd) is NOT repairable
  *   client-side and reports `failed` — the caller must never lose data it
  *   cannot reconstruct.
  * - A log whose last non-empty line already parses reports `clean` (nothing
  *   was touched — the corruption may have self-healed).
+ * - ACTIVE-WRITER DEFENSE: the scan can glimpse a torn tail of a log that
+ *   is being appended RIGHT NOW (a large event line written in several
+ *   writes looks torn mid-write). Before touching anything, the log's
+ *   mtime+size are sampled twice around a short gap; an unstable log is
+ *   abandoned untouched and reported as still being written.
+ * - SWAP (tui-pi swapRepaired order): the repaired copy is written — with
+ *   owner-only 0600 permissions AT CREATION — beside the original, verified
+ *   byte-for-byte, and only then takes the canonical name in a tight
+ *   rename-rename pair (original → `<name>.corrupt-bak`, epoch-suffixed
+ *   when taken, never overwritten). A failed swap-in restores the original
+ *   best-effort and the failure detail NAMES the backup, so even a double
+ *   failure never strands the data without a pointer.
  */
-export function repairSessionLogTail(path: string): RepairSessionLogResult {
+export function repairSessionLogTail(path: string, options: RepairSessionLogOptions = {}): RepairSessionLogResult {
+	const delayFn = options.delayFn ?? sleepSync
+	const writeFn = options.writeFn ?? writeFileSync
+	const renameFn = options.renameFn ?? renameSync
 	if (!path.endsWith(".jsonl")) {
 		return { kind: "failed", detail: "not a plain jsonl log — client-side repair only truncates invalid jsonl tails" }
 	}
@@ -496,7 +636,41 @@ export function repairSessionLogTail(path: string): RepairSessionLogResult {
 		return { kind: "failed", detail: "no parseable jsonl line remains — refusing to empty the log" }
 	}
 	if (kept === end) return { kind: "clean" }
+	// Active-writer defense: two stable mtime+size samples around a short
+	// gap, or the repair is abandoned untouched.
+	try {
+		const before = statSync(path)
+		delayFn(ACTIVE_WRITER_PROBE_MS)
+		const after = statSync(path)
+		if (before.size !== after.size || before.mtimeMs !== after.mtimeMs) {
+			return { kind: "failed", detail: "log is still being written — repair abandoned, nothing was touched" }
+		}
+	} catch (e) {
+		return { kind: "failed", detail: `cannot stat ${basename(path)}: ${String(e instanceof Error ? e.message : e)}` }
+	}
 	const repaired = lines.slice(0, kept).join("\n") + "\n"
+	// The repaired copy is written BESIDE the original first (0600 at
+	// creation — never a world-readable moment) and verified before any
+	// canonical name is touched.
+	const tmpPath = `${path}.repair-tmp-${Date.now()}`
+	try {
+		writeFn(tmpPath, repaired, { mode: 0o600 })
+	} catch (e) {
+		return { kind: "failed", detail: `cannot write the repaired copy: ${String(e instanceof Error ? e.message : e)}` }
+	}
+	try {
+		if (readFileSync(tmpPath, "utf8") !== repaired) throw new Error("repaired copy content mismatch")
+	} catch (e) {
+		try {
+			unlinkSync(tmpPath)
+		} catch {
+			// Best-effort cleanup.
+		}
+		return {
+			kind: "failed",
+			detail: `repaired copy failed verification: ${String(e instanceof Error ? e.message : e)}`,
+		}
+	}
 	let backupPath = `${path}.corrupt-bak`
 	try {
 		statSync(backupPath)
@@ -505,24 +679,43 @@ export function repairSessionLogTail(path: string): RepairSessionLogResult {
 		// Free — the plain .corrupt-bak name is ours.
 	}
 	try {
-		renameSync(path, backupPath)
+		renameFn(path, backupPath)
 	} catch (e) {
+		try {
+			unlinkSync(tmpPath)
+		} catch {
+			// Best-effort cleanup.
+		}
 		return { kind: "failed", detail: `cannot back up the original: ${String(e instanceof Error ? e.message : e)}` }
 	}
 	try {
-		writeFileSync(path, repaired)
-		try {
-			chmodSync(path, 0o600)
-		} catch {
-			// Permissions are store hygiene, not log integrity.
-		}
-		return { kind: "repaired", backupPath }
+		renameFn(tmpPath, path)
 	} catch (e) {
+		// Best-effort restore first — the canonical name must not stay missing
+		// with the original parked in the backup. The detail names the backup
+		// either way: on a double failure that copy is all that remains.
 		try {
-			renameSync(backupPath, path)
+			unlinkSync(tmpPath)
+		} catch {
+			// Best-effort cleanup of the stray repaired copy.
+		}
+		let restored = false
+		try {
+			renameFn(backupPath, path)
+			restored = true
 		} catch {
 			// Nothing further is recoverable; the backup still holds the original.
 		}
-		return { kind: "failed", detail: `swap failed: ${String(e instanceof Error ? e.message : e)}` }
+		return {
+			kind: "failed",
+			detail: `swap failed: ${String(e instanceof Error ? e.message : e)} — the original is at ${backupPath}${restored ? " (restored in place)" : " (restore failed; the backup copy is the only remaining data)"}`,
+		}
 	}
+	try {
+		chmodSync(path, 0o600)
+	} catch {
+		// Permissions are store hygiene, not log integrity: the swap already
+		// succeeded, so a chmod failure never flips the outcome.
+	}
+	return { kind: "repaired", backupPath }
 }

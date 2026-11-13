@@ -4,10 +4,11 @@
 // paths, and the workspace-overlay config seam — all against tmp dirs,
 // fakes, and one local HTTP server for the /api/file route.
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
+import { zstdCompressSync } from "node:zlib"
 import { listAgentFiles, repairScanSessions, repairSessionLogTail, scanBrokenSessionLogs, setAgentField } from "../src/client/remote-local-fs.ts"
 import { probeGitBranch, probeGitBranchOrSha } from "../src/client/remote-git.ts"
 import { toolPresentationModeFromPresetDocument } from "../src/client/remote-exec-mode.ts"
@@ -116,7 +117,7 @@ describe("row 31 — /repair via client-local scan", () => {
 		const home = scratchDir("dsh-wave3-home-")
 		const good = join(home, "sessions", "ws-a", "session-1111")
 		mkdirSync(good, { recursive: true })
-		writeFileSync(join(good, "session.v4.jsonl.zstd"), Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x01, 0x02]))
+		writeFileSync(join(good, "session.v4.jsonl.zstd"), zstdCompressSync(Buffer.from('{"type":"turn/end"}\n')))
 		const empty = join(home, "sessions", "ws-a", "session-2222")
 		mkdirSync(empty, { recursive: true })
 		writeFileSync(join(empty, "session.v4.jsonl.zstd"), Buffer.alloc(0))
@@ -134,7 +135,7 @@ describe("row 31 — /repair via client-local scan", () => {
 		expect(report[0]).toBe("sessions: 5 logs scanned, 2 healthy")
 		expect(report[1]).toBe("broken: 3")
 		expect(report.some((l) => l.includes("session.v4.jsonl.zstd (0 bytes)"))).toBe(true)
-		expect(report.some((l) => l.includes("(not a zstd frame)"))).toBe(true)
+		expect(report.some((l) => l.includes("(not a zstd frame"))).toBe(true)
 		expect(report.some((l) => l.includes("(invalid jsonl tail)"))).toBe(true)
 		expect(report.filter((l) => l.includes("✗")).length).toBe(3)
 	})
@@ -517,7 +518,10 @@ describe("C13 — scanBrokenSessionLogs (structured row-31 sibling)", () => {
 		const home = scratchDir("dsh-c13-home-")
 		const good = join(home, "sessions", "ws-a", "session-aaa1")
 		mkdirSync(good, { recursive: true })
-		writeFileSync(join(good, "session.v4.jsonl.zstd"), Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x01]))
+		writeFileSync(
+			join(good, "session.v4.jsonl.zstd"),
+			zstdCompressSync(Buffer.from('{"type":"turn/start"}\n{"type":"turn/end"}\n')),
+		)
 		const badTail = join(home, "sessions", "ws-a", "session-bbb2")
 		mkdirSync(badTail, { recursive: true })
 		writeFileSync(join(badTail, "session.v3.jsonl"), '{"type":"turn/end"}\nnot json\n')
@@ -612,5 +616,173 @@ describe("C13 — repairSessionLogTail (guarded plain-jsonl tail repair)", () =>
 		const throughFacade = session.repairSessionLog(broken[0]!.path)
 		expect(throughFacade.kind).toBe("failed")
 		session.dispose()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// C13 review fixes — probe coverage, hot-path cost, swap safety
+// ---------------------------------------------------------------------------
+
+describe("C13 probe — zstd coverage is accurate about repairability", () => {
+	test("truncated zstd frame (valid magic, torn body) is flagged as NOT repairable client-side", () => {
+		const home = scratchDir("dsh-c13-zstd-trunc-")
+		const dir = join(home, "sessions", "session-ggg7")
+		mkdirSync(dir, { recursive: true })
+		const frame = zstdCompressSync(
+			Buffer.from(Array.from({ length: 50 }, (_, i) => `{"type":"event","seq":${i}}\n`).join("")),
+		)
+		const log = join(dir, "session.v4.jsonl.zstd")
+		writeFileSync(log, frame.subarray(0, frame.length - 10)) // torn tail, magic intact
+
+		const broken = scanBrokenSessionLogs(home)
+		const row = broken.find((r) => r.path === log)
+		expect(row?.reason).toContain("truncated or corrupt zstd frame")
+		expect(row?.reason).toContain("not repairable client-side")
+		expect(row?.sessionId).toBe("ggg7")
+	})
+
+	test("bad-magic zstd is flagged as not repairable; a healthy frame stays clean", () => {
+		const home = scratchDir("dsh-c13-zstd-magic-")
+		const badDir = join(home, "sessions", "session-hhh8")
+		const okDir = join(home, "sessions", "session-iii9")
+		mkdirSync(badDir, { recursive: true })
+		mkdirSync(okDir, { recursive: true })
+		writeFileSync(join(badDir, "session.v4.jsonl.zstd"), Buffer.from([0x00, 0x01, 0x02]))
+		writeFileSync(join(okDir, "session.v4.jsonl.zstd"), zstdCompressSync(Buffer.from('{"type":"turn/end"}\n')))
+
+		const broken = scanBrokenSessionLogs(home)
+		expect(broken.find((r) => r.path.includes("hhh8"))?.reason).toContain("not a zstd frame")
+		expect(broken.some((r) => r.path.includes("iii9"))).toBe(false)
+	})
+})
+
+describe("C13 probe — hot-path cost and per-entry tolerance", () => {
+	test("300 logs scan well under the 117ms baseline; a warm re-scan (mtime cache) stays in the <30ms band", () => {
+		const home = scratchDir("dsh-c13-perf-")
+		const root = join(home, "sessions")
+		mkdirSync(root, { recursive: true })
+		for (let i = 0; i < 300; i++) {
+			const dir = join(root, `session-perf-${i}`)
+			mkdirSync(dir)
+			writeFileSync(
+				join(dir, "session.v3.jsonl"),
+				`{"type":"turn/start"}\n{"type":"turn/end","seq":${i}}\n`,
+			)
+		}
+		const coldStart = performance.now()
+		expect(scanBrokenSessionLogs(home)).toEqual([])
+		const coldMs = performance.now() - coldStart
+		expect(coldMs).toBeLessThan(117) // the measured full-read baseline
+		const warmStart = performance.now()
+		expect(scanBrokenSessionLogs(home)).toEqual([])
+		expect(performance.now() - warmStart).toBeLessThan(30)
+	})
+
+	test("a dangling symlink (or any single failing entry) is skipped, never aborts the scan", () => {
+		const home = scratchDir("dsh-c13-dangling-")
+		const dir = join(home, "sessions", "session-jjj1")
+		mkdirSync(dir, { recursive: true })
+		symlinkSync(join(dir, "vanished-target"), join(dir, "session.v3.jsonl"))
+		const sibling = join(home, "sessions", "session-jjj2")
+		mkdirSync(sibling, { recursive: true })
+		writeFileSync(join(sibling, "session.v3.jsonl"), '{"type":"turn/end"}\njunk\n')
+
+		const broken = scanBrokenSessionLogs(home)
+		expect(broken.map((r) => r.sessionId)).toEqual(["jjj2"]) // the scan survived the dangling entry
+	})
+})
+
+describe("C13 repair — active-writer defense and reference-order swap", () => {
+	function tornLog(home: string, session: string): string {
+		const dir = join(home, "sessions", session)
+		mkdirSync(dir, { recursive: true })
+		const log = join(dir, "session.v3.jsonl")
+		writeFileSync(log, '{"type":"turn/start"}\n{"type":"turn/end"}\n{"seq":\n')
+		return log
+	}
+
+	function tmpLeftovers(log: string): string[] {
+		return readdirSync(join(log, "..")).filter((name) => name.includes(".repair-tmp-"))
+	}
+
+	test("a log still being written (mtime/size moves between samples) is abandoned untouched", () => {
+		const home = scratchDir("dsh-c13-writer-")
+		const log = tornLog(home, "session-kkk2")
+		const before = readFileSync(log, "utf8")
+
+		const result = repairSessionLogTail(log, {
+			// The injected pause doubles as the live writer: an append lands
+			// between the two stability samples.
+			delayFn: () => appendFileSync(log, '{"type":"more"}\n'),
+		})
+		expect(result.kind).toBe("failed")
+		if (result.kind !== "failed") return
+		expect(result.detail).toContain("still being written")
+		// only the simulated writer's own append landed — the repair touched nothing
+		expect(readFileSync(log, "utf8")).toBe(`${before}{"type":"more"}\n`)
+		expect(existsSync(`${log}.corrupt-bak`)).toBe(false)
+		expect(tmpLeftovers(log)).toEqual([])
+	})
+
+	test("the repaired copy is written to a temp name with 0600 at creation — never the canonical name", () => {
+		const home = scratchDir("dsh-c13-mode-")
+		const log = tornLog(home, "session-lll3")
+
+		const writes: { path: string; mode: unknown }[] = []
+		const spyWrite = ((p: Parameters<typeof writeFileSync>[0], data: Parameters<typeof writeFileSync>[1], opts?: Parameters<typeof writeFileSync>[2]) => {
+			writes.push({ path: String(p), mode: (opts as { mode?: number } | undefined)?.mode })
+			return writeFileSync(p, data, opts)
+		}) as typeof writeFileSync
+
+		const result = repairSessionLogTail(log, { writeFn: spyWrite })
+		expect(result.kind).toBe("repaired")
+		expect(writes).toHaveLength(1)
+		expect(writes[0]!.mode).toBe(0o600)
+		expect(writes[0]!.path).not.toBe(log)
+		expect(writes[0]!.path.startsWith(log)).toBe(true)
+		// and the swapped-in canonical log ends up owner-only
+		expect(statSync(log).mode & 0o777).toBe(0o600)
+	})
+
+	test("swap-in failure restores the original and the detail names the backup (previously untestable branch)", () => {
+		const home = scratchDir("dsh-c13-swapfail-")
+		const log = tornLog(home, "session-mmm4")
+		const before = readFileSync(log, "utf8")
+
+		let renameCalls = 0
+		const failingSwapIn = ((from: string, to: string) => {
+			renameCalls += 1
+			// call 1: original → backup (succeeds); call 2: repaired copy → canonical (fails); call 3: the restore
+			if (renameCalls === 2) throw new Error("EACCES: simulated swap-in failure")
+			return renameSync(from, to)
+		}) as typeof renameSync
+
+		const result = repairSessionLogTail(log, { renameFn: failingSwapIn })
+		expect(result.kind).toBe("failed")
+		if (result.kind !== "failed") return
+		expect(result.detail).toContain("swap failed")
+		expect(result.detail).toContain(".corrupt-bak")
+		// the canonical log was RESTORED to its original content
+		expect(readFileSync(log, "utf8")).toBe(before)
+		// and the backup was moved back — no copies left behind
+		expect(existsSync(`${log}.corrupt-bak`)).toBe(false)
+		expect(tmpLeftovers(log)).toEqual([])
+	})
+
+	test("a failing swap-in write leaves the canonical log untouched and creates no backup", () => {
+		const home = scratchDir("dsh-c13-writefail-")
+		const log = tornLog(home, "session-nnn5")
+		const before = readFileSync(log, "utf8")
+
+		const result = repairSessionLogTail(log, {
+			writeFn: (() => {
+				throw new Error("ENOSPC: simulated write failure")
+			}) as typeof writeFileSync,
+		})
+		expect(result.kind).toBe("failed")
+		if (result.kind !== "failed") return
+		expect(result.detail).toContain("cannot write the repaired copy")
+		expect(readFileSync(log, "utf8")).toBe(before)
+		expect(existsSync(`${log}.corrupt-bak`)).toBe(false)
 	})
 })

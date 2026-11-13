@@ -160,6 +160,16 @@ export function brokenLogsForSession(broken: readonly BrokenLogRow[], sessionId:
 }
 
 /**
+ * Whether a broken log is client-side repairable AT ALL: only a plain
+ * `.jsonl` log with a torn tail is. The 0-byte and zstd categories are not
+ * (repairSessionLogTail refuses them) — the confirm dialog must never offer
+ * "Repair & resume" for a repair that cannot succeed.
+ */
+export function isRepairableLogRow(row: BrokenLogRow): boolean {
+	return row.path.endsWith(".jsonl") && row.reason !== "0 bytes"
+}
+
+/**
  * The repair confirm dialog's two options, in the tui-pi order (index 0 =
  * "Repair & resume" is preselected by pickOne's row-0 selection): the
  * repair rewrites user data on disk, so it NEVER runs implicitly.
