@@ -9,17 +9,11 @@ The Solid host plus plugin mount points plus host-seam bridging — the
 "architecture" deliverable. Owns the OpenTUI renderer lifecycle, the
 surface service, and stdout capture. Package: `@dsh-opentui/runtime`.
 
-## Kit
-
-The prewritten component library (theme tokens, i18n seam, status bar,
-panels, transcript, editors). Shared by the Shell and by plugins that take
-the layer-1 (Solid component) path. Package: `@dsh-opentui/kit`.
-
 ## Shell
 
 The minimal TUI this repo ships to prove the architecture runs —
 transcript, input line, status bar. Deliberately small; it is a consumer
-of Runtime + Kit, not a container for features. Package:
+of Runtime, not a container for features. Package:
 `@dsh-opentui/shell`.
 
 ## Starter
@@ -102,3 +96,35 @@ widgets, approval/ask surfaces. _Avoid_: theme (theme is base-provided).
 The engine-agnostic Remote session facade (host-session /
 remote-host-session surface). Unaffected by view-layer swaps. _Avoid_: host
 (the dsh host is the process it connects to).
+
+## Test tiers
+
+The repo's four-tier test split — unit, ft, ui, e2e — selected and run by
+the tier runner. A test's tier is decided by its filename and imports, not
+by directory. _Avoid_: unit/integration/e2e generics when naming the tiers
+(the repo names are unit/ft/ui/e2e).
+
+## ft
+
+The tier that runs against a real renderer: tests importing
+`@opentui/core/testing` (`testRender`/`createTestRenderer`). _Avoid_:
+calling it "unit tests with rendering" (if it renders, it is ft).
+
+## False green
+
+A test that passes without exercising the guarded behavior — it looks green
+while the protection it claims to provide does not exist. _Avoid_: flaky
+(a false green is consistently wrong, not intermittently failing).
+
+## Canary test
+
+A test that fails when the harness itself stops exercising the real runtime
+— it guards against the fixture layer silently bypassing real code.
+_Avoid_: smoke test (a canary guards the harness, not the happy path).
+
+## Real-client gate
+
+The verification lane that boots the actual terminal client on a real
+machine (the self-hosted `real-client` job), as opposed to hosted CI where
+the client connection is stubbed. _Avoid_: e2e (the tiers' e2e is a
+separate container/local-flow lane).
