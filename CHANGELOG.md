@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-11-13
+
+### Fixed
+
+- **`/agents` read `DEEP` and `LIMITS` as one column.** The deep column was right-aligned inside a five-cell slot, so the only separation from the next column was the kit's single shared gap — the header printed as `DEEP LIMITS` and the values as `0 —`. The slot is now six cells and left-aligned, which turns the column's own padding into visible spacing at both 120x40 and 80x24 without changing the shared `COLUMN_GAP` (so the `/settings` row table is unaffected).
+
 ## [0.9.9] - 2026-11-12
 
 ### Added
