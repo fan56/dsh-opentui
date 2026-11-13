@@ -29,6 +29,7 @@
  */
 import { testRender } from "@opentui/solid"
 import type { TestRendererSetup } from "@opentui/core/testing"
+import type { CapturedFrame } from "@opentui/core"
 import { Transcript } from "../../tui-base/src/routes/session/transcript"
 import { WidgetsDock } from "../../tui-base/src/routes/session/widgets-dock"
 import { createSeamRows, type SeamRows } from "../../tui-base/src/routes/session/seam-rows"
@@ -56,6 +57,11 @@ export interface ShellRenderFixtureOptions {
 	height?: number
 	/** Canned durable transcript the fake session answers storedTranscript with. */
 	stored?: SeamTranscriptRow[]
+	/** When set, every storedTranscript read REJECTS with this error — the
+	 * incident injection point for the read-failure cases (research/
+	 * oldfox-reuse-verdict.md §3: read failure must not be treated as empty
+	 * data). */
+	storedFailure?: Error
 	/** Scripted live turn; `fixture.send()` awaits it. */
 	turnScript?: TurnScript
 }
@@ -129,6 +135,7 @@ function fakeSession(options: ShellRenderFixtureOptions) {
 		currentSessionId: () => "ses-fixture",
 		storedTranscript: async (id: string, _skip?: number) => {
 			calls.push({ method: "storedTranscript", args: id })
+			if (options.storedFailure) throw options.storedFailure
 			return stored
 		},
 		listSessions: async (_limit?: number) => [] as { id: string; title: string }[],
@@ -200,6 +207,9 @@ export interface ShellRenderFixture {
 	waitForFrame(predicate?: (frame: string) => boolean, options?: { timeoutMs?: number }): Promise<string>
 	waitForVisualIdle(options?: { quietFrames?: number }): Promise<void>
 	captureFrame(): string
+	/** Span-level capture (colors/attributes per cell) — for fade assertions
+	 * where the char frame cannot see the gradient. */
+	captureSpans(): CapturedFrame
 	resize(width: number, height: number): void
 	dispose(): Promise<void>
 	[Symbol.asyncDispose](): Promise<void>
@@ -228,6 +238,7 @@ export async function createShellRenderFixture(options: ShellRenderFixtureOption
 	await projection.load()
 
 	const captureFrame = () => normalizeFrame(setup.captureCharFrame())
+	const captureSpans = () => setup.captureSpans()
 
 	/** Time-based poll (opencode waitForFrame semantics): render, capture,
 	 * test the predicate on the NORMALIZED frame, retry on wall-clock budget.
@@ -260,6 +271,7 @@ export async function createShellRenderFixture(options: ShellRenderFixtureOption
 		waitForFrame,
 		waitForVisualIdle: (idleOptions) => setup.waitForVisualIdle(idleOptions),
 		captureFrame,
+		captureSpans,
 		resize: (w, h) => setup.resize(w, h),
 		async dispose() {
 			await setup.dispose()
