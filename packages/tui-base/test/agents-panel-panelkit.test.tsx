@@ -222,7 +222,30 @@ describe("/agents panel-kit modal (8 layers)", () => {
 			expect(flat).toContain("Agent 00")
 			expect(flat).toContain("bigmodel/glm-5.3")
 			expect(flat).toContain("rounds 12 · background")
+			// Column-gap regression (raw frame: text() collapses whitespace, so
+			// spacing cannot be asserted there): DEEP and LIMITS must read as two
+			// columns — header words ≥2 cells apart, deep value ≥2 cells from the
+			// limits dash.
+			const raw = frame()
+			expect(raw).toMatch(/DEEP {2,}LIMITS/)
+			expect(raw).toMatch(/\d {2,}—/)
 			expect(agentsPanelOpen()).toBe(true)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("80-column body shrinks the table without gluing DEEP and LIMITS", async () => {
+		const { setup, frame } = await mount({ rows: corpus(3), width: 80, height: 24 })
+		try {
+			const raw = frame()
+			// The budget shrink takes cells from the widest column, so DEEP keeps
+			// its width: header words and value/dash stay ≥2 cells apart, and the
+			// trailing column survives intact (no clip, no overlap).
+			expect(raw).toMatch(/DEEP {2,}LIMITS/)
+			expect(raw).toMatch(/\d {2,}—/)
+			expect(raw).toContain("LIMITS")
+			expect(raw).toContain("MODEL")
 		} finally {
 			await setup.dispose()
 		}

@@ -132,12 +132,19 @@ export function brokenLine(count: number): string {
 // ---------------------------------------------------------------------------
 
 /** Fixed table columns. Widths are declared cells; List shrinks the widest
- * first when the body budget is smaller (never overlapping). */
+ * first when the body budget is smaller (never overlapping).
+ *
+ * `deep` is deliberately LEFT-aligned and 6 wide: the kit's fixed COLUMN_GAP
+ * is one cell, and the old right-aligned 5-wide column put all its padding on
+ * the left, so the rendered `DEEP`/value sat one cell away from `LIMITS` —
+ * the header read "DEEP LIMITS" and the value read "0 —". Left alignment
+ * turns the column's own trailing pad into the visible gap: header ≥3 cells,
+ * value ≥6 cells, both before LIMITS (total 92 of the 108-cell xlarge body). */
 export const AGENT_TABLE_COLUMNS: ListColumn[] = [
 	{ id: "name", title: "NAME", width: 18 },
 	{ id: "model", title: "MODEL", width: 30 },
 	{ id: "thinking", title: "THINK", width: 10 },
-	{ id: "deep", title: "DEEP", width: 5, align: "right" },
+	{ id: "deep", title: "DEEP", width: 6, align: "left" },
 	{ id: "limits", title: "LIMITS", width: 24 },
 ]
 
