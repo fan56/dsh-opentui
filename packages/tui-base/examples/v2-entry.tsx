@@ -626,6 +626,42 @@ function V2SessionPage(props: {
 			},
 		}),
 	}
+	// The session-switch refresh, lifted out of the slash deps so the /resume
+	// command AND the B1 search-hit resume share ONE reload body (per-session
+	// state resets + the journal load targeting the STAGED id — the
+	// transcript-loss law: the reload must be told WHICH session to read).
+	const reloadSession = (sessionId?: string) => {
+		setLastRequest(undefined)
+		// Steer/queue batch: same per-session reset on /fork//resume switches.
+		composerRef?.resetDeliveries()
+		setComposerPending([])
+		// Footer-quickwins: same per-session reset on /fork//resume switches.
+		setTools(0)
+		resetSkinLineFades()
+		// /resume stages the id (no live session yet) — read THAT session's
+		// journal; /new clears first and reads the (empty) live one.
+		const settled = projection.load(sessionId)
+		void seam.currentModelSelection().then(setModel)
+		refreshFooterData()
+		refreshPresetLabel()
+		// Slash-menu skills: same per-session reset on /fork//resume switches
+		// (the new session's catalog is listed after its first message).
+		setSkillRows(props.skills ?? [])
+		// Composer context row: /fork and /resume are session switches.
+		setContextRevision((n) => n + 1)
+		return settled
+	}
+	// B1 (gap C2, tui-pi search.ts parity): Enter on a /search hit resumes
+	// through the SAME path a /resume pick takes — stage the id on the seam
+	// (`resumeSession` binds it at the next turn), reload THAT journal, then
+	// confirm in the transcript. No confirm dialog (the reference's
+	// resumeTarget({ id }) fires straight); a rejected resume keeps the
+	// overlay open with its own `resume failed — …` status line.
+	const resumeFromSearch = async (sessionId: string) => {
+		seam.resumeSession(sessionId)
+		await reloadSession(sessionId)
+		sayLine(`resumed ${sessionId}`)
+	}
 	const slash = createSlashHost(buildSlashDeps({
 		seam,
 		// Skills ride the SAME registry as the commands: `/name` rows share
@@ -660,27 +696,7 @@ function V2SessionPage(props: {
 			// Composer context row: re-read the branch for the new session.
 			setContextRevision((n) => n + 1)
 		},
-		reload: (sessionId?: string) => {
-			setLastRequest(undefined)
-			// Steer/queue batch: same per-session reset on /fork//resume switches.
-			composerRef?.resetDeliveries()
-			setComposerPending([])
-			// Footer-quickwins: same per-session reset on /fork//resume switches.
-			setTools(0)
-			resetSkinLineFades()
-			// /resume stages the id (no live session yet) — read THAT session's
-			// journal; /new clears first and reads the (empty) live one.
-			const settled = projection.load(sessionId)
-			void seam.currentModelSelection().then(setModel)
-			refreshFooterData()
-			refreshPresetLabel()
-			// Slash-menu skills: same per-session reset on /fork//resume switches
-			// (the new session's catalog is listed after its first message).
-			setSkillRows(props.skills ?? [])
-			// Composer context row: /fork and /resume are session switches.
-			setContextRevision((n) => n + 1)
-			return settled
-		},
+		reload: reloadSession,
 		quit: props.quit,
 		pickOne,
 	}, {
@@ -797,6 +813,9 @@ function V2SessionPage(props: {
 					get seam() {
 						return seam
 					},
+					// B1 (gap C2): Enter on a search hit resumes it through the
+					// /resume seam path (resumeFromSearch: stage + reload(id) + say).
+					onResumed: (sessionId: string) => resumeFromSearch(sessionId),
 					onClosed: () => {
 						if (composerRef && !composerRef.focused()) composerRef.focus()
 					},
