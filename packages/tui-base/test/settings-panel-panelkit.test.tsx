@@ -37,6 +37,7 @@ import {
 	displayValue,
 	draftKey,
 	settingsBackView,
+	settingsRowWidth,
 	stageDraft,
 	type SettingsRowContext,
 } from "../src/routes/session/settings-modal"
@@ -252,6 +253,85 @@ async function mount(options: {
 beforeEach(() => {
 	setSettingsBridge(undefined)
 })
+
+// ------------------------------------------------------ frame geometry ----
+
+/** Display cells of a string (CJK/emoji are two), matching the frame grid. */
+function cells(value: string): number {
+	let width = 0
+	for (const ch of value) {
+		const cp = ch.codePointAt(0) ?? 0
+		const wide =
+			(cp >= 0x1100 && cp <= 0x115f) ||
+			(cp >= 0x2e80 && cp <= 0xa4cf) ||
+			(cp >= 0xac00 && cp <= 0xd7a3) ||
+			(cp >= 0xf900 && cp <= 0xfaff) ||
+			(cp >= 0xfe30 && cp <= 0xfe4f) ||
+			(cp >= 0xff00 && cp <= 0xff60) ||
+			(cp >= 0xffe0 && cp <= 0xffe6)
+		width += wide ? 2 : 1
+	}
+	return width
+}
+
+/**
+ * Labels painted inside the 20-cell nav column: heavy-border cell + 3 panel
+ * inset + 1 body inset = border + 5, width NAV_WIDTH (20). Read off the styled
+ * frame per cell so a blank column can never be mistaken for content text
+ * (the old gate matched the whole frame, and `通用` also names the section
+ * title).
+ */
+function navLabels(setup: Setup): string[] {
+	const frame = setup.captureSpans()
+	const lines = frame.lines.map((line) => line.spans.map((span) => span.text).join(""))
+	const headerIndex = lines.findIndex((line) => line.includes("Settings"))
+	if (headerIndex < 0) return []
+	let borderCell = -1
+	let scan = 0
+	for (const span of frame.lines[headerIndex]!.spans) {
+		if (borderCell < 0 && span.text.includes("┃")) borderCell = scan + span.text.indexOf("┃")
+		scan += span.width
+	}
+	if (borderCell < 0) return []
+	const start = borderCell + 5
+	const out: string[] = []
+	for (const line of frame.lines) {
+		const chars: string[] = []
+		let cell = 0
+		for (const span of line.spans) {
+			let offset = 0
+			for (const ch of span.text) {
+				if (cell + offset >= start && cell + offset < start + 20) chars.push(ch)
+				offset += cells(ch)
+			}
+			cell += span.width
+		}
+		const text = chars.join("").replace(/[┃│\s]/g, "")
+		if (text.length > 0) out.push(text)
+	}
+	return out
+}
+
+/** Cell run painted with the active-row background on the line holding `needle`. */
+function highlightRun(setup: Setup, needle: string): { start: number; end: number } | undefined {
+	const frame = setup.captureSpans()
+	const activeBg = FALLBACK_THEME.row.activeBg
+	for (const line of frame.lines) {
+		if (!line.spans.map((span) => span.text).join("").includes(needle)) continue
+		let cell = 0
+		let start: number | undefined
+		let end = -1
+		for (const span of line.spans) {
+			if (span.bg.equals(activeBg)) {
+				if (start === undefined) start = cell
+				end = cell + span.width - 1
+			}
+			cell += span.width
+		}
+		if (start !== undefined) return { start, end }
+	}
+	return undefined
+}
 
 // ------------------------------------------------------ pure data layer ----
 
@@ -493,6 +573,63 @@ describe("settings modal: drafts", () => {
 // ----------------------------------------------------- rendered key paths ----
 
 describe("settings modal: real keys", () => {
+	test("open frame paints all 7 nav labels, hint follows the pane, highlight stays in budget", async () => {
+		const { setup, frame } = await mount({ width: 120, height: 40 })
+		try {
+			// 1. The nav column is painted head to tail (not just `通用`, which also
+			//    names the section title; the old gate matched the whole frame).
+			const labels = navLabels(setup)
+			for (const section of SETTINGS_SECTIONS) {
+				expect(labels.some((line) => line.startsWith(section.label.replace(/\s+/g, "")))).toBe(true)
+			}
+			// 2. At open the nav owns the cursor: the hint says so and the row list
+			//    must not paint a competing highlight.
+			expect(frame()).toContain("↑↓ 选择分节")
+			expect(highlightRun(setup, "权限默认预设")).toBeUndefined()
+			const navRun = highlightRun(setup, "通用 12")
+			expect(navRun).toBeDefined()
+			expect(navRun!.end - navRun!.start + 1).toBeLessThanOrEqual(20)
+
+			// 3. → hands the cursor to the rows: hint and highlight agree, and the
+			//    bar is exactly the rowWidth budget (84 at 120x40), clear of the
+			//    panel's right padding and border.
+			setup.mockInput.pressArrow("right")
+			await settle(setup)
+			expect(frame()).toContain("↑↓ 选择行")
+			expect(frame()).not.toContain("↑↓ 选择分节")
+			const run = highlightRun(setup, "权限默认预设")
+			expect(run).toBeDefined()
+			expect(run!.end - run!.start + 1).toBe(settingsRowWidth(120, 40))
+			expect(settingsRowWidth(120, 40)).toBe(84)
+			const header = setup
+				.captureCharFrame()
+				.split("\n")
+				.find((line) => line.includes("Settings"))!
+			const rightBorder = cells(header.slice(0, header.lastIndexOf("┃")))
+			expect(rightBorder - 1 - run!.end).toBeGreaterThanOrEqual(3)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	
+	test("a stray printable key never filters the section nav away", async () => {
+		const { setup, frame } = await mount({ width: 120, height: 40 })
+		try {
+			setup.mockInput.pressKey("z")
+			setup.mockInput.pressKey("z")
+			await settle(setup)
+			const labels = navLabels(setup)
+			for (const section of SETTINGS_SECTIONS) {
+				expect(labels.some((line) => line.startsWith(section.label.replace(/\s+/g, "")))).toBe(true)
+			}
+			expect(frame()).not.toContain("No items")
+			expect(frame()).not.toContain("/zz")
+		} finally {
+			await setup.dispose()
+		}
+	})
+
 	test("Esc walks editor → section → close, one level per press (P1 ladder)", async () => {
 		const closed: (string | undefined)[] = []
 		const { setup, frame } = await mount({ onClosed: (summary) => closed.push(summary) })

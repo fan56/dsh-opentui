@@ -536,6 +536,19 @@ export interface SettingsModalProps {
 
 /** Body size cap so the frame never overflows a small terminal. */
 const NAV_WIDTH = 20
+
+/**
+ * Row width budget in cells for one section row (also the painted highlight
+ * width). Terminal width/height → panel frame (`xlarge`, capped at
+ * terminal-2) → borders (2) + panel inset (3 or 1 when compact, both sides) +
+ * PanelBody inset (2) + nav column + column gap. 120 cols → 84 cells, which is
+ * exactly the content column the flex row leaves beside the 20-cell nav.
+ */
+export function settingsRowWidth(terminalWidth: number, terminalHeight: number): number {
+	const frame = resolvePanelWidth("xlarge", undefined, terminalWidth)
+	const inset = resolvePanelMetrics(frame - 2, Math.max(3, terminalHeight - 4)).compact ? 1 : 3
+	return Math.max(16, frame - 2 - inset * 2 - 2 - NAV_WIDTH - 2)
+}
 /**
  * Rows painted per page, derived from the live terminal height instead of a
  * constant (a 120x40 terminal must show all 12 General rows on the first
@@ -1080,15 +1093,12 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	)
 
 	/**
-	 * Row width derived from the real frame: terminal width → panel frame
-	 * (`xlarge`, capped at terminal-2) → borders (2) + panel inset (3 or 1 when
-	 * compact, both sides) + PanelBody inset (2) + nav column + column gap.
+	 * Row width derived from the real frame (see settingsRowWidth): terminal
+	 * width/height → panel frame (`xlarge`, capped at terminal-2) → borders (2)
+	 * + panel inset (3 or 1 when compact, both sides) + PanelBody inset (2) +
+	 * nav column + column gap.
 	 */
-	const rowWidth = () => {
-		const frame = resolvePanelWidth("xlarge", undefined, dimensions().width)
-		const inset = resolvePanelMetrics(frame - 2, Math.max(3, dimensions().height - 4)).compact ? 1 : 3
-		return Math.max(16, frame - 2 - inset * 2 - 2 - NAV_WIDTH - 2)
-	}
+	const rowWidth = () => settingsRowWidth(dimensions().width, dimensions().height)
 	const rowItems = createMemo(() => rowListItems(visibleRows(), drafts()))
 	const activeRowId = () => currentRow()?.id
 	/** "1-8/16" while a section exceeds one page. */
@@ -1108,8 +1118,14 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 						<List
 							items={navItems()}
 							width={NAV_WIDTH - 2}
-							activeId={currentSection().id}
+							/* Only the focused pane paints a cursor: in the nav pane the
+							   row list must not also look selected (and vice versa), or the
+							   hint line below contradicts the visible highlight. */
+							activeId={pane() === "nav" ? currentSection().id : undefined}
 							pageSize={8}
+							/* Section nav: a stray printable key must never filter the
+							   labels away (T18 contract §85). */
+							filterable={false}
 						/>
 					</box>
 					<box flexDirection="column" flexGrow={1} flexShrink={1}>
@@ -1118,7 +1134,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 							<List
 								items={rowItems()}
 								width={rowWidth()}
-								activeId={activeRowId()}
+								activeId={pane() === "rows" ? activeRowId() : undefined}
 								pageSize={pageSize()}
 								onSelect={(item) => {
 									const row = currentRows().find((entry) => entry.id === item.id)

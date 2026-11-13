@@ -489,6 +489,13 @@ export interface ListProps<T = unknown> {
    */
   pageSize?: number
   /**
+   * Type-to-filter. Default true; `false` (navigation lists) keeps every
+   * printable key out of the query buffer so a section nav can never be
+   * silently filtered down — or emptied — by a stray keystroke
+   * (research/t18-settings-migration-contract.md §85).
+   */
+  filterable?: boolean
+  /**
    * Controlled fuzzy query. Omit to use the List's internal typing buffer;
    * when supplied the List paints this value and reports keystrokes through
    * onQueryChange (T17-INT1 B2).

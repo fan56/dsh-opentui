@@ -560,13 +560,28 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
   const rows = createMemo(() =>
     buildListRows(fuzzyFilter(props.items, query()), props.groups),
   )
-  const activeId = () => props.activeId ?? state().activeId
+  /**
+   * A passed `activeId` prop (even `undefined`) makes the cursor controlled:
+   * `undefined` then means "no cursor", which is how /settings parks the
+   * highlight on the focused pane instead of falling back to a stale internal
+   * row. Lists that never pass the prop keep their internal cursor.
+   */
+  const activeControlled = () => "activeId" in props
+  const activeId = () => (activeControlled() ? props.activeId : state().activeId)
   const selectedIds = () => props.selected ?? state().selected
 
   // Paged window (v1.1): group headers count as rows; the page index is
   // clamped on every read so a shrinking filter never leaves a blank page.
   const pageInfo = createMemo(() => resolveListPage(rows().length, props.pageSize, page()))
-  const pageRows = createMemo(() => listPageSlice(rows(), props.pageSize, pageInfo().page))
+  const pageRows = createMemo(() => {
+    const all = rows()
+    const slice = listPageSlice(all, props.pageSize, pageInfo().page)
+    // Never paint a reserved-but-empty body while rows exist: an out-of-range
+    // window (stale page, a host width of 0 that truncated every cell) falls
+    // back to the first window instead of leaving the column blank with no
+    // fallback text either (the `emptyLabel` branch is gated on itemRows()).
+    return slice.length === 0 && all.length > 0 ? listPageSlice(all, props.pageSize, 0) : slice
+  })
 
   // Cursor-follows-page: whenever the active row leaves the window — up/down,
   // a controlled activeId change, or a filter reshuffle — pull the window to
@@ -627,6 +642,10 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
   }
 
   function onKeyDown(key: KeyEvent) {
+    // Navigation lists opt out of type-to-filter (ListProps.filterable): the
+    // query buffer stays empty so a stray printable key can neither hide a row
+    // nor leave the nav painted blank; Esc/Backspace bubble to the panel ladder.
+    const filterable = props.filterable !== false
     // PgUp/PgDn/Home/End page only while the list exceeds one page; otherwise
     // they fall through untouched (the key never gets swallowed).
     const window = pageInfo()
@@ -656,13 +675,15 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
         dispatch({ type: "toggle" })
         break
       case "backspace":
+        if (!filterable) return
         dispatch({ type: "query", query: query().slice(0, -1) })
         break
       case "escape":
-        if (query().length === 0) return
+        if (!filterable || query().length === 0) return
         dispatch({ type: "query", query: "" })
         break
       default:
+        if (!filterable) return
         if (key.ctrl || key.meta) return
         if (key.sequence.length !== 1 || key.name === "space") return
         dispatch({ type: "query", query: query() + key.sequence })
@@ -736,10 +757,15 @@ function ListRowView<T>(props: {
   columns?: readonly ListColumn[]
   footer?: (item: ListItem<T>) => JSX.Element
 }): JSX.Element {
-  const { item, theme } = props
+  // `theme` and `active` stay accessors: a Solid component body runs once, so
+  // destructuring them would freeze the row at its first frame — the enter fade
+  // and a controlled activeId change (Settings hands the cursor between nav and
+  // rows) would then never repaint the highlight.
+  const item = props.item
+  const theme = () => props.theme
   const disabled = item.disabled === true
-  const active = props.active && !disabled
-  const fg = disabled ? theme.text.disabled : toneColor(theme, item.tone, active)
+  const active = () => props.active === true && !disabled
+  const fg = () => (disabled ? theme().text.disabled : toneColor(theme(), item.tone, active()))
 
   // Label truncation keeps the tail (spec: 宽度截断保尾); the label is the
   // flexible segment, badge/description/footer survive.
@@ -770,21 +796,21 @@ function ListRowView<T>(props: {
   return (
     <box
       flexDirection="row"
-      backgroundColor={active ? theme.row.activeBg : undefined}
+      backgroundColor={active() ? theme().row.activeBg : undefined}
     >
       <Show when={props.marker}>
-        <text fg={active ? theme.row.activeFg : theme.text.success}>
+        <text fg={active() ? theme().row.activeFg : theme().text.success}>
           {props.selected ? "✔ " : "  "}
         </text>
       </Show>
       <Show when={item.badge !== undefined}>
-        <text fg={active ? theme.row.activeFg : theme.text.accent}>{item.badge} </text>
+        <text fg={active() ? theme().row.activeFg : theme().text.accent}>{item.badge} </text>
       </Show>
-      <Show when={hasColumns} fallback={<text fg={fg}>{label}</text>}>
-        <text fg={fg}>{columnText()}</text>
+      <Show when={hasColumns} fallback={<text fg={fg()}>{label}</text>}>
+        <text fg={fg()}>{columnText()}</text>
       </Show>
       <Show when={item.description !== undefined}>
-        <text fg={disabled ? theme.text.disabled : active ? theme.row.activeFg : theme.text.muted}>
+        <text fg={disabled ? theme().text.disabled : active() ? theme().row.activeFg : theme().text.muted}>
           {" " + item.description}
         </text>
       </Show>
