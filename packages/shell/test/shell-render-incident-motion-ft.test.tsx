@@ -94,20 +94,35 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 			expect(lingerFrame).toContain("💭 thought")
 			const lingerFg = spanFg(fixture, "💭 thought")
 
-			// Intermediate state 2 — inside the 300ms sweep (2000–2300ms): the
-			// line is STILL on screen and its color has started mixing toward
-			// the background. This frame is the one the incident never painted.
-			await sleepUntil(settleAt + 2150)
+			// Intermediate state 2 — inside the 300ms sweep (2000–2300ms past
+			// the row's fadeOutAt): the line is STILL on screen and its color
+			// has started mixing toward the background. This frame is the one
+			// the incident never painted.
+			//
+			// Sampling window (flaky-mitigation): settleAt is taken BEFORE
+			// `await pending` resolves, so the row's real fadeOutAt sits one
+			// projection-convergence beat LATER than settleAt — a CI process
+			// pause during that await shifts the whole fade window right and
+			// the old narrow sample range [2150, 2270] could miss it. Start
+			// before the nominal sweep edge and end past it: [2015, 2290].
+			// Acceptance inside the loop still requires a MIXED color (the
+			// capture must have moved off the linger color), so an early tick
+			// that lands while the row is still lingering cannot be mistaken
+			// for a mid-sweep frame.
+			await sleepUntil(settleAt + 2015)
 			let sweepFrame: string | undefined
 			let sweepFg: RGBA | undefined
 			// Poll inside the sweep window: catch one painted mid-sweep frame.
-			while (Date.now() < settleAt + 2270) {
+			while (Date.now() < settleAt + 2290) {
 				await tick()
 				const frame = fixture.captureFrame()
 				if (frame.includes("💭 thought")) {
-					sweepFrame = frame
-					sweepFg = spanFg(fixture, "💭 thought")
-					break
+					const fg = spanFg(fixture, "💭 thought")
+					if (colorDistance(fg, lingerFg) > 0.02) {
+						sweepFrame = frame
+						sweepFg = fg
+						break
+					}
 				}
 				await sleep(20)
 			}

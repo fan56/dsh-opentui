@@ -33,8 +33,9 @@ import type { CapturedFrame } from "@opentui/core"
 import { Transcript } from "../../tui-base/src/routes/session/transcript"
 import { WidgetsDock } from "../../tui-base/src/routes/session/widgets-dock"
 import { createSeamRows, type SeamRows } from "../../tui-base/src/routes/session/seam-rows"
-import type { SessionSeam, SeamTranscriptRow } from "../../tui-base/src/seams/session"
+import type { SessionSeam } from "../../tui-base/src/seams/session"
 import { RemoteSessionSeam } from "../src/client/session-seam-adapter"
+import type { StoredTranscriptRow } from "../src/client/seam-types.ts"
 import type { RemoteHostSession } from "../src/client/remote-host-session"
 import type { RemoteJournalEntry } from "../src/client/remote-session-ops"
 
@@ -55,8 +56,14 @@ export type TurnScript = (cb: FakeTurnCallbacks, userText: string) => Promise<vo
 export interface ShellRenderFixtureOptions {
 	width?: number
 	height?: number
-	/** Canned durable transcript the fake session answers storedTranscript with. */
-	stored?: SeamTranscriptRow[]
+	/** Canned durable transcript the fake session answers storedTranscript
+	 * with — RAW pre-projection rows (StoredTranscriptRow, the
+	 * RemoteHostSession wire shape), NOT post-projection SeamTranscriptRow[]:
+	 * the real stored→seam projection in src/client/session-seam-adapter.ts
+	 * (ask Q&A flattening, tool args/brief mapping) runs on them during
+	 * `projection.load()`, so drift in that projection is caught here too.
+	 * Fine-grained projection coverage lives in test/session-seam-adapter.test.ts. */
+	stored?: StoredTranscriptRow[]
 	/** When set, every storedTranscript read REJECTS with this error — the
 	 * incident injection point for the read-failure cases (research/
 	 * oldfox-reuse-verdict.md §3: read failure must not be treated as empty
