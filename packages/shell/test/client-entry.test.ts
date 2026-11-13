@@ -10,7 +10,7 @@ import { describe, expect, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { aggregateTurnContext, bootCallOrder, bootClient, installExitPaths, themeNameFromConfig } from '../src/client-entry.tsx'
+import { aggregateTurnContext, bootCallOrder, bootClient, installClientErrorLog, installExitPaths, themeNameFromConfig } from '../src/client-entry.tsx'
 import { RemoteHostSession } from '../src/client/remote-host-session.ts'
 import type { ClientConnection, ClientConnectionState, ClientReadyInfo } from '../src/client/transport.ts'
 import type { EventsItem } from '../src/client/mux-frame.ts'
@@ -137,6 +137,7 @@ describe('bootClient wiring', () => {
         createSession: seams.createSession,
         render: seams.render as never,
         exitPaths: false,
+        installErrorLog: false,
         labelBudgetMs: 50,
       })
 
@@ -179,6 +180,7 @@ describe('bootClient wiring', () => {
       createSession: seams.createSession,
       render: seams.render as never,
       exitPaths: false,
+      installErrorLog: false,
       labelBudgetMs: 1_000,
     })
     // waitForBootLabel saw the real route immediately — no budget burned
@@ -199,6 +201,7 @@ describe('bootClient shutdown', () => {
       createSession: seams.createSession,
       render: seams.render as never,
       exitPaths: false,
+      installErrorLog: false,
       labelBudgetMs: 10,
     })
     expect(handle.releases).toBe(0)
@@ -221,6 +224,7 @@ describe('bootClient shutdown', () => {
       createSession: seams.createSession,
       render: seams.render as never,
       exitPaths: false,
+      installErrorLog: false,
       labelBudgetMs: 10,
       spawnReaper: (args) => reapers.push(args),
     })
@@ -248,6 +252,7 @@ describe('bootClient shutdown', () => {
         createSession: seams.createSession,
         render: seams.render as never,
         exitPaths: false,
+        installErrorLog: false,
         labelBudgetMs: 10,
         spawnReaper: (args) => reapers.push(args),
       })
@@ -272,6 +277,7 @@ describe('bootClient shutdown', () => {
         createSession: residentFakes.seams.createSession,
         render: residentFakes.seams.render as never,
         exitPaths: false,
+        installErrorLog: false,
         labelBudgetMs: 10,
         spawnReaper: (args) => reapers.push(args),
       })
@@ -294,6 +300,7 @@ describe('bootClient shutdown', () => {
       createSession: seams.createSession,
       render: seams.render as never,
       exitPaths: false,
+      installErrorLog: false,
       labelBudgetMs: 10,
       spawnReaper: (args) => reapers.push(args),
     })
@@ -888,5 +895,72 @@ describe('installExitPaths', () => {
     target.exit(0)
     await new Promise((resolve) => setTimeout(resolve, 120))
     expect(realExitCode).toBe(0) // did not hang forever
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Client error-log sink ($DSH_HOME/opentui-client.errors.log): a UI async
+// path failing must land on disk (opentui-host.idle.log convention) instead
+// of dying with Bun's default handler and zero trace.
+// ---------------------------------------------------------------------------
+
+describe('installClientErrorLog', () => {
+  function fakeTarget() {
+    const listeners = new Map<string, (arg: unknown) => void>()
+    let exitCode: number | undefined
+    const target: { exit: NodeJS.Process['exit']; on: NodeJS.Process['on'] } = {
+      exit: (code?: number) => {
+        exitCode = code
+      },
+      on: (event: string, listener: (arg: unknown) => void) => {
+        listeners.set(event, listener)
+        return target as unknown as NodeJS.Process
+      },
+    }
+    return { target: target as unknown as NodeJS.Process, listeners, exit: () => exitCode }
+  }
+
+  test('unhandledRejection lands in the log and the process stays alive', () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-errlog-'))
+    try {
+      const fake = fakeTarget()
+      installClientErrorLog(home, fake.target)
+      fake.listeners.get('unhandledRejection')!(new Error('async path blew up'))
+      const log = readFileSync(join(home, 'opentui-client.errors.log'), 'utf8')
+      expect(log).toContain('kind=unhandledRejection')
+      expect(log).toContain('async path blew up')
+      expect(fake.exit()).toBeUndefined() // no kill on the rejection path
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  test('uncaughtException lands in the log, then exits loudly', () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-errlog-'))
+    try {
+      const fake = fakeTarget()
+      installClientErrorLog(home, fake.target)
+      fake.listeners.get('uncaughtException')!(new Error('sync blowup'))
+      const log = readFileSync(join(home, 'opentui-client.errors.log'), 'utf8')
+      expect(log).toContain('kind=uncaughtException')
+      expect(log).toContain('sync blowup')
+      expect(fake.exit()).toBe(1)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  test('non-Error reasons and unwritable homes never throw from the sink', () => {
+    const fake = fakeTarget()
+    // dshHome points INTO a file → appendFileSync fails; the sink swallows it
+    const fileHome = mkdtempSync(join(tmpdir(), 'dsh-errlog-'))
+    const notADir = join(fileHome, 'plain-file')
+    writeFileSync(notADir, 'x')
+    try {
+      installClientErrorLog(notADir, fake.target)
+      expect(() => fake.listeners.get('unhandledRejection')!('a string reason')).not.toThrow()
+    } finally {
+      rmSync(fileHome, { recursive: true, force: true })
+    }
   })
 })

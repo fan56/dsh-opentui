@@ -47,6 +47,61 @@ export function hostLockPath(dshHome: string, profile: string): string {
 	return join(dshHome, `opentui-host.${profile}.json`)
 }
 
+/** Client error-log path (idle-reaper convention:
+ * `<dshHome>/opentui-host.idle.log` → the client mirrors it as
+ * `<dshHome>/opentui-client.errors.log`). */
+export function clientErrorLogPath(dshHome: string): string {
+	return join(dshHome, "opentui-client.errors.log")
+}
+
+/** Install the client's last-resort async-error sink (opentui-host.idle.log
+ * convention: appendFileSync, best-effort, never throws). WITHOUT this, a
+ * rejection escaping a UI async path (`void command.run(...)` fire-and-forget
+ * dispatch, detached view effects) dies with Bun's default handler — stderr
+ * may be a redirected file the user never reads, or on detached runs nothing
+ * at all, and the crash is unrepeatable with no trace. With it, every
+ * unhandled rejection / uncaught exception lands in
+ * `$DSH_HOME/opentui-client.errors.log` before anything else happens.
+ *
+ * - unhandledRejection: log and STAY ALIVE — an async path failing must not
+ *   kill the TUI silently (the process keeps rendering; the log line is the
+ *   evidence).
+ * - uncaughtException: log, then exit(1) — a synchronous throw leaves the
+ *   renderer in undefined state, but the stack is now on disk first.
+ *
+ * `target` is the process-like surface (injectable for tests); handlers are
+ * idempotent per sink (re-install replaces, the flag keeps one log line per
+ * event). */
+export function installClientErrorLog(
+	dshHome: string,
+	target: Pick<NodeJS.Process, "on" | "exit"> = process,
+): void {
+	const logPath = clientErrorLogPath(dshHome)
+	const record = (kind: string, error: unknown): void => {
+		const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
+		const line = `${new Date().toISOString()} kind=${kind} pid=${process.pid}\n${message}\n\n`
+		try {
+			appendFileSync(logPath, line)
+		} catch {
+			/* the sink must never throw from the error path */
+		}
+		try {
+			process.stderr.write(`[dsh-opentui] ${kind}: ${message.split("\n")[0]}\n`)
+		} catch {
+			/* stderr may be detached */
+		}
+	}
+	target.on("unhandledRejection", (reason) => {
+		record("unhandledRejection", reason)
+	})
+	target.on("uncaughtException", (error) => {
+		record("uncaughtException", error)
+		// A synchronous throw leaves the renderer loop in an undefined state —
+		// exit loudly (the stack is on disk now), never silently.
+		target.exit(1)
+	})
+}
+
 /** Detached idle-exit hand-off (decision 5): see scripts/idle-reaper.mjs.
  * `idleMs` is the window after the LAST client disconnect; the reaper
  * survives this process, cancels itself if a client re-attaches inside the
@@ -110,7 +165,7 @@ export function spawnIdleReaper(
 }
 
 import { join } from "node:path"
-import { existsSync } from "node:fs"
+import { appendFileSync, existsSync } from "node:fs"
 import { spawn } from "node:child_process"
 import type { ShellSessionSurface } from "./shell-session.ts"
 import { ENV_THEME } from "./workspace-config.ts"

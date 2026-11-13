@@ -258,45 +258,50 @@ export class RemoteSessionOps {
 	 * Stored sessions (row 13): `session/list` + the client-side retention
 	 * filter of host-session.ts:208-240 — subagent-origin rows out,
 	 * retention-days cutoff by updatedAt, newest first, capped.
+	 *
+	 * RPC failures PROPAGATE (never flatten to `[]`): the pre-bcfba5a blanket
+	 * `catch { return [] }` made a failing call read as "no stored sessions"
+	 * — the /resume picker lied while the store had rows (observed live: a
+	 * client adopting a resident host older than the `session/list` route
+	 * answered "no stored sessions" with zero diagnostics). Consumers own
+	 * their degrade: the /resume command reports the failure as
+	 * `resume unavailable — …`, and the auto-resume boot path already wraps
+	 * this call in its own catch (auto-resume.ts runAutoResume).
 	 */
 	async listSessions(options: { limit?: number; retentionDays?: number } = {}): Promise<RemoteSessionRow[]> {
 		const limit = options.limit ?? 12
-		try {
-			const value = (await this.#rpc("session/list", { _request: {} })) as { items?: unknown }
-			const items = Array.isArray(value.items) ? value.items : []
-			const retentionDays = Number(options.retentionDays ?? 0)
-			const cutoff = retentionDays > 0 ? Date.now() - retentionDays * 86400000 : 0
-			const out: RemoteSessionRow[] = []
-			for (const item of items) {
-				const row = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>
-				// subagent children are not user-resumable (the wire carries the
-				// origin tag; delegationDepth has no remote field)
-				if (row.origin === "subagent") continue
-				const id = typeof row.sessionId === "string" ? row.sessionId : ""
-				if (!id) continue
-				const updatedAt = typeof row.updatedAt === "number" ? String(row.updatedAt) : ""
-				if (cutoff > 0 && updatedAt && Number(updatedAt) < cutoff) continue
-				const projections = (row.projections ?? {}) as Record<string, unknown>
-				const values = (projections.values ?? {}) as Record<string, unknown>
-				const title = typeof values.title === "string" ? values.title : ""
-				out.push({
-					id,
-					title: title.slice(0, 40),
-					...(updatedAt ? { updatedAt } : {}),
-					// G1 resume-picker: pass-through display fields — the wire may
-					// not carry them (older hosts); absent stays absent and the
-					// view fails open on both.
-					...(typeof row.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
-					...(typeof row.sizeBytes === "number" && Number.isFinite(row.sizeBytes) ? { sizeBytes: row.sizeBytes } : {}),
-					// feat/auto-resume: the host's emptiness flag — an absent
-					// field stays absent (older hosts), never fabricated.
-					...(typeof row.blank === "boolean" ? { blank: row.blank } : {}),
-				})
-			}
-			return out.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit)
-		} catch {
-			return []
+		const value = (await this.#rpc("session/list", { _request: {} })) as { items?: unknown }
+		const items = Array.isArray(value.items) ? value.items : []
+		const retentionDays = Number(options.retentionDays ?? 0)
+		const cutoff = retentionDays > 0 ? Date.now() - retentionDays * 86400000 : 0
+		const out: RemoteSessionRow[] = []
+		for (const item of items) {
+			const row = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>
+			// subagent children are not user-resumable (the wire carries the
+			// origin tag; delegationDepth has no remote field)
+			if (row.origin === "subagent") continue
+			const id = typeof row.sessionId === "string" ? row.sessionId : ""
+			if (!id) continue
+			const updatedAt = typeof row.updatedAt === "number" ? String(row.updatedAt) : ""
+			if (cutoff > 0 && updatedAt && Number(updatedAt) < cutoff) continue
+			const projections = (row.projections ?? {}) as Record<string, unknown>
+			const values = (projections.values ?? {}) as Record<string, unknown>
+			const title = typeof values.title === "string" ? values.title : ""
+			out.push({
+				id,
+				title: title.slice(0, 40),
+				...(updatedAt ? { updatedAt } : {}),
+				// G1 resume-picker: pass-through display fields — the wire may
+				// not carry them (older hosts); absent stays absent and the
+				// view fails open on both.
+				...(typeof row.cwd === "string" && row.cwd ? { cwd: row.cwd } : {}),
+				...(typeof row.sizeBytes === "number" && Number.isFinite(row.sizeBytes) ? { sizeBytes: row.sizeBytes } : {}),
+				// feat/auto-resume: the host's emptiness flag — an absent
+				// field stays absent (older hosts), never fabricated.
+				...(typeof row.blank === "boolean" ? { blank: row.blank } : {}),
+			})
 		}
+		return out.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit)
 	}
 
 	/**

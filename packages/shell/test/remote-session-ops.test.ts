@@ -155,11 +155,20 @@ describe("RemoteSessionOps", () => {
 		expect(h.connection.rpcCalls[0]).toMatchObject({ method: "session/list", args: { _request: {} } })
 	})
 
-	test("listSessions survives a failing RPC with []", async () => {
+	test("listSessions rejects on a failing RPC (never reads as 'no stored sessions')", async () => {
+		// The pre-fix blanket `catch { return [] }` made a failing session/list
+		// RPC — e.g. a client that adopted a resident host older than the
+		// route — print the /resume lie "no stored sessions" with zero
+		// diagnostics. Failures propagate now; consumers own their degrade.
 		const h = makeOps(() => {
 			throw new Error("down")
 		})
-		expect(await h.ops.listSessions()).toEqual([])
+		const settled = await h.ops.listSessions().then(
+			(rows) => ({ rows }),
+			(error: unknown) => ({ error }),
+		)
+		expect(settled.rows).toBeUndefined()
+		expect((settled.error as Error).message).toBe("down")
 	})
 
 	test("storedTranscript rejects on a failed journal read (never fakes an empty history)", async () => {

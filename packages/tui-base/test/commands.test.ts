@@ -37,11 +37,14 @@ class RecordingSeam {
 	repairResults: ({ kind: "repaired"; backupPath: string } | { kind: "clean" } | { kind: "failed"; detail: string })[] = []
 	/** C13: the log paths the repair actually received (the write gate). */
 	repairCalls: string[] = []
+	/** Fail-loud /resume: when set, listSessions rejects with this error. */
+	listFailure: Error | undefined
 
 	readonly seam: SessionSeam = {
 		status: () => ({ connection: "connected", turn: "idle", sessionAttached: true }),
 		listSessions: async () => {
 			this.calls.push("listSessions")
+			if (this.listFailure) throw this.listFailure
 			return this.sessions
 		},
 		searchSessions: async () => [],
@@ -420,6 +423,18 @@ describe("core commands", () => {
 		await coreCommands()[6]!.run(ctx, "")
 		expect(ctx.hooks.picks).toEqual([])
 		expect(ctx.lines).toEqual(["no stored sessions"])
+	})
+
+	test("/resume reports a failing store list as an error, never 'no stored sessions'", async () => {
+		// The list must fail loud: a dead seam / an adopted host without the
+		// session/list route used to flatten to [] and print the lie "no
+		// stored sessions" while the store had rows (02e1608 logout parity).
+		const seam = new RecordingSeam()
+		seam.listFailure = new Error("host does not serve session/list")
+		const ctx = makeCtx(seam)
+		await coreCommands()[6]!.run(ctx, "")
+		expect(ctx.hooks.picks).toEqual([])
+		expect(ctx.lines).toEqual(["resume unavailable — host does not serve session/list"])
 	})
 
 	test("/clear resets the transcript client-side and says so", async () => {

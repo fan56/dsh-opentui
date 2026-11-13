@@ -80,6 +80,7 @@ import {
 	bootCallOrder,
 	defaultSpawnReaper,
 	hostLockPath,
+	installClientErrorLog,
 	installExitPaths,
 	spawnIdleReaper,
 	type IdleReaperArgs,
@@ -88,7 +89,7 @@ import {
 // Re-exported for the tests and the --v2 dev entry (batch 9a split: the
 // implementations live in client/boot-shared.ts — importable WITHOUT this
 // file's @opentui/solid preload registration).
-export { bootCallOrder, installExitPaths, spawnIdleReaper, themeNameFromConfig } from "./client/boot-shared.ts"
+export { bootCallOrder, installClientErrorLog, installExitPaths, spawnIdleReaper, themeNameFromConfig } from "./client/boot-shared.ts"
 import {
 	DEFAULT_PROFILE,
 	ensureHost,
@@ -142,6 +143,9 @@ export interface ClientBootOptions {
 	/** Install the process exit-path interception (default true; tests
 	 * pass false and exercise installExitPaths with a fake target). */
 	exitPaths?: boolean
+	/** Install the client error-log sink ($DSH_HOME/opentui-client.errors.log;
+	 * default true; tests pass false to keep the process surface clean). */
+	installErrorLog?: boolean
 	/** Idle reaper seam (tests record instead of spawning). Default: the
 	 * detached `node scripts/idle-reaper.mjs` spawn. */
 	spawnReaper?: (args: IdleReaperArgs) => void
@@ -220,6 +224,13 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 		idleExitSec,
 		...(options.dshHome !== undefined ? { dshHome: options.dshHome } : {}),
 	})
+
+	// Last-resort async-error sink: unhandled rejections / uncaught exceptions
+	// land in $DSH_HOME/opentui-client.errors.log (opentui-host.idle.log
+	// convention) — a UI async path failing must never vanish without a trace.
+	if (options.installErrorLog !== false) {
+		installClientErrorLog(host.dshHome)
+	}
 
 	bootCallOrder.push("connect")
 	const connection = (options.connect ?? defaultConnect)(host.authority, host.cookieHeader)

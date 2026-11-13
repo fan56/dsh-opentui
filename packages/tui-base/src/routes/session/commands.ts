@@ -19,7 +19,7 @@
  *                            send to the model)
  *   plain text            → not a command; caller sends/steers as batch 4
  */
-import type { SeamEffortOption, SeamLoginRoute, SeamPresetRow, SessionSeam } from "../../seams/session"
+import type { SeamEffortOption, SeamLoginRoute, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
 import {
@@ -901,7 +901,17 @@ export function coreCommands(): SlashCommand[] {
 			name: "/resume",
 			description: "resume a persisted session",
 			async run(ctx) {
-				const sessions = await ctx.seam.listSessions()
+				// The store list must FAIL LOUD, never read as empty: a list
+				// failure here (dead seam, adopted host without the route) used
+				// to flatten to [] and print the lie "no stored sessions"
+				// (parity with the /logout dead-seam contract in 02e1608).
+				let sessions: SeamSessionSummary[]
+				try {
+					sessions = await ctx.seam.listSessions()
+				} catch (error) {
+					ctx.say(`resume unavailable — ${seamFailureReason(error)}`)
+					return
+				}
 				if (sessions.length === 0) {
 					ctx.say("no stored sessions")
 					return
