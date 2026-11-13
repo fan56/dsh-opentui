@@ -14,8 +14,8 @@ import { testRender } from "@opentui/solid"
 import type { JSX } from "solid-js"
 import type { PanelMotionAdapter } from "../src/contracts"
 import { FALLBACK_THEME } from "../src/fallback"
-import { Panel, resolvePanelHeightLimit, resolvePanelMetrics, resolvePanelWidth } from "../src/panel"
-import { PanelKitContext, fadeColor, resolveFrameToken, resolveIdentity, resolveScrimAlpha, resolveScrimColor, resolveTitleColor, usePanelTheme } from "../src/theme"
+import { Panel, resolvePanelHeightLimit, resolvePanelMetrics, resolvePanelRows, resolvePanelWidth } from "../src/panel"
+import { PanelKitContext, fadeColor, resolveFrameToken, resolveIdentity, resolvePanelChrome, resolveScrimAlpha, resolveScrimColor, resolveTitleColor, usePanelTheme } from "../src/theme"
 import { align, fitColumns, fitRow, hasWideGlyphs, measure, padEnd, padStart, takeCells, truncate } from "../src/text"
 
 /** Child probe: reads the live (possibly faded) theme like a control does. */
@@ -232,6 +232,114 @@ describe("size rules", () => {
     expect(resolvePanelMetrics(78, 18).compact).toBe(true)
     expect(resolvePanelMetrics(60, 30).compact).toBe(true)
     expect(resolvePanelMetrics(78, 30).compact).toBe(false)
+  })
+
+  test("rows is a fixed frame height clamped like the height cap (v1.2)", () => {
+    expect(resolvePanelRows(undefined, 40)).toBeUndefined()
+    expect(resolvePanelRows(Number.NaN, 40)).toBeUndefined()
+    expect(resolvePanelRows(30, 40)).toBe(30)
+    expect(resolvePanelRows(29.7, 40)).toBe(29)
+    expect(resolvePanelRows(100, 40)).toBe(36)
+    expect(resolvePanelRows(2, 40)).toBe(3)
+    expect(resolvePanelRows(30, 10)).toBe(6)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Fixed frame (v1.2 `rows`) + layered chrome
+// ---------------------------------------------------------------------------
+
+/** First/last row of the frame's top/bottom border in the painted frame. */
+function frameEdges(setup: Awaited<ReturnType<typeof testRender>>): { top: number; bottom: number } {
+  const lines = setup.captureCharFrame().split("\n")
+  return {
+    top: lines.findIndex((line) => line.includes("┏")),
+    bottom: lines.findLastIndex((line) => line.includes("┗")),
+  }
+}
+
+describe("fixed frame and layered chrome", () => {
+  test("a taller body cannot change the frame edges; rows fixes the height", async () => {
+    // One renderer at a time (a second live testRender has no renderer), and
+    // children are lazy: a function child is resolved inside the render root,
+    // so createElement never runs before a renderer exists.
+    const lazy = (build: () => JSX.Element) => build as unknown as JSX.Element
+    const short = await renderPanel({
+      title: "Fixed",
+      rows: 14,
+      width: 40,
+      children: lazy(() => <text>one</text>),
+    })
+    const a = frameEdges(short)
+    await short.dispose()
+
+    const tall = await renderPanel({
+      title: "Fixed",
+      rows: 14,
+      width: 40,
+      children: lazy(() => (
+        <box flexDirection="column">
+          {Array.from({ length: 20 }, (_, index) => (
+            <text>{`row ${index + 1}`}</text>
+          ))}
+        </box>
+      )),
+    })
+    const b = frameEdges(tall)
+    await tall.dispose()
+
+    // 80x24 terminal: a 14-row frame is centered at row 5 and ends at 18.
+    expect(a).toEqual({ top: 5, bottom: 18 })
+    expect(b).toEqual(a)
+    expect(a.bottom - a.top + 1).toBe(14)
+  })
+
+  test("rows wins over a content `height` cap", async () => {
+    const setup = await renderPanel({ title: "Fixed", rows: 12, height: 4, width: 40 })
+    try {
+      expect(frameEdges(setup)).toEqual({ top: 6, bottom: 17 })
+    } finally {
+      await setup.dispose()
+    }
+  })
+
+  test("layered paints the title band and a rule under it; flat keeps v1.1", async () => {
+    const layered = await renderPanel({ title: "Layered", rows: 12, width: 40, layered: true })
+    const flat = await renderPanel({ title: "Layered", rows: 12, width: 40 })
+    try {
+      const chrome = resolvePanelChrome(theme)
+      const lines = layered.captureCharFrame().split("\n")
+      const titleRow = lines.findIndex((line) => line.includes("Layered"))
+      expect(titleRow).toBeGreaterThan(-1)
+      // One-color band behind the title, straight from the theme projection.
+      const titleSpan = layered
+        .captureSpans()
+        .lines[titleRow]!.spans.find((span) => span.text.includes("Layered"))
+      expect(titleSpan?.bg.toInts()).toEqual(chrome.titleBand.toInts())
+      expect(chrome.titleBand.toInts()).not.toEqual(chrome.content.toInts())
+      // The rule row right under the title.
+      expect(lines[titleRow + 1]).toContain("─")
+
+      const flatLines = flat.captureCharFrame().split("\n")
+      const flatTitleRow = flatLines.findIndex((line) => line.includes("Layered"))
+      const flatSpan = flat
+        .captureSpans()
+        .lines[flatTitleRow]!.spans.find((span) => span.text.includes("Layered"))
+      expect(flatSpan?.bg.toInts()).toEqual(chrome.content.toInts())
+      expect(flatLines[flatTitleRow + 1]).not.toContain("─")
+    } finally {
+      await layered.dispose()
+      await flat.dispose()
+    }
+  })
+
+  test("the chrome projection is token-only and keeps the bands distinct", () => {
+    const chrome = resolvePanelChrome(theme)
+    expect(chrome.content).toBe(theme.background.surface)
+    expect(chrome.navBand).toBe(theme.background.raised)
+    expect(chrome.divider).toBe(theme.border.base.color)
+    expect(chrome.titleBand.toInts()).not.toEqual(chrome.content.toInts())
+    expect(chrome.navBand.toInts()).not.toEqual(chrome.titleBand.toInts())
   })
 })
 

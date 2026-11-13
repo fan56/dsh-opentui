@@ -36,6 +36,7 @@ import {
   STATIC_MOTION,
   fadeTheme,
   resolveFrameToken,
+  resolvePanelChrome,
   resolveScrimAlpha,
   resolveScrimColor,
   resolveTitleColor,
@@ -74,6 +75,20 @@ export function resolvePanelHeightLimit(maxHeight: number | undefined, terminalH
   return Math.max(3, Math.min(Math.floor(rows), terminalHeight - 4))
 }
 
+/**
+ * Fixed frame height (v1.2). `PanelOptions.rows` is a target frame size, so it
+ * is clamped exactly like the height cap and resolved BEFORE content: the
+ * frame never depends on what a consumer paints inside it. `undefined` keeps
+ * the v1 content-sized behavior.
+ */
+export function resolvePanelRows(
+  rows: number | undefined,
+  terminalHeight: number,
+): number | undefined {
+  if (rows === undefined || !Number.isFinite(rows)) return undefined
+  return resolvePanelHeightLimit(rows, terminalHeight)
+}
+
 export function Panel(props: PanelShellProps) {
   const dimensions = useTerminalDimensions()
   const kit = usePanelKit()
@@ -87,7 +102,16 @@ export function Panel(props: PanelShellProps) {
   // -- Geometry -------------------------------------------------------------
   const frameWidth = () => resolvePanelWidth(props.size, props.width, dimensions().width)
   const heightLimit = () => resolvePanelHeightLimit(props.maxHeight, dimensions().height)
-  const frameHeight = () => (props.height === undefined ? undefined : Math.min(props.height, heightLimit()))
+  /**
+   * `rows` (v1.2) is a FIXED frame height: it is resolved from the terminal
+   * alone, so a consumer swapping sections or opening an editor cannot resize
+   * the frame. `height` keeps the v1 content-height meaning.
+   */
+  const frameHeight = () => {
+    const fixed = resolvePanelRows(props.rows, dimensions().height)
+    if (fixed !== undefined) return fixed
+    return props.height === undefined ? undefined : Math.min(props.height, heightLimit())
+  }
   const innerWidth = () => Math.max(1, frameWidth() - 2)
   const inset = () => (resolvePanelMetrics(innerWidth(), (frameHeight() ?? heightLimit()) - 2).compact ? 1 : 3)
 
@@ -212,9 +236,24 @@ export function Panel(props: PanelShellProps) {
   const header = () => {
     if (props.header) return props.header
     const width = Math.max(1, innerWidth() - inset() * 2)
+    // v1.2 layered chrome: a title band one step above the content surface and
+    // a one-cell rule under it, so the header never blends into the body. Flat
+    // (default) keeps the v1.1 look for every existing consumer.
+    const layered = props.layered === true
     return (
-      <box flexDirection="column" flexShrink={0}>
-        <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
+      <box
+        flexDirection="column"
+        flexShrink={0}
+        backgroundColor={layered ? resolvePanelChrome(theme()).titleBand : undefined}
+      >
+        <box
+          flexDirection="row"
+          justifyContent="space-between"
+          flexShrink={0}
+          border={layered ? ["bottom"] : undefined}
+          borderStyle="single"
+          borderColor={resolvePanelChrome(theme()).divider}
+        >
           <text fg={titleTint()} attributes={theme().attributes.title}>
             {truncate(props.title, Math.max(1, width - 4))}
           </text>

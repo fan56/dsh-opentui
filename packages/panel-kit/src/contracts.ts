@@ -58,6 +58,22 @@
  *     focused list and a right-aligned "first-last/total" indicator appears at
  *     the tail. Keys are consumed only while the list exceeds one page.
  *
+ * v1.2 amendment (2026-11-13) — fixed-height panels + layered chrome:
+ *   • ADDITIVE PanelOptions.rows: a FIXED frame height in terminal rows. The
+ *     frame no longer shrinks or grows with its content, so switching a
+ *     consumer's sections (or entering its editor view) cannot move the frame
+ *     edges. It is clamped into [3, terminalRows - 4] exactly like `maxHeight`,
+ *     and it wins over the content-sized `height` default. `height` keeps its
+ *     v1 meaning (a cap on content height).
+ *   • ADDITIVE PanelOptions.layered: paints the shell's own chrome as bands
+ *     (title band + a bottom rule) from the {@link PanelChrome} projection.
+ *     Default false, so existing consumers (e.g. /agents) keep their flat
+ *     chrome pixel-for-pixel.
+ *   • ADDITIVE PanelChrome (`theme.ts: resolvePanelChrome`): title band, nav
+ *     band, content surface and divider resolved from the SAME PanelTheme
+ *     tokens (no new literals). Consumers may paint their own zones with it.
+ *   • No new motion constants, timers or dependencies; no geometry animation.
+ *
  * v1.1 amendment (2026-11-13) — List cursor/page coupling:
  *   • UPGRADED contract: the active row must always be inside the painted page
  *     window. When activeId moves out of the window (up/down, Home/End, a
@@ -186,6 +202,23 @@ export interface PanelTheme {
   readonly identity: readonly [RGBA, RGBA]
 }
 
+/**
+ * Layered chrome projection (v1.2). Four zones resolved from the SAME
+ * {@link PanelTheme} tokens by `resolvePanelChrome`: chrome bands sit one step
+ * above the content surface, and the divider is the theme's border token —
+ * bright enough to read against the scrim, never a literal color.
+ */
+export interface PanelChrome {
+  /** Title band (raised surface). */
+  readonly titleBand: RGBA
+  /** Navigation band (raised surface). */
+  readonly navBand: RGBA
+  /** Content area (the panel surface itself). */
+  readonly content: RGBA
+  /** One-cell rule between zones (theme border token). */
+  readonly divider: RGBA
+}
+
 // ---------------------------------------------------------------------------
 // §2.2 Provider injection surface (decision D1)
 // ---------------------------------------------------------------------------
@@ -287,6 +320,20 @@ export interface PanelOptions {
    * its content up to `maxHeight` (no geometry is animated in v1).
    */
   height?: number
+  /**
+   * v1.2: FIXED frame height in terminal rows. Unlike `height` this is a
+   * target frame size, not a content cap: the frame stays exactly this tall
+   * while the consumer swaps sections or opens an editor, so nothing outside
+   * the panel moves. Clamped to [3, terminalRows - 4]; wins over `height`.
+   * Overflow is the consumer's job (paginate); the frame never resizes.
+   */
+  rows?: number
+  /**
+   * v1.2: paint the shell chrome as bands — the title row gets the title-band
+   * token plus a bottom rule — instead of a flat surface. Default false so
+   * existing panels keep their v1.1 look. See {@link PanelChrome}.
+   */
+  layered?: boolean
   /** default terminalRows - 4 */
   maxHeight?: number
   /** default "center"; "top" = vertical quarter (dialog parity) */

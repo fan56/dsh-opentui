@@ -16,7 +16,13 @@ export * from "./contracts"
 export { FALLBACK_THEME } from "./fallback"
 
 // -- Panel shell ------------------------------------------------------------
-export { Panel, resolvePanelHeightLimit, resolvePanelMetrics, resolvePanelWidth } from "./panel"
+export {
+  Panel,
+  resolvePanelHeightLimit,
+  resolvePanelMetrics,
+  resolvePanelRows,
+  resolvePanelWidth,
+} from "./panel"
 export type { PanelShellProps } from "./panel"
 
 // -- Motion (phase machine + shared-clock fade driver) ----------------------
@@ -40,6 +46,7 @@ export {
   panelKitContext,
   resolveFrameToken,
   resolveIdentity,
+  resolvePanelChrome,
   resolveScrimAlpha,
   resolveScrimColor,
   resolveTitleColor,

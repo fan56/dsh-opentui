@@ -14,6 +14,7 @@ import { RGBA } from "@opentui/core"
 import type {
   PanelBorderStyle,
   PanelBorderToken,
+  PanelChrome,
   PanelKeyCommands,
   PanelKeyRouter,
   PanelKitContextValue,
@@ -156,6 +157,29 @@ export function resolveIdentity(
 ): readonly [RGBA, RGBA] | undefined {
   if (!enabled || wideTitle) return undefined
   return theme.identity
+}
+
+/**
+ * Layered chrome projection (v1.2). Consumers that paint zones (a nav column,
+ * a content pane, a title band) read these four colors instead of inventing
+ * their own: the bands sit one step above the content surface, the divider is
+ * the theme's border token. Nothing here is a literal — a theme switch
+ * recolors every zone on the next frame, and the shell's whole-subtree fade
+ * still works because the inputs are the faded theme's tokens.
+ *
+ * - content   = background.surface (the panel itself, unchanged)
+ * - navBand   = background.raised (one step above the surface)
+ * - titleBand = background.raised, blended half a step toward the surface so
+ *               the title reads as chrome without competing with the nav
+ * - divider   = border.base.color (the brightness floor above the scrim)
+ */
+export function resolvePanelChrome(theme: PanelTheme): PanelChrome {
+  return {
+    titleBand: fadeColor(theme.background.surface, theme.background.raised, 0.5),
+    navBand: theme.background.raised,
+    content: theme.background.surface,
+    divider: theme.border.base.color,
+  }
 }
 
 /**
