@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.2] - 2026-11-13
+
+### Added
+
+- **`--version` prints `dsh-opentui <version>` and exits** without booting the TUI or provisioning.
+- **`--force` kills stale host/client instances sharing the current DSH_HOME** (TERM→KILL ladder, prints `--force: killed N stale instance(s)`) before a clean boot.
+
 ## [0.12.1] - 2026-11-13
 
 ### Fixed
