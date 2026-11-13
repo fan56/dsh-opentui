@@ -31,6 +31,7 @@ import { SessionComposer, type SessionComposerRef } from "../src/routes/session/
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
+import type { PickOneExtras } from "../src/routes/session/commands"
 import { DialogSelect } from "../src/ui/dialog-select"
 import { useDialog } from "../src/ui/dialog"
 import { PowerlineFooter, sessionFooterSegments } from "../src/routes/session/powerline"
@@ -231,7 +232,15 @@ function SessionPage() {
 	// alone leaves the picker mounted (TurnOverlayHost drives its stack
 	// through the controller; here the promise settles it directly).
 	let cmdOrdinal = 0
-	const pickOne = (title: string, options: { title: string; value: string }[]) =>
+	const pickOne = (
+		title: string,
+		options: { title: string; value: string }[],
+		_headerLine?: string,
+		_currentValue?: string,
+		/** A4 in-picker arming — this minimal example host keeps the plain
+		 * pick (the optional extras degrade to the pre-A4 behavior). */
+		_extras?: PickOneExtras,
+	) =>
 		new Promise<string | undefined>((resolve) => {
 			let settled = false
 			const done = (value: string | undefined) => {

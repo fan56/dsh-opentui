@@ -55,7 +55,7 @@ import { TurnOverlayController } from "../src/routes/session/turn-overlay-contro
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
-import { presetLabelFor, coreCommands } from "../src/routes/session/commands"
+import { presetLabelFor, coreCommands, type PickOneExtras } from "../src/routes/session/commands"
 import { discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
@@ -452,6 +452,7 @@ function V2SessionPage(props: {
 		options: { title: string; value: string; description?: string }[],
 		headerLine?: string,
 		currentValue?: string,
+		extras?: PickOneExtras,
 	) =>
 		new Promise<string | undefined>((resolvePick) => {
 			let settled = false
@@ -461,16 +462,49 @@ function V2SessionPage(props: {
 				dialog.clear()
 				resolvePick(value)
 			}
+			// A4 (gap-analysis C14): the extras arming. `getOptions` is read
+			// REACTIVELY (a getter passed straight to DialogSelect — the
+			// vendored options effect reconciles the cursor onto the moved row
+			// on every change), and every action press bumps `extrasTick` so
+			// the getter re-runs: the list reorders live while the dialog
+			// stays open (tui-pi pickModel parity).
+			const [extrasTick, bumpExtrasTick] = createSignal(0)
+			const actions = extras?.actions?.map((action) => ({
+				command: action.command,
+				title:
+					typeof action.title === "function"
+						? (option: { value: string } | undefined) => action.title(option === undefined ? undefined : String(option.value))
+						: action.title,
+				bind: action.bind,
+				disabled: action.disabled
+					? (option: { value: string } | undefined) => (option === undefined ? false : action.disabled!(String(option.value)))
+					: undefined,
+				onTrigger: (option: { value: string }) => {
+					extras.onAction?.(action.command, String(option.value))
+					bumpExtrasTick((n) => n + 1)
+				},
+			}))
 			dialog.replace(
 				() =>
 					createComponent(DialogSelect, {
 						title,
 						renderFilter: false,
-						options: options.map((option) => ({
-							title: option.title,
-							value: option.value,
-							description: option.description,
-						})),
+						options: extras?.getOptions
+							? () => {
+									extrasTick()
+									return extras.getOptions!().map((option) => ({
+										title: option.title,
+										value: option.value,
+										description: option.description,
+										category: option.category,
+									}))
+								}
+							: options.map((option) => ({
+									title: option.title,
+									value: option.value,
+									description: option.description,
+								})),
+						...(actions && actions.length > 0 ? { actions } : {}),
 						current: currentValue,
 						focusCurrent: false,
 						onSelect: (option: { value: string }) => done(option.value),

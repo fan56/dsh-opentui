@@ -34,6 +34,12 @@ import {
 } from "./resume-picker"
 import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
 import {
+	buildModelPickerRows,
+	modelKey,
+	readModelPrefsFromConfig,
+	toggleStringList,
+} from "./model-picker"
+import {
 	CUSTOM_ENTRY,
 	CUSTOM_STEPS,
 	LOGIN_PICKER_TITLE,
@@ -109,6 +115,39 @@ export interface SlashCommand {
 	run(ctx: SlashCommandContext, argText: string): void | Promise<void>
 }
 
+/**
+ * One in-picker key action (A4, gap-analysis C14; the DialogSelect
+ * `actions` face). The entry registers it on the dialog's keymap under
+ * `bind` and paints it in the dialog footer; a press fires the pickOne
+ * caller's `onAction` with the command id and the selected row's value.
+ */
+export interface PickOneAction {
+	/** Keymap command id — also the `onAction` discriminator. */
+	command: string
+	/** Footer label. A function follows the selected row (e.g. favorite ↔
+	 * unfavorite); it also receives undefined (label resolved without a
+	 * selection while the list moves). */
+	title: string | ((value: string | undefined) => string)
+	/** Direct key binding, e.g. "f" / "h". */
+	bind?: string
+	/** Dynamic disable — the press is refused while it returns true for the
+	 * selected row's value (the h-on-favorite guard, tui-pi parity). */
+	disabled?: (value: string) => boolean
+}
+
+/**
+ * Optional in-picker arming for pickOne (A4). `getOptions` is the reactive
+ * row source: the entry re-reads it after every `onAction` press so the
+ * list reorders live while the dialog stays open (the DialogSelect options
+ * effect reconciles the cursor onto the moved row). Commands keep their
+ * favorite/hidden state in the closures those callbacks close over.
+ */
+export interface PickOneExtras {
+	actions?: PickOneAction[]
+	getOptions?: () => { title: string; value: string; description?: string; category?: string }[]
+	onAction?: (command: string, value: string) => void
+}
+
 /** Host-side effects a command may ask for; the page owns each hook. */
 export interface SlashCommandContext {
 	seam: SessionSeam
@@ -129,6 +168,10 @@ export interface SlashCommandContext {
 	 * overlay host). Resolves the picked value, or undefined on esc/cancel.
 	 * `headerLine` (G1 resume-picker batch) paints an aligned column-header
 	 * line under the dialog title (the /resume UPDATED/DIR columns).
+	 *
+	 * `extras` (A4, gap-analysis C14) arms the dialog with in-picker
+	 * actions (f/h-style keys). Optional — a host without the wiring keeps
+	 * the plain pick (every pre-A4 caller and test).
 	 */
 	pickOne(
 		title: string,
@@ -137,6 +180,7 @@ export interface SlashCommandContext {
 		/** α skin layer: marks the active row with the vendored `●` current
 		 * marker without moving the selection off row 0. */
 		currentValue?: string,
+		extras?: PickOneExtras,
 	): Promise<string | undefined>
 	/**
 	 * One generic modal text prompt (the DialogPrompt modal through the
@@ -528,13 +572,62 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				const current = await ctx.seam.currentModelSelection()
+				// A4 (gap-analysis C14, dsh-tui-pi selectors.ts pickModel parity):
+				// the stage-1 picker carries the favorites/hidden layer — `f`
+				// toggles the favorite flag on the cursor model (list reorders
+				// live, dialog stays open), `h` hides (a "Hidden" section at the
+				// bottom keeps the rows visible/selectable so `h` restores
+				// them). Every toggle persists immediately through the config
+				// seam (`favoriteModels`/`hiddenModels` profile config.json
+				// keys, tui-pi readModelPrefs/writeModelPref parity) —
+				// best-effort: a seam-less host keeps the session-local state.
+				const prefs = readModelPrefsFromConfig(ctx.seam.configLoad?.())
+				let favorites = prefs.favoriteModels
+				let hidden = prefs.hiddenModels
+				const persistPrefs = (): void => {
+					try {
+						ctx.seam.configSave?.({ favoriteModels: [...favorites], hiddenModels: [...hidden] })
+					} catch (error) {
+						console.error("[commands] model prefs persist failed:", error)
+					}
+				}
+				const currentKey = current ? modelKey(current.providerID, current.modelID) : undefined
 				const picked = await ctx.pickOne(
 					"Select model",
-					catalog.map((model) => ({
-						title: `${model.providerID}/${model.modelID}`,
-						value: `${model.providerID}/${model.modelID}`,
-						description: current?.providerID === model.providerID && current.modelID === model.modelID ? "current" : undefined,
-					})),
+					buildModelPickerRows(catalog, favorites, hidden, current),
+					undefined,
+					currentKey,
+					{
+						actions: [
+							{
+								command: "model.picker.favorite",
+								title: (value) => (value !== undefined && favorites.includes(value) ? "unfavorite" : "favorite"),
+								bind: "f",
+							},
+							{
+								command: "model.picker.hide",
+								title: "hide",
+								bind: "h",
+								// tui-pi canHideModelRow parity: hiding a favorite row
+								// would silently persist hiddenModels with no visual
+								// feedback (the row stays pinned in Favorites) — refuse
+								// h there; the user unfavorites first.
+								disabled: (value) => favorites.includes(value),
+							},
+						],
+						getOptions: () => buildModelPickerRows(catalog, favorites, hidden, current),
+						onAction: (command, value) => {
+							if (command === "model.picker.favorite") {
+								favorites = toggleStringList(favorites, value)
+							} else if (command === "model.picker.hide") {
+								if (favorites.includes(value)) return
+								hidden = toggleStringList(hidden, value)
+							} else {
+								return
+							}
+							persistPrefs()
+						},
+					},
 				)
 				if (!picked) return
 				const [providerID, modelID] = picked.split("/")
