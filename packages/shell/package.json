@@ -22,9 +22,9 @@
     "prepack": "bun ../../scripts/build-client.mjs && node scripts/pack-meta.mjs"
   },
   "dependencies": {
-    "@opentui/core": "0.8.2",
-    "@opentui/solid": "0.8.2",
-    "@opentui/keymap": "0.8.2",
+    "@opentui/core": "0.8.1",
+    "@opentui/solid": "0.8.1",
+    "@opentui/keymap": "0.8.1",
     "solid-js": "1.9.17",
     "ws": "^8.22.1"
   },
