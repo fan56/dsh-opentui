@@ -61,6 +61,7 @@ import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessio
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
 import { AgentsPanel, openAgentsPanel } from "../src/routes/session/agents-panel"
 import { openSettingsPanel } from "../src/routes/session/settings-panel"
+import { HistoryPanel, openHistoryPanel } from "../src/routes/session/history-panel"
 import { SettingsModalHost } from "../src/routes/session/settings-modal"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
 import { readCacheHitMode } from "../src/seams/config"
@@ -719,6 +720,9 @@ function V2SessionPage(props: {
 		// /settings panel v1 (whitelist-driven): local preferences + host
 		// settings + read-only namespaces; mounted in the root children below.
 		openSettings: () => openSettingsPanel(),
+			// B2 (gap C1 step 2, tui-pi history.ts parity): /history opens the
+			// two-pane turn browser (the module-bridge panel mounted below).
+			openHistory: () => openHistoryPanel(),
 		// Footer-quickwins bug fix (/think parity with tui-pi): setting commands
 		// (/think, /model) re-run the page's footer refresh right
 		// after the seam mutation settles — the same entry the turn-end effect
@@ -839,6 +843,36 @@ function V2SessionPage(props: {
 					},
 					onClosed: (summary?: string) => {
 						if (summary !== undefined) sayLine(summary)
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
+				}),
+				// History browser (B2 gap C1 step 2, tui-pi history.ts parity):
+				// /history opens the two-pane turn browser. Getter-prop law: the
+				// seam and the current-session id ride getters.
+				createComponent(HistoryPanel, {
+					get seam() {
+						return seam
+					},
+					// The /history bare target: the live id — or the staged stored
+					// id (auto-resume / resumeFromSearch) until the next turn binds
+					// it (the transcript-loss law: never rely on the live id alone).
+					sessionId: () => seam.currentSessionId() ?? props.initialSessionId,
+					// Enter/c refill (tui-pi copy semantics): write the turn's first
+					// human prompt into the composer editor and focus it (the panel
+					// closes itself; onClosed reclaims focus below).
+					onRefill: (text: string) => {
+						composerRef?.node()?.setText(text)
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
+					// f fork-at-turn success: resume the forked session through the
+					// SAME seam path a /resume pick takes (stage + reload + say) —
+					// the B1 resumeFromSearch shape.
+					onForked: (forkedId: string, turn: number) => {
+						seam.resumeSession(forkedId)
+						void reloadSession(forkedId)
+						sayLine(`forked from turn #${turn} → ${forkedId}`)
+					},
+					onClosed: () => {
 						if (composerRef && !composerRef.focused()) composerRef.focus()
 					},
 				}),

@@ -1808,6 +1808,28 @@ export class RemoteHostSession {
 	}
 
 	/**
+	 * B2 /history raw journal read (gap C1 step 2): the durable journal of
+	 * ANY session through the ops client's fetchJournal (oldest-first,
+	 * sorted pages) — the exact fold input of tui-base's history-data.ts.
+	 * Unlike historyTurns (the live-ledger projection), this reads the
+	 * STORED journal, so a /history session-switch face can fold any id.
+	 */
+	async sessionJournal(sessionId: string): Promise<ReturnType<RemoteSessionOps["fetchJournal"]>> {
+		return this.#opsClient().fetchJournal(sessionId)
+	}
+
+	/**
+	 * B2 /history fork-at-turn: seed a NEW session from ANY session's journal
+	 * prefix (`atSeq` inclusive, ops.fork) WITHOUT switching this facade —
+	 * the caller resumes the returned id through its own session-switch path
+	 * (the seam adapter's forkSession face; forkAtTurn below is the
+	 * facade-switching variant for the live session).
+	 */
+	async forkSession(sessionId: string, atSeq?: number): Promise<string> {
+		return this.#opsClient().fork(sessionId, atSeq)
+	}
+
+	/**
 	 * wave 2 (audit row 18): completed turns of the LIVE session from the
 	 * follow record ledger (client-side grouping, host-session.ts:1057-1084
 	 * algorithm). Empty until the session's journal has turn brackets.

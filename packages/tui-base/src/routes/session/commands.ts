@@ -257,6 +257,11 @@ export interface SlashCommandContext {
 	 */
 	openSettings?(): void
 	/**
+	 * Open the /history two-pane turn browser (gap C1 step 2, tui-pi history
+	 * parity). Optional — an entry without it degrades /history to a notice.
+	 */
+	openHistory?(): void
+	/**
 	 * Deliver the client-side delivery queue NOW (the /flush command).
 	 *
 	 * The queue is paused after a failed or aborted turn: it is KEPT (the
@@ -1095,6 +1100,23 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				ctx.openSettings()
+			},
+		},
+		{
+			// B2 gap C1 step 2 (tui-pi history.ts parity): opens the two-pane
+			// turn browser — left = completed-turn list, right = the selected
+			// turn's detail; Enter/c refills the composer with the turn's first
+			// human prompt, s switches the browsed session, f forks at the
+			// selected turn (seam.forkSession), esc closes. A bare read over
+			// the stored journal — never busy-gated.
+			name: "/history",
+			description: "browse completed turns of the session (refill, switch, fork)",
+			run(ctx) {
+				if (!ctx.openHistory) {
+					ctx.say("/history: the browser panel is not mounted in this entry")
+					return
+				}
+				ctx.openHistory()
 			},
 		},
 		{

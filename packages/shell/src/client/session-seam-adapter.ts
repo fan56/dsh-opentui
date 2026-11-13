@@ -113,6 +113,7 @@ SeamSessionEvent,
 	SeamTurnCallbacks,
 	SessionSeam,
 } from "../../../tui-base/src/seams/session"
+import type { HistoryJournalEntry } from "../../../tui-base/src/routes/session/history-data.ts"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { turnEndErrorMessage } from "./remote-follow.ts"
 import { RemoteHostSession } from "./remote-host-session.ts"
@@ -165,6 +166,24 @@ export class RemoteSessionSeam implements SessionSeam {
 
 	async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
 		return this.#session.searchSessions(query)
+	}
+
+	/**
+	 * B2 /history raw journal read (gap C1 step 2): the facade's fetchJournal
+	 * passthrough — RemoteJournalEntry satisfies tui-base's structural
+	 * HistoryJournalEntry slice 1:1 (type/seq/time/data), no reshaping.
+	 */
+	async sessionJournal(sessionId: string): Promise<HistoryJournalEntry[]> {
+		return this.#session.sessionJournal(sessionId)
+	}
+
+	/**
+	 * B2 /history fork-at-turn: ops.fork passthrough (atSeq inclusive). NO
+	 * facade switch — the view resumes the returned id through the same
+	 * session-switch path a /resume pick takes (resumeSession + reload).
+	 */
+	async forkSession(sessionId: string, seqEnd?: number): Promise<string> {
+		return this.#session.forkSession(sessionId, seqEnd)
 	}
 
 	async storedTranscript(id: string, skip?: number): Promise<SeamTranscriptRow[]> {

@@ -66,6 +66,7 @@
 
 /** One session row as the view's lists need it (data.session.list shape). */
 import type { CacheHitMode } from "./config.ts"
+import type { HistoryJournalEntry } from "../routes/session/history-data.ts"
 
 export interface SeamSessionSummary {
 	id: string
@@ -488,6 +489,25 @@ export interface SessionSeam {
 	repairSessionLog?(
 		path: string,
 	): { kind: "repaired"; backupPath: string } | { kind: "clean" } | { kind: "failed"; detail: string }
+	/**
+	 * B2 /history raw journal read (gap C1 step 2): the durable journal
+	 * records of ANY session (remote-session-ops fetchJournal shape —
+	 * type/seq/time/data, oldest-first), the exact input of
+	 * routes/session/history-data.ts groupHistoryTurns. The storedTranscript
+	 * row face cannot serve the turn brackets (turn/start…turn/end), so the
+	 * /history browser folds THIS. Optional — a seam without it degrades
+	 * /history to the unavailable notice.
+	 */
+	sessionJournal?(sessionId: string): Promise<HistoryJournalEntry[]>
+	/**
+	 * B2 /history fork-at-turn (tui-pi `f` parity): seed a NEW session with
+	 * `sessionId`'s journal prefix through `seqEnd` INCLUSIVE (a folded
+	 * turn's seqEnd — the state as that turn finished) and return the new
+	 * session id. NO facade/app-session switch here — the caller resumes the
+	 * forked id through the same path a /resume pick takes. Optional — a
+	 * seam without it degrades `f` to the refill notice (never a fake fork).
+	 */
+	forkSession?(sessionId: string, seqEnd?: number): Promise<string>
 	newSession(): void
 	renameSession(title: string): Promise<{ title: string; seq: number } | undefined>
 

@@ -392,6 +392,8 @@ export interface SlashHostDeps {
 	openAgents?: SlashCommandContext["openAgents"]
 	/** /settings panel opener (v1); absent = /settings says "not mounted". */
 	openSettings?: SlashCommandContext["openSettings"]
+	/** /history browser opener (gap C1 step 2); absent = /history says "not mounted". */
+	openHistory?: SlashCommandContext["openHistory"]
 	/** Footer-refresh hook (footer-quickwins); absent = setting commands skip
 	 * the immediate footer re-read (turn-end-only refresh, the old behavior). */
 	refreshFooter?: SlashCommandContext["refreshFooter"]

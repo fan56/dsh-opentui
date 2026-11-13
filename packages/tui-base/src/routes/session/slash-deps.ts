@@ -44,6 +44,7 @@ export const ENTRY_SLASH_HOOKS = [
 	"openPlugins",
 	"openAgents",
 	"openSettings",
+	"openHistory",
 	"refreshFooter",
 	"invalidateFooter",
 	"flushQueue",
