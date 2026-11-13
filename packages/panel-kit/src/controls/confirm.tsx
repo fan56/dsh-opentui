@@ -4,24 +4,32 @@
  * ConfirmDialog content body (spec §3.8): message block + confirm/cancel
  * button row composed from the lane-B `Button` (contracts.ButtonProps).
  *
- * Key semantics (user directive 2026-11-12):
- *   - Enter activates the focused action, Esc is always Cancel, Left/Right
- *     move the active action. Esc is the only back action: there is no
+ * Key semantics (user directive 2026-11-13, supersedes 2026-11-12):
+ *   - Enter and Space activate the focused action; Esc is always Cancel;
+ *     Left/Right and Tab/Shift+Tab cycle the active action and the highlight
+ *     repaints immediately. Esc is the only back action: there is no
  *     mouse-driven exit (no click-outside, no scrim dismiss).
+ *   - Tab is the one key the panel router does not carry (`panel.tsx` reserves
+ *     escape/enter/space/arrows), so the dialog also listens for it on the
+ *     renderer. A host that later routes Tab through the kit table owns it
+ *     first: a consumed key never reaches the raw listener (no double toggle).
  *   - `destructive` puts the initial focus on Cancel and gives the confirm
  *     button the danger variant.
  *   - After an action fires both buttons disable and further keys are inert
  *     (double-submit guard while the stack waits for the promise to settle).
+ *   - The hint line under the buttons is owned here, not by consumers.
  *
  * This file used to own a second kit context (Symbol.for registry); T17-INT1
  * B3/C2 collapsed it into src/theme.ts. The re-exports below keep the module
  * API stable, but there is only one context identity in the package.
  */
-import { createSignal, onCleanup, onMount, type JSX } from "solid-js"
+import { useKeyboard } from "@opentui/solid"
+import { createSignal, onCleanup, onMount, type Accessor, type JSX } from "solid-js"
 import type {
   ConfirmDialogProps,
   PanelButtonVariant,
   PanelKeyCommands,
+  PanelTheme,
 } from "../contracts"
 import { useControlKeys, usePanelTheme } from "../theme"
 import { Button } from "./button"
@@ -54,9 +62,9 @@ export interface ConfirmModel {
   settled(): boolean
   buttons(): Record<ConfirmAction, ConfirmButtonState>
   /**
-   * Reserved-key dispatch ("enter" | "escape" | "left" | "right"). Returns
-   * true when consumed. Everything is consumed while settled so a pending
-   * close cannot race panel-level Esc handling.
+   * Reserved-key dispatch ("enter" | "space" | "escape" | "left" | "right" |
+   * "tab" | "shift+tab"). Returns true when consumed. Everything is consumed
+   * while settled so a pending close cannot race panel-level Esc handling.
    */
   command(id: string): boolean
   choose(action: ConfirmAction): void
@@ -79,6 +87,7 @@ export function createConfirmModel(props: ConfirmDialogProps): ConfirmModel {
     if (settled()) return true
     switch (id) {
       case "enter":
+      case "space":
         choose(active())
         return true
       case "escape":
@@ -86,6 +95,8 @@ export function createConfirmModel(props: ConfirmDialogProps): ConfirmModel {
         return true
       case "left":
       case "right":
+      case "tab":
+      case "shift+tab":
         setActive((current) => (current === "confirm" ? "cancel" : "confirm"))
         return true
       default:
@@ -97,7 +108,11 @@ export function createConfirmModel(props: ConfirmDialogProps): ConfirmModel {
     cancel: {
       label: props.cancelLabel ?? "Cancel",
       variant: "ghost",
-      keyHint: "esc",
+      // Esc always cancels; Enter activates whichever button is focused, so
+      // the activation hint travels with the focus instead of living on one
+      // fixed button (a static "enter" on the confirm side misled users into
+      // thinking Enter would discard while Cancel was focused).
+      keyHint: active() === "cancel" && !settled() ? "esc / enter" : "esc",
       disabled: settled(),
       focused: active() === "cancel" && !settled(),
       onPress: () => choose("cancel"),
@@ -105,7 +120,7 @@ export function createConfirmModel(props: ConfirmDialogProps): ConfirmModel {
     confirm: {
       label: props.confirmLabel ?? "Confirm",
       variant: props.destructive || props.tone === "danger" ? "danger" : "primary",
-      keyHint: "enter",
+      keyHint: active() === "confirm" && !settled() ? "enter" : "",
       disabled: settled(),
       focused: active() === "confirm" && !settled(),
       onPress: () => choose("confirm"),
@@ -127,14 +142,28 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
 
   const commands = (): PanelKeyCommands => ({
     enter: () => model.command("enter"),
+    space: () => model.command("space"),
     escape: () => model.command("escape"),
     left: () => model.command("left"),
     right: () => model.command("right"),
+    tab: () => model.command("tab"),
+    "shift+tab": () => model.command("shift+tab"),
   })
 
   onMount(() => {
     const dispose = registerKeys(commands())
     if (typeof dispose === "function") onCleanup(dispose)
+  })
+
+  // The panel router does not carry Tab (see the file header). Listen on the
+  // renderer for the physical key; keymap layers are consulted first, so a
+  // host that routes Tab through the kit table never double-toggles here.
+  useKeyboard((key) => {
+    if (key.name !== "tab") return
+    if (model.command(key.shift ? "shift+tab" : "tab")) {
+      key.preventDefault()
+      key.stopPropagation()
+    }
   })
 
   const cancel = () => model.buttons().cancel
@@ -149,7 +178,7 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
   }
 
   return (
-    <box flexDirection="column" gap={1}>
+    <box flexDirection="column">
       {typeof props.message === "string" ? (
         <text wrapMode="word" fg={messageTone()}>
           {props.message}
@@ -157,24 +186,48 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
       ) : (
         props.message
       )}
-      <box flexDirection="row" justifyContent="flex-end" gap={2} marginTop={1}>
-        <Button
-          label={cancel().label}
-          variant={cancel().variant}
-          keyHint={cancel().keyHint}
-          disabled={cancel().disabled}
-          focused={cancel().focused}
-          onPress={cancel().onPress}
-        />
-        <Button
-          label={confirm().label}
-          variant={confirm().variant}
-          keyHint={confirm().keyHint}
-          disabled={confirm().disabled}
-          focused={confirm().focused}
-          onPress={confirm().onPress}
-        />
+      <box flexDirection="row" justifyContent="flex-end" gap={2} flexShrink={0} marginTop={1}>
+        <ConfirmButton state={cancel} theme={theme} />
+        <ConfirmButton state={confirm} theme={theme} />
       </box>
+      <box flexDirection="row" justifyContent="flex-end" flexShrink={0}>
+        <text fg={theme().text.muted} attributes={theme().attributes.keyHint} wrapMode="none">
+          {"←→ 选择 · Enter 确认 · Esc 取消"}
+        </text>
+      </box>
+    </box>
+  )
+}
+
+/**
+ * One button plus a one-line-tall side border so the unfocused action still
+ * reads as a button (the danger variant has no background of its own). Both
+ * border tokens come from the panel theme; the focused state keeps the
+ * list-row highlight tokens the Button already paints.
+ */
+function ConfirmButton(props: {
+  state: Accessor<ConfirmButtonState>
+  theme: Accessor<PanelTheme>
+}): JSX.Element {
+  const token = () =>
+    props.state().focused
+      ? props.theme().border.focused
+      : props.theme().border.base
+  return (
+    <box
+      flexShrink={0}
+      border={["left", "right"]}
+      borderStyle={token().style}
+      borderColor={token().color}
+    >
+      <Button
+        label={props.state().label}
+        variant={props.state().variant}
+        keyHint={props.state().keyHint}
+        disabled={props.state().disabled}
+        focused={props.state().focused}
+        onPress={props.state().onPress}
+      />
     </box>
   )
 }
