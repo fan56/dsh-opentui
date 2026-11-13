@@ -12,6 +12,7 @@ import { RGBA, TextAttributes } from "@opentui/core"
 import type { PanelTheme } from "./contracts"
 
 const surface = RGBA.fromHex("#1a1b26")
+const content = RGBA.fromHex("#1f2335")
 const raised = RGBA.fromHex("#24283b")
 const base = RGBA.fromHex("#c0caf5")
 const muted = RGBA.fromHex("#a9b1d6")
@@ -21,12 +22,17 @@ const disabled = RGBA.fromHex("#414868")
 const danger = RGBA.fromHex("#f7768e")
 const warning = RGBA.fromHex("#e0af68")
 const success = RGBA.fromHex("#9ece6a")
+const code = RGBA.fromHex("#c3e88d")
+const user = RGBA.fromHex("#c0caf5")
+const system = RGBA.fromHex("#82aaff")
+const heading = RGBA.fromHex("#c099ff")
 
 /** No-provider palette (dialog parity: scrim is RGBA(0,0,0,150)). */
 export const FALLBACK_THEME: PanelTheme = Object.freeze({
   background: {
     surface,
     raised,
+    content,
     scrim: RGBA.fromInts(0, 0, 0, 150),
   },
   text: {
@@ -38,6 +44,10 @@ export const FALLBACK_THEME: PanelTheme = Object.freeze({
     danger,
     warning,
     success,
+    code,
+    user,
+    system,
+    heading,
   },
   row: {
     activeBg: accent,

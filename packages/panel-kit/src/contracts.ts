@@ -150,6 +150,12 @@ export interface PanelTheme {
     readonly surface: RGBA
     /** background.raised.high (footer band, hovered row) */
     readonly raised: RGBA
+    /**
+     * background.raised.base (v1.2). The panel CONTENT surface: one step above
+     * `surface` and below `raised`, so the content pane reads as a layer over
+     * the scrim instead of a near-black box.
+     */
+    readonly content: RGBA
     /** RGBA(0,0,0,150), or theme-specified */
     readonly scrim: RGBA
   }
@@ -161,12 +167,20 @@ export interface PanelTheme {
     readonly accent: RGBA
     /** text.action.primary.disabled */
     readonly disabled: RGBA
-    /** text.action.destructive.base */
+    /** text.feedback.error.base (v1.2; was text.action.destructive.base) */
     readonly danger: RGBA
     /** text.feedback.warning.base */
     readonly warning: RGBA
     /** text.feedback.success.base */
     readonly success: RGBA
+    /** markdown.code — code spans, literal values, enum options (v1.2) */
+    readonly code: RGBA
+    /** text.action.primary.base — the user role (editable markers) (v1.2) */
+    readonly user: RGBA
+    /** text.feedback.info.base — system/status text, counts (v1.2) */
+    readonly system: RGBA
+    /** markdown.heading — section titles, group headers (v1.2) */
+    readonly heading: RGBA
   }
   /**
    * Row highlight. v1 action-token ratification (T17-INT1 B4): the theme has
@@ -203,17 +217,18 @@ export interface PanelTheme {
 }
 
 /**
- * Layered chrome projection (v1.2). Four zones resolved from the SAME
- * {@link PanelTheme} tokens by `resolvePanelChrome`: chrome bands sit one step
- * above the content surface, and the divider is the theme's border token —
- * bright enough to read against the scrim, never a literal color.
+ * Layered chrome projection (v1.2; content raised in v1.2.1 addendum). Four
+ * zones resolved from the SAME {@link PanelTheme} tokens by
+ * `resolvePanelChrome`: chrome bands sit one step above the content surface,
+ * and the divider is the theme's border token — bright enough to read against
+ * the scrim, never a literal color.
  */
 export interface PanelChrome {
-  /** Title band (raised surface). */
+  /** Title band (content blended toward the raised band). */
   readonly titleBand: RGBA
   /** Navigation band (raised surface). */
   readonly navBand: RGBA
-  /** Content area (the panel surface itself). */
+  /** Content area (background.content: raised.base, above the page surface). */
   readonly content: RGBA
   /** One-cell rule between zones (theme border token). */
   readonly divider: RGBA
@@ -512,7 +527,17 @@ export interface ListItem<T = unknown> {
   group?: string
   /** Static marker, e.g. "●" current item / "✔" */
   badge?: string
-  tone?: "default" | "muted" | "warning" | "danger"
+  tone?: "default" | "muted" | "warning" | "danger" | "system"
+  /**
+   * Badge color role (v1.2). Default `accent` keeps every pre-v1.2 list as it
+   * was; `user` is the user role (the settings ✎ editable marker).
+   */
+  badgeTone?: "accent" | "user"
+  /**
+   * Description color role (v1.2). Default `muted`; `code` paints literal
+   * values and enum options, `system` paints counts and status-like text.
+   */
+  descriptionTone?: "muted" | "code" | "system"
   disabled?: boolean
 }
 

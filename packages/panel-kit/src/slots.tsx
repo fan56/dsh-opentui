@@ -162,7 +162,7 @@ export function PanelActions(props: PanelActionsProps): JSX.Element {
       </Show>
       <Show when={props.hint !== undefined}>
         <box flexDirection="row" justifyContent="flex-end">
-          <text fg={theme().text.faint} attributes={theme().attributes.keyHint} wrapMode="none">
+          <text fg={theme().text.system} attributes={theme().attributes.keyHint} wrapMode="none">
             {props.hint}
           </text>
         </box>

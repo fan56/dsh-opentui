@@ -55,6 +55,7 @@ export {
   usePanelKeys,
   usePanelKit,
   usePanelTheme,
+  withContrastFloor,
 } from "./theme"
 
 // -- Text / cell helpers ----------------------------------------------------

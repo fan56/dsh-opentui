@@ -167,17 +167,21 @@ export function resolveIdentity(
  * recolors every zone on the next frame, and the shell's whole-subtree fade
  * still works because the inputs are the faded theme's tokens.
  *
- * - content   = background.surface (the panel itself, unchanged)
- * - navBand   = background.raised (one step above the surface)
- * - titleBand = background.raised, blended half a step toward the surface so
- *               the title reads as chrome without competing with the nav
+ * - content   = background.content (raised.base: one step over the page)
+ * - navBand   = background.raised (one step above the content)
+ * - titleBand = content blended half a step toward the nav band so the title
+ *               reads as chrome without competing with the nav
  * - divider   = border.base.color (the brightness floor above the scrim)
  */
 export function resolvePanelChrome(theme: PanelTheme): PanelChrome {
+  // `content` is v1.2: a theme projected before the slot existed falls back to
+  // the page surface, which is exactly the pre-v1.2 chrome. Required in the
+  // type, tolerant at runtime.
+  const content = theme.background.content ?? theme.background.surface
   return {
-    titleBand: fadeColor(theme.background.surface, theme.background.raised, 0.5),
+    titleBand: fadeColor(content, theme.background.raised, 0.5),
     navBand: theme.background.raised,
-    content: theme.background.surface,
+    content,
     divider: theme.border.base.color,
   }
 }
@@ -194,6 +198,37 @@ export function fadeColor(from: RGBA, to: RGBA, t: number): RGBA {
   // literal 8-bit color (spec §7.2 grep rule).
   const mix = (a: number, b: number) => a + (b - a) * progress
   return RGBA.fromValues(mix(from.r, to.r), mix(from.g, to.g), mix(from.b, to.b), to.a)
+}
+
+/** WCAG AA minimum for normal-size text. */
+const MIN_CONTRAST = 4.5
+
+function srgbToLinear(channel: number): number {
+  return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+}
+
+function relativeLuminance(color: RGBA): number {
+  return (
+    0.2126 * srgbToLinear(color.r) +
+    0.7152 * srgbToLinear(color.g) +
+    0.0722 * srgbToLinear(color.b)
+  )
+}
+
+function contrastRatio(a: RGBA, b: RGBA): number {
+  const la = relativeLuminance(a)
+  const lb = relativeLuminance(b)
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
+}
+
+/**
+ * Contrast floor for a theme-derived foreground (spec §5). Returns `fg` when
+ * it reaches WCAG AA (4.5:1) against `bg`, otherwise `fallback`. Consumers pick
+ * the fallback from their own palette; the kit only enforces the threshold.
+ * Exactly 4.5:1 passes (the comparison is strict `<`).
+ */
+export function withContrastFloor(fg: RGBA, bg: RGBA, fallback: RGBA): RGBA {
+  return contrastRatio(fg, bg) < MIN_CONTRAST ? fallback : fg
 }
 
 /**
@@ -218,6 +253,7 @@ export function fadeTheme(theme: PanelTheme, t: number): PanelTheme {
     background: {
       surface,
       raised: mix(theme.background.raised),
+      content: mix(theme.background.content),
       scrim: mix(theme.background.scrim),
     },
     text: {
@@ -229,6 +265,10 @@ export function fadeTheme(theme: PanelTheme, t: number): PanelTheme {
       danger: mix(theme.text.danger),
       warning: mix(theme.text.warning),
       success: mix(theme.text.success),
+      code: mix(theme.text.code),
+      user: mix(theme.text.user),
+      system: mix(theme.text.system),
+      heading: mix(theme.text.heading),
     },
     row: {
       activeBg: mix(theme.row.activeBg),

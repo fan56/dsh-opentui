@@ -17,7 +17,7 @@
  * Adapted from @opencode/tui, Copyright 2025 opencode, MIT
  * (form: ui/dialog-select.tsx fuzzy filter / grouping / row markers)
  */
-import type { KeyEvent } from "@opentui/core"
+import type { KeyEvent, RGBA } from "@opentui/core"
 import stringWidth from "string-width"
 import {
   createEffect,
@@ -536,6 +536,8 @@ function toneColor(theme: PanelTheme, tone: ListItem["tone"], active: boolean) {
   switch (tone) {
     case "muted":
       return theme.text.muted
+    case "system":
+      return theme.text.system
     case "warning":
       return theme.text.warning
     case "danger":
@@ -543,6 +545,23 @@ function toneColor(theme: PanelTheme, tone: ListItem["tone"], active: boolean) {
     default:
       return theme.text.base
   }
+}
+
+/** v1.2 description role. Unset = muted, so pre-v1.2 lists are unchanged. */
+function descriptionColor(theme: PanelTheme, tone: ListItem["descriptionTone"]): RGBA {
+  switch (tone) {
+    case "code":
+      return theme.text.code
+    case "system":
+      return theme.text.system
+    default:
+      return theme.text.muted
+  }
+}
+
+/** v1.2 badge role. Unset = accent, so pre-v1.2 lists are unchanged. */
+function badgeColor(theme: PanelTheme, tone: ListItem["badgeTone"]): RGBA {
+  return tone === "user" ? theme.text.user : theme.text.accent
 }
 
 export function List<T>(props: ListControlProps<T>): JSX.Element {
@@ -710,7 +729,7 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
             <Show when={mode() === "multi"}>
               <text>{"  "}</text>
             </Show>
-            <text attributes={theme().attributes.group} fg={theme().text.muted} wrapMode="none">
+            <text attributes={theme().attributes.group} fg={theme().text.heading} wrapMode="none">
               {headers()}
             </text>
           </box>
@@ -718,7 +737,7 @@ export function List<T>(props: ListControlProps<T>): JSX.Element {
         <For each={pageRows()}>
           {(row) =>
             row.kind === "group" ? (
-              <text attributes={theme().attributes.group} fg={theme().text.muted}>
+              <text attributes={theme().attributes.group} fg={theme().text.heading}>
                 {row.group.label ?? row.group.id}
               </text>
             ) : (
@@ -804,13 +823,13 @@ function ListRowView<T>(props: {
         </text>
       </Show>
       <Show when={item.badge !== undefined}>
-        <text fg={active() ? theme().row.activeFg : theme().text.accent}>{item.badge} </text>
+        <text fg={active() ? theme().row.activeFg : badgeColor(theme(), item.badgeTone)}>{item.badge} </text>
       </Show>
       <Show when={hasColumns} fallback={<text fg={fg()}>{label}</text>}>
         <text fg={fg()}>{columnText()}</text>
       </Show>
       <Show when={item.description !== undefined}>
-        <text fg={disabled ? theme().text.disabled : active() ? theme().row.activeFg : theme().text.muted}>
+        <text fg={disabled ? theme().text.disabled : active() ? theme().row.activeFg : descriptionColor(theme(), item.descriptionTone)}>
           {" " + item.description}
         </text>
       </Show>

@@ -69,6 +69,7 @@ function fixtureTheme(): PanelTheme {
     background: {
       surface: color(0.08, 0.08, 0.1),
       raised: color(0.12, 0.12, 0.15),
+      content: color(0.1, 0.1, 0.13),
       scrim: color(0, 0, 0),
     },
     text: {
@@ -80,6 +81,10 @@ function fixtureTheme(): PanelTheme {
       danger: color(1, 0.3, 0.3),
       warning: color(1, 0.7, 0.2),
       success: color(0.3, 0.9, 0.4),
+      code: color(0.4, 0.9, 0.5),
+      user: color(0.9, 0.9, 0.9),
+      system: color(0.5, 0.7, 1),
+      heading: color(0.7, 0.5, 1),
     },
     row: { activeBg: color(0.15, 0.25, 0.5), activeFg: color(1, 1, 1) },
     border: {

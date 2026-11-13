@@ -15,7 +15,7 @@ import type { JSX } from "solid-js"
 import type { PanelMotionAdapter } from "../src/contracts"
 import { FALLBACK_THEME } from "../src/fallback"
 import { Panel, resolvePanelHeightLimit, resolvePanelMetrics, resolvePanelRows, resolvePanelWidth } from "../src/panel"
-import { PanelKitContext, fadeColor, resolveFrameToken, resolveIdentity, resolvePanelChrome, resolveScrimAlpha, resolveScrimColor, resolveTitleColor, usePanelTheme } from "../src/theme"
+import { PanelKitContext, fadeColor, fadeTheme, resolveFrameToken, resolveIdentity, resolvePanelChrome, resolveScrimAlpha, resolveScrimColor, resolveTitleColor, usePanelTheme } from "../src/theme"
 import { align, fitColumns, fitRow, hasWideGlyphs, measure, padEnd, padStart, takeCells, truncate } from "../src/text"
 
 /** Child probe: reads the live (possibly faded) theme like a control does. */
@@ -325,7 +325,9 @@ describe("fixed frame and layered chrome", () => {
       const flatSpan = flat
         .captureSpans()
         .lines[flatTitleRow]!.spans.find((span) => span.text.includes("Layered"))
-      expect(flatSpan?.bg.toInts()).toEqual(chrome.content.toInts())
+      // Flat (v1.1) leaves the title band unpainted, so the panel surface
+      // shows through — unchanged by the v1.2 content raise.
+      expect(flatSpan?.bg.toInts()).toEqual(theme.background.surface.toInts())
       expect(flatLines[flatTitleRow + 1]).not.toContain("─")
     } finally {
       await layered.dispose()
@@ -335,11 +337,42 @@ describe("fixed frame and layered chrome", () => {
 
   test("the chrome projection is token-only and keeps the bands distinct", () => {
     const chrome = resolvePanelChrome(theme)
-    expect(chrome.content).toBe(theme.background.surface)
+    expect(chrome.content).toBe(theme.background.content)
     expect(chrome.navBand).toBe(theme.background.raised)
     expect(chrome.divider).toBe(theme.border.base.color)
     expect(chrome.titleBand.toInts()).not.toEqual(chrome.content.toInts())
     expect(chrome.navBand.toInts()).not.toEqual(chrome.titleBand.toInts())
+    // The content layer sits above the page surface but below the nav band.
+    expect(chrome.content.toInts()).not.toEqual(theme.background.surface.toInts())
+    expect(chrome.content.toInts()).not.toEqual(chrome.navBand.toInts())
+  })
+
+  test("v1.2 slots project through fadeTheme (rail, content and text roles)", () => {
+    const faded = fadeTheme(theme, 0.5)
+    // Every new slot interpolates from the panel surface instead of freezing.
+    expect(faded.background.content.toInts()).not.toEqual(theme.background.content.toInts())
+    for (const key of ["code", "user", "system", "heading"] as const) {
+      expect(faded.text[key].toInts()).not.toEqual(theme.text[key].toInts())
+      // Mid-fade each slot is a mix of the SAME surface toward its own token
+      // (the user role equals base in the fallback palette, so it can match).
+      if (theme.text[key].toInts().join() !== theme.text.base.toInts().join()) {
+        expect(faded.text[key].toInts()).not.toEqual(faded.text.base.toInts())
+      }
+    }
+    // t = 1 is the identity, so the live theme is never re-projected.
+    expect(fadeTheme(theme, 1)).toBe(theme)
+  })
+
+  test("the fallback palette carries every v1.2 role with distinct values", () => {
+    expect(FALLBACK_THEME.background.content.toInts()).not.toEqual(
+      FALLBACK_THEME.background.surface.toInts(),
+    )
+    const roles = ["base", "muted", "code", "user", "system", "heading"] as const
+    for (const key of roles) expect(FALLBACK_THEME.text[key]).toBeDefined()
+    // Roles must be visually distinguishable from the primary text.
+    for (const key of ["muted", "code", "system", "heading"] as const) {
+      expect(FALLBACK_THEME.text[key].toInts()).not.toEqual(FALLBACK_THEME.text.base.toInts())
+    }
   })
 })
 
