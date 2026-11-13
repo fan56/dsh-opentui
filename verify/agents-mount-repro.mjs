@@ -18,8 +18,8 @@
 //      nav, Host section with the four whitelist rows), a local preference
 //      edit (motion) really rewrites the scratch profile config.json (full,
 //      then back to auto), the inner-first Esc ladder (editor → browse →
-//      close) holds, and a keyboard-selected host row commits through 确定
-//      (Ctrl+S) into the scratch cordis.patch.yml;
+//      exit confirm) holds, and a keyboard-selected host row saves on Enter
+//      (instant model) into the scratch cordis.patch.yml;
 //   3. `/thi` + Tab completes to `/think ` (composer-side Tab), and a
 //      user-invocable skill (a scratch-home FIXTURE, not the user's corpus)
 //      renders as an italic `/name` row that Tab completes with its trailing
@@ -60,7 +60,11 @@ const FALLBACK = 'not mounted in this entry'
 const AGENT_TABLE_HEADER = /NAME\s+MODEL\s+THINK\s+DEEP\s+LIMITS/
 const AGENT_TABLE_HINT = 'enter open · l limits'
 const AGENT_LIMITS_KEYS = ['maxRounds', 'background', 'maxActiveSubagents', 'maxDepth']
-const SETTINGS_SUBTITLE = '分节导航 · Ctrl+S 提交 · Esc 逐层返回'
+const SETTINGS_SUBTITLE = '分节导航 · 即时保存 · Esc 逐层返回'
+/** Resting text of the action band's status line (instant-save contract). */
+const SETTINGS_STATUS = '改动已即时保存'
+/** The top-level Esc confirm (nothing is pending, so it is a courtesy). */
+const SETTINGS_EXIT_TITLE = '退出设置？'
 const SETTINGS_SECTIONS = ['通用', 'TUI 专有', 'Host', '模型', '插件', 'Agent 预设', '账号']
 /** Content-pane marker that only one section paints (reachability proof). */
 const SECTION_MARKERS = ['权限默认预设', 'cacheHitMode', 'subagent.maxActiveSubagents', '打开 /model', '打开 /plugins', '打开 /preset', '打开 /login']
@@ -593,10 +597,11 @@ try {
 
   // ---------------- 1b. /settings modal (panel-kit, T18) ----------------
   // Seven-section nav (通用 / TUI 专有 / Host / 模型 / 插件 / Agent 预设 / 账号)
-  // with the inner-first Esc ladder (editor → browse → close), a REAL local
-  // preference write (motion full → auto) observed in the scratch profile
-  // config.json, and the Host section: the four whitelist rows from the live
-  // settings/describe plus a keyboard-selected row committed with 确定 (Ctrl+S).
+  // with the inner-first Esc ladder (editor → browse → exit confirm), a REAL
+  // local preference write (motion full → auto) observed in the scratch
+  // profile config.json, and the Host section: the four whitelist rows from
+  // the live settings/describe plus a keyboard-selected row saved on Enter
+  // (instant model, no commit key) into the scratch cordis.patch.yml.
   const profileConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
   const readProfile = () => {
     try { return JSON.parse(readFileSync(profileConfigPath, 'utf8')) } catch { return {} }
@@ -637,6 +642,23 @@ try {
     return waitPane(SESS, settingsUp, 25_000)
   }
   const waitSettingsClosed = (timeout = 15_000) => waitPane(SESS, (out) => !settingsUp(out) && idle(out), timeout)
+  /**
+   * Close the modal under the instant-save contract: Esc at the browse root
+   * opens the `退出设置？` confirm with the focus on 取消, Tab moves it to 退出,
+   * and Enter confirms. Nothing is pending (every edit landed on choice), so
+   * there is no commit key and no other close path.
+   */
+  const closeSettings = async (timeout = 15_000) => {
+    sendKeys(SESS, 'Escape')
+    const confirm = await waitPane(SESS, (out) => out.includes(SETTINGS_EXIT_TITLE), 6_000)
+    if (confirm.ok) {
+      sendKeys(SESS, 'Tab')
+      await sleep(180)
+      sendKeys(SESS, 'Enter')
+    }
+    const closed = await waitSettingsClosed(timeout)
+    return { ok: confirm.ok && closed.ok, out: closed.out, confirmOk: confirm.ok }
+  }
   /** Land on one section: Up clamps at index 0, then Down walks to the target. */
   const gotoSection = async (index) => {
     await sleep(250) // let the modal's entrance settle before driving its keys
@@ -653,10 +675,10 @@ try {
   const settingsOpen = await openSettings()
   snap('11-settings-open')
   const navLabels = SETTINGS_SECTIONS.filter((label) => settingsOpen.out.includes(label))
-  record('/settings opens the Settings modal (section nav + commit band)',
-    settingsOpen.ok && navLabels.length === SETTINGS_SECTIONS.length && settingsOpen.out.includes('确定 ctrl+s'),
+  record('/settings opens the Settings modal (section nav + instant-save band)',
+    settingsOpen.ok && navLabels.length === SETTINGS_SECTIONS.length && settingsOpen.out.includes(SETTINGS_STATUS),
     [`nav sections: ${navLabels.join(' / ') || 'none'}`,
-      settingsOpen.out.includes('确定 ctrl+s') ? 'commit band: esc 取消 · 确定 ctrl+s' : 'commit band missing'])
+      settingsOpen.out.includes(SETTINGS_STATUS) ? `action band: esc 返回 · ${SETTINGS_STATUS}` : 'action band missing'])
   record('/settings modal frame uses the 116-cell xlarge preset',
     panelFrameWidth(settingsOpen.out) === XLargeWidth(COLS),
     [`frame width: ${panelFrameWidth(settingsOpen.out)} (expected ${XLargeWidth(COLS)} at ${COLS} cols)`])
@@ -709,32 +731,34 @@ try {
   sendKeys(SESS, 'Up') // back onto session-log-deepseek.enabled (row 3)
   await sleep(200)
 
-  // Host write on a REAL host: a keyboard-selected row → Enter stages a draft →
-  // 确定 (Ctrl+S) commits through settings.mutate into cordis.patch.yml. The
-  // proof has two halves — the patch file and the value a FRESH describe paints
-  // after reopening the modal. Scratch home only; the real ~/.dsh stays clean.
+  // Host write on a REAL host: a keyboard-selected row → Enter persists the
+  // new value on the spot (instant model) through settings.mutate into
+  // cordis.patch.yml. The proof has two halves — the patch file and the value
+  // a FRESH describe paints after reopening the modal. Scratch home only; the
+  // real ~/.dsh stays clean.
   const hostRow = await waitPane(SESS, (out) => /session-log-deepseek\.enabled\s+(on|off)/.test(out), 6_000)
   const valueBefore = /session-log-deepseek\.enabled\s+(on|off)/.exec(hostRow.out)?.[1] ?? 'on'
   const afterToggle = valueBefore === 'on' ? 'off' : 'on'
   record('settings selects the host row with the keyboard', hostRow.ok && hostRow.out.includes('session-log-deepseek.enabled'),
     [hostRow.ok ? `row: ${hostRowLine(hostRow.out, 'session-log-deepseek').trim()}` : 'row not selected'])
-  sendKeys(SESS, 'Enter') // toggle: value → afterToggle (staged draft)
-  const staged = await waitPane(SESS,
-    (out) => new RegExp(`session-log-deepseek\\.enabled\\s+${afterToggle}`).test(out) && /未提交：\d+ 项/.test(out), 8_000)
-  snap('15-settings-host-staged')
-  record('settings stages the host toggle as an uncommitted draft', staged.ok,
-    staged.ok ? [`row shows ${afterToggle}; commit band: 未提交：1 项`] : ['draft not staged'])
-  sendKeys(SESS, 'C-s') // 确定
+  sendKeys(SESS, 'Enter') // toggle: value → afterToggle, written immediately
+  const saved = await waitPane(SESS,
+    (out) => new RegExp(`session-log-deepseek\\.enabled\\s+${afterToggle}`).test(out), 8_000)
+  snap('15-settings-host-saved')
+  record('settings saves the host toggle on Enter (instant model)', saved.ok,
+    saved.ok
+      ? [`row shows ${afterToggle}`, `status line: ${saved.out.includes(`已保存 · session-log-deepseek.enabled`) ? '已保存 · session-log-deepseek.enabled' : 'not observed (transient)'}`]
+      : ['row value did not flip'])
   const wroteOff = await waitPatch((text) => patchEntry('session-log-deepseek').includes(`enabled: ${afterToggle === 'on'}`))
-  const closedAfterWrite = await waitSettingsClosed()
+  const closedAfterWrite = await closeSettings()
   snap('16-settings-host-write-off')
   record(`settings writes a host row (session-log-deepseek.enabled=${afterToggle}) into cordis.patch.yml`,
-    staged.ok && wroteOff && closedAfterWrite.ok,
-    [staged.ok ? 'row selected + edited' : 'row not selected',
+    saved.ok && wroteOff && closedAfterWrite.ok,
+    [saved.ok ? 'row toggled + saved on Enter' : 'row not saved',
       wroteOff ? `patch entry has enabled: ${afterToggle === 'on'}` : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
-      closedAfterWrite.ok ? '确定 closed the modal' : 'modal still on screen'])
+      closedAfterWrite.ok ? '退出 confirm closed the modal' : 'modal still on screen'])
   const writeSummary = closedAfterWrite.out.split('\n').find((line) => /Settings updated:/.test(line)) ?? ''
-  record('/settings commits print the exit summary', /Settings updated:/.test(writeSummary),
+  record('/settings saves print the exit summary', /Settings updated:/.test(writeSummary),
     [writeSummary.trim() === '' ? 'no summary row' : writeSummary.trim()])
 
   // Proof half 2: a fresh settings/describe after reopening shows the new value.
@@ -750,16 +774,15 @@ try {
   // Restore the original value (same keyboard path).
   for (let i = 0; i < 3; i++) { sendKeys(SESS, 'Down'); await sleep(140) }
   sendKeys(SESS, 'Enter')
-  const stagedBack = await waitPane(SESS,
-    (out) => new RegExp(`session-log-deepseek\\.enabled\\s+${valueBefore}`).test(out) && /未提交：\d+ 项/.test(out), 8_000)
-  sendKeys(SESS, 'C-s')
+  const savedBack = await waitPane(SESS,
+    (out) => new RegExp(`session-log-deepseek\\.enabled\\s+${valueBefore}`).test(out), 8_000)
   const wroteOn = await waitPatch((text) => patchEntry('session-log-deepseek').includes(`enabled: ${valueBefore === 'on'}`))
-  const restoredClose = await waitSettingsClosed()
+  const restoredClose = await closeSettings()
   snap('18-settings-host-restore')
   record(`settings restores the host row (session-log-deepseek.enabled=${valueBefore})`,
-    stagedBack.ok && wroteOn && restoredClose.ok,
+    savedBack.ok && wroteOn && restoredClose.ok,
     [wroteOn ? `patch entry back to enabled: ${valueBefore === 'on'}` : `patch entry: ${JSON.stringify(patchEntry('session-log-deepseek').slice(-120))}`,
-      restoredClose.ok ? 'modal closed after 确定' : 'modal still on screen'])
+      restoredClose.ok ? 'modal closed after the exit confirm' : 'modal still on screen'])
 
   // ---- local preference write (motion) through the TUI 专有 section ----
   const MOTION_OPTIONS = ['auto', 'full', 'reduced', 'off']
@@ -785,8 +808,8 @@ try {
 
   await openSettings()
   const motionFirst = await openMotionEditor()
-  // Always pick a value that differs from the snapshot, so Enter stages a real
-  // draft and 确定 writes it (a same-value choice is dropped by the modal).
+  // Always pick a value that differs from the snapshot, so Enter is a real
+  // write (instant model: the choice persists the moment it is confirmed).
   const motionTarget = motionFirst.current === 'full' ? 'auto' : 'full'
   const motionSteps = await moveMotionCursor(motionFirst.current, motionTarget)
   snap('19-settings-motion-editor')
@@ -805,47 +828,46 @@ try {
   record('/settings Esc discards the editor and returns to the section rows', editorBack.ok,
     [editorBack.ok ? 'editor closed, section still on screen' : 'editor did not return'])
 
-  // Re-enter the editor, aim the cursor, stage the draft, commit with 确定.
+  // Re-enter the editor, aim the cursor, save the choice (Enter persists it).
   sendKeys(SESS, 'Enter')
   await waitPane(SESS, (out) => out.includes('motion — 选择值'), 8_000)
   await moveMotionCursor(motionFirst.current, motionTarget)
   sendKeys(SESS, 'Enter')
-  const motionStaged = await waitPane(SESS,
-    (out) => new RegExp(`✎\\s*motion\\s+${motionTarget}`).test(out) && /未提交：\d+ 项/.test(out), 8_000)
-  snap('21-settings-motion-staged')
-  record(`settings stages motion=${motionTarget} as an uncommitted draft`, motionStaged.ok,
-    motionStaged.ok ? [`row: ✎ motion ${motionTarget}; commit band: 未提交：1 项`] : ['draft not staged'])
-  sendKeys(SESS, 'C-s')
+  const motionSaved = await waitPane(SESS,
+    (out) => new RegExp(`✎\\s*motion\\s+${motionTarget}`).test(out), 8_000)
+  snap('21-settings-motion-saved')
+  record(`settings saves motion=${motionTarget} on Enter (instant model)`, motionSaved.ok,
+    motionSaved.ok ? [`row: ✎ motion ${motionTarget}`] : ['row value did not flip'])
   const fullConfig = await waitProfile((config) => config.motion === motionTarget)
-  const fullClose = await waitSettingsClosed()
+  const fullClose = await closeSettings()
   snap('22-settings-motion-write')
   record(`settings writes motion=${motionTarget} into the profile config.json`,
-    motionStaged.ok && fullConfig.motion === motionTarget && fullClose.ok,
+    motionSaved.ok && fullConfig.motion === motionTarget && fullClose.ok,
     [`motion: ${JSON.stringify(fullConfig.motion)}`, `steps from ${motionFirst.current}: ${motionSteps}`,
-      fullClose.ok ? 'modal closed after 确定' : 'modal still on screen'])
+      fullClose.ok ? 'modal closed after the exit confirm' : 'modal still on screen'])
 
   // Restore the original value through the same path (cursor starts on it now).
   await openSettings()
   const motionBack = await openMotionEditor()
   const restoreSteps = await moveMotionCursor(motionBack.current, motionFirst.current)
   sendKeys(SESS, 'Enter')
-  const autoStaged = await waitPane(SESS,
-    (out) => new RegExp(`✎\\s*motion\\s+${motionFirst.current}`).test(out) && /未提交：\d+ 项/.test(out), 8_000)
-  sendKeys(SESS, 'C-s')
+  const autoSaved = await waitPane(SESS,
+    (out) => new RegExp(`✎\\s*motion\\s+${motionFirst.current}`).test(out), 8_000)
   const autoConfig = await waitProfile((config) => config.motion === motionFirst.current)
-  const autoClose = await waitSettingsClosed()
+  const autoClose = await closeSettings()
   snap('23-settings-motion-restore')
   record(`settings writes motion back to ${motionFirst.current}`,
-    autoStaged.ok && autoConfig.motion === motionFirst.current && autoClose.ok,
+    autoSaved.ok && autoConfig.motion === motionFirst.current && autoClose.ok,
     [`motion: ${JSON.stringify(autoConfig.motion)}`, `steps from ${motionBack.current}: ${restoreSteps}`])
 
-  // Browse root Esc closes (no dirty draft → no discard confirm).
+  // Browse root Esc opens the exit confirm; Tab + Enter on 退出 closes.
   await openSettings()
-  sendKeys(SESS, 'Escape')
-  const settingsClosed = await waitSettingsClosed(8_000)
+  const settingsClosed = await closeSettings(8_000)
   snap('24-settings-closed')
-  record('/settings Esc closes the modal at the browse root', settingsClosed.ok,
-    [settingsClosed.ok ? 'back to the composer' : 'panel still on screen'])
+  record('/settings Esc opens the exit confirm and 退出 closes the modal',
+    settingsClosed.ok && settingsClosed.confirmOk,
+    [settingsClosed.confirmOk ? `confirm: ${SETTINGS_EXIT_TITLE} (取消/退出)` : 'exit confirm missing',
+      settingsClosed.ok ? 'back to the composer' : 'panel still on screen'])
 
   // ---------------- 1c. pane focus + transcript scroll (focus batch) ----------------
   // F6 / clicks move focus between the composer and the transcript. The frame
