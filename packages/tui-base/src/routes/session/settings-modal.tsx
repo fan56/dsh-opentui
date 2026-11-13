@@ -23,12 +23,14 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import {
+  Button,
   List,
-  PanelActions,
   PanelBody,
+  resolvePanelChrome,
   resolvePanelMetrics,
   resolvePanelWidth,
   useControlKeys,
+  usePanelTheme,
   usePanels,
   type ListItem,
   type PanelHandle,
@@ -538,33 +540,53 @@ export interface SettingsModalProps {
 const NAV_WIDTH = 20
 
 /**
+ * Fixed frame height (v1.2): the panel is 75% of the terminal, clamped to
+ * [18, rows - 4]. The frame therefore has the SAME height in every section and
+ * in the editor view — switching General (12 rows) → TUI 专有 (16) → Host (32)
+ * → a command jump (1) can never move the frame edges. Overflow is handled by
+ * the paged row window, not by resizing the frame.
+ */
+export const SETTINGS_PANEL_RATIO = 0.75
+export const SETTINGS_PANEL_MIN_ROWS = 18
+export function settingsPanelRows(terminalRows: number): number {
+	const rows = Number.isFinite(terminalRows) ? Math.floor(terminalRows) : 24
+	const upper = Math.max(3, rows - 4)
+	const target = Math.round(rows * SETTINGS_PANEL_RATIO)
+	// The lower bound yields on terminals too short to honour it, so the panel
+	// always stays inside the terminal instead of overflowing.
+	return Math.max(Math.min(SETTINGS_PANEL_MIN_ROWS, upper), Math.min(target, upper))
+}
+
+/**
  * Row width budget in cells for one section row (also the painted highlight
- * width). Terminal width/height → panel frame (`xlarge`, capped at
+ * width). Terminal width/height → fixed panel frame (`xlarge`, capped at
  * terminal-2) → borders (2) + panel inset (3 or 1 when compact, both sides) +
- * PanelBody inset (2) + nav column + column gap. 120 cols → 84 cells, which is
- * exactly the content column the flex row leaves beside the 20-cell nav.
+ * nav column + divider + column gaps. 120 cols → 84 cells, which is exactly
+ * the content column the flex row leaves beside the 20-cell nav.
  */
 export function settingsRowWidth(terminalWidth: number, terminalHeight: number): number {
 	const frame = resolvePanelWidth("xlarge", undefined, terminalWidth)
-	const inset = resolvePanelMetrics(frame - 2, Math.max(3, terminalHeight - 4)).compact ? 1 : 3
+	const frameRows = settingsPanelRows(terminalHeight)
+	const inset = resolvePanelMetrics(frame - 2, Math.max(3, frameRows - 2)).compact ? 1 : 3
 	return Math.max(16, frame - 2 - inset * 2 - 2 - NAV_WIDTH - 2)
 }
 /**
- * Rows painted per page, derived from the live terminal height instead of a
- * constant (a 120x40 terminal must show all 12 General rows on the first
- * screen). The kit frame gives `rows - 4`, minus 2 border lines and 2 vertical
- * padding lines, minus the 2-line header and 2-line action band = `rows - 15`
- * rows for the body; the body itself spends 3 lines on its title, row note and
- * key hint. Clamped to [4, 16]: small terminals stay inside 80x24, big ones
- * never page a 12-row section.
+ * Rows painted per page, derived from the FIXED frame height (never from the
+ * section's own row count). The frame spends
+ *
+ *   2 border + 2 vertical padding + 3 header (title, rule, subtitle)
+ *   + 2 action band (buttons, hint) + 3 body chrome (section label, note, hint)
+ *
+ * = 12 rows on chrome, so the row list gets `frameRows - 12`. Clamped to
+ * [4, 24]: 80x24 (frame 18) still paints 6 rows + the indicator; a 120x40
+ * frame (30) paints 18, which fits General's 12 without paging.
  */
 const MIN_BODY_PAGE = 4
-const MAX_BODY_PAGE = 16
-/** header (title + subtitle) + action band (buttons + hint) + body chrome. */
-const FIXED_CHROME_ROWS = 15
-export function bodyPageSize(terminalRows: number): number {
-	const rows = Number.isFinite(terminalRows) ? Math.floor(terminalRows) : 24
-	return Math.max(MIN_BODY_PAGE, Math.min(MAX_BODY_PAGE, rows - FIXED_CHROME_ROWS))
+const MAX_BODY_PAGE = 24
+export const SETTINGS_FIXED_CHROME_ROWS = 12
+export function bodyPageSize(panelRows: number): number {
+	const rows = Number.isFinite(panelRows) ? Math.floor(panelRows) : 24
+	return Math.max(MIN_BODY_PAGE, Math.min(MAX_BODY_PAGE, rows - SETTINGS_FIXED_CHROME_ROWS))
 }
 
 function rowListItems(rows: readonly SettingsRow[], drafts: SettingsDrafts): ListItem[] {
@@ -579,6 +601,9 @@ function rowListItems(rows: readonly SettingsRow[], drafts: SettingsDrafts): Lis
 
 export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: () => void }) {
 	const themeFace = () => props.themes
+	/** Live kit theme: every color below is a token of this projection. */
+	const theme = usePanelTheme()
+	const chrome = () => resolvePanelChrome(theme())
 	const [view, setView] = createSignal<SettingsView>("browse")
 	const [pane, setPane] = createSignal<SettingsPane>("nav")
 	const [sectionIndex, setSectionIndex] = createSignal(0)
@@ -627,9 +652,10 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	const currentRow = createMemo(() => currentRows()[rowIndex()])
 	const dirty = createMemo(() => isDirty(drafts()))
 
-	/** Live page size (terminal rows → body rows, clamped in `bodyPageSize`). */
+	/** Live page size: fixed frame rows → body rows, clamped in `bodyPageSize`. */
 	const dimensions = useTerminalDimensions()
-	const pageSize = createMemo(() => bodyPageSize(dimensions().height))
+	const panelRows = createMemo(() => settingsPanelRows(dimensions().height))
+	const pageSize = createMemo(() => bodyPageSize(panelRows()))
 
 	/**
 	 * Cursor-follow window (P0-3). The List paints `pageSize` rows; the window
@@ -1113,8 +1139,18 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	return (
 		<box flexDirection="column" flexGrow={1} flexShrink={1}>
 			<PanelBody inset={1} maxRows={pageSize() + 3}>
-				<box flexDirection="row" flexGrow={1} flexShrink={1} gap={2}>
-					<box flexDirection="column" width={NAV_WIDTH} flexShrink={0}>
+				{/* Layered zones (v1.2): raised nav band, a theme-border divider and
+				    the content surface, all resolved from the injected PanelTheme, so
+				    a theme switch recolors them. The row box fills the body height
+				    (flexGrow) and the two columns stretch, so the bands reach the
+				    body edges whatever the section holds. */}
+				<box flexDirection="row" flexGrow={1} flexShrink={1}>
+					<box
+						flexDirection="column"
+						width={NAV_WIDTH}
+						flexShrink={0}
+						backgroundColor={chrome().navBand}
+					>
 						<List
 							items={navItems()}
 							width={NAV_WIDTH - 2}
@@ -1128,8 +1164,16 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 							filterable={false}
 						/>
 					</box>
-					<box flexDirection="column" flexGrow={1} flexShrink={1}>
-						<text attributes={TextAttributes.BOLD}>{currentSection().label}</text>
+					<box width={1} flexShrink={0} backgroundColor={chrome().divider} />
+					{/* One content cell of breathing room after the rule, so the row
+					    highlight never touches the divider and the 84-cell budget
+					    (settingsRowWidth) is exact at 120 cols. */}
+					<box flexDirection="column" flexGrow={1} flexShrink={1} paddingLeft={1}>
+						<box flexShrink={0} backgroundColor={chrome().titleBand}>
+							<text attributes={TextAttributes.BOLD} fg={theme().text.base}>
+								{currentSection().label}
+							</text>
+						</box>
 						<Show when={editorRow() === undefined}>
 							<List
 								items={rowItems()}
@@ -1142,16 +1186,16 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 								}}
 							/>
 							<Show when={currentRow()?.note !== undefined}>
-								<text>{`  ${currentRow()!.note!}`}</text>
+								<text fg={theme().text.muted}>{`  ${currentRow()!.note!}`}</text>
 							</Show>
-							<text>{`${pane() === "nav" ? "↑↓ 选择分节 · →/Enter 进入内容" : "↑↓ 选择行 · Enter 编辑 · ←/Esc 返回"}${pageIndicator()}`}</text>
+							<text fg={theme().text.muted}>{`${pane() === "nav" ? "↑↓ 选择分节 · →/Enter 进入内容" : "↑↓ 选择行 · Enter 编辑 · ←/Esc 返回"}${pageIndicator()}`}</text>
 						</Show>
 						<Show when={editorRow() !== undefined}>
 							<EditorView
 								row={editorRow()!}
 								value={editorValue()}
 								cursor={optionCursor()}
-								optionRows={Math.max(1, pageSize() - 1)}
+								optionRows={Math.max(1, pageSize() - 2)}
 								onValue={setEditorValue}
 								onStage={stageEditorValue}
 								onStep={stepValue}
@@ -1162,11 +1206,41 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 					</box>
 				</box>
 			</PanelBody>
-			<PanelActions
-				secondary={[{ id: "cancel", label: "取消", keyHint: "esc", variant: "ghost", onPress: () => void requestDiscardOrClose() }]}
-				primary={[{ id: "confirm", label: "确定", keyHint: "ctrl+s", variant: "primary", disabled: busy(), onPress: () => void confirm() }]}
-				hint={error() ?? status() ?? (dirty() ? `未提交：${Object.keys(drafts()).length} 项 · 确定提交 / 取消丢弃` : "无未提交改动")}
-			/>
+			{/* Action band (v1.2): the 确定 / esc 取消 actions are real kit Buttons
+			    inside a one-cell rule on each side, so the footer has a boundary
+			    instead of naked text; the primary action keeps the accent fill and
+			    the default action owns the accent rule. */}
+			<box flexDirection="column" flexShrink={0}>
+				<box flexDirection="row" justifyContent="space-between" flexShrink={0} gap={2}>
+					<box
+						flexShrink={0}
+						border={["left", "right"]}
+						borderStyle="single"
+						borderColor={chrome().divider}
+					>
+						<Button label="取消" keyHint="esc" variant="ghost" onPress={() => void requestDiscardOrClose()} />
+					</box>
+					<box
+						flexShrink={0}
+						border={["left", "right"]}
+						borderStyle="single"
+						borderColor={theme().text.accent}
+					>
+						<Button
+							label="确定"
+							keyHint="ctrl+s"
+							variant="primary"
+							disabled={busy()}
+							onPress={() => void confirm()}
+						/>
+					</box>
+				</box>
+				<box flexDirection="row" justifyContent="flex-end">
+					<text fg={theme().text.muted} attributes={theme().attributes.keyHint} wrapMode="none">
+						{error() ?? status() ?? (dirty() ? `未提交：${Object.keys(drafts()).length} 项 · 确定提交 / 取消丢弃` : "无未提交改动")}
+					</text>
+				</box>
+			</box>
 		</box>
 	)
 }
@@ -1284,6 +1358,7 @@ export function SettingsModalHost(props: {
 	onClosed?: (summary?: string) => void
 }) {
 	const panels = usePanels()
+	const dimensions = useTerminalDimensions()
 	const [, setOpen] = useSettingsPanelOpenState()
 	let summary: string | undefined
 	let handle: PanelHandle | undefined
@@ -1315,6 +1390,15 @@ export function SettingsModalHost(props: {
 				title: "Settings",
 				subtitle: "分节导航 · Ctrl+S 提交 · Esc 逐层返回",
 				size: "xlarge",
+				/**
+				 * A FIXED frame height (v1.2): 75% of the terminal, clamped to
+				 * [18, rows - 4]. The frame is resolved once at open from the
+				 * terminal, so no section (12 / 16 / 32 / 1 rows) and no editor view
+				 * can move its edges; extra rows are paged inside the body.
+				 */
+				rows: settingsPanelRows(dimensions().height),
+				/** Title band + rule, so the header reads as chrome, not body. */
+				layered: true,
 				onClose: () => {
 					handle = undefined
 					setLayerHandle(undefined)

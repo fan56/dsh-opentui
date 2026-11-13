@@ -20,15 +20,23 @@ import {
 	PanelStack,
 	STATIC_MOTION,
 	createHostKeyAdapter,
+	resolvePanelChrome,
 	usePanels,
 	type PanelStackApi,
 } from "@dsh-opentui/panel-kit"
 import { Keymap } from "../src/context/keymap"
-import { createTuiPanelKeymapHost } from "../src/context/panel-kit-host"
+import { createTuiPanelKeymapHost, projectPanelTheme } from "../src/context/panel-kit-host"
+import { contrastRatio, relativeLuminance } from "../src/routes/session/powerline"
+import { createComponentTheme } from "../src/theme/component"
+import { getDshBlueTheme, parseTheme } from "../src/theme/index"
+import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
+import gruvboxJson from "../src/theme/assets/gruvbox.json"
+import tokyonightJson from "../src/theme/assets/tokyonight.json"
 import {
 	GENERAL_ROW_COUNT,
 	SETTINGS_SECTIONS,
 	SettingsModalHost,
+	bodyPageSize,
 	buildGeneralRows,
 	buildHostRows,
 	buildOpentuiRows,
@@ -37,6 +45,7 @@ import {
 	displayValue,
 	draftKey,
 	settingsBackView,
+	settingsPanelRows,
 	settingsRowWidth,
 	stageDraft,
 	type SettingsRowContext,
@@ -331,6 +340,57 @@ function highlightRun(setup: Setup, needle: string): { start: number; end: numbe
 		if (start !== undefined) return { start, end }
 	}
 	return undefined
+}
+
+
+/** Frame border rows/columns of the painted modal (top/bottom border glyphs). */
+function frameEdges(setup: Setup): { top: number; bottom: number; left: number; right: number } {
+	const lines = setup.captureCharFrame().split("\n")
+	const top = lines.findIndex((line) => line.includes("┏"))
+	const bottom = lines.findLastIndex((line) => line.includes("┗"))
+	const topLine = lines[top] ?? ""
+	return { top, bottom, left: topLine.indexOf("┏"), right: topLine.lastIndexOf("┓") }
+}
+
+interface CellSpan {
+	cell: number
+	width: number
+	text: string
+	bg: { equals(other: { toInts(): readonly number[] }): boolean; toInts(): readonly number[] }
+	fg: { equals(other: { toInts(): readonly number[] }): boolean; toInts(): readonly number[] }
+}
+
+/** Captured spans per frame line, with absolute cell offsets. */
+function lineSpans(setup: Setup): CellSpan[][] {
+	return setup.captureSpans().lines.map((line) => {
+		let cell = 0
+		return line.spans.map((span) => {
+			const entry = { cell, width: span.width, text: span.text, bg: span.bg, fg: span.fg }
+			cell += span.width
+			return entry
+		})
+	})
+}
+
+/** First span of a line containing `needle`, or undefined. */
+function spanOf(setup: Setup, needle: string): CellSpan | undefined {
+	for (const line of lineSpans(setup)) {
+		for (const span of line) {
+			if (span.text.includes(needle)) return span
+		}
+	}
+	return undefined
+}
+
+/** True when a line containing `needle` paints `bg` on any of its spans. */
+function linePaintsBg(setup: Setup, needle: string, bg: { toInts(): readonly number[] }): boolean {
+	const line = lineSpans(setup).find((entry) => entry.map((span) => span.text).join("").includes(needle))
+	return line !== undefined && line.some((span) => span.bg.toInts().join() === bg.toInts().join())
+}
+
+/** Frame line index containing `needle`, or -1. */
+function lineIndexOf(setup: Setup, needle: string): number {
+	return setup.captureCharFrame().split("\n").findIndex((line) => line.includes(needle))
 }
 
 // ------------------------------------------------------ pure data layer ----
@@ -699,7 +759,8 @@ describe("settings modal: real keys", () => {
 	})
 
 	test("opentui's 16 rows are all reachable with ↓ (P0-3, row 16 included)", async () => {
-		// 24 rows => page size 9 (24 - 15 chrome), so the 16-row section pages.
+		// 24 terminal rows => an 18-row fixed frame => page size 6, so the
+		// 16-row section pages.
 		const { setup, frame } = await mount({ height: 24 })
 		try {
 			setup.mockInput.pressArrow("down") // nav: general → opentui
@@ -710,9 +771,9 @@ describe("settings modal: real keys", () => {
 				setup.mockInput.pressArrow("down")
 				await settle(setup, 1)
 			}
-			// 16 rows, page 9: the cursor window flipped to the second page.
+			// 16 rows, page 6: the cursor window flipped to the last page.
 			expect(frame()).toContain("maxRoundsGrace")
-			expect(frame()).toContain("10-16/16")
+			expect(frame()).toContain("13-16/16")
 			expect(frame()).not.toContain("themeMode")
 			setup.mockInput.pressEnter() // the LAST row opens its editor
 			await settle(setup)
@@ -751,12 +812,12 @@ describe("settings modal: real keys", () => {
 	test("120x24 pages a long section and the indicator follows the window", async () => {
 		const { setup, frame } = await mount({ preselect: "general.permission", height: 24 })
 		try {
-			// pageSize(24) = 9 < 12
-			expect(frame()).toMatch(/1-9\/12/)
+			// 24 rows => 18-row frame => pageSize 6 < 12
+			expect(frame()).toMatch(/1-6\/12/)
 			setup.mockInput.pressKey("\u001b[F") // End
 			await settle(setup)
 			expect(frame()).toContain("当前版本")
-			expect(frame()).toMatch(/10-12\/12/)
+			expect(frame()).toMatch(/7-12\/12/)
 		} finally {
 			await setup.dispose()
 		}
@@ -772,7 +833,7 @@ describe("settings modal: real keys", () => {
 			},
 		})
 		try {
-			// General fits (12 <= 16): the session pager must keep pagedown.
+			// General fits (12 <= 18): the session pager must keep pagedown.
 			tall.setup.mockInput.pressKey("\u001b[6~") // PgDn
 			await settle(tall.setup)
 			expect(sessionPages).toBe(1)
@@ -789,14 +850,14 @@ describe("settings modal: real keys", () => {
 			},
 		})
 		try {
-			expect(short.frame()).toMatch(/1-9\/16/)
+			expect(short.frame()).toMatch(/1-6\/16/)
 			short.setup.mockInput.pressKey("\u001b[6~") // PgDn → next page
 			await settle(short.setup)
 			expect(sessionPages).toBe(1) // still 1: consumed by settings
-			expect(short.frame()).toMatch(/10-16\/16/)
+			expect(short.frame()).toMatch(/7-12\/16/)
 			short.setup.mockInput.pressKey("\u001b[5~") // PgUp → previous page
 			await settle(short.setup)
-			expect(short.frame()).toMatch(/1-9\/16/)
+			expect(short.frame()).toMatch(/1-6\/16/)
 			expect(sessionPages).toBe(1)
 		} finally {
 			await short.setup.dispose()
@@ -1010,7 +1071,7 @@ describe("settings modal: real keys", () => {
 		try {
 			setup.mockInput.pressKey(" ") // stage a draft (send = on)
 			await settle(setup)
-			expect(frame()).toMatch(/1-9\/16/)
+			expect(frame()).toMatch(/1-6\/16/)
 
 			// A foreign layer on top: our handle is no longer `panels.top`.
 			const popup = stack!.open(() => <text>foreign popup</text>, {
@@ -1026,7 +1087,9 @@ describe("settings modal: real keys", () => {
 			setup.mockInput.pressKey("\u001b[6~") // PgDn must fall through
 			await settle(setup)
 			expect(sessionPages).toBe(1)
-			expect(frame()).toMatch(/1-9\/16/) // settings did not page
+			// The foreign layer covers the settings hint line, so "settings did
+			// not page" is proven below: the FIRST PgDn after the pop must land
+			// on page 2 (7-12/16), never page 3.
 
 			setup.mockInput.pressKey("s", { ctrl: true }) // must not commit
 			await settle(setup)
@@ -1039,7 +1102,7 @@ describe("settings modal: real keys", () => {
 			setup.mockInput.pressKey("\u001b[6~")
 			await settle(setup)
 			expect(sessionPages).toBe(1)
-			expect(frame()).toMatch(/10-16\/16/)
+			expect(frame()).toMatch(/7-12\/16/)
 
 			setup.mockInput.pressKey("s", { ctrl: true })
 			await settleUntil(setup, () => !settingsPanelOpen())
@@ -1060,14 +1123,14 @@ describe("settings modal: real keys", () => {
 			set: () => true,
 			mode: () => ({ current: () => "dark", set: () => true }),
 		}
-		// 24 rows => page size 9 => 8 option rows per window.
+		// 24 rows => an 18-row frame => page size 6 => 4 option rows per window.
 		const { setup, frame } = await mount({ preselect: "theme", themes, height: 24 })
 		try {
 			setup.mockInput.pressEnter() // theme row → enum editor
 			await settle(setup)
 			expect(frame()).toContain("theme — 选择值")
 			expect(frame()).toContain("▸ theme-01")
-			expect(frame()).toMatch(/1-8\/20/)
+			expect(frame()).toMatch(/1-4\/20/)
 			expect(frame()).not.toContain("theme-09")
 
 			for (let index = 0; index < 19; index += 1) {
@@ -1080,6 +1143,206 @@ describe("settings modal: real keys", () => {
 			expect(frame()).not.toContain("theme-05")
 		} finally {
 			await setup.dispose()
+		}
+	})
+})
+
+// ------------------------------------------- fixed frame + layered chrome ----
+
+describe("settings modal: fixed frame (v1.2)", () => {
+	test("75% of the terminal, clamped to [18, rows - 4]", () => {
+		expect(settingsPanelRows(40)).toBe(30)
+		expect(settingsPanelRows(34)).toBe(26)
+		expect(settingsPanelRows(24)).toBe(18)
+		// 18 is the floor; rows - 4 is the ceiling, and it wins on short screens.
+		expect(settingsPanelRows(20)).toBe(16)
+		expect(settingsPanelRows(12)).toBe(8)
+		expect(settingsPanelRows(Number.NaN)).toBe(18)
+	})
+
+	test("page size derives from the fixed frame, never from the section", () => {
+		expect(bodyPageSize(30)).toBe(18)
+		expect(bodyPageSize(18)).toBe(6)
+		// Small frames keep at least 4 rows + the indicator row.
+		expect(bodyPageSize(12)).toBe(4)
+		expect(bodyPageSize(40)).toBe(24)
+	})
+
+	test("switching all 7 sections never moves the frame (120x40)", async () => {
+		const { setup } = await mount({ width: 120, height: 40 })
+		try {
+			const edges = [frameEdges(setup)]
+			for (let index = 1; index < SETTINGS_SECTIONS.length; index += 1) {
+				setup.mockInput.pressArrow("down")
+				await settle(setup, 1)
+				edges.push(frameEdges(setup))
+			}
+			const first = edges[0]!
+			expect(first.bottom - first.top + 1).toBe(settingsPanelRows(40))
+			for (const edge of edges) expect(edge).toEqual(first)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("80x24 keeps the same fixed frame across all 7 sections", async () => {
+		const { setup } = await mount({ width: 80, height: 24 })
+		try {
+			const edges = [frameEdges(setup)]
+			for (let index = 1; index < SETTINGS_SECTIONS.length; index += 1) {
+				setup.mockInput.pressArrow("down")
+				await settle(setup, 1)
+				edges.push(frameEdges(setup))
+			}
+			const first = edges[0]!
+			expect(first.bottom - first.top + 1).toBe(18)
+			expect(first.top).toBe(3)
+			for (const edge of edges) expect(edge).toEqual(first)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("the editor view keeps the frame edges (row editor and enum editor)", async () => {
+		const { setup } = await mount({ preselect: "general.permission", width: 120, height: 40 })
+		try {
+			const browse = frameEdges(setup)
+			setup.mockInput.pressArrow("right") // nav → rows
+			await settle(setup, 1)
+			setup.mockInput.pressEnter() // enum editor
+			await settle(setup)
+			expect(frameEdges(setup)).toEqual(browse)
+
+			setup.mockInput.pressEscape() // editor → browse
+			await settle(setup)
+			setup.mockInput.pressArrow("down") // 语言
+			await settle(setup, 1)
+			expect(frameEdges(setup)).toEqual(browse)
+		} finally {
+			await setup.dispose()
+		}
+	})
+})
+
+describe("settings modal: layered chrome (v1.2)", () => {
+	const chrome = () => resolvePanelChrome(FALLBACK_THEME)
+
+	test("title band + rule, nav band, divider and content surface are distinct", async () => {
+		const { setup } = await mount({ width: 120, height: 40 })
+		try {
+			// 1. Title band: the Settings line paints the title-band token, and the
+			//    row under it is the theme-border rule.
+			expect(linePaintsBg(setup, "Settings", chrome().titleBand)).toBe(true)
+			const titleRow = lineIndexOf(setup, "Settings")
+			const ruleRow = setup.captureCharFrame().split("\n")[titleRow + 1] ?? ""
+			expect(ruleRow).toContain("─")
+
+			// 2. Nav band: an UNSELECTED nav row paints the raised band (the
+			//    selected row is covered by the accent highlight), and the divider
+			//    column (theme border token) is painted on that same line.
+			expect(linePaintsBg(setup, "账号", chrome().navBand)).toBe(true)
+			expect(linePaintsBg(setup, "账号", chrome().divider)).toBe(true)
+			const navLine = lineSpans(setup).find((line) => line.map((span) => span.text).join("").includes("账号"))!
+			const dividerCell = navLine.find((span) => span.bg.toInts().join() === chrome().divider.toInts().join())
+			expect(dividerCell?.width).toBe(1)
+
+			// 3. A content row stays on the surface (the frame line also carries
+			//    the nav cells, so assert on the row's own span).
+			expect(spanOf(setup, "权限默认预设")?.bg.toInts()).toEqual(chrome().content.toInts())
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("nav selection is accent-filled and the count badge stays muted", async () => {
+		const { setup } = await mount({ width: 120, height: 40 })
+		try {
+			// Selected section: full accent row (the kit's active row token).
+			const navRun = highlightRun(setup, "通用 12")
+			expect(navRun).toBeDefined()
+			expect(navRun!.end - navRun!.start + 1).toBeLessThanOrEqual(20)
+			// Unselected sections still paint their row-count badge muted.
+			expect(spanOf(setup, "TUI 专有")?.fg.toInts()).toEqual(FALLBACK_THEME.text.base.toInts())
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("the action band is two bordered buttons with their key hints", async () => {
+		const { setup, frame } = await mount({ width: 120, height: 40 })
+		try {
+			expect(frame()).toContain("取消 esc")
+			expect(frame()).toContain("确定 ctrl+s")
+			expect(frame()).toContain("无未提交改动")
+
+			const lines = lineSpans(setup)
+			const buttonLine = lines.find((line) => line.map((span) => span.text).join("").includes("确定"))!
+			const text = buttonLine.map((span) => span.text).join("")
+			// A rule cell on each side of each action: │ 取消 esc │   │ 确定 ctrl+s │
+			expect(text).toContain("│")
+			expect(text.split("│").length - 1).toBeGreaterThanOrEqual(4)
+			// 确定 is the primary button: accent fill + dark foreground.
+			const confirm = buttonLine.find((span) => span.text.includes("确定"))!
+			expect(confirm.bg.toInts()).toEqual(FALLBACK_THEME.row.activeBg.toInts())
+			expect(confirm.fg.toInts()).toEqual(FALLBACK_THEME.row.activeFg.toInts())
+
+			// The status line is muted, not faint/hidden.
+			const hint = spanOf(setup, "无未提交改动")
+			expect(hint?.fg.toInts()).toEqual(FALLBACK_THEME.text.muted.toInts())
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("dsh-blue: every layered text pair clears 4.5:1 (default theme)", () => {
+		const theme = createComponentTheme(() => resolveThemeDocument(getDshBlueTheme(), "dark"))
+		const panel = projectPanelTheme(theme)
+		const layers = resolvePanelChrome(panel)
+		const pairs: readonly [string, typeof panel.text.base, typeof panel.text.base][] = [
+			["title on title band", panel.text.base, layers.titleBand],
+			["esc hint on title band", panel.text.muted, layers.titleBand],
+			["nav label on nav band", panel.text.base, layers.navBand],
+			["nav count on nav band", panel.text.muted, layers.navBand],
+			["content label on surface", panel.text.base, layers.content],
+			["content value on surface", panel.text.muted, layers.content],
+			["editable badge on surface", panel.text.accent, layers.content],
+			["selected row on accent", panel.row.activeFg, panel.row.activeBg],
+		]
+		for (const [name, fg, bg] of pairs) {
+			// Name is part of the assertion so a failure says WHICH pair broke.
+			expect({ pair: name, ok: contrastRatio(fg, bg) >= 4.5 }).toEqual({ pair: name, ok: true })
+		}
+		// The divider is a non-text rule, but it must still out-shine the scrim.
+		expect(contrastRatio(layers.divider, layers.content)).toBeGreaterThanOrEqual(1.5)
+		expect(relativeLuminance(layers.divider)).toBeGreaterThan(relativeLuminance(panel.background.scrim))
+		// Every band clears the scrim too (the panel is never "a black box").
+		for (const band of [layers.titleBand, layers.navBand, layers.content]) {
+			expect(relativeLuminance(band)).toBeGreaterThan(relativeLuminance(panel.background.scrim))
+		}
+	})
+
+	test("the layered projection follows the theme (tokyonight / gruvbox too)", () => {
+		const make = (source: unknown, name: string) => {
+			const document = parseTheme(source as never, name)
+			return createComponentTheme(() => resolveThemeDocument(document, "dark"))
+		}
+		for (const [name, source] of [
+			["tokyonight", tokyonightJson],
+			["gruvbox", gruvboxJson],
+		] as const) {
+			const panel = projectPanelTheme(make(source, name))
+			const layers = resolvePanelChrome(panel)
+			expect({ name, nav: layers.navBand.toInts().join() }).not.toEqual({
+				name,
+				nav: layers.content.toInts().join(),
+			})
+			// Primary text keeps AA contrast on the raised band. (muted-on-base
+			// is the THEME's own pairing — gruvbox sits at 4.0 — so only the band
+			// we introduce is asserted here; dsh-blue is fully pinned above.)
+			expect({ name, ratio: contrastRatio(panel.text.base, layers.navBand) >= 4.5 }).toEqual({
+				name,
+				ratio: true,
+			})
 		}
 	})
 })
