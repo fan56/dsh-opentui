@@ -4,6 +4,11 @@
  * the plugin-mode chain was retired in batch B4).
  *
  * Startup chain:
+ *   0. Bin-level flags — `--version` prints `dsh-opentui <version>` and
+ *      exits 0 BEFORE anything else (no provision, no TUI); `--force` kills
+ *      this profile's stale instances (resident dsh host + bun client, TERM
+ *      then KILL) before startup continues. Both are consumed by the bin
+ *      and never forwarded to the client.
  *   1. bun check — the client bundle runs under bun (FFI, import attributes,
  *      bun export conditions); no bun on PATH → install guidance, exit 1.
  *   2. dsh check — the host CLI is the session carrier (profile storage,
@@ -47,6 +52,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { ancestorPids, killStaleProcesses, parseLauncherArgs, parseProcessHomes, parseProcessRows, readLauncherVersion, selectStaleProcesses } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -55,6 +61,25 @@ function exitWithGuidance(what, installCmd) {
   console.error(`dsh-opentui: ${what} is required but was not found on PATH.`)
   console.error(`dsh-opentui: install it with:  ${installCmd}`)
   process.exit(1)
+}
+
+/** Run a helper command and return its stdout ('' on failure). */
+function capture(cmd, args) {
+  const r = spawnSync(cmd, args, { encoding: 'utf8' })
+  return r.stdout ?? ''
+}
+
+// --- 0. Bin-level flags: --version short-circuits, --force pre-clears -------
+const { version: versionFlag, force: forceFlag, rest: userArgs } = parseLauncherArgs(process.argv.slice(2))
+
+if (versionFlag) {
+  const version = readLauncherVersion(pkgRoot)
+  if (!version) {
+    console.error(`dsh-opentui: could not read the version from ${join(pkgRoot, 'package.json')}.`)
+    process.exit(1)
+  }
+  console.log(`dsh-opentui ${version}`)
+  process.exit(0)
 }
 
 // --- 1. bun: hard runtime dependency of the client chain -------------------
@@ -67,13 +92,29 @@ if (!spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout.trim()) {
   exitWithGuidance('the dsh CLI', 'npm i -g @deepseek-ai/dsh')
 }
 
+// --- 2.5 --force: kill this profile's stale instances before starting ------
+// Matches the opentui-profile host (`node <...>/dsh --profile opentui ...`)
+// and the dsh-opentui client (source entry or published bundle) by command
+// line, scoped to THIS dsh home (see lib/launcher.mjs SCOPE). The launcher's
+// own process tree is excluded; TERM first, then KILL for survivors.
+if (forceFlag) {
+  const rows = parseProcessRows(capture('ps', ['-A', '-o', 'pid=,ppid=,command=']))
+  const homes = parseProcessHomes(capture('ps', ['eww', '-A', '-o', 'pid=,args=']))
+  const stale = selectStaleProcesses(rows, {
+    homes,
+    home: dshHome,
+    excludePids: ancestorPids(rows, process.pid),
+  })
+  const result = await killStaleProcesses(stale)
+  console.log(`--force: killed ${result.terminated} stale instance(s)`)
+}
+
 // --- 3. Profile bootstrap (every start, best effort, idempotent) -----------
 // provision-opentui-profile.mjs is idempotent and understands
 // --provider/--model/--reasoning-effort --plugins/--dry-run; forward those,
 // ignore the rest. With nothing to do this is a local, sub-second pass.
 const opentuiProfileDir = join(dshHome, 'profiles', 'opentui')
 {
-  const userArgs = process.argv.slice(2)
   const provisionFlags = []
   for (const name of ['provider', 'model', 'reasoning-effort']) {
     const i = userArgs.indexOf(`--${name}`)
@@ -265,7 +306,7 @@ if (!existsSync(clientEntry)) {
   console.error('dsh-opentui: reinstall the package (npm i -g @aiwayds/dsh-opentui), or rebuild it with `bun scripts/build-client.mjs` from the repo.')
   process.exit(1)
 }
-const result = spawnSync('bun', [clientEntry, ...process.argv.slice(2)], {
+const result = spawnSync('bun', [clientEntry, ...userArgs], {
   stdio: 'inherit',
 })
 if (result.error) {
