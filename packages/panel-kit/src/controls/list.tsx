@@ -800,6 +800,27 @@ function ListRowView<T>(props: {
       ? item.label
       : truncateCells(item.label, labelBudget, "tail")
 
+  /**
+   * `descriptionAlign: "right"` paints the description in a fixed column at
+   * the row's width edge, so every value ends on the same cell instead of
+   * trailing its own label. The gap is computed in display cells (CJK-aware)
+   * and never below the one-cell separator. Color is independent: `descriptionTone` picks the token only. Everything else
+   * (default left alignment, column tables, a row without a width budget)
+   * keeps the inline `label value` form.
+   */
+  const descriptionRightAligned = () =>
+    item.description !== undefined &&
+    item.descriptionAlign === "right" &&
+    !hasColumns &&
+    props.width !== undefined &&
+    props.width > 0
+  const descriptionGap = () => {
+    if (item.description === undefined) return ""
+    if (!descriptionRightAligned()) return " "
+    const used = prefixCells + stringWidth(label) + stringWidth(item.description)
+    return " ".repeat(Math.max(1, (props.width ?? 0) - used))
+  }
+
   // Fixed columns (v1.1): the first column falls back to the label, badge and
   // description keep their v1 positions, and the column block shrinks inside
   // whatever cells the badge/description leave behind.
@@ -830,7 +851,7 @@ function ListRowView<T>(props: {
       </Show>
       <Show when={item.description !== undefined}>
         <text fg={disabled ? theme().text.disabled : active() ? theme().row.activeFg : descriptionColor(theme(), item.descriptionTone)}>
-          {" " + item.description}
+          {descriptionGap() + (item.description ?? "")}
         </text>
       </Show>
       <box flexGrow={1} />

@@ -283,3 +283,55 @@ export function fadeTheme(theme: PanelTheme, t: number): PanelTheme {
     identity: [mix(theme.identity[0]), mix(theme.identity[1])] as const,
   }
 }
+
+/**
+ * Dim projection (stack layering). Multiplies every themed RGB channel by
+ * `factor` and keeps each alpha, so the projection darkens a lower layer
+ * without painting anything over it: an alpha background fill rewrites the
+ * cells it covers, which drops the trailing half of a double-width glyph
+ * (opentui 0.8.1), while a color multiply leaves every grapheme in place and
+ * keeps surfaces opaque. `factor = 1` returns the theme unchanged.
+ */
+export function dimTheme(theme: PanelTheme, factor: number): PanelTheme {
+  const level = clamp01(factor)
+  if (level >= 1) return theme
+  const dim = (color: RGBA) =>
+    RGBA.fromValues(color.r * level, color.g * level, color.b * level, color.a)
+  const border = (token: PanelBorderToken): PanelBorderToken => ({
+    style: token.style,
+    color: dim(token.color),
+  })
+  return {
+    background: {
+      surface: dim(theme.background.surface),
+      raised: dim(theme.background.raised),
+      content: dim(theme.background.content),
+      scrim: dim(theme.background.scrim),
+    },
+    text: {
+      base: dim(theme.text.base),
+      muted: dim(theme.text.muted),
+      faint: dim(theme.text.faint),
+      accent: dim(theme.text.accent),
+      disabled: dim(theme.text.disabled),
+      danger: dim(theme.text.danger),
+      warning: dim(theme.text.warning),
+      success: dim(theme.text.success),
+      code: dim(theme.text.code),
+      user: dim(theme.text.user),
+      system: dim(theme.text.system),
+      heading: dim(theme.text.heading),
+    },
+    row: {
+      activeBg: dim(theme.row.activeBg),
+      activeFg: dim(theme.row.activeFg),
+    },
+    border: {
+      base: border(theme.border.base),
+      focused: border(theme.border.focused),
+      warning: border(theme.border.warning),
+    },
+    attributes: theme.attributes,
+    identity: [dim(theme.identity[0]), dim(theme.identity[1])] as const,
+  }
+}

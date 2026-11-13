@@ -197,18 +197,28 @@ describe("panel-kit confirm physical keys (Keymap.Provider chain)", () => {
     }
   })
 
-  test("paints the 取消/丢弃 buttons with borders and the key hint line", async () => {
+  test("paints the 取消/丢弃 buttons with four-sided borders and the key hint line", async () => {
     const { setup, panels } = await mount()
     try {
       void open(panels)
       await settle(setup)
 
       const text = setup.captureCharFrame()
+      // Full frames: the focused action is heavy, the unfocused one single.
+      // The warning panel's own heavy top border also matches /┏━+┓/, so
+      // require BOTH button top edges, separated by the button gap, on the
+      // SAME line.
+      const lines = text.split("\n")
+      const topRow = lines.findIndex((line) => /┏━+┓ +┌─+┐/.test(line))
+      expect(topRow).not.toBe(-1) // focused heavy + unfocused single, one row
+      // The focused button keeps its heavy side borders on the row below.
+      expect(lines[topRow + 1]).toMatch(/┃.*┃/)
       // The activation hint follows focus: 取消 (focused) reads "esc / enter",
       // 丢弃 (unfocused) carries no enter hint.
       expect(text).toMatch(/[┃│] 取消  ?esc \/ enter ?[┃│]/)
       expect(text).toMatch(/[┃│] 丢弃 +[┃│]/)
       expect(text).not.toMatch(/丢弃  ?enter/)
+      // The hint's Esc verb follows cancelLabel ("取消" in this fixture).
       expect(text).toContain("←→ 选择 · Enter 确认 · Esc 取消")
     } finally {
       await setup.dispose()

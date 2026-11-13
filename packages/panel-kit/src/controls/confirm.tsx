@@ -192,7 +192,10 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
       </box>
       <box flexDirection="row" justifyContent="flex-end" flexShrink={0}>
         <text fg={theme().text.muted} attributes={theme().attributes.keyHint} wrapMode="none">
-          {"←→ 选择 · Enter 确认 · Esc 取消"}
+          {/* The Esc verb follows the cancel button's own label, so a consumer
+              that renames Cancel ("返回" in /settings) never sees the hint and
+              the button disagree. */}
+          {`←→ 选择 · Enter 确认 · Esc ${props.cancelLabel ?? "Cancel"}`}
         </text>
       </box>
     </box>
@@ -200,10 +203,12 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
 }
 
 /**
- * One button plus a one-line-tall side border so the unfocused action still
- * reads as a button (the danger variant has no background of its own). Both
- * border tokens come from the panel theme; the focused state keeps the
- * list-row highlight tokens the Button already paints.
+ * One button inside a full four-sided frame so it reads as a button in both
+ * states, not just when focused (the danger variant has no background of its
+ * own). The inner Button keeps its one-space left/right padding, so the frame
+ * sits one cell outside the label on every side. Both border tokens come from
+ * the panel theme; the focused state keeps the list-row highlight tokens the
+ * Button already paints.
  */
 function ConfirmButton(props: {
   state: Accessor<ConfirmButtonState>
@@ -216,14 +221,17 @@ function ConfirmButton(props: {
   return (
     <box
       flexShrink={0}
-      border={["left", "right"]}
+      border={["top", "right", "bottom", "left"]}
       borderStyle={token().style}
       borderColor={token().color}
     >
       <Button
         label={props.state().label}
         variant={props.state().variant}
-        keyHint={props.state().keyHint}
+        // An empty hint means "no suffix": passing "" would still paint the
+        // leading space, leaving the frame with two cells on the right and one
+        // on the left.
+        keyHint={props.state().keyHint || undefined}
         disabled={props.state().disabled}
         focused={props.state().focused}
         onPress={props.state().onPress}

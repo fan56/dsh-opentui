@@ -41,6 +41,7 @@ export {
   PanelKeyRoutingContext,
   PanelKitContext,
   STATIC_MOTION,
+  dimTheme,
   fadeColor,
   fadeTheme,
   panelKitContext,

@@ -244,20 +244,27 @@ describe("ConfirmDialog keyboard (panel router + raw Tab)", () => {
     }
   })
 
-  test("paints the hint line and a themed border around each button", async () => {
+  test("paints the hint line and a full four-sided border around each button", async () => {
     const { setup, panels } = await mount()
     try {
       void openConfirm(panels)
       await setup.renderOnce()
 
       const text = frameText(setup.captureSpans())
+      // The hint's Esc verb follows cancelLabel ("取消" in this fixture).
       expect(text).toContain("←→ 选择 · Enter 确认 · Esc 取消")
 
-      // Both actions keep a visible boundary even when unfocused; the focused
-      // one uses the heavy border token from the theme. The activation hint
-      // follows the focus: Cancel (focused) reads "esc / enter", Discard
-      // (unfocused) carries no enter hint.
+      // Both actions keep a visible four-sided boundary even when unfocused;
+      // the focused one uses the heavy border token from the theme, the other
+      // the single-line base token. The warning panel's own heavy top border
+      // also matches /┏━+┓/, so require BOTH button top edges, separated by
+      // the button gap, on the SAME line.
       const raw = setup.captureCharFrame()
+      const lines = raw.split("\n")
+      const topRow = lines.findIndex((line) => /┏━+┓ +┌─+┐/.test(line))
+      expect(topRow).not.toBe(-1) // focused heavy + unfocused single, one row
+      // The focused button keeps its heavy side borders on the row below.
+      expect(lines[topRow + 1]).toMatch(/┃.*┃/)
       expect(raw).toMatch(/[┃│] 取消  ?esc \/ enter ?[┃│]/)
       expect(raw).toMatch(/[┃│] 丢弃 +[┃│]/)
       expect(raw).not.toMatch(/丢弃  ?enter/)

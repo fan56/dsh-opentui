@@ -772,9 +772,9 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 
 	/**
 	 * Esc at the root opens the exit confirmation (kit confirm layer,
-	 * destructive => focus starts on 取消). Nothing is pending here: every edit
-	 * landed the moment it was chosen, so the dialog is a courtesy, not a
-	 * discard prompt. Only an explicit 退出 closes the panel.
+	 * destructive => focus starts on 返回, the safe side). Nothing is pending
+	 * here: every edit landed the moment it was chosen, so the dialog is a
+	 * courtesy, not a discard prompt. Only an explicit 确认退出 closes the panel.
 	 */
 	async function requestExitConfirm() {
 		if (confirmingExit) return
@@ -783,8 +783,8 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			const exit = await panels.confirm({
 				title: "退出设置？",
 				message: "所有改动已即时保存。",
-				confirmLabel: "退出",
-				cancelLabel: "取消",
+				confirmLabel: "确认退出",
+				cancelLabel: "返回",
 				destructive: true,
 			})
 			if (exit) props.onRequestClose()
@@ -991,8 +991,10 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			id: section.id,
 			label: section.label,
 			description: `${section.rows.length}`,
-			// v1.2: the row count is system text, not a muted value.
+			// v1.2: the row count is system text, not a muted value, and it sits
+			// in the fixed right-aligned count column.
 			descriptionTone: "system" as const,
+			descriptionAlign: "right" as const,
 		})),
 	)
 

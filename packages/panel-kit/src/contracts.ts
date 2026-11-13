@@ -396,6 +396,15 @@ export interface PanelProps extends PanelOptions {
    */
   active?: boolean
   /**
+   * Brightness factor 0..1 (default 1) for this layer's themed subtree. The
+   * stack dims the layers below the top this way instead of covering them
+   * with a translucent scrim: an alpha background fill rewrites the cells it
+   * covers and drops the trailing half of a double-width glyph (opentui
+   * 0.8.1), while a color multiply keeps every grapheme and every surface
+   * opaque. A standalone panel keeps 1.
+   */
+  dim?: number
+  /**
    * Receives the imperative close handle once the shell is mounted; the stack
    * stores it behind PanelHandle. (T17-INT1 A1)
    */
@@ -535,9 +544,17 @@ export interface ListItem<T = unknown> {
   badgeTone?: "accent" | "user"
   /**
    * Description color role (v1.2). Default `muted`; `code` paints literal
-   * values and enum options, `system` paints counts and status-like text.
+   * values and enum options; `system` paints counts and status-like text.
+   * Color only — horizontal placement is `descriptionAlign`.
    */
   descriptionTone?: "muted" | "code" | "system"
+  /**
+   * Description placement (v1.2). Default `left` keeps the inline
+   * `label value` form. `right` paints the description in a fixed column at
+   * the row's `width` edge (display cells, CJK-aware) when no `columns[]` are
+   * set and the List has a width budget, so repeated values end on one cell.
+   */
+  descriptionAlign?: "left" | "right"
   disabled?: boolean
 }
 

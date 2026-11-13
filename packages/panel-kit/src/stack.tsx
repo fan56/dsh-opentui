@@ -34,6 +34,7 @@ import type {
 } from "./contracts"
 import { ConfirmDialog } from "./controls/confirm"
 import { Panel } from "./panel"
+import { resolveScrimAlpha, usePanelTheme } from "./theme"
 
 interface StackEntry {
   readonly id: string
@@ -63,12 +64,57 @@ function inTree(root: Renderable, node: Renderable): boolean {
 
 export function PanelStack(props: PanelStackProps): JSX.Element {
   const renderer = useRenderer()
+  const panelTheme = usePanelTheme()
   const [layers, setLayers] = createSignal<StackEntry[]>([])
   const handles = new Map<string, PanelHandle>()
   let counter = 0
   let baseFocus: Renderable | null = null
 
   const maxDepth = () => props.maxDepth ?? 4
+
+  /** Scrim alpha a layer asked for (0 when it paints none). */
+  const layerScrimAlpha = (index: number): number => {
+    const entry = layers()[index]
+    if (!entry || entry.options.scrim === false) return 0
+    return (
+      entry.options.scrimAlpha ??
+      resolveScrimAlpha(panelTheme().background.scrim.toInts()[3], index)
+    )
+  }
+
+  /**
+   * A scrim is a full-screen alpha fill. The engine composites it cell by cell
+   * and drops the trailing half of a double-width glyph (opentui 0.8.1), so a
+   * scrim above a panel blanks that panel's CJK. The stack therefore dims the
+   * covered layers through their theme projection (`dim`) and paints a scrim
+   * only on the deepest layer, where it dims the page behind (which has no kit
+   * canvas of its own to recolor).
+   *
+   * `dimFor` is the brightness left after the scrims above `index`: one black
+   * overlay at alpha a leaves (1 - a/255) of the color.
+   */
+  const dimFor = (index: number): number => {
+    let left = 1
+    for (let above = index + 1; above < layers().length; above += 1) {
+      left *= 1 - layerScrimAlpha(above) / 255
+    }
+    return left
+  }
+
+  /**
+   * The page scrim keeps the depth it had before layer scrims were dropped:
+   * every level's scrim used to stack on the page, so the deepest layer gets
+   * their composite alpha. Explicit consumer alphas are left untouched.
+   */
+  const pageScrimAlpha = (index: number): number | undefined => {
+    if (index !== 0 || layers().length < 2) return undefined
+    if (layers()[0]?.options.scrimAlpha !== undefined) return undefined
+    let left = 1
+    for (let at = 0; at < layers().length; at += 1) {
+      left *= 1 - layerScrimAlpha(at) / 255
+    }
+    return Math.round((1 - left) * 255)
+  }
 
   const restore = (target: Renderable | null) => {
     queueMicrotask(() => {
@@ -193,7 +239,10 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
             title: options.title,
             tone: options.tone ?? "warning",
             size: "medium",
-            height: 10,
+            // Message (1) + gap (1) + four-sided button frame (3) + hint (1)
+            // + frame/title rows. The framed buttons need two rows more than
+            // the old side-border form, so the message keeps its line.
+            height: 12,
             onClose: () => {
               if (settled) return
               settled = true
@@ -224,6 +273,10 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
             id={entry.id}
             depth={index()}
             active={index() === layers().length - 1}
+            // Only the deepest layer keeps a scrim (it dims the page behind).
+            scrim={index() === 0 ? entry.options.scrim : false}
+            scrimAlpha={index() === 0 ? pageScrimAlpha(index()) : entry.options.scrimAlpha}
+            dim={dimFor(index())}
             onClose={() => {
               entry.options.onClose?.()
               removeEntry(entry.id)

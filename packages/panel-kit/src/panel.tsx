@@ -34,6 +34,7 @@ import {
   PanelKeyRoutingContext,
   PanelKitContext,
   STATIC_MOTION,
+  dimTheme,
   fadeTheme,
   resolveFrameToken,
   resolvePanelChrome,
@@ -148,7 +149,13 @@ export function Panel(props: PanelShellProps) {
     if (current === "entering") return props.fadeIn === false ? 1 : driver.progress()
     return current === "closed" ? 0 : 1
   }
-  const theme = createMemo(() => fadeTheme(baseTheme(), fadeProgress()))
+  /**
+   * Stack layering dims a covered layer through this projection, never through
+   * a translucent overlay: the engine's alpha fill rewrites covered cells and
+   * drops a double-width glyph's trailing half, while a color multiply keeps
+   * every grapheme and every surface opaque. See contracts.PanelProps.dim.
+   */
+  const theme = createMemo(() => dimTheme(fadeTheme(baseTheme(), fadeProgress()), props.dim ?? 1))
 
   // -- Close guard ----------------------------------------------------------
   let pending = false
@@ -233,12 +240,30 @@ export function Panel(props: PanelShellProps) {
   const frameToken = () => resolveFrameToken(theme(), props.tone, props.border)
   const titleTint = () => resolveTitleColor(theme(), props.tone)
 
+  /**
+   * v1.2 layered chrome: a title band one step above the content surface and a
+   * one-cell rule under it, so the header never blends into the body.
+   *
+   * The band and its rule span the FRAME's inner width (the rule meets both
+   * side borders); only the title/esc/subtitle text sits on the content inset.
+   * A rule that stopped at the padded content column read as a broken divider
+   * 3 cells short of the frame (release 0.12.0 screenshot report). Flat
+   * (default) keeps the v1.1 look: no band, no rule, padded text only.
+   */
   const header = () => {
-    if (props.header) return props.header
+    // A consumer-supplied header keeps the v1.1 content-inset geometry (the
+    // shell only moves the default chrome out to the frame edges). The wrapper
+    // is flexShrink={0}, unlike the bare node a v1.1 consumer dropped into the
+    // padded column: the header must never be squeezed by the body, so the
+    // wrapper pins that intent instead of mirroring a flexGrow default.
+    if (props.header) {
+      return (
+        <box flexDirection="column" flexShrink={0} paddingLeft={inset()} paddingRight={inset()}>
+          {props.header}
+        </box>
+      )
+    }
     const width = Math.max(1, innerWidth() - inset() * 2)
-    // v1.2 layered chrome: a title band one step above the content surface and
-    // a one-cell rule under it, so the header never blends into the body. Flat
-    // (default) keeps the v1.1 look for every existing consumer.
     const layered = props.layered === true
     return (
       <box
@@ -246,25 +271,36 @@ export function Panel(props: PanelShellProps) {
         flexShrink={0}
         backgroundColor={layered ? resolvePanelChrome(theme()).titleBand : undefined}
       >
+        {/* The rule box spans the frame's inner width, so the divider meets
+            both side borders; only its text row sits on the content inset. */}
         <box
-          flexDirection="row"
-          justifyContent="space-between"
+          flexDirection="column"
           flexShrink={0}
           border={layered ? ["bottom"] : undefined}
           borderStyle="single"
           borderColor={resolvePanelChrome(theme()).divider}
         >
-          <text fg={titleTint()} attributes={theme().attributes.title}>
-            {truncate(props.title, Math.max(1, width - 4))}
-          </text>
-          <text fg={theme().text.muted} attributes={theme().attributes.keyHint}>
-            {"esc"}
-          </text>
+          <box
+            flexDirection="row"
+            justifyContent="space-between"
+            flexShrink={0}
+            paddingLeft={inset()}
+            paddingRight={inset()}
+          >
+            <text fg={titleTint()} attributes={theme().attributes.title}>
+              {truncate(props.title, Math.max(1, width - 4))}
+            </text>
+            <text fg={theme().text.muted} attributes={theme().attributes.keyHint}>
+              {"esc"}
+            </text>
+          </box>
         </box>
         <Show when={props.subtitle}>
-          <text fg={theme().text.muted} attributes={theme().attributes.subtitle} wrapMode="none">
-            {truncate(props.subtitle ?? "", width)}
-          </text>
+          <box flexDirection="column" flexShrink={0} paddingLeft={inset()} paddingRight={inset()}>
+            <text fg={theme().text.muted} attributes={theme().attributes.subtitle} wrapMode="none">
+              {truncate(props.subtitle ?? "", width)}
+            </text>
+          </box>
         </Show>
       </box>
     )
@@ -304,16 +340,18 @@ export function Panel(props: PanelShellProps) {
             borderColor={frameToken().color}
             paddingTop={1}
           >
-            <box
-              flexDirection="column"
-              flexGrow={1}
-              flexShrink={1}
-              paddingLeft={inset()}
-              paddingRight={inset()}
-              paddingBottom={1}
-            >
+            <box flexDirection="column" flexGrow={1} flexShrink={1} paddingBottom={1}>
+              {/* The header carries its own horizontal inset: its chrome
+                  (layered band + rule) spans the full inner width, the text
+                  stays on the content column. */}
               {header()}
-              <box flexDirection="column" flexGrow={1} flexShrink={1}>
+              <box
+                flexDirection="column"
+                flexGrow={1}
+                flexShrink={1}
+                paddingLeft={inset()}
+                paddingRight={inset()}
+              >
                 {/* Controls paint from the faded projection, so the whole
                     subtree fades with one tint per frame (no per-row loop). */}
                 <PanelKitContext.Provider value={{ theme, motion: motion(), keys: kit?.keys }}>

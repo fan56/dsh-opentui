@@ -325,6 +325,47 @@ function navLabels(setup: Setup): string[] {
 	return out
 }
 
+/**
+ * Right edge (screen cell) of each nav row's count, read off the 20-cell nav
+ * column. The count is the trailing digit run of a row, so a list whose counts
+ * trail their own labels yields different edges; a fixed right-aligned count
+ * column yields one edge for every row.
+ */
+function navCountRightEdges(setup: Setup): { start: number; edges: number[] } | undefined {
+	const frame = setup.captureSpans()
+	const lines = frame.lines.map((line) => line.spans.map((span) => span.text).join(""))
+	const headerIndex = lines.findIndex((line) => line.includes("Settings"))
+	if (headerIndex < 0) return undefined
+	let borderCell = -1
+	let scan = 0
+	for (const span of frame.lines[headerIndex]!.spans) {
+		if (borderCell < 0 && span.text.includes("┃")) borderCell = scan + span.text.indexOf("┃")
+		scan += span.width
+	}
+	if (borderCell < 0) return undefined
+	const start = borderCell + 5
+	const edges: number[] = []
+	for (const line of frame.lines) {
+		const cellsInNav: { ch: string; cell: number }[] = []
+		let cell = 0
+		for (const span of line.spans) {
+			let offset = 0
+			for (const ch of span.text) {
+				const at = cell + offset
+				if (at >= start && at < start + 20) cellsInNav.push({ ch, cell: at })
+				offset += cells(ch)
+			}
+			cell += span.width
+		}
+		// Trim the band's blank tail, then require the row to end in digits.
+		while (cellsInNav.length > 0 && cellsInNav[cellsInNav.length - 1]!.ch.trim() === "") cellsInNav.pop()
+		const last = cellsInNav[cellsInNav.length - 1]
+		if (last === undefined || !/\d/.test(last.ch)) continue
+		edges.push(last.cell)
+	}
+	return { start, edges }
+}
+
 /** Cell run painted with the active-row background on the line holding `needle`. */
 function highlightRun(setup: Setup, needle: string): { start: number; end: number } | undefined {
 	const frame = setup.captureSpans()
@@ -677,7 +718,9 @@ describe("settings modal: real keys", () => {
 			//    must not paint a competing highlight.
 			expect(frame()).toContain("↑↓ 选择分节")
 			expect(highlightRun(setup, "权限默认预设")).toBeUndefined()
-			const navRun = highlightRun(setup, "通用 12")
+			// The nav label and its count are separate spans (the count is
+			// right-aligned in its own column), so match the label alone.
+			const navRun = highlightRun(setup, "通用")
 			expect(navRun).toBeDefined()
 			expect(navRun!.end - navRun!.start + 1).toBeLessThanOrEqual(20)
 
@@ -1397,14 +1440,30 @@ describe("settings modal: layered chrome (v1.2)", () => {
 		}
 	})
 
-	test("nav selection is accent-filled and the count badge stays muted", async () => {
+	test("nav selection is accent-filled and the count column is system text", async () => {
 		const { setup } = await mount({ width: 120, height: 40 })
 		try {
 			// Selected section: full accent row (the kit's active row token).
-			const navRun = highlightRun(setup, "通用 12")
+			// The nav label and its count are separate spans (the count is
+			// right-aligned in its own column), so match the label alone.
+			const navRun = highlightRun(setup, "通用")
 			expect(navRun).toBeDefined()
 			expect(navRun!.end - navRun!.start + 1).toBeLessThanOrEqual(20)
-			// Unselected sections still paint their row-count badge muted.
+			// Every section count ends on the SAME cell: the fixed count column
+			// (release 0.12.0 report had each count trailing its own label).
+			const nav = navCountRightEdges(setup)!
+			expect(nav.edges).toHaveLength(SETTINGS_SECTIONS.length)
+			expect(new Set(nav.edges).size).toBe(1)
+			// The column is not just uniform but ABSOLUTE: the nav List is
+			// width={NAV_WIDTH - 2} = 18, so the count's last cell is the 18th
+			// cell of the nav column, start + 17.
+			expect(nav.edges[0]).toBe(nav.start + 17)
+			// Unselected sections paint the COUNT span (its own right-aligned
+			// span) as system text; the label span keeps the base token.
+			const navCount = lineSpans(setup)
+				.find((line) => line.map((span) => span.text).join("").includes("TUI 专有"))!
+				.find((span) => /^\s*\d+\s*$/.test(span.text))
+			expect(navCount?.fg.toInts()).toEqual(FALLBACK_THEME.text.system.toInts())
 			expect(spanOf(setup, "TUI 专有")?.fg.toInts()).toEqual(FALLBACK_THEME.text.base.toInts())
 		} finally {
 			await setup.dispose()
