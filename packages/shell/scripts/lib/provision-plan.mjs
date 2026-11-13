@@ -29,7 +29,7 @@ export const PLUGIN_SET = [
   },
   {
     name: '@aiwayds/dsh-subagent-registry',
-    version: '0.19.1',
+    version: '0.20.0',
     tier: 'core',
     reason: 'subagent discovery and registration for the shell',
   },
