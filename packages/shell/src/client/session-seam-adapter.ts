@@ -15,8 +15,6 @@
  *                                true — durable rows are complete)
  *   currentSessionId()         → session.currentSessionId()      (1:1)
  *   resumeSession(id)          → session.resumeSession(id)       ("ok"|"owned")
- *   reloadHost()               → session.reloadPlugins()         (C9 /reload:
- *                                same-port restart; error-string contract)
  *   newSession()               → session.newSession()            (1:1)
  *   renameSession(title)       → session.renameSession(title)    (1:1)
  *   turn(text, cb)             → session.turn(text, adapted)     — see below
@@ -279,16 +277,6 @@ export class RemoteSessionSeam implements SessionSeam {
 
 	resumeSession(id: string): "ok" | "owned" {
 		return this.#session.resumeSession(id)
-	}
-
-	/**
-	 * C9 /reload: passthrough onto the facade's same-port restart
-	 * (reloadPlugins → restartSamePortHost + carrier reconnect + wave-2
-	 * follow re-attach). The error-string-not-throw contract keeps the
-	 * command's failure arm free of try/catch semantics.
-	 */
-	reloadHost(): Promise<string | undefined> {
-		return this.#session.reloadPlugins()
 	}
 
 	/** C13 /resume repair flow, probe half (client-local, /repair topology). */

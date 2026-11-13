@@ -757,47 +757,6 @@ export function coreCommands(): SlashCommand[] {
 			},
 		},
 		{
-			// C9 gap fix: the same-port host restart base existed all along —
-			// restartSamePortHost over the lifecycle lockfile contract (wave-3
-			// row 29), driven by RemoteHostSession.reloadPlugins() — but no UI
-			// entry called it (keybind.ts shipped service.restart/location.reload
-			// = none and no slash command). /reload opens the gate, with the
-			// reference (dsh-tui-pi /reload) semantics adapted to this
-			// topology: the session survives host-side (the carrier reconnects
-			// and the wave-2 re-attach replays the follow), so the command
-			// captures the CURRENT session id BEFORE the restart — the carrier
-			// is about to drop — and re-hydrates the transcript with it
-			// afterwards (the transcript-loss incident: an unnamed reload
-			// read "" and emptied the view). No resumeSession staging here:
-			// the facade's resumeSession() calls newSession() first, which
-			// would tear down the very follow the re-attach is about to
-			// replay. A failed restart keeps the view untouched — no reload,
-			// no clear: the user must never land in an empty session because
-			// a restart failed (the carrier keeps retrying its authority).
-			name: "/reload",
-			description: "restart the host on the same port (session reattaches)",
-			async run(ctx) {
-				if (!ctx.seam.reloadHost) {
-					ctx.say("/reload unavailable in this session")
-					return
-				}
-				const sessionId = ctx.seam.currentSessionId()
-				ctx.say(sessionId ? `reloading host — session ${sessionId} reattaches automatically…` : "reloading host…")
-				let failure: string | undefined
-				try {
-					failure = await ctx.seam.reloadHost()
-				} catch (error) {
-					failure = seamFailureReason(error)
-				}
-				if (failure !== undefined) {
-					ctx.say(`reload failed — ${failure} (session kept; the connection keeps retrying)`)
-					return
-				}
-				await ctx.reload(sessionId)
-				ctx.say(sessionId ? `host reloaded — session ${sessionId} reattached` : "host reloaded")
-			},
-		},
-		{
 			// G1 resume-picker batch (renamed to /resume — the dsh-tui-pi
 			// command name; no /sessions alias, the old name is gone): the
 			// picker keeps the reference /resume column semantics (dsh-tui-pi
