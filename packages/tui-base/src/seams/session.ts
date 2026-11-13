@@ -449,6 +449,18 @@ export interface SessionSeam {
 	settings?: SeamSettingsFace
 	resumeSession(id: string): "ok" | "owned"
 	/**
+	 * C9 /reload (wave-3 row 29): restart the host ON THE SAME authority so
+	 * the live session survives — the carrier reconnects by itself and the
+	 * wave-2 re-attach machinery replays the follow. The command captures
+	 * `currentSessionId()` BEFORE the call and re-hydrates the transcript
+	 * with it afterwards (the transcript-loss incident: an unnamed reload
+	 * emptied the view). Resolves undefined on success, else ONE error
+	 * string (the reloadPlugins contract; a restart failure never throws
+	 * out of this seam). Optional — a seam without it degrades /reload to
+	 * a notice.
+	 */
+	reloadHost?(): Promise<string | undefined>
+	/**
 	 * C13 /resume repair flow, probe half (tui-pi loadSessionPreviews
 	 * corruptIds parity): broken session logs from the client-local store
 	 * scan (`<dshHome>/sessions/`, the same criteria the /repair card

@@ -37,6 +37,8 @@ class RecordingSeam {
 	repairResults: ({ kind: "repaired"; backupPath: string } | { kind: "clean" } | { kind: "failed"; detail: string })[] = []
 	/** C13: the log paths the repair actually received (the write gate). */
 	repairCalls: string[] = []
+	/** C9 /reload: the restart result (undefined = success) the fake reports. */
+	reloadResult: string | undefined
 
 	readonly seam: SessionSeam = {
 		status: () => ({ connection: "connected", turn: "idle", sessionAttached: true }),
@@ -50,6 +52,12 @@ class RecordingSeam {
 		resumeSession: (id) => {
 			this.calls.push(`resumeSession:${id}`)
 			return "ok"
+		},
+		// C9 /reload (optional seam member): the restart records its call and
+		// reports reloadResult (undefined = success).
+		reloadHost: async (): Promise<string | undefined> => {
+			this.calls.push("reloadHost")
+			return this.reloadResult
 		},
 		// C13 /resume repair flow (optional seam members): the scan rides
 		// brokenLogs (empty by default → the repair-free behavior every
@@ -235,6 +243,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/login",
 			"/logout",
 			"/quit",
+			"/reload",
 			"/resume",
 			"/clear",
 			"/flush",
@@ -269,6 +278,7 @@ describe("core commands", () => {
 			"/login — log in a provider (bare opens the picker; Custom provider opens the form)",
 			"/logout — log out a provider (drops the stored key)",
 			"/quit — exit the app",
+			"/reload — restart the host on the same port (session reattaches)",
 			"/resume — resume a persisted session",
 			"/clear — clear the transcript",
 			"/flush — deliver the queued prompts now",
@@ -351,6 +361,45 @@ describe("core commands", () => {
 		expect(ctx.lines).toEqual([])
 	})
 
+	// ------------------------------------------------------------- /reload --
+	// C9 gap fix: the same-port restart base existed behind reloadPlugins()
+	// with no UI entry. The command must re-hydrate with the session id it
+	// captured BEFORE the restart (the transcript-loss incident), and a
+	// failed restart must keep the view (no reload, no clear).
+
+	test("/reload restarts the host and re-hydrates the CURRENT session id", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		await coreCommands()[6]!.run(ctx, "")
+		expect(seam.calls).toEqual(["reloadHost"]) // no resumeSession staging — the live follow survives the restart
+		// Transcript-loss regression: the reload MUST name the session
+		// captured before the carrier dropped.
+		expect(ctx.hooks.reloadIds).toEqual(["s-current"])
+		expect(ctx.lines.some((l) => l.includes("host reloaded — session s-current reattached"))).toBe(true)
+	})
+
+	test("/reload failure reports the reason and keeps the view untouched", async () => {
+		const seam = new RecordingSeam()
+		seam.reloadResult = "restarted dsh host did not listen on 7601 within 30000ms"
+		const ctx = makeCtx(seam)
+		await coreCommands()[6]!.run(ctx, "")
+		expect(seam.calls).toEqual(["reloadHost"])
+		expect(ctx.hooks.reloaded).toBe(0) // no re-hydrate on failure
+		expect(ctx.hooks.cleared).toBe(0) // never an empty session
+		expect(ctx.lines.some((l) => l.startsWith("reload failed —") && l.includes("session kept"))).toBe(true)
+	})
+
+	test("/reload degrades to a notice on a seam without the entry", async () => {
+		const seam = new RecordingSeam()
+		// The seam object was built at construction time — strip the member
+		// to simulate an adapter that genuinely lacks the entry.
+		delete (seam.seam as Partial<SessionSeam>).reloadHost
+		const ctx = makeCtx(seam)
+		await coreCommands()[6]!.run(ctx, "")
+		expect(ctx.hooks.reloaded).toBe(0)
+		expect(ctx.lines).toEqual(["/reload unavailable in this session"])
+	})
+
 	test("/resume lists, picks, resumes, reloads (aligned UPDATED/DIR rows)", async () => {
 		const seam = new RecordingSeam()
 		seam.sessions = [
@@ -358,7 +407,7 @@ describe("core commands", () => {
 			{ id: "s2", title: "second" },
 		]
 		const ctx = makeCtx(seam, "s2")
-		await coreCommands()[6]!.run(ctx, "")
+		await coreCommands()[7]!.run(ctx, "")
 		expect(seam.calls).toEqual(["listSessions", "resumeSession:s2"])
 		const pick = ctx.hooks.picks[0]
 		expect(pick?.title).toBe("Resume session")
@@ -397,7 +446,7 @@ describe("core commands", () => {
 			{ id: "unknown", title: "unknown" },
 		]
 		const ctx = makeCtx(seam, "big")
-		await coreCommands()[6]!.run(ctx, "")
+		await coreCommands()[7]!.run(ctx, "")
 		const pick = ctx.hooks.picks[0]
 		expect(pick?.options).toHaveLength(2)
 		expect(pick?.options.map((o) => o.title.includes("big") || o.title.includes("unknown"))).toEqual([true, true])
@@ -408,7 +457,7 @@ describe("core commands", () => {
 		const seam = new RecordingSeam()
 		seam.sessions = [{ id: "stub", title: "stub", sizeBytes: 200 }]
 		const ctx = makeCtx(seam)
-		await coreCommands()[6]!.run(ctx, "")
+		await coreCommands()[7]!.run(ctx, "")
 		expect(ctx.hooks.picks).toEqual([])
 		expect(ctx.lines).toEqual([emptyFilteredCopy(1)])
 	})
@@ -417,14 +466,14 @@ describe("core commands", () => {
 		const seam = new RecordingSeam()
 		seam.sessions = []
 		const ctx = makeCtx(seam)
-		await coreCommands()[6]!.run(ctx, "")
+		await coreCommands()[7]!.run(ctx, "")
 		expect(ctx.hooks.picks).toEqual([])
 		expect(ctx.lines).toEqual(["no stored sessions"])
 	})
 
 	test("/clear resets the transcript client-side and says so", async () => {
 		const ctx = makeCtx(new RecordingSeam())
-		await coreCommands()[7]!.run(ctx, "")
+		await coreCommands()[8]!.run(ctx, "")
 		expect(ctx.hooks.cleared).toBe(1)
 		expect(ctx.lines).toEqual(["transcript cleared"])
 	})
