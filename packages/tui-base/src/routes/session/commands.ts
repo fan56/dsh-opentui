@@ -19,7 +19,7 @@
  *                            send to the model)
  *   plain text            → not a command; caller sends/steers as batch 4
  */
-import type { SeamEffortOption, SeamPresetRow, SessionSeam } from "../../seams/session"
+import type { SeamEffortOption, SeamLoginRoute, SeamPresetRow, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
 import {
@@ -325,7 +325,8 @@ export interface LoginFace {
 	credentialStatus(ref: string): Promise<{ configured: boolean }>
 	login(ref: string, apiKey: string): Promise<void>
 	logout(ref: string): Promise<void>
-	routes(): Promise<string[]>
+	/** The configured routes with their profile bodies (see SeamLoginRoute). */
+	routes(): Promise<SeamLoginRoute[]>
 	registerRoute(providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean>
 }
 
@@ -495,32 +496,46 @@ export async function runCustomLoginChain(
 // ----------------------------------------------------------- /logout helpers --
 // Gap fix (C8): the login/logout seam has existed since batch H4, but /logout
 // had no caller. Behavior mirrors the reference (dsh-tui-pi openLogoutFlow):
-// list the routes whose derived key ref holds a stored credential, pick one,
-// drop the key first (the security-critical half), then clear the route —
-// EXCEPT for custom (non-catalog) routes, whose api/baseURL/models profile the
-// catalog commit cannot re-create, so they keep the route (the reference's
+// list the routes whose key ref holds a stored credential, pick one, drop the
+// key first (the security-critical half), then clear the route — EXCEPT for
+// custom (hand-declared) routes, whose api/baseURL/models profile the catalog
+// commit cannot re-create, so they keep the route (the reference's
 // hand-declared arm). Picker selection is the commit boundary — the reference
 // drives no extra confirm dialog.
 
 /** One actionable logout target derived from a configured route. */
 export interface LogoutTarget {
 	id: string
-	/** Catalog display name, else the raw route id. */
+	/** Profile display name, else the catalog name, else the raw route id. */
 	name: string
-	/** The env-ref the key is stored under (deriveKeyRef). */
+	/**
+	 * The env-ref the key is stored under: the profile's own `apiKeyEnv` when
+	 * it names one (a hand-edited profile may point anywhere — deriving from
+	 * the id would unset an unrelated key and strand the real one), else the
+	 * conventional derived ref (the reference contract,
+	 * tui-pi login.ts logoutCandidatesFromSection).
+	 */
 	ref: string
-	/** Non-catalog route: logout drops only the key, never the route. */
+	/** Hand-declared route: logout drops only the key, never the route. */
 	custom: boolean
 }
 
 /**
- * Pure classifier: configured route ids → picker rows. Catalog rows carry
- * their display name; anything else is a custom route (key-only logout).
+ * Pure classifier: configured routes → picker rows. A live `declared` flag
+ * (profile carries its own api/baseURL/models) marks the route hand-declared
+ * even when the client's static catalog mirror lists the id; an id absent
+ * from the mirror is custom too (the mirror is the fallback signal — the
+ * reference prefers the live flag and falls back to its catalog stand-in).
  */
-export function logoutTargets(routes: readonly string[]): LogoutTarget[] {
-	return routes.map((id) => {
-		const entry = PROVIDER_CATALOG.find((e) => e.id === id)
-		return { id, name: entry?.name ?? id, ref: deriveKeyRef(id), custom: entry === undefined }
+export function logoutTargets(routes: readonly SeamLoginRoute[]): LogoutTarget[] {
+	return routes.map((route) => {
+		const entry = PROVIDER_CATALOG.find((e) => e.id === route.id)
+		return {
+			id: route.id,
+			name: route.displayName ? route.displayName : (entry?.name ?? route.id),
+			ref: route.apiKeyEnv ?? deriveKeyRef(route.id),
+			custom: route.declared === true || entry === undefined,
+		}
 	})
 }
 
@@ -779,7 +794,7 @@ export function coreCommands(): SlashCommand[] {
 				)
 				if (!picked) return
 				if (picked === CUSTOM_ENTRY.id) {
-					const routes = await face.routes().catch(() => [] as string[])
+					const routes = (await face.routes().catch(() => [])).map((route) => route.id)
 					await runCustomLoginChain(ctx, face, routes)
 					return
 				}
@@ -791,9 +806,10 @@ export function coreCommands(): SlashCommand[] {
 		{
 			// Gap fix (C8): the logout half of the batch-H4 login face — the
 			// seam carried logout/credentialStatus all along, but nothing
-			// called them. Bare opens the picker over the routes whose derived
-			// key ref probes configured; "/logout <id>" targets one directly.
-			// Commit mirrors the reference commitLogout ordering: the key
+			// called them. Bare opens the picker over the routes whose key ref
+			// probes configured; "/logout <id>" targets one directly (exact,
+			// case-sensitive id match — route ids are mixed-case). Commit
+			// mirrors the reference commitLogout ordering: the key
 			// (credentials/unset) first — a failed unset never touches the
 			// route — then the route clears for catalog rows only (custom
 			// routes keep their api/baseURL/models profile: the catalog commit
@@ -807,7 +823,18 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say("/logout unavailable in this session")
 					return
 				}
-				const routes = await face.routes().catch(() => [] as string[])
+				// A dead settings seam is an ERROR, not an empty login list (the
+				// reference throws "settings service is not available"): only a
+				// genuinely empty/unconfigured route table reads as "no
+				// logged-in providers" — a flattened failure would have the
+				// user believe no keys remain.
+				let routes: SeamLoginRoute[]
+				try {
+					routes = await face.routes()
+				} catch (error) {
+					ctx.say(`logout failed — ${seamFailureReason(error)}`)
+					return
+				}
 				// Probe each route's key ref (the reference's credentials sweep):
 				// a failing probe reads as logged out — never breaks the list.
 				const loggedIn: LogoutTarget[] = []
@@ -822,7 +849,7 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say("no logged-in providers")
 					return
 				}
-				const arg = argText.trim().toLowerCase()
+				const arg = argText.trim()
 				let target = arg ? loggedIn.find((t) => t.id === arg) : undefined
 				if (arg && !target) {
 					ctx.say(`not logged in: ${arg}`)

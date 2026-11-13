@@ -107,6 +107,7 @@ SeamSessionEvent,
 	SeamSessionInfo,
 	SeamSessionSummary,
 	SeamStatus,
+	SeamLoginRoute,
 	SeamTranscriptRow,
 	SeamSubagentView,
 	SeamTurnCallbacks,
@@ -551,14 +552,31 @@ export class RemoteSessionSeam implements SessionSeam {
 		credentialStatus: (ref: string) => this.#session.credentialStatus(ref),
 		login: (ref: string, apiKey: string) => this.#session.login(ref, apiKey),
 		logout: (ref: string) => this.#session.logout(ref),
-		routes: async (): Promise<string[]> => {
-			try {
-				const rows = await this.#session.settingsSeam.describe()
-				const ns = Array.isArray(rows) ? rows.find((row: any) => row?.ns === "llm-pi-ai") : undefined
-				return Object.keys((ns?.value as any)?.providers ?? {})
-			} catch {
-				return []
-			}
+		routes: async (): Promise<SeamLoginRoute[]> => {
+			// No catch: a dead settings seam must reach the caller as an error —
+			// flattening to [] made /logout report "no logged-in providers"
+			// while keys stayed stored (the reference throws on an unavailable
+			// settings service; only a per-route credential-probe failure reads
+			// as logged out).
+			const rows = await this.#session.settingsSeam.describe()
+			const ns = Array.isArray(rows) ? rows.find((row: any) => row?.ns === "llm-pi-ai") : undefined
+			const providers = (ns?.value as any)?.providers ?? {}
+			return Object.entries(providers as Record<string, unknown>).map(([id, profile]) => {
+				const p = typeof profile === "object" && profile !== null ? (profile as Record<string, unknown>) : {}
+				const apiKeyEnv = p.apiKeyEnv
+				const displayName = p.displayName
+				return {
+					id,
+					...(typeof apiKeyEnv === "string" && apiKeyEnv !== "" ? { apiKeyEnv } : {}),
+					...(typeof displayName === "string" && displayName !== "" ? { displayName } : {}),
+					// Live hand-declaration signal (the reference's declared arm):
+					// a profile carrying its own api/baseURL/models overrides the
+					// catalog, so /logout must keep the route.
+					...(typeof p.api === "string" || typeof p.baseURL === "string" || Array.isArray(p.models)
+						? { declared: true }
+						: {}),
+				}
+			})
 		},
 		registerRoute: async (providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean> => {
 			try {

@@ -381,6 +381,29 @@ export interface SeamSettingsFace {
 	permissionCatalog?(): Promise<SeamPermissionCatalog | undefined>
 }
 
+/**
+ * One configured provider route (one `providers` dict entry of the settings
+ * llm-pi-ai namespace), as the /login //logout faces consume it. The body
+ * rides along because the credential ref is the profile's OWN `apiKeyEnv` —
+ * a hand-edited profile may point anywhere, and deriving the ref from the
+ * route id would unset an unrelated key and strand the real one (the
+ * reference contract, tui-pi login.ts logoutCandidatesFromSection).
+ */
+export interface SeamLoginRoute {
+	/** Route id (the `providers` dict key). */
+	id: string
+	/** The credential ref the profile itself names; absent → the caller derives one from the id. */
+	apiKeyEnv?: string
+	/** The profile's display name, when it carries one. */
+	displayName?: string
+	/**
+	 * Live hand-declaration signal: the profile carries its own
+	 * `api`/`baseURL`/`models`, so /login cannot re-create it and /logout
+	 * must drop only the key (the reference's declared arm).
+	 */
+	declared?: boolean
+}
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -616,8 +639,8 @@ export interface SessionSeam {
 		login(ref: string, apiKey: string): Promise<void>
 		/** Remove one stored key (credentials/unset). */
 		logout(ref: string): Promise<void>
-		/** The configured provider route ids (settings llm-pi-ai providers keys). */
-		routes(): Promise<string[]>
+		/** The configured provider routes (settings llm-pi-ai providers dict). */
+		routes(): Promise<SeamLoginRoute[]>
 		/**
 		 * Register (profile) or clear (undefined) one provider route in the
 		 * llm-pi-ai settings namespace; false when the backend rejected it.

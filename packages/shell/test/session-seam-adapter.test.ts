@@ -436,18 +436,35 @@ describe("RemoteSessionSeam login face (batch H4)", () => {
 		expect(calls.map((c) => c.method)).toEqual(["credentialStatus", "login", "logout"])
 	})
 
-	test("routes reads the llm-pi-ai providers keys from the settings describe rows", async () => {
+	test("routes reads the llm-pi-ai providers with their profile bodies from the settings describe rows", async () => {
 		const { session } = fakeSession({
 			settingsSeam: {
 				describe: async () => [
 					{ ns: "other", revision: 1, value: {} },
-					{ ns: "llm-pi-ai", revision: 7, value: { providers: { openai: { apiKeyEnv: "OPENAI_API_KEY" }, acme: {} } } },
+					{
+						ns: "llm-pi-ai",
+						revision: 7,
+						value: {
+							providers: {
+								openai: { apiKeyEnv: "OPENAI_API_KEY" },
+								acme: { apiKeyEnv: "HAND_EDITED_REF", displayName: "Acme GW" },
+								"hand-made": { api: "openai-completions", baseURL: "https://x/v1", models: [{ id: "m" }] },
+								broken: null,
+							},
+						},
+					},
 				],
 				mutate: async () => {},
 			},
 		})
 		const seam = new RemoteSessionSeam(session)
-		expect(await seam.login!.routes()).toEqual(["openai", "acme"])
+		expect(await seam.login!.routes()).toEqual([
+			{ id: "openai", apiKeyEnv: "OPENAI_API_KEY" },
+			{ id: "acme", apiKeyEnv: "HAND_EDITED_REF", displayName: "Acme GW" },
+			{ id: "hand-made", declared: true },
+			// A null profile row still lists (the derived ref applies downstream).
+			{ id: "broken" },
+		])
 	})
 
 	test("registerRoute mutates the llm-pi-ai namespace at the described revision (set + unset)", async () => {
@@ -469,7 +486,7 @@ describe("RemoteSessionSeam login face (batch H4)", () => {
 		])
 	})
 
-	test("registerRoute degrades false on a rejecting/mutating backend; routes degrades [] on describe failure", async () => {
+	test("registerRoute degrades false on a rejecting/mutating backend; a routes describe failure PROPAGATES (no silent [])", async () => {
 		const boom = fakeSession({
 			settingsSeam: {
 				describe: async () => [{ ns: "llm-pi-ai", revision: 7, value: {} }],
@@ -481,7 +498,9 @@ describe("RemoteSessionSeam login face (batch H4)", () => {
 		const seam = new RemoteSessionSeam(boom.session)
 		expect(await seam.login!.registerRoute("acme", {})).toBe(false)
 		const dead = fakeSession({ settingsSeam: { describe: async () => { throw new Error("down") }, mutate: async () => {} } })
-		expect(await new RemoteSessionSeam(dead.session).login!.routes()).toEqual([])
+		// The dead-seam error reaches the caller — flattening it to [] made
+		// /logout report "no logged-in providers" while keys stayed stored.
+		expect(new RemoteSessionSeam(dead.session).login!.routes()).rejects.toThrow("down")
 	})
 })
 

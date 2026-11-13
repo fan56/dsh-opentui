@@ -24,7 +24,7 @@ import {
 	validateBaseUrl,
 	validateRouteId,
 } from "../src/routes/session/login"
-import type { SessionSeam } from "../src/seams/session"
+import type { SeamLoginRoute, SessionSeam } from "../src/seams/session"
 
 describe("login pure helpers", () => {
 	test("deriveKeyRef maps provider ids to env refs", () => {
@@ -91,6 +91,10 @@ describe("login pure helpers", () => {
 class RecordingLoginFace implements LoginFace {
 	calls: string[] = []
 	existingRoutes: string[] = []
+	/** Full route bodies (the /logout contract); overrides existingRoutes when set. */
+	liveRoutes: SeamLoginRoute[] | undefined
+	/** When set, routes() rejects — the dead-settings-seam arm. */
+	routesError: Error | undefined
 	registerOk = true
 	loginError: Error | undefined
 	logoutError: Error | undefined
@@ -111,7 +115,8 @@ class RecordingLoginFace implements LoginFace {
 		if (this.logoutError) throw this.logoutError
 	}
 	async routes() {
-		return this.existingRoutes
+		if (this.routesError) throw this.routesError
+		return this.liveRoutes ?? this.existingRoutes.map((id) => ({ id }))
 	}
 	async registerRoute(providerId: string, profile: Record<string, unknown> | undefined) {
 		this.calls.push(`route:${providerId}:${profile ? JSON.stringify(profile) : "unset"}`)
@@ -303,11 +308,34 @@ describe("commitLoginRoute (shared commit half)", () => {
 
 describe("logoutTargets (pure classifier)", () => {
 	test("catalog routes carry the display name; unknown ids are custom (key-only)", () => {
-		const targets = logoutTargets(["deepseek", "acme-gateway"])
+		const targets = logoutTargets([{ id: "deepseek" }, { id: "acme-gateway" }])
 		expect(targets).toEqual([
 			{ id: "deepseek", name: "DeepSeek", ref: "DEEPSEEK_API_KEY", custom: false },
 			{ id: "acme-gateway", name: "acme-gateway", ref: "ACME_GATEWAY_API_KEY", custom: true },
 		])
+	})
+
+	test("the ref comes from the profile's own apiKeyEnv, not a derivation from the id (hand-edited profiles)", () => {
+		const targets = logoutTargets([
+			{ id: "deepseek", apiKeyEnv: "MY_HAND_EDITED_REF" },
+			{ id: "openai" },
+		])
+		expect(targets.map((t) => t.ref)).toEqual(["MY_HAND_EDITED_REF", "OPENAI_API_KEY"])
+	})
+
+	test("profile displayName wins over the catalog name; empty strings fall through", () => {
+		const targets = logoutTargets([
+			{ id: "deepseek", displayName: "DeepSeek (work)" },
+			{ id: "acme-gateway", displayName: "" },
+		])
+		expect(targets.map((t) => t.name)).toEqual(["DeepSeek (work)", "acme-gateway"])
+	})
+
+	test("a live declared flag marks a catalog id hand-declared (key-only logout even when the mirror lists it)", () => {
+		const targets = logoutTargets([{ id: "deepseek", declared: true }])
+		expect(targets[0]!.custom).toBe(true)
+		// Absent flag: the static catalog mirror decides.
+		expect(logoutTargets([{ id: "deepseek" }])[0]!.custom).toBe(false)
 	})
 })
 
@@ -385,6 +413,48 @@ describe("/logout command (C8 gap fix)", () => {
 		await runLogout(ctx as any, "openai")
 		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY"])
 		expect(lines).toEqual(["not logged in: openai"])
+	})
+
+	test("argument matching is case-sensitive (route ids are mixed-case)", async () => {
+		const face = new RecordingLoginFace()
+		face.liveRoutes = [{ id: "Acme" }]
+		face.configuredRefs = new Set(["ACME_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, pick: "Acme", type: [] })
+		await runLogout(ctx as any, "acme")
+		expect(lines).toEqual(["not logged in: acme"])
+		expect(face.calls).toEqual(["status:ACME_API_KEY"])
+		// The exact-case id hits.
+		await runLogout(ctx as any, "Acme")
+		expect(face.calls).toEqual(["status:ACME_API_KEY", "status:ACME_API_KEY", "logout:ACME_API_KEY"])
+	})
+
+	test("a hand-edited profile's apiKeyEnv drives the probe and the unset — never a derived ref", async () => {
+		const face = new RecordingLoginFace()
+		face.liveRoutes = [{ id: "deepseek", apiKeyEnv: "MY_HAND_EDITED_REF" }]
+		face.configuredRefs = new Set(["MY_HAND_EDITED_REF"])
+		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: [] })
+		await runLogout(ctx as any, "")
+		expect(face.calls).toEqual(["status:MY_HAND_EDITED_REF", "logout:MY_HAND_EDITED_REF", "route:deepseek:unset"])
+		expect(lines).toEqual(["DeepSeek logged out — key + route removed (leaves /model next session)"])
+	})
+
+	test("a dead settings seam reports the failure — never 'no logged-in providers'", async () => {
+		const face = new RecordingLoginFace()
+		face.routesError = new Error("settings service down")
+		const { ctx, lines } = makeLoginCtx({ face, type: [] })
+		await runLogout(ctx as any, "")
+		expect(lines).toEqual(["logout failed — settings service down"])
+		expect(face.calls).toEqual([])
+	})
+
+	test("a live declared flag keeps the catalog route (key-only logout)", async () => {
+		const face = new RecordingLoginFace()
+		face.liveRoutes = [{ id: "deepseek", declared: true }]
+		face.configuredRefs = new Set(["DEEPSEEK_API_KEY"])
+		const { ctx, lines } = makeLoginCtx({ face, pick: "deepseek", type: [] })
+		await runLogout(ctx as any, "")
+		expect(face.calls).toEqual(["status:DEEPSEEK_API_KEY", "logout:DEEPSEEK_API_KEY"])
+		expect(lines).toEqual(["DeepSeek logged out — key removed (route kept)"])
 	})
 
 	test("no configured routes degrades to a plain notice", async () => {
