@@ -64,6 +64,35 @@ async function pressEsc(setup: Awaited<ReturnType<typeof renderPanel>>) {
 // Theme projection (pure)
 // ---------------------------------------------------------------------------
 
+/**
+ * Poll the painted title colour until `predicate` holds (or the deadline
+ * passes). The fade is driven by the shared animation clock, so a loaded CI
+ * runner can miss a fixed sampling window; polling asserts the same behaviour
+ * without depending on wall-clock scheduling.
+ */
+async function waitForTitle(
+  setup: Awaited<ReturnType<typeof testRender>>,
+  predicate: (fg: { toInts(): readonly number[] }) => boolean,
+  timeoutMs = 1500,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    await setup.flush()
+    const spans = setup.captureSpans().lines.flatMap((line) => line.spans)
+    const title = spans.find((span) => span.text.includes("Exiting"))
+    if (title !== undefined && predicate(title.fg)) return true
+    if (Date.now() >= deadline) return false
+    await Bun.sleep(16)
+  }
+}
+
+/** Poll until `read()` reaches `want`, returning the value it settled on. */
+async function waitForClosed(read: () => number, want: number, timeoutMs = 1500): Promise<number> {
+  const deadline = Date.now() + timeoutMs
+  while (read() < want && Date.now() < deadline) await Bun.sleep(16)
+  return read()
+}
+
 describe("theme projection", () => {
   test("tone selects the frame token; an override changes style only", () => {
     expect(resolveFrameToken(theme, "accent")).toEqual(theme.border.focused)
@@ -410,18 +439,17 @@ describe("Panel render", () => {
     )
     try {
       await setup.renderOnce()
-      await Bun.sleep(240) // let the enter fade settle
+      // Poll instead of sleeping a fixed 240/60ms: the shared animation clock
+      // advances by wall clock, so a loaded CI runner can miss the sampling
+      // window and report a false regression (observed on macos-latest).
+      const settled = await waitForTitle(setup, (fg) => fg.toInts().every((v, i) => v === theme.text.base.toInts()[i]))
+      expect(settled, "enter fade settles back to the base title colour").toBe(true)
+      expect(closed).toBe(0)
       setup.mockInput.pressEscape()
-      await Bun.sleep(60)
-      await setup.flush()
-      const mid = setup.captureSpans().lines.flatMap((line) => line.spans)
-      const titleMid = mid.find((span) => span.text.includes("Exiting"))
-      expect(titleMid).toBeDefined()
-      expect(titleMid!.fg.toInts()).not.toEqual(theme.text.base.toInts())
+      const tinted = await waitForTitle(setup, (fg) => fg.toInts().some((v, i) => v !== theme.text.base.toInts()[i]))
+      expect(tinted, "title is tinted away from the base colour while exiting").toBe(true)
       expect(closed).toBe(0) // still fading out
-      await Bun.sleep(180)
-      await setup.flush()
-      expect(closed).toBe(1)
+      expect(await waitForClosed(() => closed, 1)).toBe(1)
     } finally {
       await setup.dispose()
     }
@@ -435,15 +463,12 @@ describe("Panel render", () => {
     )
     try {
       await setup.renderOnce()
-      await Bun.sleep(240) // let enter settle
+      await waitForTitle(setup, (fg) => fg.toInts().every((v, i) => v === theme.text.base.toInts()[i]))
       setup.mockInput.pressEscape()
-      await Bun.sleep(50)
       await setup.flush()
       expect(closed).toBe(0) // exit is still playing
       setup.mockInput.pressEscape()
-      await Bun.sleep(60)
-      await setup.flush()
-      expect(closed).toBe(1)
+      expect(await waitForClosed(() => closed, 1)).toBe(1)
     } finally {
       await setup.dispose()
     }
