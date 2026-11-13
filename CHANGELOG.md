@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] - 2026-11-13
+
+### Fixed
+
+- **Confirm dialog buttons are framed on all four sides.** Both actions now carry a full border, and the focused one is filled plus heavy-bordered, so the two choices read as buttons in either state instead of the unfocused one looking like plain text. The exit prompt in `/settings` renames its actions 取消/退出 to 返回/确认退出, and the hint line's Esc verb follows the cancel label (`Esc 返回`).
+- **Wide glyphs (CJK) are no longer lost on panels under an overlay.** Covered layers used to be dimmed by a per-layer translucent scrim, whose alpha background fill rewrites the cells it covers and drops the trailing half of a double-width glyph (opentui 0.8.1) — background panel text came out mangled. Layers below the top are now dimmed through a color projection of the panel theme (new `dim` prop / `dimTheme`), and the scrim is kept only on the bottom layer, where it dims the page behind; dimmed panels keep every grapheme.
+- **`/settings` section counts share one right-aligned column.** The counts used to trail their own labels, so the nav column's right edge moved row to row; they now sit in a fixed column at the list's width edge (new panel-kit `descriptionAlign` prop, `descriptionTone` is color-only again). The header separator also spans the panel's full inner width, so the rule meets both side borders instead of stopping three cells short.
+
 ## [0.10.2] - 2026-11-13
 
 ### Changed
