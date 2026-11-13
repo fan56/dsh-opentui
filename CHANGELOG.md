@@ -11,6 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Default subagent registry plugin moves to 0.20.0.** The pinned default (`@aiwayds/dsh-subagent-registry`) is bumped from 0.19.1; provisioning stays idempotent, `--plugins=none` still disables it, and a failed install still degrades without blocking boot.
 
+## [0.11.0] - 2026-11-13
+
+### Changed
+
+- **The `/settings` frame is fixed.** The modal pins its outer frame at 75% of the terminal height (clamped), so stepping through the seven sections no longer resizes the panel; overflow pages inside with the existing `x-y/N` indicator.
+- **Layered chrome.** A title band, a raised nav column behind a separator, a surface content area and bordered footer buttons replace the single flat black box; every colour resolves from the panel theme (contrast pinned at >=4.5:1 on dsh-blue, tokyonight and gruvbox follow their tokens).
+
+### Fixed
+
+- **The discard-confirm dialog is fully keyboard-driven.** `←/→`, `Tab`/`Shift+Tab` move between 取消 and 丢弃, `Enter`/`Space` activate the focused action (the hint travels with the focus instead of sitting on one fixed button), and `Esc` cancels; both buttons carry visible borders so the unfocused one no longer reads as plain text.
+
 ## [0.10.1] - 2026-11-13
 
 ### Fixed
