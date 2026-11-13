@@ -14,6 +14,7 @@
 import type { StoredTranscriptRow } from "./seam-types.ts"
 import type { TurnCallbacks } from "../agent/loop.ts"
 import type { RemoteHostSession } from "./remote-host-session.ts"
+import type { BrokenSessionLog, RepairSessionLogResult } from "./remote-local-fs.ts"
 
 export interface ShellSessionSurface {
 	/** Powerline route segment + label signal seed; "reconnecting…" swap. */
@@ -80,6 +81,14 @@ export interface ShellSessionSurface {
 	agentBody(name: string): string
 	modelEfforts(providerID: string, modelID: string): Promise<{ id: string; name: string; description?: string }[]>
 	repairScan(): string[]
+	/** C13 /resume repair flow, probe half: broken session logs with paths
+	 * (client-local, /repair topology). Optional — a surface without it
+	 * keeps the /resume picker repair-free. */
+	repairScanBroken?(): BrokenSessionLog[]
+	/** C13 /resume repair flow, apply half: guarded plain-jsonl tail repair
+	 * (original moved to `.corrupt-bak` first). Optional — the explicit
+	 * user confirmation lives in the /resume caller, never here. */
+	repairSessionLog?(path: string): RepairSessionLogResult
 	btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string>
 	attachImage(path: string): Promise<string>
 

@@ -448,6 +448,23 @@ export interface SessionSeam {
 	 */
 	settings?: SeamSettingsFace
 	resumeSession(id: string): "ok" | "owned"
+	/**
+	 * C13 /resume repair flow, probe half (tui-pi loadSessionPreviews
+	 * corruptIds parity): broken session logs from the client-local store
+	 * scan (`<dshHome>/sessions/`, the same criteria the /repair card
+	 * prints) with their paths and owning session ids. Optional — a seam
+	 * without it keeps the /resume picker repair-free.
+	 */
+	repairScanBroken?(): { path: string; name: string; reason: string; sessionId?: string }[]
+	/**
+	 * C13 /resume repair flow, apply half: the guarded plain-jsonl tail
+	 * repair — the original always moves to `.corrupt-bak` BEFORE any
+	 * rewrite, and a failed swap restores it. Optional — the EXPLICIT user
+	 * confirmation lives in the /resume command (no silent rewrite here).
+	 */
+	repairSessionLog?(
+		path: string,
+	): { kind: "repaired"; backupPath: string } | { kind: "clean" } | { kind: "failed"; detail: string }
 	newSession(): void
 	renameSession(title: string): Promise<{ title: string; seq: number } | undefined>
 

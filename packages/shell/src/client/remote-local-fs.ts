@@ -30,7 +30,7 @@
  * card prints them verbatim).
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 
@@ -374,4 +374,155 @@ export function repairScanSessions(explicitHome?: string): string[] {
 		out.push(`scan failed: ${String(e instanceof Error ? e.message : e).slice(0, 150)}`)
 	}
 	return out
+}
+
+/** One broken session log from {@link scanBrokenSessionLogs}: the absolute
+ * path, the file name, the same reason strings the /repair card prints, and
+ * the owning session id when the log sits in a `session-<uuid>/` directory. */
+export interface BrokenSessionLog {
+	path: string
+	name: string
+	reason: string
+	sessionId?: string
+}
+
+/**
+ * Structured sibling of {@link repairScanSessions} (same walker criteria —
+ * empty logs, missing zstd magic, invalid plain-jsonl tails — the base scan
+ * itself is untouched): returns the broken logs with their paths so the
+ * /resume repair flow can map them onto picker rows and act per log. Never
+ * throws; a scan failure surfaces as a `reason`-carrying pseudo row.
+ */
+export function scanBrokenSessionLogs(explicitHome?: string): BrokenSessionLog[] {
+	const broken: BrokenSessionLog[] = []
+	try {
+		const home = resolveDshHome(explicitHome)
+		const root = join(home, "sessions")
+		if (!existsSync(root)) return broken
+		const visit = (dir: string, depth: number): void => {
+			if (depth > 4) return
+			for (const name of readdirSync(dir)) {
+				const full = join(dir, name)
+				if (statSync(full).isDirectory()) {
+					visit(full, depth + 1)
+					continue
+				}
+				if (!(name.startsWith("session.") && (name.endsWith(".zstd") || name.endsWith(".jsonl")))) continue
+				const sessionId = /^session-(.+)$/.exec(basename(dir))?.[1]
+				const size = statSync(full).size
+				if (size === 0) {
+					broken.push({ path: full, name, reason: "0 bytes", sessionId })
+					continue
+				}
+				if (name.endsWith(".zstd")) {
+					const buf = readFileSync(full)
+					const magicOk = buf[0] === 0x28 && buf[1] === 0xb5 && buf[2] === 0x2f && buf[3] === 0xfd
+					if (!magicOk) broken.push({ path: full, name, reason: "not a zstd frame", sessionId })
+					continue
+				}
+				if (!jsonlTailParses(full)) {
+					broken.push({ path: full, name, reason: "invalid jsonl tail", sessionId })
+				}
+			}
+		}
+		visit(root, 0)
+	} catch (e) {
+		broken.push({
+			path: "",
+			name: "",
+			reason: `scan failed: ${String(e instanceof Error ? e.message : e).slice(0, 150)}`,
+		})
+	}
+	return broken
+}
+
+/** Whether the last non-empty line of a plain jsonl log parses as JSON. */
+function jsonlTailParses(path: string): boolean {
+	try {
+		const text = readFileSync(path, "utf8").trim()
+		const last = text.split("\n").filter((l) => l.trim()).pop() ?? "{}"
+		JSON.parse(last)
+		return true
+	} catch {
+		return false
+	}
+}
+
+/** Outcome of the guarded repair of one session log (tui-pi log-repair.ts
+ * parity): results, never throws. */
+export type RepairSessionLogResult =
+	| { kind: "repaired"; backupPath: string }
+	| { kind: "clean" }
+	| { kind: "failed"; detail: string }
+
+/**
+ * Guarded repair of ONE plain-jsonl session log with an invalid tail
+ * (tui-pi repairSessionLog invariants, minus the offline-surgery script the
+ * zstd fork case needs):
+ *
+ * - The ORIGINAL log is never edited in place — it first moves aside to
+ *   `<name>.corrupt-bak` (epoch-suffixed when taken, never overwritten) and
+ *   only then is the truncated copy written under the canonical name; a
+ *   failed write restores the original best-effort.
+ * - Anything but a plain `.jsonl` log (0-byte, zstd) is NOT repairable
+ *   client-side and reports `failed` — the caller must never lose data it
+ *   cannot reconstruct.
+ * - A log whose last non-empty line already parses reports `clean` (nothing
+ *   was touched — the corruption may have self-healed).
+ */
+export function repairSessionLogTail(path: string): RepairSessionLogResult {
+	if (!path.endsWith(".jsonl")) {
+		return { kind: "failed", detail: "not a plain jsonl log — client-side repair only truncates invalid jsonl tails" }
+	}
+	let text: string
+	try {
+		text = readFileSync(path, "utf8")
+	} catch (e) {
+		return { kind: "failed", detail: `cannot read ${basename(path)}: ${String(e instanceof Error ? e.message : e)}` }
+	}
+	const lines = text.split("\n")
+	let end = lines.length
+	while (end > 0 && lines[end - 1]!.trim() === "") end--
+	let kept = end
+	while (kept > 0) {
+		try {
+			JSON.parse(lines[kept - 1]!)
+			break
+		} catch {
+			kept--
+		}
+	}
+	if (kept === 0) {
+		return { kind: "failed", detail: "no parseable jsonl line remains — refusing to empty the log" }
+	}
+	if (kept === end) return { kind: "clean" }
+	const repaired = lines.slice(0, kept).join("\n") + "\n"
+	let backupPath = `${path}.corrupt-bak`
+	try {
+		statSync(backupPath)
+		backupPath = `${backupPath}.${Date.now()}`
+	} catch {
+		// Free — the plain .corrupt-bak name is ours.
+	}
+	try {
+		renameSync(path, backupPath)
+	} catch (e) {
+		return { kind: "failed", detail: `cannot back up the original: ${String(e instanceof Error ? e.message : e)}` }
+	}
+	try {
+		writeFileSync(path, repaired)
+		try {
+			chmodSync(path, 0o600)
+		} catch {
+			// Permissions are store hygiene, not log integrity.
+		}
+		return { kind: "repaired", backupPath }
+	} catch (e) {
+		try {
+			renameSync(backupPath, path)
+		} catch {
+			// Nothing further is recoverable; the backup still holds the original.
+		}
+		return { kind: "failed", detail: `swap failed: ${String(e instanceof Error ? e.message : e)}` }
+	}
 }

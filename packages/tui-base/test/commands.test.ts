@@ -31,6 +31,12 @@ class RecordingSeam {
 	]
 	calls: string[] = []
 	pickAnswer: string | undefined
+	/** C13: broken-log rows the client-local scan reports (default: none). */
+	brokenLogs: { path: string; name: string; reason: string; sessionId?: string }[] = []
+	/** C13: queued repair results; a missing entry defaults to repaired. */
+	repairResults: ({ kind: "repaired"; backupPath: string } | { kind: "clean" } | { kind: "failed"; detail: string })[] = []
+	/** C13: the log paths the repair actually received (the write gate). */
+	repairCalls: string[] = []
 
 	readonly seam: SessionSeam = {
 		status: () => ({ connection: "connected", turn: "idle", sessionAttached: true }),
@@ -44,6 +50,15 @@ class RecordingSeam {
 		resumeSession: (id) => {
 			this.calls.push(`resumeSession:${id}`)
 			return "ok"
+		},
+		// C13 /resume repair flow (optional seam members): the scan rides
+		// brokenLogs (empty by default → the repair-free behavior every
+		// pre-existing test asserts), the repair records its calls — the
+		// assertion "no confirm, no write" reads these.
+		repairScanBroken: () => this.brokenLogs,
+		repairSessionLog: (path) => {
+			this.repairCalls.push(path)
+			return this.repairResults.shift() ?? { kind: "repaired" as const, backupPath: `${path}.corrupt-bak` }
 		},
 		newSession: () => {
 			this.calls.push("newSession")
@@ -1563,5 +1578,111 @@ describe("/hints argument parsing", () => {
 		hints.run(ctx, "banana") // unknown segment
 		hints.run(ctx, "") // bare toggle flips hintsShown — not persisted
 		expect(seam.calls).not.toContain("configSave")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// C13 — /resume corrupt-log repair flow (tui-pi repair-dialog semantics on
+// the generic pickOne modal: probe at picker load, ⚠ rows, EXPLICIT confirm
+// gate, guarded rewrite, result feedback; no confirm → no write)
+// ---------------------------------------------------------------------------
+
+describe("C13: /resume repair flow", () => {
+	const BAD_LOG = {
+		path: "/home/.dsh/sessions/ws/session-bad/session.v3.jsonl",
+		name: "session.v3.jsonl",
+		reason: "invalid jsonl tail",
+		sessionId: "s1",
+	}
+
+	test("broken logs flag their picker rows with ⚠ (probe at picker-load time)", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "s1", title: "first" }, { id: "s2", title: "second" }]
+		seam.brokenLogs = [BAD_LOG]
+		const ctx = makeCtx(seam, "s2")
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		const pick = ctx.hooks.picks[0]
+		expect(pick?.options[0]?.title).toContain("⚠ first")
+		expect(pick?.options[1]?.title).not.toContain("⚠")
+		// a clean pick bypasses the confirm entirely (single pickOne stage)
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(seam.repairCalls).toEqual([])
+		expect(ctx.lines).toEqual(["resumed s2"])
+	})
+
+	test("NO CONFIRM → NO WRITE: cancel leaves the log untouched and never resumes", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "s1", title: "first" }]
+		seam.brokenLogs = [BAD_LOG]
+		const ctx = makeCtx(seam, ["s1", "cancel"])
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		// stage 1 = session picker, stage 2 = the repair confirm dialog
+		expect(ctx.hooks.picks).toHaveLength(2)
+		expect(ctx.hooks.picks[1]?.title).toContain("s1")
+		expect(ctx.hooks.picks[1]?.title).toContain("invalid jsonl tail")
+		expect(ctx.hooks.picks[1]?.options.map((o) => o.title)).toEqual(["Repair & resume", "Cancel"])
+		// the write gate: the repair never received the path
+		expect(seam.repairCalls).toEqual([])
+		expect(seam.calls).toEqual(["listSessions"]) // no resumeSession
+		expect(ctx.lines[0]).toContain("left untouched")
+	})
+
+	test("esc (undefined pick) cancels the repair the same way", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "s1", title: "first" }]
+		seam.brokenLogs = [BAD_LOG]
+		const ctx = makeCtx(seam, undefined)
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		expect(seam.repairCalls).toEqual([])
+		expect(seam.calls).toEqual(["listSessions"])
+	})
+
+	test("explicit confirm rewrites through the seam (path handed over), reports the backup, resumes", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "s1", title: "first" }]
+		seam.brokenLogs = [BAD_LOG]
+		const ctx = makeCtx(seam, ["s1", "repair"])
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		// the write happened exactly once, with the scanned path
+		expect(seam.repairCalls).toEqual([BAD_LOG.path])
+		expect(ctx.lines.some((l) => l.includes("repaired") && l.includes(".corrupt-bak"))).toBe(true)
+		// the resume path re-enters after the repair
+		expect(seam.calls).toEqual(["listSessions", "resumeSession:s1"])
+		expect(ctx.hooks.reloadIds).toEqual(["s1"])
+		expect(ctx.lines.at(-1)).toBe("resumed s1")
+	})
+
+	test("failed repair stops the resume (the log stays untouched or restored)", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "s1", title: "first" }]
+		seam.brokenLogs = [BAD_LOG]
+		seam.repairResults = [{ kind: "failed", detail: "cannot back up the original: EACCES" }]
+		const ctx = makeCtx(seam, ["s1", "repair"])
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		expect(seam.repairCalls).toEqual([BAD_LOG.path])
+		expect(ctx.lines[0]).toContain("repair failed")
+		expect(seam.calls).toEqual(["listSessions"]) // no resumeSession
+	})
+
+	test("clean verdict (self-healed log) reports nothing-to-do and still resumes", async () => {
+		const seam = new RecordingSeam()
+		seam.sessions = [{ id: "s1", title: "first" }]
+		seam.brokenLogs = [BAD_LOG]
+		seam.repairResults = [{ kind: "clean" }]
+		const ctx = makeCtx(seam, ["s1", "repair"])
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		expect(ctx.lines.some((l) => l.includes("needs no repair"))).toBe(true)
+		expect(seam.calls).toEqual(["listSessions", "resumeSession:s1"])
+	})
+
+	test("seam without the optional repair members keeps the repair-free picker", async () => {
+		const seam = new RecordingSeam()
+		const bare = { ...seam.seam } as SessionSeam
+		delete (bare as Partial<SessionSeam>).repairScanBroken
+		delete (bare as Partial<SessionSeam>).repairSessionLog
+		const ctx = makeCtx({ seam: bare, calls: [] } as unknown as RecordingSeam, "s2")
+		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(ctx.lines).toEqual(["resumed s2"])
 	})
 })

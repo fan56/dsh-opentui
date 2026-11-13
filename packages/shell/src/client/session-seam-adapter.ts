@@ -115,6 +115,7 @@ SeamSessionEvent,
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { turnEndErrorMessage } from "./remote-follow.ts"
 import { RemoteHostSession } from "./remote-host-session.ts"
+import type { BrokenSessionLog, RepairSessionLogResult } from "./remote-local-fs.ts"
 import { foldSubagentMarkerViews, registerSubagentSteer } from "../../../tui-base/src/routes/session/subagent-markers.ts"
 import { createSignal } from "solid-js"
 
@@ -276,6 +277,16 @@ export class RemoteSessionSeam implements SessionSeam {
 
 	resumeSession(id: string): "ok" | "owned" {
 		return this.#session.resumeSession(id)
+	}
+
+	/** C13 /resume repair flow, probe half (client-local, /repair topology). */
+	repairScanBroken(): BrokenSessionLog[] {
+		return this.#session.repairScanBroken()
+	}
+
+	/** C13 /resume repair flow, apply half — the caller owns the confirm. */
+	repairSessionLog(path: string): RepairSessionLogResult {
+		return this.#session.repairSessionLog(path)
 	}
 
 	newSession(): void {

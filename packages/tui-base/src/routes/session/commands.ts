@@ -22,7 +22,16 @@
 import type { SeamEffortOption, SeamPresetRow, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
-import { emptyFilteredCopy, filterSessionsBySizeFloor, resumePickerOptions } from "./resume-picker"
+import {
+	brokenLogsForSession,
+	corruptSessionIds,
+	emptyFilteredCopy,
+	filterSessionsBySizeFloor,
+	repairConfirmBody,
+	repairConfirmOptions,
+	resumePickerOptions,
+	type BrokenLogRow,
+} from "./resume-picker"
 import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
 import {
 	CUSTOM_ENTRY,
@@ -311,6 +320,57 @@ export async function commitLoginRoute(
 		return
 	}
 	say(`${entry.name} subscribed — key stored, route registered (in /model next session)`)
+}
+
+/**
+ * C13 /resume repair flow (dsh-tui-pi `offerCorruptedLogRepair` parity, the
+ * repair-dialog.ts semantics on the generic pickOne modal): the picked
+ * session's log failed the integrity scan, so the repair is offered behind
+ * an EXPLICIT confirmation dialog. It never runs silently:
+ *
+ *   - Cancel (or esc) leaves the log untouched and reports the original
+ *     reasons — the resume path does NOT run.
+ *   - Confirm runs the guarded seam repair (original always moves to
+ *     `.corrupt-bak` BEFORE any rewrite). A `failed` result keeps the log
+ *     untouched-or-restored and stops the resume; `clean` (nothing needed)
+ *     and `repaired` both let the resume proceed.
+ *
+ * Resolves true only when the resume path should re-enter.
+ */
+export async function offerCorruptedLogRepair(
+	ctx: Pick<SlashCommandContext, "say" | "pickOne"> & { seam: SessionSeam },
+	sessionId: string,
+	broken: readonly BrokenLogRow[],
+): Promise<boolean> {
+	if (broken.length === 0) {
+		ctx.say(`cannot repair ${sessionId}: no broken log found on disk`)
+		return false
+	}
+	if (!ctx.seam.repairSessionLog) {
+		ctx.say("/resume repair unavailable in this session — the log was left untouched")
+		return false
+	}
+	const confirm = await ctx.pickOne(
+		`Session ${sessionId} has a broken log (${repairConfirmBody(broken).join("; ")}) — repair it?`,
+		repairConfirmOptions(),
+	)
+	if (confirm !== "repair") {
+		ctx.say(`resume cancelled — the log was left untouched (${repairConfirmBody(broken).join("; ")})`)
+		return false
+	}
+	for (const row of broken) {
+		const result = ctx.seam.repairSessionLog(row.path)
+		if (result.kind === "failed") {
+			ctx.say(`repair failed — ${row.name}: ${result.detail} (the log was left untouched or restored)`)
+			return false
+		}
+		if (result.kind === "clean") {
+			ctx.say(`${row.name} needs no repair — the last line already parses; resuming`)
+		} else {
+			ctx.say(`repaired ${row.name} — the original was kept at ${result.backupPath}`)
+		}
+	}
+	return true
 }
 
 /** The masked key step + commit for a catalog provider. */
@@ -718,9 +778,22 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(emptyFilteredCopy(sessions.length))
 					return
 				}
-				const { header, options } = resumePickerOptions(visible)
+				// C13 repair flow, probe half: the client-local store scan (the
+				// /repair criteria) runs at picker-load time so broken logs show
+				// up as `⚠`-marked rows (tui-pi loadSessionPreviews corruptIds
+				// parity) — the repair itself stays behind the per-row confirm.
+				const broken = ctx.seam.repairScanBroken?.() ?? []
+				const corruptIds = corruptSessionIds(broken)
+				const { header, options } = resumePickerOptions(visible, Date.now(), corruptIds)
 				const picked = await ctx.pickOne("Resume session", options, header)
 				if (!picked) return
+				// Corrupt-log branch (tui-pi offerCorruptedLogRepair parity): the
+				// explicit confirm dialog gates the rewrite — Cancel falls back
+				// to the plain failure text and never resumes.
+				if (corruptIds.has(picked)) {
+					const ok = await offerCorruptedLogRepair(ctx, picked, brokenLogsForSession(broken, picked))
+					if (!ok) return
+				}
 				ctx.seam.resumeSession(picked)
 				// The staged id is not the seam's live id yet (resumeSession
 				// only records it; session/create binds it at the next turn),

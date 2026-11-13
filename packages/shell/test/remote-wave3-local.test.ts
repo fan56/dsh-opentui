@@ -8,7 +8,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
-import { listAgentFiles, repairScanSessions, setAgentField } from "../src/client/remote-local-fs.ts"
+import { listAgentFiles, repairScanSessions, repairSessionLogTail, scanBrokenSessionLogs, setAgentField } from "../src/client/remote-local-fs.ts"
 import { probeGitBranch, probeGitBranchOrSha } from "../src/client/remote-git.ts"
 import { toolPresentationModeFromPresetDocument } from "../src/client/remote-exec-mode.ts"
 import { attachmentIdsOfPromptContent, fetchHostFile, HostFileError, imagePromptPart, readImageAttachment } from "../src/client/remote-attachments.ts"
@@ -506,3 +506,111 @@ function callbacks(overrides: Partial<TurnCallbacks> = {}): { cb: TurnCallbacks 
 		},
 	}
 }
+
+// ---------------------------------------------------------------------------
+// C13 — /resume corrupt-log repair flow (client-local scan + guarded tail
+// repair beside the row-31 scan base; the base itself is untouched)
+// ---------------------------------------------------------------------------
+
+describe("C13 — scanBrokenSessionLogs (structured row-31 sibling)", () => {
+	test("reports broken logs with paths + owning session ids (same criteria as repairScanSessions)", () => {
+		const home = scratchDir("dsh-c13-home-")
+		const good = join(home, "sessions", "ws-a", "session-aaa1")
+		mkdirSync(good, { recursive: true })
+		writeFileSync(join(good, "session.v4.jsonl.zstd"), Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x01]))
+		const badTail = join(home, "sessions", "ws-a", "session-bbb2")
+		mkdirSync(badTail, { recursive: true })
+		writeFileSync(join(badTail, "session.v3.jsonl"), '{"type":"turn/end"}\nnot json\n')
+		const noDir = join(home, "sessions", "loose.v3.jsonl")
+		mkdirSync(join(home, "sessions"), { recursive: true })
+		writeFileSync(noDir, '{"type":"x"}\njunk\n')
+
+		const broken = scanBrokenSessionLogs(home)
+		const bbb2 = broken.find((r) => r.name === "session.v3.jsonl" && r.path.includes("session-bbb2"))
+		expect(bbb2?.reason).toBe("invalid jsonl tail")
+		expect(bbb2?.sessionId).toBe("bbb2")
+		// a log directly under sessions/ carries no session id
+		const loose = broken.find((r) => r.path === noDir)
+		expect(loose?.sessionId).toBeUndefined()
+		// healthy logs are absent
+		expect(broken.some((r) => r.path.includes("session-aaa1"))).toBe(false)
+	})
+
+	test("missing sessions dir → empty (never throws)", () => {
+		expect(scanBrokenSessionLogs(scratchDir("dsh-c13-empty-"))).toEqual([])
+	})
+})
+
+describe("C13 — repairSessionLogTail (guarded plain-jsonl tail repair)", () => {
+	test("bad tail: original moves to .corrupt-bak, canonical file parses, no in-place edit", () => {
+		const home = scratchDir("dsh-c13-repair-")
+		const dir = join(home, "sessions", "session-ccc3")
+		mkdirSync(dir, { recursive: true })
+		const log = join(dir, "session.v3.jsonl")
+		writeFileSync(log, '{"type":"turn/start"}\n{"type":"turn/end"}\n{"seq":3}\n{"seq":\n')
+
+		const result = repairSessionLogTail(log)
+		expect(result.kind).toBe("repaired")
+		if (result.kind !== "repaired") return
+		expect(result.backupPath).toBe(`${log}.corrupt-bak`)
+		// the canonical name parses again
+		const repaired = readFileSync(log, "utf8")
+		for (const line of repaired.trim().split("\n")) expect(() => JSON.parse(line)).not.toThrow()
+		expect(repaired).toContain('"turn/start"')
+		// the original content survives verbatim in the backup
+		expect(readFileSync(result.backupPath, "utf8")).toBe('{"type":"turn/start"}\n{"type":"turn/end"}\n{"seq":3}\n{"seq":\n')
+	})
+
+	test("clean log → clean (nothing written); a taken backup name gets the epoch suffix", () => {
+		const home = scratchDir("dsh-c13-clean-")
+		const dir = join(home, "sessions", "session-ddd4")
+		mkdirSync(dir, { recursive: true })
+		const log = join(dir, "session.v3.jsonl")
+		writeFileSync(log, '{"type":"turn/end"}\n')
+		writeFileSync(`${log}.corrupt-bak`, "earlier backup\n")
+		const before = readFileSync(log, "utf8")
+
+		expect(repairSessionLogTail(log)).toEqual({ kind: "clean" })
+		expect(readFileSync(log, "utf8")).toBe(before)
+
+		// a real repair under a taken .corrupt-bak name epoch-suffixes it
+		writeFileSync(log, '{"type":"turn/end"}\njunk\n')
+		const result = repairSessionLogTail(log)
+		expect(result.kind).toBe("repaired")
+		if (result.kind !== "repaired") return
+		expect(result.backupPath.split("/").pop()).toMatch(/^session\.v3\.jsonl\.corrupt-bak\.\d+$/)
+	})
+
+	test("zstd log → failed, file untouched (client-side repair cannot rewrite frames)", () => {
+		const home = scratchDir("dsh-c13-zstd-")
+		const dir = join(home, "sessions", "session-eee5")
+		mkdirSync(dir, { recursive: true })
+		const log = join(dir, "session.v4.jsonl.zstd")
+		writeFileSync(log, Buffer.from([0x00, 0x01]))
+		const before = readFileSync(log)
+		const result = repairSessionLogTail(log)
+		expect(result.kind).toBe("failed")
+		expect(readFileSync(log)).toEqual(before)
+	})
+
+	test("all lines unparseable → failed, log never emptied; facade rides dshHome", () => {
+		const home = scratchDir("dsh-c13-empty-guard-")
+		const dir = join(home, "sessions", "session-fff6")
+		mkdirSync(dir, { recursive: true })
+		const log = join(dir, "session.v3.jsonl")
+		writeFileSync(log, 'junk\nmore junk\n')
+		const before = readFileSync(log, "utf8")
+		const result = repairSessionLogTail(log)
+		expect(result.kind).toBe("failed")
+		expect(readFileSync(log, "utf8")).toBe(before)
+
+		// facade parity: repairScanBroken + repairSessionLog ride the
+		// configured dshHome, the same single-machine topology as /repair
+		const { session } = makeFacade({ dshHome: home })
+		const broken = session.repairScanBroken()
+		expect(broken.map((r) => r.sessionId)).toEqual(["fff6"])
+		const throughFacade = session.repairSessionLog(broken[0]!.path)
+		expect(throughFacade.kind).toBe("failed")
+		session.dispose()
+	})
+})

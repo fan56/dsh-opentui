@@ -180,7 +180,15 @@ import {
 	type RemoteQuestionAnswer,
 } from "./remote-waterfall.ts"
 import { ClientConnection, RemoteRpcError, type ClientConnectionState, type ClientReadyInfo } from "./transport.ts"
-import { repairScanSessions, resolveDshHome, setAgentField } from "./remote-local-fs.ts"
+import {
+	repairScanSessions,
+	repairSessionLogTail,
+	resolveDshHome,
+	scanBrokenSessionLogs,
+	setAgentField,
+	type BrokenSessionLog,
+	type RepairSessionLogResult,
+} from "./remote-local-fs.ts"
 import { commitAgentModelEdit, listComposedAgents, type AgentEditTarget, type ComposedAgentRow } from "./remote-agent-profiles.ts"
 import { probeGitBranch } from "./remote-git.ts"
 import { toolPresentationModeFromPresetDocument } from "./remote-exec-mode.ts"
@@ -1772,6 +1780,26 @@ export class RemoteHostSession {
 	/** wave 3 (row 31 — client-local session-store scan, HostSession parity). */
 	repairScan(): string[] {
 		return repairScanSessions(this.#dshHome)
+	}
+
+	/**
+	 * C13 /resume repair flow, probe half: the structured sibling of
+	 * {@link repairScan} — broken session logs with their paths, so the
+	 * picker can flag the owning sessions and offer the guarded repair.
+	 * Client-local (single-machine topology, same $DSH_HOME as /repair).
+	 */
+	repairScanBroken(): BrokenSessionLog[] {
+		return scanBrokenSessionLogs(this.#dshHome)
+	}
+
+	/**
+	 * C13 /resume repair flow, apply half: the guarded plain-jsonl tail
+	 * repair (original moved to `.corrupt-bak` before any rewrite). The
+	 * EXPLICIT user confirmation lives in the /resume picker — this method
+	 * never runs on its own.
+	 */
+	repairSessionLog(path: string): RepairSessionLogResult {
+		return repairSessionLogTail(path)
 	}
 
 	/** wave 2 (`session/search` — audit row 19). */

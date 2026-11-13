@@ -106,15 +106,72 @@ export interface ResumePickerOptions {
  * over the VISIBLE rows (the same width scan the reference runs), so the
  * header labels and every cell line up in a monospace capture.
  */
-export function resumePickerOptions(rows: readonly ResumePickerRow[], now: number = Date.now()): ResumePickerOptions {
+export function resumePickerOptions(
+	rows: readonly ResumePickerRow[],
+	now: number = Date.now(),
+	corruptIds?: ReadonlySet<string>,
+): ResumePickerOptions {
 	const updatedCells = rows.map((row) => relativeTime(row.updatedAt, now))
 	const dirCells = rows.map((row) => resumeDirLabel(row.cwd))
 	const updated = fitColumn("UPDATED", updatedCells)
 	const dir = fitColumn("DIR", dirCells)
 	const header = `${padCell(updated.header, updated.width)}  ${padCell(dir.header, dir.width)}  SESSION`
 	const options = rows.map((row, index) => ({
-		title: `${padCell(updatedCells[index]!, updated.width)}  ${padCell(dirCells[index]!, dir.width)}  ${row.title}`,
+		title: `${padCell(updatedCells[index]!, updated.width)}  ${padCell(dirCells[index]!, dir.width)}  ${resumeRowTitle(row.title, corruptIds?.has(row.id) ?? false)}`,
 		value: row.id,
 	}))
 	return { header, options }
+}
+
+/**
+ * Row title with the corrupt marker (tui-pi `resumeRowTitle` parity): a
+ * session whose log failed the integrity scan renders a leading `⚠`. The
+ * marker is a WARNING, not a verdict — the repair itself stays behind the
+ * explicit confirm dialog.
+ */
+export function resumeRowTitle(title: string, corrupt: boolean): string {
+	return corrupt ? `⚠ ${title}` : title
+}
+
+/** The broken-log rows the seam's client-local scan reports. */
+export interface BrokenLogRow {
+	path: string
+	name: string
+	reason: string
+	sessionId?: string
+}
+
+/**
+ * Session ids the /resume picker should flag as corrupt: the scan's
+ * `sessionId` values (the `session-<uuid>/` directory owners). Scan rows
+ * without a session id cannot be mapped onto a picker row and are dropped.
+ */
+export function corruptSessionIds(broken: readonly BrokenLogRow[]): Set<string> {
+	const ids = new Set<string>()
+	for (const row of broken) {
+		if (row.sessionId !== undefined && row.sessionId !== "") ids.add(row.sessionId)
+	}
+	return ids
+}
+
+/** The broken-log rows of ONE session (a session may own several logs). */
+export function brokenLogsForSession(broken: readonly BrokenLogRow[], sessionId: string): BrokenLogRow[] {
+	return broken.filter((row) => row.sessionId === sessionId)
+}
+
+/**
+ * The repair confirm dialog's two options, in the tui-pi order (index 0 =
+ * "Repair & resume" is preselected by pickOne's row-0 selection): the
+ * repair rewrites user data on disk, so it NEVER runs implicitly.
+ */
+export function repairConfirmOptions(): { title: string; value: "repair" | "cancel"; description?: string }[] {
+	return [
+		{ title: "Repair & resume", value: "repair", description: "back up the log, truncate the broken tail" },
+		{ title: "Cancel", value: "cancel", description: "leave the log untouched" },
+	]
+}
+
+/** One confirm-dialog body line per broken log (reason strings are the /repair card's). */
+export function repairConfirmBody(broken: readonly BrokenLogRow[]): string[] {
+	return broken.map((row) => `${row.name} — ${row.reason}`)
 }
