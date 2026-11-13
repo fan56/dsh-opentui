@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Default subagent registry plugin moves to 0.20.0.** The pinned default (`@aiwayds/dsh-subagent-registry`) is bumped from 0.19.1; provisioning stays idempotent, `--plugins=none` still disables it, and a failed install still degrades without blocking boot.
 
+## [0.12.0] - 2026-11-13
+
+### Changed
+
+- **`/settings` saves instantly.** Picking a value writes it through the existing local/host channels the moment it is picked — the 确定/Ctrl+S commit step, the draft buffer and the 未提交 counter are gone. The status line flashes `已保存 · <row>`; a failed save keeps the editor open with the error. The top-level Esc opens an exit confirm (取消/退出) before closing, and command-jump rows close the panel and then dispatch, so `打开 /model` really opens the model picker.
+- **Panel colours follow the theme.** Content rows, badges, N/A notes, section titles and editor options paint through new semantic theme roles (code/user/system/heading/danger) with a 4.5:1 contrast floor; `text.danger` previously resolved to the background colour in every shipped theme. Switching themes recolours the panels with them.
+
 ## [0.11.0] - 2026-11-13
 
 ### Changed
