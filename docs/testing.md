@@ -28,19 +28,32 @@
   （`DSH_REMOTE_SMOKE`）默认 skip，属于 **e2e**，从 unit/ft 剔除（skip 不是 pass）；
 - 其余 → **unit**。
 
-当前基线（2026-11，测试三套合并之后的 main）：
+当前基线（2026-11-14 实测，`bun run test:list` + 分层跑批；含 shell 渲染测试试点）：
 
 | 层 | 文件数 | 用例数 | 备注 |
 |---|---:|---:|---|
-| unit | 70 | 1180 | runtime 1（5）+ shell 25（463）+ tui-base 44（712） |
-| ft | 12 | 50 | 全部在 tui-base |
+| unit | 77 | 1299 | panel-kit 4（46）+ runtime 1（5）+ shell 27（510）+ tui-base 45（738） |
+| ft | 32 | 268 | panel-kit 10（117）+ shell 6（30，shell 渲染测试试点）+ tui-base 16（121） |
 | ui | 2 个脚本 | 166 条数值断言（5 个几何：80×24 / 120×34 / 45×30 / 100×45 / 120×52）+ agents-mount 全套 | `verify/ui-matrix.mjs`、`verify/agents-mount-repro.mjs` |
 | e2e | 2 个 bun 文件 + 4 个脚本/套件 | 本地 flows 10 场景 + 容器套件 20 个场景 + 2 个 live 脚本 | `verify/e2e-flows/run-flows.mjs`（默认）、`e2e/` 容器套件（默认）、`remote-live-smoke` / `steer-queue-repro` / `queue-flush-repro`（live，opt-in） |
 
-ft 的 12 个文件：`composer-delivery-ft`、`composer-history-ft`、`composer-palette-ft`、
-`composer-slash-tab-ft`、`entry-slash-deps`、`pane-focus`、`powerline-settle`、
-`transcript-codeblock-skin`、`transcript-layout`、`transcript-markdown-table`、
-`transcript-scroll`、`widgets-dock-render`。
+ft 的 32 个文件分三处：tui-base 16 个（`composer-delivery-ft`、`composer-history-ft`、
+`composer-palette-ft`、`composer-slash-tab-ft`、`entry-slash-deps`、`pane-focus`、
+`powerline-settle`、`transcript-codeblock-skin`、`transcript-layout`、
+`transcript-markdown-table`、`transcript-scroll`、`widgets-dock-render`，以及
+panel-kit 迁移带来的 4 个 panelkit 装配测试）；panel-kit 10 个；shell 6 个
+（shell 渲染测试试点，见下）。
+
+**shell 渲染测试试点**（`packages/shell/test/`，2026-11-14）：以真实渲染器 +
+固定事件序列的 fixture（`shell-render-fixture.tsx`）为底座，分层为金丝雀
+（`solid-reactivity-canary-ft`，防 false-green 的防线——fixture 失效时必红）、冒烟
+（`shell-render-smoke-ft`）、渲染回归 9 case（`shell-render-regression-ft`：宽度、
+resize、空转录、dock 隐藏、错误态）、按键路由 6 case（`key-routing-ft`）、事故映射
+4 case（`shell-render-incident-motion-ft` / `shell-render-incident-rows-ft`）。
+断言规范：帧断言一律 `captureCharFrame()` 取真实帧后 `toContain`/正则匹配，不做源码
+推断；涉及动画/渐隐的用例用时间预算等待（在预算窗口内采样中间帧），不用裸 sleep；
+事故映射里"首次转录读失败"一例按 SHOULD 行为编写，默认 skip，`DSH_TEST_READ_SIGNAL=1`
+时打开并对现状翻红（红即产品缺陷报告）。
 
 ### 1.2 现有非 bun 资产的归属
 

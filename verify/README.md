@@ -12,17 +12,24 @@
    - 截断 = widget 行长度 ≈ 终端宽
    - 清空 = 轮后 N 秒 widget 消失
 4. **视觉审核**：tmux capture -e → PNG 渲染 → 亲眼 Read 验收（禁 grep-only 收尾）
-5. **parity 对照**：与 dsh-tui-pi 同场景对拍（见 run-parity.mjs）
+5. **parity 对照**：与 dsh-tui-pi 同场景对拍（见 `verify/run-parity.mjs` —
+   **unwired**：未接入 `scripts/test-tier.mjs` 的任何层，其默认 profile 名已过时，
+   默认不跑）
 
 ## 当前状态
-- UT 层：packages/kit/src/widget-frame.test.ts — 4 tests / 16 asserts GREEN
-- E2E+parity：verify/run-parity.mjs — 9/9 GREEN
-- FT 层：packages/kit/test/widget-frame.frame.test.tsx — **已破案**：原 Orphan error 是 tsconfig include 不含 test/ 致整个文件被 react-JSX 静默编译；修 include + captureCharFrame 后测试真正运行，现卡 reconciler 的 text-node-under-box 规则（待读引擎源码）；断言保留
+- UT 层：`bun run test:unit` — 77 文件 / 1299 用例（2026-11-14 实测；分层明细见
+  [docs/testing.md §1.1](../docs/testing.md)）
+- FT 层：`bun run test:ft` — 32 文件 / 268 用例，含 shell 渲染测试试点
+  （`packages/shell/test/*-ft.test.tsx`：金丝雀 / 冒烟 / 渲染回归 / 按键路由 / 事故映射）
+- E2E：`bun run test:e2e` — 本地 flows（假模型，默认）+ 容器套件（mock 模型）+ live 腿（opt-in）
+- parity：`verify/run-parity.mjs` 存在但 **unwired**，默认 profile 名已过时，不在任何门禁内
 
 ## 运行
 ```
-cd packages/shell && npm run verify        # UT+FT+E2E 全链
-node verify/run-parity.mjs                # 与 tui-pi 对拍
+bun run test:unit                          # UT（bun test 分层跑批）
+bun run test:ft                            # FT（真实渲染器帧测试）
+bun run test:e2e                           # E2E（假模型默认腿 + 容器套件）
+# node verify/run-parity.mjs              # 与 tui-pi 对拍 — unwired, default profile name deprecated
 ```
 
 ## 已知教训（每条都真实发生过）

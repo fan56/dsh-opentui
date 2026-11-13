@@ -90,3 +90,38 @@ Settled 2026-11-14 (previously "Open decisions (awaiting user)"):
     two blocks.** The first acceptance gate includes the skeleton +
     the canary + the shell 0→1 case + the 1:1 keymap case + the smoke
     set; the remaining four mapped cases follow immediately after.
+
+## Pilot outcome (2026-11-14)
+
+The shell-render test pilot landed as 4 commits on
+`pilot/shell-render` (worktree `dsh-opentui-wt-test-arch`), all in
+`packages/shell/test/` (new files + fixture), zero product-code changes:
+
+- `4864e6c` — opencode-style render fixture + false-green canary
+- `5b0b335` — render regression battery (widths / resize / empty / dock-hide / error)
+- `acb3d4d` — key routing regression (PgDn / Home / End vs focus scopes)
+- `4e6f4e1` — incident-mapped regressions (wake-turn / fade-frames / border-count / read-failure)
+
+Case counts: render regression 9, key routing 6, incident mapping 4
+(3 active + 1 gated), smoke 4, canary 3 — 26 cases across 6 ft files.
+
+Gate results (2026-11-14, full worktree run twice, identical): `bun test`
+1571 tests across 111 files — 1565 pass / 5 skip / 1 fail (~60s per run).
+The fade-frames case (real-clock sampling, 300ms window) was stable on both
+runs. `bun run typecheck:entry` clean; `bun run verify:assembly` 7 pass /
+0 fail. The 1 fail is a pre-existing baseline failure
+(`packages/tui-base/test/subagent-markers.test.ts`, "steer slot (batch G2)",
+last touched by `9be0e6e`) — not pilot-introduced, reported only.
+
+Two product findings surfaced by the pilot (both pinned by tests, no product
+fix in this round):
+
+1. **First-transcript-read failure silently clears the transcript** —
+   `seam-rows load()` catches the error and hydrates an empty transcript with
+   only a `console.warn`; the user sees a blank screen. Pinned by a case in
+   `shell-render-incident-rows-ft.test.tsx` written to the SHOULD behavior and
+   gated behind `DSH_TEST_READ_SIGNAL=1` (with the flag it goes red against the
+   current product — the red is the bug report).
+2. **Home / End have no consumer in the pure-transcript state** — a functional
+   gap found by the key-routing cases: the keys are routed but nothing
+   consumes them outside focus scopes.
