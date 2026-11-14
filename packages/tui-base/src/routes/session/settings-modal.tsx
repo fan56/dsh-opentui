@@ -41,6 +41,7 @@ import {
   type PanelHandle,
 } from "@dsh-opentui/panel-kit"
 import { Keymap } from "../../context/keymap"
+import { t } from "../../i18n"
 import {
 	DEFAULT_FOOTER_HINTS,
 	HINT_LOCALES,
@@ -89,18 +90,24 @@ function resolveVersion(): string {
 // ------------------------------------------------------------- nav model --
 
 export const SETTINGS_SECTIONS = [
-	{ id: "general", label: "通用" },
-	{ id: "opentui", label: "TUI 专有" },
+	{ id: "general" },
+	{ id: "opentui" },
 	// Host settings (whitelist + describe-only namespaces). P0-1: the host rows
 	// are visible and editable here; General keeps the two web-order mirrors.
-	{ id: "host", label: "Host" },
-	{ id: "models", label: "模型" },
-	{ id: "plugins", label: "插件" },
-	{ id: "presets", label: "Agent 预设" },
-	{ id: "account", label: "账号" },
+	{ id: "host" },
+	{ id: "models" },
+	{ id: "plugins" },
+	{ id: "presets" },
+	{ id: "account" },
 ] as const
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"]
+
+/** Section labels resolve through `t()` at READ time (component memos /
+ * render) — never baked into a module constant (design §6 getter law). */
+export function settingsSectionLabel(id: SettingsSectionId): string {
+	return t(`settings.section.${id}`)
+}
 
 /** General keeps exactly 12 rows (contract §3.2 + user decision 9). */
 export const GENERAL_ROW_COUNT = 12
@@ -175,11 +182,11 @@ export function buildGeneralRows(ctx: SettingsRowContext): SettingsRow[] {
 	const sessionLog = hostRows.find((row) => row.id === "session-log-deepseek.enabled")
 	const permissionRow: SettingsRow =
 		permission === undefined
-			? { id: "general.permission", label: "权限默认预设", value: "n/a", kind: "readonly", editable: false, note: "宿主基线未定义" }
+			? { id: "general.permission", label: t("settings.row.permissionPreset"), value: "n/a", kind: "readonly", editable: false, note: t("settings.note.notInHostBaseline") }
 			: {
 					...fromItem(permission),
 					id: "general.permission",
-					label: "权限默认预设",
+					label: t("settings.row.permissionPreset"),
 					// No option source = no picker (existing host-row rule).
 					...(permission.editable && (permission.options?.length ?? 0) > 0
 						? {}
@@ -187,52 +194,52 @@ export function buildGeneralRows(ctx: SettingsRowContext): SettingsRow[] {
 				}
 	const sessionLogRow: SettingsRow =
 		sessionLog === undefined
-			? { id: "general.session-log", label: "Session Log 上传", value: "n/a", kind: "readonly", editable: false, note: "宿主基线未定义" }
-			: { ...fromItem(sessionLog), id: "general.session-log", label: "Session Log 上传" }
+			? { id: "general.session-log", label: t("settings.row.sessionLogUpload"), value: "n/a", kind: "readonly", editable: false, note: t("settings.note.notInHostBaseline") }
+			: { ...fromItem(sessionLog), id: "general.session-log", label: t("settings.row.sessionLogUpload") }
 
 	return [
 		permissionRow,
 		{
 			id: "general.language",
-			label: "语言",
+			label: t("settings.row.language"),
 			value: hintsLocaleFromConfig(ctx.merged.hintsLocale) ?? "en",
 			kind: "enum",
 			options: HINT_LOCALES,
 			editable: ctx.local,
-			note: "语义对齐 web 的 locale；存储为本地 hintsLocale",
+			note: t("settings.row.languageNote"),
 			write: { via: "config", key: "hintsLocale" },
 		},
 		{
 			id: "general.appearance",
-			label: "外观",
+			label: t("settings.row.appearance"),
 			value: typeof ctx.profile.themeMode === "string" ? ctx.profile.themeMode : "auto",
 			kind: "enum",
 			options: ["auto", "dark", "light"],
 			editable: ctx.local,
-			note: "语义 1:1 于 web 的 ui-theme（存储本地 themeMode）",
+			note: t("settings.row.appearanceNote"),
 			write: { via: "config", key: "themeMode" },
 		},
-		readonlyRow("general.font-size", "字号", "N/A", "终端管理字号 — TUI 无字号设置"),
+		readonlyRow("general.font-size", t("settings.row.fontSize"), "N/A", t("settings.row.fontSizeNote")),
 		{
 			id: "general.transcript-view",
-			label: "工作步骤",
+			label: t("settings.row.workingSteps"),
 			value: "N/A",
 			kind: "submenu",
 			editable: false,
-			note: "N/A — 本 TUI 不消费这三项",
+			note: t("settings.row.workingStepsNote"),
 			detail: [
-				{ id: "general.transcript-view.display", label: "工作步骤展示", value: "N/A", kind: "note", editable: false, note: "compact/standard/detailed/verbose — 无消费点" },
-				{ id: "general.transcript-view.collapse", label: "收起时机", value: "N/A", kind: "note", editable: false, note: "completion/next-input — 无消费点" },
-				{ id: "general.transcript-view.folded", label: "收起后显示", value: "N/A", kind: "note", editable: false, note: "all/final — 无消费点" },
+				{ id: "general.transcript-view.display", label: t("settings.row.stepsDisplay"), value: "N/A", kind: "note", editable: false, note: t("settings.row.stepsDisplayNote") },
+				{ id: "general.transcript-view.collapse", label: t("settings.row.stepsCollapse"), value: "N/A", kind: "note", editable: false, note: t("settings.row.stepsCollapseNote") },
+				{ id: "general.transcript-view.folded", label: t("settings.row.stepsFolded"), value: "N/A", kind: "note", editable: false, note: t("settings.row.stepsFoldedNote") },
 			],
 		},
-		naRow("general.developer-tools", "开发工具", "N/A — 本 TUI 无开发者工具视图"),
-		readonlyRow("general.shortcuts", "快捷键", "只读", "快捷键参考 — v1 只读"),
-		naRow("general.link-opening", "链接打开方式", "N/A — TUI 无内嵌浏览器，链接交给终端"),
-		readonlyRow("general.composer-enter", "忙碌时 Enter", "steer / 询问", "只读说明 — 保留现有 steer/询问行为"),
-		naRow("general.performance-usage", "性能与用量", "N/A — 本 TUI 无性能/用量视图"),
+		naRow("general.developer-tools", t("settings.row.developerTools"), t("settings.row.developerToolsNote")),
+		readonlyRow("general.shortcuts", t("settings.row.shortcuts"), t("settings.value.readOnly"), t("settings.row.shortcutsNote")),
+		naRow("general.link-opening", t("settings.row.linkOpening"), t("settings.row.linkOpeningNote")),
+		readonlyRow("general.composer-enter", t("settings.row.busyEnter"), t("settings.value.busyEnter"), t("settings.row.busyEnterNote")),
+		naRow("general.performance-usage", t("settings.row.performanceUsage"), t("settings.row.performanceUsageNote")),
 		sessionLogRow,
-		{ id: "general.current-version", label: "当前版本", value: ctx.version ?? resolveVersion(), kind: "readonly", editable: false },
+		{ id: "general.current-version", label: t("settings.row.currentVersion"), value: ctx.version ?? resolveVersion(), kind: "readonly", editable: false },
 	]
 }
 
@@ -258,15 +265,25 @@ export function buildOtherRows(ctx: SettingsRowContext): SettingsRow[] {
 	return buildOtherItems(ctx.document).map((item) => ({ ...fromItem(item), kind: "readonly" as const }))
 }
 
-const COMMAND_SECTIONS: Partial<Record<SettingsSectionId, { command: string; label: string; note: string }>> = {
-	models: { command: "/model", label: "打开 /model", note: "provider / API key / 模型清单页面在 v1 仍由 /model 承担" },
-	plugins: { command: "/plugins", label: "打开 /plugins", note: "插件清单与启停由 /plugins 面板承担：enter/space 启停、d 卸载（确认）、i 安装；部分变更需重启宿主生效" },
-	presets: { command: "/preset", label: "打开 /preset", note: "Agent 预设的轮换与指定由 /preset 承担" },
-	account: { command: "/login", label: "打开 /login", note: "登录 / 登出由 /login 流程承担" },
+/** Command-jump specs resolve through `t()` at call time (buildCommandRows
+ * runs inside component memos / tests) — the copy is not module-top-baked. */
+function settingsCommandSpec(id: SettingsSectionId): { command: string; label: string; note: string } | undefined {
+	switch (id) {
+		case "models":
+			return { command: "/model", label: t("settings.jump.open", { command: "/model" }), note: t("settings.jump.modelsNote") }
+		case "plugins":
+			return { command: "/plugins", label: t("settings.jump.open", { command: "/plugins" }), note: t("settings.jump.pluginsNote") }
+		case "presets":
+			return { command: "/preset", label: t("settings.jump.open", { command: "/preset" }), note: t("settings.jump.presetsNote") }
+		case "account":
+			return { command: "/login", label: t("settings.jump.open", { command: "/login" }), note: t("settings.jump.accountNote") }
+		default:
+			return undefined
+	}
 }
 
 export function buildCommandRows(id: SettingsSectionId): SettingsRow[] {
-	const spec = COMMAND_SECTIONS[id]
+	const spec = settingsCommandSpec(id)
 	if (spec === undefined) return []
 	return [
 		{
@@ -347,13 +364,13 @@ export async function writeSetting(
 	deps: SettingsWriteDeps,
 ): Promise<SettingsWriteResult> {
 	if (row.detail !== undefined) {
-		return { ok: false, error: `✘ ${row.label} 不可编辑` }
+		return { ok: false, error: t("settings.error.notEditable", { label: row.label }) }
 	}
 	if (!row.editable || row.write === undefined) {
-		return { ok: false, error: `✘ ${row.label} 不可编辑` }
+		return { ok: false, error: t("settings.error.notEditable", { label: row.label }) }
 	}
 	if (row.write.via === "config") {
-		if (!deps.local) return { ok: false, error: "✘ 本地偏好当前不可写" }
+		if (!deps.local) return { ok: false, error: t("settings.error.localNotWritable") }
 		const hints = footerHintsFromConfig(deps.merged.footerHints) ?? DEFAULT_FOOTER_HINTS
 		const plan = planLocalWrite(row as unknown as SettingsItem, value, hints)
 		if (!plan.ok) return { ok: false, error: `✘ ${plan.error}` }
@@ -362,18 +379,18 @@ export async function writeSetting(
 		} catch (error) {
 			return {
 				ok: false,
-				error: `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`,
+				error: t("settings.error.writeFailed", { detail: error instanceof Error ? error.message : String(error) }),
 			}
 		}
 		applySettingsLive(row as unknown as SettingsItem, plan.applied, hints, deps.themes)
 		return { ok: true, label: row.label, patch: plan.patch }
 	}
 	// Host row.
-	if (!deps.host) return { ok: false, error: "✘ 宿主设置当前不可写" }
+	if (!deps.host) return { ok: false, error: t("settings.error.hostNotWritable") }
 	const plan = planHostWrite(row as unknown as SettingsItem, value)
 	if (!plan.ok) return { ok: false, error: `✘ ${plan.error}` }
 	const face = deps.seam.settings
-	if (face === undefined) return { ok: false, error: "✘ 宿主 settings 接口不可用" }
+	if (face === undefined) return { ok: false, error: t("settings.error.hostFaceUnavailable") }
 	let document = deps.document
 	let refreshFailed = false
 	try {
@@ -388,8 +405,8 @@ export async function writeSetting(
 		if (!outcome.result.ok) {
 			const message = outcome.result.conflict
 				? outcome.attempts === 1
-					? "✘ 冲突：设置已被其它客户端修改，且 settings/describe 失败 — 没有最新 revision，未重试写入"
-					: "✘ 冲突：设置已被其它客户端修改，重试一次仍冲突（未写入）"
+					? t("settings.error.conflictNoRevision")
+					: t("settings.error.conflictStill")
 				: `✘ ${outcome.result.error}`
 			return { ok: false, error: message, ...(document !== undefined ? { document } : {}) }
 		}
@@ -397,7 +414,7 @@ export async function writeSetting(
 	} catch (error) {
 		return {
 			ok: false,
-			error: `✘ 写入失败：${error instanceof Error ? error.message : String(error)}`,
+			error: t("settings.error.writeFailed", { detail: error instanceof Error ? error.message : String(error) }),
 		}
 	}
 	return {
@@ -555,7 +572,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 
 	/** Transient 「已保存 · X」; falls back to the resting text after 1.5 s. */
 	function flashSaved(label: string) {
-		setStatus(`已保存 · ${label}`)
+		setStatus(t("settings.status.saved", { label }))
 		if (statusTimer !== undefined) clearTimeout(statusTimer)
 		statusTimer = setTimeout(() => {
 			statusTimer = undefined
@@ -647,7 +664,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 		}
 		if (row.kind === "toggle") {
 			if (!row.editable) {
-				setStatus(row.note ?? "该行只读")
+				setStatus(row.note ?? t("settings.status.rowReadOnly"))
 				return
 			}
 			// Instant model: a toggle writes on the spot, no staged buffer.
@@ -661,7 +678,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			return
 		}
 		if (!row.editable) {
-			setStatus(row.note ?? "该行只读")
+			setStatus(row.note ?? t("settings.status.rowReadOnly"))
 			return
 		}
 		setEditorRow(row)
@@ -697,7 +714,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			})
 			if (result.document !== undefined) setDocument(result.document)
 			if (!result.ok) {
-				setError(result.error ?? "✘ 写入失败")
+				setError(result.error ?? t("settings.error.writeFailedShort"))
 				return false
 			}
 			reloadLocal()
@@ -707,7 +724,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			if (result.patch !== undefined) setMerged((current) => ({ ...current, ...result.patch }))
 			void reloadHost()
 			if (result.refreshFailed === true) {
-				setError("⚠ 已写入，但设置刷新失败（显示的仍是旧文档）")
+				setError(t("settings.status.refreshFailed"))
 				return true
 			}
 			savedLabels.push(row.label)
@@ -781,10 +798,10 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 		confirmingExit = true
 		try {
 			const exit = await panels.confirm({
-				title: "退出设置？",
-				message: "所有改动已即时保存。",
-				confirmLabel: "确认退出",
-				cancelLabel: "返回",
+				title: t("settings.exit.title"),
+				message: t("settings.exit.message"),
+				confirmLabel: t("settings.exit.confirm"),
+				cancelLabel: t("settings.exit.cancel"),
 				destructive: true,
 			})
 			if (exit) props.onRequestClose()
@@ -989,7 +1006,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	const navItems = createMemo<ListItem[]>(() =>
 		sections().map((section) => ({
 			id: section.id,
-			label: section.label,
+			label: settingsSectionLabel(section.id),
 			description: `${section.rows.length}`,
 			// v1.2: the row count is system text, not a muted value, and it sits
 			// in the fixed right-aligned count column.
@@ -1057,7 +1074,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 					>
 						<box flexShrink={0} backgroundColor={chrome().titleBand}>
 							<text attributes={TextAttributes.BOLD} fg={role(theme().text.heading)}>
-								{currentSection().label}
+								{settingsSectionLabel(currentSection().id)}
 							</text>
 						</box>
 						<Show when={editorRow() === undefined}>
@@ -1074,7 +1091,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 							<Show when={currentRow()?.note !== undefined}>
 								<text fg={role(theme().text.muted)}>{`  ${currentRow()!.note!}`}</text>
 							</Show>
-							<text fg={role(theme().text.muted)}>{`${pane() === "nav" ? "↑↓ 选择分节 · →/Enter 进入内容" : "↑↓ 选择行 · Enter 编辑 · ←/Esc 返回"}${pageIndicator()}`}</text>
+							<text fg={role(theme().text.muted)}>{`${pane() === "nav" ? t("settings.hint.navSections") : t("settings.hint.rows")}${pageIndicator()}`}</text>
 						</Show>
 						<Show when={editorRow() !== undefined}>
 							<EditorView
@@ -1093,7 +1110,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 			</PanelBody>
 			{/* Action band: no commit control (every edit is already persisted).
 			    The left cell is the Esc affordance, the right the status line:
-			    the transient 「已保存 · X」 lives here. */}
+			    the transient "saved · <label>" flash lives here. */}
 			<box flexDirection="row" justifyContent="space-between" flexShrink={0} gap={2}>
 				<box
 					flexShrink={0}
@@ -1102,7 +1119,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 					borderColor={chrome().divider}
 				>
 					<text fg={theme().text.muted} attributes={theme().attributes.keyHint} wrapMode="none">
-						{"esc 返回"}
+						{t("settings.hint.escBack")}
 					</text>
 				</box>
 					<text
@@ -1110,7 +1127,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 						attributes={theme().attributes.keyHint}
 						wrapMode="none"
 					>
-					{error() ?? status() ?? "改动已即时保存"}
+					{error() ?? status() ?? t("settings.status.instantSave")}
 				</text>
 			</box>
 		</box>
@@ -1156,7 +1173,12 @@ function EditorView(props: {
 
 	return (
 		<box flexDirection="column" flexGrow={1}>
-			<text fg={role(theme().text.heading)}>{`${props.row.label} — ${props.row.kind === "number" ? "输入整数" : props.row.kind === "enum" ? "选择值" : "查看"}`}</text>
+			<text fg={role(theme().text.heading)}>
+			{t("settings.editor.title", {
+				label: props.row.label,
+				action: props.row.kind === "number" ? t("settings.input.enterInteger") : props.row.kind === "enum" ? t("settings.editor.pick") : t("settings.editor.view"),
+			})}
+		</text>
 			<Show when={props.row.note !== undefined}>
 				<text fg={role(theme().text.system)}>{`  ${props.row.note!}`}</text>
 			</Show>
@@ -1186,7 +1208,7 @@ function EditorView(props: {
 								<text fg={role(theme().text.accent)}>{optionStart() + index() === props.cursor ? "▸ " : "  "}</text>
 								<text fg={role(theme().text.code)}>{option}</text>
 								<Show when={option === props.row.value}>
-									<text fg={role(theme().text.system)}>{"  (current)"}</text>
+									<text fg={role(theme().text.system)}>{t("settings.options.current")}</text>
 								</Show>
 							</box>
 						)}
@@ -1198,7 +1220,7 @@ function EditorView(props: {
 			</Show>
 			<Show when={props.row.kind === "number" || props.row.kind === "text"}>
 				<box flexDirection="row">
-					<text fg={role(theme().text.muted)}>{`${props.row.kind === "number" ? "数值" : "值"}: `}</text>
+					<text fg={role(theme().text.muted)}>{props.row.kind === "number" ? t("settings.editor.numberValue") : t("settings.editor.textValue")}</text>
 					<text fg={role(theme().text.code)}>{props.value}</text>
 					<input
 						flexGrow={1}
@@ -1216,8 +1238,8 @@ function EditorView(props: {
 			</Show>
 			<text fg={role(theme().text.faint)}>
 				{props.row.kind === "enum"
-					? "↑↓ 选择 · Enter/Space 保存并返回 · Esc 返回"
-					: "Enter 保存并返回 · Esc 返回 · 左/右 调整数值"}
+					? t("settings.editor.footerEnum")
+					: t("settings.editor.footerInput")}
 			</text>
 		</box>
 	)
@@ -1265,7 +1287,7 @@ export function SettingsModalHost(props: {
 			{
 				id: "settings-modal",
 				title: "Settings",
-				subtitle: "分节导航 · 即时保存 · Esc 逐层返回",
+				subtitle: t("settings.modal.subtitle"),
 				size: "xlarge",
 				/**
 				 * A FIXED frame height (v1.2): 75% of the terminal, clamped to
