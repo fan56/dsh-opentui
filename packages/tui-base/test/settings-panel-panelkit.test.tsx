@@ -12,7 +12,8 @@
  * 确定 control and no Ctrl+S binding; Esc walks editor → section → 退出设置？
  * confirmation (default focus 取消).
  */
-import { beforeEach, describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test, beforeAll 
+} from "bun:test"
 import { onMount } from "solid-js"
 import { testRender } from "@opentui/solid"
 import {
@@ -44,6 +45,7 @@ import {
 	buildOpentuiRows,
 	buildSectionRows,
 	settingsBackView,
+	settingsSectionLabel,
 	settingsPanelRows,
 	settingsRowWidth,
 	writeSetting,
@@ -55,7 +57,15 @@ import {
 	settingsPanelOpen,
 	type SettingsThemeFace,
 } from "../src/routes/session/settings-panel"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import type { SeamSettingsDocument, SessionSeam } from "../src/seams/session"
+
+// The settings copy resolves through `t()` (T5 facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 const keymapConfig = {
 	keybinds: { get: () => [] },
@@ -457,18 +467,18 @@ describe("settings modal: section model", () => {
 		const rows = buildGeneralRows(context())
 		expect(rows).toHaveLength(GENERAL_ROW_COUNT)
 		expect(rows.map((row) => row.label)).toEqual([
-			"权限默认预设",
-			"语言",
-			"外观",
-			"字号",
-			"工作步骤",
-			"开发工具",
-			"快捷键",
-			"链接打开方式",
-			"忙碌时 Enter",
-			"性能与用量",
-			"Session Log 上传",
-			"当前版本",
+			"Default permission preset",
+			"Language",
+			"Appearance",
+			"Font size",
+			"Working steps",
+			"Developer tools",
+			"Shortcuts",
+			"Link opening",
+			"Enter while busy",
+			"Performance & usage",
+			"Session log upload",
+			"Current version",
 		])
 		expect(rows.find((row) => row.id === "general.current-version")?.value).toBe("9.9.9")
 	})
@@ -583,8 +593,10 @@ describe("settings modal: instant writes", () => {
 			host: true,
 		})
 		expect(result.ok).toBe(true)
-		expect(result.label).toBe("语言")
-		expect(result.patch).toEqual({ hintsLocale: "zh-CN" })
+		expect(result.label).toBe("Language")
+		// T14 unified language storage: the language row writes the `lang` key
+		// (/language authority); the legacy `hintsLocale` folds in read-only.
+		expect(result.patch).toEqual({ lang: "zh-CN" })
 		expect(calls).toHaveLength(1)
 		expect(calls[0]).toContain("configSave:")
 		expect(calls[0]).toContain("zh-CN")
@@ -641,7 +653,7 @@ describe("settings modal: instant writes", () => {
 			},
 		)
 		expect(result.ok).toBe(false)
-		expect(result.error).toContain("写入失败")
+		expect(result.error).toContain("write failed")
 		expect(result.error).toContain("disk full")
 		expect(result.patch).toBeUndefined()
 	})
@@ -697,7 +709,7 @@ describe("settings modal: instant writes", () => {
 			host: true,
 		})
 		expect(result.ok).toBe(false)
-		expect(result.error).toContain("不可编辑")
+		expect(result.error).toContain("not editable")
 		expect(calls).toHaveLength(0)
 	})
 })
@@ -712,15 +724,15 @@ describe("settings modal: real keys", () => {
 			//    names the section title; the old gate matched the whole frame).
 			const labels = navLabels(setup)
 			for (const section of SETTINGS_SECTIONS) {
-				expect(labels.some((line) => line.startsWith(section.label.replace(/\s+/g, "")))).toBe(true)
+				expect(labels.some((line) => line.startsWith(settingsSectionLabel(section.id).replace(/\s+/g, "")))).toBe(true)
 			}
 			// 2. At open the nav owns the cursor: the hint says so and the row list
 			//    must not paint a competing highlight.
-			expect(frame()).toContain("↑↓ 选择分节")
-			expect(highlightRun(setup, "权限默认预设")).toBeUndefined()
+			expect(frame()).toContain("↑↓ select section")
+			expect(highlightRun(setup, "Default permission preset")).toBeUndefined()
 			// The nav label and its count are separate spans (the count is
 			// right-aligned in its own column), so match the label alone.
-			const navRun = highlightRun(setup, "通用")
+			const navRun = highlightRun(setup, "General")
 			expect(navRun).toBeDefined()
 			expect(navRun!.end - navRun!.start + 1).toBeLessThanOrEqual(20)
 
@@ -729,9 +741,9 @@ describe("settings modal: real keys", () => {
 			//    panel's right padding and border.
 			setup.mockInput.pressArrow("right")
 			await settle(setup)
-			expect(frame()).toContain("↑↓ 选择行")
-			expect(frame()).not.toContain("↑↓ 选择分节")
-			const run = highlightRun(setup, "权限默认预设")
+			expect(frame()).toContain("↑↓ select row")
+			expect(frame()).not.toContain("↑↓ select section")
+			const run = highlightRun(setup, "Default permission preset")
 			expect(run).toBeDefined()
 			expect(run!.end - run!.start + 1).toBe(settingsRowWidth(120, 40))
 			expect(settingsRowWidth(120, 40)).toBe(84)
@@ -746,7 +758,7 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("模型 paints the /model jump, no agent rows, and dispatches after closing", async () => {
+	test("Models paints the /model jump, no agent rows, and dispatches after closing", async () => {
 		const names = ["Minimal Subagent", "老法师", "PTC Subagent", "小黄鸭", "牛马狗"]
 		// The seam deliberately exposes the real /agents corpus: the settings
 		// modal must never read it (agent definitions live in /agents).
@@ -779,7 +791,7 @@ describe("settings modal: real keys", () => {
 		try {
 			// Walk every big section (模型 / 插件 / Agent 预设 / 账号): each is one
 			// command jump, and none may paint the agent corpus the seam exposes.
-			const bigSections = ["打开 /model", "打开 /plugins", "打开 /preset", "打开 /login"]
+			const bigSections = ["Open /model", "Open /plugins", "Open /preset", "Open /login"]
 			let cursor = 0 // nav starts on 通用
 			for (let target = 3; target <= 6; target += 1) {
 				while (cursor < target) {
@@ -798,11 +810,11 @@ describe("settings modal: real keys", () => {
 				cursor -= 1
 			}
 			await settle(setup)
-			expect(frame()).toContain("打开 /model")
+			expect(frame()).toContain("Open /model")
 
 			setup.mockInput.pressEnter() // nav → rows
 			await settle(setup)
-			expect(frame()).toContain("↑↓ 选择行")
+			expect(frame()).toContain("↑↓ select row")
 			setup.mockInput.pressEnter() // the single jump row
 			await settle(setup)
 
@@ -810,7 +822,7 @@ describe("settings modal: real keys", () => {
 			// (contract §3.5: close first, then run the command).
 			expect(dispatched).toEqual(["/model"])
 			expect(topAtDispatch).not.toBe("settings-modal")
-			expect(frame()).not.toContain("分节导航")
+			expect(frame()).not.toContain("section navigation")
 		} finally {
 			await setup.dispose()
 		}
@@ -824,7 +836,7 @@ describe("settings modal: real keys", () => {
 			await settle(setup)
 			const labels = navLabels(setup)
 			for (const section of SETTINGS_SECTIONS) {
-				expect(labels.some((line) => line.startsWith(section.label.replace(/\s+/g, "")))).toBe(true)
+				expect(labels.some((line) => line.startsWith(settingsSectionLabel(section.id).replace(/\s+/g, "")))).toBe(true)
 			}
 			expect(frame()).not.toContain("No items")
 			expect(frame()).not.toContain("/zz")
@@ -837,45 +849,45 @@ describe("settings modal: real keys", () => {
 		const closed: (string | undefined)[] = []
 		const { setup, frame } = await mount({ onClosed: (summary) => closed.push(summary) })
 		try {
-			expect(frame()).toContain("通用")
+			expect(frame()).toContain("General")
 			setup.mockInput.pressEnter() // nav → General rows
 			await settle(setup)
-			expect(frame()).toContain("权限默认预设")
+			expect(frame()).toContain("Default permission preset")
 			setup.mockInput.pressEnter() // row → enum editor
 			await settle(setup)
-			expect(frame()).toContain("权限默认预设 — 选择值")
+			expect(frame()).toContain("Default permission preset — pick a value")
 			setup.mockInput.pressEscape() // editor → browse
 			await settle(setup)
-			expect(frame()).toContain("↑↓ 选择行")
-			expect(frame()).not.toContain("选择值")
+			expect(frame()).toContain("↑↓ select row")
+			expect(frame()).not.toContain("pick a value")
 			expect(settingsPanelOpen()).toBe(true)
 
 			// browse → exit confirmation. The panel is still there behind it.
 			setup.mockInput.pressEscape()
 			await settle(setup)
-			expect(frame()).toContain("退出设置？")
+			expect(frame()).toContain("Exit settings?")
 			expect(settingsPanelOpen()).toBe(true)
 
 			// Default focus is 取消: Esc cancels, panel stays.
 			setup.mockInput.pressEscape()
 			await settle(setup)
-			expect(frame()).not.toContain("退出设置？")
-			expect(frame()).toContain("↑↓ 选择行")
+			expect(frame()).not.toContain("Exit settings?")
+			expect(frame()).toContain("↑↓ select row")
 			expect(settingsPanelOpen()).toBe(true)
 
 			// Reopen and Enter: focus is still 取消, so Enter also cancels.
 			setup.mockInput.pressEscape()
 			await settle(setup)
-			expect(frame()).toContain("退出设置？")
+			expect(frame()).toContain("Exit settings?")
 			setup.mockInput.pressEnter()
 			await settle(setup)
-			expect(frame()).not.toContain("退出设置？")
+			expect(frame()).not.toContain("Exit settings?")
 			expect(settingsPanelOpen()).toBe(true)
 
 			// Tab moves the focus to 退出; Enter confirms and closes.
 			setup.mockInput.pressEscape()
 			await settle(setup)
-			expect(frame()).toContain("退出设置？")
+			expect(frame()).toContain("Exit settings?")
 			setup.mockInput.pressTab()
 			await settle(setup, 1)
 			setup.mockInput.pressEnter()
@@ -893,7 +905,7 @@ describe("settings modal: real keys", () => {
 		try {
 			setup.mockInput.pressEnter() // appearance → editor (cursor on "dark")
 			await settle(setup)
-			expect(frame()).toContain("外观 — 选择值")
+			expect(frame()).toContain("Appearance — pick a value")
 			expect(frame()).toContain("▸ dark")
 			setup.mockInput.pressArrow("down")
 			await settle(setup)
@@ -903,9 +915,9 @@ describe("settings modal: real keys", () => {
 			expect(frame()).toContain("▸ auto")
 			setup.mockInput.pressEnter() // save "auto" immediately and leave the editor
 			await settle(setup)
-			expect(frame()).not.toContain("选择值")
+			expect(frame()).not.toContain("pick a value")
 			// Instant save: the status line flashes the row, the panel stays open.
-			expect(frame()).toContain("已保存 · 外观")
+			expect(frame()).toContain("saved · Appearance")
 			expect(settingsPanelOpen()).toBe(true)
 			const saves = calls.filter((call) => call.startsWith("configSave:"))
 			expect(saves).toHaveLength(1)
@@ -914,8 +926,8 @@ describe("settings modal: real keys", () => {
 			// The flash is transient: after 1.5 s the resting text is back.
 			await new Promise((resolve) => setTimeout(resolve, 1600))
 			await setup.renderOnce()
-			expect(frame()).not.toContain("已保存")
-			expect(frame()).toContain("改动已即时保存")
+			expect(frame()).not.toContain("saved · ")
+			expect(frame()).toContain("changes are saved instantly")
 		} finally {
 			await setup.dispose()
 		}
@@ -932,7 +944,7 @@ describe("settings modal: real keys", () => {
 			// The preselect also puts the cursor on that row: Enter opens ITS editor.
 			setup.mockInput.pressEnter()
 			await settle(setup)
-			expect(frame()).toContain("subagent.maxActiveSubagents — 输入整数")
+			expect(frame()).toContain("subagent.maxActiveSubagents — enter an integer")
 		} finally {
 			await setup.dispose()
 		}
@@ -957,7 +969,7 @@ describe("settings modal: real keys", () => {
 			expect(frame()).not.toContain("themeMode")
 			setup.mockInput.pressEnter() // the LAST row opens its editor
 			await settle(setup)
-			expect(frame()).toContain("maxRoundsGrace — 输入整数")
+			expect(frame()).toContain("maxRoundsGrace — enter an integer")
 		} finally {
 			await setup.dispose()
 		}
@@ -967,18 +979,18 @@ describe("settings modal: real keys", () => {
 		const { setup, frame } = await mount({ preselect: "general.permission", height: 40 })
 		try {
 			for (const label of [
-				"权限默认预设",
-				"语言",
-				"外观",
-				"字号",
-				"工作步骤",
-				"开发工具",
-				"快捷键",
-				"链接打开方式",
-				"忙碌时 Enter",
-				"性能与用量",
-				"Session Log 上传",
-				"当前版本",
+				"Default permission preset",
+				"Language",
+				"Appearance",
+				"Font size",
+				"Working steps",
+				"Developer tools",
+				"Shortcuts",
+				"Link opening",
+				"Enter while busy",
+				"Performance & usage",
+				"Session log upload",
+				"Current version",
 			]) {
 				expect(frame()).toContain(label)
 			}
@@ -996,7 +1008,7 @@ describe("settings modal: real keys", () => {
 			expect(frame()).toMatch(/1-6\/12/)
 			setup.mockInput.pressKey("\u001b[F") // End
 			await settle(setup)
-			expect(frame()).toContain("当前版本")
+			expect(frame()).toContain("Current version")
 			expect(frame()).toMatch(/7-12\/12/)
 		} finally {
 			await setup.dispose()
@@ -1052,7 +1064,7 @@ describe("settings modal: real keys", () => {
 			await settle(setup)
 			expect(calls).toHaveLength(0)
 			expect(settingsPanelOpen()).toBe(true)
-			expect(frame()).toContain("改动已即时保存")
+			expect(frame()).toContain("changes are saved instantly")
 			expect(frame()).not.toContain("ctrl+s")
 		} finally {
 			await setup.dispose()
@@ -1071,13 +1083,13 @@ describe("settings modal: real keys", () => {
 			await settle(setup)
 			expect(settingsPanelOpen()).toBe(true)
 			expect(frame()).toContain("settings/rejected")
-			expect(frame()).not.toContain("已保存")
+			expect(frame()).not.toContain("saved · ")
 			expect(calls.filter((call) => call.startsWith("mutate:session-log-deepseek:"))).toHaveLength(1)
 
 			// The panel still navigates, and the exit dialog is still available.
 			setup.mockInput.pressEscape()
 			await settle(setup)
-			expect(frame()).toContain("退出设置？")
+			expect(frame()).toContain("Exit settings?")
 			setup.mockInput.pressTab()
 			await settle(setup, 1)
 			setup.mockInput.pressEnter()
@@ -1098,7 +1110,7 @@ describe("settings modal: real keys", () => {
 		try {
 			setup.mockInput.pressEnter() // number editor, value 1
 			await settle(setup)
-			expect(frame()).toContain("subagent.maxDepth — 输入整数")
+			expect(frame()).toContain("subagent.maxDepth — enter an integer")
 			setup.mockInput.pressArrow("right") // 1 → 2
 			await settle(setup, 1)
 			setup.mockInput.pressEnter() // submit → rejected
@@ -1106,8 +1118,8 @@ describe("settings modal: real keys", () => {
 			expect(frame()).toContain("settings/rejected")
 			// The editor is still open with the attempted value, so it can be
 			// corrected or left with Esc.
-			expect(frame()).toContain("subagent.maxDepth — 输入整数")
-			expect(frame()).toContain("数值: 2")
+			expect(frame()).toContain("subagent.maxDepth — enter an integer")
+			expect(frame()).toContain("number: 2")
 			const mutates = calls.filter((call) => call.startsWith("mutate:subagent:"))
 			expect(mutates).toHaveLength(1)
 			expect(mutates[0]).toContain('"value":2')
@@ -1164,7 +1176,7 @@ describe("settings modal: real keys", () => {
 		try {
 			setup.mockInput.pressKey(" ") // toggle send on → write on the spot
 			await settle(setup)
-			expect(frame()).toContain("已保存 · footerHints.send")
+			expect(frame()).toContain("saved · footerHints.send")
 			expect(settingsPanelOpen()).toBe(true)
 
 			const saves = calls.filter((call) => call.startsWith("configSave:"))
@@ -1314,7 +1326,7 @@ describe("settings modal: real keys", () => {
 		try {
 			setup.mockInput.pressEnter() // theme row → enum editor
 			await settle(setup)
-			expect(frame()).toContain("theme — 选择值")
+			expect(frame()).toContain("theme — pick a value")
 			expect(frame()).toContain("▸ theme-01")
 			expect(frame()).toMatch(/1-4\/20/)
 			expect(frame()).not.toContain("theme-09")
@@ -1426,15 +1438,15 @@ describe("settings modal: layered chrome (v1.2)", () => {
 			// 2. Nav band: an UNSELECTED nav row paints the raised band (the
 			//    selected row is covered by the accent highlight), and the divider
 			//    column (theme border token) is painted on that same line.
-			expect(linePaintsBg(setup, "账号", chrome().navBand)).toBe(true)
-			expect(linePaintsBg(setup, "账号", chrome().divider)).toBe(true)
-			const navLine = lineSpans(setup).find((line) => line.map((span) => span.text).join("").includes("账号"))!
+			expect(linePaintsBg(setup, "Account", chrome().navBand)).toBe(true)
+			expect(linePaintsBg(setup, "Account", chrome().divider)).toBe(true)
+			const navLine = lineSpans(setup).find((line) => line.map((span) => span.text).join("").includes("Account"))!
 			const dividerCell = navLine.find((span) => span.bg.toInts().join() === chrome().divider.toInts().join())
 			expect(dividerCell?.width).toBe(1)
 
 			// 3. A content row stays on the surface (the frame line also carries
 			//    the nav cells, so assert on the row's own span).
-			expect(spanOf(setup, "权限默认预设")?.bg.toInts()).toEqual(chrome().content.toInts())
+			expect(spanOf(setup, "Default permission preset")?.bg.toInts()).toEqual(chrome().content.toInts())
 		} finally {
 			await setup.dispose()
 		}
@@ -1446,7 +1458,7 @@ describe("settings modal: layered chrome (v1.2)", () => {
 			// Selected section: full accent row (the kit's active row token).
 			// The nav label and its count are separate spans (the count is
 			// right-aligned in its own column), so match the label alone.
-			const navRun = highlightRun(setup, "通用")
+			const navRun = highlightRun(setup, "General")
 			expect(navRun).toBeDefined()
 			expect(navRun!.end - navRun!.start + 1).toBeLessThanOrEqual(20)
 			// Every section count ends on the SAME cell: the fixed count column
@@ -1461,10 +1473,10 @@ describe("settings modal: layered chrome (v1.2)", () => {
 			// Unselected sections paint the COUNT span (its own right-aligned
 			// span) as system text; the label span keeps the base token.
 			const navCount = lineSpans(setup)
-				.find((line) => line.map((span) => span.text).join("").includes("TUI 专有"))!
+				.find((line) => line.map((span) => span.text).join("").includes("TUI-specific"))!
 				.find((span) => /^\s*\d+\s*$/.test(span.text))
 			expect(navCount?.fg.toInts()).toEqual(FALLBACK_THEME.text.system.toInts())
-			expect(spanOf(setup, "TUI 专有")?.fg.toInts()).toEqual(FALLBACK_THEME.text.base.toInts())
+			expect(spanOf(setup, "TUI-specific")?.fg.toInts()).toEqual(FALLBACK_THEME.text.base.toInts())
 		} finally {
 			await setup.dispose()
 		}
@@ -1473,15 +1485,15 @@ describe("settings modal: layered chrome (v1.2)", () => {
 	test("the action band is the esc affordance plus the status line, no commit control", async () => {
 		const { setup, frame } = await mount({ width: 120, height: 40 })
 		try {
-			expect(frame()).toContain("esc 返回")
-			expect(frame()).toContain("改动已即时保存")
+			expect(frame()).toContain("esc back")
+			expect(frame()).toContain("changes are saved instantly")
 			// The old 确定 / ctrl+s control and its 未提交 counter are gone.
 			expect(frame()).not.toContain("确定")
 			expect(frame()).not.toContain("ctrl+s")
 			expect(frame()).not.toContain("未提交")
 
 			const lines = lineSpans(setup)
-			const actionLine = lines.find((line) => line.map((span) => span.text).join("").includes("esc 返回"))!
+			const actionLine = lines.find((line) => line.map((span) => span.text).join("").includes("esc back"))!
 			const text = actionLine.map((span) => span.text).join("")
 			// The esc affordance still owns a one-cell rule on each side.
 			expect(text).toContain("│")
@@ -1489,7 +1501,7 @@ describe("settings modal: layered chrome (v1.2)", () => {
 
 			// The status line is system text (v1.2: not faint, which used to be
 			// an alias of muted and therefore carried no hierarchy).
-			const hint = spanOf(setup, "改动已即时保存")
+			const hint = spanOf(setup, "changes are saved instantly")
 			expect(hint?.fg.toInts()).toEqual(FALLBACK_THEME.text.system.toInts())
 		} finally {
 			await setup.dispose()
@@ -1708,17 +1720,17 @@ describe("settings modal: semantic roles (v1.2)", () => {
 			// ✎ editable marker: the user role, not the accent.
 			expect(spanOf(setup, "✎")?.fg.toInts()).toEqual(FALLBACK_THEME.text.user.toInts())
 			// Read-only row (字号): the label is system and its value is code.
-			const naLine = line("字号")!
+			const naLine = line("Font size")!
 			const naText = naLine.map((span) => span.text).join("")
 			expect(naText).toContain("N/A")
-			expect(naLine.find((span) => span.text.includes("字号"))?.fg.toInts()).toEqual(
+			expect(naLine.find((span) => span.text.includes("Font size"))?.fg.toInts()).toEqual(
 				FALLBACK_THEME.text.system.toInts(),
 			)
 			expect(naLine.find((span) => span.text.includes("N/A"))?.fg.toInts()).toEqual(
 				FALLBACK_THEME.text.code.toInts(),
 			)
 			// Nav row count (unselected section) is system text.
-			const navLine = line("TUI 专有")!
+			const navLine = line("TUI-specific")!
 			expect(
 				navLine.some((span) => span.fg.toInts().join() === FALLBACK_THEME.text.system.toInts().join()),
 			).toBe(true)
@@ -1729,13 +1741,13 @@ describe("settings modal: semantic roles (v1.2)", () => {
 				lineSpans(setup).some((entry) =>
 					entry.some(
 						(span) =>
-							span.text.includes("通用") &&
+							span.text.includes("General") &&
 							span.fg.toInts().join() === FALLBACK_THEME.text.heading.toInts().join(),
 					),
 				),
 			).toBe(true)
 			// The content pane paints the raised content token, not the page.
-			expect(spanOf(setup, "权限默认预设")?.bg.toInts()).toEqual(
+			expect(spanOf(setup, "Default permission preset")?.bg.toInts()).toEqual(
 				resolvePanelChrome(FALLBACK_THEME).content.toInts(),
 			)
 		} finally {
@@ -1748,8 +1760,8 @@ describe("settings modal: semantic roles (v1.2)", () => {
 		try {
 			setup.mockInput.pressEnter() // 语言 → enum editor
 			await settle(setup)
-			expect(frame()).toContain("语言 — 选择值")
-			expect(spanOf(setup, "语言 — 选择值")?.fg.toInts()).toEqual(
+			expect(frame()).toContain("Language — pick a value")
+			expect(spanOf(setup, "Language — pick a value")?.fg.toInts()).toEqual(
 				FALLBACK_THEME.text.heading.toInts(),
 			)
 			// Cursor glyph.

@@ -5,7 +5,7 @@
  * /skills command wiring (degrade notice + panel hook) and the
  * slash-deps hook carriage (the /agents incident law).
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, chmod } from "node:fs/promises"
 import { existsSync, lstatSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -24,6 +24,14 @@ import {
 } from "../src/routes/session/skills-manage"
 import { coreCommands, type SlashCommandContext } from "../src/routes/session/commands"
 import { ENTRY_SLASH_HOOKS, buildSlashDeps } from "../src/routes/session/slash-deps"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 async function makeRoots(): Promise<{ source: string; curated: string }> {
 	const base = await mkdtemp(join(tmpdir(), "dsh-skills-test-"))

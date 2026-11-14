@@ -58,6 +58,7 @@ import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-sum
 import { parseTodos, type Todo } from "../../util/todo"
 import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
+import { t } from "../../i18n"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../../skin/semantic"
 import {
@@ -317,7 +318,7 @@ export function todosSummaryLine(rows: readonly SeamRow[]): string {
 	const done = todos.filter((todo) => todo.status === "completed").length
 	if (done === todos.length) return ""
 	const active = todos.find((todo) => todo.status === "in_progress")
-	const head = `todos [✓]${done}/${todos.length}`
+	const head = t("overlay.widgets.todosSummary", { done, total: todos.length })
 	return active ? `${head} · ${active.content}` : head
 }
 
@@ -381,15 +382,15 @@ export function todosTableLines(rows: readonly SeamRow[], width: number, termina
 		.sort((a, b) => a.index - b.index)
 
 	const done = todos.filter((todo) => todo.status === "completed").length
-	const showing = window.length < todos.length ? ` · showing ${compactRanges(window.map((entry) => entry.index + 1))}` : ""
-	const header = clipToWidth(`● Todos (${done}/${todos.length})${showing}`, innerWidth)
+	const showing = window.length < todos.length ? ` · ${t("overlay.widgets.todosShowing", { ranges: compactRanges(window.map((entry) => entry.index + 1)) })}` : ""
+	const header = clipToWidth(t("overlay.widgets.todosHeader", { done, total: todos.length }) + showing, innerWidth)
 	const out: DockLine[] = [
 		{ text: `┌${border}┐`, tone: "muted" },
 		{ text: borderedRow(boxWidth, header), tone: "muted" },
 		{
 			text: borderedRow(
 				boxWidth,
-				[padCell("#", colWidths[0]!, "right"), padCell("✓", colWidths[1]!), padCell("Task", colWidths[2]!)].join(TABLE_SEP),
+				[padCell("#", colWidths[0]!, "right"), padCell("✓", colWidths[1]!), padCell(t("overlay.widgets.taskColumn"), colWidths[2]!)].join(TABLE_SEP),
 			),
 			tone: "muted",
 		},
@@ -460,12 +461,12 @@ export function thinkBlockLines(
 		const secs = row.startedAt !== undefined ? `${((now - row.startedAt) / 1000).toFixed(1)}s` : "0.0s"
 		void spin()
 		const picked = lines.length === 0 ? [""] : lines.slice(-n)
-		return picked.map((line, index) => (index === 0 ? `💭 thinking · ${secs} · ${line}` : `   ${line}`))
+		return picked.map((line, index) => (index === 0 ? t("overlay.widgets.thinkStreaming", { secs, line }) : `   ${line}`))
 	}
 	if (row.elapsedSec !== undefined) {
-		const secs = row.elapsedSec.toFixed(1)
+		const secs = `${row.elapsedSec.toFixed(1)}s`
 		const picked = lines.length === 0 ? [""] : lines.slice(-n)
-		return picked.map((line, index) => (index === 0 ? `💭 thought · ${secs}s · ${line}` : `   ${line}`))
+		return picked.map((line, index) => (index === 0 ? t("overlay.widgets.thinkCollapsed", { secs, line }) : `   ${line}`))
 	}
 	return []
 }
@@ -659,7 +660,7 @@ export function activityRuleLines(rows: readonly SeamRow[], options: DockViewOpt
 	const blocks = activityBlocks(rows, { ...options, maxLines: Math.min(options.maxLines ?? DOCK_COMPACT_MAX_LINES, DOCK_COMPACT_MAX_LINES) })
 	const think = blocks.think[0] ?? { text: "", tone: "muted" }
 	const tool = blocks.tool[0] ?? { text: "", tone: "muted" }
-	const head = think.text === "" ? "┃ activity" : `┃ activity · ${think.text}`
+	const head = think.text === "" ? t("overlay.widgets.activityTitle") : t("overlay.widgets.activityWithThink", { text: think.text })
 	return [
 		{ ...think, text: head, id: "dock:activity-head" },
 		{ ...tool, text: tool.text === "" ? "" : `┃ ${tool.text}`, markerAt: (tool.markerAt ?? 0) + 2 },
@@ -1105,7 +1106,7 @@ export function WidgetsDock(props: {
 						border={["top", "bottom", "left", "right"]}
 						borderStyle="heavy"
 						borderColor={activityFrameBorderColor(theme)}
-						title="activity"
+						title={t("overlay.widgets.frameTitle")}
 						titleAlignment="left"
 					>
 						<For each={frameBlocks().think}>{lineView}</For>

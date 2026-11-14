@@ -2,6 +2,7 @@ import { batch, createEffect, createMemo, createResource, createSignal, onCleanu
 import type { OpenCodeEvent, SessionInfo } from "@opencode/client"
 import path from "path"
 import { useTerminalDimensions } from "@opentui/solid"
+import { t } from "../i18n"
 import { DIALOG_LIST_INSET, dialogWidth, useDialog } from "../ui/dialog"
 import { DialogSelect, dialogSelectContentWidth, type DialogSelectRef } from "../ui/dialog-select"
 import { DialogPrompt } from "../ui/dialog-prompt"
@@ -223,7 +224,7 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
         title: withTimestampedFallback(session),
         searchText: `${session.id} ${session.location.directory}`,
         value: { type: "session", sessionID: session.id } as OpenTarget,
-        category: "Sessions",
+        category: t("dialog.open.category.sessions"),
         footer: `${label ? `${Locale.truncate(label, 30)} · ` : ""}${timeAgo(session.time.updated)}`,
         onSelect: () => location.set(session.location),
         gutter: sessionStatusGutter(
@@ -262,7 +263,7 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
             directory: item.directory,
             ...(git ? { projectID: item.project!.id } : {}),
           } as OpenTarget,
-          category: "Projects",
+          category: t("dialog.open.category.projects"),
           gutter:
             item.directory === current.directory ||
             item.directory === location.current?.project.canonical
@@ -336,8 +337,8 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
               pending = undefined
               restore(previous)
             }}
-            title={projectID() ? `${projectName(data.project.get(projectID()!)) ?? "Project"} / Worktrees` : "Open"}
-            placeholder={projectID() ? "Search worktrees…" : "Search sessions and projects…"}
+            title={projectID() ? t("dialog.open.worktreesTitle", { name: projectName(data.project.get(projectID()!)) ?? t("dialog.open.projectFallback") }) : t("dialog.open.title")}
+            placeholder={projectID() ? t("dialog.open.searchWorktrees") : t("dialog.open.searchAll")}
             options={projectID() ? worktreeOptions() : options()}
             current={
               currentSessionID() ? ({ type: "session", sessionID: currentSessionID()! } as OpenTarget) : undefined
@@ -354,7 +355,7 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
             emptyView={
               <Show when={!recent.loading && !projects.loading}>
                 <box paddingLeft={DIALOG_LIST_INSET} paddingRight={DIALOG_LIST_INSET}>
-                  <text fg={theme.text.muted}>No recent sessions or projects</text>
+                  <text fg={theme.text.muted}>{t("dialog.open.empty")}</text>
                 </box>
               </Show>
             }
@@ -368,15 +369,20 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
               >
                 <box>
                   <Show when={projectID() && worktrees.loading}>
-                    <Spinner color={theme.text.muted}>Loading worktrees…</Spinner>
+                    <Spinner color={theme.text.muted}>{t("dialog.open.loadingWorktrees")}</Spinner>
                   </Show>
                   <Show when={!projectID() && (recent.loading || projects.loading)}>
-                    <Spinner color={theme.text.muted}>Refreshing sessions and projects…</Spinner>
+                    <Spinner color={theme.text.muted}>{t("dialog.open.refreshing")}</Spinner>
                   </Show>
                   <Show when={!projectID() && (recent() === false || projects() === false)}>
                     <text fg={theme.text.feedback.error.base}>
-                      Could not refresh{" "}
-                      {recent() === false ? (projects() === false ? "sessions and projects" : "sessions") : "projects"}.
+                      {t("dialog.open.refreshFailed", {
+                        what: recent() === false
+                          ? (projects() === false
+                              ? t("dialog.open.scope.all")
+                              : t("dialog.open.scope.sessions"))
+                          : t("dialog.open.scope.projects"),
+                      })}
                     </text>
                   </Show>
                 </box>
@@ -387,7 +393,7 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
                 ? [
                     {
                       bind: "right",
-                      title: "Show project worktrees",
+                      title: t("dialog.open.action.showWorktrees"),
                       group: "Dialog",
                       run: () => {
                         const target = select?.selected?.value
@@ -409,27 +415,27 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
                 ? [
                     {
                       bind: "left",
-                      title: "Return to projects",
+                      title: t("dialog.open.action.returnToProjects"),
                       group: "Dialog",
                       run: back,
                     },
-                    { bind: "ctrl+n", title: "New worktree", group: "Dialog", run: newWorktree },
+                    { bind: "ctrl+n", title: t("dialog.open.action.newWorktree"), group: "Dialog", run: newWorktree },
                   ]
                 : []),
             ]}
-            footerHints={[...(projectID() ? [{ title: "new worktree", label: "ctrl+n" }] : [])]}
+            footerHints={[...(projectID() ? [{ title: t("dialog.open.hint.newWorktree"), label: "ctrl+n" }] : [])]}
             noMatchView={
               <box paddingLeft={DIALOG_LIST_INSET} paddingRight={DIALOG_LIST_INSET}>
                 <text fg={theme.text.muted}>
                   {projectID()
                     ? worktrees.loading
-                      ? "Loading worktrees…"
-                      : "No matching worktrees"
+                      ? t("dialog.open.loadingWorktrees")
+                      : t("dialog.open.noMatchWorktrees")
                     : recent.loading || projects.loading || matched.loading
-                      ? "Searching sessions and projects…"
+                      ? t("dialog.open.searching")
                       : shortcuts.get("session.list")
-                        ? `No matches · search all sessions with ${shortcuts.get("session.list")}`
-                        : "No matches"}
+                        ? t("dialog.open.noMatchAll", { key: shortcuts.get("session.list") })
+                        : t("dialog.open.noMatch")}
                 </text>
               </box>
             }
@@ -450,11 +456,11 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
       >
         <DialogPrompt
           size="large"
-          title={`${projectName(data.project.get(projectID()!)) ?? "Project"} / New worktree`}
-          placeholder="Worktree name (optional)"
-          description={() => <text fg={theme.text.muted}>Leave blank for a random name.</text>}
+          title={t("dialog.open.newWorktreeTitle", { name: projectName(data.project.get(projectID()!)) ?? t("dialog.open.projectFallback") })}
+          placeholder={t("dialog.open.worktreeNamePlaceholder")}
+          description={() => <text fg={theme.text.muted}>{t("dialog.open.worktreeNameHint")}</text>}
           busy={creating()}
-          busyText="Creating worktree…"
+          busyText={t("dialog.open.creatingWorktree")}
           onCancel={cancelCreation}
           onConfirm={(value) => {
             const id = projectID()!
@@ -475,7 +481,7 @@ export function DialogOpen(props: { sessions: SessionInfo[]; onLoad: (sessions: 
                 location.set(target)
               })
               .catch((error: unknown) =>
-                toast.show({ title: "Creating worktree failed", message: errorMessage(error), variant: "error" }),
+                toast.show({ title: t("dialog.open.createFailed"), message: errorMessage(error), variant: "error" }),
               )
               .finally(() => setCreating(false))
           }}
@@ -497,7 +503,7 @@ export function moveOpenSession(session: SessionInfo, event: Extract<OpenCodeEve
 
 function timeAgo(timestamp: number) {
   const minutes = Math.floor((Date.now() - timestamp) / 60_000)
-  if (minutes < 1) return "now"
+  if (minutes < 1) return t("dialog.open.time.now")
   if (minutes < 60) return `${minutes}m`
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return `${hours}h`

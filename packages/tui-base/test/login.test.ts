@@ -5,7 +5,8 @@
  * keeping the step, esc aborting the whole flow), the catalog key path and
  * the degrade notices — against a recording fake face.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, beforeAll, afterAll } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	coreCommands,
 	commitLoginRoute,
@@ -25,6 +26,14 @@ import {
 	validateRouteId,
 } from "../src/routes/session/login"
 import type { SeamLoginRoute, SessionSeam } from "../src/seams/session"
+
+// The command copy resolves through `t()` (T4 facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+afterAll(() => setLanguages(new Map()))
 
 describe("login pure helpers", () => {
 	test("deriveKeyRef maps provider ids to env refs", () => {

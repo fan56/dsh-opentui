@@ -35,6 +35,7 @@ import type { SeamRow } from "./seam-rows"
 import { clipToWidth } from "./tool-summarize"
 import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
+import { t } from "../../i18n"
 import { motionDecorationsEnabled } from "../../skin/motion"
 import { dockSpin, skinFadeInColor, skinLineFadeT, SKIN_FADE_IN_MS } from "./widgets-dock"
 
@@ -97,7 +98,7 @@ export function childLineText(
 	// Rounds = the child's assistant-message count (one LLM round-trip per
 	// message, tui-pi `round {n}` parity). Always shown — `round 0` proves
 	// the counter is live on a freshly spawned child.
-	const rounds = ` · round ${child.rounds}`
+	const rounds = ` · ${t("overlay.lastrequest.round", { n: child.rounds })}`
 	const meta = `${elapsed}${rounds}`
 	const head = `${track}${glyph}`
 	const tail = lastVisibleLine(child.lastLine)

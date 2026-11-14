@@ -20,6 +20,7 @@ import {
 import { useToast } from "../../ui/toast"
 import { Locale } from "../../util/locale"
 import { getScrollAcceleration } from "../../util/scroll"
+import { t } from "../../i18n"
 
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown))
 
@@ -67,13 +68,20 @@ export function DialogExecute(props: { part: SessionMessageAssistantTool }) {
   })
   const status = createMemo(() => {
     const state = props.part.state
-    if (state.status === "streaming") return "Receiving code…"
-    if (state.status === "running") return "Running"
+    if (state.status === "streaming") return t("overlay.execute.status.receiving")
+    if (state.status === "running") return t("overlay.execute.status.running")
     const duration = props.part.time.completed
-      ? ` · ${Locale.duration(props.part.time.completed - (props.part.time.ran ?? props.part.time.created))}`
-      : ""
-    if (failed()) return `Failed${duration}`
-    return `Completed${duration}`
+      ? Locale.duration(props.part.time.completed - (props.part.time.ran ?? props.part.time.created))
+      : undefined
+    // Conditional concat → full-sentence branch keys (design §6 pattern 2).
+    if (failed()) {
+      return duration !== undefined
+        ? t("overlay.execute.status.failedDuration", { duration })
+        : t("overlay.execute.status.failed")
+    }
+    return duration !== undefined
+      ? t("overlay.execute.status.completedDuration", { duration })
+      : t("overlay.execute.status.completed")
   })
 
   const copy = (kind: "code" | "output") => {
@@ -88,24 +96,24 @@ export function DialogExecute(props: { part: SessionMessageAssistantTool }) {
   Keymap.createLayer(() => ({
     mode: "modal",
     commands: [
-      { bind: "up", title: "Scroll up", group: "Execute", run: () => scroll?.scrollBy(-1) },
-      { bind: "down", title: "Scroll down", group: "Execute", run: () => scroll?.scrollBy(1) },
-      { bind: "pageup", title: "Previous page", group: "Execute", run: () => scroll?.scrollBy(-maxHeight()) },
-      { bind: "pagedown", title: "Next page", group: "Execute", run: () => scroll?.scrollBy(maxHeight()) },
-      { bind: "home", title: "Scroll to code", group: "Execute", run: () => scroll?.scrollTo(0) },
-      { bind: "end", title: "Scroll to output", group: "Execute", run: () => scroll?.scrollTo(Infinity) },
-      { bind: "c", title: "Copy code", group: "Execute", run: () => copy("code") },
-      { bind: "o", title: "Copy output", group: "Execute", run: () => copy("output") },
+      { bind: "up", title: t("overlay.execute.keymap.scrollUp"), group: "Execute", run: () => scroll?.scrollBy(-1) },
+      { bind: "down", title: t("overlay.execute.keymap.scrollDown"), group: "Execute", run: () => scroll?.scrollBy(1) },
+      { bind: "pageup", title: t("overlay.execute.keymap.pageUp"), group: "Execute", run: () => scroll?.scrollBy(-maxHeight()) },
+      { bind: "pagedown", title: t("overlay.execute.keymap.pageDown"), group: "Execute", run: () => scroll?.scrollBy(maxHeight()) },
+      { bind: "home", title: t("overlay.execute.keymap.scrollToCode"), group: "Execute", run: () => scroll?.scrollTo(0) },
+      { bind: "end", title: t("overlay.execute.keymap.scrollToOutput"), group: "Execute", run: () => scroll?.scrollTo(Infinity) },
+      { bind: "c", title: t("overlay.execute.keymap.copyCode"), group: "Execute", run: () => copy("code") },
+      { bind: "o", title: t("overlay.execute.keymap.copyOutput"), group: "Execute", run: () => copy("output") },
     ],
   }))
 
   const copyActions = () => [
     copied() === "code"
-      ? { title: "✓ copied", color: theme.text.feedback.success.base, onTrigger: () => copy("code") }
-      : { title: "copy code", key: "c", onTrigger: () => copy("code") },
+      ? { title: t("overlay.execute.copied"), color: theme.text.feedback.success.base, onTrigger: () => copy("code") }
+      : { title: t("overlay.execute.copyCode"), key: "c", onTrigger: () => copy("code") },
     copied() === "output"
-      ? { title: "✓ copied", color: theme.text.feedback.success.base, onTrigger: () => copy("output") }
-      : { title: "copy output", key: "o", onTrigger: () => copy("output") },
+      ? { title: t("overlay.execute.copied"), color: theme.text.feedback.success.base, onTrigger: () => copy("output") }
+      : { title: t("overlay.execute.copyOutput"), key: "o", onTrigger: () => copy("output") },
   ]
 
   return (
@@ -115,7 +123,7 @@ export function DialogExecute(props: { part: SessionMessageAssistantTool }) {
           gap={2}
           titleView={
             <text fg={theme.text.base} attributes={TextAttributes.BOLD} flexGrow={1}>
-              execute
+              {t("overlay.execute.headerTitle")}
             </text>
           }
         >
@@ -127,9 +135,9 @@ export function DialogExecute(props: { part: SessionMessageAssistantTool }) {
         <DialogFooter
           actions={{
             secondary: [
-              { title: "scroll", key: "↑/↓" },
+              { title: t("overlay.execute.footer.scroll"), key: "↑/↓" },
               ...copyActions(),
-              { title: "back", key: "esc", onTrigger: () => dialog.clear() },
+              { title: t("overlay.execute.footer.back"), key: "esc", onTrigger: () => dialog.clear() },
             ],
           }}
         />
@@ -148,15 +156,15 @@ export function DialogExecute(props: { part: SessionMessageAssistantTool }) {
           <box gap={1} paddingLeft={DIALOG_INSET} paddingRight={DIALOG_INSET} paddingTop={1} paddingBottom={1}>
             <box>
               <text fg={contentTheme.text.muted} attributes={TextAttributes.BOLD}>
-                Code
+                {t("overlay.execute.codeLabel")}
               </text>
-              <Show when={code()} fallback={<text fg={contentTheme.text.muted}>Waiting for code…</text>}>
+              <Show when={code()} fallback={<text fg={contentTheme.text.muted}>{t("overlay.execute.waitingCode")}</text>}>
                 {(value) => <GutteredCode content={value()} filetype="typescript" digits={digits()} />}
               </Show>
             </box>
             <box>
               <text fg={contentTheme.text.muted} attributes={TextAttributes.BOLD}>
-                Output
+                {t("overlay.execute.outputLabel")}
               </text>
               <Show
                 when={highlighted()}
@@ -171,7 +179,7 @@ export function DialogExecute(props: { part: SessionMessageAssistantTool }) {
                     }
                     wrapMode="word"
                   >
-                    {text() ?? (props.part.state.status === "completed" ? "No output" : "Waiting for output…")}
+                    {text() ?? (props.part.state.status === "completed" ? t("overlay.execute.noOutput") : t("overlay.execute.waitingOutput"))}
                   </text>
                 }
               >

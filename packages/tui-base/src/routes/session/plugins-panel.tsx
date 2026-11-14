@@ -28,6 +28,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "so
 import type { InputRenderable } from "@opentui/core"
 import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
+import { t } from "../../i18n"
 import { useDialog } from "../../ui/dialog"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useThemeOptional } from "../../context/theme"
@@ -107,9 +108,10 @@ export function bundleStateText(row: {
 	readOnlyReason?: string
 	error?: string
 }): string {
-	const base = !row.installed && row.optional ? "available" : row.enabled ? "on" : "off"
-	if (row.error !== undefined && row.error !== "") return `${base} error`
-	if (row.readOnlyReason !== undefined && row.readOnlyReason !== "") return `${base} read-only`
+	const base =
+		!row.installed && row.optional ? t("panel.plugins.state.available") : row.enabled ? t("panel.plugins.state.on") : t("panel.plugins.state.off")
+	if (row.error !== undefined && row.error !== "") return t("panel.plugins.state.error", { state: base })
+	if (row.readOnlyReason !== undefined && row.readOnlyReason !== "") return t("panel.plugins.state.readOnly", { state: base })
 	return base
 }
 
@@ -163,23 +165,24 @@ export function pluginChangeNotice(change: PluginChange): string {
 	const target = change.target
 	switch (change.application) {
 		case "applied":
-			return `${target}: change applied`
+			return t("panel.plugins.notice.applied", { target })
 		case "restart-required":
-			return `${target}: change saved — restart the host for it to take effect`
+			return t("panel.plugins.notice.restartRequired", { target })
 		case "overridden":
-			return `${target}: change saved, but a higher-priority config keeps the previous state`
+			return t("panel.plugins.notice.overridden", { target })
 		case "failed":
-			return `${target}: change failed${change.error ? ` — ${change.error}` : ""}`
+			return change.error
+				? t("panel.plugins.notice.failed", { target, error: change.error })
+				: t("panel.plugins.notice.failedNoError", { target })
 		case "cancelled":
-			return `${target}: change cancelled`
+			return t("panel.plugins.notice.cancelled", { target })
 	}
 }
 
 /** The install confirm's body from an accepted inspection. */
 export function installPreviewLine(inspection: Extract<PluginInspection, { status: "accepted" }>): string {
-	const version = inspection.version !== undefined && inspection.version !== "" ? `@${inspection.version}` : ""
-	const notBundle = inspection.bundle === false ? " (not a bundle package — installs as a plain dependency)" : ""
-	return `${inspection.name ?? "spec"}${version}${notBundle}`
+	const spec = `${inspection.name ?? "spec"}${inspection.version !== undefined && inspection.version !== "" ? `@${inspection.version}` : ""}`
+	return inspection.bundle === false ? t("panel.plugins.preview.notBundle", { spec }) : spec
 }
 
 export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }) {
@@ -280,11 +283,16 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		if (row === undefined) return
 		if (busy()) return
 		if (!row.toggleable || typeof props.seam.setPluginBundleEnabled !== "function") {
-			flash(`${row.name}: read-only${row.readOnlyReason ? ` (${row.readOnlyReason})` : ""}`, 4000)
+			flash(
+				row.readOnlyReason
+					? t("panel.plugins.status.readOnlyReason", { name: row.name, reason: row.readOnlyReason })
+					: t("panel.plugins.status.readOnly", { name: row.name }),
+				4000,
+			)
 			return
 		}
 		setBusy(true)
-		flash(`${row.enabled ? `disabling` : `enabling`} ${row.name}…`)
+		flash(row.enabled ? t("panel.plugins.status.disabling", { name: row.name }) : t("panel.plugins.status.enabling", { name: row.name }))
 		try {
 			const change = await props.seam.setPluginBundleEnabled(row.name, !row.enabled)
 			flash(pluginChangeNotice(change), 6000)
@@ -292,7 +300,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			// P2-3: RemoteHostSession folds throws into failed Changes, but a
 			// rejecting seam adapter (local/test) would surface as an unhandled
 			// rejection with no panel feedback — flash it instead.
-			flash(`${row.name}: change failed — ${errorMessage(error)}`, 8000)
+			flash(t("panel.plugins.status.changeFailed", { name: row.name, error: errorMessage(error) }), 8000)
 		} finally {
 			setBusy(false)
 		}
@@ -302,16 +310,16 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	function confirmRemove(row: PluginBundleView | undefined) {
 		if (row === undefined || busy()) return
 		if (!row.removable) {
-			flash(`${row.name}: not removable`, 4000)
+			flash(t("panel.plugins.status.notRemovable", { name: row.name }), 4000)
 			return
 		}
 		const name = row.name
 		dialog.replace(
 			() => (
 				<DialogConfirm
-					title={`Uninstall ${name}?`}
-					message={`Removes the ${name} package from this profile. Its plugins stop at the change (or the next host start).`}
-					label={{ confirm: "Uninstall", cancel: "Keep" }}
+					title={t("panel.plugins.dialog.uninstallTitle", { name })}
+					message={t("panel.plugins.dialog.uninstallMessage", { name })}
+					label={{ confirm: t("panel.plugins.dialog.uninstallConfirm"), cancel: t("panel.plugins.dialog.keep") }}
 					onConfirm={() => void remove(name)}
 				/>
 			),
@@ -324,12 +332,12 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		if (busy()) return
 		if (typeof props.seam.removePluginBundle !== "function") return
 		setBusy(true)
-		flash(`uninstalling ${name}…`)
+		flash(t("panel.plugins.status.uninstalling", { name }))
 		try {
 			const change = await props.seam.removePluginBundle(name)
 			flash(pluginChangeNotice(change), 8000)
 		} catch (error) {
-			flash(`${name}: change failed — ${errorMessage(error)}`, 8000)
+			flash(t("panel.plugins.status.changeFailed", { name, error: errorMessage(error) }), 8000)
 		} finally {
 			setBusy(false)
 		}
@@ -339,7 +347,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	function beginInstall() {
 		if (busy()) return
 		if (typeof props.seam.installPluginSpec !== "function") {
-			flash("install unavailable on this seam", 4000)
+			flash(t("panel.plugins.status.installUnavailable"), 4000)
 			return
 		}
 		setInstallText("")
@@ -350,7 +358,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	async function commitInstall() {
 		const spec = installText().trim()
 		if (spec === "") {
-			flash("spec required (npm name, git url, path or tarball)", 4000)
+			flash(t("panel.plugins.status.specRequired"), 4000)
 			return
 		}
 		setInstallOpen(false)
@@ -358,27 +366,31 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		if (busy()) return
 		if (typeof props.seam.inspectPluginSpec !== "function") return
 		setBusy(true)
-		flash(`inspecting ${spec}…`)
+		flash(t("panel.plugins.status.inspecting", { spec }))
 		let inspection: PluginInspection
 		try {
 			inspection = await props.seam.inspectPluginSpec(spec)
 		} catch (error) {
-			flash(`cannot install ${spec}: ${errorMessage(error)}`, 8000)
+			flash(t("panel.plugins.status.cannotInstall", { spec, error: errorMessage(error) }), 8000)
 			return
 		} finally {
 			setBusy(false)
 		}
 		if (inspection.status === "refused") {
-			flash(`cannot install ${spec}: ${inspection.problem} — ${inspection.reason}`, 8000)
+			flash(t("panel.plugins.status.cannotInstallRefused", { spec, problem: inspection.problem, reason: inspection.reason }), 8000)
 			return
 		}
 		const accepted = inspection
 		dialog.replace(
 			() => (
 				<DialogConfirm
-					title="Install plugin?"
-					message={`${installPreviewLine(accepted)}${accepted.description ? ` — ${accepted.description}` : ""}`}
-					label={{ confirm: "Install", cancel: "Cancel" }}
+					title={t("panel.plugins.dialog.installTitle")}
+					message={
+						accepted.description
+							? t("panel.plugins.dialog.installBodyDescription", { preview: installPreviewLine(accepted), description: accepted.description })
+							: t("panel.plugins.dialog.installBody", { preview: installPreviewLine(accepted) })
+					}
+					label={{ confirm: t("panel.plugins.dialog.installConfirm"), cancel: t("panel.plugins.dialog.cancel") }}
 					onConfirm={() => void install(spec)}
 				/>
 			),
@@ -391,12 +403,12 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		if (busy()) return
 		if (typeof props.seam.installPluginSpec !== "function") return
 		setBusy(true)
-		flash(`installing ${spec}…`)
+		flash(t("panel.plugins.status.installing", { spec }))
 		try {
 			const change = await props.seam.installPluginSpec(spec)
 			flash(pluginChangeNotice(change), 8000)
 		} catch (error) {
-			flash(`${spec}: change failed — ${errorMessage(error)}`, 8000)
+			flash(t("panel.plugins.status.changeFailed", { name: spec, error: errorMessage(error) }), 8000)
 		} finally {
 			setBusy(false)
 		}
@@ -407,10 +419,10 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		enabled: open() && dialog.stack.length === 0,
 		priority: 2,
 		commands: [
-			{ bind: "escape", title: "Close plugins manager", group: "Plugins", run: close },
+			{ bind: "escape", title: t("panel.plugins.keymap.close"), group: "Plugins", run: close },
 			{
 				bind: "/",
-				title: "Filter bundles",
+				title: t("panel.plugins.keymap.filter"),
 				group: "Plugins",
 				// Letter/arrow binds are gated OFF while an input owns the keys —
 				// the SearchOverlay P0-1 law (a keymap hit preventDefaults the key
@@ -425,7 +437,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			},
 			{
 				bind: "return",
-				title: "Commit input / toggle enable-disable",
+				title: t("panel.plugins.keymap.commit"),
 				group: "Plugins",
 				run: () => {
 					if (installOpen()) {
@@ -443,7 +455,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			},
 			{
 				bind: "space",
-				title: "Toggle enable/disable",
+				title: t("panel.plugins.keymap.toggle"),
 				group: "Plugins",
 				enabled: () => !filterOpen() && !installOpen(),
 				run: () => {
@@ -453,28 +465,28 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			},
 			{
 				bind: "d",
-				title: "Uninstall (confirm)",
+				title: t("panel.plugins.keymap.uninstall"),
 				group: "Plugins",
 				enabled: () => !filterOpen() && !installOpen(),
 				run: () => confirmRemove(current()),
 			},
 			{
 				bind: "i",
-				title: "Install a spec",
+				title: t("panel.plugins.keymap.install"),
 				group: "Plugins",
 				enabled: () => !filterOpen() && !installOpen(),
 				run: beginInstall,
 			},
 			{
 				bind: "up,k",
-				title: "Previous bundle",
+				title: t("panel.plugins.keymap.previous"),
 				group: "Plugins",
 				enabled: () => !filterOpen() && !installOpen(),
 				run: () => moveCursor(-1),
 			},
 			{
 				bind: "down,j",
-				title: "Next bundle",
+				title: t("panel.plugins.keymap.next"),
 				group: "Plugins",
 				enabled: () => !filterOpen() && !installOpen(),
 				run: () => moveCursor(1),
@@ -497,10 +509,10 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			>
 				<box height={1} flexShrink={0} flexDirection="row">
 					<text fg={theme?.text.base ?? "#e6e6e6"} attributes={TextAttributes.BOLD} wrapMode="none">
-						🔌 Plugins
+						{t("panel.plugins.header.title")}
 					</text>
 					<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
-						{` ${visible().length}/${bundles().length}  / filter  enter toggle  d uninstall  i install  esc close`}
+						{t("panel.plugins.header.bar", { visible: String(visible().length), total: String(bundles().length) })}
 					</text>
 				</box>
 				<Show
@@ -509,7 +521,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 						<box height={1} flexShrink={0} flexDirection="row">
 							<input
 								flexGrow={1}
-								placeholder="install spec (npm name, git url, path, tarball)"
+								placeholder={t("panel.plugins.placeholder.install")}
 								placeholderColor={theme?.text.muted ?? "#565f89"}
 								value={installText()}
 								onInput={(value: string) => setInstallText(value)}
@@ -527,7 +539,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 						fallback={
 							<box height={1} flexShrink={0}>
 								<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
-									{`${"BUNDLE".padEnd(36)}STATE`}
+									{`${t("panel.plugins.header.bundleColumn").padEnd(36)}${t("panel.plugins.header.stateColumn")}`}
 								</text>
 							</box>
 						}
@@ -535,7 +547,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 						<box height={1} flexShrink={0} flexDirection="row">
 							<input
 								flexGrow={1}
-								placeholder="filter"
+								placeholder={t("panel.plugins.placeholder.filter")}
 								placeholderColor={theme?.text.muted ?? "#565f89"}
 								value={filter()}
 								onInput={(value: string) => setFilter(value)}
@@ -553,7 +565,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 					fallback={
 						<box height={1} flexShrink={0}>
 							<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
-								{bundles().length === 0 ? "no plugins installed" : "no bundles match the filter"}
+								{bundles().length === 0 ? t("panel.plugins.empty.noPlugins") : t("panel.plugins.empty.noMatch")}
 							</text>
 						</box>
 					}

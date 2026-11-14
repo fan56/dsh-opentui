@@ -1,7 +1,15 @@
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { NullSessionSeam, type SeamApprovalVerdict, type SeamAskPick } from "../src/seams/session"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { askNeedsReview, askProgressTitle, askQuestionRows, askSentinelTitle, askTabStrip, registerTurnOverlays, summarizeArgs } from "../src/routes/session/turn-overlays"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The ask-card copy resolves through `t()` (T7 facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 describe("TurnOverlayController approval", () => {
 	test("confirm resolves the exact allowed-once verdict", async () => {

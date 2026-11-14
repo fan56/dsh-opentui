@@ -777,20 +777,20 @@ async function sceneBusy(session, geom) {
     await sleep(150)
     sendKeys(session, 'Enter')
   }
-  const queued = await waitPane(session, (o) => has(o, '排队等待') && has(o, '#1'), 10_000)
+  const queued = await waitPane(session, (o) => has(o, 'Queued') && has(o, '#1'), 10_000)
   const queueAnsi = capture(session, true)
-  const queueLine = queueAnsi.split('\n').find((l) => stripAnsi(l).includes('排队等待')) ?? ''
+  const queueLine = queueAnsi.split('\n').find((l) => stripAnsi(l).includes('Queued')) ?? ''
   const queueRuns = sgrRuns(queueLine)
   const queueFg = fgAt(queueRuns, '⏸')
-  record('busy', 'Queue paints `⏸ 排队等待 #1` in muted italic (SGR 3)',
-    queued.ok && hasItalicRun(queueRuns, '排队等待') && queueFg !== null && colorDistance(queueFg, THEME.textMuted) < 24,
+  record('busy', 'Queue paints `⏸ Queued #1` in muted italic (SGR 3)',
+    queued.ok && hasItalicRun(queueRuns, 'Queued') && queueFg !== null && colorDistance(queueFg, THEME.textMuted) < 24,
     queued.ok
-      ? [`fg: ${queueFg} (text.muted ${THEME.textMuted})`, `italic: ${hasItalicRun(queueRuns, '排队等待')}`]
-      : failDetail('⏸ 排队等待 #1', 'missing', queued.out, '排队'))
+      ? [`fg: ${queueFg} (text.muted ${THEME.textMuted})`, `italic: ${hasItalicRun(queueRuns, 'Queued')}`]
+      : failDetail('⏸ Queued #1', 'missing', queued.out, '排队'))
   sendKeys(session, 'Escape')
-  const paused = await waitPane(session, (o) => has(o, '已暂停') && has(o, '#1'), 12_000)
+  const paused = await waitPane(session, (o) => has(o, 'Paused') && has(o, '#1'), 12_000)
   record('busy', 'aborting the turn keeps the queue and marks it paused', paused.ok,
-    paused.ok ? ['⏸ 已暂停 #1 visible'] : failDetail('⏸ 已暂停 #1', 'missing', paused.out, '暂停'))
+    paused.ok ? ['⏸ Paused #1 visible'] : failDetail('⏸ Paused #1', 'missing', paused.out, '暂停'))
   await waitPane(session, idle, 20_000)
 }
 
@@ -802,26 +802,26 @@ async function sceneSteer(session, geom) {
   sendKeys(session, 'Enter')
   const popup = await waitPane(session, (o) => has(o, 'steer or queue'), 20_000)
   if (popup.ok) { sendKeys(session, 'Enter'); await sleep(200) }
-  const injected = await waitPane(session, (o) => has(o, '已注入当前回合'), 10_000)
+  const injected = await waitPane(session, (o) => has(o, 'Injected into the current turn'), 10_000)
   const ansi = capture(session, true)
-  const row = ansi.split('\n').find((l) => stripAnsi(l).includes('已注入当前回合')) ?? ''
+  const row = ansi.split('\n').find((l) => stripAnsi(l).includes('Injected into the current turn')) ?? ''
   const runs = sgrRuns(row)
   const fg = fgAt(runs, '⤵')
-  const italic = hasItalicRun(runs, '已注入')
-  record('busy', 'Steer paints `⤵ 已注入当前回合` in the brand text color',
+  const italic = hasItalicRun(runs, 'Injected')
+  record('busy', 'Steer paints `⤵ Injected into the current turn` in the brand text color',
     popup.ok && injected.ok && fg !== null && colorDistance(fg, THEME.textBase) < 24,
     injected.ok ? [`fg: ${fg} (text.action.primary.base ${THEME.textBase})`, `italic: ${italic}`]
-      : failDetail('⤵ 已注入当前回合', 'missing', injected.out, '注入'))
+      : failDetail('⤵ Injected into the current turn', 'missing', injected.out, '注入'))
   sendKeys(session, 'Escape')
   await sleep(350)
   sendKeys(session, 'Escape')
-  const delivered = await waitPane(session, (o) => has(o, '已投递'), 25_000)
+  const delivered = await waitPane(session, (o) => has(o, 'Delivered'), 25_000)
   const deliveredAnsi = capture(session, true)
-  const deliveredRow = deliveredAnsi.split('\n').find((l) => stripAnsi(l).includes('已投递')) ?? ''
+  const deliveredRow = deliveredAnsi.split('\n').find((l) => stripAnsi(l).includes('Delivered')) ?? ''
   const deliveredFg = fgAt(sgrRuns(deliveredRow), '✓')
-  record('busy', 'the steer receipt flips to `✓ 已投递` at turn end',
+  record('busy', 'the steer receipt flips to `✓ Delivered` at turn end',
     delivered.ok && deliveredFg !== null && colorDistance(deliveredFg, THEME.textBase) < 24,
-    delivered.ok ? [`fg: ${deliveredFg}`] : failDetail('✓ 已投递', 'missing', delivered.out, '投递'))
+    delivered.ok ? [`fg: ${deliveredFg}`] : failDetail('✓ Delivered', 'missing', delivered.out, '投递'))
   await waitPane(session, idle, 20_000)
 }
 

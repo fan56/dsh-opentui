@@ -49,7 +49,9 @@ sleep 2
 # '/search unknown command' against a bundle where /search IS registered).
 # Pane captures are tmux-rendered and keep the emoji — those greps stay.)
 PANEL_GATE=0
-if [ -d "$BUNDLE" ] && grep -rqF 'Search sessions' "$BUNDLE" && grep -rqF 'Close plugins manager' "$BUNDLE"; then
+# i18n moved user-facing copy into locale JSON; the source-stable markers are
+# the t() key names (present in the JSX regardless of the active language).
+if [ -d "$BUNDLE" ] && grep -rqF 'overlay.sessions.title' "$BUNDLE" && grep -rqF 'panel.plugins.keymap.close' "$BUNDLE"; then
   PANEL_GATE=1
 fi
 

@@ -35,12 +35,12 @@
  * non-empty filter before closing.
  */
 import { createSignal, onCleanup } from "solid-js"
+import { t, LANGUAGE_CHOICES } from "../../i18n"
 import { stringWidth } from "../../util/string-width"
 import { setMotionTier, type MotionTier } from "../../skin/motion"
 import {
 	DEFAULT_FOOTER_HINTS,
 	FOOTER_HINT_IDS,
-	HINT_LOCALES,
 	footerHintsFromConfig,
 	hintsLocaleFromConfig,
 	setFooterHints,
@@ -63,26 +63,26 @@ const PAGE = 8
  * on screen inside the page's fixed-height panel slot (the real-client gate
  * asserts all three at 120x34). The cursor row is always inside its window. */
 const MAX_ZONE_ROWS = 4
-const UNKNOWN = "(unset)"
-const NA = "n/a"
-const READONLY_NOTE = "只读 · 本 TUI 不消费"
+/** Translated value placeholders (read-time `t()`, never module-top-baked —
+ * design §6 getter law). */
+const unknownValue = () => t("settings.value.unset")
+const naValue = () => t("settings.value.na")
+const readonlyNote = () => t("settings.zone.readonlyNote")
 
 // ---------------------------------------------------------------- zones --
 
 export const SETTINGS_ZONES = ["local", "host", "other"] as const
 export type SettingsZone = (typeof SETTINGS_ZONES)[number]
 
-/** The three zone titles (the real-client gate asserts all three render). */
-export const SETTINGS_ZONE_TITLES: Record<SettingsZone, string> = {
-	local: "本地偏好",
-	host: "宿主设置",
-	other: "其它命名空间",
+/** The three zone titles (the real-client gate asserts all three render).
+ * Read-time `t()`: the language is boot-fixed, but the copy is resolved where
+ * it is rendered/built, not baked into a module constant. */
+export function settingsZoneTitle(zone: SettingsZone): string {
+	return t(`settings.zone.title.${zone}`)
 }
 
-const ZONE_SUBTITLE: Record<SettingsZone, string> = {
-	local: "(config.json → live)",
-	host: "(settings.mutate → cordis.patch.yml → host live)",
-	other: `(${READONLY_NOTE})`,
+function settingsZoneSubtitle(zone: SettingsZone): string {
+	return t(`settings.zone.subtitle.${zone}`)
 }
 
 // ---------------------------------------------------------------- items --
@@ -141,7 +141,7 @@ export const LOCAL_SETTING_IDS = [
 	"workspaceThemeMode",
 	"motion",
 	...FOOTER_HINT_IDS.map((id) => `footerHints.${id}`),
-	"hintsLocale",
+	"lang",
 	"cacheHitMode",
 	"retentionDays",
 	"maxRounds",
@@ -183,10 +183,10 @@ export function buildLocalItems(input: {
 			...base,
 			id: "theme",
 			label: "theme",
-			value: str(merged.theme) ?? UNKNOWN,
+			value: str(merged.theme) ?? unknownValue(),
 			// The value shown is the MERGED view (profile ⊕ workspace ⊕ env);
 			// the write goes to the profile config.json only.
-			source: "合并值 · theme（写 config.json）",
+			source: t("settings.source.mergedTheme"),
 			kind: "enum",
 			...(input.themeNames !== undefined && input.themeNames.length > 0 ? { options: input.themeNames } : {}),
 			write: { via: "config", key: "theme" },
@@ -195,7 +195,7 @@ export function buildLocalItems(input: {
 			...base,
 			id: "themeMode",
 			label: "themeMode",
-			value: str(profile.themeMode) ?? UNKNOWN,
+			value: str(profile.themeMode) ?? unknownValue(),
 			source: "config.json · themeMode (profile layer)",
 			kind: "enum",
 			options: ["auto", "dark", "light"],
@@ -205,7 +205,7 @@ export function buildLocalItems(input: {
 			...base,
 			id: "workspaceThemeMode",
 			label: "workspaceThemeMode",
-			value: str(workspace.themeMode) ?? UNKNOWN,
+			value: str(workspace.themeMode) ?? unknownValue(),
 			source: "workspace .dsh/config.yml · themeMode",
 			kind: "enum",
 			options: ["auto", "dark", "light"],
@@ -232,13 +232,18 @@ export function buildLocalItems(input: {
 		})),
 		{
 			...base,
-			id: "hintsLocale",
-			label: "hintsLocale",
-			value: hintsLocaleFromConfig(merged.hintsLocale) ?? "en",
-			source: "config.json · hintsLocale",
+			// T14 storage-key unification: `lang` is THE authoritative language
+			// key; the legacy `hintsLocale` folds in read-only for the DISPLAY
+			// when no unified value exists (applyHintsConfig boot parity). The
+			// options are the contract set only (en + zh-CN — ja/ko are not
+			// offered; the /hints lang degrade path stays its own surface).
+			id: "lang",
+			label: "lang",
+			value: hintsLocaleFromConfig(merged.lang) ?? hintsLocaleFromConfig(merged.hintsLocale) ?? "en",
+			source: "config.json · lang",
 			kind: "enum",
-			options: HINT_LOCALES,
-			write: { via: "config", key: "hintsLocale" },
+			options: LANGUAGE_CHOICES,
+			write: { via: "config", key: "lang" },
 		},
 		{
 			...base,
@@ -254,7 +259,7 @@ export function buildLocalItems(input: {
 			...base,
 			id: "retentionDays",
 			label: "retentionDays",
-			value: num(merged.retentionDays)?.toString() ?? UNKNOWN,
+			value: num(merged.retentionDays)?.toString() ?? unknownValue(),
 			source: "config.json · retentionDays",
 			kind: "number",
 			min: 0,
@@ -264,7 +269,7 @@ export function buildLocalItems(input: {
 			...base,
 			id: "maxRounds",
 			label: "maxRounds",
-			value: num(merged.maxRounds)?.toString() ?? UNKNOWN,
+			value: num(merged.maxRounds)?.toString() ?? unknownValue(),
 			source: "config.json · maxRounds (subagent round cap)",
 			kind: "number",
 			min: 0,
@@ -274,7 +279,7 @@ export function buildLocalItems(input: {
 			...base,
 			id: "maxRoundsGrace",
 			label: "maxRoundsGrace",
-			value: num(merged.maxRoundsGrace)?.toString() ?? UNKNOWN,
+			value: num(merged.maxRoundsGrace)?.toString() ?? unknownValue(),
 			source: "config.json · maxRoundsGrace (wrap-up window)",
 			kind: "number",
 			min: 0,
@@ -300,17 +305,17 @@ export function buildHostItems(
 			id: spec.id,
 			zone: "host",
 			label: `${spec.ns}.${spec.label}`,
-			value: NA,
+			value: naValue(),
 			source: `cordis.patch.yml · ${spec.ns}.${spec.label}`,
 			kind: spec.kind,
 			editable: false,
-			note: "n/a — 宿主基线未定义",
+			note: t("settings.note.notInHostBaseline"),
 			write: { via: "settings", ns: spec.ns, path: [...spec.path] },
 			...(spec.min !== undefined ? { min: spec.min } : {}),
 			...(spec.max !== undefined ? { max: spec.max } : {}),
 		}
 		if (document === undefined) {
-			item.note = "宿主设置不可用（未读到 settings 文档）"
+			item.note = t("settings.note.hostUnavailable")
 			return item
 		}
 		if (row === undefined) return item
@@ -329,7 +334,7 @@ export function buildHostItems(
 			effective === undefined
 				? hasCatalog && catalog.defaultPreset !== ""
 					? catalog.defaultPreset
-					: UNKNOWN
+					: unknownValue()
 				: typeof effective === "boolean"
 					? effective ? "on" : "off"
 					: String(effective)
@@ -346,9 +351,9 @@ export function buildHostItems(
 			if (options.length > 0) {
 				item.options = options
 				if (hasCatalog) {
-					item.source = "permissionPresets/catalog · 写入 settings.mutate"
-					if (item.value !== UNKNOWN && item.value !== NA && !options.includes(item.value)) {
-						item.note = `当前值 "${item.value}" 不在 catalog 默认选项中`
+					item.source = t("settings.note.catalogSource")
+					if (item.value !== unknownValue() && item.value !== naValue() && !options.includes(item.value)) {
+						item.note = t("settings.note.valueNotInCatalog", { value: item.value })
 					}
 				}
 			} else {
@@ -356,8 +361,8 @@ export function buildHostItems(
 				// say why it cannot be changed here (never an empty dropdown).
 				item.editable = false
 				item.note = hasCatalog
-					? "catalog 未声明可选项 — 只读展示生效值"
-					: "无 preset catalog（permissionPresets/catalog 不可用）— 只读展示生效值"
+					? t("settings.note.catalogNoOptions")
+					: t("settings.note.noCatalog")
 			}
 		}
 		if (spec.kind === "number") {
@@ -379,10 +384,10 @@ export function buildOtherItems(document: SeamSettingsDocument | undefined): Set
 			zone: "other" as const,
 			label: row.ns,
 			value: row.revision === undefined ? `rev ?` : `rev ${row.revision}`,
-			source: READONLY_NOTE,
+			source: readonlyNote(),
 			kind: "text" as const,
 			editable: false,
-			note: READONLY_NOTE,
+			note: readonlyNote(),
 		}))
 }
 
@@ -519,11 +524,11 @@ export type LocalWritePlan =
 
 /** Validate one local value and build the configSave patch. */
 export function planLocalWrite(item: SettingsItem, raw: string | boolean | number, hints: FooterHints): LocalWritePlan {
-	if (item.write?.via !== "config") return { ok: false, error: "not a local preference" }
+	if (item.write?.via !== "config") return { ok: false, error: t("settings.error.notLocal") }
 	const key = item.write.key
 	if (item.id.startsWith("footerHints.")) {
 		const segment = item.id.slice("footerHints.".length) as keyof FooterHints
-		if (!(segment in DEFAULT_FOOTER_HINTS)) return { ok: false, error: `unknown hint segment "${segment}"` }
+		if (!(segment in DEFAULT_FOOTER_HINTS)) return { ok: false, error: t("settings.error.unknownHintSegment", { segment }) }
 		const on = typeof raw === "boolean" ? raw : raw === "on" || raw === "true"
 		return { ok: true, patch: { footerHints: { ...hints, [segment]: on } }, applied: on }
 	}
@@ -539,7 +544,7 @@ export function planLocalWrite(item: SettingsItem, raw: string | boolean | numbe
 		return { ok: true, patch: { [key]: parsed.value }, applied: parsed.value }
 	}
 	const text = String(raw)
-	if (text === "") return { ok: false, error: "value must not be empty" }
+	if (text === "") return { ok: false, error: t("settings.error.emptyValue") }
 	return { ok: true, patch: { [key]: text }, applied: text }
 }
 
@@ -549,7 +554,7 @@ export type HostWritePlan =
 
 /** Validate one host value and build the path-op write (set/unset only). */
 export function planHostWrite(item: SettingsItem, raw: string | boolean | number): HostWritePlan {
-	if (item.write?.via !== "settings") return { ok: false, error: "not a host setting" }
+	if (item.write?.via !== "settings") return { ok: false, error: t("settings.error.notHost") }
 	const { ns, path } = item.write
 	if (item.kind === "toggle") {
 		const on = typeof raw === "boolean" ? raw : raw === "on" || raw === "true"
@@ -561,7 +566,7 @@ export function planHostWrite(item: SettingsItem, raw: string | boolean | number
 		return { ok: true, ns, ops: [{ op: "set", path: [...path], value: parsed.value }], applied: parsed.value }
 	}
 	const text = String(raw)
-	if (text === "") return { ok: false, error: "value must not be empty" }
+	if (text === "") return { ok: false, error: t("settings.error.emptyValue") }
 	return { ok: true, ns, ops: [{ op: "set", path: [...path], value: text }], applied: text }
 }
 
@@ -570,11 +575,11 @@ export type ParsedInteger = { ok: true; value: number } | { ok: false; error: st
 /** Integer input for every number row (all settings are integers). */
 export function parseIntegerInput(text: string, min?: number, max?: number): ParsedInteger {
 	const trimmed = text.trim()
-	if (!/^-?\d+$/.test(trimmed)) return { ok: false, error: `expected an integer, got "${trimmed}"` }
+	if (!/^-?\d+$/.test(trimmed)) return { ok: false, error: t("settings.error.expectedInteger", { value: trimmed }) }
 	const value = Number(trimmed)
-	if (!Number.isSafeInteger(value)) return { ok: false, error: `integer out of range: ${trimmed}` }
-	if (min !== undefined && value < min) return { ok: false, error: `must be >= ${min}` }
-	if (max !== undefined && value > max) return { ok: false, error: `must be <= ${max}` }
+	if (!Number.isSafeInteger(value)) return { ok: false, error: t("settings.error.integerOutOfRange", { value: trimmed }) }
+	if (min !== undefined && value < min) return { ok: false, error: t("settings.error.min", { min }) }
+	if (max !== undefined && value > max) return { ok: false, error: t("settings.error.max", { max }) }
 	return { ok: true, value }
 }
 
@@ -689,16 +694,16 @@ export function settingsWritable(
 	describeError: string | undefined,
 	hasFace: boolean,
 ): { local: boolean; host: boolean; reason?: string } {
-	if (!hasFace) return { local: true, host: false, reason: "宿主 settings 接口不可用 — 仅本地偏好可写" }
+	if (!hasFace) return { local: true, host: false, reason: t("settings.writable.noFace") }
 	if (describeError !== undefined) {
 		return {
 			local: true,
 			host: false,
-			reason: `settings/describe 失败：${describeError} — 宿主设置不可写，本地偏好仍可写`,
+			reason: t("settings.writable.describeFailed", { detail: describeError }),
 		}
 	}
 	if (document !== undefined && document.writable === false) {
-		return { local: false, host: false, reason: "profile 的 settings 文档只读（writable: false）— 已禁用全部写控件" }
+		return { local: false, host: false, reason: t("settings.writable.readOnlyDoc") }
 	}
 	return { local: true, host: true }
 }
@@ -720,13 +725,19 @@ export interface SettingsLinesInput {
  * the panel test asserts zone titles, row content and the selection marker. */
 export function settingsLines(input: SettingsLinesInput): SettingsLine[] {
 	const { items, cursor, width } = input
-	const lines: SettingsLine[] = [{ text: clipText("● Settings", width), tone: "accent" }]
+	const lines: SettingsLine[] = [{ text: clipText(t("settings.panel.title"), width), tone: "accent" }]
 	if (input.identity !== undefined) {
-		lines.push({ text: clipText(`profile ${input.identity.profile} · ${input.identity.dshHome}`, width), tone: "muted" })
+		lines.push({
+			text: clipText(t("settings.panel.identity", { profile: input.identity.profile, dshHome: input.identity.dshHome }), width),
+			tone: "muted",
+		})
 	}
+	const documentState = input.writable ? t("settings.panel.state.writable") : t("settings.panel.state.readOnly")
 	lines.push({
 		text: clipText(
-			`document ${input.writable ? "writable" : "read-only"} · ${input.namespaceCount} namespace(s)${input.hasDocument ? "" : " · no document"}`,
+			input.hasDocument
+				? t("settings.panel.document", { state: documentState, count: input.namespaceCount })
+				: t("settings.panel.documentNoDoc", { state: documentState, count: input.namespaceCount }),
 			width,
 		),
 		tone: "subtle",
@@ -734,24 +745,24 @@ export function settingsLines(input: SettingsLinesInput): SettingsLine[] {
 	if (input.writableReason !== undefined) {
 		lines.push({ text: clipText(`⚠ ${input.writableReason}`, width), tone: "attention" })
 	}
-	if (input.filter !== "") lines.push({ text: clipText(`filter: "${input.filter}"`, width), tone: "subtle" })
+	if (input.filter !== "") lines.push({ text: clipText(t("settings.panel.filter", { query: input.filter }), width), tone: "subtle" })
 	lines.push({ text: "", tone: "subtle" })
 
 	const visible = filterSettingsItems(items, input.filter)
 	const keyWidth = Math.min(26, Math.max(8, ...visible.map((item) => stringWidth(item.label)), 8))
 	const valueWidth = Math.min(24, Math.max(10, ...visible.map((item) => stringWidth(item.value)), 10))
 	if (visible.length === 0) {
-		lines.push({ text: clipText(`  no setting matches "${input.filter}"`, width), tone: "muted" })
+		lines.push({ text: clipText(t("settings.panel.noMatch", { query: input.filter }), width), tone: "muted" })
 	}
 	const selectedItem = visible[cursor]
 	for (const zone of SETTINGS_ZONES) {
 		const zoneItems = visible.filter((item) => item.zone === zone)
 		lines.push({
-			text: clipText(`${SETTINGS_ZONE_TITLES[zone]}  ${ZONE_SUBTITLE[zone]}`, width),
+			text: clipText(`${settingsZoneTitle(zone)}  ${settingsZoneSubtitle(zone)}`, width),
 			tone: "accent",
 		})
 		if (zoneItems.length === 0) {
-			lines.push({ text: clipText("  (none)", width), tone: "subtle" })
+			lines.push({ text: clipText(t("settings.panel.none"), width), tone: "subtle" })
 			continue
 		}
 		// Window the zone around the cursor row; the header rows stay put so
@@ -764,7 +775,7 @@ export function settingsLines(input: SettingsLinesInput): SettingsLine[] {
 				start = Math.max(0, Math.min(selectedIndex - Math.floor(MAX_ZONE_ROWS / 2), zoneItems.length - MAX_ZONE_ROWS))
 			}
 			shown = zoneItems.slice(start, start + MAX_ZONE_ROWS)
-			if (start > 0) lines.push({ text: clipText(`  … ${start} more above`, width), tone: "subtle" })
+			if (start > 0) lines.push({ text: clipText(t("settings.panel.moreAbove", { count: start }), width), tone: "subtle" })
 		}
 		for (const item of shown) {
 			const selected = selectedItem !== undefined && item.id === selectedItem.id
@@ -774,7 +785,7 @@ export function settingsLines(input: SettingsLinesInput): SettingsLine[] {
 			lines.push({ text: clipText(text, width), tone: selected ? "selected" : "muted" })
 		}
 		const below = zoneItems.length - start - shown.length
-		if (below > 0) lines.push({ text: clipText(`  … ${below} more below (type to filter)`, width), tone: "subtle" })
+		if (below > 0) lines.push({ text: clipText(t("settings.panel.moreBelow", { count: below }), width), tone: "subtle" })
 	}
 	lines.push({ text: "", tone: "subtle" })
 	if (input.status !== undefined) {
@@ -784,7 +795,7 @@ export function settingsLines(input: SettingsLinesInput): SettingsLine[] {
 		lines.push({ text: clipText(`(${cursor + 1}/${visible.length})`, width), tone: "subtle" })
 	}
 	lines.push({
-		text: clipText("↑↓ move · PgUp/PgDn page · Enter edit · type to filter · Esc clear/back", width),
+		text: clipText(t("settings.panel.footer"), width),
 		tone: "subtle",
 	})
 	return lines
@@ -799,21 +810,21 @@ export function settingsOptionLines(
 	width: number,
 	status?: string,
 ): SettingsLine[] {
-	const lines: SettingsLine[] = [{ text: clipText(`● ${item.label} — pick a value`, width), tone: "accent" }]
+	const lines: SettingsLine[] = [{ text: clipText(t("settings.options.title", { label: item.label }), width), tone: "accent" }]
 	lines.push({ text: clipText(item.source, width), tone: "subtle" })
 	if (status !== undefined) lines.push({ text: clipText(status, width), tone: "attention" })
 	lines.push({ text: "", tone: "subtle" })
 	for (let index = 0; index < options.length; index++) {
 		const option = options[index]!
 		const selected = index === cursor
-		const current = option === item.value ? "  (current)" : ""
+		const current = option === item.value ? t("settings.options.current") : ""
 		lines.push({
 			text: clipText(`${selected ? "▸ " : "  "}${option}${current}`, width),
 			tone: selected ? "selected" : "muted",
 		})
 	}
 	lines.push({ text: "", tone: "subtle" })
-	lines.push({ text: clipText("↑↓ navigate · Enter apply · Esc back", width), tone: "subtle" })
+	lines.push({ text: clipText(t("settings.options.footer"), width), tone: "subtle" })
 	return lines
 }
 
@@ -824,14 +835,14 @@ export function settingsInputLines(
 	width: number,
 	error?: string,
 ): SettingsLine[] {
-	const label = item.kind === "number" ? "enter an integer" : "enter a value"
+	const action = item.kind === "number" ? t("settings.input.enterInteger") : t("settings.input.enterValue")
 	const lines: SettingsLine[] = [
-		{ text: clipText(`● ${item.label} — ${label}`, width), tone: "accent" },
+		{ text: clipText(t("settings.input.title", { label: item.label, action }), width), tone: "accent" },
 		{ text: clipText(item.source, width), tone: "subtle" },
 	]
 	if (item.min !== undefined || item.max !== undefined) {
 		lines.push({
-			text: clipText(`bounds: ${item.min ?? "−∞"} … ${item.max ?? "∞"}`, width),
+			text: clipText(t("settings.input.bounds", { min: item.min ?? "−∞", max: item.max ?? "∞" }), width),
 			tone: "subtle",
 		})
 	}
@@ -841,10 +852,13 @@ export function settingsInputLines(
 	lines.push({ text: "", tone: "subtle" })
 	// `empty = unset` is a LOCAL number-key rule only (planLocalWrite maps ""
 	// to an undefined value the profile writer drops). Host number rows and
-	// every text/enum row refuse an empty value.
-	const emptyHint =
-		item.kind === "number" && item.write?.via === "config" ? "empty = unset · " : "empty is refused · "
-	lines.push({ text: clipText(`Enter save · ${emptyHint}Esc back`, width), tone: "subtle" })
+	// every text/enum row refuse an empty value. Full-sentence branch keys
+	// (design §6 pattern 2 — no half-key + concat).
+	const footer =
+		item.kind === "number" && item.write?.via === "config"
+			? t("settings.input.footerLocalNumber")
+			: t("settings.input.footerRefuse")
+	lines.push({ text: clipText(footer, width), tone: "subtle" })
 	return lines
 }
 
@@ -864,7 +878,7 @@ export function settingsEscape(level: "list" | "options" | "input", filter: stri
 
 /** Exit summary (mirrors the agents panel). */
 export function settingsSummary(changed: readonly string[]): string {
-	return changed.length > 0 ? `Settings updated: ${changed.join(", ")}` : "Settings unchanged."
+	return changed.length > 0 ? t("settings.summary.updated", { labels: changed.join(", ") }) : t("settings.summary.unchanged")
 }
 
 // ------------------------------------------------- bridge + appliers --
@@ -993,7 +1007,7 @@ export function applySettingsLive(
 			case "motion":
 				setMotionTier(applied === undefined || applied === "auto" ? undefined : (String(applied) as MotionTier))
 				break
-			case "hintsLocale":
+			case "lang":
 				setHintsLocale(String(applied) as HintLocale)
 				break
 			case "theme":

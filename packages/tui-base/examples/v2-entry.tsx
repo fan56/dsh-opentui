@@ -46,6 +46,7 @@ import { WidgetsDock, resetSkinLineFades } from "../src/routes/session/widgets-d
 import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
 import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
 import { HintsLine, applyHintsConfig } from "../src/routes/session/hints-line"
+import { applyI18nConfig } from "@dsh-opentui/i18n"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { createPaneFocus, PaneFocusKeys } from "../src/routes/session/pane-focus"
@@ -1335,6 +1336,12 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 	// /hints selection (profile `footerHints` / `hintsLocale` keys — /motion
 	// parity) BEFORE the first paint, so a restart keeps the toggles.
 	applyHintsConfig(seam.configLoad?.())
+	// i18n boot replay (design §3, applyHintsConfig parity): fix the language
+	// for the process lifetime BEFORE the first paint — unified `lang` key
+	// first, legacy `hintsLocale` folds in when no unified value exists
+	// (zh-CN aliases collapse; ja/ko degrade to en). Startup-fixed, no
+	// reactive switching.
+	applyI18nConfig(seam.configLoad?.())
 
 	let shutdownPromise: Promise<void> | null = null
 	const shutdown = (): Promise<void> => {

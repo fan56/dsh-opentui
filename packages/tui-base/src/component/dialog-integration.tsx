@@ -16,6 +16,7 @@ import { openUrl } from "@opencode/util/open"
 import { createEffect, createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useNewDesigns } from "../config"
+import { t } from "../i18n"
 import { useClipboard } from "../context/clipboard"
 import { useData } from "../context/data"
 import { useClient } from "../context/client"
@@ -90,10 +91,10 @@ export function credentialConnections(integration: IntegrationInfo) {
 // A count keeps several long labels from squeezing the integration name off the row.
 export function connectionSummary(integration: IntegrationInfo) {
   const connections = integration.connections
-  if (connections.length > 1) return `${connections.length} connections`
+  if (connections.length > 1) return t("dialog.integration.summary.connections", { count: connections.length })
   const connection = connections[0]
   if (!connection) return ""
-  return connection.type === "credential" ? connection.label : `$${connection.name}`
+  return connection.type === "credential" ? connection.label : t("dialog.integration.summary.env", { name: connection.name })
 }
 
 export function DialogIntegration(
@@ -129,14 +130,14 @@ export function DialogIntegration(
     return integrations().map((integration) => {
       const methods = connectMethods(integration)
       const credentials = credentialConnections(integration)
-      let category = "Services"
-      if (integration.id in INTEGRATION_PRIORITY) category = "Popular"
+      let category = t("dialog.integration.category.services")
+      if (integration.id in INTEGRATION_PRIORITY) category = t("dialog.integration.category.popular")
       const status = integration.connections[0]?.status
       return {
         title: integration.name,
         value: integration.id,
-        description: methods.length === 0 ? "Environment only" : undefined,
-        footer: status ? "Sign in required →" : connectionSummary(integration) || undefined,
+        description: methods.length === 0 ? t("dialog.integration.environmentOnly") : undefined,
+        footer: status ? t("dialog.integration.signInRequired") : connectionSummary(integration) || undefined,
         footerColor: status ? theme.text.feedback.warning.base : undefined,
         category,
         disabled: methods.length === 0 && credentials.length === 0,
@@ -154,16 +155,16 @@ export function DialogIntegration(
 
   return (
     <DialogSelect
-      title="Connect an integration"
+      title={t("dialog.integration.title")}
       options={options()}
       emptyView={
         <box paddingLeft={DIALOG_LIST_INSET} paddingRight={DIALOG_LIST_INSET}>
-          <text fg={theme.text.muted}>No integrations available</text>
+          <text fg={theme.text.muted}>{t("dialog.integration.empty")}</text>
         </box>
       }
       noMatchView={
         <box paddingLeft={DIALOG_LIST_INSET} paddingRight={DIALOG_LIST_INSET}>
-          <text fg={theme.text.muted}>No integrations found</text>
+          <text fg={theme.text.muted}>{t("dialog.integration.noMatch")}</text>
         </box>
       }
     />
@@ -204,7 +205,7 @@ function manageConnections(
           ...(methods.length
             ? [
                 {
-                  title: "Add account",
+                  title: t("dialog.integration.addAccount"),
                   value: "add",
                   onSelect: () => selectMethod(current() ?? integration, methods, location, dialog, onConnected),
                 },
@@ -216,12 +217,12 @@ function manageConnections(
               const confirming = deleting() === connection.id
               return {
                 title: confirming
-                  ? `Press ${shortcuts.get("dialog.integration.delete")} again to confirm`
+                  ? t("dialog.integration.pressAgainToConfirm", { key: shortcuts.get("dialog.integration.delete") })
                   : connection.label,
                 value: connection.id,
-                footer: connection.status ? "Sign in required →" : undefined,
+                footer: connection.status ? t("dialog.integration.signInRequired") : undefined,
                 footerColor: connection.status ? theme.text.feedback.warning.base : undefined,
-                category: "Connected accounts",
+                category: t("dialog.integration.category.connectedAccounts"),
                 bg: confirming ? theme.background.action.destructive.focused : undefined,
                 fg: confirming ? theme.text.action.destructive.focused : undefined,
                 onSelect: () => {
@@ -237,14 +238,14 @@ function manageConnections(
         actions={[
           {
             command: "dialog.integration.rename",
-            title: "rename",
+            title: t("dialog.integration.action.rename"),
             hidden: selected() === "add",
             disabled: (option) => !option || option.value === "add",
             onTrigger: (option) => {
               dialog.replace(() => (
                 <DialogPrompt
-                  title="Rename account"
-                  placeholder="Account name"
+                  title={t("dialog.integration.renameTitle")}
+                  placeholder={t("dialog.integration.renamePlaceholder")}
                   value={
                     credentialConnections(current() ?? integration).find((item) => item.id === option.value)?.label
                   }
@@ -262,7 +263,7 @@ function manageConnections(
           },
           {
             command: "dialog.integration.delete",
-            title: newDesigns() ? "remove account" : "delete",
+            title: newDesigns() ? t("dialog.integration.action.removeAccount") : t("dialog.integration.action.delete"),
             hidden: selected() === "add",
             disabled: (option) => !option || option.value === "add",
             onTrigger: (option) => {
@@ -273,7 +274,7 @@ function manageConnections(
                 .then(() => {
                   setDeleting(undefined)
                   if (!final) return
-                  toast.show({ variant: "success", message: `Disconnected ${integration.name}` })
+                  toast.show({ variant: "success", message: t("dialog.integration.toast.disconnected", { name: integration.name }) })
                   dialog.clear()
                 })
                 .catch((error) => {
@@ -300,10 +301,10 @@ function selectMethod(
     const newDesigns = useNewDesigns()
     return (
       <DialogSelect
-        title={`Connect ${integration.name}`}
+        title={t("dialog.integration.connectTitle", { name: integration.name })}
         renderFilter={!newDesigns()}
         options={methods.map((method) => ({
-          title: method.type === "key" ? (method.label ?? "API key") : method.label,
+          title: method.type === "key" ? (method.label ?? t("dialog.integration.apiKey")) : method.label,
           value: method.type === "key" ? "key" : method.id,
           onSelect: () => openMethod(integration, method, location, dialog, onConnected),
         }))}
@@ -382,7 +383,7 @@ function ExternalStarting(props: {
         dialog.clear()
       })
   })
-  return <OAuthView title={props.method.label} message="Connecting…" />
+  return <OAuthView title={props.method.label} message={t("dialog.integration.status.connecting")} />
 }
 
 async function beginKey(
@@ -393,7 +394,7 @@ async function beginKey(
   onConnected?: OnIntegrationConnected,
 ) {
   const answer = method.form
-    ? await formAnswer(dialog, method.label ?? `Connect ${integration.name}`, method.form)
+    ? await formAnswer(dialog, method.label ?? t("dialog.integration.connectTitle", { name: integration.name }), method.form)
     : undefined
   if (answer === null) return
   dialog.replace(() => (
@@ -456,7 +457,7 @@ function CommandStarting(props: {
     if (!handedOff) closed = true
   })
 
-  return <CommandView title={props.method.label} output="" message="Starting command…" />
+  return <CommandView title={props.method.label} output="" message={t("dialog.integration.status.startingCommand")} />
 }
 
 function CommandPending(props: {
@@ -495,7 +496,7 @@ function CommandPending(props: {
         }
         toast.show({
           variant: "error",
-          message: status.status === "failed" ? status.message : "Authentication expired",
+          message: status.status === "failed" ? status.message : t("dialog.integration.expired.auth"),
         })
         dialog.clear()
       })
@@ -517,7 +518,7 @@ function CommandPending(props: {
     })
   })
 
-  return <CommandView title={props.title} output={output()} message="Waiting for command to finish…" />
+  return <CommandView title={props.title} output={output()} message={t("dialog.integration.status.waitingCommand")} />
 }
 
 function CommandView(props: { title: string; output: string; message: string }) {
@@ -561,8 +562,8 @@ function KeyMethod(props: {
 
   return (
     <DialogPrompt
-      title={props.method.label ?? `Connect ${props.integration.name}`}
-      placeholder="API key"
+      title={props.method.label ?? t("dialog.integration.connectTitle", { name: props.integration.name })}
+      placeholder={t("dialog.integration.apiKey")}
       onConfirm={(key) => {
         if (!key) return
         void client.api.integration.connect
@@ -650,7 +651,7 @@ function OAuthStarting(props: {
       })
   })
 
-  return <OAuthView title={props.method.label} message="Starting authorization…" />
+  return <OAuthView title={props.method.label} message={t("dialog.integration.status.startingAuth")} />
 }
 
 function OAuthAuto(props: {
@@ -673,7 +674,7 @@ function OAuthAuto(props: {
   const open = () => {
     openUrl(props.attempt.url).catch(() =>
       toast.show({
-        message: "Could not open the browser. Copy the URL and continue manually.",
+        message: t("dialog.integration.toast.browserOpenFailed"),
         variant: "error",
       }),
     )
@@ -683,7 +684,7 @@ function OAuthAuto(props: {
     const value = props.attempt.instructions.match(OAUTH_CODE)?.[0] ?? props.attempt.url
     clipboard
       .write(value)
-      .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
+      .then(() => toast.show({ message: t("common.copiedToClipboard"), variant: "info" }))
       .catch(toast.error)
   }
 
@@ -706,8 +707,8 @@ function OAuthAuto(props: {
     // The paste prompt owns typing and Enter.
     enabled: !props.attempt.paste,
     commands: [
-      { bind: newDesigns() ? "return" : "o", title: "Open authorization URL", group: "Dialog", run: open },
-      { bind: "c", title: "Copy authorization details", group: "Dialog", run: copy },
+      { bind: newDesigns() ? "return" : "o", title: t("dialog.integration.action.openAuthUrl"), group: "Dialog", run: open },
+      { bind: "c", title: t("dialog.integration.action.copyAuthDetails"), group: "Dialog", run: copy },
     ],
   }))
 
@@ -729,7 +730,7 @@ function OAuthAuto(props: {
           void connected(props.integration, props.location, data, dialog, toast, props.onConnected)
           return
         }
-        toast.show({ variant: "error", message: status.status === "failed" ? status.message : "Authorization expired" })
+        toast.show({ variant: "error", message: status.status === "failed" ? status.message : t("dialog.integration.expired.authorization") })
         dialog.clear()
       })
       .catch((cause) => {
@@ -758,7 +759,7 @@ function OAuthAuto(props: {
           title={props.title}
           url={props.attempt.url}
           instructions={props.attempt.instructions}
-          message="Waiting for authorization…"
+          message={t("dialog.integration.status.waitingAuth")}
           onCopy={copy}
           onOpen={open}
         />
@@ -767,13 +768,13 @@ function OAuthAuto(props: {
       <DialogPrompt
         title={props.title}
         subtitle={props.attempt.instructions}
-        placeholder="Redirect URL"
+        placeholder={t("dialog.integration.placeholder.redirectUrl")}
         onConfirm={paste}
         actions={[
           {
-            title: "copy link",
+            title: t("dialog.integration.action.copyLink"),
             command: "dialog.integration.copy",
-            commandTitle: "Copy authorization link",
+            commandTitle: t("dialog.integration.command.copyAuthLink"),
             onTrigger: copy,
           },
         ]}
@@ -784,8 +785,7 @@ function OAuthAuto(props: {
             </Show>
             <Link href={props.attempt.url} fg={theme.markdown.link} />
             <text fg={theme.text.muted}>
-              Waiting for authorization… Press enter to open the link. If the browser can't reach this machine, paste
-              the URL it was redirected to.
+              {t("dialog.integration.waitAuthInstructions")}
             </text>
             <Show when={error()}>{(value) => <text fg={theme.text.feedback.error.base}>{value()}</text>}</Show>
           </box>
@@ -824,7 +824,7 @@ function OAuthCode(props: {
     <DialogPrompt
       title={props.title}
       subtitle={props.attempt.instructions}
-      placeholder="Authorization code"
+      placeholder={t("dialog.integration.placeholder.authCode")}
       onConfirm={(code) => {
         if (!code) return
         void client.api.integration.oauth
@@ -871,13 +871,13 @@ function OAuthView(props: {
             ...(props.onCopy
               ? [
                   {
-                    title: props.instructions?.match(OAUTH_CODE) ? "copy code" : "copy link",
+                    title: props.instructions?.match(OAUTH_CODE) ? t("dialog.integration.action.copyCode") : t("dialog.integration.action.copyLink"),
                     key: "c",
                     onTrigger: props.onCopy,
                   },
                 ]
               : []),
-            ...(props.onOpen ? [{ title: "open link", key: "enter", onTrigger: props.onOpen }] : []),
+            ...(props.onOpen ? [{ title: t("dialog.integration.action.openLink"), key: "enter", onTrigger: props.onOpen }] : []),
           ],
         },
       }}
@@ -885,8 +885,8 @@ function OAuthView(props: {
         <DialogFooter
           actions={{
             secondary: [
-              ...(props.onOpen ? [{ title: "open", key: "o" }] : []),
-              ...(props.onCopy ? [{ title: "copy", key: "c" }] : []),
+              ...(props.onOpen ? [{ title: t("dialog.integration.action.open"), key: "o" }] : []),
+              ...(props.onCopy ? [{ title: t("dialog.integration.action.copy"), key: "c" }] : []),
             ],
           }}
         />
@@ -959,12 +959,12 @@ async function selectAnswer(
     field.type === "boolean"
       ? field.default === false
         ? [
-            { title: "No", value: false as FormValue },
-            { title: "Yes", value: true as FormValue },
+            { title: t("common.no"), value: false as FormValue },
+            { title: t("common.yes"), value: true as FormValue },
           ]
         : [
-            { title: "Yes", value: true as FormValue },
-            { title: "No", value: false as FormValue },
+            { title: t("common.yes"), value: true as FormValue },
+            { title: t("common.no"), value: false as FormValue },
           ]
       : (field.options ?? []).map((option) => ({
           title: option.label,
@@ -976,7 +976,7 @@ async function selectAnswer(
       () => (
         <DialogSelect<FormValue | undefined>
           title={formLabel(field) || title}
-          options={[...options, ...(!field.required ? [{ title: "Skip", value: undefined }] : [])]}
+          options={[...options, ...(!field.required ? [{ title: t("dialog.form.skip"), value: undefined }] : [])]}
           current={field.type === "string" ? field.default : undefined}
           onSelect={(option) => resolve(option.value)}
         />
@@ -1025,17 +1025,17 @@ function StringChoiceField(props: {
     commands: [
       {
         id: "dialog.select.prev",
-        title: "Previous answer",
+        title: t("dialog.form.prevAnswer"),
         group: "Form",
         run: () => setStore("selected", (store.selected + count - 1) % count),
       },
       {
         id: "dialog.select.next",
-        title: "Next answer",
+        title: t("dialog.form.nextAnswer"),
         group: "Form",
         run: () => setStore("selected", (store.selected + 1) % count),
       },
-      { id: "dialog.select.submit", title: "Select answer", group: "Form", run: () => select(store.selected) },
+      { id: "dialog.select.submit", title: t("dialog.form.selectAnswer"), group: "Form", run: () => select(store.selected) },
     ],
   }))
   Keymap.createLayer(() => ({
@@ -1046,11 +1046,11 @@ function StringChoiceField(props: {
     commands: [
       {
         id: "dialog.prompt.submit",
-        title: "Submit answer",
+        title: t("dialog.form.submitAnswer"),
         group: "Form",
         run: () => submit(textarea()?.plainText.trim() || undefined),
       },
-      { bind: "escape", title: "Back to answers", group: "Form", run: back },
+      { bind: "escape", title: t("dialog.form.backToAnswers"), group: "Form", run: back },
     ],
   }))
   return (
@@ -1060,13 +1060,13 @@ function StringChoiceField(props: {
         actions: {
           secondary: store.editing
             ? [
-                { title: "submit", key: "enter", onTrigger: () => submit(textarea()?.plainText.trim() || undefined) },
-                { title: "back", key: "esc", onTrigger: back },
+                { title: t("dialog.form.action.submit"), key: "enter", onTrigger: () => submit(textarea()?.plainText.trim() || undefined) },
+                { title: t("dialog.form.action.back"), key: "esc", onTrigger: back },
               ]
             : [
-                { title: "select", key: "↑/↓" },
-                { title: "confirm", key: "enter", onTrigger: () => select(store.selected) },
-                { title: "cancel", key: "esc", onTrigger: () => dialog.clear() },
+                { title: t("dialog.form.action.select"), key: "↑/↓" },
+                { title: t("dialog.form.action.confirm"), key: "enter", onTrigger: () => select(store.selected) },
+                { title: t("dialog.form.action.cancel"), key: "esc", onTrigger: () => dialog.clear() },
               ],
         },
       }}
@@ -1106,14 +1106,14 @@ function StringChoiceField(props: {
             <text fg={fg(rows.length)}>{rows.length + 1}.</text>
             <Show
               when={store.editing}
-              fallback={<text fg={fg(rows.length)}>{store.text || "Type your own answer"}</text>}
+              fallback={<text fg={fg(rows.length)}>{store.text || t("dialog.form.typeOwnAnswer")}</text>}
             >
               <textarea
                 height={1}
                 flexGrow={1}
                 wrapMode="none"
                 initialValue={store.text}
-                placeholder={props.field.placeholder ?? "Type your own answer"}
+                placeholder={props.field.placeholder ?? t("dialog.form.typeOwnAnswer")}
                 placeholderColor={theme.text.muted}
                 textColor={theme.text.formfield.focused}
                 focusedTextColor={theme.text.formfield.focused}
@@ -1137,7 +1137,7 @@ function StringChoiceField(props: {
           </box>
           <Show when={!props.field.required}>
             <text fg={fg(rows.length + 1)} onMouseUp={() => select(rows.length + 1)}>
-              {rows.length + 2}. Skip
+              {t("dialog.form.numberedSkip", { n: rows.length + 2 })}
             </text>
           </Show>
         </scrollbox>
@@ -1204,15 +1204,18 @@ async function multiselectAnswer(
             title={formLabel(field) || title}
             options={[
               ...field.options.map((option) => ({
-                title: `[${selected.includes(option.value) ? "x" : " "}] ${option.label}`,
+                title: t("dialog.form.checkedOption", {
+                  mark: selected.includes(option.value) ? "x" : " ",
+                  label: option.label,
+                }),
                 value: option.value,
                 description: option.description,
                 disabled:
                   !selected.includes(option.value) && field.maxItems !== undefined && selected.length >= field.maxItems,
               })),
-              ...(field.custom ? [{ title: "Type your own answer", value: CUSTOM as typeof CUSTOM }] : []),
+              ...(field.custom ? [{ title: t("dialog.form.typeOwnAnswer"), value: CUSTOM as typeof CUSTOM }] : []),
               {
-                title: "Continue",
+                title: t("dialog.form.continue"),
                 value: SUBMIT as typeof SUBMIT,
                 description: invalid,
                 disabled: invalid !== undefined,
@@ -1246,7 +1249,7 @@ function customAnswer(
       () => (
         <DialogPrompt
           title={formLabel(field) || title}
-          placeholder="Type your own answer"
+          placeholder={t("dialog.form.typeOwnAnswer")}
           onConfirm={(value) => {
             if (value) resolve(value)
           }}
@@ -1270,8 +1273,8 @@ async function externalAnswer(
           <DialogSelect<true | typeof OPEN>
             title={formLabel(field) || title}
             options={[
-              { title: opened ? "Open link again" : "Open link", value: OPEN as typeof OPEN, description: field.url },
-              { title: "I finished", value: true as const, description: field.description, disabled: !opened },
+              { title: opened ? t("dialog.form.openLinkAgain") : t("dialog.form.openLink"), value: OPEN as typeof OPEN, description: field.url },
+              { title: t("dialog.form.iFinished"), value: true as const, description: field.description, disabled: !opened },
             ]}
             onSelect={(option) => resolve(option.value)}
           />
@@ -1283,7 +1286,7 @@ async function externalAnswer(
     if (choice === true) return true
     const result = await new Promise<boolean | typeof CANCELLED>((resolve) => {
       dialog.replace(
-        () => <OAuthView title={formLabel(field) || title} message="Opening link…" />,
+        () => <OAuthView title={formLabel(field) || title} message={t("dialog.integration.status.openingLink")} />,
         () => resolve(CANCELLED),
       )
       void openUrl(field.url).then(
@@ -1312,7 +1315,7 @@ async function connected(
     data.location.model.sync(location),
     data.location.provider.sync(location),
   ])
-  toast.show({ variant: "success", message: `Connected ${integration.name}` })
+  toast.show({ variant: "success", message: t("dialog.integration.toast.connected", { name: integration.name }) })
   if (onConnected) {
     onConnected(providerID(data, location, integration.id))
     return

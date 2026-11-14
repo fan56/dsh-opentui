@@ -2,11 +2,19 @@
  * Skills in the `/` palette: same filtering, Tab completion and dispatch
  * resolution as commands, with the deliberate model fall-through on submit.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import type { SessionSeam } from "../src/seams/session"
 import type { SlashCommand } from "../src/routes/session/commands"
 import { createSlashHost, MAX_ROWS } from "../src/routes/session/slash-palette"
 import { withSkillCommands } from "../src/routes/session/skills-source"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 const SKILL_ROWS = [
 	{ name: "cron", description: "schedule bounded tasks", path: "/x/cron/SKILL.md" },

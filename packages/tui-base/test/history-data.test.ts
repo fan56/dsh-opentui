@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import {
 	groupHistoryTurns,
 	historyTurnDetail,
@@ -8,6 +8,14 @@ import {
 	turnPrimaryUserText,
 	type HistoryJournalEntry,
 } from "../src/routes/session/history-data"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 /** Record builder (RemoteJournalEntry shape, oldest-first ordering). */
 function entry(type: string, seq: number, time: number, data: Record<string, unknown>): HistoryJournalEntry {

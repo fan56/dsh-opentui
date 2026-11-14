@@ -17,6 +17,7 @@ import { Show, createSignal } from "solid-js"
 import type { JSX } from "solid-js"
 import { useThemeOptional } from "../../context/theme"
 import { DialogPrompt } from "../../ui/dialog-prompt"
+import { t } from "../../i18n"
 
 /** One side-call exchange: streaming while the answer grows, then settled
  * (or error — the facade resolves turn-level failures as `error: …` text). */
@@ -152,8 +153,8 @@ export function BtwPanel(props: { controller: BtwController }) {
 	const shown = () => props.controller.run() ?? props.controller.last()
 	return (
 		<box flexDirection="column" gap={1} paddingBottom={1}>
-			<text fg={accent()}>btw — side question</text>
-			<Show when={shown()} fallback={<text fg={muted()}>no side question yet</text>}>
+			<text fg={accent()}>{t("overlay.btw.heading")}</text>
+			<Show when={shown()} fallback={<text fg={muted()}>{t("overlay.btw.empty")}</text>}>
 				{(run) => (
 					<>
 						<text>{run().question}</text>
@@ -166,19 +167,24 @@ export function BtwPanel(props: { controller: BtwController }) {
 							when={run().status === "streaming" && run().answer === ""}
 							fallback={<text>{run().answer === "" ? "(empty answer)" : run().answer}</text>}
 						>
-							<text fg={muted()}>Thinking…</text>
+							<text fg={muted()}>{t("overlay.btw.thinking")}</text>
 						</Show>
 					</>
 				)}
 			</Show>
 			<text fg={muted()}>
-				{shown()?.status === "streaming"
-					? `Running alongside the main task · Esc close${
-							props.controller.queueDepth() > 0 ? ` · ${props.controller.queueDepth()} queued` : ""
-						}`
-					: `Not kept in the session · /btw reopens this answer${
-							props.controller.queueDepth() > 0 ? ` · ${props.controller.queueDepth()} queued` : ""
-						}`}
+				{(() => {
+					const queued = props.controller.queueDepth()
+					// Conditional concat → full-sentence branch keys (design §6 pattern 2).
+					if (shown()?.status === "streaming") {
+						return queued > 0
+							? t("overlay.btw.hint.streamingQueued", { count: String(queued) })
+							: t("overlay.btw.hint.streaming")
+					}
+					return queued > 0
+						? t("overlay.btw.hint.settledQueued", { count: String(queued) })
+						: t("overlay.btw.hint.settled")
+				})()}
 			</text>
 		</box>
 	)
@@ -234,7 +240,7 @@ export function createBtwOpener(deps: {
 			() => (
 				<DialogPrompt
 					title="/btw"
-					placeholder="Ask anything"
+					placeholder={t("overlay.btw.promptPlaceholder")}
 					onConfirm={(text) => {
 						const outcome = deps.controller.submit(text)
 						if (outcome === "full") {

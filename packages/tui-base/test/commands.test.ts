@@ -2,7 +2,8 @@
  * Slash-command registry tests (batch 8): dispatch classification, the
  * harmless unknown row, and each core command's seam/hook call.
  */
-import { describe, expect, test, beforeEach } from "bun:test"
+import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	MODEL_DEFAULT_EFFORT_PICK,
 	coreCommands,
@@ -18,6 +19,14 @@ import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
 import { getMotionTier, setMotionTier } from "../src/skin/motion"
 import { footerHints, hintsLocale, setFooterHints, setHintsLocale, DEFAULT_FOOTER_HINTS, HINT_LOCALES } from "../src/routes/session/hints-line"
 import type { SessionSeam, SeamProviderModel, SeamSessionSummary } from "../src/seams/session"
+
+// The command copy resolves through `t()` (T4 facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+afterAll(() => setLanguages(new Map()))
 
 /** Recording fake: every seam method the core set touches is a spy. */
 class RecordingSeam {
@@ -253,6 +262,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/subagents",
 			"/think",
 			"/hints",
+			"/language",
 			"/motion",
 			"/hotkeys",
 			"/theme",
@@ -260,7 +270,7 @@ describe("filterCommands (palette prefix filter)", () => {
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/pl").map((c) => c.name)).toEqual(["/plugins"])
-		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual(["/login", "/logout"])
+		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual(["/login", "/logout", "/language"])
 		expect(filterCommands(commands, "/logo").map((c) => c.name)).toEqual(["/logout"])
 	})
 })
@@ -291,6 +301,7 @@ describe("core commands", () => {
 			"/subagents — view live subagent transcripts (list, steer, stop)",
 			"/think — set reasoning effort (opens the picker)",
 			"/hints — key hints: toggle bar; <segment> on|off; all on|off; lang <locale>",
+			"/language — switch language (opens the picker; restart to apply)",
 			"/motion — animation tier: full | reduced | off | auto (bare shows setting → effective)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
@@ -1539,12 +1550,17 @@ describe("/hints argument parsing", () => {
 		expect(hints.description.length).toBeLessThanOrEqual(70)
 	})
 
-	test("lang matches case-insensitively onto the canonical locale", () => {
-		expect(run("lang EN").lines).toEqual(["hint language: en"])
+	test("lang matches case-insensitively onto the canonical locale and notes the restart (T8 fold: boot-fixed wording)", () => {
+		expect(run("lang EN").lines).toEqual(["hint language: en", "Language saved — restart to apply"])
 		expect(hintsLocale()).toBe("en")
-		expect(run("lang zh-cn").lines).toEqual(["hint language: zh-CN"])
+		expect(run("lang zh-cn").lines).toEqual(["hint language: zh-CN", "Language saved — restart to apply"])
 		expect(hintsLocale()).toBe("zh-CN")
-		expect(run("lang JA").lines).toEqual(["hint language: ja"])
+		setHintsLocale("en")
+	})
+
+	test("lang ja/ko keep the command surface but degrade to en (design §1 cut 2)", () => {
+		expect(run("lang JA").lines).toEqual(["ja is not bundled — hint language degraded to en", "Language saved — restart to apply"])
+		expect(hintsLocale()).toBe("en")
 		setHintsLocale("en")
 	})
 
@@ -1591,7 +1607,11 @@ describe("/hints argument parsing", () => {
 		expect(seam.calls.filter((call) => call === "configSave").length).toBe(2)
 		// the FULL record rides each write (configSave replaces the key wholesale)
 		expect(seam.store.footerHints).toEqual({ ...DEFAULT_FOOTER_HINTS, scroll: false })
-		expect(seam.store.hintsLocale).toBe("ja")
+		// ja has no bundled locale file (contract §1) — the persisted value is
+		// the degraded en, so the stored key always names an effective language.
+		// T14: the write lands on the UNIFIED `lang` key (hintsLocale stays a
+		// read-only legacy fallback).
+		expect(seam.store.lang).toBe("en")
 	})
 
 	test("usage errors and the bare bar toggle stay session-scoped (no config write)", () => {
@@ -1600,6 +1620,67 @@ describe("/hints argument parsing", () => {
 		hints.run(ctx, "scroll of") // typo → usage
 		hints.run(ctx, "banana") // unknown segment
 		hints.run(ctx, "") // bare toggle flips hintsShown — not persisted
+		expect(seam.calls).not.toContain("configSave")
+	})
+})
+
+describe("/language (T14: unified `lang` storage, restart-to-apply)", () => {
+	const language = coreCommands().find((c) => c.name === "/language")!
+	const run = async (argText: string, pickAnswer?: string) => {
+		const seam = new ConfigSeam()
+		const ctx = makeCtx(seam, pickAnswer)
+		await language.run(ctx, argText)
+		return { ctx, seam }
+	}
+
+	beforeEach(() => {
+		setHintsLocale("en")
+	})
+
+	test("description stays within the palette row budget (≤ /login's 78)", () => {
+		expect(language.description.length).toBeLessThanOrEqual(70)
+	})
+
+	test("bare opens the picker over the offered languages (en + zh-CN only, current marked)", async () => {
+		const { ctx, seam } = await run("", "zh-CN")
+		expect(ctx.hooks.picks).toHaveLength(1)
+		const pick = ctx.hooks.picks[0]!
+		expect(pick.title).toBe("Select language")
+		expect(pick.currentValue).toBe("en")
+		expect(pick.options.map((o) => o.title)).toEqual(["en", "zh-CN"])
+		expect(ctx.lines).toEqual(["language: zh-CN", "Language saved — restart to apply"])
+		expect(seam.store.lang).toBe("zh-CN")
+		expect(seam.store.hintsLocale).toBeUndefined()
+		expect(hintsLocale()).toBe("zh-CN")
+		setHintsLocale("en")
+	})
+
+	test("esc/no answer and the current-language pick are unchanged (tui-pi semantics, no write)", async () => {
+		const esc = await run("")
+		expect(esc.ctx.lines).toEqual(["language unchanged"])
+		expect(esc.seam.calls).not.toContain("configSave")
+		const same = await run("", "en")
+		expect(same.ctx.lines).toEqual(["language unchanged"])
+		expect(same.seam.calls).not.toContain("configSave")
+	})
+
+	test("argument form targets case-insensitively and persists the unified lang key", async () => {
+		const { ctx, seam } = await run("ZH-cn")
+		expect(ctx.lines).toEqual(["language: zh-CN", "Language saved — restart to apply"])
+		expect(seam.store.lang).toBe("zh-CN")
+		setHintsLocale("en")
+	})
+
+	test("unknown id errors and lists the offered languages (nothing written)", async () => {
+		const { ctx, seam } = await run("ja")
+		expect(ctx.lines[0]).toContain("unknown language: ja")
+		expect(ctx.lines[0]).toContain("en|zh-CN")
+		expect(seam.calls).not.toContain("configSave")
+	})
+
+	test("the current language via argument prints unchanged without a write", async () => {
+		const { ctx, seam } = await run("en")
+		expect(ctx.lines).toEqual(["language unchanged"])
 		expect(seam.calls).not.toContain("configSave")
 	})
 })

@@ -8,7 +8,7 @@
  * data layer: row models, limits/copy ordering, parse rules, preselect and the
  * two-stage picker flow, plus the open-state lifetime.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { createRoot } from "solid-js"
 import {
 	agentFieldContent,
@@ -36,6 +36,14 @@ import {
 	viewerWindow,
 } from "../src/routes/session/agents-panel"
 import type { SeamAgentRow, SeamEffortOption } from "../src/seams/session"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 const rows: SeamAgentRow[] = [
 	{

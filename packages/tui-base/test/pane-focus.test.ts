@@ -13,6 +13,7 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { createSignal } from "solid-js"
 import { createComponent, testRender } from "@opentui/solid"
 import type { Renderable } from "@opentui/core"
@@ -209,15 +210,23 @@ describe("wiring source guards", () => {
 	})
 })
 
-describe("transcript hint row (4 locales)", () => {
-	test("each locale has wording; the master toggle zeroes the row", () => {
-		for (const locale of ["en", "zh-CN", "ja", "ko"] as const) {
-			const text = transcriptHintsText(true, locale)
-			expect(text.startsWith("⌨ ")).toBe(true)
-			expect(text).toContain("f6")
-		}
+describe("transcript hint row (en/zh golden — the T8 fold)", () => {
+	// T8: the wording rides the boot-fixed registry (t()); the language is
+	// chosen by setLanguages' second arg, not a parameter any more.
+	test("en golden wording; the master toggle zeroes the row", () => {
+		const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+		setLanguages(languages)
+		const text = transcriptHintsText(true)
+		expect(text.startsWith("⌨ ")).toBe(true)
+		expect(text).toContain("↑↓ scroll")
+		expect(text).toContain("f6")
 		expect(transcriptHintsText(false)).toBe("")
-		expect(transcriptHintsText(true, "en")).toContain("↑↓ scroll")
-		expect(transcriptHintsText(true, "zh-CN")).toContain("↑↓ 滚动")
+	})
+	test("zh-CN golden wording matches the folded table verbatim", () => {
+		const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+		setLanguages(languages, "zh-CN")
+		const text = transcriptHintsText(true)
+		expect(text).toBe("⌨ ↑↓ 滚动 · pgup/pgdn 翻页 · home/end 顶/底 · tab/f6 输入框")
+		setLanguages(new Map())
 	})
 })

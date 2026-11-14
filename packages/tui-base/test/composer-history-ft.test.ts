@@ -17,9 +17,17 @@
  *   - while the slash palette is open ↑/↓ move the menu only (buffer stays
  *     the slash prefix, history is not recalled).
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { join } from "node:path"
 import { PALETTE_ROWS } from "../src/routes/session/slash-palette"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 const fixture = join(import.meta.dir, "fixtures", "composer-history-ft.run.ts")
 

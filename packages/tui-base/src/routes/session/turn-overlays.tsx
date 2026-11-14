@@ -25,6 +25,7 @@ import { Keymap } from "../../context/keymap"
 import { useCursorStyle } from "../../config"
 import { TurnOverlayController, type PendingAsk } from "./turn-overlay-controller"
 import { useThemeOptional } from "../../context/theme"
+import { t } from "../../i18n"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { warningColor } from "../../skin/semantic"
 import { mixSkinColor, skinPulseBrightness, SKIN_PULSE_MS } from "./widgets-dock"
@@ -51,9 +52,9 @@ export function ApprovalCard(props: {
 			// titleView path below; here the marker is static — pulsing it
 			// needs DialogConfirm to forward a titleView (vendored file, later
 			// lane).
-			title={`⚠ Approval: ${props.name}`}
+			title={t("overlay.ask.approvalTitle", { name: props.name })}
 			message={summarizeArgs(props.name, props.args)}
-			label={{ confirm: "allow", cancel: "reject" }}
+			label={{ confirm: t("overlay.ask.allow"), cancel: t("overlay.ask.reject") }}
 			onConfirm={() => props.onVerdict("allowed-once")}
 			onCancel={() => props.onVerdict("rejected")}
 		/>
@@ -107,15 +108,14 @@ export function askTabStrip(
 
 /** The sentinel row label (tui-pi `SENTINEL_LABEL`); a committed custom
  * answer replaces it with the `✎` mark + the typed text. */
-export const ASK_SENTINEL_LABEL = "Type something."
 export function askSentinelTitle(custom: string | undefined): string {
-	return custom ? `✎ ${custom}` : ASK_SENTINEL_LABEL
+	return custom ? t("overlay.ask.customMark", { answer: custom }) : t("overlay.ask.sentinelLabel")
 }
 
 /** Progress title: `(i/n)` prefix once the batch has ≥ 2 questions. */
 export function askProgressTitle(questions: SeamAskQuestion[], index: number): string {
-	if (questions.length < 2) return "Question"
-	return `Question (${index + 1}/${questions.length})`
+	if (questions.length < 2) return t("overlay.ask.question")
+	return t("overlay.ask.questionProgress", { index: String(index + 1), total: String(questions.length) })
 }
 
 /** Whether the picker needs the explicit review row (≥ 2 questions or any multiSelect). */
@@ -197,11 +197,11 @@ export function askQuestionRows(
 ): DialogSelectOption<string | AskRowValue>[] {
 	const multi = question.multiSelect === true
 	const rows: DialogSelectOption<string | AskRowValue>[] = question.options.map((option) => ({
-		title: multi ? (picks.includes(option) ? `[x] ${option}` : `[ ] ${option}`) : option,
+		title: multi ? (picks.includes(option) ? t("overlay.ask.checkedOption", { option }) : t("overlay.ask.uncheckedOption", { option })) : option,
 		value: option,
 	}))
 	rows.push({ title: askSentinelTitle(custom), value: { kind: "custom" } })
-	if (review) rows.push({ title: "⏎ Review answers", value: { kind: "review" } })
+	if (review) rows.push({ title: t("overlay.ask.reviewRow"), value: { kind: "review" } })
 	return rows
 }
 
@@ -232,7 +232,7 @@ function AskQuestionsView(props: {
 		if (!b) return undefined
 		const parts: string[] = []
 		if (b.questions.length >= 2) parts.push(askTabStrip(b.questions, b.picks, b.index, b.customs))
-		if (multi()) parts.push("space: toggle")
+		if (multi()) parts.push(t("overlay.ask.spaceToggle"))
 		return parts.join("  ·  ") || undefined
 	}
 	const toggleHighlighted = () => {
@@ -244,18 +244,18 @@ function AskQuestionsView(props: {
 		return [
 			...(b && b.questions.length >= 2
 				? [
-						{ id: "ask.prev_question", title: "Previous question", group: "Dialog", bind: "left", run: () => props.controller.switchFocus(-1) },
-						{ id: "ask.next_question", title: "Next question", group: "Dialog", bind: "right", run: () => props.controller.switchFocus(1) },
+						{ id: "ask.prev_question", title: t("overlay.ask.prevQuestion"), group: "Dialog", bind: "left", run: () => props.controller.switchFocus(-1) },
+						{ id: "ask.next_question", title: t("overlay.ask.nextQuestion"), group: "Dialog", bind: "right", run: () => props.controller.switchFocus(1) },
 					]
 				: []),
-			{ id: "ask.toggle", title: "Toggle option", group: "Dialog", bind: "space", run: toggleHighlighted },
+			{ id: "ask.toggle", title: t("overlay.ask.toggleOption"), group: "Dialog", bind: "space", run: toggleHighlighted },
 		]
 	}
 	const title = () => {
 		const b = batch()
 		const q = question()
 		if (!b || !q) return ""
-		return `${askProgressTitle(b.questions, b.index)}: ${truncate70(q.prompt)}`
+		return t("overlay.ask.title", { title: askProgressTitle(b.questions, b.index), prompt: truncate70(q.prompt) })
 	}
 	let selectRefRef: DialogSelectRef<string | AskRowValue> | undefined
 	return (
@@ -305,13 +305,13 @@ function AskCustomInputView(props: {
 	Keymap.createLayer(() => ({
 		mode: "modal",
 		commands: [
-			{
-				id: "ask.custom_cancel",
-				title: "Back to options",
-				group: "Dialog",
-				bind: "escape",
-				run: () => props.controller.cancelCustomEdit(),
-			},
+				{
+					id: "ask.custom_cancel",
+					title: t("overlay.ask.customBackToOptions"),
+					group: "Dialog",
+					bind: "escape",
+					run: () => props.controller.cancelCustomEdit(),
+				},
 		],
 	}))
 	return (
@@ -322,10 +322,10 @@ function AskCustomInputView(props: {
 						titleView={
 							<box flexDirection="row">
 								<ReminderBadge />
-								<AskTitleText title="Your answer" />
+								<AskTitleText title={t("overlay.ask.customTitle")} />
 							</box>
 						}
-						title="Your answer"
+						title={t("overlay.ask.customTitle")}
 					/>
 					<text fg={theme?.text.muted} wrapMode="word">
 						{props.ask()?.questions[props.ask()?.index ?? 0]?.prompt}
@@ -336,7 +336,7 @@ function AskCustomInputView(props: {
 			<input
 				flexGrow={1}
 				value={props.ask()?.customDraft ?? ""}
-				placeholder={ASK_SENTINEL_LABEL}
+				placeholder={t("overlay.ask.sentinelLabel")}
 				placeholderColor={theme?.text.muted}
 				focusedBackgroundColor={theme?.background.formfield.focused}
 				focusedTextColor={theme?.text.formfield.focused}
@@ -378,16 +378,23 @@ function AskReviewView(props: {
 			const picks = b.picks[qi] ?? []
 			const custom = b.customs[qi]
 			const answer = custom
-				? `✎ ${custom}`
+				? t("overlay.ask.customMark", { answer: custom })
 				: picks.length > 0
 					? picks.join(", ")
 					: "—"
 			return {
-				title: `${truncate70(question.prompt)}  ${answer}`,
+				// Array join → param (design §6): the joined picks render through
+				// one `{picks}` placeholder; no picks render the em-dash. A
+				// committed custom answer (C7) rides the same slot as the
+				// `✎`-marked string.
+				title: t("overlay.ask.reviewQuestionRow", {
+					prompt: truncate70(question.prompt),
+					picks: answer,
+				}),
 				value: { kind: "question", qi },
 			}
 		})
-		rows.push({ title: "⏎ Submit answers", value: { kind: "submit" } })
+		rows.push({ title: t("overlay.ask.submitRow"), value: { kind: "submit" } })
 		return rows
 	}
 	return (
@@ -395,15 +402,15 @@ function AskReviewView(props: {
 			titleView={
 				<box flexDirection="row">
 					<ReminderBadge />
-					<AskTitleText title="Review answers" />
+					<AskTitleText title={t("overlay.ask.reviewTitle")} />
 				</box>
 			}
-			title="Review answers"
-			description="←: edit · enter: submit"
+			title={t("overlay.ask.reviewTitle")}
+			description={t("overlay.ask.reviewDescription")}
 			renderFilter={false}
 			options={options()}
 			bindings={[
-				{ id: "ask.back_to_questions", title: "Edit answers", group: "Dialog", bind: "left", run: () => props.controller.backToQuestions() },
+				{ id: "ask.back_to_questions", title: t("overlay.ask.editAnswers"), group: "Dialog", bind: "left", run: () => props.controller.backToQuestions() },
 			]}
 			onSelect={(option) => {
 				if (typeof option.value === "string") return

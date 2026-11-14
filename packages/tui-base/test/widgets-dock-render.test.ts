@@ -20,7 +20,8 @@
  * Frames are driven by `renderOnce()` (renderer.loop runs the animation
  * ticks), so the samples land on controlled wall-clock points.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { beforeAll, afterEach, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { createSignal } from "solid-js"
 import { createComponent } from "@opentui/solid"
 import { testRender } from "@opentui/solid"
@@ -28,6 +29,14 @@ import type { CapturedFrame, CapturedSpan } from "@opentui/core"
 import { WidgetsDock, resetSkinLineFades, dockAccentColor } from "../src/routes/session/widgets-dock"
 import { setMotionTier } from "../src/skin/motion"
 import type { SeamRow } from "../src/routes/session/seam-rows"
+
+// T7b: the dock/picker/palette copy now flows through t() — load the bundled
+// locales into the registry so the en values resolve in tests (T5/T6 law).
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+
 
 const WIDTH = 72
 const HEIGHT = 60 // > 50 rows → dockLineCap 3

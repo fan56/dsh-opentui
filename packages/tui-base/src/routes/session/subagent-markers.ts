@@ -6,6 +6,7 @@
  * `⏻` next to a hard-stopped child. E2E scenario 62 asserts these strings.
  */
 import { createSignal } from "solid-js"
+import { t } from "../../i18n"
 
 /** The marker-bearing subagent row slice (SessionSeam.subagentViews rows). */
 export interface SubagentMarkerView {
@@ -31,11 +32,11 @@ export function subagentMarkerSuffix(view: Pick<SubagentMarkerView, "injectedRou
 	if (view.spinStopRound !== undefined) {
 		// The early variant replaces the classic marker: the stop fired
 		// BEFORE the grace window (reference "spin-detected early").
-		suffix += ` ⏻! spin-detected early @${view.spinStopRound}`
+		suffix += ` ${t("panel.subagents.marker.spinStop", { round: String(view.spinStopRound) })}`
 	} else if (view.hardStopRound !== undefined) {
-		suffix += ` ⏻ hard-stopped @${view.hardStopRound}`
+		suffix += ` ${t("panel.subagents.marker.hardStop", { round: String(view.hardStopRound) })}`
 	}
-	if (view.injectedRound !== undefined) suffix += ` ⚡ injected`
+	if (view.injectedRound !== undefined) suffix += ` ${t("panel.subagents.marker.injected")}`
 	return suffix
 }
 

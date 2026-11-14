@@ -5,12 +5,13 @@
  *   - provider segment's ☁️ lead
  *   - tools / tps / durable-message wiring through sessionFooterSegments
  *   - the 8-segment hint bar: per-segment toggles, busy/idle state wording,
- *     the conditional ↓ subagents gate, and the four label languages
- *     (tui-pi locales `footer.hint.*` parity).
+ *     the conditional ↓ subagents gate, and the en/zh golden label wording
+ *     (T8 fold — the labels are `footer.hint.*` registry keys now).
  */
-import { describe, expect, test, beforeEach } from "bun:test"
+import { describe, expect, test, beforeEach, beforeAll } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	EFFORT_ICONS,
 	effortIcon,
@@ -22,7 +23,6 @@ import {
 import {
 	DEFAULT_FOOTER_HINTS,
 	FOOTER_HINT_IDS,
-	HINT_LOCALES,
 	hintInState,
 	hintLabel,
 	hintsText,
@@ -100,7 +100,14 @@ describe("footer wiring: tools / tps / durable messages", () => {
 	})
 })
 
-describe("hint bar: 8 segments × 4 languages (tui-pi FooterHints parity)", () => {
+describe("hint bar: 8 segments, en/zh golden wording (tui-pi FooterHints parity)", () => {
+	// T8 fold: labels ride the i18n registry — the bundled locales must be in
+	// (t() fail-open would render the bare keys on an empty registry).
+	let languages: Map<string, import("@dsh-opentui/i18n").LocaleTable>
+	beforeAll(() => {
+		languages = loadLocales({ bundledDir: bundledLocalesDir() }).languages
+		setLanguages(languages)
+	})
 	beforeEach(() => {
 		setFooterHints({ ...DEFAULT_FOOTER_HINTS })
 		setHintsLocale("en")
@@ -159,18 +166,17 @@ describe("hint bar: 8 segments × 4 languages (tui-pi FooterHints parity)", () =
 		expect(hintsText(true, true, true)).not.toContain("↓ subagents")
 	})
 
-	test("four languages: en / zh-CN / ja / ko labels (tui-pi locales wording)", () => {
-		setHintsLocale("zh-CN")
-		expect(hintsText(false)).toContain("enter 发送")
-		expect(hintsText(true)).toContain("esc 停止")
+	test("en + zh-CN golden wording matches the folded table verbatim (design §5.6)", () => {
+		// T8: the label language is the boot-fixed registry language, so the
+		// golden check flips it via setLanguages (the hintsLocale signal is
+		// persistence-only now). ja/ko are gone by contract §1 — no bundled
+		// file, the boot chain degrades those picks to en.
+		expect(hintsText(false)).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
+		setLanguages(languages, "zh-CN")
+		expect(hintsText(false)).toBe("⌨ enter 发送 · alt+enter 换行 · ↑↓ 历史 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c ×2 退出")
+		expect(hintsText(true)).toBe("⌨ enter 插话 · esc 停止 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c ×2 退出")
 		expect(hintsText(true, true, true)).toContain("↓ 子代理")
-		setHintsLocale("ja")
-		expect(hintsText(false)).toContain("enter 送信")
-		expect(hintsText(true, true, true)).toContain("↓ サブエージェント")
-		setHintsLocale("ko")
-		expect(hintsText(false)).toContain("enter 전송")
-		expect(hintsText(true, true, true)).toContain("↓ 서브에이전트")
-		setHintsLocale("en")
+		setLanguages(languages)
 		expect(hintsLocale()).toBe("en")
 		expect(hintsText(false)).toContain("enter send")
 	})
@@ -180,46 +186,44 @@ describe("hint bar: 8 segments × 4 languages (tui-pi FooterHints parity)", () =
 	})
 })
 
-describe("hint bar width upper bounds (4 languages, terminal columns)", () => {
+describe("hint bar width upper bounds (en/zh, terminal columns)", () => {
 	// Bounds are TERMINAL COLUMNS (stringWidth — the P1-1 CJK law: one CJK
 	// code point is 2 columns), measured per segment per language per state.
 	// The row clips at viewport-width - 2 BY DESIGN (wrapMode="none" +
-	// clipToWidth — tui-pi clips its 105-col regression row the same way,
-	// ja wording runs wider still), so these caps pin the designed ceilings:
-	// wording growth must fail here loudly instead of silently truncating
-	// mid-glyph on a narrow terminal.
-	// 20 = the widest designed label, ja scroll "pgup/pgdn スクロール"
-	// (10 ascii + 5 CJK×2); one segment never eats more than ~¼ of the
+	// clipToWidth — tui-pi clips its 105-col regression row the same way),
+	// so these caps pin the designed ceilings: wording growth must fail here
+	// loudly instead of silently truncating mid-glyph on a narrow terminal.
+	// T8: the ja/ko columns are gone with the typed table (contract §1 — no
+	// bundled file; the boot chain degrades those picks to en).
+	// 19 = the widest designed bundled label, en search "ctrl+shift+f search"
+	// (19 ascii); one segment never eats more than ~¼ of the
 	// common 80-column viewport's 78 usable columns.
-	const SEGMENT_CAP = 20
+	const SEGMENT_CAP = 19
 	// All-on full-row ceilings measured at implementation (idle includes the
-	// conditional ↓ subagents segment live; busy likewise). ja idle (120) is
+	// conditional ↓ subagents segment live; busy likewise). en idle (117) is
 	// the global worst case — the designed maximum row.
-	const ROW_CAPS = { en: 117, "zh-CN": 104, ja: 120, ko: 114 }
-	const BUSY_ROW_CAPS = { en: 96, "zh-CN": 88, ja: 106, ko: 100 }
+	const ROW_CAPS = { en: 117, "zh-CN": 104 }
+	const BUSY_ROW_CAPS = { en: 96, "zh-CN": 88 }
 
-	test("every segment label in every language and state stays ≤ 20 columns", () => {
-		for (const locale of HINT_LOCALES) {
-			for (const id of FOOTER_HINT_IDS) {
-				for (const busy of [false, true]) {
-					const label = hintLabel(id, busy, locale)
-					if (!label) continue // segment absent from this state
-					expect(stringWidth(label)).toBeLessThanOrEqual(SEGMENT_CAP)
-				}
+	test("every segment label in every language and state stays within its cap", () => {
+		for (const id of FOOTER_HINT_IDS) {
+			for (const busy of [false, true]) {
+				const label = hintLabel(id, busy)
+				if (!label) continue // segment absent from this state
+				expect(stringWidth(label)).toBeLessThanOrEqual(SEGMENT_CAP)
 			}
 		}
 	})
 
-	test("the design ceiling is hit exactly by ja scroll (the widest label)", () => {
-		expect(stringWidth(hintLabel("scroll", false, "ja"))).toBe(SEGMENT_CAP)
-	})
-
 	test("each language's all-on row stays under its pinned ceiling (idle + busy)", () => {
+		const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
 		const hints: FooterHints = { ...DEFAULT_FOOTER_HINTS }
-		for (const locale of HINT_LOCALES) {
-			expect(stringWidth(hintsText(false, true, true, hints, locale))).toBeLessThanOrEqual(ROW_CAPS[locale])
-			expect(stringWidth(hintsText(true, true, true, hints, locale))).toBeLessThanOrEqual(BUSY_ROW_CAPS[locale])
+		for (const language of Object.keys(ROW_CAPS)) {
+			setLanguages(languages, language)
+			expect(stringWidth(hintsText(false, true, true, hints))).toBeLessThanOrEqual(ROW_CAPS[language as keyof typeof ROW_CAPS])
+			expect(stringWidth(hintsText(true, true, true, hints))).toBeLessThanOrEqual(BUSY_ROW_CAPS[language as keyof typeof BUSY_ROW_CAPS])
 		}
+		setLanguages(languages)
 	})
 })
 

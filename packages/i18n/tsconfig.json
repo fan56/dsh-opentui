@@ -1,0 +1,12 @@
+{
+  "extends": "@tsconfig/bun/tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun"],
+    "lib": ["ESNext"],
+    "noUncheckedIndexedAccess": false,
+    "noUnusedLocals": true,
+    "noImplicitAny": false,
+    "verbatimModuleSyntax": false
+  },
+  "include": ["src", "test"]
+}

@@ -45,6 +45,7 @@ import {
 	type PanelHandle,
 } from "@dsh-opentui/panel-kit"
 import { Keymap } from "../../context/keymap"
+import { t } from "../../i18n"
 import { useDialog } from "../../ui/dialog"
 import { DialogPrompt } from "../../ui/dialog-prompt"
 import { useThemeOptional } from "../../context/theme"
@@ -126,7 +127,8 @@ export function viewerRowText(
 	const cap = roundCap !== undefined && roundCap > 0 ? `/${roundCap}` : ""
 	const elapsed = elapsedText !== undefined && elapsedText !== "" ? ` · ${elapsedText}` : ""
 	const model = view.model !== undefined ? ` · ${view.model}` : ""
-	return `${glyph} ${label} · rounds ${view.rounds}${cap}${elapsed}${model}${suffix ? ` ${suffix.trim()}` : ""}`
+	const rounds = t("panel.subagents.row.rounds", { count: String(view.rounds) })
+	return `${glyph} ${label} · ${rounds}${cap}${elapsed}${model}${suffix ? ` ${suffix.trim()}` : ""}`
 }
 
 /** Human elapsed display (tui-pi formatElapsed parity): `42.1s`, then `3m12s`. */
@@ -179,12 +181,14 @@ export function transcriptWindow(
 /** The steer outcome echo (the picker's e2e-asserted shapes). */
 export function steerEchoText(sent: boolean, label: string): string {
 	const agent = Locale.titlecase(label)
-	return sent ? `steered ${agent.toLowerCase()}` : `steer rejected — ${agent} is not running`
+	return sent
+		? t("panel.subagents.echo.steered", { name: agent.toLowerCase() })
+		: t("panel.subagents.echo.rejected", { name: agent })
 }
 
 /** The stop-all summary (tui-pi viewer.stopAllOne/Many parity). */
 export function stopAllSummary(stopped: number): string {
-	return stopped === 1 ? "stop requested — 1 subagent" : `stop requested — ${stopped} subagents`
+	return stopped === 1 ? t("panel.subagents.stopAll.one") : t("panel.subagents.stopAll.many", { count: String(stopped) })
 }
 
 /** Whether a second `x` press within the window completes the double press.
@@ -264,13 +268,13 @@ export function SubagentsViewer(props: {
 	function stopAll() {
 		const seam = props.seam
 		if (seam.interruptChild === undefined) {
-			flash("stop unavailable — no interrupt face in this session")
+			flash(t("panel.subagents.status.stopUnavailable"))
 			return
 		}
 		const targets = views().filter((view) => view.status === "running")
 		if (targets.length === 0) {
 			stopAllLatch = false
-			flash("no running subagents to stop")
+			flash(t("panel.subagents.status.noneRunning"))
 			return
 		}
 		if (stopAllLatch) {
@@ -280,7 +284,7 @@ export function SubagentsViewer(props: {
 		stopAllLatch = true
 		for (const target of targets) {
 			void seam.interruptChild(target.id).catch((error: unknown) => {
-				flash(`stop failed — ${String(error instanceof Error ? error.message : error).slice(0, 120)}`)
+				flash(t("panel.subagents.status.stopFailed", { error: String(error instanceof Error ? error.message : error).slice(0, 120) }))
 			})
 		}
 		flash(stopAllSummary(targets.length))
@@ -332,7 +336,7 @@ export function SubagentsViewer(props: {
 		// an effect watching a signal would re-trigger on the stack's layers).
 		transcriptHandle = panels.open(() => renderTranscript(), {
 			id: `subagents-transcript-${++sequence}`,
-			title: "Subagent transcript",
+			title: t("panel.subagents.title.transcript"),
 			size: "xlarge",
 			onClose: () => {
 				transcriptHandle = undefined
@@ -348,18 +352,18 @@ export function SubagentsViewer(props: {
 		const id = browsingId()
 		if (view === undefined || id === undefined) return
 		if (view.status !== "running") {
-			flash("this subagent has ended — steering unavailable")
+			flash(t("panel.subagents.status.steerEnded"))
 			return
 		}
 		if (props.seam.steerChild === undefined) {
-			flash("steer unavailable in this session")
+			flash(t("panel.subagents.status.steerUnavailable"))
 			return
 		}
 		const agent = Locale.titlecase(view.label)
 		dialog.replace(() => (
 			<DialogPrompt
-				title={`Steer ${agent}`}
-				placeholder="Steer message"
+				title={t("panel.subagents.dialog.steerTitle", { name: agent })}
+				placeholder={t("panel.subagents.dialog.steerPlaceholder")}
 				onConfirm={(value) => {
 					const text = value.trim()
 					dialog.clear()
@@ -380,23 +384,23 @@ export function SubagentsViewer(props: {
 		const now = Date.now()
 		if (!doublePressArmed(lastXPress, now)) {
 			lastXPress = now
-			flash("press x again to stop this subagent")
+			flash(t("panel.subagents.status.pressX"))
 			return
 		}
 		lastXPress = 0
 		if (view.status !== "running") {
-			flash("nothing to stop — this subagent has ended")
+			flash(t("panel.subagents.status.nothingToStop"))
 			return
 		}
 		const face = props.seam.interruptChild
 		if (face === undefined) {
-			flash("stop unavailable — no interrupt face in this session")
+			flash(t("panel.subagents.status.stopUnavailable"))
 			return
 		}
 		void face(id)
-			.then(() => flash(`stop requested — ${Locale.titlecase(view.label)}`))
+			.then(() => flash(t("panel.subagents.status.stopRequested", { name: Locale.titlecase(view.label) })))
 			.catch((error: unknown) => {
-				flash(`stop failed — ${String(error instanceof Error ? error.message : error).slice(0, 120)}`)
+				flash(t("panel.subagents.status.stopFailed", { error: String(error instanceof Error ? error.message : error).slice(0, 120) }))
 			})
 	}
 
@@ -421,7 +425,7 @@ export function SubagentsViewer(props: {
 		setOpen(true)
 		handle = panels.open(() => renderList(), {
 			id: `subagents-${++sequence}`,
-			title: "Subagents",
+			title: t("panel.subagents.title.list"),
 			size: "xlarge",
 			onClose: () => {
 				handle = undefined
@@ -441,11 +445,11 @@ export function SubagentsViewer(props: {
 			enabled: open() && transcriptHandle === undefined && handle !== undefined && handle === top && dialog.stack.length === 0,
 			priority: 2,
 			commands: [
-				{ bind: "up,k", title: "Subagents: previous child", group: "Subagents", run: () => moveCursor(-1) },
-				{ bind: "down,j", title: "Subagents: next child", group: "Subagents", run: () => moveCursor(1) },
+				{ bind: "up,k", title: t("panel.subagents.keymap.previous"), group: "Subagents", run: () => moveCursor(-1) },
+				{ bind: "down,j", title: t("panel.subagents.keymap.next"), group: "Subagents", run: () => moveCursor(1) },
 				{
 					bind: "return",
-					title: "Subagents: open transcript",
+					title: t("panel.subagents.keymap.openTranscript"),
 					group: "Subagents",
 					run: () => {
 						const row = rows()[cursor()]
@@ -455,14 +459,14 @@ export function SubagentsViewer(props: {
 				},
 				{
 					bind: "s",
-					title: "Subagents: sort by rounds",
+					title: t("panel.subagents.keymap.sort"),
 					group: "Subagents",
 					run: () => {
 						setSortByRounds((value) => !value)
 						return true
 					},
 				},
-				{ bind: "shift+k", title: "Subagents: stop all running", group: "Subagents", run: stopAll },
+				{ bind: "shift+k", title: t("panel.subagents.keymap.stopAll"), group: "Subagents", run: stopAll },
 			],
 		}
 	})
@@ -474,10 +478,10 @@ export function SubagentsViewer(props: {
 			enabled: open() && transcriptHandle !== undefined && transcriptHandle === top && dialog.stack.length === 0,
 			priority: 2,
 			commands: [
-				{ bind: "up,k", title: "Transcript: scroll up", group: "Subagents", run: () => scrollBy(-1) },
-				{ bind: "down,j", title: "Transcript: scroll down", group: "Subagents", run: () => scrollBy(1) },
-				{ bind: "return", title: "Transcript: steer subagent", group: "Subagents", run: openSteer },
-				{ bind: "x", title: "Transcript: press twice to stop", group: "Subagents", run: stopChild },
+				{ bind: "up,k", title: t("panel.subagents.keymap.scrollUp"), group: "Subagents", run: () => scrollBy(-1) },
+				{ bind: "down,j", title: t("panel.subagents.keymap.scrollDown"), group: "Subagents", run: () => scrollBy(1) },
+				{ bind: "return", title: t("panel.subagents.keymap.steer"), group: "Subagents", run: openSteer },
+				{ bind: "x", title: t("panel.subagents.keymap.stopTwice"), group: "Subagents", run: stopChild },
 			],
 		}
 	})
@@ -491,11 +495,18 @@ export function SubagentsViewer(props: {
 	const bodyWidth = 110
 
 	function headerText(view: SeamSubagentView | undefined, now: number): string {
-		if (view === undefined) return "subagent"
+		if (view === undefined) return t("panel.subagents.header.fallback")
 		const status =
-			view.status === "running" ? "running" : view.status === "completed" ? "completed" : view.status === "failed" ? "failed" : "cancelled"
+			view.status === "running"
+				? t("panel.subagents.status.running")
+				: view.status === "completed"
+					? t("panel.subagents.status.completed")
+					: view.status === "failed"
+						? t("panel.subagents.status.failed")
+						: t("panel.subagents.status.cancelled")
 		const elapsed = rowElapsedText(view, now)
-		const parts = [`${Locale.titlecase(view.label)} · ${status} · rounds ${view.rounds}`]
+		const rounds = t("panel.subagents.row.rounds", { count: String(view.rounds) })
+		const parts = [`${Locale.titlecase(view.label)} · ${status} · ${rounds}`]
 		if (elapsed !== undefined) parts.push(elapsed)
 		if (view.model !== undefined) parts.push(view.model)
 		return clip(parts.join(" · "), bodyWidth)
@@ -513,7 +524,7 @@ export function SubagentsViewer(props: {
 						when={list.length > 0}
 						fallback={
 							<text fg={muted} wrapMode="none">
-								{`no subagents in this session — spawn one and it shows up here`}
+								{t("panel.subagents.empty.none")}
 							</text>
 						}
 					>
@@ -539,7 +550,7 @@ export function SubagentsViewer(props: {
 						</text>
 					</Show>
 				</PanelBody>
-				<PanelActions hint={sortByRounds() ? "↑↓ select · enter transcript · s start order · shift+k stop all · esc close" : "↑↓ select · enter transcript · s sort by rounds · shift+k stop all · esc close"} />
+				<PanelActions hint={sortByRounds() ? t("panel.subagents.hint.listSorted") : t("panel.subagents.hint.list")} />
 			</box>
 		)
 	}
@@ -561,7 +572,7 @@ export function SubagentsViewer(props: {
 						when={facePresent}
 						fallback={
 							<text fg={muted} wrapMode="none">
-								{`transcript unavailable in this session (no subagent transcript face)`}
+								{t("panel.subagents.transcript.unavailable")}
 							</text>
 						}
 					>
@@ -569,7 +580,7 @@ export function SubagentsViewer(props: {
 							when={lines.length > 0}
 							fallback={
 								<text fg={muted} wrapMode="none">
-									{`no activity yet — the child's events land here live`}
+									{t("panel.subagents.transcript.empty")}
 								</text>
 							}
 						>
@@ -585,7 +596,7 @@ export function SubagentsViewer(props: {
 							<Show when={lines.length > TRANSCRIPT_ROWS}>
 								<box height={1} flexShrink={0}>
 									<text fg={muted} wrapMode="none">
-										{`${win.start + 1}-${win.end}/${lines.length}${win.follow ? " (following)" : " (detached — scroll to the bottom to re-follow)"}`}
+										{`${win.start + 1}-${win.end}/${lines.length}${win.follow ? t("panel.subagents.transcript.following") : t("panel.subagents.transcript.detached")}`}
 									</text>
 								</box>
 							</Show>
@@ -597,7 +608,7 @@ export function SubagentsViewer(props: {
 						</text>
 					</Show>
 				</PanelBody>
-				<PanelActions hint="↑↓ scroll · enter steer · x×2 stop · esc back" />
+				<PanelActions hint={t("panel.subagents.hint.transcript")} />
 			</box>
 		)
 	}

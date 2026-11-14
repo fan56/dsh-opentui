@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { DEFAULT_THEMES, getDshBlueTheme, parseTheme } from "../src/theme/index"
 import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
 import { createComponentTheme } from "../src/theme/component"
@@ -19,6 +20,14 @@ import {
 import { activityRuleLines, TODO_MAX_ROWS, todosTableLines } from "../src/routes/session/widgets-dock"
 import type { SeamRow } from "../src/routes/session/seam-rows"
 import type { ComponentTheme } from "../src/theme/component"
+
+// T7b: the dock/picker/palette copy now flows through t() — load the bundled
+// locales into the registry so the en values resolve in tests (T5/T6 law).
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+
 
 /** Minimal ComponentTheme stub: the resolvers only read these token paths,
  * and hex strings satisfy the `RGBA | string` color types, so the tests

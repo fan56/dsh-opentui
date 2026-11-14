@@ -4,7 +4,7 @@
  * steer/stop echoes) plus the command wiring (degrade / honest empty / hook /
  * pinned entry hook — the /agents incident law).
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import {
 	doublePressArmed,
 	formatViewerElapsed,
@@ -21,6 +21,14 @@ import { coreCommands, type SlashCommandContext } from "../src/routes/session/co
 import { ENTRY_SLASH_HOOKS } from "../src/routes/session/slash-deps"
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import type { SeamSubagentView } from "../src/seams/session"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 function view(overrides: Partial<SeamSubagentView> & { id: string }): SeamSubagentView {
 	return {

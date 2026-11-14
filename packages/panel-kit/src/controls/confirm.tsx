@@ -25,6 +25,7 @@
  */
 import { useKeyboard } from "@opentui/solid"
 import { createSignal, onCleanup, onMount, type Accessor, type JSX } from "solid-js"
+import { t } from "@dsh-opentui/i18n"
 import type {
   ConfirmDialogProps,
   PanelButtonVariant,
@@ -193,9 +194,10 @@ export function ConfirmDialog(props: ConfirmDialogProps): JSX.Element {
       <box flexDirection="row" justifyContent="flex-end" flexShrink={0}>
         <text fg={theme().text.muted} attributes={theme().attributes.keyHint} wrapMode="none">
           {/* The Esc verb follows the cancel button's own label, so a consumer
-              that renames Cancel ("返回" in /settings) never sees the hint and
-              the button disagree. */}
-          {`←→ 选择 · Enter 确认 · Esc ${props.cancelLabel ?? "Cancel"}`}
+              that renames Cancel never sees the hint and the button disagree.
+              Kit copy goes through t() ( locales via @dsh-opentui/i18n — the
+              kit must not depend on tui-base). */}
+          {t("panel.confirm.hint", { cancel: props.cancelLabel ?? "Cancel" })}
         </text>
       </box>
     </box>

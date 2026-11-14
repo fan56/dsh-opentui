@@ -4,11 +4,13 @@
  * and settings path-op shape), the conflict retry contract, the read-only
  * profile lockout, the Esc hierarchy and the module-signal lifetime.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, beforeAll } from "bun:test"
 import { createRoot } from "solid-js"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	LOCAL_SETTING_IDS,
-	SETTINGS_ZONE_TITLES,
+	SETTINGS_ZONES,
+	settingsZoneTitle,
 	buildHostItems,
 	buildLocalItems,
 	buildOtherItems,
@@ -32,6 +34,13 @@ import {
 } from "../src/routes/session/settings-panel"
 import { DEFAULT_FOOTER_HINTS } from "../src/routes/session/hints-line"
 import type { SeamSettingsDocument, SeamSettingsRow } from "../src/seams/session"
+
+// The settings copy resolves through `t()` (T5 facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 function doc(namespaces: SeamSettingsRow[], writable = true): SeamSettingsDocument {
 	return { writable, hasDocument: true, namespaces }
@@ -78,7 +87,7 @@ describe("v1 whitelist", () => {
 		const items = buildOtherItems(subagentDoc)
 		expect(items.map((item) => item.label)).toEqual(["ui-theme", "llm-pi-ai"])
 		expect(items.every((item) => item.editable === false)).toBe(true)
-		expect(items.every((item) => item.note === "只读 · 本 TUI 不消费")).toBe(true)
+		expect(items.every((item) => item.note === "read-only · not consumed by this TUI")).toBe(true)
 	})
 
 	test("namespace count excludes nothing (header reports the document size)", () => {
@@ -116,7 +125,7 @@ describe("host baseline (n/a, never a guessed default)", () => {
 		expect(settingsWritable(doc([], false), undefined, true)).toEqual({
 			local: false,
 			host: false,
-			reason: "profile 的 settings 文档只读（writable: false）— 已禁用全部写控件",
+			reason: "the profile's settings document is read-only (writable: false) — all write controls disabled",
 		})
 		const locked = localItems(false)
 		expect(locked.every((item) => item.editable === false)).toBe(true)
@@ -126,14 +135,14 @@ describe("host baseline (n/a, never a guessed default)", () => {
 		const verdict = settingsWritable(undefined, undefined, false)
 		expect(verdict.local).toBe(true)
 		expect(verdict.host).toBe(false)
-		expect(verdict.reason).toContain("不可用")
+		expect(verdict.reason).toContain("unavailable")
 	})
 
 	test("a failed describe keeps LOCAL writes enabled (configSave is independent)", () => {
 		const verdict = settingsWritable(undefined, "connection refused", true)
 		expect(verdict.local).toBe(true)
 		expect(verdict.host).toBe(false)
-		expect(verdict.reason).toContain("本地偏好仍可写")
+		expect(verdict.reason).toContain("local preferences still writable")
 	})
 })
 
@@ -181,7 +190,7 @@ describe("schema extraction", () => {
 		)
 		const preset = items.find((item) => item.id === "permission.defaultPreset")!
 		expect(preset.options).toBeUndefined()
-		expect(preset.note).toBe("无 preset catalog（permissionPresets/catalog 不可用）— 只读展示生效值")
+		expect(preset.note).toBe("no preset catalog (permissionPresets/catalog unavailable) — read-only, shows the effective value")
 		expect(preset.editable).toBe(false)
 	})
 
@@ -233,7 +242,7 @@ describe("schema extraction", () => {
 		const preset = items.find((item) => item.id === "permission.defaultPreset")!
 		expect(preset.options).toBeUndefined()
 		expect(preset.editable).toBe(false)
-		expect(preset.note).toBe("catalog 未声明可选项 — 只读展示生效值")
+		expect(preset.note).toBe("catalog declares no options — read-only, shows the effective value")
 		expect(preset.value).toBe("workspace-write") // still shows the effective value
 	})
 
@@ -245,7 +254,7 @@ describe("schema extraction", () => {
 		})
 		const preset = items.find((item) => item.id === "permission.defaultPreset")!
 		expect(preset.value).toBe("workspace-write")
-		expect(preset.note).toContain("不在 catalog 默认选项中")
+		expect(preset.note).toContain("not among the catalog default options")
 	})
 
 	test("a schema-served presets dict is a valid-value list, returned unfiltered", () => {
@@ -362,7 +371,7 @@ describe("local write plan (configSave patch shapes)", () => {
 	})
 
 	test("an empty enum/text value is refused", () => {
-		expect(planLocalWrite(item("hintsLocale"), "", DEFAULT_FOOTER_HINTS)).toEqual({
+		expect(planLocalWrite(item("lang"), "", DEFAULT_FOOTER_HINTS)).toEqual({
 			ok: false,
 			error: "value must not be empty",
 		})
@@ -579,7 +588,7 @@ describe("rendering + filtering", () => {
 			hasDocument: false,
 		})
 		const text = lines.map((line) => line.text).join("\n")
-		for (const title of Object.values(SETTINGS_ZONE_TITLES)) expect(text).toContain(title)
+		for (const zone of SETTINGS_ZONES) expect(text).toContain(settingsZoneTitle(zone))
 		expect(text).toContain("no setting matches")
 	})
 
@@ -602,15 +611,15 @@ describe("rendering + filtering", () => {
 	test("filtering matches label, value and source; the whitelist order survives", () => {
 		expect(filterSettingsItems(items, "footerHints.quit").map((item) => item.id)).toEqual(["footerHints.quit"])
 		expect(filterSettingsItems(items, "cordis.patch.yml").every((item) => item.zone === "host")).toBe(true)
-		expect(filterSettingsItems(items, "本 TUI 不消费").every((item) => item.zone === "other")).toBe(true)
+		expect(filterSettingsItems(items, "not consumed by this tui").every((item) => item.zone === "other")).toBe(true)
 		expect(filterSettingsItems(items, "").length).toBe(items.length)
 	})
 
 	test("the options layer renders a failed write's status (the list footer is off screen)", () => {
 		const item = items.find((candidate) => candidate.id === "motion")!
-		const lines = settingsOptionLines(item, item.options ?? [], 0, 120, "✘ 写入失败：disk full")
+		const lines = settingsOptionLines(item, item.options ?? [], 0, 120, "✘ write failed: disk full")
 		const text = lines.map((line) => line.text).join("\n")
-		expect(text).toContain("✘ 写入失败：disk full")
+		expect(text).toContain("✘ write failed: disk full")
 		const clean = settingsOptionLines(item, item.options ?? [], 0, 120)
 		expect(clean.map((line) => line.text).join("\n")).not.toContain("✘")
 	})
@@ -633,13 +642,13 @@ describe("rendering + filtering", () => {
 			width: 140,
 			filter: "",
 			writable: false,
-			writableReason: "profile 的 settings 文档只读（writable: false）— 已禁用全部写控件",
+			writableReason: "the profile's settings document is read-only (writable: false) — all write controls disabled",
 			namespaceCount: 4,
 			hasDocument: true,
 		})
 		const text = lines.map((line) => line.text).join("\n")
 		expect(text).toContain("document read-only")
-		expect(text).toContain("已禁用全部写控件")
+		expect(text).toContain("all write controls disabled")
 	})
 
 	test("exit summary", () => {

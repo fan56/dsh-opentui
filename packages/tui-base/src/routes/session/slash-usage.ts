@@ -7,7 +7,8 @@
  * moving the selection, or Tab-completing never touches the counter.
  *
  * Persistence reuses the ONE config seam every other UI preference already
- * rides (`/motion`'s `motion` key, `/hints`' `footerHints`/`hintsLocale`):
+ * rides (`/motion`'s `motion` key, `/hints`' `footerHints`, `/language`'s
+ * unified `lang` key):
  * `seam.configLoad()` at construction, `seam.configSave({ slashUsage })` after
  * a dispatch. The shell adapter routes unlisted keys to the profile
  * `config.json`, so the counts survive a restart with no new store file and

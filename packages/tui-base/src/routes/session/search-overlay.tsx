@@ -43,6 +43,7 @@ import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-j
 import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
 import { useDialog } from "../../ui/dialog"
+import { t } from "../../i18n"
 import { useThemeOptional } from "../../context/theme"
 import { focusedBorderColor, skinCursor } from "../../skin/semantic"
 import { useCursorStyle } from "../../config"
@@ -94,11 +95,12 @@ export function findMatchRowIndices(rows: readonly SeamRow[], query: string): nu
 	return hits
 }
 
-/** The find bar's status label: "" (no query), "N/M" (current/total), or
- * the reference's "No matches" for a live query with zero hits. */
+/** The find bar's status label: "" (no query), "N/M" (current/total — a
+ * locale-neutral numeric counter), or the reference's "No matches" for a
+ * live query with zero hits. */
 export function formatMatchStatus(query: string, matchCount: number, matchIndex: number): string {
 	if (!query.trim()) return ""
-	if (matchCount === 0) return "No matches"
+	if (matchCount === 0) return t("overlay.search.noMatches")
 	const current = ((matchIndex % matchCount) + matchCount) % matchCount
 	return `${current + 1}/${matchCount}`
 }
@@ -241,9 +243,9 @@ export function SearchOverlay(props: SearchOverlayProps) {
 		enabled: open() && dialog.stack.length === 0,
 		priority: 2,
 		commands: [
-			{ bind: "escape", title: "Close transcript search", group: "Search", run: close },
-			{ bind: "return", title: "Next match", group: "Search", run: () => move(1) },
-			{ bind: "shift+return", title: "Previous match", group: "Search", run: () => move(-1) },
+			{ bind: "escape", title: t("overlay.search.closeTitle"), group: "Search", run: close },
+			{ bind: "return", title: t("overlay.search.nextMatch"), group: "Search", run: () => move(1) },
+			{ bind: "shift+return", title: t("overlay.search.previousMatch"), group: "Search", run: () => move(-1) },
 		],
 	}))
 
@@ -255,7 +257,7 @@ export function SearchOverlay(props: SearchOverlayProps) {
 		commands: [
 			{
 				id: "session.search",
-				title: "Search transcript",
+				title: t("overlay.search.commandTitle"),
 				group: "Session",
 				run: openBar,
 			},
@@ -275,7 +277,7 @@ export function SearchOverlay(props: SearchOverlayProps) {
 			>
 				<input
 					flexGrow={1}
-					placeholder="Find in transcript"
+					placeholder={t("overlay.search.placeholder")}
 					placeholderColor={theme?.text.muted ?? "#565f89"}
 					focusedTextColor={theme?.text.base ?? "#e6e6e6"}
 					textColor={theme?.text.base ?? "#e6e6e6"}

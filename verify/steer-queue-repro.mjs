@@ -9,11 +9,11 @@
 //      two-row choice on the dialog stack ("Turn running — steer or queue?",
 //      rows Steer/Queue, Steer highlighted first);
 //   2. choosing Queue paints the wait row in the transcript
-//      ("⏸ 排队等待 #1");
+//      ("⏸ Queued #1");
 //   3. aborting that turn (Esc) KEEPS the queue and marks it paused
-//      ("⏸ 已暂停 #1") — the documented failure/abort policy;
+//      ("⏸ Paused #1") — the documented failure/abort policy;
 //   4. choosing Steer paints the injection receipt
-//      ("⤵ 已注入当前回合") and it flips to "✓ 已投递" at turn end.
+//      ("⤵ Injected into the current turn") and it flips to "✓ Delivered" at turn end.
 //
 // Exit 0 = every check passed; exit 1 = at least one failed (pane captures are
 // kept under verify/steer-queue-out/); exit 2 = environment problem.
@@ -164,17 +164,17 @@ try {
   sendKeys(SESS, 'Down')
   await sleep(120)
   sendKeys(SESS, 'Enter')
-  const queued = await waitPane(SESS, (o) => has(o, '排队等待') && has(o, '#1'), 8_000)
+  const queued = await waitPane(SESS, (o) => has(o, 'Queued') && has(o, '#1'), 8_000)
   snap('03-queued')
   record('Queue paints the numbered wait row', queued.ok,
-    [queued.ok ? '⏸ 排队等待 #1 visible' : 'queue row not visible'])
+    [queued.ok ? '⏸ Queued #1 visible' : 'queue row not visible'])
 
   // ---------------- 3. abort keeps the queue (paused) ----------------
   sendKeys(SESS, 'Escape')
-  const paused = await waitPane(SESS, (o) => has(o, '已暂停') && has(o, '#1'), 10_000)
+  const paused = await waitPane(SESS, (o) => has(o, 'Paused') && has(o, '#1'), 10_000)
   snap('04-paused')
   record('abort keeps the queue and marks it paused', paused.ok,
-    [paused.ok ? '⏸ 已暂停 #1 visible' : 'paused queue row not visible'])
+    [paused.ok ? '⏸ Paused #1 visible' : 'paused queue row not visible'])
   await waitPane(SESS, idle, 15_000)
 
   // ---------------- 4. Steer paints the injection receipt ----------------
@@ -185,10 +185,10 @@ try {
     sendKeys(SESS, 'Enter') // default highlight = Steer
     await sleep(150)
   }
-  const injected = await waitPane(SESS, (o) => has(o, '已注入当前回合'), 8_000)
+  const injected = await waitPane(SESS, (o) => has(o, 'Injected into the current turn'), 8_000)
   snap('05-steer-injected')
   record('Steer paints the injected receipt', steerPopup.ok && injected.ok,
-    [steerPopup.ok ? 'choice reopened' : 'choice did not reopen', injected.ok ? '⤵ 已注入当前回合 visible' : 'steer receipt not visible'])
+    [steerPopup.ok ? 'choice reopened' : 'choice did not reopen', injected.ok ? '⤵ Injected into the current turn visible' : 'steer receipt not visible'])
 
   // Abort the turn to make the receipt transition deterministic (an abort also
   // delivers the injected steer). Two Escapes: the first closes any ask card
@@ -196,10 +196,10 @@ try {
   sendKeys(SESS, 'Escape')
   await sleep(350)
   sendKeys(SESS, 'Escape')
-  const delivered = await waitPane(SESS, (o) => has(o, '已投递'), 20_000)
+  const delivered = await waitPane(SESS, (o) => has(o, 'Delivered'), 20_000)
   snap('06-steer-delivered')
   record('the steer receipt flips to delivered at turn end', delivered.ok,
-    [delivered.ok ? '✓ 已投递 visible' : 'delivered receipt not visible'])
+    [delivered.ok ? '✓ Delivered visible' : 'delivered receipt not visible'])
 
   const err = capture(SESS)
   const crash = /TypeError|ReferenceError|Cannot read propert|Unhandled error|panic/.exec(err)

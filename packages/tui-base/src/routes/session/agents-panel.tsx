@@ -50,12 +50,15 @@ import {
 	type PanelHandle,
 } from "@dsh-opentui/panel-kit"
 import { Keymap } from "../../context/keymap"
+import { t } from "../../i18n"
 import { stringWidth } from "../../util/string-width"
 import type { SeamAgentOfficialCaps, SeamAgentRow, SeamEffortOption, SessionSeam } from "../../seams/session"
 import { openSettingsPanel } from "./settings-panel"
 
-const INHERIT = "(inherit)"
-const INHERIT_DEFAULT = "(inherit — default model)"
+// Translated value placeholders (read-time `t()`, never module-top-baked —
+// design §6 getter law).
+const inheritValue = () => t("panel.agents.value.inherit")
+const inheritDefaultValue = () => t("panel.agents.value.inheritDefault")
 /** Rows per paged window (List.pageSize); the kit pages, not the consumer. */
 const PAGE_SIZE = 12
 /** Frame preset: xlarge = 116 cells, clamped to terminalWidth - 2 by the kit. */
@@ -124,7 +127,7 @@ export function agentName(row: SeamAgentRow): string {
 
 /** The corpus-level broken-file notice (table + limits layers both print it). */
 export function brokenLine(count: number): string {
-	return `${count} broken file(s) ignored`
+	return t("panel.agents.brokenLine", { count: String(count) })
 }
 
 // ---------------------------------------------------------------------------
@@ -140,19 +143,22 @@ export function brokenLine(count: number): string {
  * the header read "DEEP LIMITS" and the value read "0 —". Left alignment
  * turns the column's own trailing pad into the visible gap: header ≥3 cells,
  * value ≥6 cells, both before LIMITS (total 92 of the 108-cell xlarge body). */
-export const AGENT_TABLE_COLUMNS: ListColumn[] = [
-	{ id: "name", title: "NAME", width: 18 },
-	{ id: "model", title: "MODEL", width: 30 },
-	{ id: "thinking", title: "THINK", width: 10 },
-	{ id: "deep", title: "DEEP", width: 6, align: "left" },
-	{ id: "limits", title: "LIMITS", width: 24 },
-]
+/** The table column set (read-time `t()` titles — design §6 getter law). */
+export function agentTableColumns(): ListColumn[] {
+	return [
+		{ id: "name", title: t("panel.agents.column.name"), width: 18 },
+		{ id: "model", title: t("panel.agents.column.model"), width: 30 },
+		{ id: "thinking", title: t("panel.agents.column.think"), width: 10 },
+		{ id: "deep", title: t("panel.agents.column.deep"), width: 6, align: "left" },
+		{ id: "limits", title: t("panel.agents.column.limits"), width: 24 },
+	]
+}
 
 /** The LIMITS cell summary: per-agent frontmatter caps only. */
 export function agentLimitsCell(row: SeamAgentRow): string {
 	const parts: string[] = []
-	if (row.maxRounds !== undefined) parts.push(`rounds ${row.maxRounds}`)
-	if (row.background === true) parts.push("background")
+	if (row.maxRounds !== undefined) parts.push(t("panel.agents.cell.rounds", { count: String(row.maxRounds) }))
+	if (row.background === true) parts.push(t("panel.agents.cell.background"))
 	return parts.join(" · ")
 }
 
@@ -166,12 +172,12 @@ export function agentTableItem(row: SeamAgentRow): ListItem<SeamAgentRow> {
 		id: row.name,
 		label: agentName(row),
 		value: row,
-		cells: {
-			model: row.model ?? INHERIT,
-			thinking: row.thinking ?? "—",
-			deep: String(row.deep),
-			limits: agentLimitsCell(row) || "—",
-		},
+			cells: {
+				model: row.model ?? inheritValue(),
+				thinking: row.thinking ?? "—",
+				deep: String(row.deep),
+				limits: agentLimitsCell(row) || "—",
+			},
 	}
 }
 
@@ -181,19 +187,21 @@ export function agentTableItems(rows: readonly SeamAgentRow[]): ListItem<SeamAge
 
 /** The field-layer content rows (description + scope hint). */
 export function agentFieldContent(agent: SeamAgentRow): string[] {
-	const lines = (agent.description ?? "(no description)").split("\n")
+	const lines = (agent.description ?? t("panel.agents.field.noDescription")).split("\n")
 	lines.push(
 		agent.pin !== undefined
-			? `model/think edits apply to profile "${agent.pin}" (workspace-scoped — the frontmatter baseline stays untouched)`
-			: "no workspace profile pin — edits write the frontmatter baseline (global)",
+			? t("panel.agents.field.pinProfile", { name: agent.pin })
+			: t("panel.agents.field.noPin"),
 	)
 	return lines
 }
 
-export const AGENT_FIELD_COLUMNS: ListColumn[] = [
-	{ id: "field", title: "FIELD", width: 20 },
-	{ id: "value", title: "VALUE", width: 62 },
-]
+export function agentFieldColumns(): ListColumn[] {
+	return [
+		{ id: "field", title: t("panel.agents.column.field"), width: 20 },
+		{ id: "value", title: t("panel.agents.column.value"), width: 62 },
+	]
+}
 
 /** The three editable field rows (model → thinking → deep order). */
 export function agentFieldItems(agent: SeamAgentRow): ListItem<"model" | "thinking" | "deep">[] {
@@ -203,14 +211,14 @@ export function agentFieldItems(agent: SeamAgentRow): ListItem<"model" | "thinki
 			label: "model",
 			value: "model",
 			badge: "✎",
-			cells: { value: agent.model ?? INHERIT_DEFAULT },
+			cells: { value: agent.model ?? inheritDefaultValue() },
 		},
 		{
 			id: "thinking",
 			label: "thinking",
 			value: "thinking",
 			badge: "✎",
-			cells: { value: agent.thinking ?? INHERIT },
+			cells: { value: agent.thinking ?? inheritValue() },
 		},
 		{
 			id: "deep",
@@ -229,11 +237,9 @@ export interface AgentLimitsRow {
 	value: string
 }
 
-export const LIMIT_DESCRIPTIONS: Record<AgentLimitsRow["key"], string> = {
-	maxRounds: "assistant messages before wrap-up",
-	background: "run this agent in background sessions",
-	maxActiveSubagents: "official concurrent-children cap (subagent plugin)",
-	maxDepth: "official delegation depth (subagent plugin)",
+/** The per-key description (read-time `t()` — design §6 getter law). */
+export function limitDescription(key: AgentLimitsRow["key"]): string {
+	return t(`panel.agents.limits.desc.${key}`)
 }
 
 /** The limits rows in FIXED order. The two official caps are always there;
@@ -245,19 +251,23 @@ export function agentLimitsRows(agent: SeamAgentRow | undefined, caps: SeamAgent
 		rows.push({
 			key: "maxRounds",
 			editable: true,
-			value: agent.maxRounds === undefined ? INHERIT : String(agent.maxRounds),
+			value: agent.maxRounds === undefined ? inheritValue() : String(agent.maxRounds),
 		})
-		rows.push({ key: "background", editable: true, value: agent.background === true ? "on" : "off" })
+		rows.push({
+			key: "background",
+			editable: true,
+			value: agent.background === true ? t("panel.agents.value.on") : t("panel.agents.value.off"),
+		})
 	}
 	rows.push({
 		key: "maxActiveSubagents",
 		editable: false,
-		value: caps?.maxActiveSubagents === undefined ? "n/a" : String(caps.maxActiveSubagents),
+		value: caps?.maxActiveSubagents === undefined ? t("panel.agents.value.na") : String(caps.maxActiveSubagents),
 	})
 	rows.push({
 		key: "maxDepth",
 		editable: false,
-		value: caps?.maxDepth === undefined ? "n/a" : String(caps.maxDepth),
+		value: caps?.maxDepth === undefined ? t("panel.agents.value.na") : String(caps.maxDepth),
 	})
 	return rows
 }
@@ -268,7 +278,7 @@ export function agentLimitsItem(row: AgentLimitsRow): ListItem<AgentLimitsRow["k
 		label: row.key,
 		value: row.key,
 		...(row.editable ? { badge: "✎" } : { tone: "muted" as const }),
-		cells: { value: `${row.value} · ${LIMIT_DESCRIPTIONS[row.key]}` },
+		cells: { value: `${row.value} · ${limitDescription(row.key)}` },
 	}
 }
 
@@ -291,10 +301,12 @@ export interface AgentModelChoice {
 	modelID: string
 }
 
-export const AGENT_PICKER_COLUMNS: ListColumn[] = [
-	{ id: "model", title: "MODEL", width: 40 },
-	{ id: "provider", title: "PROVIDER", width: 24 },
-]
+export function agentPickerColumns(): ListColumn[] {
+	return [
+		{ id: "model", title: t("panel.agents.column.model"), width: 40 },
+		{ id: "provider", title: t("panel.agents.column.provider"), width: 24 },
+	]
+}
 
 export function agentPickerItems(models: readonly AgentModelChoice[]): ListItem<AgentModelChoice>[] {
 	return models.map((model) => ({
@@ -305,19 +317,21 @@ export function agentPickerItems(models: readonly AgentModelChoice[]): ListItem<
 	}))
 }
 
-export const AGENT_EFFORT_COLUMNS: ListColumn[] = [
-	{ id: "effort", title: "EFFORT", width: 24 },
-	{ id: "description", title: "DESCRIPTION", width: 56 },
-]
+export function agentEffortColumns(): ListColumn[] {
+	return [
+		{ id: "effort", title: t("panel.agents.column.effort"), width: 24 },
+		{ id: "description", title: t("panel.agents.column.description"), width: 56 },
+	]
+}
 
 /** Row 0 is `(provider default)` = clear the recorded effort override. */
 export function agentEffortItems(efforts: readonly SeamEffortOption[]): ListItem<string | null>[] {
 	return [
 		{
 			id: "default",
-			label: "(provider default)",
+			label: t("panel.agents.effort.default"),
 			value: null,
-			cells: { description: "adapter default behavior — clears the effort override" },
+			cells: { description: t("panel.agents.effort.defaultDescription") },
 		},
 		...efforts.map((effort) => ({
 			id: effort.id,
@@ -360,7 +374,7 @@ export type DeepInputOutcome = { kind: "keep" } | { kind: "error"; error: string
 export function parseDeepInput(text: string): DeepInputOutcome {
 	const trimmed = text.trim()
 	if (trimmed === "") return { kind: "keep" }
-	if (!/^\d+$/.test(trimmed)) return { kind: "error", error: `expected a non-negative integer, got "${trimmed}"` }
+	if (!/^\d+$/.test(trimmed)) return { kind: "error", error: t("panel.agents.input.deepError", { value: trimmed }) }
 	return { kind: "value", value: Number(trimmed) }
 }
 
@@ -373,7 +387,7 @@ export function parseMaxRoundsInput(text: string): DeepInputOutcome {
 	if (trimmed === "") return { kind: "keep" }
 	const value = Number(trimmed)
 	if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(value) || value < 1) {
-		return { kind: "error", error: `expected a positive integer, got "${trimmed}"` }
+		return { kind: "error", error: t("panel.agents.input.roundsError", { value: trimmed }) }
 	}
 	return { kind: "value", value }
 }
@@ -434,7 +448,8 @@ function splitRoute(model: string | undefined): AgentModelChoice | undefined {
 
 /** Exit summary (tui-pi tri-state, seed branch unreachable in phase 1). */
 export function agentsSummary(changed: readonly string[]): string {
-	return changed.length > 0 ? `Agents updated: ${changed.join(", ")}` : "Agents unchanged."
+	// The changed-name list joins into the {names} param (§6 pattern 3).
+	return changed.length > 0 ? t("panel.agents.summary.updated", { names: changed.join(", ") }) : t("panel.agents.summary.unchanged")
 }
 
 // ---------------------------------------------------------------------------
@@ -598,28 +613,28 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	function levelTitle(level: PanelLevel): string {
 		switch (level) {
 			case "table":
-				return "Agents"
+				return t("panel.agents.title.table")
 			case "fields": {
 				const current = agent()
-				return current === undefined ? "Agent" : agentName(current)
+				return current === undefined ? t("panel.agents.title.agent") : agentName(current)
 			}
 			case "limits":
-				return "Limits"
+				return t("panel.agents.title.limits")
 			case "limitEdit": {
 				const current = agent()
-				return current === undefined ? "Max rounds" : `Max rounds — ${agentName(current)}`
+				return current === undefined ? t("panel.agents.title.maxRounds") : t("panel.agents.title.maxRoundsAgent", { name: agentName(current) })
 			}
 			case "picker":
-				return "Model"
+				return t("panel.agents.title.model")
 			case "effort":
-				return "Reasoning effort"
+				return t("panel.agents.title.effort")
 			case "deep": {
 				const current = agent()
-				return current === undefined ? "Max spawn depth" : `Max spawn depth — ${agentName(current)}`
+				return current === undefined ? t("panel.agents.title.deep") : t("panel.agents.title.deepAgent", { name: agentName(current) })
 			}
 			case "viewer": {
 				const current = agent()
-				return current === undefined ? "System prompt" : `${agentName(current)} · system prompt`
+				return current === undefined ? t("panel.agents.title.viewer") : t("panel.agents.title.viewerAgent", { name: agentName(current) })
 			}
 		}
 	}
@@ -662,7 +677,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		setLimitError(undefined)
 		setCaps(undefined)
 		setStatus(undefined)
-		pushLevel("limits", row === undefined ? undefined : `target: ${agentName(row)}`)
+		pushLevel("limits", row === undefined ? undefined : t("panel.agents.limits.target", { name: agentName(row) }))
 		void loadOfficialCaps()
 	}
 
@@ -702,13 +717,13 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const next = current.background !== true
 		const result = seam.set(current.name, "background", next ? "true" : "false")
 		if (result.error !== undefined) {
-			setStatus(`✘ ${result.error}`)
+			setStatus(t("panel.agents.status.error", { error: result.error }))
 			return
 		}
 		setStatus(
 			next
-				? "background on — this agent runs in background sessions"
-				: "background off — foreground dispatch",
+				? t("panel.agents.status.backgroundOn")
+				: t("panel.agents.status.backgroundOff"),
 		)
 		markChanged(current.name)
 		reloadRows()
@@ -735,7 +750,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			return
 		}
 		setLimitError(undefined)
-		setStatus(`maxRounds → ${parsed.value} saved — applies to future subagent spawns`)
+		setStatus(t("panel.agents.status.maxRoundsSaved", { value: String(parsed.value) }))
 		markChanged(current.name)
 		reloadRows()
 		closeTop()
@@ -751,7 +766,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			catalog = []
 		}
 		if (catalog.length === 0) {
-			setStatus("✘ no models available")
+			setStatus(t("panel.agents.status.noModels"))
 			return
 		}
 		setModels(catalog)
@@ -787,7 +802,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		if (seam === undefined) return
 		const modelResult = seam.set(current.name, "model", model)
 		if (modelResult.error !== undefined) {
-			setStatus(`✘ ${modelResult.error}`)
+			setStatus(t("panel.agents.status.error", { error: modelResult.error }))
 			popAbove("fields")
 			return
 		}
@@ -798,12 +813,24 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		// summary after a persisted model edit).
 		markChanged(current.name)
 		reloadRows()
-		const scope = modelResult.target.kind === "profile" ? ` (profile "${modelResult.target.name}")` : ""
-		const think = thinking !== null ? ` · think ${thinking}` : ""
+		// Conditional concat copy became full-sentence branch keys (§6 pattern 2).
+		const profileTarget = modelResult.target.kind === "profile" ? modelResult.target.name : undefined
+		const profile = profileTarget ?? ""
 		if (thinkResult.error !== undefined) {
-			setStatus(`✘ thinking not saved: ${thinkResult.error} — model ${current.name} → ${model} saved`)
+			setStatus(t("panel.agents.status.thinkNotSaved", { error: thinkResult.error, name: current.name, model }))
+		} else if (thinking === null) {
+			setStatus(
+				profileTarget !== undefined
+					? t("panel.agents.status.savedModelProfile", { name: current.name, model, profile })
+					: t("panel.agents.status.savedModel", { name: current.name, model }),
+			)
 		} else {
-			setStatus(`saved ${current.name} → ${model}${think}${scope}`)
+			const thinkingText = thinking
+			setStatus(
+				profileTarget !== undefined
+					? t("panel.agents.status.savedModelThinkProfile", { name: current.name, model, thinking: thinkingText, profile })
+					: t("panel.agents.status.savedModelThink", { name: current.name, model, thinking: thinkingText }),
+			)
 		}
 		popAbove("fields")
 	}
@@ -812,12 +839,12 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const current = agent()
 		if (current === undefined) return
 		if (current.model === undefined) {
-			setStatus("✘ no model set — pick a model first (m)")
+			setStatus(t("panel.agents.status.noModelSet"))
 			return
 		}
 		const route = splitRoute(current.model)
 		if (route === undefined) {
-			setStatus(`✘ cannot resolve think levels for ${current.model}`)
+			setStatus(t("panel.agents.status.cannotResolveThink", { model: current.model }))
 			return
 		}
 		let ladder: SeamEffortOption[] = []
@@ -827,7 +854,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			ladder = []
 		}
 		if (ladder.length === 0) {
-			setStatus(`✘ ${current.model} exposes no think levels`)
+			setStatus(t("panel.agents.status.noThinkLevels", { model: current.model }))
 			return
 		}
 		setEfforts(ladder)
@@ -846,10 +873,18 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const thinking = next.stage === "done" ? next.thinking : null
 		const result = seam.set(current.name, "thinking", thinking)
 		if (result.error !== undefined) {
-			setStatus(`✘ ${result.error}`)
+			setStatus(t("panel.agents.status.error", { error: result.error }))
 		} else {
-			const scope = result.target.kind === "profile" ? ` (profile "${result.target.name}")` : ""
-			setStatus(`saved ${current.name} → think ${thinking ?? "inherit"}${scope}`)
+			const profileTarget = result.target.kind === "profile" ? result.target.name : undefined
+			const profile = profileTarget ?? ""
+			// "inherit" is the en fallback value for a cleared effort (zh mirrors
+			// it via the table value), so it stays a data param, not a key.
+			const thinkingText = thinking ?? "inherit"
+			setStatus(
+				profileTarget !== undefined
+					? t("panel.agents.status.savedThinkProfile", { name: current.name, thinking: thinkingText, profile })
+					: t("panel.agents.status.savedThink", { name: current.name, thinking: thinkingText }),
+			)
 			markChanged(current.name)
 			reloadRows()
 		}
@@ -890,7 +925,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		}
 		const n = Number(trimmed)
 		setDeepError(undefined)
-		setDeepNotice(`max depth ${n} saved — takes effect when this agent is spawned`)
+		setDeepNotice(t("panel.agents.status.depthSaved", { value: String(n) }))
 		setDeepCommitted(true)
 		markChanged(current.name)
 		reloadRows()
@@ -900,7 +935,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	function leaveDeepEditor() {
 		const current = agent()
 		if (deepCommitted() && current !== undefined) {
-			setStatus(`saved ${current.name} → max depth ${current.deep}`)
+			setStatus(t("panel.agents.status.savedDepth", { name: current.name, value: String(current.deep) }))
 		}
 		setDeepError(undefined)
 		setDeepNotice(undefined)
@@ -981,21 +1016,21 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			commands: [
 			{
 				bind: "m",
-				title: "Agents: model",
+				title: t("panel.agents.keymap.model"),
 				group: "Agents",
 				enabled: () => activeLevel() === "fields",
 				run: () => void openModelPicker(),
 			},
 			{
 				bind: "t",
-				title: "Agents: think level",
+				title: t("panel.agents.keymap.think"),
 				group: "Agents",
 				enabled: () => activeLevel() === "fields",
 				run: () => void openThinkingPicker(),
 			},
 			{
 				bind: "d",
-				title: "Agents: spawn depth / background",
+				title: t("panel.agents.keymap.deep"),
 				group: "Agents",
 				enabled: () => activeLevel() === "fields" || activeLevel() === "limits",
 				run: () => {
@@ -1005,14 +1040,14 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			},
 			{
 				bind: "v",
-				title: "Agents: full prompt",
+				title: t("panel.agents.keymap.prompt"),
 				group: "Agents",
 				enabled: () => activeLevel() === "fields",
 				run: () => showViewer(),
 			},
 			{
 				bind: "l",
-				title: "Agents: limits",
+				title: t("panel.agents.keymap.limits"),
 				group: "Agents",
 				enabled: () => activeLevel() === "table",
 				run: () => showLimits(),
@@ -1021,15 +1056,15 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 			// `session.page.*` layer consumes these keys first. Bind them here
 			// (top layer + over-window only; `pageList` returns false otherwise)
 			// and let the List's cursor-follow move the window.
-			{ bind: "pageup", title: "Agents: page up", group: "Agents", run: () => pageList("pageup") },
-			{ bind: "pagedown", title: "Agents: page down", group: "Agents", run: () => pageList("pagedown") },
-			{ bind: "home", title: "Agents: first row", group: "Agents", run: () => pageList("home") },
-			{ bind: "end", title: "Agents: last row", group: "Agents", run: () => pageList("end") },
+			{ bind: "pageup", title: t("panel.agents.keymap.pageUp"), group: "Agents", run: () => pageList("pageup") },
+			{ bind: "pagedown", title: t("panel.agents.keymap.pageDown"), group: "Agents", run: () => pageList("pagedown") },
+			{ bind: "home", title: t("panel.agents.keymap.firstRow"), group: "Agents", run: () => pageList("home") },
+			{ bind: "end", title: t("panel.agents.keymap.lastRow"), group: "Agents", run: () => pageList("end") },
 			// The editors' Enter commit path. On every other level the binding
 			// is disabled, so panel-kit's Enter (List select) is untouched.
 			{
 				bind: "return",
-				title: "Agents: save",
+				title: t("panel.agents.keymap.save"),
 				group: "Agents",
 				enabled: () => activeLevel() === "deep" || activeLevel() === "limitEdit",
 				run: () => {
@@ -1089,12 +1124,12 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 				<PanelBody>
 					<List
 						items={agentTableItems(rows())}
-						columns={AGENT_TABLE_COLUMNS}
+						columns={agentTableColumns()}
 						pageSize={PAGE_SIZE}
 						width={bodyWidth()}
 						query=""
 						onQueryChange={() => {}}
-						emptyLabel="no agents"
+						emptyLabel={t("panel.agents.empty.noAgents")}
 						activeId={rows()[tableCursor()]?.name}
 						onActiveChange={(id) => {
 							const index = rows().findIndex((row) => row.name === id)
@@ -1105,7 +1140,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 					{brokenLineView()}
 					{statusLine()}
 				</PanelBody>
-				<PanelActions hint="↑↓ navigate · enter open · l limits · esc back" />
+				<PanelActions hint={t("panel.agents.hint.table")} />
 			</FocusRoot>
 		)
 	}
@@ -1124,7 +1159,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		return (
 			<FocusRoot>
 				<PanelBody>
-					<Show when={current !== undefined} fallback={<text fg={theme().text.muted}>agent not found</text>}>
+					<Show when={current !== undefined} fallback={<text fg={theme().text.muted}>{t("panel.agents.fields.notFound")}</text>}>
 						<For each={agentFieldContent(current!)}>
 							{(line) => (
 								<text fg={theme().text.muted} wrapMode="none">
@@ -1135,7 +1170,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 						<box height={1} flexShrink={0} />
 						<List
 							items={agentFieldItems(current!)}
-							columns={AGENT_FIELD_COLUMNS}
+							columns={agentFieldColumns()}
 							width={bodyWidth()}
 							query=""
 							onQueryChange={() => {}}
@@ -1153,7 +1188,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 						{statusLine()}
 					</Show>
 				</PanelBody>
-				<PanelActions hint="↑↓ field · enter edit · m model · t think · d deep · v prompt · esc back" />
+				<PanelActions hint={t("panel.agents.hint.fields")} />
 			</FocusRoot>
 		)
 	}
@@ -1161,7 +1196,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 	function renderLimits(): JSX.Element {
 		const current = agent()
 		const emptyCopy = () =>
-			`no agents in ${props.seam.agents?.dir?.() ?? "$DSH_HOME/agents"} yet — drop a markdown file to define one`
+			t("panel.agents.empty.dir", { dir: props.seam.agents?.dir?.() ?? "$DSH_HOME/agents" })
 		return (
 			<FocusRoot>
 				<PanelBody>
@@ -1173,11 +1208,11 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 					</Show>
 					<List
 						items={agentLimitsItems(limitsRows())}
-						columns={AGENT_FIELD_COLUMNS}
+						columns={agentFieldColumns()}
 						width={bodyWidth()}
 						query=""
 						onQueryChange={() => {}}
-						emptyLabel="no limits"
+						emptyLabel={t("panel.agents.empty.noLimits")}
 						activeId={limitsRows()[limitsCursor()]?.key}
 						onActiveChange={(id) => {
 							const index = limitsRows().findIndex((row) => row.key === id)
@@ -1192,7 +1227,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 					{brokenLineView()}
 					{statusLine()}
 				</PanelBody>
-				<PanelActions hint="↑↓ field · enter edit · d toggle background · esc back" />
+				<PanelActions hint={t("panel.agents.hint.limits")} />
 			</FocusRoot>
 		)
 	}
@@ -1201,11 +1236,11 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		return (
 			<PanelBody>
 				<text fg={theme().text.muted} wrapMode="none">
-					{"positive integer · empty = inherit the global cap"}
+					{t("panel.agents.limitEdit.hint")}
 				</text>
 				<Show when={limitError() !== undefined}>
 					<text fg={theme().text.danger} wrapMode="none">
-						{clipText(`✘ ${limitError()}`, bodyWidth())}
+						{clipText(t("panel.agents.status.error", { error: limitError()! }), bodyWidth())}
 					</text>
 				</Show>
 				<box height={1} flexShrink={0} />
@@ -1229,7 +1264,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 						}}
 					/>
 				</box>
-				<PanelActions hint="enter save · esc back" />
+				<PanelActions hint={t("panel.agents.hint.editor")} />
 			</PanelBody>
 		)
 	}
@@ -1238,11 +1273,11 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		return (
 			<PanelBody>
 				<text fg={theme().text.muted} wrapMode="none">
-					{"0 = this agent never spawns subagents · no unlimited"}
+					{t("panel.agents.deep.hint")}
 				</text>
 				<Show when={deepError() !== undefined}>
 					<text fg={theme().text.danger} wrapMode="none">
-						{clipText(`✘ ${deepError()}`, bodyWidth())}
+						{clipText(t("panel.agents.status.error", { error: deepError()! }), bodyWidth())}
 					</text>
 				</Show>
 				<Show when={deepError() === undefined && deepNotice() !== undefined}>
@@ -1275,7 +1310,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 						}}
 					/>
 				</box>
-				<PanelActions hint="enter save · esc back" />
+				<PanelActions hint={t("panel.agents.hint.editor")} />
 			</PanelBody>
 		)
 	}
@@ -1286,12 +1321,12 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 				<PanelBody>
 					<List
 						items={agentPickerItems(models())}
-						columns={AGENT_PICKER_COLUMNS}
+						columns={agentPickerColumns()}
 						pageSize={PAGE_SIZE}
 						width={bodyWidth()}
 						query=""
 						onQueryChange={() => {}}
-						emptyLabel="no models"
+						emptyLabel={t("panel.agents.empty.noModels")}
 						activeId={models()[pickerCursor()] === undefined ? undefined : `${models()[pickerCursor()]!.providerID}/${models()[pickerCursor()]!.modelID}`}
 						onActiveChange={(id) => {
 							const index = models().findIndex((model) => `${model.providerID}/${model.modelID}` === id)
@@ -1300,7 +1335,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 						onSelect={(item) => void chooseModel(item.value!)}
 					/>
 				</PanelBody>
-				<PanelActions hint="↑↓ navigate · enter select · esc back" />
+				<PanelActions hint={t("panel.agents.hint.navigate")} />
 			</FocusRoot>
 		)
 	}
@@ -1312,11 +1347,11 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 				<PanelBody>
 					<List
 						items={items()}
-						columns={AGENT_EFFORT_COLUMNS}
+						columns={agentEffortColumns()}
 						width={bodyWidth()}
 						query=""
 						onQueryChange={() => {}}
-						emptyLabel="no effort levels"
+						emptyLabel={t("panel.agents.empty.noEffort")}
 						activeId={items()[effortCursor()]?.id ?? "default"}
 						onActiveChange={(id) => {
 							const index = items().findIndex((item) => item.id === id)
@@ -1325,7 +1360,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 						onSelect={(item) => commitThinking(items().findIndex((entry) => entry.id === item.id))}
 					/>
 				</PanelBody>
-				<PanelActions hint="↑↓ navigate · enter select · esc back" />
+				<PanelActions hint={t("panel.agents.hint.navigate")} />
 			</FocusRoot>
 		)
 	}
@@ -1343,7 +1378,7 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 				</For>
 				<Show when={view().hidden > 0}>
 					<text fg={theme().text.faint} wrapMode="none">
-						{clipText(`… ${view().hidden} more line(s)`, bodyWidth())}
+						{clipText(t("panel.agents.viewer.moreLines", { count: String(view().hidden) }), bodyWidth())}
 					</text>
 				</Show>
 			</PanelBody>
