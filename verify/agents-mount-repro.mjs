@@ -60,14 +60,14 @@ const FALLBACK = 'not mounted in this entry'
 const AGENT_TABLE_HEADER = /NAME\s+MODEL\s+THINK\s+DEEP\s+LIMITS/
 const AGENT_TABLE_HINT = 'enter open · l limits'
 const AGENT_LIMITS_KEYS = ['maxRounds', 'background', 'maxActiveSubagents', 'maxDepth']
-const SETTINGS_SUBTITLE = '分节导航 · 即时保存 · Esc 逐层返回'
+const SETTINGS_SUBTITLE = 'section navigation · instant save · Esc walks back'
 /** Resting text of the action band's status line (instant-save contract). */
-const SETTINGS_STATUS = '改动已即时保存'
+const SETTINGS_STATUS = 'changes are saved instantly'
 /** The top-level Esc confirm (nothing is pending, so it is a courtesy). */
-const SETTINGS_EXIT_TITLE = '退出设置？'
-const SETTINGS_SECTIONS = ['通用', 'TUI 专有', 'Host', '模型', '插件', 'Agent 预设', '账号']
+const SETTINGS_EXIT_TITLE = 'Exit settings?'
+const SETTINGS_SECTIONS = ['General', 'TUI-specific', 'Host', 'Models', 'Plugins', 'Agent presets', 'Account']
 /** Content-pane marker that only one section paints (reachability proof). */
-const SECTION_MARKERS = ['权限默认预设', 'cacheHitMode', 'subagent.maxActiveSubagents', '打开 /model', '打开 /plugins', '打开 /preset', '打开 /login']
+const SECTION_MARKERS = ['Default permission preset', 'cacheHitMode', 'subagent.maxActiveSubagents', 'Open /model', 'Open /plugins', 'Open /preset', 'Open /login']
 const HOST_ROWS = ['subagent.maxActiveSubagents', 'subagent.maxDepth', 'permission.defaultPreset', 'session-log-deepseek.enabled']
 const XLargeWidth = (cols) => Math.min(116, cols - 2)
 const SESS = `agents-mount-${process.pid}`
@@ -669,7 +669,7 @@ try {
   const openHostRows = async () => {
     await gotoSection(2)
     sendKeys(SESS, 'Right')
-    return waitPane(SESS, (out) => out.includes('↑↓ 选择行') && /subagent\.maxActiveSubagents\s+\d+/.test(out), 10_000)
+    return waitPane(SESS, (out) => out.includes('↑↓ select row') && /subagent\.maxActiveSubagents\s+\d+/.test(out), 10_000)
   }
 
   const settingsOpen = await openSettings()
@@ -721,7 +721,7 @@ try {
   // current row's note says so. Down x4 from the first whitelist row lands on
   // the first other namespace (agent-default-model).
   for (let i = 0; i < 4; i++) { sendKeys(SESS, 'Down'); await sleep(140) }
-  const readOnlyRow = await waitPane(SESS, (out) => out.includes('只读 · 本 TUI 不消费'), 6_000)
+  const readOnlyRow = await waitPane(SESS, (out) => out.includes('read-only · not consumed by this TUI'), 6_000)
   snap('14-settings-host-readonly-note')
   record('/settings marks other namespaces read-only ("本 TUI 不消费")',
     readOnlyRow.ok && /agent-default-model\s+rev \d+/.test(readOnlyRow.out) &&
@@ -747,7 +747,7 @@ try {
   snap('15-settings-host-saved')
   record('settings saves the host toggle on Enter (instant model)', saved.ok,
     saved.ok
-      ? [`row shows ${afterToggle}`, `status line: ${saved.out.includes(`已保存 · session-log-deepseek.enabled`) ? '已保存 · session-log-deepseek.enabled' : 'not observed (transient)'}`]
+      ? [`row shows ${afterToggle}`, `status line: ${saved.out.includes(`saved · session-log-deepseek.enabled`) ? 'saved · session-log-deepseek.enabled' : 'not observed (transient)'}`]
       : ['row value did not flip'])
   const wroteOff = await waitPatch((text) => patchEntry('session-log-deepseek').includes(`enabled: ${afterToggle === 'on'}`))
   const closedAfterWrite = await closeSettings()
@@ -792,11 +792,11 @@ try {
     await gotoSection(1)
     sendKeys(SESS, 'Right')
     const rows = await waitPane(SESS,
-      (out) => out.includes('↑↓ 选择行') && new RegExp(`motion\\s+(${MOTION_OPTIONS.join('|')})`).test(out), 8_000)
+      (out) => out.includes('↑↓ select row') && new RegExp(`motion\\s+(${MOTION_OPTIONS.join('|')})`).test(out), 8_000)
     const current = new RegExp(`motion\\s+(${MOTION_OPTIONS.join('|')})`).exec(rows.out)?.[1] ?? 'auto'
     for (let i = 0; i < 3; i++) { sendKeys(SESS, 'Down'); await sleep(140) } // motion row (index 3)
     sendKeys(SESS, 'Enter')
-    const editor = await waitPane(SESS, (out) => out.includes('motion — 选择值'), 8_000)
+    const editor = await waitPane(SESS, (out) => out.includes('motion — pick a value'), 8_000)
     return { rows, current, editor }
   }
   /** ↓ to the target option (the enum cursor wraps). */
@@ -823,14 +823,14 @@ try {
   // Inner-first Esc ladder: editor → browse (the panel stays open).
   sendKeys(SESS, 'Escape')
   const editorBack = await waitPane(SESS,
-    (out) => !out.includes('motion — 选择值') && settingsUp(out) && /↑↓ 选择行/.test(out), 6_000)
+    (out) => !out.includes('motion — pick a value') && settingsUp(out) && /↑↓ select row/.test(out), 6_000)
   snap('20-settings-motion-editor-back')
   record('/settings Esc discards the editor and returns to the section rows', editorBack.ok,
     [editorBack.ok ? 'editor closed, section still on screen' : 'editor did not return'])
 
   // Re-enter the editor, aim the cursor, save the choice (Enter persists it).
   sendKeys(SESS, 'Enter')
-  await waitPane(SESS, (out) => out.includes('motion — 选择值'), 8_000)
+  await waitPane(SESS, (out) => out.includes('motion — pick a value'), 8_000)
   await moveMotionCursor(motionFirst.current, motionTarget)
   sendKeys(SESS, 'Enter')
   const motionSaved = await waitPane(SESS,

@@ -197,7 +197,7 @@ try {
 		await sleep(120)
 		sendKeys(SESS, 'Enter')
 	}
-	const queued1 = await waitPane(SESS, (o) => has(o, '排队等待') && has(o, '#1'), 8_000)
+	const queued1 = await waitPane(SESS, (o) => has(o, 'Queued') && has(o, '#1'), 8_000)
 	// The second line lands while q1 waits: the turn is still running.
 	await typeFast(SESS, 'second queued prompt')
 	const popup2 = await waitPane(SESS, queuePopup, 15_000)
@@ -206,17 +206,17 @@ try {
 		await sleep(120)
 		sendKeys(SESS, 'Enter')
 	}
-	const queued2 = await waitPane(SESS, (o) => has(o, '排队等待') && has(o, '#2'), 8_000)
+	const queued2 = await waitPane(SESS, (o) => has(o, 'Queued') && has(o, '#2'), 8_000)
 	snap('03-queued')
 	record('two lines queue behind the running turn', popup1.ok && queued1.ok && popup2.ok && queued2.ok,
 		[queued1.ok ? '⏸ #1 visible' : 'q1 row not visible', queued2.ok ? '⏸ #2 visible' : 'q2 row not visible'])
 
 	// ---------------- 3. abort keeps the queue (paused) ----------------
 	sendKeys(SESS, 'Escape')
-	const paused = await waitPane(SESS, (o) => has(o, '已暂停') && has(o, '#1'), 10_000)
+	const paused = await waitPane(SESS, (o) => has(o, 'Paused') && has(o, '#1'), 10_000)
 	snap('04-paused')
 	record('abort keeps the queue and marks it paused', paused.ok,
-		[paused.ok ? '⏸ 已暂停 #1 visible' : 'paused queue row not visible'])
+		[paused.ok ? '⏸ Paused #1 visible' : 'paused queue row not visible'])
 	await waitPane(SESS, idle, 15_000)
 
 	// ---------------- 4. /flush restarts the pump NOW ----------------
@@ -230,10 +230,10 @@ try {
 	// The rest follows at the turn end: both prompt texts reach the transcript
 	// as real user messages (the queue wait rows are gone).
 	const delivered = await waitPane(SESS,
-		(o) => has(o, 'first queued prompt') && has(o, 'second queued prompt') && !has(o, '排队等待'), 90_000, 500)
+		(o) => has(o, 'first queued prompt') && has(o, 'second queued prompt') && !has(o, 'Queued'), 90_000, 500)
 	snap('06-delivered')
 	record('the flushed queue drains in order, one per turn end',
-		delivered.ok && !has(delivered.out, '排队等待'),
+		delivered.ok && !has(delivered.out, 'Queued'),
 		[delivered.ok ? 'both prompts in the transcript, no wait rows' : 'tail prompt not delivered'])
 
 	const err = capture(SESS)
