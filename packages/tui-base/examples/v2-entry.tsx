@@ -658,7 +658,22 @@ function V2SessionPage(props: {
 	// confirm in the transcript. No confirm dialog (the reference's
 	// resumeTarget({ id }) fires straight); a rejected resume keeps the
 	// overlay open with its own `resume failed — …` status line.
+	//
+	// P1-2 (review): the probe comes BEFORE the stage. `resumeSession` only
+	// records the id (bound at the next turn), so a resume of a cleaned or
+	// corrupted journal that failed AFTER staging would leave the id armed —
+	// the next message would be sent into the dead session. And
+	// `projection.load` deliberately SETTLES read failures instead of
+	// rejecting (its catch guards the transcript-loss rule — never clear rows
+	// on a failed read — and the fresh-boot empty settle that keeps the
+	// "Loading session history…" placeholder from pinning), so a plain
+	// `await reloadSession` can never surface the failure. Probing the same
+	// `storedTranscript` read the reload will make rejects the resume while
+	// NOTHING is mutated: no staged id, no `resumed <id>` echo, the
+	// transcript keeps the current session's rows, and the search overlay
+	// stays open on its `resume failed — …` line.
 	const resumeFromSearch = async (sessionId: string) => {
+		await seam.storedTranscript(sessionId)
 		seam.resumeSession(sessionId)
 		await reloadSession(sessionId)
 		sayLine(`resumed ${sessionId}`)

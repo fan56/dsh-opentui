@@ -122,7 +122,11 @@ describe("overlay open-layer bindings (real keymap engine)", () => {
 	 * registers it (priority 2, global mode), with the run bodies driving the
 	 * same lifted helpers the component closes over. `hits` and `cursor` are
 	 * plain locals standing in for the component's signals; the busy gate is
-	 * replicated because the double-dispatch law depends on it.
+	 * replicated because the double-dispatch law depends on it. P0-1 (review):
+	 * the arrow bindings carry the component's `hits > 0` enabled gate (the
+	 * component passes it as a command `enabled` fn; here as a cmd-side
+	 * guard) and there are NO letter bindings — j/k must reach the query
+	 * input.
 	 */
 	function composeOpenLayer(harness: ReturnType<typeof createTestKeymap>, state: {
 		hits: SessionSearchHit[]
@@ -155,22 +159,24 @@ describe("overlay open-layer bindings (real keymap engine)", () => {
 			calls.searched++
 		}
 
+		const hasHits = () => state.hits.length > 0
+
 		keymap.registerLayer({
 			priority: 2,
 			enabled: () => true,
 			bindings: [
 				{ key: "return", cmd: () => enterKey() },
 				{
-					key: "down,j",
+					key: "down",
+					enabled: hasHits,
 					cmd: () => {
-						if (state.hits.length === 0) return
 						state.cursor = hitCursorStep(state.cursor, 1, state.hits.length)
 					},
 				},
 				{
-					key: "up,k",
+					key: "up",
+					enabled: hasHits,
 					cmd: () => {
-						if (state.hits.length === 0) return
 						state.cursor = hitCursorStep(state.cursor, -1, state.hits.length)
 					},
 				},
@@ -238,5 +244,26 @@ describe("overlay open-layer bindings (real keymap engine)", () => {
 		host.press("return")
 		await Promise.resolve()
 		expect(calls.resumed).toEqual(["ses_alpha"])
+	})
+
+	test("j and k are NOT list bindings (P0-1: they belong to the query input)", async () => {
+		const h = await harness()
+		const state = { hits: HITS, cursor: 0, busy: false }
+		const { calls, host } = composeOpenLayer(h, state)
+		host.press("j")
+		host.press("k")
+		expect(state.cursor).toBe(0)
+		expect(calls.resumed).toEqual([])
+		expect(calls.searched).toBe(0)
+	})
+
+	test("down/up with NO hits are gated off and move nothing (P0-1: the keys fall through)", async () => {
+		const h = await harness()
+		const state = { hits: [] as SessionSearchHit[], cursor: 0, busy: false }
+		const { calls, host } = composeOpenLayer(h, state)
+		host.press("down")
+		host.press("up")
+		expect(state.cursor).toBe(0)
+		expect(calls.searched).toBe(0)
 	})
 })

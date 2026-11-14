@@ -213,14 +213,35 @@ export function SessionsSearch(props: {
 		priority: 2,
 		commands: [
 			{ bind: "escape", title: "Close session search", group: "Search", run: close },
-			{
-				bind: "return",
-				title: "Search stored sessions / resume selected hit",
-				group: "Search",
-				run: () => enterKey(),
-			},
-			{ bind: "down,j", title: "Next hit", group: "Search", run: () => moveCursor(1) },
-			{ bind: "up,k", title: "Previous hit", group: "Search", run: () => moveCursor(-1) },
+	{
+		bind: "return",
+		title: "Search stored sessions / resume selected hit",
+		group: "Search",
+		run: () => enterKey(),
+	},
+	// P0-1 (review): NO letter bindings here. The query input keeps focus for
+	// the overlay's whole lifetime, and a keymap hit preventDefaults the key
+	// before the focused input sees it — `down,j`/`up,k` swallowed every j/k
+	// in the query ("json kit" typed as "son it"). The tui-pi reference has
+	// no letter navigation over its query editor either. Arrow keys claim no
+	// text, so they keep cursor duty, gated on a non-empty result list: with
+	// no hits the binding REJECTS (a synchronously-false command run is a
+	// rejected binding — the key falls through untouched, and moveCursor
+	// cannot eat a phantom press).
+	{
+		bind: "down",
+		title: "Next hit",
+		group: "Search",
+		enabled: () => hits().length > 0,
+		run: () => moveCursor(1),
+	},
+	{
+		bind: "up",
+		title: "Previous hit",
+		group: "Search",
+		enabled: () => hits().length > 0,
+		run: () => moveCursor(-1),
+	},
 		],
 	}))
 
