@@ -121,14 +121,34 @@ export function resolveAgentsHome(explicit?: string | null): string {
  * client falls back to `~/.agents`, never the cwd), but the HOST provider's
  * `??` chain lets the empty string through and resolves the provider root to
  * the host's cwd, so under that misconfiguration the client's skill scan and
- * the host's catalog read DIFFERENT roots. The host code is out of this
- * repo's reach; the warning names the user-side fix (unset the variable).
- * Returns undefined when the env is healthy; `env` overrides the process
- * environment for tests.
+ * the host's catalog read DIFFERENT roots. The same hole exists on the
+ * config leg (`config.agentsHome: ""` penetrates the host's `??` chain
+ * exactly like the env) and when BOTH legs are blank. The host code is out
+ * of this repo's reach; the warning names the user-side fix for each leg
+ * (unset the variable / remove the empty config key). Returns undefined
+ * when both legs are healthy; `env` overrides the process environment for
+ * tests and `configValue` is the raw `config.agentsHome` value.
  */
-export function agentsHomeEnvWarning(env?: string): string | undefined {
+export function agentsHomeEnvWarning(env?: string, configValue?: unknown): string | undefined {
 	const value = typeof env === "string" ? env : process.env.DSH_AGENTS_HOME
-	if (typeof value !== "string" || value.trim() !== "") return undefined
+	const envBlank = typeof value === "string" && value.trim() === ""
+	const configBlank = typeof configValue === "string" && (configValue as string).trim() === ""
+	if (!envBlank && !configBlank) return undefined
+	if (envBlank && configBlank) {
+		return (
+			"DSH_AGENTS_HOME and the config agentsHome are both set but empty: this client " +
+			"falls back to ~/.agents, but the host skill provider resolves each empty string " +
+			"to its cwd — unset the variable AND remove the empty agentsHome key from the " +
+			"config to keep both skill surfaces on the same root."
+		)
+	}
+	if (configBlank) {
+		return (
+			"The config agentsHome is set but empty: this client falls back to ~/.agents, but " +
+			"the host skill provider resolves it to its cwd — remove the empty agentsHome key " +
+			"from the config (or set a real path) to keep both skill surfaces on the same root."
+		)
+	}
 	return (
 		"DSH_AGENTS_HOME is set but empty: this client falls back to ~/.agents, but the " +
 		"host skill provider resolves it to its cwd — unset the variable to keep both " +

@@ -6,7 +6,7 @@
  * slash-deps hook carriage (the /agents incident law).
  */
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, mkdir, writeFile, symlink, rm, readFile } from "node:fs/promises"
+import { mkdtemp, mkdir, writeFile, symlink, rm, readFile, chmod } from "node:fs/promises"
 import { existsSync, lstatSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -136,6 +136,25 @@ describe("skills-manage: symlink install safety (tui-pi parity)", () => {
 		await rm(gone)
 		expect(await applyOneSkillChange("flat-skill", false, source, curated)).toBeUndefined()
 		expect(existsSync(dest)).toBe(false)
+	})
+
+	test("uninstall refuses a link whose target cannot be verified (CONCERN-1 errno mirror)", async () => {
+		const { source, curated } = await makeRoots()
+		await seedSkills(source)
+		// Target under a mode-000 directory: realpath fails with EACCES (as a
+		// non-root user) — the same errno channel the install side refuses to
+		// pave over. It must NOT be treated as a dangling link and deleted.
+		// (As root the chmod is advisory: realpath then succeeds and the
+		// ownership guard still refuses — either way the link survives.)
+		const secretDir = await mkdtemp(join(tmpdir(), "dsh-skills-secret-"))
+		await chmod(secretDir, 0o000)
+		const dest = join(curated, "flat-skill.md")
+		await symlink(join(secretDir, "hidden.md"), dest)
+		const refused = await applyOneSkillChange("flat-skill", false, source, curated)
+		expect(refused).toContain("outside the managed source root")
+		expect(lstatSync(dest).isSymbolicLink()).toBe(true)
+		await chmod(secretDir, 0o700)
+		await rm(secretDir, { recursive: true, force: true })
 	})
 
 	test("install of a name missing from the source root reports a readable cause", async () => {

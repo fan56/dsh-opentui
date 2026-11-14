@@ -27,6 +27,7 @@
  * repairs a dangling link; uninstall removes ONLY a link we own — a
  * physical file/directory at the destination is refused, never deleted, and
  * a symlink is unlinked only when its realpath lands inside the public root
+ * or the link is dead (dangling/looping — no verifiable target behind it)
  * (install only ever links INTO publicDir, so a link resolving elsewhere was
  * hand-made and must survive an uninstall — c-pack-review P2-1).
  */
@@ -124,9 +125,25 @@ export async function installSkillSymlink(src: string, dest: string): Promise<vo
  * must not be deleted). A dangling or looping link has no verifiable target,
  * but removing one deletes only the dead link node — never target content —
  * matching the install side's repair semantics, so it counts as ours.
+ *
+ * The errno discipline MIRRORS the install side (installSkillSymlink): only
+ * a missing target (ENOENT), a link loop (ELOOP) or a non-directory
+ * component in the target path (ENOTDIR) counts as a dead link. Any other
+ * realpath failure (EACCES, EIO, …) means the target exists but cannot be
+ * verified — treat it as NOT ours and refuse the uninstall (fail-safe:
+ * prefer refusing over deleting a link whose ownership we cannot prove).
  */
 async function isOwnedSkillLink(dest: string, publicDir: string): Promise<boolean> {
-	const destReal = await realpath(dest).catch(() => undefined)
+	let destReal: string | undefined
+	try {
+		destReal = await realpath(dest)
+	} catch (error: unknown) {
+		// Mirror of the install side's classification: dead-link errnos fall
+		// through with destReal === undefined; everything else is an
+		// unverifiable external target → refuse.
+		const code = (error as NodeJS.ErrnoException).code
+		if (code !== "ENOENT" && code !== "ELOOP" && code !== "ENOTDIR") return false
+	}
 	if (destReal === undefined) return true // dangling/looping: nothing behind the link
 	const publicReal = await realpath(publicDir).catch(() => undefined)
 	if (publicReal === undefined) return false // no verifiable source root: refuse
