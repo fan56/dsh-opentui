@@ -246,6 +246,11 @@ export interface SlashCommandContext {
 	 */
 	openPlugins?(): void
 	/**
+	 * Open the skills manager panel (gap C3 — the /skills panel). Optional —
+	 * an entry without it degrades /skills to a notice.
+	 */
+	openSkills?(): void
+	/**
 	 * Open the agents manager panel (tui-pi agents manager parity). Optional —
 	 * an entry without it degrades /agents to a notice.
 	 */
@@ -1046,6 +1051,24 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				for (const plugin of plugins) ctx.say(`● ${plugin.name}@${plugin.version}`)
+			},
+		},
+		{
+			// Gap C3 (tui-pi skills-manager parity): the Installed/Available
+			// skill browser over the local skill roots. The host has no skills
+			// management RPC (only the read-only session-scoped `skills/list`
+			// catalog), so the panel manages the directories the provider
+			// scans — space marks, enter applies the symlink batch (see
+			// skills-manage.ts for the safety semantics). Purely local UI, so
+			// never busy-gated.
+			name: "/skills",
+			description: "manage skills (opens the panel)",
+			run(ctx) {
+				if (!ctx.openSkills) {
+					ctx.say("/skills unavailable in this session")
+					return
+				}
+				ctx.openSkills()
 			},
 		},
 		{

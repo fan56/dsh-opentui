@@ -75,6 +75,7 @@ import { DialogTimeline } from "./dialog-timeline"
 import { agentsPanelOpen } from "./agents-panel"
 import { settingsPanelOpen } from "./settings-panel"
 import { pluginsPanelOpen } from "./plugins-panel"
+import { skillsPanelOpen } from "./skills-panel"
 import { searchOverlayOpen } from "./search-overlay"
 import { sessionsSearchOpen } from "./sessions-search"
 import { historyPanelOpen } from "./history-panel"
@@ -278,6 +279,7 @@ export function Session(props: {
       !agentsPanelOpen() &&
       !settingsPanelOpen() &&
       !pluginsPanelOpen() &&
+      !skillsPanelOpen() &&
       !searchOverlayOpen() &&
       !sessionsSearchOpen() &&
       // The /history browser rides the same modal stack (review P1-5): an

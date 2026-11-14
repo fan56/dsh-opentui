@@ -56,7 +56,9 @@ import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/tur
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import { presetLabelFor, coreCommands, type PickOneExtras } from "../src/routes/session/commands"
+import { join } from "node:path"
 import { discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
+import { SkillsPanel, openSkillsPanel } from "../src/routes/session/skills-panel"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
 import { AgentsPanel, openAgentsPanel } from "../src/routes/session/agents-panel"
@@ -729,6 +731,9 @@ function V2SessionPage(props: {
 		// onto the overlays mounted in the root children below.
 		openSearch: () => openSessionsSearch(),
 		openPlugins: () => openPluginsPanel(),
+		// Gap C3 (tui-pi skills-manager parity): the Installed/Available skill
+		// browser over the local skill roots — see skillsManagerRoots below.
+		openSkills: () => openSkillsPanel(),
 		// tui-pi agents manager parity: table + fields layers over the
 		// client-local agent corpus (the composed model column included).
 		openAgents: (name?: string) => openAgentsPanel(name),
@@ -845,6 +850,20 @@ function V2SessionPage(props: {
 				createComponent(PluginsPanel, {
 					get seam() {
 						return seam
+					},
+					onClosed: () => {
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
+				}),
+				// Skills manager panel (gap C3, tui-pi skills-manager parity):
+				// /skills opens the Installed/Available browser over the local
+				// skill roots. Getter-prop law: the roots ride getters.
+				createComponent(SkillsPanel, {
+					get source() {
+						return skillsManagerRoots.source
+					},
+					get curated() {
+						return skillsManagerRoots.curated
 					},
 					onClosed: () => {
 						if (composerRef && !composerRef.focused()) composerRef.focus()
@@ -1207,11 +1226,24 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 	// provider read the same root; the client's config seam is the explicit
 	// leg it can see.
 	// Contained: a broken root yields the empty catalog, never a boot failure.
+	// One agentsHome resolution shared by BOTH skill surfaces: the slash
+	// palette boot scan below and the /skills manager panel (gap C3) — the
+	// explicit-config precedence must not diverge between them.
+	const agentsHomeForSkills = resolveAgentsHome(seam.configLoad().agentsHome as string | undefined)
 	const skillRows = discoverSkills({
 		cwd: workspace,
 		dshHome: host.dshHome,
-		agentsHome: resolveAgentsHome(seam.configLoad().agentsHome as string | undefined),
+		agentsHome: agentsHomeForSkills,
 	})
+	// /skills manager roots (gap C3): the panel manages the SAME pair of
+	// roots this boot scan read — the agents home's skills/ (the public
+	// source) and <dshHome>/skills (the curated user root installs symlink
+	// into; rank 400 outranks the agents home's 500, so a promoted copy is
+	// the one the host provider serves).
+	const skillsManagerRoots = {
+		source: join(agentsHomeForSkills, "skills"),
+		curated: join(host.dshHome, "skills"),
+	}
 	// One-shot skin migration (α skin layer, real precedence chain env >
 	// workspace > profile): a STORED legacy `theme` key (profile OR
 	// workspace layer) switches to the dsh-blue default once, persists the

@@ -386,6 +386,8 @@ export interface SlashHostDeps {
 	openSearch?: SlashCommandContext["openSearch"]
 	/** /plugins panel opener (batch H3); absent = /plugins keeps the listing. */
 	openPlugins?: SlashCommandContext["openPlugins"]
+	/** /skills manager opener (gap C3); absent = /skills says "unavailable". */
+	openSkills?: SlashCommandContext["openSkills"]
 	/** /agents manager opener (tui-pi agents manager parity); absent = /agents
 	 * says "not mounted in this entry" (the pre-fix symptom: the entry passed
 	 * the hook, this deps type/ctx spread never carried it). */

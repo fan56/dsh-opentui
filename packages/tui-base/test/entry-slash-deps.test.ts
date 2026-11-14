@@ -198,6 +198,7 @@ describe("verify: entry slash deps", () => {
 				themes,
 				openSearch,
 				openPlugins,
+				openSkills,
 				openSettings,
 				openHistory,
 				refreshFooter,
