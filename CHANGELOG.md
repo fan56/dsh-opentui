@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-11-14
+
+### Added
+
+- **`/history` two-pane turn browser.** A pure data layer plus a slash-host page: sessions on one pane, the selected session's turns on the other, with fork/resume from a chosen turn.
+- **`/skills` Installed/Available manager panel.** The slash command opens a manager panel with Installed and Available sections; panel roots ride page props so it opens against the live client.
+- **`/subagents` live transcript viewer.** The new slash command opens a large-window viewer over running subagent transcripts.
+- **`/plugins` management panel.** The panel now drives the host pluginManager face end to end — toggling plugins, installing bundles, and reflecting bundle changes.
+- **`/search` resume on Enter.** Confirming a search hit on the session layer resumes that session; a failed resume stays reachable.
+- **`/logout` gate.** The command opens a confirm dialog onto the login seam, honoring the profile's own `apiKeyEnv`.
+- **`/model` favorites.** The model picker gains favorite (`f`) and hide (`h`) keys over the stored option list.
+- **Resume corrupt-log repair.** A failed store list with a corrupt log offers an explicit-confirm repair flow instead of reading as "no stored sessions"; a transcript read failure surfaces on first hydrate instead of silently rendering empty.
+- **Home/End transcript navigation.** In pure transcript state the composer-area keys scroll the transcript to its first/last row.
+
+### Fixed
+
+- **History wiring and interactions.** `buildSlashDeps` now actually carries `openHistory` (real-machine `/history` answered "not mounted"); one `s` press opens one session layer with Enter reachable on it; the browse target is staged-aware, and forking carries a busy latch plus a switch-window guard.
+- **Search key routing.** The global layer no longer swallows `j`/`k` inside search queries.
+- **Plugins seam.** `installBundle` uses the correct wire shape and detects bundle changes; rejected panel mutations surface as a flash instead of unhandled rejections.
+- **Model picker.** Fixed the crash and cursor drift in the favorite/hide wiring.
+
 ## [0.12.2] - 2026-11-13
 
 ### Added
