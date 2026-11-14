@@ -11,7 +11,8 @@
  *    @opentui/keymap engine (the subagents-picker-keys law): return routes
  *    by hit count, up/down move the wrapping cursor.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { registerCommaBindings, registerDefaultKeys, registerEnabledFields } from "@opentui/keymap/addons"
 import { createTestKeymap } from "@opentui/keymap/testing"
 import {
@@ -21,6 +22,14 @@ import {
 	resumeSearchHit,
 	type SessionSearchHit,
 } from "../src/routes/session/sessions-search"
+
+// T7b: the dock/picker/palette copy now flows through t() — load the bundled
+// locales into the registry so the en values resolve in tests (T5/T6 law).
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+
 
 const HITS: SessionSearchHit[] = [
 	{ id: "ses_alpha", snippet: "first hit" },

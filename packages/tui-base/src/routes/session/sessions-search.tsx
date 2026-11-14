@@ -33,6 +33,7 @@ import type { InputRenderable } from "@opentui/core"
 import { createSignal as createBridgeSignal } from "solid-js"
 import { Keymap } from "../../context/keymap"
 import { useDialog } from "../../ui/dialog"
+import { t } from "../../i18n"
 import { useThemeOptional } from "../../context/theme"
 import type { SessionSeam } from "../../seams/session"
 
@@ -89,7 +90,9 @@ export function enterAction(hitCount: number): "resume" | "search" {
 
 /** One short failure line for a rejected search-hit resume (the /login commit convention — sliced, key-free). */
 export function resumeFailureText(error: unknown): string {
-	return `resume failed — ${String(error instanceof Error ? error.message : error).slice(0, 150)}`
+	return t("overlay.sessions.resumeFailed", {
+		error: String(error instanceof Error ? error.message : error).slice(0, 150),
+	})
 }
 
 /**
@@ -212,10 +215,10 @@ export function SessionsSearch(props: {
 		enabled: open() && dialog.stack.length === 0,
 		priority: 2,
 		commands: [
-			{ bind: "escape", title: "Close session search", group: "Search", run: close },
+			{ bind: "escape", title: t("overlay.sessions.keymap.close"), group: "Search", run: close },
 	{
 		bind: "return",
-		title: "Search stored sessions / resume selected hit",
+		title: t("overlay.sessions.keymap.enter"),
 		group: "Search",
 		run: () => enterKey(),
 	},
@@ -230,14 +233,14 @@ export function SessionsSearch(props: {
 	// cannot eat a phantom press).
 	{
 		bind: "down",
-		title: "Next hit",
+		title: t("overlay.sessions.keymap.next"),
 		group: "Search",
 		enabled: () => hits().length > 0,
 		run: () => moveCursor(1),
 	},
 	{
 		bind: "up",
-		title: "Previous hit",
+		title: t("overlay.sessions.keymap.previous"),
 		group: "Search",
 		enabled: () => hits().length > 0,
 		run: () => moveCursor(-1),
@@ -253,7 +256,7 @@ export function SessionsSearch(props: {
 		commands: [
 			{
 				id: "session.searchSessions",
-				title: "Search stored sessions",
+				title: t("overlay.sessions.keymap.open"),
 				group: "Session",
 				run: () => setBridgeOpen(true),
 			},
@@ -264,10 +267,10 @@ export function SessionsSearch(props: {
 		// B1: a rejected resume reads LOUDER than the counters — the failure
 		// line owns the status slot until the next search or reopen.
 		if (resumeError()) return resumeError()
-		if (busy()) return "searching…"
+		if (busy()) return t("overlay.sessions.searching")
 		if (!searched()) return ""
 		const count = hits().length
-		return count === 0 ? "No matches" : `${count} hit${count === 1 ? "" : "s"}`
+		return count === 0 ? t("overlay.sessions.noMatches") : count === 1 ? t("overlay.sessions.hitOne") : t("overlay.sessions.hitsMany", { count })
 	})
 
 	return (
@@ -285,7 +288,7 @@ export function SessionsSearch(props: {
 			>
 				<box height={1} flexShrink={0} flexDirection="row">
 					<text fg={theme?.text.base ?? "#e6e6e6"} wrapMode="none">
-						🔍 Search sessions
+						{t("overlay.sessions.title")}
 					</text>
 					<Show when={status()}>
 						<text
@@ -303,7 +306,7 @@ export function SessionsSearch(props: {
 				<box height={1} flexShrink={0} flexDirection="row">
 					<input
 						flexGrow={1}
-						placeholder="Full-text over stored sessions"
+						placeholder={t("overlay.sessions.placeholder")}
 						placeholderColor={theme?.text.muted ?? "#565f89"}
 						value={query()}
 						onInput={(value: string) => setQuery(value)}
@@ -323,7 +326,7 @@ export function SessionsSearch(props: {
 					fallback={
 						<box height={1} flexShrink={0}>
 							<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
-								{searched() ? "No matches" : "Type a query, Enter searches"}
+								{searched() ? t("overlay.sessions.noMatches") : t("overlay.sessions.typeHint")}
 							</text>
 						</box>
 					}

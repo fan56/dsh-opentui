@@ -8,10 +8,19 @@
  *     (tui-pi parity: the model belongs to the Ctrl+G viewer);
  *   - lastRequestLines: clear-when-done — settled children never render.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { childLineText, lastRequestLines, lastVisibleLine, requestEchoLine } from "../src/routes/session/lastrequest-dock"
 import { stringWidth } from "../src/util/string-width"
 import type { SeamRow } from "../src/routes/session/seam-rows"
+
+// T7b: the dock/picker/palette copy now flows through t() — load the bundled
+// locales into the registry so the en values resolve in tests (T5/T6 law).
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+
 
 const spin = () => 0
 

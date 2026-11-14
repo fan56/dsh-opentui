@@ -7,7 +7,8 @@
  *   - thinkLineText: streaming → `💭 thinking · Xs · <tail>`; collapsed →
  *     `💭 thought · Xs · <first line>`; panel-less replay rows → undefined.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	ACTIVITY_FRAME_BORDER_FALLBACK,
 	ACTIVITY_FRAME_MIN_CONTRAST,
@@ -68,6 +69,14 @@ import { colorDistance, colorRgb, contrastRatio } from "../src/routes/session/po
 import { createComponentTheme } from "../src/theme/component"
 import { getDshBlueTheme } from "../src/theme/index"
 import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
+
+// T7b: the dock/picker/palette copy now flows through t() — load the bundled
+// locales into the registry so the en values resolve in tests (T5/T6 law).
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+
 
 const spin = () => 0
 

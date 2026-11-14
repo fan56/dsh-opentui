@@ -35,6 +35,7 @@ import { useThemeOptional } from "../../context/theme"
 import { currentRowColors } from "../../skin/semantic"
 import { useDialog } from "../../ui/dialog"
 import { DialogPrompt } from "../../ui/dialog-prompt"
+import { t } from "../../i18n"
 import { Locale } from "../../util/locale"
 import {
   printSteerFeedback,
@@ -115,17 +116,17 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
     const agent = Locale.titlecase(entry.label)
     dialog.replace(() => (
       <DialogPrompt
-        title={`Steer ${agent}`}
-        placeholder="Steer message"
+        title={t("panel.subagents.dialog.steerTitle", { name: agent })}
+        placeholder={t("panel.subagents.dialog.steerPlaceholder")}
         onConfirm={(value) => {
           const text = value.trim()
           if (!text) return
           const sent = steerSubagent(entry.id, text)
           dialog.clear()
           if (sent) {
-            printSteerFeedback(`steered ${agent.toLowerCase()}`)
+            printSteerFeedback(t("panel.subagents.echo.steered", { name: agent.toLowerCase() }))
           } else {
-            printSteerFeedback(`steer rejected — ${agent} is not running`)
+            printSteerFeedback(t("panel.subagents.echo.rejected", { name: agent }))
           }
         }}
         onCancel={() => dialog.clear()}
@@ -154,14 +155,14 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
     enabled: open() && dialog.stack.length === 0,
     priority: 2,
     commands: [
-      { bind: "down", title: "Next subagent", group: "Subagents", run: () => moveTo(store.selected + 1) },
-      { bind: "up", title: "Previous subagent", group: "Subagents", run: () => moveTo(store.selected - 1) },
-      { bind: "return", title: "Steer / select subagent", group: "Subagents", run: select },
-      { bind: "ctrl+a", title: "Toggle active subagents", group: "Subagents", run: () => {
+      { bind: "down", title: t("overlay.picker.keymap.next"), group: "Subagents", run: () => moveTo(store.selected + 1) },
+      { bind: "up", title: t("overlay.picker.keymap.previous"), group: "Subagents", run: () => moveTo(store.selected - 1) },
+      { bind: "return", title: t("overlay.picker.keymap.steerSelect"), group: "Subagents", run: select },
+      { bind: "ctrl+a", title: t("overlay.picker.keymap.toggleActive"), group: "Subagents", run: () => {
           setShowAll((value) => !value)
           setStore("selected", 0)
         } },
-      { bind: "escape", title: "Close subagents picker", group: "Subagents", run: () => setOpen(false) },
+      { bind: "escape", title: t("overlay.picker.keymap.close"), group: "Subagents", run: () => setOpen(false) },
     ],
   }))
 
@@ -176,7 +177,7 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
     commands: [
       {
         id: "session.child.first",
-        title: "Toggle subagent picker",
+        title: t("overlay.picker.keymap.toggle"),
         group: "Session",
         run: () => setOpen(true),
       },
@@ -223,12 +224,23 @@ export function pickerShouldAutoClose(views: readonly SubagentMarkerView[]): boo
 /** The one-line picker body (pure, testable): `Subagents ▸ <label> ·
  * Running · i/n · enter steer · ctrl+a show inactive · esc`. */
 export function pickerLineText(entries: readonly SubagentMarkerView[], selected: number, showAll: boolean): string {
-  const toggle = `ctrl+a show ${showAll ? "active" : "inactive"}`
+  const toggle = showAll ? t("overlay.picker.showActive") : t("overlay.picker.showInactive")
   const entry = entries[selected]
-  if (entry === undefined) return `Subagents ▸ no ${showAll ? "inactive" : "active"} subagents · ${toggle} · esc`
+  if (entry === undefined) {
+    return showAll
+      ? t("overlay.picker.emptyInactive", { toggle })
+      : t("overlay.picker.emptyActive", { toggle })
+  }
   const glyph = subagentHardStopGlyph(entry)
   const suffix = subagentMarkerSuffix(entry)
   const label = `${glyph ? `${glyph} ` : ""}${Locale.titlecase(entry.label)}`
-  const status = entry.status === "running" ? " · Running" : ""
-  return `Subagents ▸ ${label}${status}${suffix ? ` ${suffix.trim()}` : ""} · ${selected + 1}/${entries.length} · ↑↓ select · enter steer · ${toggle} · esc`
+  const status = entry.status === "running" ? t("overlay.picker.statusRunning") : ""
+  return t("overlay.picker.row", {
+    label,
+    status,
+    suffix: suffix ? ` ${suffix.trim()}` : "",
+    index: selected + 1,
+    total: entries.length,
+    toggle,
+  })
 }

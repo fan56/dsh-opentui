@@ -3,7 +3,8 @@
  * prefix filtering, wrap navigation, esc-keeps-buffer, and the two composer
  * hook paths (key consumption + submit interception incl. the unknown row).
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { coreCommands, type SlashCommand } from "../src/routes/session/commands"
 import {
 	createSlashHost,
@@ -12,6 +13,14 @@ import {
 	SlashPaletteController,
 	overflowHint,
 } from "../src/routes/session/slash-palette"
+
+// T7b: the dock/picker/palette copy now flows through t() — load the bundled
+// locales into the registry so the en values resolve in tests (T5/T6 law).
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+
 
 const COMMANDS: SlashCommand[] = [
 	{ name: "/help", description: "d1", run: () => {} },

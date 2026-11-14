@@ -22,6 +22,7 @@
 import { For, Show, createSignal } from "solid-js"
 import type { KeyEvent } from "@opentui/core"
 import { useThemeOptional } from "../../context/theme"
+import { t } from "../../i18n"
 import { currentRowColors } from "../../skin/semantic"
 import type { SessionSeam } from "../../seams/session"
 import type { SlashCommand, SlashCommandContext } from "./commands"
@@ -61,8 +62,8 @@ export function overflowHint(total: number, offset = 0): string | undefined {
 	const above = Math.min(Math.max(0, offset), maxOffset)
 	const below = Math.max(0, total - above - MAX_ROWS)
 	const parts: string[] = []
-	if (above > 0) parts.push(`… ${above} more above`)
-	if (below > 0) parts.push(`… ${below} more`)
+	if (above > 0) parts.push(t("overlay.palette.moreAbove", { count: above }))
+	if (below > 0) parts.push(t("overlay.palette.more", { count: below }))
 	return parts.length > 0 ? parts.join(" · ") : undefined
 }
 

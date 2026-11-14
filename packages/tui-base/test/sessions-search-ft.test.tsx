@@ -15,7 +15,8 @@
  *   - a rejected resume keeps the overlay OPEN with its `resume failed — …`
  *     status line (never a silent close, never a fake success).
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { testRender } from "@opentui/solid"
 import { DialogProvider } from "../src/ui/dialog"
 import { ToastProvider } from "../src/ui/toast"
@@ -30,6 +31,14 @@ import {
 	type SessionSearchHit,
 } from "../src/routes/session/sessions-search"
 import type { SessionSeam } from "../src/seams/session"
+
+// T7b: the dock/picker/palette copy now flows through t() — load the bundled
+// locales into the registry so the en values resolve in tests (T5/T6 law).
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+
 
 const keymapConfig = {
 	keybinds: { get: () => [] },
