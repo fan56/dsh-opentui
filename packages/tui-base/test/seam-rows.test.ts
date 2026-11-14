@@ -141,18 +141,22 @@ describe("seam rows projection", () => {
 		dispose()
 	})
 
-	test("a FAILED FIRST read settles the empty view (unknown --session id, no pinned placeholder)", async () => {
+	test("a FAILED FIRST read settles a visible error row (unknown --session id, no pinned placeholder)", async () => {
 		// A bad/unknown `--session` id (or a transient first read) rejects.
-		// Nothing is on screen yet, so the read failure settles empty instead
-		// of pinning the loading placeholder — an already-hydrated view keeps
-		// its rows (the transcript-loss rule, asserted below).
+		// Nothing is on screen yet, so the read failure settles ONE synthetic
+		// error row (the `error: …` assistant-row form) instead of pinning
+		// the loading placeholder or showing a silent blank — an
+		// already-hydrated view keeps its rows (the transcript-loss rule,
+		// asserted below).
 		const seam = new FakeSeam()
 		seam.failRead = true
 		const { projection, dispose } = setup(seam)
 		await projection.load("missing-session")
 		expect(seam.reads).toEqual(["missing-session"])
 		expect(projection.hydrated()).toBe(true)
-		expect(projection.rows).toEqual([])
+		expect(projection.rows.map((r) => r.kind)).toEqual(["assistant"])
+		expect(projection.rows.map((r) => r.text)).toEqual(["error: transcript read failed (host gone)"])
+		expect(projection.rows.every((r) => r.final)).toBe(true)
 		dispose()
 	})
 

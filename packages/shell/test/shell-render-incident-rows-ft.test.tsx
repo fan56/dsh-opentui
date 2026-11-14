@@ -20,12 +20,9 @@
  * loading valid config values" — research/opencode-test-cases-core.md §6,
  * read failure must not be treated as empty data).
  *
- * Behavior verdict 2026-11-14: the wipe-what-you-saw half is FIXED (seam-rows
- * load(): a failed read never clears hydrated rows), but the FIRST read on a
- * fresh session still settles a SILENT empty transcript with only a
- * console.warn — no visible UI signal. That half is the desired-behavior
- * test, gated behind DSH_TEST_READ_SIGNAL=1 (it goes red on today's product,
- * documenting the bug; see the file-bottom note).
+ * Behavior verdict 2026-11-14: both halves FIXED (seam-rows load(): a failed
+ * read never clears hydrated rows, and a first read settles a visible
+ * synthetic `error: …` row instead of a silent empty transcript).
  *
  * Fixture: ./shell-render-fixture.tsx (canned events + time-budget
  * waitForFrame). Scope guards: short-burst frames only — no sustained
@@ -115,15 +112,14 @@ describe("incident regressions: row continuity (real renderer, canned events)", 
 		}
 	})
 
-	// Incident 4 — the OPEN half: desired behavior, gated. TODAY a first-read
-	// failure settles a silent empty transcript (seam-rows load() catch:
-	// console.warn + hydrate([]) when nothing is hydrated yet). Per the task
-	// contract this case is written to the SHOULD behavior and left
-	// switchable: `DSH_TEST_READ_SIGNAL=1 bun test …` turns it on and it goes
-	// RED against the current product — that red is the bug report.
-	const expectVisibleSignal = process.env.DSH_TEST_READ_SIGNAL === "1"
-	test.skipIf(!expectVisibleSignal)(
-		"a first-read failure shows a visible error signal, not a silent blank (todo: seam-rows load() catch)",
+	// Incident 4 — the CLOSED half (fixed 2026-11-14, seam-rows load() catch):
+	// a first-read failure now settles a visible synthetic `error: …` row
+	// (the session.error / turn-error assistant-row form) instead of a silent
+	// empty transcript. Was the desired-behavior test gated behind
+	// DSH_TEST_READ_SIGNAL=1 (red against the old product); always-on now
+	// that the product matches the contract.
+	test(
+		"a first-read failure shows a visible error signal, not a silent blank",
 		async () => {
 			const warn = spyOn(console, "warn")
 			try {

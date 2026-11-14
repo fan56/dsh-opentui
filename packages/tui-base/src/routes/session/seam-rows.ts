@@ -251,14 +251,20 @@ export function createSeamRows(
 			.then((stored) => {
 				if (sessionIdOverride !== undefined || sessionID() === id) hydrate(stored)
 			})
-			.catch(() => {
+			.catch((error: unknown) => {
 				// A failed read never clears rows already on screen (the
 				// transcript-loss rule). With NOTHING hydrated yet there is
-				// nothing to lose: settle the empty view so an unknown journal
-				// (a bad `--session` id, a transient first read) cannot pin the
-				// "Loading session history…" placeholder forever.
+				// nothing to lose: settle a view with ONE synthetic error row
+				// (the same `error: …` assistant-row form the session.error /
+				// turn-error paths paint) so an unknown journal (a bad
+				// `--session` id, a transient first read) cannot pin the
+				// "Loading session history…" placeholder forever — and is never
+				// a SILENT blank. A later successful load() reconciles over it.
 				console.warn(`[seam-rows] transcript read failed for ${id}`)
-				if (!hydrated()) hydrate([])
+				if (!hydrated()) {
+					const message = error instanceof Error ? error.message : String(error)
+					hydrate([{ kind: "assistant", text: `error: transcript read failed (${message})`, final: true }])
+				}
 			})
 	}
 
