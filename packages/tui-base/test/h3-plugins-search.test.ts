@@ -7,8 +7,13 @@ import { describe, expect, test } from "bun:test"
 import { createRoot } from "solid-js"
 import { formatSearchHitLine } from "../src/routes/session/sessions-search"
 import {
+	bundleStateText,
 	filterPluginRows,
 	formatPluginLine,
+	installPreviewLine,
+	legacyPluginViews,
+	pluginBundleViews,
+	pluginChangeNotice,
 	pluginsPanelOpen,
 	usePluginsPanelOpenState,
 } from "../src/routes/session/plugins-panel"
@@ -59,5 +64,90 @@ describe("plugins-panel open-state lifetime", () => {
 		})
 		dispose()
 		expect(pluginsPanelOpen()).toBe(false)
+	})
+})
+
+// C1: the /plugins manager's management face — the pure row/notice builders
+// the panel renders through (the tui-pi plugins.ts 72-162 parity surface,
+// table-testable without a renderer).
+describe("plugins-panel bundle views (C1)", () => {
+	const bundles = [
+		{ name: "dsh-tui-pi", version: "2.7.0", enabled: true, installed: true, optional: false, removable: true },
+		{
+			name: "dsh-skills-office",
+			version: "0.9.1",
+			enabled: false,
+			installed: false,
+			optional: true,
+			removable: false,
+			readOnlyReason: "management-required",
+		},
+		{
+			name: "broken-bundle",
+			version: "1.0.0",
+			enabled: true,
+			installed: true,
+			optional: false,
+			removable: true,
+			error: "failed to load",
+		},
+	]
+
+	test("state text reflects the real enablement (on / off / available + badges)", () => {
+		const views = pluginBundleViews(bundles)
+		expect(bundleStateText(views.find((row) => row.name === "dsh-tui-pi")!)).toBe("on")
+		expect(bundleStateText(views.find((row) => row.name === "dsh-skills-office")!)).toBe("available read-only")
+		expect(bundleStateText(views.find((row) => row.name === "broken-bundle")!)).toBe("on error")
+		const disabled = { ...views.find((row) => row.name === "dsh-tui-pi")!, enabled: false }
+		expect(bundleStateText(disabled)).toBe("off")
+	})
+
+	test("rows sort alphabetically and toggleable excludes read-only and error rows", () => {
+		const views = pluginBundleViews(bundles)
+		expect(views.map((row) => row.name)).toEqual(["broken-bundle", "dsh-skills-office", "dsh-tui-pi"])
+		expect(views.find((row) => row.name === "dsh-tui-pi")).toMatchObject({ toggleable: true, removable: true })
+		expect(views.find((row) => row.name === "dsh-skills-office")).toMatchObject({ toggleable: false, removable: false })
+		expect(views.find((row) => row.name === "broken-bundle")).toMatchObject({ toggleable: false })
+	})
+
+	test("legacy F7a rows keep the listing honest (loaded = on, nothing toggleable)", () => {
+		const views = legacyPluginViews([{ name: "dsh-tui-pi", version: "2.7.0" }])
+		expect(views[0]).toMatchObject({ label: "dsh-tui-pi@2.7.0", enabled: true, toggleable: false, removable: false })
+		expect(bundleStateText(views[0]!)).toBe("on")
+	})
+})
+
+describe("pluginChangeNotice (C1 — the restart semantics surface)", () => {
+	test("applied states the change is live", () => {
+		expect(pluginChangeNotice({ changed: true, application: "applied", target: "dsh-tui-pi" })).toBe(
+			"dsh-tui-pi: change applied",
+		)
+	})
+
+	test("restart-required states the host-restart limitation explicitly", () => {
+		expect(pluginChangeNotice({ changed: true, application: "restart-required", target: "dsh-tui-pi" })).toBe(
+			"dsh-tui-pi: change saved — restart the host for it to take effect",
+		)
+	})
+
+	test("failed carries the diagnostic", () => {
+		expect(pluginChangeNotice({ changed: false, application: "failed", target: "x", error: "management-required" })).toBe(
+			"x: change failed — management-required",
+		)
+		expect(pluginChangeNotice({ changed: false, application: "overridden", target: "x" })).toContain(
+			"higher-priority config",
+		)
+	})
+})
+
+describe("install preview (C1 — the i flow)", () => {
+	test("accepted inspection renders name@version + the not-a-bundle caveat", () => {
+		expect(installPreviewLine({ status: "accepted", name: "dsh-tui-pi", version: "2.7.0", bundle: true })).toBe(
+			"dsh-tui-pi@2.7.0",
+		)
+		expect(installPreviewLine({ status: "accepted", name: "plain-pkg", bundle: false })).toContain(
+			"(not a bundle package",
+		)
+		expect(installPreviewLine({ status: "accepted", bundle: null })).toBe("spec")
 	})
 })

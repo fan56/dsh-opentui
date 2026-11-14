@@ -464,6 +464,10 @@ export class RemoteHostSession {
 	#tail: RemoteTailSession | undefined
 	/** Cached /plugins rows (sync listPlugins contract; refreshed async). */
 	#pluginsCache: { name: string; version: string }[] = []
+	/** Cached bundle rows (C1: the /plugins manager's enablement face; the
+	 * same `pluginManager/listBundles` answer refreshPlugins already fetches,
+	 * kept in full instead of only the version join). */
+	#bundlesCache: RemotePluginBundleRow[] = []
 	/** Cached /skills rows (sync listSkills contract; refreshed async). */
 	#skillsCache: { name: string; description: string; invocation: string }[] = []
 	/** Skill-catalog push listeners (one auto refresh after a session's first prompt). */
@@ -1706,6 +1710,7 @@ export class RemoteHostSession {
 				this.#rpc("pluginManager/listBundles").catch(() => undefined) as Promise<unknown>,
 			])
 			const versions = new Map<string, string>()
+			const bundlesChanged = Array.isArray(bundles) && (bundles as unknown[]).length !== this.#bundlesCache.length
 			if (Array.isArray(bundles)) {
 				for (const b of bundles as Record<string, unknown>[]) {
 					// listBundles rows identify the bundle by `name` (moduleName is
@@ -1715,6 +1720,11 @@ export class RemoteHostSession {
 					const version = typeof b?.version === "string" ? b.version : ""
 					if (moduleName && version) versions.set(moduleName, version)
 				}
+				// C1: keep the full enablement rows (the /plugins manager's state
+				// column + toggle face read through this cache).
+				this.#bundlesCache = (bundles as Record<string, unknown>[])
+					.map(normalizeBundleRow)
+					.filter((row) => row.name !== "")
 			}
 			this.#pluginsCache = (Array.isArray(plugins) ? plugins : [])
 				.map((p) => {
@@ -1730,7 +1740,7 @@ export class RemoteHostSession {
 			// Notify subscribers (the seam adapter's reactive /plugins face) so a
 			// late-arriving boot warm or push refresh repaints the panel — the
 			// sync listPlugins() read is otherwise a stale-cache trap.
-			if (this.#pluginsCache.length !== before || before === 0) {
+			if (this.#pluginsCache.length !== before || before === 0 || bundlesChanged) {
 				for (const listener of this.#pushListeners) {
 					try {
 						listener.onPluginsChanged?.()
@@ -1743,6 +1753,62 @@ export class RemoteHostSession {
 			/* keep the previous cache */
 		}
 		return [...this.#pluginsCache]
+	}
+
+	/**
+	 * C1 (the /plugins manager's enablement face): the cached
+	 * `pluginManager/listBundles` rows — the sync read behind the seam's
+	 * `pluginBundles()` (refreshed by refreshPlugins: boot warm,
+	 * `plugin-manager/changed` push, and every mutation below).
+	 */
+	listBundles(): RemotePluginBundleRow[] {
+		return [...this.#bundlesCache]
+	}
+
+	/**
+	 * C1: enable/disable a bundle over the host's pluginManager face (the
+	 * SAME service the web profile's plugin-management page drives —
+	 * manager-store.ts calls `ctx.remote.pluginManager.setBundleEnabled`).
+	 * The host persists the selection to the profile AND attempts a live
+	 * apply; `application` reports which happened (`applied` = live,
+	 * `restart-required` = next start). The caches refresh after the call
+	 * (the `plugin-manager/changed` push also auto-refreshes).
+	 */
+	async setBundleEnabled(name: string, enabled: boolean): Promise<RemotePluginChange> {
+		try {
+			const change = normalizeChangeResult(await this.#rpc("pluginManager/setBundleEnabled", { name, enabled }))
+			void this.refreshPlugins().catch(() => {})
+			return change
+		} catch (cause) {
+			return failedChange(name, cause)
+		}
+	}
+
+	/** C1: uninstall a bundle's package (the `d` confirm's apply half). */
+	async removeBundle(name: string): Promise<RemotePluginChange> {
+		try {
+			const change = normalizeChangeResult(await this.#rpc("pluginManager/removeBundle", { name }))
+			void this.refreshPlugins().catch(() => {})
+			return change
+		} catch (cause) {
+			return failedChange(name, cause)
+		}
+	}
+
+	/** C1: inspect an install spec (`accepted` preview / structured refusal). */
+	async inspectBundle(spec: string): Promise<RemotePluginInspection> {
+		return normalizeInspection(await this.#rpc("pluginManager/inspect", { spec }))
+	}
+
+	/** C1: install a spec as an enabled bundle (the install flow's apply half). */
+	async installBundle(spec: string): Promise<RemotePluginChange> {
+		try {
+			const change = normalizeChangeResult(await this.#rpc("pluginManager/installBundle", { spec, enabled: true }))
+			void this.refreshPlugins().catch(() => {})
+			return change
+		} catch (cause) {
+			return failedChange(spec, cause)
+		}
 	}
 
 	/**
@@ -2824,3 +2890,120 @@ function asPermissionOptions(value: unknown): { value: string; name?: string; de
 
 /** Re-export for the tests and the future ShellHostDeps swap. */
 export { openRemoteStream, type RemoteStreamHandle }
+
+// ---------------------------------------------------------------------------
+// C1: the pluginManager face's structural rows (the /plugins manager renders
+// these; tui-base's seam types stay structurally compatible without pulling
+// shell sources — the resolution law).
+// ---------------------------------------------------------------------------
+
+/** One `pluginManager/listBundles` row (the fields the /plugins manager renders). */
+export interface RemotePluginBundleRow {
+	name: string
+	version: string
+	/** Untranslated package-manifest description (the install preview body). */
+	description: string
+	enabled: boolean
+	installed: boolean
+	/** Not-installed catalog entry (the state column's "available"). */
+	optional: boolean
+	removable: boolean
+	/** `management-required` / `unaddressable` — the host's read-only reasons. */
+	readOnlyReason?: string
+	/** Last listing diagnostic for the row (compatibility gate rejections). */
+	error?: string
+}
+
+/** Structural face of the pluginManager ChangeResult. */
+export interface RemotePluginChange {
+	changed: boolean
+	application: "applied" | "restart-required" | "overridden" | "failed" | "cancelled"
+	target: string
+	/** `error.diagnostic ?? error.code` — present on failures. */
+	error?: string
+}
+
+/** Structural face of `pluginManager/inspect`'s answer (the install preview). */
+export type RemotePluginInspection =
+	| { status: "accepted"; name?: string; version?: string; description?: string; bundle: boolean | null }
+	| { status: "refused"; problem: string; reason: string }
+
+/** Defensive raw → row normalization (the wire is zod-checked host-side; the
+ * client stays tolerant so a malformed row drops, never crashes the panel). */
+function normalizeBundleRow(raw: Record<string, unknown>): RemotePluginBundleRow {
+	const name = typeof raw.name === "string" ? raw.name : ""
+	const error = raw.error
+	return {
+		name,
+		version: typeof raw.version === "string" ? raw.version : "",
+		description: typeof raw.description === "string" ? raw.description : "",
+		enabled: raw.enabled === true,
+		installed: raw.installed === true,
+		optional: raw.optional === true,
+		removable: raw.removable === true,
+		readOnlyReason: typeof raw.readOnlyReason === "string" ? raw.readOnlyReason : undefined,
+		error:
+			typeof error === "object" && error !== null
+				? typeof (error as Record<string, unknown>).diagnostic === "string"
+					? ((error as Record<string, unknown>).diagnostic as string)
+					: typeof (error as Record<string, unknown>).message === "string"
+						? ((error as Record<string, unknown>).message as string)
+						: undefined
+				: typeof error === "string"
+					? error
+					: undefined,
+	}
+}
+
+/** Raw ChangeResult → structural face (a thrown call becomes `failed`). */
+function normalizeChangeResult(raw: unknown): RemotePluginChange {
+	const row = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>
+	const application = row.application
+	const error = row.error
+	return {
+		changed: row.changed === true,
+		application:
+			application === "applied" || application === "restart-required" || application === "overridden" || application === "cancelled"
+				? application
+				: "failed",
+		target: typeof row.target === "string" ? row.target : "",
+		error:
+			typeof error === "object" && error !== null
+				? (typeof (error as Record<string, unknown>).diagnostic === "string"
+					? ((error as Record<string, unknown>).diagnostic as string)
+					: typeof (error as Record<string, unknown>).code === "string"
+						? ((error as Record<string, unknown>).code as string)
+						: undefined)
+				: undefined,
+	}
+}
+
+/** Raw inspection → structural face (a thrown call becomes a refusal). */
+function normalizeInspection(raw: unknown): RemotePluginInspection {
+	const row = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>
+	if (row.status === "accepted") {
+		return {
+			status: "accepted",
+			name: typeof row.name === "string" ? row.name : undefined,
+			version: typeof row.version === "string" ? row.version : undefined,
+			description: typeof row.description === "string" ? row.description : undefined,
+			bundle: row.bundle === true ? true : row.bundle === false ? false : null,
+		}
+	}
+	return {
+		status: "refused",
+		problem: typeof row.problem === "string" ? row.problem : "unknown",
+		reason: typeof row.reason === "string" ? row.reason : "",
+	}
+}
+
+/** The `failed` change a thrown RPC call folds into (the panel notices it the
+ * same way a host-side refusal lands). */
+function failedChange(target: string, cause: unknown): RemotePluginChange {
+	return {
+		changed: false,
+		application: "failed",
+		target,
+		error: cause instanceof Error ? cause.message : String(cause),
+	}
+}

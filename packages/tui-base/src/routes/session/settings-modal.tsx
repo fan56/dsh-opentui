@@ -260,7 +260,7 @@ export function buildOtherRows(ctx: SettingsRowContext): SettingsRow[] {
 
 const COMMAND_SECTIONS: Partial<Record<SettingsSectionId, { command: string; label: string; note: string }>> = {
 	models: { command: "/model", label: "打开 /model", note: "provider / API key / 模型清单页面在 v1 仍由 /model 承担" },
-	plugins: { command: "/plugins", label: "打开 /plugins", note: "插件清单与启停由 /plugins 面板承担" },
+	plugins: { command: "/plugins", label: "打开 /plugins", note: "插件清单与启停由 /plugins 面板承担：enter/space 启停、d 卸载（确认）、i 安装；部分变更需重启宿主生效" },
 	presets: { command: "/preset", label: "打开 /preset", note: "Agent 预设的轮换与指定由 /preset 承担" },
 	account: { command: "/login", label: "打开 /login", note: "登录 / 登出由 /login 流程承担" },
 }

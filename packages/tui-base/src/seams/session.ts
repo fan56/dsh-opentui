@@ -136,6 +136,40 @@ export interface SeamSkillRow {
 	invocation?: string
 }
 
+/** One `pluginManager/listBundles` row (C1 — the /plugins manager renders
+ * these; structurally the same face the web profile's plugin-management
+ * page drives through `ctx.remote.pluginManager`). */
+export interface SeamPluginBundleRow {
+	name: string
+	version: string
+	/** Untranslated package-manifest description (the install preview body). */
+	description?: string
+	enabled: boolean
+	installed: boolean
+	/** Not-installed catalog entry (the state column's "available"). */
+	optional: boolean
+	removable: boolean
+	/** `management-required` / `unaddressable` — the host's read-only reasons. */
+	readOnlyReason?: string
+	/** Last listing diagnostic for the row (compatibility gate rejections). */
+	error?: string
+}
+
+/** Structural face of the pluginManager ChangeResult (C1). `applied` means
+ * the change is LIVE on the running host; `restart-required` means it
+ * persists but takes effect at the next host start (the panel states it). */
+export interface SeamPluginChange {
+	changed: boolean
+	application: "applied" | "restart-required" | "overridden" | "failed" | "cancelled"
+	target: string
+	error?: string
+}
+
+/** Structural face of `pluginManager/inspect` (C1 — the install preview). */
+export type SeamPluginInspection =
+	| { status: "accepted"; name?: string; version?: string; description?: string; bundle: boolean | null }
+	| { status: "refused"; problem: string; reason: string }
+
 /** One selectable new-session permission preset (`permissionPresets/catalog`
  * — the same process catalog the web client's General settings reads). */
 export interface SeamPermissionPresetOption {
@@ -601,6 +635,22 @@ export interface SessionSeam {
 	 * notice.
 	 */
 	plugins?(): { name: string; version: string }[]
+	/**
+	 * C1 (the /plugins manager's management face, tui-pi plugins-manager
+	 * parity): the full `pluginManager/listBundles` rows with real
+	 * enablement. Optional — a seam without it degrades the panel to the
+	 * read-only name@version listing.
+	 */
+	pluginBundles?(): SeamPluginBundleRow[]
+	/** Toggle a bundle on/off (the host persists the selection AND tries a
+	 * live apply — `application` reports which). Optional with pluginBundles. */
+	setPluginBundleEnabled?(name: string, enabled: boolean): Promise<SeamPluginChange>
+	/** Uninstall a bundle's package (behind the panel's confirm). */
+	removePluginBundle?(name: string): Promise<SeamPluginChange>
+	/** Inspect an install spec (the `i` flow's preview half). */
+	inspectPluginSpec?(spec: string): Promise<SeamPluginInspection>
+	/** Install a spec as an enabled bundle (the `i` flow's apply half). */
+	installPluginSpec?(spec: string): Promise<SeamPluginChange>
 	/**
 	 * Session-scoped skill catalog (`skills/list`): the host's composed
 	 * human-invocable skills, including plugin-provided rows a boot-time

@@ -103,6 +103,9 @@ import type {
 	SeamSettingsOp,
 	SeamSettingsRow,
 	SeamSkillRow,
+	SeamPluginBundleRow,
+	SeamPluginChange,
+	SeamPluginInspection,
 SeamSessionEvent,
 	SeamSessionInfo,
 	SeamSessionSummary,
@@ -474,6 +477,38 @@ export class RemoteSessionSeam implements SessionSeam {
 	plugins(): { name: string; version: string }[] {
 		this.#pluginsRevision[0]()
 		return this.#session.listPlugins()
+	}
+
+	/**
+	 * C1 (the /plugins manager's management face): RemoteHostSession 1:1 —
+	 * the full cached bundle rows (enablement + read-only reasons), read
+	 * through the same #pluginsRevision so every cache refresh (boot warm,
+	 * `plugin-manager/changed` push, post-mutation refresh) repaints.
+	 */
+	pluginBundles(): SeamPluginBundleRow[] {
+		this.#pluginsRevision[0]()
+		return this.#session.listBundles()
+	}
+
+	/** C1: bundle enable/disable (pluginManager/setBundleEnabled over the
+	 * wire — the same face the web profile's plugin page drives). */
+	setPluginBundleEnabled(name: string, enabled: boolean): Promise<SeamPluginChange> {
+		return this.#session.setBundleEnabled(name, enabled)
+	}
+
+	/** C1: bundle uninstall (the panel's confirm apply half). */
+	removePluginBundle(name: string): Promise<SeamPluginChange> {
+		return this.#session.removeBundle(name)
+	}
+
+	/** C1: install-spec inspection (the `i` flow's preview half). */
+	inspectPluginSpec(spec: string): Promise<SeamPluginInspection> {
+		return this.#session.inspectBundle(spec)
+	}
+
+	/** C1: spec install as an enabled bundle (the `i` flow's apply half). */
+	installPluginSpec(spec: string): Promise<SeamPluginChange> {
+		return this.#session.installBundle(spec)
 	}
 
 	/** Host skill catalog (`skills/list`): RemoteHostSession 1:1. */
