@@ -1710,8 +1710,17 @@ export class RemoteHostSession {
 				this.#rpc("pluginManager/listBundles").catch(() => undefined) as Promise<unknown>,
 			])
 			const versions = new Map<string, string>()
-			const bundlesChanged = Array.isArray(bundles) && (bundles as unknown[]).length !== this.#bundlesCache.length
-			if (Array.isArray(bundles)) {
+			// Content-level change detection (P1-2): a length-only heuristic kept
+			// a toggle (enable/disable keeps the row count) from bumping the seam
+			// revision, so the panel's STATE column showed stale on/off until the
+			// panel was reopened. Compare the normalized rows themselves — the
+			// notify below fires when the enablement face actually moved.
+			const nextBundles = Array.isArray(bundles)
+				? (bundles as Record<string, unknown>[]).map(normalizeBundleRow).filter((row) => row.name !== "")
+				: undefined
+			const bundlesChanged =
+				nextBundles !== undefined && JSON.stringify(nextBundles) !== JSON.stringify(this.#bundlesCache)
+			if (nextBundles !== undefined) {
 				for (const b of bundles as Record<string, unknown>[]) {
 					// listBundles rows identify the bundle by `name` (moduleName is
 					// absent — the pre-fix key never matched, leaving versions "") —
@@ -1722,9 +1731,7 @@ export class RemoteHostSession {
 				}
 				// C1: keep the full enablement rows (the /plugins manager's state
 				// column + toggle face read through this cache).
-				this.#bundlesCache = (bundles as Record<string, unknown>[])
-					.map(normalizeBundleRow)
-					.filter((row) => row.name !== "")
+				this.#bundlesCache = nextBundles
 			}
 			this.#pluginsCache = (Array.isArray(plugins) ? plugins : [])
 				.map((p) => {
@@ -1803,7 +1810,14 @@ export class RemoteHostSession {
 	/** C1: install a spec as an enabled bundle (the install flow's apply half). */
 	async installBundle(spec: string): Promise<RemotePluginChange> {
 		try {
-			const change = normalizeChangeResult(await this.#rpc("pluginManager/installBundle", { spec, enabled: true }))
+			// The host typert wire shape is { spec, options } — `options` is the
+			// { enabled?, requestId?, approvedBuilds?, registry? } object (the
+			// gateway's resolveParameter reads only declared keys, so a legacy
+			// top-level `enabled` never reached the host; today's correct default
+			// was luck, any future enabled:false need would have silently died).
+			const change = normalizeChangeResult(
+				await this.#rpc("pluginManager/installBundle", { spec, options: { enabled: true } }),
+			)
 			void this.refreshPlugins().catch(() => {})
 			return change
 		} catch (cause) {

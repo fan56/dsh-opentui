@@ -148,12 +148,54 @@ describe("RemoteHostSession pluginManager face (C1)", () => {
 		expect(refused).toEqual({ status: "refused", problem: "not-found", reason: "no such package" })
 	})
 
-	test("installBundle sends the spec with enabled: true (the panel installs active)", async () => {
+	test("installBundle sends the typert named-args shape { spec, options.enabled } (the panel installs active)", async () => {
 		const log: { methods: string[] } = { methods: [] }
 		const session = makeSession(pluginRpcHandler(log))
 		const change = await session.installBundle("dsh-tui-pi")
 		expect(change.application).toBe("applied")
-		expect(log.methods).toContain('pluginManager/installBundle {"spec":"dsh-tui-pi","enabled":true}')
+		// The host typert declares `spec` + `options` ({ enabled?, requestId?,
+		// approvedBuilds?, registry? }) — a top-level `enabled` is an undeclared
+		// wire key the gateway drops, so the options object is the contract.
+		expect(log.methods).toContain('pluginManager/installBundle {"spec":"dsh-tui-pi","options":{"enabled":true}}')
+	})
+
+	test("a toggle-only refresh notifies onPluginsChanged (content-level compare, P1-2)", async () => {
+		// A toggle keeps the row count; the old length-only heuristic never
+		// bumped the adapter's revision, so the panel's STATE column stayed stale
+		// until the panel was reopened. Enablement moving MUST notify.
+		const bundles = structuredClone(BUNDLES)
+		const session = makeSession((method, args) => {
+			if (method === "pluginManager/listPlugins") return [{ moduleName: "dsh-tui-pi", meta: { title: "dsh-tui-pi" } }]
+			if (method === "pluginManager/listBundles") return structuredClone(bundles)
+			if (method === "pluginManager/setBundleEnabled") {
+				bundles[0].enabled = Boolean(args.enabled)
+				return { changed: true, application: "restart-required", target: String(args.name) }
+			}
+			return {}
+		})
+		await session.refreshPlugins()
+		let notified = 0
+		session.onPluginsChanged(() => {
+			notified += 1
+		})
+		// The mutation's post-refresh is fire-and-forget (`void refreshPlugins`);
+		// a macrotask lets it settle before asserting the notify count.
+		const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+		// First toggle: rows same length, enabled flips true→false — notify.
+		await session.setBundleEnabled("dsh-tui-pi", false)
+		await flush()
+		expect(notified).toBe(1)
+		expect(session.listBundles()[0].enabled).toBe(false)
+
+		// A refresh with NO content change stays quiet (no spurious repaints).
+		await session.refreshPlugins()
+		expect(notified).toBe(1)
+
+		// Toggling back notifies again.
+		await session.setBundleEnabled("dsh-tui-pi", true)
+		await flush()
+		expect(notified).toBe(2)
 	})
 
 	test("the plugin-manager/changed push refreshes the caches and cannot escape as a rejection (C1 survival pin)", async () => {
