@@ -2,7 +2,8 @@
  * Slash-command registry tests (batch 8): dispatch classification, the
  * harmless unknown row, and each core command's seam/hook call.
  */
-import { describe, expect, test, beforeEach } from "bun:test"
+import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	MODEL_DEFAULT_EFFORT_PICK,
 	coreCommands,
@@ -18,6 +19,14 @@ import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
 import { getMotionTier, setMotionTier } from "../src/skin/motion"
 import { footerHints, hintsLocale, setFooterHints, setHintsLocale, DEFAULT_FOOTER_HINTS, HINT_LOCALES } from "../src/routes/session/hints-line"
 import type { SessionSeam, SeamProviderModel, SeamSessionSummary } from "../src/seams/session"
+
+// The command copy resolves through `t()` (T4 facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+afterAll(() => setLanguages(new Map()))
 
 /** Recording fake: every seam method the core set touches is a spy. */
 class RecordingSeam {

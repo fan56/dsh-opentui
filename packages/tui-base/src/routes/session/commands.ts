@@ -19,6 +19,7 @@
  *                            send to the model)
  *   plain text            → not a command; caller sends/steers as batch 4
  */
+import { t } from "../../i18n"
 import type { SeamEffortOption, SeamLoginRoute, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
@@ -372,16 +373,16 @@ export async function commitLoginRoute(
 	}
 	const registered = await face.registerRoute(entry.id, providerProfileFor(entry))
 	if (!registered) {
-		say(`${entry.id}: route registration failed — key not stored`)
+		say(t("command.login.routeRegistrationFailed", { id: entry.id }))
 		return
 	}
 	try {
 		await face.login(deriveKeyRef(entry.id), key)
 	} catch (e) {
-		say(`${entry.id}: key store failed — ${String(e instanceof Error ? e.message : e).slice(0, 150)}`)
+		say(t("command.login.keyStoreFailed", { id: entry.id, detail: String(e instanceof Error ? e.message : e).slice(0, 150) }))
 		return
 	}
-	say(`${entry.name} subscribed — key stored, route registered (in /model next session)`)
+	say(t("command.login.subscribed", { name: entry.name }))
 }
 
 /**
@@ -408,7 +409,7 @@ export async function offerCorruptedLogRepair(
 	broken: readonly BrokenLogRow[],
 ): Promise<boolean> {
 	if (broken.length === 0) {
-		ctx.say(`cannot repair ${sessionId}: no broken log found on disk`)
+		ctx.say(t("command.repair.noBrokenLog", { id: sessionId }))
 		return false
 	}
 	if (!ctx.seam.repairSessionLog) {
@@ -429,19 +430,19 @@ export async function offerCorruptedLogRepair(
 		repairConfirmOptions(),
 	)
 	if (confirm !== "repair") {
-		ctx.say(`resume cancelled — the log was left untouched (${repairConfirmBody(broken).join("; ")})`)
+		ctx.say(t("command.repair.cancelled", { detail: repairConfirmBody(broken).join("; ") }))
 		return false
 	}
 	for (const row of broken) {
 		const result = ctx.seam.repairSessionLog(row.path)
 		if (result.kind === "failed") {
-			ctx.say(`repair failed — ${row.name}: ${result.detail} (the log was left untouched or restored)`)
+			ctx.say(t("command.repair.failed", { name: row.name, detail: result.detail }))
 			return false
 		}
 		if (result.kind === "clean") {
-			ctx.say(`${row.name} needs no repair — the last line already parses; resuming`)
+			ctx.say(t("command.repair.notNeeded", { name: row.name }))
 		} else {
-			ctx.say(`repaired ${row.name} — the original was kept at ${result.backupPath}`)
+			ctx.say(t("command.repair.done", { name: row.name, backupPath: result.backupPath }))
 		}
 	}
 	return true
@@ -560,14 +561,14 @@ export function coreCommands(): SlashCommand[] {
 	return [
 		{
 			name: "/help",
-			description: "show available commands",
+			description: t("command.help.description"),
 			run(ctx) {
-				for (const command of coreCommands()) ctx.say(`${command.name} — ${command.description}`)
+				for (const command of coreCommands()) ctx.say(t("command.help.entry", { name: command.name, description: command.description }))
 			},
 		},
 		{
 			name: "/new",
-			description: "start a fresh session",
+			description: t("command.new.description"),
 			async run(ctx) {
 				ctx.seam.newSession()
 				// A fresh session has no stored history: clear explicitly. The
@@ -576,12 +577,12 @@ export function coreCommands(): SlashCommand[] {
 				// not survive a /new.
 				ctx.clear()
 				await ctx.reload()
-				ctx.say(`new session ${ctx.seam.currentSessionId() ?? "(unnamed)"}`)
+				ctx.say(t("command.new.created", { id: ctx.seam.currentSessionId() ?? "(unnamed)" }))
 			},
 		},
 		{
 			name: "/model",
-			description: "switch model (bare opens the picker, then the effort picker)",
+			description: t("command.model.description"),
 			async run(ctx, argText) {
 				// A previously SILENT selection failure (the staged route's
 				// re-send onto the last session create, a fire-and-forget
@@ -589,13 +590,13 @@ export function coreCommands(): SlashCommand[] {
 				// may still name a route the host never accepted.
 				const pendingSelectionError = ctx.seam.lastSelectionError?.()
 				if (pendingSelectionError) {
-					ctx.say(`model note: the last staged switch failed — ${pendingSelectionError}`)
+					ctx.say(t("command.model.stagedSwitchFailed", { reason: pendingSelectionError }))
 				}
 				const arg = argText.trim()
 				if (arg) {
 					const [providerID, modelID] = arg.split("/")
 					if (!providerID || !modelID) {
-						ctx.say(`usage: /model or /model provider/model (got "${arg}")`)
+						ctx.say(t("command.model.usage", { arg }))
 						return
 					}
 					// Argument form stays one-shot (script/muscle-memory path):
@@ -603,10 +604,10 @@ export function coreCommands(): SlashCommand[] {
 					try {
 						await ctx.seam.selectModel(providerID, modelID)
 					} catch (error) {
-						ctx.say(`model switch failed — ${seamFailureReason(error)}`)
+						ctx.say(t("command.model.switchFailed", { reason: seamFailureReason(error) }))
 						return
 					}
-					ctx.say(`model → ${providerID}/${modelID}`)
+					ctx.say(t("command.model.set", { model: `${providerID}/${modelID}` }))
 					ctx.refreshFooter?.()
 					return
 				}
@@ -704,19 +705,19 @@ export function coreCommands(): SlashCommand[] {
 					try {
 						await ctx.seam.selectModel(providerID, modelID)
 					} catch (error) {
-						ctx.say(`model switch failed — ${seamFailureReason(error)}`)
+						ctx.say(t("command.model.switchFailed", { reason: seamFailureReason(error) }))
 						return
 					}
-					ctx.say(`model → ${picked} (no think levels)`)
+					ctx.say(t("command.model.setNoThink", { model: picked }))
 					if (keptEffort !== undefined) {
 						try {
 							await thinking?.selectEffort(keptEffort)
 						} catch (error) {
-							ctx.say(`thinking switch failed — ${seamFailureReason(error)}`)
+							ctx.say(t("command.thinking.switchFailed", { reason: seamFailureReason(error) }))
 							ctx.refreshFooter?.()
 							return
 						}
-						ctx.say(`thinking → ${keptEffort} (next turn)`)
+						ctx.say(t("command.thinking.setNext", { effort: keptEffort }))
 					}
 					ctx.refreshFooter?.()
 					return
@@ -756,18 +757,18 @@ export function coreCommands(): SlashCommand[] {
 				try {
 					await ctx.seam.selectModel(providerID, modelID)
 				} catch (error) {
-					ctx.say(`model switch failed — ${seamFailureReason(error)}`)
+					ctx.say(t("command.model.switchFailed", { reason: seamFailureReason(error) }))
 					return
 				}
-				ctx.say(`model → ${picked}`)
+				ctx.say(t("command.model.set", { model: picked }))
 				try {
 					await thinking?.selectEffort(effort)
 				} catch (error) {
-					ctx.say(`thinking switch failed — ${seamFailureReason(error)}`)
+					ctx.say(t("command.thinking.switchFailed", { reason: seamFailureReason(error) }))
 					ctx.refreshFooter?.()
 					return
 				}
-				ctx.say(`thinking → ${effortPicked === MODEL_DEFAULT_EFFORT_PICK ? "model default" : effortPicked} (next turn)`)
+				ctx.say(t("command.thinking.setNext", { effort: effortPicked === MODEL_DEFAULT_EFFORT_PICK ? "model default" : effortPicked }))
 				ctx.refreshFooter?.()
 			},
 		},
@@ -785,7 +786,7 @@ export function coreCommands(): SlashCommand[] {
 			// shows up in /model on the next session. "/login <id>" targets a
 			// catalog entry directly.
 			name: "/login",
-			description: "log in a provider (bare opens the picker; Custom provider opens the form)",
+			description: t("command.login.description"),
 			async run(ctx, argText) {
 				const face = ctx.seam.login
 				if (!face || !ctx.promptText) {
@@ -796,7 +797,7 @@ export function coreCommands(): SlashCommand[] {
 				if (arg) {
 					const entry = PROVIDER_CATALOG.find((e) => e.id === arg)
 					if (!entry) {
-						ctx.say(`unknown provider: ${arg}`)
+						ctx.say(t("command.login.unknownProvider", { provider: arg }))
 						return
 					}
 					await commitCatalogLogin(ctx, face, entry)
@@ -832,7 +833,7 @@ export function coreCommands(): SlashCommand[] {
 			// could not re-create it). A failed route clear keeps the key
 			// removal (it is reported, never rolled back).
 			name: "/logout",
-			description: "log out a provider (drops the stored key)",
+			description: t("command.logout.description"),
 			async run(ctx, argText) {
 				const face = ctx.seam.login
 				if (!face) {
@@ -848,7 +849,7 @@ export function coreCommands(): SlashCommand[] {
 				try {
 					routes = await face.routes()
 				} catch (error) {
-					ctx.say(`logout failed — ${seamFailureReason(error)}`)
+					ctx.say(t("command.logout.failed", { reason: seamFailureReason(error) }))
 					return
 				}
 				// Probe each route's key ref (the reference's credentials sweep):
@@ -868,7 +869,7 @@ export function coreCommands(): SlashCommand[] {
 				const arg = argText.trim()
 				let target = arg ? loggedIn.find((t) => t.id === arg) : undefined
 				if (arg && !target) {
-					ctx.say(`not logged in: ${arg}`)
+					ctx.say(t("command.logout.notLoggedIn", { provider: arg }))
 					return
 				}
 				if (!target) {
@@ -883,11 +884,11 @@ export function coreCommands(): SlashCommand[] {
 				try {
 					await face.logout(target.ref)
 				} catch (error) {
-					ctx.say(`${target.id}: logout failed — ${seamFailureReason(error)}`)
+					ctx.say(t("command.logout.routeFailed", { id: target.id, reason: seamFailureReason(error) }))
 					return
 				}
 				if (target.custom) {
-					ctx.say(`${target.name} logged out — key removed (route kept)`)
+					ctx.say(t("command.logout.done", { name: target.name }))
 					return
 				}
 				const cleared = await face.registerRoute(target.id, undefined).catch(() => false)
@@ -900,7 +901,7 @@ export function coreCommands(): SlashCommand[] {
 		},
 		{
 			name: "/quit",
-			description: "exit the app",
+			description: t("command.quit.description"),
 			run(ctx) {
 				ctx.quit()
 			},
@@ -915,7 +916,7 @@ export function coreCommands(): SlashCommand[] {
 			// copy distinct from the plain empty-store one. Retention
 			// (deletion / age windows) stays host-side — out of scope here.
 			name: "/resume",
-			description: "resume a persisted session",
+			description: t("command.resume.description"),
 			async run(ctx) {
 				// The store list must FAIL LOUD, never read as empty: a list
 				// failure here (dead seam, adopted host without the route) used
@@ -925,7 +926,7 @@ export function coreCommands(): SlashCommand[] {
 				try {
 					sessions = await ctx.seam.listSessions()
 				} catch (error) {
-					ctx.say(`resume unavailable — ${seamFailureReason(error)}`)
+					ctx.say(t("command.resume.unavailable", { reason: seamFailureReason(error) }))
 					return
 				}
 				if (sessions.length === 0) {
@@ -959,12 +960,12 @@ export function coreCommands(): SlashCommand[] {
 				// so the reload must be told WHICH session to read. Without it
 				// the transcript read targeted "" and the view was emptied.
 				await ctx.reload(picked)
-				ctx.say(`resumed ${picked}`)
+				ctx.say(t("command.resume.done", { name: picked }))
 			},
 		},
 		{
 			name: "/clear",
-			description: "clear the transcript",
+			description: t("command.clear.description"),
 			run(ctx) {
 				ctx.clear()
 				ctx.say("transcript cleared")
@@ -982,7 +983,7 @@ export function coreCommands(): SlashCommand[] {
 			// running turn answers that the prompts wait for it to finish (no
 			// promise of delivery — a failed turn pauses the queue again).
 			name: "/flush",
-			description: "deliver the queued prompts now",
+			description: t("command.flush.description"),
 			run(ctx) {
 				if (!ctx.flushQueue) {
 					ctx.say("/flush unavailable in this session")
@@ -1008,7 +1009,7 @@ export function coreCommands(): SlashCommand[] {
 			// Feature batch F3. Never busy-gated: the side call rides a throwaway
 			// session, so a mid-turn /btw streams alongside the main turn.
 			name: "/btw",
-			description: "side question (bare reopens the last answer)",
+			description: t("command.btw.description"),
 			run(ctx, argText) {
 				if (!ctx.seam.btwAsk || !ctx.openBtw) {
 					ctx.say("/btw unavailable in this session")
@@ -1021,7 +1022,7 @@ export function coreCommands(): SlashCommand[] {
 			// Feature batch F4. Prints the info panel as an aligned transcript
 			// block (the /help print path) — no overlay, no busy-gate.
 			name: "/session",
-			description: "show session info (id, model, tokens, speed)",
+			description: t("command.session.description"),
 			async run(ctx) {
 				if (!ctx.seam.sessionInfo) {
 					ctx.say("/session unavailable in this session")
@@ -1041,7 +1042,7 @@ export function coreCommands(): SlashCommand[] {
 			// state column + `/` filter); without it the F7a transcript
 			// listing remains the degrade path. Never busy-gated — a pure read.
 			name: "/plugins",
-			description: "manage plugins (opens the panel)",
+			description: t("command.plugins.description"),
 			run(ctx) {
 				if (!ctx.seam.plugins) {
 					ctx.say("/plugins unavailable in this session")
@@ -1056,7 +1057,7 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say("no plugins installed")
 					return
 				}
-				for (const plugin of plugins) ctx.say(`● ${plugin.name}@${plugin.version}`)
+				for (const plugin of plugins) ctx.say(t("command.plugins.entry", { name: plugin.name, version: plugin.version }))
 			},
 		},
 		{
@@ -1068,7 +1069,7 @@ export function coreCommands(): SlashCommand[] {
 			// skills-manage.ts for the safety semantics). Purely local UI, so
 			// never busy-gated.
 			name: "/skills",
-			description: "manage skills (opens the panel)",
+			description: t("command.skills.description"),
 			run(ctx) {
 				if (!ctx.openSkills) {
 					ctx.say("/skills unavailable in this session")
@@ -1083,7 +1084,7 @@ export function coreCommands(): SlashCommand[] {
 			// (both adapters carry it 1:1). Never busy-gated — the query is a
 			// pure read over the stored corpus, not a model turn.
 			name: "/search",
-			description: "full-text search over stored sessions",
+			description: t("command.search.description"),
 			run(ctx) {
 				if (!ctx.openSearch) {
 					ctx.say("/search unavailable in this session")
@@ -1101,7 +1102,7 @@ export function coreCommands(): SlashCommand[] {
 			// degrades to the plain table. A seam without the agents face
 			// degrades to the unavailable notice.
 			name: "/agents",
-			description: "manage agent definitions (model, think level, spawn depth) from markdown files",
+			description: t("command.agents.description"),
 			run(ctx, argText) {
 				if (!ctx.seam.agents) {
 					ctx.say("/agents unavailable in this session")
@@ -1122,7 +1123,7 @@ export function coreCommands(): SlashCommand[] {
 			// other namespace read-only ("本 TUI 不消费"). A seam without the
 			// settings face still gets the local zone.
 			name: "/settings",
-			description: "settings: local preferences, host settings, other namespaces",
+			description: t("command.settings.description"),
 			run(ctx) {
 				if (!ctx.openSettings) {
 					ctx.say("/settings: the panel is not mounted in this entry")
@@ -1139,7 +1140,7 @@ export function coreCommands(): SlashCommand[] {
 			// selected turn (seam.forkSession), esc closes. A bare read over
 			// the stored journal — never busy-gated.
 			name: "/history",
-			description: "browse completed turns of the session (refill, switch, fork)",
+			description: t("command.history.description"),
 			run(ctx) {
 				if (!ctx.openHistory) {
 					ctx.say("/history: the browser panel is not mounted in this entry")
@@ -1156,7 +1157,7 @@ export function coreCommands(): SlashCommand[] {
 			// roster answers honestly instead of opening an empty window; a
 			// missing hook degrades to the notice (the /plugins contract).
 			name: "/subagents",
-			description: "view live subagent transcripts (list, steer, stop)",
+			description: t("command.subagents.description"),
 			run(ctx) {
 				if (!ctx.openSubagents) {
 					ctx.say("/subagents: the transcript viewer is not mounted in this entry")
@@ -1178,7 +1179,7 @@ export function coreCommands(): SlashCommand[] {
 			// — next-turn effect). Absent surface or an empty ladder = the
 			// unavailable notice (the /btw degrade contract).
 			name: "/think",
-			description: "set reasoning effort (opens the picker)",
+			description: t("command.think.description"),
 			async run(ctx) {
 				const thinking = ctx.seam.thinking
 				if (!thinking) {
@@ -1217,10 +1218,10 @@ export function coreCommands(): SlashCommand[] {
 				try {
 					await thinking.selectEffort(picked)
 				} catch (error) {
-					ctx.say(`thinking switch failed — ${seamFailureReason(error)}`)
+					ctx.say(t("command.thinking.switchFailed", { reason: seamFailureReason(error) }))
 					return
 				}
-				ctx.say(`thinking → ${picked} (next turn)`)
+				ctx.say(t("command.thinking.setNext", { effort: picked }))
 				ctx.refreshFooter?.()
 			},
 		},
@@ -1234,7 +1235,7 @@ export function coreCommands(): SlashCommand[] {
 			// segments; `all on|off` bulk-sets them; `lang <locale>` switches
 			// the label language (en/zh-CN/ja/ko).
 			name: "/hints",
-			description: "key hints: toggle bar; <segment> on|off; all on|off; lang <locale>",
+			description: t("command.hints.description"),
 			run(ctx, argText) {
 				const words = argText.trim().split(/\s+/).filter(Boolean)
 				if (words.length === 0) {
@@ -1252,12 +1253,12 @@ export function coreCommands(): SlashCommand[] {
 						? HINT_LOCALES.find((locale) => locale.toLowerCase() === raw.toLowerCase())
 						: undefined
 					if (!next) {
-						ctx.say(`usage: /hints lang ${HINT_LOCALES.join("|")} (current: ${hintsLocale()})`)
+						ctx.say(t("command.hints.usageLang", { locales: HINT_LOCALES.join("|"), current: hintsLocale() }))
 						return
 					}
 					setHintsLocale(next)
 					persistHints(ctx.seam)
-					ctx.say(`hint language: ${next}`)
+					ctx.say(t("command.hints.langSet", { lang: next }))
 					return
 				}
 				// A given state word must be exactly on|off — anything else is a
@@ -1265,7 +1266,7 @@ export function coreCommands(): SlashCommand[] {
 				// meaning "on".
 				const stateOn = state === undefined ? undefined : state === "on" ? true : state === "off" ? false : null
 				if (stateOn === null) {
-					ctx.say(`usage: /hints ${head} on|off (got: ${state})`)
+					ctx.say(t("command.hints.usageSegment", { segment: head, got: state }))
 					return
 				}
 				if (head === "all") {
@@ -1274,18 +1275,22 @@ export function coreCommands(): SlashCommand[] {
 					for (const seg of FOOTER_HINT_IDS) all[seg] = on
 					setFooterHints(all)
 					persistHints(ctx.seam)
-					ctx.say(`all hint segments: ${on ? "on" : "off"}`)
+					ctx.say(t("command.hints.allSet", { state: on ? "on" : "off" }))
 					return
 				}
 				if (!FOOTER_HINT_IDS.includes(head as HintSegmentId)) {
-					ctx.say(`unknown hint segment: ${head} (segments: ${FOOTER_HINT_IDS.join(", ")})`)
+					ctx.say(t("command.hints.unknownSegment", { segment: head, segments: FOOTER_HINT_IDS.join(", ") }))
 					return
 				}
 				const id = head as HintSegmentId
 				const on = stateOn === undefined ? !footerHints()[id] : stateOn
 				setFooterHints((hints) => ({ ...hints, [id]: on }))
 				persistHints(ctx.seam)
-				ctx.say(`hint ${id}: ${on ? "on" : "off"}${on && !hintInState(id, false) ? " (busy only)" : ""}`)
+				if (on && !hintInState(id, false)) {
+					ctx.say(t("command.hints.segmentBusy", { segment: id }))
+				} else {
+					ctx.say(t("command.hints.segmentSet", { segment: id, state: on ? "on" : "off" }))
+				}
 			},
 		},
 		{
@@ -1299,13 +1304,13 @@ export function coreCommands(): SlashCommand[] {
 			// after env `DSH_OPENTUI_MOTION` (skin/motion.ts
 			// resolveMotionPreference).
 			name: "/motion",
-			description: "animation tier: full | reduced | off | auto (bare shows setting → effective)",
+			description: t("command.motion.description"),
 			run(ctx, argText) {
 				const arg = argText.trim().toLowerCase()
 				if (!arg) {
 					const preference = getMotionPreference()
 					const setting = preference === undefined ? `auto → ${getMotionTier()}` : preference
-					ctx.say(`motion: ${setting} (usage: /motion full|reduced|off|auto)`)
+					ctx.say(t("command.motion.usage", { setting }))
 					return
 				}
 				if (arg !== "full" && arg !== "reduced" && arg !== "off" && arg !== "auto") {
@@ -1318,12 +1323,12 @@ export function coreCommands(): SlashCommand[] {
 				} catch (error) {
 					console.error("[commands] motion persist failed:", error)
 				}
-				ctx.say(`motion: ${arg === "auto" ? "auto" : getMotionTier()}`)
+				ctx.say(t("command.motion.status", { setting: arg === "auto" ? "auto" : getMotionTier() }))
 			},
 		},
 		{
 			name: "/hotkeys",
-			description: "show keybinds",
+			description: t("command.hotkeys.description"),
 			run(ctx) {
 				ctx.say(hotkeysHeader())
 				for (const row of hotkeyRows()) ctx.say(row)
@@ -1338,7 +1343,7 @@ export function coreCommands(): SlashCommand[] {
 			// (the e2e 67 contract) still lands on a theme. Picking applies
 			// live. No argument form — the picker IS the reference surface.
 			name: "/theme",
-			description: "switch theme (opens the picker)",
+			description: t("command.theme.description"),
 			async run(ctx) {
 				if (!ctx.themes) {
 					ctx.say("/theme unavailable in this session")
@@ -1365,12 +1370,12 @@ export function coreCommands(): SlashCommand[] {
 				if (!picked || picked === current) return
 				if (picked.startsWith("mode:")) {
 					const mode = picked.slice("mode:".length) as "auto" | "dark" | "light"
-					if (modeFace?.set(mode)) ctx.say(`Theme mode: ${mode}`)
-					else ctx.say(`unknown theme mode: ${mode}`)
+					if (modeFace?.set(mode)) ctx.say(t("command.theme.modeSet", { mode }))
+					else ctx.say(t("command.theme.unknownMode", { mode }))
 					return
 				}
-				if (ctx.themes.set(picked)) ctx.say(`Theme: ${picked} — applied`)
-				else ctx.say(`unknown theme: ${picked}`)
+				if (ctx.themes.set(picked)) ctx.say(t("command.theme.set", { theme: picked }))
+				else ctx.say(t("command.theme.unknown", { theme: picked }))
 			},
 		},
 		{
@@ -1385,7 +1390,7 @@ export function coreCommands(): SlashCommand[] {
 			// attached) applies directly. Absent face or an empty roster =
 			// the degrade notices (the /plugins contract).
 			name: "/preset",
-			description: "switch agent preset (bare opens the picker, next rotates)",
+			description: t("command.preset.description"),
 			async run(ctx, argText) {
 				const face = ctx.seam.preset
 				if (!face) {
@@ -1420,11 +1425,11 @@ export function coreCommands(): SlashCommand[] {
 				} else {
 					target = findPresetRow(rows, arg)
 					if (!target) {
-						ctx.say(`unknown preset: ${arg}`)
+						ctx.say(t("command.preset.unknown", { name: arg }))
 						return
 					}
 					if (target.id === currentId) {
-						ctx.say(`preset already: ${target.name}`)
+						ctx.say(t("command.preset.already", { name: target.name }))
 						return
 					}
 				}
@@ -1437,10 +1442,10 @@ export function coreCommands(): SlashCommand[] {
 					if (verdict !== "switch") return
 				}
 				if (!(await face.select(target.id))) {
-					ctx.say(`preset switch failed: ${target.name}`)
+					ctx.say(t("command.preset.switchFailed", { name: target.name }))
 					return
 				}
-				ctx.say(`preset → ${target.name} (new session)`)
+				ctx.say(t("command.preset.set", { name: target.name }))
 				await ctx.reload()
 			},
 		},
