@@ -6,10 +6,19 @@
  * diff-paint dropped the line). Mounted through @opentui/solid testRender
  * like widgets-dock-render.test.ts — no pure-function stand-in.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { createComponent, testRender } from "@opentui/solid"
 import type { CapturedFrame, CapturedSpan } from "@opentui/core"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { BtwController, BtwPanel, type BtwAskFn } from "../src/routes/session/btw-overlay"
+
+// The btw overlay copy reads through t(); boot the bundled registry so the
+// painted frame carries real copy regardless of cross-file execution order.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+afterAll(() => setLanguages(new Map()))
 
 const tick = () => new Promise((r) => setTimeout(r, 0))
 
