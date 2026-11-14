@@ -1,5 +1,7 @@
 # Home/End transcript navigation gap (shell page, plain-transcript state)
 
+Status: Implemented in 65e03d3 (2026-11-14)
+
 ## Problem
 
 In the rebuilt shell view, in pure transcript state (nothing editor-focused
