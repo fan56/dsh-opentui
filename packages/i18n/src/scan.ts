@@ -19,8 +19,18 @@ import { join } from "node:path"
 /** Han ideographs (U+3400–U+9FFF: ext-A + unified). */
 const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff]/
 
-/** A `say(` call whose argument is a template literal (backtick). */
-const SAY_TEMPLATE_RE = /\bsay\(\s*`/
+/**
+ * A `say(` call whose argument span reaches a template literal (backtick)
+ * before the argument list closes, WITHOUT routing through a `t()` call
+ * first (a backtick inside `say(t("key", { x: `...` }))` is a params value,
+ * not a raw say argument — those are already migrated). `[^`)]*` spans
+ * newlines and allows leading code between the call and the backtick
+ * (multi-line calls, `cond ? `...`` ternary arms) while a plain-string or
+ * empty argument never matches. Heuristic, not a parser: nested non-t args
+ * like `say(fmt(x), `y`)` are not caught — acceptable for a monotonic
+ * ratchet.
+ */
+const SAY_TEMPLATE_RE = /\bsay\((?:(?!\bt\()[^`)])*`/g
 
 /** Lines whose visible content is a comment are not user-visible copy. */
 export function isCommentLine(line: string): boolean {
@@ -45,11 +55,20 @@ export function scanSource(source: string): SourceLeaks {
 	const cjkLines: number[] = []
 	const templateSayLines: number[] = []
 	const lines = source.split("\n")
+	// say-template detection is multi-line aware (T15 blind-spot fix): the
+	// call and its template literal may be split across lines (`ctx.say(\n\t
+	// \`...\``, or a `cond ? `...`` ternary arm), which the old per-line test
+	// missed. The regex spans newlines (see its doc), so a global pass over
+	// the whole source finds them; each match offset maps back to the 1-based
+	// line of the `say(` opening.
+	SAY_TEMPLATE_RE.lastIndex = 0
+	for (let m = SAY_TEMPLATE_RE.exec(source); m; m = SAY_TEMPLATE_RE.exec(source)) {
+		templateSayLines.push(source.slice(0, m.index).split("\n").length)
+	}
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i] ?? ""
 		if (isCommentLine(line)) continue
 		if (CJK_RE.test(line)) cjkLines.push(i + 1)
-		if (SAY_TEMPLATE_RE.test(line)) templateSayLines.push(i + 1)
 	}
 	return { cjkLines, templateSayLines }
 }

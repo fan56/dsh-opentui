@@ -437,7 +437,7 @@ export async function offerCorruptedLogRepair(
 		// A doomed action gets no confirm option: report the reason directly,
 		// touch nothing, and do not resume.
 		ctx.say(
-			`cannot repair ${sessionId} client-side — ${repairConfirmBody(unrepairable).join("; ")}; only plain jsonl tails are repairable. The log was left untouched.`,
+			t("command.repair.unrepairable", { id: sessionId, detail: repairConfirmBody(unrepairable).join("; ") }),
 		)
 		return false
 	}
@@ -910,8 +910,8 @@ export function coreCommands(): SlashCommand[] {
 				const cleared = await face.registerRoute(target.id, undefined).catch(() => false)
 				ctx.say(
 					cleared
-						? `${target.name} logged out — key + route removed (leaves /model next session)`
-						: `${target.name} logged out — key removed, route removal failed`,
+						? t("command.logout.routeRemoved", { name: target.name })
+						: t("command.logout.routeRemoveFailed", { name: target.name }),
 				)
 			},
 		},
@@ -1011,13 +1011,11 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				if (result.kind === "busy") {
-					ctx.say(
-						`a turn is running — ${result.remaining} queued prompt(s) wait for it to finish`,
-					)
+					ctx.say(t("command.flush.busy", { remaining: result.remaining }))
 					return
 				}
 				ctx.say(
-					`queue flushed — ${result.started} prompt(s) sending now, ${result.remaining} still queued`,
+					t("command.flush.flushed", { started: result.started, remaining: result.remaining }),
 				)
 			},
 		},

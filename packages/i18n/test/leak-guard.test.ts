@@ -76,6 +76,22 @@ describe("leak-guard scanner (design §4 T14 infra)", () => {
 		expect(found.templateSayLines).toEqual([3, 5])
 	})
 
+	test("scanSource catches multi-line say template literals (T15 blind spot)", () => {
+		const source = [
+			"ctx.say(", // line 1: call and template split across lines
+			"\t`queue flushed — ${result.started} sending`", // line 2
+			")",
+			"ctx.say(", // line 4
+			"\tcond",
+			"\t\t? `arm one ${x}`", // line 6
+			"\t\t: `arm two`", // line 7
+			")",
+			"say('plain string is not a template leak')",
+		].join("\n")
+		const found = scanSource(source)
+		expect(found.templateSayLines).toEqual([1, 4])
+	})
+
 	test("scanTree skips node_modules, test files and non-source files; never throws on a missing root", () => {
 		const dir = mkdtempSync(join(tmpdir(), "i18n-scan-"))
 		try {
