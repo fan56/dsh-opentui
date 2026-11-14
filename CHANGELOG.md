@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.1] - 2026-11-14
+
+### Fixed
+
+- **Remote force-stop is honest about its outcome.** When the dedicated `subagents/interruptByParent` route is missing from the host composition, the remote subagents panel falls back to the api-session-controller's `session/cancel` on the child's own session id; both legs failing throws the combined error. `forceStop` now resolves its outcome from the wire — the cancelled settle and the hard-stop markers only fold when the stop actually landed, and a failed stop leaves the child running and reports nothing was stopped (no false ⏻ marker). The subagent policy accepts async stops and fires markers only on a resolved `true`.
+- **Attachment read-back uses the full admitted wire ref.** `session/attachment` read-back now extracts the full admitted image refs (attachmentId, mediaType, bytes, width, height) from the follow journal's prompt content and sends them verbatim, instead of an id-only ref the host's strict codec rejects; a ref missing from the journal degrades to a placeholder that surfaces as a typed rejection rather than a wire fault.
+- **Remote live-smoke no longer kills its own runner.** The `finally` port sweep excludes the runner's own pid, so a same-port restart's lingering carrier socket can no longer group-signal the test runner before it prints its summary.
+- **E2E scenarios realigned with the current UI.** The settings scenario drives the v1.2 sectioned `/settings` modal (section navigation, instant-save enum editor, exit confirmation); the commands overflow assertion computes the count from the command registry instead of pinning a literal; gate-dark 72 boots the TUI before probing `/agents` and expects the registered-command not-mounted reply rather than the pre-C3 `unknown command` row; e2e 62 capability-gates the hard-stop ladder on the `subagents/interruptByParent` route before running it.
+
 ## [0.13.0] - 2026-11-14
 
 ### Added
