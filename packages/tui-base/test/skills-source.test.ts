@@ -5,10 +5,11 @@
 import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { TextAttributes } from "@opentui/core"
 import type { SlashCommand } from "../src/routes/session/commands"
 import {
+	agentsHomeEnvWarning,
 	discoverSkills,
 	findProjectRoot,
 	frontmatterBoolean,
@@ -181,6 +182,49 @@ describe("skills-source: agents home resolution (host parity)", () => {
 		})
 		withEnv("", () => {
 			expect(resolveAgentsHome()).toBe(join(homedir(), ".agents"))
+		})
+	})
+
+	test("a blank env keeps skillRoots off the cwd (the host's ''→cwd hole)", () => {
+		withEnv("", () => {
+			const cwd = tempDir("skill-cwd-blank-")
+			const last = skillRoots({ cwd }).at(-1)!
+			// The client treats the blank env as unset: rank 500 stays at
+			// ~/.agents, never resolve("") = cwd (c-pack-review P2-2).
+			expect(last.path).toBe(join(homedir(), ".agents", "skills"))
+			expect(last.path).toBe(resolve(join(homedir(), ".agents", "skills")))
+		})
+		cleanup()
+	})
+
+	test("agentsHomeEnvWarning fires only for a set-but-blank env", () => {
+		expect(agentsHomeEnvWarning(undefined)).toBeUndefined()
+		expect(agentsHomeEnvWarning(join(tmpdir(), "real-home"))).toBeUndefined()
+		expect(agentsHomeEnvWarning("")).toContain("unset the variable")
+		expect(agentsHomeEnvWarning("   ")).toContain("unset the variable")
+		withEnv("", () => {
+			expect(agentsHomeEnvWarning()).toContain("unset the variable")
+		})
+		withEnv(join(tmpdir(), "env-agents-home"), () => {
+			expect(agentsHomeEnvWarning()).toBeUndefined()
+		})
+	})
+
+	test("agentsHomeEnvWarning covers the config leg and the both-blank case", () => {
+		// Healthy env + blank config → config-leg wording (remove the key).
+		expect(agentsHomeEnvWarning(join(tmpdir(), "real-home"), "")).toContain("agentsHome key")
+		expect(agentsHomeEnvWarning(join(tmpdir(), "real-home"), "   ")).toContain("agentsHome key")
+		// Blank config with a NON-string value is not a config-leg hole.
+		expect(agentsHomeEnvWarning(join(tmpdir(), "real-home"), undefined)).toBeUndefined()
+		expect(agentsHomeEnvWarning(join(tmpdir(), "real-home"), 42)).toBeUndefined()
+		// Both legs blank → the message must name BOTH fixes (unsetting the
+		// variable alone cannot repair the config leg).
+		const both = agentsHomeEnvWarning("", "")
+		expect(both).toContain("unset the variable")
+		expect(both).toContain("agentsHome key")
+		// Blank config still fires when the env leg is healthy.
+		withEnv(join(tmpdir(), "env-agents-home"), () => {
+			expect(agentsHomeEnvWarning(undefined, "")).toContain("agentsHome key")
 		})
 	})
 })

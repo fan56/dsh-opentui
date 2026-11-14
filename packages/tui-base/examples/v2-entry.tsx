@@ -57,7 +57,7 @@ import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palet
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import { presetLabelFor, coreCommands, type PickOneExtras } from "../src/routes/session/commands"
 import { join } from "node:path"
-import { discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
+import { agentsHomeEnvWarning, discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
 import { SkillsPanel, openSkillsPanel } from "../src/routes/session/skills-panel"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
 import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-panel"
@@ -117,6 +117,12 @@ const overlays = new TurnOverlayController()
  * the page shows it through the notices dock once mounted (the dock reads a
  * module signal — a pre-mount showNotice would burn the TTL before paint). */
 let pendingMigrationNotice: string | undefined
+/** The P2-2 agents-home boundary warning (skills-source.ts): boot detects a
+ * set-but-blank DSH_AGENTS_HOME or a blank config `agentsHome` (either leg
+ * of the host's precedence chain), the page surfaces it through the notices
+ * dock once mounted — a pre-mount showNotice would burn the TTL before
+ * paint (same reason as pendingMigrationNotice). */
+let pendingAgentsHomeNotice: string | undefined
 /** The config layer the theme lives in (env > workspace > profile, the
  * workspace-config.ts precedence): the /theme mode face persists `themeMode`
  * to the SAME layer (workspace via the workspaceThemeMode patch key, else
@@ -284,6 +290,10 @@ function V2SessionPage(props: {
 		if (pendingMigrationNotice) {
 			showNotice(pendingMigrationNotice)
 			pendingMigrationNotice = undefined
+		}
+		if (pendingAgentsHomeNotice) {
+			showNotice(pendingAgentsHomeNotice)
+			pendingAgentsHomeNotice = undefined
 		}
 		const timer = setInterval(() => setNow(new Date()), 1000)
 		onCleanup(() => clearInterval(timer))
@@ -1255,7 +1265,15 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 	// One agentsHome resolution shared by BOTH skill surfaces: the slash
 	// palette boot scan below and the /skills manager panel (gap C3) — the
 	// explicit-config precedence must not diverge between them.
-	const agentsHomeForSkills = resolveAgentsHome(seam.configLoad().agentsHome as string | undefined)
+	const agentsHomeConfig = seam.configLoad().agentsHome as string | undefined
+	const agentsHomeForSkills = resolveAgentsHome(agentsHomeConfig)
+	// P2-2 boundary warning (skills-source.ts): a set-but-blank DSH_AGENTS_HOME
+	// — or a blank config `agentsHome`, which penetrates the host's `??` chain
+	// the same way — is unset here (resolveAgentsHome falls back to ~/.agents)
+	// but the HOST provider resolves the empty string to its cwd, so the two
+	// skill surfaces can read different roots. The host is out of this repo's
+	// reach — surface the misconfiguration through the notices dock instead.
+	pendingAgentsHomeNotice = agentsHomeEnvWarning(undefined, agentsHomeConfig)
 	const skillRows = discoverSkills({
 		cwd: workspace,
 		dshHome: host.dshHome,
