@@ -8,6 +8,11 @@
  *   session.page.up    pageup,ctrl+alt+b   one viewport up
  *   session.page.down  pagedown,ctrl+alt+f  one viewport down
  *
+ * plus the pure-transcript jump keys the shell view left dead (gap fixed):
+ *
+ *   session.first      ctrl+g,home,alt+home  transcript to the first row
+ *   session.last       ctrl+alt+g,end        transcript to the last row
+ *
  * Laws honored:
  *
  * - Focus stays in the composer (OpenTUI focus-singleton law): the layer
@@ -33,6 +38,7 @@
  * these keys.
  */
 import { Show } from "solid-js"
+import { useRenderer } from "@opentui/solid"
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
 
@@ -44,6 +50,7 @@ export type TranscriptScrollKeysProps = {
 }
 
 export function TranscriptScrollKeys(props: TranscriptScrollKeysProps) {
+	const renderer = useRenderer()
 	const page = (delta: number) => {
 		const scroll = props.scroll()
 		if (!scroll || scroll.isDestroyed) return
@@ -67,6 +74,44 @@ export function TranscriptScrollKeys(props: TranscriptScrollKeysProps) {
 			},
 		],
 		bindings: ["session.page.up", "session.page.down"],
+	}))
+	// session.first/session.last (home/end + chords): jump to the transcript's
+	// first/last row in pure transcript state. Base-mode layer, gated OFF while
+	// ANY editor holds focus — home/end must stay buffer-home/buffer-end in the
+	// composer (the same `currentFocusedEditor === null` gate shape the vendored
+	// route arms these commands with, routes/session/index.tsx:1475-1478; the
+	// transcript-pane-focused case is PaneFocusKeys' home/end at priority 1).
+	const first = () => {
+		const scroll = props.scroll()
+		if (!scroll || scroll.isDestroyed) return
+		// Unpin native follow before jumping, or stickyScroll snaps back.
+		scroll.stickyScroll = false
+		scroll.scrollTo(0)
+	}
+	const last = () => {
+		const scroll = props.scroll()
+		if (!scroll || scroll.isDestroyed) return
+		// scrollTo(Infinity) clamps to the end and re-engages the scrollbox's
+		// native sticky follow (same shape as pane-focus.tsx bottom()).
+		scroll.scrollTo(Infinity)
+	}
+	Keymap.createLayer(() => ({
+		enabled: () => props.enabled() && renderer.currentFocusedEditor === null,
+		commands: [
+			{
+				id: "session.first",
+				title: "First message",
+				group: "Session",
+				run: first,
+			},
+			{
+				id: "session.last",
+				title: "Last message",
+				group: "Session",
+				run: last,
+			},
+		],
+		bindings: ["session.first", "session.last"],
 	}))
 	// The layer lives in the Keymap, not the scene; the vendored hosts use
 	// the same always-false Show slot for layer-only components.

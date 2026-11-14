@@ -26,10 +26,10 @@
  *     native bindings map home→buffer-home, end→buffer-end
  *     (@opentui/core defaultTextareaKeyBindings) — the transcript must not
  *     move and the cursor must land at the buffer ends.
- *   - plain home/end with NO editor focus have no consumer in the rebuilt
- *     shell view: session.first/session.last are bound ONLY in the vendored
- *     route (tui-base/src/routes/session/index.tsx:997,1065), which the shell
- *     page does not mount (gap note at the bottom).
+ *   - plain home/end with NO editor focus are session.first/session.last:
+ *     TranscriptScrollKeys' base-mode layer scrolls the transcript to the
+ *     first/last row, gated on "no overlay open AND no focused editor"
+ *     (transcript-scroll.tsx; see the routing note at the bottom).
  *
  * Assertions: scrollTop state + normalized frame row visibility (the visible
  * displacement), never whole-frame equality. Short stored burst only — no
@@ -295,16 +295,78 @@ describe("key routing vs focus scopes (Home/End)", () => {
 	})
 })
 
+describe("key routing vs focus scopes (Home/End, pure transcript state)", () => {
+	test("plain home/end with no editor focus jump the transcript to the first/last row", async () => {
+		await using h = await createKeyHarness()
+		await h.settle()
+		// Pure transcript state: nothing focused, stickyScroll pinned at bottom.
+		expect(h.scroll!.scrollTop).toBe(h.maxScroll())
+
+		await h.press(HOME)
+		// First row visible: the viewport jumped to the transcript top and
+		// native follow did not snap back.
+		expect(h.scroll!.scrollTop).toBe(0)
+		expect(h.visibleRows(h.captureFrame())[0]).toBe(1)
+
+		await h.press(END)
+		// Last row visible again: clamped to the end, follow re-engaged.
+		expect(h.scroll!.scrollTop).toBe(h.maxScroll())
+		expect(h.captureFrame()).toContain(`row-${String(ROWS).padStart(2, "0")}`)
+	})
+
+	test("session.first chord leg (ctrl+g) routes to the same top jump", async () => {
+		await using h = await createKeyHarness()
+		await h.settle()
+
+		await h.press("g", { ctrl: true })
+
+		expect(h.scroll!.scrollTop).toBe(0)
+		expect(h.visibleRows(h.captureFrame())[0]).toBe(1)
+	})
+
+	test("contrast: home/end return to the editor after focus moves — cursor 0/len, scrollTop untouched", async () => {
+		await using h = await createKeyHarness()
+		await h.settle()
+		await h.press(HOME)
+		expect(h.scroll!.scrollTop).toBe(0) // pure transcript: home jumped to top
+
+		// Now the composer takes focus — home/end are editor keys again.
+		h.focusEditor()
+		for (const ch of "ab") await h.press(ch)
+		await h.setup.renderOnce()
+
+		await h.press(HOME)
+		expect(h.editorCursor()).toBe(0)
+		expect(h.scroll!.scrollTop).toBe(0) // did NOT jump to the bottom or bounce
+
+		await h.press(END)
+		expect(h.editorCursor()).toBe(2)
+		expect(h.scroll!.scrollTop).toBe(0) // transcript stayed at the top
+	})
+
+	test("gate closed (overlay open): home/end do not move the transcript in pure transcript state (negative)", async () => {
+		await using h = await createKeyHarness({ enabled: () => false })
+		await h.settle()
+		const bottom = h.maxScroll()
+
+		await h.press(HOME)
+		await h.press(END)
+
+		expect(h.scroll!.scrollTop).toBe(bottom)
+		expect(h.captureFrame()).toContain(`row-${String(ROWS).padStart(2, "0")}`)
+	})
+})
+
 /**
- * GAP NOTE (not a test): plain home/end ("session.first"/"session.last",
- * config/keybind.ts:192-193) have NO consumer in the rebuilt shell view when
- * nothing editor-focused holds them — TranscriptScrollKeys binds only
- * pageup/pagedown (transcript-scroll.tsx:55-68), and session.first/
- * session.last run in the vendored route (routes/session/index.tsx:997,1065)
- * which the shell page does not mount. With the composer focused (the
- * permanent state) home/end land in the editor as buffer-home/buffer-end, so
- * the historical "Home/End eaten by a higher layer" symptom cannot recur as a
- * silent swallow; they are consumed by the editor. If the shell page later
- * wants jump-to-first/last-message, it must wire its own layer; until then
- * this documents the routing table honestly.
+ * ROUTING NOTE (updated by the home/end gap fix): plain home/end
+ * ("session.first"/"session.last", config/keybind.ts:192-193) are armed in the
+ * rebuilt shell view by TranscriptScrollKeys' base-mode layer
+ * (transcript-scroll.tsx), gated on "no overlay open AND no focused editor" —
+ * the same gate shape the vendored route uses (routes/session/index.tsx:
+ * 1475-1478). In pure transcript state home/end scroll the transcript to the
+ * first/last row; with the composer focused the layer is disabled and
+ * home/end land in the editor as buffer-home/buffer-end (the historical
+ * "Home/End eaten by a higher layer" symptom cannot recur as a silent
+ * swallow); with the transcript pane focused, PaneFocusKeys' home/end
+ * (priority 1) keeps owning them.
  */
