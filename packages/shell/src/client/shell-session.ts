@@ -30,7 +30,7 @@ export interface ShellSessionSurface {
 	abort(): void
 	newSession(): void
 	resumeSession(id: string): "ok" | "owned"
-	registerAskProvider(onAsk: (q: { id: string; prompt: string; options: string[] }[]) => Promise<{ questionId: string; selected: string }[]>): void
+	registerAskProvider(onAsk: (q: { id: string; prompt: string; options: string[] }[]) => Promise<{ questionId: string; selected: string; custom?: string }[]>): void
 
 	cacheHitRate(mode?: "session" | "lastMessage"): number | null
 	usageSummary(): string[]

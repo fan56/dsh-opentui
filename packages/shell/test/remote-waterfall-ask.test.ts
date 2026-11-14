@@ -66,3 +66,22 @@ describe("WaterfallAnswerer.answersValue — selections array (60-ask-user)", ()
 		expect(value.answers).toEqual([{ id: "q3", selected: ["lint"] }])
 	})
 })
+
+describe("WaterfallAnswerer.answersValue — free-text custom (C7)", () => {
+	const questions: RemoteQuestion[] = [{ id: "q1", prompt: "why?", options: ["a", "b"] }]
+
+	test("a custom pick rides Answer.custom with an empty selected (mutual exclusion)", () => {
+		const picks: RemoteQuestionAnswer[] = [{ questionId: "q1", selected: "", custom: "because reasons" }]
+		const value = WaterfallAnswerer.answersValue(questions, picks) as {
+			answers: { id: string; selected: string[]; custom?: string }[]
+		}
+		expect(value.answers).toEqual([{ id: "q1", selected: [], custom: "because reasons" }])
+	})
+
+	test("a missing pick still renders the declined envelope (unchanged contract)", () => {
+		const value = WaterfallAnswerer.answersValue(questions, []) as {
+			answers: { id: string; selected: string[]; custom?: string }[]
+		}
+		expect(value.answers).toEqual([{ id: "q1", selected: [], custom: "declined" }])
+	})
+})

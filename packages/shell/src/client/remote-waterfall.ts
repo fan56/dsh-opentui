@@ -55,11 +55,14 @@ export interface RemoteQuestion {
 
 /** One answer row the UI returns (host-session.ts registerAskProvider shape).
  * A multiSelect pick carries every toggled label in `selections` (display
- * order); `selected` stays the first pick for single-select consumers. */
+ * order); `selected` stays the first pick for single-select consumers. A
+ * free-text answer (the ask picker's "Type something." sentinel) rides
+ * `custom` with `selected: ""` — selected ⊕ custom are mutually exclusive. */
 export interface RemoteQuestionAnswer {
 	questionId: string
 	selected: string
 	selections?: string[]
+	custom?: string
 }
 
 export interface WaterfallAnswererOptions {
@@ -145,11 +148,18 @@ export class WaterfallAnswerer {
 		})
 	}
 
-	/** The answers value built from UI picks (host-session.ts:267-272 parity). */
+	/** The answers value built from UI picks (host-session.ts:267-272 parity).
+	 * A free-text pick rides `custom` with an empty `selected` — the same
+	 * envelope shape the declined path uses, minus the "declined" marker
+	 * (tui-pi Answer.custom contract; `answersOfBatch` in the transcript
+	 * feature already parses this shape). */
 	static answersValue(questions: RemoteQuestion[], picks: RemoteQuestionAnswer[]): RemoteJson {
 		return {
 			answers: questions.map((q) => {
 				const pick = picks.find((p) => p.questionId === q.id)
+				if (pick?.custom !== undefined && pick.custom !== "") {
+					return { id: q.id, selected: [], custom: pick.custom }
+				}
 				const answer: { [key: string]: RemoteJson } = pick
 					? { id: q.id, selected: pick.selections?.length ? [...pick.selections] : [pick.selected] }
 					: { id: q.id, selected: [], custom: "declined" }
