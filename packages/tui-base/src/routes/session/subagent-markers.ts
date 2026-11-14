@@ -116,3 +116,15 @@ export function registerSubagentSteerFeedback(fn: (line: string) => void): void 
 export function printSteerFeedback(line: string): void {
 	steerFeedbackImpl?.(line)
 }
+
+/**
+ * Test-only: clear both module slots so isolation-sensitive specs observe a
+ * fresh (unwired) bridge. bun test runs every file in one process, so a
+ * shell spec that constructed a seam adapter would otherwise leave the
+ * steer slot registered for the later tui-base specs. Production never
+ * resets — a seam adapter registers once per process and lives forever.
+ */
+export function resetSubagentSlotsForTests(): void {
+	steerImpl = undefined
+	steerFeedbackImpl = undefined
+}

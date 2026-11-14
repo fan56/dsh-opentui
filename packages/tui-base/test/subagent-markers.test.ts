@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { beforeEach, describe, expect, test } from "bun:test"
 import {
 	foldSubagentMarkerViews,
 	subagentHardStopGlyph,
@@ -7,9 +7,18 @@ import {
 	printSteerFeedback,
 	registerSubagentSteer,
 	registerSubagentSteerFeedback,
+	resetSubagentSlotsForTests,
 	steerSubagent,
 	subagentSteerWired,
 } from "../src/routes/session/subagent-markers"
+
+// bun test runs the whole monorepo in one process: shell specs that build a
+// RemoteSessionSeam leave the module steer slot registered (the adapter
+// wires it in its constructor). Reset both slots so the "unwired" specs
+// below see the fresh-process contract they assert.
+beforeEach(() => {
+	resetSubagentSlotsForTests()
+})
 
 describe("subagentMarkerSuffix", () => {
 	test("empty when neither policy stage fired", () => {
