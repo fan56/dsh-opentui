@@ -6,7 +6,8 @@
  *     newline folding, width clip;
  *   - the powerline strip carries no hint segment any more.
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { hintsText } from "../src/routes/session/hints-line"
 import {
 	NOTICE_MAX_LINES,
@@ -19,6 +20,12 @@ import {
 import { sessionFooterSegments } from "../src/routes/session/powerline"
 
 describe("hintsText", () => {
+	// T8 fold: the labels ride the i18n registry (t() fail-open → the key
+	// itself when no table is loaded), so the bundled locales must be in.
+	beforeAll(() => {
+		const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+		setLanguages(languages)
+	})
 	test("idle: send/newline/history lead, common keys follow", () => {
 		const text = hintsText(false)
 		expect(text.startsWith("⌨ enter send · alt+enter newline · ↑↓ history")).toBe(true)

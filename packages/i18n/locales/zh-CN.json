@@ -541,5 +541,16 @@
   "overlay.widgets.thinkStreaming": "💭 thinking · {secs} · {line}",
   "overlay.widgets.todosHeader": "● Todos ({done}/{total})",
   "overlay.widgets.todosShowing": "showing {ranges}",
-  "overlay.widgets.todosSummary": "todos [✓]{done}/{total}"
+  "overlay.widgets.todosSummary": "todos [✓]{done}/{total}",
+  "footer.hint.send.idle": "enter 发送",
+  "footer.hint.send.busy": "enter 插话",
+  "footer.hint.newline.idle": "alt+enter 换行",
+  "footer.hint.history.idle": "↑↓ 历史",
+  "footer.hint.stop.busy": "esc 停止",
+  "footer.hint.quit": "ctrl+c ×2 退出",
+  "footer.hint.scroll": "pgup/pgdn 滚动",
+  "footer.hint.search": "ctrl+shift+f 搜索",
+  "footer.hint.subagents": "↓ 子代理",
+  "footer.hint.transcript": "↑↓ 滚动 · pgup/pgdn 翻页 · home/end 顶/底 · tab/f6 输入框",
+  "command.hints.langDegraded": "{lang} is not bundled — hint language degraded to en"
 }

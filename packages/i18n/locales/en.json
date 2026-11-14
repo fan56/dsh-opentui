@@ -541,5 +541,16 @@
   "overlay.widgets.thinkStreaming": "💭 thinking · {secs} · {line}",
   "overlay.widgets.todosHeader": "● Todos ({done}/{total})",
   "overlay.widgets.todosShowing": "showing {ranges}",
-  "overlay.widgets.todosSummary": "todos [✓]{done}/{total}"
+  "overlay.widgets.todosSummary": "todos [✓]{done}/{total}",
+  "footer.hint.send.idle": "enter send",
+  "footer.hint.send.busy": "enter steer",
+  "footer.hint.newline.idle": "alt+enter newline",
+  "footer.hint.history.idle": "↑↓ history",
+  "footer.hint.stop.busy": "esc stop",
+  "footer.hint.quit": "ctrl+c ×2 quit",
+  "footer.hint.scroll": "pgup/pgdn scroll",
+  "footer.hint.search": "ctrl+shift+f search",
+  "footer.hint.subagents": "↓ subagents",
+  "footer.hint.transcript": "↑↓ scroll · pgup/pgdn page · home/end top/bottom · tab/f6 composer",
+  "command.hints.langDegraded": "{lang} is not bundled — hint language degraded to en"
 }

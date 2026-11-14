@@ -1232,8 +1232,8 @@ export function coreCommands(): SlashCommand[] {
 			// Batch D3: the bottom key-hint row toggle (./hints-line.tsx).
 			// Footer-quickwins (tui-pi footer.ts per-segment parity): bare
 			// toggles the bar; `<segment> [on|off]` flips ONE of the eight
-			// segments; `all on|off` bulk-sets them; `lang <locale>` switches
-			// the label language (en/zh-CN/ja/ko).
+			// segments; `all on|off` bulk-sets them; `lang <locale>` persists the
+			// unified language (en/zh-CN; ja/ko degrade to en — restart applies).
 			name: "/hints",
 			description: t("command.hints.description"),
 			run(ctx, argText) {
@@ -1249,16 +1249,27 @@ export function coreCommands(): SlashCommand[] {
 					// Case-insensitive match onto the canonical locale spellings
 					// ("EN" → en, "zh-cn" → zh-CN); anything else reprints usage.
 					const raw = words[1]
-					const next = raw
+					const picked = raw
 						? HINT_LOCALES.find((locale) => locale.toLowerCase() === raw.toLowerCase())
 						: undefined
-					if (!next) {
+					if (!picked) {
 						ctx.say(t("command.hints.usageLang", { locales: HINT_LOCALES.join("|"), current: hintsLocale() }))
 						return
 					}
+					// T8 fold (design §1 cut 2): ja/ko keep their command surface but
+					// have no bundled locale file — the pick degrades to en with a
+					// warning; the wording itself is boot-fixed, so EVERY pick lands
+					// on restart (the unified-language restart-to-apply semantics).
+					const degraded = picked !== "en" && picked !== "zh-CN"
+					const next = degraded ? "en" : picked
 					setHintsLocale(next)
 					persistHints(ctx.seam)
-					ctx.say(t("command.hints.langSet", { lang: next }))
+					ctx.say(
+						degraded
+							? t("command.hints.langDegraded", { lang: picked })
+							: t("command.hints.langSet", { lang: next }),
+					)
+					ctx.say(t("common.restartToApply"))
 					return
 				}
 				// A given state word must be exactly on|off — anything else is a

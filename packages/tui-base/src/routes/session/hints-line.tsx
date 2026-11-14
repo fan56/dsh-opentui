@@ -11,16 +11,18 @@
  * Footer-quickwins batch (tui-pi footer.ts:41-98 parity): the bar is now
  * EIGHT independently toggleable segments (send / newline / history / stop /
  * quit / scroll / search / subagents) in tui-pi's per-segment on/off shape,
- * each label localized across en / zh-CN / ja / ko (tui-pi locales'
- * `footer.hint.*` keys, vendored inline — tui-base carries no i18n
- * infrastructure, so the four languages live in one typed table instead of
- * JSON files). Toggle surface: `/hints` flips the bar (zero rows when off),
+ * each label a `footer.hint.*` key in the i18n registry (T8 fold: the vendored
+ * four-language typed tables are gone — wording now rides the boot-fixed
+ * unified language through `t()`, and a `/hints lang` pick persists the
+ * unified language for the next boot; ja/ko have no bundled file and degrade
+ * to en). Toggle surface: `/hints` flips the bar (zero rows when off),
  * `/hints <segment> [on|off]` one segment, `/hints lang <locale>` the
  * language. Store law: module-level state, getter-prop busy. The busy/idle
  * two-state wording and the conditional `↓ subagents` segment (only while a
  * child runs — the SubagentsPicker toggle gate) are preserved.
  */
 import { createSignal, Show, type JSX } from "solid-js"
+import { t } from "../../i18n"
 import { useTerminalSize } from "./terminal-size"
 import { clipToWidth } from "./tool-summarize"
 import { useThemeOptional } from "../../context/theme"
@@ -74,65 +76,37 @@ export type HintLocale = "en" | "zh-CN" | "ja" | "ko"
 export const HINT_LOCALES: readonly HintLocale[] = ["en", "zh-CN", "ja", "ko"]
 
 /**
- * One segment's label per state: `idle` renders on the idle bar, `busy` on
- * the running-turn bar; `null` = the segment is absent from that state
+ * One segment's label keys per state: `idle` renders on the idle bar, `busy`
+ * on the running-turn bar; `null` = the segment is absent from that state
  * (newline/history idle-only, stop busy-only — the pre-existing wording).
+ * Segments whose two states share one wording point both states at the same
+ * bare key. Locale-neutral structure (keys, not copy).
  */
-type HintLabel = { idle: string | null; busy: string | null }
+type HintLabelKeys = { idle: string | null; busy: string | null }
 
-/**
- * The four-language label table (tui-pi locales `footer.hint.*` wording
- * where the keys overlap: send / stop / quit / search / history /
- * subagents; newline / scroll / the steer variant are opentui-specific).
- * Vendored typed table — no i18n infra to load JSON through (typecheck
- * budget carries no resolveJsonModule).
- */
-const HINT_LABEL_TABLE: Record<HintLocale, Record<HintSegmentId, HintLabel>> = {
-	en: {
-		send: { idle: "enter send", busy: "enter steer" },
-		newline: { idle: "alt+enter newline", busy: null },
-		history: { idle: "↑↓ history", busy: null },
-		stop: { idle: null, busy: "esc stop" },
-		quit: { idle: "ctrl+c ×2 quit", busy: "ctrl+c ×2 quit" },
-		scroll: { idle: "pgup/pgdn scroll", busy: "pgup/pgdn scroll" },
-		search: { idle: "ctrl+shift+f search", busy: "ctrl+shift+f search" },
-		subagents: { idle: "↓ subagents", busy: "↓ subagents" },
-	},
-	"zh-CN": {
-		send: { idle: "enter 发送", busy: "enter 插话" },
-		newline: { idle: "alt+enter 换行", busy: null },
-		history: { idle: "↑↓ 历史", busy: null },
-		stop: { idle: null, busy: "esc 停止" },
-		quit: { idle: "ctrl+c ×2 退出", busy: "ctrl+c ×2 退出" },
-		scroll: { idle: "pgup/pgdn 滚动", busy: "pgup/pgdn 滚动" },
-		search: { idle: "ctrl+shift+f 搜索", busy: "ctrl+shift+f 搜索" },
-		subagents: { idle: "↓ 子代理", busy: "↓ 子代理" },
-	},
-	ja: {
-		send: { idle: "enter 送信", busy: "enter 割込み" },
-		newline: { idle: "alt+enter 改行", busy: null },
-		history: { idle: "↑↓ 履歴", busy: null },
-		stop: { idle: null, busy: "esc 停止" },
-		quit: { idle: "ctrl+c ×2 終了", busy: "ctrl+c ×2 終了" },
-		scroll: { idle: "pgup/pgdn スクロール", busy: "pgup/pgdn スクロール" },
-		search: { idle: "ctrl+shift+f 検索", busy: "ctrl+shift+f 検索" },
-		subagents: { idle: "↓ サブエージェント", busy: "↓ サブエージェント" },
-	},
-	ko: {
-		send: { idle: "enter 전송", busy: "enter 끼어넣기" },
-		newline: { idle: "alt+enter 줄바꿈", busy: null },
-		history: { idle: "↑↓ 기록", busy: null },
-		stop: { idle: null, busy: "esc 중지" },
-		quit: { idle: "ctrl+c ×2 종료", busy: "ctrl+c ×2 종료" },
-		scroll: { idle: "pgup/pgdn 스크롤", busy: "pgup/pgdn 스크롤" },
-		search: { idle: "ctrl+shift+f 검색", busy: "ctrl+shift+f 검색" },
-		subagents: { idle: "↓ 서브에이전트", busy: "↓ 서브에이전트" },
-	},
+/** The `footer.hint.*` key map — the tui-pi locales wording where the keys
+ * overlap (send / stop / quit / search / history / subagents); newline /
+ * scroll / the steer variant are opentui-specific. */
+const HINT_LABEL_KEYS: Record<HintSegmentId, HintLabelKeys> = {
+	send: { idle: "footer.hint.send.idle", busy: "footer.hint.send.busy" },
+	newline: { idle: "footer.hint.newline.idle", busy: null },
+	history: { idle: "footer.hint.history.idle", busy: null },
+	stop: { idle: null, busy: "footer.hint.stop.busy" },
+	quit: { idle: "footer.hint.quit", busy: "footer.hint.quit" },
+	scroll: { idle: "footer.hint.scroll", busy: "footer.hint.scroll" },
+	search: { idle: "footer.hint.search", busy: "footer.hint.search" },
+	subagents: { idle: "footer.hint.subagents", busy: "footer.hint.subagents" },
 }
 
 /** The per-segment on/off selection (module-level store, tui-pi FooterHints). */
 export const [footerHints, setFooterHints] = createSignal<FooterHints>({ ...DEFAULT_FOOTER_HINTS })
-/** The hint-bar language (module-level; `/hints lang <locale>`). */
+/**
+ * The hint-bar language (module-level). T8 fold: the labels render through
+ * the boot-fixed unified registry instead, so this signal is the persistence
+ * mirror of the stored `hintsLocale` config key only — `/hints lang` keeps it
+ * in step with the persisted value (so a later segment toggle re-saves the
+ * same language) and the new wording lands on the next boot.
+ */
 export const [hintsLocale, setHintsLocale] = createSignal<HintLocale>("en")
 
 /**
@@ -181,10 +155,20 @@ export function applyHintsConfig(config?: Record<string, unknown>): void {
 	}
 }
 
-/** One segment's label in one language; unknown locale/wording falls to en, then ''. */
-export function hintLabel(id: HintSegmentId, busy: boolean, locale: HintLocale = hintsLocale()): string {
-	const entry = (HINT_LABEL_TABLE[locale] ?? HINT_LABEL_TABLE.en)[id]
-	return (busy ? entry.busy : entry.idle) ?? ""
+/**
+ * One segment's label in the boot-fixed language (t() — the registry's
+ * fail-open chain runs active → en → key). A segment absent from the given
+ * state, or a key missing from the registry too, renders '' (the caller
+ * drops it). Getter-law note: this reads registry state at CALL time —
+ * every call site is inside the HintsLine `row()` getter / a pure helper,
+ * so the wording is never baked flat outside the render scope.
+ */
+export function hintLabel(id: HintSegmentId, busy: boolean): string {
+	const keys = HINT_LABEL_KEYS[id]
+	const key = busy ? keys.busy : keys.idle
+	if (key === null) return ""
+	const label = t(key)
+	return label === key ? "" : label
 }
 
 /** Is a segment present in the given state at all (newline/history idle-only, stop busy-only)? */
@@ -203,18 +187,17 @@ export function hintsText(
 	shown = true,
 	subagentsLive = false,
 	hints: FooterHints = footerHints(),
-	locale: HintLocale = hintsLocale(),
 ): string {
 	if (!shown) return ""
 	const parts: string[] = []
 	for (const id of FOOTER_HINT_IDS) {
 		if (id === "subagents") {
 			// Batch D5b: the conditional segment — only while a child runs AND on.
-			if (subagentsLive && hints.subagents) parts.push(hintLabel("subagents", busy, locale))
+			if (subagentsLive && hints.subagents) parts.push(hintLabel("subagents", busy))
 			continue
 		}
 		if (!hints[id]) continue
-		const label = hintLabel(id, busy, locale)
+		const label = hintLabel(id, busy)
 		if (label) parts.push(label) // '' = segment absent from this state (idle drops stop, busy drops newline/history)
 	}
 	if (parts.length === 0) return ""
@@ -224,21 +207,17 @@ export function hintsText(
 /**
  * Pane-focus hint bar (transcript owns the keys): the composer's send/history
  * segments no longer apply, so the row switches to the transcript's own keys.
- * Four locales, same `⌨ <segments>` shape as `hintsText`; the `/hints` master
- * toggle (`hintsShown`) still zeroes the row.
+ * One `footer.hint.transcript` key per language, same `⌨ <segments>` shape
+ * as `hintsText`; the `/hints` master toggle (`hintsShown`) still zeroes the
+ * row.
  */
-const TRANSCRIPT_HINT_TABLE: Record<HintLocale, string> = {
-	en: "↑↓ scroll · pgup/pgdn page · home/end top/bottom · tab/f6 composer",
-	"zh-CN": "↑↓ 滚动 · pgup/pgdn 翻页 · home/end 顶/底 · tab/f6 输入框",
-	ja: "↑↓ スクロール · pgup/pgdn ページ · home/end 先頭/末尾 · tab/f6 入力欄",
-	ko: "↑↓ 스크롤 · pgup/pgdn 페이지 · home/end 처음/끝 · tab/f6 입력창",
-}
+const TRANSCRIPT_HINT_KEY = "footer.hint.transcript"
 
 /** The transcript-focused hint row (pure; '' when the bar is toggled off). */
-export function transcriptHintsText(shown = true, locale: HintLocale = hintsLocale()): string {
+export function transcriptHintsText(shown = true): string {
 	if (!shown) return ""
-	const body = TRANSCRIPT_HINT_TABLE[locale] ?? TRANSCRIPT_HINT_TABLE.en
-	return `⌨ ${body}`
+	const body = t(TRANSCRIPT_HINT_KEY)
+	return body === TRANSCRIPT_HINT_KEY ? "" : `⌨ ${body}`
 }
 
 export function HintsLine(props: {

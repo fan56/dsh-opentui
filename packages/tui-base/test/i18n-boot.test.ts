@@ -6,8 +6,9 @@
  * switching: `t()` reads the boot-fixed language afterwards.
  *
  * The boot chain replays BOTH systems from the same config keys:
- * - the hints-bar signal (`hintsLocale`, /hints lang — keeps its own typed
- *   table until the T8 facet migration);
+ * - the hints-bar persistence signal (`hintsLocale`, /hints lang — since the
+ *   T8 fold it is the stored-language mirror only; the labels ride the
+ *   registry below);
  * - the unified i18n registry (`t()`, zh-CN alias folding, ja/ko → en
  *   degradation — ja/ko have no bundled locale file by contract §1).
  */
@@ -36,13 +37,15 @@ describe("i18n boot chain (v2-entry applyI18nConfig, applyHintsConfig parity)", 
 		applyI18nConfig({ hintsLocale: "zh" })
 		expect(activeLanguage()).toBe("zh-CN")
 
-		// degradation: ja is a legal /hints lang value (hints table keeps it
-		// until T8) but has no bundled locale file — the registry degrades to
+		// degradation: ja is a legal /hints lang spelling (the command surface
+		// is kept) but has no bundled locale file — the registry degrades to
 		// en, never throws, and t() falls open to the en strings
 		applyHintsConfig({ hintsLocale: "ja" })
 		applyI18nConfig({ hintsLocale: "ja" })
 		expect(activeLanguage()).toBe("en")
-		expect(hintsLocale()).toBe("ja") // legacy signal semantics unchanged this round
+		// the signal mirrors the stored key (a legacy "ja" value replays as-is);
+		// the degradation itself lives in the registry chain
+		expect(hintsLocale()).toBe("ja")
 		expect(t("common.confirm")).toBe("Confirm")
 
 		// unified `lang` beats the legacy hintsLocale when both are present

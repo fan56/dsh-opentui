@@ -1546,12 +1546,17 @@ describe("/hints argument parsing", () => {
 		expect(hints.description.length).toBeLessThanOrEqual(70)
 	})
 
-	test("lang matches case-insensitively onto the canonical locale", () => {
-		expect(run("lang EN").lines).toEqual(["hint language: en"])
+	test("lang matches case-insensitively onto the canonical locale and notes the restart (T8 fold: boot-fixed wording)", () => {
+		expect(run("lang EN").lines).toEqual(["hint language: en", "Language saved — restart to apply"])
 		expect(hintsLocale()).toBe("en")
-		expect(run("lang zh-cn").lines).toEqual(["hint language: zh-CN"])
+		expect(run("lang zh-cn").lines).toEqual(["hint language: zh-CN", "Language saved — restart to apply"])
 		expect(hintsLocale()).toBe("zh-CN")
-		expect(run("lang JA").lines).toEqual(["hint language: ja"])
+		setHintsLocale("en")
+	})
+
+	test("lang ja/ko keep the command surface but degrade to en (design §1 cut 2)", () => {
+		expect(run("lang JA").lines).toEqual(["ja is not bundled — hint language degraded to en", "Language saved — restart to apply"])
+		expect(hintsLocale()).toBe("en")
 		setHintsLocale("en")
 	})
 
@@ -1598,7 +1603,9 @@ describe("/hints argument parsing", () => {
 		expect(seam.calls.filter((call) => call === "configSave").length).toBe(2)
 		// the FULL record rides each write (configSave replaces the key wholesale)
 		expect(seam.store.footerHints).toEqual({ ...DEFAULT_FOOTER_HINTS, scroll: false })
-		expect(seam.store.hintsLocale).toBe("ja")
+		// ja has no bundled locale file (contract §1) — the persisted value is
+		// the degraded en, so the stored key always names an effective language
+		expect(seam.store.hintsLocale).toBe("en")
 	})
 
 	test("usage errors and the bare bar toggle stay session-scoped (no config write)", () => {
