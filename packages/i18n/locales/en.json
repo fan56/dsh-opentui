@@ -1,0 +1,9 @@
+{
+  "name": "English",
+  "common.confirm": "Confirm",
+  "common.cancel": "Cancel",
+  "common.noItems": "No items",
+  "common.invalidNumber": "Invalid number",
+  "common.restartToApply": "Language saved — restart to apply",
+  "panel.sessionsCount": "sessions: {count}"
+}

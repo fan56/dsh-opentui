@@ -1,0 +1,9 @@
+{
+  "name": "简体中文",
+  "common.confirm": "确认",
+  "common.cancel": "取消",
+  "common.noItems": "暂无条目",
+  "common.invalidNumber": "数字无效",
+  "common.restartToApply": "语言已保存 — 重启后生效",
+  "panel.sessionsCount": "会话数: {count}"
+}
