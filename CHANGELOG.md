@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-11-15
+
+### Added
+
+- **Two-language UI: English and 简体中文.** A new `@dsh-opentui/i18n` leaf package carries a flat-JSON locale contract (tui-pi parity: `{param}` placeholders, whole-file strict validation, key-by-key user overrides under `$DSH_HOME/locales`), and every user-facing surface is migrated onto it — commands, panels, settings, dialogs, docks, hints, transcript. `zh-CN` is fully translated (technical terms and key caps stay in English); the language is fixed at boot from the unified `lang` config key (the legacy `hintsLocale` still resolves as a fallback), and an explicit `ja`/`ko` request degrades to `en` with a warning.
+- **`/language` command.** The ask-style picker lists the installed languages with the current one marked and persists the choice behind a "restart to apply" notice (unchanged semantics on esc/no-answer/same-language, tui-pi parity); `/hints lang` and the settings language row write the same unified key.
+
+### Fixed
+
+- **User locale overrides actually load.** `loadLocales` left the user-override directory undefined unless the caller passed it, so the `$DSH_HOME/locales` merge contract never ran on the real boot path — user files (and their strict-validation warnings) were silently skipped. The default now resolves `$DSH_HOME`, pinned by a boot-contract regression test.
+- **The 61-btw render gap was a mock-keying artifact, not lost rows.** A Q2 request body embeds the Q1 marker and the e2e mock's first-match lookup re-served the first answer. The mock now keys by last match, an optional `DSH_OPENTUI_TRACE_FILE` traces the wire, and a settled-but-empty answer paints an `(empty answer)` placeholder so the signature is visible instead of absent.
+- **Test/verify harnesses follow the locale-keyed copy.** The ui-matrix and agents-mount assertions and the 71/72 dependency gates matched hard-coded copy that i18n moved into locale files; they now assert the active-language copy and grep `t()` key names, so gate-dark no longer misreads a fresh bundle as stale.
+
 ## [0.14.0] - 2026-11-14
 
 ### Added
