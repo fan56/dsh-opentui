@@ -109,6 +109,35 @@ describe("skills-manage: symlink install safety (tui-pi parity)", () => {
 		expect(existsSync(paths.dest)).toBe(true)
 	})
 
+	test("uninstall refuses a hand-made symlink pointing outside the source root (P2-1)", async () => {
+		const { source, curated } = await makeRoots()
+		await seedSkills(source)
+		// A same-name link the user made to their own directory elsewhere —
+		// install never created it and it must survive an uninstall.
+		const ownDir = await mkdtemp(join(tmpdir(), "dsh-skills-own-"))
+		await writeFile(join(ownDir, "SKILL.md"), "---\nname: flat-skill\n---\nuser skill\n")
+		const dest = join(curated, "flat-skill.md")
+		await symlink(ownDir, dest)
+		const refused = await applyOneSkillChange("flat-skill", false, source, curated)
+		expect(refused).toContain("outside the managed source root")
+		// The user's link (and its target) is untouched.
+		expect(lstatSync(dest).isSymbolicLink()).toBe(true)
+		expect(existsSync(dest)).toBe(true)
+		await rm(ownDir, { recursive: true, force: true })
+	})
+
+	test("uninstall removes a dangling symlink (repair mirror of the install side)", async () => {
+		const { source, curated } = await makeRoots()
+		await seedSkills(source)
+		const gone = join(source, "flat-skill.md")
+		const dest = join(curated, "flat-skill.md")
+		await writeFile(gone, "x")
+		await symlink(gone, dest)
+		await rm(gone)
+		expect(await applyOneSkillChange("flat-skill", false, source, curated)).toBeUndefined()
+		expect(existsSync(dest)).toBe(false)
+	})
+
 	test("install of a name missing from the source root reports a readable cause", async () => {
 		const { source, curated } = await makeRoots()
 		const error = await applyOneSkillChange("nope", true, source, curated)
@@ -175,6 +204,9 @@ describe("skills-manage: scan + batch summary + view helpers", () => {
 
 	test("short reason maps the errno classes", () => {
 		expect(skillApplyShortReason('refusing "x": not a symlink')).toBe("protected (not a symlink)")
+		expect(skillApplyShortReason('refusing "x": symlink target is outside the managed source root')).toBe(
+			"external target (not ours)",
+		)
 		expect(skillApplyShortReason("already installed from a different source: x")).toBe(
 			"installed from a different source",
 		)

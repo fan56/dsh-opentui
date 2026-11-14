@@ -20,17 +20,20 @@
  * serves — install/uninstall is purely a symlink create/delete in
  * `<dshHome>/skills`, and the provider's watcher picks the change up live.
  *
- * SAFETY (the reference's installSkillSymlink / applyOneSkillChange
- * semantics, kept 1:1): install is idempotent for an identical link, refuses
- * to overwrite a physical file/directory (user content) or a link pointing
- * elsewhere, and repairs a dangling link; uninstall removes ONLY a symlink
- * we own — a physical file/directory at the destination is refused, never
- * deleted.
+ * SAFETY (installSkillSymlink keeps the reference's 1:1 semantics; uninstall
+ * goes one step FURTHER than the reference, which unlinks any symlink):
+ * install is idempotent for an identical link, refuses to overwrite a
+ * physical file/directory (user content) or a link pointing elsewhere, and
+ * repairs a dangling link; uninstall removes ONLY a link we own — a
+ * physical file/directory at the destination is refused, never deleted, and
+ * a symlink is unlinked only when its realpath lands inside the public root
+ * (install only ever links INTO publicDir, so a link resolving elsewhere was
+ * hand-made and must survive an uninstall — c-pack-review P2-1).
  */
 
 import { existsSync } from "node:fs"
 import { lstat, mkdir, readFile, readdir, realpath, symlink, unlink } from "node:fs/promises"
-import { join } from "node:path"
+import { join, sep } from "node:path"
 import { parseFrontmatter } from "./skills-source"
 
 /** One row of the /skills manager: a public skill and its installed flag. */
@@ -114,6 +117,23 @@ export async function installSkillSymlink(src: string, dest: string): Promise<vo
 }
 
 /**
+ * Ownership guard for uninstall: true when `dest` is a symlink whose target
+ * resolves INSIDE `publicDir` (the source root install links into). A link
+ * resolving anywhere else was not created by us and must survive an
+ * uninstall (P2-1: a hand-made same-name link to the user's own directory
+ * must not be deleted). A dangling or looping link has no verifiable target,
+ * but removing one deletes only the dead link node — never target content —
+ * matching the install side's repair semantics, so it counts as ours.
+ */
+async function isOwnedSkillLink(dest: string, publicDir: string): Promise<boolean> {
+	const destReal = await realpath(dest).catch(() => undefined)
+	if (destReal === undefined) return true // dangling/looping: nothing behind the link
+	const publicReal = await realpath(publicDir).catch(() => undefined)
+	if (publicReal === undefined) return false // no verifiable source root: refuse
+	return destReal === publicReal || destReal.startsWith(publicReal + sep)
+}
+
+/**
  * Apply one pending install/uninstall. Return an error message instead of
  * throwing so a batch can continue past broken items.
  */
@@ -134,20 +154,25 @@ export async function applyOneSkillChange(
 		}
 	}
 	// Uninstall: mirror the install-side protection — only ever remove a
-	// symlink we own. A physical file or directory at dest is user content
-	// and must be refused, never silently deleted.
+	// link we own. A physical file or directory at dest is user content and
+	// must be refused, never silently deleted; a symlink whose target
+	// resolves outside the public root is not ours (see isOwnedSkillLink).
 	try {
 		const destMd = join(curatedDir, `${name}.md`)
 		const destBundle = join(curatedDir, name)
 		const mdStat = await lstat(destMd).catch(() => undefined)
 		if (mdStat !== undefined) {
 			if (!mdStat.isSymbolicLink()) throw new Error(`refusing to remove "${destMd}": not a symlink`)
+			if (!(await isOwnedSkillLink(destMd, publicDir)))
+				throw new Error(`refusing to remove "${destMd}": symlink target is outside the managed source root`)
 			await unlink(destMd)
 			return undefined
 		}
 		const bundleStat = await lstat(destBundle).catch(() => undefined)
 		if (bundleStat !== undefined) {
 			if (!bundleStat.isSymbolicLink()) throw new Error(`refusing to remove "${destBundle}": not a symlink`)
+			if (!(await isOwnedSkillLink(destBundle, publicDir)))
+				throw new Error(`refusing to remove "${destBundle}": symlink target is outside the managed source root`)
 			await unlink(destBundle)
 		}
 		return undefined
@@ -167,6 +192,7 @@ const SKILL_SUMMARY_MAX_ITEMS = 3
  */
 export function skillApplyShortReason(error: string): string {
 	if (error.includes("not a symlink")) return "protected (not a symlink)"
+	if (error.includes("outside the managed source root")) return "external target (not ours)"
 	if (error.includes("different source")) return "installed from a different source"
 	if (error.includes("skill not found") || error.includes("source vanished")) return "source missing"
 	return "failed"
