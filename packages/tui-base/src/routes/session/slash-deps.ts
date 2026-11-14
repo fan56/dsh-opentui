@@ -100,6 +100,7 @@ export function buildSlashDeps(base: SlashBaseDeps, hooks: EntrySlashHooks): Sla
 		openPlugins: hooks.openPlugins,
 		openAgents: hooks.openAgents,
 		openSettings: hooks.openSettings,
+		openHistory: hooks.openHistory,
 		refreshFooter: hooks.refreshFooter,
 		invalidateFooter: hooks.invalidateFooter,
 		flushQueue: hooks.flushQueue,

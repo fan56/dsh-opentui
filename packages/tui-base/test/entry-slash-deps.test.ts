@@ -44,6 +44,9 @@ function makeEntryHooks() {
 		openSettings: () => {
 			calls.push("openSettings")
 		},
+		openHistory: () => {
+			calls.push("openHistory")
+		},
 		refreshFooter: () => {
 			calls.push("refreshFooter")
 		},
@@ -116,6 +119,35 @@ describe("verify: entry slash deps", () => {
 		expect(host.interceptSubmit("/agents workhorse")).toBe(true)
 		expect(host.interceptSubmit("/settings")).toBe(true)
 		expect(calls).toEqual(["openSearch", "openPlugins", "openAgents:workhorse", "openSettings"])
+	})
+
+	test("verify: buildSlashDeps carries EVERY listed hook (the /history real-machine gap)", () => {
+		// The 2026-11-14 real-machine gate: /history answered "not mounted"
+		// although ENTRY_SLASH_HOOKS listed it and the entry passed it —
+		// buildSlashDeps's hand-written copy list omitted it, and the
+		// identity-carry test above could not see the gap (both sides were
+		// undefined). Sentinels derived FROM the list make every listed hook
+		// non-undefined on the hooks side, so an un-carried key fails here no
+		// matter what future hooks makeEntryHooks forgets.
+		const { base } = makeBase()
+		const sentinels = new Map(ENTRY_SLASH_HOOKS.map((key) => [key, () => key]))
+		const hooks = Object.fromEntries(sentinels) as unknown as ReturnType<typeof makeEntryHooks>["hooks"]
+		const deps = buildSlashDeps(base, hooks)
+		for (const key of ENTRY_SLASH_HOOKS) {
+			expect(deps[key], `buildSlashDeps dropped the listed hook '${key}'`).toBe(sentinels.get(key))
+		}
+		const ctx = carrySlashHooks(deps)
+		for (const key of ENTRY_SLASH_HOOKS) {
+			expect(ctx[key], `carrySlashHooks dropped the listed hook '${key}'`).toBe(sentinels.get(key))
+		}
+	})
+
+	test("verify: /history reaches the entry opener", () => {
+		const { hooks, calls } = makeEntryHooks()
+		const { base } = makeBase()
+		const host = createSlashHost(buildSlashDeps(base, hooks))
+		expect(host.interceptSubmit("/history")).toBe(true)
+		expect(calls).toEqual(["openHistory"])
 	})
 
 	test("verify: /btw reaches the entry opener", () => {
