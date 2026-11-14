@@ -18,16 +18,25 @@
  * Keymap.Provider chain is covered by
  * packages/tui-base/test/confirm-keys-panelkit.test.tsx.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, beforeAll, afterAll } from "bun:test"
 import { testRender } from "@opentui/solid"
 import type { CapturedFrame, CapturedSpan } from "@opentui/core"
 import type { JSX } from "solid-js"
 import type { PanelKeyAdapter, PanelKeyCommands, PanelStackApi } from "../src/contracts"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { FALLBACK_THEME } from "../src/fallback"
 import { PanelKitProvider } from "../src/kit"
 import { PanelStack, usePanels } from "../src/stack"
 import { STATIC_MOTION } from "../src/theme"
 import { createConfirmModel, type ConfirmAction } from "../src/controls/confirm"
+
+// The confirm hint line reads through t(); boot the bundled registry so the
+// painted frame carries the real copy instead of the fail-open key.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+afterAll(() => setLanguages(new Map()))
 
 function fakeKeys() {
   const state: { table?: PanelKeyCommands; scopes: PanelKeyCommands[] } = { scopes: [] }
@@ -251,8 +260,9 @@ describe("ConfirmDialog keyboard (panel router + raw Tab)", () => {
       await setup.renderOnce()
 
       const text = frameText(setup.captureSpans())
-      // The hint's Esc verb follows cancelLabel ("取消" in this fixture).
-      expect(text).toContain("←→ 选择 · Enter 确认 · Esc 取消")
+      // The hint's Esc verb follows cancelLabel ("取消" in this fixture);
+      // the surrounding copy follows the active language (bundled default en).
+      expect(text).toContain("←→ select · Enter confirm · Esc 取消")
 
       // Both actions keep a visible four-sided boundary even when unfocused;
       // the focused one uses the heavy border token from the theme, the other
