@@ -170,6 +170,47 @@ start_tui
 wait_tui_up 120 || { summary; exit 0; }
 ensure_editor_ready 'editor clean before the ladder run' || true
 
+# --- CAPABILITY GATE: subagents/interruptByParent route availability --------
+# The ladder's stage 2 rides `POST /api/subagents/interruptByParent`. That
+# route is NOT part of every host composition (authenticated probe evidence:
+# the 0.2.2-rc.3 host answers 404 there while subagents/prompt and
+# session/cancel both serve 200). Without it the child can never actually
+# be stopped, so the scenario would measure a swallowed stop, not the
+# ladder. Lightweight probe: the resident host's single-instance lock
+# carries the gateway port ($DSH_HOME/opentui-host.<profile>.json); the
+# owner cookie is minted exactly like the client does (cookie-mint.ts — an
+# UNAUTHENTICATED probe is useless here: the gateway answers 401 before
+# routing, for present and missing routes alike). A missing route (or an
+# unprovable host) skips with the reason spelled out — never a fake red,
+# never a fake green.
+HS_LOCK="$CLIENT_DSH_HOME/opentui-host.$FACE_PROFILE.json"
+HOST_PORT="$(node -e 'try{const l=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(typeof l.port==="number")console.log(l.port)}catch{}' "$HS_LOCK" 2>/dev/null || true)"
+PROBE_CODE=""
+if [ -n "$HOST_PORT" ]; then
+  cat > /tmp/probe-interrupt-route.mjs <<'PROBE'
+import { mintOwnerCookie } from "/src/packages/shell/src/client/cookie-mint.ts"
+const port = process.argv[2]
+console.log(mintOwnerCookie({ home: process.env.DSH_HOME, authority: `127.0.0.1:${port}` }))
+PROBE
+  PROBE_COOKIE="$(DSH_HOME="$CLIENT_DSH_HOME" bun /tmp/probe-interrupt-route.mjs "$HOST_PORT" 2>/dev/null || true)"
+  if [ -n "$PROBE_COOKIE" ]; then
+    PROBE_CODE="$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$HOST_PORT/api/subagents/interruptByParent" -H 'content-type: application/json' -H "Cookie: $PROBE_COOKIE" -d '{}' 2>/dev/null || true)"
+  fi
+fi
+if [ "$PROBE_CODE" = "404" ]; then
+  warn 'host composition lacks subagents/interruptByParent — hard-stop untestable on this host'
+  kill_tui
+  summary
+  exit 0
+fi
+if [ -z "$PROBE_CODE" ] || [ "$PROBE_CODE" = "401" ]; then
+  warn "could not probe subagents/interruptByParent (no resident host lock/port or no owner cookie; last status: ${PROBE_CODE:-none}) — hard-stop untestable on this host"
+  kill_tui
+  summary
+  exit 0
+fi
+ok "interruptByParent route present on this host (probe HTTP $PROBE_CODE)"
+
 # --- dispatch: parent runs looper in the foreground --------------------------
 send 'E2E_HS_PARENT: dispatch the looper agent now via use_agent. When its result returns, stop.'
 sleep 1

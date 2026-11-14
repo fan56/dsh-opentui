@@ -146,6 +146,42 @@ describe("SubagentRoundPolicy ladder", () => {
 		expect(stops).toHaveLength(0)
 	})
 
+	test("an async forceStop reports its REAL outcome: markers only on a resolved true", async () => {
+		// The remote panel's stop is a wire promise — a resolved false (the
+		// missing interruptByParent route) must never fire onHardStop even
+		// though the stage latched.
+		const hardStops: HardStopRecord[] = []
+		const forceStops: number[] = []
+		let verdict = false
+		const policy = new SubagentRoundPolicy({
+			limits: () => ({ maxRounds: 1, maxRoundsGrace: 1 }),
+			wrapup: () => true,
+			forceStop: () => Promise.resolve(verdict),
+			onHardStop: (record) => hardStops.push(record),
+			onForceStop: (_id, round) => forceStops.push(round),
+		})
+		policy.onRoundCount("c1", 1)
+		await flush()
+		policy.onRoundCount("c1", 2) // cap + grace: stage 2 fires (latched)
+		await flush()
+		expect(hardStops).toEqual([]) // the wire said nothing was stopped
+		expect(forceStops).toEqual([])
+		// a NEW policy instance: same shape, but the stop succeeds
+		const ok = new SubagentRoundPolicy({
+			limits: () => ({ maxRounds: 1, maxRoundsGrace: 1 }),
+			wrapup: () => true,
+			forceStop: () => Promise.resolve(true),
+			onHardStop: (record) => hardStops.push(record),
+			onForceStop: (_id, round) => forceStops.push(round),
+		})
+		ok.onRoundCount("c2", 1)
+		await flush()
+		ok.onRoundCount("c2", 2)
+		await flush()
+		expect(hardStops).toEqual([{ childId: "c2", round: 2, cap: 1, grace: 1 }])
+		expect(forceStops).toEqual([2])
+	})
+
 	test("maxRounds 0 disables the ladder (the 88-round runaway stays unbounded only when unconfigured)", async () => {
 		const { policy, wrapups, stops } = makePolicy({ limits: { maxRounds: 0, maxRoundsGrace: 2 } })
 		for (let n = 1; n <= 88; n++) policy.onRoundCount("c1", n)
@@ -265,7 +301,10 @@ describe("client face: RemoteSubagentPanel", () => {
 		sock.item(assistantFrame(5))
 		await until(() => rpcCalls.some((c) => c.method === "subagents/interruptByParent"))
 		expect(rpcCalls.filter((c) => c.method === "subagents/interruptByParent")).toHaveLength(1)
-		expect(panel.views()[0]!.status).toBe("cancelled")
+		// the stop outcome is the interrupt's outcome now — the cancelled
+		// settle and the hard-stop report land when the wire promise resolves
+		await until(() => panel.views()[0]!.status === "cancelled")
+		await until(() => hardStops.length > 0)
 		expect(hardStops).toEqual([{ childId: "child-x", round: 5, cap: 3, grace: 2 }])
 		expect(refreshes).toBeGreaterThanOrEqual(5)
 		panel.stop()

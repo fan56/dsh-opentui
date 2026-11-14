@@ -28,7 +28,11 @@
  *   reason logged (UX parity) — plus a detailed async variant that
  *   carries the typed error honestly.
  * - INTERRUPT: `subagents/interruptByParent`
- *   {childSessionId, parentSessionId, mode:'continuable'}.
+ *   {childSessionId, parentSessionId, mode:'continuable'}, falling back to
+ *   `session/cancel` on the child's own session id when the dedicated
+ *   route is missing from the host composition (probe: rc.3 host +
+ *   registry 0.20.0 answers 404). Both legs failing surfaces the combined
+ *   error — a force-stop never reports success it did not get.
  *
  * One-shot children never turn/end (host-session.ts:1011 comment) — their
  * settlement comes from the agent-end pairing and `session/list`
@@ -171,12 +175,22 @@ export class RemoteSubagentPanel {
 					return true
 				},
 				forceStop: (id) => {
-					if (!this.#children.has(id)) return false
-					this.interrupt(id).catch(() => {
-						/* a raced settle loses its stop — stage 2 stays latched */
-					})
-					this.#settle(id, "cancelled")
-					return true
+					if (!this.#children.has(id)) return Promise.resolve(false)
+					// Honest stage 2: the stop's outcome is the INTERRUPT's
+					// outcome. The promise resolves true only when the wire
+					// accepted the stop (the cancelled settle + the ⏻/hard-stop
+					// markers fold on it); a rejected interrupt (missing route,
+					// transport) resolves false — the child stays running in
+					// the panel and the policy reports nothing was stopped.
+					return this.interrupt(id)
+						.then(() => {
+							this.#settle(id, "cancelled")
+							return true
+						})
+						.catch((error) => {
+							console.error("[remote-subagents] force-stop failed:", describeError(error))
+							return false
+						})
 				},
 				onHardStop: (record) => this.#options.onHardStop?.(record),
 				// F6 marker folds: latch the round counts onto the child's view.
@@ -390,15 +404,37 @@ export class RemoteSubagentPanel {
 		}
 	}
 
-	/** Interrupt a child (`subagents/interruptByParent`). */
+	/**
+	 * Interrupt a child (`subagents/interruptByParent`). The dedicated route
+	 * is NOT present on every host composition (probe: the rc.3 host with
+	 * registry 0.20.0 answers 404 — the subagents face only registered
+	 * `subagents/prompt` there), so a failed dedicated interrupt falls back
+	 * to the api-session-controller's `session/cancel` on the child's own
+	 * session id (active-turn cancellation — the face this panel already
+	 * rides for session/list/follow, so it exists wherever the client runs).
+	 * Both legs failing throws the combined outcome — the failure reaches
+	 * the caller honestly (never a swallowed stop).
+	 */
 	async interrupt(id: string): Promise<void> {
 		const parent = this.#options.parentId()
 		if (parent === undefined) throw new Error("no live parent session")
-		await this.#options.rpc("subagents/interruptByParent", {
-			childSessionId: id,
-			parentSessionId: parent,
-			mode: "continuable",
-		})
+		try {
+			await this.#options.rpc("subagents/interruptByParent", {
+				childSessionId: id,
+				parentSessionId: parent,
+				mode: "continuable",
+			})
+			return
+		} catch (dedicatedError) {
+			const dedicated = describeError(dedicatedError)
+			try {
+				await this.#options.rpc("session/cancel", { sessionId: id })
+				console.warn(`[remote-subagents] interruptByParent failed (${dedicated}) — stopped the child via session/cancel`)
+				return
+			} catch (fallbackError) {
+				throw new Error(`interrupt failed — interruptByParent: ${dedicated}; session/cancel fallback: ${describeError(fallbackError)}`)
+			}
+		}
 	}
 
 	/** Close every child pump; the panel stops adopting (dispose parity). */
@@ -666,6 +702,12 @@ export class RemoteSubagentPanel {
 // ---------------------------------------------------------------------------
 // Pure mappers (unit-tested standalone)
 // ---------------------------------------------------------------------------
+
+/** One-line error text for logs and combined interrupt failures. */
+export function describeError(error: unknown): string {
+	if (error instanceof RemoteRpcError) return `${error.code}: ${error.message}`
+	return String(error instanceof Error ? error.message : error)
+}
 
 /**
  * The last non-blank line of a content body, whitespace-folded onto one row

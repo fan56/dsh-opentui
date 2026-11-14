@@ -281,8 +281,11 @@ export interface SubagentRoundPolicyOptions {
 	 * steer is async) latches the delivery when it resolves true. */
 	wrapup(childId: string, message: string, label: string | undefined): boolean | Promise<boolean>
 	/** Stage-2 sink: force-stop the child's run. False/throw = nothing was
-	 * stopped (a raced settle) — the stage marker still latches. */
-	forceStop(childId: string): boolean
+	 * stopped (a raced settle) — the stage marker still latches. A PROMISE
+	 * (the remote panel's wire stop) reports the real stop outcome when it
+	 * settles: markers fire only on a resolved true, a resolved false or
+	 * rejection reports nothing was stopped. */
+	forceStop(childId: string): boolean | Promise<boolean>
 	/** Hard-stop report sink (viewer marker fold). */
 	onHardStop?(record: HardStopRecord): void
 	/** Observation hook (batch F6): the wrap-up message was delivered to the
@@ -395,13 +398,8 @@ export class SubagentRoundPolicy {
 		})
 		if (spinAction === "force-stop-early") {
 			this.#hardStopped.add(childId)
-			let stoppedEarly = false
-			try {
-				stoppedEarly = this.#options.forceStop(childId)
-			} catch {
-				stoppedEarly = false
-			}
-			if (stoppedEarly) {
+			const reportEarlyStop = (stopped: boolean) => {
+				if (!stopped) return
 				try {
 					this.#options.onHardStop?.({ childId, round: count, cap: caps.cap, grace: caps.grace, early: true })
 				} catch {
@@ -413,6 +411,19 @@ export class SubagentRoundPolicy {
 				} catch {
 					// Same containment as onForceStop.
 				}
+			}
+			let stoppedEarly: boolean | Promise<boolean> = false
+			try {
+				stoppedEarly = this.#options.forceStop(childId)
+			} catch {
+				stoppedEarly = false
+			}
+			if (stoppedEarly instanceof Promise) {
+				void stoppedEarly.then(reportEarlyStop, () => {
+					/* rejected = nothing was stopped */
+				})
+			} else {
+				reportEarlyStop(stoppedEarly)
 			}
 			return
 		}
@@ -469,13 +480,8 @@ export class SubagentRoundPolicy {
 		// force-stop: latch FIRST (the stop's own settlement events re-enter
 		// this sink synchronously in some facades — never double-fire).
 		this.#hardStopped.add(childId)
-		let stopped = false
-		try {
-			stopped = this.#options.forceStop(childId)
-		} catch {
-			stopped = false
-		}
-		if (stopped) {
+		const reportStop = (stopped: boolean) => {
+			if (!stopped) return
 			try {
 				this.#options.onHardStop?.({ childId, round: count, cap: caps.cap, grace: caps.grace })
 			} catch {
@@ -487,6 +493,19 @@ export class SubagentRoundPolicy {
 			} catch {
 				// Same containment as onHardStop.
 			}
+		}
+		let stopped: boolean | Promise<boolean> = false
+		try {
+			stopped = this.#options.forceStop(childId)
+		} catch {
+			stopped = false
+		}
+		if (stopped instanceof Promise) {
+			void stopped.then(reportStop, () => {
+				/* rejected = nothing was stopped */
+			})
+		} else {
+			reportStop(stopped)
 		}
 	}
 

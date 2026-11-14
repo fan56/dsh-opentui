@@ -420,6 +420,103 @@ describe("subagent panel aggregation", () => {
 			mode: "continuable",
 		})
 	})
+
+	test("interrupt falls back to session/cancel when interruptByParent is missing", async () => {
+		// The rc.3 host + registry 0.20.0 composition answers 404 on the
+		// dedicated route; the api-session-controller's session/cancel is the
+		// honest fallback (same face the panel already rides).
+		const { panel, rpcCalls } = makePanel({
+			rpcHandler: (method) => {
+				if (method === "subagents/interruptByParent") throw new RemoteRpcError("http/404", "not found", {})
+				if (method === "session/cancel") return { accepted: true }
+				return {}
+			},
+		})
+		await panel.interrupt("c3")
+		expect(rpcCalls.find((c) => c.method === "session/cancel")!.args).toEqual({ sessionId: "c3" })
+	})
+
+	test("interrupt surfaces the combined failure when both legs fail (never swallowed)", async () => {
+		const { panel } = makePanel({
+			rpcHandler: (method) => {
+				if (method === "subagents/interruptByParent") throw new RemoteRpcError("http/404", "not found", {})
+				if (method === "session/cancel") throw new RemoteRpcError("session/not-running", "child not live", {})
+				return {}
+			},
+		})
+		let failure: unknown
+		try {
+			await panel.interrupt("c4")
+		} catch (error) {
+			failure = error
+		}
+		expect(failure).toBeInstanceOf(Error)
+		const message = (failure as Error).message
+		expect(message).toContain("interruptByParent")
+		expect(message).toContain("http/404")
+		expect(message).toContain("session/cancel")
+		expect(message).toContain("session/not-running")
+	})
+
+	test("force-stop failure no longer lies: no cancelled settle, no hard-stop markers", async () => {
+		// The old forceStop swallowed the interrupt rejection and returned
+		// stopped:true (a ⏻ marker + a cancelled view for a child the host
+		// kept running). The honest path: the policy's stop outcome is the
+		// interrupt's outcome — nothing settled, nothing reported.
+		const hardStops: unknown[] = []
+		const { panel, lastSocket, rpcCalls } = makePanel({
+			limits: () => ({ maxRounds: 1, maxRoundsGrace: 1 }),
+			onHardStop: (record) => hardStops.push(record),
+			rpcHandler: (method) => {
+				if (method === "subagents/prompt") return { messageId: "m-1" }
+				if (method === "subagents/interruptByParent") throw new RemoteRpcError("http/404", "not found", {})
+				if (method === "session/cancel") throw new RemoteRpcError("session/not-running", "child not live", {})
+				return {}
+			},
+		})
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "", childId: "child-stop" }))
+		const sock = await until(() => lastSocket() !== undefined).then(() => lastSocket())
+		// round 1 = cap: wrap-up (the microtask latch must land before the
+		// next counted round); round 2 = cap + grace: the (failing) stop
+		sock.item({ type: "event", event: { type: "assistant/message", seq: 1, time: Date.now(), data: { message: { content: [{ type: "text", text: "round one" }] } } } })
+		await until(() => rpcCalls.some((c) => c.method === "subagents/prompt"))
+		sock.item({ type: "event", event: { type: "assistant/message", seq: 2, time: Date.now(), data: { message: { content: [{ type: "text", text: "round two" }] } } } })
+		// both stop legs were attempted on the wire …
+		await until(() => rpcCalls.filter((c) => c.method === "session/cancel").length > 0)
+		// … and NOTHING was reported as stopped: no hard-stop record, no ⏻
+		// marker round, no cancelled settle — the child stays honestly running.
+		await new Promise((resolve) => setTimeout(resolve, 20))
+		expect(hardStops).toEqual([])
+		const view = panel.views()[0]!
+		expect(view.hardStopRound).toBeUndefined()
+		expect(view.status).toBe("running")
+		panel.stop()
+	})
+
+	test("force-stop rides the fallback too: fallback success still settles cancelled + reports", async () => {
+		const hardStops: unknown[] = []
+		const { panel, lastSocket, rpcCalls } = makePanel({
+			limits: () => ({ maxRounds: 1, maxRoundsGrace: 1 }),
+			onHardStop: (record) => hardStops.push(record),
+			rpcHandler: (method) => {
+				if (method === "subagents/prompt") return { messageId: "m-1" }
+				if (method === "subagents/interruptByParent") throw new RemoteRpcError("http/404", "not found", {})
+				if (method === "session/cancel") return { accepted: true }
+				return {}
+			},
+		})
+		panel.foldParentRecord(parentRecord("tool-workflow/agent-start", { runId: "r", seq: 0, label: "", childId: "child-stop2" }))
+		const sock = await until(() => lastSocket() !== undefined).then(() => lastSocket())
+		sock.item({ type: "event", event: { type: "assistant/message", seq: 1, time: Date.now(), data: { message: { content: [{ type: "text", text: "round one" }] } } } })
+		await until(() => rpcCalls.some((c) => c.method === "subagents/prompt"))
+		sock.item({ type: "event", event: { type: "assistant/message", seq: 2, time: Date.now(), data: { message: { content: [{ type: "text", text: "round two" }] } } } })
+		await until(() => hardStops.length > 0)
+		expect(hardStops[0]).toMatchObject({ childId: "child-stop2", round: 2, cap: 1, grace: 1 })
+		const view = panel.views()[0]!
+		expect(view.hardStopRound).toBe(2)
+		expect(view.status).toBe("cancelled")
+		panel.stop()
+	})
 })
 
 describe("facade subagent wiring", () => {
