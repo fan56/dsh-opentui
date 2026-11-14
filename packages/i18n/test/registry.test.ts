@@ -3,7 +3,7 @@
  * plus the loader integration behaviour behind them.
  */
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -106,6 +106,29 @@ describe("registry: merge + registration via the loader (design §5.2)", () => {
 			expect(en?.["common.cancel"]).toBe("Cancel") // untouched bundled key survives
 		} finally {
 			rmSync(userDir, { recursive: true, force: true })
+		}
+	})
+
+	test("omitted options.userDir still honors $DSH_HOME/locales (boot-contract regression)", () => {
+		const home = tmpRoot()
+		const localesDir = join(home, "locales")
+		mkdirSync(localesDir, { recursive: true })
+		const prevHome = process.env.DSH_HOME
+		try {
+			writeFileSync(
+				join(localesDir, "zh-CN.json"),
+				JSON.stringify({ name: "简体中文（覆盖）", "common.confirm": "好的" }),
+			)
+			process.env.DSH_HOME = home
+			const { languages, warnings } = loadLocales({ bundledDir })
+			expect(warnings).toEqual([])
+			const zh = languages.get("zh-CN")
+			expect(zh?.["name"]).toBe("简体中文（覆盖）")
+			expect(zh?.["common.confirm"]).toBe("好的")
+		} finally {
+			if (prevHome === undefined) delete process.env.DSH_HOME
+			else process.env.DSH_HOME = prevHome
+			rmSync(home, { recursive: true, force: true })
 		}
 	})
 

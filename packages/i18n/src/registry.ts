@@ -172,8 +172,10 @@ export function loadLocales(options?: { bundledDir?: string; userDir?: string })
 		warnings.push(`[i18n] bundled locales dir not found: ${bundledDir}`)
 	}
 
-	const userDir = options?.userDir
-	if (userDir && existsSync(userDir)) {
+	// Design contract: user overrides under $DSH_HOME/locales always ride the
+	// boot load — an omitted options.userDir must not silently disable them.
+	const userDir = options?.userDir ?? userLocalesDir()
+	if (existsSync(userDir)) {
 		for (const entry of readdirSync(userDir)) {
 			if (!entry.endsWith(".json")) continue
 			const id = entry.slice(0, -".json".length)
