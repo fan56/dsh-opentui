@@ -111,9 +111,30 @@ function Harness(props: {
 	)
 }
 
-async function settle(setup: Awaited<ReturnType<typeof testRender>>, rounds = 4): Promise<void> {
-	for (let index = 0; index < rounds; index += 1) {
-		await new Promise((resolve) => setTimeout(resolve, 5))
+function text(frame: string): string {
+	return frame.replace(/\s+/g, " ")
+}
+
+/** Frame wait per docs/test-framework.md §4.4: predicate over the normalized
+ * frame against a wall-clock budget, no fixed-round settle. The upstream
+ * setup.waitForFrame counts render PASSES, which can outpace async painting,
+ * and a render-FIRST poll races stdin parsing (mock input is parsed a tick
+ * after the emit — the key-routing-ft press norm: sleep, THEN renderOnce), so
+ * this poll sleeps before rendering. A timeout throws with the last frame. */
+async function waitForFrame(
+	setup: Awaited<ReturnType<typeof testRender>>,
+	predicate: (flat: string) => boolean,
+	options: { timeoutMs?: number } = {},
+): Promise<string> {
+	const timeoutMs = options.timeoutMs ?? 4000
+	const deadline = Date.now() + timeoutMs
+	for (;;) {
+		const flat = text(setup.captureCharFrame())
+		if (predicate(flat)) return flat
+		if (Date.now() > deadline) {
+			throw new Error(`waitForFrame: timed out after ${timeoutMs}ms\nlast frame:\n${flat}`)
+		}
+		await new Promise((resolve) => setTimeout(resolve, 25))
 		await setup.renderOnce()
 	}
 }
@@ -137,15 +158,13 @@ async function mount(options: {
 		),
 		{ width: 120, height: 34 },
 	)
-	await settle(setup)
+	// Settle convergence for the bare mount (upstream idle wait, §3); the open
+	// wait below is a predicate + time budget (docs/test-framework.md §4.4).
+	await setup.waitForVisualIdle()
 	openHistoryPanel()
-	await settle(setup)
+	await waitForFrame(setup, (flat) => flat.includes("alpha prompt"))
 	if (panels === undefined) throw new Error("panels probe never mounted")
 	return { setup, panels, frame: () => setup.captureCharFrame() }
-}
-
-function text(frame: string): string {
-	return frame.replace(/\s+/g, " ")
 }
 
 describe("/history panel-kit modal (review P0-2/P1-3/P1-4)", () => {
@@ -158,23 +177,21 @@ describe("/history panel-kit modal (review P0-2/P1-3/P1-4)", () => {
 			expect(historyPanelOpen()).toBe(true)
 
 			setup.mockInput.pressKey("s")
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes("Session B"))
 			// Exactly ONE layer pushed (the old effect stacked three into the
 			// maxDepth error, which leaked into the status line).
 			expect(panels.depth).toBe(2)
-			expect(text(frame())).toContain("Session B")
 			expect(text(frame())).toContain("enter browse")
 			expect(text(frame())).not.toContain("maxDepth")
 			expect(text(frame())).not.toContain("session list failed")
 
 			setup.mockInput.pressEnter()
-			await settle(setup)
-			// The pick popped the session layer AND switched the fold target to
+			// The pick pops the session layer AND switches the fold target to
 			// the picked session's journal (its deferred read lands here).
+			await waitForFrame(setup, (flat) => flat.includes("loading turns…"))
 			expect(panels.depth).toBe(1)
 			fake.landSessB()
-			await settle(setup)
-			expect(text(frame())).toContain("beta prompt")
+			await waitForFrame(setup, (flat) => flat.includes("beta prompt"))
 			expect(text(frame())).not.toContain("alpha prompt")
 		} finally {
 			await setup.dispose()
@@ -190,7 +207,8 @@ describe("/history panel-kit modal (review P0-2/P1-3/P1-4)", () => {
 			// Two dispatches in one tick (double-tap / key repeat).
 			setup.mockInput.pressKey("f")
 			setup.mockInput.pressKey("f")
-			await settle(setup)
+			await waitForFrame(setup, () => fake.forks.length === 1)
+			await setup.waitForVisualIdle()
 			expect(fake.forks).toEqual([{ id: SESSION_A, seqEnd: 3 }])
 			expect(forked).toEqual([{ id: "sess-fork", turn: 1 }])
 		} finally {
@@ -204,10 +222,10 @@ describe("/history panel-kit modal (review P0-2/P1-3/P1-4)", () => {
 		try {
 			// s → the session layer; Enter → pick sess-b (its read hangs).
 			setup.mockInput.pressKey("s")
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes("Session B"))
 			expect(panels.depth).toBe(2)
 			setup.mockInput.pressEnter()
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes("loading turns…"))
 			expect(panels.depth).toBe(1)
 
 			// The old session's turns are GONE while the read is pending — the
@@ -216,17 +234,18 @@ describe("/history panel-kit modal (review P0-2/P1-3/P1-4)", () => {
 			expect(text(frame())).not.toContain("alpha prompt")
 
 			// f in this window: no browsing turns, no fork (the old code would
-			// have forked sess-b at sess-a's seqEnd).
+			// have forked sess-b at sess-a's seqEnd). A predicate cannot tell
+			// "handler ran and declined" from "handler has not run yet", so this
+			// negative check is a settle convergence followed by the assertion.
 			setup.mockInput.pressKey("f")
-			await settle(setup)
+			await setup.waitForVisualIdle()
 			expect(fake.forks).toEqual([])
 
 			// The read lands: the picked session's turns render and f works.
 			fake.landSessB()
-			await settle(setup)
-			expect(text(frame())).toContain("beta prompt")
+			await waitForFrame(setup, (flat) => flat.includes("beta prompt"))
 			setup.mockInput.pressKey("f")
-			await settle(setup)
+			await waitForFrame(setup, () => fake.forks.length === 1)
 			expect(fake.forks).toEqual([{ id: SESSION_B, seqEnd: 103 }])
 		} finally {
 			await setup.dispose()

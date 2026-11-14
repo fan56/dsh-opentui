@@ -101,22 +101,40 @@ async function mount(options: FakeOptions = {}) {
 		),
 		{ width: 100, height: 20 },
 	)
-	await settle(setup)
+	// Settle convergence for the bare mount (upstream idle wait, §3); the open
+	// wait below is a predicate + time budget (docs/test-framework.md §4.4).
+	await setup.waitForVisualIdle()
 	openSessionsSearch()
-	await settle(setup)
+	await waitForFrame(setup, (flat) => flat.includes("Search sessions"))
 	return { setup, seam }
-}
-
-/** Flush the open-bridge effect, layout and the deferred 1 ms focus tick. */
-async function settle(setup: Awaited<ReturnType<typeof testRender>>, rounds = 4): Promise<void> {
-	for (let index = 0; index < rounds; index += 1) {
-		await new Promise((resolve) => setTimeout(resolve, 5))
-		await setup.renderOnce()
-	}
 }
 
 function frame(setup: Awaited<ReturnType<typeof testRender>>): string {
 	return setup.captureCharFrame().replace(/\s+/g, " ")
+}
+
+/** Frame wait per docs/test-framework.md §4.4: predicate over the normalized
+ * frame against a wall-clock budget, no fixed-round settle. The upstream
+ * setup.waitForFrame counts render PASSES, which can outpace async painting,
+ * and a render-FIRST poll races stdin parsing (mock input is parsed a tick
+ * after the emit — the key-routing-ft press norm: sleep, THEN renderOnce), so
+ * this poll sleeps before rendering. A timeout throws with the last frame. */
+async function waitForFrame(
+	setup: Awaited<ReturnType<typeof testRender>>,
+	predicate: (flat: string) => boolean,
+	options: { timeoutMs?: number } = {},
+): Promise<string> {
+	const timeoutMs = options.timeoutMs ?? 4000
+	const deadline = Date.now() + timeoutMs
+	for (;;) {
+		const flat = frame(setup)
+		if (predicate(flat)) return flat
+		if (Date.now() > deadline) {
+			throw new Error(`waitForFrame: timed out after ${timeoutMs}ms\nlast frame:\n${flat}`)
+		}
+		await new Promise((resolve) => setTimeout(resolve, 25))
+		await setup.renderOnce()
+	}
 }
 
 describe("/search overlay on the real stack (P0-1 + P1-2 regressions)", () => {
@@ -128,20 +146,18 @@ describe("/search overlay on the real stack (P0-1 + P1-2 regressions)", () => {
 
 			// The P0-1 repro: this typed "son it" while the global layer ate j/k.
 			await setup.mockInput.typeText("json kit")
-			await settle(setup)
-			expect(frame(setup)).toContain("json kit")
+			await waitForFrame(setup, (flat) => flat.includes("json kit"))
 
 			// Enter runs the query and paints the hit list.
 			setup.mockInput.pressEnter()
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes("ses_json"))
 			expect(frame(setup)).toContain("ses_json")
 			expect(frame(setup)).toContain(formatSearchHitLine(HITS[0]!))
 
 			// STILL letters, now with hits on screen: j/k are no list bindings,
 			// so the refinement "json kitj" must land in the input untouched.
 			await setup.mockInput.typeText("j")
-			await settle(setup)
-			expect(frame(setup)).toContain("json kitj")
+			await waitForFrame(setup, (flat) => flat.includes("json kitj"))
 			// The cursor never moved: the first hit keeps the `›` marker.
 			expect(frame(setup)).toContain(`› ${formatSearchHitLine(HITS[0]!)}`)
 			expect(frame(setup)).not.toContain(`› ${formatSearchHitLine(HITS[1]!)}`)
@@ -155,15 +171,15 @@ describe("/search overlay on the real stack (P0-1 + P1-2 regressions)", () => {
 		try {
 			await setup.mockInput.typeText("json")
 			setup.mockInput.pressEnter()
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes(`› ${formatSearchHitLine(HITS[0]!)}`))
 			expect(frame(setup)).toContain(`› ${formatSearchHitLine(HITS[0]!)}`)
 
 			setup.mockInput.pressArrow("down")
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes(`› ${formatSearchHitLine(HITS[1]!)}`))
 			expect(frame(setup)).toContain(`› ${formatSearchHitLine(HITS[1]!)}`)
 
 			setup.mockInput.pressArrow("up")
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes(`› ${formatSearchHitLine(HITS[0]!)}`))
 			expect(frame(setup)).toContain(`› ${formatSearchHitLine(HITS[0]!)}`)
 		} finally {
 			await setup.dispose()
@@ -175,11 +191,10 @@ describe("/search overlay on the real stack (P0-1 + P1-2 regressions)", () => {
 		try {
 			await setup.mockInput.typeText("json")
 			setup.mockInput.pressEnter()
-			await settle(setup)
-			expect(frame(setup)).toContain("ses_json")
+			await waitForFrame(setup, (flat) => flat.includes("ses_json"))
 
 			setup.mockInput.pressEnter()
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes("resume failed — journal gone"))
 
 			// P1-2's reachable failure path: the status line is loud, the hit
 			// list and the overlay stay on screen (never a silent close).
@@ -198,9 +213,10 @@ describe("/search overlay on the real stack (P0-1 + P1-2 regressions)", () => {
 		try {
 			await setup.mockInput.typeText("json")
 			setup.mockInput.pressEnter()
-			await settle(setup)
+			await waitForFrame(setup, (flat) => flat.includes("ses_json"))
 			setup.mockInput.pressEnter()
-			await settle(setup)
+			// The close repaints the frame without the overlay title.
+			await waitForFrame(setup, (flat) => !flat.includes("Search sessions"))
 			expect(sessionsSearchOpen()).toBe(false)
 			expect(seam.calls.resumed).toEqual(["ses_json"])
 		} finally {
