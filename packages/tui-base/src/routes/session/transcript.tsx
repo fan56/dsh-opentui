@@ -40,6 +40,7 @@ import type { SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
 import type { ComposerPendingRow } from "./composer-state"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
+import { t } from "../../i18n"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { transcriptFrame, unfocusedBorderColor } from "../../skin/semantic"
 import { skinFadeInColor, SKIN_FADE_IN_MS } from "./widgets-dock"
@@ -417,7 +418,7 @@ export function Transcript(props: TranscriptProps) {
 						</For>
 						<Show when={projection.hydrated() === false}>
 							<box flexShrink={0}>
-								<text fg={color.loading()}>Loading session history…</text>
+								<text fg={color.loading()}>{t("transcript.loading")}</text>
 							</box>
 						</Show>
 						{/* Busy-submit delivery lines: below the projected feed so a
@@ -432,11 +433,15 @@ export function Transcript(props: TranscriptProps) {
 											attributes={TextAttributes.ITALIC}
 											wrapMode="word"
 										>
-											{`⏸ ${row.state === "paused" ? "已暂停" : "排队等待"} #${row.order ?? 1} · ${row.text}`}
+											{row.state === "paused"
+											? t("transcript.pending.queue.paused", { order: row.order ?? 1, text: row.text })
+											: t("transcript.pending.queue.waiting", { order: row.order ?? 1, text: row.text })}
 										</text>
 									) : (
 										<text fg={color.pendingSteer()} wrapMode="word">
-											{`${row.state === "delivered" ? "✓ 已投递" : "⤵ 已注入当前回合"} · ${row.text}`}
+											{row.state === "delivered"
+											? t("transcript.pending.steer.delivered", { text: row.text })
+											: t("transcript.pending.steer.injected", { text: row.text })}
 										</text>
 									)}
 								</box>

@@ -1,5 +1,5 @@
 {
 	"comment": "Leak-guard ratchet baseline (design c5-i18n §4 T14 infra, built ahead of the T4-T11 facet migrations). Counts may ONLY go down: a facet migration lowers its numbers here in the same commit; any raise fails the unit tier. Goal at T14: all zeros.",
-	"tui-base": { "cjkLines": 2, "templateSayCalls": 0 },
+	"tui-base": { "cjkLines": 0, "templateSayCalls": 0 },
 	"panel-kit": { "cjkLines": 2, "templateSayCalls": 0 }
 }
