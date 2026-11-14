@@ -17,7 +17,7 @@
  * hotkey here), and the session-switch window where `f` has nothing to act
  * on while the picked journal is in flight.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { createComponent, onMount } from "solid-js"
 import {
@@ -34,6 +34,14 @@ import { createTuiPanelKeymapHost } from "../src/context/panel-kit-host"
 import { HistoryPanel, openHistoryPanel, historyPanelOpen } from "../src/routes/session/history-panel"
 import type { HistoryJournalEntry } from "../src/routes/session/history-data"
 import type { SeamSessionSummary, SessionSeam } from "../src/seams/session"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 const keymapConfig = {
 	keybinds: { get: () => [] },

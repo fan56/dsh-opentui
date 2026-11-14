@@ -3,7 +3,7 @@
  * plugins-panel filter/table line helpers (tui-pi 77 parity surface —
  * table-testable without a renderer, the commands.test.ts law).
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { createRoot } from "solid-js"
 import { formatSearchHitLine } from "../src/routes/session/sessions-search"
 import {
@@ -17,6 +17,14 @@ import {
 	pluginsPanelOpen,
 	usePluginsPanelOpenState,
 } from "../src/routes/session/plugins-panel"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 describe("sessions-search helpers", () => {
 	test("hit line joins id and snippet through an em dash", () => {

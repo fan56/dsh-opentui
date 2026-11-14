@@ -31,6 +31,7 @@
 import { existsSync } from "node:fs"
 import { lstat, mkdir, readFile, readdir, realpath, symlink, unlink } from "node:fs/promises"
 import { join } from "node:path"
+import { t } from "../../i18n"
 import { parseFrontmatter } from "./skills-source"
 
 /** One row of the /skills manager: a public skill and its installed flag. */
@@ -83,7 +84,11 @@ export async function installSkillSymlink(src: string, dest: string): Promise<vo
 		// Race window: the source vanished between the scan and the apply —
 		// surface a readable cause instead of a raw errno message.
 		const code = (error as NodeJS.ErrnoException).code
-		throw new Error(`skill source vanished: "${src}"${code === undefined ? "" : ` (${code})`}`)
+		throw new Error(
+			code === undefined
+				? t("panel.skills.error.vanished", { src })
+				: t("panel.skills.error.vanishedCode", { src, code: String(code) }),
+		)
 	})
 	const destStat = await lstat(dest).catch(() => undefined)
 	if (destStat === undefined) {
@@ -91,7 +96,7 @@ export async function installSkillSymlink(src: string, dest: string): Promise<vo
 		return
 	}
 	if (!destStat.isSymbolicLink()) {
-		throw new Error(`refusing to overwrite "${dest}": not a symlink`)
+		throw new Error(t("panel.skills.error.overwriteNotSymlink", { dest }))
 	}
 	const destReal = await realpath(dest).catch((error: unknown) => {
 		// Only a missing target (ENOENT) or a link loop (ELOOP) counts as a
@@ -109,7 +114,7 @@ export async function installSkillSymlink(src: string, dest: string): Promise<vo
 	}
 	if (destReal === srcReal) return
 	throw new Error(
-		`already installed from a different source: "${dest}" points to "${destReal}", expected "${srcReal}"`,
+		t("panel.skills.error.differentSource", { dest, destReal, srcReal }),
 	)
 }
 
@@ -125,12 +130,12 @@ export async function applyOneSkillChange(
 ): Promise<string | undefined> {
 	if (targetState) {
 		const paths = skillSymlinkPaths(publicDir, curatedDir, name)
-		if (paths === undefined) return `cannot install: skill not found in "${publicDir}"`
+		if (paths === undefined) return t("panel.skills.error.installNotFound", { dir: publicDir })
 		try {
 			await installSkillSymlink(paths.src, paths.dest)
 			return undefined
 		} catch (error: unknown) {
-			return `cannot install: ${error instanceof Error ? error.message : String(error)}`
+			return t("panel.skills.error.installFailed", { error: error instanceof Error ? error.message : String(error) })
 		}
 	}
 	// Uninstall: mirror the install-side protection — only ever remove a
@@ -141,18 +146,18 @@ export async function applyOneSkillChange(
 		const destBundle = join(curatedDir, name)
 		const mdStat = await lstat(destMd).catch(() => undefined)
 		if (mdStat !== undefined) {
-			if (!mdStat.isSymbolicLink()) throw new Error(`refusing to remove "${destMd}": not a symlink`)
+			if (!mdStat.isSymbolicLink()) throw new Error(t("panel.skills.error.removeNotSymlink", { dest: destMd }))
 			await unlink(destMd)
 			return undefined
 		}
 		const bundleStat = await lstat(destBundle).catch(() => undefined)
 		if (bundleStat !== undefined) {
-			if (!bundleStat.isSymbolicLink()) throw new Error(`refusing to remove "${destBundle}": not a symlink`)
+			if (!bundleStat.isSymbolicLink()) throw new Error(t("panel.skills.error.removeNotSymlink", { dest: destBundle }))
 			await unlink(destBundle)
 		}
 		return undefined
 	} catch (error: unknown) {
-		return `cannot uninstall: ${error instanceof Error ? error.message : String(error)}`
+		return t("panel.skills.error.uninstallFailed", { error: error instanceof Error ? error.message : String(error) })
 	}
 }
 
@@ -166,10 +171,10 @@ const SKILL_SUMMARY_MAX_ITEMS = 3
  * Full paths and raw errno details stay out of the clipped status line.
  */
 export function skillApplyShortReason(error: string): string {
-	if (error.includes("not a symlink")) return "protected (not a symlink)"
-	if (error.includes("different source")) return "installed from a different source"
-	if (error.includes("skill not found") || error.includes("source vanished")) return "source missing"
-	return "failed"
+	if (error.includes("not a symlink")) return t("panel.skills.reason.notSymlink")
+	if (error.includes("different source")) return t("panel.skills.reason.differentSource")
+	if (error.includes("skill not found") || error.includes("source vanished")) return t("panel.skills.reason.sourceMissing")
+	return t("panel.skills.reason.failed")
 }
 
 /**
@@ -183,17 +188,21 @@ export function skillApplySummary(results: readonly SkillApplyResult[]): string 
 	const failures = results.filter((r) => r.error !== undefined)
 	if (failures.length === 0) return ""
 	const okNames = results.filter((r) => r.error === undefined).map((r) => r.name)
-	const failed = failures
-		.slice(0, SKILL_SUMMARY_MAX_ITEMS)
-		.map((r) => `${r.name} (${skillApplyShortReason(r.error ?? "")})`)
-		.join(", ")
+	const failedNames = failures.slice(0, SKILL_SUMMARY_MAX_ITEMS).map((r) => `${r.name} (${skillApplyShortReason(r.error ?? "")})`)
 	const failedExtra = failures.length - SKILL_SUMMARY_MAX_ITEMS
-	const failedMore = failedExtra > 0 ? ` +${failedExtra} more` : ""
-	const okShown = okNames.slice(0, SKILL_SUMMARY_MAX_ITEMS).join(", ")
+	if (failedExtra > 0) failedNames.push(t("panel.skills.summary.more", { count: String(failedExtra) }))
+	const failedPart = t("panel.skills.summary.failed", { names: failedNames.join(", ") })
+	const segments: string[] = []
+	const okShown = okNames.slice(0, SKILL_SUMMARY_MAX_ITEMS)
 	const okExtra = okNames.length - SKILL_SUMMARY_MAX_ITEMS
-	const okMore = okExtra > 0 ? ` +${okExtra} more` : ""
-	const okPart = okNames.length > 0 ? `ok: ${okShown}${okMore} · ` : ""
-	return `applied ${okNames.length}/${results.length} — ${okPart}failed: ${failed}${failedMore}`
+	if (okExtra > 0) okShown.push(t("panel.skills.summary.more", { count: String(okExtra) }))
+	if (okShown.length > 0) segments.push(t("panel.skills.summary.ok", { names: okShown.join(", ") }))
+	segments.push(failedPart)
+	return t("panel.skills.summary.applied", {
+		ok: String(okNames.length),
+		total: String(results.length),
+		detail: segments.join(" · "),
+	})
 }
 
 // ------------------------------------------------------------ scanning --
@@ -280,7 +289,7 @@ export function filterSkillRows<T extends { name: string; description: string }>
  */
 export function skillStateText(row: { installed: boolean }, pendingState?: boolean): string {
 	const effective = pendingState ?? row.installed
-	const base = effective ? "installed" : "available"
+	const base = effective ? t("panel.skills.state.installed") : t("panel.skills.state.available")
 	return pendingState === undefined || pendingState === row.installed ? base : `${base}*`
 }
 

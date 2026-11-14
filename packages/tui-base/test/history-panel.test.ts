@@ -4,7 +4,7 @@
  * orchestrations stay unit-testable without a renderer); the fold itself is
  * covered by history-data.test.ts, here it is the fixture SOURCE.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import {
 	groupHistoryTurns,
 	type HistoryJournalEntry,
@@ -21,6 +21,14 @@ import {
 	turnRowText,
 	turnWindow,
 } from "../src/routes/session/history-panel"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 /** A minimal well-formed turn fixture. */
 function turn(overrides: Partial<HistoryTurn> = {}): HistoryTurn {

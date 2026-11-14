@@ -39,6 +39,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show, type JSX 
 import { useTerminalDimensions } from "@opentui/solid"
 import { PanelActions, PanelBody, usePanelTheme, usePanels, type PanelHandle } from "@dsh-opentui/panel-kit"
 import { Keymap } from "../../context/keymap"
+import { t } from "../../i18n"
 import { useThemeOptional } from "../../context/theme"
 import type { SeamSessionSummary, SessionSeam } from "../../seams/session"
 import {
@@ -120,9 +121,9 @@ export type RefillVerdict = { kind: "refill"; text: string } | { kind: "notice";
  * (the editor must never receive a notice text as a prompt).
  */
 export function refillOrNotice(turn: HistoryTurn | undefined): RefillVerdict {
-	if (turn === undefined) return { kind: "notice", text: "no turn selected" }
+	if (turn === undefined) return { kind: "notice", text: t("panel.history.notice.noTurn") }
 	const text = turnPrimaryUserText(turn)
-	if (text === undefined) return { kind: "notice", text: `turn #${turn.turn} has no prompt to refill` }
+	if (text === undefined) return { kind: "notice", text: t("panel.history.notice.noPrompt", { turn: String(turn.turn) }) }
 	return { kind: "refill", text }
 }
 
@@ -138,22 +139,22 @@ export function toolCallLine(call: HistoryToolCall): string {
  */
 export function turnDetailLines(turn: HistoryTurn): string[] {
 	const lines: string[] = []
-	const flags = [turn.endReason, ...(turn.interrupted ? ["interrupted"] : [])].join(" · ")
-	lines.push(`turn #${turn.turn} — ${flags}`)
-	if (turn.endError !== undefined) lines.push(`error: ${turn.endError}`)
+	const flags = [turn.endReason, ...(turn.interrupted ? [t("panel.history.detail.interrupted")] : [])].join(" · ")
+	lines.push(t("panel.history.detail.turnLine", { turn: String(turn.turn), flags }))
+	if (turn.endError !== undefined) lines.push(t("panel.history.detail.error", { error: turn.endError }))
 	if (turn.userTexts.length > 0) {
 		lines.push("")
-		lines.push("prompt:")
+		lines.push(t("panel.history.detail.prompt"))
 		for (const text of turn.userTexts) lines.push(...text.split("\n"))
 	}
 	if (turn.assistantTexts.length > 0) {
 		lines.push("")
-		lines.push("assistant:")
+		lines.push(t("panel.history.detail.assistant"))
 		for (const text of turn.assistantTexts) lines.push(...text.split("\n"))
 	}
 	if (turn.toolCalls.length > 0) {
 		lines.push("")
-		lines.push(`tools — ${toolCallSummary(turn.toolCalls.map((call) => call.name))}`)
+		lines.push(t("panel.history.detail.tools", { summary: toolCallSummary(turn.toolCalls.map((call) => call.name)) }))
 		for (const call of turn.toolCalls) lines.push(toolCallLine(call))
 	}
 	return lines
@@ -161,12 +162,12 @@ export function turnDetailLines(turn: HistoryTurn): string[] {
 
 /** The success echo of a fork-at-turn (the entry's say line). */
 export function forkEchoText(turn: number, forkedId: string): string {
-	return `forked from turn #${turn} → ${forkedId}`
+	return t("panel.history.echo.fork", { turn: String(turn), id: forkedId })
 }
 
 /** One short failure line for a rejected load/fork (sliced, key-free). */
 export function historyFailureText(prefix: string, error: unknown): string {
-	return `${prefix} failed — ${String(error instanceof Error ? error.message : error).slice(0, 150)}`
+	return t("panel.history.failure", { op: prefix, error: String(error instanceof Error ? error.message : error).slice(0, 150) })
 }
 
 // ---------------------------------------------------------------------------
@@ -227,12 +228,12 @@ export function HistoryPanel(props: {
 		const token = ++loadSequence
 		if (!sessionId) {
 			setTurns([])
-			setStatus("no active session to browse")
+			setStatus(t("panel.history.status.noSession"))
 			return
 		}
 		if (!props.seam.sessionJournal) {
 			setTurns([])
-			setStatus("history unavailable in this session (no journal face)")
+			setStatus(t("panel.history.status.noJournal"))
 			return
 		}
 		// The switch window: drop the old session's rows NOW. `fork()` and
@@ -251,12 +252,12 @@ export function HistoryPanel(props: {
 			const folded = groupHistoryTurns(entries)
 			setTurns(folded)
 			setCursor(0)
-			if (folded.length === 0) setStatus(`no completed turns in ${sessionId.slice(0, 8)}`)
+			if (folded.length === 0) setStatus(t("panel.history.status.noTurns", { id: sessionId.slice(0, 8) }))
 		} catch (error) {
 			if (token !== loadSequence) return
 			setTurns([])
 			setCursor(0)
-			setStatus(historyFailureText("history load", error))
+			setStatus(historyFailureText(t("panel.history.op.load"), error))
 		} finally {
 			if (token === loadSequence) setBusy(false)
 		}
@@ -292,7 +293,7 @@ export function HistoryPanel(props: {
 		setOpen(true)
 		handle = panels.open(() => renderBrowser(), {
 			id: `history-${++sequence}`,
-			title: "History",
+			title: t("panel.history.title.history"),
 			size: "xlarge",
 			onClose: () => {
 				handle = undefined
@@ -326,7 +327,7 @@ export function HistoryPanel(props: {
 				setSessionCursor(0)
 				setShowSessions(rows.length > 0)
 				if (rows.length === 0) {
-					setStatus("no stored sessions to switch to")
+					setStatus(t("panel.history.status.noSessions"))
 					return
 				}
 				// The session layer opens HERE, not in a createEffect watching
@@ -336,12 +337,12 @@ export function HistoryPanel(props: {
 				// layers into the maxDepth error. A direct call opens exactly one.
 				panels.open(() => renderSessions(), {
 					id: `history-sessions-${++sequence}`,
-					title: "Switch session",
+					title: t("panel.history.title.switch"),
 					size: "xlarge",
 					onClose: () => setShowSessions(false),
 				})
 			} catch (error) {
-				setStatus(historyFailureText("session list", error))
+				setStatus(historyFailureText(t("panel.history.op.sessionList"), error))
 			}
 		})()
 	}
@@ -370,7 +371,7 @@ export function HistoryPanel(props: {
 		const turn = current()
 		const id = browsingId()
 		if (!props.seam.forkSession) {
-			setStatus("fork unavailable — press c to refill the prompt instead")
+			setStatus(t("panel.history.status.forkUnavailable"))
 			return
 		}
 		if (!turn || !id) return
@@ -382,7 +383,7 @@ export function HistoryPanel(props: {
 				close()
 			})
 			.catch((error: unknown) => {
-				setStatus(historyFailureText("fork", error))
+				setStatus(historyFailureText(t("panel.history.op.fork"), error))
 			})
 			.finally(() => setBusy(false))
 	}
@@ -395,16 +396,16 @@ export function HistoryPanel(props: {
 			enabled: open() && handle !== undefined && top !== undefined && handle === top,
 			priority: 2,
 			commands: [
-				{ bind: "up,k", title: "History: previous turn", group: "History", run: () => moveCursor(-1) },
-				{ bind: "down,j", title: "History: next turn", group: "History", run: () => moveCursor(1) },
+				{ bind: "up,k", title: t("panel.history.keymap.previousTurn"), group: "History", run: () => moveCursor(-1) },
+				{ bind: "down,j", title: t("panel.history.keymap.nextTurn"), group: "History", run: () => moveCursor(1) },
 				{
 					bind: "return,c",
-					title: showSessions() ? "History: pick session" : "History: refill prompt",
+					title: showSessions() ? t("panel.history.keymap.pickSession") : t("panel.history.keymap.refill"),
 					group: "History",
 					run: () => (showSessions() ? pickSession(sessionCursor()) : refill()),
 				},
-				{ bind: "s", title: "History: switch session", group: "History", run: openSessions },
-				{ bind: "f", title: "History: fork at turn", group: "History", run: fork },
+				{ bind: "s", title: t("panel.history.keymap.switchSession"), group: "History", run: openSessions },
+				{ bind: "f", title: t("panel.history.keymap.fork"), group: "History", run: fork },
 			],
 		}
 	})
@@ -419,19 +420,19 @@ export function HistoryPanel(props: {
 		commands: [
 			{
 				bind: "up,k",
-				title: "History: previous session",
+				title: t("panel.history.keymap.previousSession"),
 				group: "History",
 				run: () => setSessionCursor((index) => turnCursorStep(index, -1, sessions().length)),
 			},
 			{
 				bind: "down,j",
-				title: "History: next session",
+				title: t("panel.history.keymap.nextSession"),
 				group: "History",
 				run: () => setSessionCursor((index) => turnCursorStep(index, 1, sessions().length)),
 			},
 			{
 				bind: "return,c",
-				title: "History: browse picked session",
+				title: t("panel.history.keymap.browse"),
 				group: "History",
 				run: () => pickSession(sessionCursor()),
 			},
@@ -455,7 +456,7 @@ export function HistoryPanel(props: {
 						when={turns().length > 0}
 						fallback={
 							<text fg={muted} wrapMode="none">
-								{busy() ? "loading turns…" : (status() ?? "no completed turns")}
+								{busy() ? t("panel.history.busy.loading") : (status() ?? t("panel.history.empty.noTurns"))}
 							</text>
 						}
 					>
@@ -500,7 +501,7 @@ export function HistoryPanel(props: {
 						</Show>
 					</Show>
 				</PanelBody>
-				<PanelActions hint="↑↓ turn · enter/c refill · s session · f fork · esc close" />
+				<PanelActions hint={t("panel.history.hint.browser")} />
 			</box>
 		)
 	}
@@ -526,7 +527,7 @@ export function HistoryPanel(props: {
 						)}
 					</For>
 				</PanelBody>
-				<PanelActions hint="↑↓ session · enter browse · esc back" />
+				<PanelActions hint={t("panel.history.hint.sessions")} />
 			</box>
 		)
 	}

@@ -42,6 +42,8 @@
  * never throw — the same defensive posture as journalToTranscriptRows.
  */
 
+import { t } from "../../i18n"
+
 /** Structural slice of one journal record (RemoteJournalEntry parity). */
 export interface HistoryJournalEntry {
 	type: string
@@ -322,8 +324,13 @@ export function toolCallSummary(names: readonly string[]): string {
 	const counts = new Map<string, number>()
 	for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1)
 	const parts = [...counts.entries()].map(([name, count]) => `${name}×${count}`)
-	const label = names.length === 1 ? "tool call" : "tool calls"
-	return `${names.length} ${label}: ${parts.join(", ")}`
+	// The singular/plural label is a full-sentence branch key (§6 pattern 2);
+	// the tool-name list joins into the {parts} param.
+	const text =
+		names.length === 1
+			? t("panel.history.tools.one", { count: String(names.length), parts: parts.join(", ") })
+			: t("panel.history.tools.many", { count: String(names.length), parts: parts.join(", ") })
+	return text
 }
 
 /**

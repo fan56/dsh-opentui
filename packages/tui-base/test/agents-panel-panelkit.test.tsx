@@ -13,7 +13,7 @@
  * the List.pageSize window boundaries, `/agents <name>` preselect and the
  * close summary carrying the changed-name list.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
 import { createComponent, onMount } from "solid-js"
 import {
@@ -30,6 +30,14 @@ import { createTuiPanelKeymapHost } from "../src/context/panel-kit-host"
 import { AgentsPanel, agentsPanelOpen, openAgentsPanel } from "../src/routes/session/agents-panel"
 import type { SessionSeam } from "../src/seams/session"
 import type { SeamAgentRow } from "../src/seams/session"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 const keymapConfig = {
 	keybinds: { get: () => [] },

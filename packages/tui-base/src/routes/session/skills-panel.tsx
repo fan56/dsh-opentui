@@ -26,6 +26,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "so
 import type { InputRenderable } from "@opentui/core"
 import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
+import { t } from "../../i18n"
 import { useDialog } from "../../ui/dialog"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useThemeOptional } from "../../context/theme"
@@ -113,7 +114,7 @@ export function SkillsPanel(props: {
 
 	/** Rescan both roots; an empty source root renders the empty copy. */
 	async function rescan(notice?: string) {
-		if (notice === undefined) flash("scanning…")
+		if (notice === undefined) flash(t("panel.skills.status.scanning"))
 		const scanned = await scanAvailableSkills(props.source(), props.curated())
 		setRows(scanned)
 		if (notice !== undefined) {
@@ -138,9 +139,9 @@ export function SkillsPanel(props: {
 			dialog.replace(
 				() => (
 					<DialogConfirm
-						title={`Discard ${count} pending change${count === 1 ? "" : "s"}?`}
-						message="Pending install/uninstall marks are not applied yet."
-						label={{ confirm: "Discard", cancel: "Keep editing" }}
+						title={count === 1 ? t("panel.skills.dialog.discardTitleOne") : t("panel.skills.dialog.discardTitleMany", { count: String(count) })}
+						message={t("panel.skills.dialog.discardMessage")}
+						label={{ confirm: t("panel.skills.dialog.discardConfirm"), cancel: t("panel.skills.dialog.keepEditing") }}
 						onConfirm={() => {
 							setPending(new Map())
 							setOpen(false)
@@ -224,10 +225,10 @@ export function SkillsPanel(props: {
 		enabled: open() && dialog.stack.length === 0,
 		priority: 2,
 		commands: [
-			{ bind: "escape", title: "Close skills manager", group: "Skills", run: close },
+			{ bind: "escape", title: t("panel.skills.keymap.close"), group: "Skills", run: close },
 			{
 				bind: "/",
-				title: "Filter skills",
+				title: t("panel.skills.keymap.filter"),
 				group: "Skills",
 				// Letter/arrow binds are gated OFF while the filter input owns the
 				// keys — the SearchOverlay P0-1 law (see the /plugins panel).
@@ -239,7 +240,7 @@ export function SkillsPanel(props: {
 			},
 			{
 				bind: "space",
-				title: "Mark install/uninstall",
+				title: t("panel.skills.keymap.mark"),
 				group: "Skills",
 				enabled: () => !filterOpen(),
 				run: () => {
@@ -249,7 +250,7 @@ export function SkillsPanel(props: {
 			},
 			{
 				bind: "return",
-				title: "Commit input / apply batch",
+				title: t("panel.skills.keymap.commit"),
 				group: "Skills",
 				run: () => {
 					onReturn()
@@ -258,14 +259,14 @@ export function SkillsPanel(props: {
 			},
 			{
 				bind: "up,k",
-				title: "Previous skill",
+				title: t("panel.skills.keymap.previous"),
 				group: "Skills",
 				enabled: () => !filterOpen(),
 				run: () => moveCursor(-1),
 			},
 			{
 				bind: "down,j",
-				title: "Next skill",
+				title: t("panel.skills.keymap.next"),
 				group: "Skills",
 				enabled: () => !filterOpen(),
 				run: () => moveCursor(1),
@@ -297,10 +298,10 @@ export function SkillsPanel(props: {
 			>
 				<box height={1} flexShrink={0} flexDirection="row">
 					<text fg={theme?.text.base ?? "#e6e6e6"} attributes={TextAttributes.BOLD} wrapMode="none">
-						🛠 Skills
+						{t("panel.skills.header.title")}
 					</text>
 					<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
-						{` ${visible().length}/${rows().length}  / filter  space mark  enter apply  esc close`}
+						{t("panel.skills.header.bar", { visible: String(visible().length), total: String(rows().length) })}
 					</text>
 				</box>
 				<Show
@@ -309,7 +310,7 @@ export function SkillsPanel(props: {
 						<box height={1} flexShrink={0} flexDirection="row">
 							<input
 								flexGrow={1}
-								placeholder="filter"
+								placeholder={t("panel.skills.placeholder.filter")}
 								placeholderColor={theme?.text.muted ?? "#565f89"}
 								value={filter()}
 								onInput={(value: string) => setFilter(value)}
@@ -324,7 +325,7 @@ export function SkillsPanel(props: {
 				>
 					<box height={1} flexShrink={0}>
 						<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
-							{`${"SKILL".padEnd(32)}STATE`}
+							{`${t("panel.skills.header.skillColumn").padEnd(32)}${t("panel.skills.header.stateColumn")}`}
 						</text>
 					</box>
 				</Show>
@@ -334,8 +335,8 @@ export function SkillsPanel(props: {
 						<box height={1} flexShrink={0}>
 							<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
 								{rows().length === 0
-									? `no skills in ${props.source()}`
-									: "no skills match the filter"}
+									? t("panel.skills.empty.none", { dir: props.source() })
+									: t("panel.skills.empty.noMatch")}
 							</text>
 						</box>
 					}

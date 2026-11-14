@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test"
+import { beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import {
 	foldSubagentMarkerViews,
 	subagentHardStopGlyph,
@@ -11,6 +11,14 @@ import {
 	steerSubagent,
 	subagentSteerWired,
 } from "../src/routes/session/subagent-markers"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The facet copy resolves through `t()` (T6 panel facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 // bun test runs the whole monorepo in one process: shell specs that build a
 // RemoteSessionSeam leave the module steer slot registered (the adapter
