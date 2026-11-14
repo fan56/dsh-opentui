@@ -250,16 +250,17 @@ assert_no_match 'question 2 title is gone after the pick' "$(progress_title 2 "$
 assert_no_match 'question 2 option rows are gone after the pick' "$(option_row chatty)" "$PANE"
 
 # --- 4. space toggles multiSelect membership in place ---------------------------
-# Space is the advertised toggle binding. The dialog selection PERSISTS
-# across the auto-advance (it stays on the smoke row here), so clamp to the
-# first row with Up presses first — then Space toggles lint ON and the
-# picker STAYS on question 3 (multiSelect never auto-advances).
-send Up
+# Space is the advertised toggle binding, and it acts on the ACTIVE row —
+# which PERSISTS across the auto-advance and WRAPS at both list ends
+# (DialogSelect move(-1)/move(+1) wrap). Since C7 the questions view carries
+# a 4th row ("Type something.", turn-overlays askQuestionRows), so a fixed
+# count of Up presses lands one row off (3 Ups from lint: 0→3→2→1 = smoke —
+# space then toggles the wrong option). Walk to the target row by its ACTIVE
+# (bold) state instead — row-count independent, so the sentinel/review rows
+# can never displace the toggle. Space toggles lint ON and the picker STAYS
+# on question 3 (multiSelect never auto-advances).
+select_row '[ ] lint' 5
 sleep 0.5
-send Up
-sleep 0.5
-send Up
-sleep 1
 send Space
 if ! wait_pane 'space toggles lint on in place' 15 "$(option_row '\[x\] lint')"; then
   summary
@@ -268,8 +269,8 @@ fi
 PANE="$(capture)"
 assert_matches 'the picker stays on question 3 after the toggle' "$(progress_title 3 "$Q3")" "$PANE"
 assert_matches 'smoke is still unchecked after the lint toggle' "$(option_row '\[ \] smoke')" "$PANE"
-send Down
-sleep 1
+select_row '[ ] smoke' 5
+sleep 0.5
 send Space
 if ! wait_pane 'space toggles smoke on as well' 15 "$(option_row '\[x\] smoke')"; then
   summary

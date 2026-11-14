@@ -26,7 +26,8 @@
  *                                structural passthrough: RemoteQuestion ≡
  *                                SeamAskQuestion {id,prompt,options[]},
  *                                RemoteQuestionAnswer ≡ SeamAskPick
- *                                {questionId,selected} (remote-waterfall.ts)
+ *                                {questionId,selected,custom?}
+ *                                (remote-waterfall.ts)
  *   listProviders()            → session.listProviders()         (1:1)
  *   modelCatalog(force)        → session.modelCatalog(force), FLATTENED:
  *                                the wire catalog is provider-GROUPED

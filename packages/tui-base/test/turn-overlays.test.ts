@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { NullSessionSeam, type SeamApprovalVerdict, type SeamAskPick } from "../src/seams/session"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
-import { askNeedsReview, askProgressTitle, askTabStrip, registerTurnOverlays, summarizeArgs } from "../src/routes/session/turn-overlays"
+import { askNeedsReview, askProgressTitle, askQuestionRows, askSentinelTitle, askTabStrip, registerTurnOverlays, summarizeArgs } from "../src/routes/session/turn-overlays"
 import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 
 // The ask-card copy resolves through `t()` (T7 facet migration): boot the
@@ -90,6 +90,37 @@ describe("TurnOverlayController ask", () => {
 		expect(c.enterReview()).toBe(true)
 		c.submit()
 		expect(await pending).toEqual([{ questionId: "q1", selected: "b" }])
+	})
+
+	// C7 regression pin (container e2e 60-ask-user "space toggles lint on in
+	// place"): the exact e2e ladder — two single-select picks then the
+	// multiSelect question — with the sentinel rows present. The space toggle
+	// (controller.toggle on the string-valued option rows) must still toggle
+	// the RIGHT option in place, never displaced by the sentinel/review rows.
+	test("space-toggle ladder over the C7 batch (2 single-select + 1 multiSelect, sentinel rows present)", async () => {
+		const c = new TurnOverlayController()
+		const pending = c.answer([
+			{ id: "deploy", prompt: "where?", options: ["staging", "production"] },
+			{ id: "verbosity", prompt: "how loud?", options: ["quiet", "chatty"] },
+			{ id: "extras", prompt: "checks?", options: ["lint", "smoke"], multiSelect: true },
+		])
+		// The sentinel slot exists on every question from the start (C7).
+		expect(c.pendingAsk?.customs).toEqual([undefined, undefined, undefined])
+		c.toggle("staging") // auto-advances
+		c.toggle("chatty") // auto-advances to the multiSelect tab
+		expect(c.currentQuestion?.id).toBe("extras")
+		c.toggle("lint")
+		expect(c.pendingAsk?.picks[2]).toEqual(["lint"])
+		expect(c.pendingAsk?.phase).toBe("questions") // multiSelect never auto-advances
+		c.toggle("smoke")
+		expect(c.pendingAsk?.picks[2]).toEqual(["lint", "smoke"])
+		expect(c.enterReview()).toBe(true)
+		c.submit()
+		expect(await pending).toEqual([
+			{ questionId: "deploy", selected: "staging" },
+			{ questionId: "verbosity", selected: "chatty" },
+			{ questionId: "extras", selected: "lint", selections: ["lint", "smoke"] },
+		])
 	})
 
 	test("←/→ switchFocus moves between tabs, clamped at both ends", () => {
@@ -187,6 +218,128 @@ describe("TurnOverlayController ask", () => {
 	})
 })
 
+describe("TurnOverlayController ask custom (C7 free text)", () => {
+	test("lone single-select: committed custom settles immediately, envelope rides Answer.custom", async () => {
+		const c = new TurnOverlayController()
+		const pending = c.answer([{ id: "q1", prompt: "why?", options: ["a", "b"] }])
+		expect(c.beginCustom()).toBe(true)
+		expect(c.pendingAsk?.customDraft).toBe("")
+		c.patchCustom("because reasons")
+		expect(c.pendingAsk?.customDraft).toBe("because reasons")
+		c.commitCustom()
+		expect(await pending).toEqual([{ questionId: "q1", selected: "", custom: "because reasons" }])
+		expect(c.pendingAsk).toBeUndefined()
+	})
+
+	test("selected ⊕ custom are mutually exclusive, both directions", () => {
+		const c = new TurnOverlayController()
+		c.answer([
+			{ id: "q1", prompt: "one", options: ["a", "b"] },
+			{ id: "q2", prompt: "two", options: ["x", "y"] },
+		])
+		c.toggle("a") // auto-advances to q2
+		c.switchFocus(-1) // back to q1
+		// Committing custom clears the picked option.
+		c.beginCustom()
+		c.patchCustom("my own answer")
+		c.commitCustom()
+		expect(c.pendingAsk?.picks[0]).toEqual([])
+		expect(c.pendingAsk?.customs[0]).toBe("my own answer")
+		// Picking an option clears the committed custom (q1 still focused:
+		// the commit auto-advanced to q2, switch back first).
+		c.switchFocus(-1)
+		c.toggle("b")
+		expect(c.pendingAsk?.customs[0]).toBeUndefined()
+		expect(c.pendingAsk?.picks[0]).toEqual(["b"])
+	})
+
+	test("empty commit discards and stays on the picker; esc cancels the draft", () => {
+		const c = new TurnOverlayController()
+		c.answer([{ id: "q1", prompt: "one", options: ["a"] }])
+		c.beginCustom()
+		c.commitCustom() // empty draft: nothing answered, editor closed
+		expect(c.pendingAsk?.customDraft).toBeNull()
+		expect(c.pendingAsk?.customs[0]).toBeUndefined()
+		c.beginCustom()
+		c.patchCustom("  ")
+		c.commitCustom() // whitespace-only: discarded too
+		expect(c.pendingAsk?.customs[0]).toBeUndefined()
+		expect(c.pendingAsk).toBeDefined()
+		c.beginCustom()
+		c.patchCustom("draft")
+		c.cancelCustomEdit()
+		expect(c.pendingAsk?.customDraft).toBeNull()
+		expect(c.pendingAsk?.customs[0]).toBeUndefined()
+	})
+
+	test("custom counts as an answer: review gate opens, envelope carries custom next to picks", async () => {
+		const c = new TurnOverlayController()
+		const pending = c.answer([
+			{ id: "q1", prompt: "one", options: ["a", "b"] },
+			{ id: "q2", prompt: "two", options: ["x", "y"] },
+		])
+		c.beginCustom()
+		c.patchCustom("free text")
+		c.commitCustom()
+		// Auto-advanced to the unanswered second tab; NOT on the review yet
+		// (the lone-single fast path does not apply to multi-question batches).
+		expect(c.currentQuestion?.id).toBe("q2")
+		expect(c.pendingAsk?.phase).toBe("questions")
+		expect(c.enterReview()).toBe(false)
+		c.toggle("y")
+		expect(c.pendingAsk?.phase).toBe("review")
+		c.submit()
+		expect(await pending).toEqual([
+			{ questionId: "q1", selected: "", custom: "free text" },
+			{ questionId: "q2", selected: "y" },
+		])
+	})
+
+	test("re-editing the sentinel seeds the draft from the committed answer; multiSelect custom reaches the review phase", async () => {
+		const c = new TurnOverlayController()
+		const pending = c.answer([{ id: "q1", prompt: "many?", options: ["a", "b"], multiSelect: true }])
+		c.beginCustom()
+		expect(c.pendingAsk?.customDraft).toBe("")
+		c.patchCustom("typed once")
+		c.commitCustom()
+		// multiSelect never auto-settles: the review gate opens instead.
+		expect(c.pendingAsk?.phase).toBe("review")
+		c.backToQuestions(0)
+		c.beginCustom()
+		expect(c.pendingAsk?.customDraft).toBe("typed once")
+		c.patchCustom("typed twice")
+		c.commitCustom()
+		expect(c.pendingAsk?.phase).toBe("review")
+		c.submit()
+		expect(await pending).toEqual([{ questionId: "q1", selected: "", custom: "typed twice" }])
+	})
+
+	test("toggle is inert while the sentinel editor is engaged; after esc the option path works again", async () => {
+		const c = new TurnOverlayController()
+		const pending = c.answer([{ id: "q1", prompt: "one", options: ["a"] }])
+		c.beginCustom()
+		c.toggle("a")
+		expect(c.pendingAsk?.picks[0]).toEqual([])
+		expect(c.pendingAsk?.customDraft).not.toBeNull()
+		c.cancelCustomEdit()
+		// Editor closed: the lone single-select fast path is live again — the
+		// toggle settles the batch with the picked option.
+		c.toggle("a")
+		expect(await pending).toEqual([{ questionId: "q1", selected: "a" }])
+		// Review phase has no sentinel: beginCustom refuses there.
+		const multi = new TurnOverlayController()
+		multi.answer([
+			{ id: "q1", prompt: "one", options: ["a"] },
+			{ id: "q2", prompt: "two", options: ["x"] },
+		])
+		multi.toggle("a")
+		multi.toggle("x")
+		expect(multi.pendingAsk?.phase).toBe("review")
+		expect(multi.beginCustom()).toBe(false)
+		expect(multi.pendingAsk?.customDraft).toBeNull()
+	})
+})
+
 describe("ask picker pure helpers (F5)", () => {
 	test("askTabStrip: brackets mark focus, ✓ marks answered tabs", () => {
 		const questions = [
@@ -196,6 +349,15 @@ describe("ask picker pure helpers (F5)", () => {
 		]
 		expect(askTabStrip(questions, [[], [], []], 0)).toBe("[1] · 2 · 3")
 		expect(askTabStrip(questions, [["x"], [], ["z"]], 1)).toBe("1✓ · [2] · 3✓")
+		// A committed custom answer counts as answered too (C7) — the focused
+		// tab's ✓ rides inside its brackets, same as tui-pi's renderTabStrip.
+		expect(askTabStrip(questions, [[], [], []], 0, ["free", undefined, undefined])).toBe("[1✓] · 2 · 3")
+	})
+
+	test("askSentinelTitle: the label until text is typed, then the ✎ mark (tui-pi parity)", () => {
+		expect(askSentinelTitle(undefined)).toBe("Type something.")
+		expect(askSentinelTitle("")).toBe("Type something.")
+		expect(askSentinelTitle("my answer")).toBe("✎ my answer")
 	})
 
 	test("askProgressTitle: (i/n) only for multi-question batches", () => {
@@ -207,6 +369,45 @@ describe("ask picker pure helpers (F5)", () => {
 		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"] }])).toBe(false)
 		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"], multiSelect: true }])).toBe(true)
 		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"] }, { id: "2", prompt: "b", options: ["y"] }])).toBe(true)
+	})
+
+	// C7 regression pin (container e2e 60-ask-user "space toggles lint on in
+	// place"): the sentinel row adds a 4th row to the questions list, and the
+	// dialog keymap WRAPS at both ends — so the trailing rows shift where a
+	// fixed count of arrow presses lands. The rows themselves must keep the
+	// option labels as STRING values (the only rows the space toggle and
+	// enter-pick act on), with the sentinel/review discriminators strictly
+	// after them — the trailing rows participate in navigation but can never
+	// absorb the toggle semantics.
+	test("askQuestionRows: option rows stay string-valued around the sentinel row; toggles re-bracket in place", () => {
+		const question = { id: "extras", prompt: "checks?", options: ["lint", "smoke"], multiSelect: true }
+		// Unanswered: brackets unchecked; sentinel + review rows follow.
+		expect(askQuestionRows(question, [], undefined, true).map((row) => row.value)).toEqual([
+			"lint",
+			"smoke",
+			{ kind: "custom" },
+			{ kind: "review" },
+		])
+		expect(askQuestionRows(question, [], undefined, true).map((row) => row.title)).toEqual([
+			"[ ] lint",
+			"[ ] smoke",
+			"Type something.",
+			"⏎ Review answers",
+		])
+		// lint toggled in place: only its own bracket flips, the sentinel and
+		// review rows keep their titles and discriminator values.
+		const toggled = askQuestionRows(question, ["lint"], undefined, true)
+		expect(toggled[0].title).toBe("[x] lint")
+		expect(toggled[1].title).toBe("[ ] smoke")
+		expect(toggled[2].value).toEqual({ kind: "custom" })
+		expect(toggled[3].value).toEqual({ kind: "review" })
+		// A committed custom answer renders the ✎ mark on the sentinel row.
+		expect(askQuestionRows(question, [], "typed", true)[2].title).toBe("✎ typed")
+		// Single-select rows stay bracket-less; no review row when the batch
+		// needs none (lone single-select question).
+		const single = askQuestionRows({ id: "1", prompt: "a", options: ["x"] }, ["x"], undefined, false)
+		expect(single.map((row) => row.value)).toEqual(["x", { kind: "custom" }])
+		expect(single[0].title).toBe("x")
 	})
 })
 

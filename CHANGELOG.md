@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-11-14
+
+### Added
+
+- **`/export` writes the session journal to JSONL.** The new slash command exports the active session's journal via the production sessionJournal seam (`session/page` pagination) to a JSONL file — default `~/Downloads/dsh-session-<id8>.jsonl`, an explicit `[path]` argument overrides it. The completion line reports the record count and absolute path and labels the output as the host journal format (no cross-client replay claim); no session or no face degrades to a notice instead of a crash.
+- **Ask free-text answers.** Every ask question gains a `Type something.` sentinel row: selecting it switches to an inline input (Enter submits, Esc returns to the picker without declining the batch), the submission rides `Answer.custom` with strict option/custom mutual exclusion, and a `✎` marker tracks the typed answer through the review gate. Multi-question batches settle custom answers through the same review flow as picks.
+
+### Fixed
+
+- **Skills uninstall no longer follows links outside the managed root.** Uninstall resolves the link's realpath and refuses targets outside the skills source root (batch rows fold as `external target (not ours)`); dangling or looping dead links stay removable, and untestable errno states (EACCES/EIO) fail safe by refusing, mirroring the install-side discipline.
+- **Blank `agentsHome` is visible instead of silent.** A set-but-empty `DSH_AGENTS_HOME` or an empty `agentsHome` config key boots with a notice explaining the client falls back to `~/.agents` while the host resolves the empty value to the cwd, naming the fix for each leg (and both); the resolution itself stays defensive on the client.
+- **Ask scenario navigation is row-aware.** The `60-ask-user` e2e scenario walks the picker by the highlighted row instead of a fixed step count, so the sentinel row's wrap shift can no longer flip which option a blind arrow press toggles.
+
 ## [0.13.1] - 2026-11-14
 
 ### Fixed
