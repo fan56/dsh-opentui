@@ -125,3 +125,24 @@ fix in this round):
 2. **Home / End have no consumer in the pure-transcript state** — a functional
    gap found by the key-routing cases: the keys are routed but nothing
    consumes them outside focus scopes.
+
+### Real-client verification (2026-11-14)
+
+Both fix directions verified PASS against the real TUI (tmux session, scratch
+`DSH_HOME`):
+
+- **Failure path**: with the session journal `chmod 000` and the client
+  launched with `--session <id>`, the error is surfaced in the transcript at
+  ~6s as a rendered error row —
+  `error: transcript read failed (remote stream gateway/internal: ... EACCES ...)`
+  — instead of a silent blank screen.
+- **Recovery path**: after restoring the journal to mode 644 and relaunching,
+  the transcript loads in ~1s with no stale error row left behind.
+
+### Host-side observation (recorded, no action)
+
+`session/list` enumeration is all-or-nothing on the host: any artifact whose
+journal is unreadable (EACCES) or whose header id/cwd does not match its path
+causes the entire list RPC to reject, and the client degrades to "no stored
+sessions". Found while staging the verification above. This is upstream
+@deepseek-ai/dsh behavior, not this repo — recorded only, no fix planned here.
