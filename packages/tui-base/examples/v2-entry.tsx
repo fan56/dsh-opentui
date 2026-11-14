@@ -140,6 +140,15 @@ function V2SessionPage(props: {
 	resumeNotice?: string
 	/** Boot-time disk snapshot of user-invocable skills (skills-source.ts). */
 	skills?: SkillRow[]
+	/** /skills manager roots (gap C3): the agents-home skills/ source and the
+	 * `<dshHome>/skills` curated root. Computed in bootClientV2 (where the
+	 * agentsHome resolution and host.dshHome live) and passed in — the page's
+	 * render getters must never reach into boot scope (the C3 exit-2 bug: a
+	 * boot-scope const referenced from the children getter compiled clean
+	 * under @ts-nocheck and threw ReferenceError only when the panel first
+	 * mounted, which the root ErrorBoundary answered with process.exit(2)). */
+	skillsSource: string
+	skillsCurated: string
 }) {
 	const seam = props.seam
 	const projection = createSeamRows(seam, () => seam.currentSessionId() ?? "", {
@@ -862,13 +871,15 @@ function V2SessionPage(props: {
 				// Skills manager panel (gap C3, tui-pi skills-manager parity):
 				// /skills opens the Installed/Available browser over the local
 				// skill roots. Getter-prop law: the roots ride getters.
+				// PROP RECAST LAW (the second half of the exit-2 bug): object
+				// getters in a children literal are BAKED INTO VALUES before the
+				// component body runs — `get source()` arrived as the bare string
+				// and `props.source()` inside the panel threw TypeError. The
+				// HistoryPanel `sessionId: () => …` precedent is the right shape:
+				// arrow-function props survive, and the panel calls them.
 				createComponent(SkillsPanel, {
-					get source() {
-						return skillsManagerRoots.source
-					},
-					get curated() {
-						return skillsManagerRoots.curated
-					},
+					source: () => props.skillsSource,
+					curated: () => props.skillsCurated,
 					onClosed: () => {
 						if (composerRef && !composerRef.focused()) composerRef.focus()
 					},
@@ -1373,6 +1384,12 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 																				initialSessionId,
 																				resumeNotice,
 																				skills: skillRows,
+																				// /skills manager roots (gap C3): see the
+																				// V2SessionPage props note — boot-scope values
+																				// ride PROPS into the page, never closure reads
+																				// from the children getters (the exit-2 bug).
+																				skillsSource: skillsManagerRoots.source,
+																				skillsCurated: skillsManagerRoots.curated,
 																			})
 																		},
 																	})
