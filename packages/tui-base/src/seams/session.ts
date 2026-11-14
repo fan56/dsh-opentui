@@ -416,6 +416,16 @@ export interface SessionSeam {
 	storedTranscript(id: string, skip?: number): Promise<SeamTranscriptRow[]>
 	currentSessionId(): string | undefined
 	/**
+	 * The stored session id STAGED by `resumeSession()` (auto-resume,
+	 * /search Enter-resume, fork resume): bound to a live session only at the
+	 * next turn, so `currentSessionId()` is undefined until then. Optional —
+	 * a seam without the face falls back to its other sources. Consumers that
+	 * target "the session on screen" (e.g. the /history bare target) must
+	 * read this too, or a resumed-but-not-yet-turned session browses the
+	 * WRONG id (review P1-1).
+	 */
+	stagedSessionId?(): string | undefined
+	/**
 	 * ⚡ CH footer segment (batch F2): cache hit rate in percent, null until
 	 * the host reports cache traffic (usage chunk cacheReadTokens /
 	 * cacheWriteTokens). Optional — a seam without it hides the segment.

@@ -6,7 +6,6 @@ import {
 	normalizeHistoryPreview,
 	toolCallSummary,
 	turnPrimaryUserText,
-	turnSeedSlice,
 	type HistoryJournalEntry,
 } from "../src/routes/session/history-data"
 
@@ -202,19 +201,6 @@ describe("history data layer (gap C1 step 1)", () => {
 		expect(historyTurnDetail(turns, 1)).toBe(turns[1])
 		expect(historyTurnDetail(turns, -1)).toBeUndefined()
 		expect(historyTurnDetail(turns, 2)).toBeUndefined()
-	})
-
-	test("fork seed slices at the turn's own seqEnd (inclusive), later turns out", () => {
-		const journal = twoTurnJournal()
-		const turns = groupHistoryTurns(journal)
-		const seed = turnSeedSlice(journal, turns[0]!)
-		expect(seed.length).toBe(5) // seq 0..4 inclusive
-		expect(seed.at(-1)).toMatchObject({ type: "turn/end", seq: 4 })
-		// a damaged journal with duplicate turn numbers cuts at the turn's OWN
-		// seqEnd, not at an earlier same-numbered bracket
-		const sliced = turnSeedSlice(journal, turns[1]!)
-		expect(sliced.length).toBe(11)
-		expect(sliced.at(-1)).toMatchObject({ type: "turn/end", seq: 10 })
 	})
 
 	test("cross-session: the fold is pure over each journal — no bleed between sessions", () => {

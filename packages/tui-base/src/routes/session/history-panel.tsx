@@ -202,6 +202,8 @@ export function HistoryPanel(props: {
 	const [showSessions, setShowSessions] = createSignal(false)
 	let handle: PanelHandle | undefined
 	let sequence = 0
+	/** Monotonic load token: only the latest `load()` may paint (P1-4). */
+	let loadSequence = 0
 
 	const current = createMemo(() => turns()[cursor()])
 	/** Pane text budget in cells (the agents-panel bodyWidth shape). */
@@ -220,6 +222,9 @@ export function HistoryPanel(props: {
 
 	// ---- data ----
 	async function load(sessionId: string | undefined) {
+		// Request-sequence guard (review P1-4): two loads may overlap (a `s`
+		// pick racing the previous read); only the LATEST token may paint.
+		const token = ++loadSequence
 		if (!sessionId) {
 			setTurns([])
 			setStatus("no active session to browse")
@@ -230,20 +235,30 @@ export function HistoryPanel(props: {
 			setStatus("history unavailable in this session (no journal face)")
 			return
 		}
+		// The switch window: drop the old session's rows NOW. `fork()` and
+		// `refill()` read `current()` — with turns emptied, `f`/Enter have
+		// nothing to act on while the picked session's journal is in flight
+		// (the renderer shows the busy "loading turns…" line instead of the
+		// old session's turns).
+		setTurns([])
+		setCursor(0)
 		setBusy(true)
 		setStatus(undefined)
 		try {
 			const entries: HistoryJournalEntry[] = await props.seam.sessionJournal!(sessionId)
+			// A newer load took over (a later `s` pick): this response is stale.
+			if (token !== loadSequence) return
 			const folded = groupHistoryTurns(entries)
 			setTurns(folded)
 			setCursor(0)
 			if (folded.length === 0) setStatus(`no completed turns in ${sessionId.slice(0, 8)}`)
 		} catch (error) {
+			if (token !== loadSequence) return
 			setTurns([])
 			setCursor(0)
 			setStatus(historyFailureText("history load", error))
 		} finally {
-			setBusy(false)
+			if (token === loadSequence) setBusy(false)
 		}
 	}
 
@@ -303,13 +318,28 @@ export function HistoryPanel(props: {
 	}
 
 	function openSessions() {
+		if (showSessions()) return
 		void (async () => {
 			try {
 				const rows = await props.seam.listSessions(30)
 				setSessions(rows)
 				setSessionCursor(0)
 				setShowSessions(rows.length > 0)
-				if (rows.length === 0) setStatus("no stored sessions to switch to")
+				if (rows.length === 0) {
+					setStatus("no stored sessions to switch to")
+					return
+				}
+				// The session layer opens HERE, not in a createEffect watching
+				// showSessions() (review P0-2): panels.open reads the stack's
+				// layers signal, so an effect that both reads showSessions() and
+				// opens the layer re-triggers itself — one `s` press stacked three
+				// layers into the maxDepth error. A direct call opens exactly one.
+				panels.open(() => renderSessions(), {
+					id: `history-sessions-${++sequence}`,
+					title: "Switch session",
+					size: "xlarge",
+					onClose: () => setShowSessions(false),
+				})
 			} catch (error) {
 				setStatus(historyFailureText("session list", error))
 			}
@@ -320,6 +350,10 @@ export function HistoryPanel(props: {
 		const picked = sessions()[index]
 		if (!picked) return
 		setShowSessions(false)
+		// Pop the "Switch session" layer explicitly (review P0-2): without
+		// this the layer stays up as an orphan — the main layer's
+		// `handle === top` gate keeps it disabled for the rest of the browse.
+		panels.close()
 		setBrowsingId(picked.id)
 		// Re-fold the picked session's journal; browsing continues on it (the
 		// app session is NOT resumed here — tui-pi's in-browser switch).
@@ -327,6 +361,12 @@ export function HistoryPanel(props: {
 	}
 
 	function fork() {
+		// The busy latch (review P1-3): fork is the one DURABLE hotkey here —
+		// a second press while a fork is in flight (double-tap, key repeat)
+		// would create a second orphan forked session. Same shape as load()
+		// and the sessions-search enterKey gate: setBusy(true) below is
+		// synchronous, so a same-tick double dispatch is caught too.
+		if (busy()) return
 		const turn = current()
 		const id = browsingId()
 		if (!props.seam.forkSession) {
@@ -369,7 +409,9 @@ export function HistoryPanel(props: {
 		}
 	})
 
-	// Session-layer cursor keys ride the same layer while it is up.
+	// Session-layer keys ride a dedicated layer while the "Switch session"
+	// panel is top (the main layer is parked behind its `handle === top`
+	// gate then, so Enter must be rebound HERE — review P0-2 part 2).
 	Keymap.createLayer(() => ({
 		mode: "global",
 		enabled: open() && showSessions(),
@@ -386,6 +428,12 @@ export function HistoryPanel(props: {
 				title: "History: next session",
 				group: "History",
 				run: () => setSessionCursor((index) => turnCursorStep(index, 1, sessions().length)),
+			},
+			{
+				bind: "return,c",
+				title: "History: browse picked session",
+				group: "History",
+				run: () => pickSession(sessionCursor()),
 			},
 		],
 	}))
@@ -457,18 +505,9 @@ export function HistoryPanel(props: {
 		)
 	}
 
-	// The session-switch layer renders through the same panels.open path —
-	// pushed on top while showSessions() is true.
-	createEffect(() => {
-		if (!showSessions()) return
-		const id = `history-sessions-${++sequence}`
-		panels.open(() => renderSessions(), {
-			id,
-			title: "Switch session",
-			size: "xlarge",
-			onClose: () => setShowSessions(false),
-		})
-	})
+	// (The session-switch layer is opened by openSessions() itself — a
+	// createEffect watching showSessions() re-triggered on the stack's own
+	// layers signal and stacked the layer to maxDepth. Review P0-2.)
 
 	function renderSessions(): JSX.Element {
 		const muted = theme?.text.muted ?? kitTheme().text.muted

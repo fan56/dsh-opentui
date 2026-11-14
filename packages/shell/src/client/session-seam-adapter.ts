@@ -219,6 +219,12 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.currentSessionId()
 	}
 
+	/** /history bare target (review P1-1): RemoteHostSession.stagedSessionId()
+	 * 1:1 — the id staged by resumeSession() until the next turn binds it. */
+	stagedSessionId(): string | undefined {
+		return this.#session.stagedSessionId()
+	}
+
 	/** ⚡ CH footer segment (batch F2): RemoteHostSession.cacheHitRate() 1:1 —
 	 * the cacheHitMode (batch F2) passes through untouched. */
 	cacheHitRate(mode?: "session" | "lastMessage"): number | null {

@@ -869,9 +869,13 @@ function V2SessionPage(props: {
 						return seam
 					},
 					// The /history bare target: the live id — or the staged stored
-					// id (auto-resume / resumeFromSearch) until the next turn binds
-					// it (the transcript-loss law: never rely on the live id alone).
-					sessionId: () => seam.currentSessionId() ?? props.initialSessionId,
+					// id (auto-resume / resumeFromSearch / fork resume) until the
+					// next turn binds it (the transcript-loss law: never rely on
+					// the live id alone). Review P1-1: the seam's staged face is the
+					// ONLY id a resumed-but-not-yet-turned session has — without it
+					// the browser opened on the boot-time session (or nothing).
+					sessionId: () =>
+						seam.currentSessionId() ?? seam.stagedSessionId?.() ?? props.initialSessionId,
 					// Enter/c refill (tui-pi copy semantics): write the turn's first
 					// human prompt into the composer editor and focus it (the panel
 					// closes itself; onClosed reclaims focus below).
@@ -881,10 +885,14 @@ function V2SessionPage(props: {
 					},
 					// f fork-at-turn success: resume the forked session through the
 					// SAME seam path a /resume pick takes (stage + reload + say) —
-					// the B1 resumeFromSearch shape.
-					onForked: (forkedId: string, turn: number) => {
+					// the B1 resumeFromSearch shape, INCLUDING its ordering (review
+					// P2-1): the echo line is appended only AFTER the reload lands —
+					// a hydrate-appended row wipes any line appended before it
+					// (seam-rows keyed reconcile), so `void reload` + immediate say
+					// erased the "forked from turn #N" confirmation.
+					onForked: async (forkedId: string, turn: number) => {
 						seam.resumeSession(forkedId)
-						void reloadSession(forkedId)
+						await reloadSession(forkedId)
 						sayLine(`forked from turn #${turn} → ${forkedId}`)
 					},
 					onClosed: () => {

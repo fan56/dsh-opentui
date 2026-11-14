@@ -77,6 +77,7 @@ import { settingsPanelOpen } from "./settings-panel"
 import { pluginsPanelOpen } from "./plugins-panel"
 import { searchOverlayOpen } from "./search-overlay"
 import { sessionsSearchOpen } from "./sessions-search"
+import { historyPanelOpen } from "./history-panel"
 import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { UsageLimitNotice, useLimitNotice, useUsageAlerts } from "../../component/usage"
 import { useStorage } from "../../context/storage"
@@ -278,7 +279,11 @@ export function Session(props: {
       !settingsPanelOpen() &&
       !pluginsPanelOpen() &&
       !searchOverlayOpen() &&
-      !sessionsSearchOpen(),
+      !sessionsSearchOpen() &&
+      // The /history browser rides the same modal stack (review P1-5): an
+      // omitted yield here let this priority-10 layer eat the browser's Esc
+      // on a narrow screen — the sidebar closed while the panel stayed up.
+      !historyPanelOpen(),
     commands: [{ bind: "escape,ctrl+c", title: "Close sidebar", group: "Session", run: props.onToggleSidebar }],
   }))
   const contentWidth = createMemo(() => (props.width ?? dimensions().width - props.verticalTabsWidth) - 4)

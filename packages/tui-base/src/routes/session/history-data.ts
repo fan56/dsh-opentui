@@ -327,16 +327,10 @@ export function toolCallSummary(names: readonly string[]): string {
 }
 
 /**
- * The `f` fork-at-turn seed: the journal records from seq 0 through the
- * selected turn's `turn/end` (inclusive) — the state as that turn finished;
- * later turns stay out of the new session (tui-pi turnSeedSlice parity). The
- * boundary is the turn's OWN seqEnd (captured while folding), never a
- * re-match on the turn NUMBER. `seq === array index` holds for the fetched
- * journal (sortJournal + contiguous seq), so a plain slice is exact.
+ * The `f` fork-at-turn seed used to live here (`turnSeedSlice`, a plain
+ * `slice(0, seqEnd + 1)`): it assumed `seq === array index`, which does NOT
+ * hold for real journals (seq starts where the session started, e.g. 100 —
+ * the slice then returned the WHOLE journal). Nothing uses it: the fork
+ * passes the turn's OWN `seqEnd` to the host's `atSeq` fork face, which
+ * applies the same cut server-side. Deleted rather than patched (review P2).
  */
-export function turnSeedSlice(
-	entries: readonly HistoryJournalEntry[],
-	turn: HistoryTurn,
-): readonly HistoryJournalEntry[] {
-	return entries.slice(0, Math.min(turn.seqEnd + 1, entries.length))
-}

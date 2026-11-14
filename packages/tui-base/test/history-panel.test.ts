@@ -7,7 +7,6 @@
 import { describe, expect, test } from "bun:test"
 import {
 	groupHistoryTurns,
-	turnSeedSlice,
 	type HistoryJournalEntry,
 	type HistoryToolCall,
 	type HistoryTurn,
@@ -185,10 +184,11 @@ describe("history panel: fold → panel pipeline integration", () => {
 	test("the fork seed cuts at the selected turn's own seqEnd (inclusive)", () => {
 		const journal = buildJournal()
 		const turns = groupHistoryTurns(journal)
-		const seed = turnSeedSlice(journal, turns[0]!)
-		expect(seed.length).toBe(turns[0]!.seqEnd + 1)
-		expect(seed.at(-1)!.type).toBe("turn/end")
-		// The second turn's records stay out of the seed.
-		expect(seed.some((row) => row.seq >= turns[1]!.seqStart)).toBe(false)
+		// turnSeedSlice was deleted (review P2: its `seq === array index`
+		// assumption fails on real journals); the fork now hands the turn's
+		// OWN seqEnd straight to the host's atSeq fork face — that is what
+		// gets pinned here.
+		expect(turns[0]!.seqEnd).toBeLessThan(turns[1]!.seqStart)
+		expect(journal.at(-1)!.seq).toBe(turns.at(-1)!.seqEnd)
 	})
 })
