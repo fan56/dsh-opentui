@@ -6,9 +6,17 @@
  * counts zero — and the status label carries the reference's two faces
  * ("N/M" counter, "No matches").
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { findMatchRowIndices, formatMatchStatus, rowSearchText, type SearchOverlayProps } from "../src/routes/session/search-overlay"
 import type { SeamRow } from "../src/routes/session/seam-rows"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The find-bar copy resolves through `t()` (T7 facet migration): boot the
+// bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 function row(partial: Omit<SeamRow, "final"> & { final?: boolean }): SeamRow {
 	switch (partial.kind) {

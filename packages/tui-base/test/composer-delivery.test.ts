@@ -5,14 +5,15 @@
  * steer/queue answer, the controller owns ordering, the one-at-a-time pump and
  * the transcript delivery lines. No renderer is mounted here.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import {
 	ComposerController,
 	type ComposerDelivery,
 	type ComposerPendingRow,
 	type ComposerQueuePause,
 } from "../src/routes/session/composer-state"
-import { DELIVERY_OPTIONS, openDeliveryChoice } from "../src/routes/session/delivery-choice"
+import { deliveryOptions, openDeliveryChoice } from "../src/routes/session/delivery-choice"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 
 function deferred() {
 	let resolve!: () => void
@@ -25,6 +26,13 @@ function deferred() {
 }
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+// The delivery-choice copy resolves through `t()` (T7 facet migration): boot
+// the bundled registry so the en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 function setup(options: {
 	choice?: () => Promise<ComposerDelivery | undefined>
@@ -326,9 +334,10 @@ describe("session switch", () => {
 
 describe("dialog options", () => {
 	test("Steer is first (the default highlight) and Queue second", () => {
-		expect(DELIVERY_OPTIONS.map((option) => option.value)).toEqual(["steer", "queue"])
-		expect(DELIVERY_OPTIONS[0]?.title).toBe("Steer")
-		expect(DELIVERY_OPTIONS[1]?.title).toBe("Queue")
+		const options = deliveryOptions()
+		expect(options.map((option) => option.value)).toEqual(["steer", "queue"])
+		expect(options[0]?.title).toBe("Steer")
+		expect(options[1]?.title).toBe("Queue")
 	})
 
 	test("an already-open dialog suppresses the popup (vendored steer, no stacking)", async () => {

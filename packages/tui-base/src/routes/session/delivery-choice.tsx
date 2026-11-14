@@ -14,6 +14,7 @@
  */
 import { DialogSelect } from "../../ui/dialog-select"
 import type { DialogContext } from "../../ui/dialog"
+import { t } from "../../i18n"
 import type { ComposerDelivery } from "./composer-state"
 
 export interface DeliveryOption {
@@ -22,19 +23,25 @@ export interface DeliveryOption {
 	description: string
 }
 
-/** Steer first = the default highlight (DialogSelect selects option 0). */
-export const DELIVERY_OPTIONS: readonly DeliveryOption[] = [
-	{
-		title: "Steer",
-		value: "steer",
-		description: "Inject this message into the running turn now",
-	},
-	{
-		title: "Queue",
-		value: "queue",
-		description: "Send it as the next turn after this one finishes",
-	},
-]
+/**
+ * Steer first = the default highlight (DialogSelect selects option 0).
+ * Read-time `t()` getter (design §6 getter law): the titles/descriptions are
+ * never baked into a module constant.
+ */
+export function deliveryOptions(): readonly DeliveryOption[] {
+	return [
+		{
+			title: t("overlay.delivery.steerTitle"),
+			value: "steer",
+			description: t("overlay.delivery.steerDescription"),
+		},
+		{
+			title: t("overlay.delivery.queueTitle"),
+			value: "queue",
+			description: t("overlay.delivery.queueDescription"),
+		},
+	]
+}
 
 export function openDeliveryChoice(
 	dialog: Pick<DialogContext, "replace" | "clear" | "stack">,
@@ -55,10 +62,10 @@ export function openDeliveryChoice(
 		dialog.replace(
 			() => (
 				<DialogSelect<ComposerDelivery>
-					title="Turn running — steer or queue?"
-					description={`“${preview}”`}
+					title={t("overlay.delivery.title")}
+					description={t("overlay.delivery.preview", { text: preview })}
 					renderFilter={false}
-					options={DELIVERY_OPTIONS.map((option) => ({
+					options={deliveryOptions().map((option) => ({
 						title: option.title,
 						value: option.value,
 						description: option.description,
