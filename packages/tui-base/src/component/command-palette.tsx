@@ -1,4 +1,5 @@
 import { createMemo } from "solid-js"
+import { t } from "../i18n"
 import { DialogSelect, type DialogSelectRef } from "../ui/dialog-select"
 import { type DialogContext } from "../ui/dialog"
 import { COMMAND_PALETTE_COMMAND, Keymap, type KeymapCommand } from "../context/keymap"
@@ -35,10 +36,10 @@ export function CommandPaletteDialog() {
     }),
   )
   const settingOptions = settings.map((setting) => ({
-    title: setting.title,
-    category: setting.category,
+    title: t(setting.titleKey),
+    category: t(setting.categoryKey),
     searchText: setting.keywords?.join(" "),
-    searchFooter: `Settings · ${setting.category}`,
+    searchFooter: t("dialog.config.searchFooter", { category: t(setting.categoryKey) }),
     value: `setting:${settingID(setting)}`,
     onSelect: (dialog: DialogContext) => {
       dialog.replace(() => <DialogConfig current={settingID(setting)} />)
