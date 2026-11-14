@@ -1178,15 +1178,15 @@ export function coreCommands(): SlashCommand[] {
 			// are host-native journal envelopes (SessionWireEvent shape), NOT
 			// a verified tui-pi snapshotEvents replay — the done line says so.
 			name: "/export",
-			description: "export the session journal to JSONL ([path], default ~/Downloads)",
+			description: t("command.export.description"),
 			async run(ctx, argText) {
 				const sessionId = ctx.seam.currentSessionId()
 				if (!sessionId) {
-					ctx.say("/export: no active session to export")
+					ctx.say(t("command.export.noSession"))
 					return
 				}
 				if (!ctx.seam.sessionJournal) {
-					ctx.say("/export: the journal read face is not mounted in this entry")
+					ctx.say(t("command.export.unavailable"))
 					return
 				}
 				try {
@@ -1195,10 +1195,10 @@ export function coreCommands(): SlashCommand[] {
 					await mkdir(dirname(target), { recursive: true })
 					await writeFile(target, journalToJSONL(entries))
 					ctx.say(
-						`exported ${entries.length} journal records (host journal format) → ${target}`,
+						t("command.export.done", { count: entries.length, target }),
 					)
 				} catch (error) {
-					ctx.say(`/export failed — ${seamFailureReason(error)}`)
+					ctx.say(t("command.export.failed", { reason: seamFailureReason(error) }))
 				}
 			},
 		},

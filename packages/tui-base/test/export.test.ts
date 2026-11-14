@@ -5,7 +5,7 @@
  * The command tests hand-build the ctx (skills-manate.test.ts precedent)
  * but exercise the REAL write against a temp dir.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -14,6 +14,15 @@ import { join, resolve } from "node:path"
 import { exportTargetPath, journalToJSONL } from "../src/routes/session/export"
 import { coreCommands, type SlashCommandContext } from "../src/routes/session/commands"
 import type { HistoryJournalEntry } from "../src/routes/session/history-data"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The command copy resolves through `t()` (T4 facet migration; the /export
+// say lines ride it after the main merge): boot the bundled registry so the
+// en-literal assertions stay hermetic in isolation.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 function entry(seq: number, type = "message/updated"): HistoryJournalEntry {
 	return { type, seq, time: 1700000000000 + seq, data: { seq } }
