@@ -9,6 +9,7 @@ import { join } from "node:path"
 import { TextAttributes } from "@opentui/core"
 import type { SlashCommand } from "../src/routes/session/commands"
 import {
+	agentsHomeEnvWarning,
 	discoverSkills,
 	findProjectRoot,
 	frontmatterBoolean,
@@ -181,6 +182,31 @@ describe("skills-source: agents home resolution (host parity)", () => {
 		})
 		withEnv("", () => {
 			expect(resolveAgentsHome()).toBe(join(homedir(), ".agents"))
+		})
+	})
+
+	test("a blank env keeps skillRoots off the cwd (the host's ''→cwd hole)", () => {
+		withEnv("", () => {
+			const cwd = tempDir("skill-cwd-blank-")
+			const last = skillRoots({ cwd }).at(-1)!
+			// The client treats the blank env as unset: rank 500 stays at
+			// ~/.agents, never resolve("") = cwd (c-pack-review P2-2).
+			expect(last.path).toBe(join(homedir(), ".agents", "skills"))
+			expect(last.path).not.toBe(cwd)
+		})
+		cleanup()
+	})
+
+	test("agentsHomeEnvWarning fires only for a set-but-blank env", () => {
+		expect(agentsHomeEnvWarning(undefined)).toBeUndefined()
+		expect(agentsHomeEnvWarning(join(tmpdir(), "real-home"))).toBeUndefined()
+		expect(agentsHomeEnvWarning("")).toContain("unset the variable")
+		expect(agentsHomeEnvWarning("   ")).toContain("unset the variable")
+		withEnv("", () => {
+			expect(agentsHomeEnvWarning()).toContain("unset the variable")
+		})
+		withEnv(join(tmpdir(), "env-agents-home"), () => {
+			expect(agentsHomeEnvWarning()).toBeUndefined()
 		})
 	})
 })

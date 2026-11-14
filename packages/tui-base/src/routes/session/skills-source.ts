@@ -96,15 +96,44 @@ export function findProjectRoot(cwd: string): string {
 
 /**
  * The agents home, in the host's precedence (`dsh-skill-filesystem`):
- * explicit config > non-empty `DSH_AGENTS_HOME` > `~/.agents`. An empty or
- * whitespace-only value counts as unset (the host's `??` chain keeps the
- * next leg), and the result is resolved like the provider's `resolve()`.
+ * explicit config > non-empty `DSH_AGENTS_HOME` > `~/.agents`, resolved like
+ * the provider's `resolve()`. An empty or whitespace-only value counts as
+ * unset and falls through to the next leg — a DELIBERATE divergence from the
+ * host: the provider's `??` chain (`config.agentsHome ?? DSH_AGENTS_HOME ??
+ * ~/.agents`) lets the empty string THROUGH (`''` is not nullish), so a
+ * set-but-blank `DSH_AGENTS_HOME` resolves the provider root to the host's
+ * cwd (c-pack-review P2-2). The host code is not in this repo, so the
+ * client cannot fix that leg; it defends its own surfaces here — every
+ * agents-home read (slash palette scan AND the /skills manager) goes through
+ * this one function — and surfaces the misconfiguration at boot via
+ * `agentsHomeEnvWarning`.
  */
 export function resolveAgentsHome(explicit?: string | null): string {
 	if (typeof explicit === "string" && explicit.trim() !== "") return resolve(explicit)
 	const env = process.env.DSH_AGENTS_HOME
 	if (typeof env === "string" && env.trim() !== "") return resolve(env)
 	return resolve(join(homedir(), ".agents"))
+}
+
+/**
+ * Boot-time boundary warning for the P2-2 agents-home edge: a set-but-blank
+ * `DSH_AGENTS_HOME` is treated as unset here (see `resolveAgentsHome` — the
+ * client falls back to `~/.agents`, never the cwd), but the HOST provider's
+ * `??` chain lets the empty string through and resolves the provider root to
+ * the host's cwd, so under that misconfiguration the client's skill scan and
+ * the host's catalog read DIFFERENT roots. The host code is out of this
+ * repo's reach; the warning names the user-side fix (unset the variable).
+ * Returns undefined when the env is healthy; `env` overrides the process
+ * environment for tests.
+ */
+export function agentsHomeEnvWarning(env?: string): string | undefined {
+	const value = typeof env === "string" ? env : process.env.DSH_AGENTS_HOME
+	if (typeof value !== "string" || value.trim() !== "") return undefined
+	return (
+		"DSH_AGENTS_HOME is set but empty: this client falls back to ~/.agents, but the " +
+		"host skill provider resolves it to its cwd — unset the variable to keep both " +
+		"skill surfaces on the same root."
+	)
 }
 
 /** The ranked roots, de-duplicated by resolved path (lowest rank wins). */
