@@ -414,44 +414,47 @@ scenario('settings', '/settings writes a local preference to config.json and rev
   ctx.note(`initial motion: ${original === undefined ? '(unset → auto)' : original}`)
 
   await submit('/settings')
-  const open = await waitFor((o) => has(o, '● Settings') && has(o, '本地偏好'), 20_000)
-  ctx.expect('settings panel opened', open.ok, '● Settings + 本地偏好', open.ok ? 'present' : 'absent', open.out)
+  // v1.2 settings modal: a sectioned panel ("分节导航 · 即时保存 · Esc 逐层
+  // 返回") with General / TUI 专有 / Host / 模型 / 插件 / Agent 预设 / 账号 —
+  // the old flat "● Settings + 本地偏好" list is gone.
+  const open = await waitFor((o) => has(o, 'Settings') && has(o, '分节导航'), 20_000)
+  ctx.expect('settings panel opened', open.ok, 'settings modal (分节导航 subtitle)', open.ok ? 'present' : 'absent', open.out)
 
-  // filter down to the motion row, open its enum, pick the next value
-  await typeText('motion')
-  await sleep(500)
-  const filtered = capture()
-  ctx.contains('filter narrows to the motion row', filtered, 'motion')
-  sendKeys('Enter')
-  const options = await waitFor((o) => has(o, 'auto') && has(o, 'full'), 10_000)
-  ctx.expect('enum option list opened', options.ok, 'auto/full options', options.ok ? 'present' : 'absent', options.out)
+  // nav: Down moves to the TUI 专有 section, Enter opens its row list; motion
+  // is the 4th row (theme / themeMode / workspaceThemeMode / motion)
+  sendKeys('Down'); await sleep(200)
+  sendKeys('Enter'); await sleep(500)
+  const rows = await waitFor((o) => has(o, 'motion'), 10_000)
+  ctx.contains('TUI 专有 section lists the motion row', rows.out || capture(), 'motion')
 
-  // target a value different from the current one: pick "off" (last row)
-  const up = async () => { sendKeys('Up'); await sleep(120) }
-  for (let i = 0; i < 5; i++) await up()
-  sendKeys('Down'); await sleep(120) // auto -> full
-  sendKeys('Down'); await sleep(120) // full -> reduced
-  sendKeys('Down'); await sleep(120) // reduced -> off
+  // open the motion enum editor and pick "off" (last option); the cursor
+  // starts on the effective value (auto), Enter saves instantly
+  for (let i = 0; i < 3; i++) { sendKeys('Down'); await sleep(150) }
+  sendKeys('Enter'); await sleep(500)
+  const options = await waitFor((o) => has(o, '选择值') && has(o, 'full'), 10_000)
+  ctx.expect('enum option list opened', options.ok, 'motion — 选择值 with auto/full/…', options.ok ? 'present' : 'absent', options.out)
+
+  for (let i = 0; i < 3; i++) { sendKeys('Down'); await sleep(120) } // auto -> full -> reduced -> off
   sendKeys('Enter')
   const wrote = await waitForCfg(cfgPath, (c) => c.motion === 'off', 10_000)
   ctx.expect('config.json got the new local preference', wrote.ok, 'motion = "off"', wrote.ok ? 'off' : JSON.stringify(wrote.value), capture())
 
-  // revert: the panel closes after a write, so reopen it fresh (the filter
-  // from the first pass would otherwise accumulate and match nothing)
-  for (let i = 0; i < 3; i++) { sendKeys('Escape'); await sleep(400) }
-  await sleep(500)
-  await submit('/settings')
-  await waitFor((o) => has(o, '● Settings') && has(o, '本地偏好'), 20_000)
-  await typeText('motion')
-  await waitFor((o) => has(o, 'filter: "motion"'), 10_000)
-  sendKeys('Enter')
-  await waitFor((o) => has(o, 'auto') && has(o, 'full'), 10_000)
-  for (let i = 0; i < 5; i++) await up()
+  // revert: the save returns to the row list, so re-enter the editor — its
+  // cursor now restarts on the saved value ("off"); walk it to the original
+  sendKeys('Enter'); await sleep(500)
   const targets = ['auto', 'full', 'reduced', 'off']
-  for (let i = 0; i < Math.max(0, targets.indexOf(originalMerged)); i++) { sendKeys('Down'); await sleep(120) }
+  const delta = (targets.indexOf('off') - Math.max(0, targets.indexOf(originalMerged)) + targets.length) % targets.length
+  for (let i = 0; i < delta; i++) { sendKeys('Up'); await sleep(120) }
   sendKeys('Enter')
   const reverted = await waitForCfg(cfgPath, (c) => c.motion === originalMerged, 10_000)
   ctx.expect('config.json reverted', reverted.ok, `motion = "${originalMerged}"`, reverted.ok ? originalMerged : JSON.stringify(reverted.value), capture())
+
+  // close the modal so the composer owns the keys again for /quit: Esc opens
+  // the exit confirmation (focus starts on 返回), ←→ cycles to 确认退出
+  sendKeys('Escape'); await sleep(400)
+  sendKeys('Right'); await sleep(200)
+  sendKeys('Enter'); await sleep(400)
+  await waitFor((o) => !has(o, '分节导航') && idle(o), 10_000)
 })
 
 scenario('mcp', 'host tool catalog lists the context7 MCP tools', async (ctx) => {
