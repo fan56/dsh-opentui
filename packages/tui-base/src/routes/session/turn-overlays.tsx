@@ -20,7 +20,9 @@ import { onAnimationTick } from "@opentui/solid"
 import type { SeamApprovalVerdict, SeamAskPick, SeamAskQuestion } from "../../seams/session"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { DialogSelect, type DialogSelectOption, type DialogSelectRef } from "../../ui/dialog-select"
-import { useDialog } from "../../ui/dialog"
+import { DialogHeader, DialogLayout, DIALOG_LIST_INSET, useDialog } from "../../ui/dialog"
+import { Keymap } from "../../context/keymap"
+import { useCursorStyle } from "../../config"
 import { TurnOverlayController, type PendingAsk } from "./turn-overlay-controller"
 import { useThemeOptional } from "../../context/theme"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
@@ -84,17 +86,30 @@ export function ReminderBadge(): JSX.Element {
 
 /**
  * One-line tab strip for a multi-question batch (tui-pi parity):
- * `[1] · 2✓ · 3` — brackets mark the focused tab, ✓ an answered one.
+ * `[1] · 2✓ · 3` — brackets mark the focused tab, ✓ an answered one
+ * (a committed custom answer counts as answered too, C7).
  * Pure so tests and the renderer share one vocabulary.
  */
-export function askTabStrip(questions: SeamAskQuestion[], picks: readonly (readonly string[])[], index: number): string {
+export function askTabStrip(
+	questions: SeamAskQuestion[],
+	picks: readonly (readonly string[])[],
+	index: number,
+	customs?: readonly (string | undefined)[],
+): string {
 	return questions
 		.map((_, qi) => {
-			const answered = (picks[qi]?.length ?? 0) > 0
+			const answered = (picks[qi]?.length ?? 0) > 0 || (customs?.[qi] !== undefined && customs[qi] !== "")
 			const label = `${qi + 1}${answered ? "✓" : ""}`
 			return qi === index ? `[${label}]` : label
 		})
 		.join(" · ")
+}
+
+/** The sentinel row label (tui-pi `SENTINEL_LABEL`); a committed custom
+ * answer replaces it with the `✎` mark + the typed text. */
+export const ASK_SENTINEL_LABEL = "Type something."
+export function askSentinelTitle(custom: string | undefined): string {
+	return custom ? `✎ ${custom}` : ASK_SENTINEL_LABEL
 }
 
 /** Progress title: `(i/n)` prefix once the batch has ≥ 2 questions. */
@@ -143,16 +158,52 @@ export function AskPicker(props: {
 
 	return (
 		<Show
-			when={ask()?.phase === "review"}
-			fallback={<AskQuestionsView ask={ask} controller={props.controller} onDecline={props.onDecline} />}
+			when={ask() !== undefined && ask()?.customDraft !== null}
+			fallback={
+				<Show
+					when={ask()?.phase === "review"}
+					fallback={<AskQuestionsView ask={ask} controller={props.controller} onDecline={props.onDecline} />}
+				>
+					<AskReviewView ask={ask} controller={props.controller} onDecline={props.onDecline} />
+				</Show>
+			}
 		>
-			<AskReviewView ask={ask} controller={props.controller} onDecline={props.onDecline} />
+			<AskCustomInputView ask={ask} controller={props.controller} onDecline={props.onDecline} />
 		</Show>
 	)
 }
 
-/** Review-row discriminator: a question row (enter = edit it) or the submit row. */
-type AskRowValue = { kind: "question"; qi: number } | { kind: "submit" } | { kind: "review" }
+/** Review-row discriminator: a question row (enter = edit it), the submit row, or the sentinel row. */
+type AskRowValue = { kind: "question"; qi: number } | { kind: "submit" } | { kind: "review" } | { kind: "custom" }
+
+/**
+ * The questions-phase rows, pure so the option ↔ sentinel ↔ review row
+ * mapping is unit-pinned: the question's options (multiSelect rows bracketed
+ * by the picks), then the sentinel row (tui-pi parity — a committed custom
+ * answer renders as `✎ <text>`; selecting it opens the inline editor), then
+ * the review row when the batch needs one. The OPTION rows carry the raw
+ * label as a string value; the sentinel/review rows carry AskRowValue
+ * discriminators — the space toggle (and enter's pick) only fires on the
+ * string-valued rows, so the trailing rows can never absorb the toggle
+ * semantics. They DO participate in arrow navigation (the keymap wraps), so
+ * callers walking the list by keypresses must target rows by their active
+ * state, not by a fixed count (see e2e/scenarios/60-ask-user.sh).
+ */
+export function askQuestionRows(
+	question: SeamAskQuestion,
+	picks: readonly string[],
+	custom: string | undefined,
+	review: boolean,
+): DialogSelectOption<string | AskRowValue>[] {
+	const multi = question.multiSelect === true
+	const rows: DialogSelectOption<string | AskRowValue>[] = question.options.map((option) => ({
+		title: multi ? (picks.includes(option) ? `[x] ${option}` : `[ ] ${option}`) : option,
+		value: option,
+	}))
+	rows.push({ title: askSentinelTitle(custom), value: { kind: "custom" } })
+	if (review) rows.push({ title: "⏎ Review answers", value: { kind: "review" } })
+	return rows
+}
 
 /** The questions phase: focused question's options + tab strip + ←/→/space. */
 function AskQuestionsView(props: {
@@ -170,22 +221,17 @@ function AskQuestionsView(props: {
 		const b = batch()
 		return b?.picks[b.index] ?? []
 	}
+	const bIndex = (): number => batch()?.index ?? 0
 	const options = (): DialogSelectOption<string | AskRowValue>[] => {
 		const q = question()
-		const p = picked()
 		if (!q) return []
-		const rows: DialogSelectOption<string | AskRowValue>[] = q.options.map((option) => ({
-			title: multi() ? (p.includes(option) ? `[x] ${option}` : `[ ] ${option}`) : option,
-			value: option,
-		}))
-		if (askNeedsReview(batch()?.questions ?? [])) rows.push({ title: "⏎ Review answers", value: { kind: "review" } })
-		return rows
+		return askQuestionRows(q, picked(), batch()?.customs[bIndex()], askNeedsReview(batch()?.questions ?? []))
 	}
 	const description = (): string | undefined => {
 		const b = batch()
 		if (!b) return undefined
 		const parts: string[] = []
-		if (b.questions.length >= 2) parts.push(askTabStrip(b.questions, b.picks, b.index))
+		if (b.questions.length >= 2) parts.push(askTabStrip(b.questions, b.picks, b.index, b.customs))
 		if (multi()) parts.push("space: toggle")
 		return parts.join("  ·  ") || undefined
 	}
@@ -231,10 +277,80 @@ function AskQuestionsView(props: {
 			bindings={bindings()}
 			onSelect={(option) => {
 				if (typeof option.value === "string") props.controller.toggle(option.value)
+				else if (option.value.kind === "custom") props.controller.beginCustom()
 				else props.controller.enterReview()
 			}}
 			onCancel={props.onDecline}
 		/>
+	)
+}
+
+/**
+ * The inline free-text editor for the sentinel path (C7, tui-pi parity):
+ * a one-line input replacing the picker while the controller is editing
+ * (`customDraft !== null`). Enter commits (empty = discard, back to the
+ * picker), Esc discards — the Esc binding rides a modal keymap layer (the
+ * same mechanism DialogSelect's escape uses), so the vendored dialog
+ * stack's onClose decline never fires while editing. The committed answer
+ * clears the question's picked options — selected ⊕ custom are mutually
+ * exclusive.
+ */
+function AskCustomInputView(props: {
+	ask: () => PendingAsk | undefined
+	controller: TurnOverlayController
+	onDecline: () => void
+}) {
+	const theme = useThemeOptional()
+	const cursorStyle = useCursorStyle()
+	Keymap.createLayer(() => ({
+		mode: "modal",
+		commands: [
+			{
+				id: "ask.custom_cancel",
+				title: "Back to options",
+				group: "Dialog",
+				bind: "escape",
+				run: () => props.controller.cancelCustomEdit(),
+			},
+		],
+	}))
+	return (
+		<DialogLayout
+			header={
+				<box paddingLeft={DIALOG_LIST_INSET - 1} paddingRight={DIALOG_LIST_INSET - 1}>
+					<DialogHeader
+						titleView={
+							<box flexDirection="row">
+								<ReminderBadge />
+								<AskTitleText title="Your answer" />
+							</box>
+						}
+						title="Your answer"
+					/>
+					<text fg={theme?.text.muted} wrapMode="word">
+						{props.ask()?.questions[props.ask()?.index ?? 0]?.prompt}
+					</text>
+				</box>
+			}
+		>
+			<input
+				flexGrow={1}
+				value={props.ask()?.customDraft ?? ""}
+				placeholder={ASK_SENTINEL_LABEL}
+				placeholderColor={theme?.text.muted}
+				focusedBackgroundColor={theme?.background.formfield.focused}
+				focusedTextColor={theme?.text.formfield.focused}
+				cursorColor={theme?.text.formfield.focused}
+				cursorStyle={cursorStyle()}
+				onInput={(text) => props.controller.patchCustom(text)}
+				onSubmit={() => props.controller.commitCustom()}
+				ref={(r) => {
+					setTimeout(() => {
+						if (!r.isDestroyed) r.focus()
+					}, 1)
+				}}
+			/>
+		</DialogLayout>
 	)
 }
 
@@ -260,8 +376,14 @@ function AskReviewView(props: {
 		if (!b) return []
 		const rows: DialogSelectOption<string | AskRowValue>[] = b.questions.map((question, qi) => {
 			const picks = b.picks[qi] ?? []
+			const custom = b.customs[qi]
+			const answer = custom
+				? `✎ ${custom}`
+				: picks.length > 0
+					? picks.join(", ")
+					: "—"
 			return {
-				title: `${truncate70(question.prompt)}  ${picks.length > 0 ? picks.join(", ") : "—"}`,
+				title: `${truncate70(question.prompt)}  ${answer}`,
 				value: { kind: "question", qi },
 			}
 		})

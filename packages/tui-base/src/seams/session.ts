@@ -206,15 +206,18 @@ export interface SeamAskQuestion {
 	multiSelect?: boolean
 }
 
-/** One answer row: the picked option. A declined batch resolves as `[]`
- * (empty selection = the tui-pi declined envelope downstream). A
- * multiSelect answer carries every toggled label in `selections`
- * (display order); `selected` stays the first pick for single-select
- * consumers. */
+/** One answer row: the picked option OR the free-text answer. A declined
+ * batch resolves as `[]` (empty selection = the tui-pi declined envelope
+ * downstream). A multiSelect answer carries every toggled label in
+ * `selections` (display order); `selected` stays the first pick for
+ * single-select consumers. A free-text answer (the "Type something."
+ * sentinel, C7) rides `custom` with `selected: ""` — selected ⊕ custom
+ * are mutually exclusive (tui-pi Answer.custom contract). */
 export interface SeamAskPick {
 	questionId: string
 	selected: string
 	selections?: string[]
+	custom?: string
 }
 
 /**

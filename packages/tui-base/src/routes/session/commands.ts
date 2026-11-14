@@ -67,6 +67,9 @@ import {
 	type HintSegmentId,
 } from "./hints-line"
 import { getMotionPreference, getMotionTier, setMotionTier, type MotionTier } from "../../skin/motion"
+import { mkdir, writeFile } from "node:fs/promises"
+import { dirname } from "node:path"
+import { exportTargetPath, journalToJSONL } from "./export"
 
 /**
  * Persist the hint-bar selection after a /hints mutation (/motion parity):
@@ -1146,6 +1149,42 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				ctx.openHistory()
+			},
+		},
+		{
+			// Gap C12 (tui-pi export parity, design §4 D2): dump the session's
+			// RAW durable journal as JSONL. Reads through the seam's optional
+			// `sessionJournal` face (the /history fold input — no new entry
+			// hook, so the slash-deps hand-copied table is untouched); the FS
+			// write lives HERE in the run (the commands.ts registry red line:
+			// no top-level side effects). Default target carries the tui-pi
+			// habit (~/Downloads/dsh-session-<id8>.jsonl); an arg resolves
+			// against the client cwd. Format honesty (design §3c): the rows
+			// are host-native journal envelopes (SessionWireEvent shape), NOT
+			// a verified tui-pi snapshotEvents replay — the done line says so.
+			name: "/export",
+			description: "export the session journal to JSONL ([path], default ~/Downloads)",
+			async run(ctx, argText) {
+				const sessionId = ctx.seam.currentSessionId()
+				if (!sessionId) {
+					ctx.say("/export: no active session to export")
+					return
+				}
+				if (!ctx.seam.sessionJournal) {
+					ctx.say("/export: the journal read face is not mounted in this entry")
+					return
+				}
+				try {
+					const entries = await ctx.seam.sessionJournal(sessionId)
+					const target = exportTargetPath(sessionId, argText)
+					await mkdir(dirname(target), { recursive: true })
+					await writeFile(target, journalToJSONL(entries))
+					ctx.say(
+						`exported ${entries.length} journal records (host journal format) → ${target}`,
+					)
+				} catch (error) {
+					ctx.say(`/export failed — ${seamFailureReason(error)}`)
+				}
 			},
 		},
 		{
