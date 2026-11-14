@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 import type { ClientConnection } from "../src/client/transport.ts"
+import type { EventsItem } from "../src/client/mux-frame.ts"
 import type { RpcHandler } from "./client-fakes.ts"
 
 // The FakeConnection lives in remote-host-session.test.ts (not exported);
@@ -14,6 +15,7 @@ import type { RpcHandler } from "./client-fakes.ts"
 class FakeConnection {
 	rpcCalls: { method: string; args: Record<string, unknown> }[] = []
 	rpcHandler: RpcHandler = () => ({})
+	#eventHandlers = new Set<(item: EventsItem) => void>()
 
 	async connect(): Promise<{ clientId: string; host: { home: string } }> {
 		return { clientId: "client-1", host: { home: "/tmp/dsh-home" } }
@@ -24,8 +26,9 @@ class FakeConnection {
 		return (await this.rpcHandler(method, args ?? {})) as T
 	}
 
-	onEvent(): () => void {
-		return () => {}
+	onEvent(handler: (item: EventsItem) => void): () => void {
+		this.#eventHandlers.add(handler)
+		return () => this.#eventHandlers.delete(handler)
 	}
 
 	onStateChange(): () => void {
@@ -37,6 +40,11 @@ class FakeConnection {
 	}
 
 	async close(): Promise<void> {}
+
+	/** Deliver a forwarded host push (the `$events` emit frame shape). */
+	emit(item: EventsItem): void {
+		for (const handler of [...this.#eventHandlers]) handler(item)
+	}
 }
 
 function makeSession(rpcHandler: RpcHandler): RemoteHostSession {
@@ -146,5 +154,41 @@ describe("RemoteHostSession pluginManager face (C1)", () => {
 		const change = await session.installBundle("dsh-tui-pi")
 		expect(change.application).toBe("applied")
 		expect(log.methods).toContain('pluginManager/installBundle {"spec":"dsh-tui-pi","enabled":true}')
+	})
+
+	test("the plugin-manager/changed push refreshes the caches and cannot escape as a rejection (C1 survival pin)", async () => {
+		// The gate's real-machine repro of a client exit around a toggle was
+		// not reproducible (4 independent boots, 10+ toggles, incl. a host
+		// kill + same-port respawn — the client followed the fresh host).
+		// This pins the only JS-side silent-death vector on the push path:
+		// an unhandled rejection escaping `refreshPlugins` while the host is
+		// mid-hot-apply and refuses the refresh RPCs.
+		let refreshCalls = 0
+		const connection = new FakeConnection()
+		connection.rpcHandler = (method) => {
+			if (method === "pluginManager/listPlugins" || method === "pluginManager/listBundles") {
+				refreshCalls += 1
+				throw new Error("host is reloading the plugin tree")
+			}
+			return {}
+		}
+		const session = new RemoteHostSession({
+			connection: connection as unknown as ClientConnection,
+			cookieHeader: "dsh-auth-x=v1.test",
+			cwd: "/tmp/workspace",
+		})
+		await session.start()
+		const notified: number[] = []
+		session.onPluginsChanged(() => notified.push(refreshCalls))
+		// start() already ran one boot warm (2 RPCs against the throwing handler).
+		const before = refreshCalls
+
+		connection.emit({ type: "emit", event: "plugin-manager/changed", args: [] })
+		await new Promise((resolve) => setTimeout(resolve, 20))
+		expect(refreshCalls - before).toBe(2) // listPlugins + listBundles both attempted
+		expect(notified).toEqual([before + 2]) // listeners still notified after the failure
+		// The caches kept their previous (empty) contents — no crash, no exit.
+		expect(session.listBundles()).toEqual([])
+		expect(session.listPlugins()).toEqual([])
 	})
 })
