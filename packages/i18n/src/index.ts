@@ -10,5 +10,13 @@ export {
 	validateLocaleFile,
 } from "./registry"
 export type { LocaleFileError, LocaleTable, LoadLocalesResult, ValidateResult } from "./registry"
-export { activeLanguage, applyI18nConfig, installedLanguages, localeFromConfig, setLanguages, t } from "./t"
+export {
+	LANGUAGE_CHOICES,
+	activeLanguage,
+	applyI18nConfig,
+	installedLanguages,
+	localeFromConfig,
+	setLanguages,
+	t,
+} from "./t"
 export type { I18nConfigLike } from "./t"

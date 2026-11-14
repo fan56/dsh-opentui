@@ -371,7 +371,7 @@ describe("local write plan (configSave patch shapes)", () => {
 	})
 
 	test("an empty enum/text value is refused", () => {
-		expect(planLocalWrite(item("hintsLocale"), "", DEFAULT_FOOTER_HINTS)).toEqual({
+		expect(planLocalWrite(item("lang"), "", DEFAULT_FOOTER_HINTS)).toEqual({
 			ok: false,
 			error: "value must not be empty",
 		})

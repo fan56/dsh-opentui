@@ -35,13 +35,12 @@
  * non-empty filter before closing.
  */
 import { createSignal, onCleanup } from "solid-js"
-import { t } from "../../i18n"
+import { t, LANGUAGE_CHOICES } from "../../i18n"
 import { stringWidth } from "../../util/string-width"
 import { setMotionTier, type MotionTier } from "../../skin/motion"
 import {
 	DEFAULT_FOOTER_HINTS,
 	FOOTER_HINT_IDS,
-	HINT_LOCALES,
 	footerHintsFromConfig,
 	hintsLocaleFromConfig,
 	setFooterHints,
@@ -142,7 +141,7 @@ export const LOCAL_SETTING_IDS = [
 	"workspaceThemeMode",
 	"motion",
 	...FOOTER_HINT_IDS.map((id) => `footerHints.${id}`),
-	"hintsLocale",
+	"lang",
 	"cacheHitMode",
 	"retentionDays",
 	"maxRounds",
@@ -233,13 +232,18 @@ export function buildLocalItems(input: {
 		})),
 		{
 			...base,
-			id: "hintsLocale",
-			label: "hintsLocale",
-			value: hintsLocaleFromConfig(merged.hintsLocale) ?? "en",
-			source: "config.json · hintsLocale",
+			// T14 storage-key unification: `lang` is THE authoritative language
+			// key; the legacy `hintsLocale` folds in read-only for the DISPLAY
+			// when no unified value exists (applyHintsConfig boot parity). The
+			// options are the contract set only (en + zh-CN — ja/ko are not
+			// offered; the /hints lang degrade path stays its own surface).
+			id: "lang",
+			label: "lang",
+			value: hintsLocaleFromConfig(merged.lang) ?? hintsLocaleFromConfig(merged.hintsLocale) ?? "en",
+			source: "config.json · lang",
 			kind: "enum",
-			options: HINT_LOCALES,
-			write: { via: "config", key: "hintsLocale" },
+			options: LANGUAGE_CHOICES,
+			write: { via: "config", key: "lang" },
 		},
 		{
 			...base,
@@ -1003,7 +1007,7 @@ export function applySettingsLive(
 			case "motion":
 				setMotionTier(applied === undefined || applied === "auto" ? undefined : (String(applied) as MotionTier))
 				break
-			case "hintsLocale":
+			case "lang":
 				setHintsLocale(String(applied) as HintLocale)
 				break
 			case "theme":

@@ -11,4 +11,4 @@
  * (non-getter) prop. No reactive language switching is planned (startup
  * fixed), so no signal wiring belongs here.
  */
-export { t } from "@dsh-opentui/i18n"
+export { t, activeLanguage, installedLanguages, LANGUAGE_CHOICES } from "@dsh-opentui/i18n"

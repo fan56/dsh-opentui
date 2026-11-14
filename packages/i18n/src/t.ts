@@ -34,6 +34,13 @@ interface I18nState {
 const state: I18nState = { languages: new Map(), active: DEFAULT_LANGUAGE, warnings: [] }
 
 /**
+ * The offered language choices (T14 `/language` + the settings language rows
+ * — design §1: the contract is en + zh-CN ONLY; ja/ko are deliberately not
+ * offered as options, the /hints lang degrade path stays its own surface).
+ */
+export const LANGUAGE_CHOICES: readonly string[] = ["en", "zh-CN"]
+
+/**
  * Resolve a config value into a language id. Canonical ids are `en` and
  * `zh-CN` (`zh-CN` spelling matches the existing `hintsLocale` config values,
  * design §1). `zh` aliases (zh / zh_cn / zh-hans / zh-Hans-CN …) map to

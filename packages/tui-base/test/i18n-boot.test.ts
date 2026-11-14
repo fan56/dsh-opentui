@@ -15,7 +15,7 @@
 import { describe, expect, test } from "bun:test"
 import { activeLanguage, applyI18nConfig, t } from "@dsh-opentui/i18n"
 import { t as tReexported } from "../src/i18n"
-import { applyHintsConfig, hintsLocale } from "../src/routes/session/hints-line"
+import { applyHintsConfig, hintsLocale, setHintsLocale } from "../src/routes/session/hints-line"
 
 describe("i18n boot chain (v2-entry applyI18nConfig, applyHintsConfig parity)", () => {
 	test("boot replay fixes the language from the persisted hintsLocale; t() and the hints signal both see it", () => {
@@ -56,5 +56,20 @@ describe("i18n boot chain (v2-entry applyI18nConfig, applyHintsConfig parity)", 
 		applyI18nConfig(undefined)
 		expect(activeLanguage()).toBe("en")
 		expect(t("common.noItems")).toBe("No items")
+	})
+
+	test("T14 storage-key unification: the hints mirror folds the SAME precedence — unified lang first, legacy hintsLocale read-only fallback", () => {
+		// the unified key wins on the signal mirror too
+		applyHintsConfig({ lang: "zh-CN", hintsLocale: "en" })
+		expect(hintsLocale()).toBe("zh-CN")
+
+		// no unified value → the legacy key still folds in (read-only compat)
+		applyHintsConfig({ hintsLocale: "zh-CN" })
+		expect(hintsLocale()).toBe("zh-CN")
+
+		// neither → the signal is left untouched (replay never resets)
+		setHintsLocale("en")
+		applyHintsConfig({})
+		expect(hintsLocale()).toBe("en")
 	})
 })

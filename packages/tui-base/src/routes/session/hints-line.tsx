@@ -103,9 +103,10 @@ export const [footerHints, setFooterHints] = createSignal<FooterHints>({ ...DEFA
 /**
  * The hint-bar language (module-level). T8 fold: the labels render through
  * the boot-fixed unified registry instead, so this signal is the persistence
- * mirror of the stored `hintsLocale` config key only — `/hints lang` keeps it
- * in step with the persisted value (so a later segment toggle re-saves the
- * same language) and the new wording lands on the next boot.
+ * mirror of the stored language only — `/hints lang`, `/language` and the
+ * settings language rows keep it in step with the persisted value (so a later
+ * segment toggle re-saves the same language) and the new wording lands on the
+ * next boot.
  */
 export const [hintsLocale, setHintsLocale] = createSignal<HintLocale>("en")
 
@@ -130,9 +131,12 @@ export function footerHintsFromConfig(value: unknown): FooterHints | undefined {
 }
 
 /**
- * The persisted `hintsLocale` config key (/hints lang): one of the four
- * canonical spellings; anything else (legacy value, typo) → undefined →
- * boot keeps the en default.
+ * The persisted language config value: one of the four canonical spellings;
+ * anything else (legacy value, typo) → undefined → boot keeps the en
+ * default. T14: the WRITE surface is the unified `lang` key (/language, /hints
+ * lang, the settings rows); `hintsLocale` stays a READ-ONLY legacy fallback —
+ * the stored values share the same canonical spellings, so one validator
+ * serves both keys.
  */
 export function hintsLocaleFromConfig(value: unknown): HintLocale | undefined {
 	return typeof value === "string" && (HINT_LOCALES as readonly string[]).includes(value) ? (value as HintLocale) : undefined
@@ -141,14 +145,18 @@ export function hintsLocaleFromConfig(value: unknown): HintLocale | undefined {
 /**
  * Boot replay (/motion's `motionFromConfig` parity): apply the persisted
  * hint-bar selection onto the module signals BEFORE the first paint so a
- * restart keeps the user's toggles. Unknown/missing keys leave the
- * signals at their defaults; never throws.
+ * restart keeps the user's toggles. The language folds in through the SAME
+ * precedence the i18n registry applies (applyI18nConfig — T8 report's
+ * storage-key split): the unified `lang` key first, the legacy `hintsLocale`
+ * key as the read-only fallback when no unified value exists. Unknown/missing
+ * keys leave the signals at their defaults; never throws.
  */
 export function applyHintsConfig(config?: Record<string, unknown>): void {
 	try {
 		const hints = config && footerHintsFromConfig(config.footerHints)
 		if (hints) setFooterHints(hints)
-		const locale = config && hintsLocaleFromConfig(config.hintsLocale)
+		const stored = config?.lang !== undefined ? config.lang : config?.hintsLocale
+		const locale = config && hintsLocaleFromConfig(stored)
 		if (locale) setHintsLocale(locale)
 	} catch {
 		/* replay is best-effort: a bad config read keeps the defaults */

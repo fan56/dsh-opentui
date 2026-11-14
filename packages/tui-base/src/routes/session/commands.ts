@@ -19,7 +19,7 @@
  *                            send to the model)
  *   plain text            → not a command; caller sends/steers as batch 4
  */
-import { t } from "../../i18n"
+import { t, activeLanguage, installedLanguages, LANGUAGE_CHOICES } from "../../i18n"
 import type { SeamEffortOption, SeamLoginRoute, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
@@ -65,23 +65,39 @@ import {
 	FOOTER_HINT_IDS,
 	HINT_LOCALES,
 	type FooterHints,
+	type HintLocale,
 	type HintSegmentId,
 } from "./hints-line"
 import { getMotionPreference, getMotionTier, setMotionTier, type MotionTier } from "../../skin/motion"
 
 /**
  * Persist the hint-bar selection after a /hints mutation (/motion parity):
- * the FULL record + locale ride the profile config.json (`footerHints` /
- * `hintsLocale` keys — configSave routes unlisted keys to the profile), so
- * a restart replays them (hints-line.tsx applyHintsConfig at boot). The
- * bar toggle (`hintsShown`) stays session-scoped. Best-effort: a failed
- * write keeps this session's state and logs.
+ * the FULL record + language ride the profile config.json (`footerHints` +
+ * the unified `lang` key — T14: `lang` is THE authoritative language key,
+ * the legacy `hintsLocale` stays a read-only boot fallback; configSave
+ * routes unlisted keys to the profile), so a restart replays them
+ * (hints-line.tsx applyHintsConfig at boot). The bar toggle (`hintsShown`)
+ * stays session-scoped. Best-effort: a failed write keeps this session's
+ * state and logs.
  */
 function persistHints(seam: SessionSeam): void {
 	try {
-		seam.configSave?.({ footerHints: footerHints(), hintsLocale: hintsLocale() })
+		seam.configSave?.({ footerHints: footerHints(), lang: hintsLocale() })
 	} catch (error) {
 		console.error("[commands] hints persist failed:", error)
+	}
+}
+
+/**
+ * Persist the unified language key after a /language pick (/motion parity):
+ * `lang` is THE authoritative key (T14 storage-key unification — design §1);
+ * the wording lands on restart (the registry is boot-fixed). Best-effort.
+ */
+function persistLang(seam: SessionSeam, lang: string): void {
+	try {
+		seam.configSave?.({ lang })
+	} catch (error) {
+		console.error("[commands] language persist failed:", error)
 	}
 }
 
@@ -1302,6 +1318,64 @@ export function coreCommands(): SlashCommand[] {
 				} else {
 					ctx.say(t("command.hints.segmentSet", { segment: id, state: on ? "on" : "off" }))
 				}
+			},
+		},
+		{
+			// T14 (design §1/§3, tui-pi /language ask-chain parity): the unified
+			// language face. Bare opens the picker over the installed languages
+			// (the generic pickOne modal — the /theme shape; the current row
+			// carries the vendored `●` marker); `<id>` targets directly
+			// (case-insensitive onto the installed ids). The pick persists the
+			// UNIFIED `lang` profile key (THE authority — /hints lang and the
+			// settings language rows write it too; the legacy `hintsLocale` key
+			// stays a read-only boot fallback) and the wording lands on restart
+			// (the registry is boot-fixed — NO live apply). ja/ko are not offered
+			// (contract: en + zh-CN only); the degrade path stays /hints lang's
+			// own surface.
+			name: "/language",
+			description: t("command.language.description"),
+			async run(ctx, argText) {
+				const arg = argText.trim()
+				const installed = installedLanguages()
+				// A registry that never boot-loaded still offers the bundled set.
+				const choices = installed.length > 0 ? installed : LANGUAGE_CHOICES
+				const current = activeLanguage()
+				const pick = (id: string) => {
+					setHintsLocale(id as HintLocale)
+					persistLang(ctx.seam, id)
+					ctx.say(t("command.language.set", { lang: id }))
+					ctx.say(t("common.restartToApply"))
+				}
+				if (arg === "") {
+					const picked = await ctx.pickOne(
+						t("command.language.pickTitle"),
+						choices.map((id) => ({
+							title: id,
+							value: id,
+							description: id === current ? t("command.language.current") : t("command.language.restartNote"),
+						})),
+						undefined,
+						current,
+					)
+					// tui-pi unchanged semantics: esc/no answer and the current
+					// language print the unchanged line, nothing is written.
+					if (!picked || picked === current) {
+						ctx.say(t("command.language.unchanged"))
+						return
+					}
+					pick(picked)
+					return
+				}
+				const picked = choices.find((id) => id.toLowerCase() === arg.toLowerCase())
+				if (!picked) {
+					ctx.say(t("command.language.unknown", { lang: arg, languages: choices.join("|") }))
+					return
+				}
+				if (picked === current) {
+					ctx.say(t("command.language.unchanged"))
+					return
+				}
+				pick(picked)
 			},
 		},
 		{

@@ -41,10 +41,9 @@ import {
   type PanelHandle,
 } from "@dsh-opentui/panel-kit"
 import { Keymap } from "../../context/keymap"
-import { t } from "../../i18n"
+import { t, LANGUAGE_CHOICES } from "../../i18n"
 import {
 	DEFAULT_FOOTER_HINTS,
-	HINT_LOCALES,
 	footerHintsFromConfig,
 	hintsLocaleFromConfig,
 } from "./hints-line"
@@ -200,14 +199,17 @@ export function buildGeneralRows(ctx: SettingsRowContext): SettingsRow[] {
 	return [
 		permissionRow,
 		{
+			// T14 storage-key unification: this row writes the unified `lang`
+			// key (the /language authority); the legacy `hintsLocale` folds in
+			// read-only for the display when no unified value exists.
 			id: "general.language",
 			label: t("settings.row.language"),
-			value: hintsLocaleFromConfig(ctx.merged.hintsLocale) ?? "en",
+			value: hintsLocaleFromConfig(ctx.merged.lang) ?? hintsLocaleFromConfig(ctx.merged.hintsLocale) ?? "en",
 			kind: "enum",
-			options: HINT_LOCALES,
+			options: LANGUAGE_CHOICES,
 			editable: ctx.local,
 			note: t("settings.row.languageNote"),
-			write: { via: "config", key: "hintsLocale" },
+			write: { via: "config", key: "lang" },
 		},
 		{
 			id: "general.appearance",
@@ -243,8 +245,8 @@ export function buildGeneralRows(ctx: SettingsRowContext): SettingsRow[] {
 	]
 }
 
-/** The opentui-only group (survey D.2), all preserved. hintsLocale lives in
- * General's language row (one key, one control). */
+/** The opentui-only group (survey D.2), all preserved. The unified `lang`
+ * key lives in General's language row (one key, one control). */
 export function buildOpentuiRows(ctx: SettingsRowContext): SettingsRow[] {
 	return buildLocalItems({
 		merged: ctx.merged,
@@ -253,7 +255,7 @@ export function buildOpentuiRows(ctx: SettingsRowContext): SettingsRow[] {
 		...(ctx.themeNames !== undefined ? { themeNames: ctx.themeNames } : {}),
 		writable: ctx.local,
 	})
-		.filter((item) => item.id !== "hintsLocale")
+		.filter((item) => item.id !== "lang")
 		.map(fromItem)
 }
 
