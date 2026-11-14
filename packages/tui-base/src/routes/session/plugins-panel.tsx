@@ -84,6 +84,12 @@ export function formatPluginLine(row: PluginRow): string {
 	return `${row.name}@${row.version}`
 }
 
+/** A rejection's short message for the status line (Error.message or the
+ * stringified value, clipped to a row width). */
+function errorMessage(error: unknown): string {
+	return String(error instanceof Error ? error.message : error).slice(0, 90)
+}
+
 /** The rows surviving the filter: a case-insensitive substring over the
  * rendered `name@version` line (the reference's own `/` filter shape). */
 export function filterPluginRows<T extends PluginRow>(rows: readonly T[], query: string): T[] {
@@ -282,6 +288,11 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		try {
 			const change = await props.seam.setPluginBundleEnabled(row.name, !row.enabled)
 			flash(pluginChangeNotice(change), 6000)
+		} catch (error) {
+			// P2-3: RemoteHostSession folds throws into failed Changes, but a
+			// rejecting seam adapter (local/test) would surface as an unhandled
+			// rejection with no panel feedback — flash it instead.
+			flash(`${row.name}: change failed — ${errorMessage(error)}`, 8000)
 		} finally {
 			setBusy(false)
 		}
@@ -317,6 +328,8 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		try {
 			const change = await props.seam.removePluginBundle(name)
 			flash(pluginChangeNotice(change), 8000)
+		} catch (error) {
+			flash(`${name}: change failed — ${errorMessage(error)}`, 8000)
 		} finally {
 			setBusy(false)
 		}
@@ -349,6 +362,9 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		let inspection: PluginInspection
 		try {
 			inspection = await props.seam.inspectPluginSpec(spec)
+		} catch (error) {
+			flash(`cannot install ${spec}: ${errorMessage(error)}`, 8000)
+			return
 		} finally {
 			setBusy(false)
 		}
@@ -379,6 +395,8 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		try {
 			const change = await props.seam.installPluginSpec(spec)
 			flash(pluginChangeNotice(change), 8000)
+		} catch (error) {
+			flash(`${spec}: change failed — ${errorMessage(error)}`, 8000)
 		} finally {
 			setBusy(false)
 		}
