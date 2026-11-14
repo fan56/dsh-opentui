@@ -43,6 +43,12 @@ if [ -d "$BUNDLE" ] \
 fi
 
 if (( AGENTS_GATE == 0 )); then
+  # 71-search ends with kill_tui, so the session is dead here on the fresh
+  # container path — boot before probing, exactly like the gate-lit branch.
+  if ! tui_alive; then
+    start_tui
+    wait_tui_up 120 || { summary; exit 0; }
+  fi
   ensure_editor_ready 'editor clean before the stale-bundle /agents probe' || true
   send '/agents'
   sleep 2

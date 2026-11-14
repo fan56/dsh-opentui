@@ -55,10 +55,14 @@ fi
 ensure_editor_ready 'editor ready before command traffic' || true
 
 # --- palette: the clamped core set ------------------------------------------
-# One '/' write from the clean state opens the palette. The registry holds 20
-# commands and the window is MAX_ROWS=10 (slash-palette.tsx), so the
-# unfiltered list paints the alphabetically-first ten rows plus the reserved
-# overflow row; any row past that window is proven through its own prefix.
+# One '/' write from the clean state opens the palette. The window is
+# MAX_ROWS=10 (slash-palette.tsx), so the unfiltered list paints the
+# alphabetically-first ten rows plus the reserved overflow row; any row past
+# that window is proven through its own prefix. The overflow count is computed
+# from the registry itself so the assertion tracks registry growth instead of
+# pinning a literal that drifts every time a command is added.
+REGISTRY_ROWS="$(grep -c 'name: "/' /src/packages/tui-base/src/routes/session/commands.ts || true)"
+OVERFLOW_ROWS=$(( REGISTRY_ROWS - 10 ))
 send '/'
 sleep 2
 PANE="$(capture)"
@@ -66,8 +70,8 @@ assert_contains 'palette row /help (inside the first window)' \
   '/help show available commands' "$PANE"
 assert_contains 'palette row /clear (inside the first window)' \
   '/clear clear the transcript' "$PANE"
-assert_contains 'palette clamps the 20-command registry with the overflow row' \
-  '… 10 more' "$PANE"
+assert_contains "palette clamps the ${REGISTRY_ROWS}-command registry with the overflow row" \
+  "… ${OVERFLOW_ROWS} more" "$PANE"
 # Row shape is name + space + description (slash-palette.tsx SlashPalette).
 # The selection highlight is color-only, so it is asserted on the SGR
 # capture: the ACTIVE row's fg must differ from the base fg of its sibling

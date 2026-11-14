@@ -62,13 +62,16 @@ assert_contains 'powerline still rendered at 80x24 (emoji model segment)' \
 
 # --- overlay inside the 24-row pane ---------------------------------------------
 # One '/' write from the clean state opens the palette (input law: text lands
-# as one tmux write from a closed palette). The 20-command registry clamps to
-# the 10-row window, so /quit is NOT in the visible rows at this geometry —
-# the /help row and the `… N more` overflow row are.
+# as one tmux write from a closed palette). The registry clamps to the 10-row
+# window (slash-palette.tsx MAX_ROWS), so /quit is NOT in the visible rows at
+# this geometry — the /help row and the `… N more` overflow row are. N is
+# computed from the registry so the assertion tracks registry growth.
+REGISTRY_ROWS="$(grep -c 'name: "/' /src/packages/tui-base/src/routes/session/commands.ts || true)"
+OVERFLOW_ROWS=$(( REGISTRY_ROWS - 10 ))
 send '/'
 wait_pane_fixed 'slash palette opens at 24 rows' 15 '/help show available commands' \
   && assert_contains 'palette lists the clamped set at 24 rows' \
-    '… 10 more' "$(capture)"
+    "… ${OVERFLOW_ROWS} more" "$(capture)"
 esc_until_placeholder 'palette closes at 24 rows, placeholder back' 15
 
 # --- restore to the tuned geometry ------------------------------------------------
