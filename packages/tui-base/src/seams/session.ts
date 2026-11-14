@@ -743,6 +743,21 @@ export interface SessionSeam {
 	 * path dark (the vendored SubagentsTab degrades to navigation only).
 	 */
 	steerChild?(id: string, text: string): boolean
+	/**
+	 * One child's buffered transcript lines (gap C3 /subagents viewer, tui-pi
+	 * `bridge.getChildLog` parity): the capped per-child log the client's
+	 * child follow pump folds (tool ▶/⎿ rows, assistant text lines). A
+	 * snapshot read — re-read it on every render tick; the pump folds the
+	 * live frames underneath. Optional — a seam without it renders the
+	 * viewer's transcript as "unavailable".
+	 */
+	subagentTranscript?(id: string): string[]
+	/**
+	 * Interrupt one child subagent (tui-pi `bridge.cancelChild` parity):
+	 * `subagents/interruptByParent` on the remote face. Optional — a seam
+	 * without it leaves the viewer's stop gesture dark.
+	 */
+	interruptChild?(id: string): Promise<void>
 	/** Event push (context/event.ts's subscribe/on replacement). */
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void
 

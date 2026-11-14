@@ -47,6 +47,9 @@ function makeEntryHooks() {
 		openHistory: () => {
 			calls.push("openHistory")
 		},
+		openSubagents: () => {
+			calls.push("openSubagents")
+		},
 		refreshFooter: () => {
 			calls.push("refreshFooter")
 		},
@@ -201,6 +204,7 @@ describe("verify: entry slash deps", () => {
 				openSkills,
 				openSettings,
 				openHistory,
+				openSubagents,
 				refreshFooter,
 				invalidateFooter,
 				flushQueue,

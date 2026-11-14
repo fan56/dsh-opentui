@@ -262,6 +262,7 @@ describe("/skills command wiring", () => {
 				openAgents: () => {},
 				openSettings: () => {},
 				openHistory: () => {},
+				openSubagents: () => {},
 				refreshFooter: () => {},
 				invalidateFooter: () => {},
 				flushQueue: () => ({ kind: "empty", started: 0, remaining: 0 }),

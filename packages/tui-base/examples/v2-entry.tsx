@@ -64,6 +64,7 @@ import { PluginsPanel, openPluginsPanel } from "../src/routes/session/plugins-pa
 import { AgentsPanel, openAgentsPanel } from "../src/routes/session/agents-panel"
 import { openSettingsPanel } from "../src/routes/session/settings-panel"
 import { HistoryPanel, openHistoryPanel } from "../src/routes/session/history-panel"
+import { SubagentsViewer, openSubagentsViewer } from "../src/routes/session/subagents-viewer"
 import { SettingsModalHost } from "../src/routes/session/settings-modal"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
 import { readCacheHitMode } from "../src/seams/config"
@@ -743,6 +744,9 @@ function V2SessionPage(props: {
 			// B2 (gap C1 step 2, tui-pi history.ts parity): /history opens the
 			// two-pane turn browser (the module-bridge panel mounted below).
 			openHistory: () => openHistoryPanel(),
+		// Gap C3 (tui-pi subagent-viewer parity): /subagents opens the
+		// large-window transcript viewer (the module-bridge panel below).
+		openSubagents: () => openSubagentsViewer(),
 		// Footer-quickwins bug fix (/think parity with tui-pi): setting commands
 		// (/think, /model) re-run the page's footer refresh right
 		// after the seam mutation settles — the same entry the turn-end effect
@@ -913,6 +917,17 @@ function V2SessionPage(props: {
 						seam.resumeSession(forkedId)
 						await reloadSession(forkedId)
 						sayLine(`forked from turn #${turn} → ${forkedId}`)
+					},
+					onClosed: () => {
+						if (composerRef && !composerRef.focused()) composerRef.focus()
+					},
+				}),
+				// Subagents transcript viewer (gap C3, tui-pi subagent-viewer
+				// parity): /subagents opens the list + live transcript layers.
+				// Getter-prop law: the seam rides a getter.
+				createComponent(SubagentsViewer, {
+					get seam() {
+						return seam
 					},
 					onClosed: () => {
 						if (composerRef && !composerRef.focused()) composerRef.focus()

@@ -267,6 +267,12 @@ export interface SlashCommandContext {
 	 */
 	openHistory?(): void
 	/**
+	 * Open the /subagents large-window transcript viewer (gap C3, tui-pi
+	 * subagent-viewer parity). Optional — an entry without it degrades
+	 * /subagents to a notice.
+	 */
+	openSubagents?(): void
+	/**
 	 * Deliver the client-side delivery queue NOW (the /flush command).
 	 *
 	 * The queue is paused after a failed or aborted turn: it is KEPT (the
@@ -1140,6 +1146,28 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				ctx.openHistory()
+			},
+		},
+		{
+			// Gap C3 (tui-pi subagent-viewer parity): the command twin of the
+			// ↓ picker — opens the large-window transcript viewer over the
+			// session's subagents (list → live transcript → steer/stop). A
+			// pure read over the panel snapshot — never busy-gated. An empty
+			// roster answers honestly instead of opening an empty window; a
+			// missing hook degrades to the notice (the /plugins contract).
+			name: "/subagents",
+			description: "view live subagent transcripts (list, steer, stop)",
+			run(ctx) {
+				if (!ctx.openSubagents) {
+					ctx.say("/subagents: the transcript viewer is not mounted in this entry")
+					return
+				}
+				const views = ctx.seam.subagentViews?.() ?? []
+				if (views.length === 0) {
+					ctx.say("no subagents in this session — spawn one and run /subagents again")
+					return
+				}
+				ctx.openSubagents()
 			},
 		},
 		{

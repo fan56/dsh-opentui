@@ -702,6 +702,18 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.steerChild(id, text)
 	}
 
+	// ---- subagent viewer faces (gap C3 /subagents, RemoteHostSession 1:1) ----
+	// The child transcript read rides the panel's capped per-child log (the
+	// same buffer the lastRequest dock tail renders); interrupt forwards the
+	// `subagents/interruptByParent` RPC (typed errors surface to the caller —
+	// the viewer prints the failure, it never swallows it).
+	subagentTranscript(id: string): string[] {
+		return this.#session.childTranscript(id)
+	}
+	async interruptChild(id: string): Promise<void> {
+		await this.#session.interruptChild(id)
+	}
+
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void {
 		this.#listeners.push(listener)
 		this.#ensureJournalFeed()
