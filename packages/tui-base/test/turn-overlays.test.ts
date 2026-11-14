@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { NullSessionSeam, type SeamApprovalVerdict, type SeamAskPick } from "../src/seams/session"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
-import { askNeedsReview, askProgressTitle, askSentinelTitle, askTabStrip, registerTurnOverlays, summarizeArgs } from "../src/routes/session/turn-overlays"
+import { askNeedsReview, askProgressTitle, askQuestionRows, askSentinelTitle, askTabStrip, registerTurnOverlays, summarizeArgs } from "../src/routes/session/turn-overlays"
 
 describe("TurnOverlayController approval", () => {
 	test("confirm resolves the exact allowed-once verdict", async () => {
@@ -82,6 +82,37 @@ describe("TurnOverlayController ask", () => {
 		expect(c.enterReview()).toBe(true)
 		c.submit()
 		expect(await pending).toEqual([{ questionId: "q1", selected: "b" }])
+	})
+
+	// C7 regression pin (container e2e 60-ask-user "space toggles lint on in
+	// place"): the exact e2e ladder — two single-select picks then the
+	// multiSelect question — with the sentinel rows present. The space toggle
+	// (controller.toggle on the string-valued option rows) must still toggle
+	// the RIGHT option in place, never displaced by the sentinel/review rows.
+	test("space-toggle ladder over the C7 batch (2 single-select + 1 multiSelect, sentinel rows present)", async () => {
+		const c = new TurnOverlayController()
+		const pending = c.answer([
+			{ id: "deploy", prompt: "where?", options: ["staging", "production"] },
+			{ id: "verbosity", prompt: "how loud?", options: ["quiet", "chatty"] },
+			{ id: "extras", prompt: "checks?", options: ["lint", "smoke"], multiSelect: true },
+		])
+		// The sentinel slot exists on every question from the start (C7).
+		expect(c.pendingAsk?.customs).toEqual([undefined, undefined, undefined])
+		c.toggle("staging") // auto-advances
+		c.toggle("chatty") // auto-advances to the multiSelect tab
+		expect(c.currentQuestion?.id).toBe("extras")
+		c.toggle("lint")
+		expect(c.pendingAsk?.picks[2]).toEqual(["lint"])
+		expect(c.pendingAsk?.phase).toBe("questions") // multiSelect never auto-advances
+		c.toggle("smoke")
+		expect(c.pendingAsk?.picks[2]).toEqual(["lint", "smoke"])
+		expect(c.enterReview()).toBe(true)
+		c.submit()
+		expect(await pending).toEqual([
+			{ questionId: "deploy", selected: "staging" },
+			{ questionId: "verbosity", selected: "chatty" },
+			{ questionId: "extras", selected: "lint", selections: ["lint", "smoke"] },
+		])
 	})
 
 	test("←/→ switchFocus moves between tabs, clamped at both ends", () => {
@@ -330,6 +361,45 @@ describe("ask picker pure helpers (F5)", () => {
 		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"] }])).toBe(false)
 		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"], multiSelect: true }])).toBe(true)
 		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"] }, { id: "2", prompt: "b", options: ["y"] }])).toBe(true)
+	})
+
+	// C7 regression pin (container e2e 60-ask-user "space toggles lint on in
+	// place"): the sentinel row adds a 4th row to the questions list, and the
+	// dialog keymap WRAPS at both ends — so the trailing rows shift where a
+	// fixed count of arrow presses lands. The rows themselves must keep the
+	// option labels as STRING values (the only rows the space toggle and
+	// enter-pick act on), with the sentinel/review discriminators strictly
+	// after them — the trailing rows participate in navigation but can never
+	// absorb the toggle semantics.
+	test("askQuestionRows: option rows stay string-valued around the sentinel row; toggles re-bracket in place", () => {
+		const question = { id: "extras", prompt: "checks?", options: ["lint", "smoke"], multiSelect: true }
+		// Unanswered: brackets unchecked; sentinel + review rows follow.
+		expect(askQuestionRows(question, [], undefined, true).map((row) => row.value)).toEqual([
+			"lint",
+			"smoke",
+			{ kind: "custom" },
+			{ kind: "review" },
+		])
+		expect(askQuestionRows(question, [], undefined, true).map((row) => row.title)).toEqual([
+			"[ ] lint",
+			"[ ] smoke",
+			"Type something.",
+			"⏎ Review answers",
+		])
+		// lint toggled in place: only its own bracket flips, the sentinel and
+		// review rows keep their titles and discriminator values.
+		const toggled = askQuestionRows(question, ["lint"], undefined, true)
+		expect(toggled[0].title).toBe("[x] lint")
+		expect(toggled[1].title).toBe("[ ] smoke")
+		expect(toggled[2].value).toEqual({ kind: "custom" })
+		expect(toggled[3].value).toEqual({ kind: "review" })
+		// A committed custom answer renders the ✎ mark on the sentinel row.
+		expect(askQuestionRows(question, [], "typed", true)[2].title).toBe("✎ typed")
+		// Single-select rows stay bracket-less; no review row when the batch
+		// needs none (lone single-select question).
+		const single = askQuestionRows({ id: "1", prompt: "a", options: ["x"] }, ["x"], undefined, false)
+		expect(single.map((row) => row.value)).toEqual(["x", { kind: "custom" }])
+		expect(single[0].title).toBe("x")
 	})
 })
 

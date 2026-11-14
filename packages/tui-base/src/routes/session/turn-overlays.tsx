@@ -176,6 +176,35 @@ export function AskPicker(props: {
 /** Review-row discriminator: a question row (enter = edit it), the submit row, or the sentinel row. */
 type AskRowValue = { kind: "question"; qi: number } | { kind: "submit" } | { kind: "review" } | { kind: "custom" }
 
+/**
+ * The questions-phase rows, pure so the option ↔ sentinel ↔ review row
+ * mapping is unit-pinned: the question's options (multiSelect rows bracketed
+ * by the picks), then the sentinel row (tui-pi parity — a committed custom
+ * answer renders as `✎ <text>`; selecting it opens the inline editor), then
+ * the review row when the batch needs one. The OPTION rows carry the raw
+ * label as a string value; the sentinel/review rows carry AskRowValue
+ * discriminators — the space toggle (and enter's pick) only fires on the
+ * string-valued rows, so the trailing rows can never absorb the toggle
+ * semantics. They DO participate in arrow navigation (the keymap wraps), so
+ * callers walking the list by keypresses must target rows by their active
+ * state, not by a fixed count (see e2e/scenarios/60-ask-user.sh).
+ */
+export function askQuestionRows(
+	question: SeamAskQuestion,
+	picks: readonly string[],
+	custom: string | undefined,
+	review: boolean,
+): DialogSelectOption<string | AskRowValue>[] {
+	const multi = question.multiSelect === true
+	const rows: DialogSelectOption<string | AskRowValue>[] = question.options.map((option) => ({
+		title: multi ? (picks.includes(option) ? `[x] ${option}` : `[ ] ${option}`) : option,
+		value: option,
+	}))
+	rows.push({ title: askSentinelTitle(custom), value: { kind: "custom" } })
+	if (review) rows.push({ title: "⏎ Review answers", value: { kind: "review" } })
+	return rows
+}
+
 /** The questions phase: focused question's options + tab strip + ←/→/space. */
 function AskQuestionsView(props: {
 	ask: () => PendingAsk | undefined
@@ -195,17 +224,8 @@ function AskQuestionsView(props: {
 	const bIndex = (): number => batch()?.index ?? 0
 	const options = (): DialogSelectOption<string | AskRowValue>[] => {
 		const q = question()
-		const p = picked()
 		if (!q) return []
-		const rows: DialogSelectOption<string | AskRowValue>[] = q.options.map((option) => ({
-			title: multi() ? (p.includes(option) ? `[x] ${option}` : `[ ] ${option}`) : option,
-			value: option,
-		}))
-		// Sentinel row (tui-pi parity): the free-text entry point. A committed
-		// custom answer shows as `✎ <text>`; selecting it opens the inline editor.
-		rows.push({ title: askSentinelTitle(batch()?.customs[bIndex()]), value: { kind: "custom" } })
-		if (askNeedsReview(batch()?.questions ?? [])) rows.push({ title: "⏎ Review answers", value: { kind: "review" } })
-		return rows
+		return askQuestionRows(q, picked(), batch()?.customs[bIndex()], askNeedsReview(batch()?.questions ?? []))
 	}
 	const description = (): string | undefined => {
 		const b = batch()
