@@ -594,7 +594,9 @@ describe("settings modal: instant writes", () => {
 		})
 		expect(result.ok).toBe(true)
 		expect(result.label).toBe("Language")
-		expect(result.patch).toEqual({ hintsLocale: "zh-CN" })
+		// T14 unified language storage: the language row writes the `lang` key
+		// (/language authority); the legacy `hintsLocale` folds in read-only.
+		expect(result.patch).toEqual({ lang: "zh-CN" })
 		expect(calls).toHaveLength(1)
 		expect(calls[0]).toContain("configSave:")
 		expect(calls[0]).toContain("zh-CN")

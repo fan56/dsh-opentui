@@ -30,6 +30,7 @@
 import { testRender } from "@opentui/solid"
 import type { TestRendererSetup } from "@opentui/core/testing"
 import type { CapturedFrame } from "@opentui/core"
+import { applyI18nConfig } from "../../i18n/src/index"
 import { Transcript } from "../../tui-base/src/routes/session/transcript"
 import { WidgetsDock } from "../../tui-base/src/routes/session/widgets-dock"
 import { createSeamRows, type SeamRows } from "../../tui-base/src/routes/session/seam-rows"
@@ -77,6 +78,14 @@ export interface ShellRenderFixtureOptions {
 // Canned journal-record builders (payload contracts of projectJournalRecord
 // in src/client/session-seam-adapter.ts).
 // ---------------------------------------------------------------------------
+
+// i18n boot parity with the real client (examples/v2-entry.tsx calls
+// `applyI18nConfig(seam.configLoad?.())` before mounting): the fixture mounts
+// tui-base view components directly, so without this boot every `t()` call
+// (e.g. WidgetsDock's activity frame title) fail-opens to the raw key and the
+// en-literal frame assertions never see translated copy. Fixed language, no
+// config → the bundled en default, matching the boot contract.
+applyI18nConfig()
 
 let journalSeq = 0
 

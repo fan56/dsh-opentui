@@ -11,9 +11,17 @@
  */
 import { createTestRenderer } from "@opentui/core/testing"
 import { createComponent, render } from "@opentui/solid"
+import { applyI18nConfig } from "@dsh-opentui/i18n"
 import { SessionComposer } from "../../src/routes/session/session-composer"
 import { createSlashHost, SlashPalette } from "../../src/routes/session/slash-palette"
 import type { SlashCommand } from "../../src/routes/session/commands"
+
+// i18n boot parity with the real client (examples/v2-entry.tsx calls
+// `applyI18nConfig(seam.configLoad?.())` before mounting): the palette's
+// `… N more` overflow hint reads through t(), so without the boot it
+// fail-opens to the raw key and the frame assertions miss the copy.
+// No config → the bundled en default, matching the boot contract.
+applyI18nConfig()
 
 function findTextarea(node: any): any {
 	if (!node) return undefined
