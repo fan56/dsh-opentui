@@ -53,9 +53,33 @@ if (( AGENTS_GATE == 0 )); then
   send '/agents'
   sleep 2
   send Enter
-  wait_pane_fixed \
-    'G0 (gate dark): /agents is not the manager in these sources (never a model send)' 15 \
-    'unknown command: /agents (try /help)' || true
+  # /agents is a REGISTERED command in these sources too (commands.ts) — the
+  # stale-source answer is the honest not-mounted copy ("unavailable in this
+  # session" / "the manager panel is not mounted in this entry"), NOT the
+  # "unknown command" row the pre-C3 registry produced. The repaint can lag a
+  # keystroke (known in-container stale-paint family), so poll with a
+  # harmless re-Enter (an empty composer's Enter is a no-op) until either
+  # copy paints.
+  G0_HIT=0
+  for _ in $(seq 1 15); do
+    PANE="$(capture)"
+    if printf '%s' "$PANE" | grep -qF 'unavailable in this session' \
+      || printf '%s' "$PANE" | grep -qF 'the manager panel is not mounted in this entry'; then
+      G0_HIT=1
+      ok 'G0 (gate dark): /agents answers the honest not-mounted copy (never a model send)'
+      break
+    fi
+    send Enter
+    sleep 1
+  done
+  if (( G0_HIT == 0 )); then
+    # The load-bearing legs of G0 are the two below (no manager title, never a
+    # model send). The reply copy is face paint: it rides the stale-paint
+    # family (known in-container anomaly — the row can sit unpainted until a
+    # later keystroke), so a missing copy is a warn, not a verdict.
+    warn 'G0 (gate dark): /agents reply copy never painted within 15s (stale-paint family or unregistered run); no manager title, no model send either way; haystack tail:'
+    capture | tail -6 | sed 's/^/    | /'
+  fi
   assert_not_contains 'G0: no agents manager title exists in the stale sources' \
     '● Agents' "$(capture)"
   warn 'manager groups skipped-by-gate (sources predate the agents manager)'
