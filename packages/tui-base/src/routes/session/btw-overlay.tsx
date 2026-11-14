@@ -157,9 +157,14 @@ export function BtwPanel(props: { controller: BtwController }) {
 				{(run) => (
 					<>
 						<text>{run().question}</text>
+						{/* Render-gap adjudication: a settled/error slot whose answer
+							is "" paints the explicit placeholder so "badge but no body"
+							is identifiable on screen (H-B signature). This node only
+							exists when a run/last state is present — shown()===undefined
+							still paints just the badge below, unchanged. */}
 						<Show
 							when={run().status === "streaming" && run().answer === ""}
-							fallback={<text>{run().answer}</text>}
+							fallback={<text>{run().answer === "" ? "(empty answer)" : run().answer}</text>}
 						>
 							<text fg={muted()}>Thinking…</text>
 						</Show>

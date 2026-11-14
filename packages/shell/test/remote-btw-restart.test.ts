@@ -1,9 +1,9 @@
 // Wave-3 /btw second-session flow (row 32) and /reload same-port restart
 // (row 29) — fake connection, fake mux sockets, a fake dsh spawner, and a
 // real killable child process for the lockfile stop half.
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, describe, expect, test } from "bun:test"
 import { spawn as spawnNode } from "node:child_process"
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Server } from "node:net"
@@ -159,6 +159,91 @@ describe("row 32 — /btw via a reused throwaway session", () => {
 		expect(result.answer).toBe("hi")
 		expect(result.sessionId).toBe("throw-1")
 		await connection.close()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Trace file sink — DSH_OPENTUI_TRACE_FILE (the container e2e cannot read
+// stderr: the TUI repaints the tmux pane, so stderr never reaches the
+// container log). The sink only changes WHERE the trace lands — the line
+// format and the EARLY-EMPTY-SETTLE marker are unchanged.
+// ---------------------------------------------------------------------------
+
+describe("btw trace file sink (DSH_OPENTUI_TRACE_FILE)", () => {
+	const savedTraceFile = process.env.DSH_OPENTUI_TRACE_FILE
+	const savedDebug = process.env.DSH_OPENTUI_DEBUG
+	afterEach(() => {
+		if (savedTraceFile === undefined) delete process.env.DSH_OPENTUI_TRACE_FILE
+		else process.env.DSH_OPENTUI_TRACE_FILE = savedTraceFile
+		if (savedDebug === undefined) delete process.env.DSH_OPENTUI_DEBUG
+		else process.env.DSH_OPENTUI_DEBUG = savedDebug
+	})
+
+	/** One standalone askBtw turn: one text delta, then turn/end → settle. */
+	async function runOneBtw(): Promise<string> {
+		const sockets: FakeMuxSocket[] = []
+		const connection = new FakeConnection()
+		connection.rpcHandler = (method) => {
+			if (method === "session/create") return { sessionId: "throw-trace" }
+			if (method === "session/prompt") return { accepted: true }
+			if (method === "session/rename") return { title: "x", seq: 1 }
+			return {}
+		}
+		const pending = askBtw({
+			rpc: (method, args) => connection.rpc(method, args),
+			socketFactory: () => {
+				const s = new FakeMuxSocket()
+				sockets.push(s)
+				return s
+			},
+			cwd: "/w",
+			question: "trace me",
+			snapshot: [],
+			timeoutMs: 2000,
+		})
+		await until(() => sockets.length > 0)
+		const sock = sockets[sockets.length - 1]!
+		sock.item(snapshotFrame("throw-trace"))
+		sock.item(streamFrame({ type: "chunk", attemptId: "a", revision: 0, index: 0, time: 1, chunk: { type: "text-delta", index: 0, text: "hi" } }))
+		sock.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		const result = await pending
+		await connection.close()
+		return result.answer
+	}
+
+	test("the settle trace line is appended to DSH_OPENTUI_TRACE_FILE", async () => {
+		const file = join(scratchDir("btw-trace-"), "trace.log")
+		delete process.env.DSH_OPENTUI_DEBUG // the file sink has its own gate
+		process.env.DSH_OPENTUI_TRACE_FILE = file
+		expect(await runOneBtw()).toBe("hi")
+		const text = readFileSync(file, "utf8")
+		expect(text).toMatch(/^\[btw \d{2}:\d{2}:\d{2}\.\d{3}\] settle why=turn-end /m)
+		expect(text).toContain("out len=2")
+		// the EARLY-EMPTY-SETTLE marker only fires on a zero-delta settle
+		expect(text).not.toContain("EARLY-EMPTY-SETTLE")
+		// append-friendly: every trace line ends with a newline
+		expect(text.endsWith("\n")).toBe(true)
+		for (const line of text.split("\n")) {
+			if (line.length > 0) expect(line.startsWith("[btw ")).toBe(true)
+		}
+	})
+
+	test("no trace file is written when DSH_OPENTUI_TRACE_FILE is unset", async () => {
+		const file = join(scratchDir("btw-trace-off-"), "trace.log")
+		process.env.DSH_OPENTUI_TRACE_FILE = file
+		expect(await runOneBtw()).toBe("hi")
+		expect(existsSync(file)).toBe(true)
+		unlinkSync(file)
+		delete process.env.DSH_OPENTUI_TRACE_FILE
+		expect(await runOneBtw()).toBe("hi")
+		expect(existsSync(file)).toBe(false)
+	})
+
+	test("an unwritable trace file degrades instead of throwing", async () => {
+		const file = join(scratchDir("btw-trace-bad-"), "no-such-dir", "trace.log")
+		process.env.DSH_OPENTUI_TRACE_FILE = file
+		expect(await runOneBtw()).toBe("hi")
+		expect(existsSync(file)).toBe(false)
 	})
 })
 
@@ -461,5 +546,49 @@ describe("row 29 — /reload via lifecycle restart + carrier reconnect", () => {
 		const message = await session.reloadPlugins()
 		expect(message).toContain("no host lockfile")
 		await session.dispose()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// e2e mock btw keying — the 61-btw render-gap root cause pin. askBtw reuses
+// ONE throwaway session across side questions (previousSessionId), so the
+// SECOND question's LLM request body embeds the FIRST question's marker in
+// its history turns. The mock must key on the LAST marker in the body (the
+// newest user turn); the old first-match rule re-served ANSWER-ONE to Q2,
+// which made the scenario's ANSWER-TWO assertions unwinnable while the
+// client's paint path was fine (warn text said "render gap" — the body
+// never existed on the wire; local trace: settle out len=63 = ANSWER-ONE).
+// ---------------------------------------------------------------------------
+
+describe("e2e mock btwAnswer keys on the newest question (session-reuse contract)", () => {
+	test("Q2's body embedding Q1's history marker still answers ANSWER-TWO", async () => {
+		const { btwAnswer } = await import("../../../e2e/lib/mock-llm.mjs")
+		// shape: Q1's historical turns (question + ANSWER-ONE) precede Q2's
+		// own user message — the reused throwaway session's request body.
+		const body = [
+			'{"role":"user","content":"Side question (answer in one or two sentences, do not use tools): E2E_BTW_Q1 what is the deploy status"}',
+			'{"role":"assistant","content":"E2E-BTW-ANSWER-ONE — the deploy is green and the cache is warm."}',
+			'{"role":"user","content":"Side question (answer in one or two sentences, do not use tools): E2E_BTW_Q2 and the rollback plan"}',
+		].join("\n")
+		expect(btwAnswer(body)).toContain("E2E-BTW-ANSWER-TWO")
+	})
+
+	test("a first-question-only body still answers ANSWER-ONE", async () => {
+		const { btwAnswer } = await import("../../../e2e/lib/mock-llm.mjs")
+		const body = '{"role":"user","content":"Side question: E2E_BTW_Q1 what is the deploy status"}'
+		expect(btwAnswer(body)).toContain("E2E-BTW-ANSWER-ONE")
+	})
+
+	test("a body with no Q key falls back to the UNKNOWN marker", async () => {
+		const { btwAnswer } = await import("../../../e2e/lib/mock-llm.mjs")
+		expect(btwAnswer('{"role":"user","content":"hello"}')).toBe("E2E-BTW-ANSWER-UNKNOWN")
+	})
+
+	test("a body whose Q2 marker precedes Q1's still answers the LAST one", async () => {
+		const { btwAnswer } = await import("../../../e2e/lib/mock-llm.mjs")
+		// defensive ordering pin: whatever the host's history serialization
+		// order, the greatest lastIndexOf wins, not array order
+		const body = 'x E2E_BTW_Q2 y E2E_BTW_Q1 z'
+		expect(btwAnswer(body)).toContain("E2E-BTW-ANSWER-ONE")
 	})
 })

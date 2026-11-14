@@ -38,6 +38,7 @@
 
 import http from 'node:http'
 import { writeFileSync } from 'node:fs'
+import { pathToFileURL } from 'node:url'
 
 const args = process.argv.slice(2)
 const portFlag = args.indexOf('--port')
@@ -282,10 +283,27 @@ function decidePhase(bodyText) {
   return 'ignore'
 }
 
-/** The btw answer text for a request body (first matching Q key wins). */
-function btwAnswer(bodyText) {
-  const hit = BTW_Q_ANSWERS.find(entry => bodyText.includes(entry.key))
-  return hit !== undefined ? hit.answer : 'E2E-BTW-ANSWER-UNKNOWN'
+/** The btw answer text for a request body (LAST matching Q key wins).
+ *
+ * /btw reuses ONE throwaway session for every side question
+ * (remote-btw.ts previousSessionId), so a queued second question's request
+ * body embeds the FIRST question's marker in its history turns. Keying on
+ * the last occurrence answers the marker of the NEWEST user turn — the
+ * first-match rule answered Q1's script again for Q2, which made 61-btw's
+ * ANSWER-TWO assertions unwinnable while the paint path was fine (the
+ * 61-btw "PRODUCT RENDER GAP" warn family; see research/btw-render-gap.md
+ * — the local trace replay showed settle out len=63 = ANSWER-ONE for Q2). */
+export function btwAnswer(bodyText) {
+  let hit = null
+  let hitAt = -1
+  for (const entry of BTW_Q_ANSWERS) {
+    const at = bodyText.lastIndexOf(entry.key)
+    if (at > hitAt) {
+      hit = entry
+      hitAt = at
+    }
+  }
+  return hit !== null ? hit.answer : 'E2E-BTW-ANSWER-UNKNOWN'
 }
 
 /** The tps phase script: ticks over ~1.5s so the decode window is real. */
@@ -510,6 +528,11 @@ const server = http.createServer((req, res) => {
   req.on('error', () => res.destroy())
 })
 
-server.listen(PORT, HOST, () => {
-  log(`ready http://${HOST}:${PORT}`)
-})
+// Run-as-script gate: bind the port only when invoked as the mock server
+// (node mock-llm.mjs --port N). Imported as a module (the keying unit test),
+// the server never starts.
+if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
+  server.listen(PORT, HOST, () => {
+    log(`ready http://${HOST}:${PORT}`)
+  })
+}
