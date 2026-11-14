@@ -6,6 +6,12 @@
  * `/attach` (the audit offers receipts OR inline image parts — pick per
  * wire, say why):
  *
+ * - READ-BACK WIRE (installed closure, dsh 0.2.2-rc.2 typert.host.js):
+ *   `session/attachment` takes ONE parameter named `request` of shape
+ *   `{sessionId, attachment: ImageAttachmentRef}` — the nested ref needs
+ *   `attachmentId` + `mediaType` + `bytes` + `width` + `height` (all
+ *   required; strict codec, `additionalProperties: false`). The admitted
+ *   prompt-content blocks in the follow journal carry exactly that ref.
  * - `fileUploads/upload` {agentId, request:{data, name?}} mints a receipt
  *   carrying a FileAttachmentRef (verbatim file store). BUT the prompt
  *   `{type:'file', receiptId}` part resolves to a FILE reference, and the
@@ -24,7 +30,7 @@
  *
  * Chosen route: the inline image part. The admitted refs are read from
  * the follow journal's durable user/message records
- * (`attachmentIdsOfPromptContent`) for the round-trip surface.
+ * (`attachmentRefsOfPromptContent`) for the round-trip surface.
  *
  * Row 36: `GET /api/file?path=<absolute path>` (mounted by
  * SessionMediaReferences, authenticated by the API cookie, 20 MiB cap →
@@ -82,20 +88,30 @@ export function imagePromptPart(file: StagedImageUpload): RemoteImagePromptPart 
 }
 
 /**
- * The admitted attachment ids inside one durable prompt content array
- * (the host promotes inline bytes to `{type:'image', attachment:
- * ImageAttachmentRef}` before the message is created).
+ * The admitted image refs inside one durable prompt content array (the
+ * host promotes inline bytes to `{type:'image', attachment:
+ * ImageAttachmentRef}` before the message is created). The refs pass
+ * through verbatim — `session/attachment` verifies the full ref
+ * (attachmentId + mediaType + bytes + width + height), not just the id.
  */
-export function attachmentIdsOfPromptContent(content: unknown): string[] {
-	const ids: string[] = []
-	if (!Array.isArray(content)) return ids
+export function attachmentRefsOfPromptContent(content: unknown): Record<string, unknown>[] {
+	const refs: Record<string, unknown>[] = []
+	if (!Array.isArray(content)) return refs
 	for (const block of content) {
 		const typed = block as { type?: unknown; attachment?: unknown } | null
 		if (typed?.type !== "image" || typeof typed.attachment !== "object" || typed.attachment === null) continue
-		const attachmentId = (typed.attachment as Record<string, unknown>).attachmentId
-		if (typeof attachmentId === "string" && attachmentId) ids.push(attachmentId)
+		const ref = typed.attachment as Record<string, unknown>
+		if (typeof ref.attachmentId === "string" && ref.attachmentId) refs.push(ref)
 	}
-	return ids
+	return refs
+}
+
+/**
+ * The admitted attachment ids inside one durable prompt content array
+ * (durable read-back input; the ids of `attachmentRefsOfPromptContent`).
+ */
+export function attachmentIdsOfPromptContent(content: unknown): string[] {
+	return attachmentRefsOfPromptContent(content).map((ref) => ref.attachmentId as string)
 }
 
 /** Typed failures of the /api/file bytes path. */
@@ -126,14 +142,16 @@ export async function fetchHostFile(baseUrl: string, cookieHeader: string, path:
 
 /**
  * Read one durable image back (round-trip verification): base64 payload
- * plus the normalized ref the host stored.
+ * plus the normalized ref the host stored. The wire parameter is the FULL
+ * admitted ref (`{request:{sessionId, attachment}}` per the host typert
+ * descriptor) — an id-only request is rejected `gateway/input-invalid`.
  */
 export async function readSessionAttachment(
 	rpc: RemoteAttachmentRpc,
 	sessionId: string,
-	attachmentId: string,
+	attachment: Record<string, unknown>,
 ): Promise<{ data: string; mediaType: string; bytes: number; width?: number; height?: number }> {
-	const value = (await rpc("session/attachment", { request: { sessionId, attachmentId } })) as Record<string, unknown>
+	const value = (await rpc("session/attachment", { request: { sessionId, attachment } })) as Record<string, unknown>
 	const ref = (typeof value.attachment === "object" && value.attachment !== null ? value.attachment : {}) as Record<string, unknown>
 	return {
 		data: typeof value.data === "string" ? value.data : "",

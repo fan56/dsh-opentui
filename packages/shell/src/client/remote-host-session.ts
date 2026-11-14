@@ -193,7 +193,7 @@ import { commitAgentModelEdit, listComposedAgents, type AgentEditTarget, type Co
 import { probeGitBranch } from "./remote-git.ts"
 import { toolPresentationModeFromPresetDocument } from "./remote-exec-mode.ts"
 import {
-	attachmentIdsOfPromptContent,
+	attachmentRefsOfPromptContent,
 	fetchHostFile,
 	imagePromptPart,
 	readImageAttachment,
@@ -2000,25 +2000,42 @@ export class RemoteHostSession {
 	}
 
 	/**
+	 * The admitted image refs of the last image-carrying prompt, read
+	 * from the follow journal's durable user/message records. The FULL
+	 * ref is the `session/attachment` read-back input (the host verifies
+	 * attachmentId + mediaType + bytes + width + height).
+	 */
+	#attachmentRefsOfLastPrompt(): Record<string, unknown>[] {
+		for (let i = this.#journal.length - 1; i >= 0; i--) {
+			const entry = this.#journal[i]!
+			if (entry.type !== "user/message") continue
+			const refs = attachmentRefsOfPromptContent(entry.data.content ?? (entry.data.message as Record<string, unknown> | undefined)?.content)
+			if (refs.length > 0) return refs
+		}
+		return []
+	}
+
+	/**
 	 * wave 3 (row 35 read-back): the durable attachment ids of the last
 	 * image-carrying prompt, read from the follow journal's admitted
 	 * user/message records (`session/attachment` round-trip input).
 	 */
 	lastAttachmentIds(): string[] {
-		for (let i = this.#journal.length - 1; i >= 0; i--) {
-			const entry = this.#journal[i]!
-			if (entry.type !== "user/message") continue
-			const ids = attachmentIdsOfPromptContent(entry.data.content ?? (entry.data.message as Record<string, unknown> | undefined)?.content)
-			if (ids.length > 0) return ids
-		}
-		return []
+		return this.#attachmentRefsOfLastPrompt().map((ref) => ref.attachmentId as string)
 	}
 
 	/** Read one durable image back (row 35 round-trip; remote-attachments). */
 	readSessionAttachment(attachmentId: string): Promise<{ data: string; mediaType: string; bytes: number; width?: number; height?: number }> {
 		const sessionId = this.#sessionId
 		if (sessionId === undefined) throw new Error("no live session to read attachments from")
-		return readSessionAttachment((method, args) => this.#rpc(method, args), sessionId, attachmentId)
+		// The journal carries the full admitted ref — the wire needs it
+		// (`{request:{sessionId, attachment}}`); an id-only request is
+		// rejected `gateway/input-invalid`. A ref missing from the journal
+		// (foreign id, mock fixture) degrades to a placeholder that the
+		// host answers with a typed rejection instead of a wire fault.
+		const known = this.#attachmentRefsOfLastPrompt().find((ref) => ref.attachmentId === attachmentId)
+		const attachment = known ?? { attachmentId, mediaType: "", bytes: 0, width: 0, height: 0 }
+		return readSessionAttachment((method, args) => this.#rpc(method, args), sessionId, attachment)
 	}
 
 	/**

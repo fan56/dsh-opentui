@@ -535,7 +535,11 @@ describe("remote live smoke", () => {
 				}
 				if (host !== undefined) {
 					const sweep = spawnSync("lsof", ["-ti", `tcp:${host.port}`])
-					const pids = String(sweep.stdout).split("\n").map((s) => s.trim()).filter(Boolean)
+					// exclude THIS process: after a same-port restart the runner's
+					// own lingering carrier socket to the restarted host still
+					// shows up in lsof, and group-signaling it kills the test
+					// runner itself (SIGTERM before the summary — observed live)
+					const pids = String(sweep.stdout).split("\n").map((s) => s.trim()).filter(Boolean).filter((pid) => Number(pid) !== process.pid)
 					if (sweep.error || pids.length > 0) console.log(`  [wave-3] port sweep tcp:${host.port} → ${sweep.error ? `lsof error: ${sweep.error.message}` : pids.join(",")}`)
 					for (const pid of pids) {
 						// the pid is the detached dsh wrapper — a group leader:
