@@ -368,7 +368,7 @@ export async function commitLoginRoute(
 	// the host rejects AND registered a garbage route. An empty key is a
 	// swallowed no-op (esc stays the cancel path).
 	if (!key.trim()) {
-		say("login cancelled — empty key")
+		say(t("command.login.cancelledEmptyKey"))
 		return
 	}
 	const registered = await face.registerRoute(entry.id, providerProfileFor(entry))
@@ -413,7 +413,7 @@ export async function offerCorruptedLogRepair(
 		return false
 	}
 	if (!ctx.seam.repairSessionLog) {
-		ctx.say("/resume repair unavailable in this session — the log was left untouched")
+		ctx.say(t("command.repair.unavailable"))
 		return false
 	}
 	const unrepairable = broken.filter((row) => !isRepairableLogRow(row))
@@ -481,7 +481,7 @@ export async function runCustomLoginChain(
 		for (;;) {
 			value = await ctx.promptText?.(loginStepTitle(def.title, error), { mask: def.mask })
 			if (value === undefined) {
-				ctx.say("login cancelled")
+				ctx.say(t("command.login.cancelled"))
 				return
 			}
 			const trimmed = value.trim()
@@ -613,7 +613,7 @@ export function coreCommands(): SlashCommand[] {
 				}
 				const catalog = await ctx.seam.modelCatalog()
 				if (catalog.length === 0) {
-					ctx.say("no models in the catalog")
+					ctx.say(t("command.model.emptyCatalog"))
 					return
 				}
 				const current = await ctx.seam.currentModelSelection()
@@ -741,7 +741,7 @@ export function coreCommands(): SlashCommand[] {
 					],
 				)
 				if (!effortPicked) {
-					ctx.say("model unchanged")
+					ctx.say(t("command.model.unchanged"))
 					return
 				}
 				const effort = effortPicked === MODEL_DEFAULT_EFFORT_PICK ? undefined : effortPicked
@@ -790,7 +790,7 @@ export function coreCommands(): SlashCommand[] {
 			async run(ctx, argText) {
 				const face = ctx.seam.login
 				if (!face || !ctx.promptText) {
-					ctx.say("/login unavailable in this session")
+					ctx.say(t("command.login.unavailable"))
 					return
 				}
 				const arg = argText.trim().toLowerCase()
@@ -837,7 +837,7 @@ export function coreCommands(): SlashCommand[] {
 			async run(ctx, argText) {
 				const face = ctx.seam.login
 				if (!face) {
-					ctx.say("/logout unavailable in this session")
+					ctx.say(t("command.logout.unavailable"))
 					return
 				}
 				// A dead settings seam is an ERROR, not an empty login list (the
@@ -863,7 +863,7 @@ export function coreCommands(): SlashCommand[] {
 					}
 				}
 				if (loggedIn.length === 0) {
-					ctx.say("no logged-in providers")
+					ctx.say(t("command.logout.none"))
 					return
 				}
 				const arg = argText.trim()
@@ -930,7 +930,7 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				if (sessions.length === 0) {
-					ctx.say("no stored sessions")
+					ctx.say(t("command.resume.empty"))
 					return
 				}
 				const visible = filterSessionsBySizeFloor(sessions)
@@ -968,7 +968,7 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.clear.description"),
 			run(ctx) {
 				ctx.clear()
-				ctx.say("transcript cleared")
+				ctx.say(t("command.clear.done"))
 			},
 		},
 		{
@@ -986,12 +986,12 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.flush.description"),
 			run(ctx) {
 				if (!ctx.flushQueue) {
-					ctx.say("/flush unavailable in this session")
+					ctx.say(t("command.flush.unavailable"))
 					return
 				}
 				const result = ctx.flushQueue()
 				if (result.kind === "empty") {
-					ctx.say("queue is empty — nothing to flush")
+					ctx.say(t("command.flush.empty"))
 					return
 				}
 				if (result.kind === "busy") {
@@ -1012,7 +1012,7 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.btw.description"),
 			run(ctx, argText) {
 				if (!ctx.seam.btwAsk || !ctx.openBtw) {
-					ctx.say("/btw unavailable in this session")
+					ctx.say(t("command.btw.unavailable"))
 					return
 				}
 				ctx.openBtw(argText)
@@ -1025,12 +1025,12 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.session.description"),
 			async run(ctx) {
 				if (!ctx.seam.sessionInfo) {
-					ctx.say("/session unavailable in this session")
+					ctx.say(t("command.session.unavailable"))
 					return
 				}
 				const info = await ctx.seam.sessionInfo()
 				if (!info || info.sessionId === null) {
-					ctx.say("no active session")
+					ctx.say(t("command.session.noActive"))
 					return
 				}
 			for (const line of formatSessionInfoPanel(sessionInfoRows(info))) ctx.say(line)
@@ -1045,7 +1045,7 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.plugins.description"),
 			run(ctx) {
 				if (!ctx.seam.plugins) {
-					ctx.say("/plugins unavailable in this session")
+					ctx.say(t("command.plugins.unavailable"))
 					return
 				}
 				if (ctx.openPlugins) {
@@ -1054,7 +1054,7 @@ export function coreCommands(): SlashCommand[] {
 				}
 				const plugins = ctx.seam.plugins()
 				if (plugins.length === 0) {
-					ctx.say("no plugins installed")
+					ctx.say(t("command.plugins.none"))
 					return
 				}
 				for (const plugin of plugins) ctx.say(t("command.plugins.entry", { name: plugin.name, version: plugin.version }))
@@ -1072,7 +1072,7 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.skills.description"),
 			run(ctx) {
 				if (!ctx.openSkills) {
-					ctx.say("/skills unavailable in this session")
+					ctx.say(t("command.skills.unavailable"))
 					return
 				}
 				ctx.openSkills()
@@ -1087,7 +1087,7 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.search.description"),
 			run(ctx) {
 				if (!ctx.openSearch) {
-					ctx.say("/search unavailable in this session")
+					ctx.say(t("command.search.unavailable"))
 					return
 				}
 				ctx.openSearch()
@@ -1105,11 +1105,11 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.agents.description"),
 			run(ctx, argText) {
 				if (!ctx.seam.agents) {
-					ctx.say("/agents unavailable in this session")
+					ctx.say(t("command.agents.unavailable"))
 					return
 				}
 				if (!ctx.openAgents) {
-					ctx.say("/agents: the manager panel is not mounted in this entry")
+					ctx.say(t("command.agents.panelNotMounted"))
 					return
 				}
 				const name = argText.trim()
@@ -1126,7 +1126,7 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.settings.description"),
 			run(ctx) {
 				if (!ctx.openSettings) {
-					ctx.say("/settings: the panel is not mounted in this entry")
+					ctx.say(t("command.settings.panelNotMounted"))
 					return
 				}
 				ctx.openSettings()
@@ -1143,7 +1143,7 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.history.description"),
 			run(ctx) {
 				if (!ctx.openHistory) {
-					ctx.say("/history: the browser panel is not mounted in this entry")
+					ctx.say(t("command.history.panelNotMounted"))
 					return
 				}
 				ctx.openHistory()
@@ -1160,12 +1160,12 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.subagents.description"),
 			run(ctx) {
 				if (!ctx.openSubagents) {
-					ctx.say("/subagents: the transcript viewer is not mounted in this entry")
+					ctx.say(t("command.subagents.panelNotMounted"))
 					return
 				}
 				const views = ctx.seam.subagentViews?.() ?? []
 				if (views.length === 0) {
-					ctx.say("no subagents in this session — spawn one and run /subagents again")
+					ctx.say(t("command.subagents.none"))
 					return
 				}
 				ctx.openSubagents()
@@ -1183,12 +1183,12 @@ export function coreCommands(): SlashCommand[] {
 			async run(ctx) {
 				const thinking = ctx.seam.thinking
 				if (!thinking) {
-					ctx.say("/think unavailable in this session")
+					ctx.say(t("command.think.unavailable"))
 					return
 				}
 				const efforts = await thinking.efforts()
 				if (efforts.length === 0) {
-					ctx.say("/think unavailable: the current model exposes no reasoning efforts")
+					ctx.say(t("command.think.noEfforts"))
 					return
 				}
 				const current = await thinking.currentEffort()
@@ -1325,7 +1325,7 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				if (arg !== "full" && arg !== "reduced" && arg !== "off" && arg !== "auto") {
-					ctx.say("usage: /motion full|reduced|off|auto")
+					ctx.say(t("command.motion.usageBare"))
 					return
 				}
 				setMotionTier(arg === "auto" ? undefined : (arg as MotionTier))
@@ -1357,7 +1357,7 @@ export function coreCommands(): SlashCommand[] {
 			description: t("command.theme.description"),
 			async run(ctx) {
 				if (!ctx.themes) {
-					ctx.say("/theme unavailable in this session")
+					ctx.say(t("command.theme.unavailable"))
 					return
 				}
 				const current = ctx.themes.current()
@@ -1405,12 +1405,12 @@ export function coreCommands(): SlashCommand[] {
 			async run(ctx, argText) {
 				const face = ctx.seam.preset
 				if (!face) {
-					ctx.say("/preset unavailable in this session")
+					ctx.say(t("command.preset.unavailable"))
 					return
 				}
 				const rows = await face.list()
 				if (rows.length === 0) {
-					ctx.say("no agent presets available")
+					ctx.say(t("command.preset.none"))
 					return
 				}
 				const currentId = await face.currentId()
@@ -1430,7 +1430,7 @@ export function coreCommands(): SlashCommand[] {
 				} else if (arg === "next") {
 					target = presetNextRow(rows, currentId)
 					if (!target) {
-						ctx.say("no other preset to switch to")
+						ctx.say(t("command.preset.noOther"))
 						return
 					}
 				} else {

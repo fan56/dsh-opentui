@@ -93,17 +93,36 @@ describe("leak-guard scanner (design §4 T14 infra)", () => {
 		}
 	})
 
-	test("scanTree honors the exclude option", () => {
-		const dir = mkdtempSync(join(tmpdir(), "i18n-scan-"))
-		try {
-			writeFileSync(join(dir, "keep.ts"), "const a = '中文'\n")
-			writeFileSync(join(dir, "skip-me.ts"), "const a = '中文'\n")
-			const found = scanTree(dir, { exclude: (file) => file.endsWith("skip-me.ts") })
-			expect(found.map((f: FileLeaks) => f.file)).toEqual([join(dir, "keep.ts")])
-		} finally {
-			rmSync(dir, { recursive: true, force: true })
-		}
-	})
+		test("scanTree honors the exclude option", () => {
+			const dir = mkdtempSync(join(tmpdir(), "i18n-scan-"))
+			try {
+				writeFileSync(join(dir, "keep.ts"), "const a = '中文'\n")
+				writeFileSync(join(dir, "skip-me.ts"), "const a = '中文'\n")
+				const found = scanTree(dir, { exclude: (file) => file.endsWith("skip-me.ts") })
+				expect(found.map((f: FileLeaks) => f.file)).toEqual([join(dir, "keep.ts")])
+			} finally {
+				rmSync(dir, { recursive: true, force: true })
+			}
+		})
+
+		test("scanTree skips the sanctioned vendored dead code by default", () => {
+			const dir = mkdtempSync(join(tmpdir(), "i18n-scan-"))
+			// the suffixes are matched against the shipped layout (<pkg>/src/...)
+			const src = join(dir, "src")
+			try {
+				mkdirSync(src, { recursive: true })
+				writeFileSync(join(src, "keep.ts"), "const a = '中文'\n")
+				// dead code per the C12 disposition doc: v2-entry never mounts
+				// the vendored app root or the session route reached from it
+				mkdirSync(join(src, "routes", "session"), { recursive: true })
+				writeFileSync(join(src, "routes", "session", "index.tsx"), "const a = '中文'\n")
+				writeFileSync(join(src, "app.tsx"), "const a = '中文'\n")
+				const found = scanTree(src)
+				expect(found.map((f: FileLeaks) => f.file)).toEqual([join(src, "keep.ts")])
+			} finally {
+				rmSync(dir, { recursive: true, force: true })
+			}
+		})
 })
 
 describe("leak-guard ratchet (baseline may only go down — design §4 T14)", () => {

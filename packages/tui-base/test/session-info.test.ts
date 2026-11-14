@@ -3,10 +3,19 @@
  * (unknown reads as "—", never 0 tok/s), the row vocabulary/order, the
  * aligned transcript block, and the /session command's seam call + notice.
  */
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test, beforeAll, afterAll } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { formatSessionInfoPanel, formatTps, sessionInfoRows } from "../src/routes/session/session-info"
 import { coreCommands, dispatchLine, unknownCommandRow } from "../src/routes/session/commands"
 import type { SeamSessionInfo } from "../src/seams/session"
+
+// The command copy resolves through `t()` (T12 plain-say migration): boot
+// the bundled registry so the en-literal assertions stay hermetic.
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+afterAll(() => setLanguages(new Map()))
 
 /** A fully-billed session snapshot. */
 const billed: SeamSessionInfo = {

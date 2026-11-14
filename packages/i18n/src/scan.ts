@@ -61,6 +61,22 @@ export interface FileLeaks extends SourceLeaks {
 
 const SCANNED_EXTENSIONS = new Set([".ts", ".tsx"])
 
+/**
+ * Sanctioned files excluded from EVERY scanTree call (in addition to any
+ * caller-supplied `exclude`): vendored dead code that is never mounted.
+ *
+ * - `routes/session/index.tsx` and `app.tsx` are adapted from @opentui/tui,
+ *   but the v2-entry boots the slim app shell, not the vendored `app.tsx`
+ *   root, and the vendored session route is only reachable from that
+ *   unmounted root (C12 disposition doc). Their copy is upstream content,
+ *   not UI chrome we ship, and an upstream vendor refresh must never trip
+ *   the leak-guard ratchet — so they are skipped, not migrated.
+ */
+const DEFAULT_EXCLUDED_SUFFIXES = [
+	join("routes", "session", "index.tsx"),
+	join("src", "app.tsx"),
+]
+
 function* walkSources(
 	dir: string,
 	exclude?: (file: string) => boolean,
@@ -88,6 +104,7 @@ function* walkSources(
 			!entry.includes(".test.")
 		) {
 			if (exclude?.(full)) continue
+			if (DEFAULT_EXCLUDED_SUFFIXES.some((suffix) => full.endsWith(suffix))) continue
 			yield full
 		}
 	}
@@ -96,8 +113,9 @@ function* walkSources(
 /**
  * Walk a source tree and scan every non-test .ts/.tsx file. Files with no
  * leaks are omitted. `exclude(file)` opts intentional non-UI-CJK files out
- * of the scan (see test/leak-guard.test.ts for the sanctioned list). Never
- * throws on unreadable files (skipped).
+ * of the scan (see test/leak-guard.test.ts for the sanctioned list); the
+ * DEFAULT_EXCLUDED_SUFFIXES dead-code list above applies on top of it.
+ * Never throws on unreadable files (skipped).
  */
 export function scanTree(
 	rootDir: string,
