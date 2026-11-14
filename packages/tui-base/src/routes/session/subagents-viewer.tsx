@@ -63,6 +63,10 @@ const TRANSCRIPT_TICK_MS = 500
 const TRANSCRIPT_ROWS = 14
 /** The `x ×2` stop gesture window (ms) — a deliberate double press only. */
 const DOUBLE_PRESS_MS = 600
+/** The minimum gap between the two `x` presses (ms) — a held key's
+ * auto-repeat (~30-50ms apart) must never complete the double press and
+ * interrupt a RUNNING child (tui-pi keymap MIN_DOUBLE_PRESS_GAP_MS parity). */
+export const MIN_DOUBLE_PRESS_GAP_MS = 80
 
 const [bridgeOpen, setBridgeOpen] = createSignal(false)
 // Module-scope open state: the session sidebar Esc layer (priority 10)
@@ -90,11 +94,19 @@ export function useSubagentsViewerOpenState() {
 
 /**
  * The list rows: running children first (the live items the viewer is for),
- * then the most recent settled slice (capped). Pure and unit-tested.
+ * then the most recent settled slice (capped). Settled rows sort by `endedAt`
+ * descending — the spawn-order Map behind `views()` keeps insertion order, so
+ * a plain slice surfaced the OLDEST five ended children once the cap engaged
+ * (tui-pi sorts by endedAt before slicing, subagent-viewer.ts:368-374).
+ * Rows without `endedAt` (legacy producers) sort oldest — they lose to dated
+ * rows. Pure and unit-tested.
  */
 export function viewerRows(views: readonly SeamSubagentView[]): SeamSubagentView[] {
 	const running = views.filter((view) => view.status === "running")
-	const settled = views.filter((view) => view.status !== "running").slice(0, SETTLED_CAP)
+	const settled = views
+		.filter((view) => view.status !== "running")
+		.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+		.slice(0, SETTLED_CAP)
 	return [...running, ...settled]
 }
 
@@ -135,6 +147,21 @@ export function rowElapsedText(view: SeamSubagentView, now: number): string | un
 }
 
 /**
+ * The next scroll offset after one scroll step (P1-3, tui-pi followEnd
+ * re-location parity, subagent-viewer.ts:744-750): a saturating follow
+ * offset (MAX_SAFE_INTEGER pins the tail at open) first lands on the real
+ * window's bottom, then steps — so ↑/k detaches instead of re-clamping to
+ * the tail every press, and scrolling back to the bottom re-follows
+ * (transcriptWindow's `follow` flips when the offset reaches maxScroll).
+ * Pure and unit-tested.
+ */
+export function scrollTarget(delta: number, offset: number, lineCount: number, visible: number): number {
+	const maxScroll = Math.max(0, lineCount - visible)
+	const start = Math.min(offset, maxScroll) // rebase a saturating follow offset onto the real window
+	return Math.max(0, Math.min(start + delta, maxScroll)) // the bottom edge re-follows
+}
+
+/**
  * The transcript scroll window: `offset` clamped into [0, maxScroll], and the
  * follow flag — pinned to the tail when the offset sits at maxScroll (tui-pi
  * follow:'end' + scroll-detach semantics). Pure and unit-tested.
@@ -160,9 +187,12 @@ export function stopAllSummary(stopped: number): string {
 	return stopped === 1 ? "stop requested — 1 subagent" : `stop requested — ${stopped} subagents`
 }
 
-/** Whether a second `x` press within the window completes the double press. */
+/** Whether a second `x` press within the window completes the double press.
+ * The gap must be deliberate: fast enough to be a human double tap (≤600ms),
+ * slow enough that a held key's auto-repeat never completes it (≥80ms). */
 export function doublePressArmed(lastPress: number, now: number): boolean {
-	return lastPress > 0 && now - lastPress <= DOUBLE_PRESS_MS
+	const gap = now - lastPress
+	return lastPress > 0 && gap >= MIN_DOUBLE_PRESS_GAP_MS && gap <= DOUBLE_PRESS_MS
 }
 
 // ---------------------------------------------------------------- component --
@@ -192,6 +222,8 @@ export function SubagentsViewer(props: {
 	let lastXPress = 0
 	let tickTimer: ReturnType<typeof setInterval> | undefined
 	let statusTimer: ReturnType<typeof setTimeout> | undefined
+	/** P2-4: shift+k latch — one stop-all sweep per keypress, no repeats. */
+	let stopAllLatch = false
 	onCleanup(() => {
 		clearInterval(tickTimer)
 		clearTimeout(statusTimer)
@@ -226,7 +258,9 @@ export function SubagentsViewer(props: {
 		setCursor((index) => (index + delta + count) % count)
 	}
 
-	/** K stop-all: one interrupt RPC per RUNNING child (best-effort each). */
+	/** K stop-all: one interrupt RPC per RUNNING child (best-effort each).
+	 * Latched until the roster shows no more running children — a repeated
+	 * shift+k must not re-fire the interrupts (P2-4). */
 	function stopAll() {
 		const seam = props.seam
 		if (seam.interruptChild === undefined) {
@@ -235,9 +269,15 @@ export function SubagentsViewer(props: {
 		}
 		const targets = views().filter((view) => view.status === "running")
 		if (targets.length === 0) {
+			stopAllLatch = false
 			flash("no running subagents to stop")
 			return
 		}
+		if (stopAllLatch) {
+			flash(stopAllSummary(targets.length))
+			return
+		}
+		stopAllLatch = true
 		for (const target of targets) {
 			void seam.interruptChild(target.id).catch((error: unknown) => {
 				flash(`stop failed — ${String(error instanceof Error ? error.message : error).slice(0, 120)}`)
@@ -277,7 +317,10 @@ export function SubagentsViewer(props: {
 	}
 
 	function scrollBy(delta: number) {
-		setScrollOffset((offset) => offset + delta)
+		// P1-3: rebase a saturating follow offset onto the real window before
+		// stepping (scrollTarget) — a bare `offset + delta` from MAX_SAFE_INTEGER
+		// re-clamped to the tail forever and made scroll-up a visual no-op.
+		setScrollOffset((offset) => scrollTarget(delta, offset, transcript().length, TRANSCRIPT_ROWS))
 	}
 
 	function openTranscript(id: string) {
@@ -374,6 +417,7 @@ export function SubagentsViewer(props: {
 		setSortByRounds(false)
 		setBrowsingId(undefined)
 		setStatus(undefined)
+		stopAllLatch = false
 		setOpen(true)
 		handle = panels.open(() => renderList(), {
 			id: `subagents-${++sequence}`,

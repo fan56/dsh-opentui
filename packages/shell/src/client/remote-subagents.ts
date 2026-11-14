@@ -55,6 +55,9 @@ export interface RemoteSubagentView {
 	 * subagent tree's live duration ticks off it; `elapsed` stays the
 	 * read-time snapshot for the picker. */
 	startedAt: number
+	/** Wall clock of the running→settled transition (P1-5: the viewer's
+	 * "most recent settled" slice sorts off it, tui-pi endedAt parity). */
+	endedAt?: number
 	tokens?: number
 	elapsed: number
 	lastLine?: string
@@ -121,6 +124,8 @@ interface ChildState {
 	rounds: number
 	tokens?: number
 	startedAt: number
+	/** Wall clock of the running→settled transition (viewer recency sort). */
+	endedAt?: number
 	lastLine?: string
 	/** Live delta accumulation (text + reasoning), separate from `lastLine`.
 	 * Cleared whenever a durable record (assistant/message, tool/result)
@@ -237,7 +242,7 @@ export class RemoteSubagentPanel {
 		const view = this.#children.get(sessionId)
 		if (!view) return
 		if (!running && view.status === "running") {
-			this.#children.set(sessionId, { ...view, status: "completed" })
+			this.#children.set(sessionId, { ...view, status: "completed", endedAt: Date.now() })
 			this.#emit()
 		}
 	}
@@ -274,7 +279,7 @@ export class RemoteSubagentPanel {
 					this.#adopt(id, `subagent ${id.slice(0, 8)}`)
 					changed = true
 				} else if (row.running === false && existing.status === "running") {
-					this.#children.set(id, { ...existing, status: "completed" })
+					this.#children.set(id, { ...existing, status: "completed", endedAt: Date.now() })
 					changed = true
 				}
 			}
@@ -294,6 +299,7 @@ export class RemoteSubagentPanel {
 			status: v.status,
 			rounds: v.rounds,
 			startedAt: v.startedAt,
+			...(v.status !== "running" ? { endedAt: v.endedAt ?? Date.now() } : {}),
 			...(v.tokens !== undefined ? { tokens: v.tokens } : {}),
 			elapsed: Math.max(0, Math.floor((Date.now() - v.startedAt) / 1000)),
 			...(v.lastLine ? { lastLine: clamp(v.lastLine) } : {}),
@@ -425,7 +431,7 @@ export class RemoteSubagentPanel {
 	#settle(childId: string, outcome: "completed" | "failed" | "cancelled"): void {
 		const existing = this.#children.get(childId)
 		if (existing !== undefined && existing.status === "running") {
-			this.#children.set(childId, { ...existing, status: outcome })
+			this.#children.set(childId, { ...existing, status: outcome, endedAt: Date.now() })
 			this.#emit()
 		}
 	}
@@ -623,7 +629,7 @@ export class RemoteSubagentPanel {
 		} else if (type === "turn/end" && view.status === "running") {
 			// continuable children settle here too; one-shot children rely on
 			// the agent-end pairing / list running flags
-			this.#children.set(id, { ...view, status: "completed" })
+			this.#children.set(id, { ...view, status: "completed", endedAt: Date.now() })
 			changed = true
 		}
 		while (log.length > 200) log.shift()

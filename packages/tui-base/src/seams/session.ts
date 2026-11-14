@@ -289,6 +289,10 @@ export interface SeamSubagentView {
 	/** Batch V2b: frozen duration seconds of a SETTLED child (folded at the
 	 * settle emission; running rows carry none — they tick live). */
 	elapsedSec?: number
+	/** P1-5: wall clock of the running→settled transition (epoch ms) — the
+	 * viewer's "most recent settled" cap sorts off it (tui-pi endedAt parity).
+	 * Settled rows carry one; running rows do not. */
+	endedAt?: number
 	/** maxRounds wrap-up delivered at this round (`⚡ injected`). */
 	injectedRound?: number
 	/** maxRounds force-stop fired at this round (`⏻ hard-stopped @N`). */
