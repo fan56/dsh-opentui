@@ -8,6 +8,18 @@ importers:
 
   .: {}
 
+  packages/i18n:
+    devDependencies:
+      '@tsconfig/bun':
+        specifier: 1.0.9
+        version: 1.0.9
+      '@types/bun':
+        specifier: 1.4.3
+        version: 1.4.3
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   packages/panel-kit:
     dependencies:
       '@opentui/core':
@@ -94,6 +106,9 @@ importers:
 
   packages/tui-base:
     dependencies:
+      '@dsh-opentui/i18n':
+        specifier: workspace:*
+        version: link:../i18n
       '@dsh-opentui/panel-kit':
         specifier: workspace:*
         version: link:../panel-kit
