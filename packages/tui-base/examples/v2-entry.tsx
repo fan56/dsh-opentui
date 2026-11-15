@@ -585,7 +585,11 @@ function V2SessionPage(props: {
 						// its face is unchanged.
 						...(extras ? { preserveSelection: true } : {}),
 						current: currentValue,
-						focusCurrent: false,
+						// Opt-in focus-current arm (extras.focusCurrent — the
+						// /language picker): the selection starts on the marked
+						// current row so ↑ moves OFF it and bare Enter confirms it.
+						// The default stays row 0 (the e2e 67 bare-Enter contract).
+						focusCurrent: extras?.focusCurrent === true,
 						onSelect: (option: { value: string }) => done(option.value),
 						onCancel: () => done(undefined),
 					}),

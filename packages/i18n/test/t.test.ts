@@ -188,6 +188,20 @@ describe("setLanguage live switch (solid signal, no restart)", () => {
 		expect(t("command.language.set", { lang: "zh-CN" })).toBe("language switched: zh-CN")
 	})
 
+	test("a live switch to an id without a table degrades to en (never a table-less language)", () => {
+		// Real-machine live-lang symptom-2 guard (2026-11-15): a `setLanguage`
+		// past an uninstalled id must NOT leave the signal pointing at a
+		// table-less language — the fail-open chain would silently mask it
+		// (hintLabel turns a key-shaped t() output into '').
+		setLanguages(loadLocales({ bundledDir }).languages, "en")
+		setLanguage("fr")
+		expect(activeLanguage()).toBe("en")
+		expect(t("common.confirm")).toBe("Confirm")
+		// the installed ids still switch live
+		setLanguage("zh-CN")
+		expect(activeLanguage()).toBe("zh-CN")
+	})
+
 	test("t() is tracked: createEffect reading it re-runs on a language switch", async () => {
 		const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 		setLanguages(loadLocales({ bundledDir }).languages, "en")

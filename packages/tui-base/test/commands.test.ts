@@ -13,6 +13,7 @@ import {
 	presetLabelFor,
 	presetNextRow,
 	unknownCommandRow,
+	type PickOneExtras,
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
 import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
@@ -118,6 +119,7 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string | (string | undefined)
 			title: string
 			headerLine?: string
 			currentValue?: string
+			extras?: PickOneExtras
 			options: { title: string; description?: string }[]
 		}[],
 	}
@@ -132,11 +134,12 @@ function makeCtx(seam: RecordingSeam, pickAnswer?: string | (string | undefined)
 		quit: () => hooks.quit++,
 		refreshFooter: () => hooks.footerRefreshes++,
 		invalidateFooter: () => hooks.footerInvalidations++,
-		pickOne: async (title, options, headerLine, currentValue) => {
+		pickOne: async (title, options, headerLine, currentValue, extras) => {
 			hooks.picks.push({
 				title,
 				headerLine,
 				currentValue,
+				extras,
 				options: options.map((o) => ({ title: o.title, description: o.description })),
 			})
 			// An array answer is a per-stage queue (the /model two-stage flow:
@@ -1655,6 +1658,12 @@ describe("/language (T14: unified `lang` storage, live apply)", () => {
 		const pick = ctx.hooks.picks[0]!
 		expect(pick.title).toBe("Select language")
 		expect(pick.currentValue).toBe("en")
+		// Real-machine live-lang regression (2026-11-15): the picker marks the
+		// current row with the vendored `●` but kept the SELECTION on row 0 —
+		// ↑ from the marked current row wrapped to the far row and Enter
+		// resolved the wrong language ("语言未改变" ×2). The picker arms the
+		// focus-current extras so the selection STARTS on the marked row.
+		expect(pick.extras?.focusCurrent).toBe(true)
 		expect(pick.options.map((o) => o.title)).toEqual(["en", "zh-CN"])
 		// setLanguage runs BEFORE the confirm line is rendered: the completion
 		// wording already lands in the NEW language (zh), one line, no restart.

@@ -167,6 +167,14 @@ export interface PickOneExtras {
 	actions?: PickOneAction[]
 	getOptions?: () => { title: string; value: string; description?: string; category?: string }[]
 	onAction?: (command: string, value: string) => void
+	/**
+	 * Arm the focus-current face (live-language picker regression 2026-11-15):
+	 * the selection STARTS on the `currentValue` row instead of row 0, so ↑
+	 * moves OFF the marked current row and bare Enter confirms it (unchanged).
+	 * Opt-in — the /theme bare-Enter row-0 contract (e2e 67) keeps the default
+	 * row-0 focus.
+	 */
+	focusCurrent?: boolean
 }
 
 /** Host-side effects a command may ask for; the page owns each hook. */
@@ -199,7 +207,8 @@ export interface SlashCommandContext {
 		options: { title: string; value: string; description?: string }[],
 		headerLine?: string,
 		/** α skin layer: marks the active row with the vendored `●` current
-		 * marker without moving the selection off row 0. */
+		 * marker; the selection stays on row 0 unless `extras.focusCurrent`
+		 * arms the current-row focus (the /language picker). */
 		currentValue?: string,
 		extras?: PickOneExtras,
 	): Promise<string | undefined>
@@ -1392,6 +1401,12 @@ export function coreCommands(): SlashCommand[] {
 						})),
 						undefined,
 						current,
+						// Real-machine regression (2026-11-15): without the arm the
+						// selection stayed on row 0 while the current row only carried
+						// the `●` marker — ↑ wrapped away from the marked row and Enter
+						// resolved the current id again ("language unchanged" ×2), and
+						// a bare Enter suddenly switched to row 0's id.
+						{ focusCurrent: true },
 					)
 					// tui-pi unchanged semantics: esc/no answer and the current
 					// language print the unchanged line, nothing is written.

@@ -135,10 +135,17 @@ export function installedLanguages(): string[] {
  * Switch the active language LIVE (no restart): flip the signal (tracked
  * `t()` call sites re-render) + the non-reactive mirror. Persistence is the
  * CALLER's job — `/language` persists the unified `lang` key through the
- * config seam before calling this. Unknown ids are not validated here (the
- * command layer owns the choice surface); `t()` fail-opens to en on a miss.
+ * config seam before calling this. An id without a table (a hand-rolled
+ * caller past an uninstalled id — the real-machine live-lang symptom-2 shape)
+ * is REFUSED with a warning instead of parking the signal on a table-less
+ * language, where the fail-open chain would silently mask every miss
+ * (hintLabel turns a key-shaped t() output into '').
  */
 export function setLanguage(id: string): void {
+	if (state.languages.size > 0 && !state.languages.has(id)) {
+		console.warn(`[i18n] setLanguage('${id}') has no table — keeping '${state.active}'`)
+		return
+	}
 	state.active = id
 	setLanguageSignal(id)
 }

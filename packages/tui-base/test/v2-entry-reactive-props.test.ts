@@ -48,3 +48,14 @@ describe("examples reactive-prop law (batch 10e, the same family)", () => {
 		expect(helloSource).toMatch(/createComponent\(For,\s*\{\s*get each\(\)/)
 	})
 })
+
+describe("v2-entry pickOne focus-current wiring (live-language picker regression, 2026-11-15)", () => {
+	test("pickOne forwards the extras focus-current arm to DialogSelect", () => {
+		// The hardcoded `focusCurrent: false` kept the picker SELECTION on row 0
+		// while the current row only carried the `●` marker — ↑ from the marked
+		// row wrapped away and Enter resolved the wrong language. The arm is
+		// opt-in per call (the /theme bare-Enter row-0 contract stays put).
+		expect(source).toMatch(/focusCurrent:\s*extras\?\.focusCurrent === true/)
+		expect(source).not.toMatch(/focusCurrent:\s*false,/)
+	})
+})
