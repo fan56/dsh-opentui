@@ -64,13 +64,13 @@ const subagentDoc = doc([
 ])
 
 describe("v1 whitelist", () => {
-	test("local zone = the 9 v1 items (footerHints expands to its 8 segments)", () => {
+	test("local zone = the 10 v1 items (footerHints expands to its 8 segments)", () => {
 		const items = localItems()
 		expect(items).toHaveLength(LOCAL_SETTING_IDS.length)
-		expect(items).toHaveLength(17)
+		expect(items).toHaveLength(18)
 		expect(items.filter((item) => item.id.startsWith("footerHints."))).toHaveLength(8)
 		expect(items.map((item) => item.id)).toEqual([...LOCAL_SETTING_IDS])
-		expect(items.map((item) => item.zone)).toEqual(Array(17).fill("local"))
+		expect(items.map((item) => item.zone)).toEqual(Array(18).fill("local"))
 	})
 
 	test("host zone is exactly the four whitelisted rows, in fixed order", () => {

@@ -143,6 +143,95 @@ export function dockLineCap(terminalRows?: number): number {
 	return DOCK_WIDGET_MAX_LINES
 }
 
+// ------------------------------------------------- U4 activity panelHeight --
+// The /settings gear for the activity panel size (dsh-tui-pi parity:
+// 1 / 5 / 7 / 10 / all). The gear lives in the profile config under
+// `session.activity_panel_height`; ONLY /settings writes it, and the effect
+// is live through this module signal (the /language wiring: a settings-row
+// write flips the signal, boot replay restores it — no restart, no keybind).
+
+/** The five gears (dsh-tui-pi theme-settings). Numbers cap EACH of the think
+ * and tool blocks at N lines independently; `all` drops the per-block cap
+ * and instead clamps the whole frame at 2/3 of the terminal rows (the
+ * transcript keeps its 1/3 floor). */
+export const ACTIVITY_PANEL_GEARS = ["1", "5", "7", "10", "all"] as const
+export type ActivityPanelGear = (typeof ACTIVITY_PANEL_GEARS)[number]
+
+/** Practically-unbounded per-block cap for the `all` gear (the real bound is
+ * the combined `totalMaxLines` budget; a finite sentinel keeps every
+ * `slice(-maxLines)` and `Math.max(1, …)` well-defined). */
+const PANEL_UNBOUNDED_LINES = 1_000_000
+
+/** The selected gear; undefined = unset → the graded dockLineCap default. */
+export const [activityPanelGear, setActivityPanelGear] = createSignal<ActivityPanelGear | undefined>(undefined)
+
+/** The stored `session.activity_panel_height` value: one of the five gear
+ * spellings; anything else (typo, number, legacy value) → undefined → the
+ * caller keeps the default (the lang validator's fail-open style). */
+export function activityPanelHeightFromConfig(value: unknown): ActivityPanelGear | undefined {
+	return typeof value === "string" && (ACTIVITY_PANEL_GEARS as readonly string[]).includes(value)
+		? (value as ActivityPanelGear)
+		: undefined
+}
+
+/**
+ * Boot replay (/motion's resolveMotionPreference parity): apply the persisted
+ * /settings gear onto the module signal BEFORE the first paint, so a restart
+ * keeps the user's choice. Reads `session.activity_panel_height` from the
+ * merged config snapshot; an invalid value is REJECTED with a warning (the
+ * default sizing keeps running); missing/unreadable config is silent. Never
+ * throws.
+ */
+export function applyActivityPanelConfig(config?: Record<string, unknown>): void {
+	try {
+		const session = config?.session
+		const stored =
+			typeof session === "object" && session !== null ? (session as Record<string, unknown>).activity_panel_height : undefined
+		if (stored === undefined || stored === null) return
+		const gear = activityPanelHeightFromConfig(stored)
+		if (gear !== undefined) {
+			setActivityPanelGear(gear)
+			return
+		}
+		console.warn(
+			`[widgets-dock] invalid session.activity_panel_height ${JSON.stringify(stored)} — expected one of ${ACTIVITY_PANEL_GEARS.join("/")} ; keeping the default panel sizing`,
+		)
+	} catch {
+		/* replay is best-effort: a bad config read keeps the default */
+	}
+}
+
+/** The resolved geometry for one gear + terminal height. */
+export interface ActivityPanelCapSpec {
+	/** Per-block cap fed to the builders' `maxLines`. */
+	maxLines: number
+	/** Combined think+tool budget (the `all` gear's 2/3 frame clamp); the
+	 * frame borders ride ON TOP of this budget. */
+	totalMaxLines?: number
+}
+
+/**
+ * Gear → dock geometry (pure). Unset gear = the graded default, byte for
+ * byte. A short terminal (≤ COMPOSER_COMPACT_TERMINAL_ROWS, the two-row rule
+ * bar contract) leaves the gear INERT — the degraded strip wins over the
+ * gear at any value. Numeric gears cap each block at N lines independently;
+ * `all` runs the blocks unbounded but holds the whole frame (borders
+ * included) at 2/3 of the terminal rows: `floor(rows * 2 / 3) - 2` content
+ * lines. Unknown height keeps the numeric gear (only `all` needs geometry
+ * and degrades to unbounded).
+ */
+export function activityPanelCapSpec(gear: ActivityPanelGear | undefined, terminalRows?: number): ActivityPanelCapSpec {
+	if (gear === undefined) return { maxLines: dockLineCap(terminalRows) }
+	if (terminalRows !== undefined && terminalRows <= COMPOSER_COMPACT_TERMINAL_ROWS) {
+		return { maxLines: dockLineCap(terminalRows) }
+	}
+	if (gear === "all") {
+		if (terminalRows === undefined) return { maxLines: PANEL_UNBOUNDED_LINES }
+		return { maxLines: PANEL_UNBOUNDED_LINES, totalMaxLines: Math.max(1, Math.floor((terminalRows * 2) / 3) - 2) }
+	}
+	return { maxLines: Number(gear) }
+}
+
 /** Notice fade progress: 0 until the last SKIN_NOTICE_FADE_MS of the TTL,
  * then 0→1. The removal timer is untouched (H5/notifications). */
 export function skinNoticeFadeProgress(elapsedMs: number, ttlMs: number): number {
@@ -521,6 +610,10 @@ export type DockViewOptions = {
 	decorated?: boolean
 	/** Per-widget line cap (3 default, 1 at compact terminals). */
 	maxLines?: number
+	/** Combined think+tool budget (U4 panelHeight `all` gear): when the two
+	 * blocks together exceed it, the LONGER block sheds its oldest lines first
+	 * (a tie sheds think) until the sum fits. */
+	totalMaxLines?: number
 }
 
 /** The dock's two widget blocks (pure): Think → Tool. The Todos table is NOT
@@ -615,6 +708,18 @@ export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = 
 			id: `dock:tool:${row.key}`,
 			fadeOutAt: row.status !== "running" ? skinStopAt(row) : undefined,
 		})
+	}
+	// U4 panelHeight `all` gear: the combined think+tool budget. Think and
+	// tool stay independent builders; only the SUM is clamped here, shedding
+	// the oldest (front) line of the currently LONGER block first — a tie
+	// sheds think — so neither block can starve the other below half.
+	const totalCap = options.totalMaxLines !== undefined ? Math.max(1, Math.floor(options.totalMaxLines)) : undefined
+	if (totalCap !== undefined) {
+		while (think.length + toolLines.length > totalCap && think.length + toolLines.length > 0) {
+			const longer = think.length >= toolLines.length ? think : toolLines
+			if (longer.length === 0) break
+			longer.shift()
+		}
 	}
 	return { think, tool: toolLines, now, decorated }
 }
@@ -1045,11 +1150,17 @@ export function WidgetsDock(props: {
 	createEffect(() => activityFrameLatch.push(turnActive()))
 	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
-	// Per-widget line cap, graded by terminal height (≤ 40 → 1, 41-50 → 2,
-	// > 50 → 3): the middle band never grows the activity frame past the
-	// transcript floor.
-	const lineCap = () => dockLineCap(dimensions().height)
-	const frameBlocks = () => activityBlocks(props.rows, { maxLines: lineCap() })
+	// Per-widget line cap: the /settings panelHeight gear when set (reactive —
+	// the module signal re-runs this on a live change), else the graded
+	// terminal-height default (≤ 40 → 1, 41-50 → 2, > 50 → 3). Short
+	// terminals keep the rule-bar degradation; the gear is inert there.
+	const capSpec = () => activityPanelCapSpec(activityPanelGear(), dimensions().height)
+	const lineCap = () => capSpec().maxLines
+	const frameBlocks = () =>
+		activityBlocks(props.rows, {
+			maxLines: lineCap(),
+			...(capSpec().totalMaxLines !== undefined ? { totalMaxLines: capSpec().totalMaxLines } : {}),
+		})
 	// Explicit height = 2 border rows + the visible content rows (title rides
 	// the top border, adds no rows). Dynamic: the blocks grow/shrink as lines
 	// appear and are hidden; each row still has an explicit parent height.
@@ -1074,19 +1185,20 @@ export function WidgetsDock(props: {
 					</For>
 				</box>
 			</Show>
-			<Show
-				when={activityFrameLatch.shown()}
-				fallback={
-					<FlatDock
-						rows={props.rows}
-						width={width()}
-						fgFor={fgFor}
-						accentFg={accentFg}
-						skinCtx={skinCtx()}
-						maxLines={lineCap()}
-					/>
-				}
-			>
+				<Show
+					when={activityFrameLatch.shown()}
+					fallback={
+						<FlatDock
+							rows={props.rows}
+							width={width()}
+							fgFor={fgFor}
+							accentFg={accentFg}
+							skinCtx={skinCtx()}
+							maxLines={lineCap()}
+							totalMaxLines={capSpec().totalMaxLines}
+						/>
+					}
+				>
 				<Show
 					when={frame() === "frame"}
 					fallback={
@@ -1121,7 +1233,8 @@ export function WidgetsDock(props: {
 /** The idle fallback dock (the pre-skin flat line list): after the turn
  * ends the frame disappears and any straggler lines (lingering/fading) keep
  * their original per-line height so the composer never jumps. `maxLines` is
- * the geometry's per-widget cap (3 default, 1 at compact terminals). */
+ * the geometry's per-widget cap (3 default, 1 at compact terminals);
+ * `totalMaxLines` is the `all` gear's combined budget (undefined = none). */
 function FlatDock(props: {
 	rows: readonly SeamRow[]
 	width: number
@@ -1129,16 +1242,21 @@ function FlatDock(props: {
 	accentFg: (accent: DockAccent) => string | RGBA
 	skinCtx: SkinFgContext
 	maxLines: number
+	totalMaxLines?: number
 }): JSX.Element {
+	const dockOptions = () => ({
+		maxLines: props.maxLines,
+		...(props.totalMaxLines !== undefined ? { totalMaxLines: props.totalMaxLines } : {}),
+	})
 	return (
 		<box
 			flexShrink={0}
 			flexDirection="column"
 			width="100%"
-			height={dockLines(props.rows, { maxLines: props.maxLines }).length}
+			height={dockLines(props.rows, dockOptions()).length}
 			paddingLeft={3}
 		>
-			<For each={dockLines(props.rows, { maxLines: props.maxLines })}>
+			<For each={dockLines(props.rows, dockOptions())}>
 				{(line) => dockLineNode(line, props.width, props.skinCtx, props.fgFor, props.accentFg)}
 			</For>
 		</box>

@@ -183,6 +183,10 @@ export const Info = Schema.Struct({
       permissions: Schema.optional(Schema.Literals(["prompt", "autoaccept"])).annotate({
         description: "Prompt for permission requests or accept them automatically",
       }),
+      activity_panel_height: Schema.optional(Schema.Literals(["1", "5", "7", "10", "all"])).annotate({
+        description:
+          "Activity panel height gear (U4): lines per think and tool block; 'all' grows the blocks freely while the whole frame never exceeds 2/3 of the terminal rows",
+      }),
     }),
   ).annotate({ description: "Session transcript presentation settings" }),
   tabs: Schema.optional(

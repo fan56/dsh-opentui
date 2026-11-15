@@ -335,6 +335,10 @@ export interface SettingsWriteDeps {
 	seam: SessionSeam
 	themes?: SettingsThemeFace
 	merged: Record<string, unknown>
+	/** The PROFILE config snapshot: nested-key rows (the
+	 * `session.activity_panel_height` gear) merge their slice from it so the
+	 * patch never clobbers sibling session keys. */
+	profile?: Record<string, unknown>
 	document?: SeamSettingsDocument
 	local: boolean
 	host: boolean
@@ -374,7 +378,11 @@ export async function writeSetting(
 	if (row.write.via === "config") {
 		if (!deps.local) return { ok: false, error: t("settings.error.localNotWritable") }
 		const hints = footerHintsFromConfig(deps.merged.footerHints) ?? DEFAULT_FOOTER_HINTS
-		const plan = planLocalWrite(row as unknown as SettingsItem, value, hints)
+		const sessionSlice =
+			typeof deps.profile?.session === "object" && deps.profile.session !== null
+				? (deps.profile.session as Record<string, unknown>)
+				: undefined
+		const plan = planLocalWrite(row as unknown as SettingsItem, value, hints, sessionSlice)
 		if (!plan.ok) return { ok: false, error: `✘ ${plan.error}` }
 		try {
 			deps.seam.configSave?.(plan.patch)
@@ -710,6 +718,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 				seam: props.seam,
 				...(props.themes !== undefined ? { themes: props.themes } : {}),
 				merged: merged(),
+				...(profile() !== undefined ? { profile: profile() } : {}),
 				...(document() !== undefined ? { document: document() } : {}),
 				local: writable().local,
 				host: writable().host,

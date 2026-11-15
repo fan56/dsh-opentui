@@ -49,6 +49,7 @@ import {
 	type HintLocale,
 } from "./hints-line"
 import { readCacheHitMode } from "../../seams/config"
+import { activityPanelHeightFromConfig, setActivityPanelGear } from "./widgets-dock"
 import type {
 	SeamPermissionCatalog,
 	SeamSettingsDocument,
@@ -143,6 +144,7 @@ export const LOCAL_SETTING_IDS = [
 	...FOOTER_HINT_IDS.map((id) => `footerHints.${id}`),
 	"lang",
 	"cacheHitMode",
+	"activityPanelHeight",
 	"retentionDays",
 	"maxRounds",
 	"maxRoundsGrace",
@@ -254,6 +256,23 @@ export function buildLocalItems(input: {
 			kind: "enum",
 			options: ["lastMessage", "session"],
 			write: { via: "config", key: "cacheHitMode" },
+		},
+		{
+			...base,
+			// U4 panelHeight: the activity dock's size gear (1/5/7/10/all).
+			// Unset renders `default` — the graded terminal-height sizing. The
+			// write targets the NESTED `session.activity_panel_height` key (the
+			// config schema's session section), so planLocalWrite merges the
+			// profile's existing session slice instead of clobbering it.
+			id: "activityPanelHeight",
+			label: t("settings.row.activityPanelHeight"),
+			value:
+				str((merged.session as Record<string, unknown> | undefined)?.activity_panel_height) ??
+				"default",
+			source: "config.json · session.activity_panel_height",
+			kind: "enum",
+			options: ["default", "1", "5", "7", "10", "all"],
+			write: { via: "config", key: "session.activity_panel_height" },
 		},
 		{
 			...base,
@@ -522,8 +541,17 @@ export type LocalWritePlan =
 	| { ok: true; patch: Record<string, unknown>; applied: string | boolean | number | undefined }
 	| { ok: false; error: string }
 
-/** Validate one local value and build the configSave patch. */
-export function planLocalWrite(item: SettingsItem, raw: string | boolean | number, hints: FooterHints): LocalWritePlan {
+/** Validate one local value and build the configSave patch. Nested keys (the
+ * `session.activity_panel_height` gear) take an optional `session` slice — the
+ * PROFILE's current session object — so the patch carries the whole section
+ * (configSave merges top-level keys shallowly; a bare `{session:{…}}` would
+ * drop every sibling session key). */
+export function planLocalWrite(
+	item: SettingsItem,
+	raw: string | boolean | number,
+	hints: FooterHints,
+	session?: Record<string, unknown>,
+): LocalWritePlan {
 	if (item.write?.via !== "config") return { ok: false, error: t("settings.error.notLocal") }
 	const key = item.write.key
 	if (item.id.startsWith("footerHints.")) {
@@ -531,6 +559,18 @@ export function planLocalWrite(item: SettingsItem, raw: string | boolean | numbe
 		if (!(segment in DEFAULT_FOOTER_HINTS)) return { ok: false, error: t("settings.error.unknownHintSegment", { segment }) }
 		const on = typeof raw === "boolean" ? raw : raw === "on" || raw === "true"
 		return { ok: true, patch: { footerHints: { ...hints, [segment]: on } }, applied: on }
+	}
+	if (key === "session.activity_panel_height") {
+		const text = String(raw)
+		// `default` (or an emptied input) unsets the key: the gear returns to
+		// the graded terminal-height sizing. `undefined` values vanish on the
+		// JSON write, so the key is dropped rather than stored as null.
+		const gear = text === "" || text === "default" ? undefined : text
+		return {
+			ok: true,
+			patch: { session: { ...(session ?? {}), activity_panel_height: gear } },
+			applied: gear,
+		}
 	}
 	if (item.kind === "toggle") {
 		const on = typeof raw === "boolean" ? raw : raw === "on" || raw === "true"
@@ -1009,6 +1049,12 @@ export function applySettingsLive(
 				break
 			case "lang":
 				setHintsLocale(String(applied) as HintLocale)
+				break
+			case "session.activity_panel_height":
+				// U4 panelHeight live apply: the dock reads the gear signal
+				// reactively, so this set repaints the panel in place. An invalid
+				// stored value falls back to unset (the validator's fail-open law).
+				setActivityPanelGear(applied === undefined ? undefined : activityPanelHeightFromConfig(applied))
 				break
 			case "theme":
 				themes?.set(String(applied), { persist: false })

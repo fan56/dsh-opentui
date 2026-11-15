@@ -26,7 +26,7 @@ import { createSignal } from "solid-js"
 import { createComponent } from "@opentui/solid"
 import { testRender } from "@opentui/solid"
 import type { CapturedFrame, CapturedSpan } from "@opentui/core"
-import { WidgetsDock, resetSkinLineFades, dockAccentColor } from "../src/routes/session/widgets-dock"
+import { WidgetsDock, resetSkinLineFades, dockAccentColor, setActivityPanelGear } from "../src/routes/session/widgets-dock"
 import { setMotionTier } from "../src/skin/motion"
 import type { SeamRow } from "../src/routes/session/seam-rows"
 
@@ -222,6 +222,73 @@ describe("WidgetsDock on the real renderer", () => {
 			// The settled tool is still inside its linger: independent, painted.
 			expect(spanFor(frame, "✔")).toBeDefined()
 		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("U4 panelHeight: the /settings gear live-resizes the frame (1 → 10)", async () => {
+		setMotionTier("full")
+		const now = Date.now()
+		// A 5-line collapsed think burst beside a running tool: the frame is
+		// 2 borders + think + tool rows, so the gear moves its height directly.
+		const rows: SeamRow[] = [
+			{
+				key: "reasoning:gear",
+				kind: "reasoning",
+				text: "g1\ng2\ng3\ng4\ng5",
+				final: true,
+				startedAt: now - 400,
+				elapsedSec: 0.4,
+			},
+			{ key: "tool:live:gear", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+		]
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
+			{ width: WIDTH, height: HEIGHT, useMouse: false },
+		)
+		const thinkLines = (frame: CapturedFrame): number =>
+			frame.lines.reduce(
+				(count, line) => count + line.spans.filter((span) => /g[1-5]/.test(span.text)).length,
+				0,
+			)
+		try {
+			await sleep(300) // the frame latch + entrance fades
+			await setup.renderOnce()
+			// Gear 1: ONE think line survives (the tail), the frame is tight.
+			setActivityPanelGear("1")
+			await setup.renderOnce()
+			const tight = setup.captureSpans()
+			expect(spanFor(tight, "g5")).toBeDefined()
+			expect(spanFor(tight, "g1")).toBeUndefined()
+			expect(thinkLines(tight)).toBe(1)
+
+			// Gear 10, NO remount: the reactive gear signal re-runs the block
+			// builders and the frame grows in place — the live-apply contract.
+			setActivityPanelGear("10")
+			await setup.renderOnce()
+			const tall = setup.captureSpans()
+			expect(spanFor(tall, "g1")).toBeDefined()
+			expect(spanFor(tall, "g5")).toBeDefined()
+			expect(thinkLines(tall)).toBe(5)
+
+			// Short terminal: the gear is INERT — the rule-bar degradation wins
+			// (the same gear must not resize a ≤30-row terminal).
+			setActivityPanelGear("10")
+			const small = await testRender(
+				() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
+				{ width: WIDTH, height: 24, useMouse: false },
+			)
+			try {
+				await sleep(200)
+				await small.renderOnce()
+				const compact = small.captureSpans()
+				// The rule bar carries ONE think line (the tail), never five.
+				expect(thinkLines(compact)).toBeLessThanOrEqual(1)
+			} finally {
+				await small.dispose()
+			}
+		} finally {
+			setActivityPanelGear(undefined)
 			await setup.dispose()
 		}
 	})

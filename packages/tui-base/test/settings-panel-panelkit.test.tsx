@@ -57,7 +57,7 @@ import {
 	settingsPanelOpen,
 	type SettingsThemeFace,
 } from "../src/routes/session/settings-panel"
-import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+import { bundledLocalesDir, loadLocales, setLanguage, setLanguages } from "@dsh-opentui/i18n"
 import type { SeamSettingsDocument, SessionSeam } from "../src/seams/session"
 
 // The settings copy resolves through `t()` (T5 facet migration): boot the
@@ -514,12 +514,26 @@ describe("settings modal: section model", () => {
 		}
 	})
 
-	test("opentui group is 16 rows (hintsLocale lives in General's language row)", () => {
+	test("opentui group is 17 rows (hintsLocale lives in General's language row)", () => {
 		const rows = buildOpentuiRows(context())
-		expect(rows).toHaveLength(16)
+		expect(rows).toHaveLength(17)
 		expect(rows.some((row) => row.id === "hintsLocale")).toBe(false)
 		expect(rows.some((row) => row.id === "motion")).toBe(true)
 		expect(rows.at(-1)?.id).toBe("maxRoundsGrace")
+	})
+
+	test("the panelHeight row targets the nested session key with the six gear options", () => {
+		const row = buildOpentuiRows(context()).find((entry) => entry.id === "activityPanelHeight")!
+		expect(row.kind).toBe("enum")
+		expect(row.editable).toBe(true)
+		expect(row.options).toEqual(["default", "1", "5", "7", "10", "all"])
+		expect(row.write).toEqual({ via: "config", key: "session.activity_panel_height" })
+		// Unset config renders `default` (the graded terminal-height sizing).
+		expect(row.value).toBe("default")
+		const configured = buildOpentuiRows({ ...context(), merged: { session: { activity_panel_height: "7" } } }).find(
+			(entry) => entry.id === "activityPanelHeight",
+		)!
+		expect(configured.value).toBe("7")
 	})
 
 	test("host section carries all four whitelist rows plus describe-only namespaces", () => {
@@ -950,28 +964,64 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("opentui's 16 rows are all reachable with ↓ (P0-3, row 16 included)", async () => {
+	test("opentui's 17 rows are all reachable with ↓ (P0-3, row 17 included)", async () => {
 		// 24 terminal rows => an 18-row fixed frame => page size 6, so the
-		// 16-row section pages.
+		// 17-row section pages.
 		const { setup, frame } = await mount({ height: 24 })
 		try {
 			setup.mockInput.pressArrow("down") // nav: general → opentui
 			await settle(setup, 1)
 			setup.mockInput.pressArrow("right") // nav → rows
 			await settle(setup, 1)
-			for (let index = 0; index < 16; index += 1) {
+			for (let index = 0; index < 17; index += 1) {
 				setup.mockInput.pressArrow("down")
 				await settle(setup, 1)
 			}
-			// 16 rows, page 6: the cursor window flipped to the last page.
+			// 17 rows, page 6: the cursor window flipped to the last page.
 			expect(frame()).toContain("maxRoundsGrace")
-			expect(frame()).toContain("13-16/16")
+			expect(frame()).toContain("13-17/17")
 			expect(frame()).not.toContain("themeMode")
 			setup.mockInput.pressEnter() // the LAST row opens its editor
 			await settle(setup)
 			expect(frame()).toContain("maxRoundsGrace — enter an integer")
 		} finally {
 			await setup.dispose()
+		}
+	})
+
+	test("the panelHeight row renders in en and zh (the t() copy is bilingual)", async () => {
+		// EN: the label rides the opentui section, the picker offers the six
+		// gears with the cursor on the effective value (`default`).
+		const { setup, frame } = await mount({ preselect: "activityPanelHeight" })
+		try {
+			expect(frame()).toContain("Activity panel height")
+			expect(frame()).toContain("default")
+			setup.mockInput.pressEnter() // open the enum picker
+			await settle(setup)
+			expect(frame()).toContain("Activity panel height")
+			expect(frame()).toContain("▸ default")
+			expect(frame()).toContain("10")
+			expect(frame()).toContain("all")
+		} finally {
+			await setup.dispose()
+		}
+		// ZH: the SAME row through the zh-CN registry (live setLanguage, no
+		// remount of the registry).
+		try {
+			setLanguage("zh-CN")
+			const zh = await mount({ preselect: "activityPanelHeight" })
+			try {
+				expect(zh.frame()).toContain("活动面板高度")
+				expect(zh.frame()).toContain("default")
+				zh.setup.mockInput.pressEnter()
+				await settle(zh.setup)
+				expect(zh.frame()).toContain("活动面板高度")
+				expect(zh.frame()).toContain("▸ default")
+			} finally {
+				await zh.setup.dispose()
+			}
+		} finally {
+			setLanguage("en")
 		}
 	})
 
@@ -1042,14 +1092,14 @@ describe("settings modal: real keys", () => {
 			},
 		})
 		try {
-			expect(short.frame()).toMatch(/1-6\/16/)
+			expect(short.frame()).toMatch(/1-6\/17/)
 			short.setup.mockInput.pressKey("\u001b[6~") // PgDn → next page
 			await settle(short.setup)
 			expect(sessionPages).toBe(1) // still 1: consumed by settings
-			expect(short.frame()).toMatch(/7-12\/16/)
+			expect(short.frame()).toMatch(/7-12\/17/)
 			short.setup.mockInput.pressKey("\u001b[5~") // PgUp → previous page
 			await settle(short.setup)
-			expect(short.frame()).toMatch(/1-6\/16/)
+			expect(short.frame()).toMatch(/1-6\/17/)
 			expect(sessionPages).toBe(1)
 		} finally {
 			await short.setup.dispose()
@@ -1274,7 +1324,7 @@ describe("settings modal: real keys", () => {
 		try {
 			setup.mockInput.pressKey(" ") // send = on → one immediate write
 			await settle(setup)
-			expect(frame()).toMatch(/1-6\/16/)
+			expect(frame()).toMatch(/1-6\/17/)
 			expect(calls.filter((call) => call.startsWith("configSave:"))).toHaveLength(1)
 
 			// A foreign layer on top: our handle is no longer `panels.top`.
@@ -1307,7 +1357,7 @@ describe("settings modal: real keys", () => {
 			setup.mockInput.pressKey("\u001b[6~")
 			await settle(setup)
 			expect(sessionPages).toBe(1)
-			expect(frame()).toMatch(/7-12\/16/)
+			expect(frame()).toMatch(/7-12\/17/)
 		} finally {
 			await setup.dispose()
 		}
