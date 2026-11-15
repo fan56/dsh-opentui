@@ -434,6 +434,23 @@ const submit = async (session, text) => {
   await sleep(250)
   sendKeys(session, 'Enter')
 }
+/** Abort the running turn through the U6 stop contract (turn-cancel.tsx):
+ * the first Esc only ARMS ("Press Esc again to stop"), a second Esc inside
+ * the double-press window opens the `Stop everything?` confirm, and Enter
+ * confirms it (the confirm card's active row defaults to Stop). A bare Esc
+ * or two Escapes without the confirm leave the turn running — and a left-open
+ * confirm dialog makes the next busy submit take the vendored immediate-steer
+ * path (delivery-choice: no stacking on an open dialog), so the whole busy
+ * ladder below silently degrades. The settle predicate reads the HINT row,
+ * not the editor: the composer paints its placeholder while busy too. */
+const abortTurn = async (session, waitMs = 15_000) => {
+  sendKeys(session, 'Escape')
+  await sleep(150)
+  sendKeys(session, 'Escape')
+  await sleep(350)
+  sendKeys(session, 'Enter')
+  return waitPane(session, (o) => !has(o, 'esc stop'), waitMs)
+}
 const snap = (name, session = SESS) => {
   writeFileSync(join(OUT, `${name}.ans`), capture(session, true))
   writeFileSync(join(OUT, `${name}.txt`), capture(session))
@@ -797,11 +814,14 @@ async function sceneBusy(session, geom) {
     queued.ok
       ? [`fg: ${queueFg} (text.muted ${THEME.textMuted})`, `italic: ${hasItalicRun(queueRuns, 'Queued')}`]
       : failDetail('⏸ Queued #1', 'missing', queued.out, '排队'))
-  sendKeys(session, 'Escape')
+  // Abort through the U6 contract (see abortTurn): Esc arms, Esc opens the
+  // stop-everything confirm, Enter confirms. The aborted turn pauses the
+  // queue in place (`⏸ Paused #1`, composer-state abort policy).
+  await abortTurn(session)
   const paused = await waitPane(session, (o) => has(o, 'Paused') && has(o, '#1'), 12_000)
   record('busy', 'aborting the turn keeps the queue and marks it paused', paused.ok,
     paused.ok ? ['⏸ Paused #1 visible'] : failDetail('⏸ Paused #1', 'missing', paused.out, '暂停'))
-  await waitPane(session, idle, 20_000)
+  await waitPane(session, idle, 5_000)
 }
 
 async function sceneSteer(session, geom) {
@@ -822,9 +842,12 @@ async function sceneSteer(session, geom) {
     popup.ok && injected.ok && fg !== null && colorDistance(fg, THEME.textBase) < 24,
     injected.ok ? [`fg: ${fg} (text.action.primary.base ${THEME.textBase})`, `italic: ${italic}`]
       : failDetail('⤵ Injected into the current turn', 'missing', injected.out, '注入'))
-  sendKeys(session, 'Escape')
-  await sleep(350)
-  sendKeys(session, 'Escape')
+  // Turn end via the confirmed abort (abortTurn): composer-state settles the
+  // seam turn and flips every injected steer row to `✓ Delivered` on BOTH
+  // the success and the abort path — aborting is the deterministic way to
+  // end it (a natural settle re-serves the mock's main-slow phase for every
+  // auxiliary request that carries the trigger marker: 84s+ per turn).
+  await abortTurn(session)
   const delivered = await waitPane(session, (o) => has(o, 'Delivered'), 25_000)
   const deliveredAnsi = capture(session, true)
   const deliveredRow = deliveredAnsi.split('\n').find((l) => stripAnsi(l).includes('Delivered')) ?? ''
@@ -870,10 +893,11 @@ async function sceneActivity(session, geom) {
       ruleLine !== '' ? [`rule: ${JSON.stringify(stripAnsi(ruleLine).trim().slice(0, 40))}`]
         : failDetail('┃ activity rule', 'missing', capture(session), 'activity'))
   }
-  sendKeys(session, 'Escape')
-  await sleep(350)
-  sendKeys(session, 'Escape')
-  await waitPane(session, idle, 25_000)
+  // Abort through the U6 contract (abortTurn): two bare Escapes would leave
+  // the `Stop everything?` confirm open, and the leaked dialog would push the
+  // NEXT busy submit onto the vendored immediate-steer path (no dialog).
+  await abortTurn(session)
+  await waitPane(session, idle, 10_000)
 }
 
 async function sceneThink(session, geom) {
