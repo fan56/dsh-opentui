@@ -10,10 +10,17 @@
 //      rows Steer/Queue, Steer highlighted first);
 //   2. choosing Queue paints the wait row in the transcript
 //      ("⏸ Queued #1");
-//   3. aborting that turn (Esc) KEEPS the queue and marks it paused
-//      ("⏸ Paused #1") — the documented failure/abort policy;
+//   3. aborting that turn (the U6 stop contract) KEEPS the queue and marks it
+//      paused ("⏸ Paused #1") — the documented failure/abort policy;
 //   4. choosing Steer paints the injection receipt
 //      ("⤵ Injected into the current turn") and it flips to "✓ Delivered" at turn end.
+//
+// The model is the offline mock (e2e/lib/mock-llm.mjs): the scratch profile's
+// apiKeyEnv providers get a baseURL pointing at it and the launch env pins
+// dummy keys + mock BASE_URL, so no provider call leaves the machine. The
+// busy turns carry the mock's E2E_BTW_MAIN marker (main-slow phase, ~42s) so
+// the busy window reliably covers the steer/queue dance; the harness asserts
+// en copy, so the scratch config pins lang=en.
 //
 // Exit 0 = every check passed; exit 1 = at least one failed (pane captures are
 // kept under verify/steer-queue-out/); exit 2 = environment problem.
@@ -21,17 +28,19 @@
 // Isolation: uniquely named tmux session, killed individually; the scratch
 // host is reaped through its scratch lock file.
 
-import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
+import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LAUNCHER = join(REPO, 'dsh-opentui')
+const MOCK = join(REPO, 'e2e', 'lib', 'mock-llm.mjs')
 const PROFILE = 'opentui'
 const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
-const IDLE = '提问，回车发送'
+const IDLE = 'enter send'
 const PLACEHOLDER = 'Type a message'
 const SESS = `steer-queue-${process.pid}`
 const OUT = join(REPO, 'verify', 'steer-queue-out')
@@ -51,14 +60,26 @@ const tmuxOut = (...a) => (tmux(...a).status === 0 ? tmux(...a).stdout : '')
 const flat = (s) => String(s).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '')
 const has = (out, marker) => flat(out).includes(flat(marker))
 const hasAny = (out, markers) => markers.some((m) => has(out, m))
+/** A free TCP port (a fixed default collided with unrelated listeners). */
+const freePort = () =>
+  new Promise((res, rej) => {
+    const srv = createServer()
+    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => res(port)) })
+    srv.on('error', rej)
+  })
+const PORT = await freePort()
+const mockBaseUrl = () => `http://127.0.0.1:${PORT}/v1`
 
-for (const cmd of ['tmux', 'bun'])
+for (const cmd of ['tmux', 'bun', 'node'])
   if (sh('which', [cmd]).status !== 0) { console.error(`steer-queue: ${cmd} not on PATH`); process.exit(2) }
 if (!existsSync(join(REAL_HOME, 'profiles', PROFILE))) {
   console.error(`steer-queue: profile '${PROFILE}' missing under ${REAL_HOME}`)
   process.exit(2)
 }
-if (!existsSync(LAUNCHER)) { console.error(`steer-queue: launcher missing: ${LAUNCHER}`); process.exit(2) }
+if (!existsSync(LAUNCHER) || !existsSync(MOCK)) {
+  console.error(`steer-queue: launcher or mock missing (${LAUNCHER}, ${MOCK})`)
+  process.exit(2)
+}
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 
 // --- scratch home (same isolation as agents-mount-repro) ---
@@ -70,6 +91,42 @@ cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { 
 for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
   const from = join(REAL_HOME, rel)
   if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
+}
+
+// Deterministic language: the harness asserts en copy, so pin the scratch
+// config's `lang` regardless of what the operator's real profile carries.
+// (Distinct name — a past `profileConfigPath` redeclaration SyntaxError.)
+const pinLangConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
+try {
+  const cfg = JSON.parse(readFileSync(pinLangConfigPath, 'utf8'))
+  cfg.lang = 'en'
+  writeFileSync(pinLangConfigPath, JSON.stringify(cfg, null, 2))
+} catch {}
+
+// Offline, free model: point EVERY apiKeyEnv provider at the local mock.
+// Indentation is the provision script's fixed shape; a plain string insert,
+// no yaml dep. Patching a single provider is not enough — the profile's
+// default route (agent-default-model) decides which provider a turn hits,
+// and that has already sent a real request when only one provider was
+// patched. A pre-existing baseURL means unclear routing; refuse rather than
+// silently reach a real endpoint.
+const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+if (!existsSync(patchPath)) {
+  console.error(`steer-queue: profile patch missing: ${patchPath}`)
+  process.exit(2)
+}
+{
+  const yaml = readFileSync(patchPath, 'utf8')
+  if (/baseURL:/.test(yaml)) {
+    console.error('steer-queue: scratch profile patch already carries a baseURL — refusing ambiguous routing')
+    process.exit(2)
+  }
+  const patched = yaml.replace(/^( +[a-z][\w-]*:\n)( +apiKeyEnv:)/gm, `$1        baseURL: ${mockBaseUrl()}\n$2`)
+  if (patched === yaml) {
+    console.error('steer-queue: no apiKeyEnv provider found to patch — turns would reach a real endpoint')
+    process.exit(2)
+  }
+  writeFileSync(patchPath, patched)
 }
 
 const LOCK = join(HOME, `opentui-host.${PROFILE}.json`)
@@ -103,8 +160,9 @@ const capture = (session = SESS, esc = false) => {
   return tmuxOut(...args)
 }
 const sendKeys = (session, ...keys) => tmux('send-keys', '-t', session, ...keys)
-/** One burst write (no per-char gaps): the busy window is short and the
- * composer sets busy synchronously, so this reliably lands on a running turn. */
+/** One burst write (no per-char gaps): busyTurn() gates the caller on the
+ * running turn's `esc stop` hint (mock main-slow, ~42s window), and the
+ * composer sets busy synchronously, so this reliably lands on it. */
 const typeFast = async (session, text) => {
   sendKeys(session, '-l', text)
   await sleep(40)
@@ -134,15 +192,65 @@ const snap = (name, session = SESS) => {
 }
 const launch = (session, cols, rows) => {
   tmux('kill-session', '-t', session)
-  const env = [`DSH_HOME=${HOME}`, 'DSH_OPENTUI_DEBUG=1']
+  // Dummy keys + mock BASE_URL: the turn runs through the offline mock —
+  // both the profile patch and this env point at it, so nothing ever
+  // reaches a real provider.
+  const env = [
+    `DSH_HOME=${HOME}`,
+    'DSH_OPENTUI_DEBUG=1',
+    'ZAI_CODING_CN_API_KEY=mock-only-key',
+    `ZAI_CODING_CN_BASE_URL=${mockBaseUrl()}`,
+    'OPENCODE_GO_API_KEY=mock-only-key',
+    `OPENCODE_GO_BASE_URL=${mockBaseUrl()}`,
+  ]
   const r = tmux('new-session', '-d', '-x', String(cols), '-y', String(rows), '-s', session, '-c', WS,
     `${env.join(' ')} ${LAUNCHER} --client 2>${join(OUT, `${session}.err.log`)}`)
   if (r.status !== 0) throw new Error('tmux boot failed: ' + r.stderr)
 }
 const killSession = (session) => tmux('kill-session', '-t', session)
+/** Abort the running turn through the U6 stop contract (turn-cancel.tsx):
+ * the first Esc only ARMS ("Press Esc again to stop"), a second Esc inside
+ * the double-press window opens the `Stop everything?` confirm, and Enter
+ * confirms it (the confirm card's active row defaults to Stop). A bare Esc
+ * or two Escapes without the confirm leave the turn running — and a left-open
+ * confirm dialog breaks every later step. The settle predicate reads the
+ * HINT row, not the editor: the composer paints its placeholder while busy. */
+const abortTurn = async (session, waitMs = 15_000) => {
+  sendKeys(session, 'Escape')
+  await sleep(150)
+  sendKeys(session, 'Escape')
+  await sleep(350)
+  sendKeys(session, 'Enter')
+  return waitPane(session, (o) => !has(o, 'esc stop'), waitMs)
+}
+/** Wait for the busy hint (`esc stop`) so the next burst write deterministically
+ * lands on a running turn (the mock's main-slow phase keeps it busy ~42s). */
+const busyTurn = (session) => waitPane(session, (o) => has(o, 'esc stop'), 20_000)
+
+let mockProc = null
+const startMock = async () => {
+  const log = join(OUT, 'mock-llm.log')
+  const fd = openSync(log, 'w')
+  mockProc = spawn('node', [MOCK, '--port', String(PORT)], { stdio: ['ignore', fd, fd] })
+  for (let i = 0; i < 50; i++) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${PORT}/healthz`)
+      if (res.ok) return
+    } catch { /* not up yet */ }
+    await sleep(100)
+  }
+  throw new Error(`mock LLM did not answer on 127.0.0.1:${PORT}`)
+}
+const stopMock = () => {
+  if (!mockProc) return
+  try { mockProc.kill('SIGTERM') } catch {}
+  mockProc = null
+}
 
 let crashed = null
 try {
+  await startMock()
+  console.log(`steer-queue: mock LLM on 127.0.0.1:${PORT}; scratch home ${HOME}`)
   launch(SESS, COLS, ROWS)
   const boot = await waitPane(SESS, (o) => o.includes('🧠') || idle(o), 90_000, 500)
   if (!boot.out.includes('🧠') && !idle(boot.out)) {
@@ -153,7 +261,10 @@ try {
   snap('01-welcome')
 
   // ---------------- 1. busy submit opens the choice ----------------
-  await typeFast(SESS, 'Reply with just: OK')
+  // The busy turn carries the mock's E2E_BTW_MAIN marker (main-slow phase,
+  // ~42s of ticks) so the window covers the whole steer/queue dance.
+  await typeFast(SESS, 'Walk the migration plan step by step. E2E_BTW_MAIN')
+  await busyTurn(SESS)
   await typeFast(SESS, 'queued line')
   const popup = await waitPane(SESS, (o) => has(o, 'steer or queue') && hasAny(o, ['Steer']) && hasAny(o, ['Queue']), 15_000)
   snap('02-choice')
@@ -170,15 +281,19 @@ try {
     [queued.ok ? '⏸ Queued #1 visible' : 'queue row not visible'])
 
   // ---------------- 3. abort keeps the queue (paused) ----------------
-  sendKeys(SESS, 'Escape')
-  const paused = await waitPane(SESS, (o) => has(o, 'Paused') && has(o, '#1'), 10_000)
+  // Abort through the U6 contract (see abortTurn): Esc arms, Esc opens the
+  // stop-everything confirm, Enter confirms. The aborted turn pauses the
+  // queue in place (`⏸ Paused #1`, composer-state abort policy).
+  await abortTurn(SESS)
+  const paused = await waitPane(SESS, (o) => has(o, 'Paused') && has(o, '#1'), 12_000)
   snap('04-paused')
   record('abort keeps the queue and marks it paused', paused.ok,
     [paused.ok ? '⏸ Paused #1 visible' : 'paused queue row not visible'])
   await waitPane(SESS, idle, 15_000)
 
   // ---------------- 4. Steer paints the injection receipt ----------------
-  await typeFast(SESS, 'Reply with just: OK')
+  await typeFast(SESS, 'Walk the migration plan again. E2E_BTW_MAIN')
+  await busyTurn(SESS)
   await typeFast(SESS, 'say hello in one word')
   const steerPopup = await waitPane(SESS, (o) => has(o, 'steer or queue'), 15_000)
   if (steerPopup.ok) {
@@ -190,13 +305,13 @@ try {
   record('Steer paints the injected receipt', steerPopup.ok && injected.ok,
     [steerPopup.ok ? 'choice reopened' : 'choice did not reopen', injected.ok ? '⤵ Injected into the current turn visible' : 'steer receipt not visible'])
 
-  // Abort the turn to make the receipt transition deterministic (an abort also
-  // delivers the injected steer). Two Escapes: the first closes any ask card
-  // the model opened, the second cancels the turn.
-  sendKeys(SESS, 'Escape')
-  await sleep(350)
-  sendKeys(SESS, 'Escape')
-  const delivered = await waitPane(SESS, (o) => has(o, 'Delivered'), 20_000)
+  // Turn end via the confirmed abort (abortTurn): composer-state settles the
+  // seam turn and flips every injected steer row to `✓ Delivered` on BOTH
+  // the success and the abort path — aborting is the deterministic way to
+  // end it (a natural settle re-serves the mock's main-slow phase for every
+  // auxiliary request that carries the trigger marker: 84s+ per turn).
+  await abortTurn(SESS)
+  const delivered = await waitPane(SESS, (o) => has(o, 'Delivered'), 25_000)
   snap('06-steer-delivered')
   record('the steer receipt flips to delivered at turn end', delivered.ok,
     [delivered.ok ? '✓ Delivered visible' : 'delivered receipt not visible'])
@@ -208,6 +323,7 @@ try {
   crashed = error
   console.error('steer-queue: run failed:', error?.stack ?? error)
 } finally {
+  stopMock()
   if (!KEEP) killSession(SESS)
   reapHost()
   try {
