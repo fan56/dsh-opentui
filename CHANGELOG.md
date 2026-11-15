@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-11-15
+
+### Internal
+
+- **Screenshot text-leak gate for the `ui` test tier.** Boots the real client in both languages across eleven surfaces and fails on any painted run resolving exactly against a locale key (the `overlay.widgets.frameTitle` class of leaks); a packed-artifact pass repeats the scan on the installed `npm pack` tarball in red and green states, and a unit canary pins the scanner itself. The UI matrix's busy-ladder scenes now follow the double-Esc stop contract, and the harness pins its scratch language to `en`. No shipped code changed in this release.
+
 ## [0.16.0] - 2026-11-15
 
 ### Added
