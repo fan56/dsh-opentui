@@ -204,6 +204,16 @@ chmodSync(HOME, 0o700)
 const WS = mkdtempSync(join(tmpdir(), 'dsh-agents-mount-ws-'))
 mkdirSync(join(HOME, 'profiles'), { recursive: true })
 cpSync(join(REAL_HOME, 'profiles', PROFILE), join(HOME, 'profiles', PROFILE), { recursive: true })
+
+// Deterministic language: the harness asserts en copy, so pin the scratch
+// config's `lang` regardless of what the operator's real profile carries.
+const profileConfigPath = join(HOME, 'profiles', PROFILE, 'config.json')
+try {
+  const cfg = JSON.parse(readFileSync(profileConfigPath, 'utf8'))
+  cfg.lang = 'en'
+  writeFileSync(profileConfigPath, JSON.stringify(cfg, null, 2))
+} catch {}
+
 for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'workspace-presets.json', 'settings.yaml', 'agents', 'themes']) {
   const from = join(REAL_HOME, rel)
   if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
