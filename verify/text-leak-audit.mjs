@@ -24,28 +24,48 @@
 //
 // Drives the REAL launcher `./dsh-opentui` in a scratch DSH_HOME (same
 // isolation as agents-mount-repro: nothing is written to ~/.dsh) twice —
-// config lang=en and lang=zh-CN — and captures five faces per language:
+// config lang=en and lang=zh-CN — and captures eleven faces per language:
 //   idle · slash palette at `/ex` prefix · /settings · /hotkeys · /help
+//   · /plugins · /skills · /agents · /language picker (the ask seam's
+//   pickOne face) · busy (a mock-LLM turn mid-stream) · ask (the F5 batch
+//   ask_user_question picker over the same mock)
+// The last two ride e2e/lib/mock-llm.mjs (the offline fake model): the
+// scratch profile's provider route gets a baseURL pointing at the mock, the
+// TPS trigger streams a short turn for the busy face and the ASK trigger
+// opens the real batch picker for the ask face.
 //
 //   node verify/text-leak-audit.mjs [--keep] [--only en|zh]
+//
+// Env overrides (the packed-artifact leg, verify/text-leak-pack-audit.mjs,
+// points these at the npm-prefix install):
+//   TEXT_LEAK_LAUNCHER    launcher to boot (default REPO/dsh-opentui)
+//   TEXT_LEAK_OUT         capture/report dir (default verify/text-leak-out)
+//   TEXT_LEAK_MOCK_PORT   mock-llm port (default: pick a free port)
 //
 // Exit 0 = no key leak; exit 1 = at least one leak (or a face could not be
 // driven — an unauditable face is a failure, not a skip); exit 2 =
 // environment problem. Captures + reports land in verify/text-leak-out/.
 
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:net'
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { findKeyLeaks, keyShapedTokens, loadDictionary, stripAnsi } from './text-leak-core.mjs'
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const LAUNCHER = join(REPO, 'dsh-opentui')
+const LAUNCHER = process.env.TEXT_LEAK_LAUNCHER || join(REPO, 'dsh-opentui')
 const LOCALES_DIR = join(REPO, 'packages', 'i18n', 'locales')
 const QUOTES_SRC = join(REPO, 'packages', 'tui-base', 'src', 'routes', 'quotes.ts')
+const MOCK_SERVER = join(REPO, 'e2e', 'lib', 'mock-llm.mjs')
+let MOCK_PORT = Number(process.env.TEXT_LEAK_MOCK_PORT || 0) // 0 = pick a free port
+const mockBaseUrl = () => `http://127.0.0.1:${MOCK_PORT}/v1`
+const TPS_TRIGGER = 'E2E_TPS_TRIGGER'
+const ASK_TRIGGER = 'E2E_ASK_TRIGGER'
 const PROFILE = 'opentui'
 const REAL_HOME = process.env.DSH_HOME_REAL || join(homedir(), '.dsh')
-const OUT = join(REPO, 'verify', 'text-leak-out')
+const OUT = process.env.TEXT_LEAK_OUT || join(REPO, 'verify', 'text-leak-out')
 const SESS = (lang) => `text-leak-${lang}-${process.pid}`
 const COLS = 120
 const ROWS = 34
@@ -54,7 +74,7 @@ const ONLY = process.argv.includes('--only') ? process.argv[process.argv.indexOf
 const TYPE_GAP_MS = 60
 
 /** The audited faces, in drive order. */
-const FACES = ['idle', 'palette-ex', 'settings', 'hotkeys', 'help']
+const FACES = ['idle', 'palette-ex', 'settings', 'hotkeys', 'help', 'plugins', 'skills', 'agents', 'language-picker', 'busy', 'ask']
 const LANGS = ['en', 'zh-CN'].filter((l) => !ONLY || l === ONLY)
 if (ONLY && LANGS.length === 0) {
   console.error(`text-leak: unknown --only language '${ONLY}' (en|zh-CN)`)
@@ -62,28 +82,22 @@ if (ONLY && LANGS.length === 0) {
 }
 
 // --- dictionary load (direct from the locale sources, NOT through the app's
-// registry — the gate must stay independent of the code it polices) -----------
-const loadTable = (file) => {
-  try {
-    const raw = JSON.parse(readFileSync(file, 'utf8'))
-    return Object.entries(raw).filter(([, v]) => typeof v === 'string')
-  } catch (error) {
-    console.error(`text-leak: cannot load ${file}: ${error.message}`)
-    process.exit(2)
-  }
+// registry — the gate must stay independent of the code it polices; the scan
+// primitives live in verify/text-leak-core.mjs so the canary unit test
+// exercises the SAME logic) -----------------------------------------------
+let TABLES, KEY_SET
+try {
+  const dict = loadDictionary(LOCALES_DIR)
+  TABLES = dict.tables
+  KEY_SET = dict.keySet
+} catch (error) {
+  console.error(`text-leak: cannot load the locale dictionaries: ${error.message}`)
+  process.exit(2)
 }
-const TABLES = { en: loadTable(join(LOCALES_DIR, 'en.json')), 'zh-CN': loadTable(join(LOCALES_DIR, 'zh-CN.json')) }
-// A key is a leak candidate if it is declared in EITHER table (a zh-only key
-// leaking through the en fallback chain is the same bug).
-const KEY_SET = new Set([...TABLES.en.map(([k]) => k), ...TABLES['zh-CN'].map(([k]) => k)])
 if (KEY_SET.size < 100) {
   console.error(`text-leak: dictionary suspiciously small (${KEY_SET.size} keys) — refusing to gate on it`)
   process.exit(2)
 }
-// Fail-open leak shape: `overlay.widgets.frameTitle` — lower-camel head, dotted
-// segments, nothing but letters/digits/_/- inside. The dotted shape alone is
-// NOT a leak (host rows, paths); the dictionary membership decides.
-const KEY_SHAPE = /[a-z][a-zA-Z0-9]*(?:\.[a-zA-Z0-9_-]+)+/g
 /** Value strings of the active table, longest first (containment matching). */
 const tableValues = (lang) => [...new Set(TABLES[lang].map(([, v]) => v))].filter((v) => v.trim().length > 0).sort((a, b) => b.length - a.length)
 
@@ -111,8 +125,6 @@ if (!existsSync(LAUNCHER)) { console.error(`text-leak: launcher missing (${LAUNC
 if (!existsSync(OUT)) mkdirSync(OUT, { recursive: true })
 
 // --- ANSI / text-run primitives ----------------------------------------------
-const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07/g
-const stripAnsi = (s) => String(s).replace(ANSI_RE, '')
 const flat = (s) => String(s).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '')
 const has = (out, marker) => flat(out).includes(flat(marker))
 
@@ -136,15 +148,9 @@ const textRuns = (ansiFrame) => {
 }
 
 /**
- * Dotted key-shaped tokens of one frame (ANSI stripped). False-positive safe:
- * a token only becomes a FAIL if it equals a declared locale key.
+ * Dotted key-shaped tokens of one frame — the scanner lives in
+ * verify/text-leak-core.mjs (shared with the reverse canary unit test).
  */
-const keyShapedTokens = (ansiFrame) => {
-  const plain = stripAnsi(ansiFrame)
-  const tokens = new Set()
-  for (const m of plain.matchAll(KEY_SHAPE)) tokens.add(m[0])
-  return [...tokens]
-}
 
 // Whitelist classes for the reconciliation leg (report-level tagging).
 const classifyRun = (run, lang) => {
@@ -179,6 +185,47 @@ for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.jso
 // scratch root, so the reconciliation never depends on the user's corpus.
 const AGENTS_HOME = join(HOME, 'agents-home')
 mkdirSync(join(AGENTS_HOME, 'skills'), { recursive: true })
+
+// --- mock LLM (e2e/lib/mock-llm.mjs — the offline fake model) ---------------
+// The busy + ask faces need a REAL turn. The mock stands in for the provider
+// (stdlib-only server, phases keyed on the request body): the scratch
+// profile's provider route gets a baseURL pointing at it, so no real
+// provider is ever contacted and the turn never costs anything.
+const patchPath = join(HOME, 'profiles', PROFILE, 'cordis.patch.yml')
+/** A free TCP port (the fixed default collided with unrelated listeners). */
+const freePort = async () =>
+  new Promise((res, rej) => {
+    const srv = createServer()
+    srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => res(port)) })
+    srv.on('error', rej)
+  })
+const startMock = async () => {
+  if (!existsSync(MOCK_SERVER)) return null
+  if (MOCK_PORT === 0) MOCK_PORT = await freePort()
+  if (existsSync(patchPath)) {
+    const yaml = readFileSync(patchPath, 'utf8')
+    if (!/baseURL:/.test(yaml)) {
+      // Insert under EVERY provider that declares an apiKeyEnv (indentation is
+      // the provision script's fixed shape; a plain string insert, no yaml
+      // dep). The profile's DEFAULT model decides which provider a turn hits —
+      // patching only zai-coding-cn left the opencode-go default on its real
+      // endpoint and the audit's turn reached a real provider.
+      const patched = yaml.replace(/^( +[a-z][\w-]*:\n)( +apiKeyEnv:)/gm, `$1        baseURL: ${mockBaseUrl()}\n$2`)
+      if (patched !== yaml) writeFileSync(patchPath, patched)
+    }
+  }
+  const child = spawn(process.execPath, [MOCK_SERVER, '--port', String(MOCK_PORT)], { stdio: 'ignore', detached: false })
+  child.on('error', () => {})
+  for (let i = 0; i < 30; i++) {
+    if (child.exitCode !== null) return null
+    const probe = sh('curl', ['-sf', `http://127.0.0.1:${MOCK_PORT}/healthz`])
+    if (probe.status === 0) return child
+    await sleep(500)
+  }
+  child.kill('SIGTERM')
+  return null
+}
+let MOCK = null
 
 const CONFIG_PATH = join(HOME, 'profiles', PROFILE, 'config.json')
 const writeLang = (lang) => {
@@ -245,10 +292,11 @@ const launch = (session, lang) => {
     `DSH_HOME=${HOME}`,
     `DSH_AGENTS_HOME=${AGENTS_HOME}`,
     'DSH_OPENTUI_DEBUG=1',
-    // Defensive pair (agents-mount parity): no turn is submitted here, but a
-    // dummy key + empty BASE_URL guarantee nothing ever reaches a provider.
+    // Dummy key + mock BASE_URL: the busy/ask faces DO submit turns, but both
+    // the profile patch and this env point at the offline mock — nothing ever
+    // reaches a real provider.
     'ZAI_CODING_CN_API_KEY=mock-only-key',
-    'ZAI_CODING_CN_BASE_URL=',
+    `ZAI_CODING_CN_BASE_URL=${mockBaseUrl()}`,
   ]
   const r = tmux('new-session', '-d', '-x', String(COLS), '-y', String(ROWS), '-s', session, '-c', WS,
     `${env.join(' ')} ${LAUNCHER} --client 2>${join(OUT, `${session}.err.log`)}`)
@@ -271,8 +319,8 @@ const snapFace = (lang, face, session) => {
 
 /** Core gate on one frame: dotted tokens that EQUAL a locale key → leak. */
 const auditFrame = (lang, face, ansi) => {
-  for (const token of keyShapedTokens(ansi)) {
-    if (KEY_SET.has(token)) leaks.push({ lang, face, key: token, line: stripAnsi(ansi).split('\n').find((l) => l.includes(token))?.trim().slice(0, 120) ?? '' })
+  for (const token of findKeyLeaks(ansi, KEY_SET)) {
+    leaks.push({ lang, face, key: token, line: stripAnsi(ansi).split('\n').find((l) => l.includes(token))?.trim().slice(0, 120) ?? '' })
   }
 }
 
@@ -374,6 +422,107 @@ const driveLang = async (lang) => {
   auditFrame(lang, 'help', ansi)
   reconcileFrame(lang, 'help', ansi)
 
+  // face: /plugins (the plugins manager PANEL — the first open loads every
+  // bundle's state over the host RPC, which can take tens of seconds)
+  const pluginsMarker = TABLES[lang].find(([k]) => k === 'panel.plugins.header.title')?.[1] ?? ''
+  await submit(session, '/plugins')
+  const plugins = await waitPane(session, (o) => pluginsMarker !== '' && o.includes(pluginsMarker), 45_000)
+  ansi = snapFace(lang, 'plugins', session)
+  facesFrames.push({ lang, face: 'plugins', ok: plugins.ok, note: plugins.ok ? '' : 'plugins panel header not seen' })
+  auditFrame(lang, 'plugins', ansi)
+  reconcileFrame(lang, 'plugins', ansi)
+  sendKeys(session, 'Escape')
+  await waitPane(session, (o) => isIdle(o, lang), 10_000)
+  await sleep(300)
+
+  // face: /skills (the Installed/Available manager panel; header title from
+  // the table, Escape closes)
+  const skillsMarker = TABLES[lang].find(([k]) => k === 'panel.skills.header.title')?.[1] ?? ''
+  await submit(session, '/skills')
+  const skills = await waitPane(session, (o) => skillsMarker !== '' && o.includes(skillsMarker), 30_000)
+  ansi = snapFace(lang, 'skills', session)
+  facesFrames.push({ lang, face: 'skills', ok: skills.ok, note: skills.ok ? '' : 'skills header not seen' })
+  auditFrame(lang, 'skills', ansi)
+  reconcileFrame(lang, 'skills', ansi)
+  sendKeys(session, 'Escape')
+  await waitPane(session, (o) => isIdle(o, lang), 10_000)
+  await sleep(300)
+
+  // face: /agents (the agent-definition manager table; title from the table)
+  const agentsMarker = TABLES[lang].find(([k]) => k === 'panel.agents.title.table')?.[1] ?? ''
+  await submit(session, '/agents')
+  const agents = await waitPane(session, (o) => agentsMarker !== '' && o.includes(agentsMarker), 30_000)
+  ansi = snapFace(lang, 'agents', session)
+  facesFrames.push({ lang, face: 'agents', ok: agents.ok, note: agents.ok ? '' : 'agents table title not seen' })
+  auditFrame(lang, 'agents', ansi)
+  reconcileFrame(lang, 'agents', ansi)
+  sendKeys(session, 'Escape')
+  await waitPane(session, (o) => isIdle(o, lang), 10_000)
+  await sleep(300)
+
+  // face: /language picker (the T14 pickOne ask-seam face; picker title from
+  // the table, Escape declines — "language unchanged")
+  const pickTitle = TABLES[lang].find(([k]) => k === 'command.language.pickTitle')?.[1] ?? ''
+  await submit(session, '/language')
+  const picker = await waitPane(session, (o) => pickTitle !== '' && o.includes(pickTitle), 30_000)
+  ansi = snapFace(lang, 'language-picker', session)
+  facesFrames.push({ lang, face: 'language-picker', ok: picker.ok, note: picker.ok ? '' : 'picker title not seen' })
+  auditFrame(lang, 'language-picker', ansi)
+  reconcileFrame(lang, 'language-picker', ansi)
+  sendKeys(session, 'Escape')
+  await waitPane(session, (o) => isIdle(o, lang), 10_000)
+  await sleep(300)
+
+  // faces: busy + ask — mock-LLM turns. Without the mock these two faces are
+  // unauditable, which by the script's own law is a FAIL, not a skip.
+  if (MOCK) {
+    // ask FIRST: the mock keys its phase on the request BODY, and the
+    // conversation history rides along — a TPS turn submitted first would put
+    // E2E_TPS_TRIGGER into the ask turn's history and the mock would serve
+    // the tps phase instead of the ask phase (real first-run observation).
+    // ask: the ASK trigger opens the F5 batch ask_user_question picker. The
+    // progress title is LOCALIZED (`overlay.ask.questionProgress`, en
+    // `Question (1/3)`, zh `问题（1/3）`) — format the table value per lang.
+    const askProgress = (TABLES[lang].find(([k]) => k === 'overlay.ask.questionProgress')?.[1] ?? 'Question ({index}/{total})')
+      .replace('{index}', '1').replace('{total}', '3')
+    await submit(session, ASK_TRIGGER)
+    const ask = await waitPane(session, (o) => o.includes(askProgress), 40_000)
+    ansi = snapFace(lang, 'ask', session)
+    facesFrames.push({ lang, face: 'ask', ok: ask.ok, note: ask.ok ? '' : 'ask picker not seen' })
+    auditFrame(lang, 'ask', ansi)
+    reconcileFrame(lang, 'ask', ansi)
+    sendKeys(session, 'Escape') // decline all — the mock serves its final text
+    await waitPane(session, (o) => isIdle(o, lang) && o.includes('E2E-ASK-FLOW-COMPLETE'), 30_000)
+
+    // busy: whatever the mock streams for this turn (its phase selection may
+    // see the ask history), the frame only needs the turn IN FLIGHT. Snap the
+    // FIRST frame carrying the turn overlay's status spinner (untranslated
+    // status text: `📝 Writing... 0s` / `Composing... 42s` in both languages)
+    // — poll fast, the scripted stream can complete inside ~1.5s.
+    await submit(session, TPS_TRIGGER)
+    const busyDeadline = Date.now() + 20_000
+    let busySeen = false
+    while (Date.now() < busyDeadline) {
+      const frame = capture(session)
+      if (/(Writing|Composing|Thinking)\.\.\./.test(frame)) {
+        ansi = capture(session, true)
+        busySeen = stripAnsi(ansi).includes(TPS_TRIGGER)
+        if (busySeen) writeFileSync(join(OUT, `${lang}-busy.ans`), ansi) // evidence parity with snapFace
+        break
+      }
+      if (isIdle(frame, lang) && stripAnsi(frame).includes('E2E-TPS-TURN-DONE')) break // too late — turn already settled
+      await sleep(150)
+    }
+    if (!busySeen) ansi = snapFace(lang, 'busy', session)
+    const busyOk = busySeen
+    facesFrames.push({ lang, face: 'busy', ok: busyOk, note: busyOk ? '' : 'no mid-turn spinner frame captured' })
+    auditFrame(lang, 'busy', ansi)
+    reconcileFrame(lang, 'busy', ansi)
+    await waitPane(session, (o) => isIdle(o, lang), 30_000)
+  } else {
+    for (const face of ['busy', 'ask']) facesFrames.push({ lang, face, ok: false, note: 'mock LLM unavailable' })
+  }
+
   // exit
   await submit(session, '/quit')
   await waitPane(session, () => tmux('has-session', '-t', session).status !== 0, 15_000)
@@ -386,6 +535,8 @@ const driveLang = async (lang) => {
 let crashed = null
 try {
   console.log(`text-leak: dictionary = ${KEY_SET.size} keys (en ${TABLES.en.length} / zh-CN ${TABLES['zh-CN'].length}); faces: ${FACES.join(', ')}`)
+  MOCK = await startMock()
+  console.log(`text-leak: mock LLM ${MOCK ? `up on 127.0.0.1:${MOCK_PORT}` : 'UNAVAILABLE — busy/ask faces will fail'}`)
   for (const lang of LANGS) {
     console.log(`\n== text-leak: lang=${lang} ==`)
     const ok = await driveLang(lang)
@@ -407,6 +558,7 @@ try {
 } finally {
   for (const lang of LANGS) killSession(SESS(lang))
   reapHost()
+  if (MOCK) { try { MOCK.kill('SIGTERM') } catch { /* already gone */ } }
 
   // reports (always, so a failing run still lands its evidence)
   writeFileSync(join(OUT, 'audit-report.json'), JSON.stringify({
