@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { RGBA } from "@opentui/core"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The 💬 label rides the i18n registry (t() fail-open → the key itself when
+// no table is loaded), so the bundled locales must be in before any segment
+// builder assertion. Top-level (not beforeAll) so single-file runs and the
+// scattered top-level tests are all covered.
+setLanguages(loadLocales({ bundledDir: bundledLocalesDir() }).languages)
 import {
 	POWERLINE_ARROW,
 	POWERLINE_COLORS,
@@ -181,8 +188,19 @@ describe("footer assembly", () => {
 		])
 	})
 
-	test("empty data still yields brand plus the always-on counters (no hint segment)", () => {
-		expect(sessionFooterSegments({}).map((s) => s.text)).toEqual(["dsh", "💬 0 msgs", "🔧 0 tools"])
+	test("empty data still yields brand plus the always-on tool counter (no hint segment)", () => {
+		// messages is UNKNOWN (no sessionInfo) → the 💬 segment hides entirely;
+		// tools keeps its 0-count parity shape.
+		expect(sessionFooterSegments({}).map((s) => s.text)).toEqual(["dsh", "🔧 0 tools"])
+	})
+
+	test("💬 presence gate: unknown count hides the segment, an explicit 0 still renders", () => {
+		// wt/footer-0.17.0: the old `?? 0` fallback pinned a send-count-shaped
+		// fake number while sessionInfo was absent; undefined must OMIT the
+		// segment, 0 (a real empty session) stays visible.
+		expect(sessionFooterSegments({}).some((s) => s.text.startsWith("💬"))).toBe(false)
+		expect(sessionFooterSegments({ messages: 0 })?.find((s) => s.text === "💬 0 msgs")).toBeDefined()
+		expect(sessionFooterSegments({ messages: 4 })?.find((s) => s.text === "💬 4 msgs")).toBeDefined()
 	})
 })
 

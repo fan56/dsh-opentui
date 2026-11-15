@@ -26,6 +26,7 @@ import { brandBlue, type SkinColorMode } from "../../skin/identity"
 import { clipToWidth } from "./tool-summarize"
 import { stringWidth } from "../../util/string-width"
 import { useTerminalSize } from "./terminal-size"
+import { t } from "../../i18n"
 
 /** A color that is either a token RGBA or a fallback hex string. */
 export type PowerlineColor = string | RGBA
@@ -735,12 +736,15 @@ export function contextSegment(
 
 /**
  * The 💬 message-count segment (fix/footer-parity, tui-pi wording `💬 {n}
- * msgs`, footer.ts:271); ALWAYS shown — tui-pi pushes it unconditionally,
- * so 0 renders `💬 0 msgs` instead of omitting the segment.
+ * msgs`, footer.ts:271); 0 still renders `💬 0 msgs` (a legitimate empty
+ * session, tui-pi pushes it unconditionally). The label goes through i18n
+ * (`footer.messages`, live language signal). Presence is the CALLER's
+ * decision: sessionFooterSegments omits the segment when the count is
+ * unknown (sessionInfo absent) rather than showing a fake number.
  */
 export function messagesSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
 	if (!Number.isFinite(n) || n < 0) return null
-	return { text: `💬 ${n} msgs`, bg: resolvePalette(theme).messages, priority: 80 }
+	return { text: t("footer.messages", { n }), bg: resolvePalette(theme).messages, priority: 80 }
 }
 
 /**
@@ -1031,6 +1035,7 @@ export function sessionFooterSegments(data: {
 	contextTokens?: number | null
 	/** 🧠 model window (footer context batch); null/absent degrades to the bare `used` shape. */
 	contextWindow?: number | null
+	/** 💬 durable message count (seam sessionInfo); undefined — sessionInfo absent — hides the segment (no fake fallback), an explicit 0 still renders. */
 	messages?: number
 	tools?: number
 	tps?: number | null
@@ -1054,7 +1059,10 @@ export function sessionFooterSegments(data: {
 	add(contextSegment(data.contextTokens ?? null, data.contextWindow ?? null, theme))
 	// tui-pi footer order: 🧠 context, ⚡ CH, then msgs/tools.
 	add(cacheSegment(data.cacheHitRate ?? null, theme))
-	add(messagesSegment(data.messages ?? 0, theme))
+	// Unknown count (sessionInfo absent) hides the segment — the old
+	// `?? 0` fallback pinned a send-count-shaped fake number on the strip;
+	// an explicit 0 (a real empty session) still renders `💬 0 msgs`.
+	if (data.messages !== undefined) add(messagesSegment(data.messages, theme))
 	add(toolSegment(data.tools ?? 0, theme))
 	add(elapsedSegment(data.elapsedSec ?? null, theme))
 	add(speedSegment(data.tps ?? null, theme))

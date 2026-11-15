@@ -37,6 +37,11 @@ import {
 } from "../src/routes/session/hints-line"
 import { stringWidth } from "../src/util/string-width"
 
+// The 💬 label rides the i18n registry (t() fail-open → the key itself when
+// no table is loaded); boot the bundled locales before any segment assertion
+// so this file also passes standalone (the footer-wiring describe relies on it).
+setLanguages(loadLocales({ bundledDir: bundledLocalesDir() }).languages)
+
 describe("effort glyph ladder (tui-pi thinkingIcon parity)", () => {
 	test("the seven levels map to the seven ramp glyphs; off is ○ (tui-pi parity, not bare)", () => {
 		expect(EFFORT_ICONS.off).toBe("○")

@@ -183,12 +183,13 @@ function V2SessionPage(props: {
 	const [turnBusy, setTurnBusy] = createSignal(false)
 	const busy = () => composerBusy() || turnBusy()
 	const [busySince, setBusySince] = createSignal(0)
-	const [msgs, setMsgs] = createSignal(0)
 	const [model, setModel] = createSignal<{ providerID: string; modelID: string } | undefined>()
 	// Footer-quickwins (tui-pi footer parity): local tool-run count (🛠, reset
 	// on session clear), the model segment's effort level, and the remote
 	// session snapshot (durable user+assistant message count + decode-window
-	// tok/s). Local msgs stays the fallback while the seam has no sessionInfo.
+	// tok/s). The 💬 count has NO local fallback: while sessionInfo is absent
+	// the footer hides the segment instead of showing a send-count-shaped
+	// fake number.
 	const [tools, setTools] = createSignal(0)
 	const [effort, setEffort] = createSignal<string | undefined>()
 	const [remoteInfo, setRemoteInfo] = createSignal<{ messageCount?: number; tps?: number | null }>()
@@ -317,7 +318,6 @@ function V2SessionPage(props: {
 	let turnAborted = false
 	const send = (text: string) => {
 		turnAborted = false
-		setMsgs((n) => n + 1)
 		setTurnBusy(true)
 		setBusySince(Date.now())
 		setLastRequest(text)
@@ -486,10 +486,10 @@ function V2SessionPage(props: {
 			provider: model()?.providerID,
 			model: model()?.modelID,
 			effort: effort(),
-			// Durable user+assistant count from the seam's session snapshot; the
-			// local send-count stays the fallback while the seam has no
-			// sessionInfo (or the session is too young to answer).
-			messages: remoteInfo()?.messageCount ?? msgs(),
+			// Durable user+assistant count from the seam's session snapshot;
+			// undefined while sessionInfo is absent — the footer then hides the
+			// 💬 segment instead of showing a fake fallback number.
+			messages: remoteInfo()?.messageCount,
 			tools: tools(),
 			tps: remoteInfo()?.tps ?? null,
 			contextTokens: ctxTokens(),
@@ -874,8 +874,10 @@ function V2SessionPage(props: {
 					state: {
 						// hydrated() gates the journal-hydration window: a boot that
 						// attaches a session with history must not flash the hero
-						// for the duration of the fetch before it fills.
-						visible: () => projection.hydrated() && msgs() === 0 && projection.rows.length === 0,
+						// for the duration of the fetch before it fills. A local send
+						// upserts a user row synchronously (seam-rows send()), so the
+						// empty-rows check alone also covers "first message sent".
+						visible: () => projection.hydrated() && projection.rows.length === 0,
 						model: () => model()?.modelID,
 						muted: () => theme.text.muted,
 						// Skin wiring (contract §1): the identity gradient follows the
@@ -1389,11 +1391,13 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 	// U4 panelHeight replay (/motion parity): restore the persisted /settings
 	// gear BEFORE the first paint, so a restart keeps the chosen panel size.
 	applyActivityPanelConfig(seam.configLoad?.())
-	// i18n boot replay (design §3, applyHintsConfig parity): fix the language
-	// for the process lifetime BEFORE the first paint — unified `lang` key
-	// first, legacy `hintsLocale` folds in when no unified value exists
-	// (zh-CN aliases collapse; ja/ko degrade to en). Startup-fixed, no
-	// reactive switching.
+	// i18n boot replay (design §3, applyHintsConfig parity): seed the active
+	// language BEFORE the first paint — unified `lang` key first, legacy
+	// `hintsLocale` folds in when no unified value exists (zh-CN aliases
+	// collapse; ja/ko degrade to en). This boot seeds the signal only; the
+	// language stays LIVE afterwards — /language and /hints lang flip it at
+	// runtime through setLanguage (commands.ts), and t() call sites in
+	// tracking scopes re-render on the flip.
 	applyI18nConfig(seam.configLoad?.())
 
 	let shutdownPromise: Promise<void> | null = null

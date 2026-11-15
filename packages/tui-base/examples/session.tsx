@@ -45,6 +45,13 @@ import { ClipboardProvider, useClipboard } from "../src/context/clipboard"
 import { copyOnSelectEnabled, copyOnSelectRelease } from "../src/util/selection"
 import { createTuiClipboard } from "../src/clipboard"
 import { DialogProvider } from "../src/ui/dialog"
+import { applyI18nConfig } from "@dsh-opentui/i18n"
+
+// i18n boot replay (applyI18nConfig parity with v2-entry, BEFORE the first
+// paint): the footer's 💬 label is a `footer.messages` registry key now —
+// without a loaded table t() fail-opens to the bare key on the strip. No
+// config seam here, so the en default loads.
+applyI18nConfig()
 
 const SENTENCES = Number(process.env.S_SENTENCES ?? 24)
 const INTERVAL_MS = Number(process.env.S_INTERVAL_MS ?? 250)

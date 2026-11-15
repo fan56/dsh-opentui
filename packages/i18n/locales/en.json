@@ -611,6 +611,7 @@
   "turn.stop.confirmMessage": "Stop {parts} now? Queued prompts stay and the session remains resumable.",
   "turn.stop.confirmLabel": "stop",
   "turn.stop.cancelLabel": "keep running",
+  "footer.messages": "💬 {n} msgs",
   "footer.hint.quit": "ctrl+c ×2 quit",
   "footer.hint.scroll": "pgup/pgdn scroll",
   "footer.hint.search": "ctrl+shift+f search",

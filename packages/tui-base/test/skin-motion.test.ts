@@ -46,6 +46,11 @@ import {
 	speedSegment,
 	contextSegment,
 } from "../src/routes/session/powerline"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+
+// The 💬 label rides the i18n registry (t() fail-open → the key itself when
+// no table is loaded); boot the bundled locales before any segment assertion.
+setLanguages(loadLocales({ bundledDir: bundledLocalesDir() }).languages)
 
 afterEachDefault()
 
@@ -315,7 +320,8 @@ describe("powerline rolling numbers", () => {
 
 	test("footer assembly keeps order with the elapsed segment", () => {
 		const segs = sessionFooterSegments({ elapsedSec: 5, tps: 10 })
-		// always-on counters (💬/🔧, tui-pi parity); context still drops out
-		expect(segs.map((s) => s.text)).toEqual(["dsh", "💬 0 msgs", "🔧 0 tools", "⏱ 5s", "10 tok/s"])
+		// 🔧 stays an always-on counter (tui-pi parity); 💬 hides — the count is
+		// unknown here (no sessionInfo), context still drops out
+		expect(segs.map((s) => s.text)).toEqual(["dsh", "🔧 0 tools", "⏱ 5s", "10 tok/s"])
 	})
 })
