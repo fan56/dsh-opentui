@@ -72,6 +72,7 @@ import type { SessionSeam } from "../../seams/session"
 import { ComposerController, type ComposerDelivery, type ComposerFlushResult, type ComposerHistory, type ComposerPendingRow, type ComposerQueuePause } from "./composer-state"
 import { composerKeyBindings, type ComposerKeybindConfig } from "./composer-keybinds"
 import { useThemeOptional } from "../../context/theme"
+import { t } from "../../i18n"
 import { Keymap } from "../../context/keymap"
 import { useCursorStyle } from "../../config"
 import {
@@ -546,7 +547,7 @@ export function SessionComposer(props: SessionComposerProps) {
 				width="100%"
 				minHeight={1}
 				maxHeight={maxLines()}
-				placeholder={props.placeholder ?? "Type a message (enter send, alt+enter newline)"}
+				placeholder={props.placeholder ?? t("composer.placeholder")}
 				placeholderColor={color.placeholder()}
 				textColor={color.unfocusedText()}
 				focusedTextColor={color.text()}

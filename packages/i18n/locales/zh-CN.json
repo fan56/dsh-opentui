@@ -903,5 +903,6 @@
   "dialog.mcp.details.title": "MCP 服务器：{name}",
   "dialog.mcp.details.unknownError": "未知的 MCP 连接错误",
   "dialog.mcp.details.context": "状态：{status}\n配置：mcp.servers.{server}",
-  "dialog.mcp.details.integration": "\n集成：{id}"
+  "dialog.mcp.details.integration": "\n集成：{id}",
+  "composer.placeholder": "输入消息（enter 发送，alt+enter 换行）"
 }

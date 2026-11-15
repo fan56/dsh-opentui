@@ -903,5 +903,6 @@
   "dialog.mcp.details.title": "MCP server: {name}",
   "dialog.mcp.details.unknownError": "Unknown MCP connection error",
   "dialog.mcp.details.context": "Status: {status}\nConfiguration: mcp.servers.{server}",
-  "dialog.mcp.details.integration": "\nIntegration: {id}"
+  "dialog.mcp.details.integration": "\nIntegration: {id}",
+  "composer.placeholder": "Type a message (enter send, alt+enter newline)"
 }
