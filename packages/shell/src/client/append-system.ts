@@ -36,9 +36,9 @@ export const APPEND_SYSTEM_ROW_ID = `preset-${APPEND_SYSTEM_PRESET_ID}`
 /** The managed-block marker comment: its presence marks OUR lines; resync never touches other lines. */
 export const APPEND_SYSTEM_MARKER = "# dsh-opentui:append-system"
 
-/** Default harness home: `$DSH_HOME` or `~/.dsh` (tui-pi parity). */
+/** Default harness home: `$DSH_HOME` or `~/.dsh` (tui-pi parity; an empty DSH_HOME falls back, host-side parity). */
 export function defaultDshHome(): string {
-	return process.env.DSH_HOME ?? join(homedir(), ".dsh")
+	return process.env.DSH_HOME || join(homedir(), ".dsh")
 }
 
 /** The user-editable append file (`$DSH_HOME/APPEND_SYSTEM.md`). */
@@ -59,8 +59,9 @@ export const APPEND_SYSTEM_TEMPLATE = `# APPEND_SYSTEM.md — standing system-pr
 The content of this file is appended to the system prompt of every main
 session the dsh-opentui client creates (ported from dsh-tui-pi).
 
-The file is user-owned: the client seeds it once when missing and never
-rewrites it. Edits apply to sessions created after the next client start.
+The file is user-owned: the client seeds it once and never rewrites it.
+Edits apply to sessions created after the next client start; clearing or
+deleting this file switches the append off (it is not re-seeded).
 
 ## Vocabulary
 
@@ -78,7 +79,7 @@ Write your persistent instructions below this line.
  * double quotes (survives YAML double-quoted scalars), no backslashes.
  */
 export const APPEND_SYSTEM_SUFFIX_EXPR =
-	`((req, path) => { try { return req('node:fs').readFileSync(path.join(process.env.DSH_HOME || ((process.env.HOME || '') + '/.dsh'), 'APPEND_SYSTEM.md'), 'utf8') } catch { return '' } })(process.getBuiltinModule('node:module').createRequire(baseUrl), process.getBuiltinModule('node:path'))`
+	`((req, path) => { try { const text = req('node:fs').readFileSync(path.join(process.env.DSH_HOME || ((process.env.HOME || '') + '/.dsh'), 'APPEND_SYSTEM.md'), 'utf8'); return text.length > 65536 ? text.slice(0, 65536) + String.fromCharCode(10) + '[append-system: truncated at 64KiB]' : text } catch { return '' } })(process.getBuiltinModule('node:module').createRequire(baseUrl), process.getBuiltinModule('node:path'))`
 
 /**
  * The managed patch block. The plugin list is the shipped `standard` preset
@@ -97,8 +98,8 @@ ${APPEND_SYSTEM_MARKER} persona suffix = $DSH_HOME/APPEND_SYSTEM.md, evaluated b
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: ${APPEND_SYSTEM_PRESET_ID}
-        name: Append System
-        description: Standard composition plus the user's APPEND_SYSTEM.md appended to the system prompt.
+        name: Standard + Append
+        description: The shipped standard preset plus the user's APPEND_SYSTEM.md appended to the system prompt.
         order: 5
         plugins:
           - id: persona
@@ -262,9 +263,16 @@ function writeAtomically(path: string, content: string, mode: number): void {
 }
 
 /**
- * Seed the append file when missing (tui-pi parity). An existing file — even
- * an empty one — is user-owned: zero writes. Atomic; throws on write failure
- * (the caller degrades to booting without the feature, never fails the boot).
+ * Seed the append file — FIRST PROVISIONING ONLY: a missing file is seeded
+ * solely when the managed preset block is absent too. After provisioning,
+ * deleting the file is how the user switches the append OFF (an empty persona
+ * suffix renders no section), and this function must not resurrect it (the
+ * block's presence answers "provisioned"). An existing file — even an empty
+ * one — is user-owned: zero writes. Atomic; throws on write failure (the
+ * caller degrades to booting without the feature, never fails the boot).
+ * @param path - target file (injectable for tests). Whether the install is
+ *   already provisioned (managed block present => deleted file stays deleted)
+ *   is the CALLER's judgment — see {@link provisionAppendSystem}.
  */
 export function ensureAppendSystemFile(path: string = appendSystemPath()): "seeded" | "kept" {
 	try {
@@ -319,6 +327,31 @@ function managedSpan(lines: readonly string[]): [number, number] | undefined {
 		}
 	}
 	return [start, end]
+}
+
+/**
+ * One boot-time provisioning pass (the lifecycle entry point): maintain the
+ * managed preset row, then seed the append file only when the install is not
+ * yet provisioned (no managed block) AND the file is missing — afterwards a
+ * deleted file means OFF and stays deleted. Returns both outcomes for the
+ * caller's structured logging; write failures propagate.
+ */
+export function provisionAppendSystem(home: string, profile: string): { patch: AppendPresetSyncResult; file: "seeded" | "kept" } {
+	// Provisioning is judged on the PRE-sync patch state: the block this pass
+	// just added must not count (a fresh install seeds the file in the same
+	// breath), while a block that already existed means the user may have
+	// deleted the file to switch OFF — never re-seed over that.
+	let preText: string | undefined
+	try {
+		preText = readFileSync(profilePatchPath(home, profile), "utf8")
+	} catch {
+		preText = undefined // no patch file: nothing provisioned, seeding stays eligible
+	}
+	const patch = syncAppendSystemPreset(home, profile)
+	if (preText !== undefined && managedSpan(preText.split("\n")) !== undefined) {
+		return { patch, file: "kept" } // provisioned install: deleted file stays deleted (delete = off)
+	}
+	return { patch, file: ensureAppendSystemFile(appendSystemPath(home)) }
 }
 
 /**

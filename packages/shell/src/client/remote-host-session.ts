@@ -1130,20 +1130,29 @@ export class RemoteHostSession {
 
 	/**
 	 * One-shot roster probe for the client-managed append-system preset
-	 * (dsh-tui-pi port): true only when the host composes it (broken/unmounted
-	 * rows are dropped by listPresets, so an adopted host predating the patch
-	 * row keeps `agentPreset` off the wire instead of failing `session/create`
-	 * with `agent-preset/not-found`). Never throws.
+	 * (dsh-tui-pi port): true only when the host composes it (broken rows are
+	 * dropped, so an uncomposable declaration keeps `agentPreset` off the wire
+	 * instead of failing `session/create` with `agent-preset/not-found`).
+	 * Never throws. A FAILED probe is deliberately NOT cached — an adopted
+	 * host predating the patch row (or a transient registry outage) must not
+	 * pin the answer false forever; the next create re-probes. A successful
+	 * answer is cached per host instance; #reattach resets it because the
+	 * reconnect target may be a NEW host whose patch state differs.
 	 */
 	async #appendPresetRosterCheck(): Promise<boolean> {
-		if (!this.#appendPresetChecked) {
-			this.#appendPresetChecked = true
-			try {
-				this.#appendPresetAvailable = (await this.listPresets()).some((row) => row.id === APPEND_SYSTEM_PRESET_ID)
-			} catch {
-				this.#appendPresetAvailable = false
-			}
+		if (this.#appendPresetChecked) return this.#appendPresetAvailable
+		let roster: { presets?: unknown }
+		try {
+			roster = (await this.#rpc("agentPresets/list")) as { presets?: unknown }
+		} catch {
+			return false // not cached — probe again on the next create
 		}
+		this.#appendPresetChecked = true
+		const presets = Array.isArray(roster.presets) ? roster.presets : []
+		this.#appendPresetAvailable = presets.some((p) => {
+			const row = (typeof p === "object" && p !== null ? p : {}) as Record<string, unknown>
+			return String(row.id ?? "") === APPEND_SYSTEM_PRESET_ID && !(typeof row.broken === "string" && row.broken)
+		})
 		return this.#appendPresetAvailable
 	}
 
@@ -1203,10 +1212,15 @@ export class RemoteHostSession {
 			// sticking to it forever.
 			if (this.#presetId !== undefined) return this.#presetId
 			if (proj.agentPreset !== undefined && proj.agentPreset !== this.#presetId) {
-				this.#presetId = proj.agentPreset
-				// Same follow-up as the opening-header adoption: the verdict
-				// drives tool presentation for the preset-bound session.
-				void this.#probeExecutionMode()
+				// Default-ride guard (see the create-echo adoption): the client-
+				// managed preset is re-resolved per create, never fixated from
+				// observed state while the user has not chosen a preset.
+				if (!(this.#presetId === undefined && proj.agentPreset === APPEND_SYSTEM_PRESET_ID)) {
+					this.#presetId = proj.agentPreset
+					// Same follow-up as the opening-header adoption: the verdict
+					// drives tool presentation for the preset-bound session.
+					void this.#probeExecutionMode()
+				}
 			}
 			return proj.agentPreset
 		} catch {
@@ -2346,15 +2360,21 @@ export class RemoteHostSession {
 			await this.#attachFollow(false)
 			return this.#sessionId
 		}
+		const resumed = this.#resumeId !== undefined
 		const requestedId = this.#resumeId ?? randomUUID()
 		this.#resumeId = undefined
 		// Append-system default (dsh-tui-pi port): with no explicit user preset,
-		// a fresh create rides the client-managed preset when the host composes
+		// a FRESH create rides the client-managed preset when the host composes
 		// it (roster-gated); the persona suffix shadows nothing but the persona
-		// sections, so the session face stays the shipped default's.
+		// sections, so the session face stays the shipped default's. A RESUME
+		// (stored, non-blank session) rides only an explicit choice: the host
+		// accepts create-time preset REPLACEMENT on a reused session (probe
+		// 2026-11-15: blank re-create with agentPreset -> accepted, recorded
+		// preset replaced), and the non-blank re-create face is unexercised —
+		// the stored session keeps its recorded preset unless the user says so.
 		const request: Record<string, unknown> = { cwd: this.#cwd, sessionId: requestedId }
 		if (this.#presetId !== undefined) request.agentPreset = this.#presetId
-		else if (await this.#appendPresetRosterCheck()) request.agentPreset = APPEND_SYSTEM_PRESET_ID
+		else if (!resumed && (await this.#appendPresetRosterCheck())) request.agentPreset = APPEND_SYSTEM_PRESET_ID
 		let value: Record<string, unknown>
 		try {
 			value = (await this.#rpc("session/create", { request })) as Record<string, unknown>
@@ -2367,7 +2387,14 @@ export class RemoteHostSession {
 		// The host may reuse a DIFFERENT session than requested (blank-reuse
 		// rules are host-native, row 12) — its answer wins.
 		this.#sessionId = typeof value.sessionId === "string" ? value.sessionId : requestedId
-		if (typeof value.agentPreset === "string" && value.agentPreset) this.#presetId = value.agentPreset
+		// Adopt the host's answer (blank-reuse may hand back a session with a
+		// DIFFERENT recorded preset — its answer wins), EXCEPT the default
+		// ride: an echoed append-system id while the user never chose a preset
+		// must not fixate into #presetId, or /new would stop re-resolving the
+		// default (and a later host without the row would pin the stale id).
+		if (typeof value.agentPreset === "string" && value.agentPreset && !(this.#presetId === undefined && value.agentPreset === APPEND_SYSTEM_PRESET_ID)) {
+			this.#presetId = value.agentPreset
+		}
 		// A staged model selection (switchModel with no live session) applies
 		// to the fresh session before its first prompt.
 		if (this.#pendingModel !== undefined && this.#sessionId !== undefined) {
@@ -2389,7 +2416,13 @@ export class RemoteHostSession {
 		// adopt it (it drives the row-37 executionMode probe).
 		const opening = await this.#attachFollow(false)
 		if (opening.header.agentPreset && opening.header.agentPreset !== this.#presetId) {
-			this.#presetId = opening.header.agentPreset
+			// Default-ride guard (see the create-echo adoption): the client-
+			// managed preset is never fixated from observed state while the
+			// user has not chosen a preset — but the executionMode probe still
+			// runs, because the session IS preset-bound (row 37 presentation).
+			if (!(this.#presetId === undefined && opening.header.agentPreset === APPEND_SYSTEM_PRESET_ID)) {
+				this.#presetId = opening.header.agentPreset
+			}
 			void this.#probeExecutionMode()
 		}
 		return this.#sessionId
@@ -2830,6 +2863,9 @@ export class RemoteHostSession {
 	async #reattach(): Promise<void> {
 		if (this.#disposed || this.#sessionId === undefined || this.#reattachInFlight) return
 		if (this.#follow?.attached) return
+		// The reconnect target may be a NEW host (restart) whose patch state —
+		// and therefore the append-system roster row — differs; re-probe.
+		this.#appendPresetChecked = false
 		this.#reattachInFlight = true
 		if (this.#awaiting) this.#setReconnecting(true)
 		try {

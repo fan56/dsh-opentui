@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test"
 import { RemoteHostSession, REATTACH_RETRY_MS, REATTACH_MAX_ATTEMPTS } from "../src/client/remote-host-session.ts"
 import { APPEND_SYSTEM_PRESET_ID } from "../src/client/append-system.ts"
+import { askBtw } from "../src/client/remote-btw.ts"
 import { RemoteFollowSession, expandCompactStream, scanUsageChunk, blocksText, type RemoteFollowSink } from "../src/client/remote-follow.ts"
 import { RemoteRpcError, type ClientConnection, type ClientConnectionState, type ClientEventDisposer, type ClientEventHandler, type ClientReadyInfo } from "../src/client/transport.ts"
 import { askCallData, askResultData } from "./client-fakes.ts"
@@ -742,6 +743,88 @@ describe("RemoteHostSession session ops", () => {
 			await pending
 			await h.session.dispose()
 		}
+	})
+
+	test("append-system default: a FAILED roster probe is not cached (next create re-probes)", async () => {
+		let listCalls = 0
+		const handler: RpcHandler = (method) => {
+			if (method === "agentPresets/list") {
+				listCalls += 1
+				if (listCalls === 1) throw new Error("registry not mounted yet")
+				return { presets: [{ id: APPEND_SYSTEM_PRESET_ID }] }
+			}
+			if (method === "session/create") return { sessionId: `sess-${listCalls}` }
+			if (method === "session/prompt") return { accepted: true }
+			return {}
+		}
+		const h = makeSession({ rpcHandler: handler })
+		const { cb } = callbacks()
+		// Turn 1: the probe fails => no agentPreset on the wire, and the failure is not remembered.
+		const first = h.session.turn("go", cb)
+		await until(() => rpcOf(h.connection, "session/create") !== undefined)
+		expect((rpcOf(h.connection, "session/create")!["request"] as Record<string, unknown>).agentPreset).toBeUndefined()
+		h.lastSocket().item(snapshotFrame("sess-1"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await first
+		// Turn 2: the probe succeeds => the default now rides.
+		h.session.newSession()
+		const second = h.session.turn("go", cb)
+		await until(() => h.connection.rpcCalls.filter((f) => f.method === "session/create").length >= 2)
+		const secondCreate = h.connection.rpcCalls.filter((f) => f.method === "session/create")[1]!
+		expect((secondCreate.args as Record<string, unknown>)["request"] as Record<string, unknown>).toHaveProperty("agentPreset", APPEND_SYSTEM_PRESET_ID)
+		h.lastSocket().item(snapshotFrame("sess-2"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		// newSession() reset the ledger: the fresh session's first turn is 1.
+		// Let the client's turn arm land before the end frame (the default
+		// ride adds probe RPCs between prompt dispatch and the arm).
+		await new Promise((resolve) => setTimeout(resolve, 120))
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await second
+		expect(listCalls).toBeGreaterThanOrEqual(2)
+		await h.session.dispose()
+	})
+
+	test("append-system default: a RESUME does not ride it (explicit choice only)", async () => {
+		const handler: RpcHandler = (method) => {
+			if (method === "agentPresets/list") return { presets: [{ id: APPEND_SYSTEM_PRESET_ID }] }
+			if (method === "session/create") return { sessionId: "stored-7" }
+			if (method === "session/prompt") return { accepted: true }
+			return {}
+		}
+		const h = makeSession({ rpcHandler: handler })
+		const { cb } = callbacks()
+		h.session.resumeSession("stored-7")
+		const pending = h.session.turn("go", cb)
+		await until(() => rpcOf(h.connection, "session/create") !== undefined)
+		expect((rpcOf(h.connection, "session/create")!["request"] as Record<string, unknown>).agentPreset).toBeUndefined()
+		h.lastSocket().item(snapshotFrame("stored-7"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
+		await h.session.dispose()
+	})
+
+	test("append-system default: an echoed default id is NOT fixated into the preset state", async () => {
+		const handler: RpcHandler = (method) => {
+			if (method === "agentPresets/list") return { presets: [{ id: APPEND_SYSTEM_PRESET_ID }] }
+			// The host echoes the id it mounted (the default ride).
+			if (method === "session/create") return { sessionId: "sess-echo", agentPreset: APPEND_SYSTEM_PRESET_ID }
+			if (method === "session/prompt") return { accepted: true }
+			return {}
+		}
+		const h = makeSession({ rpcHandler: handler })
+		const { cb } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		h.lastSocket().item(snapshotFrame("sess-echo"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
+		// The ride was default-resolved, so the echo must not stick: /new
+		// re-resolves from the roster instead of pinning a staged id.
+		expect(h.session.currentPresetId()).toBeUndefined()
+		await h.session.dispose()
 	})
 
 	test("append-system default: an explicit user preset wins over it", async () => {
@@ -1490,5 +1573,49 @@ describe("RemoteHostSession contextPressure projections", () => {
 		expect(calls).toBe(settled)
 		expect(h.session.contextWindow()).toBe(128000)
 		await h.session.dispose()
+	})
+})
+
+describe("askBtw agentPreset passthrough (append-system default ride)", () => {
+	/** Drive one askBtw against a recording rpc and return the create request. */
+	async function btwCreateRequest(agentPreset: string | undefined): Promise<Record<string, unknown>> {
+		const requests: Record<string, unknown>[] = []
+		const sockets: FakeMuxSocket[] = []
+		const pending = askBtw({
+			rpc: (method, args) => {
+				requests.push({ method, ...(args !== undefined ? { args } : {}) })
+				if (method === "session/create") return Promise.resolve({ sessionId: "throw-1" })
+				if (method === "session/prompt") return Promise.resolve({ accepted: true })
+				return Promise.resolve({})
+			},
+			socketFactory: () => {
+				const s = new FakeMuxSocket()
+				sockets.push(s)
+				return s
+			},
+			cwd: "/w",
+			question: "tiny",
+			snapshot: [],
+			timeoutMs: 2000,
+			...(agentPreset !== undefined ? { agentPreset } : {}),
+		})
+		await until(() => sockets.length > 0)
+		const sock = sockets[sockets.length - 1]!
+		sock.item(snapshotFrame("throw-1"))
+		await until(() => requests.some((r) => r.method === "session/prompt"))
+		sock.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
+		return (requests.find((r) => r.method === "session/create")!["args"] as Record<string, Record<string, unknown>>)["request"]
+	}
+
+	test("with agentPreset => rides the throwaway session/create request", async () => {
+		const request = await btwCreateRequest(APPEND_SYSTEM_PRESET_ID)
+		expect(request.agentPreset).toBe(APPEND_SYSTEM_PRESET_ID)
+		expect(typeof request.sessionId).toBe("string") // client-minted id; the ANSWER id (throw-1) is separate
+	})
+
+	test("without agentPreset => request carries no preset (host default)", async () => {
+		const request = await btwCreateRequest(undefined)
+		expect(request.agentPreset).toBeUndefined()
 	})
 })

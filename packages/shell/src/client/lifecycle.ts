@@ -85,7 +85,7 @@ import { homedir } from 'node:os'
 import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { probeHostHttp, probeHostMux } from './host-probe.ts'
-import { appendSystemPath, ensureAppendSystemFile, syncAppendSystemPreset } from './append-system.ts'
+import { provisionAppendSystem } from './append-system.ts'
 
 export const DEFAULT_PROFILE = 'opentui'
 /** Idle-exit window: the resident host exits this long after the LAST client
@@ -1002,8 +1002,12 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
   // roster gate in remote-host-session keeps `agentPreset` off the wire, so
   // an enrichment must never fail the boot.
   try {
-    ensureAppendSystemFile(appendSystemPath(o.dshHome))
-    syncAppendSystemPreset(o.dshHome, o.profile)
+    const provision = provisionAppendSystem(o.dshHome, o.profile)
+    // Same channel as the throw path: a skipped/collision outcome boots
+    // WITHOUT the preset and must be visible in the error log, never silent.
+    if (provision.patch.status === 'collision' || provision.patch.status === 'skipped') {
+      console.error(`[lifecycle] append-system preset not provisioned (${provision.patch.status}): ${provision.patch.detail}`)
+    }
   } catch (error) {
     console.error('[lifecycle] append-system sync failed (booting without the preset):', error)
   }

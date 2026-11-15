@@ -24,6 +24,7 @@ import {
 	defaultDshHome,
 	ensureAppendSystemFile,
 	profilePatchPath,
+	provisionAppendSystem,
 	readAppendSystem,
 	syncAppendSystemPreset,
 } from "../src/client/append-system.ts"
@@ -177,6 +178,54 @@ describe("syncAppendSystemPreset", () => {
 		expect(readFileSync(path, "utf8")).toBe(before)
 	})
 
+	test("patch without a trailing newline => block still appended cleanly, rows preserved", () => {
+		const path = seedPatch(USER_PATCH.replace(/\n$/, ""))
+		const before = readFileSync(path, "utf8")
+		const result = syncAppendSystemPreset(home, "opentui")
+		expect(result.status).toBe("added")
+		const after = readFileSync(path, "utf8")
+		expect(after.startsWith(before + "\n")).toBe(true)
+		expect(after).toContain(`id: ${APPEND_SYSTEM_ROW_ID}`)
+		expect(syncAppendSystemPreset(home, "opentui").status).toBe("present")
+	})
+
+	test("duplicate managed blocks (user copy-paste) => collision, zero writes", () => {
+		const path = seedPatch(USER_PATCH)
+		syncAppendSystemPreset(home, "opentui")
+		const once = readFileSync(path, "utf8")
+		writeFileSync(path, once + once) // two managed blocks
+		const before = readFileSync(path, "utf8")
+		const result = syncAppendSystemPreset(home, "opentui")
+		expect(result.status).toBe("collision")
+		expect(readFileSync(path, "utf8")).toBe(before)
+	})
+
+	test("delete = off: after provisioning, a deleted APPEND_SYSTEM.md is not resurrected", () => {
+		const dir = join(home, "profiles", "opentui")
+		mkdirSync(dir, { recursive: true })
+		writeFileSync(profilePatchPath(home, "opentui"), USER_PATCH)
+		const append = appendSystemPath(home)
+		// First provision: block added + file seeded.
+		const first = provisionAppendSystem(home, "opentui")
+		expect(first.patch.status).toBe("added")
+		expect(first.file).toBe("seeded")
+		expect(existsSync(append)).toBe(true)
+		// User deletes the file to switch the append off.
+		rmSync(append)
+		const second = provisionAppendSystem(home, "opentui")
+		expect(second.patch.status).toBe("present")
+		expect(second.file).toBe("kept")
+		expect(existsSync(append)).toBe(false)
+	})
+
+	test("no patch file at all => patch skipped, but the missing append file still seeds (fresh install)", () => {
+		mkdirSync(join(home, "profiles"), { recursive: true })
+		const result = provisionAppendSystem(home, "opentui")
+		expect(result.patch.status).toBe("skipped")
+		expect(result.file).toBe("seeded")
+		expect(existsSync(appendSystemPath(home))).toBe(true)
+	})
+
 	test("write is atomic: no tmp leftovers in the profile dir", () => {
 		const dir = join(home, "profiles", "opentui")
 		mkdirSync(dir, { recursive: true })
@@ -200,6 +249,9 @@ describe("appendSystemPresetBlock shape", () => {
 		expect(block).toContain(`suffix: !!js "${APPEND_SYSTEM_SUFFIX_EXPR}"`)
 		expect(APPEND_SYSTEM_SUFFIX_EXPR).toContain("APPEND_SYSTEM.md")
 		expect(APPEND_SYSTEM_SUFFIX_EXPR).toContain("DSH_HOME")
+		expect(APPEND_SYSTEM_SUFFIX_EXPR).toContain("65536") // 64KiB cap (agent-instructions maxBytes magnitude)
+		expect(APPEND_SYSTEM_SUFFIX_EXPR).toContain("String.fromCharCode(10)") // newline joiner without any YAML-escape hazard
+		expect(APPEND_SYSTEM_SUFFIX_EXPR).toContain("truncated at 64KiB") // felt marker on truncation
 		expect(APPEND_SYSTEM_SUFFIX_EXPR).not.toContain('"') // survives the YAML double-quoted scalar
 		expect(APPEND_SYSTEM_SUFFIX_EXPR).not.toContain("\\") // no escape-sequence surprises
 	})
