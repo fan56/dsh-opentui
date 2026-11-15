@@ -5,6 +5,7 @@
 // assert the HostSession-shaped callbacks ShellHost consumes.
 import { describe, expect, test } from "bun:test"
 import { RemoteHostSession, REATTACH_RETRY_MS, REATTACH_MAX_ATTEMPTS } from "../src/client/remote-host-session.ts"
+import { APPEND_SYSTEM_PRESET_ID } from "../src/client/append-system.ts"
 import { RemoteFollowSession, expandCompactStream, scanUsageChunk, blocksText, type RemoteFollowSink } from "../src/client/remote-follow.ts"
 import { RemoteRpcError, type ClientConnection, type ClientConnectionState, type ClientEventDisposer, type ClientEventHandler, type ClientReadyInfo } from "../src/client/transport.ts"
 import { askCallData, askResultData } from "./client-fakes.ts"
@@ -689,6 +690,75 @@ describe("RemoteHostSession session ops", () => {
 		const create = rpcOf(h.connection, "session/create")!["request"] as Record<string, unknown>
 		expect(create.agentPreset).toBe("reviewer")
 		h.lastSocket().item(snapshotFrame("sess-8"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
+		await h.session.dispose()
+	})
+
+	// ---- append-system default preset (dsh-tui-pi port; roster gate) ----
+
+	test("append-system default: roster composes it => a fresh create rides it", async () => {
+		const handler: RpcHandler = (method) => {
+			if (method === "agentPresets/list") return { presets: [{ id: "standard" }, { id: APPEND_SYSTEM_PRESET_ID }] }
+			if (method === "session/create") return { sessionId: "sess-append" }
+			if (method === "session/prompt") return { accepted: true }
+			return {}
+		}
+		const h = makeSession({ rpcHandler: handler })
+		const { cb } = callbacks()
+		const pending = h.session.turn("go", cb)
+		await until(() => rpcOf(h.connection, "session/create") !== undefined)
+		const create = rpcOf(h.connection, "session/create")!["request"] as Record<string, unknown>
+		expect(create.agentPreset).toBe(APPEND_SYSTEM_PRESET_ID)
+		h.lastSocket().item(snapshotFrame("sess-append"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
+		await h.session.dispose()
+	})
+
+	test("append-system default: absent or broken roster row => no agentPreset on the wire", async () => {
+		for (const roster of [
+			{ presets: [{ id: "standard" }] }, // not declared (host predates the patch row)
+			{ presets: [{ id: APPEND_SYSTEM_PRESET_ID, broken: "mount failed" }] }, // declared but uncomposable
+			{}, // no registry service
+		]) {
+			const handler: RpcHandler = (method) => {
+				if (method === "agentPresets/list") return roster
+				if (method === "session/create") return { sessionId: "sess-plain" }
+				if (method === "session/prompt") return { accepted: true }
+				return {}
+			}
+			const h = makeSession({ rpcHandler: handler })
+			const { cb } = callbacks()
+			const pending = h.session.turn("go", cb)
+			await until(() => rpcOf(h.connection, "session/create") !== undefined)
+			const create = rpcOf(h.connection, "session/create")!["request"] as Record<string, unknown>
+			expect(create.agentPreset).toBeUndefined()
+			h.lastSocket().item(snapshotFrame("sess-plain"))
+			await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+			h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+			await pending
+			await h.session.dispose()
+		}
+	})
+
+	test("append-system default: an explicit user preset wins over it", async () => {
+		const handler: RpcHandler = (method) => {
+			if (method === "agentPresets/list") return { presets: [{ id: APPEND_SYSTEM_PRESET_ID }, { id: "minimal" }] }
+			if (method === "session/create") return { sessionId: "sess-pick" }
+			if (method === "session/prompt") return { accepted: true }
+			return {}
+		}
+		const h = makeSession({ rpcHandler: handler })
+		const { cb } = callbacks()
+		h.session.switchPreset("minimal")
+		const pending = h.session.turn("go", cb)
+		await until(() => rpcOf(h.connection, "session/create") !== undefined)
+		const create = rpcOf(h.connection, "session/create")!["request"] as Record<string, unknown>
+		expect(create.agentPreset).toBe("minimal")
+		h.lastSocket().item(snapshotFrame("sess-pick"))
 		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
 		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
 		await pending

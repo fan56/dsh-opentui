@@ -49,6 +49,11 @@ export interface RemoteBtwOptions {
 	previousSessionId?: string
 	/** Model route staged for the throwaway (the facade's pending selection). */
 	stagedModel?: RemoteModelSelection
+	/**
+	 * Preset the throwaway rides (append-system default rule — the facade
+	 * passes the same id a fresh main create would). Omitted => host default.
+	 */
+	agentPreset?: string
 	/** Hard stop (host-session parity: 120s wedged side call → empty). */
 	timeoutMs?: number
 }
@@ -99,7 +104,13 @@ export async function askBtw(options: RemoteBtwOptions): Promise<RemoteBtwResult
 	let sessionId = options.previousSessionId ?? ""
 	if (!sessionId) {
 		const requested = randomUUID()
-		const value = (await options.rpc("session/create", { request: { cwd: options.cwd, sessionId: requested } })) as Record<string, unknown>
+		const value = (await options.rpc("session/create", {
+			request: {
+				cwd: options.cwd,
+				sessionId: requested,
+				...(options.agentPreset !== undefined ? { agentPreset: options.agentPreset } : {}),
+			},
+		})) as Record<string, unknown>
 		sessionId = typeof value.sessionId === "string" ? value.sessionId : requested
 		// a staged model route applies to the fresh throwaway before the prompt
 		if (options.stagedModel) {

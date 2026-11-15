@@ -172,6 +172,7 @@ import {
 import { RemoteModelClient, type RemoteContextPressure, type RemoteModelSelection, type RemoteSessionProjections } from "./remote-model.ts"
 import { ContextTokenMeter } from "./token-estimate.ts"
 import { RemoteSettingsClient, type RemoteSettingsRow, type RemoteCredentialInfo } from "./remote-settings.ts"
+import { APPEND_SYSTEM_PRESET_ID } from "./append-system.ts"
 import { openRemoteStream, type RemoteStreamHandle } from "./remote-stream.ts"
 import {
 	WaterfallAnswerer,
@@ -404,6 +405,15 @@ export class RemoteHostSession {
 	#sessionId: string | undefined
 	#resumeId: string | undefined
 	#presetId: string | undefined
+	/**
+	 * Append-system (dsh-tui-pi port) roster gate: a fresh main-session create
+	 * rides the client-managed preset only when the host actually composes it
+	 * (the lifecycle sync writes the patch before ITS boot, but an adopted
+	 * host predating the row must not see `agent-preset/not-found`). One-shot
+	 * probe; an explicit user preset (`#presetId`) always wins.
+	 */
+	#appendPresetChecked = false
+	#appendPresetAvailable = false
 	#cb: TurnCallbacks | undefined
 	#askProvider: ((questions: RemoteQuestion[]) => Promise<RemoteQuestionAnswer[]>) | undefined
 	#resolveTurn: (() => void) | undefined
@@ -1116,6 +1126,25 @@ export class RemoteHostSession {
 		} catch {
 			return []
 		}
+	}
+
+	/**
+	 * One-shot roster probe for the client-managed append-system preset
+	 * (dsh-tui-pi port): true only when the host composes it (broken/unmounted
+	 * rows are dropped by listPresets, so an adopted host predating the patch
+	 * row keeps `agentPreset` off the wire instead of failing `session/create`
+	 * with `agent-preset/not-found`). Never throws.
+	 */
+	async #appendPresetRosterCheck(): Promise<boolean> {
+		if (!this.#appendPresetChecked) {
+			this.#appendPresetChecked = true
+			try {
+				this.#appendPresetAvailable = (await this.listPresets()).some((row) => row.id === APPEND_SYSTEM_PRESET_ID)
+			} catch {
+				this.#appendPresetAvailable = false
+			}
+		}
+		return this.#appendPresetAvailable
 	}
 
 	/** Read one preset's composition document (row 23; executionMode probe input). */
@@ -1957,6 +1986,11 @@ export class RemoteHostSession {
 			// wins, else the live session's effective projection route, else
 			// the catalog default — never a stale deployment default.
 			const staged = this.#pendingModel ?? (await this.currentModelSelection())
+			// Same default-preset rule as #ensureSession: the throwaway is a
+			// full main-agent session, so it rides the client-managed preset
+			// when the user has not chosen one; an explicit choice re-rides as
+			// declared (host-default parity otherwise).
+			const btwPreset = this.#presetId ?? ((await this.#appendPresetRosterCheck()) ? APPEND_SYSTEM_PRESET_ID : undefined)
 			const result = await askBtw({
 				rpc: (method, args) => this.#rpc(method, args),
 				socketFactory: this.#socketFactory,
@@ -1966,6 +2000,7 @@ export class RemoteHostSession {
 				...(onDelta ? { onDelta } : {}),
 				...(this.#btwSessionId !== undefined ? { previousSessionId: this.#btwSessionId } : {}),
 				...(staged !== undefined ? { stagedModel: staged } : {}),
+				...(btwPreset !== undefined ? { agentPreset: btwPreset } : {}),
 			})
 			this.#btwSessionId = result.sessionId
 			return result.answer
@@ -2313,8 +2348,13 @@ export class RemoteHostSession {
 		}
 		const requestedId = this.#resumeId ?? randomUUID()
 		this.#resumeId = undefined
+		// Append-system default (dsh-tui-pi port): with no explicit user preset,
+		// a fresh create rides the client-managed preset when the host composes
+		// it (roster-gated); the persona suffix shadows nothing but the persona
+		// sections, so the session face stays the shipped default's.
 		const request: Record<string, unknown> = { cwd: this.#cwd, sessionId: requestedId }
 		if (this.#presetId !== undefined) request.agentPreset = this.#presetId
+		else if (await this.#appendPresetRosterCheck()) request.agentPreset = APPEND_SYSTEM_PRESET_ID
 		let value: Record<string, unknown>
 		try {
 			value = (await this.#rpc("session/create", { request })) as Record<string, unknown>

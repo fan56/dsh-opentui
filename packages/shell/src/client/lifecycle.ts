@@ -85,6 +85,7 @@ import { homedir } from 'node:os'
 import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { probeHostHttp, probeHostMux } from './host-probe.ts'
+import { appendSystemPath, ensureAppendSystemFile, syncAppendSystemPreset } from './append-system.ts'
 
 export const DEFAULT_PROFILE = 'opentui'
 /** Idle-exit window: the resident host exits this long after the LAST client
@@ -994,6 +995,18 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
   // Phase 2 — boot under the claim. The claim is released by writeLock on
   // success and removed in the failure path.
   const profileDir = join(o.dshHome, 'profiles', o.profile)
+  // Append-system (dsh-tui-pi port): seed $DSH_HOME/APPEND_SYSTEM.md and keep
+  // the managed preset row in the profile patch BEFORE the host spawns — the
+  // host reads the patch (and evaluates the persona suffix's `!!js` read) at
+  // its own boot. Best-effort: a failure boots without the preset, and the
+  // roster gate in remote-host-session keeps `agentPreset` off the wire, so
+  // an enrichment must never fail the boot.
+  try {
+    ensureAppendSystemFile(appendSystemPath(o.dshHome))
+    syncAppendSystemPreset(o.dshHome, o.profile)
+  } catch (error) {
+    console.error('[lifecycle] append-system sync failed (booting without the preset):', error)
+  }
   const port = await getFreePort()
   const child = o.spawnDsh(['--profile', o.profile, '--no-open', '--port', String(port)], {
     cwd: profileDir,
