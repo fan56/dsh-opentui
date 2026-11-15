@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.3] - 2026-11-16
+
+### Added
+
+- **Splash lists installed plugins.** The welcome hero shows the loaded plugin set tui-pi style — a root row plus `name@version` lines in loader order, a `+k more` overflow row and a `plugins N` summary. The row cap tracks the live terminal size (8 lines on tall terminals, down to a single example row below 30 rows, re-computed on resize without a restart); the list refreshes live through the plugin-change push channel, and the overflow/summary copy is localized (en/zh).
+
+### Fixed
+
+- **The footer msgs segment no longer fakes a count.** While the journal count is unknown the segment hides instead of falling back to the send count (which read like a turn counter), and its label rides the i18n table so /language hot-switches it.
+- **The 🧠 context segment keeps its full used/window(x.x%) form on narrow terminals.** A long preset label (e.g. `dsh(Standard + Append)`) now degrades first instead of crowding the context segment down to a bare token count.
+
 ## [0.17.2] - 2026-11-15
 
 ### Added
