@@ -165,6 +165,10 @@ const runUi = () => {
 	let failed = 0
 	failed = run(NODE, ["verify/ui-matrix.mjs"], { cwd: ROOT }) || failed
 	failed = run(NODE, ["verify/agents-mount-repro.mjs"], { cwd: ROOT }) || failed
+	// Locale text-leak audit: every UI string on real-client frames (en + zh-CN
+	// boots, five faces each) is checked against the locale dictionaries — the
+	// gate that catches the `t()` fail-open key-on-screen bug shape.
+	failed = run(NODE, ["verify/text-leak-audit.mjs"], { cwd: ROOT }) || failed
 	return failed
 }
 
@@ -214,7 +218,7 @@ const printMatrix = () => {
 	for (const name of ["unit", "ft", "ui", "e2e"]) {
 		const files =
 			name === "ui"
-				? ["verify/ui-matrix.mjs", "verify/agents-mount-repro.mjs"]
+				? ["verify/ui-matrix.mjs", "verify/agents-mount-repro.mjs", "verify/text-leak-audit.mjs"]
 				: name === "e2e"
 					? ["verify/e2e-flows/run-flows.mjs", ...tiers.e2e, "verify/steer-queue-repro.mjs", "verify/queue-flush-repro.mjs", "e2e/run-e2e.sh"]
 					: tiers[name]
