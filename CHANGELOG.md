@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.2] - 2026-11-15
+
+### Added
+
+- **append-system, ported from dsh-tui-pi.** `~/.dsh/APPEND_SYSTEM.md` is appended to the system prompt of every new main session. The additions ride an `agentPreset` persona row the client provisions into the opentui profile — zero host changes, and no other profile is affected. The file is seeded once when missing and never rewritten; edits apply after the next host restart; emptying or deleting the file disables the additions (the seed only ever runs on first provision). The persona read is capped at 64 KiB with a truncation marker. `/preset` lists the composition as "Standard + Append"; resuming an existing session carries the additions only when explicitly selected.
+
 ## [0.17.1] - 2026-11-15
 
 ### Fixed
