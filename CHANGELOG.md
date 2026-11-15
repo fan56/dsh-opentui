@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-11-15
+
+### Added
+
+- **Configurable activity panel height.** The `/settings` TUI-specific section gains an `activityPanelHeight` row (dsh-tui-pi parity: `1` / `5` / `7` / `10` / `all`, plus `default`). Numeric gears cap each think and tool block at N lines independently; `all` drops the per-block cap and clamps the whole frame at two-thirds of the terminal rows (the transcript keeps its one-third floor), trimming the longer block's oldest lines first when the two blocks together exceed the budget. Short terminals keep the compact two-row rule bar, where the gear is inert, and the unset gear is byte-for-byte the previous graded sizing. The choice lives in the profile config's `session.activity_panel_height` key: the settings row applies it live, boot replays it before the first paint, `default` unsets the key, and an invalid stored value warns while the default sizing keeps running.
+
+### Fixed
+
+- **The settings write no longer clobbers sibling `session` keys.** `configSave` merges top-level keys shallowly, so writing the nested panel-height gear now merges the profile's current `session` slice into the patch instead of replacing the whole section.
+
 ## [0.16.1] - 2026-11-15
 
 ### Internal
