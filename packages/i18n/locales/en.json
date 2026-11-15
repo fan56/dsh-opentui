@@ -907,5 +907,7 @@
   "dialog.mcp.details.unknownError": "Unknown MCP connection error",
   "dialog.mcp.details.context": "Status: {status}\nConfiguration: mcp.servers.{server}",
   "dialog.mcp.details.integration": "\nIntegration: {id}",
-  "composer.placeholder": "Type a message (enter send, alt+enter newline)"
+  "composer.placeholder": "Type a message (enter send, alt+enter newline)",
+  "hero.plugins.count": "plugins {count}",
+  "hero.plugins.more": "… +{count} more"
 }

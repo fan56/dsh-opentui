@@ -135,11 +135,14 @@ let pendingAgentsHomeNotice: string | undefined
 let themeModePatchKey: "themeMode" | "workspaceThemeMode" = "themeMode"
 
 /** The v2 session page: the real seam driving the rebuilt view. */
-function V2SessionPage(props: {
+	function V2SessionPage(props: {
 	seam: RemoteSessionSeam
 	themeName?: string
 	quit: () => void
 	workspace: string
+	/** Splash hero plugin-tree root label (the boot profile name,
+	 * lifecycle.DEFAULT_PROFILE); undefined keeps the block headless. */
+	profileName?: string
 	/** Branch-or-SHA probe for the composer context row (shell's
 	 * remote-git.ts; absent = directory-only row, the silent degrade). */
 	probeBranch?: (cwd: string) => Promise<string>
@@ -217,11 +220,19 @@ function V2SessionPage(props: {
 	// so the palette rows and Tab completion read the CURRENT rows.
 	const [skillRows, setSkillRows] = createSignal<SkillRow[]>(props.skills ?? [])
 	const slashCommands = createMemo(() => withSkillCommands(coreCommands(), skillRows()))
+	// Splash hero plugin rows (tui-pi welcome parity): seeded from the seam's
+	// sync plugins() cache (the boot warm may not have landed yet), then the
+	// push bridge re-reads on every refresh — the adapter's revision signal is
+	// shell-side solid-js and cannot repaint tui-base (the /plugins panel
+	// trap), so the rows ride THIS signal into the hero state.
+	const [pluginRows, setPluginRows] = createSignal<readonly { name: string; version: string }[]>(seam.plugins?.() ?? [])
 	onMount(() => {
 		const off = seam.onSkillsChanged?.((rows) =>
 			setSkillRows(rows.map((row) => ({ name: row.name, description: row.description, path: "skills/list" }))),
 		)
 		onCleanup(() => off?.())
+		const offPlugins = seam.onPluginsChanged?.(() => setPluginRows(seam.plugins?.() ?? []))
+		onCleanup(() => offPlugins?.())
 	})
 	// `presetLabelFor` is tui-pi's formatPresetLabel semantics: with nothing
 	// staged/attached yet the registry-default row answers, so the brand
@@ -884,6 +895,10 @@ function V2SessionPage(props: {
 						// active theme's color mode (light themes darken the brand
 						// ramp for contrast — skin/identity.ts).
 						mode: () => themeService.mode(),
+						// Splash plugin tree (tui-pi welcome parity): profile-name
+						// root + the bridged plugin rows (signal above).
+						title: () => props.profileName,
+						plugins: () => pluginRows(),
 					},
 					cwd: props.workspace,
 				}),
@@ -1458,6 +1473,8 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 																				themeName,
 																				quit: () => process.exit(0),
 																				workspace,
+																				// Splash hero plugin-tree root (the boot profile).
+																				profileName: profile,
 																				// Branch-or-SHA probe (composer context row):
 																				// client-local, silent on non-repos.
 																				probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),

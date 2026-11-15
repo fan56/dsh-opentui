@@ -643,6 +643,15 @@ export interface SessionSeam {
 	 */
 	plugins?(): { name: string; version: string }[]
 	/**
+	 * Splash hero (tui-pi welcome parity): push notification after every
+	 * plugins-cache refresh lands (the boot warm, the `plugin-manager/changed`
+	 * push, post-mutation refreshes). The hero seeds its rows from `plugins()`
+	 * at boot and re-reads on this signal — the adapter's revision signal is
+	 * shell-side solid-js and cannot invalidate tui-base memos (the /plugins
+	 * panel trap). Optional — a seam without it keeps the boot-seeded rows.
+	 */
+	onPluginsChanged?(listener: () => void): () => void
+	/**
 	 * C1 (the /plugins manager's management face, tui-pi plugins-manager
 	 * parity): the full `pluginManager/listBundles` rows with real
 	 * enablement. Optional — a seam without it degrades the panel to the

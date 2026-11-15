@@ -137,6 +137,11 @@ export class RemoteSessionSeam implements SessionSeam {
 	 * listPlugins() is a sync cached read that alone never retriggers). */
 	readonly #pluginsRevision = createSignal(0)
 	#unplugins: (() => void) | undefined
+	/** Splash-hero push fans (tui-pi welcome parity): tui-base-side listeners
+	 * bridged off the same facade notifications as #pluginsRevision — their
+	 * solid-js instance is a different module graph, so the revision signal
+	 * alone cannot repaint them (the /plugins panel trap). */
+	readonly #pluginsPushListeners: (() => void)[] = []
 
 	constructor(session: RemoteHostSession) {
 		this.#session = session
@@ -145,10 +150,20 @@ export class RemoteSessionSeam implements SessionSeam {
 		registerSubagentSteer((id, text) => this.#session.steerChild(id, text))
 		// /plugins reactivity (client-face panel): the facade notifies after
 		// every refreshPlugins() that lands (boot warm + plugin-manager/changed
-		// push); the panel's memo re-reads the sync cache on each bump.
+		// push); the panel's memo re-reads the sync cache on each bump, and the
+		// hero's tui-base-side fans re-read through their own bridge.
 		// Optional-chained: test stubs may not carry the push-listener face.
 		this.#unplugins =
-			session.onPluginsChanged?.(() => this.#pluginsRevision[1]((n) => n + 1)) ?? undefined
+			session.onPluginsChanged?.(() => {
+				this.#pluginsRevision[1]((n) => n + 1)
+				for (const listener of this.#pluginsPushListeners) {
+					try {
+						listener()
+					} catch {
+						/* contained — one stale fan must not starve the others */
+					}
+				}
+			}) ?? undefined
 	}
 
 	status(): SeamStatus {
@@ -480,6 +495,17 @@ export class RemoteSessionSeam implements SessionSeam {
 		return this.#session.listPlugins()
 	}
 
+	/** Splash-hero push face (the `onSkillsChanged` bridge law): registers a
+	 * tui-base-side fan notified alongside #pluginsRevision after every
+	 * refreshPlugins() that lands. */
+	onPluginsChanged(listener: () => void): () => void {
+		this.#pluginsPushListeners.push(listener)
+		return () => {
+			const index = this.#pluginsPushListeners.indexOf(listener)
+			if (index >= 0) this.#pluginsPushListeners.splice(index, 1)
+		}
+	}
+
 	/**
 	 * C1 (the /plugins manager's management face): RemoteHostSession 1:1 —
 	 * the full cached bundle rows (enablement + read-only reasons), read
@@ -732,6 +758,7 @@ export class RemoteSessionSeam implements SessionSeam {
 		this.#unplugins?.()
 		this.#unplugins = undefined
 		this.#listeners.length = 0
+		this.#pluginsPushListeners.length = 0
 		await this.#session.dispose()
 	}
 

@@ -907,5 +907,7 @@
   "dialog.mcp.details.unknownError": "未知的 MCP 连接错误",
   "dialog.mcp.details.context": "状态：{status}\n配置：mcp.servers.{server}",
   "dialog.mcp.details.integration": "\n集成：{id}",
-  "composer.placeholder": "输入消息（enter 发送，alt+enter 换行）"
+  "composer.placeholder": "输入消息（enter 发送，alt+enter 换行）",
+  "hero.plugins.count": "插件 {count}",
+  "hero.plugins.more": "… 还有 {count} 个"
 }
