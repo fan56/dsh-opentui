@@ -712,6 +712,32 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		expect(fitted.segments.some((segment) => segment.text.includes("🔧"))).toBe(false)
 	})
 
+	test("45 columns with a long preset label: brand shortens, context keeps the full compact form", () => {
+		// The append-system preset regression: `dsh(Standard + Append)` (the
+		// client-managed default-ride label) is 4 columns wider than the
+		// labels the 45-col budget was sized against, and with the ui-matrix
+		// scratch window the strip landed one column over (`…Append` 24 +
+		// `🧠 205/200.0k(0.1%)` 21 + 2 arrows = 47 > 44) — the fitting law's
+		// only recourse was degrading the 🧠 segment to the bare `🧠 205`
+		// shape, so the window never reached the footer. The brand's degrade
+		// face gives the law a yield path that protects the contract above
+		// for ANY label length.
+		const fitted = fitPowerlineSegments(
+			sessionFooterSegments({
+				contextTokens: 205,
+				contextWindow: 200_000,
+				messages: 4,
+				tools: 1,
+				presetLabel: "Standard + Append",
+			}),
+			44,
+		)
+		expect(measure(fitted.segments)).toBeLessThanOrEqual(44)
+		const context = fitted.segments.find((segment) => segment.text.startsWith("🧠"))
+		expect(context?.text).toBe("🧠 205/200.0k(0.1%)")
+		expect(fitted.segments[0]?.text).toBe("dsh")
+	})
+
 	test("degradation chain: full → bare `🧠 used` → segment omitted", () => {
 		// 22 cols: the full label no longer fits beside the brand → bare used.
 		const degraded = fitPowerlineSegments(fixture(), 22)

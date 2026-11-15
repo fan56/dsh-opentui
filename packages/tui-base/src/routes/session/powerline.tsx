@@ -586,7 +586,16 @@ export function resolvePalette(theme?: ComponentTheme) {
  */
 export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode: SkinColorMode = "dark"): PowerlineSegment {
 	const label = presetLabel ? `dsh(${presetLabel})` : "dsh"
-	return { text: label, bg: brandBlue(mode), priority: 100 }
+	// `degrade: "dsh"` gives the top-priority segment a yield path: the preset
+	// label is unbounded host data (any roster name rides here), and a label
+	// long enough to push the strip past the terminal budget used to leave the
+	// fitting law exactly one recourse — degrading the 🧠 segment to the bare
+	// `🧠 used` shape (the context window never reached the footer at 45 cols:
+	// `dsh(Standard + Append)` + `🧠 205/200.0k(0.1%)` = 47 > 44). Shortening
+	// the cosmetic parenthetical first keeps the 45-col contract "brand + full
+	// compact context" for every label length; the no-preset face ("dsh") is
+	// already its own degrade and is skipped by the fitter's same-shape guard.
+	return { text: label, bg: brandBlue(mode), priority: 100, degrade: "dsh" }
 }
 
 /**
