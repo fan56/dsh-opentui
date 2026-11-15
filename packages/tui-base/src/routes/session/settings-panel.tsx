@@ -266,8 +266,11 @@ export function buildLocalItems(input: {
 			// profile's existing session slice instead of clobbering it.
 			id: "activityPanelHeight",
 			label: t("settings.row.activityPanelHeight"),
+			// Normalized display: an out-of-contract stored value (hand-edited
+			// config) runs the default at runtime, so the row must SAY default
+			// too — the raw string would render a value the runtime ignores.
 			value:
-				str((merged.session as Record<string, unknown> | undefined)?.activity_panel_height) ??
+				activityPanelHeightFromConfig((merged.session as Record<string, unknown> | undefined)?.activity_panel_height) ??
 				"default",
 			source: "config.json · session.activity_panel_height",
 			kind: "enum",
@@ -565,7 +568,13 @@ export function planLocalWrite(
 		// `default` (or an emptied input) unsets the key: the gear returns to
 		// the graded terminal-height sizing. `undefined` values vanish on the
 		// JSON write, so the key is dropped rather than stored as null.
-		const gear = text === "" || text === "default" ? undefined : text
+		const gear = text === "" || text === "default" ? undefined : activityPanelHeightFromConfig(text)
+		if (text !== "" && text !== "default" && gear === undefined) {
+			// Enum guard: only the contract spellings land in the profile — a
+			// stray value would be silently ignored at runtime while the row
+			// still renders it (write what the validator will read back).
+			return { ok: false, error: t("settings.error.invalidGear", { value: text }) }
+		}
 		return {
 			ok: true,
 			patch: { session: { ...(session ?? {}), activity_panel_height: gear } },

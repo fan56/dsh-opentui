@@ -145,6 +145,7 @@
   "settings.error.notHost": "不是 host 设置",
   "settings.error.unknownHintSegment": "未知提示段 \"{segment}\"",
   "settings.error.emptyValue": "值不能为空",
+  "settings.error.invalidGear": "无效的 activity 面板档位 \"{value}\"（default、1、5、7、10、all）",
   "settings.error.expectedInteger": "应为整数，收到 \"{value}\"",
   "settings.error.integerOutOfRange": "整数超出范围：{value}",
   "settings.error.min": "必须 >= {min}",

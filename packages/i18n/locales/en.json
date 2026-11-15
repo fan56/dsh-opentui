@@ -145,6 +145,7 @@
   "settings.error.notHost": "not a host setting",
   "settings.error.unknownHintSegment": "unknown hint segment \"{segment}\"",
   "settings.error.emptyValue": "value must not be empty",
+  "settings.error.invalidGear": "invalid activity panel gear \"{value}\" (default, 1, 5, 7, 10, all)",
   "settings.error.expectedInteger": "expected an integer, got \"{value}\"",
   "settings.error.integerOutOfRange": "integer out of range: {value}",
   "settings.error.min": "must be >= {min}",

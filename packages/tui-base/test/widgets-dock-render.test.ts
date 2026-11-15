@@ -292,6 +292,68 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.dispose()
 		}
 	})
+
+	test("U4 panelHeight `all`: the frame is clamped to the 2/3 budget (the LONGER block sheds first)", async () => {
+		setMotionTier("full")
+		const now = Date.now()
+		// 20 collapsed think lines + 8 running tools = 28 unbounded content
+		// rows. At 36 terminal rows the `all` budget is floor(72/3) - 2 =
+		// 22, so the trim MUST shed 6 think lines (the longer block) and
+		// keep every tool.
+		const rows: SeamRow[] = [
+			{
+				key: "reasoning:all-budget",
+				kind: "reasoning",
+				text: Array.from({ length: 20 }, (_, index) => `g${index + 1}`).join("\n"),
+				final: true,
+				startedAt: now - 400,
+				elapsedSec: 0.4,
+			},
+			...Array.from({ length: 8 }, (_, index) => ({
+				key: `tool:live:all-${index + 1}`,
+				kind: "tool" as const,
+				name: `tool-${index + 1}`,
+				args: "{}",
+				status: "running" as const,
+				startedAt: now,
+			})),
+		]
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
+			{ width: WIDTH, height: 36, useMouse: false },
+		)
+		const texts = (frame: CapturedFrame): string[] =>
+			frame.lines.flatMap((line) => line.spans.map((span) => span.text.trim()))
+		try {
+			await sleep(300) // the frame latch + entrance fades
+			await setup.renderOnce()
+			// Baseline: NO gear → the graded default (36 rows → cap 1) — one
+			// think line, one tool line.
+			const base = texts(setup.captureSpans())
+			expect(base.filter((text) => /^g\d+$/.test(text)).length).toBeLessThanOrEqual(1)
+			expect(base.filter((text) => /tool-\d+/.test(text)).length).toBeLessThanOrEqual(1)
+
+			// Gear `all`: per-block caps drop, but the combined budget holds:
+			// 22 content rows = think 14 (tail g7..g20) + all 8 tools.
+			setActivityPanelGear("all")
+			await setup.renderOnce()
+			const frame = texts(setup.captureSpans())
+			const thinkLines = frame.filter((text) => /^g\d+$/.test(text))
+			const toolLines = frame.filter((text) => /tool-\d+/.test(text))
+			expect(thinkLines.length + toolLines.length).toBe(22)
+			expect(thinkLines.length).toBe(14)
+			expect(toolLines.length).toBe(8)
+			// The shed lines are the OLDEST of the longer block: the tail
+			// survives, the head goes.
+			expect(thinkLines).not.toContain("g1")
+			expect(thinkLines).not.toContain("g6")
+			expect(thinkLines).toContain("g7")
+			expect(thinkLines).toContain("g20")
+		} finally {
+			setActivityPanelGear(undefined)
+			await setup.dispose()
+		}
+	})
 })
 
 /** Compare a captured fg to a target string/RGBA accent (channel tolerance). */

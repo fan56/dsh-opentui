@@ -3,16 +3,21 @@
  * (dsh-tui-pi parity: 1 / 5 / 7 / 10 / all).
  *
  *   - the config validator accepts ONLY the five gear spellings;
- *   - boot replay restores the gear and REJECTS an invalid stored value with
- *     a warning (the default sizing keeps running);
+ *   - boot replay restores the gear and silently REJECTS an invalid stored
+ *     value (the default sizing keeps running — the hints-line fail-open law);
  *   - the geometry resolver: unset gear = the graded dockLineCap default
  *     byte for byte, short terminals stay inert, numeric gears cap each
- *     block at N lines, `all` runs unbounded under the 2/3 frame budget;
+ *     block at N lines AND at half the `all` gear's 2/3 content budget,
+ *     `all` runs unbounded under the 2/3 frame budget;
  *   - the combined-budget trim sheds the LONGER block's oldest lines first;
  *   - the settings write plan merges the profile's session slice (configSave
- *     merges top-level keys shallowly) and `default` unsets the key.
+ *     merges top-level keys shallowly), `default` unsets the key, and a
+ *     non-contract value is REJECTED (never written to the profile);
+ *   - applySettingsLive flips the gear signal on the
+ *     `session.activity_panel_height` write key (the hot-apply contract).
  */
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	ACTIVITY_PANEL_GEARS,
 	activityPanelCapSpec,
@@ -24,9 +29,17 @@ import {
 	type ActivityPanelGear,
 } from "../src/routes/session/widgets-dock"
 import { DEFAULT_FOOTER_HINTS } from "../src/routes/session/hints-line"
-import { planLocalWrite } from "../src/routes/session/settings-panel"
+import { applySettingsLive, planLocalWrite, type SettingsItem } from "../src/routes/session/settings-panel"
 import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../src/skin/semantic"
 import type { SeamRow } from "../src/routes/session/seam-rows"
+
+// The write-plan rejection copy resolves through `t()`: boot the bundled
+// registry so the en-literal assertion stays hermetic (settings-panel.test
+// parity).
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 afterEach(() => {
 	setActivityPanelGear(undefined)
@@ -66,19 +79,12 @@ describe("applyActivityPanelConfig", () => {
 		expect(gearOf()).toBeUndefined()
 	})
 
-	test("an invalid stored value warns and keeps the default", () => {
-		const warnings: string[] = []
-		const original = console.warn
-		console.warn = (message?: unknown) => {
-			warnings.push(String(message))
-		}
-		try {
-			applyActivityPanelConfig({ session: { activity_panel_height: "42" } })
-		} finally {
-			console.warn = original
-		}
+	test("an invalid stored value silently keeps the default (the fail-open law)", () => {
+		// P2-2: replay runs BEFORE the first frame — stderr noise there can
+		// corrupt a raw-mode first paint, so the rejection is silent (the
+		// applyHintsConfig/applyI18nConfig contract).
+		applyActivityPanelConfig({ session: { activity_panel_height: "42" } })
 		expect(gearOf()).toBeUndefined()
-		expect(warnings.some((line) => line.includes("activity_panel_height") && line.includes("42"))).toBe(true)
 	})
 })
 
@@ -108,13 +114,31 @@ describe("activityPanelCapSpec", () => {
 
 	test("`all` drops the per-block cap and holds the frame at 2/3 of the rows", () => {
 		const spec = activityPanelCapSpec("all", 60)
-		expect(spec.totalMaxLines).toBe(Math.floor((60 * 2) / 3) - 2) // 38 content rows
+		// P2-4: literal expectations, not the implementation's own formula —
+		// 60 rows → floor(60*2/3) - 2 = 38 content rows.
+		expect(spec.totalMaxLines).toBe(38)
 		expect(spec.maxLines).toBeGreaterThan(1000) // unbounded per block
-		// Small tall-enough terminals keep a positive budget.
-		expect(activityPanelCapSpec("all", 31)?.totalMaxLines).toBe(Math.floor((31 * 2) / 3) - 2)
-		// Unknown height degrades to unbounded (no clamp without geometry).
-		expect(activityPanelCapSpec("all", undefined)).toEqual({ maxLines: activityPanelCapSpec("all", undefined).maxLines })
+		// Small tall-enough terminals keep a positive budget: 31 → 18.
+		expect(activityPanelCapSpec("all", 31)?.totalMaxLines).toBe(18)
+		// Unknown height degrades to the unbounded sentinel (no clamp without
+		// geometry; no budget either).
+		expect(activityPanelCapSpec("all", undefined)).toEqual({ maxLines: 1_000_000 })
 		expect(activityPanelCapSpec("all", undefined).totalMaxLines).toBeUndefined()
+	})
+
+	test("P1: numeric gears also clamp to half the terminal content budget", () => {
+		// The `all` budget split between the two blocks: each block gets
+		// min(N, floor(budget/2)), budget = floor(rows*2/3) - 2.
+		// rows=52 → budget 32, half 16: gear 10 untouched (the verified
+		// behavior must not move).
+		expect(activityPanelCapSpec("10", 52)).toEqual({ maxLines: 10 })
+		// rows=35 → budget 21, half 10: gear 10 still fits exactly.
+		expect(activityPanelCapSpec("10", 35)).toEqual({ maxLines: 10 })
+		// rows=32 → budget 19, half 9: gear 10 clamps (frame 2+9+9=20 ≤ 2/3).
+		expect(activityPanelCapSpec("10", 32)).toEqual({ maxLines: 9 })
+		// rows=31 → budget 18, half 9: gear 7 fits, gear 10 clamps.
+		expect(activityPanelCapSpec("7", 31)).toEqual({ maxLines: 7 })
+		expect(activityPanelCapSpec("10", 31)).toEqual({ maxLines: 9 })
 	})
 })
 
@@ -197,5 +221,46 @@ describe("planLocalWrite session gear branch", () => {
 		const plan = planLocalWrite(item, "5", DEFAULT_FOOTER_HINTS)
 		expect(plan.ok).toBe(true)
 		if (plan.ok) expect(plan.patch).toEqual({ session: { activity_panel_height: "5" } })
+	})
+
+	test("P2-3: a non-contract value is rejected, never written to the profile", () => {
+		for (const stray of ["42", "3", "ALL", "ten"]) {
+			const plan = planLocalWrite(item, stray, DEFAULT_FOOTER_HINTS)
+			expect(plan.ok).toBe(false)
+			if (!plan.ok) expect(plan.error).toContain(stray)
+		}
+	})
+})
+
+describe("applySettingsLive session gear case", () => {
+	const item: SettingsItem = {
+		id: "activityPanelHeight",
+		zone: "local",
+		label: "activityPanelHeight",
+		value: "default",
+		source: "config.json · session.activity_panel_height",
+		kind: "enum",
+		editable: true,
+		options: ["default", "1", "5", "7", "10", "all"],
+		write: { via: "config", key: "session.activity_panel_height" },
+	}
+
+	test("P2-5: a gear write flips the module signal live (no restart)", () => {
+		expect(gearOf()).toBeUndefined()
+		applySettingsLive(item, "7", DEFAULT_FOOTER_HINTS)
+		expect(gearOf()).toBe("7")
+		applySettingsLive(item, "1", DEFAULT_FOOTER_HINTS)
+		expect(gearOf()).toBe("1")
+	})
+
+	test("an unset write clears the signal back to the graded default", () => {
+		setActivityPanelGear("5")
+		applySettingsLive(item, undefined, DEFAULT_FOOTER_HINTS)
+		expect(gearOf()).toBeUndefined()
+	})
+
+	test("an invalid applied value fails open to unset (never throws)", () => {
+		applySettingsLive(item, "42", DEFAULT_FOOTER_HINTS)
+		expect(gearOf()).toBeUndefined()
 	})
 })

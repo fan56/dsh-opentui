@@ -178,8 +178,10 @@ export function activityPanelHeightFromConfig(value: unknown): ActivityPanelGear
  * Boot replay (/motion's resolveMotionPreference parity): apply the persisted
  * /settings gear onto the module signal BEFORE the first paint, so a restart
  * keeps the user's choice. Reads `session.activity_panel_height` from the
- * merged config snapshot; an invalid value is REJECTED with a warning (the
- * default sizing keeps running); missing/unreadable config is silent. Never
+ * merged config snapshot; an invalid value is silently REJECTED (the default
+ * sizing keeps running) — the applyHintsConfig/applyI18nConfig fail-open law:
+ * replay runs before the first frame, and stderr noise there can corrupt the
+ * raw-mode first paint. Missing/unreadable config is silent too. Never
  * throws.
  */
 export function applyActivityPanelConfig(config?: Record<string, unknown>): void {
@@ -189,13 +191,7 @@ export function applyActivityPanelConfig(config?: Record<string, unknown>): void
 			typeof session === "object" && session !== null ? (session as Record<string, unknown>).activity_panel_height : undefined
 		if (stored === undefined || stored === null) return
 		const gear = activityPanelHeightFromConfig(stored)
-		if (gear !== undefined) {
-			setActivityPanelGear(gear)
-			return
-		}
-		console.warn(
-			`[widgets-dock] invalid session.activity_panel_height ${JSON.stringify(stored)} — expected one of ${ACTIVITY_PANEL_GEARS.join("/")} ; keeping the default panel sizing`,
-		)
+		if (gear !== undefined) setActivityPanelGear(gear)
 	} catch {
 		/* replay is best-effort: a bad config read keeps the default */
 	}
@@ -214,11 +210,13 @@ export interface ActivityPanelCapSpec {
  * Gear → dock geometry (pure). Unset gear = the graded default, byte for
  * byte. A short terminal (≤ COMPOSER_COMPACT_TERMINAL_ROWS, the two-row rule
  * bar contract) leaves the gear INERT — the degraded strip wins over the
- * gear at any value. Numeric gears cap each block at N lines independently;
- * `all` runs the blocks unbounded but holds the whole frame (borders
- * included) at 2/3 of the terminal rows: `floor(rows * 2 / 3) - 2` content
- * lines. Unknown height keeps the numeric gear (only `all` needs geometry
- * and degrades to unbounded).
+ * gear at any value. `all` runs the blocks unbounded but holds the whole
+ * frame (borders included) at 2/3 of the terminal rows: `floor(rows * 2 / 3)
+ * - 2` content lines. A numeric gear caps each block at N lines but ALSO at
+ * half of that same content budget (the transcript's 1/3 floor is shared by
+ * the two blocks — P1 review: gear 10 must not eat a 35-row terminal).
+ * Unknown height keeps the numeric gear (only geometry-bearing clamps need
+ * rows and degrade to unbounded).
  */
 export function activityPanelCapSpec(gear: ActivityPanelGear | undefined, terminalRows?: number): ActivityPanelCapSpec {
 	if (gear === undefined) return { maxLines: dockLineCap(terminalRows) }
@@ -229,7 +227,13 @@ export function activityPanelCapSpec(gear: ActivityPanelGear | undefined, termin
 		if (terminalRows === undefined) return { maxLines: PANEL_UNBOUNDED_LINES }
 		return { maxLines: PANEL_UNBOUNDED_LINES, totalMaxLines: Math.max(1, Math.floor((terminalRows * 2) / 3) - 2) }
 	}
-	return { maxLines: Number(gear) }
+	const cap = Number(gear)
+	if (terminalRows === undefined) return { maxLines: cap }
+	// The `all` gear's content budget, split between the two blocks: each
+	// block gets at most half, so 2 blocks + 2 borders stay inside 2/3 of
+	// the rows and the transcript keeps its 1/3 floor at every gear.
+	const halfBudget = Math.floor(Math.max(1, Math.floor((terminalRows * 2) / 3) - 2) / 2)
+	return { maxLines: Math.min(cap, halfBudget) }
 }
 
 /** Notice fade progress: 0 until the last SKIN_NOTICE_FADE_MS of the TTL,

@@ -634,6 +634,23 @@ describe("settings modal: instant writes", () => {
 		expect(Object.keys(patch.footerHints).length).toBeGreaterThan(2)
 	})
 
+	test("the panelHeight gear write falls back to the merged session slice when the profile is empty", async () => {
+		// P2-1: readLocalSnapshot can return {} (unreadable profile) — the
+		// nested-key patch must then slice from the merged view instead of
+		// sending a bare {session:{…}} that would shallow-merge over and DROP
+		// every sibling session key.
+		const calls: string[] = []
+		const row = buildOpentuiRows(context()).find((entry) => entry.id === "activityPanelHeight")!
+		const result = await writeSetting(row, "10", {
+			seam: fakeSeam(calls),
+			merged: { session: { verbosity: "high" } },
+			local: true,
+			host: true,
+		})
+		expect(result.ok).toBe(true)
+		expect(result.patch).toEqual({ session: { verbosity: "high", activity_panel_height: "10" } })
+	})
+
 	test("rows sharing a write target write exactly once per action", async () => {
 		const calls: string[] = []
 		const seam = fakeSeam(calls)

@@ -378,10 +378,19 @@ export async function writeSetting(
 	if (row.write.via === "config") {
 		if (!deps.local) return { ok: false, error: t("settings.error.localNotWritable") }
 		const hints = footerHintsFromConfig(deps.merged.footerHints) ?? DEFAULT_FOOTER_HINTS
+		// Nested-key rows merge the profile's CURRENT session slice so the
+		// patch carries the whole section. Defensive fallback (P2-1): when the
+		// profile snapshot is missing/unreadable (readLocalSnapshot → {}), fall
+		// back to the merged view's session slice — a bare {session:{…}} patch
+		// would shallow-merge over and DROP every sibling session key.
+		const profileSession = deps.profile?.session
+		const mergedSession = deps.merged.session
 		const sessionSlice =
-			typeof deps.profile?.session === "object" && deps.profile.session !== null
-				? (deps.profile.session as Record<string, unknown>)
-				: undefined
+			typeof profileSession === "object" && profileSession !== null
+				? (profileSession as Record<string, unknown>)
+				: typeof mergedSession === "object" && mergedSession !== null
+					? { ...(mergedSession as Record<string, unknown>) }
+					: undefined
 		const plan = planLocalWrite(row as unknown as SettingsItem, value, hints, sessionSlice)
 		if (!plan.ok) return { ok: false, error: `✘ ${plan.error}` }
 		try {
