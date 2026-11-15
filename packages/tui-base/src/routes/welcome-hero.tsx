@@ -24,30 +24,41 @@ import { For, Show, type JSX } from "solid-js"
 import { pickDailyQuote } from "./quotes"
 import { GradientAsciiText } from "../component/gradient-text"
 import type { SkinColorMode } from "../skin/identity"
+import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../skin/semantic"
 import { t } from "../i18n"
+import { stringWidth } from "../util/string-width"
 
 /** The DSH brand blue for the wordmark ramp start (skin/identity.ts). */
 export const DSH_BRAND = "#4D6BFE"
 
 /**
- * Rendered plugin-row cap (the splash spec §5.2 — no tui-pi precedent, an
- * opentui addition): 8 rows fit 120x40 with the 6-row wordmark. Overflow
- * renders the first cap−1 rows plus one `└─ … +{k} more` line (tui-pi
- * clips, never wraps).
+ * Rendered plugin-row cap by viewport height (the splash spec §5.2 — no
+ * tui-pi precedent, an opentui addition): 8 rows fit 120x40 with the 6-row
+ * wordmark. Overflow renders the first cap−1 rows plus one `└─ … +{k} more`
+ * line (tui-pi clips, never wraps).
  *
- * The cap is HEIGHT-AWARE: the hero is fixed content above a bottom-anchored
- * composer, so an oversized block pushes the composer off-screen on compact
- * viewports (the agents-mount 80x24 geometry law: the composer box must end
- * strictly above the powerline). A 24-row terminal gets 1 row + the
- * more/counts lines; 30-39 rows get 4; 40+ get the spec's 8. Boot-time read —
- * the hero repaints on mount/resize only, and the palette checks boot at a
- * fixed size.
+ * The hero is fixed content above a bottom-anchored composer, so an
+ * oversized block pushes the composer off-screen on compact viewports (the
+ * agents-mount 80x24 geometry law: the composer box must end strictly above
+ * the powerline). Bands: 40+ rows get the spec's 8; from
+ * COMPOSER_COMPACT_TERMINAL_ROWS (the band where the composer itself drops
+ * its border — skin/semantic.ts) up get 4; below get 1 (the tree root, one
+ * example row, the more-line, the counts line). Reactive: the page feeds
+ * `state.size` off the renderer's resize signal, so a mid-splash resize
+ * recomputes the cap the same way the composer's own compact band does.
  */
-function splashRowCap(): number {
-	const rows = (typeof process !== "undefined" && process.stdout?.rows) || 40
+export function splashRowCap(rows: number): number {
 	if (rows >= 40) return 8
-	if (rows >= 30) return 4
+	if (rows >= COMPOSER_COMPACT_TERMINAL_ROWS) return 4
 	return 1
+}
+
+/** How many of `total` plugin rows hide behind the `+{k} more` line at this
+ * cap (0 = every row renders). Overflow ALWAYS keeps at least one example
+ * row visible — a bare `└─ … +k more` under the tree root would show no
+ * plugin at all. */
+export function splashOverflowCount(total: number, cap: number): number {
+	return total > cap ? total - Math.max(1, cap - 1) : 0
 }
 
 /** One installed user plugin row off the seam's plugins() cache. */
@@ -75,6 +86,13 @@ export interface WelcomeHeroState {
 	 * through onPluginsChanged). undefined/empty keeps today's two-line hero.
 	 */
 	plugins?: () => readonly WelcomePluginRow[]
+	/**
+	 * Live terminal size for the plugin-block cap/clip (the page's
+	 * useTerminalSize() accessor — renderer resize-reactive; components
+	 * outside the provider stack cannot call useRenderer() themselves).
+	 * undefined falls back to process.stdout — the standalone/test mounts.
+	 */
+	size?: () => { width: number; height: number }
 }
 
 /** The user's home, shortened to "~" in the info line. */
@@ -93,23 +111,45 @@ function pluginLabel(row: WelcomePluginRow): string {
 	return row.version === "" ? row.name : `${row.name}@${row.version}`
 }
 
-/** Per-line width clip (tui-pi startup-info clips, never wraps): terminal
- * columns − 2 when the width is known, else the 120-col baseline. Plugin
- * labels are npm names + semvers (ASCII), so a plain slice is mono-safe. */
-function clipRow(line: string): string {
-	const cols = (typeof process !== "undefined" && process.stdout?.columns) || 120
-	const max = Math.max(20, cols - 2)
-	return line.length <= max ? line : `${line.slice(0, max - 1)}…`
+/**
+ * Per-line width clip (tui-pi startup-info clips, never wraps), width-based
+ * through the repo's grapheme-segmented stringWidth — CJK counts 2 and
+ * surrogate pairs / emoji never tear. One cell is reserved for the `…`.
+ */
+export function clipRow(line: string, maxWidth: number): string {
+	if (stringWidth(line) <= maxWidth) return line
+	const limit = Math.max(0, maxWidth - 1)
+	let out = ""
+	let width = 0
+	for (const grapheme of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(line)) {
+		const w = stringWidth(grapheme.segment)
+		if (width + w > limit) break
+		out += grapheme.segment
+		width += w
+	}
+	return `${out}…`
+}
+
+/** The fallback size when no renderer accessor rides the state (standalone
+ * mounts, tests): the process tty, else the 120x40 baseline. */
+function fallbackSize(): { width: number; height: number } {
+	return {
+		width: (typeof process !== "undefined" && process.stdout?.columns) || 120,
+		height: (typeof process !== "undefined" && process.stdout?.rows) || 40,
+	}
 }
 
 export function WelcomeHero(props: { state: WelcomeHeroState; cwd: string }): JSX.Element {
 	const quote = pickDailyQuote()
+	const size = () => props.state.size?.() ?? fallbackSize()
+	const cap = () => splashRowCap(size().height)
+	const maxRowWidth = () => Math.max(20, size().width - 2)
 	const pluginRows = () => props.state.plugins?.() ?? []
-	const cap = splashRowCap()
-	// Overflow always leaves at least ONE example row above the more-line
-	// (a bare `└─ … +k more` under the tree root would show no plugin at all).
-	const overflowCount = () => (pluginRows().length > cap ? pluginRows().length - Math.max(1, cap - 1) : 0)
-	const visibleRows = () => (overflowCount() > 0 ? pluginRows().slice(0, Math.max(1, cap - 1)) : pluginRows())
+	const overflowCount = () => splashOverflowCount(pluginRows().length, cap())
+	const visibleRows = () => {
+		const count = overflowCount()
+		return count > 0 ? pluginRows().slice(0, pluginRows().length - count) : pluginRows()
+	}
 	const heroTitle = () => props.state.title?.()
 	return (
 		<Show when={props.state.visible()}>
@@ -136,22 +176,25 @@ export function WelcomeHero(props: { state: WelcomeHeroState; cwd: string }): JS
 					<For each={visibleRows()}>
 						{(row, index) => (
 							<text fg={props.state.muted?.()} selectable={false}>
-								{clipRow(`${index() === visibleRows().length - 1 && overflowCount() === 0 ? "└─" : "├─"} ${pluginLabel(row)}`)}
+								{clipRow(
+									`${index() === visibleRows().length - 1 && overflowCount() === 0 ? "└─" : "├─"} ${pluginLabel(row)}`,
+									maxRowWidth(),
+								)}
 							</text>
 						)}
 					</For>
 					<Show when={overflowCount() > 0}>
 						<text fg={props.state.muted?.()} selectable={false}>
-							{clipRow(`└─ ${t("hero.plugins.more", { count: overflowCount() })}`)}
+							{clipRow(`└─ ${t("hero.plugins.more", { count: overflowCount() })}`, maxRowWidth())}
 						</text>
 					</Show>
 					<text fg={props.state.muted?.()} selectable={false}>
-						{clipRow(t("hero.plugins.count", { count: pluginRows().length }))}
+						{clipRow(t("hero.plugins.count", { count: pluginRows().length }), maxRowWidth())}
 					</text>
 					{/* Trailing spacer follows the tui-pi blank-line rhythm — but
-					    compact viewports (cap ≤ 1) need the row for the composer
+					    compact viewports (cap 1) need the row for the composer
 					    geometry law, so the decorative blank yields first. */}
-					<Show when={cap > 1}>
+					<Show when={cap() > 1}>
 						<box height={1} flexShrink={0} />
 					</Show>
 				</Show>

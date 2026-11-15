@@ -37,6 +37,7 @@ import type { ComposerPendingRow } from "../src/routes/session/composer-state"
 import { openDeliveryChoice } from "../src/routes/session/delivery-choice"
 import { parseLaunchArgs, runAutoResume } from "../src/routes/session/auto-resume"
 import { WelcomeHero } from "../src/routes/welcome-hero"
+import { useTerminalSize } from "../src/routes/session/terminal-size"
 import { pickDailyQuote } from "../src/routes/quotes"
 import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
@@ -135,7 +136,7 @@ let pendingAgentsHomeNotice: string | undefined
 let themeModePatchKey: "themeMode" | "workspaceThemeMode" = "themeMode"
 
 /** The v2 session page: the real seam driving the rebuilt view. */
-	function V2SessionPage(props: {
+function V2SessionPage(props: {
 	seam: RemoteSessionSeam
 	themeName?: string
 	quit: () => void
@@ -233,6 +234,10 @@ let themeModePatchKey: "themeMode" | "workspaceThemeMode" = "themeMode"
 		onCleanup(() => off?.())
 		const offPlugins = seam.onPluginsChanged?.(() => setPluginRows(seam.plugins?.() ?? []))
 		onCleanup(() => offPlugins?.())
+		// Re-read once AFTER registering: a boot warm that landed between the
+		// signal seed above and this subscription would otherwise only reach
+		// us on the NEXT push (the registration window lost-event trap).
+		setPluginRows(seam.plugins?.() ?? [])
 	})
 	// `presetLabelFor` is tui-pi's formatPresetLabel semantics: with nothing
 	// staged/attached yet the registry-default row answers, so the brand
@@ -265,6 +270,11 @@ let themeModePatchKey: "themeMode" | "workspaceThemeMode" = "themeMode"
 	// confirmation lifts it to full. The event may fire before mount, so an
 	// already-present capabilities snapshot applies too.
 	const renderer = useRenderer()
+	// Shared resize-reactive terminal size (terminal-size.ts — ONE renderer
+	// listener serves every caller): feeds the splash hero's plugin-block
+	// cap/clip so a mid-splash resize recomputes instead of freezing the boot
+	// snapshot (the composer compact-band law at COMPOSER_COMPACT_TERMINAL_ROWS).
+	const dimensions = useTerminalSize()
 	// Pane focus (focus batch): composer textarea ↔ transcript scrollbox, both
 	// focused through OpenTUI itself. `pane` is read off the renderer's
 	// FOCUSED_RENDERABLE event, so dialogs and the search input correctly
@@ -899,6 +909,11 @@ let themeModePatchKey: "themeMode" | "workspaceThemeMode" = "themeMode"
 						// root + the bridged plugin rows (signal above).
 						title: () => props.profileName,
 						plugins: () => pluginRows(),
+						// Plugin-block cap/clip follow the LIVE terminal size (the
+						// renderer resize signal, terminal-size.ts): a mid-splash
+						// resize recomputes the cap instead of freezing at the boot
+						// snapshot.
+						size: () => dimensions(),
 					},
 					cwd: props.workspace,
 				}),

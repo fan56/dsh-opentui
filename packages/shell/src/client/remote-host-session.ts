@@ -1745,7 +1745,7 @@ export class RemoteHostSession {
 		return [...this.#pluginsCache]
 	}
 
-	async refreshPlugins(): Promise<{ name: string; version: string }[]> {
+	async refreshPlugins(opts: { silent?: boolean } = {}): Promise<{ name: string; version: string }[]> {
 		try {
 			const before = this.#pluginsCache.length
 			const [plugins, bundles] = await Promise.all([
@@ -1788,9 +1788,13 @@ export class RemoteHostSession {
 				.filter((p) => p.name && !p.moduleName.startsWith("@deepseek-ai/"))
 				.map(({ name, version }) => ({ name, version }))
 			// Notify subscribers (the seam adapter's reactive /plugins face) so a
-			// late-arriving boot warm or push refresh repaints the panel — the
-			// sync listPlugins() read is otherwise a stale-cache trap.
-			if (this.#pluginsCache.length !== before || before === 0 || bundlesChanged) {
+			// late-arriving boot warm or mutation repaints the panel — the sync
+			// listPlugins() read is otherwise a stale-cache trap. `silent`
+			// callers own the notification: the plugin-manager/changed push
+			// notifies UNCONDITIONALLY after its refresh (success or failure —
+			// the C1 survival pin), and this conditional leg would double-fire
+			// that push (one event, two repaints).
+			if (!opts.silent && (this.#pluginsCache.length !== before || before === 0 || bundlesChanged)) {
 				for (const listener of this.#pushListeners) {
 					try {
 						listener.onPluginsChanged?.()
@@ -2766,7 +2770,11 @@ export class RemoteHostSession {
 		}
 		if (event === "plugin-manager/changed") {
 			// the profile's plugins changed: refresh the sync cache, then notify
-			void this.refreshPlugins()
+			// ONCE. The refresh runs silent (its conditional leg would
+			// double-fire this push) and the notification is unconditional so
+			// listeners repaint even when the mid-hot-apply refresh RPCs fail
+			// (the C1 survival pin).
+			void this.refreshPlugins({ silent: true })
 				.catch(() => {})
 				.then(() => {
 					for (const listener of this.#pushListeners) {

@@ -636,3 +636,58 @@ describe("sessionInfo with a staged --resume-last session", () => {
 		expect(await seam.sessionInfo()).toBeUndefined()
 	})
 })
+
+describe("plugins push bridge (splash hero fan-out)", () => {
+	/** Facade with the plugin push tap + sync cache the bridge reads. */
+	function fakePluginsSession(overrides: Record<string, unknown> = {}) {
+		const pluginListeners: (() => void)[] = []
+		const { session } = fakeSession({
+			listPlugins: () => [{ name: "dsh-dcp", version: "0.13.1" }],
+			onPluginsChanged: (listener: () => void) => {
+				pluginListeners.push(listener)
+				return () => {
+					const index = pluginListeners.indexOf(listener)
+					if (index >= 0) pluginListeners.splice(index, 1)
+				}
+			},
+			...overrides,
+		})
+		return { session, pluginListeners }
+	}
+
+	test("the constructor taps the facade push once and fans every hero listener", () => {
+		const { session, pluginListeners } = fakePluginsSession()
+		const seam = new RemoteSessionSeam(session)
+		// ONE tap on the facade, whatever the fan count
+		expect(pluginListeners.length).toBe(1)
+		const seen: string[] = []
+		const offA = seam.onPluginsChanged!(() => seen.push("a"))
+		seam.onPluginsChanged!(() => seen.push("b"))
+		pluginListeners[0]!()
+		expect(seen).toEqual(["a", "b"])
+		offA()
+		seen.length = 0
+		pluginListeners[0]!()
+		expect(seen).toEqual(["b"]) // the disposed fan stays silent
+	})
+
+	test("a throwing fan is contained — the others still fire", () => {
+		const { session, pluginListeners } = fakePluginsSession()
+		const seam = new RemoteSessionSeam(session)
+		const seen: string[] = []
+		seam.onPluginsChanged!(() => {
+			throw new Error("stale fan")
+		})
+		seam.onPluginsChanged!(() => seen.push("b"))
+		expect(() => pluginListeners[0]!()).not.toThrow()
+		expect(seen).toEqual(["b"])
+	})
+
+	test("dispose drops the facade tap, so nothing fires afterwards", async () => {
+		const { session, pluginListeners } = fakePluginsSession()
+		const seam = new RemoteSessionSeam(session)
+		seam.onPluginsChanged!(() => {})
+		await seam.dispose()
+		expect(pluginListeners.length).toBe(0)
+	})
+})
