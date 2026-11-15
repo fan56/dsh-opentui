@@ -41,7 +41,7 @@
  *
  * The output is gitignored (root .gitignore: dist/).
  */
-import { copyFileSync, mkdirSync, readFileSync } from "node:fs"
+import { copyFileSync, cpSync, mkdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -184,6 +184,16 @@ if (!result.success) {
 // dist/scripts/idle-reaper.mjs; ship it there.
 mkdirSync(join(shellDir, "dist", "scripts"), { recursive: true })
 copyFileSync(join(shellDir, "scripts", "idle-reaper.mjs"), join(shellDir, "dist", "scripts", "idle-reaper.mjs"))
+
+// Ship the locale tables: registry.ts's bundledLocalesDir() walks UP from the
+// bundle's directory looking for locales/en.json — from dist/client it checks
+// dist/client/locales then dist/locales, so a copy of packages/i18n/locales
+// at dist/locales is hit within the walk (and the packaged files whitelist
+// carries it into the npm tarball). Without this the installed CLI boots with
+// no bundled tables and silently degrades to en.
+cpSync(join(repoRoot, "packages", "i18n", "locales"), join(shellDir, "dist", "locales"), {
+	recursive: true,
+})
 
 const bundle = join(outDir, "index.js")
 const sizeKb = Math.round(readFileSync(bundle).byteLength / 1024)
