@@ -1,16 +1,19 @@
 /**
  * `t(key, params?)` + boot-time language resolution.
  *
- * Contract (research/gap-analysis-20261113/c5-i18n-design.md §3):
- * - the language is FIXED at startup (boot replay, `/language` writes config
- *   + tells the user to restart) — no reactive switching, so `t()` reads a
- *   plain module variable and is safe from ordinary functions and module
- *   constants;
+ * Contract (research/gap-analysis-20261113/c5-i18n-design.md §3, live-switch
+ * amendment): the language starts at boot replay (`applyI18nConfig`) and can
+ * be switched LIVE through `setLanguage(id)` — the active language rides a
+ * solid-js signal, so `t()` call sites inside a solid tracking scope
+ * (components, createEffect) re-render automatically when the language
+ * changes. Persistence stays the CALLER's job (`/language` persists through
+ * the config seam first, then calls `setLanguage`).
  * - `t()` is fail-open and NEVER throws (§6 exit(2) rule): missing key → en,
  *   missing in en too → the key itself; a missing param leaves the
  *   placeholder as-is; any unexpected error returns the key.
  */
 
+import { createSignal } from "solid-js"
 import {
 	DEFAULT_LANGUAGE,
 	loadLocales,
@@ -32,6 +35,13 @@ interface I18nState {
 }
 
 const state: I18nState = { languages: new Map(), active: DEFAULT_LANGUAGE, warnings: [] }
+
+/**
+ * The live language signal. Boot replay seeds it (`applyI18nConfig`), a
+ * `/language`-style pick flips it (`setLanguage`); solid tracking scopes that
+ * call `t()` re-run when it changes.
+ */
+const [languageSignal, setLanguageSignal] = createSignal<string>(DEFAULT_LANGUAGE)
 
 /**
  * The offered language choices (T14 `/language` + the settings language rows
@@ -101,12 +111,18 @@ export function applyI18nConfig(
 		state.active = DEFAULT_LANGUAGE
 	}
 	for (const warning of state.warnings) console.warn(warning)
+	setLanguageSignal(state.active)
 	return { language: state.active, warnings: state.warnings }
 }
 
-/** The active language id (fixed at boot). */
+/**
+ * The active language id. Reads the live signal (reactive inside a solid
+ * tracking scope); with an empty registry (never boot-loaded) it degrades to
+ * en without losing the signal subscription.
+ */
 export function activeLanguage(): string {
-	return state.languages.size === 0 ? DEFAULT_LANGUAGE : state.active
+	const id = languageSignal()
+	return state.languages.size === 0 ? DEFAULT_LANGUAGE : id
 }
 
 /** Installed language ids, sorted (bundled + user-registered). */
@@ -115,10 +131,22 @@ export function installedLanguages(): string[] {
 
 }
 
+/**
+ * Switch the active language LIVE (no restart): flip the signal (tracked
+ * `t()` call sites re-render) + the non-reactive mirror. Persistence is the
+ * CALLER's job — `/language` persists the unified `lang` key through the
+ * config seam before calling this. Unknown ids are not validated here (the
+ * command layer owns the choice surface); `t()` fail-opens to en on a miss.
+ */
+export function setLanguage(id: string): void {
+	state.active = id
+	setLanguageSignal(id)
+}
+
 /** Test/secondary hook: point the registry at explicit tables without a boot replay. */
 export function setLanguages(languages: Map<string, LocaleTable>, active?: string): void {
 	state.languages = languages
-	state.active = active ?? DEFAULT_LANGUAGE
+	setLanguage(active ?? DEFAULT_LANGUAGE)
 }
 
 const table = (id: string): LocaleTable | undefined => state.languages.get(id)
@@ -139,13 +167,16 @@ const interpolate = (template: string, params: Record<string, unknown>): string 
 	})
 
 /**
- * Translate one key in the boot-fixed language. Fail-open, never throws:
- * active language → en → the key itself; a param that is not supplied keeps
- * its `{placeholder}`; a non-string table entry is treated as missing.
+ * Translate one key in the ACTIVE language (live: the language signal is
+ * read inside this call, so solid tracking scopes re-run on a language
+ * switch). Fail-open, never throws: active language → en → the key itself; a
+ * param that is not supplied keeps its `{placeholder}`; a non-string table
+ * entry is treated as missing.
  */
 export function t(key: string, params?: Record<string, unknown>): string {
 	try {
-		const raw = table(activeLanguage())?.[key] ?? table(DEFAULT_LANGUAGE)?.[key]
+		const active = activeLanguage()
+		const raw = table(active)?.[key] ?? table(DEFAULT_LANGUAGE)?.[key]
 		if (typeof raw !== "string") return key
 		return params ? interpolate(raw, params) : raw
 	} catch {

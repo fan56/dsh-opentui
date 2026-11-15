@@ -19,7 +19,7 @@
  *                            send to the model)
  *   plain text            → not a command; caller sends/steers as batch 4
  */
-import { t, activeLanguage, installedLanguages, LANGUAGE_CHOICES } from "../../i18n"
+import { t, activeLanguage, installedLanguages, setLanguage, LANGUAGE_CHOICES } from "../../i18n"
 import type { SeamEffortOption, SeamLoginRoute, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
@@ -94,7 +94,7 @@ function persistHints(seam: SessionSeam): void {
 /**
  * Persist the unified language key after a /language pick (/motion parity):
  * `lang` is THE authoritative key (T14 storage-key unification — design §1);
- * the wording lands on restart (the registry is boot-fixed). Best-effort.
+ * the caller flips the live language signal right after. Best-effort.
  */
 function persistLang(seam: SessionSeam, lang: string): void {
 	try {
@@ -1286,7 +1286,7 @@ export function coreCommands(): SlashCommand[] {
 			// Footer-quickwins (tui-pi footer.ts per-segment parity): bare
 			// toggles the bar; `<segment> [on|off]` flips ONE of the eight
 			// segments; `all on|off` bulk-sets them; `lang <locale>` persists the
-			// unified language (en/zh-CN; ja/ko degrade to en — restart applies).
+			// unified language (en/zh-CN; ja/ko degrade to en — applies live).
 			name: "/hints",
 			description: t("command.hints.description"),
 			run(ctx, argText) {
@@ -1311,18 +1311,18 @@ export function coreCommands(): SlashCommand[] {
 					}
 					// T8 fold (design §1 cut 2): ja/ko keep their command surface but
 					// have no bundled locale file — the pick degrades to en with a
-					// warning; the wording itself is boot-fixed, so EVERY pick lands
-					// on restart (the unified-language restart-to-apply semantics).
+					// warning. Live-switch: persist through the seam, then flip the
+					// language signal immediately (no restart).
 					const degraded = picked !== "en" && picked !== "zh-CN"
 					const next = degraded ? "en" : picked
 					setHintsLocale(next)
 					persistHints(ctx.seam)
+					setLanguage(next)
 					ctx.say(
 						degraded
 							? t("command.hints.langDegraded", { lang: picked })
 							: t("command.hints.langSet", { lang: next }),
 					)
-					ctx.say(t("common.restartToApply"))
 					return
 				}
 				// A given state word must be exactly on|off — anything else is a
@@ -1365,10 +1365,9 @@ export function coreCommands(): SlashCommand[] {
 			// (case-insensitive onto the installed ids). The pick persists the
 			// UNIFIED `lang` profile key (THE authority — /hints lang and the
 			// settings language rows write it too; the legacy `hintsLocale` key
-			// stays a read-only boot fallback) and the wording lands on restart
-			// (the registry is boot-fixed — NO live apply). ja/ko are not offered
-			// (contract: en + zh-CN only); the degrade path stays /hints lang's
-			// own surface.
+			// stays a read-only boot fallback) and then flips the language
+			// signal LIVE (no restart). ja/ko are not offered (contract: en +
+			// zh-CN only); the degrade path stays /hints lang's own surface.
 			name: "/language",
 			description: t("command.language.description"),
 			async run(ctx, argText) {
@@ -1380,8 +1379,8 @@ export function coreCommands(): SlashCommand[] {
 				const pick = (id: string) => {
 					setHintsLocale(id as HintLocale)
 					persistLang(ctx.seam, id)
+					setLanguage(id)
 					ctx.say(t("command.language.set", { lang: id }))
-					ctx.say(t("common.restartToApply"))
 				}
 				if (arg === "") {
 					const picked = await ctx.pickOne(
@@ -1389,7 +1388,7 @@ export function coreCommands(): SlashCommand[] {
 						choices.map((id) => ({
 							title: id,
 							value: id,
-							description: id === current ? t("command.language.current") : t("command.language.restartNote"),
+							description: id === current ? t("command.language.current") : undefined,
 						})),
 						undefined,
 						current,

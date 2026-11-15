@@ -1,0 +1,10 @@
+# bun 1.4.x: `bun test` only honors [test].preload. This package's reactive
+# test (test/t.test.ts, the live language signal) imports "solid-js" plainly —
+# without the preload it resolves to the SSR build (dist/server.js), whose
+# createEffect is a no-op and the tracking assertion silently vacuums. Same
+# shape as packages/tui-base/bunfig.toml; the bare "@opentui/solid/preload"
+# specifier does not resolve here (@opentui/* is a per-package dependency),
+# so point at tui-base's installed copy directly — the same file the repo-root
+# bunfig.toml [test].preload uses for root runs.
+[test]
+preload = ["../tui-base/node_modules/@opentui/solid/scripts/preload.js"]

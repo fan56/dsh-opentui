@@ -16,6 +16,7 @@ export {
 	applyI18nConfig,
 	installedLanguages,
 	localeFromConfig,
+	setLanguage,
 	setLanguages,
 	t,
 } from "./t"

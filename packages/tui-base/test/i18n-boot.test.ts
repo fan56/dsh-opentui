@@ -1,9 +1,9 @@
 /**
  * i18n boot chain (design c5-i18n §3/§4 T2): the language is resolved from
- * the persisted config and FIXED for the process lifetime at boot —
- * `applyI18nConfig(seam.configLoad?.())` in v2-entry, `applyHintsConfig`
- * boot-replay parity (examples/v2-entry.tsx:1319 shape). No reactive
- * switching: `t()` reads the boot-fixed language afterwards.
+ * the persisted config at boot — `applyI18nConfig(seam.configLoad?.())` in
+ * v2-entry, `applyHintsConfig` boot-replay parity (examples/v2-entry.tsx:1319
+ * shape). Live-switch amendment: the boot seeds the language SIGNAL;
+ * `setLanguage(id)` flips it afterwards without a restart.
  *
  * The boot chain replays BOTH systems from the same config keys:
  * - the hints-bar persistence signal (`hintsLocale`, /hints lang — since the
@@ -28,8 +28,8 @@ describe("i18n boot chain (v2-entry applyI18nConfig, applyHintsConfig parity)", 
 		// t() resolves the boot-fixed language (fail-open table round-trips)
 		expect(t("common.confirm")).toBe("确认")
 		expect(t("panel.sessionsCount", { count: 3 })).toBe("会话数: 3")
-		// the exposed tui-base surface re-exports the same t()
-		expect(tReexported("common.restartToApply")).toBe("语言已保存 — 重启后生效")
+		// the exposed tui-base surface re-exports the same t() (live key)
+		expect(tReexported("command.language.set", { lang: "zh-CN" })).toBe("语言已切换：zh-CN")
 	})
 
 	test("zh-CN alias folding and ja/ko → en degradation happen in the boot chain; the unified lang key wins over legacy hintsLocale", () => {

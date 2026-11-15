@@ -12,10 +12,10 @@
  * EIGHT independently toggleable segments (send / newline / history / stop /
  * quit / scroll / search / subagents) in tui-pi's per-segment on/off shape,
  * each label a `footer.hint.*` key in the i18n registry (T8 fold: the vendored
- * four-language typed tables are gone — wording now rides the boot-fixed
- * unified language through `t()`, and a `/hints lang` pick persists the
- * unified language for the next boot; ja/ko have no bundled file and degrade
- * to en). Toggle surface: `/hints` flips the bar (zero rows when off),
+ * four-language typed tables are gone — wording now rides the unified
+ * language through `t()`, and a `/hints lang` pick persists the unified
+ * language and flips the live language signal immediately; ja/ko have no
+ * bundled file and degrade to en). Toggle surface: `/hints` flips the bar (zero rows when off),
  * `/hints <segment> [on|off]` one segment, `/hints lang <locale>` the
  * language. Store law: module-level state, getter-prop busy. The busy/idle
  * two-state wording and the conditional `↓ subagents` segment (only while a
@@ -102,11 +102,11 @@ const HINT_LABEL_KEYS: Record<HintSegmentId, HintLabelKeys> = {
 export const [footerHints, setFooterHints] = createSignal<FooterHints>({ ...DEFAULT_FOOTER_HINTS })
 /**
  * The hint-bar language (module-level). T8 fold: the labels render through
- * the boot-fixed unified registry instead, so this signal is the persistence
- * mirror of the stored language only — `/hints lang`, `/language` and the
- * settings language rows keep it in step with the persisted value (so a later
- * segment toggle re-saves the same language) and the new wording lands on the
- * next boot.
+ * the unified registry instead, so this signal is the persistence mirror of
+ * the stored language only — `/hints lang`, `/language` and the settings
+ * language rows keep it in step with the persisted value (so a later segment
+ * toggle re-saves the same language) and also flip the i18n language signal
+ * live, so the new wording lands immediately (no restart).
  */
 export const [hintsLocale, setHintsLocale] = createSignal<HintLocale>("en")
 
@@ -164,12 +164,14 @@ export function applyHintsConfig(config?: Record<string, unknown>): void {
 }
 
 /**
- * One segment's label in the boot-fixed language (t() — the registry's
- * fail-open chain runs active → en → key). A segment absent from the given
- * state, or a key missing from the registry too, renders '' (the caller
- * drops it). Getter-law note: this reads registry state at CALL time —
- * every call site is inside the HintsLine `row()` getter / a pure helper,
- * so the wording is never baked flat outside the render scope.
+ * One segment's label in the active language (t() — the registry's
+ * fail-open chain runs active → en → key; the language signal is read at
+ * call time, so tracked call sites re-render on a live switch). A segment
+ * absent from the given state, or a key missing from the registry too,
+ * renders '' (the caller drops it). Getter-law note: this reads registry
+ * state at CALL time — every call site is inside the HintsLine `row()`
+ * getter / a pure helper, so the wording is never baked flat outside the
+ * render scope.
  */
 export function hintLabel(id: HintSegmentId, busy: boolean): string {
 	const keys = HINT_LABEL_KEYS[id]

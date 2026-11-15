@@ -9,6 +9,10 @@ importers:
   .: {}
 
   packages/i18n:
+    dependencies:
+      solid-js:
+        specifier: 1.9.17
+        version: 1.9.17
     devDependencies:
       '@tsconfig/bun':
         specifier: 1.0.9

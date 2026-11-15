@@ -3,7 +3,7 @@
  * harmless unknown row, and each core command's seam/hook call.
  */
 import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:test"
-import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+import { activeLanguage, bundledLocalesDir, loadLocales, setLanguage, setLanguages, t } from "@dsh-opentui/i18n"
 import {
 	MODEL_DEFAULT_EFFORT_PICK,
 	coreCommands,
@@ -301,7 +301,7 @@ describe("core commands", () => {
 			"/subagents — view live subagent transcripts (list, steer, stop)",
 			"/think — set reasoning effort (opens the picker)",
 			"/hints — key hints: toggle bar; <segment> on|off; all on|off; lang <locale>",
-			"/language — switch language (opens the picker; restart to apply)",
+			"/language — switch language (opens the picker; applies immediately)",
 			"/motion — animation tier: full | reduced | off | auto (bare shows setting → effective)",
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
@@ -1550,16 +1550,23 @@ describe("/hints argument parsing", () => {
 		expect(hints.description.length).toBeLessThanOrEqual(70)
 	})
 
-	test("lang matches case-insensitively onto the canonical locale and notes the restart (T8 fold: boot-fixed wording)", () => {
-		expect(run("lang EN").lines).toEqual(["hint language: en", "Language saved — restart to apply"])
+	test("lang matches case-insensitively onto the canonical locale and applies live (no restart line)", () => {
+		expect(run("lang EN").lines).toEqual(["hint language: en"])
 		expect(hintsLocale()).toBe("en")
-		expect(run("lang zh-cn").lines).toEqual(["hint language: zh-CN", "Language saved — restart to apply"])
+		// setLanguage runs BEFORE the confirm line renders: the wording already
+		// lands in the NEW language (zh) — the live apply made visible.
+		expect(run("lang zh-cn").lines).toEqual(["提示语言：zh-CN"])
 		expect(hintsLocale()).toBe("zh-CN")
+		// live switch: the registry language flipped with the pick — the next
+		// t() resolves through zh-CN without a restart.
+		expect(activeLanguage()).toBe("zh-CN")
+		expect(t("common.confirm")).toBe("确认")
 		setHintsLocale("en")
+		setLanguage("en")
 	})
 
 	test("lang ja/ko keep the command surface but degrade to en (design §1 cut 2)", () => {
-		expect(run("lang JA").lines).toEqual(["ja is not bundled — hint language degraded to en", "Language saved — restart to apply"])
+		expect(run("lang JA").lines).toEqual(["ja is not bundled — hint language degraded to en"])
 		expect(hintsLocale()).toBe("en")
 		setHintsLocale("en")
 	})
@@ -1624,7 +1631,7 @@ describe("/hints argument parsing", () => {
 	})
 })
 
-describe("/language (T14: unified `lang` storage, restart-to-apply)", () => {
+describe("/language (T14: unified `lang` storage, live apply)", () => {
 	const language = coreCommands().find((c) => c.name === "/language")!
 	const run = async (argText: string, pickAnswer?: string) => {
 		const seam = new ConfigSeam()
@@ -1635,6 +1642,7 @@ describe("/language (T14: unified `lang` storage, restart-to-apply)", () => {
 
 	beforeEach(() => {
 		setHintsLocale("en")
+		setLanguage("en")
 	})
 
 	test("description stays within the palette row budget (≤ /login's 78)", () => {
@@ -1648,11 +1656,17 @@ describe("/language (T14: unified `lang` storage, restart-to-apply)", () => {
 		expect(pick.title).toBe("Select language")
 		expect(pick.currentValue).toBe("en")
 		expect(pick.options.map((o) => o.title)).toEqual(["en", "zh-CN"])
-		expect(ctx.lines).toEqual(["language: zh-CN", "Language saved — restart to apply"])
+		// setLanguage runs BEFORE the confirm line is rendered: the completion
+		// wording already lands in the NEW language (zh), one line, no restart.
+		expect(ctx.lines).toEqual(["语言已切换：zh-CN"])
 		expect(seam.store.lang).toBe("zh-CN")
 		expect(seam.store.hintsLocale).toBeUndefined()
 		expect(hintsLocale()).toBe("zh-CN")
+		// live apply: the registry language flipped immediately (no restart)
+		expect(activeLanguage()).toBe("zh-CN")
+		expect(t("common.confirm")).toBe("确认")
 		setHintsLocale("en")
+		setLanguage("en")
 	})
 
 	test("esc/no answer and the current-language pick are unchanged (tui-pi semantics, no write)", async () => {
@@ -1664,11 +1678,13 @@ describe("/language (T14: unified `lang` storage, restart-to-apply)", () => {
 		expect(same.seam.calls).not.toContain("configSave")
 	})
 
-	test("argument form targets case-insensitively and persists the unified lang key", async () => {
+	test("argument form targets case-insensitively, persists the unified lang key, applies live", async () => {
 		const { ctx, seam } = await run("ZH-cn")
-		expect(ctx.lines).toEqual(["language: zh-CN", "Language saved — restart to apply"])
+		expect(ctx.lines).toEqual(["语言已切换：zh-CN"])
 		expect(seam.store.lang).toBe("zh-CN")
+		expect(activeLanguage()).toBe("zh-CN")
 		setHintsLocale("en")
+		setLanguage("en")
 	})
 
 	test("unknown id errors and lists the offered languages (nothing written)", async () => {

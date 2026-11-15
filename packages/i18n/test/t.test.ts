@@ -3,8 +3,9 @@
  * param-set consistency, localeFromConfig, golden values on the seed keys).
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { createEffect, createRoot } from "solid-js"
 import { bundledLocalesDir, extractParams, loadLocales, type LocaleTable } from "../src/registry"
-import { activeLanguage, applyI18nConfig, installedLanguages, localeFromConfig, setLanguages, t } from "../src/t"
+import { activeLanguage, applyI18nConfig, installedLanguages, localeFromConfig, setLanguage, setLanguages, t } from "../src/t"
 
 const bundledDir = bundledLocalesDir()
 
@@ -125,7 +126,7 @@ describe("golden values on the seed keys (design §5.6, seed-key form)", () => {
 		expect(t("common.cancel")).toBe("Cancel")
 		expect(t("common.noItems")).toBe("No items")
 		expect(t("common.invalidNumber")).toBe("Invalid number")
-		expect(t("common.restartToApply")).toBe("Language saved — restart to apply")
+		expect(t("command.language.set", { lang: "zh-CN" })).toBe("language switched: zh-CN")
 		expect(t("panel.sessionsCount", { count: 12 })).toBe("sessions: 12")
 	})
 
@@ -135,12 +136,12 @@ describe("golden values on the seed keys (design §5.6, seed-key form)", () => {
 		expect(t("common.cancel")).toBe("取消")
 		expect(t("common.noItems")).toBe("暂无条目")
 		expect(t("common.invalidNumber")).toBe("数字无效")
-		expect(t("common.restartToApply")).toBe("语言已保存 — 重启后生效")
+		expect(t("command.language.set", { lang: "zh-CN" })).toBe("语言已切换：zh-CN")
 		expect(t("panel.sessionsCount", { count: 12 })).toBe("会话数: 12")
 	})
 })
 
-describe("applyI18nConfig boot replay (design §3, startup-fixed language)", () => {
+describe("applyI18nConfig boot replay (design §3, live-switch amendment)", () => {
 	test("resolves the unified lang setting and fixes it for the process", () => {
 		const result = applyI18nConfig({ lang: "zh-CN" }, { bundledDir })
 		expect(result.language).toBe("zh-CN")
@@ -172,5 +173,51 @@ describe("applyI18nConfig boot replay (design §3, startup-fixed language)", () 
 	test("installedLanguages reflects the boot-loaded registry", () => {
 		applyI18nConfig({ lang: "en" }, { bundledDir })
 		expect(installedLanguages()).toEqual(["en", "zh-CN"])
+	})
+})
+
+describe("setLanguage live switch (solid signal, no restart)", () => {
+	test("t() returns the new language immediately after setLanguage", () => {
+		setLanguages(loadLocales({ bundledDir }).languages, "en")
+		expect(t("command.language.set", { lang: "zh-CN" })).toBe("language switched: zh-CN")
+		setLanguage("zh-CN")
+		expect(activeLanguage()).toBe("zh-CN")
+		expect(t("command.language.set", { lang: "zh-CN" })).toBe("语言已切换：zh-CN")
+		// switching back restores the en wording (same signal, same table)
+		setLanguage("en")
+		expect(t("command.language.set", { lang: "zh-CN" })).toBe("language switched: zh-CN")
+	})
+
+	test("t() is tracked: createEffect reading it re-runs on a language switch", async () => {
+		const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+		setLanguages(loadLocales({ bundledDir }).languages, "en")
+		let runs = 0
+		let last = ""
+		let disposeRoot: (() => void) | undefined
+		createRoot((dispose) => {
+			disposeRoot = dispose
+			createEffect(() => {
+				runs++
+				last = t("command.language.set", { lang: "zh-CN" })
+			})
+		})
+		// solid effects fire on the microtask queue — initial run: en wording
+		await wait(0)
+		expect(runs).toBe(1)
+		expect(last).toBe("language switched: zh-CN")
+		// live flip → the tracked effect re-runs with the new language
+		setLanguage("zh-CN")
+		await wait(0)
+		expect(runs).toBe(2)
+		expect(last).toBe("语言已切换：zh-CN")
+		setLanguage("en")
+		await wait(0)
+		expect(runs).toBe(3)
+		expect(last).toBe("language switched: zh-CN")
+		// a same-id set is a solid no-op write (equal value) — no re-run
+		setLanguage("en")
+		await wait(0)
+		expect(runs).toBe(3)
+		disposeRoot?.()
 	})
 })
