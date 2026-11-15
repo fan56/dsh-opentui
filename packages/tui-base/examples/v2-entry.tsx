@@ -47,6 +47,7 @@ import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
 import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
 import { HintsLine, applyHintsConfig } from "../src/routes/session/hints-line"
 import { applyI18nConfig } from "@dsh-opentui/i18n"
+import { t } from "../src/i18n"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { createPaneFocus, PaneFocusKeys } from "../src/routes/session/pane-focus"
@@ -71,6 +72,7 @@ import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src
 import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
 import { DialogPrompt } from "../src/ui/dialog-prompt"
+import { DialogConfirm } from "../src/ui/dialog-confirm"
 import { DialogProvider, useDialog } from "../src/ui/dialog"
 import { ToastProvider, useToast } from "../src/ui/toast"
 import { ClipboardProvider, useClipboard } from "../src/context/clipboard"
@@ -321,6 +323,42 @@ function V2SessionPage(props: {
 		const done = projection.send(text)
 		void done.finally(() => setTurnBusy(false))
 		return done
+	}
+	// U6 stop-everything confirm (tui-pi stop-dialog parity): the confirmed
+	// stop cancels the main turn AND every live subagent (cancelling the
+	// parent alone leaves independent children running — seam.interruptChild
+	// per running row, the /subagents viewer's stop-all leg). The dialog
+	// states the blast radius at open time; Esc inside it cancels and keeps
+	// everything running.
+	const confirmStopAll = () => {
+		const runningChildren = (seam.subagentViews?.() ?? []).filter((view) => view.status === "running").length
+		const parts = [
+			...(turnBusy() || composerBusy() ? [t("turn.stop.confirmMain")] : []),
+			...(runningChildren === 1
+				? [t("turn.stop.confirmChildrenOne")]
+				: runningChildren > 0
+					? [t("turn.stop.confirmChildrenMany", { count: String(runningChildren) })]
+					: []),
+		]
+		dialog.replace(
+			() => (
+				<DialogConfirm
+					title={t("turn.stop.confirmTitle")}
+					message={t("turn.stop.confirmMessage", { parts: parts.join(", ") })}
+					label={{ confirm: t("turn.stop.confirmLabel"), cancel: t("turn.stop.cancelLabel") }}
+					onConfirm={() => {
+						turnAborted = true
+						seam.interrupt()
+						for (const view of seam.subagentViews?.() ?? []) {
+							if (view.status !== "running") continue
+							void seam.interruptChild?.(view.id).catch(() => {})
+						}
+					}}
+				/>
+			),
+			undefined,
+			{ tone: "warning" },
+		)
 	}
 	// ⚡ CH (batch F2): usage lands at turn end, so reading turnBusy() here
 	// re-runs the getter-fed segment list on each turn boundary (footer row
@@ -1111,8 +1149,10 @@ function V2SessionPage(props: {
 						toggle: paneFocus.toggle,
 						focusComposer: paneFocus.focusComposer,
 					}),
-					// Cancel contract (batch V2, ./turn-cancel.tsx): esc interrupts
-					// the running turn; ctrl+c interrupts + arms, ctrl+c x2 quits
+					// Cancel contract (batch V2, ./turn-cancel.tsx): esc on a running
+					// turn arms the stop (U6 double-press), a second esc inside the
+					// window opens the stop-everything confirm (main turn + every
+					// live subagent); ctrl+c interrupts + arms, ctrl+c x2 quits
 					// through props.quit (the shutdown-intercepted process.exit).
 					createComponent(TurnCancelKeys, {
 						busy,
@@ -1122,6 +1162,11 @@ function V2SessionPage(props: {
 							// keep (not silently send) the queue.
 							turnAborted = true
 							seam.interrupt()
+						},
+						confirmStop: () => {
+							// The flag flips only on a CONFIRMED stop — a cancelled
+							// dialog leaves the turn (and its queue policy) untouched.
+							confirmStopAll()
 						},
 						quit: props.quit,
 						enabled: () => dialog.stack.length === 0,

@@ -140,13 +140,15 @@ environment (`DSH_OPENTUI_THEME` / `DSH_OPENTUI_MODEL`) wins over the file.
 **In the TUI**: type a question, Enter to send. `F6` (or a click) moves focus
 between the transcript and the composer; while the transcript is focused, ↑/↓
 scroll a line, PgUp/PgDn a page, Home/End jump to the top/bottom, and Tab or
-Esc returns to the composer (Esc still stops a running turn). The focused pane
+Esc returns to the composer (Esc ×2 stops a running turn: the first press
+prompts "press Esc again to stop", the second opens a confirmation dialog
+that stops the turn AND every live subagent). The focused pane
 carries a heavy accent frame; the unfocused one dims. Mouse reporting is on, so
 hold **Shift** while dragging for the terminal's native selection (then
 Cmd/Ctrl+C copies it); a plain drag is copied on release per `terminal.copy`.
 The model's thinking streams
 dim; tool calls (bash / read_file / write_file) pop an approval card — `y`
-allow, `n` decline; `esc` aborts a running turn. Ctrl+C twice quits. Commands:
+allow, `n` decline; `esc` ×2 + confirm stops a running turn. Ctrl+C twice quits. Commands:
 `/help` `/model [provider/id]` `/usage` `/clear` `/login` `/logout` `/resume`
 `/search` `/new` `/quit` and more — see `/help` inside the TUI.
 
