@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-11-15
+
+### Added
+
+- **Live language switching.** `/language` now applies the chosen language immediately — the locale registry rides a solid signal, so every tracked `t()` read point repaints in place; the "restart to apply" copy is gone. Persisting to the unified `lang` config key is unchanged.
+- **Double-esc stop confirmation (U6, tui-pi parity).** With a turn running the first Esc only arms a `Press Esc again to stop` hint (500 ms window); the second Esc opens a `Stop everything?` confirm dialog naming the blast radius (Keep Running / Stop, Esc cancels). Confirming stops the running turn and every live subagent through the existing client-side fallback chain; single-Esc semantics outside a busy turn are untouched.
+
+### Fixed
+
+- **The published bundle ships its locale files.** The npm package never contained `en.json`/`zh-CN.json` and the build did not copy them, so on any installed (non-source) run the locale registry came up empty, `t()` fell open to raw key names (`overlay.widgets.frameTitle` painted as a frame title), and `/language` degraded to English regardless of the persisted `lang`. The build now copies `packages/i18n/locales` to `dist/locales`, the `files` whitelist ships it, and a prepack gate verifies the packed archive byte-for-byte.
+- **`/language` picker starts on the current row.** `pickOne` hard-coded the dialog selection to row 0, so arrow+Enter committed the wrong language and bare Enter silently switched to the first entry; the picker now opts into focusing the current language, with a real-renderer ft pinning open/Up/commit.
+- **`setLanguage` refuses table-less ids** instead of parking the signal on a language with no table; the composer placeholder is keyed (`composer.placeholder`) so the zh UI no longer mixes an English prompt line.
+
 ## [0.15.0] - 2026-11-15
 
 ### Added
