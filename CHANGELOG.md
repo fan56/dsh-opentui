@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-11-15
+
+### Fixed
+
+- **Numeric activity gears clamp to the same two-thirds terminal budget as `all`.** Each block now gets `min(N, budget/2)` with `budget = floor(rows * 2/3) - 2`, so a 10-line gear can no longer crowd out the transcript on short terminals; 52-row terminals are unaffected (gear 10 still renders 10 lines).
+- **Settings write path hardening.** The nested-key write now falls back to the merged view's `session` slice when the profile snapshot is missing, so a bare `{session: {…}}` patch can no longer drop sibling `session` keys; boot replay rejects an out-of-contract stored value silently (fail-open, no stderr before the first paint); the settings row displays the normalized (effective) value; and a non-contract gear write is rejected with `settings.error.invalidGear` instead of landing in the profile.
+- Note: 0.17.0 was never published to npm — `latest` skips it and points at 0.17.1.
+
 ## [0.17.0] - 2026-11-15
 
 ### Added
