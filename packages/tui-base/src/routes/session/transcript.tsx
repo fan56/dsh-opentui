@@ -7,7 +7,14 @@
  *   row > flexGrow col (position relative) > scrollbox
  *   stickyScroll + stickyStart="bottom"   (prop-sensitive; NOT stickyScrollPosition)
  *   keyed marginTop=1 rows via <For>
- *   bottom slot (children) — the composer (batch 4, ./session-composer.tsx)
+ *   bottom slot (children/footer/notices) — legacy hosts only
+ *
+ * The v2 page no longer uses this bottom slot: its composer, lastRequest and
+ * notices moved to the page-root column so the in-flow dock can take the
+ * composer seat as a sibling of this transcript (spec §2, ./dock-host.tsx).
+ * The slots stay here because the bare examples mount a composer through
+ * them; when a host passes none, the bottom box collapses to the status and
+ * widgets slots exactly as before.
  *
  * with its feed cut over from `useData`/`useClient` to `SessionSeam`
  * (see ./seam-rows.ts for the row projection). Rendering follows the
@@ -184,7 +191,9 @@ export type TranscriptProps = {
 	renderNode?: (node: any) => any
 	/** Upstream syntax style (vendored app: `useThemes().currentSyntax`). */
 	syntaxStyle?: SyntaxStyle
-		/** Bottom slot: the composer. */
+		/** Bottom slot: the composer (legacy hosts). The v2 page passes the
+		 * composer to the page-root dock seat instead, so a dock can take this
+		 * position as a sibling of the transcript (spec §2). */
 		children?: JSX.Element
 		/** Batch D3 status slot (dsh-tui-pi dock top, index.ts:846 Loader):
 		 * the running indicator rendered ABOVE the widgets slot — the page
