@@ -123,7 +123,8 @@ export function estimateAskRows(ask: {
 }): number {
 	const question = ask.questions[ask.index]
 	if (question === undefined) return 1
-	let rows = 1 // title
+	let rows = 1 // top rule (the surface's separation from the widgets dock)
+	rows += 1 // title
 	if (question.header !== undefined) rows += 1
 	if (question.detail !== undefined) rows += 1
 	if (ask.questions.length >= 2) rows += 1 // tab strip

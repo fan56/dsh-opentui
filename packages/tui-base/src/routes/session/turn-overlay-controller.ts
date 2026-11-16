@@ -20,8 +20,11 @@
  *             downstream).
  *   custom    free-text answers: the resident inline row (`✎ <input>`) is the
  *             last row of every question (spec §5) and the controller keeps
- *             its live buffer on `customDraft` (null = no live edit) plus the
- *             committed answer on `customs[qi]`. Committing a non-empty buffer
+ *             ONE live buffer PER QUESTION (`customDrafts[qi]`, null = no live
+ *             edit) plus the committed answer on `customs[qi]`. The buffer is
+ *             question-scoped: an uncommitted draft typed on question N never
+ *             paints on question M, and committing M never touches N's draft.
+ *             Committing a non-empty buffer
  *             CLEARS the picked options (selected ⊕ custom are mutually
  *             exclusive, tui-pi's `setCustomAnswer`) and rides the envelope's
  *             `Answer.custom` field; an empty commit discards the buffer.
@@ -62,12 +65,15 @@ export type AskPhase = "questions" | "input" | "review"
  * the selected labels per question (empty = unanswered; recommended options
  * are pre-selected at open, spec §4), `phase` says which surface owns the
  * interactive focus. `customs` carries the committed free-text answer per
- * question (undefined = none); `customDraft` is the live inline buffer
- * (null = no live edit — the committed answer still paints when it exists).
+ * question (undefined = none); `customDraft` is the FOCUSED question's live
+ * inline buffer (derived from the per-question buffers — null = no live edit,
+ * the committed answer still paints when it exists).
  * `cursors` is the option-row cursor per question (option rows, then the
  * review row when painted, then the resident inline row — see
- * `questionRowCount`); `reviewCursor` is the review page's row cursor
- * (question rows, then Submit). */
+ * `questionRowCount`); `listCursors` remembers the last LIST position (option
+ * or review row) so the list keeps a marker while the inline input owns the
+ * phase; `reviewCursor` is the review page's row cursor (question rows, then
+ * Submit). */
 export type PendingAsk = {
 	id: number
 	questions: SeamAskQuestion[]
@@ -77,6 +83,7 @@ export type PendingAsk = {
 	customs: (string | undefined)[]
 	customDraft: string | null
 	cursors: number[]
+	listCursors: number[]
 	reviewCursor: number
 }
 
@@ -84,7 +91,11 @@ type ApprovalEntry = {
 	request: PendingApproval
 	resolve: (verdict: SeamApprovalVerdict) => void
 }
-type AskEntry = PendingAsk & {
+/** The stored batch keeps one live inline buffer PER QUESTION. The public
+ * snapshot above derives `customDraft` for the focused question only, so a
+ * draft typed on question N can never leak onto M (D4). */
+type AskEntry = Omit<PendingAsk, "customDraft"> & {
+	customDrafts: (string | null)[]
 	resolve: (picks: SeamAskPick[]) => void
 }
 
@@ -168,8 +179,9 @@ export class TurnOverlayController {
 				picks: head.picks,
 				phase: head.phase,
 				customs: [...head.customs],
-				customDraft: head.customDraft,
+				customDraft: head.customDrafts[head.index] ?? null,
 				cursors: [...head.cursors],
+				listCursors: [...head.listCursors],
 				reviewCursor: head.reviewCursor,
 			}
 		}
@@ -194,8 +206,9 @@ export class TurnOverlayController {
 				// dock opens with the resident inline row focused.
 				phase: questions[0]?.options.length === 0 ? "input" : "questions",
 				customs: questions.map(() => undefined),
-				customDraft: null,
+				customDrafts: questions.map(() => null),
 				cursors: questions.map(() => 0),
+				listCursors: questions.map(() => 0),
 				reviewCursor: 0,
 				resolve,
 			})
@@ -222,9 +235,9 @@ export class TurnOverlayController {
 		if (head.phase === "input") return
 		// Picking an option clears the question's committed custom answer
 		// (selected ⊕ custom are mutually exclusive, tui-pi setCustomAnswer)
-		// and any live inline text.
+		// and ITS live inline text only — a draft on another question stays.
 		head.customs[head.index] = undefined
-		head.customDraft = null
+		head.customDrafts[head.index] = null
 		if (question.multiSelect === true) {
 			const current = head.picks[head.index] ?? []
 			head.picks[head.index] = current.includes(option)
@@ -329,7 +342,7 @@ export class TurnOverlayController {
 		const head = this.#asks[0]
 		if (!head || head.phase === "review") return false
 		const question = head.questions[head.index]
-		head.customDraft = head.customs[head.index] ?? ""
+		head.customDrafts[head.index] = head.customs[head.index] ?? ""
 		head.phase = "input"
 		if (question !== undefined) {
 			head.cursors[head.index] = inlineRowIndex(question, askNeedsReview(head.questions))
@@ -338,11 +351,12 @@ export class TurnOverlayController {
 		return true
 	}
 
-	/** Live sentinel edit: replace the draft buffer. No-op unless editing. */
+	/** Live sentinel edit: replace the draft buffer. No-op unless the focused
+	 * question is being edited. */
 	patchCustom(text: string): void {
 		const head = this.#asks[0]
-		if (!head || head.customDraft === null) return
-		head.customDraft = text
+		if (!head || head.customDrafts[head.index] === null) return
+		head.customDrafts[head.index] = text
 		this.#changed()
 	}
 
@@ -358,9 +372,11 @@ export class TurnOverlayController {
 	commitCustom(): void {
 		const head = this.#asks[0]
 		const question = head?.questions[head.index]
-		if (!head || !question || head.customDraft === null) return
-		const text = head.customDraft.trim()
-		head.customDraft = null
+		if (!head || !question) return
+		const draft = head.customDrafts[head.index] ?? null
+		if (draft === null) return
+		const text = draft.trim()
+		head.customDrafts[head.index] = null
 		if (text === "") {
 			// An empty commit discards the buffer and hands focus back to the
 			// list (a zero-option question has no list: it stays on the input).
@@ -391,8 +407,8 @@ export class TurnOverlayController {
 	/** Esc in the sentinel editor: discard the draft, back to the picker. */
 	cancelCustomEdit(): void {
 		const head = this.#asks[0]
-		if (!head || head.customDraft === null) return
-		head.customDraft = null
+		if (!head || head.customDrafts[head.index] === null) return
+		head.customDrafts[head.index] = null
 		this.#backToList(head)
 		this.#changed()
 	}
@@ -402,29 +418,31 @@ export class TurnOverlayController {
 	// `ask-keys.ts` translates keys into these transitions (spec §5-§6);
 	// the controller stays renderer-free and registers no binding.
 
-	/** The resident inline row's text: the live buffer while an edit is in
-	 * progress, else the question's committed custom answer. */
+	/** The resident inline row's text for the FOCUSED question: its live
+	 * buffer while an edit is in progress, else its committed custom answer.
+	 * Another question's draft is never returned (D4). */
 	get inlineText(): string {
 		const head = this.#asks[0]
 		if (!head) return ""
-		if (head.customDraft !== null) return head.customDraft
+		const draft = head.customDrafts[head.index]
+		if (draft !== null && draft !== undefined) return draft
 		return head.customs[head.index] ?? ""
 	}
 
-	/** Input event path: replace the inline buffer. The first character starts
-	 * the edit and parks the cursor on the inline row (the input only receives
-	 * keys while it is focused). */
+	/** Input event path: replace the focused question's inline buffer. The
+	 * first character starts the edit and parks the cursor on the inline row
+	 * (the input only receives keys while it is focused). */
 	setInlineText(text: string): void {
 		const head = this.#asks[0]
 		const question = head?.questions[head.index]
 		if (!head || !question || head.phase === "review") return
 		// A controlled `InputRenderable` emits `input` when its `value` prop
 		// changes programmatically, so clearing the rendered row (a pick or a
-		// commit set `customDraft` back to null) arrives here as "". With no
+		// commit set the buffer back to null) arrives here as "". With no
 		// live edit the model already owns the row: re-activating the input
 		// phase here would steal the keys back after every pick.
-		if (head.customDraft === null && text === "") return
-		head.customDraft = text
+		if ((head.customDrafts[head.index] ?? null) === null && text === "") return
+		head.customDrafts[head.index] = text
 		head.phase = "input"
 		head.cursors[head.index] = inlineRowIndex(question, askNeedsReview(head.questions))
 		this.#changed()
@@ -462,6 +480,9 @@ export class TurnOverlayController {
 		const next = Math.max(0, Math.min(inline, Math.floor(row)))
 		head.cursors[head.index] = next
 		head.phase = next === inline ? "input" : "questions"
+		// Landing on the inline row does not forget the list position: the
+		// panel keeps a muted marker on it while the input owns the phase.
+		if (next !== inline) head.listCursors[head.index] = next
 		this.#changed()
 	}
 
@@ -473,8 +494,10 @@ export class TurnOverlayController {
 		const needsReview = askNeedsReview(head.questions)
 		const last = questionRowCount(question, needsReview) - 1
 		const next = Math.max(0, Math.min(last, (head.cursors[head.index] ?? 0) + delta))
+		const inline = inlineRowIndex(question, needsReview)
 		head.cursors[head.index] = next
-		head.phase = next === inlineRowIndex(question, needsReview) ? "input" : "questions"
+		head.phase = next === inline ? "input" : "questions"
+		if (next !== inline) head.listCursors[head.index] = next
 		this.#changed()
 	}
 
@@ -504,7 +527,12 @@ export class TurnOverlayController {
 		}
 		head.phase = "questions"
 		const inline = inlineRowIndex(question, askNeedsReview(head.questions))
-		head.cursors[head.index] = Math.min(head.cursors[head.index] ?? 0, Math.max(0, inline - 1))
+		// Restore the remembered LIST row (not "the last row before the
+		// inline input"): Esc out of the resident input returns the list to
+		// where the user left it.
+		const row = Math.max(0, Math.min(inline - 1, head.listCursors[head.index] ?? 0))
+		head.cursors[head.index] = row
+		head.listCursors[head.index] = row
 	}
 
 	/**

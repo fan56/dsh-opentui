@@ -43,8 +43,9 @@ import { For, createMemo, createSignal, onCleanup, onMount, Show, type JSX } fro
 import { useRenderer, onAnimationTick } from "@opentui/solid"
 import { useTerminalSize } from "./terminal-size"
 import { BoxRenderable, SyntaxStyle, TextAttributes, type RGBA, type ScrollBoxRenderable } from "@opentui/core"
-import type { SessionSeam } from "../../seams/session"
+import type { SeamAskEntry, SessionSeam } from "../../seams/session"
 import { createSeamRows, type SeamRow, type SeamRows } from "./seam-rows"
+import { splitRecommended } from "./ask-options"
 import type { ComposerPendingRow } from "./composer-state"
 import { useThemeOptional, useThemesOptional } from "../../context/theme"
 import { t } from "../../i18n"
@@ -278,10 +279,8 @@ export function Transcript(props: TranscriptProps) {
 		text: () => theme?.text.base ?? "#e6e6e6",
 		user: () => theme?.text.action.primary.base ?? "#7aa2f7",
 		reasoningBorder: () => theme?.border.base ?? "#565f89",
-		reasoning: () => theme?.text.muted ?? "#9aa5ce",
-		// Ask replay (spec §9): the answer line rides the accent role — the
-		// same brand/action tier the user prompt uses.
-		answer: () => theme?.text.action.primary.base ?? "#7aa2f7",
+		// Ask replay (spec §9) paints through `AskReplayBlock`, which owns its
+		// own theme read (muted question line + accent answer line).
 		done: () => theme?.text.feedback.success.base ?? "#9ece6a",
 		running: () => theme?.text.feedback.warning.base ?? "#e0af68",
 		failed: () => theme?.text.feedback.error.base ?? "#f7768e",
@@ -346,25 +345,15 @@ export function Transcript(props: TranscriptProps) {
 	 * is its own value; a declined question shows the declined marker (muted:
 	 * distinct from an answer, no accent emphasis). Offered options stay
 	 * carried in the row but are not repeated here — the record is what was
-	 * asked and what was answered, not the menu. */
-	const askAnswer = (entry: Extract<SeamRow, { kind: "ask" }>["entries"][number]): string =>
-		entry.selected.join(", ") || entry.custom || t("transcript.ask.declined")
-	const askDeclined = (entry: Extract<SeamRow, { kind: "ask" }>["entries"][number]): boolean =>
-		entry.declined || (entry.selected.length === 0 && !entry.custom)
-	const askRow = (row: Extract<SeamRow, { kind: "ask" }>) => (
-		<box flexDirection="column" gap={1}>
-			<For each={row.entries}>
-				{(entry) => (
-					<box flexDirection="column">
-						<Show when={entry.header}>{(header) => <text fg={color.reasoning()}>{header()}</text>}</Show>
-						<text fg={color.reasoning()}>{`✓ ${entry.question}`}</text>
-						<Show when={entry.detail}>{(detail) => <text fg={color.reasoning()}>{detail()}</text>}</Show>
-						<text fg={askDeclined(entry) ? color.reasoning() : color.answer()}>{`  → ${askAnswer(entry)}`}</text>
-					</box>
-				)}
-			</For>
-		</box>
-	)
+	 * asked and what was answered, not the menu.
+	 *
+	 * The answer VALUE stays the raw pick label (it is what the tool returned),
+	 * but the painted line runs the same `splitRecommended` normalization the
+	 * option list used, so replay never shows `SQLite (Recommended)` next to a
+	 * picker that showed `SQLite [推荐]` (D5). No badge here: the replay is a
+	 * record, and a second badge token in scrollback would compete with the
+	 * answer text. See `AskReplayBlock`. */
+	const askRow = (row: Extract<SeamRow, { kind: "ask" }>) => <AskReplayBlock row={row} />
 
 	// Batch D1: tool/reasoning rows stay in the store (the widgets dock reads
 	// them there) but never paint in the flow — the visible feed is the
@@ -505,6 +494,39 @@ export function Transcript(props: TranscriptProps) {
 					{props.notices}
 				</box>
 			</Show>
+		</box>
+	)
+}
+
+/**
+ * The replay block a settled ask paints in the transcript flow (spec §9).
+ * Exported so the D5 rendering test can mount the exact component without
+ * seam/projection scaffolding. The answer line runs `splitRecommended` on
+ * every picked label, matching the option list's normalized label; no badge
+ * is painted here (the replay is a record, not a picker).
+ */
+export function AskReplayBlock(props: { row: Extract<SeamRow, { kind: "ask" }> }): JSX.Element {
+	const theme = useThemeOptional()
+	const reasoning = () => theme?.text.muted ?? "#9aa5ce"
+	const answer = () => theme?.text.action.primary.base ?? "#7aa2f7"
+	const askAnswerOf = (entry: SeamAskEntry): string =>
+		entry.selected.map((label) => splitRecommended(label).label).join(", ") ||
+		entry.custom ||
+		t("transcript.ask.declined")
+	const askDeclinedOf = (entry: SeamAskEntry): boolean =>
+		entry.declined || (entry.selected.length === 0 && !entry.custom)
+	return (
+		<box flexDirection="column" gap={1}>
+			<For each={props.row.entries}>
+				{(entry) => (
+					<box flexDirection="column">
+						<Show when={entry.header}>{(header) => <text fg={reasoning()}>{header()}</text>}</Show>
+						<text fg={reasoning()}>{`✓ ${entry.question}`}</text>
+						<Show when={entry.detail}>{(detail) => <text fg={reasoning()}>{detail()}</text>}</Show>
+						<text fg={askDeclinedOf(entry) ? reasoning() : answer()}>{`  → ${askAnswerOf(entry)}`}</text>
+					</box>
+				)}
+			</For>
 		</box>
 	)
 }

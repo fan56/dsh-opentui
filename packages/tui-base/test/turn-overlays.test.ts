@@ -376,6 +376,31 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 		expect(c.pendingAsk?.index).toBe(1)
 	})
 
+	test("D4: inline drafts are per question — commit on q2 leaves q1's draft untouched", () => {
+		const c = new TurnOverlayController()
+		c.answer([
+			{ id: "q1", prompt: "one", options: [{ label: "a" }, { label: "b" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y" }] },
+		])
+		c.setInlineText("ab")
+		c.focusOptions()
+		// Esc restores the remembered LIST row (0), not "the row before the
+		// inline input".
+		expect(c.pendingAsk?.cursors[0]).toBe(0)
+		c.switchFocus(1)
+		// The draft belongs to q1: q2's row starts empty.
+		expect(c.inlineText).toBe("")
+		expect(c.pendingAsk?.customDraft).toBeNull()
+		c.setInlineText("cd")
+		c.commitCustom()
+		// q2 committed its own text; q1's draft is still pending.
+		expect(c.pendingAsk?.customs[1]).toBe("cd")
+		expect(c.pendingAsk?.customs[0]).toBeUndefined()
+		c.switchFocus(-1)
+		expect(c.inlineText).toBe("ab")
+		expect(c.pendingAsk?.customDraft).toBe("ab")
+	})
+
 	test("P2-8: auto-advance skips a later question answered by free text", () => {
 		const c = new TurnOverlayController()
 		c.answer([

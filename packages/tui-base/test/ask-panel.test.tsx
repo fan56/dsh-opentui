@@ -90,6 +90,28 @@ const lineWith = (setup: Setup, needle: string): string | undefined =>
 		.find((line) => line.includes(needle))
 
 describe("ask panel body (spec §2-§5, §8)", () => {
+	/** D1: the surface opens with one full-width single rule, the divider
+	 * grammar `/settings` uses (panel-kit `resolvePanelChrome().divider`).
+	 * Without it the panel merged into the widgets dock's `┗━━┛` box. */
+	test("D1: a full-width top rule opens the panel", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([{ id: "q1", prompt: "pick one", options: [{ label: "a" }] }])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+
+			const lines = frame(setup).split("\n")
+			const rule = lines[0] ?? ""
+			expect(rule).toBe("─".repeat(80))
+			// The body keeps its one-column gutter under the rule.
+			expect(lines[1]?.startsWith(" pick one")).toBe(true)
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
 	test("eyebrow, wrapped title, detail, numbered rows, description line, badge", async () => {
 		const { setup, api } = await mount({ width: 80, height: 30 })
 		try {
@@ -116,6 +138,9 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 			expect(painted).toContain("› 1. postgres")
 			expect(painted).toContain("[Recommended]")
 			expect(painted).not.toContain("(Recommended)")
+			// D2: the badge is a label attribute with a fixed 2-cell gap — not
+			// a right-aligned column at the terminal edge.
+			expect(painted).toContain("postgres  [Recommended]")
 			expect(painted).toContain("2. sqlite")
 			expect(painted).toContain("managed, battle tested")
 			// The description lives on its own continuation line.
@@ -205,6 +230,9 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 			await settle(setup)
 			expect(frame(setup)).toContain("esc: back to options")
 			expect(frame(setup)).toContain("⏎ confirm")
+			// The list keeps a muted marker on its last position while the
+			// inline input owns the focus (never a marker-less list).
+			expect(frame(setup)).toContain("› 1. a")
 
 			// The resident row paints the live buffer (a real input, value-bound).
 			controller.setInlineText("free text answer")
@@ -220,7 +248,7 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 		}
 	})
 
-	test("multi-select rows use the Check glyph vocabulary; footer says space toggle", async () => {
+	test("multi-select rows use the hollow/filled box vocabulary; footer says space toggle", async () => {
 		const { setup, api } = await mount({ width: 80, height: 24 })
 		try {
 			const controller = new TurnOverlayController()
@@ -229,14 +257,18 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 			])
 			const handle = openAsk(api, controller)
 			await settle(setup)
-			expect(frame(setup)).toContain("✘ 1. lint")
+			// Unchecked = hollow box, checked = filled box. `✔`/`✘` are the
+			// confirm/fail family and must not mean "unchecked" here.
+			expect(frame(setup)).toContain("□ 1. lint")
+			expect(frame(setup)).toContain("□ 2. smoke")
+			expect(frame(setup)).not.toContain("✘")
 			expect(frame(setup)).toContain("space toggle")
 
 			controller.toggle("lint")
 			await settle(setup)
 			const painted = frame(setup)
-			expect(painted).toContain("✔ 1. lint")
-			expect(painted).toContain("✘ 2. smoke")
+			expect(painted).toContain("■ 1. lint")
+			expect(painted).toContain("□ 2. smoke")
 			handle.close()
 		} finally {
 			await setup.dispose()
@@ -371,6 +403,90 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 			expect(badgeLine).toBeDefined()
 			expect(badgeLine).not.toContain("long option label")
 			expect(painted).toContain("wraps")
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	/** D2: the badge stays adjacent to a short label; when the label plus the
+	 * 2-cell gap and the badge genuinely do not fit (still above the compact
+	 * threshold), the badge moves to its own continuation line. */
+	test("D2: badge drops to its own line only when label + badge do not fit", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([
+				{
+					id: "q1",
+					prompt: "pick",
+					options: [{ label: "a long option label that cannot share its row with the badge at this width (Recommended)" }],
+				},
+			])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+			const badgeLine = lineWith(setup, "[Recommended]")
+			expect(badgeLine).toBeDefined()
+			expect(badgeLine).not.toContain("a long option label")
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	/** D4: the resident inline buffer is per question. A draft typed on Q1 and
+	 * left uncommitted (Esc stage 1) must never paint on Q2. */
+	test("D4: an uncommitted draft never leaks across questions", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([
+				{ id: "q1", prompt: "first question", options: [{ label: "a" }] },
+				{ id: "q2", prompt: "second question", options: [{ label: "x" }] },
+			])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+
+			controller.setInlineText("draft-one")
+			await settle(setup)
+			expect(frame(setup)).toContain("draft-one")
+
+			// Esc stage 1 (list owns keys again), then → to question 2.
+			controller.focusOptions()
+			controller.switchFocus(1)
+			await settle(setup)
+			expect(controller.pendingAsk?.index).toBe(1)
+			expect(controller.inlineText).toBe("")
+			expect(frame(setup)).not.toContain("draft-one")
+			expect(frame(setup)).toContain("second question")
+
+			// Back on Q1 the draft is still its own.
+			controller.switchFocus(-1)
+			await settle(setup)
+			expect(frame(setup)).toContain("draft-one")
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	/** D5: the review page paints the SAME normalized label the option row
+	 * showed — no raw `(Recommended)` suffix. */
+	test("D5: review answers carry no raw (Recommended) suffix", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([
+				{ id: "q1", prompt: "which engine?", options: [{ label: "SQLite (Recommended)" }] },
+				{ id: "q2", prompt: "which extras?", options: [{ label: "Cache" }] },
+			])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+			expect(controller.enterReview()).toBe(true)
+			await settle(setup)
+			const painted = frame(setup)
+			expect(painted).toContain("→ SQLite")
+			expect(painted).not.toContain("(Recommended)")
 			handle.close()
 		} finally {
 			await setup.dispose()
