@@ -34,6 +34,14 @@ container's own scratch home.
   `pnpm`/`dsh` + bun + the `/src` workspace snapshot
 - `lib/common.sh` — markers, tmux driving (start/wait/quit), assert
   primitives (copied as-is from dsh-tui-pi)
+- `scenarios/11-upgrade.sh` — `dsh-opentui upgrade` against the offline
+  registry fixture: dry-run plan with zero writes, real install with
+  `--save-exact` reaching pnpm, `upgrade-overrides.json`, and provisioning
+  honouring the override (no reinstall/downgrade)
+- `fixtures/upgrade-registry/` — fixture generator (stub tarballs + packuments
+  derived from the shipped PLUGIN_SET, one patch bump) and the `127.0.0.1`
+  registry server that both the query and install paths point at (see its
+  README)
 - `scenarios/20-start.sh` — first screen: composer placeholder, powerline
   provider/model segments, ticking clock, editor echo + backspace clear
 - `scenarios/30-commands.sh` — slash commands over the 6-command core set:

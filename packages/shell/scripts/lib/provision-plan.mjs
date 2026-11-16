@@ -344,6 +344,59 @@ export function isLocalSpec(spec) {
 }
 
 // ---------------------------------------------------------------------------
+// upgrade-overrides: the profile's "do not downgrade me" list
+//
+// `dsh-opentui upgrade` installs versions newer than the shipped pins and
+// records them in `$DSH_HOME/profiles/opentui/upgrade-overrides.json`, because
+// provisioning runs on EVERY start and would otherwise pull the profile back
+// to the pins. The file is a side manifest, not a relaxation of the pins:
+//
+//   {
+//     "version": 1,
+//     "updatedAt": "<iso>",
+//     "packages": {
+//       "@aiwayds/dsh-cron": { "version": "0.7.2", "shippedPin": "0.7.0", "updatedAt": "<iso>" }
+//     }
+//   }
+//
+// An override raises the effective pin ONLY when it is strictly newer than the
+// shipped pin: once a release raises the pin past the override, the override
+// stops applying by itself and the shipped pin wins again — a stale override
+// can never downgrade a profile.
+// ---------------------------------------------------------------------------
+
+/** The versions a shipped pin may be raised to by an override. Lookup is by
+ *  package name, so an entry for a package this launcher does not manage can
+ *  never take effect (PLUGIN_SET is the allowlist). */
+const OVERRIDEABLE_PLUGINS = new Set(PLUGIN_SET.map((plugin) => plugin.name))
+
+/**
+ * The version a managed plugin must be installed at: the shipped pin, or the
+ * override version when the profile carries a VALID override that is strictly
+ * newer than the pin.
+ *
+ * An override is ignored (the shipped pin is returned) when any of these holds:
+ *   - `name` is not in PLUGIN_SET (unknown keys are silently ignored)
+ *   - the entry is not an object, or its `version` is not a semver string
+ *   - the override version equals or precedes the shipped pin
+ *
+ * @param {{name: string, shippedPin: string, overrides?: Record<string, {version?: string}>}} input
+ * @returns {string} the effective pin
+ */
+export function resolveEffectivePin({ name, shippedPin, overrides = {} }) {
+  if (!OVERRIDEABLE_PLUGINS.has(name)) return shippedPin
+  if (typeof overrides !== 'object' || overrides === null || Array.isArray(overrides)) return shippedPin
+  const entry = overrides[name]
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return shippedPin
+  const parsed = typeof entry.version === 'string' ? parseVersion(entry.version) : null
+  if (parsed === null) return shippedPin
+  // Canonical form so an install spec never carries a `v` prefix or build
+  // metadata (`pkg@v1.2.3` is not a version pnpm resolves reliably).
+  const candidate = `${parsed.major}.${parsed.minor}.${parsed.patch}${parsed.pre.length ? `-${parsed.pre.join('.')}` : ''}`
+  return compareVersions(candidate, shippedPin) > 0 ? candidate : shippedPin
+}
+
+// ---------------------------------------------------------------------------
 // Plan
 // ---------------------------------------------------------------------------
 
@@ -354,11 +407,14 @@ export function isLocalSpec(spec) {
  * Idempotency rule (all three must hold for a plugin to count as satisfied):
  *   1. the package is a `dependencies` entry in the profile manifest
  *   2. `node_modules/<pkg>/package.json` exists (its version is passed in)
- *   3. that version satisfies the pinned version
+ *   3. that version satisfies the effective pin (see resolveEffectivePin)
  * A dep pinned with a local spec (link/file/workspace) skips 2/3: the local
  * pin wins and is never replaced.
  *
- * @param {{tier: string, dependencies?: Record<string,string>, bundles?: string[], installedVersions?: Record<string,string>}} input
+ * `overrides` is optional and empty by default, so a profile without the
+ * upgrade-overrides manifest plans exactly as it did before overrides existed.
+ *
+ * @param {{tier: string, dependencies?: Record<string,string>, bundles?: string[], installedVersions?: Record<string,string>, overrides?: Record<string,{version?: string}>}} input
  * @returns {{
  *   total: number,
  *   satisfied: number,
@@ -367,18 +423,19 @@ export function isLocalSpec(spec) {
  *   managedOrder: string[],
  * }}
  */
-export function planPluginInstall({ tier, dependencies = {}, bundles = [], installedVersions = {} }) {
+export function planPluginInstall({ tier, dependencies = {}, bundles = [], installedVersions = {}, overrides = {} }) {
   const plugins = selectPlugins(tier)
   const install = []
   const missingBundles = []
   const managedOrder = plugins.map((plugin) => plugin.name)
 
   for (const plugin of plugins) {
+    const effectivePin = resolveEffectivePin({ name: plugin.name, shippedPin: plugin.version, overrides })
     const depSpec = dependencies[plugin.name]
     const installed = installedVersions[plugin.name]
-    const depOk = depSpec !== undefined && (isLocalSpec(depSpec) || satisfiesVersion(installed, plugin.version))
+    const depOk = depSpec !== undefined && (isLocalSpec(depSpec) || satisfiesVersion(installed, effectivePin))
     if (!depOk) {
-      install.push({ name: plugin.name, spec: `${plugin.name}@${plugin.version}`, reason: plugin.reason })
+      install.push({ name: plugin.name, spec: `${plugin.name}@${effectivePin}`, reason: plugin.reason })
       continue
     }
     if (!bundles.includes(plugin.name)) missingBundles.push(plugin.name)
