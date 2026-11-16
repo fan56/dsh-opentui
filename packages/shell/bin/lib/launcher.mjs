@@ -405,7 +405,7 @@ export function formatUpgradeUsage() {
 		'Exit codes:',
 		'  0  already up to date, nothing to do, --dry-run, or --help',
 		'  1  hard failure (e.g. self-upgrade did not verify); profile untouched/rolled back',
-		'  2  usage error',
+		'  2  usage error, or another upgrade is already running (profile lock held)',
 		'  3  partial: a package did not reach the target version, or overrides could not be recorded',
 	].join('\n')
 }

@@ -5,7 +5,11 @@
 import { describe, expect, test } from 'bun:test'
 import { compareVersions } from '../scripts/lib/provision-plan.mjs'
 import {
+  NPMRC_DSH_HOME,
+  NPMRC_HOME,
+  NPMRC_PROFILE,
   OFFICIAL_REGISTRY,
+  buildSelfInstallArgs,
   buildUpgradePlan,
   buildViewArgs,
   isOfficialRegistry,
@@ -25,48 +29,83 @@ describe('resolveRegistry', () => {
   test('the environment variable wins over npmrc and the default', () => {
     const resolved = resolveRegistry({
       env: { DSH_UPGRADE_REGISTRY: 'https://explicit.example/' },
-      npmrcTexts: ['registry=https://npmrc.example/'],
+      npmrcFiles: [{ path: NPMRC_HOME, text: 'registry=https://npmrc.example/' }],
     })
-    expect(resolved).toEqual({ registry: 'https://explicit.example', source: 'env' })
+    expect(resolved).toEqual({
+      registry: 'https://explicit.example',
+      source: 'env',
+      sourcePath: 'env',
+    })
   })
 
   test('npmrc is used when the environment variable is absent', () => {
     const resolved = resolveRegistry({
       env: {},
-      npmrcTexts: ['registry=https://npmrc.example/'],
+      npmrcFiles: [{ path: NPMRC_HOME, text: 'registry=https://npmrc.example/' }],
     })
-    expect(resolved).toEqual({ registry: 'https://npmrc.example', source: 'npmrc' })
+    expect(resolved).toEqual({
+      registry: 'https://npmrc.example',
+      source: 'npmrc',
+      sourcePath: NPMRC_HOME,
+    })
   })
 
   test('empty configuration falls back to the official registry', () => {
-    expect(resolveRegistry({ env: {}, npmrcTexts: [] })).toEqual({
+    expect(resolveRegistry({ env: {}, npmrcFiles: [] })).toEqual({
       registry: OFFICIAL_REGISTRY,
       source: 'default',
+      sourcePath: 'default',
     })
-    expect(resolveRegistry()).toEqual({ registry: OFFICIAL_REGISTRY, source: 'default' })
+    expect(resolveRegistry()).toEqual({
+      registry: OFFICIAL_REGISTRY,
+      source: 'default',
+      sourcePath: 'default',
+    })
   })
 
   test('trailing slashes are stripped from every source', () => {
     expect(resolveRegistry({ env: { DSH_UPGRADE_REGISTRY: 'https://a.example///' } }).registry).toBe(
       'https://a.example',
     )
-    expect(resolveRegistry({ npmrcTexts: ['registry=https://b.example//'] }).registry).toBe(
-      'https://b.example',
-    )
+    expect(
+      resolveRegistry({ npmrcFiles: [{ path: NPMRC_HOME, text: 'registry=https://b.example//' }] })
+        .registry,
+    ).toBe('https://b.example')
   })
 
-  test('a later npmrc text overrides an earlier one', () => {
+  test('a later npmrc file overrides an earlier one and names itself the source', () => {
     const resolved = resolveRegistry({
-      npmrcTexts: ['registry=https://first.example/', 'registry="https://second.example/"'],
+      npmrcFiles: [
+        { path: NPMRC_HOME, text: 'registry=https://first.example/' },
+        { path: NPMRC_PROFILE, text: 'registry="https://second.example/"' },
+      ],
     })
-    expect(resolved).toEqual({ registry: 'https://second.example', source: 'npmrc' })
+    expect(resolved).toEqual({
+      registry: 'https://second.example',
+      source: 'npmrc',
+      sourcePath: NPMRC_PROFILE,
+    })
   })
 
   test('a trailing # comment and quotes do not leak into the value', () => {
     const resolved = resolveRegistry({
-      npmrcTexts: ['registry="https://npmrc.example/"  # corporate mirror\n'],
+      npmrcFiles: [{ path: NPMRC_DSH_HOME, text: 'registry="https://npmrc.example/"  # corporate mirror\n' }],
     })
-    expect(resolved).toEqual({ registry: 'https://npmrc.example', source: 'npmrc' })
+    expect(resolved).toEqual({
+      registry: 'https://npmrc.example',
+      source: 'npmrc',
+      sourcePath: NPMRC_DSH_HOME,
+    })
+  })
+
+  test('a file last written without a registry value does not become the source', () => {
+    const resolved = resolveRegistry({
+      npmrcFiles: [
+        { path: NPMRC_HOME, text: 'registry=https://mirror.example/' },
+        { path: NPMRC_PROFILE, text: 'strict-peer-dependencies=true\n' },
+      ],
+    })
+    expect(resolved.sourcePath).toBe(NPMRC_HOME)
   })
 
   test('only registry.npmjs.org counts as the official registry', () => {
@@ -76,6 +115,32 @@ describe('resolveRegistry', () => {
     expect(isOfficialRegistry('https://registry.npmmirror.com')).toBe(false)
     expect(isOfficialRegistry('https://registry.npmjs.org.example.com')).toBe(false)
   })
+})
+
+describe('buildSelfInstallArgs', () => {
+  // Only ~/.npmrc is a file npm itself reads. Every other source has to reach
+  // the install on argv, or the query and the install resolve different hosts.
+  const cases: Array<[string, string, boolean]> = [
+    ['env', 'env', true],
+    ['~/.npmrc', NPMRC_HOME, false],
+    ['$DSH_HOME/.npmrc', NPMRC_DSH_HOME, true],
+    ['<profile>/.npmrc', NPMRC_PROFILE, true],
+    ['default', 'default', true],
+  ]
+
+  for (const [label, sourcePath, forwarded] of cases) {
+    test(`a registry from ${label} ${forwarded ? 'reaches' : 'is left off'} the install argv`, () => {
+      const args = buildSelfInstallArgs({
+        pkg: '@aiwayds/dsh-opentui',
+        target: '0.17.4',
+        registry: 'https://mirror.example',
+        sourcePath,
+      })
+      expect(args.slice(0, 3)).toEqual(['i', '-g', '@aiwayds/dsh-opentui@0.17.4'])
+      expect(args.includes('--registry')).toBe(forwarded)
+      if (forwarded) expect(args[args.indexOf('--registry') + 1]).toBe('https://mirror.example')
+    })
+  }
 })
 
 describe('buildViewArgs', () => {
@@ -240,6 +305,8 @@ describe('parseOverrides', () => {
         '@aiwayds/dsh-vault': '0.8.2',
         '@aiwayds/dsh-cron': { version: '0.7.1', shippedPin: '0.7.0' },
       },
+      // Nothing uninterpretable in this document.
+      raw: {},
     })
   })
 
@@ -256,7 +323,7 @@ describe('parseOverrides', () => {
     expect(parseOverrides(JSON.stringify({ version: 1 }))).toBeNull()
   })
 
-  test('a malformed entry is dropped and the rest survive', () => {
+  test('a malformed entry is kept in `raw` and the rest are parsed', () => {
     const parsed = parseOverrides(
       JSON.stringify({
         version: 1,
@@ -274,6 +341,22 @@ describe('parseOverrides', () => {
         '@aiwayds/keep': '0.7.2',
         '@aiwayds/also-keep': { version: '0.7.3' },
       },
+      // Not interpreted, but not lost either: a rewrite must not delete them.
+      raw: {
+        '@aiwayds/broken': { nope: true },
+        '@aiwayds/empty': '',
+      },
+    })
+  })
+
+  test('a malformed entry still cannot change the effective pin', () => {
+    const parsed = parseOverrides(
+      JSON.stringify({ version: 1, packages: { [MANAGED]: { nope: true } } }),
+    )
+    expect(pickEffectivePin({ name: MANAGED, shippedPin: '0.7.0', overrides: parsed })).toEqual({
+      pin: '0.7.0',
+      overridden: false,
+      ignoredReason: 'invalid',
     })
   })
 })
@@ -298,6 +381,35 @@ describe('serializeOverrides', () => {
     expect(serializeOverrides({ version: 1, packages: {} })).toBe(
       `${JSON.stringify({ version: 1, packages: {} }, null, 2)}\n`,
     )
+  })
+
+  test('entries the parser could not interpret are written back verbatim', () => {
+    const original = serializeOverrides({
+      version: 1,
+      packages: {
+        '@aiwayds/keep': '0.7.2',
+        '@aiwayds/broken': { note: 'hand-written' },
+        '@aiwayds/empty': '',
+      },
+    })
+    expect(serializeOverrides(parseOverrides(original))).toBe(original)
+  })
+
+  test('`raw` is merged into packages and never emitted as a key', () => {
+    const text = serializeOverrides({
+      version: 1,
+      updatedAt: '2026-11-16T00:00:00.000Z',
+      packages: { '@aiwayds/keep': '0.7.2' },
+      raw: { '@aiwayds/broken': 42 },
+    })
+    const doc = JSON.parse(text) as Record<string, unknown>
+    expect(doc.raw).toBeUndefined()
+    expect(doc.packages).toEqual({ '@aiwayds/broken': 42, '@aiwayds/keep': '0.7.2' })
+    // An interpreted entry wins over a raw one with the same name.
+    const shadowed = JSON.parse(
+      serializeOverrides({ packages: { '@aiwayds/x': '1.0.0' }, raw: { '@aiwayds/x': 'nope' } }),
+    ) as { packages: Record<string, unknown> }
+    expect(shadowed.packages).toEqual({ '@aiwayds/x': '1.0.0' })
   })
 })
 

@@ -35,7 +35,8 @@ const installedPlugin = (version: string) =>
   JSON.stringify({ name: PLUGIN, version })
 
 /** In-memory fs: missing paths behave like ENOENT, and every mutation is
- *  recorded so a test can assert "the profile was not touched". */
+ *  recorded so a test can assert "the profile was not touched". The fd trio
+ *  backs the exclusive-create profile lock (.upgrade.lock). */
 function fakeFs(files: Record<string, string>) {
   const state = {
     files: new Map(Object.entries(files)),
@@ -43,7 +44,10 @@ function fakeFs(files: Record<string, string>) {
     removed: [] as string[],
     made: [] as string[],
     copied: [] as Array<[string, string]>,
+    opened: [] as Array<{ path: string; flags: string }>,
   }
+  const fds = new Map<number, string>()
+  let nextFd = 1
   const fs = {
     readFileSync: (path: string) => {
       const text = state.files.get(path)
@@ -73,6 +77,25 @@ function fakeFs(files: Record<string, string>) {
     },
     copyFileSync: (from: string, to: string) => {
       state.copied.push([from, to])
+    },
+    openSync: (path: string, flags: string) => {
+      state.opened.push({ path, flags })
+      if (flags === 'wx' && state.files.has(path)) {
+        throw Object.assign(new Error(`EEXIST: ${path}`), { code: 'EEXIST' })
+      }
+      const fd = nextFd
+      nextFd += 1
+      fds.set(fd, path)
+      return fd
+    },
+    writeSync: (fd: number, data: string) => {
+      const path = fds.get(fd)
+      if (path === undefined) throw new Error(`EBADF: ${fd}`)
+      state.files.set(path, String(data))
+      return String(data).length
+    },
+    closeSync: (fd: number) => {
+      fds.delete(fd)
     },
   }
   return { fs, state }
@@ -247,6 +270,9 @@ describe('runUpgrade — self upgrade', () => {
     expect(code).toBe(0)
     const installs = installed(calls)
     expect(installs).toHaveLength(1)
+    // No npmrc configured one: the default is forwarded explicitly, because
+    // npm could otherwise resolve a registry this command never saw.
+    expect(output.text()).toContain(`registry ${OFFICIAL_REGISTRY} (source: default)`)
     expect(installs[0].args).toEqual([
       'i',
       '-g',
@@ -257,6 +283,164 @@ describe('runUpgrade — self upgrade', () => {
     expect(installs[0].timeout).toBe(10 * 60 * 1000)
     // The plan row was populated by the registry query.
     expect(output.text()).toContain('upgraded @aiwayds/dsh-opentui 0.17.3 -> 0.17.4')
+  })
+
+  test('DSH_UPGRADE_REGISTRY is forwarded to the install as --registry', () => {
+    const { fs, state } = fakeFs({
+      [SELF_MANIFEST]: selfManifest('0.17.3'),
+      [MANIFEST]: profileManifest(),
+    })
+    const calls: RunCall[] = []
+    const base = respond({ selfTarget: '0.17.4' })
+    const response = (cmd: string, args: string[]) => {
+      if (cmd === 'npm' && args[0] === 'i' && args[1] === '-g') {
+        state.files.set(GLOBAL_MANIFEST, selfManifest('0.17.4'))
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      return base(cmd, args)
+    }
+    const output = captureOutput()
+    let code
+    try {
+      code = runUpgrade(
+        { yes: true, noPlugins: true },
+        {
+          pkgRoot: ROOT,
+          env: { ...ENV, DSH_UPGRADE_REGISTRY: 'https://mirror.example/' },
+          fs,
+          run: fakeRun(response, calls),
+          selfPath: SELF_PATH_GLOBAL,
+        },
+      )
+    } finally {
+      output.restore()
+    }
+
+    expect(code).toBe(0)
+    const boot = installed(calls)
+    expect(boot).toHaveLength(1)
+    // Explicit operator override, and only then: it must reach the install.
+    expect(boot[0].args).toEqual([
+      'i',
+      '-g',
+      `${SELF_NAME}@0.17.4`,
+      '--registry',
+      'https://mirror.example',
+    ])
+  })
+
+  test('a registry read from ~/.npmrc is not forced onto the install argv', () => {
+    const { fs, state } = fakeFs({
+      [SELF_MANIFEST]: selfManifest('0.17.3'),
+      [MANIFEST]: profileManifest(),
+      [`${HOME}/.npmrc`]: 'registry=https://mirror.example/\n',
+    })
+    const calls: RunCall[] = []
+    const base = respond({ selfTarget: '0.17.4' })
+    const response = (cmd: string, args: string[]) => {
+      if (cmd === 'npm' && args[0] === 'i' && args[1] === '-g') {
+        state.files.set(GLOBAL_MANIFEST, selfManifest('0.17.4'))
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      return base(cmd, args)
+    }
+    const output = captureOutput()
+    let code
+    try {
+      code = runUpgrade(
+        { yes: true, noPlugins: true },
+        {
+          pkgRoot: ROOT,
+          env: ENV,
+          fs,
+          run: fakeRun(response, calls),
+          selfPath: SELF_PATH_GLOBAL,
+        },
+      )
+    } finally {
+      output.restore()
+    }
+
+    expect(code).toBe(0)
+    // The query used the resolved mirror; the install leaves the choice to npm
+    // so per-scope / per-package npmrc config keeps working.
+    expect(output.text()).toContain('registry https://mirror.example (source: npmrc)')
+    const boot = installed(calls)
+    expect(boot).toHaveLength(1)
+    expect(boot[0].args).toEqual(['i', '-g', `${SELF_NAME}@0.17.4`])
+  })
+
+  /** A self upgrade whose only registry configuration is one npmrc file. */
+  const selfUpgradeWithNpmrc = (npmrcPath: string, text: string) => {
+    const { fs, state } = fakeFs({
+      [SELF_MANIFEST]: selfManifest('0.17.3'),
+      [MANIFEST]: profileManifest(),
+      [npmrcPath]: text,
+    })
+    const calls: RunCall[] = []
+    const base = respond({ selfTarget: '0.17.4' })
+    const response = (cmd: string, args: string[]) => {
+      if (cmd === 'npm' && args[0] === 'i' && args[1] === '-g') {
+        state.files.set(GLOBAL_MANIFEST, selfManifest('0.17.4'))
+        return { status: 0, stdout: '', stderr: '' }
+      }
+      return base(cmd, args)
+    }
+    const output = captureOutput()
+    let code
+    try {
+      code = runUpgrade(
+        { yes: true, noPlugins: true },
+        {
+          pkgRoot: ROOT,
+          env: ENV,
+          fs,
+          run: fakeRun(response, calls),
+          selfPath: SELF_PATH_GLOBAL,
+        },
+      )
+    } finally {
+      output.restore()
+    }
+    return { code, boot: installed(calls), text: output.text() }
+  }
+
+  // npm never reads these two files, so the query would hit the mirror while
+  // the install silently went to the default registry unless argv says where.
+  test('a registry read from $DSH_HOME/.npmrc is forwarded to the install', () => {
+    const { code, boot, text } = selfUpgradeWithNpmrc(
+      `${DSH_HOME}/.npmrc`,
+      'registry=https://mirror.example/\n',
+    )
+
+    expect(code).toBe(0)
+    expect(text).toContain('registry https://mirror.example (source: npmrc)')
+    expect(boot).toHaveLength(1)
+    expect(boot[0].args).toEqual([
+      'i',
+      '-g',
+      `${SELF_NAME}@0.17.4`,
+      '--registry',
+      'https://mirror.example',
+    ])
+  })
+
+  test('a registry read from <profile>/.npmrc is forwarded to the install', () => {
+    const { code, boot, text } = selfUpgradeWithNpmrc(
+      `${PROFILE_DIR}/.npmrc`,
+      'registry=https://mirror.example/\n',
+    )
+
+    expect(code).toBe(0)
+    expect(text).toContain('registry https://mirror.example (source: npmrc)')
+    expect(boot).toHaveLength(1)
+    expect(boot[0].args).toEqual([
+      'i',
+      '-g',
+      `${SELF_NAME}@0.17.4`,
+      '--registry',
+      'https://mirror.example',
+    ])
   })
 
   test('a failed npm install aborts before the profile is touched', () => {

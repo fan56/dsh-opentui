@@ -13,17 +13,19 @@
 //      install form is skipped with a warning — installing into a different
 //      prefix would create a shadow copy that `dsh-opentui` never resolves.
 //      A hard failure here aborts BEFORE anything touches the profile.
-//   4. Plugins: `applyPluginUpgrades(ctx)` — back up the profile, run ONE
-//      batched `dsh plugin add`, verify each package on disk, and record the
-//      landed versions in upgrade-overrides.json. An install failure restores
-//      the backup and re-adds the pre-upgrade specs; a version that did not
-//      land is reported but never rolls back a successful install.
+//   4. Plugins: `applyPluginUpgrades(ctx)` — take the profile lock, back up
+//      the profile, run ONE batched `dsh plugin add`, verify each package on
+//      disk, and record the landed versions in upgrade-overrides.json. An
+//      install failure restores the backup and re-adds the pre-upgrade specs;
+//      a version that did not land is reported but never rolls back a
+//      successful install.
 //
 // Exit codes: 0 done/nothing to do/dry-run/help; 1 hard failure OR any package
 // whose target version could not be determined (a query failure means the
 // target is unknown, which is not "up to date"; nothing is written in that
-// case); 2 usage refusal; 3 partially applied (some package is not at its
-// planned version, or the override file could not be written).
+// case); 2 usage refusal, or another upgrade already holds the profile lock;
+// 3 partially applied (some package is not at its planned version, or the
+// override file could not be written).
 //
 // Dependency injection: every child process goes through `run(cmd, args, {
 // timeout })` and every file operation through `fs`, both overridable from the
@@ -31,16 +33,20 @@
 // and abort paths without npm, a TTY, or a real profile.
 import { execFileSync } from 'node:child_process'
 import {
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readSync,
   realpathSync,
   renameSync,
   rmdirSync,
   rmSync,
+  statSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
@@ -54,6 +60,10 @@ import {
   resolveEffectivePin,
 } from './lib/provision-plan.mjs'
 import {
+  NPMRC_DSH_HOME,
+  NPMRC_HOME,
+  NPMRC_PROFILE,
+  buildSelfInstallArgs,
   buildUpgradePlan,
   buildViewArgs,
   isOfficialRegistry,
@@ -73,6 +83,19 @@ const PREFIX_TIMEOUT_MS = 10 * 1000
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000
 const OVERRIDE_FILE = 'upgrade-overrides.json'
 const BACKUP_DIR_NAME = '.upgrade-backup'
+// Sits next to .provision-state.json in the profile dir: one lock per profile,
+// held for the whole write phase (backup -> install -> override write).
+const LOCK_FILE = '.upgrade.lock'
+const LOCK_STALE_MS = 30 * 60 * 1000
+// A lock file exists before its payload does: `openSync(..., 'wx')` wins the
+// create and `writeSync` fills `{pid, startedAt}` a moment later. An unreadable
+// payload is therefore evidence of a LIVE writer, not of a dead one, until the
+// file itself is older than this window.
+const LOCK_WRITE_GRACE_MS = 10 * 1000
+// The contention line is printed verbatim (no `dsh-opentui upgrade: ` prefix):
+// the user's question is "what is running", and the answer names the holder.
+const LOCK_PREFIX = 'upgrade: '
+const INSTALL_STDERR_PREFIX = 'dsh plugin add: '
 // pnpm-workspace.yaml belongs here because users hand-write allowBuilds in it:
 // a host rollback that restored only the manifest and the lock would leave the
 // rewritten workspace file in place.
@@ -158,6 +181,13 @@ export const defaultFs = {
   rmdirSync: (path) => rmdirSync(path),
   copyFileSync: (from, to) => copyFileSync(from, to),
   renameSync: (from, to) => renameSync(from, to),
+  // The lock is claimed with an exclusive create, so it needs the fd API:
+  // `openSync(path, 'wx')` is what makes "exactly one winner" atomic.
+  openSync: (path, flags) => openSync(path, flags),
+  writeSync: (fd, data) => writeSync(fd, data),
+  closeSync: (fd) => closeSync(fd),
+  // Only the lock's mtime is ever stat'ed: it dates the create->write window.
+  statSync: (path) => statSync(path),
 }
 
 /** A synchronous one-line read from stdin (the confirmation prompt). */
@@ -217,19 +247,25 @@ function readText(fs, path) {
 }
 
 /**
- * npmrc texts, least specific first (resolveRegistry lets the LAST text win).
- * Only files that exist are passed, so a missing file cannot shadow a present
- * one: profile/.npmrc > $DSH_HOME/.npmrc > ~/.npmrc.
+ * The .npmrc files that may configure the registry, least specific first
+ * (resolveRegistry lets the LAST file win). Only files that exist are passed,
+ * so a missing file cannot shadow a present one: profile/.npmrc >
+ * $DSH_HOME/.npmrc > ~/.npmrc. Each entry carries the identity npm compares
+ * against, because npm itself reads only the first one.
  */
-function collectNpmrcTexts({ fs, dshHome, profileDir, env }) {
+function collectNpmrcFiles({ fs, dshHome, profileDir, env }) {
   const home = env.HOME || homedir()
-  const paths = [join(home, '.npmrc'), join(dshHome, '.npmrc'), join(profileDir, '.npmrc')]
-  const texts = []
-  for (const path of paths) {
-    const text = readText(fs, path)
-    if (text !== undefined) texts.push(text)
+  const slots = [
+    [NPMRC_HOME, join(home, '.npmrc')],
+    [NPMRC_DSH_HOME, join(dshHome, '.npmrc')],
+    [NPMRC_PROFILE, join(profileDir, '.npmrc')],
+  ]
+  const files = []
+  for (const [path, file] of slots) {
+    const text = readText(fs, file)
+    if (text !== undefined) files.push({ path, text })
   }
-  return texts
+  return files
 }
 
 /** The version on disk for a profile dependency, when readable. */
@@ -306,6 +342,110 @@ function backupStamp(now = new Date()) {
 }
 
 // ---------------------------------------------------------------------------
+// Concurrency: <profileDir>/.upgrade.lock
+//
+// Two upgrades racing over one profile both back up, both install, and both
+// rewrite package.json / upgrade-overrides.json — the loser's backup then
+// describes a profile that no longer exists. The lock therefore covers the
+// write phase only (backup -> install -> override write): a --dry-run, a
+// no-op run, and the read-only plan never create the file.
+// ---------------------------------------------------------------------------
+
+/** The holder recorded in the lock file, or nulls when it cannot be read. */
+function readLockHolder(fs, lockPath) {
+  const text = readText(fs, lockPath)
+  let doc
+  try {
+    doc = JSON.parse(String(text ?? ''))
+  } catch {
+    return { pid: null, startedAt: null }
+  }
+  if (!isPlainObject(doc)) return { pid: null, startedAt: null }
+  return {
+    pid: Number.isInteger(doc.pid) ? doc.pid : null,
+    startedAt: typeof doc.startedAt === 'string' ? doc.startedAt : null,
+  }
+}
+
+/**
+ * Is the stamp older than LOCK_STALE_MS? Only a readable `startedAt` can answer
+ * that; an unreadable payload carries no age, so the caller rules out the
+ * create->write window by mtime first (see lockIsInWriteWindow).
+ */
+function isStaleLock(holder, now) {
+  if (holder?.startedAt === null || holder?.startedAt === undefined) return false
+  const started = Date.parse(holder.startedAt)
+  if (Number.isNaN(started)) return true
+  return now - started > LOCK_STALE_MS
+}
+
+/**
+ * Is the lock file young enough to be a claim mid-create? Ages the create and
+ * the payload write together, so a writer that was descheduled between them is
+ * still respected: past the grace window the creator is gone and the file is
+ * garbage nothing else would ever clear.
+ *
+ * Returns false when the file cannot be stat'ed (it vanished or the fs has no
+ * stat): there is nothing left to protect, so the caller reclaims.
+ */
+function lockIsInWriteWindow(fs, lockPath, now) {
+  let mtimeMs
+  try {
+    mtimeMs = Number(fs.statSync(lockPath)?.mtimeMs)
+  } catch {
+    return false
+  }
+  if (!Number.isFinite(mtimeMs)) return false
+  return now - mtimeMs < LOCK_WRITE_GRACE_MS
+}
+
+/**
+ * Claim the lock. `openSync(path, 'wx')` is the atomic part: the kernel lets
+ * exactly one process create the file, so a claim needs no second check.
+ *
+ * A failed claim reads the holder and takes the lock over only when it is
+ * provably abandoned: a readable stamp older than LOCK_STALE_MS, or a
+ * payload-less file older than LOCK_WRITE_GRACE_MS (a fresh payload-less file
+ * belongs to a live process still inside the create->write window). One retry,
+ * then the caller reports the contention. Every operation goes through the
+ * injected `fs`, so the whole path is unit-testable.
+ *
+ * @param {{ fs: typeof defaultFs, lockPath: string, now?: number }} input
+ * @returns {{ ok: true, release: () => void } |
+ *   { ok: false, holder: { pid: number|null, startedAt: string|null } }}
+ */
+function acquireUpgradeLock({ fs, lockPath, now = Date.now() }) {
+  const payload = JSON.stringify({ pid: process.pid, startedAt: new Date(now).toISOString() })
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx')
+      try {
+        fs.writeSync(fd, payload)
+      } finally {
+        fs.closeSync(fd)
+      }
+      return { ok: true, release: () => fs.rmSync(lockPath, { force: true }) }
+    } catch (err) {
+      // Anything but "already exists" (an unwritable profile dir, say) is a
+      // real failure of the run, not contention: let it propagate.
+      if (err?.code !== 'EEXIST') throw err
+      const holder = readLockHolder(fs, lockPath)
+      // An unreadable payload has no age of its own: the file's mtime is the
+      // only evidence of who won the create. Inside the grace window another
+      // process may still be writing its payload, so the lock is held; only
+      // past it is a payload-less file provably garbage.
+      if (holder.startedAt === null) {
+        if (lockIsInWriteWindow(fs, lockPath, now)) return { ok: false, holder }
+      } else if (!isStaleLock(holder, now)) {
+        return { ok: false, holder }
+      }
+      fs.rmSync(lockPath, { force: true })
+    }
+  }
+  return { ok: false, holder: readLockHolder(fs, lockPath) }
+}
+
+// ---------------------------------------------------------------------------
 // Phase: self upgrade
 // ---------------------------------------------------------------------------
 
@@ -313,12 +453,21 @@ function backupStamp(now = new Date()) {
  * Bring the launcher itself up to `target`, but only when the running copy is
  * the one the npm global prefix owns.
  *
+ * `registryPath` decides whether `--registry` is passed on the install: only a
+ * registry npm would resolve on its own (i.e. from `~/.npmrc`) is left off
+ * argv. A registry from the environment, `$DSH_HOME/.npmrc`, `<profile>/.npmrc`
+ * or the default is invisible to npm, so it is forwarded explicitly — the
+ * query and the install must reach the same host. See buildSelfInstallArgs.
+ *
+ * @param {{ self: {name: string, version: string}|null, target: string|null,
+ *   registry: string, registryPath: string,
+ *   run: Function, fs: typeof defaultFs, selfPath: string }} input
  * @returns {{ kind: 'skipped', form: string } |
  *   { kind: 'latest', version: string } |
  *   { kind: 'upgraded', from: string, to: string } |
  *   { kind: 'failed', exitCode: 1 }}
  */
-function upgradeSelf({ self, target, registry, run, fs, selfPath }) {
+function upgradeSelf({ self, target, registry, registryPath, run, fs, selfPath }) {
   if (!self || typeof target !== 'string' || target === '') {
     say('self: skipped (install form: unknown)')
     warn(
@@ -354,7 +503,13 @@ function upgradeSelf({ self, target, registry, run, fs, selfPath }) {
     return { kind: 'latest', version: self.version }
   }
 
-  const install = run('npm', ['i', '-g', `${self.name}@${target}`, '--registry', registry], {
+  const installArgs = buildSelfInstallArgs({
+    pkg: self.name,
+    target,
+    registry,
+    sourcePath: registryPath,
+  })
+  const install = run('npm', installArgs, {
     timeout: INSTALL_TIMEOUT_MS,
   })
   if (!install || install.status !== 0) {
@@ -470,13 +625,17 @@ function originalSpecs({ fs, copies, manifestPath }) {
  * One batched install. A host that rejects `--save-exact` gets exactly one
  * retry without it; every other failure is final (no per-package retry).
  *
+ * On success the captured stderr is kept instead of thrown away: pnpm writes
+ * progress and warnings there, and a batch that succeeded slowly or with
+ * warnings otherwise leaves no trace at all. The caller prints a short tail.
+ *
  * @returns {{ status: number, args: string[], stderr: string }}
  */
 function installPlugins({ run, env, specs, warn }) {
   let args = pluginAddArgs(specs)
   let result = run('dsh', args, { timeout: INSTALL_TIMEOUT_MS, env })
   let status = runStatus(result)
-  if (status === 0) return { status, args, stderr: '' }
+  if (status === 0) return { status, args, stderr: String(result?.stderr ?? '') }
 
   const stderr = String(result?.stderr ?? '')
   if (SAVE_EXACT_REJECTED.test(stderr)) {
@@ -484,7 +643,7 @@ function installPlugins({ run, env, specs, warn }) {
     args = pluginAddArgs(specs, { saveExact: false })
     result = run('dsh', args, { timeout: INSTALL_TIMEOUT_MS, env })
     status = runStatus(result)
-    if (status === 0) return { status, args, stderr: '' }
+    if (status === 0) return { status, args, stderr: String(result?.stderr ?? '') }
   }
   return { status, args, stderr }
 }
@@ -569,14 +728,51 @@ function convergeProfile({ fs, run, env, copies, manifestPath, log, warn }) {
 }
 
 /**
- * Phase 4: install every planned plugin upgrade, verify it landed, and record
- * the landed versions in `upgrade-overrides.json`.
+ * Phase 4: claim the profile lock, then install every planned plugin upgrade,
+ * verify it landed, and record the landed versions in `upgrade-overrides.json`.
+ *
+ * The lock is held only around the write phase, and released in `finally` so a
+ * throw from the backup or the override write still leaves no lock behind. A
+ * run that has nothing to install never touches the file, and `--dry-run`
+ * returns long before this function is reached.
  *
  * Outcomes (they map 1:1 to the process exit code, see exitCodeAfterPlugins):
+ *   - another upgrade holds the lock             -> nothing written, code 2
  *   - all landed, overrides written or unnecessary -> backup deleted, code 0
  *   - install failed                               -> rollback, backup kept, code 1
  *   - install ok, some version did not land        -> no rollback, code 3
  *   - override write failed                        -> code 3
+ *
+ * @param {Parameters<typeof installPluginUpgrades>[0]} ctx
+ * @returns {ReturnType<typeof installPluginUpgrades> & { lockBusy?: boolean }}
+ */
+function applyPluginUpgrades(ctx) {
+  const { profileDir, pluginRows, fs, log } = ctx
+
+  if (pluginRows.length === 0) {
+    log('plugins: already up to date')
+    return { landed: [], mismatched: [], failed: [] }
+  }
+
+  const lock = acquireUpgradeLock({ fs, lockPath: join(profileDir, LOCK_FILE) })
+  if (!lock.ok) {
+    const pid = lock.holder.pid ?? 'unknown'
+    const startedAt = lock.holder.startedAt ?? 'unknown'
+    console.error(`${LOCK_PREFIX}another upgrade is running (pid ${pid}, started ${startedAt})`)
+    log('nothing changed')
+    return { landed: [], mismatched: [], failed: [], lockBusy: true }
+  }
+
+  try {
+    return installPluginUpgrades(ctx)
+  } finally {
+    lock.release()
+  }
+}
+
+/**
+ * The write phase proper: backup, one batched install, verify, override write.
+ * Callers go through applyPluginUpgrades, which owns the profile lock.
  *
  * @param {{
  *   profileDir: string, manifestPath: string, overridePath: string,
@@ -596,14 +792,9 @@ function convergeProfile({ fs, run, env, copies, manifestPath, log, warn }) {
  *   upToDate?: number,
  * }}
  */
-function applyPluginUpgrades(ctx) {
+function installPluginUpgrades(ctx) {
   const { profileDir, manifestPath, overridePath, backupDir, rows, pluginRows, counts, selfName, env, run, fs, log, warn } =
     ctx
-
-  if (pluginRows.length === 0) {
-    log('plugins: already up to date')
-    return { landed: [], mismatched: [], failed: [] }
-  }
 
   const specs = pluginRows.map((row) => `${row.name}@${row.target}`)
   const copies = createBackup({ fs, profileDir, backupDir })
@@ -619,6 +810,13 @@ function applyPluginUpgrades(ctx) {
     log(`upgrade failed at plugin install; profile restored from ${backupDir}`)
     log('if the profile still looks wrong, fix it by hand before starting the TUI')
     return { landed: [], mismatched: [], failed: [{ reason: 'install', status: install.status }] }
+  }
+
+  // A successful batch can still have said something worth keeping (pnpm
+  // warnings, dedupe notes). Five prefixed lines is enough to be diagnosable
+  // without turning the summary into a log dump.
+  for (const line of tailLines(install.stderr, 5)) {
+    console.error(`${INSTALL_STDERR_PREFIX}${line}`)
   }
 
   const { landed, mismatched } = verifyPlugins({ fs, profileDir, rows: pluginRows })
@@ -710,6 +908,7 @@ function applyPluginUpgrades(ctx) {
 
 /**
  * Exit code after the plugin phase (plan §1.3):
+ *   2 - another upgrade holds `<profile>/.upgrade.lock`; nothing was written;
  *   1 - the batched install failed and the profile was rolled back;
  *   3 - partially applied: the install exited 0 but a package is not at its
  *       target version, or the override file could not be written;
@@ -717,6 +916,7 @@ function applyPluginUpgrades(ctx) {
  */
 function exitCodeAfterPlugins({ pluginResult } = {}) {
   if (!pluginResult) return 0
+  if (pluginResult.lockBusy) return 2
   if (Array.isArray(pluginResult.failed) && pluginResult.failed.length > 0) return 1
   if (pluginResult.overridesError) return 3
   if (Array.isArray(pluginResult.mismatched) && pluginResult.mismatched.length > 0) return 3
@@ -747,7 +947,8 @@ function exitCodeAfterPlugins({ pluginResult } = {}) {
  * }} [context]
  * @returns {number} 0 done / nothing to do / --dry-run / --help,
  *   1 hard failure or an undetermined target version, 2 non-interactive
- *   refusal (the bin owns the other usage errors), 3 partially applied
+ *   refusal or another upgrade holding the profile lock (the bin owns the
+ *   other usage errors), 3 partially applied
  */
 export function runUpgrade(
   opts = {},
@@ -799,9 +1000,9 @@ export function runUpgrade(
     warn(`could not read ${manifestPath}; treating the profile as having no plugin dependencies`)
   }
 
-  const { registry, source } = resolveRegistry({
+  const { registry, source, sourcePath } = resolveRegistry({
     env,
-    npmrcTexts: collectNpmrcTexts({ fs, dshHome, profileDir, env }),
+    npmrcFiles: collectNpmrcFiles({ fs, dshHome, profileDir, env }),
   })
 
   const tag = opts.tag ?? 'latest'
@@ -889,6 +1090,7 @@ export function runUpgrade(
       self,
       target: selfRow?.target ?? null,
       registry,
+      registryPath: sourcePath,
       run,
       fs,
       selfPath,

@@ -13,6 +13,7 @@ const PROFILE_DIR = `${DSH_HOME}/profiles/opentui`
 const MANIFEST = `${PROFILE_DIR}/package.json`
 const LOCK = `${PROFILE_DIR}/pnpm-lock.yaml`
 const OVERRIDE = `${PROFILE_DIR}/upgrade-overrides.json`
+const UPGRADE_LOCK = `${PROFILE_DIR}/.upgrade.lock`
 const ENV = { HOME, DSH_HOME }
 
 // Names from provision-plan's PLUGIN_SET: only those can take an override,
@@ -66,17 +67,23 @@ const installedPath = (name: string) =>
   `${PROFILE_DIR}/node_modules/${name.split('/').join('/')}/package.json`
 
 /** In-memory fs. `copyFileSync` moves content too, so the rollback's
- *  `originalSpecs` can read the manifest from its backup copy. */
-function fakeFs(files: Record<string, string>) {
+ *  `originalSpecs` can read the manifest from its backup copy. The fd trio
+ *  backs the exclusive-create profile lock; `mtimes` + `statSync` back the
+ *  create->write window, where the lock file's age is the only evidence. */
+function fakeFs(files: Record<string, string>, mtimes: Record<string, number> = {}) {
   const state = {
     files: new Map(Object.entries(files)),
+    mtimes: new Map(Object.entries(mtimes)),
     written: [] as string[],
     removed: [] as string[],
     made: [] as string[],
     copied: [] as Array<[string, string]>,
     renamed: [] as Array<[string, string]>,
     ops: [] as string[],
+    opened: [] as Array<{ path: string; flags: string }>,
   }
+  const fds = new Map<number, string>()
+  let nextFd = 1
   const under = (path: string) => {
     const prefix = `${path}/`
     return [...state.files.keys()].filter((key) => key.startsWith(prefix))
@@ -91,6 +98,7 @@ function fakeFs(files: Record<string, string>) {
       state.written.push(path)
       state.ops.push(`write:${path}`)
       state.files.set(path, String(data))
+      state.mtimes.set(path, Date.now())
     },
     existsSync: (path: string) => state.files.has(path) || under(path).length > 0,
     mkdirSync: (path: string) => {
@@ -99,6 +107,7 @@ function fakeFs(files: Record<string, string>) {
     rmSync: (path: string, options?: { recursive?: boolean; force?: boolean }) => {
       state.removed.push(path)
       state.files.delete(path)
+      state.mtimes.delete(path)
       if (options?.recursive) for (const key of under(path)) state.files.delete(key)
     },
     rmdirSync: (path: string) => {
@@ -109,6 +118,8 @@ function fakeFs(files: Record<string, string>) {
       state.copied.push([from, to])
       const text = state.files.get(from)
       if (text !== undefined) state.files.set(to, text)
+      const mtime = state.mtimes.get(from)
+      if (mtime !== undefined) state.mtimes.set(to, mtime)
     },
     renameSync: (from: string, to: string) => {
       state.renamed.push([from, to])
@@ -116,6 +127,33 @@ function fakeFs(files: Record<string, string>) {
       const text = state.files.get(from)
       if (text !== undefined) state.files.set(to, text)
       state.files.delete(from)
+      const mtime = state.mtimes.get(from)
+      if (mtime !== undefined) state.mtimes.set(to, mtime)
+      state.mtimes.delete(from)
+    },
+    openSync: (path: string, flags: string) => {
+      state.opened.push({ path, flags })
+      if (flags === 'wx' && state.files.has(path)) {
+        throw Object.assign(new Error(`EEXIST: ${path}`), { code: 'EEXIST' })
+      }
+      const fd = nextFd
+      nextFd += 1
+      fds.set(fd, path)
+      return fd
+    },
+    writeSync: (fd: number, data: string) => {
+      const path = fds.get(fd)
+      if (path === undefined) throw new Error(`EBADF: ${fd}`)
+      state.files.set(path, String(data))
+      state.mtimes.set(path, Date.now())
+      return String(data).length
+    },
+    closeSync: (fd: number) => {
+      fds.delete(fd)
+    },
+    statSync: (path: string) => {
+      if (!state.files.has(path)) throw new Error(`ENOENT: ${path}`)
+      return { mtimeMs: state.mtimes.get(path) ?? Date.now() }
     },
   }
   return { fs, state }
@@ -163,12 +201,14 @@ const dshCalls = (calls: RunCall[]) => calls.filter((call) => call.cmd === 'dsh'
 
 /** Run the command with `--no-self` (the self path has its own tests) and
  *  `--yes`, so only the plugin phase is exercised. The responder receives the
- *  live fs state so it can simulate what the host installs. */
+ *  live fs state so it can simulate what the host installs; `mtimes` dates the
+ *  fixture files (the lock's create->write window is a function of its age). */
 function upgrade(
   files: Record<string, string>,
   respond: (cmd: string, args: string[], state: FsState) => RunResult | undefined,
+  mtimes: Record<string, number> = {},
 ) {
-  const { fs, state } = fakeFs(files)
+  const { fs, state } = fakeFs(files, mtimes)
   const calls: RunCall[] = []
   const output = captureOutput()
   try {
@@ -236,8 +276,9 @@ describe('plugin phase — the happy path', () => {
     expect(doc.packages[CRON].version).toBe(CRON_NEXT)
     expect(doc.packages[VAULT].version).toBe(VAULT_NEXT)
 
-    // Success removes the backup directory AND its now-empty hidden parent.
-    expect(state.removed).toEqual([backupDir, `${PROFILE_DIR}/.upgrade-backup`])
+    // Success removes the backup directory, its now-empty hidden parent, and
+    // the profile lock (released last, after the backup is gone).
+    expect(state.removed).toEqual([backupDir, `${PROFILE_DIR}/.upgrade-backup`, UPGRADE_LOCK])
     expect(text).toContain('2 upgraded, 0 up to date, 0 mismatched, 0 excluded')
     expect(text).toContain('upgraded 2 plugin(s)')
     expect(text).toContain('restart required: exit the TUI and run dsh-opentui again')
@@ -259,7 +300,7 @@ describe('plugin phase — the happy path', () => {
 
     expect(code).toBe(0)
     const backupDir = backupDirOf(state)
-    expect(state.removed).toEqual([backupDir, `${PROFILE_DIR}/.upgrade-backup`])
+    expect(state.removed).toEqual([backupDir, `${PROFILE_DIR}/.upgrade-backup`, UPGRADE_LOCK])
     // The stamp directory's files are gone and neither directory is left.
     expect(state.files.has(`${backupDir}/package.json`)).toBe(false)
     expect(state.made.length).toBe(1)
@@ -545,7 +586,235 @@ describe('plugin phase — nothing to do', () => {
     expect(state.made).toEqual([])
     expect(state.copied).toEqual([])
     expect(state.written).toEqual([])
+    // Nothing to install means nothing to protect: the lock is never created.
+    expect(state.opened).toEqual([])
+    expect(state.files.has(UPGRADE_LOCK)).toBe(false)
     expect(dshCalls(calls)).toEqual([])
     expect(text).toContain('plugins: already up to date')
+  })
+})
+
+describe('plugin phase — profile lock', () => {
+  const lockFile = (startedAt: string, pid = 4242) => JSON.stringify({ pid, startedAt })
+
+  /** A plugin-only run whose host installs the target. `mtimes` dates the
+   *  fixture files: the lock's create->write window depends on its age. */
+  const installedRun = (files: Record<string, string> = {}, mtimes: Record<string, number> = {}) =>
+    upgrade(
+      {
+        [MANIFEST]: manifest({ [CRON]: `^${CRON_PIN}` }),
+        [installedPath(CRON)]: pkg(CRON, CRON_PIN),
+        ...files,
+      },
+      (cmd, args, state) => {
+        if (cmd !== 'npm' && cmd !== 'dsh') return undefined
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
+        return { status: 0, stdout: '', stderr: '' }
+      },
+      mtimes,
+    )
+
+  test('the lock is taken for the write phase and released afterwards', () => {
+    const { code, state } = installedRun()
+
+    expect(code).toBe(0)
+    expect(state.opened).toEqual([{ path: UPGRADE_LOCK, flags: 'wx' }])
+    expect(state.files.has(UPGRADE_LOCK)).toBe(false)
+    expect(state.removed).toContain(UPGRADE_LOCK)
+  })
+
+  test('a fresh lock from another process refuses the run with exit 2', () => {
+    const startedAt = new Date().toISOString()
+    const { code, state, calls, text } = installedRun({ [UPGRADE_LOCK]: lockFile(startedAt) })
+
+    expect(code).toBe(2)
+    // Refused before anything is backed up, installed, or recorded.
+    expect(dshCalls(calls)).toEqual([])
+    expect(state.made).toEqual([])
+    expect(state.copied).toEqual([])
+    expect(state.written).toEqual([])
+    // Someone else's lock is not deleted.
+    expect(state.files.get(UPGRADE_LOCK)).toBe(lockFile(startedAt))
+    expect(text).toContain(`upgrade: another upgrade is running (pid 4242, started ${startedAt})`)
+  })
+
+  test('a lock older than 30 minutes is reclaimed', () => {
+    const stale = new Date(Date.now() - 31 * 60 * 1000).toISOString()
+    const { code, state, calls, text } = installedRun({ [UPGRADE_LOCK]: lockFile(stale) })
+
+    expect(code).toBe(0)
+    expect(dshCalls(calls)).toHaveLength(1)
+    // The stale file was replaced by this run and then released.
+    expect(state.files.has(UPGRADE_LOCK)).toBe(false)
+    expect(text).not.toContain('another upgrade is running')
+  })
+
+  // The create->write window: `openSync(path, 'wx')` wins the file a moment
+  // before `writeSync` fills it. An empty payload is therefore what a LIVE
+  // writer looks like, and only the file's own age can tell the two apart.
+  test('a payload-less lock one second old is treated as held', () => {
+    const { code, state, calls, text } = installedRun(
+      { [UPGRADE_LOCK]: '' },
+      { [UPGRADE_LOCK]: Date.now() - 1000 },
+    )
+
+    expect(code).toBe(2)
+    expect(dshCalls(calls)).toEqual([])
+    expect(state.written).toEqual([])
+    // The other process may still be inside the window: do not delete its file.
+    expect(state.files.has(UPGRADE_LOCK)).toBe(true)
+    expect(text).toContain('another upgrade is running')
+  })
+
+  test('a payload-less lock one minute old is reclaimed', () => {
+    const { code, state, calls, text } = installedRun(
+      { [UPGRADE_LOCK]: '' },
+      { [UPGRADE_LOCK]: Date.now() - 60 * 1000 },
+    )
+
+    expect(code).toBe(0)
+    expect(dshCalls(calls)).toHaveLength(1)
+    // The abandoned file was replaced by this run and then released.
+    expect(state.files.has(UPGRADE_LOCK)).toBe(false)
+    expect(text).not.toContain('another upgrade is running')
+  })
+
+  test('--dry-run never opens the lock', () => {
+    const { fs, state } = fakeFs({
+      [MANIFEST]: manifest({ [CRON]: `^${CRON_PIN}` }),
+      [installedPath(CRON)]: pkg(CRON, CRON_PIN),
+    })
+    const calls: RunCall[] = []
+    const output = captureOutput()
+    let code
+    try {
+      code = runUpgrade(
+        { dryRun: true, noSelf: true },
+        {
+          pkgRoot: ROOT,
+          env: ENV,
+          fs,
+          run: fakeRun(
+            (cmd, args) =>
+              cmd === 'npm' && args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined,
+            calls,
+          ),
+        },
+      )
+    } finally {
+      output.restore()
+    }
+
+    expect(code).toBe(0)
+    // A dry run writes nothing at all, the lock included.
+    expect(state.opened).toEqual([])
+    expect(state.files.has(UPGRADE_LOCK)).toBe(false)
+    expect(state.made).toEqual([])
+    expect(state.written).toEqual([])
+  })
+
+  test('a throw mid-write still releases the lock', () => {
+    const { fs, state } = fakeFs({
+      [MANIFEST]: manifest({ [CRON]: `^${CRON_PIN}` }),
+      [installedPath(CRON)]: pkg(CRON, CRON_PIN),
+    })
+    fs.copyFileSync = () => {
+      throw new Error('EIO: disk on fire')
+    }
+    const calls: RunCall[] = []
+    const output = captureOutput()
+    let thrown: unknown
+    try {
+      runUpgrade(
+        { yes: true, noSelf: true },
+        {
+          pkgRoot: ROOT,
+          env: ENV,
+          fs,
+          run: fakeRun(
+            (cmd, args) =>
+              cmd === 'npm' && args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined,
+            calls,
+          ),
+        },
+      )
+    } catch (err) {
+      thrown = err
+    } finally {
+      output.restore()
+    }
+
+    expect(thrown).toBeInstanceOf(Error)
+    expect(state.files.has(UPGRADE_LOCK)).toBe(false)
+    expect(state.removed).toContain(UPGRADE_LOCK)
+  })
+})
+
+describe('plugin phase — install stderr after a successful batch', () => {
+  const stderrLine = (index: number) => `Progress: resolved ${index}`
+
+  const runWithStderr = (stderr: string) =>
+    upgrade(
+      {
+        [MANIFEST]: manifest({ [CRON]: `^${CRON_PIN}` }),
+        [installedPath(CRON)]: pkg(CRON, CRON_PIN),
+      },
+      (cmd, args, state) => {
+        if (cmd !== 'npm' && cmd !== 'dsh') return undefined
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
+        return { status: 0, stdout: '', stderr }
+      },
+    )
+
+  test('the last five stderr lines are printed with a prefix', () => {
+    const lines = Array.from({ length: 7 }, (_unused, index) => stderrLine(index))
+    const { code, text } = runWithStderr(lines.join('\n'))
+
+    expect(code).toBe(0)
+    for (const line of lines.slice(-5)) expect(text).toContain(`dsh plugin add: ${line}`)
+    expect(text).not.toContain(`dsh plugin add: ${lines[0]}`)
+    expect(text).not.toContain(`dsh plugin add: ${lines[1]}`)
+  })
+
+  test('an empty stderr prints nothing', () => {
+    const { code, text } = runWithStderr('')
+
+    expect(code).toBe(0)
+    expect(text).not.toContain('dsh plugin add: ')
+  })
+})
+
+describe('plugin phase — override rewrite keeps entries it cannot interpret', () => {
+  test('a malformed hand-written entry survives and keeps its original value', () => {
+    const existing = JSON.stringify({
+      version: 1,
+      packages: {
+        [WORKFLOW]: { note: 'hand-written, no version field' },
+        [TOPICS]: '0.26.1',
+      },
+    })
+    const { code, state } = upgrade(
+      {
+        [MANIFEST]: manifest({ [CRON]: `^${CRON_PIN}` }),
+        [OVERRIDE]: existing,
+        [installedPath(CRON)]: pkg(CRON, CRON_PIN),
+      },
+      (cmd, args, state) => {
+        if (cmd !== 'npm' && cmd !== 'dsh') return undefined
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
+        return { status: 0, stdout: '', stderr: '' }
+      },
+    )
+
+    expect(code).toBe(0)
+    const doc = JSON.parse(state.files.get(OVERRIDE) as string)
+    expect(doc.packages[WORKFLOW]).toEqual({ note: 'hand-written, no version field' })
+    expect(doc.packages[TOPICS]).toBe('0.26.1')
+    expect(doc.packages[CRON].version).toBe(CRON_NEXT)
+    // `raw` is a parse-side carrier, never a key of the file on disk.
+    expect(doc.raw).toBeUndefined()
   })
 })
