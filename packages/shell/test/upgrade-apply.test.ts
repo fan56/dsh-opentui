@@ -3,6 +3,7 @@
 // the exit-code mapping. Everything runs through an injected `run` and an
 // in-memory `fs`, so no package is installed and no real profile is touched.
 import { describe, expect, test } from 'bun:test'
+import { parseVersion, PLUGIN_SET } from '../scripts/lib/provision-plan.mjs'
 import { runUpgrade } from '../scripts/upgrade.mjs'
 
 const ROOT = '/fixture/pkg'
@@ -14,12 +15,40 @@ const LOCK = `${PROFILE_DIR}/pnpm-lock.yaml`
 const OVERRIDE = `${PROFILE_DIR}/upgrade-overrides.json`
 const ENV = { HOME, DSH_HOME }
 
-// Names and shipped pins from provision-plan's PLUGIN_SET: only those can take
-// an override, which is what the write path asserts before recording one.
+// Names from provision-plan's PLUGIN_SET: only those can take an override,
+// which is what the write path asserts before recording one. The pins are read
+// from PLUGIN_SET instead of being written down, because they drift with every
+// release — a hardcoded pin silently turns the "newer release" fakes into the
+// shipped version and the happy path then records no override at all.
+const shippedPin = (name: string): string => {
+  const plugin = (PLUGIN_SET as Array<{ name: string; version: string }>).find(
+    (candidate) => candidate.name === name,
+  )
+  if (!plugin) throw new Error(`${name} is not in PLUGIN_SET; it cannot take an override`)
+  return plugin.version
+}
+
+/** One patch above `version`: the fake registry's "newer release". Derived so
+ *  a pin bump can never make it equal to (or below) the shipped pin. */
+const nextPatch = (version: string): string => {
+  const parsed = parseVersion(version)
+  if (!parsed) throw new Error(`unparsable version: ${version}`)
+  return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`
+}
+
+/** One patch below `version`, for the "registry lags the shipped pin" case. */
+const previousPatch = (version: string): string => {
+  const parsed = parseVersion(version)
+  if (!parsed || parsed.patch === 0) throw new Error(`no patch to step below: ${version}`)
+  return `${parsed.major}.${parsed.minor}.${parsed.patch - 1}`
+}
+
 const CRON = '@aiwayds/dsh-cron'
-const CRON_PIN = '0.7.0'
+const CRON_PIN = shippedPin(CRON)
+const CRON_NEXT = nextPatch(CRON_PIN)
 const VAULT = '@aiwayds/dsh-vault'
-const VAULT_PIN = '0.8.0'
+const VAULT_PIN = shippedPin(VAULT)
+const VAULT_NEXT = nextPatch(VAULT_PIN)
 const TOPICS = '@aiwayds/dsh-topics-memory'
 const WORKFLOW = '@aiwayds/dsh-workflow'
 
@@ -165,13 +194,13 @@ describe('plugin phase — the happy path', () => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
         if (cmd === 'npm') {
           if (args[0] !== 'view') return undefined
-          if (args[1] === CRON) return view('0.7.2')
-          if (args[1] === VAULT) return view('0.8.2')
+          if (args[1] === CRON) return view(CRON_NEXT)
+          if (args[1] === VAULT) return view(VAULT_NEXT)
           return undefined
         }
         // The host installed both targets in one call.
-        state.files.set(installedPath(CRON), pkg(CRON, '0.7.2'))
-        state.files.set(installedPath(VAULT), pkg(VAULT, '0.8.2'))
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
+        state.files.set(installedPath(VAULT), pkg(VAULT, VAULT_NEXT))
         return { status: 0, stdout: '', stderr: '' }
       },
     )
@@ -185,8 +214,8 @@ describe('plugin phase — the happy path', () => {
       'opentui',
       'add',
       '--save-exact',
-      `${CRON}@0.7.2`,
-      `${VAULT}@0.8.2`,
+      `${CRON}@${CRON_NEXT}`,
+      `${VAULT}@${VAULT_NEXT}`,
     ])
     expect(adds[0].options.timeout).toBe(10 * 60 * 1000)
     // DSH_HOME reaches the child: the host must act on the selected profile.
@@ -200,8 +229,8 @@ describe('plugin phase — the happy path', () => {
     ])
 
     const doc = JSON.parse(state.files.get(OVERRIDE) as string)
-    expect(doc.packages[CRON].version).toBe('0.7.2')
-    expect(doc.packages[VAULT].version).toBe('0.8.2')
+    expect(doc.packages[CRON].version).toBe(CRON_NEXT)
+    expect(doc.packages[VAULT].version).toBe(VAULT_NEXT)
 
     // Success removes the backup directory.
     expect(state.removed).toEqual([backupDir])
@@ -224,12 +253,12 @@ describe('plugin phase — install failure and rollback', () => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
         if (cmd === 'npm') {
           if (args[0] !== 'view') return undefined
-          if (args[1] === CRON) return view('0.7.2')
-          if (args[1] === VAULT) return view('0.8.2')
+          if (args[1] === CRON) return view(CRON_NEXT)
+          if (args[1] === VAULT) return view(VAULT_NEXT)
           return undefined
         }
         // The first (targeted) batch fails; the convergence batch succeeds.
-        if (args.includes(`${CRON}@0.7.2`)) {
+        if (args.includes(`${CRON}@${CRON_NEXT}`)) {
           return { status: 1, stderr: 'ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION: too fresh' }
         }
         return { status: 0, stdout: '', stderr: '' }
@@ -239,7 +268,7 @@ describe('plugin phase — install failure and rollback', () => {
     expect(code).toBe(1)
     const adds = dshCalls(calls)
     expect(adds).toHaveLength(2)
-    expect(adds[0].args).toContain(`${CRON}@0.7.2`)
+    expect(adds[0].args).toContain(`${CRON}@${CRON_NEXT}`)
     // The convergence call re-adds the ORIGINAL specs, read from the backup.
     expect(adds[1].args).toEqual([
       'plugin',
@@ -274,7 +303,7 @@ describe('plugin phase — verification', () => {
       },
       (cmd, args) => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
-        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view('0.7.2') : undefined
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
         // pnpm exited 0 but the profile stayed on the old version.
         return { status: 0, stdout: '', stderr: '' }
       },
@@ -282,7 +311,7 @@ describe('plugin phase — verification', () => {
 
     expect(code).toBe(3)
     expect(state.written).toEqual([])
-    expect(text).toContain(`mismatch: ${CRON} expected 0.7.2, installed ${CRON_PIN}`)
+    expect(text).toContain(`mismatch: ${CRON} expected ${CRON_NEXT}, installed ${CRON_PIN}`)
     expect(text).toContain('possible downgrade')
     expect(text).toContain('0 upgraded, 0 up to date, 1 mismatched, 0 excluded')
     // Partial success keeps the backup: a rollback is still possible by hand.
@@ -299,11 +328,11 @@ describe('plugin phase — --save-exact compatibility', () => {
       },
       (cmd, args, state) => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
-        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view('0.7.2') : undefined
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
         if (args.includes('--save-exact')) {
           return { status: 2, stderr: "error: unknown option '--save-exact'" }
         }
-        state.files.set(installedPath(CRON), pkg(CRON, '0.7.2'))
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
         return { status: 0, stdout: '', stderr: '' }
       },
     )
@@ -311,10 +340,10 @@ describe('plugin phase — --save-exact compatibility', () => {
     expect(code).toBe(0)
     const adds = dshCalls(calls)
     expect(adds).toHaveLength(2)
-    expect(adds[1].args).toEqual(['plugin', '--profile', 'opentui', 'add', `${CRON}@0.7.2`])
+    expect(adds[1].args).toEqual(['plugin', '--profile', 'opentui', 'add', `${CRON}@${CRON_NEXT}`])
     expect(text).toContain('--save-exact not supported by host; relying on upgrade-overrides')
     const doc = JSON.parse(state.files.get(OVERRIDE) as string)
-    expect(doc.packages[CRON].version).toBe('0.7.2')
+    expect(doc.packages[CRON].version).toBe(CRON_NEXT)
   })
 })
 
@@ -355,8 +384,8 @@ describe('plugin phase — override policy', () => {
       },
       (cmd, args, state) => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
-        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view('0.7.2') : undefined
-        state.files.set(installedPath(CRON), pkg(CRON, '0.7.2'))
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
         return { status: 0, stdout: '', stderr: '' }
       },
     )
@@ -365,7 +394,7 @@ describe('plugin phase — override policy', () => {
     const doc = JSON.parse(state.files.get(OVERRIDE) as string)
     expect(doc.packages[TOPICS]).toEqual({ version: '0.26.1', shippedPin: '0.26.0' })
     expect(doc.packages[WORKFLOW]).toBe('0.2.2')
-    expect(doc.packages[CRON].version).toBe('0.7.2')
+    expect(doc.packages[CRON].version).toBe(CRON_NEXT)
     // The pre-existing file was part of the backup.
     expect(state.copied).toContainEqual([OVERRIDE, `${backupDirOf(state)}/upgrade-overrides.json`])
   })
@@ -378,8 +407,8 @@ describe('plugin phase — override policy', () => {
       },
       (cmd, args, state) => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
-        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view('0.7.2') : undefined
-        state.files.set(installedPath(CRON), pkg(CRON, '0.7.2'))
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
         return { status: 0, stdout: '', stderr: '' }
       },
     )
@@ -396,7 +425,7 @@ describe('plugin phase — override policy', () => {
     expect(renameAt).toBeGreaterThan(writeAt)
     // The rename consumed the temp file.
     expect(state.files.has(tmp)).toBe(false)
-    expect(JSON.parse(state.files.get(OVERRIDE) as string).packages[CRON].version).toBe('0.7.2')
+    expect(JSON.parse(state.files.get(OVERRIDE) as string).packages[CRON].version).toBe(CRON_NEXT)
   })
 
   test('a package outside PLUGIN_SET gets no override and an accurate warning', () => {
@@ -424,24 +453,26 @@ describe('plugin phase — override policy', () => {
   })
 
   test('a version provisioning would ignore is not recorded, and a warning says so', () => {
+    // Derived from the pin: the registry's latest is an "upgrade" on disk yet
+    // still older than the shipped pin, so an override could never apply.
+    const stale = previousPatch(VAULT_PIN)
+    const older = previousPatch(stale)
     const { code, state, text } = upgrade(
       {
         [MANIFEST]: manifest({ [VAULT]: `^${VAULT_PIN}` }),
-        [installedPath(VAULT)]: pkg(VAULT, '0.7.0'),
+        [installedPath(VAULT)]: pkg(VAULT, older),
       },
       (cmd, args, state) => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
-        // The registry lags the shipped pin: 0.7.2 is an "upgrade" on disk but
-        // still older than the 0.8.0 pin, so an override could never apply.
-        if (cmd === 'npm') return args[0] === 'view' && args[1] === VAULT ? view('0.7.2') : undefined
-        state.files.set(installedPath(VAULT), pkg(VAULT, '0.7.2'))
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === VAULT ? view(stale) : undefined
+        state.files.set(installedPath(VAULT), pkg(VAULT, stale))
         return { status: 0, stdout: '', stderr: '' }
       },
     )
 
     expect(code).toBe(0)
     expect(state.files.has(OVERRIDE)).toBe(false)
-    expect(text).toContain(`${VAULT}: an override at 0.7.2 would be ignored by provisioning`)
+    expect(text).toContain(`${VAULT}: an override at ${stale} would be ignored by provisioning`)
     expect(text).toContain('not recorded')
   })
 
@@ -455,8 +486,8 @@ describe('plugin phase — override policy', () => {
       },
       (cmd, args, state) => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
-        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view('0.7.2') : undefined
-        state.files.set(installedPath(CRON), pkg(CRON, '0.7.2'))
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
         return { status: 0, stdout: '', stderr: '' }
       },
     )
@@ -475,11 +506,11 @@ describe('plugin phase — nothing to do', () => {
     const { code, state, calls, text } = upgrade(
       {
         [MANIFEST]: manifest({ [CRON]: `^${CRON_PIN}` }),
-        [installedPath(CRON)]: pkg(CRON, '0.7.2'),
+        [installedPath(CRON)]: pkg(CRON, CRON_NEXT),
       },
       (cmd, args) => {
         if (cmd !== 'npm' && cmd !== 'dsh') return undefined
-        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view('0.7.2') : undefined
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
         return undefined
       },
     )
