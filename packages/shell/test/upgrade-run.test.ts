@@ -67,6 +67,10 @@ function fakeFs(files: Record<string, string>) {
       state.removed.push(path)
       state.files.delete(path)
     },
+    rmdirSync: (path: string) => {
+      state.removed.push(path)
+      state.files.delete(path)
+    },
     copyFileSync: (from: string, to: string) => {
       state.copied.push([from, to])
     },

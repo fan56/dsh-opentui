@@ -23,6 +23,7 @@ import {
   orderPluginAddFailures,
   parseDumpConfig,
   parseTier,
+  partitionInstallByRetryState,
   patchEntryBlock,
   patchTargetName,
   planMcpPatch,
@@ -35,7 +36,9 @@ import {
   resolveEffectivePin,
   satisfiesVersion,
   selectPlugins,
+  verifyInstalledPins,
 } from '../scripts/lib/provision-plan.mjs'
+import { MAX_ATTEMPTS, RESET_AFTER_MS } from '../scripts/lib/provision-state.mjs'
 
 const allNames = PLUGIN_SET.map((plugin) => plugin.name)
 
@@ -175,6 +178,108 @@ describe('planPluginInstall', () => {
     expect(specs[0]).toBe('@aiwayds/dsh-ask-router@0.7.0')
     expect(pluginAddArgs('opentui', specs)).toEqual(['plugin', '--profile', 'opentui', 'add', ...specs])
     expect(pluginAddCommand('opentui', specs)).toBe(`dsh plugin --profile opentui add ${specs.join(' ')}`)
+  })
+})
+
+describe('partitionInstallByRetryState', () => {
+  const CRON = '@aiwayds/dsh-cron'
+  const CRON_PIN = PLUGIN_SET.find((plugin) => plugin.name === CRON)?.version as string
+  const T0 = '2026-11-16T10:00:00.000Z'
+  const T_SOON = '2026-11-16T10:05:00.000Z'
+  const T_RESET = new Date(Date.parse(T0) + RESET_AFTER_MS).toISOString()
+
+  const planRows = () =>
+    planPluginInstall({ tier: 'recommended' }).install.filter((row) => row.name === CRON)
+
+  const stateWith = (entry: Record<string, unknown>) => ({
+    version: 1,
+    failures: { [CRON]: { pin: CRON_PIN, firstFailedAt: T0, lastFailedAt: T0, error: 'boom', ...entry } },
+  })
+
+  test('without failure memory every plan row is installed', () => {
+    const rows = planRows()
+    const { install, skips } = partitionInstallByRetryState({ install: rows, state: null, now: T_SOON })
+    expect(skips).toEqual([])
+    expect(install).toEqual(rows)
+    expect(install[0].pin).toBe(CRON_PIN)
+  })
+
+  test('a pin inside its backoff window is skipped and leaves the install command', () => {
+    const { install, skips } = partitionInstallByRetryState({
+      install: planRows(),
+      state: stateWith({ attempts: 1 }),
+      now: T_SOON,
+    })
+    expect(install).toEqual([])
+    expect(skips).toEqual([
+      { name: CRON, pin: CRON_PIN, reason: 'backoff', attempts: 1, lastFailedAt: T0 },
+    ])
+  })
+
+  test('a pin at the attempt cap is skipped', () => {
+    const { install, skips } = partitionInstallByRetryState({
+      install: planRows(),
+      state: stateWith({ attempts: MAX_ATTEMPTS }),
+      now: T_SOON,
+    })
+    expect(install).toEqual([])
+    expect(skips[0].reason).toBe('max-attempts')
+    expect(skips[0].attempts).toBe(MAX_ATTEMPTS)
+  })
+
+  test('the same pin is retried once the 24-hour reset window has elapsed', () => {
+    const { install, skips } = partitionInstallByRetryState({
+      install: planRows(),
+      state: stateWith({ attempts: MAX_ATTEMPTS }),
+      now: T_RESET,
+    })
+    expect(skips).toEqual([])
+    expect(install.map((row) => row.spec)).toEqual([`${CRON}@${CRON_PIN}`])
+  })
+
+  test('an override raises the compared pin, so a shipped-pin failure does not skip it', () => {
+    // The plan asks for the override version; the recorded failure belongs to
+    // the shipped pin. Comparing against the shipped pin would skip a plugin
+    // that was never attempted at the version now requested.
+    const raised = `${CRON_PIN.replace(/(\d+)$/, (patch) => String(Number(patch) + 1))}`
+    const rows = planPluginInstall({
+      tier: 'recommended',
+      dependencies: {},
+      installedVersions: {},
+      overrides: { [CRON]: { version: raised } },
+    }).install.filter((row) => row.name === CRON)
+    expect(rows[0].pin).toBe(raised)
+
+    const { install, skips } = partitionInstallByRetryState({
+      install: rows,
+      state: stateWith({ attempts: MAX_ATTEMPTS }),
+      now: T_SOON,
+    })
+    expect(skips).toEqual([])
+    expect(install[0].spec).toBe(`${CRON}@${raised}`)
+  })
+})
+
+describe('verifyInstalledPins', () => {
+  test('reports each target against its effective pin, exact match only', () => {
+    const install = [
+      { name: '@aiwayds/dsh-cron', pin: '0.7.2', spec: '@aiwayds/dsh-cron@0.7.2' },
+      { name: '@aiwayds/dsh-vault', pin: '0.3.0', spec: '@aiwayds/dsh-vault@0.3.0' },
+      { name: '@aiwayds/dsh-topics-memory', pin: '0.26.0', spec: '@aiwayds/dsh-topics-memory@0.26.0' },
+    ]
+    const results = verifyInstalledPins({
+      install,
+      installedVersions: {
+        '@aiwayds/dsh-cron': '0.7.2',
+        '@aiwayds/dsh-vault': '0.2.9',
+        '@aiwayds/dsh-topics-memory': undefined,
+      },
+    })
+    expect(results).toEqual([
+      { name: '@aiwayds/dsh-cron', pin: '0.7.2', installed: '0.7.2', ok: true },
+      { name: '@aiwayds/dsh-vault', pin: '0.3.0', installed: '0.2.9', ok: false },
+      { name: '@aiwayds/dsh-topics-memory', pin: '0.26.0', installed: null, ok: false },
+    ])
   })
 })
 
@@ -558,7 +663,7 @@ describe('plugin-add failure classification (bounded retry policy)', () => {
 
   test('provision source guard: the retry loop captures stderr, classifies, and reports deterministic failures first', () => {
     const script = readFileSync(new URL('../scripts/provision-opentui-profile.mjs', import.meta.url), 'utf8')
-    expect(script).toContain('runPluginAdd([spec], { captureStderr: true })')
+    expect(script).toContain('runPluginAdd([entry.spec], { captureStderr: true })')
     expect(script).toContain('pluginAddRetryDecision(retry, { attempt, attempts: PLUGIN_ADD_ATTEMPTS })')
     expect(script).toContain("decision.failure.kind === 'deterministic'")
     expect(script).toContain('orderPluginAddFailures(failedInstalls)')
@@ -642,7 +747,7 @@ describe('upgrade overrides', () => {
 
   test('an override raises the install spec when node_modules still has the shipped pin', () => {
     const plan = planWith({ [CRON]: { version: '0.7.2', shippedPin: CRON_PIN } })
-    expect(plan.install).toEqual([{ name: CRON, spec: `${CRON}@0.7.2`, reason: expect.any(String) }])
+    expect(plan.install).toEqual([{ name: CRON, pin: '0.7.2', spec: `${CRON}@0.7.2`, reason: expect.any(String) }])
     expect(plan.satisfied).toBe(11)
   })
 
