@@ -202,6 +202,12 @@ export function HistoryPanel(props: {
 	const [sessionCursor, setSessionCursor] = createSignal(0)
 	const [showSessions, setShowSessions] = createSignal(false)
 	let handle: PanelHandle | undefined
+	/**
+	 * The "Switch session" layer's handle. Reactive: the session-list key
+	 * layer is registered before the layer opens and reads this inside its
+	 * `enabled` callback (ADR-0008 `ownsInput`).
+	 */
+	const [sessionsHandle, setSessionsHandle] = createSignal<PanelHandle | undefined>(undefined)
 	let sequence = 0
 	/** Monotonic load token: only the latest `load()` may paint (P1-4). */
 	let loadSequence = 0
@@ -335,12 +341,17 @@ export function HistoryPanel(props: {
 				// layers signal, so an effect that both reads showSessions() and
 				// opens the layer re-triggers itself — one `s` press stacked three
 				// layers into the maxDepth error. A direct call opens exactly one.
-				panels.open(() => renderSessions(), {
-					id: `history-sessions-${++sequence}`,
-					title: t("panel.history.title.switch"),
-					size: "xlarge",
-					onClose: () => setShowSessions(false),
-				})
+				setSessionsHandle(
+					panels.open(() => renderSessions(), {
+						id: `history-sessions-${++sequence}`,
+						title: t("panel.history.title.switch"),
+						size: "xlarge",
+						onClose: () => {
+							setSessionsHandle(undefined)
+							setShowSessions(false)
+						},
+					}),
+				)
 			} catch (error) {
 				setStatus(historyFailureText(t("panel.history.op.sessionList"), error))
 			}
@@ -389,33 +400,34 @@ export function HistoryPanel(props: {
 	}
 
 	// ---- hotkeys: the consumer's own Keymap layer (agents-panel law) ----
-	Keymap.createLayer(() => {
-		const top = panels.top
-		return {
-			mode: "global",
-			enabled: open() && handle !== undefined && top !== undefined && handle === top,
-			priority: 2,
-			commands: [
-				{ bind: "up,k", title: t("panel.history.keymap.previousTurn"), group: "History", run: () => moveCursor(-1) },
-				{ bind: "down,j", title: t("panel.history.keymap.nextTurn"), group: "History", run: () => moveCursor(1) },
-				{
-					bind: "return,c",
-					title: showSessions() ? t("panel.history.keymap.pickSession") : t("panel.history.keymap.refill"),
-					group: "History",
-					run: () => (showSessions() ? pickSession(sessionCursor()) : refill()),
-				},
-				{ bind: "s", title: t("panel.history.keymap.switchSession"), group: "History", run: openSessions },
-				{ bind: "f", title: t("panel.history.keymap.fork"), group: "History", run: fork },
-			],
-		}
-	})
-
-	// Session-layer keys ride a dedicated layer while the "Switch session"
-	// panel is top (the main layer is parked behind its `handle === top`
-	// gate then, so Enter must be rebound HERE — review P0-2 part 2).
 	Keymap.createLayer(() => ({
 		mode: "global",
-		enabled: open() && showSessions(),
+		// ADR-0008: enabled only while this browser layer's own frame is the
+		// input-ownership top. `panels.top` could not see a dialog above the
+		// panel; `ownsInput()` can.
+		enabled: open() && handle?.ownsInput() === true,
+		priority: 2,
+		commands: [
+			{ bind: "up,k", title: t("panel.history.keymap.previousTurn"), group: "History", run: () => moveCursor(-1) },
+			{ bind: "down,j", title: t("panel.history.keymap.nextTurn"), group: "History", run: () => moveCursor(1) },
+			{
+				bind: "return,c",
+				title: showSessions() ? t("panel.history.keymap.pickSession") : t("panel.history.keymap.refill"),
+				group: "History",
+				run: () => (showSessions() ? pickSession(sessionCursor()) : refill()),
+			},
+			{ bind: "s", title: t("panel.history.keymap.switchSession"), group: "History", run: openSessions },
+			{ bind: "f", title: t("panel.history.keymap.fork"), group: "History", run: fork },
+		],
+	}))
+
+	// Session-layer keys ride a dedicated layer while the "Switch session"
+	// panel is top (the main layer is parked behind its `ownsInput` gate then,
+	// so Enter must be rebound HERE — review P0-2 part 2). The same ownership
+	// gate keeps this layer parked while a dialog sits above the stack.
+	Keymap.createLayer(() => ({
+		mode: "global",
+		enabled: open() && showSessions() && sessionsHandle()?.ownsInput() === true,
 		priority: 3,
 		commands: [
 			{

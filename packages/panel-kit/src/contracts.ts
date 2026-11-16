@@ -462,6 +462,22 @@ export interface PanelShellHandle {
 export interface PanelHandle {
   readonly id: string
   readonly depth: number
+  /**
+   * ADR-0008: this layer's opaque ownership frame token, exactly the token
+   * the host pushed when the layer opened. `undefined` when the host mounted
+   * no ownership bridge (standalone use). Consumers never inspect it; they
+   * ask {@link PanelHandle.ownsInput} instead.
+   */
+  readonly frame: unknown
+  /**
+   * ADR-0008: true while this layer's frame is the top input-ownership frame
+   * — i.e. this panel, not a dialog or a deeper panel, owns the keyboard.
+   * This is the consumer-layer gate; it replaces ad-hoc `panels.top ===
+   * handle` checks, which cannot see a dialog above the panel. When the host
+   * mounted no ownership bridge it falls back to stack-top identity, the
+   * pre-ADR behavior.
+   */
+  ownsInput(): boolean
   /** Fades out (FADE_MS) then unmounts. Idempotent. */
   close(): void
   /** Unmounts immediately; teardown and second-Esc path. */

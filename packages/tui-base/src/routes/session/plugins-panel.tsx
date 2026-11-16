@@ -28,6 +28,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "so
 import type { InputRenderable } from "@opentui/core"
 import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
+import { useIsPageOwner } from "../../context/input-ownership"
 import { t } from "../../i18n"
 import { useDialog } from "../../ui/dialog"
 import { DialogConfirm } from "../../ui/dialog-confirm"
@@ -188,6 +189,9 @@ export function installPreviewLine(inspection: Extract<PluginInspection, { statu
 export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }) {
 	const theme = useThemeOptional()
 	const dialog = useDialog()
+	// ADR-0008: this manager is a page surface (it pushes no ownership frame);
+	// its keys are off whenever a dialog, panel or dock owns the keyboard.
+	const pageOwns = useIsPageOwner()
 
 	const [open, setOpen] = usePluginsPanelOpenState()
 	const [filterOpen, setFilterOpen] = createSignal(false)
@@ -416,7 +420,9 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 
 	Keymap.createLayer(() => ({
 		mode: "global",
-		enabled: open() && dialog.stack.length === 0,
+		// ADR-0008: page-ownership gate (subsumes the old dialog-stack check:
+		// a dialog pushes its own frame above the page, as does a kit panel).
+		enabled: open() && pageOwns(),
 		priority: 2,
 		commands: [
 			{ bind: "escape", title: t("panel.plugins.keymap.close"), group: "Plugins", run: close },

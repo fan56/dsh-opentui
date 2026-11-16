@@ -438,53 +438,50 @@ export function SubagentsViewer(props: {
 	})
 
 	// ---- hotkeys: the consumer's own Keymap layer (history-panel law) ----
-	Keymap.createLayer(() => {
-		const top = panels.top
-		return {
-			mode: "global",
-			enabled: open() && transcriptHandle === undefined && handle !== undefined && handle === top && dialog.stack.length === 0,
-			priority: 2,
-			commands: [
-				{ bind: "up,k", title: t("panel.subagents.keymap.previous"), group: "Subagents", run: () => moveCursor(-1) },
-				{ bind: "down,j", title: t("panel.subagents.keymap.next"), group: "Subagents", run: () => moveCursor(1) },
-				{
-					bind: "return",
-					title: t("panel.subagents.keymap.openTranscript"),
-					group: "Subagents",
-					run: () => {
-						const row = rows()[cursor()]
-						if (row !== undefined) openTranscript(row.id)
-						return true
-					},
+	Keymap.createLayer(() => ({
+		mode: "global",
+		// ADR-0008: the list layer answers only while its own frame owns the
+		// keyboard. `dialog.stack.length === 0` is kept for the no-ownership
+		// fallback; under the provider `ownsInput` already covers the dialog.
+		enabled: open() && transcriptHandle === undefined && handle?.ownsInput() === true && dialog.stack.length === 0,
+		priority: 2,
+		commands: [
+			{ bind: "up,k", title: t("panel.subagents.keymap.previous"), group: "Subagents", run: () => moveCursor(-1) },
+			{ bind: "down,j", title: t("panel.subagents.keymap.next"), group: "Subagents", run: () => moveCursor(1) },
+			{
+				bind: "return",
+				title: t("panel.subagents.keymap.openTranscript"),
+				group: "Subagents",
+				run: () => {
+					const row = rows()[cursor()]
+					if (row !== undefined) openTranscript(row.id)
+					return true
 				},
-				{
-					bind: "s",
-					title: t("panel.subagents.keymap.sort"),
-					group: "Subagents",
-					run: () => {
-						setSortByRounds((value) => !value)
-						return true
-					},
+			},
+			{
+				bind: "s",
+				title: t("panel.subagents.keymap.sort"),
+				group: "Subagents",
+				run: () => {
+					setSortByRounds((value) => !value)
+					return true
 				},
-				{ bind: "shift+k", title: t("panel.subagents.keymap.stopAll"), group: "Subagents", run: stopAll },
-			],
-		}
-	})
+			},
+			{ bind: "shift+k", title: t("panel.subagents.keymap.stopAll"), group: "Subagents", run: stopAll },
+		],
+	}))
 
-	Keymap.createLayer(() => {
-		const top = panels.top
-		return {
-			mode: "global",
-			enabled: open() && transcriptHandle !== undefined && transcriptHandle === top && dialog.stack.length === 0,
-			priority: 2,
-			commands: [
-				{ bind: "up,k", title: t("panel.subagents.keymap.scrollUp"), group: "Subagents", run: () => scrollBy(-1) },
-				{ bind: "down,j", title: t("panel.subagents.keymap.scrollDown"), group: "Subagents", run: () => scrollBy(1) },
-				{ bind: "return", title: t("panel.subagents.keymap.steer"), group: "Subagents", run: openSteer },
-				{ bind: "x", title: t("panel.subagents.keymap.stopTwice"), group: "Subagents", run: stopChild },
-			],
-		}
-	})
+	Keymap.createLayer(() => ({
+		mode: "global",
+		enabled: open() && transcriptHandle?.ownsInput() === true && dialog.stack.length === 0,
+		priority: 2,
+		commands: [
+			{ bind: "up,k", title: t("panel.subagents.keymap.scrollUp"), group: "Subagents", run: () => scrollBy(-1) },
+			{ bind: "down,j", title: t("panel.subagents.keymap.scrollDown"), group: "Subagents", run: () => scrollBy(1) },
+			{ bind: "return", title: t("panel.subagents.keymap.steer"), group: "Subagents", run: openSteer },
+			{ bind: "x", title: t("panel.subagents.keymap.stopTwice"), group: "Subagents", run: stopChild },
+		],
+	}))
 
 	// ---- rendering ----
 	function clip(text: string, width: number): string {

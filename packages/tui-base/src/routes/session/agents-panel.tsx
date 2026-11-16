@@ -1003,15 +1003,15 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 
 	// ---- letter hotkeys: the consumer's own Keymap layer (not PANEL_KEY_IDS) ----
 	Keymap.createLayer(() => {
-		// Only the manager's own top layer may answer. A kit layer pushed on
-		// top (a confirm dialog, a settings dropdown) is `panels.top` while
-		// `layers` still names our last level, so the hotkeys stay parked
-		// there instead of leaking into the layer below the popup.
-		const top = panels.top
+		// Only the manager's own top layer may answer. Ownership is the kit's
+		// frame predicate (`ownsInput`, ADR-0008): a kit layer pushed on top (a
+		// confirm dialog, a settings dropdown) or a dialog above the panel
+		// makes the deepest own handle yield, so the hotkeys stay parked there
+		// instead of leaking into the layer below the popup.
 		const ownTop = layers().at(-1)?.handle
 		return {
 			mode: "global",
-			enabled: open() && top !== undefined && top === ownTop,
+			enabled: open() && ownTop?.ownsInput() === true,
 			priority: 2,
 			commands: [
 			{

@@ -164,6 +164,16 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
     get depth() {
       return Math.max(0, layers().findIndex((item) => item.id === entry.id))
     },
+    get frame() {
+      return entry.frame
+    },
+    // ADR-0008: the consumer-layer gate. The host bridge owns the real
+    // predicate (dialogs and deeper surfaces push above this frame); without
+    // a bridge, stack-top identity keeps the pre-ADR behavior.
+    ownsInput: () =>
+      ownership !== undefined
+        ? ownership.owns(entry.frame)
+        : layers().at(-1)?.id === entry.id,
     close() {
       if (entry.handle) entry.handle.close()
       else entry.pendingClose = true
@@ -191,6 +201,8 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
         return {
           id,
           depth: 0,
+          frame: undefined,
+          ownsInput: () => false,
           close: () => {},
           closeNow: () => {},
         }

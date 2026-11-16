@@ -26,6 +26,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "so
 import type { InputRenderable } from "@opentui/core"
 import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
+import { useIsPageOwner } from "../../context/input-ownership"
 import { t } from "../../i18n"
 import { useDialog } from "../../ui/dialog"
 import { DialogConfirm } from "../../ui/dialog-confirm"
@@ -78,6 +79,9 @@ export function SkillsPanel(props: {
 }) {
 	const theme = useThemeOptional()
 	const dialog = useDialog()
+	// ADR-0008: this manager is a page surface (it pushes no ownership frame);
+	// its keys are off whenever a dialog, panel or dock owns the keyboard.
+	const pageOwns = useIsPageOwner()
 
 	const [open, setOpen] = useSkillsPanelOpenState()
 	const [filterOpen, setFilterOpen] = createSignal(false)
@@ -222,7 +226,9 @@ export function SkillsPanel(props: {
 
 	Keymap.createLayer(() => ({
 		mode: "global",
-		enabled: open() && dialog.stack.length === 0,
+		// ADR-0008: page-ownership gate (subsumes the old dialog-stack check:
+		// a dialog pushes its own frame above the page, as does a kit panel).
+		enabled: open() && pageOwns(),
 		priority: 2,
 		commands: [
 			{ bind: "escape", title: t("panel.skills.keymap.close"), group: "Skills", run: close },
