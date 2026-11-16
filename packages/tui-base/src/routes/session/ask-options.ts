@@ -132,5 +132,6 @@ export function estimateAskRows(ask: {
 	if (hasReviewRow(question, askNeedsReview(ask.questions))) rows += 1
 	rows += 1 // inline row
 	rows += 1 // footer hint
+	rows += 1 // bottom rule (mirrors the top rule)
 	return rows
 }

@@ -25,17 +25,27 @@
  *   6. review row   `⏎ Review answers` when the batch needs the review page
  *   7. inline row   `✎ <input>` — always last and always visible
  *   8. footer       phase-derived key hint + the dock's queue indicator
+ *   9. bottom rule  a full-width single rule mirroring the top one, so the
+ *                   panel closes against the surface below instead of fading
+ *                   into it (both sides share `theme.background.base`).
  * The review phase replaces rows 5-7 with one row per question plus Submit.
  *
  * Glyph vocabulary (no new language invented):
- *   - `›`  cursor marker (accent / current-row text role). A row that still
- *          holds the list cursor while the inline input owns the phase keeps
- *          a MUTED `›` (same glyph, no row band) so the last list position
- *          stays marked after Esc, when no option is focused.
+ *   - `›`  cursor marker (current-row text role on the focus band, faint once
+ *          the band is gone). A row that still holds the list cursor while
+ *          the inline input owns the phase keeps a MUTED `›` (same glyph, no
+ *          row band) so the last list position stays marked after Esc, when
+ *          no option is focused.
+ *   - `●`/`○` single-select state — filled / hollow dot. Selection is a
+ *          GLYPH, never colour alone: the dot is the only thing that moves
+ *          when the pick changes, so a blue-ish (accent) label can never be
+ *          mistaken for the cursor.
  *   - `□`/`■` multi-select state — hollow / filled box. The project already
  *          uses the box family for square state markers (`■` in the spinner
  *          and session tabs); `✔`/`✘` stay reserved for confirm/fail
  *          (panel-kit Check, tool status) and never mean "unchecked".
+ *          The single-select dot uses the same slot as the box, so the
+ *          number column is aligned across single- and multi-select rows.
  *   - `✎`  resident free-text row (spec §5)
  *   - `✓`  answered question on the tab strip and the review rows (spec §8)
  *   - `⏎`  the review/submit rows' Enter affordance (existing copy keys)
@@ -58,9 +68,20 @@ import { stringWidth } from "../../util/string-width"
  * the Recommended badge drops to its own continuation line (spec §2). */
 export const ASK_COMPACT_COLUMNS = 64
 
-/** The rows are painted one column in from the dock edge (the dock owns no
- * gutters — the surface inside does). */
-const GUTTER = 1
+/** The rows are painted two columns in from the dock edge (the dock owns no
+ * gutters — the surface inside does). Two is the transcript's content inset:
+ * inside the reply pane's one-column frame the feed starts at column 3, so a
+ * one-column gutter would leave the panel looking flush-left. The top and
+ * bottom rules stay full width. */
+const GUTTER = 2
+
+/** The cursor marker's cell width (`› ` or the blank equivalent). */
+const CURSOR_CELLS = 2
+
+/** The selection-state cell width (`● `, `○ `, `■ `, `□ `). It is ALWAYS
+ * present — single-select and multi-select share the slot — so the number
+ * column starts at the same offset on every row. */
+const STATE_CELLS = 2
 
 /** Fixed gap between an option label and its Recommended badge: the badge is
  * a label attribute, not a column, so it sits 2 cells after the text. */
@@ -287,9 +308,12 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 			selected: picks().includes(option.label),
 		}))
 
-	/** First column of the label: gutter + cursor marker + checkbox (multi) +
-	 * number gutter. Continuation lines (badge drop, description) indent here. */
-	const labelColumn = (row: OptionRowModel): number => GUTTER + 2 + (multi() ? 2 : 0) + `${row.number}. `.length
+	/** First column of the label: gutter + cursor marker + selection-state
+	 * cell + number gutter. The state cell is present on every row (single or
+	 * multi), so numbers align across the whole list. Continuation lines
+	 * (badge drop, description) indent here. */
+	const labelColumn = (row: OptionRowModel): number =>
+		GUTTER + CURSOR_CELLS + STATE_CELLS + `${row.number}. `.length
 
 	// --- footer ----------------------------------------------------------
 
@@ -479,15 +503,21 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 				<box flexDirection="column" width="100%" flexShrink={0}>
 					<Index each={questions()}>
 						{(item, qi) => (
-							<box
-								flexDirection="column"
-								width="100%"
-								flexShrink={0}
-								paddingLeft={GUTTER}
-								backgroundColor={reviewRowActive(qi) ? currentBg() : undefined}
-							>
-								<box flexDirection="row" width="100%">
-									<text fg={accent()}>{reviewRowActive(qi) ? "› " : "  "}</text>
+							<box flexDirection="column" width="100%" flexShrink={0}>
+								{/* The focus band sits on the row's first line only (the
+								 * one grammar the inline input and option rows share);
+								 * the answer continuation stays on the dock surface so
+								 * its accent/faint tone is never painted on the band. */}
+								<box
+									flexDirection="row"
+									width="100%"
+									flexShrink={0}
+									paddingLeft={GUTTER}
+									backgroundColor={reviewRowActive(qi) ? currentBg() : undefined}
+								>
+									<text fg={reviewRowActive(qi) ? currentFg() : accent()}>
+										{reviewRowActive(qi) ? "› " : "  "}
+									</text>
 									<text fg={reviewRowActive(qi) ? currentFg() : muted()}>{"✓ "}</text>
 									<text fg={reviewRowActive(qi) ? currentFg() : base()} wrapMode="word">
 										{item().prompt}
@@ -496,7 +526,7 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 								{/* The answer line carries the unanswered state distinctly:
 								 * the answer mark + accent when answered, faint "not answered"
 								 * otherwise. */}
-								<box paddingLeft={4}>
+								<box paddingLeft={GUTTER + CURSOR_CELLS + STATE_CELLS}>
 									<text fg={answerText(qi) !== "" ? accent() : faint()} wrapMode="word">
 										{`→ ${answerText(qi) !== "" ? answerText(qi) : t("overlay.ask.unanswered")}`}
 									</text>
@@ -511,7 +541,9 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 						paddingLeft={GUTTER}
 						backgroundColor={reviewSubmitActive() ? currentBg() : undefined}
 					>
-						<text fg={accent()}>{reviewSubmitActive() ? "› " : "  "}</text>
+						<text fg={reviewSubmitActive() ? currentFg() : accent()}>
+							{reviewSubmitActive() ? "› " : "  "}
+						</text>
 						<text fg={reviewSubmitActive() ? currentFg() : base()} wrapMode="none">
 							{t("overlay.ask.submitRow")}
 						</text>
@@ -531,6 +563,11 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 					</text>
 				</Show>
 			</box>
+			{/* 9. Bottom edge: the panel surface and the surface right below it
+			 *    share `background.base`, so without an explicit rule the footer
+			 *    fades into the next line. Mirrors the top rule exactly (same
+			 *    single style, `theme.border.base`, full width). */}
+			<box width="100%" flexShrink={0} border={["bottom"]} borderStyle="single" borderColor={rule()} />
 		</box>
 	)
 }
@@ -571,6 +608,17 @@ function OptionRow(props: {
 	const label = () => splitRecommended(props.row().option.label)
 	const number = () => `${props.row().number}. `
 	const badge = () => `[${t("overlay.ask.recommended")}]`
+	/** Selection is a glyph, never a colour: the filled/hollow dot (single) or
+	 * box (multi) is the state, and it keeps the number column aligned because
+	 * both families are `STATE_CELLS` wide and always painted. */
+	const stateGlyph = () => {
+		if (props.multi()) return props.row().selected ? "■ " : "□ "
+		return props.row().selected ? "● " : "○ "
+	}
+	const stateColor = () => {
+		if (props.cursor()) return currentFg()
+		return props.row().selected ? success() : faint()
+	}
 	/** Inline badge: the label column plus the label, the 2-cell gap and the
 	 * badge must fit the dock width. Otherwise (or in compact mode) the badge
 	 * moves to its own continuation line at the label column. */
@@ -579,35 +627,29 @@ function OptionRow(props: {
 		const used = props.labelColumn() + stringWidth(label().label) + BADGE_GAP + stringWidth(badge())
 		return used <= props.width()
 	}
-	const labelColor = () => {
-		if (props.cursor()) return currentFg()
-		if (props.marked()) return base()
-		// A picked single-select row stays visibly chosen without a checkbox
-		// (multi-select carries the box glyph instead).
-		if (!props.multi() && props.row().selected) return accent()
-		return base()
-	}
+	/** One focus grammar (the inline input's band): the ROW's first line takes
+	 * the focus background and every glyph on it, including the badge, switches
+	 * to the matching focused text token. Continuation lines stay on the dock
+	 * surface so muted descriptions never sit on the band. */
+	const labelColor = () => (props.cursor() ? currentFg() : base())
 
 	return (
-		<box
-			flexDirection="column"
-			width="100%"
-			flexShrink={0}
-			backgroundColor={props.cursor() ? currentBg() : undefined}
-		>
-			<box flexDirection="row" width="100%" paddingLeft={GUTTER}>
-				<text fg={props.cursor() ? accent() : faint()}>{props.marked() ? "› " : "  "}</text>
-				<Show when={props.multi()}>
-					{/* Hollow box = not selected, filled box = selected. The
-					 * confirm/fail glyphs (✔/✘) belong to other surfaces. */}
-					<text fg={props.row().selected ? success() : faint()}>{props.row().selected ? "■ " : "□ "}</text>
-				</Show>
+		<box flexDirection="column" width="100%" flexShrink={0}>
+			<box
+				flexDirection="row"
+				width="100%"
+				flexShrink={0}
+				paddingLeft={GUTTER}
+				backgroundColor={props.cursor() ? currentBg() : undefined}
+			>
+				<text fg={props.cursor() ? currentFg() : faint()}>{props.marked() ? "› " : "  "}</text>
+				<text fg={stateColor()}>{stateGlyph()}</text>
 				<text fg={props.cursor() ? currentFg() : faint()}>{number()}</text>
 				<text fg={labelColor()} wrapMode="word" flexGrow={badgeInline() ? 0 : 1}>
 					{label().label}
 				</text>
 				<Show when={badgeInline()}>
-					<text fg={success()}>{`  ${badge()}`}</text>
+					<text fg={props.cursor() ? currentFg() : success()}>{`  ${badge()}`}</text>
 				</Show>
 			</box>
 			<Show when={label().recommended && !badgeInline()}>

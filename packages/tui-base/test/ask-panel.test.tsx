@@ -19,7 +19,10 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { onMount } from "solid-js"
 import { testRender } from "@opentui/solid"
+import type { CapturedFrame, CapturedSpan } from "@opentui/core"
 import { bundledLocalesDir, loadLocales, setLanguage, setLanguages } from "@dsh-opentui/i18n"
+import { ConfigProvider, resolve } from "../src/config"
+import { ThemeProvider, createThemeSource } from "../src/context/theme"
 import { DockProvider, DockSeat, useDock, type DockApi, type DockHandle } from "../src/routes/session/dock-host"
 import { AskPanel } from "../src/routes/session/ask-panel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
@@ -36,21 +39,31 @@ function CaptureDock(props: { done: (api: DockApi) => void }) {
 	return <box height={0} />
 }
 
-async function mount(options: { width: number; height: number }): Promise<{ setup: Setup; api: DockApi }> {
+async function mount(options: { width: number; height: number; themed?: boolean }): Promise<{ setup: Setup; api: DockApi }> {
 	let api: DockApi | undefined
+	const tree = () => (
+		<DockProvider>
+			<CaptureDock done={(value) => (api = value)} />
+			<DockSeat
+				composer={() => (
+					<box width="100%" height={1}>
+						<text wrapMode="none">composer seat</text>
+					</box>
+				)}
+			/>
+		</DockProvider>
+	)
 	const setup = await testRender(
-		() => (
-			<DockProvider>
-				<CaptureDock done={(value) => (api = value)} />
-				<DockSeat
-					composer={() => (
-						<box width="100%" height={1}>
-							<text wrapMode="none">composer seat</text>
-						</box>
-					)}
-				/>
-			</DockProvider>
-		),
+		() =>
+			options.themed === true ? (
+				<ConfigProvider config={resolve({}, { terminalSuspend: true })}>
+					<ThemeProvider mode="dark" source={createThemeSource("")}>
+						{tree()}
+					</ThemeProvider>
+				</ConfigProvider>
+			) : (
+				tree()
+			),
 		{ width: options.width, height: options.height, exitOnCtrlC: false },
 	)
 	await settle(setup)
@@ -89,6 +102,30 @@ const lineWith = (setup: Setup, needle: string): string | undefined =>
 		.split("\n")
 		.find((line) => line.includes(needle))
 
+/** The painted span that carries `needle` (colours included). */
+function spanWith(setup: Setup, needle: string): CapturedSpan | undefined {
+	for (const line of setup.captureSpans().lines) {
+		for (const span of line.spans) {
+			if (span.text.includes(needle)) return span
+		}
+	}
+	return undefined
+}
+
+/** RGBA equality with a tolerance (captured channels are floats). */
+function sameColor(
+	a: CapturedSpan["bg"] | undefined,
+	b: CapturedSpan["bg"] | undefined,
+): boolean {
+	if (a === undefined || b === undefined) return false
+	return (
+		Math.abs(a.r - b.r) < 0.01 &&
+		Math.abs(a.g - b.g) < 0.01 &&
+		Math.abs(a.b - b.b) < 0.01 &&
+		Math.abs(a.a - b.a) < 0.01
+	)
+}
+
 describe("ask panel body (spec §2-§5, §8)", () => {
 	/** D1: the surface opens with one full-width single rule, the divider
 	 * grammar `/settings` uses (panel-kit `resolvePanelChrome().divider`).
@@ -104,8 +141,9 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 			const lines = frame(setup).split("\n")
 			const rule = lines[0] ?? ""
 			expect(rule).toBe("─".repeat(80))
-			// The body keeps its one-column gutter under the rule.
-			expect(lines[1]?.startsWith(" pick one")).toBe(true)
+			// Content inset: the transcript's feed starts at column 3, so the
+			// panel keeps a two-column gutter under the full-width rule.
+			expect(lines[1]?.startsWith("  pick one")).toBe(true)
 			handle.close()
 		} finally {
 			await setup.dispose()
@@ -135,7 +173,7 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 			expect(painted).toContain("Storage")
 			expect(painted).toContain("Which database should the migration target")
 			expect(painted).toContain("Pick the engine the ops team already runs.")
-			expect(painted).toContain("› 1. postgres")
+			expect(painted).toContain("› ● 1. postgres")
 			expect(painted).toContain("[Recommended]")
 			expect(painted).not.toContain("(Recommended)")
 			// D2: the badge is a label attribute with a fixed 2-cell gap — not
@@ -232,7 +270,7 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 			expect(frame(setup)).toContain("⏎ confirm")
 			// The list keeps a muted marker on its last position while the
 			// inline input owns the focus (never a marker-less list).
-			expect(frame(setup)).toContain("› 1. a")
+			expect(frame(setup)).toContain("› ○ 1. a")
 
 			// The resident row paints the live buffer (a real input, value-bound).
 			controller.setInlineText("free text answer")
@@ -396,13 +434,191 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 
 			const painted = frame(setup)
 			// Wrapped title, not truncated.
-			expect(painted).toContain("cut off at the edge")
+			expect(painted).toContain("cut off at the")
+			expect(painted).toContain("edge")
 			expect(painted).not.toContain("…")
 			// Badge on its own continuation line, indented under the label.
 			const badgeLine = lineWith(setup, "[Recommended]")
 			expect(badgeLine).toBeDefined()
 			expect(badgeLine).not.toContain("long option label")
 			expect(painted).toContain("wraps")
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	/** Focus grammar: the row under the cursor must read as strongly as the
+	 * inline input. Both paint the SAME theme pair — the panel-kit row theme
+	 * projection (`background.action.primary.focused` +
+	 * `text.action.primary.focused`, panel-kit-host.tsx:96-98), which is also
+	 * what `/settings`' List highlight uses. */
+	test("focus grammar: the cursor row carries the same band as the inline input", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24, themed: true })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([{ id: "q1", prompt: "pick one", options: [{ label: "alpha" }, { label: "bravo" }] }])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+
+			// Options phase: row 1 owns the cursor and must be banded; row 2 not.
+			const cursorBand = spanWith(setup, "alpha")?.bg
+			const plainBand = spanWith(setup, "bravo")?.bg
+			expect(cursorBand).toBeDefined()
+			expect(plainBand).toBeDefined()
+			expect(sameColor(cursorBand, plainBand)).toBe(false)
+
+			// The focused text token is used on that band (dark-on-band), not the
+			// raised/muted role: the cursor label differs from the idle label.
+			const idleLabelFg = spanWith(setup, "bravo")?.fg
+			expect(sameColor(spanWith(setup, "alpha")?.fg, idleLabelFg)).toBe(false)
+
+			// The inline input's focused row is the reference: same band.
+			controller.focusInput()
+			await settle(setup)
+			const inputBand = spanWith(setup, "Type something.")?.bg
+			expect(inputBand).toBeDefined()
+			expect(sameColor(cursorBand, inputBand)).toBe(true)
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	/** Cursor ≠ selected: selection is a GLYPH (●/○ single, ■/□ multi), so a
+	 * selected row that does NOT hold the cursor is still legible, and the
+	 * label tone of a selected idle row equals a plain idle row (no
+	 * colour-only selection). */
+	test("selection is a glyph: selected-but-not-cursor is distinguishable without colour", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24, themed: true })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([
+				{
+					id: "q1",
+					prompt: "pick one",
+					options: [{ label: "alpha (Recommended)" }, { label: "bravo" }, { label: "charlie" }],
+				},
+			])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+
+			// Cursor and selection coincide on row 1 → both markers on the band.
+			expect(frame(setup)).toContain("› ● 1. alpha")
+
+			// Move the cursor away: row 1 stays selected through the filled dot.
+			controller.setCursor(2)
+			await settle(setup)
+			const painted = frame(setup)
+			expect(painted).toContain("● 1. alpha")
+			expect(painted).toContain("○ 2. bravo")
+			expect(painted).toContain("› ○ 3. charlie")
+
+			// The idle selected label and the idle plain label share one tone:
+			// the dot, not the colour, is what says "selected".
+			expect(sameColor(spanWith(setup, "alpha")?.fg, spanWith(setup, "bravo")?.fg)).toBe(true)
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("a row that is both cursor and selected keeps the selection glyph on the band", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([{ id: "q1", prompt: "pick one", options: [{ label: "alpha (Recommended)" }, { label: "bravo" }] }])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+			expect(frame(setup)).toContain("› ● 1. alpha")
+			// Back from row 2: the cursor row is still the selected one.
+			controller.setCursor(1)
+			await settle(setup)
+			controller.setCursor(0)
+			await settle(setup)
+			expect(frame(setup)).toContain("› ● 1. alpha")
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	/** Inset: the panel's content starts at column 3 like the transcript feed,
+	 * continuation lines line up with the label column, and the bottom rule
+	 * mirrors the full-width top rule so the panel closes against the surface
+	 * below it (both share `background.base`). */
+	test("content inset and bottom closure match the transcript grammar", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([
+				{
+					id: "q1",
+					prompt: "pick one",
+					options: [{ label: "alpha", description: "desc text" }, { label: "bravo" }],
+				},
+			])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+
+			const lines = frame(setup).split("\n")
+			// Full-width top rule, two-column content inset.
+			expect(lines[0]).toBe("─".repeat(80))
+			expect(lines[1]?.startsWith("  pick one")).toBe(true)
+			// Gutter(2) + cursor(2) + state(2) + number(3) -> label at column 10.
+			const optionLine = lineWith(setup, "1. alpha")
+			expect(optionLine).toBeDefined()
+			expect(optionLine!.startsWith("  › ○ 1. alpha")).toBe(true)
+			// Continuation lines indent at the label column (9 cells).
+			const descriptionLine = lineWith(setup, "desc text")
+			expect(descriptionLine).toBeDefined()
+			expect(descriptionLine!.startsWith(" ".repeat(9) + "desc text")).toBe(true)
+			// The bottom rule closes the panel right under the footer hint.
+			const footerIndex = lines.findIndex((line) => line.includes("esc: decline"))
+			expect(footerIndex).toBeGreaterThan(0)
+			expect(lines[footerIndex + 1]).toBe("─".repeat(80))
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	/** 50 columns: number, marker, state glyph, label, badge and description
+	 * must all still read; the badge drops to its continuation line and the
+	 * question text wraps without truncation. */
+	test("50 columns: marker, dot, label, badge and description stay readable", async () => {
+		const { setup, api } = await mount({ width: 50, height: 30 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([
+				{
+					id: "q1",
+					prompt: "a long question that must wrap instead of being cut off at the edge",
+					options: [
+						{
+							label: "a long option label that wraps (Recommended)",
+							description: "a description that also wraps inside the narrow dock",
+						},
+						{ label: "second option" },
+					],
+				},
+			])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+
+			const painted = frame(setup)
+			expect(painted).not.toContain("…")
+			expect(painted).toContain("cut off at the")
+			expect(painted).toContain("edge")
+			// Number column aligned across rows: both labels start at column 10.
+			expect(lineWith(setup, "1. a long option")?.startsWith("  › ● 1. a long option")).toBe(true)
+			expect(lineWith(setup, "2. second option")?.startsWith("    ○ 2. second option")).toBe(true)
+			// Badge drops to its own line at the label column.
+			const badgeLine = lineWith(setup, "[Recommended]")
+			expect(badgeLine).toBeDefined()
+			expect(badgeLine!.startsWith(" ".repeat(9) + "[Recommended]")).toBe(true)
+			// Description wraps on its own continuation line.
+			expect(lineWith(setup, "a description that also")).toBeDefined()
 			handle.close()
 		} finally {
 			await setup.dispose()
