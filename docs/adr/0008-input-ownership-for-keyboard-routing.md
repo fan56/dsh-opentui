@@ -180,6 +180,23 @@ to receive keys.
    overlay layer gated on `owns(dockFrame)`; page layers are therefore off
    for the whole batch, not just while an overlay happens to be on the
    dialog stack.
+   - **Normative rule for every in-flow surface: never push its ownership
+     frame above an absolutely-positioned overlay.** Dialogs and panel-kit
+     panels are `position="absolute"` (`ui/dialog.tsx:87`,
+     `panel-kit/src/panel.tsx:320`), so they remain visually on top after an
+     in-flow surface pushes. If the dock admitted while a dialog or panel
+     was open, `dock` would become the top frame and the dock's Esc ladder
+     would consume a key aimed at the overlay — silently declining the ask
+     batch. A review found exactly that window in the first cut of the
+     admission effect.
+   - Therefore **admission waits for page ownership and re-evaluates
+     reactively**: a new ask opens only while the top frame is the page
+     frame, and the admission effect re-runs on `top()` changes so a queued
+     ask admits as soon as the overlay closes. The gate lives in admission,
+     not in `dock.open`'s frame push: the frame is pushed in the same call
+     that enqueues the admitted request (`dock-host.tsx:250-257`), and
+     `turn-overlays.tsx:163-169` reads the page-ownership predicate before
+     calling it.
 5. **The ask surface is not a panel-kit panel** (reasons above). It is an
    in-flow dock at the composer seat (spec §2). panel-kit stays as-is for
    /settings and /agents.
@@ -199,21 +216,30 @@ to receive keys.
    They are not part of this change.
 7. **Focus is explicit, not a microtask race.** panel-kit already restores
    focus on close (`stack.tsx:119-146` via `queueMicrotask`; `closeAll`
-   `:207-218`); what it does **not** do is focus into the panel on open —
-   `stack.tsx:185-187` blurs the previously focused renderable and nothing
+   `:238-251`); what it does **not** do is focus into the panel on open —
+   `stack.tsx:211-213` blurs the previously focused renderable and nothing
    calls `focus()`. The panel also never becomes the focused renderable
    (`panel.tsx:331-342` is not `focusable`). The ask dock is not a dialog
-   entry and not a kit layer, so none of the three timer/microtask restore
-   paths runs for it; the dock refocuses the composer **by ref after layout**
-   on submit/decline (spec §10), and a test pins exactly one `focus()` call
-   per settlement.
+   entry and not a kit layer, but `TurnOverlayHost.onIdle`'s 3 ms reclaim
+   still runs on every drain, ask drains included
+   (`turn-overlays.tsx:132-134`). It is safe because both that reclaim and
+   the dock's post-layout `bindComposerFocus` are guarded by
+   `!composerRef.focused()` (`v2-entry.tsx:291-293`, `:890-892`): exactly
+   one effective `focus()` call lands per settlement, and the second path is
+   a no-op rather than suppressed (spec §10). A test pins one call
+   (`dock-host.test.tsx:298-331`).
 8. **`TurnCancelKeys` keeps one instance and one layer,** gated on
    `top() === "page"` for both Esc and Ctrl+C. There is no second
    always-on quit layer: while any overlay frame (including the dock) is on
    top, Ctrl+C belongs to that overlay and quit is unreachable. The arm
-   state stays inside one `createTurnCancel` (`turn-cancel.tsx:91-150`), so
-   the double-press windows are unchanged. The page-level interrupt press
-   must not arm the quit gate (spec §6, hazard).
+   state stays inside one `createTurnCancel` (`turn-cancel.tsx:135-199`), so
+   the double-press windows are unchanged. On a busy turn, the press
+   immediately after a dock Ctrl+C decline must not arm the quit gate: it
+   consumes a one-shot non-arming interrupt (`turn-cancel.tsx:69-85`,
+   `:183-188`). An ordinary page-level Ctrl+C on a busy turn still presses
+   the gate and arms, exactly as in 0.17.3
+   (`turn-cancel.tsx:189-196`); the invariant is that three
+   consecutive presses never quit inside the window (spec §6).
 
 ### Proposed shape
 
@@ -294,11 +320,14 @@ Negative / cost:
   `up/down/home/end/tab/escape` (`pane-focus.tsx:197-267`). Gate both
   layers on ownership; do not treat F6 as harmless.
 
-Risks: reworking the page-level Ctrl+C press so that it interrupts without
-arming changes the shipped double-press convention documented at
-`turn-cancel.tsx:1-33`. The arm state must stay inside `createTurnCancel`
-(`turn-cancel.tsx:91-150`) and the acceptance case is three presses in a row
-never quitting (spec §6).
+Risks: the one-shot non-arming interrupt is module-scoped state shared by the
+dock and the page layer (`turn-cancel.tsx:69-85`). A stale flag would turn
+the next busy-turn press into a non-arming interrupt, so it is consumed
+unconditionally on the next Ctrl+C (`:81-85`) and has a test reset (`:77-79`).
+An ordinary page-level press still interrupts **and** arms, so the shipped
+double-press convention documented at `turn-cancel.tsx:16-22` is unchanged
+outside the dock transition; the acceptance case is three presses in a row
+never quitting inside the window (spec §6).
 
 ## Verification
 
@@ -311,10 +340,11 @@ section):
 2. **PgUp/PgDn over /settings and /agents.** The panel's own pager wins when
    its list overflows; the transcript does not scroll.
 3. **No overlay open.** Esc still arms/interrupts, PgUp/PgDn still scroll the
-   transcript. Ctrl+C on a busy turn interrupts without arming; two Ctrl+C
-   presses on an idle page still quit (spec §6).
+   transcript. Ctrl+C on a busy turn still interrupts **and** arms, as in
+   0.17.3; two Ctrl+C presses on an idle page quit (spec §6).
 4. **Ask dock open.** Esc and Ctrl+C reach the dock only; the page cancel
-   layer never fires. After the dock closes, a page Ctrl+C interrupts the
-   turn without arming quit (spec §6 hazard).
+   layer never fires. After the dock closes, the next page Ctrl+C consumes
+   the one-shot: on a busy turn it interrupts without arming. The press
+   after that is an ordinary busy-turn press and arms again (spec §6).
 5. **Frame accounting.** Pushing/popping dialog, panel and dock frames
    returns the stack to exactly `[page]`; a leaked frame fails the test.

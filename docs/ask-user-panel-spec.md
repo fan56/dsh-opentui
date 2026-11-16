@@ -17,11 +17,11 @@ the renderer, keyboard semantics, admission order against the approval card,
 focus restoration, transcript replay, and the deletion of the non-live legacy
 ask path.
 
-Out of scope: the approval card's content and verdict semantics (unchanged;
-only its host slot is shared, §7), the stop-confirmation dialog (unchanged,
-still a vendored `Dialog`), the panel-kit `List` control (not used by this
-surface), and the web product profile (referenced only as a normalization
-precedent, §3).
+Out of scope: the approval card's content, verdict semantics and host
+(unchanged; it stays on the dialog stack, §7), the stop-confirmation dialog
+(unchanged, still a vendored `Dialog`), the panel-kit `List` control (not
+used by this surface), and the web product profile (referenced only as a
+normalization precedent, §3).
 
 ## 2. Surface: an in-flow dock, not a panel-kit panel
 
@@ -54,12 +54,14 @@ to the page root column (where `Transcript`, `PowerlineFooter` and
 `HintsLine` already are, `examples/v2-entry.tsx:1055`, `:1221-1236`) so the
 dock and the composer swap in the same in-flow position:
 
-- while the dock is open the composer is not mounted in that seat;
+- while the dock is open the composer's seat is hidden (`visible={false}`,
+  rows 0) rather than unmounted — the component and its component-scoped
+  controller stay alive, which is where the draft and history live
+  (`dock-host.tsx:378-383`);
 - the transcript stays visible above and **reflows** into the rows the dock
   leaves (the scrollbox is `flexGrow`; nothing is covered and no scrim is
   painted);
-- on settle the composer returns with its draft intact (the draft lives in
-  composer state, not in the component).
+- on settle the composer's rows return with the draft intact.
 
 A vendored `Dialog` opened while the dock is up (the stop confirm, a model
 picker) is pushed above the dock in the ownership stack (ADR-0008); the dock
@@ -120,6 +122,16 @@ is reused.
 (`list.tsx:663-719` on the box's `onKeyDown`, `list.tsx:719` `focusable`), so
 it cannot host a resident live input row.
 
+**Known rough edge — no scroll handle in the render context.** The shipped
+`DockRenderContext` exposes `id`, `close`, `width` and `maxHeight` only
+(`routes/session/dock-host.tsx:82-91`); it does not hand the body the dock's
+`<scrollbox>`. The body discovers the ancestor scrollbox by walking
+`parent` until it finds a `scrollChildIntoView` (`ask-panel.tsx:85-93`).
+This is not a bug — the ensure-visible work lands on the right renderable —
+but it is an implicit coupling: a second scroller introduced between the row
+and the dock body would silently receive the call. Exposing the handle on
+`DockRenderContext` is a later cleanup, not a prerequisite.
+
 **Row anatomy.**
 
 ```
@@ -175,6 +187,31 @@ it cannot host a resident live input row.
    merging the header into the question. It emits the extended `AskEntry`
    from §9.
 5. `id` stays the correlation key between request and answer.
+
+### Blank answers (normative)
+
+Submitting a batch with a question left unanswered must produce the same
+wire shape as a question missing from the picks: `selected: []` plus
+`custom: "declined"` — **never** `selected: [""]`. The two are not
+equivalent: `""` is a selected value, and the host would read a
+one-element selection instead of a declined answer.
+
+This case is newly reachable. The questions phase paints the trailing
+`⏎ Review answers` row for every option-bearing question of a review batch
+(`hasReviewRow`, `routes/session/ask-options.ts:94-96`; rendered at
+`ask-panel.tsx:376-389`), so the review page — and its Submit row — can be
+reached with questions still unanswered; `submit()` resolves the batch
+unconditionally (`turn-overlay-controller.ts:542-549`). The controller's
+per-question pick carries the empty string for such a question
+(`selected: picks[0] ?? ""`, `turn-overlay-controller.ts:564-567`); that is
+an internal `SeamAskPick`, not the wire shape. `answersValue` recognizes an
+empty pick with no custom text as unanswered and emits the missing-pick
+shape (`{ id, selected: [], custom: "declined" }`,
+`packages/shell/src/client/remote-waterfall.ts:206-223`, rule at `:213-215`).
+Emitting `[""]` would also make replay disagree with the record (an
+unanswered question renders as declined). The controller may keep the empty
+pick internally; the conversion belongs at `answersValue`, which must not
+turn an empty pick into a one-element array.
 
 ### Recommended-suffix normalization (normative)
 
@@ -250,6 +287,20 @@ while the list is focused — the character is inserted and focus moves to the
 input. Digits `1`–`9` are reserved for quick-pick while the list is focused
 (§4); they type digits only once the input holds focus. A zero-option
 question opens with the input focused.
+
+**Selection gate (normative).** `phase` is the only gate for option
+interaction. `toggle` refuses only the `review` phase and the `input` phase,
+which owns the keys (`turn-overlay-controller.ts:213-222`). An active inline
+draft must not block option picking: choosing an option clears the draft and
+the committed custom answer (`toggle` writes `customs[qi] = undefined` and
+`customDraft = null`, `:226-227`; the mutual exclusion is `selected ⊕
+custom`). Because the resident inline row is always mounted, a live
+`customDraft` is the normal state, not a modal one — a `customDraft !==
+null` early return in `toggle` silently makes the list read-only while the
+user has typed anything, and must not be reintroduced. The key layer's
+gates are phase-based (`ask-keys.ts:181-232`): digits and Space are held
+off only while the input holds the renderer focus, and Enter is released
+only in the input phase.
 
 **Keys in the input.**
 
@@ -330,57 +381,50 @@ A persistent footer hint always states what Esc does right now
 indicator. The review-page hint (`overlay.ask.esc.review`) reads
 `esc: back to question`.
 
-**Ctrl+C — the same ladder, one extra step at the outermost level.** Ctrl+C
-walks the same back-out stages. At the outermost level the **first** Ctrl+C
-declines the batch and closes the dock. **Inside the dock, Ctrl+C never
-interrupts the turn and never arms the quit chain** — not at any stage, not
-at the outermost one. A **second** Ctrl+C, now on the page, is what
-interrupts the turn:
+**Ctrl+C — the same ladder, then one non-arming page press.** Ctrl+C walks
+the same back-out stages as Esc (`ask-keys.ts:242-272`). At the outermost
+level it declines the batch and closes the dock. **Inside the dock, Ctrl+C
+never interrupts the turn and never arms the quit gate.** The dismissing
+press does one extra thing: it arms a one-shot **non-arming interrupt**
+(`armNonArmingInterrupt`, `ask-keys.ts:266-272`; `turn-cancel.tsx:69-85`).
+The next page-level Ctrl+C consumes that one-shot: on a busy turn it calls
+`interrupt()` and returns without `gate.press()` or `arm()`
+(`turn-cancel.tsx:183-188`).
 
-- the dock's Ctrl+C resolves the same decline envelope as Esc stage 3 and
-  closes; the turn keeps running;
-- the page-level Ctrl+C (the turn is still busy) calls `interrupt` through a
-  **non-arming interrupt path**: it must not press or arm the quit gate.
+That is the *only* non-arming page press. An **ordinary** page-level Ctrl+C
+on a busy turn still does `gate.press()` → `interrupt()` → `arm("ctrl-c",
+…)`, exactly as in 0.17.3 (`turn-cancel.tsx:189-196`): the press that
+interrupts still arms the quit chain, and a second press inside
+`CTRL_C_QUIT_WINDOW_MS` (`turn-cancel.tsx:55`) quits.
 
-**Hazard this pin closes.** `turn-cancel.tsx:134-147` currently does both in
-one command: `ctrlC()` checks the quit gate, then `if (props.busy())
-props.interrupt()`, then `arm("ctrl-c", …)` unconditionally. A naive reading
-of "first press declines, second press interrupts" would let that second
-press arm the quit chain, and a third press inside the 500 ms window
-(`CTRL_C_QUIT_WINDOW_MS`, `turn-cancel.tsx:39-41`) would call `props.quit()`
-and exit the application from a key sequence the user read as "dismiss the
-panel, stop the turn". Required shape:
+The invariant is therefore narrower than "Ctrl+C never arms quit":
+**three consecutive Ctrl+C presses with a busy turn and an open dock must
+not quit within that window.** Press 1 (dock) declines and arms the
+one-shot; press 2 (page) consumes the one-shot and only interrupts; press 3
+is either another busy-turn press (re-arms, after the one-shot is spent) or
+an idle press (arms the idle quit gate) — neither reaches `quit()` on that
+press. Acceptance test: "turn interrupted, app still running".
 
-```ts
-// page-level Ctrl+C, turn busy: interrupt, do not touch the gate
-if (props.busy()) {
-  props.interrupt()
-  return true // no gate.press(), no arm()
-}
-// turn idle: the existing double-press quit gate
-if (gate.press() === "quit") { disarm(); props.quit(); return true }
-arm("ctrl-c", () => gate.reset())
-```
+**Why the one-shot, not an unconditional non-arming branch.** The earlier
+draft required `if (busy) { interrupt; return }` on every busy page press.
+That is not what shipped and would change the shipped double-press
+convention for every user, not just for the dock transition: quitting would
+then need two presses from an idle page in all cases. The one-shot keeps
+the fix local to the press that follows a dock dismissal. The divergence
+from the convention documented at `turn-cancel.tsx:16-22` is correspondingly
+narrow: only the press immediately after a dock Ctrl+C skips the arm.
 
-The quit chain therefore arms **only on an idle page**, where there is no
-turn to interrupt. Acceptance test: three consecutive Ctrl+C presses with a
-busy turn and an open dock end at "turn interrupted, app still running".
-
-**Acknowledged divergence.** `turn-cancel.tsx:1-33` documents the shipped
-convention "ctrl+c (1st) interrupts **and** arms quit; ctrl+c (2nd) quits".
-This spec intentionally diverges: the press that interrupts no longer arms.
-The reason is the hazard above — a dock decline must not be one press away
-from quitting the application — and the cost is that quitting now requires
-two presses from an idle page instead of one press from a busy turn followed
-by one more. The divergence is deliberate and must be documented in
-`turn-cancel.tsx` when the code changes.
+**Hazard the one-shot closes.** Without it, press 2 would arm the chain and
+press 3 inside the 500 ms window (`CTRL_C_QUIT_WINDOW_MS`,
+`turn-cancel.tsx:55`) would `quit()` — exiting the application from a
+sequence the user read as "dismiss the panel, stop the turn".
 
 **Decline envelope unchanged.** A decline (Esc stage 3, or the dock's Ctrl+C)
 resolves the existing envelope `{ id, selected: [], custom: "declined" }`.
-The controller resolves `[]` (`routes/session/turn-overlay-controller.ts:339-344`);
+The controller resolves `[]` (`routes/session/turn-overlay-controller.ts:574-579`);
 the waterfall builds the per-question envelopes
-(`packages/shell/src/client/remote-waterfall.ts:199-222` — `answersValue`,
-with `declinedValue` used by `remote-host-session.ts:2716-2740` on a provider
+(`packages/shell/src/client/remote-waterfall.ts:206-223` — `answersValue`,
+with `declinedValue` at `:226-230` used by `remote-host-session.ts:2716-2740` on a provider
 error). No protocol change. The answers typed before the decline are
 discarded — that is the user-visible defect this staged ladder exists to
 prevent users from hitting by accident: it now takes one Esc per stage plus
@@ -388,66 +432,108 @@ one deliberate decline, with the footer saying so.
 
 ## 7. Admission order: approval and ask never coexist
 
-One interaction slot; first-come-first-served; the next pending interaction
-opens automatically when the current one settles.
+One interaction slot, two hosts. The approval card stays on the vendored
+dialog stack; the ask renders in the in-flow dock. They are never visible at
+the same time, and the next pending interaction opens automatically when the
+current one settles.
 
-- **One slot, one host.** The dock is the single in-flow interaction slot.
-  The approval card keeps its component and verdict semantics
-  (`ApprovalCard`, `routes/session/turn-overlays.tsx:42-66`;
-  `confirmApproval` / `rejectApproval`); only its host moves from the
-  vendored centered `Dialog` into this slot. The ask and approval surfaces
-  are never visible at the same time.
-- **First-come-first-served.** The controller already assigns one monotonic
-  id from a single counter to both kinds (`#seq`,
-  `turn-overlay-controller.ts:66`, incremented for approvals at `:98` and for
-  asks at `:145-146`). Both per-kind queues are FIFO, so the two heads are
-  the oldest of each kind; the slot shows whichever head has the **smaller
-  id**. The dock owns the slot decision; the controller keeps both queues.
-- **Why the slot must own it, not `pendingAsk`.** `pendingAsk` is set the
-  moment the ask *request* arrives, even while an approval is showing
-  (`answer()` pushes into `#asks` at `:145-146`; the current display effect
-  prefers the approval at `turn-overlays.tsx:463-483`). So
-  `pendingAsk !== undefined` cannot mean "the ask is on screen", and a dock
-  keyed on `pendingAsk` would open underneath a pending approval. The dock
-  reads both heads and the shared id.
-- **Queue indicator.** When a second interaction is pending behind the shown
-  one, the footer shows `还有 N 个待回答` (en: `N more waiting`), where N is
-  the count of pending interactions with an id greater than the shown one
-  (approvals plus asks). The copy is an i18n key (`overlay.ask.queued`), not
-  a hard-coded string; N is a count argument. The indicator also appears
-  when the shown interaction is an approval.
-- **Hand-off.** On settlement the dock swaps its content to the next head in
-  the same mounted slot — no dock unmount/remount between interactions, so
-  the ownership frame and keymap layers do not churn (the churn defect is
-  documented at `turn-overlays.tsx:447-453`).
-- **Retired mechanism.** The `TurnOverlayHost` `dialog.replace` effect is
-  deleted (`turn-overlays.tsx:461-505`), including its trailing
-  `dialog.clear()` — with approval and ask gone from the dialog stack that
-  call would close whatever dialog the page itself opened. The stop-confirm
-  dialog and other vendored dialogs stay on the dialog stack and take
-  keyboard ownership through ADR-0008 like any other frame.
+- **The approval keeps its host.** `ApprovalCard` (`DialogConfirm`) and its
+  verdict semantics are unchanged (`routes/session/turn-overlays.tsx:55-75`;
+  `confirmApproval` / `rejectApproval`), and the host still opens it with
+  `dialog.replace` (`turn-overlays.tsx:181-196`). Moving it into the dock
+  was considered and rejected (below), so the approval takes keyboard
+  ownership through the dialog frame as any vendored dialog does (ADR-0008).
+- **An ask queues behind an approval.** A pending approval preempts an ask
+  that has **not** opened yet; an ask already showing keeps the dock until
+  it settles (`askShowing` / `approvalWins`,
+  `turn-overlays.tsx:162-164`). There is no id comparison between the two
+  kinds — the controller keeps both FIFO queues and one monotonic id
+  (`#seq`, `turn-overlay-controller.ts:94`, incremented at `:137` and
+  `:187`), but the host's slot decision is "approval first unless an ask is
+  already on screen" (`turn-overlays.tsx:164-235`).
+- **Why the dock cannot simply key on `pendingAsk`.** `pendingAsk` is set
+  the moment the ask *request* arrives, even while an approval is showing
+  (`answer()` pushes into `#asks`, `turn-overlay-controller.ts:183-187`), so
+  `pendingAsk !== undefined` does not mean "the ask is on screen". The host
+  reads both heads and tracks the opened ask's id (`askId`,
+  `turn-overlays.tsx:137-169`).
+- **Queue indicator: ask panel only.** The ask panel's footer shows
+  `还有 N 个待回答` (en: `N more waiting`), where N is
+  `pendingAskCount + pendingApprovalCount - 1` — the asks behind the shown
+  batch plus any approvals queued behind it
+  (`turn-overlays.tsx:215-217`; rendered at `ask-panel.tsx:476-481`). The
+  copy is the i18n key `overlay.ask.queued`, not a hard-coded string; N is a
+  count argument. **An approval card carries no counter**: `ApprovalCard`
+  has no queue input (`turn-overlays.tsx:55-75`), so a pending ask behind an
+  approval is invisible until the approval settles. That is accepted.
+- **Rejected alternative: one unified slot.** Re-hosting the approval in the
+  dock would let a single counter span both kinds and remove the host
+  asymmetry. It was rejected: the approval is a security-critical verdict
+  path, re-hosting would make its allow/reject keys depend on the dock layer
+  and put the decision on a newly built surface, and that was judged a
+  disproportionate risk for a display-only win. Consequence: the counter
+  lives on the ask only.
+- **Hand-off.** On settlement the dock opens the next ask in the same
+  mounted slot and then closes the previous handle, so the queue never
+  empties — no dock unmount/remount between asks, no ownership-frame churn,
+  and the composer is not refocused between two interactions
+  (`turn-overlays.tsx:200-229`).
+- **Retired mechanism.** The old `dialog.replace` path that opened the ask
+  is gone; `dialog.replace` remains for the approval
+  (`turn-overlays.tsx:181-196`). The trailing `dialog.clear()` is deleted —
+  with the ask off the dialog stack it would close whatever dialog the page
+  itself opened. The stop-confirm dialog and other vendored dialogs stay on
+  the dialog stack and take keyboard ownership through ADR-0008 like any
+  other frame.
+
+### Admission requires page ownership (normative)
+
+An in-flow surface must never push its ownership frame above an
+absolutely-positioned overlay. Dialogs and panel-kit panels are
+`position="absolute"` (`ui/dialog.tsx:87`, `panel-kit/src/panel.tsx:320`);
+the dock is a plain in-flow sibling (`dock-host.tsx:376-435`). `dock.open`
+pushes the `dock` frame in the same call that enqueues the request
+(`dock-host.tsx:250-257`), so if the dock admitted while a dialog or panel
+was open, it would become the top frame while the overlay stayed visually on
+top — and the dock's Esc ladder would consume a key the user aimed at the
+overlay, silently declining the ask batch. A review found that window in the
+first cut of the admission effect; it is closed by `pageOwned`
+(`turn-overlays.tsx:163-169`).
+
+Therefore: **admission waits for page ownership and re-evaluates
+reactively.** The dock opens only while the top ownership frame is the page
+frame, and a queued ask is reconsidered whenever `top()` changes — when the
+overlay closes, the page becomes owner again and the dock admits then.
+`dock.open`'s frame push must stay unconditional (it is the frame for an
+admitted request); the gate belongs in the admission effect that decides
+whether to call `open`, not inside the queue (`turn-overlays.tsx:154-235`).
+The same rule applies to any future in-flow surface; it is recorded in
+ADR-0008 under the dock-frame decision.
 
 ## 8. Multi-question flow
 
 **Tab strip.** A top strip of index plus per-question status: `[1 ✓] · 2 · 3`
-— brackets on the focused tab, `✓` on an answered one. This is the current
-`askTabStrip` (`turn-overlays.tsx:94-109`) normalized: the `(i/n)` title
-prefix (`askProgressTitle`, `turn-overlays.tsx:116-119`, composed at `:258`)
-is discarded, the strip alone carries progress.
+— brackets on the focused tab, `✓` on an answered one. This is
+`askTabStrip` (`routes/session/ask-options.ts:76-89`), rendered for 2+
+questions at `ask-panel.tsx:333-339`. The old `(i/n)` title prefix is not
+painted: the strip alone carries progress.
 
 **Review page.** Trigger unchanged: at least two questions, or any
-multi-select (`askNeedsReview`, `turn-overlays.tsx:121-124`). The questions
-phase keeps its trailing explicit review row (`⏎ Review answers`,
-`askQuestionRows` at `turn-overlays.tsx:192-202`), so the page is reachable
-before every question is answered.
+multi-select (`askNeedsReview`, `routes/session/ask-options.ts:67-69`). The
+questions phase keeps its trailing explicit review row (`⏎ Review answers`,
+`hasReviewRow` at `ask-options.ts:94-96`, rendered at
+`ask-panel.tsx:376-389`), so the page is reachable before every question is
+answered. That reachability is why §3 now states the blank-answer wire
+shape.
 
 - Review rows are selectable and show question + current answer.
 - Enter on a row jumps back to that question for editing.
 - A single Submit row at the bottom submits the whole batch.
 
-**Left/right** keep moving between questions where they already do
-(`turn-overlays.tsx:247-248`), including from the review page's question
-rows.
+**Left/right** move between questions (`ask-keys.ts:295-296` →
+`switchQuestion`, `:164-178` → `TurnOverlayController.switchFocus`,
+`turn-overlay-controller.ts:269-284`); on the review page, left returns to
+the last question (`ask-keys.ts:168-173`).
 
 ## 9. Transcript replay
 
@@ -520,29 +606,35 @@ Focus restoration after submit or decline is **explicit**, not a race
 between timers.
 
 - On settlement, the dock closes its slot and then refocuses the composer
-  through the page's existing composer ref (`examples/v2-entry.tsx:1130`)
-  **after layout** (run the refocus in the same layout pass the dock's
-  removal triggers, e.g. an `afterLayout` callback; a `setTimeout` is not a
-  layout guarantee).
-- Exactly one owner per transition. The dock is a page component, not a
-  dialog and not a kit layer, so three existing mechanisms must not fire for
-  it:
+  through the page's existing composer ref (`examples/v2-entry.tsx:281-293`)
+  **after layout** (`dock-host.tsx:180-199` uses the renderer's `frame`
+  event; a `setTimeout` is not a layout guarantee).
+- **Exactly one effective `focus()` call per settlement, protected by a
+  guard.** The dock is a page component, not a dialog and not a kit layer,
+  but the other restore paths are not suppressed:
   - the vendored dialog's refocus after close
-    (`packages/tui-base/src/ui/dialog.tsx:362-378`, a 1 ms timer);
-  - `TurnOverlayHost.onIdle`'s reclaim
-    (`turn-overlays.tsx:443-445`, a 3 ms timer that checks at 3 ms to beat
-    the dialog's 1 ms);
-  - panel-kit's microtask `baseFocus` restore
-    (`packages/panel-kit/src/stack.tsx:119-146`, `closeAll` `:207-218`).
-  The dock does not push a dialog entry or a kit layer, so none of the three
-  should run; the implementation must assert that (a test that spies on the
-  composer's `focus()` sees exactly one call per settlement).
+    (`packages/tui-base/src/ui/dialog.tsx:368-383`, a 1 ms timer) and
+    panel-kit's microtask `baseFocus` restore
+    (`packages/panel-kit/src/stack.tsx:119-146`, `closeAll` `:238-251`) do
+    not fire for the dock because it pushes neither a dialog entry nor a kit
+    layer;
+  - `TurnOverlayHost.onIdle`'s 3 ms reclaim **does** run on every drain,
+    ask drains included (`turn-overlays.tsx:132-134`).
+  What makes the settlement safe is the shared guard, not suppression: both
+  the 3 ms reclaim and the dock's `bindComposerFocus` run only
+  `if (composerRef && !composerRef.focused())`
+  (`examples/v2-entry.tsx:291-293`, `:890-892`). Whichever lands first
+  focuses the composer; the other becomes a no-op. A test that spies on the
+  composer's `focus()` sees exactly one call per settlement
+  (`test/dock-host.test.tsx:298-331`).
 - If the next queued interaction (§7) takes the slot, do **not** refocus the
   composer: the slot immediately owns focus. Refocus only when the queue
-  drains and the dock actually unmounts.
+  drains and the dock closes (`dock-host.tsx:221-237`).
 - On open, focus goes into the dock (list, or the input for a zero-option
-  question) in the same way; the composer is not mounted in the seat, so
-  there is no competing autofocus.
+  question) in the same way (`dock-host.tsx:201-213`). The composer stays
+  mounted but hidden; when the body has no focusable yet, the host blurs the
+  hidden composer so it cannot swallow typing (same call), so there is no
+  competing autofocus.
 
 ## 11. Legacy path removal
 
@@ -618,11 +710,15 @@ this change set). Only the ask-related block is removed.
     layer fires for Esc, Ctrl+C, PgUp/PgDn or F6; the dock's own Esc ladder
     advances one stage per press and declines only at stage 3.
   - Ctrl+C, ft tier: dock Ctrl+C declines and keeps the turn; the next page
-    Ctrl+C interrupts without arming quit; a third press does not quit
-    (§6 hazard).
-  - Admission, ft tier: ask request arriving during an approval queues with
-    the indicator and opens on approval settlement, and the reverse order
-    behaves symmetrically (FCFS by id).
+    Ctrl+C consumes the one-shot and interrupts without arming quit; a third
+    press does not quit inside the window. A separate case pins the ordinary
+    busy-turn press: it still interrupts **and** arms, as in 0.17.3 (§6).
+  - Admission, ft tier: an ask request arriving during an approval queues
+    and opens on approval settlement; an approval arriving while an ask is
+    showing waits for the ask to settle and is counted by the ask footer,
+    and the approval card shows no counter. A case also pins the ownership
+    gate: an ask that arrives while /agents or /settings is open must not
+    take the dock until the overlay closes (§7).
   - Focus, ft tier: exactly one composer `focus()` call per settlement, after
     layout; none while a queued interaction takes the slot.
   - Rendering, ft tier: in-flow placement and full width; transcript reflow;
@@ -645,35 +741,50 @@ this change set). Only the ask-related block is removed.
 
 ## 13. i18n
 
-New keys (English source, `packages/i18n/locales/en.json`; zh-CN mirrors):
+Added keys (English source, `packages/i18n/locales/en.json:548-560`;
+`zh-CN.json:548-560` mirrors them):
 
 - `overlay.ask.recommended` — the badge label (`Recommended` / `推荐`).
 - `overlay.ask.inputPlaceholder` — the resident input placeholder.
+- `overlay.ask.unanswered` — the review row's unanswered state.
 - Esc-hint variants: `overlay.ask.esc.back`, `.esc.prevQuestion`,
   `.esc.review`, `.esc.decline`.
 - `overlay.ask.overflow` — the overflow indicator line.
 - `overlay.ask.queued` — the queue indicator (`{count}` arguments; en
   `{count} more waiting`, zh `还有 {count} 个待回答`).
-- `overlay.ask.ctrlC.hint` — the outermost Ctrl+C hint (Ctrl+C declines
-  here; the next Ctrl+C, on the page, stops the turn).
+- The four phase-derived footer lines: `overlay.ask.footer.options`,
+  `.footer.multi`, `.footer.input`, `.footer.review` (each takes the Esc
+  hint as an interpolated `{esc}`).
 
-Retired keys and their fates:
+Retired keys (all absent from both locale files):
 
 - `overlay.ask.checkedOption`, `overlay.ask.uncheckedOption` — replaced by
   the glyphs (§4).
 - `overlay.ask.questionProgress` and the `{title}: {prompt}` composition
   (`overlay.ask.title`) — replaced by the eyebrow/title/detail stack (§3).
-- `overlay.ask.question` — retired **for this surface**. It was the generic
-  single-question title (`turn-overlays.tsx:117`); the eyebrow now carries
-  `header` and the title line is the prompt, so no generic label remains.
-  (The approval surface never used it.)
+- `overlay.ask.question` — retired **for this surface** as the generic
+  single-question title; the eyebrow now carries `header` and the title line
+  is the prompt, so no generic label remains. (The approval surface never
+  used it.)
+- `overlay.ask.reviewDescription` and `overlay.ask.reviewQuestionRow` — the
+  review page is rebuilt from question rows and `overlay.ask.reviewTitle`;
+  neither key is referenced.
 - `overlay.ask.sentinelLabel` / `overlay.ask.customMark` — replaced by the
   resident input row; the committed answer is the input's value, with no
   separate `✎ <text>` mark.
-- `overlay.ask.customTitle` and `overlay.ask.customBackToOptions` — die with
-  `AskCustomInputView` (used at `turn-overlays.tsx:310`, `:325`, `:328`).
-- `overlay.ask.reviewRow` — kept: the questions phase still offers the
-  explicit review row (`askQuestionRows`, `turn-overlays.tsx:192-202`).
+- `overlay.ask.customTitle` and `overlay.ask.customBackToOptions` — died
+  with `AskCustomInputView`.
+- `overlay.ask.ctrlC.hint`, `overlay.ask.prevQuestion`,
+  `overlay.ask.nextQuestion`, `overlay.ask.toggleOption`,
+  `overlay.ask.editAnswers` — dead: no source file references them (the
+  keyboard hints are composed from the footer keys and the Esc variants).
+  They are removed from both locale files.
+
+Kept keys relevant to the new surface: `overlay.ask.reviewRow` (the
+trailing explicit review row, `ask-panel.tsx:376-389`),
+`overlay.ask.reviewTitle` and `overlay.ask.submitRow` (`ask-panel.tsx:329`,
+`:465`), plus the approval keys `approvalTitle` / `allow` / `reject`
+(unchanged, `turn-overlays.tsx:68-70`).
 
 The leak-guard baseline (`packages/i18n/test/leak-guard-baseline.json`) is
 updated in the same commit.
@@ -688,10 +799,12 @@ updated in the same commit.
 - **Ownership frame leak.** A dock that fails to pop its frame leaves every
   page layer dead. Disposition: frame push/pop in the same open/close call,
   plus the stack-accounting test (ADR-0008 verification case 5).
-- **Approval moved into the slot.** The approval card's host changes even
-  though its content does not; a regression in its verdict keys would now
-  depend on the dock layer. Disposition: keep the approval's key handling in
-  the card (unchanged) and add an ft case for allow/reject from the slot.
+- **Approval and ask have different hosts.** The approval stays on the
+  dialog stack while the ask lives in the dock, so the two interactions have
+  different key-ownership frames and no shared counter. An approval behind a
+  showing ask is invisible until the dock drains. Disposition: accepted;
+  re-hosting the approval in the dock was rejected as disproportionate risk
+  (§7), and the admission/ownership ft cases cover the ordering.
 - **Description length.** Descriptions wrap; a hostile long description can
   push the dock to the 60% cap on a single option. Disposition: the cap and
   the internal scroll are the guard; no truncation is reintroduced.
