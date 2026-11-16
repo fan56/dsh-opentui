@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1] - 2026-11-16
+
+### Fixed
+
+- **Provisioning stops re-installing a pin that cannot be reached.** Consecutive install failures are recorded per pin in `<profile>/.provision-state.json`; a failing pin backs off for 10 minutes and is skipped after 3 attempts, and the record resets after 24 hours. A missing or unreadable state file is read as "no memory", so the old behavior is the fallback.
+- **`dsh plugin add` is verified by readback, not by its exit code.** After the install, provisioning reads the version that actually landed in `node_modules` and compares it with the effective pin (including a newer version raised by an `upgrade` override); a batch that exits 0 while leaving a package at another version no longer counts as installed.
+- **Skipped and degraded plugins are named.** Each one gets a one-line notice with the state file path and a `dsh-opentui upgrade` suggestion; provisioning still exits 0 and the launcher still starts, so a degraded profile does not block boot.
+- **A successful upgrade leaves no empty `.upgrade-backup` directory.** The stamp directory is removed and then its parent only when empty.
+
+### Internal
+
+- **stub-`dsh` integration tests for the provisioning script** (`test/provision-script.test.ts`), running the real script end to end against a stub host CLI offline.
+
 ## [0.18.0] - 2026-11-16
 
 ### Added
