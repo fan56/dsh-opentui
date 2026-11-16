@@ -42,7 +42,7 @@ jobs:
     name: Gate & Publish
     if: github.repository == 'fan56/dsh-opentui' # forks never publish
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45 # 20-min verify window needs headroom above the pre-publish gates
     permissions:
       contents: read
       id-token: write # OIDC claim for npm --provenance (repo is public)
@@ -215,20 +215,53 @@ jobs:
       - name: Verify the publish actually landed
         # A zero exit from publish is not proof (npm has committed a write while
         # reporting failure). The registry answering with the exact version is
-        # the acceptance signal; packument propagation measured ~50s-2min, so
-        # poll 24 x 15s. Also covers the already-published skip path.
+        # the acceptance signal; this also covers the already-published skip
+        # path. Provenance publishes go through an async processing queue
+        # ("Your package is being processed and may take a few minutes to become
+        # available") that can take tens of minutes to become visible. Use a
+        # 20-minute window with backoff so a slow-but-successful publish is not
+        # reported as a false failure:
+        #   0-2 min: every 10s  |  2-8 min: every 20s  |  8-20 min: every 60s
+        # Keep this a hard gate — the registry is the only proof the package
+        # landed; a genuine no-land must still turn the job red.
         run: |
           TAG_VERSION="${TAG#v}"
-          for attempt in $(seq 1 24); do
+          START=$SECONDS
+          ATTEMPT=0
+
+          poll() {
+            ATTEMPT=$((ATTEMPT + 1))
             SEEN="$(npm view "$PKG@$TAG_VERSION" version --registry="$REG" --prefer-online 2>/dev/null || true)"
             if [ "$SEEN" = "$TAG_VERSION" ]; then
-              echo "verified: $PKG@$TAG_VERSION is on the registry (attempt $attempt)"
-              exit 0
+              echo "verified: $PKG@$TAG_VERSION is on the registry (attempt $ATTEMPT, elapsed $((SECONDS - START))s)"
+              return 0
             fi
-            echo "attempt $attempt/24: registry answered '$SEEN'; waiting 15s for $TAG_VERSION"
-            sleep 15
-          done
-          echo "::error::publish reported success but npm view never saw $PKG@$TAG_VERSION — inspect the registry manually"
+            echo "attempt $ATTEMPT (elapsed $((SECONDS - START))s): registry answered '$SEEN'; waiting ${1}s for $TAG_VERSION"
+            sleep "$1"
+            return 1
+          }
+
+          # 0-2 min: 12 x 10s.
+          for _ in $(seq 1 12); do poll 10 && exit 0; done
+          # 2-8 min: 18 x 20s.
+          for _ in $(seq 1 18); do poll 20 && exit 0; done
+          # 8-20 min: 12 x 60s.
+          for _ in $(seq 1 12); do poll 60 && exit 0; done
+
+          # Timeout after 20 minutes: publish reported success but the version
+          # never appeared on the registry. Keep this a hard failure.
+          echo "::error::publish reported success but $PKG@$TAG_VERSION did not appear on the registry within 20 minutes"
+          echo
+          echo "The 'Publish to npm' step succeeded, but npm view never saw $TAG_VERSION on $REG."
+          echo "Provenance publishes are processed asynchronously and can take tens of minutes to surface."
+          echo
+          echo "1. Check the registry directly (bypasses any local npm cache):"
+          echo "   curl -sS \"https://registry.npmjs.org/@aiwayds%2Fdsh-opentui/${TAG_VERSION}\""
+          echo "   Inspect dist-tags and versions[\"${TAG_VERSION}\"].dist.shasum in the response."
+          echo "   The expected shasum is in the 'Publish to npm' step log, on the 'npm notice shasum:' line."
+          echo
+          echo "2. If the package is really there, this was only a propagation delay: do NOT re-tag the release."
+          echo "   Re-run only the failed steps: gh run rerun ${GITHUB_RUN_ID} --failed"
           exit 1
 
   release:

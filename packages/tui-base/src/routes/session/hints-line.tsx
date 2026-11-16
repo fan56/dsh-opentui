@@ -80,18 +80,25 @@ export const FOOTER_HINT_IDS: readonly HintSegmentId[] = [
  * Trade-off: the keys needed to ACT and to LEAVE are core and survive first;
  * discovery/navigation conveniences are optional and disappear whole. Ties are
  * broken by display order (FOOTER_HINT_IDS), so the surviving row always reads
- * core → optional in a stable order. The low tier is ordered subagentPanel →
- * search → scroll: each is progressively more of a nice-to-have, so scroll is
- * always the first to go and subagentPanel the last of the optional three.
+ * core → optional in a stable order.
+ *
+ * subagentPanel sits immediately after the core tier (15) rather than inside
+ * it: ctrl+g is the only discovery path to the subagent activity panel, so it
+ * must survive an 80-column bar alongside ctrl+c ×2 quit. At 40 columns the
+ * 22-column label is too wide and it yields to the core pair, which keeps the
+ * "leave" key reachable. Putting it in the 10 tier instead would let it win
+ * the display-order tie against quit and push quit off the 40-column bar.
+ * Beyond core, the tail is ordered history → newline → subagents → search →
+ * scroll, so scroll is always the first optional segment to go.
  */
 export const HINT_SEGMENT_PRIORITY: Readonly<Record<HintSegmentId, number>> = Object.freeze({
 	send: 10, // enter send / steer — the primary action
 	stop: 10, // esc stop — the only way to halt a running turn
 	quit: 10, // ctrl+c ×2 quit — the only way to leave
+	subagentPanel: 15, // ctrl+g — core-adjacent: fits 80 cols beside quit, yields to quit at 40
 	history: 20, // ↑↓ history — recall the last input
 	newline: 30, // alt+enter newline — multiline input
 	subagents: 40, // ↓ subagents — contextual: only while a child runs
-	subagentPanel: 50, // ctrl+g — opens the subagent activity panel
 	search: 60, // ctrl+shift+f — full-text search
 	scroll: 70, // pgup/pgdn — page the transcript (first to go)
 })

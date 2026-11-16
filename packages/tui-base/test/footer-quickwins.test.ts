@@ -296,15 +296,19 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		expect(row.startsWith("⌨ ")).toBe(true)
 	}
 
-	test("priority table: core (send/stop/quit) outrank the optional tail; subagentPanel > search > scroll", () => {
+	test("priority table: core (send/stop/quit), then subagentPanel, then the optional tail", () => {
 		expect(HINT_SEGMENT_PRIORITY.send).toBe(HINT_SEGMENT_PRIORITY.stop)
 		expect(HINT_SEGMENT_PRIORITY.stop).toBe(HINT_SEGMENT_PRIORITY.quit)
+		// ctrl+g is core-adjacent: above every optional segment, but strictly
+		// after the core three so a 40-column bar keeps quit (display-order tie).
 		for (const core of ["send", "stop", "quit"] as const) {
-			for (const optional of ["subagentPanel", "search", "scroll"] as const) {
+			expect(HINT_SEGMENT_PRIORITY[core]).toBeLessThan(HINT_SEGMENT_PRIORITY.subagentPanel)
+			for (const optional of ["history", "newline", "subagents", "search", "scroll"] as const) {
 				expect(HINT_SEGMENT_PRIORITY[core]).toBeLessThan(HINT_SEGMENT_PRIORITY[optional])
 			}
 		}
-		expect(HINT_SEGMENT_PRIORITY.subagentPanel).toBeLessThan(HINT_SEGMENT_PRIORITY.search)
+		expect(HINT_SEGMENT_PRIORITY.subagentPanel).toBeLessThan(HINT_SEGMENT_PRIORITY.history)
+		expect(HINT_SEGMENT_PRIORITY.history).toBeLessThan(HINT_SEGMENT_PRIORITY.newline)
 		expect(HINT_SEGMENT_PRIORITY.search).toBeLessThan(HINT_SEGMENT_PRIORITY.scroll)
 	})
 
@@ -312,7 +316,9 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		const all = [EN.sendIdle, EN.newline, EN.history, EN.subagentPanel, EN.search, EN.scroll, EN.quit]
 		const cases: { width: number; present: string[] }[] = [
 			{ width: 40, present: [EN.sendIdle, EN.quit] },
-			{ width: 80, present: [EN.sendIdle, EN.newline, EN.history, EN.quit] },
+			// ctrl+g now outranks newline: at 80 the panel survives beside quit,
+			// and newline (the widest optional label) is the segment that yields.
+			{ width: 80, present: [EN.sendIdle, EN.history, EN.subagentPanel, EN.quit] },
 			{ width: 120, present: [EN.sendIdle, EN.newline, EN.history, EN.subagentPanel, EN.search, EN.quit] },
 			{ width: 160, present: all },
 		]
@@ -346,9 +352,17 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		const idleAll = [ZH.sendIdle, ZH.newline, ZH.history, ZH.subagentPanel, ZH.search, ZH.scroll, ZH.quit]
 		expectSegments(
 			hintsTextAtWidth(false, true, false, 80, { ...DEFAULT_FOOTER_HINTS }),
-			[ZH.sendIdle, ZH.newline, ZH.history, ZH.quit],
-			[ZH.subagentPanel, ZH.search, ZH.scroll],
+			[ZH.sendIdle, ZH.history, ZH.subagentPanel, ZH.quit],
+			[ZH.newline, ZH.search, ZH.scroll],
 			80,
+		)
+		// 40 columns: the wide ctrl+g label yields to the core pair, so the
+		// "leave" key stays reachable in zh as in en.
+		expectSegments(
+			hintsTextAtWidth(false, true, false, 40, { ...DEFAULT_FOOTER_HINTS }),
+			[ZH.sendIdle, ZH.quit],
+			[ZH.newline, ZH.history, ZH.subagentPanel, ZH.search, ZH.scroll],
+			40,
 		)
 		expectSegments(hintsTextAtWidth(false, true, false, 160, { ...DEFAULT_FOOTER_HINTS }), idleAll, [], 160)
 		const busyAt80 = hintsTextAtWidth(true, true, false, 80, { ...DEFAULT_FOOTER_HINTS })

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+- The hints bar keeps `ctrl+g subagents panel` on narrow terminals: the segment
+  now outranks history and newline, so 80-column layouts show it next to
+  `ctrl+c ×2 quit`. `alt+enter newline` yields first.
+- The publish-landed check waits up to 20 minutes (10s/20s/60s backoff) instead
+  of 6, and its failure message explains how to confirm the registry directly and
+  re-run only the failed steps. Provenance publishes are queued asynchronously by
+  npm and 0.18.5 failed this check while the package was in fact landing.
+
 ## [0.18.5] - 2026-11-16
 
 ### Added
