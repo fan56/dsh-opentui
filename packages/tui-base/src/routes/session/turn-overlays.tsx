@@ -14,8 +14,14 @@
  * `dialog.replace` behavior) and the ask waits; an ask that is ALREADY on
  * screen keeps the slot until it settles, so the two surfaces never coexist
  * and the dock is never torn down underneath a dialog (which would hand the
- * composer focus to a hidden surface after layout). The full id-ordered
- * admission slot is the next task (spec §7).
+ * composer focus to a hidden surface after layout).
+ *
+ * Admission order (spec §7): the controller assigns one monotonic id to both
+ * kinds and both per-kind queues are FIFO, so `pendingAsk` is always the
+ * smallest pending ask id — ask batches are admitted in request-id order, and
+ * a settlement opens the next head automatically. The indicator count is the
+ * number of pending interactions with a larger id than the shown one (approval
+ * count + ask count − 1 for the shown ask).
  *
  * `TurnOverlayHost.onIdle`'s 3 ms reclaim stays for the approval dialog path
  * (the vendored provider refocuses at 1 ms); the dock refocuses the composer
@@ -96,9 +102,9 @@ export function ReminderBadge(): JSX.Element {
  * dialog stack, one ask panel in the in-flow dock. `reclaimFocus` fires after
  * each drain for the dialog path (the dock owns its own refocus).
  *
- * SEAM (next task): the dock's key layer, the staged Esc/Ctrl+C ladder, digit
- * gating and the id-ordered admission slot. This host only mounts and
- * unmounts surfaces; `AskPanel` owns the body and registers its focus target.
+ * The ask panel drives its own keys through the single layer in
+ * `ask-keys.ts`; this host owns only the slot, the id-ordered admission and
+ * the queue-depth count the footer shows.
  */
 export function TurnOverlayHost(props: {
 	controller: TurnOverlayController
@@ -141,12 +147,17 @@ export function TurnOverlayHost(props: {
 		const ask = props.controller.pendingAsk
 		// An ask already on screen holds the slot until it settles: closing the
 		// dock to open a dialog would refocus the composer under that dialog.
+		// A pending approval still preempts an ask that has NOT opened yet (the
+		// shipped serialization — the two surfaces never coexist).
 		const askShowing = askHandle !== undefined && ask !== undefined && askId === ask.id
-		const key = approval !== undefined && !askShowing ? `approval:${approval.id}` : ask ? `ask:${ask.id}` : ""
+		const approvalWins = approval !== undefined && !askShowing
+		// Ask batches reach this point in request-id order: `pendingAsk` is the
+		// head of the controller's FIFO ask queue (spec §7).
+		const key = approvalWins ? `approval:${approval.id}` : ask !== undefined ? `ask:${ask.id}` : ""
 		if (key === shown) return
 		shown = key
 
-		if (approval !== undefined && !askShowing) {
+		if (approvalWins) {
 			// Approval wins the slot (today's serialization). The ask stays
 			// queued in the controller and reopens when the approval settles.
 			closeAsk()
@@ -183,6 +194,11 @@ export function TurnOverlayHost(props: {
 					<AskPanel
 						controller={props.controller}
 						width={ctx.width}
+						// Pending interactions behind this batch: every approval plus
+						// the asks queued behind the shown head (spec §7).
+						queued={() =>
+							Math.max(0, props.controller.pendingAskCount + props.controller.pendingApprovalCount - 1)
+						}
 						onFocusTarget={(resolve) => {
 							panelFocus = resolve
 						}}

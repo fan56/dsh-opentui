@@ -30,10 +30,10 @@
  *
  *   surface   the rendering state the dock panel needs: `phase`
  *             (questions / input / review), the per-question option-row
- *             `cursors` and the review-page cursor. The key layer that drives
- *             them (arrows, digits, the staged Esc ladder, Ctrl+C) is a
- *             separate task (spec §5-§6, ADR-0008): no binding is registered
- *             here.
+ *             `cursors` and the review-page cursor. The mutators below are the
+ *             transitions the key layer drives (`ask-keys.ts`: arrows, digits,
+ *             the staged Esc/Ctrl+C ladder — spec §5-§6, ADR-0008); no binding
+ *             is registered here.
  *
  * The `onIdle` hook is the composer-refocus point: it fires every time the
  * overlay set drains to empty — the host re-asserts editor focus there
@@ -118,6 +118,17 @@ export class TurnOverlayController {
 
 	get pendingApproval(): PendingApproval | undefined {
 		return this.#approvals[0]?.request
+	}
+
+	/** Queue depths for the admission slot's "N more waiting" indicator
+	 * (spec §7). Both queues are FIFO over the shared monotonic id, so pending
+	 * interactions behind the shown head are exactly these counts minus one
+	 * for whichever kind holds the slot. */
+	get pendingApprovalCount(): number {
+		return this.#approvals.length
+	}
+	get pendingAskCount(): number {
+		return this.#asks.length
 	}
 
 	/** View-side entry — what `SeamTurnCallbacks.onApprove` awaits. */
@@ -252,10 +263,13 @@ export class TurnOverlayController {
 
 	/** ←/→: switch the focused question tab, clamped at both ends. The inline
 	 * input owns Left/Right while it is focused (spec §5) — the key layer
-	 * releases those keys, this guard is the controller-side mirror. */
+	 * releases those keys, this guard is the controller-side mirror. A
+	 * zero-option question has no list at all (its input IS the question), so
+	 * the Esc ladder's previous-question stage may still leave it. */
 	switchFocus(direction: 1 | -1): void {
 		const head = this.#asks[0]
-		if (!head || head.phase === "review" || head.phase === "input" || head.questions.length < 2) return
+		if (!head || head.phase === "review" || head.questions.length < 2) return
+		if (head.phase === "input" && (head.questions[head.index]?.options.length ?? 0) > 0) return
 		const next = Math.max(0, Math.min(head.questions.length - 1, head.index + direction))
 		if (next === head.index) return
 		head.index = next
@@ -267,6 +281,37 @@ export class TurnOverlayController {
 			head.cursors[next] = inlineRowIndex(question, askNeedsReview(head.questions))
 		}
 		this.#changed()
+	}
+
+	/**
+	 * Enter on a multi-select question (spec §6): confirm the draft as it
+	 * stands and advance — the next unanswered question, else the review page.
+	 * The picks are NOT touched here; Space is the toggle. Batches that have no
+	 * review page (a lone single-select question) settle through `toggle()`
+	 * instead, so this refuses them.
+	 */
+	confirmQuestion(): boolean {
+		const head = this.#asks[0]
+		if (!head || head.phase === "review" || head.phase === "input") return false
+		const question = head.questions[head.index]
+		if (question === undefined || !askNeedsReview(head.questions)) return false
+		const next = head.questions.findIndex(
+			(_, qi) => qi > head.index && (head.picks[qi]?.length ?? 0) === 0 && !head.customs[qi],
+		)
+		if (next >= 0) {
+			head.index = next
+			const target = head.questions[next]
+			head.phase = target?.options.length === 0 ? "input" : "questions"
+			if (head.phase === "input" && target !== undefined) {
+				head.cursors[next] = inlineRowIndex(target, askNeedsReview(head.questions))
+			}
+		} else {
+			// No later question left: the confirm advances onto the review page.
+			head.phase = "review"
+			head.reviewCursor = 0
+		}
+		this.#changed()
+		return true
 	}
 
 	/**
@@ -350,10 +395,8 @@ export class TurnOverlayController {
 
 	// ---- ask surface state (rendering: cursors / inline focus) ---------
 	//
-	// The key layer that drives these (arrows, digits, Esc ladder, Ctrl+C)
-	// is the NEXT task: `docs/ask-user-panel-spec.md` §5-§6, ADR-0008. These
-	// mutators exist so the panel can render and focus correctly; no binding
-	// is registered here.
+	// `ask-keys.ts` translates keys into these transitions (spec §5-§6);
+	// the controller stays renderer-free and registers no binding.
 
 	/** The resident inline row's text: the live buffer while an edit is in
 	 * progress, else the question's committed custom answer. */

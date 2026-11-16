@@ -2,12 +2,14 @@
  * AskPanel — the ask-user surface BODY, rendered inside the in-flow dock at
  * the composer seat (`docs/ask-user-panel-spec.md` §2-§5, §8, §13).
  *
- * This file is the body only: it reads `TurnOverlayController` state and
- * paints it. NO key bindings, no Esc ladder, no digit gating and no
- * admission logic live here — that is the NEXT task (spec §5-§6, ADR-0008).
- * The only interaction the body owns is the resident inline row focusing
- * itself when the controller phase says the input holds focus, plus the
- * ensure-visible scroll that keeps the current row on screen.
+ * This file is the body plus its key layer hook-up: it reads
+ * `TurnOverlayController` state, paints it, and mounts the ONE keymap layer
+ * that owns the surface (`ask-keys.ts`: move/pick/digits, the staged Esc and
+ * Ctrl+C ladder, key release to the resident input). Admission and the queue
+ * indicator count come from the host (`turn-overlays.tsx`). The body itself
+ * only moves the renderer focus when the controller phase says the resident
+ * input owns it, plus the ensure-visible scroll that keeps the current row on
+ * screen.
  *
  * Layout, top to bottom (spec §2-§4):
  *   1. eyebrow      `question.header`, muted, only when present
@@ -38,6 +40,7 @@ import { useCursorStyle } from "../../config"
 import { warningColor } from "../../skin/semantic"
 import { askNeedsReview, askTabStrip, hasReviewRow, reviewRowIntent, splitRecommended } from "./ask-options"
 import type { PendingAsk, TurnOverlayController } from "./turn-overlay-controller"
+import { useAskKeys } from "./ask-keys"
 import { useDock, type DockFocusable } from "./dock-host"
 
 /** panel-kit's compact threshold (`panel-kit/src/panel.tsx:57-61`): below it
@@ -55,6 +58,10 @@ export interface AskPanelProps {
 	/** Registers the panel's focus resolver with the host. The host calls it
 	 * on open/head-change after layout (`DockOpenOptions.focusRef`). */
 	onFocusTarget?: (resolve: (() => DockFocusable | undefined) | undefined) => void
+	/** Pending interactions behind this batch (approvals + asks, spec §7). The
+	 * host supplies the controller-derived count; absent (bare harness), the
+	 * indicator falls back to the dock's own queue depth. */
+	queued?: () => number
 }
 
 interface ScrollTarget {
@@ -151,6 +158,21 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 	let inputEl: InputRenderable | undefined
 	let inlineRowEl: Renderable | undefined
 
+	// The surface's ONE keymap layer (spec §5 constraints 1-5): gated on the
+	// dock's ownership frame, evaluated before the focused inline input, with
+	// the editing keys released back to it. The refs are read lazily, so the
+	// layer sees the live elements.
+	useAskKeys({ controller: props.controller, input: () => inputEl })
+
+	// Queue indicator source: the host counts pending interactions behind this
+	// batch (spec §7); a bare harness falls back to the dock's request depth.
+	// `version()` keeps the count live: the controller notifies on every queue
+	// change and the counts themselves are plain getters.
+	const queuedCount = () => {
+		version()
+		return props.queued?.() ?? dock.queueDepth()
+	}
+
 	// Focus registration: the dock host resolves the designated focusable on
 	// open and on head change (spec §10). The resolver reads the refs lazily,
 	// so the host's post-layout callback always sees the live targets. It is
@@ -178,7 +200,31 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 		revealRow(inlineRowEl)
 	}
 
-	createEffect(on(() => phase(), (next) => (next === "input" ? focusInputRow() : undefined)))
+	// Phase → renderer focus. The ladder moves the controller phase without
+	// touching focus, so the body owns this one rule (spec §5): the resident
+	// input takes focus on the input phase, the option list takes it back when
+	// the phase returns to the questions list. Without the second leg, the
+	// digit commands stay gated off (they compare the focused renderable with
+	// `inputEl`) even though the list owns the cursor.
+	createEffect(
+		on(
+			() => phase(),
+			(next) => {
+				if (next === "input") {
+					focusInputRow()
+					return
+				}
+				if (next !== "questions") return
+				const focusList = () => {
+					if (listEl !== undefined && !listEl.isDestroyed) listEl.focus()
+				}
+				// Review → questions recreates the list in the same batch; its ref
+				// may land after this effect, so retry on the microtask boundary.
+				if (listEl !== undefined && !listEl.isDestroyed) focusList()
+				else queueMicrotask(focusList)
+			},
+		),
+	)
 	// A zero-option question opens on the input (spec §2); moving to another
 	// question re-lands the focus if that question is input-phase too.
 	createEffect(on(() => index(), () => (phase() === "input" ? focusInputRow() : undefined), { defer: true }))
@@ -410,9 +456,9 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 				<text fg={muted()} wrapMode="none">
 					{footerHint()}
 				</text>
-				<Show when={dock.queueDepth() > 0}>
+				<Show when={queuedCount() > 0}>
 					<text fg={muted()} wrapMode="none">
-						{t("overlay.ask.queued", { count: dock.queueDepth() })}
+						{t("overlay.ask.queued", { count: queuedCount() })}
 					</text>
 				</Show>
 			</box>
