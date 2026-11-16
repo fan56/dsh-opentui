@@ -33,6 +33,67 @@ npm i -g @aiwayds/dsh-opentui
 dsh-opentui
 ```
 
+## Upgrading
+
+`dsh-opentui upgrade` moves the installed launcher itself to the newest npm
+release (or another dist-tag via `--tag`) and upgrades the registry plugins
+already installed in the `opentui` profile to their latest versions. It does
+**not** upgrade the dsh host: the host is a separate global install.
+
+```bash
+dsh-opentui upgrade --dry-run   # print the plan table, write nothing
+dsh-opentui upgrade             # confirm, then apply
+```
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | Print the plan table and exit; nothing is installed or written. |
+| `-y`, `--yes` | Skip the confirmation prompt. Required when stdin is not a TTY. |
+| `--tag <name>` | Resolve a dist-tag other than `latest` (`next`, for example). |
+| `--no-self` | Skip the launcher; upgrade profile plugins only. |
+| `--no-plugins` | Skip profile plugins; upgrade the launcher only. |
+| `--reset-overrides` | Delete `upgrade-overrides.json` and exit (terminal; cannot be combined with `--no-self` / `--no-plugins`). |
+| `-h`, `--help` | Print usage and exit. |
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Completed, nothing to upgrade, or `--dry-run` / `--help`. |
+| `1` | Hard failure, already rolled back; a target version that cannot be resolved writes nothing. |
+| `2` | Usage error. |
+| `3` | Partial: some packages did not reach the target version, or overrides could not be recorded. |
+
+### Why upgrades stick (upgrade-overrides)
+
+Provisioning runs on every launch and converges the profile to the shipped
+pins, so a plain upgrade would be undone on the next start. After a successful
+upgrade the command records the new versions in
+`$DSH_HOME/profiles/opentui/upgrade-overrides.json`, and provisioning honors
+each entry instead of the pin. An entry applies only while it is **strictly
+newer** than the built-in pin, so a later release that raises the pin past it
+invalidates the entry by itself.
+
+`--reset-overrides` deletes that file and exits. The next launch provisions
+from the shipped pins again, which can **downgrade** a package the override
+was holding above them.
+
+### Mirrors
+
+Queries go to `DSH_UPGRADE_REGISTRY` when set, otherwise the profile
+`.npmrc`, `~/.npmrc`, or the public npm registry, always with
+`--prefer-online`. A mirror's `latest` can lag behind npmjs; the command
+prints a note when it resolves through one.
+
+```bash
+DSH_UPGRADE_REGISTRY=https://registry.npmmirror.com dsh-opentui upgrade --dry-run
+```
+
+### After upgrading
+
+Quit the TUI and run `dsh-opentui` again. The host is a long-running process
+and keeps the plugin set it booted with, so a plugin upgrade never applies to
+the current one. CI and scripted runs must pass `--yes` — without a TTY the
+confirmation prompt is refused.
+
 ## Client mode
 
 `dsh-opentui` starts a thin client TUI (`dist/client/index.js` under Bun) that
