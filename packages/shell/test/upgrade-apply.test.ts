@@ -101,6 +101,10 @@ function fakeFs(files: Record<string, string>) {
       state.files.delete(path)
       if (options?.recursive) for (const key of under(path)) state.files.delete(key)
     },
+    rmdirSync: (path: string) => {
+      state.removed.push(path)
+      state.files.delete(path)
+    },
     copyFileSync: (from: string, to: string) => {
       state.copied.push([from, to])
       const text = state.files.get(from)
@@ -232,11 +236,33 @@ describe('plugin phase — the happy path', () => {
     expect(doc.packages[CRON].version).toBe(CRON_NEXT)
     expect(doc.packages[VAULT].version).toBe(VAULT_NEXT)
 
-    // Success removes the backup directory.
-    expect(state.removed).toEqual([backupDir])
+    // Success removes the backup directory AND its now-empty hidden parent.
+    expect(state.removed).toEqual([backupDir, `${PROFILE_DIR}/.upgrade-backup`])
     expect(text).toContain('2 upgraded, 0 up to date, 0 mismatched, 0 excluded')
     expect(text).toContain('upgraded 2 plugin(s)')
     expect(text).toContain('restart required: exit the TUI and run dsh-opentui again')
+  })
+
+  test('success leaves no empty .upgrade-backup tree behind', () => {
+    const { code, state } = upgrade(
+      {
+        [MANIFEST]: manifest({ [CRON]: `^${CRON_PIN}` }),
+        [installedPath(CRON)]: pkg(CRON, CRON_PIN),
+      },
+      (cmd, args, state) => {
+        if (cmd !== 'npm' && cmd !== 'dsh') return undefined
+        if (cmd === 'npm') return args[0] === 'view' && args[1] === CRON ? view(CRON_NEXT) : undefined
+        state.files.set(installedPath(CRON), pkg(CRON, CRON_NEXT))
+        return { status: 0, stdout: '', stderr: '' }
+      },
+    )
+
+    expect(code).toBe(0)
+    const backupDir = backupDirOf(state)
+    expect(state.removed).toEqual([backupDir, `${PROFILE_DIR}/.upgrade-backup`])
+    // The stamp directory's files are gone and neither directory is left.
+    expect(state.files.has(`${backupDir}/package.json`)).toBe(false)
+    expect(state.made.length).toBe(1)
   })
 })
 

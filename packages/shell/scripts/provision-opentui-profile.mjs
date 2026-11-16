@@ -90,6 +90,7 @@ import {
   orderPluginAddFailures,
   parseDumpConfig,
   parseTier,
+  partitionInstallByRetryState,
   planMcpPatch,
   planOrphanPatchCleanup,
   planPluginInstall,
@@ -98,7 +99,14 @@ import {
   pluginAddCommand,
   pluginAddRetryDecision,
   selectPlugins,
+  verifyInstalledPins,
 } from './lib/provision-plan.mjs'
+import {
+  emptyState,
+  parseState,
+  recordInstallOutcomes,
+  serializeState,
+} from './lib/provision-state.mjs'
 
 const TEMPLATE = 'web'
 const INSTALL_TIMEOUT_MS = 10 * 60 * 1000
@@ -150,6 +158,9 @@ const manifestPath = join(profileDir, 'package.json')
 // Written by `dsh-opentui upgrade` (never by this script): the versions that
 // command installed above the shipped pins. Read-only here.
 const overridePath = join(profileDir, 'upgrade-overrides.json')
+// Cross-launch failure memory (see lib/provision-state.mjs). Sits next to
+// `.plugin-manager/`, so it travels with the profile and nowhere else.
+const statePath = join(profileDir, '.provision-state.json')
 console.log(`${PREFIX}dsh home ${dshHome}`)
 
 const requireDsh = () => {
@@ -246,6 +257,48 @@ function readUpgradeOverrides() {
     return {}
   }
   return packages
+}
+
+/** The failure memory of previous launches. A missing file is the normal
+ *  first-run path; an unreadable one degrades to "no memory" (everything is
+ *  retried) and is NOT reported: the file is an optimisation, and a warning
+ *  on every start would be noise the user cannot act on. The raw text is
+ *  returned too, so the caller can skip a write when nothing changed. */
+function readProvisionState() {
+  let text = ''
+  try {
+    text = readFileSync(statePath, 'utf8')
+  } catch {
+    return { state: emptyState(), text: '' }
+  }
+  return { state: parseState(text) ?? emptyState(), text }
+}
+
+/** Persist the failure memory only when it changed. Same-directory temp then
+ *  rename: a crash mid-write cannot leave a torn JSON document that the next
+ *  start would silently ignore. A write failure is a WARN, never a failed
+ *  provisioning run — the state file only ever removes retries. */
+function writeProvisionState(state, previousText) {
+  const text = serializeState(state)
+  if (text === previousText) return false
+  try {
+    mkdirSync(profileDir, { recursive: true })
+    const tmpPath = `${statePath}.tmp`
+    writeFileSync(tmpPath, text)
+    renameSync(tmpPath, statePath)
+    return true
+  } catch (err) {
+    warn(`could not write ${statePath}: ${err?.message ?? err}`)
+    return false
+  }
+}
+
+/** Last non-empty stderr line, flattened to the state file's single-line
+ *  budget. `dsh plugin add` puts pnpm's error code on that line. */
+function lastStderrLine(stderr) {
+  const text = typeof stderr === 'string' ? stderr : stderr?.toString() ?? ''
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '')
+  return lines.length > 0 ? lines[lines.length - 1].slice(-200) : ''
 }
 
 /** Backup-then-write the profile manifest (the backup is the contract: a
@@ -423,7 +476,6 @@ function pauseSync(ms) {
 }
 
 const failedInstalls = [] // { spec, failure: { kind, code, hint } }
-let installedCount = 0
 
 if (tier === 'none') {
   say(3, 'plugins', 'skipped (--plugins=none)')
@@ -439,23 +491,87 @@ if (tier === 'none') {
   // pulled back to the shipped pin on every start.
   const overrides = readUpgradeOverrides()
   const plan = planPluginInstall({ tier, dependencies, bundles, installedVersions, overrides })
-  const specs = plan.install.map((entry) => entry.spec)
-  const skipped = plan.total - plan.install.length
+  // Failure memory: what previous launches learned about these pins. The file
+  // only ever REMOVES retries (see lib/provision-state.mjs); a missing or
+  // unreadable one is read as "no memory", silently.
+  const { state: retryState, text: stateText } = readProvisionState()
+  // The launch time decides which pins are inside their backoff window. It is
+  // NOT the failure timestamp: that one is taken when the installs finish (see
+  // recordInstallOutcomes below), so a long failing batch still buys the full
+  // backoff window.
+  const launchIso = new Date().toISOString()
+  const { install: targets, skips } = partitionInstallByRetryState({
+    install: plan.install,
+    state: retryState,
+    now: launchIso,
+  })
+  const specs = targets.map((entry) => entry.spec)
+  const satisfied = plan.total - plan.install.length
+  const skipped = satisfied + skips.length
+  let nextState = retryState
+
+  if (skips.length > 0) {
+    const detail = skips
+      .map((row) => `${row.name}@${row.pin} (${row.attempts} attempt${row.attempts === 1 ? '' : 's'}, since ${row.lastFailedAt})`)
+      .join(', ')
+    console.error(
+      `${PREFIX}skipping ${skips.length} package(s) after repeated failures: ${detail}` +
+        ` (retry in 24h, or rm ${statePath} to retry now)`,
+    )
+  }
 
   if (plan.install.length === 0) {
     say(3, 'plugins', `already satisfied (${plan.total}/${plan.total})`)
   } else if (dryRun) {
-    say(3, 'plugins', `found ${skipped}/${plan.total}, installing ${specs.length}… → running: ${pluginAddCommand(PROFILE, specs)}`)
-    say(3, 'plugins', `dry run: skipped the install (${skipped} already satisfied)`)
+    if (specs.length === 0) {
+      say(3, 'plugins', `found ${satisfied}/${plan.total}, installing 0… (${skips.length} in failure backoff)`)
+    } else {
+      say(3, 'plugins', `found ${satisfied}/${plan.total}, installing ${specs.length}… → running: ${pluginAddCommand(PROFILE, specs)}`)
+    }
+    say(3, 'plugins', `dry run: skipped the install (${satisfied} already satisfied)`)
+  } else if (specs.length === 0) {
+    // Every unsatisfied pin is inside its backoff window: spawn nothing.
+    say(3, 'plugins', `installed 0, skipped ${skipped} (${skips.length} in failure backoff)`)
   } else {
     requireDsh()
-    say(3, 'plugins', `found ${skipped}/${plan.total}, installing ${specs.length}… → running: ${pluginAddCommand(PROFILE, specs)}`)
-    const batch = runPluginAdd(specs)
+    say(3, 'plugins', `found ${satisfied}/${plan.total}, installing ${specs.length}… → running: ${pluginAddCommand(PROFILE, specs)}`)
+    // name -> { ok, error }: the final word on each target, recorded ONCE at
+    // the end of the run so the batch set and the single-spec fallback cannot
+    // double-count one launch.
+    const outcomes = new Map()
+    let degraded = 0
+    // Captured so the batch's last stderr line can be stored as the failure
+    // reason; the text is echoed below, so nothing the user used to see on the
+    // terminal is lost.
+    const batch = runPluginAdd(specs, { captureStderr: true })
     if (!batch.error && batch.status === 0) {
-      installedCount = specs.length
+      // Readback: compare what actually landed with the EFFECTIVE pin (the
+      // shipped pin, or the newer version an override raises it to). A batch
+      // that exits 0 is not proof that the profile is at the pinned version.
+      const landed = Object.fromEntries(targets.map((entry) => [entry.name, installedVersion(entry.name)]))
+      for (const result of verifyInstalledPins({ install: targets, installedVersions: landed })) {
+        if (result.ok) outcomes.set(result.name, { ok: true })
+        else {
+          outcomes.set(result.name, {
+            ok: false,
+            error: `installed ${result.installed ?? 'nothing'}, expected ${result.pin}`,
+          })
+        }
+      }
     } else {
-      if (batch.error) warn(`plugin install failed to start: ${batch.error.message}`)
-      else warn(`plugin install exited ${batch.status}`)
+      if (batch.error) {
+        warn(`plugin install failed to start: ${batch.error.message}`)
+      } else {
+        echoCapturedStderr(batch.stderr)
+        warn(`plugin install exited ${batch.status}`)
+      }
+      // The whole batch failed, so every target is a failure until its own
+      // fallback attempt proves otherwise. `batchError` is the last stderr
+      // line (pnpm's error code), which the summary below must not hide.
+      const batchError =
+        lastStderrLine(batch.stderr) ||
+        (batch.error ? batch.error.message : `dsh plugin add exited ${batch.status}`)
+      for (const entry of targets) outcomes.set(entry.name, { ok: false, error: batchError })
       if (approvePrintedBuilds(plugins.map((plugin) => plugin.name))) {
         say(3, 'plugins', 'approved the printed build scripts (pnpm allowBuilds) — retrying one by one…')
       }
@@ -467,29 +583,66 @@ if (tier === 'none') {
       // cannot fix it, so the spec gives up on the first hit. The terminal
       // failure stays a WARN + failedInstalls entry — never a silent pass
       // (the e2e npm-install boot leg asserts the delivered set).
-      for (const spec of specs) {
+      for (const entry of targets) {
         let installed = false
         for (let attempt = 1; attempt <= PLUGIN_ADD_ATTEMPTS && !installed; attempt += 1) {
           if (attempt > 1) {
-            say(3, 'plugins', `${spec} failed — retry ${attempt - 1}/${PLUGIN_ADD_ATTEMPTS - 1} in ${PLUGIN_ADD_BACKOFF_MS / 1000}s…`)
+            say(3, 'plugins', `${entry.spec} failed — retry ${attempt - 1}/${PLUGIN_ADD_ATTEMPTS - 1} in ${PLUGIN_ADD_BACKOFF_MS / 1000}s…`)
             pauseSync(PLUGIN_ADD_BACKOFF_MS)
           }
-          const retry = runPluginAdd([spec], { captureStderr: true })
+          const retry = runPluginAdd([entry.spec], { captureStderr: true })
           echoCapturedStderr(retry.stderr)
           const decision = pluginAddRetryDecision(retry, { attempt, attempts: PLUGIN_ADD_ATTEMPTS })
           if (decision.action === 'installed') {
-            installedCount += 1
             installed = true
+            // A fallback success still lands at whatever the registry served:
+            // verify it rather than trusting the exit code.
+            const actual = installedVersion(entry.name)
+            if (actual === entry.pin) outcomes.set(entry.name, { ok: true })
+            else {
+              outcomes.set(entry.name, {
+                ok: false,
+                error: `installed ${actual ?? 'nothing'}, expected ${entry.pin}`,
+              })
+            }
           } else if (decision.action === 'failed') {
             const detail = retry.error ? retry.error.message : `(exit ${retry.status})`
-            failedInstalls.push({ spec, failure: decision.failure, detail })
+            failedInstalls.push({ spec: entry.spec, failure: decision.failure, detail })
+            outcomes.set(entry.name, { ok: false, error: lastStderrLine(retry.stderr) || detail })
             if (decision.failure.kind === 'deterministic') {
-              say(3, 'plugins', `${spec}: ${decision.failure.code} — deterministic, not retrying`)
+              say(3, 'plugins', `${entry.spec}: ${decision.failure.code} — deterministic, not retrying`)
             }
             break
           }
         }
       }
+    }
+    // One write per run: success clears the entry, failure grows it (or starts
+    // a fresh 24-hour round once the pin has been failing that long). The
+    // timestamp is taken HERE, after the last install returned, and shared by
+    // the whole batch: the backoff window is measured from the failure, not
+    // from process start (a 9-minute failing batch would otherwise leave 1
+    // minute of the 10-minute window).
+    const recorded = recordInstallOutcomes({
+      state: nextState,
+      now: new Date().toISOString(),
+      rows: targets.map((entry) => {
+        const outcome = outcomes.get(entry.name)
+        return {
+          name: entry.name,
+          pin: entry.pin,
+          ok: outcome?.ok === true,
+          error: outcome?.error ?? 'install did not complete',
+        }
+      }),
+    })
+    nextState = recorded.state
+    degraded += recorded.failed.length
+    // Only a real change is persisted: a clean successful run must not create
+    // an empty state file, and a damaged one is left alone until a failure or
+    // a success actually rewrites the memory.
+    if (serializeState(nextState) !== serializeState(retryState)) {
+      writeProvisionState(nextState, stateText)
     }
     // Summary: deterministic failures first, each with its one-line fix; the
     // retried-then-failed ones follow without a hint.
@@ -499,8 +652,33 @@ if (tier === 'none') {
           ` — continuing${failure.hint ? ` — ${failure.hint}` : ''}`,
       )
     }
-    const failedSuffix = failedInstalls.length > 0 ? `, failed ${failedInstalls.length}` : ''
-    say(3, 'plugins', `installed ${installedCount}, skipped ${skipped}${failedSuffix}`)
+    // The summary counts VERIFIED packages, not attempts: a batch that exited 0
+    // while leaving a package at another version must not read as a full
+    // install next to the degraded line below. Skips (already satisfied, or
+    // held back by the failure backoff) and the not-at-pin packages are named
+    // separately; the attempt count is the denominator.
+    const verified = targets.reduce((count, entry) => (outcomes.get(entry.name)?.ok === true ? count + 1 : count), 0)
+    const hardFailed = failedInstalls.length
+    const notAtPin = Math.max(0, degraded - hardFailed)
+    if (degraded === 0 && skips.length === 0) {
+      say(3, 'plugins', `installed ${verified}, skipped ${skipped}`)
+    } else {
+      const parts = []
+      if (satisfied > 0) parts.push(`${satisfied} already installed`)
+      if (skips.length > 0) parts.push(`${skips.length} in failure backoff`)
+      if (notAtPin > 0) parts.push(`${notAtPin} not at the pinned version`)
+      if (hardFailed > 0) parts.push(`${hardFailed} failed`)
+      say(3, 'plugins', `installed ${verified} of ${plan.install.length} (${parts.join(', ')})`)
+    }
+    // The launcher must still start (exit code stays 0), but a version the pin
+    // did not reach is not silence: the next start skips this pin and the user
+    // needs to know why.
+    if (degraded > 0) {
+      console.error(
+        `${PREFIX}degraded — ${degraded} plugin(s) not at the pinned version; see the lines above` +
+          ` (plugins stay on their installed versions; run "dsh-opentui upgrade" after the registry catches up)`,
+      )
+    }
   }
 }
 

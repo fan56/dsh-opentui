@@ -5,6 +5,12 @@
 // fixtures. That split is what makes the idempotency rules (dep present,
 // node_modules version satisfies, bundle entry present) testable without a
 // network or a real dsh profile.
+//
+// The failure-memory policy lives in ./provision-state.mjs (also pure); this
+// module only applies it to a plan, so "which specs does this launch actually
+// run" is testable end to end without a profile.
+
+import { shouldSkipRetry } from './provision-state.mjs'
 
 export const PROFILE = 'opentui'
 export const PREFIX = 'provision-opentui-profile: '
@@ -435,7 +441,10 @@ export function planPluginInstall({ tier, dependencies = {}, bundles = [], insta
     const installed = installedVersions[plugin.name]
     const depOk = depSpec !== undefined && (isLocalSpec(depSpec) || satisfiesVersion(installed, effectivePin))
     if (!depOk) {
-      install.push({ name: plugin.name, spec: `${plugin.name}@${effectivePin}`, reason: plugin.reason })
+      // `pin` is the EFFECTIVE pin (shipped pin or a newer override), so the
+      // caller can compare the installed version and the failure state against
+      // exactly the version this install asked for.
+      install.push({ name: plugin.name, pin: effectivePin, spec: `${plugin.name}@${effectivePin}`, reason: plugin.reason })
       continue
     }
     if (!bundles.includes(plugin.name)) missingBundles.push(plugin.name)
@@ -449,6 +458,83 @@ export function planPluginInstall({ tier, dependencies = {}, bundles = [], insta
     missingBundles,
     managedOrder,
   }
+}
+
+/**
+ * Split a plan's install rows into the specs this launch runs and the pins it
+ * skips after repeated failures (see provision-state.mjs for the policy:
+ * backoff, attempt cap, 24-hour reset).
+ *
+ * The pin compared is `row.pin` — the EFFECTIVE pin computed by
+ * planPluginInstall. Using the shipped pin here would make an override-raised
+ * package look permanently failed: its install spec says 0.7.2 while the
+ * recorded failure (from an older launch) says 0.7.0.
+ *
+ * Pure: `state` is the parsed state document, `now` a Date / ISO string /
+ * epoch ms. Returns the surviving rows and one summary row per skipped pin.
+ *
+ * @param {{
+ *   install?: Array<{name: string, pin: string, spec: string}>,
+ *   state?: object|null,
+ *   now?: Date|string|number,
+ *   backoffMs?: number,
+ *   maxAttempts?: number,
+ * }} input
+ * @returns {{
+ *   install: Array<{name: string, pin: string, spec: string}>,
+ *   skips: Array<{name: string, pin: string, reason: string, attempts: number, lastFailedAt: string}>,
+ * }}
+ */
+export function partitionInstallByRetryState({ install = [], state, now, backoffMs, maxAttempts } = {}) {
+  const pending = []
+  const skips = []
+  for (const row of Array.isArray(install) ? install : []) {
+    if (!row || typeof row.name !== 'string' || row.name === '') {
+      pending.push(row)
+      continue
+    }
+    const pin = typeof row.pin === 'string' && row.pin !== '' ? row.pin : specPin(row.spec)
+    const verdict = shouldSkipRetry({ state, name: row.name, pin, now, backoffMs, maxAttempts })
+    if (!verdict.skip) {
+      pending.push(pin === row.pin ? row : { ...row, pin })
+      continue
+    }
+    skips.push({
+      name: row.name,
+      pin: verdict.entry.pin,
+      reason: verdict.reason,
+      attempts: verdict.entry.attempts,
+      lastFailedAt: verdict.entry.lastFailedAt,
+    })
+  }
+  return { install: pending, skips }
+}
+
+/** `@scope/pkg@1.2.3` -> `1.2.3`. Only a fallback for rows without `pin`. */
+function specPin(spec) {
+  if (typeof spec !== 'string') return ''
+  const at = spec.lastIndexOf('@')
+  return at > 0 ? spec.slice(at + 1) : ''
+}
+
+/**
+ * Compare the versions that actually landed against the plan's effective pins.
+ * Exact match only: `dsh plugin add` was asked for an exact version, so a
+ * newer or older version is a degraded install, not a satisfied one.
+ *
+ * @param {{
+ *   install?: Array<{name: string, pin: string}>,
+ *   installedVersions?: Record<string, string|undefined>,
+ * }} input
+ * @returns {Array<{name: string, pin: string, installed: string|null, ok: boolean}>}
+ */
+export function verifyInstalledPins({ install = [], installedVersions = {} } = {}) {
+  const versions = installedVersions && typeof installedVersions === 'object' ? installedVersions : {}
+  return (Array.isArray(install) ? install : []).map((row) => {
+    const actual = row && typeof row.name === 'string' ? versions[row.name] : undefined
+    const installed = typeof actual === 'string' && actual !== '' ? actual : null
+    return { name: row?.name, pin: row?.pin, installed, ok: installed !== null && installed === row?.pin }
+  })
 }
 
 /**

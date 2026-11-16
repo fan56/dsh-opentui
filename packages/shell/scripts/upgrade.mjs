@@ -38,6 +38,7 @@ import {
   readSync,
   realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -154,6 +155,7 @@ export const defaultFs = {
   existsSync: (path) => existsSync(path),
   mkdirSync: (path, options) => mkdirSync(path, options),
   rmSync: (path, options) => rmSync(path, options),
+  rmdirSync: (path) => rmdirSync(path),
   copyFileSync: (from, to) => copyFileSync(from, to),
   renameSync: (from, to) => renameSync(from, to),
 }
@@ -437,6 +439,22 @@ function restoreBackup({ fs, profileDir, overridePath, copies }) {
   }
 }
 
+/**
+ * Remove the backup after a fully successful run: the stamp directory first,
+ * then its hidden `.upgrade-backup` parent when it is empty. `rmdir` (not
+ * `rm -r`) is deliberate — it refuses to touch a parent that still holds
+ * another run's backup (ENOTEMPTY is ignored), so concurrent upgrades cannot
+ * delete each other's rollback material. The failure paths never call this.
+ */
+function removeSuccessfulBackup({ fs, backupDir }) {
+  fs.rmSync(backupDir, { recursive: true, force: true })
+  try {
+    fs.rmdirSync(dirname(backupDir))
+  } catch {
+    /* not empty, already gone, or not ours to remove — leave it */
+  }
+}
+
 /** The specs of the pre-upgrade manifest, read from its BACKUP copy (the live
  *  manifest may already have been rewritten by the host). Local and host
  *  specs are skipped: they are not installable from the registry. */
@@ -681,7 +699,7 @@ function applyPluginUpgrades(ctx) {
   }
 
   if (mismatched.length === 0 && !overridesError) {
-    fs.rmSync(backupDir, { recursive: true, force: true })
+    removeSuccessfulBackup({ fs, backupDir })
     log(`upgraded ${upgraded} plugin(s)`)
   } else {
     log(`backup kept at ${backupDir}`)
