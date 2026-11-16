@@ -61,6 +61,11 @@ jobs:
           ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
           fetch-depth: 0 # the main-ancestry check needs real history
 
+      # Tag builds land in a detached HEAD, and parts of the test suite read the
+      # current branch name; give the checkout a local branch so those tests see one.
+      - name: Materialise a local branch for the tag checkout
+        run: git checkout -B ci-release
+
       - name: Validate the tag
         run: |
           case "$TAG" in
