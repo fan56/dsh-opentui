@@ -5,11 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [0.18.0] - 2026-11-16
 
 ### Added
 
-- feat: add `upgrade` subcommand to update dsh-opentui itself and profile plugins to the latest npm version, with dry-run, confirmation, backup/rollback, and an `upgrade-overrides.json` that stops provisioning from restoring shipped pins.
+- **`upgrade` subcommand.** `dsh-opentui upgrade` moves the launcher and the opentui profile's plugins to the latest npm version, with `--dry-run`, a confirmation prompt, backup/rollback on a failed install, and an `upgrade-overrides.json` that stops provisioning from restoring the shipped pins.
+
+### Fixed
+
+- **A profile upgrade survives the next start.** Provisioning now reads `upgrade-overrides.json` from the profile and treats the versions recorded there as the effective pins, so a plugin installed past its built-in pin is no longer replaced by it on the following boot. A missing file keeps the old behavior, and an unreadable one degrades to the shipped pins with a warning.
+- **An undeterminable target version fails the run.** When the registry query cannot resolve a package, `upgrade` exits non-zero and writes nothing — no `node_modules` change, no lockfile, no override file, `--dry-run` included — instead of reporting success.
+- **A dead registry is answered in one request.** The version query runs with `--fetch-retries 0 --fetch-timeout 20000`, so an unreachable host reports `query-failed` without npm's retry ladder.
+
+### Internal
+
+- **`11-upgrade` e2e scenario** against a local registry fixture (`e2e/fixtures/upgrade-registry`), covering the profile upgrade path from query through `upgrade-overrides.json` to the next provision.
 
 ## [0.17.3] - 2026-11-16
 
