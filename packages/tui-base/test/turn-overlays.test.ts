@@ -1,7 +1,17 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { NullSessionSeam, type SeamApprovalVerdict, type SeamAskPick } from "../src/seams/session"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
-import { askNeedsReview, askProgressTitle, askQuestionRows, askSentinelTitle, askTabStrip, registerTurnOverlays, summarizeArgs } from "../src/routes/session/turn-overlays"
+import { registerTurnOverlays, summarizeArgs } from "../src/routes/session/turn-overlays"
+import {
+	askNeedsReview,
+	askTabStrip,
+	hasReviewRow,
+	inlineRowIndex,
+	questionRowCount,
+	recommendedPicks,
+	reviewRowIntent,
+	splitRecommended,
+} from "../src/routes/session/ask-options"
 import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 
 // The ask-card copy resolves through `t()` (T7 facet migration): boot the
@@ -144,20 +154,24 @@ describe("TurnOverlayController ask", () => {
 		expect(solo.currentQuestion?.id).toBe("solo")
 	})
 
-	test("enterReview is refused until every question is answered; backToQuestions returns to edit", () => {
+	test("enterReview opens a reviewing batch early (spec §8); a lone single-select batch has no page", () => {
 		const c = new TurnOverlayController()
 		c.answer([
 			{ id: "q1", prompt: "one", options: [{ label: "a" }, { label: "b" }] },
 			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y" }], multiSelect: true },
 		])
+		// The trailing review row makes the page reachable before every
+		// question is answered; unanswered rows render their own state.
 		c.toggle("a")
-		expect(c.enterReview()).toBe(false)
-		expect(c.pendingAsk?.phase).toBe("questions")
-		c.toggle("x")
 		expect(c.enterReview()).toBe(true)
+		expect(c.pendingAsk?.phase).toBe("review")
 		c.backToQuestions(1)
 		expect(c.pendingAsk?.phase).toBe("questions")
 		expect(c.currentQuestion?.id).toBe("q2")
+		// A lone single-select batch settles on its pick: no review page.
+		const solo = new TurnOverlayController()
+		solo.answer([{ id: "solo", prompt: "p", options: [{ label: "o" }] }])
+		expect(solo.enterReview()).toBe(false)
 	})
 
 	test("review page: ← back keeps picks, re-answer replaces, submit resolves the batch", async () => {
@@ -285,7 +299,6 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 		// (the lone-single fast path does not apply to multi-question batches).
 		expect(c.currentQuestion?.id).toBe("q2")
 		expect(c.pendingAsk?.phase).toBe("questions")
-		expect(c.enterReview()).toBe(false)
 		c.toggle("y")
 		expect(c.pendingAsk?.phase).toBe("review")
 		c.submit()
@@ -340,7 +353,42 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 	})
 })
 
-describe("ask picker pure helpers (F5)", () => {
+describe("ask surface pure helpers (spec §3, §4, §8)", () => {
+	test("splitRecommended strips only a trailing (Recommended)/(推荐) token", () => {
+		expect(splitRecommended("Postgres (Recommended)")).toEqual({ label: "Postgres", recommended: true })
+		expect(splitRecommended("Postgres（推荐）")).toEqual({ label: "Postgres", recommended: true })
+		expect(splitRecommended("  Postgres  (RECOMMENDED) ")).toEqual({ label: "Postgres", recommended: true })
+		// Negative cases: free text and unrelated parentheticals stay intact.
+		expect(splitRecommended("not recommended")).toEqual({ label: "not recommended", recommended: false })
+		expect(splitRecommended("fast (beta)")).toEqual({ label: "fast (beta)", recommended: false })
+		expect(splitRecommended("推荐 but slow")).toEqual({ label: "推荐 but slow", recommended: false })
+		// An all-suffix label keeps its text and renders no badge.
+		expect(splitRecommended("(Recommended)")).toEqual({ label: "(Recommended)", recommended: false })
+		expect(splitRecommended("（推荐）")).toEqual({ label: "（推荐）", recommended: false })
+	})
+
+	test("recommendedPicks pre-selects the draft and never submits (spec §4)", async () => {
+		const c = new TurnOverlayController()
+		const pending = c.answer([
+			{ id: "q1", prompt: "one", options: [{ label: "a (Recommended)" }, { label: "b" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y（推荐）" }] },
+		])
+		expect(c.pendingAsk?.picks).toEqual([["a (Recommended)"], ["y（推荐）"]])
+		expect(c.pendingAsk?.phase).toBe("questions")
+		expect(recommendedPicks({ id: "q", prompt: "p", options: [{ label: "x" }, { label: "y (Recommended)" }, { label: "z（推荐）" }] })).toEqual(["y (Recommended)"])
+		// multiSelect pre-selects every recommended option.
+		expect(
+			recommendedPicks({
+				id: "q",
+				prompt: "p",
+				multiSelect: true,
+				options: [{ label: "x (Recommended)" }, { label: "y（推荐）" }, { label: "z" }],
+			}),
+		).toEqual(["x (Recommended)", "y（推荐）"])
+		c.decline()
+		expect(await pending).toEqual([])
+	})
+
 	test("askTabStrip: brackets mark focus, ✓ marks answered tabs", () => {
 		const questions = [
 			{ id: "1", prompt: "a", options: [{ label: "x" }] },
@@ -348,66 +396,34 @@ describe("ask picker pure helpers (F5)", () => {
 			{ id: "3", prompt: "c", options: [{ label: "z" }] },
 		]
 		expect(askTabStrip(questions, [[], [], []], 0)).toBe("[1] · 2 · 3")
-		expect(askTabStrip(questions, [["x"], [], ["z"]], 1)).toBe("1✓ · [2] · 3✓")
-		// A committed custom answer counts as answered too (C7) — the focused
-		// tab's ✓ rides inside its brackets, same as tui-pi's renderTabStrip.
-		expect(askTabStrip(questions, [[], [], []], 0, ["free", undefined, undefined])).toBe("[1✓] · 2 · 3")
+		expect(askTabStrip(questions, [["x"], [], ["z"]], 1)).toBe("1 ✓ · [2] · 3 ✓")
+		// A committed custom answer counts as answered too; the focused tab's
+		// ✓ rides inside its brackets.
+		expect(askTabStrip(questions, [[], [], []], 0, ["free", undefined, undefined])).toBe("[1 ✓] · 2 · 3")
 	})
 
-	test("askSentinelTitle: the label until text is typed, then the ✎ mark (tui-pi parity)", () => {
-		expect(askSentinelTitle(undefined)).toBe("Type something.")
-		expect(askSentinelTitle("")).toBe("Type something.")
-		expect(askSentinelTitle("my answer")).toBe("✎ my answer")
+	test("askNeedsReview + the row cursor space", () => {
+		const one = { id: "1", prompt: "a", options: [{ label: "x" }] }
+		const zero = { id: "2", prompt: "b", options: [] }
+		expect(askNeedsReview([one])).toBe(false)
+		expect(askNeedsReview([{ ...one, multiSelect: true }])).toBe(true)
+		expect(askNeedsReview([one, zero])).toBe(true)
+		// A zero-option question paints only the resident inline row (spec §2).
+		expect(hasReviewRow(zero, true)).toBe(false)
+		expect(questionRowCount(zero, true)).toBe(1)
+		expect(inlineRowIndex(zero, true)).toBe(0)
+		// Option row(s), the review row, then the inline row.
+		expect(hasReviewRow(one, true)).toBe(true)
+		expect(questionRowCount(one, true)).toBe(3)
+		expect(inlineRowIndex(one, true)).toBe(2)
+		expect(questionRowCount(one, false)).toBe(2)
 	})
 
-	test("askProgressTitle: (i/n) only for multi-question batches", () => {
-		expect(askProgressTitle([{ id: "1", prompt: "a", options: [] }], 0)).toBe("Question")
-		expect(askProgressTitle([{ id: "1", prompt: "a", options: [] }, { id: "2", prompt: "b", options: [] }], 1)).toBe("Question (2/2)")
-	})
-
-	test("askNeedsReview: multi-question or any multiSelect", () => {
-		expect(askNeedsReview([{ id: "1", prompt: "a", options: [{ label: "x" }] }])).toBe(false)
-		expect(askNeedsReview([{ id: "1", prompt: "a", options: [{ label: "x" }], multiSelect: true }])).toBe(true)
-		expect(askNeedsReview([{ id: "1", prompt: "a", options: [{ label: "x" }] }, { id: "2", prompt: "b", options: [{ label: "y" }] }])).toBe(true)
-	})
-
-	// C7 regression pin (container e2e 60-ask-user "space toggles lint on in
-	// place"): the sentinel row adds a 4th row to the questions list, and the
-	// dialog keymap WRAPS at both ends — so the trailing rows shift where a
-	// fixed count of arrow presses lands. The rows themselves must keep the
-	// option labels as STRING values (the only rows the space toggle and
-	// enter-pick act on), with the sentinel/review discriminators strictly
-	// after them — the trailing rows participate in navigation but can never
-	// absorb the toggle semantics.
-	test("askQuestionRows: option rows stay string-valued around the sentinel row; toggles re-bracket in place", () => {
-		const question = { id: "extras", prompt: "checks?", options: [{ label: "lint" }, { label: "smoke" }], multiSelect: true }
-		// Unanswered: brackets unchecked; sentinel + review rows follow.
-		expect(askQuestionRows(question, [], undefined, true).map((row) => row.value)).toEqual([
-			"lint",
-			"smoke",
-			{ kind: "custom" },
-			{ kind: "review" },
-		])
-		expect(askQuestionRows(question, [], undefined, true).map((row) => row.title)).toEqual([
-			"[ ] lint",
-			"[ ] smoke",
-			"Type something.",
-			"⏎ Review answers",
-		])
-		// lint toggled in place: only its own bracket flips, the sentinel and
-		// review rows keep their titles and discriminator values.
-		const toggled = askQuestionRows(question, ["lint"], undefined, true)
-		expect(toggled[0].title).toBe("[x] lint")
-		expect(toggled[1].title).toBe("[ ] smoke")
-		expect(toggled[2].value).toEqual({ kind: "custom" })
-		expect(toggled[3].value).toEqual({ kind: "review" })
-		// A committed custom answer renders the ✎ mark on the sentinel row.
-		expect(askQuestionRows(question, [], "typed", true)[2].title).toBe("✎ typed")
-		// Single-select rows stay bracket-less; no review row when the batch
-		// needs none (lone single-select question).
-		const single = askQuestionRows({ id: "1", prompt: "a", options: [{ label: "x" }] }, ["x"], undefined, false)
-		expect(single.map((row) => row.value)).toEqual(["x", { kind: "custom" }])
-		expect(single[0].title).toBe("x")
+	test("reviewRowIntent: question rows edit, the last row submits (spec §8)", () => {
+		expect(reviewRowIntent(0, 2)).toEqual({ kind: "edit", question: 0 })
+		expect(reviewRowIntent(1, 2)).toEqual({ kind: "edit", question: 1 })
+		expect(reviewRowIntent(2, 2)).toEqual({ kind: "submit" })
+		expect(reviewRowIntent(9, 2)).toEqual({ kind: "submit" })
 	})
 })
 

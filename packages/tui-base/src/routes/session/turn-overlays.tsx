@@ -1,34 +1,40 @@
 /**
- * Turn overlay surfaces (batch 5): the rebuilt approval + ask surfaces on
- * the VENDORED dialog components, wired through SessionSeam.
+ * Turn overlay host: the approval card and the ask surface.
  *
- * Component mapping (vendored → our surface):
+ * Component mapping:
  *   ui/dialog-confirm  DialogConfirm  → ApprovalCard  (tool approval:
- *       tool name + args summary, enter = allow, esc/cancel = reject)
- *   ui/dialog-select   DialogSelect   → AskPicker      (one question +
- *       its options, arrows + enter; esc declines the whole batch)
+ *       tool name + args summary, enter = allow, esc/cancel = reject) — still
+ *       a vendored dialog, per the task split.
+ *   the in-flow dock                 → AskPanel      (`ask-panel.tsx`): the
+ *       ask surface left the dialog stack entirely (spec §2) and renders in
+ *       the dock's composer seat instead, full width, in flow.
  *
- * Both mount through the vendored DialogProvider stack (`dialog.replace`),
- * which captures the currently focused renderable on open and refocuses it
- * when the stack drains — that is the OpenTUI focus law. `TurnOverlayHost`
- * additionally re-asserts composer focus on the controller's idle hook
- * (belt and braces against the login-era bug: overlay closed, editor
- * stayed blurred because a stale focused flag said otherwise).
+ * One interaction slot, first-come-first-served in the sense the shipped host
+ * already had: while an approval is pending it wins the slot (the old
+ * `dialog.replace` behavior) and the ask waits; an ask that is ALREADY on
+ * screen keeps the slot until it settles, so the two surfaces never coexist
+ * and the dock is never torn down underneath a dialog (which would hand the
+ * composer focus to a hidden surface after layout). The full id-ordered
+ * admission slot is the next task (spec §7).
+ *
+ * `TurnOverlayHost.onIdle`'s 3 ms reclaim stays for the approval dialog path
+ * (the vendored provider refocuses at 1 ms); the dock refocuses the composer
+ * itself, by ref, after layout (spec §10).
  */
-import { createEffect, createSignal, onCleanup, onMount, untrack, Show, type JSX } from "solid-js"
+import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { onAnimationTick } from "@opentui/solid"
 import type { SeamApprovalVerdict, SeamAskPick, SeamAskQuestion } from "../../seams/session"
 import { DialogConfirm } from "../../ui/dialog-confirm"
-import { DialogSelect, type DialogSelectOption, type DialogSelectRef } from "../../ui/dialog-select"
-import { DialogHeader, DialogLayout, DIALOG_LIST_INSET, useDialog } from "../../ui/dialog"
-import { Keymap } from "../../context/keymap"
-import { useCursorStyle } from "../../config"
-import { TurnOverlayController, type PendingAsk } from "./turn-overlay-controller"
+import { useDialog } from "../../ui/dialog"
+import { TurnOverlayController } from "./turn-overlay-controller"
 import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
 import { motionAnimationRunning, motionDecorationsEnabled, motionFrameRate } from "../../skin/motion"
 import { warningColor } from "../../skin/semantic"
 import { mixSkinColor, skinPulseBrightness, SKIN_PULSE_MS } from "./widgets-dock"
+import { AskPanel } from "./ask-panel"
+import { estimateAskRows } from "./ask-options"
+import { useDock, type DockFocusable, type DockHandle } from "./dock-host"
 
 /** One-line args summary for the approval card message. */
 export function summarizeArgs(name: string, args: Record<string, unknown>, limit = 160): string {
@@ -86,391 +92,65 @@ export function ReminderBadge(): JSX.Element {
 }
 
 /**
- * One-line tab strip for a multi-question batch (tui-pi parity):
- * `[1] · 2✓ · 3` — brackets mark the focused tab, ✓ an answered one
- * (a committed custom answer counts as answered too, C7).
- * Pure so tests and the renderer share one vocabulary.
- */
-export function askTabStrip(
-	questions: SeamAskQuestion[],
-	picks: readonly (readonly string[])[],
-	index: number,
-	customs?: readonly (string | undefined)[],
-): string {
-	return questions
-		.map((_, qi) => {
-			const answered = (picks[qi]?.length ?? 0) > 0 || (customs?.[qi] !== undefined && customs[qi] !== "")
-			const label = `${qi + 1}${answered ? "✓" : ""}`
-			return qi === index ? `[${label}]` : label
-		})
-		.join(" · ")
-}
-
-/** The sentinel row label (tui-pi `SENTINEL_LABEL`); a committed custom
- * answer replaces it with the `✎` mark + the typed text. */
-export function askSentinelTitle(custom: string | undefined): string {
-	return custom ? t("overlay.ask.customMark", { answer: custom }) : t("overlay.ask.sentinelLabel")
-}
-
-/** Progress title: `(i/n)` prefix once the batch has ≥ 2 questions. */
-export function askProgressTitle(questions: SeamAskQuestion[], index: number): string {
-	if (questions.length < 2) return t("overlay.ask.question")
-	return t("overlay.ask.questionProgress", { index: String(index + 1), total: String(questions.length) })
-}
-
-/** Whether the picker needs the explicit review row (≥ 2 questions or any multiSelect). */
-export function askNeedsReview(questions: SeamAskQuestion[]): boolean {
-	return questions.length >= 2 || questions.some((question) => question.multiSelect === true)
-}
-
-function truncate70(text: string): string {
-	return text.length > 70 ? text.slice(0, 69) + "…" : text
-}
-
-/**
- * The ask surface (feature batch F5, tui-pi parity): ONE dialog over the
- * whole question batch. Per question: a `(i/n)` progress title, a tab strip
- * (`[1] · 2✓ · 3`), ←/→ to switch tabs (questions ≥ 2), space/enter to
- * toggle — single-select replaces and auto-advances, multiSelect toggles in
- * place — and a `⏎ Review answers` row once the batch needs one. The review
- * page lists every question with its picks, ← returns to edit, enter on the
- * submit row settles the batch. Esc at ANY point still declines the whole
- * batch (unchanged contract).
+ * Mounts the controller's pending overlays: one approval card on the vendored
+ * dialog stack, one ask panel in the in-flow dock. `reclaimFocus` fires after
+ * each drain for the dialog path (the dock owns its own refocus).
  *
- * Reactivity: the dialog mounts once per ask batch (the host keys by batch
- * id) and re-renders from controller state through its own subscription;
- * every DialogSelect prop reads the batch through a getter so the fine-
- * grained updates track (getter props rule).
- */
-export function AskPicker(props: {
-	controller: TurnOverlayController
-	onDecline: () => void
-}) {
-	const [version, setVersion] = createSignal(0)
-	onMount(() => {
-		const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1))
-		onCleanup(unsubscribe)
-	})
-	const ask = (): PendingAsk | undefined => {
-		version()
-		return props.controller.pendingAsk
-	}
-
-	return (
-		<Show
-			when={ask() !== undefined && ask()?.customDraft !== null}
-			fallback={
-				<Show
-					when={ask()?.phase === "review"}
-					fallback={<AskQuestionsView ask={ask} controller={props.controller} onDecline={props.onDecline} />}
-				>
-					<AskReviewView ask={ask} controller={props.controller} onDecline={props.onDecline} />
-				</Show>
-			}
-		>
-			<AskCustomInputView ask={ask} controller={props.controller} onDecline={props.onDecline} />
-		</Show>
-	)
-}
-
-/** Review-row discriminator: a question row (enter = edit it), the submit row, or the sentinel row. */
-type AskRowValue = { kind: "question"; qi: number } | { kind: "submit" } | { kind: "review" } | { kind: "custom" }
-
-/**
- * The questions-phase rows, pure so the option ↔ sentinel ↔ review row
- * mapping is unit-pinned: the question's options (multiSelect rows bracketed
- * by the picks), then the sentinel row (tui-pi parity — a committed custom
- * answer renders as `✎ <text>`; selecting it opens the inline editor), then
- * the review row when the batch needs one. The OPTION rows carry the raw
- * label as a string value; the sentinel/review rows carry AskRowValue
- * discriminators — the space toggle (and enter's pick) only fires on the
- * string-valued rows, so the trailing rows can never absorb the toggle
- * semantics. They DO participate in arrow navigation (the keymap wraps), so
- * callers walking the list by keypresses must target rows by their active
- * state, not by a fixed count (see e2e/scenarios/60-ask-user.sh).
- */
-export function askQuestionRows(
-	question: SeamAskQuestion,
-	picks: readonly string[],
-	custom: string | undefined,
-	review: boolean,
-): DialogSelectOption<string | AskRowValue>[] {
-	const multi = question.multiSelect === true
-	const rows: DialogSelectOption<string | AskRowValue>[] = question.options.map(({ label }) => ({
-		title: multi ? (picks.includes(label) ? t("overlay.ask.checkedOption", { option: label }) : t("overlay.ask.uncheckedOption", { option: label })) : label,
-		value: label,
-	}))
-	rows.push({ title: askSentinelTitle(custom), value: { kind: "custom" } })
-	if (review) rows.push({ title: t("overlay.ask.reviewRow"), value: { kind: "review" } })
-	return rows
-}
-
-/** The questions phase: focused question's options + tab strip + ←/→/space. */
-function AskQuestionsView(props: {
-	ask: () => PendingAsk | undefined
-	controller: TurnOverlayController
-	onDecline: () => void
-}) {
-	const batch = () => props.ask()
-	const question = () => {
-		const b = batch()
-		return b?.questions[b.index]
-	}
-	const multi = () => question()?.multiSelect === true
-	const picked = () => {
-		const b = batch()
-		return b?.picks[b.index] ?? []
-	}
-	const bIndex = (): number => batch()?.index ?? 0
-	const options = (): DialogSelectOption<string | AskRowValue>[] => {
-		const q = question()
-		if (!q) return []
-		return askQuestionRows(q, picked(), batch()?.customs[bIndex()], askNeedsReview(batch()?.questions ?? []))
-	}
-	const description = (): string | undefined => {
-		const b = batch()
-		if (!b) return undefined
-		const parts: string[] = []
-		if (b.questions.length >= 2) parts.push(askTabStrip(b.questions, b.picks, b.index, b.customs))
-		if (multi()) parts.push(t("overlay.ask.spaceToggle"))
-		return parts.join("  ·  ") || undefined
-	}
-	const toggleHighlighted = () => {
-		const option = selectRefRef?.selected
-		if (option && typeof option.value === "string") props.controller.toggle(option.value)
-	}
-	const bindings = () => {
-		const b = batch()
-		return [
-			...(b && b.questions.length >= 2
-				? [
-						{ id: "ask.prev_question", title: t("overlay.ask.prevQuestion"), group: "Dialog", bind: "left", run: () => props.controller.switchFocus(-1) },
-						{ id: "ask.next_question", title: t("overlay.ask.nextQuestion"), group: "Dialog", bind: "right", run: () => props.controller.switchFocus(1) },
-					]
-				: []),
-			{ id: "ask.toggle", title: t("overlay.ask.toggleOption"), group: "Dialog", bind: "space", run: toggleHighlighted },
-		]
-	}
-	const title = () => {
-		const b = batch()
-		const q = question()
-		if (!b || !q) return ""
-		return t("overlay.ask.title", { title: askProgressTitle(b.questions, b.index), prompt: truncate70(q.prompt) })
-	}
-	let selectRefRef: DialogSelectRef<string | AskRowValue> | undefined
-	return (
-		<DialogSelect<string | AskRowValue>
-			// Pulsing reminder marker + the title (titleView replaces the
-			// header's own title text; the frame/tone stays warning, untouched).
-			titleView={
-				<box flexDirection="row">
-					<ReminderBadge />
-					<AskTitleText title={title()} />
-				</box>
-			}
-			title={title()}
-			description={description()}
-			renderFilter={false}
-			options={options()}
-			current={multi() ? undefined : picked()[0]}
-			ref={(r) => (selectRefRef = r)}
-			bindings={bindings()}
-			onSelect={(option) => {
-				if (typeof option.value === "string") props.controller.toggle(option.value)
-				else if (option.value.kind === "custom") props.controller.beginCustom()
-				else props.controller.enterReview()
-			}}
-			onCancel={props.onDecline}
-		/>
-	)
-}
-
-/**
- * The inline free-text editor for the sentinel path (C7, tui-pi parity):
- * a one-line input replacing the picker while the controller is editing
- * (`customDraft !== null`). Enter commits (empty = discard, back to the
- * picker), Esc discards — the Esc binding rides a modal keymap layer (the
- * same mechanism DialogSelect's escape uses), so the vendored dialog
- * stack's onClose decline never fires while editing. The committed answer
- * clears the question's picked options — selected ⊕ custom are mutually
- * exclusive.
- */
-function AskCustomInputView(props: {
-	ask: () => PendingAsk | undefined
-	controller: TurnOverlayController
-	onDecline: () => void
-}) {
-	const theme = useThemeOptional()
-	const cursorStyle = useCursorStyle()
-	Keymap.createLayer(() => ({
-		mode: "modal",
-		commands: [
-				{
-					id: "ask.custom_cancel",
-					title: t("overlay.ask.customBackToOptions"),
-					group: "Dialog",
-					bind: "escape",
-					run: () => props.controller.cancelCustomEdit(),
-				},
-		],
-	}))
-	return (
-		<DialogLayout
-			header={
-				<box paddingLeft={DIALOG_LIST_INSET - 1} paddingRight={DIALOG_LIST_INSET - 1}>
-					<DialogHeader
-						titleView={
-							<box flexDirection="row">
-								<ReminderBadge />
-								<AskTitleText title={t("overlay.ask.customTitle")} />
-							</box>
-						}
-						title={t("overlay.ask.customTitle")}
-					/>
-					<text fg={theme?.text.muted} wrapMode="word">
-						{props.ask()?.questions[props.ask()?.index ?? 0]?.prompt}
-					</text>
-				</box>
-			}
-		>
-			<input
-				flexGrow={1}
-				value={props.ask()?.customDraft ?? ""}
-				placeholder={t("overlay.ask.sentinelLabel")}
-				placeholderColor={theme?.text.muted}
-				focusedBackgroundColor={theme?.background.formfield.focused}
-				focusedTextColor={theme?.text.formfield.focused}
-				cursorColor={theme?.text.formfield.focused}
-				cursorStyle={cursorStyle()}
-				onInput={(text) => props.controller.patchCustom(text)}
-				onSubmit={() => props.controller.commitCustom()}
-				ref={(r) => {
-					setTimeout(() => {
-						if (!r.isDestroyed) r.focus()
-					}, 1)
-				}}
-			/>
-		</DialogLayout>
-	)
-}
-
-/** The ask-card title text in the header's warning tier (the titleView
- * replaces DialogHeader's own title <text>, which would paint text.base). */
-function AskTitleText(props: { title: string }): JSX.Element {
-	const theme = useThemeOptional()
-	return (
-		<text fg={warningColor(theme)} wrapMode="none">
-			{props.title}
-		</text>
-	)
-}
-
-/** The review phase: every question + its picks, ← back, enter submits. */
-function AskReviewView(props: {
-	ask: () => PendingAsk | undefined
-	controller: TurnOverlayController
-	onDecline: () => void
-}) {
-	const options = (): DialogSelectOption<string | AskRowValue>[] => {
-		const b = props.ask()
-		if (!b) return []
-		const rows: DialogSelectOption<string | AskRowValue>[] = b.questions.map((question, qi) => {
-			const picks = b.picks[qi] ?? []
-			const custom = b.customs[qi]
-			const answer = custom
-				? t("overlay.ask.customMark", { answer: custom })
-				: picks.length > 0
-					? picks.join(", ")
-					: "—"
-			return {
-				// Array join → param (design §6): the joined picks render through
-				// one `{picks}` placeholder; no picks render the em-dash. A
-				// committed custom answer (C7) rides the same slot as the
-				// `✎`-marked string.
-				title: t("overlay.ask.reviewQuestionRow", {
-					prompt: truncate70(question.prompt),
-					picks: answer,
-				}),
-				value: { kind: "question", qi },
-			}
-		})
-		rows.push({ title: t("overlay.ask.submitRow"), value: { kind: "submit" } })
-		return rows
-	}
-	return (
-		<DialogSelect<string | AskRowValue>
-			titleView={
-				<box flexDirection="row">
-					<ReminderBadge />
-					<AskTitleText title={t("overlay.ask.reviewTitle")} />
-				</box>
-			}
-			title={t("overlay.ask.reviewTitle")}
-			description={t("overlay.ask.reviewDescription")}
-			renderFilter={false}
-			options={options()}
-			bindings={[
-				{ id: "ask.back_to_questions", title: t("overlay.ask.editAnswers"), group: "Dialog", bind: "left", run: () => props.controller.backToQuestions() },
-			]}
-			onSelect={(option) => {
-				if (typeof option.value === "string") return
-				if (option.value.kind === "submit") props.controller.submit()
-				else if (option.value.kind === "question") props.controller.backToQuestions(option.value.qi)
-			}}
-			onCancel={props.onDecline}
-		/>
-	)
-}
-
-/**
- * Renders the controller's pending overlays through the vendored dialog
- * stack: one approval card or one ask picker at a time (a multi-question
- * ask mounts ONE batch picker, F5). `reclaimFocus` fires after each drain
- * — pass the composer's focused-flag ref there.
+ * SEAM (next task): the dock's key layer, the staged Esc/Ctrl+C ladder, digit
+ * gating and the id-ordered admission slot. This host only mounts and
+ * unmounts surfaces; `AskPanel` owns the body and registers its focus target.
  */
 export function TurnOverlayHost(props: {
 	controller: TurnOverlayController
 	reclaimFocus?: () => void
 }) {
 	const dialog = useDialog()
+	const dock = useDock()
 	const [version, setVersion] = createSignal(0)
 	onMount(() => {
-		const unsubscribe = props.controller.subscribe(() => setVersion((v) => v + 1))
+		const unsubscribe = props.controller.subscribe(() => setVersion((value) => value + 1))
 		onCleanup(unsubscribe)
 	})
-	// Every drain to empty: re-assert editor focus after the vendored
-	// DialogProvider's own refocus (it schedules at 1 ms; we check at 3 ms).
+	// Approval path only: the DialogProvider's own refocus runs at 1 ms; we
+	// check at 3 ms. The dock does NOT use this timer (spec §10).
 	props.controller.onIdle(() => {
 		setTimeout(() => props.reclaimFocus?.(), 3)
 	})
 
-	// Diff by overlay descriptor: `dialog.replace` itself mutates the tracked
-	// dialog stack, so an effect that reads the stack re-triggers itself and
-	// remounts the card every frame (keymap layers churn, dispatch dies).
-	// Only replace when the shown overlay actually changed; the stack read
-	// for the final clear is untracked.
-	//
-	// Each replace registers the stack item's `onClose` (what the vendored
-	// DialogProvider modal escape/ctrl+c invoke when the surface itself has
-	// no escape binding — legacy DialogConfirm doesn't). It settles only if
-	// its overlay is still the shown one, so replace-over (question
-	// advance, next queued approval) never settles the NEW head by proxy.
+	/** The ask panel's focus resolver, registered by the mounted body. */
+	let panelFocus: (() => DockFocusable | undefined) | undefined
+	let askHandle: DockHandle | undefined
+	let askId: number | undefined
 	let shown: string | undefined
+
+	function closeAsk(): void {
+		askHandle?.close()
+		askHandle = undefined
+		askId = undefined
+	}
+
+	// Diff by overlay descriptor: `dialog.replace` mutates the tracked stack,
+	// so an effect reading it re-triggers itself and remounts the card every
+	// frame (keymap layers churn, dispatch dies). Only act when the SHOWN
+	// overlay actually changed. Each dialog entry's `onClose` settles only if
+	// its overlay is still the shown one, so replace-over never settles the
+	// NEW head by proxy.
 	createEffect(() => {
 		version()
 		const approval = props.controller.pendingApproval
 		const ask = props.controller.pendingAsk
-		const key = approval
-			? `approval:${approval.id}`
-			: ask
-				? `ask:${ask.id}`
-				: ""
+		// An ask already on screen holds the slot until it settles: closing the
+		// dock to open a dialog would refocus the composer under that dialog.
+		const askShowing = askHandle !== undefined && ask !== undefined && askId === ask.id
+		const key = approval !== undefined && !askShowing ? `approval:${approval.id}` : ask ? `ask:${ask.id}` : ""
 		if (key === shown) return
 		shown = key
-		if (approval) {
+
+		if (approval !== undefined && !askShowing) {
+			// Approval wins the slot (today's serialization). The ask stays
+			// queued in the controller and reopens when the approval settles.
+			closeAsk()
 			const atOpen = key
-			// Warning tone (skin contract §1): approval/ask cards paint the
-			// warning tier on the panel frame + title (instant, no animation).
 			dialog.replace(
 				() => (
 					<ApprovalCard
@@ -489,23 +169,44 @@ export function TurnOverlayHost(props: {
 			)
 			return
 		}
-		if (ask) {
-			// One dialog per ask BATCH (F5): the picker reacts to controller
-			// state internally (tab switches, toggles, review phase) instead
-			// of remounting per question.
-			const atOpen = key
-			dialog.replace(
-				() => <AskPicker controller={props.controller} onDecline={() => props.controller.decline()} />,
-				() => {
-					if (shown === atOpen) props.controller.decline()
+
+		if (ask !== undefined) {
+			if (askHandle !== undefined && askId === ask.id) return
+			// A new head (or the first one). The dock slot is REUSED: open the
+			// next request first, then settle the previous one, so the queue
+			// never empties (no frame pop/push churn, and the composer is not
+			// refocused between two interactions — spec §7 hand-off, §10).
+			const previous = askHandle
+			askId = ask.id
+			askHandle = dock.open(
+				(ctx) => (
+					<AskPanel
+						controller={props.controller}
+						width={ctx.width}
+						onFocusTarget={(resolve) => {
+							panelFocus = resolve
+						}}
+					/>
+				),
+				{
+					kind: "ask",
+					contentRows: estimateAskRows(ask),
+					focusRef: () => panelFocus?.(),
+					overflowLabel: (hidden) => t("overlay.ask.overflow", { count: hidden }),
 				},
-				{ tone: "warning" },
 			)
+			previous?.close()
 			return
 		}
-		if (untrack(() => dialog.stack.length) > 0) dialog.clear()
+
+		// No overlay left: release the dock seat. The trailing `dialog.clear()`
+		// is gone (spec §7): with approval and ask off the dialog stack it
+		// would close whatever dialog the page itself opened.
+		closeAsk()
 	})
-	// The overlays render through the vendored dialog stack, not this slot.
+	onCleanup(closeAsk)
+	// The overlays render through the dialog stack (approval) and the dock
+	// (ask), not this slot.
 	return <Show when={false}>{null}</Show>
 }
 

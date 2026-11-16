@@ -30,6 +30,7 @@ import { createPaneFocus, PaneFocusKeys } from "../src/routes/session/pane-focus
 import { SessionComposer, type SessionComposerRef } from "../src/routes/session/session-composer"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
+import { DockProvider, DockSeat } from "../src/routes/session/dock-host"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import type { PickOneExtras } from "../src/routes/session/commands"
 import { DialogSelect } from "../src/ui/dialog-select"
@@ -364,6 +365,10 @@ function SessionPage() {
 					if (composerRef && !composerRef.focused()) composerRef.focus()
 				}}
 			/>
+			{/* The ask surface renders in the in-flow dock (spec §2). This legacy
+			    example keeps its composer inside Transcript, so the seat has no
+			    composer of its own: the dock simply takes the trailing slot. */}
+			<DockSeat composer={() => null} />
 		</box>
 	)
 }
@@ -380,7 +385,9 @@ render(
 					<ThemeProvider mode="dark" source={{ discover: async () => ({}) }}>
 							<ClipboardHost>
 								<DialogProvider>
-									<SessionPage />
+									<DockProvider>
+										<SessionPage />
+									</DockProvider>
 								</DialogProvider>
 							</ClipboardHost>
 					</ThemeProvider>
