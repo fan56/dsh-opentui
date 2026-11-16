@@ -869,6 +869,7 @@
   "dialog.sessionList.deleteFailed": "删除会话失败：{error}",
   "dialog.sessionList.hint.currentDirectory": "当前目录",
   "dialog.sessionList.hint.allProjects": "所有项目",
+  "transcript.ask.declined": "已拒绝",
   "transcript.loading": "加载会话历史…",
   "transcript.pending.queue.paused": "⏸ 已暂停 #{order} · {text}",
   "transcript.pending.queue.waiting": "⏸ 排队等待 #{order} · {text}",

@@ -270,6 +270,9 @@ export function Transcript(props: TranscriptProps) {
 		user: () => theme?.text.action.primary.base ?? "#7aa2f7",
 		reasoningBorder: () => theme?.border.base ?? "#565f89",
 		reasoning: () => theme?.text.muted ?? "#9aa5ce",
+		// Ask replay (spec §9): the answer line rides the accent role — the
+		// same brand/action tier the user prompt uses.
+		answer: () => theme?.text.action.primary.base ?? "#7aa2f7",
 		done: () => theme?.text.feedback.success.base ?? "#9ece6a",
 		running: () => theme?.text.feedback.warning.base ?? "#e0af68",
 		failed: () => theme?.text.feedback.error.base ?? "#f7768e",
@@ -328,6 +331,32 @@ export function Transcript(props: TranscriptProps) {
 		/>
 	)
 
+	/** Spec §9 ask replay: one block per settled ask, one pair per question —
+	 * muted `✓ <question>` (header eyebrow above, detail context below) then
+	 * the accent `  → <answer>`. Multi-select joins on ", "; a free-text answer
+	 * is its own value; a declined question shows the declined marker (muted:
+	 * distinct from an answer, no accent emphasis). Offered options stay
+	 * carried in the row but are not repeated here — the record is what was
+	 * asked and what was answered, not the menu. */
+	const askAnswer = (entry: Extract<SeamRow, { kind: "ask" }>["entries"][number]): string =>
+		entry.selected.join(", ") || entry.custom || t("transcript.ask.declined")
+	const askDeclined = (entry: Extract<SeamRow, { kind: "ask" }>["entries"][number]): boolean =>
+		entry.declined || (entry.selected.length === 0 && !entry.custom)
+	const askRow = (row: Extract<SeamRow, { kind: "ask" }>) => (
+		<box flexDirection="column" gap={1}>
+			<For each={row.entries}>
+				{(entry) => (
+					<box flexDirection="column">
+						<Show when={entry.header}>{(header) => <text fg={color.reasoning()}>{header()}</text>}</Show>
+						<text fg={color.reasoning()}>{`✓ ${entry.question}`}</text>
+						<Show when={entry.detail}>{(detail) => <text fg={color.reasoning()}>{detail()}</text>}</Show>
+						<text fg={askDeclined(entry) ? color.reasoning() : color.answer()}>{`  → ${askAnswer(entry)}`}</text>
+					</box>
+				)}
+			</For>
+		</box>
+	)
+
 	// Batch D1: tool/reasoning rows stay in the store (the widgets dock reads
 	// them there) but never paint in the flow — the visible feed is the
 	// tui-pi chat-clean set. Batch D2: the subagent tree moved to the
@@ -353,6 +382,8 @@ export function Transcript(props: TranscriptProps) {
 				)
 			case "assistant":
 				return assistantRow(row)
+			case "ask":
+				return askRow(row)
 			default:
 				return null
 		}

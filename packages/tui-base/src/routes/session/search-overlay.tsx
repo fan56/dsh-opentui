@@ -75,6 +75,15 @@ export function rowSearchText(row: SeamRow): string {
 			return row.text
 		case "tool":
 			return `${row.name}${row.args ? `(${row.args})` : ""}${row.output ? ` ${row.output}` : ""}`
+		// Ask replay blocks search by the question and the answered values
+		// (the header eyebrow and the option menu are paint, not the record).
+		case "ask":
+			return row.entries
+				.map(
+					(entry) =>
+						`${entry.question}${entry.header ? ` ${entry.header}` : ""} ${entry.selected.join(" ")}${entry.custom ? ` ${entry.custom}` : ""}`,
+				)
+				.join(" ")
 		// Batch V2b: the live subagent tree row searches by child label —
 		// the tree track/glyphs/status are paint, not searchable text.
 		case "subagents":

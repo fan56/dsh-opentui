@@ -107,14 +107,19 @@ describe("RemoteSessionSeam mapping fidelity (batch-2a table)", () => {
 		])
 	})
 
-	test("storedTranscript: durable rows final-true, assistant keeps its flag, ask rows project Q&A text", async () => {
+	test("storedTranscript: durable rows final-true, assistant keeps its flag, ask rows carry their entries", async () => {
 		const { session } = fakeSession()
 		const seam = new RemoteSessionSeam(session)
 		const rows = await seam.storedTranscript("ses-1")
 		expect(rows).toEqual([
 			{ kind: "user", text: "q", final: true },
 			{ kind: "assistant", text: "a", final: false },
-			{ kind: "ask", text: "Go? → y", final: true },
+			{
+				kind: "ask",
+				text: "",
+				final: true,
+				entries: [{ question: "Go?", options: [{ label: "y" }, { label: "n" }], selected: ["y"], declined: false }],
+			},
 		])
 	})
 

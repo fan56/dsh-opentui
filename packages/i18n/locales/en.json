@@ -869,6 +869,7 @@
   "dialog.sessionList.deleteFailed": "Failed to delete session: {error}",
   "dialog.sessionList.hint.currentDirectory": "current directory",
   "dialog.sessionList.hint.allProjects": "all projects",
+  "transcript.ask.declined": "declined",
   "transcript.loading": "Loading session history…",
   "transcript.pending.queue.paused": "⏸ Paused #{order} · {text}",
   "transcript.pending.queue.waiting": "⏸ Queued #{order} · {text}",

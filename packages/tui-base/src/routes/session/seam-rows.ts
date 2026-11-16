@@ -57,6 +57,7 @@ import { createSignal, onCleanup, type Accessor } from "solid-js"
 import { createStore, produce, reconcile } from "solid-js/store"
 import type {
 	SeamApprovalVerdict,
+	SeamAskEntry,
 	SeamSessionEvent,
 	SeamSubagentView,
 	SeamTranscriptRow,
@@ -129,9 +130,16 @@ export type SeamRow =
 					lastLine?: string
 				}[]
 		  }
+	| {
+			/** One settled `ask_user_question` block: the questions with their
+			 * answers (the transcript's structured replay, spec §9). */
+			key: string
+			kind: "ask"
+			entries: SeamAskEntry[]
+	  }
 
 export function toStoredRow(stored: SeamTranscriptRow, index: number): SeamRow {
-	const kind = stored.kind === "user" || stored.kind === "tool" ? stored.kind : "assistant"
+	const kind = stored.kind === "user" || stored.kind === "tool" || stored.kind === "ask" ? stored.kind : "assistant"
 	const key = `stored:${kind}:${index}`
 	if (kind === "tool") {
 		// Batch V1 (gap 3): durable tool rows now carry the args brief, the
@@ -146,6 +154,14 @@ export function toStoredRow(stored: SeamTranscriptRow, index: number): SeamRow {
 			status: stored.ok === false ? "failed" : "done",
 			...(typeof stored.output === "string" ? { output: stored.output } : {}),
 		}
+	}
+	if (kind === "ask") {
+		// Ask replay (spec §9): the entries carry the questions and answers, so
+		// the view renders the structured block. A row WITHOUT entries is an
+		// older projection (the pre-entries flattening) — degrade to the
+		// assistant text row it always was, never an empty block.
+		if (stored.entries?.length) return { key, kind: "ask", entries: stored.entries }
+		return { key, kind: "assistant", text: stored.text, final: stored.final }
 	}
 	if (kind === "user") return { key, kind: "user", text: stored.text, final: true }
 	return { key, kind: "assistant", text: stored.text, final: stored.final }

@@ -82,6 +82,26 @@ export interface SeamSessionSummary {
 	parentID?: string
 }
 
+/** One settled Q&A row of an `ask_user_question` transcript block: the tool
+ * call carries the question/options, the tool result the selection. Additive
+ * — persisted items without it keep rendering (see toStoredRow's fallback). */
+export interface SeamAskEntry {
+	/** The question text (kept apart from `header`). */
+	question: string
+	/** Short heading the tool call carried, when any (eyebrow in replay). */
+	header?: string
+	/** Supporting detail the tool call carried, when any (context line). */
+	detail?: string
+	/** The options offered, each label with its optional description. */
+	options: SeamAskOption[]
+	/** The labels the user picked (empty when declined). */
+	selected: string[]
+	/** Free-text answer carried by the result, when any. */
+	custom?: string
+	/** True when the question got no user selection (declined / timed out). */
+	declined: boolean
+}
+
 /** Transcript row (api.session.view / storedTranscript shape, view-sliced). */
 export interface SeamTranscriptRow {
 	kind: string
@@ -92,6 +112,10 @@ export interface SeamTranscriptRow {
 	args?: string
 	output?: string
 	ok?: boolean
+	/** Settled `ask` rows carry their Q&A entries (the transcript block);
+	 * absent on every other kind — and on older projections, which degrade
+	 * to the assistant text row they used to be. */
+	entries?: SeamAskEntry[]
 }
 
 /**
