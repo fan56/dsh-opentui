@@ -305,16 +305,44 @@ export interface PanelKeyAdapter {
   focusTakeover?(active: boolean): void
 }
 
+/**
+ * ADR-0008 input-ownership bridge. Structural like `keymap` (decision D1):
+ * panel-kit never imports the host, it pushes one opaque frame per layer and
+ * asks the host whether a token is the top owner. The host is tui-base's
+ * `InputOwnership`; the token is its `OwnerFrame`.
+ */
+export interface PanelOwnershipBridge {
+  /** One frame per panel layer, innermost last. */
+  push(kind: "panel"): unknown
+  /** Idempotent: a layer can be removed twice (fade close + teardown). */
+  pop(token: unknown): void
+  /** Top-frame identity check — the only ownership predicate. */
+  owns(token: unknown): boolean
+}
+
+/**
+ * Kit-side ownership state: the host bridge plus the frame of the deepest
+ * panel layer, which `PanelStack` maintains and the kit's single modal layer
+ * gates on (`owns(panelTopFrame)`).
+ */
+export interface PanelOwnership extends PanelOwnershipBridge {
+  readonly topFrame: Accessor<unknown>
+  setTopFrame(frame: unknown): void
+}
+
 export interface PanelKitContextValue {
   readonly theme: Accessor<PanelTheme>
   readonly motion: PanelMotionAdapter
   readonly keys?: PanelKeyAdapter
+  readonly ownership?: PanelOwnership
 }
 
 export interface PanelKitProviderProps {
   theme: PanelTheme | Accessor<PanelTheme>
   motion: PanelMotionAdapter
   keys?: PanelKeyAdapter
+  /** ADR-0008 ownership bridge; absent = no ownership tracking (standalone). */
+  ownership?: PanelOwnershipBridge
   children?: JSX.Element
 }
 

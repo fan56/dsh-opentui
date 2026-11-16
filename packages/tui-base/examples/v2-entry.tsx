@@ -82,6 +82,7 @@ import { createTuiClipboard } from "../src/clipboard"
 import { Keymap } from "../src/context/keymap"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
 import { PanelKitHost } from "../src/context/panel-kit-host"
+import { InputOwnershipProvider, useIsPageOwner } from "../src/context/input-ownership"
 import { ConfigProvider, resolve, useConfig } from "../src/config"
 import { copyOnSelectEnabled, copyOnSelectRelease } from "../src/util/selection"
 import { createThemeSeam } from "../src/seams/theme"
@@ -177,6 +178,10 @@ function V2SessionPage(props: {
 		onToolRun: () => setTools((n) => n + 1),
 	})
 	const dialog = useDialog()
+	// ADR-0008: page-level global layers answer only while the page frame is
+	// the top ownership frame (dialogs, panel-kit panels and the ask dock all
+	// push above it). Subsumes the old `dialog.stack.length === 0` gate.
+	const pageOwns = useIsPageOwner()
 	const theme = useTheme()
 	const themeService = useThemes()
 	const themeSeam = createThemeSeam(themeService)
@@ -1169,7 +1174,8 @@ function V2SessionPage(props: {
 				// gated OFF while any dialog (approval/ask//model) is open.
 					createComponent(TranscriptScrollKeys, {
 						scroll: () => transcriptScroll,
-						enabled: () => dialog.stack.length === 0,
+						// ADR-0008: page frame on top (no dialog, panel or dock).
+						enabled: pageOwns,
 					}),
 					// Pane focus keys (./pane-focus.tsx): F6 toggles the two
 					// panes; while the transcript is focused ↑↓/PgUp/PgDn/Home/End
@@ -1178,7 +1184,11 @@ function V2SessionPage(props: {
 					// picker, so no overlay ever loses its keys.
 					createComponent(PaneFocusKeys, {
 						pane: paneFocus.pane,
-						keysEnabled: () => dialog.stack.length === 0,
+						// Both pane layers (F6 and transcript keys) gate on the
+						// ownership stack: the pane-focus leak was wider than
+						// PgUp/PgDn and at priority 1, so a dialog/panel/dock
+						// above the page must win (ADR-0008 consequences).
+						keysEnabled: pageOwns,
 						slashOpen: () => slash.controller.open,
 						pickerOpen: subagentsPickerOpen,
 						busy,
@@ -1206,7 +1216,10 @@ function V2SessionPage(props: {
 							confirmStopAll()
 						},
 						quit: props.quit,
-						enabled: () => dialog.stack.length === 0,
+						// ADR-0008: one layer, page-owned. While any overlay frame
+						// (dialog, panel, ask dock) is on top, both Esc and Ctrl+C
+						// belong to it.
+						enabled: pageOwns,
 						escapeYields: () => slash.controller.open,
 					}),
 				// REACTIVE-PROP LAW (batch 10d): signal reads ride GETTERS. An
@@ -1472,43 +1485,47 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 										// only viable while the app never owned a selection).
 										return createComponent(ClipboardHost, {
 											get children() {
-												return createComponent(DialogProvider, {
+												return createComponent(InputOwnershipProvider, {
 													get children() {
-															return createComponent(ErrorBoundaryDiagnostics, {
-																get children() {
-																	// PanelKit host (T17-INT2): inside ThemeProvider +
-																	// Keymap.Provider, wrapping the page so the stack's
-																	// layers are absolute siblings of the page root
-																	// (zIndex 3000+) and cover the transcript and every
-																	// page-level panel.
-																	return createComponent(PanelKitHost, {
-																		get children() {
-																			return createComponent(V2SessionPage, {
-																				seam,
-																				themeName,
-																				quit: () => process.exit(0),
-																				workspace,
-																				// Splash hero plugin-tree root (the boot profile).
-																				profileName: profile,
-																				// Branch-or-SHA probe (composer context row):
-																				// client-local, silent on non-repos.
-																				probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
-																				// feat/auto-resume: the staged stored session +
-																				// its one-line notice (undefined = fresh boot).
-																				initialSessionId,
-																				resumeNotice,
-																				skills: skillRows,
-																				// /skills manager roots (gap C3): see the
-																				// V2SessionPage props note — boot-scope values
-																				// ride PROPS into the page, never closure reads
-																				// from the children getters (the exit-2 bug).
-																				skillsSource: skillsManagerRoots.source,
-																				skillsCurated: skillsManagerRoots.curated,
-																			})
-																		},
-																	})
-																},
-															})
+														return createComponent(DialogProvider, {
+															get children() {
+																return createComponent(ErrorBoundaryDiagnostics, {
+																	get children() {
+																		// PanelKit host (T17-INT2): inside ThemeProvider +
+																		// Keymap.Provider, wrapping the page so the stack's
+																		// layers are absolute siblings of the page root
+																		// (zIndex 3000+) and cover the transcript and every
+																		// page-level panel.
+																		return createComponent(PanelKitHost, {
+																			get children() {
+																				return createComponent(V2SessionPage, {
+																					seam,
+																					themeName,
+																					quit: () => process.exit(0),
+																					workspace,
+																					// Splash hero plugin-tree root (the boot profile).
+																					profileName: profile,
+																					// Branch-or-SHA probe (composer context row):
+																					// client-local, silent on non-repos.
+																					probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
+																					// feat/auto-resume: the staged stored session +
+																					// its one-line notice (undefined = fresh boot).
+																					initialSessionId,
+																					resumeNotice,
+																					skills: skillRows,
+																					// /skills manager roots (gap C3): see the
+																					// V2SessionPage props note — boot-scope values
+																					// ride PROPS into the page, never closure reads
+																					// from the children getters (the exit-2 bug).
+																					skillsSource: skillsManagerRoots.source,
+																					skillsCurated: skillsManagerRoots.curated,
+																				})
+																			},
+																		})
+																	},
+																})
+															},
+														})
 													},
 												})
 											},

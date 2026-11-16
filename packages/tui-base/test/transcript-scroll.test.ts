@@ -108,7 +108,9 @@ describe("transcript scroll keys wiring", () => {
 		const source = src("examples/v2-entry.tsx")
 		expect(source).toMatch(/scrollRef: \(value: ScrollBoxRenderable \| undefined\) => \(transcriptScroll = value\)/)
 		expect(source).toMatch(/createComponent\(TranscriptScrollKeys, \{/)
-		expect(source).toMatch(/enabled: \(\) => dialog\.stack\.length === 0/)
+		// ADR-0008: the page gate is the ownership predicate (it subsumes the
+		// old `dialog.stack.length === 0` check and adds panel/dock frames).
+		expect(source).toMatch(/enabled: pageOwns,/)
 		// focus batch: mouse reporting is ON (click focuses a pane / wheel
 		// scrolls); batch V2's exitOnCtrlC:false stays.
 		expect(source).toMatch(/\{ useMouse: true(, exitOnCtrlC: false)? \}/)

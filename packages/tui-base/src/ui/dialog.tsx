@@ -13,6 +13,7 @@ import {
   type ParentProps,
 } from "solid-js"
 import { Keymap } from "../context/keymap"
+import { useInputOwnershipOptional, type OwnerFrame } from "../context/input-ownership"
 import { ThemeContextProvider, useTheme } from "../context/theme"
 import { InputRenderable, MouseButton, Renderable, RGBA, TextAttributes } from "@opentui/core"
 import { createStore } from "solid-js/store"
@@ -344,6 +345,8 @@ function init() {
       onClose?: () => void
       key?: unknown
       tone?: DialogTone
+      /** ADR-0008 ownership claim, pushed in the same call that adds the entry. */
+      frame?: OwnerFrame
     }[],
     size: "medium" as DialogSize,
     centered: false,
@@ -351,6 +354,9 @@ function init() {
 
   const renderer = useRenderer()
   const keymap = Keymap.use()
+  // Optional: the vendored app tree and FT harnesses mount DialogProvider
+  // without an ownership provider; the layer then keeps its pre-ADR gate.
+  const ownership = useInputOwnershipOptional()
 
   createEffect(() => {
     if (store.stack.length === 0) return
@@ -379,7 +385,11 @@ function init() {
 
   Keymap.createLayer(() => ({
     mode: "modal",
-    enabled: store.stack.length > 0,
+    // ADR-0008: the dialog lane is only enabled while the top ownership frame
+    // is the top dialog entry — a panel/dock frame above it wins, even though
+    // both layers sit at priority 0.
+    enabled:
+      store.stack.length > 0 && (ownership === undefined || ownership.owns(store.stack.at(-1)?.frame)),
     commands: [
       {
         bind: "escape",
@@ -392,6 +402,7 @@ function init() {
           }
           const current = store.stack.at(-1)
           current?.onClose?.()
+          ownership?.pop(current?.frame)
           setStore("stack", store.stack.slice(0, -1))
           refocus()
         },
@@ -413,6 +424,7 @@ function init() {
           }
           const current = store.stack.at(-1)
           current?.onClose?.()
+          ownership?.pop(current?.frame)
           setStore("stack", store.stack.slice(0, -1))
           refocus()
         },
@@ -424,6 +436,7 @@ function init() {
     clear() {
       for (const item of store.stack) {
         if (item.onClose) item.onClose()
+        ownership?.pop(item.frame)
       }
       batch(() => {
         setStore("size", "medium")
@@ -443,6 +456,9 @@ function init() {
       }
       for (const item of store.stack) {
         if (item.onClose) item.onClose()
+        // `replace` discards the whole stack, so its ownership frames go too
+        // before the single replacement entry pushes its own.
+        ownership?.pop(item.frame)
       }
       batch(() => {
         setStore("size", options?.size ?? "medium")
@@ -453,6 +469,7 @@ function init() {
             onClose,
             key: options?.key,
             tone: options?.tone,
+            frame: ownership?.push("dialog"),
           },
         ])
       })

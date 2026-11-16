@@ -34,6 +34,7 @@ import { Keymap } from "../../context/keymap"
 import { useThemeOptional } from "../../context/theme"
 import { currentRowColors } from "../../skin/semantic"
 import { useDialog } from "../../ui/dialog"
+import { useIsPageOwner } from "../../context/input-ownership"
 import { DialogPrompt } from "../../ui/dialog-prompt"
 import { t } from "../../i18n"
 import { Locale } from "../../util/locale"
@@ -67,6 +68,9 @@ export type SubagentsPickerProps = {
 export function SubagentsPicker(props: SubagentsPickerProps) {
   const theme = useThemeOptional()
   const dialog = useDialog()
+  // ADR-0008: the picker is a page surface (it pushes no frame of its own);
+  // its layers yield while a dialog, panel or dock owns the keyboard.
+  const pageOwns = useIsPageOwner()
 
   // Shared with the pane-focus layer gate (module signal, above).
   const [open, setOpen] = [pickerOpen, setPickerOpen] as const
@@ -152,7 +156,7 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
   // while a dialog owns the keys — the steer prompt rides the DialogProvider).
   Keymap.createLayer(() => ({
     mode: "global",
-    enabled: open() && dialog.stack.length === 0,
+    enabled: open() && pageOwns(),
     priority: 2,
     commands: [
       { bind: "down", title: t("overlay.picker.keymap.next"), group: "Subagents", run: () => moveTo(store.selected + 1) },
@@ -173,7 +177,7 @@ export function SubagentsPicker(props: SubagentsPickerProps) {
   // history recall (the D5 finding: ↓ for history opened the bar instead).
   Keymap.createLayer(() => ({
     mode: "global",
-    enabled: !open() && dialog.stack.length === 0 && pickerToggleEnabled(subagentMarkerViews()),
+    enabled: !open() && pageOwns() && pickerToggleEnabled(subagentMarkerViews()),
     commands: [
       {
         id: "session.child.first",
