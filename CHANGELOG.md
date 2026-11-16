@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-11-16
+
+### Added
+
+- **The ask-user panel is rebuilt as a bottom-docked, full-width surface.** The batch now occupies the composer seat in the page's normal layout flow (`docs/ask-user-panel-spec.md` §2) instead of a centered overlay: option rows are numbered and carry their descriptions, the trailing `(Recommended)` token is promoted to a `Recommended` badge (recommended rows are pre-selected but never auto-submit), digits `1`–`9` quick-pick a row, the free-text row is a resident inline input rather than a screen swap, multi-question batches get a `[1 ✓] · 2 · 3` tab strip, and the review page lists each question with its current answer and jumps back to it for editing on Enter.
+- **One input-ownership stack routes the keyboard** (`docs/adr/0008-input-ownership-for-keyboard-routing.md`, ADR-0008). Frames are pushed as surfaces open and the top frame wins: page-level `mode:"global"` layers gate on `top() === "page"`, and every overlay layer gates on its own frame. This ends the leak where Esc and PgUp reached the page under `/settings`, `/agents`, `/history` and `/subagents-viewer`; the dialog provider and panel-kit push one frame per open entry/layer, and the ask dock participates with its own frame.
+- **The transcript replays a settled ask as a structured block.** Each question paints `✓ <question>` with `→ <answer>` in accent, one pair per question; a `header` becomes a muted eyebrow, a `detail` a muted continuation line, and a declined question `→ declined`. The offered options are carried but not repeated.
+
+### Changed
+
+- **Ask no longer renders on the dialog stack.** A new in-flow dock host at the composer seat hosts the batch; the composer stays mounted but hidden while the dock is open, so its draft and history survive, and admission waits for page ownership and re-evaluates reactively, so a queued ask admits when the overlay in front of it closes instead of pushing its ownership frame above an absolutely-positioned surface.
+
+### Fixed
+
+- **Unanswered questions submit as declined, not as an empty selection.** The review page is reachable with questions still blank, so the submit path now sends the missing-pick shape (`selected: []` plus `custom: "declined"`) instead of a one-element `[""]` selection that the host would read as a chosen empty string. The answer envelope is otherwise unchanged.
+
+### Removed
+
+- **The dead legacy `Question` tool renderer** and its private `parseQuestions` / `parseQuestionAnswers` helpers are removed (spec §11); no live path imported them.
+
 ## [0.17.3] - 2026-11-16
 
 ### Added
