@@ -29,7 +29,7 @@ export const PLUGIN_SET = [
   },
   {
     name: '@aiwayds/dsh-subagent-registry',
-    version: '0.20.0',
+    version: '0.20.1',
     tier: 'core',
     reason: 'subagent discovery and registration for the shell',
   },
@@ -89,7 +89,7 @@ export const PLUGIN_SET = [
   },
   {
     name: '@aiwayds/dsh-vault',
-    version: '0.8.0',
+    version: '0.8.2',
     tier: 'recommended',
     reason: 'secret storage used by the companion plugins',
   },
