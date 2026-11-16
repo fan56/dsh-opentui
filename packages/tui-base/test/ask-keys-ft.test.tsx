@@ -347,6 +347,49 @@ describe("digit gating (spec §5 constraint 3)", () => {
 	})
 })
 
+describe("free-text capture on the options phase (spec §5 focus model)", () => {
+	test("a printable character lands in the resident input and moves the phase there", async () => {
+		const { setup, controller } = await mount()
+		try {
+			controller.answer([{ id: "q1", prompt: "pick", options: [{ label: "a" }, { label: "b" }] }])
+			await settle(setup)
+			expect(controller.pendingAsk?.phase).toBe("questions")
+
+			setup.mockInput.pressKey("x")
+			await settle(setup)
+
+			expect(controller.pendingAsk?.phase).toBe("input")
+			// The input itself received the key (its onInput wrote the buffer):
+			// the character was neither swallowed nor duplicated.
+			expect(controller.inlineText).toBe("x")
+			expect(controller.pendingAsk?.picks[0]).toEqual([])
+			expect(frame(setup)).toContain("x")
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("after the capture, digits type instead of quick-picking", async () => {
+		const { setup, controller } = await mount()
+		try {
+			controller.answer([{ id: "q1", prompt: "pick", options: [{ label: "a" }, { label: "b" }] }])
+			await settle(setup)
+
+			setup.mockInput.pressKey("x")
+			await settle(setup)
+			expect(controller.pendingAsk?.phase).toBe("input")
+
+			setup.mockInput.pressKey("2")
+			await settle(setup)
+			expect(controller.inlineText).toBe("x2")
+			expect(controller.pendingAsk?.picks[0]).toEqual([])
+			expect(controller.pendingAsk).toBeDefined()
+		} finally {
+			await setup.dispose()
+		}
+	})
+})
+
 describe("space vs enter (spec §6)", () => {
 	test("multi-select: Space toggles in place, Enter confirms and advances to review", async () => {
 		const { setup, controller } = await mount()

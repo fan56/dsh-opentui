@@ -9,6 +9,12 @@
  * prepends its listener, so the layer runs BEFORE the focused inline input —
  * every key the input must own is released with `return false`.
  *
+ * One key class is not a binding: a printable character typed while the LIST
+ * owns the cursor belongs to the resident inline row (spec §5 focus model).
+ * It goes through the keymap's `key` interceptor, which runs ahead of every
+ * binding and does not consume, so the now-focused input inserts it after the
+ * phase switch.
+ *
  * Phase semantics:
  *   options  the option list owns the cursor. ↑↓/PgUp/PgDn/Home/End move;
  *            Enter picks (single) or confirms (multi); Space toggles (multi
@@ -30,8 +36,9 @@
  * one-shot non-arming page interrupt (`turn-cancel.ts`): the dock's dismissal
  * must never put the application one press away from quitting.
  */
-import type { Renderable } from "@opentui/core"
+import type { KeyEvent, Renderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
+import { onCleanup } from "solid-js"
 import { Keymap } from "../../context/keymap"
 import { useInputOwnershipOptional } from "../../context/input-ownership"
 import {
@@ -47,6 +54,23 @@ import type { PendingAsk, TurnOverlayController } from "./turn-overlay-controlle
  * (the dock host owns the only scrollbox), so a page moves this many rows. */
 export const ASK_PAGE_ROWS = 5
 
+/** The single printable character a key types, or undefined when the key is
+ * not free text. Digits stay with quick-pick, Space with multi-select, and
+ * control sequences / multi-character (IME, paste-sized) payloads are left
+ * alone (spec §5 focus model). */
+function printableText(event: KeyEvent): string | undefined {
+	const text = event.sequence
+	// One UTF-16 code unit: a lone character. Anything longer is IME text or a
+	// control sequence and must not be forced through the inline row.
+	if (text.length !== 1) return undefined
+	if (event.ctrl || event.meta || event.super === true || event.hyper === true) return undefined
+	if (text === " ") return undefined
+	if (text >= "0" && text <= "9") return undefined
+	const code = text.codePointAt(0) ?? 0
+	if (code < 32 || code === 127) return undefined
+	return text
+}
+
 export interface AskKeysOptions {
 	controller: TurnOverlayController
 	/** The resident inline input element. It is the only surface that may take
@@ -58,7 +82,8 @@ export function useAskKeys(options: AskKeysOptions): void {
 	// Bare rendering harnesses mount the panel without the app's keymap
 	// provider; the document says the provider's presence is fixed for the
 	// component's lifetime, so the branch is stable.
-	if (Keymap.useOptional() === undefined) return
+	const keymap = Keymap.useOptional()
+	if (keymap === undefined) return
 
 	const renderer = useRenderer()
 	// ADR-0008: the dock's own frame is the gate. Without an ownership provider
@@ -80,6 +105,27 @@ export function useAskKeys(options: AskKeysOptions): void {
 		const input = options.input()
 		return input !== undefined && renderer.currentFocusedRenderable === input
 	}
+
+	// A printable character typed while the option list is focused belongs to
+	// the resident inline row, not the list (spec §5 focus model). The phase
+	// switch alone is not enough: the keymap is prepended, so this runs before
+	// the input. A layer binding cannot express a character class — it needs a
+	// concrete key or a registered sequence pattern, and the layer wrapper
+	// drops `preventDefault: false` — so the catch-all is the keymap's public
+	// "key" interceptor (which runs ahead of every binding). It deliberately
+	// does NOT consume: the event falls through to the now-focused input's own
+	// keypress handler, which inserts exactly the typed character (and its
+	// `onInput` writes the controller's inline buffer).
+	onCleanup(
+		keymap.intercept("key", ({ event }) => {
+			if (!ownsDock()) return
+			const batch = ask()
+			if (batch === undefined || batch.phase !== "questions") return
+			if (printableText(event) === undefined) return
+			options.controller.focusInput()
+			options.input()?.focus()
+		}),
+	)
 
 	/** Move the list cursor; false releases the key to the focused input. */
 	function move(delta: number): boolean {
