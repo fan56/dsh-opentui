@@ -3,7 +3,7 @@
 // before any provision/profile/TUI work. No dsh, no profile, no signals:
 // kill semantics run against injected fakes; ps parsing runs against both
 // synthetic output and the real `ps` on this machine.
-import { describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -12,13 +12,29 @@ import {
   ancestorPids,
   classifyProcess,
   defaultDshHome,
+  formatUsage,
+  KNOWN_CLIENT_ARGS,
   killStaleProcesses,
   parseLauncherArgs,
+  parseLauncherOptions,
   parseProcessHomes,
   parseProcessRows,
   readLauncherVersion,
   selectStaleProcesses,
+  validateLauncherArgs,
 } from '../bin/lib/launcher.mjs'
+import { CLI_LAUNCH_FLAGS } from '../../tui-base/src/routes/session/auto-resume.ts'
+import {
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_READINESS_TIMEOUT_MS,
+  DEFAULT_SERVE_PROBE_BUDGET_MS,
+  ENV_BOOT_TIMEOUT_MS,
+  ENV_CONNECT_TIMEOUT_MS,
+  ENV_MUX_TIMEOUT_MS,
+  resolveBootTimeoutMs,
+  resolveConnectTimeoutMs,
+  resolveMuxTimeoutMs,
+} from '../src/client/lifecycle.ts'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const binPath = join(pkgRoot, 'bin', 'dsh-opentui.mjs')
@@ -26,14 +42,20 @@ const pkgVersion = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'
 
 describe('parseLauncherArgs', () => {
   test('consumes --version and --force, forwards the rest', () => {
-    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, rest: [] })
-    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, rest: [] })
-    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, rest: [] })
+    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--model', 'x', '--force', 'prompt'])).toEqual({
       version: false,
       force: true,
       rest: ['--model', 'x', 'prompt'],
+      passthrough: [],
     })
+  })
+
+  test('treats -v as an alias for --version', () => {
+    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, rest: [], passthrough: [] })
   })
 
   test('leaves unrelated arguments (including lookalikes) untouched', () => {
@@ -41,8 +63,9 @@ describe('parseLauncherArgs', () => {
       version: false,
       force: false,
       rest: ['--model', '--version-like', '--forced'],
+      passthrough: [],
     })
-    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, rest: [] })
+    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, rest: [], passthrough: [] })
   })
 })
 
@@ -220,8 +243,10 @@ describe('killStaleProcesses (injected kill/sleep/isAlive)', () => {
 describe('bin integration: --version short-circuits the startup chain', () => {
   const cases: Array<Array<string>> = [
     ['--version'],
+    ['-v'],
     ['--force', '--version'],
     ['--model', 'm', '--version'],
+    ['-v', '--', '--whatever'],
   ]
   for (const args of cases) {
     test(`node bin/dsh-opentui.mjs ${args.join(' ')} prints exactly one version line and exits 0`, () => {
@@ -239,4 +264,331 @@ describe('bin integration: --version short-circuits the startup chain', () => {
     expect(r.stdout).not.toContain('provision')
     expect(r.stdout).not.toContain('[1/5]')
   })
+
+  test('-v output contains no provision step lines', () => {
+    const r = spawnSync('node', [binPath, '-v'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe(`dsh-opentui ${pkgVersion}\n`)
+    expect(r.stdout).not.toContain('provision')
+    expect(r.stdout).not.toContain('[1/5]')
+  })
+})
+
+describe('parseLauncherArgs -- separator', () => {
+  test('everything after the first standalone -- goes to passthrough verbatim', () => {
+    expect(
+      parseLauncherArgs(['--model', 'm', '--', '--version', '--force', '--verison', 'plain']),
+    ).toEqual({
+      version: false,
+      force: false,
+      rest: ['--model', 'm'],
+      passthrough: ['--version', '--force', '--verison', 'plain'],
+    })
+  })
+
+  test('a bare -- has an empty passthrough; a second -- is itself passthrough', () => {
+    expect(parseLauncherArgs(['--']).passthrough).toEqual([])
+    expect(parseLauncherArgs(['--', '--']).passthrough).toEqual(['--'])
+  })
+
+  test('passthrough is an empty array when no separator is present', () => {
+    expect(parseLauncherArgs(['--force']).passthrough).toEqual([])
+    expect(parseLauncherArgs([]).passthrough).toEqual([])
+  })
+
+  test('-v after -- is passthrough, never a version flag', () => {
+    const result = parseLauncherArgs(['--', '-v'])
+    expect(result.version).toBe(false)
+    expect(result.passthrough).toContain('-v')
+  })
+
+  test('-h and --help after -- are passthrough, never interpreted as help', () => {
+    expect(parseLauncherArgs(['--', '-h', '--help']).passthrough).toEqual(['-h', '--help'])
+  })
+})
+
+describe('formatUsage', () => {
+  test('documents every launcher option, client options and the exit codes', () => {
+    const usage = formatUsage()
+    for (const flag of [
+      '-v, --version',
+      '--force',
+      '--boot-timeout <sec>',
+      '--mux-timeout <sec>',
+      '--connect-timeout <sec>',
+      '--provider <name>',
+      '--model <name>',
+      '--reasoning-effort <level>',
+      '--plugins <tier>',
+      '--dry-run',
+      '-h, --help',
+    ]) {
+      expect(usage).toContain(flag)
+    }
+    expect(usage).toContain('Usage: dsh-opentui [options] [-- <client args>]')
+    expect(usage).toContain('Client options')
+    expect(usage).toContain('--new, --resume-last, --session <id>')
+    for (const code of ['  0  ', '  1  ', '  2  ']) expect(usage).toContain(code)
+
+    // --boot-timeout is scoped to the cold start; /reload keeps its own 30s.
+    expect(usage).toContain('seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)')
+    // The env contract and its precedence are documented, not implied.
+    expect(usage).toContain('Environment:')
+    for (const env of [
+      'DSH_OPENTUI_BOOT_TIMEOUT_MS',
+      'DSH_OPENTUI_MUX_TIMEOUT_MS',
+      'DSH_OPENTUI_CONNECT_TIMEOUT_MS',
+    ]) {
+      expect(usage).toContain(env)
+    }
+    expect(usage).toContain('CLI flag > environment variable > default')
+    // Exit codes are honest: provisioning failures are WARNs, not exit 1, and
+    // the client's own code is passed through.
+    expect(usage).toContain('  1  launcher startup failure')
+    expect(usage).toContain("  other  the client's own exit code is passed through (e.g. 130 on SIGINT)")
+    expect(usage).not.toContain('host failed to boot')
+    expect(usage).not.toContain('provisioning failed')
+
+    // The upgrade subcommand has its own, separate usage text.
+    expect(usage).not.toContain('Usage: dsh-opentui upgrade')
+  })
+})
+
+describe('parseLauncherOptions', () => {
+  test('accepts space and equals forms for all three flags', () => {
+    expect(
+      parseLauncherOptions([
+        '--boot-timeout',
+        '45',
+        '--mux-timeout=20',
+        '--connect-timeout',
+        '90',
+      ]),
+    ).toEqual({
+      bootTimeoutSec: 45,
+      muxTimeoutSec: 20,
+      connectTimeoutSec: 90,
+      error: null,
+    })
+  })
+
+  test('a missing value is reported with the offending flag', () => {
+    const missing = parseLauncherOptions(['--boot-timeout'])
+    expect(missing.error).toBe('missing-value')
+    expect(missing.errorFlag).toBe('--boot-timeout')
+    expect(parseLauncherOptions(['--mux-timeout', '--force']).error).toBe('missing-value')
+    expect(parseLauncherOptions(['--connect-timeout=']).error).toBe('missing-value')
+  })
+
+  test('invalid and out-of-range values carry the original value', () => {
+    const bad = parseLauncherOptions(['--mux-timeout', 'abc'])
+    expect(bad.error).toBe('invalid-value')
+    expect(bad.errorFlag).toBe('--mux-timeout')
+    expect(bad.errorValue).toBe('abc')
+    expect(parseLauncherOptions(['--connect-timeout=0']).error).toBe('invalid-value')
+    expect(parseLauncherOptions(['--connect-timeout=3601']).error).toBe('invalid-value')
+    expect(parseLauncherOptions(['--connect-timeout=3600']).error).toBe(null)
+    expect(parseLauncherOptions(['--boot-timeout=1']).error).toBe(null)
+  })
+
+  test('a negative number is an invalid value, not a missing one', () => {
+    const bad = parseLauncherOptions(['--boot-timeout', '-5'])
+    expect(bad.error).toBe('invalid-value')
+    expect(bad.errorFlag).toBe('--boot-timeout')
+    expect(bad.errorValue).toBe('-5')
+    // The inline form reports the same thing.
+    const inline = parseLauncherOptions(['--boot-timeout=-5'])
+    expect(inline.error).toBe('invalid-value')
+    expect(inline.errorValue).toBe('-5')
+    // A flag-looking token is still a genuinely missing value.
+    expect(parseLauncherOptions(['--boot-timeout', '--force']).error).toBe('missing-value')
+    expect(parseLauncherOptions(['--boot-timeout', '-x']).error).toBe('missing-value')
+  })
+
+  test('the last occurrence of a flag wins', () => {
+    expect(parseLauncherOptions(['--boot-timeout', '10', '--boot-timeout=20']).bootTimeoutSec).toBe(20)
+    expect(parseLauncherOptions(['--mux-timeout', '5', '--mux-timeout', '8']).muxTimeoutSec).toBe(8)
+  })
+})
+
+describe('validateLauncherArgs', () => {
+  test('allowlisted provision and client flags plus values and positionals pass', () => {
+    const result = validateLauncherArgs([
+      '--provider',
+      'p',
+      '--model',
+      'm',
+      '--reasoning-effort',
+      'high',
+      '--plugins',
+      'core',
+      '--dry-run',
+      '--new',
+      '--resume-last',
+      '--session',
+      's1',
+      'positional',
+    ])
+    expect(result.unknown).toEqual([])
+  })
+
+  test('inline --plugins= and --session= forms pass', () => {
+    expect(validateLauncherArgs(['--plugins=none', '--session=x']).unknown).toEqual([])
+  })
+
+  test('inline --provider=, --model= and --reasoning-effort= forms pass', () => {
+    const result = validateLauncherArgs(['--provider=x', '--model=y', '--reasoning-effort=high'])
+    expect(result.unknown).toEqual([])
+  })
+
+  test('a value-taking flag consumes the next token even when it starts with -', () => {
+    for (const flag of ['--session', '--provider', '--model', '--reasoning-effort', '--plugins']) {
+      expect(validateLauncherArgs([flag, '-x']).unknown).toEqual([])
+    }
+  })
+
+  test('a known flag after a value-taking flag is not consumed as its value', () => {
+    expect(validateLauncherArgs(['--session', '--new']).unknown).toEqual([])
+    // --plugins was validated on its own: it consumed its own -x value rather
+    // than being swallowed by --session (which would leave -x unknown).
+    expect(validateLauncherArgs(['--session', '--plugins', '-x']).unknown).toEqual([])
+  })
+
+  test('a single-character unknown flag is reported without a misleading suggestion', () => {
+    const result = validateLauncherArgs(['-x'])
+    expect(result.unknown).toEqual(['-x'])
+    expect(result.suggestion).toBeUndefined()
+    expect(result.suggestions['-x']).toBeUndefined()
+  })
+
+  test('an unknown flag is reported with a spelling suggestion', () => {
+    const result = validateLauncherArgs(['--verison'])
+    expect(result.unknown).toEqual(['--verison'])
+    expect(result.suggestion).toBe('--version')
+    expect(result.suggestions['--verison']).toBe('--version')
+  })
+
+  test('multiple unknowns are each reported and suggested independently', () => {
+    const result = validateLauncherArgs(['--verison', '--forc', '--new'])
+    expect(result.unknown).toEqual(['--verison', '--forc'])
+    expect(result.suggestions['--verison']).toBe('--version')
+    expect(result.suggestions['--forc']).toBe('--force')
+  })
+
+  test('nothing after a standalone -- is validated', () => {
+    expect(validateLauncherArgs(['--verison', '--', '--bogus']).unknown).toEqual(['--verison'])
+  })
+
+  test('flags consumed by the launcher can be skipped', () => {
+    expect(
+      validateLauncherArgs(['--boot-timeout', '45', '--verison'], {
+        skip: ['--boot-timeout'],
+      }).unknown,
+    ).toEqual(['--verison'])
+  })
+
+  test('the client launch flags stay inside the exported allowlist', () => {
+    for (const flag of CLI_LAUNCH_FLAGS) expect(KNOWN_CLIENT_ARGS).toContain(flag)
+  })
+})
+
+describe('bin integration: usage errors fail before provisioning', () => {
+  test('--help prints the launcher usage and exits 0 without provisioning', () => {
+    const r = spawnSync('node', [binPath, '--help'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(0)
+    expect(r.stderr).toBe('')
+    expect(r.stdout).toContain('Usage: dsh-opentui [options] [-- <client args>]')
+    expect(r.stdout).not.toContain('[1/5]')
+  })
+
+  test('--verison fails with a suggestion, no provisioning output', () => {
+    const r = spawnSync('node', [binPath, '--verison'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain("dsh-opentui: unknown option '--verison'")
+    expect(r.stderr).toContain("dsh-opentui: did you mean '--version'?")
+    expect(r.stderr).not.toContain('[1/5]')
+  })
+
+  test('-x is rejected as unknown without a misleading did-you-mean hint', () => {
+    const r = spawnSync('node', [binPath, '-x'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain("dsh-opentui: unknown option '-x'")
+    expect(r.stderr).not.toContain('did you mean')
+    expect(r.stderr).not.toContain('[1/5]')
+  })
+
+  test('--boot-timeout -5 is an invalid value, not a missing one', () => {
+    const r = spawnSync('node', [binPath, '--boot-timeout', '-5'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain("dsh-opentui: invalid value '-5' for '--boot-timeout' (expected 1-3600 seconds)")
+    expect(r.stderr).not.toContain('requires a value')
+  })
+
+  test('an invalid timeout fails with the value and the valid range', () => {
+    const r = spawnSync('node', [binPath, '--boot-timeout=0'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain("dsh-opentui: invalid value '0' for '--boot-timeout' (expected 1-3600 seconds)")
+  })
+
+  test('a missing timeout value names the flag', () => {
+    const r = spawnSync('node', [binPath, '--mux-timeout'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain("dsh-opentui: option '--mux-timeout' requires a value")
+  })
+})
+
+// The client-side resolvers share the launcher's env contract. `Number()` on
+// its own also accepts hex/exponent/separator spellings that are NOT valid
+// millisecond budgets, so each env value must pass a plain-decimal gate first.
+describe('timeout env parsing rejects non-decimal Number() spellings', () => {
+  const resolvers = [
+    {
+      name: 'resolveBootTimeoutMs',
+      env: ENV_BOOT_TIMEOUT_MS,
+      def: DEFAULT_READINESS_TIMEOUT_MS,
+      fn: resolveBootTimeoutMs,
+    },
+    {
+      name: 'resolveMuxTimeoutMs',
+      env: ENV_MUX_TIMEOUT_MS,
+      def: DEFAULT_SERVE_PROBE_BUDGET_MS,
+      fn: resolveMuxTimeoutMs,
+    },
+    {
+      name: 'resolveConnectTimeoutMs',
+      env: ENV_CONNECT_TIMEOUT_MS,
+      def: DEFAULT_CONNECT_TIMEOUT_MS,
+      fn: resolveConnectTimeoutMs,
+    },
+  ]
+  const saved = new Map<string, string | undefined>()
+
+  beforeEach(() => {
+    for (const r of resolvers) {
+      saved.set(r.env, process.env[r.env])
+      delete process.env[r.env]
+    }
+  })
+
+  afterEach(() => {
+    for (const r of resolvers) {
+      const value = saved.get(r.env)
+      if (value === undefined) delete process.env[r.env]
+      else process.env[r.env] = value
+    }
+  })
+
+  for (const r of resolvers) {
+    for (const bad of ['0x1D', '30e2', '1_000']) {
+      test(`${r.name}: env '${bad}' falls back to the default`, () => {
+        process.env[r.env] = bad
+        expect(r.fn()).toBe(r.def)
+      })
+    }
+  }
 })

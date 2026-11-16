@@ -49,16 +49,31 @@ export function defaultDshHome() {
  * Split the launcher's argv into the flags the bin consumes itself and the
  * arguments forwarded to the client bundle.
  *
- * `--version` and `--force` are BIN-level flags: they are consumed here and
- * NOT forwarded (the client must never see `--force`).
+ * `-v`/`--version` and `--force` are BIN-level flags: they are consumed here
+ * and NOT forwarded (the client must never see `--force`).
+ *
+ * A standalone `--` ends launcher parsing: every token after it (even one that
+ * spells a launcher flag) goes to `passthrough` verbatim and is never
+ * interpreted by the bin. `passthrough` is always a string array; it is empty
+ * when no separator appears, so callers never have to handle a union type.
  */
 export function parseLauncherArgs(argv) {
 	const args = Array.isArray(argv) ? argv : []
 	let version = false
 	let force = false
 	const rest = []
+	const passthrough = []
+	let separatorSeen = false
 	for (const arg of args) {
-		if (arg === '--version') {
+		if (separatorSeen) {
+			passthrough.push(arg)
+			continue
+		}
+		if (arg === '--') {
+			separatorSeen = true
+			continue
+		}
+		if (arg === '--version' || arg === '-v') {
 			version = true
 			continue
 		}
@@ -68,7 +83,229 @@ export function parseLauncherArgs(argv) {
 		}
 		rest.push(arg)
 	}
-	return { version, force, rest }
+	return { version, force, rest, passthrough }
+}
+
+/**
+ * Flags the launcher itself consumes before the client starts. Kept here so
+ * every flag is validated by exactly one owner: the bin rejects these before
+ * the client sees them, and `validateLauncherArgs` ignores them via `skip`.
+ */
+export const LAUNCHER_TIMEOUT_FLAGS = ['--boot-timeout', '--mux-timeout', '--connect-timeout']
+
+/** Allowed argv tokens/patterns: profile provisioning forwards + client launch. */
+export const KNOWN_CLIENT_ARGS = [
+	'--provider',
+	'--provider=',
+	'--model',
+	'--model=',
+	'--reasoning-effort',
+	'--reasoning-effort=',
+	'--plugins',
+	'--plugins=',
+	'--dry-run',
+	'--new',
+	'--resume-last',
+	'--session',
+	'--session=',
+]
+
+/**
+ * Parse the launcher-only timeout flags out of `rest`.
+ *
+ * Both `--flag 45` and `--flag=45` are accepted for each flag; the last
+ * occurrence of a flag wins. No printing and no exit: errors come back as a
+ * marker (`missing-value` / `invalid-value`) plus the offending flag and value
+ * so the bin can render its message and usage.
+ */
+export function parseLauncherOptions(rest) {
+	const parsed = {
+		bootTimeoutSec: undefined,
+		muxTimeoutSec: undefined,
+		connectTimeoutSec: undefined,
+		error: null,
+	}
+	const specs = [
+		{ flag: '--boot-timeout', key: 'bootTimeoutSec' },
+		{ flag: '--mux-timeout', key: 'muxTimeoutSec' },
+		{ flag: '--connect-timeout', key: 'connectTimeoutSec' },
+	]
+	const args = Array.isArray(rest) ? rest : []
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === '--') break
+		let spec
+		let value
+		for (const candidate of specs) {
+			if (arg === candidate.flag) {
+				spec = candidate
+				value = args[i + 1]
+				if (value === undefined) {
+					parsed.error = 'missing-value'
+					parsed.errorFlag = candidate.flag
+					return parsed
+				}
+				if (value.startsWith('-')) {
+					// A negative number IS a supplied value (the user gave one),
+					// just an invalid one — report it as such, not as a missing
+					// value. A flag-looking token is a genuinely missing value.
+					if (/^-\d+$/.test(value)) {
+						parsed.error = 'invalid-value'
+						parsed.errorFlag = candidate.flag
+						parsed.errorValue = value
+					} else {
+						parsed.error = 'missing-value'
+						parsed.errorFlag = candidate.flag
+					}
+					return parsed
+				}
+				i++
+				break
+			}
+			if (arg.startsWith(`${candidate.flag}=`)) {
+				spec = candidate
+				value = arg.slice(candidate.flag.length + 1)
+				break
+			}
+		}
+		if (!spec) continue
+		if (value === '' || !/^\d+$/.test(value)) {
+			parsed.error = value === '' ? 'missing-value' : 'invalid-value'
+			parsed.errorFlag = spec.flag
+			if (value !== '') parsed.errorValue = value
+			return parsed
+		}
+		const seconds = Number(value)
+		if (seconds < 1 || seconds > 3600) {
+			parsed.error = 'invalid-value'
+			parsed.errorFlag = spec.flag
+			parsed.errorValue = value
+			return parsed
+		}
+		parsed[spec.key] = seconds
+	}
+	return parsed
+}
+
+/** Levenshtein distance — small, dependency-free, only used for flag hints. */
+function levenshtein(a, b) {
+	let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+	for (let i = 1; i <= a.length; i++) {
+		const curr = [i]
+		for (let j = 1; j <= b.length; j++) {
+			curr[j] = Math.min(
+				curr[j - 1] + 1,
+				prev[j] + 1,
+				prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+			)
+		}
+		prev = curr
+	}
+	return prev[b.length]
+}
+
+/**
+ * Reject unknown launcher-level flags before provisioning runs.
+ *
+ * Positional tokens and flag values (anything not starting with `-`) are left
+ * alone. Tokens after a standalone `--` are never validated. `skip` names
+ * launcher flags already consumed elsewhere (the timeout flags), so they are
+ * not mistaken for client options. A space-form value-taking flag consumes the
+ * token right after it — even one starting with `-` — unless that token is
+ * itself a known flag, so `--session -x` is not mistaken for an unknown flag
+ * while `--session --new` leaves `--new` to be validated on its own. Each
+ * unknown flag may carry a spelling hint when it is at least 3 characters long
+ * and within edit distance 2 of a known flag; one-character typos such as `-x`
+ * get no misleading hint.
+ */
+export function validateLauncherArgs(rest, { skip = [] } = {}) {
+	const skipped = Array.isArray(skip) ? skip : []
+	const knownFlags = [
+		'--version',
+		'-v',
+		'--force',
+		...LAUNCHER_TIMEOUT_FLAGS,
+		'-h',
+		'--help',
+		...KNOWN_CLIENT_ARGS.filter((known) => !known.endsWith('=')),
+	]
+	const isKnown = (token) =>
+		knownFlags.includes(token) ||
+		skipped.some((s) => token === s || token.startsWith(`${s}=`)) ||
+		KNOWN_CLIENT_ARGS.some((known) => known.endsWith('=') && token.startsWith(known))
+	// Space-form flags whose immediately following token is always their value.
+	const valueTaking = ['--provider', '--model', '--reasoning-effort', '--plugins', '--session']
+	const unknown = []
+	const args = Array.isArray(rest) ? rest : []
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === '--') break
+		if (!arg.startsWith('-')) continue
+		if (valueTaking.includes(arg)) {
+			const next = args[i + 1]
+			if (next !== undefined && next !== '--' && !isKnown(next)) i++
+			continue
+		}
+		if (isKnown(arg)) continue
+		unknown.push(arg)
+	}
+
+	const suggestions = {}
+	for (const flag of unknown) {
+		if (flag.length < 3) continue
+		let best
+		let bestDistance = 3
+		for (const known of knownFlags) {
+			const distance = levenshtein(flag, known)
+			if (distance < bestDistance) {
+				bestDistance = distance
+				best = known
+			}
+		}
+		if (best) suggestions[flag] = best
+	}
+	return {
+		unknown,
+		suggestions,
+		suggestion: unknown.length > 0 ? suggestions[unknown[0]] : undefined,
+	}
+}
+
+/** Usage text for the normal launcher (not the `upgrade` subcommand). */
+export function formatUsage() {
+	return [
+		'dsh-opentui — terminal client for the dsh harness',
+		'',
+		'Usage: dsh-opentui [options] [-- <client args>]',
+		'',
+		'Options:',
+		'  -v, --version              print the launcher version and exit',
+		'  --force                    kill stale dsh processes before starting',
+		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
+		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
+		'  --connect-timeout <sec>    seconds to wait for the first connection (default: 30)',
+		'  --provider <name>          forwarded to profile provisioning',
+		'  --model <name>             forwarded to profile provisioning',
+		'  --reasoning-effort <level> forwarded to profile provisioning',
+		'  --plugins <tier>           forwarded to profile provisioning',
+		'  --dry-run                  forwarded to profile provisioning',
+		'  -h, --help                 print this help and exit',
+		'',
+		'Environment:',
+		'  DSH_OPENTUI_BOOT_TIMEOUT_MS      host cold-start budget in ms (CLI flag wins)',
+		'  DSH_OPENTUI_MUX_TIMEOUT_MS       mux readiness budget in ms (CLI flag wins)',
+		'  DSH_OPENTUI_CONNECT_TIMEOUT_MS   first-connect budget in ms (CLI flag wins)',
+		'  Precedence: CLI flag > environment variable > default.',
+		'',
+		'Client options (passed through; put them after -- to skip validation):',
+		'  --new, --resume-last, --session <id>',
+		'',
+		'Exit codes:',
+		'  0  success, --version, or --help',
+		'  1  launcher startup failure',
+		'  2  usage error (unknown option, invalid timeout value)',
+		"  other  the client's own exit code is passed through (e.g. 130 on SIGINT)",
+	].join('\n')
 }
 
 /**

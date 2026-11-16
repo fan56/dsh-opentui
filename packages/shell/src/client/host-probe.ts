@@ -31,6 +31,10 @@ import { openEventsStreamFrame, parseMuxFrame } from "./mux-frame.ts"
 /** Default bound for one probe. */
 export const DEFAULT_HOST_PROBE_TIMEOUT_MS = 2_000
 
+/** Minimal socket seam the probe drives; defaults to a real `ws` socket.
+ * Tests inject a fake that reproduces ws's async CONNECTING-close error. */
+export type HostProbeSocketFactory = () => WS
+
 export interface HostProbeOptions {
   /** `host:port` (scheme omitted) exactly as the host binds it. */
   authority: string
@@ -38,6 +42,8 @@ export interface HostProbeOptions {
   cookieHeader: string
   /** Bound for the whole probe; defaults to 2s. */
   timeoutMs?: number
+  /** Injectable socket factory (tests). Default: real `ws` to the mux path. */
+  socketFactory?: HostProbeSocketFactory
 }
 
 function validAuthority(authority: string): boolean {
@@ -78,6 +84,9 @@ export async function probeHostHttp(options: HostProbeOptions): Promise<boolean>
 export async function probeHostMux(options: HostProbeOptions): Promise<boolean> {
   if (!validAuthority(options.authority)) return false
   const timeoutMs = options.timeoutMs ?? DEFAULT_HOST_PROBE_TIMEOUT_MS
+  const makeSocket: HostProbeSocketFactory =
+    options.socketFactory ??
+    (() => new WS(`ws://${options.authority}/api/remote.mux`, { headers: { cookie: options.cookieHeader } }))
   return await new Promise<boolean>((resolve) => {
     let settled = false
     let socket: WS | undefined
@@ -88,6 +97,13 @@ export async function probeHostMux(options: HostProbeOptions): Promise<boolean> 
       clearTimeout(timer)
       try {
         socket?.removeAllListeners()
+        // Closing a still-CONNECTING socket makes `ws` emit 'error' ("closed
+        // before established") ASYNCHRONOUSLY, after removeAllListeners() has
+        // removed the probe's own listeners — keep a noop handler attached so
+        // it can never surface as an uncaught exception (events-source.ts and
+        // remote-stream.ts fixed the identical race the same way). Every
+        // settlement path funnels through done(), so all of them are covered.
+        socket?.on("error", () => {})
         socket?.terminate()
       } catch {
         /* already gone */
@@ -95,9 +111,7 @@ export async function probeHostMux(options: HostProbeOptions): Promise<boolean> 
       resolve(ok)
     }
     try {
-      socket = new WS(`ws://${options.authority}/api/remote.mux`, {
-        headers: { cookie: options.cookieHeader },
-      })
+      socket = makeSocket()
     } catch {
       done(false)
       return

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- `--boot-timeout`, `--mux-timeout`, `--connect-timeout` (seconds) with
+  matching `DSH_OPENTUI_*_TIMEOUT_MS` env overrides; the three wait budgets
+  in the boot chain were previously hard-coded. `--boot-timeout` applies to
+  the initial host cold-start only: `/reload` keeps its own hardcoded 30s
+  restart budget and does not read this value.
+- `-v` alias for `--version`.
+- `--help` / `-h` usage output for the launcher.
+- `--` separator: everything after it is passed to the client without validation.
+- Client bundles ship sourcemaps (`.map`) so crash traces resolve to source.
+
+### Changed
+- Unknown launcher options are now rejected with `exit 2` and a usage block
+  instead of silently booting the full client. A near-miss suggestion is printed
+  when the typo is at least 3 characters long and within edit distance 2 of a
+  known option (short flags such as `-x` get no misleading hint).
+
+### Fixed
+- The host mux probe aborted a still-connecting socket after removing its
+  listeners, turning a normal "host not serving yet" timeout into an uncaught
+  `WebSocket was closed before the connection was established` crash. The probe
+  now keeps a no-op error listener, so the failure surfaces as `HostNotServingError`.
+
 ## [0.18.3] - 2026-11-16
 
 ### Added

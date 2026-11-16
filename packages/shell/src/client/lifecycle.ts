@@ -99,6 +99,16 @@ export const DEFAULT_IDLE_EXIT_SEC = DEFAULT_IDLE_EXIT_MS / 1000
  * an empty or unparsable value falls back to the default). */
 export const ENV_IDLE_EXIT_MS = 'DSH_OPENTUI_HOST_IDLE_MS'
 export const DEFAULT_READINESS_TIMEOUT_MS = 30_000
+/** Env override for the host-start readiness budget, in milliseconds. */
+export const ENV_BOOT_TIMEOUT_MS = 'DSH_OPENTUI_BOOT_TIMEOUT_MS'
+/** Env override for the post-mint mux-readiness budget, in milliseconds. */
+export const ENV_MUX_TIMEOUT_MS = 'DSH_OPENTUI_MUX_TIMEOUT_MS'
+/** Default mux-readiness budget (the former SERVE_PROBE_BUDGET_MS constant). */
+export const DEFAULT_SERVE_PROBE_BUDGET_MS = 20_000
+/** Env override for the first-connection budget, in milliseconds (transport). */
+export const ENV_CONNECT_TIMEOUT_MS = 'DSH_OPENTUI_CONNECT_TIMEOUT_MS'
+/** Default first-connection budget (mirrors transport.ts's former constant). */
+export const DEFAULT_CONNECT_TIMEOUT_MS = 30_000
 
 /** Resolve the idle window (ms) for this process: explicit seconds option >
  * `DSH_OPENTUI_HOST_IDLE_MS` > `DEFAULT_IDLE_EXIT_MS`. Negative values are
@@ -119,6 +129,44 @@ export function resolveIdleExitMs(explicitSec?: number): number {
 export function resolveIdleExitSec(explicitSec?: number): number {
   return resolveIdleExitMs(explicitSec) / 1000
 }
+
+/** A usable millisecond budget: finite, integer and strictly positive. */
+function validBudgetMs(value: number): boolean {
+  return Number.isFinite(value) && Number.isInteger(value) && value > 0
+}
+
+/** Resolve a millisecond budget: explicit option > env > default. Non-finite,
+ * non-integer and non-positive values are ignored (never thrown), falling
+ * through to the next source — the same shape as resolveIdleExitMs. An env
+ * value must be a plain decimal integer: `Number()` alone would also accept
+ * hex/octal (`0x1D`), exponent (`30e2`) and numeric separators (`1_000`),
+ * which are not valid spellings of a millisecond budget here. */
+function resolveBudgetMs(explicitMs: number | undefined, envName: string, defaultMs: number): number {
+  if (explicitMs !== undefined && validBudgetMs(explicitMs)) return explicitMs
+  const raw = process.env[envName]
+  if (raw !== undefined && /^\d+$/.test(raw)) {
+    const parsed = Number(raw)
+    if (validBudgetMs(parsed)) return parsed
+  }
+  return defaultMs
+}
+
+/** Host-start readiness budget: explicit > DSH_OPENTUI_BOOT_TIMEOUT_MS > 30s. */
+export function resolveBootTimeoutMs(explicitMs?: number): number {
+  return resolveBudgetMs(explicitMs, ENV_BOOT_TIMEOUT_MS, DEFAULT_READINESS_TIMEOUT_MS)
+}
+
+/** Post-mint mux-readiness budget: explicit > DSH_OPENTUI_MUX_TIMEOUT_MS > 20s. */
+export function resolveMuxTimeoutMs(explicitMs?: number): number {
+  return resolveBudgetMs(explicitMs, ENV_MUX_TIMEOUT_MS, DEFAULT_SERVE_PROBE_BUDGET_MS)
+}
+
+/** First-connection budget: explicit > DSH_OPENTUI_CONNECT_TIMEOUT_MS > 30s.
+ * Lives here next to the other two so all three env contracts stay in sync;
+ * transport.ts imports it for its connectBudgetMs. */
+export function resolveConnectTimeoutMs(explicitMs?: number): number {
+  return resolveBudgetMs(explicitMs, ENV_CONNECT_TIMEOUT_MS, DEFAULT_CONNECT_TIMEOUT_MS)
+}
 /** How long a lock whose pid is alive but not yet listening gets to come up
  * before we declare the lock stale (covers a cold host mid-boot). */
 export const DEFAULT_STALE_PROBE_MS = 8_000
@@ -136,9 +184,6 @@ const LISTEN_POLL_MS = 200
 const ADOPT_PROBE_TIMEOUT_MS = 2_000
 /** Cadence for the post-boot mux-readiness poll (listener-fallback boots). */
 const SERVE_PROBE_POLL_MS = 250
-/** How long a listener-ready host gets to serve the client mux after the
- * cookie mint (the plugin tree can take seconds to mount `$events`). */
-const SERVE_PROBE_BUDGET_MS = 20_000
 /** Lines of child output quoted in surfaced error messages. */
 const ERROR_TAIL_LINES = 12
 const KILL_GRACE_MS = 5_000
@@ -194,10 +239,10 @@ export class HostDiedError extends HostLifecycleError {
  * child's output tail is quoted so the failure is diagnosable from the TUI
  * error line alone. */
 export class HostNotServingError extends HostLifecycleError {
-  constructor(readonly outputTail: string) {
+  constructor(readonly outputTail: string, readonly budgetMs: number = DEFAULT_SERVE_PROBE_BUDGET_MS) {
     super(
       'host-not-serving',
-      `dsh host is listening but never served the client mux (${SERVE_PROBE_BUDGET_MS}ms budget)${errorTail(outputTail)}`,
+      `dsh host is listening but never served the client mux (${budgetMs}ms budget)${errorTail(outputTail)}`,
     )
   }
 }
@@ -286,8 +331,11 @@ export interface EnsureHostOptions {
   spawnDsh?: SpawnDsh
   /** Injectable cookie mint (tests). Default: ./cookie-mint.ts import. */
   mintCookie?: MintOwnerCookie
-  /** Readiness budget. Default 30_000. */
+  /** Readiness budget. Default 30_000 (or DSH_OPENTUI_BOOT_TIMEOUT_MS). */
   readinessTimeoutMs?: number
+  /** Post-mint mux-readiness budget for listener-fallback boots.
+   * Default 20_000 (or DSH_OPENTUI_MUX_TIMEOUT_MS). */
+  serveProbeBudgetMs?: number
   /** Max wait for a concurrently-booting host (another process holding the
    * `booting` placeholder) to finish, when this client cold-boots behind it.
    * Default `readinessTimeoutMs + 20s` (readiness + mint budget + slack). */
@@ -900,6 +948,7 @@ interface ResolvedOptions {
   dshHome: string
   idleExitSec: number
   readinessTimeoutMs: number
+  serveProbeBudgetMs: number
   bootJoinTimeoutMs?: number
   staleProbeMs: number
   maxAgeMs?: number
@@ -916,7 +965,8 @@ function resolveOptions(opts: EnsureHostOptions): ResolvedOptions {
     profile,
     dshHome,
     idleExitSec,
-    readinessTimeoutMs: opts.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS,
+    readinessTimeoutMs: resolveBootTimeoutMs(opts.readinessTimeoutMs),
+    serveProbeBudgetMs: resolveMuxTimeoutMs(opts.serveProbeBudgetMs),
     ...(opts.bootJoinTimeoutMs !== undefined ? { bootJoinTimeoutMs: opts.bootJoinTimeoutMs } : {}),
     staleProbeMs: opts.staleProbeMs ?? DEFAULT_STALE_PROBE_MS,
     ...(opts.maxAgeMs !== undefined ? { maxAgeMs: opts.maxAgeMs } : {}),
@@ -1065,7 +1115,7 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
     // first attempt cannot land in the retry loop; the URL line already
     // implies the loader + connection service are mounted.
     if (ready.via === 'listener') {
-      const deadline = Date.now() + SERVE_PROBE_BUDGET_MS
+      const deadline = Date.now() + o.serveProbeBudgetMs
       let serving = false
       while (Date.now() < deadline) {
         serving = await probeHostMux({
@@ -1077,7 +1127,7 @@ async function bootHost(o: ResolvedOptions): Promise<ManagedHost> {
         if (!pidAlive(child.pid)) break // died after binding: surface the tail now
         await sleep(SERVE_PROBE_POLL_MS)
       }
-      if (!serving) throw new HostNotServingError(host.outputTail)
+      if (!serving) throw new HostNotServingError(host.outputTail, o.serveProbeBudgetMs)
     }
     // Claim still ours? A join-budget takeover by another client replaced the
     // placeholder — kill our child rather than clobber the winner's lock

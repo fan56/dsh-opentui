@@ -82,6 +82,10 @@ const result = await Bun.build({
   format: "esm",
   outdir: outDir,
   naming: { entry: "index.[ext]" },
+  // Ship an external .map plus a trailing sourceMappingURL comment so crash
+  // traces resolve to the original .ts/.tsx sources. "linked" (not "inline")
+  // keeps the bundle itself from doubling in size.
+  sourcemap: "linked",
   define: { __DSH_CLIENT_VERSION__: JSON.stringify(shellVersion) },
   plugins: [
     // ORDER MATTERS: registered before the solid plugin — plugin onLoad

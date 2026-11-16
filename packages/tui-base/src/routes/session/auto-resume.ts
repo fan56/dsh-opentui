@@ -56,6 +56,9 @@ export interface LaunchArgs {
 	sessionId?: string
 }
 
+/** Launch flags this module actually parses (sync guard for the CLI allowlist). */
+export const CLI_LAUNCH_FLAGS = ["--new", "--resume-last", "--session", "--session="] as const
+
 /**
  * Parse the launch flags this feature cares about. Everything else
  * (`--provider`, `--model`, `--plugins`, …) belongs to provisioning and is

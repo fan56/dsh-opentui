@@ -52,7 +52,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ancestorPids, formatUpgradeUsage, killStaleProcesses, parseLauncherArgs, parseProcessHomes, parseProcessRows, parseUpgradeArgs, readLauncherVersion, selectStaleProcesses } from './lib/launcher.mjs'
+import { ancestorPids, formatUpgradeUsage, formatUsage, killStaleProcesses, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -70,7 +70,7 @@ function capture(cmd, args) {
 }
 
 // --- 0. Bin-level flags: --version short-circuits, --force pre-clears -------
-const { version: versionFlag, force: forceFlag, rest: userArgs } = parseLauncherArgs(process.argv.slice(2))
+const { version: versionFlag, force: forceFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
   const version = readLauncherVersion(pkgRoot)
@@ -123,6 +123,75 @@ if (upgradeResult.isUpgrade) {
   process.exit(runUpgrade(upgradeResult.opts, { pkgRoot }))
 }
 
+// --- 0.6 usage/help and argument validation --------------------------------
+// Placed after --version (absolute short-circuit) and after `upgrade` (whose
+// -h/--help belongs to parseUpgradeArgs), but BEFORE provisioning or any TUI
+// work: a typo like `--verison` must fail here instead of running a full
+// provision pass first.
+function stripLauncherTimeoutFlags(args) {
+  const out = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    const flag = LAUNCHER_TIMEOUT_FLAGS.find((f) => arg === f || arg.startsWith(`${f}=`))
+    if (!flag) {
+      out.push(arg)
+      continue
+    }
+    // `--flag value`: parseLauncherOptions already verified the value does not
+    // start with '-', so it is safe to consume here.
+    if (arg === flag) i++
+  }
+  return out
+}
+
+if (userArgs.includes('-h') || userArgs.includes('--help')) {
+  console.log(formatUsage())
+  process.exit(0)
+}
+
+const options = parseLauncherOptions(userArgs)
+if (options.error === 'missing-value') {
+  console.error(`dsh-opentui: option '${options.errorFlag}' requires a value`)
+  console.error(formatUsage())
+  process.exit(2)
+}
+if (options.error === 'invalid-value') {
+  console.error(
+    `dsh-opentui: invalid value '${options.errorValue}' for '${options.errorFlag}' (expected 1-3600 seconds)`,
+  )
+  console.error(formatUsage())
+  process.exit(2)
+}
+
+const validation = validateLauncherArgs(userArgs, { skip: LAUNCHER_TIMEOUT_FLAGS })
+if (validation.unknown.length > 0) {
+  for (const flag of validation.unknown) {
+    console.error(`dsh-opentui: unknown option '${flag}'`)
+    if (validation.suggestions[flag]) {
+      console.error(`dsh-opentui: did you mean '${validation.suggestions[flag]}'?`)
+    }
+  }
+  console.error(formatUsage())
+  process.exit(2)
+}
+
+// Write a timeout to the client env only when the user supplied that flag:
+// defaults must not clobber a value already set in the shell environment.
+const clientEnv = { ...process.env }
+const timeoutEnvNames = {
+  bootTimeoutSec: 'DSH_OPENTUI_BOOT_TIMEOUT_MS',
+  muxTimeoutSec: 'DSH_OPENTUI_MUX_TIMEOUT_MS',
+  connectTimeoutSec: 'DSH_OPENTUI_CONNECT_TIMEOUT_MS',
+}
+for (const [key, envName] of Object.entries(timeoutEnvNames)) {
+  if (options[key] !== undefined) clientEnv[envName] = String(options[key] * 1000)
+}
+
+// The client bundle does not understand the launcher's timeout flags; strip
+// them and append anything after a `--` verbatim.
+const clientArgs = stripLauncherTimeoutFlags(userArgs)
+clientArgs.push(...(passthrough ?? []))
+
 // --- 1. bun: hard runtime dependency of the client chain -------------------
 if (!spawnSync('which', ['bun'], { encoding: 'utf8' }).stdout.trim()) {
   exitWithGuidance('bun', 'npm i -g bun')
@@ -152,12 +221,18 @@ if (forceFlag) {
 
 // --- 3. Profile bootstrap (every start, best effort, idempotent) -----------
 // provision-opentui-profile.mjs is idempotent and understands
-// --provider/--model/--reasoning-effort --plugins/--dry-run; forward those,
-// ignore the rest. With nothing to do this is a local, sub-second pass.
+// --provider/--model/--reasoning-effort --plugins/--dry-run (both space and
+// `=` forms); forward those, ignore the rest. With nothing to do this is a
+// local, sub-second pass.
 const opentuiProfileDir = join(dshHome, 'profiles', 'opentui')
 {
   const provisionFlags = []
   for (const name of ['provider', 'model', 'reasoning-effort']) {
+    const inline = userArgs.find((arg) => arg.startsWith(`--${name}=`))
+    if (inline) {
+      provisionFlags.push(inline)
+      continue
+    }
     const i = userArgs.indexOf(`--${name}`)
     if (i >= 0 && userArgs[i + 1]) provisionFlags.push(`--${name}`, userArgs[i + 1])
   }
@@ -347,8 +422,9 @@ if (!existsSync(clientEntry)) {
   console.error('dsh-opentui: reinstall the package (npm i -g @aiwayds/dsh-opentui), or rebuild it with `bun scripts/build-client.mjs` from the repo.')
   process.exit(1)
 }
-const result = spawnSync('bun', [clientEntry, ...userArgs], {
+const result = spawnSync('bun', [clientEntry, ...clientArgs], {
   stdio: 'inherit',
+  env: clientEnv,
 })
 if (result.error) {
   console.error(`dsh-opentui: failed to launch the client: ${result.error.message}`)

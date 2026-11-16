@@ -33,6 +33,8 @@ npm i -g @aiwayds/dsh-opentui
 dsh-opentui
 ```
 
+Run `dsh-opentui --help` for the full list of launcher options.
+
 ## Upgrading
 
 `dsh-opentui upgrade` moves the installed launcher itself to the newest npm

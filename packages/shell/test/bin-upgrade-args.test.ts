@@ -132,7 +132,7 @@ describe('parseUpgradeArgs — flags', () => {
 describe('parseUpgradeArgs — interaction with parseLauncherArgs', () => {
   test('--force is consumed before the upgrade parse, never repeated in it', () => {
     const launcher = parseLauncherArgs(['--force', 'upgrade', '--dry-run'])
-    expect(launcher).toEqual({ version: false, force: true, rest: ['upgrade', '--dry-run'] })
+    expect(launcher).toEqual({ version: false, force: true, rest: ['upgrade', '--dry-run'], passthrough: [] })
     expect(parseUpgradeArgs(launcher.rest)).toEqual({
       isUpgrade: true,
       opts: { ...baseOpts, dryRun: true },

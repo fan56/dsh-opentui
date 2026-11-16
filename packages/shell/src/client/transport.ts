@@ -55,6 +55,7 @@ import type {
 import { Context } from "@deepseek-ai/cordis"
 import WS from "ws"
 import { createEventsPumpSource, type EventsPumpCallbacks, type MuxSocket } from "./events-source.ts"
+import { resolveConnectTimeoutMs } from "./lifecycle.ts"
 import type { EventsItem } from "./mux-frame.ts"
 
 /** Connection lifecycle state observable by consumers. */
@@ -136,7 +137,6 @@ export class ConnectionRetryExhaustedError extends Error {
 }
 
 const DEFAULT_MAX_CONNECT_ATTEMPTS = 3
-const DEFAULT_CONNECT_BUDGET_MS = 30_000
 
 /** Handler receiving raw `$events` items (`emit` | `waterfall` | `cancel`). */
 export type ClientEventHandler = (item: EventsItem) => void
@@ -205,7 +205,7 @@ export class ClientConnection {
 		}
 		this.#recovery = options.recovery
 		this.#maxConnectAttempts = Math.max(0, options.maxConnectAttempts ?? DEFAULT_MAX_CONNECT_ATTEMPTS)
-		this.#connectBudgetMs = Math.max(1, options.connectBudgetMs ?? DEFAULT_CONNECT_BUDGET_MS)
+		this.#connectBudgetMs = resolveConnectTimeoutMs(options.connectBudgetMs)
 		this.#diagnostics = options.diagnostics
 		this.#pumpCallbacks = {
 			onReady: (info) => {
