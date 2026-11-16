@@ -196,9 +196,9 @@ export function askQuestionRows(
 	review: boolean,
 ): DialogSelectOption<string | AskRowValue>[] {
 	const multi = question.multiSelect === true
-	const rows: DialogSelectOption<string | AskRowValue>[] = question.options.map((option) => ({
-		title: multi ? (picks.includes(option) ? t("overlay.ask.checkedOption", { option }) : t("overlay.ask.uncheckedOption", { option })) : option,
-		value: option,
+	const rows: DialogSelectOption<string | AskRowValue>[] = question.options.map(({ label }) => ({
+		title: multi ? (picks.includes(label) ? t("overlay.ask.checkedOption", { option: label }) : t("overlay.ask.uncheckedOption", { option: label })) : label,
+		value: label,
 	}))
 	rows.push({ title: askSentinelTitle(custom), value: { kind: "custom" } })
 	if (review) rows.push({ title: t("overlay.ask.reviewRow"), value: { kind: "review" } })

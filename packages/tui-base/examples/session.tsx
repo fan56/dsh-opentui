@@ -62,8 +62,8 @@ const AUTO_TURN = process.env.S_AUTO_TURN === "1"
 
 /** The questions the fake ask fires mid-turn (one batch, two pickers). */
 const DEMO_QUESTIONS: SeamAskQuestion[] = [
-	{ id: "q-followup", prompt: "Run a follow-up deep dive?", options: ["yes, deep dive", "summary only"] },
-	{ id: "q-format", prompt: "Which output format?", options: ["bullets", "prose"] },
+	{ id: "q-followup", prompt: "Run a follow-up deep dive?", options: [{ label: "yes, deep dive" }, { label: "summary only" }] },
+	{ id: "q-format", prompt: "Which output format?", options: [{ label: "bullets" }, { label: "prose" }] },
 ]
 
 class FakeSeam extends NullSessionSeam {

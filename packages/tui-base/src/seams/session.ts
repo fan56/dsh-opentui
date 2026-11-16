@@ -193,16 +193,26 @@ export interface SeamPermissionCatalog {
  */
 export type SeamApprovalVerdict = "allowed-once" | "rejected"
 
+/** One selectable option of a question: `label` is the row text AND the
+ * answer value (picks, the answer envelope and the transcript all carry the
+ * label string), `description` the optional supporting line under it. */
+export interface SeamAskOption {
+	label: string
+	description?: string
+}
+
 /** One user question row (the shell registerAskProvider wire shape). The
  * optional faces mirror the tui-pi ask panel: `header` is the short tab
- * label, `description` the supporting line under the prompt, `multiSelect`
- * marks a toggle-many question (upstream `multi_select`). */
+ * label, `description` the supporting line under the prompt, `detail` the
+ * host's body text (`question.detail`, e.g. a plan under review),
+ * `multiSelect` marks a toggle-many question (upstream `multi_select`). */
 export interface SeamAskQuestion {
 	id: string
 	prompt: string
-	options: string[]
+	options: SeamAskOption[]
 	header?: string
 	description?: string
+	detail?: string
 	multiSelect?: boolean
 }
 

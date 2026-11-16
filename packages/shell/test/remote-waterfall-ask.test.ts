@@ -21,7 +21,7 @@ describe("WaterfallAnswerer.questionsView — multiSelect passthrough (60-ask-us
 			askFrame([{ id: "q3", question: "picks?", options: [{ label: "lint" }, { label: "smoke" }], multi_select: true }]),
 		)
 		expect(questions[0].multiSelect).toBe(true)
-		expect(questions[0].options).toEqual(["lint", "smoke"])
+		expect(questions[0].options).toEqual([{ label: "lint" }, { label: "smoke" }])
 	})
 
 	test("omits the key on single-select questions (absent, not false)", () => {
@@ -30,10 +30,45 @@ describe("WaterfallAnswerer.questionsView — multiSelect passthrough (60-ask-us
 	})
 })
 
+describe("WaterfallAnswerer.questionsView — rich content plumbing", () => {
+	test("carries header, detail, description and per-option descriptions", () => {
+		const questions = WaterfallAnswerer.questionsView(
+			askFrame([{
+				id: "q1",
+				question: "Which framework?",
+				header: "Stack",
+				detail: "Pick the renderer",
+				description: "one line",
+				options: [
+					{ label: "React", description: "SPA, largest ecosystem" },
+					{ label: "Solid" },
+				],
+			}]),
+		)
+		expect(questions[0]).toEqual({
+			id: "q1",
+			prompt: "Which framework?",
+			header: "Stack",
+			detail: "Pick the renderer",
+			description: "one line",
+			options: [{ label: "React", description: "SPA, largest ecosystem" }, { label: "Solid" }],
+		})
+	})
+
+	test("string options and `value` option objects still normalize to labels", () => {
+		const questions = WaterfallAnswerer.questionsView(
+			askFrame([{ id: "q1", question: "which?", options: ["plain", { value: "legacy" }, { label: "modern", description: "new" }] }]),
+		)
+		expect(questions[0].options).toEqual([{ label: "plain" }, { label: "legacy" }, { label: "modern", description: "new" }])
+		expect(questions[0].header).toBeUndefined()
+		expect(questions[0].detail).toBeUndefined()
+	})
+})
+
 describe("WaterfallAnswerer.answersValue — selections array (60-ask-user)", () => {
 	const questions: RemoteQuestion[] = [
-		{ id: "q1", prompt: "deploy?", options: ["staging", "production"] },
-		{ id: "q3", prompt: "checks?", options: ["lint", "smoke"], multiSelect: true },
+		{ id: "q1", prompt: "deploy?", options: [{ label: "staging" }, { label: "production" }] },
+		{ id: "q3", prompt: "checks?", options: [{ label: "lint" }, { label: "smoke" }], multiSelect: true },
 	]
 
 	test("a multiSelect pick carries every toggled label in `selected`", () => {
@@ -68,7 +103,7 @@ describe("WaterfallAnswerer.answersValue — selections array (60-ask-user)", ()
 })
 
 describe("WaterfallAnswerer.answersValue — free-text custom (C7)", () => {
-	const questions: RemoteQuestion[] = [{ id: "q1", prompt: "why?", options: ["a", "b"] }]
+	const questions: RemoteQuestion[] = [{ id: "q1", prompt: "why?", options: [{ label: "a" }, { label: "b" }] }]
 
 	test("a custom pick rides Answer.custom with an empty selected (mutual exclusion)", () => {
 		const picks: RemoteQuestionAnswer[] = [{ questionId: "q1", selected: "", custom: "because reasons" }]

@@ -47,7 +47,7 @@ describe("TurnOverlayController approval", () => {
 describe("TurnOverlayController ask", () => {
 	test("lone single-select question settles on the pick (legacy fast path)", async () => {
 		const c = new TurnOverlayController()
-		const pending = c.answer([{ id: "q1", prompt: "first?", options: ["a", "b"] }])
+		const pending = c.answer([{ id: "q1", prompt: "first?", options: [{ label: "a" }, { label: "b" }] }])
 		expect(c.currentQuestion?.id).toBe("q1")
 		c.toggle("a")
 		expect(await pending).toEqual([{ questionId: "q1", selected: "a" }])
@@ -57,8 +57,8 @@ describe("TurnOverlayController ask", () => {
 	test("multi-question batch: single-select replaces and auto-advances to review", async () => {
 		const c = new TurnOverlayController()
 		const pending = c.answer([
-			{ id: "q1", prompt: "first?", options: ["a", "b"] },
-			{ id: "q2", prompt: "second?", options: ["x", "y"] },
+			{ id: "q1", prompt: "first?", options: [{ label: "a" }, { label: "b" }] },
+			{ id: "q2", prompt: "second?", options: [{ label: "x" }, { label: "y" }] },
 		])
 		expect(c.pendingAsk?.phase).toBe("questions")
 		c.toggle("a")
@@ -79,7 +79,7 @@ describe("TurnOverlayController ask", () => {
 	test("multiSelect toggles membership in place and the envelope carries selections", async () => {
 		const c = new TurnOverlayController()
 		const pending = c.answer([
-			{ id: "q1", prompt: "pick many?", options: ["a", "b", "c"], multiSelect: true },
+			{ id: "q1", prompt: "pick many?", options: [{ label: "a" }, { label: "b" }, { label: "c" }], multiSelect: true },
 		])
 		c.toggle("a")
 		expect(c.pendingAsk?.phase).toBe("questions")
@@ -100,9 +100,9 @@ describe("TurnOverlayController ask", () => {
 	test("space-toggle ladder over the C7 batch (2 single-select + 1 multiSelect, sentinel rows present)", async () => {
 		const c = new TurnOverlayController()
 		const pending = c.answer([
-			{ id: "deploy", prompt: "where?", options: ["staging", "production"] },
-			{ id: "verbosity", prompt: "how loud?", options: ["quiet", "chatty"] },
-			{ id: "extras", prompt: "checks?", options: ["lint", "smoke"], multiSelect: true },
+			{ id: "deploy", prompt: "where?", options: [{ label: "staging" }, { label: "production" }] },
+			{ id: "verbosity", prompt: "how loud?", options: [{ label: "quiet" }, { label: "chatty" }] },
+			{ id: "extras", prompt: "checks?", options: [{ label: "lint" }, { label: "smoke" }], multiSelect: true },
 		])
 		// The sentinel slot exists on every question from the start (C7).
 		expect(c.pendingAsk?.customs).toEqual([undefined, undefined, undefined])
@@ -126,8 +126,8 @@ describe("TurnOverlayController ask", () => {
 	test("←/→ switchFocus moves between tabs, clamped at both ends", () => {
 		const c = new TurnOverlayController()
 		c.answer([
-			{ id: "q1", prompt: "one", options: ["a"] },
-			{ id: "q2", prompt: "two", options: ["x"] },
+			{ id: "q1", prompt: "one", options: [{ label: "a" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }] },
 		])
 		c.switchFocus(1)
 		expect(c.currentQuestion?.id).toBe("q2")
@@ -139,7 +139,7 @@ describe("TurnOverlayController ask", () => {
 		expect(c.currentQuestion?.id).toBe("q1")
 		// Single-question batches and the review phase ignore tab switches.
 		const solo = new TurnOverlayController()
-		solo.answer([{ id: "solo", prompt: "p", options: ["o"] }])
+		solo.answer([{ id: "solo", prompt: "p", options: [{ label: "o" }] }])
 		solo.switchFocus(1)
 		expect(solo.currentQuestion?.id).toBe("solo")
 	})
@@ -147,8 +147,8 @@ describe("TurnOverlayController ask", () => {
 	test("enterReview is refused until every question is answered; backToQuestions returns to edit", () => {
 		const c = new TurnOverlayController()
 		c.answer([
-			{ id: "q1", prompt: "one", options: ["a", "b"] },
-			{ id: "q2", prompt: "two", options: ["x", "y"], multiSelect: true },
+			{ id: "q1", prompt: "one", options: [{ label: "a" }, { label: "b" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y" }], multiSelect: true },
 		])
 		c.toggle("a")
 		expect(c.enterReview()).toBe(false)
@@ -163,8 +163,8 @@ describe("TurnOverlayController ask", () => {
 	test("review page: ← back keeps picks, re-answer replaces, submit resolves the batch", async () => {
 		const c = new TurnOverlayController()
 		const pending = c.answer([
-			{ id: "q1", prompt: "one", options: ["a", "b"] },
-			{ id: "q2", prompt: "two", options: ["x", "y"] },
+			{ id: "q1", prompt: "one", options: [{ label: "a" }, { label: "b" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y" }] },
 		])
 		c.toggle("a")
 		c.toggle("y")
@@ -186,8 +186,8 @@ describe("TurnOverlayController ask", () => {
 	test("esc mid-batch declines the whole batch as an empty selection", async () => {
 		const c = new TurnOverlayController()
 		const pending = c.answer([
-			{ id: "q1", prompt: "first?", options: ["a"] },
-			{ id: "q2", prompt: "second?", options: ["x"] },
+			{ id: "q1", prompt: "first?", options: [{ label: "a" }] },
+			{ id: "q2", prompt: "second?", options: [{ label: "x" }] },
 		])
 		c.toggle("a")
 		expect(c.currentQuestion?.id).toBe("q2")
@@ -200,8 +200,8 @@ describe("TurnOverlayController ask", () => {
 	test("esc on the review page still declines the whole batch", async () => {
 		const c = new TurnOverlayController()
 		const pending = c.answer([
-			{ id: "q1", prompt: "one", options: ["a"] },
-			{ id: "q2", prompt: "two", options: ["x"] },
+			{ id: "q1", prompt: "one", options: [{ label: "a" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }] },
 		])
 		c.toggle("a")
 		c.toggle("x")
@@ -214,14 +214,14 @@ describe("TurnOverlayController ask", () => {
 		const c = new TurnOverlayController()
 		expect(await c.answer([])).toEqual([])
 		const seam = new NullSessionSeam()
-		expect(await seam.ask([{ id: "q", prompt: "p", options: ["o"] }])).toEqual([])
+		expect(await seam.ask([{ id: "q", prompt: "p", options: [{ label: "o" }] }])).toEqual([])
 	})
 })
 
 describe("TurnOverlayController ask custom (C7 free text)", () => {
 	test("lone single-select: committed custom settles immediately, envelope rides Answer.custom", async () => {
 		const c = new TurnOverlayController()
-		const pending = c.answer([{ id: "q1", prompt: "why?", options: ["a", "b"] }])
+		const pending = c.answer([{ id: "q1", prompt: "why?", options: [{ label: "a" }, { label: "b" }] }])
 		expect(c.beginCustom()).toBe(true)
 		expect(c.pendingAsk?.customDraft).toBe("")
 		c.patchCustom("because reasons")
@@ -234,8 +234,8 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 	test("selected ⊕ custom are mutually exclusive, both directions", () => {
 		const c = new TurnOverlayController()
 		c.answer([
-			{ id: "q1", prompt: "one", options: ["a", "b"] },
-			{ id: "q2", prompt: "two", options: ["x", "y"] },
+			{ id: "q1", prompt: "one", options: [{ label: "a" }, { label: "b" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y" }] },
 		])
 		c.toggle("a") // auto-advances to q2
 		c.switchFocus(-1) // back to q1
@@ -255,7 +255,7 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 
 	test("empty commit discards and stays on the picker; esc cancels the draft", () => {
 		const c = new TurnOverlayController()
-		c.answer([{ id: "q1", prompt: "one", options: ["a"] }])
+		c.answer([{ id: "q1", prompt: "one", options: [{ label: "a" }] }])
 		c.beginCustom()
 		c.commitCustom() // empty draft: nothing answered, editor closed
 		expect(c.pendingAsk?.customDraft).toBeNull()
@@ -275,8 +275,8 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 	test("custom counts as an answer: review gate opens, envelope carries custom next to picks", async () => {
 		const c = new TurnOverlayController()
 		const pending = c.answer([
-			{ id: "q1", prompt: "one", options: ["a", "b"] },
-			{ id: "q2", prompt: "two", options: ["x", "y"] },
+			{ id: "q1", prompt: "one", options: [{ label: "a" }, { label: "b" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y" }] },
 		])
 		c.beginCustom()
 		c.patchCustom("free text")
@@ -297,7 +297,7 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 
 	test("re-editing the sentinel seeds the draft from the committed answer; multiSelect custom reaches the review phase", async () => {
 		const c = new TurnOverlayController()
-		const pending = c.answer([{ id: "q1", prompt: "many?", options: ["a", "b"], multiSelect: true }])
+		const pending = c.answer([{ id: "q1", prompt: "many?", options: [{ label: "a" }, { label: "b" }], multiSelect: true }])
 		c.beginCustom()
 		expect(c.pendingAsk?.customDraft).toBe("")
 		c.patchCustom("typed once")
@@ -316,7 +316,7 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 
 	test("toggle is inert while the sentinel editor is engaged; after esc the option path works again", async () => {
 		const c = new TurnOverlayController()
-		const pending = c.answer([{ id: "q1", prompt: "one", options: ["a"] }])
+		const pending = c.answer([{ id: "q1", prompt: "one", options: [{ label: "a" }] }])
 		c.beginCustom()
 		c.toggle("a")
 		expect(c.pendingAsk?.picks[0]).toEqual([])
@@ -329,8 +329,8 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 		// Review phase has no sentinel: beginCustom refuses there.
 		const multi = new TurnOverlayController()
 		multi.answer([
-			{ id: "q1", prompt: "one", options: ["a"] },
-			{ id: "q2", prompt: "two", options: ["x"] },
+			{ id: "q1", prompt: "one", options: [{ label: "a" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }] },
 		])
 		multi.toggle("a")
 		multi.toggle("x")
@@ -343,9 +343,9 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 describe("ask picker pure helpers (F5)", () => {
 	test("askTabStrip: brackets mark focus, ✓ marks answered tabs", () => {
 		const questions = [
-			{ id: "1", prompt: "a", options: ["x"] },
-			{ id: "2", prompt: "b", options: ["y"] },
-			{ id: "3", prompt: "c", options: ["z"] },
+			{ id: "1", prompt: "a", options: [{ label: "x" }] },
+			{ id: "2", prompt: "b", options: [{ label: "y" }] },
+			{ id: "3", prompt: "c", options: [{ label: "z" }] },
 		]
 		expect(askTabStrip(questions, [[], [], []], 0)).toBe("[1] · 2 · 3")
 		expect(askTabStrip(questions, [["x"], [], ["z"]], 1)).toBe("1✓ · [2] · 3✓")
@@ -366,9 +366,9 @@ describe("ask picker pure helpers (F5)", () => {
 	})
 
 	test("askNeedsReview: multi-question or any multiSelect", () => {
-		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"] }])).toBe(false)
-		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"], multiSelect: true }])).toBe(true)
-		expect(askNeedsReview([{ id: "1", prompt: "a", options: ["x"] }, { id: "2", prompt: "b", options: ["y"] }])).toBe(true)
+		expect(askNeedsReview([{ id: "1", prompt: "a", options: [{ label: "x" }] }])).toBe(false)
+		expect(askNeedsReview([{ id: "1", prompt: "a", options: [{ label: "x" }], multiSelect: true }])).toBe(true)
+		expect(askNeedsReview([{ id: "1", prompt: "a", options: [{ label: "x" }] }, { id: "2", prompt: "b", options: [{ label: "y" }] }])).toBe(true)
 	})
 
 	// C7 regression pin (container e2e 60-ask-user "space toggles lint on in
@@ -380,7 +380,7 @@ describe("ask picker pure helpers (F5)", () => {
 	// after them — the trailing rows participate in navigation but can never
 	// absorb the toggle semantics.
 	test("askQuestionRows: option rows stay string-valued around the sentinel row; toggles re-bracket in place", () => {
-		const question = { id: "extras", prompt: "checks?", options: ["lint", "smoke"], multiSelect: true }
+		const question = { id: "extras", prompt: "checks?", options: [{ label: "lint" }, { label: "smoke" }], multiSelect: true }
 		// Unanswered: brackets unchecked; sentinel + review rows follow.
 		expect(askQuestionRows(question, [], undefined, true).map((row) => row.value)).toEqual([
 			"lint",
@@ -405,7 +405,7 @@ describe("ask picker pure helpers (F5)", () => {
 		expect(askQuestionRows(question, [], "typed", true)[2].title).toBe("✎ typed")
 		// Single-select rows stay bracket-less; no review row when the batch
 		// needs none (lone single-select question).
-		const single = askQuestionRows({ id: "1", prompt: "a", options: ["x"] }, ["x"], undefined, false)
+		const single = askQuestionRows({ id: "1", prompt: "a", options: [{ label: "x" }] }, ["x"], undefined, false)
 		expect(single.map((row) => row.value)).toEqual(["x", { kind: "custom" }])
 		expect(single[0].title).toBe("x")
 	})
@@ -416,7 +416,7 @@ describe("overlay wiring through the seam", () => {
 		const seam = new NullSessionSeam()
 		const c = new TurnOverlayController()
 		registerTurnOverlays(seam, c)
-		const pending = seam.ask([{ id: "q9", prompt: "pick one", options: ["one", "two"] }])
+		const pending = seam.ask([{ id: "q9", prompt: "pick one", options: [{ label: "one" }, { label: "two" }] }])
 		expect(c.currentQuestion?.id).toBe("q9")
 		c.toggle("two")
 		expect(await pending).toEqual([{ questionId: "q9", selected: "two" }])
@@ -427,7 +427,7 @@ describe("overlay wiring through the seam", () => {
 		let idles = 0
 		c.onIdle(() => idles++)
 		const approval = c.requestApproval("bash", {})
-		const ask = c.answer([{ id: "q", prompt: "p", options: ["o"] }])
+		const ask = c.answer([{ id: "q", prompt: "p", options: [{ label: "o" }] }])
 		// Approval settles but the ask is still queued: no drain yet.
 		c.confirmApproval()
 		expect(idles).toBe(0)

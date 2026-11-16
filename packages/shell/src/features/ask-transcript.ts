@@ -21,7 +21,7 @@
  * fabricated answers on the transcript (a hard-failed result renders
  * declined, the honest outcome of an errored ask).
  */
-import type { AskEntry, TranscriptItem } from "../client/seam-types.ts"
+import type { AskEntry, AskEntryOption, TranscriptItem } from "../client/seam-types.ts"
 
 /** The dsh user-questions tool name (tool/call + tool/result events). */
 export const ASK_TOOL_NAME = "ask_user_question"
@@ -47,9 +47,11 @@ export interface ParsedAskQuestion {
 
 /**
  * Parse the tool/call arguments into question rows (answers unfilled).
- * Accepts the wire schema (`question`, `header`, option objects with
- * `label`) and tolerates the simplified overlay shape (`prompt`, plain
- * string options). Returns undefined when nothing readable remains —
+ * Accepts the wire schema (`question`, `header`, `detail`, option objects
+ * with `label`/`description`) and tolerates the simplified overlay shape
+ * (`prompt`, plain string options). `header` and `detail` stay on their own
+ * fields (the renderer decides how to compose them) and every option keeps
+ * its description. Returns undefined when nothing readable remains —
  * the caller then renders nothing rather than a broken block.
  */
 export function parseAskCallArgs(args: string): ParsedAskQuestion[] | undefined {
@@ -73,15 +75,16 @@ export function parseAskCallArgs(args: string): ParsedAskQuestion[] | undefined 
         ? item.prompt
         : undefined
     if (question === undefined) continue
-    const header = typeof item.header === "string" && item.header ? item.header : undefined
+    const header = textField(item.header)
+    const detail = textField(item.detail)
     const rawOptions = Array.isArray(item.options) ? item.options : []
-    const options = rawOptions
-      .map((o) => (typeof o === "string" ? o : typeof (o as Record<string, unknown>)?.label === "string" ? ((o as Record<string, unknown>).label as string) : ""))
-      .filter((o) => o !== "")
+    const options = rawOptions.map(optionView).filter((option) => option.label !== "")
     out.push({
       id,
       entry: {
-        question: header !== undefined && header !== question ? `${header}: ${question}` : question,
+        question,
+        ...(header !== undefined ? { header } : {}),
+        ...(detail !== undefined ? { detail } : {}),
         options,
         selected: [],
         declined: false,
@@ -89,6 +92,20 @@ export function parseAskCallArgs(args: string): ParsedAskQuestion[] | undefined 
     })
   }
   return out.length > 0 ? out : undefined
+}
+
+/** A non-empty string field of the parsed call arguments. */
+function textField(value: unknown): string | undefined {
+  return typeof value === "string" && value !== "" ? value : undefined
+}
+
+/** One raw option → `{label, description?}`; bare strings stay label-only. */
+function optionView(option: unknown): AskEntryOption {
+  if (typeof option === "string") return { label: option }
+  const item = (typeof option === "object" && option !== null ? option : {}) as Record<string, unknown>
+  const label = typeof item.label === "string" ? item.label : ""
+  const description = textField(item.description)
+  return description === undefined ? { label } : { label, description }
 }
 
 /** Text blocks of a message/content array (block type `text`). */
