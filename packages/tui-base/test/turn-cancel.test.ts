@@ -206,15 +206,23 @@ describe("wiring source guards", () => {
 		expect(entry).toContain("seam.interrupt()")
 		expect(entry).toContain("escapeYields: () => slash.controller.open")
 	})
-	test("the v2 page wires the U6 stop-confirm dialog over the seam's stop faces", () => {
+	test("the v2 page wires the U6 stop-confirm dialog to the shared stop-everything helper", () => {
 		const entry = src("examples/v2-entry.tsx")
 		expect(entry).toContain("confirmStop:")
 		expect(entry).toContain("confirmStopAll()")
 		expect(entry).toContain("DialogConfirm")
-		// The everything-stop: the main turn AND every live subagent
-		// (interruptChild per running row — the viewer's stop-all leg).
-		expect(entry).toMatch(/interruptChild\?\.\(/)
-		expect(entry).toMatch(/status !== "running"[\s\S]*?continue/)
+		// The seam stop faces moved into stop-all.ts so /stop can share the
+		// exact same leg; the page delegates instead of re-implementing them.
+		expect(entry).toContain('from "../src/routes/session/stop-all"')
+		expect(entry).toContain("void stopEverything(seam)")
+		const helper = src("src/routes/session/stop-all.ts")
+		// Parent first, then interruptChild per RUNNING row, with per-child
+		// failure isolation (the viewer's stop-all leg).
+		expect(helper).toMatch(/seam\.interrupt\(\)/)
+		expect(helper).toContain("seam.subagentViews")
+		expect(helper).toMatch(/status !== "running"[\s\S]*?continue/)
+		expect(helper).toContain("seam.interruptChild")
+		expect(helper).toContain("catch")
 	})
 	test("cancel layer binds escape + ctrl+c on a global, gated layer", () => {
 		const cancel = src("src/routes/session/turn-cancel.tsx")

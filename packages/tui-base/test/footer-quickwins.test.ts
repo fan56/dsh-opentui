@@ -4,9 +4,11 @@
  *   - effortFromModelLabel: the sessionInfo().model label parse fallback
  *   - provider segment's ☁️ lead
  *   - tools / tps / durable-message wiring through sessionFooterSegments
- *   - the 8-segment hint bar: per-segment toggles, busy/idle state wording,
- *     the conditional ↓ subagents gate, and the en/zh golden label wording
- *     (T8 fold — the labels are `footer.hint.*` registry keys now).
+ *   - the 9-segment hint bar: per-segment toggles, busy/idle state wording,
+ *     the conditional ↓ subagents gate, the en/zh golden label wording
+ *     (T8 fold — the labels are `footer.hint.*` registry keys now), and the
+ *     width-fitted folding: whole low-priority segments drop as the terminal
+ *     narrows so the core keys (enter / esc / ctrl+c) always stay visible.
  */
 import { describe, expect, test, beforeEach, beforeAll } from "bun:test"
 import { readFileSync } from "node:fs"
@@ -26,6 +28,8 @@ import {
 	hintInState,
 	hintLabel,
 	hintsText,
+	hintsTextAtWidth,
+	HINT_SEGMENT_PRIORITY,
 	setFooterHints,
 	setHintsLocale,
 	footerHints,
@@ -105,7 +109,7 @@ describe("footer wiring: tools / tps / durable messages", () => {
 	})
 })
 
-describe("hint bar: 8 segments, en/zh golden wording (tui-pi FooterHints parity)", () => {
+describe("hint bar: 9 segments, en/zh golden wording (tui-pi FooterHints parity)", () => {
 	// T8 fold: labels ride the i18n registry — the bundled locales must be in
 	// (t() fail-open would render the bare keys on an empty registry).
 	let languages: Map<string, import("@dsh-opentui/i18n").LocaleTable>
@@ -120,12 +124,21 @@ describe("hint bar: 8 segments, en/zh golden wording (tui-pi FooterHints parity)
 
 	test("all-on idle text keeps the pre-quickwins segment order", () => {
 		const text = hintsText(false)
-		expect(text).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
+		expect(text).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
 	})
 
 	test("busy text leads with the running-turn keys", () => {
 		const text = hintsText(true)
-		expect(text).toBe("⌨ enter steer · esc stop · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
+		expect(text).toBe("⌨ enter steer · esc stop · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
+	})
+
+	test("subagentPanel is unconditional (no running-agent gate) and independently toggleable", () => {
+		expect(hintsText(false)).toContain("ctrl+g subagents panel")
+		expect(hintsText(true)).toContain("ctrl+g subagents panel")
+		expect(hintsText(false, true, false)).toContain("ctrl+g subagents panel")
+		setFooterHints((hints) => ({ ...hints, subagentPanel: false }))
+		expect(hintsText(false)).not.toContain("ctrl+g subagents panel")
+		expect(hintsText(true)).not.toContain("ctrl+g subagents panel")
 	})
 
 	test("per-segment toggles drop exactly their own label (both states)", () => {
@@ -155,11 +168,12 @@ describe("hint bar: 8 segments, en/zh golden wording (tui-pi FooterHints parity)
 			newline: false,
 			history: false,
 			stop: false,
-			quit: false,
-			scroll: false,
-			search: false,
-			subagents: false,
-		}
+		quit: false,
+		scroll: false,
+		search: false,
+		subagentPanel: false,
+		subagents: false,
+	}
 		expect(hintsText(false, true, false, off)).toBe("")
 		expect(hintsText(true, true, true, off)).toBe("")
 	})
@@ -176,10 +190,10 @@ describe("hint bar: 8 segments, en/zh golden wording (tui-pi FooterHints parity)
 		// golden check flips it via setLanguages (the hintsLocale signal is
 		// persistence-only now). ja/ko are gone by contract §1 — no bundled
 		// file, the boot chain degrades those picks to en.
-		expect(hintsText(false)).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
+		expect(hintsText(false)).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
 		setLanguages(languages, "zh-CN")
-		expect(hintsText(false)).toBe("⌨ enter 发送 · alt+enter 换行 · ↑↓ 历史 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c ×2 退出")
-		expect(hintsText(true)).toBe("⌨ enter 插话 · esc 停止 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c ×2 退出")
+		expect(hintsText(false)).toBe("⌨ enter 发送 · alt+enter 换行 · ↑↓ 历史 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c ×2 退出")
+		expect(hintsText(true)).toBe("⌨ enter 插话 · esc 停止 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c ×2 退出")
 		expect(hintsText(true, true, true)).toContain("↓ 子代理")
 		setLanguages(languages)
 		expect(hintsLocale()).toBe("en")
@@ -194,21 +208,21 @@ describe("hint bar: 8 segments, en/zh golden wording (tui-pi FooterHints parity)
 describe("hint bar width upper bounds (en/zh, terminal columns)", () => {
 	// Bounds are TERMINAL COLUMNS (stringWidth — the P1-1 CJK law: one CJK
 	// code point is 2 columns), measured per segment per language per state.
-	// The row clips at viewport-width - 2 BY DESIGN (wrapMode="none" +
-	// clipToWidth — tui-pi clips its 105-col regression row the same way),
-	// so these caps pin the designed ceilings: wording growth must fail here
-	// loudly instead of silently truncating mid-glyph on a narrow terminal.
+	// hintsText is the WIDTH-UNAWARE full row: these caps pin the designed
+	// ceilings so wording growth fails here loudly. At render time the row
+	// folds whole low-priority segments to fit (see the folding block below),
+	// so the visible row never mid-cuts a segment on a narrow terminal.
 	// T8: the ja/ko columns are gone with the typed table (contract §1 — no
 	// bundled file; the boot chain degrades those picks to en).
-	// 19 = the widest designed bundled label, en search "ctrl+shift+f search"
-	// (19 ascii); one segment never eats more than ~¼ of the
-	// common 80-column viewport's 78 usable columns.
-	const SEGMENT_CAP = 19
+	// 22 = the widest designed bundled label, en subagentPanel
+	// "ctrl+g subagents panel" (22 ascii); one segment never eats more than
+	// ~¼ of the common 80-column viewport's 78 usable columns.
+	const SEGMENT_CAP = 22
 	// All-on full-row ceilings measured at implementation (idle includes the
-	// conditional ↓ subagents segment live; busy likewise). en idle (117) is
+	// conditional ↓ subagents segment live; busy likewise). en idle (142) is
 	// the global worst case — the designed maximum row.
-	const ROW_CAPS = { en: 117, "zh-CN": 104 }
-	const BUSY_ROW_CAPS = { en: 96, "zh-CN": 88 }
+	const ROW_CAPS = { en: 142, "zh-CN": 128 }
+	const BUSY_ROW_CAPS = { en: 121, "zh-CN": 112 }
 
 	test("every segment label in every language and state stays within its cap", () => {
 		for (const id of FOOTER_HINT_IDS) {
@@ -229,6 +243,175 @@ describe("hint bar width upper bounds (en/zh, terminal columns)", () => {
 			expect(stringWidth(hintsText(true, true, true, hints))).toBeLessThanOrEqual(BUSY_ROW_CAPS[language as keyof typeof BUSY_ROW_CAPS])
 		}
 		setLanguages(languages)
+	})
+})
+
+describe("hint bar width folding (whole-segment priority collapse)", () => {
+	// Width-fitted rendering: segments are taken high → low priority until the
+	// next would overflow, then dropped WHOLE. These tests pin which segments
+	// survive at 40 / 80 / 120 / 160 columns (the `-2` viewport margin is inside
+	// hintsTextAtWidth). Golden strings are replaced by per-width presence /
+	// absence assertions so a whole-segment drop is observable, not just a
+	// string equality check on the widest row.
+	const EN = {
+		sendIdle: "enter send",
+		sendBusy: "enter steer",
+		newline: "alt+enter newline",
+		history: "↑↓ history",
+		stop: "esc stop",
+		subagentPanel: "ctrl+g subagents panel",
+		subagents: "↓ subagents",
+		search: "ctrl+shift+f search",
+		scroll: "pgup/pgdn scroll",
+		quit: "ctrl+c ×2 quit",
+	}
+	const ZH = {
+		sendIdle: "enter 发送",
+		sendBusy: "enter 插话",
+		newline: "alt+enter 换行",
+		history: "↑↓ 历史",
+		stop: "esc 停止",
+		subagentPanel: "ctrl+g 子代理活动面板",
+		subagents: "↓ 子代理",
+		search: "ctrl+shift+f 搜索",
+		scroll: "pgup/pgdn 滚动",
+		quit: "ctrl+c ×2 退出",
+	}
+
+	let languages: Map<string, import("@dsh-opentui/i18n").LocaleTable>
+	beforeAll(() => {
+		languages = loadLocales({ bundledDir: bundledLocalesDir() }).languages
+	})
+	beforeEach(() => {
+		setLanguages(languages, "en")
+		setFooterHints({ ...DEFAULT_FOOTER_HINTS })
+	})
+
+	/** Assert a row shows exactly the wanted segments and never a half-cut one. */
+	function expectSegments(row: string, present: string[], absent: string[], columns: number): void {
+		for (const seg of present) expect(row).toContain(seg)
+		for (const seg of absent) expect(row).not.toContain(seg)
+		expect(stringWidth(row)).toBeLessThanOrEqual(columns - 2)
+		expect(row).not.toContain("…") // folding drops whole segments; no mid-glyph cut
+		expect(row.startsWith("⌨ ")).toBe(true)
+	}
+
+	test("priority table: core (send/stop/quit) outrank the optional tail; subagentPanel > search > scroll", () => {
+		expect(HINT_SEGMENT_PRIORITY.send).toBe(HINT_SEGMENT_PRIORITY.stop)
+		expect(HINT_SEGMENT_PRIORITY.stop).toBe(HINT_SEGMENT_PRIORITY.quit)
+		for (const core of ["send", "stop", "quit"] as const) {
+			for (const optional of ["subagentPanel", "search", "scroll"] as const) {
+				expect(HINT_SEGMENT_PRIORITY[core]).toBeLessThan(HINT_SEGMENT_PRIORITY[optional])
+			}
+		}
+		expect(HINT_SEGMENT_PRIORITY.subagentPanel).toBeLessThan(HINT_SEGMENT_PRIORITY.search)
+		expect(HINT_SEGMENT_PRIORITY.search).toBeLessThan(HINT_SEGMENT_PRIORITY.scroll)
+	})
+
+	test("en idle: which of send/newline/history/subagentPanel/search/scroll/quit survive per width", () => {
+		const all = [EN.sendIdle, EN.newline, EN.history, EN.subagentPanel, EN.search, EN.scroll, EN.quit]
+		const cases: { width: number; present: string[] }[] = [
+			{ width: 40, present: [EN.sendIdle, EN.quit] },
+			{ width: 80, present: [EN.sendIdle, EN.newline, EN.history, EN.quit] },
+			{ width: 120, present: [EN.sendIdle, EN.newline, EN.history, EN.subagentPanel, EN.search, EN.quit] },
+			{ width: 160, present: all },
+		]
+		for (const { width, present } of cases) {
+			const row = hintsTextAtWidth(false, true, false, width, { ...DEFAULT_FOOTER_HINTS })
+			expectSegments(row, present, all.filter((seg) => !present.includes(seg)), width)
+		}
+	})
+
+	test("en busy: esc + ctrl+c survive 80 columns; search/scroll drop", () => {
+		const all = [EN.sendBusy, EN.stop, EN.subagentPanel, EN.search, EN.scroll, EN.quit]
+		const cases: { width: number; present: string[] }[] = [
+			{ width: 40, present: [EN.sendBusy, EN.stop] },
+			{ width: 80, present: [EN.sendBusy, EN.stop, EN.subagentPanel, EN.quit] },
+			{ width: 120, present: all },
+			{ width: 160, present: all },
+		]
+		for (const { width, present } of cases) {
+			const row = hintsTextAtWidth(true, true, false, width, { ...DEFAULT_FOOTER_HINTS })
+			expectSegments(row, present, all.filter((seg) => !present.includes(seg)), width)
+		}
+		// The core observable of the fix: esc stop and ctrl+c ×2 quit are both
+		// still on an 80-column bar even though new low-tier segments were added.
+		const at80 = hintsTextAtWidth(true, true, false, 80, { ...DEFAULT_FOOTER_HINTS })
+		expect(at80).toContain(EN.stop)
+		expect(at80).toContain(EN.quit)
+	})
+
+	test("zh-CN idle/busy fold on the same priorities (CJK columns)", () => {
+		setLanguages(languages, "zh-CN")
+		const idleAll = [ZH.sendIdle, ZH.newline, ZH.history, ZH.subagentPanel, ZH.search, ZH.scroll, ZH.quit]
+		expectSegments(
+			hintsTextAtWidth(false, true, false, 80, { ...DEFAULT_FOOTER_HINTS }),
+			[ZH.sendIdle, ZH.newline, ZH.history, ZH.quit],
+			[ZH.subagentPanel, ZH.search, ZH.scroll],
+			80,
+		)
+		expectSegments(hintsTextAtWidth(false, true, false, 160, { ...DEFAULT_FOOTER_HINTS }), idleAll, [], 160)
+		const busyAt80 = hintsTextAtWidth(true, true, false, 80, { ...DEFAULT_FOOTER_HINTS })
+		expectSegments(busyAt80, [ZH.sendBusy, ZH.stop, ZH.subagentPanel, ZH.quit], [ZH.search, ZH.scroll], 80)
+		expect(busyAt80).toContain(ZH.stop)
+		expect(busyAt80).toContain(ZH.quit)
+		setLanguages(languages, "en")
+	})
+
+	test("160 columns: no folding — every present segment visible in both states", () => {
+		// No single state renders all 9 at once (stop is busy-only, newline /
+		// history idle-only), so "all 9" means: both states render their full
+		// segment set unfolded, whose union covers the 9 ids.
+		for (const busy of [false, true]) {
+			const hints = { ...DEFAULT_FOOTER_HINTS }
+			const full = hintsText(busy, true, true, hints)
+			const fitted = hintsTextAtWidth(busy, true, true, 160, hints)
+			expect(fitted).toBe(full)
+			for (const id of FOOTER_HINT_IDS) {
+				const label = hintLabel(id, busy)
+				if (label) expect(fitted).toContain(label)
+			}
+		}
+		const union = FOOTER_HINT_IDS.filter((id) => hintLabel(id, false) || hintLabel(id, true))
+		expect(union.length).toBe(9)
+	})
+
+	test("survivors keep display order; folding never promotes a lower-priority segment", () => {
+		for (const width of [40, 80, 120, 160]) {
+			const row = hintsTextAtWidth(false, true, false, width, { ...DEFAULT_FOOTER_HINTS })
+			// Display order from FOOTER_HINT_IDS: send < newline < history <
+			// subagentPanel < search < scroll < quit (stop/subagents absent here).
+			const order = [EN.sendIdle, EN.newline, EN.history, EN.subagentPanel, EN.search, EN.scroll, EN.quit]
+			const indices = order.filter((seg) => row.includes(seg)).map((seg) => row.indexOf(seg))
+			expect(indices).toEqual([...indices].sort((a, b) => a - b))
+		}
+	})
+
+	test("extreme narrow falls back to a bounded clipToWidth hard-cut", () => {
+		// At 9 columns (usable 8) not even `⌨ enter send` fits whole — the
+		// function must fall back to the original bounded hard-cut, never
+		// overflow. This is the only path that may emit an ellipsis.
+		const row = hintsTextAtWidth(false, true, false, 9, { ...DEFAULT_FOOTER_HINTS })
+		expect(stringWidth(row)).toBeLessThanOrEqual(8)
+		expect(row).toContain("…")
+	})
+
+	test("all segments off / bar hidden still renders '' at any width", () => {
+		const off: FooterHints = {
+			send: false,
+			newline: false,
+			history: false,
+			stop: false,
+			subagentPanel: false,
+			quit: false,
+			scroll: false,
+			search: false,
+			subagents: false,
+		}
+		for (const width of [9, 40, 80, 160]) {
+			expect(hintsTextAtWidth(false, true, false, width, off)).toBe("")
+			expect(hintsTextAtWidth(false, false, false, width, { ...DEFAULT_FOOTER_HINTS })).toBe("")
+		}
 	})
 })
 
@@ -326,9 +509,11 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 		expect(source).toMatch(/setPresetLabel\(presetLabelFor\(rows, id\)\)/)
 		// /preset lands through reload() (already wired) AND the first turn
 		// creates the session, so the turn-end footer refresh re-reads the
-		// label too instead of keeping the boot fallback.
+		// label too instead of keeping the boot fallback. Tolerate intervening
+		// statements in the effect body (e.g. the first-turn probe reset): the
+		// contract is that both refresh calls run inside the !turnBusy guard.
 		expect(source).toMatch(
-			/createEffect\(\(\) => \{\s*\n\s*if \(!turnBusy\(\)\) \{\s*\n\s*refreshFooterData\(\)\s*\n\s*refreshPresetLabel\(\)/,
+			/createEffect\(\(\) => \{\s*\n\s*if \(!turnBusy\(\)\) \{[\s\S]*?refreshFooterData\(\)[\s\S]*?refreshPresetLabel\(\)/,
 		)
 		// A transient list/currentId failure keeps the last label instead of
 		// flipping a known "dsh(<preset>)" back to the plain "dsh"; the next

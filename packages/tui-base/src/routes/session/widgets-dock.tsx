@@ -56,6 +56,7 @@ import { parseColor, TextAttributes, type RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
 import { parseTodos, type Todo } from "../../util/todo"
+import { takeWidth } from "../../util/locale"
 import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
@@ -1147,6 +1148,14 @@ export function WidgetsDock(props: {
 	// floor.
 	const tableWidth = () => todosTableWidth(dimensions().width)
 	const table = () => todosTableLines(props.rows, tableWidth(), dimensions().height)
+	// Column fidelity: `todosTableLines` already pads every row to EXACTLY
+	// `tableWidth()` columns (border included), so the right `│` of each row
+	// shares the top border's `┐` column by construction. The rows are painted
+	// with `takeWidth` — a pure display-column hard-cut that NEVER rewrites
+	// internal whitespace (a no-op on these exact-width rows, a bound on the
+	// one-line short-terminal summary). Do NOT swap in `clipToWidth` here: its
+	// whitespace fold collapsed the `#` column's leading pad and pulled the
+	// right wall two columns left of the `┌...┐` top border (the 80-col bug).
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
 	// Mitigation 1: the frame's Show reads the DEFERRED latch, not the raw
 	// turn liveness — mount/unmount land one render tick after the flip
@@ -1183,7 +1192,7 @@ export function WidgetsDock(props: {
 					<For each={table()}>
 						{(line) => (
 							<text fg={fgFor(line.tone)} wrapMode="none">
-								{clipToWidth(line.text, tableWidth())}
+								{takeWidth(line.text, tableWidth())}
 							</text>
 						)}
 					</For>

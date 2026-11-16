@@ -18,10 +18,24 @@
 import { stringWidth } from "../../util/string-width"
 
 /**
- * Display-width clip (P1-1 CJK law): limits are TERMINAL COLUMNS, measured
- * with the package's #string-width util — a CJK code point is 2 columns, so
- * a `.length`-based budget overflows 2x on Chinese args. No ANSI sequences
- * in these strings.
+ * Display-width clip for SINGLE-LINE DISPLAY TEXT (tool subjects/details/
+ * results and one-line dock labels). Contract: flatten the first whitespace
+ * run to one space, trim both ends, then cap to `limit` TERMINAL COLUMNS with
+ * a trailing ellipsis — P1-1 CJK law: measured with #string-width (a CJK code
+ * point is 2 columns, so a `.length` budget overflows 2x on Chinese args).
+ * No ANSI sequences in these strings.
+ *
+ * The flatten is deliberately NOT global (`/\s+/u`, no `g`): only the FIRST
+ * whitespace run folds. Callers join fragments with meaningful multi-space
+ * separators (e.g. `toolDetail`'s two-space `parts.join("  ")`, pinned by
+ * tool-summarize.test.ts) and depend on later runs surviving unchanged, so a
+ * `g` here would silently rewrite established output across every caller.
+ *
+ * This helper is therefore NOT a column-faithful transform — it must NEVER
+ * wrap content whose internal whitespace or right border must be preserved
+ * (bordered tables, aligned rows). Those use a pure display-column hard-cut
+ * (`takeWidth` from `util/locale`); routing them through this clip rewrites
+ * whitespace and drifts their right edge away from the frame's border.
  */
 export function clipToWidth(text: string, limit: number): string {
 	if (limit <= 0) return ""

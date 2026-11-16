@@ -220,7 +220,13 @@ export function SubagentsViewer(props: {
 	const [scrollOffset, setScrollOffset] = createSignal(0)
 	const [status, setStatus] = createSignal<string | undefined>(undefined)
 	let handle: PanelHandle | undefined
-	let transcriptHandle: PanelHandle | undefined
+	/**
+	 * The transcript layer's handle. Reactive: the transcript key layer is
+	 * registered before the layer opens and reads this inside its `enabled`
+	 * callback (ADR-0008 `ownsInput`). A plain variable left `enabled` stuck
+	 * false — the history-panel `sessionsHandle` law.
+	 */
+	const [transcriptHandle, setTranscriptHandle] = createSignal<PanelHandle | undefined>(undefined)
 	let sequence = 0
 	/** Timestamp of the last `x` press on the transcript layer (0 = none). */
 	let lastXPress = 0
@@ -334,15 +340,17 @@ export function SubagentsViewer(props: {
 		setStatus(undefined)
 		// A direct call opens exactly one layer (the history-panel P0-2 law:
 		// an effect watching a signal would re-trigger on the stack's layers).
-		transcriptHandle = panels.open(() => renderTranscript(), {
-			id: `subagents-transcript-${++sequence}`,
-			title: t("panel.subagents.title.transcript"),
-			size: "xlarge",
-			onClose: () => {
-				transcriptHandle = undefined
-				stopTicking()
-			},
-		})
+		setTranscriptHandle(
+			panels.open(() => renderTranscript(), {
+				id: `subagents-transcript-${++sequence}`,
+				title: t("panel.subagents.title.transcript"),
+				size: "xlarge",
+				onClose: () => {
+					setTranscriptHandle(undefined)
+					stopTicking()
+				},
+			}),
+		)
 		startTicking()
 	}
 
@@ -432,7 +440,7 @@ export function SubagentsViewer(props: {
 				// Closing the list layer from outside (esc pops the stack top —
 				// which is the list only when no transcript is up) tears the
 				// whole viewer down; the transcript layer pops first on its own.
-				if (transcriptHandle === undefined) finish()
+				if (transcriptHandle() === undefined) finish()
 			},
 		})
 	})
@@ -443,7 +451,7 @@ export function SubagentsViewer(props: {
 		// ADR-0008: the list layer answers only while its own frame owns the
 		// keyboard. `dialog.stack.length === 0` is kept for the no-ownership
 		// fallback; under the provider `ownsInput` already covers the dialog.
-		enabled: open() && transcriptHandle === undefined && handle?.ownsInput() === true && dialog.stack.length === 0,
+		enabled: open() && transcriptHandle() === undefined && handle?.ownsInput() === true && dialog.stack.length === 0,
 		priority: 2,
 		commands: [
 			{ bind: "up,k", title: t("panel.subagents.keymap.previous"), group: "Subagents", run: () => moveCursor(-1) },
@@ -473,7 +481,7 @@ export function SubagentsViewer(props: {
 
 	Keymap.createLayer(() => ({
 		mode: "global",
-		enabled: open() && transcriptHandle?.ownsInput() === true && dialog.stack.length === 0,
+		enabled: open() && transcriptHandle()?.ownsInput() === true && dialog.stack.length === 0,
 		priority: 2,
 		commands: [
 			{ bind: "up,k", title: t("panel.subagents.keymap.scrollUp"), group: "Subagents", run: () => scrollBy(-1) },

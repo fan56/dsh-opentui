@@ -42,6 +42,12 @@ import { pickDailyQuote } from "../src/routes/quotes"
 import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
 import { createSeamRows } from "../src/routes/session/seam-rows"
+import {
+	initialFooterProbeState,
+	markFooterProbeStarted,
+	settleFooterProbe,
+	shouldStartFooterProbe,
+} from "../src/routes/session/footer-refresh"
 import { Transcript } from "../src/routes/session/transcript"
 import { WidgetsDock, resetSkinLineFades } from "../src/routes/session/widgets-dock"
 import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
@@ -55,6 +61,7 @@ import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { createPaneFocus, PaneFocusKeys } from "../src/routes/session/pane-focus"
 import { subagentsPickerOpen } from "../src/routes/session/subagents-picker"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
+import { stopEverything } from "../src/routes/session/stop-all"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import { DockProvider, DockSeat, useDock } from "../src/routes/session/dock-host"
@@ -181,6 +188,32 @@ function V2SessionPageBody(props: {
 	skillsCurated: string
 }) {
 	const seam = props.seam
+	// First-turn footer fix (pure-chat / no-tool path): journal message events
+	// cannot re-read the 💬 count during a turn — the real adapter DROPS every
+	// journal projection for the whole turn await (`session-seam-adapter.ts:771
+	// if (this.#turnInFlight) return`, no buffer/replay), so an onSessionEvent
+	// subscription is dead in exactly the window we need. The streamed delta
+	// callbacks DO fire while the turn awaits (`shell/src/agent/loop.ts:198
+	// onThinkingDelta / :202 onContentDelta`, passed through the adapter at
+	// :344-345) and are not gated by #turnInFlight. Wrap the seam's turn() so
+	// the FIRST delta of a turn triggers the one-shot authoritative count
+	// probe. onContentDelta is the guaranteed trigger for a tool-less chat turn
+	// (every answer streams text); onThinkingDelta is hooked too so a
+	// reasoning-only turn trips on the earliest delta. The probe guard collapses
+	// the burst; onToolRun below stays as the earlier, tool-path trigger.
+	const rawTurn = seam.turn.bind(seam)
+	seam.turn = (userText, cb) =>
+		rawTurn(userText, {
+			...cb,
+			onThinkingDelta: (text) => {
+				refreshFooterIfUnknown()
+				cb.onThinkingDelta?.(text)
+			},
+			onContentDelta: (text) => {
+				refreshFooterIfUnknown()
+				cb.onContentDelta?.(text)
+			},
+		})
 	const projection = createSeamRows(seam, () => seam.currentSessionId() ?? "", {
 		// Mid-turn approvals route through the batch-5 card.
 		onApprove: (name, args) => overlays.requestApproval(name, args),
@@ -190,7 +223,13 @@ function V2SessionPageBody(props: {
 		// Footer-quickwins (tui-pi 🔧 tools parity): the 🛠 footer segment
 		// counts settled tool runs off the store's onToolRun passthrough —
 		// replaces the hardcoded `tools: 0`. Reset on session clear/reload.
-		onToolRun: () => setTools((n) => n + 1),
+		// First-turn footer fix: a settled tool run proves the live session id
+		// is bound, so it is one of the events that re-reads the authoritative
+		// 💬 count during the first turn (the turn-end effect is busy-gated).
+		onToolRun: () => {
+			setTools((n) => n + 1)
+			refreshFooterIfUnknown()
+		},
 	})
 	const dialog = useDialog()
 	// ADR-0008: page-level global layers answer only while the page frame is
@@ -344,6 +383,12 @@ function V2SessionPageBody(props: {
 		void seam.currentModelSelection().then(setModel)
 		refreshFooterData()
 		refreshPresetLabel()
+		// First-turn 💬 re-read is driven by the streamed-delta wrapper on
+		// seam.turn() (see the top of this body) and by onToolRun for tool turns.
+		// There is intentionally NO onSessionEvent subscription here: the real
+		// adapter suppresses all journal events for the turn await, and the
+		// turn-end effect below already refreshes once the turn settles — so an
+		// event listener would be dead in-turn and redundant post-turn.
 		if (props.resumeNotice) showNotice(props.resumeNotice)
 		if (pendingMigrationNotice) {
 			showNotice(pendingMigrationNotice)
@@ -402,11 +447,10 @@ function V2SessionPageBody(props: {
 					label={{ confirm: t("turn.stop.confirmLabel"), cancel: t("turn.stop.cancelLabel") }}
 					onConfirm={() => {
 						turnAborted = true
-						seam.interrupt()
-						for (const view of seam.subagentViews?.() ?? []) {
-							if (view.status !== "running") continue
-							void seam.interruptChild?.(view.id).catch(() => {})
-						}
+						// Stop the main turn AND every live subagent through the
+						// shared leg (also used by /stop); the helper isolates
+						// per-child failures so one bad child cannot strand the rest.
+						void stopEverything(seam)
 					}}
 				/>
 			),
@@ -445,7 +489,39 @@ function V2SessionPageBody(props: {
 	// explicit level, "off" included, always wins (footer-polish feedback).
 	// Called on mount, on session reload and at every turn end.
 	let footerRefreshSeq = 0
-	const refreshFooterData = () => {
+	// First-turn footer fix: the 💬 count comes from sessionInfo(), which is
+	// undefined until the first turn binds the live session id. The mount read
+	// therefore lands in the unknown window, and the normal turn-end refresh is
+	// gated off by turnBusy() for the whole first turn — the segment would stay
+	// hidden until the turn ended. The first streamed delta (or a settled tool
+	// run) proves the id is bound, so it triggers this ONE extra re-read.
+	// FooterProbeState collapses the delta burst into a single in-flight read
+	// and caps retries (max 3, >=400ms apart) so a sessionInfo() that answered
+	// undefined / rejected cannot make every subsequent delta issue a read.
+	let footerProbe = initialFooterProbeState()
+	const resetFooterProbe = () => {
+		footerProbe = initialFooterProbeState()
+	}
+	function refreshFooterIfUnknown() {
+		const now = Date.now()
+		if (!shouldStartFooterProbe(remoteInfo(), seam.currentSessionId(), footerProbe, now)) return
+		footerProbe = markFooterProbeStarted(footerProbe, now)
+		refreshFooterData((infoObtained) => {
+			// Always release — a bound id whose snapshot has not projected yet,
+			// or a rejecting sessionInfo(), must not strand the guard (which
+			// would swallow this AND later sessions' first-turn probes). A
+			// successful read also resets the budget; a failed one keeps the
+			// cap/stamp so the next delta is still throttled.
+			footerProbe = settleFooterProbe(footerProbe, infoObtained)
+		})
+	}
+	// A refresh that paints an authoritative count makes further probes moot —
+	// clear the guard and the budget. A later session switch (clear/reload) and
+	// each turn boundary reset the budget explicitly below.
+	createEffect(() => {
+		if (remoteInfo() !== undefined) resetFooterProbe()
+	})
+	const refreshFooterData = (onSettled?: (infoObtained: boolean) => void) => {
 		// Stale-promise guard (review fix): a slow earlier refresh must never
 		// overwrite a newer refresh's answer — every then/catch below checks
 		// the ordinal before touching the signals.
@@ -505,6 +581,10 @@ function V2SessionPageBody(props: {
 			.catch(() => undefined)
 		void Promise.resolve(seam.sessionInfo?.())
 			.then((info) => {
+				// Release the probe guard even when a newer refresh superseded
+				// this read: a stale result must never strand in-flight. Only the
+				// signal writes below are seq-gated; the release is unconditional.
+				onSettled?.(!!info)
 				if (seq !== footerRefreshSeq) return
 				// Footer-quickwins review fix: a missing snapshot (fresh/cleared
 				// session before its first event) must DROP the previous session's
@@ -520,6 +600,7 @@ function V2SessionPageBody(props: {
 				settleEffort()
 			})
 			.catch(() => {
+				onSettled?.(false)
 				if (seq !== footerRefreshSeq) return
 				settleEffort()
 			})
@@ -530,6 +611,9 @@ function V2SessionPageBody(props: {
 	// opening header) on the first turn, after mount already read the roster.
 	createEffect(() => {
 		if (!turnBusy()) {
+			// Each turn boundary gives the next first-turn probe a fresh retry
+			// budget; the turn-end refresh itself paints the authoritative count.
+			resetFooterProbe()
 			refreshFooterData()
 			refreshPresetLabel()
 		}
@@ -762,6 +846,7 @@ function V2SessionPageBody(props: {
 		// journal; /new clears first and reads the (empty) live one.
 		const settled = projection.load(sessionId)
 		void seam.currentModelSelection().then(setModel)
+		resetFooterProbe()
 		refreshFooterData()
 		refreshPresetLabel()
 		// Slash-menu skills: same per-session reset on /fork//resume switches
@@ -821,6 +906,7 @@ function V2SessionPageBody(props: {
 			// Footer-quickwins: a session switch resets the LOCAL footer counters
 			// (🛠 tool runs are per-session local; the remote 💬 count re-reads).
 			setTools(0)
+			resetFooterProbe()
 			refreshFooterData()
 			resetSkinLineFades()
 			// Slash-menu skills: the host catalog is session-scoped, so the
@@ -884,6 +970,22 @@ function V2SessionPageBody(props: {
 		// assigned once the composer mounts).
 		flushQueue: () =>
 			composerRef?.flushQueue() ?? { kind: "empty", started: 0, remaining: 0 },
+	}))
+	// Ctrl+G opens the live subagents panel through the SAME slash dispatch a
+	// typed `/subagents` uses — no viewer internals are imported here (the
+	// command host owns the mount bridge). Deliberately NOT gated on running
+	// agents: the whole point is discoverability; an empty roster gets the
+	// command's honest "no subagents" notice instead of a hidden shortcut.
+	Keymap.createLayer(() => ({
+		enabled: () => pageOwns(),
+		commands: [
+			{
+				id: "session.subagents",
+				title: "Subagents activity panel",
+				group: "Session",
+				run: () => slash.interceptSubmit("/subagents"),
+			},
+		],
 	}))
 	const overlayHost = createComponent(TurnOverlayHost, {
 		controller: overlays,

@@ -138,6 +138,9 @@ export const Definitions = {
   "session.toggle.exploration_grouping": keybind("none", "Toggle related tool call grouping"),
   "session.verbosity.cycle": keybind("none", "Cycle transcript verbosity"),
   "session.child.first": keybind("down", "Toggle subagent picker"),
+  // ctrl+g owns the live subagents panel (tui-pi parity); this is the command
+  // dispatch path, so no viewer internals are imported by the keybind layer.
+  "session.subagents": keybind("ctrl+g", "Open the subagents activity panel"),
   "session.child.next": keybind("right", "Go to next child session"),
   "session.child.previous": keybind("left", "Go to previous child session"),
   "session.parent": keybind("up", "Go to parent session"),
@@ -189,7 +192,9 @@ export const Definitions = {
   "session.line.down": keybind("ctrl+alt+e", "Scroll messages down by one line"),
   "session.half.page.up": keybind("ctrl+alt+u", "Scroll messages up by half page"),
   "session.half.page.down": keybind("ctrl+alt+d", "Scroll messages down by half page"),
-  "session.first": keybind("ctrl+g,home,alt+home", "Navigate to first message"),
+  // ctrl+g moved to session.subagents; ctrl+home is a free leg with the same
+  // "first" semantics (home/alt+home stay for the old muscle memory).
+  "session.first": keybind("ctrl+home,home,alt+home", "Navigate to first message"),
   "session.last": keybind("ctrl+alt+g,end", "Navigate to last message"),
   "session.message.next": keybind("none", "Navigate to next message"),
   "session.message.previous": keybind("none", "Navigate to previous message"),

@@ -514,9 +514,9 @@ describe("settings modal: section model", () => {
 		}
 	})
 
-	test("opentui group is 17 rows (hintsLocale lives in General's language row)", () => {
+	test("opentui group is 18 rows (hintsLocale lives in General's language row)", () => {
 		const rows = buildOpentuiRows(context())
-		expect(rows).toHaveLength(17)
+		expect(rows).toHaveLength(18)
 		expect(rows.some((row) => row.id === "hintsLocale")).toBe(false)
 		expect(rows.some((row) => row.id === "motion")).toBe(true)
 		expect(rows.at(-1)?.id).toBe("maxRoundsGrace")
@@ -981,22 +981,22 @@ describe("settings modal: real keys", () => {
 		}
 	})
 
-	test("opentui's 17 rows are all reachable with ↓ (P0-3, row 17 included)", async () => {
+	test("opentui's 18 rows are all reachable with ↓ (P0-3, row 18 included)", async () => {
 		// 24 terminal rows => an 18-row fixed frame => page size 6, so the
-		// 17-row section pages.
+		// 18-row section pages.
 		const { setup, frame } = await mount({ height: 24 })
 		try {
 			setup.mockInput.pressArrow("down") // nav: general → opentui
 			await settle(setup, 1)
 			setup.mockInput.pressArrow("right") // nav → rows
 			await settle(setup, 1)
-			for (let index = 0; index < 17; index += 1) {
+			for (let index = 0; index < 18; index += 1) {
 				setup.mockInput.pressArrow("down")
 				await settle(setup, 1)
 			}
-			// 17 rows, page 6: the cursor window flipped to the last page.
+			// 18 rows, page 6: the cursor window flipped to the last page.
 			expect(frame()).toContain("maxRoundsGrace")
-			expect(frame()).toContain("13-17/17")
+			expect(frame()).toContain("13-18/18")
 			expect(frame()).not.toContain("themeMode")
 			setup.mockInput.pressEnter() // the LAST row opens its editor
 			await settle(setup)
@@ -1109,14 +1109,14 @@ describe("settings modal: real keys", () => {
 			},
 		})
 		try {
-			expect(short.frame()).toMatch(/1-6\/17/)
+			expect(short.frame()).toMatch(/1-6\/18/)
 			short.setup.mockInput.pressKey("\u001b[6~") // PgDn → next page
 			await settle(short.setup)
 			expect(sessionPages).toBe(1) // still 1: consumed by settings
-			expect(short.frame()).toMatch(/7-12\/17/)
+			expect(short.frame()).toMatch(/7-12\/18/)
 			short.setup.mockInput.pressKey("\u001b[5~") // PgUp → previous page
 			await settle(short.setup)
-			expect(short.frame()).toMatch(/1-6\/17/)
+			expect(short.frame()).toMatch(/1-6\/18/)
 			expect(sessionPages).toBe(1)
 		} finally {
 			await short.setup.dispose()
@@ -1282,8 +1282,8 @@ describe("settings modal: real keys", () => {
 		try {
 			setup.mockInput.pressKey(" ") // send = on (writes immediately)
 			await settle(setup, 1)
-			for (let index = 0; index < 5; index += 1) {
-				setup.mockInput.pressArrow("down") // send(4) → search(9)
+			for (let index = 0; index < 6; index += 1) {
+				setup.mockInput.pressArrow("down") // send(4) → search(10), subagentPanel added at 8
 				await settle(setup, 1)
 			}
 			setup.mockInput.pressKey(" ") // search = on (second write)
@@ -1341,7 +1341,7 @@ describe("settings modal: real keys", () => {
 		try {
 			setup.mockInput.pressKey(" ") // send = on → one immediate write
 			await settle(setup)
-			expect(frame()).toMatch(/1-6\/17/)
+			expect(frame()).toMatch(/1-6\/18/)
 			expect(calls.filter((call) => call.startsWith("configSave:"))).toHaveLength(1)
 
 			// A foreign layer on top: our handle is no longer `panels.top`.
@@ -1374,7 +1374,7 @@ describe("settings modal: real keys", () => {
 			setup.mockInput.pressKey("\u001b[6~")
 			await settle(setup)
 			expect(sessionPages).toBe(1)
-			expect(frame()).toMatch(/7-12\/17/)
+			expect(frame()).toMatch(/7-12\/18/)
 		} finally {
 			await setup.dispose()
 		}

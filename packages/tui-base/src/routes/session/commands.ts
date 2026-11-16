@@ -22,6 +22,7 @@
 import { t, activeLanguage, installedLanguages, setLanguage, LANGUAGE_CHOICES } from "../../i18n"
 import type { SeamEffortOption, SeamLoginRoute, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
+import { stopEverything } from "./stop-all"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
 import {
 	brokenLogsForSession,
@@ -1583,6 +1584,30 @@ export function coreCommands(): SlashCommand[] {
 				}
 				ctx.say(t("command.preset.set", { name: target.name }))
 				await ctx.reload()
+			},
+		},
+		{
+			// /stop = the double-Esc confirm's stop-everything leg, without the
+			// dialog (the command IS the explicit intent). Cancels the main turn
+			// AND every running subagent through the shared helper; a no-turn /
+			// no-child stop is a harmless "nothing running" notice, not an error.
+			name: "/stop",
+			description: t("command.stop.description"),
+			async run(ctx) {
+				const { parent, children } = await stopEverything(ctx.seam)
+				if (!parent && children === 0) {
+					ctx.say(t("command.stop.nothingRunning"))
+					return
+				}
+				const parts = [
+					...(parent ? [t("turn.stop.confirmMain")] : []),
+					...(children === 1
+						? [t("turn.stop.confirmChildrenOne")]
+						: children > 0
+							? [t("turn.stop.confirmChildrenMany", { count: String(children) })]
+							: []),
+				]
+				ctx.say(t("command.stop.done", { parts: parts.join(", ") }))
 			},
 		},
 	]

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- `/stop` command: stops the active turn and every running subagent, matching
+  the double-Esc confirmation. It is a no-op on an idle session — `interrupt()`
+  clears the session binding, so it is only issued while a turn is running.
+- `ctrl+g` opens the subagent activity panel (`/subagents`); `session.first`
+  moves to `ctrl+home` (`home`/`alt+home` still work).
+
+### Fixed
+- The todo panel's right border was drawn two columns short: already-sized
+  content rows were re-clipped by `clipToWidth`, whose whitespace pattern
+  lacked the `g` flag and collapsed only the first run of spaces. Rows now go
+  through `takeWidth`, which never rewrites interior whitespace.
+- The footer `msgs` segment stayed hidden for the entire first turn of a fresh
+  session: remote info was only refreshed on mount and after the turn ended, so
+  the count was still unknown while the turn ran. The first streaming delta (and
+  the first tool run) now triggers a throttled re-read.
+- The `/subagents` transcript layer ignored `x` (stop one child) and `Enter`
+  (steer): the panel handle was a plain variable read by a reactive `enabled`
+  gate, so the layer's keymap never subscribed.
+- The hints bar truncated mid-segment on narrow terminals, hiding
+  `esc stop` and `ctrl+c ×2 quit`. Segments are now dropped whole by priority.
+
 ## [0.18.4] - 2026-11-16
 
 ### Added

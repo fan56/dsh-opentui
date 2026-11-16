@@ -19,7 +19,7 @@ import {
 import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
 import { getMotionTier, setMotionTier } from "../src/skin/motion"
 import { footerHints, hintsLocale, setFooterHints, setHintsLocale, DEFAULT_FOOTER_HINTS, HINT_LOCALES } from "../src/routes/session/hints-line"
-import type { SessionSeam, SeamProviderModel, SeamSessionSummary } from "../src/seams/session"
+import type { SessionSeam, SeamProviderModel, SeamSessionSummary, SeamStatus, SeamSubagentView } from "../src/seams/session"
 
 // The command copy resolves through `t()` (T4 facet migration): boot the
 // bundled registry so the en-literal assertions stay hermetic in isolation.
@@ -49,9 +49,15 @@ class RecordingSeam {
 	repairCalls: string[] = []
 	/** Fail-loud /resume: when set, listSessions rejects with this error. */
 	listFailure: Error | undefined
+	/** /stop: the live turn state reported by status(). */
+	stopTurn: SeamStatus["turn"] = "idle"
+	/** /stop: the subagent rows reported by subagentViews(). */
+	stopViews: SeamSubagentView[] = []
+	/** /stop: a child id whose interrupt rejects (isolation test). */
+	stopFailingChild: string | undefined
 
 	readonly seam: SessionSeam = {
-		status: () => ({ connection: "connected", turn: "idle", sessionAttached: true }),
+		status: () => ({ connection: "connected", turn: this.stopTurn, sessionAttached: true }),
 		listSessions: async () => {
 			this.calls.push("listSessions")
 			if (this.listFailure) throw this.listFailure
@@ -79,7 +85,14 @@ class RecordingSeam {
 		renameSession: async () => undefined,
 		turn: async () => {},
 		steer: () => {},
-		interrupt: () => {},
+		interrupt: () => {
+			this.calls.push("interrupt")
+		},
+		subagentViews: () => this.stopViews,
+		interruptChild: async (id: string) => {
+			this.calls.push(`interruptChild:${id}`)
+			if (id === this.stopFailingChild) throw new Error(`child ${id} failed`)
+		},
 		registerAskProvider: () => {},
 		listProviders: async () => [],
 		modelCatalog: async () => {
@@ -194,6 +207,67 @@ describe("batch H3: /search + /plugins panel", () => {
 	})
 })
 
+describe("/stop (stop-everything command)", () => {
+	function stopChild(id: string, status: SeamSubagentView["status"] = "running"): SeamSubagentView {
+		return { id, label: id, status, rounds: 0 }
+	}
+	const stopCmd = () => coreCommands().find((c) => c.name === "/stop")!
+
+	test("is registered with an i18n description key and resolves through dispatch", () => {
+		const cmd = coreCommands().find((c) => c.name === "/stop")
+		expect(cmd).toBeDefined()
+		expect(cmd!.description).toBe(t("command.stop.description"))
+		expect(cmd!.description).not.toContain("command.stop")
+		const dispatched = dispatchLine(coreCommands(), "/stop")
+		expect(dispatched.kind).toBe("command")
+		if (dispatched.kind === "command") expect(dispatched.command.name).toBe("/stop")
+	})
+
+	test("interrupts the parent + every running child, skips settled children", async () => {
+		const seam = new RecordingSeam()
+		seam.stopTurn = "running"
+		seam.stopViews = [stopChild("a"), stopChild("done", "completed"), stopChild("b")]
+		const ctx = makeCtx(seam)
+		await stopCmd().run(ctx, "")
+		expect(seam.calls).toEqual(["interrupt", "interruptChild:a", "interruptChild:b"])
+		const parts = `${t("turn.stop.confirmMain")}, ${t("turn.stop.confirmChildrenMany", { count: "2" })}`
+		expect(ctx.lines).toEqual([t("command.stop.done", { parts })])
+	})
+
+	test("nothing running → harmless notice, no error", async () => {
+		const seam = new RecordingSeam()
+		seam.stopTurn = "idle"
+		const ctx = makeCtx(seam)
+		await stopCmd().run(ctx, "")
+		// P0: interrupt() on an idle turn is NOT harmless — the host's abort()
+		// clears the session binding, so it must never be sent with nothing live.
+		expect(seam.calls).not.toContain("interrupt")
+		expect(seam.calls).not.toContain("interruptChild")
+		expect(ctx.lines).toEqual([t("command.stop.nothingRunning")])
+	})
+
+	test("children-only stop (no running parent) interrupts each running child, never the idle parent", async () => {
+		const seam = new RecordingSeam()
+		seam.stopTurn = "idle"
+		seam.stopViews = [stopChild("a")]
+		const ctx = makeCtx(seam)
+		await stopCmd().run(ctx, "")
+		expect(seam.calls).toEqual(["interruptChild:a"])
+		expect(ctx.lines[0]).toContain(t("turn.stop.confirmChildrenOne"))
+	})
+
+	test("a failing child is isolated — the rest still get interrupted", async () => {
+		const seam = new RecordingSeam()
+		seam.stopTurn = "running"
+		seam.stopViews = [stopChild("bad"), stopChild("good")]
+		seam.stopFailingChild = "bad"
+		const ctx = makeCtx(seam)
+		await stopCmd().run(ctx, "")
+		expect(seam.calls).toEqual(["interrupt", "interruptChild:bad", "interruptChild:good"])
+		expect(ctx.lines[0]).toContain(t("turn.stop.confirmChildrenOne"))
+	})
+})
+
 describe("dispatchLine", () => {
 	const commands = coreCommands()
 
@@ -270,6 +344,7 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/hotkeys",
 			"/theme",
 			"/preset",
+			"/stop",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/pl").map((c) => c.name)).toEqual(["/plugins"])
@@ -309,6 +384,7 @@ describe("core commands", () => {
 			"/hotkeys — show keybinds",
 			"/theme — switch theme (opens the picker)",
 			"/preset — switch agent preset (bare opens the picker, next rotates)",
+			"/stop — stop the main turn and all running subagents",
 		])
 	})
 

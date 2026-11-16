@@ -165,59 +165,82 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 	// straight off the captured frame, no hint fallback.
 	// -------------------------------------------------------------------
 	test("bordered todos box draws its content rows inside the border (counted off the frame)", async () => {
-		await using fixture = await createShellRenderFixture({
-			turnScript: async (cb) => {
-				cb.onToolStart?.({
-					callId: "call-todo",
-					name: "todo_write",
-					args: JSON.stringify({
-						todos: [
-							{ content: "map the incident", status: "completed" },
-							{ content: "write the regression", status: "in_progress" },
-							{ content: "ship the gate", status: "pending" },
-						],
-					}),
-				})
-				cb.onToolRun?.({
-					callId: "call-todo",
-					name: "todo_write",
-					// NOTE: onToolRun replaces the row's args with argsPretty, so
-					// the todo array rides HERE (the shape latestTodos parses).
-					argsPretty: JSON.stringify({
-						todos: [
-							{ content: "map the incident", status: "completed" },
-							{ content: "write the regression", status: "in_progress" },
-							{ content: "ship the gate", status: "pending" },
-						],
-					}),
-					output: "Updated todo list",
-					ok: true,
-				})
-			},
-		})
+		// The dock's right-wall alignment is a RENDER-layer invariant: the pure
+		// todosTableLines() builder pads every row to exactly boxWidth columns,
+		// but the renderer used to re-clip each row with clipToWidth (whose
+		// whitespace fold pulled the right `│` 2 columns left of the `┐`), so a
+		// pure-function test stays green while the painted box is broken. Pin it
+		// off the REAL frame at three widths — including 40 (the narrow-box
+		// Math.max(16, W-1) floor path).
+		for (const width of [80, 120, 40]) {
+			await using fixture = await createShellRenderFixture({
+				width,
+				turnScript: async (cb) => {
+					cb.onToolStart?.({
+						callId: "call-todo",
+						name: "todo_write",
+						args: JSON.stringify({
+							todos: [
+								{ content: "map the incident", status: "completed" },
+								{ content: "write the regression", status: "in_progress" },
+								{ content: "ship the gate", status: "pending" },
+							],
+						}),
+					})
+					cb.onToolRun?.({
+						callId: "call-todo",
+						name: "todo_write",
+						// NOTE: onToolRun replaces the row's args with argsPretty, so
+						// the todo array rides HERE (the shape latestTodos parses).
+						argsPretty: JSON.stringify({
+							todos: [
+								{ content: "map the incident", status: "completed" },
+								{ content: "write the regression", status: "in_progress" },
+								{ content: "ship the gate", status: "pending" },
+							],
+						}),
+						output: "Updated todo list",
+						ok: true,
+					})
+				},
+			})
 
-		const pending = fixture.send("plan the gate work")
-		const frame = await fixture.waitForFrame((f) => f.includes("● Todos"))
-		await pending
-		const lines = frame.split("\n")
+			const pending = fixture.send("plan the gate work")
+			const frame = await fixture.waitForFrame((f) => f.includes("● Todos"))
+			await pending
+			const lines = frame.split("\n")
 
-		// Locate the bordered box by its header; the top border must sit
-		// directly above it and the bottom border must close the box.
-		const headerIdx = lines.findIndex((line) => line.includes("● Todos"))
-		expect(headerIdx).toBeGreaterThan(0)
-		const topBorder = lines[headerIdx - 1]
-		expect(topBorder).toContain("┌")
-		const bottomIdx = lines.findIndex((line, i) => i > headerIdx && line.includes("└"))
-		expect(bottomIdx).toBeGreaterThan(headerIdx)
+			// Locate the bordered box by its header; the top border must sit
+			// directly above it and the bottom border must close the box.
+			const headerIdx = lines.findIndex((line) => line.includes("● Todos"))
+			expect(headerIdx).toBeGreaterThan(0)
+			const topBorder = lines[headerIdx - 1]!
+			expect(topBorder).toContain("┌")
+			const bottomIdx = lines.findIndex((line, i) => i > headerIdx && line.includes("└"))
+			expect(bottomIdx).toBeGreaterThan(headerIdx)
 
-		// THE incident assert: rows counted INSIDE the border box are > 0.
-		const inner = lines.slice(headerIdx + 1, bottomIdx)
-		expect(inner.length).toBeGreaterThan(0)
-		// The border really surrounds the content: walls on every inner row
-		// and the known content present between top and bottom.
-		for (const line of inner) expect(line).toContain("│")
-		expect(inner.some((line) => line.includes("write the regression"))).toBe(true)
-		expect(inner.some((line) => line.includes("ship the gate"))).toBe(true)
+			// THE incident assert: rows counted INSIDE the border box are > 0.
+			const inner = lines.slice(headerIdx + 1, bottomIdx)
+			expect(inner.length).toBeGreaterThan(0)
+			// The border really surrounds the content: walls on every inner row
+			// and the known content present between top and bottom.
+			for (const line of inner) expect(line).toContain("│")
+			expect(inner.some((line) => line.includes("write the regression"))).toBe(true)
+			expect(inner.some((line) => line.includes("ship the gate"))).toBe(true)
+
+			// THE render-layer regression assert (width=${width}): every table
+			// row's right wall (`│`) must land in the SAME column as the top
+			// border's right corner (`┐`). The re-clip bug shrank the # / ✓ /
+			// Task header and the data rows by two columns, so their `│` sat
+			// left of the `┐` while the title row (single leading space) and
+			// the borders matched — this is the exact drift the FT must catch.
+			const topRightCol = topBorder.lastIndexOf("┐")
+			expect(topRightCol).toBeGreaterThan(0)
+			const tableRows = [lines[headerIdx]!, ...inner]
+			for (const row of tableRows) {
+				expect(row.lastIndexOf("│")).toBe(topRightCol)
+			}
+		}
 	})
 
 	// Incident 3 — negative pairing at pure granularity: with content the

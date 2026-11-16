@@ -314,14 +314,24 @@ describe("key routing vs focus scopes (Home/End, pure transcript state)", () => 
 		expect(h.captureFrame()).toContain(`row-${String(ROWS).padStart(2, "0")}`)
 	})
 
-	test("session.first chord leg (ctrl+g) routes to the same top jump", async () => {
+	test("session.first ctrl+home leg jumps to the top; ctrl+g no longer routes there", async () => {
 		await using h = await createKeyHarness()
 		await h.settle()
 
-		await h.press("g", { ctrl: true })
+		// ctrl+home is the free leg that replaced ctrl+g (which now owns the
+		// subagents panel). The remaining home/alt+home legs are unchanged.
+		await h.press(HOME, { ctrl: true })
 
 		expect(h.scroll!.scrollTop).toBe(0)
 		expect(h.visibleRows(h.captureFrame())[0]).toBe(1)
+
+		// ctrl+g must NOT still be a first-message jump — that would steal the
+		// new panel shortcut. From the bottom it must leave the scroll alone.
+		await h.press(END)
+		const bottom = h.maxScroll()
+		expect(h.scroll!.scrollTop).toBe(bottom)
+		await h.press("g", { ctrl: true })
+		expect(h.scroll!.scrollTop).toBe(bottom)
 	})
 
 	test("contrast: home/end return to the editor after focus moves — cursor 0/len, scrollTop untouched", async () => {

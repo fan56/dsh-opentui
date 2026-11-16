@@ -9,8 +9,8 @@
  *   busy  `⌨ enter steer · esc stop · …` (the running-turn keys lead)
  *
  * Footer-quickwins batch (tui-pi footer.ts:41-98 parity): the bar is now
- * EIGHT independently toggleable segments (send / newline / history / stop /
- * quit / scroll / search / subagents) in tui-pi's per-segment on/off shape,
+ * NINE independently toggleable hint segments (send / newline / history / stop /
+ * subagentPanel / quit / scroll / search / subagents) in tui-pi's per-segment on/off shape,
  * each label a `footer.hint.*` key in the i18n registry (T8 fold: the vendored
  * four-language typed tables are gone — wording now rides the unified
  * language through `t()`, and a `/hints lang` pick persists the unified
@@ -25,20 +25,22 @@ import { createSignal, Show, type JSX } from "solid-js"
 import { t } from "../../i18n"
 import { useTerminalSize } from "./terminal-size"
 import { clipToWidth } from "./tool-summarize"
+import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
 import { subagentMarkerViews } from "./subagent-markers"
 import type { Pane } from "./pane-focus"
 
 export const [hintsShown, setHintsShown] = createSignal(true)
 
-/** The eight toggleable hint segments (tui-pi FooterHints parity, opentui keys). */
-export type HintSegmentId = "send" | "newline" | "history" | "stop" | "quit" | "scroll" | "search" | "subagents"
+/** The nine toggleable hint segments (tui-pi FooterHints parity, opentui keys). */
+export type HintSegmentId = "send" | "newline" | "history" | "stop" | "subagentPanel" | "quit" | "scroll" | "search" | "subagents"
 
 export interface FooterHints {
 	send: boolean
 	newline: boolean
 	history: boolean
 	stop: boolean
+	subagentPanel: boolean
 	quit: boolean
 	scroll: boolean
 	search: boolean
@@ -51,6 +53,7 @@ export const DEFAULT_FOOTER_HINTS: Readonly<FooterHints> = Object.freeze({
 	newline: true,
 	history: true,
 	stop: true,
+	subagentPanel: true,
 	quit: true,
 	scroll: true,
 	search: true,
@@ -65,11 +68,33 @@ export const FOOTER_HINT_IDS: readonly HintSegmentId[] = [
 	"newline",
 	"history",
 	"stop",
+	"subagentPanel",
 	"subagents",
 	"search",
 	"scroll",
 	"quit",
 ]
+
+/**
+ * Width-folding priority (lower number = kept longer as the terminal narrows).
+ * Trade-off: the keys needed to ACT and to LEAVE are core and survive first;
+ * discovery/navigation conveniences are optional and disappear whole. Ties are
+ * broken by display order (FOOTER_HINT_IDS), so the surviving row always reads
+ * core → optional in a stable order. The low tier is ordered subagentPanel →
+ * search → scroll: each is progressively more of a nice-to-have, so scroll is
+ * always the first to go and subagentPanel the last of the optional three.
+ */
+export const HINT_SEGMENT_PRIORITY: Readonly<Record<HintSegmentId, number>> = Object.freeze({
+	send: 10, // enter send / steer — the primary action
+	stop: 10, // esc stop — the only way to halt a running turn
+	quit: 10, // ctrl+c ×2 quit — the only way to leave
+	history: 20, // ↑↓ history — recall the last input
+	newline: 30, // alt+enter newline — multiline input
+	subagents: 40, // ↓ subagents — contextual: only while a child runs
+	subagentPanel: 50, // ctrl+g — opens the subagent activity panel
+	search: 60, // ctrl+shift+f — full-text search
+	scroll: 70, // pgup/pgdn — page the transcript (first to go)
+})
 
 /** Supported hint-bar languages (tui-pi locales parity). */
 export type HintLocale = "en" | "zh-CN" | "ja" | "ko"
@@ -92,6 +117,7 @@ const HINT_LABEL_KEYS: Record<HintSegmentId, HintLabelKeys> = {
 	newline: { idle: "footer.hint.newline.idle", busy: null },
 	history: { idle: "footer.hint.history.idle", busy: null },
 	stop: { idle: null, busy: "footer.hint.stop.busy" },
+	subagentPanel: { idle: "footer.hint.subagentPanel", busy: "footer.hint.subagentPanel" },
 	quit: { idle: "footer.hint.quit", busy: "footer.hint.quit" },
 	scroll: { idle: "footer.hint.scroll", busy: "footer.hint.scroll" },
 	search: { idle: "footer.hint.search", busy: "footer.hint.search" },
@@ -186,11 +212,49 @@ export function hintInState(id: HintSegmentId, busy: boolean): boolean {
 	return hintLabel(id, busy) !== ""
 }
 
+/** One rendered segment: its id (priority lookup) and its localized label. */
+interface HintPart {
+	id: HintSegmentId
+	label: string
+}
+
 /**
- * The hint row text (pure): `''` when the bar is toggled off; only the
- * per-segment ON segments render, in the fixed order busy/idle leads →
- * conditional `↓ subagents` → common. Batch D5b: `↓ subagents` only while
- * a child runs AND its segment is on.
+ * The present segments in display order (busy/idle leads → conditional
+ * `↓ subagents` → common tail). Batch D5b: `↓ subagents` only while a child
+ * runs AND its segment is on. Shared by the unclipped and width-fitted rows so
+ * wording and order semantics stay identical — folding only removes segments.
+ */
+function hintParts(busy: boolean, shown: boolean, subagentsLive: boolean, hints: FooterHints): HintPart[] {
+	if (!shown) return []
+	const parts: HintPart[] = []
+	for (const id of FOOTER_HINT_IDS) {
+		if (id === "subagents") {
+			// Batch D5b: the conditional segment — only while a child runs AND on.
+			if (subagentsLive && hints.subagents) {
+				const label = hintLabel("subagents", busy)
+				if (label) parts.push({ id, label })
+			}
+			continue
+		}
+		if (!hints[id]) continue
+		const label = hintLabel(id, busy)
+		// '' = segment absent from this state (idle drops stop, busy drops newline/history).
+		if (label) parts.push({ id, label })
+	}
+	return parts
+}
+
+/** Render parts as the `⌨ seg · seg` row; '' when nothing survives. */
+function joinHintParts(parts: HintPart[]): string {
+	if (parts.length === 0) return ""
+	return `⌨ ${parts.map((p) => p.label).join(" · ")}`
+}
+
+/**
+ * The full, unclipped hint row (pure): `''` when the bar is toggled off; only
+ * the per-segment ON segments render, in the fixed display order. Width-unaware
+ * — renderers that own a viewport use `hintsTextAtWidth` so a narrow terminal
+ * folds whole segments instead of cutting one mid-glyph.
  */
 export function hintsText(
 	busy: boolean,
@@ -198,20 +262,49 @@ export function hintsText(
 	subagentsLive = false,
 	hints: FooterHints = footerHints(),
 ): string {
-	if (!shown) return ""
-	const parts: string[] = []
-	for (const id of FOOTER_HINT_IDS) {
-		if (id === "subagents") {
-			// Batch D5b: the conditional segment — only while a child runs AND on.
-			if (subagentsLive && hints.subagents) parts.push(hintLabel("subagents", busy))
-			continue
-		}
-		if (!hints[id]) continue
-		const label = hintLabel(id, busy)
-		if (label) parts.push(label) // '' = segment absent from this state (idle drops stop, busy drops newline/history)
+	return joinHintParts(hintParts(busy, shown, subagentsLive, hints))
+}
+
+/**
+ * The width-fitted hint row (pure). Segments are taken highest-priority first
+ * until the next one would overflow: that segment AND every lower-priority one
+ * after it are dropped WHOLE (never cut). Survivors are sorted back into display
+ * order — the visible row always reads core → optional, and a lower-priority
+ * segment is never shown while a higher-priority one is missing. `columns` is
+ * the terminal width (the same -2 the viewport applies). Everything fitting
+ * needs no folding. If not even one whole segment fits (extreme narrow), fall
+ * back to `clipToWidth` so the row stays bounded.
+ */
+export function hintsTextAtWidth(
+	busy: boolean,
+	shown: boolean,
+	subagentsLive: boolean,
+	columns: number,
+	hints: FooterHints = footerHints(),
+): string {
+	const parts = hintParts(busy, shown, subagentsLive, hints)
+	const full = joinHintParts(parts)
+	if (!full) return ""
+	const usable = Math.max(8, columns - 2)
+	if (stringWidth(full) <= usable) return full
+
+	// Rank high → low priority; ties keep display order. Keep each part's
+	// display index so survivors can be restored to stable core → optional order.
+	const ranked = parts
+		.map((part, index) => ({ part, index }))
+		.sort((a, b) => HINT_SEGMENT_PRIORITY[a.part.id] - HINT_SEGMENT_PRIORITY[b.part.id] || a.index - b.index)
+
+	const kept: typeof ranked = []
+	let width = 0 // the ⌨ prefix is counted once, when the first segment lands
+	for (const candidate of ranked) {
+		const added = stringWidth(candidate.part.label) + (kept.length > 0 ? stringWidth(" · ") : stringWidth("⌨ "))
+		if (width + added > usable) break // this segment AND all lower-priority ones are dropped whole
+		width += added
+		kept.push(candidate)
 	}
-	if (parts.length === 0) return ""
-	return `⌨ ${parts.join(" · ")}`
+	if (kept.length === 0) return clipToWidth(full, usable) // extreme narrow: bounded hard-cut fallback
+	kept.sort((a, b) => a.index - b.index)
+	return joinHintParts(kept.map((k) => k.part))
 }
 
 /**
@@ -242,13 +335,19 @@ export function HintsLine(props: {
 	const theme = useThemeOptional()
 	// The rendered row (getter: tracks busy / focus pane / segment toggles /
 	// locale / live subagents / width). All segments off → '' → the row drops.
-	const row = () =>
-		clipToWidth(
-			props.pane?.() === "transcript"
-				? transcriptHintsText(hintsShown())
-				: hintsText(props.busy, hintsShown(), subagentMarkerViews().some((v) => v.status === "running")),
-			Math.max(8, dimensions().width - 2),
-		)
+	// The composer bar folds whole segments by priority to the viewport width;
+	// the transcript row is a single key string, so it keeps the plain clip.
+	const row = () => {
+		const columns = dimensions().width
+		return props.pane?.() === "transcript"
+			? clipToWidth(transcriptHintsText(hintsShown()), Math.max(8, columns - 2))
+			: hintsTextAtWidth(
+					props.busy,
+					hintsShown(),
+					subagentMarkerViews().some((v) => v.status === "running"),
+					columns,
+				)
+	}
 	// All-off parity (tui-pi): '' renders ZERO rows — the fixed-height box
 	// must unmount with the text, not linger as a blank line above the
 	// composer.

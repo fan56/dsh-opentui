@@ -106,6 +106,8 @@ export const Definitions = {
   session_queued_prompts: keybind("<leader>q", "View queued prompts"),
   queued_prompt_delete: keybind("ctrl+d", "Delete queued prompt"),
   session_child_first: keybind("down", "Toggle subagent picker"),
+  // ctrl+g owns the live subagents panel (tui-pi parity); mirrors config/keybind.ts.
+  subagents: keybind("ctrl+g", "Open the subagents activity panel"),
   session_parent: keybind("up", "Go to parent session"),
   session_pin_toggle: keybind("ctrl+f", "Pin or unpin session in the session list"),
   session_quick_switch_1: keybind("<leader>1", "Switch to session in quick slot 1"),
@@ -150,7 +152,8 @@ export const Definitions = {
   messages_line_down: keybind("ctrl+alt+e", "Scroll messages down by one line"),
   messages_half_page_up: keybind("ctrl+alt+u", "Scroll messages up by half page"),
   messages_half_page_down: keybind("ctrl+alt+d", "Scroll messages down by half page"),
-  messages_first: keybind("ctrl+g,home,alt+home", "Navigate to first message"),
+  // ctrl+g moved to subagents; ctrl+home is a free leg with the same "first" semantics.
+  messages_first: keybind("ctrl+home,home,alt+home", "Navigate to first message"),
   messages_last: keybind("ctrl+alt+g,end", "Navigate to last message"),
   messages_next: keybind("none", "Navigate to next message"),
   messages_previous: keybind("none", "Navigate to previous message"),
@@ -308,6 +311,7 @@ export const CommandMap = {
   session_queued_prompts: "session.queued_prompts",
   queued_prompt_delete: "queued_prompt.delete",
   session_child_first: "session.child.first",
+  subagents: "session.subagents",
   session_parent: "session.parent",
   session_pin_toggle: "session.pin.toggle",
   session_quick_switch_1: "session.quick_switch.1",
