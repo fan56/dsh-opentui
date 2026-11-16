@@ -1,7 +1,12 @@
 {
   "name": "@aiwayds/dsh-opentui",
-  "version": "0.18.1",
+  "version": "0.18.2",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fan56/dsh-opentui.git",
+    "directory": "packages/shell"
+  },
   "type": "module",
   "bin": {
     "dsh-opentui": "bin/dsh-opentui.mjs"

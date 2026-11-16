@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.2] - 2026-11-16
+
+### Fixed
+
+- **The self-upgrade no longer forces a registry onto `npm i -g`.** `--registry` is passed only when the registry came from `DSH_UPGRADE_REGISTRY`; a registry read from an `.npmrc` is left to npm's own configuration, which resolves the same place without overriding the user's per-scope or per-package settings.
+- **Two upgrades can no longer run over one profile at once.** The write phase (backup, install, override write) holds `<profile>/.upgrade.lock`; a second run reports the holder and exits 2 without writing anything: `upgrade: another upgrade is running (pid <pid>, started <iso>)`. A lock older than 30 minutes is treated as stale and reclaimed, and `--dry-run` never creates one.
+- **Unknown or malformed entries in `upgrade-overrides.json` survive a rewrite.** The parser keeps entries it cannot interpret (no version string) and the serializer writes them back unchanged, so a hand-written entry is no longer silently deleted when the upgrade command records a new pin. They still never affect the effective pin.
+- **The tail of `dsh plugin add` stderr is shown after a successful batch install.** Up to five lines are printed with a `dsh plugin add: ` prefix, so pnpm warnings from an install that exited 0 are no longer lost. The failure path is unchanged.
+
+### Internal
+
+- **`repository` field added to `packages/shell/package.json`** so `npm publish --provenance` can generate provenance.
+
 ## [0.18.1] - 2026-11-16
 
 ### Fixed

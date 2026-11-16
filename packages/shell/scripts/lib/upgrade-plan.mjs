@@ -16,6 +16,14 @@ import { compareVersions, parseVersion, resolveEffectivePin } from './provision-
 
 export const OFFICIAL_REGISTRY = 'https://registry.npmjs.org'
 
+// Identities of the .npmrc files the upgrade command reads, least specific
+// first. They are labels, not paths: the caller turns them into real paths and
+// keeps them in the resolved registry so the install rule can tell npm's own
+// file (~/.npmrc) from the ones npm never reads.
+export const NPMRC_HOME = '~/.npmrc'
+export const NPMRC_DSH_HOME = '$DSH_HOME/.npmrc'
+export const NPMRC_PROFILE = '<profile>/.npmrc'
+
 // ---------------------------------------------------------------------------
 // Registry resolution
 // ---------------------------------------------------------------------------
@@ -36,19 +44,23 @@ function stripTrailingSlashes(value) {
   return String(value).replace(/\/+$/, '')
 }
 
-/** Last `registry=` line across all texts wins: later files override earlier
+/** Last `registry=` line across all files wins: later files override earlier
  *  ones, and inside one file the last assignment wins, which is how npm's
- *  own config layering behaves. */
-function registryFromNpmrcTexts(npmrcTexts) {
-  let found = ''
-  for (const text of npmrcTexts) {
-    if (typeof text !== 'string') continue
-    for (const line of text.split(/\r?\n/)) {
+ *  own config layering behaves. Returns the value together with the identity
+ *  of the file it came from, so the install rule can tell npm's own file from
+ *  the ones npm never reads. */
+function registryFromNpmrcFiles(npmrcFiles) {
+  let found = null
+  for (const file of npmrcFiles) {
+    if (typeof file?.text !== 'string') continue
+    let value = ''
+    for (const line of file.text.split(/\r?\n/)) {
       const match = /^\s*registry\s*=\s*(.+)$/i.exec(line)
       if (!match) continue
-      const value = cleanRegistryValue(match[1])
-      if (value) found = value
+      const parsed = cleanRegistryValue(match[1])
+      if (parsed) value = parsed
     }
+    if (value) found = { registry: value, path: file.path }
   }
   return found
 }
@@ -57,25 +69,57 @@ function registryFromNpmrcTexts(npmrcTexts) {
  * Where the `npm view` query should go.
  *
  * Priority: DSH_UPGRADE_REGISTRY (explicit operator override) -> the npmrc
- * texts the caller read, last one winning -> the public registry.
+ * files the caller read, last one winning -> the public registry.
  *
- * `npmrcTexts` is a list of file *contents*, not paths: this module does no
- * IO, and the caller decides which files apply (user, global, profile).
- * The returned registry never ends with `/` so argv and string comparisons
- * stay canonical.
+ * `npmrcFiles` is a list of `{ path, text }` where `path` names the file
+ * (`~/.npmrc`, `$DSH_HOME/.npmrc`, `<profile>/.npmrc`): this module does no
+ * IO, and the caller decides which files apply (user, DSH home, profile).
+ * `sourcePath` is that identity (or `env` / `default`); `source` stays the
+ * coarse bucket callers already print. The returned registry never ends with
+ * `/` so argv and string comparisons stay canonical.
  *
- * @param {{ env?: Record<string, string|undefined>, npmrcTexts?: string[] }} [input]
- * @returns {{ registry: string, source: 'env'|'npmrc'|'default' }}
+ * @param {{ env?: Record<string, string|undefined>,
+ *   npmrcFiles?: Array<{ path: string, text: string }> }} [input]
+ * @returns {{ registry: string, source: 'env'|'npmrc'|'default', sourcePath: string }}
  */
-export function resolveRegistry({ env = {}, npmrcTexts = [] } = {}) {
+export function resolveRegistry({ env = {}, npmrcFiles = [] } = {}) {
   const rawEnv = env && typeof env === 'object' ? env.DSH_UPGRADE_REGISTRY : undefined
   const fromEnv = typeof rawEnv === 'string' ? stripTrailingSlashes(cleanRegistryValue(rawEnv)) : ''
-  if (fromEnv) return { registry: fromEnv, source: 'env' }
+  if (fromEnv) return { registry: fromEnv, source: 'env', sourcePath: 'env' }
 
-  const fromNpmrc = stripTrailingSlashes(registryFromNpmrcTexts(Array.isArray(npmrcTexts) ? npmrcTexts : []))
-  if (fromNpmrc) return { registry: fromNpmrc, source: 'npmrc' }
+  const fromNpmrc = registryFromNpmrcFiles(Array.isArray(npmrcFiles) ? npmrcFiles : [])
+  if (fromNpmrc) {
+    const registry = stripTrailingSlashes(fromNpmrc.registry)
+    // An unnamed text cannot be attributed to npm's own file, so it is
+    // forwarded explicitly: over-specifying is harmless, under-specifying
+    // sends the install to a different registry than the query used.
+    const named = typeof fromNpmrc.path === 'string' && fromNpmrc.path !== ''
+    const sourcePath = named ? fromNpmrc.path : 'npmrc'
+    return { registry, source: 'npmrc', sourcePath }
+  }
 
-  return { registry: OFFICIAL_REGISTRY, source: 'default' }
+  return { registry: OFFICIAL_REGISTRY, source: 'default', sourcePath: 'default' }
+}
+
+/**
+ * argv for `npm i -g <pkg>@<target>`.
+ *
+ * npm reads `~/.npmrc` (plus the project and global files) itself, so a
+ * registry that came from there is already what this install resolves: passing
+ * it again would only override per-scope / per-package configuration the user
+ * wrote. Every other source is invisible to npm — `DSH_UPGRADE_REGISTRY` is
+ * this command's own variable, and `$DSH_HOME/.npmrc` / `<profile>/.npmrc` are
+ * files npm never looks at — so the install must be told explicitly, or the
+ * version query hits the mirror while the install goes to the default
+ * registry.
+ *
+ * @param {{ pkg: string, target: string, registry: string, sourcePath: string }} input
+ * @returns {string[]}
+ */
+export function buildSelfInstallArgs({ pkg, target, registry, sourcePath } = {}) {
+  const args = ['i', '-g', `${pkg}@${target}`]
+  if (sourcePath !== NPMRC_HOME) args.push('--registry', registry)
+  return args
 }
 
 /**
@@ -268,11 +312,18 @@ function entryVersion(entry) {
 
 /** The name -> entry map of an override document. Both shapes are accepted
  *  because the reader that feeds provisioning returns the inner map while the
- *  command works with the whole document; `packages` wins when both exist. */
+ *  command works with the whole document; `packages` wins when both exist.
+ *  Entries parseOverrides could not interpret are carried in `raw` and are
+ *  folded back in here: to a pin decision they are simply entries that lose
+ *  (invalid), which is exactly what this map represented before `raw` existed. */
 function overridePackageMap(overrides) {
   if (!isPlainObject(overrides)) return {}
-  if (isPlainObject(overrides.packages)) return overrides.packages
-  return overrides
+  if (!isPlainObject(overrides.packages)) return overrides
+  const packages = overrides.packages
+  if (!isPlainObject(overrides.raw)) return packages
+  const merged = { ...overrides.raw }
+  for (const [name, entry] of Object.entries(packages)) merged[name] = entry
+  return merged
 }
 
 /**
@@ -280,16 +331,25 @@ function overridePackageMap(overrides) {
  * is unusable (bad JSON, not an object, no usable `packages` object) — the
  * caller maps null to "no overrides", never to an error.
  *
- * A single malformed entry (no version string) is dropped instead of failing
- * the file: one hand-edit typo must not silently disable the other pins.
- * Surviving entries keep their shape — a string stays a string, an object keeps
- * its metadata (`shippedPin`, `updatedAt`) — so a read/serialize round trip
- * does not destroy fields this module does not interpret. Neither `version`
- * nor the entry's semver validity is enforced here (pickEffectivePin judges
- * validity, so a bad version can still be reported and cleaned up).
+ * A single malformed entry (no version string) does not fail the file, and it
+ * is NOT dropped either: it lands in `raw` verbatim. The command rewrites the
+ * whole `packages` map after every upgrade, so dropping an entry it cannot
+ * interpret would silently delete a hand-written pin. Uninterpretable means
+ * "this module cannot use it" (pickEffectivePin ignores it), not "the user did
+ * not mean it".
+ *
+ * Interpreted entries keep their shape — a string stays a string, an object
+ * keeps its metadata (`shippedPin`, `updatedAt`) — so a read/serialize round
+ * trip does not destroy fields this module does not interpret. Neither
+ * `version` nor the entry's semver validity is enforced here (pickEffectivePin
+ * judges validity, so a bad version can still be reported and cleaned up).
  *
  * @param {string} text
- * @returns {{ version: number, packages: Record<string, string|{version: string}> } | null}
+ * @returns {{
+ *   version: number,
+ *   packages: Record<string, string|{version: string}>,
+ *   raw: Record<string, unknown>,
+ * } | null}
  */
 export function parseOverrides(text) {
   let doc
@@ -302,14 +362,18 @@ export function parseOverrides(text) {
   if (!isPlainObject(doc.packages)) return null
 
   const packages = {}
+  const raw = {}
   for (const [name, entry] of Object.entries(doc.packages)) {
     if (name === '') continue
     const version = entryVersion(entry)
-    if (version === null || version === '') continue
+    if (version === null || version === '') {
+      raw[name] = entry
+      continue
+    }
     packages[name] = typeof entry === 'string' ? version : { ...entry, version }
   }
 
-  return { version: Number.isInteger(doc.version) ? doc.version : 1, packages }
+  return { version: Number.isInteger(doc.version) ? doc.version : 1, packages, raw }
 }
 
 /**
@@ -318,15 +382,34 @@ export function parseOverrides(text) {
  * every upgrade and lives in a directory users inspect and diff; insertion
  * order must not leak into the bytes.
  *
- * @param {{ packages?: Record<string, string>, [key: string]: unknown }} obj
+ * `raw` (from parseOverrides) is written back into `packages` under its
+ * original name and value, and is never emitted as a key of its own: that is
+ * what makes a rewrite lossless for entries the parser could not interpret.
+ * An interpreted entry always wins over a raw one with the same name.
+ *
+ * @param {{ packages?: Record<string, unknown>, raw?: Record<string, unknown>, [key: string]: unknown }} obj
  * @returns {string}
  */
 export function serializeOverrides(obj) {
   if (!isPlainObject(obj)) throw new TypeError('serializeOverrides: expected a plain object')
   const packages = isPlainObject(obj.packages) ? obj.packages : {}
+  const raw = isPlainObject(obj.raw) ? obj.raw : {}
+
+  const merged = {}
+  for (const [name, entry] of Object.entries(raw)) {
+    if (!Object.prototype.hasOwnProperty.call(packages, name)) merged[name] = entry
+  }
+  for (const [name, entry] of Object.entries(packages)) merged[name] = entry
+
   const sorted = {}
-  for (const name of Object.keys(packages).sort()) sorted[name] = packages[name]
-  return `${JSON.stringify({ ...obj, packages: sorted }, null, 2)}\n`
+  for (const name of Object.keys(merged).sort()) sorted[name] = merged[name]
+
+  // Everything but `raw` is document metadata and passes through untouched.
+  const document = {}
+  for (const [key, value] of Object.entries(obj)) {
+    if (key !== 'raw') document[key] = value
+  }
+  return `${JSON.stringify({ ...document, packages: sorted }, null, 2)}\n`
 }
 
 /**
