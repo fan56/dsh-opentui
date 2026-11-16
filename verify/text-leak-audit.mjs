@@ -101,6 +101,20 @@ if (KEY_SET.size < 100) {
 /** Value strings of the active table, longest first (containment matching). */
 const tableValues = (lang) => [...new Set(TABLES[lang].map(([, v]) => v))].filter((v) => v.trim().length > 0).sort((a, b) => b.length - a.length)
 
+/**
+ * A probe key's expected on-screen text, with `{name}` variables substituted.
+ * Returns undefined when the key is absent or empty in that language table —
+ * the caller MUST treat that as a failure. A hardcoded literal fallback would
+ * let a retired key (the ask redesign retired
+ * `overlay.ask.questionProgress`) degrade the probe into a tautology that can
+ * only pass.
+ */
+const probeText = (lang, key, vars = {}) => {
+  const value = TABLES[lang].find(([k]) => k === key)?.[1]
+  if (value === undefined || value.trim() === '') return undefined
+  return Object.entries(vars).reduce((text, [name, sub]) => text.split(`{${name}}`).join(sub), value)
+}
+
 // Daily-quote pool (welcome banner line): plain CJK one-liners, not locale
 // table content. Parsed straight from the source so the list cannot drift.
 const QUOTE_POOL = (() => {
@@ -481,14 +495,41 @@ const driveLang = async (lang) => {
     // E2E_TPS_TRIGGER into the ask turn's history and the mock would serve
     // the tps phase instead of the ask phase (real first-run observation).
     // ask: the ASK trigger opens the F5 batch ask_user_question picker. The
-    // progress title is LOCALIZED (`overlay.ask.questionProgress`, en
-    // `Question (1/3)`, zh `问题（1/3）`) — format the table value per lang.
-    const askProgress = (TABLES[lang].find(([k]) => k === 'overlay.ask.questionProgress')?.[1] ?? 'Question ({index}/{total})')
-      .replace('{index}', '1').replace('{total}', '3')
+    // redesign retired the `Question ({index}/{total})` title (and with it
+    // `overlay.ask.questionProgress`): the panel now paints header eyebrow,
+    // prompt, tab strip, option rows, resident input and footer hint. Probe
+    // the keys that actually paint on a FRESH batch (question 1 of the mock's
+    // three-question batch) and must be localized:
+    //   - `overlay.ask.footer.options` — the options-phase footer hint; its
+    //     `{esc}` leg is `overlay.ask.esc.decline` at question 1, so that key
+    //     is proved transitively
+    //   - `overlay.ask.inputPlaceholder` — the resident input's placeholder
+    //     (the inline buffer is empty when the batch opens)
+    // A probe key missing from the active table FAILS this face; there is no
+    // hardcoded fallback (see probeText).
+    const escDecline = probeText(lang, 'overlay.ask.esc.decline')
+    const askProbes = [
+      { key: 'overlay.ask.footer.options', text: escDecline === undefined ? undefined : probeText(lang, 'overlay.ask.footer.options', { esc: escDecline }) },
+      { key: 'overlay.ask.inputPlaceholder', text: probeText(lang, 'overlay.ask.inputPlaceholder') },
+    ]
+    const missingProbes = askProbes.filter((p) => p.text === undefined)
+    for (const probe of missingProbes) {
+      console.error(`text-leak[${lang}]: probe key '${probe.key}' is missing from ${lang}.json — the ask face cannot prove localization without it`)
+    }
     await submit(session, ASK_TRIGGER)
-    const ask = await waitPane(session, (o) => o.includes(askProgress), 40_000)
+    const ask = missingProbes.length === 0
+      ? await waitPane(session, (o) => askProbes.every((p) => o.includes(p.text)), 40_000)
+      : { ok: false }
     ansi = snapFace(lang, 'ask', session)
-    facesFrames.push({ lang, face: 'ask', ok: ask.ok, note: ask.ok ? '' : 'ask picker not seen' })
+    facesFrames.push({
+      lang,
+      face: 'ask',
+      ok: ask.ok,
+      note: ask.ok ? ''
+        : missingProbes.length > 0
+          ? `probe key(s) missing from ${lang}.json: ${missingProbes.map((p) => p.key).join(', ')}`
+          : `ask picker not seen (localized probe text absent: ${askProbes.map((p) => p.key).join(', ')})`,
+    })
     auditFrame(lang, 'ask', ansi)
     reconcileFrame(lang, 'ask', ansi)
     sendKeys(session, 'Escape') // decline all — the mock serves its final text
