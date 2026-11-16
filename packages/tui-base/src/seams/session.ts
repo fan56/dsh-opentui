@@ -82,6 +82,26 @@ export interface SeamSessionSummary {
 	parentID?: string
 }
 
+/** One settled Q&A row of an `ask_user_question` transcript block: the tool
+ * call carries the question/options, the tool result the selection. Additive
+ * — persisted items without it keep rendering (see toStoredRow's fallback). */
+export interface SeamAskEntry {
+	/** The question text (kept apart from `header`). */
+	question: string
+	/** Short heading the tool call carried, when any (eyebrow in replay). */
+	header?: string
+	/** Supporting detail the tool call carried, when any (context line). */
+	detail?: string
+	/** The options offered, each label with its optional description. */
+	options: SeamAskOption[]
+	/** The labels the user picked (empty when declined). */
+	selected: string[]
+	/** Free-text answer carried by the result, when any. */
+	custom?: string
+	/** True when the question got no user selection (declined / timed out). */
+	declined: boolean
+}
+
 /** Transcript row (api.session.view / storedTranscript shape, view-sliced). */
 export interface SeamTranscriptRow {
 	kind: string
@@ -92,6 +112,10 @@ export interface SeamTranscriptRow {
 	args?: string
 	output?: string
 	ok?: boolean
+	/** Settled `ask` rows carry their Q&A entries (the transcript block);
+	 * absent on every other kind — and on older projections, which degrade
+	 * to the assistant text row they used to be. */
+	entries?: SeamAskEntry[]
 }
 
 /**
@@ -193,16 +217,26 @@ export interface SeamPermissionCatalog {
  */
 export type SeamApprovalVerdict = "allowed-once" | "rejected"
 
+/** One selectable option of a question: `label` is the row text AND the
+ * answer value (picks, the answer envelope and the transcript all carry the
+ * label string), `description` the optional supporting line under it. */
+export interface SeamAskOption {
+	label: string
+	description?: string
+}
+
 /** One user question row (the shell registerAskProvider wire shape). The
  * optional faces mirror the tui-pi ask panel: `header` is the short tab
- * label, `description` the supporting line under the prompt, `multiSelect`
- * marks a toggle-many question (upstream `multi_select`). */
+ * label, `description` the supporting line under the prompt, `detail` the
+ * host's body text (`question.detail`, e.g. a plan under review),
+ * `multiSelect` marks a toggle-many question (upstream `multi_select`). */
 export interface SeamAskQuestion {
 	id: string
 	prompt: string
-	options: string[]
+	options: SeamAskOption[]
 	header?: string
 	description?: string
+	detail?: string
 	multiSelect?: boolean
 }
 

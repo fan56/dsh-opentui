@@ -38,7 +38,7 @@ function fakeSession(overrides: Record<string, unknown> = {}) {
 		storedTranscript: async () => [
 			{ kind: "user", text: "q" },
 			{ kind: "assistant", text: "a", final: false },
-			{ kind: "ask", entries: [{ question: "Go?", options: ["y", "n"], selected: ["y"], declined: false }] },
+			{ kind: "ask", entries: [{ question: "Go?", options: [{ label: "y" }, { label: "n" }], selected: ["y"], declined: false }] },
 		],
 		resumeSession: (id: string) => {
 			calls.push({ method: "resumeSession", args: id })
@@ -107,14 +107,19 @@ describe("RemoteSessionSeam mapping fidelity (batch-2a table)", () => {
 		])
 	})
 
-	test("storedTranscript: durable rows final-true, assistant keeps its flag, ask rows project Q&A text", async () => {
+	test("storedTranscript: durable rows final-true, assistant keeps its flag, ask rows carry their entries", async () => {
 		const { session } = fakeSession()
 		const seam = new RemoteSessionSeam(session)
 		const rows = await seam.storedTranscript("ses-1")
 		expect(rows).toEqual([
 			{ kind: "user", text: "q", final: true },
 			{ kind: "assistant", text: "a", final: false },
-			{ kind: "ask", text: "Go? → y", final: true },
+			{
+				kind: "ask",
+				text: "",
+				final: true,
+				entries: [{ question: "Go?", options: [{ label: "y" }, { label: "n" }], selected: ["y"], declined: false }],
+			},
 		])
 	})
 
@@ -207,7 +212,7 @@ describe("turn callback adaptation", () => {
 	test("registerAskProvider passes the question/answer shapes through structurally", async () => {
 		const { session, getAskProvider } = fakeSession()
 		const seam = new RemoteSessionSeam(session)
-		const questions = [{ id: "q1", prompt: "Pick", options: ["a", "b"] }]
+		const questions = [{ id: "q1", prompt: "Pick", options: [{ label: "a" }, { label: "b" }] }]
 		let received: unknown
 		seam.registerAskProvider(async (q) => {
 			received = q

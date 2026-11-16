@@ -21,7 +21,7 @@ describe("WaterfallAnswerer.questionsView — multiSelect passthrough (60-ask-us
 			askFrame([{ id: "q3", question: "picks?", options: [{ label: "lint" }, { label: "smoke" }], multi_select: true }]),
 		)
 		expect(questions[0].multiSelect).toBe(true)
-		expect(questions[0].options).toEqual(["lint", "smoke"])
+		expect(questions[0].options).toEqual([{ label: "lint" }, { label: "smoke" }])
 	})
 
 	test("omits the key on single-select questions (absent, not false)", () => {
@@ -30,10 +30,45 @@ describe("WaterfallAnswerer.questionsView — multiSelect passthrough (60-ask-us
 	})
 })
 
+describe("WaterfallAnswerer.questionsView — rich content plumbing", () => {
+	test("carries header, detail, description and per-option descriptions", () => {
+		const questions = WaterfallAnswerer.questionsView(
+			askFrame([{
+				id: "q1",
+				question: "Which framework?",
+				header: "Stack",
+				detail: "Pick the renderer",
+				description: "one line",
+				options: [
+					{ label: "React", description: "SPA, largest ecosystem" },
+					{ label: "Solid" },
+				],
+			}]),
+		)
+		expect(questions[0]).toEqual({
+			id: "q1",
+			prompt: "Which framework?",
+			header: "Stack",
+			detail: "Pick the renderer",
+			description: "one line",
+			options: [{ label: "React", description: "SPA, largest ecosystem" }, { label: "Solid" }],
+		})
+	})
+
+	test("string options and `value` option objects still normalize to labels", () => {
+		const questions = WaterfallAnswerer.questionsView(
+			askFrame([{ id: "q1", question: "which?", options: ["plain", { value: "legacy" }, { label: "modern", description: "new" }] }]),
+		)
+		expect(questions[0].options).toEqual([{ label: "plain" }, { label: "legacy" }, { label: "modern", description: "new" }])
+		expect(questions[0].header).toBeUndefined()
+		expect(questions[0].detail).toBeUndefined()
+	})
+})
+
 describe("WaterfallAnswerer.answersValue — selections array (60-ask-user)", () => {
 	const questions: RemoteQuestion[] = [
-		{ id: "q1", prompt: "deploy?", options: ["staging", "production"] },
-		{ id: "q3", prompt: "checks?", options: ["lint", "smoke"], multiSelect: true },
+		{ id: "q1", prompt: "deploy?", options: [{ label: "staging" }, { label: "production" }] },
+		{ id: "q3", prompt: "checks?", options: [{ label: "lint" }, { label: "smoke" }], multiSelect: true },
 	]
 
 	test("a multiSelect pick carries every toggled label in `selected`", () => {
@@ -68,7 +103,7 @@ describe("WaterfallAnswerer.answersValue — selections array (60-ask-user)", ()
 })
 
 describe("WaterfallAnswerer.answersValue — free-text custom (C7)", () => {
-	const questions: RemoteQuestion[] = [{ id: "q1", prompt: "why?", options: ["a", "b"] }]
+	const questions: RemoteQuestion[] = [{ id: "q1", prompt: "why?", options: [{ label: "a" }, { label: "b" }] }]
 
 	test("a custom pick rides Answer.custom with an empty selected (mutual exclusion)", () => {
 		const picks: RemoteQuestionAnswer[] = [{ questionId: "q1", selected: "", custom: "because reasons" }]
@@ -83,5 +118,39 @@ describe("WaterfallAnswerer.answersValue — free-text custom (C7)", () => {
 			answers: { id: string; selected: string[]; custom?: string }[]
 		}
 		expect(value.answers).toEqual([{ id: "q1", selected: [], custom: "declined" }])
+	})
+})
+
+describe("WaterfallAnswerer.answersValue — blank pick is unanswered (P1-3)", () => {
+	const questions: RemoteQuestion[] = [
+		{ id: "q1", prompt: "one?", options: [{ label: "a" }, { label: "b" }] },
+		{ id: "q2", prompt: "two?", options: [{ label: "x" }] },
+	]
+
+	test("selected === '' with no custom produces the EXACT missing-pick shape", () => {
+		const blank: RemoteQuestionAnswer[] = [
+			{ questionId: "q1", selected: "a" },
+			{ questionId: "q2", selected: "" },
+		]
+		const missing: RemoteQuestionAnswer[] = [{ questionId: "q1", selected: "a" }]
+		const blankValue = WaterfallAnswerer.answersValue(questions, blank)
+		const missingValue = WaterfallAnswerer.answersValue(questions, missing)
+		// The exact same envelope: no `selected: [""]` state exists.
+		expect(blankValue).toEqual(missingValue)
+		expect(blankValue).toEqual({
+			answers: [
+				{ id: "q1", selected: ["a"] },
+				{ id: "q2", selected: [], custom: "declined" },
+			],
+		})
+		expect(JSON.stringify(blankValue)).not.toContain('[""]')
+	})
+
+	test("a blank selected is NOT declined when a custom answer rides along", () => {
+		const picks: RemoteQuestionAnswer[] = [{ questionId: "q1", selected: "", custom: "free text" }]
+		const value = WaterfallAnswerer.answersValue([questions[0]], picks) as {
+			answers: { id: string; selected: string[]; custom?: string }[]
+		}
+		expect(value.answers).toEqual([{ id: "q1", selected: [], custom: "free text" }])
 	})
 })

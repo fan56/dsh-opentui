@@ -30,6 +30,8 @@ import { createPaneFocus, PaneFocusKeys } from "../src/routes/session/pane-focus
 import { SessionComposer, type SessionComposerRef } from "../src/routes/session/session-composer"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
+import { DockProvider, DockSeat } from "../src/routes/session/dock-host"
+import { InputOwnershipProvider } from "../src/context/input-ownership"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import type { PickOneExtras } from "../src/routes/session/commands"
 import { DialogSelect } from "../src/ui/dialog-select"
@@ -62,8 +64,8 @@ const AUTO_TURN = process.env.S_AUTO_TURN === "1"
 
 /** The questions the fake ask fires mid-turn (one batch, two pickers). */
 const DEMO_QUESTIONS: SeamAskQuestion[] = [
-	{ id: "q-followup", prompt: "Run a follow-up deep dive?", options: ["yes, deep dive", "summary only"] },
-	{ id: "q-format", prompt: "Which output format?", options: ["bullets", "prose"] },
+	{ id: "q-followup", prompt: "Run a follow-up deep dive?", options: [{ label: "yes, deep dive" }, { label: "summary only" }] },
+	{ id: "q-format", prompt: "Which output format?", options: [{ label: "bullets" }, { label: "prose" }] },
 ]
 
 class FakeSeam extends NullSessionSeam {
@@ -364,6 +366,10 @@ function SessionPage() {
 					if (composerRef && !composerRef.focused()) composerRef.focus()
 				}}
 			/>
+			{/* The ask surface renders in the in-flow dock (spec §2). This legacy
+			    example keeps its composer inside Transcript, so the seat has no
+			    composer of its own: the dock simply takes the trailing slot. */}
+			<DockSeat composer={() => null} />
 		</box>
 	)
 }
@@ -379,9 +385,18 @@ render(
 				<ToastProvider>
 					<ThemeProvider mode="dark" source={{ discover: async () => ({}) }}>
 							<ClipboardHost>
-								<DialogProvider>
-									<SessionPage />
-								</DialogProvider>
+								{/* ADR-0008: the real client mounts the ownership provider
+								    above the dialog/dock hosts (v2-entry order). Without
+								    it, every `owns*` gate falls open: the dock would take
+								    the keyboard under a page dialog and the dialog would
+								    lose Esc. */}
+								<InputOwnershipProvider>
+									<DialogProvider>
+										<DockProvider>
+											<SessionPage />
+										</DockProvider>
+									</DialogProvider>
+								</InputOwnershipProvider>
 							</ClipboardHost>
 					</ThemeProvider>
 				</ToastProvider>

@@ -21,6 +21,7 @@ import {
   batch,
   createContext,
   createSignal,
+  onCleanup,
   useContext,
   type JSX,
 } from "solid-js"
@@ -34,13 +35,15 @@ import type {
 } from "./contracts"
 import { ConfirmDialog } from "./controls/confirm"
 import { Panel } from "./panel"
-import { resolveScrimAlpha, usePanelTheme } from "./theme"
+import { resolveScrimAlpha, usePanelKit, usePanelTheme } from "./theme"
 
 interface StackEntry {
   readonly id: string
   readonly options: PanelOptions
   readonly render: () => JSX.Element
   readonly focusBefore: Renderable | null
+  /** ADR-0008 ownership claim, mirrored by this entry's lifetime. */
+  readonly frame?: unknown
   handle?: PanelShellHandle
   pendingClose: boolean
 }
@@ -65,10 +68,17 @@ function inTree(root: Renderable, node: Renderable): boolean {
 export function PanelStack(props: PanelStackProps): JSX.Element {
   const renderer = useRenderer()
   const panelTheme = usePanelTheme()
+  // ADR-0008: one ownership frame per layer, pushed/popped in lockstep with
+  // this stack. Absent when the host passes no bridge (standalone mounts).
+  const ownership = usePanelKit()?.ownership
   const [layers, setLayers] = createSignal<StackEntry[]>([])
   const handles = new Map<string, PanelHandle>()
   let counter = 0
   let baseFocus: Renderable | null = null
+  onCleanup(() => {
+    for (const entry of layers()) ownership?.pop(entry.frame)
+    ownership?.setTopFrame(undefined)
+  })
 
   const maxDepth = () => props.maxDepth ?? 4
 
@@ -141,6 +151,10 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
     const next = layers().filter((entry) => entry.id !== id)
     handles.delete(id)
     setLayers(next)
+    // Popped in the same call that removes the entry (ADR-0008); the token
+    // may already be gone on a double close, and pop is idempotent.
+    ownership?.pop(closing.frame)
+    ownership?.setTopFrame(next.at(-1)?.frame)
     if (next.length === 0) restore(baseFocus)
     else restoreUnder(closing)
   }
@@ -150,6 +164,16 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
     get depth() {
       return Math.max(0, layers().findIndex((item) => item.id === entry.id))
     },
+    get frame() {
+      return entry.frame
+    },
+    // ADR-0008: the consumer-layer gate. The host bridge owns the real
+    // predicate (dialogs and deeper surfaces push above this frame); without
+    // a bridge, stack-top identity keeps the pre-ADR behavior.
+    ownsInput: () =>
+      ownership !== undefined
+        ? ownership.owns(entry.frame)
+        : layers().at(-1)?.id === entry.id,
     close() {
       if (entry.handle) entry.handle.close()
       else entry.pendingClose = true
@@ -177,6 +201,8 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
         return {
           id,
           depth: 0,
+          frame: undefined,
+          ownsInput: () => false,
           close: () => {},
           closeNow: () => {},
         }
@@ -186,14 +212,19 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
       if (layers().length === 0) baseFocus = focused
       focused?.blur()
 
+      // ADR-0008: the frame is pushed before the layer exists, so the kit's
+      // modal layer sees ownership on its first read (deepest = owner).
+      const frame = ownership?.push("panel")
       const entry: StackEntry = {
         id,
         options: { ...options, id },
         render,
         focusBefore: focused,
+        frame,
         pendingClose: false,
       }
       setLayers((current) => [...current, entry])
+      ownership?.setTopFrame(frame)
       const handle = makeHandle(entry)
       handles.set(id, handle)
       return handle
@@ -214,6 +245,8 @@ export function PanelStack(props: PanelStackProps): JSX.Element {
         handles.clear()
         setLayers([])
       })
+      for (const entry of entries) ownership?.pop(entry.frame)
+      ownership?.setTopFrame(undefined)
       restore(baseFocus)
     },
 

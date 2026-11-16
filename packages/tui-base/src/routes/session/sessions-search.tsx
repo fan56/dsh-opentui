@@ -32,9 +32,9 @@ import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "so
 import type { InputRenderable } from "@opentui/core"
 import { createSignal as createBridgeSignal } from "solid-js"
 import { Keymap } from "../../context/keymap"
-import { useDialog } from "../../ui/dialog"
 import { t } from "../../i18n"
 import { useThemeOptional } from "../../context/theme"
+import { useIsPageOwner } from "../../context/input-ownership"
 import type { SessionSeam } from "../../seams/session"
 
 /** Module bridge: /search flips this; the overlay owns the close side. */
@@ -123,7 +123,9 @@ export function SessionsSearch(props: {
 	onResumed?: (sessionId: string) => void | Promise<void>
 }) {
 	const theme = useThemeOptional()
-	const dialog = useDialog()
+	// ADR-0008: page surface (no frame of its own); both layers yield while a
+	// dialog, panel or dock owns the keyboard.
+	const pageOwns = useIsPageOwner()
 
 	const [open, setOpen] = useSessionsSearchOpenState()
 	const [query, setQuery] = createSignal("")
@@ -212,7 +214,7 @@ export function SessionsSearch(props: {
 	// is open.
 	Keymap.createLayer(() => ({
 		mode: "global",
-		enabled: open() && dialog.stack.length === 0,
+		enabled: open() && pageOwns(),
 		priority: 2,
 		commands: [
 			{ bind: "escape", title: t("overlay.sessions.keymap.close"), group: "Search", run: close },
@@ -252,7 +254,7 @@ export function SessionsSearch(props: {
 	// its configured binding (ctrl+alt+f) from the shared keybind config.
 	Keymap.createLayer(() => ({
 		mode: "global",
-		enabled: !open() && dialog.stack.length === 0,
+		enabled: !open() && pageOwns(),
 		commands: [
 			{
 				id: "session.searchSessions",

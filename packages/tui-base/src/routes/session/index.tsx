@@ -2661,9 +2661,6 @@ function ToolPart(props: { part: SessionMessageAssistantTool; images?: boolean }
       <Match when={display() === "todowrite"}>
         <TodoWrite {...toolprops} />
       </Match>
-      <Match when={display() === "question"}>
-        <Question {...toolprops} />
-      </Match>
       <Match when={display() === "skill"}>
         <Skill {...toolprops} />
       </Match>
@@ -3691,42 +3688,6 @@ function TodoWrite(props: ToolProps) {
   )
 }
 
-function Question(props: ToolProps) {
-  const theme = useTheme()
-  const questions = createMemo(() => parseQuestions(props.input.questions))
-  const answers = createMemo(() => parseQuestionAnswers(props.metadata.answers))
-  const count = createMemo(() => questions().length)
-
-  function format(answer?: ReadonlyArray<string>) {
-    if (!answer?.length) return "(no answer)"
-    return answer.join(", ")
-  }
-
-  return (
-    <Switch>
-      <Match when={answers()}>
-        <BlockTool title="# Questions" part={props.part}>
-          <box gap={1}>
-            <For each={questions()}>
-              {(q, i) => (
-                <box flexDirection="column">
-                  <text fg={theme.text.muted}>{q.question}</text>
-                  <text fg={theme.text.base}>{format(answers()?.[i()])}</text>
-                </box>
-              )}
-            </For>
-          </box>
-        </BlockTool>
-      </Match>
-      <Match when={true}>
-        <InlineTool icon="→" pending="Asking questions…" complete={count()} part={props.part}>
-          Asked {count()} question{count() !== 1 ? "s" : ""}
-        </InlineTool>
-      </Match>
-    </Switch>
-  )
-}
-
 function Skill(props: ToolProps) {
   const name = createMemo(() => stringValue(props.metadata.name) ?? stringValue(props.input.id))
   return (
@@ -3827,21 +3788,6 @@ export function parseApplyPatchFiles(value: unknown) {
       return []
     return [{ type, relativePath, filePath, patch, additions, deletions, movePath: stringValue(file.movePath) }]
   })
-}
-
-export function parseQuestions(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value.flatMap((item) => {
-    const question = stringValue(recordValue(item)?.question)
-    return question ? [{ question }] : []
-  })
-}
-
-export function parseQuestionAnswers(value: unknown) {
-  if (!Array.isArray(value)) return
-  return value.map((answer) =>
-    Array.isArray(answer) ? answer.filter((item): item is string => typeof item === "string") : [],
-  )
 }
 
 export function parseDiagnostics(value: unknown, filePath: string) {

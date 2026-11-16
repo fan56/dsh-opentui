@@ -29,11 +29,13 @@ import {
   PanelStack,
   type PanelKeymapHost,
   type PanelKeymapLayer,
+  type PanelOwnershipBridge,
   type PanelTheme,
 } from "@dsh-opentui/panel-kit"
 import { motionDecorationsEnabled, motionFrameRate } from "../skin/motion"
 import type { ComponentTheme } from "../theme/component"
 import { ensureContrast } from "../theme/contrast"
+import { useInputOwnershipOptional, type InputOwnership, type OwnerFrame } from "./input-ownership"
 import { Keymap } from "./keymap"
 import { useTheme } from "./theme"
 
@@ -153,6 +155,19 @@ export function createTuiPanelKeymapHost(
 }
 
 /**
+ * Project tui-base's ownership stack onto panel-kit's structural bridge
+ * (ADR-0008). The token stays opaque to the kit; it is the host's
+ * `OwnerFrame`, so `owns` remains an identity check.
+ */
+export function createTuiPanelOwnership(ownership: InputOwnership): PanelOwnershipBridge {
+  return {
+    push: (kind) => ownership.push(kind),
+    pop: (token) => ownership.pop(token as OwnerFrame | undefined),
+    owns: (token) => ownership.owns(token as OwnerFrame | undefined),
+  }
+}
+
+/**
  * Provider + stack host. Mount inside Keymap.Provider and ThemeProvider,
  * wrapping the page (not inside it): the stack's layers are absolute siblings
  * of the page root.
@@ -160,12 +175,16 @@ export function createTuiPanelKeymapHost(
 export function PanelKitHost(props: { children?: JSX.Element }): JSX.Element {
   const theme = useTheme()
   const keymap = Keymap.use()
+  // Optional: harnesses that mount the host without the ownership provider
+  // keep the pre-ADR behavior (no frames, no gate).
+  const ownership = useInputOwnershipOptional()
   const panelTheme: Accessor<PanelTheme> = () => projectPanelTheme(theme)
   return (
     <PanelKitProvider
       theme={panelTheme}
       motion={panelKitMotion()}
       keymap={createTuiPanelKeymapHost(keymap)}
+      ownership={ownership ? createTuiPanelOwnership(ownership) : undefined}
     >
       <PanelStack>{props.children}</PanelStack>
     </PanelKitProvider>

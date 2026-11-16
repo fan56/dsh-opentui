@@ -28,14 +28,21 @@ const callArgs = JSON.stringify({
 })
 
 describe("parseAskCallArgs", () => {
-	test("parses the wire schema: question text, header prefix, option labels", () => {
+	test("parses the wire schema: question text, header and option descriptions", () => {
 		const parsed = parseAskCallArgs(callArgs)!
 		expect(parsed).toHaveLength(2)
 		expect(parsed[0]!.id).toBe("q1")
 		expect(parsed[0]!.entry.question).toBe("Which framework?")
-		expect(parsed[0]!.entry.options).toEqual(["React", "Solid"])
-		expect(parsed[1]!.entry.question).toBe("Styling: CSS approach?")
-		expect(parsed[1]!.entry.options).toEqual(["Tailwind", "vanilla"])
+		expect(parsed[0]!.entry.options).toEqual([{ label: "React", description: "SPA" }, { label: "Solid" }])
+		expect(parsed[1]!.entry.header).toBe("Styling")
+		expect(parsed[1]!.entry.question).toBe("CSS approach?")
+		expect(parsed[1]!.entry.options).toEqual([{ label: "Tailwind" }, { label: "vanilla" }])
+	})
+
+	test("keeps detail on its own field, apart from the question", () => {
+		const parsed = parseAskCallArgs(JSON.stringify({ questions: [{ id: "d", question: "Approve?", detail: "Plan markdown" }] }))!
+		expect(parsed[0]!.entry.question).toBe("Approve?")
+		expect(parsed[0]!.entry.detail).toBe("Plan markdown")
 	})
 
 	test("answers start unfilled (declined false, no selection)", () => {
@@ -47,7 +54,7 @@ describe("parseAskCallArgs", () => {
 	test("tolerates the simplified shape (prompt + string options)", () => {
 		const parsed = parseAskCallArgs(JSON.stringify({ questions: [{ id: "x", prompt: "Go?", options: ["yes", "no"] }] }))!
 		expect(parsed[0]!.entry.question).toBe("Go?")
-		expect(parsed[0]!.entry.options).toEqual(["yes", "no"])
+		expect(parsed[0]!.entry.options).toEqual([{ label: "yes" }, { label: "no" }])
 	})
 
 	test("malformed / empty arguments → undefined", () => {
@@ -112,7 +119,7 @@ describe("buildAskTranscriptItem", () => {
 		)
 		expect(item?.kind).toBe("ask")
 		if (item?.kind !== "ask") return
-		expect(item.entries[0]).toEqual({ question: "Which framework?", options: ["React", "Solid"], selected: ["React"], declined: false })
+		expect(item.entries[0]).toEqual({ question: "Which framework?", options: [{ label: "React", description: "SPA" }, { label: "Solid" }], selected: ["React"], declined: false })
 		expect(item.entries[1]!.selected).toEqual(["Tailwind"])
 		expect(item.entries[1]!.declined).toBe(false)
 	})
@@ -181,7 +188,7 @@ describe("journalToTranscriptRows ask rows (resume replay)", () => {
 		const ask = rows[1]
 		if (ask?.kind !== "ask") return
 		expect(ask.entries).toHaveLength(2)
-		expect(ask.entries[0]).toEqual({ question: "Which framework?", options: ["React", "Solid"], selected: ["React"], declined: false })
+		expect(ask.entries[0]).toEqual({ question: "Which framework?", options: [{ label: "React", description: "SPA" }, { label: "Solid" }], selected: ["React"], declined: false })
 		expect(ask.entries[1]!.declined).toBe(true)
 	})
 

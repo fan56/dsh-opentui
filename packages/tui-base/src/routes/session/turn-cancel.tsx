@@ -30,6 +30,20 @@
  * Both keys are gated by `enabled` (pass "no dialog is open"): the
  * DialogProvider stack owns esc/ctrl+c while an overlay is up — the
  * confirm dialog's Esc lands in the dialog (cancel), never at the task.
+ *
+ * DIVERGENCE (spec §6, docs/ask-user-panel-spec.md): the ask dock's Ctrl+C
+ * declines the batch and closes the dock, which is one keypress away from
+ * this layer owning Ctrl+C again. A naive reading of "first press declines,
+ * second press interrupts" would let that second press arm the quit chain, so
+ * a third press inside CTRL_C_QUIT_WINDOW_MS would quit the application from a
+ * sequence the user read as "dismiss the panel, stop the turn". Therefore the
+ * dock's Ctrl+C arms a ONE-SHOT non-arming interrupt (`armNonArmingInterrupt`)
+ * and the next page-level Ctrl+C on a busy turn interrupts WITHOUT pressing or
+ * arming the quit gate. The quit chain then arms only on an idle page, where
+ * there is no turn to interrupt. Cost: after a dock decline, quitting takes
+ * the idle double-press. Acceptance invariant: three consecutive Ctrl+C presses
+ * with a busy turn and an open dock end at "turn interrupted, app still
+ * running".
  */
 import { createSignal, onCleanup, Show } from "solid-js"
 import { Keymap } from "../../context/keymap"
@@ -39,6 +53,36 @@ import { t } from "../../i18n"
 /** Double-press window for ctrl+c → quit and the armed esc stop (tui-pi
  * contract range 150-500ms — DOUBLE_PRESS_MS parity). */
 export const CTRL_C_QUIT_WINDOW_MS = 500
+
+/**
+ * One-shot non-arming interrupt (spec §6; see the divergence note above).
+ *
+ * The ask dock's Ctrl+C sets it when it declines the batch and closes the
+ * dock; the next page-level Ctrl+C consumes it: on a busy turn it interrupts
+ * and returns without `gate.press()`/`arm()`, on an idle page it falls through
+ * to the normal double-press chain (the flag is spent either way).
+ *
+ * Module scope is deliberate: the dock (a page component below the keymap
+ * provider) and `TurnCancelKeys` (the page's cancel layer) are separate
+ * component trees and share no controller handle.
+ */
+let nonArmingInterrupt = false
+
+/** Arm the next Ctrl+C to interrupt without touching the quit gate. */
+export function armNonArmingInterrupt(): void {
+	nonArmingInterrupt = true
+}
+
+/** Drop a pending one-shot (tests; a fresh app boot starts unarmed). */
+export function resetNonArmingInterrupt(): void {
+	nonArmingInterrupt = false
+}
+
+function consumeNonArmingInterrupt(): boolean {
+	const armed = nonArmingInterrupt
+	nonArmingInterrupt = false
+	return armed
+}
 
 export type CtrlCAction = "arm" | "quit"
 
@@ -136,6 +180,12 @@ export function createTurnCancel(props: TurnCancelKeysProps, onArm: (armed: bool
 			// affordance are cleared before the quit gate runs (tui-pi parity —
 			// handleExit clears the interrupt arm).
 			if (armedKey === "escape") disarm()
+			// The press after the ask dock's own Ctrl+C decline: interrupt a busy
+			// turn and NOTHING else — no gate.press(), no arm() (spec §6 hazard).
+			if (consumeNonArmingInterrupt() && props.busy()) {
+				props.interrupt()
+				return true
+			}
 			if (gate.press() === "quit") {
 				disarm()
 				props.quit()

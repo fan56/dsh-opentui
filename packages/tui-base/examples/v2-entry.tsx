@@ -57,6 +57,7 @@ import { subagentsPickerOpen } from "../src/routes/session/subagents-picker"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { registerTurnOverlays, TurnOverlayHost } from "../src/routes/session/turn-overlays"
+import { DockProvider, DockSeat, useDock } from "../src/routes/session/dock-host"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import { presetLabelFor, coreCommands, type PickOneExtras } from "../src/routes/session/commands"
@@ -82,6 +83,7 @@ import { createTuiClipboard } from "../src/clipboard"
 import { Keymap } from "../src/context/keymap"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
 import { PanelKitHost } from "../src/context/panel-kit-host"
+import { InputOwnershipProvider, useIsPageOwner } from "../src/context/input-ownership"
 import { ConfigProvider, resolve, useConfig } from "../src/config"
 import { copyOnSelectEnabled, copyOnSelectRelease } from "../src/util/selection"
 import { createThemeSeam } from "../src/seams/theme"
@@ -135,8 +137,22 @@ let pendingAgentsHomeNotice: string | undefined
  * the mode pin either → profile (no env var carries a mode). */
 let themeModePatchKey: "themeMode" | "workspaceThemeMode" = "themeMode"
 
+/**
+ * Page boundary: the dock provider must be an ANCESTOR of the page body for
+ * `useDock()` to resolve, and it must sit inside the ownership stack (it
+ * pushes the `dock` frame) and the renderer. It renders no element — context
+ * only — so the page-root layout is untouched.
+ */
+function V2SessionPage(props: Parameters<typeof V2SessionPageBody>[0]) {
+	return createComponent(DockProvider, {
+		get children() {
+			return createComponent(V2SessionPageBody, props)
+		},
+	})
+}
+
 /** The v2 session page: the real seam driving the rebuilt view. */
-function V2SessionPage(props: {
+function V2SessionPageBody(props: {
 	seam: RemoteSessionSeam
 	themeName?: string
 	quit: () => void
@@ -177,6 +193,16 @@ function V2SessionPage(props: {
 		onToolRun: () => setTools((n) => n + 1),
 	})
 	const dialog = useDialog()
+	// ADR-0008: page-level global layers answer only while the page frame is
+	// the top ownership frame (dialogs, panel-kit panels and the ask dock all
+	// push above it). Subsumes the old `dialog.stack.length === 0` gate.
+	const pageOwns = useIsPageOwner()
+	// The in-flow interaction dock (spec §2). The provider sits above this
+	// page, so the page and the surface that will open the dock share one
+	// queue and one `dock` ownership frame. Nothing opens it in this change
+	// set: the ask surface is a later task, and its extension point is
+	// `dock.open(...)` (see dock-host.tsx).
+	const dock = useDock()
 	const theme = useTheme()
 	const themeService = useThemes()
 	const themeSeam = createThemeSeam(themeService)
@@ -259,6 +285,12 @@ function V2SessionPage(props: {
 		resetDeliveries(): void
 		flushQueue(): import("../src/routes/session/composer-state").ComposerFlushResult
 	} | undefined
+	// Focus restoration (spec §10): the dock calls this by ref after layout
+	// when its queue drains. The closure reads `composerRef` at call time —
+	// the composer mounts later than this registration.
+	dock.bindComposerFocus(() => {
+		if (composerRef && !composerRef.focused()) composerRef.focus()
+	})
 	// Transcript scrollback (batch 10f): the page owns the scrollbox ref and
 	// the key layer. Pane focus (focus batch): F6 / mouse clicks move the
 	// renderer focus between this scrollbox and the composer textarea; the
@@ -1086,48 +1118,41 @@ function V2SessionPage(props: {
 						// state object).
 						turnActive: () => busy(),
 					}),
-					// Batch D2 lastRequest slot (dsh-tui-pi live-widgets structure):
-					// the `●` echo + running-children lines paint BELOW the editor.
-					// Getter-prop law: rows and lastRequest are getters.
-					footer: createComponent(LastRequestDock, {
-						get rows() {
-							return projection.rows
-						},
-						get lastRequest() {
-							return lastRequest()
-						},
-					}),
 					// Steer/queue batch: queued waits and steer receipts paint at the
 					// bottom of the transcript flow (inside the scrollbox).
 					pending: () => composerPending(),
-					// Batch D3 notices slot (dsh-tui-pi tui.ts:256): stacked
-					// auto-dismissing lines below lastRequest, above the powerline.
-					notices: createComponent(NoticesDock, {}),
-					get children() {
-						return [
-							// Composer info bar (steer/dir/branch batch): the working
-							// directory + git branch embedded in the input box's top
-							// border (one-row rule at compact heights). The probe is
-							// shell's client-local remote-git.ts (branch, or the short
-							// SHA on a detached HEAD); a failed read resolves "" →
-							// directory-only, never an error row. steer = the page's
-							// composer-busy mirror — the existing steer window.
-							createComponent(ComposerContext, {
-								cwd: () => props.workspace,
-								probeBranch: props.probeBranch,
-								revision: () => contextRevision(),
-								steer: () => composerBusy(),
-								attachTitle: (get) => {
-									contextFrameTitle = get
-								},
-							}),
-							createComponent(SessionComposer, {
-								seam,
-								send,
-								footerHint: false,
-								frameTitle: () => contextFrameTitle?.() ?? "",
-								onBusyChange: setComposerBusy,
-								ref: (r: { focused(): boolean; focus(): void; node(): import("@opentui/core").TextareaRenderable | undefined; resetDeliveries(): void }) => (composerRef = r),
+				}),
+				// Composer seat, lifted out of Transcript's bottom slot into the
+				// page-root column (spec §2): DockSeat is a sibling of Transcript,
+				// so a dock request takes the seat in flow, full width, and the
+				// transcript reflows above it. With no request the seat renders
+				// exactly the composer stack this file used to pass as
+				// Transcript's `children`.
+				createComponent(DockSeat, {
+					composer: () => [
+						// Composer info bar (steer/dir/branch batch): the working
+						// directory + git branch embedded in the input box's top
+						// border (one-row rule at compact heights). The probe is
+						// shell's client-local remote-git.ts (branch, or the short
+						// SHA on a detached HEAD); a failed read resolves "" →
+						// directory-only, never an error row. steer = the page's
+						// composer-busy mirror — the existing steer window.
+						createComponent(ComposerContext, {
+							cwd: () => props.workspace,
+							probeBranch: props.probeBranch,
+							revision: () => contextRevision(),
+							steer: () => composerBusy(),
+							attachTitle: (get) => {
+								contextFrameTitle = get
+							},
+						}),
+						createComponent(SessionComposer, {
+							seam,
+							send,
+							footerHint: false,
+							frameTitle: () => contextFrameTitle?.() ?? "",
+							onBusyChange: setComposerBusy,
+							ref: (r: { focused(): boolean; focus(): void; node(): import("@opentui/core").TextareaRenderable | undefined; resetDeliveries(): void }) => (composerRef = r),
 							// Steer/queue batch: busy Enter opens the two-row choice on
 							// the page's dialog stack (Steer highlighted first; Esc keeps
 							// the typed text). The queue lives client-side in the
@@ -1151,9 +1176,24 @@ function V2SessionPage(props: {
 							slashPalette: () => createComponent(SlashPalette, { controller: slash.controller, commands: () => slash.commands }),
 							slashHeight: () => slash.controller.rows(),
 						}),
-						]
+					],
+				}),
+				// Batch D2 lastRequest slot (dsh-tui-pi live-widgets structure):
+				// the `●` echo + running-children lines paint BELOW the editor —
+				// now below the page-root seat, keeping the no-dock order
+				// status → widgets → composer → lastRequest → notices → powerline
+				// → hints identical to the old transcript bottom slot.
+				createComponent(LastRequestDock, {
+					get rows() {
+						return projection.rows
+					},
+					get lastRequest() {
+						return lastRequest()
 					},
 				}),
+				// Batch D3 notices slot (dsh-tui-pi tui.ts:256): stacked
+				// auto-dismissing lines below lastRequest, above the powerline.
+				createComponent(NoticesDock, {}),
 				// Subagents picker (batch C10a mount-gap fix): the seam-native
 				// edition of the vendored SubagentsTab (rows off the
 				// subagent-markers store, steer through the module bridge),
@@ -1169,7 +1209,8 @@ function V2SessionPage(props: {
 				// gated OFF while any dialog (approval/ask//model) is open.
 					createComponent(TranscriptScrollKeys, {
 						scroll: () => transcriptScroll,
-						enabled: () => dialog.stack.length === 0,
+						// ADR-0008: page frame on top (no dialog, panel or dock).
+						enabled: pageOwns,
 					}),
 					// Pane focus keys (./pane-focus.tsx): F6 toggles the two
 					// panes; while the transcript is focused ↑↓/PgUp/PgDn/Home/End
@@ -1178,7 +1219,11 @@ function V2SessionPage(props: {
 					// picker, so no overlay ever loses its keys.
 					createComponent(PaneFocusKeys, {
 						pane: paneFocus.pane,
-						keysEnabled: () => dialog.stack.length === 0,
+						// Both pane layers (F6 and transcript keys) gate on the
+						// ownership stack: the pane-focus leak was wider than
+						// PgUp/PgDn and at priority 1, so a dialog/panel/dock
+						// above the page must win (ADR-0008 consequences).
+						keysEnabled: pageOwns,
 						slashOpen: () => slash.controller.open,
 						pickerOpen: subagentsPickerOpen,
 						busy,
@@ -1206,7 +1251,10 @@ function V2SessionPage(props: {
 							confirmStopAll()
 						},
 						quit: props.quit,
-						enabled: () => dialog.stack.length === 0,
+						// ADR-0008: one layer, page-owned. While any overlay frame
+						// (dialog, panel, ask dock) is on top, both Esc and Ctrl+C
+						// belong to it.
+						enabled: pageOwns,
 						escapeYields: () => slash.controller.open,
 					}),
 				// REACTIVE-PROP LAW (batch 10d): signal reads ride GETTERS. An
@@ -1472,43 +1520,47 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 										// only viable while the app never owned a selection).
 										return createComponent(ClipboardHost, {
 											get children() {
-												return createComponent(DialogProvider, {
+												return createComponent(InputOwnershipProvider, {
 													get children() {
-															return createComponent(ErrorBoundaryDiagnostics, {
-																get children() {
-																	// PanelKit host (T17-INT2): inside ThemeProvider +
-																	// Keymap.Provider, wrapping the page so the stack's
-																	// layers are absolute siblings of the page root
-																	// (zIndex 3000+) and cover the transcript and every
-																	// page-level panel.
-																	return createComponent(PanelKitHost, {
-																		get children() {
-																			return createComponent(V2SessionPage, {
-																				seam,
-																				themeName,
-																				quit: () => process.exit(0),
-																				workspace,
-																				// Splash hero plugin-tree root (the boot profile).
-																				profileName: profile,
-																				// Branch-or-SHA probe (composer context row):
-																				// client-local, silent on non-repos.
-																				probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
-																				// feat/auto-resume: the staged stored session +
-																				// its one-line notice (undefined = fresh boot).
-																				initialSessionId,
-																				resumeNotice,
-																				skills: skillRows,
-																				// /skills manager roots (gap C3): see the
-																				// V2SessionPage props note — boot-scope values
-																				// ride PROPS into the page, never closure reads
-																				// from the children getters (the exit-2 bug).
-																				skillsSource: skillsManagerRoots.source,
-																				skillsCurated: skillsManagerRoots.curated,
-																			})
-																		},
-																	})
-																},
-															})
+														return createComponent(DialogProvider, {
+															get children() {
+																return createComponent(ErrorBoundaryDiagnostics, {
+																	get children() {
+																		// PanelKit host (T17-INT2): inside ThemeProvider +
+																		// Keymap.Provider, wrapping the page so the stack's
+																		// layers are absolute siblings of the page root
+																		// (zIndex 3000+) and cover the transcript and every
+																		// page-level panel.
+																		return createComponent(PanelKitHost, {
+																			get children() {
+																				return createComponent(V2SessionPage, {
+																					seam,
+																					themeName,
+																					quit: () => process.exit(0),
+																					workspace,
+																					// Splash hero plugin-tree root (the boot profile).
+																					profileName: profile,
+																					// Branch-or-SHA probe (composer context row):
+																					// client-local, silent on non-repos.
+																					probeBranch: (cwd: string) => git.probeGitBranchOrSha(cwd),
+																					// feat/auto-resume: the staged stored session +
+																					// its one-line notice (undefined = fresh boot).
+																					initialSessionId,
+																					resumeNotice,
+																					skills: skillRows,
+																					// /skills manager roots (gap C3): see the
+																					// V2SessionPage props note — boot-scope values
+																					// ride PROPS into the page, never closure reads
+																					// from the children getters (the exit-2 bug).
+																					skillsSource: skillsManagerRoots.source,
+																					skillsCurated: skillsManagerRoots.curated,
+																				})
+																			},
+																		})
+																	},
+																})
+															},
+														})
 													},
 												})
 											},

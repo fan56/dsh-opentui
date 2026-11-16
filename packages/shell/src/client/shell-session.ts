@@ -14,6 +14,7 @@
 import type { StoredTranscriptRow } from "./seam-types.ts"
 import type { TurnCallbacks } from "../agent/loop.ts"
 import type { RemoteHostSession } from "./remote-host-session.ts"
+import type { RemoteQuestion, RemoteQuestionAnswer } from "./remote-waterfall.ts"
 import type { BrokenSessionLog, RepairSessionLogResult } from "./remote-local-fs.ts"
 
 export interface ShellSessionSurface {
@@ -30,7 +31,7 @@ export interface ShellSessionSurface {
 	abort(): void
 	newSession(): void
 	resumeSession(id: string): "ok" | "owned"
-	registerAskProvider(onAsk: (q: { id: string; prompt: string; options: string[] }[]) => Promise<{ questionId: string; selected: string; custom?: string }[]>): void
+	registerAskProvider(onAsk: (q: RemoteQuestion[]) => Promise<RemoteQuestionAnswer[]>): void
 
 	cacheHitRate(mode?: "session" | "lastMessage"): number | null
 	usageSummary(): string[]

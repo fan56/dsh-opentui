@@ -12,6 +12,7 @@ import { RemoteRpcError, type ClientConnection, type ClientConnectionState, type
 import { askCallData, askResultData } from "./client-fakes.ts"
 import type { EventsItem } from "../src/client/mux-frame.ts"
 import type { MuxSocket } from "../src/client/events-source.ts"
+import type { RemoteQuestion } from "../src/client/remote-waterfall.ts"
 import type { TurnCallbacks } from "../src/agent/loop.ts"
 
 // ---------------------------------------------------------------------------
@@ -591,7 +592,7 @@ describe("RemoteHostSession waterfalls", () => {
 
 	test("user-questions waterfall: ask provider answers, throw declines", async () => {
 		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-7") })
-		const asked: { id: string; prompt: string; options: string[] }[][] = []
+		const asked: RemoteQuestion[][] = []
 		h.session.registerAskProvider(async (questions) => {
 			asked.push(questions)
 			if (asked.length === 1) return [{ questionId: "q1", selected: "allow" }]
@@ -610,12 +611,14 @@ describe("RemoteHostSession waterfalls", () => {
 			agentId: "sess-7",
 			request: {
 				questions: [
-					{ id: "q1", prompt: "Proceed?", options: [{ label: "allow", description: "yes" }, "deny"] },
+					{ id: "q1", prompt: "Proceed?", detail: "two-stage deploy", options: [{ label: "allow", description: "yes" }, "deny"] },
 				],
 			},
 		})
 		await until(() => h.connection.rpcCalls.some((c) => c.method === "$events/result"))
-		expect(asked[0]).toEqual([{ id: "q1", prompt: "Proceed?", options: ["allow", "deny"] }])
+		expect(asked[0]).toEqual([
+			{ id: "q1", prompt: "Proceed?", detail: "two-stage deploy", options: [{ label: "allow", description: "yes" }, { label: "deny" }] },
+		])
 		expect(h.connection.rpcCalls.find((c) => c.method === "$events/result")!.args.outcome).toEqual({
 			kind: "result",
 			value: { answers: [{ id: "q1", selected: ["allow"] }] },
@@ -629,7 +632,7 @@ describe("RemoteHostSession waterfalls", () => {
 			request: { questions: [{ id: "q2", question: "fallback prompt", header: "h" }] },
 		})
 		await until(() => h.connection.rpcCalls.filter((c) => c.method === "$events/result").length === 2)
-		expect(asked[1]).toEqual([{ id: "q2", prompt: "fallback prompt", options: [] }])
+		expect(asked[1]).toEqual([{ id: "q2", prompt: "fallback prompt", header: "h", options: [] }])
 		expect(h.connection.rpcCalls.filter((c) => c.method === "$events/result").at(-1)!.args.outcome).toEqual({
 			kind: "result",
 			value: { answers: [{ id: "q2", selected: [], custom: "declined" }] },

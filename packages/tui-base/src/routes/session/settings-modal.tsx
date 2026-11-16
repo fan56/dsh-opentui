@@ -456,10 +456,10 @@ export interface SettingsModalProps {
 	/** Row id to land on (agents-panel jump). */
 	preselect?: string
 	/**
-	 * The stack handle this body was opened under. Top-ness is an IDENTITY
-	 * comparison against `panels.top` (same object `panels.open` returned), so
-	 * a layer closing underneath can never silently disable the paging
-	 * layer the way a positional depth check could.
+	 * The stack handle this body was opened under. Ownership is a frame
+	 * identity check inside the kit (`handle.ownsInput()`, ADR-0008), so a
+	 * dialog above the panel disables the paging layer and a layer closing
+	 * underneath can never silently disable it the way a depth check could.
 	 */
 	layerHandle?: PanelHandle
 }
@@ -972,8 +972,9 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	 * Paging keys live on the consumer layer (the kit's modal table only knows
 	 * escape/enter/space/arrows; the session's global `pagedown` binding would
 	 * otherwise swallow the keys). This layer:
-	 *   - is only enabled while OUR layer is the stack top (`panels.top`), so a
-	 *     confirm/popup on top keeps the keys for itself;
+	 *   - is only enabled while OUR layer is the input-ownership top (ADR-0008
+	 *     `ownsInput`), so a confirm/popup or a dialog above the panel keeps
+	 *     the keys for itself;
 	 *   - consumes pageup/pagedown/home/end only in the rows pane and only when
 	 *     the section overflows one page — returning false lets the session's
 	 *     scroll layer keep them on a fitting section.
@@ -982,13 +983,13 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	 * so Ctrl+S has no meaning in this panel (and must not have one).
 	 */
 	/**
-	 * Top-ness is a handle IDENTITY check (same object `panels.open` returned,
-	 * which is also what `panels.top` yields), not a depth/position compare: a
-	 * layer closing underneath must not silently disable paging. A foreign
-	 * layer pushed on top makes `top` different, so this layer yields; popping
-	 * it restores the same comparison result.
+	 * Ownership is a frame identity check inside the kit (`ownsInput`), not a
+	 * `panels.top`/depth compare: the kit's own `top` cannot see a dialog
+	 * pushed above the panel, while the ownership stack can. A layer closing
+	 * underneath must not silently disable paging; a foreign layer (kit panel
+	 * or dialog) on top makes `ownsInput` false and yields.
 	 */
-	const ownsTop = () => props.layerHandle !== undefined && panels.top === props.layerHandle
+	const ownsTop = () => props.layerHandle?.ownsInput() === true
 	Keymap.createLayer(() => ({
 		mode: "global",
 		priority: 2,

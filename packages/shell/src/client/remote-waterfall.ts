@@ -41,16 +41,51 @@ import type { EventsWaterfall, RemoteJson } from "./mux-frame.ts"
 /** The approval verdict vocabulary (ApprovalOutcome subset the TUI returns). */
 export type RemoteApprovalVerdict = "allowed-once" | "rejected" | "unavailable"
 
+/** One option row of a question: `label` is both the row text and the answer
+ * value, `description` the host's optional supporting line
+ * (`AskUserQuestionOption` in dsh-user-questions/types). */
+export interface RemoteQuestionOption {
+	label: string
+	description?: string
+}
+
 /** One simplified question row — the exact host-session.ts ask-provider shape. */
 export interface RemoteQuestion {
 	id: string
 	prompt: string
-	options: string[]
+	/** Short heading/group label (`AskUserQuestionItem.header`). */
+	header?: string
+	/** Supporting line under the prompt. The host service names this field
+	 * `detail`; `description` is the tui-pi face some callers still send. */
+	description?: string
+	/** Supporting detail rendered under the prompt
+	 * (`AskUserQuestionItem.detail`, e.g. the plan markdown of a
+	 * plan-review intent). */
+	detail?: string
+	options: RemoteQuestionOption[]
 	/** Toggle-many question (upstream `multi_select`; host-session.ts keeps
 	 * both spellings). Dropped until now: the client ask picker rendered a
 	 * multiSelect question as single-select (bracket-less rows, space
 	 * replaced instead of toggled, one-element answer arrays). */
 	multiSelect?: boolean
+}
+
+/** A non-empty string field of the raw request, undefined otherwise. */
+function textField(value: unknown): string | undefined {
+	return typeof value === "string" && value !== "" ? value : undefined
+}
+
+/**
+ * One raw option → the structured row. Object options keep the
+ * host-session.ts `label ?? value` fallback and their optional
+ * description; a bare string stays a label-only row (older payloads).
+ */
+function optionView(option: unknown): RemoteQuestionOption {
+	if (typeof option !== "object" || option === null) return { label: String(option) }
+	const item = option as Record<string, unknown>
+	const label = String(item.label ?? item.value ?? option)
+	const description = textField(item.description)
+	return description === undefined ? { label } : { label, description }
 }
 
 /** One answer row the UI returns (host-session.ts registerAskProvider shape).
@@ -132,17 +167,25 @@ export class WaterfallAnswerer {
 	 * (host-session.ts:256-260 parity: prompt ?? question ?? header;
 	 * option label ?? value ?? raw; multiSelect kept — the raw tool field
 	 * `multi_select` stays a fallback for direct callers, same as
-	 * host-session.ts:425).
+	 * host-session.ts:425). Content the host sends beyond the prompt —
+	 * `header`, `detail`, `description` — and each option's `description`
+	 * ride through so the panel can render them.
 	 */
 	static questionsView(frame: EventsWaterfall): RemoteQuestion[] {
 		const questions = Array.isArray(frame.request.questions) ? frame.request.questions : []
 		return questions.map((q) => {
 			const item = (typeof q === "object" && q !== null ? q : {}) as Record<string, unknown>
 			const options = Array.isArray(item.options) ? item.options : []
+			const header = textField(item.header)
+			const description = textField(item.description)
+			const detail = textField(item.detail)
 			return {
 				id: String(item.id ?? ""),
 				prompt: String(item.prompt ?? item.question ?? item.header ?? ""),
-				options: options.map((o) => String(typeof o === "object" && o !== null ? ((o as Record<string, unknown>).label ?? (o as Record<string, unknown>).value ?? o) : o)),
+				...(header !== undefined ? { header } : {}),
+				...(description !== undefined ? { description } : {}),
+				...(detail !== undefined ? { detail } : {}),
+				options: options.map(optionView),
 				...((item.multiSelect === true || item.multi_select === true) ? { multiSelect: true } : {}),
 			}
 		})
@@ -152,7 +195,14 @@ export class WaterfallAnswerer {
 	 * A free-text pick rides `custom` with an empty `selected` — the same
 	 * envelope shape the declined path uses, minus the "declined" marker
 	 * (tui-pi Answer.custom contract; `answersOfBatch` in the transcript
-	 * feature already parses this shape). */
+	 * feature already parses this shape).
+	 *
+	 * A pick with neither an option nor free text (`selected === ""`, no
+	 * `custom`) is an UNANSWERED question, not an answer: it takes the exact
+	 * missing-pick shape below (`selected: []` + `custom: "declined"`).
+	 * Emitting `selected: [""]` here would create a state 0.17.3 never
+	 * produced and that replay renders as "declined", contradicting the
+	 * record. */
 	static answersValue(questions: RemoteQuestion[], picks: RemoteQuestionAnswer[]): RemoteJson {
 		return {
 			answers: questions.map((q) => {
@@ -160,9 +210,13 @@ export class WaterfallAnswerer {
 				if (pick?.custom !== undefined && pick.custom !== "") {
 					return { id: q.id, selected: [], custom: pick.custom }
 				}
-				const answer: { [key: string]: RemoteJson } = pick
-					? { id: q.id, selected: pick.selections?.length ? [...pick.selections] : [pick.selected] }
-					: { id: q.id, selected: [], custom: "declined" }
+				if (pick === undefined || (pick.selected === "" && (pick.custom ?? "") === "")) {
+					return { id: q.id, selected: [], custom: "declined" }
+				}
+				const answer: { [key: string]: RemoteJson } = {
+					id: q.id,
+					selected: pick.selections?.length ? [...pick.selections] : [pick.selected],
+				}
 				return answer
 			}),
 		}

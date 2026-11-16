@@ -16,14 +16,25 @@ export type TranscriptItem =
   | { kind: "error"; text: string }
   | { kind: "system"; text: string }
 
+/** One option of an ask transcript row: `label` is the answer value,
+ * `description` the optional supporting line the tool call carried. */
+export interface AskEntryOption {
+  label: string
+  description?: string
+}
+
 /** One Q&A row of an `ask_user_question` transcript block (the tool
  * call carries the questions/options, the tool result the selection).
  * Additive kind — persisted items without it keep rendering. */
 export interface AskEntry {
-  /** The question text. */
+  /** The question text (kept apart from `header`). */
   question: string
-  /** The option labels offered (rendered dimmed). */
-  options: string[]
+  /** Short heading the tool call carried, when any. */
+  header?: string
+  /** Supporting detail the tool call carried, when any. */
+  detail?: string
+  /** The options offered, each label with its optional description. */
+  options: AskEntryOption[]
   /** The labels the user picked (empty when declined). */
   selected: string[]
   /** Free-text answer carried by the result (the declined marker lands here). */

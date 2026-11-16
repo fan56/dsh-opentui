@@ -42,9 +42,9 @@
 import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
 import type { InputRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
-import { useDialog } from "../../ui/dialog"
 import { t } from "../../i18n"
 import { useThemeOptional } from "../../context/theme"
+import { useIsPageOwner } from "../../context/input-ownership"
 import { focusedBorderColor, skinCursor } from "../../skin/semantic"
 import { useCursorStyle } from "../../config"
 import type { SeamRow } from "./seam-rows"
@@ -75,6 +75,15 @@ export function rowSearchText(row: SeamRow): string {
 			return row.text
 		case "tool":
 			return `${row.name}${row.args ? `(${row.args})` : ""}${row.output ? ` ${row.output}` : ""}`
+		// Ask replay blocks search by the question and the answered values
+		// (the header eyebrow and the option menu are paint, not the record).
+		case "ask":
+			return row.entries
+				.map(
+					(entry) =>
+						`${entry.question}${entry.header ? ` ${entry.header}` : ""} ${entry.selected.join(" ")}${entry.custom ? ` ${entry.custom}` : ""}`,
+				)
+				.join(" ")
 		// Batch V2b: the live subagent tree row searches by child label —
 		// the tree track/glyphs/status are paint, not searchable text.
 		case "subagents":
@@ -153,7 +162,9 @@ export function useSearchOverlayOpenState() {
 
 export function SearchOverlay(props: SearchOverlayProps) {
 	const theme = useThemeOptional()
-	const dialog = useDialog()
+	// ADR-0008: the find bar is a page surface (it pushes no frame); both its
+	// layers are off whenever a dialog, panel or dock owns the keyboard.
+	const pageOwns = useIsPageOwner()
 	// Skin focus face (contract §1): the strip has no list row, so the
 	// focus lands on its input — accent cursor + the skin cursor shape
 	// (semantic.skinCursor; undefined config = bare harness → the default).
@@ -240,7 +251,7 @@ export function SearchOverlay(props: SearchOverlayProps) {
 	// dead).
 	Keymap.createLayer(() => ({
 		mode: "global",
-		enabled: open() && dialog.stack.length === 0,
+		enabled: open() && pageOwns(),
 		priority: 2,
 		commands: [
 			{ bind: "escape", title: t("overlay.search.closeTitle"), group: "Search", run: close },
@@ -253,7 +264,7 @@ export function SearchOverlay(props: SearchOverlayProps) {
 	// configured binding (ctrl+shift+f) from the shared keybind config.
 	Keymap.createLayer(() => ({
 		mode: "global",
-		enabled: !open() && dialog.stack.length === 0,
+		enabled: !open() && pageOwns(),
 		commands: [
 			{
 				id: "session.search",

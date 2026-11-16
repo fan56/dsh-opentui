@@ -20,6 +20,7 @@ import type {
   PanelKeyAdapter,
   PanelKeyCommands,
   PanelKitProviderProps,
+  PanelOwnership,
 } from "./contracts"
 import { PanelKitContext, toAccessor } from "./theme"
 
@@ -65,12 +66,18 @@ export interface PanelKeymapHost {
  * owner (the provider component): it registers one host layer for the whole
  * kit lifetime and pushes the modal mode while a table is active.
  */
-export function createHostKeyAdapter(keymap: PanelKeymapHost): PanelKeyAdapter {
+export function createHostKeyAdapter(
+  keymap: PanelKeymapHost,
+  ownership?: PanelOwnership,
+): PanelKeyAdapter {
   const [active, setActive] = createSignal<PanelKeyCommands | undefined>(undefined)
 
   const disposeLayer = keymap.createLayer(() => ({
     mode: "modal",
-    enabled: active() !== undefined,
+    // ADR-0008: a panel layer answers only while the deepest panel frame is
+    // the top ownership frame, so a dialog opened above the panel wins even
+    // though both layers sit at priority 0.
+    enabled: active() !== undefined && (ownership === undefined || ownership.owns(ownership.topFrame())),
     bindings: PANEL_KEY_IDS.map((id) => ({
       key: id,
       group: "Panel",
@@ -112,9 +119,21 @@ export interface PanelKitProviderHostProps extends PanelKitProviderProps {
  */
 export function PanelKitProvider(props: PanelKitProviderHostProps): JSX.Element {
   const theme = toAccessor(props.theme)
-  const keys = props.keys ?? (props.keymap ? createHostKeyAdapter(props.keymap) : undefined)
+  // The deepest panel layer's frame. PanelStack owns the push/pop, the
+  // provider owns the signal so the modal layer (built below) can read it.
+  const [topFrame, setTopFrame] = createSignal<unknown>(undefined)
+  const ownership: PanelOwnership | undefined = props.ownership
+    ? {
+        push: (kind) => props.ownership!.push(kind),
+        pop: (token) => props.ownership!.pop(token),
+        owns: (token) => props.ownership!.owns(token),
+        topFrame,
+        setTopFrame,
+      }
+    : undefined
+  const keys = props.keys ?? (props.keymap ? createHostKeyAdapter(props.keymap, ownership) : undefined)
   return (
-    <PanelKitContext.Provider value={{ theme, motion: props.motion, keys }}>
+    <PanelKitContext.Provider value={{ theme, motion: props.motion, keys, ownership }}>
       {props.children}
     </PanelKitContext.Provider>
   )

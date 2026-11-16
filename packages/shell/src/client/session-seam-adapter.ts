@@ -209,15 +209,10 @@ export class RemoteSessionSeam implements SessionSeam {
 		const rows = await this.#session.storedTranscript(id, skip)
 		return rows.map((row) => {
 			if (row.kind === "ask") {
-				// Ask rows project as their Q&A text (the seam view renders them
-				// as assistant rows; the replay keeps the Q&A visible).
-				const text = row.entries
-					.map((entry) => {
-						const picked = entry.selected.length > 0 ? entry.selected.join(", ") : (entry.custom ?? "declined")
-						return `${entry.question} → ${picked}`
-					})
-					.join("\n")
-				return { kind: row.kind, text, final: true }
+				// Ask rows pass their Q&A entries THROUGH (spec §9): the view
+				// renders the structured replay block off them, so `text` stays
+				// empty here — no pre-flattening.
+				return { kind: row.kind, text: "", final: true, entries: row.entries }
 			}
 			if (row.kind === "tool") {
 				// Batch V1: settled tool rows project with their args brief and
