@@ -43,7 +43,8 @@
 // Idempotency contract (step 3): a plugin needs no work only when
 //   (a) it is in the profile `dependencies`,
 //   (b) `node_modules/<pkg>/package.json` exists and its version satisfies the
-//       pinned version, and
+//       effective pin — the shipped pin, or the newer version recorded in
+//       `upgrade-overrides.json` by `dsh-opentui upgrade` — and
 //   (c) its name is in `dsh.profile.bundles`.
 // A dep pinned with a local spec (link:/file:/workspace:) always counts as
 // satisfied — a local development pin is never replaced by a registry version.
@@ -146,6 +147,9 @@ function fail(message, detail = '') {
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
 const profileDir = join(dshHome, 'profiles', PROFILE)
 const manifestPath = join(profileDir, 'package.json')
+// Written by `dsh-opentui upgrade` (never by this script): the versions that
+// command installed above the shipped pins. Read-only here.
+const overridePath = join(profileDir, 'upgrade-overrides.json')
 console.log(`${PREFIX}dsh home ${dshHome}`)
 
 const requireDsh = () => {
@@ -209,6 +213,39 @@ function installedVersion(name) {
   } catch {
     return undefined
   }
+}
+
+/** The `packages` map of `upgrade-overrides.json`, or {} when the file is
+ *  absent, unreadable, not JSON, or not the documented shape. Every failure
+ *  degrades to "no overrides", which keeps a damaged side file from changing
+ *  (or interrupting) provisioning in any way. A MISSING file is the normal
+ *  path and stays silent; a present-but-unusable one is worth a warning,
+ *  because silently reverting to the shipped pins can downgrade plugins. */
+function readUpgradeOverrides() {
+  if (!existsSync(overridePath)) return {}
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(overridePath, 'utf8'))
+  } catch {
+    console.error(
+      `${PREFIX}warning: ignoring upgrade overrides; shipped pins will be used (${overridePath} is unreadable or not valid JSON)`,
+    )
+    return {}
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    console.error(
+      `${PREFIX}warning: ignoring upgrade overrides; shipped pins will be used (${overridePath} is not a JSON object)`,
+    )
+    return {}
+  }
+  const packages = parsed.packages
+  if (typeof packages !== 'object' || packages === null || Array.isArray(packages)) {
+    console.error(
+      `${PREFIX}warning: ignoring upgrade overrides; shipped pins will be used (${overridePath} has no "packages" object)`,
+    )
+    return {}
+  }
+  return packages
 }
 
 /** Backup-then-write the profile manifest (the backup is the contract: a
@@ -397,7 +434,11 @@ if (tier === 'none') {
   const installedVersions = Object.fromEntries(
     plugins.map((plugin) => [plugin.name, installedVersion(plugin.name)]),
   )
-  const plan = planPluginInstall({ tier, dependencies, bundles, installedVersions })
+  // A version recorded by `dsh-opentui upgrade` raises the effective pin, so an
+  // already-upgraded plugin is satisfied at that version instead of being
+  // pulled back to the shipped pin on every start.
+  const overrides = readUpgradeOverrides()
+  const plan = planPluginInstall({ tier, dependencies, bundles, installedVersions, overrides })
   const specs = plan.install.map((entry) => entry.spec)
   const skipped = plan.total - plan.install.length
 

@@ -51,8 +51,8 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { ancestorPids, killStaleProcesses, parseLauncherArgs, parseProcessHomes, parseProcessRows, readLauncherVersion, selectStaleProcesses } from './lib/launcher.mjs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { ancestorPids, formatUpgradeUsage, killStaleProcesses, parseLauncherArgs, parseProcessHomes, parseProcessRows, parseUpgradeArgs, readLauncherVersion, selectStaleProcesses } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -80,6 +80,47 @@ if (versionFlag) {
   }
   console.log(`dsh-opentui ${version}`)
   process.exit(0)
+}
+
+// --- 0.5 upgrade subcommand -------------------------------------------------
+// `upgrade` is a positional subcommand: only the first remaining argument may
+// select it, and here is its ONLY consumer. It must never reach the provision
+// forwarder (step 3) or the client (step 6) — the client would take the bare
+// `upgrade` for a session name. Placed after `--version` (whose absolute
+// short-circuit is unchanged) and BEFORE the bun/dsh checks: upgrading needs
+// `npm` and `dsh`, not bun, and must not provision or link anything.
+const upgradeResult = parseUpgradeArgs(userArgs)
+if (upgradeResult.isUpgrade) {
+  if (forceFlag) {
+    console.error('dsh-opentui: --force is not supported with upgrade.')
+    console.error(formatUpgradeUsage())
+    process.exit(2)
+  }
+  if (upgradeResult.error === 'unknown-flag') {
+    console.error(`dsh-opentui: unknown flag(s): ${upgradeResult.unknownFlags.join(', ')}`)
+    console.error(formatUpgradeUsage())
+    process.exit(2)
+  }
+  if (upgradeResult.error === 'missing-tag-value') {
+    console.error('dsh-opentui: --tag requires a non-empty value.')
+    console.error(formatUpgradeUsage())
+    process.exit(2)
+  }
+  if (upgradeResult.error === 'invalid-tag') {
+    console.error(
+      `dsh-opentui: invalid --tag value: ${upgradeResult.invalidTag} (allowed: A-Z a-z 0-9 . _ -)`,
+    )
+    console.error(formatUpgradeUsage())
+    process.exit(2)
+  }
+  if (upgradeResult.error === 'reset-overrides-conflict') {
+    console.error('dsh-opentui: --reset-overrides cannot be combined with --no-self or --no-plugins.')
+    console.error(formatUpgradeUsage())
+    process.exit(2)
+  }
+  // Loaded lazily so a normal launch never evaluates the upgrade body.
+  const { runUpgrade } = await import(pathToFileURL(join(pkgRoot, 'scripts', 'upgrade.mjs')).href)
+  process.exit(runUpgrade(upgradeResult.opts, { pkgRoot }))
 }
 
 // --- 1. bun: hard runtime dependency of the client chain -------------------

@@ -7,11 +7,15 @@
  * plain data so the flags can be unit-tested without a dsh, a profile or a
  * running client. The bin stays the only thing that touches the process.
  *
- * The two capabilities:
+ * The capabilities:
  *   1. `--version` — print `dsh-opentui <version>` and exit 0, BEFORE any
  *      provision/profile work (see the bin's step 0).
  *   2. `--force`   — kill this profile's stale instances (the resident `dsh
  *      host and the bun client) before starting.
+ *   3. `upgrade`   — the positional upgrade subcommand: its argv is parsed
+ *      here (pure) and dispatched by the bin to scripts/upgrade.mjs. The
+ *      subcommand and its flags are consumed by the bin and NEVER forwarded
+ *      to the client (which would take them for a session name).
  *
  * SCOPE (requirement: never touch another profile's instances):
  * a candidate is "ours" only when BOTH hold:
@@ -280,4 +284,128 @@ export async function killStaleProcesses(targets, options = {}) {
 		killed: survivors.length,
 		survivors: survivors.filter((pid) => isAlive(pid)),
 	}
+}
+
+/** The dist-tag `upgrade` resolves against when none is given. */
+export const UPGRADE_DEFAULT_TAG = 'latest'
+// The tag becomes an argv value for `npm view` and must never be able to look
+// like a flag or carry shell/URL syntax: npm dist-tags are [A-Za-z0-9._-].
+const TAG_PATTERN = /^[A-Za-z0-9._-]+$/
+
+/**
+ * Parse the argv of the `upgrade` subcommand.
+ *
+ * The subcommand is POSITIONAL and must be the first argument the launcher
+ * sees after `parseLauncherArgs` consumed `--version`/`--force`. A `upgrade`
+ * anywhere else (`foo upgrade`, `--model upgrade`) is NOT the subcommand: the
+ * argument vector is forwarded to the client exactly as before (requirement:
+ * an old release silently ignores a stray positional, and this release must
+ * not turn that into an error).
+ *
+ * `--force` is deliberately absent here — `parseLauncherArgs` consumes it
+ * before this function runs, so it can never reach an upgrade flag parse. The
+ * bin rejects the `--force upgrade` combination itself (a usage error).
+ *
+ * Unknown flags are reported once as `error: 'unknown-flag'` with the offending
+ * tokens in `unknownFlags`; the caller prints the usage and exits 2 without
+ * doing anything. `--reset-overrides` is a terminal action and is incompatible
+ * with every flag that shapes an upgrade (`--no-self`/`--no-plugins`/`--yes`
+ * and a non-default `--tag`): combining them would silently ignore one intent.
+ *
+ * @param {string[]} argv arguments after the bin-level flags
+ * @returns {{ isUpgrade: boolean, opts: {
+ *   dryRun: boolean, yes: boolean, tag: string, noSelf: boolean,
+ *   noPlugins: boolean, resetOverrides: boolean, help: boolean,
+ * }, error: null | 'unknown-flag' | 'missing-tag-value' | 'invalid-tag' |
+ *   'reset-overrides-conflict', unknownFlags?: string[], invalidTag?: string }}
+ */
+export function parseUpgradeArgs(argv) {
+	const args = Array.isArray(argv) ? argv : []
+	const opts = {
+		dryRun: false,
+		yes: false,
+		tag: UPGRADE_DEFAULT_TAG,
+		noSelf: false,
+		noPlugins: false,
+		resetOverrides: false,
+		help: false,
+	}
+	// Positional contract: only argv[0] selects the subcommand.
+	if (args[0] !== 'upgrade') return { isUpgrade: false, opts, error: null }
+
+	const unknownFlags = []
+	// Presence, not value: `--reset-overrides --tag latest` is still two
+	// intents, and the conflict report must not depend on the tag's spelling.
+	let tagGiven = false
+	for (let i = 1; i < args.length; i++) {
+		const arg = args[i]
+		if (arg === '--dry-run') {
+			opts.dryRun = true
+		} else if (arg === '-y' || arg === '--yes') {
+			opts.yes = true
+		} else if (arg === '--no-self') {
+			opts.noSelf = true
+		} else if (arg === '--no-plugins') {
+			opts.noPlugins = true
+		} else if (arg === '--reset-overrides') {
+			opts.resetOverrides = true
+		} else if (arg === '-h' || arg === '--help') {
+			opts.help = true
+		} else if (arg === '--tag') {
+			const value = args[i + 1]
+			if (value === undefined || value.startsWith('-')) {
+				return { isUpgrade: true, opts, error: 'missing-tag-value' }
+			}
+			if (!TAG_PATTERN.test(value)) {
+				return { isUpgrade: true, opts, error: 'invalid-tag', invalidTag: value }
+			}
+			opts.tag = value
+			tagGiven = true
+			i++
+		} else if (arg.startsWith('--tag=')) {
+			const value = arg.slice('--tag='.length)
+			if (value === '') return { isUpgrade: true, opts, error: 'missing-tag-value' }
+			if (!TAG_PATTERN.test(value)) {
+				return { isUpgrade: true, opts, error: 'invalid-tag', invalidTag: value }
+			}
+			opts.tag = value
+			tagGiven = true
+		} else {
+			unknownFlags.push(arg)
+		}
+	}
+
+	if (unknownFlags.length > 0) {
+		return { isUpgrade: true, opts, error: 'unknown-flag', unknownFlags }
+	}
+	if (opts.resetOverrides && (opts.noSelf || opts.noPlugins || opts.yes || tagGiven)) {
+		return { isUpgrade: true, opts, error: 'reset-overrides-conflict' }
+	}
+	return { isUpgrade: true, opts, error: null }
+}
+
+/** Usage text for `dsh-opentui upgrade` (also the `--help` body). Plain text,
+ *  one flag per line; the exit-code block is part of the contract. */
+export function formatUpgradeUsage() {
+	return [
+		'dsh-opentui upgrade — upgrade the launcher and the opentui profile plugins',
+		'',
+		'Usage: dsh-opentui upgrade [options]',
+		'',
+		'Options:',
+		'  --dry-run             print the plan and exit; write nothing',
+		'  -y, --yes             do not ask for confirmation',
+		'  --tag <name>          dist-tag to resolve (default: latest)',
+		'  --no-self             skip the dsh-opentui launcher itself',
+		'  --no-plugins          skip the opentui profile plugins',
+		'  --reset-overrides     delete upgrade-overrides.json and exit (terminal;',
+		'                        conflicts with --no-self/--no-plugins/--yes/--tag)',
+		'  -h, --help            print this help and exit',
+		'',
+		'Exit codes:',
+		'  0  already up to date, nothing to do, --dry-run, or --help',
+		'  1  hard failure (e.g. self-upgrade did not verify); profile untouched/rolled back',
+		'  2  usage error',
+		'  3  partial: a package did not reach the target version, or overrides could not be recorded',
+	].join('\n')
 }
