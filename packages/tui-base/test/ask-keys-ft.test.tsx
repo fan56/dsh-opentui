@@ -20,6 +20,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 import { testRender } from "@opentui/solid"
+import type { BoxRenderable } from "@opentui/core"
 import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { Keymap } from "../src/context/keymap"
 import { InputOwnershipProvider, useIsPageOwner } from "../src/context/input-ownership"
@@ -27,7 +28,7 @@ import { ClipboardProvider, type ClipboardService } from "../src/context/clipboa
 import { ThemeProvider, createThemeSource } from "../src/context/theme"
 import { ConfigProvider, resolve } from "../src/config"
 import { ToastProvider } from "../src/ui/toast"
-import { DialogProvider } from "../src/ui/dialog"
+import { DialogProvider, useDialog } from "../src/ui/dialog"
 import { DockProvider, DockSeat, useDock, type DockApi } from "../src/routes/session/dock-host"
 import { TurnOverlayHost } from "../src/routes/session/turn-overlays"
 import {
@@ -58,6 +59,12 @@ const clipboard: ClipboardService = {
 
 function CaptureDock(props: { done: (api: DockApi) => void }) {
 	props.done(useDock())
+	return <box height={0} />
+}
+
+/** The page's own dialog stack (a /settings-like page dialog). */
+function CaptureDialog(props: { done: (api: ReturnType<typeof useDialog>) => void }) {
+	props.done(useDialog())
 	return <box height={0} />
 }
 
@@ -104,7 +111,11 @@ function CancelKeys(props: { busy: () => boolean; calls: string[] }) {
 async function mount(options: { busy?: () => boolean } = {}) {
 	const controller = new TurnOverlayController()
 	const calls: string[] = []
+	/** The page's composer refocus spy (P2-6 combined-path assertion). */
+	const composerFoci: string[] = []
 	let api: DockApi | undefined
+	let composerEl: BoxRenderable | undefined
+	let dialog: ReturnType<typeof useDialog> | undefined
 	const setup = await testRender(
 		() => (
 			<ConfigProvider config={resolve({}, { terminalSuspend: true })}>
@@ -115,10 +126,26 @@ async function mount(options: { busy?: () => boolean } = {}) {
 								<InputOwnershipProvider>
 									<DialogProvider>
 										<DockProvider>
-											<CaptureDock done={(value) => (api = value)} />
+											<CaptureDock
+												done={(value) => {
+													api = value
+													value.bindComposerFocus(() => {
+														composerFoci.push("composer")
+														composerEl?.focus()
+													})
+												}}
+											/>
+											<CaptureDialog done={(value) => (dialog = value)} />
 											<DockSeat
 												composer={() => (
-													<box width="100%" height={1}>
+													<box
+														ref={(value: BoxRenderable) => {
+															composerEl = value
+														}}
+														width="100%"
+														height={1}
+														focusable={true}
+													>
 														<text wrapMode="none">composer seat</text>
 													</box>
 												)}
@@ -139,7 +166,8 @@ async function mount(options: { busy?: () => boolean } = {}) {
 	)
 	await settle(setup)
 	if (api === undefined) throw new Error("dock api missing")
-	return { setup, api, controller, calls }
+	if (dialog === undefined) throw new Error("dialog api missing")
+	return { setup, api, controller, calls, dialog, composerFoci, composerEl: () => composerEl }
 }
 
 /** Flush Solid effects, the dock's after-layout focus and the deferred stdin
@@ -345,6 +373,39 @@ describe("digit gating (spec §5 constraint 3)", () => {
 			await setup.dispose()
 		}
 	})
+
+	test("P1-2: a typed draft survives Esc and the digit still picks (draft cleared)", async () => {
+		const { setup, controller } = await mount()
+		try {
+			controller.answer(TWO_SINGLE)
+			await settle(setup)
+
+			// Type into the resident row, then Esc: the list owns the keys
+			// again but the buffer is still live (Esc stage 1 never discards).
+			setup.mockInput.pressKey("x")
+			await settle(setup)
+			expect(controller.pendingAsk?.phase).toBe("input")
+			expect(controller.inlineText).toBe("x")
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			expect(controller.pendingAsk?.phase).toBe("questions")
+			expect(controller.pendingAsk?.customDraft).toBe("x")
+
+			// The quick-pick must land (it was silently inert behind the stale
+			// draft guard) and the pick clears the draft.
+			setup.mockInput.pressKey("2")
+			await settle(setup)
+			expect(controller.pendingAsk?.picks[0]).toEqual(["b"])
+			expect(controller.pendingAsk?.customDraft).toBeNull()
+			expect(controller.pendingAsk?.customs[0]).toBeUndefined()
+			// Auto-advanced to the unanswered second tab.
+			expect(controller.pendingAsk?.index).toBe(1)
+			controller.decline()
+			await settle(setup)
+		} finally {
+			await setup.dispose()
+		}
+	})
 })
 
 describe("free-text capture on the options phase (spec §5 focus model)", () => {
@@ -510,6 +571,48 @@ describe("admission and ownership (spec §7, ADR-0008)", () => {
 			await setup.dispose()
 		}
 	})
+
+	test("P0-1: an ask arriving under a visible page dialog waits; Esc closes the dialog, then the dock opens", async () => {
+		const { setup, api, controller, calls, dialog } = await mount()
+		try {
+			dialog.replace(
+				() => (
+					<box width="100%">
+						<text wrapMode="none">page settings dialog</text>
+					</box>
+				),
+				() => calls.push("dialog:closed"),
+			)
+			await settle(setup)
+			expect(frame(setup)).toContain("page settings dialog")
+
+			const pending = controller.answer(TWO_SINGLE)
+			await settle(setup)
+			// The dock is an IN-FLOW surface: it must never push its ownership
+			// frame above the absolutely-positioned dialog.
+			expect(api.isOpen()).toBe(false)
+			expect(frame(setup)).not.toContain("first question")
+			expect(controller.pendingAsk).toBeDefined()
+
+			// Esc belongs to the VISIBLE dialog: it closes it. It must not walk
+			// the invisible dock's ladder and silently decline the batch.
+			setup.mockInput.pressEscape()
+			await settle(setup)
+			expect(calls).toContain("dialog:closed")
+			expect(frame(setup)).not.toContain("page settings dialog")
+			expect(controller.pendingAsk).toBeDefined()
+
+			// The page owns input again: the queued ask opens immediately.
+			expect(api.isOpen()).toBe(true)
+			expect(frame(setup)).toContain("first question")
+
+			controller.decline()
+			await settle(setup)
+			expect(await pending).toEqual([])
+		} finally {
+			await setup.dispose()
+		}
+	})
 })
 
 describe("controller transitions behind the ladder", () => {
@@ -588,5 +691,29 @@ describe("one-shot non-arming interrupt (spec §6 hazard)", () => {
 		cancel.ctrlC() // second idle press quits (the shipped idle convention)
 		expect(calls).toEqual(["quit"])
 		cancel.dispose()
+	})
+})
+
+describe("combined settlement path (P2-6)", () => {
+	test("dock + TurnOverlayHost settle an ask with exactly one composer focus", async () => {
+		const { setup, api, controller, composerFoci, composerEl } = await mount()
+		try {
+			const pending = controller.answer([{ id: "q1", prompt: "pick", options: [{ label: "a" }, { label: "b" }] }])
+			await settle(setup)
+			expect(api.isOpen()).toBe(true)
+			expect(composerFoci).toEqual([])
+
+			controller.toggle("a") // lone single-select: the pick settles
+			await settle(setup)
+			expect(await pending).toEqual([{ questionId: "q1", selected: "a" }])
+			expect(api.isOpen()).toBe(false)
+			// Exactly one refocus for the settlement, from the dock's after-layout
+			// hook — TurnOverlayHost's onIdle reclaim has no callback here, so
+			// nothing double-focuses the composer.
+			expect(composerFoci).toEqual(["composer"])
+			expect(setup.renderer.currentFocusedRenderable).toBe(composerEl())
+		} finally {
+			await setup.dispose()
+		}
 	})
 })

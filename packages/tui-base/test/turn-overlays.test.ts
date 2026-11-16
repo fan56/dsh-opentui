@@ -327,10 +327,11 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 		expect(await pending).toEqual([{ questionId: "q1", selected: "", custom: "typed twice" }])
 	})
 
-	test("toggle is inert while the sentinel editor is engaged; after esc the option path works again", async () => {
+	test("toggle gates on the phase (input), not on a live draft", async () => {
 		const c = new TurnOverlayController()
 		const pending = c.answer([{ id: "q1", prompt: "one", options: [{ label: "a" }] }])
 		c.beginCustom()
+		expect(c.pendingAsk?.phase).toBe("input")
 		c.toggle("a")
 		expect(c.pendingAsk?.picks[0]).toEqual([])
 		expect(c.pendingAsk?.customDraft).not.toBeNull()
@@ -350,6 +351,52 @@ describe("TurnOverlayController ask custom (C7 free text)", () => {
 		expect(multi.pendingAsk?.phase).toBe("review")
 		expect(multi.beginCustom()).toBe(false)
 		expect(multi.pendingAsk?.customDraft).toBeNull()
+	})
+
+	test("P1-2: a typed draft + Esc leaves the list live; a pick clears the draft", () => {
+		const c = new TurnOverlayController()
+		c.answer([
+			{ id: "q1", prompt: "one", options: [{ label: "a" }, { label: "b" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y" }] },
+		])
+		c.setInlineText("foo")
+		expect(c.pendingAsk?.phase).toBe("input")
+		expect(c.pendingAsk?.customDraft).toBe("foo")
+		// Esc stage 1: the buffer survives, the list owns the keys again.
+		c.focusOptions()
+		expect(c.pendingAsk?.phase).toBe("questions")
+		expect(c.pendingAsk?.customDraft).toBe("foo")
+		// The pick must land (it was silently inert while the stale draft
+		// guard returned first) and the draft is cleared as intended.
+		c.toggle("a")
+		expect(c.pendingAsk?.picks[0]).toEqual(["a"])
+		expect(c.pendingAsk?.customDraft).toBeNull()
+		expect(c.pendingAsk?.customs[0]).toBeUndefined()
+		// Auto-advance to the unanswered second tab.
+		expect(c.pendingAsk?.index).toBe(1)
+	})
+
+	test("P2-8: auto-advance skips a later question answered by free text", () => {
+		const c = new TurnOverlayController()
+		c.answer([
+			{ id: "q1", prompt: "one", options: [{ label: "a" }, { label: "b" }] },
+			{ id: "q2", prompt: "two", options: [{ label: "x" }, { label: "y" }] },
+			{ id: "q3", prompt: "three", options: [{ label: "m" }, { label: "n" }] },
+		])
+		c.toggle("a") // q1 answered, advances to q2
+		expect(c.pendingAsk?.index).toBe(1)
+		c.beginCustom()
+		c.patchCustom("free text")
+		c.commitCustom() // q2 answered by free text, advances to q3
+		expect(c.pendingAsk?.index).toBe(2)
+		c.switchFocus(-1)
+		c.switchFocus(-1)
+		expect(c.pendingAsk?.index).toBe(0)
+		// q1 re-pick: the next unanswered tab is q3 — q2's picks are empty but
+		// its committed custom answer covers it.
+		c.toggle("b")
+		expect(c.pendingAsk?.index).toBe(2)
+		expect(c.pendingAsk?.phase).toBe("questions")
 	})
 })
 

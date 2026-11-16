@@ -134,6 +134,16 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 	const multi = () => question()?.multiSelect === true
 	const compact = () => props.width() < ASK_COMPACT_COLUMNS
 	const needsReview = () => askNeedsReview(questions())
+	// `remote-waterfall.questionsView` falls back `prompt ?? question ?? header`,
+	// so a header-only payload arrives with header === prompt. Rendering both
+	// would draw the same string twice (eyebrow + title); suppress the eyebrow
+	// when it carries no extra information.
+	const eyebrow = (): string | undefined => {
+		if (phaseOf() === "review") return undefined
+		const current = question()
+		if (current?.header === undefined || current.header === current.prompt) return undefined
+		return current.header
+	}
 
 	// Theme roles. The fallbacks are the pre-skin hexes, the same convention
 	// the other rebuilt faces use (they only paint when no provider exists).
@@ -264,7 +274,14 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 	const footerHint = (): string => {
 		if (phaseOf() === "review") return t("overlay.ask.footer.review", { esc: t("overlay.ask.esc.review") })
 		if (phaseOf() === "input") {
-			const escKey = question()?.options.length === 0 ? "overlay.ask.esc.decline" : "overlay.ask.esc.back"
+			// The input phase on a zero-option question has no list stage: Esc
+			// walks to the previous question, or declines at the head.
+			const escKey =
+				question()?.options.length === 0
+					? index() > 0
+						? "overlay.ask.esc.prevQuestion"
+						: "overlay.ask.esc.decline"
+					: "overlay.ask.esc.back"
 			return t("overlay.ask.footer.input", { esc: t(escKey) })
 		}
 		const escKey =
@@ -293,8 +310,9 @@ export function AskPanel(props: AskPanelProps): JSX.Element {
 
 	return (
 		<box flexDirection="column" width="100%" flexShrink={0}>
-			{/* 1. Eyebrow: `header`, never concatenated into the prompt. */}
-			<Show when={phaseOf() !== "review" ? question()?.header : undefined}>
+			{/* 1. Eyebrow: `header`, never concatenated into the prompt, and
+			 *    suppressed when the payload repeats the title. */}
+			<Show when={eyebrow()}>
 				{(header) => (
 					<box paddingLeft={GUTTER} paddingRight={GUTTER}>
 						<text fg={muted()} wrapMode="none">

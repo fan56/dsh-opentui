@@ -292,6 +292,46 @@ describe("ask panel body (spec §2-§5, §8)", () => {
 		}
 	})
 
+	test("P2-4: a zero-option question past the first advertises the previous-question stage", async () => {
+		const { setup, api } = await mount({ width: 80, height: 20 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([
+				{ id: "q1", prompt: "first question", options: [{ label: "a" }] },
+				{ id: "q2", prompt: "anything else?", options: [] },
+			])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+			controller.switchFocus(1)
+			await settle(setup)
+			expect(controller.pendingAsk?.index).toBe(1)
+			expect(controller.pendingAsk?.phase).toBe("input")
+			const painted = frame(setup)
+			// Esc from here walks to question 1 (ask-keys `backOut`), it does
+			// NOT decline the batch.
+			expect(painted).toContain("esc: previous question")
+			expect(painted).not.toContain("esc: decline")
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("P2-7: a header-only payload (header === prompt) paints the string once", async () => {
+		const { setup, api } = await mount({ width: 80, height: 24 })
+		try {
+			const controller = new TurnOverlayController()
+			controller.answer([{ id: "q1", prompt: "Same heading", header: "Same heading", options: [{ label: "a" }] }])
+			const handle = openAsk(api, controller)
+			await settle(setup)
+			// The eyebrow is suppressed; the title still paints.
+			expect(frame(setup).split("Same heading").length - 1).toBe(1)
+			handle.close()
+		} finally {
+			await setup.dispose()
+		}
+	})
+
 	test("queue indicator comes from the dock host", async () => {
 		const { setup, api } = await mount({ width: 80, height: 24 })
 		try {

@@ -120,3 +120,37 @@ describe("WaterfallAnswerer.answersValue — free-text custom (C7)", () => {
 		expect(value.answers).toEqual([{ id: "q1", selected: [], custom: "declined" }])
 	})
 })
+
+describe("WaterfallAnswerer.answersValue — blank pick is unanswered (P1-3)", () => {
+	const questions: RemoteQuestion[] = [
+		{ id: "q1", prompt: "one?", options: [{ label: "a" }, { label: "b" }] },
+		{ id: "q2", prompt: "two?", options: [{ label: "x" }] },
+	]
+
+	test("selected === '' with no custom produces the EXACT missing-pick shape", () => {
+		const blank: RemoteQuestionAnswer[] = [
+			{ questionId: "q1", selected: "a" },
+			{ questionId: "q2", selected: "" },
+		]
+		const missing: RemoteQuestionAnswer[] = [{ questionId: "q1", selected: "a" }]
+		const blankValue = WaterfallAnswerer.answersValue(questions, blank)
+		const missingValue = WaterfallAnswerer.answersValue(questions, missing)
+		// The exact same envelope: no `selected: [""]` state exists.
+		expect(blankValue).toEqual(missingValue)
+		expect(blankValue).toEqual({
+			answers: [
+				{ id: "q1", selected: ["a"] },
+				{ id: "q2", selected: [], custom: "declined" },
+			],
+		})
+		expect(JSON.stringify(blankValue)).not.toContain('[""]')
+	})
+
+	test("a blank selected is NOT declined when a custom answer rides along", () => {
+		const picks: RemoteQuestionAnswer[] = [{ questionId: "q1", selected: "", custom: "free text" }]
+		const value = WaterfallAnswerer.answersValue([questions[0]], picks) as {
+			answers: { id: string; selected: string[]; custom?: string }[]
+		}
+		expect(value.answers).toEqual([{ id: "q1", selected: [], custom: "free text" }])
+	})
+})

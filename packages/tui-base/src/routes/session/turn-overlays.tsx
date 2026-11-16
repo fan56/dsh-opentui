@@ -32,6 +32,7 @@ import { onAnimationTick } from "@opentui/solid"
 import type { SeamApprovalVerdict, SeamAskPick, SeamAskQuestion } from "../../seams/session"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useDialog } from "../../ui/dialog"
+import { useIsPageOwner } from "../../context/input-ownership"
 import { TurnOverlayController } from "./turn-overlay-controller"
 import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
@@ -112,6 +113,15 @@ export function TurnOverlayHost(props: {
 }) {
 	const dialog = useDialog()
 	const dock = useDock()
+	// Admission gate (spec §2, ADR-0008): the dock is an IN-FLOW surface. An
+	// in-flow surface must never push its ownership frame above an
+	// absolutely-positioned overlay — the dock would take the renderer focus
+	// underneath a scrim the user cannot see past, and its Esc ladder would
+	// silently decline the batch while the visible dialog/panel stays
+	// unclosable. So a new ask waits while any overlay owns the keyboard;
+	// reading `pageOwns()` inside the admission effect tracks the ownership
+	// stack, so admission re-evaluates the moment ownership returns to the page.
+	const pageOwns = useIsPageOwner()
 	const [version, setVersion] = createSignal(0)
 	onMount(() => {
 		const unsubscribe = props.controller.subscribe(() => setVersion((value) => value + 1))
@@ -150,10 +160,16 @@ export function TurnOverlayHost(props: {
 		// A pending approval still preempts an ask that has NOT opened yet (the
 		// shipped serialization — the two surfaces never coexist).
 		const askShowing = askHandle !== undefined && ask !== undefined && askId === ask.id
+		const pageOwned = pageOwns()
 		const approvalWins = approval !== undefined && !askShowing
+		// Ask admission: an ask already on screen keeps the slot until it
+		// settles; a NEW ask opens only while the page owns the keyboard
+		// (nothing above the page frame). Otherwise it stays queued in the
+		// controller — the effect re-runs on the ownership change.
+		const askAdmitted = ask !== undefined && (askShowing || pageOwned)
 		// Ask batches reach this point in request-id order: `pendingAsk` is the
 		// head of the controller's FIFO ask queue (spec §7).
-		const key = approvalWins ? `approval:${approval.id}` : ask !== undefined ? `ask:${ask.id}` : ""
+		const key = approvalWins ? `approval:${approval.id}` : askAdmitted ? `ask:${ask.id}` : ""
 		if (key === shown) return
 		shown = key
 
@@ -181,7 +197,7 @@ export function TurnOverlayHost(props: {
 			return
 		}
 
-		if (ask !== undefined) {
+		if (ask !== undefined && askAdmitted) {
 			if (askHandle !== undefined && askId === ask.id) return
 			// A new head (or the first one). The dock slot is REUSED: open the
 			// next request first, then settle the previous one, so the queue

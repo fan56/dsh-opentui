@@ -195,7 +195,14 @@ export class WaterfallAnswerer {
 	 * A free-text pick rides `custom` with an empty `selected` — the same
 	 * envelope shape the declined path uses, minus the "declined" marker
 	 * (tui-pi Answer.custom contract; `answersOfBatch` in the transcript
-	 * feature already parses this shape). */
+	 * feature already parses this shape).
+	 *
+	 * A pick with neither an option nor free text (`selected === ""`, no
+	 * `custom`) is an UNANSWERED question, not an answer: it takes the exact
+	 * missing-pick shape below (`selected: []` + `custom: "declined"`).
+	 * Emitting `selected: [""]` here would create a state 0.17.3 never
+	 * produced and that replay renders as "declined", contradicting the
+	 * record. */
 	static answersValue(questions: RemoteQuestion[], picks: RemoteQuestionAnswer[]): RemoteJson {
 		return {
 			answers: questions.map((q) => {
@@ -203,9 +210,13 @@ export class WaterfallAnswerer {
 				if (pick?.custom !== undefined && pick.custom !== "") {
 					return { id: q.id, selected: [], custom: pick.custom }
 				}
-				const answer: { [key: string]: RemoteJson } = pick
-					? { id: q.id, selected: pick.selections?.length ? [...pick.selections] : [pick.selected] }
-					: { id: q.id, selected: [], custom: "declined" }
+				if (pick === undefined || (pick.selected === "" && (pick.custom ?? "") === "")) {
+					return { id: q.id, selected: [], custom: "declined" }
+				}
+				const answer: { [key: string]: RemoteJson } = {
+					id: q.id,
+					selected: pick.selections?.length ? [...pick.selections] : [pick.selected],
+				}
 				return answer
 			}),
 		}

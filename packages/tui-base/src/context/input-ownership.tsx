@@ -34,9 +34,10 @@ export type OwnerKind = "page" | "dialog" | "panel" | "dock"
 export type OverlayKind = Exclude<OwnerKind, "page">
 
 /**
- * One ownership claim. Identity is the token itself (an object), not the
- * kind: two dialogs stacked on each other, or a confirm panel pushed over
- * /settings, are distinct frames.
+ * One ownership claim. Identity is the `id` token, not the kind or the object
+ * identity: hosts may hand back a store proxy of the frame, and two dialogs
+ * stacked on each other, or a confirm panel pushed over /settings, are
+ * distinct frames. `kind` is only the readable label.
  */
 export interface OwnerFrame {
   readonly id: symbol
@@ -76,10 +77,16 @@ export function InputOwnershipProvider(props: ParentProps): JSX.Element {
     },
     pop(frame) {
       if (!frame || frame === page) return
-      setStack((items) => (items.includes(frame) ? items.filter((item) => item !== frame) : items))
+      // Compare by `id`, not object identity: hosts that keep their frame in a
+      // Solid store (`dialog.tsx`) read back a store proxy, so the handle they
+      // pass here is never `===` the pushed object. `id` is the frame token's
+      // stable identity (two frames of the same kind have distinct ids).
+      setStack((items) =>
+        items.some((item) => item.id === frame.id) ? items.filter((item) => item.id !== frame.id) : items,
+      )
     },
     owns(frame) {
-      return frame !== undefined && top() === frame
+      return frame !== undefined && top().id === frame.id
     },
   }
   return <Context.Provider value={value}>{props.children}</Context.Provider>

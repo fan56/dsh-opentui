@@ -31,6 +31,7 @@ import { SessionComposer, type SessionComposerRef } from "../src/routes/session/
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
 import { TurnOverlayHost, registerTurnOverlays } from "../src/routes/session/turn-overlays"
 import { DockProvider, DockSeat } from "../src/routes/session/dock-host"
+import { InputOwnershipProvider } from "../src/context/input-ownership"
 import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palette"
 import type { PickOneExtras } from "../src/routes/session/commands"
 import { DialogSelect } from "../src/ui/dialog-select"
@@ -384,11 +385,18 @@ render(
 				<ToastProvider>
 					<ThemeProvider mode="dark" source={{ discover: async () => ({}) }}>
 							<ClipboardHost>
-								<DialogProvider>
-									<DockProvider>
-										<SessionPage />
-									</DockProvider>
-								</DialogProvider>
+								{/* ADR-0008: the real client mounts the ownership provider
+								    above the dialog/dock hosts (v2-entry order). Without
+								    it, every `owns*` gate falls open: the dock would take
+								    the keyboard under a page dialog and the dialog would
+								    lose Esc. */}
+								<InputOwnershipProvider>
+									<DialogProvider>
+										<DockProvider>
+											<SessionPage />
+										</DockProvider>
+									</DialogProvider>
+								</InputOwnershipProvider>
 							</ClipboardHost>
 					</ThemeProvider>
 				</ToastProvider>

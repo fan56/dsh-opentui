@@ -214,12 +214,12 @@ export class TurnOverlayController {
 		const head = this.#asks[0]
 		const question = head?.questions[head.index]
 		if (!head || !question || head.phase === "review") return
-		// The inline input owns the keys while it is focused (digits type
-		// digits): a quick-pick must not fire from underneath it.
+		// The phase is the ONLY gate: `input` owns the keys (digits type
+		// digits), `review` has no list. A live draft alone must not block a
+		// pick — Esc stage 1 (`focusOptions`) hands the keys back to the list
+		// without discarding the buffer, and the pick below clears it, exactly
+		// as the mutual-exclusion comment says.
 		if (head.phase === "input") return
-		// A live inline draft means the resident input is mid-edit; keep the
-		// old sentinel guard.
-		if (head.customDraft !== null) return
 		// Picking an option clears the question's committed custom answer
 		// (selected ⊕ custom are mutually exclusive, tui-pi setCustomAnswer)
 		// and any live inline text.
@@ -246,8 +246,12 @@ export class TurnOverlayController {
 			head.reviewCursor = 0
 		} else {
 			// Auto-advance to the nearest later unanswered tab (clamped: the
-			// last unanswered question keeps the focus).
-			const next = head.questions.findIndex((_, qi) => qi > head.index && head.picks[qi]?.length === 0)
+			// last unanswered question keeps the focus). A committed free-text
+			// answer counts as answered, exactly as in `confirmQuestion`,
+			// `commitCustom` and `#allAnswered`.
+			const next = head.questions.findIndex(
+				(_, qi) => qi > head.index && (head.picks[qi]?.length ?? 0) === 0 && !head.customs[qi],
+			)
 			if (next >= 0) head.index = next
 			// A zero-option question has no list-focus state (spec §2).
 			head.phase = head.questions[head.index]?.options.length === 0 ? "input" : "questions"
@@ -414,6 +418,12 @@ export class TurnOverlayController {
 		const head = this.#asks[0]
 		const question = head?.questions[head.index]
 		if (!head || !question || head.phase === "review") return
+		// A controlled `InputRenderable` emits `input` when its `value` prop
+		// changes programmatically, so clearing the rendered row (a pick or a
+		// commit set `customDraft` back to null) arrives here as "". With no
+		// live edit the model already owns the row: re-activating the input
+		// phase here would steal the keys back after every pick.
+		if (head.customDraft === null && text === "") return
 		head.customDraft = text
 		head.phase = "input"
 		head.cursors[head.index] = inlineRowIndex(question, askNeedsReview(head.questions))
