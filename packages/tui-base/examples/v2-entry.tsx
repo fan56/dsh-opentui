@@ -49,7 +49,7 @@ import {
 	shouldStartFooterProbe,
 } from "../src/routes/session/footer-refresh"
 import { Transcript } from "../src/routes/session/transcript"
-import { WidgetsDock, resetSkinLineFades } from "../src/routes/session/widgets-dock"
+import { WidgetsDock, resetMergedDockCursor, resetSkinLineFades } from "../src/routes/session/widgets-dock"
 import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
 import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
 import { HintsLine, applyHintsConfig } from "../src/routes/session/hints-line"
@@ -854,6 +854,8 @@ function V2SessionPageBody(props: {
 		// Footer-quickwins: same per-session reset on /fork//resume switches.
 		setTools(0)
 		resetSkinLineFades()
+		// Merged lower-zone wheel position is per-session: drop the old cursor.
+		resetMergedDockCursor()
 		// /resume stages the id (no live session yet) — read THAT session's
 		// journal; /new clears first and reads the (empty) live one.
 		const settled = projection.load(sessionId)
@@ -921,6 +923,8 @@ function V2SessionPageBody(props: {
 			resetFooterProbe()
 			refreshFooterData()
 			resetSkinLineFades()
+			// Merged lower-zone wheel position is per-session: drop the old cursor.
+			resetMergedDockCursor()
 			// Slash-menu skills: the host catalog is session-scoped, so the
 			// previous session's `skills/list` rows must not leak into the new
 			// one — fall back to the boot snapshot until its first message

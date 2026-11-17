@@ -183,7 +183,11 @@ export function LastRequestDock(props: {
 	// has, so neither the indent nor the track can push a row past the slot.
 	const contentWidth = () => Math.max(16, dimensions().width - 1)
 	const lineWidth = (line: LastRequestLine) => Math.max(1, contentWidth() - (line.indent ?? 0))
-	const lines = () => lastRequestLines(props.rows, props.lastRequest, contentWidth())
+	// D15: running subagents now render in the activity lower zone. Painting
+	// their rows here too would show each subagent twice. Keep ONLY the ● user
+	// echo in the composer footer; `lastRequestLines` stays pure/unchanged for
+	// its other callers and tests.
+	const lines = () => lastRequestLines(props.rows, props.lastRequest, contentWidth()).filter((line) => line.id === "lr:echo")
 	// δ: entrance fade (0.4s faint → target) on the shared skin palette; the
 	// re-render cadence rides the widgets dock's shared-clock dockSpin tick.
 	const lineFg = (line: LastRequestLine): string | RGBA => {

@@ -2,7 +2,7 @@
  * Footer-quickwins batch: the tui-pi parity footer pieces —
  *   - model segment's per-level effort glyph ladder (○◔◑◕●◉★, off = ○ off)
  *   - effortFromModelLabel: the sessionInfo().model label parse fallback
- *   - provider segment's ☁️ lead
+ *   - provider segment's 🌐 lead
  *   - tools / tps / durable-message wiring through sessionFooterSegments
  *   - the 9-segment hint bar: per-segment toggles, busy/idle state wording,
  *     the conditional ↓ subagents gate, the en/zh golden label wording
@@ -84,9 +84,9 @@ describe("effortFromModelLabel (sessionInfo().model parse fallback)", () => {
 	})
 })
 
-describe("provider segment ☁️ lead", () => {
-	test("provider label carries the ☁️ prefix", () => {
-		expect(providerSegment("bigmodel")?.text).toBe("☁️ bigmodel")
+describe("provider segment 🌐 lead", () => {
+	test("provider label carries the 🌐 prefix", () => {
+		expect(providerSegment("bigmodel")?.text).toBe("🌐 bigmodel")
 	})
 })
 

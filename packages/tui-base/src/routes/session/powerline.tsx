@@ -600,9 +600,10 @@ export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode:
 }
 
 /**
- * The provider segment (providerID on the purple/interactive fill, ☁️ lead —
- * tui-pi footer parity). `mode` feeds providerFill's brand-collision walk
- * (see POWERLINE_MIN_SEGMENT_DISTANCE).
+ * The provider segment (providerID on the purple/interactive fill, 🌐 lead —
+ * tui-pi footer parity; bare U+1F310, no VS16, because the renderer blanks
+ * VS16 graphemes in wcwidth mode). `mode` feeds providerFill's brand-collision
+ * walk (see POWERLINE_MIN_SEGMENT_DISTANCE).
  */
 export function providerSegment(
 	provider: string,
@@ -610,7 +611,7 @@ export function providerSegment(
 	mode: SkinColorMode = "dark",
 ): PowerlineSegment | null {
 	if (!provider) return null
-	const label = `☁️ ${provider}`
+	const label = `🌐 ${provider}`
 	if (!theme) return { text: label, bg: POWERLINE_COLORS.provider, priority: 60 }
 	return { text: label, bg: powerlinePalette(theme, brandBlue(mode)).provider, priority: 60 }
 }

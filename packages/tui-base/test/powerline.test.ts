@@ -97,9 +97,9 @@ describe("segment builders", () => {
 		expect(fallback.bg).toBe(POWERLINE_COLORS.brand.toLowerCase())
 	})
 
-	test("provider carries the ☁️ lead; model shows the per-level effort glyph (tui-pi parity)", () => {
+	test("provider carries the 🌐 lead; model shows the per-level effort glyph (tui-pi parity)", () => {
 		expect(providerSegment("", undefined)).toBeNull()
-		expect(providerSegment("bigmodel", undefined)?.text).toBe("☁️ bigmodel")
+		expect(providerSegment("bigmodel", undefined)?.text).toBe("🌐 bigmodel")
 		expect(modelSegment("", "high")).toBeNull()
 		expect(modelSegment("glm-5.3-flash", "off")?.text).toBe("🤖 glm-5.3-flash ○ off")
 		// tui-pi thinkingIcon ladder: minimal ◔ / low ◑ / medium ◕ / high ● / xhigh ◉ / max ★.
@@ -179,7 +179,7 @@ describe("footer assembly", () => {
 		})
 		expect(segs.map((s) => s.text)).toEqual([
 			"dsh",
-			"☁️ bigmodel",
+			"🌐 bigmodel",
 			"🤖 glm-5.3-flash ● high",
 			"🧠 420/1.0k(42.0%)",
 			"💬 2 msgs",

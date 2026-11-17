@@ -25,7 +25,9 @@
  * opencode counterpart: packages/tui/test/ui/layout.test.ts exact boundary
  * asserts + inline-tool-wrap-snapshot fixed-width captureCharFrame). The
  * antidote is a headless frame assertion that COUNTS the drawn rows inside
- * the dock's bordered Todos box — no hint fallback involved.
+ * the merged activity frame's heavy border — no hint fallback involved.
+ * Under the merged widget (D1) todos render inside that frame; there is no
+ * standalone bordered Todos box any more.
  *
  * Fixture: ./shell-render-fixture.tsx. Scope guards: short-burst frames
  * only — no sustained streaming turn (upstream diff-paint corruption).
@@ -37,6 +39,7 @@ import { setMotionTier } from "../../tui-base/src/skin/motion"
 import { latestTodos, skinDockLineFg, todosTableLines } from "../../tui-base/src/routes/session/widgets-dock"
 import { setDockSpin } from "../../tui-base/src/routes/session/widgets-dock"
 import type { SeamRow } from "../../tui-base/src/routes/session/seam-rows"
+import { stringWidth } from "../../tui-base/src/util/string-width"
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 /** Advance to an absolute wall-clock target (Date.now based). */
@@ -160,86 +163,70 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 	})
 
 	// -------------------------------------------------------------------
-	// Incident 3 — border-box row count (positive case): the dock's bordered
-	// Todos box must DRAW its content rows inside the border — counted
-	// straight off the captured frame, no hint fallback.
+	// Incident 3 — paint continuity (positive case): the MERGED activity
+	// frame must DRAW its in_progress todo rows INSIDE its heavy border —
+	// counted straight off the captured frame, no hint fallback, no
+	// standalone Todos box (D1/D6).
 	// -------------------------------------------------------------------
 	test("bordered todos box draws its content rows inside the border (counted off the frame)", async () => {
-		// The dock's right-wall alignment is a RENDER-layer invariant: the pure
-		// todosTableLines() builder pads every row to exactly boxWidth columns,
-		// but the renderer used to re-clip each row with clipToWidth (whose
-		// whitespace fold pulled the right `│` 2 columns left of the `┐`), so a
-		// pure-function test stays green while the painted box is broken. Pin it
-		// off the REAL frame at three widths — including 40 (the narrow-box
-		// Math.max(16, W-1) floor path).
+		// Right-wall alignment is a RENDER-layer invariant: the pure row builder
+		// fits every line to the container's inner width with stringWidth (D13),
+		// but the old renderer re-clipped rows with a character-count clip (whose
+		// whitespace fold pulled the right wall 2 columns left of the top-right
+		// corner), so a pure-function test stayed green while the painted frame
+		// was broken. Pin it off the REAL frame at three widths — including 40
+		// (the narrow Math.max(16, W-4) floor path). The fixture feeds a settled
+		// `todo_write` seam row whose args carry the todos — the merged path's
+		// data source (there is no standalone panel any more).
+		const todoArgs = JSON.stringify({
+			todos: [
+				{ content: "map the incident", status: "completed" },
+				{ content: "write the regression", status: "in_progress" },
+				{ content: "ship the gate", status: "pending" },
+			],
+		})
 		for (const width of [80, 120, 40]) {
 			await using fixture = await createShellRenderFixture({
 				width,
-				turnScript: async (cb) => {
-					cb.onToolStart?.({
-						callId: "call-todo",
-						name: "todo_write",
-						args: JSON.stringify({
-							todos: [
-								{ content: "map the incident", status: "completed" },
-								{ content: "write the regression", status: "in_progress" },
-								{ content: "ship the gate", status: "pending" },
-							],
-						}),
-					})
-					cb.onToolRun?.({
-						callId: "call-todo",
-						name: "todo_write",
-						// NOTE: onToolRun replaces the row's args with argsPretty, so
-						// the todo array rides HERE (the shape latestTodos parses).
-						argsPretty: JSON.stringify({
-							todos: [
-								{ content: "map the incident", status: "completed" },
-								{ content: "write the regression", status: "in_progress" },
-								{ content: "ship the gate", status: "pending" },
-							],
-						}),
-						output: "Updated todo list",
-						ok: true,
-					})
-				},
+				stored: [{ kind: "tool", name: "todo_write", args: todoArgs, brief: "Updated todo list", ok: true }],
 			})
 
-			const pending = fixture.send("plan the gate work")
-			const frame = await fixture.waitForFrame((f) => f.includes("● Todos"))
-			await pending
+			const frame = await fixture.waitForFrame((f) => f.includes("🧩 activity"))
 			const lines = frame.split("\n")
 
-			// Locate the bordered box by its header; the top border must sit
-			// directly above it and the bottom border must close the box.
-			const headerIdx = lines.findIndex((line) => line.includes("● Todos"))
-			expect(headerIdx).toBeGreaterThan(0)
-			const topBorder = lines[headerIdx - 1]!
-			expect(topBorder).toContain("┌")
-			const bottomIdx = lines.findIndex((line, i) => i > headerIdx && line.includes("└"))
-			expect(bottomIdx).toBeGreaterThan(headerIdx)
+			// D1/D4: no separate bordered Todos box (the "● Todos" header is gone)
+			// and the activity title never mentions "todo".
+			expect(frame).not.toContain("● Todos")
+			const topIdx = lines.findIndex((line) => line.includes("┏"))
+			expect(topIdx).toBeGreaterThanOrEqual(0)
+			expect(lines[topIdx]!.toLowerCase()).not.toContain("todo")
 
-			// THE incident assert: rows counted INSIDE the border box are > 0.
-			const inner = lines.slice(headerIdx + 1, bottomIdx)
-			expect(inner.length).toBeGreaterThan(0)
-			// The border really surrounds the content: walls on every inner row
-			// and the known content present between top and bottom.
-			for (const line of inner) expect(line).toContain("│")
-			expect(inner.some((line) => line.includes("write the regression"))).toBe(true)
-			expect(inner.some((line) => line.includes("ship the gate"))).toBe(true)
+			// Locate the activity frame by its HEAVY borders (┏ title / ┗ close);
+			// the transcript uses light ┌/└, so ┏/┗ are unambiguous.
+			const bottomIdx = lines.findIndex((line, i) => i > topIdx && line.includes("┗"))
+			expect(bottomIdx).toBeGreaterThan(topIdx)
 
-			// THE render-layer regression assert (width=${width}): every table
-			// row's right wall (`│`) must land in the SAME column as the top
-			// border's right corner (`┐`). The re-clip bug shrank the # / ✓ /
-			// Task header and the data rows by two columns, so their `│` sat
-			// left of the `┐` while the title row (single leading space) and
-			// the borders matched — this is the exact drift the FT must catch.
-			const topRightCol = topBorder.lastIndexOf("┐")
-			expect(topRightCol).toBeGreaterThan(0)
-			const tableRows = [lines[headerIdx]!, ...inner]
-			for (const row of tableRows) {
-				expect(row.lastIndexOf("│")).toBe(topRightCol)
-			}
+			// Count content rows straight off the frame: every row between the
+			// two borders is a content row (frame height - 2), each with a ┃ wall.
+			// Active-only (D6) keeps just the one in_progress todo, at its
+			// original plan index 2 — no pending/completed residue.
+			const frameHeight = bottomIdx - topIdx + 1
+			const inner = lines.slice(topIdx + 1, bottomIdx)
+			expect(inner.length).toBe(frameHeight - 2)
+			expect(inner.length).toBe(1)
+			for (const row of inner) expect(row).toContain("┃")
+
+			// Exact painted row (D13): wall, "● <index> <content>", stringWidth
+			// padding to the inner width, closing wall.
+			const body = "● 2 write the regression"
+			expect(inner).toEqual([`┃${body}${" ".repeat(width - 2 - stringWidth(body))}┃`])
+
+			// THE render-layer regression assert (width=${width}): every content
+			// row's right wall (┃) must land in the SAME column as the top
+			// border's ┓. The character-count re-clip bug sat 2 columns left.
+			const topRightCol = lines[topIdx]!.lastIndexOf("┓")
+			expect(topRightCol).toBe(width - 1)
+			for (const row of inner) expect(row.lastIndexOf("┃")).toBe(topRightCol)
 		}
 	})
 
