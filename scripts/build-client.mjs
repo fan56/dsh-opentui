@@ -235,3 +235,23 @@ if (!hostLaunchResult.success) {
   process.exit(1)
 }
 console.log(`[build-client] built ${hostLaunchOut}`)
+
+// --- T3b: detached all-crash watchdog bundle -------------------------------
+// The client spawns this detached node process (see spawnWatchdog) to reclaim a
+// host whose clients all crashed without a clean exit. Separate entry so the
+// launcher/host-launch path stays lean; all logic lives in client-lifecycle.ts.
+const watchdogOut = join(shellDir, "dist", "watchdog.mjs")
+const watchdogResult = await Bun.build({
+  entrypoints: [join(shellDir, "src", "client", "watchdog-cli.ts")],
+  target: "node",
+  format: "esm",
+  outdir: join(shellDir, "dist"),
+  naming: "watchdog.mjs",
+  sourcemap: "linked",
+  external: ["ws", "@opentui/core", "@deepseek-ai/dsh-client-connection", "@aiwayds/dsh-jev-core"],
+})
+if (!watchdogResult.success) {
+  for (const log of watchdogResult.logs) console.error(log)
+  process.exit(1)
+}
+console.log(`[build-client] built ${watchdogOut}`)

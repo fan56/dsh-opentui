@@ -22,14 +22,26 @@
  * the whole state machine with fakes — no real host, socket, or signal.
  */
 
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { homedir } from 'node:os'
 import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { dirname, join } from 'node:path'
 
+// ADR-0009 decisions 6–8 — client heartbeat guard, three-evidence safe stop.
+import { assertForceAllowed, purgeAllHeartbeats } from './client-lifecycle.ts'
 import { mintOwnerCookie } from './cookie-mint.ts'
 import { checkHostHealth, defaultHealthProbes, type HealthCheck } from './host-health.ts'
 import { findFreePort } from './host-port.ts'
+// ADR-0009 decision 8 — the three-evidence gate and the only sanctioned way to
+// signal a host. Re-exported below so existing callers keep their imports.
+import {
+  evidencesAgree,
+  psKillHooks,
+  safeStopHost,
+  SERVER_ENV_NAME,
+  SERVER_ENV_VALUE,
+  type ProcessKillHooks,
+} from './safe-kill.ts'
 import {
   claimRegistry,
   isRegistryStale,
@@ -50,15 +62,19 @@ import {
 
 /** The one product profile (ADR-0005 decision 3). */
 export const DEFAULT_LAUNCH_PROFILE = 'opentui'
-/** Env marking a process as THIS launcher's Host service (ADR-0009 decision 1). */
-export const SERVER_ENV_NAME = 'DSH_OPENTUI_SERVER'
-export const SERVER_ENV_VALUE = '1'
+/** Env marker + three-evidence hooks live in `safe-kill.ts`; re-exported for
+ *  the callers/tests that imported them from here in T3a. */
+export { SERVER_ENV_NAME, SERVER_ENV_VALUE, psKillHooks } from './safe-kill.ts'
+export type { ProcessKillHooks } from './safe-kill.ts'
 /** 5-minute budget for the whole claim→ready sequence (ADR-0009 decision 5). */
 export const DEFAULT_LAUNCH_TIMEOUT_MS = 5 * 60_000
 /** Progress / readiness poll cadence (100–200ms per the ADR). */
 export const DEFAULT_POLL_MS = 150
 /** v2 record whose `updatedAt` is older than this (and whose pid lives) is stale. */
 export const DEFAULT_REGISTRY_MAX_AGE_MS = 60_000
+/** SIGTERM → SIGKILL grace for a confirmed `--force --yes` host stop. */
+export const FORCE_TERM_GRACE_MS = 2_000
+export const FORCE_KILL_GRACE_MS = 1_000
 
 /** Stages rendered in the launcher terminal while WE spawn the host. */
 export const LAUNCH_PHASES = ['spawn', 'booting', 'ready'] as const
@@ -112,22 +128,14 @@ export type SpawnHost = (
   options: { cwd: string; env: NodeJS.ProcessEnv },
 ) => SpawnedHost
 
-/** The three-evidence process-identification seam (ADR-0009 decision 8). */
-export interface ProcessKillHooks {
-  /** Full cmdline of `pid`, or null when the process is gone / unreadable. */
-  cmdline(pid: number): string | null
-  /** True when `pid`'s environment contains `DSH_OPENTUI_SERVER=1`. */
-  hasServerEnv(pid: number): boolean
-  /** Send a signal to `pid` (no-op on ESRCH is fine). */
-  kill(pid: number, signal: NodeJS.Signals): void
-}
-
 export interface HostLaunchDeps {
   home?: string
   profile?: string
   cwd?: string
-  /** T3b will add the full force/restart semantics; T3a only skips the attach. */
+  /** Reset the singleton host. Live clients require `yes` too (ADR-0009 §7). */
   force?: boolean
+  /** Confirm a force reset when live clients exist (`--force --yes`). */
+  yes?: boolean
   /** Filesystem seam for the registry + diagnostic log. */
   fs?: RegistryFs
   /** Clock (`Date.now` equivalent) for timestamps, elapsed and deadlines. */
@@ -167,6 +175,7 @@ interface ResolvedDeps {
   profile: string
   cwd: string
   force: boolean
+  yes: boolean
   fs: RegistryFs
   now: () => number
   sleep: (ms: number) => Promise<void>
@@ -248,32 +257,6 @@ export const defaultSpawnHost: SpawnHost = (argv, options) => {
   return child as unknown as SpawnedHost
 }
 
-/** Default three-evidence hooks via `ps` (portable enough for darwin/linux). */
-export const psKillHooks: ProcessKillHooks = {
-  cmdline(pid) {
-    try {
-      return spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).stdout?.trim() || null
-    } catch {
-      return null
-    }
-  },
-  hasServerEnv(pid) {
-    try {
-      const out = spawnSync('ps', ['eww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).stdout ?? ''
-      return out.includes(`${SERVER_ENV_NAME}=${SERVER_ENV_VALUE}`)
-    } catch {
-      return false
-    }
-  },
-  kill(pid, signal) {
-    try {
-      process.kill(pid, signal)
-    } catch {
-      /* already gone */
-    }
-  },
-}
-
 const defaultHealth = (authority: string, cookieHeader: string): Promise<HealthCheck> =>
   checkHostHealth({ authority, cookieHeader }, defaultHealthProbes)
 
@@ -285,6 +268,7 @@ function resolveDeps(d: HostLaunchDeps): ResolvedDeps {
     profile,
     cwd: d.cwd ?? process.cwd(),
     force: d.force ?? false,
+    yes: d.yes ?? false,
     fs: d.fs ?? nodeRegistryFs,
     now: d.now ?? Date.now,
     sleep: d.sleep ?? defaultSleep,
@@ -361,18 +345,6 @@ function removeInvalidRecord(home: string, profile: string, o: ResolvedDeps): vo
   }
 }
 
-/** True only when all three ADR-0009 decision-8 evidences agree. */
-function evidencesAgree(pid: number, registryPid: number, o: ResolvedDeps): boolean {
-  if (registryPid !== pid) return false // (1) registry pid
-  const cmd = o.killHooks.cmdline(pid)
-  if (!cmd) return false
-  // (2) --profile opentui and no other profile on the cmdline.
-  const profiles = [...cmd.matchAll(/--profile[= ]+([^\s]+)/g)].map((m) => m[1])
-  if (profiles.length === 0 || profiles.some((p) => p !== DEFAULT_LAUNCH_PROFILE)) return false
-  // (3) env marker.
-  return o.killHooks.hasServerEnv(pid)
-}
-
 /** Attach output listeners that accumulate a bounded tail for the log/timeout. */
 function captureOutput(child: SpawnedHost, tail: { text: string }): void {
   const push = (chunk: unknown) => {
@@ -406,6 +378,36 @@ function flushLog(o: ResolvedDeps, tail: { text: string }): string {
  */
 export async function ensureHost(deps: HostLaunchDeps = {}): Promise<HostLaunchResult> {
   const o = resolveDeps(deps)
+
+  // 0. `--force` reset (ADR-0009 decision 7). Refuse when live clients exist
+  //    without `--yes`; otherwise three-evidence-stop the registry host and
+  //    clear its registry + client heartbeats before the normal boot sequence.
+  if (o.force) {
+    const hbDeps = { fs: o.fs, now: o.now }
+    assertForceAllowed(o.home, { ...hbDeps, yes: o.yes })
+    const current = readRegistry(o.home, o.profile, o.fs)
+    if (current.kind === 'v2' && current.value.pid > 0) {
+      await safeStopHost({
+        pid: current.value.pid,
+        registryPid: current.value.pid,
+        hooks: o.killHooks,
+        termGraceMs: FORCE_TERM_GRACE_MS,
+        killGraceMs: FORCE_KILL_GRACE_MS,
+        sleep: o.sleep,
+        now: o.now,
+        pidAlive: o.pidAlive,
+      })
+    }
+    try {
+      o.fs.unlinkSync(registryPath(o.home, o.profile))
+    } catch {
+      /* already gone */
+    }
+    purgeAllHeartbeats(o.home, hbDeps)
+  }
+
+  // The launch budget covers the claim → ready sequence only, not the force
+  // teardown that preceded it.
   const startedAt = o.now()
   const deadline = startedAt + o.timeoutMs
   const emit = (phase: LaunchPhase) => o.progress?.({ phase, elapsedMs: o.now() - startedAt })
@@ -534,7 +536,7 @@ export async function ensureHost(deps: HostLaunchDeps = {}): Promise<HostLaunchR
   const log = flushLog(o, tail)
   const current = readRegistry(o.home, o.profile, o.fs)
   const registryPid = current.kind === 'v2' ? current.value.pid : -1
-  if (evidencesAgree(child.pid, registryPid, o)) {
+  if (evidencesAgree(child.pid, registryPid, o.killHooks)) {
     o.killHooks.kill(child.pid, 'SIGTERM')
     if (o.pidAlive(child.pid)) o.killHooks.kill(child.pid, 'SIGKILL')
   }
@@ -564,5 +566,6 @@ export function bindFreePort(): Promise<number> {
 }
 
 // Re-export so callers can read a validated registry without reaching into the
-// sibling module directly.
+// sibling module directly, plus the typed `--force` refusal the launcher gates on.
 export { readRegistry, type HostRegistryV2, type RegistryReadResult }
+export { ForceNeedsYesError } from './client-lifecycle.ts'

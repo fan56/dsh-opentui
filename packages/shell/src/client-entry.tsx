@@ -74,6 +74,16 @@
  * idempotent (Symbol.for guard).
  */
 import type { RuntimeOptions, RuntimeHandle } from "@dsh-opentui/runtime"
+import { existsSync } from "node:fs"
+import { join } from "node:path"
+import {
+	registerHeartbeat as registerClientHeartbeat,
+	lastOneGracefulShutdown,
+	psKillHooks,
+	spawnWatchdog as spawnLifecycleWatchdog,
+	type HeartbeatHandle,
+	type LastOneResult,
+} from "./client/client-lifecycle.ts"
 import {
 	BOOT_LABEL_BUDGET_MS,
 	SHUTDOWN_GRACE_MS,
@@ -100,6 +110,22 @@ import {
 import { ClientConnection } from "./client/transport.ts"
 import { RemoteHostSession } from "./client/remote-host-session.ts"
 import type { ShellSessionSurface } from "./client/shell-session.ts"
+
+/** Resolve the detached watchdog bundle across source / built layouts.
+ *  Returns null when absent (e.g. a test tree) so spawn is simply skipped. */
+function resolveWatchdogScript(): string | null {
+	const candidates = [
+		// bundled client: dist/client/index.js → dist/watchdog.mjs
+		join(import.meta.dir, "..", "watchdog.mjs"),
+		// source tree: src/client-entry.tsx → dist/watchdog.mjs
+		join(import.meta.dir, "..", "dist", "watchdog.mjs"),
+		join(import.meta.dir, "..", "scripts", "watchdog.mjs"),
+	]
+	for (const candidate of candidates) {
+		if (existsSync(candidate)) return candidate
+	}
+	return null
+}
 
 /** Client boot product: what main() keeps alive and tests assert on. */
 export interface ClientBoot {
@@ -149,6 +175,21 @@ export interface ClientBootOptions {
 	/** Idle reaper seam (tests record instead of spawning). Default: the
 	 * detached `node scripts/idle-reaper.mjs` spawn. */
 	spawnReaper?: (args: IdleReaperArgs) => void
+	/** ADR-0009 client heartbeat lifecycle (default on; tests may disable). */
+	heartbeat?: boolean
+	/** Stable client id for the heartbeat file (default: generated). */
+	clientId?: string
+	/** Heartbeat registration seam (default: the real per-client file). */
+	registerHeartbeat?: typeof registerClientHeartbeat
+	/** Last-one-out graceful shutdown seam (default: the real 2s-grace logic). */
+	lastOneShutdown?: (
+		home: string,
+		opts: Parameters<typeof lastOneGracefulShutdown>[1],
+	) => Promise<LastOneResult>
+	/** Detached watchdog spawn seam (tests record instead of spawning). */
+	spawnLifecycleWatchdog?: (home: string, opts: { scriptPath: string; profile?: string }) => { pid?: number }
+	/** Override the watchdog script path (else resolved from the bundle layout). */
+	watchdogScriptPath?: string
 }
 
 /** Wait (bounded) for the cold-boot model route label — best-effort: the
@@ -225,6 +266,33 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 		...(options.dshHome !== undefined ? { dshHome: options.dshHome } : {}),
 	})
 
+	// ADR-0009 decision 6: a successful attach (fresh spawn, adopt, or the
+	// client's own fallback boot) registers this client's OWN heartbeat file and
+	// starts the ~3s refresh. No shared-array read-modify-write.
+	let heartbeat: HeartbeatHandle | null = null
+	if (options.heartbeat !== false) {
+		try {
+			heartbeat = (options.registerHeartbeat ?? registerClientHeartbeat)(host.dshHome, {
+				...(options.clientId !== undefined ? { id: options.clientId } : {}),
+				pid: process.pid,
+				workspace,
+			})
+			heartbeat.start()
+		} catch (error) {
+			console.error("[client-entry] heartbeat registration failed:", error)
+		}
+		// All-crash fallback: a detached watchdog polls the heartbeat dir and
+		// reclaims a host whose clients all crashed without a clean exit.
+		try {
+			const scriptPath = options.watchdogScriptPath ?? resolveWatchdogScript()
+			if (scriptPath) {
+				;(options.spawnLifecycleWatchdog ?? spawnLifecycleWatchdog)(host.dshHome, { scriptPath, profile })
+			}
+		} catch (error) {
+			console.error("[client-entry] watchdog spawn failed:", error)
+		}
+	}
+
 	// Last-resort async-error sink: unhandled rejections / uncaught exceptions
 	// land in $DSH_HOME/opentui-client.errors.log (opentui-host.idle.log
 	// convention) — a UI async path failing must never vanish without a trace.
@@ -286,6 +354,19 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 				])
 			} catch {
 				/* dispose is best-effort on the quit path */
+			}
+			// ADR-0009 decision 6: remove our heartbeat, then let the last-one
+			// logic decide (after a 2s grace, DSH_OPENTUI_HOST_IDLE_MS override)
+			// whether to SIGTERM the host and clear the registry. Only when this
+			// was the last fresh client does it touch the host at all.
+			if (heartbeat) {
+				heartbeat.stop()
+				heartbeat.remove()
+				try {
+					await (options.lastOneShutdown ?? lastOneGracefulShutdown)(host.dshHome, { profile, hooks: psKillHooks })
+				} catch (error) {
+					console.error("[client-entry] last-one shutdown failed:", error)
+				}
 			}
 			// Grace-window re-attach semantics (decision 5): release — NOT
 			// dispose — the host; it idle-exits after idleExitSec or is

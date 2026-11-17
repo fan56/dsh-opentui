@@ -52,7 +52,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ancestorPids, formatUpgradeUsage, formatUsage, killStaleProcesses, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
+import { formatUpgradeUsage, formatUsage, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseUpgradeArgs, readLauncherVersion, validateLauncherArgs } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -63,14 +63,8 @@ function exitWithGuidance(what, installCmd) {
   process.exit(1)
 }
 
-/** Run a helper command and return its stdout ('' on failure). */
-function capture(cmd, args) {
-  const r = spawnSync(cmd, args, { encoding: 'utf8' })
-  return r.stdout ?? ''
-}
-
 // --- 0. Bin-level flags: --version short-circuits, --force pre-clears -------
-const { version: versionFlag, force: forceFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
+const { version: versionFlag, force: forceFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
   const version = readLauncherVersion(pkgRoot)
@@ -80,6 +74,11 @@ if (versionFlag) {
   }
   console.log(`dsh-opentui ${version}`)
   process.exit(0)
+}
+
+if (yesFlag && !forceFlag) {
+  console.error('dsh-opentui: --yes is only meaningful together with --force.')
+  process.exit(2)
 }
 
 // --- 0.5 upgrade subcommand -------------------------------------------------
@@ -202,22 +201,12 @@ if (!spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout.trim()) {
   exitWithGuidance('the dsh CLI', 'npm i -g @deepseek-ai/dsh')
 }
 
-// --- 2.5 --force: kill this profile's stale instances before starting ------
-// Matches the opentui-profile host (`node <...>/dsh --profile opentui ...`)
-// and the dsh-opentui client (source entry or published bundle) by command
-// line, scoped to THIS dsh home (see lib/launcher.mjs SCOPE). The launcher's
-// own process tree is excluded; TERM first, then KILL for survivors.
-if (forceFlag) {
-  const rows = parseProcessRows(capture('ps', ['-A', '-o', 'pid=,ppid=,command=']))
-  const homes = parseProcessHomes(capture('ps', ['eww', '-A', '-o', 'pid=,args=']))
-  const stale = selectStaleProcesses(rows, {
-    homes,
-    home: dshHome,
-    excludePids: ancestorPids(rows, process.pid),
-  })
-  const result = await killStaleProcesses(stale)
-  console.log(`--force: killed ${result.terminated} stale instance(s)`)
-}
+// --- 2.5 --force -----------------------------------------------------------
+// NOTE (ADR-0009 decision 8): the old bare `--profile opentui` cmdline sweep
+// lived here. It is deliberately removed — killing a process needs the THREE
+// evidences (registry pid + `--profile opentui` cmdline + `DSH_OPENTUI_SERVER=1`
+// env). `--force` is now handled at step 6a inside the host-launch bundle,
+// which also enforces the `--yes` guard when live clients are connected.
 
 // --- 3. Profile bootstrap (every start, best effort, idempotent) -----------
 // provision-opentui-profile.mjs is idempotent and understands
@@ -440,12 +429,19 @@ if (!clientArgs.includes('--dry-run')) {
       profile: 'opentui',
       cwd: process.cwd(),
       ...(forceFlag ? { force: true } : {}),
+      ...(yesFlag ? { yes: true } : {}),
       progress: createLaunchProgress({
         isTty: Boolean(process.stderr.isTTY),
         write: (text) => process.stderr.write(text),
       }),
     })
   } catch (err) {
+    // A force reset with live clients and no --yes is a usage error: abort
+    // instead of continuing into a client that would attach to the old host.
+    if (err?.code === 'force-needs-yes') {
+      console.error(`dsh-opentui: ${err?.message ?? err}`)
+      process.exit(2)
+    }
     console.error(`dsh-opentui: host pre-launch failed (${err?.message ?? err}); the client will retry host boot.`)
   }
 }

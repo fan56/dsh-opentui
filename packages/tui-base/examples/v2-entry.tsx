@@ -69,6 +69,7 @@ import { createSlashHost, SlashPalette } from "../src/routes/session/slash-palet
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import { presetLabelFor, coreCommands, type PickOneExtras } from "../src/routes/session/commands"
 import { join } from "node:path"
+import { existsSync } from "node:fs"
 import { agentsHomeEnvWarning, discoverSkills, resolveAgentsHome, withSkillCommands, type SkillRow } from "../src/routes/session/skills-source"
 import { SkillsPanel, openSkillsPanel } from "../src/routes/session/skills-panel"
 import { SessionsSearch, openSessionsSearch } from "../src/routes/session/sessions-search"
@@ -113,16 +114,27 @@ import { StatusBar } from "../src/routes/session/status-bar"
 // transitive errors on top of the 58 budget) even behind this file's
 // ts-nocheck. Runtime-only, opaque to tsc.
 const SHELL = "../../" + "shell/src/client/"
+/** Locate the detached watchdog bundle across source / built layouts. */
+function resolveWatchdogScript(): string | null {
+	const candidates = [
+		join(import.meta.dir, "..", "watchdog.mjs"),
+		join(import.meta.dir, "..", "..", "shell", "dist", "watchdog.mjs"),
+		join(import.meta.dir, "..", "..", "..", "shell", "dist", "watchdog.mjs"),
+	]
+	for (const candidate of candidates) if (existsSync(candidate)) return candidate
+	return null
+}
 async function loadShell() {
-	const [shared, lifecycle, transport, rhs, adapter, git] = await Promise.all([
+	const [shared, lifecycle, clifecycle, transport, rhs, adapter, git] = await Promise.all([
 		import(SHELL + "boot-shared.ts"),
 		import(SHELL + "lifecycle.ts"),
+		import(SHELL + "client-lifecycle.ts"),
 		import(SHELL + "transport.ts"),
 		import(SHELL + "remote-host-session.ts"),
 		import(SHELL + "session-seam-adapter.ts"),
 		import(SHELL + "remote-git.ts"),
 	])
-	return { shared, lifecycle, transport, rhs, adapter, git }
+	return { shared, lifecycle, clifecycle, transport, rhs, adapter, git }
 }
 
 const overlays = new TurnOverlayController()
@@ -1416,7 +1428,7 @@ export interface ClientBootV2 {
  * parity (dispose session → release host ref → idle reaper hand-off).
  */
 export async function bootClientV2(options: { argv?: readonly string[] } = {}): Promise<ClientBootV2> {
-	const { shared, lifecycle, transport, rhs, adapter, git } = await loadShell()
+	const { shared, lifecycle, clifecycle, transport, rhs, adapter, git } = await loadShell()
 	const workspace = process.cwd()
 	const profile = lifecycle.DEFAULT_PROFILE
 	const idleExitMs = lifecycle.resolveIdleExitMs()
@@ -1424,6 +1436,23 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 
 	shared.bootCallOrder.push("ensureHost")
 	const host = await lifecycle.ensureHost({ profile, idleExitSec })
+	// ADR-0009 decision 6: register this client's OWN heartbeat as soon as the
+	// attach succeeded, refresh every ~3s, and start the detached all-crash
+	// watchdog. All I/O here is best-effort — a heartbeat failure must never
+	// block the TUI from booting.
+	let clientHeartbeat: ReturnType<typeof clifecycle.registerHeartbeat> | null = null
+	try {
+		clientHeartbeat = clifecycle.registerHeartbeat(host.dshHome, { pid: process.pid, workspace })
+		clientHeartbeat.start()
+	} catch (error) {
+		console.error("[v2-entry] heartbeat registration failed:", error)
+	}
+	try {
+		const scriptPath = resolveWatchdogScript()
+		if (scriptPath) clifecycle.spawnWatchdog(host.dshHome, { scriptPath, profile })
+	} catch (error) {
+		console.error("[v2-entry] watchdog spawn failed:", error)
+	}
 	shared.bootCallOrder.push("connect")
 	const connection = new transport.ClientConnection({
 		authority: host.authority,
@@ -1588,6 +1617,17 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 				await Promise.race([session.dispose(), new Promise((resolve) => setTimeout(resolve, shared.SHUTDOWN_GRACE_MS))])
 			} catch {
 				/* dispose is best-effort on the quit path */
+			}
+			// ADR-0009 decision 6: drop our own heartbeat, then let the last-one
+			// logic decide (after the grace window) whether to SIGTERM the host.
+			if (clientHeartbeat) {
+				clientHeartbeat.stop()
+				clientHeartbeat.remove()
+				try {
+					await clifecycle.lastOneGracefulShutdown(host.dshHome, { profile, hooks: clifecycle.psKillHooks })
+				} catch (error) {
+					console.error("[v2-entry] last-one shutdown failed:", error)
+				}
 			}
 			// Grace-window parity (client-entry): release — NOT dispose — the
 			// host, then hand the idle-exit to the detached reaper.

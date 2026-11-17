@@ -61,6 +61,7 @@ export function parseLauncherArgs(argv) {
 	const args = Array.isArray(argv) ? argv : []
 	let version = false
 	let force = false
+	let yes = false
 	const rest = []
 	const passthrough = []
 	let separatorSeen = false
@@ -81,9 +82,15 @@ export function parseLauncherArgs(argv) {
 			force = true
 			continue
 		}
+		// `--yes` confirms a --force reset when live clients exist (ADR-0009 §7).
+		// Consumed by the bin, never forwarded to dsh/the client.
+		if (arg === '--yes') {
+			yes = true
+			continue
+		}
 		rest.push(arg)
 	}
-	return { version, force, rest, passthrough }
+	return { version, force, yes, rest, passthrough }
 }
 
 /**
@@ -280,7 +287,8 @@ export function formatUsage() {
 		'',
 		'Options:',
 		'  -v, --version              print the launcher version and exit',
-		'  --force                    kill stale dsh processes before starting',
+		'  --force                    reset the singleton host before starting (needs --yes if clients are live)',
+		'  --yes                      confirm a --force reset that would disconnect live clients',
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
 		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
 		'  --connect-timeout <sec>    seconds to wait for the first connection (default: 30)',

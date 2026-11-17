@@ -19,6 +19,8 @@
     "dist/locales",
     "dist/host-launch.mjs",
     "dist/host-launch.mjs.map",
+    "dist/watchdog.mjs",
+    "dist/watchdog.mjs.map",
     "README.md",
     "LICENSE",
     "NOTICE",
