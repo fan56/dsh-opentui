@@ -78,6 +78,8 @@ export const DEFAULT_LAST_ONE_GRACE_MS = 2_000
 export const ENV_IDLE_MS = 'DSH_OPENTUI_HOST_IDLE_MS'
 /** Watchdog poll cadence. */
 export const DEFAULT_WATCHDOG_POLL_MS = 1_000
+/** Cap for the watchdog's failure-path backoff (`graceMs * 2 ** failStreak`). */
+export const WATCHDOG_MAX_BACKOFF_MS = 30_000
 /** Watchdog env: home / profile / explicit "I am the watchdog" marker. */
 export const ENV_WATCHDOG = 'DSH_OPENTUI_WATCHDOG'
 export const ENV_WATCHDOG_HOME = 'DSH_OPENTUI_WATCHDOG_HOME'
@@ -415,6 +417,7 @@ export async function lastOneGracefulShutdown(
     pid: read.value.pid,
     registryPid: read.value.pid,
     hooks: options.hooks,
+    profile,
     termGraceMs: options.termGraceMs,
     killGraceMs: options.killGraceMs,
     sleep,
@@ -558,10 +561,14 @@ export async function runWatchdog(home: string, options: WatchdogOptions): Promi
   const sleep = options.sleep ?? defaultSleep
   const alive = options.hooks.pidAlive ?? defaultPidAlive
   const fs = options.fs ?? nodeLifecycleFs
+  // Consecutive refusal streak. Only the `!stop.stopped` path sleeps with
+  // exponential backoff; any fresh client / host-gone observation clears it.
+  let failStreak = 0
 
   for (let tick = 0; options.maxTicks === undefined || tick < options.maxTicks; tick++) {
     const read = readRegistry(home, profile, fs as never)
     if (read.kind !== 'v2' || read.value.pid <= 0 || !alive(read.value.pid)) {
+      failStreak = 0
       // Host gone: self-exit (also drop a stale record naming a dead pid).
       if (read.kind === 'v2' && !alive(read.value.pid)) {
         try {
@@ -576,6 +583,7 @@ export async function runWatchdog(home: string, options: WatchdogOptions): Promi
     const freshCount = freshClients(home, options, options.ttlMs).length
     options.onTick?.({ tick, freshCount, hostPid: read.value.pid })
     if (freshCount > 0) {
+      failStreak = 0
       await sleep(pollMs)
       continue
     }
@@ -585,13 +593,17 @@ export async function runWatchdog(home: string, options: WatchdogOptions): Promi
     await sleep(graceMs)
     const again = readRegistry(home, profile, fs as never)
     if (again.kind !== 'v2' || again.value.pid !== read.value.pid) continue
-    if (freshClients(home, options, options.ttlMs).length > 0) continue
+    if (freshClients(home, options, options.ttlMs).length > 0) {
+      failStreak = 0
+      continue
+    }
     if (!alive(again.value.pid)) continue // re-loop → host-gone self-exit
 
     const stop = await safeStopHost({
       pid: again.value.pid,
       registryPid: again.value.pid,
       hooks: options.hooks,
+      profile,
       termGraceMs: options.termGraceMs,
       killGraceMs: options.killGraceMs,
       sleep,
@@ -601,8 +613,18 @@ export async function runWatchdog(home: string, options: WatchdogOptions): Promi
     if (!stop.stopped) {
       // P0-2: evidence was refused (or the kill was not confirmed). The host is
       // still alive — clearing its registry record would make it a permanent
-      // untrackable orphan. Keep the record, log, and retry next tick.
+      // untrackable orphan. Keep the record, log, and retry next tick with a
+      // capped exponential backoff (the functional graceMs window above is
+      // untouched — this only throttles repeated refusals).
       options.onEvidenceRefused?.({ pid: again.value.pid, evidencesOk: stop.evidencesOk })
+      // Floating-point multiply: unlike `<<` (32-bit signed) this never wraps
+      // to a negative/tiny delay when graceMs is large and the streak grows.
+      // Math.min still pins the result to the 30s cap.
+      await sleep(Math.min(graceMs * 2 ** failStreak, WATCHDOG_MAX_BACKOFF_MS))
+      // Cap the exponent so we never compute a meaningless huge power (which
+      // would overflow to Infinity). The backoff is already pinned at the cap
+      // long before this — the clamp is NOT about 32-bit wrap (multiply can't).
+      failStreak = Math.min(failStreak + 1, 30)
       continue
     }
     clearRegistryIfPid(home, profile, again, again.value.pid, fs)

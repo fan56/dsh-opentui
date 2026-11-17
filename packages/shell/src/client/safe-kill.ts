@@ -5,13 +5,13 @@
  * A process may only be signalled when ALL of these agree:
  *   1. the pid recorded in the v2 registry (`registryPid`) equals the pid we
  *      are about to signal;
- *   2. its `ps` cmdline contains `--profile opentui` AND no other `--profile`;
+ *   2. its `ps` cmdline contains `--profile <expected>` AND no other `--profile`;
  *   3. its environment carries `DSH_OPENTUI_SERVER=1`.
  *
  * Evidence 3 is OPTIONAL when the env is genuinely unreadable (DESIGN §6):
  * on some platforms `ps eww` cannot expose a detached process's environment.
  * In that case only the two hard evidences (registry pid + exact
- * `--profile opentui` cmdline) are required, and a fallback log is emitted.
+ * `--profile <expected>` cmdline) are required, and a fallback log is emitted.
  * A bare "dsh" substring match remains explicitly forbidden in ALL cases.
  * Every signal goes
  * through {@link ProcessKillHooks.kill}, which is injectable so unit tests
@@ -136,22 +136,27 @@ export const psKillHooks: ProcessKillHooks = {
 
 /**
  * True when the ADR-0009 decision-8 evidences agree. Evidences 1 (registry
- * pid) and 2 (exact `--profile opentui` cmdline, no other profile) are always
- * required. Evidence 3 (the env marker) is waived ONLY when the env is
+ * pid) and 2 (exact `--profile <expectedProfile>` cmdline, no other profile)
+ * are always required. Evidence 3 (the env marker) is waived ONLY when the env is
  * genuinely unreadable (`hooks.envReadable(pid) === false`, e.g. `ps eww` is
  * unavailable) — in that case a fallback log is emitted. When the env is
  * readable but lacks the marker, this still refuses to signal. This is the
  * sole gate before any host signal and never falls back to a "dsh" substring
  * or port guess.
  */
-export function evidencesAgree(pid: number, registryPid: number, hooks: ProcessKillHooks): boolean {
+export function evidencesAgree(
+  pid: number,
+  registryPid: number,
+  hooks: ProcessKillHooks,
+  expectedProfile: string = HOST_PROFILE,
+): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false
   if (registryPid !== pid) return false // (1) registry pid
   const cmd = hooks.cmdline(pid)
   if (!cmd) return false
-  // (2) --profile opentui and no other profile on the cmdline.
+  // (2) exactly one --profile, compared by equality (never a substring match).
   const profiles = [...cmd.matchAll(/--profile[= ]+([^\s]+)/g)].map((m) => m[1])
-  if (profiles.length === 0 || profiles.some((p) => p !== HOST_PROFILE)) return false
+  if (profiles.length === 0 || profiles.some((p) => p !== expectedProfile)) return false
   // (3) env marker — required when readable, optional when unreadable.
   if (hooks.hasServerEnv(pid)) return true
   if (hooks.envReadable && !hooks.envReadable(pid)) {
@@ -167,6 +172,8 @@ export interface SafeStopOptions {
   /** The pid recorded in the registry (evidence 1). */
   registryPid: number
   hooks: ProcessKillHooks
+  /** Profile this host belongs to; must equal the cmdline profile (default `HOST_PROFILE`). */
+  profile?: string
   termGraceMs?: number
   killGraceMs?: number
   sleep?: (ms: number) => Promise<void>
@@ -217,6 +224,7 @@ export async function safeStopHost(options: SafeStopOptions): Promise<SafeStopRe
     pid,
     registryPid,
     hooks,
+    profile = HOST_PROFILE,
     termGraceMs = DEFAULT_TERM_GRACE_MS,
     killGraceMs = DEFAULT_KILL_GRACE_MS,
     sleep = defaultSleep,
@@ -224,7 +232,7 @@ export async function safeStopHost(options: SafeStopOptions): Promise<SafeStopRe
     now = Date.now,
   } = options
 
-  if (!evidencesAgree(pid, registryPid, hooks)) {
+  if (!evidencesAgree(pid, registryPid, hooks, profile)) {
     return { attempted: false, evidencesOk: false, signals: [], stopped: !pidAlive(pid) }
   }
 
