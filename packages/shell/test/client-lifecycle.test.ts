@@ -9,6 +9,7 @@ import {
   CLIENTS_DIR_NAME,
   DEFAULT_CLIENT_TTL_MS,
   ForceNeedsYesError,
+  IncompleteLifecycleFsError,
   freshClients,
   heartbeatPath,
   isFresh,
@@ -31,6 +32,7 @@ import {
 import { writeRegistry, type HostRegistryV2 } from '../src/client/host-registry.ts'
 import { ensureHost, ForceNeedsYesError as HostForceError } from '../src/client/host-launch.ts'
 import { safeStopHost } from '../src/client/safe-kill.ts'
+import { prelaunchFailurePolicy } from '../bin/lib/launcher.mjs'
 
 const HOME = '/virtual/home'
 const PORT = 60_200
@@ -479,7 +481,7 @@ describe('--force / --yes guard', () => {
     seedHeartbeat(fs, 'c1', new Date(NOW).toISOString())
     const kill = makeHooks()
     await expect(ensureHost({
-      home: HOME, fs: fs as never, now: () => NOW, force: true, killHooks: kill.hooks,
+      home: HOME, fs: fs as never, lifecycleFs: fs, now: () => NOW, force: true, killHooks: kill.hooks,
       spawnHost: () => { throw new Error('must not spawn') },
     })).rejects.toBeInstanceOf(HostForceError)
     expect(kill.killed).toHaveLength(0)
@@ -500,7 +502,7 @@ describe('--force / --yes guard', () => {
     }
     const spawned: unknown[] = []
     const result = await ensureHost({
-      home: HOME, fs: fs as never, now: clock.now, sleep: clock.sleep,
+      home: HOME, fs: fs as never, lifecycleFs: fs, now: clock.now, sleep: clock.sleep,
       force: true, yes: true, killHooks: kill.hooks, pidAlive: kill.hooks.pidAlive!,
       baseEnv: {}, findPort: async () => PORT,
       mintCookie: ({ authority }) => `cookie-for-${authority}`,
@@ -515,6 +517,61 @@ describe('--force / --yes guard', () => {
     expect(reg.pid).toBe(4242)
     expect(reg.phase).toBe('ready')
     expect(listHeartbeats(HOME, { fs, now: clock.now })).toHaveLength(0) // heartbeats purged
+  })
+
+  // Regression for T6b/S1: the packaged host-launch used to hand the slim
+  // registry-only fs (no readdirSync) to the force guard. A live client was then
+  // invisible → no ForceNeedsYesError → SIGTERM to a live host. That fs must now
+  // HARD-ERROR, never silently report zero clients.
+  test('slim fs without readdirSync hard-errors instead of silently allowing force', () => {
+    const { fs: full } = makeFs()
+    seedHeartbeat(full, 'c1', new Date(NOW).toISOString()) // a live client really exists
+    const slim: LifecycleFs = { ...full }
+    delete slim.readdirSync
+    // The full fs still sees the client and refuses.
+    expect(() => assertForceAllowed(HOME, { fs: full, now: () => NOW })).toThrow(ForceNeedsYesError)
+    // The slim fs must not degrade to "0 clients → allowed".
+    expect(() => assertForceAllowed(HOME, { fs: slim, now: () => NOW })).toThrow(IncompleteLifecycleFsError)
+    try {
+      assertForceAllowed(HOME, { fs: slim, now: () => NOW })
+    } catch (err) {
+      expect((err as IncompleteLifecycleFsError).code).toBe('lifecycle-fs-incomplete')
+      expect((err as IncompleteLifecycleFsError).missing).toContain('readdirSync')
+      expect((err as IncompleteLifecycleFsError).message).toContain('readdirSync')
+    }
+  })
+
+  test('ensureHost force with a slim lifecycleFs refuses before any host signal/spawn', async () => {
+    const { fs } = makeFs()
+    seedRegistry(fs)
+    seedHeartbeat(fs, 'c1', new Date(NOW).toISOString())
+    const slim: LifecycleFs = { ...fs }
+    delete slim.readdirSync
+    const kill = makeHooks({ stopOnSigterm: true })
+    await expect(ensureHost({
+      home: HOME, fs: fs as never, lifecycleFs: slim, now: () => NOW, force: true,
+      killHooks: kill.hooks, pidAlive: kill.hooks.pidAlive!,
+      spawnHost: () => { throw new Error('must not spawn') },
+    })).rejects.toBeInstanceOf(IncompleteLifecycleFsError)
+    expect(kill.killed).toHaveLength(0) // no SIGTERM/SIGKILL reached the live host
+  })
+
+  test('ForceNeedsYesError maps to exit 2 (usage-error) and prints the client count', () => {
+    const { fs } = makeFs()
+    seedHeartbeat(fs, 'c1', new Date(NOW).toISOString())
+    let err: unknown
+    try {
+      assertForceAllowed(HOME, { fs, now: () => NOW })
+    } catch (caught) {
+      err = caught
+    }
+    expect(err).toBeInstanceOf(ForceNeedsYesError)
+    const forceErr = err as ForceNeedsYesError
+    expect(forceErr.code).toBe('force-needs-yes')
+    expect(forceErr.message).toContain('disconnect 1 live client')
+    // The launcher's pre-launch failure policy maps this to exit code 2.
+    expect(prelaunchFailurePolicy(forceErr, false)).toBe('usage-error')
+    expect(prelaunchFailurePolicy(forceErr, true)).toBe('usage-error')
   })
 })
 

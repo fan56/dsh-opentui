@@ -460,6 +460,31 @@ export class ForceNeedsYesError extends Error {
 }
 
 /**
+ * Thrown when the force guard is handed an fs that cannot enumerate
+ * heartbeats. A slim (registry-only) fs makes `listHeartbeats` return `[]`,
+ * which would silently treat a live host as clientless and bypass `--yes`.
+ */
+export class IncompleteLifecycleFsError extends Error {
+  readonly code = 'lifecycle-fs-incomplete'
+  constructor(readonly missing: string[]) {
+    super(
+      `dsh-opentui: --force guard fs is missing required method(s): ${missing.join(', ')}; ` +
+        `refusing to read an unlistable heartbeat dir as "no live clients" (that would bypass --yes).`,
+    )
+    this.name = new.target.name
+  }
+}
+
+/** Fail loudly instead of silently seeing zero clients when the fs is slim. */
+function assertLifecycleFsComplete(fs: LifecycleFs | undefined): void {
+  const f = fs ?? nodeLifecycleFs
+  const missing = (['readdirSync', 'readFileSync'] as const).filter(
+    (method) => typeof (f as unknown as Record<string, unknown>)[method] !== 'function',
+  )
+  if (missing.length > 0) throw new IncompleteLifecycleFsError([...missing])
+}
+
+/**
  * The launcher-side `--force` gate. If any FRESH heartbeat exists and `yes` is
  * false, refuse with a typed error carrying the client count (the launcher
  * prints "will disconnect N clients"). With `yes`, or with no live clients,
@@ -469,6 +494,9 @@ export function assertForceAllowed(
   home: string,
   options: HeartbeatDeps & { yes?: boolean; ttlMs?: number },
 ): { liveClients: number; allowed: boolean } {
+  // REFUSE a slim fs (e.g. the registry-only `nodeRegistryFs`) instead of
+  // silently reading an empty client set and bypassing the `--yes` gate.
+  assertLifecycleFsComplete(options.fs)
   const live = freshClients(home, options, options.ttlMs)
   if (live.length > 0 && !options.yes) throw new ForceNeedsYesError(live.length)
   return { liveClients: live.length, allowed: true }

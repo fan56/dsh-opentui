@@ -28,7 +28,12 @@ import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { dirname, join } from 'node:path'
 
 // ADR-0009 decisions 6–8 — client heartbeat guard, three-evidence safe stop.
-import { assertForceAllowed, purgeAllHeartbeats } from './client-lifecycle.ts'
+import {
+  assertForceAllowed,
+  nodeLifecycleFs,
+  purgeAllHeartbeats,
+  type LifecycleFs,
+} from './client-lifecycle.ts'
 import { mintOwnerCookie } from './cookie-mint.ts'
 import { checkHostHealth, defaultHealthProbes, type HealthCheck } from './host-health.ts'
 import { findFreePort } from './host-port.ts'
@@ -138,6 +143,11 @@ export interface HostLaunchDeps {
   yes?: boolean
   /** Filesystem seam for the registry + diagnostic log. */
   fs?: RegistryFs
+  /** Filesystem seam for the `--force` heartbeat guard. Defaults to the full
+   *  real fs (WITH `readdirSync`) — never the slim registry-only `RegistryFs`.
+   *  Keeping this separate is what stops the packaged bundle from degrading the
+   *  force guard to an fs that cannot see live clients. */
+  lifecycleFs?: LifecycleFs
   /** Clock (`Date.now` equivalent) for timestamps, elapsed and deadlines. */
   now?: () => number
   /** Cancellable sleep seam. */
@@ -177,6 +187,7 @@ interface ResolvedDeps {
   force: boolean
   yes: boolean
   fs: RegistryFs
+  lifecycleFs: LifecycleFs
   now: () => number
   sleep: (ms: number) => Promise<void>
   spawnHost: SpawnHost
@@ -270,6 +281,7 @@ function resolveDeps(d: HostLaunchDeps): ResolvedDeps {
     force: d.force ?? false,
     yes: d.yes ?? false,
     fs: d.fs ?? nodeRegistryFs,
+    lifecycleFs: d.lifecycleFs ?? nodeLifecycleFs,
     now: d.now ?? Date.now,
     sleep: d.sleep ?? defaultSleep,
     spawnHost: d.spawnHost ?? defaultSpawnHost,
@@ -383,7 +395,10 @@ export async function ensureHost(deps: HostLaunchDeps = {}): Promise<HostLaunchR
   //    without `--yes`; otherwise three-evidence-stop the registry host and
   //    clear its registry + client heartbeats before the normal boot sequence.
   if (o.force) {
-    const hbDeps = { fs: o.fs, now: o.now }
+    // The heartbeat guard MUST see live clients. Use the dedicated full fs
+    // (with readdirSync), never the slim registry fs; assertForceAllowed now
+    // hard-errors if an incomplete fs is ever passed here again.
+    const hbDeps = { fs: o.lifecycleFs, now: o.now }
     assertForceAllowed(o.home, { ...hbDeps, yes: o.yes })
     const current = readRegistry(o.home, o.profile, o.fs)
     // A live legacy record is ALSO a host that must be stopped before its sole
