@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1] - 2026-11-17
+
+### Fixed
+- The launcher spawns the client asynchronously. Host processes were previously
+  left as unreaped zombies for the whole client session, because the synchronous
+  spawn blocked the event loop that reaps them. A client killed by a signal now
+  also reports `128 + signal` instead of exiting 0.
+- Stopping a host under a non-default profile works again: the
+  process-identification check compared the command line against the hardcoded
+  `opentui` profile instead of the profile the registry record was read for.
+- The watchdog backs off when the host refuses to stop (capped at 30s) instead
+  of re-probing every tick forever.
+- The `widgets-dock` fade-window test samples across a window derived from the
+  visibility constants instead of one fixed instant, so a slow CI runner no
+  longer fails it. The live remote smoke test builds its own scratch git
+  repository instead of relying on the checkout's branch.
+
+### Changed
+- ADR-0009 is Accepted. The phase-2 workspace-config extension is deferred:
+  skills, AGENTS.md and theme/model already resolve per session cwd; only
+  settings and tools are profile-scoped. Give each project its own `DSH_HOME`
+  if it needs a different tool set today.
+
 ## [0.19.0] - 2026-11-17
 
 0.18.7 carried the same code but shipped these lifecycle changes as a patch;
