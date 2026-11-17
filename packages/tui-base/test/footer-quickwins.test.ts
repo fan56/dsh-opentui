@@ -103,9 +103,11 @@ describe("footer wiring: tools / tps / durable messages", () => {
 		expect(segs.find((s) => s.text.includes("⚡"))).toBeUndefined()
 		expect(sessionFooterSegments({ provider: "p", model: "m", tps: null }).find((s) => s.text.includes("tok/s"))).toBeUndefined()
 	})
-	test("durable message count rides the 💬 segment (sessionInfo().messageCount)", () => {
-		const segs = sessionFooterSegments({ provider: "p", model: "m", messages: 7 })
-		expect(segs.find((s) => s.text === "💬 7 msgs")).toBeDefined()
+	test("durable turn/round counts ride the 💬 / ↻ readout (sessionInfo())", () => {
+		const segs = sessionFooterSegments({ provider: "p", model: "m", turns: 7, rounds: 12 })
+		expect(segs.find((s) => s.text === "💬 7 turns · ↻ 12 rounds")).toBeDefined()
+		// The legacy "N msgs" readout is retired from the strip.
+		expect(segs.some((s) => s.text.includes("msgs"))).toBe(false)
 	})
 })
 
@@ -475,7 +477,7 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 		expect(source).toMatch(/if \(!info\) \{\s*\n\s*setRemoteInfo\(undefined\)\s*\n\s*settleEffort\(\)\s*\n\s*return\s*\n\s*\}/)
 		// the guard sits inside refreshFooterData's sessionInfo chain, before setRemoteInfo({...})
 		expect(source.indexOf("if (!info) {")).toBeGreaterThan(source.indexOf("seam.sessionInfo?.()"))
-		expect(source.indexOf("if (!info) {")).toBeLessThan(source.indexOf("setRemoteInfo({ messageCount"))
+		expect(source.indexOf("if (!info) {")).toBeLessThan(source.indexOf("setRemoteInfo({"))
 	})
 
 	test("both effort sources settle before the default lands (review 3.3)", () => {
@@ -540,7 +542,9 @@ describe("v2-entry remote snapshot hygiene (source shape — the entry is ts-noc
 describe("HintsLine zero-row gate (all-off collapses to 0 lines — tui-pi parity)", () => {
 	const source = readFileSync(join(import.meta.dir, "..", "src", "routes", "session", "hints-line.tsx"), "utf8")
 
-	test("the Show gate requires non-empty row text, not just hintsShown", () => {
-		expect(source).toMatch(/<Show when=\{hintsShown\(\) && row\(\)\.length > 0\}>/)
+	test("the Show gate requires non-empty row text OR a busy comet, not just hintsShown", () => {
+		// Idle keeps the tui-pi zero-row gate; a busy turn keeps the row alive
+		// for the comet even when every hint segment is toggled off.
+		expect(source).toMatch(/<Show when=\{hintsShown\(\) && \(cometActive\(\) \|\| row\(\)\.length > 0\)\}>/)
 	})
 })

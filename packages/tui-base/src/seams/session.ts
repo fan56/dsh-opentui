@@ -265,8 +265,20 @@ export interface SeamSessionInfo {
 	model: string | null
 	/** Durable user+assistant messages (adapter-side transcript count). */
 	messageCount: number
-	/** User turns this facade drove since attach. */
+	/**
+	 * Footer 💬 turns — count of durable `user` transcript rows (one nominal
+	 * turn = one user/message with source.kind "user"). The adapter overrides
+	 * the facade's client-local `turnCount` with this durable count. A steer
+	 * may journal another user row on some hosts; unverifiable from the client.
+	 */
 	turnCount: number
+	/**
+	 * Footer ↻ rounds — count of durable `assistant/message` journal events
+	 * (one assembled assistant message = one attempt/round). Optional so an
+	 * older host or a seam fake without round plumbing still typechecks; absent
+	 * means unknown and the footer hides the segment (not a fabricated 0).
+	 */
+	roundCount?: number
 	tokensIn: number
 	tokensOut: number
 	cacheRead: number
