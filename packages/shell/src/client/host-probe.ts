@@ -51,12 +51,14 @@ function validAuthority(authority: string): boolean {
 }
 
 /**
- * Authenticated liveness: `GET /` with the owner cookie must reach the web
- * app. Any 2xx/3xx counts; 401/403 (cookie not accepted), 404 (something
- * else holds the port) and 5xx (broken host) all mean "not usable".
+ * Raw HTTP status of the authenticated `GET /` probe, or `null` when the
+ * authority is malformed or the request could not complete (timeout / TCP
+ * refused / fetch threw). Exposed so callers that decide health themselves
+ * (e.g. `host-health.ts`) can compose TCP + status without duplicating the
+ * cookie/authority/timeout plumbing. Never throws.
  */
-export async function probeHostHttp(options: HostProbeOptions): Promise<boolean> {
-  if (!validAuthority(options.authority)) return false
+export async function probeHostHttpStatus(options: HostProbeOptions): Promise<number | null> {
+  if (!validAuthority(options.authority)) return null
   const timeoutMs = options.timeoutMs ?? DEFAULT_HOST_PROBE_TIMEOUT_MS
   try {
     const response = await fetch(`http://${options.authority}/`, {
@@ -69,10 +71,20 @@ export async function probeHostHttp(options: HostProbeOptions): Promise<boolean>
     } catch {
       /* already consumed/closed */
     }
-    return response.status >= 200 && response.status < 400
+    return response.status
   } catch {
-    return false
+    return null
   }
+}
+
+/**
+ * Authenticated liveness: `GET /` with the owner cookie must reach the web
+ * app. Any 2xx/3xx counts; 401/403 (cookie not accepted), 404 (something
+ * else holds the port) and 5xx (broken host) all mean "not usable".
+ */
+export async function probeHostHttp(options: HostProbeOptions): Promise<boolean> {
+  const status = await probeHostHttpStatus(options)
+  return status !== null && status >= 200 && status < 400
 }
 
 /**
