@@ -107,8 +107,10 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 	})
 
 	// ------------------------------------------------------------------
-	// 4. Dock hide (D5) — activity frame appears with a live turn, hides
-	//    after the turn ends and the linger window expires.
+	// 4. Dock visibility lifecycle (D5 / D10) — the activity frame appears
+	//    with a live turn and, unlike the old design, STAYS up after turn end
+	//    while an in_progress todo remains. It only hides once the lower zone
+	//    is cleared and the frame's defer window passes.
 	// ------------------------------------------------------------------
 	test("dock activity frame appears during a turn and hides after end + linger", async () => {
 		let releaseTool: (() => void) | undefined
@@ -122,23 +124,46 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 			cb.onContentDelta?.("d5 turn answer body")
 		}
 
-		await using fixture = await createShellRenderFixture({ turnScript: script })
+		// A settled todo_write seam row carrying one in_progress todo keeps the
+		// lower zone present past turn end (D10) without gating on the frame
+		// latch. The parked grep tool gives the live-turn upper content.
+		await using fixture = await createShellRenderFixture({
+			stored: [{
+				kind: "tool",
+				name: "todo_write",
+				args: JSON.stringify({ todos: [{ content: "d5 active task", status: "in_progress" }] }),
+				brief: "Updated todo list",
+				ok: true,
+			}],
+			turnScript: script,
+		})
 		const pending = fixture.send("d5 probe")
 
-		// Positive: the turn is live → the bordered activity frame is up.
-		const live = await fixture.waitForFrame((f) => f.includes("activity"))
-		expect(live).toContain("activity")
+		// Positive: the turn is live → the heavy-bordered activity frame is up,
+		// tool row above and todo row below.
+		const live = await fixture.waitForFrame((f) => f.includes("┏"))
+		expect(live).toContain("🔧 tool")
 		expect(live).toContain("grep")
+		expect(live).toContain("● 1 d5 active task")
 
 		releaseTool?.()
 		await pending
 
-		// D5: end of turn + 2s linger + 300ms sweep → the frame and every
-		// settled dock line are hidden. Wait out the linger, then require a
-		// frame WITHOUT the activity title.
+		// D10: turn ended + 2s linger + 300ms sweep passed, but the in_progress
+		// todo is still present → the frame must STAY shown with the SAME lower
+		// row (now titled "🧩 activity" since the tool row faded out).
 		await new Promise((resolve) => setTimeout(resolve, 2800))
-		const settled = await fixture.waitForFrame((f) => !f.includes("activity"), { timeoutMs: 8000 })
-		expect(settled).not.toContain("activity")
+		const survived = await fixture.waitForFrame(() => true)
+		expect(survived).toContain("┏")
+		expect(survived).toContain("🧩 activity")
+		expect(survived).toContain("● 1 d5 active task")
+
+		// Clearing the todo list empties the lower zone; once the frame's defer
+		// window passes, the activity frame hides entirely (D5 lifecycle).
+		fixture.projection.hydrate([])
+		const settled = await fixture.waitForFrame((f) => !f.includes("┏"), { timeoutMs: 8000 })
+		expect(settled).not.toContain("┏")
+		expect(settled).not.toContain("d5 active task")
 	})
 
 	// ------------------------------------------------------------------
