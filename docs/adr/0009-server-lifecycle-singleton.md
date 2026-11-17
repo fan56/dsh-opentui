@@ -1,7 +1,7 @@
 # ADR-0009: Server lifecycle redesign — deterministic singleton host, refcounted shutdown
 
 Date: 2026-11-17
-Status: Proposed (design pending final review)
+Status: Accepted
 
 ## Context
 
@@ -89,6 +89,44 @@ shutdown; decision 4's workspace-local config (theme + model only) is
 extended to settings/tools/skills/model in phase 2. It also adds startup
 progress, deterministic porting, the new registry schema, `--force`, and
 the decision-8 process-identification rule.
+
+### Amendment (2026-11-17)
+
+Phase 2 is deferred, not scheduled. A follow-up audit of the host core and
+the client corrected the scope assumed in decision 9; this amendment
+supersedes the phase-2 description there and in the ADR-0005 note above.
+
+Scope correction — three of the four keys already resolve per session cwd:
+
+- Skills are already per-cwd: the host-core `dsh-skill-filesystem` service
+  exposes `roots(cwd)`, scanning `<projectRoot>/.dsh/skills` and
+  `<projectRoot>/.agents/skills` and merging `$DSH_HOME/skills`. cwd flows
+  from `session/create.cwd` through the session header to
+  `workingDirectory.ensure(agent)`, and the cache is keyed by cwd.
+- AGENTS.md is already per-cwd: the host-core `dsh-agent-instructions`
+  service uses `workingDirectory.ensure(agent)` → `findProjectRoot(cwd)` to
+  collect instructions directory by directory.
+- Theme/model are already per-client-cwd: the client workspace-config layer
+  ("the host has no workspace config layer (deliberate); this is a purely
+  client-side mechanism") carries only theme/themeMode/model.
+
+Only settings and tools remain profile/home scoped and fixed at boot:
+`composeProfile()` in profile-boot assembles the whole Cordis config tree
+once when the host boots, and the settings package has no cwd concept. The
+`session/create` schema exposes only `workspaceId`, `cwd`, `sessionId`,
+`agentPreset`, so it cannot inject settings/tools/skills/model.
+
+The real phase-2 scope therefore narrows to settings/tools (plus optional
+skills enable/disable). The only viable injection point is host-internal
+`agentOptions`/`setup` on `AgentRegistry.create`; the wire protocol does not
+carry these keys, so this repo cannot implement it without a host-core
+change.
+
+Workaround that works today: give each project its own `DSH_HOME`. The
+singleton is already sharded by `(DSH_HOME, profile)`, so this needs no code.
+If a need arises in the future for different projects under the same
+`DSH_HOME` to use different tool sets or settings, revisit phase 2 with the
+narrowed scope above.
 
 ## Considered Options
 
