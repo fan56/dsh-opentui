@@ -1,7 +1,7 @@
 # ADR-0009: Server lifecycle redesign — deterministic singleton host, refcounted shutdown
 
 Date: 2026-11-17
-Status: Proposed (design pending final review)
+Status: Accepted
 
 ## Context
 

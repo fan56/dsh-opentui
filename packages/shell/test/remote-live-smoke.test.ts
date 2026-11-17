@@ -33,7 +33,6 @@ import { join } from "node:path"
 import { ensureHost } from "../src/client/lifecycle.ts"
 import { ClientConnection } from "../src/client/transport.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
-import { probeGitBranch } from "../src/client/remote-git.ts"
 
 const RUN = process.env.DSH_REMOTE_SMOKE === "1"
 // Host profile under test; defaults to `web`, override for a differently
@@ -49,6 +48,25 @@ async function until(fn: () => boolean, timeoutMs = 30_000): Promise<void> {
 		if (Date.now() > deadline) throw new Error("until() timed out")
 		await sleep(200)
 	}
+}
+
+// Local copy of makeNamedBranchRepo() from remote-wave3-local.test.ts: a
+// scratch git repo on a real named branch. The git-segment step must not depend
+// on the branch of the checkout running this suite (a detached HEAD has no
+// branch), so both the session cwd and the expected value come from this repo.
+function makeNamedBranchRepo(): { repo: string; branch: string } {
+	const repo = mkdtempSync(join(tmpdir(), "dsh-live-git-branch-"))
+	const git = (...args: string[]) =>
+		spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], {
+			cwd: repo,
+			encoding: "utf8",
+		})
+	spawnSync("git", ["init", "-q"], { cwd: repo })
+	writeFileSync(join(repo, "a.txt"), "one\n")
+	expect(spawnSync("git", ["add", "."], { cwd: repo }).status).toBe(0)
+	expect(git("commit", "-q", "-m", "one").status).toBe(0)
+	const branch = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim()
+	return { repo, branch }
 }
 
 describe("remote live smoke", () => {
@@ -348,6 +366,7 @@ describe("remote live smoke", () => {
 				chmodSync(join(home, ".credentials.yaml"), 0o600)
 			}
 			const workspace = mkdtempSync(join(tmpdir(), "dsh-wave3-ws-"))
+			const gitRepo = makeNamedBranchRepo()
 			let host: Awaited<ReturnType<typeof ensureHost>> | undefined
 			let session: RemoteHostSession | undefined
 			try {
@@ -358,7 +377,7 @@ describe("remote live smoke", () => {
 				session = new RemoteHostSession({
 					connection: live,
 					cookieHeader: host.cookieHeader,
-					cwd: import.meta.dir, // workspace = this repo's test dir (git probe target)
+					cwd: gitRepo.repo, // scratch named-branch repo (git probe target)
 					dshHome: home,
 					profile: PROFILE,
 				})
@@ -500,9 +519,9 @@ describe("remote live smoke", () => {
 				expect(continuity.length).toBeGreaterThan(0)
 				step(`/reload: host restarted on the SAME port, carrier reconnected, follow re-opened, ${continuity.length} transcript rows survived`)
 
-				// 8. git segment (row 39): the workspace probe = the real branch
+				// 8. git segment (row 39): the scratch repo's named branch
 				const branch = await session.gitBranch()
-				const expected = await probeGitBranch(import.meta.dir)
+				const expected = gitRepo.branch
 				expect(branch).toBe(expected)
 				expect(branch).not.toBe("")
 				step(`git segment: ${branch}`)
@@ -575,13 +594,15 @@ describe("remote live smoke", () => {
 				// scratch homes go away with the host
 				rmSync(home, { recursive: true, force: true })
 				rmSync(workspace, { recursive: true, force: true })
+				rmSync(gitRepo.repo, { recursive: true, force: true })
 				// one late re-removal pass: a shutdown flush that landed between
 				// the kill and the first rm gets collected too
 				await sleep(1500)
 				rmSync(home, { recursive: true, force: true })
 				rmSync(workspace, { recursive: true, force: true })
-				if (existsSync(home) || existsSync(workspace)) {
-					console.log(`  [wave-3] WARNING: scratch dirs still present (${existsSync(home) ? home : ""} ${existsSync(workspace) ? workspace : ""}) — the OS temp sweeper will collect them`)
+				rmSync(gitRepo.repo, { recursive: true, force: true })
+				if (existsSync(home) || existsSync(workspace) || existsSync(gitRepo.repo)) {
+					console.log(`  [wave-3] WARNING: scratch dirs still present (${existsSync(home) ? home : ""} ${existsSync(workspace) ? workspace : ""} ${existsSync(gitRepo.repo) ? gitRepo.repo : ""}) — the OS temp sweeper will collect them`)
 				}
 			}
 		},
