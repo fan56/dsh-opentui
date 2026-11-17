@@ -39,10 +39,11 @@ concept).
 
 ## Workspace-local config
 
-Preferences stored in `<workspace>/.dsh/`, overriding global defaults. Today
-the only keys here are theme + model; phase 2 extends them to
-settings/tools/skills/model, applied per cwd by the opentui-profile host
-plugin (override chain cwd > home > profile). Credentials and plugin installs
+Preferences stored in `<workspace>/.dsh/`, overriding global defaults. Theme
+and model are already per-workspace (resolved client-side); skills and
+AGENTS.md are resolved by the host per session cwd; settings and tools stay
+profile/home scoped and are fixed at host boot. The phase-2 extension to
+settings/tools is deferred, not scheduled. Credentials and plugin installs
 never live here — they would leak into version control. _Avoid_: credentials
 or plugin installs (they are profile/home scoped, not workspace scoped).
 
