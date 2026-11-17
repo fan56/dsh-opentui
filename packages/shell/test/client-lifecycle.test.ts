@@ -416,6 +416,23 @@ describe('three-evidence safe kill — the only signalling path', () => {
     })
     expect(kill.killed).toEqual([`${HOST_PID}:SIGTERM`, `${HOST_PID}:SIGKILL`])
     expect(result.signals).toEqual(['SIGTERM', 'SIGKILL'])
+    expect(result.stopped).toBe(false) // never flips dead → timeout verdict
+  })
+
+  test('pidAlive flips true→false mid-grace (zombie reaped) → stopped: true, no SIGKILL timeout', async () => {
+    // The zombie-aware probe initially sees kill(0) succeed, then the reaper
+    // collects the zombie and the ps-stat probe reports dead. Safe stop must
+    // confirm on that flip instead of timing out to stopped:false.
+    let probes = 0
+    const kill = makeHooks({ alive: () => ++probes <= 2 })
+    const result = await safeStopHost({
+      pid: HOST_PID, registryPid: HOST_PID, hooks: kill.hooks,
+      termGraceMs: 100, killGraceMs: 100, now: () => NOW, sleep: async () => {},
+    })
+    expect(result.evidencesOk).toBe(true)
+    expect(result.stopped).toBe(true)
+    expect(result.signals).toEqual(['SIGTERM']) // confirmed on the flip, no escalation
+    expect(kill.killed).toEqual([`${HOST_PID}:SIGTERM`])
   })
 
   test('env unreadable → registry + cmdline two-evidence fallback agrees + logs (P1-3)', async () => {

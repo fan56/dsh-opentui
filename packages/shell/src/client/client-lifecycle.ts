@@ -50,6 +50,7 @@ import {
   type RegistryReadResult,
 } from './host-registry.ts'
 import {
+  defaultPidAlive,
   psKillHooks,
   safeStopHost,
   SERVER_ENV_NAME,
@@ -555,14 +556,7 @@ export async function runWatchdog(home: string, options: WatchdogOptions): Promi
   if (graceMs === 0) return { reclaimed: false, reason: 'resident' }
   const pollMs = options.pollMs ?? DEFAULT_WATCHDOG_POLL_MS
   const sleep = options.sleep ?? defaultSleep
-  const alive = options.hooks.pidAlive ?? ((pid: number) => {
-    try {
-      process.kill(pid, 0)
-      return true
-    } catch (err) {
-      return (err as NodeJS.ErrnoException).code === 'EPERM'
-    }
-  })
+  const alive = options.hooks.pidAlive ?? defaultPidAlive
   const fs = options.fs ?? nodeLifecycleFs
 
   for (let tick = 0; options.maxTicks === undefined || tick < options.maxTicks; tick++) {
