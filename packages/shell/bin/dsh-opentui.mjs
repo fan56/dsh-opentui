@@ -47,9 +47,9 @@
  * package root (plus `dist/scripts/idle-reaper.mjs`, which the bundle
  * spawns) alongside `bin/` and `scripts/`.
  */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { constants as osConstants, homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { formatUpgradeUsage, formatUsage, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseUpgradeArgs, prelaunchFailurePolicy, readLauncherVersion, validateLauncherArgs } from './lib/launcher.mjs'
@@ -452,12 +452,36 @@ if (!clientArgs.includes('--dry-run')) {
   }
 }
 
-const result = spawnSync('bun', [clientEntry, ...clientArgs], {
+// ADR-0009 follow-up (PR B): spawnSync blocked the launcher's event loop for
+// the whole TUI session, so SIGCHLD could never be delivered — the detached,
+// unref'd host child died but stayed a zombie until the client exited. An
+// async spawn keeps libuv alive so the host is reaped as soon as it exits.
+const child = spawn('bun', [clientEntry, ...clientArgs], {
   stdio: 'inherit',
   env: clientEnv,
+  // No `detached`: the client stays in the launcher's foreground process
+  // group, preserving TTY / Ctrl-C semantics.
 })
-if (result.error) {
-  console.error(`dsh-opentui: failed to launch the client: ${result.error.message}`)
+child.on('error', (err) => {
+  console.error(`dsh-opentui: failed to launch the client: ${err.message}`)
   process.exit(1)
+})
+
+// Forward terminal signals to the client; do NOT exit here. We rely on the
+// client's handler being idempotent — boot-shared.ts `exitAfterShutdown` is an
+// idempotent shutdown + 2.5s grace — so a transitive signal from the tty (the
+// client shares our process group) plus this forward cannot strand it. The
+// launcher waits for the client to exit, then derives its own exit code below.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    child.kill(signal)
+  })
 }
-process.exit(result.status ?? 0)
+
+// `resolve` forwards only its first argument, so pack both exit-event args.
+const [exitCode, signal] = await new Promise((resolve) => child.on('exit', (code, sig) => resolve([code, sig])))
+if (signal) {
+  // Signal death used to be mis-reported as 0 by `result.status ?? 0`.
+  process.exit(128 + (osConstants.signals[signal] ?? 0))
+}
+process.exit(exitCode ?? 0)
