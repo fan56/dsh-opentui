@@ -398,7 +398,11 @@ export interface StaleVerdict {
 }
 
 function looksLikeV2(value: RegistryReadResult | HostRegistryV2): value is HostRegistryV2 {
-  return isPlainObject(value) && value.version === REGISTRY_SCHEMA_VERSION
+  // Narrow through an `unknown` candidate: applying isPlainObject() directly to
+  // the tagged union keeps the {kind:'v2', value:...} branch in play, which has
+  // no top-level `version` and fails the check. A raw HostRegistryV2 does.
+  const candidate: unknown = value
+  return isPlainObject(candidate) && candidate.version === REGISTRY_SCHEMA_VERSION
 }
 
 /**

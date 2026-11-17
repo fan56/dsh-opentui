@@ -35,6 +35,14 @@ export const DEFAULT_HOST_PROBE_TIMEOUT_MS = 2_000
  * Tests inject a fake that reproduces ws's async CONNECTING-close error. */
 export type HostProbeSocketFactory = () => WS
 
+/** Extra surface a real `ws` socket exposes for bounded teardown. The ambient
+ * `ws.d.ts` declares only the transport's minimal slice, so the probe names the
+ * teardown methods it relies on locally (no `any` / suppression needed). */
+interface TeardownSocket extends WS {
+  removeAllListeners(): this
+  terminate(): void
+}
+
 export interface HostProbeOptions {
   /** `host:port` (scheme omitted) exactly as the host binds it. */
   authority: string
@@ -108,7 +116,8 @@ export async function probeHostMux(options: HostProbeOptions): Promise<boolean> 
       settled = true
       clearTimeout(timer)
       try {
-        socket?.removeAllListeners()
+        const teardown = socket as TeardownSocket | undefined
+        teardown?.removeAllListeners()
         // Closing a still-CONNECTING socket makes `ws` emit 'error' ("closed
         // before established") ASYNCHRONOUSLY, after removeAllListeners() has
         // removed the probe's own listeners — keep a noop handler attached so
@@ -116,7 +125,7 @@ export async function probeHostMux(options: HostProbeOptions): Promise<boolean> 
         // remote-stream.ts fixed the identical race the same way). Every
         // settlement path funnels through done(), so all of them are covered.
         socket?.on("error", () => {})
-        socket?.terminate()
+        teardown?.terminate()
       } catch {
         /* already gone */
       }
@@ -150,7 +159,7 @@ export async function probeHostMux(options: HostProbeOptions): Promise<boolean> 
     })
     socket.on("unexpected-response", (_request, response) => {
       try {
-        response.resume()
+        ;(response as { resume(): void }).resume()
       } catch {
         /* already drained */
       }
