@@ -244,14 +244,23 @@ describe('stale detection (injected clock + pid probe)', () => {
     expect(isRegistryStale(record, { pidAlive: () => true })).toEqual({ stale: false, reasons: [] })
   })
 
-  test('optional registryMaxAgeMs uses the injected clock', () => {
-    const record = makeRecord({ updatedAt: NOW })
+  test('optional registryMaxAgeMs applies only to claim/booting, never to a steady ready host', () => {
+    const booting = makeRecord({ updatedAt: NOW, phase: 'booting' })
     const now = Date.parse(NOW) + 60_000
-    expect(isRegistryStale(record, { pidAlive: () => true, now: () => now, registryMaxAgeMs: 30_000 })).toEqual({
+    expect(isRegistryStale(booting, { pidAlive: () => true, now: () => now, registryMaxAgeMs: 30_000 })).toEqual({
       stale: true,
       reasons: ['registry-too-old'],
     })
-    expect(isRegistryStale(record, { pidAlive: () => true, now: () => now, registryMaxAgeMs: 120_000 }).stale).toBe(false)
+    expect(isRegistryStale(booting, { pidAlive: () => true, now: () => now, registryMaxAgeMs: 120_000 }).stale).toBe(false)
+    // P1-1: a ready host's updatedAt is never refreshed (heartbeats are in
+    // separate files), so an age check must NOT make it stale — even at 1ms.
+    const ready = makeRecord({ updatedAt: NOW, phase: 'ready' })
+    expect(isRegistryStale(ready, { pidAlive: () => true, now: () => now, registryMaxAgeMs: 1 })).toEqual({
+      stale: false,
+      reasons: [],
+    })
+    const stopping = makeRecord({ updatedAt: NOW, phase: 'stopping' })
+    expect(isRegistryStale(stopping, { pidAlive: () => true, now: () => now, registryMaxAgeMs: 1 }).stale).toBe(false)
   })
 })
 
@@ -263,11 +272,17 @@ describe('safeClearLegacy — file only, never a process', () => {
       writeFileSync(path, JSON.stringify({ pid: 42, port: 60_000 }))
       // pre-read registry is accepted (no second read needed)
       const preRead = readRegistry(home, PROFILE)
-      expect(safeClearLegacy(home, PROFILE, { read: preRead })).toEqual({ removed: true, reason: 'legacy-removed' })
+      expect(safeClearLegacy(home, PROFILE, { read: preRead, pidAlive: () => false })).toEqual({
+        removed: true,
+        reason: 'legacy-removed',
+      })
       expect(readRegistry(home, PROFILE).kind).toBe('missing')
 
       writeFileSync(path, JSON.stringify({ pid: 43, port: 60_001 }))
-      expect(safeClearLegacy(home, PROFILE)).toEqual({ removed: true, reason: 'legacy-removed' })
+      expect(safeClearLegacy(home, PROFILE, { pidAlive: () => false })).toEqual({
+        removed: true,
+        reason: 'legacy-removed',
+      })
       expect(readRegistry(home, PROFILE).kind).toBe('missing')
 
       writeRegistry(home, PROFILE, makeRecord({ home }))
@@ -286,10 +301,25 @@ describe('safeClearLegacy — file only, never a process', () => {
     const home = '/virtual/home'
     const path = registryPath(home, PROFILE)
     fs.writeFileSync(path, JSON.stringify({ pid: 999, port: 60_000 }))
-    expect(safeClearLegacy(home, PROFILE, { fs }).removed).toBe(true)
+    expect(safeClearLegacy(home, PROFILE, { fs, pidAlive: () => false }).removed).toBe(true)
     expect(fs.existsSync(path)).toBe(false)
     // There is no process.kill import or call in this module — the seam has
     // no signal method at all, so no process can be touched by cleanup.
     expect((fs as unknown as Record<string, unknown>).kill).toBeUndefined()
+  })
+
+  test('a legacy record whose pid is still alive is KEPT, not deleted (P1-4)', () => {
+    const fs = makeMemFs()
+    const home = '/virtual/home'
+    const path = registryPath(home, PROFILE)
+    fs.writeFileSync(path, JSON.stringify({ pid: 4242, port: 60_000 }))
+    expect(safeClearLegacy(home, PROFILE, { fs, pidAlive: (pid) => pid === 4242 })).toEqual({
+      removed: false,
+      reason: 'legacy-host-alive',
+    })
+    expect(fs.existsSync(path)).toBe(true) // the host's only record survives
+    // Once the pid is dead, the same record can be cleaned up normally.
+    expect(safeClearLegacy(home, PROFILE, { fs, pidAlive: () => false }).removed).toBe(true)
+    expect(fs.existsSync(path)).toBe(false)
   })
 })

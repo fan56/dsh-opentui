@@ -35,7 +35,6 @@ import { findFreePort } from './host-port.ts'
 // ADR-0009 decision 8 — the three-evidence gate and the only sanctioned way to
 // signal a host. Re-exported below so existing callers keep their imports.
 import {
-  evidencesAgree,
   psKillHooks,
   safeStopHost,
   SERVER_ENV_NAME,
@@ -70,7 +69,8 @@ export type { ProcessKillHooks } from './safe-kill.ts'
 export const DEFAULT_LAUNCH_TIMEOUT_MS = 5 * 60_000
 /** Progress / readiness poll cadence (100–200ms per the ADR). */
 export const DEFAULT_POLL_MS = 150
-/** v2 record whose `updatedAt` is older than this (and whose pid lives) is stale. */
+/** Max age before a LIVE `claim`/`booting` record is stale (P1-1: never applied
+ *  to steady-state `ready`/`stopping`, whose `updatedAt` is not refreshed). */
 export const DEFAULT_REGISTRY_MAX_AGE_MS = 60_000
 /** SIGTERM → SIGKILL grace for a confirmed `--force --yes` host stop. */
 export const FORCE_TERM_GRACE_MS = 2_000
@@ -386,10 +386,14 @@ export async function ensureHost(deps: HostLaunchDeps = {}): Promise<HostLaunchR
     const hbDeps = { fs: o.fs, now: o.now }
     assertForceAllowed(o.home, { ...hbDeps, yes: o.yes })
     const current = readRegistry(o.home, o.profile, o.fs)
-    if (current.kind === 'v2' && current.value.pid > 0) {
-      await safeStopHost({
-        pid: current.value.pid,
-        registryPid: current.value.pid,
+    // A live legacy record is ALSO a host that must be stopped before its sole
+    // record is removed (P1-4 hands it to --force / manual intervention).
+    const forcePid =
+      current.kind === 'v2' ? current.value.pid : current.kind === 'legacy' ? current.raw.pid : 0
+    if (forcePid > 0) {
+      const stop = await safeStopHost({
+        pid: forcePid,
+        registryPid: forcePid,
         hooks: o.killHooks,
         termGraceMs: FORCE_TERM_GRACE_MS,
         killGraceMs: FORCE_KILL_GRACE_MS,
@@ -397,11 +401,20 @@ export async function ensureHost(deps: HostLaunchDeps = {}): Promise<HostLaunchR
         now: o.now,
         pidAlive: o.pidAlive,
       })
-    }
-    try {
-      o.fs.unlinkSync(registryPath(o.home, o.profile))
-    } catch {
-      /* already gone */
+      // P0-2: only unlink after the old host is CONFIRMED stopped. Otherwise
+      // clearing the record turns it into an untrackable live orphan.
+      if (!stop.stopped) {
+        throw new Error(
+          `dsh-opentui: --force could not confirm the old host pid ${forcePid} is stopped ` +
+            `(evidences ${stop.evidencesOk ? 'matched but pid survived' : 'refused'}); ` +
+            `registry left intact — retry --force or stop it manually.`,
+        )
+      }
+      try {
+        o.fs.unlinkSync(registryPath(o.home, o.profile))
+      } catch {
+        /* already gone */
+      }
     }
     purgeAllHeartbeats(o.home, hbDeps)
   }
@@ -434,8 +447,14 @@ export async function ensureHost(deps: HostLaunchDeps = {}): Promise<HostLaunchR
     read = readRegistry(o.home, o.profile, o.fs)
     if (read.kind === 'missing') break
     if (read.kind === 'legacy') {
-      // File only — safeClearLegacy never signals a process.
-      safeClearLegacy(o.home, o.profile, { fs: o.fs, read })
+      // P1-4: safeClearLegacy keeps the record when the old pid is still alive.
+      const cleared = safeClearLegacy(o.home, o.profile, { fs: o.fs, read, pidAlive: o.pidAlive })
+      if (!cleared.removed) {
+        throw new Error(
+          `dsh-opentui: legacy host pid ${read.raw.pid} is still alive; ` +
+            `its registry record is kept — stop it manually or use --force --yes.`,
+        )
+      }
       continue
     }
     if (read.kind === 'invalid') {
@@ -451,10 +470,32 @@ export async function ensureHost(deps: HostLaunchDeps = {}): Promise<HostLaunchR
       removeStaleRecord(o.home, o.profile, read.value, o)
       continue
     }
-    // Fresh v2 we could not attach to: an unhealthy `ready` host is dropped so
-    // a fresh claim can reboot it. A `claim`/`booting` record is LEFT INTACT —
-    // another launcher owns it and our claim below must lose to it (adopt-wait).
-    if (read.value.phase === 'ready') removeStaleRecord(o.home, o.profile, read.value, o)
+    // Fresh v2 we could not attach to: an unhealthy `ready` host is first
+    // three-evidence-STOPPED, then its record is dropped so a fresh claim can
+    // reboot it (P0-2: never just abandon the record — that leaks a live host).
+    // If the stop cannot be confirmed, keep the record and fail loudly instead
+    // of silently orphaning the old host. A `claim`/`booting` record is LEFT
+    // INTACT — another launcher owns it and our claim below must lose (adopt-wait).
+    if (read.value.phase === 'ready' && read.value.pid > 0) {
+      const stop = await safeStopHost({
+        pid: read.value.pid,
+        registryPid: read.value.pid,
+        hooks: o.killHooks,
+        termGraceMs: FORCE_TERM_GRACE_MS,
+        killGraceMs: FORCE_KILL_GRACE_MS,
+        sleep: o.sleep,
+        now: o.now,
+        pidAlive: o.pidAlive,
+      })
+      if (!stop.stopped) {
+        throw new Error(
+          `dsh-opentui: unhealthy host pid ${read.value.pid} could not be stopped ` +
+            `(evidences ${stop.evidencesOk ? 'matched but pid survived' : 'refused'}); ` +
+            `registry record kept — retry or stop it manually.`,
+        )
+      }
+      removeStaleRecord(o.home, o.profile, read.value, o)
+    }
     break
   }
 
@@ -532,14 +573,22 @@ export async function ensureHost(deps: HostLaunchDeps = {}): Promise<HostLaunchR
   }
 
   // 6. Timeout / death: verify three evidences against the registry's CURRENT
-  //    pid, kill ONLY this spawn, clear the registry, and surface the log path.
+  //    pid, then use the SAME SIGTERM → grace → SIGKILL sequence as
+  //    safeStopHost (P2-1) to give the host a chance to flush. Clear the
+  //    registry only for our own spawn and surface the log path.
   const log = flushLog(o, tail)
   const current = readRegistry(o.home, o.profile, o.fs)
   const registryPid = current.kind === 'v2' ? current.value.pid : -1
-  if (evidencesAgree(child.pid, registryPid, o.killHooks)) {
-    o.killHooks.kill(child.pid, 'SIGTERM')
-    if (o.pidAlive(child.pid)) o.killHooks.kill(child.pid, 'SIGKILL')
-  }
+  await safeStopHost({
+    pid: child.pid,
+    registryPid,
+    hooks: o.killHooks,
+    termGraceMs: FORCE_TERM_GRACE_MS,
+    killGraceMs: FORCE_KILL_GRACE_MS,
+    sleep: o.sleep,
+    now: o.now,
+    pidAlive: o.pidAlive,
+  })
   if (current.kind === 'v2' && current.value.pid === child.pid) {
     try {
       o.fs.unlinkSync(registryPath(o.home, o.profile))

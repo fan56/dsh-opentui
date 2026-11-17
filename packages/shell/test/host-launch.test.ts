@@ -86,7 +86,16 @@ function makeChild(pid = CHILD_PID): SpawnedHost & { exited: boolean; fireExit()
   return obj as unknown as SpawnedHost & { exited: boolean; fireExit(): void }
 }
 
-function makeKill(opts: { cmd?: string | null; env?: boolean; killed?: string[] } = {}): {
+function makeKill(
+  opts: {
+    cmd?: string | null
+    env?: boolean
+    killed?: string[]
+    /** Simulate `ps eww` being unable to read the env (P1-3 fallback). */
+    envReadable?: boolean
+    onEnvFallback?: (pid: number) => void
+  } = {},
+): {
   hooks: ProcessKillHooks
   killed: string[]
 } {
@@ -97,6 +106,8 @@ function makeKill(opts: { cmd?: string | null; env?: boolean; killed?: string[] 
       cmdline: () => (opts.cmd === undefined ? `--profile opentui --no-open --port ${PORT}` : opts.cmd),
       hasServerEnv: () => opts.env ?? true,
       kill: (pid, signal) => killed.push(`${pid}:${signal}`),
+      ...(opts.envReadable !== undefined ? { envReadable: () => opts.envReadable! } : {}),
+      ...(opts.onEnvFallback ? { onEnvFallback: opts.onEnvFallback } : {}),
     },
   }
 }
@@ -177,13 +188,37 @@ describe('ensureHost — attach fast path', () => {
   })
 
   test('an unhealthy ready host is not adopted — it is cleared and re-spawned', async () => {
-    // First probe (attach) fails → fall through; readiness probe succeeds.
+    // First probe (attach) fails → fall through; the old host is stopped, then
+    // the readiness probe for the respawn succeeds.
     let n = 0
-    const h = harness({ initial: 'ready', healthy: () => ++n > 1 })
+    const kill = makeKill()
+    const h = harness({
+      initial: 'ready',
+      healthy: () => ++n > 1,
+      kill,
+      // the old ready host (9999) dies on SIGTERM; the new child stays alive
+      alive: (pid) => pid === CHILD_PID || !kill.killed.some((k) => k.startsWith(`${pid}:SIGTERM`)),
+    })
     const result = await ensureHost(h.deps)
     expect(result.spawned).toBe(true)
     expect(h.spawnCalls).toHaveLength(1)
     expect(h.healthCalls.length).toBe(2)
+  })
+
+  test('a >60s-old ready host is NOT discarded by the age limit — it is stopped before reboot (P1-1)', async () => {
+    // updatedAt is 3 minutes old; the 60s max-age must NOT apply to `ready`.
+    let n = 0
+    const kill = makeKill()
+    const h = harness({
+      initial: makeRecord({ phase: 'ready', updatedAt: new Date(NOW - 180_000).toISOString() }),
+      healthy: () => ++n > 1,
+      kill,
+      alive: (pid) => pid === CHILD_PID || !kill.killed.some((k) => k.startsWith(`${pid}:SIGTERM`)),
+    })
+    const result = await ensureHost(h.deps)
+    expect(result.spawned).toBe(true)
+    // The live old host was actually three-evidence-stopped, not just "abandoned".
+    expect(kill.killed).toContain('9999:SIGTERM')
   })
 })
 
@@ -217,7 +252,8 @@ describe('ensureHost — winner spawn path', () => {
   })
 
   test('a legacy registry file is cleared (file only) before spawning', async () => {
-    const h = harness({ initial: 'legacy', healthy: () => true })
+    // the legacy host pid 111 is dead → safeClearLegacy may remove the record
+    const h = harness({ initial: 'legacy', healthy: () => true, alive: (pid) => pid !== 111 })
     const result = await ensureHost(h.deps)
     expect(result.spawned).toBe(true)
     const reg = h.read()
@@ -228,6 +264,13 @@ describe('ensureHost — winner spawn path', () => {
     const h = harness({ initial: 'invalid', healthy: () => true })
     const result = await ensureHost(h.deps)
     expect(result.spawned).toBe(true)
+  })
+
+  test('a LIVE legacy host keeps its only record — no orphan, fails loudly (P1-4)', async () => {
+    const h = harness({ initial: 'legacy', healthy: () => true, alive: () => true })
+    await expect(ensureHost(h.deps)).rejects.toThrow(/legacy host pid 111 is still alive/)
+    expect(h.read().kind).toBe('legacy')
+    expect(h.spawnCalls).toHaveLength(0)
   })
 })
 
@@ -309,11 +352,64 @@ describe('ensureHost — timeout & three-evidence kill', () => {
     await expect(ensureHost(h.deps)).rejects.toBeInstanceOf(HostLaunchTimeoutError)
     expect(Date.now() - started).toBeLessThan(1_000)
   })
+
+  test('env unreadable → registry + cmdline two-evidence stop on timeout (P1-3)', async () => {
+    const fallbacks: number[] = []
+    const kill = makeKill({ env: false, envReadable: false, onEnvFallback: (pid) => fallbacks.push(pid) })
+    const h = harness({ initial: 'missing', healthy: () => false, timeoutMs: 300, pollMs: 100, kill })
+    await expect(ensureHost(h.deps)).rejects.toBeInstanceOf(HostLaunchTimeoutError)
+    expect(fallbacks).toContain(CHILD_PID)
+    expect(kill.killed).toContain(`${CHILD_PID}:SIGTERM`)
+  })
+
+  test('timeout teardown uses SIGTERM → grace → SIGKILL, not an instant SIGKILL (P2-1)', async () => {
+    const kill = makeKill()
+    const h = harness({ initial: 'missing', healthy: () => false, timeoutMs: 300, pollMs: 100, kill })
+    await expect(ensureHost(h.deps)).rejects.toBeInstanceOf(HostLaunchTimeoutError)
+    expect(kill.killed[0]).toBe(`${CHILD_PID}:SIGTERM`)
+    expect(kill.killed).toContain(`${CHILD_PID}:SIGKILL`)
+  })
+})
+
+describe('ensureHost — evidence refusal never orphans a host (P0-2)', () => {
+  test('--force with evidence refused → throws, registry kept, no reset', async () => {
+    const kill = makeKill({ env: false }) // strict refusal (no envReadable fallback hook)
+    const h = harness({ initial: 'ready', force: true, healthy: () => true, kill })
+    await expect(ensureHost(h.deps)).rejects.toThrow(/could not confirm the old host pid .* is stopped/)
+    expect(h.read().kind).toBe('v2')
+    expect(h.spawnCalls).toHaveLength(0)
+    expect(kill.killed).toHaveLength(0)
+  })
+
+  test('unhealthy ready host with evidence refused → throws, record kept, no re-spawn', async () => {
+    const kill = makeKill({ env: false })
+    const h = harness({ initial: 'ready', healthy: () => false, kill })
+    await expect(ensureHost(h.deps)).rejects.toThrow(/unhealthy host pid .* could not be stopped/)
+    expect(h.read().kind).toBe('v2')
+    expect(h.spawnCalls).toHaveLength(0)
+    expect(kill.killed).toHaveLength(0)
+  })
+
+  test('--force on a LIVE legacy host with evidence refused keeps the record', async () => {
+    const kill = makeKill({ env: false })
+    const h = harness({ initial: 'legacy', force: true, healthy: () => true, kill })
+    await expect(ensureHost(h.deps)).rejects.toThrow(/could not confirm the old host pid .* is stopped/)
+    expect(h.read().kind).toBe('legacy')
+    expect(kill.killed).toHaveLength(0)
+  })
 })
 
 describe('ensureHost — force (T3a: skips attach only)', () => {
   test('force bypasses the healthy attach fast path and re-spawns', async () => {
-    const h = harness({ initial: 'ready', healthy: () => true, force: true })
+    const kill = makeKill()
+    const h = harness({
+      initial: 'ready',
+      healthy: () => true,
+      force: true,
+      kill,
+      // the forced old host dies on SIGTERM; the new child stays alive
+      alive: (pid) => pid === CHILD_PID || !kill.killed.some((k) => k.startsWith(`${pid}:SIGTERM`)),
+    })
     const result = await ensureHost(h.deps)
     expect(result.spawned).toBe(true)
     // Attach fast path skipped: only the post-spawn readiness probe runs.

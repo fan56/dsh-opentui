@@ -332,6 +332,25 @@ export function readLauncherVersion(pkgRoot) {
 }
 
 /**
+ * Decide how a failed host pre-launch (step 6a) must be handled (P1-5).
+ *
+ * - `force-needs-yes` is a usage error: exit 2 (the user must confirm).
+ * - with `--force`, ANY other failure is fatal: exit 1. A force reset that
+ *   could not import/run the orchestration bundle did not happen, so quietly
+ *   continuing would turn `--force` into a silent no-op (the bin-level force
+ *   cleanup was removed in step 2.5). Never downgrade to a warning here.
+ * - without `--force`, pre-launch is best-effort: warn and let the client
+ *   retry host boot itself.
+ *
+ * @returns 'usage-error' | 'abort' | 'warn'
+ */
+export function prelaunchFailurePolicy(err, force) {
+	if (err?.code === 'force-needs-yes') return 'usage-error'
+	if (force) return 'abort'
+	return 'warn'
+}
+
+/**
  * Parse `ps -A -o pid=,ppid=,command=` output into process rows.
  *
  * @returns [{ pid, ppid, command }]

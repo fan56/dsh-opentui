@@ -355,6 +355,7 @@ export type LastOneAction =
   | 'no-host'
   | 'shutdown'
   | 'evidence-refused'
+  | 'stop-failed'
 
 export interface LastOneResult {
   action: LastOneAction
@@ -420,6 +421,9 @@ export async function lastOneGracefulShutdown(
     pidAlive: options.hooks.pidAlive,
   })
   if (!stop.evidencesOk) return { action: 'evidence-refused', freshCount: 0, stop }
+  // Evidence matched but the pid survived SIGKILL: clearing would orphan a
+  // still-live host. Keep the record unchanged (P0-2).
+  if (!stop.stopped) return { action: 'stop-failed', freshCount: 0, stop }
 
   clearRegistryIfPid(home, profile, still, still.value.pid, fs)
   return { action: 'shutdown', freshCount: 0, stop }
@@ -474,13 +478,19 @@ export function assertForceAllowed(
 // All-crash fallback watchdog (pure runner + detached spawn).
 // ---------------------------------------------------------------------------
 
-export type WatchdogStopReason = 'reclaimed' | 'host-gone' | 'max-ticks'
+export type WatchdogStopReason = 'reclaimed' | 'host-gone' | 'max-ticks' | 'resident'
 
 export interface WatchdogResult {
   reclaimed: boolean
   reason: WatchdogStopReason
   /** Signals sent when a reclaim happened. */
   stop?: SafeStopResult
+}
+
+/** Emitted when a reclaim was refused (keep the record, retry next tick). */
+export interface WatchdogEvidenceRefused {
+  pid: number
+  evidencesOk: boolean
 }
 
 export interface WatchdogOptions extends HeartbeatDeps {
@@ -495,6 +505,8 @@ export interface WatchdogOptions extends HeartbeatDeps {
   termGraceMs?: number
   killGraceMs?: number
   onTick?: (info: { tick: number; freshCount: number; hostPid: number }) => void
+  /** Log seam for an evidence-refused reclaim (P0-2: never orphan a live host). */
+  onEvidenceRefused?: (info: WatchdogEvidenceRefused) => void
 }
 
 /**
@@ -503,10 +515,16 @@ export interface WatchdogOptions extends HeartbeatDeps {
  * three-evidence-stops the host, clears the registry and exits. The watchdog
  * itself is only ever signalled through the same three-evidence hooks; if the
  * registry pid is dead it exits without touching anyone.
+ *
+ * `graceMs === 0` means "resident" — the watchdog self-exits without ever
+ * signalling (P1-2). If evidence is refused (or a stop is unconfirmed), the
+ * registry record is KEPT, a log is emitted, and the loop retries next tick
+ * instead of orphaning a live host (P0-2).
  */
 export async function runWatchdog(home: string, options: WatchdogOptions): Promise<WatchdogResult> {
   const profile = options.profile ?? 'opentui'
   const graceMs = resolveGraceMs(options.graceMs)
+  if (graceMs === 0) return { reclaimed: false, reason: 'resident' }
   const pollMs = options.pollMs ?? DEFAULT_WATCHDOG_POLL_MS
   const sleep = options.sleep ?? defaultSleep
   const alive = options.hooks.pidAlive ?? ((pid: number) => {
@@ -558,6 +576,13 @@ export async function runWatchdog(home: string, options: WatchdogOptions): Promi
       now: options.now,
       pidAlive: alive,
     })
+    if (!stop.stopped) {
+      // P0-2: evidence was refused (or the kill was not confirmed). The host is
+      // still alive — clearing its registry record would make it a permanent
+      // untrackable orphan. Keep the record, log, and retry next tick.
+      options.onEvidenceRefused?.({ pid: again.value.pid, evidencesOk: stop.evidencesOk })
+      continue
+    }
     clearRegistryIfPid(home, profile, again, again.value.pid, fs)
     return { reclaimed: stop.evidencesOk, reason: 'reclaimed', stop }
   }

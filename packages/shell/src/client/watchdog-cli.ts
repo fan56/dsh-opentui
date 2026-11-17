@@ -25,7 +25,17 @@ const home = process.env[ENV_WATCHDOG_HOME]
 const profile = process.env[ENV_WATCHDOG_PROFILE] || 'opentui'
 
 if (process.env[ENV_WATCHDOG] === '1' && home) {
-  runWatchdog(home, { fs: nodeLifecycleFs, profile, hooks: psKillHooks })
+  runWatchdog(home, {
+    fs: nodeLifecycleFs,
+    profile,
+    hooks: psKillHooks,
+    // P0-2: never orphan a live host when three-evidence is refused.
+    onEvidenceRefused: ({ pid, evidencesOk }) =>
+      console.error(
+        `[watchdog] reclaim refused for host pid ${pid} (evidencesOk=${evidencesOk}); ` +
+          `registry record kept, retrying next tick`,
+      ),
+  })
     .then(() => process.exit(0))
     .catch(() => process.exit(0))
 }

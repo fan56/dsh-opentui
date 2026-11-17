@@ -1443,17 +1443,24 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 	// watchdog. All I/O here is best-effort — a heartbeat failure must never
 	// block the TUI from booting.
 	let clientHeartbeat: ReturnType<typeof clifecycle.registerHeartbeat> | null = null
+	let heartbeatRegistered = false
 	try {
 		clientHeartbeat = clifecycle.registerHeartbeat(host.dshHome, { pid: process.pid, workspace })
 		clientHeartbeat.start()
+		heartbeatRegistered = true
 	} catch (error) {
 		console.error("[v2-entry] heartbeat registration failed:", error)
 	}
-	try {
-		const scriptPath = resolveWatchdogScript()
-		if (scriptPath) clifecycle.spawnWatchdog(host.dshHome, { scriptPath, profile })
-	} catch (error) {
-		console.error("[v2-entry] watchdog spawn failed:", error)
+	// P1-6: do NOT arm the all-crash watchdog when our own heartbeat was not
+	// registered — with no heartbeat file the watchdog would reclaim the host
+	// from under this still-live client after the TTL.
+	if (heartbeatRegistered) {
+		try {
+			const scriptPath = resolveWatchdogScript()
+			if (scriptPath) clifecycle.spawnWatchdog(host.dshHome, { scriptPath, profile })
+		} catch (error) {
+			console.error("[v2-entry] watchdog spawn failed:", error)
+		}
 	}
 	shared.bootCallOrder.push("connect")
 	const connection = new transport.ClientConnection({

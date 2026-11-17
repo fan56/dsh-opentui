@@ -19,6 +19,7 @@ import {
   parseLauncherOptions,
   parseProcessHomes,
   parseProcessRows,
+  prelaunchFailurePolicy,
   readLauncherVersion,
   selectStaleProcesses,
   validateLauncherArgs,
@@ -602,4 +603,27 @@ describe('timeout env parsing rejects non-decimal Number() spellings', () => {
       })
     }
   }
+})
+
+describe('prelaunchFailurePolicy — --force never silently degrades to a no-op (P1-5)', () => {
+  const needsYes = Object.assign(new Error('will disconnect 2 live clients'), { code: 'force-needs-yes' })
+
+  test('force-needs-yes is always a usage error (exit 2), force or not', () => {
+    expect(prelaunchFailurePolicy(needsYes, false)).toBe('usage-error')
+    expect(prelaunchFailurePolicy(needsYes, true)).toBe('usage-error')
+  })
+
+  test('any other pre-launch failure under --force is a hard abort (exit 1)', () => {
+    for (const err of [
+      new Error('Cannot find module .../dist/host-launch.mjs'),
+      new TypeError('ensureLaunchHost is not a function'),
+      'string rejection',
+    ]) {
+      expect(prelaunchFailurePolicy(err, true)).toBe('abort')
+    }
+  })
+
+  test('without --force the same failure stays best-effort (warn)', () => {
+    expect(prelaunchFailurePolicy(new Error('ENOENT'), false)).toBe('warn')
+  })
 })

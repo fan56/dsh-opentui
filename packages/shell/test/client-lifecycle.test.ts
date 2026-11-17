@@ -90,7 +90,18 @@ function makeClock() {
   }
 }
 
-function makeHooks(opts: { cmd?: string | null; env?: boolean; alive?: (pid: number) => boolean } = {}): {
+function makeHooks(
+  opts: {
+    cmd?: string | null
+    env?: boolean
+    alive?: (pid: number) => boolean
+    /** Simulate a host that actually dies on SIGTERM (so a stop is confirmable). */
+    stopOnSigterm?: boolean
+    /** Simulate an unreadable env → two-evidence fallback (P1-3). */
+    envReadable?: boolean
+    onEnvFallback?: (pid: number) => void
+  } = {},
+): {
   hooks: ProcessKillHooks & { killed: string[] }
   killed: string[]
 } {
@@ -100,7 +111,13 @@ function makeHooks(opts: { cmd?: string | null; env?: boolean; alive?: (pid: num
     cmdline: () => (opts.cmd === undefined ? '--profile opentui --no-open' : opts.cmd),
     hasServerEnv: () => opts.env ?? true,
     kill: (pid, signal) => { killed.push(`${pid}:${signal}`) },
-    pidAlive: opts.alive ?? (() => true),
+    pidAlive:
+      opts.alive ??
+      (opts.stopOnSigterm
+        ? (pid) => !killed.some((k) => k.startsWith(`${pid}:SIGTERM`))
+        : () => true),
+    ...(opts.envReadable !== undefined ? { envReadable: () => opts.envReadable! } : {}),
+    ...(opts.onEnvFallback ? { onEnvFallback: opts.onEnvFallback } : {}),
   }
   return { hooks, killed }
 }
@@ -199,7 +216,7 @@ describe('last-one graceful shutdown (refcount → 0 → grace → SIGTERM)', ()
     const { fs, files } = makeFs()
     const clock = makeClock()
     seedRegistry(fs)
-    const kill = makeHooks()
+    const kill = makeHooks({ stopOnSigterm: true })
     const regPath = join(HOME, 'opentui-host.opentui.json')
     expect(files.has(regPath)).toBe(true)
 
@@ -241,15 +258,30 @@ describe('last-one graceful shutdown (refcount → 0 → grace → SIGTERM)', ()
     expect(files.has(join(HOME, 'opentui-host.opentui.json'))).toBe(true)
   })
 
-  test('three evidence missing → refuse to signal', async () => {
-    const { fs } = makeFs()
+  test('three evidence missing → refuse to signal AND keep the registry (P0-2)', async () => {
+    const { fs, files } = makeFs()
     seedRegistry(fs)
     const kill = makeHooks({ env: false })
+    const regPath = join(HOME, 'opentui-host.opentui.json')
     const result = await lastOneGracefulShutdown(HOME, {
       fs, now: () => NOW, sleep: async () => {}, hooks: kill.hooks, graceMs: 10, termGraceMs: 10, killGraceMs: 10,
     })
     expect(result.action).toBe('evidence-refused')
     expect(kill.killed).toHaveLength(0)
+    expect(files.has(regPath)).toBe(true) // never orphan a live host
+  })
+
+  test('evidence matched but pid survives SIGKILL → stop-failed, registry kept (P0-2)', async () => {
+    const { fs, files } = makeFs()
+    seedRegistry(fs)
+    const kill = makeHooks({ alive: () => true }) // never dies, even after SIGKILL
+    const result = await lastOneGracefulShutdown(HOME, {
+      fs, now: () => NOW, sleep: async () => {}, hooks: kill.hooks, graceMs: 10, termGraceMs: 10, killGraceMs: 10,
+    })
+    expect(result.action).toBe('stop-failed')
+    expect(kill.killed).toContain(`${HOST_PID}:SIGTERM`)
+    expect(kill.killed).toContain(`${HOST_PID}:SIGKILL`)
+    expect(files.has(join(HOME, 'opentui-host.opentui.json'))).toBe(true)
   })
 })
 
@@ -258,7 +290,7 @@ describe('all-crash watchdog fallback', () => {
     const { fs, files } = makeFs()
     const clock = makeClock()
     seedRegistry(fs)
-    const kill = makeHooks()
+    const kill = makeHooks({ stopOnSigterm: true })
     const ticks: number[] = []
     const result = await runWatchdog(HOME, {
       fs, now: clock.now, sleep: clock.sleep, hooks: kill.hooks,
@@ -296,6 +328,40 @@ describe('all-crash watchdog fallback', () => {
     })
     expect(result.reason).toBe('host-gone')
     expect(kill.killed).toHaveLength(0)
+  })
+
+  test('evidence refused → registry kept, log emitted, retry next tick (P0-2)', async () => {
+    const { fs, files } = makeFs()
+    const clock = makeClock()
+    seedRegistry(fs)
+    // env evidence missing and no fallback hook → strict refusal; host stays alive
+    const kill = makeHooks({ env: false })
+    const refusals: { pid: number; evidencesOk: boolean }[] = []
+    const regPath = join(HOME, 'opentui-host.opentui.json')
+    const result = await runWatchdog(HOME, {
+      fs, now: clock.now, sleep: clock.sleep, hooks: kill.hooks,
+      graceMs: 10, pollMs: 5, maxTicks: 3, termGraceMs: 10, killGraceMs: 10,
+      onEvidenceRefused: (info) => refusals.push(info),
+    })
+    expect(result.reclaimed).toBe(false)
+    expect(result.reason).toBe('max-ticks') // retried instead of returning early
+    expect(refusals.length).toBeGreaterThanOrEqual(1)
+    expect(refusals[0]!.evidencesOk).toBe(false)
+    expect(kill.killed).toHaveLength(0)
+    expect(files.has(regPath)).toBe(true) // live host keeps its only record
+  })
+
+  test('graceMs 0 = resident — watchdog self-exits, never signals (P1-2)', async () => {
+    const { fs, files } = makeFs()
+    seedRegistry(fs)
+    const kill = makeHooks()
+    const result = await runWatchdog(HOME, {
+      fs, now: () => NOW, sleep: async () => {}, hooks: kill.hooks, graceMs: 0, maxTicks: 3,
+    })
+    expect(result.reason).toBe('resident')
+    expect(result.reclaimed).toBe(false)
+    expect(kill.killed).toHaveLength(0)
+    expect(files.has(join(HOME, 'opentui-host.opentui.json'))).toBe(true)
   })
 })
 
@@ -349,6 +415,43 @@ describe('three-evidence safe kill — the only signalling path', () => {
     expect(kill.killed).toEqual([`${HOST_PID}:SIGTERM`, `${HOST_PID}:SIGKILL`])
     expect(result.signals).toEqual(['SIGTERM', 'SIGKILL'])
   })
+
+  test('env unreadable → registry + cmdline two-evidence fallback agrees + logs (P1-3)', async () => {
+    const fallbacks: number[] = []
+    const kill = makeHooks({ env: false, envReadable: false, onEnvFallback: (pid) => fallbacks.push(pid) })
+    const result = await safeStopHost({
+      pid: HOST_PID, registryPid: HOST_PID, hooks: kill.hooks, now: () => NOW, sleep: async () => {},
+    })
+    expect(result.evidencesOk).toBe(true)
+    expect(fallbacks).toEqual([HOST_PID])
+    expect(kill.killed).toContain(`${HOST_PID}:SIGTERM`)
+  })
+
+  test('env readable but marker missing → still refuse, no fallback (P1-3)', async () => {
+    const fallbacks: number[] = []
+    const kill = makeHooks({ env: false, envReadable: true, onEnvFallback: (pid) => fallbacks.push(pid) })
+    const result = await safeStopHost({
+      pid: HOST_PID, registryPid: HOST_PID, hooks: kill.hooks, now: () => NOW, sleep: async () => {},
+    })
+    expect(result.evidencesOk).toBe(false)
+    expect(fallbacks).toHaveLength(0)
+    expect(kill.killed).toHaveLength(0)
+  })
+
+  test('env unreadable NEVER waives registry-pid or exact-cmdline evidence (P1-3)', async () => {
+    for (const cmd of ['--profile web', 'just dsh', null]) {
+      const kill = makeHooks({ cmd, env: false, envReadable: false })
+      const result = await safeStopHost({
+        pid: HOST_PID, registryPid: HOST_PID, hooks: kill.hooks, now: () => NOW, sleep: async () => {},
+      })
+      expect(result.evidencesOk).toBe(false)
+      expect(kill.killed).toHaveLength(0)
+    }
+    const mismatch = makeHooks({ env: false, envReadable: false })
+    await expect(safeStopHost({
+      pid: HOST_PID, registryPid: 9999, hooks: mismatch.hooks, now: () => NOW, sleep: async () => {},
+    })).resolves.toMatchObject({ evidencesOk: false })
+  })
 })
 
 describe('--force / --yes guard', () => {
@@ -387,7 +490,7 @@ describe('--force / --yes guard', () => {
     const clock = makeClock()
     seedRegistry(fs)
     seedHeartbeat(fs, 'c1', new Date(NOW).toISOString())
-    const kill = makeHooks()
+    const kill = makeHooks({ stopOnSigterm: true })
     const child = {
       pid: 4242,
       stdout: { on: () => {} },
@@ -398,7 +501,7 @@ describe('--force / --yes guard', () => {
     const spawned: unknown[] = []
     const result = await ensureHost({
       home: HOME, fs: fs as never, now: clock.now, sleep: clock.sleep,
-      force: true, yes: true, killHooks: kill.hooks, pidAlive: () => true,
+      force: true, yes: true, killHooks: kill.hooks, pidAlive: kill.hooks.pidAlive!,
       baseEnv: {}, findPort: async () => PORT,
       mintCookie: ({ authority }) => `cookie-for-${authority}`,
       health: async () => ({ healthy: true, tcp: true, httpStatus: 200, reason: 'ok' as const }),

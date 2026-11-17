@@ -8,7 +8,12 @@
  *   2. its `ps` cmdline contains `--profile opentui` AND no other `--profile`;
  *   3. its environment carries `DSH_OPENTUI_SERVER=1`.
  *
- * A bare "dsh" substring match is explicitly forbidden. Every signal goes
+ * Evidence 3 is OPTIONAL when the env is genuinely unreadable (DESIGN §6):
+ * on some platforms `ps eww` cannot expose a detached process's environment.
+ * In that case only the two hard evidences (registry pid + exact
+ * `--profile opentui` cmdline) are required, and a fallback log is emitted.
+ * A bare "dsh" substring match remains explicitly forbidden in ALL cases.
+ * Every signal goes
  * through {@link ProcessKillHooks.kill}, which is injectable so unit tests
  * never signal a real process. No other module in the T3b path calls
  * `process.kill` on a host pid directly.
@@ -41,6 +46,15 @@ export interface ProcessKillHooks {
   kill(pid: number, signal: NodeJS.Signals): void
   /** Pid liveness probe (defaults to `process.kill(pid, 0)`). */
   pidAlive?(pid: number): boolean
+  /**
+   * Whether `pid`'s environment can be READ AT ALL (distinct from "readable
+   * but lacks the marker"). When this returns false, `evidencesAgree` waives
+   * evidence 3 and requires only registry pid + exact cmdline. Hooks that omit
+   * it keep the strict three-evidence rule (backward compatible).
+   */
+  envReadable?(pid: number): boolean
+  /** Called once when the two-evidence fallback is used (logging seam). */
+  onEnvFallback?(pid: number): void
 }
 
 function defaultPidAlive(pid: number): boolean {
@@ -69,6 +83,23 @@ export const psKillHooks: ProcessKillHooks = {
       return false
     }
   },
+  envReadable(pid) {
+    try {
+      const result = spawnSync('ps', ['eww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' })
+      if (result.error || (result.status !== null && result.status !== 0)) return false
+      // A non-empty `ps eww` row means the env was readable, even if the
+      // marker itself is absent (that case must still refuse to signal).
+      return (result.stdout ?? '').trim().length > 0
+    } catch {
+      return false
+    }
+  },
+  onEnvFallback(pid) {
+    console.warn(
+      `[safe-kill] ${SERVER_ENV_NAME} env unreadable for pid ${pid}; ` +
+        `using registry + cmdline two-evidence fallback (no "dsh" match)`,
+    )
+  },
   kill(pid, signal) {
     try {
       process.kill(pid, signal)
@@ -79,8 +110,13 @@ export const psKillHooks: ProcessKillHooks = {
 }
 
 /**
- * True only when all three ADR-0009 decision-8 evidences agree. This is the
- * sole gate before any host signal. It never falls back to a "dsh" substring
+ * True when the ADR-0009 decision-8 evidences agree. Evidences 1 (registry
+ * pid) and 2 (exact `--profile opentui` cmdline, no other profile) are always
+ * required. Evidence 3 (the env marker) is waived ONLY when the env is
+ * genuinely unreadable (`hooks.envReadable(pid) === false`, e.g. `ps eww` is
+ * unavailable) — in that case a fallback log is emitted. When the env is
+ * readable but lacks the marker, this still refuses to signal. This is the
+ * sole gate before any host signal and never falls back to a "dsh" substring
  * or port guess.
  */
 export function evidencesAgree(pid: number, registryPid: number, hooks: ProcessKillHooks): boolean {
@@ -91,8 +127,13 @@ export function evidencesAgree(pid: number, registryPid: number, hooks: ProcessK
   // (2) --profile opentui and no other profile on the cmdline.
   const profiles = [...cmd.matchAll(/--profile[= ]+([^\s]+)/g)].map((m) => m[1])
   if (profiles.length === 0 || profiles.some((p) => p !== HOST_PROFILE)) return false
-  // (3) env marker.
-  return hooks.hasServerEnv(pid)
+  // (3) env marker — required when readable, optional when unreadable.
+  if (hooks.hasServerEnv(pid)) return true
+  if (hooks.envReadable && !hooks.envReadable(pid)) {
+    hooks.onEnvFallback?.(pid)
+    return true
+  }
+  return false
 }
 
 export interface SafeStopOptions {

@@ -52,7 +52,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { formatUpgradeUsage, formatUsage, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseUpgradeArgs, readLauncherVersion, validateLauncherArgs } from './lib/launcher.mjs'
+import { formatUpgradeUsage, formatUsage, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseUpgradeArgs, prelaunchFailurePolicy, readLauncherVersion, validateLauncherArgs } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -418,7 +418,8 @@ if (!existsSync(clientEntry)) {
 // lifecycle.ensureHost then adopts the ready host (no double start). On the
 // healthy-attach fast path nothing is printed. The orchestration bundle is a
 // separate build artifact (packages/shell/dist/host-launch.mjs); a missing or
-// failing pre-launch is best-effort — the client retries host boot itself.
+// failing pre-launch is best-effort — the client retries host boot itself —
+// EXCEPT under `--force`, where a failed import/reset is fatal (P1-5).
 // `--dry-run` is side-effect free and skips this step.
 if (!clientArgs.includes('--dry-run')) {
   try {
@@ -436,11 +437,16 @@ if (!clientArgs.includes('--dry-run')) {
       }),
     })
   } catch (err) {
-    // A force reset with live clients and no --yes is a usage error: abort
-    // instead of continuing into a client that would attach to the old host.
-    if (err?.code === 'force-needs-yes') {
+    // P1-5: a force reset must NEVER silently degrade to a no-op. Only the
+    // non-force path is best-effort (the client retries host boot itself).
+    const policy = prelaunchFailurePolicy(err, forceFlag)
+    if (policy === 'usage-error') {
       console.error(`dsh-opentui: ${err?.message ?? err}`)
       process.exit(2)
+    }
+    if (policy === 'abort') {
+      console.error(`dsh-opentui: --force host pre-launch failed (${err?.message ?? err}); aborting without reset.`)
+      process.exit(1)
     }
     console.error(`dsh-opentui: host pre-launch failed (${err?.message ?? err}); the client will retry host boot.`)
   }

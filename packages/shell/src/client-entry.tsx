@@ -274,6 +274,7 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 	// starts the ~3s refresh. No shared-array read-modify-write.
 	let heartbeat: HeartbeatHandle | null = null
 	if (options.heartbeat !== false) {
+		let heartbeatRegistered = false
 		try {
 			heartbeat = (options.registerHeartbeat ?? registerClientHeartbeat)(host.dshHome, {
 				...(options.clientId !== undefined ? { id: options.clientId } : {}),
@@ -281,18 +282,24 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 				workspace,
 			})
 			heartbeat.start()
+			heartbeatRegistered = true
 		} catch (error) {
 			console.error("[client-entry] heartbeat registration failed:", error)
 		}
 		// All-crash fallback: a detached watchdog polls the heartbeat dir and
 		// reclaims a host whose clients all crashed without a clean exit.
-		try {
-			const scriptPath = options.watchdogScriptPath ?? resolveWatchdogScript()
-			if (scriptPath) {
-				;(options.spawnLifecycleWatchdog ?? spawnLifecycleWatchdog)(host.dshHome, { scriptPath, profile })
+		// P1-6: NEVER arm it when our own heartbeat was not registered — with no
+		// heartbeat file the watchdog would treat us as crashed and kill the
+		// host out from under the live client after the TTL.
+		if (heartbeatRegistered) {
+			try {
+				const scriptPath = options.watchdogScriptPath ?? resolveWatchdogScript()
+				if (scriptPath) {
+					;(options.spawnLifecycleWatchdog ?? spawnLifecycleWatchdog)(host.dshHome, { scriptPath, profile })
+				}
+			} catch (error) {
+				console.error("[client-entry] watchdog spawn failed:", error)
 			}
-		} catch (error) {
-			console.error("[client-entry] watchdog spawn failed:", error)
 		}
 	}
 

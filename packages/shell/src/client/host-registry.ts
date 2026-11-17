@@ -408,8 +408,11 @@ function looksLikeV2(value: RegistryReadResult | HostRegistryV2): value is HostR
 /**
  * Decide whether a registry is stale. Pure given the injected clock / pid
  * probe. Legacy and invalid records are stale by schema; a v2 record is stale
- * when its pid is dead (or, if `registryMaxAgeMs` is supplied, its `updatedAt`
- * is too old). A missing registry is not stale — it is simply free to claim.
+ * when its pid is dead. The optional `registryMaxAgeMs` applies ONLY to
+ * `claim`/`booting` records — a `ready`/`stopping` host is steady-state and
+ * nobody refreshes its `updatedAt` (heartbeats live in separate files), so an
+ * age check there would falsely stale (>60s) healthy hosts (P1-1). A missing
+ * registry is not stale — it is simply free to claim.
  */
 export function isRegistryStale(input: RegistryReadResult | HostRegistryV2, deps: StaleDeps = {}): StaleVerdict {
   const read: RegistryReadResult = looksLikeV2(input) ? { kind: 'v2', value: input } : input
@@ -420,7 +423,10 @@ export function isRegistryStale(input: RegistryReadResult | HostRegistryV2, deps
   const reasons: StaleReason[] = []
   const alive = deps.pidAlive ?? defaultPidAlive
   if (!alive(read.value.pid)) reasons.push('dead-pid')
-  if (deps.registryMaxAgeMs !== undefined) {
+  if (
+    deps.registryMaxAgeMs !== undefined &&
+    (read.value.phase === 'claim' || read.value.phase === 'booting')
+  ) {
     const now = (deps.now ?? Date.now)()
     const updated = Date.parse(read.value.updatedAt)
     if (!Number.isNaN(updated) && now - updated > deps.registryMaxAgeMs) reasons.push('registry-too-old')
@@ -441,24 +447,32 @@ export function checkRegistryStale(
 
 export interface ClearLegacyResult {
   removed: boolean
-  reason: 'legacy-removed' | 'not-legacy' | 'missing'
+  reason: 'legacy-removed' | 'not-legacy' | 'missing' | 'legacy-host-alive'
 }
 
 export interface SafeClearOptions {
   fs?: RegistryFs
   /** Pre-read registry (e.g. from `checkRegistryStale`) to avoid a second read. */
   read?: RegistryReadResult
+  /** Pid liveness probe. Default: `lifecycle.pidAlive` (EPERM counts as alive). */
+  pidAlive?: (pid: number) => boolean
 }
 
 /**
- * Remove a legacy registry FILE on first run of the new version.
+ * Remove a legacy registry FILE on first run of the new version — ONLY when
+ * its pid is confirmed dead. P1-4: a legacy record can be the sole record of
+ * a still-running old host; unlinking it would orphan that host and make
+ * `--force` unable to locate it. When the pid is alive (or its liveness is
+ * uncertain — EPERM counts as alive), the record is KEPT for `--force` /
+ * manual intervention. DESIGN §7: "if it cannot be confirmed, leave it for
+ * stale cleanup".
  *
  * Accepts either a `(home, profile)` pair (reads the file itself) or a
  * pre-read registry via `options.read`. CONTRACT: this function only ever
  * unlinks the registry file. It NEVER signals or kills the legacy pid —
  * identifying and stopping that host needs the three-evidence rule
- * (ADR-0009 decision 8) and belongs to a later task. A v2 record (or a
- * missing/unreadable file) is left untouched.
+ * (ADR-0009 decision 8). A v2 record (or a missing/unreadable file) is left
+ * untouched.
  */
 export function safeClearLegacy(home: string, profile: string, options: SafeClearOptions = {}): ClearLegacyResult {
   const fs = options.fs ?? nodeRegistryFs
@@ -466,6 +480,10 @@ export function safeClearLegacy(home: string, profile: string, options: SafeClea
   const read = options.read ?? readRegistryAt(path, fs)
   if (read.kind === 'missing') return { removed: false, reason: 'missing' }
   if (read.kind !== 'legacy') return { removed: false, reason: 'not-legacy' }
+  const alive = options.pidAlive ?? defaultPidAlive
+  if (read.raw.pid > 0 && alive(read.raw.pid)) {
+    return { removed: false, reason: 'legacy-host-alive' }
+  }
   fs.unlinkSync(path) // file only — no process.kill anywhere in this module
   return { removed: true, reason: 'legacy-removed' }
 }
