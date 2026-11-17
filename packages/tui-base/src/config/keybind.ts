@@ -192,6 +192,13 @@ export const Definitions = {
   "session.line.down": keybind("ctrl+alt+e", "Scroll messages down by one line"),
   "session.half.page.up": keybind("ctrl+alt+u", "Scroll messages up by half page"),
   "session.half.page.down": keybind("ctrl+alt+d", "Scroll messages down by half page"),
+  // D9 optional keyboard fallback for the merged activity lower zone. The
+  // ctrl+alt+↑/↓ chords are ALSO declared as which-key.scroll.up/down below,
+  // but which-key has no layer implementation in this repo, so those entries
+  // are inert — these ids are the live registration (guarded by lower-zone
+  // overflow and page ownership; no pageup/pagedown/home/end binding here).
+  "session.dock.scroll.up": keybind("ctrl+alt+up", "Scroll the activity lower zone up"),
+  "session.dock.scroll.down": keybind("ctrl+alt+down", "Scroll the activity lower zone down"),
   // ctrl+g moved to session.subagents; ctrl+home is a free leg with the same
   // "first" semantics (home/alt+home stay for the old muscle memory).
   "session.first": keybind("ctrl+home,home,alt+home", "Navigate to first message"),

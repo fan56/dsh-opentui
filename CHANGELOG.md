@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-11-17
+
+### Added
+- The activity frame now merges Todos and Subagents. Tool and think rows render
+  in an upper zone above the todo tree, and both zones are visible at once
+  instead of switching.
+- Only `in_progress` todos render. Every running subagent hangs under the last
+  `in_progress` todo — a documented approximation, since the data model has no
+  todo/subagent association field.
+- The merged frame has a 10-line visible cap shared with
+  `session.activity_panel_height` as `min(gear, 10)`. The lower zone scrolls via
+  mouse wheel with a `ctrl+alt+up/down` fallback (overflow and page-owner
+  guarded) and an `N/M` position suffix in the frame title.
+- Per-line entrance and exit fades and think italics apply inside the merged
+  frame. Todo and agent rows survive turn end while in_progress content remains,
+  decoupled from the activity frame latch.
+
+### Changed
+- The activity title tool glyph is `🔧` (U+1F527) instead of `🛠️`: the renderer
+  blanks VS16 graphemes in wcwidth mode. The footer provider lead is likewise
+  `🌐` (U+1F310) for the same reason.
+
+### Removed
+- Running-child rows were removed from the last-request footer dock; subagents
+  now render once, in the activity panel.
+- The standalone Todos panel render was removed.
+
 ## [0.19.1] - 2026-11-17
 
 ### Fixed

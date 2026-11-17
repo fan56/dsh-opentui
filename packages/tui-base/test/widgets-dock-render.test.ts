@@ -22,14 +22,31 @@
  */
 import { beforeAll, afterEach, describe, expect, test } from "bun:test"
 import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
-import { createSignal } from "solid-js"
+import { createSignal, type JSX } from "solid-js"
 import { createComponent } from "@opentui/solid"
 import { testRender } from "@opentui/solid"
 import type { CapturedFrame, CapturedSpan } from "@opentui/core"
-import { WidgetsDock, resetSkinLineFades, dockAccentColor, setActivityPanelGear } from "../src/routes/session/widgets-dock"
+import {
+	WidgetsDock,
+	mergedDockCursor,
+	resetMergedDockCursor,
+	resetSkinLineFades,
+	dockAccentColor,
+	setActivityPanelGear,
+	mergedThinkRows,
+} from "../src/routes/session/widgets-dock"
 import { DOCK_LINGER_MS, DOCK_FADE_OUT_MS } from "../src/routes/session/dock-visibility"
+import { stringWidth } from "../src/util/string-width"
 import { setMotionTier } from "../src/skin/motion"
 import type { SeamRow } from "../src/routes/session/seam-rows"
+import { ConfigProvider, resolve } from "../src/config"
+import { Keymap } from "../src/context/keymap"
+import {
+	InputOwnershipProvider,
+	useInputOwnership,
+	type InputOwnership,
+	type OwnerFrame,
+} from "../src/context/input-ownership"
 
 // T7b: the dock/picker/palette copy now flows through t() — load the bundled
 // locales into the registry so the en values resolve in tests (T5/T6 law).
@@ -63,6 +80,7 @@ const near = (a: number, b: number, tol = 0.02) => Math.abs(a - b) <= tol
 afterEach(() => {
 	setMotionTier(undefined)
 	resetSkinLineFades()
+	resetMergedDockCursor()
 })
 
 describe("WidgetsDock on the real renderer", () => {
@@ -266,11 +284,35 @@ describe("WidgetsDock on the real renderer", () => {
 		}
 	})
 
-	test("U4 panelHeight: the /settings gear live-resizes the frame (1 → 10)", async () => {
+	/** The dock frame's content rows: the heavy-border verticals (`┃`) delimit
+	 * the rows inside the box; the top/bottom borders use `┏┓┗┛`, so they are
+	 * excluded. Visible content = 2 border rows + this count. */
+	const dockContentLines = (frame: CapturedFrame): number =>
+		frame.lines.filter((line) => line.spans.some((span) => span.text.includes("┃"))).length
+
+	const spansMatching = (frame: CapturedFrame, re: RegExp): CapturedSpan[] =>
+		frame.lines.flatMap((line) => line.spans).filter((span) => re.test(span.text))
+
+	/** A settled `todo_write` row carrying `count` in_progress todos in its
+	 * args; `latestTodos` reads this, and `mergedToolRows` excludes it (key not
+	 * `tool:live:`), so it feeds the lower zone without adding a tool line. */
+	const todoWriteRows = (count: number): SeamRow => ({
+		key: "tool:todos",
+		kind: "tool",
+		name: "todo_write",
+		args: JSON.stringify({
+			todos: Array.from({ length: count }, (_, i) => ({ content: `task ${i + 1}`, status: "in_progress" })),
+		}),
+		status: "done",
+		output: "Updated todo list",
+	})
+
+	test("U4 panelHeight: gear caps the merged frame at min(gear, 10) (1 → 10)", async () => {
 		setMotionTier("full")
 		const now = Date.now()
-		// A 5-line collapsed think burst beside a running tool: the frame is
-		// 2 borders + think + tool rows, so the gear moves its height directly.
+		// A 5-line collapsed think burst + a running tool + 12 in_progress todos
+		// → coexistence: think + tool above, todo window below. The gear caps
+		// the WHOLE merged frame; think itself never expands past one line.
 		const rows: SeamRow[] = [
 			{
 				key: "reasoning:gear",
@@ -281,38 +323,46 @@ describe("WidgetsDock on the real renderer", () => {
 				elapsedSec: 0.4,
 			},
 			{ key: "tool:live:gear", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoWriteRows(12),
 		]
 		const setup = await testRender(
 			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
 			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
-		const thinkLines = (frame: CapturedFrame): number =>
-			frame.lines.reduce(
-				(count, line) => count + line.spans.filter((span) => /g[1-5]/.test(span.text)).length,
-				0,
-			)
 		try {
 			await sleep(300) // the frame latch + entrance fades
 			await setup.renderOnce()
-			// Gear 1: ONE think line survives (the tail), the frame is tight.
+			// No gear → the 10-line ceiling. Think is exactly ONE line (the
+			// tail, g5); the coexistence tool zone is exactly ONE line.
+			const base = setup.captureSpans()
+			expect(dockContentLines(base)).toBe(10)
+			expect(spansMatching(base, /g[1-5]/)).toHaveLength(1)
+			expect(spansMatching(base, /g[1-5]/)[0]!.text).toContain("g5")
+			expect(spansMatching(base, /g[1-5]/)[0]!.text).not.toContain("g1")
+			expect(spansMatching(base, /bash/)).toHaveLength(1)
+
+			// Gear 1: the frame shrinks in place (no remount) to ONE content
+			// line — the newest upper line (tool); think/lower are trimmed.
 			setActivityPanelGear("1")
 			await setup.renderOnce()
 			const tight = setup.captureSpans()
-			expect(spanFor(tight, "g5")).toBeDefined()
-			expect(spanFor(tight, "g1")).toBeUndefined()
-			expect(thinkLines(tight)).toBe(1)
+			expect(dockContentLines(tight)).toBe(1)
+			expect(spansMatching(tight, /bash/)).toHaveLength(1)
+			expect(spansMatching(tight, /g[1-5]/)).toHaveLength(0)
+			expect(spansMatching(tight, /task \d+/)).toHaveLength(0)
 
-			// Gear 10, NO remount: the reactive gear signal re-runs the block
-			// builders and the frame grows in place — the live-apply contract.
-			setActivityPanelGear("10")
-			await setup.renderOnce()
-			const tall = setup.captureSpans()
-			expect(spanFor(tall, "g1")).toBeDefined()
-			expect(spanFor(tall, "g5")).toBeDefined()
-			expect(thinkLines(tall)).toBe(5)
+			// Gear 5 → exactly 5 content lines; gear 10 → exactly 10. Think and
+			// the tool zone stay at one line each at every gear.
+			for (const [gear, expected] of [["5", 5], ["10", 10]] as const) {
+				setActivityPanelGear(gear)
+				await setup.renderOnce()
+				const frame = setup.captureSpans()
+				expect(dockContentLines(frame)).toBe(expected)
+				expect(spansMatching(frame, /g[1-5]/)).toHaveLength(1)
+				expect(spansMatching(frame, /bash/)).toHaveLength(1)
+			}
 
-			// Short terminal: the gear is INERT — the rule-bar degradation wins
-			// (the same gear must not resize a ≤30-row terminal).
+			// Short terminal: the gear is INERT — the rule-bar degradation wins.
 			setActivityPanelGear("10")
 			const small = await testRender(
 				() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
@@ -321,9 +371,8 @@ describe("WidgetsDock on the real renderer", () => {
 			try {
 				await sleep(200)
 				await small.renderOnce()
-				const compact = small.captureSpans()
-				// The rule bar carries ONE think line (the tail), never five.
-				expect(thinkLines(compact)).toBeLessThanOrEqual(1)
+				// The compact rule bar carries ONE think line (the tail), not five.
+				expect(spansMatching(small.captureSpans(), /g[1-5]/)).toHaveLength(1)
 			} finally {
 				await small.dispose()
 			}
@@ -333,13 +382,12 @@ describe("WidgetsDock on the real renderer", () => {
 		}
 	})
 
-	test("U4 panelHeight `all`: the frame is clamped to the 2/3 budget (the LONGER block sheds first)", async () => {
+	test("U4 panelHeight `all`: content caps at 10 with scroll indicators", async () => {
 		setMotionTier("full")
 		const now = Date.now()
-		// 20 collapsed think lines + 8 running tools = 28 unbounded content
-		// rows. At 36 terminal rows the `all` budget is floor(72/3) - 2 =
-		// 22, so the trim MUST shed 6 think lines (the longer block) and
-		// keep every tool.
+		// 20 collapsed think lines + a running tool + 20 in_progress todos:
+		// far more than the merged frame can show. Under `all` (unbounded gear)
+		// the merged ceiling still caps content at 10 visible lines.
 		const rows: SeamRow[] = [
 			{
 				key: "reasoning:all-budget",
@@ -349,49 +397,399 @@ describe("WidgetsDock on the real renderer", () => {
 				startedAt: now - 400,
 				elapsedSec: 0.4,
 			},
-			...Array.from({ length: 8 }, (_, index) => ({
-				key: `tool:live:all-${index + 1}`,
-				kind: "tool" as const,
-				name: `tool-${index + 1}`,
-				args: "{}",
-				status: "running" as const,
-				startedAt: now,
-			})),
+			{ key: "tool:live:all", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoWriteRows(20),
 		]
 		const setup = await testRender(
 			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
-			{ width: WIDTH, height: 36, useMouse: false },
+			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
-		const texts = (frame: CapturedFrame): string[] =>
-			frame.lines.flatMap((line) => line.spans.map((span) => span.text.trim()))
 		try {
 			await sleep(300) // the frame latch + entrance fades
 			await setup.renderOnce()
-			// Baseline: NO gear → the graded default (36 rows → cap 1) — one
-			// think line, one tool line.
-			const base = texts(setup.captureSpans())
-			expect(base.filter((text) => /^g\d+$/.test(text)).length).toBeLessThanOrEqual(1)
-			expect(base.filter((text) => /tool-\d+/.test(text)).length).toBeLessThanOrEqual(1)
+			// No gear → the 10-line ceiling (the default is already 10).
+			expect(dockContentLines(setup.captureSpans())).toBe(10)
 
-			// Gear `all`: per-block caps drop, but the combined budget holds:
-			// 22 content rows = think 14 (tail g7..g20) + all 8 tools.
+			// Gear `all`: 2 upper (think + tool) + 7 todos + 1 bottom indicator
+			// = 10. Think stays at ONE line; the tool zone stays at ONE line;
+			// the indicator consumes a real visible line (counted in the 10).
 			setActivityPanelGear("all")
 			await setup.renderOnce()
-			const frame = texts(setup.captureSpans())
-			const thinkLines = frame.filter((text) => /^g\d+$/.test(text))
-			const toolLines = frame.filter((text) => /tool-\d+/.test(text))
-			expect(thinkLines.length + toolLines.length).toBe(22)
-			expect(thinkLines.length).toBe(14)
-			expect(toolLines.length).toBe(8)
-			// The shed lines are the OLDEST of the longer block: the tail
-			// survives, the head goes.
-			expect(thinkLines).not.toContain("g1")
-			expect(thinkLines).not.toContain("g6")
-			expect(thinkLines).toContain("g7")
-			expect(thinkLines).toContain("g20")
+			const all = setup.captureSpans()
+			expect(dockContentLines(all)).toBe(10)
+			expect(spansMatching(all, /g\d+/)).toHaveLength(1)
+			expect(spansMatching(all, /bash/)).toHaveLength(1)
+			expect(spansMatching(all, /task \d+/)).toHaveLength(7)
+			const more = spansMatching(all, /more/)
+			expect(more).toHaveLength(1)
+			expect(more[0]!.text).toContain("▼ 13 more")
+			expect(spansMatching(all, /▲/)).toHaveLength(0)
+
+			// Gear 10 is the same ceiling; gear 1 shrinks to one content line.
+			setActivityPanelGear("10")
+			await setup.renderOnce()
+			expect(dockContentLines(setup.captureSpans())).toBe(10)
+			setActivityPanelGear("1")
+			await setup.renderOnce()
+			expect(dockContentLines(setup.captureSpans())).toBe(1)
 		} finally {
 			setActivityPanelGear(undefined)
 			await setup.dispose()
+		}
+	})
+
+	test("title shows N/M only on lower-zone overflow, right-aligned (D8/D13)", async () => {
+		const now = Date.now()
+		const [rows, setRows] = createSignal<SeamRow[]>([
+			{ key: "tool:live:title", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoWriteRows(14),
+		])
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { get rows() { return rows() }, turnActive: () => true }),
+			{ width: WIDTH, height: HEIGHT, useMouse: false },
+		)
+		try {
+			resetMergedDockCursor()
+			await sleep(300) // frame latch + entrance fades
+			await setup.renderOnce()
+			const topLine = setup.captureSpans().lines[0]
+			const title = topLine?.spans.map((s) => s.text).join("") ?? ""
+
+			// 14 todos overflow → N/M present. FIX A: the box reserves 4 chrome
+			// columns (┏, leading ━, trailing ━, ┓), so the title slot is W-4 and
+			// the suffix right edge is flush against the ONE mandatory trailing
+			// ━ (`1/14━┓`). Encode the EXACT full string: a 1-column pad error
+			// (W-3/W-5) or an extra ━ (`1/14━━┓`) now fails, unlike the old
+			// `endsWith("1/14━┓")`. `1/14┓` is not achievable — a W-3 title is
+			// wider than the slot and opentui drops the title entirely (probe
+			// evidence; see widgets-dock.tsx titleSlotWidth comment).
+			const base = "🔧 tool"
+			const suffix = "1/14"
+			const slot = WIDTH - 4
+			const expected = `┏━${base}${" ".repeat(slot - stringWidth(base) - stringWidth(suffix))}${suffix}━┓`
+			expect(title).toBe(expected)
+			expect(title.includes("todo")).toBe(false)
+
+			// 2 todos fit → NO N/M anywhere in the title.
+			setRows([
+				{ key: "tool:live:title2", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+				todoWriteRows(2),
+			])
+			await setup.renderOnce()
+			const fitTitle = (setup.captureSpans().lines[0]?.spans.map((s) => s.text).join("") ?? "")
+			expect(fitTitle).toContain("🔧 tool")
+			expect(/\d+\/\d+/.test(fitTitle)).toBe(false)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("wheel steps the lower-zone cursor only while it overflows (D9)", async () => {
+		const now = Date.now()
+		const [rows, setRows] = createSignal<SeamRow[]>([
+			{ key: "tool:live:wheel", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoWriteRows(14),
+		])
+		// Mouse capture must be ON for renderer wheel delivery (main client path).
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { get rows() { return rows() }, turnActive: () => true }),
+			{ width: WIDTH, height: HEIGHT, useMouse: true },
+		)
+		const titleOf = () => setup.captureSpans().lines[0]?.spans.map((s) => s.text).join("") ?? ""
+		try {
+			resetMergedDockCursor()
+			await sleep(300)
+			await setup.renderOnce()
+			expect(titleOf()).toContain("1/14")
+
+			// Scroll down over the dock frame (x=6, y=2 is inside a content row).
+			// The SGR mouse parser emits scroll delta=1, so one notch = one line.
+			await setup.mockMouse.scroll(6, 2, "down")
+			await setup.renderOnce()
+			expect(titleOf()).toContain("2/14")
+
+			// Scroll back up to the top.
+			await setup.mockMouse.scroll(6, 2, "up")
+			await setup.renderOnce()
+			expect(titleOf()).toContain("1/14")
+
+			// No overflow → the wheel is a no-op (cursor guard).
+			setRows([
+				{ key: "tool:live:wheel2", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+				todoWriteRows(2),
+			])
+			await setup.renderOnce()
+			const fitTitle = titleOf()
+			expect(fitTitle).toContain("🔧 tool")
+			expect(/\d+\/\d+/.test(fitTitle)).toBe(false)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("D10: lower zone survives turn end (turnActive false, no FlatDock fallback)", async () => {
+		// turnActive=false but an in_progress todo keeps mergedLowerHasContent true,
+		// so the latch stays shown and the MERGED frame renders (FlatDock draws no
+		// heavy border). Assert exact line count + exact content strings.
+		const rows: SeamRow[] = [todoWriteRows(1)]
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { rows, turnActive: () => false }),
+			{ width: WIDTH, height: HEIGHT, useMouse: false },
+		)
+		try {
+			resetMergedDockCursor()
+			await sleep(120) // 60ms latch defer + entrance margin
+			await setup.renderOnce()
+			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
+			const occupied = lines.filter((l) => l.trim() !== "")
+			expect(occupied).toHaveLength(3) // top border + 1 todo content + bottom border
+			const body = "● 1 task 1"
+			const inner = WIDTH - 2
+			expect(occupied[0]).toBe(`┏━🧩 activity${"━".repeat(inner - 1 - stringWidth("🧩 activity"))}┓`)
+			expect(occupied[1]).toBe(`┃${body}${" ".repeat(inner - stringWidth(body))}┃`)
+			expect(occupied[2]).toBe(`┗${"━".repeat(inner)}┛`)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("D11: compact terminal keeps 2-line rule form + 1 summary line, no scroll/N-M", async () => {
+		// height 24 ≤ COMPOSER_COMPACT_TERMINAL_ROWS: no box/scroll zone; upper
+		// zone keeps its 2 rule lines, lower zone collapses to ONE summary line.
+		const now = Date.now()
+		const rows: SeamRow[] = [
+			{ key: "reasoning:compact", kind: "reasoning", text: "think tail", final: true, startedAt: now - 400, elapsedSec: 0.4 },
+			{ key: "tool:live:compact", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoWriteRows(12),
+		]
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
+			{ width: WIDTH, height: 24, useMouse: false },
+		)
+		try {
+			resetMergedDockCursor()
+			await sleep(120)
+			await setup.renderOnce()
+			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
+			const occupied = lines.filter((l) => l.trim() !== "")
+			expect(occupied).toHaveLength(3) // 2 upper rule lines + 1 lower summary
+			expect(occupied[0]!.trimEnd()).toBe("   ┃ activity · 💭 thought · 0.4s · think tail")
+			expect(occupied[1]!.includes("┃")).toBe(true) // rule form (not a boxed ┃ row)
+			expect(occupied[1]!.includes("bash")).toBe(true)
+			expect(occupied[2]!.trimEnd()).toBe("   todos [✓]0/12 · task 1")
+			// No scroll indicators and no boxed title carrying N/M.
+			for (const line of occupied) {
+				expect(line.includes("▲")).toBe(false)
+				expect(line.includes("▼")).toBe(false)
+				expect(line.includes("┏")).toBe(false)
+				expect(line.includes("┓")).toBe(false)
+			}
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("D3/D14: think-row retention filter hides a settled row when tier drops decorations mid-linger", async () => {
+		// Pure law at the tier-switch boundary (the only changed input is
+		// `decorated`): same row + same clock, kept under full (fading), dropped
+		// under reduced/off (hidden at the 2.0s linger edge).
+		const stoppedAt = 2500
+		const row: Extract<SeamRow, { kind: "reasoning" }> = {
+			key: "reasoning:tier",
+			kind: "reasoning",
+			text: "tier switch line",
+			final: true,
+			streaming: false,
+			startedAt: 1000,
+			elapsedSec: 1.5, // stop = 1000 + 1.5s = 2500
+		}
+		const now = stoppedAt + 2100 // inside 2.0-2.3s window
+		expect(mergedThinkRows([row], now, true)).toHaveLength(1)
+		expect(mergedThinkRows([row], now, false)).toHaveLength(0)
+		// A live streaming burst is never filtered, even with a stale stop anchor.
+		const live: SeamRow = { ...row, streaming: true }
+		expect(mergedThinkRows([live], now, false)).toHaveLength(1)
+	})
+})
+
+/**
+ * D9 keyboard fallback harness: mount the REAL dock under the same provider
+ * tree the client uses (ConfigProvider -> Keymap.Provider -> InputOwnershipProvider)
+ * so the global scroll layer is live and its page-owner guard is real. A bare
+ * testRender (no provider) would leave the layer unregistered and make every
+ * key assertion vacuous. `pressChord` drives the REAL ctrl+alt+up / ctrl+alt+down
+ * bytes through the renderer input parser, so the chord-to-command binding in
+ * keybind.ts is exercised end to end; `openOverlay`/`closeOverlay` push/pop a
+ * dialog frame on the ownership stack — the canonical ADR-0008 API `pageOwns()`
+ * reads.
+ */
+type KeyHarness = {
+	setup: Awaited<ReturnType<typeof testRender>>
+	titleOf: () => string
+	pressChord: (direction: "up" | "down") => void
+	openOverlay: () => void
+	closeOverlay: () => void
+}
+
+async function mountDockWithKeys(rows: () => readonly SeamRow[]): Promise<KeyHarness> {
+	let ownership: InputOwnership | undefined
+	let overlay: OwnerFrame | undefined
+	function Capture() {
+		ownership = useInputOwnership()
+		return null
+	}
+	const setup = await testRender(
+		() =>
+			createComponent(ConfigProvider, {
+				config: resolve({} as Parameters<typeof resolve>[0], { terminalSuspend: true }),
+				get children() {
+					return createComponent(Keymap.Provider, {
+						get children() {
+							return createComponent(InputOwnershipProvider, {
+								get children() {
+									return [
+										createComponent(Capture, {}),
+										createComponent(WidgetsDock, {
+											get rows() {
+												return rows()
+											},
+											turnActive: () => true,
+										}),
+									] as unknown as JSX.Element
+								},
+							})
+						},
+					})
+				},
+			}),
+		{ width: WIDTH, height: HEIGHT, useMouse: false },
+	)
+	return {
+		setup,
+		titleOf: () => setup.captureSpans().lines[0]?.spans.map((s) => s.text).join("") ?? "",
+		pressChord: (direction) => {
+			// alt = meta in the TUI modifier model; ctrl+meta+arrow encodes the
+			// exact ctrl+alt+up / ctrl+alt+down chord the config binds.
+			setup.mockInput.pressArrow(direction, { ctrl: true, meta: true })
+		},
+		openOverlay: () => {
+			if (!ownership) throw new Error("key harness: ownership context not captured")
+			overlay = ownership.push("dialog")
+		},
+		closeOverlay: () => {
+			if (!ownership || !overlay) throw new Error("key harness: no overlay frame open")
+			ownership.pop(overlay)
+			overlay = undefined
+		},
+	}
+}
+
+describe("WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down)", () => {
+	/** A settled todo_write row with `count` in_progress todos (same shape the
+	 * other describe uses) — `latestTodos` reads it without adding a tool line. */
+	const todoRows = (count: number): SeamRow => ({
+		key: "tool:todos:kb",
+		kind: "tool",
+		name: "todo_write",
+		args: JSON.stringify({
+			todos: Array.from({ length: count }, (_, i) => ({ content: `task ${i + 1}`, status: "in_progress" })),
+		}),
+		status: "done",
+		output: "Updated todo list",
+	})
+
+	test("overflow + key advances N/M, one line per notch", async () => {
+		const now = Date.now()
+		const [rows, setRows] = createSignal<SeamRow[]>([
+			{ key: "tool:live:kb", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoRows(14),
+		])
+		const h = await mountDockWithKeys(() => rows())
+		try {
+			resetMergedDockCursor()
+			await sleep(300)
+			await h.setup.renderOnce()
+			expect(h.titleOf()).toContain("1/14")
+
+			// ctrl+alt+down (session.dock.scroll.down) advances the window.
+			h.pressChord("down")
+			await h.setup.renderOnce()
+			expect(h.titleOf()).toContain("2/14")
+
+			// ctrl+alt+up (session.dock.scroll.up) steps back.
+			h.pressChord("up")
+			await h.setup.renderOnce()
+			expect(h.titleOf()).toContain("1/14")
+
+			// Content change keeps the harness live (proves the provider tree did
+			// not freeze the dock's reactive rows).
+			setRows([
+				{ key: "tool:live:kb-b", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+				todoRows(16),
+			])
+			await h.setup.renderOnce()
+			expect(h.titleOf()).toContain("1/16")
+		} finally {
+			await h.setup.dispose()
+		}
+	})
+
+	test("no overflow + key is a no-op: cursor stays at 0 and no N/M", async () => {
+		const now = Date.now()
+		const rows: SeamRow[] = [
+			{ key: "tool:live:kb2", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoRows(2),
+		]
+		const h = await mountDockWithKeys(() => rows)
+		try {
+			resetMergedDockCursor()
+			await sleep(300)
+			await h.setup.renderOnce()
+			const before = h.titleOf()
+			expect(/\d+\/\d+/.test(before)).toBe(false)
+
+			h.pressChord("down")
+			h.pressChord("up")
+			await h.setup.renderOnce()
+			expect(mergedDockCursor()).toBe(0)
+			expect(/\d+\/\d+/.test(h.titleOf())).toBe(false)
+		} finally {
+			await h.setup.dispose()
+		}
+	})
+
+	test("overlay open + key is a real no-op (page-owner guard)", async () => {
+		const now = Date.now()
+		const rows: SeamRow[] = [
+			{ key: "tool:live:kb3", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoRows(14),
+		]
+		const h = await mountDockWithKeys(() => rows)
+		try {
+			resetMergedDockCursor()
+			await sleep(300)
+			await h.setup.renderOnce()
+			expect(h.titleOf()).toContain("1/14")
+
+			// A dialog frame owns the keyboard: pageOwns() is false, so the layer's
+			// enabled flips off and the key must not move the cursor.
+			h.openOverlay()
+			await h.setup.flush()
+			h.pressChord("down")
+			await h.setup.renderOnce()
+			expect(mergedDockCursor()).toBe(0)
+			expect(h.titleOf()).toContain("1/14")
+
+			// Closing the overlay re-arms the same key — proves the guard, not a
+			// dead binding.
+			h.closeOverlay()
+			await h.setup.flush()
+			h.pressChord("down")
+			await h.setup.renderOnce()
+			expect(mergedDockCursor()).toBe(1)
+			expect(h.titleOf()).toContain("2/14")
+		} finally {
+			await h.setup.dispose()
 		}
 	})
 })
