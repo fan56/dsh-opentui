@@ -61,6 +61,7 @@ export function parseLauncherArgs(argv) {
 	const args = Array.isArray(argv) ? argv : []
 	let version = false
 	let force = false
+	let yes = false
 	const rest = []
 	const passthrough = []
 	let separatorSeen = false
@@ -81,9 +82,15 @@ export function parseLauncherArgs(argv) {
 			force = true
 			continue
 		}
+		// `--yes` confirms a --force reset when live clients exist (ADR-0009 §7).
+		// Consumed by the bin, never forwarded to dsh/the client.
+		if (arg === '--yes') {
+			yes = true
+			continue
+		}
 		rest.push(arg)
 	}
-	return { version, force, rest, passthrough }
+	return { version, force, yes, rest, passthrough }
 }
 
 /**
@@ -280,7 +287,8 @@ export function formatUsage() {
 		'',
 		'Options:',
 		'  -v, --version              print the launcher version and exit',
-		'  --force                    kill stale dsh processes before starting',
+		'  --force                    reset the singleton host before starting (needs --yes if clients are live)',
+		'  --yes                      confirm a --force reset that would disconnect live clients',
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
 		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
 		'  --connect-timeout <sec>    seconds to wait for the first connection (default: 30)',
@@ -321,6 +329,25 @@ export function readLauncherVersion(pkgRoot) {
 	} catch {
 		return undefined
 	}
+}
+
+/**
+ * Decide how a failed host pre-launch (step 6a) must be handled (P1-5).
+ *
+ * - `force-needs-yes` is a usage error: exit 2 (the user must confirm).
+ * - with `--force`, ANY other failure is fatal: exit 1. A force reset that
+ *   could not import/run the orchestration bundle did not happen, so quietly
+ *   continuing would turn `--force` into a silent no-op (the bin-level force
+ *   cleanup was removed in step 2.5). Never downgrade to a warning here.
+ * - without `--force`, pre-launch is best-effort: warn and let the client
+ *   retry host boot itself.
+ *
+ * @returns 'usage-error' | 'abort' | 'warn'
+ */
+export function prelaunchFailurePolicy(err, force) {
+	if (err?.code === 'force-needs-yes') return 'usage-error'
+	if (force) return 'abort'
+	return 'warn'
 }
 
 /**

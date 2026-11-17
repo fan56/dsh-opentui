@@ -52,7 +52,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ancestorPids, formatUpgradeUsage, formatUsage, killStaleProcesses, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
+import { formatUpgradeUsage, formatUsage, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseUpgradeArgs, prelaunchFailurePolicy, readLauncherVersion, validateLauncherArgs } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -63,14 +63,8 @@ function exitWithGuidance(what, installCmd) {
   process.exit(1)
 }
 
-/** Run a helper command and return its stdout ('' on failure). */
-function capture(cmd, args) {
-  const r = spawnSync(cmd, args, { encoding: 'utf8' })
-  return r.stdout ?? ''
-}
-
 // --- 0. Bin-level flags: --version short-circuits, --force pre-clears -------
-const { version: versionFlag, force: forceFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
+const { version: versionFlag, force: forceFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
   const version = readLauncherVersion(pkgRoot)
@@ -80,6 +74,11 @@ if (versionFlag) {
   }
   console.log(`dsh-opentui ${version}`)
   process.exit(0)
+}
+
+if (yesFlag && !forceFlag) {
+  console.error('dsh-opentui: --yes is only meaningful together with --force.')
+  process.exit(2)
 }
 
 // --- 0.5 upgrade subcommand -------------------------------------------------
@@ -202,22 +201,12 @@ if (!spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout.trim()) {
   exitWithGuidance('the dsh CLI', 'npm i -g @deepseek-ai/dsh')
 }
 
-// --- 2.5 --force: kill this profile's stale instances before starting ------
-// Matches the opentui-profile host (`node <...>/dsh --profile opentui ...`)
-// and the dsh-opentui client (source entry or published bundle) by command
-// line, scoped to THIS dsh home (see lib/launcher.mjs SCOPE). The launcher's
-// own process tree is excluded; TERM first, then KILL for survivors.
-if (forceFlag) {
-  const rows = parseProcessRows(capture('ps', ['-A', '-o', 'pid=,ppid=,command=']))
-  const homes = parseProcessHomes(capture('ps', ['eww', '-A', '-o', 'pid=,args=']))
-  const stale = selectStaleProcesses(rows, {
-    homes,
-    home: dshHome,
-    excludePids: ancestorPids(rows, process.pid),
-  })
-  const result = await killStaleProcesses(stale)
-  console.log(`--force: killed ${result.terminated} stale instance(s)`)
-}
+// --- 2.5 --force -----------------------------------------------------------
+// NOTE (ADR-0009 decision 8): the old bare `--profile opentui` cmdline sweep
+// lived here. It is deliberately removed — killing a process needs the THREE
+// evidences (registry pid + `--profile opentui` cmdline + `DSH_OPENTUI_SERVER=1`
+// env). `--force` is now handled at step 6a inside the host-launch bundle,
+// which also enforces the `--yes` guard when live clients are connected.
 
 // --- 3. Profile bootstrap (every start, best effort, idempotent) -----------
 // provision-opentui-profile.mjs is idempotent and understands
@@ -422,6 +411,47 @@ if (!existsSync(clientEntry)) {
   console.error('dsh-opentui: reinstall the package (npm i -g @aiwayds/dsh-opentui), or rebuild it with `bun scripts/build-client.mjs` from the repo.')
   process.exit(1)
 }
+// --- 6a. Pre-launch the Host service (registry / port / health) ------------
+// ADR-0009 §3: start/adopt the singleton host HERE, while the launcher still
+// owns the terminal, so the `spawn → booting → ready + elapsed` progress is
+// painted BEFORE the bun client enters its alternate screen. The client's own
+// lifecycle.ensureHost then adopts the ready host (no double start). On the
+// healthy-attach fast path nothing is printed. The orchestration bundle is a
+// separate build artifact (packages/shell/dist/host-launch.mjs); a missing or
+// failing pre-launch is best-effort — the client retries host boot itself —
+// EXCEPT under `--force`, where a failed import/reset is fatal (P1-5).
+// `--dry-run` is side-effect free and skips this step.
+if (!clientArgs.includes('--dry-run')) {
+  try {
+    const hostLaunchPath = join(pkgRoot, 'dist', 'host-launch.mjs')
+    const { ensureHost: ensureLaunchHost, createLaunchProgress } = await import(pathToFileURL(hostLaunchPath).href)
+    await ensureLaunchHost({
+      home: dshHome,
+      profile: 'opentui',
+      cwd: process.cwd(),
+      ...(forceFlag ? { force: true } : {}),
+      ...(yesFlag ? { yes: true } : {}),
+      progress: createLaunchProgress({
+        isTty: Boolean(process.stderr.isTTY),
+        write: (text) => process.stderr.write(text),
+      }),
+    })
+  } catch (err) {
+    // P1-5: a force reset must NEVER silently degrade to a no-op. Only the
+    // non-force path is best-effort (the client retries host boot itself).
+    const policy = prelaunchFailurePolicy(err, forceFlag)
+    if (policy === 'usage-error') {
+      console.error(`dsh-opentui: ${err?.message ?? err}`)
+      process.exit(2)
+    }
+    if (policy === 'abort') {
+      console.error(`dsh-opentui: --force host pre-launch failed (${err?.message ?? err}); aborting without reset.`)
+      process.exit(1)
+    }
+    console.error(`dsh-opentui: host pre-launch failed (${err?.message ?? err}); the client will retry host boot.`)
+  }
+}
+
 const result = spawnSync('bun', [clientEntry, ...clientArgs], {
   stdio: 'inherit',
   env: clientEnv,

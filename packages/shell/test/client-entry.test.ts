@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { aggregateTurnContext, bootCallOrder, bootClient, installClientErrorLog, installExitPaths, themeNameFromConfig } from '../src/client-entry.tsx'
+import type { HeartbeatHandle } from '../src/client/client-lifecycle.ts'
 import { RemoteHostSession } from '../src/client/remote-host-session.ts'
 import type { ClientConnection, ClientConnectionState, ClientReadyInfo } from '../src/client/transport.ts'
 import type { EventsItem } from '../src/client/mux-frame.ts'
@@ -185,6 +186,84 @@ describe('bootClient wiring', () => {
     })
     // waitForBootLabel saw the real route immediately — no budget burned
     expect(session.label).toBe('deepseek/deepseek-chat')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P1-6: the all-crash watchdog must never be armed without our own heartbeat.
+// ---------------------------------------------------------------------------
+
+function fakeHeartbeat(): HeartbeatHandle {
+  const rec = { id: 'c1', pid: process.pid, lastSeen: new Date().toISOString(), workspace: '/ws' }
+  return {
+    id: 'c1',
+    get record() {
+      return rec
+    },
+    refresh: () => rec,
+    start: () => {},
+    stop: () => {},
+    remove: () => true,
+  }
+}
+
+describe('bootClient watchdog arming — heartbeat registration is a precondition (P1-6)', () => {
+  const silentError = async (run: () => Promise<void>) => {
+    const orig = console.error
+    console.error = () => {}
+    try {
+      await run()
+    } finally {
+      console.error = orig
+    }
+  }
+
+  test('heartbeat registration failure → watchdog is NOT spawned', async () => {
+    const { handle, seams } = makeFakes()
+    const watchdogCalls: string[] = []
+    await silentError(async () => {
+      await bootClient({
+        ensureHost: seams.ensureHost,
+        connect: seams.connect,
+        createSession: seams.createSession,
+        render: seams.render as never,
+        exitPaths: false,
+        installErrorLog: false,
+        labelBudgetMs: 1,
+        registerHeartbeat: (() => {
+          throw new Error('heartbeat write failed')
+        }) as never,
+        watchdogScriptPath: '/fake/watchdog.mjs',
+        spawnLifecycleWatchdog: ((home: string) => {
+          watchdogCalls.push(home)
+          return { pid: 1 }
+        }) as never,
+      })
+    })
+    expect(watchdogCalls).toHaveLength(0)
+    rmSync(handle.dshHome, { recursive: true, force: true })
+  })
+
+  test('successful heartbeat registration → watchdog IS spawned', async () => {
+    const { handle, seams } = makeFakes()
+    const watchdogCalls: string[] = []
+    await bootClient({
+      ensureHost: seams.ensureHost,
+      connect: seams.connect,
+      createSession: seams.createSession,
+      render: seams.render as never,
+      exitPaths: false,
+      installErrorLog: false,
+      labelBudgetMs: 1,
+      registerHeartbeat: (() => fakeHeartbeat()) as never,
+      watchdogScriptPath: '/fake/watchdog.mjs',
+      spawnLifecycleWatchdog: ((home: string) => {
+        watchdogCalls.push(home)
+        return { pid: 1 }
+      }) as never,
+    })
+    expect(watchdogCalls).toEqual([handle.dshHome])
+    rmSync(handle.dshHome, { recursive: true, force: true })
   })
 })
 

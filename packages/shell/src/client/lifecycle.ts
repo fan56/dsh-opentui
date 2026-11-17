@@ -344,6 +344,28 @@ export interface EnsureHostOptions {
   staleProbeMs?: number
   /** Cookie max age forwarded to mintOwnerCookie. */
   maxAgeMs?: number
+  /** v2 host-launch seam (ADR-0009). Called by `ensureV2Host` to claim/attach
+   * the singleton host through the v2 registry. Default: the real
+   * `host-launch.ts ensureHost` (dynamically imported to avoid the registry↔
+   * lifecycle import cycle). Tests inject a fake that writes a v2 record. */
+  launchHost?: (deps: V2LaunchDeps) => Promise<V2LaunchResult>
+  /** Child cwd for the v2 launcher (default `process.cwd()`). */
+  cwd?: string
+}
+
+/** Minimal deps the v2 launcher needs from the client. */
+export interface V2LaunchDeps {
+  home: string
+  profile: string
+  cwd: string
+}
+
+/** The subset of host-launch's `HostLaunchResult` the v2 adapter consumes. */
+export interface V2LaunchResult {
+  port: number
+  adopted: boolean
+  spawned: boolean
+  hostPid?: number
 }
 
 export interface HostHandle {
@@ -363,6 +385,10 @@ export interface HostHandle {
   diagnostics(): string
   /** True when this host was adopted from the lockfile, not spawned here. */
   readonly adopted: boolean
+  /** ADR-0009: true when this handle is backed by the v2 host-launch stack
+   * (v2 registry + heartbeat/watchdog lifecycle) rather than the legacy v1
+   * lockfile. v2 handles never arm the v1 idle-5s timer or write the lock. */
+  readonly v2Managed?: boolean
   readonly refCount: number
   /** +1 user (cancels a pending idle-exit). */
   retain(): void
@@ -389,6 +415,8 @@ interface ManagedHost {
   url: string | null
   token: string | null
   adopted: boolean
+  /** ADR-0009 v2-backed host: no v1 lockfile writes, no v1 idle timer. */
+  v2Managed?: boolean
   child: HostChildProcess | null
   refCount: number
   idleTimer: ReturnType<typeof setTimeout> | null
@@ -503,9 +531,24 @@ function getFreePort(): Promise<number> {
   })
 }
 
+/** ADR-0009 v2 guard: the registry file at `<dshHome>/opentui-host.<profile>.json`
+ * is shared by the v1 lockfile and the v2 registry. A record carrying
+ * `version: 2` belongs to the host-launch stack and is NEVER a valid v1 lock.
+ * v1 code must treat it as absent (read-only) — never downgrade it to v1. */
+function isV2Registry(dshHome: string, profile: string): boolean {
+  try {
+    const raw = JSON.parse(readFileSync(lockPathFor(dshHome, profile), 'utf8')) as { version?: unknown } | null
+    return raw !== null && typeof raw === 'object' && raw.version === 2
+  } catch {
+    return false
+  }
+}
+
 function readLock(dshHome: string, profile: string): LockFile | null {
   try {
     const raw = JSON.parse(readFileSync(lockPathFor(dshHome, profile), 'utf8')) as Partial<LockFile>
+    // v2 records are not v1 locks: refuse to read them as such (P0-1).
+    if ((raw as { version?: unknown }).version === 2) return null
     if (typeof raw.pid !== 'number' || typeof raw.port !== 'number') return null
     return {
       pid: raw.pid,
@@ -521,6 +564,9 @@ function readLock(dshHome: string, profile: string): LockFile | null {
 }
 
 function writeLock(dshHome: string, profile: string, host: ManagedHost): void {
+  // P0-1: never overwrite a v2 registry with a v1 payload. The v2 stack owns
+  // this file once written; an adopted client is strictly read-only here.
+  if (isV2Registry(dshHome, profile)) return
   mkdirSync(dshHome, { recursive: true })
   const path = lockPathFor(dshHome, profile)
   const payload: LockFile = {
@@ -555,6 +601,9 @@ function clearOurLock(host: ManagedHost): void {
  * file. The placeholder's pid is the BOOTER's pid — the liveness anchor until
  * the real lock (child pid) replaces it. */
 function claimBootLock(dshHome: string, profile: string): string | null {
+  // P0-1: a v2 registry is a live single-instance claim — a v1 booter must
+  // never clobber it with a booting placeholder (that would orphan the v2 host).
+  if (isV2Registry(dshHome, profile)) return null
   mkdirSync(dshHome, { recursive: true })
   const path = lockPathFor(dshHome, profile)
   const payload: LockFile = {
@@ -891,6 +940,9 @@ function makeHandle(host: ManagedHost): HostHandle {
     get adopted() {
       return host.adopted
     },
+    get v2Managed() {
+      return host.v2Managed === true
+    },
     get refCount() {
       return host.refCount
     },
@@ -1174,6 +1226,11 @@ function attachHost(host: ManagedHost): void {
 
 function releaseHost(host: ManagedHost): void {
   host.refCount = Math.max(0, host.refCount - 1)
+  // ADR-0009 decision 6: v2-backed hosts are shut down by the refcount +
+  // heartbeat + last-one grace path (client-lifecycle), never by the legacy
+  // idle-5s timer. A v2 release only drops the in-process ref; it never arms
+  // a kill timer (two lifecycles must not coexist on one host).
+  if (host.v2Managed) return
   if (host.refCount === 0 && host.state === 'ready' && host.idleExitSec > 0) {
     const timer = setTimeout(() => {
       host.idleTimer = null
@@ -1238,13 +1295,125 @@ async function terminateHost(host: ManagedHost): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// v2 host-launch attach (ADR-0009 — the production path).
+// ---------------------------------------------------------------------------
+
+/** The v2 registry fields the client adapter needs (host-registry.ts owns the
+ * canonical type; read locally to avoid the registry→lifecycle import cycle). */
+function readV2Record(dshHome: string, profile: string): { pid: number; port: number; authority: string } | null {
+  try {
+    const raw = JSON.parse(readFileSync(lockPathFor(dshHome, profile), 'utf8')) as {
+      version?: unknown
+      pid?: unknown
+      port?: unknown
+      authority?: unknown
+    } | null
+    if (raw === null || typeof raw !== 'object' || raw.version !== 2) return null
+    if (typeof raw.pid !== 'number' || typeof raw.port !== 'number') return null
+    return {
+      pid: raw.pid,
+      port: raw.port,
+      authority: typeof raw.authority === 'string' ? raw.authority : `127.0.0.1:${raw.port}`,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Default v2 launcher: dynamically import host-launch so this module never
+ * statically depends on the registry/health/port modules that import it back
+ * (their `pidAlive`/`isListening` helpers are used at call time only). */
+async function defaultLaunchHost(deps: V2LaunchDeps): Promise<V2LaunchResult> {
+  const mod = await import('./host-launch.ts')
+  return mod.ensureHost({ home: deps.home, profile: deps.profile, cwd: deps.cwd })
+}
+
+/** Boot/adopt the host via the v2 host-launch stack and wrap it in a
+ * HostHandle. This performs NO v1 lockfile write: `lockOwned` is false and a
+ * v2 registry is consumed read-only. The host's real lifecycle is refcount +
+ * heartbeat + last-one grace + watchdog (client-lifecycle.ts), not the v1
+ * idle-5s timer. */
+async function bootV2Host(o: ResolvedOptions, opts: EnsureHostOptions): Promise<ManagedHost> {
+  const launch = opts.launchHost ?? defaultLaunchHost
+  const result = await launch({ home: o.dshHome, profile: o.profile, cwd: opts.cwd ?? process.cwd() })
+
+  // The launcher writes the v2 registry; adopt it read-only. Fall back to the
+  // launcher result when a fake seam did not materialise a record on disk.
+  const record = readV2Record(o.dshHome, o.profile)
+  const port = record?.port ?? result.port
+  const pid = record?.pid ?? result.hostPid ?? 0
+  const authority = record?.authority ?? `127.0.0.1:${port}`
+
+  const host: ManagedHost = {
+    key: o.key,
+    profile: o.profile,
+    dshHome: o.dshHome,
+    pid,
+    port,
+    authority,
+    cookieHeader: '',
+    url: null,
+    token: null,
+    adopted: result.adopted,
+    v2Managed: true,
+    child: null,
+    refCount: 0,
+    idleTimer: null,
+    idleExitSec: 0, // no legacy idle timer: ADR-0009 decision 6
+    state: 'ready',
+    lockOwned: false, // never write/clear the v1 lockfile
+    outputTail: '',
+    exitInfo: null,
+    resolveExit: () => {},
+    exitPromise: Promise.resolve(),
+    termination: null,
+    handle: null,
+    ...(o.maxAgeMs !== undefined ? { maxAgeMs: o.maxAgeMs } : {}),
+    ...(o.mintCookie !== undefined ? { mintCookie: o.mintCookie } : {}),
+  }
+  registry.set(o.key, host)
+  host.cookieHeader = await mintCookieWithRetry(host)
+  return host
+}
+
+/** ADR-0009 production entry: ensure/adopt the singleton host through the v2
+ * host-launch stack (v2 registry), producing a HostHandle with no v1 writes. */
+export async function ensureV2Host(opts: EnsureHostOptions = {}): Promise<HostHandle> {
+  const o = resolveOptions(opts)
+
+  const live = registry.get(o.key)
+  if (live && live.state === 'ready' && live.v2Managed) {
+    attachHost(live)
+    return makeHandle(live)
+  }
+
+  const pending = pendingBoots.get(o.key)
+  if (pending) {
+    const host = await pending
+    attachHost(host)
+    return makeHandle(host)
+  }
+
+  const boot = bootV2Host(o, opts).finally(() => pendingBoots.delete(o.key))
+  pendingBoots.set(o.key, boot)
+  const host = await boot
+  attachHost(host)
+  return makeHandle(host)
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point.
 // ---------------------------------------------------------------------------
 
 /** Manage one resident dsh host per profile (see file header for the full
- * contract). Idempotent: existing live hosts are joined, not re-booted. */
+ * contract). Idempotent: existing live hosts are joined, not re-booted.
+ *
+ * ADR-0009 (P0-1): when the registry is already a version-2 record, this
+ * delegates to `ensureV2Host` so the legacy v1 lockfile path never touches it.
+ * The legacy path remains only for pre-upgrade (v1) registries. */
 export async function ensureHost(opts: EnsureHostOptions = {}): Promise<HostHandle> {
   const o = resolveOptions(opts)
+  if (isV2Registry(o.dshHome, o.profile)) return ensureV2Host(opts)
 
   const live = registry.get(o.key)
   if (live && live.state === 'ready') {

@@ -19,6 +19,7 @@ import {
   parseLauncherOptions,
   parseProcessHomes,
   parseProcessRows,
+  prelaunchFailurePolicy,
   readLauncherVersion,
   selectStaleProcesses,
   validateLauncherArgs,
@@ -42,30 +43,40 @@ const pkgVersion = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'
 
 describe('parseLauncherArgs', () => {
   test('consumes --version and --force, forwards the rest', () => {
-    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, yes: false, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--model', 'x', '--force', 'prompt'])).toEqual({
       version: false,
       force: true,
+      yes: false,
       rest: ['--model', 'x', 'prompt'],
       passthrough: [],
     })
   })
 
+  test('consumes --yes (confirm flag) and never forwards it', () => {
+    expect(parseLauncherArgs(['--force', '--yes'])).toEqual({ version: false, force: true, yes: true, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--yes', '--model', 'x'])).toEqual({
+      version: false, force: false, yes: true, rest: ['--model', 'x'], passthrough: [],
+    })
+    expect(parseLauncherArgs(['--yes', '--', '--yes']).passthrough).toEqual(['--yes'])
+  })
+
   test('treats -v as an alias for --version', () => {
-    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, yes: false, rest: [], passthrough: [] })
   })
 
   test('leaves unrelated arguments (including lookalikes) untouched', () => {
     expect(parseLauncherArgs(['--model', '--version-like', '--forced'])).toEqual({
       version: false,
       force: false,
+      yes: false,
       rest: ['--model', '--version-like', '--forced'],
       passthrough: [],
     })
-    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, yes: false, rest: [], passthrough: [] })
   })
 })
 
@@ -281,6 +292,7 @@ describe('parseLauncherArgs -- separator', () => {
     ).toEqual({
       version: false,
       force: false,
+      yes: false,
       rest: ['--model', 'm'],
       passthrough: ['--version', '--force', '--verison', 'plain'],
     })
@@ -591,4 +603,27 @@ describe('timeout env parsing rejects non-decimal Number() spellings', () => {
       })
     }
   }
+})
+
+describe('prelaunchFailurePolicy — --force never silently degrades to a no-op (P1-5)', () => {
+  const needsYes = Object.assign(new Error('will disconnect 2 live clients'), { code: 'force-needs-yes' })
+
+  test('force-needs-yes is always a usage error (exit 2), force or not', () => {
+    expect(prelaunchFailurePolicy(needsYes, false)).toBe('usage-error')
+    expect(prelaunchFailurePolicy(needsYes, true)).toBe('usage-error')
+  })
+
+  test('any other pre-launch failure under --force is a hard abort (exit 1)', () => {
+    for (const err of [
+      new Error('Cannot find module .../dist/host-launch.mjs'),
+      new TypeError('ensureLaunchHost is not a function'),
+      'string rejection',
+    ]) {
+      expect(prelaunchFailurePolicy(err, true)).toBe('abort')
+    }
+  })
+
+  test('without --force the same failure stays best-effort (warn)', () => {
+    expect(prelaunchFailurePolicy(new Error('ENOENT'), false)).toBe('warn')
+  })
 })
