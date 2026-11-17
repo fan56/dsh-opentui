@@ -282,11 +282,11 @@ export class RemoteSessionSeam implements SessionSeam {
 	}
 
 	/**
-	 * /session info panel (batch F4) + footer 💬 turns / ↻ rounds:
-	 * RemoteHostSession.sessionInfo() provides the facade's live round count
-	 * and context/tps; the adapter adds the durable transcript counts the
+	 * /session info panel (batch F4) + footer 💬 msg count:
+	 * RemoteHostSession.sessionInfo() provides the facade's live msg count
+	 * (and context/tps); the adapter adds the durable transcript counts the
 	 * facade can't know. One transcript read yields BOTH the legacy
-	 * `messageCount` (user+assistant rows) and the footer's `turnCount`
+	 * `messageCount` (user+assistant rows) and the /session `turnCount`
 	 * (durable `user` rows). Transcript failure degrades both to 0 without
 	 * sinking the panel.
 	 */
@@ -315,21 +315,22 @@ export class RemoteSessionSeam implements SessionSeam {
 		} catch {
 			/* panel shows 0 rather than failing */
 		}
-		// Rounds come from the facade's live assistant/message journal counter.
+		// Msgs come from the facade's live assistant/message journal counter.
 		// A staged (resumed) session has not bound a live session or attached
 		// its follow yet, so the facade has NO journal data — expose `undefined`
-		// so the footer hides ↻ rather than painting a fabricated 0. The turn
-		// count above still paints truthfully from the durable transcript.
-		const roundCount = base.sessionId === undefined ? undefined : base.roundCount
+		// so the footer hides 💬 rather than painting a fabricated 0. The
+		// /session turn count above still paints from the durable transcript.
+		const msgCount = base.sessionId === undefined ? undefined : base.msgCount
 		return {
 			...base,
 			sessionId,
 			model: base.model ?? null,
 			messageCount,
-			// Override the facade's client-local `turnCount` (#turns since attach,
-			// which misses resumed history) with the durable user-row count.
+			// /session "turns" row: override the facade's client-local
+			// `turnCount` (#turns since attach, which misses resumed history)
+			// with the durable user-row count. Not used by the footer strip.
 			turnCount,
-			roundCount,
+			msgCount,
 			// 🧠 context row (footer context batch): the facade's occupancy
 			// estimate + resolved window (undefined → null, "unknown").
 			contextTokens: base.contextTokens,

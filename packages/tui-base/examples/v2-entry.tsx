@@ -266,7 +266,7 @@ function V2SessionPageBody(props: {
 	const [model, setModel] = createSignal<{ providerID: string; modelID: string } | undefined>()
 	// Footer-quickwins (tui-pi footer parity): local tool-run count (🛠, reset
 	// on session clear), the model segment's effort level, and the remote
-	// session snapshot (durable user+assistant message count + decode-window
+	// session snapshot (durable assistant/message msg count + decode-window
 	// tok/s). The 💬 count has NO local fallback: while sessionInfo is absent
 	// the footer hides the segment instead of showing a send-count-shaped
 	// fake number.
@@ -274,8 +274,7 @@ function V2SessionPageBody(props: {
 	const [effort, setEffort] = createSignal<string | undefined>()
 	const [remoteInfo, setRemoteInfo] = createSignal<{
 		messageCount?: number
-		turnCount?: number
-		roundCount?: number
+		msgCount?: number
 		tps?: number | null
 	}>()
 	const [now, setNow] = createSignal(new Date())
@@ -612,8 +611,7 @@ function V2SessionPageBody(props: {
 				}
 				setRemoteInfo({
 					messageCount: info.messageCount,
-					turnCount: info.turnCount,
-					roundCount: info.roundCount,
+					msgCount: info.msgCount,
 					tps: info.lastTurnTps ?? info.sessionAvgTps,
 				})
 				labelEffortWord = effortFromModelLabel(info.model)
@@ -643,14 +641,12 @@ function V2SessionPageBody(props: {
 			provider: model()?.providerID,
 			model: model()?.modelID,
 			effort: effort(),
-			// Footer 💬 turns / ↻ rounds from the seam's session snapshot: the
-			// turn count is durable user rows, the round count is the facade's
-			// live assistant/message journal count. Both hide while unknown
-			// (sessionInfo absent or a resumed session's journal unbound) rather
-			// than showing a fabricated 0. messageCount stays on the /session
-			// panel; the strip no longer renders the legacy "N msgs" segment.
-			turns: remoteInfo()?.turnCount,
-			rounds: remoteInfo()?.roundCount,
+			// Footer 💬 msgs from the seam's session snapshot: one durable
+			// assistant/message event = one msg. Hidden while unknown (sessionInfo
+			// absent or a resumed session's journal unbound) rather than showing
+			// a fabricated 0. messageCount/turnCount stay on the /session panel;
+			// the strip shows no turn count.
+			msg: remoteInfo()?.msgCount,
 			tools: tools(),
 			tps: remoteInfo()?.tps ?? null,
 			contextTokens: ctxTokens(),

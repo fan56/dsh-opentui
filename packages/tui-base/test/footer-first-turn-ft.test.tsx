@@ -1,7 +1,7 @@
 /**
  * Render-path coverage for the first-turn footer fix: the first STREAMED delta
  * of a turn (onThinkingDelta / onContentDelta) must drive the one-shot
- * authoritative 💬/↻ re-read and paint `💬 N turns · ↻ M rounds` in the LIVE footer frame while
+ * authoritative 💬 re-read and paint `💬 N msgs` in the LIVE footer frame while
  * the turn is STILL OPEN — not after turn end. Mounts the real PowerlineFooter
  * through @opentui/solid testRender (not a pure-function stand-in), with a
  * getter-fed `left` like the page uses, and drives the probe through the SAME
@@ -48,8 +48,7 @@ const frameText = (frame: CapturedFrame): string =>
 function createProbeHarness() {
 	const [remoteInfo, setRemoteInfo] = createSignal<FooterRemoteInfo | undefined>()
 	let liveSessionId: string | undefined
-	let serverTurns: number | undefined
-	let serverRounds: number | undefined
+	let serverMsgs: number | undefined
 	let sessionInfoCalls = 0
 	let turnEndRefreshes = 0
 	let deltas = 0
@@ -59,13 +58,13 @@ function createProbeHarness() {
 	const sessionInfo = async () => {
 		sessionInfoCalls++
 		// The real adapter answers undefined until the turn binds the live id.
-		if (liveSessionId === undefined || serverTurns === undefined) return undefined
-		return { messageCount: serverTurns + (serverRounds ?? 0), turnCount: serverTurns, roundCount: serverRounds }
+		if (liveSessionId === undefined || serverMsgs === undefined) return undefined
+		return { messageCount: serverMsgs, msgCount: serverMsgs }
 	}
 	const refreshFooterData = async (onSettled?: (infoObtained: boolean) => void) => {
 		const info = await sessionInfo()
 		onSettled?.(!!info)
-		setRemoteInfo(info ? { turnCount: info.turnCount, roundCount: info.roundCount } : undefined)
+		setRemoteInfo(info ? { msgCount: info.msgCount } : undefined)
 	}
 	/** The exact shape of v2-entry's refreshFooterIfUnknown(). */
 	const refreshFooterIfUnknown = () => {
@@ -91,9 +90,8 @@ function createProbeHarness() {
 		bind(id: string) {
 			liveSessionId = id
 		},
-		setCounts(turns: number, rounds: number) {
-			serverTurns = turns
-			serverRounds = rounds
+		setMsgCount(msg: number) {
+			serverMsgs = msg
 		},
 		firstDelta,
 		turnEnd,
@@ -109,7 +107,7 @@ async function mountFooter(remoteInfo: () => FooterRemoteInfo | undefined) {
 		() =>
 			createComponent(PowerlineFooter, {
 				get left() {
-					return sessionFooterSegments({ provider: "p", model: "m", turns: remoteInfo()?.turnCount, rounds: remoteInfo()?.roundCount })
+					return sessionFooterSegments({ provider: "p", model: "m", msg: remoteInfo()?.msgCount })
 				},
 				right: "12:00:00",
 			}),
@@ -129,7 +127,7 @@ describe("first-turn 💬 segment (real footer frame, in-turn delta trigger)", (
 			// The turn opens and binds the live id. No turn-end has happened, and
 			// binding the id alone must NOT paint the count (that was the bug).
 			h.bind("session-1")
-			h.setCounts(4, 9)
+			h.setMsgCount(9)
 			await tick()
 			await setup.renderOnce()
 			expect(frameText(setup.captureSpans())).not.toContain("💬")
@@ -139,7 +137,7 @@ describe("first-turn 💬 segment (real footer frame, in-turn delta trigger)", (
 			h.firstDelta()
 			await tick()
 			await setup.renderOnce()
-			expect(frameText(setup.captureSpans())).toContain("💬 4 turns · ↻ 9 rounds")
+			expect(frameText(setup.captureSpans())).toContain("💬 9 msgs")
 			expect(h.stats().turnEndRefreshes).toBe(0) // genuinely turn-internal
 
 			// Subsequent deltas in the same turn collapse: no extra sessionInfo().
@@ -172,12 +170,12 @@ describe("first-turn 💬 segment (real footer frame, in-turn delta trigger)", (
 
 			// …but after the retry interval a delta can try again and paint
 			// (the snapshot has landed by now).
-			h.setCounts(7, 12)
+			h.setMsgCount(12)
 			h.advance(FOOTER_PROBE_MIN_INTERVAL_MS)
 			h.firstDelta()
 			await tick()
 			await setup.renderOnce()
-			expect(frameText(setup.captureSpans())).toContain("💬 7 turns · ↻ 12 rounds")
+			expect(frameText(setup.captureSpans())).toContain("💬 12 msgs")
 		} finally {
 			await setup.dispose()
 		}

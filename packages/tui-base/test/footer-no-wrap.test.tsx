@@ -33,8 +33,7 @@ const hostileSegments = () =>
 		effort: "high",
 		contextTokens: 420,
 		contextWindow: 1000,
-		turns: 4,
-		rounds: 11,
+		msg: 11,
 		tools: 7,
 		tps: 42,
 	})

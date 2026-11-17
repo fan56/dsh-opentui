@@ -103,11 +103,11 @@ describe("footer wiring: tools / tps / durable messages", () => {
 		expect(segs.find((s) => s.text.includes("⚡"))).toBeUndefined()
 		expect(sessionFooterSegments({ provider: "p", model: "m", tps: null }).find((s) => s.text.includes("tok/s"))).toBeUndefined()
 	})
-	test("durable turn/round counts ride the 💬 / ↻ readout (sessionInfo())", () => {
-		const segs = sessionFooterSegments({ provider: "p", model: "m", turns: 7, rounds: 12 })
-		expect(segs.find((s) => s.text === "💬 7 turns · ↻ 12 rounds")).toBeDefined()
-		// The legacy "N msgs" readout is retired from the strip.
-		expect(segs.some((s) => s.text.includes("msgs"))).toBe(false)
+	test("durable assistant/message msg count rides the single 💬 readout (sessionInfo())", () => {
+		const segs = sessionFooterSegments({ provider: "p", model: "m", msg: 12 })
+		expect(segs.find((s) => s.text === "💬 12 msgs")).toBeDefined()
+		// No turn count anywhere in the strip.
+		expect(segs.some((s) => /turns?/.test(s.text))).toBe(false)
 	})
 })
 

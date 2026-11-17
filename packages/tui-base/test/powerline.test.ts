@@ -17,9 +17,7 @@ import {
 	contextSegment,
 	fitPowerlineSegments,
 	messagesSegment,
-	turnsSegment,
-	roundsSegment,
-	turnsRoundsSegment,
+	msgSegment,
 	modelSegment,
 	powerlinePalette,
 	powerlineGradient,
@@ -168,29 +166,14 @@ describe("segment builders", () => {
 		expect(speedSegment(87.4)?.text).toBe("87 tok/s")
 	})
 
-	test("turn/round leaves: singular/plural, explicit 0, invalid → null", () => {
-		expect(turnsSegment(0)?.text).toBe("💬 0 turns")
-		expect(turnsSegment(1)?.text).toBe("💬 1 turn")
-		expect(turnsSegment(2)?.text).toBe("💬 2 turns")
-		expect(roundsSegment(0)?.text).toBe("↻ 0 rounds")
-		expect(roundsSegment(1)?.text).toBe("↻ 1 round")
-		expect(roundsSegment(7)?.text).toBe("↻ 7 rounds")
-		expect(turnsSegment(Number.NaN)).toBeNull()
-		expect(turnsSegment(-1)).toBeNull()
-		expect(roundsSegment(Number.NaN)).toBeNull()
-		expect(roundsSegment(-1)).toBeNull()
-	})
-
-	test("turnsRoundsSegment: dual readout, unknown rounds → 💬-only, unknown turns → null", () => {
-		expect(turnsRoundsSegment(1, 1)?.text).toBe("💬 1 turn · ↻ 1 round")
-		expect(turnsRoundsSegment(2, 7)?.text).toBe("💬 2 turns · ↻ 7 rounds")
-		expect(turnsRoundsSegment(0, 0)?.text).toBe("💬 0 turns · ↻ 0 rounds")
-		// A resumed session's journal is unbound → no fake ↻ 0; the truthful
-		// durable user-turn count still paints.
-		expect(turnsRoundsSegment(4, undefined)?.text).toBe("💬 4 turns")
-		// Unknown/absent counts hide the segment rather than showing a fake 0.
-		expect(turnsRoundsSegment(Number.NaN, 2)).toBeNull()
-		expect(turnsRoundsSegment(2, -1)).toBeNull()
+	test("msgSegment: singular/plural, explicit 0, invalid → null", () => {
+		// One durable assistant/message event = one msg.
+		expect(msgSegment(0)?.text).toBe("💬 0 msgs")
+		expect(msgSegment(1)?.text).toBe("💬 1 msg")
+		expect(msgSegment(2)?.text).toBe("💬 2 msgs")
+		expect(msgSegment(7)?.text).toBe("💬 7 msgs")
+		expect(msgSegment(Number.NaN)).toBeNull()
+		expect(msgSegment(-1)).toBeNull()
 	})
 })
 
@@ -202,8 +185,7 @@ describe("footer assembly", () => {
 			effort: "high",
 			contextTokens: 420,
 			contextWindow: 1000,
-			turns: 2,
-			rounds: 5,
+			msg: 5,
 			tools: 0,
 			tps: null,
 		})
@@ -212,29 +194,34 @@ describe("footer assembly", () => {
 			"🌐 bigmodel",
 			"🤖 glm-5.3-flash ● high",
 			"🧠 420/1.0k(42.0%)",
-			"💬 2 turns · ↻ 5 rounds",
+			"💬 5 msgs",
 			"🔧 0 tools",
 			// Batch D3: no hint segment — hints moved to the last row.
 		])
 	})
 
 	test("empty data still yields brand plus the always-on tool counter (no hint segment)", () => {
-		// turns/rounds are UNKNOWN (no sessionInfo) → the readout hides entirely;
+		// msg is UNKNOWN (no sessionInfo) → the segment hides entirely;
 		// tools keeps its 0-count parity shape.
 		expect(sessionFooterSegments({}).map((s) => s.text)).toEqual(["dsh", "🔧 0 tools"])
 	})
 
-	test("💬/↻ presence gate: unknown hides the segment, an explicit 0 still renders", () => {
+	test("💬 presence gate: unknown hides the segment, an explicit 0 still renders", () => {
 		// The old `?? 0` fallback pinned a send-count-shaped fake number while
 		// sessionInfo was absent; undefined must OMIT the segment, 0 (a real
-		// empty session) stays visible. No "N msgs" readout anymore.
+		// empty session) stays visible.
 		expect(sessionFooterSegments({}).some((s) => s.text.startsWith("💬"))).toBe(false)
-		expect(sessionFooterSegments({ turns: 0, rounds: 0 }).find((s) => s.text === "💬 0 turns · ↻ 0 rounds")).toBeDefined()
-		expect(sessionFooterSegments({ turns: 4, rounds: 4 }).find((s) => s.text === "💬 4 turns · ↻ 4 rounds")).toBeDefined()
-		// Rounds unknown (resumed journal unbound) → honest 💬-only face.
-		expect(sessionFooterSegments({ turns: 4 }).find((s) => s.text === "💬 4 turns")).toBeDefined()
+		expect(sessionFooterSegments({ msg: 0 }).find((s) => s.text === "💬 0 msgs")).toBeDefined()
+		expect(sessionFooterSegments({ msg: 1 }).find((s) => s.text === "💬 1 msg")).toBeDefined()
+		expect(sessionFooterSegments({ msg: 9 }).find((s) => s.text === "💬 9 msgs")).toBeDefined()
 		// The legacy `messages` field no longer produces a strip segment.
-		expect(sessionFooterSegments({ messages: 4 }).some((s) => s.text.includes("msgs"))).toBe(false)
+		expect(sessionFooterSegments({ messages: 4 }).some((s) => s.text.startsWith("💬"))).toBe(false)
+	})
+
+	test("the msg strip contains no turn count anywhere", () => {
+		const texts = sessionFooterSegments({ provider: "p", model: "m", msg: 9, tools: 3, tps: 42 }).map((s) => s.text)
+		expect(texts.some((t) => /turns?/.test(t))).toBe(false)
+		expect(texts.some((t) => t.startsWith("↻"))).toBe(false)
 	})
 })
 
@@ -394,8 +381,7 @@ describe("footer gradient (multi-hue ramp, ordered deep→light)", () => {
 			contextTokens: 100,
 			contextWindow: 1000,
 			cacheHitRate: 50,
-			turns: 2,
-			rounds: 3,
+			msg: 3,
 			tools: 1,
 			elapsedSec: 5,
 			tps: 10,
@@ -739,37 +725,42 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 			effort: "high",
 			contextTokens: 205,
 			contextWindow: 1_000_000,
-			turns: 4,
-			rounds: 9,
+			msg: 9,
 			tools: 1,
 			tps: 42,
 		})
 
-	test("80 columns: full context + turn/round readout survive, low-priority segments shed", () => {
-		const fitted = fitPowerlineSegments(fixture(), 89, "12:36:44")
-		expect(measure(fitted.segments)).toBeLessThanOrEqual(89)
+	test("80 columns: full context + msg readout survive, low-priority segments shed", () => {
+		const fitted = fitPowerlineSegments(fixture(), 80, "12:36:44")
+		expect(measure(fitted.segments)).toBeLessThanOrEqual(80)
 		const context = fitted.segments.find((segment) => segment.text.startsWith("🧠"))
 		expect(context?.text).toBe("🧠 205/1.0M(0.0%)")
-		expect(fitted.segments.find((segment) => segment.text.startsWith("💬"))?.text).toBe("💬 4 turns · ↻ 9 rounds")
-		// The clock rides while the leftover columns hold it (the wider readout
-		// needs 89 here rather than the 79 that fit the old single segment).
+		expect(fitted.segments.find((segment) => segment.text.startsWith("💬"))?.text).toBe("💬 9 msgs")
+		// The clock rides while the leftover columns hold it.
 		expect(fitted.right).toBe("12:36:44")
-		expect(measure(fitted.segments) + stringWidth("12:36:44") + 1).toBeLessThanOrEqual(89)
+		expect(measure(fitted.segments) + stringWidth("12:36:44") + 1).toBeLessThanOrEqual(80)
 		// No label is a half number / dangling paren.
 		for (const segment of fitted.segments) expect(segment.text).not.toMatch(/[/(]$/)
 	})
 
-	test("fold order: the counters shed before brand + full context as the strip narrows", () => {
+	test("fold order: msg sheds before brand + full context as the strip narrows", () => {
 		const at = (width: number) => fitPowerlineSegments(fixture(), width).segments.map((s) => s.text)
-		const hasCounters = (width: number) => at(width).some((t) => t.startsWith("💬"))
-		// Present at roomy widths, gone by the 45-column contract.
-		expect(hasCounters(80)).toBe(true)
-		expect(hasCounters(60)).toBe(true)
-		expect(hasCounters(44)).toBe(false)
-		// The 45-col shape kept brand + full context while dropping 🔧 too.
-		expect(at(44)[0]?.startsWith("dsh")).toBe(true)
-		expect(at(44).some((t) => t.startsWith("🧠 205/1.0M"))).toBe(true)
-		expect(at(44).some((t) => t.includes("🔧"))).toBe(false)
+		const hasMsg = (width: number) => at(width).some((t) => t.startsWith("💬"))
+		// The single short readout fits at every contract width (45/60/80);
+		// brand + full context survive throughout, low-priority 🔧 sheds by 45.
+		expect(hasMsg(80)).toBe(true)
+		expect(hasMsg(60)).toBe(true)
+		expect(hasMsg(45)).toBe(true)
+		for (const width of [80, 60, 45]) {
+			expect(at(width)[0]?.startsWith("dsh")).toBe(true)
+			expect(at(width).some((t) => t.startsWith("🧠 205/1.0M"))).toBe(true)
+		}
+		expect(at(45).some((t) => t.includes("🔧"))).toBe(false)
+		// Once it no longer fits, the priority-75 msg is shed BEFORE brand +
+		// context (both higher priority) — the "shed it first" contract.
+		expect(hasMsg(30)).toBe(false)
+		expect(at(30)[0]?.startsWith("dsh")).toBe(true)
+		expect(at(30).some((t) => t.startsWith("🧠 205/1.0M"))).toBe(true)
 	})
 
 	test("45 columns: brand + full compact context (the matrix's required shape)", () => {
@@ -779,8 +770,9 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		expect(context?.text).toBe("🧠 205/1.0M(0.0%)")
 		expect(fitted.segments[0]?.text.startsWith("dsh")).toBe(true)
 		expect(fitted.segments.some((segment) => segment.text.includes("🔧"))).toBe(false)
-		// The turn/round readout is shed at this width.
-		expect(fitted.segments.some((segment) => segment.text.startsWith("💬"))).toBe(false)
+		// The short msg readout still fits here; no turn count leaks in.
+		expect(fitted.segments.find((segment) => segment.text.startsWith("💬"))?.text).toBe("💬 9 msgs")
+		expect(fitted.segments.some((segment) => /turns?/.test(segment.text))).toBe(false)
 	})
 
 	test("45 columns with a long preset label: brand shortens, context keeps the full compact form", () => {
@@ -797,8 +789,7 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 			sessionFooterSegments({
 				contextTokens: 205,
 				contextWindow: 200_000,
-				turns: 4,
-				rounds: 9,
+				msg: 9,
 				tools: 1,
 				presetLabel: "Standard + Append",
 			}),
