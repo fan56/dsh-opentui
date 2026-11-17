@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.18.7] - 2026-11-17
+## [0.19.0] - 2026-11-17
+
+0.18.7 carried the same code but shipped these lifecycle changes as a patch;
+it is deprecated in favour of 0.19.0.
+
+### BREAKING CHANGES
+- The resident host no longer exits 5s after going idle. It now shuts down
+  once the last client exits (2s grace). `DSH_OPENTUI_HOST_IDLE_MS` keeps its
+  name but now means "last-one grace override" (default 2000); `0` means
+  resident. Scripts that relied on the 5s idle window must set it explicitly.
+- The host registry moved to schema v2. v1 records are treated as legacy and
+  never overwritten or signalled; a live v1 host is left for stale cleanup
+  only. Tooling that parsed `opentui-host.<profile>.json` must accept
+  `version: 2`.
+- `--force` without `--yes` now exits 2 and leaves the host untouched while
+  clients are still live. Automation calling `--force` must add `--yes`.
 
 ### Changed
 - One host service per `(DSH_HOME, profile)`, on a port derived from the home
@@ -28,6 +43,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--force --yes` now resets a host whose pid is an unreaped zombie: a zombie
   still answers `kill(pid, 0)`, which used to look like "still running" and
   abort the reset.
+
+### Migration
+- Replace 5s-idle assumptions: set `DSH_OPENTUI_HOST_IDLE_MS` explicitly to keep
+  the old grace, or `0` for a resident host; the new default is 2000ms.
+- Update tooling reading `opentui-host.<profile>.json` to accept `version: 2`;
+  treat leftover v1 records as legacy and let stale cleanup remove them.
+- Add `--yes` to every automation call that uses `--force`, or handle exit 2 and
+  leave the host untouched while clients are live.
 
 ## [0.18.6] - 2026-11-17
 
