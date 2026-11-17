@@ -1623,8 +1623,8 @@ describe("askBtw agentPreset passthrough (append-system default ride)", () => {
 	})
 })
 
-describe("RemoteHostSession footer ↻ round counter (assistant/message journal events)", () => {
-	test("N durable assistant/message events yield N rounds (incl. text-less); non-assistant events do not; reset on newSession", async () => {
+describe("RemoteHostSession footer 💬 msg counter (assistant/message journal events)", () => {
+	test("N durable assistant/message events yield N msgs (incl. text-less); non-assistant events do not; reset on newSession", async () => {
 		const h = makeSession({ rpcHandler: defaultRpcHandler("sess-rounds") })
 		const { cb } = callbacks()
 		const pending = h.session.turn("go", cb)
@@ -1632,28 +1632,28 @@ describe("RemoteHostSession footer ↻ round counter (assistant/message journal 
 		const sock = h.lastSocket()
 		sock.item(snapshotFrame("sess-rounds"))
 		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
-		expect(h.session.sessionInfo().roundCount).toBe(0)
+		expect(h.session.sessionInfo().msgCount).toBe(0)
 
-		// Three assembled rounds = three assistant/message durable events. The
-		// middle one is text-less (a tool-only round): it would be DROPPED by an
-		// assistant TRANSCRIPT-row count but is a real round here.
+		// Three assembled msgs = three assistant/message durable events. The
+		// middle one is text-less (a tool-only msg): it would be DROPPED by an
+		// assistant TRANSCRIPT-row count but is a real msg here.
 		sock.item(eventFrame("assistant/message", { message: { content: [{ type: "text", text: "a1" }] } }, 2))
 		sock.item(eventFrame("assistant/message", { message: { content: [] } }, 3))
 		sock.item(eventFrame("assistant/message", { message: { content: [{ type: "text", text: "a3" }] } }, 4))
-		await until(() => h.session.sessionInfo().roundCount === 3)
-		expect(h.session.sessionInfo().roundCount).toBe(3)
+		await until(() => h.session.sessionInfo().msgCount === 3)
+		expect(h.session.sessionInfo().msgCount).toBe(3)
 
-		// A user prompt and a tool call are NOT rounds.
+		// A user prompt and a tool call are NOT msgs.
 		sock.item(eventFrame("user/message", { content: [{ type: "text", text: "q" }], source: { kind: "user" } }, 5))
 		sock.item(eventFrame("tool/call", { callId: "c1", name: "t", arguments: "{}" }, 6))
-		expect(h.session.sessionInfo().roundCount).toBe(3)
+		expect(h.session.sessionInfo().msgCount).toBe(3)
 
 		sock.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 7))
 		await pending
-		expect(h.session.sessionInfo().roundCount).toBe(3)
-		// A fresh / resumed session restarts the ledger and the round count.
+		expect(h.session.sessionInfo().msgCount).toBe(3)
+		// A fresh / resumed session restarts the ledger and the msg count.
 		h.session.newSession()
-		expect(h.session.sessionInfo().roundCount).toBe(0)
+		expect(h.session.sessionInfo().msgCount).toBe(0)
 		await h.session.dispose()
 	})
 })

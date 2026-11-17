@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.1] - 2026-11-17
+
+### Changed
+- The footer message counter is now a single `💬 N msgs`. One message is one
+  durable `assistant/message` event (the unit previously called a round). The
+  turn count is no longer displayed in the footer; it remains available to the
+  `/session` panel.
+
+### Note
+- `msg` also counts tool-only rounds that produce no assistant transcript row.
+
 ## [0.21.0] - 2026-11-17
 
 ### Added
