@@ -15,6 +15,7 @@
  * '' — a tool block renders from whatever arrives, never throws.
  */
 
+import { takeWidth } from "../../util/locale"
 import { stringWidth } from "../../util/string-width"
 
 /**
@@ -41,15 +42,13 @@ export function clipToWidth(text: string, limit: number): string {
 	if (limit <= 0) return ""
 	const flat = text.replace(/\s+/u, " ").trim()
 	if (stringWidth(flat) <= limit) return flat
-	// Walk the string accumulating display width; keep room for the ellipsis.
-	let width = 0
-	for (let i = 0; i < flat.length; i++) {
-		width += stringWidth(flat[i]!)
-		if (width > limit - 1) {
-			return limit <= 1 ? "…" : `${flat.slice(0, i)}…`
-		}
-	}
-	return flat
+	// Reserve the last column for the ellipsis and take WHOLE graphemes via the
+	// grapheme-safe helper. Walking UTF-16 code units under-counted surrogate
+	// pairs (emoji), VS16 and ZWJ sequences — each rendered 1-2 columns wider
+	// than measured — so the result overflowed the budget and shifted any
+	// right-edge-aligned caller. takeWidth measures each grapheme atomically.
+	if (limit === 1) return "…"
+	return `${takeWidth(flat, limit - 1)}…`
 }
 
 /** First word of a value (dsh-tui-pi parity: `command`.split(/\s+/)[0]).

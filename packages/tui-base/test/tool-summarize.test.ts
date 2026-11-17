@@ -4,6 +4,8 @@
 // follow stream's JSON brief envelope, and legacy/absent output.
 import { describe, expect, test } from "bun:test"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "../src/routes/session/tool-summarize"
+import { graphemes } from "../src/util/locale"
+import { stringWidth } from "../src/util/string-width"
 
 describe("clipToWidth (display-column budget)", () => {
 	test("ASCII strings clip at the column limit with an ellipsis", () => {
@@ -32,6 +34,34 @@ describe("clipToWidth (display-column budget)", () => {
 		expect(clipToWidth("anything", 0)).toBe("")
 		expect(clipToWidth("anything", 1)).toBe("…")
 		expect(clipToWidth("", 10)).toBe("")
+	})
+})
+
+describe("clipToWidth (grapheme-safe width contract)", () => {
+	const cases = [
+		{ name: "emoji-leading", input: "🌐 some-very-long-provider-name-here", n: 8 },
+		{ name: "CJK-leading", input: "构建整个工作区并发布所有包到生产环境", n: 8 },
+		{ name: "VS16-containing", input: "❤️❤️❤️ long-tail-of-ascii-characters", n: 6 },
+		{ name: "ZWJ-containing", input: "👨‍👩‍👧‍👦 family-tail-of-ascii-characters", n: 6 },
+		{ name: "plain ASCII", input: "some-very-long-provider-name-here", n: 8 },
+	]
+	for (const { name, input, n } of cases) {
+		test(`${name}: stringWidth(result) <= ${n} and no grapheme is split`, () => {
+			const out = clipToWidth(input, n)
+			expect(stringWidth(out)).toBeLessThanOrEqual(n)
+			// Grapheme integrity: the visible body (clip minus the ellipsis) is an
+			// ordered prefix of the input's graphemes — nothing was cut mid-grapheme
+			// and no lone surrogate / VS16 / ZWJ half survived.
+			const body = out.endsWith("…") ? graphemes(out.slice(0, -1)) : graphemes(out)
+			const source = graphemes(input)
+			expect(body.length).toBeGreaterThanOrEqual(1)
+			expect(body.every((g, i) => g === source[i])).toBe(true)
+		})
+	}
+
+	test("the exact defect pair no longer overflows by 2 columns", () => {
+		const out = clipToWidth("🌐 some-very-long-provider…", 8)
+		expect(stringWidth(out)).toBeLessThanOrEqual(8)
 	})
 })
 

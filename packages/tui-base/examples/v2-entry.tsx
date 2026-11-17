@@ -1,7 +1,8 @@
 /**
  * --v2 dev entry (batch 9a): the FIRST real boot of the rebuilt tui-base
  * view — Transcript + SessionComposer + turn overlays + slash palette +
- * StatusBar/PowerlineFooter on the REAL `RemoteSessionSeam` adapter
+ * PowerlineFooter/HintsLine (the busy comet rides the hints row) on the REAL
+ * `RemoteSessionSeam` adapter
  * (shell client/session-seam-adapter.ts) over a real resident host.
  *
  * RESOLUTION LAW (established empirically on the first real boot): this
@@ -108,7 +109,6 @@ import {
 	decideEffort,
 	defaultEffortToApply,
 } from "../src/routes/session/powerline"
-import { StatusBar } from "../src/routes/session/status-bar"
 // Shell-side modules load through COMPUTED dynamic imports: a static
 // import would pull shell's client graph into tui-base's tsc program (11
 // transitive errors on top of the 58 budget) even behind this file's
@@ -263,7 +263,6 @@ function V2SessionPageBody(props: {
 	const [composerBusy, setComposerBusy] = createSignal(false)
 	const [turnBusy, setTurnBusy] = createSignal(false)
 	const busy = () => composerBusy() || turnBusy()
-	const [busySince, setBusySince] = createSignal(0)
 	const [model, setModel] = createSignal<{ providerID: string; modelID: string } | undefined>()
 	// Footer-quickwins (tui-pi footer parity): local tool-run count (🛠, reset
 	// on session clear), the model segment's effort level, and the remote
@@ -273,7 +272,12 @@ function V2SessionPageBody(props: {
 	// fake number.
 	const [tools, setTools] = createSignal(0)
 	const [effort, setEffort] = createSignal<string | undefined>()
-	const [remoteInfo, setRemoteInfo] = createSignal<{ messageCount?: number; tps?: number | null }>()
+	const [remoteInfo, setRemoteInfo] = createSignal<{
+		messageCount?: number
+		turnCount?: number
+		roundCount?: number
+		tps?: number | null
+	}>()
 	const [now, setNow] = createSignal(new Date())
 	// Composer context row (user feedback batch): a bump re-reads the git
 	// branch above the input box. Session switches (/new → clear, /fork /
@@ -381,9 +385,10 @@ function V2SessionPageBody(props: {
 		if (renderer.capabilities) confirmTerminalCapabilities(renderer.capabilities)
 	})
 	// Skin wiring (contract §1): the shared motion clock's busy lane is the
-	// page's own busy window (composer + turn), replacing the temporary
-	// StatusBar effect (unmounted while idle, it dropped the stream fps cap
-	// the moment the phase ended — busy() stays the host-side truth).
+	// page's own busy window (composer + turn). It stays host-side truth even
+	// though the comet now lives in HintsLine (which mounts on both states) —
+	// an old StatusBar-only effect used to drop the cap the moment a phase
+	// ended; busy() no longer has that gap.
 	createEffect(() => setMotionBusy(busy()))
 	onCleanup(() => setMotionBusy(false))
 	onMount(() => {
@@ -413,7 +418,6 @@ function V2SessionPageBody(props: {
 		const timer = setInterval(() => setNow(new Date()), 1000)
 		onCleanup(() => clearInterval(timer))
 	})
-	const elapsed = () => (busy() ? Math.max(0, Math.floor((now().getTime() - busySince()) / 1000)) : 0)
 	// Batch D2 (tui-pi index.ts:2469 semantics): the `●` last-request echo
 	// below the editor tracks MODEL prompts only — `send` is the composer's
 	// non-slash submit path (the slash host intercepts `…` commands), it
@@ -429,7 +433,6 @@ function V2SessionPageBody(props: {
 	const send = (text: string) => {
 		turnAborted = false
 		setTurnBusy(true)
-		setBusySince(Date.now())
 		setLastRequest(text)
 		const done = projection.send(text)
 		void done.finally(() => setTurnBusy(false))
@@ -607,7 +610,12 @@ function V2SessionPageBody(props: {
 					settleEffort()
 					return
 				}
-				setRemoteInfo({ messageCount: info.messageCount, tps: info.lastTurnTps ?? info.sessionAvgTps })
+				setRemoteInfo({
+					messageCount: info.messageCount,
+					turnCount: info.turnCount,
+					roundCount: info.roundCount,
+					tps: info.lastTurnTps ?? info.sessionAvgTps,
+				})
 				labelEffortWord = effortFromModelLabel(info.model)
 				settleEffort()
 			})
@@ -635,10 +643,14 @@ function V2SessionPageBody(props: {
 			provider: model()?.providerID,
 			model: model()?.modelID,
 			effort: effort(),
-			// Durable user+assistant count from the seam's session snapshot;
-			// undefined while sessionInfo is absent — the footer then hides the
-			// 💬 segment instead of showing a fake fallback number.
-			messages: remoteInfo()?.messageCount,
+			// Footer 💬 turns / ↻ rounds from the seam's session snapshot: the
+			// turn count is durable user rows, the round count is the facade's
+			// live assistant/message journal count. Both hide while unknown
+			// (sessionInfo absent or a resumed session's journal unbound) rather
+			// than showing a fabricated 0. messageCount stays on the /session
+			// panel; the strip no longer renders the legacy "N msgs" segment.
+			turns: remoteInfo()?.turnCount,
+			rounds: remoteInfo()?.roundCount,
 			tools: tools(),
 			tps: remoteInfo()?.tps ?? null,
 			contextTokens: ctxTokens(),
@@ -648,8 +660,8 @@ function V2SessionPageBody(props: {
 			theme,
 			// Skin wiring (contract §1): the dsh brand segment's identity blue
 			// follows the active theme's color mode. NO elapsedSec — the ⏱
-			// segment stays dormant (busy seconds already show in the status
-			// bar; the contract pins the powerline shape).
+			// segment stays dormant (the busy label + its Ns timer were removed
+			// in the HUD merge; the contract pins the powerline shape).
 			mode: themeService.mode(),
 		})
 	let cmdOrdinal = 0
@@ -944,7 +956,7 @@ function V2SessionPageBody(props: {
 		openBtw: (argText: string) => void openBtw(argText),
 		// Batch H3 client-face parity (host-entry-v2 was the only wired pair —
 		// this entry missed the deps, so /search answered "unavailable in this
-		// session" while the status bar advertised Ctrl+Shift+F): /search
+		// session" while the hint row advertised Ctrl+Shift+F): /search
 		// (cross-session FTS overlay) + /plugins (the manager panel — table +
 		// state column + `/` filter). Both open through module-signal bridges
 		// onto the overlays mounted in the root children below.
@@ -1210,15 +1222,12 @@ function V2SessionPageBody(props: {
 					// the renderer focus, single/border.base otherwise.
 					focused: paneFocus.transcriptFocused,
 					scrollRef: (value: ScrollBoxRenderable | undefined) => (transcriptScroll = value),
-					// Batch D3 status slot (dsh-tui-pi dock top, index.ts:846 Loader):
-					// the 🐳 comet StatusBar moved here from below the composer —
-					// mount-on-busy, zero rows idle. Getter-prop law: phase is a getter.
-					status: createComponent(StatusBar, {
-						get phase() {
-							return busy() ? "stream" : null
-						},
-						elapsed,
-					}),
+					// HUD merge (2026-11-17): the transcript `status` slot is
+					// intentionally LEFT UNUSED (undefined) — no StatusBar is
+					// mounted here any more. The 🐳 comet moved into the LAST
+					// page row (HintsLine), to the left of the key hints; the busy
+					// status label was deleted. The slot stays in the Transcript
+					// API (optional) rather than restructuring that component.
 					// Batch D1 widgets slot (dsh-tui-pi dock structure): the fixed
 					// Todos → Think → Tool panels ride the SAME projection the
 					// transcript paints — the dock reads the tool/reasoning rows the
@@ -1381,9 +1390,9 @@ function V2SessionPageBody(props: {
 				// REMOUNTED the whole subtree — the SessionComposer owning the
 				// in-flight turn was disposed and its busy=false dropped by its
 				// disposed guard: "Writing…" frozen after a settled turn.
-				// Batch D3: the StatusBar moved to the dock top (Transcript status
-				// slot); the page bottom is the powerline, then the hints row LAST
-				// (dsh-tui-pi PowerlineFooter → FooterHint order).
+				// HUD merge (2026-11-17): the page bottom is the powerline, then
+				// the hints row LAST (dsh-tui-pi PowerlineFooter → FooterHint
+				// order); that last row now also carries the busy comet.
 				createComponent(PowerlineFooter, {
 					get left() {
 						return segments()
@@ -1394,9 +1403,12 @@ function V2SessionPageBody(props: {
 					theme,
 				}),
 				createComponent(HintsLine, {
-					get busy() {
-						return busy()
-					},
+					// GETTER-PROP LAW: a STABLE FUNCTION value, not a baked
+					// `get busy()` snapshot — the latter is recast to its mount-time
+					// value before HintsLine's body runs (the exact WidgetsDock
+					// turnActive trap). HintsLine calls props.busy() at render time
+					// so busy/idle (and the comet) flip live.
+					busy: () => busy(),
 					// Pane focus: transcript-focused swaps the row to the scroll
 					// keys (4 locales, hints-line.tsx).
 					pane: paneFocus.pane,

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-11-17
+
+### Added
+- The footer now shows turn and round counters as `💬 N turns · ↻ M rounds`.
+  Turns count durable `user` transcript rows; rounds count durable
+  `assistant/message` journal events (one assembled message = one round).
+  When the journal is unavailable the counters degrade honestly: the rounds
+  half is omitted rather than shown as a fake 0.
+
+### Changed
+- The busy status line is gone: no verb, elapsed time or detail text renders.
+  The animated comet now rides the key-hint row, to the left of the hints and
+  only while busy; its renderer moved to a shared `comet-track.tsx` module.
+
+### Known limitations
+- Round counts refresh only at turn boundaries, so a multi-round turn jumps
+  once at its end instead of ticking per round. Steer messages may inflate the
+  turn count; whether the host journals steer text as a user message cannot be
+  verified from this repo.
+
 ## [0.20.0] - 2026-11-17
 
 ### Added

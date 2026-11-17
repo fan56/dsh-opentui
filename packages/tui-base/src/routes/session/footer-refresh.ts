@@ -25,6 +25,8 @@
 /** Minimal shape the guard needs from the remote footer snapshot. */
 export interface FooterRemoteInfo {
 	messageCount?: number
+	turnCount?: number
+	roundCount?: number
 	tps?: number | null
 }
 

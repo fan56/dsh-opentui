@@ -457,6 +457,16 @@ export class RemoteHostSession {
 	#settings: RemoteSettingsClient | undefined
 	/** Durable record ledger of the LIVE session (/history + fork + gap repair). */
 	#journal: RemoteJournalEntry[] = []
+	/**
+	 * Footer ↻ rounds: count of durable `assistant/message` journal events for
+	 * the live session. One assembled assistant message = one attempt/round
+	 * (the codebase's own subagent convention, remote-subagents.ts:603-611),
+	 * which counts text-less tool-only rounds that assistant TRANSCRIPT rows
+	 * drop. Reset with the ledger on fresh/resumed/forked sessions; advanced
+	 * live by the follow sink's onRecord, so it is current at each turn-end
+	 * refresh. 0 is a real empty session, not a fabricated fallback.
+	 */
+	#rounds = 0
 	/** Batch 9a: external journal observers (SessionSeam adapter event feed). */
 	#journalListeners: ((entry: RemoteJournalEntry) => void)[] = []
 	/** Highest durable seq painted for the live session (gap-repair base). */
@@ -921,6 +931,8 @@ export class RemoteHostSession {
 		sessionId: string | undefined
 		model: string | undefined
 		turnCount: number
+		/** Footer ↻ rounds — durable assistant/message events (live-ledger count). */
+		roundCount: number
 		tokensIn: number
 		tokensOut: number
 		cacheRead: number
@@ -934,6 +946,7 @@ export class RemoteHostSession {
 			sessionId: this.currentSessionId(),
 			model: this.label === "dsh-host" ? undefined : this.label,
 			turnCount: this.#turns,
+			roundCount: this.#rounds,
 			tokensIn: this.usage.prompt,
 			tokensOut: this.usage.completion,
 			cacheRead: this.usage.cacheRead,
@@ -2319,6 +2332,7 @@ export class RemoteHostSession {
 	#resetLedger(): void {
 		this.#journal = []
 		this.#lastDurableSeq = -1
+		this.#rounds = 0
 		// 🧠 occupancy (footer context batch): a fresh/resumed session
 		// restarts the estimate from zero, drops the previous session's
 		// pressure row (the tag check would discard it anyway) and its
@@ -2450,6 +2464,12 @@ export class RemoteHostSession {
 			// subagent panel pairs tool-workflow rows from the same ledger.
 			onRecord: (entry: RemoteJournalEntry) => {
 				if (entry.seq > this.#lastDurableSeq) this.#lastDurableSeq = entry.seq
+				// Footer ↻ rounds: one durable assistant/message = one round,
+				// counted here (not from assistant transcript rows, which drop
+				// text-less tool-only rounds). Snapshot replay is deduped by the
+				// follow's sinceSeq baseline, so a resumed session is not
+				// double-counted.
+				if (entry.type === "assistant/message") this.#rounds++
 				this.#journal.push(entry)
 				if (this.#journal.length > 4000) this.#journal.shift()
 				for (const listener of this.#journalListeners) {

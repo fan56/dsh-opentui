@@ -749,6 +749,46 @@ export function messagesSegment(n: number, theme?: ComponentTheme): PowerlineSeg
 }
 
 /**
+ * Footer 💬 turns leaf — durable user-row count through the i18n keys
+ * `footer.turns.one` / `footer.turns.many` (t() only interpolates, so the
+ * singular/plural branch is caller-side). Exported for granular formatting
+ * tests; the strip assembles it via `turnsRoundsSegment()`.
+ */
+export function turnsSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
+	if (!Number.isFinite(n) || n < 0) return null
+	return { text: t(n === 1 ? "footer.turns.one" : "footer.turns.many", { n }), bg: resolvePalette(theme).messages, priority: 75 }
+}
+
+/**
+ * Footer ↻ rounds leaf — durable `assistant/message` journal count through
+ * the i18n keys `footer.rounds.one` / `footer.rounds.many`. Exported for
+ * granular formatting tests; the strip assembles it via `turnsRoundsSegment()`.
+ */
+export function roundsSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
+	if (!Number.isFinite(n) || n < 0) return null
+	return { text: t(n === 1 ? "footer.rounds.one" : "footer.rounds.many", { n }), bg: resolvePalette(theme).messages, priority: 75 }
+}
+
+/**
+ * The footer's dual readout as ONE segment: `💬 <n> turns · ↻ <m> rounds`.
+ * Keeping the pair atomic makes the fitter shed both together: priority 75
+ * (above 🔧 50 / provider 60 / model 70, below context 90 / brand 100) keeps
+ * the counters at 80 columns while the 45-column contract still sheds them
+ * before brand + full context. When rounds are unknown (a resumed session
+ * whose journal is unbound) the honest 💬-only face renders instead of a
+ * fake 0. The middle dot is punctuation, not English — the words come from
+ * the four i18n keys above.
+ */
+export function turnsRoundsSegment(turns: number, rounds: number | undefined, theme?: ComponentTheme): PowerlineSegment | null {
+	const turnLeaf = turnsSegment(turns, theme)
+	if (!turnLeaf) return null
+	if (rounds === undefined) return { ...turnLeaf, priority: 75 }
+	const roundLeaf = roundsSegment(rounds, theme)
+	if (!roundLeaf) return null
+	return { text: `${turnLeaf.text} · ${roundLeaf.text}`, bg: turnLeaf.bg, priority: 75 }
+}
+
+/**
  * The 🔧 tool-count segment (fix/footer-parity, tui-pi parity: icon 🔧 and
  * the `{n} tools` wording, footer.ts:272; the former 🛠 bare-count with a
  * > 0 gate is replaced). ALWAYS shown — 0 renders `🔧 0 tools`.
@@ -1016,7 +1056,7 @@ export function PowerlineFooter(props: {
 
 /**
  * Assemble the standard footer row from live data (the example page's
- * seam wiring): brand, provider, model+effort, context, messages, tools,
+ * seam wiring): brand, provider, model+effort, context, turns + rounds, tools,
  * speed. Omitted-data builders (null) drop out.
  *
  * Two fixes from the footer-polish feedback batch ride here:
@@ -1036,8 +1076,16 @@ export function sessionFooterSegments(data: {
 	contextTokens?: number | null
 	/** 🧠 model window (footer context batch); null/absent degrades to the bare `used` shape. */
 	contextWindow?: number | null
-	/** 💬 durable message count (seam sessionInfo); undefined — sessionInfo absent — hides the segment (no fake fallback), an explicit 0 still renders. */
+	/**
+	 * @deprecated Retired from the strip: the legacy "💬 N msgs" readout is
+	 * replaced by `turns` + `rounds`. Kept optional so older callers/tests
+	 * still typecheck (messagesSegment() itself is retained).
+	 */
 	messages?: number
+	/** 💬 durable user-row count; undefined (unknown) hides the segment, an explicit 0 still renders. */
+	turns?: number
+	/** ↻ durable assistant/message journal count; undefined (unknown / resumed journal unbound) hides the segment. */
+	rounds?: number
 	tools?: number
 	tps?: number | null
 	/** ⚡ CH rate (seam.cacheHitRate()); null/absent hides the segment. */
@@ -1058,12 +1106,14 @@ export function sessionFooterSegments(data: {
 	add(providerSegment(data.provider ?? "", theme, data.mode))
 	add(modelSegment(data.model ?? "", effectiveEffort(data.effort), theme))
 	add(contextSegment(data.contextTokens ?? null, data.contextWindow ?? null, theme))
-	// tui-pi footer order: 🧠 context, ⚡ CH, then msgs/tools.
+	// tui-pi footer order: 🧠 context, ⚡ CH, then the conversation counters/tools.
 	add(cacheSegment(data.cacheHitRate ?? null, theme))
-	// Unknown count (sessionInfo absent) hides the segment — the old
-	// `?? 0` fallback pinned a send-count-shaped fake number on the strip;
-	// an explicit 0 (a real empty session) still renders `💬 0 msgs`.
-	if (data.messages !== undefined) add(messagesSegment(data.messages, theme))
+	// The single "💬 N msgs" readout is replaced by a truthful dual readout:
+	// 💬 durable user turns + ↻ durable assistant/message rounds. Unknown
+	// counts (sessionInfo absent, or a resumed session's journal unbound)
+	// hide their segment rather than painting a fabricated 0; explicit 0s
+	// (a real empty session) still render.
+	if (data.turns !== undefined) add(turnsRoundsSegment(data.turns, data.rounds, theme))
 	add(toolSegment(data.tools ?? 0, theme))
 	add(elapsedSegment(data.elapsedSec ?? null, theme))
 	add(speedSegment(data.tps ?? null, theme))

@@ -118,7 +118,7 @@ describe("rendered hint row (frame capture)", () => {
 		// /hints tests in other files toggle this module signal; a captured
 		// frame needs the row actually shown, not just the segments enabled.
 		setHintsShown(true)
-		const setup = await testRender(() => <HintsLine busy={false} />, { width: 160, height: 4, useMouse: false })
+		const setup = await testRender(() => <HintsLine busy={() => false} />, { width: 160, height: 4, useMouse: false })
 		try {
 			await setup.renderOnce()
 			const frame = setup.captureCharFrame()
@@ -145,7 +145,7 @@ describe("rendered hint row (frame capture)", () => {
 			// /hints tests in other files toggle this module signal; a captured
 			// frame needs the row actually shown, not just the segments enabled.
 			setHintsShown(true)
-			const setup = await testRender(() => <HintsLine busy={false} />, { width: 80, height: 4, useMouse: false })
+			const setup = await testRender(() => <HintsLine busy={() => false} />, { width: 80, height: 4, useMouse: false })
 			try {
 				await setup.renderOnce()
 				const frame = setup.captureCharFrame()
