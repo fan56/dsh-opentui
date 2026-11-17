@@ -27,6 +27,7 @@ import { createComponent } from "@opentui/solid"
 import { testRender } from "@opentui/solid"
 import type { CapturedFrame, CapturedSpan } from "@opentui/core"
 import { WidgetsDock, resetSkinLineFades, dockAccentColor, setActivityPanelGear } from "../src/routes/session/widgets-dock"
+import { DOCK_LINGER_MS, DOCK_FADE_OUT_MS } from "../src/routes/session/dock-visibility"
 import { setMotionTier } from "../src/skin/motion"
 import type { SeamRow } from "../src/routes/session/seam-rows"
 
@@ -96,25 +97,64 @@ describe("WidgetsDock on the real renderer", () => {
 			expect(near(lingerSpan!.fg.g, 124 / 255)).toBe(true)
 			expect(near(lingerSpan!.fg.b, 216 / 255)).toBe(true)
 
-			// Sample INSIDE the 300ms sweep (2.0s..2.3s after the stop).
-			await sleep(t0 + 2150 - Date.now())
-			await setup.renderOnce()
-			const mid = setup.captureSpans()
-			const midSpan = spanFor(mid, "💭 thought")
-			expect(midSpan).toBeDefined()
-			const bg = rgbOf(midSpan!.bg)
-			const target = rgbOf(lingerSpan!.fg)
-			const mixed = rgbOf(midSpan!.fg)
-			// Not the linger color (a stale frame) and not the background (a
-			// dropped line): every channel strictly between bg and target —
-			// i.e. a REAL intermediate frame was painted by the tick.
-			expect(near(mixed.r, target.r) && near(mixed.g, target.g) && near(mixed.b, target.b)).toBe(false)
-			expect(near(mixed.r, bg.r) && near(mixed.g, bg.g) && near(mixed.b, bg.b)).toBe(false)
-			for (const channel of ["r", "g", "b"] as const) {
-				const lo = Math.min(bg[channel], target[channel])
-				const hi = Math.max(bg[channel], target[channel])
-				expect(mixed[channel]).toBeGreaterThan(lo)
-				expect(mixed[channel]).toBeLessThan(hi)
+			// Poll a WINDOW derived from the same constants the visibility
+			// state machine uses. A single fixed sample at 2150ms sat only
+			// 150ms from the 2300ms edge, so one 200ms-class CI stall pushed
+			// it past `hidden` (macOS observed 2361ms → midSpan undefined).
+			// Guard bands on BOTH sides keep the sample inside the sweep.
+			const WINDOW_START = DOCK_LINGER_MS + 50 // 2050
+			const WINDOW_END = DOCK_LINGER_MS + DOCK_FADE_OUT_MS - 50 // 2250
+			const STEP_MS = 50
+			// Cheap self-check: a future constant change must not collapse the
+			// window into a point (which would recreate the flake).
+			expect(WINDOW_END - WINDOW_START).toBeGreaterThan(2 * STEP_MS)
+
+			const target = rgbOf(lingerSpan!.fg) // accent reference from the linger sample
+			let lastRgb: [number, number, number] = [target.r, target.g, target.b]
+			let passed = false
+			let samples = 0
+			for (let at = WINDOW_START; at <= WINDOW_END; at += STEP_MS) {
+				await sleep(Math.max(0, t0 + at - Date.now()))
+				await setup.renderOnce()
+				const midSpan = spanFor(setup.captureSpans(), "💭 thought")
+				samples++
+				if (midSpan === undefined) {
+					// Row already hidden — sampling ran too late.
+					throw new Error(
+						`M1 fade window FAIL (span vanished — sampled too late): ` +
+							`elapsed=${Date.now() - t0}ms, last fg rgb=${JSON.stringify(lastRgb)}, ` +
+							`sample #${samples} (target t0+${at}ms, window [${WINDOW_START},${WINDOW_END}]). ` +
+							`The "💭 thought" line went hidden before a mid-fade frame was observed.`,
+					)
+				}
+				const bg = rgbOf(midSpan.bg)
+				const mixed = rgbOf(midSpan.fg)
+				lastRgb = [mixed.r, mixed.g, mixed.b]
+				// Unchanged discrimination: not near(accent), not near(bg), and
+				// EVERY channel strictly between bg and target (near tol unchanged).
+				const nearAccent = near(mixed.r, target.r) && near(mixed.g, target.g) && near(mixed.b, target.b)
+				const nearBg = near(mixed.r, bg.r) && near(mixed.g, bg.g) && near(mixed.b, bg.b)
+				let strictlyBetween = true
+				for (const channel of ["r", "g", "b"] as const) {
+					const lo = Math.min(bg[channel], target[channel])
+					const hi = Math.max(bg[channel], target[channel])
+					if (!(mixed[channel] > lo && mixed[channel] < hi)) strictlyBetween = false
+				}
+				if (!nearAccent && !nearBg && strictlyBetween) {
+					passed = true
+					break
+				}
+			}
+			if (!passed) {
+				// No intermediate frame anywhere in the window — the M1
+				// regression signature: the tick never re-ran the builders,
+				// so the dock sat at full accent until the store dropped it.
+				throw new Error(
+					`M1 fade window FAIL (full-color across window — M1 regression: ` +
+						`animation tick did not re-run builders): elapsed=${Date.now() - t0}ms, ` +
+						`last fg rgb=${JSON.stringify(lastRgb)}, samples=${samples}, ` +
+						`window [${WINDOW_START},${WINDOW_END}]ms. No intermediate frame seen.`,
+				)
 			}
 		} finally {
 			await setup.dispose()
