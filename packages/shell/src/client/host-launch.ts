@@ -40,6 +40,7 @@ import { findFreePort } from './host-port.ts'
 // ADR-0009 decision 8 — the three-evidence gate and the only sanctioned way to
 // signal a host. Re-exported below so existing callers keep their imports.
 import {
+  defaultPidAlive,
   psKillHooks,
   safeStopHost,
   SERVER_ENV_NAME,
@@ -214,15 +215,6 @@ export function defaultDshHome(): string {
 }
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
-
-function defaultPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
-  }
-}
 
 const defaultPortProbe = (port: number): Promise<boolean> =>
   new Promise((resolve) => {

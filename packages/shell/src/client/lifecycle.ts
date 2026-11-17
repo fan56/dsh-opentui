@@ -86,6 +86,7 @@ import { connect as netConnect, Server, type AddressInfo } from 'node:net'
 import { join } from 'node:path'
 import { probeHostHttp, probeHostMux } from './host-probe.ts'
 import { provisionAppendSystem } from './append-system.ts'
+import { defaultPidAlive } from './safe-kill.ts'
 
 export const DEFAULT_PROFILE = 'opentui'
 /** Idle-exit window: the resident host exits this long after the LAST client
@@ -471,12 +472,7 @@ function lockPathFor(dshHome: string, profile: string): string {
 // ---------------------------------------------------------------------------
 
 export function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'EPERM'
-  }
+  return defaultPidAlive(pid)
 }
 
 export function isListening(port: number): Promise<boolean> {

@@ -57,13 +57,33 @@ export interface ProcessKillHooks {
   onEnvFallback?(pid: number): void
 }
 
-function defaultPidAlive(pid: number): boolean {
+/** Read a pid's process state via `ps -o stat=`; null when ps is unavailable. */
+function psStat(pid: number): string | null {
+  try {
+    const result = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], { encoding: 'utf8' })
+    if (result.error || result.status !== 0) return null
+    return (result.stdout ?? '').trim() || null
+  } catch {
+    return null
+  }
+}
+
+/** True when a `ps -o stat=` row denotes a zombie (Z / Z+ / Z<...>). */
+function statIsZombie(stat: string): boolean {
+  return stat.startsWith('Z')
+}
+
+export function defaultPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
-    return true
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'EPERM'
   }
+  // kill(0) succeeds for a zombie the parent has not reaped yet. Confirm via
+  // ps; when ps is unavailable keep the kill(0) verdict (no semantic change).
+  const stat = psStat(pid)
+  if (stat !== null && statIsZombie(stat)) return false
+  return true
 }
 
 /** Default three-evidence hooks via `ps` (portable enough for darwin/linux). */
@@ -87,9 +107,14 @@ export const psKillHooks: ProcessKillHooks = {
     try {
       const result = spawnSync('ps', ['eww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' })
       if (result.error || (result.status !== null && result.status !== 0)) return false
+      const out = (result.stdout ?? '').trim()
+      // A zombie's command degrades to `<defunct>` and carries no readable env.
+      if (!out || out.includes('<defunct>')) return false
+      const stat = psStat(pid)
+      if (stat !== null && statIsZombie(stat)) return false
       // A non-empty `ps eww` row means the env was readable, even if the
       // marker itself is absent (that case must still refuse to signal).
-      return (result.stdout ?? '').trim().length > 0
+      return true
     } catch {
       return false
     }
