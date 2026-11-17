@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The row 39 git-branch probe in the shell tests now builds its own temporary
   repository instead of assuming the checkout is on a named branch, so the
   tests no longer fail under detached PR/tag checkouts.
+- `--force --yes` now resets a host whose pid is an unreaped zombie: a zombie
+  still answers `kill(pid, 0)`, which used to look like "still running" and
+  abort the reset.
 
 ## [0.18.6] - 2026-11-17
 
