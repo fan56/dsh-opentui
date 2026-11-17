@@ -102,7 +102,7 @@ import {
 export { bootCallOrder, installClientErrorLog, installExitPaths, spawnIdleReaper, themeNameFromConfig } from "./client/boot-shared.ts"
 import {
 	DEFAULT_PROFILE,
-	ensureHost,
+	ensureV2Host,
 	resolveIdleExitMs,
 	type HostHandle,
 	type EnsureHostOptions,
@@ -260,7 +260,10 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 	const idleExitSec = idleExitMs / 1000
 
 	bootCallOrder.push("ensureHost")
-	const host = await (options.ensureHost ?? ensureHost)({
+	// ADR-0009 (P0-1): production attaches through the v2 host-launch stack.
+	// Test seams may still inject a fake `ensureHost`; the default is the v2
+	// adapter, which consumes the v2 registry read-only (no v1 lockfile write).
+	const host = await (options.ensureHost ?? ensureV2Host)({
 		profile,
 		idleExitSec,
 		...(options.dshHome !== undefined ? { dshHome: options.dshHome } : {}),
@@ -376,7 +379,10 @@ export async function bootClient(options: ClientBootOptions = {}): Promise<Clien
 			// process — hand the idle-exit to the detached reaper when the
 			// last ref was released (a resident host, idleExitMs 0, gets
 			// none; another live ref in this process owns the host instead).
-			if (host.refCount === 0 && idleExitMs > 0) {
+			// ADR-0009: a v2-backed host is already governed by last-one grace
+			// + watchdog above — never arm the legacy idle-5s reaper (two
+			// lifecycles must not coexist on the same host).
+			if (host.v2Managed !== true && host.refCount === 0 && idleExitMs > 0) {
 				spawnIdleReaper(host, idleExitMs, options.spawnReaper ?? defaultSpawnReaper)
 			}
 		})()

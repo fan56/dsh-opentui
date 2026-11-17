@@ -467,6 +467,10 @@ describe("row 29 — /reload via lifecycle restart + carrier reconnect", () => {
 					throw new Error("ensureHost must not respawn — the restarted host is managed")
 				},
 				mintCookie: () => "join-cookie",
+				// ADR-0009: remote-restart now writes a v2 registry, so
+				// ensureHost delegates to the v2 host-launch adapter. Inject a
+				// fake launcher that adopts the record just written.
+				launchHost: async () => ({ port, adopted: true, spawned: false, hostPid: fresh.pid }),
 			})
 			expect(handle.adopted).toBe(true)
 			expect(handle.pid).toBe(fresh.pid)

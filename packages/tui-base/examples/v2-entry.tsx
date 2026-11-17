@@ -1435,7 +1435,9 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 	const idleExitSec = idleExitMs / 1000
 
 	shared.bootCallOrder.push("ensureHost")
-	const host = await lifecycle.ensureHost({ profile, idleExitSec })
+	// ADR-0009 (P0-1): attach through the v2 host-launch stack (v2 registry),
+	// never the legacy v1 ensureHost that overwrites the registry on adopt.
+	const host = await lifecycle.ensureV2Host({ profile, idleExitSec })
 	// ADR-0009 decision 6: register this client's OWN heartbeat as soon as the
 	// attach succeeded, refresh every ~3s, and start the detached all-crash
 	// watchdog. All I/O here is best-effort — a heartbeat failure must never
@@ -1630,9 +1632,11 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 				}
 			}
 			// Grace-window parity (client-entry): release — NOT dispose — the
-			// host, then hand the idle-exit to the detached reaper.
+			// host, then hand the idle-exit to the detached reaper. ADR-0009:
+			// v2-backed hosts are governed by last-one grace + watchdog only;
+			// never arm the legacy idle-5s reaper on the production path.
 			host.release()
-			if (host.refCount === 0 && idleExitMs > 0) shared.spawnIdleReaper(host, idleExitMs)
+			if (host.v2Managed !== true && host.refCount === 0 && idleExitMs > 0) shared.spawnIdleReaper(host, idleExitMs)
 		})()
 		return shutdownPromise
 	}
