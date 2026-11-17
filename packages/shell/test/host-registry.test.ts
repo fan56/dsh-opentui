@@ -244,6 +244,32 @@ describe('stale detection (injected clock + pid probe)', () => {
     expect(isRegistryStale(record, { pidAlive: () => true })).toEqual({ stale: false, reasons: [] })
   })
 
+  test('zombie-aware probe: a pid judged dead is stale (dead-pid), not adopted as a live host', () => {
+    // The zombie-aware liveness probe (defaultPidAlive in safe-kill, reached in
+    // production via lifecycle.pidAlive) reports false for an unreaped zombie
+    // even though a bare kill(pid, 0) still succeeds. Staleness must follow the
+    // probe's verdict: dead-pid → stale, never adopted as a live host.
+    const zombiePid = 4321
+    const zombieAware = (pid: number) => pid !== zombiePid
+    expect(isRegistryStale(makeRecord({ pid: zombiePid }), { pidAlive: zombieAware })).toEqual({
+      stale: true,
+      reasons: ['dead-pid'],
+    })
+    // Same probe, live pid → not stale (the only case eligible for adoption).
+    expect(isRegistryStale(makeRecord({ pid: 9999 }), { pidAlive: zombieAware })).toEqual({
+      stale: false,
+      reasons: [],
+    })
+  })
+
+  test('default (non-injected) zombie-aware probe classifies a dead pid as stale', () => {
+    // Exercises the real default probe chain (lifecycle.pidAlive → safe-kill
+    // defaultPidAlive) rather than an injected stub. A nonexistent pid yields
+    // ESRCH → dead, so the v2 record is stale without any max-age involvement.
+    expect(isRegistryStale(makeRecord({ pid: 2_147_483_647 }))).toEqual({ stale: true, reasons: ['dead-pid'] })
+    expect(isRegistryStale(makeRecord({ pid: process.pid }))).toEqual({ stale: false, reasons: [] })
+  })
+
   test('optional registryMaxAgeMs applies only to claim/booting, never to a steady ready host', () => {
     const booting = makeRecord({ updatedAt: NOW, phase: 'booting' })
     const now = Date.parse(NOW) + 60_000

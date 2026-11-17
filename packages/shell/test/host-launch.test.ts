@@ -397,6 +397,33 @@ describe('ensureHost — evidence refusal never orphans a host (P0-2)', () => {
     expect(h.read().kind).toBe('legacy')
     expect(kill.killed).toHaveLength(0)
   })
+
+  test('--force with a zombie old pid (pidAlive false) confirms the stop, resets registry, no "pid survived" throw', async () => {
+    // A zombie still answers kill(pid,0), but the zombie-aware defaultPidAlive
+    // reports dead. Whichever evidence branch is taken (two-evidence fallback
+    // when the zombie's env is unreadable, or strict three-evidence refusal),
+    // the force pre-launch path must treat pidAlive=false as a confirmed stop.
+    for (const kill of [
+      makeKill({ env: false, envReadable: false }), // two-evidence fallback agrees
+      makeKill({ env: false }),                      // strict three-evidence refused
+    ]) {
+      const h = harness({
+        initial: 'ready',
+        force: true,
+        healthy: () => true,
+        kill,
+        // old registry pid is a zombie (judged dead); the fresh child is live
+        alive: (pid) => pid === CHILD_PID,
+      })
+      const result = await ensureHost(h.deps) // must NOT throw "evidences ... pid survived"
+      expect(result.spawned).toBe(true)
+      // The old record was unlinked and a fresh one rewritten with the new pid.
+      const reg = h.read()
+      expect(reg.kind).toBe('v2')
+      if (reg.kind === 'v2') expect(reg.value.pid).toBe(CHILD_PID)
+      expect(h.spawnCalls).toHaveLength(1)
+    }
+  })
 })
 
 describe('ensureHost — force (T3a: skips attach only)', () => {
