@@ -17,6 +17,8 @@
     "dist/client",
     "dist/scripts",
     "dist/locales",
+    "dist/host-launch.mjs",
+    "dist/host-launch.mjs.map",
     "README.md",
     "LICENSE",
     "NOTICE",

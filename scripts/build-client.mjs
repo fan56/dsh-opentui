@@ -212,3 +212,26 @@ if (leaked.length > 0) {
   console.error("[build-client] bundle still contains computed dynamic import(s):", [...new Set(leaked)])
   process.exit(1)
 }
+
+// --- T3a: launcher-side host orchestration bundle --------------------------
+// bin/dsh-opentui.mjs is plain node ESM and cannot import the .ts sources;
+// it lazily imports THIS bundle to pre-launch/adopt the host and render the
+// `spawn → booting → ready + elapsed` progress BEFORE the bun client takes the
+// TTY into its alternate screen. Separate entry (client bundle stays intact),
+// target "node" to match the bin's runtime. Bare deps stay external so they
+// resolve from the package's own node_modules at runtime.
+const hostLaunchOut = join(shellDir, "dist", "host-launch.mjs")
+const hostLaunchResult = await Bun.build({
+  entrypoints: [join(shellDir, "src", "client", "host-launch.ts")],
+  target: "node",
+  format: "esm",
+  outdir: join(shellDir, "dist"),
+  naming: "host-launch.mjs",
+  sourcemap: "linked",
+  external: ["ws", "@opentui/core", "@deepseek-ai/dsh-client-connection", "@aiwayds/dsh-jev-core"],
+})
+if (!hostLaunchResult.success) {
+  for (const log of hostLaunchResult.logs) console.error(log)
+  process.exit(1)
+}
+console.log(`[build-client] built ${hostLaunchOut}`)

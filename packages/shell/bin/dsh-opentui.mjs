@@ -422,6 +422,34 @@ if (!existsSync(clientEntry)) {
   console.error('dsh-opentui: reinstall the package (npm i -g @aiwayds/dsh-opentui), or rebuild it with `bun scripts/build-client.mjs` from the repo.')
   process.exit(1)
 }
+// --- 6a. Pre-launch the Host service (registry / port / health) ------------
+// ADR-0009 §3: start/adopt the singleton host HERE, while the launcher still
+// owns the terminal, so the `spawn → booting → ready + elapsed` progress is
+// painted BEFORE the bun client enters its alternate screen. The client's own
+// lifecycle.ensureHost then adopts the ready host (no double start). On the
+// healthy-attach fast path nothing is printed. The orchestration bundle is a
+// separate build artifact (packages/shell/dist/host-launch.mjs); a missing or
+// failing pre-launch is best-effort — the client retries host boot itself.
+// `--dry-run` is side-effect free and skips this step.
+if (!clientArgs.includes('--dry-run')) {
+  try {
+    const hostLaunchPath = join(pkgRoot, 'dist', 'host-launch.mjs')
+    const { ensureHost: ensureLaunchHost, createLaunchProgress } = await import(pathToFileURL(hostLaunchPath).href)
+    await ensureLaunchHost({
+      home: dshHome,
+      profile: 'opentui',
+      cwd: process.cwd(),
+      ...(forceFlag ? { force: true } : {}),
+      progress: createLaunchProgress({
+        isTty: Boolean(process.stderr.isTTY),
+        write: (text) => process.stderr.write(text),
+      }),
+    })
+  } catch (err) {
+    console.error(`dsh-opentui: host pre-launch failed (${err?.message ?? err}); the client will retry host boot.`)
+  }
+}
+
 const result = spawnSync('bun', [clientEntry, ...clientArgs], {
   stdio: 'inherit',
   env: clientEnv,
