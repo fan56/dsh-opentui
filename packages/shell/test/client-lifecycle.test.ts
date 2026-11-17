@@ -353,6 +353,58 @@ describe('all-crash watchdog fallback', () => {
     expect(files.has(regPath)).toBe(true) // live host keeps its only record
   })
 
+  test('repeated refusals back off graceMs → 2× → 4× → 8× → 16× → 30s cap', async () => {
+    const { fs, files } = makeFs()
+    const clock = makeClock()
+    seedRegistry(fs)
+    // env evidence missing → every stop is refused before safeStopHost sleeps
+    const kill = makeHooks({ env: false })
+    const delays: number[] = []
+    const graceMs = 1_000
+    const result = await runWatchdog(HOME, {
+      fs, now: clock.now,
+      sleep: async (ms) => { clock.advance(ms); delays.push(ms) },
+      hooks: kill.hooks,
+      graceMs, pollMs: 10, maxTicks: 6, termGraceMs: 10, killGraceMs: 10,
+    })
+    expect(result.reason).toBe('max-ticks')
+    expect(result.reclaimed).toBe(false)
+    // Each failed cycle waits the functional graceMs window, then the
+    // failure-path backoff; backoff values are the odd-indexed delays.
+    const backoff = delays.filter((_, i) => i % 2 === 1)
+    expect(backoff).toEqual([graceMs, 2 * graceMs, 4 * graceMs, 8 * graceMs, 16 * graceMs, 30_000])
+    expect(files.has(join(HOME, 'opentui-host.opentui.json'))).toBe(true) // P0-2
+  })
+
+  test('a fresh heartbeat clears the streak and returns to pollMs polling', async () => {
+    const { fs, files } = makeFs()
+    const clock = makeClock()
+    seedRegistry(fs)
+    const kill = makeHooks({ env: false })
+    const delays: number[] = []
+    const graceMs = 1_000
+    const pollMs = 7
+    const result = await runWatchdog(HOME, {
+      fs, now: clock.now,
+      sleep: async (ms) => { clock.advance(ms); delays.push(ms) },
+      hooks: kill.hooks,
+      graceMs, pollMs, maxTicks: 8, termGraceMs: 10, killGraceMs: 10,
+      onTick: ({ tick }) => {
+        // A client returns at tick 2, then leaves again at tick 4.
+        if (tick === 2) seedHeartbeat(fs, 'returned', clock.iso())
+        if (tick === 4) fs.unlinkSync(heartbeatPath(HOME, 'returned'))
+      },
+    })
+    expect(result.reason).toBe('max-ticks')
+    // Two failed cycles escalate (1000, 2000 backoff), then fresh clients poll
+    // at pollMs. When the client leaves, backoff RESTARTS at graceMs — proving
+    // the streak was cleared rather than continuing at 4×.
+    expect(delays.slice(0, 4)).toEqual([graceMs, graceMs, graceMs, 2 * graceMs])
+    expect(delays.slice(5, 7)).toEqual([pollMs, pollMs])
+    expect(delays.slice(7, 9)).toEqual([graceMs, graceMs])
+    expect(files.has(join(HOME, 'opentui-host.opentui.json'))).toBe(true)
+  })
+
   test('graceMs 0 = resident — watchdog self-exits, never signals (P1-2)', async () => {
     const { fs, files } = makeFs()
     seedRegistry(fs)
@@ -397,6 +449,27 @@ describe('three-evidence safe kill — the only signalling path', () => {
       expect(result.evidencesOk).toBe(false)
       expect(kill.killed).toHaveLength(0)
     }
+  })
+
+  test('expected profile beta + cmdline --profile beta → three evidences agree', async () => {
+    const kill = makeHooks({ cmd: '--profile beta', stopOnSigterm: true })
+    const result = await safeStopHost({
+      pid: HOST_PID, registryPid: HOST_PID, hooks: kill.hooks, profile: 'beta',
+      termGraceMs: 20, killGraceMs: 20, now: () => NOW, sleep: async () => {},
+    })
+    expect(result.evidencesOk).toBe(true)
+    expect(result.stopped).toBe(true)
+    expect(kill.killed).toContain(`${HOST_PID}:SIGTERM`)
+  })
+
+  test('expected profile beta + cmdline --profile opentui → refuse (no hardcoded profile)', async () => {
+    const kill = makeHooks({ cmd: '--profile opentui' })
+    const result = await safeStopHost({
+      pid: HOST_PID, registryPid: HOST_PID, hooks: kill.hooks, profile: 'beta',
+      now: () => NOW, sleep: async () => {},
+    })
+    expect(result.evidencesOk).toBe(false)
+    expect(kill.killed).toHaveLength(0)
   })
 
   test('missing DSH_OPENTUI_SERVER env → no signal', async () => {
