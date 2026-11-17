@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.7] - 2026-11-17
+
+### Changed
+- One host service per `(DSH_HOME, profile)`, on a port derived from the home
+  path. Later launches attach to the running host rather than spawning another;
+  warm attach measured at 407ms.
+- Startup renders the boot phase and elapsed time before entering the client
+  interface, so a cold start shows progress instead of a blank screen.
+- The host shuts down gracefully 2s after the last client exits, letting it
+  flush state. Set `DSH_OPENTUI_HOST_IDLE_MS=0` to keep it resident instead.
+
+### Fixed
+- `--force` without `--yes` now exits 2 and leaves the host untouched while
+  clients are still live. A three-evidence gate keeps it from stopping a
+  process it cannot positively identify as this profile's server.
+- The host registry is unified on v2, so v1 and v2 records no longer overwrite
+  each other.
+- The row 39 git-branch probe in the shell tests now builds its own temporary
+  repository instead of assuming the checkout is on a named branch, so the
+  tests no longer fail under detached PR/tag checkouts.
+
 ## [0.18.6] - 2026-11-17
 
 ### Changed
