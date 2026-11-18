@@ -273,6 +273,67 @@ describe("turn().onApprove — approval answers", () => {
 })
 
 // ---------------------------------------------------------------------------
+// 3b. DEFAULT STARTUP PATH (no --session / no staged id) — regression
+// ---------------------------------------------------------------------------
+
+describe("default startup — ask reaches the turn card", () => {
+	test("first prompt binds a fresh session BEFORE send, so a mid-turn ask.request is answered by the turn card (never a claims-gate reject)", async () => {
+		const h = makeAskHarness()
+		h.replies.set("session.open", { value: { sessionId: "fresh-default", journalCursor: 0 } })
+		h.replies.set("session.send", { value: { turnId: "t-default" } })
+		let approvals = 0
+		const turn = h.seam.turn("write a file", noopCallbacks({
+			onApprove: async (name) => {
+				approvals++
+				return "allowed-once"
+			},
+		}))
+		await h.flush()
+
+		// Default startup stages nothing. The seam must create a fresh session
+		// BEFORE session.send — without a binding the bridge answers
+		// SESSION_NOT_OPEN, no turn exists, and the approval ask.card never
+		// reaches the client (the gate rejection is a downstream symptom).
+		const openIndex = h.requests.findIndex((r) => r.method === "session.open")
+		const sendIndex = h.requests.findIndex((r) => r.method === "session.send")
+		expect(openIndex).toBeGreaterThanOrEqual(0)
+		expect(sendIndex).toBeGreaterThanOrEqual(0)
+		expect(openIndex).toBeLessThan(sendIndex)
+		expect(h.requests[openIndex]?.params).toEqual({ mode: "new" })
+
+		// With the turn bound, an inbound approval ask is delivered to the
+		// turn-scoped onApprove (the card), not the no-provider fail-closed path.
+		h.emit("ask.request", askRequest({
+			eventId: "t-default:ask-1",
+			kind: "approval",
+			toolName: "bash",
+			callId: "c-default",
+			reason: "Write operations require human approval",
+		}))
+		await h.flush()
+
+		expect(approvals).toBe(1)
+		expect(h.lastResponse()).toEqual({ eventId: "t-default:ask-1", kind: "approval", verdict: "allowed-once" })
+		expect(h.logsContaining("ASK_CHANNEL_UNAVAILABLE")).toHaveLength(0)
+
+		h.emit("turn.end", { turnId: "t-default", text: "" })
+		await turn
+	})
+
+	test("an explicit --session resume is NOT overridden by the default fresh-session staging", async () => {
+		const h = makeAskHarness()
+		h.replies.set("session.open", { value: { sessionId: "resumed-id", journalCursor: 4 } })
+		h.replies.set("session.send", { value: { turnId: "t-resume" } })
+		expect(h.seam.resumeSession("resumed-id")).toBe("ok")
+		const turn = h.seam.turn("go", noopCallbacks())
+		await h.flush()
+		expect(h.requests.find((r) => r.method === "session.open")?.params).toEqual({ mode: "resume", id: "resumed-id" })
+		h.emit("turn.end", { turnId: "t-resume", text: "" })
+		await turn
+	})
+})
+
+// ---------------------------------------------------------------------------
 // 4. no provider — explicit fail-closed, never silent approve
 // ---------------------------------------------------------------------------
 

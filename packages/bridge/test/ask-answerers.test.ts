@@ -349,6 +349,29 @@ describe('ADR-0011 T4 — user-questions mapping', () => {
 })
 
 describe('ADR-0011 T4 — fail-closed + cleanup settle', () => {
+  // Regression: the DEFAULT inproc startup (no --session) now stages
+  // session.open{mode:'new'} on the first turn. The claims gate (askTarget)
+  // must accept that freshly-created binding + its live turn and PUSH the
+  // ask.request frame — never mis-route it to failClosedAsk, which would
+  // settle 'unavailable' with no card on the client.
+  test('default-path session.open{mode:new} binding is NOT mis-rejected by the claims gate', async () => {
+    const h = makeHarness()
+    const { sessionId } = await startTurn(h, 1) // session.open{mode:'new'} + session.send
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+
+    // The ask was delivered, not fail-closed.
+    const asks = h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId)
+    expect(asks).toHaveLength(1)
+    expect(h.registry.settlements()).toHaveLength(0)
+    // Answer it to prove the host verdict round-trips (card reachability).
+    h.send({ id: 20, method: 'ask.response', params: {
+      eventId: asks[0].payload.eventId, kind: 'approval', verdict: 'allowed-once',
+    } })
+    expect((await h.waitFor(20)).ok).toBe(true)
+    expect(await mustSettle(pending, 'default-path ask')).toBe('allowed-once')
+  })
+
   test('no open turn: no ask.request frame, ASK_CHANNEL_UNAVAILABLE settle, host fails closed', async () => {
     const h = makeHarness()
     const pending = h.emitHost('approval/request', approvalReq('no-session'))[0]

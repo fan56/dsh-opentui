@@ -612,8 +612,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void {
 		// PARTIAL: only turn.start/end/error project; token/tool ride the live
 		// turn callbacks, and permission.asked / host session.updated /
-		// bridge.shutdown do not exist on the wire. Log that gap once.
-		this.#degrade("onSessionEvent", "only turn.* lifecycle/error events project; permission.asked / bridge.shutdown absent")
+		// bridge.shutdown do not exist on the wire. The ask channel owns its
+		// OWN frame queue (ask.request/cancel/settled/pending), so this gap is
+		// noise for the approval card — log it once (the view subscribes on
+		// every boot / session switch, which used to spam the same warn).
+		this.#degradeOnce("onSessionEvent", "only turn.* lifecycle/error events project; permission.asked / bridge.shutdown absent")
 		this.#listeners.push(listener)
 		return () => {
 			const i = this.#listeners.indexOf(listener)
@@ -655,11 +658,14 @@ export class BridgeSessionSeam implements SessionSeam {
 	// ----- async members (D3: UNSUPPORTED error, never fake success) --------
 
 	async listSessions(limit?: number): Promise<SeamSessionSummary[]> {
-		// session.list is read-only; on a stock opentui-inproc profile the host
-		// returns ok:false{code:"UNSUPPORTED"} (sessionController is mounted by
-		// dsh-web-app, not the base+bridge bundle). The transport rejects with
-		// BridgeProtocolError(code=UNSUPPORTED) and we MUST let it propagate —
-		// no `catch { return [] }`. (Do not "fix" this by changing the profile.)
+		// session.list is read-only: the bridge calls the host's
+		// sessionController.list and passes items through (7e66b3f, ADR-0010:89).
+		// The opentui-inproc profile mounts a standalone sessionController shim
+		// (2b5e2f1), so dsh-web-app is NOT required. If that service is absent the
+		// bridge replies UNSUPPORTED and the transport rejects with
+		// BridgeProtocolError(code=UNSUPPORTED); we MUST let it propagate —
+		// no `catch { return [] }` (an empty store must stay distinct from a
+		// "capability unavailable" answer).
 		const value = await this.#transport.request("session.list")
 		return projectBridgeSessionList(asRecord(value).items, limit)
 	}
@@ -673,9 +679,12 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	async currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined> {
-		// PARTIAL: host reads currentSelection() internally but no frame exists
-		// yet. The request is wired so the frame can land without a seam change;
-		// today the bridge answers UNSUPPORTED (unknown method), which propagates.
+		// The bridge now exposes a read-only `model.currentSelection` route
+		// (19c2ab2, packages/bridge/src/index.ts:1795) backed by
+		// ctx.agentDefaultModel.currentSelection(); the seam reads it at boot
+		// before staging the first session.open. If that service is absent the
+		// bridge replies UNSUPPORTED and the error propagates — do not swallow it
+		// into a fabricated selection.
 		const selection = await this.#transport.request("model.currentSelection")
 		if (selection === undefined || selection === null) return undefined
 		const s = asRecord(selection)
@@ -711,6 +720,17 @@ export class BridgeSessionSeam implements SessionSeam {
 		let sendFailed: unknown
 		try {
 			// Bind a staged id (resume/new) at the next turn, as in the remote seam.
+			// Default startup (autoResume off / no --session) stages NOTHING, so
+			// the first turn used to reach session.send with no bridge binding
+			// and the bridge answered SESSION_NOT_OPEN — no turn started, so the
+			// pre-execute gate never fired and no approval ask.card was pushed.
+			// Mirror RemoteHostSession.#ensureSession(): when no id is staged and
+			// no session is attached yet, stage a fresh session on this turn so
+			// the bridge binds it BEFORE send. --session / auto-resume / /new
+			// still win because they stage #pendingOpen explicitly.
+			if (this.#pendingOpen === undefined && !this.#sessionAttached) {
+				this.#pendingOpen = { mode: "new" }
+			}
 			if (this.#pendingOpen !== undefined) {
 				const pending = this.#pendingOpen
 				this.#pendingOpen = undefined
