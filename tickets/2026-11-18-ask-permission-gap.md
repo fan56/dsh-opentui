@@ -3,7 +3,7 @@
 性质：**只读调研**。未改源码、未 commit。工作区 `feat/inproc-bridge-20261118`，HEAD `f05b28c`（原快照为 `c8f891b`；本次仅回写文档结论，未改任何源码/测试）。
 时间盒 30 分钟；关键结论均带代码位置，未核实的标 UNKNOWN。本文不含任何凭据值。
 
-## 0. 已闭环（截至 HEAD f05b28c，本次文档对齐回写）
+## 0. 已闭环（截至 HEAD f05b28c + 本提交 T8，本次文档对齐回写）
 
 **结论：§1–§7 描述的"缺口休眠 / 审批卡从不出现 / 切 ask 预设后工具全被拒"均已随后续 commit 关闭。当前默认配置为 `workspace-write` + `approval: ask` + 预执行 gate，ask 双向通道（审批 + 提问）已接通。** §1–§7 保留作 `c8f891b` 时点的推理记录，当前状态以本节为准。
 
@@ -19,11 +19,12 @@
 | §6 三个候选待拍板（A 保持降级 / B 最小 / C 完整对齐） | 选 **C** | `docs/adr/0011-ask-permission-bridge-channel.md:23`（D1 方案 C，完整对齐 remote：审批 + 提问双向帧，含取消/超时/并发/fail-closed） |
 | §7.4 取消/超时策略、§7.6 `ctx.get('approval')` 真机验证 | Q1/Q2 已确认并由 T2 `AskRegistry` 实现语义；真机验证仍未做 | `docs/adr/0011-ask-permission-bridge-channel.md:128-130`；剩余见 §0.2 |
 | 决策审计与持久化（原无） | `f05b28c`（T7） | `packages/bridge/src/ask-journal.ts`（redacted journal + `SessionPermissionSummary`）；`packages/bridge/src/index.ts:801-830` |
+| §0.2 第 2 条 T8 显式提示（Q4 待确认 + 无一次性提示 + BridgeSessionSeam 未实现 `permissionCatalog`） | 本提交（基于 `1b103dc`，T8） | ADR-0011 §8 Q4 已按推荐确认；`BridgeSessionSeam.permissionCatalog()` 探测（ask 帧/answerer/degrade/连接态，bridge 无能力声明与 catalog RPC）+ `onPermissionUnavailable` 经 v2-entry `showNotice` 显示一次性 fail-closed 提示；进程内 once 标志 `#permissionNoticeShown`；i18n `notice.permission.unavailable` / `notice.permission.reason.*`；单测 `packages/shell/test/bridge-permission-catalog.test.ts` |
 
 ### 0.2 仍未闭环（不美化）
 
 1. **T6 重连细节**：`ask.pending` 帧类型与 seam 消费已定义（`seam:973-983`），`AskRegistry.pendingSnapshot(sessionId, emit)` 已存在（`packages/bridge/src/ask-registry.ts:545-552`），但 bridge 生产路径没有调用点（全仓 `pendingSnapshot` 仅测试引用），重连后 pending 卡片不会重建。
-2. **T8 显式提示**：`docs/adr/0011-ask-permission-bridge-channel.md:133`（Q4）仍标"待确认"；seam 无 provider/异常仅 `logger.warn`（`seam:895,902,908`），无常驻或一次性"审批通道不可用"状态位；`permissionCatalog()` 为 optional 面且 BridgeSessionSeam 未实现。
+2. ~~**T8 显式提示**~~（**已闭环，本提交基于 `1b103dc`**）：Q4 已按推荐确认并落地；`BridgeSessionSeam.permissionCatalog()` 已实现（无 provider → `undefined`），经 `onPermissionUnavailable` 在真实 fail-closed ask 时由 v2-entry `showNotice` 显示**一次性**「审批通道不可用」提示（进程内 once 标志，不常驻），en/zh-CN i18n 已补。证据见 §0.1 T8 行与 `packages/shell/test/bridge-permission-catalog.test.ts`。（原缺口：Q4 标"待确认"、seam 仅 `logger.warn`、BridgeSessionSeam 未实现 `permissionCatalog()`。）
 3. **跨进程摘要持久化**：`SessionPermissionSummary` 是进程内 plain Map（`packages/bridge/src/ask-journal.ts:127-138`），`dispose()` 清空（`packages/bridge/src/ask-registry.ts:565`）；journal 有 `ask.requested/responded/cancelled` 审计事件，但摘要不从事件重建，进程重启后 `always` 授权消失。`docs/adr/0011-ask-permission-bridge-channel.md:139` 已记 journal 写与摘要更新非原子。
 4. **真机验证缺口**：带审批的真实 turn 未在本次文档对齐中执行；§7 遗留的"UNKNOWN 需真机确认"（`ctx.get('approval')` 可用性、scoped gate、rc.4 实机）仍未闭环。
 

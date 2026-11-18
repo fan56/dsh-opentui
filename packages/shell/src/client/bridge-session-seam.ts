@@ -34,6 +34,7 @@ import type {
 	SeamApprovalVerdict,
 	SeamAskPick,
 	SeamAskQuestion,
+	SeamPermissionCatalog,
 	SeamProviderModel,
 	SeamSessionEvent,
 	SeamSessionSummary,
@@ -117,6 +118,13 @@ export interface BridgeSeamContext {
 	logger: BridgeSeamLogger
 }
 
+/**
+ * ADR-0011 T8/Q4: a stable machine code for WHY the bridge seam could not
+ * confirm an approval provider. A code (not prose) keeps localization in the
+ * composition root's i18n layer instead of baking English into the shell seam.
+ */
+export type PermissionUnavailableReason = "no-provider" | "bridge-offline" | "ask-no-provider"
+
 export interface BridgeSessionSeamOptions {
 	transport: BridgeTransport
 	ctx: BridgeSeamContext
@@ -124,6 +132,10 @@ export interface BridgeSessionSeamOptions {
 	 *  with no in-flight turn (the idle-period crash case). The composition
 	 *  root turns this into an immediate transient UI notice. */
 	onDead?: (cause: BridgeDeadCause) => void
+	/** ADR-0011 T8/Q4: called at most ONCE per process from `permissionCatalog()`
+	 *  when no approval provider can be confirmed. The composition root turns
+	 *  this into a transient (never persistent) localized fail-closed notice. */
+	onPermissionUnavailable?: (reason: PermissionUnavailableReason) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +736,20 @@ export class BridgeSessionSeam implements SessionSeam {
 	/** P2-9: degrade classes that already logged once; idle polling must not spam. */
 	#degradedOnce = new Set<string>()
 	#usage: UsageAccumulator = { turns: 0, prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
+	/**
+	 * ADR-0011 T8/Q4: a host→client ask frame is the bridge-side proof that the
+	 * host armed its ask answerers (`armAskAnswerers`, bridge/src/index.ts). We
+	 * use it as the provider signal because `bridge.hello`/`bridge.ping` reply
+	 * with ONLY `{protocolVersion, bridgeVersion, hostVersion}` (NO capability
+	 * field) and the bridge dispatch exposes NO `permissionPresets/catalog`
+	 * route — see permissionCatalog() for the full reasoning.
+	 */
+	#askFrameSeen = false
+	/** ADR-0011 T8/Q4: process-once flag for the fail-closed notice. Never a
+	 *  persistent status bit; set on the first confirmed "no provider" probe. */
+	#permissionNoticeShown = false
+	/** ADR-0011 T8/Q4: composition-root sink for the one-shot notice. */
+	#onPermissionUnavailable: ((reason: PermissionUnavailableReason) => void) | undefined
 	/** ADR-0011: the globally registered answerer (default for question asks,
 	 *  fallback for approval asks when no turn-scoped onApprove is active). */
 	#askProvider: ((questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>) | undefined
@@ -752,6 +778,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#transport = options.transport
 		this.#ctx = options.ctx
 		this.#onDead = options.onDead
+		this.#onPermissionUnavailable = options.onPermissionUnavailable
 		this.#unsubEvent = this.#transport.onEvent((frame) => this.#onBridgeEvent(frame))
 	}
 
@@ -1257,6 +1284,48 @@ export class BridgeSessionSeam implements SessionSeam {
 		return {}
 	}
 
+	/**
+	 * ADR-0011 T8 / Q4 — approval-provider availability probe.
+	 *
+	 * PROBE BASIS (verified, not guessed): the in-process bridge has NO
+	 * capability declaration — `bridge.hello`/`bridge.ping` reply with ONLY
+	 * `{protocolVersion, bridgeVersion, hostVersion}` (packages/bridge/src/index.ts
+	 * :1977-1994) — and NO `permissionPresets/catalog` route (dispatch :1977-2042),
+	 * unlike the remote host which calls that RPC (remote-host-session.ts:1347).
+	 * A real catalog therefore cannot be fetched here. The honest signal is the
+	 * ask event channel plus local answerer state:
+	 *   - a delivered `ask.request`/`ask.pending` frame (#askFrameSeen) proves the
+	 *     host armed its ask answerers (bridge/src/index.ts `armAskAnswerers`);
+	 *   - a registered `#askProvider` or a live turn's `onApprove` proves this
+	 *     client CAN answer an ask;
+	 *   - the `ask.no-provider` degrade class (#degradedOnce) is positive proof
+	 *     the channel exists but has NO answerer — fail-closed.
+	 * When no provider can be confirmed we return `undefined` (the same meaning
+	 * the remote implementation gives "service absent / malformed") and fire the
+	 * composition-root sink ONCE per process for a transient fail-closed notice.
+	 * We never invent preset values: a confirmed provider yields a shape-valid
+	 * EMPTY catalog so /settings falls back to the schema-derived enum.
+	 */
+	async permissionCatalog(): Promise<SeamPermissionCatalog | undefined> {
+		const answererReady =
+			this.#askProvider !== undefined ||
+			(this.#inFlightGeneration !== 0 && this.#activeCallbacks !== undefined) ||
+			this.#askFrameSeen
+		const providerConfirmed =
+			this.#connection === "connected" && answererReady && !this.#degradedOnce.has("ask.no-provider")
+		if (providerConfirmed) return { options: [], defaultOptions: [], defaultPreset: "" }
+		if (!this.#permissionNoticeShown) {
+			this.#permissionNoticeShown = true
+			const reason: PermissionUnavailableReason = this.#degradedOnce.has("ask.no-provider")
+				? "ask-no-provider"
+				: this.#connection === "disconnected"
+					? "bridge-offline"
+					: "no-provider"
+			this.#onPermissionUnavailable?.(reason)
+		}
+		return undefined
+	}
+
 	// ----- async members (D3: UNSUPPORTED error, never fake success) --------
 
 	async listSessions(limit?: number): Promise<SeamSessionSummary[]> {
@@ -1609,6 +1678,10 @@ export class BridgeSessionSeam implements SessionSeam {
 					params = this.#approvalParams(request, approvalVerdictFromPicks(request, picks))
 				} else {
 					this.#degradeOnce("ask.no-provider", "no onApprove/ask provider; answering approval unavailable (ASK_CHANNEL_UNAVAILABLE)")
+					// ADR-0011 T8: a fail-closed ask with no answerer is the precise
+					// moment to probe the catalog; it returns undefined and fires the
+					// one-shot transient notice. Never on boot (avoids false alarms).
+					void this.permissionCatalog()
 					params = unavailableResponse(request)
 				}
 			} else if (this.#askProvider !== undefined) {
@@ -1616,6 +1689,7 @@ export class BridgeSessionSeam implements SessionSeam {
 				params = { eventId: request.eventId, kind: "questions", answers: answersFor(request, picks) }
 			} else {
 				this.#degradeOnce("ask.no-provider", "no ask provider; answering questions unavailable (ASK_CHANNEL_UNAVAILABLE)")
+				void this.permissionCatalog() // ADR-0011 T8: one-shot fail-closed notice
 				params = unavailableResponse(request)
 			}
 		} catch (err) {
@@ -1689,6 +1763,10 @@ export class BridgeSessionSeam implements SessionSeam {
 	/** Handle the four host→client ask events. Returns true when consumed. */
 	#onAskEvent(frame: BridgeEventFrame): boolean {
 		const payload = asRecord(frame.payload)
+		// ADR-0011 T8: a delivered ask.request / ask.pending proves the host
+		// armed its ask answerers — the availability signal permissionCatalog()
+		// reads (bridge has no capability field and no catalog RPC).
+		if (frame.type === "ask.request" || frame.type === "ask.pending") this.#askFrameSeen = true
 		switch (frame.type) {
 			case "ask.request": {
 				const request = parseAskRequest(frame.payload)

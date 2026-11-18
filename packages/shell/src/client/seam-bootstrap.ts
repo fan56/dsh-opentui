@@ -31,6 +31,7 @@ import {
 	type BridgeRecoveryResult,
 	type BridgeSeamContext,
 	type BridgeTransport,
+	type PermissionUnavailableReason,
 } from "./bridge-session-seam.ts"
 // P0 fail-fast: the three-element text has ONE source (scripts/lib/...). This
 // handshake path and the provision-script fingerprint path both import it, so
@@ -231,6 +232,10 @@ export interface CreateBridgeSessionSeamOptions {
 	 *  handshake failure before the seam exists), so the UI can paint the
 	 *  transient "连接已断开" notice without polling. */
 	onDead?: (cause: BridgeDeadCause) => void
+	/** ADR-0011 T8/Q4: notified at most once per process from permissionCatalog()
+	 *  when no approval provider can be confirmed — the composition root paints
+	 *  a transient fail-closed notice (never a persistent status bit). */
+	onPermissionUnavailable?: (reason: PermissionUnavailableReason) => void
 }
 
 /** One-line transient notice text for a structured DEAD cause (A2). Kept in
@@ -277,7 +282,12 @@ export async function createBridgeSessionSeam(
 	}
 	// Throws BridgeBootstrapError on mismatch — no `catch` that degrades.
 	verifyBridgeFingerprint(hello, version)
-	const seam = new BridgeSessionSeam({ transport: options.transport, ctx: options.ctx, onDead: options.onDead })
+	const seam = new BridgeSessionSeam({
+		transport: options.transport,
+		ctx: options.ctx,
+		onDead: options.onDead,
+		onPermissionUnavailable: options.onPermissionUnavailable,
+	})
 	// Populate the connection leg of status(); a ping failure after a verified
 	// handshake is a recoverable DEAD→READY transition, not a boot failure, so
 	// the seam's own lenient connect() is appropriate here.

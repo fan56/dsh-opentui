@@ -3,7 +3,7 @@
 Date: 2026-11-18
 Status: Proposed（随 ADR-0010 在 0.22.0 落地前定稿）
 
-> 本文以源码为准核对了 blocky 草案的未验证内容（草案作者无文件工具，所有行号与字段名未核对）。凡草案与源码不符之处均按源码改写，改动逐条列在文末「草案偏差记录」。已拍板决策（方案 C + 默认预设改需审批）原样保留；四个未拍板项中 **Q1/Q2/Q3 已于 2026-11-18 按推荐值确认并随 T2 实现（见 §8）**，Q4 仍待确认。
+> 本文以源码为准核对了 blocky 草案的未验证内容（草案作者无文件工具，所有行号与字段名未核对）。凡草案与源码不符之处均按源码改写，改动逐条列在文末「草案偏差记录」。已拍板决策（方案 C + 默认预设改需审批）原样保留；四个未拍板项中 **Q1/Q2/Q3 已于 2026-11-18 按推荐值确认并随 T2 实现（见 §8）；Q4 已于 2026-11-19 按推荐值确认并随 T8 实现（本提交，基于 `1b103dc`，见 §8）**。
 
 ## 1. 背景（Context）
 
@@ -124,14 +124,14 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 
 > **对称性交叉引用**：备选 B 所述「客户端掉线挂住 turn」是 ask 通道侧的否决理由；**宿主侧掉线语义由 ADR-0010 的 DEAD 恢复条款兑现**——bridge 连接断开进 DEAD 后，仅用户显式 R 键重连恢复，恢复序列的 replay drain 完成后用 `ask.pending` 快照重建未答卡片（见 `docs/adr/0010-session-seam-lifecycle-contract.md` 的「DEAD 恢复阶段一」与「桥态」条款，commit `4323a82`）。两侧对称：ask 侧掉线结算为 `cancelled`（§8 Q2），宿主侧连接中断期间的 in-flight turn 在 journal 沉默时由客户端呈现本地 INTERRUPTED（不写 journal）。
 
-## 8. 假设与确认状态（Q1–Q3 已确认，Q4 待确认）
+## 8. 假设与确认状态（Q1–Q4 已确认）
 
-以下四项来自草案 §5 末尾的未拍板项。**Q1/Q2/Q3 已于 2026-11-18 按推荐值确认，并已由 T2 `AskRegistry` 实现；Q4 仍待确认。**
+以下四项来自草案 §5 末尾的未拍板项。**Q1/Q2/Q3 已于 2026-11-18 按推荐值确认，并已由 T2 `AskRegistry` 实现；Q4 已于 2026-11-19 按推荐值确认（用户授权直接用推荐），由 T8 落地（本提交，基于 `1b103dc`）。**
 
 - **Q1 — 超时墙钟**（已确认 2026-11-18，按推荐值）：采纳默认值 `askDeadlineMs=null` / `detachGraceMs=30000` / `maxAskWaitMs=3600000`；permission 墙钟超时落 `denied`、question 墙钟超时落 `cancelled`，`deadlineAt` 只作硬帽不主动轮询；`maxAskWaitMs` 绝对硬帽落 `unavailable`（D6 fail-closed）。数值仍待真机验证后定最终值。
 - **Q2 — 掉线/turn 中断时未答请求的语义**（已确认 2026-11-18，按推荐值）：统一 `cancelled`（宿主 `ApprovalOutcome` 含 `cancelled`，`tickets/2026-11-18-ask-permission-gap.md:41`），并把 `signal` abort 视为 cancel（`ticket:132`）；迟到应答按 `ASK_TURN_ENDED` 丢弃。
 - **Q3 — 'always'/escalation 的作用域与授权边界**（已确认 2026-11-18，按推荐值）：当前会话级摘要（compaction 不清），未授予 escalation 时收到 `behavior:'always'` 回 `ASK_INVALID_RESPONSE`（D7 + §5）。
-- **Q4 — UI 明示义务的范围**（待确认）：是否除审批卡/提问面板外，还要常驻显示"审批通道不可用"状态位？**推荐**：在 `permissionCatalog()` 探测到无 provider 时显示一次性提示（矩阵 `:88,100`、`packages/shell/src/client/bridge-session-seam.ts:445-447` 的 `onSessionEvent` degrade）；不常驻。
+- **Q4 — UI 明示义务的范围**（已确认 2026-11-19，按推荐值，用户授权直接用推荐）：是否除审批卡/提问面板外，还要常驻显示"审批通道不可用"状态位？**结论**：不常驻；在 `permissionCatalog()` 探测到无 provider 时显示一次性提示（矩阵 `:88,100`、`packages/shell/src/client/bridge-session-seam.ts` 的 `onSessionEvent` / `ask.no-provider` degrade）。**落地（本提交，基于 `1b103dc`）**：`BridgeSessionSeam.permissionCatalog()` 以「ask 帧可用性 + 本地 answerer + `ask.no-provider` degrade + bridge 连接态」为探测依据——bridge 无能力声明（`bridge.hello`/`ping` 仅回版本三元组）、无 `permissionPresets/catalog` RPC，故返回与 `SeamPermissionCatalog` 同形的**空目录**（不臆造 preset 值），无法确认 provider 时返回 `undefined`；经 `BridgeSessionSeamOptions.onPermissionUnavailable` 由 v2-entry 用 `showNotice` 显示一次性 fail-closed 提示，进程内 once 标志为 seam 私有字段 `#permissionNoticeShown`，触发点为真实 fail-closed ask（非 boot，避免误报）。i18n 键 `notice.permission.unavailable` / `notice.permission.reason.*`（en + zh-CN）。单测 `packages/shell/test/bridge-permission-catalog.test.ts`。
 
 ## 9. 风险（Risks）
 

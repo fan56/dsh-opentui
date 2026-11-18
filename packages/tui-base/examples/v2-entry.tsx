@@ -1597,6 +1597,16 @@ export async function bootClientV2(options: {
 						undefined,
 						"error",
 					),
+				// ADR-0011 T8/Q4: one-shot TRANSIENT fail-closed notice when the
+				// approval provider cannot be confirmed (the seam fires this at
+				// most once per process). Never a persistent status bit. The
+				// reason is a stable code localized through i18n below.
+				onPermissionUnavailable: (reason: string) =>
+					void showNotice(
+						`${t("notice.permission.unavailable")} · ${t(`notice.permission.reason.${reason}`)}`,
+						undefined,
+						"error",
+					),
 			})
 		},
 		createRemote: () => new adapter.RemoteSessionSeam(session as never),
