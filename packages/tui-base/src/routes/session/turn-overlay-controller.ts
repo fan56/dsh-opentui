@@ -71,6 +71,10 @@ export type BridgeAskSnapshot = {
 	callId?: string
 	reason?: string
 	escalation?: boolean
+	/** Question rows of a `kind:"questions"` ask. Used to correlate the
+	 *  provider's `answer(questions)` call to its seam entry so a host cancel /
+	 *  turn end can close the panel (ADR-0011 T5b). */
+	questions?: SeamAskQuestion[]
 }
 
 /** `always` / `session` are the two escalated behaviors the bridge wire
@@ -103,6 +107,10 @@ export type AskPhase = "questions" | "input" | "review"
  * Submit). */
 export type PendingAsk = {
 	id: number
+	/** ADR-0011 T5b: the bridge ask this batch answers, when correlated from
+	 *  the read-only snapshot. Lets `syncPendingAsks()` close a panel whose host
+	 *  ask was cancelled / settled without a UI frame. */
+	eventId?: string
 	questions: SeamAskQuestion[]
 	index: number
 	picks: string[][]
@@ -124,6 +132,24 @@ type ApprovalEntry = {
 type AskEntry = Omit<PendingAsk, "customDraft"> & {
 	customDrafts: (string | null)[]
 	resolve: (picks: SeamAskPick[]) => void
+}
+
+/** Content signature correlating a provider `answer(questions)` call to its
+ *  seam entry. Ids plus every rendered field are included so two concurrent
+ *  asks with different questions never borrow each other's eventId (a wrong
+ *  match could cancel the wrong panel). */
+function askSignature(questions: readonly SeamAskQuestion[]): string {
+	return JSON.stringify(
+		questions.map((question) => [
+			question.id,
+			question.prompt,
+			question.header,
+			question.description,
+			question.detail,
+			question.multiSelect === true,
+			question.options.map((option) => [option.label, option.description]),
+		]),
+	)
 }
 
 export class TurnOverlayController {
@@ -260,30 +286,49 @@ export class TurnOverlayController {
 	}
 
 	/**
-	 * ADR-0011: reconcile the card stack with the seam's read-only snapshot.
-	 * When the host cancels / settles / replaces an ask (`ask.cancel`,
-	 * `ask.settled`, turn end, `ask.pending` reconnect snapshot), the seam drops
-	 * its local entry. A card still on screen for that eventId closes with a
-	 * fail-closed `rejected` verdict — no ghost card, no dangling onApprove
+	 * ADR-0011: reconcile BOTH overlay queues with the seam's read-only
+	 * snapshot. When the host cancels / settles / replaces an ask (`ask.cancel`,
+	 * `ask.settled`, timeout, turn end, `ask.pending` reconnect snapshot), the
+	 * seam drops its local entry. A card / panel still on screen for that
+	 * eventId closes fail-closed — approvals resolve `rejected`, questions
+	 * resolve `[]` (the declined envelope) — no ghost card/panel, no dangling
 	 * promise, never an implicit allow. No accessor (non-bridge seams) = no-op.
 	 */
 	syncPendingAsks(): void {
-		if (this.#pendingAsks === undefined || this.#approvals.length === 0) return
+		if (this.#pendingAsks === undefined) return
 		const asks = this.#pendingAsks()
-		const before = this.#approvals.length
+		let changed = false
+
+		const approvalsBefore = this.#approvals.length
 		this.#approvals = this.#approvals.filter((entry) => {
-			if (this.#askStillPending(entry.request, asks)) return true
+			if (this.#approvalStillPending(entry.request, asks)) return true
 			entry.resolve("rejected")
 			return false
 		})
-		if (this.#approvals.length !== before) this.#changed()
+		if (this.#approvals.length !== approvalsBefore) changed = true
+
+		const questionsBefore = this.#asks.length
+		this.#asks = this.#asks.filter((entry) => {
+			if (this.#questionStillPending(entry, asks)) return true
+			entry.resolve([]) // fail-closed: empty picks = declined downstream
+			return false
+		})
+		if (this.#asks.length !== questionsBefore) changed = true
+
+		if (changed) this.#changed()
 	}
 
-	#askStillPending(request: PendingApproval, asks: readonly BridgeAskSnapshot[]): boolean {
+	#approvalStillPending(request: PendingApproval, asks: readonly BridgeAskSnapshot[]): boolean {
 		if (request.eventId !== undefined) return asks.some((ask) => ask.eventId === request.eventId)
 		// Unmatched card (no eventId): keep it unless there are NO approval asks
 		// left at all. Conservative — an active card is never closed on a maybe.
 		return asks.some((ask) => ask.kind === "approval")
+	}
+
+	#questionStillPending(entry: AskEntry, asks: readonly BridgeAskSnapshot[]): boolean {
+		if (entry.eventId !== undefined) return asks.some((ask) => ask.eventId === entry.eventId)
+		// Unmatched panel (no eventId): keep it unless NO questions asks remain.
+		return asks.some((ask) => ask.kind === "questions")
 	}
 
 	/** Turn terminal / session close sweep (A1/D5): close every card fail-closed. */
@@ -294,6 +339,15 @@ export class TurnOverlayController {
 		this.#changed()
 	}
 
+	/** Turn terminal / session close sweep for questions (A1/D5): resolve every
+	 *  pending batch with the declined envelope — fail-closed, never silent. */
+	cancelAllAsks(): void {
+		if (this.#asks.length === 0) return
+		const entries = this.#asks.splice(0)
+		for (const entry of entries) entry.resolve([])
+		this.#changed()
+	}
+
 	// ---- ask ----------------------------------------------------------
 
 	get pendingAsk(): PendingAsk | undefined {
@@ -301,6 +355,7 @@ export class TurnOverlayController {
 		if (!head) return undefined
 			return {
 				id: head.id,
+				...(head.eventId !== undefined ? { eventId: head.eventId } : {}),
 				questions: head.questions,
 				index: head.index,
 				picks: head.picks,
@@ -318,12 +373,34 @@ export class TurnOverlayController {
 		return head?.questions[head.index]
 	}
 
+	/**
+	 * Correlate a provider `answer(questions)` call to a `kind:"questions"` row
+	 * in the read-only snapshot. The seam passes only the question rows (no
+	 * eventId), so match on their full content; an eventId already held by an
+	 * open panel is skipped so two concurrent identical asks get distinct
+	 * entries. A single unclaimed questions ask is a safe fallback; anything
+	 * more ambiguous stays uncorrelated (conservative sync keeps that panel).
+	 */
+	#matchAsk(questions: SeamAskQuestion[]): BridgeAskSnapshot | undefined {
+		const asks = (this.#pendingAsks?.() ?? []).filter((ask) => ask.kind === "questions")
+		if (asks.length === 0) return undefined
+		const claimed = new Set(this.#asks.map((entry) => entry.eventId))
+		const available = asks.filter((ask) => !claimed.has(ask.eventId))
+		if (available.length === 0) return undefined
+		const signature = askSignature(questions)
+		const exact = available.filter((ask) => askSignature(ask.questions ?? []) === signature)
+		if (exact.length > 0) return exact[0]
+		return available.length === 1 ? available[0] : undefined
+	}
+
 	/** The seam ask provider body — one batch picker (tui-pi parity). */
 	answer(questions: SeamAskQuestion[]): Promise<SeamAskPick[]> {
 		if (questions.length === 0) return Promise.resolve([])
+		const ask = this.#matchAsk(questions)
 		return new Promise((resolve) => {
 			this.#asks.push({
 				id: ++this.#seq,
+				...(ask !== undefined ? { eventId: ask.eventId } : {}),
 				questions,
 				index: 0,
 				// Recommended options are pre-selected in the draft (spec §4);
