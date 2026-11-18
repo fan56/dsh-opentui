@@ -30,6 +30,7 @@
  */
 
 import type {
+	SeamApprovalVerdict,
 	SeamAskPick,
 	SeamAskQuestion,
 	SeamProviderModel,
@@ -90,6 +91,158 @@ export interface BridgeSeamContext {
 export interface BridgeSessionSeamOptions {
 	transport: BridgeTransport
 	ctx: BridgeSeamContext
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0011 ask frames (host → client events, client → host ask.response)
+// ---------------------------------------------------------------------------
+
+/** One `ask.request` payload, structurally mirrored from ADR-0011 §3.2. Kept
+ *  local to the shell client so this file never imports the bridge package at
+ *  runtime (same rule as BridgeTransport above). */
+export interface BridgeAskRequestPayload {
+	eventId: string
+	sessionId: string
+	kind: "approval" | "questions"
+	toolName?: string
+	callId?: string
+	reason?: string
+	questions?: SeamAskQuestion[]
+	deadlineAt?: number
+	detachGraceMs?: number
+	escalation?: boolean
+}
+
+/** Derive the turn id from the ADR-0011 association key `${turnId}:ask-${seq}`. */
+function askTurnId(eventId: string): string {
+	const i = eventId.lastIndexOf(":ask-")
+	return i === -1 ? "" : eventId.slice(0, i)
+}
+
+function optionalStringField(row: Record<string, unknown>, key: string): string | undefined {
+	const value = row[key]
+	return typeof value === "string" && value !== "" ? value : undefined
+}
+
+/** Parse an `ask.request` payload. Returns undefined for malformed frames —
+ *  a bad ask frame must never poison the pending queue or throw on the event
+ *  pump (the seam's event path is shared with the render loop). */
+function parseAskRequest(value: unknown): BridgeAskRequestPayload | undefined {
+	const row = asRecord(value)
+	const eventId = optionalStringField(row, "eventId")
+	const sessionId = optionalStringField(row, "sessionId")
+	const kind = row.kind
+	if (eventId === undefined || sessionId === undefined || (kind !== "approval" && kind !== "questions")) {
+		return undefined
+	}
+	const out: BridgeAskRequestPayload = { eventId, sessionId, kind }
+	for (const key of ["toolName", "callId", "reason"] as const) {
+		const v = optionalStringField(row, key)
+		if (v !== undefined) out[key] = v
+	}
+	for (const key of ["deadlineAt", "detachGraceMs"] as const) {
+		const v = row[key]
+		if (typeof v === "number" && Number.isFinite(v)) out[key] = v
+	}
+	if (row.escalation === true) out.escalation = true
+	if (Array.isArray(row.questions)) {
+		const questions: SeamAskQuestion[] = []
+		for (const raw of row.questions) {
+			const q = asRecord(raw)
+			const id = optionalStringField(q, "id")
+			const prompt = optionalStringField(q, "prompt")
+			if (id === undefined || prompt === undefined || !Array.isArray(q.options)) continue
+			const options: SeamAskQuestion["options"] = []
+			for (const rawOpt of q.options) {
+				const opt = asRecord(rawOpt)
+				const label = optionalStringField(opt, "label")
+				if (label === undefined) continue
+				const description = optionalStringField(opt, "description")
+				options.push({ label, ...(description !== undefined ? { description } : {}) })
+			}
+			if (options.length === 0) continue
+			const question: SeamAskQuestion = { id, prompt, options }
+			for (const key of ["header", "description", "detail"] as const) {
+				const v = optionalStringField(q, key)
+				if (v !== undefined) question[key] = v
+			}
+			if (q.multiSelect === true) question.multiSelect = true
+			questions.push(question)
+		}
+		if (questions.length > 0) out.questions = questions
+	}
+	return out
+}
+
+/** `SeamApprovalVerdict` plus the two escalated behaviors the wire exposes.
+ *  `onApprove`'s real type only promises the first two; the latter two are
+ *  handled defensively (a view/caller may widen it) and gated on the ask's
+ *  `escalation` flag before a frame is ever sent (ASK_INVALID_RESPONSE). */
+type BridgeApproveVerdict = SeamApprovalVerdict | "always" | "session"
+
+/** Args passed to `onApprove(name, args)` — the ask.request wire carries no
+ *  tool arguments, so surface the identifying fields the host did send. */
+function approvalArgs(request: BridgeAskRequestPayload): Record<string, unknown> {
+	return {
+		...(request.callId !== undefined ? { callId: request.callId } : {}),
+		...(request.reason !== undefined ? { reason: request.reason } : {}),
+	}
+}
+
+/** A registered ask provider answers an approval ask via a synthesized
+ *  allow/deny question (the default-surface fallback when no turn-scoped
+ *  onApprove is active). Real approvals should go through onApprove. */
+function approvalQuestion(request: BridgeAskRequestPayload): SeamAskQuestion {
+	const toolName = request.toolName ?? "tool"
+	return {
+		id: request.eventId,
+		prompt: request.reason ?? `Allow ${toolName}?`,
+		options: [{ label: "allow" }, { label: "deny" }],
+		header: "Approval",
+		...(request.callId !== undefined ? { detail: `callId: ${request.callId}` } : {}),
+	}
+}
+
+function approvalVerdictFromPicks(request: BridgeAskRequestPayload, picks: SeamAskPick[]): BridgeApproveVerdict {
+	const pick = picks.find((p) => p.questionId === request.eventId)
+	const choice = pick?.custom ?? pick?.selections?.[0] ?? pick?.selected ?? ""
+	return /^(allow|allowed-once|yes|approve)$/i.test(choice) ? "allowed-once" : "rejected"
+}
+
+/** Map SeamAskPick[] → the wire `{id, selected[], custom?}` answers shape,
+ *  mirroring remote-waterfall.ts:206-223 `answersValue` exactly: custom wins,
+ *  missing/empty picks become `{selected:[],custom:"declined"}`, multi-select
+ *  rides `selections` with `selected` as the first pick. */
+function answersFor(request: BridgeAskRequestPayload, picks: SeamAskPick[]): { id: string; selected: string[]; custom?: string }[] {
+	const questions = request.questions ?? []
+	if (questions.length === 0) {
+		return picks.map((pick) => ({
+			id: pick.questionId,
+			selected: pick.selections?.length ? [...pick.selections] : [pick.selected],
+			...(pick.custom !== undefined && pick.custom !== "" ? { custom: pick.custom } : {}),
+		}))
+	}
+	return questions.map((q) => {
+		const pick = picks.find((p) => p.questionId === q.id)
+		if (pick?.custom !== undefined && pick.custom !== "") return { id: q.id, selected: [], custom: pick.custom }
+		if (pick === undefined || (pick.selected === "" && (pick.custom ?? "") === "")) {
+			return { id: q.id, selected: [], custom: "declined" }
+		}
+		return {
+			id: q.id,
+			selected: pick.selections?.length ? [...pick.selections] : [pick.selected],
+		}
+	})
+}
+
+/** Fail-closed response for a provider-less ask: `verdict:"unavailable"` per
+ *  ADR-0011 §5 ASK_CHANNEL_UNAVAILABLE (never a silent approve). Questions
+ *  additionally carry declined answers because the host rejects a questions
+ *  response with no answers (ask-registry.ts:310). */
+function unavailableResponse(request: BridgeAskRequestPayload): Record<string, unknown> {
+	return request.kind === "questions"
+		? { eventId: request.eventId, kind: "questions", verdict: "unavailable", answers: answersFor(request, []) }
+		: { eventId: request.eventId, kind: "approval", verdict: "unavailable" }
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +406,17 @@ const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n
 // BridgeSessionSeam
 // ---------------------------------------------------------------------------
 
+/** One locally-pending ask. `done` always settles — on answer, cancel, host
+ *  settled broadcast, reconnect snapshot replacement or dispose — so no
+ *  consumer ever waits on a dangling promise (ADR-0011 §3.3 / invariant A2). */
+interface PendingAskEntry {
+	request: BridgeAskRequestPayload
+	turnId: string
+	cancelled: boolean
+	readonly done: Promise<void>
+	readonly finish: () => void
+}
+
 export class BridgeSessionSeam implements SessionSeam {
 	readonly #transport: BridgeTransport
 	readonly #ctx: BridgeSeamContext
@@ -283,6 +447,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	/** P2-9: degrade classes that already logged once; idle polling must not spam. */
 	#degradedOnce = new Set<string>()
 	#usage: UsageAccumulator = { turns: 0, prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
+	/** ADR-0011: the globally registered answerer (default for question asks,
+	 *  fallback for approval asks when no turn-scoped onApprove is active). */
+	#askProvider: ((questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>) | undefined
+	/** ADR-0011: pending asks keyed by eventId — first-wins, turn-scoped. */
+	readonly #pendingAsks = new Map<string, PendingAskEntry>()
 	#disposed = false
 
 	constructor(options: BridgeSessionSeamOptions) {
@@ -517,10 +686,10 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	async turn(userText: string, cb: SeamTurnCallbacks): Promise<void> {
-		// PARTIAL: session.send + turn.* stream. onApprove has no ask frame, so
-		// this seam cannot ever call it — log that degrade once per call so the
-		// UI owner knows approval is unavailable on this path.
-		this.#degrade("turn.onApprove", "bridge has no ask/permission frame; onApprove will not fire")
+		// ADR-0011 T4: cb.onApprove is the turn-scoped answerer for `ask.request
+		// {kind:"approval"}` frames (it shadows the registered ask provider for
+		// this turn only). The active callbacks are installed below before send;
+		// #answerAsk reads them under the in-flight generation guard.
 
 		// P1-3 REENTRANCY SEMANTICS: reject, do not queue. The bridge drives one
 		// turn per session (TURN_BUSY on a second send), so an overlapping turn()
@@ -576,11 +745,16 @@ export class BridgeSessionSeam implements SessionSeam {
 			// THIS turn. A stale finally (send/reject resolving late) must not
 			// clear a newer generation's callbacks, waiter or turnId.
 			if (this.#inFlightGeneration === gen) {
+				const endedTurnId = this.#inFlightTurnId
 				this.#activeCallbacks = undefined
 				this.#turnDone = undefined
 				this.#inFlightTurnId = undefined
 				this.#inFlightGeneration = 0
 				this.#turn = "idle"
+				// Turn end is the upper bound for every ask it opened (A1/D5):
+				// resolve their waiters and drop them even if no terminal frame
+				// arrived (e.g. session.send failed).
+				if (endedTurnId !== undefined) this.#cancelAsksForTurn(endedTurnId)
 			}
 		}
 		if (sendFailed !== undefined) throw sendFailed
@@ -592,6 +766,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#unsubEvent()
 		this.#listeners.length = 0
 		this.#activeCallbacks = undefined
+		this.#cancelAllAsks()
 		this.#turnDone?.()
 		this.#turnDone = undefined
 		this.#inFlightTurnId = undefined
@@ -621,9 +796,17 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#degrade("steer", "no session.steer frame; steer is a no-op")
 	}
 
-	registerAskProvider(_onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void {
-		// UI MUST surface ask/approve as unavailable — registration is empty.
-		this.#degrade("registerAskProvider", "no ask/permission frames; provider registration is empty (ask/approve unavailable)")
+	registerAskProvider(onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void {
+		// ADR-0011 T4: really save the answerer. It is the default for
+		// `ask.request{kind:"questions"}` and the fallback for approval asks
+		// outside a turn; a turn-scoped onApprove shadows it for that turn.
+		this.#askProvider = onAsk
+	}
+
+	/** ADR-0011: read-only snapshot of the still-pending asks (reconnect cards,
+	 *  T5 UI). Fresh shallow copies — callers cannot mutate the live queue. */
+	pendingAsks(): readonly BridgeAskRequestPayload[] {
+		return [...this.#pendingAsks.values()].map((entry) => ({ ...entry.request }))
 	}
 
 	async listProviders(): Promise<{ provider: string; models: string[] }[]> {
@@ -636,6 +819,171 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	selectModel(_providerID: string, _modelID: string): Promise<void> {
 		return Promise.reject(new BridgeProtocolError("UNSUPPORTED", "selectModel is not backed by the in-process bridge", { capability: "selectModel" }))
+	}
+
+	// ------------------------------------------------------------------
+	// ADR-0011 ask queue / answerer resolution
+	// ------------------------------------------------------------------
+
+	/**
+	 * Map an approval verdict to `ask.response` params. `allowed-once` /
+	 * `rejected` are the real SeamApprovalVerdict values. The widened
+	 * `always` / `session` behaviors are only legal when the request carried
+	 * `escalation:true`; otherwise return undefined so NO frame is sent (the
+	 * host would answer ASK_INVALID_RESPONSE — refuse locally instead).
+	 */
+	#approvalParams(request: BridgeAskRequestPayload, verdict: BridgeApproveVerdict): Record<string, unknown> | undefined {
+		const base = { eventId: request.eventId, kind: "approval" as const }
+		switch (verdict) {
+			case "allowed-once":
+				return { ...base, verdict: "allowed-once" }
+			case "rejected":
+				return { ...base, verdict: "rejected" }
+			case "always":
+			case "session":
+				if (request.escalation !== true) {
+					this.#degradeOnce(
+						"ask.invalid-escalation",
+						`behavior:${verdict} needs a granted escalation; refusing to send ask.response (ASK_INVALID_RESPONSE)`,
+					)
+					return undefined
+				}
+				return { ...base, verdict: "allowed-once", behavior: verdict, escalation: true }
+			default:
+				// Unknown verdict → fail closed (deny), never an implicit allow.
+				return { ...base, verdict: "rejected" }
+		}
+	}
+
+	/** Enqueue a freshly received ask and start its answer task. Duplicate
+	 *  eventIds are dropped (first-wins / replay safety, A2/A5). */
+	#enqueueAsk(request: BridgeAskRequestPayload): void {
+		if (this.#disposed || this.#pendingAsks.has(request.eventId)) return
+		let finish!: () => void
+		const done = new Promise<void>((resolve) => { finish = resolve })
+		const entry: PendingAskEntry = {
+			request,
+			turnId: askTurnId(request.eventId),
+			cancelled: false,
+			done,
+			finish,
+		}
+		this.#pendingAsks.set(request.eventId, entry)
+		void this.#answerAsk(entry)
+	}
+
+	/**
+	 * Resolve the answerer and send exactly one `ask.response`. Turn-scoped
+	 * onApprove wins over the registered provider for approval asks and only
+	 * while that turn is in flight. Questions always use the registered
+	 * provider. No provider / provider failure → explicit `verdict:"unavailable"`
+	 * (ASK_CHANNEL_UNAVAILABLE), never a silent approve.
+	 */
+	async #answerAsk(entry: PendingAskEntry): Promise<void> {
+		const request = entry.request
+		let params: Record<string, unknown> | undefined
+		try {
+			if (request.kind === "approval") {
+				const cb = this.#inFlightGeneration !== 0 ? this.#activeCallbacks : undefined
+				if (cb !== undefined) {
+					const verdict = await cb.onApprove(request.toolName ?? "tool", approvalArgs(request))
+					params = this.#approvalParams(request, verdict)
+				} else if (this.#askProvider !== undefined) {
+					const picks = await this.#askProvider([approvalQuestion(request)])
+					params = this.#approvalParams(request, approvalVerdictFromPicks(request, picks))
+				} else {
+					this.#degradeOnce("ask.no-provider", "no onApprove/ask provider; answering approval unavailable (ASK_CHANNEL_UNAVAILABLE)")
+					params = unavailableResponse(request)
+				}
+			} else if (this.#askProvider !== undefined) {
+				const picks = await this.#askProvider(request.questions ?? [])
+				params = { eventId: request.eventId, kind: "questions", answers: answersFor(request, picks) }
+			} else {
+				this.#degradeOnce("ask.no-provider", "no ask provider; answering questions unavailable (ASK_CHANNEL_UNAVAILABLE)")
+				params = unavailableResponse(request)
+			}
+		} catch (err) {
+			// A provider that throws is a fail-closed answer, never an implicit
+			// allow and never a dangling promise.
+			this.#degradeOnce("ask.provider-error", "ask provider threw; answering unavailable (ASK_CHANNEL_UNAVAILABLE)")
+			this.#ctx.logger.warn("[bridge-seam] ask provider failed: %s", err)
+			params = unavailableResponse(request)
+		}
+
+		// cancel / host-settled / turn end / snapshot replacement may have
+		// removed this entry while the provider was pending: never send then.
+		if (entry.cancelled || this.#pendingAsks.get(request.eventId) !== entry) {
+			entry.finish()
+			return
+		}
+		if (params !== undefined) {
+			try {
+				await this.#transport.request("ask.response", params)
+			} catch (err) {
+				// A late response gets ASK_TURN_ENDED / ASK_ALREADY_ANSWERED from
+				// the host; log it, never retry (first-wins lives in the bridge).
+				this.#ctx.logger.warn("[bridge-seam] ask.response failed for %s: %s", request.eventId, err)
+			}
+		}
+		entry.finish()
+		if (this.#pendingAsks.get(request.eventId) === entry) this.#pendingAsks.delete(request.eventId)
+	}
+
+	/** Drop one ask: cancel, host-settled or superseded. Always resolves the
+	 *  waiter so no consumer hangs (A2/D5). */
+	#settlePendingAsk(eventId: string): void {
+		const entry = this.#pendingAsks.get(eventId)
+		if (entry === undefined) return
+		entry.cancelled = true
+		this.#pendingAsks.delete(eventId)
+		entry.finish()
+	}
+
+	#cancelAsksForTurn(turnId: string): void {
+		if (turnId === "") return
+		for (const [eventId, entry] of [...this.#pendingAsks]) {
+			if (entry.turnId === turnId) this.#settlePendingAsk(eventId)
+		}
+	}
+
+	#cancelAllAsks(): void {
+		for (const eventId of [...this.#pendingAsks.keys()]) this.#settlePendingAsk(eventId)
+	}
+
+	/** Handle the four host→client ask events. Returns true when consumed. */
+	#onAskEvent(frame: BridgeEventFrame): boolean {
+		const payload = asRecord(frame.payload)
+		switch (frame.type) {
+			case "ask.request": {
+				const request = parseAskRequest(frame.payload)
+				if (request !== undefined) this.#enqueueAsk(request)
+				return true
+			}
+			case "ask.cancel": {
+				const eventId = optionalStringField(payload, "eventId")
+				if (eventId !== undefined) this.#settlePendingAsk(eventId)
+				return true
+			}
+			case "ask.settled": {
+				// Host broadcast: this eventId is closed — de-dup any local copy.
+				const eventId = optionalStringField(payload, "eventId")
+				if (eventId !== undefined) this.#settlePendingAsk(eventId)
+				return true
+			}
+			case "ask.pending": {
+				// Reconnect snapshot replaces the whole queue. Resolve every old
+				// waiter before enqueueing the fresh set (no dangling promises).
+				this.#cancelAllAsks()
+				const asks = Array.isArray(payload.asks) ? payload.asks : []
+				for (const raw of asks) {
+					const request = parseAskRequest(raw)
+					if (request !== undefined) this.#enqueueAsk(request)
+				}
+				return true
+			}
+			default:
+				return false
+		}
 	}
 
 	// ------------------------------------------------------------------
@@ -654,13 +1002,20 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	#onBridgeEvent(frame: BridgeEventFrame): void {
+		// ADR-0011 ask frames own their own queue — never project them as turn
+		// deltas or session events (they are not transcript rows).
+		if (this.#onAskEvent(frame)) return
+
 		const payload = asRecord(frame.payload)
 		// status state machine (no reconnect precision — D3: idle on ambiguity).
 		if (frame.type === "turn.start") this.#turn = "starting"
 		if (frame.type === "turn.token" || frame.type === "turn.tool") this.#turn = "running"
 		if (frame.type === "turn.end" || frame.type === "turn.error") {
 			this.#turn = "idle"
+			const endedTurnId = typeof payload.turnId === "string" ? payload.turnId : this.#inFlightTurnId
 			this.#inFlightTurnId = undefined
+			// Turn terminal frame is the upper bound for its asks (A1/D5).
+			if (endedTurnId !== undefined) this.#cancelAsksForTurn(endedTurnId)
 			this.#turnDone?.()
 		}
 

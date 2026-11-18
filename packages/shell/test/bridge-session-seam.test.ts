@@ -457,12 +457,14 @@ describe("sync degrade values + logs", () => {
 		expect(h.warnFor("onSessionEvent")[0].args.map(String).join(" ")).toContain("permission.asked")
 	})
 
-	test("steer / registerAskProvider degrade to no-ops + logs (out-of-batch D3 stubs)", () => {
+	test("steer degrades to a no-op + log; registerAskProvider now really stores the provider (ADR-0011 T4)", () => {
 		const h = makeHarness()
 		expect(() => h.seam.steer("x")).not.toThrow()
-		expect(() => h.seam.registerAskProvider(async () => [])).not.toThrow()
 		expect(h.warnFor("steer")).toHaveLength(1)
-		expect(h.warnFor("registerAskProvider")).toHaveLength(1)
+		// T4: registerAskProvider is no longer a degrade stub — the real
+		// provider round-trip is pinned in bridge-session-ask.test.ts.
+		expect(() => h.seam.registerAskProvider(async () => [])).not.toThrow()
+		expect(h.warnFor("registerAskProvider")).toHaveLength(0)
 	})
 })
 
