@@ -848,6 +848,18 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
 
   /** Dispose the current binding (detach semantics) and clear all state. */
   async function disposeBinding(current: SessionBinding): Promise<void> {
+    // A turn still streaming when its binding is replaced (session.open
+    // replace) or closed MUST get a terminal frame. Dropping activeTurn without
+    // one leaves the client's `await done` pending forever (P0). Emit it BEFORE
+    // dispose: finalizeTurn writes the single terminal frame while stdout is
+    // still live, and the frame precedes any late host event for this turn.
+    if (activeTurn !== undefined && activeTurn.sessionId === current.sessionId && !activeTurn.ended) {
+      finalizeTurn(activeTurn, {
+        kind: 'error',
+        code: 'SESSION_CLOSED',
+        message: 'turn terminated because its session was closed or replaced',
+      })
+    }
     binding = undefined
     inFlightTurnId = undefined
     terminalTurnIds.clear()
@@ -855,6 +867,8 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // level firehose subscriptions stay armed (they are session-filtered), but
     // no further frames can be emitted without an activeTurn. This is what
     // keeps A's late events from landing under B's turnId after an open-replace.
+    // finalizeTurn above already cleared this turn's timer + activeTurn; this
+    // branch is a defensive fallback for an already-ended accumulator.
     if (activeTurn !== undefined && activeTurn.sessionId === current.sessionId) {
       if (activeTurn.batchTimer !== undefined) clearTimeout(activeTurn.batchTimer)
       activeTurn = undefined
@@ -1047,7 +1061,18 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         () => {
           const safety = setTimeout(() => {
             if (inFlightTurnId === turnId) {
-              logger.warn('[dsh-opentui-bridge] turn %s idle with no terminal frame; releasing TURN_BUSY', turnId)
+              // The host went idle without delivering turn/end. Releasing only
+              // TURN_BUSY left activeTurn unterminated, so the client's
+              // `await done` hung and the next send overwrote this turn with no
+              // terminal frame (P2). Emit the terminal first, then clear state.
+              logger.warn('[dsh-opentui-bridge] turn %s idle with no terminal frame; finalizing', turnId)
+              if (activeTurn === state && !state.ended) {
+                finalizeTurn(state, {
+                  kind: 'error',
+                  code: 'INTERNAL',
+                  message: 'no terminal frame received before the idle safety net fired',
+                })
+              }
               clearInFlight()
             }
           }, 2000)
@@ -1149,6 +1174,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         logger.info('[dsh-opentui-bridge] turn.abort issued turnId=%s sessionId=%s', state.turnId, state.sessionId)
         replyOk(req.id, { turnId: state.turnId, aborted: true })
       } catch (err) {
+        // cancel() threw before firing the driver's AbortSignal. Leaving the
+        // guard set would make every retry a fake `{noop:true}` success, so the
+        // turn could never be cancelled. Clear it so a retry reaches cancel().
+        state.abortRequested = false
         logger.error('[dsh-opentui-bridge] turn.abort failed: %s', err)
         replyError(req.id, 'INTERNAL', err instanceof Error ? err.message : String(err))
       }
@@ -1195,8 +1224,24 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
 
     try {
-      const value = await controller.list({ _request: cursor !== undefined ? { cursor } : {} })
-      const items = value !== null && typeof value === 'object' && Array.isArray(value.items) ? value.items : []
+      const raw: unknown = await controller.list({ _request: cursor !== undefined ? { cursor } : {} })
+      // A malformed host reply means "host is broken", NOT "no sessions". Never
+      // flatten it to an empty success: that would be indistinguishable from a
+      // genuinely empty store (see ADR-0010 session.list contract).
+      if (raw === null || typeof raw !== 'object' || Array.isArray(raw) || !Array.isArray((raw as { items?: unknown }).items)) {
+        const reason =
+          raw === null
+            ? 'sessionController.list returned null'
+            : Array.isArray(raw)
+              ? 'sessionController.list returned an array, expected a SessionListValue object'
+              : typeof raw !== 'object'
+                ? `sessionController.list returned a non-object (${typeof raw})`
+                : 'sessionController.list returned an object without an items array'
+        logger.error('[dsh-opentui-bridge] session.list malformed reply: %s', reason)
+        replyError(req.id, 'INTERNAL', 'sessionController.list returned a malformed value', { reason })
+        return
+      }
+      const items = (raw as SessionListValueLike).items
       logger.info('[dsh-opentui-bridge] session.list ok items=%d', items.length)
       // Pass the host rows through unchanged — the wire shape is the contract.
       replyOk(req.id, { items })

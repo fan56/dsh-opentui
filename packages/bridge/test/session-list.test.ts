@@ -322,3 +322,44 @@ describe("session.list — host errors", () => {
     expect(reply.result).toBeUndefined()
   })
 })
+
+describe("session.list — malformed host value is INTERNAL, never a flattened empty success (P1-2)", () => {
+  const cases: Array<{ name: string; id: number; value: unknown; reason: string }> = [
+    { name: "null value", id: 40, value: null, reason: "returned null" },
+    { name: "object with no items", id: 41, value: { sessions: [] }, reason: "without an items array" },
+    { name: "items not an array", id: 42, value: { items: "not-an-array" }, reason: "without an items array" },
+  ]
+
+  for (const c of cases) {
+    test(`${c.name} -> INTERNAL with a reason, distinguishable from UNSUPPORTED and from {items:[]}`, async () => {
+      const controller = makeController(() => c.value)
+      const h = makeHarness(controller)
+
+      h.send({ id: c.id, method: "session.list" })
+      const reply = await h.waitFor(c.id)
+
+      expect(reply.ok).toBe(false)
+      expect(reply.error.code).toBe("INTERNAL")
+      // "host is broken" carries a reason — it is not the UNSUPPORTED shape
+      // ({capability,service}), nor a success result at all.
+      expect(String(reply.error.message)).toContain("malformed")
+      expect(reply.error.detail.reason).toContain(c.reason)
+      expect(reply.error.detail.capability).toBeUndefined()
+      expect(reply.result).toBeUndefined()
+      expect(controller.calls).toEqual([{ _request: {} }])
+    })
+  }
+
+  test("a non-object value -> INTERNAL with a reason", async () => {
+    const controller = makeController(() => "garbage")
+    const h = makeHarness(controller)
+
+    h.send({ id: 43, method: "session.list" })
+    const reply = await h.waitFor(43)
+
+    expect(reply.ok).toBe(false)
+    expect(reply.error.code).toBe("INTERNAL")
+    expect(reply.error.detail.reason).toContain("non-object")
+    expect(reply.result).toBeUndefined()
+  })
+})

@@ -114,6 +114,7 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - `ALREADY_OPEN`（`detail.openSessionId`）
 - `TURN_BUSY`（`detail.turnId`）
 - `TURN_NOT_FOUND`（`turn.abort` 请求的 turnId 不是在途 turn、也非最近已终态 turn 时返回；`detail` 为 `{requestedTurnId, activeTurnId}`，其中 `activeTurnId` 为当前在途 turn id，无在途 turn 时为 `null`）
+- `SESSION_CLOSED`（`turn.error` 的 `code`：会话被 `session.open{replace:true}` 替换或被 `session.close` 关闭时，为仍在途的 turn 补发唯一的终态帧；该 turn 因所属会话结束而终止，既非模型失败，也非 `turn.abort` 的 `ABORTED`）
 - `BAD_PARAMS`
 - `BAD_FRAME`
 - `UNSUPPORTED`（未知方法；亦用于 `session.list` 服务缺失，`detail={capability,service}`）

@@ -43,7 +43,7 @@ afterEach(() => {
  * Fresh bridge instance per test. The switch, stdin and stdout are all
  * process-global, so each harness snapshots and restores them in afterEach.
  */
-function makeHarness(): Harness {
+function makeHarness(cancelImpl?: (cause: any, opts: any) => void): Harness {
   const previousSwitch = process.env[STDIO_SWITCH]
   process.env[STDIO_SWITCH] = "1"
 
@@ -105,6 +105,7 @@ function makeHarness(): Harness {
     steer() {},
     cancel(cause: any, opts: any) {
       cancelCalls.push({ cause, opts })
+      cancelImpl?.(cause, opts)
     },
     whenIdle() {
       return new Promise<void>(() => {}) // hold the turn open
@@ -372,6 +373,32 @@ describe("turn.abort — idempotency and terminal frame", () => {
     expect(terminals[0].type).toBe("turn.error")
     expect(terminals[0].payload.code).toBe("USER_ABORT")
     expect(terminals.some((f) => f.type === "turn.end")).toBe(false)
+  })
+})
+
+describe("turn.abort — cancel error resets abortRequested (P1-1)", () => {
+  test("cancel() throwing INTERNAL resets the guard so a retry reissues cancel", async () => {
+    let attempts = 0
+    const h = makeHarness(() => {
+      attempts += 1
+      if (attempts === 1) throw new Error("cancel exploded")
+    })
+    const { turnId } = await startTurn(h, 1)
+
+    h.send({ id: 10, method: "turn.abort", params: { turnId } })
+    const first = await h.waitFor(10)
+    expect(first.ok).toBe(false)
+    expect(first.error.code).toBe("INTERNAL")
+    expect(h.cancelCalls).toHaveLength(1)
+
+    // Without the guard reset this retry is swallowed as `{noop:true}` and the
+    // turn can never be cancelled. The retry must reach cancel() again.
+    h.send({ id: 11, method: "turn.abort", params: { turnId } })
+    const second = await h.waitFor(11)
+    expect(second.ok).toBe(true)
+    expect(second.result).toEqual({ turnId, aborted: true })
+    expect(second.result.noop).toBeUndefined()
+    expect(h.cancelCalls).toHaveLength(2)
   })
 })
 
