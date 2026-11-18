@@ -5,6 +5,8 @@
 
 路径约定：下文 `dsh-<pkg>@0.2.2-rc.3/...` 指 `node_modules/.pnpm/@deepseek-ai+dsh-<pkg>@0.2.2-rc.3_<hash>/node_modules/@deepseek-ai/dsh-<pkg>/...`（版本均为 `0.2.2-rc.3`，hash 已省略）；仓库内文件用仓库相对路径。
 
+**已启用（2026-11-18，ADR-0011 T9，commit `feat(profile): default to workspace-write + approval: ask with the pre-execute gate`）**：本调研的两条结论已落到默认 profile——`defaultPreset: workspace-write`（`approval: ask`，取 §2 的 sandbox 真实收益）+ pre-execute gate 默认 armed（`tools: {bash, write, edit, apply_patch}: ask`，取 §4 目标 B 的审批卡）。逃生门：`DSH_OPENTUI_APPROVAL_GATE=off dsh-opentui` 恢复 T9 前的 `danger-full-access` + gate 关闭；默认 ON。
+
 ---
 
 ## 0. 结论先行（T9 有没有安全价值）

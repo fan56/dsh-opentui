@@ -15,9 +15,9 @@
  *
  * The policy is DATA, supplied by the profile patch's `config` (see
  * packages/shell/scripts/provision-inproc-profile.mjs). Nothing about tool
- * identity is hard-coded in the listener logic. The default profile registers
- * this gate with an EMPTY policy (inert): it is enabled independently by
- * setting `config.tools` in a scratch profile.
+ * identity is hard-coded in the listener logic. T9 arms the shipped inproc
+ * profile with WRITE_TOOL_POLICY by default (and switches the preset to
+ * workspace-write + approval: ask); `DSH_OPENTUI_APPROVAL_GATE=off` disables it.
  *
  * No `@deepseek-ai/*` runtime import: all host shapes are transcribed locally,
  * matching the rest of the bridge package (the build script keeps the whole

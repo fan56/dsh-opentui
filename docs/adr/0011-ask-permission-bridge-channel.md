@@ -110,12 +110,11 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 
 ## 6. 与当前 profile 默认的关系（Relationship to profile default）
 
-现状：`packages/shell/scripts/provision-inproc-profile.mjs:480-493` 写死 `presets.danger-full-access = {sandbox:'danger-full-access', approval:'never'}`（`:490-492`）且 `defaultPreset: danger-full-access`（`:493`）。用户已拍板改为需审批（D2），但**改默认必须排在 T1–T8 全部落地并通过验收之后**，原因有源码证据：
+**T9 已落地（commit `feat(profile): default to workspace-write + approval: ask with the pre-execute gate`）。** `packages/shell/scripts/provision-inproc-profile.mjs` 的 patch 模板现在写 `defaultPreset: workspace-write`（`presets.workspace-write = {sandbox:'workspace-write', approval:'ask'}`），并把 `dsh-opentui-approval-gate` 默认 armed：`enabled: true` + `tools: {bash: ask, write: ask, edit: ask, apply_patch: ask}`。工具名按宿主注册表面核对——`dsh-tool-bash/src/index.ts:393` 注册 `bash`，`dsh-tool-fs/src/{write,edit,apply-patch}.ts` 分别注册 `write` / `edit` / `apply_patch`，即 `tools/pre-execute` 收到的 `exec.name`。写类工具因此真正返回 `{kind:'ask'}`，走 `serviceAsk` → `approval.request` → bridge answerer → `ask.request` → TUI 审批卡；只读工具仍由 `next()` 直接放行。越界写仍由 `workspace-write` 文件沙箱硬拒绝并提示升级（收益来自 sandbox，不来自 approval）。
 
-- 一旦 `defaultPreset` 切到 `read-only`/`workspace-write`（`approval:'ask'`，同文件 `:484-489`），宿主开始发起 `approval/request`；
-- 此时若 ask 通道尚未上线，bridge 无 answerer（`packages/bridge/src/index.ts:77-101,240,833-834`），宿主回退 `unavailable`（`tickets/2026-11-18-ask-permission-gap.md:158-162`），工具侧把 `unavailable` 映射为 deny（`dsh-tools/lib/pipeline.js:641-651`）；
-- seam 又从不调用 `onApprove`（`packages/shell/src/client/bridge-session-seam.ts:488-492`）、provider 空注册（同文件 `:593-595`），审批卡不弹出；
-- 净结果：**所有需审批工具被静默全拒**（ticket `:172-175`）。因此提前改默认会造成"工具全被拒"事故，必须先有通道（T1–T8）再切默认（T9）。
+**逃生门**：`DSH_OPENTUI_APPROVAL_GATE=off dsh-opentui`。patch 的 `defaultPreset` 与 gate 的 `enabled` 都由 `!!js process.env.DSH_OPENTUI_APPROVAL_GATE` 推导；置 `off` 时恢复 `danger-full-access` + gate 关闭（即 T9 前的行为）。默认不设置，即 ON；不要默认关闭。
+
+历史依据（改默认曾必须排在 T9 之后，现已满足）：旧模板 `defaultPreset: danger-full-access` + `approval: never`；若提前切到 `approval:'ask'` 而 ask 通道未上线，bridge 无 answerer（`packages/bridge/src/index.ts:77-101,240,833-834`）→ 宿主 `unavailable`（`tickets/2026-11-18-ask-permission-gap.md:158-162`）→ 工具侧 deny（`dsh-tools/lib/pipeline.js:641-651`）；且 seam 不接 `onApprove` / provider 空注册（`packages/shell/src/client/bridge-session-seam.ts:488-492,593-595`），净结果是"所有需审批工具被静默全拒"（ticket `:172-175`）。T1–T5（帧/registry/dispatch/answerer/两张卡）与 pre-execute gate（commit `19c2ab2`）已落地；T7 journal 由并行分支推进。D2 的落地点即本 T9。
 
 ## 7. 被否备选（Alternatives considered）
 
@@ -153,10 +152,10 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 | T6 | TUI 卡片：审批卡 / 提问面板接 `onApprove` / provider（复用 `turn-overlay-controller.ts:145-151`） | T5 |
 | T7 | journal 决策落盘 + 会话级权限摘要（compaction 清事件不清效果，D7） | T2, T3, T5 |
 | T8 | 显式 fail-closed + UI 明示（unavailable 上屏，替换静默 warn） | T5, T7 |
-| T9 | 去 `danger-full-access` 硬编码，默认预设改需审批（`provision-inproc-profile.mjs:490-493`） | **T1–T8 全部落地并验收** |
+| T9 | 去 `danger-full-access` 硬编码，默认预设改需审批（`provision-inproc-profile.mjs:490-493`） | **已落地，commit `feat(profile): default to workspace-write + approval: ask with the pre-execute gate`（见 §6）** |
 | T10 | 真机验收（审批卡可放行、提问可答、掉线/取消/并发/重连/compaction） | T9 |
 
-T9 是 D2 的落地点，**不得提前**（§6）。
+T9 是 D2 的落地点，已按 §6 的前提落地（commit `feat(profile): default to workspace-write + approval: ask with the pre-execute gate`）。
 
 ## 11. 验收标准（Acceptance）
 

@@ -215,6 +215,17 @@ allow, `n` decline; `esc` ×2 + confirm stops a running turn. Ctrl+C twice quits
 `/help` `/model [provider/id]` `/usage` `/clear` `/login` `/logout` `/resume`
 `/search` `/new` `/quit` and more — see `/help` inside the TUI.
 
+**Approval by default (inproc profile)**: the generated profile pins
+`defaultPreset: workspace-write` (`approval: ask`) and arms the pre-execute
+gate for the write tools the host registers — `bash`, `write`, `edit`,
+`apply_patch`. Those tools pop the approval card before running; read-only
+tools run straight through; writes outside the workspace are denied by the
+sandbox with an escalation hint. **Escape hatch**: launch with
+`DSH_OPENTUI_APPROVAL_GATE=off dsh-opentui` to disable the gate and restore the
+pre-T9 `danger-full-access` default. The gate is ON by default — do not set
+that variable for normal use. See `docs/adr/0011-ask-permission-bridge-channel.md`
+§6 and `tickets/2026-11-18-approval-trigger-mechanism.md`.
+
 **Session restore on launch (opt-in)**: a plain launch starts a new, empty
 session. To reopen the newest non-empty session from the launch workspace that
 was active within the last 7 days — with a `resumed <title> · <time ago>`

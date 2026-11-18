@@ -515,23 +515,29 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
       danger-full-access:
         sandbox: danger-full-access
         approval: never
-    defaultPreset: danger-full-access
+    # T9 (ADR-0011): default to the confined + ask preset. Escape hatch: set
+    # DSH_OPENTUI_APPROVAL_GATE=off to restore the pre-T9 permissive default.
+    defaultPreset: !!js process.env.DSH_OPENTUI_APPROVAL_GATE === 'off' && 'danger-full-access' || 'workspace-write'
 
-# Pre-execute approval gate. Registered with an EMPTY policy by default so the
-# inproc profile stays byte-for-byte as permissive as before: the preset above
-# remains danger-full-access + approval never (T9 is a separate step). The gate
-# is independently enabled by setting config.tools in a scratch profile, e.g.
-#   tools: {bash: ask, write: ask, edit: ask, apply_patch: ask}
-# Once enabled it returns {kind:'ask'} for those tools, driving the host's
-# approval.request -> bridge answerer -> ask.request -> TUI approval card.
+# Pre-execute approval gate (ADR-0011 T9). Armed BY DEFAULT for the write tools
+# the host actually registers (verified in dsh-tool-bash/src/index.ts:393 and
+# dsh-tool-fs/src/{write,edit,apply-patch}.ts): it returns {kind:'ask'} for them,
+# driving approval.request -> bridge answerer -> ask.request -> TUI approval card.
+# Read-only tools (read/search/glob/...) are untouched and pass via next().
+# Escape hatch: DSH_OPENTUI_APPROVAL_GATE=off sets enabled=false (and reverts the
+# preset above), restoring the old frictionless behavior. Never default to off.
 # See tickets/2026-11-18-approval-trigger-mechanism.md.
 - insert:
     - id: dsh-opentui-approval-gate
       name: '@aiwayds/dsh-opentui-bridge/approval-gate'
       config:
-        enabled: true
+        enabled: !!js process.env.DSH_OPENTUI_APPROVAL_GATE !== 'off'
         reason: 'Write operations require human approval'
-        tools: {}
+        tools:
+          bash: ask
+          write: ask
+          edit: ask
+          apply_patch: ask
 
 # MCP (managed by provision-opentui-profile.mjs — the adapter's mcp_list/mcp_call need a client row; context7 needs no key and a failed/offline connection is non-fatal):
 - insert:
