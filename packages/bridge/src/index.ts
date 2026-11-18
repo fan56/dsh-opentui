@@ -48,6 +48,14 @@ import { askPluginRecordType, type AskJournalEvent } from './ask-journal'
 // stays assembly-only so it does not grow the overlap surface with ask (ADR-0011).
 import { registerAppendSection } from './append-section'
 import type { RegisterAppendSectionOptions } from './append-section'
+// M3-05 — resume preset migration decoration lives in preset-migration.ts so
+// index.ts stays assembly-only (same overlap-surface discipline as M3-02/04).
+import {
+  presetMentionsAppend,
+  readSessionAgentPreset,
+  warnAppendMigrationOnce,
+  STANDARD_PRESET_ID,
+} from './preset-migration'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -171,6 +179,10 @@ interface JournalReadResultLike {
 
 /** `sessionPersistence` handle — `open(id,'read')` never takes the writer lock. */
 interface PersistenceHandleLike {
+  /** Immutable stored header (dsh-session-persistence `SessionHandle.header`,
+   *  dsh-session `SessionHeader`). M3-05 reads `agentPreset` off it to detect a
+   *  legacy append session without writing any durable state. */
+  readonly header?: { readonly agentPreset?: unknown }
   read(offset?: number, length?: number): Promise<JournalReadResultLike>
   close(): Promise<void>
 }
@@ -1430,11 +1442,32 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           logger.info('[dsh-opentui-bridge] session.open adopt live %s', id)
           handle = { agent: live, dispose: async () => { /* owned by creator */ } }
         } else {
+          // M3-05 — resume decoration layer (ADR-0010:134): read the persisted
+          // preset BEFORE resume through a read-only handle. A legacy append
+          // session is decorated IN MEMORY — `preset` overridden to `standard`
+          // (set, not deleted: provider/model/reasoningEffort stay intact) and
+          // the M3-04 setup is told to suppress the section so append content
+          // is not injected twice (ADR-0010:142). A detection failure/missing
+          // field is a clean miss and must never block resume.
+          const agentOptions = buildAgentOptions(ctx)
+          let preset: unknown
+          try {
+            preset = await readSessionAgentPreset(resolvePersistence(ctx), id)
+          } catch {
+            // Service-lookup / detection failure is a clean miss; never block resume.
+            preset = undefined
+          }
+          const legacyAppend = presetMentionsAppend(preset)
+          if (legacyAppend) {
+            agentOptions.preset = STANDARD_PRESET_ID
+            warnAppendMigrationOnce(logger, id)
+          }
           logger.info('[dsh-opentui-bridge] session.open resume %s', id)
           handle = await agents.resume({
             resumeSessionId: id,
-            agentOptions: buildAgentOptions(ctx),
-            setup: makeAppendSectionSetup(logger, id),
+            agentOptions,
+            // Dedupe predicate for the agent-scoped append section (M3-04 seam).
+            setup: makeAppendSectionSetup(logger, id, () => legacyAppend),
           })
         }
         sessionId = id
