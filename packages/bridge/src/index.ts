@@ -47,6 +47,7 @@ import { askPluginRecordType, type AskJournalEvent } from './ask-journal'
 // M3-02 — section registration skeleton lives in append-section.ts; index.ts
 // stays assembly-only so it does not grow the overlap surface with ask (ADR-0011).
 import { registerAppendSection } from './append-section'
+import type { RegisterAppendSectionOptions } from './append-section'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -335,12 +336,45 @@ export const inject: string[] = ['agents']
  * apply(): ADR-0010 requires the section to be registered at AGENT scope
  * ("scope 注册，禁 global"), and the only agent-scoped handle is the
  * `setup: (agentCtx) => ...` callback on session.open's create/resume — that
- * wiring is M3-04. This thin, testable helper is the single assembly point:
- * callers pass the agent-scoped ctx once M3-04 lands. Keeping it out of the
- * session.open block also keeps this task clear of the ask-channel diff.
+ * wiring is M3-04 (below). This thin, testable helper is the single assembly
+ * point: callers pass the agent-scoped ctx. Keeping it out of the session.open
+ * block also keeps this task clear of the ask-channel diff.
  */
-export function armAppendSection(ctx: BridgeContext): () => void {
-  return registerAppendSection(ctx)
+export function armAppendSection(
+  ctx: BridgeContext,
+  options: RegisterAppendSectionOptions = {},
+): () => void {
+  return registerAppendSection(ctx, options)
+}
+
+/**
+ * M3-04 — build the agent-scoped `setup` callback for one `session.open`.
+ *
+ * Host contract (dsh-agent `lib/types/index.d.ts:41`): `AgentSetup` returns an
+ * optional synchronous `AgentSetupCommit` (`{ commit() }`) or void — NOT a
+ * disposer. A setup throw/rejection rolls the whole Agent creation back
+ * (`:96-97`). Therefore:
+ *  - we call `armAppendSection` for its side effect and IGNORE its returned
+ *    cleanup; the section disposer is held on `agentCtx.effect` inside
+ *    `registerAppendSection`, so agent-scope disposal tears it down (`:92-95`);
+ *  - every failure is contained to one `logger.warn`, never rethrown.
+ *
+ * `sessionId` is captured here so M3-05 can key its per-session warning and its
+ * `shouldSuppress` predicate (built from the session's preset snapshot) to this
+ * exact open. The predicate defaults to `false` in M3-04; detection is M3-05.
+ */
+function makeAppendSectionSetup(
+  logger: Logger,
+  sessionId: string,
+  shouldSuppress: () => boolean = () => false,
+): (agentCtx: BridgeContext) => void {
+  return (agentCtx: BridgeContext) => {
+    try {
+      armAppendSection(agentCtx, { appendText: { shouldSuppress } })
+    } catch (err) {
+      logger.warn('[dsh-opentui-bridge] append section setup failed for %s (plugin stays live): %s', sessionId, err)
+    }
+  }
 }
 
 /** ADR-0011 T3: one AskRegistry per stdio connection (= one `apply()` call).
@@ -1372,10 +1406,8 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     try {
       let sessionId: string
       let handle: AgentHandleLike
-      // M3-04 TODO: pass `setup: (agentCtx) => armAppendSection(agentCtx)` in
-      // BOTH agents.create and agents.resume options below so the append
-      // section registers at agent scope (ADR-0010 "scope 注册，禁 global").
-      // M3-02 intentionally stops at the testable assembly helper above.
+      // M3-04: register the append section at AGENT scope via the host's
+      // `setup` callback (ADR-0010 "scope 注册，禁 global"), on both paths.
       if (mode === 'new') {
         // I1: a fresh id is minted here and only here.
         sessionId = randomUUID()
@@ -1383,6 +1415,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           sessionId,
           meta: { cwd: process.cwd() },
           agentOptions: buildAgentOptions(ctx),
+          setup: makeAppendSectionSetup(logger, sessionId),
         })
       } else if (mode === 'resume') {
         const id = req.params.id
@@ -1401,6 +1434,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           handle = await agents.resume({
             resumeSessionId: id,
             agentOptions: buildAgentOptions(ctx),
+            setup: makeAppendSectionSetup(logger, id),
           })
         }
         sessionId = id
