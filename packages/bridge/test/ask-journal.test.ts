@@ -8,9 +8,11 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
+  ASK_GRANT_JOURNAL_TYPE,
   ASK_JOURNAL_KINDS,
   ASK_PLUGIN_RECORD_PREFIX,
   SessionPermissionSummary,
+  alwaysGrantToolsFromJournal,
   askPluginRecordType,
   redactIdentifier,
   summarizeAnswers,
@@ -209,5 +211,104 @@ describe('ADR-0011 T7 — session summary survives compaction', () => {
     expect(summary.has('sB', 'write')).toBe(false)
     summary.clearSession('sA')
     expect(summary.count('sA')).toBe(0)
+  })
+})
+
+describe('ADR-0011 D7 — always-grant reconstruction from the durable journal (respawn)', () => {
+  const row = (payload: unknown, type: string = ASK_GRANT_JOURNAL_TYPE) => ({ type, payload })
+  const always = (overrides: Record<string, unknown> = {}) => ({
+    eventId: 't1:ask-1',
+    kind: 'ask.responded',
+    askKind: 'approval',
+    sessionId: 's1',
+    turnId: 't1',
+    toolName: 'bash',
+    verdict: 'allowed-once',
+    outcome: 'approved',
+    behavior: 'always',
+    source: 'answer',
+    at: 1,
+    ...overrides,
+  })
+
+  test('(a) rebuild: always-allow responded events restore tools into the summary', () => {
+    const tools = alwaysGrantToolsFromJournal('s1', [
+      row({ type: 'turn.start' }), // unrelated host event
+      row(always()),
+      row(always({ eventId: 't2:ask-1', turnId: 't2', toolName: 'write', source: 'summary' })),
+    ])
+    expect(tools).toEqual(['bash', 'write'])
+
+    const summary = new SessionPermissionSummary()
+    summary.restoreGrants('s1', tools)
+    expect(summary.has('s1', 'bash')).toBe(true)
+    expect(summary.has('s1', 'write')).toBe(true)
+    expect(summary.has('s1', 'edit')).toBe(false)
+    expect(summary.count('s1')).toBe(2)
+
+    // The registry facade the bridge calls on resume exposes the same effect.
+    const { registry } = makeRegistry()
+    registry.restoreSessionGrants('s1', tools)
+    expect(registry.sessionGrants('s1')).toEqual(['bash', 'write'])
+  })
+
+  test('(b) idempotent: replaying the same journal never accumulates duplicates', () => {
+    const rows = [row(always()), row(always({ eventId: 't2:ask-1' }))]
+    const summary = new SessionPermissionSummary()
+    const first = alwaysGrantToolsFromJournal('s1', rows)
+    summary.restoreGrants('s1', first)
+    expect(summary.tools('s1')).toEqual(['bash'])
+
+    summary.restoreGrants('s1', alwaysGrantToolsFromJournal('s1', rows))
+    expect(summary.tools('s1')).toEqual(['bash'])
+    expect(summary.count('s1')).toBe(1)
+
+    const { registry } = makeRegistry()
+    registry.restoreSessionGrants('s1', first)
+    registry.restoreSessionGrants('s1', first)
+    expect(registry.sessionGrants('s1')).toEqual(['bash'])
+  })
+
+  test('(c) corrupt / incomplete journal degrades to an empty summary without throwing', () => {
+    const rows = [
+      { type: ASK_GRANT_JOURNAL_TYPE, payload: 'not-an-object' },
+      { type: ASK_GRANT_JOURNAL_TYPE, payload: null },
+      { type: ASK_GRANT_JOURNAL_TYPE, payload: [1, 2, 3] },
+      row({ behavior: 'always', outcome: 'approved', toolName: 'bash' }), // no sessionId
+      row(always({ toolName: 42 })), // non-string tool name
+      row(always(), 'plugin:opentui/ask/requested'), // wrong record type
+    ]
+    let tools: readonly string[] | undefined
+    expect(() => {
+      tools = alwaysGrantToolsFromJournal('s1', rows)
+    }).not.toThrow()
+    expect(tools).toEqual([])
+
+    const summary = new SessionPermissionSummary()
+    summary.restoreGrants('s1', tools ?? [])
+    expect(summary.count('s1')).toBe(0)
+  })
+
+  test('(d) no audit events yields an empty summary', () => {
+    expect(ASK_GRANT_JOURNAL_TYPE).toBe('plugin:opentui/ask/responded')
+    expect(alwaysGrantToolsFromJournal('s1', [])).toEqual([])
+    const summary = new SessionPermissionSummary()
+    summary.restoreGrants('s1', [])
+    expect(summary.count('s1')).toBe(0)
+  })
+
+  test('session scoping: a forked journal cannot inherit the parent session\'s grant', () => {
+    const rows = [row(always({ sessionId: 'parent-session' }))]
+    expect(alwaysGrantToolsFromJournal('child-session', rows)).toEqual([])
+  })
+
+  test('fail-closed: rejected / unavailable / cancelled / once events confer no grant', () => {
+    const rows = [
+      row(always({ verdict: 'rejected', outcome: 'denied' })),
+      row(always({ verdict: 'unavailable', outcome: 'unavailable' })),
+      row(always({ kind: 'ask.cancelled', outcome: 'cancelled', behavior: undefined })),
+      row(always({ behavior: 'once' })),
+    ]
+    expect(alwaysGrantToolsFromJournal('s1', rows)).toEqual([])
   })
 })

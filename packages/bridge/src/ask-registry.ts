@@ -201,6 +201,14 @@ export class AskRegistry {
     this.#summary.clearSession(sessionId)
   }
 
+  /** ADR-0011 D7 (respawn): load always-grants reconstructed from the durable
+   *  journal of this session into the in-process summary. Additive/idempotent —
+   *  repeated resume opens never double-count. Reconstruction itself is done
+   *  by index.ts (the registry imports no host persistence). */
+  restoreSessionGrants(sessionId: string, tools: readonly string[]): void {
+    this.#summary.restoreGrants(sessionId, tools)
+  }
+
   /**
    * Record a decision made from the session summary alone (index.ts short-circuits
    * a repeated 'always' tool without creating a pending ask / pushing a card).

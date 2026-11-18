@@ -43,7 +43,7 @@ import { ASK_FRAME_TYPES, validateAskResponse } from './ask-frames'
 import type { AskOutcome, AskRequestPayload, AskResponseParams, AskSettledPayload } from './ask-frames'
 import { AskRegistry } from './ask-registry'
 // ADR-0011 T7 — redacted decision journal + session-scoped permission summary.
-import { askPluginRecordType, type AskJournalEvent } from './ask-journal'
+import { alwaysGrantToolsFromJournal, askPluginRecordType, type AskJournalEvent } from './ask-journal'
 // M3-02 — section registration skeleton lives in append-section.ts; index.ts
 // stays assembly-only so it does not grow the overlap surface with ask (ADR-0011).
 import { registerAppendSection } from './append-section'
@@ -1384,6 +1384,67 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     ask.pendingSnapshot(sessionId, true)
   }
 
+  /**
+   * ADR-0011 D7 (respawn): repopulate this process's always-grant summary from
+   * the durable journal of a resumed session. Read-only (`open(id,'read')`),
+   * best-effort and fully contained — a missing service, a corrupt log or an
+   * unreadable payload degrades to an EMPTY summary and never fails the open.
+   *
+   * The in-process summary stays authoritative for the rest of the session
+   * (A4: compaction clears events, not the effect). Reconstruction runs only at
+   * open on a fresh process, so it cannot resurrect a grant cleared by a live
+   * session close/replace, and a Set union keeps repeated opens idempotent.
+   * Fired without awaiting so a slow/large journal never delays the reply.
+   */
+  function restoreSessionGrantsFromJournal(sessionId: string): void {
+    void (async () => {
+      let handle: PersistenceHandleLike | undefined
+      try {
+        // Service lookup itself can throw (host proxy / containment boundary);
+        // it must be inside the try so a throwing ctx.get never fails the open.
+        const persistence = resolvePersistence(ctx)
+        if (persistence === undefined) return
+        handle = await persistence.open(sessionId, 'read')
+        const rows: Array<{ type: string; payload: unknown }> = []
+        let offset = 0
+        for (;;) {
+          const batch = await handle.read(offset)
+          const slice = batch.events ?? []
+          if (slice.length === 0) break
+          for (const event of slice) {
+            rows.push({
+              type: typeof event.type === 'string' ? event.type : '',
+              payload: event.data,
+            })
+          }
+          offset += slice.length
+        }
+        // The read is async: a close/replace may have moved the binding on.
+        // Never repopulate a session that is no longer the active one (I1/A5).
+        if (binding?.sessionId !== sessionId) return
+        const tools = alwaysGrantToolsFromJournal(sessionId, rows)
+        if (tools.length > 0) {
+          ask.restoreSessionGrants(sessionId, tools)
+          logger.info(
+            '[dsh-opentui-bridge] restored %d always-grant(s) from journal session=%s tools=%s',
+            tools.length, sessionId, tools.join(','),
+          )
+        }
+      } catch (err) {
+        // Degrade to an empty summary; never surface as an open failure.
+        logger.warn('[dsh-opentui-bridge] journal grant reconstruction skipped (summary stays empty): %s', err)
+      } finally {
+        if (handle !== undefined) {
+          try {
+            await handle.close()
+          } catch {
+            /* containment: close failure cannot affect the grant or the open */
+          }
+        }
+      }
+    })()
+  }
+
   /** `session.open` — the ONLY operation that binds/changes sessionId (I1).
    *
    * `replace` contract: the only way to change an already-bound id is this same
@@ -1418,6 +1479,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // bridge stayed alive — still push the snapshot (the binding is live and
         // its pending table is the source of truth).
         pushResumePendingSnapshot(binding.sessionId)
+        // A4/D7: rebuild always-grants from the durable journal as well. Set
+        // union makes this idempotent against the already-live in-memory grants.
+        restoreSessionGrantsFromJournal(binding.sessionId)
         return
       }
       if (!replace) {
@@ -1504,7 +1568,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         ...(previousSessionId !== undefined ? { previousSessionId } : {}),
       })
       // A6: resume opens push the reconnect snapshot; fresh opens never do.
-      if (mode === 'resume') pushResumePendingSnapshot(sessionId)
+      // A4/D7: also rebuild always-grants from the durable journal on a fresh
+      // process. Contained + non-awaiting: a corrupt/incomplete journal never
+      // blocks the open and degrades to an empty summary.
+      if (mode === 'resume') {
+        pushResumePendingSnapshot(sessionId)
+        restoreSessionGrantsFromJournal(sessionId)
+      }
     } catch (err) {
       logger.error('[dsh-opentui-bridge] session.open failed: %s', err)
       // No fallback create: the failure is returned verbatim as a typed code.
@@ -2151,7 +2221,9 @@ export type {
 export {
   ASK_JOURNAL_KINDS,
   ASK_PLUGIN_RECORD_PREFIX,
+  ASK_GRANT_JOURNAL_TYPE,
   askPluginRecordType,
+  alwaysGrantToolsFromJournal,
   SessionPermissionSummary,
   redactIdentifier,
   summarizeAnswers,

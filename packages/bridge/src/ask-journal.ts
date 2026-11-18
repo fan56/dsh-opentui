@@ -45,6 +45,11 @@ export function askPluginRecordType(kind: AskJournalKind): string {
   return `${ASK_PLUGIN_RECORD_PREFIX}/${kind.slice('ask.'.length)}`
 }
 
+/** Host plugin-record type that carries a settled ask decision. `journal.replay`
+ *  surfaces ignorable plugin records as `{type, payload}` rows (`payload` is the
+ *  event `data`), so grant reconstruction only needs this one type. */
+export const ASK_GRANT_JOURNAL_TYPE = askPluginRecordType(ASK_JOURNAL_KINDS.RESPONDED)
+
 /** How a decision reached the journal — informative only, never a free-text
  *  channel (no stack traces, no tool output). */
 export type AskJournalSource = 'request' | 'answer' | 'timeout' | 'teardown' | 'fail-closed' | 'summary'
@@ -123,6 +128,44 @@ export function summarizeAnswers(answers: readonly { selected: readonly string[]
   }
 }
 
+/**
+ * Best-effort, read-only projection of one session's journal into the tool names
+ * granted `behavior:'always'` (ADR-0011 D7). Used ONLY to repopulate a fresh
+ * bridge process on `session.open{mode:'resume'}`; it is not the live source of
+ * truth — the in-process summary stays authoritative after open, so compaction
+ * (which drops events) cannot clear an in-life grant (A4). Compaction before a
+ * restart simply degrades reconstruction to an empty set.
+ *
+ * A row contributes a grant only when ALL hold:
+ *  - its `type` is the settled-ask plugin record (`plugin:opentui/ask/responded`);
+ *  - its `payload` is an object whose `sessionId` matches this session (forked
+ *    journals inherit the parent's records — A5 requires session scoping);
+ *  - `behavior === 'always'` AND `outcome === 'approved'` (fail-closed: a
+ *    rejected/unavailable/cancelled ask never confers a grant);
+ *  - `toolName` redacts to a non-empty identifier.
+ *
+ * Malformed rows are skipped; the function never throws. The result is a Set
+ * union, so replaying the same journal twice is idempotent.
+ */
+export function alwaysGrantToolsFromJournal(
+  sessionId: string,
+  rows: readonly { type: string; payload: unknown }[],
+): readonly string[] {
+  const expectedSession = redactIdentifier(sessionId) ?? sessionId
+  const tools = new Set<string>()
+  for (const row of rows) {
+    if (row.type !== ASK_GRANT_JOURNAL_TYPE) continue
+    const data: unknown = row.payload
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) continue
+    const event = data as Record<string, unknown>
+    if (event.sessionId !== expectedSession) continue
+    if (event.behavior !== 'always' || event.outcome !== 'approved') continue
+    const tool = redactIdentifier(event.toolName)
+    if (tool !== undefined) tools.add(tool)
+  }
+  return [...tools]
+}
+
 // ---------------------------------------------------------------------------
 // Session-scoped permission summary (compaction-independent by construction).
 // ---------------------------------------------------------------------------
@@ -149,6 +192,12 @@ export class SessionPermissionSummary {
       this.#bySession.set(sessionId, tools)
     }
     tools.add(toolName)
+  }
+
+  /** Additive bulk load for journal reconstruction. Set union: replaying the
+   *  same journal twice leaves the store unchanged (no duplicate side effects). */
+  restoreGrants(sessionId: string, tools: readonly string[]): void {
+    for (const tool of tools) this.grant(sessionId, tool)
   }
 
   clearSession(sessionId: string): void {
