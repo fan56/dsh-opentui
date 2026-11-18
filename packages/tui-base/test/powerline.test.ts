@@ -730,23 +730,39 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		expect(fitted.segments.some((segment) => segment.text.includes("🔧"))).toBe(false)
 	})
 
-	test("45 columns with a long preset label: brand shortens, context keeps the full compact form", () => {
-		// The append-system preset regression: `dsh(Standard + Append)` (the
-		// client-managed default-ride label) is 4 columns wider than the
-		// labels the 45-col budget was sized against, and with the ui-matrix
-		// scratch window the strip landed one column over (`…Append` 24 +
-		// `🧠 205/200.0k(0.1%)` 21 + 2 arrows = 47 > 44) — the fitting law's
-		// only recourse was degrading the 🧠 segment to the bare `🧠 205`
-		// shape, so the window never reached the footer. The brand's degrade
-		// face gives the law a yield path that protects the contract above
-		// for ANY label length.
+	test("45 columns with the mapped Standard preset: brand shows `dsh(Standard)`, context keeps the full compact form", () => {
+		// 0.22.0 inproc: append is a section, not a synthetic preset, so the
+		// mapped preset is `standard` -> `presetLabelFor` yields "Standard" and
+		// the footer shows `dsh(Standard)` (no synthetic appended face survives).
+		// The 45-col "brand + full compact context" contract still holds.
 		const fitted = fitPowerlineSegments(
 			sessionFooterSegments({
 				contextTokens: 205,
 				contextWindow: 200_000,
 				messages: 4,
 				tools: 1,
-				presetLabel: "Standard + Append",
+				presetLabel: "Standard",
+			}),
+			44,
+		)
+		expect(measure(fitted.segments)).toBeLessThanOrEqual(44)
+		const context = fitted.segments.find((segment) => segment.text.startsWith("🧠"))
+		expect(context?.text).toBe("🧠 205/200.0k(0.1%)")
+		expect(fitted.segments[0]?.text).toBe("dsh(Standard)")
+	})
+
+	test("45 columns with an arbitrarily long preset label: brand yields to `dsh`, context stays full", () => {
+		// Host roster names are unbounded. A synthetic long label (no real
+		// preset carries the old appended label any more in 0.22.0) must still
+		// make the top-priority brand shorten instead of squeezing the context
+		// window off the footer.
+		const fitted = fitPowerlineSegments(
+			sessionFooterSegments({
+				contextTokens: 205,
+				contextWindow: 200_000,
+				messages: 4,
+				tools: 1,
+				presetLabel: "A Very Long Custom Preset Name",
 			}),
 			44,
 		)
