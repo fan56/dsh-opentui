@@ -16,6 +16,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import {
+	BridgeProtocolError,
 	BridgeSessionSeam,
 	type BridgeAskRequestPayload,
 	type BridgeEventFrame,
@@ -482,5 +483,61 @@ describe("ask queue convergence", () => {
 		gate.resolve([{ questionId: "q1", selected: "A" }])
 		await h.flush()
 		expect(h.responses()).toHaveLength(0)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// A6 — rebuilt card whose ask.response fails becomes a terminal invalidated
+// card with a reason (never silently disappears).
+// ---------------------------------------------------------------------------
+
+describe("A6: invalidated terminal state on a dead ask.response", () => {
+	test("ASK_UNKNOWN_REQUEST keeps a terminal card with reason + emits bridge.ask.invalidated", async () => {
+		const h = makeAskHarness()
+		h.replies.set("ask.response", {
+			error: new BridgeProtocolError("ASK_UNKNOWN_REQUEST", "eventId not in registry"),
+		})
+		h.seam.registerAskProvider(async () => [{ questionId: "q1", selected: "A" }])
+		const events: { type: string; details: unknown }[] = []
+		h.seam.onSessionEvent((e) => events.push(e))
+
+		h.emit("ask.pending", {
+			sessionId: "s1",
+			asks: [askRequest({
+				eventId: "t9:ask-1",
+				kind: "questions",
+				questions: [{ id: "q1", prompt: "Keep?", options: [{ label: "A" }] }],
+			})],
+		})
+		await h.flush()
+
+		// Entry is KEPT as a terminal card (not silently dropped).
+		expect(h.seam.pendingAsks().map((a) => a.eventId)).toEqual(["t9:ask-1"])
+		const invalidated = h.seam.invalidatedAsks()
+		expect(invalidated.get("t9:ask-1")).toContain("ASK_UNKNOWN_REQUEST")
+		expect(invalidated.get("t9:ask-1")).toContain("eventId not in registry")
+		const invalidationEvents = events.filter((e) => e.type === "bridge.ask.invalidated")
+		expect(invalidationEvents).toHaveLength(1)
+		expect(invalidationEvents[0]!.details).toMatchObject({ eventId: "t9:ask-1", sessionId: "s1" })
+	})
+
+	test("ASK_NOT_FOUND alias is also treated as a dead response", async () => {
+		const h = makeAskHarness()
+		h.replies.set("ask.response", {
+			error: new BridgeProtocolError("ASK_NOT_FOUND", "ask not found"),
+		})
+		h.seam.registerAskProvider(async () => [{ questionId: "q1", selected: "A" }])
+
+		h.emit("ask.pending", {
+			sessionId: "s1",
+			asks: [askRequest({
+				eventId: "t9:ask-2",
+				kind: "questions",
+				questions: [{ id: "q1", prompt: "Keep?", options: [{ label: "A" }] }],
+			})],
+		})
+		await h.flush()
+
+		expect(h.seam.invalidatedAsks().get("t9:ask-2")).toContain("ASK_NOT_FOUND")
 	})
 })

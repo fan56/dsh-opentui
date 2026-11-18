@@ -80,6 +80,10 @@ function makeHarness() {
 		replies,
 		seamEvents,
 		logs,
+		/** A6: drive a bridge→client event frame through the seam's onEvent pump. */
+		emitFrame(type: string, payload: unknown) {
+			for (const l of [...frameListeners]) l({ type, payload })
+		},
 		recover: () => recoverBridgeSession({ transport, seam }),
 		openRequest: () => requests.find((r) => r.method === "session.open"),
 		replayRequests: () => requests.filter((r) => r.method === "journal.replay"),
@@ -252,5 +256,78 @@ describe("A4+A5: post-DEAD recovery orchestration", () => {
 		})
 		expect((events[0]!.details as { message: string }).message).toContain("已恢复，补齐 2 条事件")
 		expect(result.applied).toBe(2)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// A6 — pendingSnapshot timing gate (blocky §2.3 step 6)
+// ---------------------------------------------------------------------------
+
+describe("A6: pendingSnapshot is applied only after the replay drain", () => {
+	const SNAPSHOT_ASK = {
+		eventId: "t9:ask-1",
+		sessionId: "s-a6",
+		kind: "questions",
+		questions: [{ id: "q1", prompt: "Keep?", options: [{ label: "Yes" }] }],
+	}
+
+	test("snapshot arriving mid-drain is BUFFERED, then rebuilt after drain with askId preserved", async () => {
+		const h = makeHarness()
+		await stageResume(h, "s-a6")
+		// Gate the answerer so the rebuilt card stays pending and assertable.
+		let release!: (picks: { questionId: string; selected: string }[]) => void
+		const gate = new Promise<{ questionId: string; selected: string }[]>((r) => { release = r })
+		h.seam.registerAskProvider(async () => gate)
+
+		// Push the reconnect snapshot from inside the journal.replay reply — i.e.
+		// while recoverSession's drain is still in flight — and record whether
+		// a card was (prematurely) rebuilt at that exact moment.
+		let rebuiltAtReceive: string[] | undefined
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn() {
+				h.emitFrame("ask.pending", { sessionId: "s-a6", asks: [SNAPSHOT_ASK] })
+				rebuiltAtReceive = h.seam.pendingAsks().map((a) => a.eventId)
+				return value({ rows: [], cursor: 1 })
+			},
+		})
+
+		const result = await h.recover()
+		await Bun.sleep(5) // let #answerAsk's provider microtask settle
+
+		expect(result.state).toBe("attached")
+		// TIMING GATE: no card at frame receipt (drain not done); rebuilt after.
+		expect(rebuiltAtReceive).toEqual([])
+		// The rebuilt card is present with the SAME askId (parseAskRequest preserves it).
+		expect(h.seam.pendingAsks().map((a) => a.eventId)).toEqual(["t9:ask-1"])
+
+		release([{ questionId: "q1", selected: "Yes" }])
+		await Bun.sleep(5)
+
+		// SAME askId flowed through the EXISTING ask.response frame path.
+		const responses = h.requests.filter((r) => r.method === "ask.response")
+		expect(responses).toHaveLength(1)
+		expect(responses[0].params).toMatchObject({ eventId: "t9:ask-1", kind: "questions" })
+	})
+
+	test("empty snapshot rebuilds no card and does not crash", async () => {
+		const h = makeHarness()
+		await stageResume(h, "s-a6-empty")
+		h.seam.registerAskProvider(async () => [{ questionId: "q1", selected: "Yes" }])
+
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn() {
+				h.emitFrame("ask.pending", { sessionId: "s-a6-empty", asks: [] })
+				return value({ rows: [], cursor: 1 })
+			},
+		})
+
+		const result = await h.recover()
+		await Bun.sleep(5)
+
+		expect(result.state).toBe("attached")
+		expect(h.seam.pendingAsks()).toEqual([])
+		expect(h.requests.filter((r) => r.method === "ask.response")).toHaveLength(0)
 	})
 })

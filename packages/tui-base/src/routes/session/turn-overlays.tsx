@@ -29,7 +29,7 @@
  */
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { onAnimationTick } from "@opentui/solid"
-import type { SeamAskPick, SeamAskQuestion } from "../../seams/session"
+import type { SeamAskPick, SeamAskQuestion, SeamSessionEvent } from "../../seams/session"
 import type { BridgeApprovalVerdict, BridgeAskSnapshot } from "./turn-overlay-controller"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useDialog } from "../../ui/dialog"
@@ -58,8 +58,12 @@ export function ApprovalCard(props: {
 	args: Record<string, unknown>
 	/** ADR-0011: only true when the host granted escalation on this ask. */
 	escalation?: boolean
+	/** A6: a rebuilt card whose ask.response failed (ask/turn gone). Terminal
+	 *  state — the reason is shown and the only actions acknowledge it. */
+	invalidatedReason?: string
 	onVerdict: (verdict: BridgeApprovalVerdict) => void
 }) {
+	const invalidated = () => props.invalidatedReason !== undefined
 	return (
 		<DialogConfirm
 			// Reminder marker (skin contract §1 提醒脉冲): `⚠` marks the card.
@@ -68,15 +72,21 @@ export function ApprovalCard(props: {
 			// titleView path below; here the marker is static — pulsing it
 			// needs DialogConfirm to forward a titleView (vendored file, later
 			// lane).
-			title={t("overlay.ask.approvalTitle", { name: props.name })}
-			message={summarizeArgs(props.name, props.args)}
-			label={{ confirm: t("overlay.ask.allow"), cancel: t("overlay.ask.reject") }}
+			title={invalidated()
+				? t("overlay.ask.invalidatedTitle")
+				: t("overlay.ask.approvalTitle", { name: props.name })}
+			message={invalidated()
+				? t("overlay.ask.invalidated", { reason: props.invalidatedReason ?? "" })
+				: summarizeArgs(props.name, props.args)}
+			label={invalidated()
+				? { confirm: t("overlay.ask.invalidatedAck"), cancel: t("overlay.ask.invalidatedAck") }
+				: { confirm: t("overlay.ask.allow"), cancel: t("overlay.ask.reject") }}
 			onConfirm={() => props.onVerdict("allowed-once")}
 			onCancel={() => props.onVerdict("rejected")}
 			// Escalated behaviors are shown ONLY when granted. Their keys live in
 			// the dialog's modal layer, never the page/turn-abort layers.
 			extraActions={
-				props.escalation === true
+				!invalidated() && props.escalation === true
 					? [
 							{
 								label: t("overlay.ask.allowAlways"),
@@ -221,6 +231,7 @@ export function TurnOverlayHost(props: {
 							name={approval.name}
 							args={approval.args}
 							escalation={approval.escalation}
+							invalidatedReason={approval.invalidatedReason}
 							onVerdict={(verdict) => {
 								switch (verdict) {
 									case "allowed-once":
@@ -308,10 +319,22 @@ export function TurnOverlayHost(props: {
 export function registerTurnOverlays(seam: {
 	registerAskProvider(onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void
 	pendingAsks?: () => readonly BridgeAskSnapshot[]
+	onSessionEvent?: (listener: (event: SeamSessionEvent) => void) => () => void
 }, controller: TurnOverlayController): void {
 	if (typeof seam.pendingAsks === "function") {
 		const read = seam.pendingAsks.bind(seam)
 		controller.attachPendingAsks(() => read() ?? [])
+	}
+	// A6: the bridge seam publishes `bridge.ask.invalidated` when a rebuilt
+	// card's ask.response fails because the ask/turn is gone. Paint a terminal
+	// "已失效" card with the reason instead of letting it vanish silently.
+	if (typeof seam.onSessionEvent === "function") {
+		seam.onSessionEvent((event) => {
+			if (event.type !== "bridge.ask.invalidated") return
+			const details = event.details as { eventId?: unknown; reason?: unknown }
+			if (typeof details?.eventId !== "string") return
+			controller.invalidateAsk(details.eventId, typeof details.reason === "string" ? details.reason : "")
+		})
 	}
 	seam.registerAskProvider((questions) => controller.answer(questions))
 }

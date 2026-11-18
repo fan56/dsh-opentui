@@ -539,6 +539,17 @@ export class BridgeSessionSeam implements SessionSeam {
 	#askProvider: ((questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>) | undefined
 	/** ADR-0011: pending asks keyed by eventId — first-wins, turn-scoped. */
 	readonly #pendingAsks = new Map<string, PendingAskEntry>()
+	/** A6: reconnect snapshot buffered while the recovery replay drain is still
+	 *  in flight. Applied only AFTER the drain completes (blocky §2.3 step 6),
+	 *  so rebuilt cards never race the durable transcript replay. */
+	#bufferedPendingSnapshot: BridgeAskRequestPayload[] | undefined
+	/** A6: true from recoverSession's attach step until the drain is applied.
+	 *  While true, an incoming `ask.pending` frame is buffered, not applied. */
+	#replayDrainPending = false
+	/** A6: rebuilt asks whose `ask.response` failed because the ask/turn is gone
+	 *  (ASK_UNKNOWN_REQUEST / ASK_TURN_ENDED), keyed by eventId → reason. Kept
+	 *  read-only for the view to paint a terminal "已失效" card (never vanish). */
+	readonly #invalidatedAsks = new Map<string, string>()
 	#disposed = false
 
 	constructor(options: BridgeSessionSeamOptions) {
@@ -649,6 +660,10 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#sessionAttached = false
 			this.#connection = "connected"
 			this.#bridgeLink = "ready"
+			// A6: a failed recovery never rebuilds cards — drop any buffered
+			// snapshot and release the drain gate.
+			this.#bufferedPendingSnapshot = undefined
+			this.#replayDrainPending = false
 			const result: BridgeRecoveryResult = {
 				state: "failed", sessionId, applied: 0, from: 0, cursor: 0, rows: [],
 				error: { code, message },
@@ -666,6 +681,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#connection = "connected"
 		this.#bridgeLink = "ready"
 		this.#sessionAttached = false
+		// A6: open the drain gate BEFORE session.open — the bridge pushes
+		// ask.pending on resume, and that frame can arrive before this method
+		// reaches the journal replay below.
+		this.#replayDrainPending = true
 
 		// (a) re-attach the last session with an eager resume, never replace.
 		let opened: Record<string, unknown>
@@ -679,6 +698,9 @@ export class BridgeSessionSeam implements SessionSeam {
 				// the branch from status()/recoveryState()/this event.
 				this.#recoveryState = "locked"
 				this.#sessionAttached = false
+				// A6: no attach happened — no card rebuild on a locked session.
+				this.#bufferedPendingSnapshot = undefined
+				this.#replayDrainPending = false
 				const result: BridgeRecoveryResult = {
 					state: "locked", sessionId, applied: 0, from: 0, cursor: 0, rows: [],
 					error: { code, message },
@@ -728,6 +750,16 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#lastAppliedSeq = Math.max(this.#lastAppliedSeq ?? 0, maxSeq)
 			this.#lastAppliedSessionId = boundId
 		}
+
+		// (d) A6 timing gate — ONLY now that the replay drain has completed do
+		// we rebuild pending cards from a buffered `ask.pending` snapshot. The
+		// eventId is preserved verbatim so the cards answer through the existing
+		// ask.response path (blocky §2.3 step 6; A4/A5 recovery order).
+		const buffered = this.#bufferedPendingSnapshot
+		this.#bufferedPendingSnapshot = undefined
+		this.#replayDrainPending = false
+		if (buffered !== undefined) this.#applyPendingSnapshot(buffered)
+
 		this.#sessionAttached = true
 		this.#connection = "connected"
 		this.#bridgeLink = "ready"
@@ -1059,6 +1091,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#listeners.length = 0
 		this.#activeCallbacks = undefined
 		this.#cancelAllAsks()
+		// A6: release buffered/invalidated recovery state on dispose.
+		this.#bufferedPendingSnapshot = undefined
+		this.#replayDrainPending = false
+		this.#invalidatedAsks.clear()
 		this.#turnDone?.()
 		this.#turnDone = undefined
 		this.#inFlightTurnId = undefined
@@ -1099,6 +1135,14 @@ export class BridgeSessionSeam implements SessionSeam {
 	 *  T5 UI). Fresh shallow copies — callers cannot mutate the live queue. */
 	pendingAsks(): readonly BridgeAskRequestPayload[] {
 		return [...this.#pendingAsks.values()].map((entry) => ({ ...entry.request }))
+	}
+
+	/** A6: read-only rebuilt-and-invalidated asks (eventId → reason). A rebuilt
+	 *  card whose `ask.response` failed (ASK_UNKNOWN_REQUEST / ASK_TURN_ENDED)
+	 *  lands here as a TERMINAL state with its reason — it never silently
+	 *  disappears. Fresh copy so callers cannot mutate the live map. */
+	invalidatedAsks(): ReadonlyMap<string, string> {
+		return new Map(this.#invalidatedAsks)
 	}
 
 	async listProviders(): Promise<{ provider: string; models: string[] }[]> {
@@ -1147,10 +1191,38 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 	}
 
+	/** A6: rebuild the local ask queue from a reconnect snapshot. The eventId is
+	 *  preserved verbatim (parseAskRequest keeps it), so rebuilt cards answer
+	 *  through the EXISTING ask.response path — D4 first-wins stays in the host.
+	 *  Old waiters are cancelled first so no snapshot leaves a dangling promise. */
+	#applyPendingSnapshot(asks: readonly BridgeAskRequestPayload[]): void {
+		this.#cancelAllAsks()
+		for (const request of asks) {
+			this.#invalidatedAsks.delete(request.eventId)
+			this.#enqueueAsk(request)
+		}
+	}
+
+	/** A6: `ask.response` failed for a reason that means the rebuilt ask can no
+	 *  longer be answered — the ask was evicted or its turn/session is dead.
+	 *  `ASK_NOT_FOUND` is accepted as a defensive alias (ADR-0011's code for an
+	 *  unknown eventId is `ASK_UNKNOWN_REQUEST`). */
+	#isDeadResponseError(err: unknown): string | undefined {
+		const code = err instanceof BridgeProtocolError ? err.code
+			: err !== null && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
+				? (err as { code: string }).code
+				: undefined
+		if (code === "ASK_NOT_FOUND" || code === "ASK_UNKNOWN_REQUEST" || code === "ASK_TURN_ENDED") {
+			return err instanceof Error && err.message !== "" ? `${code}: ${err.message}` : code
+		}
+		return undefined
+	}
+
 	/** Enqueue a freshly received ask and start its answer task. Duplicate
 	 *  eventIds are dropped (first-wins / replay safety, A2/A5). */
 	#enqueueAsk(request: BridgeAskRequestPayload): void {
 		if (this.#disposed || this.#pendingAsks.has(request.eventId)) return
+		this.#invalidatedAsks.delete(request.eventId)
 		let finish!: () => void
 		const done = new Promise<void>((resolve) => { finish = resolve })
 		const entry: PendingAskEntry = {
@@ -1215,10 +1287,26 @@ export class BridgeSessionSeam implements SessionSeam {
 				// A late response gets ASK_TURN_ENDED / ASK_ALREADY_ANSWERED from
 				// the host; log it, never retry (first-wins lives in the bridge).
 				this.#ctx.logger.warn("[bridge-seam] ask.response failed for %s: %s", request.eventId, err)
+				// A6: a rebuilt card whose ask/turn is gone must not silently
+				// vanish. Record a terminal invalidated state + reason and let the
+				// view paint it; the local entry is KEPT so syncPendingAsks() does
+				// not close the card as an ordinary cancellation.
+				const reason = this.#isDeadResponseError(err)
+				if (reason !== undefined) {
+					this.#invalidatedAsks.set(request.eventId, reason)
+					this.#emitEvent({
+						type: "bridge.ask.invalidated",
+						details: { eventId: request.eventId, sessionId: request.sessionId, reason },
+					})
+				}
 			}
 		}
 		entry.finish()
-		if (this.#pendingAsks.get(request.eventId) === entry) this.#pendingAsks.delete(request.eventId)
+		// Invalidated entries stay in #pendingAsks as a terminal card (with the
+		// reason in #invalidatedAsks) so they never disappear silently.
+		if (!this.#invalidatedAsks.has(request.eventId) && this.#pendingAsks.get(request.eventId) === entry) {
+			this.#pendingAsks.delete(request.eventId)
+		}
 	}
 
 	/** Drop one ask: cancel, host-settled or superseded. Always resolves the
@@ -1263,14 +1351,22 @@ export class BridgeSessionSeam implements SessionSeam {
 				return true
 			}
 			case "ask.pending": {
-				// Reconnect snapshot replaces the whole queue. Resolve every old
-				// waiter before enqueueing the fresh set (no dangling promises).
-				this.#cancelAllAsks()
-				const asks = Array.isArray(payload.asks) ? payload.asks : []
-				for (const raw of asks) {
+				const asks: BridgeAskRequestPayload[] = []
+				const rawAsks = Array.isArray(payload.asks) ? payload.asks : []
+				for (const raw of rawAsks) {
 					const request = parseAskRequest(raw)
-					if (request !== undefined) this.#enqueueAsk(request)
+					if (request !== undefined) asks.push(request)
 				}
+				// A6 timing gate: while recovery's journal replay drain is in
+				// flight, BUFFER the snapshot. Cards are rebuilt only after the
+				// drain completes (blocky §2.3 step 6), never racing replay. A
+				// snapshot arriving with no drain pending still applies at once
+				// (ordinary /resume or a frame that lost the race to the drain).
+				if (this.#replayDrainPending) {
+					this.#bufferedPendingSnapshot = asks
+					return true
+				}
+				this.#applyPendingSnapshot(asks)
 				return true
 			}
 			default:
@@ -1281,6 +1377,18 @@ export class BridgeSessionSeam implements SessionSeam {
 	// ------------------------------------------------------------------
 	// event pump / state machine
 	// ------------------------------------------------------------------
+
+	/** Push an event to every view listener; one stale listener never breaks the
+	 *  feed (same containment as the recover/dead event emissions). */
+	#emitEvent(event: SeamSessionEvent): void {
+		for (const listener of [...this.#listeners]) {
+			try {
+				listener(event)
+			} catch {
+				/* one stale view listener must not break the feed */
+			}
+		}
+	}
 
 	#degrade(member: string, reason: string): void {
 		this.#ctx.logger.warn("[bridge-seam] %s degraded: %s", member, reason)

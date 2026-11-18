@@ -396,3 +396,33 @@ describe('ADR-0011 T3 — lifecycle clearing', () => {
     expect(h.registry.pendingCount()).toBe(0)
   })
 })
+
+// A6 — production call point for AskRegistry.pendingSnapshot.
+describe('session.open resume pushes the pendingSnapshot frame', () => {
+  test('resume open pushes ask.pending with the still-pending askId (idempotent binding)', async () => {
+    const h = makeHarness()
+    const { sessionId, turnId } = await startTurn(h, 1)
+    const ask = h.registry.create(turnId, { sessionId, kind: 'approval', toolName: 'bash' })
+    expect(h.askFrames('ask.pending')).toHaveLength(0) // no snapshot on fresh open
+
+    // DEAD recovery re-opens the same live session — the idempotent resume path.
+    h.send({ id: 20, method: 'session.open', params: { mode: 'resume', id: sessionId } })
+    const opened = await h.waitFor(20)
+    expect(opened.ok).toBe(true)
+
+    const snapshots = h.askFrames('ask.pending')
+    expect(snapshots).toHaveLength(1)
+    expect(snapshots[0].payload.sessionId).toBe(sessionId)
+    expect(snapshots[0].payload.asks.map((a: any) => a.eventId)).toEqual([ask.eventId])
+    // Pushing the snapshot is a pure read — the ask is still pending/answerable.
+    expect(h.registry.pendingIds()).toEqual([ask.eventId])
+  })
+
+  test('fresh (mode:new) open pushes NO ask.pending frame', async () => {
+    const h = makeHarness()
+    h.send({ id: 1, method: 'session.open', params: { mode: 'new' } })
+    const opened = await h.waitFor(1)
+    expect(opened.ok).toBe(true)
+    expect(h.askFrames('ask.pending')).toHaveLength(0)
+  })
+})

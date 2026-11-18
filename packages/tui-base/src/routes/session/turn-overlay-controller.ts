@@ -60,6 +60,10 @@ export type PendingApproval = {
 	/** Host granted escalation: the card may offer `always` / `session`. Never
 	 *  inferred from args (the seam's approval args carry no escalation bit). */
 	escalation: boolean
+	/** A6: set when a REBUILT card's ask.response failed because the ask/turn is
+	 *  gone. Terminal state — the card shows the reason and only acknowledges;
+	 *  it is never silently dropped and never treated as an approval. */
+	invalidatedReason?: string
 }
 
 /** The read-only slice of the ADR-0011 reconnect snapshot the controller
@@ -172,6 +176,52 @@ export class TurnOverlayController {
 	 *  `registerTurnOverlays`). Read-only: the controller never sends frames. */
 	attachPendingAsks(read: () => readonly BridgeAskSnapshot[]): void {
 		this.#pendingAsks = read
+	}
+
+	/**
+	 * A6 — terminal "已失效" state for a rebuilt card whose `ask.response`
+	 * failed (ASK_UNKNOWN_REQUEST / ASK_TURN_ENDED). Any still-open card for the
+	 * same eventId is first dropped fail-closed (never counted as an answer),
+	 * then a terminal approval card carrying the reason is queued. The eventId
+	 * is preserved so the card stays traceable to the dead ask. The host renders
+	 * `invalidatedReason` as the reason text + an acknowledge-only action.
+	 */
+	invalidateAsk(eventId: string, reason: string): void {
+		if (eventId === "") return
+		// Drop any open card for this ask without treating it as a verdict/pick.
+		this.#approvals = this.#approvals.filter((entry) => {
+			if (entry.request.eventId !== eventId) return true
+			entry.resolve("rejected")
+			return false
+		})
+		this.#asks = this.#asks.filter((entry) => {
+			if (entry.eventId !== eventId) return true
+			entry.resolve([])
+			return false
+		})
+		this.#approvals.push({
+			request: {
+				id: ++this.#seq,
+				name: "ask",
+				args: {},
+				eventId,
+				escalation: false,
+				invalidatedReason: reason,
+			},
+			resolve: () => { /* terminal: acknowledgement is the only action */ },
+		})
+		this.#changed()
+	}
+
+	/** A6: read-only invalidated cards (eventId → reason), for view/tests. */
+	pendingInvalidated(): ReadonlyMap<string, string> {
+		const out = new Map<string, string>()
+		for (const entry of this.#approvals) {
+			if (entry.request.invalidatedReason !== undefined && entry.request.eventId !== undefined) {
+				out.set(entry.request.eventId, entry.request.invalidatedReason)
+			}
+		}
+		return out
 	}
 
 	/** Fires each time the overlay set drains to empty (the refocus point). */

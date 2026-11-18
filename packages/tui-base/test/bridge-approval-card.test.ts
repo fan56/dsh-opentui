@@ -205,3 +205,51 @@ describe("approval card — cancellation / sync / stacking", () => {
 		expect(await pending).toBe("rejected")
 	})
 })
+
+// A6 — a rebuilt card whose ask.response failed becomes a terminal
+// "已失效" card carrying its reason (never a silent disappearance).
+describe("A6: invalidated terminal card", () => {
+	test("invalidateAsk keeps the askId and paints a reason; ack clears the terminal card", () => {
+		const controller = new TurnOverlayController()
+		controller.invalidateAsk("t9:ask-1", "ASK_TURN_ENDED: turn ended")
+
+		expect(controller.pendingInvalidated().get("t9:ask-1")).toContain("ASK_TURN_ENDED")
+		expect(controller.pendingApproval?.eventId).toBe("t9:ask-1")
+		expect(controller.pendingApproval?.invalidatedReason).toContain("ASK_TURN_ENDED")
+
+		// The only action is acknowledgement — fail-closed, never an allow.
+		controller.confirmApproval()
+		expect(controller.pendingInvalidated().size).toBe(0)
+		expect(controller.pendingApproval).toBeUndefined()
+	})
+
+	test("a still-open card for the same askId is dropped fail-closed before the terminal card", async () => {
+		const controller = new TurnOverlayController()
+		registerTurnOverlays(bridgeLike([ask({ eventId: "t9:ask-1" })]), controller)
+		const pending = controller.requestApproval("bash", { callId: "c-1" })
+		expect(controller.pendingApproval?.eventId).toBe("t9:ask-1")
+		controller.invalidateAsk("t9:ask-1", "ASK_UNKNOWN_REQUEST: evicted")
+		expect(await pending).toBe("rejected")
+		expect(controller.pendingApproval?.eventId).toBe("t9:ask-1")
+		expect(controller.pendingApproval?.invalidatedReason).toContain("ASK_UNKNOWN_REQUEST")
+	})
+
+	test("registerTurnOverlays wires bridge.ask.invalidated into the controller", () => {
+		let listener: ((event: { type: string; details: unknown }) => void) | undefined
+		const seam = {
+			...bridgeLike([]),
+			onSessionEvent(fn: (event: { type: string; details: unknown }) => void) {
+				listener = fn
+				return () => { listener = undefined }
+			},
+		}
+		const controller = new TurnOverlayController()
+		registerTurnOverlays(seam, controller)
+
+		listener?.({
+			type: "bridge.ask.invalidated",
+			details: { eventId: "t9:ask-1", reason: "ASK_TURN_ENDED: turn ended" },
+		})
+		expect(controller.pendingInvalidated().get("t9:ask-1")).toBe("ASK_TURN_ENDED: turn ended")
+	})
+})

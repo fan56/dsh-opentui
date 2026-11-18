@@ -1368,6 +1368,22 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  /**
+   * A6 — after a RESUME open, proactively push the still-pending ask snapshot so
+   * a reconnecting client can rebuild its cards (ADR-0011 §3.2 `ask.pending`).
+   * Reuses the existing `AskRegistry.pendingSnapshot` frame builder verbatim —
+   * no state-machine change, no new frame. Fresh (`mode:'new'`) opens are
+   * deliberately excluded: no ask can be pending before the first turn.
+   *
+   * The bridge cannot tell a DEAD-recovery resume from a normal `/resume`, so
+   * every resume open pushes the (possibly empty) snapshot; an empty frame is a
+   * no-op on the client. This is the production call point the A6 ticket found
+   * missing (previously `pendingSnapshot` was referenced only by tests).
+   */
+  function pushResumePendingSnapshot(sessionId: string): void {
+    ask.pendingSnapshot(sessionId, true)
+  }
+
   /** `session.open` — the ONLY operation that binds/changes sessionId (I1).
    *
    * `replace` contract: the only way to change an already-bound id is this same
@@ -1398,6 +1414,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     if (binding !== undefined) {
       if (mode === 'resume' && targetId === binding.sessionId) {
         replyOk(req.id, { sessionId: binding.sessionId, journalCursor: journalCursorOf(binding) })
+        // A6: an idempotent resume is exactly what DEAD recovery sends when the
+        // bridge stayed alive — still push the snapshot (the binding is live and
+        // its pending table is the source of truth).
+        pushResumePendingSnapshot(binding.sessionId)
         return
       }
       if (!replace) {
@@ -1483,6 +1503,8 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         journalCursor: journalCursorOf(binding),
         ...(previousSessionId !== undefined ? { previousSessionId } : {}),
       })
+      // A6: resume opens push the reconnect snapshot; fresh opens never do.
+      if (mode === 'resume') pushResumePendingSnapshot(sessionId)
     } catch (err) {
       logger.error('[dsh-opentui-bridge] session.open failed: %s', err)
       // No fallback create: the failure is returned verbatim as a typed code.
