@@ -76,8 +76,11 @@ this repo's render surface.
 ## Client mode
 
 Architecture where the TUI is a thin rendering client attaching to a resident
-host service over the host's Remote connection protocol. Contrast: plugin
-mode (TUI in-process inside the host, today's shape).
+host service over the host's Remote connection protocol. Since 0.22.0 the
+default TUI path is the in-process session bridge (ADR-0009): a bridge bundle
+runs inside the host and the TUI attaches over stdio JSON-lines. The thin client
+remains via `--remote` (deprecated, removed in 0.23.0). Contrast: plugin mode
+(TUI in-process inside the host), a retired earlier shape.
 
 ## Tui base
 

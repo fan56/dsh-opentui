@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-11-19
+
+### Changed
+
+- **BREAKING — the default entry is now the in-process bridge.** A plain
+  `dsh-opentui` boot provisions the `opentui-inproc` host profile and routes the
+  TUI through a bridge bundle running inside that host (stdio JSON-lines), so
+  session identity, turns, asks and journal replay share one data source. The
+  old thin client retreats to `--remote`, retained as deprecated and slated for
+  removal in 0.23.0; passing it prints one deprecation notice per launch naming
+  the removal line. During 0.22.0 both seams coexist, and a failed inproc
+  handshake/fingerprint check fails fast with a diagnosis, a repair command
+  (`dsh-opentui --repair-bridge`) and a mode notice — it never silently falls
+  back to the remote seam.
+
+### Added
+
+- **Real session resume.** `session.open{resume}` calls the host's `ctx.agents.resume`
+  eagerly instead of silently creating a fresh session. Model context and the
+  on-screen journal now point at the same persisted session, fixing the
+  "screen still shows history, model forgot everything" split (the
+  dsh-opentui-amnesia incident). `/resume`, `--session` and `--resume-last` all
+  take the resume path; abort leaves the session id unchanged.
+- **Approval cards and tighter defaults.** The generated profile pins
+  `defaultPreset: workspace-write` (`approval: ask`) and arms a pre-execute gate
+  for `bash`, `write`, `edit` and `apply_patch`. Those tools pop a TUI approval
+  card before execution (Enter = allow, Esc = reject, fail-closed); read-only
+  tools pass straight through. Escape hatch: `DSH_OPENTUI_APPROVAL_GATE=off
+  dsh-opentui` restores the old `danger-full-access` default.
+- **User-questions panel over the bridge.** Host `user-questions` requests are
+  forwarded as `ask.request` events and surface on the TUI's ask dock, where
+  they can be answered back through `ask.response`. Missing provider/service,
+  answer errors and timeouts settle fail-closed with an explicit error code and
+  UI notice instead of being silently swallowed; first answer wins, and turn
+  end closes every pending ask.
+- **APPEND_SYSTEM.md injected for real in inproc mode.** The bridge registers
+  an agent-scoped `systemPrompt.section` (`order: 200`) that lazily reads
+  `~/.dsh/APPEND_SYSTEM.md`, caches by mtime, and truncates at 64 KiB on a UTF-8
+  character boundary. Existing `opentui-append-system` sessions carry that id
+  as inert metadata on resume (no migration, no cleaning, no `preset` passed to
+  `agents.resume`); the appended text comes only from the bridge section.
+- **DEAD recovery, phase one (host-crash recovery).** A bridge/host exit shows a
+  DEAD notice immediately with the exit code/signal, even when idle. `R`
+  reconnects: respawn the child, re-handshake with three checks (protocol
+  version, fingerprint fields, host-compat window), eager `session.open{resume}`,
+  then a `journal.replay` drain to fill the transcript. Pending approval cards
+  at DEAD turn into terminal "invalidated" cards (acknowledge-only, never an
+  implicit allow); an in-flight turn is judged by the journal's terminal row —
+  a silent journal yields a local `INTERRUPTED` marker (`seq:null`, `source:local`)
+  that is never written to the journal. Automatic retry/backoff and heartbeats
+  are deferred to a later version.
+
+### Fixed
+
+- **Session id shown in the footer.** The status bar always displays the
+  session id (short form), the observability premise for the resume invariants.
+- **Writer-held as a localized diagnostic.** `SESSION_LOCKED` now renders as a
+  `writer-held` message that includes the host-reported holder session id,
+  instead of the raw host error. In inproc mode the footer brand shows as `dsh`.
+
+### Known debt (0.22.0 transitional)
+
+- The default inproc launch still runs two host processes: an HTTP host owns the
+  config plane (`configSave`, theme/skin persistence, profile/workspace overlay
+  reads) because `BridgeSessionSeam` has no config frame, while the bridge host
+  owns the session plane. 0.23.0 folds config into the bridge (or local files)
+  and removes the `ensureHost`/`RemoteHostSession` path.
+- The old automatic reconnect (backoff retry) is not implemented; recovery in
+  0.22.0 is manual (`R`, with a 5s cooldown) only.
+
 ## [0.18.6] - 2026-11-17
 
 ### Changed
