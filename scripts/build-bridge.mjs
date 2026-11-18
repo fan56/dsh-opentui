@@ -31,16 +31,15 @@ import { createHash } from "node:crypto"
 import { copyFileSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+// Single source of truth: the SAME window the provisioner gates on. The
+// workspace manifest deliberately carries no peer (pnpm would pull the host
+// closure into the lockfile), so the range is injected into the dist manifest
+// here and read by the host's evaluatePluginCompatibility at load time.
+import { HOST_PEER_NAME, HOST_PEER_RANGE } from "../packages/shell/scripts/lib/host-compat.mjs"
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const bridgeDir = join(repoRoot, "packages", "bridge")
 const outDir = join(repoRoot, "packages", "shell", "dist", "bridge")
-
-// Single source of truth for the injected host peer: the workspace manifest no
-// longer carries this version, so it lives only here and is written into the
-// shipped dist manifest by build time. Do not duplicate the literal elsewhere.
-const HOST_PEER_NAME = "@deepseek-ai/dsh-base"
-const HOST_PEER_VERSION = "0.2.2-rc.3"
 
 /** One prefix rule for the whole host-closure scope: a future `@deepseek-ai/*`
  *  import must never be copied into the bundle (that is a host-code copy, the
@@ -87,7 +86,7 @@ if (!result.success) {
 // Copy the workspace manifest, then inject the host peer at build time. Everything
 // else (name, version, type, dsh.bundle.patch, files, ...) is preserved verbatim.
 const bridgePkg = JSON.parse(readFileSync(join(bridgeDir, "package.json"), "utf8"))
-bridgePkg.peerDependencies = { [HOST_PEER_NAME]: HOST_PEER_VERSION }
+bridgePkg.peerDependencies = { [HOST_PEER_NAME]: HOST_PEER_RANGE }
 bridgePkg.peerDependenciesMeta = { [HOST_PEER_NAME]: { optional: true } }
 writeFileSync(join(outDir, "package.json"), `${JSON.stringify(bridgePkg, null, 2)}\n`)
 copyFileSync(join(bridgeDir, "cordis.patch.yml"), join(outDir, "cordis.patch.yml"))

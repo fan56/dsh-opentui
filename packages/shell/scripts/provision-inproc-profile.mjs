@@ -5,25 +5,34 @@
 //
 // Invoked by the launcher ONLY when DSH_OPENTUI_INPROC=1
 // (bin/dsh-opentui.mjs); the default `opentui` profile path is untouched.
-// Three local-FS steps, no pnpm/npm, no install scripts:
+// Seven local-FS steps (the first is the host-version gate), no pnpm/npm, no install scripts:
 //
-//   [1/5] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
+//   [1/7] host     — detect the running dsh version. OUTSIDE the supported
+//                    window (>=0.2.2-rc.3 <0.3.0) => fail-fast with the three
+//                    fail-fast elements: the host would otherwise skip the
+//                    bridge bundle silently (it only records the conflict in
+//                    `skippedBundles`) and bridge.hello would time out. INSIDE
+//                    the window but not yet exempted => grant the profile-local
+//                    exact-version exemption in compatibility.json. Never
+//                    grants outside the window: --accept-risk is not a way to
+//                    mask a genuine incompatibility.
+//   [2/7] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
 //                    dsh.profile.bundles = [@deepseek-ai/dsh-base,
 //                    @aiwayds/dsh-opentui-bridge]. NO @deepseek-ai/* dependency
 //                    is ever written: the host's installation-first bundle
 //                    resolution supplies those bundles from the running dsh
 //                    closure (wild-package shadowing is the historical
 //                    incident this guard prevents).
-//   [2/5] symlink  — create node_modules/@aiwayds/dsh-opentui-bridge as an
+//   [3/7] symlink  — create node_modules/@aiwayds/dsh-opentui-bridge as an
 //                    ABSOLUTE symlink to THIS installation's dist/bridge
 //                    (realpath). No link:/file: protocol, no copying.
-//   [3/5] verify   — re-read the link and confirm it resolves to dist/bridge;
+//   [4/7] verify   — re-read the link and confirm it resolves to dist/bridge;
 //                    refuse any @deepseek-ai copy in the profile.
-//   [4/5] identity — T5 guard: hash the RESOLVED bridge's index.js and compare
+//   [5/7] identity — T5 guard: hash the RESOLVED bridge's index.js and compare
 //                    with the build-time fingerprint shipped in THIS
 //                    installation's dist/bridge/bundle-fingerprint.json, plus
 //                    name / version. No realpath-prefix hard binding.
-//   [5/6] patch    — ONLY when DSH_OPENTUI_INPROC=1: generate
+//   [6/7] patch    — ONLY when DSH_OPENTUI_INPROC=1: generate
 //                    $DSH_HOME/profiles/opentui-inproc/cordis.patch.yml from
 //                    the embedded inproc-only template (web-app compensation
 //                    rows removed, profileRevision stamped). The template also
@@ -31,7 +40,7 @@
 //                    real @deepseek-ai/dsh-api-session-controller plugin — no
 //                    dsh-web-app bundle is pulled in. Without the env this step
 //                    is skipped entirely — old behavior unchanged.
-//   [6/6] shim     — ONLY when DSH_OPENTUI_INPROC=1: generate the local shim
+//   [7/7] shim     — ONLY when DSH_OPENTUI_INPROC=1: generate the local shim
 //                    package under the profile's node_modules (@aiwayds scope)
 //                    that the patch row above resolves. Its @deepseek-ai/cordis
 //                    import is resolved by the host against the profile scope,
@@ -90,6 +99,16 @@ import {
   BRIDGE_NO_APPEND_NOTICE,
   BRIDGE_REPAIR_HINT,
 } from './lib/bridge-failfast-text.mjs'
+// Host-version gate. The host only records an incompatible profile bundle in
+// `skippedBundles` (no stderr on this path), so the pre-boot check here is the
+// point where a mismatch becomes an explicit, actionable failure.
+import {
+  HOST_PEER_RANGE,
+  HOST_VERSION_ENV,
+  detectHostVersion,
+  ensureHostExemption,
+  isHostVersionSupported,
+} from './lib/host-compat.mjs'
 
 const PREFIX = 'dsh-opentui(inproc): '
 const PROFILE = 'opentui-inproc'
@@ -117,12 +136,12 @@ const lockPath = join(profileDir, LOCK_NAME)
 // invocation do not. Keeping the gate HERE makes those paths byte-for-byte
 // identical to the pre-patch behavior.
 const INPROC_MODE = process.env.DSH_OPENTUI_INPROC === '1'
-const TOTAL_STEPS = INPROC_MODE ? 6 : 4
+const TOTAL_STEPS = INPROC_MODE ? 7 : 5
 const PATCH_NAME = 'cordis.patch.yml'
 const patchPath = join(profileDir, PATCH_NAME)
 const PATCH_REVISION_MARKER = '# profileRevision: '
 // Local shim package generated under the profile's node_modules. It lives in
-// the @aiwayds scope (never @deepseek-ai — see the guard in step [3/6]) so the
+// the @aiwayds scope (never @deepseek-ai — see the guard in step [4/7]) so the
 // host resolves it from the profile scope; its own @deepseek-ai/cordis import
 // is routed by the host's runtime interception to the same dsh closure that
 // serves the bridge. The patch row uses this bare package name.
@@ -521,7 +540,7 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
 # Standalone sessionController support (no dsh-web-app bundle). The real
 # controller needs 13 injects; 11 come from dsh-base, and the two web-only ones
 # (fileUploads, workspaceRegistry) are satisfied by the local shim package
-# generated in step [6/6]. No connection shim: dsh-api-gateway's optional
+# generated in step [7/7]. No connection shim: dsh-api-gateway's optional
 # ctx.inject(['connection']) calls connection.rpc.intercept(...), which a no-op
 # stub cannot honor; leaving connection absent only keeps the controller's
 # SessionMediaReferences sub-plugin pending, which does not block list().
@@ -540,7 +559,7 @@ const PATCH_CONTENT = `${PATCH_HEADER}${PATCH_TEMPLATE}`
 const KNOWN_PATCH_MD5 = new Set(['54b66bf37fbbb93a6f9dd204a24473f7'])
 
 // --- Standalone sessionController shim template -----------------------------
-// Generated into the profile's node_modules (step [6/6]) so its runtime imports
+// Generated into the profile's node_modules (step [7/7]) so its runtime imports
 // are resolved from the profile scope by the host, exactly like the bridge.
 // The real controller imports fileUploads / workspaceRegistry as TYPES ONLY;
 // only the narrow methods below are ever called, so no dsh-web-app closure is
@@ -868,8 +887,56 @@ function verifyBridgeIdentity() {
     )
   }
 
-  say(4, 'identity', `name=${fp.name} version=${fp.version} sha256=${fp.sha256.slice(0, 12)}…`)
+  say(5, 'identity', `name=${fp.name} version=${fp.version} sha256=${fp.sha256.slice(0, 12)}…`)
   note(`bridge identity OK — ${resolved}`)
+}
+
+// --- Host-version gate ------------------------------------------------------
+/** Fail loud on an unsupported host; grant the exact exemption when in-window.
+ *  Diagnosis carries expected/actual; fail() appends repair + no-append. The
+ *  check runs before any profile mutation so a bad host never leaves a
+ *  half-provisioned profile behind. */
+function verifyHostCompatibility(bridgeDir) {
+  let hostVersion
+  try {
+    hostVersion = detectHostVersion()
+  } catch (error) {
+    fail(
+      'cannot verify the dsh host version before loading the bridge',
+      `${error instanceof Error ? error.message : String(error)}\nDetected with \`dsh --version\` (override: ${HOST_VERSION_ENV}=<exact version>).`,
+    )
+  }
+
+  if (!isHostVersionSupported(hostVersion)) {
+    fail(
+      `dsh host version is outside the bridge support window — expected ${HOST_PEER_RANGE}, actual ${hostVersion}`,
+      `The host would skip ${BRIDGE_NAME} without a usable error and bridge.hello would time out (BRIDGE_TIMEOUT). `
+        + `Install a dsh host in ${HOST_PEER_RANGE}, or upgrade dsh-opentui. `
+        + `Detection override: ${HOST_VERSION_ENV}=${process.env[HOST_VERSION_ENV] ?? '(unset)'}.`,
+    )
+  }
+
+  const bridgePkg = readJsonObject(join(bridgeDir, 'package.json'))
+  const packageName = bridgePkg?.name
+  const packageVersion = bridgePkg?.version
+  if (typeof packageName !== 'string' || typeof packageVersion !== 'string') {
+    fail(
+      'bridge manifest has no name/version for the host-version exemption',
+      `${join(bridgeDir, 'package.json')} must declare string name and version.`,
+    )
+  }
+
+  try {
+    const { changed, key } = ensureHostExemption({ profileDir, packageName, packageVersion, hostVersion })
+    say(1, 'host', changed
+      ? `granted exact-version exemption ${key} for dsh ${hostVersion}`
+      : `supported host ${hostVersion}; exemption ${key} already present`)
+  } catch (error) {
+    fail(
+      `could not grant the host-version exemption for ${BRIDGE_NAME} on dsh ${hostVersion}`,
+      error instanceof Error ? error.message : String(error),
+    )
+  }
 }
 
 // --- Inproc cordis.patch.yml ownership ------------------------------------
@@ -898,7 +965,7 @@ function provisionPatch() {
 
   const localRevision = readPatchRevision(current)
   if (current === PATCH_CONTENT && localRevision === PATCH_REVISION) {
-    say(5, 'patch', 'already current, skipping')
+    say(6, 'patch', 'already current, skipping')
     return
   }
 
@@ -915,7 +982,7 @@ function provisionPatch() {
   const tmpPath = `${patchPath}.tmp-${process.pid}-${Date.now()}`
   writeFileSync(tmpPath, PATCH_CONTENT)
   renameSync(tmpPath, patchPath)
-  say(5, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION})`)
+  say(6, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION})`)
 }
 
 // --- Standalone sessionController shim ownership ---------------------------
@@ -963,10 +1030,10 @@ function provisionShim() {
   const indexChanged = convergeShimFile(SHIM_INDEX_PATH, SHIM_INDEX_CONTENT, 'session controller shim index.mjs', SHIM_REVISION)
   const pkgChanged = convergeShimFile(SHIM_PKG_PATH, SHIM_PKG_CONTENT, 'session controller shim package.json', undefined)
   if (!indexChanged && !pkgChanged) {
-    say(6, 'shim', 'already current, skipping')
+    say(7, 'shim', 'already current, skipping')
     return
   }
-  say(6, 'shim', `wrote ${SHIM_DIR} (shimRevision ${SHIM_REVISION})`)
+  say(7, 'shim', `wrote ${SHIM_DIR} (shimRevision ${SHIM_REVISION})`)
 }
 
 // --- The provision pass itself (runs under the lock) ------------------------
@@ -991,7 +1058,12 @@ function runProvision({ repair = false } = {}) {
   // or symlinked-in path that could drift with cwd or a moved install.
   const bridgeDir = realpathSync(bridgeDirRaw)
 
-  // [1/5] Manifest: write / converge the profile manifest. Only
+  // [1/7] Host compatibility: fail loud when the running dsh is outside the
+  // supported window (the host would otherwise skip the bridge silently), and
+  // grant the exact-version exemption when it is in-window but not exempted.
+  verifyHostCompatibility(bridgeDir)
+
+  // [2/7] Manifest: write / converge the profile manifest. Only
   // dsh.profile.bundles is managed; every other field is preserved.
   {
     const existing = existsSync(manifestPath) ? readManifest() : undefined
@@ -1000,7 +1072,7 @@ function runProvision({ repair = false } = {}) {
     }
     const desired = desiredManifest(existing ?? { name: `dsh-profile-${PROFILE}`, private: true })
     if (existing !== undefined && JSON.stringify(existing) === JSON.stringify(desired)) {
-      say(1, 'manifest', 'already correct, skipping')
+      say(2, 'manifest', 'already correct, skipping')
     } else {
       mkdirSync(profileDir, { recursive: true })
       if (existsSync(manifestPath)) {
@@ -1013,11 +1085,11 @@ function runProvision({ repair = false } = {}) {
       const tmpPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
       writeFileSync(tmpPath, `${JSON.stringify(desired, null, 2)}\n`)
       renameSync(tmpPath, manifestPath)
-      say(1, 'manifest', `wrote bundles [${BUNDLES.join(', ')}]`)
+      say(2, 'manifest', `wrote bundles [${BUNDLES.join(', ')}]`)
     }
   }
 
-  // [2/5] Symlink: create the absolute link, skip when already correct, and
+  // [3/7] Symlink: create the absolute link, skip when already correct, and
   // ONLY in repair mode replace a wrong target / non-symlink entry. Normal
   // startup stays report-only (a conflict is a WARN, never an overwrite).
   let conflict = null
@@ -1030,9 +1102,9 @@ function runProvision({ repair = false } = {}) {
       } catch (error) {
         fail(`could not create symlink ${linkPath}: ${error?.message ?? error}`)
       }
-      say(2, 'symlink', `created ${linkPath} -> ${bridgeDir}`)
+      say(3, 'symlink', `created ${linkPath} -> ${bridgeDir}`)
     } else if (state.kind === 'symlink' && (state.resolved === bridgeDir || state.abs === bridgeDir)) {
-      say(2, 'symlink', 'already points at the bridge artifact, skipping')
+      say(3, 'symlink', 'already points at the bridge artifact, skipping')
     } else if (repair) {
       const desc = state.kind === 'not-symlink'
         ? `${linkPath} is not a symlink`
@@ -1045,7 +1117,7 @@ function runProvision({ repair = false } = {}) {
       } catch (error) {
         fail(`could not repair symlink ${linkPath}: ${error?.message ?? error}`)
       }
-      say(2, 'symlink', `repaired ${linkPath} -> ${bridgeDir}`)
+      say(3, 'symlink', `repaired ${linkPath} -> ${bridgeDir}`)
     } else if (state.kind === 'not-symlink') {
       conflict = `${linkPath} exists and is NOT a symlink`
     } else {
@@ -1053,7 +1125,7 @@ function runProvision({ repair = false } = {}) {
     }
   }
 
-  // [3/5] Verify: report-only for a conflict; never overwrite.
+  // [4/7] Verify: report-only for a conflict; never overwrite.
   if (conflict !== null) {
     warn(`conflict, not overwriting: ${conflict}`)
     warn('the profile link was left untouched; the identity guard below decides whether the resolved artifact is acceptable')
@@ -1071,16 +1143,16 @@ function runProvision({ repair = false } = {}) {
         'The host closure supplies @deepseek-ai/* bundles; they must never be copied into a profile directory.',
       )
     }
-    say(3, 'verify', `bridge resolves to ${bridgeDir}; no @deepseek-ai copy in profile`)
+    say(4, 'verify', `bridge resolves to ${bridgeDir}; no @deepseek-ai copy in profile`)
   }
 
-  // [4/5] Identity guard always runs, including on the conflict path, so a
+  // [5/7] Identity guard always runs, including on the conflict path, so a
   // repointed / replaced bridge cannot slip through as a mere WARN.
   verifyBridgeIdentity()
 
-  // [5/6] Inproc-only patch generation. The gate is here (not just in the
+  // [6/7] Inproc-only patch generation. The gate is here (not just in the
   // launcher) so --repair-bridge / direct runs without the env stay unchanged.
-  // [6/6] generates the local shim package that the patch row resolves.
+  // [7/7] generates the local shim package that the patch row resolves.
   if (INPROC_MODE) {
     provisionPatch()
     provisionShim()
