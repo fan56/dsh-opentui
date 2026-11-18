@@ -26,7 +26,18 @@ import {
   type AskRequestPayload,
   type AskResponseParams,
   type AskErrorCode,
+  type AskVerdict,
+  type AskBehavior,
 } from './ask-frames'
+import {
+  ASK_JOURNAL_KINDS,
+  SessionPermissionSummary,
+  redactIdentifier,
+  summarizeAnswers,
+  type AskJournalEvent,
+  type AskJournalSink,
+  type AskJournalSource,
+} from './ask-journal'
 
 type TimerHandle = ReturnType<typeof setTimeout>
 
@@ -49,6 +60,11 @@ export interface AskRegistryOptions {
   now?: () => number
   /** Frame sink; defaults to a no-op. T3 forwards this to `emitEvent`. */
   sink?: (frame: AskOutboundFrame) => void
+  /** ADR-0011 T7: redacted decision journal. Defaults to a no-op; tests inject
+   *  a fake, index.ts injects the host `plugin:` record writer. The registry
+   *  calls it with an already-redacted event (no tool args / prompts / custom
+   *  text ever reach this sink). */
+  journal?: AskJournalSink
   /** Bound for the settled/ended eventId memory (prevents unbounded growth). */
   recordLimit?: number
   logger?: AskRegistryLogger
@@ -92,6 +108,13 @@ interface SettleOptions {
   cancelReason?: AskCancelReason
   /** Turn/session teardown records the id as "ended" (→ ASK_TURN_ENDED). */
   ended?: boolean
+  /** T7: journal-only decision digest (verdict / behavior / numeric answers).
+   *  Never includes `answers[].custom`, prompts, reasons or tool arguments. */
+  verdict?: AskVerdict
+  behavior?: AskBehavior
+  answers?: AskResponseParams['answers']
+  /** T7: how this decision was produced (audit field). */
+  source?: AskJournalSource
 }
 
 const DEFAULT_RECORD_LIMIT = 256
@@ -119,6 +142,7 @@ export class AskRegistry {
   readonly #recordLimit: number
   readonly #now: () => number
   readonly #sink: (frame: AskOutboundFrame) => void
+  readonly #journal: AskJournalSink
   readonly #logger?: AskRegistryLogger
 
   /** eventId -> pending ask. A single ask never appears twice (first-wins). */
@@ -131,8 +155,9 @@ export class AskRegistry {
   readonly #endedIds = new Set<string>()
   /** Append-only settlement log for tests/audit (bounded). */
   readonly #settlementLog: AskSettlement[] = []
-  /** `behavior:'always'` grants, scoped to a session (ADR-0011 D7). */
-  readonly #sessionGrants = new Map<string, Set<string>>()
+  /** `behavior:'always'` grants, scoped to a session (ADR-0011 D7). Not derived
+   *  from journal events, so compaction can never clear the effect (A4). */
+  readonly #summary = new SessionPermissionSummary()
   /** Every armed timer, so `dispose()` can release all of them. */
   readonly #timers = new Set<TimerHandle>()
 
@@ -143,6 +168,7 @@ export class AskRegistry {
     this.#recordLimit = options.recordLimit ?? DEFAULT_RECORD_LIMIT
     this.#now = options.now ?? Date.now
     this.#sink = options.sink ?? (() => {})
+    this.#journal = options.journal ?? (() => {})
     this.#logger = options.logger
   }
 
@@ -160,7 +186,58 @@ export class AskRegistry {
     return this.#settlementLog
   }
   sessionGrants(sessionId: string): readonly string[] {
-    return [...(this.#sessionGrants.get(sessionId) ?? [])]
+    return this.#summary.tools(sessionId)
+  }
+
+  /** ADR-0011 T7: true when this session already granted 'always' to this tool.
+   *  The summary lives in this process, not in journal events, so compaction
+   *  cannot clear it. index.ts consults this BEFORE pushing an ask card. */
+  hasGrant(sessionId: string, toolName: string): boolean {
+    return this.#summary.has(sessionId, toolName)
+  }
+
+  /** Scope guard (I1/A5): drop every grant of a session on close/replace. */
+  clearSessionGrants(sessionId: string): void {
+    this.#summary.clearSession(sessionId)
+  }
+
+  /**
+   * Record a decision made from the session summary alone (index.ts short-circuits
+   * a repeated 'always' tool without creating a pending ask / pushing a card).
+   * A `responded` journal event keeps the audit trail complete; no state changes
+   * because the grant was already in the summary.
+   */
+  recordSummaryDecision(turnId: string, input: {
+    sessionId: string
+    askKind: AskKind
+    toolName?: string
+  }): string {
+    const eventId = this.nextEventId(turnId)
+    this.#writeJournal({
+      eventId,
+      kind: ASK_JOURNAL_KINDS.RESPONDED,
+      askKind: input.askKind,
+      sessionId: redactIdentifier(input.sessionId) ?? input.sessionId,
+      turnId: redactIdentifier(turnId) ?? turnId,
+      ...(redactIdentifier(input.toolName) !== undefined ? { toolName: redactIdentifier(input.toolName) } : {}),
+      verdict: 'allowed-once',
+      outcome: 'approved',
+      behavior: 'always',
+      source: 'summary',
+      at: this.#now(),
+    })
+    return eventId
+  }
+
+  // ---- journal side effects ------------------------------------------------
+  /** Single funnel for every redacted journal write (T7). Never throws into a
+   *  decision path: persistence is a side effect, not part of the verdict. */
+  #writeJournal(event: AskJournalEvent): void {
+    try {
+      this.#journal(event)
+    } catch (err) {
+      this.#logger?.warn?.('[ask-registry] journal sink threw (decision unchanged): %s', err)
+    }
   }
 
   // ---- id generation -------------------------------------------------------
@@ -216,6 +293,7 @@ export class AskRegistry {
           code: ASK_ERROR_CODES.DEADLINE_EXCEEDED,
           cancelReason: 'deadline',
           message: 'ask deadline exceeded',
+          source: 'timeout',
         })
       }, deadlineAt - createdAt)
     }
@@ -226,9 +304,23 @@ export class AskRegistry {
         code: ASK_ERROR_CODES.DEADLINE_EXCEEDED,
         cancelReason: 'deadline',
         message: 'maxAskWaitMs hard cap exceeded',
+        source: 'timeout',
       })
     }, this.#maxAskWaitMs)
 
+    // ADR-0011 T7 (A4): record the pending decision BEFORE it can settle. Only
+    // allowlisted identifiers reach the log — `reason`, `questions`, `callId`
+    // and every other free-form payload field are deliberately not copied.
+    this.#writeJournal({
+      eventId,
+      kind: ASK_JOURNAL_KINDS.REQUESTED,
+      askKind: request.kind,
+      sessionId: redactIdentifier(request.sessionId) ?? request.sessionId,
+      turnId: redactIdentifier(turnId) ?? turnId,
+      ...(redactIdentifier(request.toolName) !== undefined ? { toolName: redactIdentifier(request.toolName) } : {}),
+      source: 'request',
+      at: createdAt,
+    })
     this.#emit({ type: ASK_FRAME_TYPES.REQUEST, payload: request })
     return request
   }
@@ -269,6 +361,27 @@ export class AskRegistry {
     }
     if (this.#settlementLog.length >= this.#recordLimit) this.#settlementLog.shift()
     this.#settlementLog.push(settlement)
+
+    // ADR-0011 T7 (A4): one terminal journal event per settled ask. A cancelled
+    // ask (teardown / detach / deadline-cancel) uses `ask.cancelled`; every
+    // other outcome uses `ask.responded`. `source` is an enum, not a message.
+    const cancelled = outcome === 'cancelled' || options.cancelReason !== undefined
+    this.#writeJournal({
+      eventId,
+      kind: cancelled ? ASK_JOURNAL_KINDS.CANCELLED : ASK_JOURNAL_KINDS.RESPONDED,
+      askKind: entry.request.kind,
+      sessionId: redactIdentifier(entry.request.sessionId) ?? entry.request.sessionId,
+      turnId: redactIdentifier(entry.turnId) ?? entry.turnId,
+      ...(redactIdentifier(entry.request.toolName) !== undefined ? { toolName: redactIdentifier(entry.request.toolName) } : {}),
+      ...(options.verdict !== undefined ? { verdict: options.verdict } : {}),
+      outcome,
+      ...(options.behavior !== undefined ? { behavior: options.behavior } : {}),
+      ...(summarizeAnswers(options.answers) !== undefined ? { answers: summarizeAnswers(options.answers) } : {}),
+      ...(options.code !== undefined ? { code: options.code } : {}),
+      ...(options.cancelReason !== undefined ? { reason: options.cancelReason } : {}),
+      source: options.source ?? (cancelled ? 'teardown' : 'answer'),
+      at: settlement.at,
+    })
     this.#emit({ type: ASK_FRAME_TYPES.SETTLED, payload: { eventId, outcome } })
     return settlement
   }
@@ -332,18 +445,18 @@ export class AskRegistry {
         outcome = 'approved'
     }
 
-    // PENDING-CONFIRMATION (Q3): 'always' lives in a session-level permission
-    // summary that compaction does not clear. The durable journal write is T7.
+    // ADR-0011 T7: 'always' lives in a session-scoped summary that is NOT
+    // derived from journal events, so compaction cannot clear the effect (A4).
     if (params.behavior === 'always') {
-      let grants = this.#sessionGrants.get(sessionId)
-      if (grants === undefined) {
-        grants = new Set<string>()
-        this.#sessionGrants.set(sessionId, grants)
-      }
-      grants.add(entry.request.toolName ?? params.eventId)
+      this.#summary.grant(sessionId, entry.request.toolName ?? params.eventId)
     }
 
-    const settlement = this.#settle(entry, outcome)
+    const settlement = this.#settle(entry, outcome, {
+      ...(params.verdict !== undefined ? { verdict: params.verdict } : {}),
+      ...(params.behavior !== undefined ? { behavior: params.behavior } : {}),
+      ...(params.answers !== undefined ? { answers: params.answers } : {}),
+      source: 'answer',
+    })
     return { ok: true, settlement }
   }
 
@@ -364,6 +477,20 @@ export class AskRegistry {
     }
     remember(this.#settledIds, eventId, this.#recordLimit)
     this.#settlementLog.push(settlement)
+    // No `ask.request` was pushed, so there is no `requested` event: the single
+    // `responded` event (unavailable) is the complete audit for fail-closed.
+    this.#writeJournal({
+      eventId,
+      kind: ASK_JOURNAL_KINDS.RESPONDED,
+      askKind: input.kind,
+      sessionId: redactIdentifier(input.sessionId) ?? input.sessionId,
+      turnId: redactIdentifier(input.turnId) ?? input.turnId,
+      verdict: 'unavailable',
+      outcome: 'unavailable',
+      code: ASK_ERROR_CODES.CHANNEL_UNAVAILABLE,
+      source: 'fail-closed',
+      at: settlement.at,
+    })
     this.#emit({ type: ASK_FRAME_TYPES.SETTLED, payload: { eventId, outcome: 'unavailable' } })
     return { settlement, code: ASK_ERROR_CODES.CHANNEL_UNAVAILABLE }
   }
@@ -378,6 +505,7 @@ export class AskRegistry {
           cancelReason: 'host-abort',
           code: ASK_ERROR_CODES.TURN_ENDED,
           message: 'client detached past the grace window',
+          source: 'teardown',
         })
       }, entry.graceMs)
     }
@@ -434,7 +562,7 @@ export class AskRegistry {
     this.#settledIds.clear()
     this.#endedIds.clear()
     this.#settlementLog.length = 0
-    this.#sessionGrants.clear()
+    this.#summary.clear()
     this.#logger?.debug?.('[ask-registry] disposed: all timers released')
   }
 }

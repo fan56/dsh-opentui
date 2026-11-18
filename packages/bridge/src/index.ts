@@ -42,6 +42,8 @@ import { dirname, join } from 'node:path'
 import { ASK_FRAME_TYPES, validateAskResponse } from './ask-frames'
 import type { AskOutcome, AskRequestPayload, AskResponseParams, AskSettledPayload } from './ask-frames'
 import { AskRegistry } from './ask-registry'
+// ADR-0011 T7 — redacted decision journal + session-scoped permission summary.
+import { askPluginRecordType, type AskJournalEvent } from './ask-journal'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -399,6 +401,57 @@ function resolvePersistence(ctx: BridgeContext): PersistenceLike | undefined {
     : undefined
 }
 
+/**
+ * ADR-0011 T7 — lazily resolve the host's plugin-record writer.
+ *
+ * Source-verified mechanism (dsh-session 0.2.2-rc.3):
+ * - `src/types.ts:532-545` defines `PluginRecordType = plugin:<lowercase path>`
+ *   and records are `ignorable:true`, so readers that do not own the type skip
+ *   them while fork/resume carry them with the log. This is the sanctioned seam
+ *   for out-of-repo plugin state; an arbitrary `session.append('ask.*', …)`
+ *   would create an UNKNOWN REQUIRED event and make resume refuse to reconstruct.
+ * - `src/index.ts:498-504,919-946` exports `appendPluginRecord(session, type,
+ *   data)`, which commits exactly such an ignorable record with the next seq.
+ * - The live Session is reached through the answerer's `req.agent.session`
+ *   (dsh-user-approval/src/index.ts:243 uses the same object for its own
+ *   `approval/asked` / `approval/decided` audit events).
+ *
+ * We deliberately do NOT add a static `@deepseek-ai/dsh-session` import: that
+ * broke clean npm-prefix installs before (see the note at the top of this file)
+ * and the build keeps the whole scope external. `createRequire` is already the
+ * host-version probe's pattern (readHostVersion above); it is contained here so
+ * a host without the package degrades to "no journal write", never a crash.
+ */
+type AppendPluginRecordFn = (session: unknown, type: string, data: unknown) => unknown
+let cachedAppendPluginRecord: AppendPluginRecordFn | undefined
+let appendPluginRecordResolved = false
+function resolveAppendPluginRecord(): AppendPluginRecordFn | undefined {
+  if (appendPluginRecordResolved) return cachedAppendPluginRecord
+  appendPluginRecordResolved = true
+  // Resolution roots, in order:
+  // 1. this bundle (dev / hoisted workspace installs);
+  // 2. the running `dsh` bin — the shipped bridge lives in a profile with NO
+  //    @deepseek-ai peer closure of its own, but the host always carries
+  //    dsh-session (verified rc.4: appendPluginRecord is exported there).
+  const roots: string[] = [import.meta.url]
+  if (process.argv[1]) {
+    try { roots.push(realpathSync(process.argv[1])) } catch { /* not a path */ }
+  }
+  for (const root of roots) {
+    try {
+      const req = createRequire(root)
+      const mod = req('@deepseek-ai/dsh-session') as Record<string, unknown>
+      if (typeof mod.appendPluginRecord === 'function') {
+        cachedAppendPluginRecord = mod.appendPluginRecord as AppendPluginRecordFn
+        break
+      }
+    } catch {
+      /* try the next root */
+    }
+  }
+  return cachedAppendPluginRecord
+}
+
 /** Resolve `ctx.sessionController` through the same cordis `ctx.get` seam the
  *  bridge already uses for persistence. `get?` is optional on BridgeContext, so
  *  a host without a service lookup degrades to "unavailable", never a throw. */
@@ -745,8 +798,34 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     })
   }
 
+  /** ADR-0011 T7: append one redacted event to the live session journal as an
+   *  ignorable `plugin:` record. The registry hands us an allowlisted event, so
+   *  no tool arguments / prompts / custom answer text can reach the log here.
+   *  Containment: a journal failure is a warning, never a changed verdict. */
+  function writeAskJournal(event: AskJournalEvent): void {
+    const session = binding?.handle.agent.session
+    if (session === undefined) return
+    const append = resolveAppendPluginRecord()
+    if (append === undefined) {
+      logger.debug('[dsh-opentui-bridge] ask journal writer unavailable; event %s not persisted', event.eventId)
+      return
+    }
+    const type = askPluginRecordType(event.kind)
+    try {
+      append(session, type, event)
+      const bytes = Buffer.byteLength(JSON.stringify(event), 'utf8')
+      logger.info(
+        '[dsh-opentui-bridge] ask journal append type=%s eventId=%s bytes=%d session=%s',
+        type, event.eventId, bytes, event.sessionId,
+      )
+    } catch (err) {
+      logger.warn('[dsh-opentui-bridge] ask journal append failed (decision unchanged): %s', err)
+    }
+  }
+
   const ask = new AskRegistry({
     logger,
+    journal: writeAskJournal,
     sink: (frame) => {
       emitEvent(frame.type, frame.payload as unknown as Record<string, unknown>)
       if (frame.type === ASK_FRAME_TYPES.SETTLED) {
@@ -1004,6 +1083,23 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       return 'unavailable'
     }
     const toolName = typeof req.toolName === 'string' && req.toolName !== '' ? req.toolName : undefined
+    // ADR-0011 T7 (D7): a session-scoped 'always' grant short-circuits the card.
+    // The grant can only have been created by an accepted `behavior:'always'`
+    // answer (which itself requires a host-granted escalation, Q3), and it is
+    // keyed by sessionId so another session never reuses it. No ask.request is
+    // pushed; a `responded` journal event still records the audit decision.
+    if (toolName !== undefined && ask.hasGrant(target.sessionId, toolName)) {
+      const grantedEventId = ask.recordSummaryDecision(target.turn.turnId, {
+        sessionId: target.sessionId,
+        askKind: 'approval',
+        toolName,
+      })
+      logger.info(
+        '[dsh-opentui-bridge] ask always-grant from session summary: session=%s tool=%s eventId=%s (no card)',
+        target.sessionId, toolName, grantedEventId,
+      )
+      return 'allowed-once'
+    }
     const callId = req.callId === undefined ? undefined : idString(req.callId)
     const reason = typeof req.reason === 'string' && req.reason !== '' ? req.reason : undefined
     // dsh-user-approval's ApprovalRequestEvent (src/types.ts:63-76) and the
@@ -1152,6 +1248,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // idempotent (finalizeTurn above already cleared this turn's asks), and the
     // registry records the ids as ended so late answers get ASK_TURN_ENDED.
     ask.clearSession(current.sessionId)
+    // ADR-0011 T7 (A5/I1): a session's 'always' summary dies with the session.
+    // Without this, an open-replace from A to B could reuse A's grants.
+    ask.clearSessionGrants(current.sessionId)
     if (activeTurn !== undefined && activeTurn.sessionId === current.sessionId) {
       ask.clearTurn(activeTurn.turnId)
     }
@@ -1921,3 +2020,19 @@ export type {
   AnswerResult,
   FailClosedInput,
 } from './ask-registry'
+// ADR-0011 T7 — journal persistence + session-scoped permission summary.
+export {
+  ASK_JOURNAL_KINDS,
+  ASK_PLUGIN_RECORD_PREFIX,
+  askPluginRecordType,
+  SessionPermissionSummary,
+  redactIdentifier,
+  summarizeAnswers,
+} from './ask-journal'
+export type {
+  AskJournalKind,
+  AskJournalEvent,
+  AskJournalSink,
+  AskJournalSource,
+  AskJournalAnswers,
+} from './ask-journal'

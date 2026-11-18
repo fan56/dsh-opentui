@@ -397,3 +397,35 @@ describe('ADR-0011 T4 — fail-closed + cleanup settle', () => {
     expect(h.registry.timerCount()).toBe(0)
   })
 })
+
+describe('ADR-0011 T7 — session summary short-circuit in the real answerer', () => {
+  test('an always grant skips the card on the next approval of the same tool/session', async () => {
+    const h = makeHarness()
+    const { sessionId } = await startTurn(h, 1)
+    // Seed the summary the only way Q3 permits: an accepted behavior:'always'
+    // answer on a request that carried escalation:true. The stock host's
+    // ApprovalRequestEvent has no escalation field, so a real card can never
+    // grant it today; drive the registry directly to exercise T7's effect.
+    const seed = h.registry.create('seed-turn', {
+      sessionId, kind: 'approval', toolName: 'bash', escalation: true,
+    })
+    expect(h.registry.answer(sessionId, {
+      eventId: seed.eventId, kind: 'approval', verdict: 'allowed-once',
+      behavior: 'always', escalation: true,
+    }).ok).toBe(true)
+    expect(h.registry.hasGrant(sessionId, 'bash')).toBe(true)
+
+    const cardCountBefore = h.askFrames('ask.request').length
+    const pendingBefore = h.registry.pendingCount()
+
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    expect(await mustSettle(pending, 'session-summary short-circuit')).toBe('allowed-once')
+    // The host is answered immediately: no ask.request card, no new pending ask.
+    expect(h.askFrames('ask.request')).toHaveLength(cardCountBefore)
+    expect(h.registry.pendingCount()).toBe(pendingBefore)
+
+    // A different session cannot borrow session A's grant.
+    const foreign = h.emitHost('approval/request', approvalReq('other-session'))[0]
+    expect(await mustSettle(foreign, 'foreign session after grant')).toBe('unavailable')
+  })
+})
