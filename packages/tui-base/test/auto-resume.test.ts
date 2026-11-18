@@ -86,6 +86,20 @@ describe("parseLaunchArgs", () => {
 		expect(parseLaunchArgs(["--session"])).toEqual(blank)
 		expect(parseLaunchArgs(["--session", "--new"])).toEqual({ newRequested: true, resumeLastRequested: false })
 	})
+	test("--remote (deprecated) is reported for the seam root without disturbing auto-resume", () => {
+		expect(parseLaunchArgs(["--remote"])).toEqual({ newRequested: false, resumeLastRequested: false, remoteRequested: true })
+		expect(parseLaunchArgs(["--remote", "--session", "abc"])).toEqual({
+			newRequested: false,
+			resumeLastRequested: false,
+			sessionId: "abc",
+			remoteRequested: true,
+		})
+		expect(parseLaunchArgs(["--resume-last", "--remote"])).toEqual({
+			newRequested: false,
+			resumeLastRequested: true,
+			remoteRequested: true,
+		})
+	})
 })
 
 describe("resolveAutoResumeMode: opt-in priority", () => {

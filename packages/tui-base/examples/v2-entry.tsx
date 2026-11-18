@@ -114,15 +114,16 @@ import { StatusBar } from "../src/routes/session/status-bar"
 // ts-nocheck. Runtime-only, opaque to tsc.
 const SHELL = "../../" + "shell/src/client/"
 async function loadShell() {
-	const [shared, lifecycle, transport, rhs, adapter, git] = await Promise.all([
+	const [shared, lifecycle, transport, rhs, adapter, git, seamBootstrap] = await Promise.all([
 		import(SHELL + "boot-shared.ts"),
 		import(SHELL + "lifecycle.ts"),
 		import(SHELL + "transport.ts"),
 		import(SHELL + "remote-host-session.ts"),
 		import(SHELL + "session-seam-adapter.ts"),
 		import(SHELL + "remote-git.ts"),
+		import(SHELL + "seam-bootstrap.ts"),
 	])
-	return { shared, lifecycle, transport, rhs, adapter, git }
+	return { shared, lifecycle, transport, rhs, adapter, git, seamBootstrap }
 }
 
 const overlays = new TurnOverlayController()
@@ -1411,12 +1412,25 @@ export interface ClientBootV2 {
 }
 
 /**
- * The v2 boot: ensureHost → ClientConnection → RemoteHostSession →
- * RemoteSessionSeam → the rebuilt view. Shutdown semantics are client-entry
+ * The v2 boot: ensureHost → ClientConnection → RemoteHostSession → seam →
+ * the rebuilt view. The seam is selected here (the synthetic root): in inproc
+ * mode it is BridgeSessionSeam over an injected stdio transport; otherwise —
+ * or with the deprecated `--remote` — it stays RemoteSessionSeam (the legacy
+ * thin client, retained in phase one). Shutdown semantics are client-entry
  * parity (dispose session → release host ref → idle reaper hand-off).
  */
-export async function bootClientV2(options: { argv?: readonly string[] } = {}): Promise<ClientBootV2> {
-	const { shared, lifecycle, transport, rhs, adapter, git } = await loadShell()
+export async function bootClientV2(options: {
+	argv?: readonly string[]
+	/** Injected bridge transport (inproc mode). Production creates the real
+	 *  stdio transport; tests inject a fake. */
+	bridgeTransport?: {
+		request(method: string, params?: Record<string, unknown>): Promise<unknown>
+		onEvent(listener: (event: { type: string; payload: unknown }) => void): () => void
+	}
+	/** Injected seam logger (inproc mode). */
+	bridgeCtx?: { logger: { info(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void } }
+} = {}): Promise<ClientBootV2> {
+	const { shared, lifecycle, transport, rhs, adapter, git, seamBootstrap } = await loadShell()
 	const workspace = process.cwd()
 	const profile = lifecycle.DEFAULT_PROFILE
 	const idleExitMs = lifecycle.resolveIdleExitMs()
@@ -1453,7 +1467,31 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 		}
 	}
 
-	const seam = new adapter.RemoteSessionSeam(session as never)
+	const launchArgs = parseLaunchArgs(options.argv ?? process.argv.slice(2))
+	// M2/T9: the seam is chosen HERE — the synthetic root. inproc mode defaults
+	// to BridgeSessionSeam; the deprecated `--remote` (and any non-inproc
+	// launch) keeps the legacy RemoteSessionSeam. Bridge handshake/fingerprint
+	// failure throws (BridgeBootstrapError, three elements) — NEVER falls back.
+	const seamKind = seamBootstrap.selectSeamKind({
+		inproc: seamBootstrap.isInprocMode(),
+		remote: launchArgs.remoteRequested === true,
+	})
+	const seam = await seamBootstrap.createSessionSeam({
+		kind: seamKind,
+		createBridge: async () => {
+			if (options.bridgeTransport === undefined) {
+				throw new seamBootstrap.BridgeBootstrapError({
+					code: "BRIDGE_TRANSPORT_MISSING",
+					diagnosis: "inproc mode is on (DSH_OPENTUI_INPROC=1) but no bridge transport was injected at the synthetic root",
+				})
+			}
+			return seamBootstrap.createBridgeSessionSeam({
+				transport: options.bridgeTransport,
+				ctx: options.bridgeCtx ?? { logger: console },
+			})
+		},
+		createRemote: () => new adapter.RemoteSessionSeam(session as never),
+	})
 	registerTurnOverlays(seam, overlays)
 	// feat/auto-resume: dsh sessions are persisted server-side, but a plain
 	// launch must land on a NEW session (the default is `autoResume: "off"`).
@@ -1466,7 +1504,6 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 	// The id is only STAGED here (`resumeSession` binds at the next turn), so
 	// the page reads its journal explicitly (onMount) and no writer lock is
 	// taken at boot.
-	const launchArgs = parseLaunchArgs(options.argv ?? process.argv.slice(2))
 	let initialSessionId: string | undefined
 	let resumeNotice: string | undefined
 	if (launchArgs.sessionId !== undefined) {
@@ -1588,6 +1625,16 @@ export async function bootClientV2(options: { argv?: readonly string[] } = {}): 
 				await Promise.race([session.dispose(), new Promise((resolve) => setTimeout(resolve, shared.SHUTDOWN_GRACE_MS))])
 			} catch {
 				/* dispose is best-effort on the quit path */
+			}
+			// Inproc bridge seam: dispose the bridge session and close its
+			// stdio child. Best-effort — a dead bridge must not block quit.
+			if (seamKind === "bridge") {
+				try {
+					await Promise.race([seam.dispose(), new Promise((resolve) => setTimeout(resolve, shared.SHUTDOWN_GRACE_MS))])
+				} catch {
+					/* best-effort */
+				}
+				options.bridgeTransport?.close?.()
 			}
 			// Grace-window parity (client-entry): release — NOT dispose — the
 			// host, then hand the idle-exit to the detached reaper.

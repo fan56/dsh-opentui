@@ -115,6 +115,9 @@ export const KNOWN_CLIENT_ARGS = [
 	'--resume-last',
 	'--session',
 	'--session=',
+	// T10: retained but deprecated; removed in 0.23.0. Still accepted so the
+	// legacy thin-client seam remains selectable during phase one.
+	'--remote',
 ]
 
 /**
@@ -279,6 +282,33 @@ export function validateLauncherArgs(rest, { skip = [] } = {}) {
 	}
 }
 
+/**
+ * T10 — the `--remote` deprecation notice. Names the removal line (0.23.0)
+ * and the replacement entry (inproc default; no flag needed). Kept here (pure)
+ * so the "printed exactly once" contract is unit-testable without a TUI.
+ */
+export const REMOTE_DEPRECATION_NOTICE =
+  'dsh-opentui: --remote is deprecated and will be removed in 0.23.0; ' +
+  'the in-process bridge is now the default in inproc mode (DSH_OPENTUI_INPROC=1) — ' +
+  'just drop the flag to use it (or use the /resume, --session, --resume-last entries).'
+
+/** True when `--remote` appears anywhere in the launch argv (before or after
+ *  a `--` separator). */
+export function isRemoteRequested(...argvLists) {
+  return argvLists.some((list) => Array.isArray(list) && list.includes('--remote'))
+}
+
+/**
+ * Emit the deprecation notice AT MOST ONCE per launch, even if `--remote`
+ * appears multiple times. Returns the number of lines written (0 or 1) so
+ * callers/tests can assert the "exactly once" contract. `sink` is injectable.
+ */
+export function emitRemoteDeprecation(argvLists, sink = console.warn) {
+  if (!argvLists.some((list) => Array.isArray(list) && list.includes('--remote'))) return 0
+  sink(REMOTE_DEPRECATION_NOTICE)
+  return 1
+}
+
 /** Usage text for the normal launcher (not the `upgrade` subcommand). */
 export function formatUsage() {
 	return [
@@ -308,6 +338,7 @@ export function formatUsage() {
 		'',
 		'Client options (passed through; put them after -- to skip validation):',
 		'  --new, --resume-last, --session <id>',
+		'  --remote                   (deprecated; removed in 0.23.0) force the legacy thin-client seam; default is the in-process bridge in inproc mode',
 		'',
 		'Exit codes:',
 		'  0  success, --version, or --help',

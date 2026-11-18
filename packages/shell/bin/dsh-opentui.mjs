@@ -56,7 +56,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ancestorPids, formatUpgradeUsage, formatUsage, killStaleProcesses, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
+import { ancestorPids, emitRemoteDeprecation, formatUpgradeUsage, formatUsage, killStaleProcesses, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -85,6 +85,13 @@ if (versionFlag) {
   console.log(`dsh-opentui ${version}`)
   process.exit(0)
 }
+
+// --- 0.4 --remote deprecation (T10): one clear notice per launch -------------
+// Emitted after --version (whose short-circuit stays absolute) and before the
+// upgrade/help paths, so `--remote --help` also carries it. `emitRemoteDeprecation`
+// prints AT MOST ONCE even when the flag is repeated, and the notice names the
+// removal line (0.23.0) plus the replacement entry (inproc default, no flag).
+emitRemoteDeprecation([userArgs, passthrough])
 
 // --- 0.5 upgrade subcommand -------------------------------------------------
 // `upgrade` is a positional subcommand: only the first remaining argument may

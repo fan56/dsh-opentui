@@ -54,10 +54,13 @@ export interface LaunchArgs {
 	resumeLastRequested: boolean
 	/** `--session <id>` / `--session=<id>`: the caller pinned a session. */
 	sessionId?: string
+	/** `--remote`: deprecated (T10); forces the legacy thin-client seam even
+	 *  in inproc mode. Absent unless the flag was passed. */
+	remoteRequested?: boolean
 }
 
 /** Launch flags this module actually parses (sync guard for the CLI allowlist). */
-export const CLI_LAUNCH_FLAGS = ["--new", "--resume-last", "--session", "--session="] as const
+export const CLI_LAUNCH_FLAGS = ["--new", "--resume-last", "--session", "--session=", "--remote"] as const
 
 /**
  * Parse the launch flags this feature cares about. Everything else
@@ -67,10 +70,17 @@ export const CLI_LAUNCH_FLAGS = ["--new", "--resume-last", "--session", "--sessi
 export function parseLaunchArgs(argv: readonly string[]): LaunchArgs {
 	let newRequested = false
 	let resumeLastRequested = false
+	let remoteRequested = false
 	let sessionId: string | undefined
 	for (let index = 0; index < argv.length; index++) {
 		const arg = argv[index]
 		if (arg === undefined) continue
+		if (arg === "--remote") {
+			// Deprecated escape hatch: the seam root reads this to keep the
+			// legacy thin client; it does not affect auto-resume decisions.
+			remoteRequested = true
+			continue
+		}
 		if (arg === "--new") {
 			newRequested = true
 			continue
@@ -92,7 +102,12 @@ export function parseLaunchArgs(argv: readonly string[]): LaunchArgs {
 			if (value !== "") sessionId = value
 		}
 	}
-	return { newRequested, resumeLastRequested, ...(sessionId !== undefined ? { sessionId } : {}) }
+	return {
+		newRequested,
+		resumeLastRequested,
+		...(sessionId !== undefined ? { sessionId } : {}),
+		...(remoteRequested ? { remoteRequested: true } : {}),
+	}
 }
 
 /** `autoResume` off the merged config; the default is "off" (a new session). */

@@ -12,10 +12,13 @@ import {
   ancestorPids,
   classifyProcess,
   defaultDshHome,
+  emitRemoteDeprecation,
   formatUsage,
+  isRemoteRequested,
   KNOWN_CLIENT_ARGS,
   killStaleProcesses,
   parseLauncherArgs,
+  REMOTE_DEPRECATION_NOTICE,
   parseLauncherOptions,
   parseProcessHomes,
   parseProcessRows,
@@ -333,6 +336,46 @@ describe('parseLauncherArgs -- separator', () => {
   })
 })
 
+describe('--remote deprecation (T10)', () => {
+  test('is an accepted (known) client arg and in the client-launch allowlist', () => {
+    expect(KNOWN_CLIENT_ARGS).toContain('--remote')
+    expect(validateLauncherArgs(['--remote']).unknown).toEqual([])
+    // A `--remote` value-taking neighbour is not mistaken for an unknown flag.
+    expect(validateLauncherArgs(['--remote', '--new']).unknown).toEqual([])
+  })
+
+  test('the notice names the removal line and the replacement entry', () => {
+    expect(REMOTE_DEPRECATION_NOTICE).toContain('0.23.0')
+    expect(REMOTE_DEPRECATION_NOTICE).toContain('deprecated')
+    expect(REMOTE_DEPRECATION_NOTICE.toLowerCase()).toContain('in-process bridge')
+    expect(REMOTE_DEPRECATION_NOTICE).toContain('DSH_OPENTUI_INPROC=1')
+    expect(REMOTE_DEPRECATION_NOTICE).toContain('--session')
+  })
+
+  test('emitRemoteDeprecation prints at most once even when the flag repeats', () => {
+    const lines: string[] = []
+    expect(emitRemoteDeprecation([['--remote', '--remote', '--new'], []], (m) => lines.push(String(m)))).toBe(1)
+    expect(lines).toEqual([REMOTE_DEPRECATION_NOTICE])
+    expect(emitRemoteDeprecation([['--new'], []], (m) => lines.push(String(m)))).toBe(0)
+    expect(lines).toHaveLength(1)
+  })
+
+  test('isRemoteRequested sees the flag before and after a -- separator', () => {
+    expect(isRemoteRequested(['--remote'], [])).toBe(true)
+    expect(isRemoteRequested(['--new'], ['--remote'])).toBe(true)
+    expect(isRemoteRequested(['--new'], [])).toBe(false)
+  })
+
+  test('bin integration: --remote --help prints one notice and the usage', () => {
+    const r = spawnSync('node', [binPath, '--remote', '--help'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('Usage: dsh-opentui')
+    const matches = r.stderr.split(REMOTE_DEPRECATION_NOTICE).length - 1
+    expect(matches).toBe(1)
+    expect(r.stderr).not.toContain('[1/5]') // no provisioning on the help path
+  })
+})
+
 describe('formatUsage', () => {
   test('documents every launcher option, client options and the exit codes', () => {
     const usage = formatUsage()
@@ -348,6 +391,7 @@ describe('formatUsage', () => {
       '--reasoning-effort <level>',
       '--plugins <tier>',
       '--dry-run',
+      '--remote',
       '-h, --help',
     ]) {
       expect(usage).toContain(flag)
