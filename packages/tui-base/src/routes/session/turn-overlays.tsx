@@ -320,7 +320,15 @@ export function registerTurnOverlays(seam: {
 	registerAskProvider(onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void
 	pendingAsks?: () => readonly BridgeAskSnapshot[]
 	onSessionEvent?: (listener: (event: SeamSessionEvent) => void) => () => void
-}, controller: TurnOverlayController): void {
+}, controller: TurnOverlayController, options?: {
+	/**
+	 * RM-2b V3: localized reason painted on every pending card when `bridge.dead`
+	 * arrives (bridge process death kills every ask inside it — no snapshot can
+	 * be rebuilt across a dead process). A function receives the dead-cause
+	 * details so the page can append stage/code/signal. Omit for non-bridge seams.
+	 */
+	deadReason?: string | ((details: unknown) => string)
+}): void {
 	if (typeof seam.pendingAsks === "function") {
 		const read = seam.pendingAsks.bind(seam)
 		controller.attachPendingAsks(() => read() ?? [])
@@ -328,8 +336,17 @@ export function registerTurnOverlays(seam: {
 	// A6: the bridge seam publishes `bridge.ask.invalidated` when a rebuilt
 	// card's ask.response fails because the ask/turn is gone. Paint a terminal
 	// "已失效" card with the reason instead of letting it vanish silently.
+	// RM-2b V3: `bridge.dead` invalidates EVERY pending card at once (terminal,
+	// not silent) with a localized connection-lost reason.
 	if (typeof seam.onSessionEvent === "function") {
 		seam.onSessionEvent((event) => {
+			if (event.type === "bridge.dead") {
+				const configured = options?.deadReason
+				if (configured === undefined) return
+				const reason = typeof configured === "function" ? configured(event.details) : configured
+				if (reason !== "") controller.invalidateAll(reason)
+				return
+			}
 			if (event.type !== "bridge.ask.invalidated") return
 			const details = event.details as { eventId?: unknown; reason?: unknown }
 			if (typeof details?.eventId !== "string") return

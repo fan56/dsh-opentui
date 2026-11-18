@@ -540,4 +540,58 @@ describe("A6: invalidated terminal state on a dead ask.response", () => {
 
 		expect(h.seam.invalidatedAsks().get("t9:ask-2")).toContain("ASK_NOT_FOUND")
 	})
+
+	// RM-2b V3: answering a pending card while the bridge is DEAD makes
+	// transport.request reject with BRIDGE_DEAD. That must map to a terminal
+	// invalidated state + event, never a silent disappearance.
+	test("BRIDGE_DEAD (and BRIDGE_CLOSED) map to a terminal invalidated card", async () => {
+		for (const code of ["BRIDGE_DEAD", "BRIDGE_CLOSED"] as const) {
+			const h = makeAskHarness()
+			h.replies.set("ask.response", {
+				error: new BridgeProtocolError(code, "bridge host exited"),
+			})
+			h.seam.registerAskProvider(async () => [{ questionId: "q1", selected: "A" }])
+			const events: { type: string; details: unknown }[] = []
+			h.seam.onSessionEvent((e) => events.push(e))
+
+			h.emit("ask.pending", {
+				sessionId: "s1",
+				asks: [askRequest({
+					eventId: `t9:${code}:ask-1`,
+					kind: "questions",
+					questions: [{ id: "q1", prompt: "Keep?", options: [{ label: "A" }] }],
+				})],
+			})
+			await h.flush()
+
+			// Card is KEPT as a terminal state with a reason (not silently dropped).
+			expect(h.seam.pendingAsks().map((a) => a.eventId)).toEqual([`t9:${code}:ask-1`])
+			expect(h.seam.invalidatedAsks().get(`t9:${code}:ask-1`)).toContain(code)
+			expect(h.seam.invalidatedAsks().get(`t9:${code}:ask-1`)).toContain("bridge host exited")
+			const invalidationEvents = events.filter((e) => e.type === "bridge.ask.invalidated")
+			expect(invalidationEvents).toHaveLength(1)
+			expect(invalidationEvents[0]!.details).toMatchObject({ eventId: `t9:${code}:ask-1`, sessionId: "s1" })
+		}
+	})
+
+	test("a transient/non-dead request error does NOT invalidate (no regression)", async () => {
+		const h = makeAskHarness()
+		h.replies.set("ask.response", {
+			error: new BridgeProtocolError("BRIDGE_RECOVERING", "bridge recovering"),
+		})
+		h.seam.registerAskProvider(async () => [{ questionId: "q1", selected: "A" }])
+
+		h.emit("ask.pending", {
+			sessionId: "s1",
+			asks: [askRequest({
+				eventId: "t9:ask-3",
+				kind: "questions",
+				questions: [{ id: "q1", prompt: "Keep?", options: [{ label: "A" }] }],
+			})],
+		})
+		await h.flush()
+
+		expect(h.seam.invalidatedAsks().size).toBe(0)
+		expect(h.seam.pendingAsks().map((a) => a.eventId)).toEqual([])
+	})
 })

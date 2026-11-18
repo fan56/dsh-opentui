@@ -547,6 +547,7 @@
   "overlay.ask.reject": "拒绝",
   "overlay.ask.invalidatedTitle": "⚠ 已失效",
   "overlay.ask.invalidated": "此请求已失效：{reason}",
+  "overlay.ask.invalidated.disconnected": "连接已断开，bridge 进程已终止",
   "overlay.ask.invalidatedAck": "知道了",
   "overlay.ask.allowAlways": "始终允许",
   "overlay.ask.allowSession": "本会话允许",

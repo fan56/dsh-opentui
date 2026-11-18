@@ -1327,16 +1327,23 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 	}
 
-	/** A6: `ask.response` failed for a reason that means the rebuilt ask can no
-	 *  longer be answered — the ask was evicted or its turn/session is dead.
-	 *  `ASK_NOT_FOUND` is accepted as a defensive alias (ADR-0011's code for an
-	 *  unknown eventId is `ASK_UNKNOWN_REQUEST`). */
+	/** A6: `ask.response` failed for a reason that means the ask can no longer
+	 *  be answered — the ask was evicted, its turn/session is dead, OR the bridge
+	 *  connection itself is gone. `ASK_NOT_FOUND` is a defensive alias (ADR-0011's
+	 *  code for an unknown eventId is `ASK_UNKNOWN_REQUEST`). RM-2b V3: a DEAD
+	 *  bridge rejects every request with `BRIDGE_DEAD` (`bridge-transport.ts`),
+	 *  so answering a still-pending card during DEAD must map to the terminal
+	 *  invalidated state instead of silently dropping the card. `BRIDGE_CLOSED`
+	 *  is the same connection-level class (transport closed, terminal). */
 	#isDeadResponseError(err: unknown): string | undefined {
 		const code = err instanceof BridgeProtocolError ? err.code
 			: err !== null && typeof err === "object" && typeof (err as { code?: unknown }).code === "string"
 				? (err as { code: string }).code
 				: undefined
-		if (code === "ASK_NOT_FOUND" || code === "ASK_UNKNOWN_REQUEST" || code === "ASK_TURN_ENDED") {
+		if (
+			code === "ASK_NOT_FOUND" || code === "ASK_UNKNOWN_REQUEST" || code === "ASK_TURN_ENDED" ||
+			code === "BRIDGE_DEAD" || code === "BRIDGE_CLOSED"
+		) {
 			return err instanceof Error && err.message !== "" ? `${code}: ${err.message}` : code
 		}
 		return undefined

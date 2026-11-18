@@ -253,3 +253,110 @@ describe("A6: invalidated terminal card", () => {
 		expect(controller.pendingInvalidated().get("t9:ask-1")).toBe("ASK_TURN_ENDED: turn ended")
 	})
 })
+
+// RM-2b V3 — a bridge PROCESS death kills every turn/ask in it. No pending
+// snapshot can be rebuilt across a dead process (AskRegistry died with it), so
+// every pending card goes straight to a terminal "已失效" state on bridge.dead.
+describe("RM-2b V3: bridge.dead invalidates every pending card", () => {
+	function withDeadEvents(
+		controller: TurnOverlayController,
+		deadReason: (details: unknown) => string,
+		initial: BridgeAskSnapshot[] = [],
+	) {
+		let listener: ((event: { type: string; details: unknown }) => void) | undefined
+		const seam = {
+			...bridgeLike(initial),
+			onSessionEvent(fn: (event: { type: string; details: unknown }) => void) {
+				listener = fn
+				return () => { listener = undefined }
+			},
+		}
+		registerTurnOverlays(seam, controller, { deadReason })
+		return (event: { type: string; details: unknown }) => listener?.(event)
+	}
+
+	const QUESTIONS: SeamAskQuestion[] = [
+		{ id: "q1", prompt: "Keep?", options: [{ label: "A" }, { label: "B" }] },
+	]
+
+	test("bridge.dead → all pending approvals + questions become terminal invalidated cards", async () => {
+		const controller = new TurnOverlayController()
+		const emit = withDeadEvents(controller, (details) => {
+			const cause = details as { message?: string }
+			return `CONNECTION_LOST · ${cause.message ?? ""}`
+		}, [
+			ask({ eventId: "t9:ask-1", callId: "c-1", toolName: "bash" }),
+			ask({ eventId: "t9:ask-2", callId: "c-2", toolName: "rm" }),
+			{
+				eventId: "t9:ask-3",
+				kind: "questions",
+				questions: QUESTIONS,
+			} as BridgeAskSnapshot,
+		])
+
+		const first = controller.requestApproval("bash", { callId: "c-1" })
+		const second = controller.requestApproval("rm", { callId: "c-2" })
+		const answers = controller.answer(QUESTIONS)
+		expect(controller.pendingApprovalCount).toBe(2)
+		expect(controller.pendingAskCount).toBe(1)
+
+		emit({
+			type: "bridge.dead",
+			details: { stage: "runtime", code: null, signal: "SIGKILL", message: "bridge host exited (signal SIGKILL)" },
+		})
+
+		// Every card is now a terminal invalidated card (reason includes the
+		// localized disconnected text + the dead cause message). None is dropped.
+		const invalidated = controller.pendingInvalidated()
+		expect(invalidated.size).toBe(3)
+		for (const reason of invalidated.values()) {
+			expect(reason).toContain("CONNECTION_LOST")
+			expect(reason).toContain("SIGKILL")
+		}
+		expect(controller.pendingApproval?.invalidatedReason).toContain("CONNECTION_LOST")
+		expect(controller.pendingAskCount).toBe(0)
+		// Original waiters settle fail-closed: no dangling promise, no implicit allow.
+		expect(await first).toBe("rejected")
+		expect(await second).toBe("rejected")
+		expect(await answers).toEqual([])
+	})
+
+	test("a terminal card is acknowledge-only, never an answer (作答入口禁用)", async () => {
+		const controller = new TurnOverlayController()
+		const emit = withDeadEvents(controller, () => "CONNECTION_LOST")
+		const pending = controller.requestApproval("bash", { callId: "c-1" })
+		emit({ type: "bridge.dead", details: {} })
+
+		expect(controller.pendingApproval?.invalidatedReason).toBe("CONNECTION_LOST")
+		// The original waiter is failed closed — a terminal card never answers.
+		expect(await pending).toBe("rejected")
+		// Confirm on a terminal card only acknowledges the single card: it does
+		// not produce a verdict, and escalation actions are never rendered.
+		controller.confirmApproval()
+		expect(controller.pendingInvalidated().size).toBe(0)
+		expect(controller.pendingApproval).toBeUndefined()
+	})
+
+	test("a follow-up BRIDGE_DEAD bridge.ask.invalidated cannot repaint the terminal reason", () => {
+		const controller = new TurnOverlayController()
+		const emit = withDeadEvents(controller, () => "CONNECTION_LOST (localized)")
+		controller.invalidateAsk("t9:ask-1", "CONNECTION_LOST (localized)")
+		emit({ type: "bridge.dead", details: {} })
+		expect(controller.pendingInvalidated().get("t9:ask-1")).toBe("CONNECTION_LOST (localized)")
+
+		emit({ type: "bridge.ask.invalidated", details: { eventId: "t9:ask-1", reason: "BRIDGE_DEAD: bridge dead" } })
+		expect(controller.pendingInvalidated().get("t9:ask-1")).toBe("CONNECTION_LOST (localized)")
+	})
+
+	test("non-dead events do NOT invalidate pending cards (no regression)", async () => {
+		const controller = new TurnOverlayController()
+		const emit = withDeadEvents(controller, () => "CONNECTION_LOST")
+		const pending = controller.requestApproval("bash", {})
+		emit({ type: "bridge.recovered", details: { applied: 0 } })
+		emit({ type: "bridge.session.opened", details: {} })
+		expect(controller.pendingInvalidated().size).toBe(0)
+		expect(controller.pendingApproval?.invalidatedReason).toBeUndefined()
+		controller.rejectApproval()
+		expect(await pending).toBe("rejected")
+	})
+})

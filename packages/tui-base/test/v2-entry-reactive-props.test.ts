@@ -59,3 +59,20 @@ describe("v2-entry pickOne focus-current wiring (live-language picker regression
 		expect(source).not.toMatch(/focusCurrent:\s*false,/)
 	})
 })
+
+describe("v2-entry reconnect layer (RM-2b V3: dead-state R must reach recovery)", () => {
+	test("reconnect layer is global-mode + canRecover-gated, not pageOwns-only", () => {
+		// A terminal "已失效" card stays on the modal dialog stack after bridge
+		// death. A base-mode `pageOwns()` layer is gated out by that modal; the
+		// reconnect layer must dispatch in modal mode and open on canRecover().
+		expect(source).toMatch(/mode:\s*"global",\s*\n\s*enabled:\s*\(\)\s*=>\s*pageOwns\(\)\s*\|\|\s*recovery\.canRecover\(\)/)
+		expect(source).not.toMatch(/enabled:\s*\(\)\s*=>\s*pageOwns\(\),\s*\n\s*commands:\s*\[recovery\.reconnectCommand\(\)\]/)
+		expect(source).toMatch(/commands:\s*\[recovery\.reconnectCommand\(\)\]/)
+	})
+
+	test("registerTurnOverlays gets a localized deadReason for bridge.dead", () => {
+		expect(source).toMatch(/registerTurnOverlays\(seam,\s*overlays,\s*\{/)
+		expect(source).toMatch(/deadReason:/)
+		expect(source).toMatch(/overlay\.ask\.invalidated\.disconnected/)
+	})
+})

@@ -1061,8 +1061,18 @@ function V2SessionPageBody(props: {
 	// stale dispatch can never start a second recovery. Key occupancy: plain
 	// `r` is free in config/keybind.ts (ctrl+r = session.rename, <leader>r =
 	// redo are distinct strokes).
+	// RM-2b V3: a bridge death turns every pending ask card into a terminal
+	// "已失效" card that STAYS on the dialog stack. That dialog pushes modal mode
+	// + an ownership frame, so a base-mode `pageOwns()` layer would gate R out —
+	// exactly the real-device BLOCKED result. Recovery must stay reachable while
+	// that terminal card is still visible: `global` mode ignores the modal-mode
+	// requirement, and `canRecover()` opens the layer only in dead/failed/locked
+	// (page ownership still opens it in the ordinary, no-dialog case). The
+	// reconnect command's own `canRecover()` gate is the final guard; its body
+	// never forces input ownership, so the visible card is not torn down.
 	Keymap.createLayer(() => ({
-		enabled: () => pageOwns(),
+		mode: "global",
+		enabled: () => pageOwns() || recovery.canRecover(),
 		commands: [recovery.reconnectCommand()],
 	}))
 	const overlayHost = createComponent(TurnOverlayHost, {
@@ -1598,7 +1608,17 @@ export async function bootClientV2(options: {
 						seam: seam as never,
 					})
 			: undefined
-	registerTurnOverlays(seam, overlays)
+	registerTurnOverlays(seam, overlays, {
+		// RM-2b V3: DEAD means the bridge PROCESS died — AskRegistry died with it,
+		// so no pending snapshot can be rebuilt. Every pending card is painted as
+		// a terminal "已失效" card with this localized reason + the dead cause's
+		// own diagnostic (stage/code/signal/message).
+		deadReason: (details) => {
+			const cause = details as { message?: unknown } | undefined
+			const detail = typeof cause?.message === "string" && cause.message.trim() !== "" ? cause.message : ""
+			return detail === "" ? t("overlay.ask.invalidated.disconnected") : `${t("overlay.ask.invalidated.disconnected")} · ${detail}`
+		},
+	})
 	// feat/auto-resume: dsh sessions are persisted server-side, but a plain
 	// launch must land on a NEW session (the default is `autoResume: "off"`).
 	// Restoring the newest non-empty session from THIS workspace is an opt-in:

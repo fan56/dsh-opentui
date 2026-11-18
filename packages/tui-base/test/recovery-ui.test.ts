@@ -117,6 +117,63 @@ describe("reconnect key binding and gate", () => {
 			expect(state.recovers).toBe(1)
 		}
 	})
+
+	/**
+	 * RM-2b V3 real-device BLOCKED case: a pending approval card owns the modal
+	 * mode + an ownership frame, so `pageOwns()` is false. On bridge.dead the
+	 * card becomes a terminal "已失效" card that STAYS visible, so the modal is
+	 * never released. R must still reach recover() under that modal.
+	 *
+	 * The layer below mirrors the FIX in examples/v2-entry.tsx: `mode:"global"`
+	 * (no mode requirement -> dispatches under modal mode) and
+	 * `enabled: () => pageOwns() || controller.canRecover()`.
+	 */
+	function pressReconnectWithModal(controller: RecoveryUiController, pageOwns: () => boolean) {
+		const harness = createTestKeymap({ defaultKeys: false })
+		registerDefaultKeys(harness.keymap)
+		registerEnabledFields(harness.keymap)
+		const MODE_KEY = "opencode.mode"
+		harness.keymap.registerLayerFields({
+			mode(value: string, context: { require: (key: string, value: string) => void }) {
+				context.require(MODE_KEY, value)
+			},
+		})
+		// Simulate the lingering terminal-card dialog: modal mode active, and
+		// the page does NOT own the keyboard (pageOwns() === false).
+		harness.keymap.setData(MODE_KEY, "modal")
+		harness.keymap.registerLayer({
+			mode: "modal",
+			enabled: true,
+			bindings: [{ key: "escape", cmd: () => true }],
+		})
+
+		const command = controller.reconnectCommand()
+		harness.keymap.registerLayer({
+			enabled: () => pageOwns() || controller.canRecover(),
+			commands: [{ name: command.id, enabled: command.enabled, run: command.run }],
+			bindings: [{ key: command.bind, cmd: command.id }],
+		})
+		harness.host.press(RECOVERY_RECONNECT_BIND)
+		harness.cleanup()
+	}
+
+	test("dead state: R reaches recover even with a modal card owning input (RM-2b V3)", async () => {
+		const { controller, state } = setup()
+		controller.handleEvent({ type: "bridge.dead", details: { stage: "runtime", signal: "SIGKILL" } })
+		const modalOwnsInput = () => false
+		expect(controller.canRecover()).toBe(true)
+		pressReconnectWithModal(controller, modalOwnsInput)
+		await Promise.resolve()
+		expect(state.recovers).toBe(1)
+	})
+
+	test("non-dead state with a modal owning input: R stays gated (no accidental recovery)", async () => {
+		const { controller, state } = setup()
+		const modalOwnsInput = () => false
+		pressReconnectWithModal(controller, modalOwnsInput)
+		await Promise.resolve()
+		expect(state.recovers).toBe(0)
+	})
 })
 
 describe("three-state footer + composer disable", () => {

@@ -547,6 +547,7 @@
   "overlay.ask.reject": "reject",
   "overlay.ask.invalidatedTitle": "⚠ Invalidated",
   "overlay.ask.invalidated": "This request is no longer valid: {reason}",
+  "overlay.ask.invalidated.disconnected": "Connection lost; the bridge process has exited",
   "overlay.ask.invalidatedAck": "OK",
   "overlay.ask.allowAlways": "always",
   "overlay.ask.allowSession": "session",

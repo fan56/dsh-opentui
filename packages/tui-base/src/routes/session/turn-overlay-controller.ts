@@ -188,6 +188,17 @@ export class TurnOverlayController {
 	 */
 	invalidateAsk(eventId: string, reason: string): void {
 		if (eventId === "") return
+		// RM-2b V3: a dead-bridge invalidation resolves every pending card
+		// fail-closed, which makes the seam send ask.response on a DEAD bridge.
+		// That response fails with BRIDGE_DEAD and re-emits bridge.ask.invalidated
+		// for the SAME eventId. A terminal card already carrying this eventId is
+		// the desired end state — ignore the duplicate rather than repaint it
+		// (which would flicker and overwrite the localized disconnected reason).
+		if (
+			this.#approvals.some(
+				(entry) => entry.request.invalidatedReason !== undefined && entry.request.eventId === eventId,
+			)
+		) return
 		// Drop any open card for this ask without treating it as a verdict/pick.
 		this.#approvals = this.#approvals.filter((entry) => {
 			if (entry.request.eventId !== eventId) return true
@@ -210,6 +221,59 @@ export class TurnOverlayController {
 			},
 			resolve: () => { /* terminal: acknowledgement is the only action */ },
 		})
+		this.#changed()
+	}
+
+	/**
+	 * RM-2b V3 — bridge process death invalidates EVERY ask inside that bridge.
+	 * Called on `bridge.dead`: every still-pending approval card / question panel
+	 * becomes a terminal "已失效" card carrying `reason` (connection lost), and
+	 * every underlying ask promise is resolved fail-closed (approval → rejected,
+	 * questions → declined) so no waiter dangles and no answer is implicit.
+	 *
+	 * The terminal cards stay on screen (never silently dropped); their only
+	 * action is acknowledgement. eventIds are preserved where known so the
+	 * cards remain traceable to the dead asks. A follow-up BRIDGE_DEAD
+	 * `bridge.ask.invalidated` is deduped by `invalidateAsk`'s terminal guard.
+	 */
+	invalidateAll(reason: string): void {
+		if (reason === "") return
+		const open = this.#approvals.length + this.#asks.length
+		if (open === 0) return
+
+		const terminals: ApprovalEntry[] = []
+		for (const entry of this.#approvals) {
+			terminals.push({
+				request: {
+					id: ++this.#seq,
+					name: "ask",
+					args: {},
+					...(entry.request.eventId !== undefined ? { eventId: entry.request.eventId } : {}),
+					escalation: false,
+					invalidatedReason: reason,
+				},
+				resolve: () => { /* terminal: acknowledgement is the only action */ },
+			})
+		}
+		for (const entry of this.#asks) {
+			terminals.push({
+				request: {
+					id: ++this.#seq,
+					name: "ask",
+					args: {},
+					...(entry.eventId !== undefined ? { eventId: entry.eventId } : {}),
+					escalation: false,
+					invalidatedReason: reason,
+				},
+				resolve: () => { /* terminal: acknowledgement is the only action */ },
+			})
+		}
+		// Resolve the originals fail-closed BEFORE swapping the queues, so a
+		// consumer awaiting an answer never hangs and never gets an implicit allow.
+		for (const entry of this.#approvals) entry.resolve("rejected")
+		for (const entry of this.#asks) entry.resolve([])
+		this.#approvals = terminals
+		this.#asks = []
 		this.#changed()
 	}
 
