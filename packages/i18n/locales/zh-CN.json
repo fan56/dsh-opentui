@@ -913,5 +913,7 @@
   "dialog.mcp.details.integration": "\n集成：{id}",
   "composer.placeholder": "输入消息（enter 发送，alt+enter 换行）",
   "hero.plugins.count": "插件 {count}",
-  "hero.plugins.more": "… 还有 {count} 个"
+  "hero.plugins.more": "… 还有 {count} 个",
+  "error.sessionLocked": "writer-held：会话 \"{id}\" 已在另一进程中打开（持有会话：{holder}）。请关闭该实例后重试。",
+  "error.sessionLockedNoHolder": "writer-held：某会话已在另一进程中打开（持有会话未知）。请关闭该实例后重试。"
 }

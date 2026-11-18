@@ -66,6 +66,7 @@ import type {
 } from "../../seams/session"
 import { dockRemovalMs } from "./dock-visibility"
 import { motionDecorationsEnabled } from "../../skin/motion"
+import { sessionLockedErrorText } from "../../util/error"
 
 /** One projected transcript row (the rebuilt `SessionRow` slice). */
 export type SeamRow =
@@ -580,6 +581,15 @@ export function createSeamRows(
 		let reasoningStartedAt: number | undefined
 		let turnErrored = false
 		turnOpen = true
+		/** ADR-0010 I4: one error sink for both the seam's live `onError` callback
+		 * and a REJECTED seam.turn (e.g. SESSION_LOCKED from session.open — that
+		 * failure throws before any callback fires, so without this catch it
+		 * would never reach the transcript row or the ⚠ notice). */
+		const reportError = (message: string): void => {
+			turnErrored = true
+			upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true })
+			options?.onError?.(message)
+		}
 		/** Collapse the live think row to the one-line summary (text first
 		 * char / a tool call starting — the segment is done; elapsed freezes).
 		 * No-op when no panel is open or already collapsed. */
@@ -673,12 +683,15 @@ export function createSeamRows(
 				options?.onToolRun?.(run)
 			},
 			onApprove: options?.onApprove ?? approveThrough,
-			onError: (message) => {
-				turnErrored = true
-				upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true })
-				options?.onError?.(message)
-			},
+			onError: reportError,
 		})
+			.catch((error: unknown) => {
+				// Only SESSION_LOCKED gets the localised writer-held diagnostic;
+				// every other rejection keeps the existing (silent) settle path.
+				const diagnostic = sessionLockedErrorText(error)
+				if (diagnostic !== undefined) reportError(diagnostic)
+				throw error
+			})
 			.finally(() => {
 				// The await is over: journal events from here on are post-turn
 				// (the settle supersede in apply() arms against them). Flips

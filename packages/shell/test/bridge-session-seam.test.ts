@@ -731,4 +731,27 @@ describe("covered lifecycle + turn stream", () => {
 		expect(h.requests.filter((r) => r.method === "session.close")).toHaveLength(1)
 		expect(h.seam.currentSessionId()).toBeUndefined()
 	})
+
+	test("ADR-0010 I4: SESSION_LOCKED from session.open propagates with code + detail.holder intact", async () => {
+		const h = makeHarness()
+		// The bridge replies SESSION_LOCKED with detail.holder = the locked
+		// session id; the transport decoded it to this BridgeProtocolError.
+		const locked = new BridgeProtocolError("SESSION_LOCKED", "session already owned", { holder: "sess-held" })
+		h.replies.set("session.open", { kind: "error", error: locked })
+		h.seam.resumeSession("sess-held")
+
+		const errors: string[] = []
+		const pending = h.seam.turn("go", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError: (m) => errors.push(m),
+		})
+		await expect(pending).rejects.toBe(locked)
+		// The seam rethrows verbatim — no live callback fires on this path, so
+		// the tui-base render point is what turns it into the writer-held text.
+		expect(errors).toHaveLength(0)
+		expect(h.seam.status().sessionAttached).toBe(false)
+		expect(h.requests.filter((r) => r.method === "session.send")).toHaveLength(0)
+	})
 })

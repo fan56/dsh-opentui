@@ -1,6 +1,33 @@
+import { t } from "../i18n"
 import { isRecord } from "./record"
 
 type ConfigIssue = { message: string; path: string[] }
+
+/**
+ * ADR-0010 I4: the bridge reports a single-writer conflict as
+ * `BridgeProtocolError(code="SESSION_LOCKED", detail.holder=<sessionId>)`.
+ * The raw host message is not actionable — render the localised `writer-held`
+ * diagnostic instead, naming the held session. `detail.holder` is the id of
+ * the LOCKED session (the host error's `sessionId`, `"unknown"` when absent);
+ * it is NOT a process identity. When it is missing/unknown we use the no-holder
+ * key so no literal `{holder}` placeholder ever reaches the user.
+ *
+ * Other codes return undefined — callers keep their existing rendering, so
+ * this is a pure add-on and never rewrites an unrelated error.
+ */
+export function sessionLockedErrorText(error: unknown): string | undefined {
+  if (!isRecord(error) || error.code !== "SESSION_LOCKED") return undefined
+  const detail = isRecord(error.detail) ? error.detail : undefined
+  const holderValue = detail?.holder
+  const holder =
+    typeof holderValue === "string" && holderValue !== "" && holderValue !== "unknown" ? holderValue : undefined
+  if (holder === undefined) return t("error.sessionLockedNoHolder")
+  // `detail.sessionId` may carry the session the user tried to open; the
+  // bridge only guarantees `holder`, so fall back to it when absent.
+  const idValue = detail?.sessionId
+  const id = typeof idValue === "string" && idValue !== "" ? idValue : holder
+  return t("error.sessionLocked", { id, holder })
+}
 
 export function cliErrorMessage(input: unknown): string | undefined {
   if (input instanceof Error && isRecord(input.cause) && "body" in input.cause) {

@@ -913,5 +913,7 @@
   "dialog.mcp.details.integration": "\nIntegration: {id}",
   "composer.placeholder": "Type a message (enter send, alt+enter newline)",
   "hero.plugins.count": "plugins {count}",
-  "hero.plugins.more": "… +{count} more"
+  "hero.plugins.more": "… +{count} more",
+  "error.sessionLocked": "writer-held: session \"{id}\" is already open in another process (holding session: {holder}). Close that instance and retry.",
+  "error.sessionLockedNoHolder": "writer-held: a session is already open in another process (holding session unknown). Close that instance and retry."
 }
