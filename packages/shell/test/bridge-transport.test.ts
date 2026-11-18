@@ -22,7 +22,8 @@ interface FakeBridge {
 	writes: string[]
 	spawnCalls: { command: string; args: readonly string[]; env: NodeJS.ProcessEnv }[]
 	killed: () => number
-	emitExit: (code: number) => void
+	emitExit: (code: number, signal?: string | null) => void
+	emitError: (err: Error) => void
 }
 
 function fakeSpawn(): { spawnFn: BridgeSpawnFn; bridge: FakeBridge } {
@@ -63,8 +64,11 @@ function fakeSpawn(): { spawnFn: BridgeSpawnFn; bridge: FakeBridge } {
 			writes,
 			spawnCalls,
 			killed: () => killCount,
-			emitExit: (code) => {
-				for (const listener of lifecycle.exit ?? []) listener(code as never)
+			emitExit: (code, signal) => {
+				for (const listener of lifecycle.exit ?? []) listener(code as never, signal as never)
+			},
+			emitError: (err) => {
+				for (const listener of lifecycle.error ?? []) listener(err as never)
 			},
 		},
 	}
@@ -155,6 +159,46 @@ describe("StdioBridgeTransport wire contract", () => {
 			expect(err).toBeInstanceOf(BridgeProtocolError)
 			expect((err as BridgeProtocolError).code).toBe("BRIDGE_DEAD")
 		}
+	})
+
+	test("child exit records a structured deadCause (code/signal/stage=runtime)", () => {
+		const { spawnFn, bridge } = fakeSpawn()
+		const t = new StdioBridgeTransport({ spawnFn })
+		void t.request("bridge.ping").catch(() => { /* expected on exit */ })
+		bridge.emitExit(42, "SIGKILL")
+		expect(t.deadCause).toEqual({
+			stage: "runtime",
+			code: 42,
+			signal: "SIGKILL",
+			message: "bridge host exited (code 42, signal SIGKILL)",
+		})
+	})
+
+	test("spawn error records stage=spawn with no exit code", () => {
+		const { spawnFn, bridge } = fakeSpawn()
+		const t = new StdioBridgeTransport({ spawnFn })
+		void t.request("bridge.ping").catch(() => { /* expected on error */ })
+		bridge.emitError(new Error("spawn dsh ENOENT"))
+		expect(t.deadCause).toEqual({
+			stage: "spawn",
+			code: null,
+			signal: null,
+			message: "bridge host error: spawn dsh ENOENT",
+		})
+	})
+
+	test("DEAD is published once on the existing onEvent subscription", () => {
+		const { spawnFn, bridge } = fakeSpawn()
+		const t = new StdioBridgeTransport({ spawnFn })
+		const dead: BridgeEventFrame[] = []
+		t.onEvent((e) => {
+			if (e.type === "bridge.dead") dead.push(e)
+		})
+		void t.request("bridge.ping").catch(() => { /* expected on exit */ })
+		bridge.emitExit(1)
+		bridge.emitExit(2) // second exit must NOT re-publish (permanent DEAD)
+		expect(dead).toHaveLength(1)
+		expect(dead[0]?.payload).toEqual(t.deadCause)
 	})
 
 	test("close() is idempotent and kills the child", () => {

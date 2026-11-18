@@ -13,14 +13,24 @@
 import { spawn as nodeSpawn } from "node:child_process"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { BridgeProtocolError, type BridgeEventFrame, type BridgeTransport } from "./bridge-session-seam.ts"
+import {
+	BridgeProtocolError,
+	type BridgeDeadCause,
+	type BridgeEventFrame,
+	type BridgeTransport,
+} from "./bridge-session-seam.ts"
 
 /** The minimal child-process surface the transport needs. */
 export interface SpawnedBridgeChild {
 	stdin: { write(chunk: string): unknown }
 	stdout: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown }
 	stderr: { on(event: "data", listener: (chunk: Buffer | string) => void): unknown }
-	on(event: "exit" | "error", listener: (arg: number | string | Error | null) => void): unknown
+	/** `exit` delivers (code, signal); `error` delivers (Error). The optional
+	 *  second arg keeps both shapes under one structural signature. */
+	on(
+		event: "exit" | "error",
+		listener: (arg: number | string | Error | null, signal?: string | null) => void,
+	): unknown
 	kill(signal?: string): unknown
 }
 
@@ -65,6 +75,8 @@ export class StdioBridgeTransport implements BridgeTransport {
 	#stdoutBuffer = ""
 	#stderrTail: string[] = []
 	#deadError: BridgeProtocolError | undefined
+	/** A1: first (permanent) structured DEAD cause. */
+	#deadCause: BridgeDeadCause | undefined
 	#closed = false
 
 	constructor(options: StdioBridgeTransportOptions = {}) {
@@ -74,6 +86,13 @@ export class StdioBridgeTransport implements BridgeTransport {
 	/** The stderr tail captured so far — quoted in diagnostics on a dead bridge. */
 	get diagnostics(): string {
 		return this.#stderrTail.slice(-12).join("\n")
+	}
+
+	/** A1: the structured reason the bridge entered DEAD, or undefined if alive.
+	 *  Set once (permanent, like #deadError) and readable synchronously by the
+	 *  upper layers. */
+	get deadCause(): BridgeDeadCause | undefined {
+		return this.#deadCause
 	}
 
 	#spawn(): SpawnedBridgeChild {
@@ -99,10 +118,15 @@ export class StdioBridgeTransport implements BridgeTransport {
 			this.#stderrTail.push(...text.split("\n").filter(Boolean))
 			if (this.#stderrTail.length > 64) this.#stderrTail.splice(0, this.#stderrTail.length - 64)
 		})
-		child.on("exit", (code) => this.#onDead(`bridge host exited (code ${String(code)})`))
+		child.on("exit", (code, signal) => {
+			const exitCode = typeof code === "number" ? code : null
+			const exitSignal = typeof signal === "string" ? signal : null
+			const message = `bridge host exited (code ${String(code)}${exitSignal === null ? "" : `, signal ${exitSignal}`})`
+			this.#onDead(message, { stage: "runtime", code: exitCode, signal: exitSignal, message })
+		})
 		child.on("error", (err) => {
-			const message = err instanceof Error ? err.message : String(err)
-			this.#onDead(`bridge host error: ${message}`)
+			const message = `bridge host error: ${err instanceof Error ? err.message : String(err)}`
+			this.#onDead(message, { stage: "spawn", code: null, signal: null, message })
 		})
 		return child
 	}
@@ -147,21 +171,29 @@ export class StdioBridgeTransport implements BridgeTransport {
 			return
 		}
 		if (typeof rec.type === "string") {
-			const event: BridgeEventFrame = { type: rec.type, payload: rec.payload }
-			for (const listener of [...this.#listeners]) {
-				try {
-					listener(event)
-				} catch {
-					/* a throwing view listener must not break the frame pump */
-				}
+			this.#publish({ type: rec.type, payload: rec.payload })
+		}
+	}
+
+	/** Publish on the EXISTING onEvent subscription (no new pipeline). Also
+	 *  used for the synthetic `bridge.dead` frame so upper layers observe DEAD
+	 *  without polling (A2 — the idle-period crash case). */
+	#publish(event: BridgeEventFrame): void {
+		for (const listener of [...this.#listeners]) {
+			try {
+				listener(event)
+			} catch {
+				/* a throwing view listener must not break the frame pump */
 			}
 		}
 	}
 
-	#onDead(reason: string): void {
+	#onDead(reason: string, cause: BridgeDeadCause): void {
 		if (this.#deadError === undefined) {
 			const tail = this.diagnostics ? ` (stderr tail: ${this.diagnostics})` : ""
-			this.#deadError = new BridgeProtocolError("BRIDGE_DEAD", `${reason}${tail}`)
+			this.#deadError = new BridgeProtocolError("BRIDGE_DEAD", `${reason}${tail}`, cause)
+			this.#deadCause = cause
+			this.#publish({ type: "bridge.dead", payload: cause })
 		}
 		for (const [id, pending] of [...this.#pending]) {
 			this.#pending.delete(id)
@@ -207,7 +239,12 @@ export class StdioBridgeTransport implements BridgeTransport {
 	close(): void {
 		if (this.#closed) return
 		this.#closed = true
-		this.#onDead("bridge transport closed")
+		this.#onDead("bridge transport closed", {
+			stage: "closed",
+			code: null,
+			signal: null,
+			message: "bridge transport closed",
+		})
 		try {
 			this.#child?.kill("SIGTERM")
 		} catch {

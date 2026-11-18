@@ -291,7 +291,7 @@ describe("sync degrade values + logs", () => {
 	test("status before handshake returns connected=disconnected/idle and logs a degrade", () => {
 		const h = makeHarness()
 		const s = h.seam.status()
-		expect(s).toEqual({ connection: "disconnected", turn: "idle", sessionAttached: false })
+		expect(s).toEqual({ connection: "disconnected", turn: "idle", sessionAttached: false, bridge: "ready" })
 		expect(h.warnFor("status")).toHaveLength(1)
 	})
 
@@ -300,7 +300,7 @@ describe("sync degrade values + logs", () => {
 		h.replies.set("bridge.ping", { kind: "value", value: { protocolVersion: 1 } })
 		await h.seam.connect()
 		const logsBefore = h.warnFor("status").length
-		expect(h.seam.status()).toEqual({ connection: "connected", turn: "idle", sessionAttached: false })
+		expect(h.seam.status()).toEqual({ connection: "connected", turn: "idle", sessionAttached: false, bridge: "ready" })
 		expect(h.warnFor("status")).toHaveLength(logsBefore)
 	})
 

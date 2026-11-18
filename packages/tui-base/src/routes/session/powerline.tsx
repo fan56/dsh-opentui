@@ -27,6 +27,7 @@ import { clipToWidth } from "./tool-summarize"
 import { stringWidth } from "../../util/string-width"
 import { useTerminalSize } from "./terminal-size"
 import { t } from "../../i18n"
+import type { BridgeLinkStatus } from "../../seams/session"
 
 /** A color that is either a token RGBA or a fallback hex string. */
 export type PowerlineColor = string | RGBA
@@ -825,6 +826,19 @@ export function sessionIdSegment(id: string | null | undefined, theme?: Componen
 }
 
 /**
+ * A2: the bridge link-health segment (dead / recovering / ready). The
+ * three-value precision lives in `SeamStatus.bridge` and is additive; an
+ * absent value hides the segment so legacy seams and existing consumers are
+ * untouched. Priority -2 sheds it before the session-id hint on narrow rows.
+ */
+export function bridgeStatusSegment(status: BridgeLinkStatus | undefined): PowerlineSegment | null {
+	if (status === undefined) return null
+	const text = status === "dead" ? "⚠ dead" : status === "recovering" ? "⟳ recovering" : "✓ ready"
+	const bg = status === "dead" ? "#a82124" : status === "recovering" ? "#b58105" : "#3a7d44"
+	return { text, bg, priority: -2 }
+}
+
+/**
  * Integer-part width for a rolling value: the digit count of its own
  * integer part (minimum 1). This is the compact counterpart of a hand-picked
  * fixed width — `formatRolling(v, d, rollingWidth(v, d))` renders exactly
@@ -1076,6 +1090,8 @@ export function sessionFooterSegments(data: {
 	 * from the UI; null/absent hides it (before the first turn binds a session).
 	 */
 	sessionId?: string | null
+	/** A2: bridge link health; absent hides the segment (legacy seams unaffected). */
+	bridgeStatus?: BridgeLinkStatus
 	/** Identity color mode (brand segment fill); dark default. */
 	mode?: SkinColorMode
 	theme?: ComponentTheme
@@ -1097,6 +1113,9 @@ export function sessionFooterSegments(data: {
 	add(toolSegment(data.tools ?? 0, theme))
 	add(elapsedSegment(data.elapsedSec ?? null, theme))
 	add(speedSegment(data.tps ?? null, theme))
+	// A2: bridge link health rides below the identity hint (priority -2) so it
+	// sheds first on narrow rows; absent = no segment for legacy seams.
+	add(bridgeStatusSegment(data.bridgeStatus))
 	// ADR-0010 I5: the identity hint rides last (least prominent) at the LOWEST
 	// priority — the fitter sheds it first so no existing segment is displaced.
 	add(sessionIdSegment(data.sessionId, theme))

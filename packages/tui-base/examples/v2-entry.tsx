@@ -263,6 +263,15 @@ function V2SessionPageBody(props: {
 	const [tools, setTools] = createSignal(0)
 	const [effort, setEffort] = createSignal<string | undefined>()
 	const [remoteInfo, setRemoteInfo] = createSignal<{ messageCount?: number; tps?: number | null }>()
+	// A2: bridge link health for the footer status slot. Event-driven off the
+	// seam's `bridge.dead` SeamSessionEvent — no polling, so an idle-period
+	// crash repaints immediately.
+	const [bridgeStatus, setBridgeStatus] = createSignal<"ready" | "recovering" | "dead">("ready")
+	onCleanup(
+		seam.onSessionEvent?.((event: { type: string; details: unknown }) => {
+			if (event?.type === "bridge.dead") setBridgeStatus("dead")
+		}) ?? (() => {}),
+	)
 	const [now, setNow] = createSignal(new Date())
 	// Composer context row (user feedback batch): a bump re-reads the git
 	// branch above the input box. Session switches (/new → clear, /fork /
@@ -637,6 +646,8 @@ function V2SessionPageBody(props: {
 			// ADR-0010 I5: the live session id from the seam flows into the
 			// low-priority 🆔 footer segment so identity stays observable.
 			sessionId: seam.currentSessionId(),
+			// A2: bridge link health — dead/recovering/ready (absent on legacy seams).
+			bridgeStatus: bridgeStatus(),
 			theme,
 			// Skin wiring (contract §1): the dsh brand segment's identity blue
 			// follows the active theme's color mode. NO elapsedSec — the ⏱
@@ -1491,6 +1502,12 @@ export async function bootClientV2(options: {
 			return seamBootstrap.createBridgeSessionSeam({
 				transport: options.bridgeTransport,
 				ctx: options.bridgeCtx ?? { logger: console },
+				// A2: DEAD is event-driven (no turn needed, so an idle crash paints
+				// immediately). showNotice is the global transient notices dock.
+				// TODO(A3): reserve a "按 R 重连" recovery entry here — deliberately
+				// NOT wired in A1+A2; the notice text carries no actionable hint yet.
+				onDead: (cause: { stage: string; code: number | null; signal: string | null; message: string }) =>
+					void showNotice(seamBootstrap.formatDeadNotice(cause), undefined, "error"),
 			})
 		},
 		createRemote: () => new adapter.RemoteSessionSeam(session as never),

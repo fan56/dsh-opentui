@@ -13,6 +13,7 @@ import {
 	autoContrast,
 	brightness,
 	brandSegment,
+	bridgeStatusSegment,
 	colorRgb,
 	contextSegment,
 	fitPowerlineSegments,
@@ -857,5 +858,22 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		// Identity hint gone; speed and every other segment survive.
 		expect(fitted.segments.some((s) => s.text.includes("🆔"))).toBe(false)
 		expect(fitted.segments.some((s) => s.text.includes("tok/s"))).toBe(true)
+	})
+})
+
+describe("A2 bridge link-health status segment", () => {
+	test("renders all three values; absent hides the segment", () => {
+		expect(bridgeStatusSegment("dead")?.text).toContain("dead")
+		expect(bridgeStatusSegment("recovering")?.text).toContain("recovering")
+		expect(bridgeStatusSegment("ready")?.text).toContain("ready")
+		expect(bridgeStatusSegment(undefined)).toBeNull()
+	})
+
+	test("sessionFooterSegments carries the dead status additively", () => {
+		const segs = sessionFooterSegments({ bridgeStatus: "dead", sessionId: "sess-12345678-abcd" })
+		expect(segs.some((s) => s.text.includes("dead"))).toBe(true)
+		// Legacy callers that pass no bridgeStatus keep the exact prior shape.
+		const legacy = sessionFooterSegments({ sessionId: "sess-12345678-abcd" })
+		expect(legacy.some((s) => s.text.includes("dead"))).toBe(false)
 	})
 })

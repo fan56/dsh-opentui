@@ -27,6 +27,7 @@ import type { SessionSeam } from "../../../tui-base/src/seams/session"
 import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
+	type BridgeDeadCause,
 	type BridgeSeamContext,
 	type BridgeTransport,
 } from "./bridge-session-seam.ts"
@@ -195,6 +196,35 @@ export interface CreateBridgeSessionSeamOptions {
 	transport: BridgeTransport
 	ctx: BridgeSeamContext
 	expectedProtocolVersion?: number
+	/** A2: notified synchronously on the first DEAD transition (including a
+	 *  handshake failure before the seam exists), so the UI can paint the
+	 *  transient "连接已断开" notice without polling. */
+	onDead?: (cause: BridgeDeadCause) => void
+}
+
+/** One-line transient notice text for a structured DEAD cause (A2). Kept in
+ *  shell so the handshake path and the runtime path share one wording. */
+export function formatDeadNotice(cause: BridgeDeadCause): string {
+	const detail: string[] = []
+	if (cause.code !== null) detail.push(`exit ${cause.code}`)
+	if (cause.signal !== null) detail.push(cause.signal)
+	detail.push(`stage ${cause.stage}`)
+	return `⚠ 连接已断开: ${cause.message} (${detail.join(", ")})`
+}
+
+/** When `bridge.hello` fails because the transport already went DEAD, promote
+ *  the captured cause to the `handshake` stage for the notice. */
+function deadCauseFromBootstrapError(err: unknown): BridgeDeadCause | undefined {
+	if (!(err instanceof BridgeProtocolError) || err.code !== "BRIDGE_DEAD") return undefined
+	const detail = err.detail
+	if (detail === null || typeof detail !== "object") return undefined
+	const r = detail as Record<string, unknown>
+	return {
+		stage: "handshake",
+		code: typeof r.code === "number" ? r.code : null,
+		signal: typeof r.signal === "string" ? r.signal : null,
+		message: typeof r.message === "string" ? r.message : err.message,
+	}
 }
 
 /**
@@ -210,11 +240,13 @@ export async function createBridgeSessionSeam(
 	try {
 		hello = await options.transport.request("bridge.hello", { protocolVersion: version })
 	} catch (err) {
+		const cause = deadCauseFromBootstrapError(err)
+		if (cause !== undefined) options.onDead?.(cause)
 		throw toBridgeBootstrapError(err)
 	}
 	// Throws BridgeBootstrapError on mismatch — no `catch` that degrades.
 	verifyBridgeFingerprint(hello, version)
-	const seam = new BridgeSessionSeam({ transport: options.transport, ctx: options.ctx })
+	const seam = new BridgeSessionSeam({ transport: options.transport, ctx: options.ctx, onDead: options.onDead })
 	// Populate the connection leg of status(); a ping failure after a verified
 	// handshake is a recoverable DEAD→READY transition, not a boot failure, so
 	// the seam's own lenient connect() is appropriate here.

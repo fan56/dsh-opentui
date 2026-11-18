@@ -30,6 +30,7 @@
  */
 
 import type {
+	BridgeLinkStatus,
 	SeamApprovalVerdict,
 	SeamAskPick,
 	SeamAskQuestion,
@@ -67,6 +68,25 @@ export interface BridgeEventFrame {
 	payload: unknown
 }
 
+/**
+ * Stage at which the bridge reached DEAD (ADR-0010 DEAD recovery, A1).
+ * `spawn` = the child never started, `handshake` = hello/ping rejected,
+ * `runtime` = a live child exited/was signalled, `closed` = deliberate teardown.
+ */
+export type BridgeDeadStage = "spawn" | "handshake" | "runtime" | "closed"
+
+/** Structured cause captured the first time the transport enters DEAD (A1),
+ *  republished on the existing `onEvent` pipeline as a `bridge.dead` frame. */
+export interface BridgeDeadCause {
+	stage: BridgeDeadStage
+	/** Process exit code on a runtime exit; null when unavailable. */
+	code: number | null
+	/** Terminating signal on a runtime exit; null when unavailable. */
+	signal: string | null
+	/** Short human-readable summary. */
+	message: string
+}
+
 /** The minimal client half of the stdio bridge, injected by the caller. */
 export interface BridgeTransport {
 	/** Send `request{id,method,params}`; resolve with `result`, reject with a
@@ -91,6 +111,10 @@ export interface BridgeSeamContext {
 export interface BridgeSessionSeamOptions {
 	transport: BridgeTransport
 	ctx: BridgeSeamContext
+	/** A2: called synchronously once when a `bridge.dead` frame arrives, even
+	 *  with no in-flight turn (the idle-period crash case). The composition
+	 *  root turns this into an immediate transient UI notice. */
+	onDead?: (cause: BridgeDeadCause) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +430,20 @@ const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n
 // BridgeSessionSeam
 // ---------------------------------------------------------------------------
 
+/** Normalize a `bridge.dead` frame payload into the structured cause. Unknown
+ *  senders still get a usable cause (fail open), never a crash. */
+function asDeadCause(value: unknown): BridgeDeadCause {
+	const r = asRecord(value)
+	const stage = r.stage
+	const stages: readonly string[] = ["spawn", "handshake", "runtime", "closed"]
+	return {
+		stage: typeof stage === "string" && stages.includes(stage) ? (stage as BridgeDeadStage) : "runtime",
+		code: typeof r.code === "number" ? r.code : null,
+		signal: typeof r.signal === "string" ? r.signal : null,
+		message: typeof r.message === "string" ? r.message : "bridge connection lost",
+	}
+}
+
 /** One locally-pending ask. `done` always settles — on answer, cancel, host
  *  settled broadcast, reconnect snapshot replacement or dispose — so no
  *  consumer ever waits on a dangling promise (ADR-0011 §3.3 / invariant A2). */
@@ -422,10 +460,13 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #ctx: BridgeSeamContext
 	readonly #unsubEvent: () => void
 	readonly #listeners: ((event: SeamSessionEvent) => void)[] = []
+	readonly #onDead?: (cause: BridgeDeadCause) => void
 
 	// status state machine (no dedicated status frame — ticket §1 #1).
 	#connection: SeamStatus["connection"] = "disconnected"
 	#turn: SeamStatus["turn"] = "idle"
+	/** A2: three-value bridge link health, additive to the connection leg. */
+	#bridgeLink: BridgeLinkStatus = "ready"
 	#sessionAttached = false
 	#currentSessionId: string | undefined
 	/** Pending sync-stage from resumeSession()/newSession(), bound at next turn. */
@@ -457,6 +498,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	constructor(options: BridgeSessionSeamOptions) {
 		this.#transport = options.transport
 		this.#ctx = options.ctx
+		this.#onDead = options.onDead
 		this.#unsubEvent = this.#transport.onEvent((frame) => this.#onBridgeEvent(frame))
 	}
 
@@ -481,7 +523,7 @@ export class BridgeSessionSeam implements SessionSeam {
 			// P2-9: session-tabs polls status() on a timer — log this class once.
 			this.#degradeOnce("status", "no handshake/status frame; returning disconnected/idle")
 		}
-		return { connection: this.#connection, turn: this.#turn, sessionAttached: this.#sessionAttached }
+		return { connection: this.#connection, turn: this.#turn, sessionAttached: this.#sessionAttached, bridge: this.#bridgeLink }
 	}
 
 	currentSessionId(): string | undefined {
@@ -1025,6 +1067,26 @@ export class BridgeSessionSeam implements SessionSeam {
 		// ADR-0011 ask frames own their own queue — never project them as turn
 		// deltas or session events (they are not transcript rows).
 		if (this.#onAskEvent(frame)) return
+
+		// A2: DEAD is published on the existing onEvent pipeline (no polling).
+		// Event-driven so an idle-period crash — no in-flight turn — paints the
+		// notice immediately. Re-emit as a SeamSessionEvent for the view and call
+		// the composition-root callback synchronously.
+		if (frame.type === "bridge.dead") {
+			const cause = asDeadCause(frame.payload)
+			this.#bridgeLink = "dead"
+			this.#connection = "disconnected"
+			this.#turn = "idle"
+			this.#onDead?.(cause)
+			for (const listener of [...this.#listeners]) {
+				try {
+					listener({ type: "bridge.dead", details: cause })
+				} catch {
+					/* one stale view listener must not break the feed */
+				}
+			}
+			return
+		}
 
 		const payload = asRecord(frame.payload)
 		// status state machine (no reconnect precision — D3: idle on ambiguity).

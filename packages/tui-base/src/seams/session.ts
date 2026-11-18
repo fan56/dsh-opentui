@@ -130,11 +130,18 @@ export interface SeamSessionEvent {
 	details: unknown
 }
 
+/** Bridge link health for the footer status slot (ADR-0010 DEAD recovery).
+ *  Additive status precision: dead / recovering / ready. */
+export type BridgeLinkStatus = "ready" | "recovering" | "dead"
+
 /** Connection/turn status — RemoteSessionStatus's view-relevant slice. */
 export interface SeamStatus {
 	connection: "connecting" | "connected" | "disconnected"
 	turn: "idle" | "starting" | "running" | "reconnecting"
 	sessionAttached: boolean
+	/** Bridge link health (A2). Optional: the legacy remote seam and older
+	 *  consumers that only read connection/turn are unaffected. */
+	bridge?: BridgeLinkStatus
 }
 
 /** Provider/model catalog entry (dialog-model, model-options). */

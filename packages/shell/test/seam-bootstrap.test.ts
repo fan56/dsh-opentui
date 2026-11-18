@@ -23,6 +23,7 @@ import {
 	createBridgeSessionSeam,
 	createSessionSeam,
 	formatBridgeBootstrapMessage,
+	formatDeadNotice,
 	isInprocMode,
 	selectSeamKind,
 	toBridgeBootstrapError,
@@ -54,7 +55,13 @@ function fakeTransport(replies: Record<string, unknown> = { "bridge.hello": HELL
 			}
 		},
 	}
-	return { transport, requests }
+	return {
+		transport,
+		requests,
+		emit: (event: BridgeEventFrame) => {
+			for (const listener of [...listeners]) listener(event)
+		},
+	}
 }
 
 const logger = {
@@ -246,5 +253,52 @@ describe("D3 downgrade law stays intact", () => {
 		const seam = new BridgeSessionSeam({ transport, ctx: { logger } })
 		await expect(seam.searchSessions("q")).rejects.toMatchObject({ code: "UNSUPPORTED" })
 		await expect(seam.renameSession("t")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 6. A2 — DEAD event-driven on-screen notice (idle crash included)
+// ---------------------------------------------------------------------------
+describe("DEAD state is published and surfaced without a turn", () => {
+	const cause = { stage: "runtime" as const, code: 7, signal: "SIGTERM", message: "bridge host exited (code 7)" }
+
+	test("bridge.dead event → bridge=dead, one notice callback, one SeamSessionEvent", async () => {
+		const { transport, emit } = fakeTransport()
+		const notices: unknown[] = []
+		const seam = await createBridgeSessionSeam({
+			transport,
+			ctx: { logger },
+			onDead: (c) => notices.push(c),
+		})
+		const events: { type: string; details: unknown }[] = []
+		seam.onSessionEvent((e) => events.push(e))
+
+		// No turn in flight — the idle-period crash case.
+		expect(seam.status().turn).toBe("idle")
+		emit({ type: "bridge.dead", payload: cause })
+
+		expect(seam.status().bridge).toBe("dead")
+		expect(notices).toHaveLength(1)
+		expect(notices[0]).toEqual(cause)
+		expect(events.filter((e) => e.type === "bridge.dead")).toHaveLength(1)
+		expect(events[0]?.details).toEqual(cause)
+	})
+
+	test("notice text carries the cause summary + stage", () => {
+		expect(formatDeadNotice(cause)).toContain("连接已断开")
+		expect(formatDeadNotice(cause)).toContain("bridge host exited (code 7)")
+		expect(formatDeadNotice(cause)).toContain("exit 7")
+		expect(formatDeadNotice(cause)).toContain("stage runtime")
+	})
+
+	test("handshake failure over a DEAD transport notifies with stage=handshake", async () => {
+		const { transport } = fakeTransport({
+			"bridge.hello": new BridgeProtocolError("BRIDGE_DEAD", "dead during hello", cause),
+		})
+		const notices: { stage: string }[] = []
+		await expect(
+			createBridgeSessionSeam({ transport, ctx: { logger }, onDead: (c) => notices.push(c) }),
+		).rejects.toBeInstanceOf(BridgeBootstrapError)
+		expect(notices).toEqual([{ ...cause, stage: "handshake" }])
 	})
 })
