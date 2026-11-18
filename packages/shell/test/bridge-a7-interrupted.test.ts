@@ -13,6 +13,7 @@ import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
 	journalHasTurnTerminal,
+	lastJournalTurnTerminal,
 	type BridgeEventFrame,
 	type BridgeReplayRow,
 } from "../src/client/bridge-session-seam.ts"
@@ -70,6 +71,7 @@ function makeHarness() {
 		journalWrites: () => requests.filter((r) =>
 			/append|journal\.(write|append|commit)|session\.append/i.test(r.method),
 		),
+		terminals: () => seamEvents.filter((e) => e.type === "bridge.turn.terminal"),
 	}
 }
 
@@ -118,6 +120,33 @@ async function crashMidTurn(
 	h.emitFrame("bridge.dead", { stage: "runtime", code: 1, signal: null, message: "crash" })
 }
 
+/** Same as crashMidTurn but hands back the pending turn() promise so a test can
+ *  assert recovery actually settled it (spinner / live-row finalize). The
+ *  promise rides in a HOLDER object: an `async` helper returning it directly
+ *  would flatten + await it here and deadlock (recovery has not run yet). */
+function crashMidTurnTracked(
+	h: ReturnType<typeof makeHarness>,
+	turnId: string,
+	partial: string,
+): { pending: Promise<void>; ready: Promise<void> } {
+	h.replies.set("session.send", value({ turnId }))
+	const pending = h.seam.turn("question", {
+		onThinkingDelta() {},
+		onContentDelta() {},
+		onError() {},
+		async onApprove() { return "allowed-once" },
+	})
+	const ready = Bun.sleep(0).then(() => {
+		h.emitFrame("turn.token", { turnId, kind: "text", text: partial })
+		h.emitFrame("bridge.dead", { stage: "runtime", code: 1, signal: null, message: "crash" })
+	})
+	return { pending, ready }
+}
+
+const trackedTerminal = (seq: number, payload: unknown): BridgeReplayRow => ({
+	seq, type: "turn/end", payload,
+})
+
 describe("A7: journalHasTurnTerminal (pure terminal detector)", () => {
 	test("any turn/end reason counts; a bare turn/start does not", () => {
 		expect(journalHasTurnTerminal([])).toBe(false)
@@ -129,6 +158,13 @@ describe("A7: journalHasTurnTerminal (pure terminal detector)", () => {
 	})
 	test("a terminal from a PRIOR turn (below the last start) is not this turn's", () => {
 		expect(journalHasTurnTerminal([terminalRow(1, 1, "completed"), startRow(2, 2)])).toBe(false)
+	})
+	test("lastJournalTurnTerminal picks the closing row with the journal payload intact", () => {
+		const payload = { turn: 1, reason: { kind: "interrupted" }, usage: { prompt: 9 } }
+		const term = trackedTerminal(25, payload)
+		expect(lastJournalTurnTerminal([startRow(1, 1), terminalRow(2, 1, "completed"), term])).toEqual(term)
+		expect(lastJournalTurnTerminal([startRow(1, 1), textRow(2, "partial")])).toBeUndefined()
+		expect(lastJournalTurnTerminal([terminalRow(1, 1, "completed"), startRow(2, 2)])).toBeUndefined()
 	})
 })
 
@@ -210,5 +246,71 @@ describe("A7: local INTERRUPTED marker after DEAD recovery", () => {
 		setPages(h, [startRow(1, 1), terminalRow(2, 1, "aborted")], 3)
 		await h.recover()
 		expect(h.interrupted()).toHaveLength(0)
+	})
+})
+
+describe("replay terminal feeds back to the live turn state", () => {
+	test("journal terminal finalizes the dead turn once, with the journal reason/payload, no INTERRUPTED duplicate", async () => {
+		const h = makeHarness()
+		await stageResume(h, "s-live-terminal")
+		const { pending, ready } = crashMidTurnTracked(h, "t-live", "partial answer")
+		await ready
+		const payload = { turn: 1, reason: { kind: "interrupted", message: "killed by operator" }, usage: { prompt: 3 } }
+		setPages(h, [startRow(1, 1), trackedTerminal(25, payload)], 26)
+
+		const result = await h.recover()
+
+		expect(result.state).toBe("attached")
+		const terms = h.terminals()
+		expect(terms).toHaveLength(1)
+		expect(terms[0]!.details).toMatchObject({
+			sessionID: "s-live-terminal",
+			turnId: "t-live",
+			seq: 25,
+			terminalType: "turn/end",
+			source: "journal",
+		})
+		// reason/payload are the HOST's journal shape, verbatim.
+		expect((terms[0]!.details as { reason: unknown }).reason).toEqual({ kind: "interrupted", message: "killed by operator" })
+		expect((terms[0]!.details as { payload: unknown }).payload).toEqual(payload)
+		// No duplicate local terminal, no journal write.
+		expect(h.interrupted()).toHaveLength(0)
+		expect(h.journalWrites()).toHaveLength(0)
+		// The live turn state is settled: status idle AND the pending turn()
+		// waiter resolved (which is what closes the spinner in the view).
+		expect(h.seam.status().turn).toBe("idle")
+		const settled = await Promise.race([
+			pending.then(() => "settled"),
+			Bun.sleep(50).then(() => "timeout"),
+		])
+		expect(settled).toBe("settled")
+
+		// A second recovery must NOT finalize twice (#deadInFlight was cleared).
+		setPages(h, [{ seq: 26, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "later" }] } } }], 27)
+		await h.recover()
+		expect(h.terminals()).toHaveLength(1)
+	})
+
+	test("no DEAD in-flight turn → replay terminal is NOT fed back to a live turn", async () => {
+		const h = makeHarness()
+		await stageResume(h, "s-running")
+		h.replies.set("session.send", value({ turnId: "t-running" }))
+		const pending = h.seam.turn("question", {
+			onThinkingDelta() {}, onContentDelta() {}, onError() {}, async onApprove() { return "allowed-once" },
+		})
+		await Bun.sleep(0)
+		h.emitFrame("turn.token", { turnId: "t-running", kind: "text", text: "still running" })
+		setPages(h, [startRow(1, 1), terminalRow(2, 1, "completed")], 3)
+
+		await h.recover()
+
+		expect(h.terminals()).toHaveLength(0)
+		const state = await Promise.race([
+			pending.then(() => "settled"),
+			Bun.sleep(30).then(() => "still-pending"),
+		])
+		expect(state).toBe("still-pending")
+		// Cleanup the intentionally-pending turn so the test exits cleanly.
+		h.emitFrame("turn.end", { turnId: "t-running", reason: { kind: "completed" } })
 	})
 })

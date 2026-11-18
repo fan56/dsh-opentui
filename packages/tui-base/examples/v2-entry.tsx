@@ -309,9 +309,14 @@ function V2SessionPageBody(props: {
 		seam.onSessionEvent?.((event: { type: string; details: unknown }) => {
 			if (!recoveryEvents.has(event?.type)) return
 			recovery.handleEvent(event)
-			setBridgeStatus(recovery.footerStatus)
 		}) ?? (() => {}),
 	)
+	// A3b+A8: the footer's bridge-status slot follows the recovery controller's
+	// PHASE, not only seam events. The manual R path moves the controller to
+	// "recovering" (and back to ready/failed) WITHOUT any seam event, so this
+	// subscription is the single source of truth for the footer — including the
+	// auto `bridge.dead` event path (dead), which the controller also emits.
+	onCleanup(recovery.subscribe(() => setBridgeStatus(recovery.footerStatus)))
 	const [now, setNow] = createSignal(new Date())
 	// Composer context row (user feedback batch): a bump re-reads the git
 	// branch above the input box. Session switches (/new → clear, /fork /

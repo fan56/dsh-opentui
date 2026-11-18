@@ -158,6 +158,32 @@ describe("three-state footer + composer disable", () => {
 	})
 })
 
+describe("footer follows controller phase via subscription (v2-entry wiring)", () => {
+	test("bridge.dead drives the footer to dead immediately (auto event path, no regression)", () => {
+		const { controller } = setup()
+		const seen: string[] = []
+		controller.subscribe(() => seen.push(controller.footerStatus))
+		controller.handleEvent({ type: "bridge.dead" })
+		expect(seen.at(-1)).toBe("dead")
+		expect(controller.footerStatus).toBe("dead")
+	})
+
+	test("R transition drives footer recovering → ready through the phase subscription, no seam event needed", async () => {
+		const { controller } = setup()
+		const seen: string[] = []
+		controller.subscribe(() => seen.push(controller.footerStatus))
+		controller.handleEvent({ type: "bridge.dead" })
+		pressReconnect(controller)
+		await Promise.resolve()
+		// No bridge.recovered event yet — the R path alone must show recovering.
+		expect(seen.at(-1)).toBe("recovering")
+		expect(controller.canRecover()).toBe(false)
+		controller.handleEvent({ type: "bridge.recovered", details: { applied: 0 } })
+		expect(seen.at(-1)).toBe("ready")
+		expect(seen.indexOf("recovering")).toBeLessThan(seen.lastIndexOf("ready"))
+	})
+})
+
 describe("recovered / failed / locked surfaces", () => {
 	test("bridge.recovered: notice carries N, retires after 4s, sessionId linked", () => {
 		const { controller, state } = setup()

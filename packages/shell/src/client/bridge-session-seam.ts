@@ -428,6 +428,32 @@ export function journalHasTurnTerminal(rows: readonly BridgeReplayRow[]): boolea
 }
 
 /**
+ * The journal row that TERMINATES the in-flight turn — the highest-seq
+ * `turn/end` / `turn/error` above the last `turn/start` (any terminal when the
+ * start fell outside this drain window). Same association rule as
+ * `journalHasTurnTerminal`; `undefined` when the journal stays silent about it.
+ * Read-only: the row's `payload` is the host's real terminal shape (`reason`,
+ * `usage`, …) and is never rewritten by the client.
+ */
+export function lastJournalTurnTerminal(rows: readonly BridgeReplayRow[]): BridgeReplayRow | undefined {
+	let lastStart = -Infinity
+	let hasStart = false
+	for (const row of rows) {
+		if (row.type === "turn/start") {
+			lastStart = row.seq
+			hasStart = true
+		}
+	}
+	let latest: BridgeReplayRow | undefined
+	for (const row of rows) {
+		if ((row.type === "turn/end" || row.type === "turn/error") && (!hasStart || row.seq > lastStart)) {
+			if (latest === undefined || row.seq > latest.seq) latest = row
+		}
+	}
+	return latest
+}
+
+/**
  * Bridge turn events → the seam-event shapes seam-rows.ts consumes.
  *
  * Explicitly NOT projected (ticket §2 seq 4 / ADR-0010 event list):
@@ -794,26 +820,53 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#replayDrainPending = false
 		if (buffered !== undefined) this.#applyPendingSnapshot(buffered)
 
-		// (e) A7 — the in-flight turn at DEAD gets a LOCAL INTERRUPTED marker
-		// ONLY when the durable journal stays silent about its terminal. If a
-		// `turn/end` / `turn/error` was replayed, the host's real terminal is
-		// already in the transcript — do NOT paint a second one. This event is
-		// client-inferred (seq:null, source:"local") and is NEVER journaled.
+		// (e) A7 — the in-flight turn at DEAD is finalized by the durable journal.
+		// If replay carries the host terminal, the live turn state is settled to
+		// THAT terminal (reason/payload verbatim from the journal row) and NO
+		// local duplicate marker is painted. Only when the journal stays silent
+		// does the client paint its LOCAL INTERRUPTED marker (seq:null, source:
+		// "local", never journaled). A normal (non-DEAD) in-flight turn has no
+		// #deadInFlight snapshot and is never touched here.
 		const dead = this.#deadInFlight
 		this.#deadInFlight = undefined
-		if (dead !== undefined && !journalHasTurnTerminal(drained.rows)) {
-			emit({
-				type: "bridge.turn.interrupted",
-				details: {
-					sessionID: boundId,
-					turnId: dead.turnId,
-					partial: dead.partial,
-					reason: "connection lost while the turn was in flight",
-					code: "INTERRUPTED",
-					seq: null,
-					source: "local",
-				},
-			})
+		if (dead !== undefined) {
+			const terminal = lastJournalTurnTerminal(drained.rows)
+			if (terminal !== undefined) {
+				// The host terminal is already projected into the transcript by
+				// step (c). This event feeds the terminal reason/payload back to
+				// the live turn state so the streamed rows settle and the spinner
+				// closes — without a second transcript marker.
+				emit({
+					type: "bridge.turn.terminal",
+					details: {
+						sessionID: boundId,
+						turnId: dead.turnId,
+						seq: terminal.seq,
+						terminalType: terminal.type,
+						reason: asRecord(terminal.payload).reason,
+						payload: terminal.payload,
+						source: "journal",
+					},
+				})
+				// Resolve the pending turn() waiter: its finally sweep finalizes
+				// the live rows and clears the busy/spinner state. The generation
+				// guard inside turn() keeps this harmless to any newer turn.
+				this.#turn = "idle"
+				this.#turnDone?.()
+			} else {
+				emit({
+					type: "bridge.turn.interrupted",
+					details: {
+						sessionID: boundId,
+						turnId: dead.turnId,
+						partial: dead.partial,
+						reason: "connection lost while the turn was in flight",
+						code: "INTERRUPTED",
+						seq: null,
+						source: "local",
+					},
+				})
+			}
 		}
 
 		this.#sessionAttached = true
