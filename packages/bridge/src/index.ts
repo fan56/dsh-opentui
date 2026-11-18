@@ -37,6 +37,10 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
+// ADR-0011 T3 — ask channel wiring. The registry shape/validators are T1/T2;
+// this module only connects them to dispatch + turn/session lifecycle.
+import { validateAskResponse } from './ask-frames'
+import { AskRegistry } from './ask-registry'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -238,6 +242,14 @@ export const name = 'dsh-opentui-bridge'
 /** `agents` is required for the session seam; `agentDefaultModel` is optional
  *  (read through ctx.get). Cordis resolves injected services before apply. */
 export const inject: string[] = ['agents']
+
+/** ADR-0011 T3: one AskRegistry per stdio connection (= one `apply()` call).
+ *  Keyed by ctx rather than a module global so concurrent harnesses/tests stay
+ *  isolated. Tests use this to inspect pending ids / settlements / timers. */
+const askRegistries = new WeakMap<BridgeContext, AskRegistry>()
+export function getAskRegistry(ctx: BridgeContext): AskRegistry | undefined {
+  return askRegistries.get(ctx)
+}
 
 const PROTOCOL_VERSION = 1
 const STDIO_SWITCH = 'DSH_OPENTUI_BRIDGE_STDIO'
@@ -622,6 +634,15 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     writeFrame({ type, payload })
   }
 
+  // ---- ADR-0011 T3 — ask registry wiring -----------------------------------
+  // Connection-scoped registry. Its sink is ALWAYS `emitEvent`, so ask.cancel /
+  // ask.settled (and T4's ask.request / ask.pending) travel the same
+  // `event{type,payload}` write path as the turn.* frames above. The registry
+  // remains the sole owner of first-wins, deadlines and the deliveredTo gate;
+  // dispatch only forwards codes verbatim.
+  const ask = new AskRegistry({ logger, sink: (frame) => emitEvent(frame.type, frame.payload as unknown as Record<string, unknown>) })
+  askRegistries.set(ctx, ask)
+
   /** `turn.start` is emitted once, before any other frame of this turn. */
   function ensureStarted(state: TurnStreamState): void {
     if (state.started) return
@@ -710,6 +731,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     if (activeTurn === state) activeTurn = undefined
     if (inFlightTurnId === state.turnId) inFlightTurnId = undefined
     rememberTerminalTurnId(state.turnId)
+    // ADR-0011 T3 (D5): a terminal turn is the settlement upper bound for every
+    // ask bound to it. All terminal paths funnel here — abort, SESSION_CLOSED
+    // from disposeBinding, and the INTERNAL idle safety net in handleSend — so
+    // one idempotent call covers them. Late answers then get ASK_TURN_ENDED.
+    ask.clearTurn(state.turnId)
     logger.info(
       '[dsh-opentui-bridge] turn %s finalized kind=%s textChars=%d deltas=%d tokenFrames=%d',
       state.turnId,
@@ -859,6 +885,14 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         code: 'SESSION_CLOSED',
         message: 'turn terminated because its session was closed or replaced',
       })
+    }
+    // ADR-0011 T3 (D5): session.close / session.open{replace:true} must clear
+    // every ask delivered to this session and its turn. Both operations are
+    // idempotent (finalizeTurn above already cleared this turn's asks), and the
+    // registry records the ids as ended so late answers get ASK_TURN_ENDED.
+    ask.clearSession(current.sessionId)
+    if (activeTurn !== undefined && activeTurn.sessionId === current.sessionId) {
+      ask.clearTurn(activeTurn.turnId)
     }
     binding = undefined
     inFlightTurnId = undefined
@@ -1193,6 +1227,38 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     )
   }
 
+  /** ADR-0011 T3 — `ask.response` (client → host). Validation follows the
+   *  existing parseRequest style: a malformed `params` object is rejected with
+   *  ASK_INVALID_RESPONSE before the registry is touched. The registry's error
+   *  code is forwarded VERBATIM — the full ADR-0011 §5 set is:
+   *   ASK_UNKNOWN_REQUEST / ASK_ALREADY_ANSWERED / ASK_NOT_ADDRESSEE /
+   *   ASK_TURN_ENDED / ASK_DEADLINE_EXCEEDED / ASK_CHANNEL_UNAVAILABLE /
+   *   ASK_INVALID_RESPONSE.
+   *  `answer()` currently returns the first five (plus INVALID_RESPONSE); the
+   *  deadline/hard-cap and fail-closed codes originate in the registry's wall
+   *  clocks / `failClosed()` and arrive here unchanged if surfaced by a later
+   *  registry version. No code is rewritten or swallowed here.
+   */
+  function handleAskResponse(req: ParsedRequest): void {
+    const parsed = validateAskResponse(req.params)
+    if (!parsed.ok) {
+      replyError(req.id, parsed.code, parsed.message)
+      return
+    }
+    const result = ask.answer(binding?.sessionId ?? '', parsed.value)
+    if (!result.ok) {
+      replyError(req.id, result.code, result.message)
+      return
+    }
+    const settlement = result.settlement
+    replyOk(req.id, {
+      eventId: settlement.eventId,
+      outcome: settlement.outcome,
+      ...(settlement.code !== undefined ? { code: settlement.code } : {}),
+      ...(settlement.message !== undefined ? { message: settlement.message } : {}),
+    })
+  }
+
   /** `session.list` — read-only enumeration of every session visible to the
    *  host. This is the bridge-side twin of the thin client's `session/list`
    *  RPC: it calls the SAME host service (`ctx.sessionController.list`) and
@@ -1381,6 +1447,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       handleAbort(req)
       return
     }
+    if (req.method === 'ask.response') {
+      handleAskResponse(req)
+      return
+    }
     if (req.method === 'journal.replay') {
       await handleReplay(req)
       return
@@ -1421,6 +1491,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // Requirement 6: EOF / fiber dispose removes every listener so a stale
     // firehose callback can never write to a closed stdout.
     clearTurnSubscriptions()
+    // Release every ask timer so a late deadline/hard-cap callback can never
+    // emit a cancel/settled frame after the connection closed.
+    ask.dispose()
     logger.info('[dsh-opentui-bridge] stdio protocol disposed')
   }
 

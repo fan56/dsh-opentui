@@ -3,7 +3,7 @@
 Date: 2026-11-18
 Status: Proposed（随 ADR-0010 在 0.22.0 落地前定稿）
 
-> 本文以源码为准核对了 blocky 草案的未验证内容（草案作者无文件工具，所有行号与字段名未核对）。凡草案与源码不符之处均按源码改写，改动逐条列在文末「草案偏差记录」。已拍板决策（方案 C + 默认预设改需审批）原样保留；四个未拍板项在「待确认假设」列出并附推荐答案，**不在本文定案**。
+> 本文以源码为准核对了 blocky 草案的未验证内容（草案作者无文件工具，所有行号与字段名未核对）。凡草案与源码不符之处均按源码改写，改动逐条列在文末「草案偏差记录」。已拍板决策（方案 C + 默认预设改需审批）原样保留；四个未拍板项中 **Q1/Q2/Q3 已于 2026-11-18 按推荐值确认并随 T2 实现（见 §8）**，Q4 仍待确认。
 
 ## 1. 背景（Context）
 
@@ -100,13 +100,13 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 | `ASK_ALREADY_ANSWERED` | 对已结算 `eventId` 二次应答 | first-wins，返回 `ok:false`，不改状态 |
 | `ASK_NOT_ADDRESSEE` | `deliveredTo !== sessionId`（跨会话串帧） | 拒绝，不结算（对应 waterfall `delegate/next`，`packages/shell/src/client/remote-waterfall.ts:133-136`） |
 | `ASK_TURN_ENDED` | 所属 turn 已终态 / 会话已 close-replace 的迟到应答 | 拒绝，不改状态（D5） |
-| `ASK_DEADLINE_EXCEEDED` | 超过 `deadlineAt` 硬帽仍未应答 | 结算 `unavailable`（D6） |
+| `ASK_DEADLINE_EXCEEDED` | 超过 `deadlineAt` / `askDeadlineMs` 墙钟仍未应答；或触发 `maxAskWaitMs` 绝对硬帽 | 墙钟超时按 kind 结算：permission → `denied`、question → `cancelled`（Q1，已确认）；**`maxAskWaitMs` 硬帽一律结算 `unavailable`**（D6 fail-closed）。两者都随结算记入 `code:ASK_DEADLINE_EXCEEDED`，并发 `ask.cancel{reason:'deadline'}` + `ask.settled` |
 | `ASK_CHANNEL_UNAVAILABLE` | 无 `approval`/`userQuestions` 服务或无 provider | 直接 `unavailable` 结算，不下推 `ask.request` |
 | `ASK_INVALID_RESPONSE` | 应答字段非法（如未授予 escalation 却带 `behavior:'always'`） | 拒绝，不改状态 |
 
 宿主侧 `APPROVAL_REJECTED`/`APPROVAL_CANCELLED`/`APPROVAL_UNAVAILABLE`（`dsh-tools/lib/pipeline.js:641-651`）是工具层错误，**不是**本协议 code；两者不得混用。
 
-**超时参数**（草案数值标为未验证假设，见 §8）：`askDeadlineMs` 默认 `null`（在场不设墙钟）、`detachGraceMs` 30000、`maxAskWaitMs` 3600000 硬帽；permission 超时 → deny、question 超时 → cancelled。宿主 waterfall **无超时状态机**（`packages/shell/src/client/remote-waterfall.ts:25-35`、`tickets/2026-11-18-ask-permission-gap.md:57`），故所有墙钟由 bridge 侧设定，须真机确认（§8 Q1）。
+**超时参数**（草案数值标为未验证假设，见 §8）：`askDeadlineMs` 默认 `null`（在场不设墙钟）、`detachGraceMs` 30000、`maxAskWaitMs` 3600000 绝对硬帽；permission 墙钟超时 → `denied`、question 墙钟超时 → `cancelled`（Q1 已确认，按 T2 实现），`maxAskWaitMs` 硬帽 → `unavailable`（D6 fail-closed）。宿主 waterfall **无超时状态机**（`packages/shell/src/client/remote-waterfall.ts:25-35`、`tickets/2026-11-18-ask-permission-gap.md:57`），故所有墙钟由 bridge 侧设定；数值仍须真机验证（§8 Q1 已确认语义与默认值）。
 
 ## 6. 与当前 profile 默认的关系（Relationship to profile default）
 
@@ -123,14 +123,14 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 - **B — 最小 allow/deny（只做审批，不做提问/超时/取消）**：否决：用户已拍板 C；且无取消/超时则客户端掉线会挂住 turn（ticket `:193`）。
 - **D — 透传宿主 waterfall 帧（直接把 `approval/request` 原帧推给 TUI）**：否决：TUI 的事件面只消费 5 种投影后的事件（`docs/adr/0010-session-seam-lifecycle-contract.md:69-77`），透传会把宿主结构细节和跨会话串帧风险泄漏进视图层；本项目既有策略是 bridge 侧投影 + 强校验（`packages/bridge/src/index.ts:739-824`）。
 
-## 8. 待确认假设（Open assumptions — 未定案）
+## 8. 假设与确认状态（Q1–Q3 已确认，Q4 待确认）
 
-以下四项来自草案 §5 末尾的未拍板项。**未经用户确认，本文只给推荐答案，不自行定案。**
+以下四项来自草案 §5 末尾的未拍板项。**Q1/Q2/Q3 已于 2026-11-18 按推荐值确认，并已由 T2 `AskRegistry` 实现；Q4 仍待确认。**
 
-- **Q1 — 超时墙钟**：草案建议 `askDeadlineMs=null` / `detachGraceMs=30000` / `maxAskWaitMs=3600000`；宿主 waterfall 无超时（`remote-waterfall.ts:25-35`），客户端掉线会挂住 turn。**推荐**：采纳默认值，但 permission 超时落 deny、question 超时落 cancelled，且 `deadlineAt` 只作硬帽不主动轮询；真机验证后再定最终数值。
-- **Q2 — 掉线/turn 中断时未答请求的语义**：cancel 时结算为 `cancelled` 还是 `denied`？**推荐**：统一 `cancelled`（宿主 `ApprovalOutcome` 含 `cancelled`，`tickets/2026-11-18-ask-permission-gap.md:41`），并把 `signal` abort 视为 cancel（`ticket:132`）；迟到应答按 `ASK_TURN_ENDED` 丢弃。
-- **Q3 — 'always'/escalation 的作用域与授权边界**：`always` 是仅当前会话有效还是跨会话持久？未授予 escalation 时收到 `behavior:'always'` 如何处置？**推荐**：当前会话级摘要（compaction 不清），未授予则回 `ASK_INVALID_RESPONSE`（D7 + §5）。
-- **Q4 — UI 明示义务的范围**：是否除审批卡/提问面板外，还要常驻显示"审批通道不可用"状态位？**推荐**：在 `permissionCatalog()` 探测到无 provider 时显示一次性提示（矩阵 `:88,100`、`packages/shell/src/client/bridge-session-seam.ts:445-447` 的 `onSessionEvent` degrade）；不常驻。
+- **Q1 — 超时墙钟**（已确认 2026-11-18，按推荐值）：采纳默认值 `askDeadlineMs=null` / `detachGraceMs=30000` / `maxAskWaitMs=3600000`；permission 墙钟超时落 `denied`、question 墙钟超时落 `cancelled`，`deadlineAt` 只作硬帽不主动轮询；`maxAskWaitMs` 绝对硬帽落 `unavailable`（D6 fail-closed）。数值仍待真机验证后定最终值。
+- **Q2 — 掉线/turn 中断时未答请求的语义**（已确认 2026-11-18，按推荐值）：统一 `cancelled`（宿主 `ApprovalOutcome` 含 `cancelled`，`tickets/2026-11-18-ask-permission-gap.md:41`），并把 `signal` abort 视为 cancel（`ticket:132`）；迟到应答按 `ASK_TURN_ENDED` 丢弃。
+- **Q3 — 'always'/escalation 的作用域与授权边界**（已确认 2026-11-18，按推荐值）：当前会话级摘要（compaction 不清），未授予 escalation 时收到 `behavior:'always'` 回 `ASK_INVALID_RESPONSE`（D7 + §5）。
+- **Q4 — UI 明示义务的范围**（待确认）：是否除审批卡/提问面板外，还要常驻显示"审批通道不可用"状态位？**推荐**：在 `permissionCatalog()` 探测到无 provider 时显示一次性提示（矩阵 `:88,100`、`packages/shell/src/client/bridge-session-seam.ts:445-447` 的 `onSessionEvent` degrade）；不常驻。
 
 ## 9. 风险（Risks）
 
