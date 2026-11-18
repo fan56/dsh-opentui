@@ -13,6 +13,11 @@
  */
 
 import type { BridgeContext, SystemPromptLike } from './index'
+import { createAppendTextProvider } from './append-text'
+import type { AppendTextProvider, AppendTextProviderOptions } from './append-text'
+
+// Re-export for callers/tests that consumed the M3-02 seam type from here.
+export type { AppendTextProvider } from './append-text'
 
 /**
  * Stable section name carrying the dsh-opentui prefix. ADR-0010 pins only
@@ -25,17 +30,15 @@ export const APPEND_SECTION_NAME = 'dsh-opentui:append-system'
 /** Literal order from ADR-0010:143 / M3-01 handshake (host has no named 200). */
 const APPEND_SECTION_ORDER = 200
 
-/** The section's text provider. M3-03 replaces the empty default with the real
- *  `$DSH_HOME/APPEND_SYSTEM.md` reader (lazy + mtime cache + 64 KiB UTF-8-safe
- *  truncation + dedupe). This task deliberately stops at the injection point. */
-export type AppendTextProvider = (context: unknown) => string
-
 export interface RegisterAppendSectionOptions {
-  /** Inject a text provider; defaults to `() => ''` for M3-02. */
+  /** Override the text provider entirely (highest precedence). */
   text?: AppendTextProvider
+  /** Options for the default M3-03 append-text provider (home / logger /
+   *  shouldSuppress / maxBytes). Ignored when `text` is set. Tests inject a
+   *  temp `home` here so they never touch the real `~/.dsh`. */
+  appendText?: AppendTextProviderOptions
 }
 
-const EMPTY_TEXT: AppendTextProvider = () => ''
 const NOOP: () => void = () => {}
 const EFFECT_LABEL = 'dsh-opentui:append-system section'
 
@@ -79,12 +82,20 @@ export function registerAppendSection(
     return NOOP
   }
 
+  // M3-03: default text is the real lazy provider; `ctx.logger` feeds its
+  // truncation warning. Per-call overrides (temp home, shouldSuppress, etc.)
+  // come through `options.appendText`. An explicit `text` still wins.
+  const text = options.text ?? createAppendTextProvider({
+    logger: ctx.logger,
+    ...options.appendText,
+  })
+
   let disposer: (() => void) | undefined
   try {
     disposer = sp.section({
       name: APPEND_SECTION_NAME,
       order: APPEND_SECTION_ORDER,
-      text: options.text ?? EMPTY_TEXT,
+      text,
       interpolate: false,
     })
   } catch (err) {

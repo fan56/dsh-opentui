@@ -69,7 +69,9 @@ describe('M3-02: registerAppendSection', () => {
     const { sp, sections } = makeSystemPrompt()
     const { ctx } = makeCtx(sp, logger)
 
-    const cleanup = registerAppendSection(ctx)
+    // Inject a stub text: the real default now reads $DSH_HOME/APPEND_SYSTEM.md
+    // (M3-03), and this shape test must never touch the real home.
+    const cleanup = registerAppendSection(ctx, { text: () => '' })
 
     expect(sections).toHaveLength(1)
     const spec = sections[0]!
@@ -84,7 +86,7 @@ describe('M3-02: registerAppendSection', () => {
     expect(typeof cleanup).toBe('function')
   })
 
-  test('text provider is injectable (M3-03 seam), default is the empty provider', () => {
+  test('text provider is injectable (M3-03 seam)', () => {
     const { logger } = makeLogger()
     const { sp, sections } = makeSystemPrompt()
     const { ctx } = makeCtx(sp, logger)
