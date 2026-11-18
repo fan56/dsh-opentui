@@ -285,6 +285,7 @@ function V2SessionPageBody(props: {
 		recovered: (count) => t("recovery.recovered", { count: String(count) }),
 		failedReason: (reason) => t("recovery.failed.reason", { reason }),
 		locked: () => t("recovery.locked"),
+		cooldown: (remainingMs) => t("recovery.cooldown", { remainingMs: String(remainingMs) }),
 		reconnect: () => t("recovery.action.reconnect"),
 		retry: () => t("recovery.action.retry"),
 		newSession: () => t("recovery.action.newSession"),

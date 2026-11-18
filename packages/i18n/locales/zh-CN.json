@@ -924,6 +924,7 @@
   "recovery.recovered": "已恢复连接，补齐 {count} 条事件",
   "recovery.failed.reason": "恢复连接失败：{reason}",
   "recovery.locked": "会话已被另一进程持有（writer-held）",
+  "recovery.cooldown": "冷却中，还剩 {remainingMs} ms",
   "recovery.action.reconnect": "重连 [R]",
   "recovery.action.retry": "重试 [R]",
   "recovery.action.newSession": "新会话",

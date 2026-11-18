@@ -26,6 +26,7 @@ const texts: RecoveryTexts = {
 	recovered: (count) => `caught up ${count} events`,
 	failedReason: (reason) => `failed: ${reason}`,
 	locked: () => "writer-held",
+	cooldown: (remainingMs) => `cooling down, ${remainingMs} ms left`,
 	reconnect: () => "Reconnect [R]",
 	retry: () => "Retry [R]",
 	newSession: () => "New session",
@@ -320,5 +321,31 @@ describe("recovered / failed / locked surfaces", () => {
 		await controller.recover()
 		expect(controller.phase).toBe("failed")
 		expect(controller.banner?.reason).toContain("spawn failed")
+	})
+
+	// P2-2: a cooldown is transient — keep DEAD (R still available), no failed
+	// banner, and show only a retiring notice with the remaining milliseconds.
+	test("BRIDGE_RECOVERY_COOLDOWN stays dead with a transient ms notice, no failed banner", async () => {
+		const notices: Notice[] = []
+		const controller = new RecoveryUiController({
+			recover: async () => {
+				throw Object.assign(new Error("recover() cooling down; retry in 3200ms"), {
+					code: "BRIDGE_RECOVERY_COOLDOWN",
+					detail: { remainingMs: 3200 },
+				})
+			},
+			texts,
+			onNotice: (text, ttl, kind) => notices.push({ text, ttl, kind }),
+		})
+		controller.handleEvent({ type: "bridge.dead" })
+		await controller.recover()
+
+		expect(controller.phase).toBe("dead")
+		expect(controller.banner).toBeUndefined()
+		expect(controller.canRecover()).toBe(true)
+		// recover() first paints the generic "reconnecting" transient; the
+		// cooldown notice is the last one and carries the remaining ms.
+		expect(notices.length).toBeGreaterThanOrEqual(1)
+		expect(notices[notices.length - 1]!.text).toBe("cooling down, 3200 ms left")
 	})
 })

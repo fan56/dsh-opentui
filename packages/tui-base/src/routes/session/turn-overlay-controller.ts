@@ -231,10 +231,14 @@ export class TurnOverlayController {
 	 * every underlying ask promise is resolved fail-closed (approval → rejected,
 	 * questions → declined) so no waiter dangles and no answer is implicit.
 	 *
-	 * The terminal cards stay on screen (never silently dropped); their only
-	 * action is acknowledgement. eventIds are preserved where known so the
-	 * cards remain traceable to the dead asks. A follow-up BRIDGE_DEAD
-	 * `bridge.ask.invalidated` is deduped by `invalidateAsk`'s terminal guard.
+	 * During DEAD the terminal cards STAY on screen (never silently dropped);
+	 * their only action is acknowledgement, and eventIds are preserved where
+	 * known so they remain traceable to the dead asks. They are TRANSIENT, not
+	 * permanent: a successful recovery rebuilds the session's pending-ask set
+	 * and the cards are cleared with it (RM-2c observed ≤200ms after recovery),
+	 * so there is no stale-card residue once the session is live again. A
+	 * follow-up BRIDGE_DEAD `bridge.ask.invalidated` is deduped by
+	 * `invalidateAsk`'s terminal guard while DEAD still holds.
 	 */
 	invalidateAll(reason: string): void {
 		if (reason === "") return

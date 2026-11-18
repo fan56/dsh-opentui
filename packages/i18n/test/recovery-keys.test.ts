@@ -14,6 +14,7 @@ const KEYS = [
 	"recovery.recovered",
 	"recovery.failed.reason",
 	"recovery.locked",
+	"recovery.cooldown",
 	"recovery.action.reconnect",
 	"recovery.action.retry",
 	"recovery.action.newSession",

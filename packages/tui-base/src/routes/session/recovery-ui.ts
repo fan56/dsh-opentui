@@ -37,6 +37,8 @@ export type RecoveryTexts = {
 	failedReason: (reason: string) => string
 	/** Locked notice + banner reason (writer-held). */
 	locked: () => string
+	/** P2-2: transient cooldown notice ("cooling down, N ms left"). */
+	cooldown: (remainingMs: number) => string
 	/** Failed-banner reconnect action label. */
 	reconnect: () => string
 	/** Locked-banner retry action label. */
@@ -202,6 +204,22 @@ export class RecoveryUiController {
 			// A recover() that resolves without an event leaves the UI recovering —
 			// the event is the single source of truth, never a guessed success.
 		} catch (err) {
+			// P2-2: BRIDGE_RECOVERY_COOLDOWN is a TRANSIENT "too soon" response
+			// ({remainingMs}), not a terminal recovery failure. Restoring the dead
+			// phase keeps R available and avoids the persistent failed banner;
+			// only a retiring notice reports the remaining wait. Detect by SHAPE
+			// (code + numeric detail.remainingMs) so tui-base imports no shell type.
+			const code = (err as { code?: unknown } | null)?.code
+			const detail = asRecord((err as { detail?: unknown } | null)?.detail)
+			if (
+				code === "BRIDGE_RECOVERY_COOLDOWN" &&
+				typeof detail.remainingMs === "number" &&
+				Number.isFinite(detail.remainingMs)
+			) {
+				this.#phaseTo("dead")
+				this.#onNotice?.(this.texts.cooldown(detail.remainingMs), RECOVERY_NOTICE_TTL_MS)
+				return
+			}
 			const reason = err instanceof Error ? err.message : String(err)
 			this.#phaseTo("failed")
 			this.#bannerTo({ kind: "failed", reason: this.texts.failedReason(reason) })

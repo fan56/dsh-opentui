@@ -435,7 +435,39 @@ export function journalHasTurnTerminal(rows: readonly BridgeReplayRow[]): boolea
  * Read-only: the row's `payload` is the host's real terminal shape (`reason`,
  * `usage`, …) and is never rewritten by the client.
  */
-export function lastJournalTurnTerminal(rows: readonly BridgeReplayRow[]): BridgeReplayRow | undefined {
+export function lastJournalTurnTerminal(
+	rows: readonly BridgeReplayRow[],
+	startOutsideWindow = false,
+): BridgeReplayRow | undefined {
+	// P2-1: when the in-flight turn's `turn/start` was applied BEFORE this drain
+	// window, a `turn/start` that DOES appear in the window belongs to a LATER
+	// (possibly other-writer) turn. The old "highest terminal above the LAST
+	// start" rule then attributed that later turn's terminal to ours. Two
+	// guards, in the spirit of the recommendation:
+	//   - rows carrying a turn id: a terminal whose id matches a start present
+	//     in this window is that later turn's — never ours (id association);
+	//   - otherwise: only a terminal BEFORE the next (first) turn/start can be
+	//     ours, because our start precedes the whole window (order association).
+	if (startOutsideWindow) {
+		let nextStart = Infinity
+		const startIds = new Set<unknown>()
+		for (const row of rows) {
+			if (row.type === "turn/start") {
+				nextStart = Math.min(nextStart, row.seq)
+				const id = journalTurnId(row)
+				if (id !== undefined) startIds.add(id)
+			}
+		}
+		let latest: BridgeReplayRow | undefined
+		for (const row of rows) {
+			if (row.type !== "turn/end" && row.type !== "turn/error") continue
+			if (row.seq >= nextStart) continue
+			const id = journalTurnId(row)
+			if (id !== undefined && startIds.has(id)) continue
+			if (latest === undefined || row.seq > latest.seq) latest = row
+		}
+		return latest
+	}
 	let lastStart = -Infinity
 	let hasStart = false
 	for (const row of rows) {
@@ -451,6 +483,17 @@ export function lastJournalTurnTerminal(rows: readonly BridgeReplayRow[]): Bridg
 		}
 	}
 	return latest
+}
+
+/** The journal's per-turn identifier (`data.turn` on host rows, defensively a
+ *  string `turnId` too). The bridge's UUID turnId is NOT in the journal — this
+ *  is the host's numeric turn number and is only used for same-window turn
+ *  association (P2-1). */
+function journalTurnId(row: BridgeReplayRow): number | string | undefined {
+	const payload = asRecord(row.payload)
+	if (typeof payload.turn === "number" && Number.isFinite(payload.turn)) return payload.turn
+	if (typeof payload.turnId === "string" && payload.turnId !== "") return payload.turnId
+	return undefined
 }
 
 /**
@@ -672,6 +715,12 @@ export class BridgeSessionSeam implements SessionSeam {
 		// session.open replace semantics); do NOT clear #sessionAttached here.
 		this.#currentSessionId = undefined
 		this.#pendingOpen = { mode: "new" }
+		// P1-1: starting a fresh session abandons the DEAD session entirely —
+		// settle any turn() the dead frame left suspended (busy wedge escape),
+		// and drop the death snapshot so a later recovery cannot revive it.
+		this.#settleSuspendedTurn()
+		this.#deadInFlight = undefined
+		this.#inFlightPartial = ""
 	}
 
 	stagedSessionId(): string | undefined {
@@ -724,6 +773,10 @@ export class BridgeSessionSeam implements SessionSeam {
 			// snapshot and release the drain gate.
 			this.#bufferedPendingSnapshot = undefined
 			this.#replayDrainPending = false
+			// P1-1: a failed recovery is a terminal outcome for a turn that DEAD
+			// left suspended — never leave its waiter hanging (busy wedged, next
+			// turn() rejected TURN_REENTRANT). No-op when no turn is suspended.
+			this.#settleSuspendedTurn()
 			const result: BridgeRecoveryResult = {
 				state: "failed", sessionId, applied: 0, from: 0, cursor: 0, rows: [],
 				error: { code, message },
@@ -761,6 +814,9 @@ export class BridgeSessionSeam implements SessionSeam {
 				// A6: no attach happened — no card rebuild on a locked session.
 				this.#bufferedPendingSnapshot = undefined
 				this.#replayDrainPending = false
+				// P1-1: a locked recovery is also terminal for the suspended turn;
+				// otherwise /new (which now settles it too) is the only escape.
+				this.#settleSuspendedTurn()
 				const result: BridgeRecoveryResult = {
 					state: "locked", sessionId, applied: 0, from: 0, cursor: 0, rows: [],
 					error: { code, message },
@@ -830,7 +886,14 @@ export class BridgeSessionSeam implements SessionSeam {
 		const dead = this.#deadInFlight
 		this.#deadInFlight = undefined
 		if (dead !== undefined) {
-			const terminal = lastJournalTurnTerminal(drained.rows)
+			// P2-1: if a terminal precedes the first turn/start in this drain,
+			// our turn's start was applied before the window (that terminal is
+			// ours) and any turn/start in the window is a LATER writer — switch
+			// to the id/next-start association instead of "above the last start".
+			const firstStart = drained.rows.find((r) => r.type === "turn/start")?.seq
+			const firstTerminal = drained.rows.find((r) => r.type === "turn/end" || r.type === "turn/error")?.seq
+			const startOutsideWindow = firstStart !== undefined && firstTerminal !== undefined && firstTerminal < firstStart
+			const terminal = lastJournalTurnTerminal(drained.rows, startOutsideWindow)
 			if (terminal !== undefined) {
 				// The host terminal is already projected into the transcript by
 				// step (c). This event feeds the terminal reason/payload back to
@@ -848,11 +911,11 @@ export class BridgeSessionSeam implements SessionSeam {
 						source: "journal",
 					},
 				})
-				// Resolve the pending turn() waiter: its finally sweep finalizes
-				// the live rows and clears the busy/spinner state. The generation
-				// guard inside turn() keeps this harmless to any newer turn.
-				this.#turn = "idle"
-				this.#turnDone?.()
+				// P1-1: settle the suspended turn() waiter — its generation-
+				// guarded finally sweep finalizes the live rows and clears the
+				// busy/spinner state. Without this the busy flag wedged forever
+				// and the next turn() threw TURN_REENTRANT.
+				this.#settleSuspendedTurn()
 			} else {
 				emit({
 					type: "bridge.turn.interrupted",
@@ -866,6 +929,11 @@ export class BridgeSessionSeam implements SessionSeam {
 						source: "local",
 					},
 				})
+				// P1-1: the journal stayed silent → the dead turn is a LOCAL
+				// INTERRUPTED terminal. Settle turn() the same way as the journal
+				// terminal arm (resolve), so busy returns to zero and the next
+				// submission is accepted; the event above carries the reason.
+				this.#settleSuspendedTurn()
 			}
 		}
 
@@ -1099,6 +1167,31 @@ export class BridgeSessionSeam implements SessionSeam {
 		const modelID = typeof s.model === "string" ? s.model : ""
 		if (!providerID || !modelID) return undefined
 		return { providerID, modelID }
+	}
+
+	/**
+	 * P1-1: settle the turn() waiter that a `bridge.dead` frame left SUSPENDED
+	 * (the dead handler snapshots #deadInFlight but deliberately leaves the
+	 * promise awaiting so recovery may decide terminal vs INTERRUPTED). Every
+	 * recovery exit that is NOT "journal terminal found" must settle it here:
+	 * local INTERRUPTED, failed/locked recovery, and newSession(). Resolving
+	 * (not rejecting) matches the journal-terminal arm above and lets seam-rows'
+	 * .finally() finalize the partial text; the view learns the interrupted
+	 * reason from the bridge.turn.interrupted event emitted at that site.
+	 *
+	 * Clear the slots BEFORE resolving so turn()'s own finally sees a different
+	 * generation and cannot double-settle or race a newer turn's state.
+	 */
+	#settleSuspendedTurn(): void {
+		const done = this.#turnDone
+		const endedTurnId = this.#inFlightTurnId
+		this.#turnDone = undefined
+		this.#activeCallbacks = undefined
+		this.#inFlightTurnId = undefined
+		this.#inFlightGeneration = 0
+		this.#turn = "idle"
+		if (endedTurnId !== undefined) this.#cancelAsksForTurn(endedTurnId)
+		done?.()
 	}
 
 	async turn(userText: string, cb: SeamTurnCallbacks): Promise<void> {
@@ -1433,8 +1526,12 @@ export class BridgeSessionSeam implements SessionSeam {
 			}
 		}
 		entry.finish()
-		// Invalidated entries stay in #pendingAsks as a terminal card (with the
-		// reason in #invalidatedAsks) so they never disappear silently.
+		// P2-3: an invalidated entry is KEPT in #pendingAsks through the DEAD
+		// window as a terminal card (reason in #invalidatedAsks) so it never
+		// vanishes silently mid-crash. It is NOT permanent: a successful
+		// recovery's pending-snapshot rebuild clears it along with the view's
+		// cards (RM-2c observed ≤200ms post-recovery). This mirrors the
+		// turn-overlay-controller invalidateAll() comment.
 		if (!this.#invalidatedAsks.has(request.eventId) && this.#pendingAsks.get(request.eventId) === entry) {
 			this.#pendingAsks.delete(request.eventId)
 		}
