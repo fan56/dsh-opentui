@@ -39,7 +39,8 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 // ADR-0011 T3 — ask channel wiring. The registry shape/validators are T1/T2;
 // this module only connects them to dispatch + turn/session lifecycle.
-import { validateAskResponse } from './ask-frames'
+import { ASK_FRAME_TYPES, validateAskResponse } from './ask-frames'
+import type { AskOutcome, AskRequestPayload, AskResponseParams, AskSettledPayload } from './ask-frames'
 import { AskRegistry } from './ask-registry'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
@@ -199,6 +200,66 @@ interface SessionListValueLike {
  *  `session/list` RPC (`typert.host.js:2168`, `index.js:3988`). */
 interface SessionControllerLike {
   list(request: { _request: { cursor?: string } }): Promise<SessionListValueLike>
+}
+
+// --------------------------------------------------------------------------
+// ADR-0011 T4 — host waterfall answerer shapes. Transcribed from the installed
+// host declarations (never imported at runtime, like every other host type
+// above): dsh-user-approval/src/types.ts (ApprovalRequestEvent / ApprovalOutcome)
+// and dsh-user-questions/src/types.ts (AskUserQuestionRequestEvent / answer).
+// The bridge registers `ctx.on('approval/request', ...)` /
+// `ctx.on('user-questions/request', ...)` listeners (cordis dispatches BOTH
+// waterfalls through the same hook table; the dispatch mode is chosen by the
+// emitter's `ctx.waterfall`, not by the listener registration).
+// --------------------------------------------------------------------------
+type HostApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+
+interface ApprovalAgentLike {
+  session?: { id?: unknown }
+}
+interface ApprovalRequestLike {
+  agent?: ApprovalAgentLike
+  toolName?: unknown
+  callId?: unknown
+  reason?: unknown
+  signal?: AbortSignal
+}
+
+interface HostQuestionOptionLike {
+  label?: unknown
+  description?: unknown
+}
+interface HostQuestionLike {
+  id?: unknown
+  question?: unknown
+  header?: unknown
+  detail?: unknown
+  description?: unknown
+  options?: readonly HostQuestionOptionLike[]
+  multiSelect?: unknown
+}
+interface UserQuestionsRequestLike {
+  questions?: readonly HostQuestionLike[]
+  agent?: ApprovalAgentLike
+  signal?: AbortSignal
+  /** `wait.callId` keys the host's question card; absent on indefinite waits. */
+  wait?: { callId?: unknown }
+}
+interface HostQuestionAnswerLike {
+  id: string
+  selected: string[]
+  custom?: string
+}
+interface HostQuestionsAnswerLike {
+  answers: HostQuestionAnswerLike[]
+}
+
+/** One settlement of a T4 answerer's await. The registry's `ask.settled`
+ *  broadcast carries the outcome; `ask.response` params are stashed on the
+ *  pending entry just before `answer()` so answers reach the questions mapper. */
+interface AnswererSettlement {
+  outcome: AskOutcome
+  params?: AskResponseParams
 }
 
 /** Per-connection binding: the ONE handle this stdio connection owns. */
@@ -595,6 +656,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   const terminalTurnIds = new Set<string>()
   let unsubSessionEvent: (() => void) | undefined
   let unsubStream: (() => void) | undefined
+  /** ADR-0011 T4 — host waterfall answerer disposers (contained registration). */
+  let unsubApprovalAnswerer: (() => void) | undefined
+  let unsubQuestionsAnswerer: (() => void) | undefined
 
   /** Write one NDJSON frame, pausing stdin on backpressure until drain. */
   function writeFrame(frame: unknown): void {
@@ -634,13 +698,67 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     writeFrame({ type, payload })
   }
 
-  // ---- ADR-0011 T3 — ask registry wiring -----------------------------------
+  // ---- ADR-0011 T3/T4 — ask registry + answerer bridges ---------------------
   // Connection-scoped registry. Its sink is ALWAYS `emitEvent`, so ask.cancel /
-  // ask.settled (and T4's ask.request / ask.pending) travel the same
-  // `event{type,payload}` write path as the turn.* frames above. The registry
-  // remains the sole owner of first-wins, deadlines and the deliveredTo gate;
-  // dispatch only forwards codes verbatim.
-  const ask = new AskRegistry({ logger, sink: (frame) => emitEvent(frame.type, frame.payload as unknown as Record<string, unknown>) })
+  // ask.settled / ask.request (T4) travel the same `event{type,payload}` write
+  // path as the turn.* frames above. The registry remains the sole owner of
+  // first-wins, deadlines and the deliveredTo gate; dispatch only forwards
+  // codes verbatim. T4 additionally uses `ask.settled` as the single wake-up
+  // for the host answerer's await — every settlement path (answer, deadline,
+  // clearTurn, clearSession, failClosed) passes through this one broadcast,
+  // so an answerer promise can never be left hanging by a clearing path.
+  const pendingAnswerers = new Map<string, {
+    resolve: (settlement: AnswererSettlement) => void
+    /** `ask.response` params, stashed by handleAskResponse before answer(). */
+    params?: AskResponseParams
+  }>()
+
+  /** Settle (and forget) one answerer. Idempotent: the first settle deletes the
+   *  entry, so a later `ask.settled` / signal abort / teardown is a no-op. */
+  function settleAnswerer(eventId: string, settlement: AnswererSettlement): void {
+    const pending = pendingAnswerers.get(eventId)
+    if (pending === undefined) return
+    pendingAnswerers.delete(eventId)
+    pending.resolve(settlement)
+  }
+
+  /** One promise per pushed ask. The host `signal` settling as 'cancelled'
+   *  mirrors dsh-user-approval's abort race (src/index.ts:320-332): a late
+   *  answer after abort is discarded by the first-wins delete above. */
+  function waitForAnswerer(eventId: string, signal?: AbortSignal): Promise<AnswererSettlement> {
+    return new Promise<AnswererSettlement>((resolve) => {
+      const pending: { resolve: (s: AnswererSettlement) => void; params?: AskResponseParams } = { resolve }
+      pendingAnswerers.set(eventId, pending)
+      if (signal !== undefined) {
+        if (signal.aborted) {
+          settleAnswerer(eventId, { outcome: 'cancelled' })
+        } else {
+          const original = pending.resolve
+          const onAbort = () => settleAnswerer(eventId, { outcome: 'cancelled' })
+          pending.resolve = (settlement) => {
+            signal.removeEventListener('abort', onAbort)
+            original(settlement)
+          }
+          signal.addEventListener('abort', onAbort, { once: true })
+        }
+      }
+    })
+  }
+
+  const ask = new AskRegistry({
+    logger,
+    sink: (frame) => {
+      emitEvent(frame.type, frame.payload as unknown as Record<string, unknown>)
+      if (frame.type === ASK_FRAME_TYPES.SETTLED) {
+        const settled = frame.payload as AskSettledPayload
+        const pending = pendingAnswerers.get(settled.eventId)
+        settleAnswerer(settled.eventId, {
+          outcome: settled.outcome,
+          ...(pending?.params !== undefined ? { params: pending.params } : {}),
+        })
+      }
+    },
+  })
   askRegistries.set(ctx, ask)
 
   /** `turn.start` is emitted once, before any other frame of this turn. */
@@ -847,6 +965,149 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
     ensureStarted(state)
     appendDelta(state, ctype === 'text-delta' ? 'text' : 'reasoning', text)
+  }
+
+  // ---- ADR-0011 T4 — host waterfall answerers -------------------------------
+  /** Resolve the single deliverable (session, turn) for an inbound ask. The
+   *  bridge owns one binding and one in-flight turn; an ask is deliverable only
+   *  while that turn is live. `agent.session.id` is the host's routing identity
+   *  (waterfall `claims()`) — a foreign session is NEVER answered here. */
+  function askTarget(agent: unknown): { turn: TurnStreamState; sessionId: string } | undefined {
+    const state = activeTurn
+    if (state === undefined || state.ended || binding === undefined) return undefined
+    if (state.sessionId !== binding.sessionId) return undefined
+    const agentSessionId = (agent as ApprovalAgentLike | undefined)?.session?.id
+    if (agentSessionId !== undefined && idString(agentSessionId) !== binding.sessionId) return undefined
+    return { turn: state, sessionId: binding.sessionId }
+  }
+
+  /** D6: no deliverable provider → settle `unavailable` + ASK_CHANNEL_UNAVAILABLE
+   *  through the registry (emits ask.settled), then fail the host waterfall
+   *  closed. NO ask.request frame is pushed and nothing is silently denied. */
+  function failClosedAsk(kind: 'approval' | 'questions', turnId: string, sessionId: string, reason: string): void {
+    const result = ask.failClosed({ turnId, sessionId, kind, reason })
+    logger.warn(
+      '[dsh-opentui-bridge] ask fail-closed kind=%s session=%s eventId=%s code=%s reason=%s',
+      kind, sessionId, result.settlement.eventId, result.code, reason,
+    )
+  }
+
+  /** `approval/request` answerer. The request fields are projected into an
+   *  ADR-0011 §3.2 `ask.request` via `ask.create()`, then the client's
+   *  `ask.response` verdict is mapped back to the host's ApprovalOutcome.
+   *  Returning (never calling `next`) claims the waterfall request. */
+  async function onApprovalRequest(raw: unknown, _next: () => Promise<HostApprovalOutcome>): Promise<HostApprovalOutcome> {
+    const req = (raw !== null && typeof raw === 'object' ? raw : {}) as ApprovalRequestLike
+    const target = askTarget(req.agent)
+    if (target === undefined) {
+      failClosedAsk('approval', 'no-turn', '', 'no open in-flight turn to deliver an approval ask')
+      return 'unavailable'
+    }
+    const toolName = typeof req.toolName === 'string' && req.toolName !== '' ? req.toolName : undefined
+    const callId = req.callId === undefined ? undefined : idString(req.callId)
+    const reason = typeof req.reason === 'string' && req.reason !== '' ? req.reason : undefined
+    // dsh-user-approval's ApprovalRequestEvent (src/types.ts:63-76) and the
+    // dsh-tools call site (pipeline.js:628-635) carry NO escalation field: no
+    // escalation is granted, so `behavior:'always'` stays invalid (Q3). State
+    // it explicitly rather than fabricate a grant.
+    let request: AskRequestPayload | undefined
+    try {
+      request = ask.create(target.turn.turnId, {
+        sessionId: target.sessionId,
+        kind: 'approval',
+        ...(toolName !== undefined ? { toolName } : {}),
+        ...(callId !== undefined ? { callId } : {}),
+        ...(reason !== undefined ? { reason } : {}),
+        escalation: false,
+      })
+    } catch (err) {
+      logger.error('[dsh-opentui-bridge] ask.create(approval) failed: %s', err)
+      failClosedAsk('approval', target.turn.turnId, target.sessionId, 'ask.create(approval) threw')
+      return 'unavailable'
+    }
+    const settled = await waitForAnswerer(request.eventId, req.signal)
+    switch (settled.outcome) {
+      case 'approved': return 'allowed-once'
+      case 'denied': return 'rejected'
+      case 'cancelled': return 'cancelled'
+      case 'unavailable': return 'unavailable'
+    }
+  }
+
+  /** `user-questions/request` answerer. Host question items use `question`
+   *  (not `prompt`) and `options[].label`; the ask wire uses `prompt`. Map
+   *  field-for-field like remote-waterfall.questionsView does, then convert the
+   *  client's `answers` back to `AskUserQuestionAnswer` on settlement. */
+  async function onUserQuestionsRequest(raw: unknown, _next: () => Promise<HostQuestionsAnswerLike>): Promise<HostQuestionsAnswerLike> {
+    const req = (raw !== null && typeof raw === 'object' ? raw : {}) as UserQuestionsRequestLike
+    const target = askTarget(req.agent)
+    if (target === undefined) {
+      failClosedAsk('questions', 'no-turn', '', 'no open in-flight turn to deliver a questions ask')
+      throw new Error('ASK_CHANNEL_UNAVAILABLE: no in-flight turn to deliver user questions')
+    }
+    const questions = (req.questions ?? []).map((q) => {
+      const id = q.id === undefined ? '' : idString(q.id)
+      const prompt = q.question ?? q.header ?? id
+      return {
+        id,
+        prompt: idString(prompt),
+        ...(typeof q.header === 'string' && q.header !== '' ? { header: q.header } : {}),
+        ...(typeof q.description === 'string' && q.description !== '' ? { description: q.description } : {}),
+        ...(typeof q.detail === 'string' && q.detail !== '' ? { detail: q.detail } : {}),
+        options: (q.options ?? []).map((option) => ({
+          label: option.label === undefined ? '' : idString(option.label),
+          ...(typeof option.description === 'string' && option.description !== '' ? { description: option.description } : {}),
+        })),
+        ...(q.multiSelect === true ? { multiSelect: true } : {}),
+      }
+    })
+    const callId = req.wait?.callId === undefined ? undefined : idString(req.wait.callId)
+    let request: AskRequestPayload | undefined
+    try {
+      request = ask.create(target.turn.turnId, {
+        sessionId: target.sessionId,
+        kind: 'questions',
+        questions,
+        ...(callId !== undefined ? { callId } : {}),
+      })
+    } catch (err) {
+      logger.error('[dsh-opentui-bridge] ask.create(questions) failed: %s', err)
+      failClosedAsk('questions', target.turn.turnId, target.sessionId, 'ask.create(questions) threw')
+      throw new Error('ASK_CHANNEL_UNAVAILABLE: ask.create(questions) failed')
+    }
+    const settled = await waitForAnswerer(request.eventId, req.signal)
+    if (settled.outcome !== 'approved' || settled.params?.answers === undefined || settled.params.answers.length === 0) {
+      // Explicit channel failure, NOT a silent declined answer: an unavailable /
+      // cancelled / denied settlement rejects the host waterfall so the tool
+      // sees a real error (the host restores it into a UserQuestionError).
+      throw new Error(`ASK_CHANNEL_UNAVAILABLE: user questions settled ${settled.outcome}`)
+    }
+    return {
+      answers: settled.params.answers.map((answer) => ({
+        id: answer.id,
+        selected: [...answer.selected],
+        ...(answer.custom !== undefined ? { custom: answer.custom } : {}),
+      })),
+    }
+  }
+
+  /** Contained registration: a missing `ctx.on` or a throwing registration
+   *  (host version skew / inactive fiber) must NOT make the whole plugin
+   *  pending — `bridge.ping` and every other method stay available. */
+  function armAskAnswerers(): void {
+    if (typeof ctx.on !== 'function') {
+      logger.warn('[dsh-opentui-bridge] ctx.on unavailable — ask answerers not registered (host waterfall stays fail-closed)')
+      return
+    }
+    try {
+      unsubApprovalAnswerer = ctx.on('approval/request', onApprovalRequest as (...args: unknown[]) => void)
+      unsubQuestionsAnswerer = ctx.on('user-questions/request', onUserQuestionsRequest as (...args: unknown[]) => void)
+      logger.info('[dsh-opentui-bridge] ask answerers armed (approval + user-questions)')
+    } catch (err) {
+      unsubApprovalAnswerer = undefined
+      unsubQuestionsAnswerer = undefined
+      logger.warn('[dsh-opentui-bridge] ask answerer registration contained (plugin stays live): %s', err)
+    }
   }
 
   /** Arm the two root-scope subscriptions once per connection; disposers are
@@ -1245,6 +1506,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       replyError(req.id, parsed.code, parsed.message)
       return
     }
+    // T4: stash the client's params BEFORE answer() — its settle() emits
+    // ask.settled synchronously through the registry sink, which is the single
+    // wake-up for the host answerer's await. Questions need `answers` here.
+    const pending = pendingAnswerers.get(parsed.value.eventId)
+    if (pending !== undefined) pending.params = parsed.value
     const result = ask.answer(binding?.sessionId ?? '', parsed.value)
     if (!result.ok) {
       replyError(req.id, result.code, result.message)
@@ -1491,6 +1757,17 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // Requirement 6: EOF / fiber dispose removes every listener so a stale
     // firehose callback can never write to a closed stdout.
     clearTurnSubscriptions()
+    // T4 (D5): settle every host answerer await BEFORE disposing the registry.
+    // `ask.dispose()` drops timers silently (no ask.settled), so teardown is the
+    // only place left to guarantee no waterfall promise is left hanging on a
+    // closed connection. First-wins makes this a no-op for already-settled asks.
+    for (const eventId of [...pendingAnswerers.keys()]) {
+      settleAnswerer(eventId, { outcome: 'cancelled' })
+    }
+    try { unsubApprovalAnswerer?.() } catch { /* already disposed */ }
+    try { unsubQuestionsAnswerer?.() } catch { /* already disposed */ }
+    unsubApprovalAnswerer = undefined
+    unsubQuestionsAnswerer = undefined
     // Release every ask timer so a late deadline/hard-cap callback can never
     // emit a cancel/settled frame after the connection closed.
     ask.dispose()
@@ -1561,6 +1838,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   // Arm the turn-event firehoses before stdin starts delivering requests, so a
   // session.open/send in the first input line is already observable.
   armTurnSubscriptions()
+  // ADR-0011 T4: register the host waterfall answerers with containment. A
+  // failure here is logged and swallowed — the rest of the plugin (ping,
+  // session.*) must never go pending because cordis could not resolve a
+  // service that is not declared in `inject` (see resolveSessionController).
+  armAskAnswerers()
 
   process.stdin.setEncoding('utf8')
   process.stdin.on('data', onData)
