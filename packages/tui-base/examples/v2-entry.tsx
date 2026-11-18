@@ -52,6 +52,8 @@ import { Transcript } from "../src/routes/session/transcript"
 import { WidgetsDock, resetSkinLineFades } from "../src/routes/session/widgets-dock"
 import { LastRequestDock } from "../src/routes/session/lastrequest-dock"
 import { NoticesDock, showNotice } from "../src/routes/session/notices-dock"
+import { RecoveryBanner } from "../src/routes/session/recovery-banner"
+import { RecoveryUiController, type RecoveryTexts } from "../src/routes/session/recovery-ui"
 import { HintsLine, applyHintsConfig } from "../src/routes/session/hints-line"
 import { applyActivityPanelConfig } from "../src/routes/session/widgets-dock"
 import { applyI18nConfig } from "@dsh-opentui/i18n"
@@ -164,6 +166,9 @@ function V2SessionPageBody(props: {
 	seam: RemoteSessionSeam
 	themeName?: string
 	quit: () => void
+	/** A3b+A8: the injected recovery entry (shell recoverBridgeSession over
+	 *  the live transport). Absent on legacy seams — the R layer then no-ops. */
+	recoverBridge?: () => Promise<unknown>
 	workspace: string
 	/** Splash hero plugin-tree root label (the boot profile name,
 	 * lifecycle.DEFAULT_PROFILE); undefined keeps the block headless. */
@@ -264,12 +269,47 @@ function V2SessionPageBody(props: {
 	const [effort, setEffort] = createSignal<string | undefined>()
 	const [remoteInfo, setRemoteInfo] = createSignal<{ messageCount?: number; tps?: number | null }>()
 	// A2: bridge link health for the footer status slot. Event-driven off the
-	// seam's `bridge.dead` SeamSessionEvent — no polling, so an idle-period
-	// crash repaints immediately.
+	// seam's SeamSessionEvent — no polling, so an idle-period crash repaints
+	// immediately. A3b+A8: the RecoveryUiController folds all four recovery
+	// events into the three-state footer, the composer-disable gate and the
+	// persistent banner. The page owns no copy: texts are t() getters.
 	const [bridgeStatus, setBridgeStatus] = createSignal<"ready" | "recovering" | "dead">("ready")
+	const [sessionIdFromRecovery, setSessionIdFromRecovery] = createSignal<string | undefined>()
+	// The controller is installed here but /new needs the slash host created
+	// below, so the new-session action rides a holder assigned later. Quit is
+	// the boot-owned path and resolves straight through props.quit.
+	let recoveryNewSession: () => void = () => {}
+	const recoveryQuit: () => void = () => props.quit()
+	const recoveryTexts: RecoveryTexts = {
+		transient: () => t("recovery.transient"),
+		recovered: (count) => t("recovery.recovered", { count: String(count) }),
+		failedReason: (reason) => t("recovery.failed.reason", { reason }),
+		locked: () => t("recovery.locked"),
+		reconnect: () => t("recovery.action.reconnect"),
+		retry: () => t("recovery.action.retry"),
+		newSession: () => t("recovery.action.newSession"),
+		quit: () => t("recovery.action.quit"),
+	}
+	const recovery = new RecoveryUiController({
+		recover: () =>
+			props.recoverBridge ? props.recoverBridge() : Promise.reject(new Error("no bridge transport injected")),
+		texts: recoveryTexts,
+		onNotice: (text, ttl, kind) => void showNotice(text, ttl, kind),
+		onSessionId: (id) => setSessionIdFromRecovery(id),
+		onNewSession: () => recoveryNewSession(),
+		onQuit: () => recoveryQuit(),
+	})
+	const recoveryEvents = new Set([
+		"bridge.dead",
+		"bridge.recovered",
+		"bridge.recovery.locked",
+		"bridge.recovery.failed",
+	])
 	onCleanup(
 		seam.onSessionEvent?.((event: { type: string; details: unknown }) => {
-			if (event?.type === "bridge.dead") setBridgeStatus("dead")
+			if (!recoveryEvents.has(event?.type)) return
+			recovery.handleEvent(event)
+			setBridgeStatus(recovery.footerStatus)
 		}) ?? (() => {}),
 	)
 	const [now, setNow] = createSignal(new Date())
@@ -645,7 +685,9 @@ function V2SessionPageBody(props: {
 			presetLabel: presetLabel(),
 			// ADR-0010 I5: the live session id from the seam flows into the
 			// low-priority 🆔 footer segment so identity stays observable.
-			sessionId: seam.currentSessionId(),
+			// A8: recovery/locked events can rebind the id; a new session
+			// clears the override so the seam's fresh id takes over.
+			sessionId: sessionIdFromRecovery() ?? seam.currentSessionId(),
 			// A2: bridge link health — dead/recovering/ready (absent on legacy seams).
 			bridgeStatus: bridgeStatus(),
 			theme,
@@ -851,6 +893,9 @@ function V2SessionPageBody(props: {
 	// transcript-loss law: the reload must be told WHICH session to read).
 	const reloadSession = (sessionId?: string) => {
 		setLastRequest(undefined)
+		// A8: any session switch (/new, /fork, /resume) retires a recovery-bound
+		// id override so the footer follows the seam's new session id again.
+		setSessionIdFromRecovery(undefined)
 		// Steer/queue batch: same per-session reset on /fork//resume switches.
 		composerRef?.resetDeliveries()
 		setComposerPending([])
@@ -986,6 +1031,10 @@ function V2SessionPageBody(props: {
 		flushQueue: () =>
 			composerRef?.flushQueue() ?? { kind: "empty", started: 0, remaining: 0 },
 	}))
+	// A8 banner "new session": reuse the SAME /new command path a typed
+	// `/new` takes (seam.newSession + clear + reload) — no second session
+	// reset implementation. quit stays the boot-owned shutdown path.
+	recoveryNewSession = () => void slash.interceptSubmit("/new")
 	// Ctrl+G opens the live subagents panel through the SAME slash dispatch a
 	// typed `/subagents` uses — no viewer internals are imported here (the
 	// command host owns the mount bridge). Deliberately NOT gated on running
@@ -1001,6 +1050,15 @@ function V2SessionPageBody(props: {
 				run: () => slash.interceptSubmit("/subagents"),
 			},
 		],
+	}))
+	// A3b: plain R reconnects only from dead / failed / locked. The command's
+	// enabled flag hides it elsewhere; the run body re-checks canRecover() so a
+	// stale dispatch can never start a second recovery. Key occupancy: plain
+	// `r` is free in config/keybind.ts (ctrl+r = session.rename, <leader>r =
+	// redo are distinct strokes).
+	Keymap.createLayer(() => ({
+		enabled: () => pageOwns(),
+		commands: [recovery.reconnectCommand()],
 	}))
 	const overlayHost = createComponent(TurnOverlayHost, {
 		controller: overlays,
@@ -1267,6 +1325,9 @@ function V2SessionPageBody(props: {
 							seam,
 							send,
 							footerHint: false,
+							// A3b: RECOVERING refuses submits; the typed draft is kept.
+							disabled: () => recovery.composerDisabled,
+							disabledReason: () => t("recovery.composer.disabled"),
 							frameTitle: () => contextFrameTitle?.() ?? "",
 							onBusyChange: setComposerBusy,
 							ref: (r: { focused(): boolean; focus(): void; node(): import("@opentui/core").TextareaRenderable | undefined; resetDeliveries(): void }) => (composerRef = r),
@@ -1311,6 +1372,9 @@ function V2SessionPageBody(props: {
 				// Batch D3 notices slot (dsh-tui-pi tui.ts:256): stacked
 				// auto-dismissing lines below lastRequest, above the powerline.
 				createComponent(NoticesDock, {}),
+				// A8: persistent recovery banner — reason + reconnect /
+				// new-session / quit actions. Zero rows until failed/locked.
+				createComponent(RecoveryBanner, { controller: recovery }),
 				// Subagents picker (batch C10a mount-gap fix): the seam-native
 				// edition of the vendored SubagentsTab (rows off the
 				// subagent-markers store, steer through the module bridge),
@@ -1504,14 +1568,31 @@ export async function bootClientV2(options: {
 				ctx: options.bridgeCtx ?? { logger: console },
 				// A2: DEAD is event-driven (no turn needed, so an idle crash paints
 				// immediately). showNotice is the global transient notices dock.
-				// TODO(A3): reserve a "按 R 重连" recovery entry here — deliberately
-				// NOT wired in A1+A2; the notice text carries no actionable hint yet.
+				// A3b: the notice now carries the actionable reconnect hint; the
+				// R key itself is a page keymap layer and the terminal states get
+				// a persistent banner (see RecoveryUiController).
 				onDead: (cause: { stage: string; code: number | null; signal: string | null; message: string }) =>
-					void showNotice(seamBootstrap.formatDeadNotice(cause), undefined, "error"),
+					void showNotice(
+						`${seamBootstrap.formatDeadNotice(cause)} · ${t("recovery.action.reconnect")}`,
+						undefined,
+						"error",
+					),
 			})
 		},
 		createRemote: () => new adapter.RemoteSessionSeam(session as never),
 	})
+	// A3b: the one recovery entry injected into the page. The real inproc
+	// transport satisfies recoverBridgeSession's RecoverableBridgeTransport
+	// (StdioBridgeTransport.recover); a legacy remote seam has no recovery and
+	// leaves the prop undefined so the R layer is inert there.
+	const recoverBridge =
+		seamKind === "bridge" && options.bridgeTransport !== undefined
+			? () =>
+					seamBootstrap.recoverBridgeSession({
+						transport: options.bridgeTransport as never,
+						seam: seam as never,
+					})
+			: undefined
 	registerTurnOverlays(seam, overlays)
 	// feat/auto-resume: dsh sessions are persisted server-side, but a plain
 	// launch must land on a NEW session (the default is `autoResume: "off"`).
@@ -1710,6 +1791,7 @@ export async function bootClientV2(options: {
 																					seam,
 																					themeName,
 																					quit: () => process.exit(0),
+																					recoverBridge,
 																					workspace,
 																					// Splash hero plugin-tree root (the boot profile).
 																					profileName: profile,

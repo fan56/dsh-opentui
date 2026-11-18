@@ -918,5 +918,15 @@
   "hero.plugins.count": "插件 {count}",
   "hero.plugins.more": "… 还有 {count} 个",
   "error.sessionLocked": "writer-held：会话 \"{id}\" 已在另一进程中打开（持有会话：{holder}）。请关闭该实例后重试。",
-  "error.sessionLockedNoHolder": "writer-held：某会话已在另一进程中打开（持有会话未知）。请关闭该实例后重试。"
+  "error.sessionLockedNoHolder": "writer-held：某会话已在另一进程中打开（持有会话未知）。请关闭该实例后重试。",
+  "recovery.transient": "连接已断开，正在恢复…",
+  "recovery.recovered": "已恢复连接，补齐 {count} 条事件",
+  "recovery.failed.reason": "恢复连接失败：{reason}",
+  "recovery.locked": "会话已被另一进程持有（writer-held）",
+  "recovery.action.reconnect": "重连 [R]",
+  "recovery.action.retry": "重试 [R]",
+  "recovery.action.newSession": "新会话",
+  "recovery.action.quit": "退出",
+  "recovery.command.title": "重连桥接会话",
+  "recovery.composer.disabled": "正在恢复连接…"
 }
