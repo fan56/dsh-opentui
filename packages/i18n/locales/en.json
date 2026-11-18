@@ -545,6 +545,8 @@
   "overlay.ask.approvalTitle": "⚠ Approval: {name}",
   "overlay.ask.allow": "allow",
   "overlay.ask.reject": "reject",
+  "overlay.ask.allowAlways": "always",
+  "overlay.ask.allowSession": "session",
   "overlay.ask.reviewRow": "⏎ Review answers",
   "overlay.ask.reviewTitle": "Review answers",
   "overlay.ask.submitRow": "⏎ Submit answers",

@@ -545,6 +545,8 @@
   "overlay.ask.approvalTitle": "⚠ 审批：{name}",
   "overlay.ask.allow": "允许",
   "overlay.ask.reject": "拒绝",
+  "overlay.ask.allowAlways": "始终允许",
+  "overlay.ask.allowSession": "本会话允许",
   "overlay.ask.reviewRow": "⏎ 查看答案",
   "overlay.ask.reviewTitle": "确认答案",
   "overlay.ask.submitRow": "⏎ 提交答案",

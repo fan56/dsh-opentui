@@ -50,7 +50,34 @@ import {
 	recommendedPicks,
 } from "./ask-options"
 
-export type PendingApproval = { id: number; name: string; args: Record<string, unknown> }
+export type PendingApproval = {
+	id: number
+	name: string
+	args: Record<string, unknown>
+	/** ADR-0011: the bridge ask this card answers, when one is attached. Used
+	 *  by `syncPendingAsks()` to close a card the host cancelled/settled. */
+	eventId?: string
+	/** Host granted escalation: the card may offer `always` / `session`. Never
+	 *  inferred from args (the seam's approval args carry no escalation bit). */
+	escalation: boolean
+}
+
+/** The read-only slice of the ADR-0011 reconnect snapshot the controller
+ *  needs. Structural on purpose: tui-base does not import the shell seam. */
+export type BridgeAskSnapshot = {
+	eventId: string
+	kind: string
+	toolName?: string
+	callId?: string
+	reason?: string
+	escalation?: boolean
+}
+
+/** `always` / `session` are the two escalated behaviors the bridge wire
+ *  accepts when the host granted escalation. The seam declares only the two
+ *  base verdicts on `onApprove`; the widened strings travel through the same
+ *  promise and are gated on `escalation` before a frame is ever sent. */
+export type BridgeApprovalVerdict = SeamApprovalVerdict | "always" | "session"
 
 /**
  * The ask surface's phase (spec §5, §8). `questions` = the option list owns
@@ -89,7 +116,7 @@ export type PendingAsk = {
 
 type ApprovalEntry = {
 	request: PendingApproval
-	resolve: (verdict: SeamApprovalVerdict) => void
+	resolve: (verdict: BridgeApprovalVerdict) => void
 }
 /** The stored batch keeps one live inline buffer PER QUESTION. The public
  * snapshot above derives `customDraft` for the focused question only, so a
@@ -106,10 +133,19 @@ export class TurnOverlayController {
 	#listeners = new Set<() => void>()
 	#idleHandlers = new Set<() => void>()
 	#busy = false
+	/** ADR-0011 read-only seam snapshot accessor. Absent seams (FakeSeam,
+	 *  plain view tests) never sync — `syncPendingAsks()` is a no-op there. */
+	#pendingAsks: (() => readonly BridgeAskSnapshot[]) | undefined
 
 	subscribe(fn: () => void): () => void {
 		this.#listeners.add(fn)
 		return () => this.#listeners.delete(fn)
+	}
+
+	/** Attach the seam's `pendingAsks()` snapshot (wired by
+	 *  `registerTurnOverlays`). Read-only: the controller never sends frames. */
+	attachPendingAsks(read: () => readonly BridgeAskSnapshot[]): void {
+		this.#pendingAsks = read
 	}
 
 	/** Fires each time the overlay set drains to empty (the refocus point). */
@@ -142,12 +178,53 @@ export class TurnOverlayController {
 		return this.#asks.length
 	}
 
-	/** View-side entry — what `SeamTurnCallbacks.onApprove` awaits. */
+	/** View-side entry — what `SeamTurnCallbacks.onApprove` awaits. The bridge
+	 *  seam calls this with `(toolName, {callId, reason})` when an
+	 *  `ask.request{kind:"approval"}` lands mid-turn; the matching snapshot row
+	 *  supplies `eventId` (for cancellation sync) and `escalation` (for the
+	 *  optional always/session actions). No snapshot / no match → a plain
+	 *  allow-once/reject card, never an implicit widen. */
 	requestApproval(name: string, args: Record<string, unknown>): Promise<SeamApprovalVerdict> {
-		return new Promise((resolve) => {
-			this.#approvals.push({ request: { id: ++this.#seq, name, args }, resolve })
+		const ask = this.#matchApproval(name, args)
+		const promise = new Promise<BridgeApprovalVerdict>((resolve) => {
+			this.#approvals.push({
+				request: {
+					id: ++this.#seq,
+					name,
+					args,
+					escalation: ask?.escalation === true,
+					...(ask !== undefined ? { eventId: ask.eventId } : {}),
+				},
+				resolve,
+			})
 			this.#changed()
 		})
+		// The seam honours the widened strings at runtime; keep the declared
+		// onApprove surface at SeamApprovalVerdict for every existing caller.
+		return promise as Promise<SeamApprovalVerdict>
+	}
+
+	/** Correlate an onApprove call to its `pendingAsks()` row. The seam's
+	 *  approval args carry `callId` / `reason` but not `eventId`, so match the
+	 *  most specific key available and fall back only for an unambiguous
+	 *  single approval — a wrong match would offer an ungranted escalation. */
+	#matchApproval(name: string, args: Record<string, unknown>): BridgeAskSnapshot | undefined {
+		const asks = (this.#pendingAsks?.() ?? []).filter((ask) => ask.kind === "approval")
+		if (asks.length === 0) return undefined
+		const callId = typeof args.callId === "string" ? args.callId : undefined
+		if (callId !== undefined) {
+			// callId is a strong identifier: a mismatch means NO match. Falling
+			// back to a name-only match here could borrow another ask's
+			// escalation flag and offer an ungranted behavior.
+			const byCall = asks.filter((ask) => ask.callId === callId)
+			return byCall.length > 0 ? byCall[byCall.length - 1] : undefined
+		}
+		const reason = typeof args.reason === "string" ? args.reason : undefined
+		const byName = asks.filter(
+			(ask) => (ask.toolName ?? "tool") === name && (reason === undefined || ask.reason === reason),
+		)
+		if (byName.length > 0) return byName[byName.length - 1]
+		return asks.length === 1 ? asks[0] : undefined
 	}
 
 	/** Enter / confirm button. */
@@ -155,15 +232,65 @@ export class TurnOverlayController {
 		this.#settleApproval("allowed-once")
 	}
 
-	/** Cancel button / esc. */
+	/** Cancel button / esc — fail-closed: the tool is denied, never allowed. */
 	rejectApproval(): void {
 		this.#settleApproval("rejected")
 	}
 
-	#settleApproval(verdict: SeamApprovalVerdict): void {
+	/** Escalated actions, only offered on a card whose ask granted escalation.
+	 *  A call without escalation is a no-op (no frame, no silent widen). */
+	approveAlways(): void {
+		this.#settleEscalated("always")
+	}
+
+	approveSession(): void {
+		this.#settleEscalated("session")
+	}
+
+	#settleEscalated(verdict: "always" | "session"): void {
+		if (this.#approvals[0]?.request.escalation !== true) return
+		this.#settleApproval(verdict)
+	}
+
+	#settleApproval(verdict: BridgeApprovalVerdict): void {
 		const head = this.#approvals.shift()
 		if (!head) return
 		head.resolve(verdict)
+		this.#changed()
+	}
+
+	/**
+	 * ADR-0011: reconcile the card stack with the seam's read-only snapshot.
+	 * When the host cancels / settles / replaces an ask (`ask.cancel`,
+	 * `ask.settled`, turn end, `ask.pending` reconnect snapshot), the seam drops
+	 * its local entry. A card still on screen for that eventId closes with a
+	 * fail-closed `rejected` verdict — no ghost card, no dangling onApprove
+	 * promise, never an implicit allow. No accessor (non-bridge seams) = no-op.
+	 */
+	syncPendingAsks(): void {
+		if (this.#pendingAsks === undefined || this.#approvals.length === 0) return
+		const asks = this.#pendingAsks()
+		const before = this.#approvals.length
+		this.#approvals = this.#approvals.filter((entry) => {
+			if (this.#askStillPending(entry.request, asks)) return true
+			entry.resolve("rejected")
+			return false
+		})
+		if (this.#approvals.length !== before) this.#changed()
+	}
+
+	#askStillPending(request: PendingApproval, asks: readonly BridgeAskSnapshot[]): boolean {
+		if (request.eventId !== undefined) return asks.some((ask) => ask.eventId === request.eventId)
+		// Unmatched card (no eventId): keep it unless there are NO approval asks
+		// left at all. Conservative — an active card is never closed on a maybe.
+		return asks.some((ask) => ask.kind === "approval")
+	}
+
+	/** Turn terminal / session close sweep (A1/D5): close every card fail-closed. */
+	cancelAllApprovals(): void {
+		if (this.#approvals.length === 0) return
+		const entries = this.#approvals.splice(0)
+		for (const entry of entries) entry.resolve("rejected")
 		this.#changed()
 	}
 
