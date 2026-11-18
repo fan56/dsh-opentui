@@ -9,7 +9,9 @@
  * stream (start/token/tool/end/error) driven by the host's `session/event` and
  * `agent/assistant-stream` firehoses. M2-3 adds `turn.abort` (cancel only the
  * in-flight turn, never the session — I3) and `journal.replay` (read-only
- * persistence drain, no writer lock — I6).
+ * persistence drain, no writer lock — I6). `session.list` (read-only session
+ * enumeration via the host's `sessionController.list`, reusing the `session/list`
+ * wire shape) completes the seam — no new protocol version (v1).
  *
  * stdout is reserved for the protocol. Every log line goes through ctx.logger;
  * nothing in this module ever writes to stdout except a well-formed NDJSON
@@ -92,6 +94,10 @@ export interface BridgeContext {
   /** Optional host persistence service (cordis provides `ctx.sessionPersistence`).
    *  Resolved through ctx.get, never imported at runtime. */
   sessionPersistence?: PersistenceLike
+  /** Optional host session-controller service (cordis provides
+   *  `ctx.sessionController`). Resolved through ctx.get with a direct-property
+   *  fallback; never imported at runtime. */
+  sessionController?: SessionControllerLike
 }
 
 // --------------------------------------------------------------------------
@@ -155,6 +161,40 @@ interface PersistenceHandleLike {
 /** Structural slice of `ctx.sessionPersistence` (dsh-session-persistence). */
 interface PersistenceLike {
   open(id: string, access: 'read' | 'write'): Promise<PersistenceHandleLike>
+}
+
+/** One `SessionSummary` on the `session/list` wire, transcribed from
+ *  `@deepseek-ai/dsh-api-session-controller` (`ctrl/types.d.ts:41-59`). The
+ *  bridge passes these rows through VERBATIM — it never renames a field or
+ *  fabricates one (title lives at `projections.values.title`; the summary has
+ *  no `title` / `sizeBytes` of its own). */
+interface SessionSummaryLike {
+  sessionId: string
+  updatedAt: number
+  agentAvailable: boolean
+  formatStatus?: 'current' | 'migration-required'
+  running: boolean
+  blank: boolean
+  parentSessionId?: string
+  origin?: 'subagent'
+  cwd?: string
+  projections?: {
+    kind?: 'cached' | 'sequenced'
+    asOfSeq?: number
+    values?: Record<string, unknown>
+  }
+}
+
+/** `SessionListValue` — the raw wire reply of `session/list` (`ctrl/types.d.ts:249-255`). */
+interface SessionListValueLike {
+  items: readonly SessionSummaryLike[]
+}
+
+/** Structural slice of `ctx.sessionController` (dsh-api-session-controller).
+ *  `list(_request, signal)` is the very handler behind the thin client's
+ *  `session/list` RPC (`typert.host.js:2168`, `index.js:3988`). */
+interface SessionControllerLike {
+  list(request: { _request: { cursor?: string } }): Promise<SessionListValueLike>
 }
 
 /** Per-connection binding: the ONE handle this stdio connection owns. */
@@ -283,6 +323,27 @@ function resolvePersistence(ctx: BridgeContext): PersistenceLike | undefined {
   const svc = fromGet ?? ctx.sessionPersistence
   return svc !== undefined && typeof (svc as PersistenceLike).open === 'function'
     ? (svc as PersistenceLike)
+    : undefined
+}
+
+/** Resolve `ctx.sessionController` through the same cordis `ctx.get` seam the
+ *  bridge already uses for persistence. `get?` is optional on BridgeContext, so
+ *  a host without a service lookup degrades to "unavailable", never a throw. */
+function resolveSessionController(ctx: BridgeContext): SessionControllerLike | undefined {
+  // cordis throws "cannot get property ... without inject" for a service that
+  // is not declared in `inject` (both the `ctx.get` and the direct-property
+  // access can throw). Contain it so the frame answers UNSUPPORTED instead of
+  // crashing the serial dispatch chain — a stock `opentui-inproc` profile does
+  // not mount `sessionController` at all.
+  let svc: unknown
+  try {
+    svc = typeof ctx.get === 'function' ? ctx.get('sessionController') : undefined
+    if (svc === undefined) svc = ctx.sessionController
+  } catch {
+    svc = undefined
+  }
+  return svc !== undefined && typeof (svc as SessionControllerLike).list === 'function'
+    ? (svc as SessionControllerLike)
     : undefined
 }
 
@@ -1103,6 +1164,49 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     )
   }
 
+  /** `session.list` — read-only enumeration of every session visible to the
+   *  host. This is the bridge-side twin of the thin client's `session/list`
+   *  RPC: it calls the SAME host service (`ctx.sessionController.list`) and
+   *  returns the SAME wire value (`{items: SessionSummary[]}`), field for field
+   *  — no reshape, no rename, no fabricated `title`/`sizeBytes`.
+   *
+   * - Read-only: no `agents.create/resume`, no `open`, no writer lock. It works
+   *   with NO session open and never changes the binding (ADR-0010 I1/I6).
+   * - Params follow the host's `SessionListRequest` (`cursor?: string`); an
+   *   illegal cursor is `BAD_PARAMS`. The cursor is reserved by the host (the
+   *   thin client does not send it) and is forwarded defensively.
+   * - A missing service is a contract error (`UNSUPPORTED`), NOT an empty list:
+   *   `{ok:true,result:{items:[]}}` and "capability unavailable" stay distinct.
+   */
+  async function handleListSessions(req: ParsedRequest): Promise<void> {
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'sessionController service unavailable: session.list capability not present', {
+        capability: 'session.list',
+        service: 'sessionController',
+      })
+      return
+    }
+
+    const cursor = req.params.cursor
+    if (cursor !== undefined && typeof cursor !== 'string') {
+      replyError(req.id, 'BAD_PARAMS', 'session.list cursor must be a string')
+      return
+    }
+
+    try {
+      const value = await controller.list({ _request: cursor !== undefined ? { cursor } : {} })
+      const items = value !== null && typeof value === 'object' && Array.isArray(value.items) ? value.items : []
+      logger.info('[dsh-opentui-bridge] session.list ok items=%d', items.length)
+      // Pass the host rows through unchanged — the wire shape is the contract.
+      replyOk(req.id, { items })
+    } catch (err) {
+      logger.error('[dsh-opentui-bridge] session.list failed: %s', err)
+      const mapped = mapHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
   /** `journal.replay` — read-only drain of one session's durable event log.
    *
    * - Uses `persistence.open(id, 'read')` — never `'write'`, so it cannot steal
@@ -1210,6 +1314,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         return
       }
       replyOk(req.id, { protocolVersion: PROTOCOL_VERSION, bridgeVersion, hostVersion })
+      return
+    }
+    if (req.method === 'session.list') {
+      await handleListSessions(req)
       return
     }
     if (req.method === 'session.open') {

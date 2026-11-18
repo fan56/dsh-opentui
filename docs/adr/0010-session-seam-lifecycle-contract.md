@@ -80,6 +80,16 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 
 **`turnId` 归属**：由 bridge 生成（独立 UUID，不是消息 id）；后续所有 `turn.*` 事件（`turn.start` / `turn.token` / `turn.tool` / `turn.end` / `turn.error`）必须携带该字段，供客户端把事件关联到同一 turn。
 
+**`session.list`（只读会话枚举）** —— 与实现逐字段一致：
+
+- **请求**：`{id, method:"session.list", params?:{cursor?:string}}`。`cursor` 沿用宿主 `SessionListRequest`（预留字段，thin client 通常不传）；若出现且非字符串返回 `BAD_PARAMS`。空或缺省 `params` 合法。
+- **服务解析**：`ctx.get('sessionController')`（cordis `sessionController`，与 thin client `session/list` RPC 同一服务，带 `ctx.sessionController` 直连兜底）。服务缺失（无该服务或无 `.list()`，或 cordis 抛 `cannot get property ... without inject`）返回 `UNSUPPORTED`，`detail={capability:"session.list",service:"sessionController"}`；**不得**回 `{items:[]}` 冒充成功 —— 空列表与「能力不可用」必须可区分。
+- **宿主部署前提（真机 U1 结论）**：`sessionController` 由 `@deepseek-ai/dsh-web-app` bundle 挂载，**不在** `opentui-inproc` 的 `dsh-base + bridge` 基线里。因此桥的 `inject` 保持 `['agents']` 不变 —— 若把 `sessionController` 加进必填 inject，缺该服务的 profile 会让桥插件整体 pending、连 `bridge.ping` 都不可用。真机实测：stock `opentui-inproc` 上 `session.list` 正确回 `UNSUPPORTED`；给该 profile 临时加挂 `dsh-web-app` 后回 346 行、`updatedAt` 降序、字段与远端 wire 逐字段一致。需要 `session.list` 可用的部署必须同时挂载提供该服务的 bundle。
+- **响应**：`{id, ok:true, result:{items: SessionSummary[]}}`；`items` 为宿主 wire 行**原样透传**，不改名、不造字段、不在桥侧过滤/排序（宿主已按 `updatedAt` 降序）。`SessionSummary` 形状：
+  `{sessionId:string, updatedAt:number, agentAvailable:boolean, formatStatus?:"current"|"migration-required", running:boolean, blank:boolean, parentSessionId?:string, origin?:"subagent", cwd?:string, projections?:{kind:"cached"|"sequenced", asOfSeq:number, values:object}}`；标题位于 `projections.values.title`，无顶层 `title`/`sizeBytes` 字段（远端防御性读取，缺失即缺省）。
+- **只读性**：不 `agents.create/resume`、不 `open`、不取 writer lock、不改绑定（I1/I6）；无会话打开也可调用。
+- **错误码**：`BAD_PARAMS`（非法 cursor）、`UNSUPPORTED`（服务缺失）、宿主异常经 `mapHostError` 映射（默认 `INTERNAL`）；无 `SESSION_NOT_OPEN`。`protocolVersion` 不变（仍为 1）。
+
 **`session.open` 的 replace 语义（M2-1b 实现中，先按契约写）**：`session.open` 支持 `{replace:true}`——显式点名目标 id 时允许关旧开新，响应携带 `previousSessionId`（被关闭的旧会话 id）；不带 `replace` 且当前已有不同会话时返回 `ALREADY_OPEN`（`detail.openSessionId` 为当前打开的会话 id）。该操作不违反 I1：sessionId 仍只由 `open` 改变，且必须显式点名目标 id，不存在隐式 re-mint 或 fallback create。
 
 ## 错误码全集
@@ -106,7 +116,7 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - `TURN_NOT_FOUND`（`turn.abort` 请求的 turnId 不是在途 turn、也非最近已终态 turn 时返回；`detail` 为 `{requestedTurnId, activeTurnId}`，其中 `activeTurnId` 为当前在途 turn id，无在途 turn 时为 `null`）
 - `BAD_PARAMS`
 - `BAD_FRAME`
-- `UNSUPPORTED`
+- `UNSUPPORTED`（未知方法；亦用于 `session.list` 服务缺失，`detail={capability,service}`）
 - `VERSION_INCOMPATIBLE`（亦可由握手版本比对与宿主映射得出）
 
 ## preset 迁移语义
