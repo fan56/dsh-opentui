@@ -13,10 +13,11 @@
  * `--remote` stays visible-but-deprecated until 0.23.0).
  *
  * FAIL-FAST THREE ELEMENTS (tickets/2026-11-18-inproc-bridge-plan.md T11,
- * original text: "错误自包含诊断 + 修复命令 + '该模式无 append'提示"):
- *   1. diagnosis       — what failed, with the expected/actual values;
- *   2. repair command  — the concrete command to fix it;
- *   3. no-append notice — this mode has no append-system support yet (M3).
+ * original text: "错误自包含诊断 + 修复命令 + 模式说明"):
+ *   1. diagnosis      — what failed, with the expected/actual values;
+ *   2. repair command — the concrete command to fix it;
+ *   3. mode notice    — append-system is injected via the bridge section (M3),
+ *                      presets are standard only.
  * Every `BridgeBootstrapError` message contains all three. There is NO
  * catch that falls back to the remote seam: in inproc mode a failed
  * handshake / fingerprint check is terminal and readable.
@@ -31,14 +32,14 @@ import {
 } from "./bridge-session-seam.ts"
 // P0 fail-fast: the three-element text has ONE source (scripts/lib/...). This
 // handshake path and the provision-script fingerprint path both import it, so
-// the "no append" notice can never diverge between them again.
+// the mode notice can never diverge between them again.
 import {
-	BRIDGE_NO_APPEND_NOTICE,
+	BRIDGE_APPEND_PRESET_NOTICE,
 	BRIDGE_REPAIR_COMMAND,
 	formatBridgeFailFastMessage,
 } from "../../scripts/lib/bridge-failfast-text.mjs"
 
-export { BRIDGE_NO_APPEND_NOTICE, BRIDGE_REPAIR_COMMAND }
+export { BRIDGE_APPEND_PRESET_NOTICE, BRIDGE_REPAIR_COMMAND }
 export { BRIDGE_REPAIR_HINT } from "../../scripts/lib/bridge-failfast-text.mjs"
 
 // ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ export interface BridgeBootstrapErrorOptions {
 }
 
 /** Compose the three elements into a single, copy-pasteable message. The
- *  repair command + no-append lines come from the shared fail-fast source. */
+ *  repair command + mode notice lines come from the shared fail-fast source. */
 export function formatBridgeBootstrapMessage(options: BridgeBootstrapErrorOptions): string {
 	return formatBridgeFailFastMessage(
 		`dsh-opentui inproc bridge seam failed [${options.code}]: ${options.diagnosis}`,

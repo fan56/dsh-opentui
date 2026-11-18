@@ -96,7 +96,7 @@ import { fileURLToPath } from 'node:url'
 // src/client/seam-bootstrap.ts. Both ProvisionError (fingerprint) and
 // BridgeBootstrapError (handshake) now carry the same three elements.
 import {
-  BRIDGE_NO_APPEND_NOTICE,
+  BRIDGE_APPEND_PRESET_NOTICE,
   BRIDGE_REPAIR_HINT,
 } from './lib/bridge-failfast-text.mjs'
 // Host-version gate. The host only records an incompatible profile bundle in
@@ -676,10 +676,10 @@ class ProvisionError extends Error {
 // P0 fail-fast: EVERY failure is self-contained with all three elements.
 // Element 1 (diagnosis, incl. the identity guard's expected/actual lines) is
 // the caller's `message`/`detail`; elements 2 + 3 now come from the ONE shared
-// source so the fingerprint path can never again omit the "no append" notice
-// that the handshake path alone used to print.
+// source so the fingerprint path can never again omit the mode notice that
+// the handshake path alone used to print.
 function fail(message, detail = '') {
-  const fullDetail = [detail, BRIDGE_REPAIR_HINT, BRIDGE_NO_APPEND_NOTICE]
+  const fullDetail = [detail, BRIDGE_REPAIR_HINT, BRIDGE_APPEND_PRESET_NOTICE]
     .filter(Boolean)
     .join('\n')
   throw new ProvisionError(message, fullDetail)

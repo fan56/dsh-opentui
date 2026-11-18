@@ -7,7 +7,7 @@
  * error, so bridge.hello timed out. Two invariants must hold now:
  *   1. the supported window contains rc.3 -> rc.4 and caps at 0.3.0;
  *   2. provisioning either grants an exact exemption in-window or fails loud
- *      (diagnosis + repair command + no-append notice) OUTSIDE it — never a
+ *      (diagnosis + repair command + mode notice) OUTSIDE it — never a
  *      silent skip, never an unconditional --accept-risk.
  */
 import { describe, expect, test } from 'bun:test'
@@ -26,7 +26,7 @@ import {
   isHostVersionSupported,
 } from '../scripts/lib/host-compat.mjs'
 import {
-  BRIDGE_NO_APPEND_NOTICE,
+  BRIDGE_APPEND_PRESET_NOTICE,
   BRIDGE_REPAIR_COMMAND,
 } from '../scripts/lib/bridge-failfast-text.mjs'
 
@@ -36,7 +36,7 @@ const BRIDGE_PKG = '@aiwayds/dsh-opentui-bridge@0.1.0'
 function assertThreeElements(stderr: string, diagnosisNeedle: string): void {
   expect(stderr).toContain(diagnosisNeedle)
   expect(stderr).toContain(BRIDGE_REPAIR_COMMAND)
-  expect(stderr).toContain(BRIDGE_NO_APPEND_NOTICE)
+  expect(stderr).toContain(BRIDGE_APPEND_PRESET_NOTICE)
 }
 
 // --- 1. The window itself ---------------------------------------------------

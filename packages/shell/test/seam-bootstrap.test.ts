@@ -3,7 +3,7 @@
  *
  * Covers the exact deliverables:
  *   - default seam selection: inproc → bridge, non-inproc → remote (each branch)
- *   - fail-fast three elements: diagnosis + repair command + no-append notice
+ *   - fail-fast three elements: diagnosis + repair command + mode notice
  *   - handshake/fingerprint failure is immediate + readable, NO fallback
  *   - --remote still selects the legacy seam + one-shot deprecation notice
  *   - D3 downgrade law: sync members degrade+log, async members UNSUPPORTED
@@ -16,7 +16,7 @@ import {
 	type BridgeTransport,
 } from "../src/client/bridge-session-seam.ts"
 import {
-	BRIDGE_NO_APPEND_NOTICE,
+	BRIDGE_APPEND_PRESET_NOTICE,
 	BRIDGE_PROTOCOL_VERSION,
 	BRIDGE_REPAIR_COMMAND,
 	BridgeBootstrapError,
@@ -87,7 +87,7 @@ describe("selectSeamKind: default path switch", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 2. Fail-fast three elements (T11 original: 诊断 + 修复命令 + 该模式无 append)
+// 2. Fail-fast three elements (T11 original: 诊断 + 修复命令 + 模式说明)
 // ---------------------------------------------------------------------------
 describe("fail-fast three elements", () => {
 	test("BridgeBootstrapError message contains all three, self-contained", () => {
@@ -101,9 +101,10 @@ describe("fail-fast three elements", () => {
 		// 2. repair command
 		expect(err.message).toContain(`Fix: ${BRIDGE_REPAIR_COMMAND}`)
 		expect(err.repairCommand).toBe(BRIDGE_REPAIR_COMMAND)
-		// 3. no-append notice
-		expect(err.message).toContain(BRIDGE_NO_APPEND_NOTICE)
-		expect(err.message.toLowerCase()).toContain("no append-system support")
+		// 3. mode notice — append via bridge section, presets standard only
+		expect(err.message).toContain(BRIDGE_APPEND_PRESET_NOTICE)
+		expect(err.message).toContain("bridge section")
+		expect(err.message).toContain("presets are standard only")
 		expect(err.code).toBe("VERSION_INCOMPATIBLE")
 	})
 
@@ -115,7 +116,7 @@ describe("fail-fast three elements", () => {
 		})
 		expect(msg).toContain("no transport injected")
 		expect(msg).toContain("Fix: npm i -g @aiwayds/dsh-opentui")
-		expect(msg).toContain(BRIDGE_NO_APPEND_NOTICE)
+		expect(msg).toContain(BRIDGE_APPEND_PRESET_NOTICE)
 	})
 
 	test("toBridgeBootstrapError keeps a BridgeProtocolError's code + detail as diagnosis", () => {
@@ -128,7 +129,7 @@ describe("fail-fast three elements", () => {
 		expect(wrapped.code).toBe("VERSION_INCOMPATIBLE")
 		expect(wrapped.message).toContain("bridge handshake rejected: protocol mismatch")
 		expect(wrapped.message).toContain('"clientProtocolVersion":2')
-		expect(wrapped.message).toContain(BRIDGE_NO_APPEND_NOTICE)
+		expect(wrapped.message).toContain(BRIDGE_APPEND_PRESET_NOTICE)
 	})
 })
 
@@ -146,7 +147,7 @@ describe("handshake / fingerprint verification fails fast", () => {
 			expect(e.code).toBe("VERSION_INCOMPATIBLE")
 			expect(e.message).toContain("client=1, bridge=2")
 			expect(e.message).toContain(`Fix: ${BRIDGE_REPAIR_COMMAND}`)
-			expect(e.message).toContain(BRIDGE_NO_APPEND_NOTICE)
+			expect(e.message).toContain(BRIDGE_APPEND_PRESET_NOTICE)
 		}
 	})
 

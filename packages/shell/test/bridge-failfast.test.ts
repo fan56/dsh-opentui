@@ -2,10 +2,10 @@
  * P0 fail-fast three-element tests.
  *
  * Both inproc failure paths must print the SAME three self-contained lines
- * (T11 original: 诊断 + 修复命令 + "该模式无 append"提示):
+ * (T11 original: 诊断 + 修复命令 + 模式说明):
  *   1. diagnosis with expected/actual where the path has them
  *   2. dsh-opentui --repair-bridge
- *   3. the "no append in this mode" notice
+ *   3. the mode notice: append comes via the bridge section, presets standard
  *
  * The regression was that these lived in two hard-coded sources that never
  * met: BridgeBootstrapError (handshake) had all three; ProvisionError
@@ -18,7 +18,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
-	BRIDGE_NO_APPEND_NOTICE,
+	BRIDGE_APPEND_PRESET_NOTICE,
 	BRIDGE_REPAIR_COMMAND,
 	BRIDGE_REPAIR_HINT,
 	formatBridgeFailFastMessage,
@@ -37,13 +37,13 @@ function assertThreeElements(text: string, diagnosisNeedle: string): void {
 	expect(text).toContain(diagnosisNeedle)
 	// 2. repair command — present in BOTH phrasings via the ONE shared constant
 	expect(text).toContain(BRIDGE_REPAIR_COMMAND)
-	// 3. no-append notice — the element the fingerprint path used to omit
-	expect(text).toContain(BRIDGE_NO_APPEND_NOTICE)
-	expect(BRIDGE_NO_APPEND_NOTICE.length).toBeGreaterThan(0)
+	// 3. mode notice — the element the fingerprint path used to omit
+	expect(text).toContain(BRIDGE_APPEND_PRESET_NOTICE)
+	expect(BRIDGE_APPEND_PRESET_NOTICE.length).toBeGreaterThan(0)
 	// the three lines are self-contained and present in one message
 	expect(lines.some((l) => l.includes(diagnosisNeedle))).toBe(true)
 	expect(lines.some((l) => l.includes(BRIDGE_REPAIR_COMMAND))).toBe(true)
-	expect(lines.some((l) => l.includes(BRIDGE_NO_APPEND_NOTICE))).toBe(true)
+	expect(lines.some((l) => l.includes(BRIDGE_APPEND_PRESET_NOTICE))).toBe(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -53,7 +53,10 @@ describe("shared fail-fast text — single source", () => {
 	test("constants are the canonical three-element strings", () => {
 		expect(BRIDGE_REPAIR_COMMAND).toBe("dsh-opentui --repair-bridge")
 		expect(BRIDGE_REPAIR_HINT).toContain(BRIDGE_REPAIR_COMMAND)
-		expect(BRIDGE_NO_APPEND_NOTICE).toContain("no append-system support")
+		// M3-08: the notice now states append is injected via the bridge section
+		// and presets are standard only — the stale "unavailable" claim is gone.
+		expect(BRIDGE_APPEND_PRESET_NOTICE).toContain("bridge section")
+		expect(BRIDGE_APPEND_PRESET_NOTICE).toContain("presets are standard only")
 	})
 
 	test("formatBridgeFailFastMessage emits exactly diagnosis + Fix + notice", () => {
@@ -66,7 +69,7 @@ describe("shared fail-fast text — single source", () => {
 		expect(lines[0]).toContain('expected "abc"')
 		expect(lines[0]).toContain('actual "def"')
 		expect(lines[1]).toBe(`Fix: ${BRIDGE_REPAIR_COMMAND}`)
-		expect(lines[2]).toBe(BRIDGE_NO_APPEND_NOTICE)
+		expect(lines[2]).toBe(BRIDGE_APPEND_PRESET_NOTICE)
 	})
 })
 
