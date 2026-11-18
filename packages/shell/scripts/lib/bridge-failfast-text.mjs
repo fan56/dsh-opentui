@@ -9,10 +9,12 @@
  *                       presets are standard only (M3 landed)
  *
  * The third element used to say append was unavailable in this mode. That was
- * true before M3 but is now false: M3-04 registers the append section
- * through session.open setup, and M3-05/05b map the legacy append preset to
- * standard. The notice is kept (it is still useful context) with corrected
- * semantics — do not restore the stale "no append" claim.
+ * true before M3 but is now false: M3-04 registers the append section through
+ * session.open setup, and M3-05b keeps the legacy append preset id as inert
+ * metadata (the `standard` mapping from 8e0e847 was reverted in a45a052) —
+ * append text is injected by the bridge section, not by a preset. The notice
+ * is kept (it is still useful context) with corrected semantics — do not
+ * restore the stale "no append" claim.
  *
  * They used to be split across two hard-coded sources that never met:
  *   - `src/client/seam-bootstrap.ts` BridgeBootstrapError (handshake path) had

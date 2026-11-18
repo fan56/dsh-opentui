@@ -136,7 +136,7 @@ ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESS
 
 ## append section 契约
 
-> **状态说明（截至 f05b28c）**：本节是 M3 的**验收规格**，bridge 路径尚未实现 append 注入。当前启动失败文本明确写"inproc bridge mode has no append-system support in 0.22.0 (M3 section not landed); presets are standard only."（`packages/shell/scripts/lib/bridge-failfast-text.mjs` 的 `BRIDGE_NO_APPEND_NOTICE`）；`tickets/2026-11-18-m3-append-inventory.md:14` 结论同为"inproc（bridge）路径 append-system 根本没有注入通道，内容不生效"。因此以下各条是"落地时必须满足"的约束，不得当作已实现行为引用。
+> **状态说明（M3 已落地，截至 9c1dd90）**：M3-04（`bd4828b`）已在 bridge `session.open` 的 `setup` 回调中把 append section 注册到 agent scope，**无条件注入** APPEND_SYSTEM.md 派生文本；旧合成 preset id 在 inproc 为惰性历史元数据、不向 `agents.resume` 传 `preset`（条款 A），防重由挂载面结构性保证、不以 preset id 作抑制条件（条款 B，修正落地于 `a45a052`）。当前启动失败文本为 `BRIDGE_APPEND_PRESET_NOTICE = 'inproc bridge mode injects append-system via the bridge section; presets are standard only.'`（`packages/shell/scripts/lib/bridge-failfast-text.mjs`），不再声称该模式无 append 支持。以下各条是已实现的约束，按验收规格逐条核对。
 
 - **scope 注册，禁 global**：section 必须以 scope 注册，不得注册为 global。
 - **`order: 200`**：与 tui-pi 共装时会并列；tie-break 语义须由握手测试钉死（不能靠注册顺序的偶然行为）。
@@ -162,4 +162,4 @@ ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESS
 
 ## 修订记录
 
-- 2026-11-18 — M3-05 事后修订（commit 8e0e847）：撤销"旧 id 映射 standard + 按会话一次 warning + 基于 header preset id 的 section 抑制"的错误定位；按架构裁决改为条款 A（旧 id 为 inproc 惰性历史元数据，不传 `preset`）、条款 B（防重由挂载面结构性保证）与观测条款（每次 resume 一条 debug 日志，不用 warn）。append section 恢复无条件注入 APPEND_SYSTEM.md 派生内容。
+- 2026-11-18 — M3-05 事后修订：撤销 `8e0e847` 的错误映射语义（`preset='standard'` 死数据 + 基于 header preset id 抑制 section，曾导致内容丢失），修正落地于 `a45a052`。按架构裁决改为条款 A（旧 id 为 inproc 惰性历史元数据，不传 `preset`）、条款 B（防重由挂载面结构性保证）与观测条款（每次 resume 一条 debug 日志，不用 warn）；append section 无条件注入 APPEND_SYSTEM.md 派生内容。

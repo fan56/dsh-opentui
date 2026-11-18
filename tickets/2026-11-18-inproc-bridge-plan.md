@@ -2,6 +2,8 @@
 
 对应 ADR-0009 / ADR-0010。只覆盖 0.22.0（阶段一）；0.23.0 拆包作为后续阶段列出，不排入本计划的任务清单。
 
+> **部分已过期（superseded）**：T15「把 `opentui-append-system` 映射为 `standard` + 一次 warning」及其下游 T17 的映射前提由 `a45a052` 撤销——旧 id 在 inproc 为惰性元数据、不传 `preset`，append 由 bridge section 无条件注入。当前语义以 ADR-0010 条款 A/B 为准；本文其余任务与决策作为历史执行计划保留。
+
 ## 决策摘要
 
 - 采用方案 D：宿主进程内 cordis bundle 直调 `ctx.agents.resume` / `sessionPersistence`，对外 stdio JSON-lines；TUI 仍是 bun 进程、命令仍是 `dsh-opentui`，这是两进程而非单进程方案。

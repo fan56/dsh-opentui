@@ -44,7 +44,7 @@ ADR-0005 的产品路径建立在两条断言上：宿主跑在 node、TUI 跑�
 1. **采用方案 D**：一个独立 bridge（cordis bundle）跑在**宿主进程内**，直调 `ctx.agents.resume` / `sessionPersistence`，对外暴露 stdio JSON-lines。TUI 仍是独立的 bun 进程，用户命令仍是 `dsh-opentui`；默认 seam 从 `RemoteSessionSeam` 换成 `BridgeSessionSeam`。**注意：这是两进程方案，不是单进程** —— bridge 只是宿主内的一个 bundle，TUI 与宿主仍是两个 OS 进程。
 2. **0.22.0 分发形态**：bridge 构建产物内嵌 dsh-opentui tarball（`packages/shell/package.json` 的 `files` 加 `dist/bridge`）；bin 运行时向 profile 落**绝对路径 symlink**。不使用 `link:` / `file:` 协议语义 —— pnpm 的 `file:` 是拷贝，等于制造野包副本。0.23.0 再拆成独立 npm 包。
 3. **新 profile `opentui-inproc`，共享同一个 `~/.dsh`**：不得给它独立 `DSH_HOME`，否则看不到存量 sessions。bin 首启做幂等 provisioning，带跨实例互斥。护栏校验 name@version（或 integrity），不用 realpath 前缀硬绑 —— 否则 0.23.0 拆包时全员拒启。
-4. **append-system 改为 bridge 内的 `systemPrompt.section`**：从"合成 agentPreset"改为 bridge 内按 scope 注册的 section（禁 global），`order: 200`。存量 `opentui-append-system` 会话在 resume 前映射为 `standard` + 一次 warning（走日志，不混入消息流），不写任何用户持久化数据。
+4. **append-system 改为 bridge 内的 `systemPrompt.section`**：从"合成 agentPreset"改为 bridge 内按 scope 注册的 section（禁 global），`order: 200`。存量 `opentui-append-system` 会话在 resume 前映射为 `standard` + 一次 warning（走日志，不混入消息流），不写任何用户持久化数据。**（已过期 / superseded：该映射语义由 `a45a052` 撤销——旧 id 在 inproc 为惰性元数据、不传 `preset`，append 由 bridge section 无条件注入；防重见 ADR-0010 条款 A/B。原句仅作历史决策记录保留。）**
 5. **发布门不可跳过**：CI 必须有 `npm pack → 全新 scratch prefix 安装 → 冷启动 → 四门禁冒烟`，required，不可 skip。
 
 ## Consequences

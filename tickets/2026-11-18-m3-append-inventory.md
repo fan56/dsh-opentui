@@ -3,6 +3,8 @@
 盘点时间：2026-11-18。工作区：`/Users/qingguee/repo/dsh-opentui-wt-inproc`，HEAD=`9cdd867`，分支 `feat/inproc-bridge-20261118`。
 纪律：只读盘点，未改代码、未 commit。事实给 `文件:行`；不确定标 `UNKNOWN`。
 
+> **已过期（superseded）**：本文是 `9cdd867` 时点的只读盘点快照。M3-04 / 05b / 08 已落地（`bd4828b` / `a45a052` / `9c1dd90`），文中"M3 主体未实施""无 append 注入通道""`BRIDGE_NO_APPEND_NOTICE`"及 T15 映射 `standard` 等结论均为历史记录；当前语义以 ADR-0010 条款 A/B 与 `packages/shell/scripts/lib/bridge-failfast-text.mjs` 的 `BRIDGE_APPEND_PRESET_NOTICE` 为准。
+
 ## 0. 一句话现状
 
 **M3 主体未实施**：bridge 插件（`packages/bridge/src/index.ts`）里没有任何 `systemPrompt.section` 注册、没有 preset 映射、没有单次 warning；旧 append ride 路径仍完整保留在客户端。但 **T16「合成 preset 声明清理」对 inproc profile 已因 `c8f891b` 流失效**——该提交让 provisioning 从内嵌模板生成 `opentui-inproc/cordis.patch.yml`，模板里已无 `preset-opentui-append-system` 声明（无需再清理，人工清理反而会被下次 provisioning 覆盖）。
