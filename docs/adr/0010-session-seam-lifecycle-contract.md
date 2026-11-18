@@ -23,10 +23,32 @@ ADR-0009 选定宿主内 bridge（方案 D）作为 TUI 的默认会话通道。
 **桥态**：
 
 ```
-BOOTING → READY → DEAD（可恢复）
+BOOTING → READY ⇄ DEAD（可恢复停泊态）
+BOOTING / READY / DEAD ─close()→ CLOSED（唯一终态）
+
+DEAD ─recover()→ RECOVERING → 重握手 → READY（三校验全过）
+                              └→ DEAD（respawn 失败或任一校验不过）
 ```
 
-`DEAD` 可恢复：连接断开后重新握手回到 `READY`，不销毁会话身份。
+`DEAD` 不是终态，而是**可恢复的停泊态**：连接断开后会话身份与 `onEvent` 订阅存活，经用户显式恢复回到 `READY`。**唯一终态是 `CLOSED`**（`close()` 后 `recover()` 被 `BRIDGE_CLOSED` 拒绝，`packages/shell/src/client/bridge-transport.ts:353-355,417-434`）。传输层是单一状态机（同文件 `:12-18,58-64`），`RECOVERING` 是其瞬时值而非第二台机器。
+
+**0.22.0 阶段一：恢复仅由用户显式触发**。不做自动 respawn、不做自动退避重连（受限自动退避属阶段二）。触发入口是 R 键（`RECOVERY_RECONNECT_BIND = "r"`，`packages/tui-base/src/routes/session/recovery-ui.ts:26,193`），仅在 `dead`/`failed`/`locked` 三态有效（同文件 `:130-132`）；DEAD 起算 5s 冷却窗口内 `recover()` 被拒并回 `BRIDGE_RECOVERY_COOLDOWN`（`bridge-transport.ts:79,363-372`）。`RECOVERING` 期间：普通 `request()` 被拒并回 `BRIDGE_RECOVERING`（同文件 `:307-310,383`），UI composer 禁用（`composerDisabled` 仅在 `recovering` 为真，`recovery-ui.ts:117-121`），已输入草稿不清空（`packages/tui-base/src/routes/session/session-composer.tsx:146-148`）。理由：重连是意图明确的动作，自动重连会在三校验失败（如 fingerprint / host-compat 变更）时反复重启；composer 禁用 + 草稿保留避免用户在 in-flight 窗口重复提交又丢失输入。
+
+**恢复序列（顺序强约束）**，传输层先于会话层：
+
+1. **respawn**：同一 transport 实例上 best-effort kill 旧 child 并以原 path/argv/env 重新 spawn；会话身份与 `onEvent` 订阅存活，generation++ 使旧连接迟到帧无法结算新请求（`bridge-transport.ts:374-395`）。
+2. **重握手三校验**：发 `bridge.hello{protocolVersion}`，三项全过才继续——`protocolVersion` 相等、fingerprint 字段齐备（`bridgeVersion` / `hostVersion`）、host-compat 版本窗（`isHostVersionSupported`）。任一不过 → 回 DEAD，`deadCause` 置 `recoverability:"permanent"` 并在 `mismatches` 报具体不匹配项（`VERSION_INCOMPATIBLE` / `FINGERPRINT_MISSING` / `HOST_INCOMPATIBLE`；`packages/shell/src/client/seam-bootstrap.ts:160-219`、`packages/shell/test/bridge-recover.test.ts:150-190`）。理由：三项决定「新 child 是否还是原来那个宿主」，任一不符则 resume 会挂到不兼容宿主，必须停在 DEAD 而非降级。
+3. **`session.open{mode:"resume", id:lastSessionId}`**：eager 恢复原会话，不 replace（`packages/shell/src/client/bridge-session-seam.ts:723-726`，从属 I2）。
+4. **`journal.replay{from:lastAppliedSeq+1}` drain 完成**：`from` 为 inclusive seq 下界，无 lastSeq 时为 1；分页 drain、按 seq 去重升序后经既有 transcript 管线 apply（同文件 `:761-786`）；客户端 seq 领先 journal 时 clamp 并告警、不抛错。
+5. **pendingSnapshot 重建**：仅当 replay drain 完成后，才用缓冲的 `ask.pending` 快照重建卡片，`eventId` 逐字保留走既有 `ask.response` 路径；失败 / locked 分支清缓冲、不重建（同文件 `:788-795`；commit `4323a82`）。理由：drain 未完成就重建会与新 replay 的 `turn.*` 竞态，产生重复或错位卡片。
+
+**SESSION_LOCKED**：`session.open` 返回 `SESSION_LOCKED` 时 transport 保持 READY，仅会话层降为「已连接未挂载」（`recoveryState()==="locked"`、`#sessionAttached=false`），发 `bridge.recovery.locked` 事件，UI 给「重试 / 新会话」两条动作，**不提供 steal**（`bridge-session-seam.ts:730-747`；`recovery-ui.ts:177,200-216`；`897585d` 映射为文案 `writer-held`）。理由：写锁归属是宿主事实，客户端强抢会造成双 writer，违反 I4。
+
+**断线期间 in-flight turn（journal 终态为准）**：turn 在 DEAD 时若在途，以 journal 的 `turn/end` / `turn/error` 终态行判定——replay 中出现宿主终态则不另画；journal 沉默（无终态行）时客户端呈现本地 `INTERRUPTED` 标记：`bridge.turn.interrupted` 事件，`code:"INTERRUPTED"`、`seq:null`、`source:"local"`，**仅客户端推断、禁止写 journal**，已 stream 的部分输出保留（`bridge-session-seam.ts:797-817`；`packages/tui-base/src/routes/session/seam-rows.ts:595-609`；`packages/bridge/src/index.ts:686`）。理由：journal 是 transcript 真源（I6），本地推断不得冒充宿主终态；`seq:null` 是「非 journal 事件」的溯源标签。
+
+**DEAD 即时上屏**：DEAD 由事件驱动即时上屏——空闲期崩溃（无在途 turn）也同步回调一次 `onDead` 并转成瞬时通知（`bridge-session-seam.ts:122-125,1484-1498`；`packages/shell/src/client/seam-bootstrap.ts`）；transport 发布 `bridge.dead` 帧（`bridge-transport.ts:271,294`）。`deadCause` 带 `stage`（`spawn` / `handshake` / `runtime` / `closed`）+ `code` / `signal`，握手失败类另带 `recoverability:"permanent"` 与 `mismatches`（同文件 `:98-122`；`bridge-session-seam.ts:78-96,492-498`）。理由：空闲期崩溃没有 `turn.error` 可承载，若不在 DEAD 时立即上屏，用户会误以为会话仍在。
+
+**阶段二（0.22.0 不做）**：受限自动退避（≤3 次，1s/5s/15s，仅瞬态 / 未知类）、fingerprint 变化确认流、断线期间完成标记、心跳。当前实现为纯手动恢复、无 retry loop（`bridge-session-seam.ts:675-679`）。
 
 **会话态**：
 
@@ -73,7 +95,7 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - 会话/turn 生命周期：`turn.start`、`turn.token`、`turn.tool`、`turn.end`、`turn.error`（`packages/bridge/src/index.ts:847,853,858,917,926,993,1008`）
 - ask 通道（ADR-0011）：`ask.request`、`ask.cancel`、`ask.pending`、`ask.settled`（`packages/bridge/src/ask-frames.ts:24-27`；经 `packages/bridge/src/index.ts:750-830` 的 registry sink 转发）
 
-bridge 自身生命周期（连接断开、插件卸载等）**仍不通过事件面暴露**：seam 侧不消费此类事件，新增 emitter 只会产生无消费者的死代码。桥态 `DEAD` 的可恢复性由重新握手体现，而非某个 bridge 生命周期事件。`ask.pending` 虽已定义帧类型且 seam 侧已消费（`bridge-session-seam.ts:973-983`），但 bridge 生产路径尚未下发重连快照（`AskRegistry.pendingSnapshot` 无生产调用点），见 ADR-0011 §8 与矩阵 §8。
+bridge 自身生命周期（连接断开、插件卸载等）**仍不通过 bridge 的 `emitEvent` 帧暴露**：bridge 子进程不产生生命周期 emitter；桥态 `DEAD` 的可恢复性由上文的恢复序列体现，而非某个 bridge 生命周期帧。阶段一落地后（`c9d3fae..a1341ea`），transport / seam 在 `onEvent` 管线下发并消费一组**客户端合成事件**——`bridge.dead` / `bridge.recovered` / `bridge.recovery.locked` / `bridge.recovery.failed` / `bridge.turn.interrupted`（`bridge-transport.ts:271,294`；`bridge-session-seam.ts:705,743,806,827,1484-1498`）——它们不是 bridge 生产的帧，仅供本地 UI 上屏。`ask.pending` 除帧类型与 seam 消费（`bridge-session-seam.ts:1424-1440`）外，bridge 生产路径现已在 resume 时下发重连快照（`AskRegistry.pendingSnapshot` 的生产调用点见 `packages/bridge/src/index.ts:1374-1384`，commit `4323a82`），供上文恢复序列第 5 步重建卡片，见 ADR-0011 §8 与矩阵 §8。
 
 **并发**：单会话单在途 turn；并发 `session.send` 返回 `TURN_BUSY`（`detail.turnId` 为当前在途 turn id）。
 
@@ -125,7 +147,7 @@ bridge 自身生命周期（连接断开、插件卸载等）**仍不通过事�
 - `UNSUPPORTED`（未知方法；亦用于 `session.list` 服务缺失，`detail={capability,service}`）
 - `VERSION_INCOMPATIBLE`（亦可由握手版本比对与宿主映射得出）
 
-ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESSEE` / `ASK_ALREADY_ANSWERED` / `ASK_TURN_ENDED` / `ASK_INVALID_RESPONSE` / `ASK_DEADLINE_EXCEEDED` / `ASK_CHANNEL_UNAVAILABLE`），定义于 `packages/bridge/src/ask-frames.ts`（`ASK_ERROR_CODES` 为全集常量），语义由 ADR-0011 §5 管辖，不在此表重复。seam 侧 `turn()` 的 `TURN_REENTRANT` 是客户端本地错误（`packages/shell/src/client/bridge-session-seam.ts:699-705`），不是 bridge 协议帧 `code`。
+ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESSEE` / `ASK_ALREADY_ANSWERED` / `ASK_TURN_ENDED` / `ASK_INVALID_RESPONSE` / `ASK_DEADLINE_EXCEEDED` / `ASK_CHANNEL_UNAVAILABLE`），定义于 `packages/bridge/src/ask-frames.ts`（`ASK_ERROR_CODES` 为全集常量），语义由 ADR-0011 §5 管辖，不在此表重复。seam 侧 `turn()` 的 `TURN_REENTRANT` 是客户端本地错误（`packages/shell/src/client/bridge-session-seam.ts:699-705`），不是 bridge 协议帧 `code`。同理，恢复通道的 `BRIDGE_RECOVERING` / `BRIDGE_RECOVERY_COOLDOWN` / `BRIDGE_CLOSED` / `BRIDGE_NOT_DEAD` 是 transport 的本地 `BridgeProtocolError` code（拒绝调用、非协议帧；`packages/shell/src/client/bridge-transport.ts:307-310,353-372`），不进入上表；`INTERRUPTED` 在恢复语义中作为本地推断标记的事件 `code`（`seq:null`、`source:"local"`）出现，与宿主 `turn.error` 的同名 code 共用词汇但来源不同。
 
 **终态 turnId 记忆与 close/replace**：bridge 用一个有界 FIFO（上限 64、oldest-first 淘汰）记住最近终态 turnId，使重复 `turn.abort` 在 id 仍在 FIFO 时返回 `{noop:true}`。`session.close` 与 `session.open{replace:true}` 的 `disposeBinding` 会 `terminalTurnIds.clear()` 清空该 FIFO；因此 close/replace 之前刚终态的 turn，其 id 在 close/replace 后不再被记忆，重试 `turn.abort` 返回 `TURN_NOT_FOUND`（而非 `{noop:true}`）。FIFO 自然淘汰旧 id 也有同样效果。
 
@@ -163,3 +185,4 @@ ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESS
 ## 修订记录
 
 - 2026-11-18 — M3-05 事后修订：撤销 `8e0e847` 的错误映射语义（`preset='standard'` 死数据 + 基于 header preset id 抑制 section，曾导致内容丢失），修正落地于 `a45a052`。按架构裁决改为条款 A（旧 id 为 inproc 惰性历史元数据，不传 `preset`）、条款 B（防重由挂载面结构性保证）与观测条款（每次 resume 一条 debug 日志，不用 warn）；append section 无条件注入 APPEND_SYSTEM.md 派生内容。
+- 2026-11-19 — DEAD 条款 0.22.0 阶段一落地（commits `c9d3fae..a1341ea`，阶段二未做）：DEAD 改为可恢复停泊态、唯一终态 CLOSED；恢复仅用户显式触发（R 键 + 5s 冷却）+ 顺序强约束（respawn → 三校验重握手 → resume → replay drain → pendingSnapshot）、SESSION_LOCKED 不 steal、journal 沉默时本地 INTERRUPTED、DEAD 事件驱动即时上屏（deadCause 带 stage/code/signal）。同步更新事件面段（客户端合成生命周期事件）与错误码段（transport 本地 `BRIDGE_*`）以保持一致。

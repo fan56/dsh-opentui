@@ -122,6 +122,8 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 - **B — 最小 allow/deny（只做审批，不做提问/超时/取消）**：否决：用户已拍板 C；且无取消/超时则客户端掉线会挂住 turn（ticket `:193`）。
 - **D — 透传宿主 waterfall 帧（直接把 `approval/request` 原帧推给 TUI）**：否决：TUI 的事件面只消费 5 种投影后的事件（`docs/adr/0010-session-seam-lifecycle-contract.md:69-77`），透传会把宿主结构细节和跨会话串帧风险泄漏进视图层；本项目既有策略是 bridge 侧投影 + 强校验（`packages/bridge/src/index.ts:739-824`）。
 
+> **对称性交叉引用**：备选 B 所述「客户端掉线挂住 turn」是 ask 通道侧的否决理由；**宿主侧掉线语义由 ADR-0010 的 DEAD 恢复条款兑现**——bridge 连接断开进 DEAD 后，仅用户显式 R 键重连恢复，恢复序列的 replay drain 完成后用 `ask.pending` 快照重建未答卡片（见 `docs/adr/0010-session-seam-lifecycle-contract.md` 的「DEAD 恢复阶段一」与「桥态」条款，commit `4323a82`）。两侧对称：ask 侧掉线结算为 `cancelled`（§8 Q2），宿主侧连接中断期间的 in-flight turn 在 journal 沉默时由客户端呈现本地 INTERRUPTED（不写 journal）。
+
 ## 8. 假设与确认状态（Q1–Q3 已确认，Q4 待确认）
 
 以下四项来自草案 §5 末尾的未拍板项。**Q1/Q2/Q3 已于 2026-11-18 按推荐值确认，并已由 T2 `AskRegistry` 实现；Q4 仍待确认。**
