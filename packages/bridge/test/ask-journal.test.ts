@@ -311,4 +311,38 @@ describe('ADR-0011 D7 — always-grant reconstruction from the durable journal (
     ]
     expect(alwaysGrantToolsFromJournal('s1', rows)).toEqual([])
   })
+
+  test('production always answer produces the journal row that rebuilds the grant on respawn', () => {
+    // The real answerer now grants escalation on every approval ask (index.ts),
+    // so this is the exact journal event a user "always" produces in prod.
+    const { registry, journal } = makeRegistry()
+    const granted = registry.create('t1', {
+      sessionId: 's1', kind: 'approval', toolName: 'bash', escalation: true,
+    })
+    expect(registry.answer('s1', {
+      eventId: granted.eventId, kind: 'approval', verdict: 'allowed-once',
+      behavior: 'always', escalation: true,
+    }).ok).toBe(true)
+
+    const responded = journal.find((e) => e.kind === ASK_JOURNAL_KINDS.RESPONDED)!
+    expect(responded).toMatchObject({
+      toolName: 'bash', behavior: 'always', outcome: 'approved',
+      sessionId: 's1', source: 'answer',
+    })
+
+    // 5b94053: a fresh bridge process drains that durable row on resume and
+    // repopulates the in-process summary — the next approval still skips the card.
+    const restored = alwaysGrantToolsFromJournal('s1', [
+      { type: ASK_GRANT_JOURNAL_TYPE, payload: responded },
+    ])
+    expect(restored).toEqual(['bash'])
+    const fresh = new AskRegistry({ journal: () => {} })
+    try {
+      fresh.restoreSessionGrants('s1', restored)
+      expect(fresh.hasGrant('s1', 'bash')).toBe(true)
+      expect(fresh.hasGrant('s1', 'write')).toBe(false)
+    } finally {
+      fresh.dispose()
+    }
+  })
 })

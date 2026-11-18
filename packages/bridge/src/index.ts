@@ -1191,10 +1191,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
     const callId = req.callId === undefined ? undefined : idString(req.callId)
     const reason = typeof req.reason === 'string' && req.reason !== '' ? req.reason : undefined
-    // dsh-user-approval's ApprovalRequestEvent (src/types.ts:63-76) and the
-    // dsh-tools call site (pipeline.js:628-635) carry NO escalation field: no
-    // escalation is granted, so `behavior:'always'` stays invalid (Q3). State
-    // it explicitly rather than fabricate a grant.
+    // ADR-0011 Q3/D7: escalation is a BRIDGE-side grant on ask.request, not a
+    // host field — dsh-user-approval's ApprovalRequestEvent has no escalation
+    // and its ApprovalOutcome has no 'always' (the bridge folds an accepted
+    // `behavior:'always'` into the session summary and answers allowed-once).
+    // Granting it here is what makes the always/session actions visible on the
+    // card (turn-overlays.tsx) and lets the seam send behavior:'always'
+    // (bridge-session-seam.ts). Without it the whole Q3 path is unreachable.
     let request: AskRequestPayload | undefined
     try {
       request = ask.create(target.turn.turnId, {
@@ -1203,7 +1206,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         ...(toolName !== undefined ? { toolName } : {}),
         ...(callId !== undefined ? { callId } : {}),
         ...(reason !== undefined ? { reason } : {}),
-        escalation: false,
+        escalation: true,
       })
     } catch (err) {
       logger.error('[dsh-opentui-bridge] ask.create(approval) failed: %s', err)

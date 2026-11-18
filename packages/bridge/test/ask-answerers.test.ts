@@ -270,7 +270,7 @@ describe('ADR-0011 T4 — approval ask.request push + verdict mapping', () => {
     expect(payload.toolName).toBe('bash')
     expect(payload.callId).toBe('call-1')
     expect(payload.reason).toBe('needs sandbox write access')
-    expect(payload.escalation).toBe(false) // host carries no escalation grant
+    expect(payload.escalation).toBe(true) // ADR-0011 Q3/D7: bridge grants escalation on approval asks
 
     h.send({ id: 10, method: 'ask.response', params: { eventId: payload.eventId, kind: 'approval', verdict: 'allowed-once' } })
     expect((await h.waitFor(10)).ok).toBe(true)
@@ -421,34 +421,62 @@ describe('ADR-0011 T4 — fail-closed + cleanup settle', () => {
   })
 })
 
-describe('ADR-0011 T7 — session summary short-circuit in the real answerer', () => {
-  test('an always grant skips the card on the next approval of the same tool/session', async () => {
+describe('ADR-0011 Q3/T7 — always grant is reachable through the real answerer', () => {
+  test('UI always → ask.response → session summary → no card on the next approval', async () => {
     const h = makeHarness()
     const { sessionId } = await startTurn(h, 1)
-    // Seed the summary the only way Q3 permits: an accepted behavior:'always'
-    // answer on a request that carried escalation:true. The stock host's
-    // ApprovalRequestEvent has no escalation field, so a real card can never
-    // grant it today; drive the registry directly to exercise T7's effect.
-    const seed = h.registry.create('seed-turn', {
-      sessionId, kind: 'approval', toolName: 'bash', escalation: true,
+
+    // 1. The real host answerer pushes an approval card with escalation granted
+    // (the flag the seam/UI gate on), so the always action is legal on the wire.
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId).at(-1)!.payload
+    expect(ask.escalation).toBe(true)
+
+    // 2. The seam sends exactly this when the user picks "always".
+    h.send({
+      id: 10, method: 'ask.response',
+      params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once', behavior: 'always', escalation: true },
     })
-    expect(h.registry.answer(sessionId, {
-      eventId: seed.eventId, kind: 'approval', verdict: 'allowed-once',
-      behavior: 'always', escalation: true,
-    }).ok).toBe(true)
+    expect((await h.waitFor(10)).ok).toBe(true)
+    // The host only ever sees allowed-once (its ApprovalOutcome has no 'always').
+    expect(await mustSettle(pending, 'always → host')).toBe('allowed-once')
     expect(h.registry.hasGrant(sessionId, 'bash')).toBe(true)
 
+    // 3. A second approval of the same tool/session is answered from the
+    // summary: no new card, no new pending ask, host still gets allowed-once.
     const cardCountBefore = h.askFrames('ask.request').length
     const pendingBefore = h.registry.pendingCount()
-
-    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
-    expect(await mustSettle(pending, 'session-summary short-circuit')).toBe('allowed-once')
-    // The host is answered immediately: no ask.request card, no new pending ask.
+    const second = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    expect(await mustSettle(second, 'session-summary short-circuit')).toBe('allowed-once')
     expect(h.askFrames('ask.request')).toHaveLength(cardCountBefore)
     expect(h.registry.pendingCount()).toBe(pendingBefore)
 
-    // A different session cannot borrow session A's grant.
+    // 4. A different session cannot borrow session A's grant.
     const foreign = h.emitHost('approval/request', approvalReq('other-session'))[0]
     expect(await mustSettle(foreign, 'foreign session after grant')).toBe('unavailable')
+  })
+
+  test('once / deny still work and create no always grant', async () => {
+    const h = makeHarness()
+    const { sessionId } = await startTurn(h, 1)
+    const first = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId).at(-1)!.payload
+    h.send({ id: 11, method: 'ask.response', params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once' } })
+    expect((await h.waitFor(11)).ok).toBe(true)
+    expect(await mustSettle(first, 'once')).toBe('allowed-once')
+    expect(h.registry.sessionGrants(sessionId)).toEqual([])
+
+    const second = h.emitHost('approval/request', approvalReq(sessionId))[0] // second host request
+    await sleep(0)
+    const ask2 = h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId).at(-1)!.payload
+    h.send({ id: 12, method: 'ask.response', params: { eventId: ask2.eventId, kind: 'approval', verdict: 'rejected' } })
+    expect((await h.waitFor(12)).ok).toBe(true)
+    expect(await mustSettle(second, 'deny')).toBe('rejected')
+    expect(h.registry.sessionGrants(sessionId)).toEqual([])
+
+    // A new card really was pushed for the denied tool (no false short-circuit).
+    expect(h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId)).toHaveLength(2)
   })
 })
