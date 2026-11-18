@@ -7,22 +7,27 @@
 // (bin/dsh-opentui.mjs); the default `opentui` profile path is untouched.
 // Three local-FS steps, no pnpm/npm, no install scripts:
 //
-//   [1/4] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
+//   [1/5] manifest — write $DSH_HOME/profiles/opentui-inproc/package.json with
 //                    dsh.profile.bundles = [@deepseek-ai/dsh-base,
 //                    @aiwayds/dsh-opentui-bridge]. NO @deepseek-ai/* dependency
 //                    is ever written: the host's installation-first bundle
 //                    resolution supplies those bundles from the running dsh
 //                    closure (wild-package shadowing is the historical
 //                    incident this guard prevents).
-//   [2/4] symlink  — create node_modules/@aiwayds/dsh-opentui-bridge as an
+//   [2/5] symlink  — create node_modules/@aiwayds/dsh-opentui-bridge as an
 //                    ABSOLUTE symlink to THIS installation's dist/bridge
 //                    (realpath). No link:/file: protocol, no copying.
-//   [3/4] verify   — re-read the link and confirm it resolves to dist/bridge;
+//   [3/5] verify   — re-read the link and confirm it resolves to dist/bridge;
 //                    refuse any @deepseek-ai copy in the profile.
-//   [4/4] identity — T5 guard: hash the RESOLVED bridge's index.js and compare
+//   [4/5] identity — T5 guard: hash the RESOLVED bridge's index.js and compare
 //                    with the build-time fingerprint shipped in THIS
 //                    installation's dist/bridge/bundle-fingerprint.json, plus
 //                    name / version. No realpath-prefix hard binding.
+//   [5/5] patch    — ONLY when DSH_OPENTUI_INPROC=1: generate
+//                    $DSH_HOME/profiles/opentui-inproc/cordis.patch.yml from
+//                    the embedded inproc-only template (web-app compensation
+//                    rows removed, profileRevision stamped). Without the env
+//                    this step is skipped entirely — old behavior unchanged.
 //
 // T4 — cross-instance mutual exclusion:
 //   The whole provisioning run is serialized by `.provision.lock` in the
@@ -93,7 +98,411 @@ const manifestPath = join(profileDir, 'package.json')
 const linkPath = join(profileDir, 'node_modules', ...BRIDGE_NAME.split('/'))
 const lockPath = join(profileDir, LOCK_NAME)
 
-const say = (step, label, value = '') => console.log(`${PREFIX}[${step}/4] ${label}${value ? ` — ${value}` : ''}`)
+// --- Inproc patch ownership (gated by DSH_OPENTUI_INPROC=1) -----------------
+// The launcher sets this on the opt-in startup path; --repair-bridge and direct
+// invocation do not. Keeping the gate HERE makes those paths byte-for-byte
+// identical to the pre-patch behavior.
+const INPROC_MODE = process.env.DSH_OPENTUI_INPROC === '1'
+const TOTAL_STEPS = INPROC_MODE ? 5 : 4
+const PATCH_NAME = 'cordis.patch.yml'
+const patchPath = join(profileDir, PATCH_NAME)
+const PATCH_REVISION_MARKER = '# profileRevision: '
+const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs — provider zai-coding-cn, key read by the host from ZAI_CODING_CN_API_KEY):
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      zai-coding-cn:
+        apiKeyEnv: ZAI_CODING_CN_API_KEY
+        models:
+          - id: glm-4.5
+            name: glm-4.5
+            input:
+              - text
+          - id: glm-4.5-air
+            name: glm-4.5-air
+            input:
+              - text
+          - id: glm-4.6
+            name: glm-4.6
+            input:
+              - text
+          - id: glm-4.6v
+          - id: glm-4.7
+            name: glm-4.7
+            input:
+              - text
+          - id: glm-5
+            name: glm-5
+            input:
+              - text
+          - id: glm-5-turbo
+            name: glm-5-turbo
+            input:
+              - text
+          - id: glm-5.1
+            name: glm-5.1
+            input:
+              - text
+          - id: glm-5.2
+            name: GLM 5.2
+            input:
+              - text
+          - id: glm-5.3
+            name: GLM 5.3
+            input:
+              - text
+          - id: glm-5.3-flash
+            name: glm-5.3-flash
+            input:
+              - text
+          - id: glm-5.3-flashx
+            name: glm-5.3-flashx
+            input:
+              - text
+          - id: glm-5.3-flashx-legal
+            name: glm-5.3-flashx-legal
+            input:
+              - text
+          - id: glm-5.3-highspeed
+      xiaomi-token-plan-cn:
+        models:
+          - id: mimo-v2.5-asr
+            name: mimo-v2.5-asr
+            input:
+              - text
+          - id: mimo-v2.5-tts
+            name: mimo-v2.5-tts
+            input:
+              - text
+          - id: mimo-v2.5-tts-voiceclone
+            name: mimo-v2.5-tts-voiceclone
+            input:
+              - text
+          - id: mimo-v2.5-tts-voicedesign
+            name: mimo-v2.5-tts-voicedesign
+            input:
+              - text
+          - id: mimo-v2.6-flash
+            name: MiMo-V2.6-Flash
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+            compat:
+              thinkingFormat: deepseek
+              supportsReasoningEffort: false
+          - id: mimo-v2.6-pro
+            name: MiMo-V2.6-Pro
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+            compat:
+              thinkingFormat: deepseek
+              supportsReasoningEffort: false
+      opencode-go:
+        apiKeyEnv: OPENCODE_GO_API_KEY
+        models:
+          - id: beam-free
+            name: Beam Free
+            contextWindow: 1048576
+            input:
+              - text
+          - id: claude-haiku-5-5
+            name: Claude Haiku 5.5
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: deepseek-v4-pro
+            name: DeepSeek V4 Pro
+            contextWindow: 1000000
+            input:
+              - text
+            reasoningEfforts:
+              high: high
+              max: max
+            compat:
+              thinkingFormat: deepseek
+          - id: deepseek-v4.1-flash
+            name: DeepSeek V4.1 Flash 1017
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+            reasoningEfforts:
+              low: low
+              high: high
+              max: max
+            compat:
+              thinkingFormat: deepseek
+          - id: gemini-4-argon
+            name: Gemini 4 Argon
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+          - id: glm-5.2
+            name: GLM-5.2
+            contextWindow: 1000000
+            input:
+              - text
+          - id: glm-5.3
+            name: GLM-5.3
+            contextWindow: 1000000
+            input:
+              - text
+          - id: glm-5.3-flash
+            name: GLM-5.3-Flash
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: gpt-5.6-luna
+            name: GPT-5.6 Luna
+            contextWindow: 1050000
+            input:
+              - text
+              - image
+          - id: gpt-6-luna
+            name: GPT-6 Luna
+            contextWindow: 1050000
+            input:
+              - text
+              - image
+          - id: grok-4.7
+            name: Grok 4.7
+            contextWindow: 500000
+            input:
+              - text
+              - image
+          - id: hy3
+            name: Hy3
+            contextWindow: 256000
+            input:
+              - text
+          - id: hy4
+            name: Hy4
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+          - id: hy4-preview
+            name: Hy4 preview
+            contextWindow: 1024000
+            input:
+              - text
+          - id: iceman-contributor-free
+            name: Iceman Contributor Free
+            contextWindow: 262144
+            input:
+              - text
+          - id: kimi-k2.7-code
+            name: Kimi K2.7 Code
+            contextWindow: 262144
+            input:
+              - text
+              - image
+          - id: kimi-k3
+            name: Kimi K3
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+          - id: kimi-k3.1-pro
+            name: Kimi K3.1 Pro
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+          - id: longcat-2.0
+            name: LongCat-2.0
+            contextWindow: 1000000
+            input:
+              - text
+          - id: longcat-2.5-free
+            name: LongCat 2.5 Free
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: mimo-v2.5
+            name: MiMo V2.5
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: mimo-v2.5-pro
+            name: MiMo V2.5 Pro
+            contextWindow: 1048576
+            input:
+              - text
+          - id: mimo-v2.6-flash
+            name: MiMo-V2.6-Flash
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+          - id: mimo-v2.6-pro
+            name: MiMo-V2.6-Pro
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+          - id: minimax-m3
+            name: MiniMax-M3
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: minimax-m3.1-flash
+            name: MiniMax M3.1 Flash
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: muse-spark-1.2-contributor
+            name: Muse Spark 1.2 Contributor
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+          - id: muse-spark-1.3-contributor
+            name: Muse Spark 1.3 Contributor
+            contextWindow: 1048576
+            input:
+              - text
+              - image
+          - id: qwen3.7-plus
+            name: Qwen3.7 Plus
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: qwen3.8-flash
+            name: Qwen3.8 Flash
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: qwen3.8-max
+            name: Qwen3.8 Max
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+          - id: step-5-preview
+            name: Step 5 Preview
+            contextWindow: 1000000
+            input:
+              - text
+              - image
+# Toolface restore (toolfix 2026-11-08), mirroring the tui profile's ambient
+# tool rows. The @deepseek-ai/dsh-web-app bundle disables the dsh-base ambient
+# tool rows (tool-bash/tool-todo/…) and recomposes them per agent preset, but
+# this profile's effective default preset resolves to \`native\` = ambient
+# composition (registry 0.19.0 agent-preset-registry default), which left the
+# main session without todo and subagent sessions without bash. These rows are
+# the last patch layer, so they win per id. Forms copied verbatim from the
+# dsh-base/tui ambient rows.
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  # disabled: false must be stated explicitly — id-targeted patch rows merge
+  # per key (config replaces wholesale), so an omitted \`disabled\` inherits the
+  # web-app's \`disabled: true\` on the ambient row.
+  disabled: false
+  config:
+    allowParallelInProgress: true
+# The subagent face also composes from the ambient rows, and the web-app
+# disabled the file tools + instructions service the tui ambient face has on:
+# without these, spawned agents get bash but no read/write/search surface.
+# Forms copied verbatim from the dsh-base rows (tui ambient state).
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+  disabled: false
+  config:
+    applyPatch: false
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  disabled: false
+  config:
+    sampleOverCapGlobResults: false
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  disabled: false
+  config:
+    maxBytes: 65536
+- id: tool-result-pruner
+  name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+  disabled: false
+  config:
+    thresholdChars: 8192
+    headChars: 4096
+    tailChars: 1024
+# tui mounts ask_user ambient via its dsh-tui-pi bundle; this profile has no
+# equivalent bundle (its @aiwayds/dsh-opentui bundle is skipped by the host),
+# so the row is inserted here instead of overridden.
+- insert:
+    - id: tool-ask-user
+      name: '@deepseek-ai/dsh-tool-ask-user'
+# Web search restore (webtool 2026-11-10). The dsh-web-app bundle disables the
+# ambient tool-web row and the effective default preset is \`native\` (ambient
+# composition), so the main session had no web_search/web_fetch tool. This row
+# is the last patch layer and wins per id. Form copied verbatim from dsh-base.
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  disabled: false
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+- id: permission
+  name: "@deepseek-ai/dsh-permission-presets"
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+
+# MCP (managed by provision-opentui-profile.mjs — the adapter's mcp_list/mcp_call need a client row; context7 needs no key and a failed/offline connection is non-fatal):
+- insert:
+    - id: mcp-context7
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: context7
+        transport: streamable-http
+        url: https://mcp.context7.com/mcp
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: opencode-go
+    model: deepseek-v4.1-flash
+    reasoningEffort: high
+
+- id: subagent
+  name: "@deepseek-ai/dsh-subagent"
+  config:
+    maxActiveSubagents: 3
+`
+const PATCH_REVISION = createHash('sha256').update(PATCH_TEMPLATE).digest('hex').slice(0, 16)
+const PATCH_HEADER = `# dsh-opentui inproc profile patch — GENERATED by provision-inproc-profile.mjs; edit the script, not this file.\n${PATCH_REVISION_MARKER}${PATCH_REVISION}\n`
+const PATCH_CONTENT = `${PATCH_HEADER}${PATCH_TEMPLATE}`
+// MD5 of the web/opentui template this profile used to copy verbatim (see
+// tickets/2026-11-18-inproc-profile-inventory.md §0). A local file matching it
+// is an unowned legacy copy and is replaced without a backup.
+const KNOWN_PATCH_MD5 = new Set(['54b66bf37fbbb93a6f9dd204a24473f7'])
+
+const say = (step, label, value = '') => console.log(`${PREFIX}[${step}/${TOTAL_STEPS}] ${label}${value ? ` — ${value}` : ''}`)
 const warn = (message) => console.error(`${PREFIX}WARN ${message}`)
 const note = (message) => console.log(`${PREFIX}${message}`)
 
@@ -338,6 +747,52 @@ function verifyBridgeIdentity() {
   note(`bridge identity OK — ${resolved}`)
 }
 
+// --- Inproc cordis.patch.yml ownership ------------------------------------
+/** Read the profileRevision stamped by this script, if present. */
+function readPatchRevision(content) {
+  const match = typeof content === 'string' ? content.match(/^# profileRevision: ([0-9a-f]+)$/m) : null
+  return match ? match[1] : undefined
+}
+
+/** Converge the profile patch to the embedded inproc template.
+ *  - exact current content (revision matches) -> no-op (idempotent, no write)
+ *  - known web/opentui template copy          -> replace silently (legacy template)
+ *  - anything else, incl. a hand-edited output -> timestamped backup + WARN
+ *
+ *  Marker presence alone is NOT proof of ownership: a user can edit a generated
+ *  file while leaving the marker intact. Only a byte-for-byte match with the
+ *  current generated content counts as "this script's own output". */
+function provisionPatch() {
+  let current
+  try {
+    current = readFileSync(patchPath, 'utf8')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    current = undefined
+  }
+
+  const localRevision = readPatchRevision(current)
+  if (current === PATCH_CONTENT && localRevision === PATCH_REVISION) {
+    say(5, 'patch', 'already current, skipping')
+    return
+  }
+
+  if (current !== undefined && current.length > 0) {
+    const md5 = createHash('md5').update(current).digest('hex')
+    if (!KNOWN_PATCH_MD5.has(md5)) {
+      const backupPath = `${patchPath}.bak-${Date.now()}`
+      renameSync(patchPath, backupPath)
+      warn(`cordis.patch.yml was modified outside provisioning (local revision ${localRevision ?? 'absent'}, md5 ${md5} matches neither a known web/opentui template nor the current generated profileRevision ${PATCH_REVISION}); backed up to ${backupPath}`)
+    }
+  }
+
+  // Atomic write: temp file in the same dir, then rename.
+  const tmpPath = `${patchPath}.tmp-${process.pid}-${Date.now()}`
+  writeFileSync(tmpPath, PATCH_CONTENT)
+  renameSync(tmpPath, patchPath)
+  say(5, 'patch', `wrote ${patchPath} (profileRevision ${PATCH_REVISION})`)
+}
+
 // --- The provision pass itself (runs under the lock) ------------------------
 function runProvision({ repair = false } = {}) {
   if (repair) note('repair mode — a wrong bridge symlink will be rebuilt (content is never repaired)')
@@ -360,7 +815,7 @@ function runProvision({ repair = false } = {}) {
   // or symlinked-in path that could drift with cwd or a moved install.
   const bridgeDir = realpathSync(bridgeDirRaw)
 
-  // [1/4] Manifest: write / converge the profile manifest. Only
+  // [1/5] Manifest: write / converge the profile manifest. Only
   // dsh.profile.bundles is managed; every other field is preserved.
   {
     const existing = existsSync(manifestPath) ? readManifest() : undefined
@@ -386,7 +841,7 @@ function runProvision({ repair = false } = {}) {
     }
   }
 
-  // [2/4] Symlink: create the absolute link, skip when already correct, and
+  // [2/5] Symlink: create the absolute link, skip when already correct, and
   // ONLY in repair mode replace a wrong target / non-symlink entry. Normal
   // startup stays report-only (a conflict is a WARN, never an overwrite).
   let conflict = null
@@ -422,7 +877,7 @@ function runProvision({ repair = false } = {}) {
     }
   }
 
-  // [3/4] Verify: report-only for a conflict; never overwrite.
+  // [3/5] Verify: report-only for a conflict; never overwrite.
   if (conflict !== null) {
     warn(`conflict, not overwriting: ${conflict}`)
     warn('the profile link was left untouched; the identity guard below decides whether the resolved artifact is acceptable')
@@ -443,9 +898,13 @@ function runProvision({ repair = false } = {}) {
     say(3, 'verify', `bridge resolves to ${bridgeDir}; no @deepseek-ai copy in profile`)
   }
 
-  // [4/4] Identity guard always runs, including on the conflict path, so a
+  // [4/5] Identity guard always runs, including on the conflict path, so a
   // repointed / replaced bridge cannot slip through as a mere WARN.
   verifyBridgeIdentity()
+
+  // [5/5] Inproc-only patch generation. The gate is here (not just in the
+  // launcher) so --repair-bridge / direct runs without the env stay unchanged.
+  if (INPROC_MODE) provisionPatch()
 
   console.log(`${PREFIX}PASS`)
 }
