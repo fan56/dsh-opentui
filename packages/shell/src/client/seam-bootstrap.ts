@@ -28,6 +28,7 @@ import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
 	type BridgeDeadCause,
+	type BridgeRecoveryResult,
 	type BridgeSeamContext,
 	type BridgeTransport,
 } from "./bridge-session-seam.ts"
@@ -298,4 +299,40 @@ export interface CreateSessionSeamOptions {
 export async function createSessionSeam(options: CreateSessionSeamOptions): Promise<SessionSeam> {
 	if (options.kind === "remote") return options.createRemote()
 	return options.createBridge()
+}
+
+// ---------------------------------------------------------------------------
+// A4+A5: post-DEAD recovery orchestration (blocky §2.3, first four steps)
+// ---------------------------------------------------------------------------
+
+/**
+ * A transport that can re-handshake from DEAD. `StdioBridgeTransport` satisfies
+ * this structurally; the seam's injected `BridgeTransport` deliberately does
+ * NOT (recovery is owned at this composition layer, not by the view seam).
+ */
+export interface RecoverableBridgeTransport extends BridgeTransport {
+	recover(): Promise<void>
+}
+
+export interface RecoverBridgeSessionOptions {
+	transport: RecoverableBridgeTransport
+	seam: BridgeSessionSeam
+}
+
+/**
+ * The one recovery entry point: after the transport reaches READY, re-attach
+ * the last session and drain the journal automatically — no manual step
+ * between the handshake and the replay. `pendingSnapshot` (A6), the INTERRUPTED
+ * / SESSION_LOCKED UI branches (A7/A8) and any transport-state painting stay in
+ * their own tickets; this function only drives the transport + seam sequence.
+ *
+ * A transport `recover()` failure still propagates (A3 owns that state machine
+ * and its permanent/retriable classification). A session-layer failure is a
+ * resolved `BridgeRecoveryResult` with an explicit state — never a retry loop.
+ */
+export async function recoverBridgeSession(
+	options: RecoverBridgeSessionOptions,
+): Promise<BridgeRecoveryResult> {
+	await options.transport.recover() // respawn → three checks → READY (A3)
+	return options.seam.recoverSession() // session.open{resume} + journal.replay drain
 }

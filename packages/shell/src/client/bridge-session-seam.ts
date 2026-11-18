@@ -337,6 +337,27 @@ export interface BridgeReplayRow {
 }
 
 /**
+ * A4+A5: read-only outcome of a post-DEAD session recovery. Exposed on the
+ * seam so the UI branch (A8) can render "已连接未挂载" / "补齐 N 条" without
+ * polling, and so a failed open is an explicit state rather than a retry loop.
+ */
+export type BridgeRecoveryState = "idle" | "recovering" | "attached" | "locked" | "failed"
+
+export interface BridgeRecoveryResult {
+	state: BridgeRecoveryState
+	sessionId: string | undefined
+	/** Number of NEW, deduplicated journal events applied (the N in the notice). */
+	applied: number
+	/** Inclusive seq lower bound the drain started from (1 when no lastSeq). */
+	from: number
+	/** Full-log exclusive upper bound from the bridge (`maxSeq + 1`). */
+	cursor: number
+	/** Transcript projection via the EXISTING journal pipeline (never a new render path). */
+	rows: SeamTranscriptRow[]
+	error?: { code: string; message: string }
+}
+
+/**
  * `journal.replay` rows `{seq,type,payload}` → `SeamTranscriptRow[]`.
  *
  * `payload` is the host event's `data`, so each row is structurally a
@@ -484,7 +505,16 @@ export class BridgeSessionSeam implements SessionSeam {
 	/** A2: three-value bridge link health, additive to the connection leg. */
 	#bridgeLink: BridgeLinkStatus = "ready"
 	#sessionAttached = false
+	/** lastSessionId for recovery — this IS the last opened session id; it
+	 *  survives a `bridge.dead` frame (only `newSession`/`dispose` clear it). */
 	#currentSessionId: string | undefined
+	/** A4: highest journal seq applied to the transcript so far. Did NOT exist
+	 *  before this task; recovery needs it to compute `from = lastAppliedSeq+1`. */
+	#lastAppliedSeq: number | undefined
+	/** The session `#lastAppliedSeq` belongs to; reset on a different binding. */
+	#lastAppliedSessionId: string | undefined
+	/** A4+A5: explicit recovery outcome for the UI branch (A8), never thrown. */
+	#recoveryState: BridgeRecoveryState = "idle"
 	/** Pending sync-stage from resumeSession()/newSession(), bound at next turn. */
 	#pendingOpen: { mode: "resume"; id: string } | { mode: "new" } | undefined
 	/** Turn id of the single in-flight turn (drives interrupt()/status()). */
@@ -580,6 +610,184 @@ export class BridgeSessionSeam implements SessionSeam {
 		// session on screen" must read this alongside currentSessionId() or a
 		// resumed-but-not-yet-turned session browses the wrong id (review P1-1).
 		return this.#pendingOpen?.mode === "resume" ? this.#pendingOpen.id : undefined
+	}
+
+	// ----- A4+A5: post-DEAD session recovery (respawn is A3/transport) --------
+
+	/** A4+A5: read-only recovery outcome; the view reads this in A8 instead of
+	 *  polling. Never throws — failures are states + events. */
+	recoveryState(): BridgeRecoveryState {
+		return this.#recoveryState
+	}
+
+	/**
+	 * A4+A5: after the transport's `recover()` has reached READY, re-attach the
+	 * last session and drain the durable journal. Steps (blocky §2.3 first four):
+	 *   session.open{mode:"resume", id:lastSessionId}
+	 *   → journal.replay{from:lastAppliedSeq+1} (no lastSeq → 1), paged drain
+	 *   → seq dedup + ascending apply through the EXISTING transcript pipeline
+	 *   → "已恢复，补齐 N 条事件" event, terminal state "attached".
+	 * SESSION_LOCKED keeps the transport READY and drops the session layer to
+	 * "connected / not attached" (visible via status() + recoveryState() + event).
+	 * A non-LOCKED open/replay failure becomes an explicit "failed" state — no
+	 * retry loop, no transport rollback.
+	 */
+	async recoverSession(): Promise<BridgeRecoveryResult> {
+		const sessionId = this.#currentSessionId ?? this.stagedSessionId()
+
+		const emit = (event: SeamSessionEvent): void => {
+			for (const listener of [...this.#listeners]) {
+				try {
+					listener(event)
+				} catch {
+					/* one stale view listener must not break the feed */
+				}
+			}
+		}
+		const fail = (code: string, message: string): BridgeRecoveryResult => {
+			this.#recoveryState = "failed"
+			this.#sessionAttached = false
+			this.#connection = "connected"
+			this.#bridgeLink = "ready"
+			const result: BridgeRecoveryResult = {
+				state: "failed", sessionId, applied: 0, from: 0, cursor: 0, rows: [],
+				error: { code, message },
+			}
+			emit({ type: "bridge.recovery.failed", details: { ...result, message: `恢复失败: ${message}` } })
+			return result
+		}
+
+		if (this.#disposed) return fail("DISPOSED", "bridge seam is disposed")
+		if (sessionId === undefined || sessionId === "") {
+			return fail("NO_SESSION_TO_RESUME", "no session was open before DEAD")
+		}
+
+		this.#recoveryState = "recovering"
+		this.#connection = "connected"
+		this.#bridgeLink = "ready"
+		this.#sessionAttached = false
+
+		// (a) re-attach the last session with an eager resume, never replace.
+		let opened: Record<string, unknown>
+		try {
+			opened = asRecord(await this.#transport.request("session.open", { mode: "resume", id: sessionId }))
+		} catch (err) {
+			const code = err instanceof BridgeProtocolError ? err.code : "SESSION_OPEN_FAILED"
+			const message = err instanceof Error ? err.message : String(err)
+			if (code === "SESSION_LOCKED") {
+				// Transport stays READY; only the session layer degrades. A8 paints
+				// the branch from status()/recoveryState()/this event.
+				this.#recoveryState = "locked"
+				this.#sessionAttached = false
+				const result: BridgeRecoveryResult = {
+					state: "locked", sessionId, applied: 0, from: 0, cursor: 0, rows: [],
+					error: { code, message },
+				}
+				emit({
+					type: "bridge.recovery.locked",
+					details: { ...result, message: `会话已被占用，已连接未挂载: ${message}` },
+				})
+				return result
+			}
+			this.#ctx.logger.error("[bridge-seam] recovery session.open failed: %s", err)
+			return fail(code, message)
+		}
+
+		const boundId = typeof opened.sessionId === "string" ? opened.sessionId : sessionId
+		this.#currentSessionId = boundId
+		if (this.#pendingOpen?.mode === "resume" && this.#pendingOpen.id === boundId) this.#pendingOpen = undefined
+		if (this.#lastAppliedSessionId !== boundId) {
+			this.#lastAppliedSessionId = boundId
+			this.#lastAppliedSeq = undefined
+		}
+		this.#sessionAttached = true
+
+		// (b) catch up the durable journal. `from` is inclusive; no lastSeq → 1.
+		const from = this.#lastAppliedSeq === undefined ? 1 : this.#lastAppliedSeq + 1
+		let drained: { rows: BridgeReplayRow[]; cursor: number; clamped: boolean }
+		try {
+			drained = await this.#drainJournal(boundId, from)
+		} catch (err) {
+			const code = err instanceof BridgeProtocolError ? err.code : "JOURNAL_REPLAY_FAILED"
+			const message = err instanceof Error ? err.message : String(err)
+			this.#ctx.logger.error("[bridge-seam] recovery journal.replay failed: %s", err)
+			return fail(code, message)
+		}
+		if (drained.clamped) {
+			this.#ctx.logger.warn(
+				"[bridge-seam] recovery replay from=%d is ahead of journal max=%d; clamped to %d",
+				from, Math.max(0, drained.cursor - 1), drained.cursor,
+			)
+		}
+
+		// (c) apply through the SAME projection storedTranscript() uses — no new
+		// render path. Dedup + ascending order were established by #drainJournal.
+		const rows = bridgeReplayRowsToSeamTranscript(drained.rows)
+		if (drained.rows.length > 0) {
+			const maxSeq = drained.rows.reduce((m, row) => Math.max(m, row.seq), -Infinity)
+			this.#lastAppliedSeq = Math.max(this.#lastAppliedSeq ?? 0, maxSeq)
+			this.#lastAppliedSessionId = boundId
+		}
+		this.#sessionAttached = true
+		this.#connection = "connected"
+		this.#bridgeLink = "ready"
+		this.#recoveryState = "attached"
+		const result: BridgeRecoveryResult = {
+			state: "attached", sessionId: boundId, applied: drained.rows.length,
+			from, cursor: drained.cursor, rows,
+		}
+		emit({ type: "bridge.recovered", details: { ...result, message: `已恢复，补齐 ${result.applied} 条事件` } })
+		return result
+	}
+
+	/**
+	 * Drain `journal.replay` pages. The bridge replies `{rows, cursor}` in one
+	 * frame (`cursor = maxSeq+1` of the FULL log, independent of `from`); this
+	 * loop still advances `from` by the page's max seq so a paginating bridge is
+	 * drained completely. Rows are deduplicated by seq and sorted ascending, so
+	 * overlapping/out-of-order pages never paint a duplicate transcript line.
+	 * A client ahead of the journal (`from > cursor`) is clamped once + reported
+	 * to the caller (which logs `warn`) instead of throwing.
+	 */
+	async #drainJournal(
+		sessionId: string,
+		startFrom: number,
+	): Promise<{ rows: BridgeReplayRow[]; cursor: number; clamped: boolean }> {
+		let from = startFrom
+		let floor = startFrom
+		let cursor = 0
+		let clamped = false
+		const seen = new Set<number>()
+		const collected: BridgeReplayRow[] = []
+		for (;;) {
+			const value = asRecord(await this.#transport.request("journal.replay", { sessionId, from }))
+			const rawRows = Array.isArray(value.rows) ? value.rows : []
+			if (typeof value.cursor === "number" && Number.isFinite(value.cursor)) cursor = value.cursor
+			if (!clamped && cursor > 0 && from > cursor) {
+				// lastAppliedSeq > journal max — clamp the lower bound once, then
+				// re-request; never loop on the clamp itself.
+				clamped = true
+				from = cursor
+				floor = cursor
+				continue
+			}
+			let added = 0
+			let pageMax = from - 1
+			for (const raw of rawRows) {
+				const row = asRecord(raw)
+				const seq = row.seq
+				if (typeof seq !== "number" || !Number.isFinite(seq) || seq < floor || seen.has(seq)) continue
+				seen.add(seq)
+				collected.push({ seq, type: typeof row.type === "string" ? row.type : "", payload: row.payload })
+				added += 1
+				if (seq > pageMax) pageMax = seq
+			}
+			if (added === 0) break
+			from = pageMax + 1
+			if (cursor > 0 && from >= cursor) break
+		}
+		collected.sort((a, b) => a.seq - b.seq)
+		return { rows: collected, cursor, clamped }
 	}
 
 	interrupt(): void {
@@ -799,6 +1007,12 @@ export class BridgeSessionSeam implements SessionSeam {
 				try {
 					const opened = asRecord(await this.#transport.request("session.open", params))
 					if (typeof opened.sessionId === "string") this.#currentSessionId = opened.sessionId
+					// A4: lastAppliedSeq is per-session. A different binding starts a
+					// fresh journal, so the next recovery must replay from 1.
+					if (this.#lastAppliedSessionId !== this.#currentSessionId) {
+						this.#lastAppliedSessionId = this.#currentSessionId
+						this.#lastAppliedSeq = undefined
+					}
 					this.#sessionAttached = true
 				} catch (err) {
 					// SESSION_LOCKED / SESSION_NOT_FOUND surface to the turn caller.
