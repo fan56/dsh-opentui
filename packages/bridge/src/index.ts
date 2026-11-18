@@ -48,13 +48,13 @@ import { askPluginRecordType, type AskJournalEvent } from './ask-journal'
 // stays assembly-only so it does not grow the overlap surface with ask (ADR-0011).
 import { registerAppendSection } from './append-section'
 import type { RegisterAppendSectionOptions } from './append-section'
-// M3-05 — resume preset migration decoration lives in preset-migration.ts so
-// index.ts stays assembly-only (same overlap-surface discipline as M3-02/04).
+// M3-05 — legacy preset id DETECTION (debug-only observation) lives in
+// preset-migration.ts so index.ts stays assembly-only (same overlap-surface
+// discipline as M3-02/04). No preset is written to any resume payload.
 import {
   presetMentionsAppend,
   readSessionAgentPreset,
-  warnAppendMigrationOnce,
-  STANDARD_PRESET_ID,
+  logLegacyAppendPreset,
 } from './preset-migration'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
@@ -180,8 +180,8 @@ interface JournalReadResultLike {
 /** `sessionPersistence` handle — `open(id,'read')` never takes the writer lock. */
 interface PersistenceHandleLike {
   /** Immutable stored header (dsh-session-persistence `SessionHandle.header`,
-   *  dsh-session `SessionHeader`). M3-05 reads `agentPreset` off it to detect a
-   *  legacy append session without writing any durable state. */
+   *  dsh-session `SessionHeader`). M3-05 reads `agentPreset` off it for debug
+   *  observation only — no durable state is written and no preset is applied. */
   readonly header?: { readonly agentPreset?: unknown }
   read(offset?: number, length?: number): Promise<JournalReadResultLike>
   close(): Promise<void>
@@ -371,18 +371,18 @@ export function armAppendSection(
  *    `registerAppendSection`, so agent-scope disposal tears it down (`:92-95`);
  *  - every failure is contained to one `logger.warn`, never rethrown.
  *
- * `sessionId` is captured here so M3-05 can key its per-session warning and its
- * `shouldSuppress` predicate (built from the session's preset snapshot) to this
- * exact open. The predicate defaults to `false` in M3-04; detection is M3-05.
+ * `sessionId` is captured here only for the containment warning. The section
+ * text provider is unconditional: append content is always returned from
+ * APPEND_SYSTEM.md (M3-05 removed the preset-id-driven `shouldSuppress`, which
+ * could only swallow content because inproc mounts no `agentPresets` service).
  */
 function makeAppendSectionSetup(
   logger: Logger,
   sessionId: string,
-  shouldSuppress: () => boolean = () => false,
 ): (agentCtx: BridgeContext) => void {
   return (agentCtx: BridgeContext) => {
     try {
-      armAppendSection(agentCtx, { appendText: { shouldSuppress } })
+      armAppendSection(agentCtx)
     } catch (err) {
       logger.warn('[dsh-opentui-bridge] append section setup failed for %s (plugin stays live): %s', sessionId, err)
     }
@@ -1442,32 +1442,23 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           logger.info('[dsh-opentui-bridge] session.open adopt live %s', id)
           handle = { agent: live, dispose: async () => { /* owned by creator */ } }
         } else {
-          // M3-05 — resume decoration layer (ADR-0010:134): read the persisted
-          // preset BEFORE resume through a read-only handle. A legacy append
-          // session is decorated IN MEMORY — `preset` overridden to `standard`
-          // (set, not deleted: provider/model/reasoningEffort stay intact) and
-          // the M3-04 setup is told to suppress the section so append content
-          // is not injected twice (ADR-0010:142). A detection failure/missing
-          // field is a clean miss and must never block resume.
-          const agentOptions = buildAgentOptions(ctx)
-          let preset: unknown
+          // M3-05 (post-8e0e847) — observation only. Read the persisted header
+          // preset through a read-only handle; if it is the legacy synthetic
+          // append id, emit ONE debug log for this resume. The id is inert in
+          // inproc (no `preset` field on ResumeAgentOptions, no agentPresets
+          // service), so NO `preset` is written and the section text stays
+          // unconditional. Detection failures are clean misses, never blocking.
           try {
-            preset = await readSessionAgentPreset(resolvePersistence(ctx), id)
+            const preset = await readSessionAgentPreset(resolvePersistence(ctx), id)
+            if (presetMentionsAppend(preset)) logLegacyAppendPreset(logger)
           } catch {
             // Service-lookup / detection failure is a clean miss; never block resume.
-            preset = undefined
-          }
-          const legacyAppend = presetMentionsAppend(preset)
-          if (legacyAppend) {
-            agentOptions.preset = STANDARD_PRESET_ID
-            warnAppendMigrationOnce(logger, id)
           }
           logger.info('[dsh-opentui-bridge] session.open resume %s', id)
           handle = await agents.resume({
             resumeSessionId: id,
-            agentOptions,
-            // Dedupe predicate for the agent-scoped append section (M3-04 seam).
-            setup: makeAppendSectionSetup(logger, id, () => legacyAppend),
+            agentOptions: buildAgentOptions(ctx),
+            setup: makeAppendSectionSetup(logger, id),
           })
         }
         sessionId = id

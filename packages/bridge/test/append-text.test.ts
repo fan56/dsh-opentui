@@ -55,7 +55,7 @@ afterEach(() => {
 })
 
 describe('M3-03: createAppendTextProvider', () => {
-  test('copied preset id matches the canonical shell constant (dedupe key)', () => {
+  test('copied preset id matches the canonical shell constant (detection key)', () => {
     // packages/shell/src/client/append-system.ts:33 — kept in sync by hand.
     expect(APPEND_SYSTEM_PRESET_ID).toBe('opentui-append-system')
   })
@@ -131,17 +131,7 @@ describe('M3-03: createAppendTextProvider', () => {
     expect(text({})).toBe('BBB')
   })
 
-  test('shouldSuppress()=true -> empty string even with file content (no disk read, no warn)', () => {
-    writeFileSync(filePath, 'REAL-CONTENT', 'utf8')
-    const { logger, warnings } = makeLogger()
-    let calls = 0
-    const text = provider({ shouldSuppress: () => { calls += 1; return true } }, logger)
-    expect(text({})).toBe('')
-    expect(calls).toBe(1)
-    expect(warnings).toHaveLength(0)
-  })
-
-  test('shouldSuppress defaults to false -> normal content is returned', () => {
+  test('section text is unconditional: no session metadata can suppress APPEND_SYSTEM.md', () => {
     writeFileSync(filePath, 'SHOWN', 'utf8')
     expect(provider()({})).toBe('SHOWN')
   })

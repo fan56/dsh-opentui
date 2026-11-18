@@ -131,9 +131,8 @@ ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESS
 
 ## preset 迁移语义
 
-- `opentui-append-system` → `standard`：映射在 bridge 的 **resume 装饰层、open 之前**完成，不进入持久化层。
-- 每次迁移产生**一次 warning**，走日志，不混入消息流。
-- 不改任何持久化文件 —— 迁移只发生在内存中的 decorate 步骤。
+- **旧 id resume 语义（条款 A）**：若会话 header 携带旧合成 preset id（如 `opentui-append-system`）：不清洗、不覆盖、不向 `agents.resume` 传递任何 `preset` 字段；append 内容由 bridge section 注入，行为与新建会话一致。理由：宿主 `AgentOptions`/`ResumeAgentOptions` 无 `preset` 字段，`dsh-agent-loop` 仅消费 `maxTokens`，多余字段被静默忽略；且 inproc 无 `agentPresets` 服务，preset 组装不发生。该 id 在 inproc 为惰性历史元数据，在 legacy opentui profile 仍为活数据（见「交替恢复」条款）。
+- **观测条款（追加）**：检测到旧 id 时记一条 debug 日志，说明「id 在本 profile 不生效，append 由 bridge section 接管」；不使用 warn——该状态为预期行为。每次 resume 触发一次，不做按会话去重。
 
 ## append section 契约
 
@@ -146,7 +145,7 @@ ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESS
 - **惰性读取 + mtime 缓存**：文件内容惰性读取，按 mtime 缓存，避免每次 turn 都读盘。
 - **64KiB 截断落在 UTF-8 字符边界**：不得在多字节字符中间切断；截断告警仅入日志。
 - **文件缺失/为空返回空串**：不影响会话打开。
-- **防重**：会话记录里 preset 已含 append 合成 id 时返回空串，避免重复注入。
+- **append 注入防重（条款 B）**：不以会话记录中的 preset id 作为 section 文本的抑制条件。防重由挂载面结构性保证——不变量：同一 profile 禁止同时挂载 bridge section 与会注入 append persona 的 `agentPresets` preset；当前 inproc（只挂 bridge）与 legacy opentui（只挂 preset）满足该不变量，交替恢复各自注入一次。若未来 inproc 挂载 `agentPresets` 服务，必须在同一变更中重新引入防重，且判据必须为「服务存在 ∧ header.agentPreset 可解析为激活 preset」；仅判服务存在，会在旧 id 场景复现 M3-05 的内容丢失（commit 8e0e847）。
 
 ## 构建与打包约束（Consequences）
 
@@ -160,3 +159,7 @@ ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESS
 ② abort 后下一条消息仍在同一会话；
 ③ 模型能答出原会话首条消息；
 ④ 连续 20 轮上下文正确（含 compaction/截断交互）。
+
+## 修订记录
+
+- 2026-11-18 — M3-05 事后修订（commit 8e0e847）：撤销"旧 id 映射 standard + 按会话一次 warning + 基于 header preset id 的 section 抑制"的错误定位；按架构裁决改为条款 A（旧 id 为 inproc 惰性历史元数据，不传 `preset`）、条款 B（防重由挂载面结构性保证）与观测条款（每次 resume 一条 debug 日志，不用 warn）。append section 恢复无条件注入 APPEND_SYSTEM.md 派生内容。

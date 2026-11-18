@@ -1,19 +1,18 @@
 /**
- * M3-05 — resume preset migration decoration layer.
+ * M3-05 (post-8e0e847) — legacy append preset id is INERT metadata in inproc.
  *
  * Drives the real `apply()` over the NDJSON wire with a fake `ctx.sessionPersistence`
  * whose read handle exposes `header.agentPreset` (the real host field —
  * dsh-session `SessionHeader.agentPreset`, dsh-session-persistence
  * `SessionHandle.header`). Pins:
- *  - legacy append preset -> resume agentOptions.preset overridden to 'standard'
- *    (set, not deleted), and the synthetic id never appears in the options;
- *  - one warning per migrated session per process (same session re-resume stays
- *    1; a different session warns once more);
- *  - dedupe: the M3-04 setup's section text() is '' for a hit session (no
- *    double injection) and the real append content for a miss session;
- *  - read-only: every persistence open is 'read', zero append/write calls;
- *  - boundary: missing preset field or read failure is a clean miss — no
- *    override, no warning, resume still succeeds.
+ *  - golden (a): a legacy-header session resumes with section text = the
+ *    APPEND_SYSTEM.md content, appearing EXACTLY ONCE (no double injection);
+ *  - golden (b): the `agents.resume` payload has NO `preset` key at all;
+ *  - golden (c): new and legacy-header-resume sessions yield equal section text
+ *    under the same APPEND_SYSTEM.md;
+ *  - detection stays read-only and is logged as ONE debug line PER resume
+ *    (no once-per-session Set), never as warn;
+ *  - missing preset field / read failure / ctx.get throw are clean misses.
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -25,8 +24,19 @@ import { APPEND_SYSTEM_PRESET_ID } from '../src/append-text'
 
 const STDIO_SWITCH = 'DSH_OPENTUI_BRIDGE_STDIO'
 const APPEND_MARKER = 'M3-05-APPEND-CONTENT-MARKER'
+const EXPECTED_DEBUG = `[append-system] header.agentPreset="${APPEND_SYSTEM_PRESET_ID}" 为旧版合成 preset id，在本 profile 中不生效（无 agentPresets 服务）；append 内容由 bridge section 注入，行为与新建会话一致`
 type Frame = Record<string, any>
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+function occurrences(haystack: string, needle: string): number {
+  let count = 0
+  let at = haystack.indexOf(needle)
+  while (at !== -1) {
+    count += 1
+    at = haystack.indexOf(needle, at + needle.length)
+  }
+  return count
+}
 
 const cleanups: Array<() => void> = []
 afterEach(() => {
@@ -48,12 +58,19 @@ interface Harness {
   waitFor(id: number | string): Promise<Frame>
   resumeOptions: Array<Record<string, any>>
   warnings: unknown[][]
+  debugs: unknown[][]
   sections: SystemPromptSectionLike[]
   openCalls: Array<{ id: string; access: string }>
   appendCalls: number
 }
 
-function migrationWarnings(h: Harness): number {
+function legacyDebugCount(h: Harness): number {
+  return h.debugs.filter(
+    (d) => typeof d[0] === 'string' && (d[0] as string).includes('旧版合成 preset id'),
+  ).length
+}
+
+function migrationWarningCount(h: Harness): number {
   return h.warnings.filter(
     (w) => typeof w[0] === 'string' && (w[0] as string).includes('migrated to'),
   ).length
@@ -68,7 +85,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   const presets = new Map<string, unknown>(Object.entries(options.presets ?? {}))
   const failOpen = new Set(options.failOpen ?? [])
 
-  // Temp DSH_HOME with real append content so a non-suppressed section text()
+  // Temp DSH_HOME with real append content so the unconditional section text()
   // returns a non-empty marker we can assert on.
   const home = mkdtempSync(join(tmpdir(), 'dsh-m3-05-'))
   const appendFile = join(home, 'APPEND_SYSTEM.md')
@@ -116,13 +133,14 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   Object.defineProperty(process, 'stdin', { value: fakeStdin, configurable: true })
 
   const warnings: unknown[][] = []
+  const debugs: unknown[][] = []
   const sections: SystemPromptSectionLike[] = []
   const agentCtx = {
     logger: {
       info() {},
       warn(...args: unknown[]) { warnings.push(args) },
       error() {},
-      debug() {},
+      debug(...args: unknown[]) { debugs.push(args) },
     },
     effect() { return {} },
     get(name: string) {
@@ -138,7 +156,10 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   }
   const resumeOptions: Array<Record<string, any>> = []
   const agents = {
-    async create() { return { agent, dispose: async () => {} } },
+    async create(options: Record<string, any>) {
+      if (typeof options?.setup === 'function') await options.setup(agentCtx, agent)
+      return { agent, dispose: async () => {} }
+    },
     async resume(options: Record<string, any>) {
       resumeOptions.push(options)
       if (typeof options.setup === 'function') await options.setup(agentCtx, agent)
@@ -168,7 +189,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
       info() {},
       warn(...args: unknown[]) { warnings.push(args) },
       error() {},
-      debug() {},
+      debug(...args: unknown[]) { debugs.push(args) },
     },
     effect(execute: () => () => void) {
       disposeBridge = execute()
@@ -227,7 +248,7 @@ function makeHarness(options: HarnessOptions = {}): Harness {
   }
 
   return {
-    frames, send, waitFor, resumeOptions, warnings, sections, openCalls,
+    frames, send, waitFor, resumeOptions, warnings, debugs, sections, openCalls,
     get appendCalls() { return appendCalls },
   }
 }
@@ -237,53 +258,68 @@ async function openResume(h: Harness, id: string, reqId: number): Promise<Frame>
   return h.waitFor(reqId)
 }
 
-describe('M3-05: resume preset mapping + single warning + dedupe', () => {
-  test('legacy append preset -> agentOptions.preset === standard (override, not delete); no synthetic id', async () => {
-    const h = makeHarness({ presets: { 'm3-05-map-1': APPEND_SYSTEM_PRESET_ID } })
-    const reply = await openResume(h, 'm3-05-map-1', 1)
-    expect(reply.ok).toBe(true)
+describe('M3-05: legacy preset id is inert metadata (post-8e0e847)', () => {
+  test('golden (a): legacy header id -> section text = APPEND_SYSTEM.md content exactly once', async () => {
+    const h = makeHarness({ presets: { 'm3-05-golden-a': APPEND_SYSTEM_PRESET_ID } })
+    expect((await openResume(h, 'm3-05-golden-a', 1)).ok).toBe(true)
+
+    expect(h.sections).toHaveLength(1)
+    const text = sectionText(h.sections.at(-1))
+    expect(text).toBe(APPEND_MARKER)
+    // Exactly once: guards against a future double-injection regression.
+    expect(occurrences(text, APPEND_MARKER)).toBe(1)
+  })
+
+  test('golden (b): agents.resume payload has NO preset key', async () => {
+    const h = makeHarness({ presets: { 'm3-05-golden-b': APPEND_SYSTEM_PRESET_ID } })
+    expect((await openResume(h, 'm3-05-golden-b', 1)).ok).toBe(true)
 
     expect(h.resumeOptions).toHaveLength(1)
     const opts = h.resumeOptions[0]!
-    expect(opts.resumeSessionId).toBe('m3-05-map-1')
-    expect(opts.agentOptions.preset).toBe('standard')
-    // Override, not delete: the pre-existing accessors are untouched.
+    expect(opts).not.toHaveProperty('preset')
+    expect(opts.agentOptions).not.toHaveProperty('preset')
+    // Pre-existing accessors are untouched.
     expect(opts.agentOptions.provider).toBe('fake-provider')
     expect(opts.agentOptions.model).toBe('fake-model')
-    // The synthetic id never leaks into the resume options.
-    expect(JSON.stringify(opts)).not.toContain(APPEND_SYSTEM_PRESET_ID)
   })
 
-  test('warn exactly once per session per process; a different session warns once', async () => {
-    const h = makeHarness({
-      presets: { 'm3-05-warn-a': APPEND_SYSTEM_PRESET_ID, 'm3-05-warn-b': APPEND_SYSTEM_PRESET_ID },
-    })
-    expect((await openResume(h, 'm3-05-warn-a', 1)).ok).toBe(true)
-    expect(migrationWarnings(h)).toBe(1)
+  test('golden (c): new session and legacy-header resume yield equal section text', async () => {
+    const h = makeHarness({ presets: { 'm3-05-golden-c': APPEND_SYSTEM_PRESET_ID } })
 
-    // Same session re-resume in the SAME process: still exactly one warning.
+    h.send({ id: 1, method: 'session.open', params: { mode: 'new' } })
+    expect((await h.waitFor(1)).ok).toBe(true)
+    const newText = sectionText(h.sections[0])
+
     h.send({ id: 2, method: 'session.close', params: {} })
     await h.waitFor(2)
-    expect((await openResume(h, 'm3-05-warn-a', 3)).ok).toBe(true)
-    expect(migrationWarnings(h)).toBe(1)
 
-    // A different session gets its own single warning.
-    h.send({ id: 4, method: 'session.close', params: {} })
-    await h.waitFor(4)
-    expect((await openResume(h, 'm3-05-warn-b', 5)).ok).toBe(true)
-    expect(migrationWarnings(h)).toBe(2)
+    expect((await openResume(h, 'm3-05-golden-c', 3)).ok).toBe(true)
+    const resumeText = sectionText(h.sections[1])
+    expect(newText).toBe(APPEND_MARKER)
+    expect(resumeText).toBe(newText)
   })
 
-  test('dedupe: hit session section text() === "" ; miss session returns append content', async () => {
-    const hit = makeHarness({ presets: { 'm3-05-suppress-hit': APPEND_SYSTEM_PRESET_ID } })
-    expect((await openResume(hit, 'm3-05-suppress-hit', 1)).ok).toBe(true)
-    expect(hit.sections).toHaveLength(1)
-    expect(sectionText(hit.sections.at(-1))).toBe('')
+  test('legacy id -> one exact debug line per resume, never warn (no once-per-session Set)', async () => {
+    const h = makeHarness({
+      presets: { 'm3-05-debug-a': APPEND_SYSTEM_PRESET_ID, 'm3-05-debug-b': APPEND_SYSTEM_PRESET_ID },
+    })
+    expect((await openResume(h, 'm3-05-debug-a', 1)).ok).toBe(true)
+    expect(legacyDebugCount(h)).toBe(1)
+    expect(String(h.debugs.at(-1)?.[0])).toBe(EXPECTED_DEBUG)
+    expect(migrationWarningCount(h)).toBe(0)
 
-    const miss = makeHarness({ presets: { 'm3-05-suppress-miss': 'standard' } })
-    expect((await openResume(miss, 'm3-05-suppress-miss', 1)).ok).toBe(true)
-    expect(miss.sections).toHaveLength(1)
-    expect(sectionText(miss.sections.at(-1))).toBe(APPEND_MARKER)
+    // Same session re-resume: another debug line (detection is NOT deduped).
+    h.send({ id: 2, method: 'session.close', params: {} })
+    await h.waitFor(2)
+    expect((await openResume(h, 'm3-05-debug-a', 3)).ok).toBe(true)
+    expect(legacyDebugCount(h)).toBe(2)
+
+    // A different session likewise gets its own line.
+    h.send({ id: 4, method: 'session.close', params: {} })
+    await h.waitFor(4)
+    expect((await openResume(h, 'm3-05-debug-b', 5)).ok).toBe(true)
+    expect(legacyDebugCount(h)).toBe(3)
+    expect(migrationWarningCount(h)).toBe(0)
   })
 
   test('read-only: every open is read; zero append/write calls', async () => {
@@ -294,18 +330,23 @@ describe('M3-05: resume preset mapping + single warning + dedupe', () => {
     expect(h.appendCalls).toBe(0)
   })
 
-  test('boundary: missing preset field or read failure -> clean miss, no warning, resume succeeds', async () => {
-    const h = makeHarness({ failOpen: ['m3-05-read-fail'] })
+  test('boundary: missing preset field or read failure -> clean miss, section still injects', async () => {
+    const h = makeHarness({
+      presets: { 'm3-05-no-preset': 'standard' },
+      failOpen: ['m3-05-read-fail'],
+    })
 
     expect((await openResume(h, 'm3-05-no-preset', 1)).ok).toBe(true)
-    expect(h.resumeOptions[0]!.agentOptions.preset).toBeUndefined()
-    expect(migrationWarnings(h)).toBe(0)
+    expect(h.resumeOptions[0]!.agentOptions).not.toHaveProperty('preset')
+    expect(legacyDebugCount(h)).toBe(0)
+    expect(sectionText(h.sections.at(-1))).toBe(APPEND_MARKER)
 
     h.send({ id: 2, method: 'session.close', params: {} })
     await h.waitFor(2)
     expect((await openResume(h, 'm3-05-read-fail', 3)).ok).toBe(true)
-    expect(h.resumeOptions[1]!.agentOptions.preset).toBeUndefined()
-    expect(migrationWarnings(h)).toBe(0)
+    expect(h.resumeOptions[1]!.agentOptions).not.toHaveProperty('preset')
+    expect(legacyDebugCount(h)).toBe(0)
+    expect(sectionText(h.sections.at(-1))).toBe(APPEND_MARKER)
 
     // Detection never blocked either resume, and stayed read-only throughout.
     expect(h.openCalls.every((c) => c.access === 'read')).toBe(true)
@@ -316,11 +357,12 @@ describe('M3-05: resume preset mapping + single warning + dedupe', () => {
     const h = makeHarness({ throwGetPersistence: true })
     const reply = await openResume(h, 'm3-05-get-throw', 1)
     expect(reply.ok).toBe(true)
-    expect(h.resumeOptions[0]!.agentOptions.preset).toBeUndefined()
-    expect(migrationWarnings(h)).toBe(0)
+    expect(h.resumeOptions[0]!.agentOptions).not.toHaveProperty('preset')
+    expect(legacyDebugCount(h)).toBe(0)
+    expect(sectionText(h.sections.at(-1))).toBe(APPEND_MARKER)
   })
 
-  test('nested/array preset shape still detected (robust equality)', async () => {
+  test('nested/array preset shape still detected -> debug line, no preset written', async () => {
     const h = makeHarness({
       presets: {
         'm3-05-array': ['ptc', APPEND_SYSTEM_PRESET_ID],
@@ -328,11 +370,13 @@ describe('M3-05: resume preset mapping + single warning + dedupe', () => {
       },
     })
     expect((await openResume(h, 'm3-05-array', 1)).ok).toBe(true)
-    expect(h.resumeOptions[0]!.agentOptions.preset).toBe('standard')
+    expect(legacyDebugCount(h)).toBe(1)
+    expect(h.resumeOptions[0]!.agentOptions).not.toHaveProperty('preset')
+
     h.send({ id: 2, method: 'session.close', params: {} })
     await h.waitFor(2)
     expect((await openResume(h, 'm3-05-nested', 3)).ok).toBe(true)
-    expect(h.resumeOptions[1]!.agentOptions.preset).toBe('standard')
-    expect(migrationWarnings(h)).toBe(2)
+    expect(legacyDebugCount(h)).toBe(2)
+    expect(h.resumeOptions[1]!.agentOptions).not.toHaveProperty('preset')
   })
 })

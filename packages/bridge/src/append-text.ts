@@ -1,9 +1,11 @@
 /**
  * M3-03 — append-system text provider.
  *
- * Reads `$DSH_HOME/APPEND_SYSTEM.md` lazily, caches by mtime, truncates at a
+ * Reads `$DSH_HOME/APPEND_SYSTEM.md` lazily, caches by mtime, and truncates at a
  * UTF-8 character boundary at 64 KiB (logger.warn only — the warning never
- * enters the message stream), and returns '' when deduped via `shouldSuppress`.
+ * enters the message stream). M3-05 removed the `shouldSuppress` branch: the
+ * section text is unconditional in inproc (no agentPresets service to double
+ * inject), so no session metadata can swallow the append content.
  *
  * Discipline: no `@deepseek-ai/*` import (ADR-0010 structural typing); Node
  * built-ins only. The text provider shape mirrors `SystemPromptSectionLike.text`
@@ -18,14 +20,13 @@ import { join } from 'node:path'
 export const APPEND_TEXT_MAX_BYTES = 64 * 1024
 
 /**
- * Synthetic preset id whose presence in a session's preset list means append
- * content was already injected via the legacy ride path — in that case the
- * section returns '' (dedupe, ADR-0010:142).
+ * Synthetic preset id from the legacy ride path. In inproc it is inert
+ * historical metadata: M3-05 detects it only for a debug log, never to suppress
+ * the section text (ADR-0010 "旧 id resume 语义" / "append 注入防重").
  *
  * COPIED VALUE (bridge must not import from packages/shell): the canonical
  * constant is `APPEND_SYSTEM_PRESET_ID` in
- * `packages/shell/src/client/append-system.ts:33`. Kept in sync by hand; M3-05
- * builds the real `shouldSuppress` predicate against this id.
+ * `packages/shell/src/client/append-system.ts:33`. Kept in sync by hand.
  */
 export const APPEND_SYSTEM_PRESET_ID = 'opentui-append-system'
 
@@ -39,9 +40,6 @@ export interface AppendTextProviderOptions {
   home?: string
   /** Logger for the truncation warning (best-effort; warn-only). */
   logger?: AppendTextLogger
-  /** Dedupe signal: true when the session's presets already contain
-   *  APPEND_SYSTEM_PRESET_ID. Defaults to `() => false` (M3-05 wires the real one). */
-  shouldSuppress?: () => boolean
   /** Byte cap override for tests; defaults to APPEND_TEXT_MAX_BYTES. */
   maxBytes?: number
 }
@@ -82,7 +80,6 @@ function decodeUtf8Capped(buf: Buffer, maxBytes: number): { text: string; trunca
  */
 export function createAppendTextProvider(options: AppendTextProviderOptions = {}): AppendTextProvider {
   const filePath = join(options.home ?? defaultDshHome(), 'APPEND_SYSTEM.md')
-  const shouldSuppress = options.shouldSuppress ?? (() => false)
   const maxBytes = options.maxBytes ?? APPEND_TEXT_MAX_BYTES
   const logger = options.logger
 
@@ -90,9 +87,6 @@ export function createAppendTextProvider(options: AppendTextProviderOptions = {}
   let cachedText = ''
 
   return (_context: unknown): string => {
-    // Dedupe takes precedence: no disk I/O at all when already injected.
-    if (shouldSuppress()) return ''
-
     let stat
     try {
       stat = statSync(filePath)

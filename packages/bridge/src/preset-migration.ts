@@ -1,37 +1,31 @@
 /**
- * M3-05 — resume preset migration decoration layer.
+ * M3-05 (post-8e0e847) — legacy append preset id DETECTION only.
  *
- * ADR-0010:134 "映射在 bridge 的 resume 装饰层、open 之前完成，不进入持久化层"
- * and ADR-0009:47. On resume we READ the persisted session header to learn its
- * agent preset id; when it is the legacy synthetic append id we decorate the
- * in-memory `agents.resume` options with `preset: 'standard'`, emit ONE warning
- * per session per process, and tell the M3-04 setup to suppress the append
- * section (dedupe) — without writing any durable state.
+ * Architecture ruling (blocky, 2026-11-18): the synthetic id
+ * `opentui-append-system` is INERT historical metadata in the inproc profile:
+ * host `AgentOptions`/`ResumeAgentOptions` have no `preset` field,
+ * `agentOptions.preset` has no consumer, and inproc mounts no `agentPresets`
+ * service. The header is readonly and is never cleaned or overwritten.
+ *
+ * Therefore this module only READS `header.agentPreset` to emit ONE debug log
+ * per resume (expected state — no warn, no once-per-session Set). The append
+ * content is injected unconditionally by the M3-04 bridge section, and inproc
+ * and legacy-opentui mount surfaces are structurally mutually exclusive, so no
+ * dedupe predicate is needed: suppressing on the id only eats content.
  *
  * Source-verified reading path (NO @deepseek-ai/* runtime import — structural
  * typing discipline, see index.ts top note):
- *  - `@deepseek-ai/dsh-session` `lib/types/types.d.ts:94-96`: `SessionHeader`
- *    carries `readonly agentPreset?: string` ("Id of the agent preset this
- *    session's agent was composed from ... durable").
- *  - `@deepseek-ai/dsh-session-persistence` `lib/types/handle.d.ts:52-54`:
- *    `SessionHandle` exposes `readonly header: SessionHeader`.
- *  - `@deepseek-ai/dsh-agent-loop` `lib/index.js:1727-1781`: `resume()` loads
- *    the session via `persistence.open(id, 'write')` and prepares it with
- *    `meta: structuredClone(handle.header)` — so the preset id the bridge can
- *    observe read-only is exactly `handle.header.agentPreset`.
- *
- * The host `AgentOptions` (`dsh-agent` `lib/types/runtime-types.d.ts`) does not
- * formally declare a `preset` field (it is merge-extensible); the ticket and
- * ADR define the decoration-layer contract as overriding `preset` to the
- * shipped `standard` preset id (append-system.ts:32 roster:
- * standard/ptc/minimal/cordis). We therefore SET the field rather than delete
- * it, leaving provider/model/reasoningEffort accessors intact.
+ *  - `@deepseek-ai/dsh-session` `src/types.ts:95-136`: `SessionHeader` carries
+ *    `readonly agentPreset?: string`; its persisted meta has no system-prompt
+ *    assembly field (`:143-165`), so the append text is never in the header.
+ *  - `@deepseek-ai/dsh-session-persistence`: `SessionHandle.header` is that
+ *    immutable header.
+ *  - `@deepseek-ai/dsh-agent-loop` `src/index.ts:805-807`: resume prepares the
+ *    session with `meta: structuredClone(handle.header)` — the value observed
+ *    through a read-only handle is exactly `handle.header.agentPreset`.
  */
 
 import { APPEND_SYSTEM_PRESET_ID } from './append-text'
-
-/** The shipped default preset id (append-system.ts:32 roster). */
-export const STANDARD_PRESET_ID = 'standard'
 
 /** Read-only slice of the persistence handle we need (dsh-session-persistence
  *  `SessionHandle.header`). `read`/`close` keep it structurally compatible with
@@ -90,22 +84,16 @@ export async function readSessionAgentPreset(
 }
 
 /** Minimal logging surface; `ctx.logger` satisfies it. */
-interface MigrationLogger {
-  warn(format: unknown, ...params: unknown[]): void
+interface DetectionLogger {
+  debug(format: unknown, ...params: unknown[]): void
 }
 
-/** Process-local memory of sessions already warned. NOT persisted, NOT in the
- *  message stream — the Q3 semantics: once per migrated session per process. */
-const warnedAppendSessions = new Set<string>()
-
-/** Warn exactly once per session id in this process. */
-export function warnAppendMigrationOnce(logger: MigrationLogger, sessionId: string): void {
-  if (warnedAppendSessions.has(sessionId)) return
-  warnedAppendSessions.add(sessionId)
-  logger.warn(
-    '[dsh-opentui-bridge] session %s: legacy preset "%s" migrated to "%s" in-memory for resume; append content is now injected by the bridge section (no durable state changed)',
-    sessionId,
-    APPEND_SYSTEM_PRESET_ID,
-    STANDARD_PRESET_ID,
+/**
+ * Observe a legacy id on every resume (no once-per-session Set). This state is
+ * EXPECTED — debug, not warn. The append content is owned by the bridge section.
+ */
+export function logLegacyAppendPreset(logger: DetectionLogger): void {
+  logger.debug(
+    `[append-system] header.agentPreset="${APPEND_SYSTEM_PRESET_ID}" 为旧版合成 preset id，在本 profile 中不生效（无 agentPresets 服务）；append 内容由 bridge section 注入，行为与新建会话一致`,
   )
 }

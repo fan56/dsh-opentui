@@ -23,7 +23,7 @@ export type { AppendTextProvider } from './append-text'
  * Stable section name carrying the dsh-opentui prefix. ADR-0010 pins only
  * `order: 200` and gives no named constant for the section name — this id is
  * chosen here and is **待 ADR 终审** (pending ADR final review). Keep it stable
- * once shipped: M3-03's dedupe key and M3-05's preset mapping will key off it.
+ * once shipped: it is the section identity M3-01's order/shadow contract pins.
  */
 export const APPEND_SECTION_NAME = 'dsh-opentui:append-system'
 
@@ -34,8 +34,8 @@ export interface RegisterAppendSectionOptions {
   /** Override the text provider entirely (highest precedence). */
   text?: AppendTextProvider
   /** Options for the default M3-03 append-text provider (home / logger /
-   *  shouldSuppress / maxBytes). Ignored when `text` is set. Tests inject a
-   *  temp `home` here so they never touch the real `~/.dsh`. */
+   *  maxBytes). Ignored when `text` is set. Tests inject a temp `home` here so
+   *  they never touch the real `~/.dsh`. */
   appendText?: AppendTextProviderOptions
 }
 
@@ -83,8 +83,8 @@ export function registerAppendSection(
   }
 
   // M3-03: default text is the real lazy provider; `ctx.logger` feeds its
-  // truncation warning. Per-call overrides (temp home, shouldSuppress, etc.)
-  // come through `options.appendText`. An explicit `text` still wins.
+  // truncation warning. Per-call overrides (temp home, maxBytes) come through
+  // `options.appendText`. An explicit `text` still wins.
   const text = options.text ?? createAppendTextProvider({
     logger: ctx.logger,
     ...options.appendText,

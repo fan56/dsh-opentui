@@ -8,7 +8,7 @@
  *  - order 200 and the effect-held disposer;
  *  - new (create) and resume (resume) paths both carry setup;
  *  - a throw inside setup is contained to logger.warn — session.open still ok;
- *  - the default `shouldSuppress` is false (text provider stays active).
+ *  - the section text provider stays active (no preset-id suppression).
  */
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
@@ -317,7 +317,7 @@ describe('M3-04: append section setup at agent scope', () => {
     ).toBe(true)
   })
 
-  test('default shouldSuppress is false: the section text provider stays active', async () => {
+  test('section text provider stays active (no preset-id suppression)', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'dsh-m3-04-'))
     const file = join(tmp, 'APPEND_SYSTEM.md')
     writeFileSync(file, 'M3-04-APPEND-BODY')
@@ -330,7 +330,7 @@ describe('M3-04: append section setup at agent scope', () => {
 
       expect(reply.ok).toBe(true)
       const spec = h.agentCtx.sections[0]!
-      // A default-true shouldSuppress would return '' (no disk read).
+      // A preset-id-driven suppression branch would return '' (no disk read).
       expect((spec.text as (context: unknown) => string)({})).toBe('M3-04-APPEND-BODY')
     } finally {
       if (previousHome === undefined) delete process.env.DSH_HOME
