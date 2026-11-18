@@ -5,13 +5,15 @@
 性质：只读调研，**不含实现**，不改源码、不 git add / commit；只新增本文档。
 口径：宿主 `@deepseek-ai/dsh` **0.2.2-rc.3**（`/opt/homebrew/.../dsh/package.json`），profile `node_modules/@deepseek-ai/*` 软链至此。
 
+> **已落地（commit `7e66b3f` + `2b5e2f1`，2026-11-18）**：本文是当时的只读调研，结论中「桥侧缺口 / U1 阻塞」均已消解——`7e66b3f` 已在 bridge `handleLine` 加 `session.list` 帧（`ctx.get('sessionController').list`，`{items: SessionSummary[]}` 原样透传，含单测）；`2b5e2f1` 为 inproc profile 生成 standalone `sessionController` shim，默认 profile 下 `ctx.get('sessionController')` 可用，真机实测 `session.list` 返回真实会话行（见 `docs/adr/0010-session-seam-lifecycle-contract.md` 的 session.list 契约段）。下方 §0 与 §4 U1 的过期表述逐条标注「已解决」，原文保留供追溯。
+
 ## 0. 结论先行
 
 **FEASIBLE-WITH-ADAPTER**。
 
-一句话理由：宿主 `ctx.sessionPersistence` **本身就有 `list()` / `stat()`**（`dsh-session-persistence/lib/types/index.d.ts:160,166`），且宿主 `sessionController.list()` 正是 thin client `/resume` 走的 `session/list` RPC 的服务端（`dsh-api-session-controller/lib/typert.host.js:2168`），能力在 0.2.2-rc.3 已存在；缺口只在桥侧——`PersistenceLike` 仅声明 `open`（本仓 `packages/bridge/src/index.ts:157`）、dispatch 无 `session.list`（落到 UNSUPPORTED，`:1235`），所以需**加帧 + 扩结构切片 + 照抄 remote 投影**，无需宿主新增能力。
+一句话理由：宿主 `ctx.sessionPersistence` **本身就有 `list()` / `stat()`**（`dsh-session-persistence/lib/types/index.d.ts:160,166`），且宿主 `sessionController.list()` 正是 thin client `/resume` 走的 `session/list` RPC 的服务端（`dsh-api-session-controller/lib/typert.host.js:2168`），能力在 0.2.2-rc.3 已存在；缺口只在桥侧——`PersistenceLike` 仅声明 `open`（本仓 `packages/bridge/src/index.ts:157`）、dispatch 无 `session.list`（落到 UNSUPPORTED，`:1235`），所以需**加帧 + 扩结构切片 + 照抄 remote 投影**，无需宿主新增能力。**（已解决：`7e66b3f` 已按该路径加帧 + 扩 `SessionControllerLike` 切片 + 照抄远端投影；本句描述的是调研时状态。）**
 
-因此 `tickets/2026-11-18-seam-capability-matrix.md:30,64,98` 中 #2 `listSessions` 的 **UNSUPPORTED / C 级 / UNKNOWN** 应下调为 **PARTIAL / B 级 / 宿主能力已确认存在**；唯一的运行时未知是「桥能否通过 `ctx.get('sessionController')` 拿到该服务」（见 §4 未知项 U1）。
+因此 `tickets/2026-11-18-seam-capability-matrix.md:30,64,98` 中 #2 `listSessions` 的 **UNSUPPORTED / C 级 / UNKNOWN** 应下调为 **PARTIAL / B 级 / 宿主能力已确认存在**；唯一的运行时未知是「桥能否通过 `ctx.get('sessionController')` 拿到该服务」（见 §4 未知项 U1）。**（已解决：矩阵 #2 已随 `7e66b3f` + `2b5e2f1` 升为可用；唯一的 U1 已由 standalone shim 消解，见顶部注记与 U1 行。）**
 
 ## 1. 证据表（事实 / 结论 / 文件:行）
 
@@ -49,7 +51,7 @@
 
 | 编号 | 未知项 | 是否阻塞 | 需要什么才能确认 |
 |---|---|---|---|
-| U1 | 桥运行时能否 `ctx.get('sessionController')` 取到服务（`get?` 为可选；`inject` 仅 `agents`） | **阻塞（推荐路径前提）** | 在宿主内起桥探针：`typeof ctx.get('sessionController')?.list === 'function'`；若为否，改为把 `sessionController` 加入 `inject` 或退到 `PersistenceLike.list()` 备选路径 |
+| U1 | 桥运行时能否 `ctx.get('sessionController')` 取到服务（`get?` 为可选；`inject` 仅 `agents`） | **已解决（原为阻塞前提；`7e66b3f` + `2b5e2f1`）** | 由 `2b5e2f1` 的 inproc standalone `sessionController` shim 消解：默认 profile 下 `ctx.get('sessionController')` 可用，真机实测 `session.list` 返回真实会话行（ADR-0010 session.list 契约段）。无需把 `sessionController` 加入必填 `inject`，也无需退到 `PersistenceLike.list()` 备选路径 |
 | U2 | `sizeBytes` 是否真出现在 `session/list` wire（`SessionSummary` 未声明，远端仅防御性读取） | 不阻塞（seam 字段可选） | 取一条真实会话行样本核对；缺省即可，view 已 fail-open |
 | U3 | 宿主最低版本/是否所有部署都挂载 `sessionController` + `sessionQuery`；旧宿主缺 `session/list` route 时的兼容策略 | 部分阻塞（版本门） | 查宿主 changelog / 对旧版宿主做一次 `session/list` 探测；桥 handshake 已有 `bridge.hello` 版本比对，可在此加能力探测并降级 UNSUPPORTED |
 | U4 | 在进程内（非 remote）场景 `remoteAccess.allows({kind:'session',id})` 是否放行全部本地会话 | 不阻塞但影响正确性 | 真机起桥后对比 `session/list` 返回行数与 `sessionPersistence.list()` 行数；若被过滤，需走不过滤的底层 `ApiSessionList.list()` |

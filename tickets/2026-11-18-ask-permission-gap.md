@@ -1,9 +1,35 @@
 # ask / permission 双向通道缺口调研（2026-11-18）
 
-性质：**只读调研**。未改源码、未 commit。工作区 `feat/inproc-bridge-20261118`，HEAD `c8f891b`。
+性质：**只读调研**。未改源码、未 commit。工作区 `feat/inproc-bridge-20261118`，HEAD `f05b28c`（原快照为 `c8f891b`；本次仅回写文档结论，未改任何源码/测试）。
 时间盒 30 分钟；关键结论均带代码位置，未核实的标 UNKNOWN。本文不含任何凭据值。
 
-## 0. 结论先行（一句话）
+## 0. 已闭环（截至 HEAD f05b28c，本次文档对齐回写）
+
+**结论：§1–§7 描述的"缺口休眠 / 审批卡从不出现 / 切 ask 预设后工具全被拒"均已随后续 commit 关闭。当前默认配置为 `workspace-write` + `approval: ask` + 预执行 gate，ask 双向通道（审批 + 提问）已接通。** §1–§7 保留作 `c8f891b` 时点的推理记录，当前状态以本节为准。
+
+### 0.1 缺口 → 关闭它的 commit（逐项）
+
+| 原缺口（本文位置） | 关闭它的 commit | 落地事实（文件:行） |
+|---|---|---|
+| §3.1 bridge 无任何 ask hook、`emitEvent` 仅 5 种 turn.*、分发表无 ask method | `4770ae1`（T3：ask registry 接入 dispatch/生命周期）、`7d54190`（T4-host：approval/user-questions answerer + ask.request 下推）、`19c2ab2`（gate + `ask.response` + `model.currentSelection` 帧） | `packages/bridge/src/index.ts:750-830`（registry sink 走 emitEvent）、`:1060-1110`、`:1795-1834`；`packages/bridge/src/ask-frames.ts:24-27`（5 帧）；`packages/bridge/src/approval-gate.ts` |
+| §3.2 seam 空注册 provider、`turn().onApprove` 永不调用、`permission.asked` 不投影 | `5429cfb`（T4-client：真存 provider、onApprove 接线、pending 队列、ask.response）、`2168604`（T5a 审批卡）、`08e17d8`（T5b 提问面板） | `packages/shell/src/client/bridge-session-seam.ts:799-804`（真存 provider）、`:882-930`（answerer 解析 + fail-closed `unavailable`）、`:954-987`（收 ask.request/cancel/settled/pending）；`packages/tui-base/src/routes/session/turn-overlay-controller.ts`（审批卡/提问面板） |
+| §3.3 `BridgeSessionSeam` 尚未切成默认 seam | `46ed988` | `packages/shell/src/client/seam-bootstrap.ts:65-72,204-236`；inproc 模式默认 bridge，`--remote` 仅 deprecated 逃生门 |
+| §5.2 默认 `danger-full-access` / `approval: never`，缺口休眠 | `c7acf1e`（T9：默认预设改需审批） | `packages/shell/scripts/provision-inproc-profile.mjs:505-520`（`defaultPreset: workspace-write`，`approval: ask`）；逃生门 `DSH_OPENTUI_APPROVAL_GATE=off`（`docs/adr/0011-ask-permission-bridge-channel.md:115`） |
+| §5.3 切到 ask 预设 = 工具全被拒（通道无人应答） | 由 `4770ae1`+`7d54190`+`5429cfb` 一并关闭 | 通道已有 answerer；失败仍 fail-closed（`seam:895,902,908` → `verdict:"unavailable"`），但不再是"无人应答" |
+| §6 三个候选待拍板（A 保持降级 / B 最小 / C 完整对齐） | 选 **C** | `docs/adr/0011-ask-permission-bridge-channel.md:23`（D1 方案 C，完整对齐 remote：审批 + 提问双向帧，含取消/超时/并发/fail-closed） |
+| §7.4 取消/超时策略、§7.6 `ctx.get('approval')` 真机验证 | Q1/Q2 已确认并由 T2 `AskRegistry` 实现语义；真机验证仍未做 | `docs/adr/0011-ask-permission-bridge-channel.md:128-130`；剩余见 §0.2 |
+| 决策审计与持久化（原无） | `f05b28c`（T7） | `packages/bridge/src/ask-journal.ts`（redacted journal + `SessionPermissionSummary`）；`packages/bridge/src/index.ts:801-830` |
+
+### 0.2 仍未闭环（不美化）
+
+1. **T6 重连细节**：`ask.pending` 帧类型与 seam 消费已定义（`seam:973-983`），`AskRegistry.pendingSnapshot(sessionId, emit)` 已存在（`packages/bridge/src/ask-registry.ts:545-552`），但 bridge 生产路径没有调用点（全仓 `pendingSnapshot` 仅测试引用），重连后 pending 卡片不会重建。
+2. **T8 显式提示**：`docs/adr/0011-ask-permission-bridge-channel.md:133`（Q4）仍标"待确认"；seam 无 provider/异常仅 `logger.warn`（`seam:895,902,908`），无常驻或一次性"审批通道不可用"状态位；`permissionCatalog()` 为 optional 面且 BridgeSessionSeam 未实现。
+3. **跨进程摘要持久化**：`SessionPermissionSummary` 是进程内 plain Map（`packages/bridge/src/ask-journal.ts:127-138`），`dispose()` 清空（`packages/bridge/src/ask-registry.ts:565`）；journal 有 `ask.requested/responded/cancelled` 审计事件，但摘要不从事件重建，进程重启后 `always` 授权消失。`docs/adr/0011-ask-permission-bridge-channel.md:139` 已记 journal 写与摘要更新非原子。
+4. **真机验证缺口**：带审批的真实 turn 未在本次文档对齐中执行；§7 遗留的"UNKNOWN 需真机确认"（`ctx.get('approval')` 可用性、scoped gate、rc.4 实机）仍未闭环。
+
+## 0-hist. 结论先行（一句话，历史快照 — 已被 §0 取代）
+
+> 以下为 `c8f891b` 时点的原始结论，保留作推理记录；当前实现状态以 §0 为准。
 
 **当前默认配置下（`defaultPreset: danger-full-access` / `approval: never`），审批通道缺口是"休眠"的——工具全放行、用户永远看不到审批卡，因为宿主侧 approval 策略被配置成 `never`，根本不会发起 ask；一旦把预设切成 `read-only`/`workspace-write`（`approval: ask`），宿主发起的审批在 bridge 内无人应答，走 `unavailable` 失败关闭，需要审批的工具全被拒，且客户端仍无任何提示（用户按下确认的动作不存在，因为审批卡从不弹出）。**
 

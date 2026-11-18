@@ -21,7 +21,7 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 以下几项**已由用户拍板**，不在本文讨论范围：
 
 - **D1 — 方案 C：完整对齐 remote。** 审批 + 提问双向帧齐备，含取消、超时、并发、fail-closed 显式化、审计/持久对齐（`tickets/2026-11-18-ask-permission-gap.md:188-194` 候选 C）。
-- **D2 — 默认预设改为需审批。** 把 `provision-inproc-profile.mjs:490-493` 的 `defaultPreset: danger-full-access` 改成需审批预设；**必须等 T1–T8 全部落地后再改**（见 §7）。
+- **D2 — 默认预设改为需审批。** 把 `provision-inproc-profile.mjs:490-493` 的 `defaultPreset: danger-full-access` 改成需审批预设。原前提「等 T1–T8 全部落地后再改」已按落地现实调整：**T9 已先落地**（改为 `workspace-write` + `approval: ask`，见 §6 / §10），**T8（显式 fail-closed + UI 明示）仍开放**；提前落地的风险由 pre-execute gate 默认开启承担（gate `enabled: true`，写类工具 `ask`，见 §6）——缺审批通道时工具按 fail-closed 拒绝而非放行，`DSH_OPENTUI_APPROVAL_GATE=off` 为逃生门。
 - **D3 — 5 帧命名空间**：`ask.request` / `ask.cancel` / `ask.pending` / `ask.settled` / `ask.response`。帧名沿用 bridge 的 `turn.<verb>` 点分小写风格（`packages/bridge/src/index.ts:629,635,699,708,770`），不沿用宿主 `$events` 的斜杠风格（`approval/request`，`packages/shell/src/client/remote-waterfall.ts:1-35`）。
 - **D4 — first-wins 结算**：同一 ask 恰好结算一次，第二次应答一律拒绝，不改状态。
 - **D5 — turn 结束强制清场**：turn abort / 终态 / 会话 close / replace 时把所有 pending ask 一次性 cancel，迟到应答不得改写已终态 ask。
@@ -134,7 +134,7 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 ## 9. 风险（Risks）
 
 - **跨会话串帧**：多会话共用一条 bridge 连接，`approval/request` 按 `agentId` claim（`remote-waterfall.ts:128-131`）；bridge 必须按 `deliveredTo === sessionId` gate，否则 A 的审批会落到 B 的 turn。缓解：`onSessionEvent` 的 sessionId gate 模式（`packages/bridge/src/index.ts:739-743`）。
-- **`ctx.get('approval')` / scoped waterfall 在 bundle 内可用性未验证**：ticket `:150,205` 标 UNKNOWN；若 cordis 抛 `cannot get property ... without inject`，需复制 `resolveSessionController` 的 containment（`packages/bridge/src/index.ts:329-348`），否则桥插件整体 pending，连 `bridge.ping` 不可用。
+- **`approval` 服务获取方式（已按实现定稿，原风险 retired）**：ticket `:150,205` 的 UNKNOWN 前提是「用 `ctx.get('approval')` 取服务可能因未 inject 而抛错、令桥插件整体 pending」。实现未走该路径：`armAskAnswerers()`（`packages/bridge/src/index.ts:1193-1210`）改用 `ctx.on('approval/request', ...)` / `ctx.on('user-questions/request', ...)` 注册 answerer，并把注册整段包在 containment 内（缺 `ctx.on` 或注册抛错只记 warn，`bridge.ping` 及其余方法照常可用）。`ctx.get` 只在 `resolveSessionController` 等解析 helper 里做 `typeof ctx.get === 'function'` 守卫的 loose 探测，从不作为必填 inject（桥 `inject` 仍为 `['agents']`）。
 - **turn 清场竞态**：turn 终态与 ask 结算并发时可能重复广播或漏清。缓解：复用 `finalizeTurn` 的单终态帧语义（`packages/bridge/src/index.ts:689-733`）。
 - **审计/持久一致性**：journal 写与会话级权限摘要更新非原子，crash 间隙可能丢 `always` 效果。需在 T7 明确写入顺序（先摘要后 journal 或反之）并由验收固定。
 
@@ -156,6 +156,8 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 | T10 | 真机验收（审批卡可放行、提问可答、掉线/取消/并发/重连/compaction） | T9 |
 
 T9 是 D2 的落地点，已按 §6 的前提落地（commit `feat(profile): default to workspace-write + approval: ask with the pre-execute gate`）。
+
+> **编号对照（落地编号与本文表格不完全一致，不重排编号）**：§10 表格里的 T6「TUI 卡片」实际以 commit `2168604`（审批卡，标注 T5a）与 `08e17d8`（提问面板，标注 T5b）落地，未使用 T6 号；T4 拆为 T4-host（`7d54190`）/ T4-client（`5429cfb`）。表格保留原始 T1–T10 编号；**T8（显式 fail-closed + UI 明示）仍开放**，T7 已由 `f05b28c` 落地，T9 已由 `c7acf1e` 落地。
 
 ## 11. 验收标准（Acceptance）
 

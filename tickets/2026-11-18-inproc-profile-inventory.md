@@ -2,13 +2,32 @@
 
 日期：2026-11-18
 工作区：`/Users/qingguee/repo/dsh-opentui-wt-inproc`
-HEAD：`7e66b3f90eb2e308b4acf1dfc99dcbf69393d190`（`feat/inproc-bridge-20261118`）
+HEAD：`f05b28c`（本次文档对齐基准；原盘点快照为 `7e66b3f90eb2e308b4acf1dfc99dcbf69393d190`）
 性质：**只读调研**。未改任何源码 / profile 文件，未 commit。探测用的临时文件在 `/private/tmp/inproc-inventory-probe/`，处置见 §8。
 凭据：全程未打印任何密钥值；`.credentials.yaml`、`models-store.json` 等未读取内容。
 
 ---
 
-## 0. 结论先行
+## 0-landed. 已落地（截至 HEAD f05b28c，本次文档对齐回写）
+
+**结论：§0–§9 是 `7e66b3f` 时点的只读盘点；其后 provision 已接管 patch、生成 shim、默认预设改为需审批并装上 gate。下列"544 行 web 模板逐字拷贝 / 4 处硬差异 / `session.list` UNSUPPORTED / 默认 `danger-full-access`"均已失效。当前事实以本节为准，§0–§9 保留作历史推理记录。**
+
+| 旧盘点结论（本文位置） | 当前实现 | 来源（commit / 文件:行） |
+|---|---|---|
+| `cordis.patch.yml` 是 web 模板逐字拷贝（544 行，MD5 `54b66bf…`），provision 不生成它（§0.2、§1.1、表 ①） | provision 在 `DSH_OPENTUI_INPROC=1` 下接管生成 inproc-only 模板（7 步中的 `[6/7]`），带 `profileRevision` 标记；已知 web/opentui 模板副本被静默替换，手写文件备份 + WARN | `c8f891b`；`packages/shell/scripts/provision-inproc-profile.mjs:35-42,134-152,153-577,964-1008` |
+| 最小裁剪（方案 B）只是候选（§7） | 已落地为生成模板：删掉 `preset-opentui-append-system`、`ui-settings-general`、`web.searchProvider: anysearch`，保留 provider 表、`tool-ask-user`、`agent-default-model`、subagent 上限、tool-web 恢复 | `c8f891b`；`provision:153-574`（这三个残留串在脚本中均 0 命中） |
+| `sessionController` 未声明 / `ctx.get` 取不到，`session.list → UNSUPPORTED`（§0.4、表 ①、§5.1） | patch 声明真实 `dsh-api-session-controller` + 本地 shim（`@aiwayds/dsh-opentui-session-shim`，提供 `fileUploads`/`workspaceRegistry` 两个 no-op）；无需 web-app。`ctx.get('sessionController')` 的运行时问题由真实插件 + shim 解决；bridge `inject` 仍仅 `['agents']` | `c8f891b`、`2b5e2f1`、`7e66b3f`；`provision:562-574,583-676,1010-1058`；ADR-0010:89（真机 `session.list` 回真实会话行） |
+| 默认 `danger-full-access` / `approval: never`，U4 未验证（§0.3、§5.3、U4） | `defaultPreset: workspace-write`（`approval: ask`）；逃生门 `DSH_OPENTUI_APPROVAL_GATE=off` 恢复旧行为 | `c7acf1e`；`provision:505-520`；ADR-0011:115 |
+| 审批 gate 只是需求（§5.3 与 approval-trigger §4） | `dsh-opentui-approval-gate` 默认 armed：`tools {bash, write, edit, apply_patch}: ask`，写类工具返回 `{kind:'ask'}` 触发审批卡 | `19c2ab2`、`c7acf1e`；`provision:522-540`；`packages/bridge/src/approval-gate.ts` |
+| ask/审批通道缺口休眠（ask-permission-gap §5） | ask 双向通道已接通（审批 + 提问，含 fail-closed） | `4770ae1`、`7d54190`、`5429cfb`、`f05b28c`；见 `tickets/2026-11-18-ask-permission-gap.md` §0 |
+
+**U1–U5 更新**：U1（anysearch 让 web_search 失败）已随该配置行从生成模板删除而消失；U2 部分变化——bridge 已加只读帧 `model.currentSelection`（`19c2ab2`；`packages/bridge/src/index.ts:1795-1813`），但 `modelCatalog` 仍 UNSUPPORTED，`/model` 选择器未在 inproc 下实测；U3 已由真实插件 + shim 解决（见上表）；U4 已改需审批，但"写类工具真弹卡"仍需真机确认（T10 真机验收未做）；U5（mcp-context7 用途）本轮未查，仍未知。
+
+---
+
+## 0. 结论先行（历史快照 — 已被 §0-landed 取代）
+
+> 以下为 `7e66b3f` 时点的原始结论，保留作推理记录。
 
 1. **bundle 列表本身很干净**：`package.json` 只声明 2 个 bundle（`@deepseek-ai/dsh-base` + `@aiwayds/dsh-opentui-bridge`），组合后 103 个插件条目；对比 web profile 205 个、`opentui` 224 个、headless 101 个。**没有 `@deepseek-ai/dsh-web-app` bundle**。
 2. **"总打开 web profile" 的真相在 `cordis.patch.yml`，不在 bundle 列表**：`opentui-inproc/cordis.patch.yml`（544 行）与 web 模板 `opentui/cordis.patch.yml` **MD5 完全相同**（`54b66bf37fbbb93a6f9dd204a24473f7`）。`provision-inproc-profile.mjs` 从不生成这个文件，只写 `package.json` 和 bridge symlink。这个文件是逐字拷贝，里面带着为 web-app bundle 写的"补偿行"。

@@ -55,26 +55,25 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 
 **握手**：`bridge.hello` / `bridge.ping` 的响应携带 `protocolVersion`（当前 `1`）、`bridgeVersion` 与 `hostVersion`；`bridge.hello` 请求带 `params.protocolVersion` 时由 bridge 做版本比对，不一致返回 `VERSION_INCOMPATIBLE`（`detail` 含 `clientProtocolVersion` / `bridgeProtocolVersion` / `hostVersion`），对应 `OPEN_FAILED{VERSION_INCOMPATIBLE}`。
 
-**方法面**：
+**方法面**（以 `packages/bridge/src/index.ts:1777-1842` 的分发表为准，共 10 个）：
 
 - `bridge.ping`
 - `bridge.hello`（握手版本比对：入参 `params.protocolVersion`；响应 `protocolVersion` / `bridgeVersion` / `hostVersion`，不匹配返回 `VERSION_INCOMPATIBLE`）
+- `model.currentSelection`（只读；转写 `ctx.agentDefaultModel.currentSelection()`，供 seam 的 `currentModelSelection` 在首个 `session.open` 前读当前选择；由 `19c2ab2` 加入，协议版本不变）
 - `session.list`
 - `session.open({mode:"new"} | {mode:"resume", id})`
 - `session.close`
 - `session.send`
 - `turn.abort`
+- `ask.response`（ADR-0011 T3/T4：`{eventId, kind, verdict|answers, behavior?, escalation?}`；迟到/已结算的请求回 `ASK_TURN_ENDED` / `ASK_ALREADY_ANSWERED`）
 - `journal.replay`
 
-**事件**：
+**事件**（两种类别，均由 `emitEvent` 走同一 `event{type,payload}` 写通道）：
 
-- `turn.start`
-- `turn.token`
-- `turn.tool`
-- `turn.end`
-- `turn.error`
+- 会话/turn 生命周期：`turn.start`、`turn.token`、`turn.tool`、`turn.end`、`turn.error`（`packages/bridge/src/index.ts:847,853,858,917,926,993,1008`）
+- ask 通道（ADR-0011）：`ask.request`、`ask.cancel`、`ask.pending`、`ask.settled`（`packages/bridge/src/ask-frames.ts:24-27`；经 `packages/bridge/src/index.ts:750-830` 的 registry sink 转发）
 
-事件面当前**仅** `turn.*` 五种（`turn.start` / `turn.token` / `turn.tool` / `turn.end` / `turn.error`）。bridge 生命周期（连接断开、插件卸载等）**不通过事件面暴露**：seam 侧不消费此类事件，新增 emitter 只会产生无消费者的死代码。桥态 `DEAD` 的可恢复性由重新握手体现，而非某个 bridge 生命周期事件。
+bridge 自身生命周期（连接断开、插件卸载等）**仍不通过事件面暴露**：seam 侧不消费此类事件，新增 emitter 只会产生无消费者的死代码。桥态 `DEAD` 的可恢复性由重新握手体现，而非某个 bridge 生命周期事件。`ask.pending` 虽已定义帧类型且 seam 侧已消费（`bridge-session-seam.ts:973-983`），但 bridge 生产路径尚未下发重连快照（`AskRegistry.pendingSnapshot` 无生产调用点），见 ADR-0011 §8 与矩阵 §8。
 
 **并发**：单会话单在途 turn；并发 `session.send` 返回 `TURN_BUSY`（`detail.turnId` 为当前在途 turn id）。
 
@@ -117,10 +116,16 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - `TURN_BUSY`（`detail.turnId`）
 - `TURN_NOT_FOUND`（`turn.abort` 请求的 turnId 不是在途 turn、也非最近已终态 turn 时返回；`detail` 为 `{requestedTurnId, activeTurnId}`，其中 `activeTurnId` 为当前在途 turn id，无在途 turn 时为 `null`）
 - `SESSION_CLOSED`（`turn.error` 的 `code`：会话被 `session.open{replace:true}` 替换或被 `session.close` 关闭时，为仍在途的 turn 补发唯一的终态帧；该 turn 因所属会话结束而终止，既非模型失败，也非 `turn.abort` 的 `ABORTED`）
+- `ABORTED`（`turn.error` 的 `code`：`turn.abort` 成功取消时宿主 aborted 结果未带 code 的兜底；`packages/bridge/src/index.ts:598-601`）
+- `BLOCKED`（`turn.error` 的 `code`：turn 在进入模型步之前被阻断；`packages/bridge/src/index.ts:602`）
+- `INTERRUPTED`（`turn.error` 的 `code`：turn 被中断；`packages/bridge/src/index.ts:603`）
+- `FORKED`（`turn.error` 的 `code`：turn 因 fork 被关闭；`packages/bridge/src/index.ts:604`）
 - `BAD_PARAMS`
 - `BAD_FRAME`
 - `UNSUPPORTED`（未知方法；亦用于 `session.list` 服务缺失，`detail={capability,service}`）
 - `VERSION_INCOMPATIBLE`（亦可由握手版本比对与宿主映射得出）
+
+ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESSEE` / `ASK_ALREADY_ANSWERED` / `ASK_TURN_ENDED` / `ASK_INVALID_RESPONSE` / `ASK_DEADLINE_EXCEEDED` / `ASK_CHANNEL_UNAVAILABLE`），定义于 `packages/bridge/src/ask-frames.ts`（`ASK_ERROR_CODES` 为全集常量），语义由 ADR-0011 §5 管辖，不在此表重复。seam 侧 `turn()` 的 `TURN_REENTRANT` 是客户端本地错误（`packages/shell/src/client/bridge-session-seam.ts:699-705`），不是 bridge 协议帧 `code`。
 
 **终态 turnId 记忆与 close/replace**：bridge 用一个有界 FIFO（上限 64、oldest-first 淘汰）记住最近终态 turnId，使重复 `turn.abort` 在 id 仍在 FIFO 时返回 `{noop:true}`。`session.close` 与 `session.open{replace:true}` 的 `disposeBinding` 会 `terminalTurnIds.clear()` 清空该 FIFO；因此 close/replace 之前刚终态的 turn，其 id 在 close/replace 后不再被记忆，重试 `turn.abort` 返回 `TURN_NOT_FOUND`（而非 `{noop:true}`）。FIFO 自然淘汰旧 id 也有同样效果。
 
@@ -131,6 +136,8 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - 不改任何持久化文件 —— 迁移只发生在内存中的 decorate 步骤。
 
 ## append section 契约
+
+> **状态说明（截至 f05b28c）**：本节是 M3 的**验收规格**，bridge 路径尚未实现 append 注入。当前启动失败文本明确写"inproc bridge mode has no append-system support in 0.22.0 (M3 section not landed); presets are standard only."（`packages/shell/scripts/lib/bridge-failfast-text.mjs` 的 `BRIDGE_NO_APPEND_NOTICE`）；`tickets/2026-11-18-m3-append-inventory.md:14` 结论同为"inproc（bridge）路径 append-system 根本没有注入通道，内容不生效"。因此以下各条是"落地时必须满足"的约束，不得当作已实现行为引用。
 
 - **scope 注册，禁 global**：section 必须以 scope 注册，不得注册为 global。
 - **`order: 200`**：与 tui-pi 共装时会并列；tie-break 语义须由握手测试钉死（不能靠注册顺序的偶然行为）。
