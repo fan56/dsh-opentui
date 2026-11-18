@@ -58,14 +58,17 @@ const keepHostPackagesExternal = {
   },
 }
 
-const result = await Bun.build({
-  entrypoints: [join(bridgeDir, "src", "index.ts")],
+// Two entrypoints from the same package: the stdio bridge (index.ts) and the
+// standalone pre-execute approval gate (approval-gate.ts). Both are loaded by
+// the host as cordis plugins; the gate gets its own row in the inproc profile
+// patch so it can be enabled independently of the bridge. The same
+// external/plugin rules apply to both (no @deepseek-ai code is ever copied).
+const sharedBuild = {
   target: "node",
   format: "esm",
   outdir: outDir,
-  naming: { entry: "index.[ext]" },
   // Known host-closure specifiers, spelled out for the record (the bridge may
-  // stop importing a given one, but the rule stays); the plugin above is the
+  // stop importing a given one, but the rule stays); the plugin is the
   // prefix-based guard for any future @deepseek-ai/* import.
   external: [
     "@deepseek-ai/dsh-base",
@@ -74,12 +77,23 @@ const result = await Bun.build({
     "@deepseek-ai/dsh-llm/message",
   ],
   plugins: [keepHostPackagesExternal],
+}
+const main = await Bun.build({
+  ...sharedBuild,
+  entrypoints: [join(bridgeDir, "src", "index.ts")],
+  naming: { entry: "index.[ext]" },
+})
+const gate = await Bun.build({
+  ...sharedBuild,
+  entrypoints: [join(bridgeDir, "src", "approval-gate.ts")],
+  naming: { entry: "approval-gate.[ext]" },
 })
 
-if (!result.success) {
-  for (const log of result.logs) console.error(log)
+if (!main.success || !gate.success) {
+  for (const log of [...main.logs, ...gate.logs]) console.error(log)
   process.exit(1)
 }
+console.log(`[build-bridge] built approval gate bundle at ${join(outDir, "approval-gate.js")}`)
 
 // The bundle is shipped as an installable directory: package.json declares
 // main/exports as ./index.js, so it must live alongside the JS in dist/bridge.

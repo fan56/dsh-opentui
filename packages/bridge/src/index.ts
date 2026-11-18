@@ -1693,6 +1693,25 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       replyOk(req.id, { protocolVersion: PROTOCOL_VERSION, bridgeVersion, hostVersion })
       return
     }
+    if (req.method === 'model.currentSelection') {
+      // Read-only host route, transcribed from `ctx.agentDefaultModel.currentSelection()`.
+      // The client seam reads this at boot (`bridge-session-seam.currentModelSelection`)
+      // before staging the first session.open; without it the inproc client aborts
+      // boot with BridgeProtocolError(UNSUPPORTED) and never opens a session (so the
+      // approval gate can never be reached). No new protocol version: this is an
+      // additive read method on the existing v1 dispatch.
+      const defaults = resolveDefaultModel(ctx)
+      if (defaults === undefined) {
+        replyError(req.id, 'UNSUPPORTED', 'agentDefaultModel service unavailable')
+        return
+      }
+      try {
+        replyOk(req.id, defaults.currentSelection())
+      } catch (err) {
+        replyError(req.id, 'INTERNAL', err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
     if (req.method === 'session.list') {
       await handleListSessions(req)
       return

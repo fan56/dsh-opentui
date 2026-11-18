@@ -8,11 +8,15 @@
     ".": {
       "default": "./index.js"
     },
+    "./approval-gate": {
+      "default": "./approval-gate.js"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "index.js",
+    "approval-gate.js",
     "cordis.patch.yml"
   ],
   "scripts": {

@@ -517,6 +517,22 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
         approval: never
     defaultPreset: danger-full-access
 
+# Pre-execute approval gate. Registered with an EMPTY policy by default so the
+# inproc profile stays byte-for-byte as permissive as before: the preset above
+# remains danger-full-access + approval never (T9 is a separate step). The gate
+# is independently enabled by setting config.tools in a scratch profile, e.g.
+#   tools: {bash: ask, write: ask, edit: ask, apply_patch: ask}
+# Once enabled it returns {kind:'ask'} for those tools, driving the host's
+# approval.request -> bridge answerer -> ask.request -> TUI approval card.
+# See tickets/2026-11-18-approval-trigger-mechanism.md.
+- insert:
+    - id: dsh-opentui-approval-gate
+      name: '@aiwayds/dsh-opentui-bridge/approval-gate'
+      config:
+        enabled: true
+        reason: 'Write operations require human approval'
+        tools: {}
+
 # MCP (managed by provision-opentui-profile.mjs — the adapter's mcp_list/mcp_call need a client row; context7 needs no key and a failed/offline connection is non-fatal):
 - insert:
     - id: mcp-context7
