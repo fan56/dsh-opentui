@@ -1513,7 +1513,9 @@ export async function bootClientV2(options: {
 		initialSessionId = launchArgs.sessionId
 	} else {
 		const autoResume = await runAutoResume(
-			{ config: seam.configLoad(), launch: launchArgs, workspace },
+			// configLoad is OPTIONAL in SessionSeam: a seam without it must
+			// degrade to "no stored override", never crash the render path.
+			{ config: seam.configLoad?.() ?? {}, launch: launchArgs, workspace },
 			{
 				listSessions: (limit) => seam.listSessions(limit),
 				resumeSession: (id) => seam.resumeSession(id),
@@ -1535,7 +1537,7 @@ export async function bootClientV2(options: {
 	// One agentsHome resolution shared by BOTH skill surfaces: the slash
 	// palette boot scan below and the /skills manager panel (gap C3) — the
 	// explicit-config precedence must not diverge between them.
-	const agentsHomeConfig = seam.configLoad().agentsHome as string | undefined
+	const agentsHomeConfig = (seam.configLoad?.() ?? {}).agentsHome as string | undefined
 	const agentsHomeForSkills = resolveAgentsHome(agentsHomeConfig)
 	// P2-2 boundary warning (skills-source.ts): a set-but-blank DSH_AGENTS_HOME
 	// — or a blank config `agentsHome`, which penetrates the host's `??` chain
@@ -1567,9 +1569,11 @@ export async function bootClientV2(options: {
 	// not a stored choice. Fresh profiles fall to the default naturally.
 	// Best-effort: a failed persist still applies the theme for this boot.
 	const envTheme = process.env[shared.ENV_THEME]
-	const workspaceConfig = seam.workspaceConfig()
+	// configRaw / workspaceConfig are OPTIONAL seam faces (same contract as
+	// configLoad above): a seam without them degrades to "no stored layer".
+	const workspaceConfig = seam.workspaceConfig?.() ?? {}
 	const migration = shared.skinMigrationPlan({
-		profileConfig: seam.configRaw(),
+		profileConfig: seam.configRaw?.() ?? {},
 		workspaceConfig,
 		envTheme,
 	})

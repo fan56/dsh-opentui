@@ -467,6 +467,52 @@ describe("sync degrade values + logs", () => {
 })
 
 // ---------------------------------------------------------------------------
+// CONFIG faces — optional SessionSeam members v2-entry.tsx calls UNGUARDED at
+// boot (P0 crash). No bridge config frame exists, so D3 sync degrade to {} +
+// once-only log; never a throw, never a fabricated config.
+// ---------------------------------------------------------------------------
+
+describe("config faces (configLoad/configRaw/workspaceConfig)", () => {
+	test("all three exist, return a contract-valid {} and log a degrade (never throw)", () => {
+		const h = makeHarness()
+		// The exact P0 regression: these were absent → "seam.configLoad is not a function".
+		expect(typeof h.seam.configLoad).toBe("function")
+		expect(typeof h.seam.configRaw).toBe("function")
+		expect(typeof h.seam.workspaceConfig).toBe("function")
+		expect(() => h.seam.configLoad()).not.toThrow()
+		expect(h.seam.configLoad()).toEqual({})
+		expect(h.seam.configRaw()).toEqual({})
+		expect(h.seam.workspaceConfig()).toEqual({})
+		expect(h.warnFor("configLoad")).toHaveLength(1)
+		expect(h.warnFor("configRaw")).toHaveLength(1)
+		expect(h.warnFor("workspaceConfig")).toHaveLength(1)
+		// Degrade reason is honest: no fabricated config layer is claimed.
+		expect(h.warnFor("configLoad")[0]?.args.map(String).join(" ")).toContain("no config frame")
+	})
+
+	test("repeated boot reads log once per class (idle polling / multi-call sites)", () => {
+		const h = makeHarness()
+		// v2-entry.tsx calls configLoad 6x per boot (auto-resume, agentsHome,
+		// cacheHitMode, hints, activity, i18n) — exactly ONE warn, not six.
+		for (let i = 0; i < 6; i++) {
+			h.seam.configLoad()
+			h.seam.configRaw()
+			h.seam.workspaceConfig()
+		}
+		expect(h.warnFor("configLoad")).toHaveLength(1)
+		expect(h.warnFor("configRaw")).toHaveLength(1)
+		expect(h.warnFor("workspaceConfig")).toHaveLength(1)
+	})
+
+	test("the degraded {} is a fresh object (callers cannot poison later reads)", () => {
+		const h = makeHarness()
+		const first = h.seam.configLoad()
+		first.poisoned = true
+		expect(h.seam.configLoad()).toEqual({})
+	})
+})
+
+// ---------------------------------------------------------------------------
 // ASYNC members: UNSUPPORTED errors (never fake success)
 // ---------------------------------------------------------------------------
 

@@ -83,12 +83,18 @@ import {
 import { homedir } from 'node:os'
 import { dirname, join, resolve as resolvePath } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// P0 fail-fast: ONE text source shared with the handshake path in
+// src/client/seam-bootstrap.ts. Both ProvisionError (fingerprint) and
+// BridgeBootstrapError (handshake) now carry the same three elements.
+import {
+  BRIDGE_NO_APPEND_NOTICE,
+  BRIDGE_REPAIR_HINT,
+} from './lib/bridge-failfast-text.mjs'
 
 const PREFIX = 'dsh-opentui(inproc): '
 const PROFILE = 'opentui-inproc'
 const BRIDGE_NAME = '@aiwayds/dsh-opentui-bridge'
 const BUNDLES = ['@deepseek-ai/dsh-base', BRIDGE_NAME]
-const REPAIR_HINT = 'Run `dsh-opentui --repair-bridge` to rebuild the bridge symlink / manifest (it fixes links, not corrupted artifact contents).'
 
 // --- T4 lock tuning (same-machine only) -------------------------------------
 const LOCK_NAME = '.provision.lock'
@@ -625,8 +631,17 @@ class ProvisionError extends Error {
 
 // Throw instead of process.exit so a `finally` block can always release the
 // lock. The top-level handler sets a non-zero exit code after cleanup.
+//
+// P0 fail-fast: EVERY failure is self-contained with all three elements.
+// Element 1 (diagnosis, incl. the identity guard's expected/actual lines) is
+// the caller's `message`/`detail`; elements 2 + 3 now come from the ONE shared
+// source so the fingerprint path can never again omit the "no append" notice
+// that the handshake path alone used to print.
 function fail(message, detail = '') {
-  throw new ProvisionError(message, detail)
+  const fullDetail = [detail, BRIDGE_REPAIR_HINT, BRIDGE_NO_APPEND_NOTICE]
+    .filter(Boolean)
+    .join('\n')
+  throw new ProvisionError(message, fullDetail)
 }
 
 // Synchronous sleep: the whole script is synchronous, so a blocking wait is
@@ -814,7 +829,7 @@ function verifyBridgeIdentity() {
   ) {
     fail(
       'build-time bridge fingerprint is missing or malformed',
-      `Expected ${fingerprintPath} with string fields name/version/sha256. Rebuild with: bun scripts/build-bridge.mjs\n${REPAIR_HINT}`,
+      `Expected ${fingerprintPath} with string fields name/version/sha256. Rebuild with: bun scripts/build-bridge.mjs`,
     )
   }
 
@@ -824,7 +839,7 @@ function verifyBridgeIdentity() {
   } catch (error) {
     fail(
       `bridge symlink cannot be resolved: ${linkPath}`,
-      `${error?.message ?? error}\n${REPAIR_HINT}`,
+      `${error?.message ?? error}`,
     )
   }
 
@@ -849,7 +864,7 @@ function verifyBridgeIdentity() {
     const detail = mismatches.map((m) => `  ${m.field}: expected "${m.expected}", actual "${m.actual}"`).join('\n')
     fail(
       `bridge identity check failed — ${fields} mismatch`,
-      `Resolved bridge: ${resolved}\n${detail}\n${REPAIR_HINT}`,
+      `Resolved bridge: ${resolved}\n${detail}`,
     )
   }
 

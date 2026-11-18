@@ -29,6 +29,17 @@ import {
 	type BridgeSeamContext,
 	type BridgeTransport,
 } from "./bridge-session-seam.ts"
+// P0 fail-fast: the three-element text has ONE source (scripts/lib/...). This
+// handshake path and the provision-script fingerprint path both import it, so
+// the "no append" notice can never diverge between them again.
+import {
+	BRIDGE_NO_APPEND_NOTICE,
+	BRIDGE_REPAIR_COMMAND,
+	formatBridgeFailFastMessage,
+} from "../../scripts/lib/bridge-failfast-text.mjs"
+
+export { BRIDGE_NO_APPEND_NOTICE, BRIDGE_REPAIR_COMMAND }
+export { BRIDGE_REPAIR_HINT } from "../../scripts/lib/bridge-failfast-text.mjs"
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -36,13 +47,6 @@ import {
 
 /** `bridge.hello` protocol version this client speaks (ADR-0010:56). */
 export const BRIDGE_PROTOCOL_VERSION = 1
-
-/** Concrete repair command carried by every bridge bootstrap error (T11 #2). */
-export const BRIDGE_REPAIR_COMMAND = "dsh-opentui --repair-bridge"
-
-/** The "no append in this mode" half of the error text (T11 #3). */
-export const BRIDGE_NO_APPEND_NOTICE =
-	"inproc bridge mode has no append-system support in 0.22.0 (M3 section not landed); presets are standard only."
 
 // ---------------------------------------------------------------------------
 // Pure seam selection
@@ -86,13 +90,13 @@ export interface BridgeBootstrapErrorOptions {
 	repairCommand?: string
 }
 
-/** Compose the three elements into a single, copy-pasteable message. */
+/** Compose the three elements into a single, copy-pasteable message. The
+ *  repair command + no-append lines come from the shared fail-fast source. */
 export function formatBridgeBootstrapMessage(options: BridgeBootstrapErrorOptions): string {
-	return [
+	return formatBridgeFailFastMessage(
 		`dsh-opentui inproc bridge seam failed [${options.code}]: ${options.diagnosis}`,
-		`Fix: ${options.repairCommand ?? BRIDGE_REPAIR_COMMAND}`,
-		BRIDGE_NO_APPEND_NOTICE,
-	].join("\n")
+		options.repairCommand ?? BRIDGE_REPAIR_COMMAND,
+	)
 }
 
 /**

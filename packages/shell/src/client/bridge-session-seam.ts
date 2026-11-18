@@ -452,6 +452,37 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 	}
 
+	// ----- config faces (optional seam members — D3 degrade, never throw) --
+	//
+	// The bridge host dispatches ONLY bridge.hello/ping, session.{list,open,
+	// send,close}, turn.abort and journal.replay (packages/bridge/src/index.ts
+	// handleLine). There is no config frame, so the merged config, its raw
+	// profile layer and the workspace overlay are not reachable over this seam.
+	// These three OPTIONAL `SessionSeam` members are nevertheless called
+	// UNGUARDED by v2-entry.tsx at boot (configLoad/configRaw/workspaceConfig);
+	// omitting them crashed the default inproc path ("seam.configLoad is not a
+	// function"). Per ticket §6 D3 a sync member with no capability returns a
+	// contract-valid degraded value + a once-only log — NEVER throws, NEVER a
+	// fabricated config. The view already treats `{}` as "no stored override"
+	// (lastMessage cacheHitMode, default skin, empty hints/i18n), so `{}` is the
+	// honest degrade. Reading the files locally would duplicate the host's
+	// mergeConfig layering in a second implementation (ticket hard constraint 3)
+	// and would desync the moment the host mutates its overlay cache.
+	configLoad(): Record<string, unknown> {
+		this.#degradeOnce("configLoad", "no config frame on the in-process bridge; returning {} (no stored override)")
+		return {}
+	}
+
+	configRaw(): Record<string, unknown> {
+		this.#degradeOnce("configRaw", "no config frame on the in-process bridge; returning {} (no profile layer)")
+		return {}
+	}
+
+	workspaceConfig(): Record<string, unknown> {
+		this.#degradeOnce("workspaceConfig", "no config frame on the in-process bridge; returning {} (no workspace overlay)")
+		return {}
+	}
+
 	// ----- async members (D3: UNSUPPORTED error, never fake success) --------
 
 	async listSessions(limit?: number): Promise<SeamSessionSummary[]> {
