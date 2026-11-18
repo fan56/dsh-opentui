@@ -8,6 +8,13 @@
  * The child-process factory is injected so the framing/correlation/error
  * paths are unit-testable without a real dsh host. Real-host spawning is
  * covered by the separate real-machine acceptance task.
+ *
+ * A3 bridge-link state — ONE machine, no parallel flags:
+ *   initializing → ready              (first successful reply, first-boot path unchanged)
+ *   * → dead                          (child exit / spawn error)
+ *   dead → recovering → handshake → ready   (manual recover(), all three checks pass)
+ *   dead → recovering → handshake → dead    (respawn or handshake failure)
+ *   * → closed                        (terminal; recover() refused)
  */
 
 import { spawn as nodeSpawn } from "node:child_process"
@@ -19,6 +26,11 @@ import {
 	type BridgeEventFrame,
 	type BridgeTransport,
 } from "./bridge-session-seam.ts"
+import {
+	BRIDGE_PROTOCOL_VERSION,
+	BridgeBootstrapError,
+	verifyRecoveryHandshake,
+} from "./seam-bootstrap.ts"
 
 /** The minimal child-process surface the transport needs. */
 export interface SpawnedBridgeChild {
@@ -40,6 +52,17 @@ export type BridgeSpawnFn = (
 	options: { env: NodeJS.ProcessEnv; stdio: ["pipe", "pipe", "pipe"] },
 ) => SpawnedBridgeChild
 
+/** A3: the transport's bridge-link state. `recovering` is a transient value of
+ *  this same machine (not a second state machine); `dead`/`closed` replace the
+ *  old implicit `#deadError` / `#closed` flags as the authority for guards. */
+export type BridgeTransportState =
+	| "initializing"
+	| "handshake"
+	| "ready"
+	| "recovering"
+	| "dead"
+	| "closed"
+
 export interface StdioBridgeTransportOptions {
 	/** dsh binary on PATH (default: "dsh"). */
 	dshBin?: string
@@ -53,6 +76,12 @@ export interface StdioBridgeTransportOptions {
 	spawnFn?: BridgeSpawnFn
 	/** Per-request reply deadline (default 30s). */
 	replyTimeoutMs?: number
+	/** A3: recover() refuses calls within this window after DEAD (default 5s). */
+	recoverCooldownMs?: number
+	/** A3: injectable clock for the cooldown (default: Date.now). */
+	now?: () => number
+	/** A3: notified on every state transition (e.g. to paint "recovering"). */
+	onStateChange?: (state: BridgeTransportState) => void
 }
 
 interface PendingRequest {
@@ -66,6 +95,33 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 		? (value as Record<string, unknown>)
 		: {}
 
+/** Turn a recovery-path throw into a structured DEAD cause. Handshake-check
+ *  failures (`BridgeBootstrapError`) are PERMANENT and carry the concrete
+ *  mismatched check; respawn/timeout failures stay retryable. */
+function recoveryCause(err: unknown, phase: "spawn" | "handshake"): BridgeDeadCause {
+	if (err instanceof BridgeBootstrapError) {
+		return {
+			stage: "handshake",
+			code: null,
+			signal: null,
+			message: err.diagnosis,
+			recoverability: "permanent",
+			mismatches: [err.code],
+		}
+	}
+	if (err instanceof BridgeProtocolError && err.code === "BRIDGE_DEAD") {
+		const detail = asRecord(err.detail)
+		return {
+			stage: phase,
+			code: typeof detail.code === "number" ? detail.code : null,
+			signal: typeof detail.signal === "string" ? detail.signal : null,
+			message: err.message,
+		}
+	}
+	const message = err instanceof Error ? err.message : String(err)
+	return { stage: phase, code: null, signal: null, message }
+}
+
 export class StdioBridgeTransport implements BridgeTransport {
 	readonly #opts: StdioBridgeTransportOptions
 	#child: SpawnedBridgeChild | undefined
@@ -75,9 +131,16 @@ export class StdioBridgeTransport implements BridgeTransport {
 	#stdoutBuffer = ""
 	#stderrTail: string[] = []
 	#deadError: BridgeProtocolError | undefined
-	/** A1: first (permanent) structured DEAD cause. */
+	/** Current structured DEAD cause (A1, updated by A3 recover failures). */
 	#deadCause: BridgeDeadCause | undefined
-	#closed = false
+	/** A3: the single source of truth for bridge-link state. */
+	#state: BridgeTransportState = "initializing"
+	/** A3: number of DEAD transitions (a failed respawn increments it). */
+	#attempts = 0
+	/** A3: when the current DEAD began, for the 5s manual-retry cooldown. */
+	#deadAt: number | undefined
+	/** A3: stale-child guard — late events from a replaced child are ignored. */
+	#connectionGeneration = 0
 
 	constructor(options: StdioBridgeTransportOptions = {}) {
 		this.#opts = options
@@ -88,11 +151,26 @@ export class StdioBridgeTransport implements BridgeTransport {
 		return this.#stderrTail.slice(-12).join("\n")
 	}
 
-	/** A1: the structured reason the bridge entered DEAD, or undefined if alive.
-	 *  Set once (permanent, like #deadError) and readable synchronously by the
-	 *  upper layers. */
+	/** A3: the current bridge-link state (read-only). */
+	get state(): BridgeTransportState {
+		return this.#state
+	}
+
+	/** A3: number of DEAD transitions, including failed recovery attempts. */
+	get attempts(): number {
+		return this.#attempts
+	}
+
+	/** The structured reason the bridge is currently DEAD, or undefined while
+	 *  alive/recovering. A successful recover() clears it. */
 	get deadCause(): BridgeDeadCause | undefined {
 		return this.#deadCause
+	}
+
+	#setState(next: BridgeTransportState): void {
+		if (this.#state === next) return
+		this.#state = next
+		this.#opts.onStateChange?.(next)
 	}
 
 	#spawn(): SpawnedBridgeChild {
@@ -111,20 +189,30 @@ export class StdioBridgeTransport implements BridgeTransport {
 			env,
 			stdio: ["pipe", "pipe", "pipe"],
 		})
+		// A3: respawn creates a new child on the SAME path with the same argv/env.
+		// Generation-tagged listeners keep a dying predecessor's late exit/error
+		// frames from dragging a fresh RECOVERING connection back to DEAD.
+		const generation = ++this.#connectionGeneration
 		this.#child = child
-		child.stdout.on("data", (chunk) => this.#onStdout(chunk))
+		child.stdout.on("data", (chunk) => {
+			if (generation !== this.#connectionGeneration) return
+			this.#onStdout(chunk)
+		})
 		child.stderr.on("data", (chunk) => {
+			if (generation !== this.#connectionGeneration) return
 			const text = typeof chunk === "string" ? chunk : chunk.toString("utf8")
 			this.#stderrTail.push(...text.split("\n").filter(Boolean))
 			if (this.#stderrTail.length > 64) this.#stderrTail.splice(0, this.#stderrTail.length - 64)
 		})
 		child.on("exit", (code, signal) => {
+			if (generation !== this.#connectionGeneration) return
 			const exitCode = typeof code === "number" ? code : null
 			const exitSignal = typeof signal === "string" ? signal : null
 			const message = `bridge host exited (code ${String(code)}${exitSignal === null ? "" : `, signal ${exitSignal}`})`
 			this.#onDead(message, { stage: "runtime", code: exitCode, signal: exitSignal, message })
 		})
 		child.on("error", (err) => {
+			if (generation !== this.#connectionGeneration) return
 			const message = `bridge host error: ${err instanceof Error ? err.message : String(err)}`
 			this.#onDead(message, { stage: "spawn", code: null, signal: null, message })
 		})
@@ -157,6 +245,10 @@ export class StdioBridgeTransport implements BridgeTransport {
 			this.#pending.delete(rec.id)
 			clearTimeout(pending.timer)
 			if (rec.ok === true) {
+				// First-boot path: the first successful reply is READY. During
+				// recovery the state is `handshake`; recover() promotes to READY
+				// only after all three handshake checks pass.
+				if (this.#state === "initializing") this.#setState("ready")
 				pending.resolve(rec.result)
 			} else {
 				const error = asRecord(rec.error)
@@ -189,6 +281,12 @@ export class StdioBridgeTransport implements BridgeTransport {
 	}
 
 	#onDead(reason: string, cause: BridgeDeadCause): void {
+		const firstDead = this.#state !== "dead" && this.#state !== "closed"
+		if (firstDead) {
+			this.#deadAt = (this.#opts.now ?? Date.now)()
+			this.#attempts += 1
+		}
+		if (this.#state !== "closed") this.#setState("dead")
 		if (this.#deadError === undefined) {
 			const tail = this.diagnostics ? ` (stderr tail: ${this.diagnostics})` : ""
 			this.#deadError = new BridgeProtocolError("BRIDGE_DEAD", `${reason}${tail}`, cause)
@@ -203,8 +301,23 @@ export class StdioBridgeTransport implements BridgeTransport {
 	}
 
 	request(method: string, params?: Record<string, unknown>): Promise<unknown> {
+		if (this.#state === "closed") {
+			return Promise.reject(new BridgeProtocolError("BRIDGE_CLOSED", "bridge transport is closed"))
+		}
+		if (this.#state === "recovering" || this.#state === "handshake") {
+			return Promise.reject(
+				new BridgeProtocolError("BRIDGE_RECOVERING", "bridge transport is recovering; request rejected", {
+					state: this.#state,
+				}),
+			)
+		}
 		if (this.#deadError !== undefined) return Promise.reject(this.#deadError)
-		if (this.#closed) return Promise.reject(new BridgeProtocolError("BRIDGE_CLOSED", "bridge transport is closed"))
+		return this.#sendRequest(method, params)
+	}
+
+	/** Framing/correlation only — no state guard. Used by the first-boot path
+	 *  through request() and by recover() for its own handshake. */
+	#sendRequest(method: string, params?: Record<string, unknown>): Promise<unknown> {
 		const child = this.#spawn()
 		const id = this.#nextId++
 		return new Promise<unknown>((resolve, reject) => {
@@ -228,6 +341,72 @@ export class StdioBridgeTransport implements BridgeTransport {
 		})
 	}
 
+	/**
+	 * A3: manual recovery from DEAD on the SAME transport instance (the session
+	 * identity and the `onEvent` subscription survive). Guards: DEAD only, not
+	 * CLOSED, and outside the 5s cooldown. The sequence is observable through
+	 * `state` / `onStateChange`: recovering → handshake → ready, or back to dead.
+	 * Ordinary `request()` calls are rejected with BRIDGE_RECOVERING meanwhile;
+	 * disabling the composer is the UI layer's job, not this transport's.
+	 */
+	async recover(): Promise<void> {
+		if (this.#state === "closed") {
+			throw new BridgeProtocolError("BRIDGE_CLOSED", "bridge transport is closed; recover() refused")
+		}
+		if (this.#state !== "dead") {
+			throw new BridgeProtocolError(
+				"BRIDGE_NOT_DEAD",
+				`recover() requires DEAD state (current: ${this.#state})`,
+				{ state: this.#state },
+			)
+		}
+		const now = this.#opts.now ?? Date.now
+		const cooldown = this.#opts.recoverCooldownMs ?? 5_000
+		const elapsed = this.#deadAt === undefined ? cooldown : now() - this.#deadAt
+		if (elapsed < cooldown) {
+			throw new BridgeProtocolError(
+				"BRIDGE_RECOVERY_COOLDOWN",
+				`recover() cooling down; retry in ${cooldown - elapsed}ms`,
+				{ remainingMs: cooldown - elapsed },
+			)
+		}
+
+		this.#setState("recovering")
+		this.#deadError = undefined
+		this.#deadCause = undefined
+		this.#connectionGeneration++
+		// Per-connection state belongs to the dead child; drop all of it before
+		// the respawn so a stale reply can never settle a new request.
+		for (const [id, pending] of [...this.#pending]) {
+			this.#pending.delete(id)
+			clearTimeout(pending.timer)
+			pending.reject(new BridgeProtocolError("BRIDGE_RECOVERING", "bridge recovering; in-flight request dropped"))
+		}
+		this.#nextId = 1
+		this.#stdoutBuffer = ""
+
+		try {
+			try {
+				this.#child?.kill("SIGTERM")
+			} catch {
+				/* best-effort teardown of a possibly-still-alive mismatched child */
+			}
+			this.#child = undefined
+			this.#spawn()
+			this.#setState("handshake")
+			const hello = await this.#sendRequest("bridge.hello", { protocolVersion: BRIDGE_PROTOCOL_VERSION })
+			verifyRecoveryHandshake(hello, BRIDGE_PROTOCOL_VERSION)
+		} catch (err) {
+			// A child error/exit already drove the machine to DEAD (or CLOSED);
+			// its cause is the authoritative one — do not overwrite it.
+			if (this.#state === "dead" || this.#state === "closed") throw err
+			const cause = recoveryCause(err, this.#state === "handshake" ? "handshake" : "spawn")
+			this.#onDead(cause.message, cause)
+			throw err
+		}
+		this.#setState("ready")
+	}
+
 	onEvent(listener: (event: BridgeEventFrame) => void): () => void {
 		this.#listeners.add(listener)
 		return () => {
@@ -235,10 +414,12 @@ export class StdioBridgeTransport implements BridgeTransport {
 		}
 	}
 
-	/** Kill the child and fail all in-flight requests. Idempotent. */
+	/** Kill the child and fail all in-flight requests. Idempotent. Terminal:
+	 *  recover() is refused after close(). */
 	close(): void {
-		if (this.#closed) return
-		this.#closed = true
+		if (this.#state === "closed") return
+		this.#connectionGeneration++
+		this.#setState("closed")
 		this.#onDead("bridge transport closed", {
 			stage: "closed",
 			code: null,

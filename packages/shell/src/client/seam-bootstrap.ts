@@ -39,6 +39,9 @@ import {
 	BRIDGE_REPAIR_COMMAND,
 	formatBridgeFailFastMessage,
 } from "../../scripts/lib/bridge-failfast-text.mjs"
+// A3: the host-compat window has ONE source (the provisioning gate). Reuse it
+// in the recovery handshake instead of a second literal range in the client.
+import { HOST_PEER_RANGE, isHostVersionSupported } from "../../scripts/lib/host-compat.mjs"
 
 export { BRIDGE_APPEND_PRESET_NOTICE, BRIDGE_REPAIR_COMMAND }
 export { BRIDGE_REPAIR_HINT } from "../../scripts/lib/bridge-failfast-text.mjs"
@@ -186,6 +189,33 @@ export function verifyBridgeFingerprint(
 		})
 	}
 	return { protocolVersion, bridgeVersion, hostVersion }
+}
+
+/**
+ * A3: the three recovery-handshake checks in one place — protocolVersion,
+ * fingerprint fields, and host-compat. The first two reuse `verifyBridgeFingerprint`
+ * verbatim (the first-boot path keeps its existing two checks and is NOT
+ * changed); the third adds the host window that provisioning already enforces
+ * at startup, so a respawned host on an incompatible version is refused here
+ * with a readable, classified cause instead of silently drifting.
+ *
+ * Any mismatch throws `BridgeBootstrapError` whose `code` names the concrete
+ * failed check — the transport turns that into a PERMANENT `BridgeDeadCause`.
+ */
+export function verifyRecoveryHandshake(
+	hello: unknown,
+	expectedProtocolVersion: number = BRIDGE_PROTOCOL_VERSION,
+): BridgeFingerprint {
+	const fingerprint = verifyBridgeFingerprint(hello, expectedProtocolVersion)
+	if (!isHostVersionSupported(fingerprint.hostVersion)) {
+		throw new BridgeBootstrapError({
+			code: "HOST_INCOMPATIBLE",
+			diagnosis:
+				`hostVersion ${fingerprint.hostVersion} is outside the supported window ${HOST_PEER_RANGE} ` +
+				`(bridge ${fingerprint.bridgeVersion}, client protocol ${expectedProtocolVersion})`,
+		})
+	}
+	return fingerprint
 }
 
 // ---------------------------------------------------------------------------

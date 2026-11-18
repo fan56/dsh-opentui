@@ -75,8 +75,9 @@ export interface BridgeEventFrame {
  */
 export type BridgeDeadStage = "spawn" | "handshake" | "runtime" | "closed"
 
-/** Structured cause captured the first time the transport enters DEAD (A1),
- *  republished on the existing `onEvent` pipeline as a `bridge.dead` frame. */
+/** Structured cause of the current DEAD transition (A1), republished on the
+ *  existing `onEvent` pipeline as a `bridge.dead` frame. A3: a successful
+ *  recover() clears it; a new DEAD (including a failed recovery) replaces it. */
 export interface BridgeDeadCause {
 	stage: BridgeDeadStage
 	/** Process exit code on a runtime exit; null when unavailable. */
@@ -85,6 +86,13 @@ export interface BridgeDeadCause {
 	signal: string | null
 	/** Short human-readable summary. */
 	message: string
+	/** A3: `permanent` means another recover() cannot help (a version /
+	 *  fingerprint / host-compat mismatch). Absent/`retriable` means a manual
+	 *  retry may succeed. */
+	recoverability?: "permanent" | "retriable"
+	/** A3: the concrete items that failed a recovery handshake, e.g.
+	 *  `["VERSION_INCOMPATIBLE"]`. */
+	mismatches?: string[]
 }
 
 /** The minimal client half of the stdio bridge, injected by the caller. */
@@ -441,6 +449,14 @@ function asDeadCause(value: unknown): BridgeDeadCause {
 		code: typeof r.code === "number" ? r.code : null,
 		signal: typeof r.signal === "string" ? r.signal : null,
 		message: typeof r.message === "string" ? r.message : "bridge connection lost",
+		// A3: keep the recovery classification attached to the SeamSessionEvent
+		// too, so the view can tell a permanent mismatch from a retryable drop.
+		...(r.recoverability === "permanent" || r.recoverability === "retriable"
+			? { recoverability: r.recoverability }
+			: {}),
+		...(Array.isArray(r.mismatches) && r.mismatches.every((m) => typeof m === "string")
+			? { mismatches: r.mismatches as string[] }
+			: {}),
 	}
 }
 
