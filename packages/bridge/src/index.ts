@@ -1502,3 +1502,48 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     logger.info('[dsh-opentui-bridge] host graceful shutdown: fiber disposed')
   }, 'dsh-opentui-bridge: stdio')
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0011 T1/T2 — ask channel skeleton exports.
+// Type/value re-exports only: the dispatch switch above is untouched. T3 will
+// import the request method + event names here and wire them into `apply()`.
+// ---------------------------------------------------------------------------
+export {
+  ASK_ERROR_CODES,
+  ASK_FRAME_TYPES,
+  isAskErrorCode,
+  validateAskRequest,
+  validateAskCancel,
+  validateAskPending,
+  validateAskSettled,
+  validateAskResponse,
+  validateAskEvent,
+} from './ask-frames'
+export type {
+  AskFrameType,
+  AskEventType,
+  AskErrorCode,
+  AskKind,
+  AskOutcome,
+  AskVerdict,
+  AskBehavior,
+  AskCancelReason,
+  AskOption,
+  AskQuestion,
+  AskAnswer,
+  AskRequestPayload,
+  AskCancelPayload,
+  AskPendingPayload,
+  AskSettledPayload,
+  AskResponseParams,
+  AskOutboundFrame,
+  ParseResult,
+} from './ask-frames'
+export { AskRegistry, askRegistry, createAskRegistry, turnIdOf } from './ask-registry'
+export type {
+  AskRegistryOptions,
+  AskRegistryLogger,
+  AskSettlement,
+  AnswerResult,
+  FailClosedInput,
+} from './ask-registry'
