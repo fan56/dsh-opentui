@@ -42,7 +42,7 @@ OPEN → CLOSING → OPENING(newId)        （/new）
 OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSION_INCOMPATIBLE}
 ```
 
-- `SESSION_LOCKED{holder}` 必须携带当前持有者标识，供 UI 生成诊断。
+- `SESSION_LOCKED{holder}` 携带宿主 `SessionAlreadyOwnedError.sessionId`（被占用写锁的会话 id；错误不带该值时为 `"unknown"`），供 UI 生成 `writer-held` 诊断。该值标识**被锁会话**，不标识持有者进程身份。
 - `VERSION_INCOMPATIBLE` 由握手的 `protocolVersion` + 宿主版本比对得出。
 
 ## IPC 契约
@@ -53,11 +53,12 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - `response{id, ok, result | error{code, message, detail}}`
 - `event{type, payload}`
 
-**握手**：首帧 exchange 携带 `protocolVersion`（当前 `1`）与宿主版本；版本比对失败进入 `OPEN_FAILED{VERSION_INCOMPATIBLE}`。
+**握手**：`bridge.hello` / `bridge.ping` 的响应携带 `protocolVersion`（当前 `1`）、`bridgeVersion` 与 `hostVersion`；`bridge.hello` 请求带 `params.protocolVersion` 时由 bridge 做版本比对，不一致返回 `VERSION_INCOMPATIBLE`（`detail` 含 `clientProtocolVersion` / `bridgeProtocolVersion` / `hostVersion`），对应 `OPEN_FAILED{VERSION_INCOMPATIBLE}`。
 
 **方法面**：
 
 - `bridge.ping`
+- `bridge.hello`（握手版本比对：入参 `params.protocolVersion`；响应 `protocolVersion` / `bridgeVersion` / `hostVersion`，不匹配返回 `VERSION_INCOMPATIBLE`）
 - `session.list`
 - `session.open({mode:"new"} | {mode:"resume", id})`
 - `session.close`
@@ -72,11 +73,12 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - `turn.tool`
 - `turn.end`
 - `turn.error`
-- `bridge.shutdown`
+
+事件面当前**仅** `turn.*` 五种（`turn.start` / `turn.token` / `turn.tool` / `turn.end` / `turn.error`）。bridge 生命周期（连接断开、插件卸载等）**不通过事件面暴露**：seam 侧不消费此类事件，新增 emitter 只会产生无消费者的死代码。桥态 `DEAD` 的可恢复性由重新握手体现，而非某个 bridge 生命周期事件。
 
 **并发**：单会话单在途 turn；并发 `session.send` 返回 `TURN_BUSY`（`detail.turnId` 为当前在途 turn id）。
 
-**`journalCursor` 语义**：`journal.replay` 的 `journalCursor` 等于 `session.seq`（日志长度），即 replay 的 exclusive upper bound（只回放 `seq < journalCursor` 的条目）。
+**`journal.replay` 游标语义（以实现为准）**：响应字段名是 `cursor`，不是 `journalCursor`；语义为全量日志的 exclusive 上界 `maxSeq + 1`（`maxSeq` 为本次读到的最大 `seq`，空日志为 `0`），与请求参数 `from`（inclusive seq 下界）无关 —— 响应只回 `seq >= from` 的 `rows`，但 `cursor` 始终覆盖全量日志。`session.open` 响应中另有 `journalCursor` 字段，取自 `agent.session.seq`（会话当前 seq，缺失时为 `0`），是另一个字段、另一条路径。把 replay 的 `cursor` 等同于 `session.seq` **依赖 seq 稠密**（从 0 连续分配、无压缩丢段），属**未验证假设**：宿主存储 seq 可能稀疏（turn/start、tool/call、compaction 标记占位，压缩可整段丢弃），因此「存储 seq 稀疏」与「`cursor = maxSeq + 1` 的计算」是两件事，不可混用。客户端不得用 `cursor` 反推行偏移：`skip` 是行数、`from` 是 seq 下界（见 seam 的投影注释）。
 
 **`turnId` 归属**：由 bridge 生成（独立 UUID，不是消息 id）；后续所有 `turn.*` 事件（`turn.start` / `turn.token` / `turn.tool` / `turn.end` / `turn.error`）必须携带该字段，供客户端把事件关联到同一 turn。
 
@@ -101,12 +103,12 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 | 宿主错误类（`this.name`） | 协议 `code` | `detail` |
 | --- | --- | --- |
 | `SessionPersistenceNotFoundError` | `SESSION_NOT_FOUND` | — |
-| `SessionAlreadyOwnedError` | `SESSION_LOCKED` | `holder`（当前持有者标识） |
+| `SessionAlreadyOwnedError` | `SESSION_LOCKED` | `holder`：取自宿主错误的 `sessionId`（被占用写锁的会话 id），缺失时为 `"unknown"`；标识被锁会话，不标识持有者进程 |
 | `SessionPersistenceCorruptionError` | `JOURNAL_CORRUPT` | — |
 | `SessionFormatUnsupportedError` | `VERSION_INCOMPATIBLE` | — |
 | 其它 | `INTERNAL` | — |
 
-映射依据：宿主错误类带稳定 `this.name`；bridge 不在运行时 import 宿主包（避免野包副本同型），故以 `name` 判定；宿主版本在 peer 钉死精确版本，并由单测覆盖上述四个 `name`。
+映射依据：宿主错误类带稳定 `this.name`；bridge 不在运行时 import 宿主包（避免野包副本同型），故以 `name` 判定；宿主版本在 peer 钉死精确版本，并由 `packages/bridge/test/host-error-map.test.ts` 覆盖上述四个 `name`（含 `SESSION_LOCKED` 的 `holder` detail）及未知 name 的 `INTERNAL` 兜底。
 
 **协议层自生 `code`**：
 
@@ -119,6 +121,8 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - `BAD_FRAME`
 - `UNSUPPORTED`（未知方法；亦用于 `session.list` 服务缺失，`detail={capability,service}`）
 - `VERSION_INCOMPATIBLE`（亦可由握手版本比对与宿主映射得出）
+
+**终态 turnId 记忆与 close/replace**：bridge 用一个有界 FIFO（上限 64、oldest-first 淘汰）记住最近终态 turnId，使重复 `turn.abort` 在 id 仍在 FIFO 时返回 `{noop:true}`。`session.close` 与 `session.open{replace:true}` 的 `disposeBinding` 会 `terminalTurnIds.clear()` 清空该 FIFO；因此 close/replace 之前刚终态的 turn，其 id 在 close/replace 后不再被记忆，重试 `turn.abort` 返回 `TURN_NOT_FOUND`（而非 `{noop:true}`）。FIFO 自然淘汰旧 id 也有同样效果。
 
 ## preset 迁移语义
 
