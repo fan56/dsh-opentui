@@ -90,27 +90,43 @@ function makeHarness() {
 const unsupportedError = (capability: string) =>
 	new BridgeProtocolError("UNSUPPORTED", `${capability} not available`, { capability })
 
-// Realistic host session/list wire rows (title at projections.values.title).
+// Real host session/list wire rows — the exact shape the host controller
+// returns (ADR-0010 §88-89 / bridge session-list.test.ts:192-219): title at
+// projections.values.title, NO top-level `title`/`sizeBytes`. A top-level
+// sizeBytes is not on the wire; the projection's sizeBytes arm is defensive
+// only, so a fake carrying it would make the assertion spin (P2-6).
 const WIRE_ROWS = [
 	{
 		sessionId: "s-newest",
 		updatedAt: 1700000000000,
-		cwd: "/work/alpha",
-		sizeBytes: 2048,
+		agentAvailable: false,
+		formatStatus: "current",
+		running: false,
 		blank: false,
-		projections: { values: { title: "The newest conversation with a very long title that must be trimmed" } },
+		cwd: "/work/alpha",
+		projections: {
+			kind: "cached",
+			asOfSeq: 42,
+			values: { title: "The newest conversation with a very long title that must be trimmed" },
+		},
 	},
 	{
 		sessionId: "s-child",
 		updatedAt: 1699999999999,
+		agentAvailable: true,
+		running: false,
+		blank: true,
+		parentSessionId: "s-newest",
 		origin: "subagent",
-		projections: { values: { title: "child" } },
+		projections: { kind: "sequenced", asOfSeq: 7, values: { title: "child" } },
 	},
 	{
 		sessionId: "s-older",
 		updatedAt: 1699000000000,
+		agentAvailable: false,
+		running: false,
 		blank: true,
-		projections: { values: { title: "Older chat" } },
+		projections: { kind: "cached", asOfSeq: 3, values: { title: "Older chat" } },
 	},
 	{ sessionId: "", updatedAt: 1, projections: { values: { title: "no id" } } },
 	{ sessionId: "s-no-title" },
@@ -127,6 +143,10 @@ describe("listSessions", () => {
 
 		const rows = await h.seam.listSessions(2)
 
+		// P2-6: the fake wire has NO top-level sizeBytes (real host shape), so
+		// the projection cannot invent one — the assertion is not spinning on
+		// a field the real wire never sends.
+		expect(WIRE_ROWS[0]).not.toHaveProperty("sizeBytes")
 		expect(h.lastRequest("session.list")?.params).toBeUndefined()
 		expect(rows).toEqual([
 			{
@@ -134,7 +154,6 @@ describe("listSessions", () => {
 				title: "The newest conversation with a very long title that must be trimmed".slice(0, 40),
 				updatedAt: "1700000000000",
 				cwd: "/work/alpha",
-				sizeBytes: 2048,
 				blank: false,
 			},
 			{ id: "s-older", title: "Older chat", updatedAt: "1699000000000", blank: true },
@@ -143,6 +162,7 @@ describe("listSessions", () => {
 		// title was truncated to exactly 40 chars (not the raw 66-char string).
 		expect(rows).toHaveLength(2)
 		expect(rows[0].title).toHaveLength(40)
+		expect(rows[0]).not.toHaveProperty("sizeBytes")
 		expect(rows.map((r) => r.id)).not.toContain("s-child")
 		expect(rows.map((r) => r.id)).not.toContain("s-no-title")
 	})
@@ -298,6 +318,17 @@ describe("sync degrade values + logs", () => {
 		expect(h.warnFor("usageSummary")).toHaveLength(1)
 	})
 
+	test("P2-9: status/usageSummary degrade logs fire once per class under idle polling", () => {
+		const h = makeHarness()
+		for (let i = 0; i < 6; i++) {
+			h.seam.status()
+			h.seam.usageSummary()
+		}
+		// Six polls of each sync member: one warn each, not twelve.
+		expect(h.warnFor("status")).toHaveLength(1)
+		expect(h.warnFor("usageSummary")).toHaveLength(1)
+	})
+
 	test("interrupt with no in-flight turnId is a no-op + log (no frame sent, no throw)", () => {
 		const h = makeHarness()
 		expect(() => h.seam.interrupt()).not.toThrow()
@@ -318,6 +349,103 @@ describe("sync degrade values + logs", () => {
 		h.seam.interrupt()
 		expect(h.lastRequest("turn.abort")?.params).toEqual({ turnId: "t-live" })
 		expect(h.warnFor("interrupt")).toHaveLength(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-live", text: "" } })
+		await waiting
+	})
+
+	test("P1-5: abort rejection (after one retry) surfaces onError + session.error, never throws", async () => {
+		const h = makeHarness()
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-live" } })
+		const errors: string[] = []
+		const events: { type: string; details: unknown }[] = []
+		const waiting = h.seam.turn("hi", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError: (m) => errors.push(m),
+		})
+		h.seam.onSessionEvent((e) => events.push(e))
+		await Bun.sleep(0)
+		h.emit({ type: "turn.token", payload: { turnId: "t-live", kind: "text", text: "x" } })
+		expect(h.seam.status().turn).toBe("running")
+
+		let attempts = 0
+		h.replies.set("turn.abort", {
+			kind: "fn",
+			fn: () => {
+				attempts += 1
+				return { kind: "error", error: new BridgeProtocolError("TURN_NOT_FOUND", "no such turn") }
+			},
+		})
+		expect(() => h.seam.interrupt()).not.toThrow() // sync signature never throws
+		await Bun.sleep(0) // both attempts + their catch handlers are microtasks
+
+		expect(attempts).toBe(2) // one bounded retry, not infinite
+		expect(errors.some((m) => m.includes("turn.abort failed") && m.includes("no such turn"))).toBe(true)
+		const errEvent = events.find((e) => e.type === "session.error")
+		expect(errEvent).toBeDefined()
+		expect(errEvent!.details).toMatchObject({
+			code: "TURN_NOT_FOUND",
+			turnId: "t-live",
+			message: "turn.abort failed for turn t-live: no such turn",
+		})
+		// Failure releases the waiter so turn() does not hang; status goes idle.
+		await waiting
+		expect(h.seam.status().turn).toBe("idle")
+	})
+
+	test("P1-5: abort noop 'success' is reported and not retried", async () => {
+		const h = makeHarness()
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-live" } })
+		const errors: string[] = []
+		const events: { type: string; details: unknown }[] = []
+		const waiting = h.seam.turn("hi", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError: (m) => errors.push(m),
+		})
+		h.seam.onSessionEvent((e) => events.push(e))
+		await Bun.sleep(0)
+
+		let attempts = 0
+		h.replies.set("turn.abort", {
+			kind: "fn",
+			fn: () => {
+				attempts += 1
+				return { kind: "value", value: { turnId: "t-live", noop: true } }
+			},
+		})
+		expect(() => h.seam.interrupt()).not.toThrow()
+		await Bun.sleep(0)
+
+		expect(attempts).toBe(1) // a noop is terminal/already-aborted — do not retry
+		expect(errors.some((m) => m.includes("noop"))).toBe(true)
+		expect(events.find((e) => e.type === "session.error")!.details).toMatchObject({ code: "TURN_ABORT_NOOP" })
+		await waiting
+	})
+
+	test("P1-5: a real abort acknowledgement reports no failure and keeps the turn live", async () => {
+		const h = makeHarness()
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-live" } })
+		h.replies.set("turn.abort", { kind: "value", value: { turnId: "t-live", aborted: true } })
+		const errors: string[] = []
+		const events: { type: string; details: unknown }[] = []
+		const waiting = h.seam.turn("hi", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError: (m) => errors.push(m),
+		})
+		h.seam.onSessionEvent((e) => events.push(e))
+		await Bun.sleep(0)
+		h.emit({ type: "turn.token", payload: { turnId: "t-live", kind: "text", text: "x" } })
+
+		h.seam.interrupt()
+		await Bun.sleep(0)
+		expect(errors).toEqual([])
+		expect(events.filter((e) => e.type === "session.error")).toHaveLength(0)
+		expect(h.seam.status().turn).toBe("running") // no terminal frame yet
 		h.emit({ type: "turn.end", payload: { turnId: "t-live", text: "" } })
 		await waiting
 	})
@@ -448,6 +576,79 @@ describe("covered lifecycle + turn stream", () => {
 		expect(tools).toEqual(["start:read", "run:read"])
 		expect(errors).toEqual(["blocked"])
 		expect(h.seam.status().turn).toBe("idle")
+	})
+
+	test("P1-3: concurrent turn() is rejected and leaves the in-flight turn's slots intact", async () => {
+		const h = makeHarness()
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t1" } })
+		const contentA: string[] = []
+		const contentB: string[] = []
+		const cbA = {
+			onThinkingDelta() {},
+			onContentDelta: (t: string) => contentA.push(t),
+			onApprove: async () => "allowed-once" as const,
+			onError() {},
+		}
+		const cbB = {
+			onThinkingDelta() {},
+			onContentDelta: (t: string) => contentB.push(t),
+			onApprove: async () => "allowed-once" as const,
+			onError() {},
+		}
+		const first = h.seam.turn("a", cbA)
+		await Bun.sleep(0) // first send resolved, waiter + callbacks registered
+
+		// Reentrant turn is rejected before it can touch any single slot.
+		await expect(h.seam.turn("b", cbB)).rejects.toMatchObject({
+			code: "TURN_REENTRANT",
+			detail: { activeTurnId: "t1" },
+		})
+
+		// The first turn is still live: its own callbacks get deltas, the
+		// rejected turn's callbacks get nothing, and no second send was issued.
+		h.emit({ type: "turn.token", payload: { turnId: "t1", kind: "text", text: "live" } })
+		expect(contentA).toEqual(["live"])
+		expect(contentB).toEqual([])
+		expect(h.requests.filter((r) => r.method === "session.send")).toHaveLength(1)
+
+		h.emit({ type: "turn.end", payload: { turnId: "t1", text: "" } })
+		await first // must resolve, not hang on an overwritten waiter
+		expect(h.seam.status().turn).toBe("idle")
+
+		// Generation reset: a fresh turn works after the first completes.
+		const second = h.seam.turn("c", cbA)
+		await Bun.sleep(0)
+		expect(h.requests.filter((r) => r.method === "session.send")).toHaveLength(2)
+		h.emit({ type: "turn.end", payload: { turnId: "t1", text: "" } })
+		await second
+	})
+
+	test("P1-4: stagedSessionId exposes the staged resume id until the next turn binds it", async () => {
+		const h = makeHarness()
+		expect(h.seam.stagedSessionId()).toBeUndefined()
+		expect(h.seam.resumeSession("s-resume")).toBe("ok")
+		expect(h.seam.stagedSessionId()).toBe("s-resume")
+		expect(h.seam.currentSessionId()).toBeUndefined() // staged, not bound yet
+
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "s-resume" } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t1" } })
+		const done = h.seam.turn("go", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError() {},
+		})
+		await Bun.sleep(0)
+		expect(h.seam.stagedSessionId()).toBeUndefined()
+		expect(h.seam.currentSessionId()).toBe("s-resume")
+		h.emit({ type: "turn.end", payload: { turnId: "t1", text: "" } })
+		await done
+	})
+
+	test("P1-4: stagedSessionId is undefined for a staged newSession", () => {
+		const h = makeHarness()
+		h.seam.newSession()
+		expect(h.seam.stagedSessionId()).toBeUndefined()
 	})
 
 	test("onSessionEvent projects turn.start/end/error and excludes token/tool", () => {

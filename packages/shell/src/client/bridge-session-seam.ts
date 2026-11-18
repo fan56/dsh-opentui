@@ -272,6 +272,16 @@ export class BridgeSessionSeam implements SessionSeam {
 	#activeCallbacks: SeamTurnCallbacks | undefined
 	/** Terminal-event waiter for the in-flight turn. */
 	#turnDone: (() => void) | undefined
+	/**
+	 * P1-3 turn generation guard. Every turn() claims a monotonic generation;
+	 * the three slots above only mean anything for the generation that claimed
+	 * them. A stale `finally` must never clear a newer generation's slots.
+	 * 0 == no turn in flight (also the reentrancy gate at turn() entry).
+	 */
+	#turnGeneration = 0
+	#inFlightGeneration = 0
+	/** P2-9: degrade classes that already logged once; idle polling must not spam. */
+	#degradedOnce = new Set<string>()
 	#usage: UsageAccumulator = { turns: 0, prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
 	#disposed = false
 
@@ -299,7 +309,8 @@ export class BridgeSessionSeam implements SessionSeam {
 		if (this.#connection === "disconnected") {
 			// No status frame + no successful handshake: the only honest
 			// sync answer is the null-seam default, plus a degrade log.
-			this.#degrade("status", "no handshake/status frame; returning disconnected/idle")
+			// P2-9: session-tabs polls status() on a timer — log this class once.
+			this.#degradeOnce("status", "no handshake/status frame; returning disconnected/idle")
 		}
 		return { connection: this.#connection, turn: this.#turn, sessionAttached: this.#sessionAttached }
 	}
@@ -321,11 +332,27 @@ export class BridgeSessionSeam implements SessionSeam {
 	newSession(): void {
 		// COVERED: clear the bound id and stage a `session.open{mode:"new"}` for
 		// the next turn (remote-host-session.ts:746-751 staging parity).
-		// The BRIDGE still holds the old session open until that next turn —
-		// #sessionAttached stays true so the staged open carries replace:true
-		// (otherwise the bridge answers ALREADY_OPEN).
+		//
+		// P2-8 LOCK WINDOW (deliberate, no behavior change): after /new but before
+		// the next turn, the BRIDGE still holds the OLD session open because no
+		// `session.open` has been sent yet. #sessionAttached intentionally stays
+		// true so the staged open carries `replace:true` (without it the bridge
+		// answers ALREADY_OPEN). Consequence: during this window another process
+		// that resumes the old id gets SESSION_LOCKED from the bridge, even
+		// though this client already reports currentSessionId() === undefined.
+		// That is the intended cost of keeping `replace` available (ADR-0010 §
+		// session.open replace semantics); do NOT clear #sessionAttached here.
 		this.#currentSessionId = undefined
 		this.#pendingOpen = { mode: "new" }
+	}
+
+	stagedSessionId(): string | undefined {
+		// P1-4: the resume target staged by resumeSession(), still unbound until
+		// the next turn calls session.open. Returns undefined for a staged
+		// newSession() or when nothing is staged — consumers targeting "the
+		// session on screen" must read this alongside currentSessionId() or a
+		// resumed-but-not-yet-turned session browses the wrong id (review P1-1).
+		return this.#pendingOpen?.mode === "resume" ? this.#pendingOpen.id : undefined
 	}
 
 	interrupt(): void {
@@ -336,16 +363,73 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#degrade("interrupt", "no in-flight turnId; turn.abort skipped (no-op)")
 			return
 		}
-		// Fire-and-forget: a sync member cannot await the bridge response.
-		void this.#transport.request("turn.abort", { turnId }).catch((err: unknown) => {
-			this.#ctx.logger.warn("[bridge-seam] turn.abort failed (fire-and-forget): %s", err)
-		})
+
+		// P1-5: a failed abort used to be logger.warn-only — the state machine
+		// stayed "running" with no callback and no event, so the user never saw
+		// it. Surface it on BOTH channels the view consumes: the live turn's
+		// onError callback and a projected session.error event. Also release the
+		// waiter so turn() does not hang forever when no terminal frame arrives
+		// (TURN_NOT_FOUND / transport death / a noop "success"). The sync void
+		// signature still never throws — all of this runs in a microtask.
+		const fail = (message: string, code: string): void => {
+			this.#ctx.logger.warn("[bridge-seam] %s", message)
+			const cb = this.#activeCallbacks
+			if (cb !== undefined) {
+				try {
+					cb.onError(message)
+				} catch {
+					/* a throwing view callback must not break the feed */
+				}
+			}
+			const [event] = projectBridgeEvent(
+				{ type: "turn.error", payload: { turnId, code, message } },
+				this.#currentSessionId ?? "",
+			)
+			if (event !== undefined) {
+				for (const listener of this.#listeners) {
+					try {
+						listener(event)
+					} catch {
+						/* one stale view listener must not break the feed */
+					}
+				}
+			}
+			// Let turn() finish and status() report idle — the abort failed, so
+			// waiting on a terminal frame that may never come is a deadlock.
+			if (this.#inFlightTurnId === turnId) {
+				this.#inFlightTurnId = undefined
+				this.#turn = "idle"
+				this.#turnDone?.()
+			}
+		}
+
+		// Fire-and-forget with ONE bounded retry. A noop response already means
+		// the id was terminal/already-aborted — report it, do not retry it.
+		const attempt = (remaining: number): void => {
+			void this.#transport.request("turn.abort", { turnId })
+				.then((result) => {
+					if (asRecord(result).noop === true) {
+						fail(`turn.abort was a noop for turn ${turnId}; turn may still be running`, "TURN_ABORT_NOOP")
+					}
+				})
+				.catch((err: unknown) => {
+					if (remaining > 0) {
+						attempt(remaining - 1)
+						return
+					}
+					const code = err instanceof BridgeProtocolError ? err.code : "TURN_ABORT_FAILED"
+					const reason = err instanceof Error ? err.message : String(err)
+					fail(`turn.abort failed for turn ${turnId}: ${reason}`, code)
+				})
+		}
+		attempt(1)
 	}
 
 	usageSummary(): string[] {
 		// PARTIAL: cache turn.end.usage; sync read, so no data = empty + log.
 		if (this.#usage.turns === 0) {
-			this.#degrade("usageSummary", "no turn.end usage captured yet; returning []")
+			// P2-9: the status bar polls this too — warn once per degrade class.
+			this.#degradeOnce("usageSummary", "no turn.end usage captured yet; returning []")
 			return []
 		}
 		const u = this.#usage
@@ -407,43 +491,66 @@ export class BridgeSessionSeam implements SessionSeam {
 		// UI owner knows approval is unavailable on this path.
 		this.#degrade("turn.onApprove", "bridge has no ask/permission frame; onApprove will not fire")
 
-		// Bind a staged id (resume/new) at the next turn, as in the remote seam.
-		if (this.#pendingOpen !== undefined) {
-			const pending = this.#pendingOpen
-			this.#pendingOpen = undefined
-			const params: Record<string, unknown> =
-				pending.mode === "resume"
-					? { mode: "resume", id: pending.id, ...(this.#sessionAttached ? { replace: true } : {}) }
-					: { mode: "new", ...(this.#sessionAttached ? { replace: true } : {}) }
-			try {
-				const opened = asRecord(await this.#transport.request("session.open", params))
-				if (typeof opened.sessionId === "string") this.#currentSessionId = opened.sessionId
-				this.#sessionAttached = true
-			} catch (err) {
-				// SESSION_LOCKED / SESSION_NOT_FOUND surface to the turn caller.
-				throw err
-			}
+		// P1-3 REENTRANCY SEMANTICS: reject, do not queue. The bridge drives one
+		// turn per session (TURN_BUSY on a second send), so an overlapping turn()
+		// is not meaningful work to defer — it is a caller bug. Rejecting keeps
+		// the single-slot callback/waiter state sound. Callers must await the
+		// first turn() before starting another.
+		if (this.#inFlightGeneration !== 0) {
+			throw new BridgeProtocolError(
+				"TURN_REENTRANT",
+				"turn() called while another turn is in flight; await the first turn()",
+				{ activeTurnId: this.#inFlightTurnId },
+			)
 		}
 
-		// Register the terminal waiter and live callbacks BEFORE send: the
-		// bridge emits turn.start ahead of its send response, so early deltas
-		// must reach the callbacks even though turnId is not known yet.
-		this.#activeCallbacks = cb
-		const done = new Promise<void>((resolve) => {
-			this.#turnDone = resolve
-		})
+		// Claim a generation BEFORE any await. Only this generation's finally
+		// may clear the slots; a stale turn cannot wipe a newer one's state.
+		const gen = ++this.#turnGeneration
+		this.#inFlightGeneration = gen
 		let sendFailed: unknown
 		try {
+			// Bind a staged id (resume/new) at the next turn, as in the remote seam.
+			if (this.#pendingOpen !== undefined) {
+				const pending = this.#pendingOpen
+				this.#pendingOpen = undefined
+				const params: Record<string, unknown> =
+					pending.mode === "resume"
+						? { mode: "resume", id: pending.id, ...(this.#sessionAttached ? { replace: true } : {}) }
+						: { mode: "new", ...(this.#sessionAttached ? { replace: true } : {}) }
+				try {
+					const opened = asRecord(await this.#transport.request("session.open", params))
+					if (typeof opened.sessionId === "string") this.#currentSessionId = opened.sessionId
+					this.#sessionAttached = true
+				} catch (err) {
+					// SESSION_LOCKED / SESSION_NOT_FOUND surface to the turn caller.
+					throw err
+				}
+			}
+
+			// Register the terminal waiter and live callbacks BEFORE send: the
+			// bridge emits turn.start ahead of its send response, so early deltas
+			// must reach the callbacks even though turnId is not known yet.
+			this.#activeCallbacks = cb
+			const done = new Promise<void>((resolve) => {
+				this.#turnDone = resolve
+			})
 			const sent = asRecord(await this.#transport.request("session.send", { text: userText }))
 			if (typeof sent.turnId === "string") this.#inFlightTurnId = sent.turnId
 			await done
 		} catch (err) {
 			sendFailed = err
 		} finally {
-			this.#activeCallbacks = undefined
-			this.#turnDone = undefined
-			this.#inFlightTurnId = undefined
-			this.#turn = "idle"
+			// Generation guard: only clear the slots if they still belong to
+			// THIS turn. A stale finally (send/reject resolving late) must not
+			// clear a newer generation's callbacks, waiter or turnId.
+			if (this.#inFlightGeneration === gen) {
+				this.#activeCallbacks = undefined
+				this.#turnDone = undefined
+				this.#inFlightTurnId = undefined
+				this.#inFlightGeneration = 0
+				this.#turn = "idle"
+			}
 		}
 		if (sendFailed !== undefined) throw sendFailed
 	}
@@ -456,6 +563,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#activeCallbacks = undefined
 		this.#turnDone?.()
 		this.#turnDone = undefined
+		this.#inFlightTurnId = undefined
+		this.#inFlightGeneration = 0
+		this.#turn = "idle"
 		try {
 			if (this.#sessionAttached) await this.#transport.request("session.close")
 		} catch (err) {
@@ -503,6 +613,13 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	#degrade(member: string, reason: string): void {
 		this.#ctx.logger.warn("[bridge-seam] %s degraded: %s", member, reason)
+	}
+
+	/** P2-9: warn once per degrade class; later hits (idle polling) stay silent. */
+	#degradeOnce(member: string, reason: string): void {
+		if (this.#degradedOnce.has(member)) return
+		this.#degradedOnce.add(member)
+		this.#degrade(member, reason)
 	}
 
 	#onBridgeEvent(frame: BridgeEventFrame): void {
