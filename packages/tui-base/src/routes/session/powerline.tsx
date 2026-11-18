@@ -800,6 +800,31 @@ export function cacheSegment(rate: number | null, theme?: ComponentTheme): Power
 }
 
 /**
+ * The 🆔 session-id segment (ADR-0010 I5 "sessionId 常显"): the SHORT id
+ * (first 8 chars — the same shape the /history panel uses for its status
+ * line) so the user can verify session identity directly from the UI, which
+ * is the observability prerequisite of the four-gate review. The FULL id
+ * stays queryable through the existing surfaces (`/session info` panel's
+ * `session` row, "Copy session ID"); the footer deliberately shows only the
+ * prefix so it does not dominate the strip.
+ *
+ * Priority -1 is BELOW every other segment (speed's implicit 0 is the prior
+ * floor), so `fitPowerlineSegments` sheds this segment FIRST on narrow
+ * screens — identity hint yields before any existing segment. An absent or
+ * blank id (e.g. before the first turn binds the live session) hides the
+ * segment entirely rather than painting an empty shell.
+ */
+export function sessionIdSegment(id: string | null | undefined, theme?: ComponentTheme): PowerlineSegment | null {
+	const value = id?.trim()
+	if (!value) return null
+	return {
+		text: `🆔 ${value.slice(0, 8)}`,
+		bg: theme?.hue.neutral[400] ?? "#616161",
+		priority: -1,
+	}
+}
+
+/**
  * Integer-part width for a rolling value: the digit count of its own
  * integer part (minimum 1). This is the compact counterpart of a hand-picked
  * fixed width — `formatRolling(v, d, rollingWidth(v, d))` renders exactly
@@ -1045,6 +1070,12 @@ export function sessionFooterSegments(data: {
 	presetLabel?: string
 	/** Elapsed turn seconds for the ⏱ segment; null/absent hides it. */
 	elapsedSec?: number | null
+	/**
+	 * ADR-0010 I5: the live session id (seam.currentSessionId()). Rendered as
+	 * the low-priority 🆔 short-id segment so session identity is observable
+	 * from the UI; null/absent hides it (before the first turn binds a session).
+	 */
+	sessionId?: string | null
 	/** Identity color mode (brand segment fill); dark default. */
 	mode?: SkinColorMode
 	theme?: ComponentTheme
@@ -1066,6 +1097,9 @@ export function sessionFooterSegments(data: {
 	add(toolSegment(data.tools ?? 0, theme))
 	add(elapsedSegment(data.elapsedSec ?? null, theme))
 	add(speedSegment(data.tps ?? null, theme))
+	// ADR-0010 I5: the identity hint rides last (least prominent) at the LOWEST
+	// priority — the fitter sheds it first so no existing segment is displaced.
+	add(sessionIdSegment(data.sessionId, theme))
 	// Batch D3: the search discoverability hint (batch H1) left the strip —
 	// key hints live on their own last row (./hints-line.tsx, tui-pi
 	// FooterHint after PowerlineFooter); the powerline is pure segments.

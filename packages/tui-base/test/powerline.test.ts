@@ -25,6 +25,7 @@ import {
 	relativeLuminance,
 	resolvePalette,
 	sessionFooterSegments,
+	sessionIdSegment,
 	speedSegment,
 	cacheSegment,
 	toolSegment,
@@ -163,6 +164,16 @@ describe("segment builders", () => {
 		expect(speedSegment(-4)).toBeNull()
 		expect(speedSegment(87.4)?.text).toBe("87 tok/s")
 	})
+
+	test("ADR-0010 I5: session-id segment shows the short id and has the lowest priority", () => {
+		const seg = sessionIdSegment("sess-12345678-abcd")!
+		// First 8 chars only — full id stays available via /session info.
+		expect(seg.text).toBe("🆔 sess-123")
+		expect(seg.text).not.toContain("sess-12345678")
+		// Lowest priority in the strip: speed's implicit 0 is the prior floor.
+		expect(seg.priority).toBe(-1)
+		expect(seg.priority!).toBeLessThan(speedSegment(42)!.priority ?? 0)
+	})
 })
 
 describe("footer assembly", () => {
@@ -201,6 +212,23 @@ describe("footer assembly", () => {
 		expect(sessionFooterSegments({}).some((s) => s.text.startsWith("💬"))).toBe(false)
 		expect(sessionFooterSegments({ messages: 0 })?.find((s) => s.text === "💬 0 msgs")).toBeDefined()
 		expect(sessionFooterSegments({ messages: 4 })?.find((s) => s.text === "💬 4 msgs")).toBeDefined()
+	})
+
+	test("ADR-0010 I5: footer carries the short session-id segment (wide screen)", () => {
+		const segs = sessionFooterSegments({ sessionId: "sess-12345678-abcd", messages: 1 })
+		const id = segs.find((s) => s.text.startsWith("🆔"))
+		expect(id?.text).toBe("🆔 sess-123")
+		// Rides last — least prominent on the strip.
+		expect(segs[segs.length - 1]?.text).toBe("🆔 sess-123")
+	})
+
+	test("ADR-0010 I5: no session id → no empty segment (boot / first turn)", () => {
+		expect(sessionIdSegment(undefined)).toBeNull()
+		expect(sessionIdSegment(null)).toBeNull()
+		expect(sessionIdSegment("")).toBeNull()
+		expect(sessionIdSegment("   ")).toBeNull()
+		const segs = sessionFooterSegments({ messages: 1 })
+		expect(segs.some((s) => s.text.includes("🆔"))).toBe(false)
 	})
 })
 
@@ -810,5 +838,24 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		const wide = fitPowerlineSegments(fixture(), 119, "12:36:44")
 		expect(wide.right).toBe("12:36:44")
 		expect(measure(wide.segments) + stringWidth("12:36:44") + 1).toBeLessThanOrEqual(119)
+	})
+
+	test("ADR-0010 I5: narrow screen sheds the session-id segment FIRST", () => {
+		const segs = sessionFooterSegments({
+			provider: "zai-coding-cn",
+			model: "glm-5.3-flash",
+			contextTokens: 205,
+			contextWindow: 1_000_000,
+			messages: 4,
+			tps: 42, // speed carries priority 0 — sessionId (-1) must still shed before it
+			sessionId: "sess-12345678-abcd",
+		})
+		const full = measure(segs)
+		// One column too narrow → the fitter sheds exactly the lowest-priority segment.
+		const fitted = fitPowerlineSegments(segs, full - 1)
+		expect(fitted.segments.length).toBe(segs.length - 1)
+		// Identity hint gone; speed and every other segment survive.
+		expect(fitted.segments.some((s) => s.text.includes("🆔"))).toBe(false)
+		expect(fitted.segments.some((s) => s.text.includes("tok/s"))).toBe(true)
 	})
 })

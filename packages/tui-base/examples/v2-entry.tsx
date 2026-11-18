@@ -634,6 +634,9 @@ function V2SessionPageBody(props: {
 			contextWindow: ctxWindow(),
 			cacheHitRate: cacheRate(),
 			presetLabel: presetLabel(),
+			// ADR-0010 I5: the live session id from the seam flows into the
+			// low-priority 🆔 footer segment so identity stays observable.
+			sessionId: seam.currentSessionId(),
 			theme,
 			// Skin wiring (contract §1): the dsh brand segment's identity blue
 			// follows the active theme's color mode. NO elapsedSec — the ⏱
