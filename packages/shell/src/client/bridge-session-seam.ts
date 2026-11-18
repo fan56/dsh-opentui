@@ -44,6 +44,7 @@ import type {
 } from "../../../tui-base/src/seams/session"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { journalToTranscriptRows } from "./remote-session-ops.ts"
+import { projectJournalRecord } from "./session-seam-adapter.ts"
 
 // ---------------------------------------------------------------------------
 // Injected transport surface (ADR-0010 frame shapes)
@@ -400,6 +401,88 @@ export function bridgeReplayRowsToSeamTranscript(
 }
 
 /**
+ * P1-2: drained journal rows → the SAME wire events `seam-rows.ts` already
+ * consumes for the remote seam (`message.updated` / `message.part.updated` /
+ * `session.error`). Emitting them through `onSessionEvent` is the ADR-0010:35
+ * "经既有 transcript 管线 apply" path: no new render path, and the existing
+ * keyed upsert (`user:${id}`, `assistant:${messageID}:${partID}`,
+ * `tool:${messageID}:${partID}`) is naturally idempotent.
+ *
+ * Text/user/notice/error records go through `projectJournalRecord` verbatim —
+ * the remote seam's journal feed uses the identical projector, so the source
+ * filter, ask merge and seq-derived ids stay in one place. `projectJournalRecord`
+ * deliberately skips tool records (the live turn paints those), so replay
+ * `tool/call`+`tool/result` pairs are projected here with the same call→result
+ * pairing and brief as `journalToTranscriptRows`, under a seq-derived messageID
+ * so a re-delivered drain patches the same row instead of appending a second.
+ *
+ * `seen` is the keys-level half of the seq/keys double insurance: even if a
+ * paged drain overlaps (or a second DEAD replays a row already painted live),
+ * an event whose key was already emitted is skipped — no duplicate line.
+ */
+export function seamReplayEventKey(event: SeamSessionEvent): string {
+	const details = asRecord(event.details)
+	return `${event.type}:${String(details.id ?? details.messageID ?? "")}:${String(asRecord(details.part).id ?? "")}`
+}
+
+export function bridgeReplayRowsToSeamEvents(
+	rows: readonly BridgeReplayRow[],
+	sessionId: string,
+): SeamSessionEvent[] {
+	const events: SeamSessionEvent[] = []
+	const seen = new Set<string>()
+	const push = (event: SeamSessionEvent): void => {
+		const key = seamReplayEventKey(event)
+		if (seen.has(key)) return
+		seen.add(key)
+		events.push(event)
+	}
+	const toolCalls = new Map<string, { seq: number; name: string; args: string }>()
+	for (const row of rows) {
+		const entry: RemoteJournalEntry = { type: row.type, seq: row.seq, time: 0, data: asRecord(row.payload) }
+		for (const event of projectJournalRecord(entry, sessionId)) push(event)
+		const data = entry.data
+		if (row.type === "tool/call") {
+			const callId = data.callId === undefined ? "" : String(data.callId)
+			if (callId) {
+				toolCalls.set(callId, {
+					seq: row.seq,
+					name: typeof data.name === "string" ? data.name : "tool",
+					args: typeof data.arguments === "string" ? data.arguments : "",
+				})
+			}
+		} else if (row.type === "tool/result") {
+			const message = asRecord(data.message)
+			const callId = data.callId !== undefined
+				? String(data.callId)
+				: message.toolCallId !== undefined ? String(message.toolCallId) : ""
+			const call = callId ? toolCalls.get(callId) : undefined
+			if (call !== undefined) {
+				toolCalls.delete(callId)
+				const messageID = `journal-${call.seq}`
+				const ok = data.isError !== true && message.isError !== true
+				push({
+					type: "message.part.updated",
+					details: {
+						messageID,
+						sessionID: sessionId,
+						part: {
+							type: "tool",
+							id: callId,
+							name: call.name,
+							input: call.args,
+							status: ok ? "done" : "failed",
+							output: JSON.stringify(data.output ?? data).slice(0, 300),
+						},
+					},
+				})
+			}
+		}
+	}
+	return events
+}
+
+/**
  * A7: does the drained journal carry a TERMINAL for the turn that was in
  * flight when the bridge died? The host journal records `turn/end` with
  * `data.reason.kind` (completed / aborted / error / interrupted / blocked /
@@ -610,6 +693,16 @@ export class BridgeSessionSeam implements SessionSeam {
 	#lastAppliedSeq: number | undefined
 	/** The session `#lastAppliedSeq` belongs to; reset on a different binding. */
 	#lastAppliedSessionId: string | undefined
+	/**
+	 * P1-2: replay-event keys already pushed to `onSessionEvent` listeners.
+	 * Live bridge frames carry NO seq (`turn.token/start/end/tool` payloads in
+	 * bridge/src/index.ts have turnId/sessionId/text only), so `lastAppliedSeq`
+	 * cannot advance on the live path; a second DEAD re-drains rows painted
+	 * since the first drain's cursor. This set is the keys-level half of the
+	 * dedup: a re-delivered row upserts the SAME key instead of appending a
+	 * duplicate line. Cleared when the session binding changes.
+	 */
+	readonly #appliedReplayKeys = new Set<string>()
 	/** A4+A5: explicit recovery outcome for the UI branch (A8), never thrown. */
 	#recoveryState: BridgeRecoveryState = "idle"
 	/** Pending sync-stage from resumeSession()/newSession(), bound at next turn. */
@@ -837,6 +930,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		if (this.#lastAppliedSessionId !== boundId) {
 			this.#lastAppliedSessionId = boundId
 			this.#lastAppliedSeq = undefined
+			this.#appliedReplayKeys.clear()
 		}
 		this.#sessionAttached = true
 
@@ -866,6 +960,16 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#lastAppliedSeq = Math.max(this.#lastAppliedSeq ?? 0, maxSeq)
 			this.#lastAppliedSessionId = boundId
 		}
+
+		// P1-2: the projection above used to be DATA-ONLY — `rows` rode on
+		// `bridge.recovered`, whose consumer reads `applied` (the count) but
+		// never the rows, so content journalled after the last live delta (the
+		// killed turn's tail, tool lines landed during the death window) was
+		// never painted, and `#lastAppliedSeq` had already moved past it.
+		// The actual event application happens BELOW, after step (e) settles
+		// the DEAD-suspended turn — seam-rows' SETTLE SUPERSEDE only replaces a
+		// streamed group when `turnOpen === false`, so emitting earlier would
+		// append a SECOND body beside the raw live one.
 
 		// (d) A6 timing gate — ONLY now that the replay drain has completed do
 		// we rebuild pending cards from a buffered `ask.pending` snapshot. The
@@ -935,6 +1039,29 @@ export class BridgeSessionSeam implements SessionSeam {
 				// submission is accepted; the event above carries the reason.
 				this.#settleSuspendedTurn()
 			}
+		}
+
+		// Step (e)'s #settleSuspendedTurn() resolves turn(), but the view's
+		// .finally() (live-row finalize + `turnOpen=false`) runs on a LATER
+		// microtask. Yield one macrotask so seam-rows' SETTLE SUPERSEDE guard
+		// sees `turnOpen===false` and replaces the raw live group IN PLACE —
+		// emitting earlier appends a second body beside the streamed one.
+		await new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+		// P1-2: apply the drained rows through the EXISTING onSessionEvent
+		// pipeline (the same `message.updated`/`message.part.updated` events the
+		// remote seam's journal feed emits). Now that step (e) has settled the
+		// suspended turn, seam-rows' SETTLE SUPERSEDE replaces the raw live
+		// group in place (one body per turn) instead of appending a duplicate,
+		// and tool lines from the death window land under their seq-derived key.
+		// The keys set is the seq/keys double insurance for a SECOND death —
+		// live bridge frames carry no seq, so a re-drain of rows painted live
+		// since the first cursor upserts the same key instead of appending.
+		for (const event of bridgeReplayRowsToSeamEvents(drained.rows, boundId)) {
+			const key = seamReplayEventKey(event)
+			if (this.#appliedReplayKeys.has(key)) continue
+			this.#appliedReplayKeys.add(key)
+			emit(event)
 		}
 
 		this.#sessionAttached = true
@@ -1250,6 +1377,7 @@ export class BridgeSessionSeam implements SessionSeam {
 					if (this.#lastAppliedSessionId !== this.#currentSessionId) {
 						this.#lastAppliedSessionId = this.#currentSessionId
 						this.#lastAppliedSeq = undefined
+						this.#appliedReplayKeys.clear()
 					}
 					this.#sessionAttached = true
 				} catch (err) {
