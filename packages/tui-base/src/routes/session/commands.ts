@@ -315,6 +315,14 @@ export interface SlashCommandContext {
 	 * to deliver, "busy" = a turn is running, "flushed" = the pump restarted).
 	 */
 	flushQueue?(): ComposerFlushResult
+	/**
+	 * RM-4: reset the recovery UI after a successful `/new` session switch.
+	 * The entry wires this to the SAME cleanup the banner's new-session action
+	 * uses (RecoveryUiController.clearRecoveryState): footer back to ready,
+	 * locked/failed banner + dead phase cleared. Optional — an entry without
+	 * recovery UI keeps the plain session switch (no stale state to clear).
+	 */
+	clearRecoveryUi?(): void
 }
 
 // ---------------------------------------------------------- /preset helpers --
@@ -606,6 +614,11 @@ export function coreCommands(): SlashCommand[] {
 				// not survive a /new.
 				ctx.clear()
 				await ctx.reload()
+				// RM-4: a session switch must retire the stale recovery UI too.
+				// The typed path used to stop here, leaving the dead footer and
+				// locked banner up even though the session had changed. The
+				// entry routes this to the same cleanup the banner action calls.
+				ctx.clearRecoveryUi?.()
 				ctx.say(t("command.new.created", { id: ctx.seam.currentSessionId() ?? "(unnamed)" }))
 			},
 		},

@@ -513,11 +513,16 @@ export function createSeamRows(
 		if (event.type === "message.updated" && details.role === "user") {
 			const id = typeof details.id === "string" ? details.id : `local-${++liveOrdinal}`
 			const text = typeof details.text === "string" ? details.text : ""
+			const journalKey = `user:${id}`
+			// Only wire/journal prompts (sessionID stamped by both adapters)
+			// take part in dedup — a page-injected `say()` feedback has no
+			// sessionID and must never retire a user row.
+			const isWire = typeof details.sessionID === "string"
 			// Journal prompt for a streamed turn (replay order: prompt record
 			// first): retire the optimistic `user:local-N` copy so the store
 			// holds one prompt; the keyed journal row becomes THE prompt row
 			// (stable on re-delivery). Same text by construction — guard anyway.
-			if (!turnOpen && pendingTurns.length > 0 && typeof details.sessionID === "string") {
+			if (!turnOpen && pendingTurns.length > 0 && isWire) {
 				const group = pendingTurns[0]!
 				const local = rows.find((row) => row.key === group.userKey)
 				if (!local || local.kind !== "user" || local.text.trim() === text.trim()) {
@@ -525,12 +530,25 @@ export function createSeamRows(
 					dropRows(new Set([group.userKey]))
 				}
 			}
-			upsert({
-				key: `user:${id}`,
-				kind: "user",
-				text,
-				final: true,
-			})
+			// RM-4 (kill AFTER a turn completed): the pendingTurns-only dedup
+			// above misses the common case — the optimistic `user:local-N` row
+			// survives while replay delivers the same words under a journal key
+			// (`user:<messageID>` / `user:journal-<seq>`), painting two ❯ lines.
+			// Match against ALL existing user rows, not just pendingTurns[0]:
+			//   1. exact journal key already present → re-delivery/second
+			//      recovery; a plain upsert is idempotent, never add a row.
+			//   2. otherwise match an OPTIMISTIC local row by content. `seq:null`
+			//      is the provenance tag — only client-inferred rows carry it,
+			//      so two genuinely different consecutive messages with the
+			//      SAME text never merge: each replay consumes its own local
+			//      row, and journal rows are matched by key, never by content.
+			if (isWire && !rows.some((row) => row.key === journalKey)) {
+				const optimistic = rows.find(
+					(row) => row.kind === "user" && row.seq === null && row.text.trim() === text.trim(),
+				)
+				if (optimistic !== undefined) dropRows(new Set([optimistic.key]))
+			}
+			upsert({ key: journalKey, kind: "user", text, final: true })
 			return
 		}
 		if (event.type === "message.part.updated") {

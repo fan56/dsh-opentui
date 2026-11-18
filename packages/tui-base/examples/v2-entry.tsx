@@ -1036,6 +1036,10 @@ function V2SessionPageBody(props: {
 		// assigned once the composer mounts).
 		flushQueue: () =>
 			composerRef?.flushQueue() ?? { kind: "empty", started: 0, remaining: 0 },
+		// RM-4: a typed `/new` takes the same recovery-UI cleanup the banner
+		// action calls, so the dead footer / locked banner never outlive the
+		// session switch. The banner path still goes through recovery.newSession().
+		clearRecoveryUi: () => recovery.clearRecoveryState(),
 	}))
 	// A8 banner "new session": reuse the SAME /new command path a typed
 	// `/new` takes (seam.newSession + clear + reload) — no second session

@@ -408,6 +408,8 @@ export interface SlashHostDeps {
 	/** /flush: deliver the client-side delivery queue now; absent = /flush
 	 * says "unavailable in this session". */
 	flushQueue?: SlashCommandContext["flushQueue"]
+	/** RM-4: reset recovery UI after /new; absent = plain session switch. */
+	clearRecoveryUi?: SlashCommandContext["clearRecoveryUi"]
 }
 
 export function createSlashHost(deps: SlashHostDeps) {

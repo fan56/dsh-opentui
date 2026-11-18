@@ -226,12 +226,23 @@ export class RecoveryUiController {
 		}
 	}
 
-	/** Banner "new session" action: page clears the session + transcript. */
-	newSession(): void {
-		this.#onNewSession?.()
+	/**
+	 * Shared new-session UI cleanup. Footer goes back to ready, the persistent
+	 * failure/locked banner is removed and the session-id linkage is cleared.
+	 * Both entry points call this SAME function: the banner action below and
+	 * the typed `/new` slash command (via the page's `clearRecoveryUi` hook),
+	 * so a session switch can never leave a stale dead footer / locked banner.
+	 */
+	clearRecoveryState(): void {
 		this.#bannerTo(undefined)
 		this.#phaseTo("ready")
 		this.#onSessionId?.(undefined)
+	}
+
+	/** Banner "new session" action: page clears the session + transcript. */
+	newSession(): void {
+		this.#onNewSession?.()
+		this.clearRecoveryState()
 	}
 
 	/** Banner "quit" action: page shutdown. */

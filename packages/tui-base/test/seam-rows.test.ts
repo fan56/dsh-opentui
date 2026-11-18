@@ -791,6 +791,89 @@ describe("A7: local disconnection markers in the transcript store", () => {
 		dispose()
 	})
 
+	describe("RM-4: replay must not duplicate an already-painted user prompt", () => {
+		const userEvent = (id: string, text: string) => ({
+			type: "message.updated",
+			details: { id, role: "user", text, sessionID: "s1" },
+		})
+		const bodyEvent = (id: string, text: string) => ({
+			type: "message.part.updated",
+			details: { messageID: id, sessionID: "s1", part: { type: "text", id: `${id}:text`, text } },
+		})
+
+		test("a) live row + replay of the same message = ONE user row (pendingTurns empty)", async () => {
+			const seam = new FakeSeam()
+			seam.script = async (cb) => { cb.onContentDelta("streamed body") }
+			const { projection, dispose } = setup(seam)
+			await projection.send("hello")
+			expect(projection.rows.filter((r) => r.kind === "user").map((r) => r.key)).toEqual(["user:local-1"])
+			// Kill AFTER the turn completed: a journal body drains the pending
+			// group WITHOUT a prompt event, so the old pendingTurns dedup is
+			// gone while the optimistic local row is still on screen.
+			seam.emit(bodyEvent("m-a0", "settled body"))
+			expect(projection.rows.filter((r) => r.kind === "user").map((r) => r.key)).toEqual(["user:local-1"])
+
+			seam.emit(userEvent("m-u1", "hello"))
+			const users = projection.rows.filter((r) => r.kind === "user")
+			expect(users).toHaveLength(1)
+			expect(users[0]!.key).toBe("user:m-u1")
+			dispose()
+		})
+
+		test("b) two consecutive identical messages survive replay as TWO rows", async () => {
+			const seam = new FakeSeam()
+			let n = 0
+			seam.script = async (cb) => { n += 1; cb.onContentDelta(`body ${n}`) }
+			const { projection, dispose } = setup(seam)
+			await projection.send("same")
+			await projection.send("same")
+			expect(projection.rows.filter((r) => r.kind === "user").map((r) => r.key)).toEqual([
+				"user:local-1", "user:local-3",
+			])
+			seam.emit(bodyEvent("m-a1", "body 1"))
+			seam.emit(bodyEvent("m-a2", "body 2"))
+			seam.emit(userEvent("m-u1", "same"))
+			seam.emit(userEvent("m-u2", "same"))
+
+			const users = projection.rows.filter((r) => r.kind === "user")
+			// Each replay consumes its OWN optimistic local row (seq:null);
+			// identical text never merges two distinct messages.
+			expect(users).toHaveLength(2)
+			expect(users.map((r) => r.key)).toEqual(["user:m-u1", "user:m-u2"])
+			dispose()
+		})
+
+		test("c) pure replay with no live row inserts the journal row", () => {
+			const seam = new FakeSeam()
+			const { projection, dispose } = setup(seam)
+			projection.apply(userEvent("m-u1", "hello"))
+			const users = projection.rows.filter((r) => r.kind === "user")
+			expect(users).toHaveLength(1)
+			expect(users[0]!.key).toBe("user:m-u1")
+			dispose()
+		})
+
+		test("d) re-delivering the same journal prompt is idempotent (second recovery)", () => {
+			const seam = new FakeSeam()
+			const { projection, dispose } = setup(seam)
+			projection.apply(userEvent("m-u1", "hello"))
+			projection.apply(userEvent("m-u1", "hello"))
+			expect(projection.rows.filter((r) => r.kind === "user")).toHaveLength(1)
+			dispose()
+		})
+
+		test("two identical messages from pure replay stay two distinct rows", () => {
+			const seam = new FakeSeam()
+			const { projection, dispose } = setup(seam)
+			projection.apply(userEvent("m-u1", "same"))
+			projection.apply(userEvent("m-u2", "same"))
+			expect(projection.rows.filter((r) => r.kind === "user").map((r) => r.key)).toEqual([
+				"user:m-u1", "user:m-u2",
+			])
+			dispose()
+		})
+	})
+
 	test("INTERRUPTED event paints a local seq:null marker and KEEPS the partial output", async () => {
 		const seam = new FakeSeam()
 		seam.script = async (cb) => { cb.onContentDelta("partial answer") }
