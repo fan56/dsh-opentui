@@ -44,6 +44,9 @@ import type { AskOutcome, AskRequestPayload, AskResponseParams, AskSettledPayloa
 import { AskRegistry } from './ask-registry'
 // ADR-0011 T7 — redacted decision journal + session-scoped permission summary.
 import { askPluginRecordType, type AskJournalEvent } from './ask-journal'
+// M3-02 — section registration skeleton lives in append-section.ts; index.ts
+// stays assembly-only so it does not grow the overlap surface with ask (ADR-0011).
+import { registerAppendSection } from './append-section'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -105,6 +108,12 @@ export interface BridgeContext {
    *  `ctx.sessionController`). Resolved through ctx.get with a direct-property
    *  fallback; never imported at runtime. */
   sessionController?: SessionControllerLike
+  /** M3-02: optional host system-prompt service (`dsh-system-prompt`). Resolved
+   *  through ctx.get with a direct-property fallback; never imported at runtime
+   *  (structural typing discipline, see below). NOTE: registration must still
+   *  happen at agent scope (ADR-0010 "scope 注册，禁 global"); this member only
+   *  widens the type surface so the registration skeleton can be carried. */
+  systemPrompt?: SystemPromptLike
 }
 
 // --------------------------------------------------------------------------
@@ -202,6 +211,21 @@ interface SessionListValueLike {
  *  `session/list` RPC (`typert.host.js:2168`, `index.js:3988`). */
 interface SessionControllerLike {
   list(request: { _request: { cursor?: string } }): Promise<SessionListValueLike>
+}
+
+// M3-02 — structural slice of `ctx.systemPrompt` (dsh-system-prompt). Exported
+// so append-section.ts can consume the same shape without importing any
+// @deepseek-ai/* runtime symbol (same discipline as the types above). Fields
+// transcribed from the host `PromptSection` declaration: `text` is static
+// string OR a provider evaluated per assembly; `interpolate` defaults to true.
+export interface SystemPromptSectionLike {
+  readonly name: string
+  readonly order: number
+  readonly text: string | ((context: unknown) => string)
+  readonly interpolate?: boolean
+}
+export interface SystemPromptLike {
+  section(section: SystemPromptSectionLike): () => void
 }
 
 // --------------------------------------------------------------------------
@@ -305,6 +329,19 @@ export const name = 'dsh-opentui-bridge'
 /** `agents` is required for the session seam; `agentDefaultModel` is optional
  *  (read through ctx.get). Cordis resolves injected services before apply. */
 export const inject: string[] = ['agents']
+
+/**
+ * M3-02 assembly seam. registerAppendSection is deliberately NOT called from
+ * apply(): ADR-0010 requires the section to be registered at AGENT scope
+ * ("scope 注册，禁 global"), and the only agent-scoped handle is the
+ * `setup: (agentCtx) => ...` callback on session.open's create/resume — that
+ * wiring is M3-04. This thin, testable helper is the single assembly point:
+ * callers pass the agent-scoped ctx once M3-04 lands. Keeping it out of the
+ * session.open block also keeps this task clear of the ask-channel diff.
+ */
+export function armAppendSection(ctx: BridgeContext): () => void {
+  return registerAppendSection(ctx)
+}
 
 /** ADR-0011 T3: one AskRegistry per stdio connection (= one `apply()` call).
  *  Keyed by ctx rather than a module global so concurrent harnesses/tests stay
@@ -1335,6 +1372,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     try {
       let sessionId: string
       let handle: AgentHandleLike
+      // M3-04 TODO: pass `setup: (agentCtx) => armAppendSection(agentCtx)` in
+      // BOTH agents.create and agents.resume options below so the append
+      // section registers at agent scope (ADR-0010 "scope 注册，禁 global").
+      // M3-02 intentionally stops at the testable assembly helper above.
       if (mode === 'new') {
         // I1: a fresh id is minted here and only here.
         sessionId = randomUUID()
