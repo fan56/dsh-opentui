@@ -103,6 +103,7 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 - `SESSION_NOT_OPEN`
 - `ALREADY_OPEN`（`detail.openSessionId`）
 - `TURN_BUSY`（`detail.turnId`）
+- `TURN_NOT_FOUND`（`turn.abort` 请求的 turnId 不是在途 turn、也非最近已终态 turn 时返回；`detail` 为 `{requestedTurnId, activeTurnId}`，其中 `activeTurnId` 为当前在途 turn id，无在途 turn 时为 `null`）
 - `BAD_PARAMS`
 - `BAD_FRAME`
 - `UNSUPPORTED`

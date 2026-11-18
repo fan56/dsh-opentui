@@ -201,6 +201,11 @@ export const inject: string[] = ['agents']
 
 const PROTOCOL_VERSION = 1
 const STDIO_SWITCH = 'DSH_OPENTUI_BRIDGE_STDIO'
+/** Upper bound on remembered finalized turn ids for abort idempotency (D3).
+ *  The set is a FIFO: once more than this many turns have finalized, the oldest
+ *  id is evicted. An evicted id is no longer remembered, so a late repeated
+ *  `turn.abort` for it is answered TURN_NOT_FOUND rather than a noop. */
+const TERMINAL_TURN_ID_LIMIT = 64
 
 /** Walk up from a file path until a package.json with the wanted name is found. */
 function findPackageVersion(entryFile: string, wantedName: string): string | undefined {
@@ -509,9 +514,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  terminal frame arrives, so a `turn/end` racing ahead of `whenIdle()` is
    *  never dropped. */
   let activeTurn: TurnStreamState | undefined
-  /** Last finalized turn id — lets a repeated `turn.abort` on an already-ended
-   *  turn answer `{noop:true}` instead of an error. */
-  let lastTerminalTurnId: string | undefined
+  /** Bounded FIFO of recently finalized turn ids (insertion-ordered Set). Lets
+   *  a repeated `turn.abort` on an already-ended turn answer `{noop:true}`
+   *  regardless of how many turns ran after it (D3). At most
+   *  TERMINAL_TURN_ID_LIMIT ids are retained; the oldest is evicted first once
+   *  the cap is exceeded, and an evicted id then answers TURN_NOT_FOUND. */
+  const terminalTurnIds = new Set<string>()
   let unsubSessionEvent: (() => void) | undefined
   let unsubStream: (() => void) | undefined
 
@@ -604,6 +612,17 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     scheduleFlush(state)
   }
 
+  /** Remember a finalized turn id for abort idempotency, keeping the FIFO
+   *  bounded to TERMINAL_TURN_ID_LIMIT (oldest-first eviction). */
+  function rememberTerminalTurnId(turnId: string): void {
+    terminalTurnIds.add(turnId)
+    while (terminalTurnIds.size > TERMINAL_TURN_ID_LIMIT) {
+      const oldest = terminalTurnIds.values().next().value
+      if (oldest === undefined) break
+      terminalTurnIds.delete(oldest)
+    }
+  }
+
   /** Emit the single terminal frame and release the turn guards. Error turns
    *  emit ONLY `turn.error` — never a follow-up `turn.end` (M2-2 semantics). */
   function finalizeTurn(state: TurnStreamState, terminal: TerminalDecision): void {
@@ -629,7 +648,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
     if (activeTurn === state) activeTurn = undefined
     if (inFlightTurnId === state.turnId) inFlightTurnId = undefined
-    lastTerminalTurnId = state.turnId
+    rememberTerminalTurnId(state.turnId)
     logger.info(
       '[dsh-opentui-bridge] turn %s finalized kind=%s textChars=%d deltas=%d tokenFrames=%d',
       state.turnId,
@@ -770,7 +789,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   async function disposeBinding(current: SessionBinding): Promise<void> {
     binding = undefined
     inFlightTurnId = undefined
-    lastTerminalTurnId = undefined
+    terminalTurnIds.clear()
     // Drop any in-flight stream accumulator for this session. The connection-
     // level firehose subscriptions stay armed (they are session-filtered), but
     // no further frames can be emitted without an activeTurn. This is what
@@ -1014,19 +1033,26 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
 
   /** `turn.abort` — cancel ONLY the current in-flight turn (ADR-0010 I3).
    *
+   * - `turnId` MUST be a non-empty string. Missing / empty / non-string ids are
+   *   `BAD_PARAMS`, and the check runs first so a malformed request can never
+   *   cancel an in-flight turn.
    * - `sessionId`, `binding`, and the handle are never touched here: no close,
    *   no dispose, no id change. The host's `agent.cancel({kind:'user'},{keepInbox:true})`
    *   fires the active driver's AbortSignal; the turn's terminal frame arrives
    *   on the existing firehose subscription (M2-2 maps an `aborted` reason to
    *   `turn.error{code:'ABORTED'}`).
-   * - `turnId` must name the current in-flight turn. A different/unknown id is
-   *   `TURN_NOT_FOUND` (detail carries the requested and active ids).
-   * - Idempotent: repeating the abort of the same turn — whether its terminal
-   *   has arrived or not — returns `{ noop: true }` instead of an error.
+   * - An unknown id (never seen, or not the current in-flight turn) is
+   *   `TURN_NOT_FOUND` with `detail:{requestedTurnId, activeTurnId}`.
+   * - Idempotent: repeating an abort for an already-terminal turn returns
+   *   `{noop:true}` regardless of how many turns ran after it, as long as the id
+   *   is still in the bounded FIFO (TERMINAL_TURN_ID_LIMIT). Repeating an abort
+   *   for the in-flight turn before its terminal arrives is also a noop. An id
+   *   evicted from the FIFO is no longer known and answers TURN_NOT_FOUND.
    */
   function handleAbort(req: ParsedRequest): void {
+    // Validate first: a missing/empty/non-string turnId must never reach cancel.
     const requested = req.params.turnId
-    if (requested !== undefined && (typeof requested !== 'string' || requested === '')) {
+    if (typeof requested !== 'string' || requested === '') {
       replyError(req.id, 'BAD_PARAMS', 'turn.abort requires a non-empty turnId string')
       return
     }
@@ -1035,53 +1061,46 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     const inFlight =
       inFlightTurnId !== undefined && state !== undefined && !state.ended && inFlightTurnId === state.turnId
 
-    if (!inFlight) {
-      // No live turn. Repeating an abort on the last finalized turn (or on a
-      // turn whose cancel was already issued) is a successful no-op.
-      if (requested === undefined || requested === lastTerminalTurnId) {
-        replyOk(req.id, { noop: true, ...(requested !== undefined ? { turnId: requested } : {}) })
+    // Already-terminal turn: bounded-FIFO idempotency, independent of whatever
+    // turn is currently in flight (D3).
+    if (terminalTurnIds.has(requested)) {
+      replyOk(req.id, { noop: true, turnId: requested })
+      return
+    }
+
+    // The named turn is the live one: issue (or repeat) its cancel.
+    if (inFlight && requested === state.turnId) {
+      if (state.abortRequested) {
+        replyOk(req.id, { noop: true, turnId: state.turnId })
         return
       }
-      replyError(
-        req.id,
-        'TURN_NOT_FOUND',
-        'requested turnId is not the current in-flight turn',
-        { requestedTurnId: requested, activeTurnId: inFlightTurnId ?? null },
-      )
+
+      const agent = binding?.handle.agent
+      if (agent === undefined || typeof agent.cancel !== 'function') {
+        replyError(req.id, 'INTERNAL', 'open agent has no cancel() seam')
+        return
+      }
+      state.abortRequested = true
+      try {
+        // Fire-and-forget, exactly dsh-tui-pi's cancelActiveTurn: keepInbox
+        // preserves queued prompts; only the active turn is aborted.
+        agent.cancel({ kind: 'user' }, { keepInbox: true })
+        logger.info('[dsh-opentui-bridge] turn.abort issued turnId=%s sessionId=%s', state.turnId, state.sessionId)
+        replyOk(req.id, { turnId: state.turnId, aborted: true })
+      } catch (err) {
+        logger.error('[dsh-opentui-bridge] turn.abort failed: %s', err)
+        replyError(req.id, 'INTERNAL', err instanceof Error ? err.message : String(err))
+      }
       return
     }
 
-    if (requested !== undefined && requested !== state.turnId) {
-      replyError(
-        req.id,
-        'TURN_NOT_FOUND',
-        'requested turnId does not match the in-flight turn',
-        { requestedTurnId: requested, activeTurnId: state.turnId },
-      )
-      return
-    }
-
-    if (state.abortRequested) {
-      replyOk(req.id, { noop: true, turnId: state.turnId })
-      return
-    }
-
-    const agent = binding?.handle.agent
-    if (agent === undefined || typeof agent.cancel !== 'function') {
-      replyError(req.id, 'INTERNAL', 'open agent has no cancel() seam')
-      return
-    }
-    state.abortRequested = true
-    try {
-      // Fire-and-forget, exactly dsh-tui-pi's cancelActiveTurn: keepInbox
-      // preserves queued prompts; only the active turn is aborted.
-      agent.cancel({ kind: 'user' }, { keepInbox: true })
-      logger.info('[dsh-opentui-bridge] turn.abort issued turnId=%s sessionId=%s', state.turnId, state.sessionId)
-      replyOk(req.id, { turnId: state.turnId, aborted: true })
-    } catch (err) {
-      logger.error('[dsh-opentui-bridge] turn.abort failed: %s', err)
-      replyError(req.id, 'INTERNAL', err instanceof Error ? err.message : String(err))
-    }
+    // Unknown / stale id — never touches the in-flight turn.
+    replyError(
+      req.id,
+      'TURN_NOT_FOUND',
+      inFlight ? 'requested turnId does not match the in-flight turn' : 'requested turnId is not a known turn',
+      { requestedTurnId: requested, activeTurnId: inFlightTurnId ?? null },
+    )
   }
 
   /** `journal.replay` — read-only drain of one session's durable event log.
