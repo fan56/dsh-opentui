@@ -928,5 +928,7 @@
   "recovery.action.newSession": "New session",
   "recovery.action.quit": "Quit",
   "recovery.command.title": "Reconnect bridge session",
-  "recovery.composer.disabled": "Reconnecting..."
+  "recovery.composer.disabled": "Reconnecting...",
+  "recovery.turn.interrupted": "Interrupted - connection lost mid-turn (local marker, turn {turnId})",
+  "recovery.input.unconfirmed": "Unconfirmed input - not acknowledged by the host yet"
 }

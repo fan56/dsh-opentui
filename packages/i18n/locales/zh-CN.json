@@ -928,5 +928,7 @@
   "recovery.action.newSession": "新会话",
   "recovery.action.quit": "退出",
   "recovery.command.title": "重连桥接会话",
-  "recovery.composer.disabled": "正在恢复连接…"
+  "recovery.composer.disabled": "正在恢复连接…",
+  "recovery.turn.interrupted": "已中断 - turn 在途时连接断开（本地标记，turn {turnId}）",
+  "recovery.input.unconfirmed": "未确认输入 - 宿主尚未确认"
 }

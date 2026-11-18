@@ -400,6 +400,34 @@ export function bridgeReplayRowsToSeamTranscript(
 }
 
 /**
+ * A7: does the drained journal carry a TERMINAL for the turn that was in
+ * flight when the bridge died? The host journal records `turn/end` with
+ * `data.reason.kind` (completed / aborted / error / interrupted / blocked /
+ * forked / max-tokens); a crash mid-turn leaves `turn/start` with NO following
+ * `turn/end`. turnId is a bridge-side UUID and is NOT in the journal, so the
+ * association is by order: the terminal closing the in-flight turn is any
+ * `turn/end` (or a defensive `turn/error`) at a seq ABOVE the last
+ * `turn/start`, or — when that start was applied before this drain window —
+ * any such row in the drained window.
+ *
+ * Read-only: this never writes to the journal (blocky 2.4: journal is the
+ * single source of truth; the client only infers a LOCAL marker).
+ */
+export function journalHasTurnTerminal(rows: readonly BridgeReplayRow[]): boolean {
+	let lastStart = -Infinity
+	let hasStart = false
+	for (const row of rows) {
+		if (row.type === "turn/start") {
+			lastStart = row.seq
+			hasStart = true
+		}
+	}
+	return rows.some((row) =>
+		(row.type === "turn/end" || row.type === "turn/error") && (!hasStart || row.seq > lastStart),
+	)
+}
+
+/**
  * Bridge turn events → the seam-event shapes seam-rows.ts consumes.
  *
  * Explicitly NOT projected (ticket §2 seq 4 / ADR-0010 event list):
@@ -546,6 +574,12 @@ export class BridgeSessionSeam implements SessionSeam {
 	/** A6: true from recoverSession's attach step until the drain is applied.
 	 *  While true, an incoming `ask.pending` frame is buffered, not applied. */
 	#replayDrainPending = false
+	/** A7: the in-flight turn as of the DEAD frame — id plus the text deltas
+	 *  already delivered to the view. A fact captured at death time, consumed
+	 *  once after replay; NEVER written to the journal (blocky 2.4). */
+	#deadInFlight: { turnId: string; partial: string } | undefined
+	/** A7: text-delta accumulator for the generation currently in flight. */
+	#inFlightPartial = ""
 	/** A6: rebuilt asks whose `ask.response` failed because the ask/turn is gone
 	 *  (ASK_UNKNOWN_REQUEST / ASK_TURN_ENDED), keyed by eventId → reason. Kept
 	 *  read-only for the view to paint a terminal "已失效" card (never vanish). */
@@ -759,6 +793,28 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#bufferedPendingSnapshot = undefined
 		this.#replayDrainPending = false
 		if (buffered !== undefined) this.#applyPendingSnapshot(buffered)
+
+		// (e) A7 — the in-flight turn at DEAD gets a LOCAL INTERRUPTED marker
+		// ONLY when the durable journal stays silent about its terminal. If a
+		// `turn/end` / `turn/error` was replayed, the host's real terminal is
+		// already in the transcript — do NOT paint a second one. This event is
+		// client-inferred (seq:null, source:"local") and is NEVER journaled.
+		const dead = this.#deadInFlight
+		this.#deadInFlight = undefined
+		if (dead !== undefined && !journalHasTurnTerminal(drained.rows)) {
+			emit({
+				type: "bridge.turn.interrupted",
+				details: {
+					sessionID: boundId,
+					turnId: dead.turnId,
+					partial: dead.partial,
+					reason: "connection lost while the turn was in flight",
+					code: "INTERRUPTED",
+					seq: null,
+					source: "local",
+				},
+			})
+		}
 
 		this.#sessionAttached = true
 		this.#connection = "connected"
@@ -1015,6 +1071,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		// may clear the slots; a stale turn cannot wipe a newer one's state.
 		const gen = ++this.#turnGeneration
 		this.#inFlightGeneration = gen
+		// A7: a NEW turn supersedes any stale death snapshot; start a fresh
+		// partial-text accumulator for this generation.
+		this.#deadInFlight = undefined
+		this.#inFlightPartial = ""
 		let sendFailed: unknown
 		try {
 			// Bind a staged id (resume/new) at the next turn, as in the remote seam.
@@ -1060,7 +1120,16 @@ export class BridgeSessionSeam implements SessionSeam {
 				this.#turnDone = resolve
 			})
 			const sent = asRecord(await this.#transport.request("session.send", { text: userText }))
-			if (typeof sent.turnId === "string") this.#inFlightTurnId = sent.turnId
+			if (typeof sent.turnId === "string") {
+				this.#inFlightTurnId = sent.turnId
+				// A7 scenario 3: session.send resolves with a turnId = the submit
+				// ACK. The submit path carries NO client inputId (see report), so
+				// the view matches this ACK to its optimistic user row by text.
+				this.#emitEvent({
+					type: "bridge.input.acked",
+					details: { sessionID: this.#currentSessionId ?? "", turnId: sent.turnId, text: userText },
+				})
+			}
 			await done
 		} catch (err) {
 			sendFailed = err
@@ -1099,6 +1168,8 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#turnDone = undefined
 		this.#inFlightTurnId = undefined
 		this.#inFlightGeneration = 0
+		this.#inFlightPartial = ""
+		this.#deadInFlight = undefined
 		this.#turn = "idle"
 		try {
 			if (this.#sessionAttached) await this.#transport.request("session.close")
@@ -1412,6 +1483,12 @@ export class BridgeSessionSeam implements SessionSeam {
 		// the composition-root callback synchronously.
 		if (frame.type === "bridge.dead") {
 			const cause = asDeadCause(frame.payload)
+			// A7: snapshot the in-flight turn BEFORE any state flip. The DEAD
+			// transition is the only moment we can factually say "a turn was
+			// in flight"; replay later decides whether the host terminalized it.
+			if (this.#inFlightGeneration !== 0 && this.#inFlightTurnId !== undefined && this.#inFlightTurnId !== "") {
+				this.#deadInFlight = { turnId: this.#inFlightTurnId, partial: this.#inFlightPartial }
+			}
 			this.#bridgeLink = "dead"
 			this.#connection = "disconnected"
 			this.#turn = "idle"
@@ -1450,6 +1527,14 @@ export class BridgeSessionSeam implements SessionSeam {
 					this.#usage[key] += usage[key] ?? 0
 				}
 			}
+		}
+
+		// A7: remember the text already delivered to the view so a local
+		// INTERRUPTED marker can report what was produced. Bounded to avoid an
+		// unbounded buffer on a long stream; this is a local fact, never a
+		// journal write.
+		if (frame.type === "turn.token" && payload.kind !== "reasoning" && typeof payload.text === "string" && payload.text) {
+			this.#inFlightPartial = (this.#inFlightPartial + payload.text).slice(-4096)
 		}
 
 		// live turn callbacks (double-paint law: content goes through turn()).

@@ -70,8 +70,30 @@ import { sessionLockedErrorText } from "../../util/error"
 
 /** One projected transcript row (the rebuilt `SessionRow` slice). */
 export type SeamRow =
-	| { key: string; kind: "user"; text: string; final: true }
+	| {
+			key: string
+			kind: "user"
+			text: string
+			final: true
+			/** A7 scenario 3: optimistic submit not yet ACKed by the bridge.
+			 *  Cleared on `bridge.input.acked`; a replayed journal prompt always
+			 *  replaces it (content dedup, since the wire carries no inputId). */
+			unconfirmed?: boolean
+			/** A7: null marks a client-inferred row (never from the journal). */
+			seq?: number | null
+	  }
 	| { key: string; kind: "assistant"; text: string; final: boolean }
+	| {
+			/** A7 scenario 2: a LOCAL "interrupted by disconnection" marker for
+			 *  a turn the journal stayed silent about. `seq:null` makes its
+			 *  provenance unmistakable — it is NOT a journal event. */
+			key: string
+			kind: "interrupted"
+			text: string
+			final: true
+			seq: null
+			turnId: string
+	  }
 	| {
 			key: string
 			kind: "reasoning"
@@ -554,6 +576,41 @@ export function createSeamRows(
 			})
 			return
 		}
+		if (event.type === "bridge.input.acked") {
+			if (typeof details.sessionID === "string" && details.sessionID !== sessionID()) return
+			const text = typeof details.text === "string" ? details.text.trim() : ""
+			// The submit path has no client inputId (session.send carries only
+			// {text}), so the ACK is matched to the optimistic local user row by
+			// content — the same key the journal prompt dedup uses below.
+			setRows(produce((draft) => {
+				for (const row of draft) {
+					if (row.kind === "user" && row.unconfirmed === true && row.key.startsWith("user:local") && row.text.trim() === text) {
+						row.unconfirmed = false
+						break
+					}
+				}
+			}))
+			return
+		}
+		if (event.type === "bridge.turn.interrupted") {
+			if (typeof details.sessionID === "string" && details.sessionID !== sessionID()) return
+			const turnId = typeof details.turnId === "string" ? details.turnId : ""
+			if (turnId === "") return
+			const reason = typeof details.reason === "string" ? details.reason : "interrupted"
+			// seq:null is the provenance tag: this row is a CLIENT inference,
+			// never a journal event. It is appended below the partial output —
+			// the streamed assistant/reasoning rows stay untouched (kept, not
+			// silently dropped).
+			upsert({
+				key: `interrupted:local:${turnId}`,
+				kind: "interrupted",
+				text: reason,
+				final: true,
+				seq: null,
+				turnId,
+			})
+			return
+		}
 		if (event.type === "session.error") {
 			const message = typeof details.message === "string" ? details.message : "unknown error"
 			upsert({ key: `error:local-${++liveOrdinal}`, kind: "assistant", text: `error: ${message}`, final: true })
@@ -569,7 +626,10 @@ export function createSeamRows(
 		const prompt = text.trim()
 		if (!prompt) return
 		const userKey = `user:local-${++liveOrdinal}`
-		upsert({ key: userKey, kind: "user", text: prompt, final: true })
+		// A7 scenario 3: paint the optimistic submit as UNCONFIRMED until the
+		// bridge ACKs session.send (bridge.input.acked) or replay reveals the
+		// journal prompt (content dedup in the message.updated handler).
+		upsert({ key: userKey, kind: "user", text: prompt, final: true, unconfirmed: true, seq: null })
 		const assistantKey = `assistant:live-${++liveOrdinal}`
 		const reasoningKey = `reasoning:live-${liveOrdinal}`
 		const group: LiveTurnGroup = { userKey, reasoningKey, assistantKey, userSuperseded: false }

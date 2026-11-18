@@ -761,3 +761,53 @@ describe("dock retention and clear-old-at-new-tool", () => {
 		dispose()
 	})
 })
+
+describe("A7: local disconnection markers in the transcript store", () => {
+	test("optimistic submit is UNCONFIRMED until the bridge ACK clears it (content match)", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => { cb.onContentDelta("partial") }
+		const { projection, dispose } = setup(seam)
+		await projection.send("question")
+		const local = projection.rows.find((r) => r.key === "user:local-1")
+		expect(local).toMatchObject({ kind: "user", text: "question", unconfirmed: true, seq: null })
+
+		// No client inputId exists on session.send — the ACK matches by text.
+		seam.emit({ type: "bridge.input.acked", details: { sessionID: "s1", turnId: "t1", text: "question" } })
+		expect(projection.rows.find((r) => r.key === "user:local-1")).toMatchObject({ unconfirmed: false })
+		dispose()
+	})
+
+	test("replay reveals the journal prompt → content dedup, ONE user row, no unconfirmed leftover", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => { cb.onContentDelta("partial") }
+		const { projection, dispose } = setup(seam)
+		await projection.send("question")
+		seam.emit({ type: "message.updated", details: { id: "m-u1", role: "user", text: "question", sessionID: "s1" } })
+
+		const users = projection.rows.filter((r) => r.kind === "user")
+		expect(users).toHaveLength(1)
+		expect(users[0]).toMatchObject({ key: "user:m-u1", text: "question" })
+		expect(users[0]).not.toHaveProperty("unconfirmed")
+		dispose()
+	})
+
+	test("INTERRUPTED event paints a local seq:null marker and KEEPS the partial output", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => { cb.onContentDelta("partial answer") }
+		const { projection, dispose } = setup(seam)
+		await projection.send("question")
+		seam.emit({
+			type: "bridge.turn.interrupted",
+			details: { sessionID: "s1", turnId: "t-9", seq: null, source: "local", reason: "connection lost mid-turn" },
+		})
+
+		const mark = projection.rows.find((r) => r.kind === "interrupted")
+		expect(mark).toMatchObject({
+			key: "interrupted:local:t-9", kind: "interrupted", turnId: "t-9", seq: null,
+		})
+		// Partial output survives — no silent drop, no error row.
+		expect(projection.rows.some((r) => r.kind === "assistant" && r.text === "partial answer")).toBe(true)
+		expect(projection.rows.some((r) => r.kind === "assistant" && r.text.startsWith("error:"))).toBe(false)
+		dispose()
+	})
+})

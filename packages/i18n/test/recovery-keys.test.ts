@@ -20,6 +20,8 @@ const KEYS = [
 	"recovery.action.quit",
 	"recovery.command.title",
 	"recovery.composer.disabled",
+	"recovery.turn.interrupted",
+	"recovery.input.unconfirmed",
 ] as const
 
 const bundled = () => loadLocales({ bundledDir }).languages
@@ -38,6 +40,8 @@ describe("recovery locale keys (en / zh-CN)", () => {
 		}
 		expect([...extractParams(bundled().get("en")!["recovery.recovered"]!)].sort()).toEqual(["count"])
 		expect([...extractParams(bundled().get("en")!["recovery.failed.reason"]!)].sort()).toEqual(["reason"])
+		expect([...extractParams(bundled().get("en")!["recovery.turn.interrupted"]!)].sort()).toEqual(["turnId"])
+		expect([...extractParams(bundled().get("en")!["recovery.input.unconfirmed"]!)].sort()).toEqual([])
 	})
 
 	test("en interpolates count and reason, zh-CN keeps the same placeholders", () => {
