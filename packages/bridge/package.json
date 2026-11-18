@@ -1,0 +1,33 @@
+{
+  "name": "@aiwayds/dsh-opentui-bridge",
+  "version": "0.1.0",
+  "description": "In-process cordis bridge for dsh-opentui (skeleton; IPC protocol not implemented yet)",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml"
+  ],
+  "scripts": {
+    "build": "bun ../../scripts/build-bridge.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@types/node": "26.6.5",
+    "typescript": "5.9.3"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

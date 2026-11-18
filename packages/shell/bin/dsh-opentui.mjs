@@ -7,8 +7,12 @@
  *   0. Bin-level flags — `--version` prints `dsh-opentui <version>` and
  *      exits 0 BEFORE anything else (no provision, no TUI); `--force` kills
  *      this profile's stale instances (resident dsh host + bun client, TERM
- *      then KILL) before startup continues. Both are consumed by the bin
- *      and never forwarded to the client.
+ *      then KILL) before startup continues. `--repair-bridge` is a terminal
+ *      maintenance command: it runs the in-process bridge self-heal (T7) and
+ *      exits before any bun/dsh check, TUI launch, or default-seam change; it
+ *      implicitly enables in-process provisioning without needing
+ *      DSH_OPENTUI_INPROC=1. All three are consumed by the bin and never
+ *      forwarded to the client.
  *   1. bun check — the client bundle runs under bun (FFI, import attributes,
  *      bun export conditions); no bun on PATH → install guidance, exit 1.
  *   2. dsh check — the host CLI is the session carrier (profile storage,
@@ -70,7 +74,7 @@ function capture(cmd, args) {
 }
 
 // --- 0. Bin-level flags: --version short-circuits, --force pre-clears -------
-const { version: versionFlag, force: forceFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
+const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
   const version = readLauncherVersion(pkgRoot)
@@ -175,6 +179,25 @@ if (validation.unknown.length > 0) {
   process.exit(2)
 }
 
+// --- 0.7 --repair-bridge: terminal in-process bridge self-heal (T7) ---------
+// This is a maintenance command, not a launch. It implicitly enables in-process
+// provisioning (no DSH_OPENTUI_INPROC=1 needed) by invoking the SAME provisioner
+// the opt-in startup path uses, in its repair mode. It deliberately exits here
+// — before the bun/dsh checks, the default `opentui` profile bootstrap, the
+// client-connection link, and the bun client launch — so it never starts a TUI
+// and never changes the default seam (that is M2's job). The provisioner owns
+// the lock, the repair logic and the T5 identity guard; its exit status is ours.
+if (repairBridgeFlag) {
+  const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-inproc-profile.mjs'), '--repair'], {
+    stdio: 'inherit',
+  })
+  if (r.error) {
+    console.error(`dsh-opentui: in-process bridge repair failed: ${r.error.message}`)
+    process.exit(1)
+  }
+  process.exit(r.status ?? 0)
+}
+
 // Write a timeout to the client env only when the user supplied that flag:
 // defaults must not clobber a value already set in the shell environment.
 const clientEnv = { ...process.env }
@@ -253,6 +276,27 @@ const opentuiProfileDir = join(dshHome, 'profiles', 'opentui')
   }
   if (r.status !== 0) {
     console.error(`dsh-opentui: profile provisioning exited ${r.status}; continuing with the profile as-is.`)
+  }
+}
+
+// --- 3b. In-process bridge profile provisioning (opt-in, T3) ---------------
+// DSH_OPENTUI_INPROC=1 is the ONLY switch: without it nothing here runs and
+// production behavior (the `opentui` profile path above) is byte-for-byte
+// unchanged. The new script provisions ONLY the `opentui-inproc` profile:
+// bundle manifest + absolute symlink to the embedded dist/bridge artifact.
+// A non-zero exit is fatal in this mode (the profile cannot work without it),
+// unlike the best-effort default path above.
+if (process.env.DSH_OPENTUI_INPROC === '1') {
+  const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-inproc-profile.mjs')], {
+    stdio: 'inherit',
+  })
+  if (r.error) {
+    console.error(`dsh-opentui: in-process profile provisioning failed: ${r.error.message}`)
+    process.exit(1)
+  }
+  if (r.status !== 0) {
+    console.error(`dsh-opentui: in-process profile provisioning exited ${r.status}; aborting.`)
+    process.exit(1)
   }
 }
 

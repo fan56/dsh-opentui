@@ -49,8 +49,10 @@ export function defaultDshHome() {
  * Split the launcher's argv into the flags the bin consumes itself and the
  * arguments forwarded to the client bundle.
  *
- * `-v`/`--version` and `--force` are BIN-level flags: they are consumed here
- * and NOT forwarded (the client must never see `--force`).
+ * `-v`/`--version`, `--force` and `--repair-bridge` are BIN-level flags: they
+ * are consumed here and NOT forwarded (the client must never see them).
+ * `--repair-bridge` is a terminal maintenance command: the bin runs the
+ * in-process bridge self-heal and exits without launching the TUI.
  *
  * A standalone `--` ends launcher parsing: every token after it (even one that
  * spells a launcher flag) goes to `passthrough` verbatim and is never
@@ -61,6 +63,7 @@ export function parseLauncherArgs(argv) {
 	const args = Array.isArray(argv) ? argv : []
 	let version = false
 	let force = false
+	let repairBridge = false
 	const rest = []
 	const passthrough = []
 	let separatorSeen = false
@@ -81,9 +84,13 @@ export function parseLauncherArgs(argv) {
 			force = true
 			continue
 		}
+		if (arg === '--repair-bridge') {
+			repairBridge = true
+			continue
+		}
 		rest.push(arg)
 	}
-	return { version, force, rest, passthrough }
+	return { version, force, repairBridge, rest, passthrough }
 }
 
 /**
@@ -224,6 +231,7 @@ export function validateLauncherArgs(rest, { skip = [] } = {}) {
 		'--version',
 		'-v',
 		'--force',
+		'--repair-bridge',
 		...LAUNCHER_TIMEOUT_FLAGS,
 		'-h',
 		'--help',
@@ -281,6 +289,7 @@ export function formatUsage() {
 		'Options:',
 		'  -v, --version              print the launcher version and exit',
 		'  --force                    kill stale dsh processes before starting',
+		'  --repair-bridge            repair the in-process bridge symlink / manifest, re-verify its identity, then exit (no TUI)',
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
 		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
 		'  --connect-timeout <sec>    seconds to wait for the first connection (default: 30)',

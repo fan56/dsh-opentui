@@ -69,7 +69,7 @@ or aggregation, or a degraded path), MISSING (no remote equivalent).
 | 12 | /new fresh session | TUI→host | host-session.ts:143-156 | new `session/create` (new sessionId); blank-reuse rules host-native | FULL |
 | 13 | Session list (/sessions) | TUI→host | host-session.ts:208-240 (`sessionPersistence.list` + retention filter) | `session/list` (SessionSummary: running/blank/cwd/parentSessionId/formatStatus/projections); retention filter stays client-side | FULL |
 | 14 | Stored transcript replay on resume | both | host-session.ts:176-205 (`persistence.open(id,'read')` drain) | `session/page` (backwards journal pages) + `session/follow` opening snapshot (records+cursor) | FULL |
-| 15 | /resume + single-writer guard | both | host-session.ts:164-168, 826-838 (`SessionAlreadyOwnedError`) | resume via `session/create` on stored id (writer lock retained); blocked resume returns `session/writer-held` — session-controller README | FULL |
+| 15 | /resume + single-writer guard | both | host-session.ts:164-168, 826-838 (`SessionAlreadyOwnedError`) | no resume/select/open/attach RPC in the 25 `@Remote` `session` methods; `session/create` on a stored id re-mints a new session (`claim()` `reusable = request.reusable(id) && !events.some(e => e.type === 'turn/start')` = false once history exists; `agent.ts:352-371`); only writer lock is native (`session/writer-held` on blocked resume) | MISSING (resume; writer guard native — see ADR-0009) |
 | 16 | Idle-release write lock (takeover contract) | TUI→host | host-session.ts:868-919 (dispose after idle, reattach + wake diff) | host writer lock is native; `session/follow` read-only watch needs no lock; wake diff = follow opening snapshot. TUI-side mechanism deleted | FULL (host-native; TUI code removal) |
 | 17 | /tail read-only watch of another process's session | host→TUI | host-session.ts:513-584 (zstd CLI poll of ~/.dsh/sessions) | `session/follow` on that sessionId (no activation needed); reconnect gap repair via tail page | FULL (strictly better than today) |
 | 18 | /history turn grouping + fork-at-turn | both | host-session.ts:1057-1139 (`session.snapshotEvents()`, `agents.create` with seed) | `session/fork` (`atSeq` exact prefix; omission = latest completed turn) — types.d.ts:320; turn grouping client-side from follow records | FULL |
@@ -100,6 +100,8 @@ or aggregation, or a degraded path), MISSING (no remote equivalent).
 | 43 | Transcript windowing, dock widgets, overlays, palette, stop-confirm, history recall | client | kit/*, features/dock.tsx, ShellHost.tsx:1163-1310 | pure client rendering, untouched | FULL (no host coupling) |
 | 44 | Surface protocol (declarative widgets) | client | `packages/runtime/src/protocol.ts`, surface-service.ts | `SurfaceStore` reserved in ShellHost (:30-33), not host-coupled; no remote needed for v1 | FULL (client-local / out of scope) |
 | 45 | Connection lifecycle, reconnect, auth | new | n/a (in-process today) | `/connect` token→cookie, `/api` POST, mux WS, `$events` generation + ConnectionController retry caps — `dsh-client-connection` README | new build (effort bucket a) |
+
+> Correction (2026-11-18): row 15's former "resume via `session/create` on stored id = FULL" verdict was wrong — there is no resume RPC and `session/create` re-mints a new id, which silently drops the model's context. See ADR-0009 (in-process session bridge) for the root-cause chain and ADR-0010 for the lifecycle contract.
 
 ## 2. Gap list — what is concretely missing
 

@@ -42,30 +42,49 @@ const pkgVersion = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'
 
 describe('parseLauncherArgs', () => {
   test('consumes --version and --force, forwards the rest', () => {
-    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, repairBridge: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, repairBridge: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, repairBridge: false, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--model', 'x', '--force', 'prompt'])).toEqual({
       version: false,
       force: true,
+      repairBridge: false,
       rest: ['--model', 'x', 'prompt'],
       passthrough: [],
     })
   })
 
   test('treats -v as an alias for --version', () => {
-    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, repairBridge: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, repairBridge: false, rest: [], passthrough: [] })
   })
 
   test('leaves unrelated arguments (including lookalikes) untouched', () => {
     expect(parseLauncherArgs(['--model', '--version-like', '--forced'])).toEqual({
       version: false,
       force: false,
+      repairBridge: false,
       rest: ['--model', '--version-like', '--forced'],
       passthrough: [],
     })
-    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, repairBridge: false, rest: [], passthrough: [] })
+  })
+
+  test('consumes --repair-bridge as a bin-level flag, forwarding the rest', () => {
+    expect(parseLauncherArgs(['--repair-bridge'])).toEqual({
+      version: false,
+      force: false,
+      repairBridge: true,
+      rest: [],
+      passthrough: [],
+    })
+    expect(parseLauncherArgs(['--model', 'x', '--repair-bridge', 'prompt'])).toEqual({
+      version: false,
+      force: false,
+      repairBridge: true,
+      rest: ['--model', 'x', 'prompt'],
+      passthrough: [],
+    })
   })
 })
 
@@ -281,6 +300,7 @@ describe('parseLauncherArgs -- separator', () => {
     ).toEqual({
       version: false,
       force: false,
+      repairBridge: false,
       rest: ['--model', 'm'],
       passthrough: ['--version', '--force', '--verison', 'plain'],
     })
@@ -305,6 +325,12 @@ describe('parseLauncherArgs -- separator', () => {
   test('-h and --help after -- are passthrough, never interpreted as help', () => {
     expect(parseLauncherArgs(['--', '-h', '--help']).passthrough).toEqual(['-h', '--help'])
   })
+
+  test('--repair-bridge after -- is passthrough, never a repair flag', () => {
+    const result = parseLauncherArgs(['--', '--repair-bridge'])
+    expect(result.repairBridge).toBe(false)
+    expect(result.passthrough).toEqual(['--repair-bridge'])
+  })
 })
 
 describe('formatUsage', () => {
@@ -313,6 +339,7 @@ describe('formatUsage', () => {
     for (const flag of [
       '-v, --version',
       '--force',
+      '--repair-bridge',
       '--boot-timeout <sec>',
       '--mux-timeout <sec>',
       '--connect-timeout <sec>',
