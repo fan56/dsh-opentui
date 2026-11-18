@@ -26,7 +26,10 @@
   },
   "dependencies": {},
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.1.0",
     "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-scope": "0.2.2-rc.3",
+    "@deepseek-ai/dsh-system-prompt": "0.2.2-rc.3",
     "@types/node": "26.6.5",
     "typescript": "5.9.3"
   },
