@@ -5,7 +5,7 @@
  * Covers the full acceptance matrix from the M3-03 inventory row / ADR-0010:140-142.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -129,6 +129,35 @@ describe('M3-03: createAppendTextProvider', () => {
     writeFileSync(filePath, 'BBB', 'utf8')
     utimesSync(filePath, d2, d2)
     expect(text({})).toBe('BBB')
+  })
+
+  test('transient read failure after a cached read -> previous cache, no warn (P2-2)', () => {
+    const { logger, warnings } = makeLogger()
+    const d1 = new Date('2020-01-01T00:00:00.000Z')
+    writeFileSync(filePath, 'CACHED', 'utf8')
+    utimesSync(filePath, d1, d1)
+
+    const text = provider({}, logger)
+    expect(text({})).toBe('CACHED')
+
+    // Replace the regular file with a directory at the same path: statSync still
+    // succeeds but readFileSync throws EISDIR. A different mtime forces past the
+    // cache fast-path into the read-failure branch (not the missing-file branch).
+    rmSync(filePath)
+    mkdirSync(filePath)
+    const d2 = new Date('2020-01-01T00:01:00.000Z')
+    utimesSync(filePath, d2, d2)
+    expect(text({})).toBe('CACHED') // falls back to the previous cache
+    expect(warnings).toHaveLength(0) // still silent
+  })
+
+  test('transient read failure before any cached read -> empty string, no warn (P2-2)', () => {
+    const { logger, warnings } = makeLogger()
+    // Directory stats fine but cannot be read (EISDIR); with no prior successful
+    // read the fallback is '' — same observable result as a missing file, silent.
+    mkdirSync(filePath)
+    expect(provider({}, logger)({})).toBe('')
+    expect(warnings).toHaveLength(0)
   })
 
   test('section text is unconditional: no session metadata can suppress APPEND_SYSTEM.md', () => {

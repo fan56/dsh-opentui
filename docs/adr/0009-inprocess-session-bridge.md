@@ -59,9 +59,20 @@ Negative / cost:
 
 - **0.22.0 单 tarball 使 bridge 没有独立回滚单元**：bridge 与 TUI 同包发布，回滚必须整体回滚，不能单独回退 bridge。
 - **`--remote` 保留为已弃用（deprecated）但可见的 flag**，0.23.0 再删除；过渡期内两套 seam 并存。
-- **`dsh-base` 钉 rc.3 精确版本**：升级必须走显式 PR + 四门禁回归，不能跟随浮动 tag。
+- **`dsh-base` 钉 `>=0.2.2-rc.3 <0.3.0` 兼容窗口**（单一事实来源 `packages/shell/scripts/lib/host-compat.mjs:32` 的 `HOST_PEER_RANGE`）：rc.3 是构建基线、rc.4 消费面字节一致，`<0.3.0` 上限把未来大版本撞车变成 provisioning 显式失败而非静默跳过；窗口内 provisioning 自动写入精确版本豁免（`compatibility.json`），因此无需手工改钉点，越窗才需显式 PR + 四门禁回归。
 - **两个 profile 共享 `~/.dsh/sessions`**：后开者必须显式收到 `writer-held`，不能静默接管。
 - 新增一个 profile 与一套 provisioning / 互斥逻辑，首启路径复杂度上升。
+
+### 0.22.0 过渡期双宿主（已知债务，非设计目标）
+
+0.22.0 的默认 inproc 启动路径实际上同时拉起**两个 node 宿主进程**（`packages/tui-base/examples/v2-entry.tsx:1439-1494`），与上文"bridge 跑在宿主进程内"的单宿主叙事并不完全一致——后者描述的是会话桥的归属，不代表全链路只有一个 node 宿主：
+
+- **HTTP 宿主**（`lifecycle.ensureHost` + `RemoteHostSession`）承担 **config 面**：`configSave`、主题 / skin 迁移持久化（`v2-entry.tsx:1589`）、profile 与 workspace overlay 读取。`BridgeSessionSeam` 没有 config frame，其 `configLoad` / `configRaw` / `workspaceConfig` 只能降级返回 `{}`（`packages/shell/src/client/bridge-session-seam.ts:627-656`），所以 config 面仍由 HTTP 宿主负责。
+- **bridge 宿主**（`createBridgeSessionSeam` 的 stdio transport）承担 **会话面**：`session.open` / `send` / `close` / `list`、`turn.abort`、ask 应答、`journal.replay` 与 append section。
+
+代价：两份 node 宿主并存，常驻内存与冷启动时间约为单宿主时的两倍；profile 配置 / overlay 在两侧各有一份视图，存在失步风险。此前没有任何 ADR 或 ticket 记录这一现状，此处补记为 0.22.0 的**已知过渡债务，不是方案 D 的设计目标**。
+
+移除计划：0.23.0 把 config 面（`configLoad` / `configRaw` / `workspaceConfig` / `configSave`）迁入 bridge 或下沉到本地文件后，删除 `ensureHost` / `RemoteHostSession` 这条 config 通路，只保留 bridge 一个 node 宿主。本条只记录现状与退出计划，不据此改动 0.22.0 代码。
 
 不可逆点 / 发布后约束：
 

@@ -110,7 +110,10 @@ export function createAppendTextProvider(options: AppendTextProviderOptions = {}
         } catch { /* logging is best-effort */ }
       }
     } catch {
-      return '' // read failed: keep the previous cache, degrade silently
+      // Transient read failure after a successful stat (EACCES/EMFILE/EISDIR):
+      // keep the previous cache, or '' before the first successful read. Degrade
+      // silently — warn-free like the missing/empty-file paths above.
+      return cachedText
     }
 
     cachedMtimeMs = stat.mtimeMs

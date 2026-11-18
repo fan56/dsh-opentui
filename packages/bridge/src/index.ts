@@ -1143,6 +1143,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     return { turn: state, sessionId: binding.sessionId }
   }
 
+  /** Deterministic audit placeholder for a fail-closed ask with no deliverable
+   *  turn. The journal's `redactIdentifier` keeps only [A-Za-z0-9._:-], so a bare
+   *  identifier survives verbatim; an empty string would otherwise be emitted as
+   *  an empty audit key (the P2-3 defect). */
+  const FAIL_CLOSED_UNKNOWN_SESSION = 'unknown'
+
   /** D6: no deliverable provider → settle `unavailable` + ASK_CHANNEL_UNAVAILABLE
    *  through the registry (emits ask.settled), then fail the host waterfall
    *  closed. NO ask.request frame is pushed and nothing is silently denied. */
@@ -1162,7 +1168,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     const req = (raw !== null && typeof raw === 'object' ? raw : {}) as ApprovalRequestLike
     const target = askTarget(req.agent)
     if (target === undefined) {
-      failClosedAsk('approval', 'no-turn', '', 'no open in-flight turn to deliver an approval ask')
+      failClosedAsk('approval', 'no-turn', binding?.sessionId ?? FAIL_CLOSED_UNKNOWN_SESSION, 'no open in-flight turn to deliver an approval ask')
       return 'unavailable'
     }
     const toolName = typeof req.toolName === 'string' && req.toolName !== '' ? req.toolName : undefined
@@ -1221,7 +1227,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     const req = (raw !== null && typeof raw === 'object' ? raw : {}) as UserQuestionsRequestLike
     const target = askTarget(req.agent)
     if (target === undefined) {
-      failClosedAsk('questions', 'no-turn', '', 'no open in-flight turn to deliver a questions ask')
+      failClosedAsk('questions', 'no-turn', binding?.sessionId ?? FAIL_CLOSED_UNKNOWN_SESSION, 'no open in-flight turn to deliver a questions ask')
       throw new Error('ASK_CHANNEL_UNAVAILABLE: no in-flight turn to deliver user questions')
     }
     const questions = (req.questions ?? []).map((q) => {

@@ -1,7 +1,7 @@
 {
   "name": "@aiwayds/dsh-opentui-bridge",
   "version": "0.1.0",
-  "description": "In-process cordis bridge for dsh-opentui (skeleton; IPC protocol not implemented yet)",
+  "description": "In-process session bridge bundle for dsh-opentui — stdio JSON-lines seam (session.open/send/close/list, turn.abort, ask.response, journal.replay) plus the append-system section provider",
   "type": "module",
   "main": "./index.js",
   "exports": {

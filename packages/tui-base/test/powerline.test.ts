@@ -730,12 +730,26 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		expect(fitted.segments.some((segment) => segment.text.includes("🔧"))).toBe(false)
 	})
 
-	test("45 columns with the mapped Standard preset: brand shows `dsh(Standard)`, context keeps the full compact form", () => {
-		// 0.22.0 inproc: append is a section, not a synthetic preset, so the
-		// mapped preset is `standard` -> `presetLabelFor` yields "Standard" and
-		// the footer shows `dsh(Standard)` (no synthetic appended face survives).
-		// The 45-col "brand + full compact context" contract still holds.
-		const fitted = fitPowerlineSegments(
+	test("45 columns: no preset face shows bare `dsh`; a Standard preset face shows `dsh(Standard)`", () => {
+		// M3-05b superseded the old synthetic-preset mapping. On the inproc bridge
+		// path there is no preset face (the bridge seam reports no presetLabel),
+		// so the brand is bare `dsh`. When a seam does supply a standard preset
+		// face, brandSegment appends it. Both keep the 45-col "brand + full
+		// compact context" contract; the assertion pins the real branches.
+		const noFace = fitPowerlineSegments(
+			sessionFooterSegments({
+				contextTokens: 205,
+				contextWindow: 200_000,
+				messages: 4,
+				tools: 1,
+			}),
+			44,
+		)
+		expect(measure(noFace.segments)).toBeLessThanOrEqual(44)
+		expect(noFace.segments[0]?.text).toBe("dsh")
+		expect(noFace.segments.find((s) => s.text.startsWith("🧠"))?.text).toBe("🧠 205/200.0k(0.1%)")
+
+		const standardFace = fitPowerlineSegments(
 			sessionFooterSegments({
 				contextTokens: 205,
 				contextWindow: 200_000,
@@ -745,10 +759,9 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 			}),
 			44,
 		)
-		expect(measure(fitted.segments)).toBeLessThanOrEqual(44)
-		const context = fitted.segments.find((segment) => segment.text.startsWith("🧠"))
-		expect(context?.text).toBe("🧠 205/200.0k(0.1%)")
-		expect(fitted.segments[0]?.text).toBe("dsh(Standard)")
+		expect(measure(standardFace.segments)).toBeLessThanOrEqual(44)
+		expect(standardFace.segments[0]?.text).toBe("dsh(Standard)")
+		expect(standardFace.segments.find((s) => s.text.startsWith("🧠"))?.text).toBe("🧠 205/200.0k(0.1%)")
 	})
 
 	test("45 columns with an arbitrarily long preset label: brand yields to `dsh`, context stays full", () => {
