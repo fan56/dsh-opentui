@@ -13,6 +13,7 @@ import {
 	autoContrast,
 	brightness,
 	brandSegment,
+	bridgeStatusSegment,
 	colorRgb,
 	contextSegment,
 	fitPowerlineSegments,
@@ -223,6 +224,7 @@ describe("footer assembly", () => {
 		expect(texts.some((t) => /turns?/.test(t))).toBe(false)
 		expect(texts.some((t) => t.startsWith("↻"))).toBe(false)
 	})
+
 })
 
 describe("palette resolution", () => {
@@ -775,23 +777,52 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		expect(fitted.segments.some((segment) => /turns?/.test(segment.text))).toBe(false)
 	})
 
-	test("45 columns with a long preset label: brand shortens, context keeps the full compact form", () => {
-		// The append-system preset regression: `dsh(Standard + Append)` (the
-		// client-managed default-ride label) is 4 columns wider than the
-		// labels the 45-col budget was sized against, and with the ui-matrix
-		// scratch window the strip landed one column over (`…Append` 24 +
-		// `🧠 205/200.0k(0.1%)` 21 + 2 arrows = 47 > 44) — the fitting law's
-		// only recourse was degrading the 🧠 segment to the bare `🧠 205`
-		// shape, so the window never reached the footer. The brand's degrade
-		// face gives the law a yield path that protects the contract above
-		// for ANY label length.
+	test("45 columns: no preset face shows bare `dsh`; a Standard preset face shows `dsh(Standard)`", () => {
+		// M3-05b superseded the old synthetic-preset mapping. On the inproc bridge
+		// path there is no preset face (the bridge seam reports no presetLabel),
+		// so the brand is bare `dsh`. When a seam does supply a standard preset
+		// face, brandSegment appends it. Both keep the 45-col "brand + full
+		// compact context" contract; the assertion pins the real branches.
+		const noFace = fitPowerlineSegments(
+			sessionFooterSegments({
+				contextTokens: 205,
+				contextWindow: 200_000,
+				messages: 4,
+				tools: 1,
+			}),
+			44,
+		)
+		expect(measure(noFace.segments)).toBeLessThanOrEqual(44)
+		expect(noFace.segments[0]?.text).toBe("dsh")
+		expect(noFace.segments.find((s) => s.text.startsWith("🧠"))?.text).toBe("🧠 205/200.0k(0.1%)")
+
+		const standardFace = fitPowerlineSegments(
+			sessionFooterSegments({
+				contextTokens: 205,
+				contextWindow: 200_000,
+				messages: 4,
+				tools: 1,
+				presetLabel: "Standard",
+			}),
+			44,
+		)
+		expect(measure(standardFace.segments)).toBeLessThanOrEqual(44)
+		expect(standardFace.segments[0]?.text).toBe("dsh(Standard)")
+		expect(standardFace.segments.find((s) => s.text.startsWith("🧠"))?.text).toBe("🧠 205/200.0k(0.1%)")
+	})
+
+	test("45 columns with an arbitrarily long preset label: brand yields to `dsh`, context stays full", () => {
+		// Host roster names are unbounded. A synthetic long label (no real
+		// preset carries the old appended label any more in 0.22.0) must still
+		// make the top-priority brand shorten instead of squeezing the context
+		// window off the footer.
 		const fitted = fitPowerlineSegments(
 			sessionFooterSegments({
 				contextTokens: 205,
 				contextWindow: 200_000,
 				msg: 9,
 				tools: 1,
-				presetLabel: "Standard + Append",
+				presetLabel: "A Very Long Custom Preset Name",
 			}),
 			44,
 		)
@@ -826,5 +857,53 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		const wide = fitPowerlineSegments(fixture(), 119, "12:36:44")
 		expect(wide.right).toBe("12:36:44")
 		expect(measure(wide.segments) + stringWidth("12:36:44") + 1).toBeLessThanOrEqual(119)
+	})
+
+})
+
+describe("A2 bridge link-health status segment", () => {
+	test("renders only abnormal states; ready and absent hide the segment", () => {
+		expect(bridgeStatusSegment("dead")?.text).toBe("⚠ dead")
+		expect(bridgeStatusSegment("recovering")?.text).toBe("⟳ recovering")
+		// 2026-11-19 user ruling: ✓ ready is the normal state and is NOT painted.
+		expect(bridgeStatusSegment("ready")).toBeNull()
+		expect(bridgeStatusSegment(undefined)).toBeNull()
+	})
+
+	test("sessionFooterSegments carries dead/recovering additively, not ready", () => {
+		const dead = sessionFooterSegments({ bridgeStatus: "dead" })
+		expect(dead.some((s) => s.text.includes("dead"))).toBe(true)
+		const recovering = sessionFooterSegments({ bridgeStatus: "recovering" })
+		expect(recovering.some((s) => s.text.includes("recovering"))).toBe(true)
+		// Healthy and legacy seams keep the exact prior shape — no status segment.
+		expect(sessionFooterSegments({ bridgeStatus: "ready" }).some((s) => s.text.includes("ready"))).toBe(false)
+		expect(sessionFooterSegments({}).some((s) => s.text.includes("dead"))).toBe(false)
+	})
+
+	test("80-column priority review: abnormal status occupies a slot; ready never does", () => {
+		const data = {
+			provider: "zai-coding-cn",
+			model: "glm-5.3-flash",
+			contextTokens: 205,
+			contextWindow: 1_000_000,
+			msg: 9,
+			tools: 1,
+			tps: 42,
+		}
+		const base = sessionFooterSegments(data)
+		// ready adds nothing at the BUILDER level: identical strip to no status.
+		expect(sessionFooterSegments({ ...data, bridgeStatus: "ready" }).map((s) => s.text))
+			.toEqual(base.map((s) => s.text))
+		// 80-column review finding: with the restored 🧠/⚡ segments the strip is
+		// wider than 80, so the lowest-priority (-2) abnormal badge is the FIRST
+		// shed. The ruling limits this change to the render condition (ready →
+		// null), so the priority is deliberately left at -2; the transient fault
+		// notice / recovery banner remain the persistent signal at that width.
+		expect(bridgeStatusSegment("dead")!.priority).toBe(-2)
+		const abnormal = fitPowerlineSegments(sessionFooterSegments({ ...data, bridgeStatus: "dead" }), 80)
+		expect(abnormal.segments.some((s) => s.text === "⚠ dead")).toBe(false)
+		// A narrow strip that DOES have room still paints the badge.
+		const roomy = fitPowerlineSegments(sessionFooterSegments({ bridgeStatus: "dead", tools: 0 }), 80)
+		expect(roomy.segments.some((s) => s.text === "⚠ dead")).toBe(true)
 	})
 })

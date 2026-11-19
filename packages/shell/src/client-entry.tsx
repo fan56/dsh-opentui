@@ -439,9 +439,31 @@ async function main(): Promise<void> {
 		// to this file through the normal loader.
 		const v2Specifier = "../../" + "tui-base/examples/v2-entry.tsx"
 		const mod = (await import(v2Specifier)) as {
-			bootClientV2(): Promise<{ shutdown(): Promise<void> }>
+			bootClientV2(options?: {
+				argv?: readonly string[]
+				bridgeTransport?: {
+					request(method: string, params?: Record<string, unknown>): Promise<unknown>
+					onEvent(listener: (event: { type: string; payload: unknown }) => void): () => void
+					close?(): void
+				}
+				bridgeCtx?: { logger: { info(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void } }
+			}): Promise<{ shutdown(): Promise<void> }>
 		}
-		await mod.bootClientV2()
+		const argv = process.argv.slice(2)
+		// M2/T9: in inproc mode the transport is constructed here and INJECTED
+		// into the synthetic root (bootClientV2), which selects BridgeSessionSeam.
+		// The legacy `--remote` flag (or a non-inproc launch) leaves it absent
+		// and the root keeps RemoteSessionSeam.
+		let bootOptions: Parameters<typeof mod.bootClientV2>[0] = { argv }
+		if (process.env.DSH_OPENTUI_INPROC === "1" && !argv.includes("--remote")) {
+			const bridgeMod = await import("./client/bridge-transport.ts")
+			bootOptions = {
+				...bootOptions,
+				bridgeTransport: new bridgeMod.StdioBridgeTransport(),
+				bridgeCtx: { logger: console },
+			}
+		}
+		await mod.bootClientV2(bootOptions)
 	} catch (error) {
 		const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
 		process.stderr.write(`dsh-opentui client boot failed: ${message}\n`)

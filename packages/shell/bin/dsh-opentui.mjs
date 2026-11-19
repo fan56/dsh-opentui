@@ -5,10 +5,14 @@
  *
  * Startup chain:
  *   0. Bin-level flags — `--version` prints `dsh-opentui <version>` and
- *      exits 0 BEFORE anything else (no provision, no TUI); `--force` kills
- *      this profile's stale instances (resident dsh host + bun client, TERM
- *      then KILL) before startup continues. Both are consumed by the bin
- *      and never forwarded to the client.
+ *      exits 0 BEFORE anything else (no provision, no TUI); `--force` resets
+ *      the singleton host before startup continues (needs `--yes` when live
+ *      clients are connected; ADR-0009). `--repair-bridge` is a terminal
+ *      maintenance command: it clears this profile's stale instances (TERM
+ *      then KILL), runs the in-process bridge self-heal (T7), and exits before
+ *      any bun/dsh check, TUI launch, or default-seam change; it implicitly
+ *      enables in-process provisioning without needing DSH_OPENTUI_INPROC=1.
+ *      All three are consumed by the bin and never forwarded to the client.
  *   1. bun check — the client bundle runs under bun (FFI, import attributes,
  *      bun export conditions); no bun on PATH → install guidance, exit 1.
  *   2. dsh check — the host CLI is the session carrier (profile storage,
@@ -52,7 +56,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { constants as osConstants, homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { formatUpgradeUsage, formatUsage, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseUpgradeArgs, prelaunchFailurePolicy, readLauncherVersion, validateLauncherArgs } from './lib/launcher.mjs'
+import { ancestorPids, emitRemoteDeprecation, formatUpgradeUsage, formatUsage, isRemoteRequested, killStaleProcesses, launcherFlagConflict, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, prelaunchFailurePolicy, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -63,8 +67,14 @@ function exitWithGuidance(what, installCmd) {
   process.exit(1)
 }
 
+/** Run a helper command and return its stdout ('' on failure). */
+function capture(cmd, args) {
+  const r = spawnSync(cmd, args, { encoding: 'utf8' })
+  return r.stdout ?? ''
+}
+
 // --- 0. Bin-level flags: --version short-circuits, --force pre-clears -------
-const { version: versionFlag, force: forceFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
+const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
   const version = readLauncherVersion(pkgRoot)
@@ -76,10 +86,33 @@ if (versionFlag) {
   process.exit(0)
 }
 
-if (yesFlag && !forceFlag) {
+// P3-3: make flag combinations that used to fall into dead corners explicit.
+// Checked here (before the upgrade/help/repair branches) so the same conflict
+// wins regardless of which branch a combination would otherwise reach.
+const remoteRequested = isRemoteRequested(userArgs, passthrough)
+const flagConflict = launcherFlagConflict(
+  { force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag },
+  remoteRequested,
+)
+if (flagConflict === 'yes-without-force') {
   console.error('dsh-opentui: --yes is only meaningful together with --force.')
   process.exit(2)
 }
+if (flagConflict === 'repair-force') {
+  console.error('dsh-opentui: --repair-bridge and --force are mutually exclusive; choose one.')
+  process.exit(2)
+}
+if (flagConflict === 'repair-remote') {
+  console.error('dsh-opentui: --repair-bridge cannot be combined with --remote (remote mode has no bridge to repair).')
+  process.exit(2)
+}
+
+// --- 0.4 --remote deprecation (T10): one clear notice per launch -------------
+// Emitted after --version (whose short-circuit stays absolute) and before the
+// upgrade/help paths, so `--remote --help` also carries it. `emitRemoteDeprecation`
+// prints AT MOST ONCE even when the flag is repeated, and the notice names the
+// removal line (0.23.0) plus the replacement entry (inproc default, no flag).
+emitRemoteDeprecation([userArgs, passthrough])
 
 // --- 0.5 upgrade subcommand -------------------------------------------------
 // `upgrade` is a positional subcommand: only the first remaining argument may
@@ -90,6 +123,11 @@ if (yesFlag && !forceFlag) {
 // `npm` and `dsh`, not bun, and must not provision or link anything.
 const upgradeResult = parseUpgradeArgs(userArgs)
 if (upgradeResult.isUpgrade) {
+  // P3-3 ②: the upgrade branch precedes the repair branch, so a stray
+  // --repair-bridge used to be silently swallowed. Say so explicitly.
+  if (repairBridgeFlag) {
+    console.error('dsh-opentui: --repair-bridge is skipped during `upgrade` (no bridge repair on the upgrade path).')
+  }
   if (forceFlag) {
     console.error('dsh-opentui: --force is not supported with upgrade.')
     console.error(formatUpgradeUsage())
@@ -174,6 +212,38 @@ if (validation.unknown.length > 0) {
   process.exit(2)
 }
 
+// --- 0.7 --repair-bridge: terminal in-process bridge self-heal (T7) ---------
+// This is a maintenance command, not a launch. It implicitly enables in-process
+// provisioning (no DSH_OPENTUI_INPROC=1 needed) by invoking the SAME provisioner
+// the opt-in startup path uses, in its repair mode. It deliberately exits here
+// — before the bun/dsh checks, the default `opentui` profile bootstrap, the
+// client-connection link, and the bun client launch — so it never starts a TUI
+// and never changes the default seam (that is M2's job). The provisioner owns
+// the lock, the repair logic and the T5 identity guard; its exit status is ours.
+if (repairBridgeFlag) {
+  // Clean up this profile's stale instances first (the old `--force` sweep),
+  // scoped to THIS dsh home; the launcher's own process tree is excluded.
+  const rows = parseProcessRows(capture('ps', ['-A', '-o', 'pid=,ppid=,command=']))
+  const homes = parseProcessHomes(capture('ps', ['eww', '-A', '-o', 'pid=,args=']))
+  const stale = selectStaleProcesses(rows, {
+    homes,
+    home: dshHome,
+    excludePids: ancestorPids(rows, process.pid),
+  })
+  const killed = await killStaleProcesses(stale)
+  console.log(`--repair-bridge: killed ${killed.terminated} stale instance(s)`)
+  // Then repair the bridge itself; the provisioner owns the lock, repair logic
+  // and identity guard, and its exit status is ours.
+  const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-inproc-profile.mjs'), '--repair'], {
+    stdio: 'inherit',
+  })
+  if (r.error) {
+    console.error(`dsh-opentui: in-process bridge repair failed: ${r.error.message}`)
+    process.exit(1)
+  }
+  process.exit(r.status ?? 0)
+}
+
 // Write a timeout to the client env only when the user supplied that flag:
 // defaults must not clobber a value already set in the shell environment.
 const clientEnv = { ...process.env }
@@ -242,6 +312,27 @@ const opentuiProfileDir = join(dshHome, 'profiles', 'opentui')
   }
   if (r.status !== 0) {
     console.error(`dsh-opentui: profile provisioning exited ${r.status}; continuing with the profile as-is.`)
+  }
+}
+
+// --- 3b. In-process bridge profile provisioning (opt-in, T3) ---------------
+// DSH_OPENTUI_INPROC=1 is the ONLY switch: without it nothing here runs and
+// production behavior (the `opentui` profile path above) is byte-for-byte
+// unchanged. The new script provisions ONLY the `opentui-inproc` profile:
+// bundle manifest + absolute symlink to the embedded dist/bridge artifact.
+// A non-zero exit is fatal in this mode (the profile cannot work without it),
+// unlike the best-effort default path above.
+if (process.env.DSH_OPENTUI_INPROC === '1') {
+  const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-inproc-profile.mjs')], {
+    stdio: 'inherit',
+  })
+  if (r.error) {
+    console.error(`dsh-opentui: in-process profile provisioning failed: ${r.error.message}`)
+    process.exit(1)
+  }
+  if (r.status !== 0) {
+    console.error(`dsh-opentui: in-process profile provisioning exited ${r.status}; aborting.`)
+    process.exit(1)
   }
 }
 

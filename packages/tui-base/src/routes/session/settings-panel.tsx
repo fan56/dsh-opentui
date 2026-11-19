@@ -259,7 +259,8 @@ export function buildLocalItems(input: {
 		},
 		{
 			...base,
-			// U4 panelHeight: the activity dock's size gear (1/5/7/10/all).
+			// U4 panelHeight: since 2026-11-19 the gear (1/5/7/10/all) controls
+			// ONLY the think block's display line count (`all`=10, legacy key).
 			// Unset renders `default` — the graded terminal-height sizing. The
 			// write targets the NESTED `session.activity_panel_height` key (the
 			// config schema's session section), so planLocalWrite merges the

@@ -130,11 +130,18 @@ export interface SeamSessionEvent {
 	details: unknown
 }
 
+/** Bridge link health for the footer status slot (ADR-0010 DEAD recovery).
+ *  Additive status precision: dead / recovering / ready. */
+export type BridgeLinkStatus = "ready" | "recovering" | "dead"
+
 /** Connection/turn status — RemoteSessionStatus's view-relevant slice. */
 export interface SeamStatus {
 	connection: "connecting" | "connected" | "disconnected"
 	turn: "idle" | "starting" | "running" | "reconnecting"
 	sessionAttached: boolean
+	/** Bridge link health (A2). Optional: the legacy remote seam and older
+	 *  consumers that only read connection/turn are unaffected. */
+	bridge?: BridgeLinkStatus
 }
 
 /** Provider/model catalog entry (dialog-model, model-options). */
@@ -263,16 +270,21 @@ export interface SeamSessionInfo {
 	sessionId: string | null
 	/** "provider/model[ (effort)]" — the facade's live label. */
 	model: string | null
-	/** Durable user+assistant messages (adapter-side transcript count). */
-	messageCount: number
+	/**
+	 * Durable user+assistant messages (adapter-side transcript count). Optional
+	 * so a seam whose transcript read failed can OMIT it rather than paint a
+	 * fake 0; the /session panel renders an em-dash placeholder for absence.
+	 */
+	messageCount?: number
 	/**
 	 * /session panel "turns" row — count of durable `user` transcript rows
 	 * (one nominal turn = one user/message with source.kind "user"). The
 	 * adapter overrides the facade's client-local `turnCount` with this
 	 * durable count. A steer may journal another user row on some hosts;
-	 * unverifiable from the client. NOT shown in the footer strip.
+	 * unverifiable from the client. NOT shown in the footer strip. Optional
+	 * for the same honest-omission reason as `messageCount`.
 	 */
-	turnCount: number
+	turnCount?: number
 	/**
 	 * Footer 💬 msgs — count of durable `assistant/message` journal events
 	 * (one durable assistant/message event = one msg). Optional so an older

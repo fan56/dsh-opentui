@@ -29,7 +29,8 @@
  */
 import { createEffect, createSignal, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { onAnimationTick } from "@opentui/solid"
-import type { SeamApprovalVerdict, SeamAskPick, SeamAskQuestion } from "../../seams/session"
+import type { SeamAskPick, SeamAskQuestion, SeamSessionEvent } from "../../seams/session"
+import type { BridgeApprovalVerdict, BridgeAskSnapshot } from "./turn-overlay-controller"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useDialog } from "../../ui/dialog"
 import { useIsPageOwner } from "../../context/input-ownership"
@@ -55,8 +56,14 @@ export function summarizeArgs(name: string, args: Record<string, unknown>, limit
 export function ApprovalCard(props: {
 	name: string
 	args: Record<string, unknown>
-	onVerdict: (verdict: SeamApprovalVerdict) => void
+	/** ADR-0011: only true when the host granted escalation on this ask. */
+	escalation?: boolean
+	/** A6: a rebuilt card whose ask.response failed (ask/turn gone). Terminal
+	 *  state — the reason is shown and the only actions acknowledge it. */
+	invalidatedReason?: string
+	onVerdict: (verdict: BridgeApprovalVerdict) => void
 }) {
+	const invalidated = () => props.invalidatedReason !== undefined
 	return (
 		<DialogConfirm
 			// Reminder marker (skin contract §1 提醒脉冲): `⚠` marks the card.
@@ -65,11 +72,35 @@ export function ApprovalCard(props: {
 			// titleView path below; here the marker is static — pulsing it
 			// needs DialogConfirm to forward a titleView (vendored file, later
 			// lane).
-			title={t("overlay.ask.approvalTitle", { name: props.name })}
-			message={summarizeArgs(props.name, props.args)}
-			label={{ confirm: t("overlay.ask.allow"), cancel: t("overlay.ask.reject") }}
+			title={invalidated()
+				? t("overlay.ask.invalidatedTitle")
+				: t("overlay.ask.approvalTitle", { name: props.name })}
+			message={invalidated()
+				? t("overlay.ask.invalidated", { reason: props.invalidatedReason ?? "" })
+				: summarizeArgs(props.name, props.args)}
+			label={invalidated()
+				? { confirm: t("overlay.ask.invalidatedAck"), cancel: t("overlay.ask.invalidatedAck") }
+				: { confirm: t("overlay.ask.allow"), cancel: t("overlay.ask.reject") }}
 			onConfirm={() => props.onVerdict("allowed-once")}
 			onCancel={() => props.onVerdict("rejected")}
+			// Escalated behaviors are shown ONLY when granted. Their keys live in
+			// the dialog's modal layer, never the page/turn-abort layers.
+			extraActions={
+				!invalidated() && props.escalation === true
+					? [
+							{
+								label: t("overlay.ask.allowAlways"),
+								bind: "a",
+								onTrigger: () => props.onVerdict("always"),
+							},
+							{
+								label: t("overlay.ask.allowSession"),
+								bind: "s",
+								onTrigger: () => props.onVerdict("session"),
+							},
+						]
+					: undefined
+			}
 		/>
 	)
 }
@@ -126,6 +157,12 @@ export function TurnOverlayHost(props: {
 	onMount(() => {
 		const unsubscribe = props.controller.subscribe(() => setVersion((value) => value + 1))
 		onCleanup(unsubscribe)
+		// ADR-0011: the seam consumes ask.cancel / ask.settled / turn-end inside
+		// itself and exposes only a READ-ONLY pendingAsks() snapshot. Poll it
+		// while a card is open so a cancelled ask never leaves a ghost card.
+		// The UI reads the snapshot; it never writes a frame.
+		const timer = setInterval(() => props.controller.syncPendingAsks(), 200)
+		onCleanup(() => clearInterval(timer))
 	})
 	// Approval path only: the DialogProvider's own refocus runs at 1 ms; we
 	// check at 3 ms. The dock does NOT use this timer (spec §10).
@@ -171,29 +208,62 @@ export function TurnOverlayHost(props: {
 		// head of the controller's FIFO ask queue (spec §7).
 		const key = approvalWins ? `approval:${approval.id}` : askAdmitted ? `ask:${ask.id}` : ""
 		if (key === shown) return
+		const previousKey = shown
 		shown = key
+		// A settlement that did NOT come through the card's own buttons (host
+		// cancel, turn end, snapshot sync) settles the controller but leaves the
+		// rendered card on the dialog stack. Clear it ONLY when our card is still
+		// the top entry — never a page dialog the page opened in the meantime.
+		if (previousKey?.startsWith("approval:") === true && dialog.stack.at(-1)?.key === previousKey) {
+			dialog.clear()
+		}
 
 		if (approvalWins) {
 			// Approval wins the slot (today's serialization). The ask stays
 			// queued in the controller and reopens when the approval settles.
 			closeAsk()
 			const atOpen = key
-			dialog.replace(
-				() => (
-					<ApprovalCard
-						name={approval.name}
-						args={approval.args}
-						onVerdict={(verdict) => {
-							if (verdict === "allowed-once") props.controller.confirmApproval()
-							else props.controller.rejectApproval()
-						}}
-					/>
-				),
-				() => {
-					if (shown === atOpen) props.controller.rejectApproval()
-				},
-				{ tone: "warning" },
-			)
+			const approvalId = approval.id
+			try {
+				dialog.replace(
+					() => (
+						<ApprovalCard
+							name={approval.name}
+							args={approval.args}
+							escalation={approval.escalation}
+							invalidatedReason={approval.invalidatedReason}
+							onVerdict={(verdict) => {
+								switch (verdict) {
+									case "allowed-once":
+										props.controller.confirmApproval()
+										break
+									case "always":
+										props.controller.approveAlways()
+										break
+									case "session":
+										props.controller.approveSession()
+										break
+									default:
+										props.controller.rejectApproval()
+								}
+							}}
+						/>
+					),
+					() => {
+						// Only settle a card that is STILL shown and STILL pending.
+						// Confirming card N clears the dialog stack; without the
+						// pending-id guard its onClose would reject card N+1.
+						if (shown === atOpen && props.controller.pendingApproval?.id === approvalId) {
+							props.controller.rejectApproval()
+						}
+					},
+					{ key, tone: "warning" },
+				)
+			} catch {
+				// Render failure is fail-closed: no dangling onApprove waiter,
+				// never an implicit allow.
+				props.controller.rejectApproval()
+			}
 			return
 		}
 
@@ -243,9 +313,45 @@ export function TurnOverlayHost(props: {
 }
 
 /** Register both surfaces on a seam: approval routes through the view's
- * turn callbacks, ask through the seam's ask provider. */
+ * turn callbacks, ask through the seam's ask provider. A bridge seam also
+ * exposes the read-only `pendingAsks()` snapshot — attaching it lets the card
+ * stack sync with host cancellations / turn end / reconnect (ADR-0011). */
 export function registerTurnOverlays(seam: {
 	registerAskProvider(onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void
-}, controller: TurnOverlayController): void {
+	pendingAsks?: () => readonly BridgeAskSnapshot[]
+	onSessionEvent?: (listener: (event: SeamSessionEvent) => void) => () => void
+}, controller: TurnOverlayController, options?: {
+	/**
+	 * RM-2b V3: localized reason painted on every pending card when `bridge.dead`
+	 * arrives (bridge process death kills every ask inside it — no snapshot can
+	 * be rebuilt across a dead process). A function receives the dead-cause
+	 * details so the page can append stage/code/signal. Omit for non-bridge seams.
+	 */
+	deadReason?: string | ((details: unknown) => string)
+}): void {
+	if (typeof seam.pendingAsks === "function") {
+		const read = seam.pendingAsks.bind(seam)
+		controller.attachPendingAsks(() => read() ?? [])
+	}
+	// A6: the bridge seam publishes `bridge.ask.invalidated` when a rebuilt
+	// card's ask.response fails because the ask/turn is gone. Paint a terminal
+	// "已失效" card with the reason instead of letting it vanish silently.
+	// RM-2b V3: `bridge.dead` invalidates EVERY pending card at once (terminal,
+	// not silent) with a localized connection-lost reason.
+	if (typeof seam.onSessionEvent === "function") {
+		seam.onSessionEvent((event) => {
+			if (event.type === "bridge.dead") {
+				const configured = options?.deadReason
+				if (configured === undefined) return
+				const reason = typeof configured === "function" ? configured(event.details) : configured
+				if (reason !== "") controller.invalidateAll(reason)
+				return
+			}
+			if (event.type !== "bridge.ask.invalidated") return
+			const details = event.details as { eventId?: unknown; reason?: unknown }
+			if (typeof details?.eventId !== "string") return
+			controller.invalidateAsk(details.eventId, typeof details.reason === "string" ? details.reason : "")
+		})
+	}
 	seam.registerAskProvider((questions) => controller.answer(questions))
 }

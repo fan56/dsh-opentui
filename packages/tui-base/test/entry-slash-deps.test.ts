@@ -60,6 +60,9 @@ function makeEntryHooks() {
 			calls.push("flushQueue")
 			return { kind: "empty", started: 0, remaining: 0 }
 		},
+		clearRecoveryUi: () => {
+			calls.push("clearRecoveryUi")
+		},
 	}
 	return { hooks, calls }
 }
@@ -208,6 +211,7 @@ describe("verify: entry slash deps", () => {
 				refreshFooter,
 				invalidateFooter,
 				flushQueue,
+				clearRecoveryUi,
 			}))
 		`
 		// openSettings is deliberately present above, so only openAgents is

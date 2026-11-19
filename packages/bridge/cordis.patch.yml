@@ -1,0 +1,8 @@
+# dsh-opentui-bridge bundle patch (T2a skeleton).
+#
+# Mounts the bridge under a stable entry id so a profile that lists this
+# bundle gets the plugin registered. The skeleton only emits lifecycle logs;
+# it does not disable any host plugin and does not override any config row.
+- insert:
+    - id: dsh-opentui-bridge
+      name: '@aiwayds/dsh-opentui-bridge'

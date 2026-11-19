@@ -83,6 +83,44 @@ describe("seam rows projection", () => {
 		dispose()
 	})
 
+	test("inproc: an empty argsPretty on settle keeps the call's args (todos array survives)", async () => {
+		const seam = new FakeSeam()
+		const todosArgs = '{"todos":[{"content":"a","status":"in_progress"}]}'
+		seam.script = async (cb) => {
+			cb.onToolStart?.({ callId: "tw", name: "todo_write", args: todosArgs })
+			cb.onToolRun?.({ callId: "tw", name: "todo_write", argsPretty: "", output: "Updated todo list: 0 pending, 1 in progress, 0 completed.", ok: true })
+		}
+		const { projection, dispose } = setup(seam)
+		await projection.send("make a todo")
+		const tool = projection.rows.find((r) => r.kind === "tool")
+		expect(tool).toMatchObject({
+			status: "done",
+			args: todosArgs,
+			output: "Updated todo list: 0 pending, 1 in progress, 0 completed.",
+		})
+		dispose()
+	})
+
+	test("P2-2③: a NON-empty argsPretty overrides the call's args (empty-fallback is a no-op on the remote path)", async () => {
+		const seam = new FakeSeam()
+		const callArgs = '{"command":"ls"}'
+		const prettyArgs = "ls -la  # settled pretty brief"
+		seam.script = async (cb) => {
+			cb.onToolStart?.({ callId: "ov", name: "bash", args: callArgs })
+			cb.onToolRun?.({ callId: "ov", name: "bash", argsPretty: prettyArgs, output: "ok", ok: true })
+		}
+		const { projection, dispose } = setup(seam)
+		await projection.send("run")
+		// run.argsPretty || existing.args — a populated pretty brief WINS; the
+		// inproc empty-argsPretty fallback does not clobber the remote path.
+		expect(projection.rows.find((r) => r.kind === "tool")).toMatchObject({
+			status: "done",
+			args: prettyArgs,
+			output: "ok",
+		})
+		dispose()
+	})
+
 	test("batch V1: a result racing a row-less store still lands; failed keeps ✗ semantics", async () => {
 		const seam = new FakeSeam()
 		seam.script = async (cb) => {
@@ -758,6 +796,139 @@ describe("dock retention and clear-old-at-new-tool", () => {
 		// Without the hydrate cleanup, A would have flagged this row faded at
 		// ≈ +100ms — after it was created, before its own fade was due.
 		expect(row.faded).not.toBe(true)
+		dispose()
+	})
+})
+
+describe("A7: local disconnection markers in the transcript store", () => {
+	test("optimistic submit is UNCONFIRMED until the bridge ACK clears it (content match)", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => { cb.onContentDelta("partial") }
+		const { projection, dispose } = setup(seam)
+		await projection.send("question")
+		const local = projection.rows.find((r) => r.key === "user:local-1")
+		expect(local).toMatchObject({ kind: "user", text: "question", unconfirmed: true, seq: null })
+
+		// No client inputId exists on session.send — the ACK matches by text.
+		seam.emit({ type: "bridge.input.acked", details: { sessionID: "s1", turnId: "t1", text: "question" } })
+		expect(projection.rows.find((r) => r.key === "user:local-1")).toMatchObject({ unconfirmed: false })
+		dispose()
+	})
+
+	test("replay reveals the journal prompt → content dedup, ONE user row, no unconfirmed leftover", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => { cb.onContentDelta("partial") }
+		const { projection, dispose } = setup(seam)
+		await projection.send("question")
+		seam.emit({ type: "message.updated", details: { id: "m-u1", role: "user", text: "question", sessionID: "s1" } })
+
+		const users = projection.rows.filter((r) => r.kind === "user")
+		expect(users).toHaveLength(1)
+		expect(users[0]).toMatchObject({ key: "user:m-u1", text: "question" })
+		expect(users[0]).not.toHaveProperty("unconfirmed")
+		dispose()
+	})
+
+	describe("RM-4: replay must not duplicate an already-painted user prompt", () => {
+		const userEvent = (id: string, text: string) => ({
+			type: "message.updated",
+			details: { id, role: "user", text, sessionID: "s1" },
+		})
+		const bodyEvent = (id: string, text: string) => ({
+			type: "message.part.updated",
+			details: { messageID: id, sessionID: "s1", part: { type: "text", id: `${id}:text`, text } },
+		})
+
+		test("a) live row + replay of the same message = ONE user row (pendingTurns empty)", async () => {
+			const seam = new FakeSeam()
+			seam.script = async (cb) => { cb.onContentDelta("streamed body") }
+			const { projection, dispose } = setup(seam)
+			await projection.send("hello")
+			expect(projection.rows.filter((r) => r.kind === "user").map((r) => r.key)).toEqual(["user:local-1"])
+			// Kill AFTER the turn completed: a journal body drains the pending
+			// group WITHOUT a prompt event, so the old pendingTurns dedup is
+			// gone while the optimistic local row is still on screen.
+			seam.emit(bodyEvent("m-a0", "settled body"))
+			expect(projection.rows.filter((r) => r.kind === "user").map((r) => r.key)).toEqual(["user:local-1"])
+
+			seam.emit(userEvent("m-u1", "hello"))
+			const users = projection.rows.filter((r) => r.kind === "user")
+			expect(users).toHaveLength(1)
+			expect(users[0]!.key).toBe("user:m-u1")
+			dispose()
+		})
+
+		test("b) two consecutive identical messages survive replay as TWO rows", async () => {
+			const seam = new FakeSeam()
+			let n = 0
+			seam.script = async (cb) => { n += 1; cb.onContentDelta(`body ${n}`) }
+			const { projection, dispose } = setup(seam)
+			await projection.send("same")
+			await projection.send("same")
+			expect(projection.rows.filter((r) => r.kind === "user").map((r) => r.key)).toEqual([
+				"user:local-1", "user:local-3",
+			])
+			seam.emit(bodyEvent("m-a1", "body 1"))
+			seam.emit(bodyEvent("m-a2", "body 2"))
+			seam.emit(userEvent("m-u1", "same"))
+			seam.emit(userEvent("m-u2", "same"))
+
+			const users = projection.rows.filter((r) => r.kind === "user")
+			// Each replay consumes its OWN optimistic local row (seq:null);
+			// identical text never merges two distinct messages.
+			expect(users).toHaveLength(2)
+			expect(users.map((r) => r.key)).toEqual(["user:m-u1", "user:m-u2"])
+			dispose()
+		})
+
+		test("c) pure replay with no live row inserts the journal row", () => {
+			const seam = new FakeSeam()
+			const { projection, dispose } = setup(seam)
+			projection.apply(userEvent("m-u1", "hello"))
+			const users = projection.rows.filter((r) => r.kind === "user")
+			expect(users).toHaveLength(1)
+			expect(users[0]!.key).toBe("user:m-u1")
+			dispose()
+		})
+
+		test("d) re-delivering the same journal prompt is idempotent (second recovery)", () => {
+			const seam = new FakeSeam()
+			const { projection, dispose } = setup(seam)
+			projection.apply(userEvent("m-u1", "hello"))
+			projection.apply(userEvent("m-u1", "hello"))
+			expect(projection.rows.filter((r) => r.kind === "user")).toHaveLength(1)
+			dispose()
+		})
+
+		test("two identical messages from pure replay stay two distinct rows", () => {
+			const seam = new FakeSeam()
+			const { projection, dispose } = setup(seam)
+			projection.apply(userEvent("m-u1", "same"))
+			projection.apply(userEvent("m-u2", "same"))
+			expect(projection.rows.filter((r) => r.kind === "user").map((r) => r.key)).toEqual([
+				"user:m-u1", "user:m-u2",
+			])
+			dispose()
+		})
+	})
+
+	test("INTERRUPTED event paints a local seq:null marker and KEEPS the partial output", async () => {
+		const seam = new FakeSeam()
+		seam.script = async (cb) => { cb.onContentDelta("partial answer") }
+		const { projection, dispose } = setup(seam)
+		await projection.send("question")
+		seam.emit({
+			type: "bridge.turn.interrupted",
+			details: { sessionID: "s1", turnId: "t-9", seq: null, source: "local", reason: "connection lost mid-turn" },
+		})
+
+		const mark = projection.rows.find((r) => r.kind === "interrupted")
+		expect(mark).toMatchObject({
+			key: "interrupted:local:t-9", kind: "interrupted", turnId: "t-9", seq: null,
+		})
+		// Partial output survives — no silent drop, no error row.
+		expect(projection.rows.some((r) => r.kind === "assistant" && r.text === "partial answer")).toBe(true)
+		expect(projection.rows.some((r) => r.kind === "assistant" && r.text.startsWith("error:"))).toBe(false)
 		dispose()
 	})
 })

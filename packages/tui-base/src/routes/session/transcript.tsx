@@ -375,7 +375,25 @@ export function Transcript(props: TranscriptProps) {
 						borderStyle="single"
 						borderColor={unfocusedBorderColor(theme)}
 					>
+						<Show when={row.unconfirmed === true}>
+							<text fg={color.pendingQueue()}>{t("recovery.input.unconfirmed")}</text>
+						</Show>
 						<UserMessageFade target={color.user()} background={color.background()} text={row.text} />
+					</box>
+				)
+			case "interrupted":
+				// A7: a LOCAL marker (seq:null) — amber, one line, visually
+				// distinct from a host terminal row. No error modal: an
+				// interruption is a fact, not a failure.
+				return (
+					<box
+						flexShrink={0}
+						paddingLeft={2}
+						border={["top", "bottom", "left", "right"]}
+						borderStyle="single"
+						borderColor={color.running()}
+					>
+						<text fg={color.running()}>{t("recovery.turn.interrupted", { turnId: row.turnId })}</text>
 					</box>
 				)
 			case "assistant":

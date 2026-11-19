@@ -9,6 +9,17 @@ import { Locale } from "../util/locale"
 import { currentRowColors } from "../skin/semantic"
 import { ReminderBadge } from "../routes/session/turn-overlays"
 
+/** An optional extra action (ADR-0011 escalation actions: always / session).
+ *  Rendered in the secondary footer and bound in the SAME modal keymap layer
+ *  as confirm/cancel, so it can never reach the page's turn-abort keys. */
+export type DialogConfirmExtraAction = {
+  label: string
+  /** Single-key binding, e.g. "a". */
+  bind: string
+  title?: string
+  onTrigger: () => void
+}
+
 export type DialogConfirmProps = {
   title: string
   message: string
@@ -18,6 +29,7 @@ export type DialogConfirmProps = {
     confirm?: string
     cancel?: string
   }
+  extraActions?: readonly DialogConfirmExtraAction[]
 }
 
 export function DialogConfirm(props: DialogConfirmProps) {
@@ -38,37 +50,50 @@ export function DialogConfirm(props: DialogConfirmProps) {
     dialog.clear()
   }
 
+  const chooseExtra = (action: DialogConfirmExtraAction) => {
+    action.onTrigger()
+    dialog.clear()
+  }
+
   Keymap.createLayer(() => ({
     mode: "modal",
-    commands: newDesigns()
-      ? [
-          { bind: "return", title: "Confirm", group: "Dialog", run: () => choose("confirm") },
-          { bind: "escape", title: "Cancel", group: "Dialog", run: () => choose("cancel") },
-        ]
-      : [
-          {
-            bind: "return",
-            title: "Confirm dialog selection",
-            group: "Dialog",
-            run: () => choose(store.active),
-          },
-          {
-            bind: "left",
-            title: "Previous dialog option",
-            group: "Dialog",
-            run: () => {
-              setStore("active", store.active === "confirm" ? "cancel" : "confirm")
+    commands: [
+      ...(newDesigns()
+        ? [
+            { bind: "return", title: "Confirm", group: "Dialog", run: () => choose("confirm") },
+            { bind: "escape", title: "Cancel", group: "Dialog", run: () => choose("cancel") },
+          ]
+        : [
+            {
+              bind: "return",
+              title: "Confirm dialog selection",
+              group: "Dialog",
+              run: () => choose(store.active),
             },
-          },
-          {
-            bind: "right",
-            title: "Next dialog option",
-            group: "Dialog",
-            run: () => {
-              setStore("active", store.active === "confirm" ? "cancel" : "confirm")
+            {
+              bind: "left",
+              title: "Previous dialog option",
+              group: "Dialog",
+              run: () => {
+                setStore("active", store.active === "confirm" ? "cancel" : "confirm")
+              },
             },
-          },
-        ],
+            {
+              bind: "right",
+              title: "Next dialog option",
+              group: "Dialog",
+              run: () => {
+                setStore("active", store.active === "confirm" ? "cancel" : "confirm")
+              },
+            },
+          ]),
+      ...(props.extraActions ?? []).map((action) => ({
+        bind: action.bind,
+        title: action.title ?? action.label,
+        group: "Dialog",
+        run: () => chooseExtra(action),
+      })),
+    ],
   }))
   return (
     <DialogLayout
@@ -96,6 +121,13 @@ export function DialogConfirm(props: DialogConfirmProps) {
       }
       footer={{
         actions: {
+          // Escalation actions sit on the left so allow-once/reject keep their
+          // established right-hand primary positions (and Enter/Esc bindings).
+          secondary: (props.extraActions ?? []).map((action) => ({
+            title: action.label.toLowerCase(),
+            key: action.bind,
+            onTrigger: () => chooseExtra(action),
+          })),
           primary: [
             // Footer labels are lowercase; the legacy buttons title-case the same labels.
             { title: (props.label?.cancel ?? "cancel").toLowerCase(), key: "esc", onTrigger: () => choose("cancel") },
@@ -108,21 +140,32 @@ export function DialogConfirm(props: DialogConfirmProps) {
         },
       }}
       legacyFooter={
-        <box flexDirection="row" justifyContent="flex-end">
-          <For each={["cancel", "confirm"] as const}>
-            {(key) => (
-              <box
-                paddingLeft={1}
-                paddingRight={1}
-                backgroundColor={key === store.active ? row().backgroundColor : undefined}
-                onMouseUp={() => choose(key)}
-              >
-                <text fg={key === store.active ? row().textColor : theme.text.muted}>
-                  {Locale.titlecase(props.label?.[key] ?? key)}
-                </text>
-              </box>
-            )}
-          </For>
+        <box flexDirection="row" justifyContent="space-between" gap={1}>
+          <box flexDirection="row">
+            <For each={props.extraActions ?? []}>
+              {(action) => (
+                <box paddingLeft={1} paddingRight={1} onMouseUp={() => chooseExtra(action)}>
+                  <text fg={theme.text.muted}>{`${action.label} [${action.bind}]`}</text>
+                </box>
+              )}
+            </For>
+          </box>
+          <box flexDirection="row">
+            <For each={["cancel", "confirm"] as const}>
+              {(key) => (
+                <box
+                  paddingLeft={1}
+                  paddingRight={1}
+                  backgroundColor={key === store.active ? row().backgroundColor : undefined}
+                  onMouseUp={() => choose(key)}
+                >
+                  <text fg={key === store.active ? row().textColor : theme.text.muted}>
+                    {Locale.titlecase(props.label?.[key] ?? key)}
+                  </text>
+                </box>
+              )}
+            </For>
+          </box>
         </box>
       }
     >

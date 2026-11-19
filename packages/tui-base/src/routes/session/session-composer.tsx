@@ -142,6 +142,12 @@ export type SessionComposerProps = {
 	/** Textarea line cap (content-driven height grows up to this). */
 	maxHeight?: number
 	placeholder?: string
+	/** Bridge RECOVERING (blocky §2.5): the composer refuses submits while
+	 * true, but the typed draft is NEVER cleared. Read as a getter so the page
+	 * can flip it live without remounting the editor. */
+	disabled?: () => boolean
+	/** Reason painted as the textarea placeholder while disabled. */
+	disabledReason?: () => string
 	/** Focus handle for overlay hosts: re-assert focus after a dialog drains. */
 	ref?: (ref: SessionComposerRef) => void
 	/** Resolved `input.submit` / `input.newline` overrides (vendored config
@@ -247,6 +253,7 @@ export function SessionComposer(props: SessionComposerProps) {
 		onPendingChange: props.onPendingChange,
 		onQueuePaused: props.onQueuePaused,
 		isTurnAborted: props.isTurnAborted,
+		disabled: props.disabled,
 		onBusyChange: (value) => {
 			if (disposed) return
 			setBusy(value)
@@ -296,6 +303,9 @@ export function SessionComposer(props: SessionComposerProps) {
 	function submit() {
 		const editor = textarea
 		if (!editor || editor.isDestroyed) return
+		// Bridge RECOVERING: refuse the submit here (before the slash/send path)
+		// and leave the editor text untouched so the draft survives recovery.
+		if (props.disabled?.()) return
 		// Slash commands resolve here (batch 8): the palette's enter path and
 		// unknown "/xxx" both come through the intercept; only plain text
 		// reaches the send/steer controller. `apply` is the skill fall-through
@@ -547,8 +557,13 @@ export function SessionComposer(props: SessionComposerProps) {
 				width="100%"
 				minHeight={1}
 				maxHeight={maxLines()}
-				placeholder={props.placeholder ?? t("composer.placeholder")}
+				placeholder={
+					props.disabled?.()
+						? (props.disabledReason?.() ?? props.placeholder ?? t("composer.placeholder"))
+						: (props.placeholder ?? t("composer.placeholder"))
+				}
 				placeholderColor={color.placeholder()}
+				showCursor={!props.disabled?.()}
 				textColor={color.unfocusedText()}
 				focusedTextColor={color.text()}
 				cursorColor={busy() ? busyColor() : color.text()}

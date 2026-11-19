@@ -121,6 +121,10 @@ export type ComposerControllerOptions = {
 	 * turn without an error, so the controller cannot tell it from success
 	 * on its own. */
 	isTurnAborted?: () => boolean
+	/** A disabled composer refuses every submit (bridge RECOVERING, blocky
+	 * §2.5). The caller keeps the typed draft: "ignored" never clears it and
+	 * never appends history. Read as a getter so the page can flip it live. */
+	disabled?: () => boolean
 }
 
 export class ComposerHistory {
@@ -201,6 +205,7 @@ export class ComposerController {
 	private readonly onPendingChange: ComposerControllerOptions["onPendingChange"]
 	private readonly onQueuePaused: ComposerControllerOptions["onQueuePaused"]
 	private readonly isTurnAborted: ComposerControllerOptions["isTurnAborted"]
+	private readonly disabled: ComposerControllerOptions["disabled"]
 	private busyState = false
 	private pendingTurn: Promise<void> | undefined
 	/** Queue items awaiting their turn, submission order (head = next). */
@@ -221,6 +226,7 @@ export class ComposerController {
 		this.onPendingChange = options.onPendingChange
 		this.onQueuePaused = options.onQueuePaused
 		this.isTurnAborted = options.isTurnAborted
+		this.disabled = options.disabled
 		this.history = options.history ?? new ComposerHistory()
 	}
 
@@ -250,6 +256,9 @@ export class ComposerController {
 	 * hosts without a dialog stack.
 	 */
 	submit(text: string): ComposerSubmitResult {
+		// Disabled (bridge RECOVERING): refuse the turn AND history. The view
+		// keeps the typed draft because the result is "ignored".
+		if (this.disabled?.()) return "ignored"
 		const prompt = text.trim()
 		if (!prompt) return "ignored"
 		// Vendored submitInner appends history for every committed prompt,
@@ -274,6 +283,7 @@ export class ComposerController {
 	 * should not wait forever.
 	 */
 	async submitWhileBusy(text: string): Promise<ComposerSubmitResult> {
+		if (this.disabled?.()) return "ignored"
 		const prompt = text.trim()
 		if (!prompt) return "ignored"
 		const epoch = this.deliveryEpoch

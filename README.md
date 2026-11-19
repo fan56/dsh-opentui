@@ -6,8 +6,10 @@ new architecture, not a reskin of dsh-tui-pi. Built on
 running on Bun.
 
 The repo's product is the **architecture**; the shipped Shell is a working
-chat agent TUI on top of it, distributed as a **client-only** package: a thin
-OpenTUI client that talks to a resident dsh host over the host's remote API.
+chat agent TUI on top of it. By default it boots an in-process session bridge
+inside the dsh host and drives the OpenTUI client over a stdio JSON-lines
+channel; the legacy thin client over the host's remote API is retained behind
+`--remote` (deprecated, removed in 0.23.0).
 
 | Package | What it is |
 |---|---|
@@ -18,7 +20,8 @@ OpenTUI client that talks to a resident dsh host over the host's remote API.
 See [CONTEXT.md](CONTEXT.md) for the glossary and [docs/adr/](docs/adr/)
 for decisions: Solid (0001), two integration channels with no compat shim
 (0002), Bun single-process distribution (0003), host profile route (0004),
-client mode (0005).
+client mode (0005, superseded as the sole TUI path by the in-process bridge,
+0009), session seam lifecycle (0010) and the ask/permission channel (0011).
 
 ## Install
 
@@ -32,6 +35,10 @@ Prerequisites:
 npm i -g @aiwayds/dsh-opentui
 dsh-opentui
 ```
+
+The first launch automatically provisions the `opentui-inproc` profile (bridge
+dependencies are symlinked from the dsh install, never copied). If that bridge
+install is damaged, rerun with `dsh-opentui --repair-bridge`.
 
 Run `dsh-opentui --help` for the full list of launcher options.
 
@@ -98,9 +105,13 @@ confirmation prompt is refused.
 
 ## Client mode
 
-`dsh-opentui` starts a thin client TUI (`dist/client/index.js` under Bun) that
-connects to a resident `dsh --profile opentui` host process. The launcher
-handles everything on startup:
+> The default TUI path since 0.22.0 is the in-process session bridge
+> (`opentui-inproc` profile, see ADR-0009). The thin-client topology below is
+> the retained `--remote` path, deprecated and removed in 0.23.0.
+
+With `--remote`, `dsh-opentui` starts a thin client TUI (`dist/client/index.js`
+under Bun) that connects to a resident `dsh --profile opentui` host process. The
+launcher handles everything on startup:
 
 - **Profile bootstrap** — `$DSH_HOME/profiles/opentui` is provisioned on
   EVERY launch (idempotent; a no-op pass is sub-second). Pass `--provider` /
@@ -210,10 +221,23 @@ carries a heavy accent frame; the unfocused one dims. Mouse reporting is on, so
 hold **Shift** while dragging for the terminal's native selection (then
 Cmd/Ctrl+C copies it); a plain drag is copied on release per `terminal.copy`.
 The model's thinking streams
-dim; tool calls (bash / read_file / write_file) pop an approval card — `y`
-allow, `n` decline; `esc` ×2 + confirm stops a running turn. Ctrl+C twice quits. Commands:
+dim; write-class tool calls (bash / write / edit / apply_patch) pop an approval
+card — **Enter** allows once, **Esc** declines (fail-closed); read-only tools
+such as read_file pass straight through. `esc` ×2 + confirm stops a running
+turn. Ctrl+C twice quits. Commands:
 `/help` `/model [provider/id]` `/usage` `/clear` `/login` `/logout` `/resume`
 `/search` `/new` `/quit` and more — see `/help` inside the TUI.
+
+**Approval by default (inproc profile)**: the generated profile pins
+`defaultPreset: workspace-write` (`approval: ask`) and arms the pre-execute
+gate for the write tools the host registers — `bash`, `write`, `edit`,
+`apply_patch`. Those tools pop the approval card before running; read-only
+tools run straight through; writes outside the workspace are denied by the
+sandbox with an escalation hint. **Escape hatch**: launch with
+`DSH_OPENTUI_APPROVAL_GATE=off dsh-opentui` to disable the gate and restore the
+pre-T9 `danger-full-access` default. The gate is ON by default — do not set
+that variable for normal use. See `docs/adr/0011-ask-permission-bridge-channel.md`
+§6 and `tickets/2026-11-18-approval-trigger-mechanism.md`.
 
 **Session restore on launch (opt-in)**: a plain launch starts a new, empty
 session. To reopen the newest non-empty session from the launch workspace that

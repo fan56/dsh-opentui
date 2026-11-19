@@ -128,3 +128,166 @@ jobs:
           path: verify/agents-mount-out/
           if-no-files-found: ignore
 
+  # T8 — required packaging gate (ADR-0009 decision 5,
+  # tickets/2026-11-18-inproc-bridge-plan.md). Proves the SHIPPED tarball, not
+  # the checkout: npm pack -> install into a fresh prefix -> cold-start
+  # provisioning -> bridge identity guard -> stdio ping handshake. No
+  # continue-on-error, no cache reuse, no skip: every assertion is hard and
+  # every failure dumps the tarball listing, the profile tree and the bridge's
+  # stderr before going red.
+  pack-cold-start:
+    name: Pack / cold start / bridge handshake
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.4"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.18.3
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 26 # packages/shell engines: node >=26.4.0; this gate RUNS the installed CLI
+          # Deliberately no `cache:` here — a cached store must not mask a cold-start failure.
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build bridge bundle
+        run: bun scripts/build-bridge.mjs
+
+      # M2-2: the bridge inline guard is a pure content criterion. The bundle
+      # FAILS only when it contains a host-implementation marker that Bun leaves
+      # when it folds @deepseek-ai into the output: `function createUserMessage`,
+      # `deepFreeze(`, or a `node_modules/.pnpm/@deepseek-ai` source banner.
+      # Any @deepseek-ai/dsh-llm mention outside an import line also fails.
+      # Bundle size no longer decides the exit code — the fixed build is ~29KB,
+      # above the old 20480B ceiling — so 20480B is kept only as a reference
+      # threshold for a warning line.
+      - name: Assert bridge bundle does not inline host implementation
+        shell: bash
+        run: |
+          set -eo pipefail
+          BUNDLE="$GITHUB_WORKSPACE/packages/shell/dist/bridge/index.js"
+          [ -f "$BUNDLE" ] || { echo "::error::built bridge bundle not found at $BUNDLE"; exit 1; }
+          BYTES="$(wc -c < "$BUNDLE" | tr -d ' ')"
+          echo "bridge bundle size: ${BYTES} bytes"
+          if [ "$BYTES" -ge 20480 ]; then
+            echo "::warning::bridge bundle is ${BYTES}B (>= 20480B reference threshold); size alone does not fail the gate"
+          fi
+          if grep -nE 'function createUserMessage|deepFreeze\(|node_modules/\.pnpm/@deepseek-ai' "$BUNDLE"; then
+            echo "::error::bridge bundle contains inlined @deepseek-ai implementation markers"
+            exit 1
+          fi
+          if grep -n '@deepseek-ai/dsh-llm' "$BUNDLE" | grep -Ev '^[0-9]+:[[:space:]]*import[[:space:]]'; then
+            echo "::error::@deepseek-ai/dsh-llm appears outside an import statement"
+            exit 1
+          fi
+          echo "bridge bundle inline guard PASS (${BYTES}B, no host implementation markers)"
+
+      - name: Pack tarball (prepack must run)
+        working-directory: packages/shell
+        run: |
+          # npm, not pnpm: prepack writes untracked build output that pnpm's
+          # git-clean check rejects (same reason as release.yml). No
+          # --ignore-scripts: prepack is the real publish build.
+          TARBALL="$(npm pack | tail -n 1)"
+          [ -n "$TARBALL" ] && [ -f "$TARBALL" ] || { echo "::error::npm pack produced no tarball"; exit 1; }
+          echo "TARBALL=$GITHUB_WORKSPACE/packages/shell/$TARBALL" >> "$GITHUB_ENV"
+          echo "packed $TARBALL"
+
+      - name: Assert tarball / fresh install / cold start / handshake
+        shell: bash
+        run: |
+          set -eo pipefail
+
+          WORK="$(mktemp -d)"
+          PREFIX="$WORK/prefix"
+          HOST_PREFIX="$WORK/host-prefix"
+          FRESH_DSH_HOME="$WORK/dsh-home"
+          PROFILE_DIR="$FRESH_DSH_HOME/profiles/opentui-inproc"
+          REPAIR_OUT="$WORK/repair.out"
+          HANDSHAKE_OUT="$WORK/handshake.out"
+          HANDSHAKE_ERR="$WORK/handshake.err"
+
+          dump_diagnostics() {
+            echo "===== T8 DIAGNOSTICS ====="
+            echo "--- tarball file list ---"
+            if [ -n "${TARBALL:-}" ] && [ -f "$TARBALL" ]; then tar -tf "$TARBALL"; else echo "(no tarball at ${TARBALL:-unset})"; fi
+            echo "--- profile tree ---"
+            if [ -d "$PROFILE_DIR" ]; then find "$PROFILE_DIR" -maxdepth 6 -print; else echo "(no profile dir)"; fi
+            echo "--- bridge repair stdout/stderr ---"
+            if [ -f "$REPAIR_OUT" ]; then cat "$REPAIR_OUT"; else echo "(no repair output)"; fi
+            echo "--- bridge handshake stdout ---"
+            if [ -f "$HANDSHAKE_OUT" ]; then cat "$HANDSHAKE_OUT"; else echo "(no handshake stdout)"; fi
+            echo "--- bridge handshake stderr ---"
+            if [ -f "$HANDSHAKE_ERR" ]; then cat "$HANDSHAKE_ERR"; else echo "(no handshake stderr)"; fi
+            echo "=========================="
+          }
+          fail() { echo "::error::$1"; dump_diagnostics; exit 1; }
+          # Any unexpected nonzero exit also gets the context dump.
+          trap 'echo "::error::unexpected failure at line $LINENO (rc=$?)"; dump_diagnostics' ERR
+
+          mkdir -p "$FRESH_DSH_HOME" || fail "cannot create fresh DSH_HOME at $FRESH_DSH_HOME"
+
+          # 3. tarball content assertions.
+          TAR_LIST="$WORK/tar-list.txt"
+          # Guard tar itself: with `set -e` a bare failing pipe would exit
+          # before fail() gets a chance to dump the diagnostics.
+          if ! tar -tf "$TARBALL" | sort > "$TAR_LIST"; then
+            fail "cannot list tarball $TARBALL"
+          fi
+          for f in \
+            package/dist/bridge/index.js \
+            package/dist/bridge/package.json \
+            package/dist/bridge/cordis.patch.yml \
+            package/dist/bridge/bundle-fingerprint.json
+          do
+            grep -Fxq "$f" "$TAR_LIST" || fail "tarball is missing $f"
+          done
+          if grep -q 'node_modules/@deepseek-ai/' "$TAR_LIST"; then
+            fail "tarball contains a forbidden node_modules/@deepseek-ai/ entry"
+          fi
+          echo "tarball bridge entries:"
+          grep '^package/dist/bridge/' "$TAR_LIST"
+
+          # 4. fresh-prefix installs: no workspace symlink can take part, and
+          # the host is pinned to the bridge's peer version (not on hosted
+          # runners). A failed host install is a real failure, never a skip.
+          npm i -g --prefix "$PREFIX" "$TARBALL" || fail "fresh-prefix install of the tarball failed"
+          npm i -g --prefix "$HOST_PREFIX" @deepseek-ai/dsh@0.2.2-rc.3 \
+            || fail "pinned host install (@deepseek-ai/dsh@0.2.2-rc.3) failed"
+          DSH_BIN="$HOST_PREFIX/bin/dsh"
+          [ -x "$DSH_BIN" ] || fail "installed dsh binary not found at $DSH_BIN"
+
+          # 5. cold start (headless): provisioning + T5 identity + T7 repair.
+          set +e
+          DSH_HOME="$FRESH_DSH_HOME" "$PREFIX/bin/dsh-opentui" --repair-bridge > "$REPAIR_OUT" 2>&1
+          REPAIR_RC=$?
+          set -e
+          cat "$REPAIR_OUT"
+          [ "$REPAIR_RC" -eq 0 ] || fail "--repair-bridge exited $REPAIR_RC"
+          grep -q 'bridge identity OK' "$REPAIR_OUT" || fail "--repair-bridge output has no 'bridge identity OK'"
+          grep -q 'PASS' "$REPAIR_OUT" || fail "--repair-bridge output has no PASS"
+
+          # 6. stdio handshake through the INSTALLED dsh (not the checkout).
+          set +e
+          node "$GITHUB_WORKSPACE/scripts/verify-bridge-handshake.mjs" "$DSH_BIN" "$FRESH_DSH_HOME" 25000 \
+            > "$HANDSHAKE_OUT" 2> "$HANDSHAKE_ERR"
+          HANDSHAKE_RC=$?
+          set -e
+          cat "$HANDSHAKE_OUT"
+          cat "$HANDSHAKE_ERR" >&2
+          [ "$HANDSHAKE_RC" -eq 0 ] || fail "bridge handshake exited $HANDSHAKE_RC"
+          grep -Eq '"protocolVersion"[[:space:]]*:[[:space:]]*1' "$HANDSHAKE_OUT" \
+            || fail "handshake stdout has no protocolVersion:1"
+
+          # 7. the profile must never hold a @deepseek-ai copy (empty find).
+          DS_COPY="$(find "$PROFILE_DIR" -path '*@deepseek-ai*' -print 2>/dev/null || true)"
+          echo "profile @deepseek-ai find output: ${DS_COPY:-<empty>}"
+          [ -z "$DS_COPY" ] || fail "profile contains @deepseek-ai copies: $DS_COPY"
+          echo "T8 pack / cold start / handshake gate PASS"
+

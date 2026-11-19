@@ -10,8 +10,9 @@
  * The capabilities:
  *   1. `--version` — print `dsh-opentui <version>` and exit 0, BEFORE any
  *      provision/profile work (see the bin's step 0).
- *   2. `--force`   — kill this profile's stale instances (the resident `dsh
- *      host and the bun client) before starting.
+ *   2. `--force`   — reset the singleton host before starting (needs `--yes`
+ *      when live clients are connected; ADR-0009). Stale-instance cleanup is a
+ *      `--repair-bridge` maintenance action.
  *   3. `upgrade`   — the positional upgrade subcommand: its argv is parsed
  *      here (pure) and dispatched by the bin to scripts/upgrade.mjs. The
  *      subcommand and its flags are consumed by the bin and NEVER forwarded
@@ -49,8 +50,10 @@ export function defaultDshHome() {
  * Split the launcher's argv into the flags the bin consumes itself and the
  * arguments forwarded to the client bundle.
  *
- * `-v`/`--version` and `--force` are BIN-level flags: they are consumed here
- * and NOT forwarded (the client must never see `--force`).
+ * `-v`/`--version`, `--force` and `--repair-bridge` are BIN-level flags: they
+ * are consumed here and NOT forwarded (the client must never see them).
+ * `--repair-bridge` is a terminal maintenance command: the bin runs the
+ * in-process bridge self-heal and exits without launching the TUI.
  *
  * A standalone `--` ends launcher parsing: every token after it (even one that
  * spells a launcher flag) goes to `passthrough` verbatim and is never
@@ -61,6 +64,7 @@ export function parseLauncherArgs(argv) {
 	const args = Array.isArray(argv) ? argv : []
 	let version = false
 	let force = false
+	let repairBridge = false
 	let yes = false
 	const rest = []
 	const passthrough = []
@@ -82,6 +86,10 @@ export function parseLauncherArgs(argv) {
 			force = true
 			continue
 		}
+		if (arg === '--repair-bridge') {
+			repairBridge = true
+			continue
+		}
 		// `--yes` confirms a --force reset when live clients exist (ADR-0009 §7).
 		// Consumed by the bin, never forwarded to dsh/the client.
 		if (arg === '--yes') {
@@ -90,7 +98,7 @@ export function parseLauncherArgs(argv) {
 		}
 		rest.push(arg)
 	}
-	return { version, force, yes, rest, passthrough }
+	return { version, force, repairBridge, yes, rest, passthrough }
 }
 
 /**
@@ -115,6 +123,9 @@ export const KNOWN_CLIENT_ARGS = [
 	'--resume-last',
 	'--session',
 	'--session=',
+	// T10: retained but deprecated; removed in 0.23.0. Still accepted so the
+	// legacy thin-client seam remains selectable during phase one.
+	'--remote',
 ]
 
 /**
@@ -231,6 +242,7 @@ export function validateLauncherArgs(rest, { skip = [] } = {}) {
 		'--version',
 		'-v',
 		'--force',
+		'--repair-bridge',
 		...LAUNCHER_TIMEOUT_FLAGS,
 		'-h',
 		'--help',
@@ -278,6 +290,54 @@ export function validateLauncherArgs(rest, { skip = [] } = {}) {
 	}
 }
 
+/**
+ * T10 — the `--remote` deprecation notice. Names the removal line (0.23.0)
+ * and the inproc migration path (set DSH_OPENTUI_INPROC=1, then drop the flag;
+ * inproc becomes the default in 0.23.0). Kept here (pure)
+ * so the "printed exactly once" contract is unit-testable without a TUI.
+ */
+export const REMOTE_DEPRECATION_NOTICE =
+  'dsh-opentui: --remote is deprecated and will be removed in 0.23.0; ' +
+  'to move to the in-process bridge, set DSH_OPENTUI_INPROC=1 and drop the flag ' +
+  '(inproc becomes the default in 0.23.0; the /resume, --session, --resume-last entries also use it).'
+
+/** True when `--remote` appears anywhere in the launch argv (before or after
+ *  a `--` separator). */
+export function isRemoteRequested(...argvLists) {
+  return argvLists.some((list) => Array.isArray(list) && list.includes('--remote'))
+}
+
+/**
+ * Emit the deprecation notice AT MOST ONCE per launch, even if `--remote`
+ * appears multiple times. Returns the number of lines written (0 or 1) so
+ * callers/tests can assert the "exactly once" contract. `sink` is injectable.
+ */
+export function emitRemoteDeprecation(argvLists, sink = console.warn) {
+  if (!argvLists.some((list) => Array.isArray(list) && list.includes('--remote'))) return 0
+  sink(REMOTE_DEPRECATION_NOTICE)
+  return 1
+}
+
+/**
+ * P3-3 — explicit handling of launcher flag combinations that previously fell
+ * into dead corners (silently ignored one flag or ran the wrong branch). Pure
+ * so the bin's reject/notice decisions are unit-testable without spawning.
+ * `remote` is precomputed via `isRemoteRequested(userArgs, passthrough)`.
+ *
+ * Returns a conflict code, or null when the combination is fine:
+ *   'repair-force'      --repair-bridge + --force → mutually exclusive
+ *   'repair-remote'     --repair-bridge + --remote → no bridge in remote mode
+ *   'yes-without-force' --yes without --force/--repair-bridge (under
+ *                       --repair-bridge, --yes is tolerated — the repair branch
+ *                       never reads it — and is intentionally allowed through)
+ */
+export function launcherFlagConflict({ force, repairBridge, yes } = {}, remote = false) {
+  if (repairBridge && force) return 'repair-force'
+  if (repairBridge && remote) return 'repair-remote'
+  if (yes && !force && !repairBridge) return 'yes-without-force'
+  return null
+}
+
 /** Usage text for the normal launcher (not the `upgrade` subcommand). */
 export function formatUsage() {
 	return [
@@ -287,8 +347,9 @@ export function formatUsage() {
 		'',
 		'Options:',
 		'  -v, --version              print the launcher version and exit',
-		'  --force                    reset the singleton host before starting (needs --yes if clients are live)',
+		'  --force                    reset the singleton host before starting (needs --yes if clients are live; no-op under --dry-run)',
 		'  --yes                      confirm a --force reset that would disconnect live clients',
+		'  --repair-bridge            kill stale instances, repair the in-process bridge symlink / manifest, re-verify its identity, then exit (no TUI)',
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
 		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
 		'  --connect-timeout <sec>    seconds to wait for the first connection (default: 30)',
@@ -307,6 +368,7 @@ export function formatUsage() {
 		'',
 		'Client options (passed through; put them after -- to skip validation):',
 		'  --new, --resume-last, --session <id>',
+		'  --remote                   (deprecated; removed in 0.23.0) force the legacy thin-client seam; default is the in-process bridge in inproc mode',
 		'',
 		'Exit codes:',
 		'  0  success, --version, or --help',

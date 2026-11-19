@@ -50,7 +50,7 @@ import { DialogProvider } from "../src/ui/dialog"
 import { applyI18nConfig } from "@dsh-opentui/i18n"
 
 // i18n boot replay (applyI18nConfig parity with v2-entry, BEFORE the first
-// paint): the footer's 💬 label is a `footer.messages` registry key now —
+// paint): the footer's 💬 label rides the `footer.msgs.one/.many` registry keys —
 // without a loaded table t() fail-opens to the bare key on the strip. No
 // config seam here, so the en default loads.
 applyI18nConfig()

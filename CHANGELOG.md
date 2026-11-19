@@ -5,6 +5,167 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-11-19
+
+### Changed
+
+- **Opt-in in-process bridge (no default change).** Setting `DSH_OPENTUI_INPROC=1`
+  provisions the `opentui-inproc` host profile and routes the TUI through a
+  bridge bundle running inside that host (stdio JSON-lines), so session
+  identity, turns, asks and journal replay share one data source. Without that
+  env var a plain `dsh-opentui` boot still starts the remote thin-client seam,
+  exactly as in 0.21.x. Flipping the default to the bridge is planned for
+  0.23.0. `--remote` remains the explicit remote selector and is deprecated,
+  slated for removal in 0.23.0; passing it prints one deprecation notice per
+  launch naming the removal line. When opt-in is on, both seams coexist and a
+  failed inproc handshake/fingerprint check fails fast with a diagnosis, a
+  repair command (`dsh-opentui --repair-bridge`) and a mode notice — it never
+  silently falls back to the remote seam.
+
+### User decisions (2026-11-19 merge-footer review)
+
+- Three rulings on the merged inproc footer, final (do not re-litigate):
+  1. The 🆔 session-id footer segment is removed entirely — segment, v2-entry
+     wiring, recovery-ui callback and tests. Session identity stays queryable
+     through `/session info` (ADR-0010 I5 carries a revision record).
+  2. The `bridgeStatus` footer segment hides only the normal `✓ ready` state;
+     `⚠ dead` / `⟳ recovering` still render during a fault / recovery and
+     disappear automatically once the link returns to ready. Recovery logic is
+     untouched — only the powerline render condition changed. The 80-column
+     priority table keeps `bridgeStatus` at the lowest priority (-2); it now
+     only occupies a slot in an abnormal state.
+  3. The 🧠 context and ⚡ cache-hit-rate footer segments render again under
+     the inproc bridge (the former P3-2 Known debt, paid early).
+
+### Added
+
+- **Real session resume.** `session.open{resume}` calls the host's `ctx.agents.resume`
+  eagerly instead of silently creating a fresh session. Model context and the
+  on-screen journal now point at the same persisted session, fixing the
+  "screen still shows history, model forgot everything" split (the
+  dsh-opentui-amnesia incident). `/resume`, `--session` and `--resume-last` all
+  take the resume path; abort leaves the session id unchanged.
+- **Approval cards and tighter defaults.** The generated profile pins
+  `defaultPreset: workspace-write` (`approval: ask`) and arms a pre-execute gate
+  for `bash`, `write`, `edit` and `apply_patch`. Those tools pop a TUI approval
+  card before execution (Enter = allow, Esc = reject, fail-closed); read-only
+  tools pass straight through. Escape hatch: `DSH_OPENTUI_APPROVAL_GATE=off
+  dsh-opentui` restores the old `danger-full-access` default.
+- **User-questions panel over the bridge.** Host `user-questions` requests are
+  forwarded as `ask.request` events and surface on the TUI's ask dock, where
+  they can be answered back through `ask.response`. Missing provider/service,
+  answer errors and timeouts settle fail-closed with an explicit error code and
+  UI notice instead of being silently swallowed; first answer wins, and turn
+  end closes every pending ask.
+- **APPEND_SYSTEM.md injected for real in inproc mode.** The bridge registers
+  an agent-scoped `systemPrompt.section` (`order: 200`) that lazily reads
+  `~/.dsh/APPEND_SYSTEM.md`, caches by mtime, and truncates at 64 KiB on a UTF-8
+  character boundary. Existing `opentui-append-system` sessions carry that id
+  as inert metadata on resume (no migration, no cleaning, no `preset` passed to
+  `agents.resume`); the appended text comes only from the bridge section.
+- **DEAD recovery, phase one (host-crash recovery).** A bridge/host exit shows a
+  DEAD notice immediately with the exit code/signal, even when idle. `R`
+  reconnects: respawn the child, re-handshake with three checks (protocol
+  version, fingerprint fields, host-compat window), eager `session.open{resume}`,
+  then a `journal.replay` drain to fill the transcript. Pending approval cards
+  at DEAD turn into terminal "invalidated" cards (acknowledge-only, never an
+  implicit allow); an in-flight turn is judged by the journal's terminal row —
+  a silent journal yields a local `INTERRUPTED` marker (`seq:null`, `source:local`)
+  that is never written to the journal. Automatic retry/backoff and heartbeats
+  are deferred to a later version.
+
+### Fixed
+
+- **Inproc bridge subagent rows converge; tool callId / isError reach the view.**
+  Follow-up to the 9190946 subagent/tool fix (oldfox P1×2+P2×3+P3×3):
+  - A plain `subagent` child now settles when the host journals a
+    `user/message` `source.kind=subagent-settled` notice — paired by
+    `senderSessionId` to the catalog child's `childId` (no runId needed),
+    `stopReason`→status conservatively mapped. Settled rows freeze their
+    duration; unknown stop reasons never paint a false failure. An ABORTED
+    parent turn leaves no such notice, so its ghost row stays `running` — a
+    documented known residue with no wall-clock fallback (ADR-0010).
+  - Catalog-family rows may revive a settled child on a later same-childId
+    catalog (a new run); the tool-workflow family keeps its no-revive guard.
+    `sessionInfo`'s incremental drain now folds these rows too, so an async
+    child settles outside any turn. Catalog replay anchors `startedAt` to the
+    host's real `childCreatedAt`.
+  - `turn.tool` call/result frames carry the `callId` end-to-end; the seam
+    passes it into `onToolStart`/`onToolRun`, so two same-name tools
+    interleaving no longer collide on one row and args stay with their call.
+    The result frame carries the host's `isError`, mapped to `ok` (a failed
+    tool is no longer painted as a success). Corrected 9190946's inaccurate
+    claim that callId preserved the args — that came from the seam-rows
+    empty-argsPretty fallback.
+- **🧠 context and ⚡ cache-hit segments render under the inproc bridge.**
+  The in-process bridge exposes no `session` / `projections` RPC (only
+  `session.list`), so `BridgeSessionSeam` derives `contextTokens()` /
+  `contextWindow()` / `cacheHitRate()` from journal rows rather than a live
+  projection. The caliber is deliberately LAYERED, not a wholesale parity
+  claim:
+  - ⚡ cache-hit rate — same formula as remote: `lastMessage` is
+    `cacheRead / (prompt + cacheRead + cacheWrite)` of the latest billed row,
+    `session` is `ΣcacheRead / (Σprompt + ΣcacheRead + ΣcacheWrite)`.
+  - 🧠 context occupancy — a DEGRADED local caliber. The numerator is the
+    journal's latest billed `assistant/message.data.usage.totalTokens`
+    (≈ remote `ContextTokenMeter` billed base `input + cacheRead + cacheWrite
+    + output`); it carries no pending-item estimate and no next-request
+    projection, so unlike remote it does NOT climb with pending text while a
+    turn is in flight. The denominator is the host-resolved
+    `request/context.contextWindow` for the live route, guarded by the same
+    `currentModelSelection()` route check.
+  All three ride the existing incremental `sessionInfo()` tally (no new cache,
+  no double counting) and read the same host usage data the remote seam reads
+  off its live chunks — remote reads the live usage chunk, the bridge the
+  journal row that carries it. The `/session` panel's `cache read/write 0 / 0`
+  was a field-name mismatch — the journal row carried `cacheReadTokens` but the
+  seam only read `cacheRead`; the alias mapping (remote `scanUsageChunk` parity)
+  fixes both the panel and the footer rate.
+- **Writer-held as a localized diagnostic.** `SESSION_LOCKED` now renders as a
+  `writer-held` message that includes the host-reported holder session id,
+  instead of the raw host error. In inproc mode the footer brand shows as `dsh`.
+- **Footer `💬` and `⚡` now render on the opt-in inproc path.** The bridge
+  seam's `sessionInfo()` derives `msgCount` from journal `assistant/message`
+  rows — the same single `💬 N msgs` unit defined in 0.21.1 — and `tps` when it
+  can be derived, so the counter and token-rate segments are no longer blank
+  under the inproc seam. `messageCount` remains the `/session` panel's data.
+
+### 用户裁决 — activity 面板重设计（2026-11-19）
+
+用户逐条拍板的最终规则表，覆盖此前"think / tool 各自独立锚点"的旧法则：
+
+| 场景 | think | tool | todo | subagent |
+| --- | --- | --- | --- | --- |
+| A. subagent 活跃 | 1 行，置顶 | 1 行，置顶 | 1 行摘要 `todo 完成数/总数 时长s` | 列表占剩余行（沿用现有滚动裁剪） |
+| B. 无 subagent、think 可见（活跃 + 2s exit hold） | 齿轮行数（≤10） | 隐藏 | 隐藏 | — |
+| C. 无 subagent、无 think | — | ≤3 行（固定值，不吃齿轮） | 1 行（现行完整格式） | — |
+
+1. **面板封顶 10 行。** 内容区随内容伸缩、硬上限 `MERGED_DOCK_TOTAL_LINES = 10`（不含边框）；废除 `all` 档的 2/3 终端增长规则和 halfBudget 帧钳制。无内容整体隐藏（D5）不变。
+2. **齿轮只管 think。** `session.activity_panel_height` 语义改为仅 think 显示行数：1/5/7/10；`all` 保留兼容（不迁移用户 config）但等于 10。tool 恢复固定 3 行。settings 行文案与 en/zh 文案改义（key 名不动）。
+3. **场景 B 互斥。** think 可见期间藏 tool 与 todo；若 subagent 仅有历史残留行而 think 活跃，按场景 B 处理（subagent 行也让位）。优先级：subagent 活跃 > think 独占。
+4. **场景 A 的 todo 摘要行。** 只显示 `todo 完成数/总数 时长s`（如 `todo 1/3 300s`），不显示当前任务文本。时长 = 当前任务集建立至今的秒数：按任务文本集合（忽略状态翻转、与顺序无关）首次出现的时刻起算；换任务集重置，同一集内 1/3→2/3 不重置，跨会话清空。
+5. **伸缩动画。** 面板高度变化走共享动画钟（busy 才给 rate）驱动的整数行数逐帧插值，200ms smoothstep；非常驻、终态精确等于目标行数；共享钟 idle 不给 tick 时按挂钟取终态。动画结束帧后自校验行数 = 目标，规避仓内常驻动画撞 diff-paint 丢行的前科。**动画仅作用于增长**（新行逐行出现）；收缩为瞬时（被删行无法参与过渡）——这是设计内的不对称，不是缺陷。
+
+置顶顺序：场景 A 中 think 行、tool 行、todo 行在 subagent 列表上方。
+
+### Known debt (0.22.0 transitional)
+
+- The default inproc launch still runs two host processes: an HTTP host owns the
+  config plane (`configSave`, theme/skin persistence, profile/workspace overlay
+  reads) because `BridgeSessionSeam` has no config frame, while the bridge host
+  owns the session plane. 0.23.0 folds config into the bridge (or local files)
+  and removes the `ensureHost`/`RemoteHostSession` path.
+- The old automatic reconnect (backoff retry) is not implemented; recovery in
+  0.22.0 is manual (`R`, with a 5s cooldown) only.
+- The inproc bridge's `subagentViews` field set matches the remote seam's, but
+  its VALUES are approximate: the bridge only sees the parent journal, so
+  `rounds` stays 0, `lastLine` / `model` are absent, and a settled row's
+  `elapsedSec` is frozen at discovery time. No whole-parity claim is made.
+- ~~`BridgeSessionSeam` does not implement `contextTokens()` / `contextWindow()`;
+  the 🧠 context-occupancy segment does not render under the inproc bridge.~~
+  **RESOLVED in 0.22.0** (user decision 2026-11-19, paid ahead of the later
+  seam-capability batch): see the Fixed entry above for the journal-derived
+  implementation and the ⚡ cache-rate parity fix.
 ## [0.21.1] - 2026-11-17
 
 ### Changed

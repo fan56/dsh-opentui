@@ -27,6 +27,7 @@ import { clipToWidth } from "./tool-summarize"
 import { stringWidth } from "../../util/string-width"
 import { useTerminalSize } from "./terminal-size"
 import { t } from "../../i18n"
+import type { BridgeLinkStatus } from "../../seams/session"
 
 /** A color that is either a token RGBA or a fallback hex string. */
 export type PowerlineColor = string | RGBA
@@ -591,11 +592,11 @@ export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode:
 	// label is unbounded host data (any roster name rides here), and a label
 	// long enough to push the strip past the terminal budget used to leave the
 	// fitting law exactly one recourse — degrading the 🧠 segment to the bare
-	// `🧠 used` shape (the context window never reached the footer at 45 cols:
-	// `dsh(Standard + Append)` + `🧠 205/200.0k(0.1%)` = 47 > 44). Shortening
-	// the cosmetic parenthetical first keeps the 45-col contract "brand + full
-	// compact context" for every label length; the no-preset face ("dsh") is
-	// already its own degrade and is skipped by the fitter's same-shape guard.
+	// `🧠 used` shape (an arbitrarily long roster name pushes the strip past 44
+	// cols alongside `🧠 205/200.0k(0.1%)`). Shortening the cosmetic
+	// parenthetical first keeps the 45-col contract "brand + full compact
+	// context" for every label length; the no-preset face ("dsh") is already
+	// its own degrade and is skipped by the fitter's same-shape guard.
 	return { text: label, bg: brandBlue(mode), priority: 100, degrade: "dsh" }
 }
 
@@ -736,16 +737,17 @@ export function contextSegment(
 }
 
 /**
- * The 💬 message-count segment (fix/footer-parity, tui-pi wording `💬 {n}
- * msgs`, footer.ts:271); 0 still renders `💬 0 msgs` (a legitimate empty
- * session, tui-pi pushes it unconditionally). The label goes through i18n
- * (`footer.messages`, live language signal). Presence is the CALLER's
- * decision: sessionFooterSegments omits the segment when the count is
+ * The legacy 💬 message-count segment (retained for older callers/tests; the
+ * strip itself uses `msgSegment`). It shares the canonical i18n keys
+ * `footer.msgs.one` / `footer.msgs.many` with `msgSegment`, so there is a single
+ * 💬 label surface; the old `footer.messages` key was removed as inconsistent.
+ * 0 still renders `💬 0 msgs` (a legitimate empty session). Presence is the
+ * CALLER's decision: sessionFooterSegments omits the segment when the count is
  * unknown (sessionInfo absent) rather than showing a fake number.
  */
 export function messagesSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
 	if (!Number.isFinite(n) || n < 0) return null
-	return { text: t("footer.messages", { n }), bg: resolvePalette(theme).messages, priority: 80 }
+	return { text: t(n === 1 ? "footer.msgs.one" : "footer.msgs.many", { n }), bg: resolvePalette(theme).messages, priority: 80 }
 }
 
 /**
@@ -812,6 +814,27 @@ export function elapsedSegment(seconds: number | null, theme?: ComponentTheme): 
 export function cacheSegment(rate: number | null, theme?: ComponentTheme): PowerlineSegment | null {
 	if (rate === null || !Number.isFinite(rate) || rate < 0) return null
 	return { text: `⚡ CH${rate.toFixed(1)}%`, bg: resolvePalette(theme).cache, priority: 40 }
+}
+
+/**
+ * A2: the bridge link-health segment (dead / recovering). The `ready` state
+ * is the NORMAL steady state and is deliberately NOT rendered — the user
+ * ruling of 2026-11-19 hides it so the strip is not cluttered by a permanent
+ * ✓ ready badge. Only the two ABNORMAL states survive: `⚠ dead` and
+ * `⟳ recovering` show while the link is broken / being restored, and vanish
+ * automatically once recovery completes (status returns to `ready`).
+ *
+ * The three-value precision still lives in `SeamStatus.bridge`; this builder
+ * is the sole render gate. An absent (`legacy seam`) OR `ready` value both
+ * hide the segment, so legacy seams and existing consumers are untouched.
+ * Priority -2 makes it shed first on narrow rows; it only ever occupies a
+ * slot during an abnormal state, so a healthy 80-col strip never pays for it.
+ */
+export function bridgeStatusSegment(status: BridgeLinkStatus | undefined): PowerlineSegment | null {
+	if (status === undefined || status === "ready") return null
+	const text = status === "dead" ? "⚠ dead" : "⟳ recovering"
+	const bg = status === "dead" ? "#a82124" : "#b58105"
+	return { text, bg, priority: -2 }
 }
 
 /**
@@ -1066,6 +1089,11 @@ export function sessionFooterSegments(data: {
 	presetLabel?: string
 	/** Elapsed turn seconds for the ⏱ segment; null/absent hides it. */
 	elapsedSec?: number | null
+	/**
+	 * A2: bridge link health. `dead` / `recovering` render a status segment;
+	 * `ready` (the normal state) and absent hide it (legacy seams unaffected).
+	 */
+	bridgeStatus?: BridgeLinkStatus
 	/** Identity color mode (brand segment fill); dark default. */
 	mode?: SkinColorMode
 	theme?: ComponentTheme
@@ -1088,6 +1116,9 @@ export function sessionFooterSegments(data: {
 	add(toolSegment(data.tools ?? 0, theme))
 	add(elapsedSegment(data.elapsedSec ?? null, theme))
 	add(speedSegment(data.tps ?? null, theme))
+	// A2: bridge link health rides at the lowest priority (-2) so it sheds
+	// first on narrow rows; only dead/recovering render, ready/absent hide it.
+	add(bridgeStatusSegment(data.bridgeStatus))
 	// Batch D3: the search discoverability hint (batch H1) left the strip —
 	// key hints live on their own last row (./hints-line.tsx, tui-pi
 	// FooterHint after PowerlineFooter); the powerline is pure segments.

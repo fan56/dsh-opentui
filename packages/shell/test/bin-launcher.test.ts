@@ -13,10 +13,14 @@ import {
   ancestorPids,
   classifyProcess,
   defaultDshHome,
+  emitRemoteDeprecation,
   formatUsage,
+  isRemoteRequested,
   KNOWN_CLIENT_ARGS,
   killStaleProcesses,
+  launcherFlagConflict,
   parseLauncherArgs,
+  REMOTE_DEPRECATION_NOTICE,
   parseLauncherOptions,
   parseProcessHomes,
   parseProcessRows,
@@ -44,12 +48,13 @@ const pkgVersion = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'
 
 describe('parseLauncherArgs', () => {
   test('consumes --version and --force, forwards the rest', () => {
-    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, yes: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, yes: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, repairBridge: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, repairBridge: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, repairBridge: false, yes: false, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--model', 'x', '--force', 'prompt'])).toEqual({
       version: false,
       force: true,
+      repairBridge: false,
       yes: false,
       rest: ['--model', 'x', 'prompt'],
       passthrough: [],
@@ -57,27 +62,47 @@ describe('parseLauncherArgs', () => {
   })
 
   test('consumes --yes (confirm flag) and never forwards it', () => {
-    expect(parseLauncherArgs(['--force', '--yes'])).toEqual({ version: false, force: true, yes: true, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '--yes'])).toEqual({ version: false, force: true, repairBridge: false, yes: true, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--yes', '--model', 'x'])).toEqual({
-      version: false, force: false, yes: true, rest: ['--model', 'x'], passthrough: [],
+      version: false, force: false, repairBridge: false, yes: true, rest: ['--model', 'x'], passthrough: [],
     })
     expect(parseLauncherArgs(['--yes', '--', '--yes']).passthrough).toEqual(['--yes'])
   })
 
   test('treats -v as an alias for --version', () => {
-    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, yes: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, repairBridge: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, repairBridge: false, yes: false, rest: [], passthrough: [] })
   })
 
   test('leaves unrelated arguments (including lookalikes) untouched', () => {
     expect(parseLauncherArgs(['--model', '--version-like', '--forced'])).toEqual({
       version: false,
       force: false,
+      repairBridge: false,
       yes: false,
       rest: ['--model', '--version-like', '--forced'],
       passthrough: [],
     })
-    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, repairBridge: false, yes: false, rest: [], passthrough: [] })
+  })
+
+  test('consumes --repair-bridge as a bin-level flag, forwarding the rest', () => {
+    expect(parseLauncherArgs(['--repair-bridge'])).toEqual({
+      version: false,
+      force: false,
+      repairBridge: true,
+      yes: false,
+      rest: [],
+      passthrough: [],
+    })
+    expect(parseLauncherArgs(['--model', 'x', '--repair-bridge', 'prompt'])).toEqual({
+      version: false,
+      force: false,
+      repairBridge: true,
+      yes: false,
+      rest: ['--model', 'x', 'prompt'],
+      passthrough: [],
+    })
   })
 })
 
@@ -293,6 +318,7 @@ describe('parseLauncherArgs -- separator', () => {
     ).toEqual({
       version: false,
       force: false,
+      repairBridge: false,
       yes: false,
       rest: ['--model', 'm'],
       passthrough: ['--version', '--force', '--verison', 'plain'],
@@ -318,6 +344,94 @@ describe('parseLauncherArgs -- separator', () => {
   test('-h and --help after -- are passthrough, never interpreted as help', () => {
     expect(parseLauncherArgs(['--', '-h', '--help']).passthrough).toEqual(['-h', '--help'])
   })
+
+  test('--repair-bridge after -- is passthrough, never a repair flag', () => {
+    const result = parseLauncherArgs(['--', '--repair-bridge'])
+    expect(result.repairBridge).toBe(false)
+    expect(result.passthrough).toEqual(['--repair-bridge'])
+  })
+})
+
+describe('--remote deprecation (T10)', () => {
+  test('is an accepted (known) client arg and in the client-launch allowlist', () => {
+    expect(KNOWN_CLIENT_ARGS).toContain('--remote')
+    expect(validateLauncherArgs(['--remote']).unknown).toEqual([])
+    // A `--remote` value-taking neighbour is not mistaken for an unknown flag.
+    expect(validateLauncherArgs(['--remote', '--new']).unknown).toEqual([])
+  })
+
+  test('the notice names the removal line and the replacement entry', () => {
+    expect(REMOTE_DEPRECATION_NOTICE).toContain('0.23.0')
+    expect(REMOTE_DEPRECATION_NOTICE).toContain('deprecated')
+    expect(REMOTE_DEPRECATION_NOTICE.toLowerCase()).toContain('in-process bridge')
+    expect(REMOTE_DEPRECATION_NOTICE).toContain('DSH_OPENTUI_INPROC=1')
+    expect(REMOTE_DEPRECATION_NOTICE).toContain('--session')
+  })
+
+  test('emitRemoteDeprecation prints at most once even when the flag repeats', () => {
+    const lines: string[] = []
+    expect(emitRemoteDeprecation([['--remote', '--remote', '--new'], []], (m) => lines.push(String(m)))).toBe(1)
+    expect(lines).toEqual([REMOTE_DEPRECATION_NOTICE])
+    expect(emitRemoteDeprecation([['--new'], []], (m) => lines.push(String(m)))).toBe(0)
+    expect(lines).toHaveLength(1)
+  })
+
+  test('isRemoteRequested sees the flag before and after a -- separator', () => {
+    expect(isRemoteRequested(['--remote'], [])).toBe(true)
+    expect(isRemoteRequested(['--new'], ['--remote'])).toBe(true)
+    expect(isRemoteRequested(['--new'], [])).toBe(false)
+  })
+
+  test('bin integration: --remote --help prints one notice and the usage', () => {
+    const r = spawnSync('node', [binPath, '--remote', '--help'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('Usage: dsh-opentui')
+    const matches = r.stderr.split(REMOTE_DEPRECATION_NOTICE).length - 1
+    expect(matches).toBe(1)
+    expect(r.stderr).not.toContain('[1/5]') // no provisioning on the help path
+  })
+})
+
+describe('P3-3 flag-combination conflicts', () => {
+  test('--repair-bridge + --force is an explicit mutually-exclusive reject', () => {
+    expect(launcherFlagConflict({ force: true, repairBridge: true, yes: false }, false)).toBe('repair-force')
+    expect(launcherFlagConflict({ force: true, repairBridge: true, yes: true }, false)).toBe('repair-force')
+  })
+
+  test('--repair-bridge + --remote is rejected (remote mode has no bridge to repair)', () => {
+    expect(launcherFlagConflict({ force: false, repairBridge: true, yes: false }, true)).toBe('repair-remote')
+  })
+
+  test('--yes without --force is rejected, but --repair-bridge --yes is the kill confirmation', () => {
+    expect(launcherFlagConflict({ force: false, repairBridge: false, yes: true }, false)).toBe('yes-without-force')
+    // Under --repair-bridge, --yes is intentionally allowed through.
+    expect(launcherFlagConflict({ force: false, repairBridge: true, yes: true }, false)).toBeNull()
+  })
+
+  test('benign combinations do not conflict', () => {
+    expect(launcherFlagConflict({ force: false, repairBridge: false, yes: false }, false)).toBeNull()
+    expect(launcherFlagConflict({ force: true, repairBridge: false, yes: true }, false)).toBeNull()
+    expect(launcherFlagConflict({ force: true, repairBridge: false, yes: false }, false)).toBeNull()
+  })
+
+  test('bin integration: conflicting combos exit 2 with a human-readable message', () => {
+    for (const [args, needle] of [
+      [['--repair-bridge', '--force'], 'mutually exclusive'],
+      [['--repair-bridge', '--remote'], 'no bridge to repair'],
+      [['--yes'], 'only meaningful together with --force'],
+    ] as const) {
+      const r = spawnSync('node', [binPath, ...args], { encoding: 'utf8', timeout: 30_000 })
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain(needle)
+    }
+  })
+
+  test('bin integration: --repair-bridge with upgrade prints a skip notice, still runs upgrade help', () => {
+    const r = spawnSync('node', [binPath, '--repair-bridge', 'upgrade', '--help'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(0)
+    expect(r.stderr).toContain('--repair-bridge is skipped')
+    expect(r.stdout).toContain('Usage: dsh-opentui upgrade')
+  })
 })
 
 describe('formatUsage', () => {
@@ -326,6 +440,7 @@ describe('formatUsage', () => {
     for (const flag of [
       '-v, --version',
       '--force',
+      '--repair-bridge',
       '--boot-timeout <sec>',
       '--mux-timeout <sec>',
       '--connect-timeout <sec>',
@@ -334,6 +449,7 @@ describe('formatUsage', () => {
       '--reasoning-effort <level>',
       '--plugins <tier>',
       '--dry-run',
+      '--remote',
       '-h, --help',
     ]) {
       expect(usage).toContain(flag)
@@ -355,6 +471,8 @@ describe('formatUsage', () => {
       expect(usage).toContain(env)
     }
     expect(usage).toContain('CLI flag > environment variable > default')
+    // P3-3 ④: --force is documented as a no-op under --dry-run.
+    expect(usage).toContain('no-op under --dry-run')
     // Exit codes are honest: provisioning failures are WARNs, not exit 1, and
     // the client's own code is passed through.
     expect(usage).toContain('  1  launcher startup failure')

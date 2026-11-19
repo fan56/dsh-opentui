@@ -17,6 +17,7 @@ import {
 	type SlashCommandContext,
 } from "../src/routes/session/commands"
 import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
+import { RecoveryUiController, type RecoveryTexts } from "../src/routes/session/recovery-ui"
 import { getMotionTier, setMotionTier } from "../src/skin/motion"
 import { footerHints, hintsLocale, setFooterHints, setHintsLocale, DEFAULT_FOOTER_HINTS, HINT_LOCALES } from "../src/routes/session/hints-line"
 import type { SessionSeam, SeamProviderModel, SeamSessionSummary, SeamStatus, SeamSubagentView } from "../src/seams/session"
@@ -395,6 +396,62 @@ describe("core commands", () => {
 		expect(seam.calls).toEqual(["newSession"])
 		expect(ctx.hooks.reloaded).toBe(1)
 		expect(ctx.lines).toEqual(["new session s-current"])
+	})
+
+	describe("RM-4: typed /new clears recovery UI via the banner's shared cleanup", () => {
+		const texts: RecoveryTexts = {
+			transient: () => "reconnecting...",
+			recovered: (count) => `caught up ${count}`,
+			failedReason: (reason) => `failed: ${reason}`,
+			locked: () => "writer-held",
+			cooldown: (ms) => `cooldown ${ms}`,
+			reconnect: () => "Reconnect",
+			retry: () => "Retry",
+			newSession: () => "New session",
+			quit: () => "Quit",
+		}
+		const newCmd = () => coreCommands().find((c) => c.name === "/new")!
+
+		async function typedNewFrom(event: { type: string; details?: unknown }) {
+			const controller = new RecoveryUiController({ recover: async () => {}, texts })
+			controller.handleEvent(event)
+			const ctx = makeCtx(new RecordingSeam())
+			ctx.clearRecoveryUi = () => controller.clearRecoveryState()
+			await newCmd().run(ctx, "")
+			return controller
+		}
+
+		test("locked → typed /new: footer ready, locked banner cleared", async () => {
+			const controller = await typedNewFrom({ type: "bridge.recovery.locked", details: { sessionId: "s-old" } })
+			expect(controller.phase).toBe("ready")
+			expect(controller.footerStatus).toBe("ready")
+			expect(controller.banner).toBeUndefined()
+		})
+
+		test("dead → typed /new: footer ready, banner cleared", async () => {
+			const controller = await typedNewFrom({ type: "bridge.dead" })
+			expect(controller.phase).toBe("ready")
+			expect(controller.footerStatus).toBe("ready")
+			expect(controller.banner).toBeUndefined()
+		})
+
+		test("normal ready → typed /new: no recovery side effects", async () => {
+			const notices: string[] = []
+			let newSessions = 0
+			const controller = new RecoveryUiController({
+				recover: async () => {},
+				texts,
+				onNotice: (text) => notices.push(text),
+				onNewSession: () => { newSessions++ },
+			})
+			const ctx = makeCtx(new RecordingSeam())
+			ctx.clearRecoveryUi = () => controller.clearRecoveryState()
+			await newCmd().run(ctx, "")
+			expect(controller.phase).toBe("ready")
+			expect(controller.banner).toBeUndefined()
+			expect(notices).toEqual([])
+			expect(newSessions).toBe(0)
+		})
 	})
 
 	test("/model bare opens the picker from the catalog and selects on pick", async () => {

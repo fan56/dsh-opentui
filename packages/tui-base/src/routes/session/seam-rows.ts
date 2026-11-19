@@ -66,11 +66,34 @@ import type {
 } from "../../seams/session"
 import { dockRemovalMs } from "./dock-visibility"
 import { motionDecorationsEnabled } from "../../skin/motion"
+import { sessionLockedErrorText } from "../../util/error"
 
 /** One projected transcript row (the rebuilt `SessionRow` slice). */
 export type SeamRow =
-	| { key: string; kind: "user"; text: string; final: true }
+	| {
+			key: string
+			kind: "user"
+			text: string
+			final: true
+			/** A7 scenario 3: optimistic submit not yet ACKed by the bridge.
+			 *  Cleared on `bridge.input.acked`; a replayed journal prompt always
+			 *  replaces it (content dedup, since the wire carries no inputId). */
+			unconfirmed?: boolean
+			/** A7: null marks a client-inferred row (never from the journal). */
+			seq?: number | null
+	  }
 	| { key: string; kind: "assistant"; text: string; final: boolean }
+	| {
+			/** A7 scenario 2: a LOCAL "interrupted by disconnection" marker for
+			 *  a turn the journal stayed silent about. `seq:null` makes its
+			 *  provenance unmistakable — it is NOT a journal event. */
+			key: string
+			kind: "interrupted"
+			text: string
+			final: true
+			seq: null
+			turnId: string
+	  }
 	| {
 			key: string
 			kind: "reasoning"
@@ -490,11 +513,16 @@ export function createSeamRows(
 		if (event.type === "message.updated" && details.role === "user") {
 			const id = typeof details.id === "string" ? details.id : `local-${++liveOrdinal}`
 			const text = typeof details.text === "string" ? details.text : ""
+			const journalKey = `user:${id}`
+			// Only wire/journal prompts (sessionID stamped by both adapters)
+			// take part in dedup — a page-injected `say()` feedback has no
+			// sessionID and must never retire a user row.
+			const isWire = typeof details.sessionID === "string"
 			// Journal prompt for a streamed turn (replay order: prompt record
 			// first): retire the optimistic `user:local-N` copy so the store
 			// holds one prompt; the keyed journal row becomes THE prompt row
 			// (stable on re-delivery). Same text by construction — guard anyway.
-			if (!turnOpen && pendingTurns.length > 0 && typeof details.sessionID === "string") {
+			if (!turnOpen && pendingTurns.length > 0 && isWire) {
 				const group = pendingTurns[0]!
 				const local = rows.find((row) => row.key === group.userKey)
 				if (!local || local.kind !== "user" || local.text.trim() === text.trim()) {
@@ -502,12 +530,25 @@ export function createSeamRows(
 					dropRows(new Set([group.userKey]))
 				}
 			}
-			upsert({
-				key: `user:${id}`,
-				kind: "user",
-				text,
-				final: true,
-			})
+			// RM-4 (kill AFTER a turn completed): the pendingTurns-only dedup
+			// above misses the common case — the optimistic `user:local-N` row
+			// survives while replay delivers the same words under a journal key
+			// (`user:<messageID>` / `user:journal-<seq>`), painting two ❯ lines.
+			// Match against ALL existing user rows, not just pendingTurns[0]:
+			//   1. exact journal key already present → re-delivery/second
+			//      recovery; a plain upsert is idempotent, never add a row.
+			//   2. otherwise match an OPTIMISTIC local row by content. `seq:null`
+			//      is the provenance tag — only client-inferred rows carry it,
+			//      so two genuinely different consecutive messages with the
+			//      SAME text never merge: each replay consumes its own local
+			//      row, and journal rows are matched by key, never by content.
+			if (isWire && !rows.some((row) => row.key === journalKey)) {
+				const optimistic = rows.find(
+					(row) => row.kind === "user" && row.seq === null && row.text.trim() === text.trim(),
+				)
+				if (optimistic !== undefined) dropRows(new Set([optimistic.key]))
+			}
+			upsert({ key: journalKey, kind: "user", text, final: true })
 			return
 		}
 		if (event.type === "message.part.updated") {
@@ -553,6 +594,41 @@ export function createSeamRows(
 			})
 			return
 		}
+		if (event.type === "bridge.input.acked") {
+			if (typeof details.sessionID === "string" && details.sessionID !== sessionID()) return
+			const text = typeof details.text === "string" ? details.text.trim() : ""
+			// The submit path has no client inputId (session.send carries only
+			// {text}), so the ACK is matched to the optimistic local user row by
+			// content — the same key the journal prompt dedup uses below.
+			setRows(produce((draft) => {
+				for (const row of draft) {
+					if (row.kind === "user" && row.unconfirmed === true && row.key.startsWith("user:local") && row.text.trim() === text) {
+						row.unconfirmed = false
+						break
+					}
+				}
+			}))
+			return
+		}
+		if (event.type === "bridge.turn.interrupted") {
+			if (typeof details.sessionID === "string" && details.sessionID !== sessionID()) return
+			const turnId = typeof details.turnId === "string" ? details.turnId : ""
+			if (turnId === "") return
+			const reason = typeof details.reason === "string" ? details.reason : "interrupted"
+			// seq:null is the provenance tag: this row is a CLIENT inference,
+			// never a journal event. It is appended below the partial output —
+			// the streamed assistant/reasoning rows stay untouched (kept, not
+			// silently dropped).
+			upsert({
+				key: `interrupted:local:${turnId}`,
+				kind: "interrupted",
+				text: reason,
+				final: true,
+				seq: null,
+				turnId,
+			})
+			return
+		}
 		if (event.type === "session.error") {
 			const message = typeof details.message === "string" ? details.message : "unknown error"
 			upsert({ key: `error:local-${++liveOrdinal}`, kind: "assistant", text: `error: ${message}`, final: true })
@@ -568,7 +644,10 @@ export function createSeamRows(
 		const prompt = text.trim()
 		if (!prompt) return
 		const userKey = `user:local-${++liveOrdinal}`
-		upsert({ key: userKey, kind: "user", text: prompt, final: true })
+		// A7 scenario 3: paint the optimistic submit as UNCONFIRMED until the
+		// bridge ACKs session.send (bridge.input.acked) or replay reveals the
+		// journal prompt (content dedup in the message.updated handler).
+		upsert({ key: userKey, kind: "user", text: prompt, final: true, unconfirmed: true, seq: null })
 		const assistantKey = `assistant:live-${++liveOrdinal}`
 		const reasoningKey = `reasoning:live-${liveOrdinal}`
 		const group: LiveTurnGroup = { userKey, reasoningKey, assistantKey, userSuperseded: false }
@@ -580,6 +659,15 @@ export function createSeamRows(
 		let reasoningStartedAt: number | undefined
 		let turnErrored = false
 		turnOpen = true
+		/** ADR-0010 I4: one error sink for both the seam's live `onError` callback
+		 * and a REJECTED seam.turn (e.g. SESSION_LOCKED from session.open — that
+		 * failure throws before any callback fires, so without this catch it
+		 * would never reach the transcript row or the ⚠ notice). */
+		const reportError = (message: string): void => {
+			turnErrored = true
+			upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true })
+			options?.onError?.(message)
+		}
 		/** Collapse the live think row to the one-line summary (text first
 		 * char / a tool call starting — the segment is done; elapsed freezes).
 		 * No-op when no panel is open or already collapsed. */
@@ -660,11 +748,18 @@ export function createSeamRows(
 			onToolRun: (run) => {
 				const existing = rows.find((row) => row.key === `tool:live:${run.callId ?? run.name}`)
 				const startedAt = existing?.kind === "tool" ? existing.startedAt : undefined
+				// Preserve the call's args JSON when the settle carries no pretty
+				// args. The inproc bridge's tool/result frame has no `input` (its
+				// onToolRun passes argsPretty:""); without this the settled row
+				// loses the `todos` array and latestTodos() finds no todo list.
+				// The remote path already fills argsPretty from its call map, so
+				// this is a no-op there.
+				const args = run.argsPretty || (existing?.kind === "tool" ? existing.args : undefined) || ""
 				upsert({
 					key: `tool:live:${run.callId ?? run.name}`,
 					kind: "tool",
 					name: run.name,
-					args: run.argsPretty,
+					args,
 					status: run.ok ? "done" : "failed",
 					output: run.output,
 					...(startedAt !== undefined ? { elapsedSec: Number(((Date.now() - startedAt) / 1000).toFixed(1)) } : {}),
@@ -673,12 +768,15 @@ export function createSeamRows(
 				options?.onToolRun?.(run)
 			},
 			onApprove: options?.onApprove ?? approveThrough,
-			onError: (message) => {
-				turnErrored = true
-				upsert({ key: assistantKey, kind: "assistant", text: `error: ${message}`, final: true })
-				options?.onError?.(message)
-			},
+			onError: reportError,
 		})
+			.catch((error: unknown) => {
+				// Only SESSION_LOCKED gets the localised writer-held diagnostic;
+				// every other rejection keeps the existing (silent) settle path.
+				const diagnostic = sessionLockedErrorText(error)
+				if (diagnostic !== undefined) reportError(diagnostic)
+				throw error
+			})
 			.finally(() => {
 				// The await is over: journal events from here on are post-turn
 				// (the settle supersede in apply() arms against them). Flips

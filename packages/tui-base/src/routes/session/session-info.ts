@@ -36,8 +36,10 @@ export function sessionInfoRows(info: SeamSessionInfo): SessionInfoRow[] {
 	return [
 		{ field: "session", value: info.sessionId ?? "—" },
 		{ field: "model", value: info.model ?? "—" },
-		{ field: "messages", value: String(info.messageCount) },
-		{ field: "turns", value: String(info.turnCount) },
+		// An omitted count means the transcript read failed — show the same
+		// em-dash placeholder as an unknown speed, never a fabricated 0.
+		{ field: "messages", value: info.messageCount === undefined ? "—" : String(info.messageCount) },
+		{ field: "turns", value: info.turnCount === undefined ? "—" : String(info.turnCount) },
 		{ field: "tokens in/out", value: `${info.tokensIn} / ${info.tokensOut}` },
 		{ field: "cache read/write", value: `${info.cacheRead} / ${info.cacheWrite}` },
 		{ field: "speed", value: speed },

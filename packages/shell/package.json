@@ -15,6 +15,7 @@
     "bin",
     "scripts",
     "dist/client",
+    "dist/bridge",
     "dist/scripts",
     "dist/locales",
     "dist/host-launch.mjs",
@@ -29,7 +30,7 @@
   "scripts": {
     "client": "bun src/client-entry.tsx",
     "typecheck": "tsc --noEmit",
-    "prepack": "bun ../../scripts/build-client.mjs && bun ../../scripts/verify-pack-locales.mjs && node scripts/pack-meta.mjs"
+    "prepack": "bun ../../scripts/build-bridge.mjs && bun ../../scripts/build-client.mjs && bun ../../scripts/verify-pack-locales.mjs && node scripts/pack-meta.mjs"
   },
   "dependencies": {
     "@opentui/core": "0.8.1",

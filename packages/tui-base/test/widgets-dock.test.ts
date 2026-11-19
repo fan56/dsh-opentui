@@ -22,8 +22,13 @@ import {
 	type FrameLatch,
 	activityBlocks,
 	activityFrameMode,
+	activityScene,
 	activityRuleLines,
 	dockBlocks,
+	dockHeightAnimating,
+	dockHeightContentLines,
+	dockHeightEase,
+	dockHeightLines,
 	dockLineCap,
 	dockLines,
 	dockAccentColor,
@@ -51,6 +56,16 @@ import {
 	SKIN_HOLD_MS,
 	SKIN_NOTICE_FADE_MS,
 	SKIN_PULSE_MS,
+	ACTIVITY_PANEL_ALL_LINES,
+	DOCK_HEIGHT_ANIM_MS,
+	resetDockHeight,
+	resetTodoBriefClock,
+	setDockHeightTarget,
+	tickDockHeight,
+	thinkRowVisible,
+	todoBriefLine,
+	todoSetStartedAt,
+	todosSummaryFromTodos,
 } from "../src/routes/session/widgets-dock"
 import {
 	DOCK_COMPACT_MAX_LINES,
@@ -281,23 +296,27 @@ describe("dockLines (batch D5 widget fade; todos live in their own table)", () =
 		expect(toolLineText(failed, spin)).toMatch(/^✘ bash false · 1\.0s/)
 	})
 	test("think/tool lines carry semantic accents; the tool marker keeps its tone", () => {
-		const rows: SeamRow[] = [
+		// 2026-11-19 scene B hides tool while a think burst is visible, so the
+		// tool accents are asserted on a scene-C (tool-only) build.
+		const thinkRows: SeamRow[] = [
 			{ key: "reasoning:live-1", kind: "reasoning", text: "pondering", final: false, streaming: true, startedAt: Date.now() },
+		]
+		const toolRows: SeamRow[] = [
 			{ key: "tool:live:b", kind: "tool", name: "bash", args: '{"command":"ls"}', status: "running", startedAt: Date.now() },
 			{ key: "tool:live:d", kind: "tool", name: "read", args: '{"path":"a.ts"}', status: "done", elapsedSec: 0.4, output: "ok" },
 		]
-		const lines = dockLines(rows)
-		const think = lines.find((line) => line.id?.startsWith("dock:think:"))
+		const think = dockLines(thinkRows).find((line) => line.id?.startsWith("dock:think:"))
 		expect(think?.accent).toBe("think")
 		expect(think?.marker).toBeUndefined()
-		const tools = lines.filter((line) => line.id?.startsWith("dock:tool:"))
+		expect(dockLines(thinkRows).some((line) => line.id?.startsWith("dock:tool:"))).toBe(false) // scene B
+		const tools = dockLines(toolRows).filter((line) => line.id?.startsWith("dock:tool:"))
 		expect(tools.map((line) => line.marker)).toEqual(["⚙", "✔"])
 		expect(tools.every((line) => line.accent === "tool")).toBe(true)
 		// Pure text builders keep the full icon-prefixed string.
 		expect(tools[0]!.text.startsWith("⚙ ")).toBe(true)
 		expect(tools[1]!.text.startsWith("✔ ")).toBe(true)
 		// The compact rule form shifts the marker past the `┃ ` prefix.
-		const [, ruledTool] = activityRuleLines(rows)
+		const [, ruledTool] = activityRuleLines(toolRows)
 		expect(ruledTool.markerAt).toBe(2)
 		expect(ruledTool.text.slice(2, 3)).toBe("✔")
 	})
@@ -385,10 +404,13 @@ describe("skin turn-lifetime activity frame", () => {
 		expect(dockTurnActive([{ key: "a", kind: "assistant", text: "x", final: false }])).toBe(true)
 		expect(dockTurnActive([{ key: "s", kind: "subagents", children: [{ id: "c", label: "l", status: "running", rounds: 1 }] }])).toBe(true)
 	})
-	test("frame content is two independent blocks: think/tool (todos live in their own table), blanks left blank", () => {
-		const blocks = activityBlocks([todoTool, thinkLive, toolRun])
-		expect(blocks.think[0]!.text).toContain("thinking")
-		expect(blocks.tool[0]!.text).toContain("bash")
+	test("scene B hides tool while think is visible; scene C restores it (todos live in their own table)", () => {
+		const sceneB = activityBlocks([todoTool, thinkLive, toolRun])
+		expect(sceneB.think[0]!.text).toContain("thinking")
+		expect(sceneB.tool).toEqual([])
+		const sceneC = activityBlocks([todoTool, toolRun])
+		expect(sceneC.think).toEqual([])
+		expect(sceneC.tool[0]!.text).toContain("bash")
 		const empty = activityBlocks([])
 		expect(empty.think).toEqual([])
 		expect(empty.tool).toEqual([])
@@ -416,8 +438,17 @@ describe("skin turn-lifetime activity frame", () => {
 		const thinkOnly = activityRuleLines([thinkLive])
 		expect(thinkOnly[0]!.text.startsWith("┃ activity · 💭 thinking · ")).toBe(true)
 		expect(thinkOnly[0]!.text).toContain(" · x")
-		// Think + tool: the head carries the think text, row 2 the tool line.
-		const both = activityRuleLines([thinkLive, toolRun])
+		// Scene B hides tool: the rule head carries the think text, row 2 blank.
+		const sceneB = activityRuleLines([thinkLive, toolRun])
+		expect(sceneB[0]!.text).toContain("thinking")
+		expect(sceneB[1]!.text).toBe("")
+		// Scene A (running subagent) keeps BOTH lines: head think, row 2 tool.
+		const subagent: SeamRow = {
+			key: "subagents:rule",
+			kind: "subagents",
+			children: [{ id: "c", label: "l", status: "running", rounds: 1 }],
+		}
+		const both = activityRuleLines([thinkLive, toolRun, subagent])
 		expect(both[0]!.text).toContain("thinking")
 		expect(both[1]!.text).toContain("bash")
 		// Still exactly two rows — the collapse never grew.
@@ -935,5 +966,194 @@ describe("dock display rules: 3 lines, 2s linger, replace", () => {
 		resetSkinLineFades()
 		// A new session's first paint starts the entrance fade over.
 		expect(skinLineFadeT(id, 2000)).toBe(0)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 2026-11-19 directive batch: scene table, todo brief, height tween.
+// ---------------------------------------------------------------------------
+
+describe("2026-11-19 scene decision (rule table)", () => {
+	test("a running subagent wins over think (subagent active > think exclusive)", () => {
+		expect(activityScene(true, false)).toBe("A")
+		expect(activityScene(true, true)).toBe("A")
+	})
+
+	test("think alone → B; neither → C", () => {
+		expect(activityScene(false, true)).toBe("B")
+		expect(activityScene(false, false)).toBe("C")
+	})
+
+	test("thinkRowVisible: live burst always; settled until retention edge", () => {
+		const live: SeamRow = { key: "reasoning:live", kind: "reasoning", text: "x", final: false, streaming: true }
+		expect(thinkRowVisible(live, 9_999_999, false)).toBe(true)
+		const settled: SeamRow = {
+			key: "reasoning:settled",
+			kind: "reasoning",
+			text: "x",
+			final: true,
+			startedAt: 1_000,
+			elapsedSec: 2,
+		}
+		expect(thinkRowVisible(settled, 3_000, false)).toBe(true) // 1s into the hold
+		expect(thinkRowVisible(settled, 3_000 + DOCK_LINGER_MS, false)).toBe(false)
+		expect(thinkRowVisible(undefined, 0, false)).toBe(false)
+	})
+})
+
+describe("2026-11-19 指令4 — scene-A todo brief", () => {
+	test("uses the existing time tracking anchor (startedAt) for the duration", () => {
+		const todos = [
+			{ content: "one", status: "completed" as const },
+			{ content: "two", status: "in_progress" as const },
+			{ content: "three", status: "pending" as const },
+		]
+		expect(todoBriefLine(todos, 1_300_000, 1_000_000)).toBe("todo 1/3 300s")
+	})
+
+	test("no todos → empty (D5: no content, no line)", () => {
+		expect(todoBriefLine([], 1_300_000, 1_000_000)).toBe("")
+	})
+
+	test("unified clock: a NEW task text set starts at its own first-seen time", () => {
+		resetTodoBriefClock()
+		const a = [{ content: "one", status: "in_progress" as const }]
+		expect(todoBriefLine(a, 5_000)).toBe("todo 0/1 0s")
+		expect(todoBriefLine(a, 8_000)).toBe("todo 0/1 3s")
+		// A different text set is a new task set → clock resets to its first sight.
+		const b = [{ content: "two", status: "in_progress" as const }]
+		expect(todoBriefLine(b, 9_000)).toBe("todo 0/1 0s")
+		expect(todoBriefLine(b, 12_000)).toBe("todo 0/1 3s")
+		resetTodoBriefClock()
+	})
+
+	test("unified clock: status flips WITHIN a set do not reset (1/3→2/3)", () => {
+		resetTodoBriefClock()
+		const before = [
+			{ content: "one", status: "in_progress" as const },
+			{ content: "two", status: "pending" as const },
+		]
+		expect(todoBriefLine(before, 5_000)).toBe("todo 0/2 0s")
+		// Same texts, flipped statuses: the 3s keeps counting from 5s.
+		const after = [
+			{ content: "one", status: "completed" as const },
+			{ content: "two", status: "in_progress" as const },
+		]
+		expect(todoBriefLine(after, 8_000)).toBe("todo 1/2 3s")
+		resetTodoBriefClock()
+	})
+
+	test("unified clock: task text order does not reset (sorted signature)", () => {
+		resetTodoBriefClock()
+		const a = [
+			{ content: "one", status: "in_progress" as const },
+			{ content: "two", status: "pending" as const },
+		]
+		expect(todoBriefLine(a, 5_000)).toBe("todo 0/2 0s")
+		expect(todoBriefLine([a[1]!, a[0]!], 9_000)).toBe("todo 0/2 4s")
+		resetTodoBriefClock()
+	})
+
+	test("unified clock: session switch clears every first-seen anchor", () => {
+		resetTodoBriefClock()
+		const a = [{ content: "one", status: "in_progress" as const }]
+		expect(todoBriefLine(a, 5_000)).toBe("todo 0/1 0s")
+		// Session switch (dock unmount → resetTodoBriefClock): same set, fresh clock.
+		resetTodoBriefClock()
+		expect(todoBriefLine(a, 6_000)).toBe("todo 0/1 0s")
+		expect(todoBriefLine(a, 9_000)).toBe("todo 0/1 3s")
+		resetTodoBriefClock()
+	})
+
+	test("todoSetStartedAt is the single first-seen anchor of a text set", () => {
+		resetTodoBriefClock()
+		const todos = [
+			{ content: "one", status: "in_progress" as const },
+			{ content: "two", status: "pending" as const },
+		]
+		expect(todoSetStartedAt(todos, 1_000)).toBe(1_000)
+		// A status flip keeps the same signature → same anchor.
+		const flipped = [
+			{ content: "one", status: "completed" as const },
+			{ content: "two", status: "in_progress" as const },
+		]
+		expect(todoSetStartedAt(flipped, 2_000)).toBe(1_000)
+		// A new text set gets a fresh anchor.
+		expect(todoSetStartedAt([{ content: "three", status: "in_progress" as const }], 3_000)).toBe(3_000)
+		resetTodoBriefClock()
+	})
+
+	test("scene-C summary keeps the current full format (with active item)", () => {
+		const summary = todosSummaryFromTodos([
+			{ content: "A", status: "completed" },
+			{ content: "B", status: "in_progress" },
+		])
+		expect(summary).toContain("todos [✓]1/2")
+		expect(summary).toContain("B")
+	})
+})
+
+describe("2026-11-19 指令5 — shared-clock height tween", () => {
+	test("ease is clamped and smoothstep-shaped", () => {
+		expect(dockHeightEase(-1)).toBe(0)
+		expect(dockHeightEase(2)).toBe(1)
+		expect(dockHeightEase(0)).toBe(0)
+		expect(dockHeightEase(1)).toBe(1)
+		expect(dockHeightEase(0.5)).toBeCloseTo(0.5)
+	})
+
+	test("integer-line interpolation is exact at both ends (no off-by-one)", () => {
+		expect(dockHeightLines(2, 8, 0, DOCK_HEIGHT_ANIM_MS)).toBe(2)
+		expect(dockHeightLines(2, 8, DOCK_HEIGHT_ANIM_MS, DOCK_HEIGHT_ANIM_MS)).toBe(8)
+		// SELF-CHECK: every terminal frame equals the target exactly.
+		for (let f = 1; f <= 6; f++) {
+			expect(dockHeightLines(0, f, DOCK_HEIGHT_ANIM_MS, DOCK_HEIGHT_ANIM_MS)).toBe(f)
+		}
+		expect(dockHeightLines(8, 2, DOCK_HEIGHT_ANIM_MS, DOCK_HEIGHT_ANIM_MS)).toBe(2)
+		// Intermediate frames are whole numbers strictly between the ends.
+		const mid = dockHeightLines(2, 8, DOCK_HEIGHT_ANIM_MS / 2, DOCK_HEIGHT_ANIM_MS)
+		expect(Number.isInteger(mid)).toBe(true)
+		expect(mid).toBeGreaterThanOrEqual(2)
+		expect(mid).toBeLessThanOrEqual(8)
+	})
+
+	test("a missed idle tick still reports the exact terminal count on the next render", () => {
+		resetDockHeight(2) // a visible→visible change is the only tweenable case
+		setDockHeightTarget(6, 1_000)
+		expect(dockHeightAnimating()).toBe(true)
+		// Wall clock past the duration, no tick fired: accessor is already exact.
+		expect(dockHeightContentLines(6, 1_000 + DOCK_HEIGHT_ANIM_MS)).toBe(6)
+		// The clock's terminal tick clears the tween (no resident animation).
+		tickDockHeight(1_000 + DOCK_HEIGHT_ANIM_MS)
+		expect(dockHeightAnimating()).toBe(false)
+		expect(dockHeightContentLines(6, 1_000 + DOCK_HEIGHT_ANIM_MS)).toBe(6)
+		resetDockHeight()
+	})
+
+	test("retarget clamps `from` to the painted shrink target (no jump on interrupt)", () => {
+		// A 5→2 shrink paints the target 2 immediately (the drawing law caps a
+		// shrinking tween at `min(target, tweened)`). At 100ms the raw 5→2 curve
+		// reads 4, but the screen already shows 2. Retargeting to 6 must start
+		// from the VISIBLE count 2, not jump 2 rows to the curve value 4.
+		resetDockHeight(5)
+		setDockHeightTarget(2, 1_000)
+		expect(dockHeightLines(5, 2, 100, DOCK_HEIGHT_ANIM_MS)).toBe(4) // raw curve
+		setDockHeightTarget(6, 1_100)
+		expect(dockHeightContentLines(6, 1_100)).toBe(2) // from = painted count
+		// Continuity: every frame of the new tween stays in [2, 6] and grows at
+		// most one row per 20ms step — no discontinuity at the retarget.
+		let prev = 2
+		for (let ms = 0; ms <= DOCK_HEIGHT_ANIM_MS; ms += 20) {
+			const count = dockHeightContentLines(6, 1_100 + ms)
+			expect(count).toBeGreaterThanOrEqual(2)
+			expect(count).toBeLessThanOrEqual(6)
+			expect(count - prev).toBeLessThanOrEqual(1)
+			prev = count
+		}
+		resetDockHeight()
+	})
+
+	test("`all` gear = 10 (legacy spelling, no growth)", () => {
+		expect(ACTIVITY_PANEL_ALL_LINES).toBe(10)
 	})
 })

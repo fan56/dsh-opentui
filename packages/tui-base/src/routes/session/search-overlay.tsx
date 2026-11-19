@@ -72,6 +72,7 @@ export function rowSearchText(row: SeamRow): string {
 		case "user":
 		case "assistant":
 		case "reasoning":
+		case "interrupted":
 			return row.text
 		case "tool":
 			return `${row.name}${row.args ? `(${row.args})` : ""}${row.output ? ` ${row.output}` : ""}`

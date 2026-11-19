@@ -79,6 +79,22 @@ describe("sessionInfoRows", () => {
 		expect(rows[0].value).toBe("—")
 		expect(rows[1].value).toBe("—")
 	})
+
+	test("P3-1: omitted counts (failed transcript read) read as em-dash, never 0", () => {
+		const rows = sessionInfoRows({
+			sessionId: "ses_x",
+			model: "p/m",
+			// messageCount / turnCount deliberately omitted by a seam whose read failed.
+			tokensIn: 0,
+			tokensOut: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			lastTurnTps: null,
+			sessionAvgTps: null,
+		})
+		expect(rows[2].value).toBe("—") // messages
+		expect(rows[3].value).toBe("—") // turns
+	})
 })
 
 describe("formatSessionInfoPanel", () => {
