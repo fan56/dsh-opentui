@@ -208,6 +208,12 @@ jobs:
 
       - name: Assert tarball / fresh install / cold start / handshake
         shell: bash
+        env:
+          # The host is installed into a private prefix (not on PATH), so the
+          # provisioner's `dsh --version` auto-detection cannot see it. Pin the
+          # documented override to the exact version installed above; the
+          # handshake child inherits it via process.env.
+          DSH_OPENTUI_HOST_VERSION: 0.2.2-rc.3
         run: |
           set -eo pipefail
 
