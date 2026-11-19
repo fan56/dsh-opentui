@@ -8,8 +8,9 @@ running on Bun.
 The repo's product is the **architecture**; the shipped Shell is a working
 chat agent TUI on top of it. By default it boots an in-process session bridge
 inside the dsh host and drives the OpenTUI client over a stdio JSON-lines
-channel; the legacy thin client over the host's remote API is retained behind
-`--remote` (deprecated, removed in 0.23.0).
+channel; the legacy thin client over the host's remote API is retained only as
+an escape hatch (`DSH_OPENTUI_INPROC=0`). The `--remote` flag was removed in
+0.23.0.
 
 | Package | What it is |
 |---|---|
@@ -38,7 +39,9 @@ dsh-opentui
 
 The first launch automatically provisions the `opentui-inproc` profile (bridge
 dependencies are symlinked from the dsh install, never copied). If that bridge
-install is damaged, rerun with `dsh-opentui --repair-bridge`.
+install is damaged, rerun with `dsh-opentui --repair-bridge`. To fall back to
+the legacy remote thin client for a launch, set `DSH_OPENTUI_INPROC=0` — that
+skips in-process provisioning and selects the remote seam.
 
 Run `dsh-opentui --help` for the full list of launcher options.
 
@@ -105,13 +108,16 @@ confirmation prompt is refused.
 
 ## Client mode
 
-> The default TUI path since 0.22.0 is the in-process session bridge
+> Since 0.23.0 the default TUI path is the in-process session bridge
 > (`opentui-inproc` profile, see ADR-0009). The thin-client topology below is
-> the retained `--remote` path, deprecated and removed in 0.23.0.
+> the legacy path, reachable only through the `DSH_OPENTUI_INPROC=0` escape
+> hatch. The old `--remote` flag was removed in 0.23.0; passing it is a usage
+> error (exit 2).
 
-With `--remote`, `dsh-opentui` starts a thin client TUI (`dist/client/index.js`
-under Bun) that connects to a resident `dsh --profile opentui` host process. The
-launcher handles everything on startup:
+With `DSH_OPENTUI_INPROC=0`, `dsh-opentui` starts a thin client TUI
+(`dist/client/index.js` under Bun) that connects to a resident
+`dsh --profile opentui` host process. The launcher handles everything on
+startup:
 
 - **Profile bootstrap** — `$DSH_HOME/profiles/opentui` is provisioned on
   EVERY launch (idempotent; a no-op pass is sub-second). Pass `--provider` /

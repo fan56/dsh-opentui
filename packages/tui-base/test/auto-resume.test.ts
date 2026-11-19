@@ -86,18 +86,19 @@ describe("parseLaunchArgs", () => {
 		expect(parseLaunchArgs(["--session"])).toEqual(blank)
 		expect(parseLaunchArgs(["--session", "--new"])).toEqual({ newRequested: true, resumeLastRequested: false })
 	})
-	test("--remote (deprecated) is reported for the seam root without disturbing auto-resume", () => {
-		expect(parseLaunchArgs(["--remote"])).toEqual({ newRequested: false, resumeLastRequested: false, remoteRequested: true })
+	test("--remote was removed in 0.23.0: it is not a launch flag and does not affect auto-resume", () => {
+		// The launcher rejects --remote as unknown (exit 2); this parser no longer
+		// reports a remoteRequested field. A -- passthrough is the only way an
+		// unknown flag reaches the client at all.
+		expect(parseLaunchArgs(["--remote"])).toEqual(blank)
 		expect(parseLaunchArgs(["--remote", "--session", "abc"])).toEqual({
 			newRequested: false,
 			resumeLastRequested: false,
 			sessionId: "abc",
-			remoteRequested: true,
 		})
 		expect(parseLaunchArgs(["--resume-last", "--remote"])).toEqual({
 			newRequested: false,
 			resumeLastRequested: true,
-			remoteRequested: true,
 		})
 	})
 })

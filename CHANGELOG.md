@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-11-19
+
+### Changed
+
+- **The in-process bridge is now the default.** A plain `dsh-opentui` boot
+  provisions the `opentui-inproc` profile and drives the TUI through the bridge
+  seam — no flag or env var needed. `DSH_OPENTUI_INPROC=1` remains valid
+  (idempotent). Setting `DSH_OPENTUI_INPROC=0` is the escape hatch back to the
+  legacy remote thin-client seam. A failed bridge handshake / fingerprint check
+  still fails fast with a diagnosis, a repair command and a mode notice, and
+  never silently falls back.
+- **`--remote` has been removed.** It is no longer accepted as a launch flag;
+  passing it exits with a usage error (exit 2). The legacy remote seam is now
+  reachable only through the `DSH_OPENTUI_INPROC=0` env escape hatch.
+
+### Fixed
+
+- **Ghost subagent rows are swept at turn boundaries.** When a parent turn is
+  aborted the host never journals the subagent's settle notice, so the child
+  stayed `running` forever. The bridge seam now reconciles its catalog against
+  the host session list at every turn terminal and after session recovery, and
+  settles any child the host no longer reports as running. Best-effort and
+  idempotent; still no wall-clock fallback.
+- **ctrl+g subagent views show real progress.** `rounds`, `lastLine` and
+  `model` are now read from each subagent's own journal (lazily, cached, and
+  re-read once the child settles), so the viewer no longer shows 0 rounds, an
+  empty last line, and a missing model.
+
 ## [0.22.0] - 2026-11-19
 
 ### Changed

@@ -10,8 +10,11 @@
  *            currentModelSelection / usageSummary / onSessionEvent / listSessions
  * The remaining 7 members exist only to satisfy `implements SessionSeam` and
  * are honest D3 stubs (async → UNSUPPORTED, sync → degrade + log) until their
- * own bridge frames land in a later batch. This file does NOT switch the
- * default seam, does NOT add fail-fast, and does NOT touch `--remote` (T9/T10).
+ * own bridge frames land in a later batch. Seam selection (this seam became the
+ * DEFAULT in 0.23.0), fail-fast wiring and the legacy `--remote` removal now
+ * live in the composition root — `client/seam-bootstrap.ts` and
+ * `bin/dsh-opentui.mjs` — not in this file; the env escape hatch
+ * `DSH_OPENTUI_INPROC=0` still reaches the remote seam.
  *
  * DEGRADE LAW (ticket §6 D3, non-negotiable):
  *   - A sync-signature member whose bridge capability is absent returns a
@@ -508,10 +511,14 @@ export function bridgeReplayRowsToSeamEvents(
 // are available; its live `session/event` firehose carries the same events,
 // which the bridge forwards as additive `agent.spawn`/`agent.settle` frames.
 // Both paths fold through this ONE function so the view FIELD SET matches the
-// remote adapter's `#projectSubagentViews` (session-seam-adapter.ts:708) — but
-// VALUES are approximate (P3-3 Known debt, ADR-0010 / CHANGELOG 0.22.0): the
-// bridge only sees the parent journal, so `rounds` stays 0, `lastLine`/`model`
-// are absent, and a settled row's `elapsedSec` is frozen at discovery time.
+// remote adapter's `#projectSubagentViews` (session-seam-adapter.ts:708). 0.23.0
+// T2 closes the P3-3 value debt for `rounds`/`lastLine`/`model`: the seam lazily
+// reads each child's journal via `journal.replay` (see #ensureChildJournal) and
+// writes the real values into the roster. `elapsedSec`/`endedAt` are frozen at
+// the FIRST settle via a per-run snapshot (#freezeSettles) — a later replay
+// re-fold that revives+re-settles the child restores that snapshot instead of
+// recomputing with the current wall clock (session-seam-adapter.ts:715-721
+// settle-freeze parity).
 
 /** The host's durable agent lifecycle record types (dsh-tool-workflow/types.ts:47-57). */
 const BRIDGE_AGENT_START = "tool-workflow/agent-start"
@@ -538,7 +545,16 @@ function bridgeSettledStatus(outcome: unknown): "completed" | "failed" | "cancel
 }
 
 /** Freeze a running child into the settled projection: drop `startedAt`, carry
- *  `elapsedSec` + `endedAt` (the exact shape of session-seam-adapter.ts:715-721). */
+ *  `elapsedSec` + `endedAt` (the exact shape of session-seam-adapter.ts:715-721).
+ *
+ *  DROPPING `startedAt` IS LOAD-BEARING (P1-3a): the lazy child-journal cache key
+ *  is `id@<startedAt>` (bridgeChildJournalKey / #ensureChildJournal), so a settle
+ *  flips it to `id@""`. The caller's #syncSubagentMeta then sees an
+ *  UNLOADED key and re-reads the FULL child journal, folding the terminal
+ *  rounds/lastLine/model that a running child's first (short) read could not
+ *  yet contain. This is the支柱 for ctrl+g terminal accuracy after a completed
+ *  child settles — do NOT preserve `startedAt` here or the settled view freezes
+ *  the stale pre-settle meta. */
 function bridgeSettleChild(
 	existing: SeamSubagentView,
 	outcome: unknown,
@@ -718,6 +734,158 @@ export function bridgeReplayRowsToSubagentViews(
 		bridgeFoldAgentRecord(children, runSeq, liveStarts, row.type, asRecord(row.payload), now, false)
 	}
 	return [...children.values()]
+}
+
+// ---------------------------------------------------------------------------
+// 0.23.0 T1/T2 — registry sweep + child-journal meta (subagent visibility)
+// ---------------------------------------------------------------------------
+
+/**
+ * The decision half of remote-subagents.ts:277-304 `refreshFromList()`, plus
+ * the ADR-0010 guard "only settle a child we STILL believe running". Pure and
+ * exported for unit tests. A row is considered ONLY when it is an explicit
+ * `origin:"subagent"` row of THIS parent whose host `running` flag is exactly
+ * `false`. Malformed rows are skipped — never flattened into an empty registry
+ * (the caller handles a failed/malformed list read separately, keeping the
+ * roster unchanged).
+ */
+export function bridgeSweepSettledChildIds(
+	rows: readonly unknown[],
+	parentId: string | undefined,
+	locallyRunning: ReadonlySet<string>,
+): string[] {
+	if (parentId === undefined || parentId === "") return []
+	const settled: string[] = []
+	for (const raw of rows) {
+		const row = asRecord(raw)
+		if (row.origin !== "subagent") continue
+		if (row.parentSessionId !== parentId) continue
+		const id = row.sessionId
+		if (typeof id !== "string" || id === "") continue
+		if (row.running !== false) continue
+		if (!locallyRunning.has(id) || settled.includes(id)) continue
+		settled.push(id)
+	}
+	return settled
+}
+
+/** ctrl+g meta folded from ONE child session's `journal.replay` rows. */
+export interface BridgeChildJournalMeta {
+	rounds: number
+	lastLine?: string
+	model?: string
+}
+
+/** `blocksText` parity (remote-follow.ts:219) — text blocks joined by newline. */
+function bridgeBlocksText(content: unknown): string {
+	if (typeof content === "string") return content.trim()
+	if (!Array.isArray(content)) return ""
+	let text = ""
+	for (const block of content) {
+		const typed = block as { type?: unknown; text?: unknown } | null
+		if (typed?.type === "text" && typeof typed.text === "string") {
+			text += (text === "" ? "" : "\n") + typed.text
+		}
+	}
+	return text.trim()
+}
+
+/** `lastContentLine` parity (remote-subagents.ts:717): last non-blank line. */
+function bridgeLastContentLine(text: string | undefined): string | undefined {
+	if (text === undefined) return undefined
+	const lines = text.replace(/\r\n?/g, "\n").split("\n")
+	for (let i = lines.length - 1; i >= 0; i--) {
+		const line = lines[i]!.trim()
+		if (line !== "") return line.replace(/\s+/gu, " ").slice(0, 240)
+	}
+	return undefined
+}
+
+/**
+ * Parse one child journal's rows into the real ctrl+g values, mirroring the
+ * remote seam's fold (remote-subagents.ts:589-628):
+ *  - `rounds` = `assistant/message` ROW COUNT (one-shot children never turn/end);
+ *  - `lastLine` = tail of the LAST assistant/message body OR a non-error
+ *    `tool/result` body (P2-3b — remote parity, see the branch below);
+ *  - `model` = `request/context.data.model`, falling back to
+ *    `subagent/descriptor.data.agentModel` (KNOWN FORK vs remote — see below).
+ * Unknown rows are ignored. This is display catch-up ONLY — no wall-clock
+ * inference, and a caller that cannot read the journal keeps its degraded view
+ * rather than calling this with an empty array.
+ */
+export function bridgeChildJournalMeta(rows: readonly BridgeReplayRow[]): BridgeChildJournalMeta {
+	let rounds = 0
+	let lastLine: string | undefined
+	let contextModel: string | undefined
+	let descriptorModel: string | undefined
+	for (const row of rows) {
+		const data = asRecord(row.payload)
+		if (row.type === "assistant/message") {
+			rounds += 1
+			const message = asRecord(data.message)
+			const tail = bridgeLastContentLine(bridgeBlocksText(message.content ?? data.content))
+			if (tail !== undefined) lastLine = tail
+		} else if (row.type === "tool/result") {
+			// P2-3b: remote surfaces a NON-error tool-result's content tail as
+			// lastLine (remote-subagents.ts:639-664) — a child that "prints" via
+			// bash echoes / search hits exposes its real progress only here.
+			// Error results keep the previous good tail (a failure string would
+			// mask the last real progress line); the ⎿ failed log still carries it.
+			if (data.isError !== true) {
+				const message = asRecord(data.message)
+				const tail = bridgeLastContentLine(bridgeBlocksText(message.content ?? data.content))
+				if (tail !== undefined) lastLine = tail
+			}
+		} else if (row.type === "request/context") {
+			if (contextModel === undefined && typeof data.model === "string" && data.model !== "") {
+				contextModel = data.model
+			}
+		} else if (row.type === "subagent/descriptor") {
+			if (descriptorModel === undefined && typeof data.agentModel === "string" && data.agentModel !== "") {
+				descriptorModel = data.agentModel
+			}
+		}
+	}
+	// KNOWN FORK (P2-3c): the remote seam resolves a child's model from the
+	// descriptor's `agentProvider`/`agentModel` JOIN plus a LATER `request/header`
+	// override (remote-subagents.ts:589-600,735-748). The inproc child journal
+	// carries no `request/header` for children; it carries `request/context`, so we
+	// prefer that over the bare `descriptor.agentModel` instead. The two seams are
+	// intentionally NOT aligned here — aligning would mean reading a row type the
+	// bridge never journals. Documented rather than "fixed" to avoid a fabricated
+	// provider/model string.
+	const model = contextModel ?? descriptorModel
+	return {
+		rounds,
+		...(lastLine !== undefined ? { lastLine } : {}),
+		...(model !== undefined ? { model } : {}),
+	}
+}
+
+/** Lazy-read / settle-snapshot cache key — a catalog revive (new startedAt) starts a new run. */
+function bridgeChildJournalKey(view: SeamSubagentView): string {
+	return `${view.id}@${view.startedAt ?? ""}`
+}
+
+/**
+ * 0.23.0 P1: the frozen facts of a child's FIRST settle, keyed by the RUN key
+ * (`id@<startedAt>` before settle). Remote parity: settle freezes the duration
+ * (session-seam-adapter.ts:715-721) — a later durable replay re-fold revives a
+ * catalog child and re-settles it with the CURRENT wall clock; restoring these
+ * facts instead keeps elapsedSec/endedAt/status stable for the whole session.
+ */
+export interface BridgeSettleSnapshot {
+	status: SeamSubagentView["status"]
+	elapsedSec: number
+	endedAt: number
+}
+
+/** Rebuild the settled shape from a frozen snapshot: `startedAt` is dropped
+ *  (settle parity), status/elapsedSec/endedAt come from the snapshot, all other
+ *  display/meta fields are carried through from the freshly-folded view. */
+function bridgeRestoreSettled(view: SeamSubagentView, snap: BridgeSettleSnapshot): SeamSubagentView {
+	const { startedAt: _startedAt, ...rest } = view
+	return { ...rest, status: snap.status, elapsedSec: snap.elapsedSec, endedAt: snap.endedAt }
 }
 
 /**
@@ -975,6 +1143,38 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #subagentListeners = new Set<(views: SeamSubagentView[]) => void>()
 	/** The session the current subagent map belongs to; reset on binding change. */
 	#subagentSessionId: string | undefined
+	/**
+	 * 0.23.0 T2: every child key whose journal was ATTEMPTED this binding, keyed
+	 * by `${childId}@${startedAt}` so a catalog REVIVE (new run, new start clock)
+	 * re-reads instead of reusing the previous run's counts. A failed read is
+	 * recorded too (but writes nothing to the roster) — never retried on every
+	 * render, and the view keeps its existing degraded values.
+	 */
+	readonly #subagentJournalLoaded = new Set<string>()
+	/**
+	 * 0.23.0 T2: successful journal meta per RUN KEY (`${childId}@${startedAt}`).
+	 * A durable replay re-fold revives a settled child then settles it again,
+	 * which resets rounds to 0 and drops lastLine; this cache lets the post-fold
+	 * sync restore the real values without re-reading the journal on every turn.
+	 */
+	readonly #subagentJournalMeta = new Map<string, BridgeChildJournalMeta>()
+	/**
+	 * 0.23.0 T1: run keys settled by the registry SWEEP, keyed by childId → the
+	 * run key (`id@<startedAt>`) observed at settle time. A sweep settle has NO
+	 * journal settle row, so a later replay that re-folds the catalog row would
+	 * revive the ghost back to `running`. The post-fold sync re-asserts the settle
+	 * via #subagentSettleSnapshots when the key matches. Keeping the childId → key
+	 * mapping also lets a MISMATCH be logged (P2a: missing childCreatedAt makes
+	 * live/replay keys diverge). Cleared on binding change/dispose.
+	 */
+	readonly #sweepSettledRuns = new Map<string, string>()
+	/**
+	 * 0.23.0 P1: frozen settle facts (status/elapsedSec/endedAt) per RUN KEY,
+	 * captured at the FIRST settle and restored on every later re-settle so a
+	 * replay's wall clock cannot grow a settled child's elapsedSec. Cleared on
+	 * binding change/dispose.
+	 */
+	readonly #subagentSettleSnapshots = new Map<string, BridgeSettleSnapshot>()
 
 	// status state machine (no dedicated status frame — ticket §1 #1).
 	#connection: SeamStatus["connection"] = "disconnected"
@@ -1342,6 +1542,11 @@ export class BridgeSessionSeam implements SessionSeam {
 		// Same rows also restore the subagent roster after a process restart
 		// (spawn/settle from the durable journal; running = start w/o terminal).
 		this.#foldAgentReplayRows(drained.rows, boundId)
+		// 0.23.0 T1 sweep hook ② (recover): the bridge has no `recover` event, so
+		// the client drives the same host-registry sweep here — after the roster
+		// is restored from the replay so a ghost child can be settled. Best-effort
+		// (the helper never throws); a failed read leaves the roster unchanged.
+		await this.#sweepSubagents(boundId)
 		const rows = bridgeReplayRowsToSeamTranscript(drained.rows)
 		if (drained.rows.length > 0) {
 			const maxSeq = drained.rows.reduce((m, row) => Math.max(m, row.seq), -Infinity)
@@ -1845,9 +2050,256 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	// ----- subagent marker face (row 33 inproc, RemoteHostSession 1:1) -------
 
-	/** Panel/viewer snapshot — a fresh copy so callers cannot mutate the store. */
+	/** Panel/viewer snapshot — a fresh copy so callers cannot mutate the store.
+	 *  T2: lazy journal reads write rounds/lastLine/model straight into the
+	 *  roster entries (so a later settle carries them via `bridgeSettleChild`);
+	 *  the view itself stays a pure copy. */
 	subagentViews(): SeamSubagentView[] {
 		return [...this.#subagentViews.values()].map((view) => ({ ...view }))
+	}
+
+	/**
+	 * 0.23.0 P1: post-fold hook — freeze the FIRST settle of every run key and
+	 * restore that frozen snapshot on any later re-settle. `before` holds the
+	 * startedAt of each child that was RUNNING before the fold. A replay re-fold
+	 * revives a settled catalog child (rounds reset, startedAt rebuilt) and then
+	 * re-settles it with `now`; without this the settled elapsedSec/endedAt grow
+	 * every turn boundary (真机 c5c9a073 109.3s→224.1s). Remote freezes on settle
+	 * (session-seam-adapter.ts:715-721) — so do we.
+	 */
+	#freezeSettles(before: ReadonlyMap<string, number | undefined>): void {
+		for (const [childId, startedAt] of before) {
+			const view = this.#subagentViews.get(childId)
+			if (view === undefined || view.status === "running") continue
+			if (view.elapsedSec === undefined || view.endedAt === undefined) continue
+			const runKey = `${childId}@${startedAt ?? ""}`
+			const frozen = this.#subagentSettleSnapshots.get(runKey)
+			if (frozen !== undefined) {
+				this.#subagentViews.set(childId, bridgeRestoreSettled(view, frozen))
+			} else {
+				// First settle of this run — freeze it. Later re-folds restore it.
+				this.#subagentSettleSnapshots.set(runKey, {
+					status: view.status, elapsedSec: view.elapsedSec, endedAt: view.endedAt,
+				})
+			}
+		}
+	}
+
+	/** Fold ONE agent record through the shared projector AND freeze/restore the
+	 *  settle snapshot. ALL roster folds route through here so a re-settle from
+	 *  any source (durable row / live frame / sweep) honours the frozen clock. */
+	#foldWithFrozenSettle(
+		type: string, data: Record<string, unknown>, now: number, live: boolean,
+	): boolean {
+		const before = new Map<string, number | undefined>()
+		for (const [id, v] of this.#subagentViews) {
+			if (v.status === "running") before.set(id, v.startedAt)
+		}
+		const changed = bridgeFoldAgentRecord(
+			this.#subagentViews, this.#subagentRunSeq, this.#subagentLiveStarts,
+			type, data, now, live,
+		)
+		if (changed) this.#freezeSettles(before)
+		return changed
+	}
+
+	/**
+	 * T1: sweep the host session registry at a turn terminal / recovery, mirroring
+	 * remote `refreshFromList()`. Only an explicit `origin:"subagent"` row of THIS
+	 * parent whose host `running===false` and whose catalog row is still running
+	 * is settled — through the SAME catalog settle branch (`user/message`
+	 * source.kind=subagent-settled → `bridgeSettleChild`) the durable notice
+	 * uses, so status/rounds/lastLine/model/elapsed stay in sync.
+	 * Best-effort: a failed/malformed `session.list` read leaves the roster
+	 * UNCHANGED (never an empty-list "all settled" inference).
+	 */
+	async #sweepSubagents(parentId: string): Promise<void> {
+		let value: unknown
+		try {
+			value = await this.#transport.request("session.list", { _request: {} })
+		} catch {
+			/* best-effort: the journal pairing covers the rest */
+			return
+		}
+		const items = asRecord(value).items
+		if (!Array.isArray(items)) return // malformed reply ≠ empty registry
+		const locallyRunning = new Set<string>()
+		for (const view of this.#subagentViews.values()) {
+			if (view.status === "running") locallyRunning.add(view.id)
+		}
+		const toSettle = bridgeSweepSettledChildIds(items, parentId, locallyRunning)
+		if (toSettle.length === 0) return
+		const now = Date.now()
+		let changed = false
+		for (const childId of toSettle) {
+			// Remember the run BEFORE settle drops startedAt. A later replay that
+			// re-folds this child's catalog row (with NO journal settle row — the
+			// aborted-parent case) would otherwise REVIVE it back to running; the
+			// post-fold sync uses this key to re-assert the sweep settle.
+			const existing = this.#subagentViews.get(childId)
+			if (existing !== undefined) this.#sweepSettledRuns.set(childId, bridgeChildJournalKey(existing))
+			// Catalog settle by childId — the SAME convergence branch the durable
+			// `user/message source.kind=subagent-settled` notice uses (by
+			// senderSessionId), so status/rounds/lastLine/model/elapsed stay in
+			// sync and NO new wire protocol is invented. No wall-clock fallback:
+			// the host's running===false flag is the only settle evidence.
+			if (this.#foldWithFrozenSettle("user/message", {
+				source: { kind: BRIDGE_SUBAGENT_SETTLED, stopReason: "completed", senderSessionId: childId },
+			}, now, false)) changed = true
+		}
+		if (changed) {
+			// Restore cached meta / frozen settle BEFORE the single emit so the
+			// panel never sees a transient rounds=0 (P2b).
+			this.#syncSubagentMeta(false)
+			this.#emitSubagentViews()
+		}
+	}
+
+	/**
+	 * T2: lazily read one child's journal via the read-only `journal.replay` RPC
+	 * (the bridge opens `sessionPersistence.open(id,'read')`). Failure or a
+	 * malformed reply keeps the existing degraded view — NEVER a zeroed one.
+	 *
+	 * COST (P2-3d): per child binding at most 2 FULL journal drains — one for the
+	 * running view (`id@<startedAt>`) and one after settle (`id@""`, because
+	 * bridgeSettleChild drops startedAt) to pick up terminal rounds/lastLine/model.
+	 * The cache key deliberately encodes startedAt so a settle invalidates the
+	 * first read and forces that second, terminal-value re-read (P1-3a); a catalog
+	 * revive (new startedAt) likewise starts a fresh run with a fresh key.
+	 */
+	async #ensureChildJournal(childId: string, startedAt: number | undefined): Promise<void> {
+		const key = `${childId}@${startedAt ?? ""}`
+		if (this.#subagentJournalLoaded.has(key)) return
+		this.#subagentJournalLoaded.add(key)
+		// P3: a session switch while the read is in flight must not let a stale
+		// response seed this binding's meta cache with another session's data.
+		const sessionAtStart = this.#subagentSessionId
+		try {
+			const value = asRecord(await this.#transport.request("journal.replay", { sessionId: childId }))
+			const rows = value.rows
+			if (!Array.isArray(rows)) return // malformed read ≠ empty journal
+			// P2-3d: a defensive read may carry null / non-object entries; drop them
+			// before bridgeChildJournalMeta reads `.payload` off each row (a null row
+			// would otherwise throw and silently degrade the whole child's meta).
+			const cleanRows = rows.filter(
+				(row): row is BridgeReplayRow => row !== null && typeof row === "object" && !Array.isArray(row),
+			)
+			const meta = bridgeChildJournalMeta(cleanRows)
+			// P3: drop a response that arrived after a binding change (or dispose).
+			if (this.#subagentSessionId !== sessionAtStart || this.#disposed) return
+			// Cache by run key even if the view changed in flight: a replay re-fold
+			// can revisit this run later and needs the meta to restore rounds.
+			this.#subagentJournalMeta.set(key, meta)
+			const existing = this.#subagentViews.get(childId)
+			// Guard against a binding change / settle while the read was in flight.
+			if (existing === undefined || bridgeChildJournalKey(existing) !== key) return
+			this.#subagentViews.set(childId, {
+				...existing,
+				rounds: meta.rounds,
+				...(meta.lastLine !== undefined ? { lastLine: meta.lastLine } : {}),
+				...(meta.model !== undefined ? { model: meta.model } : {}),
+			})
+			this.#emitSubagentViews()
+		} catch {
+			/* best-effort: keep rounds=0 / no model / no lastLine degradation */
+		}
+	}
+
+	/**
+	 * Post-fold sync — called after EVERY roster fold (live frame, replay drain,
+	 * recovery, sweep). Jobs, in order:
+	 *  ① RE-ASSERT SWEEP SETTLES: a `subagent/catalog` row re-folded from the
+	 *     durable journal revives a settled child (catalog family revive rule),
+	 *     and a sweep settle has NO journal settle row to undo it. Restore the
+	 *     FROZEN settle snapshot (status/elapsedSec/endedAt) rather than folding
+	 *     with the current clock — no wall-clock growth, no revive flashback.
+	 *  ② RESTORE JOURNAL META: the same revive+settle re-fold rebuilds the view
+	 *     with `rounds:0` and no `lastLine`; re-apply cached meta (P2b: while the
+	 *     `id@""` terminal read has not landed, fall back to the prior run-key
+	 *     meta so no transient rounds=0 is emitted).
+	 *  ③ QUEUE READS for runs whose journal has not been attempted yet.
+	 * `emit=false` lets a caller restore before its own single emit (no transient).
+	 */
+	#syncSubagentMeta(emit = true): void {
+		let changed = false
+		if (this.#sweepSettledRuns.size > 0) {
+			for (const view of [...this.#subagentViews.values()]) {
+				if (view.status !== "running") continue
+				const recordedKey = this.#sweepSettledRuns.get(view.id)
+				if (recordedKey === undefined) continue
+				const key = bridgeChildJournalKey(view)
+				if (key !== recordedKey) {
+					// P2a: the sweep observed a different start clock than this
+					// replay (missing childCreatedAt → live client clock vs replay
+					// fold clock). Visible in acceptance logs; the real host rows
+					// all carry childCreatedAt, so this is a defensive signal.
+					this.#degradeOnce("sweep-sticky-run-key-mismatch",
+						`sweep settle run key ${recordedKey} != replay key ${key} for ${view.id}`)
+					continue
+				}
+				const frozen = this.#subagentSettleSnapshots.get(recordedKey)
+				if (frozen !== undefined) {
+					this.#subagentViews.set(view.id, bridgeRestoreSettled(view, frozen))
+					changed = true
+				} else {
+					// Defensive: a sweep settle always freezes a snapshot; if one is
+					// missing, fall back to the shared frozen fold (still no new clock
+					// is invented for a child we have never settled before).
+					if (this.#foldWithFrozenSettle("user/message", {
+						source: { kind: BRIDGE_SUBAGENT_SETTLED, stopReason: "completed", senderSessionId: view.id },
+					}, Date.now(), false)) changed = true
+				}
+			}
+		}
+		for (const view of [...this.#subagentViews.values()]) {
+			const key = bridgeChildJournalKey(view)
+			// P2b: `id@""` (settled) has no cached terminal meta until the re-read
+			// lands — borrow the most recent prior RUN key's meta (same child run,
+			// real journal data) so ctrl+g never flashes rounds=0.
+			const exactMeta = this.#subagentJournalMeta.get(key)
+			const meta = exactMeta
+				?? (key === `${view.id}@` ? this.#priorRunMeta(view.id) : undefined)
+			if (meta !== undefined) {
+				const restored: SeamSubagentView = {
+					...view,
+					rounds: meta.rounds,
+					...(meta.lastLine !== undefined ? { lastLine: meta.lastLine } : {}),
+					...(meta.model !== undefined ? { model: meta.model } : {}),
+				}
+				if (restored.rounds !== view.rounds || restored.lastLine !== view.lastLine || restored.model !== view.model) {
+					this.#subagentViews.set(view.id, restored)
+					changed = true
+				}
+			}
+			// Schedule the terminal read EVEN when a borrowed prior-run meta covers
+			// the gap — the fallback is only a bridge, never a substitute for the
+			// settled-key FULL journal read (P1-3a).
+			if (exactMeta === undefined && !this.#subagentJournalLoaded.has(key)) {
+				void this.#ensureChildJournal(view.id, view.startedAt)
+			}
+		}
+		if (changed && emit) this.#emitSubagentViews()
+	}
+
+	/** P2b: the latest cached journal meta for any RUN key (`id@<startedAt>`) of
+	 *  this child — used only as the settled-key bridge while its terminal read
+	 *  is pending. Never fabricates data: the meta came from a real child-journal
+	 *  read of the same run. */
+	#priorRunMeta(childId: string): BridgeChildJournalMeta | undefined {
+		const prefix = `${childId}@`
+		let best: BridgeChildJournalMeta | undefined
+		let bestStart = -Infinity
+		for (const [key, meta] of this.#subagentJournalMeta) {
+			if (!key.startsWith(prefix)) continue
+			const suffix = key.slice(prefix.length)
+			if (suffix === "") continue
+			const start = Number(suffix)
+			if (Number.isFinite(start) && start > bestStart) {
+				bestStart = start
+				best = meta
+			}
+		}
+		return best
 	}
 
 	/** Push listener (the seam-rows tree row + /subagents viewer subscribe here).
@@ -1888,17 +2340,15 @@ export class BridgeSessionSeam implements SessionSeam {
 		const now = Date.now()
 		let changed = false
 		if (frame.type === "agent.spawn") {
-			changed = bridgeFoldAgentRecord(
-				this.#subagentViews, this.#subagentRunSeq, this.#subagentLiveStarts,
-				BRIDGE_AGENT_START, payload, now, true,
-			)
+			changed = this.#foldWithFrozenSettle(BRIDGE_AGENT_START, payload, now, true)
 		} else if (frame.type === "agent.settle") {
-			changed = bridgeFoldAgentRecord(
-				this.#subagentViews, this.#subagentRunSeq, this.#subagentLiveStarts,
-				BRIDGE_AGENT_END, payload, now, true,
-			)
+			changed = this.#foldWithFrozenSettle(BRIDGE_AGENT_END, payload, now, true)
 		}
-		if (changed) this.#emitSubagentViews()
+		if (changed) {
+			// Restore first, emit once — no transient rounds=0 (P2b).
+			this.#syncSubagentMeta(false)
+			this.#emitSubagentViews()
+		}
 	}
 
 	/**
@@ -1917,21 +2367,26 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#subagentViews.clear()
 			this.#subagentRunSeq.clear()
 			this.#subagentLiveStarts.clear()
+			this.#subagentJournalLoaded.clear()
+			this.#subagentJournalMeta.clear()
+			this.#sweepSettledRuns.clear()
+			this.#subagentSettleSnapshots.clear()
 			this.#subagentSessionId = sessionId
 			rosterReset = true
 		}
 		let changed = false
 		const now = Date.now()
 		for (const row of rows) {
-			if (bridgeFoldAgentRecord(
-				this.#subagentViews, this.#subagentRunSeq, this.#subagentLiveStarts,
-				row.type, asRecord(row.payload), now, false,
-			)) changed = true
+			if (this.#foldWithFrozenSettle(row.type, asRecord(row.payload), now, false)) changed = true
 		}
 		// P3-2: a session switch must repaint the roster EVEN IF the new session
 		// has no agent rows — otherwise a mounted viewer keeps the old session's
 		// rows until the next live frame / replay that actually changes the map.
-		if (rosterReset || changed) this.#emitSubagentViews()
+		if (rosterReset || changed) {
+			// Restore first, emit once — no transient rounds=0 (P2b).
+			this.#syncSubagentMeta(false)
+			this.#emitSubagentViews()
+		}
 	}
 
 	// ----- config faces (optional seam members — D3 degrade, never throw) --
@@ -2032,6 +2487,12 @@ export class BridgeSessionSeam implements SessionSeam {
 		// fresh boot / resume / session switch paints spawned+settled (and any
 		// start-without-terminal → running) agents even before a frame arrives.
 		this.#foldAgentReplayRows(rows, id)
+		// P2-1a: a pure resume / viewer open of an OLD session has no turn terminal
+		// to drive #sweepSubagents, so a catalog child whose host session has since
+		// stopped would stay a running ghost. Sweep here too — idempotent, best-
+		// effort (a failed/malformed session.list leaves the roster unchanged), and
+		// it settles only children that are locally running AND host-stopped.
+		void this.#sweepSubagents(id)
 		return bridgeReplayRowsToSeamTranscript(rows, skip)
 	}
 
@@ -2191,6 +2652,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#subagentViews.clear()
 		this.#subagentRunSeq.clear()
 		this.#subagentLiveStarts.clear()
+		this.#subagentJournalLoaded.clear()
+		this.#subagentJournalMeta.clear()
+		this.#sweepSettledRuns.clear()
+		this.#subagentSettleSnapshots.clear()
 		this.#activeCallbacks = undefined
 		this.#cancelAllAsks()
 		// A6: release buffered/invalidated recovery state on dispose.
@@ -2578,6 +3043,12 @@ export class BridgeSessionSeam implements SessionSeam {
 			// Turn terminal frame is the upper bound for its asks (A1/D5).
 			if (endedTurnId !== undefined) this.#cancelAsksForTurn(endedTurnId)
 			this.#turnDone?.()
+			// 0.23.0 T1 sweep hook ① (turn end): a child that finished without
+			// journaling its `subagent-settled` notice (aborted parent turn) still
+			// sits `running` in our roster. Best-effort; never blocks the terminal.
+			if (this.#currentSessionId !== undefined && this.#currentSessionId !== "") {
+				void this.#sweepSubagents(this.#currentSessionId)
+			}
 		}
 
 		// Cache billed usage on EVERY turn.end, not only turns this seam drove:
