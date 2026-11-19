@@ -205,7 +205,16 @@ describe("A4+A5: post-DEAD recovery orchestration", () => {
 		expect(h.seam.status()).toMatchObject({
 			connection: "connected", sessionAttached: false, bridge: "ready",
 		})
-		expect(h.seamEvents.some((e) => e.type === "bridge.recovery.locked")).toBe(true)
+		const lockedEvent = h.seamEvents.find((e) => e.type === "bridge.recovery.locked")
+		expect(lockedEvent).toBeDefined()
+		// P2-1: the bridge error's detail.holder rides the event so the UI can
+		// name the owner; the host diagnostic is language-neutral (no CJK).
+		expect(lockedEvent?.details).toMatchObject({
+			state: "locked",
+			sessionId: "s-locked",
+			message: "SESSION_LOCKED",
+			holder: "other",
+		})
 		expect(h.replayRequests()).toHaveLength(0) // no replay when not attached
 		expect(h.requests.filter((r) => r.method === "__recover__")).toHaveLength(1) // no retry
 	})

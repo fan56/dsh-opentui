@@ -77,18 +77,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **🧠 context and ⚡ cache-hit segments render under the inproc bridge.**
-  `BridgeSessionSeam` now supplies `contextTokens()` / `contextWindow()` /
-  `cacheHitRate()` from the same journal data the remote seam uses. The 🧠
-  numerator is the latest billed `assistant/message.data.usage` input+output
-  (`totalTokens`, the remote `ContextTokenMeter` billed base); the denominator
-  is the host-resolved `request/context.contextWindow` guarded by the live
-  `currentModelSelection()` route. The ⚡ rate uses the remote formula exactly —
-  `lastMessage`: `cacheRead / (prompt + cacheRead + cacheWrite)` of the latest
-  billed row, `session`: `ΣcacheRead / (Σprompt + ΣcacheRead + ΣcacheWrite)`.
+  The in-process bridge exposes no `session` / `projections` RPC (only
+  `session.list`), so `BridgeSessionSeam` derives `contextTokens()` /
+  `contextWindow()` / `cacheHitRate()` from journal rows rather than a live
+  projection. The caliber is deliberately LAYERED, not a wholesale parity
+  claim:
+  - ⚡ cache-hit rate — same formula as remote: `lastMessage` is
+    `cacheRead / (prompt + cacheRead + cacheWrite)` of the latest billed row,
+    `session` is `ΣcacheRead / (Σprompt + ΣcacheRead + ΣcacheWrite)`.
+  - 🧠 context occupancy — a DEGRADED local caliber. The numerator is the
+    journal's latest billed `assistant/message.data.usage.totalTokens`
+    (≈ remote `ContextTokenMeter` billed base `input + cacheRead + cacheWrite
+    + output`); it carries no pending-item estimate and no next-request
+    projection, so unlike remote it does NOT climb with pending text while a
+    turn is in flight. The denominator is the host-resolved
+    `request/context.contextWindow` for the live route, guarded by the same
+    `currentModelSelection()` route check.
   All three ride the existing incremental `sessionInfo()` tally (no new cache,
-  no double counting). The `/session` panel's `cache read/write 0 / 0` was a
-  field-name mismatch — the journal row carried `cacheReadTokens` but the seam
-  only read `cacheRead`; the alias mapping (remote `scanUsageChunk` parity)
+  no double counting) and read the same host usage data the remote seam reads
+  off its live chunks — remote reads the live usage chunk, the bridge the
+  journal row that carries it. The `/session` panel's `cache read/write 0 / 0`
+  was a field-name mismatch — the journal row carried `cacheReadTokens` but the
+  seam only read `cacheRead`; the alias mapping (remote `scanUsageChunk` parity)
   fixes both the panel and the footer rate.
 - **Writer-held as a localized diagnostic.** `SESSION_LOCKED` now renders as a
   `writer-held` message that includes the host-reported holder session id,

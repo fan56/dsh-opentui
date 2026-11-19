@@ -10,7 +10,20 @@
  */
 import { For, Show, createSignal, onCleanup, type JSX } from "solid-js"
 import { useThemeOptional } from "../../context/theme"
-import type { RecoveryUiController } from "./recovery-ui"
+import type { RecoveryBanner as RecoveryBannerModel, RecoveryUiController } from "./recovery-ui"
+
+/**
+ * P2-1: the reason row is a single non-wrapping line; a long holder id would
+ * overflow / clip it. Show only the first 8 chars of an over-long id (plus an
+ * ellipsis) — the full id stays on the controller's banner model for other
+ * surfaces. Pure helper so the geometry can be unit-tested without a renderer.
+ */
+export function widthSafeBannerReason(banner: RecoveryBannerModel | undefined): string {
+	const reason = banner?.reason ?? ""
+	const holder = banner?.holder
+	if (holder === undefined || holder.length <= 8 || !reason.includes(holder)) return reason
+	return reason.replace(holder, `${holder.slice(0, 8)}…`)
+}
 
 export function RecoveryBanner(props: { controller: RecoveryUiController }): JSX.Element {
 	const theme = useThemeOptional()
@@ -48,7 +61,7 @@ export function RecoveryBanner(props: { controller: RecoveryUiController }): JSX
 				paddingRight={1}
 			>
 				<text fg={warning()} wrapMode="none">
-					{banner()?.reason ?? ""}
+					{widthSafeBannerReason(banner())}
 				</text>
 				<box flexDirection="row" gap={2} height={1}>
 					<For each={actions()}>

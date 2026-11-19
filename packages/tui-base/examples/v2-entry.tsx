@@ -297,7 +297,14 @@ function V2SessionPageBody(props: {
 		transient: () => t("recovery.transient"),
 		recovered: (count) => t("recovery.recovered", { count: String(count) }),
 		failedReason: (reason) => t("recovery.failed.reason", { reason }),
-		locked: () => t("recovery.locked"),
+		// P2-1: three shapes — bare base, host reason, reason + holder. The
+		// controller supplies the holder only when the reason does not name it.
+		locked: (reason, holder) =>
+			reason === undefined
+				? t("recovery.locked")
+				: holder === undefined
+					? t("recovery.locked.reason", { reason })
+					: t("recovery.locked.holder", { reason, holder }),
 		cooldown: (remainingMs) => t("recovery.cooldown", { remainingMs: String(remainingMs) }),
 		reconnect: () => t("recovery.action.reconnect"),
 		retry: () => t("recovery.action.retry"),

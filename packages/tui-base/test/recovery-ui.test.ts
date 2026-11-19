@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, jest, test } from "bun:test"
 import { TuiKeybind } from "../src/config/keybind"
 import { ComposerController } from "../src/routes/session/composer-state"
 import { clearNotices, noticeList, showNotice } from "../src/routes/session/notices-dock"
+import { widthSafeBannerReason } from "../src/routes/session/recovery-banner"
 import {
 	RECOVERY_NOTICE_TTL_MS,
 	RECOVERY_RECONNECT_BIND,
@@ -25,7 +26,13 @@ const texts: RecoveryTexts = {
 	transient: () => "reconnecting...",
 	recovered: (count) => `caught up ${count} events`,
 	failedReason: (reason) => `failed: ${reason}`,
-	locked: () => "writer-held",
+	// Mirror the real i18n templates (recovery.locked{.reason,.holder}).
+	locked: (reason, holder) =>
+		reason === undefined
+			? "writer-held"
+			: holder === undefined
+				? `writer-held: ${reason}`
+				: `writer-held: ${reason} (held by ${holder})`,
 	cooldown: (remainingMs) => `cooling down, ${remainingMs} ms left`,
 	reconnect: () => "Reconnect [R]",
 	retry: () => "Retry [R]",
@@ -278,22 +285,72 @@ describe("recovered / failed / locked surfaces", () => {
 		expect(state.notices).toHaveLength(0) // failure is a banner, not a transient notice
 	})
 
-	test("bridge.recovery.locked: notice + retry/new actions + sessionId banner, no quit", () => {
+	test("bridge.recovery.locked: banner + notice show the host reason and the holder id", () => {
 		const { controller, state } = setup()
 		controller.handleEvent({
 			type: "bridge.recovery.locked",
-			details: { sessionId: "sess-locked", error: { code: "SESSION_LOCKED", message: "busy" } },
+			details: {
+				sessionId: "sess-locked",
+				message: "busy",
+				holder: "holder-9",
+				error: { code: "SESSION_LOCKED", message: "busy", detail: { holder: "holder-9" } },
+			},
 		})
 		expect(controller.phase).toBe("locked")
-		expect(state.notices).toEqual([{ text: "writer-held", ttl: RECOVERY_NOTICE_TTL_MS, kind: undefined }])
-		// The locked diagnostic still carries the full holder session id in the
-		// BANNER (the /session-info surface); it no longer feeds a footer segment.
 		expect(controller.banner?.sessionId).toBe("sess-locked")
+		expect(controller.banner?.holder).toBe("holder-9")
+		// P2-1: the holder id substring is user-visible in the banner AND the
+		// transient notice; the host reason is no longer discarded.
+		expect(controller.banner?.reason).toContain("holder-9")
+		expect(controller.banner?.reason).toContain("busy")
+		expect(state.notices[0]?.text).toContain("holder-9")
+		expect(state.notices[0]).toEqual({
+			text: "writer-held: busy (held by holder-9)",
+			ttl: RECOVERY_NOTICE_TTL_MS,
+			kind: undefined,
+		})
 		const lines = recoveryBannerLines(controller.banner, texts)
 		expect(lines[0]).toContain("writer-held")
+		expect(lines[0]).toContain("holder-9")
 		expect(lines[1]).toContain("Retry [R]")
 		expect(lines[1]).toContain("New session")
 		expect(lines[1]).not.toContain("Quit")
+	})
+
+	test("bridge.recovery.locked: holder already named in the message is not repeated", () => {
+		const { controller } = setup()
+		controller.handleEvent({
+			type: "bridge.recovery.locked",
+			details: { message: "session holder-9 is owned elsewhere", holder: "holder-9" },
+		})
+		const reason = controller.banner?.reason ?? ""
+		expect(reason).toContain("holder-9")
+		expect(reason.match(/holder-9/g)).toHaveLength(1)
+	})
+
+	test("bridge.recovery.locked: a bare event still renders the base copy", () => {
+		const { controller } = setup()
+		controller.handleEvent({ type: "bridge.recovery.locked", details: {} })
+		expect(controller.banner?.reason).toBe("writer-held")
+	})
+
+	test("writer-held banner clips an over-long holder id to 8 chars (display width)", () => {
+		const longId = "holder-abcdefghijklmnop"
+		expect(
+			widthSafeBannerReason({
+				kind: "locked",
+				reason: `writer-held: busy (held by ${longId})`,
+				holder: longId,
+			}),
+		).toBe(`writer-held: busy (held by ${longId.slice(0, 8)}…)`)
+		// Short ids are left untouched.
+		expect(
+			widthSafeBannerReason({
+				kind: "locked",
+				reason: "writer-held: busy (held by other)",
+				holder: "other",
+			}),
+		).toBe("writer-held: busy (held by other)")
 	})
 
 	test("banner new-session / quit actions call the page callbacks and clear the banner", () => {

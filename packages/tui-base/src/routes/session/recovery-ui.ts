@@ -35,8 +35,13 @@ export type RecoveryTexts = {
 	recovered: (count: number) => string
 	/** Persistent banner reason: "Recovery failed: {reason}". */
 	failedReason: (reason: string) => string
-	/** Locked notice + banner reason (writer-held). */
-	locked: () => string
+	/**
+	 * Locked notice + banner reason (writer-held). `reason` is the host-reported
+	 * occupancy detail from the seam; `holder` is the owning session id, passed
+	 * only when `reason` does not already name it. Both are optional so a bare
+	 * locked event still renders the base copy.
+	 */
+	locked: (reason?: string, holder?: string) => string
 	/** P2-2: transient cooldown notice ("cooling down, N ms left"). */
 	cooldown: (remainingMs: number) => string
 	/** Failed-banner reconnect action label. */
@@ -53,6 +58,8 @@ export type RecoveryBanner = {
 	kind: RecoveryBannerKind
 	reason: string
 	sessionId?: string
+	/** Raw owning-session id (P2-1) so the renderer can width-clip long ids. */
+	holder?: string
 }
 
 export interface RecoveryUiOptions {
@@ -173,9 +180,26 @@ export class RecoveryUiController {
 			case "bridge.recovery.locked": {
 				const details = asRecord(event.details)
 				const sessionId = typeof details.sessionId === "string" ? details.sessionId : undefined
-				const reason = this.texts.locked()
+				// P2-1: prefer the seam's host-reported message (it carries the
+				// occupancy diagnostic), then fall back to error.message. A bare
+				// event has neither — the base copy still renders.
+				const detailMessage =
+					typeof details.message === "string" && details.message.trim() !== "" ? details.message : undefined
+				const rawReason = detailMessage ?? reasonOf(details)
+				// The holder is the owning session id carried in the bridge error's
+				// detail.holder; read the seam's top-level field first, then the
+				// nested error detail defensively ("unknown" is not an id).
+				const errorDetail = asRecord(asRecord(details.error).detail)
+				const holderValue = typeof details.holder === "string" ? details.holder : errorDetail.holder
+				const holder =
+					typeof holderValue === "string" && holderValue !== "" && holderValue !== "unknown"
+						? holderValue
+						: undefined
+				// If the message already names the holder, do not print it twice.
+				const holderSuffix = holder !== undefined && rawReason.includes(holder) ? undefined : holder
+				const reason = this.texts.locked(rawReason !== "" ? rawReason : undefined, holderSuffix)
 				this.#phaseTo("locked")
-				this.#bannerTo({ kind: "locked", reason, sessionId })
+				this.#bannerTo({ kind: "locked", reason, sessionId, holder })
 				// The locked branch carries BOTH a transient notice and actions.
 				this.#onNotice?.(reason, RECOVERY_NOTICE_TTL_MS)
 				return

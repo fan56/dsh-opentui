@@ -14,6 +14,8 @@ const KEYS = [
 	"recovery.recovered",
 	"recovery.failed.reason",
 	"recovery.locked",
+	"recovery.locked.reason",
+	"recovery.locked.holder",
 	"recovery.cooldown",
 	"recovery.action.reconnect",
 	"recovery.action.retry",
@@ -43,6 +45,25 @@ describe("recovery locale keys (en / zh-CN)", () => {
 		expect([...extractParams(bundled().get("en")!["recovery.failed.reason"]!)].sort()).toEqual(["reason"])
 		expect([...extractParams(bundled().get("en")!["recovery.turn.interrupted"]!)].sort()).toEqual(["turnId"])
 		expect([...extractParams(bundled().get("en")!["recovery.input.unconfirmed"]!)].sort()).toEqual([])
+		expect([...extractParams(bundled().get("en")!["recovery.locked"]!)].sort()).toEqual([])
+		expect([...extractParams(bundled().get("en")!["recovery.locked.reason"]!)].sort()).toEqual(["reason"])
+		expect([...extractParams(bundled().get("en")!["recovery.locked.holder"]!)].sort()).toEqual(["holder", "reason"])
+	})
+
+	test("writer-held locked banner names the holder in both locales (P2-1)", () => {
+		setLanguages(bundled(), "en")
+		expect(t("recovery.locked.holder", { reason: "busy", holder: "holder-9" })).toBe(
+			"Session is writer-held by another process: busy (held by holder-9)",
+		)
+		setLanguages(bundled(), "zh-CN")
+		expect(t("recovery.locked.holder", { reason: "busy", holder: "holder-9" })).toBe(
+			"会话已被另一进程持有（writer-held）：busy（持有会话：holder-9）",
+		)
+		// No leftover placeholders, and the id substring survives interpolation.
+		setLanguages(bundled(), "en")
+		const en = t("recovery.locked.holder", { reason: "writer held", holder: "holder-session-42" })
+		expect(en).toContain("holder-session-42")
+		expect(en).not.toContain("{holder}")
 	})
 
 	test("en interpolates count and reason, zh-CN keeps the same placeholders", () => {

@@ -1045,13 +1045,28 @@ export class BridgeSessionSeam implements SessionSeam {
 				// P1-1: a locked recovery is also terminal for the suspended turn;
 				// otherwise /new (which now settles it too) is the only escape.
 				this.#settleSuspendedTurn()
+				// P2-1: the bridge maps the host's SessionAlreadyOwnedError to
+				// SESSION_LOCKED with detail.holder = the owning session id
+				// (packages/bridge/src/index.ts mapHostError). Forward it so the
+				// UI banner can name the holder. `message` stays the raw host
+				// diagnostic (language-neutral); the localised reason template
+				// in the UI does the framing, so no CJK copy rides the wire.
+				const errorDetail = err instanceof BridgeProtocolError ? asRecord(err.detail) : {}
+				const holder =
+					typeof errorDetail.holder === "string" && errorDetail.holder.trim() !== ""
+						? errorDetail.holder
+						: undefined
 				const result: BridgeRecoveryResult = {
 					state: "locked", sessionId, applied: 0, from: 0, cursor: 0, rows: [],
 					error: { code, message },
 				}
 				emit({
 					type: "bridge.recovery.locked",
-					details: { ...result, message: `会话已被占用，已连接未挂载: ${message}` },
+					details: {
+						...result,
+						message,
+						...(holder !== undefined ? { holder } : {}),
+					},
 				})
 				return result
 			}
@@ -1489,11 +1504,16 @@ export class BridgeSessionSeam implements SessionSeam {
 					if (usage !== undefined) {
 						// remote-host-session.ts:2529-2533 parity — cumulative
 						// billing totals + the latest billed request's own rate.
-						if (usage.prompt) stats.cachePrompt += usage.prompt
-						if (usage.cacheRead) stats.cacheRead += usage.cacheRead
-						if (usage.cacheWrite) stats.cacheWrite += usage.cacheWrite
-						const billed = (usage.prompt ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
-						if (billed > 0) stats.lastCacheHitRate = ((usage.cacheRead ?? 0) / billed) * 100
+						// Gate on `> 0`, not truthiness, exactly like remote: a
+						// reported 0 must never advance (or reset) a tally.
+						const prompt = usage.prompt ?? 0
+						const cacheRead = usage.cacheRead ?? 0
+						const cacheWrite = usage.cacheWrite ?? 0
+						if (prompt > 0) stats.cachePrompt += prompt
+						if (cacheRead > 0) stats.cacheRead += cacheRead
+						if (cacheWrite > 0) stats.cacheWrite += cacheWrite
+						const billed = prompt + cacheRead + cacheWrite
+						if (billed > 0) stats.lastCacheHitRate = (cacheRead / billed) * 100
 						// 🧠 numerator: latest billed request's input+output — remote's
 						// ContextTokenMeter billed base (totalTokens when disclosed).
 						stats.contextTokens = usage.total

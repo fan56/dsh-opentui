@@ -929,6 +929,8 @@
   "recovery.recovered": "Reconnected - {count} event(s) caught up",
   "recovery.failed.reason": "Recovery failed: {reason}",
   "recovery.locked": "Session is writer-held by another process",
+  "recovery.locked.reason": "Session is writer-held by another process: {reason}",
+  "recovery.locked.holder": "Session is writer-held by another process: {reason} (held by {holder})",
   "recovery.cooldown": "Cooling down - {remainingMs} ms left",
   "recovery.action.reconnect": "Reconnect [R]",
   "recovery.action.retry": "Retry [R]",
