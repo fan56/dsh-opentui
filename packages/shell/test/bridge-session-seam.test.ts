@@ -1266,6 +1266,26 @@ describe("subagent lifecycle rows (inproc visibility)", () => {
 		expect(b.elapsedSec).toBe(0)
 	})
 
+	test("replay: plain subagent/catalog rows fold to running children (the real delegation record)", () => {
+		const t0 = 700_000
+		const views = bridgeReplayRowsToSubagentViews([
+			replayRow(1, "subagent/catalog", {
+				version: 3, childId: "child-cat", childCreatedAt: 699_000,
+				mode: "continuable", label: "List and verify primes", name: "primes",
+			}),
+		], t0)
+		expect(views).toHaveLength(1)
+		expect(views[0]).toMatchObject({
+			id: "child-cat",
+			label: "List and verify primes",
+			status: "running",
+			rounds: 0,
+			startedAt: t0,
+		})
+		// No agent-end terminal exists for a plain child → stays running.
+		expect(views[0]!.status).toBe("running")
+	})
+
 	test("shape parity with the remote adapter's SeamSubagentView (field set)", () => {
 		const view = bridgeReplayRowsToSubagentViews([
 			replayRow(1, "tool-workflow/agent-start", { runId: "r", seq: 0, label: "A", childId: "c-a" }),

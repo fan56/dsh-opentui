@@ -748,11 +748,18 @@ export function createSeamRows(
 			onToolRun: (run) => {
 				const existing = rows.find((row) => row.key === `tool:live:${run.callId ?? run.name}`)
 				const startedAt = existing?.kind === "tool" ? existing.startedAt : undefined
+				// Preserve the call's args JSON when the settle carries no pretty
+				// args. The inproc bridge's tool/result frame has no `input` (its
+				// onToolRun passes argsPretty:""); without this the settled row
+				// loses the `todos` array and latestTodos() finds no todo list.
+				// The remote path already fills argsPretty from its call map, so
+				// this is a no-op there.
+				const args = run.argsPretty || (existing?.kind === "tool" ? existing.args : undefined) || ""
 				upsert({
 					key: `tool:live:${run.callId ?? run.name}`,
 					kind: "tool",
 					name: run.name,
-					args: run.argsPretty,
+					args,
 					status: run.ok ? "done" : "failed",
 					output: run.output,
 					...(startedAt !== undefined ? { elapsedSec: Number(((Date.now() - startedAt) / 1000).toFixed(1)) } : {}),

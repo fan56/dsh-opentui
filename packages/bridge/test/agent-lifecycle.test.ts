@@ -238,6 +238,63 @@ describe("subagent lifecycle frames (inproc visibility)", () => {
 		expect(h.eventFrames("agent.spawn")).toHaveLength(0)
 	})
 
+	test("plain subagent/catalog (the real delegation record) forwards as agent.spawn", async () => {
+		const h = makeHarness()
+		const { sessionId, turnId } = await startTurn(h, 1)
+
+		// The host appends `subagent/catalog` to the PARENT journal for a plain
+		// `subagent` call (no tool-workflow/agent-start exists on that path).
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{
+				type: "subagent/catalog",
+				data: {
+					version: 3, childId: "child-catalog", childCreatedAt: 1795074915419,
+					mode: "continuable", label: "List and verify primes", name: "primes",
+				},
+			},
+		)
+		const spawns = h.eventFrames("agent.spawn")
+		expect(spawns).toHaveLength(1)
+		expect(spawns[0].payload).toMatchObject({
+			turnId,
+			sessionId,
+			childId: "child-catalog",
+			label: "List and verify primes",
+			runId: "catalog:child-catalog",
+			seq: 0,
+		})
+	})
+
+	test("subagent/catalog from a different session is dropped", async () => {
+		const h = makeHarness()
+		await startTurn(h, 1)
+		h.emitSessionEvent(
+			{ id: "another-session" },
+			{ type: "subagent/catalog", data: { childId: "c", label: "x" } },
+		)
+		expect(h.eventFrames("agent.spawn")).toHaveLength(0)
+	})
+
+	test("tool/call + tool/result frames carry callId so the seam can keep args", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "tool/call", data: { turn: 1, callId: "call-9", name: "todo_write", arguments: '{"todos":[]}' } },
+		)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "tool/result", data: { turn: 1, message: { toolCallId: "call-9", content: [] } } },
+		)
+		const tools = h.eventFrames("turn.tool")
+		expect(tools).toHaveLength(2)
+		expect(tools[0].payload).toMatchObject({ callId: "call-9", name: "todo_write", input: { todos: [] } })
+		expect(tools[1].payload).toMatchObject({ callId: "call-9", name: "todo_write" })
+		expect(typeof tools[1].payload.output).toBe("string")
+	})
+
 	test("protocolVersion is unchanged (additive frames stay on v1)", async () => {
 		const h = makeHarness()
 		h.send({ id: 50, method: "bridge.hello", params: { protocolVersion: 1 } })

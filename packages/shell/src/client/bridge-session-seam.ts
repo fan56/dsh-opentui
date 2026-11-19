@@ -516,6 +516,10 @@ export function bridgeReplayRowsToSeamEvents(
 /** The host's durable agent lifecycle record types (dsh-tool-workflow/types.ts:47-57). */
 const BRIDGE_AGENT_START = "tool-workflow/agent-start"
 const BRIDGE_AGENT_END = "tool-workflow/agent-end"
+/** Plain `subagent` calls (the common delegation path) record `subagent/catalog`
+ *  on the parent instead of the tool-workflow agent records above. Same childId
+ *  + label, but no agent-end terminal — fold as a spawn that stays running. */
+const BRIDGE_SUBAGENT_CATALOG = "subagent/catalog"
 
 function bridgeAgentRunKey(runId: string, seq: number): string {
 	return `${runId}:${seq}`
@@ -540,6 +544,21 @@ function bridgeFoldAgentRecord(
 	now: number,
 	live: boolean,
 ): boolean {
+	// Plain `subagent` calls emit `subagent/catalog` (childId + label/name) on the
+	// parent, never tool-workflow/agent-* (those belong to the `workflow` tool).
+	// Fold it as a spawn with a stable synthetic pairing key; no terminal exists
+	// for plain children, so the row stays `running` (the documented
+	// "start without terminal = running" approximation, ADR-0010).
+	if (type === BRIDGE_SUBAGENT_CATALOG) {
+		const childId = typeof data.childId === "string" ? data.childId : ""
+		if (!childId) return false
+		const label = typeof data.label === "string" && data.label
+			? data.label
+			: (typeof data.name === "string" ? data.name : "")
+		return bridgeFoldAgentRecord(children, runSeq, liveStarts, BRIDGE_AGENT_START, {
+			childId, label, runId: `catalog:${childId}`, seq: 0,
+		}, now, live)
+	}
 	if (type === BRIDGE_AGENT_START) {
 		const childId = typeof data.childId === "string" ? data.childId : ""
 		if (!childId) return false

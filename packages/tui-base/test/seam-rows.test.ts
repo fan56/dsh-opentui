@@ -83,6 +83,24 @@ describe("seam rows projection", () => {
 		dispose()
 	})
 
+	test("inproc: an empty argsPretty on settle keeps the call's args (todos array survives)", async () => {
+		const seam = new FakeSeam()
+		const todosArgs = '{"todos":[{"content":"a","status":"in_progress"}]}'
+		seam.script = async (cb) => {
+			cb.onToolStart?.({ callId: "tw", name: "todo_write", args: todosArgs })
+			cb.onToolRun?.({ callId: "tw", name: "todo_write", argsPretty: "", output: "Updated todo list: 0 pending, 1 in progress, 0 completed.", ok: true })
+		}
+		const { projection, dispose } = setup(seam)
+		await projection.send("make a todo")
+		const tool = projection.rows.find((r) => r.kind === "tool")
+		expect(tool).toMatchObject({
+			status: "done",
+			args: todosArgs,
+			output: "Updated todo list: 0 pending, 1 in progress, 0 completed.",
+		})
+		dispose()
+	})
+
 	test("batch V1: a result racing a row-less store still lands; failed keeps ✗ semantics", async () => {
 		const seam = new FakeSeam()
 		seam.script = async (cb) => {

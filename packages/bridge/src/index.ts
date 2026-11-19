@@ -1068,6 +1068,37 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // is not dropped and an idle-period background run is not invisible.
     // Additive event types: protocolVersion stays 1 (ADR-0010: old clients ignore
     // unknown `event` types).
+    // Plain `subagent` calls (the common delegation path) do NOT emit the
+    // `tool-workflow/agent-*` records above — those belong to the `workflow` tool.
+    // The host instead appends a `subagent/catalog` record to the PARENT journal
+    // and fires the same event on this firehose (dsh-subagent/src/catalog.ts:143,
+    // verified live: type=subagent/catalog keys=version,childId,childCreatedAt,
+    // mode,label,name on the bound session). Forward it as the SAME additive
+    // `agent.spawn` frame so the seam projects a running child row. No terminal
+    // fires for plain children on the firehose, so the row stays `running` — the
+    // documented "start without terminal = running" approximation (ADR-0010).
+    if (type === 'subagent/catalog') {
+      const boundId = binding?.sessionId
+      if (sessionId !== boundId) return
+      const childId = idString(data.childId)
+      if (!childId) return
+      const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
+      const label = typeof data.label === 'string' && data.label !== ''
+        ? data.label
+        : (typeof data.name === 'string' ? data.name : '')
+      // Stable synthetic pairing key; no agent.settle is emitted for catalog
+      // children, so runId:seq is only the roster map key here.
+      emitEvent('agent.spawn', {
+        turnId,
+        sessionId: boundId,
+        childId,
+        label,
+        runId: `catalog:${childId}`,
+        seq: 0,
+      })
+      return
+    }
+
     if (type === 'tool-workflow/agent-start' || type === 'tool-workflow/agent-end') {
       const boundId = binding?.sessionId
       if (sessionId !== boundId) return
@@ -1125,6 +1156,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       emitEvent('turn.tool', {
         turnId: state.turnId,
         name,
+        // Carry callId so the seam can key the call→result pair and keep the
+        // call's `input` (args JSON) onto the settled row — the remote follow
+        // path does the same (remote-follow.ts:535-571). Without it the result
+        // cannot find its start and `latestTodos` loses the todos array.
+        ...(callId !== 'undefined' && callId !== '' ? { callId } : {}),
         ...(input !== undefined ? { input } : {}),
       })
       return
@@ -1140,6 +1176,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       emitEvent('turn.tool', {
         turnId: state.turnId,
         name,
+        ...(callId !== 'undefined' && callId !== '' ? { callId } : {}),
         output: contentText(message?.content),
       })
       return
