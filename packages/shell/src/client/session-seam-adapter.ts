@@ -282,10 +282,13 @@ export class RemoteSessionSeam implements SessionSeam {
 	}
 
 	/**
-	 * /session info panel (batch F4): RemoteHostSession.sessionInfo() 1:1,
-	 * plus the message count the facade can't know — a one-shot durable
-	 * transcript read (user+assistant rows). Transcript failure degrades the
-	 * count to 0 without sinking the panel.
+	 * /session info panel (batch F4) + footer 💬 msg count:
+	 * RemoteHostSession.sessionInfo() provides the facade's live msg count
+	 * (and context/tps); the adapter adds the durable transcript counts the
+	 * facade can't know. One transcript read yields BOTH the legacy
+	 * `messageCount` (user+assistant rows) and the /session `turnCount`
+	 * (durable `user` rows). Transcript failure degrades both to 0 without
+	 * sinking the panel.
 	 */
 	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
 		const base = this.#session.sessionInfo()
@@ -293,21 +296,41 @@ export class RemoteSessionSeam implements SessionSeam {
 		// only bound to a live session at the next turn. Until then the facade
 		// has no sessionId, but the durable transcript is already readable —
 		// falling back to the staged id lets the footer paint the restored
-		// message count instead of 0.
+		// counts instead of 0.
 		const sessionId = base.sessionId ?? this.#session.stagedSessionId?.()
 		if (sessionId === undefined) return undefined
 		let messageCount = 0
+		let turnCount = 0
 		try {
 			const rows = await this.#session.storedTranscript(sessionId)
 			messageCount = rows.filter((row) => row.kind === "user" || row.kind === "assistant").length
+			turnCount = rows.filter((row) => row.kind === "user").length
+			// STEER CAVEAT: the host journals steer text (`session/prompt`
+			// mode:"steer") externally; if it lands as a `user/message` with
+			// source.kind:"user", it inflates this user-row count. The host is
+			// an external binary (no host-session.ts here), so this cannot be
+			// verified client-side — reported, not silently accepted. Queued
+			// sends are real turns and correctly add a row. Host injections
+			// carry a non-user source.kind and are already excluded upstream.
 		} catch {
 			/* panel shows 0 rather than failing */
 		}
+		// Msgs come from the facade's live assistant/message journal counter.
+		// A staged (resumed) session has not bound a live session or attached
+		// its follow yet, so the facade has NO journal data — expose `undefined`
+		// so the footer hides 💬 rather than painting a fabricated 0. The
+		// /session turn count above still paints from the durable transcript.
+		const msgCount = base.sessionId === undefined ? undefined : base.msgCount
 		return {
 			...base,
 			sessionId,
 			model: base.model ?? null,
 			messageCount,
+			// /session "turns" row: override the facade's client-local
+			// `turnCount` (#turns since attach, which misses resumed history)
+			// with the durable user-row count. Not used by the footer strip.
+			turnCount,
+			msgCount,
 			// 🧠 context row (footer context batch): the facade's occupancy
 			// estimate + resolved window (undefined → null, "unknown").
 			contextTokens: base.contextTokens,

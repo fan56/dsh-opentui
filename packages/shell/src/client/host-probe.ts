@@ -35,6 +35,14 @@ export const DEFAULT_HOST_PROBE_TIMEOUT_MS = 2_000
  * Tests inject a fake that reproduces ws's async CONNECTING-close error. */
 export type HostProbeSocketFactory = () => WS
 
+/** Extra surface a real `ws` socket exposes for bounded teardown. The ambient
+ * `ws.d.ts` declares only the transport's minimal slice, so the probe names the
+ * teardown methods it relies on locally (no `any` / suppression needed). */
+interface TeardownSocket extends WS {
+  removeAllListeners(): this
+  terminate(): void
+}
+
 export interface HostProbeOptions {
   /** `host:port` (scheme omitted) exactly as the host binds it. */
   authority: string
@@ -51,12 +59,14 @@ function validAuthority(authority: string): boolean {
 }
 
 /**
- * Authenticated liveness: `GET /` with the owner cookie must reach the web
- * app. Any 2xx/3xx counts; 401/403 (cookie not accepted), 404 (something
- * else holds the port) and 5xx (broken host) all mean "not usable".
+ * Raw HTTP status of the authenticated `GET /` probe, or `null` when the
+ * authority is malformed or the request could not complete (timeout / TCP
+ * refused / fetch threw). Exposed so callers that decide health themselves
+ * (e.g. `host-health.ts`) can compose TCP + status without duplicating the
+ * cookie/authority/timeout plumbing. Never throws.
  */
-export async function probeHostHttp(options: HostProbeOptions): Promise<boolean> {
-  if (!validAuthority(options.authority)) return false
+export async function probeHostHttpStatus(options: HostProbeOptions): Promise<number | null> {
+  if (!validAuthority(options.authority)) return null
   const timeoutMs = options.timeoutMs ?? DEFAULT_HOST_PROBE_TIMEOUT_MS
   try {
     const response = await fetch(`http://${options.authority}/`, {
@@ -69,10 +79,20 @@ export async function probeHostHttp(options: HostProbeOptions): Promise<boolean>
     } catch {
       /* already consumed/closed */
     }
-    return response.status >= 200 && response.status < 400
+    return response.status
   } catch {
-    return false
+    return null
   }
+}
+
+/**
+ * Authenticated liveness: `GET /` with the owner cookie must reach the web
+ * app. Any 2xx/3xx counts; 401/403 (cookie not accepted), 404 (something
+ * else holds the port) and 5xx (broken host) all mean "not usable".
+ */
+export async function probeHostHttp(options: HostProbeOptions): Promise<boolean> {
+  const status = await probeHostHttpStatus(options)
+  return status !== null && status >= 200 && status < 400
 }
 
 /**
@@ -96,7 +116,8 @@ export async function probeHostMux(options: HostProbeOptions): Promise<boolean> 
       settled = true
       clearTimeout(timer)
       try {
-        socket?.removeAllListeners()
+        const teardown = socket as TeardownSocket | undefined
+        teardown?.removeAllListeners()
         // Closing a still-CONNECTING socket makes `ws` emit 'error' ("closed
         // before established") ASYNCHRONOUSLY, after removeAllListeners() has
         // removed the probe's own listeners — keep a noop handler attached so
@@ -104,7 +125,7 @@ export async function probeHostMux(options: HostProbeOptions): Promise<boolean> 
         // remote-stream.ts fixed the identical race the same way). Every
         // settlement path funnels through done(), so all of them are covered.
         socket?.on("error", () => {})
-        socket?.terminate()
+        teardown?.terminate()
       } catch {
         /* already gone */
       }
@@ -138,7 +159,7 @@ export async function probeHostMux(options: HostProbeOptions): Promise<boolean> 
     })
     socket.on("unexpected-response", (_request, response) => {
       try {
-        response.resume()
+        ;(response as { resume(): void }).resume()
       } catch {
         /* already drained */
       }

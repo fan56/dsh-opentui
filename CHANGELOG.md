@@ -64,6 +64,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Writer-held as a localized diagnostic.** `SESSION_LOCKED` now renders as a
   `writer-held` message that includes the host-reported holder session id,
   instead of the raw host error. In inproc mode the footer brand shows as `dsh`.
+- **Footer `💬` and `⚡` now render on the default inproc path.** The bridge
+  seam's `sessionInfo()` derives `msgCount` from journal `assistant/message`
+  rows — the same single `💬 N msgs` unit defined in 0.21.1 — and `tps` when it
+  can be derived, so the counter and token-rate segments are no longer blank
+  under the default seam. `messageCount` remains the `/session` panel's data.
 
 ### Known debt (0.22.0 transitional)
 
@@ -74,6 +79,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and removes the `ensureHost`/`RemoteHostSession` path.
 - The old automatic reconnect (backoff retry) is not implemented; recovery in
   0.22.0 is manual (`R`, with a 5s cooldown) only.
+## [0.21.1] - 2026-11-17
+
+### Changed
+- The footer message counter is now a single `💬 N msgs`. One message is one
+  durable `assistant/message` event (the unit previously called a round). The
+  turn count is no longer displayed in the footer; it remains available to the
+  `/session` panel.
+
+### Note
+- `msg` also counts tool-only rounds that produce no assistant transcript row.
+
+## [0.21.0] - 2026-11-17
+
+### Added
+- The footer now shows turn and round counters as `💬 N turns · ↻ M rounds`.
+  Turns count durable `user` transcript rows; rounds count durable
+  `assistant/message` journal events (one assembled message = one round).
+  When the journal is unavailable the counters degrade honestly: the rounds
+  half is omitted rather than shown as a fake 0.
+
+### Changed
+- The busy status line is gone: no verb, elapsed time or detail text renders.
+  The animated comet now rides the key-hint row, to the left of the hints and
+  only while busy; its renderer moved to a shared `comet-track.tsx` module.
+
+### Known limitations
+- Round counts refresh only at turn boundaries, so a multi-round turn jumps
+  once at its end instead of ticking per round. Steer messages may inflate the
+  turn count; whether the host journals steer text as a user message cannot be
+  verified from this repo.
+
+## [0.20.0] - 2026-11-17
+
+### Added
+- The activity frame now merges Todos and Subagents. Tool and think rows render
+  in an upper zone above the todo tree, and both zones are visible at once
+  instead of switching.
+- Only `in_progress` todos render. Every running subagent hangs under the last
+  `in_progress` todo — a documented approximation, since the data model has no
+  todo/subagent association field.
+- The merged frame has a 10-line visible cap shared with
+  `session.activity_panel_height` as `min(gear, 10)`. The lower zone scrolls via
+  mouse wheel with a `ctrl+alt+up/down` fallback (overflow and page-owner
+  guarded) and an `N/M` position suffix in the frame title.
+- Per-line entrance and exit fades and think italics apply inside the merged
+  frame. Todo and agent rows survive turn end while in_progress content remains,
+  decoupled from the activity frame latch.
+
+### Changed
+- The activity title tool glyph is `🔧` (U+1F527) instead of `🛠️`: the renderer
+  blanks VS16 graphemes in wcwidth mode. The footer provider lead is likewise
+  `🌐` (U+1F310) for the same reason.
+
+### Removed
+- Running-child rows were removed from the last-request footer dock; subagents
+  now render once, in the activity panel.
+- The standalone Todos panel render was removed.
+
+## [0.19.1] - 2026-11-17
+
+### Fixed
+- The launcher spawns the client asynchronously. Host processes were previously
+  left as unreaped zombies for the whole client session, because the synchronous
+  spawn blocked the event loop that reaps them. A client killed by a signal now
+  also reports `128 + signal` instead of exiting 0.
+- Stopping a host under a non-default profile works again: the
+  process-identification check compared the command line against the hardcoded
+  `opentui` profile instead of the profile the registry record was read for.
+- The watchdog backs off when the host refuses to stop (capped at 30s) instead
+  of re-probing every tick forever.
+- The `widgets-dock` fade-window test samples across a window derived from the
+  visibility constants instead of one fixed instant, so a slow CI runner no
+  longer fails it. The live remote smoke test builds its own scratch git
+  repository instead of relying on the checkout's branch.
+
+### Changed
+- ADR-0009 is Accepted. The phase-2 workspace-config extension is deferred:
+  skills, AGENTS.md and theme/model already resolve per session cwd; only
+  settings and tools are profile-scoped. Give each project its own `DSH_HOME`
+  if it needs a different tool set today.
+
+## [0.19.0] - 2026-11-17
+
+0.18.7 carried the same code but shipped these lifecycle changes as a patch;
+it is deprecated in favour of 0.19.0.
+
+### BREAKING CHANGES
+- The resident host no longer exits 5s after going idle. It now shuts down
+  once the last client exits (2s grace). `DSH_OPENTUI_HOST_IDLE_MS` keeps its
+  name but now means "last-one grace override" (default 2000); `0` means
+  resident. Scripts that relied on the 5s idle window must set it explicitly.
+- The host registry moved to schema v2. v1 records are treated as legacy and
+  never overwritten or signalled; a live v1 host is left for stale cleanup
+  only. Tooling that parsed `opentui-host.<profile>.json` must accept
+  `version: 2`.
+- `--force` without `--yes` now exits 2 and leaves the host untouched while
+  clients are still live. Automation calling `--force` must add `--yes`.
+
+### Changed
+- One host service per `(DSH_HOME, profile)`, on a port derived from the home
+  path. Later launches attach to the running host rather than spawning another;
+  warm attach measured at 407ms.
+- Startup renders the boot phase and elapsed time before entering the client
+  interface, so a cold start shows progress instead of a blank screen.
+- The host shuts down gracefully 2s after the last client exits, letting it
+  flush state. Set `DSH_OPENTUI_HOST_IDLE_MS=0` to keep it resident instead.
+
+### Fixed
+- `--force` without `--yes` now exits 2 and leaves the host untouched while
+  clients are still live. A three-evidence gate keeps it from stopping a
+  process it cannot positively identify as this profile's server.
+- The host registry is unified on v2, so v1 and v2 records no longer overwrite
+  each other.
+- The row 39 git-branch probe in the shell tests now builds its own temporary
+  repository instead of assuming the checkout is on a named branch, so the
+  tests no longer fail under detached PR/tag checkouts.
+- `--force --yes` now resets a host whose pid is an unreaped zombie: a zombie
+  still answers `kill(pid, 0)`, which used to look like "still running" and
+  abort the reset.
+
+### Migration
+- Replace 5s-idle assumptions: set `DSH_OPENTUI_HOST_IDLE_MS` explicitly to keep
+  the old grace, or `0` for a resident host; the new default is 2000ms.
+- Update tooling reading `opentui-host.<profile>.json` to accept `version: 2`;
+  treat leftover v1 records as legacy and let stale cleanup remove them.
+- Add `--yes` to every automation call that uses `--force`, or handle exit 2 and
+  leave the host untouched while clients are live.
 
 ## [0.18.6] - 2026-11-17
 

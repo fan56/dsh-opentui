@@ -127,12 +127,12 @@ describe("first-turn probe throttle (no sessionInfo() per delta)", () => {
 	})
 })
 
-test("first-turn transition: unknown count hides 💬; one re-read paints 💬 N msgs", () => {
+test("first-turn transition: unknown count hides 💬; one re-read paints the msg readout", () => {
 	let remote: FooterRemoteInfo | undefined
 	let state = initialFooterProbeState()
 
 	// Mount paint: count unknown → the segment is absent.
-	expect(sessionFooterSegments({ messages: remote?.messageCount }).some((s) => s.text.startsWith("💬"))).toBe(false)
+	expect(sessionFooterSegments({ msg: remote?.msgCount }).some((s) => s.text.startsWith("💬"))).toBe(false)
 
 	// First streamed delta → exactly one probe is allowed.
 	expect(shouldStartFooterProbe(remote, SESSION, state, 1000)).toBe(true)
@@ -144,6 +144,6 @@ test("first-turn transition: unknown count hides 💬; one re-read paints 💬 N
 	// The re-read lands → the guard releases and the segment appears.
 	state = settleFooterProbe(state, true)
 	expect(state.inFlight).toBe(false)
-	remote = { messageCount: 4 }
-	expect(sessionFooterSegments({ messages: remote.messageCount }).some((s) => s.text === "💬 4 msgs")).toBe(true)
+	remote = { messageCount: 11, msgCount: 9 }
+	expect(sessionFooterSegments({ msg: remote.msgCount }).some((s) => s.text === "💬 9 msgs")).toBe(true)
 })

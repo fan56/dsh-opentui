@@ -5,14 +5,14 @@
  *
  * Startup chain:
  *   0. Bin-level flags — `--version` prints `dsh-opentui <version>` and
- *      exits 0 BEFORE anything else (no provision, no TUI); `--force` kills
- *      this profile's stale instances (resident dsh host + bun client, TERM
- *      then KILL) before startup continues. `--repair-bridge` is a terminal
- *      maintenance command: it runs the in-process bridge self-heal (T7) and
- *      exits before any bun/dsh check, TUI launch, or default-seam change; it
- *      implicitly enables in-process provisioning without needing
- *      DSH_OPENTUI_INPROC=1. All three are consumed by the bin and never
- *      forwarded to the client.
+ *      exits 0 BEFORE anything else (no provision, no TUI); `--force` resets
+ *      the singleton host before startup continues (needs `--yes` when live
+ *      clients are connected; ADR-0009). `--repair-bridge` is a terminal
+ *      maintenance command: it clears this profile's stale instances (TERM
+ *      then KILL), runs the in-process bridge self-heal (T7), and exits before
+ *      any bun/dsh check, TUI launch, or default-seam change; it implicitly
+ *      enables in-process provisioning without needing DSH_OPENTUI_INPROC=1.
+ *      All three are consumed by the bin and never forwarded to the client.
  *   1. bun check — the client bundle runs under bun (FFI, import attributes,
  *      bun export conditions); no bun on PATH → install guidance, exit 1.
  *   2. dsh check — the host CLI is the session carrier (profile storage,
@@ -51,12 +51,12 @@
  * package root (plus `dist/scripts/idle-reaper.mjs`, which the bundle
  * spawns) alongside `bin/` and `scripts/`.
  */
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { constants as osConstants, homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ancestorPids, emitRemoteDeprecation, formatUpgradeUsage, formatUsage, killStaleProcesses, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
+import { ancestorPids, emitRemoteDeprecation, formatUpgradeUsage, formatUsage, killStaleProcesses, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, prelaunchFailurePolicy, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -74,7 +74,7 @@ function capture(cmd, args) {
 }
 
 // --- 0. Bin-level flags: --version short-circuits, --force pre-clears -------
-const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
+const { version: versionFlag, force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag, rest: userArgs, passthrough } = parseLauncherArgs(process.argv.slice(2))
 
 if (versionFlag) {
   const version = readLauncherVersion(pkgRoot)
@@ -84,6 +84,11 @@ if (versionFlag) {
   }
   console.log(`dsh-opentui ${version}`)
   process.exit(0)
+}
+
+if (yesFlag && !forceFlag) {
+  console.error('dsh-opentui: --yes is only meaningful together with --force.')
+  process.exit(2)
 }
 
 // --- 0.4 --remote deprecation (T10): one clear notice per launch -------------
@@ -195,6 +200,19 @@ if (validation.unknown.length > 0) {
 // and never changes the default seam (that is M2's job). The provisioner owns
 // the lock, the repair logic and the T5 identity guard; its exit status is ours.
 if (repairBridgeFlag) {
+  // Clean up this profile's stale instances first (the old `--force` sweep),
+  // scoped to THIS dsh home; the launcher's own process tree is excluded.
+  const rows = parseProcessRows(capture('ps', ['-A', '-o', 'pid=,ppid=,command=']))
+  const homes = parseProcessHomes(capture('ps', ['eww', '-A', '-o', 'pid=,args=']))
+  const stale = selectStaleProcesses(rows, {
+    homes,
+    home: dshHome,
+    excludePids: ancestorPids(rows, process.pid),
+  })
+  const killed = await killStaleProcesses(stale)
+  console.log(`--repair-bridge: killed ${killed.terminated} stale instance(s)`)
+  // Then repair the bridge itself; the provisioner owns the lock, repair logic
+  // and identity guard, and its exit status is ours.
   const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-inproc-profile.mjs'), '--repair'], {
     stdio: 'inherit',
   })
@@ -232,22 +250,12 @@ if (!spawnSync('which', ['dsh'], { encoding: 'utf8' }).stdout.trim()) {
   exitWithGuidance('the dsh CLI', 'npm i -g @deepseek-ai/dsh')
 }
 
-// --- 2.5 --force: kill this profile's stale instances before starting ------
-// Matches the opentui-profile host (`node <...>/dsh --profile opentui ...`)
-// and the dsh-opentui client (source entry or published bundle) by command
-// line, scoped to THIS dsh home (see lib/launcher.mjs SCOPE). The launcher's
-// own process tree is excluded; TERM first, then KILL for survivors.
-if (forceFlag) {
-  const rows = parseProcessRows(capture('ps', ['-A', '-o', 'pid=,ppid=,command=']))
-  const homes = parseProcessHomes(capture('ps', ['eww', '-A', '-o', 'pid=,args=']))
-  const stale = selectStaleProcesses(rows, {
-    homes,
-    home: dshHome,
-    excludePids: ancestorPids(rows, process.pid),
-  })
-  const result = await killStaleProcesses(stale)
-  console.log(`--force: killed ${result.terminated} stale instance(s)`)
-}
+// --- 2.5 --force -----------------------------------------------------------
+// NOTE (ADR-0009 decision 8): the old bare `--profile opentui` cmdline sweep
+// lived here. It is deliberately removed — killing a process needs the THREE
+// evidences (registry pid + `--profile opentui` cmdline + `DSH_OPENTUI_SERVER=1`
+// env). `--force` is now handled at step 6a inside the host-launch bundle,
+// which also enforces the `--yes` guard when live clients are connected.
 
 // --- 3. Profile bootstrap (every start, best effort, idempotent) -----------
 // provision-opentui-profile.mjs is idempotent and understands
@@ -473,12 +481,77 @@ if (!existsSync(clientEntry)) {
   console.error('dsh-opentui: reinstall the package (npm i -g @aiwayds/dsh-opentui), or rebuild it with `bun scripts/build-client.mjs` from the repo.')
   process.exit(1)
 }
-const result = spawnSync('bun', [clientEntry, ...clientArgs], {
+// --- 6a. Pre-launch the Host service (registry / port / health) ------------
+// ADR-0009 §3: start/adopt the singleton host HERE, while the launcher still
+// owns the terminal, so the `spawn → booting → ready + elapsed` progress is
+// painted BEFORE the bun client enters its alternate screen. The client's own
+// lifecycle.ensureHost then adopts the ready host (no double start). On the
+// healthy-attach fast path nothing is printed. The orchestration bundle is a
+// separate build artifact (packages/shell/dist/host-launch.mjs); a missing or
+// failing pre-launch is best-effort — the client retries host boot itself —
+// EXCEPT under `--force`, where a failed import/reset is fatal (P1-5).
+// `--dry-run` is side-effect free and skips this step.
+if (!clientArgs.includes('--dry-run')) {
+  try {
+    const hostLaunchPath = join(pkgRoot, 'dist', 'host-launch.mjs')
+    const { ensureHost: ensureLaunchHost, createLaunchProgress } = await import(pathToFileURL(hostLaunchPath).href)
+    await ensureLaunchHost({
+      home: dshHome,
+      profile: 'opentui',
+      cwd: process.cwd(),
+      ...(forceFlag ? { force: true } : {}),
+      ...(yesFlag ? { yes: true } : {}),
+      progress: createLaunchProgress({
+        isTty: Boolean(process.stderr.isTTY),
+        write: (text) => process.stderr.write(text),
+      }),
+    })
+  } catch (err) {
+    // P1-5: a force reset must NEVER silently degrade to a no-op. Only the
+    // non-force path is best-effort (the client retries host boot itself).
+    const policy = prelaunchFailurePolicy(err, forceFlag)
+    if (policy === 'usage-error') {
+      console.error(`dsh-opentui: ${err?.message ?? err}`)
+      process.exit(2)
+    }
+    if (policy === 'abort') {
+      console.error(`dsh-opentui: --force host pre-launch failed (${err?.message ?? err}); aborting without reset.`)
+      process.exit(1)
+    }
+    console.error(`dsh-opentui: host pre-launch failed (${err?.message ?? err}); the client will retry host boot.`)
+  }
+}
+
+// ADR-0009 follow-up (PR B): spawnSync blocked the launcher's event loop for
+// the whole TUI session, so SIGCHLD could never be delivered — the detached,
+// unref'd host child died but stayed a zombie until the client exited. An
+// async spawn keeps libuv alive so the host is reaped as soon as it exits.
+const child = spawn('bun', [clientEntry, ...clientArgs], {
   stdio: 'inherit',
   env: clientEnv,
+  // No `detached`: the client stays in the launcher's foreground process
+  // group, preserving TTY / Ctrl-C semantics.
 })
-if (result.error) {
-  console.error(`dsh-opentui: failed to launch the client: ${result.error.message}`)
+child.on('error', (err) => {
+  console.error(`dsh-opentui: failed to launch the client: ${err.message}`)
   process.exit(1)
+})
+
+// Forward terminal signals to the client; do NOT exit here. We rely on the
+// client's handler being idempotent — boot-shared.ts `exitAfterShutdown` is an
+// idempotent shutdown + 2.5s grace — so a transitive signal from the tty (the
+// client shares our process group) plus this forward cannot strand it. The
+// launcher waits for the client to exit, then derives its own exit code below.
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(signal, () => {
+    child.kill(signal)
+  })
 }
-process.exit(result.status ?? 0)
+
+// `resolve` forwards only its first argument, so pack both exit-event args.
+const [exitCode, signal] = await new Promise((resolve) => child.on('exit', (code, sig) => resolve([code, sig])))
+if (signal) {
+  // Signal death used to be mis-reported as 0 by `result.status ?? 0`.
+  process.exit(128 + (osConstants.signals[signal] ?? 0))
+}
+process.exit(exitCode ?? 0)

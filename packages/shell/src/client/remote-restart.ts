@@ -112,38 +112,48 @@ function defaultSpawnDsh(argv: string[], options: { cwd: string; env: NodeJS.Pro
 }
 
 /**
- * The lifecycle lockfile row (lifecycle.ts `LockFile`/`writeLock` shape).
- * DUPLICATED ON PURPOSE: lifecycle.ts's writeLock is private and the file is
- * owned by a parallel agent right now — this mirrors the minimal write
- * contract ({ pid, port, authority, startedAt, profile }, atomic tmp+rename)
- * with a comment instead of exporting from it. FOLLOW-UP: consolidate into
- * one shared helper exported from lifecycle.ts once it is free.
+ * ADR-0009 v2 registry row written for the respawned host. The registry file
+ * is shared with the legacy v1 lockfile; writing the v1 shape here would make
+ * the next launcher treat it as `legacy`, clear it and start a SECOND host
+ * (P0-1). We therefore write the full v2 schema (version + phase + clients)
+ * so a subsequent `ensureV2Host` adopts the restarted host in place.
  */
-interface RestartLockFile {
+interface RestartRegistryV2 {
+	version: 2
+	profile: string
+	home: string
 	pid: number
 	port: number
-	authority: string
+	phase: "ready"
 	startedAt: string
-	profile: string
+	updatedAt: string
+	authority: string
+	clients: unknown[]
 }
 
 /**
- * Re-write the single-instance lockfile for the respawned host (lifecycle
- * writeLock parity). The `<dshHome>` directory necessarily exists: step 5
- * verified the profile dir under it.
+ * Re-write the singleton registry for the respawned host (v2 schema, atomic
+ * tmp+rename). The `<dshHome>` directory necessarily exists: step 5 verified
+ * the profile dir under it.
  */
 function writeRestartedLock(home: string, profile: string, host: { pid: number; port: number; authority: string }): void {
 	const path = join(home, `opentui-host.${profile}.json`)
-	const payload: RestartLockFile = {
+	const now = new Date().toISOString()
+	const payload: RestartRegistryV2 = {
+		version: 2,
+		profile,
+		home,
 		pid: host.pid,
 		port: host.port,
+		phase: "ready",
+		startedAt: now,
+		updatedAt: now,
 		authority: host.authority,
-		startedAt: new Date().toISOString(),
-		profile,
+		clients: [],
 	}
 	const tmp = `${path}.tmp`
 	writeFileSync(tmp, JSON.stringify(payload, null, 2) + "\n")
-	renameSync(tmp, path) // near-atomic single-instance lock write (lifecycle parity)
+	renameSync(tmp, path) // near-atomic single-instance registry write
 }
 
 /**

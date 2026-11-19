@@ -52,8 +52,9 @@
 import { For, createEffect, createSignal, onCleanup, Show, untrack, type JSX } from "solid-js"
 import { onAnimationTick } from "@opentui/solid"
 import { useTerminalSize } from "./terminal-size"
-import { parseColor, TextAttributes, type RGBA } from "@opentui/core"
+import { parseColor, TextAttributes, type MouseEvent, type RGBA } from "@opentui/core"
 import type { SeamRow } from "./seam-rows"
+import type { SeamSubagentView } from "../../seams/session"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
 import { parseTodos, type Todo } from "../../util/todo"
 import { takeWidth } from "../../util/locale"
@@ -72,6 +73,20 @@ import {
 import type { ComponentTheme } from "../../theme/component"
 import type { HueScale } from "@opencode/theme/tui"
 import { colorRgb, contrastRatio, mixPowerlineColor, relativeLuminance, type PowerlineColor } from "./powerline"
+import {
+	MERGED_DOCK_TOTAL_LINES,
+	mergedDockLines,
+	mergedPositionSuffix,
+	mergedTitle,
+	mergedWindowInfo,
+	type MergedDockData,
+	type MergedDockLine,
+	type MergedDockOptions,
+	type MergedThinkRow,
+	type MergedToolRow,
+} from "./merged-dock"
+import { Keymap } from "../../context/keymap"
+import { useIsPageOwner } from "../../context/input-ownership"
 
 // ---------------------------------------------------------------------------
 // Skin motion timing (skin contract §1 入场淡入/退场渐隐/提醒脉冲, batch δ).
@@ -311,6 +326,22 @@ export function skinDockLineFg(ctx: SkinFgContext, target: string | RGBA, line: 
  * Batch D2: the lastRequest dock below the editor reads the SAME tick
  * (one interval owns the braille cadence for both docks). */
 export const [dockSpin, setDockSpin] = createSignal(0)
+
+/** Lower-zone scroll cursor — 0-based index of the first visible item.
+ * MODULE-level per the CLOSURE LAW (dockSpin / activityFrameLatch / lineFirstSeen
+ * precedent): the dock is a per-app singleton, so component scope would drop the
+ * position on every mount. `mergedDockLines`/`assembleZones` clamp it against the
+ * live content on EVERY build, so a shrinking todo list can never blank the
+ * window. The wheel handler advances it; `resetMergedDockCursor` drops it on a
+ * session switch so a stale position cannot leak across sessions. */
+export const [mergedDockCursor, setMergedDockCursor] = createSignal(0)
+
+/** Session-switch hook (mirrors `resetSkinLineFades`): the v2 entry's
+ * clear/reload hooks call this so the old session's scroll position cannot
+ * leak into the new one. */
+export function resetMergedDockCursor(): void {
+	setMergedDockCursor(0)
+}
 
 /** The todo array inside one todo-tool text, or undefined when the text
  * carries none. Two shapes: a bare array (the opencode output brief) or
@@ -1092,7 +1123,57 @@ export function createFrameLatch(ms: number = ACTIVITY_FRAME_DEFER_MS) {
  * the CLOSURE-LAW-safe home (dockSpin precedent). */
 export const activityFrameLatch = createFrameLatch()
 
+// ---------------------------------------------------------------------------
+// Merged activity widget — pure data extraction (spec D1/D4/D10/D11).
+// ---------------------------------------------------------------------------
 
+/** Visible LIVE tool rows, with the same store-visibility law as `dockBlocks`
+ * (a `faded` settled row hides; a running row always shows). Kept as raw rows
+ * because `mergedDockLines` rebuilds the trimmed/full tool text itself. */
+export function mergedToolRows(rows: readonly SeamRow[], now: number, decorated: boolean): MergedToolRow[] {
+	return rows.filter((row): row is MergedToolRow => row.kind === "tool" && row.key.startsWith("tool:live:")).filter((row) => {
+		if (row.faded === true && row.status !== "running") return false
+		if (row.status === "running") return true
+		const stopAt = skinStopAt(row)
+		return stopAt === undefined || dockLineVisibility(stopAt, now, decorated).phase !== "hidden"
+	})
+}
+
+/** Visible think rows, with the SAME store-visibility law as `mergedToolRows`
+ * (D3/D14): a live streaming burst always shows; a collapsed summary hides
+ * once `dockLineVisibility` reaches `hidden`. The store's retention timer is
+ * only a backstop — it kept the row 2.3s under `full`, so a mid-linger switch
+ * to `reduced`/`off` (decorations off → hidden at the 2.0s edge) must be
+ * enforced here too, else the row stays fully colored through 2.0-2.3s. */
+export function mergedThinkRows(rows: readonly SeamRow[], now: number, decorated: boolean): MergedThinkRow[] {
+	return rows
+		.filter((row): row is MergedThinkRow => row.kind === "reasoning")
+		.filter((row) => {
+			if (row.streaming === true) return true // live burst, no exit anchor (M2)
+			const stopAt = skinStopAt(row)
+			return stopAt === undefined || dockLineVisibility(stopAt, now, decorated).phase !== "hidden"
+		})
+}
+
+/** Running subagents from the live `subagents` seam row (D15 / D7 source). */
+export function mergedRunningAgents(rows: readonly SeamRow[]): SeamSubagentView[] {
+	const tree = [...rows].reverse().find((row) => row.kind === "subagents")
+	return tree?.kind === "subagents" ? tree.children.filter((child) => child.status === "running") : []
+}
+
+/** Lower-zone presence (D10): an `in_progress` todo OR a running subagent.
+ * This is the latch's extra liveness beyond the turn — decouples the lower
+ * zone from the turn lifecycle without touching `dockTurnActive`. */
+export function mergedLowerHasContent(rows: readonly SeamRow[]): boolean {
+	return latestTodos(rows).some((todo) => todo.status === "in_progress") || mergedRunningAgents(rows).length > 0
+}
+
+/** The compact-terminal lower-zone summary (D11): reuse `todosSummaryLine`
+ * verbatim — the single line the old short-terminal Todos table collapsed to.
+ */
+export function mergedCompactSummary(rows: readonly SeamRow[]): string {
+	return todosSummaryLine(rows)
+}
 
 /** The dock. Mounted by the v2-entry page as the transcript's `widgets`
  * slot — directly above the composer (the editor).
@@ -1140,89 +1221,210 @@ export function WidgetsDock(props: {
 		() => setDockSpin((s) => s + 1),
 	)
 	const width = () => Math.max(16, dimensions().width - 4)
-	// Todos table width: the slot carries the one-column left indent (the
-	// composer border owns column 0), so the box spans columns 1..W-1 and its
-	// right border lands on the composer's right border (W-1). See
-	// `todosTableWidth`. Short terminals (≤ COMPOSER_COMPACT_TERMINAL_ROWS)
-	// collapse it to the one-line summary so the transcript keeps its ≥6-row
-	// floor.
-	const tableWidth = () => todosTableWidth(dimensions().width)
-	const table = () => todosTableLines(props.rows, tableWidth(), dimensions().height)
-	// Column fidelity: `todosTableLines` already pads every row to EXACTLY
-	// `tableWidth()` columns (border included), so the right `│` of each row
-	// shares the top border's `┐` column by construction. The rows are painted
-	// with `takeWidth` — a pure display-column hard-cut that NEVER rewrites
-	// internal whitespace (a no-op on these exact-width rows, a bound on the
-	// one-line short-terminal summary). Do NOT swap in `clipToWidth` here: its
-	// whitespace fold collapsed the `#` column's leading pad and pulled the
-	// right wall two columns left of the `┌...┐` top border (the 80-col bug).
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
 	// Mitigation 1: the frame's Show reads the DEFERRED latch, not the raw
 	// turn liveness — mount/unmount land one render tick after the flip
 	// (see createFrameLatch above). The latch timer dies with the dock.
-	createEffect(() => activityFrameLatch.push(turnActive()))
+	// D10: the lower zone must survive turn end while an in_progress todo or a
+	// running subagent is still present, so the latch target is "turn active
+	// OR lower zone has content". `dockTurnActive` itself is untouched.
+	createEffect(() => activityFrameLatch.push(turnActive() || mergedLowerHasContent(props.rows)))
 	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
-	// Per-widget line cap: the /settings panelHeight gear when set (reactive —
-	// the module signal re-runs this on a live change), else the graded
-	// terminal-height default (≤ 40 → 1, 41-50 → 2, > 50 → 3). Short
-	// terminals keep the rule-bar degradation; the gear is inert there.
+	// Per-widget line cap for the idle FlatDock fallback (kept intact).
 	const capSpec = () => activityPanelCapSpec(activityPanelGear(), dimensions().height)
 	const lineCap = () => capSpec().maxLines
-	const frameBlocks = () =>
-		activityBlocks(props.rows, {
-			maxLines: lineCap(),
-			...(capSpec().totalMaxLines !== undefined ? { totalMaxLines: capSpec().totalMaxLines } : {}),
+
+	// ---- merged activity widget (D1/D4/D8/D11) -----------------------------
+	// CLOSURE LAW: no component-scope signal/memo here — every getter rebuilds
+	// from the props accessor so JSX reads the live store. `void dockSpin()`
+	// keeps the merged lines on the shared animation clock (dockBlocks law).
+	const mergedSource = (now: number): MergedDockData => {
+		void dockSpin()
+		return {
+			think: mergedThinkRows(props.rows, now, motionDecorationsEnabled()),
+			tools: mergedToolRows(props.rows, now, motionDecorationsEnabled()),
+			todos: latestTodos(props.rows),
+			agents: mergedRunningAgents(props.rows),
+		}
+	}
+	// D12 (approved 2026-11-17): the merged frame's effective total cap is
+	// min(gear, 10). `all` is unbounded in the gear system → use the 10 ceiling;
+	// an unset gear keeps the full 10-line safety valve. `frameHeight()` (2 +
+	// mergedFrame().lines.length) follows this count automatically.
+	const gearTotal = (): number => {
+		const gear = activityPanelGear()
+		if (gear === undefined || gear === "all") return MERGED_DOCK_TOTAL_LINES
+		return Number(gear)
+	}
+	// One builder, ONE `now` per reactive read: `mergedDockLines` and
+	// `mergedWindowInfo` share the same data/options object so the title N/M,
+	// the height, the rendered window and the wheel/key guards can never
+	// disagree at a retention boundary (D8 recon / review FIX C). `mergedSource`
+	// still reads the live props accessor + `dockSpin` on every call, so JSX
+	// stays reactive; no component-scope signal/memo is created (CLOSURE LAW).
+	const mergedFrame = (): { lines: ReturnType<typeof mergedDockLines>; info: ReturnType<typeof mergedWindowInfo> } => {
+		const now = Date.now()
+		const data = mergedSource(now)
+		const options: MergedDockOptions = {
+			innerWidth: width(),
+			now,
+			totalLines: Math.min(gearTotal(), MERGED_DOCK_TOTAL_LINES),
+			cursor: mergedDockCursor(),
+		}
+		return { lines: mergedDockLines(data, options), info: mergedWindowInfo(data, options) }
+	}
+	// The box reserves 4 of the W columns for title chrome: ┏ (col 0), the
+	// leading ━ it always draws before a left-aligned title (col 1), the trailing
+	// ━ it always draws after the title (col W-2), and ┓ (col W-1). The title
+	// SLOT is therefore exactly W-4 columns. Derived empirically via render
+	// capture (widgets-dock-render.test.ts): padding to W-4 fills the slot with
+	// the suffix immediately before the single mandatory trailing ━ (`1/14━┓`);
+	// padding to W-3 makes the title wider than the slot and opentui drops it
+	// entirely (no title painted), so suffix-adjacent-to-┓ is not achievable.
+	const titleSlotWidth = () => dimensions().width - 4
+	const mergedTitleText = () => {
+		const { lines, info } = mergedFrame()
+		const base = mergedTitle({
+			tool: lines.some((line) => line.kind === "tool"),
+			think: lines.some((line) => line.kind === "think"),
+			subagent: mergedRunningAgents(props.rows).length > 0,
 		})
-	// Explicit height = 2 border rows + the visible content rows (title rides
-	// the top border, adds no rows). Dynamic: the blocks grow/shrink as lines
-	// appear and are hidden; each row still has an explicit parent height.
-	const frameHeight = () => 2 + frameBlocks().think.length + frameBlocks().tool.length
+		const suffix = mergedPositionSuffix(info)
+		if (suffix === null) return base
+		// D8: N/M on the title's RIGHT side. `titleAlignment="left"` lays the
+		// string out from the left border, so pad with spaces measured by the
+		// runtime `stringWidth` (D13 — never a character count) to push the
+		// suffix block's right edge onto the slot's right edge (the box then adds
+		// its single mandatory trailing ━ before ┓).
+		const gap = titleSlotWidth() - stringWidth(base) - stringWidth(suffix)
+		if (gap < 1) return `${base} · ${suffix}` // degenerate narrow title: append
+		return base + " ".repeat(gap) + suffix
+	}
+	// D9 wheel — the PRIMARY scroll channel. Step the module cursor only while
+	// the lower zone overflows. `event.scroll` = `{ direction, delta }`
+	// (@opentui/core 0.8.1: no `units` field); `delta` is the wheel magnitude,
+	// so one notch moves at least one line, matching the ScrollBox feel.
+	// Deliberately NO stopPropagation / preventDefault: the transcript owns the
+	// wheel outside the dock, and right-pane-active is a documented dead zone
+	// (the full-pane overlay covers the dock) — no overlay forwarding here.
+	const onMergedWheel = (event: MouseEvent) => {
+		const info = mergedFrame().info
+		if (!info.overflow) return
+		const dir = event.scroll?.direction
+		if (dir !== "up" && dir !== "down") return
+		const step = Math.max(1, Math.floor(Math.abs(event.scroll?.delta ?? 0)))
+		setMergedDockCursor((c) => (dir === "up" ? Math.max(0, c - step) : Math.min(info.maxCursor, c + step)))
+	}
+	// D9 optional keyboard fallback — ctrl+alt+↑/↓ through the two config ids
+	// added in keybind.ts. Those chords are ALSO declared on which-key.scroll.*,
+	// but which-key has no layer implementation in this repo, so those entries
+	// are inert and there is no live collision. One key press = one notch = one
+	// line, using the SAME clamp source as the wheel (`info.maxCursor`; the window
+	// builder further clamps the visible start to n-size in assembleZones).
+	const stepMergedDock = (delta: number) => {
+		const info = mergedFrame().info
+		if (!info.overflow) return // no-op when the lower zone fits
+		setMergedDockCursor((c) => Math.max(0, Math.min(info.maxCursor, c + delta)))
+	}
+	// Global-mode layer gated ONLY by (a) lower-zone overflow and (b) page
+	// ownership (no dialog / panel / dock overlay owns the keyboard). `createLayer`
+	// MULTIPLIES `enabled` by `useInteractivity()` (keymap.tsx:219): because this
+	// dock lives inside the Session subtree, the layer also goes dead while the
+	// right pane is active — desired (the dock is a left-pane-only channel).
+	// `useOptional` keeps bare FT harnesses (no Keymap.Provider) from throwing;
+	// the wheel still works there. Built once per mount, never per render.
+	const pageOwns = useIsPageOwner()
+	if (Keymap.useOptional() !== undefined) {
+		Keymap.createLayer(() => ({
+			mode: "global",
+			enabled: mergedFrame().info.overflow && pageOwns(),
+			commands: [
+				{
+					id: "session.dock.scroll.up",
+					title: "Scroll activity up",
+					group: "Session",
+					run: () => stepMergedDock(-1),
+				},
+				{
+					id: "session.dock.scroll.down",
+					title: "Scroll activity down",
+					group: "Session",
+					run: () => stepMergedDock(1),
+				},
+			],
+			bindings: ["session.dock.scroll.up", "session.dock.scroll.down"],
+		}))
+	}
+	// Explicit height = 2 border rows + the visible merged lines (the 10-line
+	// cap already bounds the count; the title rides the top border).
+	const frameHeight = () => 2 + mergedFrame().lines.length
+	// Compact lower zone (D11): a single summary line, no scroll zone.
+	const compactSummary = () => mergedCompactSummary(props.rows)
+	const compactHeight = () => 2 + (compactSummary() === "" ? 0 : 1)
 
 	const accentFg = (accent: DockAccent): string | RGBA => dockAccentColor(theme, accent)
 	const lineView = (line: DockLine) => dockLineNode(line, width(), skinCtx(), fgFor, accentFg)
+	// Merged rows carry structured segments. Each segment resolves its TARGET
+	// color from its semantic accent (think violet / tool cyan) or, when it has
+	// none (the tool status marker), from its tone — then that target goes
+	// through the SAME `skinDockLineFg` entrance/exit-fade pipeline as the flat
+	// dock, keyed by the line's stable id / exit anchor (D3/D14). Whole-line
+	// italics come from `line.italic`. `mergedDockLines` already fitted each
+	// line to exactly `width()` columns, so the concatenated spans land the
+	// right edge on the composer border: NO clipping (it would break the exact
+	// width law) and `wrapMode="none"`.
+	const mergedLineView = (line: MergedDockLine) => {
+		const ctx = skinCtx()
+		const lineFade = { id: line.id, fadeOutAt: line.fadeOutAt }
+		const attributes = line.italic === true ? TextAttributes.ITALIC : undefined
+		return (
+			<text attributes={attributes} wrapMode="none">
+				<For each={line.segments}>
+					{(segment) => {
+						const target = segment.accent !== undefined ? accentFg(segment.accent) : fgFor(segment.tone)
+						return <span style={{ fg: skinDockLineFg(ctx, target, lineFade) }}>{segment.text}</span>
+					}}
+				</For>
+			</text>
+		)
+	}
 
 	return (
 		<box flexShrink={0} flexDirection="column" width="100%">
-			{/* Todos slot (tui-pi parity): the persistent bordered table sits
-			 * ABOVE the transient think/tool surface, outside the turn-lifetime
-			 * activity frame (the tabular todos are not per-turn activity). */}
-			<Show when={table().length > 0}>
-				<box flexShrink={0} flexDirection="column" width="100%" height={table().length} paddingLeft={1}>
-					<For each={table()}>
-						{(line) => (
-							<text fg={fgFor(line.tone)} wrapMode="none">
-								{takeWidth(line.text, tableWidth())}
-							</text>
-						)}
-					</For>
-				</box>
-			</Show>
-				<Show
-					when={activityFrameLatch.shown()}
-					fallback={
-						<FlatDock
-							rows={props.rows}
-							width={width()}
-							fgFor={fgFor}
-							accentFg={accentFg}
-							skinCtx={skinCtx()}
-							maxLines={lineCap()}
-							totalMaxLines={capSpec().totalMaxLines}
-						/>
-					}
-				>
+			<Show
+				when={activityFrameLatch.shown()}
+				fallback={
+					<FlatDock
+						rows={props.rows}
+						width={width()}
+						fgFor={fgFor}
+						accentFg={accentFg}
+						skinCtx={skinCtx()}
+						maxLines={lineCap()}
+						totalMaxLines={capSpec().totalMaxLines}
+					/>
+				}
+			>
 				<Show
 					when={frame() === "frame"}
 					fallback={
-						<box flexShrink={0} flexDirection="column" width="100%" height={2} paddingLeft={3}>
+						<box flexShrink={0} flexDirection="column" width="100%" height={compactHeight()} paddingLeft={3}>
 							<For each={activityRuleLines(props.rows)}>{lineView}</For>
+							{/* D11: compact terminals keep the 2-line rule form for
+							 * think/tool, and collapse the lower zone to a single
+							 * summary line (no scroll zone). */}
+							<Show when={compactSummary() !== ""}>
+								<text fg={fgFor("muted")} wrapMode="none">
+									{takeWidth(compactSummary(), width())}
+								</text>
+							</Show>
 						</box>
 					}
 				>
 					{/* Explicit border (the borderColor-only trap opens four sides
 					 * implicitly — contract §2.4). Height = 2 border rows + the
-					 * think/tool block rows (each capped by `lineCap`). */}
+					 * merged content rows (cap-bounded, title rides the top border). */}
 					<box
 						flexShrink={0}
 						flexDirection="column"
@@ -1231,11 +1433,11 @@ export function WidgetsDock(props: {
 						border={["top", "bottom", "left", "right"]}
 						borderStyle="heavy"
 						borderColor={activityFrameBorderColor(theme)}
-						title={t("overlay.widgets.frameTitle")}
+						title={mergedTitleText()}
 						titleAlignment="left"
+						onMouseScroll={onMergedWheel}
 					>
-						<For each={frameBlocks().think}>{lineView}</For>
-						<For each={frameBlocks().tool}>{lineView}</For>
+						<For each={mergedFrame().lines}>{mergedLineView}</For>
 					</box>
 				</Show>
 			</Show>

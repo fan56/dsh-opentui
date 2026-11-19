@@ -5,7 +5,8 @@
 // synthetic output and the real `ps` on this machine.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { constants as osConstants, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -22,6 +23,7 @@ import {
   parseLauncherOptions,
   parseProcessHomes,
   parseProcessRows,
+  prelaunchFailurePolicy,
   readLauncherVersion,
   selectStaleProcesses,
   validateLauncherArgs,
@@ -45,21 +47,30 @@ const pkgVersion = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8'
 
 describe('parseLauncherArgs', () => {
   test('consumes --version and --force, forwards the rest', () => {
-    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, repairBridge: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, repairBridge: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, repairBridge: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--version'])).toEqual({ version: true, force: false, repairBridge: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force'])).toEqual({ version: false, force: true, repairBridge: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '--version'])).toEqual({ version: true, force: true, repairBridge: false, yes: false, rest: [], passthrough: [] })
     expect(parseLauncherArgs(['--model', 'x', '--force', 'prompt'])).toEqual({
       version: false,
       force: true,
       repairBridge: false,
+      yes: false,
       rest: ['--model', 'x', 'prompt'],
       passthrough: [],
     })
   })
 
+  test('consumes --yes (confirm flag) and never forwards it', () => {
+    expect(parseLauncherArgs(['--force', '--yes'])).toEqual({ version: false, force: true, repairBridge: false, yes: true, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--yes', '--model', 'x'])).toEqual({
+      version: false, force: false, repairBridge: false, yes: true, rest: ['--model', 'x'], passthrough: [],
+    })
+    expect(parseLauncherArgs(['--yes', '--', '--yes']).passthrough).toEqual(['--yes'])
+  })
+
   test('treats -v as an alias for --version', () => {
-    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, repairBridge: false, rest: [], passthrough: [] })
-    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, repairBridge: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['-v'])).toEqual({ version: true, force: false, repairBridge: false, yes: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs(['--force', '-v'])).toEqual({ version: true, force: true, repairBridge: false, yes: false, rest: [], passthrough: [] })
   })
 
   test('leaves unrelated arguments (including lookalikes) untouched', () => {
@@ -67,10 +78,11 @@ describe('parseLauncherArgs', () => {
       version: false,
       force: false,
       repairBridge: false,
+      yes: false,
       rest: ['--model', '--version-like', '--forced'],
       passthrough: [],
     })
-    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, repairBridge: false, rest: [], passthrough: [] })
+    expect(parseLauncherArgs([])).toEqual({ version: false, force: false, repairBridge: false, yes: false, rest: [], passthrough: [] })
   })
 
   test('consumes --repair-bridge as a bin-level flag, forwarding the rest', () => {
@@ -78,6 +90,7 @@ describe('parseLauncherArgs', () => {
       version: false,
       force: false,
       repairBridge: true,
+      yes: false,
       rest: [],
       passthrough: [],
     })
@@ -85,6 +98,7 @@ describe('parseLauncherArgs', () => {
       version: false,
       force: false,
       repairBridge: true,
+      yes: false,
       rest: ['--model', 'x', 'prompt'],
       passthrough: [],
     })
@@ -304,6 +318,7 @@ describe('parseLauncherArgs -- separator', () => {
       version: false,
       force: false,
       repairBridge: false,
+      yes: false,
       rest: ['--model', 'm'],
       passthrough: ['--version', '--force', '--verison', 'plain'],
     })
@@ -662,4 +677,96 @@ describe('timeout env parsing rejects non-decimal Number() spellings', () => {
       })
     }
   }
+})
+
+describe('prelaunchFailurePolicy — --force never silently degrades to a no-op (P1-5)', () => {
+  const needsYes = Object.assign(new Error('will disconnect 2 live clients'), { code: 'force-needs-yes' })
+
+  test('force-needs-yes is always a usage error (exit 2), force or not', () => {
+    expect(prelaunchFailurePolicy(needsYes, false)).toBe('usage-error')
+    expect(prelaunchFailurePolicy(needsYes, true)).toBe('usage-error')
+  })
+
+  test('any other pre-launch failure under --force is a hard abort (exit 1)', () => {
+    for (const err of [
+      new Error('Cannot find module .../dist/host-launch.mjs'),
+      new TypeError('ensureLaunchHost is not a function'),
+      'string rejection',
+    ]) {
+      expect(prelaunchFailurePolicy(err, true)).toBe('abort')
+    }
+  })
+
+  test('without --force the same failure stays best-effort (warn)', () => {
+    expect(prelaunchFailurePolicy(new Error('ENOENT'), false)).toBe('warn')
+  })
+})
+
+// ---- bin integration: async client spawn exit mapping (PR B) -------------
+// Exercise the launcher's real `spawn('bun', …)` path end to end. To avoid a
+// real host (and any dependence on a globally installed dsh), copy the bin +
+// its lib into a throwaway package root, stub the two filesystem gates
+// (dist/client/index.js and the SDK link), put a fake `dsh` and a controllable
+// fake `bun` first on PATH, and pass `--dry-run` so step 6a host pre-launch is
+// skipped. The subject under test is the launcher's exit-code mapping of the
+// child's outcome, so only the fake bun's exit code / signal death matters.
+function makeAsyncLauncherHarness() {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-launcher-async-'))
+  const tmpBinDir = join(root, 'bin')
+  mkdirSync(join(tmpBinDir, 'lib'), { recursive: true })
+  cpSync(binPath, join(tmpBinDir, 'dsh-opentui.mjs'))
+  cpSync(join(pkgRoot, 'bin', 'lib', 'launcher.mjs'), join(tmpBinDir, 'lib', 'launcher.mjs'))
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@aiwayds/dsh-opentui', version: pkgVersion }))
+  // Step 6 existsSync gate — fake bun ignores the bundle contents.
+  mkdirSync(join(root, 'dist', 'client'), { recursive: true })
+  writeFileSync(join(root, 'dist', 'client', 'index.js'), '')
+  // ensureClientConnectionSdk() returns early when this package.json exists.
+  const sdkDir = join(root, 'node_modules', '@deepseek-ai', 'dsh-client-connection')
+  mkdirSync(sdkDir, { recursive: true })
+  writeFileSync(join(sdkDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-client-connection', version: '0.0.0' }))
+
+  const shimDir = join(root, 'shim')
+  mkdirSync(shimDir)
+  const dshShim = join(shimDir, 'dsh')
+  writeFileSync(dshShim, '#!/bin/sh\nexit 0\n')
+  chmodSync(dshShim, 0o755)
+  const bunShim = join(shimDir, 'bun')
+
+  const dshHome = join(root, 'dsh-home')
+  mkdirSync(dshHome)
+  return {
+    root,
+    launcherBin: join(tmpBinDir, 'dsh-opentui.mjs'),
+    env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, DSH_HOME: dshHome },
+    setBunShim(body: string) {
+      writeFileSync(bunShim, `#!/bin/sh\n${body}\n`)
+      chmodSync(bunShim, 0o755)
+    },
+  }
+}
+
+function runAsyncLauncher(h: ReturnType<typeof makeAsyncLauncherHarness>) {
+  return spawnSync('node', [h.launcherBin, '--dry-run'], { encoding: 'utf8', timeout: 30_000, env: h.env })
+}
+
+describe('bin integration: async client spawn maps child exit code / signal (PR B)', () => {
+  let h: ReturnType<typeof makeAsyncLauncherHarness>
+  beforeEach(() => { h = makeAsyncLauncherHarness() })
+  afterEach(() => { rmSync(h.root, { recursive: true, force: true }) })
+
+  test('launcher exits with the fake bun shim exit code', () => {
+    h.setBunShim('exit 42')
+    const r = runAsyncLauncher(h)
+    expect(r.error).toBeUndefined()
+    expect(r.status).toBe(42)
+  })
+
+  test('launcher exits 128 + SIGTERM when fake bun kills itself with SIGTERM', () => {
+    h.setBunShim('kill -TERM $$')
+    const r = runAsyncLauncher(h)
+    expect(r.error).toBeUndefined()
+    // 128 + 15 = 143 on POSIX; SIGKILL used to be mis-reported as 0.
+    expect(r.status).toBe(128 + osConstants.signals.SIGTERM)
+    expect(r.status).toBe(143)
+  })
 })

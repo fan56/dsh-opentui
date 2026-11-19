@@ -154,27 +154,8 @@ describe("row 31 — /repair via client-local scan", () => {
 // ---------------------------------------------------------------------------
 
 describe("row 39 — git branch probe", () => {
-	test("returns the real branch in a repo, empty outside one", async () => {
-		const branch = await probeGitBranch(import.meta.dir)
-		expect(branch).not.toBe("")
-		const outside = await probeGitBranch(tmpdir())
-		expect(outside).toBe("")
-	})
-
-	test("facade gitBranch defaults to the workspace cwd option", async () => {
-		const { session } = makeFacade({ cwd: import.meta.dir })
-		expect(await session.gitBranch()).not.toBe("")
-		await session.dispose()
-	})
-
-	// Composer-context batch: the row's probe is branch-or-SHA. A regular
-	// checkout answers the branch (same as the row-39 probe); a detached HEAD
-	// answers the short SHA; outside a repo / on failure it stays "".
-	test("branch-or-SHA probe: branch in a repo, short SHA when detached, empty outside", async () => {
-		expect(await probeGitBranchOrSha(import.meta.dir)).toBe(await probeGitBranch(import.meta.dir))
-		expect(await probeGitBranchOrSha(tmpdir())).toBe("")
-
-		const repo = scratchDir("dsh-git-detached-")
+	function makeNamedBranchRepo(): { repo: string; branch: string } {
+		const repo = scratchDir("dsh-git-branch-")
 		const git = (...args: string[]) =>
 			spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", ...args], {
 				cwd: repo,
@@ -184,11 +165,38 @@ describe("row 39 — git branch probe", () => {
 		writeFileSync(join(repo, "a.txt"), "one\n")
 		expect(spawnSync("git", ["add", "."], { cwd: repo }).status).toBe(0)
 		expect(git("commit", "-q", "-m", "one").status).toBe(0)
-		const named = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim()
-		expect(await probeGitBranchOrSha(repo)).toBe(named)
-		expect(named).not.toBe("HEAD")
+		const branch = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repo, encoding: "utf8" }).stdout.trim()
+		return { repo, branch }
+	}
+
+	test("returns the real branch in a repo, empty outside one", async () => {
+		const { repo } = makeNamedBranchRepo()
+		const branch = await probeGitBranch(repo)
+		expect(branch).not.toBe("")
+		const outside = await probeGitBranch(tmpdir())
+		expect(outside).toBe("")
+	})
+
+	test("facade gitBranch defaults to the workspace cwd option", async () => {
+		const { repo } = makeNamedBranchRepo()
+		const { session } = makeFacade({ cwd: repo })
+		expect(await session.gitBranch()).not.toBe("")
+		await session.dispose()
+	})
+
+	// Composer-context batch: the row's probe is branch-or-SHA. A regular
+	// checkout answers the branch (same as the row-39 probe); a detached HEAD
+	// answers the short SHA; outside a repo / on failure it stays "".
+	test("branch-or-SHA probe: branch in a repo, short SHA when detached, empty outside", async () => {
+		const { repo, branch } = makeNamedBranchRepo()
+		expect(await probeGitBranchOrSha(repo)).toBe(await probeGitBranch(repo))
+		expect(await probeGitBranchOrSha(tmpdir())).toBe("")
+
+		expect(await probeGitBranchOrSha(repo)).toBe(branch)
+		expect(branch).not.toBe("HEAD")
 		expect(spawnSync("git", ["checkout", "-q", "--detach", "HEAD"], { cwd: repo }).status).toBe(0)
 		expect(await probeGitBranchOrSha(repo)).toMatch(/^[0-9a-f]{7,}$/)
+		expect(await probeGitBranch(repo)).toBe("")
 	})
 })
 

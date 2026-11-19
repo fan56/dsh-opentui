@@ -60,10 +60,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const pidAlive = (target) => {
   try {
     process.kill(target, 0)
-    return true
-  } catch {
-    return false
+  } catch (err) {
+    return err?.code === 'EPERM'
   }
+  // kill(0) succeeds for an unreaped zombie; confirm via ps (fall back to
+  // the kill(0) verdict when ps is unavailable).
+  try {
+    const res = spawnSync('ps', ['-p', String(target), '-o', 'stat='], { encoding: 'utf8' })
+    if (!res.error && res.status === 0) return !(res.stdout ?? '').trim().startsWith('Z')
+  } catch {}
+  return true
 }
 
 /** Established TCP connections involving the host port (0 = none, -1 =

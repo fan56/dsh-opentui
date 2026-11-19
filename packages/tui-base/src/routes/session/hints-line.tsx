@@ -8,6 +8,14 @@
  *   idle  `⌨ enter send · alt+enter newline · ↑↓ history · ↓ subagents · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit`
  *   busy  `⌨ enter steer · esc stop · …` (the running-turn keys lead)
  *
+ * HUD merge (2026-11-17): the busy 🐳 comet track moved HERE — this is the
+ * LAST page row, and while the turn is busy it reads
+ *   busy  `[comet: 15 cols][gap][hints…]`
+ *   idle  `[hints…]` (no comet, same left offset as before)
+ * The busy status TEXT (verb / elapsed seconds / phase icon / detail) was
+ * deleted entirely; the comet renderable/bounce math come shared from
+ * ./comet-track (no fork with the retained StatusBar).
+ *
  * Footer-quickwins batch (tui-pi footer.ts:41-98 parity): the bar is now
  * NINE independently toggleable hint segments (send / newline / history / stop /
  * subagentPanel / quit / scroll / search / subagents) in tui-pi's per-segment on/off shape,
@@ -22,15 +30,21 @@
  * child runs — the SubagentsPicker toggle gate) are preserved.
  */
 import { createSignal, Show, type JSX } from "solid-js"
+import { onAnimationTick } from "@opentui/solid"
 import { t } from "../../i18n"
 import { useTerminalSize } from "./terminal-size"
 import { clipToWidth } from "./tool-summarize"
 import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
+import { motionDecorationsEnabled } from "../../skin/motion"
 import { subagentMarkerViews } from "./subagent-markers"
+import { cometFps, cometHeadColor, COMET_FALLBACK_TRACK, COMET_TRACK_COLS } from "./comet-track"
 import type { Pane } from "./pane-focus"
 
 export const [hintsShown, setHintsShown] = createSignal(true)
+
+/** Gap between the comet track and the first hint segment on the busy row. */
+export const COMET_HINT_GAP = 1
 
 /** The nine toggleable hint segments (tui-pi FooterHints parity, opentui keys). */
 export type HintSegmentId = "send" | "newline" | "history" | "stop" | "subagentPanel" | "quit" | "scroll" | "search" | "subagents"
@@ -331,8 +345,13 @@ export function transcriptHintsText(shown = true): string {
 }
 
 export function HintsLine(props: {
-	/** Turn running (getter-prop law: the page passes a getter). */
-	busy: boolean
+	/**
+	 * Turn running. GETTER-PROP LAW: a STABLE FUNCTION value (`busy: () => busy()`),
+	 * not a baked `get busy()` accessor or a `busy={busy()}` value — the latter
+	 * are recast to a snapshot before the component body runs (the WidgetsDock
+	 * turnActive trap), so `props.busy()` must be called at render time.
+	 */
+	busy: () => boolean
 	/** Focused pane (pane-focus batch): the transcript swaps the composer's
 	 * send/history wording for its scroll keys. Undefined (dialog focus /
 	 * startup) keeps the composer wording. */
@@ -340,29 +359,52 @@ export function HintsLine(props: {
 }): JSX.Element {
 	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
+	// The comet shows ONLY while the turn is busy AND the bar is on (/hints
+	// off keeps the tui-pi zero-row parity), and it is the only thing driving
+	// the animation clock — idle plumbs undefined, so nothing ticks.
+	const cometActive = () => props.busy() && hintsShown()
+	const [tick, setTick] = createSignal(0)
+	onAnimationTick(() => cometFps(cometActive()), () => setTick((t) => t + 1))
+
 	// The rendered row (getter: tracks busy / focus pane / segment toggles /
-	// locale / live subagents / width). All segments off → '' → the row drops.
-	// The composer bar folds whole segments by priority to the viewport width;
-	// the transcript row is a single key string, so it keeps the plain clip.
+	// locale / live subagents / width). All segments off → '' → the row drops,
+	// UNLESS busy (the comet still owns the row). The composer bar folds whole
+	// segments by priority to the viewport width; the transcript row is a
+	// single key string, so it keeps the plain clip.
+	//
+	// Width budget: the hints get the same `columns - 2` the plain line always
+	// used (1 left pad + 1 right reserve), MINUS the comet's fixed 15 display
+	// columns and the 1-column gap when busy. Subtracting from `columns`
+	// before `hintsTextAtWidth` applies its own -2 keeps the existing folding /
+	// clipping behaviour byte-for-byte; the row never overflows the pane.
 	const row = () => {
-		const columns = dimensions().width
+		const busy = cometActive()
+		const columns = dimensions().width - (busy ? COMET_TRACK_COLS + COMET_HINT_GAP : 0)
 		return props.pane?.() === "transcript"
 			? clipToWidth(transcriptHintsText(hintsShown()), Math.max(8, columns - 2))
 			: hintsTextAtWidth(
-					props.busy,
+					props.busy(),
 					hintsShown(),
 					subagentMarkerViews().some((v) => v.status === "running"),
 					columns,
 				)
 	}
-	// All-off parity (tui-pi): '' renders ZERO rows — the fixed-height box
-	// must unmount with the text, not linger as a blank line above the
-	// composer.
+	// All-off parity (tui-pi): '' and idle renders ZERO rows — the fixed-height
+	// box must unmount with the text, not linger as a blank line above the
+	// composer. A busy turn keeps the row alive for the comet alone.
 	return (
-		<Show when={hintsShown() && row().length > 0}>
-			<box flexShrink={0} height={1} width="100%" paddingLeft={1}>
+		<Show when={hintsShown() && (cometActive() || row().length > 0)}>
+			<box flexShrink={0} height={1} width="100%" paddingLeft={1} flexDirection="row">
+				<Show when={cometActive()}>
+					<comet_track
+						step={tick()}
+						headFg={cometHeadColor(theme)}
+						trackFg={theme?.border.base ?? COMET_FALLBACK_TRACK}
+						gradient={motionDecorationsEnabled()}
+					/>
+				</Show>
 				<text fg={theme?.text.faint ?? "#565f89"} wrapMode="none">
-					{row()}
+					{cometActive() && row().length > 0 ? `${" ".repeat(COMET_HINT_GAP)}${row()}` : row()}
 				</text>
 			</box>
 		</Show>

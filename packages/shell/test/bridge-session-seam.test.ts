@@ -755,3 +755,93 @@ describe("covered lifecycle + turn stream", () => {
 		expect(h.requests.filter((r) => r.method === "session.send")).toHaveLength(0)
 	})
 })
+
+// ---------------------------------------------------------------------------
+// sessionInfo: footer 💬 (msgCount) + ⚡ (tps), /session panel counts
+// ---------------------------------------------------------------------------
+
+describe("sessionInfo", () => {
+	function bindHarness(h: ReturnType<typeof makeHarness>, id: string, turnId: string) {
+		h.replies.set("session.open", { kind: "value", value: { sessionId: id, journalCursor: 1 } })
+		h.replies.set("session.send", { kind: "value", value: { turnId } })
+		h.seam.resumeSession(id)
+		const done = h.seam.turn("hi", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError() {},
+		})
+		return done
+	}
+
+	test("undefined before a session is bound", async () => {
+		const h = makeHarness()
+		expect(await h.seam.sessionInfo()).toBeUndefined()
+	})
+
+	test("msgCount = durable assistant/message rows; turnCount/messageCount serve /session", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-1", "t1")
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [
+					{ seq: 1, type: "user/message", payload: {} },
+					{ seq: 2, type: "assistant/message", payload: {} },
+					{ seq: 3, type: "assistant/message", payload: {} },
+					{ seq: 4, type: "user/message", payload: {} },
+				],
+				cursor: 5,
+			},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t1", text: "ok" } })
+		await done
+
+		const info = (await h.seam.sessionInfo())!
+		expect(info.sessionId).toBe("sess-1")
+		expect(info.msgCount).toBe(2) // two durable assistant/message events = two msgs
+		expect(info.turnCount).toBe(2) // two durable user/message rows
+		expect(info.messageCount).toBe(4) // user + assistant, /session panel only
+	})
+
+	test("⚡ tps derives from a live decode window and is absent without a token", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-2", "t2")
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [], cursor: 1 } })
+		await Bun.sleep(0)
+		// No token frame → no decode window → no tps sample.
+		h.emit({ type: "turn.end", payload: { turnId: "t2", text: "", usage: { completion: 20 } } })
+		await done
+		expect((await h.seam.sessionInfo())!.lastTurnTps).toBeNull()
+
+		// A token frame opens the window; turn.end closes it with billed tokens.
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t3" } })
+		const done2 = h.seam.turn("again", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.token", payload: { turnId: "t3", text: "hello" } })
+		await Bun.sleep(5)
+		h.emit({ type: "turn.end", payload: { turnId: "t3", text: "hello", usage: { completion: 100 } } })
+		await done2
+		const info = (await h.seam.sessionInfo())!
+		expect(info.lastTurnTps).toBeGreaterThan(0)
+		expect(info.sessionAvgTps).toBeGreaterThan(0)
+	})
+
+	test("a failed journal read degrades msgCount to absent, never a fake 0", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-3", "t4")
+		h.replies.set("journal.replay", { kind: "error", error: new Error("journal unavailable") })
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t4", text: "" } })
+		await done
+		const info = (await h.seam.sessionInfo())!
+		expect(info.sessionId).toBe("sess-3")
+		expect(info.msgCount).toBeUndefined()
+	})
+})

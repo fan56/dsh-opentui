@@ -16,9 +16,16 @@ const sessionSource = readFileSync(join(import.meta.dir, "..", "examples", "sess
 const helloSource = readFileSync(join(import.meta.dir, "..", "examples", "hello.tsx"), "utf8")
 
 describe("v2-entry reactive-prop law", () => {
-	test("StatusBar phase rides a getter, not an eager busy() read", () => {
-		expect(source).not.toMatch(/createComponent\(StatusBar,\s*\{\s*phase:\s*busy\(\)/)
-		expect(source).toMatch(/createComponent\(StatusBar,\s*\{\s*get phase\(\)/)
+	test("HUD merge: no StatusBar mount; HintsLine busy is a stable getter function", () => {
+		// The busy comet moved into the last hints row. v2-entry must not mount
+		// StatusBar in the transcript status slot, and it must pass busy() as a
+		// STABLE FUNCTION value — a `get busy()` accessor is recast to a mount-time
+		// snapshot before the component body runs (the WidgetsDock turnActive trap).
+		expect(source).not.toMatch(/createComponent\(StatusBar,/)
+		expect(source).not.toMatch(/<StatusBar\b/)
+		expect(source).toMatch(/createComponent\(HintsLine,\s*\{/)
+		expect(source).toMatch(/busy:\s*\(\)\s*=>\s*busy\(\)/)
+		expect(source).not.toMatch(/get busy\(\)\s*\{\s*return busy\(\)/)
 	})
 
 		test("PowerlineFooter left/right ride getters, not eager segments()/now() reads", () => {

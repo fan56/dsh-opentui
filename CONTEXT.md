@@ -39,10 +39,13 @@ concept).
 
 ## Workspace-local config
 
-Theme and model preferences stored in `<workspace>/.dsh/`, overriding global
-defaults. Credentials and plugin installs never live here — they would leak
-into version control. _Avoid_: settings (host "settings" are profile/home
-scoped and have no workspace layer).
+Preferences stored in `<workspace>/.dsh/`, overriding global defaults. Theme
+and model are already per-workspace (resolved client-side); skills and
+AGENTS.md are resolved by the host per session cwd; settings and tools stay
+profile/home scoped and are fixed at host boot. The phase-2 extension to
+settings/tools is deferred, not scheduled. Credentials and plugin installs
+never live here — they would leak into version control. _Avoid_: credentials
+or plugin installs (they are profile/home scoped, not workspace scoped).
 
 ## Profile
 
@@ -60,7 +63,18 @@ is not scoped by workspace).
 ## Host service
 
 The resident dsh process (profile `opentui`) owning the agent loop and the
-plugin stack; TUIs attach to it as clients. _Avoid_: server, daemon.
+plugin stack; TUIs attach to it as clients. It is a singleton sharded by
+`(DSH_HOME, profile)` and shuts down gracefully after the last client exits.
+_Avoid_: server, daemon.
+
+## Host registry
+
+The singleton registration record for a Host service instance — holds its
+`pid`, `port`, `phase`, and `clients`, stored at
+`<DSH_HOME>/opentui-host.<profile>.json`. It is keyed by `(DSH_HOME, profile)`
+and is independent of Workspace: one record per host instance, not per
+directory. _Avoid_: workspace registry (that is the host's directory grouping;
+this is the singleton instance record).
 
 ## Render surface
 

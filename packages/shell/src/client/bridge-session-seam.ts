@@ -37,6 +37,7 @@ import type {
 	SeamPermissionCatalog,
 	SeamProviderModel,
 	SeamSessionEvent,
+	SeamSessionInfo,
 	SeamSessionSummary,
 	SeamStatus,
 	SeamTranscriptRow,
@@ -46,6 +47,7 @@ import type {
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { journalToTranscriptRows } from "./remote-session-ops.ts"
 import { projectJournalRecord } from "./session-seam-adapter.ts"
+import { tokensPerSecond } from "../agent/loop.ts"
 
 // ---------------------------------------------------------------------------
 // Injected transport surface (ADR-0010 frame shapes)
@@ -737,6 +739,16 @@ export class BridgeSessionSeam implements SessionSeam {
 	#degradedOnce = new Set<string>()
 	#usage: UsageAccumulator = { turns: 0, prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
 	/**
+	 * Decode-window timing for the footer ⚡ tok/s. The bridge has no stats
+	 * frame, so the seam measures live turn frames itself: window starts at the
+	 * first non-reasoning token of a turn and closes at `turn.end`, with the
+	 * billed `usage.completion` as the token count (mirrors the remote seam's
+	 * first-delta → settle rate). Feeds `sessionInfo().lastTurnTps/sessionAvgTps`.
+	 */
+	#decodeWindowStart: number | undefined
+	#lastTurnDecode: { tokens: number; ms: number } | undefined
+	#decodeTotals = { tokens: 0, ms: 0 }
+	/**
 	 * ADR-0011 T8/Q4: a host→client ask frame is the bridge-side proof that the
 	 * host armed its ask answerers (`armAskAnswerers`, bridge/src/index.ts). We
 	 * use it as the provider signal because `bridge.hello`/`bridge.ping` reply
@@ -1236,6 +1248,55 @@ export class BridgeSessionSeam implements SessionSeam {
 			`prompt ${fmtTokens(u.prompt)} tok`,
 			`completion ${fmtTokens(u.completion)} tok`,
 		]
+	}
+
+	/**
+	 * Footer /session snapshot (0.21.1 single-💬 semantics). `msgCount` is the
+	 * authoritative footer unit and is derived from the durable journal's
+	 * `assistant/message` rows — one event = one msg. `messageCount`/`turnCount`
+	 * are the durable user+assistant counts for the /session panel ONLY.
+	 * tps rides the live decode window measured from turn frames; a journal
+	 * that cannot be read degrades to "unknown" (footer hides 💬) rather than a
+	 * fabricated 0. No session bound → undefined, matching the null seam.
+	 */
+	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
+		const sessionId = this.currentSessionId()
+		if (!sessionId) return undefined
+
+		let msgCount: number | undefined
+		let assistants = 0
+		let users = 0
+		try {
+			// Read-only full log; #drainJournal pages and dedups by seq, and never
+			// writes to the journal or touches a writer lock (ADR-0010 I6).
+			const { rows } = await this.#drainJournal(sessionId, 1)
+			for (const row of rows) {
+				if (row.type === "assistant/message") assistants++
+				else if (row.type === "user/message") users++
+			}
+			msgCount = assistants
+		} catch (err) {
+			this.#ctx.logger.warn("[bridge-seam] sessionInfo journal.replay failed: %s", err)
+		}
+
+		const selection = await this.currentModelSelection().catch(() => undefined)
+		const u = this.#usage
+		const last = this.#lastTurnDecode
+		return {
+			sessionId,
+			model: selection ? `${selection.providerID}/${selection.modelID}` : null,
+			messageCount: users + assistants,
+			turnCount: users,
+			...(msgCount !== undefined ? { msgCount } : {}),
+			tokensIn: u.prompt,
+			tokensOut: u.completion,
+			cacheRead: u.cacheRead,
+			cacheWrite: u.cacheWrite,
+			lastTurnTps: last && last.ms > 0 ? tokensPerSecond(last.tokens, last.ms) : null,
+			sessionAvgTps: this.#decodeTotals.ms > 0
+				? tokensPerSecond(this.#decodeTotals.tokens, this.#decodeTotals.ms)
+				: null,
+		}
 	}
 
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void {
@@ -1868,7 +1929,11 @@ export class BridgeSessionSeam implements SessionSeam {
 
 		const payload = asRecord(frame.payload)
 		// status state machine (no reconnect precision — D3: idle on ambiguity).
-		if (frame.type === "turn.start") this.#turn = "starting"
+		if (frame.type === "turn.start") {
+			this.#turn = "starting"
+			// A new turn opens a fresh decode window (closed at turn.end).
+			this.#decodeWindowStart = undefined
+		}
 		if (frame.type === "turn.token" || frame.type === "turn.tool") this.#turn = "running"
 		if (frame.type === "turn.end" || frame.type === "turn.error") {
 			this.#turn = "idle"
@@ -1890,6 +1955,20 @@ export class BridgeSessionSeam implements SessionSeam {
 					this.#usage[key] += usage[key] ?? 0
 				}
 			}
+			// Close the decode window: billed completion tokens over the time from
+			// the first streamed delta to this terminal frame. A turn with no
+			// observed token (e.g. tool-only) has no window and no tps sample.
+			const start = this.#decodeWindowStart
+			const tokens = usage.completion ?? 0
+			if (start !== undefined && tokens > 0) {
+				const ms = Date.now() - start
+				if (ms > 0) {
+					this.#lastTurnDecode = { tokens, ms }
+					this.#decodeTotals.tokens += tokens
+					this.#decodeTotals.ms += ms
+				}
+			}
+			this.#decodeWindowStart = undefined
 		}
 
 		// A7: remember the text already delivered to the view so a local
@@ -1897,6 +1976,8 @@ export class BridgeSessionSeam implements SessionSeam {
 		// unbounded buffer on a long stream; this is a local fact, never a
 		// journal write.
 		if (frame.type === "turn.token" && payload.kind !== "reasoning" && typeof payload.text === "string" && payload.text) {
+			// First visible delta opens the decode window (first-delta → settle).
+			if (this.#decodeWindowStart === undefined) this.#decodeWindowStart = Date.now()
 			this.#inFlightPartial = (this.#inFlightPartial + payload.text).slice(-4096)
 		}
 

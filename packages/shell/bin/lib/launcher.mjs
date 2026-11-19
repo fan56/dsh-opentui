@@ -10,8 +10,9 @@
  * The capabilities:
  *   1. `--version` — print `dsh-opentui <version>` and exit 0, BEFORE any
  *      provision/profile work (see the bin's step 0).
- *   2. `--force`   — kill this profile's stale instances (the resident `dsh
- *      host and the bun client) before starting.
+ *   2. `--force`   — reset the singleton host before starting (needs `--yes`
+ *      when live clients are connected; ADR-0009). Stale-instance cleanup is a
+ *      `--repair-bridge` maintenance action.
  *   3. `upgrade`   — the positional upgrade subcommand: its argv is parsed
  *      here (pure) and dispatched by the bin to scripts/upgrade.mjs. The
  *      subcommand and its flags are consumed by the bin and NEVER forwarded
@@ -64,6 +65,7 @@ export function parseLauncherArgs(argv) {
 	let version = false
 	let force = false
 	let repairBridge = false
+	let yes = false
 	const rest = []
 	const passthrough = []
 	let separatorSeen = false
@@ -88,9 +90,15 @@ export function parseLauncherArgs(argv) {
 			repairBridge = true
 			continue
 		}
+		// `--yes` confirms a --force reset when live clients exist (ADR-0009 §7).
+		// Consumed by the bin, never forwarded to dsh/the client.
+		if (arg === '--yes') {
+			yes = true
+			continue
+		}
 		rest.push(arg)
 	}
-	return { version, force, repairBridge, rest, passthrough }
+	return { version, force, repairBridge, yes, rest, passthrough }
 }
 
 /**
@@ -318,8 +326,9 @@ export function formatUsage() {
 		'',
 		'Options:',
 		'  -v, --version              print the launcher version and exit',
-		'  --force                    kill stale dsh processes before starting',
-		'  --repair-bridge            repair the in-process bridge symlink / manifest, re-verify its identity, then exit (no TUI)',
+		'  --force                    reset the singleton host before starting (needs --yes if clients are live)',
+		'  --yes                      confirm a --force reset that would disconnect live clients',
+		'  --repair-bridge            kill stale instances, repair the in-process bridge symlink / manifest, re-verify its identity, then exit (no TUI)',
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',
 		'  --mux-timeout <sec>        seconds to wait for the host mux to serve (default: 20)',
 		'  --connect-timeout <sec>    seconds to wait for the first connection (default: 30)',
@@ -361,6 +370,25 @@ export function readLauncherVersion(pkgRoot) {
 	} catch {
 		return undefined
 	}
+}
+
+/**
+ * Decide how a failed host pre-launch (step 6a) must be handled (P1-5).
+ *
+ * - `force-needs-yes` is a usage error: exit 2 (the user must confirm).
+ * - with `--force`, ANY other failure is fatal: exit 1. A force reset that
+ *   could not import/run the orchestration bundle did not happen, so quietly
+ *   continuing would turn `--force` into a silent no-op (the bin-level force
+ *   cleanup was removed in step 2.5). Never downgrade to a warning here.
+ * - without `--force`, pre-launch is best-effort: warn and let the client
+ *   retry host boot itself.
+ *
+ * @returns 'usage-error' | 'abort' | 'warn'
+ */
+export function prelaunchFailurePolicy(err, force) {
+	if (err?.code === 'force-needs-yes') return 'usage-error'
+	if (force) return 'abort'
+	return 'warn'
 }
 
 /**

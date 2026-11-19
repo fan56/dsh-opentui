@@ -592,6 +592,7 @@ describe("sessionInfo with a staged --resume-last session", () => {
 				sessionId: undefined,
 				model: undefined,
 				turnCount: 0,
+				msgCount: 6,
 				tokensIn: 0,
 				tokensOut: 0,
 				cacheRead: 0,
@@ -618,6 +619,11 @@ describe("sessionInfo with a staged --resume-last session", () => {
 		expect(info?.sessionId).toBe("stored-9")
 		// user + assistant rows only — the tool row is not a message.
 		expect(info?.messageCount).toBe(3)
+		// /session "turns" = durable USER rows only (q1 + q2), not assistant rows.
+		expect(info?.turnCount).toBe(2)
+		// A staged (resumed) session has no bound journal: msg hides rather
+		// than painting the facade's stale/empty 0.
+		expect(info?.msgCount).toBeUndefined()
 	})
 
 	test("a fresh session (no live and no staged id) still reports undefined", async () => {
@@ -626,6 +632,7 @@ describe("sessionInfo with a staged --resume-last session", () => {
 				sessionId: undefined,
 				model: undefined,
 				turnCount: 0,
+				msgCount: 0,
 				tokensIn: 0,
 				tokensOut: 0,
 				cacheRead: 0,
@@ -639,6 +646,71 @@ describe("sessionInfo with a staged --resume-last session", () => {
 		})
 		const seam = new RemoteSessionSeam(session)
 		expect(await seam.sessionInfo()).toBeUndefined()
+	})
+})
+
+describe("sessionInfo msg count + /session turns", () => {
+	const liveInfo = (msgCount: number) => ({
+		sessionId: "ses-live",
+		model: undefined,
+		turnCount: 0,
+		msgCount,
+		tokensIn: 0,
+		tokensOut: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		lastTurnTps: null,
+		sessionAvgTps: null,
+		contextTokens: 0,
+		contextWindow: undefined,
+	})
+
+	test("a bound session passes the facade's journal msg count through and counts M user rows as M /session turns", async () => {
+		// The transcript is the durable truth source for /session turns: M user
+		// rows → M turns, regardless of assistant/tool rows.
+		const { session } = fakeSession({
+			sessionInfo: () => liveInfo(9),
+			storedTranscript: async () => [
+				{ kind: "user", text: "q1" },
+				{ kind: "assistant", text: "a1", final: true },
+				{ kind: "assistant", text: "a2", final: true },
+				{ kind: "tool", text: "t" },
+				{ kind: "user", text: "q2" },
+				{ kind: "user", text: "q3" },
+			],
+		})
+		const info = await new RemoteSessionSeam(session).sessionInfo()
+		expect(info?.msgCount).toBe(9)
+		expect(info?.turnCount).toBe(3)
+		// messageCount stays the legacy user+assistant total (5), unchanged.
+		expect(info?.messageCount).toBe(5)
+	})
+
+	test("a transcript read failure degrades /session turns to 0 without sinking the panel; msg still passes", async () => {
+		const { session } = fakeSession({
+			sessionInfo: () => liveInfo(4),
+			storedTranscript: async () => {
+				throw new Error("transcript unavailable")
+			},
+		})
+		const info = await new RemoteSessionSeam(session).sessionInfo()
+		expect(info?.turnCount).toBe(0)
+		expect(info?.messageCount).toBe(0)
+		expect(info?.msgCount).toBe(4)
+	})
+
+	test("a resumed/staged session hides msg (undefined) while /session turns still paint from the durable transcript", async () => {
+		const { session } = fakeSession({
+			sessionInfo: () => ({ ...liveInfo(6), sessionId: undefined }),
+			stagedSessionId: () => "stored-9",
+			storedTranscript: async () => [
+				{ kind: "user", text: "q1" },
+				{ kind: "assistant", text: "a1", final: true },
+			],
+		})
+		const info = await new RemoteSessionSeam(session).sessionInfo()
+		expect(info?.msgCount).toBeUndefined()
+		expect(info?.turnCount).toBe(1)
 	})
 })
 

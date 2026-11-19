@@ -601,9 +601,10 @@ export function brandSegment(theme?: ComponentTheme, presetLabel?: string, mode:
 }
 
 /**
- * The provider segment (providerID on the purple/interactive fill, ☁️ lead —
- * tui-pi footer parity). `mode` feeds providerFill's brand-collision walk
- * (see POWERLINE_MIN_SEGMENT_DISTANCE).
+ * The provider segment (providerID on the purple/interactive fill, 🌐 lead —
+ * tui-pi footer parity; bare U+1F310, no VS16, because the renderer blanks
+ * VS16 graphemes in wcwidth mode). `mode` feeds providerFill's brand-collision
+ * walk (see POWERLINE_MIN_SEGMENT_DISTANCE).
  */
 export function providerSegment(
 	provider: string,
@@ -611,7 +612,7 @@ export function providerSegment(
 	mode: SkinColorMode = "dark",
 ): PowerlineSegment | null {
 	if (!provider) return null
-	const label = `☁️ ${provider}`
+	const label = `🌐 ${provider}`
 	if (!theme) return { text: label, bg: POWERLINE_COLORS.provider, priority: 60 }
 	return { text: label, bg: powerlinePalette(theme, brandBlue(mode)).provider, priority: 60 }
 }
@@ -736,16 +737,31 @@ export function contextSegment(
 }
 
 /**
- * The 💬 message-count segment (fix/footer-parity, tui-pi wording `💬 {n}
- * msgs`, footer.ts:271); 0 still renders `💬 0 msgs` (a legitimate empty
- * session, tui-pi pushes it unconditionally). The label goes through i18n
- * (`footer.messages`, live language signal). Presence is the CALLER's
- * decision: sessionFooterSegments omits the segment when the count is
+ * The legacy 💬 message-count segment (retained for older callers/tests; the
+ * strip itself uses `msgSegment`). It shares the canonical i18n keys
+ * `footer.msgs.one` / `footer.msgs.many` with `msgSegment`, so there is a single
+ * 💬 label surface; the old `footer.messages` key was removed as inconsistent.
+ * 0 still renders `💬 0 msgs` (a legitimate empty session). Presence is the
+ * CALLER's decision: sessionFooterSegments omits the segment when the count is
  * unknown (sessionInfo absent) rather than showing a fake number.
  */
 export function messagesSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
 	if (!Number.isFinite(n) || n < 0) return null
-	return { text: t("footer.messages", { n }), bg: resolvePalette(theme).messages, priority: 80 }
+	return { text: t(n === 1 ? "footer.msgs.one" : "footer.msgs.many", { n }), bg: resolvePalette(theme).messages, priority: 80 }
+}
+
+/**
+ * Footer 💬 msg leaf — one durable `assistant/message` event = one msg,
+ * through the i18n keys `footer.msgs.one` / `footer.msgs.many` (t() only
+ * interpolates, so the singular/plural branch is caller-side). Exported for
+ * granular formatting tests; the strip assembles it via sessionFooterSegments().
+ * Priority 75 (above 🔧 50 / provider 60 / model 70, below context 90 / brand
+ * 100) keeps the readout at 80 columns while the 45-column contract still
+ * sheds it before brand + full context.
+ */
+export function msgSegment(n: number, theme?: ComponentTheme): PowerlineSegment | null {
+	if (!Number.isFinite(n) || n < 0) return null
+	return { text: t(n === 1 ? "footer.msgs.one" : "footer.msgs.many", { n }), bg: resolvePalette(theme).messages, priority: 75 }
 }
 
 /**
@@ -1054,7 +1070,7 @@ export function PowerlineFooter(props: {
 
 /**
  * Assemble the standard footer row from live data (the example page's
- * seam wiring): brand, provider, model+effort, context, messages, tools,
+ * seam wiring): brand, provider, model+effort, context, msgs, tools,
  * speed. Omitted-data builders (null) drop out.
  *
  * Two fixes from the footer-polish feedback batch ride here:
@@ -1074,8 +1090,14 @@ export function sessionFooterSegments(data: {
 	contextTokens?: number | null
 	/** 🧠 model window (footer context batch); null/absent degrades to the bare `used` shape. */
 	contextWindow?: number | null
-	/** 💬 durable message count (seam sessionInfo); undefined — sessionInfo absent — hides the segment (no fake fallback), an explicit 0 still renders. */
+	/**
+	 * @deprecated Retired from the strip: the "💬 N msgs" readout is now
+	 * driven by `msg` (the durable assistant/message count). Kept optional so
+	 * older callers/tests still typecheck (messagesSegment() is retained).
+	 */
 	messages?: number
+	/** 💬 durable assistant/message count (one event = one msg); undefined (unknown / resumed journal unbound) hides the segment, an explicit 0 still renders. */
+	msg?: number
 	tools?: number
 	tps?: number | null
 	/** ⚡ CH rate (seam.cacheHitRate()); null/absent hides the segment. */
@@ -1104,12 +1126,13 @@ export function sessionFooterSegments(data: {
 	add(providerSegment(data.provider ?? "", theme, data.mode))
 	add(modelSegment(data.model ?? "", effectiveEffort(data.effort), theme))
 	add(contextSegment(data.contextTokens ?? null, data.contextWindow ?? null, theme))
-	// tui-pi footer order: 🧠 context, ⚡ CH, then msgs/tools.
+	// tui-pi footer order: 🧠 context, ⚡ CH, then the message counter/tools.
 	add(cacheSegment(data.cacheHitRate ?? null, theme))
-	// Unknown count (sessionInfo absent) hides the segment — the old
-	// `?? 0` fallback pinned a send-count-shaped fake number on the strip;
-	// an explicit 0 (a real empty session) still renders `💬 0 msgs`.
-	if (data.messages !== undefined) add(messagesSegment(data.messages, theme))
+	// The single "💬 N msgs" readout: one durable assistant/message event = one
+	// msg. Unknown counts (sessionInfo absent, or a resumed session's journal
+	// unbound) hide the segment rather than painting a fabricated 0; an
+	// explicit 0 (a real empty session) still renders. No turn count in the strip.
+	if (data.msg !== undefined) add(msgSegment(data.msg, theme))
 	add(toolSegment(data.tools ?? 0, theme))
 	add(elapsedSegment(data.elapsedSec ?? null, theme))
 	add(speedSegment(data.tps ?? null, theme))
