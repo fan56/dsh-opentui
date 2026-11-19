@@ -20,6 +20,7 @@ import {
 	type BridgeEventFrame,
 	type BridgeTransport,
 } from "../src/client/bridge-session-seam.ts"
+import { journalToTranscriptRows, type RemoteJournalEntry } from "../src/client/remote-session-ops.ts"
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -987,5 +988,80 @@ describe("sessionInfo", () => {
 		expect(info.msgCount).toBeUndefined()
 		expect(info.messageCount).toBeUndefined()
 		expect(info.turnCount).toBeUndefined()
+	})
+
+	test("R2 P2-1: two concurrent sessionInfo() calls coalesce; counts do not double", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-concurrent", "t-c")
+		const user = (text: string) => ({ content: [{ type: "text", text }] })
+		const assistant = (text: string) => ({ message: { content: [{ type: "text", text }] } })
+		const rows = [
+			{ seq: 1, type: "user/message", payload: user("u1") },
+			{ seq: 2, type: "assistant/message", payload: assistant("a1") },
+			{ seq: 3, type: "assistant/message", payload: assistant("a2") },
+			{ seq: 4, type: "user/message", payload: user("u2") },
+		]
+		let replayCalls = 0
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => {
+				replayCalls++
+				const from = Number(params?.from ?? 1)
+				return { kind: "value", value: { rows: rows.filter((r) => r.seq >= from), cursor: rows.length + 1 } }
+			},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-c", text: "" } })
+		await done
+
+		// Fire BOTH calls synchronously, before either await resumes — exactly the
+		// turn-boundary race between the footer refresh and the /session command.
+		const p1 = h.seam.sessionInfo()
+		const p2 = h.seam.sessionInfo()
+		// Single-flight: concurrent callers share the exact same in-flight promise.
+		expect(p1).toBe(p2)
+		const [a, b] = await Promise.all([p1, p2])
+		expect([a!.msgCount, a!.turnCount, a!.messageCount]).toEqual([2, 2, 4])
+		expect([b!.msgCount, b!.turnCount, b!.messageCount]).toEqual([2, 2, 4])
+		expect(replayCalls).toBe(1) // ONE drain over the rows, not two
+	})
+
+	test("R2 P2-2: bridge sessionInfo counts match the remote journalToTranscriptRows projection", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-parity", "t-p")
+		const rows = [
+			{ seq: 1, type: "user/message", payload: { content: [{ type: "text", text: "real user" }] } },
+			{ seq: 2, type: "user/message", payload: { source: { kind: "runtime-context" }, content: [{ type: "text", text: "ctx" }] } },
+			{ seq: 3, type: "user/message", payload: { source: { kind: "tool-registry" }, content: [{ type: "text", text: "tools" }] } },
+			{ seq: 4, type: "user/message", payload: { content: [] } },
+			{ seq: 5, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "reply 1" }] } } },
+			{ seq: 6, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "reply 2" }] } } },
+			{ seq: 7, type: "assistant/message", payload: { message: { content: [] } } },
+		]
+		h.replies.set("journal.replay", { kind: "value", value: { rows, cursor: rows.length + 1 } })
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-p", text: "" } })
+		await done
+
+		const info = (await h.seam.sessionInfo())!
+
+		// The remote adapter projection over the SAME constructed journal. A bridge
+		// replay row `{seq,type,payload}` is structurally a RemoteJournalEntry with
+		// `data = payload` — exactly how bridgeReplayRowsToSeamTranscript feeds
+		// journalToTranscriptRows — so the two must agree field for field.
+		const entries: RemoteJournalEntry[] = rows.map((row) => ({
+			type: row.type,
+			seq: row.seq,
+			time: 0,
+			data: row.payload,
+		}))
+		const remoteRows = journalToTranscriptRows(entries)
+		const remoteUser = remoteRows.filter((r) => r.kind === "user").length
+		const remoteAssistant = remoteRows.filter((r) => r.kind === "assistant").length
+		const rawAssistants = rows.filter((r) => r.type === "assistant/message").length
+
+		expect(info.turnCount).toBe(remoteUser)
+		expect(info.messageCount).toBe(remoteUser + remoteAssistant)
+		expect(info.msgCount).toBe(rawAssistants) // msgCount = RAW assistant rows
 	})
 })

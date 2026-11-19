@@ -292,13 +292,14 @@ export function validateLauncherArgs(rest, { skip = [] } = {}) {
 
 /**
  * T10 — the `--remote` deprecation notice. Names the removal line (0.23.0)
- * and the replacement entry (inproc default; no flag needed). Kept here (pure)
+ * and the inproc migration path (set DSH_OPENTUI_INPROC=1, then drop the flag;
+ * inproc becomes the default in 0.23.0). Kept here (pure)
  * so the "printed exactly once" contract is unit-testable without a TUI.
  */
 export const REMOTE_DEPRECATION_NOTICE =
   'dsh-opentui: --remote is deprecated and will be removed in 0.23.0; ' +
-  'the in-process bridge is now the default in inproc mode (DSH_OPENTUI_INPROC=1) — ' +
-  'just drop the flag to use it (or use the /resume, --session, --resume-last entries).'
+  'to move to the in-process bridge, set DSH_OPENTUI_INPROC=1 and drop the flag ' +
+  '(inproc becomes the default in 0.23.0; the /resume, --session, --resume-last entries also use it).'
 
 /** True when `--remote` appears anywhere in the launch argv (before or after
  *  a `--` separator). */
@@ -327,8 +328,8 @@ export function emitRemoteDeprecation(argvLists, sink = console.warn) {
  *   'repair-force'      --repair-bridge + --force → mutually exclusive
  *   'repair-remote'     --repair-bridge + --remote → no bridge in remote mode
  *   'yes-without-force' --yes without --force/--repair-bridge (under
- *                       --repair-bridge, --yes is the kill confirmation and is
- *                       intentionally allowed through)
+ *                       --repair-bridge, --yes is tolerated — the repair branch
+ *                       never reads it — and is intentionally allowed through)
  */
 export function launcherFlagConflict({ force, repairBridge, yes } = {}, remote = false) {
   if (repairBridge && force) return 'repair-force'

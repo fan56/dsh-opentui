@@ -749,6 +749,17 @@ export class BridgeSessionSeam implements SessionSeam {
 	#lastTurnDecode: { tokens: number; ms: number } | undefined
 	#decodeTotals = { tokens: 0, ms: 0 }
 	/**
+	 * Review P2-1: the single in-flight `sessionInfo()` promise. The footer
+	 * refresh (v2-entry) and the `/session` command share this one seam
+	 * instance; without coalescing, two calls racing at a turn boundary each
+	 * drain the same incremental rows and add them twice to #sessionInfoStats
+	 * (a permanent doubling until session switch / clamp). Concurrent callers
+	 * reuse this exact promise so the tally is mutated by ONE drain per
+	 * generation. Same single-flight shape as bridge dispatchChain /
+	 * resolveSessionController. Cleared on settle with a generation guard.
+	 */
+	#sessionInfoInFlight: Promise<SeamSessionInfo | undefined> | undefined
+	/**
 	 * P2-1: incremental `sessionInfo()` tally. The footer /session panel polls
 	 * on every turn boundary; re-draining the whole journal each call is O(N²)
 	 * on a long session. We keep one cumulative, per-session count and only
@@ -1292,8 +1303,25 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * that cannot be read omits `msgCount`/`messageCount`/`turnCount` entirely
 	 * ("unknown", not a fabricated 0). No session bound → undefined, matching
 	 * the null seam.
+	 *
+	 * Review P2-1: concurrent callers coalesce onto ONE in-flight promise
+	 * (#sessionInfoInFlight), so two polls racing at a turn boundary cannot both
+	 * drain the same incremental rows and double-count the tally.
 	 */
-	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
+	sessionInfo(): Promise<SeamSessionInfo | undefined> {
+		const existing = this.#sessionInfoInFlight
+		if (existing !== undefined) return existing
+		const run = this.#computeSessionInfo()
+		this.#sessionInfoInFlight = run
+		const release = (): void => {
+			// Generation guard: only the call that set the slot may clear it.
+			if (this.#sessionInfoInFlight === run) this.#sessionInfoInFlight = undefined
+		}
+		void run.then(release, release)
+		return run
+	}
+
+	async #computeSessionInfo(): Promise<SeamSessionInfo | undefined> {
 		const sessionId = this.currentSessionId()
 		if (!sessionId) return undefined
 
