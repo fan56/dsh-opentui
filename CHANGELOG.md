@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.23.0] - 2026-11-19
 
-_Draft, unreleased. Entries are added as their work lands._
-
 ### Changed
 
 - **The in-process bridge is now the default.** A plain `dsh-opentui` boot
