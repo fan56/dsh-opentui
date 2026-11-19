@@ -148,6 +148,11 @@ jobs:
       # and only honors the [test] preload there). The macos matrix leg and the
       # opt-in real-client job stay in ci.yml: they need tmux, a global dsh and
       # a provider key, none of which exist on hosted runners.
+      # host-compat.test.ts spawns the real provisioner, which reads the built
+      # dist/bridge artifact. dist/ is gitignored, so a fresh tag checkout has
+      # none; build it here (same step as ci.yml) before the suite runs.
+      - name: Build bridge bundle
+        run: bun scripts/build-bridge.mjs
       - name: Test suite (per package)
         run: for p in packages/*/; do (cd "$p" && bun test); done
 
