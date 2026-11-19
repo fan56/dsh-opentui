@@ -3,7 +3,7 @@
 - Gate / 门禁: PASS (6/6 assertions passed; evidence collected 2026-11-18/19 UTC; report committed separately)
 - Profile(s) / 证明类型: FEATURE
 - Expected registered (UTC) / 预期登记时间: 2026-11-18T22:36Z
-- Change ref: 4feea9f6274e1a2875e62e0ba61b789f1c22fcd4 (final HEAD of feat/inproc-bridge-20261118 containing the work under test; the report commit is separate)
+- Change ref: 49665ec2cedac23a28ebf0dde3bb44d8936ccf4f (final HEAD of feat/inproc-bridge-20261118 after merging main 06f09edf83e86b2b7068fdb504558cf8282ae7fd — merge commit 6a0a57ae6f7df5a05732afa492828b55b95ac97c — plus review fixes f65d5d0/49665ec; original pre-merge work HEAD was 4feea9f6274e1a2875e62e0ba61b789f1c22fcd4)
 - Working tree: tracked clean at registration; .proof/ untracked
 - Task: 0.22.0 进程内 bridge 分支的用户可见行为验收（resume 上下文恢复 / append section 注入 / DEAD 即时上屏 / R 键恢复 / writer-held 文案 / 审批卡与 always）。
 - Acceptance target (user verbatim) / 验收目标（用户原话）: "自己完成，明早我来验收结果。直接用推荐。或者问 oldfox 和 blocky"
@@ -32,6 +32,23 @@
 | A6 | 写工具触发审批卡；Allow always 后同工具不再弹卡 | 首次写操作出现审批卡；always 后第二次同类写操作无卡且执行成功 | 第一个 capture 含审批卡（工具名/命令）；always 后第二个 capture 无新卡且目标文件生成/命令成功 | packages/bridge/src/index.ts (escalation: true / ask dispatch) + ask-registry.ts (grant → gate 短路) | Artifact + reverse | 02-run-a6-approval.log | |
 
 Reverse cases (one per changed behavior; pre-change = 0.18.6 发布版): A1←`00-pre-change-a1.log`; A2←`00-pre-change-a2.log`; A3←`00-pre-change-a3.log`; A4←`00-pre-change-a4.log`; A5←`00-pre-change-a5.log`; A6←`00-pre-change-a6.log`.
+
+## Merge re-verification (2026-11-19, after merging main 06f09ed)
+
+Branch merged main (0.19.0–0.21.1: activity 面板 #7、快捷键行 #8、单一 💬 msgCount #9) via merge commit `6a0a57ae`, then oldfox review fixes `f65d5d0` (CHANGELOG opt-in 表述、sessionInfo 增量 drain、口径对齐、flag 死角) and `49665ec` (sessionInfo single-flight 并发去重)。Unit/ft 2854 pass / 0 fail。真机门禁在 merged HEAD 重采（DSH_HOME=/private/tmp/rm-20261119/home，DSH_OPENTUI_INPROC=1，真 TTY 200 列）：
+
+| 面向 | 结果 | 证据（/private/tmp/） |
+|---|---|---|
+| launcher 拒绝组合（repair+force / repair+remote exit 2；usage 三 flag） | PASS | rm5-flag1.out / rm5-flag2.out |
+| boot 握手 + #8 快捷键行 9 段 | PASS | rm5-boot.txt |
+| 首轮后 footer `💬 1 msg`（BridgeSessionSeam.sessionInfo 首次真机生效）+ `🆔` + 单一 💬 口径（无 turn/round 计数） | PASS | rm5-turn1.txt |
+| /session 面板计数（messages 2 / turns 1 / speed — 为 P3-1 em-dash 占位）+ ctrl+g 面板空态 | PASS | rm5-session-panel.txt / rm5-ctrlg.txt |
+| A3 空闲 SIGKILL → banner deadCause(stage/signal) + footer `⚠ dead 🆔`（kill 后 ~1s） | PASS | rm5-dead.txt |
+| A4 R 恢复：footer `⟳ recovering` 5/6 连拍帧（RM-2a 曾 FAIL 项在 merge 后复核通过）→ `Reconnected - 27 event(s) caught up` → 同 `🆔 9398307c` → `✓ ready`，💬 计数恢复后无重复 | PASS | rm5-rec-1..6.txt / rm5-rec-final.txt |
+| 门禁① `--session` resume + 80 列窄屏回归（footer 单行不换行、低优先级段按序裁剪、历史完整恢复） | PASS | rm5-narrow.txt |
+| pack 门禁：tarball→npm install 全新 prefix→空 home（仅凭据文件）冷启动→provisioning [1/7]–[7/7] 首次生成路径→TUI `✓ ready` | PASS | pack-022m/（boot.txt 首试为裸解 tarball 缺依赖的方法错误，非包缺陷；boot4.txt 为安装版终态） |
+
+方法坑记录（勿重复）：①pk2 时代 ensure-host 孤儿进程把 home2 注册表卡在 phase:booting，pk3 因此悬挂——空 home 无凭据时 host 起不来，先拷凭据再启动；②pgrep 按 profile 名匹配会撞用户并行试用实例，杀进程前必须核 PPID 链。
 
 ## Evidence index / 证据清单
 
