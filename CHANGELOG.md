@@ -76,6 +76,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Inproc bridge subagent rows converge; tool callId / isError reach the view.**
+  Follow-up to the 9190946 subagent/tool fix (oldfox P1×2+P2×3+P3×3):
+  - A plain `subagent` child now settles when the host journals a
+    `user/message` `source.kind=subagent-settled` notice — paired by
+    `senderSessionId` to the catalog child's `childId` (no runId needed),
+    `stopReason`→status conservatively mapped. Settled rows freeze their
+    duration; unknown stop reasons never paint a false failure. An ABORTED
+    parent turn leaves no such notice, so its ghost row stays `running` — a
+    documented known residue with no wall-clock fallback (ADR-0010).
+  - Catalog-family rows may revive a settled child on a later same-childId
+    catalog (a new run); the tool-workflow family keeps its no-revive guard.
+    `sessionInfo`'s incremental drain now folds these rows too, so an async
+    child settles outside any turn. Catalog replay anchors `startedAt` to the
+    host's real `childCreatedAt`.
+  - `turn.tool` call/result frames carry the `callId` end-to-end; the seam
+    passes it into `onToolStart`/`onToolRun`, so two same-name tools
+    interleaving no longer collide on one row and args stay with their call.
+    The result frame carries the host's `isError`, mapped to `ok` (a failed
+    tool is no longer painted as a success). Corrected 9190946's inaccurate
+    claim that callId preserved the args — that came from the seam-rows
+    empty-argsPretty fallback.
 - **🧠 context and ⚡ cache-hit segments render under the inproc bridge.**
   The in-process bridge exposes no `session` / `projections` RPC (only
   `session.list`), so `BridgeSessionSeam` derives `contextTokens()` /

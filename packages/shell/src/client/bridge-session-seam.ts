@@ -518,20 +518,59 @@ const BRIDGE_AGENT_START = "tool-workflow/agent-start"
 const BRIDGE_AGENT_END = "tool-workflow/agent-end"
 /** Plain `subagent` calls (the common delegation path) record `subagent/catalog`
  *  on the parent instead of the tool-workflow agent records above. Same childId
- *  + label, but no agent-end terminal — fold as a spawn that stays running. */
+ *  + label, but no agent-end terminal — fold as a spawn that stays running
+ *  UNTIL the host journals a `user/message` source.kind "subagent-settled" notice
+ *  (P1-2). */
 const BRIDGE_SUBAGENT_CATALOG = "subagent/catalog"
+/** source.kind on a `user/message` row that carries an async child's terminal. */
+const BRIDGE_SUBAGENT_SETTLED = "subagent-settled"
+/** The catalog family's synthetic runId namespace (also the P3-1 collision guard). */
+const BRIDGE_CATALOG_RUN_PREFIX = "catalog:"
 
 function bridgeAgentRunKey(runId: string, seq: number): string {
 	return `${runId}:${seq}`
 }
 
+/** outcome → settled status; anything but failed/cancelled is completed (a
+ *  conservative unknown-stopReason mapping — never paint a false failure). */
+function bridgeSettledStatus(outcome: unknown): "completed" | "failed" | "cancelled" {
+	return outcome === "failed" || outcome === "cancelled" ? outcome : "completed"
+}
+
+/** Freeze a running child into the settled projection: drop `startedAt`, carry
+ *  `elapsedSec` + `endedAt` (the exact shape of session-seam-adapter.ts:715-721). */
+function bridgeSettleChild(
+	existing: SeamSubagentView,
+	outcome: unknown,
+	startedAt: number,
+	now: number,
+): SeamSubagentView {
+	return {
+		id: existing.id,
+		label: existing.label,
+		...(existing.model !== undefined ? { model: existing.model } : {}),
+		status: bridgeSettledStatus(outcome),
+		rounds: existing.rounds,
+		elapsedSec: Number(((now - startedAt) / 1000).toFixed(1)),
+		endedAt: now,
+		...(existing.injectedRound !== undefined ? { injectedRound: existing.injectedRound } : {}),
+		...(existing.hardStopRound !== undefined ? { hardStopRound: existing.hardStopRound } : {}),
+		...(existing.spinStopRound !== undefined ? { spinStopRound: existing.spinStopRound } : {}),
+		...(existing.lastLine !== undefined ? { lastLine: existing.lastLine } : {}),
+	}
+}
+
 /**
  * Fold ONE agent lifecycle record (durable journal row OR live frame payload)
- * into the canonical `SeamSubagentView` map. `runSeq` pairs agent-end's
- * `{runId, seq}` back to the child registered by agent-start (the exact remote
- * pairing, remote-subagents.ts:152/235-249). `liveStarts` remembers which
- * children got a REAL wall-clock start from a live frame so a later replay
- * sweep never overwrite it with an approximate one.
+ * into the canonical `SeamSubagentView` map. TWO families share this map:
+ *   - tool-workflow: agent-start / agent-end paired by runId:seq (the exact
+ *     remote pairing, remote-subagents.ts:152/235-249); NO revive after settle;
+ *   - catalog: subagent/catalog (spawn) + user/message subagent-settled
+ *     (terminal) joined by childId directly — no runId pairing, and REVIVE IS
+ *     allowed (journal order is unambiguous: a catalog of a settled child is a
+ *     new run of it).
+ * `liveStarts` remembers which children got a REAL wall-clock start from a live
+ * frame so a later replay sweep never overwrites it with an approximate one.
  *
  * Returns true when the map changed (caller decides whether to re-emit).
  */
@@ -544,34 +583,87 @@ function bridgeFoldAgentRecord(
 	now: number,
 	live: boolean,
 ): boolean {
+	// P1-2 (catalog-family terminal): the host journals an async child's settle
+	// as a `user/message` notice, NOT an agent-end. Real evidence — ad45fecb
+	// seq37 source = {kind:"subagent-settled", stopReason:"completed",
+	// senderSessionId:"caf48fb3-..."}, byte-identical to the seq21 subagent/catalog
+	// childId. Pair by childId directly; no runId:seq needed.
+	// KNOWN RESIDUE: an ABORTED parent turn NEVER journals this notice (sample
+	// 2d692fc9: catalog seq24, turn/end aborted seq32, no settle row) — that ghost
+	// cannot converge through this branch and gets NO wall-clock fallback
+	// (ADR-0010). Do not add one: a timed force-settle would be a client-invented
+	// fact about a host that is still running.
+	if (type === "user/message") {
+		const source = asRecord(data.source)
+		if (source.kind !== BRIDGE_SUBAGENT_SETTLED) return false
+		const childId = typeof source.senderSessionId === "string" ? source.senderSessionId : ""
+		if (!childId) return false
+		const existing = children.get(childId)
+		if (!existing || existing.status !== "running") return false
+		children.set(childId, bridgeSettleChild(existing, source.stopReason, existing.startedAt ?? now, now))
+		return true
+	}
+
 	// Plain `subagent` calls emit `subagent/catalog` (childId + label/name) on the
 	// parent, never tool-workflow/agent-* (those belong to the `workflow` tool).
-	// Fold it as a spawn with a stable synthetic pairing key; no terminal exists
-	// for plain children, so the row stays `running` (the documented
-	// "start without terminal = running" approximation, ADR-0010).
 	if (type === BRIDGE_SUBAGENT_CATALOG) {
 		const childId = typeof data.childId === "string" ? data.childId : ""
 		if (!childId) return false
 		const label = typeof data.label === "string" && data.label
 			? data.label
 			: (typeof data.name === "string" ? data.name : "")
+		const childCreatedAt = typeof data.childCreatedAt === "number" && Number.isFinite(data.childCreatedAt)
+			? data.childCreatedAt
+			: undefined
+		const existing = children.get(childId)
+		// CATALOG-FAMILY REVIVE: a settle followed by another catalog of the same
+		// childId is a new run of that child (journal order is unambiguous), so the
+		// row goes back to running. Deliberately the OPPOSITE of the tool-workflow
+		// family's no-revive guard below — revive permission is PER ROW FAMILY.
+		if (existing !== undefined && existing.status !== "running") {
+			runSeq.set(bridgeAgentRunKey(`${BRIDGE_CATALOG_RUN_PREFIX}${childId}`, 0), childId)
+			children.set(childId, {
+				id: existing.id,
+				label: label || existing.label,
+				status: "running",
+				rounds: 0,
+				startedAt: childCreatedAt ?? now,
+				...(existing.model !== undefined ? { model: existing.model } : {}),
+			})
+			if (live) liveStarts.add(childId)
+			return true
+		}
 		return bridgeFoldAgentRecord(children, runSeq, liveStarts, BRIDGE_AGENT_START, {
-			childId, label, runId: `catalog:${childId}`, seq: 0,
+			childId, label, runId: `${BRIDGE_CATALOG_RUN_PREFIX}${childId}`, seq: 0,
+			...(childCreatedAt !== undefined ? { childCreatedAt } : {}),
+			viaCatalog: true,
 		}, now, live)
 	}
 	if (type === BRIDGE_AGENT_START) {
 		const childId = typeof data.childId === "string" ? data.childId : ""
 		if (!childId) return false
 		const runId = data.runId === undefined ? "" : String(data.runId)
+		// P3-1: the "catalog:" prefix belongs to the catalog family's synthetic
+		// pairing key. A real tool-workflow agent-start carrying it would collide
+		// with a catalog child's runSeq key (two families, one map) — reject it.
+		// The catalog branch marks its own synthesized start with viaCatalog and
+		// never reaches this guard.
+		if (data.viaCatalog !== true && runId.startsWith(BRIDGE_CATALOG_RUN_PREFIX)) return false
 		const seq = typeof data.seq === "number" ? data.seq : -1
 		runSeq.set(bridgeAgentRunKey(runId, seq), childId)
+		// P3-2: catalog rows carry the host's real child-creation clock (epoch ms).
+		// Use it instead of `now` so a recovered child shows its true duration; a
+		// catalog row is the exception to the "replay rows carry no clock" rule.
+		const childCreatedAt = typeof data.childCreatedAt === "number" && Number.isFinite(data.childCreatedAt)
+			? data.childCreatedAt
+			: undefined
 		const existing = children.get(childId)
 		if (existing !== undefined) {
 			// P3-5: a later spawn may refine the label (remote #registerChild parity).
 			const newLabel = typeof data.label === "string" ? data.label : ""
 			const labelChanged = newLabel !== "" && newLabel !== existing.label
 			// A live spawn arriving after a replay approximation upgrades the start
-			// clock to the real wall clock; a replay sweep never downgrades it.
+			// clock to a real wall clock; a replay sweep never downgrades it.
 			// P3-1: only a RUNNING row may take that upgrade — a spawn arriving after
 			// settle must not revive the row or overwrite its frozen start clock.
 			const upgradeStart = live && existing.status === "running" && !liveStarts.has(childId)
@@ -579,13 +671,13 @@ function bridgeFoldAgentRecord(
 			children.set(childId, {
 				...existing,
 				...(labelChanged ? { label: newLabel } : {}),
-				...(upgradeStart ? { startedAt: now } : {}),
+				...(upgradeStart ? { startedAt: childCreatedAt ?? now } : {}),
 			})
 			if (upgradeStart) liveStarts.add(childId)
 			return true
 		}
 		const label = typeof data.label === "string" && data.label ? data.label : `subagent ${childId.slice(0, 8)}`
-		children.set(childId, { id: childId, label, status: "running", rounds: 0, startedAt: now })
+		children.set(childId, { id: childId, label, status: "running", rounds: 0, startedAt: childCreatedAt ?? now })
 		if (live) liveStarts.add(childId)
 		return true
 	}
@@ -597,23 +689,7 @@ function bridgeFoldAgentRecord(
 		if (!childId) return false
 		const existing = children.get(childId)
 		if (!existing || existing.status !== "running") return false
-		const outcome = data.outcome === "failed" || data.outcome === "cancelled" ? data.outcome : "completed"
-		const startedAt = existing.startedAt ?? now
-		// Settled rows DROP `startedAt` and carry `elapsedSec` + `endedAt` — the
-		// exact projection shape of session-seam-adapter.ts:715-721.
-		children.set(childId, {
-			id: existing.id,
-			label: existing.label,
-			...(existing.model !== undefined ? { model: existing.model } : {}),
-			status: outcome,
-			rounds: existing.rounds,
-			elapsedSec: Number(((now - startedAt) / 1000).toFixed(1)),
-			endedAt: now,
-			...(existing.injectedRound !== undefined ? { injectedRound: existing.injectedRound } : {}),
-			...(existing.hardStopRound !== undefined ? { hardStopRound: existing.hardStopRound } : {}),
-			...(existing.spinStopRound !== undefined ? { spinStopRound: existing.spinStopRound } : {}),
-			...(existing.lastLine !== undefined ? { lastLine: existing.lastLine } : {}),
-		})
+		children.set(childId, bridgeSettleChild(existing, data.outcome, existing.startedAt ?? now, now))
 		runSeq.delete(key)
 		return true
 	}
@@ -622,11 +698,14 @@ function bridgeFoldAgentRecord(
 
 /**
  * Pure replay projection: drained journal rows → `SeamSubagentView[]`.
- * spawn→running→settle folds by runId:seq; a child with agent-start but no
- * agent-end stays `running` (the same "start without terminal = running" rule
- * the remote panel uses, remote-subagents.ts:460-473). Replayed rows carry no
- * wall clock, so `now` is used as the discovery anchor for running children —
- * an honest wall-clock approximation (duration shows from first observation).
+ * tool-workflow spawn→running→settle folds by runId:seq; a child with
+ * agent-start but no agent-end stays `running` (the remote panel's "start
+ * without terminal = running" rule, remote-subagents.ts:460-473). The catalog
+ * family folds by childId and settles on a `user/message` subagent-settled
+ * notice. Replayed tool-workflow rows carry no wall clock, so `now` is the
+ * discovery anchor (duration from first observation) — EXCEPT a catalog row,
+ * which carries the host's real `childCreatedAt` epoch ms and anchors to that
+ * instead, so a recovered child shows its true duration (P3-2).
  */
 export function bridgeReplayRowsToSubagentViews(
 	rows: readonly BridgeReplayRow[],
@@ -1649,6 +1728,13 @@ export class BridgeSessionSeam implements SessionSeam {
 				drained = await this.#drainJournal(sessionId, 1)
 			}
 
+			// P2-1 (inproc): fold the SAME drained rows through the subagent
+			// projector so an async child's terminal converges OUTSIDE a turn. The
+			// live `agent.settle` frame may be missed while the bridge was idle /
+			// down; the host journals it as a `user/message` subagent-settled row,
+			// which this fold settles by senderSessionId. Re-folding is idempotent.
+			this.#foldAgentReplayRows(drained.rows, sessionId)
+
 			// msgCount stays the RAW assistant/message count (0.21.1 semantics).
 			// The SAME journal rows also carry the ⚡ CH and 🧠 inputs: the host's
 			// `assistant/message.data.usage` (`inputTokens/outputTokens/cacheReadTokens/
@@ -1816,11 +1902,14 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
-	 * Derive subagent rows from durable journal rows (replay / recovery), for the
-	 * SAME session only. A binding change clears the old session's map so a /new
-	 * or a different replay target cannot pollute the live roster. Re-folding the
-	 * full log is idempotent (start on a known child / settle on a settled child
-	 * are no-ops), so repeated `storedTranscript` sweeps are safe.
+	 * Derive subagent rows from durable journal rows (replay / recovery / the
+	 * sessionInfo incremental drain), for the SAME session only. A binding change
+	 * clears the old session's map so a /new or a different replay target cannot
+	 * pollute the live roster. Re-folding the FULL log is idempotent: rows apply
+	 * in seq order, so the last terminal/spawn for a child decides its state.
+	 * Catalog-family rows may revive a settled child (a new catalog = a new run,
+	 * journal order is unambiguous); the tool-workflow family keeps its no-revive
+	 * guard. Repeated `storedTranscript` sweeps stay safe.
 	 */
 	#foldAgentReplayRows(rows: readonly BridgeReplayRow[], sessionId: string): void {
 		let rosterReset = false
@@ -2539,17 +2628,24 @@ export class BridgeSessionSeam implements SessionSeam {
 					cb.onContentDelta(text)
 				}
 			} else if (frame.type === "turn.tool") {
-				// The bridge's turn.tool carries either `input` (call) or
-				// `output` (result) — no callId on the wire, so that arm degrades.
+				// P1-1: the bridge's turn.tool carries `input` (call) or `output`
+				// (result), plus `callId` on both and the result's `isError` mirror.
+				// Forward all three through this conversion layer: seam-rows keys
+				// LIVE tool rows by `callId`, so two same-name tools interleaving
+				// must not collide on the name; `ok` is the isError mirror, never a
+				// hardcoded true. (FakeSeam tests that call the callbacks directly
+				// bypass this layer — this is where the wire fields used to be lost.)
 				const name = typeof payload.name === "string" ? payload.name : "tool"
+				const callId = typeof payload.callId === "string" ? payload.callId : undefined
 				if (payload.input !== undefined) {
-					cb.onToolStart?.({ name, args: JSON.stringify(payload.input) })
+					cb.onToolStart?.({ ...(callId !== undefined ? { callId } : {}), name, args: JSON.stringify(payload.input) })
 				} else if (payload.output !== undefined) {
 					cb.onToolRun?.({
+						...(callId !== undefined ? { callId } : {}),
 						name,
 						argsPretty: "",
 						output: typeof payload.output === "string" ? payload.output : "",
-						ok: true,
+						ok: payload.isError !== true,
 					})
 				}
 			} else if (frame.type === "turn.error") {

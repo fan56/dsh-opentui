@@ -118,6 +118,25 @@ bridge 自身生命周期（连接断开、插件卸载等）**仍不通过 brid
 
 **`session.open` 的 replace 语义（M2-1b 实现中，先按契约写）**：`session.open` 支持 `{replace:true}`——显式点名目标 id 时允许关旧开新，响应携带 `previousSessionId`（被关闭的旧会话 id）；不带 `replace` 且当前已有不同会话时返回 `ALREADY_OPEN`（`detail.openSessionId` 为当前打开的会话 id）。该操作不违反 I1：sessionId 仍只由 `open` 改变，且必须显式点名目标 id，不存在隐式 re-mint 或 fallback create。
 
+## 子代理生命周期行派生（inproc subagent lifecycle rows）
+
+bridge 无 subagent RPC，其 `subagentViews` 名册从父 journal 的持久行投影（`bridge-session-seam.ts` 的 `bridgeFoldAgentRecord`）。名册里有**两个行族**，配对方式与 revive 语义不同，不可混用：
+
+- **tool-workflow 族**：`tool-workflow/agent-start`（spawn）→ `tool-workflow/agent-end`（terminal），按 `runId:seq` 配对（remote `remote-subagents.ts:152/235-249` 同款）。**不 revive**：settle 之后的 agent-start 不得复活已结算行，也不得覆盖其冻结时钟（no-revive 守卫）。
+- **catalog 族**：普通 `subagent` 委托只在父 journal 落 `subagent/catalog`（childId + label/name + childCreatedAt），不发 agent-start/agent-end。**配对按 childId，不用 runId:seq**。
+
+**settle 派生规则（catalog 族）**：宿主把异步子代理的终态写成一条 `user/message` 行，`data.source = {kind:"subagent-settled", stopReason, senderSessionId, …}`；以 `senderSessionId` 直接查 children map 结算，无需 runSeq 配对（真机证据 `ad45fecb` seq21 catalog childId 与 seq37 settle 行 `senderSessionId` 逐字相等）。`stopReason` 映射：`failed`→`failed`、`cancelled`→`cancelled`、其余（含 `completed`、未知/缺失）→`completed` 保守取值，绝不因未知原因误 paint 失败。结算行 drop `startedAt`、冻结 `elapsedSec` + `endedAt`（与 remote `SeamSubagentView` 投影同形），故已结算行不再走秒。
+
+**aborted 残留边界（已知残留，不做兜底）**：父 turn 被 aborted 时宿主**不写**这条 subagent-settled 行（真机样本 `2d692fc9`：catalog seq24、`turn/end` aborted seq32，无 settle 行），因此该 catalog child 无终态可派生，会一直停在 `running` —— 这是 (a) 方案治不了的幽灵行。契约明确**不加 wall-clock 兜底**：客户端不得凭墙上时钟推断一个仍在运行的宿主的子代理终态，那是客户端捏造的宿主事实。aborted 父 turn 的后台幽灵作为已知残留记录在案。
+
+**catalog 族 revive 语义**：settle 之后再次出现**同 childId 的 catalog 行**，视为该 child 的一次新 run，行回到 `running`（journal 有序无歧义：catalog 是 spawn，晚于 settle 的 spawn 必是新一次）。这是与 tool-workflow 族 no-revive 守卫相反的**分族行为**——revive 许可按**行族**判定，不做全局一刀切。revive 行用新 catalog 的 `childCreatedAt` 作 startedAt。
+
+**catalog replay 时钟（P3-2）**：`subagent/catalog` 行携带宿主真实 `childCreatedAt`（epoch ms），replay 投影以它为 running 行的 startedAt，而非发现时刻 `now`；因此恢复（recovery）后该 child 的时长是真实值。其余不带时钟的 replay 行仍用 `now` 作发现锚点（首见起算的诚实近似）。bridge 亦在 catalog 转发的 `agent.spawn` 帧里携带 childCreatedAt（live 路径同样锚定真实时钟）。
+
+**turn 外收敛点（P2-1）**：`sessionInfo` 的增量 journal drain 也把新行喂给同一个 `bridgeFoldAgentRecord`，使错过 live `agent.settle` 帧（catalog 族本就没有该帧）的异步 child 在 turn 之外也能收敛到 settled，无需等待下一次 turn 或 recovery 全量重放。
+
+**callId / isError（P1-1）**：`turn.tool` 的 call 与 result 帧都带 `callId`，seam 的 `#onFrame` 把它透传给 `SeamTurnCallbacks.onToolStart/onToolRun`；`seam-rows` 据此以 `tool:live:${callId}` 为键，保证同名工具交错不撞键、args 各归各行。result 帧带宿主 `isError` 镜像，seam 映射到 `ok = !isError`（不再硬编码 `true`），失败工具不再被画成成功。
+
 ## 错误码全集
 
 协议帧 `error{code, message, detail}` 的 `code` 取值分两类。
@@ -195,3 +214,4 @@ ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESS
 - 2026-11-19 — 用户裁决（merge 后真机 footer 复核，勿再议）：① 删除 I5 的 🆔 session-id footer 常显段，连同 v2-entry 的 sessionId 接线、recovery-ui 的 onSessionId 回调与对应测试整体移除；身份仍由 `/session info` 的 `session` 行查询，I1/I2/I3 语义不变。② `bridgeStatus` 三态只隐藏常态 `✓ ready`——`⚠ dead` / `⟳ recovering` 在异常/恢复期间照常显示，恢复完成（状态回 `ready`）自动消失；RecoveryUiController/driving 逻辑不动，仅改 powerline 段渲染条件。③ 80 列裁剪优先级表复核：`bridgeStatus` 保持最低优先级 -2，ready 常态不再占位。复核发现：🧠/⚡ 段恢复后满载条带宽于 80 列，异常段（priority -2）在裁剪时最先让位；裁决限定只改渲染条件，故不动优先级，80 列窄屏的异常信号由瞬时故障 notice / 恢复 banner 兜底。
 - 2026-11-19 — oldfox 复审 P2-1(a)/P2-3/P3 小修：`onSessionEvent` 放开 durable `tool-workflow/agent-*` 的 turn 门控（只按绑定 sessionId 过滤），late `agent-end` 与 idle 期后台 run 实时可见；seam 侧 live spawn 升级加 `running` 守卫、会话切换无条件 emit 空快照、fold 采纳新 label；单测覆盖 turn 外 fold、settle-before-spawn、幂等、spawn-after-settle 不复活、切会话清名册、recoverSession 路径。同步声明 P3-3 债务：subagentViews 字段集与 remote 一致、值近似（rounds/lastLine/model 降级）。
 - 2026-11-19 — oldfox 复审 P2-2 口径写实：明确 inproc bridge 无 `session` / `projections` RPC（仅 `session.list`），footer 三段由 journal 行派生而非 live projection，口径分层、不做整体 parity 断言。⚡/CH 与 remote 同公式（`lastMessage` / `session`）；🧠 为降级口径——numerator 取 journal 最新 billed `assistant/message.data.usage.totalTokens`（≈ remote `ContextTokenMeter` billed base `input + cacheRead + cacheWrite + output`），无 pending 项、无下一请求投影，turn 进行中不随 pending 上涨；分母取 journal `request/context.contextWindow` 并按 live `currentModelSelection()` 路由 guard。更正此前「formulas match remote exactly」「same journal data the remote seam uses」的笼统表述：remote 读 live usage chunk 而非 journal，桥接侧读承载同一宿主 usage 数据的 journal 行。P2-1 同步：locked banner 经 `bridge.recovery.locked` 的 `details.message` / `details.holder`（源自 bridge `error.detail.holder`）显示持有会话 id；`recovery.locked{.reason,.holder}` 模板按 message 是否已含 holder 选择，渲染超长 id 截断前 8 位。
+- 2026-11-19 — oldfox 复审 9190946 修正（P1×2+P2×3+P3×3）：新增「子代理生命周期行派生」节，定稿 catalog 族 settle 派生（user/message source.kind=subagent-settled 按 senderSessionId 结算，stopReason→status 保守映射，无 runId 配对）、aborted 父 turn 无 settle 行的已知残留（不做 wall-clock 兜底）、catalog 族允许 revive 而 tool-workflow 族 no-revive 的分族语义；catalog replay 锚定 childCreatedAt 真实时钟；sessionInfo 增量 drain 接 fold 提供 turn 外收敛点。P1-1 接通 callId 透传与 result 帧 isError→ok 映射（更正 9190946 commit/bridge 注释中「callId 保住 todos」的失实表述——实际靠 seam-rows 空 argsPretty 兜底）。

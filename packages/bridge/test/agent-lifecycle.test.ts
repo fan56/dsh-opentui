@@ -295,6 +295,86 @@ describe("subagent lifecycle frames (inproc visibility)", () => {
 		expect(typeof tools[1].payload.output).toBe("string")
 	})
 
+	// ---- oldfox 9190946 review P2-2① / P1-1 / P3-2 补测 --------------------
+
+	test("P2-2①: subagent/catalog with no childId is dropped (no ghost roster row)", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "subagent/catalog", data: { version: 3, label: "no id", name: "ghost" } },
+		)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "subagent/catalog", data: { version: 3, childId: "", label: "empty id" } },
+		)
+		expect(h.eventFrames("agent.spawn")).toHaveLength(0)
+	})
+
+	test("P2-2①: an empty catalog label falls back to the host's name", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "subagent/catalog", data: { version: 3, childId: "c-name", label: "", name: "prime-checker" } },
+		)
+		const spawns = h.eventFrames("agent.spawn")
+		expect(spawns).toHaveLength(1)
+		expect(spawns[0].payload.label).toBe("prime-checker")
+	})
+
+	test("P2-2①: with no active turn the catalog spawn carries an inert empty turnId", async () => {
+		const h = makeHarness()
+		const { sessionId, turnId } = await startTurn(h, 1)
+		expect(turnId).not.toBe("")
+		h.emitSessionEvent({ id: sessionId }, { type: "turn/end", data: { reason: "completed" } })
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "subagent/catalog", data: { version: 3, childId: "c-idle", label: "L" } },
+		)
+		const spawns = h.eventFrames("agent.spawn")
+		expect(spawns).toHaveLength(1)
+		expect(spawns[0].payload.turnId).toBe("")
+		expect(spawns[0].payload.sessionId).toBe(sessionId)
+	})
+
+	test("P1-1: tool/result turn.tool frame carries the isError mirror (both row and nested message)", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "tool/result", data: { turn: 1, message: { toolCallId: "c-ok", content: [], isError: false } } },
+		)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "tool/result", data: { turn: 1, message: { toolCallId: "c-bad", content: [], isError: true } } },
+		)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "tool/result", data: { turn: 1, isError: true, message: { toolCallId: "c-rowbad", content: [] } } },
+		)
+		const tools = h.eventFrames("turn.tool")
+		expect(tools).toHaveLength(3)
+		expect(tools[0].payload).toMatchObject({ callId: "c-ok", isError: false })
+		expect(tools[1].payload).toMatchObject({ callId: "c-bad", isError: true })
+		expect(tools[2].payload).toMatchObject({ callId: "c-rowbad", isError: true })
+	})
+
+	test("P3-2: catalog spawn forwards the host's childCreatedAt wall clock", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{
+				type: "subagent/catalog",
+				data: { version: 3, childId: "c-clock", childCreatedAt: 1795074915408, label: "L" },
+			},
+		)
+		const spawns = h.eventFrames("agent.spawn")
+		expect(spawns).toHaveLength(1)
+		expect(spawns[0].payload.childCreatedAt).toBe(1795074915408)
+	})
+
 	test("protocolVersion is unchanged (additive frames stay on v1)", async () => {
 		const h = makeHarness()
 		h.send({ id: 50, method: "bridge.hello", params: { protocolVersion: 1 } })

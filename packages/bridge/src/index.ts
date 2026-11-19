@@ -1074,20 +1074,28 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // and fires the same event on this firehose (dsh-subagent/src/catalog.ts:143,
     // verified live: type=subagent/catalog keys=version,childId,childCreatedAt,
     // mode,label,name on the bound session). Forward it as the SAME additive
-    // `agent.spawn` frame so the seam projects a running child row. No terminal
-    // fires for plain children on the firehose, so the row stays `running` — the
-    // documented "start without terminal = running" approximation (ADR-0010).
+    // `agent.spawn` frame so the seam projects a running child row. There is no
+    // `agent.settle` for plain children on the firehose: the host journals the
+    // terminal as a `user/message` notice with source.kind "subagent-settled"
+    // instead (P1-2), which the seam folds by senderSessionId. Until that row
+    // is drained the child stays `running` (ADR-0010). An ABORTED parent turn
+    // never journals the settle notice — that ghost is a known residue.
     if (type === 'subagent/catalog') {
       const boundId = binding?.sessionId
       if (sessionId !== boundId) return
-      const childId = idString(data.childId)
+      // P2-2①: read the raw string, not idString() — idString(undefined) is the
+      // literal "undefined", which would slip past the empty check and mint a
+      // ghost roster row for a catalog event with no childId.
+      const childId = typeof data.childId === 'string' ? data.childId : ''
       if (!childId) return
       const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
       const label = typeof data.label === 'string' && data.label !== ''
         ? data.label
         : (typeof data.name === 'string' ? data.name : '')
       // Stable synthetic pairing key; no agent.settle is emitted for catalog
-      // children, so runId:seq is only the roster map key here.
+      // children, so runId:seq is only the roster map key here. childCreatedAt
+      // is the host's real wall clock (epoch ms) — forward it so the seam can
+      // anchor a live spawn to it too, not just the journal replay path.
       emitEvent('agent.spawn', {
         turnId,
         sessionId: boundId,
@@ -1095,6 +1103,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         label,
         runId: `catalog:${childId}`,
         seq: 0,
+        ...(typeof data.childCreatedAt === 'number' ? { childCreatedAt: data.childCreatedAt } : {}),
       })
       return
     }
@@ -1156,10 +1165,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       emitEvent('turn.tool', {
         turnId: state.turnId,
         name,
-        // Carry callId so the seam can key the call→result pair and keep the
-        // call's `input` (args JSON) onto the settled row — the remote follow
-        // path does the same (remote-follow.ts:535-571). Without it the result
-        // cannot find its start and `latestTodos` loses the todos array.
+        // P1-1: carry callId so seam-rows keys LIVE tool rows by callId (not by
+        // name) — two same-name tools interleaving must not collide. Corrected
+        // from the earlier claim that this preserved the args/latestTodos: the
+        // settled row's args survive via seam-rows' empty-argsPretty fallback,
+        // NOT via callId. This frame is the call start, so it carries `input`.
         ...(callId !== 'undefined' && callId !== '' ? { callId } : {}),
         ...(input !== undefined ? { input } : {}),
       })
@@ -1178,6 +1188,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         name,
         ...(callId !== 'undefined' && callId !== '' ? { callId } : {}),
         output: contentText(message?.content),
+        // P1-1: the result's isError mirror. The seam maps it to `ok` in its
+        // onToolRun; without it that arm hardcoded `ok:true` and a failed tool
+        // painted as a success. Mirror both the raw row and the nested message
+        // (the journal projector reads both — seam lines 478).
+        isError: data.isError === true || message?.isError === true,
       })
       return
     }

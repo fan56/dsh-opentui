@@ -738,6 +738,68 @@ describe("covered lifecycle + turn stream", () => {
 		expect(h.seam.currentSessionId()).toBeUndefined()
 	})
 
+	// ---- oldfox 9190946 review P1-1 补测: seam CONVERSION layer ------------
+	// FakeSeam tests in seam-rows.test.ts call onToolStart/onToolRun directly and
+	// bypass the frame→callback conversion in #onFrame — that is why callId loss
+	// and the ok:true hardcode escaped. These drive REAL bridge frames through.
+
+	test("P1-1: real turn.tool frames propagate callId and map isError→ok through the conversion layer", async () => {
+		const h = makeHarness()
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-tool" } })
+		const starts: { callId?: string; name: string; args: string }[] = []
+		const runs: { callId?: string; name: string; argsPretty: string; output: string; ok: boolean }[] = []
+		const done = h.seam.turn("q", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError() {},
+			onToolStart: (s) => starts.push(s),
+			onToolRun: (r) => runs.push(r),
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.tool", payload: { turnId: "t-tool", callId: "c1", name: "bash", input: { cmd: "ls" } } })
+		h.emit({ type: "turn.tool", payload: { turnId: "t-tool", callId: "c1", name: "bash", output: "ok", isError: false } })
+		h.emit({ type: "turn.tool", payload: { turnId: "t-tool", callId: "c2", name: "bash", output: "boom", isError: true } })
+		h.emit({ type: "turn.end", payload: { turnId: "t-tool", text: "" } })
+		await done
+
+		expect(starts).toEqual([{ callId: "c1", name: "bash", args: '{"cmd":"ls"}' }])
+		expect(runs).toEqual([
+			{ callId: "c1", name: "bash", argsPretty: "", output: "ok", ok: true },
+			{ callId: "c2", name: "bash", argsPretty: "", output: "boom", ok: false },
+		])
+	})
+
+	test("P1-1: two same-name tools interleaving stay on separate callId-keyed rows (full frame→seam-rows chain)", async () => {
+		const h = makeHarness()
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-inter" } })
+		let dispose!: () => void
+		const projection = createRoot((d) => {
+			dispose = d
+			return createSeamRows(h.seam, () => "sess-inter")
+		})
+		await Bun.sleep(0) // setup storedTranscript settles
+
+		const sent = projection.send("run two bash calls")
+		await Bun.sleep(0) // turn() sends session.send and binds the live callbacks
+		// A starts, B starts, A settles, B settles — all named "bash". Without
+		// callId both would collide on tool:live:bash and args/results would cross.
+		h.emit({ type: "turn.tool", payload: { turnId: "t-inter", callId: "A", name: "bash", input: { cmd: "a" } } })
+		h.emit({ type: "turn.tool", payload: { turnId: "t-inter", callId: "B", name: "bash", input: { cmd: "b" } } })
+		h.emit({ type: "turn.tool", payload: { turnId: "t-inter", callId: "A", name: "bash", output: "out-a", isError: false } })
+		h.emit({ type: "turn.tool", payload: { turnId: "t-inter", callId: "B", name: "bash", output: "out-b", isError: true } })
+		h.emit({ type: "turn.end", payload: { turnId: "t-inter", text: "" } })
+		await sent
+
+		const tools = projection.rows.filter((r) => r.kind === "tool")
+		expect(tools).toHaveLength(2)
+		const a = tools.find((r) => r.key === "tool:live:A")
+		const b = tools.find((r) => r.key === "tool:live:B")
+		expect(a).toMatchObject({ name: "bash", args: '{"cmd":"a"}', status: "done", output: "out-a" })
+		expect(b).toMatchObject({ name: "bash", args: '{"cmd":"b"}', status: "failed", output: "out-b" })
+		dispose()
+	})
+
 	test("ADR-0010 I4: SESSION_LOCKED from session.open propagates with code + detail.holder intact", async () => {
 		const h = makeHarness()
 		// The bridge replies SESSION_LOCKED with detail.holder = the locked
@@ -1069,6 +1131,41 @@ describe("sessionInfo", () => {
 		expect(info.messageCount).toBe(remoteUser + remoteAssistant)
 		expect(info.msgCount).toBe(rawAssistants) // msgCount = RAW assistant rows
 	})
+
+	test("P2-1: the incremental sessionInfo drain folds a subagent-settled row into the live roster (turn-external convergence)", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-fold", "t-fold")
+		const rows: { seq: number; type: string; payload: Record<string, unknown> }[] = [
+			{
+				seq: 1, type: "subagent/catalog",
+				payload: { childId: "async-child", childCreatedAt: 1_000, label: "async" },
+			},
+		]
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => {
+				const from = Number(params?.from ?? 1)
+				return { kind: "value", value: { rows: rows.filter((r) => r.seq >= from), cursor: rows.length + 1 } }
+			},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-fold", text: "" } })
+		await done
+
+		// First drain: catalog only → child RUNNING in the roster.
+		await h.seam.sessionInfo()
+		expect(h.seam.subagentViews().find((v) => v.id === "async-child")?.status).toBe("running")
+
+		// The host journals the async terminal as a user/message notice; no
+		// agent.settle frame is emitted for the catalog family. The incremental
+		// drain must fold it so the child settles OUTSIDE any turn.
+		rows.push({
+			seq: 2, type: "user/message",
+			payload: { source: { kind: "subagent-settled", stopReason: "completed", senderSessionId: "async-child" } },
+		})
+		await h.seam.sessionInfo()
+		expect(h.seam.subagentViews().find((v) => v.id === "async-child")?.status).toBe("completed")
+	})
 })
 
 // ---------------------------------------------------------------------------
@@ -1280,10 +1377,125 @@ describe("subagent lifecycle rows (inproc visibility)", () => {
 			label: "List and verify primes",
 			status: "running",
 			rounds: 0,
-			startedAt: t0,
+			// P3-2: a catalog row carries the host's real childCreatedAt (epoch ms),
+			// so the replay anchor is that clock, NOT the discovery `now`.
+			startedAt: 699_000,
 		})
 		// No agent-end terminal exists for a plain child → stays running.
 		expect(views[0]!.status).toBe("running")
+	})
+
+	// ---- oldfox 9190946 review P1-2 / P2-2② / P3-1 补测 ---------------------
+
+	test("P1-2: a user/message subagent-settled notice settles the catalog child by senderSessionId (no runId pairing)", () => {
+		// Real evidence: ad45fecb seq21 catalog childId == seq37 settle
+		// source.senderSessionId (byte-identical); the settle has stopReason too.
+		const t0 = 700_000
+		const views = bridgeReplayRowsToSubagentViews([
+			replayRow(21, "subagent/catalog", {
+				version: 3, childId: "child-settle", childCreatedAt: 690_000, label: "primes", name: "prime-checker",
+			}),
+			replayRow(37, "user/message", {
+				content: [{ type: "text", text: "done" }],
+				source: {
+					kind: "subagent-settled", form: "notice", summary: "finished",
+					stopReason: "completed", senderSessionId: "child-settle",
+				},
+				role: "user", id: "m-37",
+			}),
+		], t0)
+		expect(views).toHaveLength(1)
+		expect(views[0]).toMatchObject({
+			id: "child-settle", label: "primes", status: "completed",
+			// childCreatedAt anchors the duration; now freezes it at settle.
+			elapsedSec: 10, endedAt: t0,
+		})
+		expect("startedAt" in views[0]!).toBe(false)
+	})
+
+	test("P1-2: stopReason maps failed/cancelled verbatim; anything else is conservatively completed", () => {
+		const settledWith = (stopReason: unknown): SeamSubagentView =>
+			bridgeReplayRowsToSubagentViews([
+				replayRow(1, "subagent/catalog", { childId: "c", childCreatedAt: 1_000, label: "L" }),
+				replayRow(2, "user/message", { source: { kind: "subagent-settled", stopReason, senderSessionId: "c" } }),
+			], 2_000)[0]!
+		expect(settledWith("completed").status).toBe("completed")
+		expect(settledWith("failed").status).toBe("failed")
+		expect(settledWith("cancelled").status).toBe("cancelled")
+		// Unknown / absent stopReason never paints a false failure.
+		expect(settledWith("interrupted").status).toBe("completed")
+		expect(settledWith(undefined).status).toBe("completed")
+	})
+
+	test("P1-2 known residue: an aborted parent turn leaves the catalog child running (no settle row, no wall-clock fallback)", () => {
+		// Real evidence: 2d692fc9 catalog seq24, turn/end aborted seq32, no settle.
+		const views = bridgeReplayRowsToSubagentViews([
+			replayRow(24, "subagent/catalog", { childId: "ghost", childCreatedAt: 1_000, label: "G" }),
+			replayRow(32, "turn/end", { reason: { kind: "aborted", reason: { kind: "disposed" } } }),
+		], 2_000)
+		expect(views).toHaveLength(1)
+		expect(views[0]).toMatchObject({ id: "ghost", status: "running", startedAt: 1_000 })
+		// No client-invented force-settle: a ghost stays running, no elapsedSec/endedAt.
+		expect("elapsedSec" in views[0]!).toBe(false)
+		expect("endedAt" in views[0]!).toBe(false)
+	})
+
+	test("P2-2②: catalog + tool-workflow rows in one journal stay isolated (two family keys)", () => {
+		const views = bridgeReplayRowsToSubagentViews([
+			replayRow(1, "subagent/catalog", { childId: "cat-1", childCreatedAt: 900_000, label: "catalog scout" }),
+			replayRow(2, "tool-workflow/agent-start", { runId: "wf", seq: 0, childId: "wf-1", label: "workflow scout" }),
+			replayRow(3, "tool-workflow/agent-end", { runId: "wf", seq: 0, outcome: "failed" }),
+			replayRow(4, "user/message", {
+				source: { kind: "subagent-settled", stopReason: "completed", senderSessionId: "cat-1" },
+			}),
+		], 1_000_000)
+		expect(views).toHaveLength(2)
+		expect(views.find((v) => v.id === "cat-1")).toMatchObject({ status: "completed" })
+		expect(views.find((v) => v.id === "wf-1")).toMatchObject({ status: "failed" })
+	})
+
+	test("P2-2②: repeated catalog rows for the same childId are idempotent (one row)", () => {
+		const rows = [
+			replayRow(1, "subagent/catalog", { childId: "dup", childCreatedAt: 1_000, label: "L" }),
+			replayRow(2, "subagent/catalog", { childId: "dup", childCreatedAt: 1_000, label: "L" }),
+			replayRow(3, "subagent/catalog", { childId: "dup", childCreatedAt: 1_000, label: "L" }),
+		]
+		const views = bridgeReplayRowsToSubagentViews(rows, 2_000)
+		expect(views).toHaveLength(1)
+		expect(views[0]).toMatchObject({ id: "dup", status: "running", startedAt: 1_000 })
+	})
+
+	test("P2-2②: catalog-after-settle REVIVES (catalog family) but spawn-after-settle does NOT (tool-workflow family)", () => {
+		const views = bridgeReplayRowsToSubagentViews([
+			// catalog family: settle then a NEW catalog of the same child.
+			replayRow(1, "subagent/catalog", { childId: "revive-cat", childCreatedAt: 1_000, label: "L" }),
+			replayRow(2, "user/message", {
+				source: { kind: "subagent-settled", stopReason: "completed", senderSessionId: "revive-cat" },
+			}),
+			replayRow(3, "subagent/catalog", { childId: "revive-cat", childCreatedAt: 3_000, label: "L2" }),
+			// tool-workflow family: settle then a NEW agent-start of the same child.
+			replayRow(4, "tool-workflow/agent-start", { runId: "wf", seq: 0, childId: "no-revive-wf", label: "W" }),
+			replayRow(5, "tool-workflow/agent-end", { runId: "wf", seq: 0, outcome: "completed" }),
+			replayRow(6, "tool-workflow/agent-start", { runId: "wf2", seq: 0, childId: "no-revive-wf", label: "W" }),
+		], 4_000)
+		const cat = views.find((v) => v.id === "revive-cat")!
+		const wf = views.find((v) => v.id === "no-revive-wf")!
+		expect(cat.status).toBe("running") // revived
+		expect(cat.startedAt).toBe(3_000) // new run's childCreatedAt
+		expect(cat.label).toBe("L2")
+		expect(wf.status).toBe("completed") // NOT revived
+		expect("startedAt" in wf).toBe(false)
+	})
+
+	test("P3-1: a tool-workflow agent-start with a catalog: runId is rejected (no family key collision)", () => {
+		const views = bridgeReplayRowsToSubagentViews([
+			replayRow(1, "subagent/catalog", { childId: "real-cat", childCreatedAt: 1_000, label: "C" }),
+			replayRow(2, "tool-workflow/agent-start", {
+				runId: "catalog:intruder", seq: 0, childId: "intruder", label: "I",
+			}),
+		], 2_000)
+		expect(views).toHaveLength(1)
+		expect(views[0]!.id).toBe("real-cat")
 	})
 
 	test("shape parity with the remote adapter's SeamSubagentView (field set)", () => {

@@ -101,6 +101,26 @@ describe("seam rows projection", () => {
 		dispose()
 	})
 
+	test("P2-2③: a NON-empty argsPretty overrides the call's args (empty-fallback is a no-op on the remote path)", async () => {
+		const seam = new FakeSeam()
+		const callArgs = '{"command":"ls"}'
+		const prettyArgs = "ls -la  # settled pretty brief"
+		seam.script = async (cb) => {
+			cb.onToolStart?.({ callId: "ov", name: "bash", args: callArgs })
+			cb.onToolRun?.({ callId: "ov", name: "bash", argsPretty: prettyArgs, output: "ok", ok: true })
+		}
+		const { projection, dispose } = setup(seam)
+		await projection.send("run")
+		// run.argsPretty || existing.args — a populated pretty brief WINS; the
+		// inproc empty-argsPretty fallback does not clobber the remote path.
+		expect(projection.rows.find((r) => r.kind === "tool")).toMatchObject({
+			status: "done",
+			args: prettyArgs,
+			output: "ok",
+		})
+		dispose()
+	})
+
 	test("batch V1: a result racing a row-less store still lands; failed keeps ✗ semantics", async () => {
 		const seam = new FakeSeam()
 		seam.script = async (cb) => {
