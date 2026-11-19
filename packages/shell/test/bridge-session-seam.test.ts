@@ -1065,3 +1065,140 @@ describe("sessionInfo", () => {
 		expect(info.msgCount).toBe(rawAssistants) // msgCount = RAW assistant rows
 	})
 })
+
+// ---------------------------------------------------------------------------
+// 0.22.0 footer parity: ⚡ CH cache rate + 🧠 context from the SAME journal
+// ---------------------------------------------------------------------------
+
+describe("footer telemetry parity (cacheHitRate / contextTokens / contextWindow)", () => {
+	const bind = async (h: ReturnType<typeof makeHarness>, id: string, turnId: string) => {
+		h.replies.set("session.open", { kind: "value", value: { sessionId: id, journalCursor: 1 } })
+		h.replies.set("session.send", { kind: "value", value: { turnId } })
+		h.seam.resumeSession(id)
+		const done = h.seam.turn("hi", {
+			onThinkingDelta() {},
+			onContentDelta() {},
+			onApprove: async () => "allowed-once",
+			onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId, text: "" } })
+		await done
+	}
+	const selection = { provider: "opencode-go", model: "deepseek-v4.1-flash" }
+	const assistant = (seq: number, usage: Record<string, number>) => ({
+		seq,
+		type: "assistant/message",
+		payload: { message: { content: [{ type: "text", text: "reply" }] }, usage },
+	})
+
+	test("host usage field names feed the live /session cache & token rows (the 0/0 root cause)", async () => {
+		const h = makeHarness()
+		await bind(h, "sess-usage", "t-usage")
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [], cursor: 1 } })
+		// The REAL wire shape from assistant/message.data.usage — the seam used to
+		// read only {prompt,cacheRead}, so every field was missed and the panel
+		// painted "cache read/write 0 / 0".
+		h.emit({
+			type: "turn.end",
+			payload: {
+				turnId: "t-usage-2",
+				text: "",
+				usage: { inputTokens: 188, outputTokens: 378, totalTokens: 14646, cacheReadTokens: 14080 },
+			},
+		})
+		const info = (await h.seam.sessionInfo())!
+		expect(info.cacheRead).toBe(14080)
+		expect(info.cacheWrite).toBe(0)
+		expect(info.tokensIn).toBe(188)
+		expect(info.tokensOut).toBe(378)
+		expect(h.seam.usageSummary()).toEqual(["turns 1", "prompt 188 tok", "completion 378 tok"])
+	})
+
+	test("cacheHitRate mirrors remote exactly: lastMessage = latest row, session = cumulative", async () => {
+		const h = makeHarness()
+		await bind(h, "sess-cache", "t-cache")
+		// Numbers lifted from remote-host-session.test.ts:445-457 so the two
+		// seams' formulas are asserted against the same billing sample.
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [
+					assistant(1, { inputTokens: 100, outputTokens: 5, cacheReadTokens: 900, totalTokens: 1005 }),
+					assistant(2, { inputTokens: 800, outputTokens: 3, cacheReadTokens: 200, totalTokens: 1003 }),
+				],
+				cursor: 3,
+			},
+		})
+		await h.seam.sessionInfo()
+		// lastMessage bills INPUT only (prompt + cacheRead + cacheWrite), never
+		// output — exactly remote-host-session.ts:2532-2533 and its test (20%).
+		expect(h.seam.cacheHitRate()).toBeCloseTo(20, 5)
+		expect(h.seam.cacheHitRate("lastMessage")).toBeCloseTo(20, 5)
+		expect(h.seam.cacheHitRate("session")).toBeCloseTo(55, 5) // 1100 / (900+1100+0)
+	})
+
+	test("contextTokens/contextWindow derive from the journal usage + request/context rows", async () => {
+		const h = makeHarness()
+		await bind(h, "sess-ctx", "t-ctx")
+		h.replies.set("model.currentSelection", { kind: "value", value: selection })
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [
+					{ seq: 1, type: "request/context", payload: { ...selection, contextWindow: 1_000_000 } },
+					assistant(2, { inputTokens: 188, outputTokens: 378, cacheReadTokens: 14080, totalTokens: 14646 }),
+				],
+				cursor: 3,
+			},
+		})
+		const info = (await h.seam.sessionInfo())!
+		expect(h.seam.contextTokens()).toBe(14646)
+		expect(h.seam.contextWindow()).toBe(1_000_000)
+		expect(info.contextTokens).toBe(14646)
+		expect(info.contextWindow).toBe(1_000_000)
+	})
+
+	test("honest gates: no cache traffic → null rate; stale route → null window", async () => {
+		const h = makeHarness()
+		await bind(h, "sess-gate", "t-gate")
+		h.replies.set("model.currentSelection", {
+			kind: "value",
+			value: { provider: "other", model: "other-model" },
+		})
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [
+					{ seq: 1, type: "request/context", payload: { ...selection, contextWindow: 1_000_000 } },
+					assistant(2, { inputTokens: 10, outputTokens: 2, totalTokens: 12 }),
+				],
+				cursor: 3,
+			},
+		})
+		const info = (await h.seam.sessionInfo())!
+		expect(h.seam.cacheHitRate()).toBeNull() // no cacheRead/cacheWrite row
+		expect(h.seam.cacheHitRate("session")).toBeNull()
+		expect(h.seam.contextTokens()).toBe(12)
+		expect(h.seam.contextWindow()).toBeNull() // journal row is for a different route
+		expect(info.contextWindow).toBeNull()
+	})
+
+	test("new telemetry rides the single-flight incremental tally — no double counting", async () => {
+		const h = makeHarness()
+		await bind(h, "sess-inc-telemetry", "t-inc-tel")
+		h.replies.set("model.currentSelection", { kind: "value", value: selection })
+		const rows = [
+			assistant(1, { inputTokens: 100, outputTokens: 5, cacheReadTokens: 900, totalTokens: 1005 }),
+			assistant(2, { inputTokens: 800, outputTokens: 3, cacheReadTokens: 200, totalTokens: 1003 }),
+		]
+		h.replies.set("journal.replay", { kind: "value", value: { rows, cursor: 3 } })
+		await h.seam.sessionInfo()
+		const firstRate = h.seam.cacheHitRate("session")
+		const firstTokens = h.seam.contextTokens()
+		await h.seam.sessionInfo()
+		expect(h.seam.cacheHitRate("session")).toBe(firstRate)
+		expect(h.seam.contextTokens()).toBe(firstTokens)
+		expect(firstRate).toBeCloseTo(55, 5)
+	})
+})

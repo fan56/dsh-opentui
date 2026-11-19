@@ -635,16 +635,64 @@ interface UsageAccumulator {
 	cacheWrite: number
 }
 
+/**
+ * Parse ONE usage object into the accumulator's canonical fields.
+ *
+ * The bridge host's `turn.end` frame carries the LAST `assistant/message`
+ * row's `data.usage` (bridge/src/index.ts:1006,1066), whose wire fields are
+ * `{inputTokens, outputTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?}`
+ * — NOT `{prompt, completion, cacheRead, cacheWrite}`. The remote seam maps
+ * exactly these aliases (`scanUsageChunk`, remote-follow.ts:199-212); the old
+ * bridge-only numeric names are kept first so legacy callers/fixtures still
+ * work. A field is set only when at least one alias is present; multiple
+ * aliases take the max (the remote scanner's rule). This mismatch is the
+ * root cause of the inproc /session "cache read/write 0/0" panel: the journal
+ * row DOES carry `cacheReadTokens`, but the seam never read that field.
+ */
 function parseUsage(value: unknown): Partial<UsageAccumulator> {
 	const u = asRecord(value)
-	const num = (key: string): number | undefined =>
-		typeof u[key] === "number" && Number.isFinite(u[key]) ? (u[key] as number) : undefined
-	const out: Partial<UsageAccumulator> = {}
-	for (const key of ["prompt", "completion", "cacheRead", "cacheWrite"] as const) {
-		const n = num(key)
-		if (n !== undefined) out[key] = n
+	const num = (...aliases: string[]): number | undefined => {
+		let present = false
+		let best = 0
+		for (const alias of aliases) {
+			const v = u[alias]
+			if (typeof v === "number" && Number.isFinite(v)) {
+				present = true
+				best = Math.max(best, v)
+			}
+		}
+		return present ? best : undefined
 	}
+	const out: Partial<UsageAccumulator> = {}
+	const prompt = num("prompt", "promptTokens", "inputTokens", "prompt_tokens")
+	if (prompt !== undefined) out.prompt = prompt
+	const completion = num("completion", "completionTokens", "outputTokens", "completion_tokens")
+	if (completion !== undefined) out.completion = completion
+	const cacheRead = num("cacheRead", "cacheReadTokens", "cache_read_tokens")
+	if (cacheRead !== undefined) out.cacheRead = cacheRead
+	const cacheWrite = num("cacheWrite", "cacheWriteTokens", "cache_write_tokens")
+	if (cacheWrite !== undefined) out.cacheWrite = cacheWrite
 	return out
+}
+
+/**
+ * One durable `assistant/message.data.usage` row → the same canonical fields
+ * plus the host's authoritative `totalTokens` (billed input + output; on
+ * cache-splitting adapters input = prompt + cacheRead + cacheWrite). This is
+ * the 🧠 numerator's source: remote's `ContextTokenMeter` billed base
+ * (`#billedInput + #billedOutput`, token-estimate.ts:65-71) is exactly
+ * `input + cacheRead + cacheWrite + output` = `totalTokens`.
+ */
+function journalUsage(payload: unknown): (Partial<UsageAccumulator> & { total: number }) | undefined {
+	const usage = asRecord(asRecord(payload).usage)
+	const parsed = parseUsage(usage)
+	if (Object.keys(parsed).length === 0) return undefined
+	const billed = (parsed.prompt ?? 0) + (parsed.cacheRead ?? 0) + (parsed.cacheWrite ?? 0)
+	const rawTotal = usage.totalTokens
+	const total = typeof rawTotal === "number" && Number.isFinite(rawTotal) && rawTotal > 0
+		? rawTotal
+		: billed + (parsed.completion ?? 0)
+	return { ...parsed, total }
 }
 
 const fmtTokens = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
@@ -779,6 +827,21 @@ export class BridgeSessionSeam implements SessionSeam {
 				assistantRows: number
 				/** Raw `assistant/message` rows — the 0.21.1 footer 💬 unit. */
 				rawAssistants: number
+				/** ⚡ CH: cumulative billing totals from journal usage rows,
+				 *  remote `cacheHitRate("session")` 口径 (prompt = uncached input). */
+				cachePrompt: number
+				cacheRead: number
+				cacheWrite: number
+				/** ⚡ CH: latest billed row's own hit rate (remote `lastMessage`). */
+				lastCacheHitRate: number | null
+				/** 🧠 numerator: latest billed row's input+output (remote meter base). */
+				contextTokens: number | null
+				/** 🧠 denominator: host-resolved window from `request/context`. */
+				contextWindow: number | undefined
+				/** provider/model the window belongs to (route-key guard). */
+				contextWindowKey: string | undefined
+				/** provider/model of the live route (from currentModelSelection()). */
+				selectionKey: string | undefined
 		  }
 		| undefined
 	/**
@@ -1308,6 +1371,63 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * (#sessionInfoInFlight), so two polls racing at a turn boundary cannot both
 	 * drain the same incremental rows and double-count the tally.
 	 */
+
+	/**
+	 * ⚡ CH footer segment — RemoteHostSession.cacheHitRate() 1:1
+	 * (remote-host-session.ts:789-803). "session" is the cumulative journal rate
+	 * ΣcacheRead / (Σprompt + ΣcacheRead + ΣcacheWrite); the default
+	 * ("lastMessage") is the latest billed row's `cacheRead / billed * 100`.
+	 * Visibility gate: null until ANY cache traffic. Reads the SAME
+	 * `#sessionInfoStats` tally the footer's sessionInfo() poll fills, so it
+	 * needs no extra journal drain and cannot double-count.
+	 */
+	cacheHitRate(mode?: "session" | "lastMessage"): number | null {
+		const stats = this.#liveStats()
+		if (stats === undefined || stats.cacheRead + stats.cacheWrite <= 0) return null
+		if (mode === "session") {
+			const billed = stats.cachePrompt + stats.cacheRead + stats.cacheWrite
+			return billed > 0 ? (stats.cacheRead / billed) * 100 : null
+		}
+		return stats.lastCacheHitRate
+	}
+
+	/**
+	 * 🧠 numerator — the latest billed journal usage row's input+output
+	 * (`totalTokens`, remote `ContextTokenMeter` billed base). null until a
+	 * usage row has been drained for the live session (honest omission, same
+	 * gate as the other footer counters).
+	 */
+	contextTokens(): number | null {
+		return this.#liveStats()?.contextTokens ?? null
+	}
+
+	/**
+	 * 🧠 denominator — the host-resolved `request/context.contextWindow` for the
+	 * live route (remote's projection window / catalog resolution equivalent).
+	 * null while unknown → the footer degrades to the bare `🧠 used` shape.
+	 */
+	contextWindow(): number | null {
+		return this.#liveContextWindow()
+	}
+
+	/** The stats tally only while it belongs to the CURRENT session binding. */
+	#liveStats() {
+		const stats = this.#sessionInfoStats
+		return stats !== undefined && stats.sessionId === this.currentSessionId() ? stats : undefined
+	}
+
+	/** The route-guarded context window shared by the getter and sessionInfo(). */
+	#liveContextWindow(): number | null {
+		const stats = this.#liveStats()
+		if (stats?.contextWindow === undefined) return null
+		if (
+			stats.contextWindowKey !== undefined &&
+			stats.selectionKey !== undefined &&
+			stats.contextWindowKey !== stats.selectionKey
+		) return null // window belongs to a different route — degrade, never a wrong denominator
+		return stats.contextWindow
+	}
+
 	sessionInfo(): Promise<SeamSessionInfo | undefined> {
 		const existing = this.#sessionInfoInFlight
 		if (existing !== undefined) return existing
@@ -1331,7 +1451,11 @@ export class BridgeSessionSeam implements SessionSeam {
 			// a new session starts a fresh one at seq 1.
 			let stats = this.#sessionInfoStats
 			if (stats === undefined || stats.sessionId !== sessionId) {
-				stats = { sessionId, lastSeq: 0, userRows: 0, assistantRows: 0, rawAssistants: 0 }
+				stats = {
+					sessionId, lastSeq: 0, userRows: 0, assistantRows: 0, rawAssistants: 0,
+					cachePrompt: 0, cacheRead: 0, cacheWrite: 0, lastCacheHitRate: null,
+					contextTokens: null, contextWindow: undefined, contextWindowKey: undefined, selectionKey: undefined,
+				}
 				this.#sessionInfoStats = stats
 			}
 			let from = stats.lastSeq + 1
@@ -1341,15 +1465,51 @@ export class BridgeSessionSeam implements SessionSeam {
 			if (drained.clamped && from > 1) {
 				// Journal reset: `cursor` fell behind our `lastSeq` (seqs restarted).
 				// Drop the stale cumulative counts and re-read the whole log.
-				stats = { sessionId, lastSeq: 0, userRows: 0, assistantRows: 0, rawAssistants: 0 }
+				stats = {
+					sessionId, lastSeq: 0, userRows: 0, assistantRows: 0, rawAssistants: 0,
+					cachePrompt: 0, cacheRead: 0, cacheWrite: 0, lastCacheHitRate: null,
+					contextTokens: null, contextWindow: undefined, contextWindowKey: undefined, selectionKey: undefined,
+				}
 				this.#sessionInfoStats = stats
 				from = 1
 				drained = await this.#drainJournal(sessionId, 1)
 			}
 
 			// msgCount stays the RAW assistant/message count (0.21.1 semantics).
+			// The SAME journal rows also carry the ⚡ CH and 🧠 inputs: the host's
+			// `assistant/message.data.usage` (`inputTokens/outputTokens/cacheReadTokens/
+			// cacheWriteTokens/totalTokens`) is the exact data the remote seam reads
+			// off its live usage chunks (scanUsageChunk parity). Accumulate into the
+			// ONE #sessionInfoStats tally so the incremental drain, its single-flight
+			// coalescing and its session/reset invalidation stay shared (P2-1).
 			for (const row of drained.rows) {
-				if (row.type === "assistant/message") stats.rawAssistants++
+				if (row.type === "assistant/message") {
+					stats.rawAssistants++
+					const usage = journalUsage(row.payload)
+					if (usage !== undefined) {
+						// remote-host-session.ts:2529-2533 parity — cumulative
+						// billing totals + the latest billed request's own rate.
+						if (usage.prompt) stats.cachePrompt += usage.prompt
+						if (usage.cacheRead) stats.cacheRead += usage.cacheRead
+						if (usage.cacheWrite) stats.cacheWrite += usage.cacheWrite
+						const billed = (usage.prompt ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0)
+						if (billed > 0) stats.lastCacheHitRate = ((usage.cacheRead ?? 0) / billed) * 100
+						// 🧠 numerator: latest billed request's input+output — remote's
+						// ContextTokenMeter billed base (totalTokens when disclosed).
+						stats.contextTokens = usage.total
+					}
+				} else if (row.type === "request/context") {
+					// 🧠 denominator: the host resolved the live route's window for
+					// this request (remote's `pressure.contextWindow` equivalent).
+					const data = asRecord(row.payload)
+					const window = data.contextWindow
+					if (typeof window === "number" && Number.isFinite(window) && window > 0) {
+						const provider = typeof data.provider === "string" ? data.provider : ""
+						const model = typeof data.model === "string" ? data.model : ""
+						stats.contextWindow = window
+						stats.contextWindowKey = provider && model ? `${provider}/${model}` : undefined
+					}
+				}
 			}
 			// P2-2: the /session counts go through the SAME projection the remote
 			// adapter uses, so the filtered口径 (non-user source.kind + empty-text
@@ -1375,11 +1535,19 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 
 		const selection = await this.currentModelSelection().catch(() => undefined)
+		const stats = this.#liveStats()
+		// The journal's `request/context` window belongs to the route that made
+		// that request. Keep the live route key on the SAME tally so the sync
+		// contextWindow() getter and sessionInfo() share the route guard (the
+		// remote seam's `#contextWindowKey`): a window for a different route
+		// degrades to unknown rather than serving a wrong denominator.
+		const selectionKey = selection ? `${selection.providerID}/${selection.modelID}` : undefined
+		if (stats !== undefined) stats.selectionKey = selectionKey
 		const u = this.#usage
 		const last = this.#lastTurnDecode
 		return {
 			sessionId,
-			model: selection ? `${selection.providerID}/${selection.modelID}` : null,
+			model: selectionKey ?? null,
 			...(counts !== undefined ? counts : {}),
 			tokensIn: u.prompt,
 			tokensOut: u.completion,
@@ -1389,6 +1557,9 @@ export class BridgeSessionSeam implements SessionSeam {
 			sessionAvgTps: this.#decodeTotals.ms > 0
 				? tokensPerSecond(this.#decodeTotals.tokens, this.#decodeTotals.ms)
 				: null,
+			// 🧠 context rows (footer context batch; remote adapter parity).
+			contextTokens: stats?.contextTokens ?? null,
+			contextWindow: this.#liveContextWindow(),
 		}
 	}
 

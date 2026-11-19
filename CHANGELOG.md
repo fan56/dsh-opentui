@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repair command (`dsh-opentui --repair-bridge`) and a mode notice — it never
   silently falls back to the remote seam.
 
+### User decisions (2026-11-19 merge-footer review)
+
+- Three rulings on the merged inproc footer, final (do not re-litigate):
+  1. The 🆔 session-id footer segment is removed entirely — segment, v2-entry
+     wiring, recovery-ui callback and tests. Session identity stays queryable
+     through `/session info` (ADR-0010 I5 carries a revision record).
+  2. The `bridgeStatus` footer segment hides only the normal `✓ ready` state;
+     `⚠ dead` / `⟳ recovering` still render during a fault / recovery and
+     disappear automatically once the link returns to ready. Recovery logic is
+     untouched — only the powerline render condition changed. The 80-column
+     priority table keeps `bridgeStatus` at the lowest priority (-2); it now
+     only occupies a slot in an abnormal state.
+  3. The 🧠 context and ⚡ cache-hit-rate footer segments render again under
+     the inproc bridge (the former P3-2 Known debt, paid early).
+
 ### Added
 
 - **Real session resume.** `session.open{resume}` calls the host's `ctx.agents.resume`
@@ -61,8 +76,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Session id shown in the footer.** The status bar always displays the
-  session id (short form), the observability premise for the resume invariants.
+- **🧠 context and ⚡ cache-hit segments render under the inproc bridge.**
+  `BridgeSessionSeam` now supplies `contextTokens()` / `contextWindow()` /
+  `cacheHitRate()` from the same journal data the remote seam uses. The 🧠
+  numerator is the latest billed `assistant/message.data.usage` input+output
+  (`totalTokens`, the remote `ContextTokenMeter` billed base); the denominator
+  is the host-resolved `request/context.contextWindow` guarded by the live
+  `currentModelSelection()` route. The ⚡ rate uses the remote formula exactly —
+  `lastMessage`: `cacheRead / (prompt + cacheRead + cacheWrite)` of the latest
+  billed row, `session`: `ΣcacheRead / (Σprompt + ΣcacheRead + ΣcacheWrite)`.
+  All three ride the existing incremental `sessionInfo()` tally (no new cache,
+  no double counting). The `/session` panel's `cache read/write 0 / 0` was a
+  field-name mismatch — the journal row carried `cacheReadTokens` but the seam
+  only read `cacheRead`; the alias mapping (remote `scanUsageChunk` parity)
+  fixes both the panel and the footer rate.
 - **Writer-held as a localized diagnostic.** `SESSION_LOCKED` now renders as a
   `writer-held` message that includes the host-reported holder session id,
   instead of the raw host error. In inproc mode the footer brand shows as `dsh`.
@@ -81,9 +108,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and removes the `ensureHost`/`RemoteHostSession` path.
 - The old automatic reconnect (backoff retry) is not implemented; recovery in
   0.22.0 is manual (`R`, with a 5s cooldown) only.
-- `BridgeSessionSeam` does not implement `contextTokens()` / `contextWindow()`;
-  the 🧠 context-occupancy segment does not render under the inproc bridge (the
-  remote seam still supplies it). Tracked for a later seam-capability batch.
+- ~~`BridgeSessionSeam` does not implement `contextTokens()` / `contextWindow()`;
+  the 🧠 context-occupancy segment does not render under the inproc bridge.~~
+  **RESOLVED in 0.22.0** (user decision 2026-11-19, paid ahead of the later
+  seam-capability batch): see the Fixed entry above for the journal-derived
+  implementation and the ⚡ cache-rate parity fix.
 ## [0.21.1] - 2026-11-17
 
 ### Changed

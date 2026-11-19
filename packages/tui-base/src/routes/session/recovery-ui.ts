@@ -60,8 +60,6 @@ export interface RecoveryUiOptions {
 	recover: () => Promise<unknown>
 	texts: RecoveryTexts
 	onNotice?: (text: string, ttlMs: number, kind?: "error") => void
-	/** Footer sessionId linkage (A4's sessionId data flow). undefined clears. */
-	onSessionId?: (sessionId: string | undefined) => void
 	onNewSession?: () => void
 	onQuit?: () => void
 }
@@ -92,7 +90,6 @@ export class RecoveryUiController {
 	readonly texts: RecoveryTexts
 	#recover: RecoveryUiOptions["recover"]
 	#onNotice: RecoveryUiOptions["onNotice"]
-	#onSessionId: RecoveryUiOptions["onSessionId"]
 	#onNewSession: RecoveryUiOptions["onNewSession"]
 	#onQuit: RecoveryUiOptions["onQuit"]
 	#phase: RecoveryPhase = "ready"
@@ -103,7 +100,6 @@ export class RecoveryUiController {
 		this.#recover = options.recover
 		this.texts = options.texts
 		this.#onNotice = options.onNotice
-		this.#onSessionId = options.onSessionId
 		this.#onNewSession = options.onNewSession
 		this.#onQuit = options.onQuit
 	}
@@ -166,8 +162,6 @@ export class RecoveryUiController {
 				this.#bannerTo(undefined)
 				this.#phaseTo("ready")
 				this.#onNotice?.(this.texts.recovered(count), RECOVERY_NOTICE_TTL_MS)
-				const sessionId = typeof details.sessionId === "string" ? details.sessionId : undefined
-				if (sessionId !== undefined) this.#onSessionId?.(sessionId)
 				return
 			}
 			case "bridge.recovery.failed": {
@@ -184,7 +178,6 @@ export class RecoveryUiController {
 				this.#bannerTo({ kind: "locked", reason, sessionId })
 				// The locked branch carries BOTH a transient notice and actions.
 				this.#onNotice?.(reason, RECOVERY_NOTICE_TTL_MS)
-				if (sessionId !== undefined) this.#onSessionId?.(sessionId)
 				return
 			}
 			default:
@@ -227,16 +220,15 @@ export class RecoveryUiController {
 	}
 
 	/**
-	 * Shared new-session UI cleanup. Footer goes back to ready, the persistent
-	 * failure/locked banner is removed and the session-id linkage is cleared.
-	 * Both entry points call this SAME function: the banner action below and
-	 * the typed `/new` slash command (via the page's `clearRecoveryUi` hook),
-	 * so a session switch can never leave a stale dead footer / locked banner.
+	 * Shared new-session UI cleanup. Footer goes back to ready and the
+	 * persistent failure/locked banner is removed. Both entry points call
+	 * this SAME function: the banner action below and the typed `/new` slash
+	 * command (via the page's `clearRecoveryUi` hook), so a session switch
+	 * can never leave a stale dead footer / locked banner.
 	 */
 	clearRecoveryState(): void {
 		this.#bannerTo(undefined)
 		this.#phaseTo("ready")
-		this.#onSessionId?.(undefined)
 	}
 
 	/** Banner "new session" action: page clears the session + transcript. */

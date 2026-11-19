@@ -15,7 +15,7 @@ ADR-0009 选定宿主内 bridge（方案 D）作为 TUI 的默认会话通道。
 - **I2 — resume 必须 eager 真恢复**：resume 必须真实调用 `ctx.agents.resume`，恢复目标会话的历史；禁止以"创建新会话并静默采纳新 id"作为 fallback。
 - **I3 — abort 只取消当前 turn**：`turn.abort` 只终止在途 turn，会话身份（sessionId）不变，历史不回滚。
 - **I4 — 单 writer lock**：每个打开会话恰由一个持有者持 writer lock，close 时释放；后开者必须显式收到协议错误码 `SESSION_LOCKED`（UI 层展示为文案 `writer-held`），不得静默接管。
-- **I5 — sessionId 常显**：状态栏常显 sessionId，这是可观测性前提 —— 没有它，I1/I2 的违规无法被用户发现。
+- **I5 — sessionId 常显（2026-11-19 用户裁决移除 footer 常显，见文末修订记录）**：原条款要求状态栏常显 sessionId 作为 I1/I2 的可观测性前提。用户裁决该 🆔 段无用，已从 footer 段、接线与测试中整体移除；session 身份仍可由 `/session info` 面板的 `session` 行等既有面查询，I1/I2 的语义与四门禁不变。本条保留编号仅为契约历史连续，不再作为 footer 渲染依据。
 - **I6 — 客户端不得持有 transcript 真源**：UI 只持 sessionId 与只读投影；journal 真源留在宿主持久化层（`sessionPersistence`）。
 
 ## 状态机
@@ -189,3 +189,4 @@ ask 通道另有 7 个专用错误码（`ASK_UNKNOWN_REQUEST` / `ASK_NOT_ADDRESS
 - 2026-11-19 — RM-2b 真机 V3 修正：限定 pendingSnapshot 重建仅适用于「bridge 进程存活的客户端重连」；进程死亡时 AskRegistry 随进程清空、新进程发空快照为常态非缺陷。明确进程死场景的语义：`bridge.dead` 到达即把该 bridge 内全部 pending 卡转「已失效」终态（原因：连接断开），不重建、不可作答，且 dead 态下恢复键 R 立即可达（modal 不再 gate R）。错误映射 `#isDeadResponseError` 纳入 `BRIDGE_DEAD`/`BRIDGE_CLOSED`，避免 DEAD 期作答静默消失。
 - 2026-11-19 — oldfox review P1-1/P2-1/P2-2/P2-3 修正（commit `14ecb15`）：`#settleSuspendedTurn()` 结算 DEAD 遗留的在途 turn（silent-INTERRUPTED / failed / locked 退出及 newSession）并按 generation 清 busy，使下一条 turn 不再被 `TURN_REENTRANT` 拒绝；`lastJournalTurnTerminal` 增 `startOutsideWindow` 模式修终态归属（后续 writer 的 turn/start 不抢占本 turn 终态）；冷却 `BRIDGE_RECOVERY_COOLDOWN`（`detail.remainingMs`）改为短暂通知、保留 dead 态而非持久 failed banner（新 i18n key）；修正失效卡的生命周期注释（DEAD 期保留、恢复后随会话重建清除）。
 - 2026-11-19 — oldfox review P1-2/P2-4 修正（commit `10e750a`）：replay drain 的行经既有 transcript 管线 apply（`projectJournalRecord` + tool 配对 projector 走 `onSessionEvent`，stable key upsert、seq/keys 双重去重），使死亡窗口内落 journal 的尾部内容上屏，并在 suspend turn 结算后 apply 以令 SETTLE SUPERSEDE 就地替换而非追加重复正文；补 dead 态 R 逃逸口的 FT（focused composer 下 r 触发恢复并被吞、ready 态 r 正常输入），记录全局优先级（终态 ask 卡保持 modal 所有权、R 为唯一恢复入口）。同步把本文 step 4/5 及 in-flight 段的过时行号改为指向符号名。
+- 2026-11-19 — 用户裁决（merge 后真机 footer 复核，勿再议）：① 删除 I5 的 🆔 session-id footer 常显段，连同 v2-entry 的 sessionId 接线、recovery-ui 的 onSessionId 回调与对应测试整体移除；身份仍由 `/session info` 的 `session` 行查询，I1/I2/I3 语义不变。② `bridgeStatus` 三态只隐藏常态 `✓ ready`——`⚠ dead` / `⟳ recovering` 在异常/恢复期间照常显示，恢复完成（状态回 `ready`）自动消失；RecoveryUiController/driving 逻辑不动，仅改 powerline 段渲染条件。③ 80 列裁剪优先级表复核：`bridgeStatus` 保持最低优先级 -2，ready 常态不再占位。复核发现：🧠/⚡ 段恢复后满载条带宽于 80 列，异常段（priority -2）在裁剪时最先让位；裁决限定只改渲染条件，故不动优先级，80 列窄屏的异常信号由瞬时故障 notice / 恢复 banner 兜底。

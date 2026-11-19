@@ -288,7 +288,6 @@ function V2SessionPageBody(props: {
 	// events into the three-state footer, the composer-disable gate and the
 	// persistent banner. The page owns no copy: texts are t() getters.
 	const [bridgeStatus, setBridgeStatus] = createSignal<"ready" | "recovering" | "dead">("ready")
-	const [sessionIdFromRecovery, setSessionIdFromRecovery] = createSignal<string | undefined>()
 	// The controller is installed here but /new needs the slash host created
 	// below, so the new-session action rides a holder assigned later. Quit is
 	// the boot-owned path and resolves straight through props.quit.
@@ -310,7 +309,6 @@ function V2SessionPageBody(props: {
 			props.recoverBridge ? props.recoverBridge() : Promise.reject(new Error("no bridge transport injected")),
 		texts: recoveryTexts,
 		onNotice: (text, ttl, kind) => void showNotice(text, ttl, kind),
-		onSessionId: (id) => setSessionIdFromRecovery(id),
 		onNewSession: () => recoveryNewSession(),
 		onQuit: () => recoveryQuit(),
 	})
@@ -707,12 +705,7 @@ function V2SessionPageBody(props: {
 			contextWindow: ctxWindow(),
 			cacheHitRate: cacheRate(),
 			presetLabel: presetLabel(),
-			// ADR-0010 I5: the live session id from the seam flows into the
-			// low-priority 🆔 footer segment so identity stays observable.
-			// A8: recovery/locked events can rebind the id; a new session
-			// clears the override so the seam's fresh id takes over.
-			sessionId: sessionIdFromRecovery() ?? seam.currentSessionId(),
-			// A2: bridge link health — dead/recovering/ready (absent on legacy seams).
+			// A2: bridge link health — dead/recovering show; ready/absent hide.
 			bridgeStatus: bridgeStatus(),
 			theme,
 			// Skin wiring (contract §1): the dsh brand segment's identity blue

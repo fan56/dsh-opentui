@@ -231,8 +231,6 @@ function SessionPage() {
 			messages: msgs(),
 			tools: 0,
 			tps: busy() ? 87 : null,
-			// ADR-0010 I5: session identity observable from the footer.
-			sessionId: seam.currentSessionId(),
 			theme,
 		})
 	// Batch-8 slash host: command feedback lands as transcript rows through

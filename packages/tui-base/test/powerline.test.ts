@@ -27,7 +27,6 @@ import {
 	relativeLuminance,
 	resolvePalette,
 	sessionFooterSegments,
-	sessionIdSegment,
 	speedSegment,
 	cacheSegment,
 	toolSegment,
@@ -168,16 +167,6 @@ describe("segment builders", () => {
 		expect(speedSegment(87.4)?.text).toBe("87 tok/s")
 	})
 
-	test("ADR-0010 I5: session-id segment shows the short id and has the lowest priority", () => {
-		const seg = sessionIdSegment("sess-12345678-abcd")!
-		// First 8 chars only — full id stays available via /session info.
-		expect(seg.text).toBe("🆔 sess-123")
-		expect(seg.text).not.toContain("sess-12345678")
-		// Lowest priority in the strip: speed's implicit 0 is the prior floor.
-		expect(seg.priority).toBe(-1)
-		expect(seg.priority!).toBeLessThan(speedSegment(42)!.priority ?? 0)
-	})
-
 	test("msgSegment: singular/plural, explicit 0, invalid → null", () => {
 		// One durable assistant/message event = one msg.
 		expect(msgSegment(0)?.text).toBe("💬 0 msgs")
@@ -236,22 +225,6 @@ describe("footer assembly", () => {
 		expect(texts.some((t) => t.startsWith("↻"))).toBe(false)
 	})
 
-	test("ADR-0010 I5: footer carries the short session-id segment (wide screen)", () => {
-		const segs = sessionFooterSegments({ sessionId: "sess-12345678-abcd", messages: 1 })
-		const id = segs.find((s) => s.text.startsWith("🆔"))
-		expect(id?.text).toBe("🆔 sess-123")
-		// Rides last — least prominent on the strip.
-		expect(segs[segs.length - 1]?.text).toBe("🆔 sess-123")
-	})
-
-	test("ADR-0010 I5: no session id → no empty segment (boot / first turn)", () => {
-		expect(sessionIdSegment(undefined)).toBeNull()
-		expect(sessionIdSegment(null)).toBeNull()
-		expect(sessionIdSegment("")).toBeNull()
-		expect(sessionIdSegment("   ")).toBeNull()
-		const segs = sessionFooterSegments({ messages: 1 })
-		expect(segs.some((s) => s.text.includes("🆔"))).toBe(false)
-	})
 })
 
 describe("palette resolution", () => {
@@ -886,39 +859,51 @@ describe("footer width fitting (single-row, priority shedding)", () => {
 		expect(measure(wide.segments) + stringWidth("12:36:44") + 1).toBeLessThanOrEqual(119)
 	})
 
-	test("ADR-0010 I5: narrow screen sheds the session-id segment FIRST", () => {
-		const segs = sessionFooterSegments({
+})
+
+describe("A2 bridge link-health status segment", () => {
+	test("renders only abnormal states; ready and absent hide the segment", () => {
+		expect(bridgeStatusSegment("dead")?.text).toBe("⚠ dead")
+		expect(bridgeStatusSegment("recovering")?.text).toBe("⟳ recovering")
+		// 2026-11-19 user ruling: ✓ ready is the normal state and is NOT painted.
+		expect(bridgeStatusSegment("ready")).toBeNull()
+		expect(bridgeStatusSegment(undefined)).toBeNull()
+	})
+
+	test("sessionFooterSegments carries dead/recovering additively, not ready", () => {
+		const dead = sessionFooterSegments({ bridgeStatus: "dead" })
+		expect(dead.some((s) => s.text.includes("dead"))).toBe(true)
+		const recovering = sessionFooterSegments({ bridgeStatus: "recovering" })
+		expect(recovering.some((s) => s.text.includes("recovering"))).toBe(true)
+		// Healthy and legacy seams keep the exact prior shape — no status segment.
+		expect(sessionFooterSegments({ bridgeStatus: "ready" }).some((s) => s.text.includes("ready"))).toBe(false)
+		expect(sessionFooterSegments({}).some((s) => s.text.includes("dead"))).toBe(false)
+	})
+
+	test("80-column priority review: abnormal status occupies a slot; ready never does", () => {
+		const data = {
 			provider: "zai-coding-cn",
 			model: "glm-5.3-flash",
 			contextTokens: 205,
 			contextWindow: 1_000_000,
-			messages: 4,
-			tps: 42, // speed carries priority 0 — sessionId (-1) must still shed before it
-			sessionId: "sess-12345678-abcd",
-		})
-		const full = measure(segs)
-		// One column too narrow → the fitter sheds exactly the lowest-priority segment.
-		const fitted = fitPowerlineSegments(segs, full - 1)
-		expect(fitted.segments.length).toBe(segs.length - 1)
-		// Identity hint gone; speed and every other segment survive.
-		expect(fitted.segments.some((s) => s.text.includes("🆔"))).toBe(false)
-		expect(fitted.segments.some((s) => s.text.includes("tok/s"))).toBe(true)
-	})
-})
-
-describe("A2 bridge link-health status segment", () => {
-	test("renders all three values; absent hides the segment", () => {
-		expect(bridgeStatusSegment("dead")?.text).toContain("dead")
-		expect(bridgeStatusSegment("recovering")?.text).toContain("recovering")
-		expect(bridgeStatusSegment("ready")?.text).toContain("ready")
-		expect(bridgeStatusSegment(undefined)).toBeNull()
-	})
-
-	test("sessionFooterSegments carries the dead status additively", () => {
-		const segs = sessionFooterSegments({ bridgeStatus: "dead", sessionId: "sess-12345678-abcd" })
-		expect(segs.some((s) => s.text.includes("dead"))).toBe(true)
-		// Legacy callers that pass no bridgeStatus keep the exact prior shape.
-		const legacy = sessionFooterSegments({ sessionId: "sess-12345678-abcd" })
-		expect(legacy.some((s) => s.text.includes("dead"))).toBe(false)
+			msg: 9,
+			tools: 1,
+			tps: 42,
+		}
+		const base = sessionFooterSegments(data)
+		// ready adds nothing at the BUILDER level: identical strip to no status.
+		expect(sessionFooterSegments({ ...data, bridgeStatus: "ready" }).map((s) => s.text))
+			.toEqual(base.map((s) => s.text))
+		// 80-column review finding: with the restored 🧠/⚡ segments the strip is
+		// wider than 80, so the lowest-priority (-2) abnormal badge is the FIRST
+		// shed. The ruling limits this change to the render condition (ready →
+		// null), so the priority is deliberately left at -2; the transient fault
+		// notice / recovery banner remain the persistent signal at that width.
+		expect(bridgeStatusSegment("dead")!.priority).toBe(-2)
+		const abnormal = fitPowerlineSegments(sessionFooterSegments({ ...data, bridgeStatus: "dead" }), 80)
+		expect(abnormal.segments.some((s) => s.text === "⚠ dead")).toBe(false)
+		// A narrow strip that DOES have room still paints the badge.
+		const roomy = fitPowerlineSegments(sessionFooterSegments({ bridgeStatus: "dead", tools: 0 }), 80)
+		expect(roomy.segments.some((s) => s.text === "⚠ dead")).toBe(true)
 	})
 })

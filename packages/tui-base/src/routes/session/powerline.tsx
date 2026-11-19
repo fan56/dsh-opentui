@@ -817,42 +817,23 @@ export function cacheSegment(rate: number | null, theme?: ComponentTheme): Power
 }
 
 /**
- * The 🆔 session-id segment (ADR-0010 I5 "sessionId 常显"): the SHORT id
- * (first 8 chars — the same shape the /history panel uses for its status
- * line) so the user can verify session identity directly from the UI, which
- * is the observability prerequisite of the four-gate review. The FULL id
- * stays queryable through the existing surfaces (`/session info` panel's
- * `session` row, "Copy session ID"); the footer deliberately shows only the
- * prefix so it does not dominate the strip.
+ * A2: the bridge link-health segment (dead / recovering). The `ready` state
+ * is the NORMAL steady state and is deliberately NOT rendered — the user
+ * ruling of 2026-11-19 hides it so the strip is not cluttered by a permanent
+ * ✓ ready badge. Only the two ABNORMAL states survive: `⚠ dead` and
+ * `⟳ recovering` show while the link is broken / being restored, and vanish
+ * automatically once recovery completes (status returns to `ready`).
  *
- * Priority -1 sits below every existing segment (speed's implicit 0 is the
- * floor), so `fitPowerlineSegments` sheds this segment before all of them on
- * narrow screens. It is NOT the first to go: `bridgeStatusSegment` (priority
- * -2) is shed even earlier, so link health yields first, then this identity
- * hint, then the ordinary segments. An absent or blank id (e.g. before the
- * first turn binds the live session) hides the segment entirely rather than
- * painting an empty shell.
- */
-export function sessionIdSegment(id: string | null | undefined, theme?: ComponentTheme): PowerlineSegment | null {
-	const value = id?.trim()
-	if (!value) return null
-	return {
-		text: `🆔 ${value.slice(0, 8)}`,
-		bg: theme?.hue.neutral[400] ?? "#616161",
-		priority: -1,
-	}
-}
-
-/**
- * A2: the bridge link-health segment (dead / recovering / ready). The
- * three-value precision lives in `SeamStatus.bridge` and is additive; an
- * absent value hides the segment so legacy seams and existing consumers are
- * untouched. Priority -2 sheds it before the session-id hint on narrow rows.
+ * The three-value precision still lives in `SeamStatus.bridge`; this builder
+ * is the sole render gate. An absent (`legacy seam`) OR `ready` value both
+ * hide the segment, so legacy seams and existing consumers are untouched.
+ * Priority -2 makes it shed first on narrow rows; it only ever occupies a
+ * slot during an abnormal state, so a healthy 80-col strip never pays for it.
  */
 export function bridgeStatusSegment(status: BridgeLinkStatus | undefined): PowerlineSegment | null {
-	if (status === undefined) return null
-	const text = status === "dead" ? "⚠ dead" : status === "recovering" ? "⟳ recovering" : "✓ ready"
-	const bg = status === "dead" ? "#a82124" : status === "recovering" ? "#b58105" : "#3a7d44"
+	if (status === undefined || status === "ready") return null
+	const text = status === "dead" ? "⚠ dead" : "⟳ recovering"
+	const bg = status === "dead" ? "#a82124" : "#b58105"
 	return { text, bg, priority: -2 }
 }
 
@@ -1109,12 +1090,9 @@ export function sessionFooterSegments(data: {
 	/** Elapsed turn seconds for the ⏱ segment; null/absent hides it. */
 	elapsedSec?: number | null
 	/**
-	 * ADR-0010 I5: the live session id (seam.currentSessionId()). Rendered as
-	 * the low-priority 🆔 short-id segment so session identity is observable
-	 * from the UI; null/absent hides it (before the first turn binds a session).
+	 * A2: bridge link health. `dead` / `recovering` render a status segment;
+	 * `ready` (the normal state) and absent hide it (legacy seams unaffected).
 	 */
-	sessionId?: string | null
-	/** A2: bridge link health; absent hides the segment (legacy seams unaffected). */
 	bridgeStatus?: BridgeLinkStatus
 	/** Identity color mode (brand segment fill); dark default. */
 	mode?: SkinColorMode
@@ -1138,12 +1116,9 @@ export function sessionFooterSegments(data: {
 	add(toolSegment(data.tools ?? 0, theme))
 	add(elapsedSegment(data.elapsedSec ?? null, theme))
 	add(speedSegment(data.tps ?? null, theme))
-	// A2: bridge link health rides below the identity hint (priority -2) so it
-	// sheds first on narrow rows; absent = no segment for legacy seams.
+	// A2: bridge link health rides at the lowest priority (-2) so it sheds
+	// first on narrow rows; only dead/recovering render, ready/absent hide it.
 	add(bridgeStatusSegment(data.bridgeStatus))
-	// ADR-0010 I5: the identity hint rides last (least prominent) at the LOWEST
-	// priority — the fitter sheds it first so no existing segment is displaced.
-	add(sessionIdSegment(data.sessionId, theme))
 	// Batch D3: the search discoverability hint (batch H1) left the strip —
 	// key hints live on their own last row (./hints-line.tsx, tui-pi
 	// FooterHint after PowerlineFooter); the powerline is pure segments.

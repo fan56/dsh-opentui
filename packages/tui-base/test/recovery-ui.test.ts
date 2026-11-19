@@ -41,7 +41,6 @@ function setup() {
 		newSessions: 0,
 		quits: 0,
 		notices: [] as Notice[],
-		sessions: [] as (string | undefined)[],
 	}
 	const controller = new RecoveryUiController({
 		recover: async () => {
@@ -49,7 +48,6 @@ function setup() {
 		},
 		texts,
 		onNotice: (text, ttl, kind) => state.notices.push({ text, ttl, kind }),
-		onSessionId: (id) => state.sessions.push(id),
 		onNewSession: () => state.newSessions++,
 		onQuit: () => state.quits++,
 	} satisfies RecoveryUiOptions)
@@ -243,11 +241,10 @@ describe("footer follows controller phase via subscription (v2-entry wiring)", (
 })
 
 describe("recovered / failed / locked surfaces", () => {
-	test("bridge.recovered: notice carries N, retires after 4s, sessionId linked", () => {
+	test("bridge.recovered: notice carries N, retires after 4s", () => {
 		const { controller, state } = setup()
 		controller.handleEvent({ type: "bridge.recovered", details: { applied: 7, sessionId: "sess-7" } })
 		expect(state.notices).toEqual([{ text: "caught up 7 events", ttl: RECOVERY_NOTICE_TTL_MS, kind: undefined }])
-		expect(state.sessions).toEqual(["sess-7"])
 		expect(controller.banner).toBeUndefined()
 	})
 
@@ -281,7 +278,7 @@ describe("recovered / failed / locked surfaces", () => {
 		expect(state.notices).toHaveLength(0) // failure is a banner, not a transient notice
 	})
 
-	test("bridge.recovery.locked: notice + retry/new actions + sessionId, no quit", () => {
+	test("bridge.recovery.locked: notice + retry/new actions + sessionId banner, no quit", () => {
 		const { controller, state } = setup()
 		controller.handleEvent({
 			type: "bridge.recovery.locked",
@@ -289,7 +286,9 @@ describe("recovered / failed / locked surfaces", () => {
 		})
 		expect(controller.phase).toBe("locked")
 		expect(state.notices).toEqual([{ text: "writer-held", ttl: RECOVERY_NOTICE_TTL_MS, kind: undefined }])
-		expect(state.sessions).toEqual(["sess-locked"])
+		// The locked diagnostic still carries the full holder session id in the
+		// BANNER (the /session-info surface); it no longer feeds a footer segment.
+		expect(controller.banner?.sessionId).toBe("sess-locked")
 		const lines = recoveryBannerLines(controller.banner, texts)
 		expect(lines[0]).toContain("writer-held")
 		expect(lines[1]).toContain("Retry [R]")
@@ -304,7 +303,6 @@ describe("recovered / failed / locked surfaces", () => {
 		expect(state.newSessions).toBe(1)
 		expect(controller.banner).toBeUndefined()
 		expect(controller.phase).toBe("ready")
-		expect(state.sessions[state.sessions.length - 1]).toBeUndefined()
 		controller.handleEvent({ type: "bridge.recovery.failed", details: { error: { message: "y" } } })
 		controller.quit()
 		expect(state.quits).toBe(1)

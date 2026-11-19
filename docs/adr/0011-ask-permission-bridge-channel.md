@@ -82,7 +82,7 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 
 ## 4. 不变量（Invariants）
 
-文档既有不变量是 **I1–I6**（`docs/adr/0010-session-seam-lifecycle-contract.md:12-19`）：I1 sessionId 只因用户动作变化、I2 resume eager、I3 abort 只取消当前 turn、I4 单 writer lock、I5 sessionId 常显、I6 客户端不持 transcript 真源。草案把这些重排为 A1–A5 并替换语义，属编号冲突；本文按源码保留 I1–I6 原义，ask 通道新增 **A1–A5** 作为附加不变量（不改号、不重定义 I1–I6，见偏差记录 ⑤）：
+文档既有不变量是 **I1–I6**（`docs/adr/0010-session-seam-lifecycle-contract.md:12-19`）：I1 sessionId 只因用户动作变化、I2 resume eager、I3 abort 只取消当前 turn、I4 单 writer lock、I5 sessionId 常显（2026-11-19 用户裁决已移除 footer 常显面，见 ADR-0010 修订记录）、I6 客户端不持 transcript 真源。草案把这些重排为 A1–A5 并替换语义，属编号冲突；本文按源码保留 I1–I6 原义，ask 通道新增 **A1–A5** 作为附加不变量（不改号、不重定义 I1–I6，见偏差记录 ⑤）：
 
 - **A1 — turn 有界**：每个 ask 必须绑定到打开会话的在途 turnId，turn 终态即该 ask 的结算上界（从属 I3）。
 - **A2 — 一次结算**：first-wins，pending → settled 恰好一次；迟到应答不改状态（D4）。
