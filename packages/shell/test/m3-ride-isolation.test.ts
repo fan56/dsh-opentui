@@ -13,8 +13,10 @@
  * future change that accidentally routes the inproc path through the ride
  * fails here — without changing any product code.
  *
- * `--remote` behavior is untouched: its append resume/create regression tests
- * live in remote-host-session.test.ts and append-system.test.ts and stay green.
+ * The legacy remote seam (DSH_OPENTUI_INPROC=0 escape hatch) is untouched:
+ * its append resume/create regression tests live in remote-host-session.test.ts
+ * and append-system.test.ts and stay green. The --remote flag itself was
+ * removed in 0.23.0.
  */
 import { describe, expect, test } from "bun:test"
 import {
@@ -159,18 +161,18 @@ describe("M3-07 inproc wire isolation: BridgeSessionSeam never rides append", ()
 })
 
 // ---------------------------------------------------------------------------
-// 2. Seam selection keeps the two paths disjoint (inproc=bridge, --remote=remote)
+// 2. Seam selection keeps the two paths disjoint (default=bridge, env=0=remote)
 // ---------------------------------------------------------------------------
-describe("M3-07 seam selection keeps the ride on --remote only", () => {
-	test("inproc → bridge seam; --remote → remote seam (ride remains reachable only via remote)", async () => {
+describe("M3-07 seam selection keeps the ride on the remote seam only", () => {
+	test("default → bridge seam; DSH_OPENTUI_INPROC=0 → remote seam", async () => {
 		const h = makeIsolationHarness()
-		expect(selectSeamKind({ inproc: true, remote: false })).toBe("bridge")
-		expect(selectSeamKind({ inproc: true, remote: true })).toBe("remote")
+		expect(selectSeamKind({ inproc: true })).toBe("bridge")
+		expect(selectSeamKind({ inproc: false })).toBe("remote")
 
 		let bridgeBuilt = false
 		const remoteSeam = { marker: "remote" } as never
 		const selected = await createSessionSeam({
-			kind: selectSeamKind({ inproc: true, remote: false }),
+			kind: selectSeamKind({ inproc: true }),
 			createBridge: () => {
 				bridgeBuilt = true
 				return createBridgeSessionSeam({ transport: h.transport, ctx: { logger } })
@@ -181,11 +183,11 @@ describe("M3-07 seam selection keeps the ride on --remote only", () => {
 		expect(selected).toBeInstanceOf(BridgeSessionSeam)
 		expectNoRideOnWire(h.requests)
 
-		// Explicit --remote dispatches to the retained remote factory (where the
-		// append ride code lives in 0.22.0; it is NOT deleted by this task).
+		// The DSH_OPENTUI_INPROC=0 escape hatch dispatches to the retained remote
+		// factory (where the append ride code lives; it is NOT deleted here).
 		const remoteSelected = await createSessionSeam({
-			kind: selectSeamKind({ inproc: true, remote: true }),
-			createBridge: () => Promise.reject(new Error("bridge must not be built for --remote")),
+			kind: selectSeamKind({ inproc: false }),
+			createBridge: () => Promise.reject(new Error("bridge must not be built for the env escape hatch")),
 			createRemote: () => remoteSeam,
 		})
 		expect(remoteSelected).toBe(remoteSeam)

@@ -450,12 +450,13 @@ async function main(): Promise<void> {
 			}): Promise<{ shutdown(): Promise<void> }>
 		}
 		const argv = process.argv.slice(2)
-		// M2/T9: in inproc mode the transport is constructed here and INJECTED
-		// into the synthetic root (bootClientV2), which selects BridgeSessionSeam.
-		// The legacy `--remote` flag (or a non-inproc launch) leaves it absent
-		// and the root keeps RemoteSessionSeam.
+		// 0.23.0: the bridge is the default. The transport is constructed here
+		// and INJECTED into the synthetic root (bootClientV2), which selects
+		// BridgeSessionSeam. Only DSH_OPENTUI_INPROC=0 (the escape hatch) leaves
+		// it absent so the root keeps RemoteSessionSeam. This mirrors
+		// seam-bootstrap.isInprocMode() — keep the two conditions in sync.
 		let bootOptions: Parameters<typeof mod.bootClientV2>[0] = { argv }
-		if (process.env.DSH_OPENTUI_INPROC === "1" && !argv.includes("--remote")) {
+		if (process.env.DSH_OPENTUI_INPROC !== "0") {
 			const bridgeMod = await import("./client/bridge-transport.ts")
 			bootOptions = {
 				...bootOptions,

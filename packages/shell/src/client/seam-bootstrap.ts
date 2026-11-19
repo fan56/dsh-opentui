@@ -4,13 +4,15 @@
  * This is the ONLY place that decides which SessionSeam the synthetic root
  * (tui-base examples/v2-entry.tsx `bootClientV2`) constructs:
  *
- *   - inproc mode (`DSH_OPENTUI_INPROC=1`) + no explicit `--remote`
- *       → BridgeSessionSeam (the new default).
- *   - anything else, or an explicit `--remote`
- *       → RemoteSessionSeam (the legacy thin client, retained in phase one).
+ *   - default (`DSH_OPENTUI_INPROC` unset or any value other than "0",
+ *     including "1" for idempotence)
+ *       → BridgeSessionSeam (the default since 0.23.0).
+ *   - `DSH_OPENTUI_INPROC=0`
+ *       → RemoteSessionSeam (the legacy thin client, retained as the env
+ *         escape hatch).
  *
- * The remote seam code is deliberately NOT deleted (ADR-0009 Consequences:
- * `--remote` stays visible-but-deprecated until 0.23.0).
+ * The remote seam code is deliberately NOT deleted: `DSH_OPENTUI_INPROC=0`
+ * keeps it reachable after the `--remote` flag was removed in 0.23.0.
  *
  * FAIL-FAST THREE ELEMENTS (tickets/2026-11-18-inproc-bridge-plan.md T11,
  * original text: "错误自包含诊断 + 修复命令 + 模式说明"):
@@ -62,26 +64,29 @@ export const BRIDGE_PROTOCOL_VERSION = 1
 export type SeamKind = "bridge" | "remote"
 
 export interface SeamSelectionInput {
-	/** `DSH_OPENTUI_INPROC === "1"` (inproc profile/bundle opted in). */
+	/** Bridge mode from `isInprocMode()`: true unless `DSH_OPENTUI_INPROC=0`. */
 	inproc: boolean
-	/** Explicit `--remote` in the launch argv (deprecated override). */
-	remote: boolean
 }
 
 /**
- * Decide the seam kind. Pure and total — unit-tested for both default
- * branches and for the explicit `--remote` override.
+ * Decide the seam kind. Pure and total — unit-tested for both branches.
  *
- * `--remote` wins even in inproc mode: it is the retained escape hatch.
+ * The seam is selected by the env escape hatch only: `DSH_OPENTUI_INPROC=0`
+ * keeps the legacy remote seam reachable; the removed `--remote` flag no
+ * longer participates.
  */
 export function selectSeamKind(input: SeamSelectionInput): SeamKind {
-	if (input.remote) return "remote"
 	return input.inproc ? "bridge" : "remote"
 }
 
-/** Read inproc mode from an env-like record (default: the process env). */
+/**
+ * Read bridge/inproc mode from an env-like record (default: the process env).
+ * Bridge is the DEFAULT (0.23.0): unset and "1" both enable it ("1" stays
+ * valid for idempotence); only the explicit "0" opts back into the legacy
+ * remote seam.
+ */
 export function isInprocMode(env: Record<string, string | undefined> = process.env): boolean {
-	return env.DSH_OPENTUI_INPROC === "1"
+	return env.DSH_OPENTUI_INPROC !== "0"
 }
 
 // ---------------------------------------------------------------------------

@@ -2,10 +2,10 @@
  * M2/T9-T11 unit tests for seam selection + fail-fast bootstrap.
  *
  * Covers the exact deliverables:
- *   - default seam selection: inproc → bridge, non-inproc → remote (each branch)
+ *   - default seam selection: bridge by default, DSH_OPENTUI_INPROC=0 → remote
  *   - fail-fast three elements: diagnosis + repair command + mode notice
  *   - handshake/fingerprint failure is immediate + readable, NO fallback
- *   - --remote still selects the legacy seam + one-shot deprecation notice
+ *   - the env escape hatch selects the legacy seam (the --remote flag is gone)
  *   - D3 downgrade law: sync members degrade+log, async members UNSUPPORTED
  */
 import { describe, expect, test } from "bun:test"
@@ -73,23 +73,25 @@ const logger = {
 // ---------------------------------------------------------------------------
 // 1. Default seam selection — both branches
 // ---------------------------------------------------------------------------
-describe("selectSeamKind: default path switch", () => {
-	test("inproc mode → BridgeSessionSeam is the default", () => {
-		expect(selectSeamKind({ inproc: true, remote: false })).toBe("bridge")
+describe("selectSeamKind: bridge is the default", () => {
+	test("bridge mode → BridgeSessionSeam is the default", () => {
+		expect(selectSeamKind({ inproc: true })).toBe("bridge")
 	})
 
-	test("non-inproc mode → legacy RemoteSessionSeam stays the default", () => {
-		expect(selectSeamKind({ inproc: false, remote: false })).toBe("remote")
+	test("the DSH_OPENTUI_INPROC=0 escape hatch → legacy RemoteSessionSeam", () => {
+		expect(selectSeamKind({ inproc: false })).toBe("remote")
 	})
 
-	test("explicit --remote overrides inproc mode (escape hatch retained)", () => {
-		expect(selectSeamKind({ inproc: true, remote: true })).toBe("remote")
-	})
-
-	test("isInprocMode reads only DSH_OPENTUI_INPROC=1", () => {
+	test("isInprocMode: unset and '1' enable bridge, only '0' opts back to remote", () => {
+		expect(isInprocMode({})).toBe(true)
 		expect(isInprocMode({ DSH_OPENTUI_INPROC: "1" })).toBe(true)
 		expect(isInprocMode({ DSH_OPENTUI_INPROC: "0" })).toBe(false)
-		expect(isInprocMode({})).toBe(false)
+		expect(isInprocMode({ DSH_OPENTUI_INPROC: "yes" })).toBe(true)
+	})
+
+	test("env → seam composition: default is bridge, =0 is remote", () => {
+		expect(selectSeamKind({ inproc: isInprocMode({}) })).toBe("bridge")
+		expect(selectSeamKind({ inproc: isInprocMode({ DSH_OPENTUI_INPROC: "0" }) })).toBe("remote")
 	})
 })
 
@@ -196,9 +198,9 @@ describe("handshake / fingerprint verification fails fast", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 4. createSessionSeam dispatch — no fallback, --remote retained
+// 4. createSessionSeam dispatch — no fallback, legacy remote seam retained via env
 // ---------------------------------------------------------------------------
-describe("createSessionSeam: no fallback, --remote retained", () => {
+describe("createSessionSeam: no fallback, env escape hatch retained", () => {
 	test("bridge factory failure propagates and the remote factory is never called", async () => {
 		let remoteCalls = 0
 		const boom = new BridgeBootstrapError({ code: "X", diagnosis: "boom" })
@@ -215,7 +217,7 @@ describe("createSessionSeam: no fallback, --remote retained", () => {
 		expect(remoteCalls).toBe(0)
 	})
 
-	test("--remote selects the remote factory and never touches the bridge", async () => {
+	test("the DSH_OPENTUI_INPROC=0 remote kind selects the remote factory and never touches the bridge", async () => {
 		let bridgeCalls = 0
 		const remote = new BridgeSessionSeam({ transport: fakeTransport().transport, ctx: { logger } })
 		const seam = await createSessionSeam({

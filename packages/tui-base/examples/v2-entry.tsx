@@ -1533,11 +1533,11 @@ export interface ClientBootV2 {
 
 /**
  * The v2 boot: ensureHost → ClientConnection → RemoteHostSession → seam →
- * the rebuilt view. The seam is selected here (the synthetic root): in inproc
- * mode it is BridgeSessionSeam over an injected stdio transport; otherwise —
- * or with the deprecated `--remote` — it stays RemoteSessionSeam (the legacy
- * thin client, retained in phase one). Shutdown semantics are client-entry
- * parity (dispose session → release host ref → idle reaper hand-off).
+ * the rebuilt view. The seam is selected here (the synthetic root): by default
+ * it is BridgeSessionSeam over an injected stdio transport; only the
+ * DSH_OPENTUI_INPROC=0 escape hatch keeps RemoteSessionSeam (the legacy thin
+ * client). Shutdown semantics are client-entry parity (dispose session →
+ * release host ref → idle reaper hand-off).
  */
 export async function bootClientV2(options: {
 	argv?: readonly string[]
@@ -1614,13 +1614,12 @@ export async function bootClientV2(options: {
 	}
 
 	const launchArgs = parseLaunchArgs(options.argv ?? process.argv.slice(2))
-	// M2/T9: the seam is chosen HERE — the synthetic root. inproc mode defaults
-	// to BridgeSessionSeam; the deprecated `--remote` (and any non-inproc
-	// launch) keeps the legacy RemoteSessionSeam. Bridge handshake/fingerprint
-	// failure throws (BridgeBootstrapError, three elements) — NEVER falls back.
+	// 0.23.0: the seam is chosen HERE — the synthetic root. BridgeSessionSeam is
+	// the default; only DSH_OPENTUI_INPROC=0 keeps the legacy RemoteSessionSeam.
+	// Bridge handshake/fingerprint failure throws (BridgeBootstrapError, three
+	// elements) — NEVER falls back.
 	const seamKind = seamBootstrap.selectSeamKind({
 		inproc: seamBootstrap.isInprocMode(),
-		remote: launchArgs.remoteRequested === true,
 	})
 	const seam = await seamBootstrap.createSessionSeam({
 		kind: seamKind,
@@ -1628,7 +1627,7 @@ export async function bootClientV2(options: {
 			if (options.bridgeTransport === undefined) {
 				throw new seamBootstrap.BridgeBootstrapError({
 					code: "BRIDGE_TRANSPORT_MISSING",
-					diagnosis: "inproc mode is on (DSH_OPENTUI_INPROC=1) but no bridge transport was injected at the synthetic root",
+					diagnosis: "bridge seam is selected (DSH_OPENTUI_INPROC is not 0) but no bridge transport was injected at the synthetic root",
 				})
 			}
 			return seamBootstrap.createBridgeSessionSeam({

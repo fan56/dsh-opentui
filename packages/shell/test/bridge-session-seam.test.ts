@@ -16,8 +16,10 @@ import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows.ts"
 import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
+	bridgeChildJournalMeta,
 	bridgeReplayRowsToSeamTranscript,
 	bridgeReplayRowsToSubagentViews,
+	bridgeSweepSettledChildIds,
 	projectBridgeEvent,
 	projectBridgeSessionList,
 	type BridgeEventFrame,
@@ -1775,7 +1777,405 @@ describe("subagent lifecycle rows (inproc visibility)", () => {
 		expect(result.state).toBe("attached")
 		expect(result.applied).toBe(2)
 		expect(h.seam.subagentViews().map((v) => [v.id, v.status])).toEqual([["rec-1", "completed"]])
-		expect(snapshots.length).toBe(before + 1)
+		// T2: the restored roster also triggers ONE lazy child-journal read; when
+		// it lands it repaints the snapshot (the fake journal.replay returns rows,
+		// so meta folds in). before+1 = replay fold, +1 = journal meta write.
+		expect(snapshots.length).toBe(before + 2)
 		expect(snapshots.at(-1)![0]!.status).toBe("completed")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 0.23.0 T1 — registry sweep (mirror remote refreshFromList)
+// ---------------------------------------------------------------------------
+
+describe("0.23.0 T1: registry sweep of not-running subagent children", () => {
+	test("pure decision: only subagent-origin + matching parent + running===false + locally running settles", () => {
+		const rows = [
+			{ sessionId: "c-settle", origin: "subagent", parentSessionId: "p", running: false },
+			{ sessionId: "c-running", origin: "subagent", parentSessionId: "p", running: true },
+			{ sessionId: "c-other-parent", origin: "subagent", parentSessionId: "q", running: false },
+			{ sessionId: "c-user", origin: "user", parentSessionId: "p", running: false },
+			{ sessionId: 42, origin: "subagent", parentSessionId: "p", running: false },
+			{ origin: "subagent", parentSessionId: "p", running: false },
+			{ sessionId: "c-not-in-catalog", origin: "subagent", parentSessionId: "p", running: false },
+		]
+		expect(bridgeSweepSettledChildIds(rows, "p", new Set(["c-settle", "c-running", "c-other-parent", "c-user"])))
+			.toEqual(["c-settle"])
+		// No parent bound → never sweep.
+		expect(bridgeSweepSettledChildIds(rows, undefined, new Set(["c-settle"]))).toEqual([])
+	})
+
+	test("turn-end sweep settles the ghost child via the catalog settle path; running/other-parent untouched", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "p" } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-sweep" } })
+		h.replies.set("session.list", {
+			kind: "value",
+			value: {
+				items: [
+					{ sessionId: "ghost", origin: "subagent", parentSessionId: "p", running: false },
+					{ sessionId: "alive", origin: "subagent", parentSessionId: "p", running: true },
+					{ sessionId: "other-parent", origin: "subagent", parentSessionId: "q", running: false },
+				],
+			},
+		})
+		h.seam.resumeSession("p")
+		const done = h.seam.turn("go", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "ghost", label: "G" } })
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "alive", label: "A" } })
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "other-parent", label: "O" } })
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-sweep", text: "" } })
+		await done
+		await Bun.sleep(0)
+
+		const views = h.seam.subagentViews()
+		const ghost = views.find((v) => v.id === "ghost")!
+		expect(ghost.status).toBe("completed")
+		expect(typeof ghost.endedAt).toBe("number") // catalog settle shape
+		expect(views.find((v) => v.id === "alive")!.status).toBe("running")
+		expect(views.find((v) => v.id === "other-parent")!.status).toBe("running")
+	})
+
+	test("recover sweep settles a ghost restored from the replay (client drives it — bridge has no recover event)", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "p" } })
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [{ seq: 1, type: "subagent/catalog", payload: { childId: "ghost", childCreatedAt: 1000, label: "G" } }],
+				cursor: 2,
+			},
+		})
+		h.replies.set("session.list", {
+			kind: "value",
+			value: { items: [{ sessionId: "ghost", origin: "subagent", parentSessionId: "p", running: false }] },
+		})
+		h.seam.resumeSession("p")
+		const result = await h.seam.recoverSession()
+		expect(result.state).toBe("attached")
+		await Bun.sleep(0)
+		const ghost = h.seam.subagentViews().find((v) => v.id === "ghost")!
+		expect(ghost.status).toBe("completed")
+	})
+
+	test("a failed or malformed session.list read leaves the roster unchanged (never treats it as empty)", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "p" } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-fail" } })
+		h.replies.set("session.list", { kind: "error", error: new Error("list down") })
+		h.seam.resumeSession("p")
+		const done = h.seam.turn("go", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "ghost", label: "G" } })
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-fail", text: "" } })
+		await done
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]!.status).toBe("running")
+
+		// A malformed reply (no items array) is equally NOT an empty registry.
+		h.replies.set("session.list", { kind: "value", value: {} })
+		h.emit({ type: "turn.end", payload: { turnId: "t-fail", text: "" } })
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]!.status).toBe("running")
+	})
+
+	test("P2-1a: a plain storedTranscript (resume/viewer open) sweeps a host-stopped catalog child to settled", async () => {
+		const h = makeHarness()
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [{ seq: 1, type: "subagent/catalog", payload: { childId: "ghost", childCreatedAt: 1000, label: "G" } }],
+				cursor: 2,
+			},
+		})
+		h.replies.set("session.list", {
+			kind: "value",
+			value: { items: [{ sessionId: "ghost", origin: "subagent", parentSessionId: "old-sess", running: false }] },
+		})
+		// No turn/terminal at all — this is a pure resume/viewer read of an old session.
+		await h.seam.storedTranscript("old-sess")
+		await Bun.sleep(0)
+		await Bun.sleep(0)
+		const ghost = h.seam.subagentViews().find((v) => v.id === "ghost")!
+		expect(ghost.status).toBe("completed")
+		expect(typeof ghost.endedAt).toBe("number")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 0.23.0 T2 — child journal meta (rounds / lastLine / model)
+// ---------------------------------------------------------------------------
+
+describe("0.23.0 T2: child journal rounds/lastLine/model from journal.replay", () => {
+	const childRows = (): BridgeReplayRow[] => [
+		{ seq: 1, type: "subagent/descriptor", payload: { agentModel: "descriptor-model", agentProvider: "p", label: "L" } },
+		{ seq: 2, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "first\nsecond" }] } } },
+		{ seq: 3, type: "assistant/message", payload: { content: [{ type: "text", text: "last out\n" }] } },
+	]
+
+	test("rounds = assistant/message row count; lastLine = last body tail; model = descriptor.agentModel fallback", () => {
+		expect(bridgeChildJournalMeta(childRows())).toEqual({
+			rounds: 2, lastLine: "last out", model: "descriptor-model",
+		})
+	})
+
+	test("request/context.model wins over the descriptor fallback", () => {
+		const meta = bridgeChildJournalMeta([...childRows(), { seq: 4, type: "request/context", payload: { model: "ctx-model" } }])
+		expect(meta.model).toBe("ctx-model")
+		expect(meta.rounds).toBe(2)
+	})
+
+	test("P2-3b: a non-error tool/result tail becomes lastLine (remote parity); error results keep the prior tail", () => {
+		const rows: BridgeReplayRow[] = [
+			{ seq: 1, type: "assistant/message", payload: { content: [{ type: "text", text: "assistant line" }] } },
+			{ seq: 2, type: "tool/result", payload: { content: [{ type: "text", text: "tool printed this\n" }] } },
+		]
+		const meta = bridgeChildJournalMeta(rows)
+		expect(meta.lastLine).toBe("tool printed this")
+		expect(meta.rounds).toBe(1) // a tool/result is NOT a round
+
+		const withError = bridgeChildJournalMeta([
+			...rows,
+			{ seq: 3, type: "tool/result", payload: { isError: true, content: [{ type: "text", text: "boom" }] } },
+		])
+		expect(withError.lastLine).toBe("tool printed this") // error keeps the last good tail
+	})
+
+	test("no assistant rows → rounds 0 and no lastLine/model (not fabricated)", () => {
+		expect(bridgeChildJournalMeta([{ seq: 1, type: "turn/start", payload: {} }])).toEqual({ rounds: 0 })
+	})
+
+	test("lazy read writes real meta into the view; a failed read keeps the degraded row untouched", async () => {
+		const h = makeHarness()
+		h.replies.set("journal.replay", { kind: "value", value: { rows: childRows(), cursor: 4 } })
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "c1", label: "L", childCreatedAt: 1000 } })
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]).toMatchObject({
+			id: "c1", rounds: 2, lastLine: "last out", model: "descriptor-model",
+		})
+
+		// A second child whose journal read fails keeps its degraded values; the
+		// successfully-read child is NOT zeroed by the other child's failure.
+		h.replies.set("journal.replay", { kind: "error", error: new Error("journal down") })
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "c2", label: "L2", childCreatedAt: 2000 } })
+		await Bun.sleep(0)
+		const views = h.seam.subagentViews()
+		expect(views.find((v) => v.id === "c1")!.rounds).toBe(2)
+		const c2 = views.find((v) => v.id === "c2")!
+		expect(c2.rounds).toBe(0)
+		expect(c2.model).toBeUndefined()
+		expect(c2.lastLine).toBeUndefined()
+	})
+
+	test("P1-3a: settle re-reads the FULL child journal under the id@\"\" key (terminal rounds/lastLine/model)", async () => {
+		// The running view's first lazy read sees only 1 round. bridgeSettleChild
+		// drops startedAt → cache key flips id@<start> → id@"" → the post-settle
+		// #syncSubagentMeta re-reads the whole journal and folds the TERMINAL
+		// rounds/lastLine/model (ctrl+g accuracy pillar for done children).
+		const firstRead: BridgeReplayRow[] = [
+			{ seq: 1, type: "assistant/message", payload: { content: [{ type: "text", text: "only round" }] } },
+		]
+		let currentRows = firstRead
+		const h = makeHarness()
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: () => ({ kind: "value", value: { rows: currentRows, cursor: 10 } }),
+		})
+
+		// Spawn with a real wall clock (live frame) so the running key is id@<start>.
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "term-child", label: "L", runId: "rt", seq: 0 } })
+		await Bun.sleep(0)
+		const running = h.seam.subagentViews()[0]!
+		expect(running.rounds).toBe(1)
+		expect(running.lastLine).toBe("only round")
+		expect("startedAt" in running).toBe(true)
+		expect(h.requests.filter((r) => r.method === "journal.replay")).toHaveLength(1)
+
+		// The child does more work before its terminal is journalled.
+		currentRows = [
+			...firstRead,
+			{ seq: 2, type: "assistant/message", payload: { content: [{ type: "text", text: "second" }] } },
+			{ seq: 3, type: "assistant/message", payload: { content: [{ type: "text", text: "final line" }] } },
+			{ seq: 4, type: "request/context", payload: { model: "final-model" } },
+		]
+		// Settle via the tool-workflow pairing (runId:seq) — drops startedAt.
+		h.emit({ type: "agent.settle", payload: { runId: "rt", seq: 0, outcome: "completed" } })
+		await Bun.sleep(0)
+		await Bun.sleep(0)
+
+		const settled = h.seam.subagentViews()[0]!
+		expect(settled.status).toBe("completed")
+		expect("startedAt" in settled).toBe(false)
+		expect(settled.rounds).toBe(3) // terminal value, NOT the stale pre-settle 1
+		expect(settled.lastLine).toBe("final line")
+		expect(settled.model).toBe("final-model")
+		expect(h.requests.filter((r) => r.method === "journal.replay")).toHaveLength(2)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 0.23.0 真机验收回归 — rounds 被 replay refold 归零 / 幽灵被 revive 复活
+// ---------------------------------------------------------------------------
+
+describe("0.23.0 acceptance regressions (replay refold must not undo T1/T2)", () => {
+	const terminalChildRows: BridgeReplayRow[] = [
+		{ seq: 1, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "first" }] } } },
+		{ seq: 2, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "second" }] } } },
+		{ seq: 3, type: "turn/end", payload: { reason: { kind: "completed" } } },
+	]
+
+	test("journal 行数 2 → view.rounds=2；已 settle 再经 catalog revive+re-settle 仍保 2", async () => {
+		const h = makeHarness()
+		const parentRows = [
+			{ seq: 18, type: "subagent/catalog", payload: { childId: "f2c9", childCreatedAt: 1_795_092_710_913, label: "L" } },
+			{ seq: 29, type: "user/message", payload: {
+				source: { kind: "subagent-settled", stopReason: "completed", senderSessionId: "f2c9" },
+			} },
+		]
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (p) => ({ kind: "value", value: { rows: p?.sessionId === "f2c9" ? terminalChildRows : parentRows, cursor: 30 } }),
+		})
+		h.replies.set("session.list", { kind: "value", value: { items: [] } })
+
+		await h.seam.storedTranscript("parent")
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]).toMatchObject({
+			id: "f2c9", status: "completed", rounds: 2, lastLine: "second",
+		})
+
+		// 下一个 turn 边界再次全量 replay：catalog 族 REVIVE（rounds 归 0、重建
+		// startedAt）后 settle 行再结算。缓存的同 run journal meta 必须把 rounds
+		// / lastLine 恢复回来，且不重新读 journal。
+		await h.seam.storedTranscript("parent")
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]).toMatchObject({
+			id: "f2c9", status: "completed", rounds: 2, lastLine: "second",
+		})
+		expect(h.requests.filter((r) => r.method === "journal.replay" && r.params?.sessionId === "f2c9")).toHaveLength(1)
+	})
+
+	test("list 回该 child running=false → view completed；journal 无 turn/end 且后续 catalog-only replay 不复活", async () => {
+		const h = makeHarness()
+		const catalogOnly = [
+			{ seq: 83, type: "subagent/catalog", payload: { childId: "ghost", childCreatedAt: 1_795_092_985_142, label: "G" } },
+		]
+		// 子 journal 无 turn/end、无 settle 行 —— sweep 不依赖 journal terminal。
+		h.replies.set("journal.replay", { kind: "fn", fn: () => ({ kind: "value", value: { rows: catalogOnly, cursor: 84 } }) })
+		h.replies.set("session.list", {
+			kind: "fn",
+			fn: () => ({
+				kind: "value",
+				value: { items: [{ sessionId: "ghost", origin: "subagent", parentSessionId: "parent", running: false }] },
+			}),
+		})
+
+		await h.seam.storedTranscript("parent")
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]).toMatchObject({ id: "ghost", status: "completed" })
+
+		// 宿主 list 不再报 stopped，后续 replay 又只带回 catalog 行（无 settle 行）。
+		// sweep 的结算必须 sticky：不靠 wall-clock、不靠 journal terminal。
+		h.replies.set("session.list", { kind: "value", value: { items: [] } })
+		await h.seam.storedTranscript("parent")
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]).toMatchObject({ id: "ghost", status: "completed" })
+	})
+
+	test("genuine catalog REVIVE (new childCreatedAt) does not match the old sticky key and stays running", async () => {
+		const h = makeHarness()
+		const firstCatalog = [{ seq: 83, type: "subagent/catalog", payload: { childId: "revive", childCreatedAt: 1000, label: "G" } }]
+		const secondCatalog = [{ seq: 90, type: "subagent/catalog", payload: { childId: "revive", childCreatedAt: 9000, label: "G2" } }]
+		let rows = firstCatalog
+		h.replies.set("journal.replay", { kind: "fn", fn: () => ({ kind: "value", value: { rows, cursor: 100 } }) })
+		h.replies.set("session.list", {
+			kind: "fn",
+			fn: () => ({
+				kind: "value",
+				value: { items: [{ sessionId: "revive", origin: "subagent", parentSessionId: "parent", running: false }] },
+			}),
+		})
+		await h.seam.storedTranscript("parent")
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]!.status).toBe("completed")
+
+		// 同一 childId 的新 run（新 childCreatedAt）不是旧 sweep 的幽灵，必须
+		// 保持 running，不能让 sticky settle 误杀。
+		rows = secondCatalog
+		h.replies.set("session.list", { kind: "value", value: { items: [] } })
+		await h.seam.storedTranscript("parent")
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]).toMatchObject({ id: "revive", status: "running", startedAt: 9000, label: "G2" })
+	})
+
+	test("P1: settled elapsedSec/endedAt frozen across two replays at different wall clocks", async () => {
+		const h = makeHarness()
+		const parentRows = [
+			{ seq: 18, type: "subagent/catalog", payload: { childId: "frozen", childCreatedAt: Date.now() - 60_000, label: "L" } },
+			{ seq: 29, type: "user/message", payload: {
+				source: { kind: "subagent-settled", stopReason: "completed", senderSessionId: "frozen" },
+			} },
+		]
+		h.replies.set("journal.replay", { kind: "fn", fn: (p) => ({ kind: "value", value: { rows: p?.sessionId === "frozen" ? [] : parentRows, cursor: 30 } }) })
+		h.replies.set("session.list", { kind: "value", value: { items: [] } })
+
+		await h.seam.storedTranscript("parent")
+		await Bun.sleep(0)
+		const first = h.seam.subagentViews()[0]!
+		expect(first.status).toBe("completed")
+		expect(typeof first.elapsedSec).toBe("number")
+		expect(first.elapsedSec!).toBeGreaterThanOrEqual(55)
+
+		// 两个 turn 边界之后再次全量 replay —— 墙钟已前进，但 settle 快照必须
+		// 冻结 elapsedSec / endedAt（远端 settle 即冻结，session-seam-adapter:715-721）。
+		await Bun.sleep(260)
+		await h.seam.storedTranscript("parent")
+		await Bun.sleep(0)
+		const second = h.seam.subagentViews()[0]!
+		expect(second.status).toBe("completed")
+		expect(second.elapsedSec).toBe(first.elapsedSec)
+		expect(second.endedAt).toBe(first.endedAt)
+	})
+
+	test("P2b: settle boundary emits no transient rounds=0 while id@\"\" terminal read is pending", async () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+		let currentRows: BridgeReplayRow[] = [
+			{ seq: 1, type: "assistant/message", payload: { content: [{ type: "text", text: "only round" }] } },
+		]
+		h.replies.set("journal.replay", { kind: "fn", fn: () => ({ kind: "value", value: { rows: currentRows, cursor: 10 } }) })
+
+		// running child with a cached journal meta (rounds=1)
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "mid", label: "L", runId: "rt", seq: 0 } })
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews()[0]!.rounds).toBe(1)
+		// Only the settle-boundary window matters — the initial spawn's rounds=0
+		// (before any journal read) is a legitimate, unavoidable first paint.
+		snapshots.length = 0
+
+		// settle: the id@"" terminal read sees newer rows (rounds=3). The panel must
+		// never observe rounds=0 in the gap — prior run-key meta bridges it.
+		currentRows = [
+			...currentRows,
+			{ seq: 2, type: "assistant/message", payload: { content: [{ type: "text", text: "second" }] } },
+			{ seq: 3, type: "assistant/message", payload: { content: [{ type: "text", text: "final" }] } },
+		]
+		h.emit({ type: "agent.settle", payload: { runId: "rt", seq: 0, outcome: "completed" } })
+		await Bun.sleep(0)
+		await Bun.sleep(0)
+
+		const roundsSeen = snapshots.map((s) => s.find((v) => v.id === "mid")?.rounds).filter((r) => r !== undefined)
+		expect(roundsSeen.length).toBeGreaterThan(0)
+		expect(roundsSeen.every((r) => r! >= 1)).toBe(true)
+		expect(h.seam.subagentViews()[0]!.rounds).toBe(3)
 	})
 })

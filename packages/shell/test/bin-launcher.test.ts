@@ -13,14 +13,11 @@ import {
   ancestorPids,
   classifyProcess,
   defaultDshHome,
-  emitRemoteDeprecation,
   formatUsage,
-  isRemoteRequested,
   KNOWN_CLIENT_ARGS,
   killStaleProcesses,
   launcherFlagConflict,
   parseLauncherArgs,
-  REMOTE_DEPRECATION_NOTICE,
   parseLauncherOptions,
   parseProcessHomes,
   parseProcessRows,
@@ -352,72 +349,62 @@ describe('parseLauncherArgs -- separator', () => {
   })
 })
 
-describe('--remote deprecation (T10)', () => {
-  test('is an accepted (known) client arg and in the client-launch allowlist', () => {
-    expect(KNOWN_CLIENT_ARGS).toContain('--remote')
-    expect(validateLauncherArgs(['--remote']).unknown).toEqual([])
-    // A `--remote` value-taking neighbour is not mistaken for an unknown flag.
-    expect(validateLauncherArgs(['--remote', '--new']).unknown).toEqual([])
+describe('--remote removal (0.23.0)', () => {
+  test('is no longer in the allowlist and is rejected as an unknown flag', () => {
+    expect(KNOWN_CLIENT_ARGS).not.toContain('--remote')
+    const result = validateLauncherArgs(['--remote'])
+    expect(result.unknown).toEqual(['--remote'])
+    // No known flag is within edit distance 2 of "--remote", so the generic
+    // did-you-mean rule correctly declines to suggest a misleading neighbour.
+    expect(result.suggestion).toBeUndefined()
+    expect(validateLauncherArgs(['--remote', '--new']).unknown).toEqual(['--remote'])
   })
 
-  test('the notice names the removal line and the replacement entry', () => {
-    expect(REMOTE_DEPRECATION_NOTICE).toContain('0.23.0')
-    expect(REMOTE_DEPRECATION_NOTICE).toContain('deprecated')
-    expect(REMOTE_DEPRECATION_NOTICE.toLowerCase()).toContain('in-process bridge')
-    expect(REMOTE_DEPRECATION_NOTICE).toContain('DSH_OPENTUI_INPROC=1')
-    expect(REMOTE_DEPRECATION_NOTICE).toContain('--session')
+  test('-- --remote stays passthrough and is never validated', () => {
+    expect(parseLauncherArgs(['--', '--remote']).passthrough).toEqual(['--remote'])
+    expect(validateLauncherArgs(['--', '--remote']).unknown).toEqual([])
   })
 
-  test('emitRemoteDeprecation prints at most once even when the flag repeats', () => {
-    const lines: string[] = []
-    expect(emitRemoteDeprecation([['--remote', '--remote', '--new'], []], (m) => lines.push(String(m)))).toBe(1)
-    expect(lines).toEqual([REMOTE_DEPRECATION_NOTICE])
-    expect(emitRemoteDeprecation([['--new'], []], (m) => lines.push(String(m)))).toBe(0)
-    expect(lines).toHaveLength(1)
+  test('the did-you-mean unknown-flag path still works after the removal', () => {
+    const result = validateLauncherArgs(['--verison'])
+    expect(result.unknown).toEqual(['--verison'])
+    expect(result.suggestion).toBe('--version')
   })
 
-  test('isRemoteRequested sees the flag before and after a -- separator', () => {
-    expect(isRemoteRequested(['--remote'], [])).toBe(true)
-    expect(isRemoteRequested(['--new'], ['--remote'])).toBe(true)
-    expect(isRemoteRequested(['--new'], [])).toBe(false)
-  })
-
-  test('bin integration: --remote --help prints one notice and the usage', () => {
-    const r = spawnSync('node', [binPath, '--remote', '--help'], { encoding: 'utf8', timeout: 30_000 })
-    expect(r.status).toBe(0)
-    expect(r.stdout).toContain('Usage: dsh-opentui')
-    const matches = r.stderr.split(REMOTE_DEPRECATION_NOTICE).length - 1
-    expect(matches).toBe(1)
-    expect(r.stderr).not.toContain('[1/5]') // no provisioning on the help path
+  test('bin integration: --remote exits 2 as an unknown option, no notice, no provisioning', () => {
+    const r = spawnSync('node', [binPath, '--remote'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(2)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain("dsh-opentui: unknown option '--remote'")
+    // P2-4b: a removed flag with a launch-level replacement gets migration advice.
+    expect(r.stderr).toContain('use DSH_OPENTUI_INPROC=0 for the legacy remote seam')
+    expect(r.stderr).not.toContain('deprecated')
+    expect(r.stderr).not.toContain('[1/5]')
+    expect(r.stderr).not.toContain('[1/7]')
   })
 })
 
 describe('P3-3 flag-combination conflicts', () => {
   test('--repair-bridge + --force is an explicit mutually-exclusive reject', () => {
-    expect(launcherFlagConflict({ force: true, repairBridge: true, yes: false }, false)).toBe('repair-force')
-    expect(launcherFlagConflict({ force: true, repairBridge: true, yes: true }, false)).toBe('repair-force')
-  })
-
-  test('--repair-bridge + --remote is rejected (remote mode has no bridge to repair)', () => {
-    expect(launcherFlagConflict({ force: false, repairBridge: true, yes: false }, true)).toBe('repair-remote')
+    expect(launcherFlagConflict({ force: true, repairBridge: true, yes: false })).toBe('repair-force')
+    expect(launcherFlagConflict({ force: true, repairBridge: true, yes: true })).toBe('repair-force')
   })
 
   test('--yes without --force is rejected, but --repair-bridge --yes is the kill confirmation', () => {
-    expect(launcherFlagConflict({ force: false, repairBridge: false, yes: true }, false)).toBe('yes-without-force')
+    expect(launcherFlagConflict({ force: false, repairBridge: false, yes: true })).toBe('yes-without-force')
     // Under --repair-bridge, --yes is intentionally allowed through.
-    expect(launcherFlagConflict({ force: false, repairBridge: true, yes: true }, false)).toBeNull()
+    expect(launcherFlagConflict({ force: false, repairBridge: true, yes: true })).toBeNull()
   })
 
   test('benign combinations do not conflict', () => {
-    expect(launcherFlagConflict({ force: false, repairBridge: false, yes: false }, false)).toBeNull()
-    expect(launcherFlagConflict({ force: true, repairBridge: false, yes: true }, false)).toBeNull()
-    expect(launcherFlagConflict({ force: true, repairBridge: false, yes: false }, false)).toBeNull()
+    expect(launcherFlagConflict({ force: false, repairBridge: false, yes: false })).toBeNull()
+    expect(launcherFlagConflict({ force: true, repairBridge: false, yes: true })).toBeNull()
+    expect(launcherFlagConflict({ force: true, repairBridge: false, yes: false })).toBeNull()
   })
 
   test('bin integration: conflicting combos exit 2 with a human-readable message', () => {
     for (const [args, needle] of [
       [['--repair-bridge', '--force'], 'mutually exclusive'],
-      [['--repair-bridge', '--remote'], 'no bridge to repair'],
       [['--yes'], 'only meaningful together with --force'],
     ] as const) {
       const r = spawnSync('node', [binPath, ...args], { encoding: 'utf8', timeout: 30_000 })
@@ -449,7 +436,6 @@ describe('formatUsage', () => {
       '--reasoning-effort <level>',
       '--plugins <tier>',
       '--dry-run',
-      '--remote',
       '-h, --help',
     ]) {
       expect(usage).toContain(flag)
@@ -471,6 +457,10 @@ describe('formatUsage', () => {
       expect(usage).toContain(env)
     }
     expect(usage).toContain('CLI flag > environment variable > default')
+    // 0.23.0: help documents the default bridge and the env escape hatch, and
+    // no longer advertises the removed --remote flag.
+    expect(usage).toContain('DSH_OPENTUI_INPROC=0')
+    expect(usage).not.toContain('--remote')
     // P3-3 ④: --force is documented as a no-op under --dry-run.
     expect(usage).toContain('no-op under --dry-run')
     // Exit codes are honest: provisioning failures are WARNs, not exit 1, and
@@ -782,7 +772,10 @@ function makeAsyncLauncherHarness() {
   return {
     root,
     launcherBin: join(tmpBinDir, 'dsh-opentui.mjs'),
-    env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, DSH_HOME: dshHome },
+    // This harness copies only bin/ (no scripts/), and its subject is the
+    // fake-bun exit-code mapping — not provisioning. Use the 0.23.0 escape
+    // hatch so the default in-process provisioning step is skipped here.
+    env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, DSH_HOME: dshHome, DSH_OPENTUI_INPROC: '0' },
     setBunShim(body: string) {
       writeFileSync(bunShim, `#!/bin/sh\n${body}\n`)
       chmodSync(bunShim, 0o755)

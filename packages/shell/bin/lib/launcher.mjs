@@ -123,9 +123,6 @@ export const KNOWN_CLIENT_ARGS = [
 	'--resume-last',
 	'--session',
 	'--session=',
-	// T10: retained but deprecated; removed in 0.23.0. Still accepted so the
-	// legacy thin-client seam remains selectable during phase one.
-	'--remote',
 ]
 
 /**
@@ -291,49 +288,18 @@ export function validateLauncherArgs(rest, { skip = [] } = {}) {
 }
 
 /**
- * T10 — the `--remote` deprecation notice. Names the removal line (0.23.0)
- * and the inproc migration path (set DSH_OPENTUI_INPROC=1, then drop the flag;
- * inproc becomes the default in 0.23.0). Kept here (pure)
- * so the "printed exactly once" contract is unit-testable without a TUI.
- */
-export const REMOTE_DEPRECATION_NOTICE =
-  'dsh-opentui: --remote is deprecated and will be removed in 0.23.0; ' +
-  'to move to the in-process bridge, set DSH_OPENTUI_INPROC=1 and drop the flag ' +
-  '(inproc becomes the default in 0.23.0; the /resume, --session, --resume-last entries also use it).'
-
-/** True when `--remote` appears anywhere in the launch argv (before or after
- *  a `--` separator). */
-export function isRemoteRequested(...argvLists) {
-  return argvLists.some((list) => Array.isArray(list) && list.includes('--remote'))
-}
-
-/**
- * Emit the deprecation notice AT MOST ONCE per launch, even if `--remote`
- * appears multiple times. Returns the number of lines written (0 or 1) so
- * callers/tests can assert the "exactly once" contract. `sink` is injectable.
- */
-export function emitRemoteDeprecation(argvLists, sink = console.warn) {
-  if (!argvLists.some((list) => Array.isArray(list) && list.includes('--remote'))) return 0
-  sink(REMOTE_DEPRECATION_NOTICE)
-  return 1
-}
-
-/**
  * P3-3 — explicit handling of launcher flag combinations that previously fell
  * into dead corners (silently ignored one flag or ran the wrong branch). Pure
  * so the bin's reject/notice decisions are unit-testable without spawning.
- * `remote` is precomputed via `isRemoteRequested(userArgs, passthrough)`.
  *
  * Returns a conflict code, or null when the combination is fine:
  *   'repair-force'      --repair-bridge + --force → mutually exclusive
- *   'repair-remote'     --repair-bridge + --remote → no bridge in remote mode
  *   'yes-without-force' --yes without --force/--repair-bridge (under
  *                       --repair-bridge, --yes is tolerated — the repair branch
  *                       never reads it — and is intentionally allowed through)
  */
-export function launcherFlagConflict({ force, repairBridge, yes } = {}, remote = false) {
+export function launcherFlagConflict({ force, repairBridge, yes } = {}) {
   if (repairBridge && force) return 'repair-force'
-  if (repairBridge && remote) return 'repair-remote'
   if (yes && !force && !repairBridge) return 'yes-without-force'
   return null
 }
@@ -361,6 +327,7 @@ export function formatUsage() {
 		'  -h, --help                 print this help and exit',
 		'',
 		'Environment:',
+		'  DSH_OPENTUI_INPROC=0         use the legacy remote thin-client seam instead of the default in-process bridge (escape hatch); unset or 1 = bridge',
 		'  DSH_OPENTUI_BOOT_TIMEOUT_MS      host cold-start budget in ms (CLI flag wins)',
 		'  DSH_OPENTUI_MUX_TIMEOUT_MS       mux readiness budget in ms (CLI flag wins)',
 		'  DSH_OPENTUI_CONNECT_TIMEOUT_MS   first-connect budget in ms (CLI flag wins)',
@@ -368,7 +335,6 @@ export function formatUsage() {
 		'',
 		'Client options (passed through; put them after -- to skip validation):',
 		'  --new, --resume-last, --session <id>',
-		'  --remote                   (deprecated; removed in 0.23.0) force the legacy thin-client seam; default is the in-process bridge in inproc mode',
 		'',
 		'Exit codes:',
 		'  0  success, --version, or --help',

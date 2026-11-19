@@ -27,6 +27,7 @@ import {
 } from '../scripts/lib/host-compat.mjs'
 import {
   BRIDGE_APPEND_PRESET_NOTICE,
+  BRIDGE_LEGACY_REMOTE_HINT,
   BRIDGE_REPAIR_COMMAND,
 } from '../scripts/lib/bridge-failfast-text.mjs'
 
@@ -37,6 +38,8 @@ function assertThreeElements(stderr: string, diagnosisNeedle: string): void {
   expect(stderr).toContain(diagnosisNeedle)
   expect(stderr).toContain(BRIDGE_REPAIR_COMMAND)
   expect(stderr).toContain(BRIDGE_APPEND_PRESET_NOTICE)
+  // P1-4a: host-gate failures always point at the launch-level escape hatch.
+  expect(stderr).toContain(BRIDGE_LEGACY_REMOTE_HINT)
 }
 
 // --- 1. The window itself ---------------------------------------------------
