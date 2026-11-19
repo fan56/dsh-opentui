@@ -187,7 +187,6 @@ describe("WidgetsDock on the real renderer", () => {
 			height: HEIGHT,
 			useMouse: false,
 		})
-		const toolAccent = dockAccentColor(undefined, "tool")
 		try {
 			const think = dockAccentColor(undefined, "think")
 			// Phase A: a resumed think burst (streaming) carrying a stale
@@ -213,13 +212,13 @@ describe("WidgetsDock on the real renderer", () => {
 			expect(thinkA).toBeDefined()
 			// Full accent — a stale-anchor fade would paint this in the bg.
 			expect(nearSphere(thinkA!.fg, think)).toBe(true)
-			expect(spanFor(frame, "bash")).toBeDefined()
-			// The body carries the tool accent; the ⚙ marker keeps the running tone.
-			expect(nearSphere(spanFor(frame, "bash")!.fg, toolAccent)).toBe(true)
-			expect(spanFor(frame, "⚙")).toBeDefined()
+			// 2026-11-19 scene B: a visible think hides tool/todo entirely.
+			expect(spanFor(frame, "bash")).toBeUndefined()
+			expect(spanFor(frame, "⚙")).toBeUndefined()
 
-			// Phase B: the segment collapses and the tool settles → both lines
-			// keep their INDEPENDENT anchors (one never hides the other).
+			// Phase B: the segment collapses inside its 2s hold — think stays
+			// visible and tool stays hidden (the old independent-anchor law is
+			// superseded by the 2026-11-19 scene table).
 			const collapsedAt = Date.now()
 			setRows([
 				{
@@ -245,8 +244,8 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			frame = setup.captureSpans()
 			expect(spanFor(frame, "💭 thought")).toBeDefined()
-			expect(spanFor(frame, "✔")).toBeDefined()
-			expect(spanFor(frame, "bash")).toBeDefined()
+			expect(spanFor(frame, "✔")).toBeUndefined()
+			expect(spanFor(frame, "bash")).toBeUndefined()
 
 			// Phase C: a NEW think burst resumes after the tool (think→tool→think)
 			// — still streaming with the phase-B elapsedSec left on the row. The
@@ -277,8 +276,8 @@ describe("WidgetsDock on the real renderer", () => {
 			const thinkC = spanFor(frame, "💭 thinking")
 			expect(thinkC).toBeDefined()
 			expect(nearSphere(thinkC!.fg, think)).toBe(true)
-			// The settled tool is still inside its linger: independent, painted.
-			expect(spanFor(frame, "✔")).toBeDefined()
+			// The settled tool stays hidden while the think burst is visible.
+			expect(spanFor(frame, "✔")).toBeUndefined()
 		} finally {
 			await setup.dispose()
 		}
@@ -307,12 +306,27 @@ describe("WidgetsDock on the real renderer", () => {
 		output: "Updated todo list",
 	})
 
-	test("U4 panelHeight: gear caps the merged frame at min(gear, 10) (1 → 10)", async () => {
+	/** A running subagent tree (scene A's scrollable lower zone). Since
+	 * 2026-11-19 the scroll indicator / N-M title live here, not in todos. */
+	const subagentRows = (count: number): SeamRow => ({
+		key: "subagents:render",
+		kind: "subagents",
+		children: Array.from({ length: count }, (_, i) => ({
+			id: `a${i}`,
+			label: `agent ${i + 1}`,
+			status: "running" as const,
+			rounds: 2,
+			startedAt: Date.now(),
+			lastLine: "working",
+		})),
+	})
+
+	test("scene A: the 10-line frame is gear-inert; scene B: the gear drives think lines", async () => {
 		setMotionTier("full")
 		const now = Date.now()
-		// A 5-line collapsed think burst + a running tool + 12 in_progress todos
-		// → coexistence: think + tool above, todo window below. The gear caps
-		// the WHOLE merged frame; think itself never expands past one line.
+		// A 5-line collapsed think + running tool + 12 todos + 12 running
+		// subagents → scene A: think(1)/tool(1)/todo brief(1) pinned above a
+		// clipped subagent list, 10 content lines total at EVERY gear.
 		const rows: SeamRow[] = [
 			{
 				key: "reasoning:gear",
@@ -324,70 +338,69 @@ describe("WidgetsDock on the real renderer", () => {
 			},
 			{ key: "tool:live:gear", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
 			todoWriteRows(12),
+			subagentRows(12),
 		]
 		const setup = await testRender(
 			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
 			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
 		try {
-			await sleep(300) // the frame latch + entrance fades
+			await sleep(300) // frame latch + entrance fades + height tween
 			await setup.renderOnce()
-			// No gear → the 10-line ceiling. Think is exactly ONE line (the
-			// tail, g5); the coexistence tool zone is exactly ONE line.
 			const base = setup.captureSpans()
 			expect(dockContentLines(base)).toBe(10)
+			// Pinned order: one think line (the tail), one tool line, one brief.
 			expect(spansMatching(base, /g[1-5]/)).toHaveLength(1)
 			expect(spansMatching(base, /g[1-5]/)[0]!.text).toContain("g5")
 			expect(spansMatching(base, /g[1-5]/)[0]!.text).not.toContain("g1")
 			expect(spansMatching(base, /bash/)).toHaveLength(1)
+			expect(spansMatching(base, /todo/).length).toBeGreaterThan(0) // scene-A brief
+			expect(spansMatching(base, /agent \d+/).length).toBeGreaterThan(0)
 
-			// Gear 1: the frame shrinks in place (no remount) to ONE content
-			// line — the newest upper line (tool); think/lower are trimmed.
-			setActivityPanelGear("1")
-			await setup.renderOnce()
-			const tight = setup.captureSpans()
-			expect(dockContentLines(tight)).toBe(1)
-			expect(spansMatching(tight, /bash/)).toHaveLength(1)
-			expect(spansMatching(tight, /g[1-5]/)).toHaveLength(0)
-			expect(spansMatching(tight, /task \d+/)).toHaveLength(0)
-
-			// Gear 5 → exactly 5 content lines; gear 10 → exactly 10. Think and
-			// the tool zone stay at one line each at every gear.
-			for (const [gear, expected] of [["5", 5], ["10", 10]] as const) {
+			// The gear cannot grow scene A (think is pinned to one line).
+			for (const gear of ["1", "5", "10", "all"] as const) {
 				setActivityPanelGear(gear)
 				await setup.renderOnce()
 				const frame = setup.captureSpans()
-				expect(dockContentLines(frame)).toBe(expected)
+				expect(dockContentLines(frame)).toBe(10)
 				expect(spansMatching(frame, /g[1-5]/)).toHaveLength(1)
-				expect(spansMatching(frame, /bash/)).toHaveLength(1)
 			}
+		} finally {
+			setActivityPanelGear(undefined)
+			await setup.dispose()
+		}
 
+		// Scene B (no running subagent): the gear drives THINK lines only.
+		setActivityPanelGear("5")
+		const sceneB = await testRender(
+			() => createComponent(WidgetsDock, { rows: rows.slice(0, 1), turnActive: () => true }),
+			{ width: WIDTH, height: HEIGHT, useMouse: false },
+		)
+		try {
+			await sleep(300)
+			await sceneB.renderOnce()
+			expect(spansMatching(sceneB.captureSpans(), /g[1-5]/)).toHaveLength(5)
 			// Short terminal: the gear is INERT — the rule-bar degradation wins.
-			setActivityPanelGear("10")
 			const small = await testRender(
-				() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
+				() => createComponent(WidgetsDock, { rows: rows.slice(0, 1), turnActive: () => true }),
 				{ width: WIDTH, height: 24, useMouse: false },
 			)
 			try {
 				await sleep(200)
 				await small.renderOnce()
-				// The compact rule bar carries ONE think line (the tail), not five.
 				expect(spansMatching(small.captureSpans(), /g[1-5]/)).toHaveLength(1)
 			} finally {
 				await small.dispose()
 			}
 		} finally {
 			setActivityPanelGear(undefined)
-			await setup.dispose()
+			await sceneB.dispose()
 		}
 	})
 
-	test("U4 panelHeight `all`: content caps at 10 with scroll indicators", async () => {
+	test("scene A: `all` is a legacy 10-line spelling, never a growth rule", async () => {
 		setMotionTier("full")
 		const now = Date.now()
-		// 20 collapsed think lines + a running tool + 20 in_progress todos:
-		// far more than the merged frame can show. Under `all` (unbounded gear)
-		// the merged ceiling still caps content at 10 visible lines.
 		const rows: SeamRow[] = [
 			{
 				key: "reasoning:all-budget",
@@ -399,39 +412,26 @@ describe("WidgetsDock on the real renderer", () => {
 			},
 			{ key: "tool:live:all", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
 			todoWriteRows(20),
+			subagentRows(20),
 		]
 		const setup = await testRender(
 			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
 			{ width: WIDTH, height: HEIGHT, useMouse: false },
 		)
 		try {
-			await sleep(300) // the frame latch + entrance fades
+			await sleep(300)
 			await setup.renderOnce()
-			// No gear → the 10-line ceiling (the default is already 10).
 			expect(dockContentLines(setup.captureSpans())).toBe(10)
-
-			// Gear `all`: 2 upper (think + tool) + 7 todos + 1 bottom indicator
-			// = 10. Think stays at ONE line; the tool zone stays at ONE line;
-			// the indicator consumes a real visible line (counted in the 10).
 			setActivityPanelGear("all")
 			await setup.renderOnce()
 			const all = setup.captureSpans()
 			expect(dockContentLines(all)).toBe(10)
 			expect(spansMatching(all, /g\d+/)).toHaveLength(1)
 			expect(spansMatching(all, /bash/)).toHaveLength(1)
-			expect(spansMatching(all, /task \d+/)).toHaveLength(7)
-			const more = spansMatching(all, /more/)
-			expect(more).toHaveLength(1)
-			expect(more[0]!.text).toContain("▼ 13 more")
+			expect(spansMatching(all, /todo/).length).toBeGreaterThan(0) // scene-A brief
+			expect(spansMatching(all, /more/)).toHaveLength(1)
+			expect(spansMatching(all, /more/)[0]!.text).toContain("more")
 			expect(spansMatching(all, /▲/)).toHaveLength(0)
-
-			// Gear 10 is the same ceiling; gear 1 shrinks to one content line.
-			setActivityPanelGear("10")
-			await setup.renderOnce()
-			expect(dockContentLines(setup.captureSpans())).toBe(10)
-			setActivityPanelGear("1")
-			await setup.renderOnce()
-			expect(dockContentLines(setup.captureSpans())).toBe(1)
 		} finally {
 			setActivityPanelGear(undefined)
 			await setup.dispose()
@@ -442,7 +442,7 @@ describe("WidgetsDock on the real renderer", () => {
 		const now = Date.now()
 		const [rows, setRows] = createSignal<SeamRow[]>([
 			{ key: "tool:live:title", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
-			todoWriteRows(14),
+			subagentRows(14),
 		])
 		const setup = await testRender(
 			() => createComponent(WidgetsDock, { get rows() { return rows() }, turnActive: () => true }),
@@ -455,7 +455,7 @@ describe("WidgetsDock on the real renderer", () => {
 			const topLine = setup.captureSpans().lines[0]
 			const title = topLine?.spans.map((s) => s.text).join("") ?? ""
 
-			// 14 todos overflow → N/M present. FIX A: the box reserves 4 chrome
+			// 14 subagents overflow → N/M present. FIX A: the box reserves 4 chrome
 			// columns (┏, leading ━, trailing ━, ┓), so the title slot is W-4 and
 			// the suffix right edge is flush against the ONE mandatory trailing
 			// ━ (`1/14━┓`). Encode the EXACT full string: a 1-column pad error
@@ -463,17 +463,17 @@ describe("WidgetsDock on the real renderer", () => {
 			// `endsWith("1/14━┓")`. `1/14┓` is not achievable — a W-3 title is
 			// wider than the slot and opentui drops the title entirely (probe
 			// evidence; see widgets-dock.tsx titleSlotWidth comment).
-			const base = "🔧 tool"
+			const base = "🔧 tool · 🤖 subagent"
 			const suffix = "1/14"
 			const slot = WIDTH - 4
 			const expected = `┏━${base}${" ".repeat(slot - stringWidth(base) - stringWidth(suffix))}${suffix}━┓`
 			expect(title).toBe(expected)
 			expect(title.includes("todo")).toBe(false)
 
-			// 2 todos fit → NO N/M anywhere in the title.
+			// 2 subagents fit → NO N/M anywhere in the title.
 			setRows([
 				{ key: "tool:live:title2", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
-				todoWriteRows(2),
+				subagentRows(2),
 			])
 			await setup.renderOnce()
 			const fitTitle = (setup.captureSpans().lines[0]?.spans.map((s) => s.text).join("") ?? "")
@@ -488,7 +488,7 @@ describe("WidgetsDock on the real renderer", () => {
 		const now = Date.now()
 		const [rows, setRows] = createSignal<SeamRow[]>([
 			{ key: "tool:live:wheel", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
-			todoWriteRows(14),
+			subagentRows(14),
 		])
 		// Mouse capture must be ON for renderer wheel delivery (main client path).
 		const setup = await testRender(
@@ -516,7 +516,7 @@ describe("WidgetsDock on the real renderer", () => {
 			// No overflow → the wheel is a no-op (cursor guard).
 			setRows([
 				{ key: "tool:live:wheel2", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
-				todoWriteRows(2),
+				subagentRows(2),
 			])
 			await setup.renderOnce()
 			const fitTitle = titleOf()
@@ -538,12 +538,13 @@ describe("WidgetsDock on the real renderer", () => {
 		)
 		try {
 			resetMergedDockCursor()
-			await sleep(120) // 60ms latch defer + entrance margin
+			await sleep(300) // latch defer + entrance fade + height tween
 			await setup.renderOnce()
 			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
 			const occupied = lines.filter((l) => l.trim() !== "")
 			expect(occupied).toHaveLength(3) // top border + 1 todo content + bottom border
-			const body = "● 1 task 1"
+			// Scene C: ONE todo line in the current full summary format.
+			const body = "todos [✓]0/1 · task 1"
 			const inner = WIDTH - 2
 			expect(occupied[0]).toBe(`┏━🧩 activity${"━".repeat(inner - 1 - stringWidth("🧩 activity"))}┓`)
 			expect(occupied[1]).toBe(`┃${body}${" ".repeat(inner - stringWidth(body))}┃`)
@@ -561,6 +562,7 @@ describe("WidgetsDock on the real renderer", () => {
 			{ key: "reasoning:compact", kind: "reasoning", text: "think tail", final: true, startedAt: now - 400, elapsedSec: 0.4 },
 			{ key: "tool:live:compact", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
 			todoWriteRows(12),
+			subagentRows(12), // scene A: keep both think and tool rule lines
 		]
 		const setup = await testRender(
 			() => createComponent(WidgetsDock, { rows, turnActive: () => true }),
@@ -685,24 +687,25 @@ async function mountDockWithKeys(rows: () => readonly SeamRow[]): Promise<KeyHar
 }
 
 describe("WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down)", () => {
-	/** A settled todo_write row with `count` in_progress todos (same shape the
-	 * other describe uses) — `latestTodos` reads it without adding a tool line. */
-	const todoRows = (count: number): SeamRow => ({
-		key: "tool:todos:kb",
-		kind: "tool",
-		name: "todo_write",
-		args: JSON.stringify({
-			todos: Array.from({ length: count }, (_, i) => ({ content: `task ${i + 1}`, status: "in_progress" })),
-		}),
-		status: "done",
-		output: "Updated todo list",
+	/** Running subagents: scene A's scrollable lower zone carries the N/M. */
+	const subagentRowsKb = (count: number): SeamRow => ({
+		key: "subagents:kb",
+		kind: "subagents",
+		children: Array.from({ length: count }, (_, i) => ({
+			id: `k${i}`,
+			label: `agent ${i + 1}`,
+			status: "running" as const,
+			rounds: 2,
+			startedAt: Date.now(),
+			lastLine: "working",
+		})),
 	})
 
 	test("overflow + key advances N/M, one line per notch", async () => {
 		const now = Date.now()
 		const [rows, setRows] = createSignal<SeamRow[]>([
 			{ key: "tool:live:kb", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
-			todoRows(14),
+			subagentRowsKb(14),
 		])
 		const h = await mountDockWithKeys(() => rows())
 		try {
@@ -725,7 +728,7 @@ describe("WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down)", () => {
 			// not freeze the dock's reactive rows).
 			setRows([
 				{ key: "tool:live:kb-b", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
-				todoRows(16),
+				subagentRowsKb(16),
 			])
 			await h.setup.renderOnce()
 			expect(h.titleOf()).toContain("1/16")
@@ -738,7 +741,7 @@ describe("WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down)", () => {
 		const now = Date.now()
 		const rows: SeamRow[] = [
 			{ key: "tool:live:kb2", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
-			todoRows(2),
+			subagentRowsKb(2),
 		]
 		const h = await mountDockWithKeys(() => rows)
 		try {
@@ -762,7 +765,7 @@ describe("WidgetsDock D9 keyboard scroll fallback (ctrl+alt+up/down)", () => {
 		const now = Date.now()
 		const rows: SeamRow[] = [
 			{ key: "tool:live:kb3", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
-			todoRows(14),
+			subagentRowsKb(14),
 		]
 		const h = await mountDockWithKeys(() => rows)
 		try {

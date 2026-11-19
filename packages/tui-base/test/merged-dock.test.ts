@@ -2,7 +2,8 @@
  * Merged activity dock — Path 1 pure-function contract tests.
  * Spec: docs/activity-merged-widget.md (D4–D8, D13).
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import type { Todo } from "../src/util/todo"
 import { stringWidth } from "../src/util/string-width"
 import { thinkBlockLines, toolMarker } from "../src/routes/session/widgets-dock"
@@ -33,6 +34,11 @@ const agent = (id: string, overrides: Partial<MergedAgent> = {}): MergedAgent =>
 	...overrides,
 })
 
+/** A scrollable subagent list (scene A's lower zone) with labels that mirror
+ * the old todo-based window fixtures (`task 1`, `task 2`, …). */
+const manyAgents = (n: number): MergedAgent[] =>
+	Array.from({ length: n }, (_, i) => agent(`a${i}`, { label: `task ${i + 1}` }))
+
 const tool = (name: string, overrides: Partial<MergedToolRow> = {}): MergedToolRow => ({
 	key: `tool:${name}`,
 	kind: "tool",
@@ -54,6 +60,11 @@ const think = (overrides: Partial<MergedThinkRow> = {}): MergedThinkRow => ({
 })
 
 const textOf = (line: ReturnType<typeof mergedDockLines>[number]) => line.segments.map((segment) => segment.text).join("")
+
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
 
 describe("activeTodos — active-only, original plan index (D6/D7)", () => {
 	test("keeps only in_progress, with original 1-based indices (not renumbered)", () => {
@@ -151,7 +162,7 @@ describe("mergedTitle — D4 table (never 'todo')", () => {
 describe("mergedDockLines — tool zone two states (D5/D8)", () => {
 	const now = 4_000 // 3.0s elapsed for entries started at 1000
 
-	test("coexistence: exactly 1 trimmed tool line (latest only), no subject/detail", () => {
+	test("scene A (running subagent) pins exactly 1 trimmed tool line (latest only)", () => {
 		const lines = mergedDockLines(
 			{
 				tools: [
@@ -159,7 +170,7 @@ describe("mergedDockLines — tool zone two states (D5/D8)", () => {
 					tool("latest", { args: '{"command":"echo SECRET"}', output: "DETAIL_BLOB" }),
 				],
 				todos: [todo("active item", "in_progress")],
-				agents: [],
+				agents: [agent("a")], // running subagent → scene A
 			},
 			{ innerWidth: 60, now },
 		)
@@ -174,16 +185,16 @@ describe("mergedDockLines — tool zone two states (D5/D8)", () => {
 		expect(text).not.toContain("old")
 	})
 
-	test("coexistence marker follows toolMarker (done → ✔)", () => {
+	test("scene A tool marker follows toolMarker (done → ✔)", () => {
 		const lines = mergedDockLines(
 			{
 				tools: [tool("bash", { status: "done", elapsedSec: 2.5 })],
 				todos: [todo("active", "in_progress")],
-				agents: [],
+				agents: [agent("a")],
 			},
 			{ innerWidth: 40, now },
 		)
-		expect(textOf(lines[0]!)).toContain("✔ bash · 2.5s")
+		expect(textOf(lines.find((line) => line.kind === "tool")!)).toContain("✔ bash · 2.5s")
 	})
 
 	test("tool-only: up to 3 lines with FULL subject/detail format", () => {
@@ -205,74 +216,82 @@ describe("mergedDockLines — tool zone two states (D5/D8)", () => {
 })
 
 describe("mergedDockLines — active-only bodies, agents, 10-line cap (D6/D7/D8)", () => {
-	test("only in_progress todos render; agents hang under the last one", () => {
+	test("scene A: todo is ONE compact brief above the subagent list; per-todo rows are gone", () => {
 		const lines = mergedDockLines(
 			{
 				tools: [],
 				todos: [todo("pending", "pending"), todo("A", "in_progress"), todo("B", "in_progress"), todo("done", "completed")],
 				agents: [agent("a"), agent("b")],
+				todoStartedAt: 1_000,
 			},
 			{ innerWidth: 60, now: 4_000 },
 		)
 		const body = lines.map(textOf).join("\n")
-		expect(body).toContain("● 2 A")
-		expect(body).toContain("● 3 B")
+		// 指令4: `todo done/total Ns`, no current-task text, 3 seconds elapsed.
+		expect(body).toContain("todo 1/4 3s")
+		expect(body).not.toContain("● 2 A")
+		expect(body).not.toContain("● 3 B")
 		expect(body).not.toContain("pending")
 		expect(body).not.toContain("done")
+		expect(lines.filter((line) => line.kind === "todo")).toHaveLength(1)
 		const agentLines = lines.filter((line) => line.kind === "agent")
 		expect(agentLines).toHaveLength(2)
-		expect(agentLines[0]!.index).toBe(3)
 		expect(textOf(agentLines[0]!)).toContain("├─ ")
 		expect(textOf(agentLines[1]!)).toContain("└─ ")
 		expect(textOf(agentLines[0]!)).toContain("round 3")
 	})
 
-	test("no in_progress but a running agent → flat agent, no parent row", () => {
+	test("scene A with a running agent keeps the brief + flat agent row (no parent todo row)", () => {
 		const lines = mergedDockLines(
-			{ tools: [], todos: [todo("done", "completed")], agents: [agent("a")] },
+			{ tools: [], todos: [todo("done", "completed")], agents: [agent("a")], todoStartedAt: 1_000 },
 			{ innerWidth: 60, now: 4_000 },
 		)
-		expect(lines.filter((line) => line.kind === "todo")).toHaveLength(0)
+		expect(lines.filter((line) => line.kind === "todo")).toHaveLength(1)
+		expect(textOf(lines.find((line) => line.kind === "todo")!)).toContain("todo 1/1 3s")
 		expect(lines.filter((line) => line.kind === "agent")).toHaveLength(1)
 	})
 
-	test("no in_progress and no agent → no lower zone", () => {
+	test("scene C: no agent, no think → ONE todo line in the current full summary format", () => {
 		const lines = mergedDockLines(
 			{ tools: [], todos: [todo("x", "pending")], agents: [] },
 			{ innerWidth: 60 },
 		)
-		expect(lines).toEqual([])
+		expect(lines).toHaveLength(1)
+		expect(lines[0]!.kind).toBe("todo")
+		expect(textOf(lines[0]!)).toContain("todos [✓]0/1")
 	})
 
-	test("10-line cap and ▼/▲ counts are self-consistent", () => {
-		const todos = Array.from({ length: 12 }, (_, i) => todo(`task ${i + 1}`, "in_progress"))
-		const base = { tools: [tool("bash")], todos, agents: [] }
+	test("scene A: 10-line cap and ▼/▲ counts are self-consistent on the subagent list", () => {
+		const agents = Array.from({ length: 12 }, (_, i) => agent(`a${i}`))
+		const todos = [todo("active", "in_progress")]
+		const base = { tools: [tool("bash")], todos, agents, todoStartedAt: 1_000 }
 
-		// Top of the window: one bottom indicator, no top indicator.
+		// Top of the window: one bottom indicator, no top indicator. The pinned
+		// tool + todo brief occupy the first two rows, above the list.
 		const top = mergedDockLines(base, { innerWidth: 60, now: 4_000, cursor: 0 })
 		expect(top).toHaveLength(MERGED_DOCK_TOTAL_LINES)
 		expect(top[0]!.kind).toBe("tool")
+		expect(top[1]!.kind).toBe("todo")
 		expect(top[top.length - 1]!.kind).toBe("more-bottom")
 		expect(top.some((line) => line.kind === "more-top")).toBe(false)
 
-		// Bottom of the window: one top indicator, at the TOP of the lower zone
-		// (right after the tool line), with content trailing below it.
+		// Bottom of the window: one top indicator, right after the pinned rows.
 		const bottom = mergedDockLines(base, { innerWidth: 60, now: 4_000, cursor: 11 })
 		expect(bottom).toHaveLength(MERGED_DOCK_TOTAL_LINES)
 		expect(bottom[0]!.kind).toBe("tool")
-		expect(bottom[1]!.kind).toBe("more-top")
+		expect(bottom[2]!.kind).toBe("more-top")
 		expect(bottom.some((line) => line.kind === "more-bottom")).toBe(false)
 
-		// Middle: both indicators; counts + visible todos must equal the total.
+		// Middle: both indicators; counts + visible agents must equal the total.
 		const middle = mergedDockLines(base, { innerWidth: 60, now: 4_000, cursor: 2 })
 		expect(middle).toHaveLength(MERGED_DOCK_TOTAL_LINES)
 		const topLine = middle.find((line) => line.kind === "more-top")!
 		const bottomLine = middle.find((line) => line.kind === "more-bottom")!
 		const topCount = Number(/▲ (\d+) more/.exec(textOf(topLine))![1])
 		const bottomCount = Number(/▼ (\d+) more/.exec(textOf(bottomLine))![1])
-		const visibleTodos = middle.filter((line) => line.kind === "todo").length
-		expect(topCount + visibleTodos + bottomCount).toBe(12)
-		expect(middle.filter((line) => line.kind === "agent")).toHaveLength(0)
+		const visibleAgents = middle.filter((line) => line.kind === "agent").length
+		expect(topCount + visibleAgents + bottomCount).toBe(12)
+		expect(middle.filter((line) => line.kind === "todo")).toHaveLength(1)
 	})
 
 	test("retained glyph definitions (cancelled ⊘ is distinct from pending ○)", () => {
@@ -287,7 +306,7 @@ describe("mergedDockLines — active-only bodies, agents, 10-line cap (D6/D7/D8)
 describe("mergedDockLines — think row above tool (D1/D5)", () => {
 	const now = 4_000 // 3.0s elapsed for entries started at 1000
 
-	test("think + tool + todo: think line is first, above the tool line", () => {
+	test("scene B: visible think hides tool and todo (think exclusive)", () => {
 		const row = think()
 		const lines = mergedDockLines(
 			{
@@ -298,11 +317,38 @@ describe("mergedDockLines — think row above tool (D1/D5)", () => {
 			},
 			{ innerWidth: 60, now },
 		)
-		expect(lines.map((line) => line.kind)).toEqual(["think", "tool", "todo"])
+		expect(lines.map((line) => line.kind)).toEqual(["think"])
 		// The text is the shared thinkBlockLines output verbatim (trimmed of the
 		// right-padding fitLine adds to reach innerWidth) — reuse, not a second
 		// hand-rolled think format (spec D5 / task A).
 		expect(textOf(lines[0]!).trimEnd()).toBe(thinkBlockLines(row, () => 0, 1, now)[0])
+	})
+
+	test("scene A: think → tool → todo brief are pinned ABOVE the subagent list", () => {
+		const row = think()
+		const lines = mergedDockLines(
+			{
+				think: [row],
+				tools: [tool("bash")],
+				todos: [todo("active", "in_progress")],
+				agents: [agent("a")],
+			},
+			{ innerWidth: 60, now },
+		)
+		expect(lines.slice(0, 3).map((line) => line.kind)).toEqual(["think", "tool", "todo"])
+		expect(lines[3]!.kind).toBe("agent")
+		// Scene A pins think to ONE line regardless of the gear.
+		expect(textOf(lines[0]!).trimEnd()).toBe(thinkBlockLines(row, () => 0, 1, now)[0])
+	})
+
+	test("scene B honors the think gear (≤ 10 lines)", () => {
+		const row = think({ text: "a\nb\nc\nd\ne" })
+		const lines = mergedDockLines(
+			{ think: [row], tools: [], todos: [], agents: [] },
+			{ innerWidth: 60, now, thinkLines: 3 },
+		)
+		expect(lines).toHaveLength(3)
+		expect(lines.every((line) => line.kind === "think")).toBe(true)
 	})
 
 	test("think alone: only the think line is produced", () => {
@@ -479,10 +525,9 @@ describe("mergedDockLines — line-level skin metadata (D3/D5/D13/D14)", () => {
 
 describe("mergedDockLines — configurable total cap & small-cap edge (D12)", () => {
 	const now = 4_000
-	const manyTodos = Array.from({ length: 12 }, (_, i) => todo(`task ${i + 1}`, "in_progress"))
-	const base = { tools: [tool("bash")], todos: manyTodos, agents: [] }
+	const base = { tools: [tool("bash")], todos: [], agents: manyAgents(12) }
 
-	test("totalLines threads the cap: exactly N lines for a tool + overflow todos", () => {
+	test("totalLines threads the cap: exactly N lines for a tool + overflow agents", () => {
 		for (const totalLines of [1, 2, 3, 5, 7]) {
 			const lines = mergedDockLines(base, { innerWidth: 60, now, totalLines })
 			expect(lines).toHaveLength(totalLines)
@@ -492,9 +537,9 @@ describe("mergedDockLines — configurable total cap & small-cap edge (D12)", ()
 	})
 
 	test("no lower slot (cap < upper lines): upper is trimmed, lower renders nothing", () => {
-		// think + tool = 2 upper lines; cap 1 → newest upper line (tool) only.
+		// think + tool = 2 upper lines (scene A); cap 1 → newest upper line (tool) only.
 		const lines = mergedDockLines(
-			{ think: [think()], tools: [tool("bash")], todos: manyTodos, agents: [] },
+			{ think: [think()], tools: [tool("bash")], todos: [], agents: manyAgents(12) },
 			{ innerWidth: 60, now, totalLines: 1 },
 		)
 		expect(lines).toHaveLength(1)
@@ -506,14 +551,14 @@ describe("mergedDockLines — configurable total cap & small-cap edge (D12)", ()
 		// tool upper + cap 2 → lowerBudget 1 → one content line, NO ▲/▼.
 		const top = mergedDockLines(base, { innerWidth: 60, now, totalLines: 2, cursor: 0 })
 		expect(top).toHaveLength(2)
-		expect(top[1]!.kind).toBe("todo")
+		expect(top[1]!.kind).toBe("agent")
 		expect(textOf(top[1]!)).toContain("task 1")
 		expect(top.some((line) => line.kind === "more-top" || line.kind === "more-bottom")).toBe(false)
 
 		// Clamped to the last item; still exactly one content line, no indicator.
 		const bottom = mergedDockLines(base, { innerWidth: 60, now, totalLines: 2, cursor: 11 })
 		expect(bottom).toHaveLength(2)
-		expect(bottom[1]!.kind).toBe("todo")
+		expect(bottom[1]!.kind).toBe("agent")
 		expect(textOf(bottom[1]!)).toContain("task 12")
 		expect(bottom.some((line) => line.kind === "more-top" || line.kind === "more-bottom")).toBe(false)
 	})
@@ -530,8 +575,10 @@ describe("mergedDockLines — configurable total cap & small-cap edge (D12)", ()
 })
 
 describe("mergedWindowInfo + mergedPositionSuffix — title N/M from the shared window (D8, 2026-11-17)", () => {
-	// 14 lower items, no upper lines, cap 8 → one indicator + a 7-line window.
-	const many = { tools: [], think: [], agents: [], todos: Array.from({ length: 14 }, (_, i) => todo(`task ${i + 1}`, "in_progress")) }
+	// 14 lower (subagent) items, no upper lines, cap 8 → one indicator + a
+	// 7-line window. Since 2026-11-19 the scrollable lower zone is the scene-A
+	// subagent list; todos are a pinned one-line brief above it.
+	const many = { tools: [], think: [], todos: [], agents: manyAgents(14) }
 	const opts = (cursor: number) => ({ innerWidth: 60, now: 4_000, totalLines: 8, cursor })
 
 	test("14 items / 7-line window at cursor 0 → 1/14; cursor 7 → 8/14", () => {
@@ -549,14 +596,14 @@ describe("mergedWindowInfo + mergedPositionSuffix — title N/M from the shared 
 		expect(mergedPositionSuffix(mid)).toBe("8/14")
 
 		// N/M and the rendered window come from the SAME data: the first visible
-		// todo at cursor 7 is "task 8" (position 8).
+		// agent at cursor 7 is "task 8" (position 8).
 		const lines = mergedDockLines(many, opts(7))
-		const firstTodo = lines.find((line) => line.kind === "todo")!
-		expect(textOf(firstTodo)).toContain("task 8")
+		const firstAgent = lines.find((line) => line.kind === "agent")!
+		expect(textOf(firstAgent)).toContain("task 8")
 	})
 
 	test("no overflow → no suffix (everything fits)", () => {
-		const few = { tools: [], think: [], agents: [], todos: Array.from({ length: 3 }, (_, i) => todo(`t${i + 1}`, "in_progress")) }
+		const few = { tools: [], think: [], todos: [], agents: manyAgents(3) }
 		const info = mergedWindowInfo(few, opts(0))
 		expect(info.overflow).toBe(false)
 		expect(info.total).toBe(3)
@@ -577,7 +624,6 @@ describe("mergedWindowInfo + mergedPositionSuffix — title N/M from the shared 
 })
 
 describe("mergedWindowInfo.maxCursor — no dead zone at the visual bottom (P1)", () => {
-	const manyTodos = (n: number) => Array.from({ length: n }, (_, i) => todo(`task ${i + 1}`, "in_progress"))
 	const lastContent = (lines: ReturnType<typeof mergedDockLines>) => {
 		const content = lines.filter((line) => line.kind === "todo" || line.kind === "agent")
 		return textOf(content[content.length - 1]!)
@@ -592,7 +638,7 @@ describe("mergedWindowInfo.maxCursor — no dead zone at the visual bottom (P1)"
 	]
 	for (const c of cases) {
 		test(`${c.label}: maxCursor=${c.expected}, last item is the last content row, +step clamps back`, () => {
-			const data = { tools: c.tools, think: [], todos: manyTodos(c.n), agents: [] }
+			const data = { tools: c.tools, think: [], todos: [], agents: manyAgents(c.n) }
 			const opts = (cursor: number) => ({ innerWidth: 60, now: 4_000, totalLines: c.totalLines, cursor })
 			const info = mergedWindowInfo(data, opts(0))
 			expect(info.overflow).toBe(true)
@@ -610,7 +656,7 @@ describe("mergedWindowInfo.maxCursor — no dead zone at the visual bottom (P1)"
 	}
 
 	test("maxCursor is branch-stable: both-indicator cursors report the same cap as the bottom cursor", () => {
-		const data = { tools: [tool("bash")], think: [], todos: manyTodos(12), agents: [] }
+		const data = { tools: [tool("bash")], think: [], todos: [], agents: manyAgents(12) }
 		const opts = (cursor: number) => ({ innerWidth: 60, now: 4_000, totalLines: 11, cursor })
 		const midLines = mergedDockLines(data, opts(2))
 		expect(midLines.some((line) => line.kind === "more-top")).toBe(true)
@@ -623,7 +669,7 @@ describe("mergedWindowInfo.maxCursor — no dead zone at the visual bottom (P1)"
 	})
 
 	test("tiny budgets use their own clamp bound: lowerBudget 1 → n-1, budget-2 both → n-2", () => {
-		const data = { tools: [tool("bash")], think: [], todos: manyTodos(12), agents: [] }
+		const data = { tools: [tool("bash")], think: [], todos: [], agents: manyAgents(12) }
 		// cap 2 → lowerBudget 1: one content line, maxCursor = n - 1 = 11.
 		const one = mergedWindowInfo(data, { innerWidth: 60, now: 4_000, totalLines: 2, cursor: 0 })
 		expect(one.maxCursor).toBe(11)
@@ -643,8 +689,8 @@ describe("mergedWindowInfo no-window semantics — n>0 but no lower slot (P3)", 
 	const data = {
 		tools: [tool("bash")],
 		think: [think()],
-		todos: Array.from({ length: 12 }, (_, i) => todo(`task ${i + 1}`, "in_progress")),
-		agents: [],
+		todos: [],
+		agents: manyAgents(12),
 	}
 	const opts = (totalLines: number) => ({ innerWidth: 60, now: 4_000, totalLines })
 

@@ -218,7 +218,7 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 
 			// Exact painted row (D13): wall, "● <index> <content>", stringWidth
 			// padding to the inner width, closing wall.
-			const body = "● 2 write the regression"
+			const body = "todos [✓]1/3 · write the regression"
 			expect(inner).toEqual([`┃${body}${" ".repeat(width - 2 - stringWidth(body))}┃`])
 
 			// THE render-layer regression assert (width=${width}): every content

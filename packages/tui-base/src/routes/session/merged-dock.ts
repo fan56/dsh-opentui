@@ -17,7 +17,16 @@ import type { Todo } from "../../util/todo"
 import { graphemes, takeWidth } from "../../util/locale"
 import { stringWidth } from "../../util/string-width"
 import type { SeamRow } from "./seam-rows"
-import { skinStopAt, thinkBlockLines, toolLineText, toolMarker, type DockAccent } from "./widgets-dock"
+import {
+	activityScene,
+	skinStopAt,
+	thinkBlockLines,
+	todoBriefLine,
+	todosSummaryFromTodos,
+	toolLineText,
+	toolMarker,
+	type DockAccent,
+} from "./widgets-dock"
 
 // ---------------------------------------------------------------------------
 // Constants & public types
@@ -58,6 +67,11 @@ export interface MergedDockData {
 	todos: readonly Todo[]
 	agents: readonly MergedAgent[]
 	think?: readonly MergedThinkRow[]
+	/** 指令4: existing time tracking for the scene-A todo brief — the earliest
+	 * todo-tool row's `startedAt`. When absent, `todoBriefLine` falls back to a
+	 * clock from the most recent todo-array change. Optional so every existing
+	 * pure-function caller/test stays valid. */
+	todoStartedAt?: number
 }
 
 export type MergedTone = "ok" | "running" | "failed" | "muted"
@@ -108,10 +122,14 @@ export interface MergedDockOptions {
 	spin?: () => number
 	/** Scroll position within the lower zone content (0-based top item). */
 	cursor?: number
-	/** Total visible-line cap for this render (the gear ∩ the 10-line ceiling,
-	 * D12). Defaults to `MERGED_DOCK_TOTAL_LINES`. Upper zone + lower zone +
-	 * indicators never exceed it. */
+	/** Total visible-line cap for this render. Defaults to
+	 * `MERGED_DOCK_TOTAL_LINES` (10) — a HARD ceiling, no gear growth rule.
+	 * Upper zone + lower zone + indicators never exceed it. */
 	totalLines?: number
+	/** Think block line cap (the ONLY thing `session.activity_panel_height`
+	 * controls since 2026-11-19): 1/5/7/10, `all`=10. Defaults to 1 (the
+	 * legacy single think line). Tool/todo never read this. */
+	thinkLines?: number
 }
 
 /** The lower-zone window geometry, computed once by `assembleZones` and shared
@@ -348,38 +366,24 @@ export function latestThinkRow(rows: readonly MergedThinkRow[]): MergedThinkRow 
 	return undefined
 }
 
-/** Think line (D1/D5): the text is produced by the shared `thinkBlockLines`
- * (widgets-dock.tsx) with `maxLines = 1` — the same `💭 thinking · <secs> ·
- * <snippet>` / `💭 thought · <secs> · <snippet>` string the old upper zone
- * used, never a second hand-rolled format. Rows without panel state paint
- * nothing (`thinkBlockLines` returns []). */
-function thinkLine(row: MergedThinkRow, now: number, spin: () => number): MergedDockLine | undefined {
-	const text = thinkBlockLines(row, spin, 1, now)[0]
-	if (text === undefined) return undefined
-	return {
-		kind: "think",
+/** Think lines (D1/D5, gear-driven since 2026-11-19): the text is produced by
+ * the shared `thinkBlockLines` (widgets-dock.tsx) with `maxLines = thinkLines`
+ * — the same `💭 thinking · <secs> · <snippet>` / `💭 thought · <secs> ·
+ * <snippet>` format the old upper zone used, never a second hand-rolled
+ * format. Continuation lines carry the 3-column indent from `thinkBlockLines`.
+ * `thinkLines = 1` keeps the legacy single line. Rows without panel state
+ * paint nothing (`thinkBlockLines` returns []). */
+function thinkLinesFor(row: MergedThinkRow, now: number, spin: () => number, thinkLines: number): MergedDockLine[] {
+	return thinkBlockLines(row, spin, thinkLines, now).map((text) => ({
+		kind: "think" as const,
 		// Whole text is accent-colored (no marker to keep tone).
-		segments: [{ text, tone: "running", accent: "think" }],
+		segments: [{ text, tone: "running" as const, accent: "think" as const }],
 		italic: true,
 		id: `dock:think:${row.key}`,
 		// A live burst carries no exit anchor, even with a stale elapsedSec
-		// (M2 view-side rule, widgets-dock.tsx:686-691).
+		// (M2 view-side rule, widgets-dock.tsx).
 		fadeOutAt: row.streaming === true ? undefined : skinStopAt(row),
-	}
-}
-
-/** Todo line (D6): `<status glyph> <original index> <content>`, only `●`
- * rendered. The index is kept as a separate structured field too. */
-function todoLine(todo: ActiveTodo): MergedDockLine {
-	const glyph = TODO_STATUS_GLYPHS.in_progress
-	return {
-		kind: "todo",
-		index: todo.index,
-		segments: [
-			{ text: `${glyph} ${todo.index} `, tone: "running" },
-			{ text: todo.content, tone: "running" },
-		],
-	}
+	}))
 }
 
 /** Agent sub-line (D6): `├─ `/`└─ ` branch, indented just after the index,
@@ -419,14 +423,12 @@ function clamp(value: number, lo: number, hi: number): number {
  * Build the merged dock's structured lines. See the module header and the
  * spec sections D4–D8 for the full contract.
  *
- * - Think line first (D1: think above tool), then tool lines, then todo/agent
- *   lines, then scroll indicators last.
- * - Coexistence (lower zone has content): upper tool zone is exactly one
- *   trimmed line (latest tool only). Otherwise tool-only mode shows up to 3
- *   full-format lines and no lower zone.
- * - The 10-line total cap counts the think line, tool lines and indicators;
- *   visible content never exceeds it, and `▼ N more` / `▲ N more` counts are
- *   self-consistent.
+ * - 2026-11-19 scene table (see widgets-dock.tsx header): A = running subagent
+ *   → pinned think(1)/tool(1)/todo brief(1) above a clipped subagent list;
+ *   B = no subagent + visible think → gear-driven think lines only; C = no
+ *   subagent + no think → up to 3 full-format tool lines + one todo summary.
+ * - The 10-line total cap counts every line and indicator; visible content
+ *   never exceeds it, and `▼ N more` / `▲ N more` counts are self-consistent.
  * - Every returned line is fitted to `innerWidth` (D13).
  */
 export function mergedDockLines(data: MergedDockData, options: MergedDockOptions): MergedDockLine[] {
@@ -450,41 +452,43 @@ function buildMergedDock(
 	const now = options.now ?? Date.now()
 	const spin = options.spin ?? (() => 0)
 
-	const active = activeTodos(data.todos)
-	const attribution = attributeAgents(data.todos, data.agents)
-	const agents = attribution.agents
-	const parent = attribution.parent
-	const hasLowerContent = active.length > 0 || agents.length > 0
+	// `attributeAgents` keeps RUNNING agents only — a historical subagents row
+	// never opens scene A (指令3: it yields to an active think / scene B).
+	const agents = attributeAgents(data.todos, data.agents).agents
 
-	// Upper think zone (D1): one line from the shared thinkBlockLines format,
-	// stacked ABOVE the tool zone. Absent when there is no visible think row.
+	// The selected think row is VISIBLE (live or inside its exit hold). Rows
+	// without panel state produce no lines, which also means "no visible think"
+	// for scene detection. Build its lines once (gear cap) for scene B, and
+	// rebuild at one line for scene A (指令 A pins think to a single row).
 	const thinkRow = latestThinkRow(data.think ?? [])
-	const thinkLines: MergedDockLine[] = thinkRow === undefined ? [] : [thinkLine(thinkRow, now, spin)].filter(
-		(line): line is MergedDockLine => line !== undefined,
-	)
-
-	// Upper tool zone.
+	const thinkAtGear = thinkRow === undefined ? [] : thinkLinesFor(thinkRow, now, spin, options.thinkLines ?? 1)
+	const scene = activityScene(agents.length > 0, thinkAtGear.length > 0)
 	const tools = data.tools
-	let toolLines: MergedDockLine[]
-	if (hasLowerContent) {
-		const latest = tools.length > 0 ? tools[tools.length - 1]! : undefined
-		toolLines = latest ? [coexistenceToolLine(latest, now, spin)] : []
-	} else {
-		toolLines = tools.slice(-MERGED_DOCK_TOOL_ONLY_MAX).map((tool) => toolOnlyLine(tool, now, spin))
-	}
-	const upperLines = [...thinkLines, ...toolLines]
 
-	// Lower zone content (unfitted; fitting happens once at the end).
-	const lowerRaw: MergedDockLine[] = []
-	for (const todo of active) {
-		lowerRaw.push(todoLine(todo))
-		if (parent && parent.index === todo.index) {
-			agents.forEach((agent, i) => lowerRaw.push(agentLine(agent, i, agents.length, todo.index, now)))
-		}
-	}
-	if (!parent) {
-		// No in_progress todo: agents render flat, with no parent row (D7).
-		agents.forEach((agent, i) => lowerRaw.push(agentLine(agent, i, agents.length, undefined, now)))
+	let upperLines: MergedDockLine[]
+	let lowerRaw: MergedDockLine[]
+
+	if (scene === "A") {
+		// PINNED ABOVE the list, in order: think(1) → tool(1) → todo brief(1).
+		// Think/tool shrink to a single line regardless of gear or terminal.
+		upperLines = thinkRow === undefined ? [] : thinkLinesFor(thinkRow, now, spin, 1).slice(0, 1)
+		const latest = tools.length > 0 ? tools[tools.length - 1]! : undefined
+		if (latest !== undefined) upperLines.push(coexistenceToolLine(latest, now, spin))
+		const brief = todoBriefLine(data.todos, now, data.todoStartedAt)
+		if (brief !== "") upperLines.push({ kind: "todo", segments: [{ text: brief, tone: "running" }] })
+		// The subagent list takes ALL remaining lines under the existing scroll
+		// clipping. No parent todo row: the todo is the brief above.
+		lowerRaw = agents.map((agent, i) => agentLine(agent, i, agents.length, undefined, now))
+	} else if (scene === "B") {
+		// Think exclusive: gear-driven think lines; tool/todo/subagent all hidden.
+		upperLines = thinkAtGear
+		lowerRaw = []
+	} else {
+		// Scene C: no running subagent, no visible think. Tool keeps its fixed
+		// full-format cap; todo is ONE line in the current summary format.
+		upperLines = tools.slice(-MERGED_DOCK_TOOL_ONLY_MAX).map((tool) => toolOnlyLine(tool, now, spin))
+		const summary = todosSummaryFromTodos(data.todos)
+		lowerRaw = summary === "" ? [] : [{ kind: "todo", segments: [{ text: summary, tone: "running" }] }]
 	}
 
 	const assembled = assembleZones(upperLines, lowerRaw, options.totalLines ?? MERGED_DOCK_TOTAL_LINES, options.cursor)
@@ -492,9 +496,10 @@ function buildMergedDock(
 }
 
 /** Split the lower content into a window + indicators under the shared cap.
- * `upperLines` is think + tool (both rendered above the lower zone and both
- * counted against `totalLines`). `totalLines` is the gear ∩ the 10-line
- * ceiling (D12); it defaults to `MERGED_DOCK_TOTAL_LINES`.
+ * `upperLines` is the scene's pinned block (think/tool/todo brief for A, the
+ * think lines for B, the tool lines for C), rendered above the lower zone and
+ * counted against `totalLines`. `totalLines` is the HARD 10-line ceiling; it
+ * defaults to `MERGED_DOCK_TOTAL_LINES`.
  *
  * Small-cap edge rule (documented for the tests): content wins over scroll
  * indicators when the lower budget is too tight for both. Budget 1 → exactly

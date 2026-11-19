@@ -218,7 +218,7 @@
   "settings.row.performanceUsage": "性能与用量",
   "settings.row.performanceUsageNote": "不适用 — 本 TUI 没有性能/用量视图",
   "settings.row.currentVersion": "当前版本",
-  "settings.row.activityPanelHeight": "活动面板高度",
+  "settings.row.activityPanelHeight": "思考显示行数",
   "settings.jump.open": "打开 {command}",
   "settings.jump.modelsNote": "provider / API 密钥 / 模型列表页在 v1 中仍由 /model 负责",
   "settings.jump.pluginsNote": "plugin 列表和开关在 /plugins 面板：enter/space 切换，d 卸载（需确认），i 安装；部分变更需重启 host",

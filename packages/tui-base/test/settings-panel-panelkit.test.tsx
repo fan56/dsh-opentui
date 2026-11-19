@@ -1011,11 +1011,11 @@ describe("settings modal: real keys", () => {
 		// gears with the cursor on the effective value (`default`).
 		const { setup, frame } = await mount({ preselect: "activityPanelHeight" })
 		try {
-			expect(frame()).toContain("Activity panel height")
+			expect(frame()).toContain("Think display lines")
 			expect(frame()).toContain("default")
 			setup.mockInput.pressEnter() // open the enum picker
 			await settle(setup)
-			expect(frame()).toContain("Activity panel height")
+			expect(frame()).toContain("Think display lines")
 			expect(frame()).toContain("▸ default")
 			expect(frame()).toContain("10")
 			expect(frame()).toContain("all")
@@ -1028,11 +1028,11 @@ describe("settings modal: real keys", () => {
 			setLanguage("zh-CN")
 			const zh = await mount({ preselect: "activityPanelHeight" })
 			try {
-				expect(zh.frame()).toContain("活动面板高度")
+				expect(zh.frame()).toContain("思考显示行数")
 				expect(zh.frame()).toContain("default")
 				zh.setup.mockInput.pressEnter()
 				await settle(zh.setup)
-				expect(zh.frame()).toContain("活动面板高度")
+				expect(zh.frame()).toContain("思考显示行数")
 				expect(zh.frame()).toContain("▸ default")
 			} finally {
 				await zh.setup.dispose()

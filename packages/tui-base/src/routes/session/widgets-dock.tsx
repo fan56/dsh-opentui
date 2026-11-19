@@ -16,20 +16,41 @@
  * Data law: the dock is a pure VIEW over the seam-rows store — the phase
  * machine (onThinkingDelta / onToolRun / collapse / fade) is untouched.
  *
- * Visibility law (2026-11-10 user directive): a finished think/tool block is
- * NOT dropped when its stream/settle stops. It stays fully visible for 2s
- * (`DOCK_LINGER_MS`), then fades out over 300ms (`DOCK_FADE_OUT_MS`); after
- * that the line is `hidden`. New content of the same kind inside the window
- * replaces the old block (think: the store drops the old summary on the next
- * burst; tool: a starting tool flags the previous settled rows `faded`).
- * Think and tool carry INDEPENDENT anchors — one never hides the other.
- * The timeline is a pure function of the row's stop anchor and the wall
- * clock; the view re-renders on the renderer's shared animation clock, so
+ * Visibility law (2026-11-10, exit timing UNCHANGED): a finished think/tool
+ * block is NOT dropped when its stream/settle stops. It stays fully visible
+ * for 2s (`DOCK_LINGER_MS`), then fades out over 300ms (`DOCK_FADE_OUT_MS`);
+ * after that the line is `hidden`. New content of the same kind inside the
+ * window replaces the old block (think: the store drops the old summary on
+ * the next burst; tool: a starting tool flags the previous settled rows
+ * `faded`). The timeline is a pure function of the row's stop anchor and the
+ * wall clock; the view re-renders on the renderer's shared animation clock, so
  * no timers are added here. `reduced` hides at the 2s deadline without a
  * sweep and, together with `off`, the store's retention drop is the SAME
  * 2.0s (`dockRemovalMs(false)` → DOCK_LINGER_MS): the non-decorated tiers
  * have no sweep, so 2.0s is the hard removal moment. `off` never ticks, and
  * that 2.0s drop is what actually removes the line.
+ *
+ * 2026-11-19 user directive — SCENE TABLE (this SUPERSEDES the former "Think
+ * and tool carry INDEPENDENT anchors — one never hides the other" law, REMOVED;
+ * it also supersedes the earlier "keep subagents while think is visible"
+ * reading, REMOVED). Priority: SUBAGENT ACTIVE > THINK EXCLUSIVE. Three scenes
+ * are decided once per build from the live seam rows:
+ *
+ *   A. running subagent(s) present → think = 1 line, tool = 1 line, todo = ONE
+ *      compact brief (`todo done/total Ns`, no current-task text); those three
+ *      lines are PINNED ABOVE the subagent list, which takes all remaining
+ *      lines under the existing ▲/▼ scroll clipping. Think/tool shrink to one
+ *      line here regardless of gear or terminal height. A subagent with only
+ *      HISTORICAL (non-running) rows is NOT "active": it does not open scene A.
+ *   B. no running subagent + VISIBLE think (live burst OR the 2s exit hold;
+ *      a decorated tier's 300ms fade tail is still "visible") → think = gear
+ *      lines (1/5/7/10, `all`=10); tool AND todo are HIDDEN; no subagent list.
+ *   C. no running subagent + no visible think → think absent; tool = up to
+ *      DOCK_WIDGET_MAX_LINES (3, fixed — NEVER the gear); todo = ONE line in
+ *      the current full summary format (`todos [✓]d/n · <active>`).
+ *
+ * Tool/todo resume the instant scene C holds. D5 (no content → whole dock
+ * hidden) and the 2s/300ms exit timing themselves are untouched.
  *
  * CLOSURE LAW (D1 on-device finding): the component body declares NO
  * reactive state that the JSX props close over — every render getter calls
@@ -40,14 +61,17 @@
  * root cause not yet isolated, see the D1 handoff). The transcript's own
  * closures keep working, so this is dock-local avoidance, not a global law.
  *
- * Layout law: the dock sits in the transcript's bottom slot (explicit-dims
- * parent chain); the dock box sets an EXPLICIT height = its visible line
- * count (auto-height boxes collapse in flex columns) and flexShrink=0 so
- * the composer keeps its own height below it. The per-block line cap is
- * graded by terminal height (`dockLineCap`): ≤ 40 rows → 1 line (the same
- * single-line footprint as the 80x24 band, so a 31-39 row terminal never
- * grows the frame past 4 rows), 41-50 → 2, > 50 → 3 (the default). The
- * active frame is therefore at most 4/6/8 content+2 rows tall.
+ * Layout law (2026-11-19): the dock sits in the transcript's bottom slot
+ * (explicit-dims parent chain); the box sets an EXPLICIT height = 2 border
+ * rows + its visible content-line count and flexShrink=0 so the composer keeps
+ * its own height below it. The CONTENT area is elastic but HARD-CAPPED at 10
+ * lines (`MERGED_DOCK_TOTAL_LINES`) — the old `all`-gear "2/3 of terminal rows"
+ * growth rule and the halfBudget clamp are GONE. Per-scene budgets follow the
+ * SCENE TABLE above; within a scene the upper (pinned) block sheds from its
+ * head first and the subagent window clips with ▲/▼ indicators. D5: no
+ * content → the whole dock stays hidden. Height changes ride a short
+ * shared-clock tween (`dockHeightLines`, 200ms, integer lines, exact terminal
+ * state).
  */
 import { For, createEffect, createSignal, onCleanup, Show, untrack, type JSX } from "solid-js"
 import { onAnimationTick } from "@opentui/solid"
@@ -145,13 +169,14 @@ export function skinFadeOutColor(target: string | RGBA, background: string | RGB
 	return mixSkinColor(target, background, skinFadeOutProgress(elapsedSinceStopMs))
 }
 
-/** Line cap for the widgets dock (pure), graded by terminal height. The
- * active frame must never eat the transcript's floor: at 31-40 rows the
- * worst case would be an 8-row frame (2 borders + 3 think + 3 tool), so
- * those terminals keep the pre-2026-11 ONE-line-per-widget footprint. 41-50
- * rows afford two lines per widget; only > 50 rows get the default three.
- * Think and tool use the SAME cap independently. Unknown height (undefined,
- * e.g. a unit test with no geometry) keeps the default full cap. */
+/** TOOL-block line cap (pure), graded by terminal height. The gear NEVER
+ * touches this — since 2026-11-19 the tool block is capped only here (3 lines
+ * at normal terminals, graded down on short ones), not by
+ * `session.activity_panel_height`. At 31-40 rows the worst case would be a
+ * 3-tool-line frame, so those terminals keep the pre-2026-11 ONE-line
+ * footprint; 41-50 rows afford two; only > 50 rows get the default three.
+ * Think uses the separate gear-driven cap (`activityPanelCapSpec`). Unknown
+ * height (undefined, e.g. a unit test with no geometry) keeps the full cap. */
 export function dockLineCap(terminalRows?: number): number {
 	if (terminalRows === undefined) return DOCK_WIDGET_MAX_LINES
 	if (terminalRows <= 40) return DOCK_COMPACT_MAX_LINES
@@ -159,26 +184,30 @@ export function dockLineCap(terminalRows?: number): number {
 	return DOCK_WIDGET_MAX_LINES
 }
 
-// ------------------------------------------------- U4 activity panelHeight --
-// The /settings gear for the activity panel size (dsh-tui-pi parity:
-// 1 / 5 / 7 / 10 / all). The gear lives in the profile config under
-// `session.activity_panel_height`; ONLY /settings writes it, and the effect
-// is live through this module signal (the /language wiring: a settings-row
-// write flips the signal, boot replay restores it — no restart, no keybind).
+// --------------------------- U4 think display lines (gear) -------------------
+// The /settings gear (config key UNCHANGED — `session.activity_panel_height`,
+// no config migration) controls ONLY the think block's display line count
+// (2026-11-19 user directive): 1 / 5 / 7 / 10 = think shows at most N lines.
+// `all` is KEPT as a stored spelling for backward compatibility (no user config
+// is migrated) but its semantics = 10 — under the 10-line panel ceiling it is
+// identical to the `10` gear. The tool block NO LONGER consumes this gear:
+// it uses the fixed `dockLineCap` (3 lines at normal terminals). The whole
+// content area is hard-capped at MERGED_DOCK_TOTAL_LINES (10) lines; the old
+// `all` "2/3 of terminal rows" growth rule and the halfBudget clamp are gone.
+// ONLY /settings writes the key; the effect is live through this module signal
+// (settings-row write flips it, boot replay restores it — no restart/keybind).
 
-/** The five gears (dsh-tui-pi theme-settings). Numbers cap EACH of the think
- * and tool blocks at N lines independently; `all` drops the per-block cap
- * and instead clamps the whole frame at 2/3 of the terminal rows (the
- * transcript keeps its 1/3 floor). */
+/** The five stored spellings. `all` is legacy-compatible, semantically 10. */
 export const ACTIVITY_PANEL_GEARS = ["1", "5", "7", "10", "all"] as const
 export type ActivityPanelGear = (typeof ACTIVITY_PANEL_GEARS)[number]
 
-/** Practically-unbounded per-block cap for the `all` gear (the real bound is
- * the combined `totalMaxLines` budget; a finite sentinel keeps every
- * `slice(-maxLines)` and `Math.max(1, …)` well-defined). */
-const PANEL_UNBOUNDED_LINES = 1_000_000
+/** `all` is a legacy spelling; under the 10-line ceiling it equals the `10`
+ * gear. A LITERAL (not `MERGED_DOCK_TOTAL_LINES`) on purpose: this module and
+ * merged-dock.ts import each other, so a cross-module top-level initializer
+ * would hit a TDZ ReferenceError when merged-dock is the first module loaded. */
+export const ACTIVITY_PANEL_ALL_LINES = 10
 
-/** The selected gear; undefined = unset → the graded dockLineCap default. */
+/** The selected gear; undefined = unset → the graded `dockLineCap` default. */
 export const [activityPanelGear, setActivityPanelGear] = createSignal<ActivityPanelGear | undefined>(undefined)
 
 /** The stored `session.activity_panel_height` value: one of the five gear
@@ -213,43 +242,148 @@ export function applyActivityPanelConfig(config?: Record<string, unknown>): void
 	}
 }
 
-/** The resolved geometry for one gear + terminal height. */
+/** The resolved THINK line cap for one gear + terminal height. No combined
+ * budget field any more — the content area's 10-line hard cap lives in
+ * `merged-dock.ts` (`assembleZones`), and the tool block has its own fixed
+ * `dockLineCap`. */
 export interface ActivityPanelCapSpec {
-	/** Per-block cap fed to the builders' `maxLines`. */
+	/** Think block line cap (the ONLY thing the gear controls now). */
 	maxLines: number
-	/** Combined think+tool budget (the `all` gear's 2/3 frame clamp); the
-	 * frame borders ride ON TOP of this budget. */
-	totalMaxLines?: number
 }
 
 /**
- * Gear → dock geometry (pure). Unset gear = the graded default, byte for
- * byte. A short terminal (≤ COMPOSER_COMPACT_TERMINAL_ROWS, the two-row rule
- * bar contract) leaves the gear INERT — the degraded strip wins over the
- * gear at any value. `all` runs the blocks unbounded but holds the whole
- * frame (borders included) at 2/3 of the terminal rows: `floor(rows * 2 / 3)
- * - 2` content lines. A numeric gear caps each block at N lines but ALSO at
- * half of that same content budget (the transcript's 1/3 floor is shared by
- * the two blocks — P1 review: gear 10 must not eat a 35-row terminal).
- * Unknown height keeps the numeric gear (only geometry-bearing clamps need
- * rows and degrade to unbounded).
+ * Gear → THINK line cap (pure, 2026-11-19). Unset gear = the graded
+ * `dockLineCap` default. A short terminal (≤ COMPOSER_COMPACT_TERMINAL_ROWS,
+ * the two-row rule-bar contract) leaves the gear INERT — the degraded strip
+ * wins at any value. Numeric gears cap THINK at N lines (clamped to the
+ * 10-line content ceiling). `all` is a legacy spelling that means 10. The
+ * former 2/3-of-rows growth rule and halfBudget clamp are REMOVED — the
+ * content area is hard-capped at 10 lines regardless of terminal height.
  */
 export function activityPanelCapSpec(gear: ActivityPanelGear | undefined, terminalRows?: number): ActivityPanelCapSpec {
 	if (gear === undefined) return { maxLines: dockLineCap(terminalRows) }
 	if (terminalRows !== undefined && terminalRows <= COMPOSER_COMPACT_TERMINAL_ROWS) {
 		return { maxLines: dockLineCap(terminalRows) }
 	}
-	if (gear === "all") {
-		if (terminalRows === undefined) return { maxLines: PANEL_UNBOUNDED_LINES }
-		return { maxLines: PANEL_UNBOUNDED_LINES, totalMaxLines: Math.max(1, Math.floor((terminalRows * 2) / 3) - 2) }
+	if (gear === "all") return { maxLines: ACTIVITY_PANEL_ALL_LINES }
+	return { maxLines: Math.min(Number(gear), MERGED_DOCK_TOTAL_LINES) }
+}
+
+// --------------------------------- height tween (2026-11-19) ---------------
+// The panel's content-line count changes as think/tool/todo/subagent appear
+// and leave. To keep the composer from jumping, that count is interpolated
+// over a SHORT, NON-RESIDENT tween on the shared animation clock (no timers).
+// The interpolation is pure + integer-line (never a fractional row — the
+// repo has a resident-animation-vs-diff-paint lost-line incident on record),
+// and its terminal state is EXACT: at/after the duration the value is `to`,
+// never `to-1`. If the shared clock gives no tick while idle, the terminal
+// state is still correct on the NEXT render because the value is derived from
+// the WALL CLOCK, not from accumulated tick deltas (terminal correctness
+// beats animation completeness).
+
+/** Tween length, in the requested 150-250ms band. */
+export const DOCK_HEIGHT_ANIM_MS = 200
+
+/** Ease-in-out (smoothstep), 0→1 over 0→1 input. Pure. */
+export function dockHeightEase(t: number): number {
+	const k = Math.max(0, Math.min(1, t))
+	return k * k * (3 - 2 * k)
+}
+
+/** Integer-line interpolation of the panel's content-line count. `from`/`to`
+ * are clamped to ≥ 0; the result is a whole number of lines so the diff-paint
+ * never sees a fractional row. Terminal state (`elapsedMs >= durationMs`) is
+ * EXACTLY `to`; `elapsedMs <= 0` is exactly `from`. */
+export function dockHeightLines(from: number, to: number, elapsedMs: number, durationMs = DOCK_HEIGHT_ANIM_MS): number {
+	const a = Math.max(0, Math.floor(from))
+	const b = Math.max(0, Math.floor(to))
+	if (elapsedMs <= 0) return a
+	if (elapsedMs >= durationMs) return b
+	return Math.max(0, Math.round(a + (b - a) * dockHeightEase(elapsedMs / durationMs)))
+}
+
+interface DockHeightTween {
+	from: number
+	to: number
+	startedAt: number
+}
+
+/** MODULE-level tween (CLOSURE LAW: no component-scope signal closed over by
+ * JSX props). `undefined` = settled, no animation in flight. */
+const [dockHeightTween, setDockHeightTween] = createSignal<DockHeightTween | undefined>(undefined)
+/** The last settled count — the tween's `from` when no tween is active.
+ * `undefined` until the dock has rendered once: the FIRST appearance has no
+ * previous height to animate from, so it snaps to its target (otherwise a
+ * border-only box would sit on screen until a clock tick advanced the tween). */
+let dockHeightSettled: number | undefined = undefined
+
+/** Current content-line count to render for a freshly-computed `target`.
+ * Reads the tween signal (so a clock tick re-renders the frame) but derives
+ * the count from the WALL CLOCK, so a missed idle tick still yields the exact
+ * terminal count on the next render. */
+export function dockHeightContentLines(target: number, now: number = Date.now()): number {
+	// No animation clock (tier off / reduced → "busy has no rate") means no
+	// ticks would ever advance a tween. SNAP to the exact target instead of
+	// leaving the frame stuck on its first interpolated row forever. This is
+	// the "terminal correctness beats animation completeness" rule.
+	if (!motionAnimationRunning()) return target
+	const tween = dockHeightTween()
+	if (tween === undefined) return target
+	return dockHeightLines(tween.from, tween.to, now - tween.startedAt)
+}
+
+/** Push a new target content-line count. (Re)starts a short tween from the
+ * currently displayed count; a no-op when the target is unchanged. The new
+ * target always becomes `dockHeightSettled`, so even if the clock never ticks
+ * the NEXT render shows the exact terminal value. */
+export function setDockHeightTarget(target: number, now: number = Date.now()): void {
+	const to = Math.max(0, Math.min(MERGED_DOCK_TOTAL_LINES, Math.floor(target)))
+	const current = untrack(dockHeightTween)
+	if (current !== undefined) {
+		if (current.to === to) return
+		const from = dockHeightLines(current.from, current.to, now - current.startedAt)
+		// No visible previous content (or no clock) → snap. A 0-line "from"
+		// would paint a border-only box until the first tick, which a fixture
+		// waiting on the title captures as a lost content row.
+		if (from === 0 || to === 0 || !motionAnimationRunning()) {
+			setDockHeightTween(undefined)
+			dockHeightSettled = to
+			return
+		}
+		setDockHeightTween({ from, to, startedAt: now })
+	} else {
+		if (dockHeightSettled === to) return
+		// First render / no prior visible content / no clock → snap (no
+		// 0-line border-only frame). Only a real visible→visible change tweens.
+		if (dockHeightSettled === undefined || dockHeightSettled === 0 || to === 0 || !motionAnimationRunning()) {
+			dockHeightSettled = to
+			return
+		}
+		setDockHeightTween({ from: dockHeightSettled, to, startedAt: now })
 	}
-	const cap = Number(gear)
-	if (terminalRows === undefined) return { maxLines: cap }
-	// The `all` gear's content budget, split between the two blocks: each
-	// block gets at most half, so 2 blocks + 2 borders stay inside 2/3 of
-	// the rows and the transcript keeps its 1/3 floor at every gear.
-	const halfBudget = Math.floor(Math.max(1, Math.floor((terminalRows * 2) / 3) - 2) / 2)
-	return { maxLines: Math.min(cap, halfBudget) }
+	dockHeightSettled = to
+}
+
+/** True while a height tween is in flight (used to keep the shared clock
+ * subscribed). */
+export function dockHeightAnimating(): boolean {
+	return dockHeightTween() !== undefined
+}
+
+/** Shared-clock tick: clear the tween at its exact terminal frame so the
+ * clock unsubscribes (no residual animation). Idle/no-tick is fine — the
+ * wall-clock accessor already reports the exact terminal count. */
+export function tickDockHeight(now: number = Date.now()): void {
+	const current = untrack(dockHeightTween)
+	if (current !== undefined && now - current.startedAt >= DOCK_HEIGHT_ANIM_MS) setDockHeightTween(undefined)
+}
+
+/** Session-switch hook: drop any in-flight tween and settle at `to`. */
+export function resetDockHeight(to?: number): void {
+	setDockHeightTween(undefined)
+	// No arg (session switch / unmount) → forget the previous height so the
+	// next mount snaps instead of tweening up from a stale count.
+	dockHeightSettled = to === undefined ? undefined : Math.max(0, Math.min(MERGED_DOCK_TOTAL_LINES, Math.floor(to)))
 }
 
 /** Notice fade progress: 0 until the last SKIN_NOTICE_FADE_MS of the TTL,
@@ -438,13 +572,65 @@ export function latestTodos(rows: readonly SeamRow[]): Todo[] {
  * (transcript floor 6 + activity rule 2) — one summary line keeps the
  * transcript contract intact while the todos stay visible. */
 export function todosSummaryLine(rows: readonly SeamRow[]): string {
-	const todos = latestTodos(rows)
+	return todosSummaryFromTodos(latestTodos(rows))
+}
+
+/** The scene-C todo line, from an already-extracted todo list (the merged
+ * dock builds from `MergedDockData.todos`, not from raw rows). Same current
+ * full format as `todosSummaryLine`: `todos [✓]done/total · <active item>`. */
+export function todosSummaryFromTodos(todos: readonly Todo[]): string {
 	if (todos.length === 0) return ""
 	const done = todos.filter((todo) => todo.status === "completed").length
 	if (done === todos.length) return ""
 	const active = todos.find((todo) => todo.status === "in_progress")
 	const head = t("overlay.widgets.todosSummary", { done, total: todos.length })
 	return active ? `${head} · ${active.content}` : head
+}
+
+// ------------------------------------------- scene-A todo brief timing (指令4)
+// `todo done/total Ns` — no current-task text. The duration is seconds since
+// the todo set was CREATED: the earliest settled todo-tool row's `startedAt`
+// (`todoSetStartedAt`, the existing time tracking) when the caller has it.
+// When there is no such anchor (replay shapes, unit tests, host rows without a
+// timestamp) a module-level fallback counts from the most recent TODO ARRAY
+// CHANGE — the signature is compared on every call, so an add/remove/status
+// flip resets the clock. Module scope keeps the CLOSURE LAW intact.
+
+let todoSetSignature = ""
+let todoSetChangedAt = 0
+
+/** Earliest `startedAt` among settled, non-failed todo-tool rows — the
+ * creation anchor of the current todo collection ("首条创建"). `undefined`
+ * when no row carries a timestamp (the caller then uses the fallback clock). */
+export function todoSetStartedAt(rows: readonly SeamRow[]): number | undefined {
+	for (const row of rows) {
+		if (row.kind === "tool" && TODO_TOOL_NAMES.has(row.name) && row.status !== "failed" && row.startedAt !== undefined) {
+			return row.startedAt
+		}
+	}
+	return undefined
+}
+
+/** The one-line scene-A todo brief: `todo done/total Ns`. `startedAt` is the
+ * existing time-tracking anchor; omit it to use the fallback clock. Pure apart
+ * from that fallback anchor (which is module state, never component state). */
+export function todoBriefLine(todos: readonly Todo[], now: number = Date.now(), startedAt?: number): string {
+	if (todos.length === 0) return ""
+	const done = todos.filter((todo) => todo.status === "completed").length
+	const signature = todos.map((todo) => `${todo.status}\u0000${todo.content}`).join("\u0001")
+	if (signature !== todoSetSignature) {
+		todoSetSignature = signature
+		todoSetChangedAt = now
+	}
+	const anchor = startedAt ?? todoSetChangedAt
+	const secs = Math.max(0, Math.floor((now - anchor) / 1000))
+	return `todo ${done}/${todos.length} ${secs}s`
+}
+
+/** Test/session-switch hook: drop the fallback anchor. */
+export function resetTodoBriefClock(): void {
+	todoSetSignature = ""
+	todoSetChangedAt = 0
 }
 
 /** The Todos table's box width for a `terminalColumns`-wide terminal.
@@ -608,6 +794,37 @@ export function thinkLineText(
 	return thinkBlockLines(row, spin, 1, now)[0]
 }
 
+/** The 2026-11-19 rule table's three scenes. */
+export type ActivityScene = "A" | "B" | "C"
+
+/**
+ * Pure scene decision (2026-11-19 rule table). PRIORITY = SUBAGENT ACTIVE >
+ * THINK EXCLUSIVE: a RUNNING subagent opens scene A regardless of think; only
+ * when there is none does a VISIBLE think (live OR inside its exit hold) open
+ * scene B. Historical / non-running subagent rows never open A — per 指令3 a
+ * leftover subagent row yields to an active think (scene B). No subagent and
+ * no think → scene C.
+ */
+export function activityScene(hasRunningSubagent: boolean, hasVisibleThink: boolean): ActivityScene {
+	if (hasRunningSubagent) return "A"
+	return hasVisibleThink ? "B" : "C"
+}
+
+/** Whether a think row is "VISIBLE" in the scene-table sense: a live streaming
+ * burst, OR a settled row that has not reached its retention edge (the 2s hold
+ * plus, on decorated tiers, the 300ms fade tail — `dockLineVisibility` knows
+ * the tier boundary). `undefined` row → false. */
+export function thinkRowVisible(
+	row: Extract<SeamRow, { kind: "reasoning" }> | undefined,
+	now: number = Date.now(),
+	decorated: boolean = motionDecorationsEnabled(),
+): boolean {
+	if (row === undefined) return false
+	if (row.streaming === true) return true
+	const stopAt = skinStopAt(row)
+	return stopAt === undefined || dockLineVisibility(stopAt, now, decorated).phase !== "hidden"
+}
+
 /** The dock line set (pure): Think → Tool, one entry per visible panel line.
  * The Todos table is NOT part of it (tui-pi parity): it owns its own
  * multi-row block above the think/tool lines (see `todosTableLines`).
@@ -638,17 +855,20 @@ export type DockLine = {
  * "todo" can hijack the panel. */
 const TODO_TOOL_NAMES = new Set(["todowrite", "todo_write"])
 
-/** Render options for the pure line builders. Defaults: wall clock, the
- * active motion tier, and DOCK_WIDGET_MAX_LINES per widget. Tests pass a
- * fake `now` and an explicit `decorated` tier. */
+/** Render options for the pure line builders. Defaults: wall clock and the
+ * active motion tier. Tests pass a fake `now` and an explicit `decorated` tier.
+ * The think cap is gear-driven; the tool cap (`maxLines`) is NOT. */
 export type DockViewOptions = {
 	now?: number
 	decorated?: boolean
-	/** Per-widget line cap (3 default, 1 at compact terminals). */
+	/** TOOL-block line cap (3 default, 1 at compact terminals). Never the gear. */
 	maxLines?: number
-	/** Combined think+tool budget (U4 panelHeight `all` gear): when the two
-	 * blocks together exceed it, the LONGER block sheds its oldest lines first
-	 * (a tie sheds think) until the sum fits. */
+	/** THINK-block line cap (gear-driven). Defaults to `maxLines`. */
+	thinkMaxLines?: number
+	/** Optional combined think+tool budget. Kept as a generic pure utility;
+	 * the view no longer feeds it (the 10-line cap lives in `merged-dock.ts`).
+	 * When present the LONGER block sheds its oldest line first (a tie sheds
+	 * think) until the sum fits. */
 	totalMaxLines?: number
 }
 
@@ -657,13 +877,17 @@ export type DockViewOptions = {
  * think/tool lines (see `todosTableLines`).
  *
  * Think: the newest LIVE burst wins; otherwise the newest collapsed summary
- * still inside its 2s linger. Up to `maxLines` lines, always the tail.
+ * still inside its 2s linger. Up to `thinkMaxLines` lines, always the tail.
  *
  * Tool: live tool rows, chronological order, up to `maxLines` (the newest
  * `maxLines` survive the slice). A settled row is painted for 2s and then
  * fades (dock-visibility); a starting tool has already flagged the previous
  * settled rows `faded` in the store (clear old, show new). Running rows
- * always show.
+ * always show. 2026-11-19 scene table: scene A (a running subagent) shrinks
+ * both think and tool to ONE line; scene B (no running subagent + visible
+ * think) HIDES tool entirely; scene C (neither) keeps the full `maxLines`.
+ * The Todos table is not part of this block — the merged dock renders the
+ * scene-A brief / scene-C summary above these lines.
  *
  * Clock law (M1): the entry reads the shared `dockSpin` signal
  * UNCONDITIONALLY. A collapsed/lingering/fading think block no longer reads
@@ -685,8 +909,17 @@ export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = 
 	const now = options.now ?? Date.now()
 	const decorated = options.decorated ?? motionDecorationsEnabled()
 	const maxLines = Math.max(1, Math.floor(options.maxLines ?? DOCK_WIDGET_MAX_LINES))
+	const gearThinkMaxLines = Math.max(1, Math.floor(options.thinkMaxLines ?? maxLines))
 	const think: DockLine[] = []
 	const toolLines: DockLine[] = []
+
+	// 2026-11-19 scene table. Only RUNNING subagents open scene A (a historical
+	// subagents row yields to think per 指令3). The selected think row is, by
+	// construction below, a VISIBLE one (live or inside its exit hold), so its
+	// presence is the scene-B signal.
+	const hasRunningSubagent = rows.some(
+		(row) => row.kind === "subagents" && row.children.some((child) => child.status === "running"),
+	)
 
 	// Think panel: the live burst wins; else the newest collapsed summary
 	// that has not reached the retention edge (hidden rows are not painted).
@@ -704,6 +937,10 @@ export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = 
 			}
 		}
 	}
+	// The selected row is visible by construction; its presence is the scene-B
+	// signal. Scene A forces a 1-line think regardless of gear.
+	const scene = activityScene(hasRunningSubagent, thinkRow !== undefined)
+	const effectiveThinkMax = scene === "A" ? 1 : gearThinkMaxLines
 	if (thinkRow !== undefined) {
 		const stopAt = skinStopAt(thinkRow)
 		// M2 (view side): a LIVE row carries no exit anchor, even when the row
@@ -711,7 +948,7 @@ export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = 
 		// this burst resumed (the store clears it on the upsert too — belt and
 		// braces: an old anchor would paint the fresh burst in background).
 		const fadeOutAt = thinkRow.streaming === true ? undefined : stopAt
-		for (const text of thinkBlockLines(thinkRow, dockSpin, maxLines, now)) {
+		for (const text of thinkBlockLines(thinkRow, dockSpin, effectiveThinkMax, now)) {
 			think.push({
 				text,
 				tone: "running",
@@ -723,10 +960,16 @@ export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = 
 		}
 	}
 
+	// 2026-11-19 scene table: scene B hides tool entirely; scene A caps it to
+	// ONE line; scene C uses the full (fixed, never gear-driven) `maxLines`.
+	const toolMax = scene === "B" ? 0 : scene === "A" ? 1 : maxLines
+	const tools =
+		toolMax === 0
+			? []
+			: rows.filter(
+					(row): row is Extract<SeamRow, { kind: "tool" }> => row.kind === "tool" && row.key.startsWith("tool:live:"),
+				)
 	// Tool panel: one line per live tool row, keyed in-place updates.
-	const tools = rows.filter(
-		(row): row is Extract<SeamRow, { kind: "tool" }> => row.kind === "tool" && row.key.startsWith("tool:live:"),
-	)
 	const visible = tools.filter((row) => {
 		// The store's `faded` flag is the hard clear (turn-end stragglers and
 		// cleared-at-new-tool rows); running tools always show.
@@ -735,7 +978,7 @@ export function dockBlocks(rows: readonly SeamRow[], options: DockViewOptions = 
 		const stopAt = skinStopAt(row)
 		return stopAt === undefined || dockLineVisibility(stopAt, now, decorated).phase !== "hidden"
 	})
-	for (const row of visible.slice(-maxLines)) {
+	for (const row of visible.slice(-toolMax)) {
 		toolLines.push({
 			text: toolLineText(row, dockSpin, now),
 			tone: row.status === "running" ? "running" : row.status === "failed" ? "failed" : "ok",
@@ -780,12 +1023,13 @@ export function dockTurnActive(rows: readonly SeamRow[]): boolean {
 }
 
 /** The turn-lifetime activity frame content (pure): the SAME two blocks as
- * the flat dock — thinking / tool slots (skin contract §1 活动区), each up
- * to `maxLines` lines (3 by default, 1 at compact terminals), empty slots
- * left blank. Think and tool are independent: their anchors and line counts
- * never feed each other. The Todos table moved OUT of the frame to the
- * widgets slot's own block (dsh-tui-pi parity: the table is persistent, not
- * turn-lifetime). */
+ * the flat dock — thinking / tool slots (skin contract §1 活动区). Think uses
+ * the gear-driven `thinkMaxLines`, tool the fixed `maxLines` (3 default, 1 at
+ * compact terminals); empty slots left blank. 2026-11-19 scene table applies
+ * (A = one line each, B = think-only, C = tool-only); the old "independent
+ * anchors — never feed each other" law is superseded. The Todos table moved
+ * OUT of the frame to the widgets slot's own block (dsh-tui-pi parity: the
+ * table is persistent, not turn-lifetime). */
 export function activityBlocks(rows: readonly SeamRow[], options: DockViewOptions = {}): DockBlocks {
 	return dockBlocks(rows, options)
 }
@@ -1213,12 +1457,22 @@ export function WidgetsDock(props: {
 					: (theme?.text.muted ?? "#9aa5ce")
 	const bg = () => theme?.background.base ?? "#000000"
 	const skinCtx = () => ({ decorated: motionDecorationsEnabled(), background: bg() })
-	// Shared animation clock (contract §2.2 — replaces the old 120ms
-	// setInterval): ticks only while the docks have live lines; undefined
-	// pauses the clock (tier off / idle with nothing animating).
+	// Shared animation clock (contract §2.2 — no setInterval). The rate is
+	// undefined when NOTHING needs it (tier off / idle with no live lines and
+	// no tween in flight) — "busy only has a rate". While the height tween is
+	// in flight the clock is subscribed so the frame repaints at integer-line
+	// steps; if idle gives no tick the wall-clock accessor still yields the
+	// exact terminal count on the next render (terminal correctness wins).
 	onAnimationTick(
-		() => (motionAnimationRunning() && dockNeedsClock(props.rows) ? motionFrameRate() : undefined),
-		() => setDockSpin((s) => s + 1),
+		() => {
+			if (!motionAnimationRunning()) return undefined
+			if (untrack(dockHeightAnimating)) return motionFrameRate()
+			return dockNeedsClock(props.rows) ? motionFrameRate() : undefined
+		},
+		() => {
+			setDockSpin((s) => s + 1)
+			tickDockHeight()
+		},
 	)
 	const width = () => Math.max(16, dimensions().width - 4)
 	const turnActive = () => props.turnActive?.() ?? dockTurnActive(props.rows)
@@ -1231,9 +1485,11 @@ export function WidgetsDock(props: {
 	createEffect(() => activityFrameLatch.push(turnActive() || mergedLowerHasContent(props.rows)))
 	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
-	// Per-widget line cap for the idle FlatDock fallback (kept intact).
+	// Since 2026-11-19 the gear drives ONLY the THINK cap; the TOOL cap is
+	// `dockLineCap` (fixed 3 at normal terminals, graded down on short ones).
 	const capSpec = () => activityPanelCapSpec(activityPanelGear(), dimensions().height)
-	const lineCap = () => capSpec().maxLines
+	const thinkCap = () => capSpec().maxLines
+	const toolCap = () => dockLineCap(dimensions().height)
 
 	// ---- merged activity widget (D1/D4/D8/D11) -----------------------------
 	// CLOSURE LAW: no component-scope signal/memo here — every getter rebuilds
@@ -1246,17 +1502,17 @@ export function WidgetsDock(props: {
 			tools: mergedToolRows(props.rows, now, motionDecorationsEnabled()),
 			todos: latestTodos(props.rows),
 			agents: mergedRunningAgents(props.rows),
+			// 指令4: existing time tracking for the scene-A todo brief (the
+			// earliest todo-tool row's startedAt); merged-dock falls back to a
+			// todo-array-change clock when this is absent.
+			todoStartedAt: todoSetStartedAt(props.rows),
 		}
 	}
-	// D12 (approved 2026-11-17): the merged frame's effective total cap is
-	// min(gear, 10). `all` is unbounded in the gear system → use the 10 ceiling;
-	// an unset gear keeps the full 10-line safety valve. `frameHeight()` (2 +
-	// mergedFrame().lines.length) follows this count automatically.
-	const gearTotal = (): number => {
-		const gear = activityPanelGear()
-		if (gear === undefined || gear === "all") return MERGED_DOCK_TOTAL_LINES
-		return Number(gear)
-	}
+	// 2026-11-19: the merged frame's content area is HARD-capped at 10 lines
+	// (`MERGED_DOCK_TOTAL_LINES`) regardless of gear — the old min(gear,10)
+	// frame cap and the `all` 2/3-of-rows growth rule are gone. The gear only
+	// reaches the builder as `thinkLines`. `frameHeight()` (2 + animated
+	// content count) follows the tweened count, not the raw line count.
 	// One builder, ONE `now` per reactive read: `mergedDockLines` and
 	// `mergedWindowInfo` share the same data/options object so the title N/M,
 	// the height, the rendered window and the wheel/key guards can never
@@ -1269,11 +1525,18 @@ export function WidgetsDock(props: {
 		const options: MergedDockOptions = {
 			innerWidth: width(),
 			now,
-			totalLines: Math.min(gearTotal(), MERGED_DOCK_TOTAL_LINES),
+			totalLines: MERGED_DOCK_TOTAL_LINES,
+			thinkLines: thinkCap(),
 			cursor: mergedDockCursor(),
 		}
 		return { lines: mergedDockLines(data, options), info: mergedWindowInfo(data, options) }
 	}
+	// Feed the height tween from the freshly-built content count. This effect
+	// re-runs on every reactive read inside `mergedFrame` (rows / dockSpin /
+	// gear / cursor / width); `setDockHeightTarget` is a no-op while the target
+	// count is unchanged, so there is no feedback loop.
+	createEffect(() => setDockHeightTarget(mergedFrame().lines.length))
+	onCleanup(() => resetDockHeight())
 	// The box reserves 4 of the W columns for title chrome: ┏ (col 0), the
 	// leading ━ it always draws before a left-aligned title (col 1), the trailing
 	// ━ it always draws after the title (col W-2), and ┓ (col W-1). The title
@@ -1356,9 +1619,24 @@ export function WidgetsDock(props: {
 			bindings: ["session.dock.scroll.up", "session.dock.scroll.down"],
 		}))
 	}
-	// Explicit height = 2 border rows + the visible merged lines (the 10-line
-	// cap already bounds the count; the title rides the top border).
-	const frameHeight = () => 2 + mergedFrame().lines.length
+	// The painted lines follow the tweened count: during a resize only the
+	// first `count` lines render, so the box's explicit height and its content
+	// always agree (no fractional/overflow rows hitting diff-paint). The 10-line
+	// cap bounds the target count; the title rides the top border.
+	const frameLines = (): MergedDockLine[] => {
+		const lines = mergedFrame().lines
+		const target = lines.length
+		const tweened = Math.max(0, dockHeightContentLines(target))
+		// 指令5 self-check: at/after the terminal frame the painted count MUST
+		// equal the target exactly. This repo has a resident-animation-vs-diff-
+		// paint lost-line incident on record; snapping here makes an idle clock
+		// (no tick) or a dropped end frame impossible to leave one row short.
+		// During an in-flight shrink only, the tweened (smaller) count is kept.
+		const animating = untrack(dockHeightAnimating)
+		const count = !animating || tweened >= target ? target : Math.min(target, tweened)
+		return lines.slice(0, count)
+	}
+	const frameHeight = () => 2 + frameLines().length
 	// Compact lower zone (D11): a single summary line, no scroll zone.
 	const compactSummary = () => mergedCompactSummary(props.rows)
 	const compactHeight = () => 2 + (compactSummary() === "" ? 0 : 1)
@@ -1401,8 +1679,8 @@ export function WidgetsDock(props: {
 						fgFor={fgFor}
 						accentFg={accentFg}
 						skinCtx={skinCtx()}
-						maxLines={lineCap()}
-						totalMaxLines={capSpec().totalMaxLines}
+						maxLines={toolCap()}
+						thinkMaxLines={thinkCap()}
 					/>
 				}
 			>
@@ -1437,7 +1715,7 @@ export function WidgetsDock(props: {
 						titleAlignment="left"
 						onMouseScroll={onMergedWheel}
 					>
-						<For each={mergedFrame().lines}>{mergedLineView}</For>
+						<For each={frameLines()}>{mergedLineView}</For>
 					</box>
 				</Show>
 			</Show>
@@ -1448,8 +1726,9 @@ export function WidgetsDock(props: {
 /** The idle fallback dock (the pre-skin flat line list): after the turn
  * ends the frame disappears and any straggler lines (lingering/fading) keep
  * their original per-line height so the composer never jumps. `maxLines` is
- * the geometry's per-widget cap (3 default, 1 at compact terminals);
- * `totalMaxLines` is the `all` gear's combined budget (undefined = none). */
+ * the TOOL cap (3 default, graded at compact terminals; never the gear);
+ * `thinkMaxLines` is the gear-driven THINK cap. Since 2026-11-19 think also
+ * suppresses tool here (via `dockBlocks`), and no combined budget is fed. */
 function FlatDock(props: {
 	rows: readonly SeamRow[]
 	width: number
@@ -1457,12 +1736,9 @@ function FlatDock(props: {
 	accentFg: (accent: DockAccent) => string | RGBA
 	skinCtx: SkinFgContext
 	maxLines: number
-	totalMaxLines?: number
+	thinkMaxLines: number
 }): JSX.Element {
-	const dockOptions = () => ({
-		maxLines: props.maxLines,
-		...(props.totalMaxLines !== undefined ? { totalMaxLines: props.totalMaxLines } : {}),
-	})
+	const dockOptions = () => ({ maxLines: props.maxLines, thinkMaxLines: props.thinkMaxLines })
 	return (
 		<box
 			flexShrink={0}

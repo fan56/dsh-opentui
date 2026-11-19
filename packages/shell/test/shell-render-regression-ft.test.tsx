@@ -141,10 +141,10 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 
 		// Positive: the turn is live → the heavy-bordered activity frame is up,
 		// tool row above and todo row below.
-		const live = await fixture.waitForFrame((f) => f.includes("┏"))
+		const live = await fixture.waitForFrame((f) => f.includes("todos [✓]"))
 		expect(live).toContain("🔧 tool")
 		expect(live).toContain("grep")
-		expect(live).toContain("● 1 d5 active task")
+		expect(live).toContain("todos [✓]0/1 · d5 active task")
 
 		releaseTool?.()
 		await pending
@@ -153,10 +153,12 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 		// todo is still present → the frame must STAY shown with the SAME lower
 		// row (now titled "🧩 activity" since the tool row faded out).
 		await new Promise((resolve) => setTimeout(resolve, 2800))
-		const survived = await fixture.waitForFrame(() => true)
+		// The panel height rides a short tween; wait for the settled content
+		// (not just the first bordered frame, which can be a mid-tween row).
+		const survived = await fixture.waitForFrame((f) => f.includes("todos [✓]"), { timeoutMs: 8000 })
 		expect(survived).toContain("┏")
 		expect(survived).toContain("🧩 activity")
-		expect(survived).toContain("● 1 d5 active task")
+		expect(survived).toContain("todos [✓]0/1 · d5 active task")
 
 		// Clearing the todo list empties the lower zone; once the frame's defer
 		// window passes, the activity frame hides entirely (D5 lifecycle).

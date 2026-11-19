@@ -184,8 +184,12 @@ export const Info = Schema.Struct({
         description: "Prompt for permission requests or accept them automatically",
       }),
       activity_panel_height: Schema.optional(Schema.Literals(["1", "5", "7", "10", "all"])).annotate({
+        // 2026-11-19: key kept for backward compatibility (no config migration);
+        // it now controls ONLY the think block's display lines (1/5/7/10,
+        // `all`=10). The tool block is fixed at 3 lines and the whole activity
+        // panel is hard-capped at 10 lines.
         description:
-          "Activity panel height gear (U4): lines per think and tool block; 'all' grows the blocks freely while the whole frame never exceeds 2/3 of the terminal rows",
+          "Think display lines in the activity panel: 1 / 5 / 7 / 10; 'all' is a legacy spelling equal to 10. The tool block is fixed and the panel never exceeds 10 lines",
       }),
     }),
   ).annotate({ description: "Session transcript presentation settings" }),

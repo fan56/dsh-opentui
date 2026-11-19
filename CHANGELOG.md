@@ -109,6 +109,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can be derived, so the counter and token-rate segments are no longer blank
   under the inproc seam. `messageCount` remains the `/session` panel's data.
 
+### 用户裁决 — activity 面板重设计（2026-11-19）
+
+用户逐条拍板的最终规则表，覆盖此前"think / tool 各自独立锚点"的旧法则：
+
+| 场景 | think | tool | todo | subagent |
+| --- | --- | --- | --- | --- |
+| A. subagent 活跃 | 1 行，置顶 | 1 行，置顶 | 1 行摘要 `todo 完成数/总数 时长s` | 列表占剩余行（沿用现有滚动裁剪） |
+| B. 无 subagent、think 可见（活跃 + 2s exit hold） | 齿轮行数（≤10） | 隐藏 | 隐藏 | — |
+| C. 无 subagent、无 think | — | ≤3 行（固定值，不吃齿轮） | 1 行（现行完整格式） | — |
+
+1. **面板封顶 10 行。** 内容区随内容伸缩、硬上限 `MERGED_DOCK_TOTAL_LINES = 10`（不含边框）；废除 `all` 档的 2/3 终端增长规则和 halfBudget 帧钳制。无内容整体隐藏（D5）不变。
+2. **齿轮只管 think。** `session.activity_panel_height` 语义改为仅 think 显示行数：1/5/7/10；`all` 保留兼容（不迁移用户 config）但等于 10。tool 恢复固定 3 行。settings 行文案与 en/zh 文案改义（key 名不动）。
+3. **场景 B 互斥。** think 可见期间藏 tool 与 todo；若 subagent 仅有历史残留行而 think 活跃，按场景 B 处理（subagent 行也让位）。优先级：subagent 活跃 > think 独占。
+4. **场景 A 的 todo 摘要行。** 只显示 `todo 完成数/总数 时长s`（如 `todo 1/3 300s`），不显示当前任务文本。数据源 = 现有 todo 状态跟踪；时长 = 该 todo 集合首条创建至今的秒数（取现有 tool row 的 `startedAt`，缺失则从最近一次 todo 数组变化起计时）。
+5. **伸缩动画。** 面板高度变化走共享动画钟（busy 才给 rate）驱动的整数行数逐帧插值，200ms smoothstep；非常驻、终态精确等于目标行数；共享钟 idle 不给 tick 时按挂钟取终态。动画结束帧后自校验行数 = 目标，规避仓内常驻动画撞 diff-paint 丢行的前科。
+
+置顶顺序：场景 A 中 think 行、tool 行、todo 行在 subagent 列表上方。
+
 ### Known debt (0.22.0 transitional)
 
 - The default inproc launch still runs two host processes: an HTTP host owns the

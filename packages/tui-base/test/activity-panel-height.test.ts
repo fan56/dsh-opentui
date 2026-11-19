@@ -5,11 +5,13 @@
  *   - the config validator accepts ONLY the five gear spellings;
  *   - boot replay restores the gear and silently REJECTS an invalid stored
  *     value (the default sizing keeps running — the hints-line fail-open law);
- *   - the geometry resolver: unset gear = the graded dockLineCap default
- *     byte for byte, short terminals stay inert, numeric gears cap each
- *     block at N lines AND at half the `all` gear's 2/3 content budget,
- *     `all` runs unbounded under the 2/3 frame budget;
- *   - the combined-budget trim sheds the LONGER block's oldest lines first;
+ *   - the geometry resolver (2026-11-19): unset gear = the graded dockLineCap
+ *     default byte for byte, short terminals stay inert, numeric gears cap the
+ *     THINK block at N lines (≤ 10), `all` is a legacy spelling that means 10;
+ *     the tool block is NEVER gear-driven and the 2/3-of-rows growth rule and
+ *     halfBudget clamp are GONE;
+ *   - the scene table (A = running subagent, B = visible think, C = neither)
+ *     drives think/tool line counts in `dockBlocks`;
  *   - the settings write plan merges the profile's session slice (configSave
  *     merges top-level keys shallowly), `default` unsets the key, and a
  *     non-contract value is REJECTED (never written to the profile);
@@ -103,49 +105,38 @@ describe("activityPanelCapSpec", () => {
 		}
 	})
 
-	test("numeric gears cap EACH block at N lines", () => {
+	test("numeric gears cap ONLY the think block at N lines (≤ 10)", () => {
 		expect(activityPanelCapSpec("1", 60)).toEqual({ maxLines: 1 })
 		expect(activityPanelCapSpec("5", 60)).toEqual({ maxLines: 5 })
 		expect(activityPanelCapSpec("7", 60)).toEqual({ maxLines: 7 })
 		expect(activityPanelCapSpec("10", 60)).toEqual({ maxLines: 10 })
-		// No geometry: a numeric gear still applies (only `all` needs rows).
+		// No geometry: a numeric gear still applies.
 		expect(activityPanelCapSpec("10", undefined)).toEqual({ maxLines: 10 })
 	})
 
-	test("`all` drops the per-block cap and holds the frame at 2/3 of the rows", () => {
-		const spec = activityPanelCapSpec("all", 60)
-		// P2-4: literal expectations, not the implementation's own formula —
-		// 60 rows → floor(60*2/3) - 2 = 38 content rows.
-		expect(spec.totalMaxLines).toBe(38)
-		expect(spec.maxLines).toBeGreaterThan(1000) // unbounded per block
-		// Small tall-enough terminals keep a positive budget: 31 → 18.
-		expect(activityPanelCapSpec("all", 31)?.totalMaxLines).toBe(18)
-		// Unknown height degrades to the unbounded sentinel (no clamp without
-		// geometry; no budget either).
-		expect(activityPanelCapSpec("all", undefined)).toEqual({ maxLines: 1_000_000 })
-		expect(activityPanelCapSpec("all", undefined).totalMaxLines).toBeUndefined()
+	test("`all` is a legacy spelling that means 10 (no 2/3 growth, no budget)", () => {
+		expect(activityPanelCapSpec("all", 60)).toEqual({ maxLines: 10 })
+		expect(activityPanelCapSpec("all", 31)).toEqual({ maxLines: 10 })
+		expect(activityPanelCapSpec("all", undefined)).toEqual({ maxLines: 10 })
+		// The old combined-budget field is gone entirely.
+		expect(activityPanelCapSpec("all", 60).totalMaxLines).toBeUndefined()
 	})
 
-	test("P1: numeric gears also clamp to half the terminal content budget", () => {
-		// The `all` budget split between the two blocks: each block gets
-		// min(N, floor(budget/2)), budget = floor(rows*2/3) - 2.
-		// rows=52 → budget 32, half 16: gear 10 untouched (the verified
-		// behavior must not move).
-		expect(activityPanelCapSpec("10", 52)).toEqual({ maxLines: 10 })
-		// rows=35 → budget 21, half 10: gear 10 still fits exactly.
-		expect(activityPanelCapSpec("10", 35)).toEqual({ maxLines: 10 })
-		// rows=32 → budget 19, half 9: gear 10 clamps (frame 2+9+9=20 ≤ 2/3).
-		expect(activityPanelCapSpec("10", 32)).toEqual({ maxLines: 9 })
-		// rows=31 → budget 18, half 9: gear 7 fits, gear 10 clamps.
+	test("no halfBudget clamp: gears are capped only by the 10-line ceiling", () => {
+		// The old rule clamped gear 10 to half of floor(rows*2/3)-2 (9 at 31/32
+		// rows). Since 2026-11-19 the content area is hard-capped at 10 lines in
+		// `merged-dock.ts`, never here, and terminal height no longer shrinks it.
+		for (const rows of [31, 32, 35, 52, 60]) {
+			expect(activityPanelCapSpec("10", rows)).toEqual({ maxLines: 10 })
+		}
 		expect(activityPanelCapSpec("7", 31)).toEqual({ maxLines: 7 })
-		expect(activityPanelCapSpec("10", 31)).toEqual({ maxLines: 9 })
 	})
 })
 
-describe("dockBlocks combined budget (the `all` gear trim)", () => {
+describe("2026-11-19 scene table in dockBlocks", () => {
 	const NOW = 1_000_000
-	const think = (lines: number): SeamRow => ({
-		key: "reasoning:trim",
+	const think = (lines = 5): SeamRow => ({
+		key: "reasoning:scene",
 		kind: "reasoning",
 		text: Array.from({ length: lines }, (_, index) => `think-${index + 1}`).join("\n"),
 		final: true,
@@ -153,33 +144,52 @@ describe("dockBlocks combined budget (the `all` gear trim)", () => {
 		elapsedSec: 2,
 	})
 	const tool = (index: number): SeamRow => ({
-		key: `tool:live:trim-${index}`,
+		key: `tool:live:scene-${index}`,
 		kind: "tool",
 		name: `tool-${index}`,
 		args: "",
 		status: "running",
 		startedAt: NOW,
 	})
+	const subagent: SeamRow = {
+		key: "subagents:scene",
+		kind: "subagents",
+		children: [{ id: "a", label: "agent", status: "running", rounds: 1, startedAt: NOW }],
+	}
 
-	test("the sum never exceeds the budget; the LONGER block sheds first, a tie sheds think", () => {
-		const rows: SeamRow[] = [think(5), tool(1), tool(2), tool(3), tool(4), tool(5)]
-		const blocks = dockBlocks(rows, { now: NOW, decorated: false, maxLines: 100, totalMaxLines: 6 })
-		expect(blocks.think.length + blocks.tool.length).toBe(6)
-		// 5+5 → tie sheds think (4+5) → tool sheds (4+4) → tie sheds think
-		// (3+4) → tool sheds (3+3): balanced halves.
-		expect(blocks.think.length).toBe(3)
-		expect(blocks.tool.length).toBe(3)
-		// The shed lines are the OLDEST of each block: think keeps its tail,
-		// tools keep the newest.
-		expect(blocks.think[0]?.text).toContain("think-3")
-		expect(blocks.tool[0]?.text).toContain("tool-3")
+	test("scene B (visible think, no running subagent) hides tool entirely", () => {
+		const blocks = dockBlocks([think(), tool(1), tool(2)], {
+			now: NOW,
+			decorated: false,
+			maxLines: 3,
+			thinkMaxLines: 7,
+		})
+		expect(blocks.think).toHaveLength(5)
+		expect(blocks.tool).toHaveLength(0)
 	})
 
-	test("no budget = no trim (the blocks grow as usual)", () => {
-		const rows: SeamRow[] = [think(5), tool(1), tool(2), tool(3), tool(4), tool(5)]
-		const blocks = dockBlocks(rows, { now: NOW, decorated: false, maxLines: 100 })
-		expect(blocks.think.length).toBe(5)
-		expect(blocks.tool.length).toBe(5)
+	test("scene A (running subagent) keeps think AND tool at one line each", () => {
+		const blocks = dockBlocks([think(), tool(1), tool(2), subagent], {
+			now: NOW,
+			decorated: false,
+			maxLines: 3,
+			thinkMaxLines: 7,
+		})
+		expect(blocks.think).toHaveLength(1)
+		expect(blocks.tool).toHaveLength(1)
+	})
+
+	test("scene C (no subagent, no visible think) keeps the fixed tool cap", () => {
+		// 3000ms past the stop anchor: the think row has left retention.
+		const blocks = dockBlocks([think(), tool(1), tool(2), tool(3), tool(4)], {
+			now: NOW + 3_000,
+			decorated: false,
+			maxLines: 3,
+			thinkMaxLines: 7,
+		})
+		expect(blocks.think).toHaveLength(0)
+		expect(blocks.tool).toHaveLength(3)
+		expect(blocks.tool[0]?.text).toContain("tool-2") // newest 3 survive
 	})
 })
 
