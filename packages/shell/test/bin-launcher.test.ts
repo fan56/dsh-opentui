@@ -18,6 +18,7 @@ import {
   isRemoteRequested,
   KNOWN_CLIENT_ARGS,
   killStaleProcesses,
+  launcherFlagConflict,
   parseLauncherArgs,
   REMOTE_DEPRECATION_NOTICE,
   parseLauncherOptions,
@@ -391,6 +392,48 @@ describe('--remote deprecation (T10)', () => {
   })
 })
 
+describe('P3-3 flag-combination conflicts', () => {
+  test('--repair-bridge + --force is an explicit mutually-exclusive reject', () => {
+    expect(launcherFlagConflict({ force: true, repairBridge: true, yes: false }, false)).toBe('repair-force')
+    expect(launcherFlagConflict({ force: true, repairBridge: true, yes: true }, false)).toBe('repair-force')
+  })
+
+  test('--repair-bridge + --remote is rejected (remote mode has no bridge to repair)', () => {
+    expect(launcherFlagConflict({ force: false, repairBridge: true, yes: false }, true)).toBe('repair-remote')
+  })
+
+  test('--yes without --force is rejected, but --repair-bridge --yes is the kill confirmation', () => {
+    expect(launcherFlagConflict({ force: false, repairBridge: false, yes: true }, false)).toBe('yes-without-force')
+    // Under --repair-bridge, --yes is intentionally allowed through.
+    expect(launcherFlagConflict({ force: false, repairBridge: true, yes: true }, false)).toBeNull()
+  })
+
+  test('benign combinations do not conflict', () => {
+    expect(launcherFlagConflict({ force: false, repairBridge: false, yes: false }, false)).toBeNull()
+    expect(launcherFlagConflict({ force: true, repairBridge: false, yes: true }, false)).toBeNull()
+    expect(launcherFlagConflict({ force: true, repairBridge: false, yes: false }, false)).toBeNull()
+  })
+
+  test('bin integration: conflicting combos exit 2 with a human-readable message', () => {
+    for (const [args, needle] of [
+      [['--repair-bridge', '--force'], 'mutually exclusive'],
+      [['--repair-bridge', '--remote'], 'no bridge to repair'],
+      [['--yes'], 'only meaningful together with --force'],
+    ] as const) {
+      const r = spawnSync('node', [binPath, ...args], { encoding: 'utf8', timeout: 30_000 })
+      expect(r.status).toBe(2)
+      expect(r.stderr).toContain(needle)
+    }
+  })
+
+  test('bin integration: --repair-bridge with upgrade prints a skip notice, still runs upgrade help', () => {
+    const r = spawnSync('node', [binPath, '--repair-bridge', 'upgrade', '--help'], { encoding: 'utf8', timeout: 30_000 })
+    expect(r.status).toBe(0)
+    expect(r.stderr).toContain('--repair-bridge is skipped')
+    expect(r.stdout).toContain('Usage: dsh-opentui upgrade')
+  })
+})
+
 describe('formatUsage', () => {
   test('documents every launcher option, client options and the exit codes', () => {
     const usage = formatUsage()
@@ -428,6 +471,8 @@ describe('formatUsage', () => {
       expect(usage).toContain(env)
     }
     expect(usage).toContain('CLI flag > environment variable > default')
+    // P3-3 ④: --force is documented as a no-op under --dry-run.
+    expect(usage).toContain('no-op under --dry-run')
     // Exit codes are honest: provisioning failures are WARNs, not exit 1, and
     // the client's own code is passed through.
     expect(usage).toContain('  1  launcher startup failure')

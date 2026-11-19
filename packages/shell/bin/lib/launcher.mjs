@@ -317,6 +317,26 @@ export function emitRemoteDeprecation(argvLists, sink = console.warn) {
   return 1
 }
 
+/**
+ * P3-3 — explicit handling of launcher flag combinations that previously fell
+ * into dead corners (silently ignored one flag or ran the wrong branch). Pure
+ * so the bin's reject/notice decisions are unit-testable without spawning.
+ * `remote` is precomputed via `isRemoteRequested(userArgs, passthrough)`.
+ *
+ * Returns a conflict code, or null when the combination is fine:
+ *   'repair-force'      --repair-bridge + --force → mutually exclusive
+ *   'repair-remote'     --repair-bridge + --remote → no bridge in remote mode
+ *   'yes-without-force' --yes without --force/--repair-bridge (under
+ *                       --repair-bridge, --yes is the kill confirmation and is
+ *                       intentionally allowed through)
+ */
+export function launcherFlagConflict({ force, repairBridge, yes } = {}, remote = false) {
+  if (repairBridge && force) return 'repair-force'
+  if (repairBridge && remote) return 'repair-remote'
+  if (yes && !force && !repairBridge) return 'yes-without-force'
+  return null
+}
+
 /** Usage text for the normal launcher (not the `upgrade` subcommand). */
 export function formatUsage() {
 	return [
@@ -326,7 +346,7 @@ export function formatUsage() {
 		'',
 		'Options:',
 		'  -v, --version              print the launcher version and exit',
-		'  --force                    reset the singleton host before starting (needs --yes if clients are live)',
+		'  --force                    reset the singleton host before starting (needs --yes if clients are live; no-op under --dry-run)',
 		'  --yes                      confirm a --force reset that would disconnect live clients',
 		'  --repair-bridge            kill stale instances, repair the in-process bridge symlink / manifest, re-verify its identity, then exit (no TUI)',
 		'  --boot-timeout <sec>       seconds to wait for the host to cold-start (default: 30; /reload keeps its own 30s)',

@@ -825,11 +825,13 @@ export function cacheSegment(rate: number | null, theme?: ComponentTheme): Power
  * `session` row, "Copy session ID"); the footer deliberately shows only the
  * prefix so it does not dominate the strip.
  *
- * Priority -1 is BELOW every other segment (speed's implicit 0 is the prior
- * floor), so `fitPowerlineSegments` sheds this segment FIRST on narrow
- * screens — identity hint yields before any existing segment. An absent or
- * blank id (e.g. before the first turn binds the live session) hides the
- * segment entirely rather than painting an empty shell.
+ * Priority -1 sits below every existing segment (speed's implicit 0 is the
+ * floor), so `fitPowerlineSegments` sheds this segment before all of them on
+ * narrow screens. It is NOT the first to go: `bridgeStatusSegment` (priority
+ * -2) is shed even earlier, so link health yields first, then this identity
+ * hint, then the ordinary segments. An absent or blank id (e.g. before the
+ * first turn binds the live session) hides the segment entirely rather than
+ * painting an empty shell.
  */
 export function sessionIdSegment(id: string | null | undefined, theme?: ComponentTheme): PowerlineSegment | null {
 	const value = id?.trim()

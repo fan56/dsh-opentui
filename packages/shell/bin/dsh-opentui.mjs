@@ -56,7 +56,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSyn
 import { constants as osConstants, homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { ancestorPids, emitRemoteDeprecation, formatUpgradeUsage, formatUsage, killStaleProcesses, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, prelaunchFailurePolicy, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
+import { ancestorPids, emitRemoteDeprecation, formatUpgradeUsage, formatUsage, isRemoteRequested, killStaleProcesses, launcherFlagConflict, LAUNCHER_TIMEOUT_FLAGS, parseLauncherArgs, parseLauncherOptions, parseProcessHomes, parseProcessRows, parseUpgradeArgs, prelaunchFailurePolicy, readLauncherVersion, selectStaleProcesses, validateLauncherArgs } from './lib/launcher.mjs'
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -86,8 +86,24 @@ if (versionFlag) {
   process.exit(0)
 }
 
-if (yesFlag && !forceFlag) {
+// P3-3: make flag combinations that used to fall into dead corners explicit.
+// Checked here (before the upgrade/help/repair branches) so the same conflict
+// wins regardless of which branch a combination would otherwise reach.
+const remoteRequested = isRemoteRequested(userArgs, passthrough)
+const flagConflict = launcherFlagConflict(
+  { force: forceFlag, repairBridge: repairBridgeFlag, yes: yesFlag },
+  remoteRequested,
+)
+if (flagConflict === 'yes-without-force') {
   console.error('dsh-opentui: --yes is only meaningful together with --force.')
+  process.exit(2)
+}
+if (flagConflict === 'repair-force') {
+  console.error('dsh-opentui: --repair-bridge and --force are mutually exclusive; choose one.')
+  process.exit(2)
+}
+if (flagConflict === 'repair-remote') {
+  console.error('dsh-opentui: --repair-bridge cannot be combined with --remote (remote mode has no bridge to repair).')
   process.exit(2)
 }
 
@@ -107,6 +123,11 @@ emitRemoteDeprecation([userArgs, passthrough])
 // `npm` and `dsh`, not bun, and must not provision or link anything.
 const upgradeResult = parseUpgradeArgs(userArgs)
 if (upgradeResult.isUpgrade) {
+  // P3-3 ②: the upgrade branch precedes the repair branch, so a stray
+  // --repair-bridge used to be silently swallowed. Say so explicitly.
+  if (repairBridgeFlag) {
+    console.error('dsh-opentui: --repair-bridge is skipped during `upgrade` (no bridge repair on the upgrade path).')
+  }
   if (forceFlag) {
     console.error('dsh-opentui: --force is not supported with upgrade.')
     console.error(formatUpgradeUsage())

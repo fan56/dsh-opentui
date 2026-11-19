@@ -749,6 +749,28 @@ export class BridgeSessionSeam implements SessionSeam {
 	#lastTurnDecode: { tokens: number; ms: number } | undefined
 	#decodeTotals = { tokens: 0, ms: 0 }
 	/**
+	 * P2-1: incremental `sessionInfo()` tally. The footer /session panel polls
+	 * on every turn boundary; re-draining the whole journal each call is O(N²)
+	 * on a long session. We keep one cumulative, per-session count and only
+	 * drain rows whose seq is greater than `lastSeq`. `tps` is deliberately NOT
+	 * cached here — `#lastTurnDecode`/`#decodeTotals` are already accumulated
+	 * incrementally from live `turn.end` frames and are read fresh each call.
+	 * Invalidated on a different session binding or a journal reset (the drain
+	 * clamps when `cursor` falls behind `lastSeq`, i.e. seqs restarted).
+	 */
+	#sessionInfoStats:
+		| {
+				sessionId: string
+				lastSeq: number
+				/** Filtered durable `user` transcript rows (seam口径). */
+				userRows: number
+				/** Filtered durable `assistant` transcript rows (seam口径). */
+				assistantRows: number
+				/** Raw `assistant/message` rows — the 0.21.1 footer 💬 unit. */
+				rawAssistants: number
+		  }
+		| undefined
+	/**
 	 * ADR-0011 T8/Q4: a host→client ask frame is the bridge-side proof that the
 	 * host armed its ask answerers (`armAskAnswerers`, bridge/src/index.ts). We
 	 * use it as the provider signal because `bridge.hello`/`bridge.ping` reply
@@ -1253,29 +1275,74 @@ export class BridgeSessionSeam implements SessionSeam {
 	/**
 	 * Footer /session snapshot (0.21.1 single-💬 semantics). `msgCount` is the
 	 * authoritative footer unit and is derived from the durable journal's
-	 * `assistant/message` rows — one event = one msg. `messageCount`/`turnCount`
-	 * are the durable user+assistant counts for the /session panel ONLY.
-	 * tps rides the live decode window measured from turn frames; a journal
-	 * that cannot be read degrades to "unknown" (footer hides 💬) rather than a
-	 * fabricated 0. No session bound → undefined, matching the null seam.
+	 * RAW `assistant/message` rows — one event = one msg (0.21.1 release
+	 * semantics, same unit the remote seam bills). `messageCount`/`turnCount`
+	 * are the FILTERED durable transcript counts for the /session panel ONLY,
+	 * aligned with the seam contract and the remote adapter: a `user/message`
+	 * with a non-"user" `source.kind` (runtime-context / tool-registry
+	 * injections) and any empty-text user/assistant row are excluded (see
+	 * `journalToTranscriptRows`, which the remote adapter also uses).
+	 *
+	 * P2-1: the journal is drained INCREMENTALLY via a per-session tally —
+	 * only rows with seq > the cached `lastSeq` are read, so repeated polls do
+	 * not re-scan the whole log. A different session binding or a journal reset
+	 * (drain clamped) invalidates the cache and restarts from seq 1.
+	 *
+	 * tps rides the LIVE decode window measured from turn frames; a journal
+	 * that cannot be read omits `msgCount`/`messageCount`/`turnCount` entirely
+	 * ("unknown", not a fabricated 0). No session bound → undefined, matching
+	 * the null seam.
 	 */
 	async sessionInfo(): Promise<SeamSessionInfo | undefined> {
 		const sessionId = this.currentSessionId()
 		if (!sessionId) return undefined
 
-		let msgCount: number | undefined
-		let assistants = 0
-		let users = 0
+		let counts: Pick<SeamSessionInfo, "msgCount" | "messageCount" | "turnCount"> | undefined
 		try {
-			// Read-only full log; #drainJournal pages and dedups by seq, and never
-			// writes to the journal or touches a writer lock (ADR-0010 I6).
-			const { rows } = await this.#drainJournal(sessionId, 1)
-			for (const row of rows) {
-				if (row.type === "assistant/message") assistants++
-				else if (row.type === "user/message") users++
+			// P2-1: reuse the cumulative tally only while the binding is unchanged;
+			// a new session starts a fresh one at seq 1.
+			let stats = this.#sessionInfoStats
+			if (stats === undefined || stats.sessionId !== sessionId) {
+				stats = { sessionId, lastSeq: 0, userRows: 0, assistantRows: 0, rawAssistants: 0 }
+				this.#sessionInfoStats = stats
 			}
-			msgCount = assistants
+			let from = stats.lastSeq + 1
+			// Read-only incremental log; #drainJournal pages and dedups by seq and
+			// never writes to the journal or touches a writer lock (ADR-0010 I6).
+			let drained = await this.#drainJournal(sessionId, from)
+			if (drained.clamped && from > 1) {
+				// Journal reset: `cursor` fell behind our `lastSeq` (seqs restarted).
+				// Drop the stale cumulative counts and re-read the whole log.
+				stats = { sessionId, lastSeq: 0, userRows: 0, assistantRows: 0, rawAssistants: 0 }
+				this.#sessionInfoStats = stats
+				from = 1
+				drained = await this.#drainJournal(sessionId, 1)
+			}
+
+			// msgCount stays the RAW assistant/message count (0.21.1 semantics).
+			for (const row of drained.rows) {
+				if (row.type === "assistant/message") stats.rawAssistants++
+			}
+			// P2-2: the /session counts go through the SAME projection the remote
+			// adapter uses, so the filtered口径 (non-user source.kind + empty-text
+			// rows excluded) is identical. The ask/tool pairing inside the
+			// projection is irrelevant here — only user/assistant kinds are
+			// counted, and those are decided per row, independent of chunking.
+			for (const row of bridgeReplayRowsToSeamTranscript(drained.rows)) {
+				if (row.kind === "user") stats.userRows++
+				else if (row.kind === "assistant") stats.assistantRows++
+			}
+			for (const row of drained.rows) {
+				if (row.seq > stats.lastSeq) stats.lastSeq = row.seq
+			}
+			counts = {
+				msgCount: stats.rawAssistants,
+				messageCount: stats.userRows + stats.assistantRows,
+				turnCount: stats.userRows,
+			}
 		} catch (err) {
+			// P3-1: a failed read omits ALL durable counts rather than painting a
+			// fake 0 — consistent with msgCount's honest-omission contract.
 			this.#ctx.logger.warn("[bridge-seam] sessionInfo journal.replay failed: %s", err)
 		}
 
@@ -1285,9 +1352,7 @@ export class BridgeSessionSeam implements SessionSeam {
 		return {
 			sessionId,
 			model: selection ? `${selection.providerID}/${selection.modelID}` : null,
-			messageCount: users + assistants,
-			turnCount: users,
-			...(msgCount !== undefined ? { msgCount } : {}),
+			...(counts !== undefined ? counts : {}),
 			tokensIn: u.prompt,
 			tokensOut: u.completion,
 			cacheRead: u.cacheRead,

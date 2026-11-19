@@ -9,16 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING — the default entry is now the in-process bridge.** A plain
-  `dsh-opentui` boot provisions the `opentui-inproc` host profile and routes the
-  TUI through a bridge bundle running inside that host (stdio JSON-lines), so
-  session identity, turns, asks and journal replay share one data source. The
-  old thin client retreats to `--remote`, retained as deprecated and slated for
-  removal in 0.23.0; passing it prints one deprecation notice per launch naming
-  the removal line. During 0.22.0 both seams coexist, and a failed inproc
-  handshake/fingerprint check fails fast with a diagnosis, a repair command
-  (`dsh-opentui --repair-bridge`) and a mode notice — it never silently falls
-  back to the remote seam.
+- **Opt-in in-process bridge (no default change).** Setting `DSH_OPENTUI_INPROC=1`
+  provisions the `opentui-inproc` host profile and routes the TUI through a
+  bridge bundle running inside that host (stdio JSON-lines), so session
+  identity, turns, asks and journal replay share one data source. Without that
+  env var a plain `dsh-opentui` boot still starts the remote thin-client seam,
+  exactly as in 0.21.x. Flipping the default to the bridge is planned for
+  0.23.0. `--remote` remains the explicit remote selector and is deprecated,
+  slated for removal in 0.23.0; passing it prints one deprecation notice per
+  launch naming the removal line. When opt-in is on, both seams coexist and a
+  failed inproc handshake/fingerprint check fails fast with a diagnosis, a
+  repair command (`dsh-opentui --repair-bridge`) and a mode notice — it never
+  silently falls back to the remote seam.
 
 ### Added
 
@@ -64,11 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Writer-held as a localized diagnostic.** `SESSION_LOCKED` now renders as a
   `writer-held` message that includes the host-reported holder session id,
   instead of the raw host error. In inproc mode the footer brand shows as `dsh`.
-- **Footer `💬` and `⚡` now render on the default inproc path.** The bridge
+- **Footer `💬` and `⚡` now render on the opt-in inproc path.** The bridge
   seam's `sessionInfo()` derives `msgCount` from journal `assistant/message`
   rows — the same single `💬 N msgs` unit defined in 0.21.1 — and `tps` when it
   can be derived, so the counter and token-rate segments are no longer blank
-  under the default seam. `messageCount` remains the `/session` panel's data.
+  under the inproc seam. `messageCount` remains the `/session` panel's data.
 
 ### Known debt (0.22.0 transitional)
 
@@ -79,6 +81,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and removes the `ensureHost`/`RemoteHostSession` path.
 - The old automatic reconnect (backoff retry) is not implemented; recovery in
   0.22.0 is manual (`R`, with a 5s cooldown) only.
+- `BridgeSessionSeam` does not implement `contextTokens()` / `contextWindow()`;
+  the 🧠 context-occupancy segment does not render under the inproc bridge (the
+  remote seam still supplies it). Tracked for a later seam-capability batch.
 ## [0.21.1] - 2026-11-17
 
 ### Changed

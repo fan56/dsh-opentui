@@ -779,17 +779,19 @@ describe("sessionInfo", () => {
 		expect(await h.seam.sessionInfo()).toBeUndefined()
 	})
 
-	test("msgCount = durable assistant/message rows; turnCount/messageCount serve /session", async () => {
+	test("msgCount = raw assistant/message rows; turnCount/messageCount are filtered for /session", async () => {
 		const h = makeHarness()
 		const done = bindHarness(h, "sess-1", "t1")
+		const user = (text: string) => ({ content: [{ type: "text", text }] })
+		const assistant = (text: string) => ({ message: { content: [{ type: "text", text }] } })
 		h.replies.set("journal.replay", {
 			kind: "value",
 			value: {
 				rows: [
-					{ seq: 1, type: "user/message", payload: {} },
-					{ seq: 2, type: "assistant/message", payload: {} },
-					{ seq: 3, type: "assistant/message", payload: {} },
-					{ seq: 4, type: "user/message", payload: {} },
+					{ seq: 1, type: "user/message", payload: user("u1") },
+					{ seq: 2, type: "assistant/message", payload: assistant("a1") },
+					{ seq: 3, type: "assistant/message", payload: assistant("a2") },
+					{ seq: 4, type: "user/message", payload: user("u2") },
 				],
 				cursor: 5,
 			},
@@ -800,9 +802,149 @@ describe("sessionInfo", () => {
 
 		const info = (await h.seam.sessionInfo())!
 		expect(info.sessionId).toBe("sess-1")
-		expect(info.msgCount).toBe(2) // two durable assistant/message events = two msgs
-		expect(info.turnCount).toBe(2) // two durable user/message rows
-		expect(info.messageCount).toBe(4) // user + assistant, /session panel only
+		expect(info.msgCount).toBe(2) // raw durable assistant/message events = msgs (0.21.1 unit)
+		expect(info.turnCount).toBe(2) // two filtered user transcript rows
+		expect(info.messageCount).toBe(4) // filtered user + assistant, /session panel only
+	})
+
+	test("P2-2: /session counts use the filtered口径, msgCount stays raw assistant count", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-filter", "t-filter")
+		const rows = [
+			{ seq: 1, type: "user/message", payload: { content: [{ type: "text", text: "real user" }] } },
+			// Non-"user" source.kind injections (runtime-context / tool-registry) are
+			// excluded from the /session counts, exactly as the remote adapter's
+			// journalToTranscriptRows does — but they are NOT assistant/message rows
+			// so msgCount is unaffected either way.
+			{ seq: 2, type: "user/message", payload: { source: { kind: "runtime-context" }, content: [{ type: "text", text: "ctx" }] } },
+			{ seq: 3, type: "user/message", payload: { source: { kind: "tool-registry" }, content: [{ type: "text", text: "tools" }] } },
+			// Empty-text rows are dropped from /session counts...
+			{ seq: 4, type: "user/message", payload: { content: [] } },
+			{ seq: 5, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "real reply" }] } } },
+			{ seq: 6, type: "assistant/message", payload: { message: { content: [] } } },
+		]
+		h.replies.set("journal.replay", { kind: "value", value: { rows, cursor: 7 } })
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-filter", text: "" } })
+		await done
+
+		const info = (await h.seam.sessionInfo())!
+		expect(info.turnCount).toBe(1) // only the real user row (injections + empty excluded)
+		expect(info.messageCount).toBe(2) // real user + real assistant only
+		expect(info.msgCount).toBe(2) // RAW assistant/message rows: seq 5 + 6 (empty still counted)
+	})
+
+	test("P2-1: repeated sessionInfo drains only incremental rows, counts stay cumulative", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-inc", "t-inc")
+		const user = (text: string) => ({ content: [{ type: "text", text }] })
+		const assistant = (text: string) => ({ message: { content: [{ type: "text", text }] } })
+		const rows = [
+			{ seq: 1, type: "user/message", payload: user("u1") },
+			{ seq: 2, type: "assistant/message", payload: assistant("a1") },
+		]
+		const froms: number[] = []
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => {
+				const from = Number(params?.from ?? 1)
+				froms.push(from)
+				return { kind: "value", value: { rows: rows.filter((r) => r.seq >= from), cursor: rows.length + 1 } }
+			},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-inc", text: "" } })
+		await done
+
+		const first = (await h.seam.sessionInfo())!
+		expect([first.msgCount, first.turnCount, first.messageCount]).toEqual([1, 1, 2])
+		expect(froms).toEqual([1]) // full read on the first call
+
+		rows.push({ seq: 3, type: "assistant/message", payload: assistant("a2") })
+		const second = (await h.seam.sessionInfo())!
+		expect([second.msgCount, second.turnCount, second.messageCount]).toEqual([2, 1, 3]) // cumulative
+		expect(froms).toEqual([1, 3]) // second call drained ONLY the new seq
+	})
+
+	test("P2-1: sessionId switch invalidates the incremental cache", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-a", "t-a")
+		const rowsA = [{ seq: 1, type: "user/message", payload: { content: [{ type: "text", text: "a" }] } }]
+		const froms: number[] = []
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => {
+				const from = Number(params?.from ?? 1)
+				froms.push(from)
+				return { kind: "value", value: { rows: rowsA.filter((r) => r.seq >= from), cursor: rowsA.length + 1 } }
+			},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-a", text: "" } })
+		await done
+		expect((await h.seam.sessionInfo())!.turnCount).toBe(1)
+
+		// Rebind to a different session whose journal restarts at seq 1.
+		const rowsB = [
+			{ seq: 1, type: "user/message", payload: { content: [{ type: "text", text: "b1" }] } },
+			{ seq: 2, type: "user/message", payload: { content: [{ type: "text", text: "b2" }] } },
+		]
+		// Stage the new binding; turn() only calls session.open when a pending
+		// open exists (an already-attached session keeps its current id).
+		h.seam.resumeSession("sess-b")
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "sess-b", journalCursor: 1 } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-b" } })
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => {
+				const from = Number(params?.from ?? 1)
+				froms.push(from)
+				return { kind: "value", value: { rows: rowsB.filter((r) => r.seq >= from), cursor: rowsB.length + 1 } }
+			},
+		})
+		const doneB = h.seam.turn("hello b", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-b", text: "" } })
+		await doneB
+		const second = (await h.seam.sessionInfo())!
+		expect(second.sessionId).toBe("sess-b")
+		expect(second.turnCount).toBe(2) // NOT 1 (stale sess-a) + 2
+		expect(froms[froms.length - 1]).toBe(1) // fresh session re-read from seq 1
+	})
+
+	test("P2-1: a journal reset (clamped cursor) invalidates the cache and re-reads from seq 1", async () => {
+		const h = makeHarness()
+		const done = bindHarness(h, "sess-reset", "t-reset")
+		let rows = [
+			{ seq: 1, type: "user/message", payload: { content: [{ type: "text", text: "old1" }] } },
+			{ seq: 2, type: "user/message", payload: { content: [{ type: "text", text: "old2" }] } },
+			{ seq: 3, type: "user/message", payload: { content: [{ type: "text", text: "old3" }] } },
+		]
+		const froms: number[] = []
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => {
+				const from = Number(params?.from ?? 1)
+				froms.push(from)
+				return { kind: "value", value: { rows: rows.filter((r) => r.seq >= from), cursor: rows.length + 1 } }
+			},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-reset", text: "" } })
+		await done
+		expect((await h.seam.sessionInfo())!.turnCount).toBe(3) // cached lastSeq = 3
+
+		// Host restarts with a SHORTER journal: seqs restart from 1 and max = 2,
+		// so from=4 is ahead of cursor=3 → the drain clamps and the cache resets.
+		rows = [
+			{ seq: 1, type: "user/message", payload: { content: [{ type: "text", text: "fresh1" }] } },
+			{ seq: 2, type: "user/message", payload: { content: [{ type: "text", text: "fresh2" }] } },
+		]
+		const second = (await h.seam.sessionInfo())!
+		expect(second.turnCount).toBe(2) // stale 3 replaced by the fresh journal's 2
+		expect(froms[froms.length - 1]).toBe(1) // re-read from seq 1 after the reset
 	})
 
 	test("⚡ tps derives from a live decode window and is absent without a token", async () => {
@@ -833,7 +975,7 @@ describe("sessionInfo", () => {
 		expect(info.sessionAvgTps).toBeGreaterThan(0)
 	})
 
-	test("a failed journal read degrades msgCount to absent, never a fake 0", async () => {
+	test("P3-1: a failed journal read omits ALL durable counts, never a fake 0", async () => {
 		const h = makeHarness()
 		const done = bindHarness(h, "sess-3", "t4")
 		h.replies.set("journal.replay", { kind: "error", error: new Error("journal unavailable") })
@@ -843,5 +985,7 @@ describe("sessionInfo", () => {
 		const info = (await h.seam.sessionInfo())!
 		expect(info.sessionId).toBe("sess-3")
 		expect(info.msgCount).toBeUndefined()
+		expect(info.messageCount).toBeUndefined()
+		expect(info.turnCount).toBeUndefined()
 	})
 })

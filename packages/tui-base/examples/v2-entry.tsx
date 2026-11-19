@@ -279,7 +279,6 @@ function V2SessionPageBody(props: {
 	const [tools, setTools] = createSignal(0)
 	const [effort, setEffort] = createSignal<string | undefined>()
 	const [remoteInfo, setRemoteInfo] = createSignal<{
-		messageCount?: number
 		msgCount?: number
 		tps?: number | null
 	}>()
@@ -666,7 +665,6 @@ function V2SessionPageBody(props: {
 					return
 				}
 				setRemoteInfo({
-					messageCount: info.messageCount,
 					msgCount: info.msgCount,
 					tps: info.lastTurnTps ?? info.sessionAvgTps,
 				})
