@@ -507,8 +507,11 @@ export function bridgeReplayRowsToSeamEvents(
 // but its `journal.replay` reads the SAME host journal, so the durable records
 // are available; its live `session/event` firehose carries the same events,
 // which the bridge forwards as additive `agent.spawn`/`agent.settle` frames.
-// Both paths fold through this ONE function so the view shape is identical to
-// the remote adapter's `#projectSubagentViews` (session-seam-adapter.ts:708).
+// Both paths fold through this ONE function so the view FIELD SET matches the
+// remote adapter's `#projectSubagentViews` (session-seam-adapter.ts:708) — but
+// VALUES are approximate (P3-3 Known debt, ADR-0010 / CHANGELOG 0.22.0): the
+// bridge only sees the parent journal, so `rounds` stays 0, `lastLine`/`model`
+// are absent, and a settled row's `elapsedSec` is frozen at discovery time.
 
 /** The host's durable agent lifecycle record types (dsh-tool-workflow/types.ts:47-57). */
 const BRIDGE_AGENT_START = "tool-workflow/agent-start"
@@ -545,14 +548,22 @@ function bridgeFoldAgentRecord(
 		runSeq.set(bridgeAgentRunKey(runId, seq), childId)
 		const existing = children.get(childId)
 		if (existing !== undefined) {
+			// P3-5: a later spawn may refine the label (remote #registerChild parity).
+			const newLabel = typeof data.label === "string" ? data.label : ""
+			const labelChanged = newLabel !== "" && newLabel !== existing.label
 			// A live spawn arriving after a replay approximation upgrades the start
 			// clock to the real wall clock; a replay sweep never downgrades it.
-			if (live && !liveStarts.has(childId)) {
-				children.set(childId, { ...existing, startedAt: now })
-				liveStarts.add(childId)
-				return true
-			}
-			return false
+			// P3-1: only a RUNNING row may take that upgrade — a spawn arriving after
+			// settle must not revive the row or overwrite its frozen start clock.
+			const upgradeStart = live && existing.status === "running" && !liveStarts.has(childId)
+			if (!labelChanged && !upgradeStart) return false
+			children.set(childId, {
+				...existing,
+				...(labelChanged ? { label: newLabel } : {}),
+				...(upgradeStart ? { startedAt: now } : {}),
+			})
+			if (upgradeStart) liveStarts.add(childId)
+			return true
 		}
 		const label = typeof data.label === "string" && data.label ? data.label : `subagent ${childId.slice(0, 8)}`
 		children.set(childId, { id: childId, label, status: "running", rounds: 0, startedAt: now })
@@ -1793,11 +1804,13 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * are no-ops), so repeated `storedTranscript` sweeps are safe.
 	 */
 	#foldAgentReplayRows(rows: readonly BridgeReplayRow[], sessionId: string): void {
+		let rosterReset = false
 		if (sessionId !== this.#subagentSessionId) {
 			this.#subagentViews.clear()
 			this.#subagentRunSeq.clear()
 			this.#subagentLiveStarts.clear()
 			this.#subagentSessionId = sessionId
+			rosterReset = true
 		}
 		let changed = false
 		const now = Date.now()
@@ -1807,7 +1820,10 @@ export class BridgeSessionSeam implements SessionSeam {
 				row.type, asRecord(row.payload), now, false,
 			)) changed = true
 		}
-		if (changed) this.#emitSubagentViews()
+		// P3-2: a session switch must repaint the roster EVEN IF the new session
+		// has no agent rows — otherwise a mounted viewer keeps the old session's
+		// rows until the next live frame / replay that actually changes the map.
+		if (rosterReset || changed) this.#emitSubagentViews()
 	}
 
 	// ----- config faces (optional seam members — D3 degrade, never throw) --

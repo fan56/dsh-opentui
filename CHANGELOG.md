@@ -136,6 +136,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and removes the `ensureHost`/`RemoteHostSession` path.
 - The old automatic reconnect (backoff retry) is not implemented; recovery in
   0.22.0 is manual (`R`, with a 5s cooldown) only.
+- The inproc bridge's `subagentViews` field set matches the remote seam's, but
+  its VALUES are approximate: the bridge only sees the parent journal, so
+  `rounds` stays 0, `lastLine` / `model` are absent, and a settled row's
+  `elapsedSec` is frozen at discovery time. No whole-parity claim is made.
 - ~~`BridgeSessionSeam` does not implement `contextTokens()` / `contextWindow()`;
   the 🧠 context-occupancy segment does not render under the inproc bridge.~~
   **RESOLVED in 0.22.0** (user decision 2026-11-19, paid ahead of the later

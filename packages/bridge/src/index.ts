@@ -1038,26 +1038,23 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
-  /** `session/event` listener. Every event is gated on the currently open
+  /** `session/event` listener. TURN event types are gated on the currently open
    *  session id AND the in-flight turn's numeric turn, so other sessions —
    *  including subagent child sessions riding the same firehose — never leak
-   *  into this turn's frames. */
+   *  into this turn's frames. DURABLE `tool-workflow/agent-*` records are exempt
+   *  from the turn gate (ADR-0010): they are parent-journal rows, not turn stream
+   *  events, so a late `agent-end` after abort / parent turn end still settles
+   *  its row, and background workflow runs stay visible while idle (the remote
+   *  firehose has no such gate). They are filtered on the bound session id ONLY;
+   *  turn/abort semantics are unchanged by these additive frames. */
   function onSessionEvent(session: unknown, event: unknown): void {
     const state = activeTurn
-    if (state === undefined || state.ended) return
     const s = session as { id?: unknown }
-    if (idString(s?.id) !== state.sessionId) return
+    const sessionId = idString(s?.id)
     const e = event as { type?: unknown; data?: unknown }
     const type = typeof e?.type === 'string' ? e.type : ''
     const data = e?.data !== null && typeof e?.data === 'object' ? (e.data as Record<string, unknown>) : {}
-    if (DEBUG_EVENTS) {
-      logger.info('[bridge:ev] session=%s type=%s turn=%s', state.sessionId, type, String(data.turn))
-    }
-    if (type === 'turn/start') {
-      if (typeof data.turn === 'number') state.numericTurn = data.turn
-      ensureStarted(state)
-      return
-    }
+
     // Subagent lifecycle (row 33 in the seam capability matrix). The host writes
     // `tool-workflow/agent-start|agent-end` as DURABLE parent-journal records on
     // the `session/event` firehose (dsh-tool-workflow/src/types.ts:20-33), the same
@@ -1065,29 +1062,49 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // two additive event frames so the inproc seam can project live subagent
     // rows (spawn -> running -> settle) with a real wall-clock start. `agent-end`
     // carries only {runId, seq, outcome}; the client pairs runId:seq -> child the
-    // same way the remote panel does. Additive event types: protocolVersion stays
-    // 1 (ADR-0010: old clients ignore unknown `event` types).
-    if (type === 'tool-workflow/agent-start') {
-      const childId = idString(data.childId)
-      if (!childId) return
-      emitEvent('agent.spawn', {
-        turnId: state.turnId,
-        sessionId: state.sessionId,
-        childId,
-        label: typeof data.label === 'string' ? data.label : '',
-        runId: idString(data.runId),
-        seq: typeof data.seq === 'number' ? data.seq : -1,
-      })
+    // same way the remote panel does. P2-1(a): these records are NOT turn events —
+    // they are checked against the bound session id only, with no activeTurn /
+    // ended gate, so an end arriving after abort or after the parent turn ended
+    // is not dropped and an idle-period background run is not invisible.
+    // Additive event types: protocolVersion stays 1 (ADR-0010: old clients ignore
+    // unknown `event` types).
+    if (type === 'tool-workflow/agent-start' || type === 'tool-workflow/agent-end') {
+      const boundId = binding?.sessionId
+      if (sessionId !== boundId) return
+      // No active turn => no bridge turnId to attribute; the seam pairs these
+      // frames by runId:seq, so an empty turnId is an honest, inert value here.
+      const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
+      if (type === 'tool-workflow/agent-start') {
+        const childId = idString(data.childId)
+        if (!childId) return
+        emitEvent('agent.spawn', {
+          turnId,
+          sessionId: boundId,
+          childId,
+          label: typeof data.label === 'string' ? data.label : '',
+          runId: idString(data.runId),
+          seq: typeof data.seq === 'number' ? data.seq : -1,
+        })
+      } else {
+        emitEvent('agent.settle', {
+          turnId,
+          sessionId: boundId,
+          runId: idString(data.runId),
+          seq: typeof data.seq === 'number' ? data.seq : -1,
+          outcome: typeof data.outcome === 'string' ? data.outcome : 'completed',
+        })
+      }
       return
     }
-    if (type === 'tool-workflow/agent-end') {
-      emitEvent('agent.settle', {
-        turnId: state.turnId,
-        sessionId: state.sessionId,
-        runId: idString(data.runId),
-        seq: typeof data.seq === 'number' ? data.seq : -1,
-        outcome: typeof data.outcome === 'string' ? data.outcome : 'completed',
-      })
+
+    if (state === undefined || state.ended) return
+    if (sessionId !== state.sessionId) return
+    if (DEBUG_EVENTS) {
+      logger.info('[bridge:ev] session=%s type=%s turn=%s', state.sessionId, type, String(data.turn))
+    }
+    if (type === 'turn/start') {
+      if (typeof data.turn === 'number') state.numericTurn = data.turn
+      ensureStarted(state)
       return
     }
     if (state.numericTurn !== undefined && typeof data.turn === 'number' && data.turn !== state.numericTurn) return
@@ -1382,9 +1399,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     inFlightTurnId = undefined
     terminalTurnIds.clear()
     // Drop any in-flight stream accumulator for this session. The connection-
-    // level firehose subscriptions stay armed (they are session-filtered), but
-    // no further frames can be emitted without an activeTurn. This is what
-    // keeps A's late events from landing under B's turnId after an open-replace.
+    // level firehose subscriptions stay armed (they are session-filtered), so
+    // no further TURN frames can be emitted without an activeTurn. This is what
+    // keeps A's late turn events from landing under B's turnId after an open-
+    // replace. Durable `tool-workflow/agent-*` frames are the deliberate exception
+    // (P2-1(a)): they still emit without an activeTurn, but are filtered on the
+    // bound session id, so A's late agent records are dropped under B.
     // finalizeTurn above already cleared this turn's timer + activeTurn; this
     // branch is a defensive fallback for an already-ended accumulator.
     if (activeTurn !== undefined && activeTurn.sessionId === current.sessionId) {

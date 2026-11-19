@@ -1382,4 +1382,168 @@ describe("subagent lifecycle rows (inproc visibility)", () => {
 		}
 		dispose()
 	})
+
+	// ---- oldfox 复审 P2-3 / P3 补测 -------------------------------------------
+
+	test("① a post-turn frame (no activeTurn, empty turnId) still folds spawn → settle", () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+
+		// P2-1(a): with no active turn the bridge emits agent.spawn/settle with
+		// an inert empty turnId (it pairs by runId:seq). The fold must not depend
+		// on a turnId — pairing and the sessionId backstop are enough.
+		h.emit({
+			type: "agent.spawn",
+			payload: { turnId: "", sessionId: "sess-idle", childId: "bg-1", label: "background", runId: "bg", seq: 0 },
+		})
+		expect(h.seam.subagentViews()).toMatchObject([{ id: "bg-1", status: "running", label: "background" }])
+		h.emit({ type: "agent.settle", payload: { turnId: "", sessionId: "sess-idle", runId: "bg", seq: 0, outcome: "completed" } })
+		expect(h.seam.subagentViews()[0]!.status).toBe("completed")
+		expect(snapshots).toHaveLength(3)
+	})
+
+	test("② settle before its spawn is dropped — no ghost settled row", () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+
+		// No runSeq pairing exists yet: the end cannot name a child, so it must
+		// be discarded rather than materialising a phantom settled view.
+		h.emit({ type: "agent.settle", payload: { runId: "orphan", seq: 0, outcome: "completed" } })
+		expect(h.seam.subagentViews()).toEqual([])
+		expect(snapshots).toHaveLength(1) // no emit — nothing changed
+
+		// A later spawn with that runId:seq registers normally as RUNNING; the
+		// dropped settle never resurrects as a stale "completed" ghost.
+		h.emit({ type: "agent.spawn", payload: { childId: "late", label: "L", runId: "orphan", seq: 0 } })
+		expect(h.seam.subagentViews()).toMatchObject([{ id: "late", status: "running", label: "L" }])
+	})
+
+	test("③ repeated spawn / settle are idempotent (no duplicate rows or extra emits)", () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+
+		const spawn = { type: "agent.spawn", payload: { childId: "dup", label: "D", runId: "rd", seq: 0 } }
+		h.emit(spawn)
+		h.emit(spawn)
+		expect(h.seam.subagentViews()).toHaveLength(1)
+		expect(snapshots).toHaveLength(2) // initial empty + first spawn only
+
+		const settle = { type: "agent.settle", payload: { runId: "rd", seq: 0, outcome: "completed" } }
+		h.emit(settle)
+		h.emit(settle)
+		const views = h.seam.subagentViews()
+		expect(views).toHaveLength(1)
+		expect(views[0]!.status).toBe("completed")
+		expect(snapshots).toHaveLength(3) // first settle only; the second is a no-op
+	})
+
+	test("④ spawn after settle does not revive the settled row (P3-1 running guard)", async () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [
+					replayRow(1, "tool-workflow/agent-start", { runId: "r", seq: 0, label: "A", childId: "c" }),
+					replayRow(2, "tool-workflow/agent-end", { runId: "r", seq: 0, outcome: "completed" }),
+				],
+				cursor: 3,
+			},
+		})
+		// Replay folds with live=false, so the child is settled but NEVER entered
+		// `liveStarts` — exactly the shape a late live spawn used to overwrite.
+		await h.seam.storedTranscript("s")
+		const settled = h.seam.subagentViews()[0]!
+		expect(settled.status).toBe("completed")
+		expect("startedAt" in settled).toBe(false)
+		const before = snapshots.length
+
+		h.emit({ type: "agent.spawn", payload: { childId: "c", label: "A", runId: "r", seq: 0 } })
+		const after = h.seam.subagentViews()
+		expect(after).toHaveLength(1)
+		expect(after[0]!.status).toBe("completed")
+		expect(after[0]!.endedAt).toBe(settled.endedAt)
+		expect("startedAt" in after[0]!).toBe(false)
+		expect(snapshots).toHaveLength(before) // no state change → no emit
+	})
+
+	test("P3-5: a later spawn adopts a new label on an existing child", () => {
+		const h = makeHarness()
+		h.emit({ type: "agent.spawn", payload: { childId: "x", label: "old", runId: "rx", seq: 0 } })
+		expect(h.seam.subagentViews()[0]!.label).toBe("old")
+
+		h.emit({ type: "agent.spawn", payload: { childId: "x", label: "new", runId: "rx", seq: 0 } })
+		const views = h.seam.subagentViews()
+		expect(views).toHaveLength(1) // no duplicate
+		expect(views[0]!.label).toBe("new")
+		expect(views[0]!.status).toBe("running") // still running, not revived/settled
+	})
+
+	test("⑤ session switch resets the roster and emits an empty snapshot (P3-2)", async () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+		h.replies.set("journal.replay", {
+			kind: "fn",
+			fn: (params) => ({
+				kind: "value",
+				value: {
+					rows: params?.sessionId === "s1"
+						? [replayRow(1, "tool-workflow/agent-start", { runId: "r1", seq: 0, label: "old", childId: "s1-child" })]
+						: [],
+					cursor: 2,
+				},
+			}),
+		})
+
+		await h.seam.storedTranscript("s1")
+		expect(h.seam.subagentViews().map((v) => v.id)).toEqual(["s1-child"])
+		const before = snapshots.length
+
+		// New session has NO agent rows: the roster must still be reset and a
+		// snapshot pushed, so a mounted viewer drops s1-child immediately.
+		await h.seam.storedTranscript("s2")
+		expect(h.seam.subagentViews()).toEqual([])
+		expect(snapshots.length).toBe(before + 1)
+		expect(snapshots.at(-1)).toEqual([])
+	})
+
+	test("⑥ recoverSession folds durable agent rows into the live roster", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "sess-rec", journalCursor: 9 } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-rec" } })
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [
+					replayRow(1, "tool-workflow/agent-start", { runId: "rr", seq: 0, label: "rec scout", childId: "rec-1" }),
+					replayRow(2, "tool-workflow/agent-end", { runId: "rr", seq: 0, outcome: "completed" }),
+				],
+				cursor: 3,
+			},
+		})
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+
+		// Bind a session first — recovery has nothing to resume otherwise.
+		h.seam.resumeSession("sess-rec")
+		const done = h.seam.turn("go", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-rec", text: "" } })
+		await done
+		const before = snapshots.length
+
+		const result = await h.seam.recoverSession()
+		expect(result.state).toBe("attached")
+		expect(result.applied).toBe(2)
+		expect(h.seam.subagentViews().map((v) => [v.id, v.status])).toEqual([["rec-1", "completed"]])
+		expect(snapshots.length).toBe(before + 1)
+		expect(snapshots.at(-1)![0]!.status).toBe("completed")
+	})
 })

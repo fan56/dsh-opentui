@@ -171,6 +171,59 @@ describe("subagent lifecycle frames (inproc visibility)", () => {
 		})
 	})
 
+	test("P2-1(a): durable agent records still forward AFTER the turn ends (no activeTurn gate)", async () => {
+		const h = makeHarness()
+		const { sessionId, turnId } = await startTurn(h, 1)
+
+		// Finalize the turn through the real firehose path: activeTurn is cleared
+		// and the bridge is idle. Before P2-1(a) every later session/event was
+		// dropped at `state === undefined || state.ended`, so a late agent-end
+		// left a running ghost and an idle-period background run was invisible.
+		h.emitSessionEvent({ id: sessionId }, { type: "turn/end", data: { reason: "completed" } })
+		expect(h.eventFrames("turn.end")).toHaveLength(1)
+
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{
+				type: "tool-workflow/agent-start",
+				data: { runId: "late-run", seq: 0, label: "background", childId: "child-late" },
+			},
+		)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "tool-workflow/agent-end", data: { runId: "late-run", seq: 0, outcome: "completed" } },
+		)
+
+		const spawns = h.eventFrames("agent.spawn")
+		const settles = h.eventFrames("agent.settle")
+		expect(spawns).toHaveLength(1)
+		expect(settles).toHaveLength(1)
+		// Session filter is the ONLY gate left: the bound session id is carried.
+		expect(spawns[0].payload).toMatchObject({ sessionId, childId: "child-late", runId: "late-run", seq: 0 })
+		expect(settles[0].payload).toMatchObject({ sessionId, runId: "late-run", seq: 0, outcome: "completed" })
+		// No active turn => no bridge turnId to attribute (the seam pairs by
+		// runId:seq), so the frames carry an honest inert empty turnId.
+		expect(typeof spawns[0].payload.turnId).toBe("string")
+		expect(turnId).not.toBe("")
+
+		// Other event types KEEP the turn gate: a tool/call after the end must
+		// not emit a turn.tool frame.
+		h.emitSessionEvent({ id: sessionId }, { type: "tool/call", data: { callId: "c1", name: "bash" } })
+		expect(h.eventFrames("turn.tool")).toHaveLength(0)
+	})
+
+	test("P2-1(a): stale-session agent records are still dropped when idle", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		h.emitSessionEvent({ id: sessionId }, { type: "turn/end", data: { reason: "completed" } })
+
+		h.emitSessionEvent(
+			{ id: "another-session" },
+			{ type: "tool-workflow/agent-start", data: { runId: "r", seq: 0, childId: "c" } },
+		)
+		expect(h.eventFrames("agent.spawn")).toHaveLength(0)
+	})
+
 	test("events from a different session are dropped (no cross-session agent rows)", async () => {
 		const h = makeHarness()
 		await startTurn(h, 1)
