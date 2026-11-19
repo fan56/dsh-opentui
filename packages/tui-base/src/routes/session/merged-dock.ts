@@ -67,10 +67,10 @@ export interface MergedDockData {
 	todos: readonly Todo[]
 	agents: readonly MergedAgent[]
 	think?: readonly MergedThinkRow[]
-	/** 指令4: existing time tracking for the scene-A todo brief — the earliest
-	 * todo-tool row's `startedAt`. When absent, `todoBriefLine` falls back to a
-	 * clock from the most recent todo-array change. Optional so every existing
-	 * pure-function caller/test stays valid. */
+	/** 指令4: optional explicit anchor for the scene-A todo brief (seconds
+	 * counted from this wall clock). Pure callers/tests may pass one; the dock
+	 * leaves it unset so `todoBriefLine` uses the unified text-signature
+	 * first-seen map (task set establishment time, status flips ignored). */
 	todoStartedAt?: number
 }
 

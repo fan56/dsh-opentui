@@ -316,6 +316,12 @@ const [dockHeightTween, setDockHeightTween] = createSignal<DockHeightTween | und
  * previous height to animate from, so it snaps to its target (otherwise a
  * border-only box would sit on screen until a clock tick advanced the tween). */
 let dockHeightSettled: number | undefined = undefined
+/** The ONE wall clock a whole render pass derives its height count from.
+ * `frameHeight()` and `<For each={frameLines()}>` are separate reactive getters;
+ * if each called `Date.now()` itself, an ms boundary between them could paint
+ * a box one row taller/shorter than its content. Only the tick / target-set
+ * writers advance this value, so both getters in a pass read the SAME clock. */
+let dockFrameNow = 0
 
 /** Current content-line count to render for a freshly-computed `target`.
  * Reads the tween signal (so a clock tick re-renders the frame) but derives
@@ -337,11 +343,17 @@ export function dockHeightContentLines(target: number, now: number = Date.now())
  * target always becomes `dockHeightSettled`, so even if the clock never ticks
  * the NEXT render shows the exact terminal value. */
 export function setDockHeightTarget(target: number, now: number = Date.now()): void {
+	dockFrameNow = now
 	const to = Math.max(0, Math.min(MERGED_DOCK_TOTAL_LINES, Math.floor(target)))
 	const current = untrack(dockHeightTween)
 	if (current !== undefined) {
 		if (current.to === to) return
-		const from = dockHeightLines(current.from, current.to, now - current.startedAt)
+		// The painted count is CAPPED at the in-flight target during a shrink
+		// (frameLines: `min(target, tweened)`), so the screen already shows
+		// `current.to`, not the raw curve value. Clamp `from` to that same
+		// visible count: an interrupted 5→2 shrink retargeting to 6 at 100ms
+		// would otherwise start from the curve's 4 and jump 2 lines.
+		const from = Math.min(current.to, dockHeightLines(current.from, current.to, now - current.startedAt))
 		// No visible previous content (or no clock) → snap. A 0-line "from"
 		// would paint a border-only box until the first tick, which a fixture
 		// waiting on the title captures as a lost content row.
@@ -374,6 +386,7 @@ export function dockHeightAnimating(): boolean {
  * clock unsubscribes (no residual animation). Idle/no-tick is fine — the
  * wall-clock accessor already reports the exact terminal count. */
 export function tickDockHeight(now: number = Date.now()): void {
+	dockFrameNow = now
 	const current = untrack(dockHeightTween)
 	if (current !== undefined && now - current.startedAt >= DOCK_HEIGHT_ANIM_MS) setDockHeightTween(undefined)
 }
@@ -589,48 +602,47 @@ export function todosSummaryFromTodos(todos: readonly Todo[]): string {
 
 // ------------------------------------------- scene-A todo brief timing (指令4)
 // `todo done/total Ns` — no current-task text. The duration is seconds since
-// the todo set was CREATED: the earliest settled todo-tool row's `startedAt`
-// (`todoSetStartedAt`, the existing time tracking) when the caller has it.
-// When there is no such anchor (replay shapes, unit tests, host rows without a
-// timestamp) a module-level fallback counts from the most recent TODO ARRAY
-// CHANGE — the signature is compared on every call, so an add/remove/status
-// flip resets the clock. Module scope keeps the CLOSURE LAW intact.
+// the CURRENT TASK SET was established: the moment the set of task TEXTS first
+// appeared. Only texts are compared (a 1/3→2/3 status flip is NOT a new set),
+// and they are sorted (reordering is NOT a new set). A different text set gets
+// a fresh anchor ("换集重置"); within one set status flips do not reset.
+// A single module-level map — text signature → first-seen wall clock — is the
+// ONLY anchor source; there is no rows-based "earliest startedAt" primary and
+// no array-change fallback. Module scope keeps the CLOSURE LAW; the map is
+// cleared on session switch (`resetTodoBriefClock`, wired to the dock unmount
+// cleanup), so a signature never leaks into a later session.
 
-let todoSetSignature = ""
-let todoSetChangedAt = 0
+/** Text-only signature of a task set — status flips and ordering ignored. */
+const todoSetSignature = (todos: readonly Todo[]): string => todos.map((todo) => todo.content).sort().join("\u0001")
 
-/** Earliest `startedAt` among settled, non-failed todo-tool rows — the
- * creation anchor of the current todo collection ("首条创建"). `undefined`
- * when no row carries a timestamp (the caller then uses the fallback clock). */
-export function todoSetStartedAt(rows: readonly SeamRow[]): number | undefined {
-	for (const row of rows) {
-		if (row.kind === "tool" && TODO_TOOL_NAMES.has(row.name) && row.status !== "failed" && row.startedAt !== undefined) {
-			return row.startedAt
-		}
-	}
-	return undefined
+/** Text signature → wall clock when that task set was FIRST seen this session. */
+const todoSetFirstSeen = new Map<string, number>()
+
+/** The current task set's establishment time: first-seen time of its text
+ * signature. Pure apart from the module map (never component state). */
+export function todoSetStartedAt(todos: readonly Todo[], now: number = Date.now()): number {
+	const sig = todoSetSignature(todos)
+	const first = todoSetFirstSeen.get(sig)
+	if (first !== undefined) return first
+	todoSetFirstSeen.set(sig, now)
+	return now
 }
 
-/** The one-line scene-A todo brief: `todo done/total Ns`. `startedAt` is the
- * existing time-tracking anchor; omit it to use the fallback clock. Pure apart
- * from that fallback anchor (which is module state, never component state). */
+/** The one-line scene-A todo brief: `todo done/total Ns`. An explicit
+ * `startedAt` is a pure-caller/test seam; the dock leaves it unset so the
+ * unified text-signature first-seen map above is the single production clock. */
 export function todoBriefLine(todos: readonly Todo[], now: number = Date.now(), startedAt?: number): string {
 	if (todos.length === 0) return ""
 	const done = todos.filter((todo) => todo.status === "completed").length
-	const signature = todos.map((todo) => `${todo.status}\u0000${todo.content}`).join("\u0001")
-	if (signature !== todoSetSignature) {
-		todoSetSignature = signature
-		todoSetChangedAt = now
-	}
-	const anchor = startedAt ?? todoSetChangedAt
+	const anchor = startedAt ?? todoSetStartedAt(todos, now)
 	const secs = Math.max(0, Math.floor((now - anchor) / 1000))
 	return `todo ${done}/${todos.length} ${secs}s`
 }
 
-/** Test/session-switch hook: drop the fallback anchor. */
+/** Session-switch hook: drop every first-seen anchor (no signature survives
+ * into the next session). */
 export function resetTodoBriefClock(): void {
-	todoSetSignature = ""
-	todoSetChangedAt = 0
+	todoSetFirstSeen.clear()
 }
 
 /** The Todos table's box width for a `terminalColumns`-wide terminal.
@@ -1470,8 +1482,11 @@ export function WidgetsDock(props: {
 			return dockNeedsClock(props.rows) ? motionFrameRate() : undefined
 		},
 		() => {
-			setDockSpin((s) => s + 1)
+			// Advance the shared pass clock BEFORE bumping `dockSpin`: the tick's
+			// wall clock must be visible to every getter in the re-render it
+			// triggers, so height and painted rows read one and the same `now`.
 			tickDockHeight()
+			setDockSpin((s) => s + 1)
 		},
 	)
 	const width = () => Math.max(16, dimensions().width - 4)
@@ -1502,10 +1517,8 @@ export function WidgetsDock(props: {
 			tools: mergedToolRows(props.rows, now, motionDecorationsEnabled()),
 			todos: latestTodos(props.rows),
 			agents: mergedRunningAgents(props.rows),
-			// 指令4: existing time tracking for the scene-A todo brief (the
-			// earliest todo-tool row's startedAt); merged-dock falls back to a
-			// todo-array-change clock when this is absent.
-			todoStartedAt: todoSetStartedAt(props.rows),
+			// 指令4: no explicit todo anchor — `todoBriefLine` uses the unified
+			// text-signature first-seen map (task set establishment time).
 		}
 	}
 	// 2026-11-19: the merged frame's content area is HARD-capped at 10 lines
@@ -1536,7 +1549,12 @@ export function WidgetsDock(props: {
 	// gear / cursor / width); `setDockHeightTarget` is a no-op while the target
 	// count is unchanged, so there is no feedback loop.
 	createEffect(() => setDockHeightTarget(mergedFrame().lines.length))
-	onCleanup(() => resetDockHeight())
+	onCleanup(() => {
+		resetDockHeight()
+		// Session switch / unmount: no task-text signature may survive into the
+		// next session's brief clock.
+		resetTodoBriefClock()
+	})
 	// The box reserves 4 of the W columns for title chrome: ┏ (col 0), the
 	// leading ━ it always draws before a left-aligned title (col 1), the trailing
 	// ━ it always draws after the title (col W-2), and ┓ (col W-1). The title
@@ -1626,7 +1644,12 @@ export function WidgetsDock(props: {
 	const frameLines = (): MergedDockLine[] => {
 		const lines = mergedFrame().lines
 		const target = lines.length
-		const tweened = Math.max(0, dockHeightContentLines(target))
+		// PINNED clock: `frameHeight()` and the `<For>` below each call this
+		// getter, and both must derive the same count. Using the shared
+		// `dockFrameNow` (advanced once per tick / target-set) instead of a
+		// fresh Date.now() removes the ms-boundary off-by-one between the box
+		// height and its painted rows (review P3-1).
+		const tweened = Math.max(0, dockHeightContentLines(target, dockFrameNow))
 		// 指令5 self-check: at/after the terminal frame the painted count MUST
 		// equal the target exactly. This repo has a resident-animation-vs-diff-
 		// paint lost-line incident on record; snapping here makes an idle clock

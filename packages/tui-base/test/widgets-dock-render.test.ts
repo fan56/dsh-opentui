@@ -34,6 +34,9 @@ import {
 	dockAccentColor,
 	setActivityPanelGear,
 	mergedThinkRows,
+	resetDockHeight,
+	setDockHeightTarget,
+	resetTodoBriefClock,
 } from "../src/routes/session/widgets-dock"
 import { DOCK_LINGER_MS, DOCK_FADE_OUT_MS } from "../src/routes/session/dock-visibility"
 import { stringWidth } from "../src/util/string-width"
@@ -81,6 +84,8 @@ afterEach(() => {
 	setMotionTier(undefined)
 	resetSkinLineFades()
 	resetMergedDockCursor()
+	resetDockHeight()
+	resetTodoBriefClock()
 })
 
 describe("WidgetsDock on the real renderer", () => {
@@ -319,6 +324,113 @@ describe("WidgetsDock on the real renderer", () => {
 			startedAt: Date.now(),
 			lastLine: "working",
 		})),
+	})
+
+	test("P2-4: captured growth frames start at `from`, never exceed target (real renderer)", async () => {
+		setMotionTier("full")
+		const now = Date.now()
+		// Scene A: think(1) + tool(1) + todo brief(1) + 5 agents = 8 content rows.
+		const rows: SeamRow[] = [
+			{ key: "reasoning:frames", kind: "reasoning", text: "tail", final: true, startedAt: now - 400, elapsedSec: 0.4 },
+			{ key: "tool:live:frames", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+			todoWriteRows(1),
+			subagentRows(5),
+		]
+		const setup = await testRender(() => createComponent(WidgetsDock, { rows, turnActive: () => true }), {
+			width: WIDTH,
+			height: HEIGHT,
+			useMouse: false,
+		})
+		try {
+			await sleep(300) // frame latch + entrance fades + settle
+			await setup.renderOnce()
+			expect(dockContentLines(setup.captureSpans())).toBe(8)
+
+			const from = 2
+			const target = 8
+			// A slightly FUTURE anchor holds the first painted frame exactly at
+			// `from` (dockHeightLines returns `from` while elapsed ≤ 0), so the
+			// "first frame ≠ terminal target" nail is deterministic, not a race.
+			resetDockHeight(from)
+			setDockHeightTarget(target, Date.now() + 80)
+
+			const counts: number[] = []
+			for (let i = 0; i < 15; i++) {
+				await setup.renderOnce()
+				counts.push(dockContentLines(setup.captureSpans()))
+				await sleep(25)
+			}
+			// (1) first frame = from, not the terminal target.
+			expect(counts[0]).toBe(from)
+			// (2) no painted frame ever exceeds the content target.
+			expect(counts.every((c) => c <= target)).toBe(true)
+			// growth is monotonic and reaches the exact terminal count.
+			expect(Math.max(...counts)).toBe(target)
+			for (let i = 1; i < counts.length; i++) expect(counts[i]!).toBeGreaterThanOrEqual(counts[i - 1]!)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("P2-4: interrupted shrink retarget paints continuously (real renderer)", async () => {
+		setMotionTier("full")
+		const sceneRows = (agents: number): SeamRow[] => {
+			const now = Date.now()
+			return [
+				{ key: "reasoning:frames2", kind: "reasoning", text: "tail", final: true, startedAt: now - 400, elapsedSec: 0.4 },
+				{ key: "tool:live:frames2", kind: "tool", name: "bash", args: "{}", status: "running", startedAt: now },
+				todoWriteRows(1),
+				subagentRows(agents),
+			]
+		}
+		const [rows, setRows] = createSignal<SeamRow[]>(sceneRows(5))
+		const setup = await testRender(() => createComponent(WidgetsDock, { get rows() { return rows() }, turnActive: () => true }), {
+			width: WIDTH,
+			height: HEIGHT,
+			useMouse: false,
+		})
+		try {
+			await sleep(300)
+			await setup.renderOnce()
+			expect(dockContentLines(setup.captureSpans())).toBe(8)
+
+			// Shrink 8→4: a shrink is instantaneous (the drawing law caps it at
+			// the target), so the screen now shows exactly 4 rows.
+			setRows(sceneRows(1))
+			await setup.renderOnce()
+			const shrunk = dockContentLines(setup.captureSpans())
+			expect(shrunk).toBe(4)
+
+			// Still inside the 200ms shrink tween, grow back to 8. With the P2-1
+			// clamp the new tween starts from the VISIBLE 4; without it the raw
+			// 8→4 curve (~6 at 80ms) would jump two rows on the very next frame.
+			await sleep(80)
+			setRows(sceneRows(5))
+			await setup.renderOnce()
+			const resumed = dockContentLines(setup.captureSpans())
+			// With the clamp the new tween starts from the visible 4 (or one row
+			// into it if a tick landed during capture): ≤ shrunk+1. WITHOUT the
+			// clamp the raw 8→4 curve starts from ~6 = shrunk+2 and this fails.
+			expect(resumed).toBeLessThanOrEqual(shrunk + 1)
+			expect(resumed).toBeGreaterThanOrEqual(shrunk)
+
+			// Every subsequent frame stays within the target and never regresses.
+			// (Growth RATE per sample is intentionally NOT pinned: under a loaded
+			// suite a 28ms sleep can stretch past a tick, so two rows may land
+			// between samples even though each painted frame is continuous. The
+			// no-jump-at-retarget nail is the `resumed ≤ shrunk+1` check above.)
+			let prev = resumed
+			for (let i = 0; i < 8; i++) {
+				await sleep(28)
+				await setup.renderOnce()
+				const c = dockContentLines(setup.captureSpans())
+				expect(c).toBeLessThanOrEqual(8)
+				expect(c).toBeGreaterThanOrEqual(prev)
+				prev = c
+			}
+		} finally {
+			await setup.dispose()
+		}
 	})
 
 	test("scene A: the 10-line frame is gear-inert; scene B: the gear drives think lines", async () => {

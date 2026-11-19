@@ -1015,25 +1015,72 @@ describe("2026-11-19 指令4 — scene-A todo brief", () => {
 		expect(todoBriefLine([], 1_300_000, 1_000_000)).toBe("")
 	})
 
-	test("fallback clock starts at the most recent todo-array change", () => {
+	test("unified clock: a NEW task text set starts at its own first-seen time", () => {
 		resetTodoBriefClock()
 		const a = [{ content: "one", status: "in_progress" as const }]
 		expect(todoBriefLine(a, 5_000)).toBe("todo 0/1 0s")
 		expect(todoBriefLine(a, 8_000)).toBe("todo 0/1 3s")
-		// A changed array (new content) restarts the clock.
+		// A different text set is a new task set → clock resets to its first sight.
 		const b = [{ content: "two", status: "in_progress" as const }]
 		expect(todoBriefLine(b, 9_000)).toBe("todo 0/1 0s")
 		expect(todoBriefLine(b, 12_000)).toBe("todo 0/1 3s")
 		resetTodoBriefClock()
 	})
 
-	test("todoSetStartedAt finds the earliest settled todo-tool anchor", () => {
-		const rows: SeamRow[] = [
-			{ key: "tool:live:t1", kind: "tool", name: "todo_write", args: "[]", status: "done", startedAt: 1_000, elapsedSec: 1 },
-			{ key: "tool:live:t2", kind: "tool", name: "todowrite", args: "[]", status: "done", startedAt: 2_000, elapsedSec: 1 },
+	test("unified clock: status flips WITHIN a set do not reset (1/3→2/3)", () => {
+		resetTodoBriefClock()
+		const before = [
+			{ content: "one", status: "in_progress" as const },
+			{ content: "two", status: "pending" as const },
 		]
-		expect(todoSetStartedAt(rows)).toBe(1_000)
-		expect(todoSetStartedAt([])).toBeUndefined()
+		expect(todoBriefLine(before, 5_000)).toBe("todo 0/2 0s")
+		// Same texts, flipped statuses: the 3s keeps counting from 5s.
+		const after = [
+			{ content: "one", status: "completed" as const },
+			{ content: "two", status: "in_progress" as const },
+		]
+		expect(todoBriefLine(after, 8_000)).toBe("todo 1/2 3s")
+		resetTodoBriefClock()
+	})
+
+	test("unified clock: task text order does not reset (sorted signature)", () => {
+		resetTodoBriefClock()
+		const a = [
+			{ content: "one", status: "in_progress" as const },
+			{ content: "two", status: "pending" as const },
+		]
+		expect(todoBriefLine(a, 5_000)).toBe("todo 0/2 0s")
+		expect(todoBriefLine([a[1]!, a[0]!], 9_000)).toBe("todo 0/2 4s")
+		resetTodoBriefClock()
+	})
+
+	test("unified clock: session switch clears every first-seen anchor", () => {
+		resetTodoBriefClock()
+		const a = [{ content: "one", status: "in_progress" as const }]
+		expect(todoBriefLine(a, 5_000)).toBe("todo 0/1 0s")
+		// Session switch (dock unmount → resetTodoBriefClock): same set, fresh clock.
+		resetTodoBriefClock()
+		expect(todoBriefLine(a, 6_000)).toBe("todo 0/1 0s")
+		expect(todoBriefLine(a, 9_000)).toBe("todo 0/1 3s")
+		resetTodoBriefClock()
+	})
+
+	test("todoSetStartedAt is the single first-seen anchor of a text set", () => {
+		resetTodoBriefClock()
+		const todos = [
+			{ content: "one", status: "in_progress" as const },
+			{ content: "two", status: "pending" as const },
+		]
+		expect(todoSetStartedAt(todos, 1_000)).toBe(1_000)
+		// A status flip keeps the same signature → same anchor.
+		const flipped = [
+			{ content: "one", status: "completed" as const },
+			{ content: "two", status: "in_progress" as const },
+		]
+		expect(todoSetStartedAt(flipped, 2_000)).toBe(1_000)
+		// A new text set gets a fresh anchor.
+		expect(todoSetStartedAt([{ content: "three", status: "in_progress" as const }], 3_000)).toBe(3_000)
+		resetTodoBriefClock()
 	})
 
 	test("scene-C summary keeps the current full format (with active item)", () => {
@@ -1080,6 +1127,29 @@ describe("2026-11-19 指令5 — shared-clock height tween", () => {
 		tickDockHeight(1_000 + DOCK_HEIGHT_ANIM_MS)
 		expect(dockHeightAnimating()).toBe(false)
 		expect(dockHeightContentLines(6, 1_000 + DOCK_HEIGHT_ANIM_MS)).toBe(6)
+		resetDockHeight()
+	})
+
+	test("retarget clamps `from` to the painted shrink target (no jump on interrupt)", () => {
+		// A 5→2 shrink paints the target 2 immediately (the drawing law caps a
+		// shrinking tween at `min(target, tweened)`). At 100ms the raw 5→2 curve
+		// reads 4, but the screen already shows 2. Retargeting to 6 must start
+		// from the VISIBLE count 2, not jump 2 rows to the curve value 4.
+		resetDockHeight(5)
+		setDockHeightTarget(2, 1_000)
+		expect(dockHeightLines(5, 2, 100, DOCK_HEIGHT_ANIM_MS)).toBe(4) // raw curve
+		setDockHeightTarget(6, 1_100)
+		expect(dockHeightContentLines(6, 1_100)).toBe(2) // from = painted count
+		// Continuity: every frame of the new tween stays in [2, 6] and grows at
+		// most one row per 20ms step — no discontinuity at the retarget.
+		let prev = 2
+		for (let ms = 0; ms <= DOCK_HEIGHT_ANIM_MS; ms += 20) {
+			const count = dockHeightContentLines(6, 1_100 + ms)
+			expect(count).toBeGreaterThanOrEqual(2)
+			expect(count).toBeLessThanOrEqual(6)
+			expect(count - prev).toBeLessThanOrEqual(1)
+			prev = count
+		}
 		resetDockHeight()
 	})
 

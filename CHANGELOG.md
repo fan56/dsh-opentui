@@ -122,8 +122,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 1. **面板封顶 10 行。** 内容区随内容伸缩、硬上限 `MERGED_DOCK_TOTAL_LINES = 10`（不含边框）；废除 `all` 档的 2/3 终端增长规则和 halfBudget 帧钳制。无内容整体隐藏（D5）不变。
 2. **齿轮只管 think。** `session.activity_panel_height` 语义改为仅 think 显示行数：1/5/7/10；`all` 保留兼容（不迁移用户 config）但等于 10。tool 恢复固定 3 行。settings 行文案与 en/zh 文案改义（key 名不动）。
 3. **场景 B 互斥。** think 可见期间藏 tool 与 todo；若 subagent 仅有历史残留行而 think 活跃，按场景 B 处理（subagent 行也让位）。优先级：subagent 活跃 > think 独占。
-4. **场景 A 的 todo 摘要行。** 只显示 `todo 完成数/总数 时长s`（如 `todo 1/3 300s`），不显示当前任务文本。数据源 = 现有 todo 状态跟踪；时长 = 该 todo 集合首条创建至今的秒数（取现有 tool row 的 `startedAt`，缺失则从最近一次 todo 数组变化起计时）。
-5. **伸缩动画。** 面板高度变化走共享动画钟（busy 才给 rate）驱动的整数行数逐帧插值，200ms smoothstep；非常驻、终态精确等于目标行数；共享钟 idle 不给 tick 时按挂钟取终态。动画结束帧后自校验行数 = 目标，规避仓内常驻动画撞 diff-paint 丢行的前科。
+4. **场景 A 的 todo 摘要行。** 只显示 `todo 完成数/总数 时长s`（如 `todo 1/3 300s`），不显示当前任务文本。时长 = 当前任务集建立至今的秒数：按任务文本集合（忽略状态翻转、与顺序无关）首次出现的时刻起算；换任务集重置，同一集内 1/3→2/3 不重置，跨会话清空。
+5. **伸缩动画。** 面板高度变化走共享动画钟（busy 才给 rate）驱动的整数行数逐帧插值，200ms smoothstep；非常驻、终态精确等于目标行数；共享钟 idle 不给 tick 时按挂钟取终态。动画结束帧后自校验行数 = 目标，规避仓内常驻动画撞 diff-paint 丢行的前科。**动画仅作用于增长**（新行逐行出现）；收缩为瞬时（被删行无法参与过渡）——这是设计内的不对称，不是缺陷。
 
 置顶顺序：场景 A 中 think 行、tool 行、todo 行在 subagent 列表上方。
 
