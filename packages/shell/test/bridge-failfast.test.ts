@@ -23,6 +23,7 @@ import {
 	BRIDGE_REPAIR_HINT,
 	formatBridgeFailFastMessage,
 } from "../scripts/lib/bridge-failfast-text.mjs"
+import { HOST_VERSION_ENV } from "../scripts/lib/host-compat.mjs"
 import {
 	BridgeBootstrapError,
 	formatBridgeBootstrapMessage,
@@ -99,8 +100,16 @@ describe("handshake path fail-fast (BridgeBootstrapError)", () => {
 // 3. Fingerprint path (ProvisionError from the spawned script).
 // ---------------------------------------------------------------------------
 function runProvision(home: string): { status: number | null; stderr: string; stdout: string } {
+	// Hosted runners have no ambient `dsh`, so auto-detection would fail before
+	// the fingerprint path under test. Declare the pinned host explicitly here;
+	// host-version scenarios belong to host-compat.test.ts and are untouched.
 	const result = Bun.spawnSync([process.execPath, SCRIPT], {
-		env: { ...process.env, DSH_HOME: home, DSH_OPENTUI_INPROC: "1" },
+		env: {
+			...process.env,
+			DSH_HOME: home,
+			DSH_OPENTUI_INPROC: "1",
+			[HOST_VERSION_ENV]: "0.2.2-rc.3",
+		},
 	})
 	return {
 		status: result.exitCode,
