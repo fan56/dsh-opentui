@@ -11,15 +11,20 @@
  *                     count (never a seq bound), tool/ask pairing intact
  */
 import { describe, expect, test } from "bun:test"
+import { createRoot } from "solid-js"
+import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows.ts"
 import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
 	bridgeReplayRowsToSeamTranscript,
+	bridgeReplayRowsToSubagentViews,
 	projectBridgeEvent,
 	projectBridgeSessionList,
 	type BridgeEventFrame,
+	type BridgeReplayRow,
 	type BridgeTransport,
 } from "../src/client/bridge-session-seam.ts"
+import type { SeamSubagentView } from "../../tui-base/src/seams/session.ts"
 import { journalToTranscriptRows, type RemoteJournalEntry } from "../src/client/remote-session-ops.ts"
 
 // ---------------------------------------------------------------------------
@@ -1200,5 +1205,181 @@ describe("footer telemetry parity (cacheHitRate / contextTokens / contextWindow)
 		expect(h.seam.cacheHitRate("session")).toBe(firstRate)
 		expect(h.seam.contextTokens()).toBe(firstTokens)
 		expect(firstRate).toBeCloseTo(55, 5)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// Subagent visibility (inproc row 33): live agent.spawn/settle frames + replay
+// ---------------------------------------------------------------------------
+
+describe("subagent lifecycle rows (inproc visibility)", () => {
+	const replayRow = (seq: number, type: string, payload: Record<string, unknown>): BridgeReplayRow => ({ seq, type, payload })
+
+	test("replay projection: spawn → running → settle by runId:seq, remote view shape", () => {
+		const t0 = 1_000_000
+		const rows = [
+			replayRow(1, "tool-workflow/agent-start", { runId: "r", seq: 0, label: "scout", childId: "child-a" }),
+		]
+		const running = bridgeReplayRowsToSubagentViews(rows, t0)
+		expect(running).toHaveLength(1)
+		expect(running[0]).toEqual({
+			id: "child-a",
+			label: "scout",
+			status: "running",
+			rounds: 0,
+			startedAt: t0,
+		})
+
+		// Settled: startedAt dropped, elapsedSec + endedAt added, outcome mapped.
+		// Replay rows carry no wall clock, so both rows fold at the discovery `now`
+		// and a replayed settled child shows elapsedSec 0 (duration unknowable from
+		// the journal — the documented wall-clock approximation).
+		const settled = bridgeReplayRowsToSubagentViews(
+			[...rows, replayRow(2, "tool-workflow/agent-end", { runId: "r", seq: 0, outcome: "cancelled" })],
+			t0 + 3_000,
+		)
+		expect(settled).toHaveLength(1)
+		expect(settled[0]).toEqual({
+			id: "child-a",
+			label: "scout",
+			status: "cancelled",
+			rounds: 0,
+			elapsedSec: 0,
+			endedAt: t0 + 3_000,
+		})
+		// No `startedAt` on a settled row — exact parity with #projectSubagentViews.
+		expect("startedAt" in settled[0]!).toBe(false)
+	})
+
+	test("replay: start without terminal stays running; multiple children pair independently", () => {
+		const t0 = 500_000
+		const views = bridgeReplayRowsToSubagentViews([
+			replayRow(1, "tool-workflow/agent-start", { runId: "r", seq: 0, label: "A", childId: "c-a" }),
+			replayRow(2, "tool-workflow/agent-start", { runId: "r", seq: 1, label: "B", childId: "c-b" }),
+			replayRow(3, "tool-workflow/agent-end", { runId: "r", seq: 1, outcome: "failed" }),
+		], t0)
+		expect(views).toHaveLength(2)
+		const a = views.find((v) => v.id === "c-a")!
+		const b = views.find((v) => v.id === "c-b")!
+		expect(a.status).toBe("running") // no terminal → running (wall-clock approximation)
+		expect(b.status).toBe("failed")
+		expect(b.elapsedSec).toBe(0)
+	})
+
+	test("shape parity with the remote adapter's SeamSubagentView (field set)", () => {
+		const view = bridgeReplayRowsToSubagentViews([
+			replayRow(1, "tool-workflow/agent-start", { runId: "r", seq: 0, label: "A", childId: "c-a" }),
+		], 100)[0]!
+		// Keys are a strict subset of SeamSubagentView; the dock (mergedRunningAgents)
+		// needs exactly id/label/status/startedAt, the viewer needs rounds/status.
+		const allowed = new Set([
+			"id", "label", "model", "status", "rounds", "startedAt", "elapsedSec", "endedAt",
+			"injectedRound", "hardStopRound", "spinStopRound", "lastLine",
+		])
+		for (const key of Object.keys(view)) expect(allowed.has(key)).toBe(true)
+		const typed: SeamSubagentView = view
+		expect(typed.id).toBe("c-a")
+		expect(typed.status).toBe("running")
+	})
+
+	test("live frames: agent.spawn → running, onSubagentViews pushes, agent.settle → completed", () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		const unsub = h.seam.onSubagentViews((views) => snapshots.push(views))
+		expect(snapshots).toHaveLength(1) // immediate replay of the empty snapshot
+		expect(snapshots[0]).toEqual([])
+
+		h.emit({
+			type: "agent.spawn",
+			payload: { childId: "live-1", label: "live scout", runId: "rl", seq: 0 },
+		})
+		expect(h.seam.subagentViews()).toMatchObject([
+			{ id: "live-1", label: "live scout", status: "running" },
+		])
+		expect(snapshots).toHaveLength(2)
+		expect(snapshots[1]![0]!.status).toBe("running")
+
+		h.emit({ type: "agent.settle", payload: { runId: "rl", seq: 0, outcome: "completed" } })
+		const settled = h.seam.subagentViews()
+		expect(settled).toHaveLength(1)
+		expect(settled[0]!.status).toBe("completed")
+		expect(typeof settled[0]!.elapsedSec).toBe("number")
+		expect(settled[0]!.endedAt).toBeDefined()
+		expect("startedAt" in settled[0]!).toBe(false)
+		expect(snapshots).toHaveLength(3)
+
+		unsub()
+		h.emit({ type: "agent.spawn", payload: { childId: "live-2", label: "after unsub", runId: "r2", seq: 0 } })
+		expect(snapshots).toHaveLength(3) // no further pushes after unsubscribe
+		expect(h.seam.subagentViews()).toHaveLength(2) // state still updates
+	})
+
+	test("live spawn upgrades a replay approximation to a real wall clock", async () => {
+		const h = makeHarness()
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: { rows: [replayRow(1, "tool-workflow/agent-start", { runId: "r", seq: 0, label: "A", childId: "c-a" })], cursor: 2 },
+		})
+		await h.seam.storedTranscript("sess-1")
+		const approximate = h.seam.subagentViews()[0]!.startedAt!
+		expect(typeof approximate).toBe("number")
+
+		const before = Date.now() - 50
+		h.emit({ type: "agent.spawn", payload: { childId: "c-a", label: "A", runId: "r", seq: 0 } })
+		const upgraded = h.seam.subagentViews()[0]!.startedAt!
+		expect(upgraded).toBeGreaterThanOrEqual(before)
+		expect(h.seam.subagentViews()).toHaveLength(1) // no duplicate child
+	})
+
+	test("storedTranscript replays subagent rows into the live roster for the bound session", async () => {
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: {
+				rows: [
+					replayRow(1, "tool-workflow/agent-start", { runId: "r", seq: 0, label: "replayed", childId: "rp-1" }),
+					replayRow(2, "tool-workflow/agent-end", { runId: "r", seq: 0, outcome: "completed" }),
+				],
+				cursor: 3,
+			},
+		})
+		await h.seam.storedTranscript("sess-rp")
+		const views = h.seam.subagentViews()
+		expect(views).toHaveLength(1)
+		expect(views[0]).toMatchObject({ id: "rp-1", status: "completed" })
+		expect(snapshots.at(-1)![0]!.status).toBe("completed")
+	})
+
+	test("end-to-end: live frames drive the seam-rows `subagents:live` row the dock reads", async () => {
+		const h = makeHarness()
+		// createSeamRows reads storedTranscript on setup — default reply {} → [].
+		let dispose!: () => void
+		const projection = createRoot((d) => {
+			dispose = d
+			return createSeamRows(h.seam, () => "sess-e2e")
+		})
+		await Bun.sleep(0) // let the setup storedTranscript settle
+
+		// Spawn → a subagents row appears with a RUNNING child (the dock's source).
+		h.emit({ type: "agent.spawn", payload: { childId: "e2e-1", label: "e2e scout", runId: "re", seq: 0 } })
+		const tree = projection.rows.find((r) => r.kind === "subagents")
+		expect(tree).toBeDefined()
+		if (tree?.kind === "subagents") {
+			expect(tree.key).toBe("subagents:live")
+			expect(tree.children).toHaveLength(1)
+			expect(tree.children[0]!.id).toBe("e2e-1")
+			expect(tree.children[0]!.status).toBe("running")
+		}
+
+		// Settle → the same row updates in place (one row, settled child).
+		h.emit({ type: "agent.settle", payload: { runId: "re", seq: 0, outcome: "completed" } })
+		expect(projection.rows.filter((r) => r.kind === "subagents")).toHaveLength(1)
+		const settledTree = projection.rows.find((r) => r.kind === "subagents")
+		if (settledTree?.kind === "subagents") {
+			expect(settledTree.children[0]!.status).toBe("completed")
+		}
+		dispose()
 	})
 })

@@ -40,6 +40,7 @@ import type {
 	SeamSessionInfo,
 	SeamSessionSummary,
 	SeamStatus,
+	SeamSubagentView,
 	SeamTranscriptRow,
 	SeamTurnCallbacks,
 	SessionSeam,
@@ -496,6 +497,120 @@ export function bridgeReplayRowsToSeamEvents(
 	return events
 }
 
+// ---------------------------------------------------------------------------
+// Subagent lifecycle projection (row 33 on the inproc path)
+// ---------------------------------------------------------------------------
+//
+// The remote seam's subagent panel (RemoteSubagentPanel) is fed by TWO sources:
+// durable parent-journal records `tool-workflow/agent-start|agent-end` (paired
+// by runId:seq) and a session/list sweep. The inproc bridge has no subagent RPC,
+// but its `journal.replay` reads the SAME host journal, so the durable records
+// are available; its live `session/event` firehose carries the same events,
+// which the bridge forwards as additive `agent.spawn`/`agent.settle` frames.
+// Both paths fold through this ONE function so the view shape is identical to
+// the remote adapter's `#projectSubagentViews` (session-seam-adapter.ts:708).
+
+/** The host's durable agent lifecycle record types (dsh-tool-workflow/types.ts:47-57). */
+const BRIDGE_AGENT_START = "tool-workflow/agent-start"
+const BRIDGE_AGENT_END = "tool-workflow/agent-end"
+
+function bridgeAgentRunKey(runId: string, seq: number): string {
+	return `${runId}:${seq}`
+}
+
+/**
+ * Fold ONE agent lifecycle record (durable journal row OR live frame payload)
+ * into the canonical `SeamSubagentView` map. `runSeq` pairs agent-end's
+ * `{runId, seq}` back to the child registered by agent-start (the exact remote
+ * pairing, remote-subagents.ts:152/235-249). `liveStarts` remembers which
+ * children got a REAL wall-clock start from a live frame so a later replay
+ * sweep never overwrite it with an approximate one.
+ *
+ * Returns true when the map changed (caller decides whether to re-emit).
+ */
+function bridgeFoldAgentRecord(
+	children: Map<string, SeamSubagentView>,
+	runSeq: Map<string, string>,
+	liveStarts: Set<string>,
+	type: string,
+	data: Record<string, unknown>,
+	now: number,
+	live: boolean,
+): boolean {
+	if (type === BRIDGE_AGENT_START) {
+		const childId = typeof data.childId === "string" ? data.childId : ""
+		if (!childId) return false
+		const runId = data.runId === undefined ? "" : String(data.runId)
+		const seq = typeof data.seq === "number" ? data.seq : -1
+		runSeq.set(bridgeAgentRunKey(runId, seq), childId)
+		const existing = children.get(childId)
+		if (existing !== undefined) {
+			// A live spawn arriving after a replay approximation upgrades the start
+			// clock to the real wall clock; a replay sweep never downgrades it.
+			if (live && !liveStarts.has(childId)) {
+				children.set(childId, { ...existing, startedAt: now })
+				liveStarts.add(childId)
+				return true
+			}
+			return false
+		}
+		const label = typeof data.label === "string" && data.label ? data.label : `subagent ${childId.slice(0, 8)}`
+		children.set(childId, { id: childId, label, status: "running", rounds: 0, startedAt: now })
+		if (live) liveStarts.add(childId)
+		return true
+	}
+	if (type === BRIDGE_AGENT_END) {
+		const runId = data.runId === undefined ? "" : String(data.runId)
+		const seq = typeof data.seq === "number" ? data.seq : -1
+		const key = bridgeAgentRunKey(runId, seq)
+		const childId = runSeq.get(key)
+		if (!childId) return false
+		const existing = children.get(childId)
+		if (!existing || existing.status !== "running") return false
+		const outcome = data.outcome === "failed" || data.outcome === "cancelled" ? data.outcome : "completed"
+		const startedAt = existing.startedAt ?? now
+		// Settled rows DROP `startedAt` and carry `elapsedSec` + `endedAt` — the
+		// exact projection shape of session-seam-adapter.ts:715-721.
+		children.set(childId, {
+			id: existing.id,
+			label: existing.label,
+			...(existing.model !== undefined ? { model: existing.model } : {}),
+			status: outcome,
+			rounds: existing.rounds,
+			elapsedSec: Number(((now - startedAt) / 1000).toFixed(1)),
+			endedAt: now,
+			...(existing.injectedRound !== undefined ? { injectedRound: existing.injectedRound } : {}),
+			...(existing.hardStopRound !== undefined ? { hardStopRound: existing.hardStopRound } : {}),
+			...(existing.spinStopRound !== undefined ? { spinStopRound: existing.spinStopRound } : {}),
+			...(existing.lastLine !== undefined ? { lastLine: existing.lastLine } : {}),
+		})
+		runSeq.delete(key)
+		return true
+	}
+	return false
+}
+
+/**
+ * Pure replay projection: drained journal rows → `SeamSubagentView[]`.
+ * spawn→running→settle folds by runId:seq; a child with agent-start but no
+ * agent-end stays `running` (the same "start without terminal = running" rule
+ * the remote panel uses, remote-subagents.ts:460-473). Replayed rows carry no
+ * wall clock, so `now` is used as the discovery anchor for running children —
+ * an honest wall-clock approximation (duration shows from first observation).
+ */
+export function bridgeReplayRowsToSubagentViews(
+	rows: readonly BridgeReplayRow[],
+	now: number = Date.now(),
+): SeamSubagentView[] {
+	const children = new Map<string, SeamSubagentView>()
+	const runSeq = new Map<string, string>()
+	const liveStarts = new Set<string>()
+	for (const row of rows) {
+		bridgeFoldAgentRecord(children, runSeq, liveStarts, row.type, asRecord(row.payload), now, false)
+	}
+	return [...children.values()]
+}
+
 /**
  * A7: does the drained journal carry a TERMINAL for the turn that was in
  * flight when the bridge died? The host journal records `turn/end` with
@@ -740,6 +855,17 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #unsubEvent: () => void
 	readonly #listeners: ((event: SeamSessionEvent) => void)[] = []
 	readonly #onDead?: (cause: BridgeDeadCause) => void
+
+	// Subagent lifecycle (row 33 inproc): the canonical child map is the single
+	// source of truth for both the live `agent.spawn/settle` frames and the
+	// journal-replay derivation. runSeq pairs runId:seq -> child; liveStarts
+	// remembers real wall-clock starts so replay sweeps never overwrite them.
+	readonly #subagentViews = new Map<string, SeamSubagentView>()
+	readonly #subagentRunSeq = new Map<string, string>()
+	readonly #subagentLiveStarts = new Set<string>()
+	readonly #subagentListeners = new Set<(views: SeamSubagentView[]) => void>()
+	/** The session the current subagent map belongs to; reset on binding change. */
+	#subagentSessionId: string | undefined
 
 	// status state machine (no dedicated status frame — ticket §1 #1).
 	#connection: SeamStatus["connection"] = "disconnected"
@@ -1104,6 +1230,9 @@ export class BridgeSessionSeam implements SessionSeam {
 
 		// (c) apply through the SAME projection storedTranscript() uses — no new
 		// render path. Dedup + ascending order were established by #drainJournal.
+		// Same rows also restore the subagent roster after a process restart
+		// (spawn/settle from the durable journal; running = start w/o terminal).
+		this.#foldAgentReplayRows(drained.rows, boundId)
 		const rows = bridgeReplayRowsToSeamTranscript(drained.rows)
 		if (drained.rows.length > 0) {
 			const maxSeq = drained.rows.reduce((m, row) => Math.max(m, row.seq), -Infinity)
@@ -1598,6 +1727,89 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 	}
 
+	// ----- subagent marker face (row 33 inproc, RemoteHostSession 1:1) -------
+
+	/** Panel/viewer snapshot — a fresh copy so callers cannot mutate the store. */
+	subagentViews(): SeamSubagentView[] {
+		return [...this.#subagentViews.values()].map((view) => ({ ...view }))
+	}
+
+	/** Push listener (the seam-rows tree row + /subagents viewer subscribe here).
+	 *  Replays the current snapshot immediately for a late subscriber. */
+	onSubagentViews(listener: (views: SeamSubagentView[]) => void): () => void {
+		this.#subagentListeners.add(listener)
+		listener(this.subagentViews())
+		return () => {
+			this.#subagentListeners.delete(listener)
+		}
+	}
+
+	/** Emit the current snapshot to every listener; one stale UI listener is contained. */
+	#emitSubagentViews(): void {
+		if (this.#subagentListeners.size === 0) return
+		const snapshot = this.subagentViews()
+		for (const listener of [...this.#subagentListeners]) {
+			try {
+				listener(snapshot)
+			} catch {
+				/* a UI listener must never take the event pump down */
+			}
+		}
+	}
+
+	/**
+	 * Fold an additive `agent.spawn`/`agent.settle` frame through the SAME pure
+	 * projector the replay path uses. Live frames carry a real wall clock, so a
+	 * spawn registers with `Date.now()` and a settle freezes the true duration.
+	 */
+	#foldAgentFrame(frame: BridgeEventFrame): void {
+		const payload = asRecord(frame.payload)
+		// Defensive session filter: a stale frame from a replaced binding must not
+		// pollute the current roster (the bridge already filters by active turn;
+		// this is the seam-side backstop for the replay boundary).
+		const frameSession = typeof payload.sessionId === "string" ? payload.sessionId : ""
+		if (this.#subagentSessionId !== undefined && frameSession !== "" && frameSession !== this.#subagentSessionId) return
+		const now = Date.now()
+		let changed = false
+		if (frame.type === "agent.spawn") {
+			changed = bridgeFoldAgentRecord(
+				this.#subagentViews, this.#subagentRunSeq, this.#subagentLiveStarts,
+				BRIDGE_AGENT_START, payload, now, true,
+			)
+		} else if (frame.type === "agent.settle") {
+			changed = bridgeFoldAgentRecord(
+				this.#subagentViews, this.#subagentRunSeq, this.#subagentLiveStarts,
+				BRIDGE_AGENT_END, payload, now, true,
+			)
+		}
+		if (changed) this.#emitSubagentViews()
+	}
+
+	/**
+	 * Derive subagent rows from durable journal rows (replay / recovery), for the
+	 * SAME session only. A binding change clears the old session's map so a /new
+	 * or a different replay target cannot pollute the live roster. Re-folding the
+	 * full log is idempotent (start on a known child / settle on a settled child
+	 * are no-ops), so repeated `storedTranscript` sweeps are safe.
+	 */
+	#foldAgentReplayRows(rows: readonly BridgeReplayRow[], sessionId: string): void {
+		if (sessionId !== this.#subagentSessionId) {
+			this.#subagentViews.clear()
+			this.#subagentRunSeq.clear()
+			this.#subagentLiveStarts.clear()
+			this.#subagentSessionId = sessionId
+		}
+		let changed = false
+		const now = Date.now()
+		for (const row of rows) {
+			if (bridgeFoldAgentRecord(
+				this.#subagentViews, this.#subagentRunSeq, this.#subagentLiveStarts,
+				row.type, asRecord(row.payload), now, false,
+			)) changed = true
+		}
+		if (changed) this.#emitSubagentViews()
+	}
+
 	// ----- config faces (optional seam members — D3 degrade, never throw) --
 	//
 	// The bridge host dispatches ONLY bridge.hello/ping, session.{list,open,
@@ -1691,6 +1903,11 @@ export class BridgeSessionSeam implements SessionSeam {
 		// `from`: skip is a row count, not a seq bound (see projection comment).
 		const value = await this.#transport.request("journal.replay", { sessionId: id })
 		const rows = (Array.isArray(asRecord(value).rows) ? asRecord(value).rows : []) as BridgeReplayRow[]
+		// The SAME durable rows carry the subagent lifecycle records the remote
+		// panel reads off session/follow. Derive the live roster from them so a
+		// fresh boot / resume / session switch paints spawned+settled (and any
+		// start-without-terminal → running) agents even before a frame arrives.
+		this.#foldAgentReplayRows(rows, id)
 		return bridgeReplayRowsToSeamTranscript(rows, skip)
 	}
 
@@ -1846,6 +2063,10 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#disposed = true
 		this.#unsubEvent()
 		this.#listeners.length = 0
+		this.#subagentListeners.clear()
+		this.#subagentViews.clear()
+		this.#subagentRunSeq.clear()
+		this.#subagentLiveStarts.clear()
 		this.#activeCallbacks = undefined
 		this.#cancelAllAsks()
 		// A6: release buffered/invalidated recovery state on dispose.
@@ -2184,6 +2405,13 @@ export class BridgeSessionSeam implements SessionSeam {
 		// ADR-0011 ask frames own their own queue — never project them as turn
 		// deltas or session events (they are not transcript rows).
 		if (this.#onAskEvent(frame)) return
+
+		// Additive subagent lifecycle frames (row 33 inproc): feed the onSubagentViews
+		// face, never the transcript/status pipeline. An unknown frame is a no-op.
+		if (frame.type === "agent.spawn" || frame.type === "agent.settle") {
+			this.#foldAgentFrame(frame)
+			return
+		}
 
 		// A2: DEAD is published on the existing onEvent pipeline (no polling).
 		// Event-driven so an idle-period crash — no in-flight turn — paints the

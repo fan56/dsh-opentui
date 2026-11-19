@@ -93,6 +93,7 @@ OPEN_FAILED{SESSION_NOT_FOUND | JOURNAL_CORRUPT | SESSION_LOCKED{holder} | VERSI
 **事件**（两种类别，均由 `emitEvent` 走同一 `event{type,payload}` 写通道）：
 
 - 会话/turn 生命周期：`turn.start`、`turn.token`、`turn.tool`、`turn.end`、`turn.error`（`packages/bridge/src/index.ts:847,853,858,917,926,993,1008`）
+- 子代理生命周期（2026-11-19 加入，**协议版本仍为 1** —— 见下方兼容性说明）：`agent.spawn`、`agent.settle`（`packages/bridge/src/index.ts` 的 `onSessionEvent` 把宿主 `tool-workflow/agent-start|agent-end` 持久记录转发为这两个 additive 事件帧；旧客户端忽略未知事件类型，故无需 bump）
 - ask 通道（ADR-0011）：`ask.request`、`ask.cancel`、`ask.pending`、`ask.settled`（`packages/bridge/src/ask-frames.ts:24-27`；经 `packages/bridge/src/index.ts:750-830` 的 registry sink 转发）
 
 bridge 自身生命周期（连接断开、插件卸载等）**仍不通过 bridge 的 `emitEvent` 帧暴露**：bridge 子进程不产生生命周期 emitter；桥态 `DEAD` 的可恢复性由上文的恢复序列体现，而非某个 bridge 生命周期帧。阶段一落地后（`c9d3fae..a1341ea`），transport / seam 在 `onEvent` 管线下发并消费一组**客户端合成事件**——`bridge.dead` / `bridge.recovered` / `bridge.recovery.locked` / `bridge.recovery.failed` / `bridge.turn.interrupted`（`bridge-transport.ts:271,294`；`recoverSession()` / `bridge.dead` 帧处理，bridge-session-seam.ts）——它们不是 bridge 生产的帧，仅供本地 UI 上屏。`ask.pending` 除帧类型与 seam 消费（`onEvent` 的 `ask.pending` 分支，bridge-session-seam.ts）外，bridge 生产路径现已在 resume 时下发重连快照（`AskRegistry.pendingSnapshot` 的生产调用点见 `packages/bridge/src/index.ts:1374-1384`，commit `4323a82`），供上文恢复序列第 5 步重建卡片，见 ADR-0011 §8 与矩阵 §8。

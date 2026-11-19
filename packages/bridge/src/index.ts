@@ -1058,6 +1058,38 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       ensureStarted(state)
       return
     }
+    // Subagent lifecycle (row 33 in the seam capability matrix). The host writes
+    // `tool-workflow/agent-start|agent-end` as DURABLE parent-journal records on
+    // the `session/event` firehose (dsh-tool-workflow/src/types.ts:20-33), the same
+    // rows the remote panel pairs (remote-subagents.ts:235-249). Forward them as
+    // two additive event frames so the inproc seam can project live subagent
+    // rows (spawn -> running -> settle) with a real wall-clock start. `agent-end`
+    // carries only {runId, seq, outcome}; the client pairs runId:seq -> child the
+    // same way the remote panel does. Additive event types: protocolVersion stays
+    // 1 (ADR-0010: old clients ignore unknown `event` types).
+    if (type === 'tool-workflow/agent-start') {
+      const childId = idString(data.childId)
+      if (!childId) return
+      emitEvent('agent.spawn', {
+        turnId: state.turnId,
+        sessionId: state.sessionId,
+        childId,
+        label: typeof data.label === 'string' ? data.label : '',
+        runId: idString(data.runId),
+        seq: typeof data.seq === 'number' ? data.seq : -1,
+      })
+      return
+    }
+    if (type === 'tool-workflow/agent-end') {
+      emitEvent('agent.settle', {
+        turnId: state.turnId,
+        sessionId: state.sessionId,
+        runId: idString(data.runId),
+        seq: typeof data.seq === 'number' ? data.seq : -1,
+        outcome: typeof data.outcome === 'string' ? data.outcome : 'completed',
+      })
+      return
+    }
     if (state.numericTurn !== undefined && typeof data.turn === 'number' && data.turn !== state.numericTurn) return
     if (type === 'assistant/message') {
       // A settlement closes a model attempt: flush that attempt's deltas now
