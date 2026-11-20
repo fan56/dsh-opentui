@@ -44,13 +44,17 @@ function stubController(): Record<string, unknown> {
 }
 
 describe("S1 /model — createCapHostInvoke model arms", () => {
-  // S2 note: this count snapshot is slice-local (not a frozen base assertion).
-  // Old criterion (verbatim): `expect(CAP_HOST_WIRED_IDS).toEqual([ID.list, ID.catalog, ID.select, ID.init])`
-  // and `expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(4)`. S2 expands the registry
-  // to 19 (4 S1 + 12 account + 3 credentials); kept strict via exact 19-id equality.
-  test("CAP_HOST_WIRED_IDS = 19 (S1 4 + S2 15), no duplicates", () => {
+  // Slice-local count snapshot (not a frozen base assertion). Old criteria
+  // (verbatim): S1 `expect(CAP_HOST_WIRED_IDS).toEqual([ID.list, ID.catalog,
+  // ID.select, ID.init])` + `size.toBe(4)`; S2 19 ids (4 + 12 account + 3 creds).
+  // S3 expands to 22 (S2 19 + 3 session push streams); kept strict via exact
+  // 22-id equality — a superset check would be weaker, not stronger.
+  test("CAP_HOST_WIRED_IDS = 22 (S1 4 + S2 15 + S3 3), no duplicates", () => {
     expect(CAP_HOST_WIRED_IDS).toEqual([
       ID.list, ID.catalog, ID.select, ID.init,
+      "@deepseek-ai/dsh-api-session-controller#session/observeEvent",
+      "@deepseek-ai/dsh-api-session-controller#session/observeState",
+      "@deepseek-ai/dsh-api-session-controller#session/observeProjections",
       "@deepseek-ai/dsh-deepseek-account#account/cancelSignIn",
       "@deepseek-ai/dsh-deepseek-account#account/getBalance",
       "@deepseek-ai/dsh-deepseek-account#account/getNotificationContent",
@@ -67,7 +71,7 @@ describe("S1 /model — createCapHostInvoke model arms", () => {
       "@deepseek-ai/dsh-api-settings-controller#credentials/set",
       "@deepseek-ai/dsh-api-settings-controller#credentials/unset",
     ])
-    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(19)
+    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(22)
   })
 
   test("modelCatalog returns the host catalog verbatim", async () => {
@@ -121,10 +125,11 @@ describe("S1 /model — createCapHostInvoke model arms", () => {
   })
 
   test("non-wired CapIR id stays NOT_WIRED (膨胀期望面 negative)", async () => {
-    // Old criterion (verbatim): /NOT_WIRED:.*ledger in_wired=4\/257/. S2: 19/257.
+    // Old criteria (verbatim): S1 /ledger in_wired=4\/257/; S2 /ledger in_wired=19\/257/.
+    // S3: 22/257 (exact count, still checks the explicit NOT_WIRED text).
     const invoke = createCapHostInvoke(ctxWith(stubController()))
     await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(
-      /NOT_WIRED:.*ledger in_wired=19\/257/,
+      /NOT_WIRED:.*ledger in_wired=22\/257/,
     )
   })
 })

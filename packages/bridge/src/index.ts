@@ -268,6 +268,18 @@ interface SessionControllerModelLike extends SessionControllerLike {
   initializeDefaultModel?(): Promise<void>
 }
 
+// S3 push — structural slices of the host SessionController's @Remote stream
+// methods (rc.5 session-controller/src/index.ts:527-563), NO runtime import.
+// All members optional so an absent host surface degrades to NOT_WIRED, never a
+// crash. Event frames are typed minimally: type + seq only (whitelist projection).
+interface SessionPushAddressLike { readonly kind: 'session'; readonly sessionId: string }
+interface SessionPushFrameLike { readonly type?: string; readonly seq?: number }
+interface SessionControllerPushLike extends SessionControllerModelLike {
+  observeEvent?(request: { address: SessionPushAddressLike }, signal: AbortSignal): AsyncIterable<SessionPushFrameLike>
+  observeState?(request: { sessionId: string }, signal: AbortSignal): AsyncIterable<unknown>
+  observeProjections?(request: { sessionId: string }, signal: AbortSignal): AsyncIterable<unknown>
+}
+
 // --------------------------------------------------------------------------
 // S2 credentials/account — structural slices of two host services. Same
 // discipline as S1: NO @deepseek-ai runtime import; shapes transcribed from
@@ -456,12 +468,18 @@ export const inject: string[] = ['agents', ...HANDSHAKE_INJECT]
  *  - S1 (4/257): session/list + the three model methods (sessionController seam).
  *  - S2 (+15 → 19/257): 12 `deepseekAccount` methods (10 unary + 2 stream) and
  *    3 `credentialsController` methods, on their own verified ctx.get seams.
+ *  - S3 (+3 → 22/257): 3 `sessionController` push stream methods (observeEvent /
+ *    observeState / observeProjections) — the CapIR push face, profile expected.
  *  All are profile/host W capabilities; no new host API surface is invented. */
 export const CAP_HOST_WIRED_IDS: readonly string[] = [
   '@deepseek-ai/dsh-api-session-controller#session/list',
   '@deepseek-ai/dsh-api-session-controller#session/modelCatalog',
   '@deepseek-ai/dsh-api-session-controller#session/selectModel',
   '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel',
+  // S3 — session push streams (sessionController seam, shared with S1 model arms)
+  '@deepseek-ai/dsh-api-session-controller#session/observeEvent',
+  '@deepseek-ai/dsh-api-session-controller#session/observeState',
+  '@deepseek-ai/dsh-api-session-controller#session/observeProjections',
   // S2 — account (dsh-deepseek-account, service key `deepseekAccount`)
   '@deepseek-ai/dsh-deepseek-account#account/cancelSignIn',
   '@deepseek-ai/dsh-deepseek-account#account/getBalance',
@@ -480,6 +498,155 @@ export const CAP_HOST_WIRED_IDS: readonly string[] = [
   '@deepseek-ai/dsh-api-settings-controller#credentials/set',
   '@deepseek-ai/dsh-api-settings-controller#credentials/unset',
 ]
+
+/**
+ * S3 / B2 fix — release a controller WE created when the consumer stops.
+ *
+ * S2 review concern B2: the stream arm used to `new AbortController()` when the
+ * caller omitted a signal, then hand the iterable back with no release path —
+ * the host subscription lived until GC. Wrapping in an async generator with a
+ * `try/finally` makes release deterministic on `return()` / `throw()` / natural
+ * completion; a caller-supplied signal is never aborted by us (ownership stays
+ * explicit). Values and order are unchanged — the wrapper is transparent.
+ */
+export function withOwnedAbort<T>(source: AsyncIterable<T>, owned?: AbortController): AsyncIterable<T> {
+  if (owned === undefined) return source
+  return {
+    async *[Symbol.asyncIterator]() {
+      try {
+        for await (const item of source) yield item
+      } finally {
+        owned.abort()
+      }
+    },
+  }
+}
+
+/**
+ * S3 / B2 — shipped-bundle self-check: drive a throwaway owned stream through
+ * `withOwnedAbort`, close the iterator with `return()`, and report whether the
+ * owned controller was released. No host surface is touched; both the smoke
+ * (06-push-smoke.log) and the unit test call this same function.
+ */
+export async function probeOwnedAbortRelease(): Promise<boolean> {
+  const owned = new AbortController()
+  const source: AsyncIterable<number> = {
+    async *[Symbol.asyncIterator]() {
+      yield 1
+      yield 2
+    },
+  }
+  const iterator = withOwnedAbort(source, owned)[Symbol.asyncIterator]()
+  await iterator.next()
+  await iterator.return?.(undefined)
+  return owned.signal.aborted
+}
+
+/**
+ * S3: the host→client push relay, with invoke/emit injected so its ordering,
+ * degrade and ownership rules are unit-testable without a live host. Shipped
+ * bridge wires it to `createCapInvoke(ctx)` / `emitEvent` below.
+ */
+export const PUSH_RELAY_METHOD_IDS = [
+  '@deepseek-ai/dsh-api-session-controller#session/observeEvent',
+  '@deepseek-ai/dsh-api-session-controller#session/observeState',
+  '@deepseek-ai/dsh-api-session-controller#session/observeProjections',
+] as const
+
+export interface PushRelayDeps {
+  invoke(frame: { methodId: never; params: unknown }): Promise<unknown>
+  emit(type: string, payload: Record<string, unknown>): void
+  isClosing?(): boolean
+}
+export interface PushRelayHandle {
+  start(sessionId: string): void
+  stop(sessionId: string): void
+  stopAll(): void
+  activeCount(): number
+}
+
+export function createPushRelay(deps: PushRelayDeps): PushRelayHandle {
+  interface PushSubscription {
+    readonly controller: AbortController
+    seq: number
+    task?: Promise<void>
+  }
+  const subs = new Map<string, PushSubscription>()
+  const pushKey = (sessionId: string, methodId: string): string => `${sessionId}|${methodId}`
+  const isClosing = (): boolean => deps.isClosing?.() === true
+
+  async function run(sessionId: string, methodId: string, sub: PushSubscription): Promise<void> {
+    try {
+      const value = await deps.invoke({
+        methodId: methodId as never,
+        params: { sessionId, address: { kind: 'session', sessionId }, signal: sub.controller.signal },
+      })
+      const iterable = value as AsyncIterable<SessionPushFrameLike> | undefined
+      if (iterable === null || typeof iterable !== 'object' || typeof iterable[Symbol.asyncIterator] !== 'function') {
+        throw new Error('NOT_WIRED: push stream did not return an AsyncIterable')
+      }
+      for await (const item of iterable) {
+        if (isClosing() || sub.controller.signal.aborted) break
+        sub.seq += 1
+        deps.emit('cap.event', {
+          methodId,
+          sessionId,
+          seq: sub.seq,
+          eventType: typeof item?.type === 'string' ? item.type.slice(0, 64) : 'event',
+        })
+      }
+      if (!sub.controller.signal.aborted && !isClosing()) {
+        deps.emit('cap.end', { methodId, sessionId, reason: 'stream-end' })
+      }
+    } catch {
+      // Explicit degrade: a missing/failed host push surface never crashes and
+      // never fabricates events; the seam sees `cap.end` with a reason.
+      if (!sub.controller.signal.aborted && !isClosing()) {
+        deps.emit('cap.end', { methodId, sessionId, reason: 'unavailable' })
+      }
+    } finally {
+      const key = pushKey(sessionId, methodId)
+      if (subs.get(key) === sub) subs.delete(key)
+    }
+  }
+
+  return {
+    start(sessionId: string): void {
+      if (isClosing() || sessionId === '') return
+      for (const methodId of PUSH_RELAY_METHOD_IDS) {
+        const key = pushKey(sessionId, methodId)
+        if (subs.has(key)) continue
+        const sub: PushSubscription = { controller: new AbortController(), seq: 0 }
+        subs.set(key, sub)
+        sub.task = run(sessionId, methodId, sub)
+      }
+    },
+    stop(sessionId: string): void {
+      for (const [key, sub] of [...subs]) {
+        if (!key.startsWith(`${sessionId}|`)) continue
+        sub.controller.abort()
+        subs.delete(key)
+      }
+    },
+    stopAll(): void {
+      for (const sub of subs.values()) sub.controller.abort()
+      subs.clear()
+    },
+    activeCount(): number {
+      return subs.size
+    },
+  }
+}
+
+/** S3: shared stream-signal validation. A non-AbortSignal `signal` is BAD_PARAMS
+ *  and never reaches a host stream; absence is allowed (hostInvoke owns one). */
+function streamSignalFrom(params: unknown, label: string): AbortSignal | undefined {
+  const signal = (params as { signal?: unknown } | undefined)?.signal
+  if (signal !== undefined && !(signal instanceof AbortSignal)) {
+    throw new Error(`BAD_PARAMS: ${label} signal must be an AbortSignal`)
+  }
+  return signal as AbortSignal | undefined
+}
 
 /** Bridge-owned host invocation for the generated dispatcher. Only wired ids
  *  reach a real host service; every other CapIR W id fails explicitly with
@@ -547,6 +714,48 @@ export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
           }
           return controller.initializeDefaultModel()
         }
+        // ---- S3 push streams (kind-gated; hostInvoke returns the AsyncIterable,
+        // does NOT consume it — the relay / caller owns cancellation) ----------
+        case '@deepseek-ai/dsh-api-session-controller#session/observeEvent':
+        case '@deepseek-ai/dsh-api-session-controller#session/observeState':
+        case '@deepseek-ai/dsh-api-session-controller#session/observeProjections': {
+          if (kind !== 'stream') {
+            throw new Error(`BAD_KIND: ${methodId} requires stream transport`)
+          }
+          const p = params as {
+            sessionId?: unknown
+            address?: { kind?: unknown; sessionId?: unknown }
+          } | undefined
+          // Accept the host-native `{address:{kind:'session',sessionId}}` shape and
+          // the minimal `{sessionId}` shorthand; both carry a sessionId (v3 §3.1).
+          const addr = p?.address
+          const sessionId = (addr?.kind === 'session' ? addr.sessionId : undefined) ?? p?.sessionId
+          if (typeof sessionId !== 'string' || sessionId === '') {
+            throw new Error('BAD_PARAMS: session push stream requires a non-empty sessionId')
+          }
+          const signal = streamSignalFrom(params, 'session stream')
+          const owned = signal === undefined ? new AbortController() : undefined
+          const useSignal = signal ?? owned!.signal
+          if (methodId.endsWith('/observeEvent')) {
+            if (typeof controller.observeEvent !== 'function') {
+              throw new Error(`NOT_WIRED: sessionController.observeEvent unavailable for ${methodId}`)
+            }
+            return withOwnedAbort(
+              controller.observeEvent({ address: { kind: 'session', sessionId } }, useSignal),
+              owned,
+            )
+          }
+          if (methodId.endsWith('/observeState')) {
+            if (typeof controller.observeState !== 'function') {
+              throw new Error(`NOT_WIRED: sessionController.observeState unavailable for ${methodId}`)
+            }
+            return withOwnedAbort(controller.observeState({ sessionId }, useSignal), owned)
+          }
+          if (typeof controller.observeProjections !== 'function') {
+            throw new Error(`NOT_WIRED: sessionController.observeProjections unavailable for ${methodId}`)
+          }
+          return withOwnedAbort(controller.observeProjections({ sessionId }, useSignal), owned)
+        }
         default:
           throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
       }
@@ -566,23 +775,22 @@ export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
         if (kind !== 'stream') {
           throw new Error(`BAD_KIND: ${methodId} requires stream transport`)
         }
-        const signal = (params as { signal?: unknown } | undefined)?.signal
-        if (signal !== undefined && !(signal instanceof AbortSignal)) {
-          throw new Error('BAD_PARAMS: account stream signal must be an AbortSignal')
-        }
+        const signal = streamSignalFrom(params, 'account stream')
         const ownController = signal === undefined ? new AbortController() : undefined
-        const useSignal = (signal as AbortSignal | undefined) ?? ownController!.signal
+        const useSignal = signal ?? ownController!.signal
         if (short === 'account/watchExpiry') {
           if (typeof account.watchExpiry !== 'function') {
             throw new Error(`NOT_WIRED: deepseekAccount.watchExpiry unavailable for ${methodId}`)
           }
-          return account.watchExpiry(useSignal)
+          return withOwnedAbort(account.watchExpiry(useSignal), ownController)
         }
         const watchFn = account.watchState ?? account.watch
         if (typeof watchFn !== 'function') {
           throw new Error(`NOT_WIRED: deepseekAccount.watch unavailable for ${methodId}`)
         }
-        return watchFn.call(account, useSignal, false)
+        // B2: own controller is aborted on return/throw/natural done (or when the
+        // caller signal settles — the host receives the same useSignal either way).
+        return withOwnedAbort(watchFn.call(account, useSignal, false), ownController)
       }
       // unary methods — params validated with decidable checks; NO logging of
       // params/values anywhere in this arm (desensitization discipline).
@@ -927,7 +1135,7 @@ function resolveAppendPluginRecord(): AppendPluginRecordFn | undefined {
 /** Resolve `ctx.sessionController` through the same cordis `ctx.get` seam the
  *  bridge already uses for persistence. `get?` is optional on BridgeContext, so
  *  a host without a service lookup degrades to "unavailable", never a throw. */
-function resolveSessionController(ctx: BridgeContext): SessionControllerModelLike | undefined {
+function resolveSessionController(ctx: BridgeContext): SessionControllerPushLike | undefined {
   // cordis throws "cannot get property ... without inject" for a service that
   // is not declared in `inject` (both the `ctx.get` and the direct-property
   // access can throw). Contain it so the frame answers UNSUPPORTED instead of
@@ -941,7 +1149,7 @@ function resolveSessionController(ctx: BridgeContext): SessionControllerModelLik
     svc = undefined
   }
   return svc !== undefined && typeof (svc as SessionControllerModelLike).list === 'function'
-    ? (svc as SessionControllerModelLike)
+    ? (svc as SessionControllerPushLike)
     : undefined
 }
 
@@ -1296,6 +1504,105 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
             : { error: list.error }),
         })
 
+        const errCode = (e?: string): string | undefined => {
+          if (e === undefined) return undefined
+          if (e.startsWith('NOT_WIRED:')) return 'NOT_WIRED'
+          if (e.startsWith('BAD_PARAMS:')) return 'BAD_PARAMS'
+          if (e.startsWith('BAD_KIND:')) return 'BAD_KIND'
+          return 'HOST_ERROR' // host domain errors never echo a value here
+        }
+
+        // ---- S3 push streams + B2 release probe ----------------------------
+        // Drive the 3 CapIR push stream methods through the SAME shipped
+        // createCapInvoke export; take one guarded item (ready frame) and close
+        // the iterator. Whitelist ONLY method kind/type — no payload echo.
+        let pushControllerPresent = false
+        let pushControllerListFn = false
+        let pushControllerDirect = false
+        try {
+          const svc = ctx.get?.('sessionController') as { list?: unknown } | undefined
+          pushControllerPresent = svc !== undefined
+          pushControllerListFn = typeof svc?.list === 'function'
+        } catch { /* keep false — same containment as resolveSessionController */ }
+        try {
+          const direct = (ctx as { sessionController?: { list?: unknown } }).sessionController
+          pushControllerDirect = direct !== undefined && typeof direct.list === 'function'
+        } catch { /* keep false */ }
+        emit('I-probe push controller', {
+          present: pushControllerPresent,
+          listFn: pushControllerListFn,
+          directListFn: pushControllerDirect,
+        })
+        const PUSH_ID = {
+          observeEvent: '@deepseek-ai/dsh-api-session-controller#session/observeEvent' as never,
+          observeState: '@deepseek-ai/dsh-api-session-controller#session/observeState' as never,
+          observeProjections: '@deepseek-ai/dsh-api-session-controller#session/observeProjections' as never,
+          unwiredStream: '@deepseek-ai/dsh-api-session-controller#session/control' as never,
+        }
+        const probeSessionId = `s3-push-probe-${randomUUID().slice(0, 8)}`
+        const probeStream = async (id: never) => {
+          const r = await probe(id, {
+            sessionId: probeSessionId,
+            address: { kind: 'session', sessionId: probeSessionId },
+          })
+          let iterableOk = false
+          let firstType: string | null = null
+          const val = r.value as AsyncIterable<SessionPushFrameLike> | undefined
+          if (r.ok && val !== null && typeof val === 'object' && typeof val[Symbol.asyncIterator] === 'function') {
+            iterableOk = true
+            try {
+              const it = val[Symbol.asyncIterator]()
+              const next = await Promise.race([
+                it.next(),
+                new Promise<{ done: boolean; value?: SessionPushFrameLike }>((resolve) =>
+                  setTimeout(() => resolve({ done: true }), 800)),
+              ])
+              if (!next.done && next.value !== undefined) {
+                firstType = typeof next.value.type === 'string' ? next.value.type : null
+              }
+              try { await it.return?.(undefined) } catch { /* keep observed values */ }
+            } catch { /* keep observed values */ }
+          }
+          return { ok: r.ok, error: r.error, iterableOk, firstType }
+        }
+        for (const [name, id] of [
+          ['observeEvent', PUSH_ID.observeEvent],
+          ['observeState', PUSH_ID.observeState],
+          ['observeProjections', PUSH_ID.observeProjections],
+        ] as const) {
+          const r = await probeStream(id)
+          emit('W push stream', {
+            method: name,
+            kind: 'stream',
+            ok: r.ok,
+            iterableOk: r.iterableOk,
+            firstType: r.firstType,
+            emitWhitelist: ['kind', 'iterableOk', 'firstType'],
+            ...(r.ok ? {} : { errorCode: errCode(r.error) }),
+          })
+        }
+        // B2 (S2 review concern B2): prove owned controller release on return.
+        emit('B2 owned-abort', { ownedAbortOnReturn: await probeOwnedAbortRelease() })
+        // E6 negative: an UNWIRED stream id must reject explicitly (no silent
+        // empty stream); a missing sessionId must be BAD_PARAMS and never reach
+        // the host.
+        const unwiredPush = await probe(PUSH_ID.unwiredStream, { sessionId: probeSessionId })
+        emit('W push negative', {
+          id: PUSH_ID.unwiredStream,
+          rejected: !unwiredPush.ok,
+          errorCode: errCode(unwiredPush.error),
+          rawCode: unwiredPush.error?.split(':')[0],
+          errorHead: unwiredPush.error?.slice(0, 96),
+        })
+        const badParamsPush = await probe(PUSH_ID.observeEvent, { address: { kind: 'session', sessionId: '' } })
+        emit('W push negative', {
+          id: PUSH_ID.observeEvent,
+          rejected: !badParamsPush.ok,
+          errorCode: errCode(badParamsPush.error),
+          rawCode: badParamsPush.error?.split(':')[0],
+          errorHead: badParamsPush.error?.slice(0, 96),
+        })
+
         // E1: model catalog via generated chain.
         const catalog = await probe(CAP_ID.catalog, {})
         const cat = catalog.value as { default?: Partial<ModelSelectionLike>; groups?: readonly { id?: unknown; models?: readonly unknown[] }[] } | undefined
@@ -1365,13 +1672,6 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // might carry a value), key NAMES and presence booleans are ever
         // serialized to stderr. No params object, wire frame, credential value
         // or token is passed to emit() anywhere in the S2 block.
-        const errCode = (e?: string): string | undefined => {
-          if (e === undefined) return undefined
-          if (e.startsWith('NOT_WIRED:')) return 'NOT_WIRED'
-          if (e.startsWith('BAD_PARAMS:')) return 'BAD_PARAMS'
-          if (e.startsWith('BAD_KIND:')) return 'BAD_KIND'
-          return 'HOST_ERROR' // host domain errors never echo a value here
-        }
         const CLIENT: AccountClientMetaLike = { version: '0.24-opentui-probe', locale: 'en-US', timezoneOffsetSeconds: 0 }
         const A = (name: string) => `@deepseek-ai/dsh-deepseek-account#account/${name}` as never
         const C = (name: string) => `@deepseek-ai/dsh-api-settings-controller#credentials/${name}` as never
@@ -1641,6 +1941,17 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     },
   })
   askRegistries.set(ctx, ask)
+
+  // ---- S3 host→client push relay ------------------------------------------
+  // Wired to the shipped generated chain: the relay's injectable factory lives
+  // at module scope (unit-testable); here it drives createCapInvoke / emitEvent.
+  const pushRelay = createPushRelay({
+    invoke: (frame) => createCapInvoke(ctx)(frame),
+    emit: emitEvent,
+    isClosing: () => closing,
+  })
+  const startPushRelay = (sessionId: string): void => pushRelay.start(sessionId)
+  const stopPushRelay = (sessionId: string): void => pushRelay.stop(sessionId)
 
   /** `turn.start` is emitted once, before any other frame of this turn. */
   function ensureStarted(state: TurnStreamState): void {
@@ -2163,6 +2474,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
 
   /** Dispose the current binding (detach semantics) and clear all state. */
   async function disposeBinding(current: SessionBinding): Promise<void> {
+    // S3: release every host push subscription for this session BEFORE the
+    // handle goes away — no host listener may outlive its binding.
+    stopPushRelay(current.sessionId)
     // A turn still streaming when its binding is replaced (session.open
     // replace) or closed MUST get a terminal frame. Dropping activeTurn without
     // one leaves the client's `await done` pending forever (P0). Emit it BEFORE
@@ -2325,6 +2639,8 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // bridge stayed alive — still push the snapshot (the binding is live and
         // its pending table is the source of truth).
         pushResumePendingSnapshot(binding.sessionId)
+        // S3: a reconnecting client re-arms the push face on its resume open.
+        startPushRelay(binding.sessionId)
         // A4/D7: rebuild always-grants from the durable journal as well. Set
         // union makes this idempotent against the already-live in-memory grants.
         restoreSessionGrantsFromJournal(binding.sessionId)
@@ -2413,6 +2729,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         journalCursor: journalCursorOf(binding),
         ...(previousSessionId !== undefined ? { previousSessionId } : {}),
       })
+      // S3: arm the push face for the newly-bound session (new or resume).
+      // Start AFTER binding/reply so a not-yet-ready host degrades to cap.end
+      // without delaying the open reply.
+      startPushRelay(sessionId)
       // A6: resume opens push the reconnect snapshot; fresh opens never do.
       // A4/D7: also rebuild always-grants from the durable journal on a fresh
       // process. Contained + non-awaiting: a corrupt/incomplete journal never
@@ -3096,6 +3416,8 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // Requirement 6: EOF / fiber dispose removes every listener so a stale
     // firehose callback can never write to a closed stdout.
     clearTurnSubscriptions()
+    // S3: release ALL host push subscriptions on teardown (closed connection).
+    pushRelay.stopAll()
     // T4 (D5): settle every host answerer await BEFORE disposing the registry.
     // `ask.dispose()` drops timers silently (no ask.settled), so teardown is the
     // only place left to guarantee no waterfall promise is left hanging on a

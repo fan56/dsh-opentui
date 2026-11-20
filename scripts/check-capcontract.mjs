@@ -382,7 +382,12 @@ function checkDispatchExecutability() {
     }
   }
   if (offenders.length === 0) {
-    ok("10. dispatch executability", "shipped bridge imports binder + wired registry reconciles with ledger in_wired (1/257) + resident dataflow test present")
+    let wiredCount = "?"
+    try {
+      const ledger = JSON.parse(readFileSync(LEDGER_PATH, "utf8"))
+      wiredCount = String(ledger?.dimensions?.wired_capir_generated?.in_wired_total ?? "?")
+    } catch { /* keep "?" — the reconciliation itself already passed */ }
+    ok("10. dispatch executability", `shipped bridge imports binder + wired registry reconciles with ledger in_wired (${wiredCount}/257) + resident dataflow test present`)
   } else {
     bad("10. dispatch executability", offenders.join("; "))
   }

@@ -13,8 +13,8 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 | Full (CapIR) | 257 methods / 43 artifacts | unary 226 / stream 31; class W 257; endpoints: sc 27, global map sum 257 |
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
 | Wired (manual @manual wire) | 11 methods | derived-from-manual |
-| Wired (generated capcontract, S1) | 18 methods | S1+S2-generated-capcontract |
-| in_wired total (of 257) | 19 methods | union of @manual capir_id + generated ids |
+| Wired (generated capcontract, S1) | 21 methods | S1+S2+S3-generated-capcontract |
+| in_wired total (of 257) | 22 methods | union of @manual capir_id + generated ids |
 | I-class (manual) | 6 services | derived-from-manual (v3 proposal 口径) |
 
 ## Reconciliation (first-run closure)
@@ -73,6 +73,9 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 - @deepseek-ai/dsh-api-session-controller#session/modelCatalog
 - @deepseek-ai/dsh-api-session-controller#session/selectModel
 - @deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel
+- @deepseek-ai/dsh-api-session-controller#session/observeEvent
+- @deepseek-ai/dsh-api-session-controller#session/observeState
+- @deepseek-ai/dsh-api-session-controller#session/observeProjections
 - @deepseek-ai/dsh-deepseek-account#account/cancelSignIn
 - @deepseek-ai/dsh-deepseek-account#account/getBalance
 - @deepseek-ai/dsh-deepseek-account#account/getNotificationContent
@@ -132,9 +135,9 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 | 19 | @deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel | unary | Y | Y | Y | profile-patch |
 | 20 | @deepseek-ai/dsh-api-session-controller#session/list | unary | Y | Y | Y | profile-patch |
 | 21 | @deepseek-ai/dsh-api-session-controller#session/modelCatalog | unary | Y | Y | Y | profile-patch |
-| 22 | @deepseek-ai/dsh-api-session-controller#session/observeEvent | stream | Y | Y | N | profile-patch |
-| 23 | @deepseek-ai/dsh-api-session-controller#session/observeProjections | stream | Y | Y | N | profile-patch |
-| 24 | @deepseek-ai/dsh-api-session-controller#session/observeState | stream | Y | Y | N | profile-patch |
+| 22 | @deepseek-ai/dsh-api-session-controller#session/observeEvent | stream | Y | Y | Y | profile-patch |
+| 23 | @deepseek-ai/dsh-api-session-controller#session/observeProjections | stream | Y | Y | Y | profile-patch |
+| 24 | @deepseek-ai/dsh-api-session-controller#session/observeState | stream | Y | Y | Y | profile-patch |
 | 25 | @deepseek-ai/dsh-api-session-controller#session/openWorkspacePath | unary | Y | Y | N | profile-patch |
 | 26 | @deepseek-ai/dsh-api-session-controller#session/page | unary | Y | Y | N | profile-patch |
 | 27 | @deepseek-ai/dsh-api-session-controller#session/projections | unary | Y | Y | N | profile-patch |
