@@ -122,10 +122,19 @@ else
   fail "provision: see $OUT/provision.log"; dump_diagnostics; exit 2
 fi
 LINK="$SCRATCH/profiles/opentui-inproc/node_modules/@aiwayds/dsh-opentui-bridge"
-if [ "$(readlink "$LINK" 2>/dev/null)" = "$BRIDGE_DIR" ]; then
-  pass "provision: bridge symlink -> $BRIDGE_DIR"
+# S6 symlink-debt retirement: the bridge is now a REAL DIRECTORY COPY, never
+# an absolute symlink. Assert a real dir (not a link) with the shipped files,
+# and that its index.js hash matches this install's fingerprint.
+if [ -d "$LINK" ] && [ ! -L "$LINK" ] && [ -f "$LINK/index.js" ] && [ -f "$LINK/bundle-fingerprint.json" ]; then
+  EXPECTED_SHA=$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).sha256)' "$BRIDGE_DIR/bundle-fingerprint.json")
+  ACTUAL_SHA=$(node -e 'const c=require("node:crypto"),fs=require("node:fs");process.stdout.write(c.createHash("sha256").update(fs.readFileSync(process.argv[1])).digest("hex"))' "$LINK/index.js")
+  if [ "$EXPECTED_SHA" = "$ACTUAL_SHA" ]; then
+    pass "provision: bridge materialized as real dir (sha256 match, no symlink)"
+  else
+    fail "provision: bridge copy hash mismatch (expected $EXPECTED_SHA, got $ACTUAL_SHA)"; dump_diagnostics; exit 2
+  fi
 else
-  fail "provision: bridge symlink not repaired: $(readlink "$LINK" 2>/dev/null)"; dump_diagnostics; exit 2
+  fail "provision: bridge is not a real directory copy: $(ls -ld "$LINK" 2>/dev/null)"; dump_diagnostics; exit 2
 fi
 
 # ------------------------------------------------------- 3. handshake smoke

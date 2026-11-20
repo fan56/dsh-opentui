@@ -24,13 +24,16 @@
 //                    resolution supplies those bundles from the running dsh
 //                    closure (wild-package shadowing is the historical
 //                    incident this guard prevents).
-//   [3/7] symlink  — create node_modules/@aiwayds/dsh-opentui-bridge as an
-//                    ABSOLUTE symlink to THIS installation's dist/bridge
-//                    (realpath). No link:/file: protocol, no copying.
-//   [4/7] verify   — re-read the link and confirm it resolves to dist/bridge;
-//                    refuse any @deepseek-ai copy in the profile.
-//   [5/7] identity — T5 guard: hash the RESOLVED bridge's index.js and compare
-//                    with the build-time fingerprint shipped in THIS
+//   [3/7] copy     — materialize node_modules/@aiwayds/dsh-opentui-bridge as a
+//                    REAL DIRECTORY COPY of THIS installation's dist/bridge.
+//                    S6 symlink-debt retirement: no absolute symlink (no path
+//                    binding, no multi-worktree last-writer-wins, no dangling
+//                    link when a worktree is removed). Converged every launch;
+//                    idempotent when the copy's index.js hash matches.
+//   [4/7] verify   — confirm the bridge is a real directory carrying the
+//                    shipped files; refuse any @deepseek-ai copy in the profile.
+//   [5/7] identity — T5 guard: hash the materialized bridge's index.js and
+//                    compare with the build-time fingerprint shipped in THIS
 //                    installation's dist/bridge/bundle-fingerprint.json, plus
 //                    name / version. No realpath-prefix hard binding.
 //   [6/7] patch    — skipped ONLY by the DSH_OPENTUI_INPROC=0 escape hatch:
@@ -56,18 +59,14 @@
 //   taken over. The lock is released in `finally`, including on failure.
 //   Same-machine only: no cross-host / cross-user semantics.
 //
-// Idempotency: an existing symlink that resolves to the exact expected target
-// is left untouched. An existing entry that points somewhere else is NOT
-// overwritten: a conflict is reported (the identity guard below still runs
-// and decides whether the resolved artifact is acceptable).
+// Idempotency: an existing bridge directory whose index.js hash matches THIS
+// install's build-time fingerprint is left untouched; a stale directory, a
+// leftover symlink, or a missing entry is replaced with a fresh copy.
 //
-// T7 — repair mode (`--repair`, invoked by `dsh-opentui --repair-bridge`):
-//   In the normal path the conflict above is report-only. With --repair the
-//   SAME lock and the SAME pass are used, but a wrong symlink target (or a
-//   non-symlink entry) is replaced with the absolute link to this install's
-//   dist/bridge; a missing / wrong manifest is still converged as usual. The
-//   T5 identity guard runs afterwards either way — repair fixes the LINK,
-//   never the artifact CONTENT, so a fingerprint mismatch still fails.
+// `--repair` / `--repair-bridge`: still accepted for CLI/caller compatibility,
+// but a no-op for the bridge materialization — the copy converges
+// unconditionally on every provision. The T5 identity guard always runs after
+// convergence, so a fingerprint mismatch still fails loud.
 //
 // Hard guard: this script only ever touches the ONE profile named
 // `opentui-inproc`. It never runs a package manager and never writes a
@@ -76,6 +75,7 @@
 import { createHash } from 'node:crypto'
 import {
   closeSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -86,7 +86,6 @@ import {
   renameSync,
   rmSync,
   statSync,
-  symlinkSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -125,7 +124,10 @@ const LOCK_RETRY_MS = 25 // backoff between attempts while a peer holds the lock
 const LOCK_MAX_ATTEMPTS = 40 // <= ~1s of waiting before a peer is skipped
 
 const pkgRoot = dirname(dirname(fileURLToPath(import.meta.url)))
-const bridgeDirRaw = join(pkgRoot, 'dist', 'bridge')
+// Testability seam: the fail-fast tests point this at a bogus bridge dir to
+// drive the fingerprint-mismatch path without mutating the real build artifact.
+// Unset in production (the shipped dist/bridge is authoritative).
+const bridgeDirRaw = process.env.DSH_OPENTUI_TEST_BRIDGE_DIR || join(pkgRoot, 'dist', 'bridge')
 const fingerprintPath = join(bridgeDirRaw, 'bundle-fingerprint.json')
 
 const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -840,8 +842,21 @@ function linkState(path) {
   return { kind: 'symlink', raw, abs, resolved }
 }
 
+/** True when `dir` is an up-to-date copy of this install's bridge: its
+ *  index.js sha256 matches the build-time fingerprint. Used to make the
+ *  bridge-copy materialization idempotent across launches/worktrees. */
+function stateIsCurrentCopy(dir, fingerprintFile) {
+  try {
+    const fp = readJsonObject(fingerprintFile)
+    if (!fp || typeof fp.sha256 !== 'string') return false
+    return sha256File(join(dir, 'index.js')) === fp.sha256
+  } catch {
+    return false
+  }
+}
+
 /** Remove whatever occupies `path` (symlink, file or directory) so the correct
- *  symlink can be created in its place. Repair mode only; ENOENT is a no-op. */
+ *  copy can be created in its place. ENOENT is a no-op. */
 function removePath(path) {
   let st
   try {
@@ -1065,7 +1080,9 @@ function provisionShim() {
 
 // --- The provision pass itself (runs under the lock) ------------------------
 function runProvision({ repair = false } = {}) {
-  if (repair) note('repair mode — a wrong bridge symlink will be rebuilt (content is never repaired)')
+  // S6: --repair is accepted for CLI compatibility but is a no-op — the bridge
+  // copy converges unconditionally on every provision (no symlink to repair).
+  if (repair) note('repair mode accepted (no-op — bridge copy converges every provision)')
   // Prerequisites (read-only) are checked before any mutation.
   if (!existsSync(bridgeDirRaw) || !statSync(bridgeDirRaw).isDirectory()) {
     fail(
@@ -1116,51 +1133,48 @@ function runProvision({ repair = false } = {}) {
     }
   }
 
-  // [3/7] Symlink: create the absolute link, skip when already correct, and
-  // ONLY in repair mode replace a wrong target / non-symlink entry. Normal
-  // startup stays report-only (a conflict is a WARN, never an overwrite).
-  let conflict = null
+  // [3/7] Materialize the bridge as a REAL DIRECTORY COPY (S6 symlink-debt
+  // retirement). The old design wrote an ABSOLUTE symlink to THIS
+  // installation's dist/bridge: that bound the profile to one install path and
+  // let multiple worktrees sharing a DSH_HOME leave the link pointing at
+  // whichever install provisioned last (A's dsh loading B's bundle = cross-
+  // contamination); deleting a worktree left a dangling link → BRIDGE_TIMEOUT.
+  // A copy removes the path binding entirely: every provision converges the
+  // profile copy to THIS install's bytes, and the fingerprint identity guard
+  // below rejects any drift. No symlink, no --repair branch, no conflict
+  // report-only path (the flag is accepted for CLI compatibility but is a
+  // no-op — convergence is unconditional).
   {
     const state = linkState(linkPath)
-    if (state.kind === 'absent') {
-      mkdirSync(dirname(linkPath), { recursive: true })
-      try {
-        symlinkSync(bridgeDir, linkPath, 'dir')
-      } catch (error) {
-        fail(`could not create symlink ${linkPath}: ${error?.message ?? error}`)
-      }
-      say(3, 'symlink', `created ${linkPath} -> ${bridgeDir}`)
-    } else if (state.kind === 'symlink' && (state.resolved === bridgeDir || state.abs === bridgeDir)) {
-      say(3, 'symlink', 'already points at the bridge artifact, skipping')
-    } else if (repair) {
-      const desc = state.kind === 'not-symlink'
-        ? `${linkPath} is not a symlink`
-        : `${linkPath} -> ${state.raw}`
-      note(`repairing bridge link (${desc})`)
+    const isReadyDir = state.kind === 'not-symlink' && stateIsCurrentCopy(linkPath, fingerprintPath)
+    if (!isReadyDir) {
+      const desc = state.kind === 'absent' ? 'absent' : state.kind === 'symlink' ? `symlink -> ${state.raw}` : 'stale directory'
+      note(`materializing bridge copy (${desc})`)
       try {
         removePath(linkPath)
         mkdirSync(dirname(linkPath), { recursive: true })
-        symlinkSync(bridgeDir, linkPath, 'dir')
+        cpSync(bridgeDir, linkPath, { recursive: true })
       } catch (error) {
-        fail(`could not repair symlink ${linkPath}: ${error?.message ?? error}`)
+        fail(`could not materialize bridge copy at ${linkPath}: ${error?.message ?? error}`)
       }
-      say(3, 'symlink', `repaired ${linkPath} -> ${bridgeDir}`)
-    } else if (state.kind === 'not-symlink') {
-      conflict = `${linkPath} exists and is NOT a symlink`
+      say(3, 'bridge-copy', `copied ${bridgeDir} -> ${linkPath}`)
     } else {
-      conflict = `${linkPath} -> ${state.raw} (expected ${bridgeDir})`
+      say(3, 'bridge-copy', `${linkPath} already matches this install, skipping`)
     }
   }
 
-  // [4/7] Verify: report-only for a conflict; never overwrite.
-  if (conflict !== null) {
-    warn(`conflict, not overwriting: ${conflict}`)
-    warn('the profile link was left untouched; the identity guard below decides whether the resolved artifact is acceptable')
-    console.log(`${PREFIX}REPORT — conflict detected, no change made to the link`)
-  } else {
-    const finalState = linkState(linkPath)
-    if (finalState.kind !== 'symlink' || (finalState.resolved !== bridgeDir && finalState.abs !== bridgeDir)) {
-      fail(`post-write verification failed for ${linkPath}: link does not resolve to ${bridgeDir}`)
+  // [4/7] Verify: linkPath is a REAL directory (never a symlink) carrying the
+  // shipped bridge files, and no @deepseek-ai package leaked into the profile.
+  {
+    let st
+    try { st = lstatSync(linkPath) } catch (error) { fail(`post-write verification failed for ${linkPath}: ${error?.message ?? error}`) }
+    if (!st.isDirectory() || st.isSymbolicLink()) {
+      fail(`post-write verification failed for ${linkPath}: bridge is not a real directory`)
+    }
+    for (const required of ['package.json', 'index.js', 'bundle-fingerprint.json']) {
+      if (!existsSync(join(linkPath, required))) {
+        fail(`post-write verification failed: ${linkPath} is missing ${required}`)
+      }
     }
     // Explicit guard: no @deepseek-ai package may be present in the profile.
     const deepseekDir = join(profileDir, 'node_modules', '@deepseek-ai')

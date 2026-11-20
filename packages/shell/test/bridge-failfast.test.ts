@@ -13,7 +13,8 @@
  * both consumers.
  */
 import { describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -103,7 +104,7 @@ describe("handshake path fail-fast (BridgeBootstrapError)", () => {
 // ---------------------------------------------------------------------------
 // 3. Fingerprint path (ProvisionError from the spawned script).
 // ---------------------------------------------------------------------------
-function runProvision(home: string): { status: number | null; stderr: string; stdout: string } {
+function runProvision(home: string, bridgeDir?: string): { status: number | null; stderr: string; stdout: string } {
 	// Hosted runners have no ambient `dsh`, so auto-detection would fail before
 	// the fingerprint path under test. Declare the pinned host explicitly here;
 	// host-version scenarios belong to host-compat.test.ts and are untouched.
@@ -113,6 +114,7 @@ function runProvision(home: string): { status: number | null; stderr: string; st
 			DSH_HOME: home,
 			DSH_OPENTUI_INPROC: "1",
 			[HOST_VERSION_ENV]: "0.2.2-rc.3",
+			...(bridgeDir ? { DSH_OPENTUI_TEST_BRIDGE_DIR: bridgeDir } : {}),
 		},
 	})
 	return {
@@ -164,19 +166,28 @@ describe("fingerprint path fail-fast (ProvisionError)", () => {
 					},
 				}),
 			)
-			// A bogus bridge dir: name matches, version/hash mismatch the REAL fingerprint.
+			// S6: the bridge is materialized as a real dir copy (no symlink), so
+			// a poisoned profile entry is overwritten — the guard is driven via
+			// a bogus BRIDGE SOURCE dir (testability env seam) instead. Its
+			// fingerprint declares a bogus version; the copied package.json keeps
+			// the real one, so identity fails on `version`.
 			const bogus = join(root, "bogus-bridge")
 			mkdirSync(bogus, { recursive: true })
-			writeFileSync(join(bogus, "package.json"), JSON.stringify({ name: expected.name, version: "0.0.0-BOGUS" }))
+			writeFileSync(join(bogus, "package.json"), JSON.stringify({ name: expected.name, version: expected.version }))
 			writeFileSync(join(bogus, "index.js"), "// bogus\n")
-			symlinkSync(bogus, join(linkDir, "dsh-opentui-bridge"), "dir")
+			writeFileSync(join(bogus, "cordis.patch.yml"), "")
+			writeFileSync(join(bogus, "bundle-fingerprint.json"), JSON.stringify({
+				name: expected.name,
+				version: "0.0.0-BOGUS",
+				sha256: createHash("sha256").update("// bogus\n").digest("hex"),
+			}))
 
-			const run = runProvision(home)
+			const run = runProvision(home, bogus)
 			expect(run.status).toBe(1)
 			expect(run.stderr).toContain("bridge identity check failed")
 			// element 1 carries expected/actual on the fingerprint path
-			expect(run.stderr).toContain(`expected "${expected.version}"`)
-			expect(run.stderr).toContain('actual "0.0.0-BOGUS"')
+			expect(run.stderr).toContain('expected "0.0.0-BOGUS"')
+			expect(run.stderr).toContain(`actual "${expected.version}"`)
 			// elements 2 + 3 from the single shared source
 			assertThreeElements(run.stderr, "bridge identity check failed")
 		} finally {
