@@ -1,0 +1,11 @@
+{
+  "_note": "Independent provenance input for scripts/gen-capir.mjs. source_branch/source_version are pinned here (not hardcoded in the generator) so a host rc bump updates provenance by editing this file, never by editing generated capir.json. Keep values in sync with the extractor run recorded in capir/README.md.",
+  "repository": "deepseek-ai/deepseek-harness",
+  "license": "MIT",
+  "copyright": "Copyright (c) 2026 DeepSeek",
+  "source_branch": "feat/companion-install-hint",
+  "source_version": "0.2.2-rc.5",
+  "artifact_glob": "packages/**/lib/typert.remote-client.js",
+  "extraction": "local read-only; scripts/extract_capir_artifacts.py",
+  "formatting": "scripts/gen-capir.mjs"
+}

@@ -1,0 +1,2631 @@
+{
+  "_note": "Sanitized local-extractor output committed as the reproducible generator input. Machine-specific source_root removed; every field consumed by scripts/gen-capir.mjs preserved verbatim. Regenerate by running the extractor on a host-source checkout (see capir/README.md).",
+  "head_note": "read-only extraction; no git command executed",
+  "counting_rules": {
+    "artifact": "packages/**/lib/typert.remote-client.js 文件数",
+    "method": "生成 .d.ts 中 readonly '<ns>/<method>': TypertRemoteMethod<...> 条目；.js methods 键交叉核对",
+    "endpoint": "session-controller .d.ts interface TypertRemoteMap 键数（排除 TypertRemoteScopeMap 的 agent-scope 变体）；源码 @Remote 交叉核对",
+    "class_W": "./remote client face 全部方法为 CapIR W 类（client 可调用）；I 类为 ctx 直取面，不在生成工件内"
+  },
+  "totals": {
+    "artifacts": 43,
+    "methods_dts": 257,
+    "methods_js": 257,
+    "methods_all_js_keys_match_dts": true,
+    "endpoints_global_map_sum": 257,
+    "endpoints_session_controller_map": 27,
+    "scope_variants_global": 34,
+    "session_controller_src_remote_count": 27,
+    "session_controller_src_remote_by_file": {
+      "agent.ts": 0,
+      "archived-session-gate.ts": 0,
+      "assistant-stream.ts": 0,
+      "catalog.ts": 0,
+      "commands.ts": 0,
+      "continuation.ts": 0,
+      "control.ts": 0,
+      "file-references.ts": 1,
+      "history.ts": 0,
+      "index.ts": 25,
+      "list.ts": 0,
+      "media-references.ts": 0,
+      "remote-events.ts": 0,
+      "session-resource.ts": 0,
+      "skill-catalog.ts": 1,
+      "types.ts": 0
+    },
+    "methods_by_kind": {
+      "stream": 31,
+      "unary": 226
+    },
+    "methods_by_namespace_top": {
+      "forgePanel": 56,
+      "session": 25,
+      "pluginManager": 15,
+      "liveshareShares": 13,
+      "account": 12,
+      "dynamicCordisRunner": 12,
+      "workspace": 11,
+      "terminal": 9,
+      "cuaAccess": 9,
+      "schedule": 9,
+      "goals": 7,
+      "workspaceFiles": 6,
+      "speech": 6,
+      "settings": 5,
+      "pluginMarket": 4,
+      "job": 3,
+      "credentials": 3,
+      "directoryPicker": 3,
+      "productAnalytics": 3,
+      "connectorAccounts": 3,
+      "messageFeedback": 3,
+      "llm": 3,
+      "mcpManager": 3,
+      "agentPresets": 3,
+      "sessionStatus": 2,
+      "officeKit": 2,
+      "claudeCodeMods": 2,
+      "cotTranslation": 2,
+      "commands": 2,
+      "permissionPresets": 2,
+      "userQuestions": 2,
+      "subagents": 2,
+      "remoteAccess": 1,
+      "fileReferences": 1,
+      "skills": 1,
+      "fileUploads": 1,
+      "pluginEvents": 1,
+      "pluginRegistryProbe": 1,
+      "toolResults": 1,
+      "sessionReferenceResolver": 1,
+      "actionCards": 1,
+      "deepseekChatImport": 1,
+      "pluginRecommendations": 1,
+      "sessionFeedback": 1,
+      "pluginInventory": 1,
+      "agentTeams": 1,
+      "web": 1
+    }
+  },
+  "artifacts": [
+    {
+      "package": "@deepseek-ai/dsh-deepseek-account",
+      "dir": "packages/account/deepseek-account/lib",
+      "js": "packages/account/deepseek-account/lib/typert.remote-client.js",
+      "dts": "packages/account/deepseek-account/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "account"
+      ],
+      "methods_dts": 12,
+      "methods_js": 12,
+      "methods_js_match_dts": true,
+      "endpoints_map": 12,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "account/cancelSignIn",
+          "namespace": "account",
+          "name": "cancelSignIn",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/getBalance",
+          "namespace": "account",
+          "name": "getBalance",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/getNotificationContent",
+          "namespace": "account",
+          "name": "getNotificationContent",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/getNotifications",
+          "namespace": "account",
+          "name": "getNotifications",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/getProfile",
+          "namespace": "account",
+          "name": "getProfile",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/getState",
+          "namespace": "account",
+          "name": "getState",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/hasRunningAccountTasks",
+          "namespace": "account",
+          "name": "hasRunningAccountTasks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/reportNotificationEvent",
+          "namespace": "account",
+          "name": "reportNotificationEvent",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/signOut",
+          "namespace": "account",
+          "name": "signOut",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/startSignIn",
+          "namespace": "account",
+          "name": "startSignIn",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "account/watch",
+          "namespace": "account",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "account/watchExpiry",
+          "namespace": "account",
+          "name": "watchExpiry",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-job-controller",
+      "dir": "packages/api/job-controller/lib",
+      "js": "packages/api/job-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/job-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "job"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "methods_js_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "job/follow",
+          "namespace": "job",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "job/kill",
+          "namespace": "job",
+          "name": "kill",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "job/list",
+          "namespace": "job",
+          "name": "list",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-remote-access",
+      "dir": "packages/api/remote-access/lib",
+      "js": "packages/api/remote-access/lib/typert.remote-client.js",
+      "dts": "packages/api/remote-access/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "remoteAccess"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "remoteAccess/follow",
+          "namespace": "remoteAccess",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-session-controller",
+      "dir": "packages/api/session-controller/lib",
+      "js": "packages/api/session-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/session-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "fileReferences",
+        "session",
+        "skills"
+      ],
+      "methods_dts": 27,
+      "methods_js": 27,
+      "methods_js_match_dts": true,
+      "endpoints_map": 27,
+      "scope_variants": [
+        "agent:fileReferences/list"
+      ],
+      "methods": [
+        {
+          "key": "fileReferences/list",
+          "namespace": "fileReferences",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/attachment",
+          "namespace": "session",
+          "name": "attachment",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/cancel",
+          "namespace": "session",
+          "name": "cancel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/canOpenWorkspacePath",
+          "namespace": "session",
+          "name": "canOpenWorkspacePath",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/control",
+          "namespace": "session",
+          "name": "control",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "session/create",
+          "namespace": "session",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/events",
+          "namespace": "session",
+          "name": "events",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/follow",
+          "namespace": "session",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "session/fork",
+          "namespace": "session",
+          "name": "fork",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/initializeDefaultModel",
+          "namespace": "session",
+          "name": "initializeDefaultModel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/list",
+          "namespace": "session",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/modelCatalog",
+          "namespace": "session",
+          "name": "modelCatalog",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/observeEvent",
+          "namespace": "session",
+          "name": "observeEvent",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "session/observeProjections",
+          "namespace": "session",
+          "name": "observeProjections",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "session/observeState",
+          "namespace": "session",
+          "name": "observeState",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "session/openWorkspacePath",
+          "namespace": "session",
+          "name": "openWorkspacePath",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/page",
+          "namespace": "session",
+          "name": "page",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/projections",
+          "namespace": "session",
+          "name": "projections",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/prompt",
+          "namespace": "session",
+          "name": "prompt",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/rename",
+          "namespace": "session",
+          "name": "rename",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/search",
+          "namespace": "session",
+          "name": "search",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/selectModel",
+          "namespace": "session",
+          "name": "selectModel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/state",
+          "namespace": "session",
+          "name": "state",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/updateQueue",
+          "namespace": "session",
+          "name": "updateQueue",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/wait",
+          "namespace": "session",
+          "name": "wait",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "session/workspacePathApplications",
+          "namespace": "session",
+          "name": "workspacePathApplications",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "skills/list",
+          "namespace": "skills",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-settings-controller",
+      "dir": "packages/api/settings-controller/lib",
+      "js": "packages/api/settings-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/settings-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "credentials",
+        "settings"
+      ],
+      "methods_dts": 8,
+      "methods_js": 8,
+      "methods_js_match_dts": true,
+      "endpoints_map": 8,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "credentials/describe",
+          "namespace": "credentials",
+          "name": "describe",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "credentials/set",
+          "namespace": "credentials",
+          "name": "set",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "credentials/unset",
+          "namespace": "credentials",
+          "name": "unset",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "settings/describe",
+          "namespace": "settings",
+          "name": "describe",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "settings/mutate",
+          "namespace": "settings",
+          "name": "mutate",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "settings/openSettingsDocument",
+          "namespace": "settings",
+          "name": "openSettingsDocument",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "settings/replace",
+          "namespace": "settings",
+          "name": "replace",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "settings/update",
+          "namespace": "settings",
+          "name": "update",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-terminal-controller",
+      "dir": "packages/api/terminal-controller/lib",
+      "js": "packages/api/terminal-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/terminal-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "terminal"
+      ],
+      "methods_dts": 9,
+      "methods_js": 9,
+      "methods_js_match_dts": true,
+      "endpoints_map": 9,
+      "scope_variants": [
+        "agent:terminal/attach",
+        "agent:terminal/close",
+        "agent:terminal/create",
+        "agent:terminal/environment",
+        "agent:terminal/rename",
+        "agent:terminal/shells"
+      ],
+      "methods": [
+        {
+          "key": "terminal/attach",
+          "namespace": "terminal",
+          "name": "attach",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "terminal/close",
+          "namespace": "terminal",
+          "name": "close",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "terminal/create",
+          "namespace": "terminal",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "terminal/environment",
+          "namespace": "terminal",
+          "name": "environment",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "terminal/list",
+          "namespace": "terminal",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "terminal/rename",
+          "namespace": "terminal",
+          "name": "rename",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "terminal/retain",
+          "namespace": "terminal",
+          "name": "retain",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "terminal/shells",
+          "namespace": "terminal",
+          "name": "shells",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "terminal/watch",
+          "namespace": "terminal",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-workspace-controller",
+      "dir": "packages/api/workspace-controller/lib",
+      "js": "packages/api/workspace-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/workspace-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "directoryPicker",
+        "workspace"
+      ],
+      "methods_dts": 14,
+      "methods_js": 14,
+      "methods_js_match_dts": true,
+      "endpoints_map": 14,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "directoryPicker/createDirectory",
+          "namespace": "directoryPicker",
+          "name": "createDirectory",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "directoryPicker/list",
+          "namespace": "directoryPicker",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "directoryPicker/pick",
+          "namespace": "directoryPicker",
+          "name": "pick",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/archiveSession",
+          "namespace": "workspace",
+          "name": "archiveSession",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/create",
+          "namespace": "workspace",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/delete",
+          "namespace": "workspace",
+          "name": "delete",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/follow",
+          "namespace": "workspace",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "workspace/initializeDefault",
+          "namespace": "workspace",
+          "name": "initializeDefault",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/insertBefore",
+          "namespace": "workspace",
+          "name": "insertBefore",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/insertSessionBefore",
+          "namespace": "workspace",
+          "name": "insertSessionBefore",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/pinSession",
+          "namespace": "workspace",
+          "name": "pinSession",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/rename",
+          "namespace": "workspace",
+          "name": "rename",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/unarchiveSession",
+          "namespace": "workspace",
+          "name": "unarchiveSession",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspace/unpinSession",
+          "namespace": "workspace",
+          "name": "unpinSession",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-workspace-files",
+      "dir": "packages/api/workspace-files/lib",
+      "js": "packages/api/workspace-files/lib/typert.remote-client.js",
+      "dts": "packages/api/workspace-files/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "workspaceFiles"
+      ],
+      "methods_dts": 6,
+      "methods_js": 6,
+      "methods_js_match_dts": true,
+      "endpoints_map": 6,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "workspaceFiles/changes",
+          "namespace": "workspaceFiles",
+          "name": "changes",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "workspaceFiles/list",
+          "namespace": "workspaceFiles",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspaceFiles/read",
+          "namespace": "workspaceFiles",
+          "name": "read",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspaceFiles/readBytes",
+          "namespace": "workspaceFiles",
+          "name": "readBytes",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspaceFiles/search",
+          "namespace": "workspaceFiles",
+          "name": "search",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "workspaceFiles/stat",
+          "namespace": "workspaceFiles",
+          "name": "stat",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-plugin-manager",
+      "dir": "packages/boot/plugin-manager/lib",
+      "js": "packages/boot/plugin-manager/lib/typert.remote-client.js",
+      "dts": "packages/boot/plugin-manager/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginManager"
+      ],
+      "methods_dts": 15,
+      "methods_js": 15,
+      "methods_js_match_dts": true,
+      "endpoints_map": 15,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "pluginManager/cancelInstall",
+          "namespace": "pluginManager",
+          "name": "cancelInstall",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/inspect",
+          "namespace": "pluginManager",
+          "name": "inspect",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/installBundle",
+          "namespace": "pluginManager",
+          "name": "installBundle",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/listBundles",
+          "namespace": "pluginManager",
+          "name": "listBundles",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/listPlugins",
+          "namespace": "pluginManager",
+          "name": "listPlugins",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/listVersionExemptions",
+          "namespace": "pluginManager",
+          "name": "listVersionExemptions",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/listVersions",
+          "namespace": "pluginManager",
+          "name": "listVersions",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/readBundleDetail",
+          "namespace": "pluginManager",
+          "name": "readBundleDetail",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/registries",
+          "namespace": "pluginManager",
+          "name": "registries",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/removeBundle",
+          "namespace": "pluginManager",
+          "name": "removeBundle",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/setBundleEnabled",
+          "namespace": "pluginManager",
+          "name": "setBundleEnabled",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/setPluginEnabled",
+          "namespace": "pluginManager",
+          "name": "setPluginEnabled",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/setVersionExemption",
+          "namespace": "pluginManager",
+          "name": "setVersionExemption",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/updateBundle",
+          "namespace": "pluginManager",
+          "name": "updateBundle",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginManager/waitForInstall",
+          "namespace": "pluginManager",
+          "name": "waitForInstall",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-plugin-market",
+      "dir": "packages/boot/plugin-market/lib",
+      "js": "packages/boot/plugin-market/lib/typert.remote-client.js",
+      "dts": "packages/boot/plugin-market/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginMarket"
+      ],
+      "methods_dts": 4,
+      "methods_js": 4,
+      "methods_js_match_dts": true,
+      "endpoints_map": 4,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "pluginMarket/listIndexes",
+          "namespace": "pluginMarket",
+          "name": "listIndexes",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginMarket/readEntryDetail",
+          "namespace": "pluginMarket",
+          "name": "readEntryDetail",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginMarket/search",
+          "namespace": "pluginMarket",
+          "name": "search",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "pluginMarket/setIndexes",
+          "namespace": "pluginMarket",
+          "name": "setIndexes",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-file-upload",
+      "dir": "packages/client/file-upload/lib",
+      "js": "packages/client/file-upload/lib/typert.remote-client.js",
+      "dts": "packages/client/file-upload/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "fileUploads"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:fileUploads/upload"
+      ],
+      "methods": [
+        {
+          "key": "fileUploads/upload",
+          "namespace": "fileUploads",
+          "name": "upload",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-hmr",
+      "dir": "packages/client/hmr/lib",
+      "js": "packages/client/hmr/lib/typert.remote-client.js",
+      "dts": "packages/client/hmr/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginEvents"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "pluginEvents/follow",
+          "namespace": "pluginEvents",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-product-analytics",
+      "dir": "packages/client/product-analytics/lib",
+      "js": "packages/client/product-analytics/lib/typert.remote-client.js",
+      "dts": "packages/client/product-analytics/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "productAnalytics"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "methods_js_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "productAnalytics/enabled",
+          "namespace": "productAnalytics",
+          "name": "enabled",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "productAnalytics/report",
+          "namespace": "productAnalytics",
+          "name": "report",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "productAnalytics/watchPolicy",
+          "namespace": "productAnalytics",
+          "name": "watchPolicy",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-ui-connector-account",
+      "dir": "packages/client/ui-connector-account/lib",
+      "js": "packages/client/ui-connector-account/lib/typert.remote-client.js",
+      "dts": "packages/client/ui-connector-account/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "connectorAccounts"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "methods_js_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "connectorAccounts/cancel",
+          "namespace": "connectorAccounts",
+          "name": "cancel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "connectorAccounts/start",
+          "namespace": "connectorAccounts",
+          "name": "start",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "connectorAccounts/watch",
+          "namespace": "connectorAccounts",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-ui-plugin-manager",
+      "dir": "packages/client/ui-plugin-manager/lib",
+      "js": "packages/client/ui-plugin-manager/lib/typert.remote-client.js",
+      "dts": "packages/client/ui-plugin-manager/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginRegistryProbe"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "pluginRegistryProbe/fastest",
+          "namespace": "pluginRegistryProbe",
+          "name": "fastest",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-ui-session-status",
+      "dir": "packages/client/ui-session-status/lib",
+      "js": "packages/client/ui-session-status/lib/typert.remote-client.js",
+      "dts": "packages/client/ui-session-status/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "sessionStatus"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "methods_js_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "sessionStatus/follow",
+          "namespace": "sessionStatus",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "sessionStatus/mark",
+          "namespace": "sessionStatus",
+          "name": "mark",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-ui-trajectory",
+      "dir": "packages/client/ui-trajectory/lib",
+      "js": "packages/client/ui-trajectory/lib/typert.remote-client.js",
+      "dts": "packages/client/ui-trajectory/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "toolResults"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "toolResults/watch",
+          "namespace": "toolResults",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-session-reference",
+      "dir": "packages/context/session-reference/lib",
+      "js": "packages/context/session-reference/lib/typert.remote-client.js",
+      "dts": "packages/context/session-reference/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "sessionReferenceResolver"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:sessionReferenceResolver/candidates"
+      ],
+      "methods": [
+        {
+          "key": "sessionReferenceResolver/candidates",
+          "namespace": "sessionReferenceResolver",
+          "name": "candidates",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-office-kit",
+      "dir": "packages/document/office-kit/lib",
+      "js": "packages/document/office-kit/lib/typert.remote-client.js",
+      "dts": "packages/document/office-kit/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "officeKit"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "methods_js_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "officeKit/generation",
+          "namespace": "officeKit",
+          "name": "generation",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "officeKit/render",
+          "namespace": "officeKit",
+          "name": "render",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-action-cards",
+      "dir": "packages/experimental/action-cards/lib",
+      "js": "packages/experimental/action-cards/lib/typert.remote-client.js",
+      "dts": "packages/experimental/action-cards/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "actionCards"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:actionCards/act"
+      ],
+      "methods": [
+        {
+          "key": "actionCards/act",
+          "namespace": "actionCards",
+          "name": "act",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-api-speech-to-text",
+      "dir": "packages/experimental/api-speech-to-text/lib",
+      "js": "packages/experimental/api-speech-to-text/lib/typert.remote-client.js",
+      "dts": "packages/experimental/api-speech-to-text/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "speech"
+      ],
+      "methods_dts": 6,
+      "methods_js": 6,
+      "methods_js_match_dts": true,
+      "endpoints_map": 6,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "speech/cancelPreparation",
+          "namespace": "speech",
+          "name": "cancelPreparation",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "speech/catalog",
+          "namespace": "speech",
+          "name": "catalog",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "speech/configure",
+          "namespace": "speech",
+          "name": "configure",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "speech/follow",
+          "namespace": "speech",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "speech/prepare",
+          "namespace": "speech",
+          "name": "prepare",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "speech/transcribe",
+          "namespace": "speech",
+          "name": "transcribe",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-claude-code-mods",
+      "dir": "packages/experimental/claude-code-mods/lib",
+      "js": "packages/experimental/claude-code-mods/lib/typert.remote-client.js",
+      "dts": "packages/experimental/claude-code-mods/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "claudeCodeMods"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "methods_js_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [
+        "agent:claudeCodeMods/pressBand",
+        "agent:claudeCodeMods/watchBand"
+      ],
+      "methods": [
+        {
+          "key": "claudeCodeMods/pressBand",
+          "namespace": "claudeCodeMods",
+          "name": "pressBand",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "claudeCodeMods/watchBand",
+          "namespace": "claudeCodeMods",
+          "name": "watchBand",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-client-ui-cot-translation",
+      "dir": "packages/experimental/client-ui-cot-translation/lib",
+      "js": "packages/experimental/client-ui-cot-translation/lib/typert.remote-client.js",
+      "dts": "packages/experimental/client-ui-cot-translation/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "cotTranslation"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "methods_js_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "cotTranslation/limits",
+          "namespace": "cotTranslation",
+          "name": "limits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cotTranslation/translate",
+          "namespace": "cotTranslation",
+          "name": "translate",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-client-ui-forge",
+      "dir": "packages/experimental/client-ui-forge/lib",
+      "js": "packages/experimental/client-ui-forge/lib/typert.remote-client.js",
+      "dts": "packages/experimental/client-ui-forge/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "forgePanel"
+      ],
+      "methods_dts": 56,
+      "methods_js": 56,
+      "methods_js_match_dts": true,
+      "endpoints_map": 56,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "forgePanel/cancelWorktree",
+          "namespace": "forgePanel",
+          "name": "cancelWorktree",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changeRequestChecks",
+          "namespace": "forgePanel",
+          "name": "changeRequestChecks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changeRequestCommits",
+          "namespace": "forgePanel",
+          "name": "changeRequestCommits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changeRequestDiff",
+          "namespace": "forgePanel",
+          "name": "changeRequestDiff",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changeRequestReview",
+          "namespace": "forgePanel",
+          "name": "changeRequestReview",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changeRequestReviewWrite",
+          "namespace": "forgePanel",
+          "name": "changeRequestReviewWrite",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changeRequestStates",
+          "namespace": "forgePanel",
+          "name": "changeRequestStates",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changeRequestText",
+          "namespace": "forgePanel",
+          "name": "changeRequestText",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changeRequestViewed",
+          "namespace": "forgePanel",
+          "name": "changeRequestViewed",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/changesLens",
+          "namespace": "forgePanel",
+          "name": "changesLens",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/continueInProject",
+          "namespace": "forgePanel",
+          "name": "continueInProject",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/diffBases",
+          "namespace": "forgePanel",
+          "name": "diffBases",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/dismiss",
+          "namespace": "forgePanel",
+          "name": "dismiss",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/extensions",
+          "namespace": "forgePanel",
+          "name": "extensions",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/follow",
+          "namespace": "forgePanel",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/localCommits",
+          "namespace": "forgePanel",
+          "name": "localCommits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/localDiff",
+          "namespace": "forgePanel",
+          "name": "localDiff",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/localText",
+          "namespace": "forgePanel",
+          "name": "localText",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/markReady",
+          "namespace": "forgePanel",
+          "name": "markReady",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/merge",
+          "namespace": "forgePanel",
+          "name": "merge",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/refresh",
+          "namespace": "forgePanel",
+          "name": "refresh",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/requestReviews",
+          "namespace": "forgePanel",
+          "name": "requestReviews",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/requestWorktree",
+          "namespace": "forgePanel",
+          "name": "requestWorktree",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/rerunChecks",
+          "namespace": "forgePanel",
+          "name": "rerunChecks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/restoreWorktree",
+          "namespace": "forgePanel",
+          "name": "restoreWorktree",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/retryWorktree",
+          "namespace": "forgePanel",
+          "name": "retryWorktree",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewChangeRequest",
+          "namespace": "forgePanel",
+          "name": "reviewChangeRequest",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewChecks",
+          "namespace": "forgePanel",
+          "name": "reviewChecks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewCommits",
+          "namespace": "forgePanel",
+          "name": "reviewCommits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewCount",
+          "namespace": "forgePanel",
+          "name": "reviewCount",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewDescription",
+          "namespace": "forgePanel",
+          "name": "reviewDescription",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewDiff",
+          "namespace": "forgePanel",
+          "name": "reviewDiff",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewerCandidates",
+          "namespace": "forgePanel",
+          "name": "reviewerCandidates",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewLists",
+          "namespace": "forgePanel",
+          "name": "reviewLists",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewMarkReady",
+          "namespace": "forgePanel",
+          "name": "reviewMarkReady",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewMerge",
+          "namespace": "forgePanel",
+          "name": "reviewMerge",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewPoll",
+          "namespace": "forgePanel",
+          "name": "reviewPoll",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewRefresh",
+          "namespace": "forgePanel",
+          "name": "reviewRefresh",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewRequestReviews",
+          "namespace": "forgePanel",
+          "name": "reviewRequestReviews",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewRerunChecks",
+          "namespace": "forgePanel",
+          "name": "reviewRerunChecks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewReviewerCandidates",
+          "namespace": "forgePanel",
+          "name": "reviewReviewerCandidates",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewSetViewed",
+          "namespace": "forgePanel",
+          "name": "reviewSetViewed",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewStage",
+          "namespace": "forgePanel",
+          "name": "reviewStage",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewSubmit",
+          "namespace": "forgePanel",
+          "name": "reviewSubmit",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewText",
+          "namespace": "forgePanel",
+          "name": "reviewText",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewThreads",
+          "namespace": "forgePanel",
+          "name": "reviewThreads",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewThreadWrite",
+          "namespace": "forgePanel",
+          "name": "reviewThreadWrite",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewUpdateBranch",
+          "namespace": "forgePanel",
+          "name": "reviewUpdateBranch",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/reviewViewed",
+          "namespace": "forgePanel",
+          "name": "reviewViewed",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/setFileViewed",
+          "namespace": "forgePanel",
+          "name": "setFileViewed",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/stopCreation",
+          "namespace": "forgePanel",
+          "name": "stopCreation",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/submitReview",
+          "namespace": "forgePanel",
+          "name": "submitReview",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/track",
+          "namespace": "forgePanel",
+          "name": "track",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/updateBranch",
+          "namespace": "forgePanel",
+          "name": "updateBranch",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/worktreeBases",
+          "namespace": "forgePanel",
+          "name": "worktreeBases",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "forgePanel/worktreeCleanup",
+          "namespace": "forgePanel",
+          "name": "worktreeCleanup",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-cua",
+      "dir": "packages/experimental/cua/lib",
+      "js": "packages/experimental/cua/lib/typert.remote-client.js",
+      "dts": "packages/experimental/cua/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "cuaAccess"
+      ],
+      "methods_dts": 9,
+      "methods_js": 9,
+      "methods_js_match_dts": true,
+      "endpoints_map": 9,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "cuaAccess/applicationIcons",
+          "namespace": "cuaAccess",
+          "name": "applicationIcons",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cuaAccess/applications",
+          "namespace": "cuaAccess",
+          "name": "applications",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cuaAccess/enablePersistentPtc",
+          "namespace": "cuaAccess",
+          "name": "enablePersistentPtc",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cuaAccess/openSettings",
+          "namespace": "cuaAccess",
+          "name": "openSettings",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cuaAccess/ptcConfiguration",
+          "namespace": "cuaAccess",
+          "name": "ptcConfiguration",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cuaAccess/requestPermission",
+          "namespace": "cuaAccess",
+          "name": "requestPermission",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cuaAccess/retryApproval",
+          "namespace": "cuaAccess",
+          "name": "retryApproval",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cuaAccess/revoke",
+          "namespace": "cuaAccess",
+          "name": "revoke",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "cuaAccess/systemStatus",
+          "namespace": "cuaAccess",
+          "name": "systemStatus",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-deepseek-chat-import",
+      "dir": "packages/experimental/deepseek-chat-import/lib",
+      "js": "packages/experimental/deepseek-chat-import/lib/typert.remote-client.js",
+      "dts": "packages/experimental/deepseek-chat-import/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "deepseekChatImport"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "deepseekChatImport/limits",
+          "namespace": "deepseekChatImport",
+          "name": "limits",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-liveshare",
+      "dir": "packages/experimental/liveshare/lib",
+      "js": "packages/experimental/liveshare/lib/typert.remote-client.js",
+      "dts": "packages/experimental/liveshare/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "liveshareShares"
+      ],
+      "methods_dts": 13,
+      "methods_js": 13,
+      "methods_js_match_dts": true,
+      "endpoints_map": 13,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "liveshareShares/addSessions",
+          "namespace": "liveshareShares",
+          "name": "addSessions",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/audit",
+          "namespace": "liveshareShares",
+          "name": "audit",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/capabilities",
+          "namespace": "liveshareShares",
+          "name": "capabilities",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/create",
+          "namespace": "liveshareShares",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/identity",
+          "namespace": "liveshareShares",
+          "name": "identity",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/list",
+          "namespace": "liveshareShares",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/relay",
+          "namespace": "liveshareShares",
+          "name": "relay",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/setCapabilities",
+          "namespace": "liveshareShares",
+          "name": "setCapabilities",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/setRelay",
+          "namespace": "liveshareShares",
+          "name": "setRelay",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/stop",
+          "namespace": "liveshareShares",
+          "name": "stop",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/testPublish",
+          "namespace": "liveshareShares",
+          "name": "testPublish",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/testRelay",
+          "namespace": "liveshareShares",
+          "name": "testRelay",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "liveshareShares/updatePermissions",
+          "namespace": "liveshareShares",
+          "name": "updatePermissions",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-plugin-recommendations",
+      "dir": "packages/experimental/plugin-recommendations/lib",
+      "js": "packages/experimental/plugin-recommendations/lib/typert.remote-client.js",
+      "dts": "packages/experimental/plugin-recommendations/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginRecommendations"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:pluginRecommendations/describe"
+      ],
+      "methods": [
+        {
+          "key": "pluginRecommendations/describe",
+          "namespace": "pluginRecommendations",
+          "name": "describe",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-cordis-host-runner",
+      "dir": "packages/extensions/cordis-host-runner/lib",
+      "js": "packages/extensions/cordis-host-runner/lib/typert.remote-client.js",
+      "dts": "packages/extensions/cordis-host-runner/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "dynamicCordisRunner"
+      ],
+      "methods_dts": 12,
+      "methods_js": 12,
+      "methods_js_match_dts": true,
+      "endpoints_map": 12,
+      "scope_variants": [
+        "agent:dynamicCordisRunner/getClientCode",
+        "agent:dynamicCordisRunner/reportClientGuardFailure",
+        "agent:dynamicCordisRunner/reportRenderFailure",
+        "agent:dynamicCordisRunner/resolveInspectQuery",
+        "agent:dynamicCordisRunner/runHostHalf",
+        "agent:dynamicCordisRunner/settleUserRun",
+        "agent:dynamicCordisRunner/stopFromPanel",
+        "agent:dynamicCordisRunner/undefineFromPanel"
+      ],
+      "methods": [
+        {
+          "key": "dynamicCordisRunner/getClientCode",
+          "namespace": "dynamicCordisRunner",
+          "name": "getClientCode",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/inventory",
+          "namespace": "dynamicCordisRunner",
+          "name": "inventory",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/invoke",
+          "namespace": "dynamicCordisRunner",
+          "name": "invoke",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/reportClientGuardFailure",
+          "namespace": "dynamicCordisRunner",
+          "name": "reportClientGuardFailure",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/reportRenderFailure",
+          "namespace": "dynamicCordisRunner",
+          "name": "reportRenderFailure",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/resolveInspectQuery",
+          "namespace": "dynamicCordisRunner",
+          "name": "resolveInspectQuery",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/resolveRequestRun",
+          "namespace": "dynamicCordisRunner",
+          "name": "resolveRequestRun",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/runHostHalf",
+          "namespace": "dynamicCordisRunner",
+          "name": "runHostHalf",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/settleUserRun",
+          "namespace": "dynamicCordisRunner",
+          "name": "settleUserRun",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/stopFromPanel",
+          "namespace": "dynamicCordisRunner",
+          "name": "stopFromPanel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/syncInspectManifest",
+          "namespace": "dynamicCordisRunner",
+          "name": "syncInspectManifest",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "dynamicCordisRunner/undefineFromPanel",
+          "namespace": "dynamicCordisRunner",
+          "name": "undefineFromPanel",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-command-feedback",
+      "dir": "packages/feedback/command-feedback/lib",
+      "js": "packages/feedback/command-feedback/lib/typert.remote-client.js",
+      "dts": "packages/feedback/command-feedback/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "sessionFeedback"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "sessionFeedback/record",
+          "namespace": "sessionFeedback",
+          "name": "record",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-message-feedback",
+      "dir": "packages/feedback/message-feedback/lib",
+      "js": "packages/feedback/message-feedback/lib/typert.remote-client.js",
+      "dts": "packages/feedback/message-feedback/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "messageFeedback"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "methods_js_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "messageFeedback/delete",
+          "namespace": "messageFeedback",
+          "name": "delete",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "messageFeedback/list",
+          "namespace": "messageFeedback",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "messageFeedback/put",
+          "namespace": "messageFeedback",
+          "name": "put",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-goal",
+      "dir": "packages/goal/goal/lib",
+      "js": "packages/goal/goal/lib/typert.remote-client.js",
+      "dts": "packages/goal/goal/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "goals"
+      ],
+      "methods_dts": 7,
+      "methods_js": 7,
+      "methods_js_match_dts": true,
+      "endpoints_map": 7,
+      "scope_variants": [
+        "agent:goals/clear",
+        "agent:goals/complete",
+        "agent:goals/create",
+        "agent:goals/edit",
+        "agent:goals/get",
+        "agent:goals/pause",
+        "agent:goals/resume"
+      ],
+      "methods": [
+        {
+          "key": "goals/clear",
+          "namespace": "goals",
+          "name": "clear",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "goals/complete",
+          "namespace": "goals",
+          "name": "complete",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "goals/create",
+          "namespace": "goals",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "goals/edit",
+          "namespace": "goals",
+          "name": "edit",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "goals/get",
+          "namespace": "goals",
+          "name": "get",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "goals/pause",
+          "namespace": "goals",
+          "name": "pause",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "goals/resume",
+          "namespace": "goals",
+          "name": "resume",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-host-plugin-inventory",
+      "dir": "packages/host/plugin-inventory/lib",
+      "js": "packages/host/plugin-inventory/lib/typert.remote-client.js",
+      "dts": "packages/host/plugin-inventory/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginInventory"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "pluginInventory/list",
+          "namespace": "pluginInventory",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-commands",
+      "dir": "packages/interaction/commands/lib",
+      "js": "packages/interaction/commands/lib/typert.remote-client.js",
+      "dts": "packages/interaction/commands/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "commands"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "methods_js_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [
+        "agent:commands/execute",
+        "agent:commands/list"
+      ],
+      "methods": [
+        {
+          "key": "commands/execute",
+          "namespace": "commands",
+          "name": "execute",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "commands/list",
+          "namespace": "commands",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-permission-presets",
+      "dir": "packages/interaction/permission-presets/lib",
+      "js": "packages/interaction/permission-presets/lib/typert.remote-client.js",
+      "dts": "packages/interaction/permission-presets/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "permissionPresets"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "methods_js_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "permissionPresets/catalog",
+          "namespace": "permissionPresets",
+          "name": "catalog",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "permissionPresets/set",
+          "namespace": "permissionPresets",
+          "name": "set",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-user-questions",
+      "dir": "packages/interaction/user-questions/lib",
+      "js": "packages/interaction/user-questions/lib/typert.remote-client.js",
+      "dts": "packages/interaction/user-questions/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "userQuestions"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "methods_js_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [
+        "agent:userQuestions/answer",
+        "agent:userQuestions/attachWait"
+      ],
+      "methods": [
+        {
+          "key": "userQuestions/answer",
+          "namespace": "userQuestions",
+          "name": "answer",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "userQuestions/attachWait",
+          "namespace": "userQuestions",
+          "name": "attachWait",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-llm",
+      "dir": "packages/llm/llm/lib",
+      "js": "packages/llm/llm/lib/typert.remote-client.js",
+      "dts": "packages/llm/llm/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "llm"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "methods_js_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "llm/discoverModels",
+          "namespace": "llm",
+          "name": "discoverModels",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "llm/listConfigurableProviders",
+          "namespace": "llm",
+          "name": "listConfigurableProviders",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "llm/listProviders",
+          "namespace": "llm",
+          "name": "listProviders",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-mcp-manager",
+      "dir": "packages/mcp/mcp-manager/lib",
+      "js": "packages/mcp/mcp-manager/lib/typert.remote-client.js",
+      "dts": "packages/mcp/mcp-manager/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "mcpManager"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "methods_js_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "mcpManager/probe",
+          "namespace": "mcpManager",
+          "name": "probe",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "mcpManager/restart",
+          "namespace": "mcpManager",
+          "name": "restart",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "mcpManager/watch",
+          "namespace": "mcpManager",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-agent-preset-registry",
+      "dir": "packages/preset/agent-preset-registry/lib",
+      "js": "packages/preset/agent-preset-registry/lib/typert.remote-client.js",
+      "dts": "packages/preset/agent-preset-registry/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "agentPresets"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "methods_js_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [
+        "agent:agentPresets/select"
+      ],
+      "methods": [
+        {
+          "key": "agentPresets/list",
+          "namespace": "agentPresets",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "agentPresets/read",
+          "namespace": "agentPresets",
+          "name": "read",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "agentPresets/select",
+          "namespace": "agentPresets",
+          "name": "select",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-schedule",
+      "dir": "packages/schedule/schedule/lib",
+      "js": "packages/schedule/schedule/lib/typert.remote-client.js",
+      "dts": "packages/schedule/schedule/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "schedule"
+      ],
+      "methods_dts": 9,
+      "methods_js": 9,
+      "methods_js_match_dts": true,
+      "endpoints_map": 9,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "schedule/catalog",
+          "namespace": "schedule",
+          "name": "catalog",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "schedule/create",
+          "namespace": "schedule",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "schedule/deleteInactive",
+          "namespace": "schedule",
+          "name": "deleteInactive",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "schedule/deliveryLimits",
+          "namespace": "schedule",
+          "name": "deliveryLimits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "schedule/edit",
+          "namespace": "schedule",
+          "name": "edit",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "schedule/history",
+          "namespace": "schedule",
+          "name": "history",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "schedule/list",
+          "namespace": "schedule",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "schedule/run",
+          "namespace": "schedule",
+          "name": "run",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "schedule/view",
+          "namespace": "schedule",
+          "name": "view",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-subagent",
+      "dir": "packages/subagent/subagent/lib",
+      "js": "packages/subagent/subagent/lib/typert.remote-client.js",
+      "dts": "packages/subagent/subagent/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "subagents"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "methods_js_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "subagents/interruptByUser",
+          "namespace": "subagents",
+          "name": "interruptByUser",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "key": "subagents/prompt",
+          "namespace": "subagents",
+          "name": "prompt",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-agent-team",
+      "dir": "packages/team/agent-team/lib",
+      "js": "packages/team/agent-team/lib/typert.remote-client.js",
+      "dts": "packages/team/agent-team/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "agentTeams"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:agentTeams/setEnabled"
+      ],
+      "methods": [
+        {
+          "key": "agentTeams/setEnabled",
+          "namespace": "agentTeams",
+          "name": "setEnabled",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-web",
+      "dir": "packages/web/web/lib",
+      "js": "packages/web/web/lib/typert.remote-client.js",
+      "dts": "packages/web/web/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "web"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "methods_js_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "key": "web/listProviders",
+          "namespace": "web",
+          "name": "listProviders",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    }
+  ]
+}

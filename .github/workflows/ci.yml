@@ -13,6 +13,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      # 0.24 base integrity gate (delivery plan §二 v2.1): pure Node, no deps,
+      # no host closure, no build. Byte-compares committed CapIR/capcontract
+      # against the generators (catches hand-edited generated files) then runs
+      # the static discipline checks. @manual count is explicitly NOT RUN here
+      # (ledger is a later slice). release.yml is deliberately untouched.
+      - name: CapIR / capcontract integrity gate
+        run: node scripts/check-capcontract.mjs
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.4"

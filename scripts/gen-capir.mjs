@@ -5,7 +5,16 @@
  * script is the *only* place that stamps the provenance declaration onto the
  * generated file. Do not paste the declaration by hand.
  *
- *   node scripts/gen-capir.mjs <extractor-json> <output-json>
+ *   node scripts/gen-capir.mjs <extractor-json> <output-json> [provenance-json]
+ *   node scripts/gen-capir.mjs --check [extractor-json] [output-json] [provenance-json]
+ *
+ * `--check` regenerates in memory and byte-compares against the output file,
+ * exiting 1 on any drift. It is the CI anti-laundering gate: an edit to the
+ * committed capir/capir.json that was not produced by a re-run cannot pass.
+ * With no paths, --check uses the committed inputs below.
+ *
+ * Provenance (source_branch/source_version) is read from an independent input
+ * file, never hardcoded here: a host rc bump updates provenance in one place.
  *
  * The declaration is emitted as the first key and kept on the first physical
  * line of the JSON so CI can assert it by line as well as by field value.
@@ -13,27 +22,39 @@
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 
 const ATTRIBUTION =
   "Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 DeepSeek)"
-const SCHEMA = "dsh-opentui.capir/1"
+const SCHEMA = "dsh-opentui.capir/2"
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
-const [, , inputArg, outputArg] = process.argv
-if (!inputArg || !outputArg) {
-  console.error("usage: gen-capir.mjs <extractor-json> <output-json>")
-  process.exit(2)
-}
-const input = resolve(inputArg)
-const output = resolve(outputArg)
-
-const src = JSON.parse(readFileSync(input, "utf8"))
 const fail = (msg) => {
   console.error("gen-capir: " + msg)
   process.exit(1)
 }
 
+const argv = process.argv.slice(2)
+const checkMode = argv[0] === "--check"
+const paths = checkMode ? argv.slice(1) : argv
+if (paths.length > 3) {
+  console.error("usage: gen-capir.mjs [--check] <extractor-json> <output-json> [provenance-json]")
+  process.exit(2)
+}
+const input = resolve(paths[0] ?? resolve(ROOT, "capir/extractor-input.json"))
+const output = resolve(paths[1] ?? resolve(ROOT, "capir/capir.json"))
+const provenancePath = resolve(paths[2] ?? resolve(ROOT, "capir/provenance-input.json"))
+
+const src = JSON.parse(readFileSync(input, "utf8"))
+const prov = JSON.parse(readFileSync(provenancePath, "utf8"))
+
 if (!Array.isArray(src.artifacts)) fail("extractor JSON has no artifacts[]")
 if (src.totals == null) fail("extractor JSON has no totals")
+for (const key of ["repository", "license", "copyright", "source_branch", "source_version", "artifact_glob", "extraction", "formatting"]) {
+  if (typeof prov[key] !== "string" || prov[key].length === 0) {
+    fail("provenance input missing or empty: " + key)
+  }
+}
 
 // --- 静态全集校验：拒绝任何内部不一致，不为了对上数字硬凑 ---
 const artifacts = src.artifacts.map((a) => {
@@ -48,7 +69,10 @@ const artifacts = src.artifacts.map((a) => {
     methods_dts: a.methods_dts,
     methods_js: a.methods_js,
     js_keys_match_dts: a.methods_js_match_dts,
-    endpoints_map: a.endpoints_map,
+    // fixup suggestion #3: the value is a per-artifact method COUNT, not a
+    // map. Renamed to endpoints_count under schema/2 (extractor keeps its
+    // own input key `endpoints_map`; only the emitted CapIR field changes).
+    endpoints_count: a.endpoints_map,
     scope_variants: a.scope_variants,
     methods: a.methods.map((m) => ({
       id: `${a.package}#${m.key}`,
@@ -80,14 +104,14 @@ const capir = {
   attribution: ATTRIBUTION,
   schema: SCHEMA,
   provenance: {
-    repository: "deepseek-ai/deepseek-harness",
-    license: "MIT",
-    copyright: "Copyright (c) 2026 DeepSeek",
-    source_branch: "feat/companion-install-hint",
-    source_version: "0.2.2-rc.5",
-    artifact_glob: "packages/**/lib/typert.remote-client.js",
-    extraction: "local read-only; scripts/extract_capir_artifacts.py",
-    formatting: "scripts/gen-capir.mjs",
+    repository: prov.repository,
+    license: prov.license,
+    copyright: prov.copyright,
+    source_branch: prov.source_branch,
+    source_version: prov.source_version,
+    artifact_glob: prov.artifact_glob,
+    extraction: prov.extraction,
+    formatting: prov.formatting,
   },
   counting_rules: src.counting_rules,
   totals: {
@@ -108,8 +132,29 @@ const declLine = `  "attribution": ${JSON.stringify(ATTRIBUTION)},`
 if (!text.startsWith("{\n" + declLine)) fail("attribution line not at head")
 text = "{" + declLine.trimStart() + text.slice(("{\n" + declLine).length)
 
-mkdirSync(dirname(output), { recursive: true })
-writeFileSync(output, text, "utf8")
-
-console.log(`capir: artifacts=${artifacts.length} methods=${allMethods.length} ` +
-  `unary=${kinds.unary} stream=${kinds.stream} -> ${output}`)
+if (checkMode) {
+  let actual
+  try {
+    actual = readFileSync(output, "utf8")
+  } catch {
+    fail("--check: output file missing: " + output)
+  }
+  if (actual === text) {
+    console.log(`capir --check: byte-identical (artifacts=${artifacts.length} methods=${allMethods.length}) -> ${output}`)
+  } else {
+    const aLines = text.split("\n")
+    const bLines = actual.split("\n")
+    let at = 0
+    while (at < aLines.length && at < bLines.length && aLines[at] === bLines[at]) at++
+    console.error(`gen-capir --check: DRIFT at line ${at + 1}`)
+    console.error(`  expected: ${JSON.stringify(aLines[at] ?? "<eof>")}`)
+    console.error(`  actual:   ${JSON.stringify(bLines[at] ?? "<eof>")}`)
+    console.error("  committed capir.json was not produced by the current generator/inputs; re-run gen-capir.mjs.")
+    process.exit(1)
+  }
+} else {
+  mkdirSync(dirname(output), { recursive: true })
+  writeFileSync(output, text, "utf8")
+  console.log(`capir: artifacts=${artifacts.length} methods=${allMethods.length} ` +
+    `unary=${kinds.unary} stream=${kinds.stream} -> ${output}`)
+}
