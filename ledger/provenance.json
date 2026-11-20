@@ -1,0 +1,351 @@
+{
+  "attribution": "Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 DeepSeek)",
+  "schema": "dsh-opentui.ledger.provenance/1",
+  "note": "Hand-maintained mapping + evidence data. gen-ledger.mjs reads this with capir/capir.json and regenerates ledger.json/ledger.md. Reconciliation corrections are applied HERE (bundle->contribution-package mapping + method exclusions), never to CapIR.",
+  "profile": {
+    "name": "opentui-inproc",
+    "host_bundles": [
+      "@deepseek-ai/dsh-base",
+      "@aiwayds/dsh-opentui-bridge"
+    ],
+    "bundle_declaration_source": "packages/shell/scripts/provision-inproc-profile.mjs:117-119 (PROFILE='opentui-inproc'; BUNDLES=['@deepseek-ai/dsh-base', BRIDGE_NAME])",
+    "bridge_is_ours": true,
+    "bridge_note": "@aiwayds/dsh-opentui-bridge is our cordis bundle, not a host-source package; its contribution to the surface is via the profile cordis.patch.yml insert recorded below."
+  },
+  "derivation": {
+    "algorithm": "expected = (methods of CapIR artifacts whose package is in dsh-base declared dependency closure) UNION (methods of CapIR artifacts inserted by opentui-inproc profile patch) MINUS (method-level exclusions)",
+    "closure_method": "BFS over declared dependencies+optionalDependencies of host-source packages/*/package.json (workspace names resolved to local dirs, NO node_modules resolution); start=@deepseek-ai/dsh-base",
+    "closure_source_root": "/Users/qingguee/repo/deepseek-harness-pr (host source clone, read-only; HEAD d41e2019 / rc.5-1641)",
+    "closure_packages_total": 138,
+    "base_closure_capir_contribution_packages": [
+      "@deepseek-ai/dsh-agent-team",
+      "@deepseek-ai/dsh-api-remote-access",
+      "@deepseek-ai/dsh-command-feedback",
+      "@deepseek-ai/dsh-commands",
+      "@deepseek-ai/dsh-deepseek-account",
+      "@deepseek-ai/dsh-goal",
+      "@deepseek-ai/dsh-llm",
+      "@deepseek-ai/dsh-permission-presets",
+      "@deepseek-ai/dsh-plugin-manager",
+      "@deepseek-ai/dsh-subagent",
+      "@deepseek-ai/dsh-user-questions",
+      "@deepseek-ai/dsh-web"
+    ],
+    "base_closure_capir_method_count": 49,
+    "profile_patch_contribution_packages": [
+      {
+        "package": "@deepseek-ai/dsh-api-session-controller",
+        "methods": 27,
+        "source": "packages/shell/scripts/provision-inproc-profile.mjs:566-578 (cordis.patch.yml: insert id 'session-controller' name '@deepseek-ai/dsh-api-session-controller', plus local @aiwayds/dsh-opentui-session-shim supplying the two web-only injects fileUploads/workspaceRegistry)",
+        "origin": "profile-patch"
+      }
+    ],
+    "method_exclusions": [
+      {
+        "id": "@deepseek-ai/dsh-permission-presets#permissionPresets/set",
+        "reason": "Present in CapIR (extracted from rc.5 source) but NOT a Remote in host rc.4 binary used by the steady-state probe; registered surface of the probed environment legitimately excludes it.",
+        "evidence": [
+          "rc.4 tag dsh-v0.2.2-rc.4 packages/interaction/permission-presets/src/index.ts:291 only @Remote('catalog'); 'set' at line 398 is a plain method, no @Remote decorator",
+          "rc.5 source HEAD packages/interaction/permission-presets/src/index.ts:325-326 adds @Remote({name:'set'}) setPreset(...) => CapIR gains permissionPresets/set",
+          "probe §3.2 / typert-local-list.json: only permissionPresets/catalog present, permissionPresets/set absent"
+        ],
+        "mapping_kind": "method-level environment correction (host rc.4 vs CapIR rc.5)"
+      }
+    ]
+  },
+  "reconciliation": {
+    "measured_source": "probe §3.2 / /private/tmp/dsh-probe-out/typert-local-list.json (75 descriptors)",
+    "measured_host_binary": "dsh 0.2.2-rc.4 (/opt/homebrew/bin/dsh)",
+    "measured_count": 75,
+    "measured_ids": [
+      "@deepseek-ai/dsh-llm#llm/discoverModels",
+      "@deepseek-ai/dsh-llm#llm/listConfigurableProviders",
+      "@deepseek-ai/dsh-llm#llm/listProviders",
+      "@deepseek-ai/dsh-api-remote-access#remoteAccess/follow",
+      "@deepseek-ai/dsh-user-questions#userQuestions/answer",
+      "@deepseek-ai/dsh-user-questions#userQuestions/attachWait",
+      "@deepseek-ai/dsh-deepseek-account#account/cancelSignIn",
+      "@deepseek-ai/dsh-deepseek-account#account/getBalance",
+      "@deepseek-ai/dsh-deepseek-account#account/getNotificationContent",
+      "@deepseek-ai/dsh-deepseek-account#account/getNotifications",
+      "@deepseek-ai/dsh-deepseek-account#account/getProfile",
+      "@deepseek-ai/dsh-deepseek-account#account/getState",
+      "@deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks",
+      "@deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent",
+      "@deepseek-ai/dsh-deepseek-account#account/signOut",
+      "@deepseek-ai/dsh-deepseek-account#account/startSignIn",
+      "@deepseek-ai/dsh-deepseek-account#account/watch",
+      "@deepseek-ai/dsh-deepseek-account#account/watchExpiry",
+      "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
+      "@deepseek-ai/dsh-commands#commands/execute",
+      "@deepseek-ai/dsh-commands#commands/list",
+      "@deepseek-ai/dsh-command-feedback#sessionFeedback/record",
+      "@deepseek-ai/dsh-goal#goals/clear",
+      "@deepseek-ai/dsh-goal#goals/complete",
+      "@deepseek-ai/dsh-goal#goals/create",
+      "@deepseek-ai/dsh-goal#goals/edit",
+      "@deepseek-ai/dsh-goal#goals/get",
+      "@deepseek-ai/dsh-goal#goals/pause",
+      "@deepseek-ai/dsh-goal#goals/resume",
+      "@deepseek-ai/dsh-subagent#subagents/interruptByUser",
+      "@deepseek-ai/dsh-subagent#subagents/prompt",
+      "@deepseek-ai/dsh-agent-team#agentTeams/setEnabled",
+      "@deepseek-ai/dsh-web#web/listProviders",
+      "@deepseek-ai/dsh-api-session-controller#fileReferences/list",
+      "@deepseek-ai/dsh-api-session-controller#session/attachment",
+      "@deepseek-ai/dsh-api-session-controller#session/cancel",
+      "@deepseek-ai/dsh-api-session-controller#session/canOpenWorkspacePath",
+      "@deepseek-ai/dsh-api-session-controller#session/control",
+      "@deepseek-ai/dsh-api-session-controller#session/create",
+      "@deepseek-ai/dsh-api-session-controller#session/events",
+      "@deepseek-ai/dsh-api-session-controller#session/follow",
+      "@deepseek-ai/dsh-api-session-controller#session/fork",
+      "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel",
+      "@deepseek-ai/dsh-api-session-controller#session/list",
+      "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
+      "@deepseek-ai/dsh-api-session-controller#session/observeEvent",
+      "@deepseek-ai/dsh-api-session-controller#session/observeProjections",
+      "@deepseek-ai/dsh-api-session-controller#session/observeState",
+      "@deepseek-ai/dsh-api-session-controller#session/openWorkspacePath",
+      "@deepseek-ai/dsh-api-session-controller#session/page",
+      "@deepseek-ai/dsh-api-session-controller#session/projections",
+      "@deepseek-ai/dsh-api-session-controller#session/prompt",
+      "@deepseek-ai/dsh-api-session-controller#session/rename",
+      "@deepseek-ai/dsh-api-session-controller#session/search",
+      "@deepseek-ai/dsh-api-session-controller#session/selectModel",
+      "@deepseek-ai/dsh-api-session-controller#session/state",
+      "@deepseek-ai/dsh-api-session-controller#session/updateQueue",
+      "@deepseek-ai/dsh-api-session-controller#session/wait",
+      "@deepseek-ai/dsh-api-session-controller#session/workspacePathApplications",
+      "@deepseek-ai/dsh-api-session-controller#skills/list",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/inspect",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/installBundle",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/listBundles",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/listPlugins",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersionExemptions",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersions",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/readBundleDetail",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/registries",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/removeBundle",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/setBundleEnabled",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/setPluginEnabled",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/setVersionExemption",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/updateBundle",
+      "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall"
+    ],
+    "expect_diff_empty": true,
+    "first_run_naive_derived": 49,
+    "first_run_naive_diff": {
+      "extra_vs_measured": [
+        "@deepseek-ai/dsh-permission-presets#permissionPresets/set"
+      ],
+      "missing_vs_measured": [
+        "@deepseek-ai/dsh-api-session-controller#fileReferences/list",
+        "@deepseek-ai/dsh-api-session-controller#session/attachment",
+        "@deepseek-ai/dsh-api-session-controller#session/cancel",
+        "@deepseek-ai/dsh-api-session-controller#session/canOpenWorkspacePath",
+        "@deepseek-ai/dsh-api-session-controller#session/control",
+        "@deepseek-ai/dsh-api-session-controller#session/create",
+        "@deepseek-ai/dsh-api-session-controller#session/events",
+        "@deepseek-ai/dsh-api-session-controller#session/follow",
+        "@deepseek-ai/dsh-api-session-controller#session/fork",
+        "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel",
+        "@deepseek-ai/dsh-api-session-controller#session/list",
+        "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
+        "@deepseek-ai/dsh-api-session-controller#session/observeEvent",
+        "@deepseek-ai/dsh-api-session-controller#session/observeProjections",
+        "@deepseek-ai/dsh-api-session-controller#session/observeState",
+        "@deepseek-ai/dsh-api-session-controller#session/openWorkspacePath",
+        "@deepseek-ai/dsh-api-session-controller#session/page",
+        "@deepseek-ai/dsh-api-session-controller#session/projections",
+        "@deepseek-ai/dsh-api-session-controller#session/prompt",
+        "@deepseek-ai/dsh-api-session-controller#session/rename",
+        "@deepseek-ai/dsh-api-session-controller#session/search",
+        "@deepseek-ai/dsh-api-session-controller#session/selectModel",
+        "@deepseek-ai/dsh-api-session-controller#session/state",
+        "@deepseek-ai/dsh-api-session-controller#session/updateQueue",
+        "@deepseek-ai/dsh-api-session-controller#session/wait",
+        "@deepseek-ai/dsh-api-session-controller#session/workspacePathApplications",
+        "@deepseek-ai/dsh-api-session-controller#skills/list"
+      ]
+    },
+    "mapping_corrections_applied": [
+      "add @deepseek-ai/dsh-api-session-controller via opentui-inproc profile patch insert (27 methods) -> fixes 27 missing",
+      "exclude permissionPresets/set (rc.5-only Remote, absent in probed rc.4) -> fixes 1 extra"
+    ],
+    "final_derived_count": 75,
+    "final_diff": {
+      "derived_minus_measured": [],
+      "measured_minus_derived": [],
+      "empty": true
+    }
+  },
+  "dsh_base_dep_verification": {
+    "question": "@deepseek-ai/dsh-base 依赖声明是否含 dsh-deepseek-account",
+    "answer": true,
+    "evidence": "packages/bundle/base/package.json:61  \"@deepseek-ai/dsh-deepseek-account\": \"workspace:*\", (dependencies, total 101 declared deps)",
+    "conclusion": "声明含该依赖（直接依赖）。勘误登记「rc.4 安装面缺 dsh-deepseek-account」是静态包解析面结论，与声明不符；运行时 account/* 12 条已注册（probe §3.2）与声明一致。"
+  },
+  "wired_surface_manual": {
+    "mark": "derived-from-manual",
+    "source": "packages/bridge/src/index.ts handleLine() dispatch, inventory at 08cd2a8 (0.23.3 base)",
+    "note": "Baseline snapshot of the current hand-transcribed stdio wire surface. NOT generated from CapIR. The v3 proposal's '10 methods (8 business + 2 meta)' predates L1 (0.23.1) which added subagents.interrupt/stopChildren; actual dispatch has 12.",
+    "methods": [
+      {
+        "method": "bridge.ping",
+        "kind": "meta",
+        "source_line": 2247,
+        "capir_id": null
+      },
+      {
+        "method": "bridge.hello",
+        "kind": "meta",
+        "source_line": 2256,
+        "capir_id": null
+      },
+      {
+        "method": "model.currentSelection",
+        "kind": "business",
+        "source_line": 2275,
+        "capir_id": null,
+        "note": "read via I-class agentDefaultModel.currentSelection(), not a CapIR W method"
+      },
+      {
+        "method": "session.list",
+        "kind": "business",
+        "source_line": 2294,
+        "capir_id": "@deepseek-ai/dsh-api-session-controller#session/list"
+      },
+      {
+        "method": "subagents.interrupt",
+        "kind": "business",
+        "source_line": 2300,
+        "capir_id": null,
+        "note": "L1 0.23.1 added"
+      },
+      {
+        "method": "subagents.stopChildren",
+        "kind": "business",
+        "source_line": 2304,
+        "capir_id": null,
+        "note": "L1 0.23.1 added"
+      },
+      {
+        "method": "session.open",
+        "kind": "business",
+        "source_line": 2308,
+        "capir_id": null
+      },
+      {
+        "method": "session.send",
+        "kind": "business",
+        "source_line": 2312,
+        "capir_id": null
+      },
+      {
+        "method": "session.close",
+        "kind": "business",
+        "source_line": 2316,
+        "capir_id": null
+      },
+      {
+        "method": "turn.abort",
+        "kind": "business",
+        "source_line": 2320,
+        "capir_id": null
+      },
+      {
+        "method": "ask.response",
+        "kind": "business",
+        "source_line": 2324,
+        "capir_id": null
+      },
+      {
+        "method": "journal.replay",
+        "kind": "business",
+        "source_line": 2328,
+        "capir_id": null
+      }
+    ],
+    "count": 12
+  },
+  "i_class_manual": {
+    "mark": "derived-from-manual (v3 proposal 口径)",
+    "source": "v3 proposal §1:13 + bridge ctx.get inventory (packages/bridge/src/index.ts)",
+    "note": "I 类 = ctx.get 直取面，不在 typert 工件内。v3 口径 5 服务；另观察到 systemPrompt（append-section.ts:55）为第 6 个实际 ctx.get 服务，登记为旁注不纳入 5 服务口径。",
+    "services": [
+      {
+        "key": "agents",
+        "members": [
+          "create"
+        ],
+        "call_sites": [
+          "index.ts:1599",
+          "index.ts:1656",
+          "index.ts:2079"
+        ],
+        "w_migration": "partial — CapIR 有 subagents/prompt、subagents/interruptByUser，但 agent 创建/生命周期仍为 I 类"
+      },
+      {
+        "key": "sessionPersistence",
+        "members": [
+          "open(sessionId,'read')",
+          "readSessionAgentPreset"
+        ],
+        "call_sites": [
+          "index.ts:1545",
+          "index.ts:1682",
+          "index.ts:2170",
+          "index.ts:2189"
+        ],
+        "w_migration": "low — journal.replay 为 wire 面，持久化 open 无直接 CapIR 对应"
+      },
+      {
+        "key": "agentDefaultModel",
+        "members": [
+          "currentSelection()"
+        ],
+        "call_sites": [
+          "index.ts:574",
+          "index.ts:578",
+          "index.ts:581",
+          "index.ts:584",
+          "index.ts:2288"
+        ],
+        "w_migration": "feasible — v3 指出用途可评估迁往 W 三方法 (session/selectModel、modelCatalog、initializeDefaultModel)"
+      },
+      {
+        "key": "appExit",
+        "members": [
+          "callable appExit(0)"
+        ],
+        "call_sites": [
+          "index.ts:2395",
+          "index.ts:2404",
+          "index.ts:2440"
+        ],
+        "w_migration": "no — 进程生命周期，非 typert 面"
+      },
+      {
+        "key": "sessionController",
+        "members": [
+          "list()",
+          "subagent index reconcile"
+        ],
+        "call_sites": [
+          "index.ts:1979",
+          "index.ts:2002",
+          "index.ts:2031"
+        ],
+        "w_migration": "feasible — 非 wire 部分的 list() 对应 CapIR W 方法 session/list"
+      }
+    ],
+    "count": 5,
+    "observation_extra_ctx_get": {
+      "key": "systemPrompt",
+      "source": "packages/bridge/src/append-section.ts:55",
+      "note": "actual 6th ctx.get service; outside v3's 5-service 口径"
+    }
+  }
+}
