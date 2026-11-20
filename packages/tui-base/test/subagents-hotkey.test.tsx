@@ -6,7 +6,7 @@
  * `openSubagents`), so the key layer must only dispatch the command. These
  * tests pin that contract without importing the viewer internals.
  */
-import { describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { bundledLocalesDir, loadLocales, setLanguage, setLanguages } from "@dsh-opentui/i18n"
@@ -16,6 +16,10 @@ import { TuiKeybind } from "../src/config/keybind"
 import * as V1 from "../src/config/v1/keybind"
 import { Keymap } from "../src/context/keymap"
 import { DEFAULT_FOOTER_HINTS, HintsLine, setFooterHints, setHintsShown } from "../src/routes/session/hints-line"
+
+// The bilingual hint loop leaves the live language on zh-CN (its last case).
+// Restore en on exit: the registry is process-global across test files.
+afterAll(() => setLanguage("en"))
 
 const legs = (value: unknown): string[] => String(value).split(",").map((leg) => leg.trim())
 

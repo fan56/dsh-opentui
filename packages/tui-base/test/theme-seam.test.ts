@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { bundledThemeNames, createThemeSeam, DEFAULT_THEME, isBundledTheme } from "../src/seams/theme"
-import { allThemes } from "../src/theme"
+import { allThemes, getDshBlueTheme } from "../src/theme"
+import { resolveThemeDocument } from "../src/vendor/theme/src/tui/resolve"
 
 function fakeTarget(start = DEFAULT_THEME) {
 	const calls: string[] = []
@@ -35,6 +36,22 @@ describe("ThemeSeam (batch 6 stub)", () => {
 		expect("base" in (source as object)).toBe(true)
 		expect("light" in (source as object)).toBe(true)
 		expect("dark" in (source as object)).toBe(true)
+	})
+
+	test("dsh-blue dialog muted is lifted one neutral step (300) above base (400) in both modes", () => {
+		const hex = (c: { toInts(): [number, number, number] }) => {
+			const [r, g, b] = c.toInts()
+			return `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`
+		}
+		const doc = getDshBlueTheme()
+		for (const mode of ["dark", "light"] as const) {
+			const theme = resolveThemeDocument(doc, mode)
+			// The @dialog text.muted override brightens ask descriptions / "Type
+			// something."; the base muted elsewhere stays at neutral.400.
+			expect(hex(theme.surface("dialog").text.muted)).toBe(hex(theme.hue.neutral[300]))
+			expect(hex(theme.text.muted)).toBe(hex(theme.hue.neutral[400]))
+			expect(hex(theme.surface("dialog").text.muted)).not.toBe(hex(theme.text.muted))
+		}
 	})
 
 	test("setTheme accepts a bundled name and drives the provider", () => {

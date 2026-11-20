@@ -6,11 +6,16 @@
  * in both bundled languages (the fail-open contract: a missing key would
  * paint `hero.plugins.count` on the splash).
  */
-import { describe, expect, test } from "bun:test"
+import { afterAll, describe, expect, test } from "bun:test"
 import { applyI18nConfig, installedLanguages, setLanguage, t } from "@dsh-opentui/i18n"
 import { COMPOSER_COMPACT_TERMINAL_ROWS } from "../src/skin/semantic"
 import { clipRow, splashOverflowCount, splashRowCap } from "../src/routes/welcome-hero"
 import { stringWidth } from "../src/util/string-width"
+
+// The last test flips the global live language to zh-CN. Bun shares one
+// registry across every test file in the process, so restore en on exit —
+// otherwise a later file's en-literal t() assertions see zh-CN copy.
+afterAll(() => setLanguage("en"))
 
 describe("splashRowCap: height bands (composer compact law tie-in)", () => {
 	test("40+ rows get the spec cap of 8", () => {

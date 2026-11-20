@@ -12,7 +12,7 @@
  * 确定 control and no Ctrl+S binding; Esc walks editor → section → 退出设置？
  * confirmation (default focus 取消).
  */
-import { beforeEach, describe, expect, test, beforeAll 
+import { afterAll, beforeEach, describe, expect, test, beforeAll 
 } from "bun:test"
 import { onMount } from "solid-js"
 import { testRender } from "@opentui/solid"
@@ -58,13 +58,32 @@ import {
 	type SettingsThemeFace,
 } from "../src/routes/session/settings-panel"
 import { bundledLocalesDir, loadLocales, setLanguage, setLanguages } from "@dsh-opentui/i18n"
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
+import { defaultUiStatePath } from "../src/util/ui-state"
 import type { SeamSettingsDocument, SessionSeam } from "../src/seams/session"
+
+let originalUiState: string | undefined
 
 // The settings copy resolves through `t()` (T5 facet migration): boot the
 // bundled registry so the en-literal assertions stay hermetic in isolation.
 beforeAll(() => {
 	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
 	setLanguages(languages)
+	// The modal reads the CLIENT's real state file on mount (reloadLocal), so
+	// a gear persisted by a previous run leaks into the panelHeight assertions
+	// ("default" vs a live "5"). Snapshot + clear it for the duration of this
+	// file so the painted value is deterministic.
+	const path = defaultUiStatePath()
+	originalUiState = existsSync(path) ? readFileSync(path, "utf8") : undefined
+	writeFileSync(path, "{}")
+})
+afterAll(() => {
+	const path = defaultUiStatePath()
+	if (originalUiState === undefined) {
+		if (existsSync(path)) unlinkSync(path)
+	} else {
+		writeFileSync(path, originalUiState)
+	}
 })
 
 const keymapConfig = {

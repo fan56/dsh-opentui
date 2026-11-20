@@ -175,6 +175,53 @@ function naRow(id: string, label: string, note: string): SettingsRow {
 }
 
 /**
+ * Runtime capability gate for the /settings row set.
+ *
+ * The user's rule: drop every configuration we cannot change; keep the
+ * commands we support. "Cannot change" is decided by capabilities ALREADY
+ * probed by the data layer — not by a new probe:
+ *   - `ctx.host` is `settingsWritable(...).host` — false when there is no
+ *     face, describe failed, or the document is `writable: false`; true when a
+ *     face exists and writes are possible.
+ *   - `ctx.document` is the `settings/describe` result from `readHostSnapshot`.
+ *     It starts `undefined` and is filled by an ASYNC read on mount, so an
+ *     `undefined` document while `ctx.host` is true is a LOADING window, not
+ *     bridge mode. Filtering that window would make preselection resolve row
+ *     ids against a hidden row set (the preselect effect runs before the host
+ *     snapshot arrives), landing on the wrong row.
+ * Remote mode (`DSH_OPENTUI_INPROC=0`) supplies a writable host, so the full
+ * row set renders exactly as before. Bridge mode (no face → `host: false`)
+ * hides every row with no live write path; command-jump rows are kept in both
+ * modes (they are commands, not configuration).
+ *
+ * Row DEFINITIONS stay intact — this is a filter at build time, never a
+ * deletion from the source lists.
+ */
+function hostSettingsAvailable(ctx: SettingsRowContext): boolean {
+	// `ctx.host` already folds in every capability probe. Deciding on it alone
+	// (rather than also requiring `ctx.document !== undefined`) keeps the row
+	// set stable during the async describe window while still gating true
+	// bridge mode, where `host` is false.
+	return ctx.host
+}
+
+export function settingsRowsForMode(rows: readonly SettingsRow[], ctx: SettingsRowContext): SettingsRow[] {
+	if (hostSettingsAvailable(ctx)) return [...rows]
+	return rows.filter((row) => row.kind === "jump" || (row.editable && row.write !== undefined))
+}
+
+/**
+ * The Host nav entry is meaningless without a readable settings document —
+ * bridge mode would show four rows whose only content is "host settings
+ * unavailable". Hide the entry (not the definition) in that mode; remote mode
+ * keeps all seven sections.
+ */
+export function visibleSettingsSections(ctx: SettingsRowContext): readonly (typeof SETTINGS_SECTIONS)[number][] {
+	if (hostSettingsAvailable(ctx)) return SETTINGS_SECTIONS
+	return SETTINGS_SECTIONS.filter((section) => section.id !== "host")
+}
+
+/**
  * 12 General rows in web order (contract §3.2). Rows 4/6/7/8/9/10/12 are
  * informational by decision: the TUI has no consumer for them, so they carry a
  * note instead of a dead control. Row 5 opens a three-field N/A sub-layer while
@@ -201,7 +248,7 @@ export function buildGeneralRows(ctx: SettingsRowContext): SettingsRow[] {
 			? { id: "general.session-log", label: t("settings.row.sessionLogUpload"), value: "n/a", kind: "readonly", editable: false, note: t("settings.note.notInHostBaseline") }
 			: { ...fromItem(sessionLog), id: "general.session-log", label: t("settings.row.sessionLogUpload") }
 
-	return [
+	const rows: SettingsRow[] = [
 		permissionRow,
 		{
 			// T14 storage-key unification: this row writes the unified `lang`
@@ -248,12 +295,13 @@ export function buildGeneralRows(ctx: SettingsRowContext): SettingsRow[] {
 		sessionLogRow,
 		{ id: "general.current-version", label: t("settings.row.currentVersion"), value: ctx.version ?? resolveVersion(), kind: "readonly", editable: false },
 	]
+	return settingsRowsForMode(rows, ctx)
 }
 
 /** The opentui-only group (survey D.2), all preserved. The unified `lang`
  * key lives in General's language row (one key, one control). */
 export function buildOpentuiRows(ctx: SettingsRowContext): SettingsRow[] {
-	return buildLocalItems({
+	const rows = buildLocalItems({
 		merged: ctx.merged,
 		profile: ctx.profile,
 		workspace: ctx.workspace,
@@ -267,14 +315,18 @@ export function buildOpentuiRows(ctx: SettingsRowContext): SettingsRow[] {
 				: row,
 		)
 		.map(fromItem)
+	return settingsRowsForMode(rows, ctx)
 }
 
 export function buildHostRows(ctx: SettingsRowContext): SettingsRow[] {
-	return buildHostItems(ctx.document, ctx.host, ctx.catalog).map(fromItem)
+	return settingsRowsForMode(buildHostItems(ctx.document, ctx.host, ctx.catalog).map(fromItem), ctx)
 }
 
 export function buildOtherRows(ctx: SettingsRowContext): SettingsRow[] {
-	return buildOtherItems(ctx.document).map((item) => ({ ...fromItem(item), kind: "readonly" as const }))
+	return settingsRowsForMode(
+		buildOtherItems(ctx.document).map((item) => ({ ...fromItem(item), kind: "readonly" as const })),
+		ctx,
+	)
 }
 
 /** Command-jump specs resolve through `t()` at call time (buildCommandRows
@@ -617,7 +669,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	}))
 	const sections = createMemo(() => {
 		const ctx = rowContext()
-		return SETTINGS_SECTIONS.map((section) => ({
+		return visibleSettingsSections(ctx).map((section) => ({
 			...section,
 			rows: buildSectionRows(section.id, ctx),
 		}))
