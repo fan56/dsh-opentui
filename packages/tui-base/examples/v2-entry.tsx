@@ -84,6 +84,8 @@ import { HistoryPanel, openHistoryPanel } from "../src/routes/session/history-pa
 import { SubagentsViewer, openSubagentsViewer } from "../src/routes/session/subagents-viewer"
 import { SettingsModalHost } from "../src/routes/session/settings-modal"
 import { BtwController, createBtwOpener, createBtwSnapshotBuilder } from "../src/routes/session/btw-overlay"
+import { createAppCommandLayers } from "../src/routes/session/app-command-layer"
+import { CommandPaletteDialog } from "../src/component/command-palette"
 import { readCacheHitMode } from "../src/seams/config"
 import { DialogSelect } from "../src/ui/dialog-select"
 import { DialogPrompt } from "../src/ui/dialog-prompt"
@@ -1081,6 +1083,20 @@ function V2SessionPageBody(props: {
 			},
 		],
 	}))
+	// 0234: app-level command layers. The shipped config binds <leader>n/l/g/q/m/x
+	// and ctrl+p, but the v2 bundle mounted no layer that registered those
+	// command IDs, so the keys were silent no-ops and their letters fell into
+	// the composer. Reuse the v2-native faces (slash dispatch + the page-owned
+	// palette / history panel) instead of the un-bundled app.tsx services.
+	// Command definitions stay ungated so ctrl+p's own palette can list them;
+	// the key bindings alone are gated on page ownership (no dialog misfire).
+	for (const layer of createAppCommandLayers({
+		slash: (name) => void slash.interceptSubmit(name),
+		openPalette: () => dialog.replace(() => createComponent(CommandPaletteDialog, {})),
+		openTimeline: () => openHistoryPanel(),
+		enabled: pageOwns,
+	}))
+		Keymap.createLayer(layer)
 	// A3b: plain R reconnects only from dead / failed / locked. The command's
 	// enabled flag hides it elsewhere; the run body re-checks canRecover() so a
 	// stale dispatch can never start a second recovery. Key occupancy: plain
