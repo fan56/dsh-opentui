@@ -178,10 +178,15 @@ jobs:
       # FAILS only when it contains a host-implementation marker that Bun leaves
       # when it folds @deepseek-ai into the output: `function createUserMessage`,
       # `deepFreeze(`, or a `node_modules/.pnpm/@deepseek-ai` source banner.
-      # Any @deepseek-ai/dsh-llm mention outside an import line also fails.
-      # Bundle size no longer decides the exit code — the fixed build is ~29KB,
-      # above the old 20480B ceiling — so 20480B is kept only as a reference
-      # threshold for a warning line.
+      # The dsh-llm-outside-import check remains as the guard's narrow second
+      # tier; since 0.24 the dsh-llm token in the bundle is the \u002f-escaped
+      # form of CapIR capability data (see scripts/build-bridge.mjs, frozen by
+      # 024 N1 C1), so this tier is expected to stay quiet — it no longer
+      # generalises to other @deepseek-ai tokens.
+      # Bundle size no longer decides the exit code — the current inlined
+      # contract data puts the fixed build around ~230-240KB, above the old
+      # 20480B ceiling — so 20480B is kept only as a reference threshold for a
+      # warning line.
       - name: Assert bridge bundle does not inline host implementation
         shell: bash
         run: |
