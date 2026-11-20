@@ -1184,6 +1184,36 @@ describe("/model two-stage think level (one transaction, tui-pi parity)", () => 
 })
 
 describe("model/effort failure surfacing (a rejected RPC never echoes success)", () => {
+	test("/model bare: an unsupported modelCatalog (inproc bridge) degrades to a notice, never an uncaught rejection", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		// The real bridge seam rejects modelCatalog() with
+		// BridgeProtocolError(UNSUPPORTED, "modelCatalog is not backed by the
+		// in-process bridge"). Reproduce that shape without a cross-package import.
+		const bridgeError = Object.assign(new Error("modelCatalog is not backed by the in-process bridge"), {
+			code: "UNSUPPORTED",
+			capability: "modelCatalog",
+		})
+		ctx.seam = {
+			...seam.seam,
+			modelCatalog: async () => {
+				seam.calls.push("modelCatalog")
+				throw bridgeError
+			},
+		}
+		// `slash-palette` calls `void command.run()`; a rejected run would become
+		// an unhandled rejection / Console popup. The regression is that this
+		// await RESOLVES and the failure is a plain transcript line instead.
+		await coreCommands()[2]!.run(ctx, "")
+		expect(seam.calls).toEqual(["modelCatalog"])
+		expect(ctx.lines).toHaveLength(1)
+		expect(ctx.lines[0]).toContain("unavailable")
+		expect(ctx.lines[0]).toContain("modelCatalog is not backed by the in-process bridge")
+		expect(ctx.hooks.picks).toHaveLength(0)
+		expect(ctx.hooks.footerRefreshes).toBe(0)
+		expect(ctx.hooks.footerInvalidations).toBe(0)
+	})
+
 	test("/model provider/model: a rejected selectModel prints the failure line, no success echo, footer untouched", async () => {
 		const seam = new RecordingSeam()
 		const ctx = makeCtx(seam)

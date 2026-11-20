@@ -653,12 +653,25 @@ export function coreCommands(): SlashCommand[] {
 					ctx.refreshFooter?.()
 					return
 				}
-				const catalog = await ctx.seam.modelCatalog()
+				// The in-process bridge has no `session/modelCatalog` (or `selectModel`)
+				// wire, so its seam rejects here with BridgeProtocolError(UNSUPPORTED).
+				// `slash-palette` runs commands via `void command.run()`, which would
+				// turn that rejection into an unhandled rejection / Console popup.
+				// Degrade THIS chain to a clear notice (the remote stack keeps the
+				// normal picker path): never leak the exception, never fake a catalog.
+				let catalog: Awaited<ReturnType<SessionSeam["modelCatalog"]>>
+				let current: Awaited<ReturnType<SessionSeam["currentModelSelection"]>>
+				try {
+					catalog = await ctx.seam.modelCatalog()
+					current = await ctx.seam.currentModelSelection()
+				} catch (error) {
+					ctx.say(t("command.model.unavailable", { reason: seamFailureReason(error) }))
+					return
+				}
 				if (catalog.length === 0) {
 					ctx.say(t("command.model.emptyCatalog"))
 					return
 				}
-				const current = await ctx.seam.currentModelSelection()
 				// A4 (gap-analysis C14, dsh-tui-pi selectors.ts pickModel parity):
 				// the stage-1 picker carries the favorites/hidden layer — `f`
 				// toggles the favorite flag on the cursor model (list reorders
