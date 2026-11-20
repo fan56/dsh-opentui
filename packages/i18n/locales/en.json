@@ -455,6 +455,7 @@
   "panel.subagents.status.completed": "completed",
   "panel.subagents.status.failed": "failed",
   "panel.subagents.status.cancelled": "cancelled",
+  "panel.subagents.status.interrupted": "interrupted",
   "panel.subagents.marker.spinStop": "⏻! spin-detected early @{round}",
   "panel.subagents.marker.hardStop": "⏻ hard-stopped @{round}",
   "panel.subagents.marker.injected": "⚡ injected",

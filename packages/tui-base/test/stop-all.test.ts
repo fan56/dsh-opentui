@@ -19,6 +19,11 @@ interface FakeOpts {
 	withStatus?: boolean
 	withInterruptChild?: boolean
 	childFailsFor?: string
+	/** 0.23.1 capability path knobs (default: no capability, legacy walk). */
+	withCapability?: boolean
+	withStopChildren?: boolean
+	stopChildrenResult?: Array<{ childId: string; disposition: string }>
+	stopChildrenThrows?: boolean
 }
 
 function fakeSeam(opts: FakeOpts = {}) {
@@ -39,6 +44,22 @@ function fakeSeam(opts: FakeOpts = {}) {
 						calls.push(`child:${id}`)
 						return id === opts.childFailsFor ? Promise.reject(new Error(`child ${id} failed`)) : Promise.resolve()
 					},
+		hasBridgeCapability:
+			opts.withCapability === true
+				? (name: string) => {
+						calls.push(`capability:${name}`)
+						return name === "subagents.stopChildren"
+					}
+				: undefined,
+		stopChildren:
+			opts.withStopChildren === true
+				? () => {
+						calls.push("stopChildren")
+						return opts.stopChildrenThrows
+							? Promise.reject(new Error("bridge stopped"))
+							: Promise.resolve(opts.stopChildrenResult ?? [])
+					}
+				: undefined,
 	}
 	return { seam: seam as unknown as SessionSeam, calls }
 }
@@ -104,5 +125,84 @@ describe("stopEverything", () => {
 		const result = await stopEverything(seam)
 		expect(result).toEqual({ parent: false, children: 0 })
 		expect(calls).toEqual([])
+	})
+
+	// ---- 0.23.1 capability path ----
+
+	test("capability advertised: stopChildren called ONCE, no per-child interruptChild walk", async () => {
+		const dispositions = [
+			{ childId: "a", disposition: "cancel-issued" },
+			{ childId: "b", disposition: "cancel-issued" },
+		]
+		const { seam, calls } = fakeSeam({
+			turn: "running",
+			views: [child("a", "running"), child("b", "running")],
+			withCapability: true,
+			withStopChildren: true,
+			stopChildrenResult: dispositions,
+		})
+		const result = await stopEverything(seam)
+		expect(result).toEqual({ parent: true, children: 2, dispositions })
+		expect(calls).toEqual(["parent", "capability:subagents.stopChildren", "stopChildren"])
+	})
+
+	test("capability path counts only cancel-issued dispositions (settled/failed are not 'stopped')", async () => {
+		const { seam, calls } = fakeSeam({
+			turn: "idle",
+			// The host-side roster is NOT consulted on this path — an empty
+			// client roster is exactly the Stop-moment gap 0.23.1 closes.
+			views: [],
+			withCapability: true,
+			withStopChildren: true,
+			stopChildrenResult: [
+				{ childId: "a", disposition: "cancel-issued" },
+				{ childId: "b", disposition: "already-settled" },
+				{ childId: "c", disposition: "failed" },
+			],
+		})
+		const result = await stopEverything(seam)
+		expect(result.parent).toBe(false)
+		expect(result.children).toBe(1)
+		expect(result.dispositions).toHaveLength(3)
+		expect(calls).toEqual(["capability:subagents.stopChildren", "stopChildren"])
+	})
+
+	test("a whole-call stopChildren failure degrades to zero children, parent leg preserved", async () => {
+		const { seam, calls } = fakeSeam({
+			turn: "running",
+			views: [child("a", "running")],
+			withCapability: true,
+			withStopChildren: true,
+			stopChildrenThrows: true,
+		})
+		const result = await stopEverything(seam)
+		expect(result).toEqual({ parent: true, children: 0, dispositions: [] })
+		expect(calls).toEqual(["parent", "capability:subagents.stopChildren", "stopChildren"])
+	})
+
+	test("capability advertised but stopChildren missing → legacy roster walk (per-child isolation intact)", async () => {
+		const { seam, calls } = fakeSeam({
+			turn: "running",
+			views: [child("a", "running"), child("bad", "running"), child("done", "completed")],
+			withCapability: true,
+			withStopChildren: false,
+			childFailsFor: "bad",
+		})
+		const result = await stopEverything(seam)
+		expect(result).toEqual({ parent: true, children: 1 })
+		expect(calls).toEqual(["parent", "capability:subagents.stopChildren", "child:a", "child:bad"])
+	})
+
+	test("capability NOT advertised → legacy path even when stopChildren face exists", async () => {
+		const { seam, calls } = fakeSeam({
+			turn: "idle",
+			views: [child("a", "running"), child("b", "running")],
+			withCapability: false,
+			withStopChildren: true,
+			stopChildrenResult: [{ childId: "host", disposition: "cancel-issued" }],
+		})
+		const result = await stopEverything(seam)
+		expect(result).toEqual({ parent: false, children: 2 })
+		expect(calls).toEqual(["child:a", "child:b"])
 	})
 })

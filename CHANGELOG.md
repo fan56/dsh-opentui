@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.1] - 2026-11-20
+
+### Changed
+
+- **"Stop everything" now really interrupts in-bridge subagents.** Pressing Esc
+  twice and confirming "Stop everything?" makes the host interrupt its child
+  subagents at once, without waiting for the parent turn to reach a boundary;
+  their rows flip to the ⊘ aborted state within ~2s. Answering "no" at the
+  confirm leaves every child running untouched. The interrupt also reaches
+  children the client roster never showed (live-spawned / hidden subagents),
+  and is scoped by session ownership: a TUI can only stop the subagents of its
+  own session, never another session's. The model-side `rounds` / `model`
+  information on those rows is preserved.
+
+### Fixed
+
+- **Running subagents are visible the moment they spawn.** In 0.23.0 a live
+  child was absent from the ctrl+g panel (and shift+k reported "no running
+  subagents") until the next turn boundary drained the journal. Live spawn now
+  enters the catalog immediately. Root cause: catalog-family spawn frames were
+  being silently dropped by the anti-collision guard.
+
+### Internal
+
+- Bridge: added a `subagent-index` (session → sub-agents mapping) and
+  `subagents.interrupt` / `subagents.stopChildren` methods gated on session
+  ownership at both entrances; converged the stop path into a shell
+  confirm-then-emit flow; added the ⊘ state and i18n strings to tui-base.
+
 ## [0.23.0] - 2026-11-19
 
 ### Changed

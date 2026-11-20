@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { NullSessionSeam, type SeamSessionEvent, type SessionSeam } from "../src/seams/session"
+import { NullSessionSeam, type SeamSessionEvent, type SeamSubagentView, type SessionSeam } from "../src/seams/session"
 
 describe("SessionSeam", () => {
 	test("NullSessionSeam satisfies the interface and resolves empty reads", async () => {
@@ -28,6 +28,20 @@ describe("SessionSeam", () => {
 		seam.emit({ type: "session.updated", details: { id: "s2" } })
 		expect(seen).toHaveLength(1)
 		expect(seam.listeners).toHaveLength(0)
+	})
+
+	test("0.23.1 seam faces: hasBridgeCapability / stopChildren / interrupted status are typed and callable", async () => {
+		const seam: SessionSeam = Object.assign(new NullSessionSeam(), {
+			hasBridgeCapability: (name: string) => name === "subagents.stopChildren",
+			stopChildren: async (): Promise<Array<{ childId: string; disposition: string }>> => [
+				{ childId: "child-1", disposition: "cancel-issued" },
+			],
+		})
+		const view: SeamSubagentView = { id: "child-1", label: "Explore", status: "interrupted", rounds: 2 }
+		expect(seam.hasBridgeCapability?.("subagents.stopChildren")).toBe(true)
+		expect(seam.hasBridgeCapability?.("subagents.interrupt")).toBe(false)
+		expect(await seam.stopChildren?.()).toEqual([{ childId: "child-1", disposition: "cancel-issued" }])
+		expect(view.status).toBe("interrupted")
 	})
 
 	test("dependency direction: seam module imports nothing outside the package", async () => {

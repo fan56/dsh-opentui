@@ -142,7 +142,7 @@ export type SeamRow =
 					id: string
 					label: string
 					model?: string
-					status: "running" | "completed" | "failed" | "cancelled"
+					status: "running" | "completed" | "failed" | "cancelled" | "interrupted"
 					rounds: number
 					startedAt?: number
 					elapsedSec?: number

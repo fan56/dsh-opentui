@@ -16,7 +16,9 @@ import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows.ts"
 import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
+	type BridgeConfirmClock,
 	bridgeChildJournalMeta,
+	bridgeChildStopReason,
 	bridgeReplayRowsToSeamTranscript,
 	bridgeReplayRowsToSubagentViews,
 	bridgeSweepSettledChildIds,
@@ -39,11 +41,11 @@ type Reply =
 	| { kind: "fn"; fn: (params?: Record<string, unknown>) => Reply }
 
 interface LogCall {
-	level: "info" | "warn" | "error"
+	level: "info" | "warn" | "error" | "debug"
 	args: unknown[]
 }
 
-function makeHarness() {
+function makeHarness(confirmClock?: BridgeConfirmClock) {
 	const requests: { method: string; params?: Record<string, unknown> }[] = []
 	const replies = new Map<string, Reply>()
 	const eventListeners: ((frame: BridgeEventFrame) => void)[] = []
@@ -73,9 +75,10 @@ function makeHarness() {
 		info(...args: unknown[]) { logs.push({ level: "info", args }) },
 		warn(...args: unknown[]) { logs.push({ level: "warn", args }) },
 		error(...args: unknown[]) { logs.push({ level: "error", args }) },
+		debug(...args: unknown[]) { logs.push({ level: "debug", args }) },
 	}
 
-	const seam = new BridgeSessionSeam({ transport, ctx: { logger } })
+	const seam = new BridgeSessionSeam({ transport, ctx: { logger }, confirmClock })
 
 	return {
 		seam,
@@ -1424,6 +1427,10 @@ describe("subagent lifecycle rows (inproc visibility)", () => {
 		expect(settledWith("completed").status).toBe("completed")
 		expect(settledWith("failed").status).toBe("failed")
 		expect(settledWith("cancelled").status).toBe("cancelled")
+		// L2a display mapping: `aborted` is a real user-interrupt terminal —
+		// it must NOT fold into completed (0.23.0 P1-3). SeamSubagentView.status
+		// gains "interrupted" in L3; the shell already returns that string.
+		expect(settledWith("aborted").status as string).toBe("interrupted")
 		// Unknown / absent stopReason never paints a false failure.
 		expect(settledWith("interrupted").status).toBe("completed")
 		expect(settledWith(undefined).status).toBe("completed")
@@ -1546,6 +1553,37 @@ describe("subagent lifecycle rows (inproc visibility)", () => {
 		h.emit({ type: "agent.spawn", payload: { childId: "live-2", label: "after unsub", runId: "r2", seq: 0 } })
 		expect(snapshots).toHaveLength(3) // no further pushes after unsubscribe
 		expect(h.seam.subagentViews()).toHaveLength(2) // state still updates
+	})
+
+	test("live-visibility: a catalog: prefixed live agent.spawn inserts a running row immediately (P3-1 viaCatalog guard must not drop it)", () => {
+		// 0.23.1 live-visibility fix: the bridge forwards a plain `subagent`
+		// catalog event as an additive agent.spawn whose runId is the catalog
+		// synthetic key `catalog:<childId>`. Folding it as a tool-workflow
+		// agent-start would hit the P3-1 collision guard (viaCatalog!==true)
+		// and silently drop the frame — the running child stayed invisible in
+		// ctrl+g until a later journal drain. The seam must route it through
+		// the catalog branch and insert the running row immediately.
+		const h = makeHarness()
+		const snapshots: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => snapshots.push(views))
+
+		h.emit({
+			type: "agent.spawn",
+			payload: {
+				childId: "live-cat-child",
+				label: "live catalog child",
+				runId: "catalog:live-cat-child",
+				seq: 0,
+			},
+		})
+
+		expect(h.seam.subagentViews()).toMatchObject([
+			{ id: "live-cat-child", label: "live catalog child", status: "running" },
+		])
+		// The running row is pushed to subscribers immediately, not deferred
+		// to a later journal drain.
+		expect(snapshots).toHaveLength(2)
+		expect(snapshots[1]![0]!.status).toBe("running")
 	})
 
 	test("live spawn upgrades a replay approximation to a real wall clock", async () => {
@@ -2177,5 +2215,474 @@ describe("0.23.0 acceptance regressions (replay refold must not undo T1/T2)", ()
 		expect(roundsSeen.length).toBeGreaterThan(0)
 		expect(roundsSeen.every((r) => r! >= 1)).toBe(true)
 		expect(h.seam.subagentViews()[0]!.rounds).toBe(3)
+	})
+})
+
+// ---------------------------------------------------------------------------
+// L2a (0.23.1) — capability negotiation + subagent stop frames + settle handoff
+// ---------------------------------------------------------------------------
+
+describe("L2a: bridge capabilities (additive hello/ping field)", () => {
+	test("old bridge: no capabilities field → every capability is absent (no child probing)", async () => {
+		const h = makeHarness()
+		h.replies.set("bridge.ping", { kind: "value", value: { protocolVersion: 1, bridgeVersion: "0.2.2" } })
+		await h.seam.connect()
+		expect(h.seam.hasBridgeCapability("subagents.interrupt")).toBe(false)
+		expect(h.seam.hasBridgeCapability("subagents.stopChildren")).toBe(false)
+	})
+
+	test("new bridge: advertised capabilities resolve; malformed entries dropped; reconnect replaces the set", async () => {
+		const h = makeHarness()
+		h.replies.set("bridge.ping", {
+			kind: "value",
+			value: { protocolVersion: 1, capabilities: ["subagents.interrupt", "subagents.stopChildren", 42, ""] },
+		})
+		await h.seam.connect()
+		expect(h.seam.hasBridgeCapability("subagents.interrupt")).toBe(true)
+		expect(h.seam.hasBridgeCapability("subagents.stopChildren")).toBe(true)
+		expect(h.seam.hasBridgeCapability("subagents.nope")).toBe(false)
+
+		// A malformed / missing array clears the old set (recovered bridge may be older).
+		h.replies.set("bridge.ping", { kind: "value", value: { capabilities: "not-an-array" } })
+		await h.seam.connect()
+		expect(h.seam.hasBridgeCapability("subagents.interrupt")).toBe(false)
+	})
+})
+
+describe("L2a: interruptChild / stopChildren seam methods", () => {
+	/** Open + bind a session through a completed turn; #currentSessionId persists. */
+	async function boundHarness(sessionId = "parent-1") {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-bind" } })
+		h.seam.resumeSession(sessionId)
+		const done = h.seam.turn("go", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t-bind", text: "" } })
+		await done
+		await Bun.sleep(0)
+		expect(h.seam.currentSessionId()).toBe(sessionId)
+		return h
+	}
+
+	test("no binding: interruptChild rejects NO_SESSION and sends NO frame", async () => {
+		const h = makeHarness()
+		let caught: unknown
+		try { await h.seam.interruptChild("c") } catch (err) { caught = err }
+		expect(caught).toBeInstanceOf(BridgeProtocolError)
+		expect((caught as BridgeProtocolError).code).toBe("NO_SESSION")
+		expect(h.requests.filter((r) => r.method === "subagents.interrupt")).toHaveLength(0)
+	})
+
+	test("no binding: stopChildren rejects NO_SESSION and sends NO frame", async () => {
+		const h = makeHarness()
+		let caught: unknown
+		try { await h.seam.stopChildren() } catch (err) { caught = err }
+		expect(caught).toBeInstanceOf(BridgeProtocolError)
+		expect((caught as BridgeProtocolError).code).toBe("NO_SESSION")
+		expect(h.requests.filter((r) => r.method === "subagents.stopChildren")).toHaveLength(0)
+	})
+
+	test("cancel-issued / already-settled resolve; parentSessionId is the bound session", async () => {
+		const h = await boundHarness()
+
+		h.replies.set("subagents.interrupt", { kind: "value", value: { childId: "c1", disposition: "cancel-issued" } })
+		await expect(h.seam.interruptChild("c1")).resolves.toBeUndefined()
+		expect(h.lastRequest("subagents.interrupt")?.params).toEqual({ parentSessionId: "parent-1", childId: "c1" })
+
+		h.replies.set("subagents.interrupt", { kind: "value", value: { childId: "c2", disposition: "already-settled" } })
+		await expect(h.seam.interruptChild("c2")).resolves.toBeUndefined()
+		expect(h.lastRequest("subagents.interrupt")?.params).toEqual({ parentSessionId: "parent-1", childId: "c2" })
+	})
+
+	test("failed disposition rejects INTERRUPT_FAILED with the bridge detail attached", async () => {
+		const h = await boundHarness()
+		const detail = "agent not available in host registry"
+		h.replies.set("subagents.interrupt", {
+			kind: "value", value: { childId: "c-bad", disposition: "failed", detail },
+		})
+		let caught: unknown
+		try { await h.seam.interruptChild("c-bad") } catch (err) { caught = err }
+		expect(caught).toBeInstanceOf(BridgeProtocolError)
+		expect((caught as BridgeProtocolError).code).toBe("INTERRUPT_FAILED")
+		expect((caught as BridgeProtocolError).detail).toMatchObject({
+			childId: "c-bad", disposition: "failed", detail,
+		})
+	})
+
+	test("stopChildren returns the bridge children verbatim (childId + disposition)", async () => {
+		const h = await boundHarness()
+		h.replies.set("subagents.stopChildren", {
+			kind: "value",
+			value: { children: [
+				{ childId: "a", disposition: "cancel-issued" },
+				{ childId: "b", disposition: "already-settled" },
+				{ childId: "c", disposition: "failed", detail: "boom" },
+			] },
+		})
+		const out = await h.seam.stopChildren()
+		expect(h.lastRequest("subagents.stopChildren")?.params).toEqual({ parentSessionId: "parent-1" })
+		expect(out).toEqual([
+			{ childId: "a", disposition: "cancel-issued" },
+			{ childId: "b", disposition: "already-settled" },
+			{ childId: "c", disposition: "failed" },
+		])
+	})
+})
+
+describe("L2a: #settleChildFromHost extraction + in-flight sweep skip", () => {
+	test("settle extraction regression: a host-stopped child still settles through sweep", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "p" } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t" } })
+		h.replies.set("journal.replay", { kind: "value", value: { rows: [], cursor: 1 } })
+		h.replies.set("session.list", {
+			kind: "value",
+			value: { items: [{ sessionId: "ghost", origin: "subagent", parentSessionId: "p", running: false }] },
+		})
+		h.seam.resumeSession("p")
+		const done = h.seam.turn("go", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "ghost", label: "G", childCreatedAt: 1000 } })
+		await Bun.sleep(0)
+		h.emit({ type: "turn.end", payload: { turnId: "t", text: "" } })
+		await done
+		await Bun.sleep(0)
+		const ghost = h.seam.subagentViews().find((v) => v.id === "ghost")!
+		expect(ghost.status).toBe("completed")
+		expect(typeof ghost.endedAt).toBe("number")
+	})
+
+	test("sweep skips a child with an in-flight interrupt; siblings still settle", async () => {
+		const h = makeHarness()
+		h.replies.set("session.open", { kind: "value", value: { sessionId: "p" } })
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-skip" } })
+		h.replies.set("session.list", {
+			kind: "value",
+			value: { items: [
+				{ sessionId: "ghost", origin: "subagent", parentSessionId: "p", running: false },
+				{ sessionId: "sibling", origin: "subagent", parentSessionId: "p", running: false },
+			] },
+		})
+		h.replies.set("subagents.interrupt", {
+			kind: "value", value: { childId: "ghost", disposition: "cancel-issued" },
+		})
+		h.seam.resumeSession("p")
+		const done = h.seam.turn("go", {
+			onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+		})
+		await Bun.sleep(0)
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "ghost", label: "G", childCreatedAt: 1000 } })
+		h.emit({ type: "agent.spawn", payload: { sessionId: "p", childId: "sibling", label: "S", childCreatedAt: 2000 } })
+		await Bun.sleep(0)
+
+		// Register the in-flight interrupt for `ghost` (marker survives resolve).
+		await h.seam.interruptChild("ghost")
+		expect(h.lastRequest("subagents.interrupt")?.params).toEqual({ parentSessionId: "p", childId: "ghost" })
+
+		h.emit({ type: "turn.end", payload: { turnId: "t-skip", text: "" } })
+		await done
+		await Bun.sleep(0)
+
+		const views = h.seam.subagentViews()
+		// L2a handoff: sweep must not settle the interrupted child — C3 owns it.
+		expect(views.find((v) => v.id === "ghost")!.status).toBe("running")
+		// A normal sibling is still settled by the same sweep.
+		expect(views.find((v) => v.id === "sibling")!.status).toBe("completed")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// L2b (0.23.1) — C3 confirm-then-emit
+// ---------------------------------------------------------------------------
+
+/**
+ * Manually-driven poll clock. `sleep` parks until step()/stepAll() resolves it;
+ * `now()` advances by the requested delay at sleep-CALL time so the 45s deadline
+ * is reachable in ~47 deterministic steps (no real 250ms→1s waits).
+ */
+function makeManualConfirmClock() {
+	let t = 0
+	const waiters: Array<() => void> = []
+	const clock: BridgeConfirmClock = {
+		sleep(ms) {
+			t += ms
+			return new Promise<void>((resolve) => { waiters.push(resolve) })
+		},
+		now() { return t },
+	}
+	return {
+		clock,
+		/** Resolve the oldest outstanding sleep (one poll round for one child). */
+		async step() {
+			waiters.shift()?.()
+			await Bun.sleep(0)
+		},
+		/** Resolve every currently outstanding sleep (one round for N children). */
+		async stepAll() {
+			const batch = waiters.splice(0, waiters.length)
+			for (const w of batch) w()
+			await Bun.sleep(0)
+		},
+		pending() { return waiters.length },
+		elapsed() { return t },
+	}
+}
+
+// A child journal with real rounds/model (meta) but NO terminal row.
+const CHILD_ROWS: BridgeReplayRow[] = [
+	{ seq: 1, type: "request/context", payload: { model: "child-model" } },
+	{ seq: 2, type: "assistant/message", payload: { content: [{ type: "text", text: "step one" }] } },
+	{ seq: 3, type: "assistant/message", payload: { content: [{ type: "text", text: "step two" }] } },
+]
+/** Priority ① reason — a `subagent-settled` notice's `source.stopReason`. */
+const SETTLED_ABORTED: BridgeReplayRow = {
+	seq: 4,
+	type: "user/message",
+	payload: { source: { kind: "subagent-settled", stopReason: "aborted", senderSessionId: "c1" } },
+}
+
+async function bindC3(h: ReturnType<typeof makeHarness>, sessionId = "parent-1"): Promise<void> {
+	h.replies.set("session.open", { kind: "value", value: { sessionId } })
+	h.replies.set("session.send", { kind: "value", value: { turnId: "t-bind-c3" } })
+	h.seam.resumeSession(sessionId)
+	const done = h.seam.turn("go", {
+		onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+	})
+	await Bun.sleep(0)
+	h.emit({ type: "turn.end", payload: { turnId: "t-bind-c3", text: "" } })
+	await done
+	await Bun.sleep(0)
+}
+
+async function spawnC3(h: ReturnType<typeof makeHarness>, id: string): Promise<void> {
+	h.emit({ type: "agent.spawn", payload: { sessionId: "parent-1", childId: id, label: id, childCreatedAt: 1000 } })
+	await Bun.sleep(0)
+}
+
+/** Track running→settled transitions for a child across emitted snapshots. */
+function trackSettles(h: ReturnType<typeof makeHarness>, childId: string): () => number {
+	const prev = new Map<string, string>()
+	let settles = 0
+	h.seam.onSubagentViews((views) => {
+		for (const v of views) {
+			if (v.id !== childId) continue
+			if (prev.get(childId) === "running" && v.status !== "running") settles += 1
+			prev.set(childId, v.status)
+		}
+	})
+	return () => settles
+}
+
+function childReplayCount(h: ReturnType<typeof makeHarness>, id: string): number {
+	return h.requests.filter((r) => r.method === "journal.replay" && r.params?.sessionId === id).length
+}
+
+describe("L2b: C3 confirm-then-emit (poll → reason → settle)", () => {
+	test("① cancel-issued → running=false → replay aborted → settle once, rounds/model preserved", async () => {
+		const clk = makeManualConfirmClock()
+		const h = makeHarness(clk.clock)
+		h.replies.set("journal.replay", {
+			kind: "value", value: { rows: [...CHILD_ROWS, SETTLED_ABORTED], cursor: 5 },
+		})
+		let polls = 0
+		h.replies.set("session.list", { kind: "fn", fn: () => {
+			polls += 1
+			return { kind: "value", value: { items: [
+				{ sessionId: "c1", origin: "subagent", parentSessionId: "parent-1", running: polls < 2 },
+			] } }
+		} })
+		h.replies.set("subagents.interrupt", {
+			kind: "value", value: { childId: "c1", disposition: "cancel-issued" },
+		})
+		await bindC3(h)
+		await spawnC3(h, "c1")
+		const settles = trackSettles(h, "c1")
+
+		await h.seam.interruptChild("c1")
+		await clk.step() // poll 1: host still running → retry
+		await clk.step() // poll 2: running===false → replay → settle
+		await Bun.sleep(0)
+
+		expect(polls).toBeGreaterThanOrEqual(2)
+		expect(childReplayCount(h, "c1")).toBeGreaterThan(0)
+		const c1 = h.seam.subagentViews().find((v) => v.id === "c1")!
+		expect(c1.status).toBe("interrupted") // aborted → dedicated interrupted display
+		expect(c1.rounds).toBe(2)
+		expect(c1.model).toBe("child-model")
+		expect(settles()).toBe(1)
+	})
+
+	test("② replay carries no reason → degrade to aborted", async () => {
+		const clk = makeManualConfirmClock()
+		const h = makeHarness(clk.clock)
+		expect(bridgeChildStopReason(CHILD_ROWS)).toBeUndefined()
+		h.replies.set("journal.replay", { kind: "value", value: { rows: CHILD_ROWS, cursor: 4 } })
+		h.replies.set("session.list", { kind: "value", value: { items: [
+			{ sessionId: "c1", origin: "subagent", parentSessionId: "parent-1", running: false },
+		] } })
+		h.replies.set("subagents.interrupt", {
+			kind: "value", value: { childId: "c1", disposition: "cancel-issued" },
+		})
+		await bindC3(h)
+		await spawnC3(h, "c1")
+		const settles = trackSettles(h, "c1")
+
+		await h.seam.interruptChild("c1")
+		await clk.step()
+		await Bun.sleep(0)
+
+		expect(h.seam.subagentViews().find((v) => v.id === "c1")!.status).toBe("interrupted")
+		expect(settles()).toBe(1)
+	})
+
+	test("③ already-settled starts no confirmation poll", async () => {
+		const clk = makeManualConfirmClock()
+		const h = makeHarness(clk.clock)
+		h.replies.set("journal.replay", { kind: "value", value: { rows: CHILD_ROWS, cursor: 4 } })
+		h.replies.set("subagents.interrupt", {
+			kind: "value", value: { childId: "c1", disposition: "already-settled" },
+		})
+		await bindC3(h)
+		await spawnC3(h, "c1")
+		await Bun.sleep(0)
+		const before = h.requests.length
+
+		await h.seam.interruptChild("c1")
+		await clk.step()
+		await clk.step()
+		await Bun.sleep(0)
+
+		const added = h.requests.slice(before)
+		expect(added.filter((r) => r.method === "session.list" || r.method === "journal.replay")).toHaveLength(0)
+		expect(clk.pending()).toBe(0)
+
+		// F-1: already-settled cleared the in-flight marker — a later turn-boundary
+		// sweep is NOT skipped and converges the still-running child. If the marker
+		// lingered, sweep would skip "c1" and it would stay "running".
+		h.replies.set("session.list", { kind: "value", value: { items: [
+			{ sessionId: "c1", origin: "subagent", parentSessionId: "parent-1", running: false },
+		] } })
+		h.emit({ type: "turn.end", payload: { turnId: "t-fallback", text: "" } })
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews().find((v) => v.id === "c1")!.status).toBe("completed")
+	})
+
+	test("④ generation / binding change after rebind → no settle, no emit", async () => {
+		const clk = makeManualConfirmClock()
+		const h = makeHarness(clk.clock)
+		h.replies.set("journal.replay", { kind: "fn", fn: ({ sessionId }) => {
+			if (sessionId === "c1") {
+				return { kind: "value", value: { rows: [...CHILD_ROWS, SETTLED_ABORTED], cursor: 5 } }
+			}
+			// A different binding whose roster has c1 RUNNING — without the guard
+			// the stale coroutine would settle THIS new view.
+			return { kind: "value", value: { rows: [
+				{ seq: 1, type: "subagent/catalog", payload: { childId: "c1", label: "c1" } },
+			], cursor: 2 } }
+		} })
+		h.replies.set("subagents.interrupt", {
+			kind: "value", value: { childId: "c1", disposition: "cancel-issued" },
+		})
+		await bindC3(h)
+		await spawnC3(h, "c1")
+		await h.seam.interruptChild("c1")
+		expect(clk.pending()).toBe(1) // coroutine parked at its first poll
+
+		// Rebind to a different session (clears marker + bumps generation).
+		await h.seam.storedTranscript("parent-2")
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews().find((v) => v.id === "c1")!.status).toBe("running")
+
+		// Subscribe AFTER the rebind: only coroutine-generated emits are counted.
+		const emissions: SeamSubagentView[][] = []
+		h.seam.onSubagentViews((views) => emissions.push(views))
+		const replaysBefore = childReplayCount(h, "c1")
+		await clk.step() // stale coroutine wakes — guard must bail before any RPC
+		await Bun.sleep(0)
+
+		expect(emissions).toHaveLength(1) // only the replay-on-subscribe snapshot
+		expect(childReplayCount(h, "c1")).toBe(replaysBefore)
+		expect(h.seam.subagentViews().find((v) => v.id === "c1")!.status).toBe("running")
+	})
+
+	test("⑤ deadline reached → no settle, marker cleared for turn sweep, debug log (no body)", async () => {
+		const clk = makeManualConfirmClock()
+		const h = makeHarness(clk.clock)
+		h.replies.set("journal.replay", { kind: "value", value: { rows: CHILD_ROWS, cursor: 4 } })
+		let listCalls = 0
+		h.replies.set("session.list", { kind: "fn", fn: () => {
+			listCalls += 1
+			return { kind: "value", value: { items: [
+				{ sessionId: "c1", origin: "subagent", parentSessionId: "parent-1", running: true },
+			] } }
+		} })
+		h.replies.set("subagents.interrupt", {
+			kind: "value", value: { childId: "c1", disposition: "cancel-issued" },
+		})
+		await bindC3(h)
+		await spawnC3(h, "c1")
+		const settles = trackSettles(h, "c1")
+
+		await h.seam.interruptChild("c1")
+		for (let i = 0; i < 60; i += 1) await clk.step()
+		await Bun.sleep(0)
+
+		expect(listCalls).toBeGreaterThan(20)
+		expect(clk.elapsed()).toBeGreaterThanOrEqual(45_000)
+		expect(h.seam.subagentViews().find((v) => v.id === "c1")!.status).toBe("running")
+		expect(settles()).toBe(0)
+		const debug = h.logs.filter((l) => l.level === "debug" && l.args.map(String).join(" ").includes("timed out"))
+		expect(debug).toHaveLength(1)
+		expect(debug[0]!.args.map(String).join(" ")).toContain("c1")
+
+		// Marker was cleared: a later turn boundary sweep converges the child.
+		h.replies.set("session.list", { kind: "value", value: { items: [
+			{ sessionId: "c1", origin: "subagent", parentSessionId: "parent-1", running: false },
+		] } })
+		h.emit({ type: "turn.end", payload: { turnId: "t-fallback", text: "" } })
+		await Bun.sleep(0)
+		expect(h.seam.subagentViews().find((v) => v.id === "c1")!.status).toBe("completed")
+	})
+
+	test("⑥ stopChildren: each child confirms independently; one replay failure does not drag the other", async () => {
+		const clk = makeManualConfirmClock()
+		const h = makeHarness(clk.clock)
+		h.replies.set("journal.replay", { kind: "fn", fn: ({ sessionId }) => {
+			if (sessionId === "c2") return { kind: "error", error: new Error("child journal unavailable") }
+			return { kind: "value", value: { rows: [...CHILD_ROWS, SETTLED_ABORTED], cursor: 5 } }
+		} })
+		let listRound = 0
+		h.replies.set("session.list", { kind: "fn", fn: () => {
+			listRound += 1
+			return { kind: "value", value: { items: [
+				{ sessionId: "c1", origin: "subagent", parentSessionId: "parent-1", running: false },
+				{ sessionId: "c2", origin: "subagent", parentSessionId: "parent-1", running: listRound < 2 },
+			] } }
+		} })
+		h.replies.set("subagents.stopChildren", { kind: "value", value: { children: [
+			{ childId: "c1", disposition: "cancel-issued" },
+			{ childId: "c2", disposition: "cancel-issued" },
+		] } })
+		await bindC3(h)
+		await spawnC3(h, "c1")
+		await spawnC3(h, "c2")
+		await Bun.sleep(0)
+
+		await h.seam.stopChildren()
+		expect(clk.pending()).toBe(2) // one parked poll per child
+		await clk.stepAll() // round 1: c1 stopped; c2 still running
+		await clk.stepAll() // round 2: c2 stopped → replay throws → degrades
+		await Bun.sleep(0)
+
+		const views = h.seam.subagentViews()
+		expect(views.find((v) => v.id === "c1")!.status).toBe("interrupted")
+		expect(views.find((v) => v.id === "c1")!.rounds).toBe(2)
+		expect(views.find((v) => v.id === "c2")!.status).toBe("interrupted")
+		expect(clk.pending()).toBe(0)
 	})
 })

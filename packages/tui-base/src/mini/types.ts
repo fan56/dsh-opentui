@@ -314,7 +314,7 @@ export type FooterSubagentTab = {
   sessionID: string
   label: string
   description: string
-  status: "running" | "completed" | "cancelled" | "error"
+  status: "running" | "completed" | "cancelled" | "error" | "interrupted"
   background?: boolean
   title?: string
 }

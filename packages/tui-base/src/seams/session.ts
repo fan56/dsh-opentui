@@ -343,7 +343,7 @@ export interface SeamSubagentView {
 	id: string
 	label: string
 	model?: string
-	status: "running" | "completed" | "failed" | "cancelled"
+	status: "running" | "completed" | "failed" | "cancelled" | "interrupted"
 	rounds: number
 	/** Batch V2b (transcript subagent tree): the child's start wall clock —
 	 * running rows compute the live duration off it per spinner tick. */
@@ -833,6 +833,23 @@ export interface SessionSeam {
 	 * without it leaves the viewer's stop gesture dark.
 	 */
 	interruptChild?(id: string): Promise<void>
+	/**
+	 * Ask the host to stop ALL of the parent session's live subagents in one
+	 * call (0.23.1 `subagents.stopChildren` capability). Prefer this over the
+	 * per-child interrupt loop when the bridge advertises the capability: it
+	 * sees host-side children even before the client roster catches up.
+	 * Disposition values mirror the bridge frame contract
+	 * (`cancel-issued` | `already-settled` | `failed`); a per-child failure is
+	 * reported as a row, never thrown. Optional — a seam without it falls back
+	 * to the roster walk in `stopEverything`.
+	 */
+	stopChildren?(): Promise<Array<{ childId: string; disposition: string }>>
+	/**
+	 * Whether the connected bridge advertises a named optional capability from
+	 * the handshake (`capabilities` array; missing field = empty set for old
+	 * bridges). Lets consumers gate new faces without trial-and-error.
+	 */
+	hasBridgeCapability?(name: string): boolean
 	/** Event push (context/event.ts's subscribe/on replacement). */
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void
 

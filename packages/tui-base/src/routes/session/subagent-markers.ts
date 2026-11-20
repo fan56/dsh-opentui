@@ -12,7 +12,7 @@ import { t } from "../../i18n"
 export interface SubagentMarkerView {
 	id: string
 	label: string
-	status: "running" | "completed" | "failed" | "cancelled"
+	status: "running" | "completed" | "failed" | "cancelled" | "interrupted"
 	rounds: number
 	injectedRound?: number
 	hardStopRound?: number

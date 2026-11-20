@@ -21,7 +21,7 @@ import { coreCommands, type SlashCommandContext } from "../src/routes/session/co
 import { ENTRY_SLASH_HOOKS } from "../src/routes/session/slash-deps"
 import { buildSlashDeps } from "../src/routes/session/slash-deps"
 import type { SeamSubagentView } from "../src/seams/session"
-import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+import { bundledLocalesDir, loadLocales, setLanguage, setLanguages, t } from "@dsh-opentui/i18n"
 
 // The facet copy resolves through `t()` (T6 panel facet migration): boot the
 // bundled registry so the en-literal assertions stay hermetic in isolation.
@@ -105,6 +105,32 @@ describe("viewer row text", () => {
 		expect(viewerRowText(view({ id: "s1", status: "completed" }), undefined, undefined)).toContain("✓")
 		expect(viewerRowText(view({ id: "s1", status: "failed" }), undefined, undefined)).toContain("✗")
 		expect(viewerRowText(view({ id: "s1", status: "cancelled" }), undefined, undefined)).toContain("—")
+	})
+
+	test("0.23.1: an interrupted row gets its own neutral glyph, distinct from cancelled", () => {
+		const interrupted = viewerRowText(view({ id: "s1", status: "interrupted" }), undefined, undefined)
+		const cancelled = viewerRowText(view({ id: "s1", status: "cancelled" }), undefined, undefined)
+		expect(interrupted).toContain("⊘")
+		expect(interrupted).not.toBe(cancelled)
+	})
+})
+
+describe("interrupted status copy (i18n)", () => {
+	test("the header status key renders in both bundled languages", () => {
+		setLanguage("en")
+		expect(t("panel.subagents.status.interrupted")).toBe("interrupted")
+		setLanguage("zh-CN")
+		expect(t("panel.subagents.status.interrupted")).toBe("已中止")
+		setLanguage("en")
+	})
+
+	test("interrupted is a settled row (not a live one) for list ordering", () => {
+		const rows = viewerRows([
+			view({ id: "live" }),
+			view({ id: "stopped", status: "interrupted", endedAt: 100 }),
+		])
+		expect(rows.map((row) => row.status === "running")).toEqual([true, false])
+		expect(rows[1]!.id).toBe("stopped")
 	})
 })
 
