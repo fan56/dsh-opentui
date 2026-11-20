@@ -327,7 +327,6 @@ export function formatUsage() {
 		'  -h, --help                 print this help and exit',
 		'',
 		'Environment:',
-		'  DSH_OPENTUI_INPROC=0         use the legacy remote thin-client seam instead of the default in-process bridge (escape hatch); unset or 1 = bridge',
 		'  DSH_OPENTUI_BOOT_TIMEOUT_MS      host cold-start budget in ms (CLI flag wins)',
 		'  DSH_OPENTUI_MUX_TIMEOUT_MS       mux readiness budget in ms (CLI flag wins)',
 		'  DSH_OPENTUI_CONNECT_TIMEOUT_MS   first-connect budget in ms (CLI flag wins)',

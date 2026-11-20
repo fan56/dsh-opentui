@@ -5,7 +5,7 @@
  * Design rule (ADR-0006 dependency direction): shell → tui-base, never the
  * reverse. This file therefore declares STRUCTURAL types only and imports
  * nothing from packages/shell; the real adapter lives in shell
- * (`RemoteSessionSeam` wrapping a `RemoteHostSession`) and is injected at
+ * (the bridge `SessionSeam` impl wrapping host client state) and is injected at
  * the view's composition root, replacing `useClient()`/`useData()` wiring.
  *
  * Derived from an enumeration of all 113 `@opencode/client` import sites in

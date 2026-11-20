@@ -3,9 +3,9 @@
 // `opentui-inproc` host profile (ADR-0009 decision 3; T3 of the in-process
 // bridge plan).
 //
-// Invoked by the launcher on EVERY start since 0.23.0 (bridge is the default);
-// only DSH_OPENTUI_INPROC=0 skips it (legacy `opentui` remote thin-client path).
-// The default `opentui` profile path is otherwise untouched.
+// Invoked by the launcher on EVERY start (S6: bridge is the sole seam; the
+// former env escape hatch that skipped provisioning is removed with it).
+// The `opentui` profile path is otherwise untouched.
 // Seven local-FS steps (the first is the host-version gate), no pnpm/npm, no install scripts:
 //
 //   [1/7] host     — detect the running dsh version. OUTSIDE the supported
@@ -36,17 +36,15 @@
 //                    compare with the build-time fingerprint shipped in THIS
 //                    installation's dist/bridge/bundle-fingerprint.json, plus
 //                    name / version. No realpath-prefix hard binding.
-//   [6/7] patch    — skipped ONLY by the DSH_OPENTUI_INPROC=0 escape hatch:
-//                    generate $DSH_HOME/profiles/opentui-inproc/cordis.patch.yml
+//   [6/7] patch    — generate $DSH_HOME/profiles/opentui-inproc/cordis.patch.yml
 //                    from the embedded inproc-only template (web-app
 //                    compensation rows removed, profileRevision stamped). The
 //                    template also registers the standalone sessionController
 //                    shim plus the real @deepseek-ai/dsh-api-session-controller
-//                    plugin — no dsh-web-app bundle is pulled in. The escape
-//                    hatch skips this step entirely.
-//   [7/7] shim     — skipped ONLY by DSH_OPENTUI_INPROC=0: generate the local
-//                    shim package under the profile's node_modules (@aiwayds
-//                    scope) that the patch row above resolves. Its
+//                    plugin — no dsh-web-app bundle is pulled in.
+//   [7/7] shim     — generate the local shim package under the profile's
+//                    node_modules (@aiwayds scope) that the patch row resolves.
+//                    Its
 //                    @deepseek-ai/cordis import is resolved by the host against
 //                    the profile scope, exactly like the bridge. revision +
 //                    backup converge it.
@@ -98,7 +96,6 @@ import { fileURLToPath } from 'node:url'
 // BridgeBootstrapError (handshake) now carry the same three elements.
 import {
   BRIDGE_APPEND_PRESET_NOTICE,
-  BRIDGE_LEGACY_REMOTE_HINT,
   BRIDGE_REPAIR_HINT,
 } from './lib/bridge-failfast-text.mjs'
 // Host-version gate. The host only records an incompatible profile bundle in
@@ -136,13 +133,11 @@ const manifestPath = join(profileDir, 'package.json')
 const linkPath = join(profileDir, 'node_modules', ...BRIDGE_NAME.split('/'))
 const lockPath = join(profileDir, LOCK_NAME)
 
-// --- Inproc patch ownership (escape hatch: DSH_OPENTUI_INPROC=0) ------------
-// Bridge is the default since 0.23.0: the launcher runs this script on every
-// start, so the patch/shim steps are ON unless the explicit escape hatch
-// DSH_OPENTUI_INPROC=0 is set. "1" stays valid (idempotent); --repair-bridge
-// and direct invocation now converge on the same full-inproc output.
-const INPROC_MODE = process.env.DSH_OPENTUI_INPROC !== '0'
-const TOTAL_STEPS = INPROC_MODE ? 7 : 5
+// --- Inproc patch ownership ------------------------------------------------
+// S6: the patch/shim steps are unconditional (the env escape hatch that used
+// to skip them is removed with the legacy seam). The launcher runs this script
+// on every start; --repair-bridge and direct invocation converge identically.
+const TOTAL_STEPS = 7
 const PATCH_NAME = 'cordis.patch.yml'
 const patchPath = join(profileDir, PATCH_NAME)
 const PATCH_REVISION_MARKER = '# profileRevision: '
@@ -944,7 +939,7 @@ function verifyHostCompatibility(bridgeDir) {
   } catch (error) {
     fail(
       'cannot verify the dsh host version before loading the bridge',
-      `${error instanceof Error ? error.message : String(error)}\nDetected with \`dsh --version\` (override: ${HOST_VERSION_ENV}=<exact version>).\n${BRIDGE_LEGACY_REMOTE_HINT}`,
+      `${error instanceof Error ? error.message : String(error)}\nDetected with \`dsh --version\` (override: ${HOST_VERSION_ENV}=<exact version>).`,
     )
   }
 
@@ -953,8 +948,7 @@ function verifyHostCompatibility(bridgeDir) {
       `dsh host version is outside the bridge support window — expected ${HOST_PEER_RANGE}, actual ${hostVersion}`,
       `The host would skip ${BRIDGE_NAME} without a usable error and bridge.hello would time out (BRIDGE_TIMEOUT). `
         + `Install a dsh host in ${HOST_PEER_RANGE}, or upgrade dsh-opentui. `
-        + `Detection override: ${HOST_VERSION_ENV}=${process.env[HOST_VERSION_ENV] ?? '(unset)'}.`
-        + `\n${BRIDGE_LEGACY_REMOTE_HINT}`,
+        + `Detection override: ${HOST_VERSION_ENV}=${process.env[HOST_VERSION_ENV] ?? '(unset)'}.`,
     )
   }
 
@@ -1191,13 +1185,10 @@ function runProvision({ repair = false } = {}) {
   // repointed / replaced bridge cannot slip through as a mere WARN.
   verifyBridgeIdentity()
 
-  // [6/7] Inproc-only patch generation. The gate is here (not just in the
-  // launcher) so --repair-bridge / direct runs without the env stay unchanged.
-  // [7/7] generates the local shim package that the patch row resolves.
-  if (INPROC_MODE) {
-    provisionPatch()
-    provisionShim()
-  }
+  // [6/7] Inproc patch generation + [7/7] the local shim package the patch row
+  // resolves. S6: unconditional (no env escape hatch).
+  provisionPatch()
+  provisionShim()
 
   console.log(`${PREFIX}PASS`)
 }

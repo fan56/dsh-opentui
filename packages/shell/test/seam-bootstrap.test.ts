@@ -1,11 +1,9 @@
 /**
- * M2/T9-T11 unit tests for seam selection + fail-fast bootstrap.
+ * M2/T9-T11 unit tests for fail-fast bootstrap (S6: bridge is the sole seam).
  *
  * Covers the exact deliverables:
- *   - default seam selection: bridge by default, DSH_OPENTUI_INPROC=0 → remote
  *   - fail-fast three elements: diagnosis + repair command + mode notice
  *   - handshake/fingerprint failure is immediate + readable, NO fallback
- *   - the env escape hatch selects the legacy seam (the --remote flag is gone)
  *   - D3 downgrade law: sync members degrade+log, async members UNSUPPORTED
  */
 import { describe, expect, test } from "bun:test"
@@ -21,11 +19,8 @@ import {
 	BRIDGE_REPAIR_COMMAND,
 	BridgeBootstrapError,
 	createBridgeSessionSeam,
-	createSessionSeam,
 	formatBridgeBootstrapMessage,
 	formatDeadNotice,
-	isInprocMode,
-	selectSeamKind,
 	toBridgeBootstrapError,
 	verifyBridgeFingerprint,
 } from "../src/client/seam-bootstrap.ts"
@@ -71,32 +66,10 @@ const logger = {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Default seam selection — both branches
-// ---------------------------------------------------------------------------
-describe("selectSeamKind: bridge is the default", () => {
-	test("bridge mode → BridgeSessionSeam is the default", () => {
-		expect(selectSeamKind({ inproc: true })).toBe("bridge")
-	})
-
-	test("the DSH_OPENTUI_INPROC=0 escape hatch → legacy RemoteSessionSeam", () => {
-		expect(selectSeamKind({ inproc: false })).toBe("remote")
-	})
-
-	test("isInprocMode: unset and '1' enable bridge, only '0' opts back to remote", () => {
-		expect(isInprocMode({})).toBe(true)
-		expect(isInprocMode({ DSH_OPENTUI_INPROC: "1" })).toBe(true)
-		expect(isInprocMode({ DSH_OPENTUI_INPROC: "0" })).toBe(false)
-		expect(isInprocMode({ DSH_OPENTUI_INPROC: "yes" })).toBe(true)
-	})
-
-	test("env → seam composition: default is bridge, =0 is remote", () => {
-		expect(selectSeamKind({ inproc: isInprocMode({}) })).toBe("bridge")
-		expect(selectSeamKind({ inproc: isInprocMode({ DSH_OPENTUI_INPROC: "0" }) })).toBe("remote")
-	})
-})
-
-// ---------------------------------------------------------------------------
-// 2. Fail-fast three elements (T11 original: 诊断 + 修复命令 + 模式说明)
+// 1. Fail-fast three elements (T11 original: 诊断 + 修复命令 + 模式说明)
+// S6退役登记: the former "Default seam selection" describe (4 tests) is removed
+// with the seam-selection helpers — the surface it tested no
+// longer exists (A.5: 被测面消亡随删).
 // ---------------------------------------------------------------------------
 describe("fail-fast three elements", () => {
 	test("BridgeBootstrapError message contains all three, self-contained", () => {
@@ -165,26 +138,16 @@ describe("handshake / fingerprint verification fails fast", () => {
 		expect(() => verifyBridgeFingerprint({ protocolVersion: 1, bridgeVersion: "0.1.0" })).toThrow(/hostVersion/)
 	})
 
-	test("a VERSION_INCOMPATIBLE frame fails the whole bridge seam creation (no remote seam)", async () => {
+	test("a VERSION_INCOMPATIBLE frame fails the whole bridge seam creation (no fallback)", async () => {
 		const { transport, requests } = fakeTransport({
 			"bridge.hello": new BridgeProtocolError("VERSION_INCOMPATIBLE", "protocol mismatch", {
 				clientProtocolVersion: 2,
 				bridgeProtocolVersion: 1,
 			}),
 		})
-		let remoteCreated = false
-		await expect(
-			createSessionSeam({
-				kind: "bridge",
-				createBridge: () => createBridgeSessionSeam({ transport, ctx: { logger } }),
-				createRemote: () => {
-					remoteCreated = true
-					return new BridgeSessionSeam({ transport, ctx: { logger } }) // stands in for the remote seam
-				},
-			}),
-		).rejects.toBeInstanceOf(BridgeBootstrapError)
-		// The critical "no silent fallback" assertions:
-		expect(remoteCreated).toBe(false)
+		// S6: createBridgeSessionSeam is the sole path; a handshake rejection is
+		// terminal (no other seam to fall back to — that seam no longer exists).
+		await expect(createBridgeSessionSeam({ transport, ctx: { logger } })).rejects.toBeInstanceOf(BridgeBootstrapError)
 		expect(requests.filter((r) => r.method === "bridge.hello")).toHaveLength(1)
 	})
 
@@ -198,38 +161,21 @@ describe("handshake / fingerprint verification fails fast", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 4. createSessionSeam dispatch — no fallback, legacy remote seam retained via env
+// 3b. No silent fallback (S6): the seam selection surface is gone; handshake
+// failure propagates unchanged. S6退役登记: the former seam-factory dispatch describe's remote-factory
+// tests are removed with the selection
+// mechanism (A.5: 被测面消亡); the "failure propagates" semantic is retained
+// here against the sole creation path.
 // ---------------------------------------------------------------------------
-describe("createSessionSeam: no fallback, env escape hatch retained", () => {
-	test("bridge factory failure propagates and the remote factory is never called", async () => {
-		let remoteCalls = 0
-		const boom = new BridgeBootstrapError({ code: "X", diagnosis: "boom" })
-		await expect(
-			createSessionSeam({
-				kind: "bridge",
-				createBridge: () => Promise.reject(boom),
-				createRemote: () => {
-					remoteCalls++
-					return {} as never
-				},
-			}),
-		).rejects.toBe(boom)
-		expect(remoteCalls).toBe(0)
-	})
-
-	test("the DSH_OPENTUI_INPROC=0 remote kind selects the remote factory and never touches the bridge", async () => {
-		let bridgeCalls = 0
-		const remote = new BridgeSessionSeam({ transport: fakeTransport().transport, ctx: { logger } })
-		const seam = await createSessionSeam({
-			kind: "remote",
-			createBridge: () => {
-				bridgeCalls++
-				return Promise.resolve({} as never)
-			},
-			createRemote: () => remote as never,
-		})
-		expect(seam).toBe(remote)
-		expect(bridgeCalls).toBe(0)
+describe("createBridgeSessionSeam: failure propagates, no silent degrade", () => {
+	test("a handshake rejection propagates unchanged (no other seam exists)", async () => {
+		const boom = new BridgeProtocolError("VERSION_INCOMPATIBLE", "protocol mismatch")
+		const { transport } = fakeTransport({ "bridge.hello": boom })
+		const err = await createBridgeSessionSeam({ transport, ctx: { logger } }).catch((e) => e)
+		// The bridge failure surfaces as a typed bootstrap error carrying the
+		// original diagnosis — never swallowed into a degraded seam.
+		expect(err).toBeInstanceOf(BridgeBootstrapError)
+		expect(String(err.message)).toContain("protocol mismatch")
 	})
 })
 

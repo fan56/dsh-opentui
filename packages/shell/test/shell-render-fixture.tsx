@@ -7,10 +7,10 @@
  * buffer.
  *
  * S6 "先建" (adjudication 024-s6-conflict-adjudication-oldfox.md §A.4): the
- * fixture used to drive the real render path through RemoteSessionSeam (only
- * reachable via the removed `DSH_OPENTUI_INPROC=0` escape hatch). Since the
- * 0.23.0 flip the PRODUCTION default IS BridgeSessionSeam, so this fixture now
- * uses it — the render chain downstream (seam-rows → Transcript/WidgetsDock →
+ * fixture used to drive the real render path through the legacy thin-client
+ * seam (only reachable via an env escape hatch, now removed). Since the 0.23.0
+ * flip the production seam IS BridgeSessionSeam, so this fixture now uses it —
+ * the render chain downstream (seam-rows → Transcript/WidgetsDock →
  * buffer) and every canned projector are unchanged. The five `-ft` tests that
  * consume this fixture keep their assertions verbatim.
  *

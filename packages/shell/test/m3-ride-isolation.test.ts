@@ -4,7 +4,7 @@
  * The legacy append "ride" (roster probe `agentPresets/list` at
  * remote-host-session.ts:1132-1158, `session/create.agentPreset` at :2370-2381,
  * ask-btw throwaway create at :2011, echo guards at :2396-2399/:2427, and
- * remote-btw.ts:53) lives ONLY in the RemoteSessionSeam implementation.
+ * remote-btw.ts:53) lives ONLY in the legacy thin-client seam implementation.
  *
  * BridgeSessionSeam is a separate implementation that speaks ADR-0010 bridge
  * frames (`bridge.hello`/`bridge.ping`/`session.open`/`session.send`/...). It
@@ -13,10 +13,8 @@
  * future change that accidentally routes the inproc path through the ride
  * fails here — without changing any product code.
  *
- * The legacy remote seam (DSH_OPENTUI_INPROC=0 escape hatch) is untouched:
- * its append resume/create regression tests live in remote-host-session.test.ts
- * and append-system.test.ts and stay green. The --remote flag itself was
- * removed in 0.23.0.
+ * The host-client-layer append regression tests live in
+ * remote-host-session.test.ts and append-system.test.ts and stay green.
  */
 import { describe, expect, test } from "bun:test"
 import {
@@ -27,8 +25,6 @@ import {
 import {
 	BRIDGE_PROTOCOL_VERSION,
 	createBridgeSessionSeam,
-	createSessionSeam,
-	selectSeamKind,
 } from "../src/client/seam-bootstrap.ts"
 import { APPEND_SYSTEM_PRESET_ID, APPEND_SYSTEM_ROW_ID } from "../src/client/append-system.ts"
 
@@ -160,36 +156,6 @@ describe("M3-07 inproc wire isolation: BridgeSessionSeam never rides append", ()
 	})
 })
 
-// ---------------------------------------------------------------------------
-// 2. Seam selection keeps the two paths disjoint (default=bridge, env=0=remote)
-// ---------------------------------------------------------------------------
-describe("M3-07 seam selection keeps the ride on the remote seam only", () => {
-	test("default → bridge seam; DSH_OPENTUI_INPROC=0 → remote seam", async () => {
-		const h = makeIsolationHarness()
-		expect(selectSeamKind({ inproc: true })).toBe("bridge")
-		expect(selectSeamKind({ inproc: false })).toBe("remote")
-
-		let bridgeBuilt = false
-		const remoteSeam = { marker: "remote" } as never
-		const selected = await createSessionSeam({
-			kind: selectSeamKind({ inproc: true }),
-			createBridge: () => {
-				bridgeBuilt = true
-				return createBridgeSessionSeam({ transport: h.transport, ctx: { logger } })
-			},
-			createRemote: () => remoteSeam,
-		})
-		expect(bridgeBuilt).toBe(true)
-		expect(selected).toBeInstanceOf(BridgeSessionSeam)
-		expectNoRideOnWire(h.requests)
-
-		// The DSH_OPENTUI_INPROC=0 escape hatch dispatches to the retained remote
-		// factory (where the append ride code lives; it is NOT deleted here).
-		const remoteSelected = await createSessionSeam({
-			kind: selectSeamKind({ inproc: false }),
-			createBridge: () => Promise.reject(new Error("bridge must not be built for the env escape hatch")),
-			createRemote: () => remoteSeam,
-		})
-		expect(remoteSelected).toBe(remoteSeam)
-	})
-})
+// S6退役登记: the former "seam selection keeps the two paths disjoint" describe
+// is removed with the seam-selection mechanism (A.5: 被测面消亡). The append
+// regression body ("BridgeSessionSeam never rides append") above stays green.

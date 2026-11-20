@@ -13,7 +13,7 @@
  *    while the client profile (and verify70's assertions) is `opentui`.
  *  The client owns those files (DEFAULT_PROFILE='opentui', resolveDshHome()),
  *  so the honest real implementation is local file I/O — exactly what the
- *  legacy RemoteSessionSeam does for config/agents. The bridge CapIR wiring
+ *  legacy thin-client seam did for config/agents. The bridge CapIR wiring
  *  remains available for host profiles that DO mount the controller.
  *
  * SECURITY (oldfox S4 review §六.2/§六.3, S4 prereg §四): field-by-field

@@ -1,18 +1,9 @@
 /**
- * Seam selection + fail-fast bootstrap for the in-process bridge (M2 / T9-T11).
+ * Fail-fast bootstrap for the in-process bridge (M2 / T9-T11).
  *
- * This is the ONLY place that decides which SessionSeam the synthetic root
- * (tui-base examples/v2-entry.tsx `bootClientV2`) constructs:
- *
- *   - default (`DSH_OPENTUI_INPROC` unset or any value other than "0",
- *     including "1" for idempotence)
- *       → BridgeSessionSeam (the default since 0.23.0).
- *   - `DSH_OPENTUI_INPROC=0`
- *       → RemoteSessionSeam (the legacy thin client, retained as the env
- *         escape hatch).
- *
- * The remote seam code is deliberately NOT deleted: `DSH_OPENTUI_INPROC=0`
- * keeps it reachable after the `--remote` flag was removed in 0.23.0.
+ * S6: BridgeSessionSeam is the SOLE SessionSeam; `createBridgeSessionSeam` is
+ * the only composition path. The former seam-selection mechanism and its env
+ * escape hatch are removed — no fallback, no shell.
  *
  * FAIL-FAST THREE ELEMENTS (tickets/2026-11-18-inproc-bridge-plan.md T11,
  * original text: "错误自包含诊断 + 修复命令 + 模式说明"):
@@ -20,12 +11,10 @@
  *   2. repair command — the concrete command to fix it;
  *   3. mode notice    — append-system is injected via the bridge section (M3),
  *                      presets are standard only.
- * Every `BridgeBootstrapError` message contains all three. There is NO
- * catch that falls back to the remote seam: in inproc mode a failed
- * handshake / fingerprint check is terminal and readable.
+ * Every `BridgeBootstrapError` message contains all three. A failed handshake
+ * / fingerprint check is terminal and readable — never a silent degradation.
  */
 
-import type { SessionSeam } from "../../../tui-base/src/seams/session"
 import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
@@ -56,38 +45,6 @@ export { BRIDGE_REPAIR_HINT } from "../../scripts/lib/bridge-failfast-text.mjs"
 
 /** `bridge.hello` protocol version this client speaks (ADR-0010:56). */
 export const BRIDGE_PROTOCOL_VERSION = 1
-
-// ---------------------------------------------------------------------------
-// Pure seam selection
-// ---------------------------------------------------------------------------
-
-export type SeamKind = "bridge" | "remote"
-
-export interface SeamSelectionInput {
-	/** Bridge mode from `isInprocMode()`: true unless `DSH_OPENTUI_INPROC=0`. */
-	inproc: boolean
-}
-
-/**
- * Decide the seam kind. Pure and total — unit-tested for both branches.
- *
- * The seam is selected by the env escape hatch only: `DSH_OPENTUI_INPROC=0`
- * keeps the legacy remote seam reachable; the removed `--remote` flag no
- * longer participates.
- */
-export function selectSeamKind(input: SeamSelectionInput): SeamKind {
-	return input.inproc ? "bridge" : "remote"
-}
-
-/**
- * Read bridge/inproc mode from an env-like record (default: the process env).
- * Bridge is the DEFAULT (0.23.0): unset and "1" both enable it ("1" stays
- * valid for idempotence); only the explicit "0" opts back into the legacy
- * remote seam.
- */
-export function isInprocMode(env: Record<string, string | undefined> = process.env): boolean {
-	return env.DSH_OPENTUI_INPROC !== "0"
-}
 
 // ---------------------------------------------------------------------------
 // Fail-fast error: the three elements in one self-contained message
@@ -298,22 +255,6 @@ export async function createBridgeSessionSeam(
 	// the seam's own lenient connect() is appropriate here.
 	await seam.connect()
 	return seam
-}
-
-export interface CreateSessionSeamOptions {
-	kind: SeamKind
-	createBridge: () => Promise<SessionSeam>
-	createRemote: () => SessionSeam
-}
-
-/**
- * Dispatch to the selected seam factory. Deliberately has NO try/catch:
- * a bridge failure must propagate to the boot caller (fail fast), never be
- * swallowed into the remote path. This property is unit-tested.
- */
-export async function createSessionSeam(options: CreateSessionSeamOptions): Promise<SessionSeam> {
-	if (options.kind === "remote") return options.createRemote()
-	return options.createBridge()
 }
 
 // ---------------------------------------------------------------------------

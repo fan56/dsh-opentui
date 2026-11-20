@@ -189,10 +189,10 @@ function naRow(id: string, label: string, note: string): SettingsRow {
  *     bridge mode. Filtering that window would make preselection resolve row
  *     ids against a hidden row set (the preselect effect runs before the host
  *     snapshot arrives), landing on the wrong row.
- * Remote mode (`DSH_OPENTUI_INPROC=0`) supplies a writable host, so the full
- * row set renders exactly as before. Bridge mode (no face → `host: false`)
- * hides every row with no live write path; command-jump rows are kept in both
- * modes (they are commands, not configuration).
+ * A writable host supplies the full row set (renders exactly as before).
+ * A bridge seam with no face (`host: false`) hides every row with no live write
+ * path; command-jump rows are kept in both modes (they are commands, not
+ * configuration).
  *
  * Row DEFINITIONS stay intact — this is a filter at build time, never a
  * deletion from the source lists.

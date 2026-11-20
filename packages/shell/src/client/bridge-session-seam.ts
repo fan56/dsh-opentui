@@ -10,11 +10,9 @@
  *            currentModelSelection / usageSummary / onSessionEvent / listSessions
  * The remaining 7 members exist only to satisfy `implements SessionSeam` and
  * are honest D3 stubs (async → UNSUPPORTED, sync → degrade + log) until their
- * own bridge frames land in a later batch. Seam selection (this seam became the
- * DEFAULT in 0.23.0), fail-fast wiring and the legacy `--remote` removal now
- * live in the composition root — `client/seam-bootstrap.ts` and
- * `bin/dsh-opentui.mjs` — not in this file; the env escape hatch
- * `DSH_OPENTUI_INPROC=0` still reaches the remote seam.
+ * own bridge frames land in a later batch. Fail-fast wiring lives in the
+ * composition root — `client/seam-bootstrap.ts` and `bin/dsh-opentui.mjs` —
+ * not in this file. S6: this is the SOLE seam; construction is unconditional.
  *
  * DEGRADE LAW (ticket §6 D3, non-negotiable):
  *   - A sync-signature member whose bridge capability is absent returns a
@@ -50,7 +48,9 @@ import type {
 } from "../../../tui-base/src/seams/session"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { journalToTranscriptRows } from "./remote-session-ops.ts"
-import { projectJournalRecord } from "./session-seam-adapter.ts"
+// S6: the shared journal projector moved to its permanent home so the bridge
+// path survives the legacy seam deletion (zero behavior change).
+import { projectJournalRecord } from "./journal-projection.ts"
 import { tokensPerSecond } from "../agent/loop.ts"
 // S5 — real local config/settings/agents faces replace the old `{}` / honest-
 // failure degrades (no mocks; every read/write touches the operator's files).
@@ -2879,8 +2879,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	// ----- config faces (S5 — REAL local reads/writes, no degrade, no mock) --
 	//
 	// The client owns the `opentui` profile files (DEFAULT_PROFILE, $DSH_HOME),
-	// exactly the files verify70 reads/writes and the legacy RemoteSessionSeam
-	// uses. The in-process host mounts no settingsController/config service and
+	// exactly the files verify70 reads/writes and the legacy seam used. The in-process host mounts no settingsController/config service and
 	// would write to a DIFFERENT profile (opentui-inproc), so local file I/O is
 	// the honest real implementation — never the old `{}` degrade. Field-level
 	// whitelist projection lives in LocalConfigStore (oldfox S4 §六.2/§六.3).

@@ -45,13 +45,16 @@ import { TranscriptScrollKeys } from "../../tui-base/src/routes/session/transcri
 import { Keymap } from "../../tui-base/src/context/keymap"
 import { TuiKeybind } from "../../tui-base/src/config/keybind"
 import type { SessionSeam } from "../../tui-base/src/seams/session"
-import { RemoteSessionSeam } from "../src/client/session-seam-adapter"
-import type { RemoteHostSession } from "../src/client/remote-host-session"
+import { BridgeSessionSeam, type BridgeReplayRow, type BridgeTransport } from "../src/client/bridge-session-seam.ts"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { normalizeFrame } from "./shell-render-fixture.tsx"
 
 // ---------------------------------------------------------------------------
-// Fake session (same double shape as shell-render-fixture — canned stored
-// transcript, no transport).
+// Fake bridge transport (S6: the render path is driven by the production
+// BridgeSessionSeam over a canned `journal.replay` reply; scratch home so the
+// seam's S5 local faces never read the operator's ~/.dsh).
 // ---------------------------------------------------------------------------
 
 const ROWS = 48
@@ -62,35 +65,38 @@ const storedRows = () =>
 		final: true,
 	}))
 
-function fakeStoredSession(stored: { kind: "assistant"; text: string; final: boolean }[]) {
-	const base = {
-		label: "dsh-host",
-		usage: { prompt: 3, completion: 5, cacheRead: 0, cacheWrite: 0 },
-		lastTurnStats: { ms: 0, chars: 0, tokens: 0, tps: null, estimated: false, startedAt: 0, endedAt: 0 },
-		status: { connection: "connected" as const, turn: "idle" as const, sessionAttached: true, tailActive: false },
-		currentSessionId: () => "ses-keys",
-		storedTranscript: async () => stored,
-		listSessions: async () => [],
-		searchSessions: async () => [],
-		resumeSession: () => "ok" as const,
-		newSession: () => {},
-		renameSession: async (title: string) => ({ title, seq: 1 }),
-		turn: async () => {},
-		steer: () => {},
-		abort: () => {},
-		steerChild: () => false,
-		registerAskProvider: () => {},
-		listProviders: async () => [],
-		modelCatalog: async () => ({ groups: [] }),
-		currentModelSelection: async () => ({ provider: "prov-a", model: "ma1", reasoningEffort: "high" }),
-		selectModel: async (s: unknown) => s,
-		usageSummary: () => [],
-		onJournalRecord: (_listener: unknown) => () => {},
-		subagentViews: () => [],
-		onSubagentViews: (_listener: unknown) => () => {},
-		dispose: async () => {},
+function fakeBridgeSeam(stored: { kind: "assistant"; text: string; final: boolean }[]): {
+	seam: BridgeSessionSeam
+	scratch: string
+} {
+	const rows: BridgeReplayRow[] = stored.map((row, i) => ({
+		seq: i + 1,
+		type: "assistant/message",
+		payload: { message: { content: [{ type: "text", text: row.text }] } },
+	}))
+	const transport: BridgeTransport = {
+		async request(method) {
+			switch (method) {
+				case "journal.replay": return { rows, cursor: rows.length + 1 }
+				case "session.open": return { sessionId: "ses-keys" }
+				case "session.list": return { items: [] }
+				case "modelCatalog": return { groups: [] }
+				case "model.currentSelection": return { provider: "prov-a", model: "ma1", reasoningEffort: "high" }
+				case "bridge.ping": return { ok: true, capabilities: [] }
+				default: return {}
+			}
+		},
+		onEvent() { return () => {} },
 	}
-	return base as unknown as RemoteHostSession
+	const scratch = mkdtempSync(join(tmpdir(), "key-routing-ft-"))
+	const seam = new BridgeSessionSeam({
+		transport,
+		ctx: { logger: { info() {}, warn() {}, error() {}, debug() {} } },
+		dshHome: scratch,
+		workspaceDir: scratch,
+		profile: "opentui",
+	})
+	return { seam, scratch }
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +118,8 @@ const keybindsConfig = () => ({
 })
 
 async function createKeyHarness(options: { enabled?: () => boolean } = {}) {
-	const seam = new RemoteSessionSeam(fakeStoredSession(storedRows())) as unknown as SessionSeam
+	const { seam: bridgeSeam, scratch } = fakeBridgeSeam(storedRows())
+	const seam = bridgeSeam as unknown as SessionSeam
 	let scroll: ScrollBoxRenderable | undefined
 	let textarea: TextareaRenderable | undefined
 	const enabled = options.enabled ?? (() => true)
@@ -121,7 +128,7 @@ async function createKeyHarness(options: { enabled?: () => boolean } = {}) {
 		return (
 			<Keymap.Provider config={keybindsConfig()}>
 				<box width="100%" height="100%" flexDirection="column">
-					<Transcript seam={seam} focused={() => false} scrollRef={(value) => (scroll = value)} />
+					<Transcript seam={seam} sessionID="ses-keys" focused={() => false} scrollRef={(value) => (scroll = value)} />
 					{/* The page wiring shape (tui-base examples/session.tsx:308): the
 					    layer lives beside the transcript, gated on the dialog stack. */}
 					<TranscriptScrollKeys scroll={() => scroll} enabled={() => enabled()} />
@@ -181,6 +188,8 @@ async function createKeyHarness(options: { enabled?: () => boolean } = {}) {
 		},
 		async dispose() {
 			await setup.dispose()
+			await bridgeSeam.dispose()
+			rmSync(scratch, { recursive: true, force: true })
 		},
 		async [Symbol.asyncDispose]() {
 			await this.dispose()

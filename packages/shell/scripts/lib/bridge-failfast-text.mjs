@@ -34,15 +34,10 @@ export const BRIDGE_REPAIR_COMMAND = 'dsh-opentui --repair-bridge'
 export const BRIDGE_APPEND_PRESET_NOTICE =
   'inproc bridge mode injects append-system via the bridge section; presets are standard only.'
 
-/** The escape-hatch line carried by EVERY bridge failure: a launch-level opt
- *  out of the default inproc bridge back to the legacy remote thin client. Kept
- *  as its own constant so the host gate and the shared repair hint cannot drift. */
-export const BRIDGE_LEGACY_REMOTE_HINT =
-  'To keep the legacy remote thin client for this launch: DSH_OPENTUI_INPROC=0'
-
-/** The repair element with the link-vs-content caveat (provision-script wording). */
+/** The repair element with the link-vs-content caveat (provision-script wording).
+ *  S6: the legacy escape-hatch hint is gone with the seam it selected. */
 export const BRIDGE_REPAIR_HINT =
-  `Run \`${BRIDGE_REPAIR_COMMAND}\` to rebuild the bridge symlink / manifest (it fixes links, not corrupted artifact contents).\n${BRIDGE_LEGACY_REMOTE_HINT}`
+  `Run \`${BRIDGE_REPAIR_COMMAND}\` to rebuild the bridge manifest (it fixes links, not corrupted artifact contents).`
 
 /**
  * Compose the three elements into one copy-pasteable, self-contained message.

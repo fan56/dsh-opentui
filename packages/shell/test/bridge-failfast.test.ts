@@ -20,7 +20,6 @@ import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
 	BRIDGE_APPEND_PRESET_NOTICE,
-	BRIDGE_LEGACY_REMOTE_HINT,
 	BRIDGE_REPAIR_COMMAND,
 	BRIDGE_REPAIR_HINT,
 	formatBridgeFailFastMessage,
@@ -56,9 +55,7 @@ describe("shared fail-fast text — single source", () => {
 	test("constants are the canonical three-element strings", () => {
 		expect(BRIDGE_REPAIR_COMMAND).toBe("dsh-opentui --repair-bridge")
 		expect(BRIDGE_REPAIR_HINT).toContain(BRIDGE_REPAIR_COMMAND)
-		// P1-4a: the launch-level escape hatch rides in the shared repair hint.
-		expect(BRIDGE_LEGACY_REMOTE_HINT).toBe("To keep the legacy remote thin client for this launch: DSH_OPENTUI_INPROC=0")
-		expect(BRIDGE_REPAIR_HINT).toContain(BRIDGE_LEGACY_REMOTE_HINT)
+		// S6: the launch-level escape-hatch hint is gone with the seam it selected.
 		// M3-08: the notice now states append is injected via the bridge section
 		// and presets are standard only — the stale "unavailable" claim is gone.
 		expect(BRIDGE_APPEND_PRESET_NOTICE).toContain("bridge section")
@@ -112,7 +109,6 @@ function runProvision(home: string, bridgeDir?: string): { status: number | null
 		env: {
 			...process.env,
 			DSH_HOME: home,
-			DSH_OPENTUI_INPROC: "1",
 			[HOST_VERSION_ENV]: "0.2.2-rc.3",
 			...(bridgeDir ? { DSH_OPENTUI_TEST_BRIDGE_DIR: bridgeDir } : {}),
 		},
@@ -134,8 +130,6 @@ describe("fingerprint path fail-fast (ProvisionError)", () => {
 			assertThreeElements(run.stderr, "DSH_HOME directory does not exist")
 			// the repair element keeps its link-vs-content caveat
 			expect(run.stderr).toContain(BRIDGE_REPAIR_HINT)
-			// P1-4a: the escape hatch is present in the concrete failure text.
-			expect(run.stderr).toContain(BRIDGE_LEGACY_REMOTE_HINT)
 		} finally {
 			rmSync(root, { recursive: true, force: true })
 		}

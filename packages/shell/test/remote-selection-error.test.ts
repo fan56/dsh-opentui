@@ -6,7 +6,6 @@
 // next read/command can report them instead of trusting the optimistic
 // label. Fake connection + fake mux sockets, real wire frames.
 import { describe, expect, test } from "bun:test"
-import { RemoteSessionSeam } from "../src/client/session-seam-adapter.ts"
 import { RemoteHostSession } from "../src/client/remote-host-session.ts"
 import { RemoteRpcError, type ClientConnection } from "../src/client/transport.ts"
 import { FakeConnection, FakeMuxSocket, eventFrame, rpcOf, snapshotFrame, until, type RpcHandler } from "./client-fakes.ts"
@@ -119,37 +118,7 @@ describe("selection failure propagation (model/effort)", () => {
 		await h.session.dispose()
 	})
 
-	test("RemoteSessionSeam.selectModel/selectEffort REJECT on a host refusal (no silent catch)", async () => {
-		const h = makeSession({
-			rpcHandler: (method) => {
-				if (method === "session/create") return { sessionId: "sess-se3" }
-				if (method === "session/prompt") return { accepted: true }
-				if (method === "session/selectModel") {
-					throw new RemoteRpcError("session/failed", "provider rejected the route", {})
-				}
-				if (method === "session/projections") {
-					return {
-						kind: "sequenced",
-						asOfSeq: 1,
-						values: { modelSelection: { lastUsed: { provider: "deepseek", model: "deepseek-chat" } } },
-					}
-				}
-				return {}
-			},
-		})
-		const seam = new RemoteSessionSeam(h.session)
-		const { cb } = callbacks()
-		const pending = h.session.turn("go", cb)
-		await until(() => h.sockets.length > 0)
-		h.lastSocket().item(snapshotFrame("sess-se3"))
-		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
-		// selectModel: the rejection reaches the caller (was: swallowed into a
-		// console.error + a resolving promise the command read as success)
-		await expect(seam.selectModel("deepseek", "deepseek-reasoner")).rejects.toThrow("provider rejected the route")
-		// selectEffort rides selectModel on the current route: same rejection
-		await expect(seam.thinking.selectEffort("low")).rejects.toThrow("provider rejected the route")
-		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
-		await pending
-		await h.session.dispose()
-	})
+
+	// S6退役登记: "legacy thin-client seam selectModel/selectEffort REJECT" 测试随该 seam 类删除（被测面消亡，A.5）；
+	// RemoteHostSession 层 selection 错误传播由本 describe 其余 test 承担。
 })

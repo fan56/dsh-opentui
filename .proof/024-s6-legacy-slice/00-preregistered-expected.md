@@ -82,3 +82,25 @@ retry-cap 专属断言（`ConnectionRetryExhaustedError.after N retries` / `auth
 4. 干净 worktree（无本地软链）+ `pnpm install --frozen-lockfile` 全链（0.9.6 教训）。
 5. pack 门禁；G5 typecheck（迁移后 2 条消失、无新错误）。
 6. 两 commit 各自独立过 CI；先建绿是后删开闸条件。
+
+---
+
+## 附：Commit2 删除边界二次裁决修订（2026-11-21，oldfox `024-s6-commit2-adjudication-oldfox.md`）
+
+> 本修订覆盖上方原 §3/§4 中已废止条款，以二次裁决为准。基点 9c4e16b。
+
+**定性纠正（非豁免）**：`transport.ts`/`remote-host-session.ts` 及其依赖闭包全族经 A.2 重定性为 **ADR-0009 现行 host 客户端层**（bootClientV2 无条件路径：ensureV2Host → ClientConnection → RemoteHostSession → start/label/configSave/dispose；bridge 默认模式同样承载 host 连接/冷启动标签/host config/会话生命周期；BridgeSessionSeam 无 label/start/host-config RPC 等价面）。文件名含 remote 是历史命名，不构成 legacy 定性。§2.4/§8.3 的误归在此纠正。
+
+**保留面登记文本（写进文档/ledger）**：
+> ClientConnection（transport.ts）/RemoteHostSession（remote-host-session.ts）及其依赖闭包为 ADR-0009 host/client 架构的现行 host 客户端层，是生产 boot 合成根（v2-entry.tsx，bin:489 → build-client:80/:98-120 → client-entry:440/:467 内联分发的唯一 boot 合成根）在 bridge 默认模式下仍无条件使用的组件。024-s6-legacy-slice §2.4/§8.3 曾误归 legacy 代码面，2026-11-21 oldfox 二次裁决纠正。CI stub 两步（ci.yml:31-48,115-125）随保留面存活（SDK 不进 lockfile，仍需 stub）。
+
+**删除清单（授权面）**：① session-seam-adapter.ts 全文件（projectJournalRecord + 私有依赖迁 remote-session-ops.ts，bridge seam 改 import，G5 两条随删）；② seam-bootstrap.ts 的 SeamKind/SeamSelectionInput/selectSeamKind/isInprocMode/CreateSessionSeamOptions/createSessionSeam + 头注释；③ client-entry :453-466 恒真化注入；④ v2-entry seam 选择简化 + recoverBridge 恒定 + V2SessionPageBody seam 类型改 SessionSeam + loadShell 删 adapter；⑤ bin --remote 提示改纯 removed + provisioning INPROC 条件删；⑥ launcher usage 行删；⑦ failfast-text BRIDGE_LEGACY_REMOTE_HINT 删；⑧ provision INPROC_MODE 分支删；⑨ 测试随删登记。
+
+**上轮废止**：A.4.5 的 transport/rhs/remote-* 删除授权废止；A.4.6(b)/A.4.7 的 transport-connect-retry 处置与 CI stub 退役废止；§8.2 三处泄漏修复不再需要；§8.4 缩为 projectJournalRecord 单点迁移。INPROC 逃生舱随删不留 WARN 兼容壳；历史文档不动。
+
+**C 增补三项验证**：
+1. grep 零命中：`DSH_OPENTUI_INPROC`（packages/shell/{src,bin,scripts,test}、packages/tui-base/{src,examples,test}、scripts/、verify/、.github/ 零命中；CHANGELOG/docs/adr/tickets 历史豁免）；`RemoteSessionSeam`/`selectSeamKind`/`createRemote`/`isInprocMode`（src+test 零命中）。
+2. bin-launcher harness 等价：exit-code mapping 断言主体原样；usage 不含 INPROC 广告断言在场。
+3. G5：session-seam-adapter.ts:182 两条 TS2339 消失；tsc 基线重登无新增错误。
+
+**重验面**：verify70 64/64 + 真机配方 + CI 三 job；全包单测按删除量如实记账（新基线 + 差值逐条对应退役登记）。无需 INPROC=0 真机负例、无新 e2e、零 bridge 协议触碰。

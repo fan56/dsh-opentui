@@ -376,8 +376,9 @@ describe('--remote removal (0.23.0)', () => {
     expect(r.status).toBe(2)
     expect(r.stdout).toBe('')
     expect(r.stderr).toContain("dsh-opentui: unknown option '--remote'")
-    // P2-4b: a removed flag with a launch-level replacement gets migration advice.
-    expect(r.stderr).toContain('use DSH_OPENTUI_INPROC=0 for the legacy remote seam')
+    // S6: --remote is a plain unknown option — its one-time migration hint is
+    // gone with the env escape hatch it pointed to.
+    expect(r.stderr).not.toContain('migration advice')
     expect(r.stderr).not.toContain('deprecated')
     expect(r.stderr).not.toContain('[1/5]')
     expect(r.stderr).not.toContain('[1/7]')
@@ -457,9 +458,9 @@ describe('formatUsage', () => {
       expect(usage).toContain(env)
     }
     expect(usage).toContain('CLI flag > environment variable > default')
-    // 0.23.0: help documents the default bridge and the env escape hatch, and
-    // no longer advertises the removed --remote flag.
-    expect(usage).toContain('DSH_OPENTUI_INPROC=0')
+    // S6: help advertises neither the removed --remote flag nor the deleted
+    // env escape hatch (same assertion class as the --remote one).
+    expect(usage).not.toContain('DSH_OPENTUI_INPROC')
     expect(usage).not.toContain('--remote')
     // P3-3 ④: --force is documented as a no-op under --dry-run.
     expect(usage).toContain('no-op under --dry-run')
@@ -752,6 +753,11 @@ function makeAsyncLauncherHarness() {
   cpSync(binPath, join(tmpBinDir, 'dsh-opentui.mjs'))
   cpSync(join(pkgRoot, 'bin', 'lib', 'launcher.mjs'), join(tmpBinDir, 'lib', 'launcher.mjs'))
   writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@aiwayds/dsh-opentui', version: pkgVersion }))
+  // S6: provisioning is unconditional (no env hatch to skip it). Copy the
+  // scripts/ tree + a real dist/bridge so the launcher's step-3b provisioning
+  // passes; the subject (fake-bun exit-code mapping) is unchanged.
+  cpSync(join(pkgRoot, 'scripts'), join(root, 'scripts'), { recursive: true })
+  cpSync(join(pkgRoot, 'dist', 'bridge'), join(root, 'dist', 'bridge'), { recursive: true })
   // Step 6 existsSync gate — fake bun ignores the bundle contents.
   mkdirSync(join(root, 'dist', 'client'), { recursive: true })
   writeFileSync(join(root, 'dist', 'client', 'index.js'), '')
@@ -772,10 +778,10 @@ function makeAsyncLauncherHarness() {
   return {
     root,
     launcherBin: join(tmpBinDir, 'dsh-opentui.mjs'),
-    // This harness copies only bin/ (no scripts/), and its subject is the
-    // fake-bun exit-code mapping — not provisioning. Use the 0.23.0 escape
-    // hatch so the default in-process provisioning step is skipped here.
-    env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, DSH_HOME: dshHome, DSH_OPENTUI_INPROC: '0' },
+    // S6: scripts/ + dist/bridge are copied above so the unconditional
+    // provisioning passes; the host-version override avoids spawning the fake
+    // `dsh` for version detection. Subject remains fake-bun exit-code mapping.
+    env: { ...process.env, PATH: `${shimDir}:${process.env.PATH}`, DSH_HOME: dshHome, DSH_OPENTUI_HOST_VERSION: '0.2.2-rc.3' },
     setBunShim(body: string) {
       writeFileSync(bunShim, `#!/bin/sh\n${body}\n`)
       chmodSync(bunShim, 0o755)

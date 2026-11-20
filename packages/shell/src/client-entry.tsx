@@ -424,7 +424,7 @@ function defaultCreateSession(options: {
 
 /** CLI main: boot and keep the process alive under the renderer loop.
  * Batch 10c CUTOVER: the tui-base view (transcript + composer + dialogs +
- * palette + powerline) over the REAL RemoteSessionSeam adapter is THE
+ * palette + powerline) over the REAL BridgeSessionSeam is THE
  * client path — `--v2` is accepted as a no-op alias and the old ShellHost
  * boot branch is removed (client mode never mounts the old stack again;
  * `--plugin` stays the frozen published-0.4.3 stack). The v2 entry resolves
@@ -450,21 +450,15 @@ async function main(): Promise<void> {
 			}): Promise<{ shutdown(): Promise<void> }>
 		}
 		const argv = process.argv.slice(2)
-		// 0.23.0: the bridge is the default. The transport is constructed here
-		// and INJECTED into the synthetic root (bootClientV2), which selects
-		// BridgeSessionSeam. Only DSH_OPENTUI_INPROC=0 (the escape hatch) leaves
-		// it absent so the root keeps RemoteSessionSeam. This mirrors
-		// seam-bootstrap.isInprocMode() — keep the two conditions in sync.
-		let bootOptions: Parameters<typeof mod.bootClientV2>[0] = { argv }
-		if (process.env.DSH_OPENTUI_INPROC !== "0") {
-			const bridgeMod = await import("./client/bridge-transport.ts")
-			bootOptions = {
-				...bootOptions,
-				bridgeTransport: new bridgeMod.StdioBridgeTransport(),
-				bridgeCtx: { logger: console },
-			}
-		}
-		await mod.bootClientV2(bootOptions)
+		// S6: the bridge is the SOLE seam. StdioBridgeTransport is constructed
+		// here and unconditionally INJECTED into the synthetic root (bootClientV2),
+		// which builds BridgeSessionSeam directly (fail-fast if transport absent).
+		const bridgeMod = await import("./client/bridge-transport.ts")
+		await mod.bootClientV2({
+			argv,
+			bridgeTransport: new bridgeMod.StdioBridgeTransport(),
+			bridgeCtx: { logger: console },
+		})
 	} catch (error) {
 		const message = error instanceof Error ? (error.stack ?? error.message) : String(error)
 		process.stderr.write(`dsh-opentui client boot failed: ${message}\n`)

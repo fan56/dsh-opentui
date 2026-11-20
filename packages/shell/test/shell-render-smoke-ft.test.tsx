@@ -1,7 +1,7 @@
 /**
  * Shell render smoke (pilot/shell-render): the FIRST renderer-level tests in
  * packages/shell. Drives the canned-event fixture (./shell-render-fixture)
- * through the real shell render path — RemoteSessionSeam → seam-rows store →
+ * through the real shell render path — BridgeSessionSeam → seam-rows store →
  * Transcript + WidgetsDock on the real @opentui renderer — and asserts known
  * text reached the buffer via normalized captureCharFrame substrings (the
  * opencode norm; never whole-frame equality).

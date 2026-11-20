@@ -189,12 +189,8 @@ const validation = validateLauncherArgs(userArgs, { skip: LAUNCHER_TIMEOUT_FLAGS
 if (validation.unknown.length > 0) {
   for (const flag of validation.unknown) {
     console.error(`dsh-opentui: unknown option '${flag}'`)
-    // P2-4b: the removed --remote flag has a launch-level replacement — point
-    // users at it instead of leaving a dead end. Other unknown flags get only
-    // the generic did-you-mean rule (no misleading migration advice).
-    if (flag === '--remote') {
-      console.error('dsh-opentui: use DSH_OPENTUI_INPROC=0 for the legacy remote seam')
-    }
+    // S6: --remote is simply an unknown option (the env escape hatch it once
+    // pointed to is gone with the legacy seam). No migration advice.
     if (validation.suggestions[flag]) {
       console.error(`dsh-opentui: did you mean '${validation.suggestions[flag]}'?`)
     }
@@ -305,14 +301,12 @@ const opentuiProfileDir = join(dshHome, 'profiles', 'opentui')
   }
 }
 
-// --- 3b. In-process bridge profile provisioning (default since 0.23.0) -----
-// The bridge is the default, so this runs on EVERY launch; only the explicit
-// escape hatch DSH_OPENTUI_INPROC=0 skips it (legacy remote thin client). "1"
-// is still accepted and is now a no-op-equivalent (idempotent). The script
-// provisions ONLY the `opentui-inproc` profile: bundle manifest + absolute
-// symlink to the embedded dist/bridge artifact. A non-zero exit is fatal here
+// --- 3b. In-process bridge profile provisioning ----------------------------
+// S6: the bridge is the sole seam, so this runs on EVERY launch. The script
+// provisions ONLY the `opentui-inproc` profile: bundle manifest + the shipped
+// dist/bridge artifact (real directory copy). A non-zero exit is fatal here
 // (the bridge cannot work without it), unlike the best-effort path above.
-if (process.env.DSH_OPENTUI_INPROC !== '0') {
+{
   const r = spawnSync(process.execPath, [join(pkgRoot, 'scripts', 'provision-inproc-profile.mjs')], {
     stdio: 'inherit',
   })

@@ -2,8 +2,8 @@
  * --v2 dev entry (batch 9a): the FIRST real boot of the rebuilt tui-base
  * view — Transcript + SessionComposer + turn overlays + slash palette +
  * PowerlineFooter/HintsLine (the busy comet rides the hints row) on the REAL
- * `RemoteSessionSeam` adapter
- * (shell client/session-seam-adapter.ts) over a real resident host.
+ * BridgeSessionSeam over an injected stdio transport to a resident host
+ * (S6: the sole seam; the legacy thin-client seam + its env hatch are gone).
  *
  * RESOLUTION LAW (established empirically on the first real boot): this
  * file MUST live under tui-base and import the view graph through the
@@ -130,17 +130,16 @@ function resolveWatchdogScript(): string | null {
 	return null
 }
 async function loadShell() {
-	const [shared, lifecycle, clifecycle, transport, rhs, adapter, git, seamBootstrap] = await Promise.all([
+	const [shared, lifecycle, clifecycle, transport, rhs, git, seamBootstrap] = await Promise.all([
 		import(SHELL + "boot-shared.ts"),
 		import(SHELL + "lifecycle.ts"),
 		import(SHELL + "client-lifecycle.ts"),
 		import(SHELL + "transport.ts"),
 		import(SHELL + "remote-host-session.ts"),
-		import(SHELL + "session-seam-adapter.ts"),
 		import(SHELL + "remote-git.ts"),
 		import(SHELL + "seam-bootstrap.ts"),
 	])
-	return { shared, lifecycle, clifecycle, transport, rhs, adapter, git, seamBootstrap }
+	return { shared, lifecycle, clifecycle, transport, rhs, git, seamBootstrap }
 }
 
 const overlays = new TurnOverlayController()
@@ -178,7 +177,7 @@ function V2SessionPage(props: Parameters<typeof V2SessionPageBody>[0]) {
 
 /** The v2 session page: the real seam driving the rebuilt view. */
 function V2SessionPageBody(props: {
-	seam: RemoteSessionSeam
+	seam: SessionSeam
 	themeName?: string
 	quit: () => void
 	/** A3b+A8: the injected recovery entry (shell recoverBridgeSession over
@@ -211,8 +210,8 @@ function V2SessionPageBody(props: {
 	const seam = props.seam
 	// First-turn footer fix (pure-chat / no-tool path): journal message events
 	// cannot re-read the 💬 count during a turn — the real adapter DROPS every
-	// journal projection for the whole turn await (`session-seam-adapter.ts:771
-	// if (this.#turnInFlight) return`, no buffer/replay), so an onSessionEvent
+	// journal projection for the whole turn await (the seam suppresses journal
+	// projection during an in-flight turn, no buffer/replay), so an onSessionEvent
 	// subscription is dead in exactly the window we need. The streamed delta
 	// callbacks DO fire while the turn awaits (`shell/src/agent/loop.ts:198
 	// onThinkingDelta / :202 onContentDelta`, passed through the adapter at
@@ -1534,12 +1533,10 @@ export interface ClientBootV2 {
 }
 
 /**
- * The v2 boot: ensureHost → ClientConnection → RemoteHostSession → seam →
- * the rebuilt view. The seam is selected here (the synthetic root): by default
- * it is BridgeSessionSeam over an injected stdio transport; only the
- * DSH_OPENTUI_INPROC=0 escape hatch keeps RemoteSessionSeam (the legacy thin
- * client). Shutdown semantics are client-entry parity (dispose session →
- * release host ref → idle reaper hand-off).
+ * The v2 boot: ensureV2Host → ClientConnection → RemoteHostSession (host
+ * client layer — label/config/lifecycle) → BridgeSessionSeam (sole session
+ * seam) → the rebuilt view. Shutdown semantics are client-entry parity
+ * (dispose session → release host ref → idle reaper hand-off).
  */
 export async function bootClientV2(options: {
 	argv?: readonly string[]
@@ -1552,7 +1549,7 @@ export async function bootClientV2(options: {
 	/** Injected seam logger (inproc mode). */
 	bridgeCtx?: { logger: { info(...a: unknown[]): void; warn(...a: unknown[]): void; error(...a: unknown[]): void } }
 } = {}): Promise<ClientBootV2> {
-	const { shared, lifecycle, clifecycle, transport, rhs, adapter, git, seamBootstrap } = await loadShell()
+	const { shared, lifecycle, clifecycle, transport, rhs, git, seamBootstrap } = await loadShell()
 	const workspace = process.cwd()
 	const profile = lifecycle.DEFAULT_PROFILE
 	const idleExitMs = lifecycle.resolveIdleExitMs()
@@ -1616,62 +1613,48 @@ export async function bootClientV2(options: {
 	}
 
 	const launchArgs = parseLaunchArgs(options.argv ?? process.argv.slice(2))
-	// 0.23.0: the seam is chosen HERE — the synthetic root. BridgeSessionSeam is
-	// the default; only DSH_OPENTUI_INPROC=0 keeps the legacy RemoteSessionSeam.
-	// Bridge handshake/fingerprint failure throws (BridgeBootstrapError, three
-	// elements) — NEVER falls back.
-	const seamKind = seamBootstrap.selectSeamKind({
-		inproc: seamBootstrap.isInprocMode(),
-	})
-	const seam = await seamBootstrap.createSessionSeam({
-		kind: seamKind,
-		createBridge: async () => {
-			if (options.bridgeTransport === undefined) {
-				throw new seamBootstrap.BridgeBootstrapError({
-					code: "BRIDGE_TRANSPORT_MISSING",
-					diagnosis: "bridge seam is selected (DSH_OPENTUI_INPROC is not 0) but no bridge transport was injected at the synthetic root",
-				})
-			}
-			return seamBootstrap.createBridgeSessionSeam({
-				transport: options.bridgeTransport,
-				ctx: options.bridgeCtx ?? { logger: console },
-				// A2: DEAD is event-driven (no turn needed, so an idle crash paints
-				// immediately). showNotice is the global transient notices dock.
-				// A3b: the notice now carries the actionable reconnect hint; the
-				// R key itself is a page keymap layer and the terminal states get
-				// a persistent banner (see RecoveryUiController).
-				onDead: (cause: { stage: string; code: number | null; signal: string | null; message: string }) =>
-					void showNotice(
-						`${seamBootstrap.formatDeadNotice(cause)} · ${t("recovery.action.reconnect")}`,
-						undefined,
-						"error",
-					),
-				// ADR-0011 T8/Q4: one-shot TRANSIENT fail-closed notice when the
-				// approval provider cannot be confirmed (the seam fires this at
-				// most once per process). Never a persistent status bit. The
-				// reason is a stable code localized through i18n below.
-				onPermissionUnavailable: (reason: string) =>
-					void showNotice(
-						`${t("notice.permission.unavailable")} · ${t(`notice.permission.reason.${reason}`)}`,
-						undefined,
-						"error",
-					),
-			})
-		},
-		createRemote: () => new adapter.RemoteSessionSeam(session as never),
+	// S6: BridgeSessionSeam is the SOLE seam (the legacy seam + its env escape
+	// hatch are removed). Bridge handshake/fingerprint failure throws
+	// (BridgeBootstrapError, three elements) — never a silent fallback.
+	if (options.bridgeTransport === undefined) {
+		throw new seamBootstrap.BridgeBootstrapError({
+			code: "BRIDGE_TRANSPORT_MISSING",
+			diagnosis: "no bridge transport was injected at the synthetic root",
+		})
+	}
+	const seam = await seamBootstrap.createBridgeSessionSeam({
+		transport: options.bridgeTransport,
+		ctx: options.bridgeCtx ?? { logger: console },
+		// A2: DEAD is event-driven (no turn needed, so an idle crash paints
+		// immediately). showNotice is the global transient notices dock.
+		// A3b: the notice now carries the actionable reconnect hint; the
+		// R key itself is a page keymap layer and the terminal states get
+		// a persistent banner (see RecoveryUiController).
+		onDead: (cause: { stage: string; code: number | null; signal: string | null; message: string }) =>
+			void showNotice(
+				`${seamBootstrap.formatDeadNotice(cause)} · ${t("recovery.action.reconnect")}`,
+				undefined,
+				"error",
+			),
+		// ADR-0011 T8/Q4: one-shot TRANSIENT fail-closed notice when the
+		// approval provider cannot be confirmed (the seam fires this at
+		// most once per process). Never a persistent status bit. The
+		// reason is a stable code localized through i18n below.
+		onPermissionUnavailable: (reason: string) =>
+			void showNotice(
+				`${t("notice.permission.unavailable")} · ${t(`notice.permission.reason.${reason}`)}`,
+				undefined,
+				"error",
+			),
 	})
 	// A3b: the one recovery entry injected into the page. The real inproc
 	// transport satisfies recoverBridgeSession's RecoverableBridgeTransport
-	// (StdioBridgeTransport.recover); a legacy remote seam has no recovery and
-	// leaves the prop undefined so the R layer is inert there.
-	const recoverBridge =
-		seamKind === "bridge" && options.bridgeTransport !== undefined
-			? () =>
-					seamBootstrap.recoverBridgeSession({
-						transport: options.bridgeTransport as never,
-						seam: seam as never,
-					})
-			: undefined
+	// (StdioBridgeTransport.recover).
+	const recoverBridge = () =>
+		seamBootstrap.recoverBridgeSession({
+			transport: options.bridgeTransport as never,
+			seam: seam as never,
+		})
 	registerTurnOverlays(seam, overlays, {
 		// RM-2b V3: DEAD means the bridge PROCESS died — AskRegistry died with it,
 		// so no pending snapshot can be rebuilt. Every pending card is painted as
@@ -1824,16 +1807,14 @@ export async function bootClientV2(options: {
 			} catch {
 				/* dispose is best-effort on the quit path */
 			}
-			// Inproc bridge seam: dispose the bridge session and close its
-			// stdio child FIRST. Best-effort — a dead bridge must not block quit.
-			if (seamKind === "bridge") {
-				try {
-					await Promise.race([seam.dispose(), new Promise((resolve) => setTimeout(resolve, shared.SHUTDOWN_GRACE_MS))])
-				} catch {
-					/* best-effort */
-				}
-				options.bridgeTransport?.close?.()
+			// Dispose the bridge seam and close its stdio child FIRST.
+			// Best-effort — a dead bridge must not block quit.
+			try {
+				await Promise.race([seam.dispose(), new Promise((resolve) => setTimeout(resolve, shared.SHUTDOWN_GRACE_MS))])
+			} catch {
+				/* best-effort */
 			}
+			options.bridgeTransport?.close?.()
 			// ADR-0009 decision 6: client-side bridge is closed before we drop
 			// our own heartbeat and let the last-one logic decide (after the grace
 			// window) whether to SIGTERM the host.
