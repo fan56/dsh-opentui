@@ -31,11 +31,15 @@ bun --version
 echo "[client-face-setup] pnpm install /src (linux natives)"
 pnpm --dir /src install --registry "$REG"
 # @deepseek-ai/dsh-client-connection resolves ONLY from the global dsh
-# closure (not on the npm registry — see transport.ts's lazy-load note);
-# link it the same way the Containerfile's client layer does.
+# closure (not on the npm registry — see transport.ts's lazy-load note).
+# 024 E2E symlink-debt cleanup (S6 §3.1 residue): copy it into a REAL
+# directory (same as the Containerfile client layer), never an absolute
+# symlink into a build-machine path — self-contained, no dangling link.
 mkdir -p /src/packages/shell/node_modules/@deepseek-ai
-ln -sfn /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-connection \
+cp -a /usr/local/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-client-connection \
   /src/packages/shell/node_modules/@deepseek-ai/dsh-client-connection
+test -d /src/packages/shell/node_modules/@deepseek-ai/dsh-client-connection
+test ! -L /src/packages/shell/node_modules/@deepseek-ai/dsh-client-connection
 test -d /src/packages/shell/node_modules/@opentui/solid
 
 echo "[client-face-setup] /src ready — starting scenario runner"

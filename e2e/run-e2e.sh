@@ -48,11 +48,22 @@ printf '==> dsh closure: %s\n' "$DSH_VERSION"
 # into e2e/Containerfile on this repo, so the only build arg to forward is
 # the resolved dsh version.
 printf '==> building image %s (context: %s)\n' "$IMAGE" "$REPO_ROOT"
+# 024 E2E flaky law: the podman VM clock can lag the host by ~1h48m, so image
+# CREATED timestamps are NOT a freshness signal. Freshness is judged ONLY by
+# the IMAGE ID below (and by the dsh version resolved above with the
+# newest-of(latest,next) rule — never a hand pin, never retired `alpha`).
 podman build -f "$REPO_ROOT/e2e/Containerfile" \
   --build-arg DSH_VERSION="$DSH_VERSION" \
   -t "$IMAGE" "$REPO_ROOT"
+printf '==> image ID (freshness = this ID only, NOT the VM clock): %s\n' \
+  "$(podman image inspect --format '{{.Id}}' "$IMAGE")"
 
-printf '==> running scenario suite (all state stays inside the container)\n'
+# 024 E2E flaky law: VM is 5CPU/2GiB — run at most 2 scenarios/containers at
+# once. This driver runs ONE container for the whole suite; E2E_SCENARIOS
+# scopes it to a subset. Source is baked into the image by the Containerfile
+# (COPY packages /src) — the worktree is NOT mounted; only the test scripts
+# are bind-mounted read-only at /e2e:ro.
+printf '==> running scenario suite (all state stays inside the container; VM concurrency <= 2)\n'
 # Face under test: the client face only (batch B5) — the bun TUI client +
 # resident `dsh --profile opentui` host topology users run daily. The plugin
 # face is retired (ADR-0005 / batch B4 removed the --plugin chain): the

@@ -6,6 +6,25 @@ Podman-based end-to-end harness for the opentui client, ported from the
 primitives, same aggregation rules — adapted to this repo's boot path and
 markers.
 
+## 0.24 unified E2E (the single test-layer investment)
+
+`families/` is the 0.24 unified E2E layer (delivery plan §四). One command
+runs every family with the pack gate outermost:
+
+```sh
+bash e2e/families/run-all.sh            # all families incl. container (if podman runnable)
+bash e2e/families/run-all.sh --skip-container
+```
+
+Families: `00-pack-gate` (outermost), `10-capability-domains`
+(handshake±/degrade, session, sessionId isolation, push, model),
+`20-model-domain`, `30-account-credentials-domain`, `40-exit-code`
+(128+N framing + quit-confirm exit 0), `80-keymap-modality` (FocusRouter
+layer), plus the `verify70` gate family via `scripts/real-client-gate.sh`.
+The accurate verify count is **64/64** (the "70" in the gate script's banner
+is stale 0.23 text). The legacy `scenarios/` suite stays in service until
+the new families are all green; flaky laws are in `families/FLAKY-LAWS.md`.
+
 ## What boots in the container
 
 Client mode only (batch B5; the plugin face is retired — ADR-0005, batch
