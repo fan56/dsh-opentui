@@ -60,6 +60,9 @@ import {
 // index module owns the Map shape and its build/incremental/reconcile rules;
 // index.ts only wires it to the host firehose and the dispatcher.
 import { getSubagentIndex } from './subagent-index'
+// Batch 1 — wire ids are a single source of truth; the dispatch compares against
+// these constants (no host runtime import, pure data).
+import { WIRE, isWireId } from './wires'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -121,6 +124,15 @@ export interface BridgeContext {
    *  `ctx.sessionController`). Resolved through ctx.get with a direct-property
    *  fallback; never imported at runtime. */
   sessionController?: SessionControllerLike
+  /** Batch 1: optional host subagent runtime (`ctx.subagents`), resolved through
+   *  ctx.get with a direct-property fallback; never imported at runtime. */
+  subagents?: SubagentsLike
+  /** Batch 1: optional host credential services. The provider (`ctx.credentials`)
+   *  is mounted in-process; the Remote controller (`ctx.credentialsController`,
+   *  batched `describe(refs[])`) is mounted only in some compositions. Either
+   *  one backs the credentials.* wires — resolved through ctx.get. */
+  credentials?: CredentialsProviderLike
+  credentialsController?: CredentialsControllerLike
   /** M3-02: optional host system-prompt service (`dsh-system-prompt`). Resolved
    *  through ctx.get with a direct-property fallback; never imported at runtime
    *  (structural typing discipline, see below). NOTE: registration must still
@@ -228,6 +240,70 @@ interface SessionListValueLike {
  *  `session/list` RPC (`typert.host.js:2168`, `index.js:3988`). */
 interface SessionControllerLike {
   list(request: { _request: { cursor?: string } }): Promise<SessionListValueLike>
+  /** Session-scoped model selection — the same handler behind the host's
+   *  `session/selectModel` RPC (dsh-api-session-controller/src/index.ts:316).
+   *  It records the Session selection AND saves the deployment default in the
+   *  background (commands.ts:166-190); the bridge passes the request through
+   *  verbatim and does not strip that side effect. */
+  selectModel?(request: {
+    sessionId: string
+    provider: string
+    model: string
+    reasoningEffort?: string
+  }): Promise<{ selected: { provider: string; model: string; reasoningEffort?: string } }>
+  /** Full-text session search — the host's `session/search` RPC
+   *  (dsh-api-session-controller/src/index.ts:295). Under `openAt:'never'`
+   *  the provider throws SessionQueryError with code
+   *  `SESSION_QUERY_SEARCH_DISABLED` (dsh-session-query-sqlite/src/index.ts:342);
+   *  the bridge forwards that code verbatim. */
+  search?(request: { query: string }, signal: AbortSignal): Promise<{
+    items: readonly { sessionId: string; snippet: string }[]
+    hasMore: boolean
+  }>
+}
+
+/** Structural slice of `ctx.subagents` (dsh-subagent `SubagentRuntime`). The
+ *  runtime `sendMessage(sender, targetId, content, {signal})` hardcodes
+ *  `delivery:'steer'` (dsh-subagent/src/manager.ts:567-575) — calling it IS the
+ *  targeted-steer path. `sender` must be the live root Agent (the bound agent). */
+interface SubagentsLike {
+  sendMessage(
+    sender: unknown,
+    targetId: string,
+    content: readonly { readonly type: 'text'; readonly text: string }[],
+    options: { signal: AbortSignal },
+  ): Promise<unknown>
+}
+
+/** Host `CredentialInfo` view (dsh-credentials/src/types.ts:66-75). */
+interface CredentialInfoLike {
+  configured: boolean
+  source?: string
+  writable: boolean
+  masked?: string
+}
+
+/** `ctx.credentials` provider (dsh-credentials/src/index.ts:192-209): single-ref
+ *  describe; set/unset take a branded ref (a string at runtime). */
+interface CredentialsProviderLike {
+  describe(ref: string): Promise<CredentialInfoLike>
+  set(ref: string, value: string): Promise<void>
+  unset(ref: string): Promise<void>
+}
+
+/** `ctx.credentialsController` (dsh-api-settings-controller/src/credentials.ts:84-118):
+ *  batched `describe(refs[])` plus set/unset. Mounted only in some compositions. */
+interface CredentialsControllerLike {
+  describe(refs: string[]): Promise<Record<string, CredentialInfoLike>>
+  set(ref: string, value: string): Promise<void>
+  unset(ref: string): Promise<void>
+}
+
+/** The common wire-facing credential contract (the controller shape). */
+interface CredentialsWireLike {
+  describe(refs: string[]): Promise<Record<string, CredentialInfoLike>>
+  set(ref: string, value: string): Promise<void>
+  unset(ref: string): Promise<void>
 }
 
 // M3-02 — structural slice of `ctx.systemPrompt` (dsh-system-prompt). Exported
@@ -406,7 +482,7 @@ const STDIO_SWITCH = 'DSH_OPENTUI_BRIDGE_STDIO'
 /** Additive capabilities advertised in the bridge.hello / bridge.ping reply.
  *  An older client that never sees this field has NO capability and keeps its
  *  legacy roster-walk behaviour; a new client gates the stop frame on it. */
-const BRIDGE_CAPABILITIES = ['subagents.interrupt', 'subagents.stopChildren'] as const
+const BRIDGE_CAPABILITIES = [WIRE.SUBAGENTS_INTERRUPT, WIRE.SUBAGENTS_STOP_CHILDREN] as const
 /** Upper bound on remembered finalized turn ids for abort idempotency (D3).
  *  The set is a FIFO: once more than this many turns have finalized, the oldest
  *  id is evicted. An evicted id is no longer remembered, so a late repeated
@@ -564,6 +640,77 @@ function resolveSessionController(ctx: BridgeContext): SessionControllerLike | u
     : undefined
 }
 
+/** Generic cordis service resolver: `ctx.get(name)` first, direct property
+ *  fallback, exceptions contained. Same discipline as resolveSessionController
+ *  — a host without the service answers UNSUPPORTED instead of crashing the
+ *  serial dispatch chain. */
+function resolveService(ctx: BridgeContext, name: string): unknown {
+  if (typeof ctx.get === 'function') {
+    try {
+      const fromGet = ctx.get(name)
+      if (fromGet !== undefined) return fromGet
+    } catch {
+      /* undeclared injection — try the direct property below */
+    }
+  }
+  try {
+    return (ctx as unknown as Record<string, unknown>)[name]
+  } catch {
+    return undefined
+  }
+}
+
+/** Resolve `ctx.subagents` to the steer-capable slice. */
+function resolveSubagents(ctx: BridgeContext): SubagentsLike | undefined {
+  const svc = resolveService(ctx, 'subagents')
+  return svc !== undefined && typeof (svc as SubagentsLike).sendMessage === 'function'
+    ? (svc as SubagentsLike)
+    : undefined
+}
+
+/**
+ * Resolve a wire-facing credentials service with the CONTROLLER contract
+ * (`describe(refs[])` returning a keyed view). Prefers the real Remote
+ * controller when mounted; otherwise adapts the in-process provider
+ * (`ctx.credentials`) by fanning describe out per ref and applying the same
+ * field projection as the host controller. Both are genuine host services —
+ * no stub data and no `list` wire is invented (there is no host list API).
+ */
+function resolveCredentialsWire(ctx: BridgeContext): CredentialsWireLike | undefined {
+  const controller = resolveService(ctx, 'credentialsController') as CredentialsControllerLike | undefined
+  if (
+    controller !== undefined &&
+    typeof controller.set === 'function' &&
+    typeof controller.unset === 'function' &&
+    typeof controller.describe === 'function'
+  ) {
+    return {
+      set: (ref, value) => controller.set(ref, value),
+      unset: (ref) => controller.unset(ref),
+      describe: (refs) => controller.describe(refs),
+    }
+  }
+  const provider = resolveService(ctx, 'credentials') as CredentialsProviderLike | undefined
+  if (
+    provider !== undefined &&
+    typeof provider.set === 'function' &&
+    typeof provider.unset === 'function' &&
+    typeof provider.describe === 'function'
+  ) {
+    return {
+      set: (ref, value) => provider.set(ref, value),
+      unset: (ref) => provider.unset(ref),
+      describe: async (refs) => {
+        const entries = await Promise.all(
+          refs.map(async (ref) => [ref, projectCredentialInfo(await provider.describe(ref))] as const),
+        )
+        return Object.fromEntries(entries)
+      },
+    }
+  }
+  return undefined
+}
+
 /**
  * Mirror the host's `agentOptions()` (dsh-api-session-controller/src/agent.ts):
  * getters read `agentDefaultModel.currentSelection()` so a session that has
@@ -623,6 +770,49 @@ function mapHostError(err: unknown): { code: string; message: string; detail?: R
     detail = { holder: holder === undefined ? 'unknown' : String(holder) }
   }
   return { code: entry.code, message, ...(detail !== undefined ? { detail } : {}) }
+}
+
+/**
+ * Batch 1 — host error passthrough. Host failures carry a stable `code` (the
+ * `RemoteError` / `SessionQueryError` / `SubagentError` taxonomy): e.g.
+ * `SESSION_QUERY_SEARCH_DISABLED`, `session/model-unavailable`,
+ * `subagent/delivery-unavailable`, `gateway/bad-request`. Forward that code
+ * VERBATIM — do not fold it into INTERNAL — and forward `details` as `detail`.
+ * Errors without a string `code` fall back to the persistence-name map and then
+ * INTERNAL. Nothing is swallowed: every failure becomes a typed error frame.
+ */
+function passthroughHostError(err: unknown): { code: string; message: string; detail?: unknown } {
+  const code = err !== null && typeof err === 'object' ? (err as { code?: unknown }).code : undefined
+  if (typeof code === 'string' && code !== '') {
+    const details = (err as { details?: unknown }).details
+    return {
+      code,
+      message: err instanceof Error ? err.message : String(err),
+      ...(details !== undefined ? { detail: details } : {}),
+    }
+  }
+  return mapHostError(err)
+}
+
+/** Credential ref grammar — mirrors host `isCredentialRefName` /
+ *  `credentialRef` (dsh-credentials/src/index.ts:19,29-33,45-47): a POSIX shell
+ *  identifier. Validated bridge-side before the branded host call so an
+ *  invalid name never reaches (or is invented by) the host. */
+const CREDENTIAL_REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
+function isValidCredentialRef(value: unknown): value is string {
+  return typeof value === 'string' && CREDENTIAL_REF_PATTERN.test(value)
+}
+
+/** Mirror the host `projectCredentialInfo` projection
+ *  (dsh-api-settings-controller/src/credentials.ts:45-52): only the four public
+ *  view fields, never a secret value. */
+function projectCredentialInfo(info: CredentialInfoLike): CredentialInfoLike {
+  return {
+    configured: info.configured,
+    ...(info.source === undefined ? {} : { source: info.source }),
+    writable: info.writable,
+    ...(info.masked === undefined ? {} : { masked: info.masked }),
+  }
 }
 
 /** journalCursor = session log length (`session.seq`, exclusive upper bound). */
@@ -2233,6 +2423,232 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  // ---- Batch 1 — new wire handlers ------------------------------------------
+
+  /**
+   * `agent.steer` — inject a message into the CURRENT running turn.
+   *
+   * Deliberately independent of handleSend: handleSend answers TURN_BUSY while
+   * a turn is in flight, so it cannot express "steer this running turn". The
+   * gate here is the host's `agent.status === 'running'`; any other status is
+   * an explicit AGENT_NOT_RUNNING error — never a silent success, and never a
+   * followup fallback (that fallback belongs to handleSend, not to this wire).
+   */
+  function handleAgentSteer(req: ParsedRequest): void {
+    if (binding === undefined) {
+      replyError(req.id, 'SESSION_NOT_OPEN', 'no open session; call session.open first')
+      return
+    }
+    const text = req.params.text
+    if (typeof text !== 'string' || text === '') {
+      replyError(req.id, 'BAD_PARAMS', 'agent.steer requires a non-empty text string')
+      return
+    }
+    const agent = binding.handle.agent
+    if (agent.status !== 'running') {
+      replyError(req.id, 'AGENT_NOT_RUNNING', 'no running turn to steer', { status: agent.status })
+      return
+    }
+    try {
+      agent.steer(createBridgeUserMessage(text))
+    } catch (err) {
+      const mapped = passthroughHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+      return
+    }
+    replyOk(req.id, { injected: true })
+  }
+
+  /**
+   * `subagents.steer` — targeted steer of one child subagent.
+   *
+   * `ctx.subagents.sendMessage(...)` is the steer path: the runtime hardcodes
+   * `delivery:'steer'` (dsh-subagent/src/manager.ts:567-575), so calling it IS
+   * the directional steer. Host refusals (including in-flight / capacity,
+   * e.g. `subagent/delivery-unavailable`) are forwarded verbatim through
+   * passthroughHostError — no TURN_BUSY-class rejection is masked.
+   */
+  async function handleSubagentsSteer(req: ParsedRequest): Promise<void> {
+    if (binding === undefined) {
+      replyError(req.id, 'SESSION_NOT_OPEN', 'no open session; call session.open first')
+      return
+    }
+    const childId = req.params.childId
+    if (typeof childId !== 'string' || childId === '') {
+      replyError(req.id, 'BAD_PARAMS', 'subagents.steer requires a non-empty childId')
+      return
+    }
+    const text = req.params.text
+    if (typeof text !== 'string' || text === '') {
+      replyError(req.id, 'BAD_PARAMS', 'subagents.steer requires a non-empty text string')
+      return
+    }
+    const subagents = resolveSubagents(ctx)
+    if (subagents === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'subagents service unavailable: subagents.steer capability not present')
+      return
+    }
+    const abort = new AbortController()
+    try {
+      const messageId = await subagents.sendMessage(
+        binding.handle.agent,
+        childId,
+        [{ type: 'text', text }],
+        { signal: abort.signal },
+      )
+      replyOk(req.id, { childId, messageId: idString(messageId) })
+    } catch (err) {
+      const mapped = passthroughHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
+  /**
+   * `session.selectModel` — session-scoped model selection through the host
+   * controller (dsh-api-session-controller/src/index.ts:316). The request is
+   * passed through verbatim so the host's "also save the deployment default in
+   * the background" behaviour is preserved (commands.ts:166-190) — the bridge
+   * does not strip that side effect.
+   */
+  async function handleSelectModel(req: ParsedRequest): Promise<void> {
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined || typeof controller.selectModel !== 'function') {
+      replyError(req.id, 'UNSUPPORTED', 'sessionController.selectModel unavailable: session.selectModel capability not present')
+      return
+    }
+    const sessionId =
+      typeof req.params.sessionId === 'string' && req.params.sessionId !== ''
+        ? req.params.sessionId
+        : binding?.sessionId
+    if (sessionId === undefined) {
+      replyError(req.id, 'BAD_PARAMS', 'session.selectModel requires a sessionId (or an open session)')
+      return
+    }
+    const provider = req.params.provider
+    const model = req.params.model
+    if (typeof provider !== 'string' || provider === '' || typeof model !== 'string' || model === '') {
+      replyError(req.id, 'BAD_PARAMS', 'session.selectModel requires provider and model strings')
+      return
+    }
+    const reasoningEffort = req.params.reasoningEffort
+    const request: {
+      sessionId: string
+      provider: string
+      model: string
+      reasoningEffort?: string
+    } = {
+      sessionId,
+      provider,
+      model,
+      ...(typeof reasoningEffort === 'string' ? { reasoningEffort } : {}),
+    }
+    try {
+      const value = await controller.selectModel(request)
+      replyOk(req.id, { ...value })
+    } catch (err) {
+      const mapped = passthroughHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
+  /**
+   * `session.search` — full-text session search. The host row carries
+   * `sessionId`, not `id` (dsh-api-session-controller/src/types.ts:170-173), so
+   * rows are projected to `{ id, snippet }`. Host errors — notably
+   * SESSION_QUERY_SEARCH_DISABLED under `openAt:'never'` — are forwarded
+   * verbatim, never folded into an empty success.
+   */
+  async function handleSessionSearch(req: ParsedRequest): Promise<void> {
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined || typeof controller.search !== 'function') {
+      replyError(req.id, 'UNSUPPORTED', 'sessionController.search unavailable: session.search capability not present')
+      return
+    }
+    const query = req.params.query
+    if (typeof query !== 'string' || query === '') {
+      replyError(req.id, 'BAD_PARAMS', 'session.search requires a non-empty query string')
+      return
+    }
+    const abort = new AbortController()
+    try {
+      const value = await controller.search({ query }, abort.signal)
+      const items = value.items.map((item) => ({ id: idString(item.sessionId), snippet: item.snippet }))
+      replyOk(req.id, { items, hasMore: value.hasMore })
+    } catch (err) {
+      const mapped = passthroughHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
+  /** `credentials.set` — store one value under a grammar-valid ref. */
+  async function handleCredentialsSet(req: ParsedRequest): Promise<void> {
+    const ref = req.params.ref
+    if (!isValidCredentialRef(ref)) {
+      replyError(req.id, 'BAD_PARAMS', 'credentials.set requires a ref matching the credential reference grammar')
+      return
+    }
+    const value = req.params.value
+    if (typeof value !== 'string' || value === '') {
+      replyError(req.id, 'BAD_PARAMS', 'credentials.set requires a non-empty value string')
+      return
+    }
+    const wire = resolveCredentialsWire(ctx)
+    if (wire === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'credential service unavailable: credentials.set capability not present')
+      return
+    }
+    try {
+      await wire.set(ref, value)
+      replyOk(req.id, { ref, stored: true })
+    } catch (err) {
+      const mapped = passthroughHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
+  /** `credentials.unset` — remove one grammar-valid ref. */
+  async function handleCredentialsUnset(req: ParsedRequest): Promise<void> {
+    const ref = req.params.ref
+    if (!isValidCredentialRef(ref)) {
+      replyError(req.id, 'BAD_PARAMS', 'credentials.unset requires a ref matching the credential reference grammar')
+      return
+    }
+    const wire = resolveCredentialsWire(ctx)
+    if (wire === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'credential service unavailable: credentials.unset capability not present')
+      return
+    }
+    try {
+      await wire.unset(ref)
+      replyOk(req.id, { ref, unset: true })
+    } catch (err) {
+      const mapped = passthroughHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
+  /** `credentials.describe` — batched describe(refs[]); no list API exists. */
+  async function handleCredentialsDescribe(req: ParsedRequest): Promise<void> {
+    const rawRefs = req.params.refs
+    if (!Array.isArray(rawRefs) || rawRefs.some((ref) => !isValidCredentialRef(ref))) {
+      replyError(req.id, 'BAD_PARAMS', 'credentials.describe requires refs: an array of credential reference names')
+      return
+    }
+    const refs = rawRefs as string[]
+    const wire = resolveCredentialsWire(ctx)
+    if (wire === undefined) {
+      replyError(req.id, 'UNSUPPORTED', 'credential service unavailable: credentials.describe capability not present')
+      return
+    }
+    try {
+      const views = await wire.describe(refs)
+      replyOk(req.id, { ...views })
+    } catch (err) {
+      const mapped = passthroughHostError(err)
+      replyError(req.id, mapped.code, mapped.message, mapped.detail)
+    }
+  }
+
   /** Dispatch a single request frame (async: open/send/close are async). */
   async function handleLine(raw: string): Promise<void> {
     let req: ParsedRequest
@@ -2244,7 +2660,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       return
     }
 
-    if (req.method === 'bridge.ping') {
+    // Wire ids come from the single-source table in ./wires — see that file for
+    // the full roster (12 pre-existing + 7 batch-1 additions).
+    if (req.method === WIRE.BRIDGE_PING) {
       replyOk(req.id, {
         protocolVersion: PROTOCOL_VERSION,
         bridgeVersion,
@@ -2253,7 +2671,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       })
       return
     }
-    if (req.method === 'bridge.hello') {
+    if (req.method === WIRE.BRIDGE_HELLO) {
       const clientVersion = req.params.protocolVersion
       if (clientVersion !== undefined && clientVersion !== PROTOCOL_VERSION) {
         replyError(
@@ -2272,7 +2690,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       })
       return
     }
-    if (req.method === 'model.currentSelection') {
+    if (req.method === WIRE.MODEL_CURRENT_SELECTION) {
       // Read-only host route, transcribed from `ctx.agentDefaultModel.currentSelection()`.
       // The client seam reads this at boot (`bridge-session-seam.currentModelSelection`)
       // before staging the first session.open; without it the inproc client aborts
@@ -2291,45 +2709,80 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       }
       return
     }
-    if (req.method === 'session.list') {
+    if (req.method === WIRE.SESSION_LIST) {
       await handleListSessions(req)
       return
     }
     // L1 (0.23.1) — subagent stop capability. Both frames are scoped to the
     // bound parent session; there is deliberately NO global-stop method.
-    if (req.method === 'subagents.interrupt') {
+    if (req.method === WIRE.SUBAGENTS_INTERRUPT) {
       await handleInterruptSubagent(req)
       return
     }
-    if (req.method === 'subagents.stopChildren') {
+    if (req.method === WIRE.SUBAGENTS_STOP_CHILDREN) {
       await handleStopChildren(req)
       return
     }
-    if (req.method === 'session.open') {
+    if (req.method === WIRE.SESSION_OPEN) {
       await handleOpen(req)
       return
     }
-    if (req.method === 'session.send') {
+    if (req.method === WIRE.SESSION_SEND) {
       await handleSend(req)
       return
     }
-    if (req.method === 'session.close') {
+    if (req.method === WIRE.SESSION_CLOSE) {
       await handleClose(req)
       return
     }
-    if (req.method === 'turn.abort') {
+    if (req.method === WIRE.TURN_ABORT) {
       handleAbort(req)
       return
     }
-    if (req.method === 'ask.response') {
+    if (req.method === WIRE.ASK_RESPONSE) {
       handleAskResponse(req)
       return
     }
-    if (req.method === 'journal.replay') {
+    if (req.method === WIRE.JOURNAL_REPLAY) {
       await handleReplay(req)
       return
     }
-    replyError(req.id, 'UNSUPPORTED', `unsupported method: ${req.method}`)
+
+    // ---- Batch 1 additions ------------------------------------------------
+    if (req.method === WIRE.AGENT_STEER) {
+      handleAgentSteer(req)
+      return
+    }
+    if (req.method === WIRE.SUBAGENTS_STEER) {
+      await handleSubagentsSteer(req)
+      return
+    }
+    if (req.method === WIRE.SESSION_SELECT_MODEL) {
+      await handleSelectModel(req)
+      return
+    }
+    if (req.method === WIRE.SESSION_SEARCH) {
+      await handleSessionSearch(req)
+      return
+    }
+    if (req.method === WIRE.CREDENTIALS_SET) {
+      await handleCredentialsSet(req)
+      return
+    }
+    if (req.method === WIRE.CREDENTIALS_UNSET) {
+      await handleCredentialsUnset(req)
+      return
+    }
+    if (req.method === WIRE.CREDENTIALS_DESCRIBE) {
+      await handleCredentialsDescribe(req)
+      return
+    }
+
+    // Unknown / unimplemented wire id: always an explicit error, never ignored.
+    // `isWireId` distinguishes a known-but-undispatched id from a bogus one in
+    // the message while keeping the stable UNSUPPORTED code.
+    const kind = isWireId(req.method) ? 'known wire id but no handler' : 'unknown wire id'
+    replyError(req.id, 'UNSUPPORTED', `unsupported method: ${req.method} (${kind})`)
   }
 
   /** Enqueue a frame so async handlers answer in arrival order. */
