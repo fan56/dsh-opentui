@@ -174,6 +174,9 @@ export function PaneFocusKeys(props: PaneFocusKeysProps) {
 	Keymap.createLayer(() => ({
 		mode: "global",
 		priority: 1,
+		// ADR-R4: F6 + transcript keys are `main` tier; existing priority:1 is
+		// preserved (linkage clause 3) while overlays structurally win.
+		capture: "main",
 		enabled: paneToggleEnabled({
 			pane: props.pane(),
 			keysEnabled: props.keysEnabled(),
@@ -197,6 +200,7 @@ export function PaneFocusKeys(props: PaneFocusKeysProps) {
 	Keymap.createLayer(() => ({
 		mode: "global",
 		priority: 1,
+		capture: "main",
 		enabled: transcriptKeysEnabled({ pane: props.pane(), keysEnabled: props.keysEnabled() }),
 		commands: [
 			{

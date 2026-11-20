@@ -1011,6 +1011,9 @@ export function AgentsPanel(props: { seam: SessionSeam; onClosed?: (summary?: st
 		const ownTop = layers().at(-1)?.handle
 		return {
 			mode: "global",
+			// ADR-R4: the agents panel is an `overlay` surface; its hotkeys (and
+			// its pager) yield to a dialog stacked above the panel.
+			capture: "overlay",
 			enabled: open() && ownTop?.ownsInput() === true,
 			priority: 2,
 			commands: [

@@ -26,6 +26,8 @@ import {
 import { useConfig } from "../config"
 import { TuiKeybind } from "../config/keybind"
 import { resolveInteractivity, useInteractivity } from "./interactivity"
+import { useFocusRouterOptional, type CaptureTier } from "./focus-router"
+import type { OwnerFrame } from "./input-ownership"
 
 declare module "@opentui/keymap" {
   interface Command {
@@ -207,16 +209,37 @@ function use(): Keymap {
 function createLayer(input: () => KeymapLayer) {
   const value = useValue()
   const enabled = useInteractivity()
+  // FocusRouter (ADR-R4): a layer may declare a capture tier. The router then
+  // ANDs the structural ownership gate into `enabled` at registration time, so
+  // a page-level layer cannot fire under a modal/overlay even when its author
+  // omits a handwritten `pageOwns()` shim. Layers without `capture` are
+  // byte-for-byte unchanged (legacy behaviour preserved for untouched code).
+  const focus = useFocusRouterOptional()
   // The keymap rebuilds a re-registered layer when a command's `opencode` object is new,
   // so each command keeps one object while its data is unchanged.
   const stable = new Map<string, KeymapCommand & { readonly id: string }>()
   useBindings(() => {
     const layer = input()
-    const { commands, bindings, mode, ...options } = layer
+    const { commands, bindings, mode, capture, captureFrame, ...options } = layer
     const grouped = groupCommands(commands)
+    // Only tiered layers are wrapped; untagged layers keep `options.enabled`
+    // exactly as before (no behaviour drift on untouched surfaces).
+    const resolvedEnabled =
+      focus && capture !== undefined
+        ? () => {
+            const base =
+              typeof options.enabled === "function"
+                ? options.enabled()
+                : options.enabled === undefined
+                  ? true
+                  : options.enabled
+            if (!base) return false
+            return focus.allows(capture as CaptureTier, captureFrame?.() as OwnerFrame | undefined)
+          }
+        : options.enabled
     return {
       ...options,
-      enabled: enabled() ? options.enabled : false,
+      enabled: enabled() ? resolvedEnabled : false,
       ...(mode === "global" ? {} : { mode: mode ?? MODE.base }),
       commands: grouped.named.map((command) => {
         const previous = stable.get(command.id)

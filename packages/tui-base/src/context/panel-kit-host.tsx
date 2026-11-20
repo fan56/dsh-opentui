@@ -140,6 +140,10 @@ export function createTuiPanelKeymapHost(
       return Keymap.createLayer(() => {
         const layer = input()
         return {
+          // ADR-R4: the whole kit is an `overlay` surface. Its own frame
+          // predicate stays in `enabled`; the router adds the structural
+          // top-tier gate so a dialog above a panel wins by token identity.
+          capture: "overlay",
           ...(layer.mode === undefined ? {} : { mode: layer.mode }),
           ...(layer.enabled === undefined ? {} : { enabled: layer.enabled }),
           commands: layer.bindings.map((binding) => ({

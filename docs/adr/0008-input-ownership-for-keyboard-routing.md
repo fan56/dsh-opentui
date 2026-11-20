@@ -348,3 +348,52 @@ section):
    after that is an ordinary busy-turn press and arms again (spec §6).
 5. **Frame accounting.** Pushing/popping dialog, panel and dock frames
    returns the stack to exactly `[page]`; a leaked frame fails the test.
+
+## R4 linkage — FocusRouter four-tier capture stack (024 SK, 2026-11-21)
+
+Status: linkage finalized by the 024 SK slice (ADR-R4 / v3 §3.4). This section
+records how the FocusRouter capture stack refines the mechanism decided above;
+it does not open a second ownership state.
+
+ADR-0008 established one input-ownership stack (`page`/`dialog`/`panel`/`dock`
+frames; `top()` and `owns(frame)` are the only predicates) to remove the
+`mode:"global"` + registration-order tie. ADR-R4 (redesign proposal §3.4, §7
+ADR-R4) tightens that mechanism with **FocusRouter**, a tiered view of the same
+stack: dialog frames are the `modal` tier, panel and dock frames are the
+`overlay` tier, and the page frame hosts `main` and `global`. The keymap lane's
+`prependListener` priority and the raw `useKeyboard` lane (Context, "the two key
+lanes") remain the two entry lanes this stack arbitrates between.
+
+Capture precedence is `modal (3) > overlay (2) > main (1) > global (0)`.
+`FocusRouter.allows(tier, frame?)` is the single structural gate; a layer
+declares a `capture` tier and `Keymap.createLayer` ANDs that gate into the
+layer's `enabled` at registration time. The resulting invariants:
+
+1. **No second ownership.** FocusRouter is a view over `InputOwnership`; frame
+   tokens, push/pop lifecycle and top-identity semantics are exactly Decision
+   1–3. `FocusRouterProvider` nests `InputOwnershipProvider` so dialog,
+   panel-kit and dock hosts all read the same stack. No bridge, inject or
+   service surface is involved.
+2. **Shims only at leaves.** The page-level `pageOwns()` / legacy
+   `dialog.stack.length === 0` gates are no longer the ownership authority:
+   `useIsPageOwner()` now delegates to the router's `main` gate. Panel paging
+   layers (Decision 6) are `overlay` tier and keep their own functionality.
+   The name `useIsPageOwner` stays as a compatibility alias so untouched call
+   sites and their pinned tests keep working.
+3. **Existing priorities unchanged.** The four-tier order decides *which tiers
+   are enabled*, not keymap `priority`. On the page frame both `main` and
+   `global` are enabled; their relative order is still the existing per-layer
+   `priority` and registration order (e.g. pane-focus stays `priority: 1`, the
+   agents hotkey layer stays `priority: 2`). This avoids behaviour drift.
+4. **Ambiguous key decisions keep the status quo.** Esc arm→confirm, Ctrl+C
+   busy interrupt-and-arm, Ctrl+C under an overlay belonging to the overlay
+   (quit unreachable, Decision 8), and digit session-tab quick switch all stay
+   as decided here and in the shipped keybind config. Interaction-feel
+   differences are recorded as USER-JUDGMENT and never gate the build.
+
+Where a surface cannot declare a `capture` tier (a bare FT harness without the
+provider), layers fall back to their pre-ownership `enabled` behaviour, exactly
+as the optional-ownership fallback in Decision 3 already provides. Verification
+for the tiered view is added in `packages/tui-base/test/focus-router.test.tsx`
+(matrix, leak negatives N1/N2, frame accounting) plus the SK slice's real tmux
+`capture-pane -e` evidence in `.proof/024-sk-keymap/`.

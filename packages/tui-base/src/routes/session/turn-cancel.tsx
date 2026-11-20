@@ -234,6 +234,9 @@ export function TurnCancelKeys(props: TurnCancelKeysProps) {
 	onCleanup(() => cancel.dispose())
 	Keymap.createLayer(() => ({
 		mode: "global",
+		// ADR-R4: the turn cancel layer is `main` tier. Under a dialog/panel/dock
+		// frame Esc and Ctrl+C belong to that surface, never to the page.
+		capture: "main",
 		enabled: props.enabled(),
 		commands: [
 			{

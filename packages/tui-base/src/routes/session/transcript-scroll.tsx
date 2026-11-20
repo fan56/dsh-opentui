@@ -58,6 +58,9 @@ export function TranscriptScrollKeys(props: TranscriptScrollKeysProps) {
 	}
 	Keymap.createLayer(() => ({
 		mode: "global",
+		// ADR-R4: transcript paging is `main` tier — a panel's own pager (overlay
+		// tier) wins while that panel is open; no `dialog.stack.length` shim.
+		capture: "main",
 		enabled: props.enabled(),
 		commands: [
 			{
@@ -96,6 +99,7 @@ export function TranscriptScrollKeys(props: TranscriptScrollKeysProps) {
 		scroll.scrollTo(Infinity)
 	}
 	Keymap.createLayer(() => ({
+		capture: "main",
 		enabled: () => props.enabled() && renderer.currentFocusedEditor === null,
 		commands: [
 			{

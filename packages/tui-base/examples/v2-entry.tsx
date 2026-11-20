@@ -95,7 +95,9 @@ import { createTuiClipboard } from "../src/clipboard"
 import { Keymap } from "../src/context/keymap"
 import { ThemeProvider, useTheme, useThemes } from "../src/context/theme"
 import { PanelKitHost } from "../src/context/panel-kit-host"
-import { InputOwnershipProvider, useIsPageOwner } from "../src/context/input-ownership"
+// ADR-R4: FocusRouterProvider nests InputOwnershipProvider and exposes the
+// four-tier capture view; pageOwns now routes through the single authority.
+import { FocusRouterProvider, useIsPageOwner } from "../src/context/focus-router"
 import { ConfigProvider, resolve, useConfig } from "../src/config"
 import { copyOnSelectEnabled, copyOnSelectRelease } from "../src/util/selection"
 import { createThemeSeam } from "../src/seams/theme"
@@ -1879,7 +1881,7 @@ export async function bootClientV2(options: {
 										// only viable while the app never owned a selection).
 										return createComponent(ClipboardHost, {
 											get children() {
-												return createComponent(InputOwnershipProvider, {
+												return createComponent(FocusRouterProvider, {
 													get children() {
 														return createComponent(DialogProvider, {
 															get children() {

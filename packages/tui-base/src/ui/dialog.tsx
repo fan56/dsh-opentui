@@ -385,6 +385,11 @@ function init() {
 
   Keymap.createLayer(() => ({
     mode: "modal",
+    // ADR-R4 FocusRouter: the dialog lane is the `modal` capture tier. The
+    // claim frame is re-read from the stack so a dialog above a panel wins by
+    // token identity, not by registration order.
+    capture: "modal",
+    captureFrame: () => store.stack.at(-1)?.frame,
     // ADR-0008: the dialog lane is only enabled while the top ownership frame
     // is the top dialog entry — a panel/dock frame above it wins, even though
     // both layers sit at priority 0.
