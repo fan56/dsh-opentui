@@ -1,50 +1,33 @@
 /**
  * Batch V2: cancel contract + scrollbar style guard.
  *
- * 1. createCtrlCGate / createTurnCancel — the pure key decisions:
- *    ctrl+c interrupts + arms, a second press inside the window quits, a
- *    late second press re-arms. Esc falls through when idle or while the
- *    slash palette is open. WITHOUT `confirmStop` the legacy single-press
- *    interrupt stays; WITH it (U6 stop-confirm contract) the first Esc only
- *    ARMS, the second inside the window opens the confirmation (confirmStop),
- *    and a late second press re-arms — a stray Esc can never kill a turn.
+ * 1. createTurnCancel — the pure key decisions:
+ *    ctrl+c on idle OPENS the quit dialog (confirmQuit), on a busy turn the
+ *    1st press only interrupts and the NEXT press (any time later, no timing
+ *    gate) opens the quit dialog; a fresh turn restarts the cycle. Esc falls
+ *    through when idle or while the slash palette is open. WITHOUT `confirmStop`
+ *    the legacy single-press interrupt stays; WITH it (U6 stop-confirm contract)
+ *    the first Esc only ARMS, the second inside the window opens the confirmation
+ *    (confirmStop), and a late second press re-arms — a stray Esc can never kill
+ *    a turn.
  * 2. Source guards — the client render passes exitOnCtrlC:false (OpenTUI's
  *    default `true` exits ahead of every keymap layer and wiped the frame),
  *    the cancel layer is wired into the v2 page with the stop-confirm dialog
- *    (main turn + every live subagent), and the transcript scrollbar follows
- *    the vendored default (off, themed track) instead of the always-on
- *    default-gray track.
+ *    (main turn + every live subagent), the quit dialog reuses DialogConfirm
+ *    and calls props.quit, and the transcript scrollbar follows the vendored
+ *    default (off, themed track) instead of the always-on default-gray track.
  */
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
-import { CTRL_C_QUIT_WINDOW_MS, createCtrlCGate, createTurnCancel } from "../src/routes/session/turn-cancel"
+import { CTRL_C_QUIT_WINDOW_MS, createTurnCancel } from "../src/routes/session/turn-cancel"
 
 const src = (file: string) => readFileSync(join(import.meta.dir, "..", file), "utf8")
 
-describe("ctrl+c double-press gate", () => {
-	test("window is inside the tui-pi 150-500ms contract", () => {
-		expect(CTRL_C_QUIT_WINDOW_MS).toBeGreaterThanOrEqual(150)
-		expect(CTRL_C_QUIT_WINDOW_MS).toBeLessThanOrEqual(500)
-	})
-	test("first press arms, second inside the window quits, late press re-arms", () => {
-		let t = 1000
-		const gate = createCtrlCGate(500, () => t)
-		expect(gate.press()).toBe("arm")
-		t += 300
-		expect(gate.press()).toBe("quit")
-		expect(gate.press()).toBe("arm") // quit consumed the arm
-		t += 900
-		expect(gate.press()).toBe("arm") // late: re-arms, never quits
-		t += 100
-		expect(gate.press()).toBe("quit")
-	})
-})
-
-type ArmRecord = { armed: boolean; key: "escape" | "ctrl-c" }
+type ArmRecord = { armed: boolean; key: "escape" }
 
 function harness(
-	opts: { busy?: boolean; palette?: boolean; confirmStop?: boolean } = {},
+	opts: { busy?: boolean; palette?: boolean; confirmStop?: boolean; settleOnInterrupt?: boolean } = {},
 ) {
 	const calls: string[] = []
 	const armed: ArmRecord[] = []
@@ -54,7 +37,9 @@ function harness(
 			busy: () => busy,
 			interrupt: () => {
 				calls.push("interrupt")
-				busy = false // the seam settles the turn → page busy → false
+				// The seam settles the turn → page busy → false; `false` models an
+				// async interrupt whose settle lands later (busy stays true).
+				if (opts.settleOnInterrupt !== false) busy = false
 			},
 			...(opts.confirmStop === false ? {} : { confirmStop: () => calls.push("confirmStop") }),
 			quit: () => calls.push("quit"),
@@ -63,9 +48,17 @@ function harness(
 			windowMs: 400,
 		},
 		(armedValue, key) => armed.push({ armed: armedValue, key }),
+		() => calls.push("confirmQuit"),
 	)
-	return { cancel, calls, armed, isBusy: () => busy }
+	return { cancel, calls, armed, isBusy: () => busy, setBusy: (value: boolean) => { busy = value } }
 }
+
+describe("esc arm window", () => {
+	test("window is inside the tui-pi 150-500ms contract", () => {
+		expect(CTRL_C_QUIT_WINDOW_MS).toBeGreaterThanOrEqual(150)
+		expect(CTRL_C_QUIT_WINDOW_MS).toBeLessThanOrEqual(500)
+	})
+})
 
 describe("turn cancel decisions — legacy single-esc (no confirmStop)", () => {
 	test("esc on a running turn interrupts and the page returns idle", () => {
@@ -140,19 +133,16 @@ describe("turn cancel decisions — U6 stop-confirm double-esc", () => {
 	test("an armed esc window is cleared by the ctrl+c chain (no chain mixing)", () => {
 		const h = harness({ busy: true })
 		h.cancel.escape()
-		h.cancel.ctrlC() // interrupts + arms the quit affordance
+		h.cancel.ctrlC() // interrupts the busy turn; the esc arm is cleared
 		expect(h.calls).toEqual(["interrupt"])
 		expect(h.armed).toEqual([
 			{ armed: true, key: "escape" },
 			{ armed: false, key: "escape" },
-			{ armed: true, key: "ctrl-c" },
 		])
 		// The cleared esc arm cannot confirm on the next press: the interrupt
-		// already settled the turn, so the page is idle and esc falls through
-		// (idle esc is a no-op — never a stale-arm confirm).
+		// already settled the turn, so the page is idle and esc falls through.
 		expect(h.cancel.escape()).toBe(false)
 		expect(h.calls).toEqual(["interrupt"])
-		expect(h.armed.at(-1)).toEqual({ armed: true, key: "ctrl-c" })
 		h.cancel.dispose()
 	})
 	test("dispose clears a pending arm", () => {
@@ -163,35 +153,46 @@ describe("turn cancel decisions — U6 stop-confirm double-esc", () => {
 	})
 })
 
-describe("turn cancel decisions — ctrl+c chain (unchanged by U6)", () => {
-	test("ctrl+c once: interrupts the running turn and shows the quit affordance, no quit", () => {
+describe("turn cancel decisions — ctrl+c quit dialog (no timing gate)", () => {
+	test("idle: a single ctrl+c opens the quit dialog (no interrupt, no quit yet)", () => {
+		const h = harness({ busy: false })
+		expect(h.cancel.ctrlC()).toBe(true)
+		expect(h.calls).toEqual(["confirmQuit"])
+		expect(h.armed).toEqual([])
+	})
+	test("busy: the first ctrl+c interrupts only — no dialog", () => {
 		const h = harness({ busy: true })
 		expect(h.cancel.ctrlC()).toBe(true)
 		expect(h.calls).toEqual(["interrupt"])
-		expect(h.armed).toEqual([{ armed: true, key: "ctrl-c" }])
-		h.cancel.dispose()
+		expect(h.calls).not.toContain("confirmQuit")
 	})
-	test("ctrl+c twice inside the window quits exactly once", () => {
-		const h = harness()
-		h.cancel.ctrlC()
-		h.cancel.ctrlC()
-		expect(h.calls).toEqual(["quit"])
-		expect(h.armed).toEqual([
-			{ armed: true, key: "ctrl-c" },
-			{ armed: false, key: "ctrl-c" },
-		])
+	test("busy: the second ctrl+c opens the quit dialog", () => {
+		const h = harness({ busy: true })
+		h.cancel.ctrlC() // interrupt
+		h.cancel.ctrlC() // dialog
+		expect(h.calls).toEqual(["interrupt", "confirmQuit"])
 	})
-	test("the affordance disarms after the window", async () => {
-		const h = harness()
+	test("busy: the second press opens the dialog even if busy has not settled (no timing gate)", () => {
+		// settleOnInterrupt:false — the seam's abort is async, so busy stays true.
+		const h = harness({ busy: true, settleOnInterrupt: false })
 		h.cancel.ctrlC()
-		await new Promise((resolve) => setTimeout(resolve, 450))
-		expect(h.armed).toEqual([
-			{ armed: true, key: "ctrl-c" },
-			{ armed: false, key: "ctrl-c" },
-		])
-		h.cancel.ctrlC() // window expired: re-arm, no quit
-		expect(h.calls).toEqual([])
-		h.cancel.dispose()
+		h.cancel.ctrlC()
+		expect(h.calls).toEqual(["interrupt", "confirmQuit"])
+	})
+	test("busy: a late third press also opens the dialog (any time later)", async () => {
+		const h = harness({ busy: true })
+		h.cancel.ctrlC()
+		await new Promise((resolve) => setTimeout(resolve, 600)) // outlive the old 500ms gate
+		h.cancel.ctrlC()
+		expect(h.calls).toEqual(["interrupt", "confirmQuit"])
+	})
+	test("a fresh turn restarts the cycle: busy interrupt → dialog, then a NEW turn interrupts again", () => {
+		const h = harness({ busy: true })
+		h.cancel.ctrlC() // interrupt turn #1
+		h.cancel.ctrlC() // quit dialog, latch cleared
+		h.setBusy(true) // a NEW turn starts
+		h.cancel.ctrlC() // interrupts the new turn, NOT another dialog
+		expect(h.calls).toEqual(["interrupt", "confirmQuit", "interrupt"])
 	})
 })
 
@@ -234,6 +235,15 @@ describe("wiring source guards", () => {
 	test("the esc arm hint is localized (U6 prompt bar)", () => {
 		const cancel = src("src/routes/session/turn-cancel.tsx")
 		expect(cancel).toContain('t("turn.stop.escHint")')
+	})
+	test("no double-press quit gate; quit reuses DialogConfirm and calls props.quit", () => {
+		const cancel = src("src/routes/session/turn-cancel.tsx")
+		// The 500ms quit gate and its hint are gone: a dialog is now the step.
+		expect(cancel).not.toContain("createCtrlCGate")
+		expect(cancel).not.toContain("Press Ctrl+C again to quit")
+		expect(cancel).toContain("DialogConfirm")
+		expect(cancel).toContain('title={t("turn.quit.confirmTitle")}')
+		expect(cancel).toContain("onConfirm={props.quit}")
 	})
 	test("transcript scrollbar: vendored default off + themed track (no default-gray column)", () => {
 		const transcript = src("src/routes/session/transcript.tsx")
