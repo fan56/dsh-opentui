@@ -370,9 +370,18 @@ const stopMock = () => {
 }
 
 const results = []
+// --- batch fail-fast guard -------------------------------------------------
+// A single step that fails to close its modal used to keep sending keys into
+// the stuck UI, poisoning the next two batches (the 12 cascade reds). Once a
+// batch is known stuck, the guard marks it BLOCKED and gates off further key
+// sends to that session until a fresh launch resets it. `blocked` is distinct
+// from `ok:false` so a BLOCKED batch is never counted as a real red.
+let sessStuck = false
+let batchGateOpen = true
 const record = (item, ok, detail = []) => {
-  results.push({ item, ok, detail })
-  console.log(`${(ok ? 'PASS' : 'FAIL').padEnd(5)} ${item}${detail.length ? ` — ${detail.join(' | ')}` : ''}`)
+  const blocked = !batchGateOpen
+  results.push({ item, ok: blocked ? false : ok, ...(blocked ? { blocked: true } : {}), detail })
+  console.log(`${(blocked ? 'BLOCKED' : ok ? 'PASS' : 'FAIL').padEnd(7)} ${item}${detail.length ? ` — ${detail.join(' | ')}` : ''}`)
 }
 
 const capture = (session = SESS, esc = false) => {
@@ -380,10 +389,15 @@ const capture = (session = SESS, esc = false) => {
   if (esc) args.push('-e')
   return tmuxOut(...args)
 }
-const sendKeys = (session, ...keys) => tmux('send-keys', '-t', session, ...keys)
+// When a batch is BLOCKED (a modal was left stuck), refuse to send any more
+// keys into that session — this is the fail-fast that stops one poisoned step
+// from cascading into later batches. A fresh launch() clears the flag.
+const sendKeys = (session, ...keys) =>
+  sessStuck && session === SESS ? { status: 0 } : tmux('send-keys', '-t', session, ...keys)
 /** SGR mouse bytes straight into the pane's pty (the app enables SGR mouse
  * reporting with useMouse). x/y are 1-based terminal cells. */
 const sendMouse = (session, kind, x, y, button = 0) => {
+  if (sessStuck && session === SESS) return
   const seq = `\x1b[<${button};${x};${y}${kind === 'release' ? 'm' : 'M'}`
   const hex = [...Buffer.from(seq, 'utf8')].map((b) => b.toString(16).padStart(2, '0'))
   tmux('send-keys', '-t', session, '-H', ...hex)
@@ -451,17 +465,27 @@ const editorRuns = (ansiOut) => {
   return rows.at(-1).replace(/\x1b\[[0-9;]*m/g, '\u0000').split('\u0000').map((run) => run.trimStart())
 }
 const submit = async (session, text) => {
+  // C-u clear BEFORE typing: a stale key that landed in the composer (e.g. the
+  // `l` from a structural-red /agents limits probe) must not be glued to a
+  // command — `l/settings` is a chat message, not a slash command, and the mock
+  // LLM answers it with a bash-approval modal that poisons the whole batch.
+  sendKeys(session, 'C-u')
+  await sleep(120)
   await typeText(session, text)
   await sleep(300)
-  if (!inputRow(capture(session)).includes(text)) {
-    for (let i = 0; i < text.length + 6; i++) { sendKeys(session, 'BSpace'); await sleep(TYPE_GAP_MS) }
-    await sleep(200)
+  // EXACT read-back, not substring: `'l/settings'.includes('/settings')` is
+  // true — that substring check is exactly the bug that let dirty text be
+  // sent. Retry once from a clean composer on any mismatch.
+  if (inputRow(capture(session)) !== text) {
+    sendKeys(session, 'C-u')
+    await sleep(120)
     await typeText(session, text)
     await sleep(300)
   }
   sendKeys(session, 'Enter')
 }
 const waitPane = async (session, pred, timeoutMs, everyMs = 400) => {
+  if (sessStuck && session === SESS) return { ok: false, out: capture(session) } // fail-fast: no keys, no waits
   const deadline = Date.now() + timeoutMs
   let last = ''
   while (Date.now() < deadline) {
@@ -480,6 +504,11 @@ const snap = (name, session = SESS) => {
 }
 const idle = (out) => out.includes(IDLE) || composerEmpty(out)
 const launch = (session, cols, rows, cwd = WS) => {
+  // A fresh session starts a fresh batch chain: clear any earlier BLOCKED gate.
+  // Any launch (SESS80 / SESSGIT / SESS relaunch) is independent of a poisoned
+  // predecessor, so the gate must reset here for ALL sessions.
+  sessStuck = false
+  batchGateOpen = true
   tmux('kill-session', '-t', session)
   const env = [
     `DSH_HOME=${HOME}`,
@@ -496,6 +525,30 @@ const launch = (session, cols, rows, cwd = WS) => {
   if (r.status !== 0) throw new Error('tmux boot failed: ' + r.stderr)
 }
 const killSession = (session) => tmux('kill-session', '-t', session)
+
+/** A modal/overlay that eats keys. Composer residue does NOT eat keys (C-u in
+ * submit clears it), so only overlays count as a stuck batch — a failed *assert*
+ * on a batch whose modal never opened (e.g. structural-red /agents) must not
+ * trip the guard and block the rest of the run. */
+const overlayOpen = (out) =>
+  settingsUp(out) || agentsPanelUp(out) ||
+  out.includes('Approval:') || out.includes(SETTINGS_EXIT_TITLE)
+/**
+ * Batch-entry fail-fast guard. If the previous batch left a key-eating modal
+ * open, mark the whole remaining SESS batch BLOCKED and suppress further keys
+ * to SESS until a fresh launch() resets the flag. Real reds stay real reds;
+ * only cascade-poisoned batches are turned into BLOCKED.
+ */
+const guardBatch = (label) => {
+  if (sessStuck) return false // already poisoned in an earlier batch
+  const frame = capture(SESS)
+  if (!overlayOpen(frame)) return true
+  sessStuck = true
+  batchGateOpen = false
+  writeFileSync(join(OUT, `BLOCKED-${label}.txt`), frame)
+  console.log(`  BATCH GUARD [${label}]: previous batch left a modal open — BLOCKED (keys suppressed)`)
+  return false
+}
 
 let crashed = null
 try {
@@ -622,6 +675,7 @@ try {
     [agentsSummary.trim() === '' ? 'no summary row' : agentsSummary.trim()])
 
   // ---------------- 1b. /settings modal (panel-kit, T18) ----------------
+  guardBatch('1b-settings')
   // Seven-section nav (通用 / TUI 专有 / Host / 模型 / 插件 / Agent 预设 / 账号)
   // with the inner-first Esc ladder (editor → browse → exit confirm), a REAL
   // local preference write (motion full → auto) observed in the scratch
@@ -675,8 +729,19 @@ try {
    * there is no commit key and no other close path.
    */
   const closeSettings = async (timeout = 15_000) => {
-    sendKeys(SESS, 'Escape')
-    const confirm = await waitPane(SESS, (out) => out.includes(SETTINGS_EXIT_TITLE), 6_000)
+    // Walk the inner-first Esc ladder: after a Host/motion edit the focus sits
+    // in a rows sub-pane, so ONE Escape only returns to the browse root — it
+    // does NOT open the exit confirm. Parking there is the cascade that poisoned
+    // pane-focus and palette. Step Escape until the confirm appears (or the
+    // modal is already gone), then Tab to 退出 + Enter. Check after each press:
+    // another Escape at the confirm would cancel it.
+    let confirm = { ok: false, out: capture(SESS) }
+    for (let step = 0; step < 4 && !confirm.ok; step++) {
+      sendKeys(SESS, 'Escape')
+      confirm = await waitPane(SESS, (out) => out.includes(SETTINGS_EXIT_TITLE), 2_000, 150)
+      if (confirm.ok) break
+      if (!settingsUp(capture(SESS))) break // already closed
+    }
     if (confirm.ok) {
       sendKeys(SESS, 'Tab')
       await sleep(180)
@@ -896,6 +961,7 @@ try {
       settingsClosed.ok ? 'back to the composer' : 'panel still on screen'])
 
   // ---------------- 1c. pane focus + transcript scroll (focus batch) ----------------
+  guardBatch('1c-pane-focus')
   // F6 / clicks move focus between the composer and the transcript. The frame
   // form is the observable: focused = heavy border (`┏`/`┃`, accent title),
   // unfocused = single (`┌`/`│`). The border characters are captured plain, no
@@ -912,6 +978,7 @@ try {
     return start >= 0 && end > start ? lines.slice(start + 1, end).join('\n') : out
   }
   const waitFrame = async (pred, timeout = 6_000) => {
+    if (sessStuck) return { ok: false, out: capture(SESS) } // fail-fast
     const deadline = Date.now() + timeout
     let last = ''
     while (Date.now() < deadline) {
@@ -1131,7 +1198,13 @@ try {
   const lines = out80.split('\n')
   const boxStart = lines.findIndex((l) => l.trimStart().startsWith('┃'))
   const boxEnd = lines.map((l) => l.trimStart().startsWith('┃')).lastIndexOf(true)
-  const powerIdx = lines.map((l) => /🧠/.test(l)).lastIndexOf(true)
+  // Locator refreshed (oldfox #33): the footer no longer paints 🧠 — it draws
+  // a `dsh  … 🤖 …` powerline plus a `⌨ …` hint row (frame evidence: both
+  // geometries have zero 🧠). Keying on 🧠 gave powerIdx=-1 → false red. Locate
+  // the footer by the `⌨` hint row, falling back to the `dsh ` powerline row.
+  const hintIdx = lines.map((l) => l.includes('⌨')).lastIndexOf(true)
+  const dshIdx = lines.map((l) => /^\s*dsh\s/.test(l)).lastIndexOf(true)
+  const powerIdx = hintIdx >= 0 ? hintIdx : dshIdx
   const rows80 = composerRows(out80).map((l) => l.trimStart())
   const editorRow = rows80.at(-1) ?? ''
   const menuRows = rows80.filter((l) => /^\/[a-z]/.test(l)).length
