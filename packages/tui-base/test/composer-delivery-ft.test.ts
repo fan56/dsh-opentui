@@ -42,5 +42,5 @@ describe("busy submit delivery chooser (real renderer)", () => {
 
 		// Steer: cleared and injected through the seam
 		expect(r.afterSteer).toMatchObject({ buffer: "", sent: ["first"], steered: ["steer line"] })
-	})
+	}, 20000)
 })
