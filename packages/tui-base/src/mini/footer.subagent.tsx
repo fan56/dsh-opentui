@@ -21,6 +21,10 @@ function statusColor(theme: RunFooterTheme, status: FooterSubagentTab["status"])
     return theme.muted
   }
 
+  if (status === "interrupted") {
+    return theme.muted
+  }
+
   if (status === "error") {
     return theme.error
   }
@@ -35,6 +39,10 @@ function statusIcon(status: FooterSubagentTab["status"], mono: boolean) {
 
   if (status === "cancelled") {
     return mono ? "-" : "○"
+  }
+
+  if (status === "interrupted") {
+    return mono ? "-" : "⊘"
   }
 
   if (status === "error") {

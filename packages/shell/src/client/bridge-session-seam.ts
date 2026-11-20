@@ -118,10 +118,25 @@ export interface BridgeSeamLogger {
 	info(message: string, ...args: unknown[]): void
 	warn(message: string, ...args: unknown[]): void
 	error(message: string, ...args: unknown[]): void
+	/** L2b C3: optional debug channel (the timeout fallback logs here). Hosts
+	 *  without a debug method are fine — the seam calls it via optional chaining. */
+	debug?(message: string, ...args: unknown[]): void
 }
 
 export interface BridgeSeamContext {
 	logger: BridgeSeamLogger
+}
+
+/**
+ * L2b C3: injectable clock for the subagent-stop confirm-then-emit poll loop.
+ * Tests replace it to drive the 250ms→1s backoff and the 45s deadline without
+ * real waits; production uses a real timer + `Date.now()` (set in the ctor).
+ */
+export interface BridgeConfirmClock {
+	/** Resolve after `ms` (real) simulated milliseconds. */
+	sleep(ms: number): Promise<void>
+	/** Monotonic-ish elapsed clock (ms) used for the confirm deadline. */
+	now(): number
 }
 
 /**
@@ -142,6 +157,8 @@ export interface BridgeSessionSeamOptions {
 	 *  when no approval provider can be confirmed. The composition root turns
 	 *  this into a transient (never persistent) localized fail-closed notice. */
 	onPermissionUnavailable?: (reason: PermissionUnavailableReason) => void
+	/** L2b C3: override the confirm-then-emit poll clock (tests only). */
+	confirmClock?: BridgeConfirmClock
 }
 
 // ---------------------------------------------------------------------------
@@ -538,10 +555,21 @@ function bridgeAgentRunKey(runId: string, seq: number): string {
 	return `${runId}:${seq}`
 }
 
-/** outcome → settled status; anything but failed/cancelled is completed (a
- *  conservative unknown-stopReason mapping — never paint a false failure). */
-function bridgeSettledStatus(outcome: unknown): "completed" | "failed" | "cancelled" {
-	return outcome === "failed" || outcome === "cancelled" ? outcome : "completed"
+/**
+ * outcome → settled status. `failed`/`cancelled` pass through; `aborted` (the
+ * journal `subagent-settled.stopReason` / child `turn/end.reason.kind` for a
+ * user interrupt) maps to the dedicated interrupted display state — folding
+ * it into `completed` was the 0.23.0 P1-3 display bug. Everything else stays
+ * the conservative "completed" (never paint a false failure for an unknown
+ * reason).
+ *
+ * `"interrupted"` is part of the `SeamSubagentView.status` union in tui-base
+ * (L3), so the aborted outcome is returned directly — no narrow assertion.
+ */
+function bridgeSettledStatus(outcome: unknown): SeamSubagentView["status"] {
+	if (outcome === "failed" || outcome === "cancelled") return outcome
+	if (outcome === "aborted") return "interrupted"
+	return "completed"
 }
 
 /** Freeze a running child into the settled projection: drop `startedAt`, carry
@@ -862,6 +890,41 @@ export function bridgeChildJournalMeta(rows: readonly BridgeReplayRow[]): Bridge
 	}
 }
 
+/** L2b C3: first confirm poll delay, the doubling ceiling, and the total cap
+ *  (45s, inside the plan's 30–60s band). A child that is still host-running at
+ *  the cap is NOT force-settled — the marker is dropped so the turn-boundary
+ *  `#sweepSubagents` fallback can converge it from a later registry snapshot. */
+const CONFIRM_POLL_INITIAL_MS = 250
+const CONFIRM_POLL_MAX_MS = 1000
+const CONFIRM_TIMEOUT_MS = 45_000
+
+/**
+ * L2b C3: read a child's REAL stop reason from its journal. Priority:
+ *   ① `user/message source.kind=subagent-settled` → `source.stopReason`;
+ *   ② the child session's `turn/end` → `data.reason.kind`;
+ *   ③ neither → `undefined` (the caller degrades to `"aborted"`).
+ * Scans newest-first so the latest terminal wins when a child ran multiple
+ * turns. Pure/testable — the confirm coroutine is the only production caller.
+ */
+export function bridgeChildStopReason(rows: readonly BridgeReplayRow[]): string | undefined {
+	for (let i = rows.length - 1; i >= 0; i -= 1) {
+		const row = rows[i]
+		if (row.type !== "user/message") continue
+		const source = asRecord(asRecord(row.payload).source)
+		if (source.kind !== BRIDGE_SUBAGENT_SETTLED) continue
+		const reason = source.stopReason
+		if (typeof reason === "string" && reason !== "") return reason
+	}
+	for (let i = rows.length - 1; i >= 0; i -= 1) {
+		const row = rows[i]
+		if (row.type !== "turn/end") continue
+		const reason = asRecord(asRecord(row.payload).reason)
+		const kind = reason.kind
+		if (typeof kind === "string" && kind !== "") return kind
+	}
+	return undefined
+}
+
 /** Lazy-read / settle-snapshot cache key — a catalog revive (new startedAt) starts a new run. */
 function bridgeChildJournalKey(view: SeamSubagentView): string {
 	return `${view.id}@${view.startedAt ?? ""}`
@@ -1175,6 +1238,18 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * binding change/dispose.
 	 */
 	readonly #subagentSettleSnapshots = new Map<string, BridgeSettleSnapshot>()
+	/**
+	 * L2a: children with a user interrupt issued against THIS binding, keyed by
+	 * childId → monotonic interrupt generation. Sweep MUST skip a child in this
+	 * map (no settle) so the confirm-then-emit path owns its terminal projection;
+	 * this is the P1-1 "sweep eats the interrupt result" guard. L2b C3 reads the
+	 * generation for its binding-change guard and clears entries after settling.
+	 * Cleared on binding change / dispose.
+	 */
+	readonly #interruptInFlight = new Map<string, number>()
+	#interruptGeneration = 0
+	/** L2b C3: poll clock for the confirm-then-emit loop (real timer by default). */
+	readonly #confirmClock: BridgeConfirmClock
 
 	// status state machine (no dedicated status frame — ticket §1 #1).
 	#connection: SeamStatus["connection"] = "disconnected"
@@ -1185,6 +1260,15 @@ export class BridgeSessionSeam implements SessionSeam {
 	/** lastSessionId for recovery — this IS the last opened session id; it
 	 *  survives a `bridge.dead` frame (only `newSession`/`dispose` clear it). */
 	#currentSessionId: string | undefined
+	/**
+	 * L2a capability negotiation: the additive `capabilities` array from the
+	 * `bridge.hello`/`bridge.ping` reply (L1 advertises
+	 * `subagents.interrupt` / `subagents.stopChildren`). An OLD bridge omits the
+	 * field entirely → empty set = no capability (never probe child-by-child).
+	 * Refreshed on every successful handshake so a recovered/newer bridge is
+	 * picked up without recreating the seam.
+	 */
+	readonly #bridgeCapabilities = new Set<string>()
 	/** A4: highest journal seq applied to the transcript so far. Did NOT exist
 	 *  before this task; recovery needs it to compute `from = lastAppliedSeq+1`. */
 	#lastAppliedSeq: number | undefined
@@ -1322,19 +1406,51 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#ctx = options.ctx
 		this.#onDead = options.onDead
 		this.#onPermissionUnavailable = options.onPermissionUnavailable
+		this.#confirmClock = options.confirmClock ?? {
+			// unref: a background confirmation poll must never keep the CLI alive
+			// after every real (ref'd) handle has gone away.
+			sleep: (ms) => new Promise<void>((resolve) => {
+				const timer = setTimeout(resolve, ms)
+				;(timer as { unref?: () => void }).unref?.()
+			}),
+			now: () => Date.now(),
+		}
 		this.#unsubEvent = this.#transport.onEvent((frame) => this.#onBridgeEvent(frame))
 	}
 
 	/** Additive handshake helper (not one of the 19 seam members): ping fills
-	 *  the connection leg of status() without a dedicated status frame. */
+	 *  the connection leg of status() without a dedicated status frame. L2a: the
+	 *  same reply carries the additive `capabilities` array — parse it here so
+	 *  `hasBridgeCapability()` is authoritative for L3's stop-all branch. */
 	async connect(): Promise<void> {
 		try {
-			await this.#transport.request("bridge.ping")
+			const reply = asRecord(await this.#transport.request("bridge.ping"))
+			this.#recordBridgeCapabilities(reply.capabilities)
 			this.#connection = "connected"
 		} catch (err) {
 			this.#connection = "disconnected"
 			this.#ctx.logger.warn("[bridge-seam] bridge.ping failed, status connection=disconnected: %s", err)
 		}
+	}
+
+	/** Replace the capability set with the bridge's advertised array. Missing /
+	 *  malformed / non-string entries are simply dropped (old bridge = empty). */
+	#recordBridgeCapabilities(value: unknown): void {
+		this.#bridgeCapabilities.clear()
+		if (!Array.isArray(value)) return
+		for (const entry of value) {
+			if (typeof entry === "string" && entry !== "") this.#bridgeCapabilities.add(entry)
+		}
+	}
+
+	/**
+	 * L2a: true iff the connected bridge advertised `name` in its hello/ping
+	 * reply. Old bridges (no `capabilities` field) answer false for everything.
+	 * Public so L3's `stop-all.ts` can pick the capability path vs the legacy
+	 * roster traversal without firing a probe frame per child.
+	 */
+	hasBridgeCapability(name: string): boolean {
+		return this.#bridgeCapabilities.has(name)
 	}
 
 	// ----- sync members (D3: degrade + log, never throw) -------------------
@@ -2059,6 +2175,187 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * L2a: interrupt ONE running child through the bridge's subagent-stop
+	 * capability (retires the D3 stub). `parentSessionId` is ALWAYS the seam's
+	 * currently bound session — the bridge enforces a one-session-per-stdio-
+	 * connection binding, so a child of any other session must never be named.
+	 * A missing binding rejects with a clear NO_SESSION error BEFORE any frame
+	 * is sent (no enumeration, no cancel).
+	 *
+	 * disposition: `cancel-issued`/`already-settled` resolve; `failed` rejects
+	 * with the bridge detail attached. The child is registered in
+	 * #interruptInFlight so sweep will not settle it — L2b's C3 owns that
+	 * confirm-then-emit settle.
+	 */
+	async interruptChild(childId: string): Promise<void> {
+		const parentSessionId = this.#currentSessionId
+		if (parentSessionId === undefined || parentSessionId === "") {
+			throw new BridgeProtocolError(
+				"NO_SESSION",
+				"cannot interrupt a subagent: no session is bound to this bridge connection",
+				{ childId },
+			)
+		}
+		const generation = ++this.#interruptGeneration
+		const sessionAtStart = this.#subagentSessionId
+		this.#interruptInFlight.set(childId, generation)
+		let value: Record<string, unknown>
+		try {
+			value = asRecord(await this.#transport.request("subagents.interrupt", { parentSessionId, childId }))
+		} catch (err) {
+			// No confirmed cancel → drop the marker so the normal sweep can
+			// still converge this child (there is nothing for C3 to confirm).
+			if (this.#interruptInFlight.get(childId) === generation) this.#interruptInFlight.delete(childId)
+			throw err
+		}
+		const disposition = value.disposition
+		if (disposition === "cancel-issued") {
+			// C3: a cancel was issued but the child may still be host-running.
+			// Confirm running===false, read the real reason, emit ONE settle.
+			void this.#confirmChildStop(childId, generation, sessionAtStart)
+			return
+		}
+		if (disposition === "already-settled") {
+			// Host already terminalized it — no confirmation needed. Drop the
+			// marker so sweep stays free to converge the child if it still looks
+			// running in the roster.
+			if (this.#interruptInFlight.get(childId) === generation) this.#interruptInFlight.delete(childId)
+			return
+		}
+		// `failed` (and any defensive unknown disposition): no cancel was proven
+		// and no confirmation coroutine owns this child, so drop the marker too —
+		// sweep must stay free to converge it. Reject with the bridge detail
+		// attached.
+		if (this.#interruptInFlight.get(childId) === generation) this.#interruptInFlight.delete(childId)
+		const detail = value.detail
+		throw new BridgeProtocolError(
+			"INTERRUPT_FAILED",
+			`bridge failed to interrupt subagent ${childId}${typeof disposition === "string" ? ` (${disposition})` : ""}`,
+			{ childId, disposition, ...(detail !== undefined ? { detail } : {}) },
+		)
+	}
+
+	/**
+	 * L2a: stop ALL running children of the bound parent in one frame (scoped
+	 * to #currentSessionId; there is deliberately no global-stop path). Returns
+	 * the bridge's `{childId, disposition}` rows verbatim so L3 can report per
+	 * child. A missing binding rejects before any frame is sent.
+	 */
+	async stopChildren(): Promise<Array<{ childId: string; disposition: string }>> {
+		const parentSessionId = this.#currentSessionId
+		if (parentSessionId === undefined || parentSessionId === "") {
+			throw new BridgeProtocolError(
+				"NO_SESSION",
+				"cannot stop children: no session is bound to this bridge connection",
+			)
+		}
+		const value = asRecord(await this.#transport.request("subagents.stopChildren", { parentSessionId }))
+		const children = value.children
+		if (!Array.isArray(children)) return []
+		const sessionAtStart = this.#subagentSessionId
+		const rows = children.map((row) => {
+			const r = asRecord(row)
+			return {
+				childId: typeof r.childId === "string" ? r.childId : "",
+				disposition: typeof r.disposition === "string" ? r.disposition : "failed",
+			}
+		})
+		// C3: one independent confirmation coroutine per issued cancel. A failed
+		// sibling never blocks or cancels another's confirmation (each is `void`
+		// with its own generation + try/catch). `already-settled`/`failed` rows
+		// start no coroutine — the host already terminalized them, or no cancel
+		// was proven (the normal sweep may still converge the latter).
+		for (const row of rows) {
+			if (row.disposition !== "cancel-issued" || row.childId === "") continue
+			const generation = ++this.#interruptGeneration
+			this.#interruptInFlight.set(row.childId, generation)
+			void this.#confirmChildStop(row.childId, generation, sessionAtStart)
+		}
+		return rows
+	}
+
+	/**
+	 * L2b C3 — confirm-then-emit for one user-stopped child. Never throws (called
+	 * fire-and-forget from interruptChild/stopChildren). Three outcomes:
+	 *   ① host reports running===false → read the REAL reason from the child
+	 *      journal and settle exactly once through #settleChildFromHost;
+	 *   ② deadline reached while still running → NO settle, drop only this
+	 *      child's marker so the turn-boundary #sweepSubagents fallback converges
+	 *      it later, with a debug log (no journal/body text);
+	 *   ③ binding/generation changed (rebind / dispose / a newer interrupt on
+	 *      the same child) → abandon with NO settle and NO emit.
+	 * The generation is captured per child at issue time (the value stored in
+	 * #interruptInFlight), plus the binding session id — the same sessionAtStart
+	 * pattern #ensureChildJournal uses. A rebind clears the marker map (L2a) and
+	 * bumps #interruptGeneration, so both guards fire for a stale coroutine.
+	 */
+	async #confirmChildStop(childId: string, generation: number, sessionAtStart: string | undefined): Promise<void> {
+		const clock = this.#confirmClock
+		const deadlineAt = clock.now() + CONFIRM_TIMEOUT_MS
+		let delayMs = CONFIRM_POLL_INITIAL_MS
+		try {
+			for (;;) {
+				await clock.sleep(delayMs)
+				// Guard BEFORE every RPC: a stale coroutine must not even poll.
+				if (this.#disposed || this.#subagentSessionId !== sessionAtStart
+					|| this.#interruptInFlight.get(childId) !== generation) return
+
+				let stopped = false
+				try {
+					// Reuse the seam's existing list capability (same frame as
+					// #sweepSubagents); a failed/malformed read is NOT a stop.
+					const items = asRecord(await this.#transport.request("session.list", { _request: {} })).items
+					if (Array.isArray(items)) {
+						stopped = items.some((row) => {
+							const item = asRecord(row)
+							return item.sessionId === childId && item.running === false
+						})
+					}
+				} catch {
+					/* best-effort poll: try again until the deadline */
+				}
+				// Guard AGAIN after the await — a rebind during the poll wins.
+				if (this.#disposed || this.#subagentSessionId !== sessionAtStart
+					|| this.#interruptInFlight.get(childId) !== generation) return
+
+				if (stopped) {
+					let reason = "aborted" // degradation: no readable terminal in the child journal
+					try {
+						const rows = asRecord(await this.#transport.request("journal.replay", { sessionId: childId })).rows
+						if (Array.isArray(rows)) {
+							const clean = rows.filter(
+								(row): row is BridgeReplayRow => row !== null && typeof row === "object" && !Array.isArray(row),
+							)
+							reason = bridgeChildStopReason(clean) ?? "aborted"
+						}
+					} catch {
+						/* a journal read failure degrades to "aborted", never a fake success */
+					}
+					if (this.#disposed || this.#subagentSessionId !== sessionAtStart
+						|| this.#interruptInFlight.get(childId) !== generation) return
+					this.#settleChildFromHost(childId, reason, clock.now())
+					return
+				}
+
+				if (clock.now() >= deadlineAt) {
+					// Timeout: do NOT invent a terminal. Drop only this marker so
+					// the turn-boundary sweep can settle from a later host snapshot.
+					if (this.#interruptInFlight.get(childId) === generation) this.#interruptInFlight.delete(childId)
+					this.#ctx.logger.debug?.(
+						"[bridge-seam] subagent stop confirm timed out (child=%s, generation=%d, after=%dms); "
+						+ "clearing in-flight marker for turn sweep",
+						childId, generation, CONFIRM_TIMEOUT_MS,
+					)
+					return
+				}
+				delayMs = Math.min(CONFIRM_POLL_MAX_MS, delayMs * 2)
+			}
+		} catch {
+			/* defensive: a malformed reply must never leave an unhandled void rejection */
+		}
+	}
+
+	/**
 	 * 0.23.0 P1: post-fold hook — freeze the FIRST settle of every run key and
 	 * restore that frozen snapshot on any later re-settle. `before` holds the
 	 * startedAt of each child that was RUNNING before the fold. A replay re-fold
@@ -2132,27 +2429,53 @@ export class BridgeSessionSeam implements SessionSeam {
 		const now = Date.now()
 		let changed = false
 		for (const childId of toSettle) {
-			// Remember the run BEFORE settle drops startedAt. A later replay that
-			// re-folds this child's catalog row (with NO journal settle row — the
-			// aborted-parent case) would otherwise REVIVE it back to running; the
-			// post-fold sync uses this key to re-assert the sweep settle.
-			const existing = this.#subagentViews.get(childId)
-			if (existing !== undefined) this.#sweepSettledRuns.set(childId, bridgeChildJournalKey(existing))
-			// Catalog settle by childId — the SAME convergence branch the durable
-			// `user/message source.kind=subagent-settled` notice uses (by
-			// senderSessionId), so status/rounds/lastLine/model/elapsed stay in
-			// sync and NO new wire protocol is invented. No wall-clock fallback:
-			// the host's running===false flag is the only settle evidence.
-			if (this.#foldWithFrozenSettle("user/message", {
-				source: { kind: BRIDGE_SUBAGENT_SETTLED, stopReason: "completed", senderSessionId: childId },
-			}, now, false)) changed = true
+			// L2a P1-1: a child with an interrupt in flight belongs to C3's
+			// confirm-then-emit path, NOT to the sweep's conservative
+			// "completed" projection. Skip it entirely — no settle, no sticky,
+			// so the real interrupt reason from the child journal wins.
+			if (this.#interruptInFlight.has(childId)) continue
+			if (this.#settleChildFromHost(childId, "completed", now, false)) changed = true
 		}
 		if (changed) {
 			// Restore cached meta / frozen settle BEFORE the single emit so the
-			// panel never sees a transient rounds=0 (P2b).
-			this.#syncSubagentMeta(false)
+			// panel never sees a transient rounds=0 (P2b). The single emit is
+			// kept here (emit=false above) to preserve the exact 0.23.0 behavior.
 			this.#emitSubagentViews()
 		}
+	}
+
+	/**
+	 * L2a: the shared settle three-beat for a host-confirmed child terminal,
+	 * extracted from the 0.23.0 registry sweep so sweep / L2b C3 / recovery all
+	 * converge on ONE path:
+	 *   ① record the pre-settle run key into #sweepSettledRuns (sticky against a
+	 *      later catalog revive that carries no journal settle row),
+	 *   ② fold the synthetic `user/message subagent-settled` row through
+	 *      #foldWithFrozenSettle (freezes elapsedSec/endedAt/status),
+	 *   ③ #syncSubagentMeta(false) restores cached meta BEFORE a single emit.
+	 * `stopReason` is the real host reason when C3 supplies one; sweep keeps
+	 * passing the conservative "completed". `emit=false` lets a multi-child
+	 * caller batch its own single emit. Returns true iff the roster changed.
+	 */
+	#settleChildFromHost(childId: string, stopReason: unknown, now = Date.now(), emit = true): boolean {
+		// ① Remember the run BEFORE settle drops startedAt (aborted-parent case).
+		const existing = this.#subagentViews.get(childId)
+		if (existing !== undefined) this.#sweepSettledRuns.set(childId, bridgeChildJournalKey(existing))
+		// ② Catalog settle by childId — the SAME convergence branch the durable
+		// `user/message source.kind=subagent-settled` notice uses. No wall-clock
+		// fallback: the host's terminal evidence is the only settle input.
+		const changed = this.#foldWithFrozenSettle("user/message", {
+			source: { kind: BRIDGE_SUBAGENT_SETTLED, stopReason, senderSessionId: childId },
+		}, now, false)
+		if (changed) {
+			// ③ Restore cached meta / frozen settle BEFORE the emit (P2b).
+			this.#syncSubagentMeta(false)
+			if (emit) this.#emitSubagentViews()
+		}
+		// A host-confirmed settle ends this child's in-flight interrupt (C3
+		// calls this with the real reason, closing the handoff cleanly).
+		this.#interruptInFlight.delete(childId)
+		return changed
 	}
 
 	/**
@@ -2340,7 +2663,19 @@ export class BridgeSessionSeam implements SessionSeam {
 		const now = Date.now()
 		let changed = false
 		if (frame.type === "agent.spawn") {
-			changed = this.#foldWithFrozenSettle(BRIDGE_AGENT_START, payload, now, true)
+			// 0.23.1 live-visibility fix: the bridge forwards a plain `subagent`
+			// catalog event as an additive spawn whose runId is the catalog-family
+			// synthetic key (`catalog:<childId>`). Folding it as a tool-workflow
+			// agent-start hits the P3-1 collision guard (viaCatalog!==true) and
+			// silently returns false — the roster then only filled on the next
+			// journal drain, so a running child was invisible in ctrl+g. Route the
+			// catalog-keyed spawn through the catalog branch, which marks its own
+			// synthesized start with viaCatalog and inserts the running row.
+			const runId = typeof payload.runId === "string" ? payload.runId : ""
+			const childId = typeof payload.childId === "string" ? payload.childId : ""
+			changed = runId === `${BRIDGE_CATALOG_RUN_PREFIX}${childId}`
+				? this.#foldWithFrozenSettle(BRIDGE_SUBAGENT_CATALOG, payload, now, true)
+				: this.#foldWithFrozenSettle(BRIDGE_AGENT_START, payload, now, true)
 		} else if (frame.type === "agent.settle") {
 			changed = this.#foldWithFrozenSettle(BRIDGE_AGENT_END, payload, now, true)
 		}
@@ -2371,6 +2706,8 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#subagentJournalMeta.clear()
 			this.#sweepSettledRuns.clear()
 			this.#subagentSettleSnapshots.clear()
+			this.#interruptInFlight.clear() // L2a: in-flight interrupts belong to the old binding
+			this.#interruptGeneration += 1 // L2b C3: invalidate every in-flight confirm coroutine on rebind
 			this.#subagentSessionId = sessionId
 			rosterReset = true
 		}
@@ -2656,6 +2993,9 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#subagentJournalMeta.clear()
 		this.#sweepSettledRuns.clear()
 		this.#subagentSettleSnapshots.clear()
+		this.#interruptInFlight.clear()
+		this.#interruptGeneration = 0
+		this.#bridgeCapabilities.clear()
 		this.#activeCallbacks = undefined
 		this.#cancelAllAsks()
 		// A6: release buffered/invalidated recovery state on dispose.

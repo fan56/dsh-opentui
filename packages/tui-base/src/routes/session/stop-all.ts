@@ -12,8 +12,16 @@ export interface StopEverythingResult {
 	/** A parent turn was active when stop ran (status().turn !== "idle") — also
 	 * the gate for interrupt(): it is sent only when this is true. */
 	parent: boolean
-	/** Running children successfully interrupted (per-child failures isolated). */
+	/** Running children successfully interrupted (per-child failures isolated).
+	 * On the capability path this counts only `cancel-issued` dispositions. */
 	children: number
+	/**
+	 * 0.23.1 capability path only: the raw per-child dispositions returned by
+	 * `stopChildren()` when the bridge advertised `subagents.stopChildren`.
+	 * Absent on the legacy roster-walk path. Optional so existing callers
+	 * (`commands.ts`, the confirm dialog) keep working unchanged.
+	 */
+	dispositions?: Array<{ childId: string; disposition: string }>
 }
 
 /**
@@ -34,6 +42,28 @@ export async function stopEverything(seam: SessionSeam): Promise<StopEverythingR
 	// parent would clear its session binding and disconnect the next message.
 	if (parent) seam.interrupt()
 
+	// 0.23.1 capability path: a bridge that advertises `subagents.stopChildren`
+	// stops host-side children in ONE call — it sees children before the client
+	// roster fills in (the Stop-moment empty-roster gap). The parent leg above
+	// is identical; only the child leg differs. A whole-call failure degrades to
+	// "no children stopped" rather than breaking /stop.
+	if (seam.hasBridgeCapability?.("subagents.stopChildren") === true && seam.stopChildren) {
+		let dispositions: Array<{ childId: string; disposition: string }> = []
+		try {
+			dispositions = await seam.stopChildren()
+		} catch {
+			// Bridge call failed entirely — report zero children, keep parent.
+		}
+		return {
+			parent,
+			children: dispositions.filter((row) => row.disposition === "cancel-issued").length,
+			dispositions,
+		}
+	}
+
+	// Legacy path (remote seam, old bridges): roster walk + per-child interrupt.
+	// Behavior is intentionally byte-for-byte unchanged — the remote seam
+	// depends on this isolation (one failure must not strand the rest).
 	let children = 0
 	for (const view of seam.subagentViews?.() ?? []) {
 		if (view.status !== "running" || !seam.interruptChild) continue

@@ -56,6 +56,10 @@ import {
   readSessionAgentPreset,
   logLegacyAppendPreset,
 } from './preset-migration'
+// L1 (0.23.1) — bridge-local session→sub-agents index + stop capability. The
+// index module owns the Map shape and its build/incremental/reconcile rules;
+// index.ts only wires it to the host firehose and the dispatcher.
+import { getSubagentIndex } from './subagent-index'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -399,6 +403,10 @@ export function getAskRegistry(ctx: BridgeContext): AskRegistry | undefined {
 
 const PROTOCOL_VERSION = 1
 const STDIO_SWITCH = 'DSH_OPENTUI_BRIDGE_STDIO'
+/** Additive capabilities advertised in the bridge.hello / bridge.ping reply.
+ *  An older client that never sees this field has NO capability and keeps its
+ *  legacy roster-walk behaviour; a new client gates the stop frame on it. */
+const BRIDGE_CAPABILITIES = ['subagents.interrupt', 'subagents.stopChildren'] as const
 /** Upper bound on remembered finalized turn ids for abort idempotency (D3).
  *  The set is a FIFO: once more than this many turns have finalized, the oldest
  *  id is evicted. An evicted id is no longer remembered, so a late repeated
@@ -766,6 +774,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     `[dsh-opentui-bridge] stdio protocol active (protocolVersion=${PROTOCOL_VERSION}, bridge=${bridgeVersion}, host=${hostVersion})`,
   )
 
+  // L1: a fresh apply() is a fresh bridge — rebuild the subagent index from
+  // scratch (the table is never persisted; the host restart / bridge reset is
+  // the rebuild trigger).
+  getSubagentIndex(ctx).reset()
+
   let buffer = ''
   let closing = false
   let awaitingDrain = false
@@ -1088,6 +1101,15 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // ghost roster row for a catalog event with no childId.
       const childId = typeof data.childId === 'string' ? data.childId : ''
       if (!childId) return
+      // L1 incremental build: a `subagent/catalog` row inserts the child into
+      // the host-local index with its parent (the bound session) and the host's
+      // real wall clock. This covers the gap before `session.list` publishes the
+      // row — exactly the window where 0.23.0's client roster was empty.
+      getSubagentIndex(ctx).noteCatalog(
+        childId,
+        sessionId,
+        typeof data.childCreatedAt === 'number' ? data.childCreatedAt : undefined,
+      )
       const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
       const label = typeof data.label === 'string' && data.label !== ''
         ? data.label
@@ -1135,6 +1157,17 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         })
       }
       return
+    }
+
+    // L1 incremental settle: a child's OWN `turn/end` rides the same root-scope
+    // firehose but is dropped by the turn gate below (child != bound session).
+    // Observe it BEFORE that gate and flip the indexed child to settled, so
+    // `subagents.interrupt` can answer `already-settled` between list snapshots.
+    if (type === 'turn/end') {
+      const index = getSubagentIndex(ctx)
+      if (index.has(sessionId)) {
+        index.noteSettled(sessionId, typeof data.seq === 'number' ? data.seq : undefined)
+      }
     }
 
     if (state === undefined || state.ended) return
@@ -1987,6 +2020,139 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  // ---- L1 (0.23.1) — subagents.interrupt / subagents.stopChildren ----------
+
+  /** Refresh the subagent index from the authoritative `session.list` source.
+   *  Called before EVERY stop action: the index is a cache, the host list is the
+   *  source of truth. A missing/broken host service is a clean miss (cached rows
+   *  still carry the parent captured from the catalog event), never a thrown
+   *  request — the binding gate + row recheck below still prevent wrong kills. */
+  async function reconcileSubagentIndex(): Promise<void> {
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined) {
+      logger.warn('[dsh-opentui-bridge] subagent index reconcile skipped: sessionController unavailable')
+      return
+    }
+    try {
+      const raw: unknown = await controller.list({ _request: {} })
+      if (raw !== null && typeof raw === 'object' && !Array.isArray(raw) && Array.isArray((raw as { items?: unknown }).items)) {
+        const count = getSubagentIndex(ctx).syncFromList((raw as SessionListValueLike).items)
+        logger.info('[dsh-opentui-bridge] subagent index reconciled: subagents=%d rows=%d', count, getSubagentIndex(ctx).rows.size)
+      } else {
+        logger.warn('[dsh-opentui-bridge] subagent index reconcile skipped: malformed session.list reply')
+      }
+    } catch (err) {
+      logger.warn('[dsh-opentui-bridge] subagent index reconcile failed: %s', err)
+    }
+  }
+
+  /**
+   * Gate 1 — connection/session binding ownership.
+   *
+   * The bridge binding model is ONE `SessionBinding { sessionId, handle }` per
+   * stdio connection: set only by `session.open` (ADR-0010 I1), cleared by
+   * `session.close` / explicit replace / EOF. A stop request may address only
+   * children of THAT bound session. Returning an error here means zero
+   * enumeration and zero cancellation — no host list call, no agent lookup.
+   */
+  function gateSubagentParent(parentSessionId: unknown): { code: string; message: string; detail?: Record<string, unknown> } | undefined {
+    if (binding === undefined) {
+      return { code: 'NO_SESSION', message: 'no session is open; cannot authorize a subagent stop' }
+    }
+    if (typeof parentSessionId !== 'string' || parentSessionId === '') {
+      return { code: 'BAD_PARAMS', message: 'parentSessionId must be a non-empty string' }
+    }
+    if (parentSessionId !== binding.sessionId) {
+      return {
+        code: 'OWNERSHIP_MISMATCH',
+        message: 'parentSessionId is not the bound session',
+        detail: { parentSessionId, boundSessionId: binding.sessionId },
+      }
+    }
+    return undefined
+  }
+
+  /** Issue the host cancel for one child. `cancel` is synchronous / fire-and-
+   *  forget (I3); a missing agent or a throw is isolated as `failed` detail. */
+  function issueChildCancel(childId: string): string | undefined {
+    try {
+      const agents = resolveAgents(ctx)
+      const agent = agents?.get(childId)
+      if (agent === undefined) return 'agent not available in host registry'
+      agent.cancel({ kind: 'user' }, { keepInbox: true })
+      return undefined
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  async function handleInterruptSubagent(req: ParsedRequest): Promise<void> {
+    const gate = gateSubagentParent(req.params.parentSessionId)
+    if (gate !== undefined) {
+      replyError(req.id, gate.code, gate.message, gate.detail)
+      return
+    }
+    const childId = req.params.childId
+    if (typeof childId !== 'string' || childId === '') {
+      replyError(req.id, 'BAD_PARAMS', 'childId must be a non-empty string')
+      return
+    }
+    const parentSessionId = req.params.parentSessionId as string
+
+    await reconcileSubagentIndex()
+
+    // Gate 2 — row-level parent recheck against the reconciled (host-truth)
+    // snapshot BEFORE any cancel. A child of another parent is never cancelled.
+    const index = getSubagentIndex(ctx)
+    const row = index.get(childId)
+    if (row === undefined || row.parentSessionId !== parentSessionId) {
+      replyError(req.id, 'OWNERSHIP_MISMATCH', 'child is not a subagent of the bound session', {
+        childId,
+        parentSessionId,
+      })
+      return
+    }
+    if (row.status !== 'running') {
+      replyOk(req.id, { childId, disposition: 'already-settled' })
+      return
+    }
+    const detail = issueChildCancel(childId)
+    replyOk(req.id, {
+      childId,
+      disposition: detail === undefined ? 'cancel-issued' : 'failed',
+      ...(detail !== undefined ? { detail } : {}),
+    })
+  }
+
+  async function handleStopChildren(req: ParsedRequest): Promise<void> {
+    const gate = gateSubagentParent(req.params.parentSessionId)
+    if (gate !== undefined) {
+      replyError(req.id, gate.code, gate.message, gate.detail)
+      return
+    }
+    const parentSessionId = req.params.parentSessionId as string
+
+    await reconcileSubagentIndex()
+
+    // Enumerate from the reconciled snapshot, RUNNING children of the bound
+    // parent only — there is no global-stop path. Gate 2 is the explicit parent
+    // recheck per row before cancel; a failing child is isolated to its own
+    // `failed` result so one bad agent never aborts the batch.
+    const index = getSubagentIndex(ctx)
+    const children: Array<Record<string, unknown>> = []
+    for (const [childId, row] of index.rows) {
+      if (row.status !== 'running') continue
+      if (row.parentSessionId !== parentSessionId) continue
+      const detail = issueChildCancel(childId)
+      children.push({
+        childId,
+        disposition: detail === undefined ? 'cancel-issued' : 'failed',
+        ...(detail !== undefined ? { detail } : {}),
+      })
+    }
+    replyOk(req.id, { children })
+  }
+
   /** `journal.replay` — read-only drain of one session's durable event log.
    *
    * - Uses `persistence.open(id, 'read')` — never `'write'`, so it cannot steal
@@ -2079,7 +2245,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
 
     if (req.method === 'bridge.ping') {
-      replyOk(req.id, { protocolVersion: PROTOCOL_VERSION, bridgeVersion, hostVersion })
+      replyOk(req.id, {
+        protocolVersion: PROTOCOL_VERSION,
+        bridgeVersion,
+        hostVersion,
+        capabilities: [...BRIDGE_CAPABILITIES],
+      })
       return
     }
     if (req.method === 'bridge.hello') {
@@ -2093,7 +2264,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         )
         return
       }
-      replyOk(req.id, { protocolVersion: PROTOCOL_VERSION, bridgeVersion, hostVersion })
+      replyOk(req.id, {
+        protocolVersion: PROTOCOL_VERSION,
+        bridgeVersion,
+        hostVersion,
+        capabilities: [...BRIDGE_CAPABILITIES],
+      })
       return
     }
     if (req.method === 'model.currentSelection') {
@@ -2117,6 +2293,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
     if (req.method === 'session.list') {
       await handleListSessions(req)
+      return
+    }
+    // L1 (0.23.1) — subagent stop capability. Both frames are scoped to the
+    // bound parent session; there is deliberately NO global-stop method.
+    if (req.method === 'subagents.interrupt') {
+      await handleInterruptSubagent(req)
+      return
+    }
+    if (req.method === 'subagents.stopChildren') {
+      await handleStopChildren(req)
       return
     }
     if (req.method === 'session.open') {

@@ -64,6 +64,16 @@ describe("marker store", () => {
 		expect(subagentMarkersFor("child-b")?.hardStopRound).toBe(6)
 		expect(subagentMarkersFor("child-c")).toBeUndefined()
 	})
+
+	test("0.23.1: an interrupted row folds through the store and keeps its markers", () => {
+		foldSubagentMarkerViews([
+			{ id: "child-x", label: "Explore", status: "interrupted", rounds: 5, hardStopRound: 5 },
+		])
+		const row = subagentMarkersFor("child-x")
+		expect(row?.status).toBe("interrupted")
+		expect(row?.hardStopRound).toBe(5)
+		expect(subagentHardStopGlyph({ hardStopRound: row!.hardStopRound })).toBe("⏻")
+	})
 })
 
 describe("steer slot (batch G2)", () => {

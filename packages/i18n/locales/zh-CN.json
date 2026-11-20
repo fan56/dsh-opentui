@@ -455,6 +455,7 @@
   "panel.subagents.status.completed": "已完成",
   "panel.subagents.status.failed": "失败",
   "panel.subagents.status.cancelled": "已取消",
+  "panel.subagents.status.interrupted": "已中止",
   "panel.subagents.marker.spinStop": "⏻! 检测到空转提前停止 @{round}",
   "panel.subagents.marker.hardStop": "⏻ 强制停止 @{round}",
   "panel.subagents.marker.injected": "⚡ 已注入",

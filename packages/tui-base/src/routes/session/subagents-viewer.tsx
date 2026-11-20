@@ -120,7 +120,16 @@ export function viewerRowText(
 	roundCap: number | undefined,
 	elapsedText: string | undefined,
 ): string {
-	const glyph = view.status === "running" ? "⠋" : view.status === "completed" ? "✓" : view.status === "failed" ? "✗" : "—"
+	const glyph =
+		view.status === "running"
+			? "⠋"
+			: view.status === "completed"
+				? "✓"
+				: view.status === "failed"
+					? "✗"
+					: view.status === "interrupted"
+						? "⊘"
+						: "—"
 	const stop = subagentHardStopGlyph(view)
 	const label = `${stop ? `${stop} ` : ""}${Locale.titlecase(view.label)}`
 	const suffix = subagentMarkerSuffix(view)
@@ -508,7 +517,9 @@ export function SubagentsViewer(props: {
 					? t("panel.subagents.status.completed")
 					: view.status === "failed"
 						? t("panel.subagents.status.failed")
-						: t("panel.subagents.status.cancelled")
+						: view.status === "interrupted"
+							? t("panel.subagents.status.interrupted")
+							: t("panel.subagents.status.cancelled")
 		const elapsed = rowElapsedText(view, now)
 		const rounds = t("panel.subagents.row.rounds", { count: String(view.rounds) })
 		const parts = [`${Locale.titlecase(view.label)} · ${status} · ${rounds}`]
