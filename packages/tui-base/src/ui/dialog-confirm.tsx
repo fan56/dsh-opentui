@@ -86,6 +86,27 @@ export function DialogConfirm(props: DialogConfirmProps) {
                 setStore("active", store.active === "confirm" ? "cancel" : "confirm")
               },
             },
+            // Tab selects in the SAME modal layer as ←/→ (dialog-export-options
+            // / dialog-go-upsell parity): without this binding Tab falls through
+            // to the page's base layer and moves the page focus while the
+            // dialog's active button never moves — the on-device "Tab does
+            // nothing" symptom. Two options, so both directions toggle.
+            {
+              bind: "tab",
+              title: "Next dialog option",
+              group: "Dialog",
+              run: () => {
+                setStore("active", store.active === "confirm" ? "cancel" : "confirm")
+              },
+            },
+            {
+              bind: "shift+tab",
+              title: "Previous dialog option",
+              group: "Dialog",
+              run: () => {
+                setStore("active", store.active === "confirm" ? "cancel" : "confirm")
+              },
+            },
           ]),
       ...(props.extraActions ?? []).map((action) => ({
         bind: action.bind,

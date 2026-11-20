@@ -917,9 +917,6 @@ function V2SessionPageBody(props: {
 	// transcript-loss law: the reload must be told WHICH session to read).
 	const reloadSession = (sessionId?: string) => {
 		setLastRequest(undefined)
-		// A8: any session switch (/new, /fork, /resume) retires a recovery-bound
-		// id override so the footer follows the seam's new session id again.
-		setSessionIdFromRecovery(undefined)
 		// Steer/queue batch: same per-session reset on /fork//resume switches.
 		composerRef?.resetDeliveries()
 		setComposerPending([])
