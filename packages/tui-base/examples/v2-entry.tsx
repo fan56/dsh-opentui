@@ -57,6 +57,7 @@ import { RecoveryBanner } from "../src/routes/session/recovery-banner"
 import { RecoveryUiController, type RecoveryTexts } from "../src/routes/session/recovery-ui"
 import { HintsLine, applyHintsConfig } from "../src/routes/session/hints-line"
 import { applyActivityPanelConfig } from "../src/routes/session/widgets-dock"
+import { defaultUiStatePath, readUiStateSync, resolveBootGear } from "../src/util/ui-state"
 import { applyI18nConfig } from "@dsh-opentui/i18n"
 import { t } from "../src/i18n"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
@@ -1798,7 +1799,11 @@ export async function bootClientV2(options: {
 	applyHintsConfig(seam.configLoad?.())
 	// U4 panelHeight replay (/motion parity): restore the persisted /settings
 	// gear BEFORE the first paint, so a restart keeps the chosen panel size.
-	applyActivityPanelConfig(seam.configLoad?.())
+	// The client-local UI-state file wins over the profile config fallback
+	// (bridge mode has no configSave and configLoad degrades to `{}`).
+	const bootLocalUi = readUiStateSync(defaultUiStatePath())
+	const bootGear = resolveBootGear(seam.configLoad?.(), bootLocalUi)
+	if (bootGear !== undefined) applyActivityPanelConfig({ session: { activity_panel_height: bootGear } })
 	// i18n boot replay (design §3, applyHintsConfig parity): seed the active
 	// language BEFORE the first paint — unified `lang` key first, legacy
 	// `hintsLocale` folds in when no unified value exists (zh-CN aliases

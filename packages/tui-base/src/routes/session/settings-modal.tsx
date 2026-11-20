@@ -73,6 +73,11 @@ import type {
 	SeamSettingsDocument,
 	SessionSeam,
 } from "../../seams/session"
+import {
+	defaultUiStatePath,
+	readUiStateSync,
+	writeUiState,
+} from "../../util/ui-state"
 
 // Version: build-time define; missing (dev/test) => "dev".
 declare const __DSH_CLIENT_VERSION__: string | undefined
@@ -256,6 +261,11 @@ export function buildOpentuiRows(ctx: SettingsRowContext): SettingsRow[] {
 		writable: ctx.local,
 	})
 		.filter((item) => item.id !== "lang")
+		.map((row) =>
+			row.id === "activityPanelHeight"
+				? { ...row, note: t("settings.row.activityPanelHeightNote") }
+				: row,
+		)
 		.map(fromItem)
 }
 
@@ -342,6 +352,9 @@ export interface SettingsWriteDeps {
 	document?: SeamSettingsDocument
 	local: boolean
 	host: boolean
+	/** Client-local UI-state file. When present, pure-UI gear rows persist here
+	 * (the bridge seam has no `configSave`), and local state wins at boot. */
+	uiStatePath?: string
 }
 
 export interface SettingsWriteResult {
@@ -393,12 +406,39 @@ export async function writeSetting(
 					: undefined
 		const plan = planLocalWrite(row as unknown as SettingsItem, value, hints, sessionSlice)
 		if (!plan.ok) return { ok: false, error: `✘ ${plan.error}` }
-		try {
-			deps.seam.configSave?.(plan.patch)
-		} catch (error) {
-			return {
-				ok: false,
-				error: t("settings.error.writeFailed", { detail: error instanceof Error ? error.message : String(error) }),
+		// Pure-UI gears (only `session.activity_panel_height` today) are
+		// CLIENT-local: persist them to the state file regardless of the
+		// seam's configSave capability. The bridge seam has NO configSave, so
+		// the profile write would be a silent no-op and `configLoad` degrades
+		// to `{}` on restart — the local file is the source of truth at boot.
+		const isLocalGear = row.write.key === "session.activity_panel_height"
+		const locallyPersisted = isLocalGear && deps.uiStatePath !== undefined
+		if (locallyPersisted) {
+			try {
+				await writeUiState(deps.uiStatePath!, {
+					session: { activity_panel_height: plan.applied === undefined ? undefined : String(plan.applied) },
+				})
+			} catch (error) {
+				return {
+					ok: false,
+					error: t("settings.error.writeFailed", { detail: error instanceof Error ? error.message : String(error) }),
+				}
+			}
+		}
+		if (deps.seam.configSave === undefined && !locallyPersisted) {
+			// Honest failure: without a config writer this row cannot persist.
+			// It is still applied live so the "session only" notice is true.
+			applySettingsLive(row as unknown as SettingsItem, plan.applied, hints, deps.themes)
+			return { ok: false, error: t("settings.error.configNotPersistable") }
+		}
+		if (deps.seam.configSave !== undefined) {
+			try {
+				deps.seam.configSave(plan.patch)
+			} catch (error) {
+				return {
+					ok: false,
+					error: t("settings.error.writeFailed", { detail: error instanceof Error ? error.message : String(error) }),
+				}
 			}
 		}
 		applySettingsLive(row as unknown as SettingsItem, plan.applied, hints, deps.themes)
@@ -547,6 +587,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 	const [editorValue, setEditorValue] = createSignal<string>("")
 	/** Enum editor cursor (P0-2): the option Enter/Space saves immediately. */
 	const [optionCursor, setOptionCursor] = createSignal(0)
+	const localUiStatePath = defaultUiStatePath()
 	const [merged, setMerged] = createSignal<Record<string, unknown>>({})
 	const [profile, setProfile] = createSignal<Record<string, unknown>>({})
 	const [workspace, setWorkspace] = createSignal<Record<string, unknown>>({})
@@ -637,7 +678,17 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 
 	function reloadLocal() {
 		const snapshot = readLocalSnapshot(props.seam)
-		setMerged(snapshot.merged)
+		// Local UI state wins over the config fallback: a bridge seam has no
+		// configSave and its configLoad degrades to `{}`, so the local file is
+		// what actually survives a restart for pure-UI gears.
+		const local = readUiStateSync(localUiStatePath)
+		const localGear = local.session?.activity_panel_height
+		const merged: Record<string, unknown> = { ...snapshot.merged }
+		if (localGear !== undefined) {
+			const session = typeof merged.session === "object" && merged.session !== null ? merged.session : {}
+			merged.session = { ...(session as Record<string, unknown>), activity_panel_height: localGear }
+		}
+		setMerged(merged)
 		setProfile(snapshot.profile)
 		setWorkspace(snapshot.workspace)
 	}
@@ -731,6 +782,7 @@ export function SettingsModalBody(props: SettingsModalProps & { onRequestClose: 
 				...(document() !== undefined ? { document: document() } : {}),
 				local: writable().local,
 				host: writable().host,
+				uiStatePath: localUiStatePath,
 			})
 			if (result.document !== undefined) setDocument(result.document)
 			if (!result.ok) {
