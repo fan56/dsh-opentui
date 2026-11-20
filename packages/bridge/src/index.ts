@@ -64,6 +64,11 @@ import { getSubagentIndex } from './subagent-index'
 // it is started from apply() but adds NO `req.method ===` dispatch branch, so
 // the @manual wired surface (and its ledger registry) is unchanged.
 import { attachHandshake, HANDSHAKE_INJECT, startCapabilityHandshake, type HandshakeHandle } from './handshake'
+// 024 base task5b — capcontract host adapter (oldfox R2/R3). The generated
+// binder/dispatcher own only id/kind data + membership checks; the bridge
+// injects real host invocation and marks every other CapIR W id NOT_WIRED.
+import { createProjectionBinder, type WireFrameHandler } from '../../../capcontract/binder'
+import type { CapHostInvoke } from '../../../capcontract/dispatch'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -353,6 +358,45 @@ export const name = 'dsh-opentui-bridge'
  *  are optional and read through ctx.get. Cordis resolves inject before apply. */
 export const inject: string[] = ['agents', ...HANDSHAKE_INJECT]
 
+// ---- 024 base task5b: capcontract host adapter (oldfox R2/R3) ---------------
+
+/** CapIR W ids with a hand-wired inproc host adapter. Single source: the ledger
+ *  `methods[].in_wired` flag (currently 1/257 = session/list). check-capcontract
+ *  reconciles this literal set against the ledger, so drift fails the gate. */
+export const CAP_HOST_WIRED_IDS: readonly string[] = [
+  '@deepseek-ai/dsh-api-session-controller#session/list',
+]
+
+/** Bridge-owned host invocation for the generated dispatcher. Only wired ids
+ *  reach a real host service; every other CapIR W id fails explicitly with
+ *  NOT_WIRED (never silent success / an empty result). session/list reuses the
+ *  verified resolveSessionController + controller.list wire shape from
+ *  handleListSessions (index.ts:2010-2053) — no new host API is invented. */
+export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
+  return async (methodId, _kind, params) => {
+    if (CAP_HOST_WIRED_IDS.includes(methodId)) {
+      const controller = resolveSessionController(ctx)
+      if (controller === undefined) {
+        throw new Error(`NOT_WIRED: sessionController unavailable for ${methodId}`)
+      }
+      const cursor = (params as { cursor?: unknown } | undefined)?.cursor
+      if (cursor !== undefined && typeof cursor !== 'string') {
+        throw new Error('BAD_PARAMS: session.list cursor must be a string')
+      }
+      return controller.list({ _request: cursor !== undefined ? { cursor } : {} })
+    }
+    throw new Error(
+      `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`,
+    )
+  }
+}
+
+/** Real shipped-bundle export: wire frame -> binder -> dispatcher -> injected
+ *  host adapter. The W-roundtrip smoke drives this export (no injected copy). */
+export function createCapInvoke(ctx: BridgeContext): WireFrameHandler {
+  return createProjectionBinder(createCapHostInvoke(ctx))
+}
+
 /**
  * M3-02 assembly seam. registerAppendSection is deliberately NOT called from
  * apply(): ADR-0010 requires the section to be registered at AGENT scope
@@ -409,6 +453,10 @@ export function getAskRegistry(ctx: BridgeContext): AskRegistry | undefined {
 
 const PROTOCOL_VERSION = 1
 const STDIO_SWITCH = 'DSH_OPENTUI_BRIDGE_STDIO'
+/** 024 base task5b (oldfox R4.3): env-gated W roundtrip smoke. When set, the
+ *  shipped bundle drives the REAL exported `createCapInvoke` (binder -> dispatch
+ *  -> injected host adapter) against the live ctx — no injected dispatcher copy. */
+const CAP_SMOKE_SWITCH = 'DSH_OPENTUI_CAP_SMOKE'
 /** Additive capabilities advertised in the bridge.hello / bridge.ping reply.
  *  An older client that never sees this field has NO capability and keeps its
  *  legacy roster-walk behaviour; a new client gates the stop frame on it. */
@@ -810,6 +858,67 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   }
   /** Exposed for headless proof / smoke tooling; no wire surface change. */
   attachHandshake(ctx, handshake)
+
+  // 024 base task5b — env-gated real-host W roundtrip smoke (oldfox R4.3).
+  // Drives the shipped bundle's OWN exported createCapInvoke against the live
+  // ctx after the registration window; emits a single [CAP-SMOKE] stderr line.
+  // No dispatcher source is copied or injected — this IS the shipped code path.
+  if (process.env[CAP_SMOKE_SWITCH] === '1') {
+    // Mirror ctx.logger to stderr so the handshake verdict + I-probes@stable
+    // lines are observable in the headless run (the host logger is not on
+    // stderr there). This is a logging tee only; no call logic is injected.
+    const origInfo = logger.info.bind(logger)
+    const origWarn = logger.warn.bind(logger)
+    logger.info = ((fmt: unknown, ...params: unknown[]) => {
+      process.stderr.write(`[SMOKE-LOG] ${[fmt, ...params].map(String).join(' ')}\n`)
+      return origInfo(fmt, ...params)
+    }) as typeof logger.info
+    logger.warn = ((fmt: unknown, ...params: unknown[]) => {
+      process.stderr.write(`[SMOKE-LOG] ${[fmt, ...params].map(String).join(' ')}\n`)
+      return origWarn(fmt, ...params)
+    }) as typeof logger.warn
+
+    const W_ID = '@deepseek-ai/dsh-api-session-controller#session/list' as never
+    setTimeout(() => {
+      const emit = (tag: string, obj: unknown) =>
+        process.stderr.write(`[CAP-SMOKE] ${tag} ${JSON.stringify(obj)}\n`)
+      // A6 re-registration observations (oldfox §二): direct access after
+      // inject declaration, and the ctx.get fallback surface size.
+      let direct = 'THREW'
+      try {
+        const local = (ctx as unknown as { typert?: { local?: unknown } }).typert?.local
+        direct = local !== undefined ? 'OK local-present' : 'OK no-local'
+      } catch (err) {
+        direct = `THREW ${String((err as { message?: string })?.message ?? err)}`
+      }
+      emit('direct ctx.typert', direct)
+      let fallbackLen = -1
+      try {
+        const svc = ctx.get?.('typert') as { local?: { list(): ReadonlyArray<{ id: string }> } } | undefined
+        if (typeof svc?.local?.list === 'function') fallbackLen = svc.local.list().length
+      } catch { /* keep -1 */ }
+      emit('ctx.get typert fallback', { listLength: fallbackLen })
+      Promise.resolve()
+        .then(() => createCapInvoke(ctx)({ methodId: W_ID, params: {} }))
+        .then((value) => {
+          const items = (value as { items?: unknown[] } | undefined)?.items
+          emit('W roundtrip via createCapInvoke', {
+            id: W_ID,
+            ok: true,
+            kind: 'unary',
+            hasItems: Array.isArray(items),
+            items: Array.isArray(items) ? items.length : undefined,
+          })
+        })
+        .catch((err) => {
+          emit('W roundtrip via createCapInvoke', {
+            id: W_ID,
+            ok: false,
+            error: String((err as { message?: string })?.message ?? err),
+          })
+        })
+    }, 1500)
+  }
 
   let buffer = ''
   let closing = false

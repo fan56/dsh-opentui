@@ -7,10 +7,13 @@
  * Design constraints (dsh-opentui-024-delivery-plan.md §二 v2.1 + redesign v3 §3.0):
  *  - self-contained: NO @deepseek-ai import; capability ids are string data only.
  *  - every generated file starts with the provenance declaration line.
- *  - binder/dispatch declare `inject: ['typert']`; no bare `ctx.<service>` access.
+ *  - generated code declares NO cordis `inject` and touches NO ctx service: the
+ *    host invocation surface is injected by bridge via `CapHostInvoke` (R2/R3).
  *  - CapIR carries interface shapes only (id/namespace/name/kind/class). It has
  *    NO parameter/result schema, codec or event-frame field. Every such gap is
  *    an explicit TODO — nothing is inferred from host implementation code.
+ *  - R5 TODO: descriptor.invoke + TypertClientRemote shim is deliberately NOT
+ *    generated here; it needs a CapIR params schema the true source lacks.
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
@@ -105,29 +108,8 @@ export function isCapMethodId(value: string): boolean {
 }
 `
 
-const dispatch = header("dispatch: generic W-capability dispatcher") + `
+const dispatch = header("dispatch: generic W-capability dispatcher (host-adapter injected)") + `
 import type { CapMethodId } from "./types.js"
-
-/**
- * Declarative cordis injection contract for the bridge bundle (v2.1 clause C).
- * The bundle declares inject: ['typert']; the only service read is typert.
- */
-export const CAPCONTRACT_BUNDLE = {
-  name: "dsh-opentui.capcontract.bridge",
-  inject: ["typert"] as const,
-} as const
-
-/** Minimal self-contained shape of the typert.local service (no host package dependency). */
-export interface TypertLocalFace {
-  list(): ReadonlyArray<{ id: string }>
-  invoke(descriptorId: string, params: unknown): Promise<unknown>
-  stream(descriptorId: string, params: unknown): AsyncIterable<unknown>
-}
-
-/** The runtime context surface actually consumed by the dispatcher. */
-export interface CapRuntimeCtx {
-  readonly typert: { readonly local: TypertLocalFace }
-}
 
 /**
  * Handshake comparison key (delivery plan §二 L37 / v2.1 A): a CapIR method id
@@ -143,43 +125,41 @@ export const CAP_DISPATCH_TABLE: Readonly<Record<string, "unary" | "stream">> = 
 ${tableBlock}
 }
 
-/** Resolve the single injected service; no other context service is touched. */
-export function resolveTypertLocal(ctx: CapRuntimeCtx): TypertLocalFace {
-  return ctx.typert.local
+/**
+ * Look up the transport kind for a CapIR method id. Unknown ids throw loudly;
+ * this is the single generated-side contract check (oldfox R1). The error text
+ * is retained verbatim for the CI gate assertion.
+ */
+export function lookupCapKind(methodId: string): "unary" | "stream" {
+  const kind = CAP_DISPATCH_TABLE[methodId]
+  if (kind === "unary" || kind === "stream") return kind
+  throw new Error("capcontract: unknown method id " + methodId)
 }
 
 /**
- * Generic W dispatcher: stdio wire (method id + opaque params) -> typert.local.
- * The transport kind comes from the generated table, never from the wire payload.
- * TODO(CapIR): typed params/result per method once CapIR carries schema fields.
+ * Host invocation is injected by the bridge (R2). The generated layer owns only
+ * id/kind data and membership checks; it makes NO assumption about any host API
+ * surface (no typert.local.invoke/stream, no descriptor.invoke — R5 TODO).
  */
-export function createCapDispatcher(ctx: CapRuntimeCtx) {
-  const local = resolveTypertLocal(ctx)
+export type CapHostInvoke = (
+  methodId: CapMethodId,
+  kind: "unary" | "stream",
+  params: unknown,
+) => Promise<unknown>
+
+/** Generic W dispatcher: id + opaque params -> kind lookup -> injected hostInvoke. */
+export function createCapDispatcher(hostInvoke: CapHostInvoke) {
   return async function dispatch(methodId: CapMethodId, params: unknown): Promise<unknown> {
-    const kind = CAP_DISPATCH_TABLE[methodId]
-    if (kind === "unary") return local.invoke(toTypertDescriptorId(methodId), params)
-    if (kind === "stream") {
-      const chunks: unknown[] = []
-      for await (const chunk of local.stream(toTypertDescriptorId(methodId), params)) {
-        chunks.push(chunk)
-      }
-      return chunks
-    }
-    throw new Error("capcontract: unknown method id " + methodId)
+    const kind = lookupCapKind(methodId)
+    return hostInvoke(methodId, kind, params)
   }
 }
 `
 
-const binder = header("binder: stdio wire frame -> dispatch projection binder") + `
+const binder = header("binder: stdio wire frame -> dispatch projection binder (host-adapter injected)") + `
 import type { CapMethodId } from "./types.js"
 import { CAP_METHOD_IDS, isCapMethodId } from "./types.js"
-import { createCapDispatcher, type CapRuntimeCtx } from "./dispatch.js"
-
-/** Declarative cordis injection contract, matching the dispatch template (v2.1 C). */
-export const CAPCONTRACT_BINDER_BUNDLE = {
-  name: "dsh-opentui.capcontract.projection",
-  inject: ["typert"] as const,
-} as const
+import { createCapDispatcher, type CapHostInvoke } from "./dispatch.js"
 
 /** A stdio wire frame. Params stay opaque: CapIR has no params schema. */
 export interface CapWireFrame {
@@ -193,12 +173,13 @@ export interface CapWireFrame {
 export type WireFrameHandler = (frame: CapWireFrame) => Promise<unknown>
 
 /**
- * Bind the wire-frame surface to the generic dispatcher. Membership is checked
- * against the generated CapIR id set so a stale/unknown id fails loudly.
+ * Bind the wire-frame surface to the injected host dispatcher. Membership is
+ * checked against the generated CapIR id set so a stale/unknown id fails loudly.
+ * No cordis inject / ctx access here — the bridge assembles hostInvoke (R3).
  * TODO(CapIR): typed per-method projection when CapIR gains a codec/schema field.
  */
-export function createProjectionBinder(ctx: CapRuntimeCtx): WireFrameHandler {
-  const dispatch = createCapDispatcher(ctx)
+export function createProjectionBinder(hostInvoke: CapHostInvoke): WireFrameHandler {
+  const dispatch = createCapDispatcher(hostInvoke)
   return async function handle(frame) {
     if (!isCapMethodId(frame.methodId)) {
       throw new Error("capcontract: method id not in CapIR set: " + frame.methodId)

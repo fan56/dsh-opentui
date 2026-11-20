@@ -46,6 +46,48 @@ const notRun = (name, detail) => {
   console.log(`NOT RUN  ${name} — ${detail}`)
 }
 
+/** Strip // and /* ... *\/ comments so a prose mention of a forbidden token
+ *  cannot satisfy (or trip) a provenance scan. */
+const stripCommentsTop = (s) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "")
+
+/**
+ * Host-face provenance predicate (oldfox R4.1 — "契约对账断言").
+ * Generated code (and its generator TEMPLATE) may not declare or call a host
+ * surface that neither CapIR nor the host source defines. The direct regression
+ * pin for task5's defect: no `local.invoke` / `local.stream`, no self-invented
+ * `*Face` interface, no generated `inject:['typert']` bundle declaration.
+ * The legitimate host surface is the injected `CapHostInvoke` adapter point.
+ */
+function findFabricatedHostFace(text) {
+  const code = stripCommentsTop(text)
+  const offenders = []
+  if (/\blocal\s*\.\s*(invoke|stream)\b/.test(code)) offenders.push("fabricated local.invoke/local.stream call")
+  if (/\binterface\s+\w*Face\b/.test(code)) offenders.push("self-invented *Face interface")
+  if (/\bCAPCONTRACT_(BINDER_)?BUNDLE\b/.test(code)) offenders.push("generated inject-declaring *BUNDLE")
+  if (/\binject\s*:\s*\[[^\]]*["']typert["']/.test(code)) offenders.push("generated inject:['typert'] declaration")
+  return offenders
+}
+
+// Negative-control self-test: proves the provenance predicate actually catches
+// the exact fabrication class that caused task5's red (no repository file is
+// touched). Invoked by the proof rerun as a gate "can catch a fake Face" check.
+if (process.argv.includes("--negative-self-test")) {
+  const poisoned = [
+    "export interface FakeLocalFace { invoke(x: unknown): Promise<unknown> }",
+    "export function createCapDispatcher(ctx: any) {",
+    "  return (id: string, params: unknown) => ctx.typert.local.invoke(id, params)",
+    "}",
+  ].join("\n")
+  const found = findFabricatedHostFace(poisoned)
+  if (found.length > 0) {
+    console.log("negative-self-test: DETECTED -> " + found.join("; "))
+    console.log("negative-self-test: PASS (predicate rejects fabricated *Face + local.invoke)")
+    process.exit(0)
+  }
+  console.error("negative-self-test: FAIL (fabricated *Face/local.invoke slipped through)")
+  process.exit(1)
+}
+
 /** Run a generator in --check mode; return its stdout or throw with its stderr. */
 function runCheck(script, label) {
   try {
@@ -244,6 +286,108 @@ function checkManualCount() {
   }
 }
 checkManualCount()
+
+// --- 9. host-face provenance (oldfox R4.1 / gate item 8) ---
+// Scan the generated call-surface files AND the generator TEMPLATE. The defect
+// lived in the template (gen-capcontract.mjs), so pinning only the generated
+// output would let a future template regression slip through until regeneration.
+function checkHostFaceProvenance() {
+  const targets = [
+    ["capcontract/dispatch.ts", resolve(OUT_DIR, "dispatch.ts")],
+    ["capcontract/binder.ts", resolve(OUT_DIR, "binder.ts")],
+    ["scripts/gen-capcontract.mjs (template)", resolve(ROOT, "scripts/gen-capcontract.mjs")],
+  ]
+  const offenders = []
+  for (const [label, path] of targets) {
+    let text
+    try {
+      text = readFileSync(path, "utf8")
+    } catch (e) {
+      offenders.push(`${label}: unreadable (${e.message})`)
+      continue
+    }
+    for (const o of findFabricatedHostFace(text)) offenders.push(`${label}: ${o}`)
+  }
+  // Positive half: the injected adapter point must be present in the generated
+  // dispatcher, and the call chain must NOT assume any host object shape.
+  const dispatchText = files["dispatch.ts"] ?? ""
+  if (!/\bexport\s+type\s+CapHostInvoke\b/.test(dispatchText)) {
+    offenders.push("dispatch.ts: missing injected CapHostInvoke adapter point")
+  }
+  if (/\bctx\s*\./.test(stripCommentsTop(dispatchText)) || /\bctx\s*\./.test(stripCommentsTop(files["binder.ts"] ?? ""))) {
+    offenders.push("generated call surface reads ctx.<service> (must be injected)")
+  }
+  if (offenders.length === 0) {
+    ok("9. host-face provenance", "generated dispatch/binder + template free of local.invoke/local.stream/*Face/inject decl; CapHostInvoke present")
+  } else {
+    bad("9. host-face provenance", offenders.join("; "))
+  }
+}
+checkHostFaceProvenance()
+
+// --- 10. dispatch executability — resident consumer (oldfox R4.2 / gate item 9) ---
+// Static half of the gate: the generated call chain must have a COMPILED-IN
+// consumer in the shipped bridge (so tree-shake cannot drop it), a resident
+// dataflow unit test, and a wired-set that reconciles with ledger in_wired.
+// The runtime half is the bun test itself (rerun item 5).
+function checkDispatchExecutability() {
+  let bridgeSrc
+  try {
+    bridgeSrc = readFileSync(BRIDGE_PATH, "utf8")
+  } catch (e) {
+    notRun("10. dispatch executability", "bridge source unavailable: " + e.message)
+    return
+  }
+  const offenders = []
+  // (a) shipped bridge imports the generated binder and builds the wired hostInvoke.
+  if (!/from\s+["'][^"']*capcontract\/binder["']/.test(bridgeSrc)) {
+    offenders.push("bridge does not import capcontract/binder (tree-shake would drop generated chain)")
+  }
+  if (!/\bcreateProjectionBinder\s*\(/.test(bridgeSrc)) {
+    offenders.push("bridge never calls createProjectionBinder")
+  }
+  if (!/\bNOT_WIRED\b/.test(bridgeSrc)) {
+    offenders.push("bridge host adapter has no explicit NOT_WIRED path")
+  }
+  // (b) wired set in bridge == ledger.methods[].in_wired (currently 1/257).
+  let ledger
+  try {
+    ledger = JSON.parse(readFileSync(LEDGER_PATH, "utf8"))
+  } catch (e) {
+    offenders.push("ledger.json unreadable: " + e.message)
+  }
+  const wiredMatch = bridgeSrc.match(/CAP_HOST_WIRED_IDS[^=]*=\s*\[([\s\S]*?)\]/)
+  if (!wiredMatch) {
+    offenders.push("CAP_HOST_WIRED_IDS registry not found in bridge source")
+  } else if (ledger) {
+    const bridgeIds = new Set([...wiredMatch[1].matchAll(/["']([^"']+)["']/g)].map((m) => m[1]))
+    const ledgerIds = new Set((ledger.methods ?? []).filter((m) => m.in_wired).map((m) => m.id))
+    const missing = [...ledgerIds].filter((id) => !bridgeIds.has(id))
+    const extra = [...bridgeIds].filter((id) => !ledgerIds.has(id))
+    if (missing.length || extra.length) {
+      offenders.push(`wired set drift: missing=[${missing}] extra=[${extra}]`)
+    }
+  }
+  // (c) resident dataflow test file exists and exercises the full chain.
+  const testPath = resolve(ROOT, "packages/bridge/test/capcontract-dispatch.test.ts")
+  let testSrc
+  try {
+    testSrc = readFileSync(testPath, "utf8")
+  } catch (e) {
+    offenders.push("resident capcontract-dispatch.test.ts missing: " + e.message)
+  }
+  if (testSrc !== undefined) {
+    for (const needle of ["createProjectionBinder", "NOT_WIRED", "BINDER_METHOD_COUNT", "hostInvoke"]) {
+      if (!testSrc.includes(needle)) offenders.push(`test missing case marker: ${needle}`)
+    }
+  }
+  if (offenders.length === 0) {
+    ok("10. dispatch executability", "shipped bridge imports binder + wired registry reconciles with ledger in_wired (1/257) + resident dataflow test present")
+  } else {
+    bad("10. dispatch executability", offenders.join("; "))
+  }
+}
+checkDispatchExecutability()
 
 // --- summary ---
 console.log("")

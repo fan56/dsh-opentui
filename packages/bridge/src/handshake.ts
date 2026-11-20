@@ -12,24 +12,25 @@
  * from capcontract (`toTypertDescriptorId`). `CAP_DISPATCH_TABLE` is consulted
  * only to count the 182 full-only ids that are deliberately ignored.
  *
- * Service access discipline: the generated capcontract bundle declares
- * `inject: ['typert']` and its `resolveTypertLocal()` is the one typed accessor;
- * there is no bare `ctx.<service>` property read below. `ctx.get` is used only
- * for the six optional I-class probes (v2.1 C clause, apply-time available).
+ * Service access discipline: the generated capcontract layer declares NO inject
+ * and touches NO ctx service (oldfox R1/R2). The bridge owns `inject: ['typert']`
+ * (index.ts:354) and the only typed typert accessor below. `ctx.get` is used for
+ * the typert fallback and the six optional I-class probes (observation only).
+ * I-class probes are sampled after the stable window, never at apply() time
+ * (oldfox §三): their apply-time value was proven registration-time noise.
  */
 
 import ledger from "../../../ledger/ledger.json"
 import {
   CAP_DISPATCH_TABLE,
-  CAPCONTRACT_BUNDLE,
-  resolveTypertLocal,
   toTypertDescriptorId,
-  type CapMethodId,
-  type CapRuntimeCtx,
 } from "../../../capcontract/dispatch"
+import type { CapMethodId } from "../../../capcontract/types"
 
-/** Declarative inject surface shared with the bridge bundle (v2.1 clause C). */
-export const HANDSHAKE_INJECT: readonly string[] = CAPCONTRACT_BUNDLE.inject
+/** Bridge-owned declarative inject surface (v2.1 clause C, oldfox R3). The
+ *  generated capcontract layer no longer declares inject; index.ts:354 is the
+ *  sole owner of the assembled `inject` array. */
+export const HANDSHAKE_INJECT: readonly string[] = ["typert"]
 
 /** Per-ctx handle registry for headless proof/smoke tooling (no wire surface). */
 const ctxHandles = new WeakMap<object, HandshakeHandle>()
@@ -60,7 +61,8 @@ export interface HandshakeSnapshot {
   elapsedMs: number
   sampleCount: number
   stabilitySamples: number
-  /** apply-time `ctx.get` probes of the six registered I-class services. */
+  /** Stable-window `ctx.get` probes of the six registered I-class services
+   *  (observation only; never part of the PENDING/READY/DEGRADED decision). */
   iClass: ReadonlyArray<{ key: string; present: boolean }>
 }
 
@@ -70,7 +72,8 @@ export interface HandshakeLogger {
 }
 
 export interface HandshakeDeps {
-  /** Runtime ctx; `resolveTypertLocal` is the only accessor of its typert member. */
+  /** Runtime ctx; the direct `typert.local` accessor below is the only reader
+   *  of its typert member (the generated layer no longer reads ctx — R1/R2). */
   ctx: unknown
   /** Cordis service lookup, used for the I-class probes and the typert fallback. */
   get?: (name: string, strict?: boolean) => unknown
@@ -101,18 +104,21 @@ const DEFAULT_POLL_INTERVAL_MS = 100
 const DEFAULT_STABILITY_SAMPLES = 2
 
 function resolveLocal(deps: HandshakeDeps): { list(): ReadonlyArray<{ id: string }> } | undefined {
-  // Preferred: generated, inject-declared accessor (ctx.typert.local lives inside
-  // capcontract and is covered by CAPCONTRACT_BUNDLE.inject: ['typert']).
+  // Preferred: direct property access on the bridge-owned inject surface
+  // (index.ts:354 declares inject: ['agents', 'typert']). The generated
+  // capcontract layer no longer provides a ctx accessor (oldfox R1/R2).
   try {
-    return resolveTypertLocal(deps.ctx as CapRuntimeCtx)
+    const local = (deps.ctx as { typert?: { local?: { list(): ReadonlyArray<{ id: string }> } } }).typert?.local
+    if (typeof local?.list === "function") return local
   } catch {
-    // v2.1 C clause permits ctx.get('typert') as the no-declaration route.
-    try {
-      const svc = deps.get?.("typert") as { local?: { list(): ReadonlyArray<{ id: string }> } } | undefined
-      return typeof svc?.local?.list === "function" ? svc.local : undefined
-    } catch {
-      return undefined
-    }
+    // fall through to the ctx.get route below
+  }
+  // v2.1 C clause permits ctx.get('typert') as the no-declaration route.
+  try {
+    const svc = deps.get?.("typert") as { local?: { list(): ReadonlyArray<{ id: string }> } } | undefined
+    return typeof svc?.local?.list === "function" ? svc.local : undefined
+  } catch {
+    return undefined
   }
 }
 
@@ -199,18 +205,21 @@ export function startCapabilityHandshake(deps: HandshakeDeps, options: Handshake
   const stabilitySamples = Math.max(2, options.stabilitySamples ?? DEFAULT_STABILITY_SAMPLES)
   const startedAt = Date.now()
 
-  // I-class probes: cordis resolves inject before apply, so ctx.get is usable
-  // here (L43). Probes are observations only — an absent optional I service is
-  // not a W-surface degradation.
-  const iClass = iClassKeys.map((key) => {
-    let present = false
-    try {
-      present = deps.get?.(key) !== undefined
-    } catch {
-      present = false
-    }
-    return { key, present }
-  })
+  // I-class probes (oldfox §三): sampled AFTER the stable window, never at
+  // apply() time. The apply-time values were proven registration-time noise
+  // (sessionController present=false@apply → true@1500ms in 05/07/09). Probes
+  // remain observations only — an absent optional I service never degrades the
+  // W-surface state.
+  const probeIClass = (): ReadonlyArray<{ key: string; present: boolean }> =>
+    iClassKeys.map((key) => {
+      let present = false
+      try {
+        present = deps.get?.(key) !== undefined
+      } catch {
+        present = false
+      }
+      return { key, present }
+    })
 
   let cancelled = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -228,7 +237,7 @@ export function startCapabilityHandshake(deps: HandshakeDeps, options: Handshake
     elapsedMs: 0,
     sampleCount: 0,
     stabilitySamples,
-    iClass,
+    iClass: [],
   }
 
   let settle!: (s: HandshakeSnapshot) => void
@@ -237,12 +246,11 @@ export function startCapabilityHandshake(deps: HandshakeDeps, options: Handshake
   })
 
   deps.logger.info(
-    "[dsh-opentui-bridge][handshake] PENDING timeout=%dms expected=%d poll=%dms stability=%d I-probes=%s",
+    "[dsh-opentui-bridge][handshake] PENDING timeout=%dms expected=%d poll=%dms stability=%d",
     timeoutMs,
     expectedIds.length,
     pollIntervalMs,
     stabilitySamples,
-    JSON.stringify(iClass),
   )
 
   const delay = (ms: number): Promise<void> =>
@@ -280,6 +288,13 @@ export function startCapabilityHandshake(deps: HandshakeDeps, options: Handshake
         next.sampleCount,
       )
     }
+    // I-probes are recorded once, after the stable-window verdict, as a pure
+    // observation line (oldfox §三): no new DEGRADED semantics, no apply-time
+    // double point.
+    deps.logger.info(
+      "[dsh-opentui-bridge][handshake] I-probes@stable %s",
+      JSON.stringify(next.iClass),
+    )
     settle(next)
   }
 
@@ -310,7 +325,7 @@ export function startCapabilityHandshake(deps: HandshakeDeps, options: Handshake
           elapsedMs: Date.now() - startedAt,
           sampleCount,
           stabilitySamples,
-          iClass,
+          iClass: probeIClass(),
         })
         return
       }
