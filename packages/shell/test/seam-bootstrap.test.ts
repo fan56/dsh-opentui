@@ -237,7 +237,7 @@ describe("createSessionSeam: no fallback, env escape hatch retained", () => {
 // 5. D3 downgrade law (user-decided, not to be violated by fail-fast)
 // ---------------------------------------------------------------------------
 describe("D3 downgrade law stays intact", () => {
-	test("sync members degrade + log, never throw", () => {
+	test("sync members degrade + log; steer now returns an explicit receipt", async () => {
 		const { transport } = fakeTransport()
 		const warns: string[] = []
 		const seam = new BridgeSessionSeam({
@@ -246,15 +246,23 @@ describe("D3 downgrade law stays intact", () => {
 		})
 		expect(seam.status()).toHaveProperty("connection")
 		expect(seam.usageSummary()).toEqual([])
-		expect(() => seam.steer("x")).not.toThrow()
-		expect(warns.some((w) => w.includes("steer"))).toBe(true)
+		// steer is no longer a sync degrade stub: it dispatches agent.steer and
+		// returns an explicit receipt (UNSUPPORTED here because this fake has no
+		// wire reply) — never a silent no-op success (FLW-03).
+		expect(await seam.steer("x")).toMatchObject({ ok: false, code: "UNSUPPORTED" })
+		expect(warns.some((w) => w.includes("steer degraded"))).toBe(false)
 	})
 
-	test("async unsupported members reject with UNSUPPORTED, never fake success", async () => {
+	test("async members with no wire still reject with UNSUPPORTED, never fake success", async () => {
 		const { transport } = fakeTransport()
 		const seam = new BridgeSessionSeam({ transport, ctx: { logger } })
+		// searchSessions/selectModel now have wires (batch 1) and surface the
+		// bridge's UNSUPPORTED for an old host that never dispatched them.
 		await expect(seam.searchSessions("q")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+		await expect(seam.selectModel("p", "m")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+		// No wire at all for these — still an honest rejection.
 		await expect(seam.renameSession("t")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+		await expect(seam.modelCatalog()).rejects.toMatchObject({ code: "UNSUPPORTED" })
 	})
 })
 

@@ -8,12 +8,15 @@
  *   COVERED  currentSessionId / resumeSession / newSession / dispose
  *   PARTIAL  status / storedTranscript / turn / interrupt /
  *            currentModelSelection / usageSummary / onSessionEvent / listSessions
- * The remaining 7 members exist only to satisfy `implements SessionSeam` and
- * are honest D3 stubs (async → UNSUPPORTED, sync → degrade + log) until their
- * own bridge frames land in a later batch. Seam selection (this seam became the
- * DEFAULT in 0.23.0), fail-fast wiring and the legacy `--remote` removal now
- * live in the composition root — `client/seam-bootstrap.ts` and
- * `bin/dsh-opentui.mjs` — not in this file; the env escape hatch
+ * Batch 1 wires (feat/0234-steer) add: steer (agent.steer), searchSessions
+ * (session.search), selectModel (session.selectModel), steerChild (subagents.steer)
+ * and the credential half of the /login face (credentials.set/unset/describe).
+ * Members with NO bridge wire (renameSession, modelCatalog/listProviders,
+ * login.routes/registerRoute) stay honest D3 stubs: async → UNSUPPORTED with the
+ * missing wire named in the message, never a fabricated value. Seam selection
+ * (this seam became the DEFAULT in 0.23.0), fail-fast wiring and the legacy
+ * `--remote` removal now live in the composition root — `client/seam-bootstrap.ts`
+ * and `bin/dsh-opentui.mjs` — not in this file; the env escape hatch
  * `DSH_OPENTUI_INPROC=0` still reaches the remote seam.
  *
  * DEGRADE LAW (ticket §6 D3, non-negotiable):
@@ -37,11 +40,13 @@ import type {
 	SeamApprovalVerdict,
 	SeamAskPick,
 	SeamAskQuestion,
+	SeamLoginRoute,
 	SeamPermissionCatalog,
 	SeamProviderModel,
 	SeamSessionEvent,
 	SeamSessionInfo,
 	SeamSessionSummary,
+	SeamSteerReceipt,
 	SeamStatus,
 	SeamSubagentView,
 	SeamTranscriptRow,
@@ -3019,18 +3024,167 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#currentSessionId = undefined
 	}
 
-	// ----- out-of-batch members: honest D3 stubs (later batch) --------------
+	// ----- batch-1 wire-backed members --------------------------------------
+	//
+	// The wires live in packages/bridge/src/wires.ts (WIRE table) and are
+	// dispatched in bridge/src/index.ts:2437-2650. Names here deliberately match
+	// the wire ids 1:1 so the mapping is auditable:
+	//   steer          → agent.steer
+	//   searchSessions → session.search
+	//   selectModel    → session.selectModel
+	//   steerChild     → subagents.steer
+	//   login.{login,logout,credentialStatus} → credentials.{set,unset,describe}
 
-	async searchSessions(_query: string): Promise<{ id: string; snippet: string }[]> {
-		return unsupported("searchSessions")
+	/**
+	 * `agent.steer` — inject into the CURRENT running turn. The wire answers
+	 * `{injected:true}` on success and `AGENT_NOT_RUNNING` when no turn is live.
+	 * Both outcomes become an explicit receipt: NEVER a silent success (the
+	 * old `void` no-op was the FLW-03 fake-receipt root cause). A wire that
+	 * replies without the `injected` flag is an UNCONFIRMED failure too — no
+	 * "delivered" claim is fabricated from a bare `{}` reply.
+	 */
+	steer(text: string): Promise<SeamSteerReceipt> {
+		return this.#transport.request("agent.steer", { text }).then(
+			(value): SeamSteerReceipt => {
+				if (asRecord(value).injected === true) return { ok: true, injected: true }
+				return {
+					ok: false,
+					code: "STEER_UNCONFIRMED",
+					message: "宿主未确认注入 / host did not confirm the steer injection",
+				}
+			},
+			(err: unknown): SeamSteerReceipt => {
+				if (err instanceof BridgeProtocolError && err.code === "AGENT_NOT_RUNNING") {
+					return {
+						ok: false,
+						code: "AGENT_NOT_RUNNING",
+						message: "当前没有运行中的回合可注入 / no running turn to steer",
+					}
+				}
+				const code = err instanceof BridgeProtocolError ? err.code : "STEER_FAILED"
+				const message = err instanceof Error ? err.message : String(err)
+				return { ok: false, code, message }
+			},
+		)
 	}
+
+	/**
+	 * `session.search` — full-text session search. The bridge forwards host
+	 * errors verbatim; `SESSION_QUERY_SEARCH_DISABLED` (host `openAt:'never'`)
+	 * gets a READABLE message and is THROWN — flattening it to `[]` would make
+	 * the /search picker look empty instead of telling the user search is off.
+	 */
+	async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
+		let value: unknown
+		try {
+			value = await this.#transport.request("session.search", { query })
+		} catch (err) {
+			if (err instanceof BridgeProtocolError && err.code === "SESSION_QUERY_SEARCH_DISABLED") {
+				const hostMessage = err.message ? `: ${err.message}` : ""
+				throw new BridgeProtocolError(
+					err.code,
+					`内容搜索未启用 / content search is not enabled on this host${hostMessage}`,
+					err.detail,
+				)
+			}
+			throw err
+		}
+		const rows = Array.isArray(asRecord(value).items) ? (value as { items: unknown[] }).items : []
+		const out: { id: string; snippet: string }[] = []
+		for (const raw of rows) {
+			const row = asRecord(raw)
+			const id = typeof row.id === "string" ? row.id : ""
+			if (!id) continue
+			out.push({ id, snippet: typeof row.snippet === "string" ? row.snippet : "" })
+		}
+		return out
+	}
+
+	/**
+	 * `subagents.steer` — the sync seam face stays `boolean` (the module steer
+	 * slot and picker are sync), so the frame is dispatched fire-and-forget.
+	 * A refusal (notably TURN_BUSY) is NOT swallowed: it is logged AND emitted
+	 * through the existing `session.error` event channel with the wire's code.
+	 * Callers that need the typed receipt use `steerChildReceipt`.
+	 */
+	steerChild(childId: string, text: string): boolean {
+		if (!childId || !text) return false
+		void this.steerChildReceipt(childId, text).then(
+			(receipt) => {
+				if (!receipt.ok) this.#reportSteerFailure("subagents.steer", receipt.code, receipt.message, childId)
+			},
+			(err: unknown) => {
+				this.#reportSteerFailure("subagents.steer", "STEER_FAILED", String(err), childId)
+			},
+		)
+		return true
+	}
+
+	/** Typed `subagents.steer` receipt: TURN_BUSY and host refusals pass through
+	 *  verbatim (code + message), so callers/tests can observe the real outcome. */
+	async steerChildReceipt(
+		childId: string,
+		text: string,
+	): Promise<
+		| { ok: true; childId: string; messageId: string }
+		| { ok: false; code: string; message: string }
+	> {
+		if (!childId || !text) {
+			return { ok: false, code: "BAD_PARAMS", message: "subagents.steer requires childId and text" }
+		}
+		try {
+			const value = asRecord(await this.#transport.request("subagents.steer", { childId, text }))
+			return {
+				ok: true,
+				childId: typeof value.childId === "string" ? value.childId : childId,
+				messageId: typeof value.messageId === "string" ? value.messageId : "",
+			}
+		} catch (err) {
+			const code = err instanceof BridgeProtocolError ? err.code : "STEER_FAILED"
+			const message = err instanceof Error ? err.message : String(err)
+			return { ok: false, code, message }
+		}
+	}
+
+	/** Sink for the sync face's async refusal — the wire code is never masked. */
+	#reportSteerFailure(wire: string, code: string, message: string, childId: string): void {
+		this.#ctx.logger.warn(`[bridge-seam] ${wire} failed: ${code} ${message}`)
+		this.#emitEvent({
+			type: "session.error",
+			details: { sessionID: this.#currentSessionId ?? "", code, message: `${message} (${childId})` },
+		})
+	}
+
+	/**
+	 * `credentials.set` / `credentials.unset` / `credentials.describe` — the
+	 * credential half of the /login face. Seam methods only; the settings-half
+	 * (routes/registerRoute) needs a settings.describe/mutate bridge wire that
+	 * batch 1 does not have, so those two reject UNSUPPORTED explicitly.
+	 */
+	login = {
+		credentialStatus: async (ref: string): Promise<{ configured: boolean }> => {
+			const views = asRecord(await this.#transport.request("credentials.describe", { refs: [ref] }))
+			return { configured: asRecord(views[ref]).configured === true }
+		},
+		login: async (ref: string, apiKey: string): Promise<void> => {
+			await this.#transport.request("credentials.set", { ref, value: apiKey })
+		},
+		logout: async (ref: string): Promise<void> => {
+			await this.#transport.request("credentials.unset", { ref })
+		},
+		routes: async (): Promise<SeamLoginRoute[]> =>
+			unsupported("login.routes (no settings.describe bridge wire)"),
+		registerRoute: async (): Promise<boolean> =>
+			unsupported("login.registerRoute (no settings.mutate bridge wire)"),
+	}
+
+	// ----- still unsupported: no bridge wire exists (batch 1 audit) ---------
+	// renameSession would need `session.rename`; modelCatalog/listProviders a
+	// `model.catalog` wire. Neither is in WIRE (packages/bridge/src/wires.ts),
+	// so they keep the honest UNSUPPORTED rejection — never a fabricated row.
 
 	async renameSession(_title: string): Promise<{ title: string; seq: number } | undefined> {
-		return unsupported("renameSession")
-	}
-
-	steer(_text: string): void {
-		this.#degrade("steer", "no session.steer frame; steer is a no-op")
+		return unsupported("renameSession (no session.rename bridge wire)")
 	}
 
 	registerAskProvider(onAsk: (questions: SeamAskQuestion[]) => Promise<SeamAskPick[]>): void {
@@ -3055,15 +3209,18 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	async listProviders(): Promise<{ provider: string; models: string[] }[]> {
-		return unsupported("listProviders")
+		return unsupported("listProviders (no model.catalog bridge wire)")
 	}
 
 	async modelCatalog(_force?: boolean): Promise<SeamProviderModel[]> {
-		return unsupported("modelCatalog")
+		return unsupported("modelCatalog (no model.catalog bridge wire)")
 	}
 
-	selectModel(_providerID: string, _modelID: string): Promise<void> {
-		return Promise.reject(new BridgeProtocolError("UNSUPPORTED", "selectModel is not backed by the in-process bridge", { capability: "selectModel" }))
+	/** `session.selectModel` — provider/model go on the wire under the host's
+	 *  field names; host refusals (`session/model-unavailable`, …) propagate
+	 *  verbatim as BridgeProtocolError — never swallowed into a fake success. */
+	async selectModel(providerID: string, modelID: string): Promise<void> {
+		await this.#transport.request("session.selectModel", { provider: providerID, model: modelID })
 	}
 
 	// ------------------------------------------------------------------

@@ -12,6 +12,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { createRoot } from "solid-js"
+import { WIRE, isWireId } from "../../bridge/src/wires.ts"
 import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows.ts"
 import { latestTodos, todoTreeLines } from "../../tui-base/src/routes/session/widgets-dock.tsx"
 import {
@@ -470,14 +471,14 @@ describe("sync degrade values + logs", () => {
 		expect(h.warnFor("onSessionEvent")[0].args.map(String).join(" ")).toContain("permission.asked")
 	})
 
-	test("steer degrades to a no-op + log; registerAskProvider now really stores the provider (ADR-0011 T4)", () => {
+	test("registerAskProvider really stores the provider (ADR-0011 T4); steer no longer degrades", () => {
 		const h = makeHarness()
-		expect(() => h.seam.steer("x")).not.toThrow()
-		expect(h.warnFor("steer")).toHaveLength(1)
 		// T4: registerAskProvider is no longer a degrade stub — the real
 		// provider round-trip is pinned in bridge-session-ask.test.ts.
 		expect(() => h.seam.registerAskProvider(async () => [])).not.toThrow()
 		expect(h.warnFor("registerAskProvider")).toHaveLength(0)
+		// steer now rides agent.steer (batch 1) — see the wire-backed suite below.
+		expect(h.warnFor("steer")).toHaveLength(0)
 	})
 })
 
@@ -545,13 +546,208 @@ describe("async UNSUPPORTED members", () => {
 		expect(await h.seam.currentModelSelection()).toEqual({ providerID: "p1", modelID: "m2" })
 	})
 
-	test("out-of-batch async members all reject with UNSUPPORTED", async () => {
+	test("members with NO bridge wire still reject with UNSUPPORTED (missing wire named)", async () => {
 		const h = makeHarness()
-		await expect(h.seam.searchSessions("q")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+		// renameSession (session.rename), listProviders/modelCatalog (model.catalog)
+		// are NOT in WIRE — never fabricate a row. searchSessions/selectModel are
+		// now wire-backed and are covered in the batch-1 suite below.
 		await expect(h.seam.renameSession("t")).rejects.toMatchObject({ code: "UNSUPPORTED" })
 		await expect(h.seam.listProviders()).rejects.toMatchObject({ code: "UNSUPPORTED" })
 		await expect(h.seam.modelCatalog()).rejects.toMatchObject({ code: "UNSUPPORTED" })
-		await expect(h.seam.selectModel("p", "m")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+		await expect(h.seam.login.routes()).rejects.toMatchObject({ code: "UNSUPPORTED" })
+		await expect(h.seam.login.registerRoute("p", {})).rejects.toMatchObject({ code: "UNSUPPORTED" })
+		expect(h.lastRequest("session.rename")).toBeUndefined()
+		expect(h.lastRequest("model.catalog")).toBeUndefined()
+	})
+})
+
+// ---------------------------------------------------------------------------
+// BATCH 1 wires — seam ↔ wire mapping, success + explicit error passthrough.
+// Every method sends the frame named in WIRE (packages/bridge/src/wires.ts).
+// ---------------------------------------------------------------------------
+
+describe("batch-1 wire-backed seam members", () => {
+	test("steer → agent.steer: {injected:true} becomes an ok receipt; no warn", async () => {
+		const h = makeHarness()
+		h.replies.set("agent.steer", { kind: "value", value: { injected: true } })
+		expect(await h.seam.steer("wrap up")).toEqual({ ok: true, injected: true })
+		expect(h.lastRequest("agent.steer")?.params).toEqual({ text: "wrap up" })
+		expect(h.warnFor("steer")).toHaveLength(0)
+	})
+
+	test("steer → AGENT_NOT_RUNNING is an explicit failure, never a silent success", async () => {
+		const h = makeHarness()
+		h.replies.set("agent.steer", {
+			kind: "error",
+			error: new BridgeProtocolError("AGENT_NOT_RUNNING", "no running turn to steer", { status: "idle" }),
+		})
+		expect(await h.seam.steer("x")).toEqual({
+			ok: false,
+			code: "AGENT_NOT_RUNNING",
+			message: "当前没有运行中的回合可注入 / no running turn to steer",
+		})
+	})
+
+	test("steer → a bare {} reply is not mistaken for a delivery confirmation", async () => {
+		const h = makeHarness()
+		h.replies.set("agent.steer", { kind: "value", value: {} })
+		expect(await h.seam.steer("x")).toEqual({
+			ok: false,
+			code: "STEER_UNCONFIRMED",
+			message: "宿主未确认注入 / host did not confirm the steer injection",
+		})
+	})
+
+	test("steer → a driver refusal code passes through verbatim", async () => {
+		const h = makeHarness()
+		h.replies.set("agent.steer", {
+			kind: "error",
+			error: new BridgeProtocolError("STEER_REJECTED", "driver refused"),
+		})
+		expect(await h.seam.steer("x")).toEqual({ ok: false, code: "STEER_REJECTED", message: "driver refused" })
+	})
+
+	test("searchSessions → session.search projects items and passes the query", async () => {
+		const h = makeHarness()
+		h.replies.set("session.search", {
+			kind: "value",
+			value: { items: [{ id: "s1", snippet: "hit" }, { id: "", snippet: "dropped" }], hasMore: true },
+		})
+		expect(await h.seam.searchSessions("needle")).toEqual([{ id: "s1", snippet: "hit" }])
+		expect(h.lastRequest("session.search")?.params).toEqual({ query: "needle" })
+	})
+
+	test("searchSessions → SESSION_QUERY_SEARCH_DISABLED is a readable error, never []", async () => {
+		const h = makeHarness()
+		h.replies.set("session.search", {
+			kind: "error",
+			error: new BridgeProtocolError(
+				"SESSION_QUERY_SEARCH_DISABLED",
+				'content search is disabled: openAt "never"',
+			),
+		})
+		const err = await h.seam.searchSessions("q").catch((e: unknown) => e)
+		expect(err).toBeInstanceOf(BridgeProtocolError)
+		expect(err.code).toBe("SESSION_QUERY_SEARCH_DISABLED")
+		expect(err.message).toContain("内容搜索未启用")
+		expect(err.message).toContain('openAt "never"') // host detail is not masked
+	})
+
+	test("selectModel → session.selectModel maps provider/model and forwards refusals", async () => {
+		const h = makeHarness()
+		h.replies.set("session.selectModel", { kind: "value", value: { selected: true } })
+		await h.seam.selectModel("p1", "m2")
+		expect(h.lastRequest("session.selectModel")?.params).toEqual({ provider: "p1", model: "m2" })
+
+		h.replies.set("session.selectModel", {
+			kind: "error",
+			error: new BridgeProtocolError("session/model-unavailable", "no such model"),
+		})
+		await expect(h.seam.selectModel("p1", "missing")).rejects.toMatchObject({
+			code: "session/model-unavailable",
+			message: "no such model",
+		})
+	})
+
+	test("steerChild → subagents.steer receipt (childId + messageId) and TURN_BUSY passthrough", async () => {
+		const h = makeHarness()
+		h.replies.set("subagents.steer", { kind: "value", value: { childId: "c9", messageId: "msg-1" } })
+		expect(await h.seam.steerChildReceipt("c9", "focus")).toEqual({ ok: true, childId: "c9", messageId: "msg-1" })
+		expect(h.lastRequest("subagents.steer")?.params).toEqual({ childId: "c9", text: "focus" })
+
+		h.replies.set("subagents.steer", {
+			kind: "error",
+			error: new BridgeProtocolError("TURN_BUSY", "child is busy", { turnId: "t-1" }),
+		})
+		expect(await h.seam.steerChildReceipt("c9", "again")).toEqual({
+			ok: false,
+			code: "TURN_BUSY",
+			message: "child is busy",
+		})
+	})
+
+	test("steerChild sync face dispatches the wire and surfaces TURN_BUSY as an event + log", async () => {
+		const h = makeHarness()
+		const errors: { type: string; details: any }[] = []
+		h.seam.onSessionEvent((e) => errors.push(e as { type: string; details: any }))
+		h.replies.set("subagents.steer", {
+			kind: "error",
+			error: new BridgeProtocolError("TURN_BUSY", "child is busy"),
+		})
+		expect(h.seam.steerChild("c9", "x")).toBe(true) // request dispatched
+		expect(h.lastRequest("subagents.steer")?.params).toEqual({ childId: "c9", text: "x" })
+		expect(h.seam.steerChild("", "x")).toBe(false) // locally invalid: no frame
+		await Bun.sleep(0)
+		expect(errors.filter((e) => e.type === "session.error")).toHaveLength(1)
+		expect(errors.find((e) => e.type === "session.error")!.details.code).toBe("TURN_BUSY")
+		expect(h.logs.some((l) => l.args.map(String).join(" ").includes("subagents.steer failed"))).toBe(true)
+	})
+
+	test("login credentials → credentials.set/unset/describe with the right frames", async () => {
+		const h = makeHarness()
+		h.replies.set("credentials.set", { kind: "value", value: { stored: true } })
+		h.replies.set("credentials.unset", { kind: "value", value: { unset: true } })
+		h.replies.set("credentials.describe", {
+			kind: "value",
+			value: { MY_KEY: { configured: true, writable: true } },
+		})
+		await h.seam.login.login("MY_KEY", "sk-1")
+		expect(h.lastRequest("credentials.set")?.params).toEqual({ ref: "MY_KEY", value: "sk-1" })
+		expect(await h.seam.login.credentialStatus("MY_KEY")).toEqual({ configured: true })
+		expect(h.lastRequest("credentials.describe")?.params).toEqual({ refs: ["MY_KEY"] })
+		expect(await h.seam.login.credentialStatus("NOPE")).toEqual({ configured: false })
+		await h.seam.login.logout("MY_KEY")
+		expect(h.lastRequest("credentials.unset")?.params).toEqual({ ref: "MY_KEY" })
+	})
+
+	test("login credentials → wire errors propagate (no fake configured:false on describe failure)", async () => {
+		const h = makeHarness()
+		h.replies.set("credentials.describe", {
+			kind: "error",
+			error: new BridgeProtocolError("BAD_PARAMS", "invalid credential ref"),
+		})
+		await expect(h.seam.login.credentialStatus("bad-ref")).rejects.toMatchObject({
+			code: "BAD_PARAMS",
+			message: "invalid credential ref",
+		})
+		h.replies.set("credentials.set", {
+			kind: "error",
+			error: new BridgeProtocolError("CREDENTIAL_REJECTED", "read-only store"),
+		})
+		await expect(h.seam.login.login("MY_KEY", "v")).rejects.toMatchObject({ code: "CREDENTIAL_REJECTED" })
+	})
+
+	test("WIRE contract conformance: every batch-1 seam method is a known bridge wire id", async () => {
+		const h = makeHarness()
+		h.replies.set(WIRE.AGENT_STEER, { kind: "value", value: { injected: true } })
+		h.replies.set(WIRE.SESSION_SEARCH, { kind: "value", value: { items: [] } })
+		h.replies.set(WIRE.SESSION_SELECT_MODEL, { kind: "value", value: {} })
+		h.replies.set(WIRE.SUBAGENTS_STEER, { kind: "value", value: { childId: "c", messageId: "m" } })
+		h.replies.set(WIRE.CREDENTIALS_SET, { kind: "value", value: {} })
+		h.replies.set(WIRE.CREDENTIALS_UNSET, { kind: "value", value: {} })
+		h.replies.set(WIRE.CREDENTIALS_DESCRIBE, { kind: "value", value: {} })
+
+		await h.seam.steer("s")
+		await h.seam.searchSessions("q")
+		await h.seam.selectModel("p", "m")
+		await h.seam.steerChildReceipt("c", "t")
+		await h.seam.login.login("R", "v")
+		await h.seam.login.logout("R")
+		await h.seam.login.credentialStatus("R")
+
+		const batch1 = [
+			WIRE.AGENT_STEER,
+			WIRE.SESSION_SEARCH,
+			WIRE.SESSION_SELECT_MODEL,
+			WIRE.SUBAGENTS_STEER,
+			WIRE.CREDENTIALS_SET,
+			WIRE.CREDENTIALS_UNSET,
+			WIRE.CREDENTIALS_DESCRIBE,
+		]
+		expect(h.requests.map((r) => r.method)).toEqual(batch1)
+		for (const method of h.requests.map((r) => r.method)) {
+			expect(isWireId(method)).toBe(true)
+		}
 	})
 })
 

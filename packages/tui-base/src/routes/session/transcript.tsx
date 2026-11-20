@@ -487,7 +487,9 @@ export function Transcript(props: TranscriptProps) {
 						</Show>
 						{/* Busy-submit delivery lines: below the projected feed so a
 						 * queued prompt reads as "waiting behind the current turn".
-						 * Queue = muted italic `⏸`; steer = brand `⤵`/`✓`. */}
+						 * Queue = muted italic `⏸`; steer = brand `⤵` while pending,
+						 * muted `⚠` when unconfirmed. Only a host receipt paints the
+						 * "delivered" copy — a turn settle alone never does (FLW-03). */}
 						<For each={props.pending?.() ?? []}>
 							{(row) => (
 								<box id={`pending-row-${row.id}`} marginTop={1} flexShrink={0}>
@@ -501,13 +503,21 @@ export function Transcript(props: TranscriptProps) {
 											? t("transcript.pending.queue.paused", { order: row.order ?? 1, text: row.text })
 											: t("transcript.pending.queue.waiting", { order: row.order ?? 1, text: row.text })}
 										</text>
-									) : (
-										<text fg={color.pendingSteer()} wrapMode="word">
-											{row.state === "delivered"
-											? t("transcript.pending.steer.delivered", { text: row.text })
-											: t("transcript.pending.steer.injected", { text: row.text })}
-										</text>
-									)}
+										) : row.state === "unconfirmed" ? (
+											<text fg={color.pendingQueue()} wrapMode="word">
+												{t("transcript.pending.steer.unconfirmed", {
+													text: row.text,
+													code: row.error?.code ?? "STEER_UNCONFIRMED",
+													detail: row.error?.message ? ` · ${row.error.message}` : "",
+												})}
+											</text>
+										) : (
+											<text fg={color.pendingSteer()} wrapMode="word">
+												{row.state === "delivered"
+												? t("transcript.pending.steer.delivered", { text: row.text })
+												: t("transcript.pending.steer.injected", { text: row.text })}
+											</text>
+										)}
 								</box>
 							)}
 						</For>

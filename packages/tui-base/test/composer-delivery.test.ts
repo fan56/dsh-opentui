@@ -12,6 +12,7 @@ import {
 	type ComposerPendingRow,
 	type ComposerQueuePause,
 } from "../src/routes/session/composer-state"
+import type { SeamSteerReceipt } from "../src/seams/session"
 import { deliveryOptions, openDeliveryChoice } from "../src/routes/session/delivery-choice"
 import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 
@@ -38,6 +39,8 @@ function setup(options: {
 	choice?: () => Promise<ComposerDelivery | undefined>
 	aborted?: () => boolean
 	onQueuePaused?: (info: ComposerQueuePause) => void
+	/** Host receipt for the steer wire. Omitted = sync-void seam (no confirmation). */
+	steerAck?: (text: string) => Promise<SeamSteerReceipt> | SeamSteerReceipt | void
 } = {}) {
 	const sent: string[] = []
 	const steered: string[] = []
@@ -50,7 +53,10 @@ function setup(options: {
 			turns.push(turn)
 			return turn.promise
 		},
-		steer: (text) => steered.push(text),
+		steer: (text) => {
+			steered.push(text)
+			return options.steerAck?.(text)
+		},
 		chooseDelivery: options.choice ?? (async () => "steer"),
 		onPendingChange: (rows) => pendingSnapshots.push(rows.map((row) => ({ ...row }))),
 		onQueuePaused: options.onQueuePaused,
@@ -119,16 +125,70 @@ describe("busy submit asks steer vs queue", () => {
 		expect(steered).toEqual([])
 	})
 
-	test("Steer receipt flips to delivered when the turn settles", async () => {
-		const { controller, turns } = setup({ choice: async () => "steer" })
+	test("steer success → pending → (host receipt) → delivered; turn settle never pre-empts it", async () => {
+		let resolveAck!: (receipt: SeamSteerReceipt) => void
+		const ack = new Promise<SeamSteerReceipt>((res) => { resolveAck = res })
+		const { controller, turns } = setup({ steerAck: () => ack })
+		controller.submit("first")
+		expect(await controller.submitWhileBusy("steer me")).toBe("steered")
+		// Wire dispatched, host has NOT answered: pending only.
+		expect(controller.pending).toEqual([
+			{ id: 1, kind: "steer", state: "injected", text: "steer me" },
+		])
+		// The host receipt — not the turn settle — is the delivery evidence.
+		resolveAck({ ok: true, injected: true })
+		await flush()
+		expect(controller.pending).toEqual([
+			{ id: 1, kind: "steer", state: "delivered", text: "steer me" },
+		])
+		turns[0]!.resolve()
+		await flush()
+		expect(controller.pending[0]?.state).toBe("delivered")
+	})
+
+	test("steer failure (ok:false) → unconfirmed with the wire code + message", async () => {
+		const { controller } = setup({
+			steerAck: async () => ({ ok: false, code: "AGENT_NOT_RUNNING", message: "no running turn to steer" }),
+		})
+		controller.submit("first")
+		await controller.submitWhileBusy("steer me")
+		await flush()
+		expect(controller.pending).toEqual([
+			{
+				id: 1,
+				kind: "steer",
+				state: "unconfirmed",
+				text: "steer me",
+				error: { code: "AGENT_NOT_RUNNING", message: "no running turn to steer" },
+			},
+		])
+	})
+
+	test("steer rejection → unconfirmed, never delivered", async () => {
+		const { controller } = setup({
+			steerAck: async () => { throw new Error("bridge offline") },
+		})
+		controller.submit("first")
+		await controller.submitWhileBusy("steer me")
+		await flush()
+		expect(controller.pending[0]?.state).toBe("unconfirmed")
+		expect(controller.pending[0]?.error).toEqual({ code: "STEER_FAILED", message: "bridge offline" })
+		expect(controller.pending.some((row) => row.state === "delivered")).toBe(false)
+	})
+
+	test("turn ends before any host receipt → unconfirmed, never a delivered receipt", async () => {
+		const { controller, turns } = setup({ steerAck: () => new Promise<SeamSteerReceipt>(() => {}) })
 		controller.submit("first")
 		await controller.submitWhileBusy("steer me")
 		expect(controller.pending[0]?.state).toBe("injected")
 		turns[0]!.resolve()
 		await flush()
-		expect(controller.pending).toEqual([
-			{ id: 1, kind: "steer", state: "delivered", text: "steer me" },
-		])
+		expect(controller.pending[0]?.state).toBe("unconfirmed")
+		expect(controller.pending[0]?.error).toEqual({
+			code: "STEER_UNCONFIRMED",
+			message: "turn ended before the host confirmed delivery",
+		})
+		expect(controller.pending.some((row) => row.state === "delivered")).toBe(false)
 	})
 })
 

@@ -505,6 +505,20 @@ export interface SeamLoginRoute {
 	declared?: boolean
 }
 
+/**
+ * Host receipt for `steer(text)`. `ok:true` means the HOST confirmed the
+ * injection into the running turn — NOT that the model has consumed it yet;
+ * callers must not render a stronger claim than "sent to the turn". `ok:false`
+ * carries the wire's error code (`AGENT_NOT_RUNNING`, …) and a readable message.
+ *
+ * A seam whose steer path is still synchronous returns `void` (and surfaces
+ * failures elsewhere); the composer treats a missing receipt as UNCONFIRMED,
+ * never as delivered.
+ */
+export type SeamSteerReceipt =
+	| { ok: true; injected: true }
+	| { ok: false; code: string; message: string }
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -623,7 +637,12 @@ export interface SessionSeam {
 
 	/** Turn streaming (mini/stream-v2 replacement point). */
 	turn(userText: string, cb: SeamTurnCallbacks): Promise<void>
-	steer(text: string): void
+	/**
+	 * Inject `text` into the RUNNING turn. A host-backed seam returns a promise
+	 * whose receipt is the delivery confirmation; a seam without that wire may
+	 * stay synchronous (`void`), in which case delivery is never confirmed.
+	 */
+	steer(text: string): void | Promise<SeamSteerReceipt>
 	interrupt(): void
 
 	/**

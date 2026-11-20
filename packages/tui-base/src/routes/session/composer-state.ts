@@ -20,9 +20,13 @@
  *   - a session switch calls `resetDeliveries()` (queue and receipt lines are
  *     per-session state, never carried across).
  *
- * Steer contract: the injected line gets a `⤵` receipt row that flips to
- * `✓` (delivered) when the turn settles. The transcript paints both states
- * from `pendingRows`; nothing here animates.
+ * Steer contract (FLW-03 fake-receipt fix): the injected line gets a `⤵`
+ * receipt row in `injected` (pending) state. ONLY a host receipt from the
+ * steer wire (SeamSteerReceipt ok:true) may flip it to `delivered` — a turn
+ * settle is not proof of injection, so an unconfirmed row becomes
+ * `unconfirmed` at turn end, and a wire failure carries its code/message.
+ * The transcript paints all three states from `pendingRows`; nothing here
+ * animates, and no state ever claims the model consumed the message.
  *
  * History recall is shell-style, aligned with the pi editor
  * (`dsh-tui-pi` pi-tui `navigateHistory`) and the mini composer
@@ -42,6 +46,8 @@
  * to recall once the user had typed a draft (the reported "↑ does nothing
  * when I typed something" gap).
  */
+import type { SeamSteerReceipt } from "../../seams/session"
+
 export const MAX_HISTORY_ENTRIES = 50
 
 /** Busy-submit delivery choice. The view asks through the dialog stack; the
@@ -53,11 +59,14 @@ export type ComposerSubmitResult = "sent" | "steered" | "queued" | "ignored" | "
 
 /** A transcript "pending delivery" line (queue wait / injected steer). */
 export type ComposerPendingKind = "queue" | "steer"
-/** queued = waiting for the turn end; paused = a failed/aborted turn kept the
- * queue and the pump waits for the next successful turn end; injected = a
- * steer line already pushed into the running turn; delivered = that steer's
- * turn has settled (the line stays as a compact receipt). */
-export type ComposerPendingState = "queued" | "paused" | "injected" | "delivered"
+/**
+ * queued  = waiting for the turn end;
+ * paused  = a failed/aborted turn kept the queue, pump waits for the next end;
+ * injected = the steer wire was called, HOST ACK STILL PENDING;
+ * delivered = the host confirmed injection (wire receipt) — NOT model consumption;
+ * unconfirmed = wire failed OR the turn ended before a receipt arrived.
+ */
+export type ComposerPendingState = "queued" | "paused" | "injected" | "delivered" | "unconfirmed"
 
 export interface ComposerPendingRow {
 	/** Monotonic id (stable transcript row key). */
@@ -67,6 +76,8 @@ export interface ComposerPendingRow {
 	text: string
 	/** 1-based queue position; queue rows only. */
 	order?: number
+	/** Wire error / missing-confirmation reason — honest, unconfirmed rows only. */
+	error?: { code: string; message: string }
 }
 
 export interface ComposerQueuePause {
@@ -103,8 +114,12 @@ type HistoryDraft = { text: string; cursor: number }
 export type ComposerControllerOptions = {
 	/** Starts a turn (page wiring: the transcript projection's `send`). */
 	send: (text: string) => Promise<void>
-	/** Steers the running turn (page wiring: `seam.steer`). */
-	steer: (text: string) => void
+	/**
+	 * Steers the running turn (page wiring: `seam.steer`). A host-backed seam
+	 * returns a receipt promise — that receipt (NOT turn settle) is the only
+	 * delivery confirmation. Sync `void` seams leave the row unconfirmed.
+	 */
+	steer: (text: string) => void | Promise<SeamSteerReceipt>
 	/** Busy changes are pushed here (status/powerline batch consumes). */
 	onBusyChange?: (busy: boolean) => void
 	/** Injectable history for tests; defaults to a fresh in-memory one. */
@@ -125,6 +140,15 @@ export type ComposerControllerOptions = {
 	 * §2.5). The caller keeps the typed draft: "ignored" never clears it and
 	 * never appends history. Read as a getter so the page can flip it live. */
 	disabled?: () => boolean
+}
+
+/** Extract a wire error's code + readable message from any thrown value. */
+function steerError(err: unknown): { code: string; message: string } {
+	const row = err !== null && typeof err === "object" ? (err as { code?: unknown; message?: unknown }) : {}
+	return {
+		code: typeof row.code === "string" ? row.code : "STEER_FAILED",
+		message: typeof row.message === "string" ? row.message : String(err),
+	}
 }
 
 export class ComposerHistory {
@@ -372,7 +396,9 @@ export class ComposerController {
 		this.pendingTurn = turn.finally(() => {
 			this.pendingTurn = undefined
 			const aborted = !failed && (this.isTurnAborted?.() ?? false)
-			this.markSteerDelivered()
+			// A turn settle is NOT delivery evidence: leave confirmed rows alone,
+			// but any steer still awaiting a receipt becomes unconfirmed (FLW-03).
+			this.markUnconfirmedSteers()
 			if (failed || aborted) {
 				this.setBusy(false)
 				if (this.queueItems.length > 0) {
@@ -404,19 +430,66 @@ export class ComposerController {
 		this.emitPending()
 	}
 
-	/** Steer the running turn now and paint its `⤵` receipt row. */
+	/**
+	 * Steer the running turn now and paint its `⤵` receipt in PENDING state.
+	 * The wire's receipt is the only thing that can promote it to `delivered`;
+	 * a failure (rejection or ok:false) records the wire code + message. A
+	 * session switch invalidates a late answer via the delivery epoch.
+	 */
 	private injectSteer(prompt: string): void {
 		const id = ++this.deliverySeq
+		const epoch = this.deliveryEpoch
 		this.pendingRows = [...this.pendingRows, { id, kind: "steer", state: "injected", text: prompt }]
 		this.emitPending()
-		this.steer(prompt)
+		let result: void | Promise<SeamSteerReceipt>
+		try {
+			result = this.steer(prompt)
+		} catch (err) {
+			this.settleSteer(id, epoch, "unconfirmed", steerError(err))
+			return
+		}
+		if (result !== undefined && typeof (result as Promise<SeamSteerReceipt>).then === "function") {
+			void (result as Promise<SeamSteerReceipt>).then(
+				(receipt) => {
+					if (receipt.ok) this.settleSteer(id, epoch, "delivered")
+					else this.settleSteer(id, epoch, "unconfirmed", { code: receipt.code, message: receipt.message })
+				},
+				(err: unknown) => this.settleSteer(id, epoch, "unconfirmed", steerError(err)),
+			)
+		}
+		// A sync `void` seam leaves the row `injected`; turn end will mark it
+		// unconfirmed. Never paint delivered without a host receipt.
 	}
 
-	/** Turn end: every injected steer line becomes a delivered receipt. */
-	private markSteerDelivered(): void {
+	/** Apply one wire receipt to one steer row (epoch-guarded, id-scoped). */
+	private settleSteer(
+		id: number,
+		epoch: number,
+		state: "delivered" | "unconfirmed",
+		error?: { code: string; message: string },
+	): void {
+		if (epoch !== this.deliveryEpoch) return
+		if (!this.pendingRows.some((row) => row.id === id && row.kind === "steer")) return
+		this.pendingRows = this.pendingRows.map((row) =>
+			row.id === id ? { ...row, state, ...(error !== undefined ? { error } : {}) } : row,
+		)
+		this.emitPending()
+	}
+
+	/** Turn end: downgrade only the steers that NEVER got a host receipt. */
+	private markUnconfirmedSteers(): void {
 		if (!this.pendingRows.some((row) => row.kind === "steer" && row.state === "injected")) return
 		this.pendingRows = this.pendingRows.map((row) =>
-			row.kind === "steer" && row.state === "injected" ? { ...row, state: "delivered" } : row,
+			row.kind === "steer" && row.state === "injected"
+				? {
+						...row,
+						state: "unconfirmed" as const,
+						error: {
+							code: "STEER_UNCONFIRMED",
+							message: "turn ended before the host confirmed delivery",
+						},
+					}
+				: row,
 		)
 		this.emitPending()
 	}
