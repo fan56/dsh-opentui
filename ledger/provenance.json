@@ -190,7 +190,7 @@
   "wired_surface_manual": {
     "mark": "derived-from-manual",
     "source": "packages/bridge/src/index.ts handleLine() dispatch, inventory at 08cd2a8 (0.23.3 base)",
-    "note": "Baseline snapshot of the current hand-transcribed stdio wire surface. NOT generated from CapIR. The v3 proposal's '10 methods (8 business + 2 meta)' predates L1 (0.23.1) which added subagents.interrupt/stopChildren; actual dispatch has 12.",
+    "note": "Baseline snapshot of the hand-transcribed stdio wire surface. NOT generated from CapIR. S1 removes the @manual=model.currentSelection hand-wire (now served by the generated capcontract chain via a table lookup, not a `req.method ===` line), so the count drops 12 -> 11. The v3 proposal's '10 methods (8 business + 2 meta)' predates L1 (0.23.1) which added subagents.interrupt/stopChildren.",
     "methods": [
       {
         "method": "bridge.ping",
@@ -203,13 +203,6 @@
         "kind": "meta",
         "source_line": 2256,
         "capir_id": null
-      },
-      {
-        "method": "model.currentSelection",
-        "kind": "business",
-        "source_line": 2275,
-        "capir_id": null,
-        "note": "read via I-class agentDefaultModel.currentSelection(), not a CapIR W method"
       },
       {
         "method": "session.list",
@@ -268,7 +261,17 @@
         "capir_id": null
       }
     ],
-    "count": 12
+    "count": 11
+  },
+  "wired_capir_generated": {
+    "mark": "S1-generated-capcontract",
+    "note": "CapIR W ids wired through the generated capcontract host adapter (CAP_HOST_WIRED_IDS in packages/bridge/src/index.ts), NOT hand-copied req.method lines. S1 /model adds the three model methods on the SAME sessionController seam; session/list stays hand-wired @manual and is NOT repeated here. gen-ledger unions these ids with wired_surface_manual[].capir_id to produce methods[].in_wired (4/257 after S1). check-capcontract #10 reconciles this set against the bridge literal; #8 stays on the 11 hand-wired names.",
+    "source": "packages/bridge/src/index.ts CAP_HOST_WIRED_IDS / createCapHostInvoke",
+    "ids": [
+      "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
+      "@deepseek-ai/dsh-api-session-controller#session/selectModel",
+      "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel"
+    ]
   },
   "i_class_manual": {
     "mark": "derived-from-manual (v3 proposal 口径)",
@@ -307,13 +310,11 @@
           "currentSelection()"
         ],
         "call_sites": [
-          "index.ts:574",
-          "index.ts:578",
-          "index.ts:581",
-          "index.ts:584",
-          "index.ts:2288"
+          "index.ts:635",
+          "index.ts:636",
+          "index.ts:730"
         ],
-        "w_migration": "feasible — v3 指出用途可评估迁往 W 三方法 (session/selectModel、modelCatalog、initializeDefaultModel)"
+        "w_migration": "S1 done (wire read) — the @manual model.currentSelection wire line was removed; the selection read now rides the generated chain via session/modelCatalog().default. The I-class service itself stays for buildAgentOptions() live getters (agentOptions provider/model) — see 024-s1-model-slice.md."
       },
       {
         "key": "appExit",

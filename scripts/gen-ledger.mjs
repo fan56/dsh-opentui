@@ -59,7 +59,16 @@ for (const id of expected) {
 
 // --- assemble ledger -------------------------------------------------------
 const wired = prov.wired_surface_manual.methods
-const wiredCapirIds = new Set(wired.map((w) => w.capir_id).filter(Boolean))
+// S1: the wired CapIR set is the UNION of (a) hand-wired @manual wire lines that
+// carry a capir_id (session/list) and (b) generated-capcontract wired ids
+// (the three S1 model methods). The @manual WIRE surface count stays 11 — the
+// generated ids are NOT hand-copied req.method lines, so they must not inflate
+// dimensions.wired.count or the check-capcontract #8 name set.
+const generatedWiredIds = (prov.wired_capir_generated?.ids ?? [])
+const wiredCapirIds = new Set([...wired.map((w) => w.capir_id).filter(Boolean), ...generatedWiredIds])
+for (const id of generatedWiredIds) {
+  if (!allIds.has(id)) throw new Error(`generated wired id not in CapIR full set: ${id}`)
+}
 
 const rows = allMethods
   .map((m) => ({
@@ -103,6 +112,12 @@ const ledger = {
       mark: prov.wired_surface_manual.mark,
       count: wired.length,
       methods: wired,
+    },
+    wired_capir_generated: {
+      mark: prov.wired_capir_generated?.mark ?? 'n/a',
+      count: generatedWiredIds.length,
+      ids: generatedWiredIds,
+      in_wired_total: rows.filter((r) => r.in_wired).length,
     },
     i_class: {
       mark: prov.i_class_manual.mark,
@@ -151,7 +166,9 @@ md.push('| Dimension | Count | Notes |')
 md.push('|---|---:|---|')
 md.push(`| Full (CapIR) | ${d.full.methods} methods / ${d.full.artifacts} artifacts | unary ${d.full.by_kind.unary} / stream ${d.full.by_kind.stream}; class W ${d.full.by_class.W}; endpoints: sc ${d.full.endpoints_session_controller}, global map sum ${d.full.endpoints_global_map_sum} |`)
 md.push(`| Profile expected | ${d.expected.count} methods | profile ${d.expected.profile}; ${d.expected.contribution_packages.length} contribution packages; ${d.expected.exclusions.length} method exclusion(s) |`)
-md.push(`| Wired (manual) | ${d.wired.count} methods | ${d.wired.mark} |`)
+md.push(`| Wired (manual @manual wire) | ${d.wired.count} methods | ${d.wired.mark} |`)
+md.push(`| Wired (generated capcontract, S1) | ${d.wired_capir_generated.count} methods | ${d.wired_capir_generated.mark} |`)
+md.push(`| in_wired total (of ${d.full.methods}) | ${d.wired_capir_generated.in_wired_total} methods | union of @manual capir_id + generated ids |`)
 md.push(`| I-class (manual) | ${d.i_class.count} services | ${d.i_class.mark} |`)
 md.push('')
 md.push('## Reconciliation (first-run closure)')
@@ -183,6 +200,12 @@ md.push('')
 md.push('| method | kind | source line | CapIR id mapping |')
 md.push('|---|---|---:|---|')
 for (const w of d.wired.methods) md.push(`| ${w.method} | ${w.kind} | ${w.source_line} | ${w.capir_id ?? '—'} |`)
+md.push('')
+md.push('## Wired CapIR ids via generated capcontract (S1)')
+md.push('')
+md.push('Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by check-capcontract #10.')
+md.push('')
+for (const id of d.wired_capir_generated.ids) md.push(`- ${id}`)
 md.push('')
 md.push('## I-class services (manual registry)')
 md.push('')

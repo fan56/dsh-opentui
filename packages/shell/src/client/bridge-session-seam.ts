@@ -3058,12 +3058,51 @@ export class BridgeSessionSeam implements SessionSeam {
 		return unsupported("listProviders")
 	}
 
+	/**
+	 * S1 /model: the bridge now serves `modelCatalog` through the generated
+	 * capcontract W chain (session/modelCatalog). Flatten the host provider
+	 * groups exactly like SessionSeamAdapter does; a transport without the
+	 * frame replies `{}`, which degrades to UNSUPPORTED (never a fake catalog).
+	 */
 	async modelCatalog(_force?: boolean): Promise<SeamProviderModel[]> {
-		return unsupported("modelCatalog")
+		const raw = await this.#transport.request("modelCatalog") as {
+			groups?: { id?: unknown; models?: { id?: unknown }[] }[]
+		} | undefined
+		if (raw === undefined || raw === null || !Array.isArray(raw.groups)) {
+			return unsupported("modelCatalog")
+		}
+		const rows: SeamProviderModel[] = []
+		for (const group of raw.groups) {
+			const providerID = typeof group?.id === "string" ? group.id : ""
+			if (!providerID) continue
+			for (const model of Array.isArray(group.models) ? group.models : []) {
+				const modelID = typeof model?.id === "string" ? model.id : ""
+				if (modelID) rows.push({ providerID, modelID })
+			}
+		}
+		return rows
 	}
 
-	selectModel(_providerID: string, _modelID: string): Promise<void> {
-		return Promise.reject(new BridgeProtocolError("UNSUPPORTED", "selectModel is not backed by the in-process bridge", { capability: "selectModel" }))
+	/**
+	 * S1 /model: `selectModel` rides the generated capcontract W chain. The
+	 * bridge applies the bound (or staged) sessionId; rejections PROPAGATE so a
+	 * host refusal surfaces in the transcript. A transport without the frame
+	 * replies `{}` → UNSUPPORTED, preserving the out-of-batch degrade contract.
+	 */
+	selectModel(providerID: string, modelID: string): Promise<void> {
+		const sessionId = this.#currentSessionId ?? this.stagedSessionId()
+		return this.#transport
+			.request("selectModel", {
+				provider: providerID,
+				model: modelID,
+				...(sessionId !== undefined && sessionId !== "" ? { sessionId } : {}),
+			})
+			.then((reply) => {
+				const r = reply as { selected?: unknown } | undefined
+				if (r === undefined || r === null || r.selected === undefined) {
+					return unsupported("selectModel")
+				}
+			})
 	}
 
 	// ------------------------------------------------------------------

@@ -124,7 +124,7 @@
     },
     "wired": {
       "mark": "derived-from-manual",
-      "count": 12,
+      "count": 11,
       "methods": [
         {
           "method": "bridge.ping",
@@ -137,13 +137,6 @@
           "kind": "meta",
           "source_line": 2256,
           "capir_id": null
-        },
-        {
-          "method": "model.currentSelection",
-          "kind": "business",
-          "source_line": 2275,
-          "capir_id": null,
-          "note": "read via I-class agentDefaultModel.currentSelection(), not a CapIR W method"
         },
         {
           "method": "session.list",
@@ -203,6 +196,16 @@
         }
       ]
     },
+    "wired_capir_generated": {
+      "mark": "S1-generated-capcontract",
+      "count": 3,
+      "ids": [
+        "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
+        "@deepseek-ai/dsh-api-session-controller#session/selectModel",
+        "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel"
+      ],
+      "in_wired_total": 4
+    },
     "i_class": {
       "mark": "derived-from-manual (v3 proposal 口径)",
       "count": 6,
@@ -239,13 +242,11 @@
             "currentSelection()"
           ],
           "call_sites": [
-            "index.ts:574",
-            "index.ts:578",
-            "index.ts:581",
-            "index.ts:584",
-            "index.ts:2288"
+            "index.ts:635",
+            "index.ts:636",
+            "index.ts:730"
           ],
-          "w_migration": "feasible — v3 指出用途可评估迁往 W 三方法 (session/selectModel、modelCatalog、initializeDefaultModel)"
+          "w_migration": "S1 done (wire read) — the @manual model.currentSelection wire line was removed; the selection read now rides the generated chain via session/modelCatalog().default. The I-class service itself stays for buildAgentOptions() live getters (agentOptions provider/model) — see 024-s1-model-slice.md."
         },
         {
           "key": "appExit",
@@ -617,7 +618,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "profile-patch"
     },
     {
@@ -641,7 +642,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "profile-patch"
     },
     {
@@ -761,7 +762,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "profile-patch"
     },
     {

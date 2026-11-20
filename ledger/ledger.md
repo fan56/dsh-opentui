@@ -12,7 +12,9 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 |---|---:|---|
 | Full (CapIR) | 257 methods / 43 artifacts | unary 226 / stream 31; class W 257; endpoints: sc 27, global map sum 257 |
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
-| Wired (manual) | 12 methods | derived-from-manual |
+| Wired (manual @manual wire) | 11 methods | derived-from-manual |
+| Wired (generated capcontract, S1) | 3 methods | S1-generated-capcontract |
+| in_wired total (of 257) | 4 methods | union of @manual capir_id + generated ids |
 | I-class (manual) | 6 services | derived-from-manual (v3 proposal 口径) |
 
 ## Reconciliation (first-run closure)
@@ -54,7 +56,6 @@ Corrections applied in provenance mapping data:
 |---|---|---:|---|
 | bridge.ping | meta | 2247 | — |
 | bridge.hello | meta | 2256 | — |
-| model.currentSelection | business | 2275 | — |
 | session.list | business | 2294 | @deepseek-ai/dsh-api-session-controller#session/list |
 | subagents.interrupt | business | 2300 | — |
 | subagents.stopChildren | business | 2304 | — |
@@ -65,13 +66,21 @@ Corrections applied in provenance mapping data:
 | ask.response | business | 2324 | — |
 | journal.replay | business | 2328 | — |
 
+## Wired CapIR ids via generated capcontract (S1)
+
+Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by check-capcontract #10.
+
+- @deepseek-ai/dsh-api-session-controller#session/modelCatalog
+- @deepseek-ai/dsh-api-session-controller#session/selectModel
+- @deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel
+
 ## I-class services (manual registry)
 
 | service | members | call sites | W migration |
 |---|---|---|---|
 | agents | create | index.ts:1599, index.ts:1656, index.ts:2079 | partial — CapIR 有 subagents/prompt、subagents/interruptByUser，但 agent 创建/生命周期仍为 I 类 |
 | sessionPersistence | open(sessionId,'read'), readSessionAgentPreset | index.ts:1545, index.ts:1682, index.ts:2170, index.ts:2189 | low — journal.replay 为 wire 面，持久化 open 无直接 CapIR 对应 |
-| agentDefaultModel | currentSelection() | index.ts:574, index.ts:578, index.ts:581, index.ts:584, index.ts:2288 | feasible — v3 指出用途可评估迁往 W 三方法 (session/selectModel、modelCatalog、initializeDefaultModel) |
+| agentDefaultModel | currentSelection() | index.ts:635, index.ts:636, index.ts:730 | S1 done (wire read) — the @manual model.currentSelection wire line was removed; the selection read now rides the generated chain via session/modelCatalog().default. The I-class service itself stays for buildAgentOptions() live getters (agentOptions provider/model) — see 024-s1-model-slice.md. |
 | appExit | callable appExit(0) | index.ts:2395, index.ts:2404, index.ts:2440 | no — 进程生命周期，非 typert 面 |
 | sessionController | list(), subagent index reconcile | index.ts:1979, index.ts:2002, index.ts:2031 | feasible — 非 wire 部分的 list() 对应 CapIR W 方法 session/list |
 | systemPrompt | section | packages/bridge/src/append-section.ts:55 | 否（服务对象面，无 CapIR W 对应；长期 I 类） |
@@ -105,9 +114,9 @@ Corrections applied in provenance mapping data:
 | 16 | @deepseek-ai/dsh-api-session-controller#session/events | unary | Y | Y | N | profile-patch |
 | 17 | @deepseek-ai/dsh-api-session-controller#session/follow | stream | Y | Y | N | profile-patch |
 | 18 | @deepseek-ai/dsh-api-session-controller#session/fork | unary | Y | Y | N | profile-patch |
-| 19 | @deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel | unary | Y | Y | N | profile-patch |
+| 19 | @deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel | unary | Y | Y | Y | profile-patch |
 | 20 | @deepseek-ai/dsh-api-session-controller#session/list | unary | Y | Y | Y | profile-patch |
-| 21 | @deepseek-ai/dsh-api-session-controller#session/modelCatalog | unary | Y | Y | N | profile-patch |
+| 21 | @deepseek-ai/dsh-api-session-controller#session/modelCatalog | unary | Y | Y | Y | profile-patch |
 | 22 | @deepseek-ai/dsh-api-session-controller#session/observeEvent | stream | Y | Y | N | profile-patch |
 | 23 | @deepseek-ai/dsh-api-session-controller#session/observeProjections | stream | Y | Y | N | profile-patch |
 | 24 | @deepseek-ai/dsh-api-session-controller#session/observeState | stream | Y | Y | N | profile-patch |
@@ -117,7 +126,7 @@ Corrections applied in provenance mapping data:
 | 28 | @deepseek-ai/dsh-api-session-controller#session/prompt | unary | Y | Y | N | profile-patch |
 | 29 | @deepseek-ai/dsh-api-session-controller#session/rename | unary | Y | Y | N | profile-patch |
 | 30 | @deepseek-ai/dsh-api-session-controller#session/search | unary | Y | Y | N | profile-patch |
-| 31 | @deepseek-ai/dsh-api-session-controller#session/selectModel | unary | Y | Y | N | profile-patch |
+| 31 | @deepseek-ai/dsh-api-session-controller#session/selectModel | unary | Y | Y | Y | profile-patch |
 | 32 | @deepseek-ai/dsh-api-session-controller#session/state | unary | Y | Y | N | profile-patch |
 | 33 | @deepseek-ai/dsh-api-session-controller#session/updateQueue | unary | Y | Y | N | profile-patch |
 | 34 | @deepseek-ai/dsh-api-session-controller#session/wait | unary | Y | Y | N | profile-patch |

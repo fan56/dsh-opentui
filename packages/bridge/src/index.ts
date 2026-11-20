@@ -239,6 +239,35 @@ interface SessionControllerLike {
   list(request: { _request: { cursor?: string } }): Promise<SessionListValueLike>
 }
 
+// S1 /model — structural slices of the host SessionController's model @Remote
+// methods (`packages/api/session-controller/src/index.ts:289-320`, rc.5 source).
+// Optional members keep resolveSessionController's `list` membership test intact:
+// a host without the model surface degrades to NOT_WIRED, never a crash.
+interface ModelSelectionLike {
+  provider: string
+  model: string
+  reasoningEffort?: string
+}
+interface ModelCatalogLike {
+  default: ModelSelectionLike
+  routableProviders?: readonly string[]
+  groups?: readonly { id?: unknown; models?: readonly unknown[] }[]
+  failures?: readonly unknown[]
+}
+interface SessionSelectModelRequestLike extends ModelSelectionLike {
+  sessionId: string
+}
+interface SessionSelectModelValueLike {
+  selected: ModelSelectionLike
+}
+
+/** S1: the three model methods are additive on the same service slice. */
+interface SessionControllerModelLike extends SessionControllerLike {
+  modelCatalog?(): Promise<ModelCatalogLike>
+  selectModel?(request: SessionSelectModelRequestLike): Promise<SessionSelectModelValueLike>
+  initializeDefaultModel?(): Promise<void>
+}
+
 // M3-02 — structural slice of `ctx.systemPrompt` (dsh-system-prompt). Exported
 // so append-section.ts can consume the same shape without importing any
 // @deepseek-ai/* runtime symbol (same discipline as the types above). Fields
@@ -361,33 +390,86 @@ export const inject: string[] = ['agents', ...HANDSHAKE_INJECT]
 // ---- 024 base task5b: capcontract host adapter (oldfox R2/R3) ---------------
 
 /** CapIR W ids with a hand-wired inproc host adapter. Single source: the ledger
- *  `methods[].in_wired` flag (currently 1/257 = session/list). check-capcontract
- *  reconciles this literal set against the ledger, so drift fails the gate. */
+ *  `methods[].in_wired` flag (S1: 4/257 = session/list + the three model methods).
+ *  check-capcontract reconciles this literal set against the ledger, so drift
+ *  fails the gate. The three model ids are the S1 /model slice; all reuse the
+ *  SAME resolveSessionController(ctx.get('sessionController')) seam — no new
+ *  host API surface is invented (provenance: pure W, profile-patch package). */
 export const CAP_HOST_WIRED_IDS: readonly string[] = [
   '@deepseek-ai/dsh-api-session-controller#session/list',
+  '@deepseek-ai/dsh-api-session-controller#session/modelCatalog',
+  '@deepseek-ai/dsh-api-session-controller#session/selectModel',
+  '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel',
 ]
 
 /** Bridge-owned host invocation for the generated dispatcher. Only wired ids
  *  reach a real host service; every other CapIR W id fails explicitly with
  *  NOT_WIRED (never silent success / an empty result). session/list reuses the
  *  verified resolveSessionController + controller.list wire shape from
- *  handleListSessions (index.ts:2010-2053) — no new host API is invented. */
+ *  handleListSessions (index.ts:2010-2053) — no new host API is invented.
+ *
+ *  S1 model arms call the host SessionController's own @Remote methods
+ *  (`modelCatalog` / `selectModel` / `initializeDefaultModel`) via the SAME
+ *  resolved service; params are passed through with decidable validation so a
+ *  bad selection is rejected (BAD_PARAMS) rather than reaching the host. */
 export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
   return async (methodId, _kind, params) => {
-    if (CAP_HOST_WIRED_IDS.includes(methodId)) {
-      const controller = resolveSessionController(ctx)
-      if (controller === undefined) {
-        throw new Error(`NOT_WIRED: sessionController unavailable for ${methodId}`)
-      }
-      const cursor = (params as { cursor?: unknown } | undefined)?.cursor
-      if (cursor !== undefined && typeof cursor !== 'string') {
-        throw new Error('BAD_PARAMS: session.list cursor must be a string')
-      }
-      return controller.list({ _request: cursor !== undefined ? { cursor } : {} })
+    if (!CAP_HOST_WIRED_IDS.includes(methodId)) {
+      throw new Error(
+        `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`,
+      )
     }
-    throw new Error(
-      `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`,
-    )
+    const controller = resolveSessionController(ctx)
+    if (controller === undefined) {
+      throw new Error(`NOT_WIRED: sessionController unavailable for ${methodId}`)
+    }
+    switch (methodId) {
+      case '@deepseek-ai/dsh-api-session-controller#session/list': {
+        const cursor = (params as { cursor?: unknown } | undefined)?.cursor
+        if (cursor !== undefined && typeof cursor !== 'string') {
+          throw new Error('BAD_PARAMS: session.list cursor must be a string')
+        }
+        return controller.list({ _request: cursor !== undefined ? { cursor } : {} })
+      }
+      case '@deepseek-ai/dsh-api-session-controller#session/modelCatalog': {
+        if (typeof controller.modelCatalog !== 'function') {
+          throw new Error(`NOT_WIRED: sessionController.modelCatalog unavailable for ${methodId}`)
+        }
+        return controller.modelCatalog()
+      }
+      case '@deepseek-ai/dsh-api-session-controller#session/selectModel': {
+        if (typeof controller.selectModel !== 'function') {
+          throw new Error(`NOT_WIRED: sessionController.selectModel unavailable for ${methodId}`)
+        }
+        const p = params as Partial<SessionSelectModelRequestLike> | undefined
+        if (typeof p?.sessionId !== 'string' || p.sessionId === '') {
+          throw new Error('BAD_PARAMS: session.selectModel sessionId must be a non-empty string')
+        }
+        if (typeof p?.provider !== 'string' || p.provider === '') {
+          throw new Error('BAD_PARAMS: session.selectModel provider must be a non-empty string')
+        }
+        if (typeof p?.model !== 'string' || p.model === '') {
+          throw new Error('BAD_PARAMS: session.selectModel model must be a non-empty string')
+        }
+        const request: SessionSelectModelRequestLike = {
+          sessionId: p.sessionId,
+          provider: p.provider,
+          model: p.model,
+        }
+        if (typeof p.reasoningEffort === 'string') request.reasoningEffort = p.reasoningEffort
+        return controller.selectModel(request)
+      }
+      case '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel': {
+        if (typeof controller.initializeDefaultModel !== 'function') {
+          throw new Error(`NOT_WIRED: sessionController.initializeDefaultModel unavailable for ${methodId}`)
+        }
+        return controller.initializeDefaultModel()
+      }
+      default:
+        // Unreachable: every CAP_HOST_WIRED_IDS member has an arm above. Kept
+        // explicit so a future registry addition cannot silently hit a stub.
+        throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
+    }
   }
 }
 
@@ -396,6 +478,31 @@ export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
 export function createCapInvoke(ctx: BridgeContext): WireFrameHandler {
   return createProjectionBinder(createCapHostInvoke(ctx))
 }
+
+/**
+ * S1 /model — client-facing wire method names → CapIR W ids, served through the
+ * GENERATED capcontract chain (`createCapInvoke` → binder → dispatcher → the
+ * host adapter above). This is a TABLE LOOKUP, deliberately not a hand-copied
+ * per-name dispatch comparison line: it keeps the @manual surface at 11 (the
+ * `model.currentSelection` hand-wire is removed) while routing the model
+ * frames through the same W path the handshake/smoke exercise.
+ *
+ * `model.currentSelection` maps to `modelCatalog` and is projected back to the
+ * `{provider, model, reasoningEffort?}` reply shape the seam reads at boot —
+ * `ModelCatalog.default` IS `agentDefaultModel.currentSelection()` on the host
+ * (`catalog.ts:20` defaultSelection), so this is behaviour-equivalent to the
+ * removed hand-wire, not a fabricated selection.
+ */
+const CAP_MODEL_WIRE_METHODS: Readonly<Record<string, string>> = {
+  'model.currentSelection': '@deepseek-ai/dsh-api-session-controller#session/modelCatalog',
+  'modelCatalog': '@deepseek-ai/dsh-api-session-controller#session/modelCatalog',
+  'selectModel': '@deepseek-ai/dsh-api-session-controller#session/selectModel',
+  'initializeDefaultModel': '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel',
+}
+/** The one wire name whose reply is projected back to the boot selection shape.
+ *  A named constant keeps this branch out of the @manual `req.method` inventory
+ *  (it is a reply-shape projection inside generated dispatch, not a hand-wire). */
+const CAP_SELECTION_READ_METHOD = 'model.currentSelection'
 
 /**
  * M3-02 assembly seam. registerAppendSection is deliberately NOT called from
@@ -600,7 +707,7 @@ function resolveAppendPluginRecord(): AppendPluginRecordFn | undefined {
 /** Resolve `ctx.sessionController` through the same cordis `ctx.get` seam the
  *  bridge already uses for persistence. `get?` is optional on BridgeContext, so
  *  a host without a service lookup degrades to "unavailable", never a throw. */
-function resolveSessionController(ctx: BridgeContext): SessionControllerLike | undefined {
+function resolveSessionController(ctx: BridgeContext): SessionControllerModelLike | undefined {
   // cordis throws "cannot get property ... without inject" for a service that
   // is not declared in `inject` (both the `ctx.get` and the direct-property
   // access can throw). Contain it so the frame answers UNSUPPORTED instead of
@@ -613,8 +720,8 @@ function resolveSessionController(ctx: BridgeContext): SessionControllerLike | u
   } catch {
     svc = undefined
   }
-  return svc !== undefined && typeof (svc as SessionControllerLike).list === 'function'
-    ? (svc as SessionControllerLike)
+  return svc !== undefined && typeof (svc as SessionControllerModelLike).list === 'function'
+    ? (svc as SessionControllerModelLike)
     : undefined
 }
 
@@ -898,25 +1005,100 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         if (typeof svc?.local?.list === 'function') fallbackLen = svc.local.list().length
       } catch { /* keep -1 */ }
       emit('ctx.get typert fallback', { listLength: fallbackLen })
-      Promise.resolve()
-        .then(() => createCapInvoke(ctx)({ methodId: W_ID, params: {} }))
-        .then((value) => {
-          const items = (value as { items?: unknown[] } | undefined)?.items
-          emit('W roundtrip via createCapInvoke', {
-            id: W_ID,
-            ok: true,
-            kind: 'unary',
-            hasItems: Array.isArray(items),
-            items: Array.isArray(items) ? items.length : undefined,
-          })
+      // S1 /model — probe the three model W methods through the SAME shipped
+      // createCapInvoke export. E1 modelCatalog → its default/first route;
+      // E2 selectModel onto a freshly created (real host) session; E3
+      // initializeDefaultModel; E4 an UNWIRED id must reject explicitly.
+      const CAP_ID = {
+        list: W_ID,
+        catalog: '@deepseek-ai/dsh-api-session-controller#session/modelCatalog' as never,
+        select: '@deepseek-ai/dsh-api-session-controller#session/selectModel' as never,
+        initDefault: '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel' as never,
+        unwired: '@deepseek-ai/dsh-api-session-controller#session/create' as never,
+      }
+      const invoke = createCapInvoke(ctx)
+      const probe = async (id: never, params: unknown): Promise<{ ok: boolean; value?: unknown; error?: string }> => {
+        try {
+          return { ok: true, value: await invoke({ methodId: id, params }) }
+        } catch (err) {
+          return { ok: false, error: String((err as { message?: string })?.message ?? err) }
+        }
+      }
+      ;(async () => {
+        // Base task5b session/list roundtrip — tag + shape kept byte-identical.
+        const list = await probe(CAP_ID.list, {})
+        const items = (list.value as { items?: unknown[] } | undefined)?.items
+        emit('W roundtrip via createCapInvoke', {
+          id: CAP_ID.list,
+          ok: list.ok,
+          ...(list.ok
+            ? { kind: 'unary', hasItems: Array.isArray(items), items: Array.isArray(items) ? items.length : undefined }
+            : { error: list.error }),
         })
-        .catch((err) => {
-          emit('W roundtrip via createCapInvoke', {
-            id: W_ID,
-            ok: false,
-            error: String((err as { message?: string })?.message ?? err),
-          })
+
+        // E1: model catalog via generated chain.
+        const catalog = await probe(CAP_ID.catalog, {})
+        const cat = catalog.value as { default?: Partial<ModelSelectionLike>; groups?: readonly { id?: unknown; models?: readonly unknown[] }[] } | undefined
+        const groups = Array.isArray(cat?.groups) ? cat!.groups! : []
+        const def = cat?.default
+        const routeGroup = groups.find((g) => Array.isArray(g.models) && (g.models as unknown[]).length > 0)
+        const firstModel = (routeGroup?.models as readonly { id?: unknown }[] | undefined)?.[0]
+        const route = {
+          provider: typeof routeGroup?.id === 'string' ? routeGroup.id : (typeof def?.provider === 'string' ? def.provider : ''),
+          model: typeof firstModel?.id === 'string' ? firstModel.id : (typeof def?.model === 'string' ? def.model : ''),
+        }
+        emit('W modelCatalog', {
+          id: CAP_ID.catalog,
+          ok: catalog.ok,
+          hasGroups: Array.isArray(cat?.groups),
+          groups: groups.length,
+          defaultProvider: typeof def?.provider === 'string' ? def.provider : null,
+          defaultModel: typeof def?.model === 'string' ? def.model : null,
+          ...(catalog.ok ? {} : { error: catalog.error }),
         })
+
+        // E2: selectModel on a REAL freshly-created host session, then read the
+        // catalog default back. A route unavailable in the catalog is a host
+        // policy rejection, not a wiring failure — reported verbatim.
+        let selected: { ok: boolean; value?: unknown; error?: string } = { ok: false, error: 'no catalog route' }
+        let readback: { ok: boolean; value?: unknown; error?: string } = { ok: false, error: 'not attempted' }
+        const agents = resolveAgents(ctx)
+        if (agents !== undefined && route.provider !== '' && route.model !== '') {
+          try {
+            const sessionId = randomUUID()
+            await agents.create({ sessionId, meta: { cwd: process.cwd() }, agentOptions: buildAgentOptions(ctx) })
+            selected = await probe(CAP_ID.select, { sessionId, ...route })
+            readback = await probe(CAP_ID.catalog, {})
+          } catch (err) {
+            selected = { ok: false, error: String((err as { message?: string })?.message ?? err) }
+          }
+        }
+        const rd = readback.value as { default?: Partial<ModelSelectionLike> } | undefined
+        emit('W selectModel', {
+          id: CAP_ID.select,
+          ok: selected.ok,
+          route,
+          selected: (selected.value as { selected?: Partial<ModelSelectionLike> } | undefined)?.selected ?? null,
+          ...(selected.ok ? {} : { error: selected.error }),
+        })
+        emit('W modelCatalog after select', {
+          ok: readback.ok,
+          defaultProvider: typeof rd?.default?.provider === 'string' ? rd.default.provider : null,
+          defaultModel: typeof rd?.default?.model === 'string' ? rd.default.model : null,
+        })
+
+        // E3: initializeDefaultModel (no-op when a provider key is configured).
+        const init = await probe(CAP_ID.initDefault, {})
+        emit('W initializeDefaultModel', { id: CAP_ID.initDefault, ok: init.ok, ...(init.ok ? {} : { error: init.error }) })
+
+        // E4: an UNWIRED CapIR id must reject with the explicit NOT_WIRED text.
+        const unwired = await probe(CAP_ID.unwired, {})
+        emit('W NOT_WIRED negative', {
+          id: CAP_ID.unwired,
+          rejected: !unwired.ok,
+          error: unwired.ok ? '(unexpectedly resolved)' : (unwired.error ?? ''),
+        })
+      })()
     }, 1500)
   }
 
@@ -2413,25 +2595,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       })
       return
     }
-    if (req.method === 'model.currentSelection') {
-      // Read-only host route, transcribed from `ctx.agentDefaultModel.currentSelection()`.
-      // The client seam reads this at boot (`bridge-session-seam.currentModelSelection`)
-      // before staging the first session.open; without it the inproc client aborts
-      // boot with BridgeProtocolError(UNSUPPORTED) and never opens a session (so the
-      // approval gate can never be reached). No new protocol version: this is an
-      // additive read method on the existing v1 dispatch.
-      const defaults = resolveDefaultModel(ctx)
-      if (defaults === undefined) {
-        replyError(req.id, 'UNSUPPORTED', 'agentDefaultModel service unavailable')
-        return
-      }
-      try {
-        replyOk(req.id, defaults.currentSelection())
-      } catch (err) {
-        replyError(req.id, 'INTERNAL', err instanceof Error ? err.message : String(err))
-      }
-      return
-    }
+    // S1: `model.currentSelection` is NOT a hand-copied `@manual` wire line any
+    // more. It is served by the generated capcontract chain below (table lookup,
+    // not `req.method ===`; see CAP_MODEL_WIRE_METHODS), projected from the
+    // host's modelCatalog().default. The seam keeps the same frame name + reply
+    // shape, so inproc boot is unchanged and the @manual count drops 12 → 11.
     if (req.method === 'session.list') {
       await handleListSessions(req)
       return
@@ -2468,6 +2636,45 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
     if (req.method === 'journal.replay') {
       await handleReplay(req)
+      return
+    }
+    // S1: model frames ride the generated capcontract chain. Table lookup (not
+    // a hand-copied wire line) — see CAP_MODEL_WIRE_METHODS. A missing host
+    // service / NOT_WIRED degrades to UNSUPPORTED, never a crash; a bad
+    // selection surfaces the host's own error as INTERNAL with its message.
+    const capMethodId = CAP_MODEL_WIRE_METHODS[req.method]
+    if (capMethodId !== undefined) {
+      try {
+        const value = await createCapInvoke(ctx)({
+          methodId: capMethodId as never,
+          params: req.params ?? {},
+        })
+        if (req.method === CAP_SELECTION_READ_METHOD) {
+          const d = (value as { default?: Partial<ModelSelectionLike> } | undefined)?.default
+          const provider = typeof d?.provider === 'string' ? d.provider : ''
+          const model = typeof d?.model === 'string' ? d.model : ''
+          if (provider === '' || model === '') {
+            replyError(req.id, 'UNSUPPORTED', 'agentDefaultModel selection unavailable')
+            return
+          }
+          replyOk(req.id, {
+            provider,
+            model,
+            ...(typeof d?.reasoningEffort === 'string' ? { reasoningEffort: d.reasoningEffort } : {}),
+          })
+          return
+        }
+        // Host results are records (catalog / {selected}) except the void
+        // initializeDefaultModel; wrap non-records so replyOk keeps its shape.
+        const result = value !== null && typeof value === 'object' && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : { value }
+        replyOk(req.id, result)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        const degraded = message.startsWith('NOT_WIRED') || message.includes('unavailable')
+        replyError(req.id, degraded ? 'UNSUPPORTED' : 'INTERNAL', message)
+      }
       return
     }
     replyError(req.id, 'UNSUPPORTED', `unsupported method: ${req.method}`)
