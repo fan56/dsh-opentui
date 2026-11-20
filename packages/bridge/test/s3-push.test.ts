@@ -13,6 +13,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import {
+  classifyPushErrorCode,
   createCapHostInvoke,
   createPushRelay,
   PUSH_RELAY_METHOD_IDS,
@@ -270,5 +271,31 @@ describe("S3 — createPushRelay", () => {
     const ends = frames.filter((f) => f.type === "cap.end")
     expect(ends).toHaveLength(3)
     expect(ends.every((f) => f.payload.reason === "unavailable")).toBe(true)
+  })
+
+  // C-1: error detail is classified into a whitelisted cap.end.code instead of
+  // being swallowed by a bare catch. reason/wire shape stay unchanged.
+  test("classifyPushErrorCode maps known prefixes, defaults to HOST_ERROR", () => {
+    expect(classifyPushErrorCode(new Error("NOT_WIRED: no adapter"))).toBe("NOT_WIRED")
+    expect(classifyPushErrorCode("BAD_PARAMS: bad signal")).toBe("BAD_PARAMS")
+    expect(classifyPushErrorCode(new Error("BAD_KIND: unary"))).toBe("BAD_KIND")
+    expect(classifyPushErrorCode(new Error("host exploded mid-stream"))).toBe("HOST_ERROR")
+    expect(classifyPushErrorCode(undefined)).toBe("HOST_ERROR")
+  })
+
+  test("invoke failure emits cap.end.code classification for every subscription", async () => {
+    const frames: Array<{ type: string; payload: Record<string, unknown> }> = []
+    const relay = createPushRelay({
+      invoke: async () => { throw new Error("NOT_WIRED: host observe* absent") },
+      emit: (type, payload) => { frames.push({ type, payload }) },
+    })
+    relay.start("sess-c1")
+    for (let i = 0; i < 30 && relay.activeCount() > 0; i++) await tick()
+    const ends = frames.filter((f) => f.type === "cap.end")
+    expect(ends).toHaveLength(3)
+    expect(ends.every((f) => f.payload.reason === "unavailable")).toBe(true)
+    expect(ends.every((f) => f.payload.code === "NOT_WIRED")).toBe(true)
+    // Only the bounded enum escapes — no message/payload/stack field.
+    expect(ends.every((f) => Object.keys(f.payload).sort().join(",") === "code,methodId,reason,sessionId")).toBe(true)
   })
 })

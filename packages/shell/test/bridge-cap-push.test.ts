@@ -151,3 +151,56 @@ describe("S3 — seam push degrade / recovery status", () => {
     expect(delivered).toEqual([1])
   })
 })
+
+describe("S3 / BL-1 — seam-side per-method ordering + C-2 drop counter", () => {
+  const E = "observeEvent"
+  const S = "observeState"
+  const P = "observeProjections"
+
+  test("three methods of one session each keep their own seq from 1 (no cross-stream drops)", () => {
+    const h = makeHarness()
+    const delivered: Array<{ methodId: string; seq: number }> = []
+    h.seam.onCapPush("s-A", (e) => delivered.push({ methodId: e.methodId, seq: e.seq }))
+    h.emit(h.event(1, "s-A", E))
+    h.emit(h.event(1, "s-A", S))
+    h.emit(h.event(1, "s-A", P))
+    h.emit(h.event(2, "s-A", E))
+    h.emit(h.event(2, "s-A", S))
+    h.emit(h.event(2, "s-A", P))
+    const by = new Map<string, number[]>()
+    for (const d of delivered) by.set(d.methodId, [...(by.get(d.methodId) ?? []), d.seq])
+    expect(by.get(E)).toEqual([1, 2])
+    expect(by.get(S)).toEqual([1, 2])
+    expect(by.get(P)).toEqual([1, 2])
+    expect(delivered).toHaveLength(6)
+    expect(h.seam.capPushDropCount("s-A")).toBe(0)
+  })
+
+  test("cap end of one method degrades only that subscription; other streams still deliver", () => {
+    const h = makeHarness()
+    const delivered: Array<{ methodId: string; seq: number }> = []
+    h.seam.onCapPush("s-A", (e) => delivered.push({ methodId: e.methodId, seq: e.seq }))
+    for (const m of [E, S, P]) h.emit(h.event(1, "s-A", m))
+    h.emit({ type: "cap.end", payload: { methodId: E, sessionId: "s-A", reason: "stream-end" } })
+    // The two still-live streams continue past the first stream's lastSeq.
+    h.emit(h.event(2, "s-A", S))
+    h.emit(h.event(2, "s-A", P))
+    const by = new Map<string, number[]>()
+    for (const d of delivered) by.set(d.methodId, [...(by.get(d.methodId) ?? []), d.seq])
+    expect(by.get(E)).toEqual([1])
+    expect(by.get(S)).toEqual([1, 2])
+    expect(by.get(P)).toEqual([1, 2])
+    expect(h.seam.capPushStatus("s-A")).toMatchObject({ state: "degraded", lastSeq: 2 })
+  })
+
+  test("C-2: duplicate/regressive seq is counted per method, not silently lost", () => {
+    const h = makeHarness()
+    const delivered: number[] = []
+    h.seam.onCapPush("s-A", (e) => delivered.push(e.seq))
+    for (const seq of [1, 2, 2, 1, 3]) h.emit(h.event(seq, "s-A", E))
+    expect(delivered).toEqual([1, 2, 3])
+    expect(h.seam.capPushDropCount("s-A", E)).toBe(2)
+    expect(h.seam.capPushDropCount("s-A")).toBe(2)
+    expect(h.seam.capPushDropCount("s-B")).toBe(0)
+  })
+})

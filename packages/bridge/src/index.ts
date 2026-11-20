@@ -565,6 +565,22 @@ export interface PushRelayHandle {
   activeCount(): number
 }
 
+/**
+ * S3 / C-1: classify a failed push-stream error into a bounded, whitelisted
+ * code for `cap.end`. Only the known prefix is kept — no message body, host
+ * payload or stack is ever emitted (same desensitization law as `cap.event`).
+ * This lets the seam / S4 tell "surface absent" (NOT_WIRED) from a host or
+ * mid-stream error (HOST_ERROR) instead of collapsing both into one opaque
+ * reason.
+ */
+export function classifyPushErrorCode(err: unknown): 'NOT_WIRED' | 'BAD_PARAMS' | 'BAD_KIND' | 'HOST_ERROR' {
+  const message = err instanceof Error ? err.message : typeof err === 'string' ? err : ''
+  if (message.startsWith('NOT_WIRED')) return 'NOT_WIRED'
+  if (message.startsWith('BAD_PARAMS')) return 'BAD_PARAMS'
+  if (message.startsWith('BAD_KIND')) return 'BAD_KIND'
+  return 'HOST_ERROR'
+}
+
 export function createPushRelay(deps: PushRelayDeps): PushRelayHandle {
   interface PushSubscription {
     readonly controller: AbortController
@@ -598,11 +614,14 @@ export function createPushRelay(deps: PushRelayDeps): PushRelayHandle {
       if (!sub.controller.signal.aborted && !isClosing()) {
         deps.emit('cap.end', { methodId, sessionId, reason: 'stream-end' })
       }
-    } catch {
+    } catch (err: unknown) {
       // Explicit degrade: a missing/failed host push surface never crashes and
-      // never fabricates events; the seam sees `cap.end` with a reason.
+      // never fabricates events. C-1: keep the error class instead of swallowing
+      // it — `reason` stays 'unavailable' (wire contract unchanged) while the
+      // new whitelisted `code` carries the classification the seam / S4 needs to
+      // tell "surface absent" from "host/stream error". No payload is emitted.
       if (!sub.controller.signal.aborted && !isClosing()) {
-        deps.emit('cap.end', { methodId, sessionId, reason: 'unavailable' })
+        deps.emit('cap.end', { methodId, sessionId, reason: 'unavailable', code: classifyPushErrorCode(err) })
       }
     } finally {
       const key = pushKey(sessionId, methodId)

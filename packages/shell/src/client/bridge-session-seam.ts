@@ -88,10 +88,11 @@ export interface CapPushEvent {
 /** Lifecycle of one session's push subscription, observed by the seam. */
 export type CapPushStatusState = "attached" | "degraded" | "disconnected"
 
+/** Aggregate view of one session's per-method push subscriptions. */
 export interface CapPushStatus {
 	readonly sessionId: string
 	readonly state: CapPushStatusState
-	/** Highest in-order seq delivered for this subscription (0 = fresh/reset). */
+	/** Highest in-order seq across this session's subscriptions (0 = fresh/reset). */
 	readonly lastSeq: number
 }
 
@@ -1323,10 +1324,20 @@ export class BridgeSessionSeam implements SessionSeam {
 	#inFlightGeneration = 0
 	/** P2-9: degrade classes that already logged once; idle polling must not spam. */
 	#degradedOnce = new Set<string>()
-	// S3 push face: per-session ordered listeners + status. All state is local;
-	// frames are whitelisted (methodId/sessionId/seq/eventType) — no host payload.
+	// S3 push face: per-session listeners + PER-(session,method) ordering state.
+	// The relay assigns seq per subscription (key sessionId|methodId), so the
+	// seam must key the same way (BL-1) or a second/third stream's frames are
+	// silently dropped against the first stream's lastSeq. All state is local;
+	// frames are whitelisted (methodId/sessionId/seq/eventType/code) — no payload.
 	readonly #capPushListeners = new Map<string, Set<(event: CapPushEvent) => void>>()
-	readonly #capPushStatus = new Map<string, { state: CapPushStatusState; lastSeq: number }>()
+	readonly #capPushStatus = new Map<string, {
+		sessionId: string
+		methodId: string
+		state: CapPushStatusState
+		lastSeq: number
+	}>()
+	/** C-2: seq-ordering drops, per (sessionId,methodId) — observable, not silent. */
+	readonly #capPushDrops = new Map<string, { sessionId: string; methodId: string; count: number }>()
 	#usage: UsageAccumulator = { turns: 0, prompt: 0, completion: 0, cacheRead: 0, cacheWrite: 0 }
 	/**
 	 * Decode-window timing for the footer ⚡ tok/s. The bridge has no stats
@@ -1800,9 +1811,14 @@ export class BridgeSessionSeam implements SessionSeam {
 		this.#connection = "connected"
 		this.#bridgeLink = "ready"
 		this.#recoveryState = "attached"
-		// S3: a successful resume re-arms the push face — state attached, seq
-		// reset to 0 (the bridge starts a fresh subscription on its resume open).
-		this.#capPushStatus.set(boundId, { state: "attached", lastSeq: 0 })
+		// S3: a successful resume re-arms the push face — EVERY per-(session,method)
+		// subscription returns to attached with seq reset to 0 (the bridge starts
+		// fresh subscriptions on its resume open). BL-1: reset is per subscription,
+		// never a single session-wide slot.
+		for (const [key, status] of this.#capPushStatus) {
+			if (status.sessionId !== boundId) continue
+			this.#capPushStatus.set(key, { ...status, state: "attached", lastSeq: 0 })
+		}
 		const result: BridgeRecoveryResult = {
 			state: "attached", sessionId: boundId, applied: drained.rows.length,
 			from, cursor: drained.cursor, rows,
@@ -2196,10 +2212,36 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 	}
 
-	/** Current push subscription status for a session, or undefined if unseen. */
+	/**
+	 * Aggregate push status for a session, or undefined if unseen. Internally the
+	 * seam tracks ordering per (sessionId,methodId) (BL-1); this surface keeps the
+	 * original three-field shape: `lastSeq` is the max across that session's
+	 * subscriptions and `state` uses disconnected > degraded > attached precedence.
+	 */
 	capPushStatus(sessionId: string): CapPushStatus | undefined {
-		const status = this.#capPushStatus.get(sessionId)
-		return status === undefined ? undefined : { sessionId, ...status }
+		let seen = false
+		let state: CapPushStatusState = "attached"
+		let lastSeq = 0
+		for (const status of this.#capPushStatus.values()) {
+			if (status.sessionId !== sessionId) continue
+			seen = true
+			lastSeq = Math.max(lastSeq, status.lastSeq)
+			if (status.state === "disconnected") state = "disconnected"
+			else if (status.state === "degraded" && state === "attached") state = "degraded"
+		}
+		return seen ? { sessionId, state, lastSeq } : undefined
+	}
+
+	/** C-2: count of seq-ordered drops for one method, or all methods of a session. */
+	capPushDropCount(sessionId: string, methodId?: string): number {
+		if (methodId !== undefined) {
+			return this.#capPushDrops.get(`${sessionId}|${methodId}`)?.count ?? 0
+		}
+		let total = 0
+		for (const drop of this.#capPushDrops.values()) {
+			if (drop.sessionId === sessionId) total += drop.count
+		}
+		return total
 	}
 
 	onSessionEvent(listener: (event: SeamSessionEvent) => void): () => void {
@@ -3424,31 +3466,54 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	/** S3: consume one `cap.event` / `cap.end` frame. Returns true when consumed.
 	 *  Machine-decidable rules: sessionId is mandatory and scopes delivery;
-	 *  seq must strictly increase (duplicate/regressive seq is dropped); a
-	 *  `cap.end` flips the subscription to `degraded`. Malformed frames are a
-	 *  contained no-op — they never throw into the shared event pump. */
+	 *  ordering is per (sessionId,methodId) — the relay's seq is per subscription
+	 *  (BL-1), so a second stream's `seq=1` must not be judged against the first
+	 *  stream's lastSeq. seq must strictly increase within a subscription; a
+	 *  duplicate/regressive seq is dropped and counted (C-2); a `cap.end` flips
+	 *  only that subscription to `degraded`. Malformed frames are a contained
+	 *  no-op — they never throw into the shared event pump. */
 	#onCapPushEvent(frame: BridgeEventFrame): boolean {
 		if (frame.type !== "cap.event" && frame.type !== "cap.end") return false
 		const payload = asRecord(frame.payload)
 		const sessionId = optionalStringField(payload, "sessionId")
 		if (sessionId === undefined || sessionId === "") return true
 		const methodId = optionalStringField(payload, "methodId") ?? "unknown"
+		const key = `${sessionId}|${methodId}`
 		if (frame.type === "cap.end") {
-			const current = this.#capPushStatus.get(sessionId)
-			this.#capPushStatus.set(sessionId, {
+			const current = this.#capPushStatus.get(key)
+			this.#capPushStatus.set(key, {
+				sessionId,
+				methodId,
 				state: "degraded",
 				lastSeq: current?.lastSeq ?? 0,
 			})
-			this.#degradeOnce("cap.end", `push stream ${methodId} ended for ${sessionId}`)
+			// C-1 end-to-end: surface the relay's whitelisted error code in the
+			// degrade log instead of losing it (no payload, bounded enum).
+			const code = optionalStringField(payload, "code")
+			this.#degradeOnce(
+				"cap.end",
+				`push stream ${methodId} ended for ${sessionId}${code === undefined ? "" : ` (code=${code})`}`,
+			)
 			return true
 		}
 		const seq = typeof payload.seq === "number" && Number.isInteger(payload.seq) ? payload.seq : 0
-		const current = this.#capPushStatus.get(sessionId) ?? { state: "attached" as CapPushStatusState, lastSeq: 0 }
-		// v3 §3.1 ordering: strictly-increasing seq only; a duplicate or a regress
-		// is dropped, never delivered twice or out of order.
-		if (seq <= current.lastSeq) return true
-		const status = { state: current.state, lastSeq: seq }
-		this.#capPushStatus.set(sessionId, status)
+		const current = this.#capPushStatus.get(key) ?? {
+			sessionId,
+			methodId,
+			state: "attached" as CapPushStatusState,
+			lastSeq: 0,
+		}
+		// v3 §3.1 ordering: strictly-increasing seq only WITHIN this subscription;
+		// a duplicate or a regress is dropped, never delivered twice or out of
+		// order. C-2: count it so a silent drop is observable.
+		if (seq <= current.lastSeq) {
+			const drop = this.#capPushDrops.get(key) ?? { sessionId, methodId, count: 0 }
+			drop.count += 1
+			this.#capPushDrops.set(key, drop)
+			return true
+		}
+		const status = { ...current, lastSeq: seq }
+		this.#capPushStatus.set(key, status)
 		const event: CapPushEvent = {
 			methodId,
 			sessionId,
@@ -3496,9 +3561,10 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#connection = "disconnected"
 			this.#turn = "idle"
 			// S3: a dead bridge ends every host push subscription; record the
-			// disconnect per session so a later resume can re-arm from seq 0.
-			for (const [sessionId, status] of this.#capPushStatus) {
-				this.#capPushStatus.set(sessionId, { state: "disconnected", lastSeq: status.lastSeq })
+			// disconnect per (session,method) subscription (BL-1) so a later
+			// resume can re-arm each one from seq 0.
+			for (const [key, status] of this.#capPushStatus) {
+				this.#capPushStatus.set(key, { ...status, state: "disconnected" })
 			}
 			this.#onDead?.(cause)
 			for (const listener of [...this.#listeners]) {
