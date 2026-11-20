@@ -140,28 +140,40 @@ describe("shell render regression battery (widths / resize / empty / dock-hide /
 		const pending = fixture.send("d5 probe")
 
 		// Positive: the turn is live → the heavy-bordered activity frame is up,
-		// tool row above and todo row below.
-		const live = await fixture.waitForFrame((f) => f.includes("todos [✓]"))
+		// tool row above and the scene-C todo TREE below.
+		// OLD marker: "todos [✓]0/1 · d5 active task" (one-line summary).
+		// NEW marker: "● Todos (0/1)" header + "└─ ● d5 active task" child.
+		const live = await fixture.waitForFrame(
+			(f) => f.includes("● Todos (0/1)") && f.includes("└─ ● d5 active task"),
+		)
 		expect(live).toContain("🔧 tool")
 		expect(live).toContain("grep")
-		expect(live).toContain("todos [✓]0/1 · d5 active task")
+		expect(live).toContain("● Todos (0/1)")
+		expect(live).toContain("└─ ● d5 active task")
 
 		releaseTool?.()
 		await pending
 
-		// D10: turn ended + 2s linger + 300ms sweep passed, but the in_progress
-		// todo is still present → the frame must STAY shown with the SAME lower
-		// row (now titled "🧩 activity" since the tool row faded out).
+		// D10 / batch-a latch: turn ended + think/tool linger + sweep passed,
+		// but the in_progress todo remains → mergedLowerHasContent keeps the
+		// frame latched OPEN (OLD behavior hid the frame here). The lower tree
+		// is repainted and the title is "🧩 activity" (tool row faded out).
 		await new Promise((resolve) => setTimeout(resolve, 2800))
 		// The panel height rides a short tween; wait for the settled content
 		// (not just the first bordered frame, which can be a mid-tween row).
-		const survived = await fixture.waitForFrame((f) => f.includes("todos [✓]"), { timeoutMs: 8000 })
+		const survived = await fixture.waitForFrame(
+			(f) => f.includes("● Todos (0/1)") && f.includes("🧩 activity") && f.includes("└─ ● d5 active task"),
+			{ timeoutMs: 8000 },
+		)
 		expect(survived).toContain("┏")
 		expect(survived).toContain("🧩 activity")
-		expect(survived).toContain("todos [✓]0/1 · d5 active task")
+		expect(survived).toContain("● Todos (0/1)")
+		expect(survived).toContain("└─ ● d5 active task")
 
-		// Clearing the todo list empties the lower zone; once the frame's defer
-		// window passes, the activity frame hides entirely (D5 lifecycle).
+		// Contrast: clearing the todo list empties the lower zone AND — with no
+		// think/tool row left lingering — the latch falls back, so the activity
+		// frame hides entirely (D5 lifecycle). This is the ONLY post-turn case
+		// where the frame goes away; an unfinished todo must NOT trigger it.
 		fixture.projection.hydrate([])
 		const settled = await fixture.waitForFrame((f) => !f.includes("┏"), { timeoutMs: 8000 })
 		expect(settled).not.toContain("┏")

@@ -603,6 +603,7 @@
   "overlay.widgets.taskColumn": "任务",
   "overlay.widgets.thinkCollapsed": "💭 thought · {secs} · {line}",
   "overlay.widgets.thinkStreaming": "💭 thinking · {secs} · {line}",
+  "overlay.widgets.todosBrief": "待办 {done}/{total} {secs}s",
   "overlay.widgets.todosHeader": "● 待办（{done}/{total}）",
   "overlay.widgets.todosShowing": "显示 {ranges}",
   "overlay.widgets.todosSummary": "待办 [✓]{done}/{total}",
@@ -945,5 +946,7 @@
   "recovery.command.title": "重连桥接会话",
   "recovery.composer.disabled": "正在恢复连接…",
   "recovery.turn.interrupted": "已中断 - turn 在途时连接断开（本地标记，turn {turnId}）",
-  "recovery.input.unconfirmed": "未确认输入 - 宿主尚未确认"
+  "recovery.input.unconfirmed": "未确认输入 - 宿主尚未确认",
+  "settings.error.configNotPersistable": "当前模式不支持持久化，仅本次会话生效",
+  "settings.row.activityPanelHeightNote": "存于本机 · subagent 运行期间 think 预览固定 1 行（设计如此）"
 }

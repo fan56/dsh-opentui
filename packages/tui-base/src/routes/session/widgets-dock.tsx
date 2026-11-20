@@ -81,7 +81,6 @@ import type { SeamRow } from "./seam-rows"
 import type { SeamSubagentView } from "../../seams/session"
 import { clipToWidth, toolDetail, toolResultLine, toolSubject } from "./tool-summarize"
 import { parseTodos, type Todo } from "../../util/todo"
-import { takeWidth } from "../../util/locale"
 import { stringWidth } from "../../util/string-width"
 import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
@@ -103,6 +102,7 @@ import {
 	mergedPositionSuffix,
 	mergedTitle,
 	mergedWindowInfo,
+	TODO_STATUS_GLYPHS,
 	type MergedDockData,
 	type MergedDockLine,
 	type MergedDockOptions,
@@ -490,21 +490,32 @@ export function resetMergedDockCursor(): void {
 	setMergedDockCursor(0)
 }
 
-/** The todo array inside one todo-tool text, or undefined when the text
- * carries none. Two shapes: a bare array (the opencode output brief) or
- * `{ todos: [...] }` (the dsh host's todo_write call ARGUMENTS — its
+/** The todo array inside one todo-tool args/output value, or undefined when it
+ * carries none. Two payload shapes: a bare array (the opencode output brief)
+ * or `{ todos: [...] }` (the dsh host's todo_write call ARGUMENTS — its
  * tool/result wire carries only the rendered `Updated todo list: …` text,
- * never the array). */
-function todoArray(text: string | undefined): unknown[] | undefined {
-	if (text === undefined || text.trim() === "") return undefined
-	try {
-		const parsed = JSON.parse(text) as unknown
-		if (Array.isArray(parsed)) return parsed
-		if (parsed !== null && typeof parsed === "object" && Array.isArray((parsed as { todos?: unknown }).todos)) {
-			return (parsed as { todos: unknown[] }).todos
+ * never the array).
+ *
+ * Two CARRIER shapes too, one per seam boundary: the journal/`message.part`
+ * seam hands the raw JSON STRING (`part.input`, a tool row's `args`), while a
+ * live bridge frame hands the PARSED OBJECT (`turn.tool.input` after the host
+ * arguments were JSON-parsed). Accept both so the array survives whichever
+ * boundary delivered it — a string-only reader dropped the object form and
+ * left `latestTodos` empty even though the row carried the full array. */
+function todoArray(value: unknown): unknown[] | undefined {
+	if (value === undefined || value === null) return undefined
+	let parsed: unknown = value
+	if (typeof value === "string") {
+		if (value.trim() === "") return undefined
+		try {
+			parsed = JSON.parse(value) as unknown
+		} catch {
+			return undefined
 		}
-	} catch {
-		/* not JSON — no todo array */
+	}
+	if (Array.isArray(parsed)) return parsed
+	if (parsed !== null && typeof parsed === "object" && Array.isArray((parsed as { todos?: unknown }).todos)) {
+		return (parsed as { todos: unknown[] }).todos
 	}
 	return undefined
 }
@@ -600,6 +611,27 @@ export function todosSummaryFromTodos(todos: readonly Todo[]): string {
 	return active ? `${head} · ${active.content}` : head
 }
 
+/** Scene-C todo tree (compact terminal): the `● Todos (d/n)` header plus one
+ * `├─ {glyph} {content}` row per todo (`└─ ` on the last). Returned as lower-zone
+ * lines so the merged dock gives them its 10-line hard cap + scroll window;
+ * they are rebuilt from the same `MergedDockData.todos` as `todosSummaryFromTodos`.
+ * Empty list OR every todo completed → zero lines (clear-when-done, same law as
+ * the one-line summary). Status glyphs reuse `TODO_STATUS_GLYPHS`. */
+export function todoTreeLines(todos: readonly Todo[]): MergedDockLine[] {
+	if (todos.length === 0) return []
+	const done = todos.filter((todo) => todo.status === "completed").length
+	if (done === todos.length) return []
+	const lines: MergedDockLine[] = [
+		{ kind: "todo", segments: [{ text: t("overlay.widgets.todosHeader", { done, total: todos.length }), tone: "running" }] },
+	]
+	todos.forEach((todo, i) => {
+		const branch = i === todos.length - 1 ? "└─ " : "├─ "
+		const glyph = TODO_STATUS_GLYPHS[todo.status] ?? TODO_STATUS_GLYPHS.pending
+		lines.push({ kind: "todo", segments: [{ text: `${branch}${glyph} ${todo.content}`, tone: "running" }] })
+	})
+	return lines
+}
+
 // ------------------------------------------- scene-A todo brief timing (指令4)
 // `todo done/total Ns` — no current-task text. The duration is seconds since
 // the CURRENT TASK SET was established: the moment the set of task TEXTS first
@@ -636,7 +668,7 @@ export function todoBriefLine(todos: readonly Todo[], now: number = Date.now(), 
 	const done = todos.filter((todo) => todo.status === "completed").length
 	const anchor = startedAt ?? todoSetStartedAt(todos, now)
 	const secs = Math.max(0, Math.floor((now - anchor) / 1000))
-	return `todo ${done}/${todos.length} ${secs}s`
+	return t("overlay.widgets.todosBrief", { done, total: todos.length, secs })
 }
 
 /** Session-switch hook: drop every first-seen anchor (no signature survives
@@ -1426,9 +1458,33 @@ export function mergedLowerHasContent(rows: readonly SeamRow[]): boolean {
 
 /** The compact-terminal lower-zone summary (D11): reuse `todosSummaryLine`
  * verbatim — the single line the old short-terminal Todos table collapsed to.
- */
+ * Kept as the HONEST degradation for a tree that cannot fit the middle band
+ * (very narrow terminals / very long lists); the normal compact path renders
+ * the tree via `mergedCompactLowerLines`. */
 export function mergedCompactSummary(rows: readonly SeamRow[]): string {
 	return todosSummaryLine(rows)
+}
+
+/** Max tree rows the compact (≤ COMPOSER_COMPACT_TERMINAL_ROWS) lower zone can
+ * show before it degrades to the single-line summary. A 3-item tree is 4 rows
+ * (header + 3); 8 leaves room for the 2 rule rows + the transcript floor on an
+ * 80x24 / 120x29 terminal. Beyond that the summary is the only honest form. */
+export const COMPACT_TREE_MAX_LINES = 8
+
+/** Compact-terminal lower zone: the SAME todo tree the framed scene C shows,
+ * fed by the same `latestTodos`. Previously this branch alone still painted
+ * the old `todos [✓]d/n · active` summary — so a turn that settled with an
+ * in_progress todo (the state the user actually sits in) kept the summary on
+ * any terminal ≤ 30 rows while tall terminals got the tree. Now both modes
+ * render the tree; only an over-budget tree degrades to the summary line. */
+export function mergedCompactLowerLines(rows: readonly SeamRow[]): MergedDockLine[] {
+	const tree = todoTreeLines(latestTodos(rows))
+	if (tree.length === 0) return []
+	if (tree.length > COMPACT_TREE_MAX_LINES) {
+		const summary = mergedCompactSummary(rows)
+		return summary === "" ? [] : [{ kind: "todo", segments: [{ text: summary, tone: "muted" }] }]
+	}
+	return tree
 }
 
 /** The dock. Mounted by the v2-entry page as the transcript's `widgets`
@@ -1497,7 +1553,20 @@ export function WidgetsDock(props: {
 	// D10: the lower zone must survive turn end while an in_progress todo or a
 	// running subagent is still present, so the latch target is "turn active
 	// OR lower zone has content". `dockTurnActive` itself is untouched.
-	createEffect(() => activityFrameLatch.push(turnActive() || mergedLowerHasContent(props.rows)))
+	// Think/tool exit linger: a settled line stays visible for ~2.3s after the
+	// turn (2s hold + 300ms sweep, `dockLineVisibility`). Keep the frame up for
+	// that whole window so the fade paints INSIDE the framed activity board
+	// instead of the bare FlatDock — the board now withdraws only once the last
+	// line is hidden (the user-visible "board waits for the fade" behavior).
+	// Same `Date.now()` / `motionDecorationsEnabled()` args as `mergedSource`.
+	createEffect(() =>
+		activityFrameLatch.push(
+			turnActive() ||
+				mergedLowerHasContent(props.rows) ||
+				mergedThinkRows(props.rows, Date.now(), motionDecorationsEnabled()).length > 0 ||
+				mergedToolRows(props.rows, Date.now(), motionDecorationsEnabled()).length > 0,
+		),
+	)
 	onCleanup(activityFrameLatch.dispose)
 	const frame = () => activityFrameMode(dimensions().height)
 	// Since 2026-11-19 the gear drives ONLY the THINK cap; the TOOL cap is
@@ -1547,8 +1616,13 @@ export function WidgetsDock(props: {
 	// Feed the height tween from the freshly-built content count. This effect
 	// re-runs on every reactive read inside `mergedFrame` (rows / dockSpin /
 	// gear / cursor / width); `setDockHeightTarget` is a no-op while the target
-	// count is unchanged, so there is no feedback loop.
-	createEffect(() => setDockHeightTarget(mergedFrame().lines.length))
+	// count is unchanged, so there is no feedback loop. While the latch is off
+	// the FlatDock is mounted and owns the shared tween feed (see FlatDock) —
+	// guarding here keeps ONE feed site for the two mutually-exclusive views.
+	createEffect(() => {
+		if (!activityFrameLatch.shown()) return
+		setDockHeightTarget(mergedFrame().lines.length)
+	})
 	onCleanup(() => {
 		resetDockHeight()
 		// Session switch / unmount: no task-text signature may survive into the
@@ -1660,9 +1734,10 @@ export function WidgetsDock(props: {
 		return lines.slice(0, count)
 	}
 	const frameHeight = () => 2 + frameLines().length
-	// Compact lower zone (D11): a single summary line, no scroll zone.
-	const compactSummary = () => mergedCompactSummary(props.rows)
-	const compactHeight = () => 2 + (compactSummary() === "" ? 0 : 1)
+	// Compact lower zone: the same todo tree as the framed dock (with a narrow
+	// fallback for an over-budget tree). No scroll zone in the compact form.
+	const compactLower = () => mergedCompactLowerLines(props.rows)
+	const compactHeight = () => 2 + compactLower().length
 
 	const accentFg = (accent: DockAccent): string | RGBA => dockAccentColor(theme, accent)
 	const lineView = (line: DockLine) => dockLineNode(line, width(), skinCtx(), fgFor, accentFg)
@@ -1712,14 +1787,11 @@ export function WidgetsDock(props: {
 					fallback={
 						<box flexShrink={0} flexDirection="column" width="100%" height={compactHeight()} paddingLeft={3}>
 							<For each={activityRuleLines(props.rows)}>{lineView}</For>
-							{/* D11: compact terminals keep the 2-line rule form for
-							 * think/tool, and collapse the lower zone to a single
-							 * summary line (no scroll zone). */}
-							<Show when={compactSummary() !== ""}>
-								<text fg={fgFor("muted")} wrapMode="none">
-									{takeWidth(compactSummary(), width())}
-								</text>
-							</Show>
+							{/* Compact terminals keep the 2-line rule form for
+							 * think/tool. The lower zone now renders the SAME todo
+							 * tree as the framed dock (no scroll zone); only an
+							 * over-budget tree degrades to one summary line. */}
+							<For each={compactLower()}>{mergedLineView}</For>
 						</box>
 					}
 				>
@@ -1762,17 +1834,26 @@ function FlatDock(props: {
 	thinkMaxLines: number
 }): JSX.Element {
 	const dockOptions = () => ({ maxLines: props.maxLines, thinkMaxLines: props.thinkMaxLines })
+	const allLines = () => dockLines(props.rows, dockOptions())
+	// The idle fallback owns the shared height tween while mounted (the frame
+	// feed in WidgetsDock is guarded by the latch). Feed from the flat line
+	// count; a store drop to 0 snaps by the to===0 law in setDockHeightTarget.
+	createEffect(() => setDockHeightTarget(allLines().length))
+	// Same tween pattern as the framed view (frameLines): the painted count is
+	// capped at the target on an in-flight shrink and snaps to the exact target
+	// at the terminal frame, so the box height and its rows always agree. Both
+	// getters read the SAME pinned `dockFrameNow`, so no ms-boundary off-by-one.
+	const flatLines = (): DockLine[] => {
+		const lines = allLines()
+		const target = lines.length
+		const tweened = Math.max(0, dockHeightContentLines(target, dockFrameNow))
+		const animating = untrack(dockHeightAnimating)
+		const count = !animating || tweened >= target ? target : Math.min(target, tweened)
+		return lines.slice(0, count)
+	}
 	return (
-		<box
-			flexShrink={0}
-			flexDirection="column"
-			width="100%"
-			height={dockLines(props.rows, dockOptions()).length}
-			paddingLeft={3}
-		>
-			<For each={dockLines(props.rows, dockOptions())}>
-				{(line) => dockLineNode(line, props.width, props.skinCtx, props.fgFor, props.accentFg)}
-			</For>
+		<box flexShrink={0} flexDirection="column" width="100%" height={flatLines().length} paddingLeft={3}>
+			<For each={flatLines()}>{(line) => dockLineNode(line, props.width, props.skinCtx, props.fgFor, props.accentFg)}</For>
 		</box>
 	)
 }

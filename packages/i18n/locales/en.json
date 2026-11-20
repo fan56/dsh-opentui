@@ -603,6 +603,7 @@
   "overlay.widgets.taskColumn": "Task",
   "overlay.widgets.thinkCollapsed": "💭 thought · {secs} · {line}",
   "overlay.widgets.thinkStreaming": "💭 thinking · {secs} · {line}",
+  "overlay.widgets.todosBrief": "todo {done}/{total} {secs}s",
   "overlay.widgets.todosHeader": "● Todos ({done}/{total})",
   "overlay.widgets.todosShowing": "showing {ranges}",
   "overlay.widgets.todosSummary": "todos [✓]{done}/{total}",
@@ -945,5 +946,7 @@
   "recovery.command.title": "Reconnect bridge session",
   "recovery.composer.disabled": "Reconnecting...",
   "recovery.turn.interrupted": "Interrupted - connection lost mid-turn (local marker, turn {turnId})",
-  "recovery.input.unconfirmed": "Unconfirmed input - not acknowledged by the host yet"
+  "recovery.input.unconfirmed": "Unconfirmed input - not acknowledged by the host yet",
+  "settings.error.configNotPersistable": "Not persistable in this mode - applied for this session only",
+  "settings.row.activityPanelHeightNote": "Stored on this machine - Think preview is fixed at 1 line while a subagent runs (by design)"
 }
