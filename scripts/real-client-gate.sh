@@ -220,7 +220,13 @@ if [ "$ONLY" = all ] || [ "$ONLY" = frames ]; then
     tmux send-keys -t "$SESS" Enter; sleep 2
     for _ in 1 2 3 4 5 6; do tmux send-keys -t "$SESS" Right; sleep 0.4; done
     sleep 1; snap 's2-account'
-    log "  s2-account: section=$(grep -qiE 'account|账户|/login' "$OUT/s2-account.log" && echo yes || echo no)"
+    # locale-complete: S5 made the profile zh-CN by default, so the Account nav
+    # label is `账号` (zh) rather than `Account` (en). The grep detects the Account
+    # SECTION being visible in the /settings panel; both locale labels are the
+    # same section. Adding `账号` keeps the assertion equivalent across locales
+    # (same class as the earlier 输入消息 / 🧠→⌨ harness locator fixes) — the
+    # check still requires a real /settings panel showing the Account section.
+    log "  s2-account: section=$(grep -qiE 'account|账户|账号|/login' "$OUT/s2-account.log" && echo yes || echo no)"
     tmux send-keys -t "$SESS" Escape; sleep 0.5
     tmux send-keys -t "$SESS" Escape; sleep 0.5
   else

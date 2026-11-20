@@ -408,6 +408,30 @@ export function projectAccountViewForFrame(view: unknown): AccountFrameProjectio
 }
 
 /**
+ * S4b — bounded, host-text-free reply projection for the NON-view unary
+ * account wire methods. No host string / URL / object is ever copied into a
+ * frame: only presence booleans, counts and an ok flag cross the boundary.
+ * The four view-returning methods use `projectAccountViewForFrame` instead
+ * (see ACCOUNT_VIEW_WIRE_METHODS); this helper covers the other six.
+ */
+export function projectAccountScalarResult(method: string, value: unknown): Record<string, unknown> {
+  switch (method) {
+    case 'account.hasRunningAccountTasks':
+      return { running: value === true }
+    case 'account.getProfile':
+    case 'account.getBalance':
+    case 'account.getNotificationContent':
+      return { present: value !== undefined && value !== null }
+    case 'account.getNotifications':
+      return { count: Array.isArray(value) ? value.length : 0 }
+    case 'account.reportNotificationEvent':
+      return { ok: true }
+    default:
+      return { ok: true }
+  }
+}
+
+/**
  * S4 wire guard — strip auth-material keys from ANY object before it is
  * serialized to stdout. Applied centrally in `writeFrame`, so no future
  * caller (reply / emit / relay) can leak an authorize URL into a frame.
@@ -1195,6 +1219,37 @@ const CAP_SETTINGS_WIRE_METHODS: Readonly<Record<string, string>> = {
   'settings.describe': '@deepseek-ai/dsh-api-settings-controller#settings/describe',
   'settings.mutate': '@deepseek-ai/dsh-api-settings-controller#settings/mutate',
 }
+
+/**
+ * S4b (R1) — client-facing wire method names → CapIR W ids for the 10 UNARY
+ * account methods, served through the SAME generated capcontract chain as the
+ * model/settings frames (table lookup, NOT a hand-copied `req.method ===`
+ * line — keeps the @manual surface at 11). The 2 stream methods
+ * (account/watch, account/watchExpiry) are deliberately NOT here: they are
+ * carried by `createAccountWatchRelay` (S5 C4 wiring), which owns the signal
+ * and emits whitelisted `cap.event` frames; a stdio unary reply cannot carry
+ * an AsyncIterable. Every reply is projected field-by-field — the four
+ * AccountView-returning methods via `projectAccountViewForFrame` (URL value
+ * contributes one boolean only), the rest via `projectAccountScalarResult`.
+ * No host text / URL / credential value is copied into a frame.
+ */
+const CAP_ACCOUNT_WIRE_METHODS: Readonly<Record<string, string>> = {
+  'account.getState': '@deepseek-ai/dsh-deepseek-account#account/getState',
+  'account.hasRunningAccountTasks': '@deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks',
+  'account.getProfile': '@deepseek-ai/dsh-deepseek-account#account/getProfile',
+  'account.getBalance': '@deepseek-ai/dsh-deepseek-account#account/getBalance',
+  'account.getNotifications': '@deepseek-ai/dsh-deepseek-account#account/getNotifications',
+  'account.getNotificationContent': '@deepseek-ai/dsh-deepseek-account#account/getNotificationContent',
+  'account.reportNotificationEvent': '@deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent',
+  'account.startSignIn': '@deepseek-ai/dsh-deepseek-account#account/startSignIn',
+  'account.cancelSignIn': '@deepseek-ai/dsh-deepseek-account#account/cancelSignIn',
+  'account.signOut': '@deepseek-ai/dsh-deepseek-account#account/signOut',
+}
+/** The four account wire methods whose host result is an AccountView; their
+ *  reply MUST be `projectAccountViewForFrame` (not key-name stripping). */
+const ACCOUNT_VIEW_WIRE_METHODS: ReadonlySet<string> = new Set([
+  'account.getState', 'account.startSignIn', 'account.cancelSignIn', 'account.signOut',
+])
 
 /**
  * M3-02 assembly seam. registerAppendSection is deliberately NOT called from
@@ -3709,6 +3764,31 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
             ? 'UNSUPPORTED'
             : 'INTERNAL'
         replyError(req.id, code, message)
+      }
+      return
+    }
+    // S4b (R1) /account: unary account frames ride the same generated
+    // capcontract chain (table lookup, not a hand-copied wire line). Every
+    // reply is whitelist-projected: AccountView-returning methods go through
+    // `projectAccountViewForFrame` (fixed four fields, URL value contributes
+    // one boolean only); the other six through `projectAccountScalarResult`
+    // (presence booleans / counts / ok only). NO host text or URL is copied.
+    // The 2 stream methods are NOT here — they use createAccountWatchRelay.
+    const accountMethodId = CAP_ACCOUNT_WIRE_METHODS[req.method]
+    if (accountMethodId !== undefined) {
+      try {
+        const value = await createCapInvoke(ctx)({
+          methodId: accountMethodId as never,
+          params: req.params ?? {},
+        })
+        const result = ACCOUNT_VIEW_WIRE_METHODS.has(req.method)
+          ? ({ ...projectAccountViewForFrame(value) } as Record<string, unknown>)
+          : projectAccountScalarResult(req.method, value)
+        replyOk(req.id, result)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        const degraded = message.startsWith('NOT_WIRED') || message.includes('unavailable')
+        replyError(req.id, degraded ? 'UNSUPPORTED' : 'INTERNAL', message)
       }
       return
     }
