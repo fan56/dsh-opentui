@@ -63,6 +63,19 @@ for (const extra of ['opentui-inproc', 'headless']) {
   const from = join(REAL_HOME, 'profiles', extra)
   if (existsSync(from)) cpSync(from, join(HOME, 'profiles', extra), { recursive: true })
 }
+// 024 real-client runner fix: repairing the in-process bridge host is REQUIRED
+// even after seeding opentui-inproc from the real home — that copy carries a
+// dangling bridge symlink (points at a removed worktree), so the host skips
+// the bundle and bridge.hello times out. Provision from THIS installation
+// with --repair (idempotent, scratch HOME only).
+{
+  const prov = join(ROOT, 'packages', 'shell', 'scripts', 'provision-inproc-profile.mjs')
+  const r = spawnSync(process.execPath, [prov, '--repair'], { encoding: 'utf8', env: { ...process.env, DSH_HOME: HOME } })
+  if (r.status !== 0) {
+    console.error('sk-ans: in-process profile provisioning failed:\n' + (r.stderr || r.stdout))
+    process.exit(2)
+  }
+}
 for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.json', 'settings.yaml', 'workspace-presets.json']) {
   const from = join(REAL_HOME, rel)
   if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
@@ -87,7 +100,10 @@ if (boot.status !== 0) {
 let booted = false
 for (let i = 0; i < BOOT_WAIT; i++) {
   const o = capture(false)
-  if (/❯|›|>/u.test(o) && o.length > 80) { booted = true; break }
+  // Readiness = the composer INPUT BOX is painted (empty-state placeholder
+  // "Type a message" / "提问，回车发送"); the old ❯/›/> marker alone does not
+  // appear before the first keystroke in this view stack.
+  if ((/❯|›|>/u.test(o) || /Type a message|提问，回车发送/u.test(o)) && o.length > 80) { booted = true; break }
   await sleep(1000)
 }
 

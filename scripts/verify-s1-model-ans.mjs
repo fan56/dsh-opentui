@@ -44,6 +44,19 @@ for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.jso
   const from = join(REAL_HOME, rel)
   if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
 }
+// 024 real-client runner fix: seed a PROVISIONED in-process host into the
+// scratch HOME. The real home's opentui-inproc bridge symlink points at a
+// cleaned-up worktree; copying profiles alone yields BRIDGE_TIMEOUT. The
+// provisioner (with --repair) creates/repairs the inproc profile from THIS
+// installation. No writes to ~/.dsh.
+{
+  const prov = join(ROOT, 'packages', 'shell', 'scripts', 'provision-inproc-profile.mjs')
+  const r = spawnSync(process.execPath, [prov, '--repair'], { encoding: 'utf8', env: { ...process.env, DSH_HOME: HOME } })
+  if (r.status !== 0) {
+    console.error('model-ans: in-process profile provisioning failed:\n' + (r.stderr || r.stdout))
+    tmux('kill-session', '-t', SESS); process.exit(2)
+  }
+}
 try {
   const p = join(HOME, 'profiles', PROFILE, 'config.json')
   const cfg = JSON.parse(readFileSync(p, 'utf8')); cfg.lang = 'zh-CN'
@@ -63,7 +76,10 @@ if (r.status !== 0) { console.error('model-ans: tmux boot failed: ' + r.stderr);
 let booted = false
 for (let i = 0; i < 90; i++) {
   const o = capture(false)
-  if (/❯|›|>/u.test(o) && o.length > 80) { booted = true; break }
+  // Readiness = the composer INPUT BOX is painted. The empty-state placeholder
+  // in this view stack is "Type a message" (en) / "提问，回车发送" (zh); the old
+  // ❯/›/> marker alone no longer appears before the first keystroke.
+  if ((/❯|›|>/u.test(o) || /Type a message|提问，回车发送/u.test(o)) && o.length > 80) { booted = true; break }
   await sleep(1000)
 }
 if (!booted) {

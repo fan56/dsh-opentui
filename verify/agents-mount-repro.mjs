@@ -218,6 +218,22 @@ for (const rel of ['.credentials.yaml', 'models-store.json', 'model-profiles.jso
   const from = join(REAL_HOME, rel)
   if (existsSync(from)) cpSync(from, join(HOME, rel), { recursive: true })
 }
+// 024 real-client runner fix: the scratch home must carry a PROVISIONED
+// in-process bridge host. Copying only the `opentui` profile leaves no
+// `opentui-inproc` profile (host: `profile "opentui-inproc" does not exist`),
+// and copying it from the real home carries a dangling bridge symlink
+// (host skips the bundle -> bridge.hello times out). Provision from THIS
+// installation with --repair: it creates the inproc profile, points the
+// bridge at this checkout's dist/bridge and grants the host-version
+// exemption. Idempotent; writes only to the scratch HOME.
+{
+  const prov = join(REPO, 'packages', 'shell', 'scripts', 'provision-inproc-profile.mjs')
+  const r = sh(process.execPath, [prov, '--repair'], { env: { ...process.env, DSH_HOME: HOME } })
+  if (r.status !== 0) {
+    console.error('agents-mount: in-process profile provisioning failed:\n' + (r.stderr || r.stdout))
+    process.exit(2)
+  }
+}
 // Deterministic, offline model route (same pattern as ui-matrix.mjs): the
 // scratch patch's zai-coding-cn provider points at the local mock and the
 // default route is re-pinned to it. The operator's real profile may carry its
