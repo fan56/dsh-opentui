@@ -251,14 +251,15 @@ describe("mergedDockLines — active-only bodies, agents, 10-line cap (D6/D7/D8)
 		expect(lines.filter((line) => line.kind === "agent")).toHaveLength(1)
 	})
 
-	test("scene C: no agent, no think → ONE todo line in the current full summary format", () => {
+	test("scene C: no agent, no think → todo tree (header + ├─/└─ rows)", () => {
 		const lines = mergedDockLines(
 			{ tools: [], todos: [todo("x", "pending")], agents: [] },
 			{ innerWidth: 60 },
 		)
-		expect(lines).toHaveLength(1)
-		expect(lines[0]!.kind).toBe("todo")
-		expect(textOf(lines[0]!)).toContain("todos [✓]0/1")
+		expect(lines).toHaveLength(2)
+		expect(lines.every((line) => line.kind === "todo")).toBe(true)
+		expect(textOf(lines[0]!)).toContain("● Todos (0/1)")
+		expect(textOf(lines[1]!)).toContain("└─ ○ x")
 	})
 
 	test("scene A: 10-line cap and ▼/▲ counts are self-consistent on the subagent list", () => {

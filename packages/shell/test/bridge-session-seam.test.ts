@@ -13,12 +13,14 @@
 import { describe, expect, test } from "bun:test"
 import { createRoot } from "solid-js"
 import { createSeamRows } from "../../tui-base/src/routes/session/seam-rows.ts"
+import { latestTodos, todoTreeLines } from "../../tui-base/src/routes/session/widgets-dock.tsx"
 import {
 	BridgeProtocolError,
 	BridgeSessionSeam,
 	type BridgeConfirmClock,
 	bridgeChildJournalMeta,
 	bridgeChildStopReason,
+	bridgeReplayRowsToSeamEvents,
 	bridgeReplayRowsToSeamTranscript,
 	bridgeReplayRowsToSubagentViews,
 	bridgeSweepSettledChildIds,
@@ -802,6 +804,101 @@ describe("covered lifecycle + turn stream", () => {
 		const b = tools.find((r) => r.key === "tool:live:B")
 		expect(a).toMatchObject({ name: "bash", args: '{"cmd":"a"}', status: "done", output: "out-a" })
 		expect(b).toMatchObject({ name: "bash", args: '{"cmd":"b"}', status: "failed", output: "out-b" })
+		dispose()
+	})
+
+	// -----------------------------------------------------------------------
+	// Todo tree feed: both seam paths must carry the FULL `todos` array from
+	// the host's `todo_write` call into a `tool` row, so latestTodos() (and the
+	// merged dock's todoTreeLines) can render it. Inputs below are the EXACT
+	// frame shapes decoded from scratch-home journal session 0f192c17 seq16-19:
+	// the call arguments are a JSON STRING (`arguments`), which the bridge
+	// parses into an object for the live `turn.tool.input` frame, and which the
+	// replay projector keeps as a string on `message.part.updated.part.input`.
+	// -----------------------------------------------------------------------
+	const TODO_ARGS = '{"todos":[{"content":"alpha","status":"pending"},{"content":"beta","status":"pending"},{"content":"gamma","status":"pending"}]}'
+	const TODO_RESULT = "Updated todo list: 3 pending, 0 in progress, 0 completed."
+	const todoTreeContents = (rows: readonly ReturnType<typeof createSeamRows>["rows"]): string[] =>
+		todoTreeLines(latestTodos(rows))
+			.map((line) => line.segments.map((seg) => seg.text).join(""))
+			.filter((text) => text.includes("alpha") || text.includes("beta") || text.includes("gamma"))
+
+	test("todo tree — live turn.tool frames carry arguments into the dock tree", async () => {
+		const h = makeHarness()
+		h.replies.set("session.send", { kind: "value", value: { turnId: "t-todo" } })
+		let dispose!: () => void
+		const projection = createRoot((d) => {
+			dispose = d
+			return createSeamRows(h.seam, () => "sess-todo")
+		})
+		await Bun.sleep(0) // setup storedTranscript settles
+
+		const sent = projection.send("create todos")
+		await Bun.sleep(0) // turn() sends session.send and binds the live callbacks
+		// The bridge turns the host's `arguments` JSON string into a PARSED object
+		// (`toolInput`) on turn.tool.input, and keeps the result text on output.
+		h.emit({
+			type: "turn.tool",
+			payload: { turnId: "t-todo", callId: "call_todo", name: "todo_write", input: JSON.parse(TODO_ARGS) },
+		})
+		h.emit({
+			type: "turn.tool",
+			payload: { turnId: "t-todo", callId: "call_todo", name: "todo_write", output: TODO_RESULT, isError: false },
+		})
+		h.emit({ type: "turn.end", payload: { turnId: "t-todo" } })
+		await sent
+
+		const tool = projection.rows.find((r) => r.kind === "tool")
+		expect(tool).toMatchObject({ name: "todo_write", args: TODO_ARGS, status: "done", output: TODO_RESULT })
+		expect(todoTreeContents(projection.rows)).toEqual(["├─ ○ alpha", "├─ ○ beta", "└─ ○ gamma"])
+		dispose()
+	})
+
+	test("todo tree — journal replay projects arguments into the dock tree", () => {
+		// Exact replay row shapes from the decoded journal (seq16-19).
+		const rows: BridgeReplayRow[] = [
+			{
+				seq: 16,
+				type: "assistant/message",
+				payload: {
+					turn: 1,
+					step: 1,
+					message: {
+						role: "assistant",
+						content: [{ type: "tool-call", id: "call_todo", name: "todo_write", arguments: TODO_ARGS }],
+					},
+				},
+			},
+			{
+				seq: 17,
+				type: "tool/call",
+				payload: { turn: 1, step: 1, callId: "call_todo", name: "todo_write", arguments: TODO_ARGS },
+			},
+			{
+				seq: 19,
+				type: "tool/result",
+				payload: {
+					turn: 1,
+					step: 1,
+					message: {
+						role: "tool",
+						toolCallId: "call_todo",
+						content: [{ type: "text", text: TODO_RESULT }],
+						isError: false,
+					},
+				},
+			},
+		]
+		let dispose!: () => void
+		const projection = createRoot((d) => {
+			dispose = d
+			return createSeamRows(makeHarness().seam, () => "sess-todo")
+		})
+		for (const event of bridgeReplayRowsToSeamEvents(rows, "sess-todo")) projection.apply(event)
+
+		const tool = projection.rows.find((r) => r.kind === "tool")
+		expect(tool).toMatchObject({ name: "todo_write", args: TODO_ARGS })
+		expect(todoTreeContents(projection.rows)).toEqual(["├─ ○ alpha", "├─ ○ beta", "└─ ○ gamma"])
 		dispose()
 	})
 

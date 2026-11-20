@@ -22,7 +22,7 @@ import {
 	skinStopAt,
 	thinkBlockLines,
 	todoBriefLine,
-	todosSummaryFromTodos,
+	todoTreeLines,
 	toolLineText,
 	toolMarker,
 	type DockAccent,
@@ -485,10 +485,10 @@ function buildMergedDock(
 		lowerRaw = []
 	} else {
 		// Scene C: no running subagent, no visible think. Tool keeps its fixed
-		// full-format cap; todo is ONE line in the current summary format.
+		// full-format cap; todos render as the tree (header + ├─/└─ rows) in the
+		// lower zone, which gives them the 10-line cap + scroll window for free.
 		upperLines = tools.slice(-MERGED_DOCK_TOOL_ONLY_MAX).map((tool) => toolOnlyLine(tool, now, spin))
-		const summary = todosSummaryFromTodos(data.todos)
-		lowerRaw = summary === "" ? [] : [{ kind: "todo", segments: [{ text: summary, tone: "running" }] }]
+		lowerRaw = todoTreeLines(data.todos)
 	}
 
 	const assembled = assembleZones(upperLines, lowerRaw, options.totalLines ?? MERGED_DOCK_TOTAL_LINES, options.cursor)

@@ -36,6 +36,8 @@ import {
 	mergedThinkRows,
 	resetDockHeight,
 	setDockHeightTarget,
+	DOCK_HEIGHT_ANIM_MS,
+	dockHeightContentLines,
 	resetTodoBriefClock,
 } from "../src/routes/session/widgets-dock"
 import { DOCK_LINGER_MS, DOCK_FADE_OUT_MS } from "../src/routes/session/dock-visibility"
@@ -654,16 +656,70 @@ describe("WidgetsDock on the real renderer", () => {
 			await setup.renderOnce()
 			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
 			const occupied = lines.filter((l) => l.trim() !== "")
-			expect(occupied).toHaveLength(3) // top border + 1 todo content + bottom border
-			// Scene C: ONE todo line in the current full summary format.
-			const body = "todos [✓]0/1 · task 1"
+			expect(occupied).toHaveLength(4) // top border + todo tree header + 1 child + bottom border
+			// Scene C: the todo tree — header + ├─/└─ child rows (single todo → └─).
+			const header = "● Todos (0/1)"
+			const child = "└─ ● task 1"
 			const inner = WIDTH - 2
 			expect(occupied[0]).toBe(`┏━🧩 activity${"━".repeat(inner - 1 - stringWidth("🧩 activity"))}┓`)
-			expect(occupied[1]).toBe(`┃${body}${" ".repeat(inner - stringWidth(body))}┃`)
-			expect(occupied[2]).toBe(`┗${"━".repeat(inner)}┛`)
+			expect(occupied[1]).toBe(`┃${header}${" ".repeat(inner - stringWidth(header))}┃`)
+			expect(occupied[2]).toBe(`┃${child}${" ".repeat(inner - stringWidth(child))}┃`)
+			expect(occupied[3]).toBe(`┗${"━".repeat(inner)}┛`)
 		} finally {
 			await setup.dispose()
 		}
+	})
+
+	test("latch: think linger holds the frame after turn end; store drop withdraws it", async () => {
+		setMotionTier("full")
+		const t0 = Date.now()
+		const thinkRow: SeamRow = {
+			key: "reasoning:latch",
+			kind: "reasoning",
+			text: "tail",
+			final: true,
+			startedAt: t0 - 1500,
+			elapsedSec: 1.5,
+		}
+		const [rows, setRows] = createSignal<SeamRow[]>([thinkRow])
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { get rows() { return rows() }, turnActive: () => false }),
+			{ width: WIDTH, height: HEIGHT, useMouse: false },
+		)
+		try {
+			await sleep(300) // latch defer + entrance fade
+			await setup.renderOnce()
+			const during = setup.captureSpans()
+			// turnActive is false throughout, but the still-visible think row
+			// keeps the latch up → the framed activity board paints its border.
+			expect(dockContentLines(during)).toBe(1)
+			expect(during.lines.some((l) => l.spans.some((s) => s.text.includes("┏")))).toBe(true)
+
+			// Once the exit hold ends the store drops the row. With no visible
+			// think/tool/lower content the latch falls back to the borderless
+			// FlatDock (which tweens its height to 0) — no heavy border remains.
+			await sleep(DOCK_LINGER_MS + DOCK_FADE_OUT_MS + 200 - (Date.now() - t0))
+			setRows([])
+			await sleep(150) // 60ms latch defer + height settle
+			await setup.renderOnce()
+			const after = setup.captureSpans()
+			expect(dockContentLines(after)).toBe(0)
+			expect(after.lines.some((l) => l.spans.some((s) => s.text.includes("┏")))).toBe(false)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("FlatDock height follows the shared tween law (growth + terminal snap)", () => {
+		// FlatDock consumes the same `dockHeightContentLines` as the framed view:
+		// growth interpolates from the settled count, the terminal frame snaps
+		// exactly to target (a shrink is capped at target by the min law).
+		resetDockHeight(2)
+		setDockHeightTarget(6, 2_000)
+		expect(dockHeightContentLines(6, 2_000)).toBe(2) // growth starts at `from`
+		expect(dockHeightContentLines(6, 2_000 + DOCK_HEIGHT_ANIM_MS / 2)).toBeGreaterThan(2)
+		expect(dockHeightContentLines(6, 2_000 + DOCK_HEIGHT_ANIM_MS)).toBe(6) // terminal snap
+		resetDockHeight()
 	})
 
 	test("D11: compact terminal keeps 2-line rule form + 1 summary line, no scroll/N-M", async () => {
@@ -695,6 +751,57 @@ describe("WidgetsDock on the real renderer", () => {
 			for (const line of occupied) {
 				expect(line.includes("▲")).toBe(false)
 				expect(line.includes("▼")).toBe(false)
+				expect(line.includes("┏")).toBe(false)
+				expect(line.includes("┓")).toBe(false)
+			}
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("compact rule mode (≤30 rows): turn-end in_progress todo paints the TODO TREE, not the old summary", async () => {
+		// The user-facing state: turn ended (turnActive false) with an in_progress
+		// todo keeps the activity frame latched; on a compact terminal (≤ 30 rows
+		// → activityFrameMode "rule") this branch used to paint only the legacy
+		// `todos [✓]d/n · task` summary while tall terminals got the tree. Now
+		// both render the tree from the same latestTodos source. 3 todos → 4 tree
+		// lines (≤ COMPACT_TREE_MAX_LINES), so no summary degradation.
+		const rows: SeamRow[] = [
+			{
+				key: "tool:todos-compact",
+				kind: "tool",
+				name: "todo_write",
+				args: JSON.stringify({
+					todos: [
+						{ content: "romeo", status: "in_progress" },
+						{ content: "juliet", status: "pending" },
+						{ content: "verona", status: "pending" },
+					],
+				}),
+				status: "done",
+				output: "Updated todo list",
+			},
+		]
+		const setup = await testRender(
+			() => createComponent(WidgetsDock, { rows, turnActive: () => false }),
+			{ width: WIDTH, height: 24, useMouse: false },
+		)
+		try {
+			resetMergedDockCursor()
+			await sleep(300) // latch defer + entrance fade + height tween
+			await setup.renderOnce()
+			const lines = setup.captureSpans().lines.map((l) => l.spans.map((s) => s.text).join(""))
+			const occupied = lines.filter((l) => l.trim() !== "")
+			// The tree header + one ├─/└─ row per todo, all rendered (no summary).
+			const headerIdx = occupied.findIndex((l) => l.includes("● Todos (0/3)"))
+			expect(headerIdx).toBeGreaterThanOrEqual(0)
+			expect(occupied[headerIdx + 1]).toContain("├─ ● romeo")
+			expect(occupied[headerIdx + 2]).toContain("├─ ○ juliet")
+			expect(occupied[headerIdx + 3]).toContain("└─ ○ verona")
+			// The legacy single-line summary is gone on this path.
+			expect(occupied.some((l) => l.includes("todos [✓]"))).toBe(false)
+			// Still the compact rule form: no heavy box borders.
+			for (const line of occupied) {
 				expect(line.includes("┏")).toBe(false)
 				expect(line.includes("┓")).toBe(false)
 			}

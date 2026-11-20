@@ -154,6 +154,9 @@
             "$hovered": "$background.raised.high"
           }
         }
+      },
+      "text": {
+        "muted": "$hue.neutral.300"
       }
     }
   },

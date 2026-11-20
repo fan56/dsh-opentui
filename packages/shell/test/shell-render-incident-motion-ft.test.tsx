@@ -194,9 +194,14 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 			const frame = await fixture.waitForFrame((f) => f.includes("🧩 activity"))
 			const lines = frame.split("\n")
 
-			// D1/D4: no separate bordered Todos box (the "● Todos" header is gone)
-			// and the activity title never mentions "todo".
-			expect(frame).not.toContain("● Todos")
+			// Batch a (scene C) INTENTIONAL change: the old single-line summary
+			// `todos [✓]d/n · item` became a TREE painted inside the activity
+			// frame — a `● Todos (d/n)` header + one `├─/└─ <glyph> <content>`
+			// row per todo. OLD: `expect(frame).not.toContain("● Todos")`;
+			// NEW: assert the header and all three child rows are painted.
+			expect(frame).toContain("● Todos (1/3)")
+			// The activity TITLE itself never mentions "todo" (the tree is a
+			// content row, not the title) — this guard is unchanged.
 			const topIdx = lines.findIndex((line) => line.includes("┏"))
 			expect(topIdx).toBeGreaterThanOrEqual(0)
 			expect(lines[topIdx]!.toLowerCase()).not.toContain("todo")
@@ -208,18 +213,26 @@ describe("incident regressions: paint continuity (real renderer, canned events)"
 
 			// Count content rows straight off the frame: every row between the
 			// two borders is a content row (frame height - 2), each with a ┃ wall.
-			// Active-only (D6) keeps just the one in_progress todo, at its
-			// original plan index 2 — no pending/completed residue.
+			// OLD: the active-only summary was ONE row (`inner.length === 1`).
+			// NEW: the tree draws the header + all 3 todos = FOUR rows.
 			const frameHeight = bottomIdx - topIdx + 1
 			const inner = lines.slice(topIdx + 1, bottomIdx)
 			expect(inner.length).toBe(frameHeight - 2)
-			expect(inner.length).toBe(1)
+			expect(inner.length).toBe(4)
 			for (const row of inner) expect(row).toContain("┃")
 
-			// Exact painted row (D13): wall, "● <index> <content>", stringWidth
-			// padding to the inner width, closing wall.
-			const body = "todos [✓]1/3 · write the regression"
-			expect(inner).toEqual([`┃${body}${" ".repeat(width - 2 - stringWidth(body))}┃`])
+			// Exact painted rows (D13): wall, body, stringWidth padding to the
+			// inner width, closing wall. OLD body: "todos [✓]1/3 · write the
+			// regression". NEW bodies: the header + one row per todo, glyphs
+			// ✓ completed / ● in_progress / ○ pending, branch ├─ except the
+			// final row's └─.
+			const bodies = [
+				"● Todos (1/3)",
+				"├─ ✓ map the incident",
+				"├─ ● write the regression",
+				"└─ ○ ship the gate",
+			]
+			expect(inner).toEqual(bodies.map((body) => `┃${body}${" ".repeat(width - 2 - stringWidth(body))}┃`))
 
 			// THE render-layer regression assert (width=${width}): every content
 			// row's right wall (┃) must land in the SAME column as the top

@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.3] - 2026-11-20
+
+### Changed
+
+- **The think fade now lives inside the activity frame.** The frame's latch
+  keeps the bordered `activity` panel mounted while any think/tool row is
+  still lingering or fading (~2.3s after a turn ends) instead of dropping the
+  panel at the 60ms turn boundary — the fade finishes inside the panel and the
+  transcript only reclaims the space afterwards, fixing the overlap where a
+  fading think row painted on top of the falling transcript. The compact
+  (≤30-row terminal) fallback dock now tweens its height through the same
+  shared clock, removing the two-row snap at the frame/flat handoff and the
+  N→0 snap when lingering rows drop.
+- **Todos render as a tree in the activity panel** — a `● Todos (done/total)`
+  header plus `├─/└─` child rows (same branch glyphs as the subagent rows) in
+  both the framed and compact layouts, replacing the single-line
+  `todos [✓]d/n · active` summary. The summary remains only as the degrade
+  when the tree cannot fit. An in-progress todo now also holds the activity
+  frame open after the turn ends.
+- **Ask-panel descriptions are readable on dsh-blue.** The theme gains a
+  `@dialog` scope override lifting dialog-surface muted text from
+  neutral.400 to neutral.300 in both light and dark — option descriptions and
+  the `Type something.` hint stop sitting at the too-dark tier.
+
+### Fixed
+
+- **The "Think display lines" setting now persists.** On the default in-process
+  bridge the setting silently no-opped (no configSave wire) while reporting
+  success and fell back to `default` on restart — which caps the think preview
+  at 1 line on ≤40-row terminals. Gear-type UI settings now persist in a
+  client-local `ui-state.json` (XDG state dir, alongside the existing
+  model.json preference store), take precedence on boot, and the settings row
+  says so ("Stored on this machine", plus a note that the think preview is
+  fixed at 1 line while a subagent runs, by design). Settings the bridge
+  cannot persist now fail honestly instead of pretending to save.
+- Todo rows survive object-shaped argument carriers end to end (live turn and
+  journal replay), with regression tests using real journal frame shapes.
+
 ## [0.23.2] - 2026-11-20
 
 ### Changed

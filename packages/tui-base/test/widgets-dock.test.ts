@@ -65,6 +65,7 @@ import {
 	thinkRowVisible,
 	todoBriefLine,
 	todoSetStartedAt,
+	todoTreeLines,
 	todosSummaryFromTodos,
 } from "../src/routes/session/widgets-dock"
 import {
@@ -195,6 +196,27 @@ describe("todosTableLines (dsh-tui-pi TodosPanel parity)", () => {
 		expect(latestTodos([running])).toEqual([])
 		const rejected = toolRow([{ content: "x", status: "in_progress" }], "tool:live:2", "failed")
 		expect(latestTodos([rejected])).toEqual([])
+	})
+
+	test("latestTodos: args carrier may be the parsed object/array, not only the JSON string", () => {
+		// The journal / message.part seam hands `args` as the raw JSON string;
+		// a live bridge frame hands the already-parsed `{todos:[…]}` object.
+		// Both carriers must feed the same todo list (two-end alignment).
+		const list = [
+			{ content: "alpha", status: "pending" },
+			{ content: "beta", status: "in_progress" },
+		]
+		const objectRow = {
+			...toolRow([]),
+			args: { todos: list }, // object form, cast past the row's string type
+		} as unknown as SeamRow
+		expect(latestTodos([objectRow]).map((todo) => todo.content)).toEqual(["alpha", "beta"])
+
+		const arrayRow = { ...toolRow([]), args: list } as unknown as SeamRow
+		expect(latestTodos([arrayRow]).map((todo) => todo.content)).toEqual(["alpha", "beta"])
+
+		// The tree still renders from these rows (the real dock path).
+		expect(todoTreeLines(latestTodos([objectRow])).length).toBe(3)
 	})
 
 	test("padCell clips with the ellipsis and pads to exact display width", () => {
@@ -998,6 +1020,37 @@ describe("2026-11-19 scene decision (rule table)", () => {
 		expect(thinkRowVisible(settled, 3_000, false)).toBe(true) // 1s into the hold
 		expect(thinkRowVisible(settled, 3_000 + DOCK_LINGER_MS, false)).toBe(false)
 		expect(thinkRowVisible(undefined, 0, false)).toBe(false)
+	})
+})
+
+describe("scene-C todoTreeLines (header + ├─/└─ tree)", () => {
+	const text = (line: { segments: readonly { text: string }[] }) => line.segments.map((s) => s.text).join("")
+
+	test("header reuses todosHeader with live done/total count", () => {
+		const lines = todoTreeLines([
+			{ content: "a", status: "completed" },
+			{ content: "b", status: "in_progress" },
+			{ content: "c", status: "pending" },
+		])
+		expect(text(lines[0]!)).toBe("● Todos (1/3)")
+		expect(lines[0]!.kind).toBe("todo")
+	})
+
+	test("child rows use ├─ for non-last and └─ for the last, with status glyphs", () => {
+		const lines = todoTreeLines([
+			{ content: "first", status: "pending" },
+			{ content: "second", status: "in_progress" },
+			{ content: "last", status: "cancelled" },
+		])
+		expect(text(lines[1]!)).toBe("├─ ○ first")
+		expect(text(lines[2]!)).toBe("├─ ● second")
+		expect(text(lines[3]!)).toBe("└─ ⊘ last")
+		expect(lines).toHaveLength(4) // header + 3 children
+	})
+
+	test("no todos OR all completed → zero lines (clear-when-done)", () => {
+		expect(todoTreeLines([])).toEqual([])
+		expect(todoTreeLines([{ content: "a", status: "completed" }, { content: "b", status: "completed" }])).toEqual([])
 	})
 })
 
