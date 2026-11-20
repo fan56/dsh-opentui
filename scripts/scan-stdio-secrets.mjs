@@ -12,6 +12,9 @@
  *   2. raw wire-frame dumps (`"params":{...}` with a secret-valued key);
  *   3. common secret shapes (sk-..., ghp_..., Bearer <token>, secret assignment);
  *   4. S4 PKCE auth-URL neighbours (code_challenge= / state= / authorizeUrl field).
+ *   5. S4-review §六.2 / S5 S-S5a config-value欠账: credential-bearing keys that
+ *      can ride inside a settings/config namespace VALUE document (a whole
+ *      config doc must never reach an evidence sink).
  *
  * `--self-test` is the S2-review S3'(a) negative-control gap: it plants one
  * synthetic fixture PER pattern in an isolated temp dir and requires every
@@ -41,6 +44,12 @@ const PATTERNS = [
   { name: "auth-url-challenge", re: /[?&]code_challenge=[A-Za-z0-9._~+/-]{8,}/g },
   { name: "auth-url-state", re: /[?&]state=[A-Za-z0-9._~+/-]{8,}/g },
   { name: "auth-url-field", re: /"(?:authorizeUrl|authorize_url)"\s*:\s*"[^"]{8,}"/g },
+  // (5) S4-review §六.2 / S5 S-S5a: config/settings namespace VALUE documents
+  // must never carry a credential-shaped key. The field-level allow-list keeps
+  // these out at runtime; this pattern is the evidence-sink backstop. Redacted
+  // (`***`) values are allowed. Keys overlap secret-value-field on purpose so a
+  // config doc leak is caught even if only one pattern's key set is consulted.
+  { name: "config-value-secret", re: /"(?:apiKey|api_key|token|accessToken|access_token|refreshToken|refresh_token|secret|clientSecret|client_secret|password|passwd|credential|authorization)"\s*:\s*"(?!\*\*\*)[^"]{4,}"/g },
 ]
 
 function walk(p, out = []) {
@@ -89,6 +98,9 @@ function selfTest() {
     "auth-url-challenge": "https://example.invalid/dsh/authorize?code_challenge=plantedchallenge123456",
     "auth-url-state": "https://example.invalid/dsh/authorize?state=plantedstate123456789",
     "auth-url-field": '{"authorizeUrl":"https://example.invalid/dsh/authorize?code_challenge=x"}',
+    // S4-review §六.2 / S5 S-S5a config-value class: a settings namespace VALUE
+    // document carrying a credential-shaped key must be detected (no real secret).
+    "config-value-secret": '{"ns":"llm-pi-ai","value":{"apiKey":"planted_config_value_secret_abc123"}}',
   }
   try {
     for (const [name, text] of Object.entries(fixtures)) {
@@ -97,7 +109,7 @@ function selfTest() {
     const { byPattern } = scanFiles(walk(dir))
     // A fixture may legitimately trip more than one pattern; require >=1 each.
     const detected = Object.fromEntries(PATTERNS.map((p) => [p.name, byPattern[p.name] > 0]))
-    console.log("=== stdio desensitization scanner — negative control (S3'(a)) ===")
+    console.log("=== stdio desensitization scanner — negative control (S3'(a) + S4b-b config-value) ===")
     console.log(`patterns: ${PATTERNS.length}, fixtures: ${Object.keys(fixtures).length}`)
     for (const p of PATTERNS) {
       console.log(`  ${detected[p.name] ? "detected=true " : "detected=false"}  count=${byPattern[p.name]}  ${p.name}`)
@@ -124,7 +136,7 @@ if (arg === "--self-test") {
   let files = []
   try { files = walk(resolve(arg)) } catch (e) { console.error(`cannot read evidence dir: ${e.message}`); process.exit(2) }
   const { hits, report } = scanFiles(files)
-  const sinkClasses = ["wire-frame logs", "CAP-SMOKE emit fields", "proof evidence logs", "S4 PKCE auth-URL neighbours"]
+  const sinkClasses = ["wire-frame logs", "CAP-SMOKE emit fields", "proof evidence logs", "S4 PKCE auth-URL neighbours", "config/settings namespace values"]
   console.log("=== stdio desensitization scan ===")
   console.log(`scanned files: ${files.length}`)
   console.log(`sink classes:  ${sinkClasses.join(" | ")}`)
