@@ -9,10 +9,12 @@
  *   3. self-consistency            — generated id sets == CapIR id set, counts match.
  *   4. reference integrity         — local imports resolve to real exports.
  *   5. @deepseek-ai import scan    — zero host-package imports in generated code.
- *   6. declaration-line coverage   — every generated file carries the provenance line.
+ *   6. declaration-line coverage   — every generated file (capcontract .ts + ledger.md)
+ *                                    carries the provenance line as its FIRST line.
  *   7. no bare ctx.<service>       — every ctx service access covered by inject: [...].
- *   8. @manual count               — bridge hand-wired dispatch count == ledger's
- *                                    declared wired count (ledger is @manual's sole owner).
+ *   8. @manual method-name set      — bridge hand-wired dispatch names == ledger's
+ *                                    declared wired method names (F2: count equality was
+ *                                    blind to rename drift; ledger is @manual's sole owner).
  *
  * No network, no host closure, no build step: pure Node over committed files.
  */
@@ -24,6 +26,7 @@ import { fileURLToPath } from "node:url"
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const CAPIR_PATH = resolve(ROOT, "capir/capir.json")
 const LEDGER_PATH = resolve(ROOT, "ledger/ledger.json")
+const LEDGER_MD_PATH = resolve(ROOT, "ledger/ledger.md")
 const BRIDGE_PATH = resolve(ROOT, "packages/bridge/src/index.ts")
 const OUT_DIR = resolve(ROOT, "capcontract")
 const ATTRIBUTION =
@@ -164,6 +167,17 @@ if (capir && Object.keys(files).length === 3) {
   const importOffenders = []
   const declOffenders = []
   const ctxOffenders = []
+  // F4: ledger.md is a generated artifact too — its first line must carry the
+  // same provenance string (v2.1 L9/L31 "every generated file" strict reading).
+  let ledgerMd
+  try {
+    ledgerMd = readFileSync(LEDGER_MD_PATH, "utf8")
+  } catch {
+    declOffenders.push("ledger.md (unreadable)")
+  }
+  if (ledgerMd !== undefined && !ledgerMd.split("\n")[0].includes(ATTRIBUTION)) {
+    declOffenders.push("ledger.md")
+  }
   for (const name of tsNames) {
     const text = files[name]
     const code = stripComments(text)
@@ -181,46 +195,52 @@ if (capir && Object.keys(files).length === 3) {
   }
   if (importOffenders.length === 0) ok("5. @deepseek-ai import scan", "zero host-package imports")
   else bad("5. @deepseek-ai import scan", importOffenders.join("; "))
-  if (declOffenders.length === 0) ok("6. declaration-line coverage", `${tsNames.length}/${tsNames.length} generated files`)
+  if (declOffenders.length === 0) ok("6. declaration-line coverage", `${tsNames.length + 1}/${tsNames.length + 1} generated files (capcontract .ts × 3 + ledger.md)`)
   else bad("6. declaration-line coverage", "missing line: " + declOffenders.join(", "))
   if (ctxOffenders.length === 0) ok("7. no bare ctx.<service> access", "all ctx services covered by inject declarations")
   else bad("7. no bare ctx.<service> access", ctxOffenders.join("; "))
 }
 
-// --- 8. @manual count: bridge hand-wired dispatch vs ledger's declared count ---
+// --- 8. @manual method-name set: bridge hand-wired dispatch vs ledger registry ---
 // The capability ledger is the single source of truth for the @manual (wired)
-// surface. Recompute the hand-copied `handleLine()` dispatch count from the
-// bridge source and assert it equals ledger.dimensions.wired.count. If either
-// input is unavailable, fall back to NOT RUN rather than inventing a count.
+// surface. Recompute the hand-copied `req.method === '<name>'` set from the
+// bridge source and assert it equals ledger.dimensions.wired.methods[].method.
+// F2: count equality alone was blind to rename drift (T2 evidence), so the
+// comparison is now by method NAME in both directions. If either input is
+// unavailable, fall back to NOT RUN rather than inventing a surface.
 function checkManualCount() {
   let ledger
   try {
     ledger = JSON.parse(readFileSync(LEDGER_PATH, "utf8"))
   } catch (e) {
-    notRun("@manual count", `ledger.json unavailable: ${e.message}`)
+    notRun("@manual method-name set", `ledger.json unavailable: ${e.message}`)
     return
   }
   let bridgeSrc
   try {
     bridgeSrc = readFileSync(BRIDGE_PATH, "utf8")
   } catch (e) {
-    notRun("@manual count", `bridge source unavailable: ${e.message}`)
+    notRun("@manual method-name set", `bridge source unavailable: ${e.message}`)
     return
   }
-  const declared = ledger?.dimensions?.wired?.count
-  if (typeof declared !== "number") {
-    notRun("@manual count", "ledger.json has no dimensions.wired.count")
+  const declaredMethods = ledger?.dimensions?.wired?.methods
+  if (!Array.isArray(declaredMethods)) {
+    notRun("@manual method-name set", "ledger.json has no dimensions.wired.methods")
     return
   }
+  const declaredNames = new Set(declaredMethods.map((w) => w?.method).filter((n) => typeof n === "string"))
   // All `req.method === '<name>'` comparisons live in handleLine(); each is one
-  // hand-copied wired line. Count unique method names to guard against a dup.
+  // hand-copied wired line. Compare NAME SETS both ways (F2): a rename keeps the
+  // count but must now be caught.
   const wiredNames = new Set(
     [...bridgeSrc.matchAll(/\breq\.method\s*===\s*["']([^"']+)["']/g)].map((m) => m[1]),
   )
-  if (wiredNames.size === declared) {
-    ok("@manual count", `bridge hand-wired dispatch ${wiredNames.size} == ledger declared wired ${declared}`)
+  const missing = [...declaredNames].filter((n) => !wiredNames.has(n))
+  const extra = [...wiredNames].filter((n) => !declaredNames.has(n))
+  if (missing.length === 0 && extra.length === 0) {
+    ok("@manual method-name set", `bridge hand-wired names == ledger wired.methods (${declaredNames.size} names)`)
   } else {
-    bad("@manual count", `bridge hand-wired dispatch ${wiredNames.size} != ledger declared wired ${declared}`)
+    bad("@manual method-name set", `missing in bridge: [${missing.join(", ")}]; unregistered in ledger: [${extra.join(", ")}]`)
   }
 }
 checkManualCount()

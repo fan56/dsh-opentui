@@ -60,6 +60,10 @@ import {
 // index module owns the Map shape and its build/incremental/reconcile rules;
 // index.ts only wires it to the host firehose and the dispatcher.
 import { getSubagentIndex } from './subagent-index'
+// 024 base task 4 — startup capability handshake. A lifecycle observer only:
+// it is started from apply() but adds NO `req.method ===` dispatch branch, so
+// the @manual wired surface (and its ledger registry) is unchanged.
+import { attachHandshake, HANDSHAKE_INJECT, startCapabilityHandshake, type HandshakeHandle } from './handshake'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -343,9 +347,11 @@ function resolveAppExit(ctx: BridgeContext): ResolvedExit | undefined {
 
 export const name = 'dsh-opentui-bridge'
 
-/** `agents` is required for the session seam; `agentDefaultModel` is optional
- *  (read through ctx.get). Cordis resolves injected services before apply. */
-export const inject: string[] = ['agents']
+/** `agents` is required for the session seam; `typert` is the declarative
+ *  inject of the generated capcontract bundle (v2.1 clause C) used by the
+ *  startup handshake. `agentDefaultModel` and the other I-class services
+ *  are optional and read through ctx.get. Cordis resolves inject before apply. */
+export const inject: string[] = ['agents', ...HANDSHAKE_INJECT]
 
 /**
  * M3-02 assembly seam. registerAppendSection is deliberately NOT called from
@@ -778,6 +784,32 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   // scratch (the table is never persisted; the host restart / bridge reset is
   // the rebuild trigger).
   getSubagentIndex(ctx).reset()
+
+  // 024 base task 4 — startup capability handshake. The first list() read is
+  // deferred to the poll loop (reading at apply() time is always []). No wire
+  // method is added: this is a lifecycle observer whose verdict goes to logs
+  // and to a per-ctx snapshot, never to the `req.method` dispatch switch.
+  const handshakeConfig = config !== null && typeof config === 'object'
+    ? (config as { handshakeTimeoutMs?: unknown })
+    : {}
+  const handshakeTimeoutMs =
+    typeof handshakeConfig.handshakeTimeoutMs === 'number' ? handshakeConfig.handshakeTimeoutMs : undefined
+  let handshake: HandshakeHandle | undefined
+  try {
+    handshake = startCapabilityHandshake(
+      {
+        ctx,
+        get: (name: string) => ctx.get?.(name),
+        logger,
+      },
+      { timeoutMs: handshakeTimeoutMs },
+    )
+  } catch (err) {
+    // Startup observation must never take the plugin down.
+    logger.warn('[dsh-opentui-bridge][handshake] start failed (plugin stays live): %s', err)
+  }
+  /** Exposed for headless proof / smoke tooling; no wire surface change. */
+  attachHandshake(ctx, handshake)
 
   let buffer = ''
   let closing = false
@@ -2379,6 +2411,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // Release every ask timer so a late deadline/hard-cap callback can never
     // emit a cancel/settled frame after the connection closed.
     ask.dispose()
+    // 024 base task 4: stop the handshake poll so a disposed bridge never has
+    // a timer that could log a late verdict after the connection closed.
+    try {
+      handshake?.cancel()
+    } catch {
+      /* already cancelled */
+    }
     logger.info('[dsh-opentui-bridge] stdio protocol disposed')
   }
 

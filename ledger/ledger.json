@@ -205,7 +205,7 @@
     },
     "i_class": {
       "mark": "derived-from-manual (v3 proposal 口径)",
-      "count": 5,
+      "count": 6,
       "services": [
         {
           "key": "agents",
@@ -271,13 +271,18 @@
             "index.ts:2031"
           ],
           "w_migration": "feasible — 非 wire 部分的 list() 对应 CapIR W 方法 session/list"
+        },
+        {
+          "key": "systemPrompt",
+          "members": [
+            "section"
+          ],
+          "call_sites": [
+            "packages/bridge/src/append-section.ts:55"
+          ],
+          "w_migration": "否（服务对象面，无 CapIR W 对应；长期 I 类）"
         }
-      ],
-      "observation_extra_ctx_get": {
-        "key": "systemPrompt",
-        "source": "packages/bridge/src/append-section.ts:55",
-        "note": "actual 6th ctx.get service; outside v3's 5-service 口径"
-      }
+      ]
     },
     "provenance": {
       "profile": {

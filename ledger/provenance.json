@@ -273,7 +273,7 @@
   "i_class_manual": {
     "mark": "derived-from-manual (v3 proposal 口径)",
     "source": "v3 proposal §1:13 + bridge ctx.get inventory (packages/bridge/src/index.ts)",
-    "note": "I 类 = ctx.get 直取面，不在 typert 工件内。v3 口径 5 服务；另观察到 systemPrompt（append-section.ts:55）为第 6 个实际 ctx.get 服务，登记为旁注不纳入 5 服务口径。",
+    "note": "I 类 = ctx.get 直取面，不在 typert 工件内。024 底座评审裁决 6（2026-11-20）终裁：systemPrompt（宿主包 @deepseek-ai/dsh-system-prompt，dsh-base 声明闭包内，消费点 append-section.ts:55）为真实第 6 服务，正式入册；原 observation_extra_ctx_get 旁注撤销（转为正条目）。v3 提案的 5 服务清单是迁移规划快照，ledger 登记真源=6。I 面探针按 6 服务逐个执行。",
     "services": [
       {
         "key": "agents",
@@ -339,13 +339,18 @@
           "index.ts:2031"
         ],
         "w_migration": "feasible — 非 wire 部分的 list() 对应 CapIR W 方法 session/list"
+      },
+      {
+        "key": "systemPrompt",
+        "members": [
+          "section"
+        ],
+        "call_sites": [
+          "packages/bridge/src/append-section.ts:55"
+        ],
+        "w_migration": "否（服务对象面，无 CapIR W 对应；长期 I 类）"
       }
     ],
-    "count": 5,
-    "observation_extra_ctx_get": {
-      "key": "systemPrompt",
-      "source": "packages/bridge/src/append-section.ts:55",
-      "note": "actual 6th ctx.get service; outside v3's 5-service 口径"
-    }
+    "count": 6
   }
 }
