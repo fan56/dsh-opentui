@@ -16,7 +16,7 @@
   "command.model.set": "模型 → {model}",
   "command.model.setNoThink": "模型 → {model}（无 think 档位）",
   "command.model.emptyCatalog": "目录中没有模型",
-  "command.model.unavailable": "/model 不可用：in-process bridge 没有模型目录/切换 wire — 请在宿主的设置/模型选择界面设定模型后重开 TUI（{reason}）",
+  "command.model.unavailable": "/model 暂不支持切换。今天请在 web 模型选择器（运行 dsh --profile opentui 或用你已有的 web 入口）选好模型，回来重开 TUI。TUI 内切换支持在做了。",
   "command.model.unchanged": "模型未变",
   "command.login.description": "登录 provider（不带参数打开选择器；Custom provider 打开表单）",
   "command.login.routeRegistrationFailed": "{id}：路由注册失败 — 密钥未保存",

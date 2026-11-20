@@ -664,8 +664,8 @@ export function coreCommands(): SlashCommand[] {
 				try {
 					catalog = await ctx.seam.modelCatalog()
 					current = await ctx.seam.currentModelSelection()
-				} catch (error) {
-					ctx.say(t("command.model.unavailable", { reason: seamFailureReason(error) }))
+				} catch {
+					ctx.say(t("command.model.unavailable"))
 					return
 				}
 				if (catalog.length === 0) {
