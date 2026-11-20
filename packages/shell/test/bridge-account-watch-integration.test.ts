@@ -93,8 +93,12 @@ describe("S4 / E5 — account watch + watchExpiry interleaved integration", () =
             for (;;) {
               const value = await gate.next(method)
               if (value === null) return
-              // Item carries a raw auth URL — must never reach the seam.
-              yield { type: value, state: { status: "signed-out", attempt: { authorizeUrl: AUTH_URL } } }
+              // S4 review C1: watchExpiry yields the BARE STRING
+              // 'session-expired' (rc.5 index.ts:585-590), never an object.
+              // The relay must map that string to eventType='expiry'.
+              if (method === EXPIRY) yield "session-expired"
+              // watch items carry a raw auth URL — must never reach the seam.
+              else yield { type: value, state: { status: "signed-out", attempt: { authorizeUrl: AUTH_URL } } }
             }
           },
         }
@@ -123,6 +127,9 @@ describe("S4 / E5 — account watch + watchExpiry interleaved integration", () =
     expect(byMethod.size).toBe(2)
     expect(byMethod.get(WATCH)).toEqual([1, 2, 3, 4])
     expect(byMethod.get(EXPIRY)).toEqual([1, 2, 3, 4])
+    // C1 proof: the bare 'session-expired' string maps to the 'expiry' enum.
+    expect(host.delivered.filter((e) => e.methodId === EXPIRY).map((e) => e.eventType))
+      .toEqual(["expiry", "expiry", "expiry", "expiry"])
     expect(host.delivered).toHaveLength(8)
     expect(new Set(host.delivered.map((e) => `${e.methodId}:${e.seq}`)).size).toBe(8)
     expect(host.seam.capPushDropCount(session)).toBe(0)

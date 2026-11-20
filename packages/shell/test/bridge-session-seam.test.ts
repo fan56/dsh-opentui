@@ -32,6 +32,10 @@ import {
 } from "../src/client/bridge-session-seam.ts"
 import type { SeamSubagentView } from "../../tui-base/src/seams/session.ts"
 import { journalToTranscriptRows, type RemoteJournalEntry } from "../src/client/remote-session-ops.ts"
+// S5 — deterministic scratch fixture for the REAL local config/settings faces.
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -47,7 +51,10 @@ interface LogCall {
 	args: unknown[]
 }
 
-function makeHarness(confirmClock?: BridgeConfirmClock) {
+function makeHarness(
+	confirmClock?: BridgeConfirmClock,
+	local?: { dshHome?: string; profile?: string; workspaceDir?: string },
+) {
 	const requests: { method: string; params?: Record<string, unknown> }[] = []
 	const replies = new Map<string, Reply>()
 	const eventListeners: ((frame: BridgeEventFrame) => void)[] = []
@@ -80,7 +87,7 @@ function makeHarness(confirmClock?: BridgeConfirmClock) {
 		debug(...args: unknown[]) { logs.push({ level: "debug", args }) },
 	}
 
-	const seam = new BridgeSessionSeam({ transport, ctx: { logger }, confirmClock })
+	const seam = new BridgeSessionSeam({ transport, ctx: { logger }, confirmClock, ...local })
 
 	return {
 		seam,
@@ -482,48 +489,55 @@ describe("sync degrade values + logs", () => {
 })
 
 // ---------------------------------------------------------------------------
-// CONFIG faces — optional SessionSeam members v2-entry.tsx calls UNGUARDED at
-// boot (P0 crash). No bridge config frame exists, so D3 sync degrade to {} +
-// once-only log; never a throw, never a fabricated config.
+// CONFIG faces — S5: REAL local reads/writes (no `{}` degrade, no mocks).
+// v2-entry.tsx calls these UNGUARDED at boot; the honest implementation reads
+// the operator's `opentui` profile files (the same files verify70 asserts).
 // ---------------------------------------------------------------------------
 
-describe("config faces (configLoad/configRaw/workspaceConfig)", () => {
-	test("all three exist, return a contract-valid {} and log a degrade (never throw)", () => {
-		const h = makeHarness()
-		// The exact P0 regression: these were absent → "seam.configLoad is not a function".
+function scratchSeam() {
+	const home = mkdtempSync(join(tmpdir(), "s5-config-test-"))
+	const profile = "opentui"
+	const ws = join(home, "ws")
+	mkdirSync(join(home, "profiles", profile), { recursive: true })
+	mkdirSync(ws, { recursive: true })
+	const configPath = join(home, "profiles", profile, "config.json")
+	writeFileSync(configPath, JSON.stringify({ motion: "auto", autoResume: "off", lang: "en" }))
+	const harness = makeHarness(undefined, { dshHome: home, profile, workspaceDir: ws })
+	return { ...harness, home, configPath }
+}
+
+describe("config faces (configLoad/configRaw/workspaceConfig/configSave) — S5 real", () => {
+	test("all four exist and read the REAL scratch profile config (never a {} degrade)", () => {
+		const h = scratchSeam()
 		expect(typeof h.seam.configLoad).toBe("function")
-		expect(typeof h.seam.configRaw).toBe("function")
-		expect(typeof h.seam.workspaceConfig).toBe("function")
-		expect(() => h.seam.configLoad()).not.toThrow()
-		expect(h.seam.configLoad()).toEqual({})
-		expect(h.seam.configRaw()).toEqual({})
+		expect(typeof h.seam.configSave).toBe("function")
+		expect(h.seam.configLoad().motion).toBe("auto")
+		expect(h.seam.configLoad().autoResume).toBe("off")
+		expect(h.seam.configRaw()).toMatchObject({ motion: "auto", lang: "en" })
 		expect(h.seam.workspaceConfig()).toEqual({})
-		expect(h.warnFor("configLoad")).toHaveLength(1)
-		expect(h.warnFor("configRaw")).toHaveLength(1)
-		expect(h.warnFor("workspaceConfig")).toHaveLength(1)
-		// Degrade reason is honest: no fabricated config layer is claimed.
-		expect(h.warnFor("configLoad")[0]?.args.map(String).join(" ")).toContain("no config frame")
+		// No degrade log — the real read emits none.
+		expect(h.warnFor("configLoad")).toHaveLength(0)
+		rmSync(h.home, { recursive: true, force: true })
 	})
 
-	test("repeated boot reads log once per class (idle polling / multi-call sites)", () => {
-		const h = makeHarness()
-		// v2-entry.tsx calls configLoad 6x per boot (auto-resume, agentsHome,
-		// cacheHitMode, hints, activity, i18n) — exactly ONE warn, not six.
-		for (let i = 0; i < 6; i++) {
-			h.seam.configLoad()
-			h.seam.configRaw()
-			h.seam.workspaceConfig()
-		}
-		expect(h.warnFor("configLoad")).toHaveLength(1)
-		expect(h.warnFor("configRaw")).toHaveLength(1)
-		expect(h.warnFor("workspaceConfig")).toHaveLength(1)
+	test("configSave persists a WHITELISTED key to config.json and re-reads it", () => {
+		const h = scratchSeam()
+		h.seam.configSave({ motion: "full" })
+		expect(JSON.parse(readFileSync(h.configPath, "utf8")).motion).toBe("full")
+		expect(h.seam.configLoad().motion).toBe("full")
+		// A non-whitelist key never reaches disk (oldfox S4 §六.3).
+		h.seam.configSave({ apiKey: "must-not-land" } as Record<string, unknown>)
+		expect(JSON.parse(readFileSync(h.configPath, "utf8"))).not.toHaveProperty("apiKey")
+		rmSync(h.home, { recursive: true, force: true })
 	})
 
-	test("the degraded {} is a fresh object (callers cannot poison later reads)", () => {
-		const h = makeHarness()
+	test("repeated boot reads are stable (no mutate, no cross-call poisoning)", () => {
+		const h = scratchSeam()
+		for (let i = 0; i < 6; i++) expect(h.seam.configLoad().motion).toBe("auto")
 		const first = h.seam.configLoad()
-		first.poisoned = true
-		expect(h.seam.configLoad()).toEqual({})
+		first.motion = "poisoned"
+		expect(h.seam.configLoad().motion).toBe("auto")
+		rmSync(h.home, { recursive: true, force: true })
 	})
 })
 

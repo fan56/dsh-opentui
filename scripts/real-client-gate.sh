@@ -161,7 +161,10 @@ BOOTED=0
 i=0
 while [ "$i" -lt "$BOOT_TIMEOUT" ]; do
   pane="$(tmux capture-pane -p -t "$SESS" 2>/dev/null)"
-  if printf '%s' "$pane" | grep -qE '❯|›|Type a message|提问，回车发送'; then BOOTED=1; break; fi
+  # S5: configLoad now reads the REAL profile config (lang may be zh), so the
+  # composer paints the zh placeholder `输入消息（enter 发送…）` too. Accept it
+  # alongside the en strings — the readiness criterion is the painted input box.
+  if printf '%s' "$pane" | grep -qE '❯|›|Type a message|提问，回车发送|输入消息'; then BOOTED=1; break; fi
   sleep 1; i=$((i + 1))
 done
 if [ "$BOOTED" -eq 1 ]; then pass "composer input box painted in ${i}s (.ans readiness)"

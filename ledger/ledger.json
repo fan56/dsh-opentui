@@ -197,8 +197,8 @@
       ]
     },
     "wired_capir_generated": {
-      "mark": "S1+S2+S3-generated-capcontract",
-      "count": 21,
+      "mark": "S1+S2+S3+S5-generated-capcontract",
+      "count": 23,
       "ids": [
         "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
         "@deepseek-ai/dsh-api-session-controller#session/selectModel",
@@ -220,9 +220,11 @@
         "@deepseek-ai/dsh-deepseek-account#account/watchExpiry",
         "@deepseek-ai/dsh-api-settings-controller#credentials/describe",
         "@deepseek-ai/dsh-api-settings-controller#credentials/set",
-        "@deepseek-ai/dsh-api-settings-controller#credentials/unset"
+        "@deepseek-ai/dsh-api-settings-controller#credentials/unset",
+        "@deepseek-ai/dsh-api-settings-controller#settings/describe",
+        "@deepseek-ai/dsh-api-settings-controller#settings/mutate"
       ],
-      "in_wired_total": 22
+      "in_wired_total": 24
     },
     "i_class": {
       "mark": "derived-from-manual (v3 proposal 口径)",
@@ -888,7 +890,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": false,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "full-only"
     },
     {
@@ -900,7 +902,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": false,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "full-only"
     },
     {

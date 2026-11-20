@@ -340,6 +340,21 @@ interface CredentialsControllerLike {
   set?(ref: string, value: string): Promise<void>
   unset?(ref: string): Promise<void>
 }
+/**
+ * S5 — structural slice of `ctx.settingsController` (rc.5,
+ * dsh-api-settings-controller/src/index.ts:86 `super(ctx,'settingsController',
+ * {namespace:'settings'})`). Only the two CapIR W methods the /settings face
+ * needs; host already redacts secret values into `secrets[{path,set}]`.
+ */
+interface SettingsControllerLike {
+  describe?(): SettingsDescribeValueLike | Promise<SettingsDescribeValueLike>
+  mutate?(ns: string, ops: unknown[], expectedRevision?: number): Promise<unknown>
+}
+interface SettingsDescribeValueLike {
+  writable?: boolean
+  hasDocument?: boolean
+  namespaces?: unknown[]
+}
 
 // --------------------------------------------------------------------------
 // S4 PKCE/stream — frame-safe projection of account/PKCE state.
@@ -565,6 +580,11 @@ export const CAP_HOST_WIRED_IDS: readonly string[] = [
   '@deepseek-ai/dsh-api-settings-controller#credentials/describe',
   '@deepseek-ai/dsh-api-settings-controller#credentials/set',
   '@deepseek-ai/dsh-api-settings-controller#credentials/unset',
+  // S5 — settings document (dsh-api-settings-controller, service key
+  // `settingsController`, rc.5 index.ts:86). describe/mutate land in the
+  // profile patch file (cordis.patch.yml) that the /settings Host zone writes.
+  '@deepseek-ai/dsh-api-settings-controller#settings/describe',
+  '@deepseek-ai/dsh-api-settings-controller#settings/mutate',
 ]
 
 /**
@@ -752,8 +772,13 @@ export interface AccountWatchRelayHandle {
   activeCount(): number
 }
 
-/** Host item type -> bounded whitelist enum; unknown types collapse to 'event'. */
+/** Host item -> bounded whitelist enum; unknown types collapse to 'event'.
+ *  S4 review C1: rc.5 `watchExpiry` is `AsyncIterable<'session-expired'>`
+ *  (dsh-deepseek-account/src/index.ts:585-590) — it yields a BARE STRING, not
+ *  `{type:'expiry'}`. Without this arm the `'expiry'` enum was unreachable in
+ *  production and the integration stub asserted a shape the host never emits. */
 function accountWatchEventType(item: unknown): string {
+  if (item === 'session-expired' || (typeof item === 'string' && /expired/i.test(item))) return 'expiry'
   const type = (item as { type?: unknown } | undefined)?.type
   if (type === 'snapshot' || type === 'credentials-changed' || type === 'expiry') return type
   return 'event'
@@ -1052,6 +1077,37 @@ export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
       }
     }
 
+    // --- S5 settings document family (dsh-api-settings-controller#settings/*) ---
+    // Must precede the credentials arm (both share the package prefix). The
+    // host's settingsController already redacts secret values; we pass the
+    // document view / namespace view through verbatim — no frame payload is
+    // copied into logs and no credential VALUE is ever echoed.
+    if (methodId.startsWith('@deepseek-ai/dsh-api-settings-controller#settings/')) {
+      const settingsSvc = resolveSettingsController(ctx)
+      if (settingsSvc === undefined) {
+        throw new Error(`NOT_WIRED: settingsController unavailable for ${methodId}`)
+      }
+      const short = methodId.slice(methodId.indexOf('#') + 1) // "settings/<name>"
+      switch (short) {
+        case 'settings/describe': {
+          if (typeof settingsSvc.describe !== 'function') throw new Error(`NOT_WIRED: settingsController.describe unavailable`)
+          return settingsSvc.describe()
+        }
+        case 'settings/mutate': {
+          if (typeof settingsSvc.mutate !== 'function') throw new Error(`NOT_WIRED: settingsController.mutate unavailable`)
+          const p = params as { ns?: unknown; ops?: unknown; expectedRevision?: unknown } | undefined
+          if (typeof p?.ns !== 'string' || p.ns === '') throw new Error('BAD_PARAMS: settings.mutate ns must be a non-empty string')
+          if (!Array.isArray(p.ops)) throw new Error('BAD_PARAMS: settings.mutate ops must be an array')
+          if (p.expectedRevision !== undefined && typeof p.expectedRevision !== 'number') {
+            throw new Error('BAD_PARAMS: settings.mutate expectedRevision must be a number')
+          }
+          return settingsSvc.mutate(p.ns, p.ops, p.expectedRevision as number | undefined)
+        }
+        default:
+          throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
+      }
+    }
+
     // --- S2 credentials family (dsh-api-settings-controller#credentials/*) ---
     if (methodId.startsWith('@deepseek-ai/dsh-api-settings-controller#')) {
       const creds = resolveCredentialsController(ctx)
@@ -1128,6 +1184,17 @@ const CAP_MODEL_WIRE_METHODS: Readonly<Record<string, string>> = {
  *  A named constant keeps this branch out of the @manual `req.method` inventory
  *  (it is a reply-shape projection inside generated dispatch, not a hand-wire). */
 const CAP_SELECTION_READ_METHOD = 'model.currentSelection'
+
+/** S5 /settings — client-facing wire method names → CapIR W ids for the two
+ *  settings-document methods, served through the SAME generated capcontract
+ *  chain as the model frames (table lookup, NOT a hand-copied `req.method ===`
+ *  line — keeps the @manual wired surface at 11). `settings/conflict` from the
+ *  host is preserved as a protocol code so the seam's optimistic-lock retry
+ *  can tell a stale revision apart from a transport failure. */
+const CAP_SETTINGS_WIRE_METHODS: Readonly<Record<string, string>> = {
+  'settings.describe': '@deepseek-ai/dsh-api-settings-controller#settings/describe',
+  'settings.mutate': '@deepseek-ai/dsh-api-settings-controller#settings/mutate',
+}
 
 /**
  * M3-02 assembly seam. registerAppendSection is deliberately NOT called from
@@ -1376,6 +1443,21 @@ function resolveCredentialsController(ctx: BridgeContext): CredentialsController
     svc = undefined
   }
   return svc !== undefined && typeof svc === 'object' ? (svc as CredentialsControllerLike) : undefined
+}
+
+/** S5 — resolve `ctx.settingsController` (service key verified from rc.5
+ *  dsh-api-settings-controller/src/index.ts:86 `super(ctx,'settingsController',
+ *  {namespace:'settings'})`). Same contained ctx.get seam as the other
+ *  controllers so an absent service degrades to NOT_WIRED, never a crash. */
+function resolveSettingsController(ctx: BridgeContext): SettingsControllerLike | undefined {
+  let svc: unknown
+  try {
+    svc = typeof ctx.get === 'function' ? ctx.get('settingsController') : undefined
+    if (svc === undefined) svc = (ctx as unknown as { settingsController?: unknown }).settingsController
+  } catch {
+    svc = undefined
+  }
+  return svc !== undefined && typeof svc === 'object' ? (svc as SettingsControllerLike) : undefined
 }
 
 /** Decidable shape check for AccountClientMetadata (version/locale/offset). */
@@ -2161,6 +2243,19 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   const startPushRelay = (sessionId: string): void => pushRelay.start(sessionId)
   const stopPushRelay = (sessionId: string): void => pushRelay.stop(sessionId)
 
+  // ---- S4 review C4: account watch relay production wiring ------------------
+  // Same generated chain + lifecycle as the S3 push relay (S4 left the relay
+  // constructed-but-unwired). `watchExpiry`'s bare 'session-expired' string is
+  // mapped to eventType='expiry' by accountWatchEventType (C1 fix above). No
+  // raw account state/authorizeUrl ever crosses — only the fixed 4-key cap.event.
+  const accountRelay = createAccountWatchRelay({
+    invoke: (frame) => createCapInvoke(ctx)(frame),
+    emit: emitEvent,
+    isClosing: () => closing,
+  })
+  const startAccountRelay = (sessionId: string): void => accountRelay.start(sessionId)
+  const stopAccountRelay = (sessionId: string): void => accountRelay.stop(sessionId)
+
   /** `turn.start` is emitted once, before any other frame of this turn. */
   function ensureStarted(state: TurnStreamState): void {
     if (state.started) return
@@ -2685,6 +2780,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // S3: release every host push subscription for this session BEFORE the
     // handle goes away — no host listener may outlive its binding.
     stopPushRelay(current.sessionId)
+    stopAccountRelay(current.sessionId)
     // A turn still streaming when its binding is replaced (session.open
     // replace) or closed MUST get a terminal frame. Dropping activeTurn without
     // one leaves the client's `await done` pending forever (P0). Emit it BEFORE
@@ -2849,6 +2945,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         pushResumePendingSnapshot(binding.sessionId)
         // S3: a reconnecting client re-arms the push face on its resume open.
         startPushRelay(binding.sessionId)
+        startAccountRelay(binding.sessionId)
         // A4/D7: rebuild always-grants from the durable journal as well. Set
         // union makes this idempotent against the already-live in-memory grants.
         restoreSessionGrantsFromJournal(binding.sessionId)
@@ -2941,6 +3038,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // Start AFTER binding/reply so a not-yet-ready host degrades to cap.end
       // without delaying the open reply.
       startPushRelay(sessionId)
+      startAccountRelay(sessionId)
       // A6: resume opens push the reconnect snapshot; fresh opens never do.
       // A4/D7: also rebuild always-grants from the durable journal on a fresh
       // process. Contained + non-awaiting: a corrupt/incomplete journal never
@@ -3588,6 +3686,32 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       }
       return
     }
+    // S5 /settings: settings document frames ride the same generated capcontract
+    // chain (table lookup, not a hand-copied wire line). The host's redacted
+    // document/namespace view is replied verbatim; its `settings/conflict` code
+    // survives so the seam can retry a stale revision once.
+    const settingsMethodId = CAP_SETTINGS_WIRE_METHODS[req.method]
+    if (settingsMethodId !== undefined) {
+      try {
+        const value = await createCapInvoke(ctx)({
+          methodId: settingsMethodId as never,
+          params: req.params ?? {},
+        })
+        const result = value !== null && typeof value === 'object' && !Array.isArray(value)
+          ? (value as Record<string, unknown>)
+          : { value }
+        replyOk(req.id, result)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        const code = message.includes('settings/conflict') || /conflict/i.test(message)
+          ? 'settings/conflict'
+          : message.startsWith('NOT_WIRED') || message.includes('unavailable')
+            ? 'UNSUPPORTED'
+            : 'INTERNAL'
+        replyError(req.id, code, message)
+      }
+      return
+    }
     replyError(req.id, 'UNSUPPORTED', `unsupported method: ${req.method}`)
   }
 
@@ -3626,6 +3750,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     clearTurnSubscriptions()
     // S3: release ALL host push subscriptions on teardown (closed connection).
     pushRelay.stopAll()
+    accountRelay.stopAll()
     // T4 (D5): settle every host answerer await BEFORE disposing the registry.
     // `ask.dispose()` drops timers silently (no ask.settled), so teardown is the
     // only place left to guarantee no waterfall promise is left hanging on a

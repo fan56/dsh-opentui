@@ -13,8 +13,8 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 | Full (CapIR) | 257 methods / 43 artifacts | unary 226 / stream 31; class W 257; endpoints: sc 27, global map sum 257 |
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
 | Wired (manual @manual wire) | 11 methods | derived-from-manual |
-| Wired (generated capcontract, S1) | 21 methods | S1+S2+S3-generated-capcontract |
-| in_wired total (of 257) | 22 methods | union of @manual capir_id + generated ids |
+| Wired (generated capcontract, S1) | 23 methods | S1+S2+S3+S5-generated-capcontract |
+| in_wired total (of 257) | 24 methods | union of @manual capir_id + generated ids |
 | I-class (manual) | 6 services | derived-from-manual (v3 proposal 口径) |
 
 ## Reconciliation (first-run closure)
@@ -91,6 +91,8 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 - @deepseek-ai/dsh-api-settings-controller#credentials/describe
 - @deepseek-ai/dsh-api-settings-controller#credentials/set
 - @deepseek-ai/dsh-api-settings-controller#credentials/unset
+- @deepseek-ai/dsh-api-settings-controller#settings/describe
+- @deepseek-ai/dsh-api-settings-controller#settings/mutate
 
 ## I-class services (manual registry)
 
@@ -153,8 +155,8 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 | 37 | @deepseek-ai/dsh-api-settings-controller#credentials/describe | unary | Y | N | Y | full-only |
 | 38 | @deepseek-ai/dsh-api-settings-controller#credentials/set | unary | Y | N | Y | full-only |
 | 39 | @deepseek-ai/dsh-api-settings-controller#credentials/unset | unary | Y | N | Y | full-only |
-| 40 | @deepseek-ai/dsh-api-settings-controller#settings/describe | unary | Y | N | N | full-only |
-| 41 | @deepseek-ai/dsh-api-settings-controller#settings/mutate | unary | Y | N | N | full-only |
+| 40 | @deepseek-ai/dsh-api-settings-controller#settings/describe | unary | Y | N | Y | full-only |
+| 41 | @deepseek-ai/dsh-api-settings-controller#settings/mutate | unary | Y | N | Y | full-only |
 | 42 | @deepseek-ai/dsh-api-settings-controller#settings/openSettingsDocument | unary | Y | N | N | full-only |
 | 43 | @deepseek-ai/dsh-api-settings-controller#settings/replace | unary | Y | N | N | full-only |
 | 44 | @deepseek-ai/dsh-api-settings-controller#settings/update | unary | Y | N | N | full-only |

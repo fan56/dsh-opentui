@@ -52,6 +52,11 @@ import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { journalToTranscriptRows } from "./remote-session-ops.ts"
 import { projectJournalRecord } from "./session-seam-adapter.ts"
 import { tokensPerSecond } from "../agent/loop.ts"
+// S5 — real local config/settings/agents faces replace the old `{}` / honest-
+// failure degrades (no mocks; every read/write touches the operator's files).
+import { LocalAgentsFace, LocalConfigStore, LocalSettingsStore } from "./local-config-faces.ts"
+import { resolveDshHome } from "./remote-local-fs.ts"
+import { DEFAULT_PROFILE } from "./lifecycle.ts"
 
 // ---------------------------------------------------------------------------
 // Injected transport surface (ADR-0010 frame shapes)
@@ -169,6 +174,12 @@ export type PermissionUnavailableReason = "no-provider" | "bridge-offline" | "as
 export interface BridgeSessionSeamOptions {
 	transport: BridgeTransport
 	ctx: BridgeSeamContext
+	/** S5 — dsh home / profile / workspace root for the real local config,
+	 *  settings and agents faces. Default to $DSH_HOME (or ~/.dsh), the
+	 *  `opentui` client profile and the process cwd. */
+	dshHome?: string
+	profile?: string
+	workspaceDir?: string
 	/** A2: called synchronously once when a `bridge.dead` frame arrives, even
 	 *  with no in-flight turn (the idle-period crash case). The composition
 	 *  root turns this into an immediate transient UI notice. */
@@ -1212,6 +1223,33 @@ interface PendingAskEntry {
 export class BridgeSessionSeam implements SessionSeam {
 	readonly #transport: BridgeTransport
 	readonly #ctx: BridgeSeamContext
+	// S5 — real local faces (the old `{}` / honest-failure degrades are gone).
+	readonly #dshHome: string
+	readonly #profile: string
+	readonly #configStore: LocalConfigStore
+	readonly #settingsStore: LocalSettingsStore
+	readonly #localAgents: LocalAgentsFace
+
+	/** S5 /settings host face — real local file I/O, field-level whitelist
+	 *  projection (oldfox S4 review §六.2). Never a `{}` degrade. */
+	settings: NonNullable<SessionSeam["settings"]> = {
+		describe: (): Promise<import("../../../tui-base/src/seams/session").SeamSettingsDocument> =>
+			Promise.resolve(this.#settingsStore.describe()),
+		mutate: (ns, ops, revision) => Promise.resolve(this.#settingsStore.mutate(ns, ops, revision)),
+		identity: () => ({ profile: this.#profile, dshHome: this.#dshHome }),
+	}
+
+	/** S5 /agents face — real `agents/*.md` corpus + model catalog, no mocks
+	 *  (oldfox S4 review §六.4). */
+	agents: NonNullable<SessionSeam["agents"]> = {
+		list: () => this.#localAgents.list(),
+		dir: () => this.#localAgents.dir(),
+		set: (name, field, value) => this.#localAgents.set(name, field, value),
+		body: (name) => this.#localAgents.body(name),
+		modelEfforts: (providerID, modelID) => this.#localAgents.modelEfforts(providerID, modelID),
+		officialCaps: () => this.#localAgents.officialCaps(),
+	}
+
 	readonly #unsubEvent: () => void
 	readonly #listeners: ((event: SeamSessionEvent) => void)[] = []
 	readonly #onDead?: (cause: BridgeDeadCause) => void
@@ -1438,6 +1476,23 @@ export class BridgeSessionSeam implements SessionSeam {
 	constructor(options: BridgeSessionSeamOptions) {
 		this.#transport = options.transport
 		this.#ctx = options.ctx
+		// S5 — resolve the client profile home/workspace with the SAME source the
+		// composition root uses (DEFAULT_PROFILE='opentui', $DSH_HOME or ~/.dsh).
+		this.#dshHome = options.dshHome ?? resolveDshHome()
+		this.#profile = options.profile ?? DEFAULT_PROFILE
+		const workspaceDir = options.workspaceDir ?? process.cwd()
+		this.#settingsStore = new LocalSettingsStore(this.#dshHome, this.#profile)
+		this.#configStore = new LocalConfigStore(this.#dshHome, this.#profile, workspaceDir)
+		this.#localAgents = new LocalAgentsFace({
+			home: this.#dshHome,
+			workspaceDir,
+			settings: this.#settingsStore,
+			// Raw catalog with reasoning.efforts (the flat modelCatalog() seam
+			// projection drops efforts; the agents picker needs the raw groups).
+			modelCatalog: () => this.#transport.request("modelCatalog") as Promise<{
+				groups: Array<{ id: string; models: Array<{ id: string; reasoning?: { efforts?: Array<{ id: string; name: string; description?: string }> } }> }>
+			}>,
+		})
 		this.#onDead = options.onDead
 		this.#onPermissionUnavailable = options.onPermissionUnavailable
 		this.#confirmClock = options.confirmClock ?? {
@@ -2821,35 +2876,28 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 	}
 
-	// ----- config faces (optional seam members — D3 degrade, never throw) --
+	// ----- config faces (S5 — REAL local reads/writes, no degrade, no mock) --
 	//
-	// The bridge host dispatches ONLY bridge.hello/ping, session.{list,open,
-	// send,close}, turn.abort and journal.replay (packages/bridge/src/index.ts
-	// handleLine). There is no config frame, so the merged config, its raw
-	// profile layer and the workspace overlay are not reachable over this seam.
-	// These three OPTIONAL `SessionSeam` members are nevertheless called
-	// UNGUARDED by v2-entry.tsx at boot (configLoad/configRaw/workspaceConfig);
-	// omitting them crashed the default inproc path ("seam.configLoad is not a
-	// function"). Per ticket §6 D3 a sync member with no capability returns a
-	// contract-valid degraded value + a once-only log — NEVER throws, NEVER a
-	// fabricated config. The view already treats `{}` as "no stored override"
-	// (lastMessage cacheHitMode, default skin, empty hints/i18n), so `{}` is the
-	// honest degrade. Reading the files locally would duplicate the host's
-	// mergeConfig layering in a second implementation (ticket hard constraint 3)
-	// and would desync the moment the host mutates its overlay cache.
+	// The client owns the `opentui` profile files (DEFAULT_PROFILE, $DSH_HOME),
+	// exactly the files verify70 reads/writes and the legacy RemoteSessionSeam
+	// uses. The in-process host mounts no settingsController/config service and
+	// would write to a DIFFERENT profile (opentui-inproc), so local file I/O is
+	// the honest real implementation — never the old `{}` degrade. Field-level
+	// whitelist projection lives in LocalConfigStore (oldfox S4 §六.2/§六.3).
 	configLoad(): Record<string, unknown> {
-		this.#degradeOnce("configLoad", "no config frame on the in-process bridge; returning {} (no stored override)")
-		return {}
+		return this.#configStore.configLoad()
 	}
 
 	configRaw(): Record<string, unknown> {
-		this.#degradeOnce("configRaw", "no config frame on the in-process bridge; returning {} (no profile layer)")
-		return {}
+		return this.#configStore.configRaw()
 	}
 
 	workspaceConfig(): Record<string, unknown> {
-		this.#degradeOnce("workspaceConfig", "no config frame on the in-process bridge; returning {} (no workspace overlay)")
-		return {}
+		return this.#configStore.workspaceConfig()
+	}
+
+	configSave(patch: Record<string, unknown>): Record<string, unknown> {
+		return this.#configStore.configSave(patch)
 	}
 
 	/**

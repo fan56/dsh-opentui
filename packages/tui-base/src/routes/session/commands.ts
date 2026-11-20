@@ -1152,15 +1152,12 @@ export function coreCommands(): SlashCommand[] {
 			// composed model/thinking columns, and the table -> fields ->
 			// model/effort/deep editors. An argument preselects the EXACT
 			// `name` row (display names never match, tui-pi parity); a miss
-			// degrades to the plain table. A seam without the agents face
-			// degrades to the unavailable notice.
+			// degrades to the plain table. S5: both seams carry the real agents
+			// face, so /agents always opens the panel-kit modal (no unavailable
+			// degrade path — the old one hid the missing-face structural red).
 			name: "/agents",
 			description: t("command.agents.description"),
 			run(ctx, argText) {
-				if (!ctx.seam.agents) {
-					ctx.say(t("command.agents.unavailable"))
-					return
-				}
 				if (!ctx.openAgents) {
 					ctx.say(t("command.agents.panelNotMounted"))
 					return

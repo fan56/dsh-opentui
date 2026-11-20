@@ -264,8 +264,8 @@
     "count": 11
   },
   "wired_capir_generated": {
-    "mark": "S1+S2+S3-generated-capcontract",
-    "note": "CapIR W ids wired through the generated capcontract host adapter (CAP_HOST_WIRED_IDS in packages/bridge/src/index.ts), NOT hand-copied req.method lines. S1 /model adds three sessionController model methods; S2 adds 12 deepseekAccount methods (10 unary + 2 stream via the kind-table stream arm) and 3 credentialsController methods on their own verified ctx.get seams; S3 adds 3 sessionController push stream methods (observeEvent/observeState/observeProjections) — 21 generated ids total. session/list stays hand-wired @manual and is NOT repeated here. gen-ledger unions these ids with wired_surface_manual[].capir_id to produce methods[].in_wired (22/257 after S3). check-capcontract #10 reconciles this set against the bridge literal; #8 stays on the 11 hand-wired names. NOTE: credentials ids reach NOT_WIRED at runtime in this profile (dsh-api-settings-controller not mounted in the opentui-inproc base closure); wiring is still declared + unit-tested, honest runtime result recorded in the S2 proof report. S3 push streams may also reach NOT_WIRED on a host lacking the observe* surface; the relay degrades to cap.end rather than fabricating events.",
+    "mark": "S1+S2+S3+S5-generated-capcontract",
+    "note": "CapIR W ids wired through the generated capcontract host adapter (CAP_HOST_WIRED_IDS in packages/bridge/src/index.ts), NOT hand-copied req.method lines. S1 /model adds three sessionController model methods; S2 adds 12 deepseekAccount methods (10 unary + 2 stream via the kind-table stream arm) and 3 credentialsController methods on their own verified ctx.get seams; S3 adds 3 sessionController push stream methods (observeEvent/observeState/observeProjections); S5 adds 2 settingsController document methods (settings/describe, settings/mutate — service key verified rc.5 dsh-api-settings-controller/src/index.ts:86) — 23 generated ids total. session/list stays hand-wired @manual and is NOT repeated here. gen-ledger unions these ids with wired_surface_manual[].capir_id to produce methods[].in_wired (24/257 after S5). check-capcontract #10 reconciles this set against the bridge literal; #8 stays on the 11 hand-wired names. NOTE: credentials AND settings ids reach NOT_WIRED at runtime in the stock opentui-inproc profile (dsh-api-settings-controller not mounted in its base closure); wiring is still declared + unit-tested, and the seam's settings/config/agents faces use REAL local file I/O (LocalSettingsStore/LocalConfigStore/LocalAgentsFace) so no degrade/mock is left. S3 push streams may also reach NOT_WIRED on a host lacking the observe* surface; the relay degrades to cap.end rather than fabricating events.",
     "source": "packages/bridge/src/index.ts CAP_HOST_WIRED_IDS / createCapHostInvoke",
     "ids": [
       "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
@@ -288,7 +288,9 @@
       "@deepseek-ai/dsh-deepseek-account#account/watchExpiry",
       "@deepseek-ai/dsh-api-settings-controller#credentials/describe",
       "@deepseek-ai/dsh-api-settings-controller#credentials/set",
-      "@deepseek-ai/dsh-api-settings-controller#credentials/unset"
+      "@deepseek-ai/dsh-api-settings-controller#credentials/unset",
+      "@deepseek-ai/dsh-api-settings-controller#settings/describe",
+      "@deepseek-ai/dsh-api-settings-controller#settings/mutate"
     ]
   },
   "i_class_manual": {
