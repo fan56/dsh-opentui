@@ -1566,11 +1566,18 @@ describe("/preset (batch H2, tui-pi 60-preset parity)", () => {
 describe("batch H5 replacement: /agents opens the definition manager", () => {
 	const run = coreCommands().find((command) => command.name === "/agents")!.run
 
-	test("a seam without the agents face degrades to the unavailable notice", async () => {
+	test("S5: no seam-face degrade — /agents always routes to the mounted panel", async () => {
+		// S5 removed the `if (!ctx.seam.agents) unavailable` branch: both seams
+		// carry the real agents face, so the old degrade was hiding the missing-
+		// face structural red. Even with agents absent from the object, /agents
+		// must delegate to openAgents (the panel itself owns its empty state).
+		const opened: (string | undefined)[] = []
 		const ctx = makeCtx(new RecordingSeam())
 		ctx.seam = { ...ctx.seam, agents: undefined }
+		ctx.openAgents = (name?: string) => opened.push(name)
 		await run(ctx, "")
-		expect(ctx.lines).toEqual(["/agents unavailable in this session"])
+		expect(opened).toEqual([undefined])
+		expect(ctx.lines).toEqual([])
 	})
 
 	test("bare opens the panel with no preselect; an argument passes the exact name", async () => {
