@@ -63,7 +63,7 @@ import { getSubagentIndex } from './subagent-index'
 // 024 base task 4 — startup capability handshake. A lifecycle observer only:
 // it is started from apply() but adds NO `req.method ===` dispatch branch, so
 // the @manual wired surface (and its ledger registry) is unchanged.
-import { attachHandshake, HANDSHAKE_INJECT, startCapabilityHandshake, type HandshakeHandle } from './handshake'
+import { attachHandshake, HANDSHAKE_ICLASS_KEYS_BASE, HANDSHAKE_INJECT, S2_OBSERVATION_ICLASS_KEYS, startCapabilityHandshake, type HandshakeHandle } from './handshake'
 // 024 base task5b — capcontract host adapter (oldfox R2/R3). The generated
 // binder/dispatcher own only id/kind data + membership checks; the bridge
 // injects real host invocation and marks every other CapIR W id NOT_WIRED.
@@ -268,6 +268,67 @@ interface SessionControllerModelLike extends SessionControllerLike {
   initializeDefaultModel?(): Promise<void>
 }
 
+// --------------------------------------------------------------------------
+// S2 credentials/account — structural slices of two host services. Same
+// discipline as S1: NO @deepseek-ai runtime import; shapes transcribed from
+// rc.5 host source, every member optional so a missing surface degrades to
+// NOT_WIRED (never a crash). Service keys verified one-hand from source:
+//   deepseekAccount      — dsh-deepseek-account/src/index.ts:136
+//   credentialsController — dsh-api-settings-controller/src/credentials.ts:71
+// --------------------------------------------------------------------------
+
+/** `AccountClientMetadata` (dsh-deepseek-account/src/types.ts:7-16) — caller
+ *  identity; no credential material. */
+interface AccountClientMetaLike {
+  version: string
+  locale: string
+  timezoneOffsetSeconds: number
+}
+/** `AccountView` (types.ts:38-42): status + attempt + links. NO secret value
+ *  is ever returned by the account service (getState doc, index.ts:201-218). */
+interface AccountViewLike {
+  status: string
+  attempt?: unknown
+  links?: unknown
+}
+/** Ordered stream item `AccountUpdate` (types.ts:45-49). */
+interface AccountUpdateLike {
+  type?: string
+  state?: AccountViewLike
+}
+/** Structural slice of `ctx.deepseekAccount` (rc.5, 12 CapIR methods).
+ *  Methods are optional so an absent host surface degrades to NOT_WIRED. */
+interface DeepSeekAccountLike {
+  getState?(): Promise<AccountViewLike>
+  getProfile?(client: AccountClientMetaLike): Promise<unknown>
+  getBalance?(client: AccountClientMetaLike): Promise<unknown>
+  getNotifications?(client: AccountClientMetaLike): Promise<unknown>
+  getNotificationContent?(id: string, client: AccountClientMetaLike): Promise<unknown>
+  reportNotificationEvent?(id: string, event: string, client: AccountClientMetaLike): Promise<unknown>
+  startSignIn?(client: AccountClientMetaLike, callbackOrigin: string, loginSource: string): Promise<AccountViewLike>
+  cancelSignIn?(attemptId: string): Promise<AccountViewLike>
+  signOut?(client: AccountClientMetaLike): Promise<AccountViewLike>
+  hasRunningAccountTasks?(): boolean | Promise<boolean>
+  /** `account/watch` is backed by @Remote-wrapped `watchState` (index.ts:621-623);
+   *  the plain `watch` (index.ts:612) is the same `observeUpdates` projection. */
+  watchState?(signal: AbortSignal, includeIdentityChanges?: boolean): AsyncIterable<AccountUpdateLike>
+  watch?(signal: AbortSignal, includeIdentityChanges?: boolean): AsyncIterable<AccountUpdateLike>
+  watchExpiry?(signal: AbortSignal): AsyncIterable<unknown>
+}
+/** `CredentialInfo` is host-redacted (field-by-field view, credentials.ts:63-66,
+  88-90) — key names + presence only, never a secret value. */
+interface CredentialInfoLike {
+  present?: boolean
+  configured?: boolean
+  [key: string]: unknown
+}
+/** Structural slice of `ctx.credentialsController` (rc.5, 3 CapIR methods). */
+interface CredentialsControllerLike {
+  describe?(refs: string[]): Promise<Record<string, CredentialInfoLike>>
+  set?(ref: string, value: string): Promise<void>
+  unset?(ref: string): Promise<void>
+}
+
 // M3-02 — structural slice of `ctx.systemPrompt` (dsh-system-prompt). Exported
 // so append-section.ts can consume the same shape without importing any
 // @deepseek-ai/* runtime symbol (same discipline as the types above). Fields
@@ -390,16 +451,34 @@ export const inject: string[] = ['agents', ...HANDSHAKE_INJECT]
 // ---- 024 base task5b: capcontract host adapter (oldfox R2/R3) ---------------
 
 /** CapIR W ids with a hand-wired inproc host adapter. Single source: the ledger
- *  `methods[].in_wired` flag (S1: 4/257 = session/list + the three model methods).
- *  check-capcontract reconciles this literal set against the ledger, so drift
- *  fails the gate. The three model ids are the S1 /model slice; all reuse the
- *  SAME resolveSessionController(ctx.get('sessionController')) seam — no new
- *  host API surface is invented (provenance: pure W, profile-patch package). */
+ *  `methods[].in_wired` flag. check-capcontract reconciles this literal set
+ *  against the ledger, so drift fails the gate.
+ *  - S1 (4/257): session/list + the three model methods (sessionController seam).
+ *  - S2 (+15 → 19/257): 12 `deepseekAccount` methods (10 unary + 2 stream) and
+ *    3 `credentialsController` methods, on their own verified ctx.get seams.
+ *  All are profile/host W capabilities; no new host API surface is invented. */
 export const CAP_HOST_WIRED_IDS: readonly string[] = [
   '@deepseek-ai/dsh-api-session-controller#session/list',
   '@deepseek-ai/dsh-api-session-controller#session/modelCatalog',
   '@deepseek-ai/dsh-api-session-controller#session/selectModel',
   '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel',
+  // S2 — account (dsh-deepseek-account, service key `deepseekAccount`)
+  '@deepseek-ai/dsh-deepseek-account#account/cancelSignIn',
+  '@deepseek-ai/dsh-deepseek-account#account/getBalance',
+  '@deepseek-ai/dsh-deepseek-account#account/getNotificationContent',
+  '@deepseek-ai/dsh-deepseek-account#account/getNotifications',
+  '@deepseek-ai/dsh-deepseek-account#account/getProfile',
+  '@deepseek-ai/dsh-deepseek-account#account/getState',
+  '@deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks',
+  '@deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent',
+  '@deepseek-ai/dsh-deepseek-account#account/signOut',
+  '@deepseek-ai/dsh-deepseek-account#account/startSignIn',
+  '@deepseek-ai/dsh-deepseek-account#account/watch',
+  '@deepseek-ai/dsh-deepseek-account#account/watchExpiry',
+  // S2 — credentials (dsh-api-settings-controller, service key `credentialsController`)
+  '@deepseek-ai/dsh-api-settings-controller#credentials/describe',
+  '@deepseek-ai/dsh-api-settings-controller#credentials/set',
+  '@deepseek-ai/dsh-api-settings-controller#credentials/unset',
 ]
 
 /** Bridge-owned host invocation for the generated dispatcher. Only wired ids
@@ -413,63 +492,204 @@ export const CAP_HOST_WIRED_IDS: readonly string[] = [
  *  resolved service; params are passed through with decidable validation so a
  *  bad selection is rejected (BAD_PARAMS) rather than reaching the host. */
 export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
-  return async (methodId, _kind, params) => {
+  return async (methodId, kind, params) => {
     if (!CAP_HOST_WIRED_IDS.includes(methodId)) {
       throw new Error(
         `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`,
       )
     }
-    const controller = resolveSessionController(ctx)
-    if (controller === undefined) {
-      throw new Error(`NOT_WIRED: sessionController unavailable for ${methodId}`)
+
+    // --- S1 session/model family (unchanged arm bodies) ----------------------
+    if (methodId.startsWith('@deepseek-ai/dsh-api-session-controller#')) {
+      const controller = resolveSessionController(ctx)
+      if (controller === undefined) {
+        throw new Error(`NOT_WIRED: sessionController unavailable for ${methodId}`)
+      }
+      switch (methodId) {
+        case '@deepseek-ai/dsh-api-session-controller#session/list': {
+          const cursor = (params as { cursor?: unknown } | undefined)?.cursor
+          if (cursor !== undefined && typeof cursor !== 'string') {
+            throw new Error('BAD_PARAMS: session.list cursor must be a string')
+          }
+          return controller.list({ _request: cursor !== undefined ? { cursor } : {} })
+        }
+        case '@deepseek-ai/dsh-api-session-controller#session/modelCatalog': {
+          if (typeof controller.modelCatalog !== 'function') {
+            throw new Error(`NOT_WIRED: sessionController.modelCatalog unavailable for ${methodId}`)
+          }
+          return controller.modelCatalog()
+        }
+        case '@deepseek-ai/dsh-api-session-controller#session/selectModel': {
+          if (typeof controller.selectModel !== 'function') {
+            throw new Error(`NOT_WIRED: sessionController.selectModel unavailable for ${methodId}`)
+          }
+          const p = params as Partial<SessionSelectModelRequestLike> | undefined
+          if (typeof p?.sessionId !== 'string' || p.sessionId === '') {
+            throw new Error('BAD_PARAMS: session.selectModel sessionId must be a non-empty string')
+          }
+          if (typeof p?.provider !== 'string' || p.provider === '') {
+            throw new Error('BAD_PARAMS: session.selectModel provider must be a non-empty string')
+          }
+          if (typeof p?.model !== 'string' || p.model === '') {
+            throw new Error('BAD_PARAMS: session.selectModel model must be a non-empty string')
+          }
+          const request: SessionSelectModelRequestLike = {
+            sessionId: p.sessionId,
+            provider: p.provider,
+            model: p.model,
+          }
+          if (typeof p.reasoningEffort === 'string') request.reasoningEffort = p.reasoningEffort
+          return controller.selectModel(request)
+        }
+        case '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel': {
+          if (typeof controller.initializeDefaultModel !== 'function') {
+            throw new Error(`NOT_WIRED: sessionController.initializeDefaultModel unavailable for ${methodId}`)
+          }
+          return controller.initializeDefaultModel()
+        }
+        default:
+          throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
+      }
     }
-    switch (methodId) {
-      case '@deepseek-ai/dsh-api-session-controller#session/list': {
-        const cursor = (params as { cursor?: unknown } | undefined)?.cursor
-        if (cursor !== undefined && typeof cursor !== 'string') {
-          throw new Error('BAD_PARAMS: session.list cursor must be a string')
-        }
-        return controller.list({ _request: cursor !== undefined ? { cursor } : {} })
+
+    // --- S2 account family (dsh-deepseek-account#account/*) ------------------
+    if (methodId.startsWith('@deepseek-ai/dsh-deepseek-account#')) {
+      const account = resolveDeepSeekAccount(ctx)
+      if (account === undefined) {
+        throw new Error(`NOT_WIRED: deepseekAccount unavailable for ${methodId}`)
       }
-      case '@deepseek-ai/dsh-api-session-controller#session/modelCatalog': {
-        if (typeof controller.modelCatalog !== 'function') {
-          throw new Error(`NOT_WIRED: sessionController.modelCatalog unavailable for ${methodId}`)
+      const short = methodId.slice(methodId.indexOf('#') + 1) // "account/<name>"
+      // stream methods are dispatched by the generated CAP_DISPATCH_TABLE kind;
+      // the host methods are async generators returning AsyncIterable. We return
+      // the iterable (do NOT consume on the bridge); the caller owns the signal.
+      if (short === 'account/watch' || short === 'account/watchExpiry') {
+        if (kind !== 'stream') {
+          throw new Error(`BAD_KIND: ${methodId} requires stream transport`)
         }
-        return controller.modelCatalog()
+        const signal = (params as { signal?: unknown } | undefined)?.signal
+        if (signal !== undefined && !(signal instanceof AbortSignal)) {
+          throw new Error('BAD_PARAMS: account stream signal must be an AbortSignal')
+        }
+        const ownController = signal === undefined ? new AbortController() : undefined
+        const useSignal = (signal as AbortSignal | undefined) ?? ownController!.signal
+        if (short === 'account/watchExpiry') {
+          if (typeof account.watchExpiry !== 'function') {
+            throw new Error(`NOT_WIRED: deepseekAccount.watchExpiry unavailable for ${methodId}`)
+          }
+          return account.watchExpiry(useSignal)
+        }
+        const watchFn = account.watchState ?? account.watch
+        if (typeof watchFn !== 'function') {
+          throw new Error(`NOT_WIRED: deepseekAccount.watch unavailable for ${methodId}`)
+        }
+        return watchFn.call(account, useSignal, false)
       }
-      case '@deepseek-ai/dsh-api-session-controller#session/selectModel': {
-        if (typeof controller.selectModel !== 'function') {
-          throw new Error(`NOT_WIRED: sessionController.selectModel unavailable for ${methodId}`)
+      // unary methods — params validated with decidable checks; NO logging of
+      // params/values anywhere in this arm (desensitization discipline).
+      switch (short) {
+        case 'account/getState': {
+          if (typeof account.getState !== 'function') throw new Error(`NOT_WIRED: deepseekAccount.getState unavailable`)
+          return account.getState()
         }
-        const p = params as Partial<SessionSelectModelRequestLike> | undefined
-        if (typeof p?.sessionId !== 'string' || p.sessionId === '') {
-          throw new Error('BAD_PARAMS: session.selectModel sessionId must be a non-empty string')
+        case 'account/hasRunningAccountTasks': {
+          if (typeof account.hasRunningAccountTasks !== 'function') throw new Error(`NOT_WIRED: deepseekAccount.hasRunningAccountTasks unavailable`)
+          return account.hasRunningAccountTasks()
         }
-        if (typeof p?.provider !== 'string' || p.provider === '') {
-          throw new Error('BAD_PARAMS: session.selectModel provider must be a non-empty string')
+        case 'account/getProfile':
+        case 'account/getBalance':
+        case 'account/getNotifications': {
+          const name = short.slice('account/'.length) as 'getProfile' | 'getBalance' | 'getNotifications'
+          const fn = account[name]
+          if (typeof fn !== 'function') throw new Error(`NOT_WIRED: deepseekAccount.${name} unavailable`)
+          const p = params as { client?: AccountClientMetaLike } | undefined
+          if (!isAccountClientMeta(p?.client)) throw new Error(`BAD_PARAMS: ${short} client metadata required`)
+          return fn.call(account, p.client)
         }
-        if (typeof p?.model !== 'string' || p.model === '') {
-          throw new Error('BAD_PARAMS: session.selectModel model must be a non-empty string')
+        case 'account/getNotificationContent': {
+          if (typeof account.getNotificationContent !== 'function') throw new Error(`NOT_WIRED: deepseekAccount.getNotificationContent unavailable`)
+          const p = params as { id?: unknown; client?: AccountClientMetaLike } | undefined
+          if (typeof p?.id !== 'string' || p.id === '') throw new Error('BAD_PARAMS: account.getNotificationContent id required')
+          if (!isAccountClientMeta(p.client)) throw new Error('BAD_PARAMS: account.getNotificationContent client metadata required')
+          return account.getNotificationContent(p.id, p.client)
         }
-        const request: SessionSelectModelRequestLike = {
-          sessionId: p.sessionId,
-          provider: p.provider,
-          model: p.model,
+        case 'account/reportNotificationEvent': {
+          if (typeof account.reportNotificationEvent !== 'function') throw new Error(`NOT_WIRED: deepseekAccount.reportNotificationEvent unavailable`)
+          const p = params as { id?: unknown; event?: unknown; client?: AccountClientMetaLike } | undefined
+          if (typeof p?.id !== 'string' || p.id === '') throw new Error('BAD_PARAMS: account.reportNotificationEvent id required')
+          if (p.event !== 'displayed' && p.event !== 'cta_clicked' && p.event !== 'dismissed') {
+            throw new Error('BAD_PARAMS: account.reportNotificationEvent event invalid')
+          }
+          if (!isAccountClientMeta(p.client)) throw new Error('BAD_PARAMS: account.reportNotificationEvent client metadata required')
+          return account.reportNotificationEvent(p.id, p.event, p.client)
         }
-        if (typeof p.reasoningEffort === 'string') request.reasoningEffort = p.reasoningEffort
-        return controller.selectModel(request)
+        case 'account/startSignIn': {
+          if (typeof account.startSignIn !== 'function') throw new Error(`NOT_WIRED: deepseekAccount.startSignIn unavailable`)
+          const p = params as { client?: AccountClientMetaLike; callbackOrigin?: unknown; loginSource?: unknown } | undefined
+          if (!isAccountClientMeta(p?.client)) throw new Error('BAD_PARAMS: account.startSignIn client metadata required')
+          if (typeof p?.callbackOrigin !== 'string' || p.callbackOrigin === '') throw new Error('BAD_PARAMS: account.startSignIn callbackOrigin required')
+          if (p.loginSource !== 'web' && p.loginSource !== 'desktop') throw new Error('BAD_PARAMS: account.startSignIn loginSource must be web|desktop')
+          return account.startSignIn(p.client, p.callbackOrigin, p.loginSource)
+        }
+        case 'account/cancelSignIn': {
+          if (typeof account.cancelSignIn !== 'function') throw new Error(`NOT_WIRED: deepseekAccount.cancelSignIn unavailable`)
+          const p = params as { attemptId?: unknown } | undefined
+          if (typeof p?.attemptId !== 'string' || p.attemptId === '') throw new Error('BAD_PARAMS: account.cancelSignIn attemptId required')
+          return account.cancelSignIn(p.attemptId)
+        }
+        case 'account/signOut': {
+          if (typeof account.signOut !== 'function') throw new Error(`NOT_WIRED: deepseekAccount.signOut unavailable`)
+          const p = params as { client?: AccountClientMetaLike } | undefined
+          if (!isAccountClientMeta(p?.client)) throw new Error('BAD_PARAMS: account.signOut client metadata required')
+          return account.signOut(p.client)
+        }
+        default:
+          throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
       }
-      case '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel': {
-        if (typeof controller.initializeDefaultModel !== 'function') {
-          throw new Error(`NOT_WIRED: sessionController.initializeDefaultModel unavailable for ${methodId}`)
-        }
-        return controller.initializeDefaultModel()
-      }
-      default:
-        // Unreachable: every CAP_HOST_WIRED_IDS member has an arm above. Kept
-        // explicit so a future registry addition cannot silently hit a stub.
-        throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
     }
+
+    // --- S2 credentials family (dsh-api-settings-controller#credentials/*) ---
+    if (methodId.startsWith('@deepseek-ai/dsh-api-settings-controller#')) {
+      const creds = resolveCredentialsController(ctx)
+      if (creds === undefined) {
+        throw new Error(`NOT_WIRED: credentialsController unavailable for ${methodId}`)
+      }
+      const short = methodId.slice(methodId.indexOf('#') + 1) // "credentials/<name>"
+      switch (short) {
+        case 'credentials/describe': {
+          if (typeof creds.describe !== 'function') throw new Error(`NOT_WIRED: credentialsController.describe unavailable`)
+          const p = params as { refs?: unknown } | undefined
+          if (!Array.isArray(p?.refs) || p.refs.some((r) => typeof r !== 'string')) {
+            throw new Error('BAD_PARAMS: credentials.describe refs must be a string array')
+          }
+          return creds.describe(p.refs as string[])
+        }
+        case 'credentials/set': {
+          if (typeof creds.set !== 'function') throw new Error(`NOT_WIRED: credentialsController.set unavailable`)
+          const p = params as { ref?: unknown; value?: unknown } | undefined
+          if (typeof p?.ref !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(p.ref)) {
+            throw new Error('BAD_PARAMS: credentials.set ref must match credential grammar')
+          }
+          if (typeof p?.value !== 'string' || p.value === '') {
+            throw new Error('BAD_PARAMS: credentials.set value must be a non-empty string')
+          }
+          // The sensitive value is passed to the host and NEVER logged/echoed.
+          return creds.set(p.ref, p.value)
+        }
+        case 'credentials/unset': {
+          if (typeof creds.unset !== 'function') throw new Error(`NOT_WIRED: credentialsController.unset unavailable`)
+          const p = params as { ref?: unknown } | undefined
+          if (typeof p?.ref !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(p.ref)) {
+            throw new Error('BAD_PARAMS: credentials.unset ref must match credential grammar')
+          }
+          return creds.unset(p.ref)
+        }
+        default:
+          throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
+      }
+    }
+
+    // Unreachable: every CAP_HOST_WIRED_IDS member belongs to a family above.
+    throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
   }
 }
 
@@ -725,6 +945,41 @@ function resolveSessionController(ctx: BridgeContext): SessionControllerModelLik
     : undefined
 }
 
+/** S2 — resolve `ctx.deepseekAccount` through the same contained ctx.get seam
+ *  as sessionController. Membership check uses the smallest signature common
+ *  to all 12 methods so a wrong/absent service degrades to NOT_WIRED. */
+function resolveDeepSeekAccount(ctx: BridgeContext): DeepSeekAccountLike | undefined {
+  let svc: unknown
+  try {
+    svc = typeof ctx.get === 'function' ? ctx.get('deepseekAccount') : undefined
+    if (svc === undefined) svc = (ctx as unknown as { deepseekAccount?: unknown }).deepseekAccount
+  } catch {
+    svc = undefined
+  }
+  return svc !== undefined && typeof svc === 'object' ? (svc as DeepSeekAccountLike) : undefined
+}
+
+/** S2 — resolve `ctx.credentialsController` (service key verified from rc.5
+ *  source, dsh-api-settings-controller/src/credentials.ts:71). Contained lookup;
+ *  an absent provider degrades to NOT_WIRED, never a crash. */
+function resolveCredentialsController(ctx: BridgeContext): CredentialsControllerLike | undefined {
+  let svc: unknown
+  try {
+    svc = typeof ctx.get === 'function' ? ctx.get('credentialsController') : undefined
+    if (svc === undefined) svc = (ctx as unknown as { credentialsController?: unknown }).credentialsController
+  } catch {
+    svc = undefined
+  }
+  return svc !== undefined && typeof svc === 'object' ? (svc as CredentialsControllerLike) : undefined
+}
+
+/** Decidable shape check for AccountClientMetadata (version/locale/offset). */
+function isAccountClientMeta(v: unknown): v is AccountClientMetaLike {
+  if (v === null || typeof v !== 'object') return false
+  const m = v as Record<string, unknown>
+  return typeof m.version === 'string' && typeof m.locale === 'string' && typeof m.timezoneOffsetSeconds === 'number'
+}
+
 /**
  * Mirror the host's `agentOptions()` (dsh-api-session-controller/src/agent.ts):
  * getters read `agentDefaultModel.currentSelection()` so a session that has
@@ -957,7 +1212,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         get: (name: string) => ctx.get?.(name),
         logger,
       },
-      { timeoutMs: handshakeTimeoutMs },
+      {
+        timeoutMs: handshakeTimeoutMs,
+        // S2: extend the six ledger I-class probes with the two new service
+        // seams (observation only; W-face 75/75 comparison is unchanged).
+        iClassKeys: [...HANDSHAKE_ICLASS_KEYS_BASE, ...S2_OBSERVATION_ICLASS_KEYS],
+      },
     )
   } catch (err) {
     // Startup observation must never take the plugin down.
@@ -1097,6 +1357,129 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           id: CAP_ID.unwired,
           rejected: !unwired.ok,
           error: unwired.ok ? '(unexpectedly resolved)' : (unwired.error ?? ''),
+        })
+
+        // ---- S2 credentials/account probes ---------------------------------
+        // DESENSITIZATION DISCIPLINE: every emit below is a fixed-shape
+        // whitelist. Only ids, ok booleans, error CODES (not messages that
+        // might carry a value), key NAMES and presence booleans are ever
+        // serialized to stderr. No params object, wire frame, credential value
+        // or token is passed to emit() anywhere in the S2 block.
+        const errCode = (e?: string): string | undefined => {
+          if (e === undefined) return undefined
+          if (e.startsWith('NOT_WIRED:')) return 'NOT_WIRED'
+          if (e.startsWith('BAD_PARAMS:')) return 'BAD_PARAMS'
+          if (e.startsWith('BAD_KIND:')) return 'BAD_KIND'
+          return 'HOST_ERROR' // host domain errors never echo a value here
+        }
+        const CLIENT: AccountClientMetaLike = { version: '0.24-opentui-probe', locale: 'en-US', timezoneOffsetSeconds: 0 }
+        const A = (name: string) => `@deepseek-ai/dsh-deepseek-account#account/${name}` as never
+        const C = (name: string) => `@deepseek-ai/dsh-api-settings-controller#credentials/${name}` as never
+
+        // E4 (concern C): I-probe presence of the two S2 service keys — boolean only.
+        let accountPresent = false
+        let credsPresent = false
+        try { accountPresent = ctx.get?.('deepseekAccount') !== undefined } catch { /* keep false */ }
+        try { credsPresent = ctx.get?.('credentialsController') !== undefined } catch { /* keep false */ }
+        emit('I-probe S2 services', { deepseekAccountPresent: accountPresent, credentialsControllerPresent: credsPresent })
+
+        // E1: the 10 unary account methods via the shipped generated chain.
+        // getState is the shape-critical one; the rest are reachability probes.
+        const state = await probe(A('getState'), {})
+        const st = state.value as AccountViewLike | undefined
+        const allowedStateKeys = ['status', 'attempt', 'links']
+        emit('W account getState', {
+          ok: state.ok,
+          status: typeof st?.status === 'string' ? st.status : null,
+          attemptPhase: (st?.attempt as { phase?: unknown } | undefined)?.phase ?? null,
+          linksPresent: st?.links !== undefined,
+          whitelist: allowedStateKeys,
+          ...(state.ok ? {} : { errorCode: errCode(state.error) }),
+        })
+        const tasks = await probe(A('hasRunningAccountTasks'), {})
+        emit('W account hasRunningAccountTasks', { ok: tasks.ok, resultType: typeof tasks.value, ...(tasks.ok ? {} : { errorCode: errCode(tasks.error) }) })
+        const unaryAccount = [
+          ['getProfile', { client: CLIENT }],
+          ['getBalance', { client: CLIENT }],
+          ['getNotifications', { client: CLIENT }],
+          ['getNotificationContent', { id: 'probe-notification-id', client: CLIENT }],
+          ['reportNotificationEvent', { id: 'probe-notification-id', event: 'displayed', client: CLIENT }],
+          ['startSignIn', { client: CLIENT, callbackOrigin: 'not-a-url', loginSource: 'desktop' }], // invalid URL -> host rejects before any browser side effect
+          ['cancelSignIn', { attemptId: 'probe-attempt-id' }],
+          ['signOut', { client: CLIENT }], // signed-out scratch home: no grant to remove
+        ] as const
+        for (const [name, params] of unaryAccount) {
+          const r = await probe(A(name), params)
+          emit('W account unary', { method: name, ok: r.ok, ...(r.ok ? {} : { errorCode: errCode(r.error) }) })
+        }
+
+        // E2: the 2 stream methods — take ONE item with a guard, emit only its
+        // whitelisted type + state.status; abort immediately after.
+        for (const name of ['watch', 'watchExpiry'] as const) {
+          const ac = new AbortController()
+          const r = await probe(A(name), { signal: ac.signal })
+          let hasFirst = false
+          let firstType: string | null = null
+          let firstStatus: string | null = null
+          let iterableOk = false
+          const val = r.value as AsyncIterable<AccountUpdateLike> | undefined
+          if (r.ok && val !== null && typeof val === 'object' && typeof val[Symbol.asyncIterator] === 'function') {
+            iterableOk = true
+            try {
+              const it = val[Symbol.asyncIterator]()
+              const next = await Promise.race([
+                it.next(),
+                new Promise<{ done: boolean; value?: AccountUpdateLike }>((resolve) =>
+                  setTimeout(() => resolve({ done: true }), 800)),
+              ])
+              if (!next.done && next.value !== undefined) {
+                hasFirst = true
+                firstType = typeof next.value.type === 'string' ? next.value.type : null
+                firstStatus = typeof next.value.state?.status === 'string' ? next.value.state.status : null
+              }
+              try { await it.return?.(undefined) } catch { /* keep observed values */ }
+            } catch { /* keep observed values */ }
+          }
+          ac.abort()
+          emit('W account stream', {
+            method: name,
+            kind: 'stream',
+            ok: r.ok,
+            iterableOk,
+            hasFirst,
+            firstType,
+            firstStatus,
+            emitWhitelist: ['type', 'state.status'],
+            ...(r.ok ? {} : { errorCode: errCode(r.error) }),
+          })
+        }
+
+        // E3 + desensitization: credentials describe/set/unset DATAFLOW using a
+        // synthetic sentinel ref/value. The VALUE is never emitted — only the
+        // ref KEY name and presence booleans. The scan script (09) greps all
+        // evidence for the sentinel substring and must find zero occurrences.
+        const sentinel = `DSHS2CRED_SENTINEL_${randomUUID()}`
+        const ref = 'dsh_s2_probe_ref'
+        const descBefore = await probe(C('describe'), { refs: [ref] })
+        const beforeInfo = (descBefore.value as Record<string, CredentialInfoLike> | undefined)?.[ref]
+        const set = await probe(C('set'), { ref, value: sentinel })
+        const descAfterSet = await probe(C('describe'), { refs: [ref] })
+        const afterInfo = (descAfterSet.value as Record<string, CredentialInfoLike> | undefined)?.[ref]
+        const unset = await probe(C('unset'), { ref })
+        const descAfterUnset = await probe(C('describe'), { refs: [ref] })
+        const unsetInfo = (descAfterUnset.value as Record<string, CredentialInfoLike> | undefined)?.[ref]
+        const presence = (info: CredentialInfoLike | undefined): boolean =>
+          info !== undefined && (info.configured === true || info.present === true || Object.keys(info).length > 0)
+        emit('W credentials describe', { ok: descBefore.ok, ref, ...(descBefore.ok ? {} : { errorCode: errCode(descBefore.error) }) })
+        emit('W credentials set', { ok: set.ok, ref, ...(set.ok ? {} : { errorCode: errCode(set.error) }) })
+        emit('W credentials DATAFLOW', {
+          describeOk: descBefore.ok && descAfterSet.ok && descAfterUnset.ok,
+          setOk: set.ok,
+          unsetOk: unset.ok,
+          beforePresent: presence(beforeInfo),
+          afterSetPresent: presence(afterInfo),
+          afterUnsetPresent: presence(unsetInfo),
+          valueLogged: false,
         })
       })()
     }, 1500)

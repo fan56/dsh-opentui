@@ -197,14 +197,29 @@
       ]
     },
     "wired_capir_generated": {
-      "mark": "S1-generated-capcontract",
-      "count": 3,
+      "mark": "S1+S2-generated-capcontract",
+      "count": 18,
       "ids": [
         "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
         "@deepseek-ai/dsh-api-session-controller#session/selectModel",
-        "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel"
+        "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel",
+        "@deepseek-ai/dsh-deepseek-account#account/cancelSignIn",
+        "@deepseek-ai/dsh-deepseek-account#account/getBalance",
+        "@deepseek-ai/dsh-deepseek-account#account/getNotificationContent",
+        "@deepseek-ai/dsh-deepseek-account#account/getNotifications",
+        "@deepseek-ai/dsh-deepseek-account#account/getProfile",
+        "@deepseek-ai/dsh-deepseek-account#account/getState",
+        "@deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks",
+        "@deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent",
+        "@deepseek-ai/dsh-deepseek-account#account/signOut",
+        "@deepseek-ai/dsh-deepseek-account#account/startSignIn",
+        "@deepseek-ai/dsh-deepseek-account#account/watch",
+        "@deepseek-ai/dsh-deepseek-account#account/watchExpiry",
+        "@deepseek-ai/dsh-api-settings-controller#credentials/describe",
+        "@deepseek-ai/dsh-api-settings-controller#credentials/set",
+        "@deepseek-ai/dsh-api-settings-controller#credentials/unset"
       ],
-      "in_wired_total": 4
+      "in_wired_total": 19
     },
     "i_class": {
       "mark": "derived-from-manual (v3 proposal 口径)",
@@ -834,7 +849,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": false,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "full-only"
     },
     {
@@ -846,7 +861,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": false,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "full-only"
     },
     {
@@ -858,7 +873,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": false,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "full-only"
     },
     {
@@ -1710,7 +1725,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1722,7 +1737,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1734,7 +1749,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1746,7 +1761,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1758,7 +1773,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1770,7 +1785,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1782,7 +1797,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1794,7 +1809,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1806,7 +1821,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1818,7 +1833,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1830,7 +1845,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {
@@ -1842,7 +1857,7 @@
       "class": "W",
       "in_full": true,
       "in_expected": true,
-      "in_wired": false,
+      "in_wired": true,
       "provenance": "base-closure"
     },
     {

@@ -44,9 +44,30 @@ function stubController(): Record<string, unknown> {
 }
 
 describe("S1 /model — createCapHostInvoke model arms", () => {
-  test("CAP_HOST_WIRED_IDS = 4 (session/list + 3 model), no duplicates", () => {
-    expect(CAP_HOST_WIRED_IDS).toEqual([ID.list, ID.catalog, ID.select, ID.init])
-    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(4)
+  // S2 note: this count snapshot is slice-local (not a frozen base assertion).
+  // Old criterion (verbatim): `expect(CAP_HOST_WIRED_IDS).toEqual([ID.list, ID.catalog, ID.select, ID.init])`
+  // and `expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(4)`. S2 expands the registry
+  // to 19 (4 S1 + 12 account + 3 credentials); kept strict via exact 19-id equality.
+  test("CAP_HOST_WIRED_IDS = 19 (S1 4 + S2 15), no duplicates", () => {
+    expect(CAP_HOST_WIRED_IDS).toEqual([
+      ID.list, ID.catalog, ID.select, ID.init,
+      "@deepseek-ai/dsh-deepseek-account#account/cancelSignIn",
+      "@deepseek-ai/dsh-deepseek-account#account/getBalance",
+      "@deepseek-ai/dsh-deepseek-account#account/getNotificationContent",
+      "@deepseek-ai/dsh-deepseek-account#account/getNotifications",
+      "@deepseek-ai/dsh-deepseek-account#account/getProfile",
+      "@deepseek-ai/dsh-deepseek-account#account/getState",
+      "@deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks",
+      "@deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent",
+      "@deepseek-ai/dsh-deepseek-account#account/signOut",
+      "@deepseek-ai/dsh-deepseek-account#account/startSignIn",
+      "@deepseek-ai/dsh-deepseek-account#account/watch",
+      "@deepseek-ai/dsh-deepseek-account#account/watchExpiry",
+      "@deepseek-ai/dsh-api-settings-controller#credentials/describe",
+      "@deepseek-ai/dsh-api-settings-controller#credentials/set",
+      "@deepseek-ai/dsh-api-settings-controller#credentials/unset",
+    ])
+    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(19)
   })
 
   test("modelCatalog returns the host catalog verbatim", async () => {
@@ -100,9 +121,10 @@ describe("S1 /model — createCapHostInvoke model arms", () => {
   })
 
   test("non-wired CapIR id stays NOT_WIRED (膨胀期望面 negative)", async () => {
+    // Old criterion (verbatim): /NOT_WIRED:.*ledger in_wired=4\/257/. S2: 19/257.
     const invoke = createCapHostInvoke(ctxWith(stubController()))
     await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(
-      /NOT_WIRED:.*ledger in_wired=4\/257/,
+      /NOT_WIRED:.*ledger in_wired=19\/257/,
     )
   })
 })

@@ -13,8 +13,8 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 | Full (CapIR) | 257 methods / 43 artifacts | unary 226 / stream 31; class W 257; endpoints: sc 27, global map sum 257 |
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
 | Wired (manual @manual wire) | 11 methods | derived-from-manual |
-| Wired (generated capcontract, S1) | 3 methods | S1-generated-capcontract |
-| in_wired total (of 257) | 4 methods | union of @manual capir_id + generated ids |
+| Wired (generated capcontract, S1) | 18 methods | S1+S2-generated-capcontract |
+| in_wired total (of 257) | 19 methods | union of @manual capir_id + generated ids |
 | I-class (manual) | 6 services | derived-from-manual (v3 proposal 口径) |
 
 ## Reconciliation (first-run closure)
@@ -73,6 +73,21 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 - @deepseek-ai/dsh-api-session-controller#session/modelCatalog
 - @deepseek-ai/dsh-api-session-controller#session/selectModel
 - @deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel
+- @deepseek-ai/dsh-deepseek-account#account/cancelSignIn
+- @deepseek-ai/dsh-deepseek-account#account/getBalance
+- @deepseek-ai/dsh-deepseek-account#account/getNotificationContent
+- @deepseek-ai/dsh-deepseek-account#account/getNotifications
+- @deepseek-ai/dsh-deepseek-account#account/getProfile
+- @deepseek-ai/dsh-deepseek-account#account/getState
+- @deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks
+- @deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent
+- @deepseek-ai/dsh-deepseek-account#account/signOut
+- @deepseek-ai/dsh-deepseek-account#account/startSignIn
+- @deepseek-ai/dsh-deepseek-account#account/watch
+- @deepseek-ai/dsh-deepseek-account#account/watchExpiry
+- @deepseek-ai/dsh-api-settings-controller#credentials/describe
+- @deepseek-ai/dsh-api-settings-controller#credentials/set
+- @deepseek-ai/dsh-api-settings-controller#credentials/unset
 
 ## I-class services (manual registry)
 
@@ -132,9 +147,9 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 | 34 | @deepseek-ai/dsh-api-session-controller#session/wait | unary | Y | Y | N | profile-patch |
 | 35 | @deepseek-ai/dsh-api-session-controller#session/workspacePathApplications | unary | Y | Y | N | profile-patch |
 | 36 | @deepseek-ai/dsh-api-session-controller#skills/list | unary | Y | Y | N | profile-patch |
-| 37 | @deepseek-ai/dsh-api-settings-controller#credentials/describe | unary | Y | N | N | full-only |
-| 38 | @deepseek-ai/dsh-api-settings-controller#credentials/set | unary | Y | N | N | full-only |
-| 39 | @deepseek-ai/dsh-api-settings-controller#credentials/unset | unary | Y | N | N | full-only |
+| 37 | @deepseek-ai/dsh-api-settings-controller#credentials/describe | unary | Y | N | Y | full-only |
+| 38 | @deepseek-ai/dsh-api-settings-controller#credentials/set | unary | Y | N | Y | full-only |
+| 39 | @deepseek-ai/dsh-api-settings-controller#credentials/unset | unary | Y | N | Y | full-only |
 | 40 | @deepseek-ai/dsh-api-settings-controller#settings/describe | unary | Y | N | N | full-only |
 | 41 | @deepseek-ai/dsh-api-settings-controller#settings/mutate | unary | Y | N | N | full-only |
 | 42 | @deepseek-ai/dsh-api-settings-controller#settings/openSettingsDocument | unary | Y | N | N | full-only |
@@ -205,18 +220,18 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 | 107 | @deepseek-ai/dsh-cua#cuaAccess/retryApproval | unary | Y | N | N | full-only |
 | 108 | @deepseek-ai/dsh-cua#cuaAccess/revoke | unary | Y | N | N | full-only |
 | 109 | @deepseek-ai/dsh-cua#cuaAccess/systemStatus | unary | Y | N | N | full-only |
-| 110 | @deepseek-ai/dsh-deepseek-account#account/cancelSignIn | unary | Y | Y | N | base-closure |
-| 111 | @deepseek-ai/dsh-deepseek-account#account/getBalance | unary | Y | Y | N | base-closure |
-| 112 | @deepseek-ai/dsh-deepseek-account#account/getNotificationContent | unary | Y | Y | N | base-closure |
-| 113 | @deepseek-ai/dsh-deepseek-account#account/getNotifications | unary | Y | Y | N | base-closure |
-| 114 | @deepseek-ai/dsh-deepseek-account#account/getProfile | unary | Y | Y | N | base-closure |
-| 115 | @deepseek-ai/dsh-deepseek-account#account/getState | unary | Y | Y | N | base-closure |
-| 116 | @deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks | unary | Y | Y | N | base-closure |
-| 117 | @deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent | unary | Y | Y | N | base-closure |
-| 118 | @deepseek-ai/dsh-deepseek-account#account/signOut | unary | Y | Y | N | base-closure |
-| 119 | @deepseek-ai/dsh-deepseek-account#account/startSignIn | unary | Y | Y | N | base-closure |
-| 120 | @deepseek-ai/dsh-deepseek-account#account/watch | stream | Y | Y | N | base-closure |
-| 121 | @deepseek-ai/dsh-deepseek-account#account/watchExpiry | stream | Y | Y | N | base-closure |
+| 110 | @deepseek-ai/dsh-deepseek-account#account/cancelSignIn | unary | Y | Y | Y | base-closure |
+| 111 | @deepseek-ai/dsh-deepseek-account#account/getBalance | unary | Y | Y | Y | base-closure |
+| 112 | @deepseek-ai/dsh-deepseek-account#account/getNotificationContent | unary | Y | Y | Y | base-closure |
+| 113 | @deepseek-ai/dsh-deepseek-account#account/getNotifications | unary | Y | Y | Y | base-closure |
+| 114 | @deepseek-ai/dsh-deepseek-account#account/getProfile | unary | Y | Y | Y | base-closure |
+| 115 | @deepseek-ai/dsh-deepseek-account#account/getState | unary | Y | Y | Y | base-closure |
+| 116 | @deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks | unary | Y | Y | Y | base-closure |
+| 117 | @deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent | unary | Y | Y | Y | base-closure |
+| 118 | @deepseek-ai/dsh-deepseek-account#account/signOut | unary | Y | Y | Y | base-closure |
+| 119 | @deepseek-ai/dsh-deepseek-account#account/startSignIn | unary | Y | Y | Y | base-closure |
+| 120 | @deepseek-ai/dsh-deepseek-account#account/watch | stream | Y | Y | Y | base-closure |
+| 121 | @deepseek-ai/dsh-deepseek-account#account/watchExpiry | stream | Y | Y | Y | base-closure |
 | 122 | @deepseek-ai/dsh-deepseek-chat-import#deepseekChatImport/limits | unary | Y | N | N | full-only |
 | 123 | @deepseek-ai/dsh-experimental-api-speech-to-text#speech/cancelPreparation | unary | Y | N | N | full-only |
 | 124 | @deepseek-ai/dsh-experimental-api-speech-to-text#speech/catalog | unary | Y | N | N | full-only |

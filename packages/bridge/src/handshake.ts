@@ -32,6 +32,21 @@ import type { CapMethodId } from "../../../capcontract/types"
  *  sole owner of the assembled `inject` array. */
 export const HANDSHAKE_INJECT: readonly string[] = ["typert"]
 
+/** S2 observation-only I-probe keys. These extend the six ledger I-class
+ *  probes at handshake time so the two new service seams (deepseekAccount,
+ *  credentialsController) are observed present/absent after the stable window.
+ *  They are NOT added to the cordis `inject` array: a declared-but-absent
+ *  required inject deactivates the whole plugin in cordis 4.1 (and the
+ *  `credentialsController` package is not mounted in this profile). Service
+ *  access stays on the `ctx.get` seam, exactly like S1's sessionController.
+ *  Observation only — an absent service never degrades the W-surface state. */
+export const S2_OBSERVATION_ICLASS_KEYS: readonly string[] = ["deepseekAccount", "credentialsController"]
+
+/** The six ledger I-class service keys (base probe surface), exported so the
+ *  bridge can assemble base + S2 observation keys for startCapabilityHandshake
+ *  without duplicating the ledger source of truth. */
+export const HANDSHAKE_ICLASS_KEYS_BASE: readonly string[] = ledger.dimensions.i_class.services.map((s) => s.key)
+
 /** Per-ctx handle registry for headless proof/smoke tooling (no wire surface). */
 const ctxHandles = new WeakMap<object, HandshakeHandle>()
 export function attachHandshake(ctx: object, handle: HandshakeHandle | undefined): void {
