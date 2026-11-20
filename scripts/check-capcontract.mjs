@@ -3,7 +3,7 @@
  *
  *   node scripts/check-capcontract.mjs
  *
- * Checks (all hard failures except the explicitly NOT RUN ledger-dependent one):
+ * Checks (all hard failures):
  *   1. CapIR reproducibility       — gen-capir.mjs --check (byte-level).
  *   2. capcontract reproducibility — gen-capcontract.mjs --check (byte-level).
  *   3. self-consistency            — generated id sets == CapIR id set, counts match.
@@ -11,8 +11,8 @@
  *   5. @deepseek-ai import scan    — zero host-package imports in generated code.
  *   6. declaration-line coverage   — every generated file carries the provenance line.
  *   7. no bare ctx.<service>       — every ctx service access covered by inject: [...].
- *   8. @manual count               — NOT RUN: depends on capability ledger (not in
- *                                    this base slice); interface reserved below.
+ *   8. @manual count               — bridge hand-wired dispatch count == ledger's
+ *                                    declared wired count (ledger is @manual's sole owner).
  *
  * No network, no host closure, no build step: pure Node over committed files.
  */
@@ -23,6 +23,8 @@ import { fileURLToPath } from "node:url"
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const CAPIR_PATH = resolve(ROOT, "capir/capir.json")
+const LEDGER_PATH = resolve(ROOT, "ledger/ledger.json")
+const BRIDGE_PATH = resolve(ROOT, "packages/bridge/src/index.ts")
 const OUT_DIR = resolve(ROOT, "capcontract")
 const ATTRIBUTION =
   "Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 DeepSeek)"
@@ -185,11 +187,41 @@ if (capir && Object.keys(files).length === 3) {
   else bad("7. no bare ctx.<service> access", ctxOffenders.join("; "))
 }
 
-// --- 8. @manual count: depends on ledger, not produced in this base slice ---
-// Interface reserved: when the capability ledger lands, implement this hook to
-// recompute the @manual count and compare it with the ledger's declared count.
+// --- 8. @manual count: bridge hand-wired dispatch vs ledger's declared count ---
+// The capability ledger is the single source of truth for the @manual (wired)
+// surface. Recompute the hand-copied `handleLine()` dispatch count from the
+// bridge source and assert it equals ledger.dimensions.wired.count. If either
+// input is unavailable, fall back to NOT RUN rather than inventing a count.
 function checkManualCount() {
-  notRun("@manual count", "requires capability ledger (not present in this base slice); hook: checkManualCount()")
+  let ledger
+  try {
+    ledger = JSON.parse(readFileSync(LEDGER_PATH, "utf8"))
+  } catch (e) {
+    notRun("@manual count", `ledger.json unavailable: ${e.message}`)
+    return
+  }
+  let bridgeSrc
+  try {
+    bridgeSrc = readFileSync(BRIDGE_PATH, "utf8")
+  } catch (e) {
+    notRun("@manual count", `bridge source unavailable: ${e.message}`)
+    return
+  }
+  const declared = ledger?.dimensions?.wired?.count
+  if (typeof declared !== "number") {
+    notRun("@manual count", "ledger.json has no dimensions.wired.count")
+    return
+  }
+  // All `req.method === '<name>'` comparisons live in handleLine(); each is one
+  // hand-copied wired line. Count unique method names to guard against a dup.
+  const wiredNames = new Set(
+    [...bridgeSrc.matchAll(/\breq\.method\s*===\s*["']([^"']+)["']/g)].map((m) => m[1]),
+  )
+  if (wiredNames.size === declared) {
+    ok("@manual count", `bridge hand-wired dispatch ${wiredNames.size} == ledger declared wired ${declared}`)
+  } else {
+    bad("@manual count", `bridge hand-wired dispatch ${wiredNames.size} != ledger declared wired ${declared}`)
+  }
 }
 checkManualCount()
 
