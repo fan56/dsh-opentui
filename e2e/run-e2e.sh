@@ -11,8 +11,48 @@
 # not reachable from this network; see e2e/Containerfile.
 set -euo pipefail
 
+usage() {
+  cat <<'EOF'
+Usage: ./e2e/run-e2e.sh [options]
+
+Host driver: build the podman e2e image and run the in-container suite.
+Options:
+  -h, --help      show this help and exit (no network, no podman)
+  -n, --dry-run   print the resolved build/run commands without executing
+                  (no npm view, no podman) — used by the suite self-check
+Environment:
+  E2E_SCENARIOS   space-separated scenario subset (e.g. "t0-global-keys")
+  E2E_ISOLATED=1  give each scenario its own scratch DSH_HOME / mock port
+  E2E_RETRY=1     rerun a failing scenario once (2 attempts max)
+  E2E_SIZES       geometries for key/panel scenarios (default "120x40 200x50")
+  DSH_VERSION     pin the dsh closure version instead of npm latest/next
+  IMAGE           override the local image tag
+EOF
+}
+
+DRY_RUN=0
+for arg in "$@"; do
+  case "$arg" in
+    -h|--help) usage; exit 0 ;;
+    -n|--dry-run) DRY_RUN=1 ;;
+    *) printf 'ERROR: unknown argument: %s\n\n' "$arg" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${IMAGE:-localhost/dsh-opentui-e2e:latest}"
+
+if [ "$DRY_RUN" = 1 ]; then
+  printf '==> [dry-run] would build %s from %s (DSH_VERSION=%s)\n' \
+    "$IMAGE" "$REPO_ROOT" "${DSH_VERSION:-<resolved from npm latest/next>}"
+  printf '==> [dry-run] would run: podman run --rm --name dsh-opentui-e2e '
+  printf -- '-v %s/e2e:/e2e:ro -e E2E_FACE=%s %s bash /e2e/scenarios/run-all.sh\n' \
+    "$REPO_ROOT" "${E2E_FACE:-client}" "$IMAGE"
+  printf '==> [dry-run] subset=%s isolated=%s retry=%s sizes=%s\n' \
+    "${E2E_SCENARIOS:-<all>}" "${E2E_ISOLATED:-0}" "${E2E_RETRY:-1}" \
+    "${E2E_SIZES:-120x40 200x50}"
+  exit 0
+fi
 
 # Same resolution rule as the dsh-tui-pi harness: newest of the `latest`
 # (stable) and `next` (rc) dist-tags, never hand-pinned and never the
@@ -20,27 +60,29 @@ IMAGE="${IMAGE:-localhost/dsh-opentui-e2e:latest}"
 # bash 3.2 (macOS) aborts on `"${arr[@]}"` for an empty array under `set -u`
 # (and `arr=()` leaves the variable unset), so carry the flag as a plain
 # string — value never contains spaces.
-NPM_VIEW_REG=""
-if ! npm view @deepseek-ai/dsh@latest version >/dev/null 2>&1; then
-  NPM_VIEW_REG="--registry=https://registry.npmjs.org"
-fi
-# shellcheck disable=SC2086
-STABLE="$(npm view @deepseek-ai/dsh@latest version $NPM_VIEW_REG)"
-# shellcheck disable=SC2086
-RC="$(npm view @deepseek-ai/dsh@next version $NPM_VIEW_REG 2>/dev/null || true)"
-DSH_VERSION="$STABLE"
-# Prerelease-aware newest-of(latest,next) — NOT sort -V (trap on record:
-# sort -V ranks 0.2.1-rc.2 above 0.2.1 once a stable lands on latest).
-if [ -n "$RC" ] && node -e '
-  const parse = (v) => { const [core, pre] = v.split("-"); return { c: core.split(".").map(Number), pre } }
-  const A = parse(process.argv[1]), B = parse(process.argv[2])
-  for (let i = 0; i < 3; i++) {
-    if (A.c[i] !== B.c[i]) process.exit(A.c[i] > B.c[i] ? 0 : 1)
-  }
-  if ((A.pre === undefined) !== (B.pre === undefined)) process.exit(A.pre === undefined ? 0 : 1)
-  process.exit(String(A.pre ?? "") >= String(B.pre ?? "") ? 0 : 1)
-' "$RC" "$STABLE"; then
-  DSH_VERSION="$RC"
+if [ -z "${DSH_VERSION:-}" ]; then
+  NPM_VIEW_REG=""
+  if ! npm view @deepseek-ai/dsh@latest version >/dev/null 2>&1; then
+    NPM_VIEW_REG="--registry=https://registry.npmjs.org"
+  fi
+  # shellcheck disable=SC2086
+  STABLE="$(npm view @deepseek-ai/dsh@latest version $NPM_VIEW_REG)"
+  # shellcheck disable=SC2086
+  RC="$(npm view @deepseek-ai/dsh@next version $NPM_VIEW_REG 2>/dev/null || true)"
+  DSH_VERSION="$STABLE"
+  # Prerelease-aware newest-of(latest,next) — NOT sort -V (trap on record:
+  # sort -V ranks 0.2.1-rc.2 above 0.2.1 once a stable lands on latest).
+  if [ -n "$RC" ] && node -e '
+    const parse = (v) => { const [core, pre] = v.split("-"); return { c: core.split(".").map(Number), pre } }
+    const A = parse(process.argv[1]), B = parse(process.argv[2])
+    for (let i = 0; i < 3; i++) {
+      if (A.c[i] !== B.c[i]) process.exit(A.c[i] > B.c[i] ? 0 : 1)
+    }
+    if ((A.pre === undefined) !== (B.pre === undefined)) process.exit(A.pre === undefined ? 0 : 1)
+    process.exit(String(A.pre ?? "") >= String(B.pre ?? "") ? 0 : 1)
+  ' "$RC" "$STABLE"; then
+    DSH_VERSION="$RC"
+  fi
 fi
 printf '==> dsh closure: %s\n' "$DSH_VERSION"
 
@@ -71,6 +113,12 @@ RUN_ARGS=(--rm --name dsh-opentui-e2e -v "$REPO_ROOT/e2e:/e2e:ro" -e "E2E_FACE=$
 if [ -n "${E2E_SCENARIOS:-}" ]; then
   RUN_ARGS+=(-e "E2E_SCENARIOS=$E2E_SCENARIOS")
 fi
+# v2 knobs (isolation / retry / sizes) are forwarded only when explicitly set.
+for v2_var in E2E_ISOLATED E2E_RETRY E2E_SIZES E2E_CAPTURE_EXIT; do
+  if [ -n "${!v2_var:-}" ]; then
+    RUN_ARGS+=(-e "$v2_var=${!v2_var}")
+  fi
+done
 podman run "${RUN_ARGS[@]}" \
   "$IMAGE" \
   bash /e2e/scenarios/run-all.sh

@@ -27,6 +27,7 @@
 # namespaces elsewhere, the file arms move with it.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/assert-v2.sh"
 scenario '/login: add-provider picker + six-step custom form + Esc abandon'
 
 # The client face runs the /src workspace snapshot (grep -r over the
@@ -61,18 +62,22 @@ PATCH="$FACE_PATCH"
 UNIQUE_ID='acme-gateway-h4'
 UNIQUE_KEY='sk-e2e-h4-login-key'
 
-# --- G0: pre-verifiable on the stale bundle ------------------------------------
+# --- G0: gate-dark is SKIP, never a PASS ---------------------------------------
+# v2 B-class fix: the old G0 ok()'d the degrade copy ("unknown command:
+# /login") and the picker's absence. Under v2 this checkout cannot exercise
+# the feature, so it is SKIP with both criteria recorded in report.md.
 if (( FORM_GATE == 0 )); then
   ensure_editor_ready 'editor clean before the stale-bundle /login probe' || true
   send '/login'
   sleep 2
   send Enter
-  wait_pane_fixed \
-    'G0 (gate dark): /login is an unknown command in the stale bundle (never a model send)' 15 \
-    'unknown command: /login (try /help)'
-  assert_not_contains 'G0: no add-provider picker exists in the stale bundle' \
-    'Add provider' "$(capture)"
-  warn 'picker/form groups skipped-by-gate (dist-host rebuild pending — H4)'
+  PANE="$(capture)"
+  v2_skip 'CMD-05' '/login add-provider picker + form' \
+    'workspace sources predate H4 (/login picker absent); degrade copy observed, not a feature check' \
+    'G0: /login is an unknown command in the stale bundle (wait_pane_fixed ok) + picker absent (assert_not_contains ok)' \
+    '/login opens the Add-provider picker and the 6-step form commits route + credential'
+  info "gate-dark observation: $(printf '%s' "$PANE" | grep -oE 'unknown command: /login[^ ]*' | head -1)"
+  v2_summary
   summary
   exit 0
 fi
@@ -127,7 +132,7 @@ sleep 2
 send "$UNIQUE_KEY" Enter
 wait_pane 'the commit prints the subscribed feedback (key stored, route registered)' 20 \
   'subscribed' \
-  || warn 'no subscribed row captured — checking the settings patch directly'
+  || info 'no subscribed row captured — the L2 commit proof below reads the settings patch directly'
 esc_until_gone 'the login flow closes after the custom commit' \
   "$MARKER_FORM_STEP1|$MARKER_ADD_PROVIDER"
 
@@ -167,4 +172,5 @@ send Escape
 esc_until_gone 'Esc at step 1 abandons the whole flow (picker included)' \
   "$MARKER_FORM_STEP1|$MARKER_ADD_PROVIDER"
 
+v2_summary
 summary

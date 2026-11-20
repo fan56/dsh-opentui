@@ -48,7 +48,7 @@ fi
 ok 'workspace sources carry the H1 search overlay'
 
 # --- the mock LLM server (same port as the baked route) -------------------------
-MOCK_PORT=8642
+MOCK_PORT="${MOCK_PORT:-8642}"
 MOCK_LOG=/tmp/mock-llm-22.log
 node "$(dirname "$0")/../lib/mock-llm.mjs" --port "$MOCK_PORT" >"$MOCK_LOG" 2>&1 &
 MOCK_PID=$!

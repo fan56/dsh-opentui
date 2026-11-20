@@ -88,7 +88,7 @@ fi
 # The scratch client profile does not exist until something provisions it —
 # do it now so the gate below tests the BAKE, not the fresh-container void.
 ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
-if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
+if ! grep -qF "127.0.0.1:${MOCK_PORT:-8642}" "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
   exit 0
@@ -170,12 +170,12 @@ EOF
 fi
 
 # --- the mock servers: LLM (chat) + Jev (decisions) --------------------------
-MOCK_PORT=8642
+MOCK_PORT="${MOCK_PORT:-8642}"
 MOCK_LOG=/tmp/mock-llm-65.log
 node "$(dirname "$0")/../lib/mock-llm.mjs" --port "$MOCK_PORT" >"$MOCK_LOG" 2>&1 &
 MOCK_PID=$!
 
-JEV_PORT=8643
+JEV_PORT="${JEV_PORT:-$((MOCK_PORT + 1))}"
 JEV_LOG=/tmp/mock-jev-65.log
 : >"$JEV_LOG"
 node "$(dirname "$0")/../lib/mock-jev.mjs" --port "$JEV_PORT" --log "$JEV_LOG" >/tmp/mock-jev-65.out 2>&1 &

@@ -23,6 +23,7 @@
 # Gate lit → everything below hard-asserts.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/assert-v2.sh"
 scenario 'plugins manager panel + cross-session full-text search (/search)'
 
 BUNDLE="/src/packages/tui-base/src"
@@ -55,18 +56,21 @@ if [ -d "$BUNDLE" ] && grep -rqF 'overlay.sessions.title' "$BUNDLE" && grep -rqF
   PANEL_GATE=1
 fi
 
-# --- G0: pre-verifiable on the stale bundle ------------------------------------
+# --- G0: gate-dark is SKIP, never a PASS ---------------------------------------
+# v2 B-class fix: ok()'ing "unknown command: /search" and the overlay's absence
+# counted a downgrade as a pass. Record SKIP with both criteria instead.
 if (( PANEL_GATE == 0 )); then
   ensure_editor_ready 'editor clean before the stale-bundle /search probe' || true
   send '/search'
   sleep 2
   send Enter
-  wait_pane_fixed \
-    'G0 (gate dark): /search is an unknown command in the stale bundle (never a model send)' 15 \
-    'unknown command: /search (try /help)'
-  assert_not_contains 'G0: no search overlay exists in the stale bundle' \
-    'Search sessions' "$(capture)"
-  warn 'panel/search groups skipped-by-gate (dist-host rebuild pending — H3)'
+  PANE="$(capture)"
+  v2_skip 'CMD-17' '/search cross-session FTS' \
+    'workspace sources predate H3 (search overlay absent); degrade copy observed, not a feature check' \
+    'G0: /search is an unknown command in the stale bundle (wait_pane_fixed ok) + overlay absent (assert_not_contains ok)' \
+    '/search opens the overlay and a query returns at least one stored-session hit'
+  info "gate-dark observation: $(printf '%s' "$PANE" | grep -oE 'unknown command: /search[^ ]*' | head -1)"
+  v2_summary
   summary
   exit 0
 fi
@@ -171,4 +175,5 @@ else
 fi
 
 kill_tui
+v2_summary
 summary

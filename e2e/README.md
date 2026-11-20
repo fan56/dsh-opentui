@@ -129,3 +129,50 @@ network's podman VM; on a clean network drop the prefixes (see
 
 Results print per-scenario counters and a final `E2E RESULT: PASS/FAIL`;
 run-e2e.sh exits non-zero on failure.
+
+## v2 assertion criteria (0234 upgrade)
+
+`lib/assert-v2.sh` replaces the v1 "grep a string / accept a degrade copy"
+mentality. Every assertion is recorded as one row in
+`$RESULTS_DIR/v2-items.tsv` and rendered into `report.md`:
+
+- class `A` 真缺陷 / `B` 判据错误 / `C` 预期行为. A B-class row must carry the
+  wrong criterion and the correct one; report.md prints both.
+- level `L1` 有响应 / `L2` 状态真变 / `L3` 模型可感知.
+- silent no-op is always FAIL; a `warn` fallback never counts as PASS.
+- gate-dark items are SKIP (listed explicitly in report.md), never a PASS.
+
+Primitives: `assert_frame_has <regex>` (content poll — never "two identical
+captures", which is unstable during a busy turn), `assert_no_degrade <frame>`
+(configurable blacklist `V2_DEGRADE_ERE`), `assert_state_change <label> <before>
+<after>`, `assert_log_has <regex> <logfile>` (L3 model-side proof),
+`assert_exit_code <label> <expected-ere> <frame>` (needs
+`E2E_CAPTURE_EXIT=1`), `v2_skip`, `v2_record`, and `v2_each_size <callback>`.
+
+### Dual size
+
+`E2E_SIZES` defaults to `120x40 200x50`. Key/panel scenarios (`t0-*`,
+plus the command/palette smoke in `30-commands`) drive every size with
+`v2_each_size`; the geometry is stamped onto each report item. The TUI boots
+at the first size; `resize_tui_to` (lib/common.sh) resizes the live pane.
+
+### Isolation / retry
+
+- `E2E_ISOLATED=1`: run-all.sh gives each scenario its own scratch
+  `DSH_HOME` under `E2E_SCRATCH_ROOT` (default `/tmp/e2e-scratch`) and a
+  derived mock port (`E2E_PORT_BASE`, default 8642) baked into that home's
+  route via `MOCK_BASE_URL`. `reset_e2e_state` runs at scenario source time
+  and kills leftover TUI/host/mock processes, so no state is shared.
+- `E2E_RETRY=1` (default): a scenario with failing assertions is rerun once
+  (2 attempts max); its failed ledger rows are dropped before the retry.
+  Use `E2E_SCENARIOS="t0-global-keys" ./e2e/run-e2e.sh` to rerun a single case.
+
+### Self-check without podman
+
+```sh
+bash -n e2e/lib/*.sh e2e/scenarios/*.sh e2e/run-e2e.sh
+./e2e/run-e2e.sh --help       # no network, no podman
+./e2e/run-e2e.sh --dry-run    # prints resolved commands, executes nothing
+```
+
+`podman machine` is intentionally not started by these checks.

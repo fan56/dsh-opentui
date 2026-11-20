@@ -45,6 +45,7 @@
 #     is ft-covered and the deep panel legs live in 71-search.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/assert-v2.sh"
 scenario 'slash commands (palette + model + unknown over the core set)'
 
 if ! tui_alive; then
@@ -154,18 +155,50 @@ for _ in $(seq 1 4); do send BSpace; sleep 0.3; done
 # --- editor survives the palette open/close/filter cycles --------------------
 ensure_editor_ready 'editor survives the palette open/close/filter cycles'
 
-# --- /model: the baked mock route makes the catalog non-empty ----------------
-# Since the mock-endpoint bake (e2e/lib/bake-mock-endpoint.mjs) the pinned
-# provider route describes glm-5.3-flash and the credential env carries the
-# baked placeholder key, so /model now surfaces the real catalog listing the
-# pinned model (pre-bake this build reported 'no models in the catalog' —
-# kept as a hard not-contains guard below).
+# --- /model: v2 B-class fix (the old check proved the wrong thing) ------------
+# WRONG (v1, lines 165-168): `wait_pane_fixed ... "$MARKER_MODEL_SEG"` +
+# `assert_not_contains 'no models in the catalog' "$MARKER_MODEL_SEG"` proved
+# only that the startup FOOTER still painted the pinned model constant
+# (lib/common.sh:80) and that one degrade row was absent. The picker never had
+# to open, and 0 or 1 catalog rows would still have passed.
+# CORRECT (v2): the picker opens ('Select model' title, L1) AND lists >=2
+# model option rows (L2 state change), with no degrade copy in the frame.
+# Row TEXT is provider data and is never pinned; only the row count is.
+MODEL_WRONG='wait_pane_fixed "/model surfaces the baked catalog" 15 "$MARKER_MODEL_SEG" && assert_not_contains "no models in the catalog"'
+MODEL_RIGHT='picker title "Select model" visible AND >=2 model option rows enumerated, with no degrade copy'
 ensure_editor_ready 'editor focused before /model' || true
 send '/model' Enter
-wait_pane_fixed '/model surfaces the baked catalog (pinned model listed)' 15 \
-  "$MARKER_MODEL_SEG" \
-  && assert_not_contains 'the empty-catalog feedback row is gone' \
-    'no models in the catalog' "$(capture)"
+PICKER_OPEN=0
+if assert_frame_has 'Select model' '/model opens the model picker (L1)' 20 \
+  'CMD-03' B L1 "$MODEL_WRONG" "$MODEL_RIGHT"; then
+  PICKER_OPEN=1
+  sleep 1 # one repaint tick: dialog option rows settle after the title
+  PANE="$(capture)"
+  # Option rows are painted inside the framed dialog (┃ glyphs). Exclude the
+  # title row and the footer/action row; the remainder are catalog rows.
+  MODEL_ROWS="$(printf '%s\n' "$PANE" \
+    | grep -F '┃' \
+    | grep -vF 'Select model' \
+    | grep -viE 'submit|enter|esc|cancel|select model' \
+    | grep -cE '[A-Za-z0-9._/-]' || true)"
+  if [ "${MODEL_ROWS:-0}" -ge 2 ]; then
+    ok "/model lists >=2 model rows (${MODEL_ROWS} option rows; row text is provider data)"
+    v2_record 'CMD-03' B L2 PASS '/model enumerates >=2 models (L2 state change)' \
+      "$MODEL_WRONG" "$MODEL_RIGHT" "option rows=${MODEL_ROWS}"
+  else
+    bad "/model picker opened but listed only ${MODEL_ROWS} model row(s) — a catalog with <2 models is not a usable picker"
+    v2_record 'CMD-03' B L2 FAIL '/model enumerates >=2 models (L2 state change)' \
+      "$MODEL_WRONG" "$MODEL_RIGHT" "option rows=${MODEL_ROWS} (<2)"
+  fi
+  assert_no_degrade "$PANE" '/model picker frame carries no degrade copy (L2)' \
+    'CMD-03' B L2 "$V2_DEGRADE_ERE"
+else
+  bad '/model never opened the picker — silent no-op is FAIL (B-class: footer constant is not a criterion)'
+  v2_record 'CMD-03' B L2 FAIL '/model enumerates >=2 models (L2 state change)' \
+    "$MODEL_WRONG" "$MODEL_RIGHT" 'picker never opened'
+fi
+# A fresh send of the pinned footer string is NOT the picker proof; keep the
+# editor-usability assertion only (it is a real state check).
 ensure_editor_ready 'editor usable after /model'
 
 # --- unknown command: the harmless error row ----------------------------------
@@ -198,22 +231,29 @@ else
   warn 'dependency gate DARK: sources predate the F7a/F7b commands — new-command groups skipped-by-gate'
 fi
 
-# --- G0: pre-verifiable absence on the stale bundle (per-command gates) ------
+# --- G0: gate-dark groups are SKIP, never a PASS ------------------------------
+# v2 B-class fix: asserting that a command is ABSENT from a stale bundle used
+# to `ok` ("G0: /think is absent...") — that verified a degrade copy, not the
+# feature. The old G0 observations are kept as evidence in the SKIP reason but
+# the verdict is SKIP and the group is listed in report.md.
 if (( ! THINK_GATE )) || (( ! HOTKEYS_GATE )) || (( ! PLUGINS_GATE )); then
   ensure_editor_ready 'editor clean before the stale-bundle probe' || true
   send '/think'
   sleep 2
   PANE="$(capture)"
-  (( THINK_GATE )) || assert_not_contains \
-    'G0: /think is absent from the stale bundle palette' \
-    '/think set reasoning effort' "$PANE"
-  (( HOTKEYS_GATE )) || assert_not_contains \
-    'G0: /hotkeys is absent from the stale bundle palette' \
-    '/hotkeys show keybinds' "$PANE"
-  (( PLUGINS_GATE )) || assert_not_contains \
-    'G0: /plugins is absent from the stale bundle palette' \
-    '/plugins list installed plugins' "$PANE"
   for _ in $(seq 1 8); do send BSpace; sleep 0.3; done
+  (( THINK_GATE )) || v2_skip 'CMD-23' '/think effort picker' \
+    'workspace sources predate F7b; palette absence observed, not a feature check' \
+    'G0: /think is absent from the stale bundle palette (assert_not_contains ok)' \
+    '/think opens the reasoning-effort picker with >=1 option row'
+  (( HOTKEYS_GATE )) || v2_skip 'CMD-28' '/hotkeys panel' \
+    'workspace sources predate F7b; palette absence observed, not a feature check' \
+    'G0: /hotkeys is absent from the stale bundle palette (assert_not_contains ok)' \
+    '/hotkeys prints the keybind table (header + rows)'
+  (( PLUGINS_GATE )) || v2_skip 'CMD-15' '/plugins panel' \
+    'workspace sources predate F7a; palette absence observed, not a feature check' \
+    'G0: /plugins is absent from the stale bundle palette (assert_not_contains ok)' \
+    '/plugins opens the manager panel with a bundle table'
 fi
 
 # --- /think: the effort picker over the model's REAL ladder -------------------
@@ -315,4 +355,25 @@ else
   warn '/plugins group skipped-by-gate (dist-host rebuild pending — F7a)'
 fi
 
+# --- dual-size command/panel smoke (120x40 + 200x50) ---------------------------
+# v2 §4.3: the slash palette straddles the wide threshold (session-frame.tsx
+# :106). v2_each_size resizes the live pane and stamps the size into every
+# report item; content polling (not two-identical-captures) is used throughout.
+palette_smoke() {
+  local size="$1" pane
+  ensure_editor_ready "editor clean before palette smoke ($size)" || true
+  send '/'
+  sleep 1.5
+  if assert_frame_has '/help show available commands|… [0-9]+ more' \
+    "slash palette opens at $size" 10 'CMD-01' C L1; then
+    pane="$(capture)"
+    assert_no_degrade "$pane" "palette frame carries no degrade copy at $size" \
+      'CMD-01' C L1 "$V2_DEGRADE_ERE"
+  fi
+  send Escape
+  esc_until_placeholder "palette closes at $size" 12 || true
+}
+v2_each_size palette_smoke
+
+v2_summary
 summary

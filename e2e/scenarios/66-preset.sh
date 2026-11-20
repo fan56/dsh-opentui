@@ -26,6 +26,7 @@
 # structurally satisfied and not asserted here.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/assert-v2.sh"
 scenario 'agent preset switch (/preset picker + /preset next rotation)'
 
 BUNDLE="/src/packages/tui-base/src"
@@ -50,18 +51,24 @@ if [ -d "$BUNDLE" ] && grep -rqF 'Select agent preset' "$BUNDLE"; then
   PICKER_GATE=1
 fi
 
-# --- G0: pre-verifiable on the stale bundle ------------------------------------
+# --- G0: gate-dark is SKIP, never a PASS ---------------------------------------
+# v2 B-class fix: asserting the degrade copy ("unknown command: /preset") with
+# ok() and the picker's ABSENCE with assert_not_contains() counted a downgrade
+# as a pass. Under v2 the feature is SKIP (unexercisable in this checkout) and
+# is listed explicitly in report.md with both criteria.
 if (( PICKER_GATE == 0 )); then
   ensure_editor_ready 'editor clean before the stale-bundle /preset probe' || true
   send '/preset'
   sleep 2
   send Enter
-  wait_pane_fixed \
-    'G0 (gate dark): /preset is an unknown command in the stale bundle (never a model send)' 15 \
-    'unknown command: /preset (try /help)'
-  assert_not_contains 'G0: no preset picker exists in the stale bundle' \
-    'Select agent preset' "$(capture)"
-  warn 'picker/rotation groups skipped-by-gate (dist-host rebuild pending — H2)'
+  # Observation only — no ok()/bad() counter; the verdict is SKIP below.
+  PANE="$(capture)"
+  v2_skip 'CMD-30' '/preset picker + rotation' \
+    'workspace sources predate H2 (/preset picker absent); degrade copy observed, not a feature check' \
+    'G0: /preset is an unknown command in the stale bundle (wait_pane_fixed ok) + picker absent (assert_not_contains ok)' \
+    '/preset opens the picker listing >=2 presets; /preset next switches with a visible footer change'
+  info "gate-dark observation: $(printf '%s' "$PANE" | grep -oE 'unknown command: /preset[^ ]*' | head -1)"
+  v2_summary
   summary
   exit 0
 fi
@@ -95,8 +102,12 @@ if (( PRESET_PICKER )); then
   ok 'presets available: /preset opens the picker'
   esc_until_gone 'preset picker closes on Esc' 'Select agent preset'
 elif (( PRESET_NOTICE )); then
-  ok '/preset reports the no-presets notice'
-  assert_contains 'footer stays plain dsh (no presets)' 'dsh' "$(capture)"
+  # v2: "no agent presets available" is a degraded surface, not a PASS.
+  bad '/preset reports only the no-presets notice — the preset feature is unavailable on this deployment (no degrade-as-PASS under v2)'
+  v2_record 'CMD-30' A L1 FAIL '/preset opens a picker with >=2 presets (L1)' \
+    'G0: /preset is an unknown command / no agent presets notice accepted as PASS' \
+    '/preset opens a picker listing >=2 presets' \
+    'no-presets notice painted; footer stayed plain dsh'
 else
   bad '/preset produced neither the picker nor the no-presets notice; tail:'
   capture | tail -8 | sed 's/^/    | /'
@@ -140,14 +151,20 @@ if (( HAS_PRESETS )); then
     if [[ -n "$AFTER" && "$AFTER" != "$BEFORE" ]]; then
       ok "confirmed switch applies: $BEFORE → $AFTER"
     else
-      warn "confirmed switch did not change the footer label (single preset?)"
+      bad "confirmed switch did not change the footer label ($BEFORE — silent no-op is FAIL under v2)"
+      v2_record 'CMD-30' A L2 FAIL 'preset switch changes the footer label (L2)' \
+        'warn "confirmed switch did not change the footer label (single preset?)"' \
+        'footer label changes to the newly selected preset' 'no state change observed'
     fi
   else
     AFTER="$(printf '%s' "$PANE" | grep -oE 'dsh\([^)]+\)' | head -1)"
     if [[ -n "$AFTER" && "$AFTER" != "$BEFORE" ]]; then
       ok "/preset next applied directly: $BEFORE → $AFTER"
     else
-      warn "/preset next did not change preset (single preset or no-op)"
+      bad "/preset next did not change preset ($BEFORE — silent no-op is FAIL under v2)"
+      v2_record 'CMD-30' A L2 FAIL 'preset switch changes the footer label (L2)' \
+        'warn "/preset next did not change preset (single preset or no-op)"' \
+        'footer label changes to the newly selected preset' 'no state change observed'
     fi
   fi
 else
@@ -159,4 +176,5 @@ fi
 # --- editor still usable after preset traffic ---------------------------------
 ensure_editor_ready 'editor usable after preset operations'
 
+v2_summary
 summary

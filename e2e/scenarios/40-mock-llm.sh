@@ -28,7 +28,7 @@ if [ ! -d /e2e/scenarios ]; then
 fi
 
 # --- the mock LLM server ------------------------------------------------------
-MOCK_PORT=8642
+MOCK_PORT="${MOCK_PORT:-8642}"
 MOCK_LOG=/tmp/mock-llm-40.log
 node "$(dirname "$0")/../lib/mock-llm.mjs" --port "$MOCK_PORT" >"$MOCK_LOG" 2>&1 &
 MOCK_PID=$!
@@ -58,7 +58,7 @@ fi
 # ensure_client_profile makes the proof order-independent (a scenario that
 # runs before the first start_tui must not skip a live assertion).
 ensure_client_profile >/dev/null 2>&1 || true
-if grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
+if grep -qF "127.0.0.1:${MOCK_PORT:-8642}" "$FACE_PATCH" 2>/dev/null; then
   ok 'baked profile patch points the pinned provider at the mock endpoint'
 else
   bad 'profile patch lacks the mock baseURL (bake step missing)'

@@ -78,30 +78,40 @@
 #      fallback path is retired (kept as a comment for archaeology).
 set -u
 . "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/assert-v2.sh"
 scenario 'btw: side questions over the mock LLM (overlay, queue, not-persisted)'
 
-# The Last-btw BODY paint. Observed on this build: the queued/drained second
-# side call settles its slot (the panel paints title + the "Not kept in the
-# session" badge, and the mock logs phase=btw for the call) but the answer
-# TEXT is not painted — same upstream stale-paint/render family as the
-# documented main-turn fallback below. A settled slot with a missing body is
-# recorded as a render gap; a missing slot entirely stays a hard failure.
+# The Last-btw BODY paint — v2 A-class fix.
+# WRONG (v1, lines 99-101): when the settled badge was present but the answer
+# text was not, `warn ...; return 0` counted a confirmed PRODUCT RENDER GAP as
+# a PASS. Under v2 the answer body must actually be painted (L2 state), so a
+# missing body is a FAIL even if the surrounding slot settled.
+# CORRECT (v2): the answer text must appear in the panel frame; a settled slot
+# without it is a real defect, not a warning.
+BTW_WRONG='if capture matches "Not kept in the session": warn "settled slot but no answer body"; return 0'
+BTW_RIGHT='answer text ("E2E-BTW-ANSWER-TWO" / review body) is painted in the panel frame'
 wait_answer_body() {
-  local label="$1" text="$2" timeout="$3" waited=0
+  local label="$1" text="$2" timeout="$3" matrix="${4:-FLW-13}" waited=0
   while (( waited < timeout )); do
     if capture | grep -qF -- "$text"; then
       ok "$label"
+      v2_record "$matrix" A L2 PASS "$label (L2 answer body painted)" \
+        "$BTW_WRONG" "$BTW_RIGHT" "answer=$text visible"
       return 0
     fi
     sleep 1
     waited=$((waited + 1))
   done
   if capture | grep -qF 'Not kept in the session'; then
-    warn "$label — the panel paints the settled Last-btw slot but not the answer body (PRODUCT RENDER GAP: the queued/drained answer text is not painted; the mock served phase=btw for the call)"
-    return 0
+    bad "$label — settled slot painted but the answer body was NOT (PRODUCT RENDER GAP; the mock served phase=btw but the text never reached the frame)"
+    v2_record "$matrix" A L2 FAIL "$label (L2 answer body painted)" \
+      "$BTW_WRONG" "$BTW_RIGHT" "settled badge present but answer=$text absent (warn fallback removed)"
+    return 1
   fi
   bad "$label (timed out after ${timeout}s; no settled slot either); haystack tail:"
   capture | tail -8 | sed 's/^/    | /'
+  v2_record "$matrix" A L2 FAIL "$label (L2 answer body painted)" \
+    "$BTW_WRONG" "$BTW_RIGHT" "no answer=$text and no settled slot after ${timeout}s"
   return 1
 }
 
@@ -109,7 +119,10 @@ wait_answer_body() {
 # Container-only: needs the baked mock route plus a throwaway ~/.dsh — on the
 # host it would depend on (or poison) live config.
 if [ ! -d /e2e/scenarios ]; then
+  v2_skip 'CMD-13' '/btw side-question flow' \
+    'host environment detected — needs the baked mock route + throwaway ~/.dsh; container only'
   warn 'host environment detected — skipping (needs the baked mock route + throwaway ~/.dsh); container only'
+  v2_summary
   summary
   exit 0
 fi
@@ -117,14 +130,17 @@ fi
 # (FACE_PATCH from lib/common.sh), not the retired baked /root/.dsh profile.
 # ensure_client_profile makes the check order-independent.
 ensure_client_profile >/dev/null 2>&1 || true
-if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
+if ! grep -qF "127.0.0.1:${MOCK_PORT:-8642}" "$FACE_PATCH" 2>/dev/null; then
+  v2_skip 'CMD-13' '/btw side-question flow' \
+    "profile patch has no mock endpoint (bake step missing) — tried $FACE_PATCH"
   warn "profile patch has no mock endpoint (bake step missing) — skipping; tried $FACE_PATCH"
+  v2_summary
   summary
   exit 0
 fi
 
 # --- the mock LLM server (same port as the baked route) -------------------------
-MOCK_PORT=8642
+MOCK_PORT="${MOCK_PORT:-8642}"
 MOCK_LOG=/tmp/mock-llm-61.log
 node "$(dirname "$0")/../lib/mock-llm.mjs" --port "$MOCK_PORT" >"$MOCK_LOG" 2>&1 &
 MOCK_PID=$!
@@ -282,13 +298,22 @@ for _ in $(seq 1 90); do
 done
 if (( MAIN_DONE == 1 )); then
   ok 'main turn finishes normally after the slow stream (pane paints E2E-BTW-MAIN-DONE)'
+  v2_record 'FLW-13' A L2 PASS 'main turn completion visible in pane (L2)' \
+    "$BTW_WRONG" "$BTW_RIGHT" 'E2E-BTW-MAIN-DONE painted'
 elif grep -q 'stream=complete phase=main-slow' "$MOCK_LOG" 2>/dev/null; then
-  warn 'main stream ran to completion (mock logged stream=complete) but the pane never painted E2E-BTW-MAIN-DONE — known upstream stale-paint family; PRODUCT RENDER GAP, not a turn disruption'
+  # v2: a mock-side complete with no pane DONE is a render gap, not a PASS.
+  bad 'main stream completed on the mock but E2E-BTW-MAIN-DONE never painted (PRODUCT RENDER GAP — no warn fallback under v2)'
+  v2_record 'FLW-13' A L2 FAIL 'main turn completion visible in pane (L2)' \
+    "$BTW_WRONG" "$BTW_RIGHT" 'mock stream=complete but pane never painted DONE'
 elif grep -q 'stream=aborted phase=main-slow' "$MOCK_LOG" 2>/dev/null; then
   bad 'the main stream was aborted mid-flight (mock logged stream=aborted) — the side calls disrupted the main turn'
+  v2_record 'FLW-13' A L2 FAIL 'main turn completion visible in pane (L2)' \
+    "$BTW_WRONG" "$BTW_RIGHT" 'mock stream=aborted'
 else
   bad 'main turn neither painted DONE nor reached mock completion within 90s; mock log tail:'
   tail -8 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
+  v2_record 'FLW-13' A L2 FAIL 'main turn completion visible in pane (L2)' \
+    "$BTW_WRONG" "$BTW_RIGHT" 'no DONE and no mock completion in 90s'
 fi
 PANE="$(capture)"
 assert_not_contains 'transcript stays clean after the main turn' 'E2E-BTW-ANSWER-ONE' "$PANE"
@@ -318,4 +343,5 @@ wait_pane 'review keeps the not-kept badge' 10 'Not kept in the session'
 send Escape
 wait_gone 'Esc closes the review overlay' 10 'btw — side question'
 
+v2_summary
 summary

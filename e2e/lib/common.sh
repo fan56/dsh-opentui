@@ -121,7 +121,10 @@ if [ "$E2E_FACE" != client ]; then
   printf 'ERROR: E2E_FACE=%s is retired (the --plugin mode chain was removed in batch B4); the suite runs the client face only.\n' "$E2E_FACE" >&2
   exit 1
 fi
-CLIENT_DSH_HOME=/tmp/client-dsh
+# v2 isolation: env-overridable so run-all.sh (E2E_ISOLATED=1) can give each
+# scenario its own scratch home instead of sharing /tmp/client-dsh. The default
+# stays the shared home for the sequential runner's cached profile bake.
+CLIENT_DSH_HOME="${CLIENT_DSH_HOME:-/tmp/client-dsh}"
 FACE_HOME="$CLIENT_DSH_HOME"
 FACE_PROFILE=opentui
 FACE_CFG="$FACE_HOME/profiles/$FACE_PROFILE/config.json"
@@ -184,8 +187,20 @@ reset_e2e_state
 # --- tmux session -------------------------------------------------------------
 TS=dsh-opentui-e2e
 # Geometry is env-overridable (same rule as the dsh-tui-pi harness).
-TUI_COLS="${TUI_COLS:-140}"
-TUI_ROWS="${TUI_ROWS:-36}"
+# v2: boot at the first requested size (120x40 by default); key/panel
+# scenarios then drive BOTH sizes via lib/assert-v2.sh's v2_each_size.
+E2E_SIZES="${E2E_SIZES:-120x40 200x50}"
+DEFAULT_SIZE="${E2E_SIZES%% *}"
+TUI_COLS="${TUI_COLS:-${DEFAULT_SIZE%x*}}"
+TUI_ROWS="${TUI_ROWS:-${DEFAULT_SIZE#*x}}"
+
+# Resize the live tmux pane and wait for the client's first repaint tick. Used
+# by v2_set_size (assert-v2.sh) so the recorded geometry matches the frame.
+resize_tui_to() {
+  local cols="$1" rows="$2"
+  tmux resize-window -t "$TS" -x "$cols" -y "$rows" 2>/dev/null || return 1
+  TUI_COLS="$cols" TUI_ROWS="$rows"
+}
 
 capture() { tmux capture-pane -t "$TS" -p 2>/dev/null; }
 capture_sgr() { tmux capture-pane -t "$TS" -p -e 2>/dev/null; }
@@ -225,7 +240,12 @@ ensure_client_profile() {
     pnpm --dir "$FACE_HOME/profiles/$FACE_PROFILE" install \
       --registry="${E2E_NPM_REGISTRY:-https://registry.npmjs.org}" || return 1
   fi
-  DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui node /e2e/lib/bake-mock-endpoint.mjs || return 1
+  # v2 slot isolation: a scenario with its own scratch home can point its
+  # baked route at its own mock port via MOCK_BASE_URL (bake-mock-endpoint.mjs
+  # honours it). Default 8642 keeps the shared-profile path unchanged.
+  DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui \
+    MOCK_BASE_URL="${MOCK_BASE_URL:-http://127.0.0.1:${MOCK_PORT:-8642}/v1}" \
+    node /e2e/lib/bake-mock-endpoint.mjs || return 1
 }
 
 start_tui() {
@@ -254,7 +274,14 @@ start_tui() {
   # bundles (registry = use_agent's home; dispatch/jev-core = the jev
   # chain) + the mock endpoint before the boot. See ensure_client_profile.
   ensure_client_profile || return 1
-  tmux send-keys -t "$TS" "${env_prefix:+env $env_prefix }DSH_HOME=$CLIENT_DSH_HOME /src/dsh-opentui" Enter
+  # v2 exit-code proof (opt-in): append a marker line to the pane so a
+  # scenario can assert the client's REAL exit code after /quit or Ctrl+C x2
+  # instead of just "a shell prompt appeared". Default path is unchanged.
+  local boot_cmd="${env_prefix:+env $env_prefix }DSH_HOME=$CLIENT_DSH_HOME /src/dsh-opentui"
+  if [ "${E2E_CAPTURE_EXIT:-0}" = 1 ]; then
+    boot_cmd="$boot_cmd ; printf '\n__DSH_E2E_EXIT=%s\n' \"\$?\""
+  fi
+  tmux send-keys -t "$TS" "$boot_cmd" Enter
 }
 
 wait_tui_up() {

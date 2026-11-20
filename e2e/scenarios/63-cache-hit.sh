@@ -66,14 +66,14 @@ fi
 # it here (idempotent; start_tui re-runs the same steps) so the gate below
 # reads a real patch. Plugin face: no-op, the image-baked patch answers.
 ensure_client_profile || { warn 'client profile provisioning failed'; summary; exit 0; }
-if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
+if ! grep -qF "127.0.0.1:${MOCK_PORT:-8642}" "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
   exit 0
 fi
 
 # --- the mock LLM server (same port as the baked route) -------------------------
-MOCK_PORT=8642
+MOCK_PORT="${MOCK_PORT:-8642}"
 MOCK_LOG=/tmp/mock-llm-63.log
 node "$(dirname "$0")/../lib/mock-llm.mjs" --port "$MOCK_PORT" >"$MOCK_LOG" 2>&1 &
 MOCK_PID=$!

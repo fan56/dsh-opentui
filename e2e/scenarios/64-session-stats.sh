@@ -62,7 +62,7 @@ fi
 # (FACE_PATCH from lib/common.sh), not the retired baked /root/.dsh profile.
 # ensure_client_profile makes the check order-independent.
 ensure_client_profile >/dev/null 2>&1 || true
-if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
+if ! grep -qF "127.0.0.1:${MOCK_PORT:-8642}" "$FACE_PATCH" 2>/dev/null; then
   warn "profile patch has no mock endpoint (bake step missing) — skipping; tried $FACE_PATCH"
   summary
   exit 0
@@ -72,7 +72,7 @@ fi
 # Port 8642 is NOT arbitrary: the baked profile patch points the pinned
 # provider route at 127.0.0.1:8642 — a mock on any other port leaves the
 # route dialing a dead endpoint (the turn never completes).
-MOCK_PORT=8642
+MOCK_PORT="${MOCK_PORT:-8642}"
 MOCK_LOG=/tmp/mock-llm-64.log
 node "$(dirname "$0")/../lib/mock-llm.mjs" --port "$MOCK_PORT" >"$MOCK_LOG" 2>&1 &
 MOCK_PID=$!

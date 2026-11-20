@@ -27,36 +27,45 @@
 # mutates ~/.dsh/agents (same rules as 62-hard-stop.sh).
 set -u
 . "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/assert-v2.sh"
 scenario 'subagent steer injection: picker → Enter → steer prompt → seam.steerChild'
 
 if [ ! -d /e2e/scenarios ]; then
+  v2_skip 'FLW-03' 'subagent steer injection' \
+    'host environment detected — installs the registry plugin and mutates ~/.dsh/agents; container only'
   warn 'host environment detected — skipping (installs the registry plugin and mutates ~/.dsh/agents); container only'
+  v2_summary
   summary
   exit 0
 fi
 
-# --- dependency gate: the runtime sources must carry the G2 steer UI --------
-# The client face runs the /src workspace snapshot (grep -r over the
-# sources) — the dist-host bundle is retired with the plugin face.
-DEPLOYED_BUNDLE="/src/packages/tui-base/src"
-BUNDLE_GREP=(grep -rqF)
-if [ ! -e "$DEPLOYED_BUNDLE" ]; then
-  warn "no workspace snapshot at $DEPLOYED_BUNDLE — skipping"
+# --- v2 B-class fix: the old dependency gate proved the WRONG thing ----------
+# WRONG (v1, lines 48-54): `grep -rqF 'subagentSteerWired' $BUNDLE` only found
+# the FUNCTION DEFINITION (packages/tui-base/src/routes/session/subagent-
+# markers.ts:77). It never proved the seam was REGISTERED (that happens only in
+# the RemoteSessionSeam adapter, packages/shell/src/client/session-seam-
+# adapter.ts:150) nor that the injected text reached the model. A green gate
+# then let the whole scenario skip before the real assertions ran.
+# CORRECT (v2): no source-string gate. Drive the actual picker → prompt →
+# submit flow and assert (a) the "steered <agent>" registration/success echo
+# (L2) AND (b) the steer-marker in the mock's child request log (L3). Both are
+# hard assertions below; absence is FAIL, never SKIP.
+STEER_WRONG="grep -rqF 'subagentSteerWired' /src/packages/tui-base/src (matches function definition only, not registration/effect)"
+STEER_RIGHT='steered <agent> success echo painted AND mock log carries steer-marker=E2E_STEER_70 in the child request stream'
+if [ ! -e /src/packages/tui-base/src ]; then
+  v2_skip 'FLW-03' 'subagent steer injection' \
+    'no workspace snapshot at /src/packages/tui-base/src — source unavailable for this scenario'
+  warn "no workspace snapshot at /src/packages/tui-base/src — skipping"
+  v2_summary
   summary
   exit 0
 fi
-if ! "${BUNDLE_GREP[@]}" 'steered ' "$DEPLOYED_BUNDLE" 2>/dev/null \
-  || ! "${BUNDLE_GREP[@]}" 'subagentSteerWired' "$DEPLOYED_BUNDLE" 2>/dev/null; then
-  warn 'workspace sources predate G2 (no steer echo / steer bridge) — skipping'
-  summary
-  exit 0
-fi
-ok 'workspace sources carry the G2 steer UI'
+ok 'workspace snapshot present — steer will be proven by runtime evidence, not a definition grep'
 
 # The scratch client profile does not exist until something provisions it —
 # do it now so the gate below tests the BAKE, not the fresh-container void.
 ensure_client_profile || { bad 'client-face profile provision/bake failed'; summary; exit 0; }
-if ! grep -qF '127.0.0.1:8642' "$FACE_PATCH" 2>/dev/null; then
+if ! grep -qF "127.0.0.1:${MOCK_PORT:-8642}" "$FACE_PATCH" 2>/dev/null; then
   warn 'profile patch has no mock endpoint (bake step missing) — skipping'
   summary
   exit 0
@@ -80,7 +89,7 @@ else
 fi
 
 # --- the mock LLM server ------------------------------------------------------
-MOCK_PORT=8642
+MOCK_PORT="${MOCK_PORT:-8642}"
 MOCK_LOG=/tmp/mock-llm-70.log
 node "$(dirname "$0")/../lib/mock-llm.mjs" --port "$MOCK_PORT" >"$MOCK_LOG" 2>&1 &
 MOCK_PID=$!
@@ -298,28 +307,20 @@ send Enter
 #      is unverifiable from the harness alone.
 # Either way the steer text never reaches the child: these assertions stay
 # red until the submit→steerChild→delivery chain is fixed product-side.
-if wait_pane 'success echo "steered looper" appears' 10 'steered .*[Ll]ooper'; then
-  :
-else
-  bad 'no "steered looper" echo after submitting the steer; pane tail:'
-  capture | tail -12 | sed 's/^/    | /'
+# (a) L2: the seam actually registered the steer (success echo), not just a
+#     function definition in the source bundle.
+BEFORE_STEER_ECHO="$(capture)"
+if assert_frame_has 'steered .*[Ll]ooper' 'steer registration echo "steered looper" (L2)' 12 \
+  'FLW-03' A L2 "$STEER_WRONG" "$STEER_RIGHT"; then
+  AFTER_STEER_ECHO="$(capture)"
+  assert_state_change 'steer echo is a real frame change (L2)' \
+    "$BEFORE_STEER_ECHO" "$AFTER_STEER_ECHO" 'FLW-03' A L2 'steered .*[Ll]ooper'
 fi
 
-# --- tool evidence: the steer text reached the child's LLM request ----------
-STEER_UP=0
-for _ in $(seq 1 60); do
-  if grep -q 'steer-marker=E2E_STEER_70' "$MOCK_LOG" 2>/dev/null; then
-    STEER_UP=1
-    break
-  fi
-  sleep 1
-done
-if (( STEER_UP == 1 )); then
-  ok 'steer injection evidence: the steer text reached the child request stream (mock steer-marker logged)'
-else
-  bad 'the steer text never reached the child request stream within 60s (no steer-marker line); mock log tail:'
-  tail -6 "$MOCK_LOG" 2>/dev/null | sed 's/^/    | /'
-fi
+# (b) L3: the injected content reached the model side (mock child request log).
+assert_log_has 'steer-marker=E2E_STEER_70' "$MOCK_LOG" \
+  'steer text reached the child LLM request stream (L3)' 60 \
+  'FLW-03' A L3 "$STEER_WRONG" "$STEER_RIGHT"
 
 # The child persona ignores the steer and keeps looping (steer is advisory
 # for the fixture) — its liveness bounds the injection wait and is itself
@@ -333,4 +334,5 @@ else
 fi
 
 kill_tui
+v2_summary
 summary

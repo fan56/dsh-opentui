@@ -26,6 +26,10 @@
 #     clean and enters the session.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/assert-v2.sh"
+# v2 B-class fix: capture the client's REAL exit code in the pane so /quit and
+# Ctrl+C x2 can be asserted on the exit status, not just "a prompt appeared".
+export E2E_CAPTURE_EXIT=1
 scenario 'resize (80x24 <-> 140x36) + clean exit (/quit + Ctrl+C x2) + restart'
 
 # Assert the pane is back on the shell after a quit: prompt string visible
@@ -106,47 +110,84 @@ else
 fi
 
 # --- clean exit A: /quit (hard regression guard) -------------------------------------
+# WRONG (v1, lines 113-119): `wait_shell_back ... || true` swallowed the exit
+# result and the next boot unconditionally `ok`'d. The scenario passed even
+# when the client never exited.
+# CORRECT (v2): the client's exit code line (__DSH_E2E_EXIT=0) MUST appear and
+# the pane must be back on bash; only then may the restart be claimed as a
+# clean-exit success.
+EXIT_WRONG='wait_shell_back "clean exit via /quit" 10 || true; then unconditional "TUI boots again after a clean quit"'
+EXIT_RIGHT='pane paints __DSH_E2E_EXIT=0 after /quit AND pane_command=bash with prompt; restart asserted only on success'
 ensure_editor_ready 'editor clean before /quit' || true
 send '/quit'
 sleep 0.4
 send Enter
-wait_shell_back 'clean exit via /quit (shell prompt back, foreground bash)' 10 \
-  || true
+QUIT_OK=0
+if wait_shell_back 'clean exit via /quit (shell prompt back, foreground bash)' 10; then
+  if assert_exit_code '/quit returns exit code 0' '0' "$(capture)" \
+    'CMD-08' A L2; then
+    QUIT_OK=1
+    v2_record 'CMD-08' A L2 PASS '/quit exits with code 0 (L2 exit status)' \
+      "$EXIT_WRONG" "$EXIT_RIGHT" 'exit marker 0 + bash prompt'
+  fi
+else
+  v2_record 'CMD-08' A L2 FAIL '/quit exits with code 0 (L2 exit status)' \
+    "$EXIT_WRONG" "$EXIT_RIGHT" 'wait_shell_back failed (no || true swallow)'
+fi
+if (( QUIT_OK == 0 )); then
+  bad 'clean exit via /quit was NOT proven — the restart below is not a clean-quit success'
+fi
 
-# --- one more full boot after a quit ---------------------------------------------------
-start_tui
-wait_tui_up 180 || summary
-ok 'TUI boots again after a clean quit'
+# --- one more full boot after a quit (only if the quit was proven) --------------------
+if (( QUIT_OK )); then
+  start_tui
+  wait_tui_up 180 || summary
+  ok 'TUI boots again after a proven clean quit'
+else
+  info 'restart-after-quit skipped: the /quit exit was not proven (see the FAIL above)'
+fi
 
 # --- clean exit B: Ctrl+C x2 (hard regression guard, 7d6d2a1) ----------------------
 # Two presses ~300ms apart, inside the 500ms TurnCancelKeys quit window
-# (CTRL_C_QUIT_WINDOW_MS). Poll for a clean exit: foreground bash AND the
-# shell prompt back. Anything else after 10s — TUI still in the foreground
-# (zombie / swallowed presses), a crashed or garbled pane — is a FAIL.
-send C-c
-sleep 0.3
-send C-c
-CCX2=0
-for _ in $(seq 1 10); do
-  if [[ "$(pane_command)" == bash ]] && capture | grep -q 'root@'; then
-    CCX2=1
-    break
+# (CTRL_C_QUIT_WINDOW_MS). An intentional Ctrl+C exit yields 0 or 130; a hang,
+# crash or garbled pane yields no exit marker and is a FAIL.
+if tui_alive; then
+  send C-c
+  sleep 0.3
+  send C-c
+  CCX2=0
+  for _ in $(seq 1 10); do
+    if [[ "$(pane_command)" == bash ]] && capture | grep -q 'root@'; then
+      CCX2=1
+      break
+    fi
+    sleep 1
+  done
+  if (( CCX2 )); then
+    ok 'clean exit via Ctrl+C x2 (shell prompt back, foreground bash)'
+    if assert_exit_code 'Ctrl+C x2 returns a clean exit code (0 or 130)' '0|130' \
+      "$(capture)" 'KEY-08' C L2; then
+      v2_record 'KEY-08' C L2 PASS 'Ctrl+C x2 exits with 0/130 (L2 exit status)' \
+        "$EXIT_WRONG" "$EXIT_RIGHT" 'exit marker 0|130 + bash prompt'
+    fi
+  else
+    bad "Ctrl+C x2 did not quit cleanly within 10s (zombie/crash/garbage; pane_command='$(pane_command)'); pane tail:"
+    capture | tail -6 | sed 's/^/    | /'
+    v2_record 'KEY-08' C L2 FAIL 'Ctrl+C x2 exits with 0/130 (L2 exit status)' \
+      "$EXIT_WRONG" "$EXIT_RIGHT" 'no clean exit within 10s (no || true swallow)'
+    # Clean up through /quit so the last boot starts from a stopped app. This
+    # is housekeeping, NOT an assertion: its result never masks the FAIL above.
+    info 'cleaning up via /quit after the Ctrl+C x2 failure'
+    ensure_editor_ready 'editor clean before the cleanup /quit' || true
+    send '/quit'
+    sleep 0.4
+    send Enter
+    sleep 2 # best-effort housekeeping only — no assertion, no swallowed verdict
   fi
-  sleep 1
-done
-if (( CCX2 )); then
-  ok 'clean exit via Ctrl+C x2 (shell prompt back, foreground bash)'
 else
-  bad "Ctrl+C x2 did not quit cleanly within 10s (zombie/crash/garbage; pane_command='$(pane_command)'); pane tail:"
-  capture | tail -6 | sed 's/^/    | /'
-  # Fall back to the working /quit path so the final boot starts from a
-  # stopped app (never type into a bare shell on the success path).
-  info 'cleaning up via /quit after the Ctrl+C x2 failure'
-  send '/quit'
-  sleep 0.4
-  send Enter
-  wait_shell_back 'cleanup: /quit still exits after the Ctrl+C x2 failure' 10 \
-    || true
+  v2_record 'KEY-08' C L2 SKIP 'Ctrl+C x2 exits with 0/130 (L2 exit status)' \
+    "$EXIT_WRONG" "$EXIT_RIGHT" 'no live TUI after the /quit leg; Ctrl+C exit not exercised'
+  printf '  SKIP Ctrl+C x2 — no live TUI after the /quit leg\n'
 fi
 
 # --- one more boot after all exit paths ---------------------------------------
@@ -156,4 +197,5 @@ ok 'TUI boots and enters the session again after all exit paths'
 
 kill_tui
 
+v2_summary
 summary

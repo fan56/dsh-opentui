@@ -20,6 +20,7 @@
 # groups are logged skipped-by-gate; gate lit -> everything hard-asserts.
 set -u
 . "$(dirname "$0")/../lib/common.sh"
+. "$(dirname "$0")/../lib/assert-v2.sh"
 scenario 'agents manager: /agents table / empty corpus / fields + limits layers'
 
 BUNDLE="/src/packages/tui-base/src"
@@ -43,8 +44,11 @@ if [ -d "$BUNDLE" ] \
 fi
 
 if (( AGENTS_GATE == 0 )); then
-  # 71-search ends with kill_tui, so the session is dead here on the fresh
-  # container path — boot before probing, exactly like the gate-lit branch.
+  # v2 B-class fix (audit §2): in THIS checkout the manager strings are absent,
+  # so the scenario ALWAYS took this branch. The old branch ok()'d the
+  # not-mounted copy and assert_not_contains'd the manager title — verifying a
+  # degrade as a PASS. Under v2 the whole feature is SKIP and is listed in
+  # report.md; the degrade copy is an OBSERVATION, never a verdict.
   if ! tui_alive; then
     start_tui
     wait_tui_up 120 || { summary; exit 0; }
@@ -53,36 +57,23 @@ if (( AGENTS_GATE == 0 )); then
   send '/agents'
   sleep 2
   send Enter
-  # /agents is a REGISTERED command in these sources too (commands.ts) — the
-  # stale-source answer is the honest not-mounted copy ("unavailable in this
-  # session" / "the manager panel is not mounted in this entry"), NOT the
-  # "unknown command" row the pre-C3 registry produced. The repaint can lag a
-  # keystroke (known in-container stale-paint family), so poll with a
-  # harmless re-Enter (an empty composer's Enter is a no-op) until either
-  # copy paints.
-  G0_HIT=0
+  G0_COPY=''
   for _ in $(seq 1 15); do
     PANE="$(capture)"
     if printf '%s' "$PANE" | grep -qF 'unavailable in this session' \
       || printf '%s' "$PANE" | grep -qF 'the manager panel is not mounted in this entry'; then
-      G0_HIT=1
-      ok 'G0 (gate dark): /agents answers the honest not-mounted copy (never a model send)'
+      G0_COPY="$(printf '%s' "$PANE" | grep -oE 'unavailable in this session|the manager panel is not mounted in this entry' | head -1)"
       break
     fi
     send Enter
     sleep 1
   done
-  if (( G0_HIT == 0 )); then
-    # The load-bearing legs of G0 are the two below (no manager title, never a
-    # model send). The reply copy is face paint: it rides the stale-paint
-    # family (known in-container anomaly — the row can sit unpainted until a
-    # later keystroke), so a missing copy is a warn, not a verdict.
-    warn 'G0 (gate dark): /agents reply copy never painted within 15s (stale-paint family or unregistered run); no manager title, no model send either way; haystack tail:'
-    capture | tail -6 | sed 's/^/    | /'
-  fi
-  assert_not_contains 'G0: no agents manager title exists in the stale sources' \
-    '● Agents' "$(capture)"
-  warn 'manager groups skipped-by-gate (sources predate the agents manager)'
+  v2_skip 'CMD-18' '/agents manager (table/fields/limits)' \
+    "this checkout has no ● Agents / ⚙ Limits strings (gate dark); observed degrade copy: ${G0_COPY:-none}" \
+    'G0 (gate dark): ok() the not-mounted copy + assert_not_contains "● Agents" (degrade verified as PASS)' \
+    '/agents opens the manager table with NAME/MODEL/DEEP/DESCRIPTION and fields/limits layers'
+  info "gate-dark observation: ${G0_COPY:-no degrade copy painted within 15s}"
+  v2_summary
   summary
   exit 0
 fi
@@ -183,4 +174,5 @@ if wait_pane 'manager reopens for the limits layer' 20 '● Agents'; then
 fi
 esc_until_gone 'manager fully closes' '● Agents'
 
+v2_summary
 summary
