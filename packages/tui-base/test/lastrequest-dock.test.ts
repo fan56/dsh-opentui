@@ -1,9 +1,10 @@
 /**
  * Batch D2: the lastRequest dock's pure line builders
- * (./src/routes/session/lastrequest-dock.tsx). The dock paints the `●`
+ * (./src/routes/session/lastrequest-dock.tsx). The dock paints the `👤`
  * last-request echo + one line per RUNNING child BELOW the editor
- * (dsh-tui-pi live-widgets activityDoc structure):
- *   - requestEchoLine: first line only, `● ` prefixed; blank → none;
+ * (dsh-tui-pi live-widgets activityDoc structure; the 👤 glyph is a
+ * deliberate dsh departure from tui-pi's `●`):
+ *   - requestEchoLine: first line only, `👤 ` prefixed; blank → none;
  *   - childLineText: `├─/└─ ⠋ <label> · Xs · <tail>` — NO model segment
  *     (tui-pi parity: the model belongs to the Ctrl+G viewer);
  *   - lastRequestLines: clear-when-done — settled children never render.
@@ -29,8 +30,8 @@ const subagentsRow = (
 ): SeamRow => ({ key: "subagents:live", kind: "subagents", children })
 
 describe("requestEchoLine", () => {
-	test("echoes the first line with the ● prefix", () => {
-		expect(requestEchoLine("fix the layout\nsecond line ignored")).toBe("● fix the layout")
+	test("echoes the first line with the 👤 prefix", () => {
+		expect(requestEchoLine("fix the layout\nsecond line ignored")).toBe("👤 fix the layout")
 	})
 	test("blank or undefined: no echo", () => {
 		expect(requestEchoLine(undefined)).toBeUndefined()
@@ -123,7 +124,7 @@ describe("lastRequestLines", () => {
 		]
 		const lines = lastRequestLines(rows, "run the loop")
 		expect(lines).toHaveLength(2)
-		expect(lines[0]).toEqual({ text: "● run the loop", tone: "muted", id: "lr:echo", indent: 1 })
+		expect(lines[0]).toEqual({ text: "👤 run the loop", tone: "muted", id: "lr:echo", indent: 1 })
 		expect(lines[1]!.tone).toBe("running")
 		expect(lines[1]!.text).toContain("live-one")
 		expect(lines[1]!.text).not.toContain("done-one")
@@ -132,9 +133,9 @@ describe("lastRequestLines", () => {
 		const rows: SeamRow[] = [subagentsRow([{ id: "a", label: "done", status: "completed", rounds: 1, elapsedSec: 3 }])]
 		expect(lastRequestLines(rows, undefined)).toEqual([])
 	})
-	test("request without children: the ● line alone persists", () => {
+	test("request without children: the 👤 line alone persists", () => {
 		const lines = lastRequestLines([{ key: "stored:user:0", kind: "user", text: "hello" }], "hello")
-		expect(lines).toEqual([{ text: "● hello", tone: "muted", id: "lr:echo", indent: 1 }])
+		expect(lines).toEqual([{ text: "👤 hello", tone: "muted", id: "lr:echo", indent: 1 }])
 	})
 	test("width-aware: every child line fits the dock width and keeps the tail", () => {
 		const rows: SeamRow[] = [

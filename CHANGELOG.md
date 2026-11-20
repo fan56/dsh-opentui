@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.2] - 2026-11-20
+
+### Changed
+
+- **Transcript block types now carry distinct theme hues.** Fenced code
+  blocks in assistant messages paint their streaming left rule and final
+  frame in the theme's code hue (`markdown.code` walked two ramp steps
+  deeper via `increase` — green.400 on the default theme), the user `❯`
+  box paints its border in the theme's interactive hue at the 400 step,
+  and the think block's left accent bars paint in the accent hue two ramp
+  steps deeper — the same family the widgets dock's think lines already
+  use. All three stay border-tier, low-saturation accents on dark themes;
+  body text colors are unchanged.
+- **The last-request echo line reads as user content.** The composer
+  footer's last submitted prompt now prefixes with the `👤` user icon
+  (footer-emoji family, a deliberate departure from tui-pi's `●`) and
+  paints at `text.base` instead of `text.muted`. The `👤` glyph is
+  double-width; the line's clip budget already measures it through the
+  grapheme-aware `stringWidth`, so no layout math changed.
+
 ## [0.23.1] - 2026-11-20
 
 ### Changed

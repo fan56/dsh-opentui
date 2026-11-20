@@ -2,16 +2,17 @@
  * LastRequestDock — batch D2: the fixed lastRequest slot BELOW the editor
  * (dsh-tui-pi live-widgets activityDoc structure):
  *
- *   ● <last submitted prompt>          — muted, one row, first line only
+ *   👤 <last submitted prompt>          — one row, first line only
  *   ├─ ⠋ <label> · 13.6s · round 2 · <tail> — one line PER RUNNING child
  *   └─ ⠋ <label> · 2.1s · round 1 · <tail>
  *
- * Semantics (tui-pi live-widgets.ts):
- *   - the `●` line tracks MODEL prompts only — slash commands never set it
+ * Semantics (tui-pi live-widgets.ts; the 👤 glyph itself is a DELIBERATE
+ * dsh departure from tui-pi's `●` — user request, footer-emoji family):
+ *   - the `👤` line tracks MODEL prompts only — slash commands never set it
  *     (the page wires the signal, tui-pi index.ts:2469 semantics); it
  *     persists across turns and clears on session switch (/new/fork/resume).
  *   - the child lines are CLEAR-WHEN-DONE: only RUNNING children render —
- *     a settled roster collapses the slot to the `●` line alone.
+ *     a settled roster collapses the slot to the `👤` line alone.
  *   - the compact line shows the delegation label + elapsed + assistant
  *     round count + content tail. NO model — that is the Ctrl+G viewer's
  *     business (tui-pi parity).
@@ -52,18 +53,22 @@ export type LastRequestLine = {
 	tone: "muted" | "running"
 	/** δ: stable entrance-fade key (spinner glyphs churn the text). */
 	id?: string
-	/** Extra leading columns (dsh-tui-pi: the ` ● ` request echo starts one
-	 * column right of the `├─ ` child rows — Text paddingX=1 + an inner
-	 * leading space). Deducted from the echo line's clip budget at render. */
+	/** Extra leading columns (dsh-tui-pi: the request echo starts one column
+	 * right of the `├─ ` child rows — Text paddingX=1 + an inner leading
+	 * space). Deducted from the echo line's clip budget at render. The `👤 `
+	 * prefix lives INSIDE `text`: 👤 is a 2-cell emoji (3 columns with its
+	 * trailing space), measured by the same grapheme-aware stringWidth the
+	 * clip uses — the budget needs no extra accounting for it. */
 	indent?: number
 }
 
-/** The `●` echo line (pure): first line of the prompt, `● ` prefixed. */
+/** The `👤` echo line (pure): first line of the prompt, `👤 ` prefixed
+ * (user request: the user-echo reads as user content, footer-emoji family). */
 export function requestEchoLine(text: string | undefined): string | undefined {
 	if (text === undefined || text.trim() === "") return undefined
 	const first = text.replace(/\r/g, "").split("\n")[0] ?? text
 	if (first.trim() === "") return undefined
-	return `● ${first}`
+	return `👤 ${first}`
 }
 
 
@@ -137,7 +142,7 @@ export function lastVisibleLine(text: string | undefined): string | undefined {
 	return undefined
 }
 
-/** The slot's line set (pure): the `●` echo (when a prompt was submitted)
+/** The slot's line set (pure): the `👤` echo (when a prompt was submitted)
  * followed by one line per RUNNING child (clear-when-done). */
 export function lastRequestLines(
 	rows: readonly SeamRow[],
@@ -173,18 +178,24 @@ export function LastRequestDock(props: {
 }): JSX.Element {
 	const dimensions = useTerminalSize()
 	const theme = useThemeOptional()
+	// 0.23.2 brightening: the echo paints at text.base (one tier up from the
+	// old text.muted) — with the 👤 prefix it reads as user content, and the
+	// muted gray drowned it against the composer. Running children keep the
+	// warning tier (unchanged).
 	const fgFor = (tone: LastRequestLine["tone"]): string | RGBA =>
-		tone === "running" ? (theme?.text.feedback.warning.base ?? "#e0af68") : (theme?.text.muted ?? "#9aa5ce")
+		tone === "running" ? (theme?.text.feedback.warning.base ?? "#e0af68") : (theme?.text.base ?? "#e6e6e6")
 	// Width law (walign geometry × subtail tail): the dock box carries
 	// paddingLeft=1, so the content area is `columns - 1`. The echo line then
-	// spends one more column on its `indent` (the `● ` prefix is inside the
-	// text), while child lines carry their `├─ ` track inside the text and
+	// spends one more column on its `indent` (the `👤 ` prefix is inside the
+	// text — 👤 is a 2-cell emoji, so the prefix spans 3 columns, all inside
+	// the stringWidth-measured clip budget), while child lines carry their
+	// `├─ ` track inside the text and
 	// childLineText's own budget. Clip each line to the columns it really
 	// has, so neither the indent nor the track can push a row past the slot.
 	const contentWidth = () => Math.max(16, dimensions().width - 1)
 	const lineWidth = (line: LastRequestLine) => Math.max(1, contentWidth() - (line.indent ?? 0))
 	// D15: running subagents now render in the activity lower zone. Painting
-	// their rows here too would show each subagent twice. Keep ONLY the ● user
+	// their rows here too would show each subagent twice. Keep ONLY the 👤 user
 	// echo in the composer footer; `lastRequestLines` stays pure/unchanged for
 	// its other callers and tests.
 	const lines = () => lastRequestLines(props.rows, props.lastRequest, contentWidth()).filter((line) => line.id === "lr:echo")
