@@ -1,0 +1,2573 @@
+{"attribution": "Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 DeepSeek)",
+  "schema": "dsh-opentui.capir/1",
+  "provenance": {
+    "repository": "deepseek-ai/deepseek-harness",
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 DeepSeek",
+    "source_branch": "feat/companion-install-hint",
+    "source_version": "0.2.2-rc.5",
+    "artifact_glob": "packages/**/lib/typert.remote-client.js",
+    "extraction": "local read-only; scripts/extract_capir_artifacts.py",
+    "formatting": "scripts/gen-capir.mjs"
+  },
+  "counting_rules": {
+    "artifact": "packages/**/lib/typert.remote-client.js 文件数",
+    "method": "生成 .d.ts 中 readonly '<ns>/<method>': TypertRemoteMethod<...> 条目；.js methods 键交叉核对",
+    "endpoint": "session-controller .d.ts interface TypertRemoteMap 键数（排除 TypertRemoteScopeMap 的 agent-scope 变体）；源码 @Remote 交叉核对",
+    "class_W": "./remote client face 全部方法为 CapIR W 类（client 可调用）；I 类为 ctx 直取面，不在生成工件内"
+  },
+  "totals": {
+    "artifacts": 43,
+    "methods": 257,
+    "methods_by_kind": {
+      "unary": 226,
+      "stream": 31
+    },
+    "methods_by_class": {
+      "W": 257
+    },
+    "endpoints_session_controller": 27,
+    "endpoints_global_map_sum": 257,
+    "scope_variants_global": 34
+  },
+  "artifacts": [
+    {
+      "package": "@deepseek-ai/dsh-deepseek-account",
+      "dir": "packages/account/deepseek-account/lib",
+      "js": "packages/account/deepseek-account/lib/typert.remote-client.js",
+      "dts": "packages/account/deepseek-account/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "account"
+      ],
+      "methods_dts": 12,
+      "methods_js": 12,
+      "js_keys_match_dts": true,
+      "endpoints_map": 12,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/cancelSignIn",
+          "namespace": "account",
+          "name": "cancelSignIn",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/getBalance",
+          "namespace": "account",
+          "name": "getBalance",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/getNotificationContent",
+          "namespace": "account",
+          "name": "getNotificationContent",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/getNotifications",
+          "namespace": "account",
+          "name": "getNotifications",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/getProfile",
+          "namespace": "account",
+          "name": "getProfile",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/getState",
+          "namespace": "account",
+          "name": "getState",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/hasRunningAccountTasks",
+          "namespace": "account",
+          "name": "hasRunningAccountTasks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/reportNotificationEvent",
+          "namespace": "account",
+          "name": "reportNotificationEvent",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/signOut",
+          "namespace": "account",
+          "name": "signOut",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/startSignIn",
+          "namespace": "account",
+          "name": "startSignIn",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/watch",
+          "namespace": "account",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-deepseek-account#account/watchExpiry",
+          "namespace": "account",
+          "name": "watchExpiry",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-job-controller",
+      "dir": "packages/api/job-controller/lib",
+      "js": "packages/api/job-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/job-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "job"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "js_keys_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-api-job-controller#job/follow",
+          "namespace": "job",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-job-controller#job/kill",
+          "namespace": "job",
+          "name": "kill",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-job-controller#job/list",
+          "namespace": "job",
+          "name": "list",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-remote-access",
+      "dir": "packages/api/remote-access/lib",
+      "js": "packages/api/remote-access/lib/typert.remote-client.js",
+      "dts": "packages/api/remote-access/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "remoteAccess"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-api-remote-access#remoteAccess/follow",
+          "namespace": "remoteAccess",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-session-controller",
+      "dir": "packages/api/session-controller/lib",
+      "js": "packages/api/session-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/session-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "fileReferences",
+        "session",
+        "skills"
+      ],
+      "methods_dts": 27,
+      "methods_js": 27,
+      "js_keys_match_dts": true,
+      "endpoints_map": 27,
+      "scope_variants": [
+        "agent:fileReferences/list"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#fileReferences/list",
+          "namespace": "fileReferences",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/attachment",
+          "namespace": "session",
+          "name": "attachment",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/cancel",
+          "namespace": "session",
+          "name": "cancel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/canOpenWorkspacePath",
+          "namespace": "session",
+          "name": "canOpenWorkspacePath",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/control",
+          "namespace": "session",
+          "name": "control",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/create",
+          "namespace": "session",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/events",
+          "namespace": "session",
+          "name": "events",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/follow",
+          "namespace": "session",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/fork",
+          "namespace": "session",
+          "name": "fork",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel",
+          "namespace": "session",
+          "name": "initializeDefaultModel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/list",
+          "namespace": "session",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
+          "namespace": "session",
+          "name": "modelCatalog",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/observeEvent",
+          "namespace": "session",
+          "name": "observeEvent",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/observeProjections",
+          "namespace": "session",
+          "name": "observeProjections",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/observeState",
+          "namespace": "session",
+          "name": "observeState",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/openWorkspacePath",
+          "namespace": "session",
+          "name": "openWorkspacePath",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/page",
+          "namespace": "session",
+          "name": "page",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/projections",
+          "namespace": "session",
+          "name": "projections",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/prompt",
+          "namespace": "session",
+          "name": "prompt",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/rename",
+          "namespace": "session",
+          "name": "rename",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/search",
+          "namespace": "session",
+          "name": "search",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/selectModel",
+          "namespace": "session",
+          "name": "selectModel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/state",
+          "namespace": "session",
+          "name": "state",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/updateQueue",
+          "namespace": "session",
+          "name": "updateQueue",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/wait",
+          "namespace": "session",
+          "name": "wait",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#session/workspacePathApplications",
+          "namespace": "session",
+          "name": "workspacePathApplications",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-session-controller#skills/list",
+          "namespace": "skills",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-settings-controller",
+      "dir": "packages/api/settings-controller/lib",
+      "js": "packages/api/settings-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/settings-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "credentials",
+        "settings"
+      ],
+      "methods_dts": 8,
+      "methods_js": 8,
+      "js_keys_match_dts": true,
+      "endpoints_map": 8,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-api-settings-controller#credentials/describe",
+          "namespace": "credentials",
+          "name": "describe",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-settings-controller#credentials/set",
+          "namespace": "credentials",
+          "name": "set",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-settings-controller#credentials/unset",
+          "namespace": "credentials",
+          "name": "unset",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-settings-controller#settings/describe",
+          "namespace": "settings",
+          "name": "describe",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-settings-controller#settings/mutate",
+          "namespace": "settings",
+          "name": "mutate",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-settings-controller#settings/openSettingsDocument",
+          "namespace": "settings",
+          "name": "openSettingsDocument",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-settings-controller#settings/replace",
+          "namespace": "settings",
+          "name": "replace",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-settings-controller#settings/update",
+          "namespace": "settings",
+          "name": "update",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-terminal-controller",
+      "dir": "packages/api/terminal-controller/lib",
+      "js": "packages/api/terminal-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/terminal-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "terminal"
+      ],
+      "methods_dts": 9,
+      "methods_js": 9,
+      "js_keys_match_dts": true,
+      "endpoints_map": 9,
+      "scope_variants": [
+        "agent:terminal/attach",
+        "agent:terminal/close",
+        "agent:terminal/create",
+        "agent:terminal/environment",
+        "agent:terminal/rename",
+        "agent:terminal/shells"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/attach",
+          "namespace": "terminal",
+          "name": "attach",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/close",
+          "namespace": "terminal",
+          "name": "close",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/create",
+          "namespace": "terminal",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/environment",
+          "namespace": "terminal",
+          "name": "environment",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/list",
+          "namespace": "terminal",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/rename",
+          "namespace": "terminal",
+          "name": "rename",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/retain",
+          "namespace": "terminal",
+          "name": "retain",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/shells",
+          "namespace": "terminal",
+          "name": "shells",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-terminal-controller#terminal/watch",
+          "namespace": "terminal",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-workspace-controller",
+      "dir": "packages/api/workspace-controller/lib",
+      "js": "packages/api/workspace-controller/lib/typert.remote-client.js",
+      "dts": "packages/api/workspace-controller/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "directoryPicker",
+        "workspace"
+      ],
+      "methods_dts": 14,
+      "methods_js": 14,
+      "js_keys_match_dts": true,
+      "endpoints_map": 14,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#directoryPicker/createDirectory",
+          "namespace": "directoryPicker",
+          "name": "createDirectory",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#directoryPicker/list",
+          "namespace": "directoryPicker",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#directoryPicker/pick",
+          "namespace": "directoryPicker",
+          "name": "pick",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/archiveSession",
+          "namespace": "workspace",
+          "name": "archiveSession",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/create",
+          "namespace": "workspace",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/delete",
+          "namespace": "workspace",
+          "name": "delete",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/follow",
+          "namespace": "workspace",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/initializeDefault",
+          "namespace": "workspace",
+          "name": "initializeDefault",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/insertBefore",
+          "namespace": "workspace",
+          "name": "insertBefore",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/insertSessionBefore",
+          "namespace": "workspace",
+          "name": "insertSessionBefore",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/pinSession",
+          "namespace": "workspace",
+          "name": "pinSession",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/rename",
+          "namespace": "workspace",
+          "name": "rename",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/unarchiveSession",
+          "namespace": "workspace",
+          "name": "unarchiveSession",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-controller#workspace/unpinSession",
+          "namespace": "workspace",
+          "name": "unpinSession",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-api-workspace-files",
+      "dir": "packages/api/workspace-files/lib",
+      "js": "packages/api/workspace-files/lib/typert.remote-client.js",
+      "dts": "packages/api/workspace-files/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "workspaceFiles"
+      ],
+      "methods_dts": 6,
+      "methods_js": 6,
+      "js_keys_match_dts": true,
+      "endpoints_map": 6,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-files#workspaceFiles/changes",
+          "namespace": "workspaceFiles",
+          "name": "changes",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-files#workspaceFiles/list",
+          "namespace": "workspaceFiles",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-files#workspaceFiles/read",
+          "namespace": "workspaceFiles",
+          "name": "read",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-files#workspaceFiles/readBytes",
+          "namespace": "workspaceFiles",
+          "name": "readBytes",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-files#workspaceFiles/search",
+          "namespace": "workspaceFiles",
+          "name": "search",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-api-workspace-files#workspaceFiles/stat",
+          "namespace": "workspaceFiles",
+          "name": "stat",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-plugin-manager",
+      "dir": "packages/boot/plugin-manager/lib",
+      "js": "packages/boot/plugin-manager/lib/typert.remote-client.js",
+      "dts": "packages/boot/plugin-manager/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginManager"
+      ],
+      "methods_dts": 15,
+      "methods_js": 15,
+      "js_keys_match_dts": true,
+      "endpoints_map": 15,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
+          "namespace": "pluginManager",
+          "name": "cancelInstall",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/inspect",
+          "namespace": "pluginManager",
+          "name": "inspect",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/installBundle",
+          "namespace": "pluginManager",
+          "name": "installBundle",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/listBundles",
+          "namespace": "pluginManager",
+          "name": "listBundles",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/listPlugins",
+          "namespace": "pluginManager",
+          "name": "listPlugins",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersionExemptions",
+          "namespace": "pluginManager",
+          "name": "listVersionExemptions",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersions",
+          "namespace": "pluginManager",
+          "name": "listVersions",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/readBundleDetail",
+          "namespace": "pluginManager",
+          "name": "readBundleDetail",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/registries",
+          "namespace": "pluginManager",
+          "name": "registries",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/removeBundle",
+          "namespace": "pluginManager",
+          "name": "removeBundle",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/setBundleEnabled",
+          "namespace": "pluginManager",
+          "name": "setBundleEnabled",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/setPluginEnabled",
+          "namespace": "pluginManager",
+          "name": "setPluginEnabled",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/setVersionExemption",
+          "namespace": "pluginManager",
+          "name": "setVersionExemption",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/updateBundle",
+          "namespace": "pluginManager",
+          "name": "updateBundle",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
+          "namespace": "pluginManager",
+          "name": "waitForInstall",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-plugin-market",
+      "dir": "packages/boot/plugin-market/lib",
+      "js": "packages/boot/plugin-market/lib/typert.remote-client.js",
+      "dts": "packages/boot/plugin-market/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginMarket"
+      ],
+      "methods_dts": 4,
+      "methods_js": 4,
+      "js_keys_match_dts": true,
+      "endpoints_map": 4,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-plugin-market#pluginMarket/listIndexes",
+          "namespace": "pluginMarket",
+          "name": "listIndexes",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-market#pluginMarket/readEntryDetail",
+          "namespace": "pluginMarket",
+          "name": "readEntryDetail",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-market#pluginMarket/search",
+          "namespace": "pluginMarket",
+          "name": "search",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-plugin-market#pluginMarket/setIndexes",
+          "namespace": "pluginMarket",
+          "name": "setIndexes",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-file-upload",
+      "dir": "packages/client/file-upload/lib",
+      "js": "packages/client/file-upload/lib/typert.remote-client.js",
+      "dts": "packages/client/file-upload/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "fileUploads"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:fileUploads/upload"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-client-file-upload#fileUploads/upload",
+          "namespace": "fileUploads",
+          "name": "upload",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-hmr",
+      "dir": "packages/client/hmr/lib",
+      "js": "packages/client/hmr/lib/typert.remote-client.js",
+      "dts": "packages/client/hmr/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginEvents"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-client-hmr#pluginEvents/follow",
+          "namespace": "pluginEvents",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-product-analytics",
+      "dir": "packages/client/product-analytics/lib",
+      "js": "packages/client/product-analytics/lib/typert.remote-client.js",
+      "dts": "packages/client/product-analytics/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "productAnalytics"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "js_keys_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-client-product-analytics#productAnalytics/enabled",
+          "namespace": "productAnalytics",
+          "name": "enabled",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-client-product-analytics#productAnalytics/report",
+          "namespace": "productAnalytics",
+          "name": "report",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-client-product-analytics#productAnalytics/watchPolicy",
+          "namespace": "productAnalytics",
+          "name": "watchPolicy",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-ui-connector-account",
+      "dir": "packages/client/ui-connector-account/lib",
+      "js": "packages/client/ui-connector-account/lib/typert.remote-client.js",
+      "dts": "packages/client/ui-connector-account/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "connectorAccounts"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "js_keys_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-client-ui-connector-account#connectorAccounts/cancel",
+          "namespace": "connectorAccounts",
+          "name": "cancel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-client-ui-connector-account#connectorAccounts/start",
+          "namespace": "connectorAccounts",
+          "name": "start",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-client-ui-connector-account#connectorAccounts/watch",
+          "namespace": "connectorAccounts",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-ui-plugin-manager",
+      "dir": "packages/client/ui-plugin-manager/lib",
+      "js": "packages/client/ui-plugin-manager/lib/typert.remote-client.js",
+      "dts": "packages/client/ui-plugin-manager/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginRegistryProbe"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-client-ui-plugin-manager#pluginRegistryProbe/fastest",
+          "namespace": "pluginRegistryProbe",
+          "name": "fastest",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-ui-session-status",
+      "dir": "packages/client/ui-session-status/lib",
+      "js": "packages/client/ui-session-status/lib/typert.remote-client.js",
+      "dts": "packages/client/ui-session-status/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "sessionStatus"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "js_keys_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-client-ui-session-status#sessionStatus/follow",
+          "namespace": "sessionStatus",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-client-ui-session-status#sessionStatus/mark",
+          "namespace": "sessionStatus",
+          "name": "mark",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-ui-trajectory",
+      "dir": "packages/client/ui-trajectory/lib",
+      "js": "packages/client/ui-trajectory/lib/typert.remote-client.js",
+      "dts": "packages/client/ui-trajectory/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "toolResults"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-client-ui-trajectory#toolResults/watch",
+          "namespace": "toolResults",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-session-reference",
+      "dir": "packages/context/session-reference/lib",
+      "js": "packages/context/session-reference/lib/typert.remote-client.js",
+      "dts": "packages/context/session-reference/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "sessionReferenceResolver"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:sessionReferenceResolver/candidates"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-session-reference#sessionReferenceResolver/candidates",
+          "namespace": "sessionReferenceResolver",
+          "name": "candidates",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-office-kit",
+      "dir": "packages/document/office-kit/lib",
+      "js": "packages/document/office-kit/lib/typert.remote-client.js",
+      "dts": "packages/document/office-kit/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "officeKit"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "js_keys_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-office-kit#officeKit/generation",
+          "namespace": "officeKit",
+          "name": "generation",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-office-kit#officeKit/render",
+          "namespace": "officeKit",
+          "name": "render",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-action-cards",
+      "dir": "packages/experimental/action-cards/lib",
+      "js": "packages/experimental/action-cards/lib/typert.remote-client.js",
+      "dts": "packages/experimental/action-cards/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "actionCards"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:actionCards/act"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-action-cards#actionCards/act",
+          "namespace": "actionCards",
+          "name": "act",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-api-speech-to-text",
+      "dir": "packages/experimental/api-speech-to-text/lib",
+      "js": "packages/experimental/api-speech-to-text/lib/typert.remote-client.js",
+      "dts": "packages/experimental/api-speech-to-text/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "speech"
+      ],
+      "methods_dts": 6,
+      "methods_js": 6,
+      "js_keys_match_dts": true,
+      "endpoints_map": 6,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-experimental-api-speech-to-text#speech/cancelPreparation",
+          "namespace": "speech",
+          "name": "cancelPreparation",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-api-speech-to-text#speech/catalog",
+          "namespace": "speech",
+          "name": "catalog",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-api-speech-to-text#speech/configure",
+          "namespace": "speech",
+          "name": "configure",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-api-speech-to-text#speech/follow",
+          "namespace": "speech",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-api-speech-to-text#speech/prepare",
+          "namespace": "speech",
+          "name": "prepare",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-api-speech-to-text#speech/transcribe",
+          "namespace": "speech",
+          "name": "transcribe",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-claude-code-mods",
+      "dir": "packages/experimental/claude-code-mods/lib",
+      "js": "packages/experimental/claude-code-mods/lib/typert.remote-client.js",
+      "dts": "packages/experimental/claude-code-mods/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "claudeCodeMods"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "js_keys_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [
+        "agent:claudeCodeMods/pressBand",
+        "agent:claudeCodeMods/watchBand"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-experimental-claude-code-mods#claudeCodeMods/pressBand",
+          "namespace": "claudeCodeMods",
+          "name": "pressBand",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-claude-code-mods#claudeCodeMods/watchBand",
+          "namespace": "claudeCodeMods",
+          "name": "watchBand",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-client-ui-cot-translation",
+      "dir": "packages/experimental/client-ui-cot-translation/lib",
+      "js": "packages/experimental/client-ui-cot-translation/lib/typert.remote-client.js",
+      "dts": "packages/experimental/client-ui-cot-translation/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "cotTranslation"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "js_keys_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-cot-translation#cotTranslation/limits",
+          "namespace": "cotTranslation",
+          "name": "limits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-cot-translation#cotTranslation/translate",
+          "namespace": "cotTranslation",
+          "name": "translate",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-client-ui-forge",
+      "dir": "packages/experimental/client-ui-forge/lib",
+      "js": "packages/experimental/client-ui-forge/lib/typert.remote-client.js",
+      "dts": "packages/experimental/client-ui-forge/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "forgePanel"
+      ],
+      "methods_dts": 56,
+      "methods_js": 56,
+      "js_keys_match_dts": true,
+      "endpoints_map": 56,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/cancelWorktree",
+          "namespace": "forgePanel",
+          "name": "cancelWorktree",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changeRequestChecks",
+          "namespace": "forgePanel",
+          "name": "changeRequestChecks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changeRequestCommits",
+          "namespace": "forgePanel",
+          "name": "changeRequestCommits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changeRequestDiff",
+          "namespace": "forgePanel",
+          "name": "changeRequestDiff",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changeRequestReview",
+          "namespace": "forgePanel",
+          "name": "changeRequestReview",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changeRequestReviewWrite",
+          "namespace": "forgePanel",
+          "name": "changeRequestReviewWrite",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changeRequestStates",
+          "namespace": "forgePanel",
+          "name": "changeRequestStates",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changeRequestText",
+          "namespace": "forgePanel",
+          "name": "changeRequestText",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changeRequestViewed",
+          "namespace": "forgePanel",
+          "name": "changeRequestViewed",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/changesLens",
+          "namespace": "forgePanel",
+          "name": "changesLens",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/continueInProject",
+          "namespace": "forgePanel",
+          "name": "continueInProject",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/diffBases",
+          "namespace": "forgePanel",
+          "name": "diffBases",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/dismiss",
+          "namespace": "forgePanel",
+          "name": "dismiss",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/extensions",
+          "namespace": "forgePanel",
+          "name": "extensions",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/follow",
+          "namespace": "forgePanel",
+          "name": "follow",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/localCommits",
+          "namespace": "forgePanel",
+          "name": "localCommits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/localDiff",
+          "namespace": "forgePanel",
+          "name": "localDiff",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/localText",
+          "namespace": "forgePanel",
+          "name": "localText",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/markReady",
+          "namespace": "forgePanel",
+          "name": "markReady",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/merge",
+          "namespace": "forgePanel",
+          "name": "merge",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/refresh",
+          "namespace": "forgePanel",
+          "name": "refresh",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/requestReviews",
+          "namespace": "forgePanel",
+          "name": "requestReviews",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/requestWorktree",
+          "namespace": "forgePanel",
+          "name": "requestWorktree",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/rerunChecks",
+          "namespace": "forgePanel",
+          "name": "rerunChecks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/restoreWorktree",
+          "namespace": "forgePanel",
+          "name": "restoreWorktree",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/retryWorktree",
+          "namespace": "forgePanel",
+          "name": "retryWorktree",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewChangeRequest",
+          "namespace": "forgePanel",
+          "name": "reviewChangeRequest",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewChecks",
+          "namespace": "forgePanel",
+          "name": "reviewChecks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewCommits",
+          "namespace": "forgePanel",
+          "name": "reviewCommits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewCount",
+          "namespace": "forgePanel",
+          "name": "reviewCount",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewDescription",
+          "namespace": "forgePanel",
+          "name": "reviewDescription",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewDiff",
+          "namespace": "forgePanel",
+          "name": "reviewDiff",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewerCandidates",
+          "namespace": "forgePanel",
+          "name": "reviewerCandidates",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewLists",
+          "namespace": "forgePanel",
+          "name": "reviewLists",
+          "kind": "stream",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewMarkReady",
+          "namespace": "forgePanel",
+          "name": "reviewMarkReady",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewMerge",
+          "namespace": "forgePanel",
+          "name": "reviewMerge",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewPoll",
+          "namespace": "forgePanel",
+          "name": "reviewPoll",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewRefresh",
+          "namespace": "forgePanel",
+          "name": "reviewRefresh",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewRequestReviews",
+          "namespace": "forgePanel",
+          "name": "reviewRequestReviews",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewRerunChecks",
+          "namespace": "forgePanel",
+          "name": "reviewRerunChecks",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewReviewerCandidates",
+          "namespace": "forgePanel",
+          "name": "reviewReviewerCandidates",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewSetViewed",
+          "namespace": "forgePanel",
+          "name": "reviewSetViewed",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewStage",
+          "namespace": "forgePanel",
+          "name": "reviewStage",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewSubmit",
+          "namespace": "forgePanel",
+          "name": "reviewSubmit",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewText",
+          "namespace": "forgePanel",
+          "name": "reviewText",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewThreads",
+          "namespace": "forgePanel",
+          "name": "reviewThreads",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewThreadWrite",
+          "namespace": "forgePanel",
+          "name": "reviewThreadWrite",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewUpdateBranch",
+          "namespace": "forgePanel",
+          "name": "reviewUpdateBranch",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/reviewViewed",
+          "namespace": "forgePanel",
+          "name": "reviewViewed",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/setFileViewed",
+          "namespace": "forgePanel",
+          "name": "setFileViewed",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/stopCreation",
+          "namespace": "forgePanel",
+          "name": "stopCreation",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/submitReview",
+          "namespace": "forgePanel",
+          "name": "submitReview",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/track",
+          "namespace": "forgePanel",
+          "name": "track",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/updateBranch",
+          "namespace": "forgePanel",
+          "name": "updateBranch",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/worktreeBases",
+          "namespace": "forgePanel",
+          "name": "worktreeBases",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-client-ui-forge#forgePanel/worktreeCleanup",
+          "namespace": "forgePanel",
+          "name": "worktreeCleanup",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-cua",
+      "dir": "packages/experimental/cua/lib",
+      "js": "packages/experimental/cua/lib/typert.remote-client.js",
+      "dts": "packages/experimental/cua/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "cuaAccess"
+      ],
+      "methods_dts": 9,
+      "methods_js": 9,
+      "js_keys_match_dts": true,
+      "endpoints_map": 9,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/applicationIcons",
+          "namespace": "cuaAccess",
+          "name": "applicationIcons",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/applications",
+          "namespace": "cuaAccess",
+          "name": "applications",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/enablePersistentPtc",
+          "namespace": "cuaAccess",
+          "name": "enablePersistentPtc",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/openSettings",
+          "namespace": "cuaAccess",
+          "name": "openSettings",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/ptcConfiguration",
+          "namespace": "cuaAccess",
+          "name": "ptcConfiguration",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/requestPermission",
+          "namespace": "cuaAccess",
+          "name": "requestPermission",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/retryApproval",
+          "namespace": "cuaAccess",
+          "name": "retryApproval",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/revoke",
+          "namespace": "cuaAccess",
+          "name": "revoke",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cua#cuaAccess/systemStatus",
+          "namespace": "cuaAccess",
+          "name": "systemStatus",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-deepseek-chat-import",
+      "dir": "packages/experimental/deepseek-chat-import/lib",
+      "js": "packages/experimental/deepseek-chat-import/lib/typert.remote-client.js",
+      "dts": "packages/experimental/deepseek-chat-import/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "deepseekChatImport"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-deepseek-chat-import#deepseekChatImport/limits",
+          "namespace": "deepseekChatImport",
+          "name": "limits",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-experimental-liveshare",
+      "dir": "packages/experimental/liveshare/lib",
+      "js": "packages/experimental/liveshare/lib/typert.remote-client.js",
+      "dts": "packages/experimental/liveshare/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "liveshareShares"
+      ],
+      "methods_dts": 13,
+      "methods_js": 13,
+      "js_keys_match_dts": true,
+      "endpoints_map": 13,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/addSessions",
+          "namespace": "liveshareShares",
+          "name": "addSessions",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/audit",
+          "namespace": "liveshareShares",
+          "name": "audit",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/capabilities",
+          "namespace": "liveshareShares",
+          "name": "capabilities",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/create",
+          "namespace": "liveshareShares",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/identity",
+          "namespace": "liveshareShares",
+          "name": "identity",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/list",
+          "namespace": "liveshareShares",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/relay",
+          "namespace": "liveshareShares",
+          "name": "relay",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/setCapabilities",
+          "namespace": "liveshareShares",
+          "name": "setCapabilities",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/setRelay",
+          "namespace": "liveshareShares",
+          "name": "setRelay",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/stop",
+          "namespace": "liveshareShares",
+          "name": "stop",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/testPublish",
+          "namespace": "liveshareShares",
+          "name": "testPublish",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/testRelay",
+          "namespace": "liveshareShares",
+          "name": "testRelay",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-experimental-liveshare#liveshareShares/updatePermissions",
+          "namespace": "liveshareShares",
+          "name": "updatePermissions",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-plugin-recommendations",
+      "dir": "packages/experimental/plugin-recommendations/lib",
+      "js": "packages/experimental/plugin-recommendations/lib/typert.remote-client.js",
+      "dts": "packages/experimental/plugin-recommendations/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginRecommendations"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:pluginRecommendations/describe"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-plugin-recommendations#pluginRecommendations/describe",
+          "namespace": "pluginRecommendations",
+          "name": "describe",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-cordis-host-runner",
+      "dir": "packages/extensions/cordis-host-runner/lib",
+      "js": "packages/extensions/cordis-host-runner/lib/typert.remote-client.js",
+      "dts": "packages/extensions/cordis-host-runner/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "dynamicCordisRunner"
+      ],
+      "methods_dts": 12,
+      "methods_js": 12,
+      "js_keys_match_dts": true,
+      "endpoints_map": 12,
+      "scope_variants": [
+        "agent:dynamicCordisRunner/getClientCode",
+        "agent:dynamicCordisRunner/reportClientGuardFailure",
+        "agent:dynamicCordisRunner/reportRenderFailure",
+        "agent:dynamicCordisRunner/resolveInspectQuery",
+        "agent:dynamicCordisRunner/runHostHalf",
+        "agent:dynamicCordisRunner/settleUserRun",
+        "agent:dynamicCordisRunner/stopFromPanel",
+        "agent:dynamicCordisRunner/undefineFromPanel"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/getClientCode",
+          "namespace": "dynamicCordisRunner",
+          "name": "getClientCode",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/inventory",
+          "namespace": "dynamicCordisRunner",
+          "name": "inventory",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/invoke",
+          "namespace": "dynamicCordisRunner",
+          "name": "invoke",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/reportClientGuardFailure",
+          "namespace": "dynamicCordisRunner",
+          "name": "reportClientGuardFailure",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/reportRenderFailure",
+          "namespace": "dynamicCordisRunner",
+          "name": "reportRenderFailure",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/resolveInspectQuery",
+          "namespace": "dynamicCordisRunner",
+          "name": "resolveInspectQuery",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/resolveRequestRun",
+          "namespace": "dynamicCordisRunner",
+          "name": "resolveRequestRun",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/runHostHalf",
+          "namespace": "dynamicCordisRunner",
+          "name": "runHostHalf",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/settleUserRun",
+          "namespace": "dynamicCordisRunner",
+          "name": "settleUserRun",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/stopFromPanel",
+          "namespace": "dynamicCordisRunner",
+          "name": "stopFromPanel",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/syncInspectManifest",
+          "namespace": "dynamicCordisRunner",
+          "name": "syncInspectManifest",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/undefineFromPanel",
+          "namespace": "dynamicCordisRunner",
+          "name": "undefineFromPanel",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-command-feedback",
+      "dir": "packages/feedback/command-feedback/lib",
+      "js": "packages/feedback/command-feedback/lib/typert.remote-client.js",
+      "dts": "packages/feedback/command-feedback/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "sessionFeedback"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-command-feedback#sessionFeedback/record",
+          "namespace": "sessionFeedback",
+          "name": "record",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-message-feedback",
+      "dir": "packages/feedback/message-feedback/lib",
+      "js": "packages/feedback/message-feedback/lib/typert.remote-client.js",
+      "dts": "packages/feedback/message-feedback/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "messageFeedback"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "js_keys_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-message-feedback#messageFeedback/delete",
+          "namespace": "messageFeedback",
+          "name": "delete",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-message-feedback#messageFeedback/list",
+          "namespace": "messageFeedback",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-message-feedback#messageFeedback/put",
+          "namespace": "messageFeedback",
+          "name": "put",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-goal",
+      "dir": "packages/goal/goal/lib",
+      "js": "packages/goal/goal/lib/typert.remote-client.js",
+      "dts": "packages/goal/goal/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "goals"
+      ],
+      "methods_dts": 7,
+      "methods_js": 7,
+      "js_keys_match_dts": true,
+      "endpoints_map": 7,
+      "scope_variants": [
+        "agent:goals/clear",
+        "agent:goals/complete",
+        "agent:goals/create",
+        "agent:goals/edit",
+        "agent:goals/get",
+        "agent:goals/pause",
+        "agent:goals/resume"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-goal#goals/clear",
+          "namespace": "goals",
+          "name": "clear",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-goal#goals/complete",
+          "namespace": "goals",
+          "name": "complete",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-goal#goals/create",
+          "namespace": "goals",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-goal#goals/edit",
+          "namespace": "goals",
+          "name": "edit",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-goal#goals/get",
+          "namespace": "goals",
+          "name": "get",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-goal#goals/pause",
+          "namespace": "goals",
+          "name": "pause",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-goal#goals/resume",
+          "namespace": "goals",
+          "name": "resume",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-host-plugin-inventory",
+      "dir": "packages/host/plugin-inventory/lib",
+      "js": "packages/host/plugin-inventory/lib/typert.remote-client.js",
+      "dts": "packages/host/plugin-inventory/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "pluginInventory"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-host-plugin-inventory#pluginInventory/list",
+          "namespace": "pluginInventory",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-commands",
+      "dir": "packages/interaction/commands/lib",
+      "js": "packages/interaction/commands/lib/typert.remote-client.js",
+      "dts": "packages/interaction/commands/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "commands"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "js_keys_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [
+        "agent:commands/execute",
+        "agent:commands/list"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-commands#commands/execute",
+          "namespace": "commands",
+          "name": "execute",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-commands#commands/list",
+          "namespace": "commands",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-permission-presets",
+      "dir": "packages/interaction/permission-presets/lib",
+      "js": "packages/interaction/permission-presets/lib/typert.remote-client.js",
+      "dts": "packages/interaction/permission-presets/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "permissionPresets"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "js_keys_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
+          "namespace": "permissionPresets",
+          "name": "catalog",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-permission-presets#permissionPresets/set",
+          "namespace": "permissionPresets",
+          "name": "set",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-user-questions",
+      "dir": "packages/interaction/user-questions/lib",
+      "js": "packages/interaction/user-questions/lib/typert.remote-client.js",
+      "dts": "packages/interaction/user-questions/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "userQuestions"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "js_keys_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [
+        "agent:userQuestions/answer",
+        "agent:userQuestions/attachWait"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-user-questions#userQuestions/answer",
+          "namespace": "userQuestions",
+          "name": "answer",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-user-questions#userQuestions/attachWait",
+          "namespace": "userQuestions",
+          "name": "attachWait",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-llm",
+      "dir": "packages/llm/llm/lib",
+      "js": "packages/llm/llm/lib/typert.remote-client.js",
+      "dts": "packages/llm/llm/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "llm"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "js_keys_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-llm#llm/discoverModels",
+          "namespace": "llm",
+          "name": "discoverModels",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-llm#llm/listConfigurableProviders",
+          "namespace": "llm",
+          "name": "listConfigurableProviders",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-llm#llm/listProviders",
+          "namespace": "llm",
+          "name": "listProviders",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-mcp-manager",
+      "dir": "packages/mcp/mcp-manager/lib",
+      "js": "packages/mcp/mcp-manager/lib/typert.remote-client.js",
+      "dts": "packages/mcp/mcp-manager/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "mcpManager"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "js_keys_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-mcp-manager#mcpManager/probe",
+          "namespace": "mcpManager",
+          "name": "probe",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-mcp-manager#mcpManager/restart",
+          "namespace": "mcpManager",
+          "name": "restart",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-mcp-manager#mcpManager/watch",
+          "namespace": "mcpManager",
+          "name": "watch",
+          "kind": "stream",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-agent-preset-registry",
+      "dir": "packages/preset/agent-preset-registry/lib",
+      "js": "packages/preset/agent-preset-registry/lib/typert.remote-client.js",
+      "dts": "packages/preset/agent-preset-registry/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "agentPresets"
+      ],
+      "methods_dts": 3,
+      "methods_js": 3,
+      "js_keys_match_dts": true,
+      "endpoints_map": 3,
+      "scope_variants": [
+        "agent:agentPresets/select"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-agent-preset-registry#agentPresets/list",
+          "namespace": "agentPresets",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-agent-preset-registry#agentPresets/read",
+          "namespace": "agentPresets",
+          "name": "read",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-agent-preset-registry#agentPresets/select",
+          "namespace": "agentPresets",
+          "name": "select",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-schedule",
+      "dir": "packages/schedule/schedule/lib",
+      "js": "packages/schedule/schedule/lib/typert.remote-client.js",
+      "dts": "packages/schedule/schedule/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "schedule"
+      ],
+      "methods_dts": 9,
+      "methods_js": 9,
+      "js_keys_match_dts": true,
+      "endpoints_map": 9,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/catalog",
+          "namespace": "schedule",
+          "name": "catalog",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/create",
+          "namespace": "schedule",
+          "name": "create",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/deleteInactive",
+          "namespace": "schedule",
+          "name": "deleteInactive",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/deliveryLimits",
+          "namespace": "schedule",
+          "name": "deliveryLimits",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/edit",
+          "namespace": "schedule",
+          "name": "edit",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/history",
+          "namespace": "schedule",
+          "name": "history",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/list",
+          "namespace": "schedule",
+          "name": "list",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/run",
+          "namespace": "schedule",
+          "name": "run",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-schedule#schedule/view",
+          "namespace": "schedule",
+          "name": "view",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-subagent",
+      "dir": "packages/subagent/subagent/lib",
+      "js": "packages/subagent/subagent/lib/typert.remote-client.js",
+      "dts": "packages/subagent/subagent/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "subagents"
+      ],
+      "methods_dts": 2,
+      "methods_js": 2,
+      "js_keys_match_dts": true,
+      "endpoints_map": 2,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-subagent#subagents/interruptByUser",
+          "namespace": "subagents",
+          "name": "interruptByUser",
+          "kind": "unary",
+          "class": "W"
+        },
+        {
+          "id": "@deepseek-ai/dsh-subagent#subagents/prompt",
+          "namespace": "subagents",
+          "name": "prompt",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-agent-team",
+      "dir": "packages/team/agent-team/lib",
+      "js": "packages/team/agent-team/lib/typert.remote-client.js",
+      "dts": "packages/team/agent-team/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "agentTeams"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [
+        "agent:agentTeams/setEnabled"
+      ],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-agent-team#agentTeams/setEnabled",
+          "namespace": "agentTeams",
+          "name": "setEnabled",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    },
+    {
+      "package": "@deepseek-ai/dsh-web",
+      "dir": "packages/web/web/lib",
+      "js": "packages/web/web/lib/typert.remote-client.js",
+      "dts": "packages/web/web/lib/typert.remote-client.d.ts",
+      "namespaces": [
+        "web"
+      ],
+      "methods_dts": 1,
+      "methods_js": 1,
+      "js_keys_match_dts": true,
+      "endpoints_map": 1,
+      "scope_variants": [],
+      "methods": [
+        {
+          "id": "@deepseek-ai/dsh-web#web/listProviders",
+          "namespace": "web",
+          "name": "listProviders",
+          "kind": "unary",
+          "class": "W"
+        }
+      ]
+    }
+  ]
+}
