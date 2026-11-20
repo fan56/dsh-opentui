@@ -341,6 +341,74 @@ interface CredentialsControllerLike {
   unset?(ref: string): Promise<void>
 }
 
+// --------------------------------------------------------------------------
+// S4 PKCE/stream — frame-safe projection of account/PKCE state.
+//
+// Host source (rc.5, one-hand verified): `deepseekAccount` service key at
+// dsh-deepseek-account/src/index.ts:136; `SignInAttemptView.authorizeUrl`
+// (types.ts:28) holds the browser URL built with code_challenge/state
+// (index.ts:727-737). The PKCE verifier stays host-side. The authorize URL is
+// a sensitive neighbour: its VALUE must never cross a frame boundary. Only a
+// boolean "ready" signal and bounded status/phase enums may be projected.
+// --------------------------------------------------------------------------
+
+/** Account statuses allowed to cross a frame (rc.5 `AccountView.status`). */
+const S4_ACCOUNT_STATUSES: ReadonlySet<string> = new Set(['signed-out', 'credential-stored'])
+/** Attempt phases allowed to cross a frame (rc.5 `SignInAttemptView.phase`). */
+const S4_ATTEMPT_PHASES: ReadonlySet<string> = new Set([
+  'initializing', 'waiting-browser', 'exchanging', 'committing',
+  'succeeded', 'cancelled', 'expired', 'failed',
+])
+/** Auth-material keys stripped from EVERY outbound frame (defence in depth).
+ *  Key-name based only — user text in `turn.token` is never rewritten. */
+const S4_AUTH_FORBIDDEN_KEYS: ReadonlySet<string> = new Set([
+  'authorizeUrl', 'authorize_url', 'code_challenge', 'code_verifier',
+  'access_token', 'id_token', 'refresh_token',
+])
+
+/** The ONLY shape allowed to represent account/PKCE state in a frame. */
+export interface AccountFrameProjection {
+  readonly status: string | null
+  readonly attemptPhase: string | null
+  readonly authorizeUrlReady: boolean
+  readonly linksPresent: boolean
+}
+
+/**
+ * Project a raw host `AccountView` into a fixed, bounded frame-safe shape.
+ * The authorize URL contributes ONE boolean (presence only); its value — and
+ * the code_challenge/state it carries — is never copied into the result.
+ */
+export function projectAccountViewForFrame(view: unknown): AccountFrameProjection {
+  const v = view as { status?: unknown; attempt?: unknown; links?: unknown } | undefined
+  const attempt = v?.attempt as { phase?: unknown; authorizeUrl?: unknown } | null | undefined
+  const isAttempt = attempt !== null && typeof attempt === 'object'
+  return {
+    status: typeof v?.status === 'string' && S4_ACCOUNT_STATUSES.has(v.status) ? v.status : null,
+    attemptPhase: isAttempt && typeof attempt.phase === 'string' && S4_ATTEMPT_PHASES.has(attempt.phase)
+      ? attempt.phase : null,
+    authorizeUrlReady: isAttempt && typeof attempt.authorizeUrl === 'string' && attempt.authorizeUrl.length > 0,
+    linksPresent: v?.links !== undefined && v?.links !== null,
+  }
+}
+
+/**
+ * S4 wire guard — strip auth-material keys from ANY object before it is
+ * serialized to stdout. Applied centrally in `writeFrame`, so no future
+ * caller (reply / emit / relay) can leak an authorize URL into a frame.
+ * Structural, bounded-depth, arrays preserved; no value rewriting.
+ */
+export function sanitizeFrameForWire<T>(frame: T, depth = 0): T {
+  if (depth > 12 || frame === null || typeof frame !== 'object') return frame
+  if (Array.isArray(frame)) return frame.map((v) => sanitizeFrameForWire(v, depth + 1)) as T
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(frame as Record<string, unknown>)) {
+    if (S4_AUTH_FORBIDDEN_KEYS.has(key)) continue
+    out[key] = sanitizeFrameForWire(value, depth + 1)
+  }
+  return out as T
+}
+
 // M3-02 — structural slice of `ctx.systemPrompt` (dsh-system-prompt). Exported
 // so append-section.ts can consume the same shape without importing any
 // @deepseek-ai/* runtime symbol (same discipline as the types above). Fields
@@ -643,6 +711,116 @@ export function createPushRelay(deps: PushRelayDeps): PushRelayHandle {
     stop(sessionId: string): void {
       for (const [key, sub] of [...subs]) {
         if (!key.startsWith(`${sessionId}|`)) continue
+        sub.controller.abort()
+        subs.delete(key)
+      }
+    },
+    stopAll(): void {
+      for (const sub of subs.values()) sub.controller.abort()
+      subs.clear()
+    },
+    activeCount(): number {
+      return subs.size
+    },
+  }
+}
+
+/**
+ * S4: client-driven account watch relay — the same four-piece-set lifecycle as
+ * the S3 push relay, applied to `account/watch` + `account/watchExpiry`:
+ *  (a) owned-signal release via `stop`/`stopAll` (+ hostInvoke's withOwnedAbort),
+ *  (b) BAD_KIND / NOT_WIRED gates inherited from `createCapHostInvoke`,
+ *  (c) `cap.end{reason,code}` degrade via `classifyPushErrorCode` (C-1),
+ *  (d) per-subscription seq — seam orders by the (sessionId,methodId) composite
+ *      key fixed in S3/BL-1. Explicit start/stop face: no auto-resubscribe.
+ * Emits ONLY whitelisted fields; the authorize URL never reaches an emit.
+ */
+export const ACCOUNT_WATCH_RELAY_METHOD_IDS = [
+  '@deepseek-ai/dsh-deepseek-account#account/watch',
+  '@deepseek-ai/dsh-deepseek-account#account/watchExpiry',
+] as const
+
+export interface AccountWatchRelayDeps {
+  invoke(frame: { methodId: never; params: unknown }): Promise<unknown>
+  emit(type: string, payload: Record<string, unknown>): void
+  isClosing?(): boolean
+}
+export interface AccountWatchRelayHandle {
+  start(sessionId: string): void
+  stop(sessionId: string): void
+  stopAll(): void
+  activeCount(): number
+}
+
+/** Host item type -> bounded whitelist enum; unknown types collapse to 'event'. */
+function accountWatchEventType(item: unknown): string {
+  const type = (item as { type?: unknown } | undefined)?.type
+  if (type === 'snapshot' || type === 'credentials-changed' || type === 'expiry') return type
+  return 'event'
+}
+
+export function createAccountWatchRelay(deps: AccountWatchRelayDeps): AccountWatchRelayHandle {
+  interface WatchSub {
+    readonly controller: AbortController
+    seq: number
+    task?: Promise<void>
+  }
+  const subs = new Map<string, WatchSub>()
+  const watchKey = (sessionId: string, methodId: string): string => `${sessionId}|${methodId}`
+  const isClosing = (): boolean => deps.isClosing?.() === true
+
+  async function run(sessionId: string, methodId: string, sub: WatchSub): Promise<void> {
+    try {
+      const value = await deps.invoke({
+        methodId: methodId as never,
+        params: { sessionId, signal: sub.controller.signal },
+      })
+      const iterable = value as AsyncIterable<unknown> | undefined
+      if (iterable === null || typeof iterable !== 'object' || typeof iterable[Symbol.asyncIterator] !== 'function') {
+        throw new Error('NOT_WIRED: account watch stream did not return an AsyncIterable')
+      }
+      for await (const item of iterable) {
+        if (isClosing() || sub.controller.signal.aborted) break
+        sub.seq += 1
+        // Fixed whitelist only: methodId / sessionId / seq / eventType.
+        // Raw account state (and its authorizeUrl) is never forwarded.
+        deps.emit('cap.event', {
+          methodId,
+          sessionId,
+          seq: sub.seq,
+          eventType: accountWatchEventType(item),
+        })
+      }
+      if (!sub.controller.signal.aborted && !isClosing()) {
+        deps.emit('cap.end', { methodId, sessionId, reason: 'stream-end' })
+      }
+    } catch (err: unknown) {
+      if (!sub.controller.signal.aborted && !isClosing()) {
+        deps.emit('cap.end', { methodId, sessionId, reason: 'unavailable', code: classifyPushErrorCode(err) })
+      }
+    } finally {
+      const key = watchKey(sessionId, methodId)
+      if (subs.get(key) === sub) subs.delete(key)
+    }
+  }
+
+  return {
+    start(sessionId: string): void {
+      if (isClosing() || sessionId === '') return
+      for (const methodId of ACCOUNT_WATCH_RELAY_METHOD_IDS) {
+        const key = watchKey(sessionId, methodId)
+        if (subs.has(key)) continue
+        const sub: WatchSub = { controller: new AbortController(), seq: 0 }
+        subs.set(key, sub)
+        sub.task = run(sessionId, methodId, sub)
+      }
+    },
+    stop(sessionId: string): void {
+      // Exact composite-key match (no startsWith mis-abort — C-3 discipline).
+      for (const methodId of ACCOUNT_WATCH_RELAY_METHOD_IDS) {
+        const key = watchKey(sessionId, methodId)
+        const sub = subs.get(key)
+        if (sub === undefined) continue
         sub.controller.abort()
         subs.delete(key)
       }
@@ -1715,6 +1893,15 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           whitelist: allowedStateKeys,
           ...(state.ok ? {} : { errorCode: errCode(state.error) }),
         })
+        // S4 (additive emit; S2 criterion shape above untouched): the host view
+        // may carry attempt.authorizeUrl during waiting-browser. Report ONLY a
+        // boolean readiness signal — never the URL or its code_challenge/state.
+        const projectedState = projectAccountViewForFrame(st)
+        emit('W account auth URL guard', {
+          urlReady: projectedState.authorizeUrlReady,
+          urlInFrame: false,
+          whitelist: ['urlReady', 'urlInFrame'],
+        })
         const tasks = await probe(A('hasRunningAccountTasks'), {})
         emit('W account hasRunningAccountTasks', { ok: tasks.ok, resultType: typeof tasks.value, ...(tasks.ok ? {} : { errorCode: errCode(tasks.error) }) })
         const unaryAccount = [
@@ -1834,10 +2021,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   let unsubApprovalAnswerer: (() => void) | undefined
   let unsubQuestionsAnswerer: (() => void) | undefined
 
-  /** Write one NDJSON frame, pausing stdin on backpressure until drain. */
+  /** Write one NDJSON frame, pausing stdin on backpressure until drain.
+   *  S4: every frame passes the central auth-material key guard before it is
+   *  serialized — an authorize URL (code_challenge/state) cannot cross stdout. */
   function writeFrame(frame: unknown): void {
     if (closing) return
-    const line = `${JSON.stringify(frame)}\n`
+    const line = `${JSON.stringify(sanitizeFrameForWire(frame))}\n`
     let writable = true
     try {
       writable = process.stdout.write(line, 'utf8')
