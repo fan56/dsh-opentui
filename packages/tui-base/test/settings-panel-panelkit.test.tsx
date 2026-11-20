@@ -58,7 +58,8 @@ import {
 	type SettingsThemeFace,
 } from "../src/routes/session/settings-panel"
 import { bundledLocalesDir, loadLocales, setLanguage, setLanguages } from "@dsh-opentui/i18n"
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 import { defaultUiStatePath } from "../src/util/ui-state"
 import type { SeamSettingsDocument, SessionSeam } from "../src/seams/session"
 
@@ -75,6 +76,8 @@ beforeAll(() => {
 	// file so the painted value is deterministic.
 	const path = defaultUiStatePath()
 	originalUiState = existsSync(path) ? readFileSync(path, "utf8") : undefined
+	// CI runners have no state dir at all — create it before seeding.
+	mkdirSync(dirname(path), { recursive: true })
 	writeFileSync(path, "{}")
 })
 afterAll(() => {
