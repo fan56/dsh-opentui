@@ -842,7 +842,7 @@ describe('RemoteHostSession accessor audit (through aggregateTurnContext)', () =
     }
   })
 
-  test('deep chain: failed turn adopts the session id → session-bound members run → abort clears', async () => {
+  test('deep chain: failed turn adopts the session id → session-bound members run → abort keeps the binding', async () => {
     const f = auditFakes()
     try {
       await f.adapted.start()
@@ -896,9 +896,9 @@ describe('RemoteHostSession accessor audit (through aggregateTurnContext)', () =
       expect((btwError as Error).message).toBe('no sockets in the audit')
       expect(f.adapted.historyTurns()).toEqual([]) // journal empty without a follow
 
-      // abort: fresh-session semantics — the id is cleared
+      // abort stops the turn only: the adopted session id survives
       f.adapted.abort()
-      expect(f.adapted.currentSessionId()).toBeUndefined()
+      expect(f.adapted.currentSessionId()).toBe('audit-resume-id')
     } finally {
       f.cleanup()
     }

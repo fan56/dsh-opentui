@@ -490,7 +490,7 @@ describe("RemoteHostSession turn lifecycle", () => {
 		await h.session.dispose()
 	})
 
-	test("abort cancels, settles without onTurnEnd, next send is a fresh session", async () => {
+	test("abort cancels only the turn: session binding survives, next send reuses it", async () => {
 		let created = 0
 		const h = makeSession({
 			rpcHandler: (method) => {
@@ -507,22 +507,87 @@ describe("RemoteHostSession turn lifecycle", () => {
 
 		h.session.abort()
 		await first
-		expect(h.connection.rpcCalls.some((c) => c.method === "session/cancel")).toBe(true)
-		expect(log.turnEnds.length).toBe(0)
-		expect(h.session.currentSessionId()).toBeUndefined()
+		const cancels = h.connection.rpcCalls.filter((c) => c.method === "session/cancel")
+		expect(cancels).toHaveLength(1)
+		expect((cancels[0]!.args["request"] as Record<string, unknown>)["sessionId"]).toBe("sess-1")
+		expect(log.turnEnds.length).toBe(0) // abort settles WITHOUT onTurnEnd
+		expect(h.session.currentSessionId()).toBe("sess-1") // binding kept (old code cleared it)
+		expect(created).toBe(1) // abort does not re-create
 
-		// Next send creates a FRESH session id with its own follow stream.
+		// Next send reuses the SAME session + follow stream: no new create, no
+		// new socket, prompt addressed to the original session id.
 		const second = h.session.turn("again", cb)
-		await until(() => h.sockets.length > 1)
-		h.sockets.at(-1)!.item(snapshotFrame("sess-2"))
-		// Wait for THIS session's prompt (the first turn's entry is stale).
-		await until(() =>
-			h.connection.rpcCalls.some((c) => c.method === "session/prompt" && (c.args["request"] as Record<string, unknown>)["sessionId"] === "sess-2"),
-		)
-		expect(h.session.currentSessionId()).toBe("sess-2")
-		h.sockets.at(-1)!.item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await until(() => h.connection.rpcCalls.filter((c) => c.method === "session/prompt").length > 1)
+		expect(created).toBe(1)
+		expect(h.sockets.length).toBe(1)
+		const prompts = h.connection.rpcCalls.filter((c) => c.method === "session/prompt")
+		expect((prompts[1]!.args["request"] as Record<string, unknown>)["sessionId"]).toBe("sess-1")
+		expect(h.session.currentSessionId()).toBe("sess-1")
+		h.lastSocket().item(eventFrame("turn/end", { turn: 2, reason: { kind: "completed" } }, 2))
 		await second
 		expect(log.turnEnds.length).toBe(1)
+		await h.session.dispose()
+	})
+
+	test("abort keeps the follow ledger attached: cancelled turn stays in /history, no error painted", async () => {
+		let created = 0
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") return { sessionId: `sess-${++created}` }
+				if (method === "session/prompt") return { accepted: true }
+				return {}
+			},
+		})
+		const { cb, log } = callbacks()
+		const first = h.session.turn("go", cb)
+		await until(() => h.sockets.length > 0)
+		const sock = h.lastSocket()
+		sock.item(snapshotFrame("sess-1"))
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+
+		sock.item(eventFrame("turn/start", { turn: 1 }, 1))
+		sock.item(eventFrame("user/message", { source: { kind: "user" }, content: [{ type: "text", text: "go" }] }, 2))
+		h.session.abort()
+		await first
+		// The host's aborted turn/end arrives on the SAME still-attached stream.
+		sock.item(eventFrame("turn/end", { turn: 1, reason: { kind: "aborted", reason: { kind: "user" } } }, 3))
+		expect(log.errors).toEqual([]) // aborted reason is not an error
+		expect(log.turnEnds.length).toBe(0) // still no onTurnEnd for the aborted turn
+		expect(h.session.historyTurns()).toEqual([{ turn: 1, seqEnd: 3, preview: "go" }]) // ledger NOT reset
+		expect(h.sockets.length).toBe(1) // follow NOT detached
+		expect(h.session.currentSessionId()).toBe("sess-1")
+
+		const second = h.session.turn("again", cb)
+		await until(() => h.connection.rpcCalls.filter((c) => c.method === "session/prompt").length > 1)
+		expect(created).toBe(1)
+		sock.item(eventFrame("turn/end", { turn: 2, reason: { kind: "completed" } }, 4))
+		await second
+		expect(log.turnEnds.length).toBe(1)
+		await h.session.dispose()
+	})
+
+	test("abort keeps a staged /resume binding for the next send", async () => {
+		const h = makeSession({
+			rpcHandler: (method) => {
+				if (method === "session/create") return { sessionId: "stored-42" }
+				if (method === "session/prompt") return { accepted: true }
+				return {}
+			},
+		})
+		const { cb } = callbacks()
+		expect(h.session.resumeSession("stored-42")).toBe("ok")
+		h.session.abort() // no live turn/session: nothing to cancel, nothing to unstage
+		expect(h.session.currentSessionId()).toBeUndefined() // staged, not bound yet
+
+		const pending = h.session.turn("resume me", cb)
+		await until(() => h.sockets.length > 0)
+		h.lastSocket().item(snapshotFrame("stored-42"))
+		await until(() => rpcOf(h.connection, "session/create") !== undefined)
+		expect((rpcOf(h.connection, "session/create")!["request"] as Record<string, unknown>)["sessionId"]).toBe("stored-42")
+		expect(h.session.currentSessionId()).toBe("stored-42")
+		await until(() => rpcOf(h.connection, "session/prompt") !== undefined)
+		h.lastSocket().item(eventFrame("turn/end", { turn: 1, reason: { kind: "completed" } }, 1))
+		await pending
 		await h.session.dispose()
 	})
 })

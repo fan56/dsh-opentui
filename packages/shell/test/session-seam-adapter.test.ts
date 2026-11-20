@@ -138,7 +138,7 @@ describe("RemoteSessionSeam mapping fidelity (batch-2a table)", () => {
 		expect(calls.find((c) => c.method === "steer")?.args).toBe("go left")
 	})
 
-	test("interrupt maps to the facade abort (session/cancel + fresh-next-send)", () => {
+	test("interrupt maps to the facade abort (session/cancel, same session on next send)", () => {
 		const { session, calls } = fakeSession()
 		const seam = new RemoteSessionSeam(session)
 		seam.interrupt()

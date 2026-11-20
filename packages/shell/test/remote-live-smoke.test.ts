@@ -112,13 +112,15 @@ describe("remote live smoke", () => {
 				const deadline = Date.now() + 60_000
 				while (!sawChunk && !settled && Date.now() < deadline) await sleep(200)
 				expect(sawChunk || settled).toBe(true)
-				expect(session.currentSessionId()).toBeDefined()
-				events.push(`sessionId=${session.currentSessionId()} — first ${sawChunk ? "chunk" : `turn settle (${errors.length} error(s))`} received, cancelling`)
+				const boundSessionId = session.currentSessionId()
+				expect(boundSessionId).toBeDefined()
+				events.push(`sessionId=${boundSessionId} — first ${sawChunk ? "chunk" : `turn settle (${errors.length} error(s))`} received, cancelling`)
 
 				session.abort()
 				await pending
 				events.push(`usage after turn: ${JSON.stringify(session.usage)}`)
-				expect(session.currentSessionId()).toBeUndefined()
+				// cancel stops only the turn: the session stays bound for the next send
+				expect(session.currentSessionId()).toBe(boundSessionId)
 				events.push(sawChunk ? "MODEL_CALL ok" : `MODEL_CALL blocked: ${errors[0] ?? "turn settled without text"}`)
 
 				await session.dispose()

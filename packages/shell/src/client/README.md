@@ -167,7 +167,7 @@ class RemoteHostSession {
   start(): Promise<ClientReadyInfo>          // connect + begin $events routing + cold-boot label (turn() calls it lazily)
   turn(userText, cb: TurnCallbacks, signal?): Promise<void>  // session/create + session/prompt{mode:'queue'}; awaits durable turn/end
   steer(userText): void                       // session/prompt{mode:'steer'}
-  abort(): void                               // session/cancel; next send is a FRESH session (host-session parity)
+  abort(): void                               // session/cancel: stops only the turn; next send reuses the SAME session (transcript kept)
   newSession(): void                          // next send creates a new session (fresh client-minted id — row 12)
   resumeSession(id): "ok"                     // next send re-creates with the stored id (writer-held → takeover error, row 15)
   registerAskProvider(onAsk): void            // user-questions waterfall prompt target

@@ -729,19 +729,25 @@ export class RemoteHostSession {
 	}
 
 	/**
-	 * Abort the running turn: `session/cancel`, then settle the awaited turn
-	 * WITHOUT onTurnEnd — and the next send gets a FRESH session
-	 * (host-session.ts:1168-1183 semantics).
+	 * Abort the running turn: `session/cancel` stops ONLY this turn, then the
+	 * awaited turn settles WITHOUT onTurnEnd. The session binding, its follow
+	 * stream and its record ledger all stay intact so the next send prompts
+	 * the SAME session and keeps the transcript (in-process stop parity).
+	 *
+	 * The old code cleared #sessionId/#resumeId and reset the ledger here,
+	 * claiming "host parity" from host-session.ts:1168-1183 — that is the
+	 * in-process TUI's handle disposal, NOT the host wire's session/cancel:
+	 * api/session-controller commands.cancel only calls
+	 * `agent.cancel({ kind: 'user' }, { keepInbox: true })` (rc.4 → current),
+	 * which aborts the live turn while the Session/Agent stay attached and
+	 * reusable (agent-loop cancel.spec.ts "parks queued work after an active
+	 * turn aborts"). Unbinding here was a context-loss bug, not a contract.
 	 */
 	abort(): void {
 		const sessionId = this.#sessionId
 		if (sessionId !== undefined) {
 			void this.#rpc("session/cancel", { request: { sessionId } }).catch(() => {})
 		}
-		this.#sessionId = undefined
-		this.#resumeId = undefined
-		this.#follow?.reset()
-		this.#resetLedger()
 		this.#interrupted = true
 		this.#settleTurnWithoutEnd()
 	}

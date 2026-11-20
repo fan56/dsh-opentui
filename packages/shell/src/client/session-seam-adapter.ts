@@ -21,7 +21,8 @@
  *   steer(text)                → session.steer(text)             (1:1)
  *   interrupt()                → session.abort()                 (rename only:
  *                                the facade's abort is the wire's
- *                                session/cancel + fresh-next-send contract)
+ *                                session/cancel — turns stop, the session
+ *                                stays bound for the next send)
  *   registerAskProvider(cb)    → session.registerAskProvider(cb) — pure
  *                                structural passthrough: RemoteQuestion ≡
  *                                SeamAskQuestion {id,prompt,options[]},
