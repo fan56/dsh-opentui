@@ -168,10 +168,11 @@ None. First-round collection; no pass criterion was changed. (`07-w-roundtrip-re
 
 ## Gitignore notice / 忽略提示
 
-`.proof/024-base-task5/*.log` 原始证据未经脱敏、无密钥；报告与 `00-preregistered-expected.md` 随本刀提交以便复核。未改动 `.gitignore`。`node_modules/` 已被仓库既有 `.gitignore` 忽略（`git check-ignore` 验证）。
+`.proof/024-base-task5/*.log` 原始证据未经脱敏、无密钥；受仓库既有 `.gitignore:4 *.log` 忽略，仅落在本 worktree 磁盘（15 文件俱在，未推远端），报告与 `00-preregistered-expected.md` 随本刀提交以便复核。未代为修改 `.gitignore`。`node_modules/` 亦被仓库既有 `.gitignore` 忽略（`git check-ignore` 验证）。
 
 ## Commit / 提交
 
 - Change ref（被测底座）: a199bf1f37be897576f2359c4fde26c34e0186e2
-- Task commit SHA（本报告所在提交）: TASK_COMMIT_SHA_PENDING
+- Task commit SHA（加入本证据包的提交）: 023cc23509611db82670aefac7ebc96975069bd9（短 023cc23）
+- Raw `.log` 证据受仓库既有 `.gitignore:4 *.log` 忽略，仅存在于本 worktree 磁盘（15 个文件俱在）；按 skill 允许 raw 证据可被 gitignore，未代为修改 `.gitignore`。`00-preregistered-expected.md` 与 `report.md` 已提交。
 - Discipline: worktree `feat/024-capir` 本地 commit；未 push、未开 PR；CapIR 真源未改（`capir.json` sha256 与 01 快照一致）；负例注入物仅在 /tmp，symlink 已恢复（12-injection-restore.log，RESTORE_MATCH=yes，tracked diff=0）
