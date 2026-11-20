@@ -210,7 +210,7 @@ export type TranscriptProps = {
 		 * ./widgets-dock.tsx; the page wires it with the shared projection. */
 		widgets?: JSX.Element
 		/** Batch D2 lastRequest slot (dsh-tui-pi live-widgets structure): the
-		 * `●` last-request echo + the running-children lines rendered DIRECTLY
+		 * `👤` last-request echo + the running-children lines rendered DIRECTLY
 		 * BELOW the composer (the editor) — see ./lastrequest-dock.tsx; the
 		 * page wires it with the shared projection + its lastRequest signal. */
 			footer?: JSX.Element
@@ -278,6 +278,22 @@ export function Transcript(props: TranscriptProps) {
 	const color = {
 		text: () => theme?.text.base ?? "#e6e6e6",
 		user: () => theme?.text.action.primary.base ?? "#7aa2f7",
+		// 0.23.2 block-hue law: the ❯ user box carries the theme's INTERACTIVE
+		// hue at the 400 step — orange-family on the default theme, so the
+		// user block reads as its own type against the green code frame and
+		// the violet think bar. Border-tier accent only: the text stays
+		// action.primary. (400, not the focus frames' 500: the user box is a
+		// permanent block frame, and 500 sinks too close to the background to
+		// read as a hue on every-message blocks.)
+		userBorder: () => theme?.hue.interactive[400] ?? unfocusedBorderColor(theme),
+		// 0.23.2 block-hue law: fenced code frames carry the theme's CODE hue —
+		// markdown.code (the inline-code token) walked two ramp steps DEEPER
+		// via increase() (ramp steps run bright→dark; increase dims on dark
+		// themes) for a low-saturation border: green.400 on the default theme.
+		// A custom theme whose markdown.code is a raw hex keeps that color —
+		// the shift is a no-op off the ramp, so the frame never picks a
+		// foreign hue.
+		codeBorder: () => (theme ? theme.increase(theme.markdown.code, 2) : undefined),
 		reasoningBorder: () => theme?.border.base ?? "#565f89",
 		// Ask replay (spec §9) paints through `AskReplayBlock`, which owns its
 		// own theme read (muted question line + accent answer line).
@@ -325,8 +341,9 @@ export function Transcript(props: TranscriptProps) {
 			// until finalize so completion keeps the final tokens.
 			// Skin (batch δ): the code-block restyle wrapper (heavy left rule
 			// while streaming, single frame + language title once final) — host
-			// renderNode still wins for the tokens it handles.
-			renderNode={skinRenderNode(row.key, row.final, props.renderNode, renderer, theme?.border.base)}
+			// renderNode still wins for the tokens it handles. 0.23.2: the
+			// frame/rule border rides the code-hue token (see color.codeBorder).
+			renderNode={skinRenderNode(row.key, row.final, props.renderNode, renderer, color.codeBorder())}
 			content={row.text}
 			streaming={!row.final}
 			internalBlockMode="top-level"
@@ -373,7 +390,7 @@ export function Transcript(props: TranscriptProps) {
 						paddingLeft={2}
 						border={["top", "bottom", "left", "right"]}
 						borderStyle="single"
-						borderColor={unfocusedBorderColor(theme)}
+						borderColor={color.userBorder()}
 					>
 						<Show when={row.unconfirmed === true}>
 							<text fg={color.pendingQueue()}>{t("recovery.input.unconfirmed")}</text>
@@ -500,7 +517,7 @@ export function Transcript(props: TranscriptProps) {
 			{/* widgets slot (batch D1, ./widgets-dock.tsx): the fixed Todos →
 			 * Think → Tool panels directly ABOVE the bottom slot (the editor).
 			 * Batch D2: the `footer` (./lastrequest-dock.tsx) paints UNDER the
-			 * editor — the lastRequest `●` echo + running-children lines.
+			 * editor — the lastRequest `👤` echo + running-children lines.
 			 * Each child owns its explicit height (the dock counts its lines;
 			 * the composer sets its own) — auto-height boxes collapse. */}
 			<Show when={props.status || props.widgets || props.children || props.footer || props.notices}>

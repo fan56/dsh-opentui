@@ -13,13 +13,21 @@
  *                     palette open → NOT consumed either way (falls through
  *                     to the composer, so the slash palette's esc still
  *                     closes).
- *   ctrl+c (1st)      interrupt the running turn (if any) + arm the quit
- *                     affordance: "Press Ctrl+C again to quit" (an armed
- *                     Esc window is cleared first — the two arm chains
- *                     never mix).
- *   ctrl+c (2nd)      inside CTRL_C_QUIT_WINDOW_MS of the 1st → quit()
- *                     (the page's clean shutdown path — tui-pi parity
- *                     "Ctrl+C x2: quit").
+ *   ctrl+c (idle)     open the quit CONFIRMATION dialog (DialogConfirm,
+ *                     "Quit dsh-opentui?"). Confirm runs the existing
+ *                     `props.quit` shutdown path; Esc / cancel keeps running.
+ *                     No timing gate: one press is enough.
+ *   ctrl+c (busy, 1st) interrupt the running turn. No timing gate, no hint.
+ *                     A one-shot latch remembers the interrupt so the NEXT
+ *                     ctrl+c (any time later) opens the quit dialog. A fresh
+ *                     turn (busy rising from false) restarts the cycle.
+ *   ctrl+c (busy, 2nd+) open the quit confirmation dialog.
+ *
+ * The old "double press inside CTRL_C_QUIT_WINDOW_MS to quit" gate is GONE.
+ * Real double presses routinely missed the 500ms window (terminal latency +
+ * human rhythm), and on a busy turn the FIRST press was spent on the
+ * interrupt — which is exactly why "press ctrl+c twice" kept failing. The
+ * dialog is now a deliberate, timing-free step.
  *
  * Precondition: the renderer runs with `exitOnCtrlC: false`. OpenTUI's
  * default (`true`, core renderer: `config.exitOnCtrlC === undefined ? true`)
@@ -27,31 +35,30 @@
  * schedules `exitHandler` on nextTick — that bypassed the page's shutdown
  * and left a wiped, never-repainted frame.
  *
- * Both keys are gated by `enabled` (pass "no dialog is open"): the
- * DialogProvider stack owns esc/ctrl+c while an overlay is up — the
- * confirm dialog's Esc lands in the dialog (cancel), never at the task.
+ * Both keys are gated by `enabled` (pass "no dialog is open"). The quit dialog
+ * lives on the DialogProvider stack, so while it is open this layer is off and
+ * Esc / Ctrl+C belong to the dialog: Esc cancels, Ctrl+C closes it. Neither
+ * reaches the running task.
  *
  * DIVERGENCE (spec §6, docs/ask-user-panel-spec.md): the ask dock's Ctrl+C
  * declines the batch and closes the dock, which is one keypress away from
  * this layer owning Ctrl+C again. A naive reading of "first press declines,
- * second press interrupts" would let that second press arm the quit chain, so
- * a third press inside CTRL_C_QUIT_WINDOW_MS would quit the application from a
- * sequence the user read as "dismiss the panel, stop the turn". Therefore the
- * dock's Ctrl+C arms a ONE-SHOT non-arming interrupt (`armNonArmingInterrupt`)
- * and the next page-level Ctrl+C on a busy turn interrupts WITHOUT pressing or
- * arming the quit gate. The quit chain then arms only on an idle page, where
- * there is no turn to interrupt. Cost: after a dock decline, quitting takes
- * the idle double-press. Acceptance invariant: three consecutive Ctrl+C presses
- * with a busy turn and an open dock end at "turn interrupted, app still
- * running".
+ * second press interrupts" would let that second press open the quit dialog,
+ * so a third press would quit from a sequence the user read as "dismiss the
+ * panel, stop the turn". Therefore the dock's Ctrl+C arms a ONE-SHOT non-arming
+ * interrupt (`armNonArmingInterrupt`) and the next page-level Ctrl+C on a busy
+ * turn interrupts WITHOUT opening the dialog. Only a further press opens it.
+ * Acceptance invariant: three consecutive Ctrl+C presses with a busy turn and
+ * an open dock end at "turn interrupted, app still running".
  */
 import { createSignal, onCleanup, Show } from "solid-js"
 import { Keymap } from "../../context/keymap"
 import { useThemeOptional } from "../../context/theme"
 import { t } from "../../i18n"
+import { useDialog } from "../../ui/dialog"
+import { DialogConfirm } from "../../ui/dialog-confirm"
 
-/** Double-press window for ctrl+c → quit and the armed esc stop (tui-pi
- * contract range 150-500ms — DOUBLE_PRESS_MS parity). */
+/** Window for the armed esc stop (tui-pi contract range 150-500ms — DOUBLE_PRESS_MS parity). */
 export const CTRL_C_QUIT_WINDOW_MS = 500
 
 /**
@@ -59,8 +66,8 @@ export const CTRL_C_QUIT_WINDOW_MS = 500
  *
  * The ask dock's Ctrl+C sets it when it declines the batch and closes the
  * dock; the next page-level Ctrl+C consumes it: on a busy turn it interrupts
- * and returns without `gate.press()`/`arm()`, on an idle page it falls through
- * to the normal double-press chain (the flag is spent either way).
+ * and returns WITHOUT opening the quit dialog, on an idle page it falls through
+ * to the normal chain (the flag is spent either way).
  *
  * Module scope is deliberate: the dock (a page component below the keymap
  * provider) and `TurnCancelKeys` (the page's cancel layer) are separate
@@ -68,7 +75,7 @@ export const CTRL_C_QUIT_WINDOW_MS = 500
  */
 let nonArmingInterrupt = false
 
-/** Arm the next Ctrl+C to interrupt without touching the quit gate. */
+/** Arm the next Ctrl+C to interrupt without touching the quit chain. */
 export function armNonArmingInterrupt(): void {
 	nonArmingInterrupt = true
 }
@@ -84,30 +91,8 @@ function consumeNonArmingInterrupt(): boolean {
 	return armed
 }
 
-export type CtrlCAction = "arm" | "quit"
-
-/** Pure double-press gate: first press arms, a second press inside the
- * window quits; a late second press re-arms. */
-export function createCtrlCGate(windowMs: number = CTRL_C_QUIT_WINDOW_MS, now: () => number = Date.now) {
-	let armedAt: number | undefined
-	return {
-		press(): CtrlCAction {
-			const t = now()
-			if (armedAt !== undefined && t - armedAt <= windowMs) {
-				armedAt = undefined
-				return "quit"
-			}
-			armedAt = t
-			return "arm"
-		},
-		reset(): void {
-			armedAt = undefined
-		},
-	}
-}
-
-/** Which chain currently owns the arm affordance. */
-export type ArmKey = "escape" | "ctrl-c"
+/** Which chain currently owns the arm affordance (only esc arms now). */
+export type ArmKey = "escape"
 
 export type TurnCancelKeysProps = {
 	/** A turn is running (composer/page busy signal). */
@@ -121,22 +106,36 @@ export type TurnCancelKeysProps = {
 	 * Esc keeps the legacy single-press interrupt.
 	 */
 	confirmStop?: () => void
-	/** Clean quit (the page's shutdown path). */
+	/** Clean quit (the page's shutdown path) — the quit dialog's confirm leg. */
 	quit: () => void
-	/** Layer gate — pass "no overlay is open". */
+	/** Layer gate — pass "no dialog is open". */
 	enabled: () => boolean
 	/** Esc is left to the composer while this is true (slash palette open). */
 	escapeYields?: () => boolean
-	/** Double-press window override (tests). */
+	/** Esc arm window override (tests). */
 	windowMs?: number
 }
 
-/** Key decisions, split out so tests drive them without a renderer. */
-export function createTurnCancel(props: TurnCancelKeysProps, onArm: (armed: boolean, key: ArmKey) => void) {
+/**
+ * Key decisions, split out so tests drive them without a renderer.
+ *
+ * `confirmQuit` opens the quit dialog (the component wires it to a
+ * DialogConfirm whose confirm calls `props.quit`); tests pass a spy.
+ */
+export function createTurnCancel(
+	props: TurnCancelKeysProps,
+	onArm: (armed: boolean, key: ArmKey) => void,
+	confirmQuit: () => void,
+) {
 	const windowMs = props.windowMs ?? CTRL_C_QUIT_WINDOW_MS
-	const gate = createCtrlCGate(windowMs)
 	let timer: ReturnType<typeof setTimeout> | undefined
 	let armedKey: ArmKey | undefined
+	// A busy Ctrl+C already interrupted the turn; the next Ctrl+C must open the
+	// quit dialog regardless of whether busy has settled yet (no timing gate).
+	let busyInterrupted = false
+	// Tracks the busy value AFTER each press's side effects, so a fresh turn
+	// (busy rising from false) starts a new interrupt → dialog cycle.
+	let lastBusy = false
 	const disarm = () => {
 		if (timer) clearTimeout(timer)
 		timer = undefined
@@ -176,23 +175,37 @@ export function createTurnCancel(props: TurnCancelKeysProps, onArm: (armed: bool
 			return true
 		},
 		ctrlC(): boolean {
-			// The esc arm must not survive into the ctrl+c chain: its timer and
-			// affordance are cleared before the quit gate runs (tui-pi parity —
-			// handleExit clears the interrupt arm).
+			// An armed esc window must not survive into the ctrl+c chain: its
+			// timer and affordance are cleared first (tui-pi parity — handleExit
+			// clears the interrupt arm).
 			if (armedKey === "escape") disarm()
+
+			const busy = props.busy()
+			// A fresh turn (busy just rose) restarts the interrupt/dialog cycle.
+			if (busy && !lastBusy) busyInterrupted = false
+
 			// The press after the ask dock's own Ctrl+C decline: interrupt a busy
-			// turn and NOTHING else — no gate.press(), no arm() (spec §6 hazard).
-			if (consumeNonArmingInterrupt() && props.busy()) {
+			// turn and NOTHING else — no dialog (spec §6 hazard).
+			if (consumeNonArmingInterrupt() && busy) {
 				props.interrupt()
+				busyInterrupted = true
+				lastBusy = props.busy()
 				return true
 			}
-			if (gate.press() === "quit") {
-				disarm()
-				props.quit()
+
+			// Busy, first press: interrupt only. The latch makes the follow-up
+			// press open the dialog even if busy has not settled yet.
+			if (busy && !busyInterrupted) {
+				props.interrupt()
+				busyInterrupted = true
+				lastBusy = props.busy()
 				return true
 			}
-			if (props.busy()) props.interrupt()
-			arm("ctrl-c", () => gate.reset())
+
+			// Idle, or a follow-up press after a busy interrupt → quit dialog.
+			busyInterrupted = false
+			lastBusy = props.busy()
+			confirmQuit()
 			return true
 		},
 		dispose: disarm,
@@ -201,8 +214,23 @@ export function createTurnCancel(props: TurnCancelKeysProps, onArm: (armed: bool
 
 export function TurnCancelKeys(props: TurnCancelKeysProps) {
 	const theme = useThemeOptional()
+	const dialog = useDialog()
 	const [armed, setArmed] = createSignal<ArmKey | undefined>(undefined)
-	const cancel = createTurnCancel(props, (value, key) => setArmed(value ? key : undefined))
+	const openQuitDialog = () => {
+		dialog.replace(
+			() => (
+				<DialogConfirm
+					title={t("turn.quit.confirmTitle")}
+					message={t("turn.quit.confirmMessage")}
+					label={{ confirm: t("turn.quit.confirmLabel"), cancel: t("turn.quit.cancelLabel") }}
+					onConfirm={props.quit}
+				/>
+			),
+			undefined,
+			{ tone: "warning" },
+		)
+	}
+	const cancel = createTurnCancel(props, (value, key) => setArmed(value ? key : undefined), openQuitDialog)
 	onCleanup(() => cancel.dispose())
 	Keymap.createLayer(() => ({
 		mode: "global",
@@ -214,14 +242,14 @@ export function TurnCancelKeys(props: TurnCancelKeysProps) {
 				group: "Session",
 				run: () => cancel.escape(),
 			},
-			{ bind: "ctrl+c", title: "Interrupt / quit (press twice)", group: "Session", run: () => cancel.ctrlC() },
+			{ bind: "ctrl+c", title: "Quit / interrupt turn", group: "Session", run: () => cancel.ctrlC() },
 		],
 	}))
 	return (
 		<Show when={armed()}>
 			<box height={1} flexShrink={0} paddingLeft={1}>
 				<text fg={theme?.text.feedback.warning.base ?? "#e0af68"} wrapMode="none">
-					{armed() === "escape" ? t("turn.stop.escHint") : "Press Ctrl+C again to quit"}
+					{t("turn.stop.escHint")}
 				</text>
 			</box>
 		</Show>

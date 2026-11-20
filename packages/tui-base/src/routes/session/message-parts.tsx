@@ -57,6 +57,14 @@ export function ReasoningPart(props: {
   const [expanded, setExpanded] = createSignal(false)
 
   const content = createMemo(() => reasoningContent(props.part))
+  // 0.23.2 block-hue law: the think block's left bars carry the theme's
+  // ACCENT hue walked two ramp steps deeper via increase() (ramp steps run
+  // bright→dark; increase dims on dark themes — decrease() would BRIGHTEN).
+  // Violet.400 on the default theme: the same hue family the widgets dock's
+  // think lines paint, so the think block reads as its own type against the
+  // green code frame and the interactive user box. Border-tier accent only:
+  // the body text stays muted.
+  const thinkBar = theme.increase(theme.hue.accent[200], 2)
   const isDone = createMemo(
     () => props.part.time?.completed !== undefined || props.message.time.completed !== undefined,
   )
@@ -78,7 +86,7 @@ export function ReasoningPart(props: {
         <box
           border={!inMinimal() || expanded() ? ["left"] : undefined}
           customBorderChars={SplitBorder.customBorderChars}
-          borderColor={theme.decrease(theme.background.base)}
+          borderColor={thinkBar}
           paddingLeft={!inMinimal() || expanded() ? 1 : 0}
         >
           <box onMouseUp={toggle}>
@@ -96,7 +104,7 @@ export function ReasoningPart(props: {
             <box
               border={["left"]}
               customBorderChars={SplitBorder.customBorderChars}
-              borderColor={theme.decrease(theme.background.base)}
+              borderColor={thinkBar}
               paddingLeft={inMinimal() ? 3 : 1}
             >
               <code

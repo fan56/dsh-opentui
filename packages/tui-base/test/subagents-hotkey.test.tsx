@@ -134,8 +134,8 @@ describe("rendered hint row (frame capture)", () => {
 	})
 
 	for (const [lang, labels] of [
-		["en", { send: "enter send", panel: "ctrl+g subagents panel", quit: "ctrl+c ×2 quit" }],
-		["zh-CN", { send: "enter 发送", panel: "ctrl+g 子代理活动面板", quit: "ctrl+c ×2 退出" }],
+		["en", { send: "enter send", panel: "ctrl+g subagents panel", quit: "ctrl+c quit" }],
+		["zh-CN", { send: "enter 发送", panel: "ctrl+g 子代理活动面板", quit: "ctrl+c 退出" }],
 	] as const) {
 		test(`the 80-column row keeps ctrl+g beside the core keys (${lang})`, async () => {
 			const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
@@ -152,13 +152,14 @@ describe("rendered hint row (frame capture)", () => {
 				const line = frame.split("\n").find((row) => row.includes("⌨"))?.trimEnd() ?? ""
 				// subagentPanel is core-adjacent: the panel key survives an
 				// 80-column bar alongside send and quit in both languages.
-				// Whole-segment folding drops the widest optional label first
-				// (newline) and never mid-cuts a segment or emits an ellipsis.
+				// Whole-segment folding never mid-cuts a segment or emits an
+				// ellipsis. The narrower CJK `alt+enter 换行` now fits beside the
+				// shorter `ctrl+c 退出` at 80 columns, so only EN drops newline.
 				console.log(`[hint-frame-80-${lang}] ${line}`)
 				expect(line).toContain(labels.send)
 				expect(line).toContain(labels.panel)
 				expect(line).toContain(labels.quit)
-				expect(line).not.toContain("alt+enter")
+				if (lang === "en") expect(line).not.toContain("alt+enter")
 				expect(line).not.toContain("ctrl+shift+f")
 				expect(line).not.toContain("pgup/pgdn")
 				expect(line).not.toContain("…")

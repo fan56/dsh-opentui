@@ -126,12 +126,12 @@ describe("hint bar: 9 segments, en/zh golden wording (tui-pi FooterHints parity)
 
 	test("all-on idle text keeps the pre-quickwins segment order", () => {
 		const text = hintsText(false)
-		expect(text).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
+		expect(text).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c quit")
 	})
 
 	test("busy text leads with the running-turn keys", () => {
 		const text = hintsText(true)
-		expect(text).toBe("⌨ enter steer · esc stop · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
+		expect(text).toBe("⌨ enter steer · esc stop · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c quit")
 	})
 
 	test("subagentPanel is unconditional (no running-agent gate) and independently toggleable", () => {
@@ -192,10 +192,10 @@ describe("hint bar: 9 segments, en/zh golden wording (tui-pi FooterHints parity)
 		// golden check flips it via setLanguages (the hintsLocale signal is
 		// persistence-only now). ja/ko are gone by contract §1 — no bundled
 		// file, the boot chain degrades those picks to en.
-		expect(hintsText(false)).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit")
+		expect(hintsText(false)).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c quit")
 		setLanguages(languages, "zh-CN")
-		expect(hintsText(false)).toBe("⌨ enter 发送 · alt+enter 换行 · ↑↓ 历史 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c ×2 退出")
-		expect(hintsText(true)).toBe("⌨ enter 插话 · esc 停止 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c ×2 退出")
+		expect(hintsText(false)).toBe("⌨ enter 发送 · alt+enter 换行 · ↑↓ 历史 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c 退出")
+		expect(hintsText(true)).toBe("⌨ enter 插话 · esc 停止 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c 退出")
 		expect(hintsText(true, true, true)).toContain("↓ 子代理")
 		setLanguages(languages)
 		expect(hintsLocale()).toBe("en")
@@ -265,7 +265,7 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		subagents: "↓ subagents",
 		search: "ctrl+shift+f search",
 		scroll: "pgup/pgdn scroll",
-		quit: "ctrl+c ×2 quit",
+		quit: "ctrl+c quit",
 	}
 	const ZH = {
 		sendIdle: "enter 发送",
@@ -277,7 +277,7 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		subagents: "↓ 子代理",
 		search: "ctrl+shift+f 搜索",
 		scroll: "pgup/pgdn 滚动",
-		quit: "ctrl+c ×2 退出",
+		quit: "ctrl+c 退出",
 	}
 
 	let languages: Map<string, import("@dsh-opentui/i18n").LocaleTable>
@@ -333,7 +333,8 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 	test("en busy: esc + ctrl+c survive 80 columns; search/scroll drop", () => {
 		const all = [EN.sendBusy, EN.stop, EN.subagentPanel, EN.search, EN.scroll, EN.quit]
 		const cases: { width: number; present: string[] }[] = [
-			{ width: 40, present: [EN.sendBusy, EN.stop] },
+			// The shorter `ctrl+c quit` label now fits beside steer/stop at 40.
+			{ width: 40, present: [EN.sendBusy, EN.stop, EN.quit] },
 			{ width: 80, present: [EN.sendBusy, EN.stop, EN.subagentPanel, EN.quit] },
 			{ width: 120, present: all },
 			{ width: 160, present: all },
@@ -342,7 +343,7 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 			const row = hintsTextAtWidth(true, true, false, width, { ...DEFAULT_FOOTER_HINTS })
 			expectSegments(row, present, all.filter((seg) => !present.includes(seg)), width)
 		}
-		// The core observable of the fix: esc stop and ctrl+c ×2 quit are both
+		// The core observable of the fix: esc stop and ctrl+c quit are both
 		// still on an 80-column bar even though new low-tier segments were added.
 		const at80 = hintsTextAtWidth(true, true, false, 80, { ...DEFAULT_FOOTER_HINTS })
 		expect(at80).toContain(EN.stop)
@@ -352,10 +353,12 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 	test("zh-CN idle/busy fold on the same priorities (CJK columns)", () => {
 		setLanguages(languages, "zh-CN")
 		const idleAll = [ZH.sendIdle, ZH.newline, ZH.history, ZH.subagentPanel, ZH.search, ZH.scroll, ZH.quit]
+		// The shorter `ctrl+c 退出` label lets the narrower CJK newline label
+		// back onto the 80-column row (search/scroll still fold off).
 		expectSegments(
 			hintsTextAtWidth(false, true, false, 80, { ...DEFAULT_FOOTER_HINTS }),
-			[ZH.sendIdle, ZH.history, ZH.subagentPanel, ZH.quit],
-			[ZH.newline, ZH.search, ZH.scroll],
+			[ZH.sendIdle, ZH.newline, ZH.history, ZH.subagentPanel, ZH.quit],
+			[ZH.search, ZH.scroll],
 			80,
 		)
 		// 40 columns: the wide ctrl+g label yields to the core pair, so the

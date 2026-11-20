@@ -648,50 +648,53 @@ describe("controller transitions behind the ladder", () => {
 })
 
 describe("one-shot non-arming interrupt (spec §6 hazard)", () => {
-	test("the press after the dock's Ctrl+C interrupts without arming; a third never quits", () => {
-		const calls: string[] = []
-		let busy = true
-		const armed: boolean[] = []
-		const cancel = createTurnCancel(
-			{
-				busy: () => busy,
-				interrupt: () => {
-					calls.push("interrupt")
-					busy = false
+		test("the press after the dock's Ctrl+C interrupts without a dialog; a third opens the quit dialog", () => {
+			const calls: string[] = []
+			let busy = true
+			const armed: boolean[] = []
+			const cancel = createTurnCancel(
+				{
+					busy: () => busy,
+					interrupt: () => {
+						calls.push("interrupt")
+						busy = false
+					},
+					confirmStop: () => calls.push("confirmStop"),
+					quit: () => calls.push("quit"),
+					enabled: () => true,
 				},
-				confirmStop: () => calls.push("confirmStop"),
-				quit: () => calls.push("quit"),
-				enabled: () => true,
-			},
-			(value) => armed.push(value),
-		)
-		armNonArmingInterrupt()
-		expect(cancel.ctrlC()).toBe(true) // press 2
-		expect(calls).toEqual(["interrupt"])
-		expect(armed).toEqual([])
-		expect(cancel.ctrlC()).toBe(true) // press 3: arms at most
-		expect(calls).not.toContain("quit")
-		expect(armed).toEqual([true])
-		cancel.dispose()
-	})
+				(value) => armed.push(value),
+				() => calls.push("confirmQuit"),
+			)
+			armNonArmingInterrupt()
+			expect(cancel.ctrlC()).toBe(true) // press 2: page, consume the one-shot
+			expect(calls).toEqual(["interrupt"])
+			expect(armed).toEqual([])
+			expect(cancel.ctrlC()).toBe(true) // press 3: idle now → quit dialog, NOT a quit
+			expect(calls).toEqual(["interrupt", "confirmQuit"])
+			expect(calls).not.toContain("quit")
+			expect(armed).toEqual([])
+			cancel.dispose()
+		})
 
-	test("an idle page still takes the normal double-press chain (the one-shot is spent)", () => {
-		const calls: string[] = []
-		const cancel = createTurnCancel(
-			{
-				busy: () => false,
-				interrupt: () => calls.push("interrupt"),
-				quit: () => calls.push("quit"),
-				enabled: () => true,
-			},
-			() => {},
-		)
-		armNonArmingInterrupt()
-		cancel.ctrlC() // idle: the one-shot is spent, the gate arms
-		cancel.ctrlC() // second idle press quits (the shipped idle convention)
-		expect(calls).toEqual(["quit"])
-		cancel.dispose()
-	})
+		test("an idle page still takes the normal single-press quit dialog (the one-shot is spent)", () => {
+			const calls: string[] = []
+			const cancel = createTurnCancel(
+				{
+					busy: () => false,
+					interrupt: () => calls.push("interrupt"),
+					quit: () => calls.push("quit"),
+					enabled: () => true,
+				},
+				() => {},
+				() => calls.push("confirmQuit"),
+			)
+			armNonArmingInterrupt()
+			cancel.ctrlC() // idle: the one-shot is spent, the quit dialog opens
+			cancel.ctrlC() // a second idle press opens it again — no quit without confirm
+			expect(calls).toEqual(["confirmQuit", "confirmQuit"])
+			cancel.dispose()
+		})
 })
 
 describe("combined settlement path (P2-6)", () => {

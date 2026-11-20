@@ -5,7 +5,7 @@
  * strip; every key hint (the composer's old idle footer + the powerline's
  * `Ctrl+Shift+F: search` segment) lives here.
  *
- *   idle  `⌨ enter send · alt+enter newline · ↑↓ history · ↓ subagents · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c ×2 quit`
+ *   idle  `⌨ enter send · alt+enter newline · ↑↓ history · ↓ subagents · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c quit`
  *   busy  `⌨ enter steer · esc stop · …` (the running-turn keys lead)
  *
  * HUD merge (2026-11-17): the busy 🐳 comet track moved HERE — this is the
@@ -98,7 +98,7 @@ export const FOOTER_HINT_IDS: readonly HintSegmentId[] = [
  *
  * subagentPanel sits immediately after the core tier (15) rather than inside
  * it: ctrl+g is the only discovery path to the subagent activity panel, so it
- * must survive an 80-column bar alongside ctrl+c ×2 quit. At 40 columns the
+ * must survive an 80-column bar alongside ctrl+c quit. At 40 columns the
  * 22-column label is too wide and it yields to the core pair, which keeps the
  * "leave" key reachable. Putting it in the 10 tier instead would let it win
  * the display-order tie against quit and push quit off the 40-column bar.
@@ -108,7 +108,7 @@ export const FOOTER_HINT_IDS: readonly HintSegmentId[] = [
 export const HINT_SEGMENT_PRIORITY: Readonly<Record<HintSegmentId, number>> = Object.freeze({
 	send: 10, // enter send / steer — the primary action
 	stop: 10, // esc stop — the only way to halt a running turn
-	quit: 10, // ctrl+c ×2 quit — the only way to leave
+	quit: 10, // ctrl+c quit — the only way to leave
 	subagentPanel: 15, // ctrl+g — core-adjacent: fits 80 cols beside quit, yields to quit at 40
 	history: 20, // ↑↓ history — recall the last input
 	newline: 30, // alt+enter newline — multiline input

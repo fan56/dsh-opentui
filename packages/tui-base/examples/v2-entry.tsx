@@ -917,9 +917,6 @@ function V2SessionPageBody(props: {
 	// transcript-loss law: the reload must be told WHICH session to read).
 	const reloadSession = (sessionId?: string) => {
 		setLastRequest(undefined)
-		// A8: any session switch (/new, /fork, /resume) retires a recovery-bound
-		// id override so the footer follows the seam's new session id again.
-		setSessionIdFromRecovery(undefined)
 		// Steer/queue batch: same per-session reset on /fork//resume switches.
 		composerRef?.resetDeliveries()
 		setComposerPending([])
@@ -1454,8 +1451,10 @@ function V2SessionPageBody(props: {
 					// Cancel contract (batch V2, ./turn-cancel.tsx): esc on a running
 					// turn arms the stop (U6 double-press), a second esc inside the
 					// window opens the stop-everything confirm (main turn + every
-					// live subagent); ctrl+c interrupts + arms, ctrl+c x2 quits
-					// through props.quit (the shutdown-intercepted process.exit).
+					// live subagent); ctrl+c on an idle turn opens the quit confirm,
+					// on a busy turn the first press interrupts and the next opens
+					// the quit confirm — no timing gate. Confirming runs props.quit
+					// (the shutdown-intercepted process.exit).
 					createComponent(TurnCancelKeys, {
 						busy,
 						interrupt: () => {
