@@ -5,6 +5,16 @@
 #
 #   scripts/real-client-gate.sh [--out DIR] [--boot-timeout SEC]
 #                               [--keep] [--only smoke|frames|verify70|all]
+#                               [--skip-env-check]
+#
+# Environment self-check (025 wave3 batch1, W5-CE clause 5): before ANY probe
+# or tmux boot, scan for orphan dsh/mock-llm hosts and named tmux sessions
+# that would race the gate (the 025-w1a 3/64 mass-red root cause). PID lists are
+# written to $OUT/env-precheck.log and (after cleanup) $OUT/env-postcheck.log;
+# POST-CHECK filters its own PIDs and re-verifies each PID before listing it
+# (W2-1 C5: never report a bare grep count). PID 98608 (dsh-jev-mcp) is a
+# protected, whitelisted process — reported but never counted or killed.
+# `--skip-env-check` is the documented escape hatch for known-clean hosts.
 #
 # What it does (all writes to a FRESH scratch DSH_HOME; ~/.dsh is never touched):
 #   1. preflight — dsh / node / bun / tmux / launcher / shipped bridge present
@@ -41,6 +51,8 @@ OUT="$REPO/.proof/real-client-gate"
 BOOT_TIMEOUT=90
 KEEP=0
 ONLY=all
+SKIP_ENV_CHECK=0
+PROTECTED_PID=98608
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -48,7 +60,8 @@ while [ "$#" -gt 0 ]; do
     --boot-timeout) BOOT_TIMEOUT="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
     --only) ONLY="$2"; shift 2 ;;
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    --skip-env-check) SKIP_ENV_CHECK=1; shift ;;
+    -h|--help) sed -n '2,48p' "$0"; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -59,6 +72,52 @@ log() { printf '%s\n' "$*" | tee -a "$RUN_LOG"; }
 FAIL=0
 fail() { FAIL=$((FAIL + 1)); log "FAIL  $*"; }
 pass() { log "PASS  $*"; }
+
+# --- environment self-check helpers (W5-CE clause 5) -----------------------
+# "ours" = this shell or its parent: a wrapper whose command line echoes the
+# match string must never be counted as an orphan (W2-1 C5).
+env_is_self() { [ "$1" = "$$" ] || [ "$1" = "$PPID" ]; }
+
+# Print "ORPHAN <pid> <cmd>" per live match after self + protected-PID filters
+# and an explicit per-PID `ps` re-check (not a bare grep count).
+env_orphan_pids() {
+  local pattern="$1" p
+  for p in $(pgrep -f "$pattern" 2>/dev/null); do
+    case "$p" in ''|*[!0-9]*) continue ;; esac
+    env_is_self "$p" && continue
+    [ "$p" = "$PROTECTED_PID" ] && continue
+    ps -p "$p" -o pid= >/dev/null 2>&1 || continue
+    printf 'ORPHAN %s %s\n' "$p" "$(ps -p "$p" -o command= 2>/dev/null | cut -c1-160)"
+  done
+}
+
+# Write one labelled snapshot to $1 and echo the ORPHAN-line count on stdout
+# (captured by the caller; redirected file output never pollutes the count).
+env_probe() {
+  local logfile="$1" label="$2" orphans tmux_orphans
+  {
+    printf '%s %s\n' "$label" "$(date -u +%FT%TZ)"
+    printf '%s\n' "--- protected PID $PROTECTED_PID ---"
+    if ps -p "$PROTECTED_PID" -o pid= >/dev/null 2>&1; then
+      printf '%s\n' "PRESENT (whitelist excluded, untouched)"
+    else
+      printf '%s\n' "NOT PRESENT"
+    fi
+    printf '%s\n' "--- dsh-jev-mcp (excluded, untouched) ---"
+    pgrep -fl 'dsh-jev-mcp' 2>/dev/null | sed 's/^/EXCLUDED /' || printf '%s\n' "(none)"
+    printf '%s\n' "--- orphan dsh --profile opentui --no-open (PID-verified, self-filtered) ---"
+    orphans="$(env_orphan_pids 'dsh --profile opentui --no-open')"
+    [ -n "$orphans" ] && printf '%s\n' "$orphans" || printf '%s\n' "none"
+    printf '%s\n' "--- orphan mock-llm.mjs (PID-verified, self-filtered) ---"
+    orphans="$(env_orphan_pids 'mock-llm.mjs')"
+    [ -n "$orphans" ] && printf '%s\n' "$orphans" || printf '%s\n' "none"
+    printf '%s\n' "--- named tmux sessions (rc-gate-* / agents-mount-*) ---"
+    tmux_orphans="$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^(rc-gate-|agents-mount-)' || true)"
+    if [ -n "${SESS:-}" ]; then tmux_orphans="$(printf '%s\n' "$tmux_orphans" | grep -v "^$SESS$" || true)"; fi
+    [ -n "$tmux_orphans" ] && printf '%s\n' "$tmux_orphans" || printf '%s\n' "none"
+  } > "$logfile"
+  grep -c '^ORPHAN ' "$logfile" || true
+}
 
 SESS="rc-gate-$$"
 SCRATCH=""
@@ -92,6 +151,21 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+# ------------------------------------------- 0. environment self-check (pre)
+if [ "$SKIP_ENV_CHECK" -eq 0 ]; then
+  log "=== env precheck $(date -u +%FT%TZ) ==="
+  PRE_ORPHANS="$(env_probe "$OUT/env-precheck.log" "env self-check")"
+  cat "$OUT/env-precheck.log" | tee -a "$RUN_LOG"
+  if [ "${PRE_ORPHANS:-0}" -gt 0 ]; then
+    fail "env precheck: ${PRE_ORPHANS} orphan process(es) — see $OUT/env-precheck.log (stop, clean, rerun; do NOT rerun to fish for green)"
+    exit 2
+  fi
+  pass "env precheck: no orphan dsh/mock-llm/named-tmux (PID list in $OUT/env-precheck.log)"
+else
+  log "SKIP  env precheck (--skip-env-check)"
+  printf 'skipped via --skip-env-check %s\n' "$(date -u +%FT%TZ)" > "$OUT/env-precheck.log"
+fi
 
 # ---------------------------------------------------------------- 1. preflight
 log "=== real-client-gate start $(date -u +%FT%TZ) ==="
@@ -269,6 +343,30 @@ if { [ "$ONLY" = all ] || [ "$ONLY" = frames ]; } && [ "$BOOTED" -eq 1 ]; then
   else
     fail "frames: answer-bearing assert exit $FRAME_ASSERT_RC (fake-empty frame, see $OUT/frame-assert.log)"
   fi
+fi
+
+# ------------------------------------------- 6c. environment post-check
+if [ "$SKIP_ENV_CHECK" -eq 0 ]; then
+  # Retire OUR tmux session first and let the detached host idle out (~5s), so
+  # the gate's own processes are never reported as orphans. The EXIT trap's
+  # cleanup is idempotent (second kill is a no-op).
+  if [ "$KEEP" -eq 0 ]; then
+    tmux kill-session -t "$SESS" 2>/dev/null || true
+    sleep 6
+  fi
+  log "=== env postcheck $(date -u +%FT%TZ) ==="
+  POST_ORPHANS="$(env_probe "$OUT/env-postcheck.log" "post-check")"
+  cat "$OUT/env-postcheck.log" | tee -a "$RUN_LOG"
+  if [ "$KEEP" -eq 1 ]; then
+    log "INFO  env postcheck verdict skipped (--keep retains owned session; PID list still in $OUT/env-postcheck.log)"
+  elif [ "${POST_ORPHANS:-0}" -gt 0 ]; then
+    fail "env postcheck: ${POST_ORPHANS} orphan process(es) — see $OUT/env-postcheck.log"
+  else
+    pass "env postcheck: no orphan dsh/mock-llm/named-tmux (PID-verified list in $OUT/env-postcheck.log)"
+  fi
+else
+  log "SKIP  env postcheck (--skip-env-check)"
+  printf 'skipped via --skip-env-check %s\n' "$(date -u +%FT%TZ)" > "$OUT/env-postcheck.log"
 fi
 
 # --------------------------------------------------------------- 7. verdict
