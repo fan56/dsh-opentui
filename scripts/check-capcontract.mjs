@@ -410,6 +410,151 @@ function checkDispatchExecutability() {
 }
 checkDispatchExecutability()
 
+// --- W2-0c (additive only: the 14 assertions above are retained verbatim) ---
+// Generated v3 data tables + deny-list (AMEND-1) + hand-projection set (AMEND-2).
+function sliceBlock(text, startMarker, endMarker) {
+  const s = text.indexOf(startMarker)
+  if (s < 0) return null
+  const from = s + startMarker.length
+  const e = text.indexOf(endMarker, from)
+  if (e < 0) return null
+  return text.slice(from, e)
+}
+const typesText = files["types.ts"] ?? ""
+const setIds = (text, name) => {
+  const body = sliceBlock(text, `export const ${name}: ReadonlySet<CapMethodId> = new Set([\n`, `\n] as const)`)
+  if (body === null) return null
+  return [...body.matchAll(/"(@deepseek-ai\/[^"]+)"/g)].map((m) => m[1])
+}
+const objEntries = (text, name) => {
+  const body = sliceBlock(text, `export const ${name} = {\n`, `\n} as const`)
+  if (body === null) return null
+  return [...body.matchAll(/^  "([^"]+)": "([^"]+)",$/gm)].map((m) => [m[1], m[2]])
+}
+
+const capirMethods = capir ? capir.artifacts.flatMap((a) => a.methods) : []
+const DENY_NS = new Set(["account", "credentials", "settings"])
+
+// 11. CAP_PARAMS_TABLE presence + per-id row count (257 methods, empty params = []).
+{
+  const body = sliceBlock(typesText, "export const CAP_PARAMS_TABLE = {\n", "\n} as const")
+  const offenders = []
+  let parsed = new Map()
+  if (body === null) {
+    offenders.push("CAP_PARAMS_TABLE block missing in types.ts")
+  } else {
+    for (const m of body.matchAll(/^  "([^"]+)": \[\n([\s\S]*?)\n  \],$/gm)) {
+      parsed.set(m[1], m[2])
+    }
+    if (parsed.size !== capirMethods.length) {
+      offenders.push(`row count ${parsed.size} != ${capirMethods.length} capir methods`)
+    }
+    const wantIds = new Set(capirMethods.map((m) => m.id))
+    for (const id of wantIds) if (!parsed.has(id)) offenders.push("missing params row: " + id)
+    for (const id of parsed.keys()) if (!wantIds.has(id)) offenders.push("extra params row: " + id)
+  }
+  if (offenders.length === 0) ok("11. PARAMS table presence", `${parsed.size} rows == ${capirMethods.length} methods`)
+  else bad("11. PARAMS table presence", offenders.join("; "))
+}
+
+// 12. params name set/order per id matches capir.json (dts-derived authority).
+{
+  const body = sliceBlock(typesText, "export const CAP_PARAMS_TABLE = {\n", "\n} as const")
+  const offenders = []
+  let checked = 0
+  if (body !== null) {
+    const byId = new Map()
+    for (const m of body.matchAll(/^  "([^"]+)": \[\n([\s\S]*?)\n  \],$/gm)) byId.set(m[1], m[2])
+    for (const meth of capirMethods) {
+      const rows = [...(byId.get(meth.id) ?? "").matchAll(/^    \{ name: "([^"]+)", required: (true|false), type: "([^"]+)"(?:, enum: \[[^\]]*\])? \},$/gm)]
+      const got = rows.map((r) => r[1])
+      const want = (meth.params ?? []).map((p) => p.name)
+      if (got.length !== want.length || got.some((n, i) => n !== want[i])) {
+        offenders.push(`${meth.id}: got [${got}] want [${want}]`)
+      }
+      checked++
+    }
+  }
+  if (offenders.length === 0 && checked === capirMethods.length) ok("12. PARAMS names match capir.json", `${checked} methods name-order identical`)
+  else bad("12. PARAMS names match capir.json", offenders.slice(0, 6).join("; ") || `checked=${checked}`)
+}
+
+// 13. CAP_SERVICE_TABLE complete + non-empty service/implementation.
+{
+  const body = sliceBlock(typesText, "export const CAP_SERVICE_TABLE = {\n", "\n} as const")
+  const offenders = []
+  let rows = []
+  if (body === null) offenders.push("CAP_SERVICE_TABLE block missing")
+  else {
+    rows = [...body.matchAll(/^  "([^"]+)": \{ service: "([^"]*)", implementation: "([^"]*)" \},$/gm)]
+    if (rows.length !== capirMethods.length) offenders.push(`rows ${rows.length} != ${capirMethods.length}`)
+    for (const m of rows) if (!m[2] || !m[3]) offenders.push("empty service/implementation: " + m[1])
+  }
+  if (offenders.length === 0) ok("13. SERVICE table complete", `${rows.length} rows, all service/implementation non-empty`)
+  else bad("13. SERVICE table complete", offenders.join("; "))
+}
+
+// 14. deny-list (AMEND-1): the three families are absent from BOTH generic tables.
+{
+  const adapters = setIds(typesText, "CAP_GENERIC_ADAPTERS") ?? []
+  const wire = objEntries(typesText, "CAP_GENERIC_WIRE_METHODS") ?? []
+  const offenders = []
+  for (const id of adapters) {
+    const ns = id.includes("#") ? id.split("#")[1].split("/")[0] : ""
+    if (DENY_NS.has(ns)) offenders.push("adapter: " + id)
+  }
+  for (const [wireName, id] of wire) {
+    const ns = wireName.split(".")[0]
+    const idNs = id.includes("#") ? id.split("#")[1].split("/")[0] : ""
+    if (DENY_NS.has(ns) || DENY_NS.has(idNs)) offenders.push("wire: " + wireName + " -> " + id)
+  }
+  if (offenders.length === 0) ok("14. deny-list families absent", `account/credentials/settings absent from adapters (${adapters.length}) + wire (${wire.length})`)
+  else bad("14. deny-list families absent", offenders.join("; "))
+}
+
+// 15. PROJECTED_BY_HAND (AMEND-2): generated set == static scan of result jsonSchema.
+{
+  const SENSITIVE_RE = /token|apikey|api_key|secret|password|credential|authorize|bearer/i
+  const collect = (node, acc) => {
+    if (node === null || typeof node !== "object") return
+    if (Array.isArray(node)) { for (const v of node) collect(v, acc); return }
+    for (const [k, v] of Object.entries(node)) { acc.add(k); collect(v, acc) }
+  }
+  const expected = []
+  for (const m of capirMethods) {
+    const acc = new Set()
+    collect(m.result?.jsonSchema, acc)
+    if ([...acc].some((k) => SENSITIVE_RE.test(k))) expected.push(m.id)
+  }
+  const got = setIds(typesText, "CAP_PROJECTED_BY_HAND") ?? []
+  const missing = expected.filter((id) => !got.includes(id))
+  const extra = got.filter((id) => !expected.includes(id))
+  if (missing.length === 0 && extra.length === 0 && got.length === expected.length) {
+    ok("15. PROJECTED_BY_HAND exact", `${got.length} ids == static sensitive-key scan`)
+  } else {
+    bad("15. PROJECTED_BY_HAND exact", `missing=[${missing}] extra=[${extra}]`)
+  }
+}
+
+// 16. generic wire table bidirectional + uniqueness + empty release whitelist (W2-0 base).
+{
+  const wire = objEntries(typesText, "CAP_GENERIC_WIRE_METHODS") ?? []
+  const rev = objEntries(typesText, "CAP_GENERIC_WIRE_BY_ID") ?? []
+  const adapters = setIds(typesText, "CAP_GENERIC_ADAPTERS") ?? []
+  const offenders = []
+  const seen = new Set()
+  for (const [w, id] of wire) {
+    if (seen.has(w)) offenders.push("duplicate wire: " + w)
+    seen.add(w)
+    if (rev.find(([id2]) => id2 === id)?.[1] !== w) offenders.push("reverse mismatch: " + w)
+  }
+  if (adapters.length !== 0) offenders.push("CAP_GENERIC_ADAPTERS must be empty at W2-0 base, got " + adapters.length)
+  const wantWire = capirMethods.filter((m) => !DENY_NS.has(m.namespace)).length
+  if (wire.length !== wantWire) offenders.push(`wire rows ${wire.length} != ${wantWire} non-denied methods`)
+  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters empty (W2-0 base)`)
+  else bad("16. generic wire table", offenders.join("; "))
+}
+
 // --- summary ---
 console.log("")
 console.log(`summary: PASS=${passes} NOT_RUN=${notRuns} FAIL=${failures.length}`)
