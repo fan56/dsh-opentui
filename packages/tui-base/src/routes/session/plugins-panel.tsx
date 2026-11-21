@@ -35,7 +35,7 @@ import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useThemeOptional } from "../../context/theme"
 import { successColor, warningColor } from "../../skin/semantic"
 import { createPluginWriteConfirm } from "../../seams/session"
-import type { SeamInstallProgress, SeamPluginBundleRow, SeamPluginChange, SeamPluginDetail, SeamPluginInspection, SessionSeam } from "../../seams/session"
+import type { PluginWriteConfirm, SeamInstallProgress, SeamPluginBundleRow, SeamPluginChange, SeamPluginDetail, SeamPluginInspection, SessionSeam } from "../../seams/session"
 
 const [bridgeOpen, setBridgeOpen] = createSignal(false)
 // Module-scope open state: the session sidebar Esc layer (priority 10)
@@ -241,6 +241,44 @@ export function installProgressLine(progress: SeamInstallProgress): string {
 		case "failed": return t("panel.plugins.progress.failed", { target: progress.target || progress.requestId, error: progress.error ?? "?" })
 		case "done": return t("panel.plugins.progress.done", { target: progress.target || progress.requestId })
 		case "unknown": return t("panel.plugins.progress.unknown")
+	}
+}
+
+/**
+ * 025-w3-2 (W2-3 S-1) — bounded live-view poll over the `waitForInstall` seam
+ * face. The host returns the active install's result (or null once settled and
+ * evicted), so every call yields a CLOSED-state projection — no host object
+ * crosses. `emit` receives each projection for the progress line; the loop
+ * stops at the first terminal state, when `stop()` turns true (the primary
+ * install reply or cancel landed), or after a bounded tick count — it can
+ * never spin forever. `sleep` is injectable so a unit test drives multiple
+ * ticks without wall-clock waits.
+ */
+export const PROGRESS_POLL_INTERVAL_MS = 250
+export const PROGRESS_POLL_MAX_TICKS = 120
+/** Bounded grace for the face-driven projection to land after the primary RPC. */
+export const PROGRESS_SETTLE_GRACE_MS = 80
+
+export async function pollInstallFace(
+	wait: (requestId: string, confirm: PluginWriteConfirm) => Promise<SeamInstallProgress>,
+	requestId: string,
+	confirm: PluginWriteConfirm,
+	emit: (progress: SeamInstallProgress) => void,
+	stop: () => boolean,
+	sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+): Promise<void> {
+	for (let tick = 0; tick < PROGRESS_POLL_MAX_TICKS; tick++) {
+		if (stop()) return
+		let progress: SeamInstallProgress
+		try {
+			progress = await wait(requestId, confirm)
+		} catch {
+			return // seam/transport failure: the primary install reply owns the terminal state
+		}
+		if (stop()) return
+		emit(progress)
+		if (progress.state !== "running") return
+		await sleep(PROGRESS_POLL_INTERVAL_MS)
 	}
 }
 
@@ -592,19 +630,49 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		setInstallProgress({ state: "running", requestId })
 		setCancelArmed(true)
 		flash(t("panel.plugins.status.installing", { spec }))
+
+		// 025-w3-2 (W2-3 S-1): consume the waitForInstall face for the progress
+		// line. The face projection and the primary install ChangeResult both
+		// land through `land` — first terminal state wins, so a late reply can
+		// never flip a settled line. The face gets a bounded grace window to
+		// land before the primary result is used as the fallback.
+		const confirm = createPluginWriteConfirm(operation)
+		let terminalLanded = false
+		let pollStopped = false
+		const land = (progress: SeamInstallProgress) => {
+			if (terminalLanded) return
+			setInstallProgress(progress)
+			if (progress.state !== "running") terminalLanded = true
+		}
+		const pollDone = typeof props.seam.waitForInstall === "function"
+			? pollInstallFace(
+					(rid, cf) => props.seam.waitForInstall!(rid, cf),
+					requestId,
+					createPluginWriteConfirm("waitForInstall"),
+					land,
+					() => pollStopped,
+				)
+			: Promise.resolve()
 		try {
-			const change = await props.seam.installPluginSpec(spec, createPluginWriteConfirm(operation), requestId)
-			// Project the terminal ChangeResult into the closed progress states.
-			// The seam also echoed requestId; waitForInstall can be polled by any
-			// consumer (seam face) for a live view, but the install's own ChangeResult
-			// is authoritative for the terminal state in this UI path.
-			const terminal = terminalProgress(change, requestId)
-			setInstallProgress(terminal)
+			const change = await props.seam.installPluginSpec(spec, confirm, requestId)
+			// Let the face-driven projection win when it is available (including
+			// the reply-lost recovery case); bounded, so a hanging face cannot
+			// stall the primary result.
+			await Promise.race([
+				pollDone,
+				new Promise<void>((resolve) => setTimeout(resolve, PROGRESS_SETTLE_GRACE_MS)),
+			])
+			pollStopped = true
+			land(terminalProgress(change, requestId))
 			flash(pluginChangeNotice(change), 8000)
 		} catch (error) {
-			setInstallProgress({ state: "failed", requestId, target: spec, error: errorMessage(error) })
+			pollStopped = true
+			land({ state: "failed", requestId, target: spec, error: errorMessage(error) })
 			flash(t("panel.plugins.status.changeFailed", { name: spec, error: errorMessage(error) }), 8000)
 		} finally {
+			pollStopped = true
+			// Release the poll reference; it is bounded and self-terminating.
+			void pollDone
 			setCancelArmed(false)
 			setBusy(false)
 			// Clear the terminal progress line after a beat so the panel returns

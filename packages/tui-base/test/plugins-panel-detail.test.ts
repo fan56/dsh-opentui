@@ -4,9 +4,11 @@
  */
 import { beforeAll, describe, expect, test } from "bun:test"
 import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+import { createPluginWriteConfirm } from "../src/seams/session"
 import {
 	bundleStateText,
 	installProgressLine,
+	pollInstallFace,
 	pluginBundleViews,
 	pluginDetailPreview,
 	versionExemptionRiskLine,
@@ -107,5 +109,82 @@ describe("W2-3c install progress line", () => {
 		expect(failed).toContain("boom")
 		expect(unknown).not.toContain("{")
 		expect(new Set([running, done, cancelled, failed, unknown]).size).toBe(5)
+	})
+})
+
+// 025-w3-2 (W2-3 S-1) — the /plugins panel now CONSUMES the waitForInstall face.
+describe("W3-2 waitForInstall face consumption (bounded poll driver)", () => {
+	const confirm = createPluginWriteConfirm("waitForInstall")
+	const noSleep = async () => {}
+
+	test("emits each closed projection and stops at the first terminal state", async () => {
+		const seq = [
+			{ state: "running" as const, requestId: "r1" },
+			{ state: "running" as const, requestId: "r1" },
+			{ state: "done" as const, requestId: "r1", target: "@s/p" },
+		]
+		let i = 0
+		const seen: string[] = []
+		await pollInstallFace(
+			async () => seq[Math.min(i++, seq.length - 1)],
+			"r1", confirm,
+			(p) => seen.push(p.state),
+			() => false,
+			noSleep,
+		)
+		expect(seen).toEqual(["running", "running", "done"])
+	})
+
+	test("stops immediately when stop() turns true (cancel path)", async () => {
+		let stopped = false
+		let calls = 0
+		await pollInstallFace(
+			async () => { stopped = true; return { state: "cancelled" as const, requestId: "r2" } },
+			"r2", confirm,
+			() => { calls++ },
+			() => stopped,
+			noSleep,
+		)
+		// The post-await stop() check suppresses the terminal emit after cancel.
+		expect(calls).toBe(0)
+	})
+
+	test("never spins forever — bounded by max ticks", async () => {
+		let calls = 0
+		await pollInstallFace(
+			async () => ({ state: "running" as const, requestId: "r3" }),
+			"r3", confirm,
+			() => { calls++ },
+			() => false,
+			noSleep,
+		)
+		expect(calls).toBeGreaterThan(0)
+		expect(calls).toBeLessThanOrEqual(120) // PROGRESS_POLL_MAX_TICKS
+	})
+
+	test("seam failure returns quietly — primary install reply owns the terminal state", async () => {
+		const seen: string[] = []
+		await pollInstallFace(
+			async () => { throw new Error("seam down") },
+			"r4", confirm,
+			(p) => seen.push(p.state),
+			() => false,
+			noSleep,
+		)
+		expect(seen).toEqual([])
+	})
+
+	test("forwards requestId + confirm to the face on every poll", async () => {
+		const seen: Array<[string, unknown]> = []
+		await pollInstallFace(
+			async (rid, cf) => { seen.push([rid, cf]); return { state: "done" as const, requestId: rid } },
+			"r5", confirm,
+			() => {},
+			() => false,
+			noSleep,
+		)
+		expect(seen.length).toBe(1)
+		expect(seen[0][0]).toBe("r5")
+		expect((seen[0][1] as { operation: string }).operation).toBe("waitForInstall")
 	})
 })
