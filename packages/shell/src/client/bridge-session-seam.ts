@@ -36,7 +36,9 @@ import type {
 	SeamApprovalVerdict,
 	SeamAskPick,
 	SeamAskQuestion,
+	SeamConfigurableProviderRow,
 	SeamEffortOption,
+	SeamLlmProviderRow,
 	PluginRowView,
 	SeamPermissionCatalog,
 	PluginWriteConfirm,
@@ -93,6 +95,12 @@ import {
 	projectVersionExemptions,
 	projectVersions,
 } from "./bridge-plugins-manager.ts"
+// 025-w2-4 — hand-written directory faces + second whitelist projection.
+import {
+	projectConfigurableProviders,
+	projectLlmProviders,
+	projectPermissionCatalog,
+} from "./bridge-directory.ts"
 
 /**
  * 025-w2-3 (R6) — seam-side confirm gate (structural mirror of the tui-base
@@ -1342,6 +1350,25 @@ export class BridgeSessionSeam implements SessionSeam {
 			Promise.resolve(this.#settingsStore.describe()),
 		mutate: (ns, ops, revision) => Promise.resolve(this.#settingsStore.mutate(ns, ops, revision)),
 		identity: () => ({ profile: this.#profile, dshHome: this.#dshHome }),
+		// 025-w2-4 — real permissionPresets/catalog face. The old top-level
+		// permissionCatalog() (ADR-0011 one-shot notice) stays intact; this is a
+		// SEPARATE honest read: a service-absent / malformed reply -> undefined
+		// (the settings row falls back to the schema enum), never a fake catalog.
+		permissionCatalog: () => this.#readPermissionCatalog(),
+	}
+
+	/**
+	 * 025-w2-4 — real provider directory (llm/listProviders + llm/listConfigurableProviders)
+	 * over the generic arm. Each face rides the generated wire name and applies
+	 * the hand-written SECOND whitelist projection. Service absence rejects with
+	 * UNSUPPORTED (never a fake-empty directory); the /login picker catches and
+	 * degrades to the static catalog with an honest notice.
+	 */
+	providerDirectory: NonNullable<SessionSeam["providerDirectory"]> = {
+		registered: (): Promise<SeamLlmProviderRow[]> =>
+			this.#directoryRequest("llm.listProviders", projectLlmProviders),
+		configurable: (): Promise<SeamConfigurableProviderRow[]> =>
+			this.#directoryRequest("llm.listConfigurableProviders", projectConfigurableProviders),
 	}
 
 	/** S5 /agents face — real `agents/*.md` corpus + model catalog, no mocks
@@ -1451,6 +1478,33 @@ export class BridgeSessionSeam implements SessionSeam {
 			}
 		}
 		return out
+	}
+
+	/**
+	 * 025-w2-4 — generic directory read: transport request on the generated wire
+	 * name + hand-written SECOND whitelist projection. A transport rejection
+	 * (UNSUPPORTED = service absent / HAND_PROJECTION_REQUIRED) PROPAGATES — the
+	 * caller (login picker) catches and degrades honestly. No fake empty value,
+	 * no host object crosses (the projector whitelists every field).
+	 */
+	async #directoryRequest<T>(method: string, project: (raw: unknown) => T): Promise<T> {
+		const reply = await this.#transport.request(method)
+		return project(reply)
+	}
+
+	/**
+	 * 025-w2-4 — real permissionPresets/catalog read for the /settings row.
+	 * Service-absent / malformed -> undefined (honest fallback to the schema
+	 * enum), never a fabricated preset. The top-level ADR-0011 one-shot-notice
+	 * permissionCatalog() is untouched — this is the settings face's real data.
+	 */
+	async #readPermissionCatalog(): Promise<SeamPermissionCatalog | undefined> {
+		try {
+			const reply = await this.#transport.request("permissionPresets.catalog")
+			return projectPermissionCatalog(reply)
+		} catch {
+			return undefined
+		}
 	}
 
 	/**

@@ -26,6 +26,8 @@
   "command.login.cancelledEmptyKey": "登录取消 — 密钥为空",
   "command.login.cancelled": "登录已取消",
   "command.login.unavailable": "本会话中 /login 不可用",
+  "command.login.directoryDegraded": "provider 目录不可用 — 显示内置 provider 列表",
+  "command.login.directoryPartial": "provider 目录部分不可用 — 显示已响应的 provider",
   "command.account.description": "查看账号登录态（signin/signout）",
   "command.account.unavailable": "本会话中 /account 不可用",
   "command.account.state": "账号：状态={status} 阶段={phase} 链接就绪={urlReady} 链接存在={links}",

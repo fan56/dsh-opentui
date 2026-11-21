@@ -20,6 +20,7 @@ import {
 	CUSTOM_STEPS,
 	PROVIDER_CATALOG,
 	buildCustomEntry,
+	catalogEntriesFromDirectory,
 	deriveKeyRef,
 	providerProfileFor,
 	validateBaseUrl,
@@ -500,5 +501,73 @@ describe("/logout command (C8 gap fix)", () => {
 		const { ctx, lines } = makeLoginCtx({ face: new RecordingLoginFace(), type: [] })
 		await runLogout({ ...ctx, seam: seamWith(undefined) } as any, "")
 		expect(lines).toEqual(["/logout unavailable in this session"])
+	})
+})
+
+// 025-w2-4 — real provider directory (llm/listProviders + listConfigurableProviders).
+describe("/login real provider directory (W2-4)", () => {
+	test("catalogEntriesFromDirectory: real rows first, static hint kept for known ids, unknown ids selectable", () => {
+		const entries = catalogEntriesFromDirectory(
+			[{ id: "deepseek", name: "DeepSeek real" }, { id: "new-provider", name: "New Provider" }],
+			[{ provider: "openai", displayName: "OpenAI real" }, { provider: "dormant", displayName: "Dormant", error: "needs key" }],
+			PROVIDER_CATALOG,
+		)
+		const ids = entries.map((e) => e.id)
+		expect(ids).toContain("deepseek")
+		expect(ids).toContain("new-provider")
+		expect(ids).toContain("dormant")
+		expect(ids).toContain("openai")
+		// known id keeps its richer static hint/name; unknown gets safe defaults.
+		expect(entries.find((e) => e.id === "deepseek")!.hint).toBe("api key")
+		expect(entries.find((e) => e.id === "new-provider")!.catalogRoute).toBe(true)
+		expect(entries.find((e) => e.id === "dormant")!.name).toBe("Dormant")
+		expect(new Set(ids).size).toBe(ids.length) // no duplicates
+	})
+
+	test("real directory picker uses provider rows; service-absent falls back with notice", async () => {
+		const face = new RecordingLoginFace()
+		const lines: string[] = []
+		const picks: { options: { title: string; value: string }[] }[] = []
+		const seam = {
+			login: face,
+			providerDirectory: {
+				registered: async () => [{ id: "real-one", name: "Real One" }],
+				configurable: async () => [{ provider: "real-two", displayName: "Real Two" }],
+			},
+		} as unknown as SessionSeam
+		const ctx = {
+			seam,
+			say: (t: string) => lines.push(t),
+			promptText: async () => undefined,
+			pickOne: async (title: string, options: { title: string; value: string }[]) => {
+				picks.push({ options })
+				return undefined // esc the picker
+			},
+		} as unknown as SlashCommandContext
+		const command = coreCommands().find((c) => c.name === "/login")!
+		await command.run(ctx, "")
+		const values = picks[0]!.options.map((o) => o.value)
+		expect(values[0]).toBe("custom")
+		expect(values).toContain("real-one")
+		expect(values).toContain("real-two")
+		expect(lines).toEqual([]) // no degrade notice when the real read succeeded
+
+		// Now a seam whose directory calls reject -> static fallback + notice.
+		const lines2: string[] = []
+		const seam2 = {
+			login: face,
+			providerDirectory: {
+				registered: async () => { throw new Error("UNSUPPORTED") },
+				configurable: async () => { throw new Error("UNSUPPORTED") },
+			},
+		} as unknown as SessionSeam
+		const ctx2 = {
+			seam: seam2,
+			say: (t: string) => lines2.push(t),
+			promptText: async () => undefined,
+			pickOne: async () => undefined,
+		} as unknown as SlashCommandContext
+		await command.run(ctx2, "")
+		expect(lines2.some((l) => /directory unavailable|built-in provider/i.test(l))).toBe(true)
 	})
 })

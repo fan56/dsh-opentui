@@ -48,6 +48,7 @@ import {
 	LOGIN_PICKER_TITLE,
 	PROVIDER_CATALOG,
 	buildCustomEntry,
+	catalogEntriesFromDirectory,
 	deriveKeyRef,
 	providerProfileFor,
 	validateBaseUrl,
@@ -486,6 +487,41 @@ export async function offerCorruptedLogRepair(
 }
 
 /** The masked key step + commit for a catalog provider. */
+/**
+ * 025-w2-4 — resolve /login picker entries from the REAL host directory first,
+ * falling back to the static catalog with an honest notice when the directory
+ * is absent (service UNSUPPORTED / NOT_WIRED) or empty. Never a fake-empty
+ * picker: the static catalog always fills the list, and `degraded` drives the
+ * user-facing "real directory unavailable" line. The registered + configurable
+ * faces are independent: one failing does not discard the other's rows.
+ */
+export async function resolveLoginCatalog(
+	seam: SessionSeam,
+	say: (text: string) => void,
+): Promise<{ entries: CatalogEntry[]; degraded: boolean }> {
+	const dir = seam.providerDirectory
+	// A seam without the face at all is an older client: use the static catalog
+	// silently (no notice — there was no real-directory promise to degrade).
+	if (!dir) return { entries: [...PROVIDER_CATALOG], degraded: false }
+	let registered: { id: string; name: string }[] = []
+	let configurable: { provider: string; displayName: string; error?: string }[] = []
+	let failed = false
+	try {
+		registered = await dir.registered()
+	} catch {
+		failed = true
+	}
+	try {
+		configurable = await dir.configurable()
+	} catch {
+		failed = true
+	}
+	const real = catalogEntriesFromDirectory(registered, configurable)
+	if (real.length === 0) return { entries: [...PROVIDER_CATALOG], degraded: true }
+	if (failed) say(t("command.login.directoryPartial"))
+	return { entries: real, degraded: false }
+}
+
 export async function commitCatalogLogin(
 	ctx: Pick<SlashCommandContext, "promptText" | "say">,
 	face: LoginFace,
@@ -848,9 +884,13 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(t("command.login.unavailable"))
 					return
 				}
+				// 025-w2-4 — real provider directory first, static catalog as an
+				// honest fallback (with a notice when the real read degraded).
+				const { entries, degraded } = await resolveLoginCatalog(ctx.seam, ctx.say)
+				if (degraded) ctx.say(t("command.login.directoryDegraded"))
 				const arg = argText.trim().toLowerCase()
 				if (arg) {
-					const entry = PROVIDER_CATALOG.find((e) => e.id === arg)
+					const entry = entries.find((e) => e.id === arg)
 					if (!entry) {
 						ctx.say(t("command.login.unknownProvider", { provider: arg }))
 						return
@@ -862,7 +902,7 @@ export function coreCommands(): SlashCommand[] {
 				// there behavior — Enter on the fresh picker opens the form).
 				const picked = await ctx.pickOne(
 					LOGIN_PICKER_TITLE,
-					[CUSTOM_ENTRY, ...PROVIDER_CATALOG].map((e) => ({ title: e.name, value: e.id, description: e.hint })),
+					[CUSTOM_ENTRY, ...entries].map((e) => ({ title: e.name, value: e.id, description: e.hint })),
 				)
 				if (!picked) return
 				if (picked === CUSTOM_ENTRY.id) {
@@ -870,7 +910,7 @@ export function coreCommands(): SlashCommand[] {
 					await runCustomLoginChain(ctx, face, routes)
 					return
 				}
-				const entry = PROVIDER_CATALOG.find((e) => e.id === picked)
+				const entry = entries.find((e) => e.id === picked)
 				if (!entry) return
 				await commitCatalogLogin(ctx, face, entry)
 			},

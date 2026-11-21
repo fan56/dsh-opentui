@@ -150,6 +150,23 @@ export interface SeamProviderModel {
 	modelID: string
 }
 
+/** 025-w2-4 — one provider directory row from `llm/listProviders` (hand-projected). */
+export interface SeamLlmProviderRow {
+	id: string
+	name: string
+}
+
+/** 025-w2-4 — one configurable-provider row from `llm/listConfigurableProviders`
+ * (hand-projected: env var NAMES only, never values / baseURL / URL). */
+export interface SeamConfigurableProviderRow {
+	provider: string
+	displayName: string
+	settingsNs?: string
+	declared?: boolean
+	authEnvNames?: string[]
+	error?: string
+}
+
 /** One reasoning-effort ladder entry (ModelReasoningEffort parity — the
  * same shape the remote catalog's `reasoning.efforts` carries). */
 export interface SeamEffortOption {
@@ -757,6 +774,17 @@ export interface SessionSeam {
 	/** Provider/model info (dialog-model, usage, model-options). */
 	listProviders(): Promise<{ provider: string; models: string[] }[]>
 	modelCatalog(force?: boolean): Promise<SeamProviderModel[]>
+	/**
+	 * 025-w2-4 — real provider directory (the `llm/listProviders` /
+	 * `llm/listConfigurableProviders` read ids). Optional; a seam without them
+	 * (service absent / UNSUPPORTED) degrades honestly to the static catalog —
+	 * never a fake-empty directory. Both faces REJECT (UNSUPPORTED) on service
+	 * absence; callers catch and fall back. Hand-projected white-list rows only.
+	 */
+	providerDirectory?: {
+		registered(): Promise<SeamLlmProviderRow[]>
+		configurable(): Promise<SeamConfigurableProviderRow[]>
+	}
 	currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined>
 	/**
 	 * The last SILENT-path selection failure as one short line — a fire-and-

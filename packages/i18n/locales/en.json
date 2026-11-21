@@ -26,6 +26,8 @@
   "command.login.cancelledEmptyKey": "login cancelled — empty key",
   "command.login.cancelled": "login cancelled",
   "command.login.unavailable": "/login unavailable in this session",
+  "command.login.directoryDegraded": "provider directory unavailable — showing the built-in provider list",
+  "command.login.directoryPartial": "provider directory partly unavailable — showing the providers that responded",
   "command.account.description": "show account sign-in state (signin/signout)",
   "command.account.unavailable": "/account unavailable in this session",
   "command.account.state": "account: status={status} phase={phase} urlReady={urlReady} links={links}",

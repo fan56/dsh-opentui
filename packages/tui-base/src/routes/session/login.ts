@@ -63,6 +63,49 @@ export const PROVIDER_CATALOG: CatalogEntry[] = [
 /** The hand-declared picker row (the six-step chained form's entry). */
 export const CUSTOM_ENTRY: CatalogEntry = { id: "custom", name: "Custom provider", hint: "baseUrl + model + key", catalogRoute: false }
 
+/**
+ * 025-w2-4 — build /login picker entries from the REAL host provider directory
+ * (llm/listProviders + llm/listConfigurableProviders, hand-projected). Entries
+ * from either source are merged by id (registered first, configurable adds
+ * display names / diagnostics), and a static-catalog entry of the same id keeps
+ * its richer `hint` (the understandable "api key" / cloud hint). Unknown real
+ * ids are still selectable (catalogRoute=true: the profile is derived by
+ * deriveKeyRef, exactly like a static catalog row). Returns [] when the
+ * directory is empty — the caller then falls back to PROVIDER_CATALOG with an
+ * honest degradation notice (never a fake-empty picker).
+ */
+export function catalogEntriesFromDirectory(
+	registered: readonly { id: string; name: string }[],
+	configurable: readonly { provider: string; displayName: string; error?: string }[],
+	staticCatalog: readonly CatalogEntry[] = PROVIDER_CATALOG,
+): CatalogEntry[] {
+	const out: CatalogEntry[] = []
+	const seen = new Set<string>()
+	for (const reg of registered) {
+		if (!reg.id || seen.has(reg.id)) continue
+		seen.add(reg.id)
+		const stat = staticCatalog.find((e) => e.id === reg.id)
+		out.push(stat ?? { id: reg.id, name: reg.name || reg.id, hint: "api key", catalogRoute: true })
+	}
+	for (const cfg of configurable) {
+		if (!cfg.provider || seen.has(cfg.provider)) continue
+		seen.add(cfg.provider)
+		const stat = staticCatalog.find((e) => e.id === cfg.provider)
+		if (stat) {
+			// Known id not in `registered`: keep the static row (richer hint).
+			out.push(stat)
+			continue
+		}
+		out.push({
+			id: cfg.provider,
+			name: cfg.displayName || cfg.provider,
+			hint: cfg.error ? "provider configuration issue" : "configurable provider",
+			catalogRoute: true,
+		})
+	}
+	return out
+}
+
 /** Picker title (the reference marker the scenario waits on). */
 export const LOGIN_PICKER_TITLE = "Add provider"
 
