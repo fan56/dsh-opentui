@@ -61,6 +61,9 @@ import { tokensPerSecond } from "../agent/loop.ts"
 import { LocalAgentsFace, LocalConfigStore, LocalLoginFace, LocalPresetFace, LocalSettingsStore } from "./local-config-faces.ts"
 import { resolveDshHome } from "./remote-local-fs.ts"
 import { DEFAULT_PROFILE } from "./lifecycle.ts"
+// 025-w1a — /plugins phase-1 local install manifest (profile node_modules).
+import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { join } from "node:path"
 
 // ---------------------------------------------------------------------------
 // Injected transport surface (ADR-0010 frame shapes)
@@ -1280,6 +1283,52 @@ export class BridgeSessionSeam implements SessionSeam {
 		logout: (ref) => { this.#localLogin.logout(ref); return Promise.resolve() },
 		routes: () => Promise.resolve(this.#localLogin.routes()),
 		registerRoute: (providerId, profile) => Promise.resolve(this.#localLogin.registerRoute(providerId, profile)),
+	}
+
+	/**
+	 * 025-w1a — /plugins phase-1 local install manifest (coordinator ruling 3).
+	 * Scan `<dshHome>/profiles/<profile>/node_modules` for the REAL installed
+	 * packages (top-level + one `@scope` level), excluding `@deepseek-ai/*`
+	 * built-ins and the `@aiwayds` bridge self-package. This is the actual
+	 * install manifest, NOT the cordis.patch.yml preset/plugin declaration rows
+	 * (those are patch inserts, not installs). The full plugin-manager (enable /
+	 * disable / install / remove, state column) is a CapIR gap for 波2 — phase 1
+	 * honestly lists name/version only; it never fabricates an enabled state.
+	 */
+	plugins(): { name: string; version: string }[] {
+		const root = join(this.#dshHome, "profiles", this.#profile, "node_modules")
+		if (!existsSync(root)) return []
+		const out: { name: string; version: string }[] = []
+		const seen = new Set<string>()
+		const readPkg = (dir: string, fallbackName: string): void => {
+			try {
+				const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as Record<string, unknown>
+				const name = typeof pkg.name === "string" && pkg.name ? pkg.name : fallbackName
+				const version = typeof pkg.version === "string" ? pkg.version : ""
+				if (name.startsWith("@deepseek-ai/") || name.startsWith("@aiwayds/")) return
+				if (seen.has(name)) return
+				seen.add(name)
+				out.push({ name, version })
+			} catch {
+				// skip malformed package.json — a broken row never crashes the list
+			}
+		}
+		let entries: string[] = []
+		try { entries = readdirSync(root) } catch { return [] }
+		for (const entry of entries) {
+			if (entry.startsWith(".")) continue
+			if (entry.startsWith("@")) {
+				let scoped: string[] = []
+				try { scoped = readdirSync(join(root, entry)) } catch { continue }
+				for (const sub of scoped) {
+					if (sub.startsWith(".")) continue
+					readPkg(join(root, entry, sub), `${entry}/${sub}`)
+				}
+			} else {
+				readPkg(join(root, entry), entry)
+			}
+		}
+		return out
 	}
 
 	/**

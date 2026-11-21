@@ -588,6 +588,37 @@ describe("async UNSUPPORTED members", () => {
 })
 
 // ---------------------------------------------------------------------------
+// 025-w1a /plugins — phase-1 local install manifest
+// ---------------------------------------------------------------------------
+
+describe("025-w1a plugins face (profile node_modules install manifest)", () => {
+	test("plugins() lists real installed packages; excludes @deepseek-ai built-ins and @aiwayds bridge self", () => {
+		const h = scratchSeam()
+		const nm = join(h.home, "profiles", "opentui", "node_modules")
+		const mk = (path: string, name: string, version: string) => {
+			mkdirSync(path, { recursive: true })
+			writeFileSync(join(path, "package.json"), JSON.stringify({ name, version }))
+		}
+		mk(join(nm, "my-plugin"), "my-plugin", "1.2.3")
+		mk(join(nm, "@scope", "another"), "@scope/another", "4.5.6")
+		mk(join(nm, "@deepseek-ai", "dsh-persona"), "@deepseek-ai/dsh-persona", "0.0.1")
+		mk(join(nm, "@aiwayds", "dsh-opentui-bridge"), "@aiwayds/dsh-opentui-bridge", "0.24.0")
+		const rows = h.seam.plugins()
+		const keyed = Object.fromEntries(rows.map((r) => [r.name, r.version]))
+		expect(keyed).toEqual({ "my-plugin": "1.2.3", "@scope/another": "4.5.6" })
+		// Built-ins / bridge self never appear, whatever the readdir order.
+		expect(rows.some((r) => r.name.startsWith("@deepseek-ai/") || r.name.startsWith("@aiwayds/"))).toBe(false)
+		rmSync(h.home, { recursive: true, force: true })
+	})
+
+	test("plugins() degrades honestly to [] when node_modules is absent", () => {
+		const h = scratchSeam()
+		expect(h.seam.plugins()).toEqual([])
+		rmSync(h.home, { recursive: true, force: true })
+	})
+})
+
+// ---------------------------------------------------------------------------
 // 025-w1a /btw — face wired + honest degradation (no fake answer)
 // ---------------------------------------------------------------------------
 
