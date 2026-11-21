@@ -8,7 +8,7 @@
 
 | 变更 | 能力源层（CapIR/ledger/capcontract） | 桥接线层（bridge hostInvoke/协议面） | seam face 层 | TUI 层（命令/面板/焦点） |
 |---|---|---|---|---|
-| **加新能力域**（CapIR 无现成 id） | ● extractor 重跑 + 换代；provenance 贡献包映射；ledger 对账；capcontract 重生成（[02](02-capability-layer.md) §2.1-2.2、[04](04-ledger-provenance.md)） | ● 新增 `CAP_HOST_WIRED_IDS` 条目 + 表项化 `CAP_*_WIRE_METHODS`；stream 走 relay（[02](02-capability-layer.md) §2.3） | ● 若 TUI 要消费，新增 `SessionSeam` face 并接 `BridgeSessionSeam` | ● 新命令注册进 `coreCommands()` / 新面板挂 panel-kit（[05](05-tui-layer.md)） |
+| **加新能力域**（CapIR 无现成 id） | ● extractor 重跑 + 换代；provenance 贡献包映射；ledger 对账；capcontract 重生成（[02](02-capability-layer.md) §2.1-2.2、[04](04-ledger-provenance.md)） | ● **优先通用 arm 放行集**：在 gen-capcontract 的 `adapterBlock` 加 id（非 deny 族）；deny 族（account/credentials/settings）走手写 arm + 专属投影；stream 走 relay（[02](02-capability-layer.md) §2.3） | ● 若 TUI 要消费，新增 `SessionSeam` face 并接 `BridgeSessionSeam`（手写 face + 二次白名单投影，不生成透传面） | ● 新命令注册进 `coreCommands()` / 新面板挂 panel-kit（[05](05-tui-layer.md)） |
 | **加新命令**（已有域扩展） | —（不扩能力面） | —（宿主面已 wired） | ● 若缺 face：补 seam face；有 face 则只改命令体 | ● `commands.ts:597` 增条目 + unavailable 分支；skill 命令由 `withSkillCommands` 追加（[05](05-tui-layer.md) §5.3-5.4） |
 | **加新面板/overlay** | — | — | ○ 仅当面板读新 face | ● panel-kit 栈 + push/pop 所有权帧；in-flow 面 admission 守 page ownership；FocusRouter tier 声明（[05](05-tui-layer.md) §5.1-5.2） |
 

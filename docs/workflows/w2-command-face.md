@@ -47,9 +47,12 @@ run(ctx) {
 ## 四、门禁阶梯（复用 W1，逐级）
 
 1. `bun test packages/*` — seam/commands 单测 0 fail；既有断言更新非删除。
-2. `node scripts/check-capcontract.mjs` — 若新增 wired id：`PASS=14`、#8a/#8b/#10 对账；若无能力面变更：确认门禁不回归即可。
-3. `bash scripts/real-client-gate.sh --out ...` — 真机命令项 + `.ans` 数值帧（禁 PNG）；若补的是 account 类，注意 s2-account section 判定（见预防条款）。
-4. `npm pack --dry-run` + CI 三 job 绿；run URL/headSha 入报告。
+2. `node scripts/check-capcontract.mjs` — 若新增 wired id：`PASS=20`（W2-0 扩至 20）、#8a/#8b/#10/#14–#16 对账（deny-list/PARAMS/SERVICE/PROJECTED_BY_HAND/通用放行集）；若无能力面变更：确认门禁不回归即可。
+3. **build shipped bundle + fingerprint**（波1 反馈 3，两波重复实证）：先 `bun scripts/build-bridge.mjs` + `bun scripts/build-client.mjs` 并核 `bundle-fingerprint.json`，再跑真机——防 tree-shake 假绿。
+4. `bash scripts/real-client-gate.sh --out ...` — 真机命令项 + `.ans` 数值帧（禁 PNG）；若补的是 account 类，注意 s2-account section 判定（见预防条款）。真机 `.ans` 数值帧断言与面板 grep **必须 locale-complete 或 pin harness scratch 语言**（C4/W5 预防条款 3），否则 locale 切换致 grep 假阴性；裁决人 + 理由入显式豁免区，不静默删。
+5. `npm pack --dry-run` + 脱敏扫描 `node scripts/scan-stdio-secrets.mjs .proof/<slice>`（最后一步）+ CI 三 job 绿；run URL/headSha 入报告。
+
+判定表补充（波2 通用 arm）：id 在 CapIR 且属 deny-list 族（`{account, credentials, settings}`）→ 手写 arm 路径；`result.jsonSchema` 静态扫描命中敏感键的 id → 手写投影例外清单（`CAP_PROJECTED_BY_HAND`，禁通用投影）。
 
 按 [W4](w4-review-gate.md) 评审（命令改动 JUDGMENT 类只记不拦）。
 
