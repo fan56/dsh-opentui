@@ -26,6 +26,6 @@
 
 ## 三、预防条款（0.24 真实陷阱，就地归属）
 
-1. **stale 硬编码计数「70」文案**（发版记录口径）：`real-client-gate.sh` 的「70-item / all 70 items」是 0.23 陈旧文案，真实 64；0.24 tag 前已修脚本文案为 64（`scripts/real-client-gate.sh:4,254`），报告与需求清单一律用 64（`024-e2e-rework.md:14`、`024-e2e-requirements.md:80`）。预防：发版呈报的 verify 计数取 harness 实际输出，不引脚本文案；标签「70/70」视作失实须更正（`024-s6-review-oldfox.md:63-73`）。
+1. **stale 硬编码计数「70」文案**（发版记录口径）：`real-client-gate.sh` 的「70-item / all 70 items」是 0.23 陈旧文案，真实 64；0.24 tag 前已修脚本文案为 64（`scripts/real-client-gate.sh:4,254`；:249 分节注释仍残留「(70 items)」一处，属无害注释尾巴，修文案时顺带清掉，勿据其计项数），报告与需求清单一律用 64（`024-e2e-rework.md:14`、`024-e2e-requirements.md:80`）。预防：发版呈报的 verify 计数取 harness 实际输出，不引脚本文案；标签「70/70」视作失实须更正（`024-s6-review-oldfox.md:63-73`）。
 2. **已发布静默跳过 ≠ 失败**：`release.yml` 幂等，已发布版本 clean skip；`workflow_dispatch` 重跑既有 tag 用于补 GitHub Release，不重复 publish（`release.yml:25-30`）。CI real-client job skipped 同理按配置如实记，非失败（`024-tag-prep-final.md:81`）。
 3. **知晓项须带**：偶发一次未复现 flake（单测 shell 首跑 1 fail 重跑 0 fail；verify 80x24 几何组 59/64 重跑 64/64）、旧容器场景显式改期下线（依赖链仍指向 scenarios，`024-tag-prep-final.md:52-58`）、路线 b + I 类 reconcileSubagentIndex 为 0.24 后事项（`024-morning-acceptance-report.md:58`）——发版呈报带上，不隐藏也不当作阻塞。

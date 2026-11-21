@@ -7,6 +7,7 @@
 - **红线内**（执行者可改）：门禁脚本、harness 定位器、证据采集脚本、预注册文案、断言更新（非删除）——属门禁资产，不算产品缺陷（`024-verify70-harness-fix.md:1-6`）。
 - **红线外**（须上报）：产品启动时序、宿主连接/凭据、renderer 行为、bundle 分发机制。典型：E2E 容器族 `cookie-mint.ts:48 RETRY_WINDOW_MS=2000` 对慢 VM 首启不足 → `CredentialsFileMissingError`，容器 `20-start` TUI 起不来（`024-e2e-rework.md:84,115`）；[R] click-to-focus 曾疑 renderer autoFocus 缺陷（`024-verify70-red-adjudication-oldfox.md:66`）。
 - 判红三档（oldfox 分档法见 [W4](w4-review-gate.md)）：结构性红（收敛于某切片）、harness 级联/断言缺陷（修 harness 后应绿）、疑似真缺陷 `[R]`（bisect 定责或缺陷票，二选一缺一即 FAIL）。
+- **计划措辞与现行实现不符时按现行实现断言并显式记录**：exit code 契约旧口径「双 Ctrl+C=0」与现行实现不符（现行为「ctrl+c 开确认框 → Enter 确认 → exit 0」），族按现行实现断言，D1 已显式记录（`024-e2e-rework.md:116`）。
 
 ## 二、流程四步
 

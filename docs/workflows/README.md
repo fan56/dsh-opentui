@@ -47,7 +47,7 @@
 素材：`025-command-surface-audit.md`（静态只读对账，对象 `988c6f0`）。
 
 1. **W5 预注册**（先落盘）：冻结 expected——`/plugins` 从「降级」转「可用」，判绿口径 = 真机面板显示插件列表且无 unavailable notice。JUDGMENT 预案只记视觉/手感/文案三类。
-2. **W2 能力面定位**：审计显示 `commands.ts:1100-1101` 已有 `if (!ctx.seam.plugins) { unavailable; return }` 降级分支，`openPlugins` hook 在 `v2-entry.tsx:1026` 已接线；瓶颈是 seam 无 `plugins` face（`025-command-surface-audit.md:42,110-118`）。底层 host 面 15 条 plugin-manager RPC 为 CapIR gap（同报告 `:75`、`:91-92`）。
+2. **W2 能力面定位**：审计显示 `commands.ts:1100-1101` 已有 `if (!ctx.seam.plugins) { unavailable; return }` 降级分支，`openPlugins` hook 在 `packages/tui-base/examples/v2-entry.tsx:1023` 已接线（hook 全集见 `025-command-surface-audit.md:8`）；瓶颈是 seam 无 `plugins` face（`025-command-surface-audit.md:42,110-118`）。底层 host 面 15 条 plugin-manager RPC 为 CapIR gap（同报告 `:75`、`:91-92`）。
 3. **W2 实现**：分两条路裁决——(a) 若只做「本地列表可读」的低成本补齐，优先补 **seam face**（5 条降级命令>/login、/btw、/think、/preset、/plugins 中 /plugins 属 "host 已 wired 或无需 host，但 bridge seam 没实现 face" 类，同报告 `:106-118`）；(b) 若要完整管理器面板，需 15 条 RPC 进 expected 面 → 触发 W1（CapIR gap 扩面）+ W8（若动 CapIR 需解冻）。`plugins()` 本身可读本地列表，管理器全靠 RPC。
 4. **门禁阶梯 + W4 评审**：按 W2 的门禁阶梯逐级跑；真机 `/plugins` 帧用 `.ans` 数值口径、locale-complete grep（W5 预防条款）；评审按 W4 分档法处理 gap 类红线，不自判豁免。
 
@@ -58,7 +58,7 @@
 | 层 | 测什么 | 何时必跑 | 命令 | 判绿口径 |
 |---|---|---|---|---|
 | 单测（`bun test packages/*`） | bridge/seam 逻辑、投影、seq 判序、负例 | 每片实现后、每次 push 前 | `for p in packages/*/; (cd $p && bun test)` | 0 fail；既有断言零删除，计数/降级断言「更新非删除」（`024-s2-credentials-slice.md:109-115`） |
-| 契约门禁（14 项，原 13+8 拆分） | CapIR 复现/自洽、引用完整、@deepseek-ai 扫描零、声明行覆盖、无裸 ctx、wired_protocol 名集、wired_manual==0、host-face provenance(#9)、dispatch 可执行(#10) | 每片、tag 前、CI 首步 | `node scripts/check-capcontract.mjs` | `PASS=14 NOT_RUN=0 FAIL=0`；#9/#10 由臆造 Face 红事件立（`024-base-core-review-oldfox.md:30-49`、`check-capcontract.mjs:62-90,337,406`） |
+| 契约门禁（14 项，原 13+8 拆分） | CapIR 复现/自洽、引用完整、@deepseek-ai 扫描零、声明行覆盖、无裸 ctx、wired_protocol 名集、wired_manual==0、host-face provenance(#9)、dispatch 可执行(#10) | 每片、tag 前、CI 首步 | `node scripts/check-capcontract.mjs` | `PASS=14 NOT_RUN=0 FAIL=0`；#9/#10 由臆造 Face 红事件立（`024-base-task5-review-oldfox.md:10,22,49`；#9 谓词与 `--negative-self-test` 见 `check-capcontract.mjs:62-90,337`，#10 见 `:406`） |
 | 真机配方（verify70，实为 **64** 项） | 真 TUI 起机、composer、pane-focus、palette、settings/agents、80x24、auto-resume | 每片（尤其接线/渲染）、tag 前 | `bash scripts/real-client-gate.sh --out .proof/<slice>/real-client-gate` | exit 0 + `REAL_CLIENT_GATE_PASS`；「70」是 `real-client-gate.sh:4,254` 陈旧文案，真实 64（`024-s6-review-oldfox.md:63-73`） |
 | E2E families | pack 门禁 + CapIR 能力域 + 握手/降级 + sessionId 隔离 + exit code + keymap/modality + verify-gate | 阶段末、tag 前连续 3 绿 | `bash e2e/families/run-all.sh --skip-container` | `E2E UNIFIED: PASS`（FAILED_FAMILIES=0），连续 3 次同 head（`024-e2e-rework.md:64-74`） |
 | pack / 冷启动 | tarball 契约、无 @deepseek-ai 副本、fresh-prefix 安装、握手 | 每片、发版、CI 三 job | `npm pack --dry-run` + ci.yml `Pack / cold start / bridge handshake` job | T8 PASS；tarball 只含 dist/bridge（`024-s1-model-slice.md:88,91`） |
