@@ -14,8 +14,8 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
 | Wired protocol (ADR-0010, not @manual) | 10 frames | bridge-protocol (ADR-0010) |
 | Wired manual (@manual host-copy) | 0 methods | derived-from-manual host-copy |
-| Wired (generated capcontract) | 26 methods | S1+S2+S3+S5-generated-capcontract |
-| in_wired total (of 257) | 26 methods | union of wire-dim capir_ids + generated ids |
+| Wired (generated capcontract) | 28 methods | S1+S2+S3+S5-generated-capcontract |
+| in_wired total (of 257) | 28 methods | union of wire-dim capir_ids + generated ids |
 | I-class (manual) | 6 services | derived-from-manual (v3 proposal 口径) |
 
 ## Reconciliation (first-run closure)
@@ -101,6 +101,8 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 - @deepseek-ai/dsh-api-settings-controller#settings/mutate
 - @deepseek-ai/dsh-api-session-controller#session/search
 - @deepseek-ai/dsh-api-session-controller#session/fork
+- @deepseek-ai/dsh-subagent#subagents/prompt
+- @deepseek-ai/dsh-subagent#subagents/interruptByUser
 
 ## I-class services (manual registry)
 
@@ -376,8 +378,8 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 | 250 | @deepseek-ai/dsh-schedule#schedule/run | unary | Y | N | N | full-only |
 | 251 | @deepseek-ai/dsh-schedule#schedule/view | unary | Y | N | N | full-only |
 | 252 | @deepseek-ai/dsh-session-reference#sessionReferenceResolver/candidates | unary | Y | N | N | full-only |
-| 253 | @deepseek-ai/dsh-subagent#subagents/interruptByUser | unary | Y | Y | N | base-closure |
-| 254 | @deepseek-ai/dsh-subagent#subagents/prompt | unary | Y | Y | N | base-closure |
+| 253 | @deepseek-ai/dsh-subagent#subagents/interruptByUser | unary | Y | Y | Y | base-closure |
+| 254 | @deepseek-ai/dsh-subagent#subagents/prompt | unary | Y | Y | Y | base-closure |
 | 255 | @deepseek-ai/dsh-user-questions#userQuestions/answer | unary | Y | Y | N | base-closure |
 | 256 | @deepseek-ai/dsh-user-questions#userQuestions/attachWait | stream | Y | Y | N | base-closure |
 | 257 | @deepseek-ai/dsh-web#web/listProviders | unary | Y | Y | N | base-closure |

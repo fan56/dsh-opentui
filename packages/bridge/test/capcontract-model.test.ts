@@ -48,16 +48,18 @@ describe("S1 /model — createCapHostInvoke model arms", () => {
   // (verbatim): S1 `expect(CAP_HOST_WIRED_IDS).toEqual([ID.list, ID.catalog,
   // ID.select, ID.init])` + `size.toBe(4)`; S2 19 ids (4 + 12 account + 3 creds).
   // S3 expands to 22 (S2 19 + 3 session push streams); S5 adds 2 settings
-  // document ids (settings/describe + mutate) → 24; 025-w1b adds 2 session
-  // query ids (session/search + session/fork) → 26. OLD criterion (verbatim):
+  // document ids (settings/describe + mutate) → 24; 025-w1b adds 4 ids
+  // (session/search + session/fork + subagents/prompt + interruptByUser) → 28. OLD criterion (verbatim):
   // "CAP_HOST_WIRED_IDS = 24 (S1 4 + S2 15 + S3 3 + S5 2), no duplicates" and
   // exact 24-id equality. Kept strict via exact equality — a superset check
   // would be weaker, not stronger.
-  test("CAP_HOST_WIRED_IDS = 26 (S1 4 + S2 15 + S3 3 + S5 2 + w1b 2), no duplicates", () => {
+  test("CAP_HOST_WIRED_IDS = 28 (S1 4 + S2 15 + S3 3 + S5 2 + w1b 4), no duplicates", () => {
     expect(CAP_HOST_WIRED_IDS).toEqual([
       ID.list, ID.catalog, ID.select, ID.init,
       "@deepseek-ai/dsh-api-session-controller#session/search",
       "@deepseek-ai/dsh-api-session-controller#session/fork",
+      "@deepseek-ai/dsh-subagent#subagents/prompt",
+      "@deepseek-ai/dsh-subagent#subagents/interruptByUser",
       "@deepseek-ai/dsh-api-session-controller#session/observeEvent",
       "@deepseek-ai/dsh-api-session-controller#session/observeState",
       "@deepseek-ai/dsh-api-session-controller#session/observeProjections",
@@ -79,7 +81,7 @@ describe("S1 /model — createCapHostInvoke model arms", () => {
       "@deepseek-ai/dsh-api-settings-controller#settings/describe",
       "@deepseek-ai/dsh-api-settings-controller#settings/mutate",
     ])
-    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(26)
+    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(28)
   })
 
   test("modelCatalog returns the host catalog verbatim", async () => {
@@ -134,10 +136,10 @@ describe("S1 /model — createCapHostInvoke model arms", () => {
 
   test("non-wired CapIR id stays NOT_WIRED (膨胀期望面 negative)", async () => {
     // Old criteria (verbatim): S1 /ledger in_wired=4\/257/; S2 /ledger in_wired=19\/257/.
-    // S3: 22/257; S5: 24/257; 025-w1b: 26/257 (exact count, still checks the explicit NOT_WIRED text).
+    // S3: 22/257; S5: 24/257; 025-w1b: 28/257 (exact count, still checks the explicit NOT_WIRED text).
     const invoke = createCapHostInvoke(ctxWith(stubController()))
     await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(
-      /NOT_WIRED:.*ledger in_wired=26\/257/,
+      /NOT_WIRED:.*ledger in_wired=28\/257/,
     )
   })
 })

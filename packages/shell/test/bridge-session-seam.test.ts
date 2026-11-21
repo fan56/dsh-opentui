@@ -2980,3 +2980,55 @@ describe("025-w1b C — seam.forkSession drives the real session.fork frame", ()
 		await expect(h2.seam.forkSession!("src")).rejects.toThrow("UNSUPPORTED")
 	})
 })
+
+describe("025-w1b D — seam subagentTranscript / steerChild (protocol frames untouched)", () => {
+	test("steerChild returns true for a running child and sends the subagents.prompt frame", () => {
+		const h = makeHarness()
+		h.emit({ type: "agent.spawn", payload: { childId: "steer-child", label: "scout", runId: "rc", seq: 0 } })
+		expect(h.seam.subagentViews().find((v) => v.id === "steer-child")?.status).toBe("running")
+		expect(h.seam.steerChild!("steer-child", "keep going")).toBe(true)
+		const req = h.lastRequest("subagents.prompt")!
+		expect(req.params).toMatchObject({
+			childSessionId: "steer-child",
+			delivery: "steer",
+			content: [{ type: "text", text: "keep going" }],
+		})
+		expect(typeof req.params!.requestId).toBe("string")
+	})
+
+	test("steerChild returns false for an unknown/settled child (no frame sent)", () => {
+		const h = makeHarness()
+		expect(h.seam.steerChild!("ghost", "x")).toBe(false)
+		expect(h.requests.some((r) => r.method === "subagents.prompt")).toBe(false)
+		h.emit({ type: "agent.spawn", payload: { childId: "c", label: "c", runId: "r", seq: 0 } })
+		h.emit({ type: "agent.settle", payload: { runId: "r", seq: 0, outcome: "completed" } })
+		expect(h.seam.steerChild!("c", "x")).toBe(false)
+	})
+
+	test("subagentTranscript folds the child's real journal rows (no fabricated log)", async () => {
+		const h = makeHarness()
+		h.replies.set("journal.replay", {
+			kind: "value",
+			value: { rows: [
+				{ seq: 1, type: "assistant/message", payload: { message: { content: [{ type: "text", text: "hello from child" }] } } },
+				{ seq: 2, type: "tool/call", payload: { name: "Read" } },
+			] },
+		})
+		h.emit({ type: "agent.spawn", payload: { childId: "log-child", label: "scout", runId: "rl", seq: 0 } })
+		// The journal read is fire-and-forget from the spawn fold; let it settle.
+		await new Promise((r) => setTimeout(r, 20))
+		const lines = h.seam.subagentTranscript!("log-child")
+		expect(Array.isArray(lines)).toBe(true)
+		expect(lines.join("\n")).toContain("hello from child")
+		expect(h.requests.some((r) => r.method === "journal.replay" && r.params?.sessionId === "log-child")).toBe(true)
+	})
+
+	test("protocol frames subagents.interrupt/stopChildren are still reachable (not merged)", () => {
+		const h = makeHarness()
+		// A prompt frame is distinct from the protocol stop frames: steerChild uses
+		// subagents.prompt; the existing interruptChild uses subagents.interrupt.
+		expect(h.seam.steerChild!("ghost", "x")).toBe(false)
+		expect(h.seam.stopChildren).toBeDefined()
+		expect(h.seam.interruptChild).toBeDefined()
+	})
+})

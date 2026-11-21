@@ -80,12 +80,12 @@ function accountWithLogin(): Record<string, unknown> {
 describe("S4 / E1 — PKCE/auth id registry + one-hand service seam", () => {
   // Old criterion (verbatim): "registry count stays 24". 025-w1b adds
   // session/search + session/fork → 26; the six PKCE ids stay wired unchanged.
-  test("all six PKCE/auth ids stay wired; registry count stays 26", () => {
+  test("all six PKCE/auth ids stay wired; registry count stays 28", () => {
     for (const id of [ID.start, ID.cancel, ID.signOut, ID.state, ID.watch, ID.watchExpiry]) {
       expect(CAP_HOST_WIRED_IDS).toContain(id)
     }
-    expect(CAP_HOST_WIRED_IDS.length).toBe(26)
-    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(26)
+    expect(CAP_HOST_WIRED_IDS.length).toBe(28)
+    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(28)
   })
 
   test("host adapter reads the verified `deepseekAccount` ctx.get key", async () => {
@@ -258,7 +258,7 @@ describe("S4 / E6 — negative controls", () => {
     const absent = createCapHostInvoke(ctxWith(undefined))
     await expect(absent(ID.start as CapMethodId, "unary", { client: CLIENT, callbackOrigin: "http://localhost", loginSource: "desktop" })).rejects.toThrow("NOT_WIRED: deepseekAccount unavailable")
     const invoke = createCapHostInvoke(ctxWith(accountWithLogin()))
-    await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=26\/257/)
+    await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=28\/257/)
   })
 
   test("bad signal param -> BAD_PARAMS (never reaches host stream)", async () => {

@@ -67,10 +67,10 @@ function stubCreds() {
 // Slice-local snapshot. Old criterion (verbatim): 19 ids
 // (session/list + 3 model + 12 account + 3 credentials). S3 adds 3 push streams,
 // S5 adds 2 settings, 025-w1b adds 2 session query ids (search/fork) → 26.
-describe("S2/S3 — CAP_HOST_WIRED_IDS registry = 26", () => {
-  test("26 unique ids (session/list + 3 model + 12 account + 3 credentials + 3 push + 2 settings + 2 w1b query)", () => {
-    expect(CAP_HOST_WIRED_IDS.length).toBe(26)
-    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(26)
+describe("S2/S3 — CAP_HOST_WIRED_IDS registry = 28", () => {
+  test("28 unique ids (session/list + 3 model + 12 account + 3 credentials + 3 push + 2 settings + 2 w1b query)", () => {
+    expect(CAP_HOST_WIRED_IDS.length).toBe(28)
+    expect(new Set(CAP_HOST_WIRED_IDS).size).toBe(28)
     for (const id of [ID.state, ID.watch, ID.watchExpiry, ID.desc, ID.set, ID.unset]) {
       expect(CAP_HOST_WIRED_IDS).toContain(id)
     }
@@ -190,11 +190,11 @@ describe("S2 — credentials arms + DATAFLOW + desensitization", () => {
 })
 
 describe("S2/S3 — negative control", () => {
-  // Old criterion (verbatim): /NOT_WIRED:.*ledger in_wired=19\/257/. S3: 22/257; S5: 24/257; 025-w1b: 26/257.
-  test("non-wired CapIR id stays NOT_WIRED with ledger in_wired=26/257", async () => {
+  // Old criterion (verbatim): /NOT_WIRED:.*ledger in_wired=19\/257/. S3: 22/257; S5: 24/257; 025-w1b: 28/257.
+  test("non-wired CapIR id stays NOT_WIRED with ledger in_wired=28/257", async () => {
     const invoke = createCapHostInvoke(ctxWith({ account: stubAccount(), creds: stubCreds() }))
     await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(
-      /NOT_WIRED:.*ledger in_wired=26\/257/,
+      /NOT_WIRED:.*ledger in_wired=28\/257/,
     )
   })
 })

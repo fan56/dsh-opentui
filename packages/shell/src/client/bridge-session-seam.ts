@@ -928,6 +928,23 @@ export function bridgeChildJournalMeta(rows: readonly BridgeReplayRow[]): Bridge
 	}
 }
 
+/**
+ * 025-w1b D — one child's durable journal rows → the viewer's transcript lines.
+ * Reuses the SAME `bridgeReplayRowsToSeamTranscript` projection the session
+ * transcript uses (single source of truth for call/result pairing, ask merge and
+ * subagent-origin rules); only the final string rendering is viewer-specific.
+ * No live/pushed text is fabricated — lines come from real replay rows.
+ */
+export function bridgeReplayRowsToChildLog(rows: readonly BridgeReplayRow[]): string[] {
+	return bridgeReplayRowsToSeamTranscript(rows).map((row) => {
+		if (row.kind === "tool") {
+			return row.output ? `▶ ${row.text}\n⎿ ${row.output}` : `▶ ${row.text}`
+		}
+		if (row.kind === "ask") return "[ask]"
+		return row.text
+	}).filter((line) => line !== "")
+}
+
 /** L2b C3: first confirm poll delay, the doubling ceiling, and the total cap
  *  (45s, inside the plan's 30–60s band). A child that is still host-running at
  *  the cap is NOT force-settled — the marker is dropped so the turn-boundary
@@ -1434,6 +1451,13 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * sync restore the real values without re-reading the journal on every turn.
 	 */
 	readonly #subagentJournalMeta = new Map<string, BridgeChildJournalMeta>()
+	/**
+	 * 025-w1b D — per-child transcript lines folded from the REAL child journal
+	 * read in #ensureChildJournal. The seam face is synchronous (viewer re-reads
+	 * it per tick), so the async replay populates this cache and the face returns
+	 * a snapshot copy. Keyed by childId (not run key): a re-run overwrites lines.
+	 */
+	readonly #subagentTranscripts = new Map<string, string[]>()
 	/**
 	 * 0.23.0 T1: run keys settled by the registry SWEEP, keyed by childId → the
 	 * run key (`id@<startedAt>`) observed at settle time. A sweep settle has NO
@@ -2484,6 +2508,40 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * 025-w1b D — one child's buffered transcript lines for the viewer. The face
+	 * is synchronous (the viewer re-reads it per tick), so lines are folded from
+	 * the REAL child journal by #ensureChildJournal and cached. A child whose
+	 * journal has not been read yet returns [] (honest empty, never a mock log).
+	 */
+	subagentTranscript(id: string): string[] {
+		return [...(this.#subagentTranscripts.get(id) ?? [])]
+	}
+
+	/**
+	 * 025-w1b D — steer a RUNNING child via the generated `subagents.prompt` frame
+	 * (host SubagentRuntime.prompt, delivery 'steer'). The seam contract is a
+	 * SYNC boolean: true when the child is known+running (reachable), false when
+	 * settled/unreachable — the same shape the remote adapter's steerChild yields.
+	 * The stdio frame is fire-and-forget (no await in a sync face); a host/transport
+	 * rejection is contained to a warn, never a false "sent". This is DISTINCT
+	 * from the binding-gated `subagents.interrupt` / `stopChildren` stop path.
+	 */
+	steerChild(id: string, text: string): boolean {
+		const view = this.#subagentViews.get(id)
+		if (view === undefined || view.status !== "running") return false
+		const requestId = `${id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+		void this.#transport.request("subagents.prompt", {
+			requestId,
+			childSessionId: id,
+			delivery: "steer",
+			content: [{ type: "text", text }],
+		}).catch((err: unknown) => {
+			this.#degrade("steerChild", `subagents.prompt failed: ${err instanceof Error ? err.message : String(err)}`)
+		})
+		return true
+	}
+
+	/**
 	 * L2a: interrupt ONE running child through the bridge's subagent-stop
 	 * capability (retires the D3 stub). `parentSessionId` is ALWAYS the seam's
 	 * currently bound session — the bridge enforces a one-session-per-stdio-
@@ -2819,6 +2877,9 @@ export class BridgeSessionSeam implements SessionSeam {
 			const meta = bridgeChildJournalMeta(cleanRows)
 			// P3: drop a response that arrived after a binding change (or dispose).
 			if (this.#subagentSessionId !== sessionAtStart || this.#disposed) return
+			// 025-w1b D — fold the same real rows into the viewer's transcript
+			// lines (sync face reads this cache; never a fabricated log).
+			this.#subagentTranscripts.set(childId, bridgeReplayRowsToChildLog(cleanRows))
 			// Cache by run key even if the view changed in flight: a replay re-fold
 			// can revisit this run later and needs the meta to restore rounds.
 			this.#subagentJournalMeta.set(key, meta)
@@ -3013,6 +3074,7 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#subagentLiveStarts.clear()
 			this.#subagentJournalLoaded.clear()
 			this.#subagentJournalMeta.clear()
+			this.#subagentTranscripts.clear() // 025-w1b D: transcripts belong to the old binding
 			this.#sweepSettledRuns.clear()
 			this.#subagentSettleSnapshots.clear()
 			this.#interruptInFlight.clear() // L2a: in-flight interrupts belong to the old binding

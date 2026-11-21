@@ -371,6 +371,22 @@ interface SettingsDescribeValueLike {
   namespaces?: unknown[]
 }
 
+// 025-w1b D — structural slice of `ctx.subagents` (SubagentRuntime, service key
+// `subagents`, subagent/src/index.ts:210 with @Remote prompt :450 /
+// interruptByUser :503). Optional so a host without them degrades to NOT_WIRED.
+// content parts are text-only here (the form carries a user message, no images).
+interface SubagentPromptRequestLike {
+  requestId: string
+  childSessionId: string
+  delivery: 'steer' | 'queue'
+  content: readonly { type: 'text'; text: string }[]
+  clientTimeZone?: string
+}
+interface SubagentRuntimeLike {
+  prompt?(request: SubagentPromptRequestLike, signal: AbortSignal): Promise<{ messageId: string }>
+  interruptByUser?(childSessionId: string): { accepted: true } | Promise<{ accepted: true }>
+}
+
 // --------------------------------------------------------------------------
 // S4 PKCE/stream — frame-safe projection of account/PKCE state.
 //
@@ -601,6 +617,9 @@ export const CAP_HOST_WIRED_IDS: readonly string[] = [
   // 025-w1b B/C — session search/fork (sessionController seam, expected 75 gap closed)
   '@deepseek-ai/dsh-api-session-controller#session/search',
   '@deepseek-ai/dsh-api-session-controller#session/fork',
+  // 025-w1b D — subagent prompt/user-interrupt (subagents service, expected 75 gap closed)
+  '@deepseek-ai/dsh-subagent#subagents/prompt',
+  '@deepseek-ai/dsh-subagent#subagents/interruptByUser',
   // S3 — session push streams (sessionController seam, shared with S1 model arms)
   '@deepseek-ai/dsh-api-session-controller#session/observeEvent',
   '@deepseek-ai/dsh-api-session-controller#session/observeState',
@@ -1219,6 +1238,54 @@ export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
       }
     }
 
+    // --- 025-w1b D — subagent control family (dsh-subagent#subagents/*) --------
+    if (methodId.startsWith('@deepseek-ai/dsh-subagent#')) {
+      let runtime: SubagentRuntimeLike | undefined
+      try {
+        runtime = typeof ctx.get === 'function' ? (ctx.get('subagents') as SubagentRuntimeLike) : undefined
+      } catch { runtime = undefined }
+      if (runtime === undefined) {
+        throw new Error(`NOT_WIRED: subagents service unavailable for ${methodId}`)
+      }
+      const short = methodId.slice(methodId.indexOf('#') + 1)
+      if (short === 'subagents/prompt') {
+        if (typeof runtime.prompt !== 'function') {
+          throw new Error(`NOT_WIRED: subagents.prompt unavailable for ${methodId}`)
+        }
+        const p = params as Partial<SubagentPromptRequestLike> | undefined
+        if (typeof p?.childSessionId !== 'string' || p.childSessionId === '') {
+          throw new Error('BAD_PARAMS: subagents.prompt childSessionId must be a non-empty string')
+        }
+        if (typeof p.requestId !== 'string' || p.requestId === '') {
+          throw new Error('BAD_PARAMS: subagents.prompt requestId must be a non-empty string')
+        }
+        if (!Array.isArray(p.content) || p.content.length === 0 ||
+            p.content.some((part) => part?.type !== 'text' || typeof part.text !== 'string')) {
+          throw new Error('BAD_PARAMS: subagents.prompt content must be a non-empty text-part array')
+        }
+        const request: SubagentPromptRequestLike = {
+          requestId: p.requestId,
+          childSessionId: p.childSessionId,
+          delivery: p.delivery === 'queue' ? 'queue' : 'steer',
+          content: p.content.map((part) => ({ type: 'text', text: part.text })),
+        }
+        if (typeof p.clientTimeZone === 'string') request.clientTimeZone = p.clientTimeZone
+        // The host control read takes a signal; a unary stdio frame has none.
+        return runtime.prompt(request, new AbortController().signal)
+      }
+      if (short === 'subagents/interruptByUser') {
+        if (typeof runtime.interruptByUser !== 'function') {
+          throw new Error(`NOT_WIRED: subagents.interruptByUser unavailable for ${methodId}`)
+        }
+        const p = params as { childSessionId?: unknown } | undefined
+        if (typeof p?.childSessionId !== 'string' || p.childSessionId === '') {
+          throw new Error('BAD_PARAMS: subagents.interruptByUser childSessionId must be a non-empty string')
+        }
+        return runtime.interruptByUser(p.childSessionId)
+      }
+      throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
+    }
+
     // Unreachable: every CAP_HOST_WIRED_IDS member belongs to a family above.
     throw new Error(`NOT_WIRED: ${methodId} has no host arm`)
   }
@@ -1321,6 +1388,18 @@ const CAP_ACCOUNT_WIRE_METHODS: Readonly<Record<string, string>> = {
 const ACCOUNT_VIEW_WIRE_METHODS: ReadonlySet<string> = new Set([
   'account.getState', 'account.startSignIn', 'account.cancelSignIn', 'account.signOut',
 ])
+
+/**
+ * 025-w1b D — client-facing frame names → CapIR W ids for the two subagent
+ * control methods (prompt = steer, interruptByUser = user-level interrupt).
+ * Table lookup on the generated chain (NOT a hand-copied wire line). These are
+ * DISTINCT from the ADR-0010 protocol frames `subagents.interrupt` /
+ * `subagents.stopChildren` (binding-gated roster stop) — do not merge them.
+ */
+const CAP_SUBAGENT_WIRE_METHODS: Readonly<Record<string, string>> = {
+  'subagents.prompt': '@deepseek-ai/dsh-subagent#subagents/prompt',
+  'subagents.interruptByUser': '@deepseek-ai/dsh-subagent#subagents/interruptByUser',
+}
 
 /**
  * M3-02 assembly seam. registerAppendSection is deliberately NOT called from
@@ -3786,6 +3865,29 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           }
           replyOk(req.id, { sessionId: newId })
         }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        const degraded = message.startsWith('NOT_WIRED') || message.includes('unavailable')
+        replyError(req.id, degraded ? 'UNSUPPORTED' : (message.startsWith('BAD_PARAMS') ? 'BAD_PARAMS' : 'INTERNAL'), message)
+      }
+      return
+    }
+    // 025-w1b D — subagents.prompt (steer) / interruptByUser ride the generated
+    // capcontract chain (table lookup, not a hand-copied wire line). Replies are
+    // whitelist-projected ({ok}/{accepted}); a missing host service degrades to
+    // UNSUPPORTED. These are DISTINCT from the two protocol frames below.
+    const subagentMethodId = CAP_SUBAGENT_WIRE_METHODS[req.method]
+    if (subagentMethodId !== undefined) {
+      try {
+        const value = await createCapInvoke(ctx)({
+          methodId: subagentMethodId as never,
+          params: req.params ?? {},
+        })
+        // No host text / id is echoed back: prompt → {ok:boolean}, interrupt →
+        // {accepted:boolean} from the host's own acknowledgement only.
+        replyOk(req.id, subagentMethodId.endsWith('/prompt')
+          ? { ok: value !== null && value !== undefined }
+          : { accepted: (value as { accepted?: unknown } | undefined)?.accepted === true })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         const degraded = message.startsWith('NOT_WIRED') || message.includes('unavailable')
