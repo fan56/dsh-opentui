@@ -122,73 +122,86 @@
         "@deepseek-ai/dsh-web#web/listProviders"
       ]
     },
-    "wired": {
-      "mark": "derived-from-manual",
+    "wired_protocol": {
+      "mark": "bridge-protocol (ADR-0010)",
       "count": 10,
       "methods": [
         {
           "method": "bridge.ping",
           "kind": "meta",
           "source_line": 2247,
-          "capir_id": null
+          "capir_id": null,
+          "note": "protocol version negotiation (no host call)"
         },
         {
           "method": "bridge.hello",
           "kind": "meta",
           "source_line": 2256,
-          "capir_id": null
+          "capir_id": null,
+          "note": "protocol version negotiation (no host call)"
         },
         {
           "method": "subagents.interrupt",
           "kind": "business",
           "source_line": 2300,
           "capir_id": null,
-          "note": "L1 0.23.1 added"
+          "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
         },
         {
           "method": "subagents.stopChildren",
           "kind": "business",
           "source_line": 2304,
           "capir_id": null,
-          "note": "L1 0.23.1 added"
+          "note": "L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel"
         },
         {
           "method": "session.open",
           "kind": "business",
           "source_line": 2308,
-          "capir_id": null
+          "capir_id": null,
+          "note": "binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful"
         },
         {
           "method": "session.send",
           "kind": "business",
           "source_line": 2312,
-          "capir_id": null
+          "capir_id": null,
+          "note": "single in-flight turn state machine + streaming turn"
         },
         {
           "method": "session.close",
           "kind": "business",
           "source_line": 2316,
-          "capir_id": null
+          "capir_id": null,
+          "note": "binding dispose"
         },
         {
           "method": "turn.abort",
           "kind": "business",
           "source_line": 2320,
-          "capir_id": null
+          "capir_id": null,
+          "note": "turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel"
         },
         {
           "method": "ask.response",
           "kind": "business",
           "source_line": 2324,
-          "capir_id": null
+          "capir_id": null,
+          "note": "bridge-internal AskRegistry settlement (no host call)"
         },
         {
           "method": "journal.replay",
           "kind": "business",
           "source_line": 2328,
-          "capir_id": null
+          "capir_id": null,
+          "note": "I-class persistence read (persistence.open(id,'read')); no same-name CapIR id"
         }
       ]
+    },
+    "wired_manual": {
+      "mark": "derived-from-manual host-copy",
+      "count": 0,
+      "methods": []
     },
     "wired_capir_generated": {
       "mark": "S1+S2+S3+S5-generated-capcontract",

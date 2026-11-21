@@ -12,9 +12,10 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 |---|---:|---|
 | Full (CapIR) | 257 methods / 43 artifacts | unary 226 / stream 31; class W 257; endpoints: sc 27, global map sum 257 |
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
-| Wired (manual @manual wire) | 10 methods | derived-from-manual |
-| Wired (generated capcontract, S1) | 24 methods | S1+S2+S3+S5-generated-capcontract |
-| in_wired total (of 257) | 24 methods | union of @manual capir_id + generated ids |
+| Wired protocol (ADR-0010, not @manual) | 10 frames | bridge-protocol (ADR-0010) |
+| Wired manual (@manual host-copy) | 0 methods | derived-from-manual host-copy |
+| Wired (generated capcontract) | 24 methods | S1+S2+S3+S5-generated-capcontract |
+| in_wired total (of 257) | 24 methods | union of wire-dim capir_ids + generated ids |
 | I-class (manual) | 6 services | derived-from-manual (v3 proposal 口径) |
 
 ## Reconciliation (first-run closure)
@@ -50,20 +51,25 @@ Corrections applied in provenance mapping data:
 
 - @deepseek-ai/dsh-permission-presets#permissionPresets/set — Present in CapIR (extracted from rc.5 source) but NOT a Remote in host rc.4 binary used by the steady-state probe; registered surface of the probed environment legitimately excludes it.
 
-## Wired surface (derived-from-manual)
+## Wired protocol frames (ADR-0010, excluded from @manual)
+
+| method | kind | source line | protocol nature |
+|---|---|---:|---|
+| bridge.ping | meta | 2247 | protocol version negotiation (no host call) |
+| bridge.hello | meta | 2256 | protocol version negotiation (no host call) |
+| subagents.interrupt | business | 2300 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| subagents.stopChildren | business | 2304 | L1 0.23.1 added; subagent authorization gate (binding ownership) + index reconcile + per-child cancel |
+| session.open | business | 2308 | binding orchestration (agents.create/resume + push relay/grants); multi-step, stateful |
+| session.send | business | 2312 | single in-flight turn state machine + streaming turn |
+| session.close | business | 2316 | binding dispose |
+| turn.abort | business | 2320 | turn state machine + terminalTurnIds FIFO idempotency + fire-and-forget agent.cancel |
+| ask.response | business | 2324 | bridge-internal AskRegistry settlement (no host call) |
+| journal.replay | business | 2328 | I-class persistence read (persistence.open(id,'read')); no same-name CapIR id |
+
+## Wired manual host-copy (@manual count source — must be 0)
 
 | method | kind | source line | CapIR id mapping |
 |---|---|---:|---|
-| bridge.ping | meta | 2247 | — |
-| bridge.hello | meta | 2256 | — |
-| subagents.interrupt | business | 2300 | — |
-| subagents.stopChildren | business | 2304 | — |
-| session.open | business | 2308 | — |
-| session.send | business | 2312 | — |
-| session.close | business | 2316 | — |
-| turn.abort | business | 2320 | — |
-| ask.response | business | 2324 | — |
-| journal.replay | business | 2328 | — |
 
 ## Wired CapIR ids via generated capcontract (S1)
 

@@ -58,16 +58,19 @@ for (const id of expected) {
 }
 
 // --- assemble ledger -------------------------------------------------------
-const wired = prov.wired_surface_manual.methods
-// S1 + 0.24 final knife: the wired CapIR set is the UNION of (a) hand-wired
-// @manual wire lines that carry a capir_id and (b) generated-capcontract wired
-// ids. Both model.currentSelection (S1) and session.list (0.24 final knife)
-// were migrated off their hand-wire onto the generated chain via a table lookup,
-// so the @manual WIRE surface count drops 12 -> 11 -> 10 and session/list now
-// lives in wired_capir_generated. Generated ids are NOT hand-copied req.method
-// lines, so they must not inflate dimensions.wired.count or the #8 name set.
+// oldfox 裁决 1: the hand-wired wire surface splits into two dimensions.
+// wired_protocol (ADR-0010 frames, no CapIR counterpart) is NOT @manual;
+// wired_manual (1:1 host copies with a CapIR id) IS the @manual count source.
+// S1 removed model.currentSelection; the 0.24 final knife removed session.list
+// (the last wired_manual entry) onto the generated chain, so wired_manual is 0.
+const protocol = prov.wired_protocol.methods
+const manual = prov.wired_manual.methods
+// The wired CapIR set is the UNION of capir_ids carried by both wire dimensions
+// (protocol entries are null today; manual is empty after the 0.24 knife) and
+// the generated-capcontract ids. Generated ids are NOT hand-copied req.method
+// lines, so they must not inflate either wire-dimension count or #8a's name set.
 const generatedWiredIds = (prov.wired_capir_generated?.ids ?? [])
-const wiredCapirIds = new Set([...wired.map((w) => w.capir_id).filter(Boolean), ...generatedWiredIds])
+const wiredCapirIds = new Set([...[...protocol, ...manual].map((w) => w.capir_id).filter(Boolean), ...generatedWiredIds])
 for (const id of generatedWiredIds) {
   if (!allIds.has(id)) throw new Error(`generated wired id not in CapIR full set: ${id}`)
 }
@@ -110,10 +113,15 @@ const ledger = {
       exclusions: prov.derivation.method_exclusions.map((e) => ({ id: e.id, mapping_kind: e.mapping_kind })),
       method_ids: [...expected].sort(),
     },
-    wired: {
-      mark: prov.wired_surface_manual.mark,
-      count: wired.length,
-      methods: wired,
+    wired_protocol: {
+      mark: prov.wired_protocol.mark,
+      count: protocol.length,
+      methods: protocol,
+    },
+    wired_manual: {
+      mark: prov.wired_manual.mark,
+      count: manual.length,
+      methods: manual,
     },
     wired_capir_generated: {
       mark: prov.wired_capir_generated?.mark ?? 'n/a',
@@ -168,9 +176,10 @@ md.push('| Dimension | Count | Notes |')
 md.push('|---|---:|---|')
 md.push(`| Full (CapIR) | ${d.full.methods} methods / ${d.full.artifacts} artifacts | unary ${d.full.by_kind.unary} / stream ${d.full.by_kind.stream}; class W ${d.full.by_class.W}; endpoints: sc ${d.full.endpoints_session_controller}, global map sum ${d.full.endpoints_global_map_sum} |`)
 md.push(`| Profile expected | ${d.expected.count} methods | profile ${d.expected.profile}; ${d.expected.contribution_packages.length} contribution packages; ${d.expected.exclusions.length} method exclusion(s) |`)
-md.push(`| Wired (manual @manual wire) | ${d.wired.count} methods | ${d.wired.mark} |`)
-md.push(`| Wired (generated capcontract, S1) | ${d.wired_capir_generated.count} methods | ${d.wired_capir_generated.mark} |`)
-md.push(`| in_wired total (of ${d.full.methods}) | ${d.wired_capir_generated.in_wired_total} methods | union of @manual capir_id + generated ids |`)
+md.push(`| Wired protocol (ADR-0010, not @manual) | ${d.wired_protocol.count} frames | ${d.wired_protocol.mark} |`)
+md.push(`| Wired manual (@manual host-copy) | ${d.wired_manual.count} methods | ${d.wired_manual.mark} |`)
+md.push(`| Wired (generated capcontract) | ${d.wired_capir_generated.count} methods | ${d.wired_capir_generated.mark} |`)
+md.push(`| in_wired total (of ${d.full.methods}) | ${d.wired_capir_generated.in_wired_total} methods | union of wire-dim capir_ids + generated ids |`)
 md.push(`| I-class (manual) | ${d.i_class.count} services | ${d.i_class.mark} |`)
 md.push('')
 md.push('## Reconciliation (first-run closure)')
@@ -197,11 +206,17 @@ md.push('## Method exclusions')
 md.push('')
 for (const e of prov.derivation.method_exclusions) md.push(`- ${e.id} — ${e.reason}`)
 md.push('')
-md.push('## Wired surface (derived-from-manual)')
+md.push('## Wired protocol frames (ADR-0010, excluded from @manual)')
+md.push('')
+md.push('| method | kind | source line | protocol nature |')
+md.push('|---|---|---:|---|')
+for (const w of d.wired_protocol.methods) md.push(`| ${w.method} | ${w.kind} | ${w.source_line} | ${w.note ?? '—'} |`)
+md.push('')
+md.push('## Wired manual host-copy (@manual count source — must be 0)')
 md.push('')
 md.push('| method | kind | source line | CapIR id mapping |')
 md.push('|---|---|---:|---|')
-for (const w of d.wired.methods) md.push(`| ${w.method} | ${w.kind} | ${w.source_line} | ${w.capir_id ?? '—'} |`)
+for (const w of d.wired_manual.methods) md.push(`| ${w.method} | ${w.kind} | ${w.source_line} | ${w.capir_id ?? '—'} |`)
 md.push('')
 md.push('## Wired CapIR ids via generated capcontract (S1)')
 md.push('')
@@ -230,4 +245,4 @@ rows.forEach((r, i) => md.push(`| ${i + 1} | ${r.id} | ${r.kind} | ${r.in_full ?
 
 writeFileSync(resolve(ROOT, 'ledger/ledger.md'), md.join('\n') + '\n')
 
-console.log(`ledger: full=${d.full.methods} expected=${d.expected.count} wired=${d.wired.count} iclass=${d.i_class.count} diff_empty=${ledger.reconciliation.diff_empty}`)
+console.log(`ledger: full=${d.full.methods} expected=${d.expected.count} wired_protocol=${d.wired_protocol.count} wired_manual=${d.wired_manual.count} iclass=${d.i_class.count} diff_empty=${ledger.reconciliation.diff_empty}`)

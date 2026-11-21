@@ -12,9 +12,10 @@
  *   6. declaration-line coverage   — every generated file (capcontract .ts + ledger.md)
  *                                    carries the provenance line as its FIRST line.
  *   7. no bare ctx.<service>       — every ctx service access covered by inject: [...].
- *   8. @manual method-name set      — bridge hand-wired dispatch names == ledger's
- *                                    declared wired method names (F2: count equality was
- *                                    blind to rename drift; ledger is @manual's sole owner).
+ *   8a. wired_protocol name set     — bridge hand-copied dispatch names == ledger's
+ *                                    ADR-0010 protocol frame names (rename-drift guard).
+ *   8b. wired_manual == 0           — the @manual count source (1:1 host copies with a
+ *                                    CapIR counterpart) is empty (tag premise #2).
  *
  * No network, no host closure, no build step: pure Node over committed files.
  */
@@ -243,49 +244,64 @@ if (capir && Object.keys(files).length === 3) {
   else bad("7. no bare ctx.<service> access", ctxOffenders.join("; "))
 }
 
-// --- 8. @manual method-name set: bridge hand-wired dispatch vs ledger registry ---
-// The capability ledger is the single source of truth for the @manual (wired)
-// surface. Recompute the hand-copied `req.method === '<name>'` set from the
-// bridge source and assert it equals ledger.dimensions.wired.methods[].method.
-// F2: count equality alone was blind to rename drift (T2 evidence), so the
-// comparison is now by method NAME in both directions. If either input is
-// unavailable, fall back to NOT RUN rather than inventing a surface.
-function checkManualCount() {
+// --- 8. wired-surface integrity (oldfox 裁决 1): TWO sub-assertions ---
+// The capability ledger is the single source of truth for the hand-wired wire
+// surface, split into two dimensions (裁决 1):
+//   8a. wired_protocol — ADR-0010 protocol frames (multi-step/stateful/I-class,
+//       no same-name CapIR id). NOT @manual. Recompute the hand-copied
+//       `req.method === '<name>'` set from bridge source and compare NAME SETS
+//       both ways (F2: count equality was blind to rename drift).
+//   8b. wired_manual — 1:1 host capability copies WITH a CapIR id (double-track
+//       drift). This is the @manual count source; tag premise #2 requires 0.
+// If an input is unavailable, fall back to NOT RUN rather than invent a surface.
+function checkWiredDimensions() {
   let ledger
   try {
     ledger = JSON.parse(readFileSync(LEDGER_PATH, "utf8"))
   } catch (e) {
-    notRun("@manual method-name set", `ledger.json unavailable: ${e.message}`)
+    notRun("8a. wired_protocol name set", `ledger.json unavailable: ${e.message}`)
+    notRun("8b. wired_manual == 0", `ledger.json unavailable: ${e.message}`)
+    return
+  }
+
+  // 8b — @manual count source must be empty (tag premise #2).
+  const manual = ledger?.dimensions?.wired_manual
+  if (!manual || typeof manual.count !== "number" || !Array.isArray(manual.methods)) {
+    bad("8b. wired_manual == 0", "ledger.json has no well-formed dimensions.wired_manual")
+  } else if (manual.count === 0 && manual.methods.length === 0) {
+    ok("8b. wired_manual == 0", "no hand-copied host-call wire lines (@manual count source is empty)")
+  } else {
+    bad("8b. wired_manual == 0", `count=${manual.count} methods=[${manual.methods.map((w) => w?.method).join(", ")}]`)
+  }
+
+  // 8a — protocol frame-name reconciliation (rename-drift guard).
+  const declaredProtocol = ledger?.dimensions?.wired_protocol?.methods
+  if (!Array.isArray(declaredProtocol)) {
+    notRun("8a. wired_protocol name set", "ledger.json has no dimensions.wired_protocol.methods")
     return
   }
   let bridgeSrc
   try {
     bridgeSrc = readFileSync(BRIDGE_PATH, "utf8")
   } catch (e) {
-    notRun("@manual method-name set", `bridge source unavailable: ${e.message}`)
+    notRun("8a. wired_protocol name set", `bridge source unavailable: ${e.message}`)
     return
   }
-  const declaredMethods = ledger?.dimensions?.wired?.methods
-  if (!Array.isArray(declaredMethods)) {
-    notRun("@manual method-name set", "ledger.json has no dimensions.wired.methods")
-    return
-  }
-  const declaredNames = new Set(declaredMethods.map((w) => w?.method).filter((n) => typeof n === "string"))
+  const declaredNames = new Set(declaredProtocol.map((w) => w?.method).filter((n) => typeof n === "string"))
   // All `req.method === '<name>'` comparisons live in handleLine(); each is one
-  // hand-copied wired line. Compare NAME SETS both ways (F2): a rename keeps the
-  // count but must now be caught.
+  // hand-copied protocol frame line. Compare NAME SETS both ways (F2).
   const wiredNames = new Set(
     [...bridgeSrc.matchAll(/\breq\.method\s*===\s*["']([^"']+)["']/g)].map((m) => m[1]),
   )
   const missing = [...declaredNames].filter((n) => !wiredNames.has(n))
   const extra = [...wiredNames].filter((n) => !declaredNames.has(n))
   if (missing.length === 0 && extra.length === 0) {
-    ok("@manual method-name set", `bridge hand-wired names == ledger wired.methods (${declaredNames.size} names)`)
+    ok("8a. wired_protocol name set", `bridge hand-wired names == ledger wired_protocol.methods (${declaredNames.size} protocol frames)`)
   } else {
-    bad("@manual method-name set", `missing in bridge: [${missing.join(", ")}]; unregistered in ledger: [${extra.join(", ")}]`)
+    bad("8a. wired_protocol name set", `missing in bridge: [${missing.join(", ")}]; unregistered in ledger: [${extra.join(", ")}]`)
   }
 }
-checkManualCount()
+checkWiredDimensions()
 
 // --- 9. host-face provenance (oldfox R4.1 / gate item 8) ---
 // Scan the generated call-surface files AND the generator TEMPLATE. The defect
