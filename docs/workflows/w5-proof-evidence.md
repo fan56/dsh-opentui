@@ -40,6 +40,30 @@
 - E3/BLOCKED、E5/NOT RUN 等结果面缺口：按预注册判定式，声明内的 BLOCKED/NOT RUN **不自称全项 PASS**，如实留给协调者裁决/末期 E2E（S1 `024-s1-model-slice.md:12-16`）。
 - NOT RUN 单一索引：`research/024-e2e-requirements.md`，逐项 `[ ]→[x]` 写证据路径，无法覆盖走显式豁免栏（裁决人+日期+理由），不静默删除（`024-e2e-requirements.md:5-9,53-80`）。
 
+## W5-CE 组合证据 PASS（首次先例：025-w1a，oldfox 2026-11-21 拍板）
+
+单次真机 run 无法取得全绿时，允许以组合证据判 PASS，条件全部满足方可：
+
+1. 在场绿完备：判定域内每一项，在至少一次 run 中有在档 PASS（逐项 exact 匹配，
+   不允许以「整体曾绿」概括）。
+2. 跨 run 可比：参与的 run 之间产品代码完全一致——commit 差仅限 verify/harness
+   且有 diff 证明不波及判定项；或 bundle fingerprint 相同（指纹文件在档）。
+3. 失败项逐项定责，每项须同时具备：
+   a. 同项在他 run 的在场绿（或基线红证据 + 定位器修复 + 修复后真跑绿）；
+   b. 失败形态直接证据在档（client stderr 原文 / 帧全空模式），按实际形态引用，
+      禁止把一种形态的铁证说成「均有」；
+   c. 因果排除：本刀 diff 范围 + 相关单测绿 + （适用时）bundle sha 未变。
+4. 措辞强制：「PASS（组合证据；豁免项：<清单>）」；禁止写「N/N 实跑」。
+   flake 家族豁免须有前置登记（前科在档）+ 波n 清零登记，不得当场自创家族。
+5. 数量上限：豁免失败项 ≤ 判定域 10% 且 ≤ 2 个失败类族；超限视为环境不可信，
+   停刀修环境（前置自检 + 孤儿清理 SOP）后重跑，不得拼接。
+6. 禁止以「重跑也没绿」为由豁免任何项；无在场绿的项只能 NOT RUN 显式声明。
+
+（本条款出处：`025-w1a-review-oldfox.md` §2.4，oldfox 2026-11-21 拍板，原文编入；W4 复核按此对表。
+证据卫生配套：失败形态引用按实际分级——`never accepted` 仅在 run1 在档、gate-final 为
+`connection lost, retry #1-3`、12/13 两次单跑为帧全空（无 client stderr 在档），禁说「均有」；
+POST-CHECK 进程计数须过滤自身 zsh wrapper 后按 PID 复核并列出清单，禁以裸 grep 计数自证「清理后 0」。）
+
 ## 四、预防条款（0.24 真实陷阱，就地归属）
 
 1. **凭据脱敏三处白名单**：凭据/密钥/auth URL 值禁止落 wire 帧、CAP-SMOKE emit、proof 日志三处 sink。预防：
