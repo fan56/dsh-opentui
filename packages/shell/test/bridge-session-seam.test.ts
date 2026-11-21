@@ -588,6 +588,22 @@ describe("async UNSUPPORTED members", () => {
 })
 
 // ---------------------------------------------------------------------------
+// 025-w1a /btw — face wired + honest degradation (no fake answer)
+// ---------------------------------------------------------------------------
+
+describe("025-w1a btwAsk face (wired + honest degrade)", () => {
+	test("btwAsk is a function; calling it rejects with an explicit side-session reason (never a fake answer)", async () => {
+		const h = makeHarness()
+		expect(typeof h.seam.btwAsk).toBe("function")
+		const err = await h.seam.btwAsk("ping", []).then(() => undefined, (e) => e)
+		expect(err).toBeInstanceOf(BridgeProtocolError)
+		expect(err.code).toBe("SIDE_SESSION_NOT_WIRED")
+		expect(String(err.message)).toContain("side-session")
+		expect(String(err.message)).toContain("波2")
+	})
+})
+
+// ---------------------------------------------------------------------------
 // 025-w1a /think — real effort ladder from the host catalog
 // ---------------------------------------------------------------------------
 

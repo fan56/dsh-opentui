@@ -3294,6 +3294,24 @@ export class BridgeSessionSeam implements SessionSeam {
 
 	// ----- out-of-batch members: honest D3 stubs (later batch) --------------
 
+	/**
+	 * 025-w1a — /btw side-question face (coordinator ruling 2: wire the face +
+	 * HONEST degradation, no fake answer, NOT a NOT RUN). The remote adapter
+	 * serves btwAsk over a throwaway second session (`session/create` + follow),
+	 * but the inproc bridge has no side-session route and `session/create` is a
+	 * CapIR gap (audit §2). So the face exists — the /btw command no longer
+	 * hits `!ctx.seam.btwAsk` — but calling it rejects with an explicit reason
+	 * the overlay paints as `error: …` (the honest degrade contract). 波2 wires
+	 * the throwaway session and this same face becomes real without a command
+	 * change. No mocked LLM answer is ever resolved.
+	 */
+	btwAsk(_question: string, _snapshot: string[], _onDelta?: (full: string) => void): Promise<string> {
+		return Promise.reject(new BridgeProtocolError(
+			"SIDE_SESSION_NOT_WIRED",
+			"/btw: side-session 未在 inproc 接线（session/create 属 CapIR gap）；波2 接线后本 face 自然激活",
+		))
+	}
+
 	async searchSessions(_query: string): Promise<{ id: string; snippet: string }[]> {
 		return unsupported("searchSessions")
 	}

@@ -58,6 +58,7 @@
   "command.flush.flushed": "queue flushed — {started} prompt(s) sending now, {remaining} still queued",
   "command.flush.empty": "queue is empty — nothing to flush",
   "command.btw.unavailable": "/btw unavailable in this session",
+  "command.btw.degraded": "/btw: side-session is not wired in-process (session/create is a CapIR gap); this face activates in wave 2",
   "command.session.unavailable": "/session unavailable in this session",
   "command.session.noActive": "no active session",
   "command.btw.description": "side question (bare reopens the last answer)",
