@@ -34,3 +34,4 @@
    - 慢时钟环境只认 **IMAGE ID**，不信墙钟（容器 VM 时钟慢约 1h48m，`024-e2e-rework.md:81`）；
    - 时序窗写入预注册风险段 + 故障注入验证，不写死环境依赖子句（W5）。
 2. **环境不可达 ≠ 实现回归**：需账号态/live busy turn/浏览器回调/expiry 触发的项，走显式豁免而非缺陷票（`024-e2e-requirements.md:60-72`）；误判会造成「造票」或「放水」两头错。
+3. **超时窗观测与 retry 文案的判别力退化**（w1b 反馈 5 / 波3 C-2）：verify70 单跑 55–56/64 摇摆时，延长 `DSH_OPENTUI_CONNECT_TIMEOUT_MS` 可救回 `auto-resume seeded` 项（w1b 实证 55→56，唯一状态翻转项），但几何/空帧家族仍摆动；根治是 boot 侧有界轮询（波3 已修，见 [07 测试架构](../architecture/07-testing-architecture.md)）。**关键判别口径变更**：boot 有界轮询修复后，`client.err.log` 的 `connection lost, retry #N` 是预算内正常探测痕迹（波3 两次 gate PASS run 均含 retry #1-3），**不再是 host-boot 失败判别信号**；w1b/wave2 历史曾把它当失败形态证据，审计勿按旧镜头把 PASS 证据误读为失败。修复后只认 verdict / typed error / 帧内容（`025-w3-review-oldfox.md` C-2、`.proof/025-w3-2/05-closure/summary.md` 勘误节）。

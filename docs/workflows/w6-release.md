@@ -20,7 +20,8 @@
 ## 二、发版四段流程
 
 1. **FF 合并到 main**：feature 分支快进合并；main CI run 绿（0.24 main run 44853304407，`024-morning-acceptance-report.md:56`）。合并门禁：底座 N1 C1/C2/C3 状态保持 + 每片门禁绿（`024-base-frozen.md:31-33`）。
-2. **tag 驱动 release**：推 `v*` tag 触发 `release.yml`（`on: push: tags: ['v*']`，`:22-25`）。发布包是 `packages/shell`（根 manifest private 无 version）；`npm version`/`npm publish` 在 packages/shell 跑；**`npm publish` 而非 `pnpm publish`**（prepack 写 untracked 产物，pnpm git-clean 会拒）；`--provenance` 需 `id-token: write` + packages/shell 的 repository 字段（`release.yml:10-19`）。已发布版本静默跳过，不成红 run（`release.yml:4-8`）。
+2. **tag 驱动 release**：推 `v*` tag 触发 `release.yml`（`on: push: tags: ['v*']`，`:22-25`）。发布包是 `packages/shell`；`npm version`/`npm publish` 在 packages/shell 跑；**`npm publish` 而非 `pnpm publish`**（prepack 写 untracked 产物，pnpm git-clean 会拒）；`--provenance` 需 `id-token: write` + packages/shell 的 repository 字段（`release.yml:10-19`）。已发布版本静默跳过，不成红 run（`release.yml:4-8`）。
+   - **pack 入口 = `packages/shell`，不是仓库根**（w1b 反馈 4，`npm pack --dry-run` 同此）：根 `package.json` **有** `name: "dsh-opentui-monorepo"`、仅缺 `version` 且 `private:true`（w1b 报告原话「无 name/version」的「无 name」部分失实，`025-w1b-review-oldfox.md` §4.4 一手更正；pack 必须在 packages/shell 跑的结论不变）。发版呈报的 pack 计数（entryCount）取该入口 dry-run 输出，勿在根跑。
 3. **npm 轮询确认**：`npm view` 是发布落地的**唯一接受证明**（`release.yml:5-7`）；发布后查 `npm view @aiwayds/dsh-opentui dist-tags` 等 latest 更新（0.24 latest=0.24.0，`024-morning-acceptance-report.md:55`）。
 4. **安装版冷启动冒烟**：本机全局升级到发布版本；全新 scratch home 冷启动冒烟 7/7 PASS（`024-morning-acceptance-report.md:55`）。Pack/cold-start job 本地复跑口径见 [README 测试架构总表](README.md#测试架构总表跨-workflow-共享判据)。
 

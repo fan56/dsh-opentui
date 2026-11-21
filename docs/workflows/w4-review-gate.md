@@ -8,6 +8,8 @@
 - 等级沿用 **RED（必须改，阻断）/ AMEND（修订条款）/ GREEN（放行，记注意事项或勘误）/ concern / suggestion**（`024-day1-review-oldfox.md:11`）。
 - 总裁决结构：先「先说结果」给 GREEN/RED + 例外三项分级处置；concern/suggestion 不拦门禁但登记去处（`024-s1-review-oldfox.md:5,32-52`）。
 - 复核要害：生成链是否为真（服务名一手核验）、冻结面 git diff 空、断言非空转（负例自测）、CI headSha 对上、NOT RUN/JUDGMENT 无静默删除（`024-s1-review-oldfox.md:9-30`）。
+- **复核固定项：commit=被测**（w1a 反馈 7）：CI headSha 必须对上本片提交，定位器修复与功能 face 分立 commit，评审可逐 concern 审（`025-w1a-stub-commands.md` §5.7、`025-w1a-review-oldfox.md` §4；CI headSha `a0d28c6…` 一手对上）。
+- **复核固定项：评审移交条款逐条对账**（w2-0..w2-6 评审惯例）：每份评审末尾的「对下一批移交提醒」是随批义务，下一批开工须逐条对账落实或显式登记未落实理由，不静默吞掉——如 E4 逐 id 实参断言（自 W2-1 起逐批）、answer-bearing 断言从 W2-2 起执行、预注册回填节时间戳、盲区家族逐 id 登记、`CAP_PROJECTED_BY_HAND` id 强制 wire SENTINEL 负例（`025-w2-0-review-oldfox.md` §4、`025-w2-1-review-oldfox.md` §4、`025-w2-4-review-oldfox.md` §9）。裁决条款一旦写入即终稿（§三），移交提醒则靠此固定项闭环。
 
 ## 二、RED 停车条款：授权面外一手事实即停
 
@@ -49,3 +51,4 @@
 1. **verify harness 自身缺陷分档（不可当能力面红豁免）**：执行者报告曾把 9 项 `[H]` 大部分笼统归入「seam 能力面不匹配」，oldfox 干净会话一手复跑证伪，纠正「级联红不得随 S5 豁免，否则门禁放水」（`024-verify70-red-adjudication-oldfox.md:80`）。预防：逐项对照帧证据 + 源码门控点 + 干净会话抽样复跑再定档；执行者不自判放行（S3 `024-s3-push-slice.md:101-107`）。
 2. **stale 硬编码计数「70」当计数（验证记录失实）**：S6 报告 §二十写「verify70 70/70」，真实为 **64/64**；「70」唯一来源是 `scripts/real-client-gate.sh:4,254` 的 0.23 陈旧文案（:4/:254 现文案已修为 64；:249 分节注释仍残留「(70 items)」一处，属无害注释尾巴，修文案时顺带清掉，勿据其计项数）。根因：把脚本文案当真实项数，是「不冒充」纪律的单点破口（`024-s6-review-oldfox.md:63-73`）。预防：计数从 harness 输出动态取值或在报告用准确数；`real-client-gate.sh` 文案与实际计数同步；评审逐项核日志 PASS 行数（S5 评审逐行点数 64，`024-s5-review-oldfox.md:14`）。同类：check #10 成功消息硬编码 `(1/257)`（S1 suggestion，`024-s1-review-oldfox.md:54`；S3 已修动态，`024-s3-push-slice.md:68`）。
 3. **harness 须声明 mock LLM 非斜杠文本触发 bash 审批弹窗**：任何非斜杠文本（含误发消息）会触发审批弹窗占用帧，`l/settings` 残留即由此污染后续 pane-focus/palette 批次；此为二线风险，须在 harness 显式声明，并由批次 fail-fast 守卫兜住（`024-verify70-red-adjudication-oldfox.md:9,89-90,96`）。
+4. **定位器类 `[H]` 先离线复现假红，再定是否需昂贵基线实跑**（w1a 反馈 6）：几何/定位器项走「基线红证据 → `[H]` 定性 → 语义不变兜底 → 复跑绿」纪律正确但耗时（两次临时 worktree 实跑）。快速路径：先用保存的 `.ans` 帧离线 strip ANSI 模拟定位器假红，复现成立再决定是否需昂贵基线实跑；语义不变兜底与 oldfox 复核仍不可省（`025-w1a-stub-commands.md` §5.6、`025-w1a-review-oldfox.md` §4）。

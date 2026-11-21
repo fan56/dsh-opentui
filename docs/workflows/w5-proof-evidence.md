@@ -12,6 +12,8 @@
 
 **deferred 修订**：若裁决事后追加附则（如 S6 二次裁决），头的 `never edited` 措辞须精确为「正文 capture 后未改；附则为此日期裁决追加」，避免字面冲突（S6 终评 S2，`024-s6-review-oldfox.md:97-99`）。
 
+**逐节时间戳与成文方式**（W2-1 C2 / 波3 S-4）：多节预注册须给每节回填时间戳且按落盘顺序编号（早期先例 W2-1 补回填节时间戳，`025-w2-1-review-oldfox.md` §4 移交 5）；若一次性成文导致各节时间戳非单调（波3 `00-preregistered-expected.md` §3 19:12:15 < §2 19:12:58，整体窗 ~65s），须在文首声明成文方式，不冒充「逐节顺写」（`025-w3-review-oldfox.md` S-4，不构成违规但须如实）。
+
 ## 二、证据包规范（`.proof/<slice>/`）
 
 文件命名约定（S1 `024-s1-model-slice.md:52-68`）：
@@ -31,6 +33,7 @@
 - `*.log` 按 `.gitignore:4` 被 gitignore，入库靠预注册 md / `.ans` / `report.md`；tag 前提要求 proof 归档时，结构化证据（bridge-probe.mjs + `.ans`）入库、`.log` 逐文件 sha256 登记（`024-tag-prep-final.md:41-49,137-216`）。
 - **日志 sha 索引**：预注册与报告的日志文件带 sha256 前 8 位（`024-s1-model-slice.md:54-68`）；归档的 gitignored `.log` 有完整 sha256 清单（`024-tag-prep-final.md:142-216`）。
 - **round log / criterion 变更透明性**：任何计数快照更新（如 registry 4→19→22），旧 criterion 逐字记入测试注释 + 报告 round log，断言强度不降（S2 `024-s2-credentials-slice.md:109-115`）。预注册 frozen 不回改；证据文件映射偏差（预注册分文件名 vs 实际合并文件）如实登记非隐瞒（S4 `024-s4-pkce-slice.md:126-128`）。
+  - **wired registry 计数变更实例**（w1b 反馈 3）：wired 24→26→28 时 bridge/test 3 文件 6 处计数断言更新，旧 criterion（`19/257 → 22/257 → 24/257`）逐字留测试注释、exact equality 强度不降（`025-w1b-half-commands-account.md` §五.3、`025-w1b-review-oldfox.md` §4.3）。
 - **提交=被测**：CI headSha 对上 + diff 复核补闭（证据包自身未必可证，C-S5a，`024-s5-review-oldfox.md:24`）。
 
 ## 三、验收制（JUDGMENT 只记录不拦）
@@ -62,7 +65,9 @@
 （本条款出处：`025-w1a-review-oldfox.md` §2.4，oldfox 2026-11-21 拍板，原文编入；W4 复核按此对表。
 证据卫生配套：失败形态引用按实际分级——`never accepted` 仅在 run1 在档、gate-final 为
 `connection lost, retry #1-3`、12/13 两次单跑为帧全空（无 client stderr 在档），禁说「均有」；
-POST-CHECK 进程计数须过滤自身 zsh wrapper 后按 PID 复核并列出清单，禁以裸 grep 计数自证「清理后 0」。）
+POST-CHECK 进程计数须过滤自身 zsh wrapper 后按 PID 复核并列出清单，禁以裸 grep 计数自证「清理后 0」。
+
+措辞强度分级（`025-w1b-review-oldfox.md` §6）：断言措辞不得超过证据强度——单测只断言对象分离/字段集不重叠时，只能写「隔离」，不能写「互不调用」（需行为级负例如「调 login.login 不产生 account.* 帧」才算）；单 run 在场绿只能写「一次在场绿」，不能写「C/D 均绿」把单次绿说成多 run；「在场绿 run 集合」表述同受条款 3b「按实际形态引用」约束。）
 
 ## 四、预防条款（0.24 真实陷阱，就地归属）
 

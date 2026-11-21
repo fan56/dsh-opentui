@@ -49,10 +49,11 @@ run(ctx) {
 1. `bun test packages/*` — seam/commands 单测 0 fail；既有断言更新非删除。
 2. `node scripts/check-capcontract.mjs` — 若新增 wired id：`PASS=20`（W2-0 扩至 20）、#8a/#8b/#10/#14–#16 对账（deny-list/PARAMS/SERVICE/PROJECTED_BY_HAND/通用放行集）；若无能力面变更：确认门禁不回归即可。
 3. **build shipped bundle + fingerprint**（波1 反馈 3，两波重复实证）：先 `bun scripts/build-bridge.mjs` + `bun scripts/build-client.mjs` 并核 `bundle-fingerprint.json`，再跑真机——防 tree-shake 假绿。
-4. `bash scripts/real-client-gate.sh --out ...` — 真机命令项 + `.ans` 数值帧（禁 PNG）；若补的是 account 类，注意 s2-account section 判定（见预防条款）。真机 `.ans` 数值帧断言与面板 grep **必须 locale-complete 或 pin harness scratch 语言**（C4/W5 预防条款 3），否则 locale 切换致 grep 假阴性；裁决人 + 理由入显式豁免区，不静默删。
+4. `bash scripts/real-client-gate.sh --out ...` — 真机命令项 + `.ans` 数值帧（禁 PNG）；若补的是 account 类，注意 s2-account section 判定（见预防条款）。真机 `.ans` 数值帧断言与面板 grep **必须 locale-complete 或 pin harness scratch 语言**（C4/W5 预防条款 3），否则 locale 切换致 grep 假阴性；裁决人 + 理由入显式豁免区，不静默删。真机前先跑**环境自检 + 孤儿清理 SOP**（`real-client-gate.sh` 默认开 pre/post-check，PID 逐个复核后列 `ORPHAN <pid> <cmd>`，`--skip-env-check` 为显式逃生口）——这是 [W5-CE 条款 5](w5-proof-evidence.md) 的强制步骤，w1a 60→63→37 漂移与 w1b run1 `TUI did not reach composer in 90s` 均由孤儿宿主/mock/tmux 竞争引起，清理后才稳（`025-w1a` §5.4、`025-w1b` §五.2、`025-w1b-review-oldfox.md` §4.2）。孤儿 precheck 命中即 RC=2 fail-loud，勿钓鱼重跑。
 5. `npm pack --dry-run` + 脱敏扫描 `node scripts/scan-stdio-secrets.mjs .proof/<slice>`（最后一步）+ CI 三 job 绿；run URL/headSha 入报告。
 
 判定表补充（波2 通用 arm）：id 在 CapIR 且属 deny-list 族（`{account, credentials, settings}`）→ 手写 arm 路径；`result.jsonSchema` 静态扫描命中敏感键的 id → 手写投影例外清单（`CAP_PROJECTED_BY_HAND`，禁通用投影）。
+- **盲区家族登记**（W2-4 移交 C-1）：静态扫描对 `result.jsonSchema` 为 `null` / `additionalProperties:true` / `jsonSchemaError` 的 id 失明——这类已放行 id 不进 `CAP_PROJECTED_BY_HAND`，须在预注册/开工前置**逐 id 声明默认投影假设**，load-bearing 防线为 seam 手写二次白名单投影（封闭枚举 + 自由文本封顶 + 敌意键零过）（`025-w2-4-review-oldfox.md` §9.1；W2-5 goals 7 id 实例见 `.proof/025-w2-5/00-preregistered-expected.md` §1 E5.b）。
 
 按 [W4](w4-review-gate.md) 评审（命令改动 JUDGMENT 类只记不拦）。
 
@@ -60,3 +61,7 @@ run(ctx) {
 
 1. **locale 变更致 grep 假阴**（S4b C-S4b-a）：S5 config 真写把 profile 切成 zh-CN，Account 导航标签从 `Account` 变 `账号`，gate grep `account|账户|/login` 不含「账号」→ `s2-account: section=no` 假阴，曾被误读为「account 面无 stdio 入口」（S6 终评 C.2 自我修正）。根因：harness 定位器非 locale-complete。预防：grep 补 locale 词（`real-client-gate.sh:238` 现为 `account|账户|账号|/login`），属**修断言 false-negative 非放宽**，判定语义仍是「真 /settings 面板出现 Account 分区」；同类先例 `🧠→⌨`（`:S3 harness`）、composer `输入消息`（`real-client-gate.sh:174-176`）；**断言等价性须由 oldfox 复核**（`024-s6-conflict-adjudication-oldfox.md:73-88`）。分离表述：section=yes 只证「分区可见」，wire 安全由帧级测试独立证（`024-s4b-account-wire.md:14,84`）。
 2. **注释与实现不符**：`/model` 的降级注释（`commands.ts:656-661` 称无 modelCatalog wire）在 S1 接链后过期，但代码实际可用（`025-command-surface-audit.md:63`）。预防：补命令时核对命令注释与 seam face/bridge 接线现状，勿据过期注释判断瓶颈；必要时随补丁更正注释（`024-s5-config-slice.md` 同纪律）。
+3. **任务书措辞 ≠ face 语义，先一手核验类型**（w1a 反馈 1，转 W2 预防条款）：任务书称 `/login` 接「bridge PKCE 流」，但 `seam.login` 实为 provider 凭据/路由双写面，account/PKCE 属另一回事；W5「预注册前一手核验」拦截了错面实现（`025-w1a-stub-commands.md` §5.1；`seams/session.ts:791`）。预防：写 expected 前先读 `packages/tui-base/src/seams/*.ts` 类型声明确认 face 语义，再据真源定 expected，勿据任务书措辞判面。
+4. **审计行号仅定位，实现前 grep 重定位**（w1a 反馈 2）：`025-command-surface-audit.md`/本 W2 文档出处行号基于 `988c6f0`，当前基点已偏移约 3–4 行（如 `/login` 843 vs audit 846）。预防：行号只作定位线索，动手前 `grep` 一手重定位；与条款 2「注释与实现不符」同族——宁信真源、不信旧行号。
+5. **服务键探针可解析 ≠ lookup 语义可达**（I-1 教训，波2 执行报告 §5）：批内中间态 `3ef6bb0..9b077e5` goals 面 string agentId 经宿主 `assertLive` 必败，单测 mock host 层用 string 断言通过发现不了，只有真机 discovery 暴露（`025-wave2-execution-report.md` §5、`.proof/025-w2-5/18-goal-lookup-finding.md`）。预防：scope 家族 id 首参是 lookup 语义（wire 收 id 字符串、宿主收活体对象），须带 lookup 语义探针或依赖 W2-0 data-driven resolver 底座；服务键 `ctx.get` 成功只证 cordis 注册在档，不证语义可达。放行依 AMEND-5 §11.1 新声明（wire 收字符串 + 表驱动 resolver），禁按旧 §2 原文省略 resolver。
+6. **answer-bearing 帧断言链入 gate verdict**（W2 评审移交条款对账）：真机 frame 的「回答行」断言须收窄到含真数据行 + `answerLen>0` 入 gate，断言脚本落档，并用负例证明必红（fake-empty 帧必须 FAIL）；W2-1 C1 carry-in 从 W2-2 真机批起执行（`.proof/025-w3-1/gate/frame-assert.log` 为在役形态；`025-w2-1-review-oldfox.md` §4 移交 5、`025-w2-3-review-oldfox.md` 要点 6）。E2 逐 id 实参断言（通用 arm 单点故障对冲）自 W2-1 起为逐批义务（`025-w2-0-review-oldfox.md` §4 移交 3）。
