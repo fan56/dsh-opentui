@@ -46,6 +46,23 @@ interface ConnectionSinks {
 class FakeConnectionHandle {
 	#source: GenerationSource | undefined
 	#socket: FakeMuxSocket | undefined
+	/** First N generations are dead; generation N+1 answers with a real ready
+	 * frame. Infinity (default) keeps the legacy always-dead host. */
+	#deadGenerations = Infinity
+	#generation = 0
+
+	/** Script a fresh fault-injection run. Callers always reset before connect. */
+	reset(deadGenerations: number): void {
+		this.#deadGenerations = deadGenerations
+		this.#generation = 0
+		this.#source = undefined
+		this.#socket = undefined
+	}
+
+	/** Generations the SDK actually opened — the non-idle-spin probe count. */
+	get generation(): number {
+		return this.#generation
+	}
 
 	registerGenerationSource(source: GenerationSource): () => void {
 		this.#source = source
@@ -55,8 +72,24 @@ class FakeConnectionHandle {
 	}
 
 	openWebSocket(): FakeMuxSocket {
-		this.#socket = new FakeMuxSocket()
-		return this.#socket
+		this.#generation += 1
+		const socket = new FakeMuxSocket()
+		this.#socket = socket
+		if (this.#generation > this.#deadGenerations) {
+			// Live generation: answer the `$events` open frame with the host's
+			// generation-gate ready item so the pump reports ready and connect()
+			// resolves. Microtask keeps the emit out of the pump's send stack.
+			const send = socket.send.bind(socket)
+			socket.send = (data: string): void => {
+				send(data)
+				if (data.includes('"type":"open"')) {
+					queueMicrotask(() =>
+						socket.item({ type: "ready", clientId: "w3-boot-probe", host: { home: "/tmp/w3-host" } }),
+					)
+				}
+			}
+		}
+		return socket
 	}
 
 	start(sinks: ConnectionSinks): { stop(): void } {
@@ -68,19 +101,23 @@ class FakeConnectionHandle {
 			if (stopped || !source) return
 			controller = new AbortController()
 			// A failed generation settles the source; the real controller then
-			// reconnects — replayed here by the tiny tick timer.
-			void source(controller.signal, () => sinks.onConnected())
+			// reconnects — replayed here by the tiny tick timer. The real SDK emits
+			// the `connected` state before the onConnected sink (connection.ts:254-257).
+			void source(controller.signal, () => {
+				sinks.onStateChange('connected')
+				sinks.onConnected()
+			})
 				.catch(() => {
 					/* failed generation: the loop retries */
 				})
 				.then(() => {
 					if (!stopped) timer = setTimeout(tick, 1)
 				})
-			// `openWebSocket` ran inside `source`'s synchronous prologue (the pump
-			// attaches its listeners before the first await), so closing the socket
-			// now fails the generation deterministically — the "host never accepts
-			// the connection" shape, without any real network.
-			this.#socket?.close()
+			// Dead generations: `openWebSocket` ran inside `source`'s synchronous
+			// prologue, so closing now fails the generation deterministically —
+			// the "host never accepts the connection" shape, no real network.
+			// Live generations stay open and answer via the ready item above.
+			if (this.#generation <= this.#deadGenerations) this.#socket?.close()
 		}
 		tick()
 		return {
@@ -140,6 +177,106 @@ describe('ClientConnection — first-connection retry cap', () => {
 			expect(exhausted.authority).toBe(`127.0.0.1:${port}`)
 			expect(exhausted.message).toContain('after 2 retries')
 			expect(exhausted.message).toContain('plugin failed to load: boom')
+		} finally {
+			await connection.close()
+		}
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 025 wave3 batch1 — bounded boot poll (host-boot flake root-cause fix).
+// Fault injection scripts a slow-booting host: the first SLOW_START_FAILURES
+// generations are dead (cookie minted, listener not up), the next is live.
+// The window/backoff come from constants injected through options — no fixed
+// wall-clock sleep and no sampling of an intermediate frame.
+// ---------------------------------------------------------------------------
+const SLOW_START_FAILURES = 5
+const BOOT_BUDGET_MS = 2_000
+const DEAD_BOOT_BUDGET_MS = 300
+const PROBE_BACKOFF = { backoffBaseMs: 5, backoffFactor: 2, backoffMaxMs: 20, generationReadyTimeoutMs: 200 }
+
+describe('ClientConnection — bounded boot poll (025-w3-1)', () => {
+	test('LEGACY fixed cap rejects a slow-boot host that comes up inside the budget', async () => {
+		handle.reset(SLOW_START_FAILURES)
+		const connection = new ClientConnection({
+			authority: '127.0.0.1:1',
+			cookieHeader: 'dsh-auth-test=v1.body.sig',
+			maxConnectAttempts: 3, // explicit cap => legacy fixed-window behavior
+			connectBudgetMs: BOOT_BUDGET_MS,
+			recovery: PROBE_BACKOFF,
+		})
+		try {
+			const error = await connection.connect().then(
+				() => undefined,
+				(reason: unknown) => reason,
+			)
+			expect(error instanceof ConnectionRetryExhaustedError).toBe(true)
+			// Old law cuts off at attempt 5 — before the host's 6th (live) generation.
+			expect(handle.generation).toBeLessThanOrEqual(SLOW_START_FAILURES)
+		} finally {
+			await connection.close()
+		}
+	})
+
+	test('bounded poll accepts the SAME slow-boot host inside the budget', async () => {
+		handle.reset(SLOW_START_FAILURES)
+		const connection = new ClientConnection({
+			authority: '127.0.0.1:1',
+			cookieHeader: 'dsh-auth-test=v1.body.sig',
+			// no explicit cap => bounded poll over connectBudgetMs (production path)
+			connectBudgetMs: BOOT_BUDGET_MS,
+			recovery: PROBE_BACKOFF,
+		})
+		try {
+			const info = await connection.connect()
+			expect(info.clientId).toBe('w3-boot-probe')
+			// Non-idle-spin proof: the source really probed PAST the old fixed cap;
+			// a no-op/wait-only fix would stall at 5 and never reach the live gen.
+			expect(handle.generation).toBeGreaterThanOrEqual(SLOW_START_FAILURES + 1)
+		} finally {
+			await connection.close()
+		}
+	})
+
+	test('bounded poll fails loud when the host never accepts inside the budget', async () => {
+		handle.reset(Infinity)
+		const connection = new ClientConnection({
+			authority: '127.0.0.1:1',
+			cookieHeader: 'dsh-auth-test=v1.body.sig',
+			connectBudgetMs: DEAD_BOOT_BUDGET_MS,
+			recovery: PROBE_BACKOFF,
+			diagnostics: () => '--- host output ---\nboot stalled',
+		})
+		try {
+			const error = await connection.connect().then(
+				() => undefined,
+				(reason: unknown) => reason,
+			)
+			expect(error instanceof ConnectionRetryExhaustedError).toBe(true)
+			const exhausted = error as ConnectionRetryExhaustedError
+			expect(exhausted.attempts).toBeGreaterThanOrEqual(1)
+			expect(exhausted.authority).toBe('127.0.0.1:1')
+			expect(exhausted.message).toContain('never accepted the client connection')
+			expect(exhausted.message).toContain('boot stalled')
+			expect(handle.generation).toBeGreaterThanOrEqual(1) // it really probed
+		} finally {
+			await connection.close()
+		}
+	})
+
+	test('bounded poll leaves the first-generation success path unchanged', async () => {
+		handle.reset(0) // live on the very first generation
+		const connection = new ClientConnection({
+			authority: '127.0.0.1:1',
+			cookieHeader: 'dsh-auth-test=v1.body.sig',
+			connectBudgetMs: BOOT_BUDGET_MS,
+			recovery: PROBE_BACKOFF,
+		})
+		try {
+			const info = await connection.connect()
+			expect(info.clientId).toBe('w3-boot-probe')
+			expect(handle.generation).toBe(1)
+			expect(connection.getState()).toBe('connected')
 		} finally {
 			await connection.close()
 		}

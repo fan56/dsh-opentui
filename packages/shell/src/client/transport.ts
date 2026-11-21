@@ -26,10 +26,16 @@
  *
  * First-connection policy: the SDK reconnects forever by design, which is
  * correct AFTER a session exists but wrong during boot against a dead or
- * unauthorized host (silent `[connection] connection lost, retry #n`). The
- * generation counter below caps retries until the first successful
- * connection (default 3) and a boot budget (default 30s) backstops it; the
- * rejection carries the host's captured stderr tail. Once connected, the
+ * unauthorized host (silent `[connection] connection lost, retry #n`). By
+ * default the first connection is a BOUNDED POLL over the boot budget
+ * (default 30s): the generation source keeps probing with the SDK's backoff
+ * until either the host accepts a generation or the budget expires, then
+ * fails loud with the host's captured stderr tail. A fixed attempt count is
+ * NOT imposed on that path — a slow-booting host (cookie minted, listener
+ * still coming up) used to be cut off after ~4 fast retries at ~4-7.5s, well
+ * before the 30s budget (025 wave3 batch1; cookie-mint bounded-poll shape).
+ * Callers that pass an explicit `maxConnectAttempts` keep the legacy fixed
+ * cap (deterministic tests / deliberately short boots). Once connected, the
  * SDK's normal reconnect behavior is untouched.
  *
  * SDK loading is LAZY: the module below is imported with `await import()`
@@ -165,6 +171,8 @@ export class ClientConnection {
 	#closed = false
 	/** First-connection retry policy (see ClientConnectionOptions). */
 	readonly #maxConnectAttempts: number
+	/** No explicit cap pinned: poll the whole budget instead of failing at a fixed attempt count. */
+	readonly #boundedPoll: boolean
 	readonly #connectBudgetMs: number
 	readonly #diagnostics: (() => string) | undefined
 	#connectAttempts = 0
@@ -204,6 +212,7 @@ export class ClientConnection {
 			},
 		}
 		this.#recovery = options.recovery
+		this.#boundedPoll = options.maxConnectAttempts === undefined
 		this.#maxConnectAttempts = Math.max(0, options.maxConnectAttempts ?? DEFAULT_MAX_CONNECT_ATTEMPTS)
 		this.#connectBudgetMs = resolveConnectTimeoutMs(options.connectBudgetMs)
 		this.#diagnostics = options.diagnostics
@@ -262,7 +271,12 @@ export class ClientConnection {
 			handle.registerGenerationSource((signal, ready) => {
 				if (!this.#connectedOnce) {
 					this.#connectAttempts += 1
-					if (this.#connectAttempts > this.#maxConnectAttempts + 1) {
+					// A fixed attempt cap cut slow boots off at ~4-7.5s, long before
+					// the 30s budget. Without an explicit cap, keep probing inside
+					// the budget (SDK backoff paces the probes) and fail loud only
+					// when the budget timer expires — the cookie-mint bounded-poll
+					// shape. Explicit caps keep the legacy deterministic behavior.
+					if (!this.#boundedPoll && this.#connectAttempts > this.#maxConnectAttempts + 1) {
 						this.#failConnect(
 							new ConnectionRetryExhaustedError(
 								this.#maxConnectAttempts,
