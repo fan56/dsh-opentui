@@ -12,6 +12,8 @@ import type {
 	PluginRowView,
 	SeamPluginBundleRow,
 	SeamPluginChange,
+	SeamInstallCancellation,
+	SeamInstallProgress,
 	SeamPluginDetail,
 	SeamPluginInspection,
 	SeamPluginRegistries,
@@ -202,4 +204,51 @@ export function projectChange(raw: unknown): SeamPluginChange {
 	if (error !== undefined) out.error = error
 	if (requestId !== undefined && requestId !== "") out.requestId = requestId
 	return out
+}
+
+/**
+ * 025-w2-3c — `waitForInstall` result -> closed-state progress projection.
+ *
+ * Host contract (src/index.ts:1125-1131): the active request's `result` promise
+ * is returned while in flight; `null` once it settled AND was evicted from the
+ * live map (completed results are not retained, so null establishes neither
+ * success nor cancellation by itself — it is an honest terminal "done" from
+ * the seam's polling perspective, with target unknown). A ChangeResult is
+ * projected by its closed `application` enum; hostile/malformed values fall to
+ * "unknown" — NEVER painted as a success. Only short enum/target/error strings
+ * cross (E5 second whitelist); no host object/array leaks.
+ */
+export function projectInstallProgress(raw: unknown, requestId: string): SeamInstallProgress {
+	if (raw === null || raw === undefined) return { state: "done", requestId }
+	const value = unwrapWireValue(raw)
+	// The generic wire wraps a null primitive as { value: null }.
+	if (value === null || value === undefined) return { state: "done", requestId }
+	const row = asRecord(value)
+	const application = row.application
+	const target = text(row.target, MAX_SHORT) ?? ""
+	if (application === "cancelled") return { state: "cancelled", requestId, target }
+	if (application === "failed") {
+		const errorObj = row.error
+		const error = typeof errorObj === "string"
+			? errorObj.slice(0, MAX_SHORT)
+			: text(asRecord(errorObj).diagnostic, MAX_SHORT) ?? text(asRecord(errorObj).code, MAX_SHORT)
+		return error !== undefined
+			? { state: "failed", requestId, target, error }
+			: { state: "failed", requestId, target }
+	}
+	if (application === "applied" || application === "restart-required" || application === "overridden") {
+		return { state: "done", requestId, target }
+	}
+	return { state: "unknown", requestId }
+}
+
+/**
+ * 025-w2-3c — `cancelInstall` result -> closed enum (E5). A hostile status is
+ * mapped to "not-running" (the safe, non-destructive reading), never trusted.
+ */
+export function projectCancellation(raw: unknown): SeamInstallCancellation {
+	const row = asRecord(unwrapWireValue(raw))
+	const status = row.status
+	if (status === "cancelled" || status === "too-late" || status === "not-running") return { status }
+	return { status: "not-running" }
 }

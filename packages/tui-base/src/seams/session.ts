@@ -288,6 +288,27 @@ export function isPluginWriteConfirm(value: unknown): value is PluginWriteConfir
 	)
 }
 
+/**
+ * 025-w2-3c — install progress projection over `waitForInstall` polling (the
+ * adjudicated route; ADR-0010 frame surface NOT expanded). The host's
+ * `waitForInstall(requestId)` returns a `ChangeResult | null`: null once the
+ * request settled and was evicted from the live map. The seam projects a CLOSED
+ * state set only — no host object crosses. `running` is the in-flight state,
+ * `done`/`cancelled`/`failed` are terminal, `unknown` is the honest fallback for
+ * a malformed/hostile reply (never painted as success).
+ */
+export type SeamInstallProgress =
+	| { readonly state: "running"; readonly requestId: string }
+	| { readonly state: "done"; readonly requestId: string; readonly target?: string }
+	| { readonly state: "cancelled"; readonly requestId: string; readonly target?: string }
+	| { readonly state: "failed"; readonly requestId: string; readonly target?: string; readonly error?: string }
+	| { readonly state: "unknown"; readonly requestId: string }
+
+/** 025-w2-3c — `cancelInstall` result (host PluginInstallCancellation, closed enum). */
+export interface SeamInstallCancellation {
+	readonly status: "cancelled" | "too-late" | "not-running"
+}
+
 /** One selectable new-session permission preset (`permissionPresets/catalog`
  * — the same process catalog the web client's General settings reads). */
 export interface SeamPermissionPresetOption {
@@ -842,7 +863,7 @@ export interface SessionSeam {
 	/** Install a spec as an enabled bundle (the `i` flow's apply half). R6 gated.
 	 *  The returned ChangeResult's `target` carries the install requestId so the
 	 *  progress face can poll `waitForInstall`. */
-	installPluginSpec?(spec: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
+	installPluginSpec?(spec: string, confirm: PluginWriteConfirm, requestId?: string): Promise<SeamPluginChange>
 	/** Update an installed bundle to a target version (R6 gated; dry-run via inspect). */
 	updatePluginBundle?(name: string, version: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
 	/** Set a plugin entry enabled (bundle-independent id; R6 gated). */
@@ -850,6 +871,11 @@ export interface SessionSeam {
 	/** Grant/clear a version exemption. acceptRisk MUST be true for a grant
 	 *  after the user accepts the crash/data-loss risk in the confirm modal (R6 gated). */
 	setVersionExemption?(packageVersion: string, runtimeVersion: string, enabled: boolean, acceptRisk: boolean, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
+	/** 025-w2-3c — poll one install's state via waitForInstall (R6 gated; progress is
+	 *  a write-id but read-only in effect). Returns a closed-state projection. */
+	waitForInstall?(requestId: string, confirm: PluginWriteConfirm): Promise<SeamInstallProgress>
+	/** 025-w2-3c — cancel an in-flight install (R6 gated; bound to the modal cancel). */
+	cancelInstall?(requestId: string, confirm: PluginWriteConfirm): Promise<SeamInstallCancellation>
 	/**
 	 * Session-scoped skill catalog (`skills/list`): the host's composed
 	 * human-invocable skills, including plugin-provided rows a boot-time

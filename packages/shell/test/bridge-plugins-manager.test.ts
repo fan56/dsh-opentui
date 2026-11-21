@@ -6,8 +6,10 @@
 import { describe, expect, test } from "bun:test"
 import {
 	projectBundleRows,
+	projectCancellation,
 	projectChange,
 	projectDetail,
+	projectInstallProgress,
 	projectInspection,
 	projectPluginRows,
 	projectRegistries,
@@ -151,5 +153,38 @@ describe("W2-3b plugin-manager write projection — second whitelist (E5)", () =
 		const out = projectChange({ application: "failed", error: { diagnostic: "x".repeat(9000) } })
 		expect(out.target).toBe("")
 		expect(out.error!.length).toBe(240)
+	})
+})
+
+// 025-w2-3c — waitForInstall progress + cancelInstall projection (closed states).
+describe("W2-3c install progress/cancel projection — second whitelist (E5)", () => {
+	test("projectInstallProgress: null (settled/evicted) -> done; ChangeResult by application", () => {
+		expect(projectInstallProgress(null, "r1")).toEqual({ state: "done", requestId: "r1" })
+		expect(projectInstallProgress({ value: null }, "r1")).toEqual({ state: "done", requestId: "r1" })
+		expect(projectInstallProgress({ application: "applied", target: "@s/p" }, "r1")).toEqual({ state: "done", requestId: "r1", target: "@s/p" })
+		expect(projectInstallProgress({ application: "restart-required", target: "@s/p" }, "r1").state).toBe("done")
+		expect(projectInstallProgress({ application: "cancelled", target: "@s/p" }, "r1")).toEqual({ state: "cancelled", requestId: "r1", target: "@s/p" })
+		expect(projectInstallProgress({ application: "failed", target: "@s/p", error: { diagnostic: "boom" } }, "r1")).toEqual({
+			state: "failed", requestId: "r1", target: "@s/p", error: "boom",
+		})
+	})
+
+	test("projectInstallProgress: hostile application/keys -> unknown, no SENTINEL leak", () => {
+		const out = projectInstallProgress({
+			application: "totally-success", target: "p", apiKey: "W22_SENTINEL_synthetic",
+			packageResult: { nested: "x" },
+		}, "r1")
+		expect(out.state).toBe("unknown")
+		const text = JSON.stringify(out)
+		expect(text).not.toContain("W22_SENTINEL_synthetic")
+		expect(text).not.toContain("apiKey")
+		expect(text).not.toContain("packageResult")
+	})
+
+	test("projectCancellation: closed enum, hostile -> not-running", () => {
+		expect(projectCancellation({ status: "cancelled" })).toEqual({ status: "cancelled" })
+		expect(projectCancellation({ status: "too-late" })).toEqual({ status: "too-late" })
+		expect(projectCancellation({ status: "not-running" })).toEqual({ status: "not-running" })
+		expect(projectCancellation({ status: "totally-cancelled", apiKey: "W22_SENTINEL_synthetic" })).toEqual({ status: "not-running" })
 	})
 })

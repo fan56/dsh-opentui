@@ -3426,3 +3426,53 @@ describe("025-w2-3b pluginManager write faces — seam confirm gate (R6)", () =>
 		expect(h.seam.pluginsManager!.available()).toBe(true)
 	})
 })
+
+// ---------------------------------------------------------------------------
+// 025-w2-3c — install progress/cancel faces (adjudicated waitForInstall route).
+// ---------------------------------------------------------------------------
+describe("025-w2-3c install progress/cancel faces (R6 gated, closed states)", () => {
+	test("E0 — no confirm token: waitForInstall/cancelInstall reject CONFIRM_REQUIRED, zero wire", async () => {
+		const h = makeHarness()
+		let c1 = "", c2 = ""
+		try { await h.seam.waitForInstall!("r1", undefined as never) } catch (e) { c1 = e instanceof BridgeProtocolError ? e.code : "" }
+		try { await h.seam.cancelInstall!("r1", undefined as never) } catch (e) { c2 = e instanceof BridgeProtocolError ? e.code : "" }
+		expect(c1).toBe("CONFIRM_REQUIRED")
+		expect(c2).toBe("CONFIRM_REQUIRED")
+		expect(h.lastRequest("pluginManager.waitForInstall")).toBeUndefined()
+		expect(h.lastRequest("pluginManager.cancelInstall")).toBeUndefined()
+	})
+
+	test("waitForInstall: valid token -> correct wire + closed-state projection by ChangeResult", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.waitForInstall", { kind: "value", value: { changed: true, application: "cancelled", target: "@s/p" } })
+		const p = await h.seam.waitForInstall!("r1", createPluginWriteConfirm("waitForInstall"))
+		expect(h.lastRequest("pluginManager.waitForInstall")?.params).toEqual({ requestId: "r1", __confirm: true })
+		expect(p).toEqual({ state: "cancelled", requestId: "r1", target: "@s/p" })
+
+		h.replies.set("pluginManager.waitForInstall", { kind: "value", value: null })
+		const p2 = await h.seam.waitForInstall!("r1", createPluginWriteConfirm("waitForInstall"))
+		expect(p2.state).toBe("done")
+	})
+
+	test("cancelInstall: valid token -> status enum; hostile status -> not-running", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.cancelInstall", { kind: "value", value: { status: "cancelled" } })
+		expect(await h.seam.cancelInstall!("r1", createPluginWriteConfirm("cancelInstall"))).toEqual({ status: "cancelled" })
+		expect(h.lastRequest("pluginManager.cancelInstall")?.params).toEqual({ requestId: "r1", __confirm: true })
+		h.replies.set("pluginManager.cancelInstall", { kind: "value", value: { status: "bogus" } })
+		expect(await h.seam.cancelInstall!("r1", createPluginWriteConfirm("cancelInstall"))).toEqual({ status: "not-running" })
+	})
+
+	test("E5 — hostile progress reply: SENTINEL/keys never cross seam shape", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.waitForInstall", {
+			kind: "value",
+			value: { application: "failed", target: "p", error: { diagnostic: "boom" }, apiKey: "W23_SENTINEL_synthetic" },
+		})
+		const p = await h.seam.waitForInstall!("r1", createPluginWriteConfirm("waitForInstall"))
+		const text = JSON.stringify(p)
+		expect(text).not.toContain("W23_SENTINEL_synthetic")
+		expect(text).not.toContain("apiKey")
+		expect(p.state).toBe("failed")
+	})
+})

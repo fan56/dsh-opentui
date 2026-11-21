@@ -35,7 +35,7 @@ import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useThemeOptional } from "../../context/theme"
 import { successColor, warningColor } from "../../skin/semantic"
 import { createPluginWriteConfirm } from "../../seams/session"
-import type { SeamPluginBundleRow, SeamPluginChange, SeamPluginDetail, SeamPluginInspection, SessionSeam } from "../../seams/session"
+import type { SeamInstallProgress, SeamPluginBundleRow, SeamPluginChange, SeamPluginDetail, SeamPluginInspection, SessionSeam } from "../../seams/session"
 
 const [bridgeOpen, setBridgeOpen] = createSignal(false)
 // Module-scope open state: the session sidebar Esc layer (priority 10)
@@ -231,6 +231,19 @@ export function writeDryRunLine(operation: "remove" | "update", inspection: Plug
 	return t("panel.plugins.dryRun.accepted", { operation: t(`panel.plugins.confirm.op.${operation}`), spec: label })
 }
 
+/** 025-w2-3c — one-line projection of an install progress state (pure, testable).
+ *  The three-semantic states are running / cancelled / failed; `done` is the
+ *  successful terminal, `unknown` is the honest non-success fallback. */
+export function installProgressLine(progress: SeamInstallProgress): string {
+	switch (progress.state) {
+		case "running": return t("panel.plugins.progress.running")
+		case "cancelled": return t("panel.plugins.progress.cancelled", { target: progress.target || progress.requestId })
+		case "failed": return t("panel.plugins.progress.failed", { target: progress.target || progress.requestId, error: progress.error ?? "?" })
+		case "done": return t("panel.plugins.progress.done", { target: progress.target || progress.requestId })
+		case "unknown": return t("panel.plugins.progress.unknown")
+	}
+}
+
 /**
  * 025-w2-2 — the detail view's one-line preview of a `readBundleDetail`
  * document. Pure (no seam/transport), so the answer-bearing `.ans` assertion
@@ -290,8 +303,15 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	const [detail, setDetail] = createSignal<SeamPluginDetail | undefined>(undefined)
 	const [detailLoading, setDetailLoading] = createSignal(false)
 	const [refreshTick, setRefreshTick] = createSignal(0)
+	// 025-w2-3c — install progress + in-flight request id for cancel.
+	const [installProgress, setInstallProgress] = createSignal<SeamInstallProgress | undefined>(undefined)
+	const [cancelArmed, setCancelArmed] = createSignal(false)
 	let statusTimer: ReturnType<typeof setTimeout> | undefined
-	onCleanup(() => clearTimeout(statusTimer))
+	let progressTimer: ReturnType<typeof setInterval> | undefined
+	onCleanup(() => {
+		clearTimeout(statusTimer)
+		if (progressTimer !== undefined) clearInterval(progressTimer)
+	})
 
 	createEffect(() => {
 		if (bridgeOpen()) {
@@ -567,18 +587,55 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	async function install(spec: string, operation: string) {
 		if (busy()) return
 		if (typeof props.seam.installPluginSpec !== "function") return
+		const requestId = `ui-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 		setBusy(true)
+		setInstallProgress({ state: "running", requestId })
+		setCancelArmed(true)
 		flash(t("panel.plugins.status.installing", { spec }))
 		try {
-			const change = await props.seam.installPluginSpec(spec, createPluginWriteConfirm(operation))
+			const change = await props.seam.installPluginSpec(spec, createPluginWriteConfirm(operation), requestId)
+			// Project the terminal ChangeResult into the closed progress states.
+			// The seam also echoed requestId; waitForInstall can be polled by any
+			// consumer (seam face) for a live view, but the install's own ChangeResult
+			// is authoritative for the terminal state in this UI path.
+			const terminal = terminalProgress(change, requestId)
+			setInstallProgress(terminal)
 			flash(pluginChangeNotice(change), 8000)
-			// W2-3c will drive waitForInstall from change.requestId; for now the
-			// post-write refresh in the seam repaints the row (W2-3b).
 		} catch (error) {
+			setInstallProgress({ state: "failed", requestId, target: spec, error: errorMessage(error) })
 			flash(t("panel.plugins.status.changeFailed", { name: spec, error: errorMessage(error) }), 8000)
 		} finally {
+			setCancelArmed(false)
 			setBusy(false)
+			// Clear the terminal progress line after a beat so the panel returns
+			// to its normal height; the status line keeps the durable notice.
+			if (progressTimer !== undefined) clearInterval(progressTimer)
+			progressTimer = setInterval(() => {
+				setInstallProgress(undefined)
+				if (progressTimer !== undefined) clearInterval(progressTimer)
+				progressTimer = undefined
+			}, 6000)
 		}
+	}
+
+	/** Pure seam-agnostic terminal mapping from a ChangeResult to progress. */
+	function terminalProgress(change: SeamPluginChange, requestId: string): SeamInstallProgress {
+		if (change.application === "cancelled") return { state: "cancelled", requestId, target: change.target }
+		if (change.application === "failed") return { state: "failed", requestId, target: change.target, error: change.error }
+		return { state: "done", requestId, target: change.target }
+	}
+
+	/** cancel key: cancel an in-flight install via cancelInstall (R6 gated). */
+	function cancelActiveInstall() {
+		const progress = installProgress()
+		if (!cancelArmed() || progress === undefined || typeof props.seam.cancelInstall !== "function") return
+		const requestId = progress.requestId
+		void props.seam.cancelInstall(requestId, createPluginWriteConfirm("cancelInstall"))
+			.then((result) => {
+				flash(t("panel.plugins.progress.cancelResult", { status: result.status }), 6000)
+				if (result.status === "cancelled") setInstallProgress({ state: "cancelled", requestId, target: requestId })
+			})
+			.catch((error) => flash(t("panel.plugins.status.changeFailed", { name: requestId, error: errorMessage(error) }), 8000))
 	}
 
 	Keymap.createLayer(() => ({
@@ -647,6 +704,15 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 				run: beginInstall,
 			},
 			{
+				bind: "x",
+				title: t("panel.plugins.keymap.cancelInstall"),
+				group: "Plugins",
+				// Only armed while an install is in flight (review §4 item 4:
+				// cancelInstall bound to the cancel action).
+				enabled: () => !filterOpen() && !installOpen() && cancelArmed(),
+				run: cancelActiveInstall,
+			},
+			{
 				bind: "up,k",
 				title: t("panel.plugins.keymap.previous"),
 				group: "Plugins",
@@ -668,7 +734,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			<box
 				flexShrink={0}
 				width="100%"
-				height={1 + 1 + (degraded() ? 1 : 0) + Math.min(visible().length || 1, 12) + 2 + (status() !== undefined ? 1 : 0) + 1}
+				height={1 + 1 + (degraded() ? 1 : 0) + Math.min(visible().length || 1, 12) + 2 + (installProgress() !== undefined ? 1 : 0) + (status() !== undefined ? 1 : 0) + 1}
 				flexDirection="column"
 				border={["left"]}
 				borderColor={theme?.border.base ?? "#7aa2f7"}
@@ -776,6 +842,15 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 						{detail() !== undefined ? pluginDetailPreview(detail(), detailLoading()) : ""}
 					</text>
 				</box>
+					{/* 025-w2-3c — install progress line (fixed height when present;
+				    text reads installProgress() signal directly — W2-2 render-gap law). */}
+					<Show when={installProgress() !== undefined}>
+						<box height={1} flexShrink={0}>
+							<text fg={warningColor(theme ?? undefined)} wrapMode="none">
+								{installProgress() !== undefined ? installProgressLine(installProgress()!) : ""}
+							</text>
+						</box>
+					</Show>
 					<Show when={status() !== undefined}>
 						<box height={1} flexShrink={0}>
 							<text fg={warningColor(theme ?? undefined)} wrapMode="none">

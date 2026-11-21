@@ -40,6 +40,8 @@ import type {
 	PluginRowView,
 	SeamPermissionCatalog,
 	PluginWriteConfirm,
+	SeamInstallCancellation,
+	SeamInstallProgress,
 	SeamPluginBundleRow,
 	SeamPluginChange,
 	SeamPluginDetail,
@@ -81,8 +83,10 @@ import { randomUUID } from "node:crypto"
 // 025-w2-2 — hand-written plugin-manager read face + second whitelist projection.
 import {
 	projectBundleRows,
+	projectCancellation,
 	projectChange,
 	projectDetail,
+	projectInstallProgress,
 	projectInspection,
 	projectPluginRows,
 	projectRegistries,
@@ -1503,14 +1507,25 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * and does NOT poison availability. On success the bundle cache is refreshed
 	 * (review §4 item 6) so a toggle/remove/install is reflected on next paint.
 	 */
+	/** Generic confirmed-call core: seam gate + `__confirm` marker + faithful
+	 *  classification. Shared by #pmWrite and the progress/cancel faces. */
+	async #pmConfirmed<T>(
+		method: string,
+		params: Record<string, unknown>,
+		confirm: PluginWriteConfirm | undefined,
+		project: (raw: unknown) => T,
+	): Promise<T> {
+		if (!writeConfirmed(confirm)) throw CONFIRM_REQUIRED(method)
+		return this.#pmRequest(method, { ...params, __confirm: true }, project)
+	}
+
 	async #pmWrite(
 		method: string,
 		params: Record<string, unknown>,
 		confirm: PluginWriteConfirm | undefined,
 		target: string,
 	): Promise<SeamPluginChange> {
-		if (!writeConfirmed(confirm)) throw CONFIRM_REQUIRED(method)
-		const reply = await this.#pmRequest(method, { ...params, __confirm: true }, projectChange)
+		const reply = await this.#pmConfirmed(method, params, confirm, projectChange)
 		// Normalise an empty/short target from the host to the caller's target so
 		// the status line always names what changed.
 		if (reply.target === "" && target !== "") reply.target = target
@@ -1548,8 +1563,8 @@ export class BridgeSessionSeam implements SessionSeam {
 	inspectPluginSpec = (spec: string): Promise<SeamPluginInspection> =>
 		this.pluginsManager.inspect(spec)
 
-	installPluginSpec = async (spec: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange> => {
-		const requestId = `w23-${randomUUID()}`
+	installPluginSpec = async (spec: string, confirm: PluginWriteConfirm, requestIdArg?: string): Promise<SeamPluginChange> => {
+		const requestId = requestIdArg ?? `w23-${randomUUID()}`
 		const change = await this.#pmWrite(
 			"pluginManager.installBundle",
 			{ spec, options: { enabled: true, requestId } },
@@ -1581,6 +1596,21 @@ export class BridgeSessionSeam implements SessionSeam {
 			confirm,
 			`${packageVersion}@${runtimeVersion}`,
 		)
+
+	// 025-w2-3c (adjudicated route) — install progress/cancel over the two
+	// unary write ids waitForInstall + cancelInstall (NO ADR-0010 frame growth).
+	// Both pass the seam confirm gate + __confirm marker; progress is a
+	// closed-state projection, never a host object.
+	waitForInstall = (requestId: string, confirm: PluginWriteConfirm): Promise<SeamInstallProgress> =>
+		this.#pmConfirmed(
+			"pluginManager.waitForInstall",
+			{ requestId },
+			confirm,
+			(raw) => projectInstallProgress(raw, requestId),
+		)
+
+	cancelInstall = (requestId: string, confirm: PluginWriteConfirm): Promise<SeamInstallCancellation> =>
+		this.#pmConfirmed("pluginManager.cancelInstall", { requestId }, confirm, projectCancellation)
 
 	/**
 	 * 025-w2-2 — warm/refresh the real bundle cache (the panel calls this on

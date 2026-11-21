@@ -6,6 +6,7 @@ import { beforeAll, describe, expect, test } from "bun:test"
 import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	bundleStateText,
+	installProgressLine,
 	pluginBundleViews,
 	pluginDetailPreview,
 	versionExemptionRiskLine,
@@ -89,5 +90,22 @@ describe("W2-3b write confirm modal helpers", () => {
 		const refused = writeDryRunLine("remove", { status: "refused", problem: "not-bundle", reason: "no bundle" })
 		expect(refused).toContain("not-bundle")
 		expect(refused).toContain("no bundle")
+	})
+})
+
+// 025-w2-3c — install progress line projection (pure, three-semantic states).
+describe("W2-3c install progress line", () => {
+	test("all closed states map to honest distinct lines (no raw keys)", () => {
+		const running = installProgressLine({ state: "running", requestId: "r" })
+		const done = installProgressLine({ state: "done", requestId: "r", target: "@s/p" })
+		const cancelled = installProgressLine({ state: "cancelled", requestId: "r", target: "@s/p" })
+		const failed = installProgressLine({ state: "failed", requestId: "r", target: "@s/p", error: "boom" })
+		const unknown = installProgressLine({ state: "unknown", requestId: "r" })
+		expect(running).not.toContain("{")
+		expect(done).toContain("@s/p")
+		expect(cancelled).toContain("@s/p")
+		expect(failed).toContain("boom")
+		expect(unknown).not.toContain("{")
+		expect(new Set([running, done, cancelled, failed, unknown]).size).toBe(5)
 	})
 })
