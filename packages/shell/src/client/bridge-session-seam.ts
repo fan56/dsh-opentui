@@ -58,7 +58,7 @@ import { projectJournalRecord } from "./journal-projection.ts"
 import { tokensPerSecond } from "../agent/loop.ts"
 // S5 — real local config/settings/agents faces replace the old `{}` / honest-
 // failure degrades (no mocks; every read/write touches the operator's files).
-import { LocalAgentsFace, LocalConfigStore, LocalSettingsStore } from "./local-config-faces.ts"
+import { LocalAgentsFace, LocalConfigStore, LocalPresetFace, LocalSettingsStore } from "./local-config-faces.ts"
 import { resolveDshHome } from "./remote-local-fs.ts"
 import { DEFAULT_PROFILE } from "./lifecycle.ts"
 
@@ -1233,6 +1233,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #configStore: LocalConfigStore
 	readonly #settingsStore: LocalSettingsStore
 	readonly #localAgents: LocalAgentsFace
+	readonly #localPresets: LocalPresetFace
 
 	/** S5 /settings host face — real local file I/O, field-level whitelist
 	 *  projection (oldfox S4 review §六.2). Never a `{}` degrade. */
@@ -1252,6 +1253,17 @@ export class BridgeSessionSeam implements SessionSeam {
 		body: (name) => this.#localAgents.body(name),
 		modelEfforts: (providerID, modelID) => this.#localAgents.modelEfforts(providerID, modelID),
 		officialCaps: () => this.#localAgents.officialCaps(),
+	}
+
+	/**
+	 * 025-w1a — /preset agent-preset face. Real local roster declared in the
+	 * profile patch (no host registry RPC in the inproc profile); staged id
+	 * persisted as a scalar `agentPreset` config preference (next-session effect).
+	 */
+	preset: NonNullable<SessionSeam["preset"]> = {
+		list: () => Promise.resolve(this.#localPresets.list()),
+		currentId: () => Promise.resolve(this.#localPresets.currentId()),
+		select: (presetId) => Promise.resolve(this.#localPresets.select(presetId)),
 	}
 
 	/**
@@ -1571,6 +1583,8 @@ export class BridgeSessionSeam implements SessionSeam {
 				groups: Array<{ id: string; models: Array<{ id: string; reasoning?: { efforts?: Array<{ id: string; name: string; description?: string }> } }> }>
 			}>,
 		})
+		// 025-w1a — /preset real local roster (patch-declared presets + staged id).
+		this.#localPresets = new LocalPresetFace(this.#dshHome, this.#profile)
 		this.#onDead = options.onDead
 		this.#onPermissionUnavailable = options.onPermissionUnavailable
 		this.#confirmClock = options.confirmClock ?? {

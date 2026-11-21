@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { LocalAgentsFace, LocalConfigStore, LocalSettingsStore } from "../src/client/local-config-faces.ts"
+import { LocalAgentsFace, LocalConfigStore, LocalPresetFace, LocalSettingsStore } from "../src/client/local-config-faces.ts"
 
 function scratch() {
 	const home = mkdtempSync(join(tmpdir(), "s5-faces-"))
@@ -101,6 +101,82 @@ describe("S5 agents face — REAL corpus, no mocks", () => {
 		expect(rows.some((r) => r.name === "fixture" && r.model === "provider/model-x" && r.deep === 2)).toBe(true)
 		expect(face.dir()).toBe(agentsDir)
 		expect(face.body("fixture")).toContain("Fixture body line.")
+		rmSync(s.home, { recursive: true, force: true })
+	})
+})
+
+describe("025-w1a LocalPresetFace — REAL patch-declared presets, field whitelist", () => {
+	const PATCH = [
+		"- id: llm-pi-ai",
+		"  config:",
+		"    providers: {}",
+		"- insert:",
+		"    - id: preset-standard",
+		"      name: '@deepseek-ai/dsh-agent-preset'",
+		"      config:",
+		"        id: standard",
+		"        name: Standard",
+		"        description: The shipped standard preset",
+		"        order: 1",
+		"        plugins:",
+		"          - id: persona",
+		`            config: { prompt: SENTINEL_MUST_NOT_CROSS }`,
+		"- insert:",
+		"    - id: preset-reviewer",
+		"      name: '@deepseek-ai/dsh-agent-preset'",
+		"      config:",
+		"        id: reviewer",
+		"        name: Reviewer",
+		"        order: 2",
+		"        plugins: []",
+		"",
+	].join("\n")
+
+	test("list() parses declared preset blocks; plugin config bodies never cross", () => {
+		const s = scratch()
+		writeFileSync(s.patch, PATCH)
+		const face = new LocalPresetFace(s.home, s.profile)
+		const rows = face.list()
+		expect(rows).toEqual([
+			{ id: "standard", name: "Standard", description: "The shipped standard preset" },
+			{ id: "reviewer", name: "Reviewer" },
+		])
+		// FIELD whitelist: the plugin `config.prompt` SENTINEL is never projected.
+		expect(JSON.stringify(rows)).not.toContain("SENTINEL")
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("list() folds a wrapped description scalar", () => {
+		const s = scratch()
+		writeFileSync(s.patch, [
+			"- insert:",
+			"    - id: preset-x",
+			"      name: '@deepseek-ai/dsh-agent-preset'",
+			"      config:",
+			"        id: x",
+			"        name: Ex",
+			"        description: first line",
+			"          second line",
+			"        plugins: []",
+			"",
+		].join("\n"))
+		expect(new LocalPresetFace(s.home, s.profile).list()[0].description).toBe("first line second line")
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("list() degrades honestly to [] when the patch is absent", () => {
+		const s = scratch()
+		expect(new LocalPresetFace(s.home, s.profile).list()).toEqual([])
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("currentId()/select() round-trip the staged preset id in config.json", () => {
+		const s = scratch()
+		const face = new LocalPresetFace(s.home, s.profile)
+		expect(face.currentId()).toBeUndefined()
+		expect(face.select("reviewer")).toBe(true)
+		expect(face.currentId()).toBe("reviewer")
+		expect(JSON.parse(readFileSync(s.config, "utf8")).agentPreset).toBe("reviewer")
 		rmSync(s.home, { recursive: true, force: true })
 	})
 })

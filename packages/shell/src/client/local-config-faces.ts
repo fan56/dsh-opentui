@@ -38,6 +38,7 @@ import type {
 	SeamAgentRow,
 	SeamAgentSetResult,
 	SeamEffortOption,
+	SeamPresetRow,
 	SeamSettingsDocument,
 	SeamSettingsMutateResult,
 	SeamSettingsOp,
@@ -78,6 +79,9 @@ const CONFIG_KEYS = [
 	"footerHints", "hintsLocale", "autoResume", "autoResumeDays",
 	"maxRoundsGrace", "activity_panel_height", "stepsDisplay", "stepsCollapse",
 	"stepsFolded",
+	// 025-w1a — /preset staged selection (next-session preset id). A plain
+	// scalar preference, same class as theme/lang; no secret crosses the seam.
+	"agentPreset",
 ] as const
 const CONFIG_KEY_SET = new Set<string>(CONFIG_KEYS)
 
@@ -419,5 +423,110 @@ export class LocalAgentsFace {
 		if (typeof value.maxActiveSubagents === "number" && Number.isFinite(value.maxActiveSubagents)) caps.maxActiveSubagents = value.maxActiveSubagents
 		if (typeof value.maxDepth === "number" && Number.isFinite(value.maxDepth)) caps.maxDepth = value.maxDepth
 		return caps
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 025-w1a — Local agent-preset face for the inproc bridge seam
+// ---------------------------------------------------------------------------
+
+/**
+ * REAL local agent-preset roster for the inproc profile, no mocks.
+ *
+ * WHY LOCAL: the inproc host mounts neither the preset registry RPC nor an
+ * `agentPresets` CapIR id in the expected surface (audit §2.1); the deployment's
+ * presets are DECLARED in `cordis.patch.yml` as `- insert:` blocks whose
+ * `name: '@deepseek-ai/dsh-agent-preset'` carries a `config:` with the real
+ * `id/name/description/order`. That patch file is the operator's own config —
+ * the same source S5's settings face reads — so parsing it is the honest real
+ * implementation (the alternative, a bridge RPC, is NOT_WIRED in this profile).
+ *
+ * SECURITY: field-by-field projection — only `id/name/description/isDefault`
+ * cross the seam (SeamPresetRow); plugin `config` bodies (which may carry
+ * prompts / paths / `!!js` expressions) are NEVER copied into a frame.
+ */
+export class LocalPresetFace {
+	readonly #patchPath: string
+	readonly #configPath: string
+
+	constructor(home: string, profile: string) {
+		this.#patchPath = join(home, "profiles", profile, "cordis.patch.yml")
+		this.#configPath = join(home, "profiles", profile, "config.json")
+	}
+
+	/** Parse declared preset blocks from the patch into SeamPresetRow rows. */
+	list(): SeamPresetRow[] {
+		let lines: readonly string[] = []
+		try { lines = readFileSync(this.#patchPath, "utf8").split("\n") } catch { return [] }
+		const rows: SeamPresetRow[] = []
+		const seen = new Set<string>()
+		for (let i = 0; i < lines.length; i++) {
+			// A preset block: `    - id: <blockId>` then (within its span)
+			// `      name: '@deepseek-ai/dsh-agent-preset'` and `      config:`.
+			if (!/^\s*- id:\s*preset-\S+\s*$/.test(lines[i])) continue
+			let end = lines.length
+			for (let j = i + 1; j < lines.length; j++) {
+				if (/^\s*- id:\s*\S+/.test(lines[j]) || /^- /.test(lines[j])) { end = j; break }
+			}
+			const span = lines.slice(i, end)
+			if (!span.some((l) => /name:\s*['"]?@deepseek-ai\/dsh-agent-preset/.test(l))) continue
+			const cfg = span.findIndex((l) => /^\s{4,}config:\s*$/.test(l))
+			const val: Record<string, string> = {}
+			if (cfg >= 0) {
+				for (let k = cfg + 1; k < span.length; k++) {
+					const m = /^\s{6,}([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.exec(span[k])
+					if (!m) continue
+					// Stop at the plugins list — its nested rows are not preset fields.
+					if (/^\s{6,}(plugins|disabled|order):/.test(span[k]) && m[1] !== "order") {
+						if (m[1] === "plugins") break
+					}
+					const key = m[1]
+					if (key === "id" || key === "name" || key === "description") {
+						let v = m[2].trim().replace(/^['"]|['"]$/g, "")
+						// Fold continuation lines of a plain scalar description.
+						let kk = k + 1
+						while (kk < span.length && /^\s{10,}\S/.test(span[kk]) && !/^\s{10,}[A-Za-z_][A-Za-z0-9_]*\s*:/.test(span[kk])) {
+							v += " " + span[kk].trim()
+							kk++
+						}
+						val[key] = v
+					}
+				}
+			}
+			const id = val.id
+			if (!id || seen.has(id)) continue
+			seen.add(id)
+			rows.push({
+				id,
+				name: val.name || id,
+				...(val.description ? { description: val.description } : {}),
+			})
+		}
+		return rows
+	}
+
+	/** The staged preset id from config.json (`agentPreset`, a scalar preference). */
+	currentId(): string | undefined {
+		try {
+			const doc = asRecord(JSON.parse(readFileSync(this.#configPath, "utf8")))
+			return typeof doc.agentPreset === "string" && doc.agentPreset !== "" ? doc.agentPreset : undefined
+		} catch {
+			return undefined
+		}
+	}
+
+	/** Persist the staged preset id (next-session effect); false on I/O failure. */
+	select(presetId: string): boolean {
+		const current = this.#readDoc()
+		try {
+			atomicWrite(this.#configPath, JSON.stringify({ ...current, agentPreset: presetId }, null, 2) + "\n")
+			return true
+		} catch {
+			return false
+		}
+	}
+
+	#readDoc(): Record<string, unknown> {
+		try { return asRecord(JSON.parse(readFileSync(this.#configPath, "utf8"))) } catch { return {} }
 	}
 }
