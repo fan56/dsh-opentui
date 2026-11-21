@@ -2953,3 +2953,30 @@ describe("025-w1b B — seam.searchSessions hits the real session.search frame",
 		await expect(h.seam.searchSessions("x")).rejects.toThrow("UNSUPPORTED")
 	})
 })
+
+describe("025-w1b C — seam.forkSession drives the real session.fork frame", () => {
+	test("forkSession sends {sessionId,atSeq} and returns the forked id", async () => {
+		const h = makeHarness()
+		h.replies.set("session.fork", { kind: "value", value: { sessionId: "forked-42" } })
+		const id = await h.seam.forkSession!("src-session", 12)
+		expect(id).toBe("forked-42")
+		const req = h.lastRequest("session.fork")!
+		expect(req.params).toEqual({ sessionId: "src-session", atSeq: 12 })
+	})
+
+	test("forkSession omits atSeq when no seqEnd given", async () => {
+		const h = makeHarness()
+		h.replies.set("session.fork", { kind: "value", value: { sessionId: "forked-latest" } })
+		await h.seam.forkSession!("src-session")
+		expect(h.lastRequest("session.fork")!.params).toEqual({ sessionId: "src-session" })
+	})
+
+	test("forkSession rejects on empty id / missing frame (never a fake fork)", async () => {
+		const h = makeHarness()
+		h.replies.set("session.fork", { kind: "value", value: {} })
+		await expect(h.seam.forkSession!("src")).rejects.toMatchObject({ code: "FORK_FAILED" })
+		const h2 = makeHarness()
+		h2.replies.set("session.fork", { kind: "error", error: new Error("UNSUPPORTED: session.fork") })
+		await expect(h2.seam.forkSession!("src")).rejects.toThrow("UNSUPPORTED")
+	})
+})

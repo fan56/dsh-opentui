@@ -3155,6 +3155,26 @@ export class BridgeSessionSeam implements SessionSeam {
 		}))
 	}
 
+	/**
+	 * 025-w1b C — /history fork-at-turn. The bridge serves `session.fork` through
+	 * the generated chain (table lookup → host sessionController.fork), replying a
+	 * whitelisted `{sessionId}`. `seqEnd` maps to the host's inclusive `atSeq`.
+	 * An empty id or a missing frame rejects — never a fake fork id, so the
+	 * history panel's `f` arm stays honest. No facade/app-session switch here
+	 * (the caller resumes the returned id via the normal /resume path).
+	 */
+	async forkSession(sessionId: string, seqEnd?: number): Promise<string> {
+		const value = asRecord(await this.#transport.request("session.fork", {
+			sessionId,
+			...(seqEnd !== undefined ? { atSeq: seqEnd } : {}),
+		}))
+		const forked = value.sessionId
+		if (typeof forked !== "string" || forked === "") {
+			throw new BridgeProtocolError("FORK_FAILED", "/history fork: session.fork returned no session id")
+		}
+		return forked
+	}
+
 	async currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined> {
 		// The bridge now exposes a read-only `model.currentSelection` route
 		// (19c2ab2, packages/bridge/src/index.ts:1795) backed by
