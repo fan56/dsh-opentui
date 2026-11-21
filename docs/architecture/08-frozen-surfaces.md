@@ -28,7 +28,8 @@
 
 ## 8.4 已知残留（不阻塞冻结，随切片/末期处置）
 
-路线 b（全集 257 通用调用）待 CapIR params schema 的残留已关闭：CapIR v3 已解冻再冻结 @ `bd37e9e`（025 波2 W2-0e，additive-only params/service/result + 休眠 generic arm + ledger deferred_reason；证据链 `docs/025-wave2-w8-unfreeze-refreeze.md`，决策 `docs/adr/0012-wave2-params-table-generic-dispatch.md`）。#9 deny-list 换名臆造盲区（N3.1）、#10 静态半边依赖 smoke 时点（N3.2）、UJ1 stdio 尾随文案、NOT RUN 清单均原样登记（同冻结报告 `:22-28`）。
+路线 b（全集 257 通用调用）待 CapIR params schema 的残留已关闭：CapIR v3（schema `dsh-opentui.capir/3`，43 工件/257 方法全带 params）已解冻再冻结 @ `bd37e9e`（025 波2 W2-0e，additive-only params/service/result + 休眠 generic arm + ledger deferred_reason；证据链 `docs/025-wave2-w8-unfreeze-refreeze.md`，决策 ADR-0012 仍标 Draft 但 W2-0 底座已落地、逐 id 放行随批推进）。**冻结后 generic arm 的逐 id 放行属 W1/W2 切片流程、不再重复解冻**（再冻结声明 `:62-67`）：手写集 28 + 通用放行 `CAP_GENERIC_ADAPTERS=30` = 并集 wired 58 终态；`ledger.dimensions.wired_capir_generated.count` 仍 28（通用放行只在 capcontract 代码侧、不动 capir.json / ledger）。波3 全程 `git diff c563323..HEAD -- capir capcontract ledger scripts/build-bridge.mjs` 为空，冻结面零触碰。本刀 `check-capcontract` PASS=22、`gen-capir --check`/`gen-capcontract --check` byte-identical。
+#9 deny-list 换名臆造盲区（N3.1）、#10 静态半边依赖 smoke 时点（N3.2）、UJ1 stdio 尾随文案、NOT RUN 清单均原样登记（同冻结报告 `:22-28`）。AMEND-2 盲区家族（`result.jsonSchema` 为 null / `additionalProperties:true` 的已放行 id 不进 `CAP_PROJECTED_BY_HAND`）逐 id 登记与 seam 手写二次白名单为 load-bearing 防线，详见 [02](02-capability-layer.md) §2.3、`docs/workflows/w2-command-face.md` 判定表补充。
 
 ## 维护责任
 

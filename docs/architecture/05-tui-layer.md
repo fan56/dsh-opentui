@@ -47,6 +47,16 @@ S5 起，config/settings/agents 三面由本地真实现供给，不再 `{}` 降
 
 025-w2-2 `/plugins` 分两**并列不合并**的 face（方案 §5.2，account/login 分域先例同款）：`seam.plugins()` = phase-1 本地安装清单（`<dshHome>/profiles/<profile>/node_modules` 扫描，回答「装了什么」）；`seam.pluginsManager`（手写 face + 二次白名单投影 `bridge-plugins-manager.ts`，回答「管理器视角：enabled/state/version 豁免」）读真 `pluginManager/{listBundles,listPlugins,readBundleDetail,...}` 七条只读 id（W2-2a 放行）。`pluginBundles()` state 列取真数据；服务缺位回退 phase-1 本地清单并标 `stateUnknown`（不假 enabled）+「管理器不可用」行；detail 区读 `readBundleDetail`。写面（8 id）留 W2-3。
 
+### 5.3a 写面确认模态与进度面（025 w2-3 / w3-2 新增组件）
+
+plugin-manager 写面（8 条 id，confirm 闸）引入两个 TUI 组件，均为结构与安全边界而非纯文案：
+
+- **确认模态** `packages/tui-base/src/ui/dialog-confirm.tsx`：通用 `DialogConfirm`（props `:23`，`extraActions` 可选 `:32`）。写操作（toggle/remove/install）一律先开确认框，展示 object + consequence + dry-run 行；**confirm token 只在 `onConfirm` 内 mint**（`plugins-panel.tsx:475-477,528`）——Esc/cancel 不触发写（R6 第二道闸，桥侧 `CAP_WRITE_CONFIRM_IDS` 为第一道闸，见 [02](02-capability-layer.md) §2.3）。confirm 文案三元组（object/consequence/risk）可在无 dialog/transport 下单测（`plugins-panel.tsx:194-231`）。
+- **进度面** `pollInstallFace`（`plugins-panel.tsx:248-285`，025-w3-2/W2-3 S-1）：消费 `waitForInstall` seam face（`seams/session.ts:977`）的有界 live-view 轮询——`PROGRESS_POLL_INTERVAL_MS=250`、`PROGRESS_POLL_MAX_TICKS=120`（上限 30s）、`sleep` 可注入（单测零墙钟）。host 返回 `SeamInstallProgress` 封闭状态集（`running/done/cancelled/failed/unknown`，`seams/session.ts:360+`，无 host 对象跨界）；首终态 / `stop()` / tick 上限停轮，seam 异常静默退回 primary 安装回复（不扩 ADR-0010 帧面）。真机 running 帧「安装中…（按 x 取消）」、终态行=requestId 坐实终态由 face 投影驱动（`025-w3-review-oldfox.md` §3.6）。
+- **双终态源优先序（S-3，观察登记）**：进度行取 face 投影终态、flash 文案取 primary ChangeResult；极端时序可能不一致（face failed + primary success），设计上是有意的 face-wins（含 reply-lost 恢复），不立缺陷票（`025-w3-review-oldfox.md` S-3）。
+
+结构含义：写面确认模态把「用户显式授权」从桥侧 `__confirm` 布尔延伸为可见 UI 帧；进度面把长时 RPC 从「一次性回复」改为「封闭状态投影 + 有界轮询」，两者都不扩协议帧面。
+
 ## 5.4 27 命令注册表
 
 `packages/tui-base/src/routes/session/commands.ts:597` 的 `coreCommands()` 实读 **27 条**（`/help /new /model /login /logout /quit /resume /clear /flush /btw /session /plugins /skills /search /agents /settings /history /export /subagents /think /hints /language /motion /hotkeys /theme /preset /stop`）。`v2-entry.tsx:365` 以 `withSkillCommands(coreCommands(), skillRows())` 追加 skill 命令后作为 `commands` prop 传给页面（`:976`）。注册表是 `{ name, description, run }` 表，`run` 只通过注入 hooks 触 UI，故可在无渲染器下做表驱动测试（`commands.ts:1-10`）。
