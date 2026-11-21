@@ -42,8 +42,10 @@ dsh-opentui
 The first launch automatically provisions the `opentui-inproc` profile: the
 shipped bridge bundle is materialized as a real directory copy of this
 installation (no symlink, no copy of any `@deepseek-ai/*` package into the
-profile) and checked against a build-time fingerprint. If that bridge install
-is damaged, rerun with `dsh-opentui --repair-bridge`.
+profile) and checked against a build-time fingerprint. The copy converges
+idempotently on every launch, so a damaged or stale bridge is replaced on the
+next start; `--repair-bridge` is still accepted for compatibility but is a
+no-op (a fingerprint mismatch still fails loud).
 
 Run `dsh-opentui --help` for the full list of launcher options.
 
@@ -127,8 +129,8 @@ Every launch provisions two profiles:
 - **`opentui-inproc`** — the bridge profile, provisioned synchronously (a
   failure here is fatal): a real directory copy of this installation's bundled
   bridge, the session shim, a host-version compatibility exemption, the
-  approval gate and an inproc-only cordis patch. A damaged bridge is repaired
-  with `--repair-bridge`.
+  approval gate and an inproc-only cordis patch. The copy converges on every
+  launch; `--repair-bridge` is accepted but is a no-op.
 - **`opentui`** — provisioned on EVERY launch, best-effort (a no-op pass is
   sub-second). Pass `--provider` / `--model` / `--reasoning-effort` to pin a
   different default model (default `zai-coding-cn/glm-5.3-flash/high`).
@@ -283,10 +285,12 @@ generic arm and served only by hand-written faces with per-field whitelist
 projection. Credential values are redacted to key name + presence before they
 cross the stdio bridge and never land in logs or evidence.
 
-Write-side operations (plugin install/uninstall/enable/disable, goal edits)
-are gated twice — a bridge-side confirm set (8 write ids) and a TUI
-confirmation modal — and values crossing the bridge pass through per-field
-whitelist projection.
+Plugin write operations (install/uninstall/enable/disable) are gated twice —
+a bridge-side confirm set (8 `pluginManager` write ids) and a TUI confirmation
+modal. Goal edits confirm in the TUI before each write; they are exempt from
+the bridge confirm set by risk grading (AMEND-5 §11.2) — goals only change
+host-side goal state, with no FS, config or credential surface. Values crossing
+the bridge pass through per-field whitelist projection in both cases.
 
 Command faces backed by real host data (0.24–0.25):
 
