@@ -282,9 +282,11 @@ export type SeamPluginInspection =
 	| { status: "refused"; problem: string; reason: string }
 
 /**
- * 025-w2-3 (R6) — the seam-side confirmation proof. The ONLY producer intended
- * for production is a TUI confirm modal's `onConfirm` callback via
- * `createPluginWriteConfirm`; the bridge seam's write faces refuse any call
+ * 025-w2-3 (R6) — the seam-side confirmation proof. Production mint points are
+ * the three write apply functions driven by a TUI confirm modal's `onConfirm`
+ * (via `createPluginWriteConfirm`) PLUS the cancelInstall key handler (a
+ * protective operation that aborts an in-flight install, not a new write);
+ * Esc/dismiss paths mint nothing. The bridge seam's write faces refuse any call
  * without a structurally-valid token (zero wire traffic). This is a discipline
  * gate, not cryptography: its job is to make "no write fires before the modal
  * is accepted" an enforceable, unit-testable invariant. Structural brand (no

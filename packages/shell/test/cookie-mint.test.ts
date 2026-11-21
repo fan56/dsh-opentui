@@ -343,7 +343,16 @@ describe("first-boot grant wait (bounded poll)", () => {
 		const src = join(home, "late-grant.yaml")
 		const dst = join(home, ".credentials.yaml")
 		writeFileSync(src, yaml)
-		const writer = spawn("sh", ["-c", 'sleep 0.3; cp "$1" "$2"; chmod 600 "$2"', "sh", src, dst], { stdio: "ignore" })
+		// C-2 (W2-4 review) — land the late grant ATOMICALLY at mode 0600. The old
+		// `cp`→`chmod 600` sequence left a window where dst existed at mode 0644;
+		// the mint's 100ms poll could hit that window and `assertOwnerOnly`
+		// (cookie-mint.ts:163) rethrows CredentialsFileInsecureError immediately
+		// (no retry), making this test intermittent (~3/4 in the reviewer's env).
+		// Write to a temp file, chmod it, then rename into place: the final path
+		// appears atomically at 0600 with complete content. Test-side only — the
+		// product fail-closed ownership assertion is UNCHANGED.
+		const tmp = `${dst}.tmp`
+		const writer = spawn("sh", ["-c", 'sleep 0.3; cp "$1" "$3"; chmod 600 "$3"; mv "$3" "$2"', "sh", src, dst, tmp], { stdio: "ignore" })
 		const start = Date.now()
 		try {
 			const cookie = mintOwnerCookie({ home, authority: AUTHORITY, timeoutMs: 3000 })

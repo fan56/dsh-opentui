@@ -3408,8 +3408,10 @@ describe("025-w2-3b pluginManager write faces — seam confirm gate (R6)", () =>
 	})
 
 	// C-2 classification: a write business error keeps its code and does NOT
-	// poison availability; a service-absent error still degrades honestly.
-	test("write business error keeps code; service-absent still degrades (C-2)", async () => {
+	// poison availability. (The service-absent / UNSUPPORTED degrade half lives in
+	// the W2-2 NOT_WIRED tests; this case pins only the INTERNAL business-error
+	// classification — S-3 name erratum, W2-4 review §6.)
+	test("write business error keeps INTERNAL code; availability not poisoned (C-2)", async () => {
 		const h = makeHarness()
 		h.replies.set("pluginManager.listBundles", { kind: "value", value: {
 			value: [{ name: "a", version: "1", enabled: true, installed: true }],

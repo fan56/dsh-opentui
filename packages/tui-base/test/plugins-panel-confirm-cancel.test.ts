@@ -44,7 +44,10 @@ describe("W2-3 C-1 source wiring guard — Esc cannot reach a write face", () =>
 		expect(panelSrc).toContain('onConfirm={() => void install(')
 		// No onCancel wiring on any of the write modals (cancel = dialog.clear only).
 		expect(panelSrc).not.toMatch(/DialogConfirm[\s\S]{0,400}?onCancel=/)
-		// Token mint points are the three apply functions, never a key bind.
+		// Token mint points: the three onConfirm-driven apply functions PLUS the
+		// cancelInstall key handler (a protective operation that halves an in-flight
+		// install). Esc/dismiss paths mint nothing; only that protective cancel mints
+		// outside an apply function. The count below pins all four (C-3/S-2 erratum).
 		const mintCount = (panelSrc.match(/createPluginWriteConfirm\(/g) ?? []).length
 		expect(mintCount).toBe(4) // toggleApply + remove + install + cancelInstall
 		for (const face of ["setPluginBundleEnabled", "removePluginBundle", "installPluginSpec"]) {
