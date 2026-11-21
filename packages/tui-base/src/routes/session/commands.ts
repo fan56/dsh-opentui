@@ -37,6 +37,12 @@ import {
 } from "./resume-picker"
 import { formatSessionInfoPanel, sessionInfoRows } from "./session-info"
 import {
+	formatGoalStatus,
+	goalsConfirmOptions,
+	goalsConfirmTitle,
+	parseGoalsArgs,
+} from "./goals-command"
+import {
 	buildModelPickerRows,
 	modelKey,
 	readModelPrefsFromConfig,
@@ -1151,6 +1157,77 @@ export function coreCommands(): SlashCommand[] {
 					return
 				}
 				for (const plugin of plugins) ctx.say(t("command.plugins.entry", { name: plugin.name, version: plugin.version }))
+			},
+		},
+		{
+			// 025-w2-5 — the /goals status surface. No args = read current goal
+			// (zero-side-effect default). Explicit write subcommands go through a
+			// yes/no confirm before touching the seam. Service absence / no active
+			// session -> honest degrade notice, never a fake-empty goal.
+			name: "/goals",
+			description: t("command.goals.description"),
+			async run(ctx, argText) {
+				const goals = ctx.seam.goals
+				if (!goals) {
+					ctx.say(t("command.goals.unavailable"))
+					return
+				}
+				const op = parseGoalsArgs(argText)
+				if (op.kind === "status") {
+					try {
+						const view = await goals.status()
+						if (view === undefined) {
+							ctx.say(t("command.goals.none"))
+							return
+						}
+						for (const line of formatGoalStatus(view)) ctx.say(line)
+					} catch {
+						ctx.say(t("command.goals.degraded"))
+					}
+					return
+				}
+				// Write subcommands are explicit intent. create/edit need an objective
+				// (prompt when omitted); esc/empty objective aborts with no side effect.
+				let objective = op.kind === "create" || op.kind === "edit" ? op.objective : ""
+				if ((op.kind === "create" || op.kind === "edit") && objective === "" && ctx.promptText) {
+					const answer = await ctx.promptText(t("command.goals.prompt.objective"))
+					objective = (answer ?? "").trim()
+				}
+				if ((op.kind === "create" || op.kind === "edit") && objective === "") {
+					ctx.say(t("command.goals.aborted"))
+					return
+				}
+				const confirmed = ctx.pickOne
+					? (await ctx.pickOne(goalsConfirmTitle(op), goalsConfirmOptions())) === "yes"
+					: false
+				if (!confirmed) {
+					ctx.say(t("command.goals.aborted"))
+					return
+				}
+				try {
+					if (op.kind === "create") {
+						const ref = await goals.create(objective)
+						ctx.say(ref ? t("command.goals.created", { id: ref.id, revision: ref.revision }) : t("command.goals.failed"))
+					} else {
+						// Every other mutation is a CAS on the current goal ref — read it
+						// ONCE (no racy double status), and refuse cleanly when no goal is current.
+						const view = await goals.status()
+						if (view === undefined) {
+							ctx.say(t("command.goals.none"))
+							return
+						}
+						const ref = { id: view.id, revision: view.revision }
+						if (op.kind === "edit") {
+							const edited = await goals.edit(ref, { objective })
+							ctx.say(edited ? t("command.goals.edited") : t("command.goals.failed"))
+						} else {
+							const changed = await goals[op.kind](ref)
+							ctx.say(changed ? t("command.goals.updated", { op: op.kind }) : t("command.goals.failed"))
+						}
+					}
+				} catch {
+					ctx.say(t("command.goals.degraded"))
+				}
 			},
 		},
 		{

@@ -167,6 +167,32 @@ export interface SeamConfigurableProviderRow {
 	error?: string
 }
 
+/**
+ * 025-w2-5 — goal ref (`GoalRef`, hand-projected). The CAS token every goal
+ * mutation rides; only stable id + positive revision cross the seam.
+ */
+export interface SeamGoalRef {
+	id: string
+	revision: number
+}
+
+/** 025-w2-5 — full goal status view (`GoalView`, hand-projected second whitelist).
+ *  Every field is a closed enum / bounded scalar / capped free text — the goal
+ *  result schemas are schema-open/null (AMEND-2 blind spot), so this projection
+ *  is the load-bearing defence against undeclared sensitive keys. */
+export interface SeamGoalView {
+	id: string
+	revision: number
+	objective: string
+	phase: "active" | "paused" | "blocked" | "complete"
+	activation: "armed" | "disarmed"
+	roundsStarted: number
+	maxGoalRounds: number
+	createdAt: number
+	updatedAt: number
+	blockedReason?: { code: string; message: string }
+}
+
 /** One reasoning-effort ladder entry (ModelReasoningEffort parity — the
  * same shape the remote catalog's `reasoning.efforts` carries). */
 export interface SeamEffortOption {
@@ -786,6 +812,24 @@ export interface SessionSeam {
 	providerDirectory?: {
 		registered(): Promise<SeamLlmProviderRow[]>
 		configurable(): Promise<SeamConfigurableProviderRow[]>
+	}
+	/**
+	 * 025-w2-5 — goals status face (the `goals/*` ids). Optional; a seam without
+	 * it (service absent / no active session) degrades honestly — never a fake
+	 * empty goal. Hand-projected second whitelist; free text capped, enums closed.
+	 * `available()` is an honest observation of THIS process, never a premise.
+	 * Mutations are explicit-intent calls (no silent change); `ref` is the CAS
+	 * token from `status()`/create, `revision` guards stale writes.
+	 */
+	goals?: {
+		status(): Promise<SeamGoalView | undefined>
+		available(): boolean
+		create(objective: string, maxGoalRounds?: number): Promise<SeamGoalRef | undefined>
+		edit(ref: SeamGoalRef, patch: { objective?: string; maxGoalRounds?: number }): Promise<SeamGoalView | undefined>
+		complete(ref: SeamGoalRef): Promise<SeamGoalView | undefined>
+		pause(ref: SeamGoalRef): Promise<SeamGoalView | undefined>
+		resume(ref: SeamGoalRef): Promise<SeamGoalView | undefined>
+		clear(ref: SeamGoalRef): Promise<SeamGoalRef | undefined>
 	}
 	currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined>
 	/**

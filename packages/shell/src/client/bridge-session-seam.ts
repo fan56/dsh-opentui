@@ -38,6 +38,8 @@ import type {
 	SeamAskQuestion,
 	SeamConfigurableProviderRow,
 	SeamEffortOption,
+	SeamGoalRef,
+	SeamGoalView,
 	SeamLlmProviderRow,
 	PluginRowView,
 	SeamPermissionCatalog,
@@ -101,6 +103,13 @@ import {
 	projectLlmProviders,
 	projectPermissionCatalog,
 } from "./bridge-directory.ts"
+// 025-w2-5 — hand-written goals face + second whitelist projection (the
+// load-bearing defence for the AMEND-2 schema-open/null blind-spot family).
+import {
+	projectCreateGoalResult,
+	projectGoalRef,
+	projectGoalView,
+} from "./bridge-goals.ts"
 
 /**
  * 025-w2-3 (R6) — seam-side confirm gate (structural mirror of the tui-base
@@ -1343,6 +1352,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	#pluginBundlesCache: SeamPluginBundleRow[] = []
 	#pluginsManagerAvailable: boolean | undefined = undefined
 
+	// 025-w2-5 — honest goals-service availability observation. `undefined` =
+	// not probed yet; true/false set by a real goals wire call. NEVER a test
+	// `present === true` premise (W5 prevention rule 2).
+	#goalsAvailable: boolean | undefined = undefined
+
 	/** S5 /settings host face — real local file I/O, field-level whitelist
 	 *  projection (oldfox S4 review §六.2). Never a `{}` degrade. */
 	settings: NonNullable<SessionSeam["settings"]> = {
@@ -1369,6 +1383,36 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#directoryRequest("llm.listProviders", projectLlmProviders),
 		configurable: (): Promise<SeamConfigurableProviderRow[]> =>
 			this.#directoryRequest("llm.listConfigurableProviders", projectConfigurableProviders),
+	}
+
+	/**
+	 * 025-w2-5 — goals status face over the generic arm. Every call goes through
+	 * the hand-written SECOND whitelist projection (schema-open/null blind spot —
+	 * AMEND-2 C-1). `agentId` is the goals scope wire: supplied explicitly from
+	 * `currentSessionId()` (the generic arm does NOT do scope substitution); no
+	 * active session -> UNSUPPORTED reject (honest, no fabricated agentId). Service
+	 * absence rejects UNSUPPORTED (never fake-empty); business/validation errors
+	 * keep their own code and do NOT poison availability (W2-3 C-2 classification).
+	 */
+	goals: NonNullable<SessionSeam["goals"]> = {
+		status: (): Promise<SeamGoalView | undefined> =>
+			this.#goalsRequest("goals.get", {}, projectGoalView),
+		available: (): boolean => this.#goalsAvailable === true,
+		create: (objective, maxGoalRounds): Promise<SeamGoalRef | undefined> => {
+			const request: Record<string, unknown> = { objective }
+			if (maxGoalRounds !== undefined) request.maxGoalRounds = maxGoalRounds
+			return this.#goalsRequest("goals.create", { request }, projectCreateGoalResult)
+		},
+		edit: (ref, patch): Promise<SeamGoalView | undefined> =>
+			this.#goalsRequest("goals.edit", { ref, request: patch }, projectGoalView),
+		complete: (ref): Promise<SeamGoalView | undefined> =>
+			this.#goalsRequest("goals.complete", { ref }, projectGoalView),
+		pause: (ref): Promise<SeamGoalView | undefined> =>
+			this.#goalsRequest("goals.pause", { ref }, projectGoalView),
+		resume: (ref): Promise<SeamGoalView | undefined> =>
+			this.#goalsRequest("goals.resume", { ref }, projectGoalView),
+		clear: (ref): Promise<SeamGoalRef | undefined> =>
+			this.#goalsRequest("goals.clear", { ref }, projectGoalRef),
 	}
 
 	/** S5 /agents face — real `agents/*.md` corpus + model catalog, no mocks
@@ -1504,6 +1548,41 @@ export class BridgeSessionSeam implements SessionSeam {
 			return projectPermissionCatalog(reply)
 		} catch {
 			return undefined
+		}
+	}
+
+	/**
+	 * 025-w2-5 — generic goals request. Injects the goals scope wire `agentId`
+	 * from the bound session (generic arm does no scope substitution); with no
+	 * active session it rejects UNSUPPORTED honestly — never a fabricated id.
+	 * Hand-written SECOND whitelist projection on every reply (AMEND-2 blind spot).
+	 * Service-absent class flips `available=false`; business/validation errors
+	 * keep their own code and do NOT poison availability (W2-3 C-2 classification).
+	 */
+	async #goalsRequest<T>(
+		method: string,
+		extraParams: Record<string, unknown>,
+		project: (raw: unknown) => T,
+	): Promise<T> {
+		const agentId = this.currentSessionId()
+		if (agentId === undefined || agentId === "") {
+			throw new BridgeProtocolError("UNSUPPORTED", `${method}: no active session (agentId unavailable)`)
+		}
+		try {
+			const reply = await this.#transport.request(method, { agentId, ...extraParams })
+			this.#goalsAvailable = true
+			return project(reply)
+		} catch (err) {
+			const code = err instanceof BridgeProtocolError ? err.code : undefined
+			const message = err instanceof Error ? err.message : String(err)
+			const serviceAbsent =
+				code === "UNSUPPORTED" || code === "NOT_WIRED" || code === "UNAVAILABLE" ||
+				(code === undefined && (/^NOT_WIRED/.test(message) || /unavailable/i.test(message)))
+			if (serviceAbsent) {
+				this.#goalsAvailable = false
+				throw new BridgeProtocolError("UNSUPPORTED", `${method}: ${message}`)
+			}
+			throw err
 		}
 	}
 
