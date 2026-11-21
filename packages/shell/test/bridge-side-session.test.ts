@@ -10,9 +10,10 @@ import {
 
 const SENTINEL = "W21_SENTINEL_synthetic_no_real_credential"
 
+// Real host shape (verified on a live wait frame): data.message.content blocks.
 const assistantRecord = (text: string, seq: number) => ({
   type: "event",
-  event: { type: "assistant/message", seq, time: seq, data: { text } },
+  event: { type: "assistant/message", seq, time: seq, data: { message: { role: "assistant", content: [{ type: "text", text }] } } },
 })
 
 describe("W2-1 side-session (create -> prompt -> wait, no destroy)", () => {
@@ -63,6 +64,15 @@ describe("W2-1 side-session (create -> prompt -> wait, no destroy)", () => {
     const capped = projectWaitAnswer({ output: { records: [assistantRecord("x".repeat(50), 1)], truncated: false } }, 10)
     expect(capped.answer).toHaveLength(10)
     expect(capped.truncated).toBe(true)
+  })
+
+  test("text projection: flat legacy text/content shapes still work", () => {
+    const flat = { output: { records: [
+      { type: "event", event: { type: "assistant/message", data: { text: "flat" } } },
+      { type: "event", event: { type: "assistant/message", data: { content: [{ type: "text", text: "blocks" }] } } },
+    ], truncated: false } }
+    // records are newest-first -> restored to chronological (blocks then flat)
+    expect(projectWaitAnswer(flat, 100).answer).toBe("blocks\n\nflat")
   })
 
   test("E5 SENTINEL: hostile sensitive keys in wait reply never reach the projected answer", () => {

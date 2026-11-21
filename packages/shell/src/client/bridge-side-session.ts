@@ -86,17 +86,22 @@ export function projectWaitAnswer(value: unknown, maxLength = 4000): { answer: s
     const event = asRecord(rec.event)
     if (event.type !== "assistant/message") continue
     const data = asRecord(event.data)
-    let text = ""
-    if (typeof data.text === "string") {
-      text = data.text.trim()
-    } else {
-      const blocks = Array.isArray(data.content) ? data.content : Array.isArray(data.parts) ? data.parts : []
-      const parts: string[] = []
-      for (const block of blocks) {
-        const b = asRecord(block)
-        if (b.type === "text" && typeof b.text === "string") parts.push(b.text)
-      }
-      text = parts.join("\n").trim()
+    // Host assistant/message data nests text under `message.content` (verified
+    // on a real wait frame: data.message.content[{type:'text',text}]). Accept
+    // flat `text`/`content` too so synthetic/legacy shapes still project.
+    const message = asRecord(data.message)
+    const content = Array.isArray(message.content) ? message.content
+      : Array.isArray(data.content) ? data.content
+      : Array.isArray(data.parts) ? data.parts : []
+    const parts: string[] = []
+    for (const block of content) {
+      const b = asRecord(block)
+      if (b.type === "text" && typeof b.text === "string") parts.push(b.text)
+    }
+    let text = parts.join("\n").trim()
+    if (text === "") {
+      const flat = typeof message.text === "string" ? message.text : typeof data.text === "string" ? data.text : ""
+      text = flat.trim()
     }
     if (text) texts.push(text)
   }
@@ -171,6 +176,13 @@ export async function runSideSession(options: SideSessionOptions): Promise<SideS
   }
   const { answer, truncated } = projectWaitAnswer(waited, options.maxAnswerLength)
   const reason = typeof waited.reason === "string" ? waited.reason : "idle"
+  // Diagnostic only (DSH_OPENTUI_DEBUG): shape of the bounded wait output, no values.
+  if (process.env.DSH_OPENTUI_DEBUG) {
+    const out = asRecord(waited.output)
+    const recs = Array.isArray(out.records) ? out.records : []
+    const types = recs.map((r) => String(asRecord(asRecord(r).event).type ?? "?")).join(",")
+    process.stderr.write(`[btw-side] wait reason=${reason} records=${recs.length} types=[${types}] truncated=${String(out.truncated)} answerLen=${answer.length}\n`)
+  }
   if (answer !== "" && options.onDelta !== undefined) {
     try {
       options.onDelta(answer)

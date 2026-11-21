@@ -628,7 +628,7 @@ describe("025-w1a plugins face (profile node_modules install manifest)", () => {
 const waitValue = (text: string) => ({
 	reason: "idle",
 	state: { cursor: 1, active: false, running: false, queue: null, pendingInput: [] },
-	output: { records: [{ type: "event", event: { type: "assistant/message", seq: 1, time: 1, data: { text } } }], truncated: false },
+	output: { records: [{ type: "event", event: { type: "assistant/message", seq: 1, time: 1, data: { message: { role: "assistant", content: [{ type: "text", text }] } } } }], truncated: false },
 })
 
 describe("025-w2-1 btwAsk face (real side session over generic arm)", () => {
