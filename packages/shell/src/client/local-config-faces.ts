@@ -24,7 +24,7 @@
  * `configSave()` accepts only whitelisted preference keys.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import {
 	listComposedAgents,
@@ -38,6 +38,7 @@ import type {
 	SeamAgentRow,
 	SeamAgentSetResult,
 	SeamEffortOption,
+	SeamLoginRoute,
 	SeamPresetRow,
 	SeamSettingsDocument,
 	SeamSettingsMutateResult,
@@ -528,5 +529,150 @@ export class LocalPresetFace {
 
 	#readDoc(): Record<string, unknown> {
 		try { return asRecord(JSON.parse(readFileSync(this.#configPath, "utf8"))) } catch { return {} }
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 025-w1a — Local provider-login face for the inproc bridge seam
+// ---------------------------------------------------------------------------
+
+/**
+ * REAL local provider-login face (S5 local-file-I/O paradigm, coordinator
+ * ruling 2026-11-21): the /login //logout seam.login contract is a PROVIDER
+ * credential/route double-write (NOT account/PKCE — that is a 波1-B entry).
+ *
+ * WHY LOCAL: the inproc profile mounts neither `credentialsController` nor
+ * the settings controller's CapIR write arms (S2 proof: DATAFLOW NOT_WIRED;
+ * S5 local-config-faces.ts header). A credentials.* plaintext frame would be
+ * dead code — so routes/registerRoute ride the profile `cordis.patch.yml`
+ * llm-pi-ai.providers dict (real local file I/O), and credentials ride a
+ * SEPARATE owner-only `provider-keys.json` local store (never the host's
+ * `.credentials.yaml` grant file, which has a different format and owner).
+ *
+ * SECURITY (W5 三处白名单): `routes()` projects ONLY the route-id key +
+ * apiKeyEnv KEY NAME + displayName + declared flag — NEVER the apiKey VALUE.
+ * `credentialStatus()` returns a boolean (env presence OR local store key
+ * presence) — no value. `login(ref,key)` writes the value to an owner-only
+ * (0600) local file and returns void — it never echoes/logs the value. No
+ * value crosses a frame, an emit, or proof.
+ */
+export class LocalLoginFace {
+	readonly #patchPath: string
+	readonly #keysPath: string
+
+	constructor(home: string, profile: string) {
+		this.#patchPath = join(home, "profiles", profile, "cordis.patch.yml")
+		this.#keysPath = join(home, "profiles", profile, "provider-keys.json")
+	}
+
+	/** Configured provider routes from the patch's llm-pi-ai.providers dict. */
+	routes(): SeamLoginRoute[] {
+		let lines: readonly string[] = []
+		try { lines = readFileSync(this.#patchPath, "utf8").split("\n") } catch { return [] }
+		const span = nsEntrySpan(lines, "llm-pi-ai")
+		if (span === undefined) return []
+		const providersLine = lines.findIndex((l, i) => i >= span[0] && i < span[1] && /^\s{4}providers:\s*$/.test(l))
+		if (providersLine < 0) return []
+		const out: SeamLoginRoute[] = []
+		for (let i = providersLine + 1; i < lines.length; i++) {
+			const line = lines[i]
+			// provider keys are dict entries at exactly 6 spaces.
+			const m = /^\s{6}([A-Za-z0-9_.\-]+):\s*$/.exec(line)
+			if (!m) {
+				if (/^\s{0,4}\S/.test(line)) break // left the providers block
+				continue
+			}
+			const id = m[1]
+			let apiKeyEnv: string | undefined
+			let displayName: string | undefined
+			let declared = false
+			for (let j = i + 1; j < lines.length; j++) {
+				if (/^\s{6}\S/.test(lines[j]) || /^\s{0,4}\S/.test(lines[j])) break
+				const f = /^\s{8}([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/.exec(lines[j])
+				if (!f) continue
+				if (f[1] === "apiKeyEnv") apiKeyEnv = f[2].trim().replace(/^['"]|['"]$/g, "")
+				else if (f[1] === "displayName") displayName = f[2].trim().replace(/^['"]|['"]$/g, "")
+				else if (f[1] === "api" || f[1] === "baseURL" || f[1] === "models") declared = true
+			}
+			out.push({ id, ...(apiKeyEnv ? { apiKeyEnv } : {}), ...(displayName ? { displayName } : {}), declared })
+		}
+		return out
+	}
+
+	/** Boolean only: env ref presence OR local provider key store presence. */
+	credentialStatus(ref: string): { configured: boolean } {
+		if (typeof process.env[ref] === "string" && process.env[ref] !== "") return { configured: true }
+		return { configured: Object.prototype.hasOwnProperty.call(this.#readKeys(), ref) }
+	}
+
+	/** Store one API key locally (owner-only 0600); value never echoed/logged. */
+	login(ref: string, apiKey: string): void {
+		const keys = this.#readKeys()
+		keys[ref] = apiKey
+		this.#writeKeys(keys)
+	}
+
+	/** Remove one stored key (absent ref is a harmless no-op). */
+	logout(ref: string): void {
+		const keys = this.#readKeys()
+		delete keys[ref]
+		this.#writeKeys(keys)
+	}
+
+	/** Register (profile) or clear (undefined) one provider route in the patch.
+	 *  Line-level conservative edit, like the other S5 patch writers. */
+	registerRoute(providerId: string, profile: Record<string, unknown> | undefined): boolean {
+		let text = ""
+		try { text = readFileSync(this.#patchPath, "utf8") } catch { return false }
+		const lines = text.length > 0 ? text.split("\n") : []
+		const span = nsEntrySpan(lines, "llm-pi-ai")
+		if (span === undefined) return false
+		const providersLine = lines.findIndex((l, i) => i >= span[0] && i < span[1] && /^\s{4}providers:\s*$/.test(l))
+		if (providersLine < 0) return false
+		// Find the provider block end (next 6-space key or dedent).
+		let pStart = -1
+		let pEnd = -1
+		for (let i = providersLine + 1; i < lines.length; i++) {
+			const m = /^\s{6}([A-Za-z0-9_.\-]+):\s*$/.exec(lines[i])
+			if (m && m[1] === providerId) {
+				pStart = i
+				pEnd = i + 1
+				for (let j = i + 1; j < lines.length; j++) {
+					if (/^\s{6}\S/.test(lines[j]) || /^\s{0,4}\S/.test(lines[j])) break
+					pEnd = j + 1
+				}
+				break
+			}
+			if (/^\s{0,4}\S/.test(lines[i])) break
+		}
+		if (profile === undefined) {
+			if (pStart < 0) return true // clearing an absent route is a no-op
+			lines.splice(pStart, pEnd - pStart)
+		} else {
+			const apiKeyEnv = typeof profile.apiKeyEnv === "string" ? profile.apiKeyEnv : ""
+			const safeRef = /^[A-Za-z0-9_]+$/.test(apiKeyEnv) ? apiKeyEnv : ""
+			const block = [`      ${providerId}:`, ...(safeRef ? [`        apiKeyEnv: ${safeRef}`] : [])]
+			if (pStart >= 0) lines.splice(pStart, pEnd - pStart, ...block)
+			else lines.splice(providersLine + 1, 0, ...block)
+		}
+		try { atomicWrite(this.#patchPath, lines.join("\n").replace(/\n*$/, "\n")) } catch { return false }
+		return true
+	}
+
+	#readKeys(): Record<string, string> {
+		try {
+			const doc = asRecord(JSON.parse(readFileSync(this.#keysPath, "utf8")))
+			const out: Record<string, string> = {}
+			for (const [k, v] of Object.entries(doc)) if (typeof v === "string") out[k] = v
+			return out
+		} catch {
+			return {}
+		}
+	}
+
+	#writeKeys(keys: Record<string, string>): void {
+		mkdirSync(dirname(this.#keysPath), { recursive: true })
+		atomicWrite(this.#keysPath, JSON.stringify(keys, null, 2) + "\n")
+		try { chmodSync(this.#keysPath, 0o600) } catch { /* best effort on non-posix */ }
 	}
 }

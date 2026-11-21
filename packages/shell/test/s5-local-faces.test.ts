@@ -6,10 +6,10 @@
  * All fixtures are scratch-only; no credential VALUE is ever asserted/printed.
  */
 import { describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { LocalAgentsFace, LocalConfigStore, LocalPresetFace, LocalSettingsStore } from "../src/client/local-config-faces.ts"
+import { LocalAgentsFace, LocalConfigStore, LocalLoginFace, LocalPresetFace, LocalSettingsStore } from "../src/client/local-config-faces.ts"
 
 function scratch() {
 	const home = mkdtempSync(join(tmpdir(), "s5-faces-"))
@@ -177,6 +177,85 @@ describe("025-w1a LocalPresetFace — REAL patch-declared presets, field whiteli
 		expect(face.select("reviewer")).toBe(true)
 		expect(face.currentId()).toBe("reviewer")
 		expect(JSON.parse(readFileSync(s.config, "utf8")).agentPreset).toBe("reviewer")
+		rmSync(s.home, { recursive: true, force: true })
+	})
+})
+
+describe("025-w1a LocalLoginFace — provider routes + boolean credentials, value never crosses", () => {
+	const PATCH = [
+		"- id: llm-pi-ai",
+		"  name: '@deepseek-ai/dsh-llm-pi-ai'",
+		"  config:",
+		"    providers:",
+		"      zai-coding-cn:",
+		"        apiKeyEnv: ZAI_CODING_CN_API_KEY",
+		"        models:",
+		"          - id: glm-5",
+		"      my-custom:",
+		"        api: openai-completions",
+		"        baseURL: https://example.test/v1",
+		"        displayName: My Custom",
+		"- id: permission",
+		"  config:",
+		"    defaultPreset: workspace-write",
+		"",
+	].join("\n")
+
+	test("routes() projects provider keys + apiKeyEnv KEY NAME + declared flag (no secret value)", () => {
+		const s = scratch()
+		writeFileSync(s.patch, PATCH)
+		const rows = new LocalLoginFace(s.home, s.profile).routes()
+		expect(rows).toEqual([
+			{ id: "zai-coding-cn", apiKeyEnv: "ZAI_CODING_CN_API_KEY", declared: true },
+			{ id: "my-custom", displayName: "My Custom", declared: true },
+		])
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("credentialStatus() is boolean-only (env presence OR local store key)", () => {
+		const s = scratch()
+		writeFileSync(s.patch, PATCH)
+		const face = new LocalLoginFace(s.home, s.profile)
+		const ref = "TEST_W1A_API_KEY"
+		delete process.env[ref]
+		expect(face.credentialStatus(ref)).toEqual({ configured: false })
+		process.env[ref] = "SENTINEL_SECRET_VALUE"
+		expect(face.credentialStatus(ref)).toEqual({ configured: true })
+		delete process.env[ref]
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("login/logout persist to an owner-only local store (0600); value never in return", () => {
+		const s = scratch()
+		const face = new LocalLoginFace(s.home, s.profile)
+		const ref = "LOCAL_W1A_API_KEY"
+		const ret = face.login(ref, "SENTINEL_SECRET_VALUE")
+		expect(ret).toBeUndefined() // value never echoed/returned
+		const storePath = join(s.home, "profiles", s.profile, "provider-keys.json")
+		expect(JSON.parse(readFileSync(storePath, "utf8"))[ref]).toBe("SENTINEL_SECRET_VALUE")
+		if (process.platform !== "win32") expect(statSync(storePath).mode & 0o777).toBe(0o600)
+		expect(face.credentialStatus(ref)).toEqual({ configured: true })
+		face.logout(ref)
+		expect(face.credentialStatus(ref)).toEqual({ configured: false })
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("registerRoute writes/clears a provider in the patch providers dict", () => {
+		const s = scratch()
+		writeFileSync(s.patch, PATCH)
+		const face = new LocalLoginFace(s.home, s.profile)
+		expect(face.registerRoute("new-provider", { apiKeyEnv: "NEW_PROVIDER_API_KEY" })).toBe(true)
+		expect(face.routes().some((r) => r.id === "new-provider" && r.apiKeyEnv === "NEW_PROVIDER_API_KEY")).toBe(true)
+		expect(face.registerRoute("new-provider", undefined)).toBe(true)
+		expect(face.routes().some((r) => r.id === "new-provider")).toBe(false)
+		// Original routes untouched.
+		expect(face.routes().some((r) => r.id === "zai-coding-cn")).toBe(true)
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("routes() degrades honestly to [] when the patch is absent", () => {
+		const s = scratch()
+		expect(new LocalLoginFace(s.home, s.profile).routes()).toEqual([])
 		rmSync(s.home, { recursive: true, force: true })
 	})
 })

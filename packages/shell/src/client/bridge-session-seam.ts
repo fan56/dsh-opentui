@@ -58,7 +58,7 @@ import { projectJournalRecord } from "./journal-projection.ts"
 import { tokensPerSecond } from "../agent/loop.ts"
 // S5 — real local config/settings/agents faces replace the old `{}` / honest-
 // failure degrades (no mocks; every read/write touches the operator's files).
-import { LocalAgentsFace, LocalConfigStore, LocalPresetFace, LocalSettingsStore } from "./local-config-faces.ts"
+import { LocalAgentsFace, LocalConfigStore, LocalLoginFace, LocalPresetFace, LocalSettingsStore } from "./local-config-faces.ts"
 import { resolveDshHome } from "./remote-local-fs.ts"
 import { DEFAULT_PROFILE } from "./lifecycle.ts"
 
@@ -1234,6 +1234,7 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #settingsStore: LocalSettingsStore
 	readonly #localAgents: LocalAgentsFace
 	readonly #localPresets: LocalPresetFace
+	readonly #localLogin: LocalLoginFace
 
 	/** S5 /settings host face — real local file I/O, field-level whitelist
 	 *  projection (oldfox S4 review §六.2). Never a `{}` degrade. */
@@ -1264,6 +1265,21 @@ export class BridgeSessionSeam implements SessionSeam {
 		list: () => Promise.resolve(this.#localPresets.list()),
 		currentId: () => Promise.resolve(this.#localPresets.currentId()),
 		select: (presetId) => Promise.resolve(this.#localPresets.select(presetId)),
+	}
+
+	/**
+	 * 025-w1a — /login //logout provider face (coordinator ruling: local real
+	 * implementation, NOT account/PKCE and NOT a dead credentials CapIR frame).
+	 * Routes from the profile patch's llm-pi-ai.providers dict; credentialStatus
+	 * is boolean-only (env ref or owner-only local key store); login/logout are
+	 * local file I/O. No secret value ever crosses a frame/log/proof.
+	 */
+	login: NonNullable<SessionSeam["login"]> = {
+		credentialStatus: (ref) => Promise.resolve(this.#localLogin.credentialStatus(ref)),
+		login: (ref, apiKey) => { this.#localLogin.login(ref, apiKey); return Promise.resolve() },
+		logout: (ref) => { this.#localLogin.logout(ref); return Promise.resolve() },
+		routes: () => Promise.resolve(this.#localLogin.routes()),
+		registerRoute: (providerId, profile) => Promise.resolve(this.#localLogin.registerRoute(providerId, profile)),
 	}
 
 	/**
@@ -1585,6 +1601,8 @@ export class BridgeSessionSeam implements SessionSeam {
 		})
 		// 025-w1a — /preset real local roster (patch-declared presets + staged id).
 		this.#localPresets = new LocalPresetFace(this.#dshHome, this.#profile)
+		// 025-w1a — /login provider face (local patch routes + owner-only key store).
+		this.#localLogin = new LocalLoginFace(this.#dshHome, this.#profile)
 		this.#onDead = options.onDead
 		this.#onPermissionUnavailable = options.onPermissionUnavailable
 		this.#confirmClock = options.confirmClock ?? {
