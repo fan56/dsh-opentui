@@ -582,10 +582,24 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
     "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersions",
     "@deepseek-ai/dsh-plugin-manager#pluginManager/readBundleDetail",
   ]
-  const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED]
+  // W2-3 round log — OLD W2-2 criterion kept VERBATIM (do not delete):
+  //   const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED]
+  //   // (old) expected 10 released ids (W2-1 3 + W2-2 7)
+  // W2-3 releases eight pluginManager WRITE ids (plan §5.2, R6).
+  const W2_3_WRITE_RELEASED = [
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/installBundle",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/updateBundle",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/removeBundle",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/setBundleEnabled",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/setPluginEnabled",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/setVersionExemption",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
+  ]
+  const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED, ...W2_3_WRITE_RELEASED]
   const adapterSet = new Set(adapters)
   if (adapters.length !== RELEASED.length) {
-    offenders.push(`CAP_GENERIC_ADAPTERS expected ${RELEASED.length} released ids (W2-1 3 + W2-2 7), got ${adapters.length}`)
+    offenders.push(`CAP_GENERIC_ADAPTERS expected ${RELEASED.length} released ids (W2-1 3 + W2-2 7 + W2-3 8 = 18), got ${adapters.length}`)
   }
   for (const id of RELEASED) {
     if (!adapterSet.has(id)) offenders.push("CAP_GENERIC_ADAPTERS missing released id " + id)
@@ -593,8 +607,43 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
   }
   const wantWire = capirMethods.filter((m) => !DENY_NS.has(m.namespace)).length
   if (wire.length !== wantWire) offenders.push(`wire rows ${wire.length} != ${wantWire} non-denied methods`)
-  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 3 + W2-2 7 = 10)`)
+  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 3 + W2-2 7 + W2-3 8 = 18)`)
   else bad("16. generic wire table", offenders.join("; "))
+}
+
+// 17. W2-3 R6 confirm gate set (CAP_WRITE_CONFIRM_IDS): exact 8 write ids, all
+// released, all unary, none in deny families or hand-projection exceptions.
+{
+  const confirmIds = setIds(typesText, "CAP_WRITE_CONFIRM_IDS") ?? []
+  const adapters = setIds(typesText, "CAP_GENERIC_ADAPTERS") ?? []
+  const projected = setIds(typesText, "CAP_PROJECTED_BY_HAND") ?? []
+  const W2_3_WRITE = [
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/installBundle",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/updateBundle",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/removeBundle",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/setBundleEnabled",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/setPluginEnabled",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/setVersionExemption",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
+  ]
+  const offenders = []
+  const cset = new Set(confirmIds)
+  const aset = new Set(adapters)
+  if (confirmIds.length !== W2_3_WRITE.length) offenders.push(`confirm set size ${confirmIds.length} != 8`)
+  for (const id of W2_3_WRITE) {
+    if (!cset.has(id)) offenders.push("CAP_WRITE_CONFIRM_IDS missing " + id)
+    if (!aset.has(id)) offenders.push("confirm id not released: " + id)
+    const m = capirMethods.find((x) => x.id === id)
+    if (!m) offenders.push("confirm id not in CapIR: " + id)
+    else if (m.kind !== "unary") offenders.push("confirm id is not unary: " + id)
+    const ns = id.includes("#") ? id.split("#")[1].split("/")[0] : ""
+    if (DENY_NS.has(ns)) offenders.push("confirm id is deny family: " + id)
+    if (projected.includes(id)) offenders.push("confirm id is hand-projected: " + id)
+  }
+  for (const id of confirmIds) if (!W2_3_WRITE.includes(id)) offenders.push("unexpected confirm id: " + id)
+  if (offenders.length === 0) ok("17. W2-3 confirm gate set", `${confirmIds.length} write ids, all released/unary/non-denied`)
+  else bad("17. W2-3 confirm gate set", offenders.join("; "))
 }
 
 // --- summary ---

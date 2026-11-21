@@ -147,9 +147,12 @@ describe("S1 /model — createCapHostInvoke model arms", () => {
     // W2-2 round log — OLD W2-1 criterion kept VERBATIM (do not delete):
     //   /NOT_WIRED:.*ledger in_wired=31\/257/
     // W2-2 releases 7 pluginManager read ids -> union count 28 + 10 = 38.
+    // W2-3 round log — OLD W2-2 criterion kept VERBATIM (do not delete):
+    //   /NOT_WIRED:.*ledger in_wired=38\/257/
+    // W2-3 releases 8 pluginManager write ids -> union count 28 + 18 = 46.
     const invoke = createCapHostInvoke(ctxWith(stubController()))
     await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(
-      /NOT_WIRED:.*ledger in_wired=38\/257/,
+      /NOT_WIRED:.*ledger in_wired=46\/257/,
     )
   })
 })

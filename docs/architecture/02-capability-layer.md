@@ -11,7 +11,7 @@
 - **43 工件 / 257 方法**：extractor 对 rc.5 源码的静态全集，双源计数零差异（`024-day1-extractor-first-run.md:95`）。
 - **27 端点**：仅 session-controller 单包口径（源码 `@Remote` 27 处双证），**不是全局端点总数**；全局 map 键和为 257，agent-scope 变体（全局 34）不计入（`capir/README.md:36-41`）。
 - **75 期望面 / 28 已接线 / 10 协议面**：分别是环境状态与桥面，不属 CapIR 静态全集（见 [03](03-handshake-lifecycle.md)、[04](04-ledger-provenance.md)）。
-  - round log（已接线口径）：0.24 final knife 24 → 025 波1（session/search、session/fork、subagents/prompt、subagents/interruptByUser + account/settings 补齐）28。W2-0 底座不含 id 放行，仍 28；W2-1 放行 3 个通用 id 后，**手写集 28 不变**，并集口径 28+3=31；W2-2 再放行 7 个 pluginManager 读 id（listBundles/listPlugins/listVersionExemptions/registries/inspect/listVersions/readBundleDetail），并集口径 28+10=38（旧 28+3=31 criterion 逐字留注释于源码与单测，见 §2.3/§2.5）。
+  - round log（已接线口径）：0.24 final knife 24 → 025 波1（session/search、session/fork、subagents/prompt、subagents/interruptByUser + account/settings 补齐）28。W2-0 底座不含 id 放行，仍 28；W2-1 放行 3 个通用 id 后，**手写集 28 不变**，并集口径 28+3=31；W2-2 再放行 7 个 pluginManager 读 id（listBundles/listPlugins/listVersionExemptions/registries/inspect/listVersions/readBundleDetail），并集口径 28+10=38；W2-3 再放行 8 个 pluginManager 写 id（installBundle/updateBundle/removeBundle/setBundleEnabled/setPluginEnabled/setVersionExemption/cancelInstall/waitForInstall），并集口径 28+18=46（旧 28+3=31 / 28+10=38 criterion 逐字留注释于源码与单测，见 §2.3/§2.5）。
 
 不变量：CapIR **只存静态全集，不携带「已注册 / 已接线」标记**；运行时注册面（profile × 宿主二进制 × 安装面）归 ledger（`capir/README.md:8-10`，`024-day1-review-oldfox.md:31`）。它只描述接口形状（工件/方法 id/端点口径），不含宿主实现代码（同 README `:11`）。
 
@@ -27,7 +27,7 @@ id 体系 `<package>#<namespace>/<method>`，与运行时 `typert.local.list()` 
 
 | 文件 | 内容 | 出处 |
 |---|---|---|
-| `types.ts` | CapIR id 联合类型、每方法 shape 行、totals；**CapIR v3 新表**：`CAP_SERVICE_TABLE`（257 行 id→{service,implementation,cancel?}）、`CAP_PARAMS_TABLE`（257 行有序参数归一档）、`CAP_GENERIC_WIRE_METHODS`/`CAP_GENERIC_WIRE_BY_ID`（237 行双向通用 wire 名）、`CAP_GENERIC_ADAPTERS`（显式放行集）、`CAP_PROJECTED_BY_HAND`（敏感键手写投影例外集） | `capcontract/README.md:16`；生成器 `gen-capcontract.mjs` |
+| `types.ts` | CapIR id 联合类型、每方法 shape 行、totals；**CapIR v3 新表**：`CAP_SERVICE_TABLE`（257 行 id→{service,implementation,cancel?}）、`CAP_PARAMS_TABLE`（257 行有序参数归一档）、`CAP_GENERIC_WIRE_METHODS`/`CAP_GENERIC_WIRE_BY_ID`（237 行双向通用 wire 名）、`CAP_GENERIC_ADAPTERS`（显式放行集）、`CAP_WRITE_CONFIRM_IDS`（W2-3 写 id confirm 闸集）、`CAP_PROJECTED_BY_HAND`（敏感键手写投影例外集） | `capcontract/README.md:16`；生成器 `gen-capcontract.mjs` |
 | `dispatch.ts` | `CAP_DISPATCH_TABLE`（257 行 id→kind）、`toTypertDescriptorId` 恒等映射、`createCapDispatcher(hostInvoke)` | `capcontract/dispatch.ts:14-16,18-19,284-307` |
 | `binder.ts` | `CapWireFrame` → dispatcher 投影、`createProjectionBinder(hostInvoke)` 成员检查 | `capcontract/binder.ts:11-18,28-36` |
 
@@ -47,13 +47,13 @@ wire frame → createProjectionBinder → createCapDispatcher → lookupCapKind 
 bridge 侧 `createCapHostInvoke(ctx)`（`packages/bridge/src/index.ts:980`）是生成 dispatcher 的宿主适配器。第一道闸现为**并集判定**：登记在手写集 `CAP_HOST_WIRED_IDS`（28 条）**或**通用放行集 `CAP_GENERIC_ADAPTERS` 的 id 才进真宿主服务；其余显式失败：
 
 ```
-NOT_WIRED: <id> has no inproc host adapter (ledger in_wired=38/257)
+NOT_WIRED: <id> has no inproc host adapter (ledger in_wired=46/257)
 出处：bridge/index.ts createCapHostInvoke 第一道闸；计数 = CAP_HOST_WIRED_IDS.length + generic.adapters.size
 ```
 
-round log（NOT_WIRED 计数文案）：025 波1（28/28，手写集口径）→ W2-0 底座（28+0，通用集空）→ W2-1（28+3=31，放行 session/create|prompt|wait）→ W2-2（28+10=38，再放行 7 个 pluginManager 读 id）。旧 `in_wired=28/257` 与 `in_wired=31/257` criterion 逐字留注释于源码与单测（round log 纪律）。
+round log（NOT_WIRED 计数文案）：025 波1（28/28，手写集口径）→ W2-0 底座（28+0，通用集空）→ W2-1（28+3=31，放行 session/create|prompt|wait）→ W2-2（28+10=38，再放行 7 个 pluginManager 读 id）→ W2-3（28+18=46，再放行 8 个 pluginManager 写 id）。旧 `in_wired=28/257`、`in_wired=31/257` 与 `in_wired=38/257` criterion 逐字留注释于源码与单测（round log 纪律）。
 
-**通用 arm（W2-0 底座建、W2-1 首个真实消费者）**：`packages/bridge/src/cap-generic.ts` 的 `invokeGenericCap` 表驱动分发——查 `CAP_GENERIC_ADAPTERS` 白名单 → deny-list（先于白名单）→ BAD_KIND 闸（stream 禁入 unary）→ 包裹式 `ctx.get(service)` → 按 `CAP_PARAMS_TABLE` 粗校验（BAD_PARAMS）→ 依表序位置调用（R3 保槽不左移）→ `cancel:'signal'` 追加 owned AbortSignal。零手抄 `methodId ===`（C5）。放行是逐 id 显式白名单制（非 expected-75 全放），每批切片把自己收割的 id 加入放行集 + ledger provenance 走 gen-ledger 正门。W2-1 放行 session/create|prompt|wait 三 id 兑现 `/btw`，seam 侧封装 create→prompt→wait side-session 生命周期（域分离于绑定主会话）。W2-2 放行 7 个 pluginManager 读 id 兑现 `/plugins` 真数据面（listBundles/listPlugins 填 state 列、readBundleDetail 供 detail 视图、registries/listVersions/listVersionExemptions/inspect 供安装前置信息）；seam 侧手写 `pluginsManager` face + 二次白名单投影，写面（install/remove/setEnabled 等 8 id）留 W2-3。
+**通用 arm（W2-0 底座建、W2-1 首个真实消费者）**：`packages/bridge/src/cap-generic.ts` 的 `invokeGenericCap` 表驱动分发——查 `CAP_GENERIC_ADAPTERS` 白名单 → deny-list（先于白名单）→ BAD_KIND 闸（stream 禁入 unary）→（W2-3 起）confirm 闸（`CAP_WRITE_CONFIRM_IDS` 写 id 须 `__confirm===true`，R6 桥侧第一道闸）→ 包裹式 `ctx.get(service)` → 按 `CAP_PARAMS_TABLE` 粗校验（BAD_PARAMS）→ 依表序位置调用（R3 保槽不左移）→ `cancel:'signal'` 追加 owned AbortSignal。零手抄 `methodId ===`（C5）。放行是逐 id 显式白名单制（非 expected-75 全放），每批切片把自己收割的 id 加入放行集 + ledger provenance 走 gen-ledger 正门。W2-1 放行 session/create|prompt|wait 三 id 兑现 `/btw`，seam 侧封装 create→prompt→wait side-session 生命周期（域分离于绑定主会话）。W2-2 放行 7 个 pluginManager 读 id 兑现 `/plugins` 真数据面（listBundles/listPlugins 填 state 列、readBundleDetail 供 detail 视图、registries/listVersions/listVersionExemptions/inspect 供安装前置信息）；seam 侧手写 `pluginsManager` face + 二次白名单投影。W2-3 放行 8 个 pluginManager 写 id（install/update/remove/setEnabled×2/setVersionExemption/cancelInstall/waitForInstall）；全部过 confirm 闸 + TUI 确认模态（seam 侧第二道闸），进度走 waitForInstall 轮询（不扩 ADR-0010 帧面）。
 
 **四张手写 `CAP_*_WIRE_METHODS` 表 + 一张生成通用表**（wire 名 → CapIR id 的表查找，**不是**手抄 `req.method ===` 分支）：
 
@@ -75,16 +75,16 @@ round log（NOT_WIRED 计数文案）：025 波1（28/28，手写集口径）→
 
 - **`wired_protocol` = 10 条**：ADR-0010 桥协议帧（多步/有状态/依赖 I 类服务、CapIR 无同名 id），不是双轨的任何一轨，**不计入 @manual**。10 条为 `bridge.ping`/`bridge.hello`/`session.open`/`session.send`/`session.close`/`turn.abort`/`ask.response`/`journal.replay`/`subagents.interrupt`/`subagents.stopChildren`（`ledger/ledger.md:54-67`；逐条定性见裁决 `:18-28`）。
 - **`wired_manual` = 0**：有 CapIR 对应的 1:1 宿主手抄调用。S1 先删 `model.currentSelection`（`024-tag-premise-adjudication-oldfox.md:17`），0.24 final knife 再删最后一条 `session.list`（`gen-ledger.mjs:64-65`；`CAP_SESSION_WIRE_METHODS` 注释 `index.ts:1212-1218`）。CI 断言 `wired_manual == 0`（`check-capcontract.mjs:17-18,268-275`）。
-- **`wired_capir_generated` = 28**（`ledger/ledger.md`）；`in_wired_total=28/257`（手写 arm 口径，W2-0 底座通用集空）。W2-1 通用放行 3 id（并集口径 31），W2-2 再放行 7 个 pluginManager 读 id（并集口径 38），但手写集与 ledger `in_wired` 仍 28（通用放行在 capcontract 放行集代码侧，不改 capir.json）。round log：24 → 28（波1）→ 28（W2-0/底座）→ 31（W2-1）→ 38（W2-2）。
+- **`wired_capir_generated` = 28**（`ledger/ledger.md`）；`in_wired_total=28/257`（手写 arm 口径，W2-0 底座通用集空）。W2-1 通用放行 3 id（并集口径 31），W2-2 再放行 7 个 pluginManager 读 id（并集口径 38），W2-3 再放行 8 个 pluginManager 写 id（并集口径 46），但手写集与 ledger `in_wired` 仍 28（通用放行在 capcontract 放行集代码侧，不改 capir.json）。round log：24 → 28（波1）→ 28（W2-0/底座）→ 31（W2-1）→ 38（W2-2）→ 46（W2-3）。
 
 「工件在≠服务在」是另一约束：W 类同样需要启动在场探针，握手缺失项显式降级而非崩溃（v3 `:56`，`024-day1-review-oldfox.md:33-34`）。
 
 ## 2.5 NOT_WIRED 是显式降级，不是静默成功
 
-除 28 条手写 arm（+ W2-1 起 3 条通用放行 + W2-2 起 7 个 pluginManager 读放行）外，其余 W id 经 hostInvoke 一律显式 `NOT_WIRED`（`index.ts` 第一道闸；冻结风险 2 见 `024-base-frozen.md:25`）。设计动机：缺宿主服务/未接线必须与「空结果」可区分——`session.list` 服务缺失时返回 `UNSUPPORTED` 而非 `{items:[]}`（`ADR-0010:112`）；stream 无宿主返回 `NOT_WIRED` 而非空流。通用 arm 的 NOT_WIRED 语义：id 不在放行集 / deny 族 / 服务缺 / 方法缺 / stream 入 unary（BAD_KIND）均显式失败，绝不静默成功或假空。`/btw` 服务的 `/btw` 在通用放行前走精确降级文案（`SIDE_SESSION_NOT_WIRED` → 现 W2-1 真化后为 `UNSUPPORTED`/`SIDE_SESSION_NO_ANSWER`），从无 mock LLM 假答案。
+除 28 条手写 arm（+ W2-1 起 3 条通用放行 + W2-2 起 7 个 pluginManager 读放行 + W2-3 起 8 个 pluginManager 写放行）外，其余 W id 经 hostInvoke 一律显式 `NOT_WIRED`（`index.ts` 第一道闸；冻结风险 2 见 `024-base-frozen.md:25`）。设计动机：缺宿主服务/未接线必须与「空结果」可区分——`session.list` 服务缺失时返回 `UNSUPPORTED` 而非 `{items:[]}`（`ADR-0010:112`）；stream 无宿主返回 `NOT_WIRED` 而非空流。通用 arm 的 NOT_WIRED 语义：id 不在放行集 / deny 族 / 服务缺 / 方法缺 / stream 入 unary（BAD_KIND）均显式失败，绝不静默成功或假空。`/btw` 服务的 `/btw` 在通用放行前走精确降级文案（`SIDE_SESSION_NOT_WIRED` → 现 W2-1 真化后为 `UNSUPPORTED`/`SIDE_SESSION_NO_ANSWER`），从无 mock LLM 假答案。
 
 `NOT_WIRED` 白名单制（第一道闸 = 手写集 ∪ 通用放行集）：通用放行集逐 id 显式（非 expected-75 全放），这是「显式降级不是静默成功」的既有语义在通用 arm 上的延续。deny-list 三族（account/credentials/settings）先于白名单判定，敌意/stale 生成器把 deny id 写进放行集也被拒。round log：0.24 时代「全集通用调用待 CapIR params schema」已由 W2-0 CapIR v3 参数表 + W2-1 首批放行兑现（路线 b 落地）。
 
 ## 维护责任
 
-CapIR 计数/口径、生成物结构（CapIR v3 字段/生成表）、`CAP_HOST_WIRED_IDS` / `CAP_GENERIC_ADAPTERS` / `CAP_*_WIRE_METHODS` 增删、@manual/协议面维度定义、NOT_WIRED 语义变化时必须更新本文档；新增流式中继需同步 2.3 节。放行新 id 时四处同步：生成器 `adapterBlock`、`check-capcontract #16` 放行断言、NOT_WIRED 文案计数（并集 28+N）、本文档 round log。
+CapIR 计数/口径、生成物结构（CapIR v3 字段/生成表）、`CAP_HOST_WIRED_IDS` / `CAP_GENERIC_ADAPTERS` / `CAP_WRITE_CONFIRM_IDS` / `CAP_*_WIRE_METHODS` 增删、@manual/协议面维度定义、NOT_WIRED 语义变化时必须更新本文档；新增流式中继需同步 2.3 节。放行新 id 时四处同步：生成器 `adapterBlock`、`check-capcontract #16` 放行断言、NOT_WIRED 文案计数（并集 28+N）、本文档 round log；写 id 另需同步 `CAP_WRITE_CONFIRM_IDS` + `check-capcontract #17`。

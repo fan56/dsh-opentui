@@ -16,6 +16,7 @@ import {
   CAP_PROJECTED_BY_HAND,
   CAP_SERVICE_TABLE,
   CAP_PARAMS_TABLE,
+  CAP_WRITE_CONFIRM_IDS,
 } from '../../../capcontract/types'
 import {
   capIdNamespace,
@@ -54,6 +55,7 @@ function makeConfig(overrides: Partial<GenericCapConfig> = {}): GenericCapConfig
     services: {},
     params: {},
     projectedByHand: new Set<string>(),
+    confirmIds: new Set<string>(),
     denyNamespaces: GENERIC_DENY_NAMESPACES,
     kindOf: () => 'unary',
     getService: () => undefined,
@@ -300,7 +302,9 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(0)
     // W2-2 round log — OLD W2-1 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(3)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(10)
+    // W2-3 round log — OLD W2-2 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(10)
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(18)
     expect(inject).toEqual(['agents', 'typert'])
     expect(inject).not.toContain('pluginManager')
     expect(inject).not.toContain('llm')
@@ -341,14 +345,16 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     expect(ghost).toContain(GHOST_ID)
     expect(ghost).toContain('in_wired=30/257')
 
-    // Production release set reports the union count 28 + released = 38 (S-1).
+    // Production release set reports the union count 28 + released = 46 (S-1).
     // W2-2 round log — OLD W2-1 criterion kept VERBATIM (do not delete):
     //   // Production release set (3 ids) reports the union count 28 + 3 = 31 (S-1).
     //   expect(prodGhost).toContain('in_wired=31/257')
+    // W2-3 round log — OLD W2-2 criterion kept VERBATIM (do not delete):
+    //   expect(prodGhost).toContain('in_wired=38/257')
     const prodConfig = makeConfig({ adapters: CAP_GENERIC_ADAPTERS })
     const prodInvoke = createCapHostInvoke(ctx, prodConfig)
     const prodGhost = await rejectionMessage(() => prodInvoke(GHOST_ID as never, 'unary', {}))
-    expect(prodGhost).toContain('in_wired=38/257')
+    expect(prodGhost).toContain('in_wired=46/257')
   })
 
   // W2-1 E4: the three released side-session ids are in the production set with
@@ -551,5 +557,206 @@ describe('W2-2a plugin-manager read ids — per-id E2/E4/E5', () => {
     expect(text).not.toContain(SENTINEL)
     for (const key of ['access_token', 'id_token', 'authorizeUrl']) expect(text).not.toContain(key)
     expect(text).toContain('pkg')
+  })
+})
+
+/**
+ * 025 W2-3a — the eight pluginManager WRITE ids released into the generic arm
+ * (plan §5.2, R6). Synthetic fixtures only: no real service, no real credential
+ * value (SENTINEL is a fixed fake string). E0 confirm double-gate (bridge half),
+ * E2 per-id BAD_PARAMS, E4 positional fidelity (R3), E5 wire sanitize.
+ */
+describe('W2-3a plugin-manager write ids — E0/E2/E4/E5', () => {
+  const PM = '@deepseek-ai/dsh-plugin-manager#pluginManager/'
+  const IDS = {
+    installBundle: PM + 'installBundle',
+    updateBundle: PM + 'updateBundle',
+    removeBundle: PM + 'removeBundle',
+    setBundleEnabled: PM + 'setBundleEnabled',
+    setPluginEnabled: PM + 'setPluginEnabled',
+    setVersionExemption: PM + 'setVersionExemption',
+    cancelInstall: PM + 'cancelInstall',
+    waitForInstall: PM + 'waitForInstall',
+  }
+  const ALL = Object.values(IDS)
+  const VALID: Record<string, unknown> = {
+    [IDS.installBundle]: { spec: '@scope/pkg' },
+    [IDS.updateBundle]: { name: '@scope/pkg', version: '2.0.0' },
+    [IDS.removeBundle]: { name: '@scope/pkg' },
+    [IDS.setBundleEnabled]: { name: '@scope/pkg', enabled: true },
+    [IDS.setPluginEnabled]: { id: 'pkg-entry', enabled: true },
+    [IDS.setVersionExemption]: { packageVersion: '1.0.0', runtimeVersion: 'rc.5', enabled: true },
+    [IDS.cancelInstall]: { requestId: 'req-1' },
+    [IDS.waitForInstall]: { requestId: 'req-1' },
+  }
+  const CONFIRM = { __confirm: true }
+
+  let calls: Record<string, unknown[][]> = {}
+  function svc(withConfirmSpread = false): Record<string, (...a: unknown[]) => unknown> {
+    calls = {}
+    const make = (key: string) => (...args: unknown[]) => {
+      ;(calls[key] ??= []).push(args)
+      return { application: 'applied', target: key }
+    }
+    // Keep the mock surface explicit (no dynamic proxy): every write method is
+    // a real named function so positional reconstruction is observable.
+    return {
+      installBundle: make('installBundle'),
+      updateBundle: make('updateBundle'),
+      removeBundle: make('removeBundle'),
+      setBundleEnabled: make('setBundleEnabled'),
+      setPluginEnabled: make('setPluginEnabled'),
+      setVersionExemption: make('setVersionExemption'),
+      cancelInstall: make('cancelInstall'),
+      waitForInstall: make('waitForInstall'),
+    }
+  }
+
+  function pmConfig(service: Record<string, (...a: unknown[]) => unknown> | undefined, confirmIds = CAP_WRITE_CONFIRM_IDS) {
+    return makeConfig({
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: CAP_SERVICE_TABLE,
+      params: CAP_PARAMS_TABLE,
+      projectedByHand: CAP_PROJECTED_BY_HAND,
+      confirmIds,
+      kindOf: () => 'unary',
+      getService: (name) => (name === 'pluginManager' ? service : undefined),
+    })
+  }
+
+  const keyOf = (id: string) => id.slice(PM.length)
+
+  // Release-set integrity: 8 write ids in adapters + confirm set, service binding
+  // and params present; none is a hand-projection exception (AMEND-2).
+  test('W2-3a release set: 8 write ids in adapters + confirm set, wired service/params, none PROJECTED_BY_HAND', () => {
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(18)
+    expect(CAP_WRITE_CONFIRM_IDS.size).toBe(8)
+    for (const id of ALL) {
+      expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
+      expect(CAP_WRITE_CONFIRM_IDS.has(id as never)).toBe(true)
+      expect(CAP_SERVICE_TABLE[id as never]?.service).toBe('pluginManager')
+      expect(Object.prototype.hasOwnProperty.call(CAP_PARAMS_TABLE, id)).toBe(true)
+      expect(CAP_PROJECTED_BY_HAND.has(id as never)).toBe(false)
+    }
+  })
+
+  // E0 BRIDGE HALF of the R6 double gate: an unconfirmed write is refused with
+  // CONFIRM_REQUIRED and host method ZERO-called — no service resolution, no fire.
+  test('E0 — bridge confirm gate: no __confirm -> CONFIRM_REQUIRED, hostCalls=0', async () => {
+    const service = svc()
+    const config = pmConfig(service)
+    for (const id of ALL) {
+      const msg = await rejectionMessage(() => invokeGenericCap(config, id, 'unary', VALID[id]))
+      expect(msg).toContain('CONFIRM_REQUIRED: ' + id)
+    }
+    expect(Object.values(calls).flat().length).toBe(0)
+  })
+
+  // E0 control: `__confirm: "yes"` (wrong type) is NOT accepted; only literal true.
+  test('E0 — bridge confirm gate rejects non-boolean confirm marker', async () => {
+    const service = svc()
+    const config = pmConfig(service)
+    const msg = await rejectionMessage(() =>
+      invokeGenericCap(config, IDS.installBundle, 'unary', { ...VALID[IDS.installBundle], __confirm: 'yes' }),
+    )
+    expect(msg).toContain('CONFIRM_REQUIRED')
+    expect(Object.values(calls).flat().length).toBe(0)
+  })
+
+  // E2 (S-1): every id carries >=1 BAD_PARAMS negative naming the FULL CapIR id;
+  // host method ZERO-called on every rejection. __confirm supplied so the gate
+  // is passed and validation is the rejecting layer (not the confirm gate).
+  test('E2 — all 8 write ids: BAD_PARAMS missing/wrong-type, full id in message, hostCalls=0', async () => {
+    const service = svc()
+    const config = pmConfig(service)
+    const cases: Array<[string, unknown, string, string]> = [
+      [IDS.installBundle, {}, 'spec', 'required'],
+      [IDS.installBundle, { spec: 42 }, 'spec', 'must be string'],
+      [IDS.updateBundle, { name: '@s/p' }, 'version', 'required'],
+      [IDS.updateBundle, { name: '@s/p', version: 42 }, 'version', 'must be string'],
+      [IDS.removeBundle, {}, 'name', 'required'],
+      [IDS.setBundleEnabled, { name: '@s/p' }, 'enabled', 'required'],
+      [IDS.setBundleEnabled, { name: '@s/p', enabled: 'yes' }, 'enabled', 'must be boolean'],
+      [IDS.setPluginEnabled, { id: 'e' }, 'enabled', 'required'],
+      [IDS.setVersionExemption, {}, 'packageVersion', 'required'],
+      [IDS.setVersionExemption, { packageVersion: '1', runtimeVersion: 'rc', enabled: true, acceptRisk: 'yes' }, 'acceptRisk', 'must be boolean'],
+      [IDS.cancelInstall, {}, 'requestId', 'required'],
+      [IDS.waitForInstall, {}, 'requestId', 'required'],
+    ]
+    for (const [id, params, param, reason] of cases) {
+      const msg = await rejectionMessage(() =>
+        invokeGenericCap(config, id, 'unary', { ...params, __confirm: true }),
+      )
+      expect(msg).toContain('BAD_PARAMS: ' + id + ' ' + param + ' ' + reason)
+    }
+    expect(Object.values(calls).flat().length).toBe(0)
+  })
+
+  // E4 (R3): positional arg order/values per id, BY TABLE ORDER from capir.json.
+  // Optional omissions keep their slot (no left shift); object identity preserved.
+  // No write id carries cancel:'signal' -> no trailing AbortSignal.
+  test('E4 — positional args per id: table-order reconstruction, optional slots preserved', async () => {
+    const service = svc()
+    const config = pmConfig(service)
+
+    const optInstall = { offline: true }
+    await invokeGenericCap(config, IDS.installBundle, 'unary', { spec: 'sp', options: optInstall, __confirm: true })
+    expect(calls.installBundle![0]).toEqual(['sp', optInstall])
+    expect(calls.installBundle![0]![1]).toBe(optInstall)
+
+    await invokeGenericCap(config, IDS.updateBundle, 'unary', { name: 'n', version: 'v', __confirm: true })
+    expect(calls.updateBundle![0]).toEqual(['n', 'v', undefined])
+
+    await invokeGenericCap(config, IDS.removeBundle, 'unary', { name: 'n', __confirm: true })
+    expect(calls.removeBundle![0]).toEqual(['n'])
+
+    await invokeGenericCap(config, IDS.setBundleEnabled, 'unary', { name: 'n', enabled: false, __confirm: true })
+    expect(calls.setBundleEnabled![0]).toEqual(['n', false])
+
+    await invokeGenericCap(config, IDS.setPluginEnabled, 'unary', { id: 'pid', enabled: true, __confirm: true })
+    expect(calls.setPluginEnabled![0]).toEqual(['pid', true])
+
+    const riskTrue = true
+    await invokeGenericCap(config, IDS.setVersionExemption, 'unary', {
+      packageVersion: 'pv', runtimeVersion: 'rv', enabled: true, acceptRisk: riskTrue, __confirm: true,
+    })
+    expect(calls.setVersionExemption![0]).toEqual(['pv', 'rv', true, riskTrue])
+    expect(calls.setVersionExemption![0]![3]).toBe(riskTrue)
+    await invokeGenericCap(config, IDS.setVersionExemption, 'unary', {
+      packageVersion: 'pv', runtimeVersion: 'rv', enabled: true, __confirm: true,
+    })
+    expect(calls.setVersionExemption![1]).toEqual(['pv', 'rv', true, undefined])
+
+    await invokeGenericCap(config, IDS.cancelInstall, 'unary', { requestId: 'rid', __confirm: true })
+    expect(calls.cancelInstall![0]).toEqual(['rid'])
+    await invokeGenericCap(config, IDS.waitForInstall, 'unary', { requestId: 'rid', __confirm: true })
+    expect(calls.waitForInstall![0]).toEqual(['rid'])
+
+    // __confirm is a meta marker: NEVER forwarded as a positional host argument.
+    for (const args of Object.values(calls).flat()) {
+      for (const a of args) expect(a).not.toEqual(CONFIRM)
+    }
+    void keyOf // documented helper; no-op reference
+  })
+
+  // E5 (defence in depth): generic wire projection strips the 7 S4 auth-material
+  // keys from a hostile write reply. No write id is in PROJECTED_BY_HAND, so a
+  // defensive wire-layer negative is required by the W2-2 precedent. Generic
+  // apiKey/token/secret keys are NOT in the S4 sanitizer (the AMEND-2 gap) — they
+  // are removed by the seam's SECOND whitelist projection (W2-3b/c), not here.
+  test('E5 — wire projection strips S4 auth keys from write reply; no SENTINEL in frame', () => {
+    const config = pmConfig(undefined)
+    const hostile = {
+      application: 'applied', target: 'pkg',
+      authorizeUrl: SENTINEL, authorize_url: SENTINEL, code_challenge: SENTINEL,
+      code_verifier: SENTINEL, access_token: SENTINEL, id_token: SENTINEL, refresh_token: SENTINEL,
+    }
+    const framed = projectGenericWireReply(config, IDS.installBundle, hostile, sanitizeFrameForWire)
+    const text = JSON.stringify(framed)
+    expect(text).not.toContain(SENTINEL)
+    for (const key of ['authorizeUrl', 'authorize_url', 'code_challenge', 'code_verifier', 'access_token', 'id_token', 'refresh_token']) {
+      expect(text).not.toContain(key)
+    }
+    expect(text).toContain('applied')
   })
 })

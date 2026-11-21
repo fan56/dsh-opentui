@@ -2261,7 +2261,7 @@ export const CAP_GENERIC_WIRE_BY_ID = {
   "@deepseek-ai/dsh-web#web/listProviders": "web.listProviders",
 } as const
 
-/** Explicit per-id generic-adapter release whitelist (W2-0 empty -> W2-1 3 -> W2-2 10). */
+/** Explicit per-id generic-adapter release whitelist (W2-0 empty -> W2-1 3 -> W2-2 10 -> W2-3 18). */
 export const CAP_GENERIC_ADAPTERS: ReadonlySet<CapMethodId> = new Set([
   "@deepseek-ai/dsh-api-session-controller#session/create",
   "@deepseek-ai/dsh-api-session-controller#session/prompt",
@@ -2273,6 +2273,26 @@ export const CAP_GENERIC_ADAPTERS: ReadonlySet<CapMethodId> = new Set([
   "@deepseek-ai/dsh-plugin-manager#pluginManager/inspect",
   "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersions",
   "@deepseek-ai/dsh-plugin-manager#pluginManager/readBundleDetail",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/installBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/updateBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/removeBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setBundleEnabled",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setPluginEnabled",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setVersionExemption",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
+] as const)
+
+/** W2-3 write ids (R6): generic-arm refuses these unless a confirm marker is present. */
+export const CAP_WRITE_CONFIRM_IDS: ReadonlySet<CapMethodId> = new Set([
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/installBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/updateBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/removeBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setBundleEnabled",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setPluginEnabled",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setVersionExemption",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
 ] as const)
 
 /** ids whose result jsonSchema carries sensitive keys; forced hand projection (AMEND-2). */

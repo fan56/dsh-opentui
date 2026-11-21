@@ -22,6 +22,9 @@
  *    empty (AMEND-4); wired count unchanged (28), bridge observable behaviour 0 delta.
  *    W2-1 releases the three side-session ids (session/create|prompt|wait).
  *    W2-2 releases seven pluginManager read ids (plan §5.2); writes stay W2-3.
+ *    W2-3 releases eight pluginManager write ids (plan §5.2); every one is also
+ *    emitted into CAP_WRITE_CONFIRM_IDS so the generic arm refuses it unless an
+ *    explicit confirm marker accompanies the call (R6 double gate).
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
@@ -138,13 +141,36 @@ const W2_2_READ_ADAPTERS = [
   "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersions",
   "@deepseek-ai/dsh-plugin-manager#pluginManager/readBundleDetail",
 ]
-// Union of every released id across batches (W2-1 3 + W2-2 7 = 10).
-const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS]
+// W2-3 /plugins write face: eight pluginManager WRITE ids (plan §5.2, R6). All
+// unary, all service=pluginManager, NO stream / deny-family id (fail-loud below).
+// Each is a FS/config-mutating call that MUST pass the TUI confirm modal; the
+// generated CAP_WRITE_CONFIRM_IDS set drives the generic-arm confirm gate.
+const W2_3_WRITE_ADAPTERS = [
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/installBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/updateBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/removeBundle",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setBundleEnabled",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setPluginEnabled",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/setVersionExemption",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
+]
+// Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 = 18).
+const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS]
 for (const id of RELEASED_ADAPTERS) {
   if (!ids.includes(id)) fail("released adapter id not in CapIR: " + id)
 }
 if (new Set(RELEASED_ADAPTERS).size !== RELEASED_ADAPTERS.length) fail("duplicate released adapter id")
 const adapterBlock = RELEASED_ADAPTERS.map((id) => `  ${q(id)},`).join("\n")
+// Fail-loud: no released id may be a stream kind or a deny-list family (R6 / AMEND-1/§3.6).
+for (const id of RELEASED_ADAPTERS) {
+  const m = methods.find((x) => x.id === id)
+  if (!m) fail("released adapter has no method: " + id)
+  if (m.kind === "stream") fail("released adapter is stream (unary arm only): " + id)
+  if (isDenied(m)) fail("released adapter is deny-list family: " + id)
+}
+// CAP_WRITE_CONFIRM_IDS: every W2-3 write id requires an explicit confirm marker.
+const confirmBlock = W2_3_WRITE_ADAPTERS.map((id) => `  ${q(id)},`).join("\n")
 
 const types = header("types: generated capability id/shape surface") + `
 /** Transport kind of a capability method (CapIR field: kind). */
@@ -232,9 +258,14 @@ export const CAP_GENERIC_WIRE_BY_ID = {
 ${wireRevBlock}
 } as const
 
-/** Explicit per-id generic-adapter release whitelist (W2-0 empty -> W2-1 3 -> W2-2 10). */
+/** Explicit per-id generic-adapter release whitelist (W2-0 empty -> W2-1 3 -> W2-2 10 -> W2-3 18). */
 export const CAP_GENERIC_ADAPTERS: ReadonlySet<CapMethodId> = new Set([
 ${adapterBlock}
+] as const)
+
+/** W2-3 write ids (R6): generic-arm refuses these unless a confirm marker is present. */
+export const CAP_WRITE_CONFIRM_IDS: ReadonlySet<CapMethodId> = new Set([
+${confirmBlock}
 ] as const)
 
 /** ids whose result jsonSchema carries sensitive keys; forced hand projection (AMEND-2). */

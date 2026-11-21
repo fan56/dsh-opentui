@@ -42,6 +42,9 @@ export interface GenericCapConfig {
   readonly params: Readonly<Record<string, readonly CapParamRow[]>>
   /** result-jsonSchema sensitive ids that MUST NOT use generic default projection (AMEND-2). */
   readonly projectedByHand: ReadonlySet<string>
+  /** W2-3 write ids (CAP_WRITE_CONFIRM_IDS): generic arm refuses these unless the
+   *  caller supplies the explicit `__confirm === true` marker (R6 first gate). */
+  readonly confirmIds: ReadonlySet<string>
   /** namespaces denied entry into generic dispatch (AMEND-1): account/credentials/settings. */
   readonly denyNamespaces: ReadonlySet<string>
   /** transport kind lookup (generated CAP_DISPATCH_TABLE via lookupCapKind). */
@@ -110,6 +113,20 @@ export async function invokeGenericCap(
   // kind table must say unary; a stream id never enters the unary arm.
   if (kind === 'stream' || config.kindOf(methodId) === 'stream') {
     throw new Error(`BAD_KIND: ${methodId} stream transport not supported by generic arm`)
+  }
+
+  // W2-3 R6 FIRST gate: a released WRITE id (CAP_WRITE_CONFIRM_IDS) is refused
+  // unless the caller supplied the explicit `__confirm === true` marker. This is
+  // the bridge-side half of the confirm double-gate (seam-side half lives in the
+  // hand-written write faces). No host service is even resolved on refusal, so
+  // a write can NEVER fire without confirmation — fail closed.
+  if (config.confirmIds.has(methodId)) {
+    const marker = (params !== null && typeof params === 'object' && !Array.isArray(params))
+      ? (params as Record<string, unknown>).__confirm
+      : undefined
+    if (marker !== true) {
+      throw new Error(`CONFIRM_REQUIRED: ${methodId} write requires explicit confirmation`)
+    }
   }
 
   const binding = config.services[methodId]

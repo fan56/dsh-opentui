@@ -75,6 +75,7 @@ import {
   CAP_PARAMS_TABLE,
   CAP_PROJECTED_BY_HAND,
   CAP_SERVICE_TABLE,
+  CAP_WRITE_CONFIRM_IDS,
 } from '../../../capcontract/types'
 // 025 wave2 W2-0d — table-driven generic arm (dormant at base: adapters empty).
 import {
@@ -971,6 +972,7 @@ export function createProductionGenericConfig(ctx: BridgeContext): GenericCapCon
     services: CAP_SERVICE_TABLE,
     params: CAP_PARAMS_TABLE,
     projectedByHand: CAP_PROJECTED_BY_HAND,
+    confirmIds: CAP_WRITE_CONFIRM_IDS,
     denyNamespaces: GENERIC_DENY_NAMESPACES,
     kindOf: (id) => lookupCapKind(id),
     getService: (service) => (typeof ctx.get === 'function' ? ctx.get(service) : undefined),
@@ -996,6 +998,8 @@ export function createCapHostInvoke(
     // releases 3 generic ids, so the two-sets-outside id now reports 31/257.
     // W2-2 round log: 7 pluginManager read ids join the set -> union 28+10=38.
     // OLD W2-1 count criterion kept VERBATIM above (do not delete).
+    // W2-3 round log: 8 pluginManager write ids join the set -> union 28+18=46.
+    // OLD W2-2 count criterion (38) kept VERBATIM in tests/docs (do not delete).
     const handWired = (CAP_HOST_WIRED_IDS as readonly string[]).includes(methodId)
     const genericReleased = generic.adapters.has(methodId)
     if (!handWired && !genericReleased) {
@@ -4112,10 +4116,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         const message = err instanceof Error ? err.message : String(err)
         const code = message.startsWith('BAD_PARAMS') ? 'BAD_PARAMS'
           : message.startsWith('BAD_KIND') ? 'UNSUPPORTED'
-            : message.startsWith('NOT_WIRED') || message.includes('unavailable') ||
-              message.startsWith('HAND_PROJECTION_REQUIRED')
-              ? 'UNSUPPORTED'
-              : 'INTERNAL'
+            // W2-3 R6: an unconfirmed write is refused with its own code so the
+            // seam can reject honestly (never a silent/fake success).
+            : message.startsWith('CONFIRM_REQUIRED') ? 'CONFIRM_REQUIRED'
+              : message.startsWith('NOT_WIRED') || message.includes('unavailable') ||
+                message.startsWith('HAND_PROJECTION_REQUIRED')
+                ? 'UNSUPPORTED'
+                : 'INTERNAL'
         replyError(req.id, code, message)
       }
       return
