@@ -239,6 +239,17 @@ interface SessionControllerLike {
   list(request: { _request: { cursor?: string } }): Promise<SessionListValueLike>
 }
 
+// 025-w1b B/C — host SessionController's search/fork @Remote methods
+// (rc.5 session-controller/src/index.ts:268 search / :422 fork; types.ts:249-257,
+// :302-313). Optional so a host without them degrades to NOT_WIRED, never a crash.
+interface SessionSearchValueLike {
+  items: readonly { sessionId: string; snippet: string }[]
+  hasMore?: boolean
+}
+interface SessionForkValueLike {
+  sessionId: string
+}
+
 // S1 /model — structural slices of the host SessionController's model @Remote
 // methods (`packages/api/session-controller/src/index.ts:289-320`, rc.5 source).
 // Optional members keep resolveSessionController's `list` membership test intact:
@@ -266,6 +277,10 @@ interface SessionControllerModelLike extends SessionControllerLike {
   modelCatalog?(): Promise<ModelCatalogLike>
   selectModel?(request: SessionSelectModelRequestLike): Promise<SessionSelectModelValueLike>
   initializeDefaultModel?(): Promise<void>
+  // 025-w1b — additive optional members; resolveSessionController's `list`
+  // membership test is unchanged, a host without them degrades to NOT_WIRED.
+  search?(request: { query: string }, signal: AbortSignal): Promise<SessionSearchValueLike>
+  fork?(request: { sessionId: string; atSeq?: number; allowMigration?: boolean }): Promise<SessionForkValueLike>
 }
 
 // S3 push — structural slices of the host SessionController's @Remote stream
@@ -583,6 +598,9 @@ export const CAP_HOST_WIRED_IDS: readonly string[] = [
   '@deepseek-ai/dsh-api-session-controller#session/modelCatalog',
   '@deepseek-ai/dsh-api-session-controller#session/selectModel',
   '@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel',
+  // 025-w1b B/C — session search/fork (sessionController seam, expected 75 gap closed)
+  '@deepseek-ai/dsh-api-session-controller#session/search',
+  '@deepseek-ai/dsh-api-session-controller#session/fork',
   // S3 — session push streams (sessionController seam, shared with S1 model arms)
   '@deepseek-ai/dsh-api-session-controller#session/observeEvent',
   '@deepseek-ai/dsh-api-session-controller#session/observeState',
@@ -960,6 +978,34 @@ export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
           }
           return controller.initializeDefaultModel()
         }
+        // ---- 025-w1b B/C: search / fork (unary, read-only except fork seeds a
+        // new session). Both optional on the host; a missing method is NOT_WIRED.
+        case '@deepseek-ai/dsh-api-session-controller#session/search': {
+          if (typeof controller.search !== 'function') {
+            throw new Error(`NOT_WIRED: sessionController.search unavailable for ${methodId}`)
+          }
+          const p = params as { query?: unknown } | undefined
+          if (typeof p?.query !== 'string') {
+            throw new Error('BAD_PARAMS: session.search query must be a string')
+          }
+          // The host read takes an AbortSignal; a unary stdio frame carries no
+          // caller signal, so use an owned, never-aborted one (mirrors other
+          // unary reads — no transport cancellation channel for a single frame).
+          return controller.search({ query: p.query }, new AbortController().signal)
+        }
+        case '@deepseek-ai/dsh-api-session-controller#session/fork': {
+          if (typeof controller.fork !== 'function') {
+            throw new Error(`NOT_WIRED: sessionController.fork unavailable for ${methodId}`)
+          }
+          const p = params as { sessionId?: unknown; atSeq?: unknown; allowMigration?: unknown } | undefined
+          if (typeof p?.sessionId !== 'string' || p.sessionId === '') {
+            throw new Error('BAD_PARAMS: session.fork sessionId must be a non-empty string')
+          }
+          const request: { sessionId: string; atSeq?: number; allowMigration?: boolean } = { sessionId: p.sessionId }
+          if (typeof p.atSeq === 'number' && Number.isFinite(p.atSeq)) request.atSeq = p.atSeq
+          if (typeof p.allowMigration === 'boolean') request.allowMigration = p.allowMigration
+          return controller.fork(request)
+        }
         // ---- S3 push streams (kind-gated; hostInvoke returns the AsyncIterable,
         // does NOT consume it — the relay / caller owns cancellation) ----------
         case '@deepseek-ai/dsh-api-session-controller#session/observeEvent':
@@ -1219,6 +1265,19 @@ const CAP_SELECTION_READ_METHOD = 'model.currentSelection'
  */
 const CAP_SESSION_WIRE_METHODS: Readonly<Record<string, string>> = {
   'session.list': '@deepseek-ai/dsh-api-session-controller#session/list',
+}
+
+/**
+ * 025-w1b B/C — client-facing frame names → CapIR W ids for session search/fork,
+ * served through the SAME generated capcontract chain (table lookup, NOT a
+ * hand-copied `req.method ===` line — keeps the @manual surface at 10). Kept in
+ * a SEPARATE table from CAP_SESSION_WIRE_METHODS because their reply shapes differ
+ * from session.list (search → {items}, fork → {sessionId}), each projected in
+ * handleLine before replyOk.
+ */
+const CAP_SESSION_QUERY_WIRE_METHODS: Readonly<Record<string, string>> = {
+  'session.search': '@deepseek-ai/dsh-api-session-controller#session/search',
+  'session.fork': '@deepseek-ai/dsh-api-session-controller#session/fork',
 }
 
 /** S5 /settings — client-facing wire method names → CapIR W ids for the two
@@ -3694,6 +3753,44 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // generated chain, so @manual drops 11 → 10.
     if (CAP_SESSION_WIRE_METHODS[req.method] !== undefined) {
       await handleListSessions(req)
+      return
+    }
+    // 025-w1b B/C — session.search / session.fork ride the generated capcontract
+    // chain (table lookup, not a hand-copied wire line). Replies are whitelist-
+    // projected to the seam shapes: search → {items:[{id,snippet}]},
+    // fork → {sessionId}. A missing host method degrades to UNSUPPORTED (never
+    // a fake empty result / fake fork), matching the session.list discipline.
+    const sessionQueryMethodId = CAP_SESSION_QUERY_WIRE_METHODS[req.method]
+    if (sessionQueryMethodId !== undefined) {
+      try {
+        const value = await createCapInvoke(ctx)({
+          methodId: sessionQueryMethodId as never,
+          params: req.params ?? {},
+        })
+        // Branch on the CapIR id (not a hand-copied method-name comparison) so
+        // the hand-copied protocol name inventory stays at 10 (gate #8a).
+        if (sessionQueryMethodId.endsWith('/search')) {
+          const raw = (value as SessionSearchValueLike | undefined)?.items
+          const items = Array.isArray(raw)
+            ? raw.map((it) => ({
+                id: typeof it?.sessionId === 'string' ? it.sessionId : '',
+                snippet: typeof it?.snippet === 'string' ? it.snippet.replace(/\s+/g, ' ').slice(0, 200) : '',
+              })).filter((it) => it.id)
+            : []
+          replyOk(req.id, { items })
+        } else {
+          const newId = (value as SessionForkValueLike | undefined)?.sessionId
+          if (typeof newId !== 'string' || newId === '') {
+            replyError(req.id, 'INTERNAL', 'session.fork returned no sessionId')
+            return
+          }
+          replyOk(req.id, { sessionId: newId })
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        const degraded = message.startsWith('NOT_WIRED') || message.includes('unavailable')
+        replyError(req.id, degraded ? 'UNSUPPORTED' : (message.startsWith('BAD_PARAMS') ? 'BAD_PARAMS' : 'INTERNAL'), message)
+      }
       return
     }
     // L1 (0.23.1) — subagent stop capability. Both frames are scoped to the

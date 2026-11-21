@@ -14,8 +14,8 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
 | Wired protocol (ADR-0010, not @manual) | 10 frames | bridge-protocol (ADR-0010) |
 | Wired manual (@manual host-copy) | 0 methods | derived-from-manual host-copy |
-| Wired (generated capcontract) | 24 methods | S1+S2+S3+S5-generated-capcontract |
-| in_wired total (of 257) | 24 methods | union of wire-dim capir_ids + generated ids |
+| Wired (generated capcontract) | 26 methods | S1+S2+S3+S5-generated-capcontract |
+| in_wired total (of 257) | 26 methods | union of wire-dim capir_ids + generated ids |
 | I-class (manual) | 6 services | derived-from-manual (v3 proposal 口径) |
 
 ## Reconciliation (first-run closure)
@@ -99,6 +99,8 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 - @deepseek-ai/dsh-api-settings-controller#credentials/unset
 - @deepseek-ai/dsh-api-settings-controller#settings/describe
 - @deepseek-ai/dsh-api-settings-controller#settings/mutate
+- @deepseek-ai/dsh-api-session-controller#session/search
+- @deepseek-ai/dsh-api-session-controller#session/fork
 
 ## I-class services (manual registry)
 
@@ -139,7 +141,7 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 | 15 | @deepseek-ai/dsh-api-session-controller#session/create | unary | Y | Y | N | profile-patch |
 | 16 | @deepseek-ai/dsh-api-session-controller#session/events | unary | Y | Y | N | profile-patch |
 | 17 | @deepseek-ai/dsh-api-session-controller#session/follow | stream | Y | Y | N | profile-patch |
-| 18 | @deepseek-ai/dsh-api-session-controller#session/fork | unary | Y | Y | N | profile-patch |
+| 18 | @deepseek-ai/dsh-api-session-controller#session/fork | unary | Y | Y | Y | profile-patch |
 | 19 | @deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel | unary | Y | Y | Y | profile-patch |
 | 20 | @deepseek-ai/dsh-api-session-controller#session/list | unary | Y | Y | Y | profile-patch |
 | 21 | @deepseek-ai/dsh-api-session-controller#session/modelCatalog | unary | Y | Y | Y | profile-patch |
@@ -151,7 +153,7 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 | 27 | @deepseek-ai/dsh-api-session-controller#session/projections | unary | Y | Y | N | profile-patch |
 | 28 | @deepseek-ai/dsh-api-session-controller#session/prompt | unary | Y | Y | N | profile-patch |
 | 29 | @deepseek-ai/dsh-api-session-controller#session/rename | unary | Y | Y | N | profile-patch |
-| 30 | @deepseek-ai/dsh-api-session-controller#session/search | unary | Y | Y | N | profile-patch |
+| 30 | @deepseek-ai/dsh-api-session-controller#session/search | unary | Y | Y | Y | profile-patch |
 | 31 | @deepseek-ai/dsh-api-session-controller#session/selectModel | unary | Y | Y | Y | profile-patch |
 | 32 | @deepseek-ai/dsh-api-session-controller#session/state | unary | Y | Y | N | profile-patch |
 | 33 | @deepseek-ai/dsh-api-session-controller#session/updateQueue | unary | Y | Y | N | profile-patch |

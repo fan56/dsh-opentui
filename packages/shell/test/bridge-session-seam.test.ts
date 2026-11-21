@@ -579,7 +579,10 @@ describe("async UNSUPPORTED members", () => {
 
 	test("out-of-batch async members all reject with UNSUPPORTED", async () => {
 		const h = makeHarness()
-		await expect(h.seam.searchSessions("q")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+		// 025-w1b B: searchSessions moved OFF the stub set onto the real
+		// session.search frame (see the dedicated describe below); it is no
+		// longer an out-of-batch UNSUPPORTED member. The four remaining stubs
+		// are unchanged.
 		await expect(h.seam.renameSession("t")).rejects.toMatchObject({ code: "UNSUPPORTED" })
 		await expect(h.seam.listProviders()).rejects.toMatchObject({ code: "UNSUPPORTED" })
 		await expect(h.seam.modelCatalog()).rejects.toMatchObject({ code: "UNSUPPORTED" })
@@ -2925,5 +2928,28 @@ describe("L2b: C3 confirm-then-emit (poll → reason → settle)", () => {
 		expect(views.find((v) => v.id === "c1")!.rounds).toBe(2)
 		expect(views.find((v) => v.id === "c2")!.status).toBe("interrupted")
 		expect(clk.pending()).toBe(0)
+	})
+})
+
+describe("025-w1b B — seam.searchSessions hits the real session.search frame", () => {
+	test("searchSessions projects the bridge's whitelisted {items} into {id,snippet}", async () => {
+		const h = makeHarness()
+		h.replies.set("session.search", {
+			kind: "value",
+			value: { items: [{ id: "s1", snippet: "first hit" }, { id: "s2", snippet: "second hit" }, { id: "", snippet: "drop" }] },
+		})
+		const found = await h.seam.searchSessions("needle")
+		expect(found).toEqual([
+			{ id: "s1", snippet: "first hit" },
+			{ id: "s2", snippet: "second hit" },
+		])
+		const req = h.lastRequest("session.search")!
+		expect(req.params).toEqual({ query: "needle" })
+	})
+
+	test("searchSessions propagates UNSUPPORTED when the frame is absent (never fake empty)", async () => {
+		const h = makeHarness()
+		h.replies.set("session.search", { kind: "error", error: new Error("UNSUPPORTED: session.search") })
+		await expect(h.seam.searchSessions("x")).rejects.toThrow("UNSUPPORTED")
 	})
 })

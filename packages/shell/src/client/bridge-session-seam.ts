@@ -3361,8 +3361,23 @@ export class BridgeSessionSeam implements SessionSeam {
 		))
 	}
 
-	async searchSessions(_query: string): Promise<{ id: string; snippet: string }[]> {
-		return unsupported("searchSessions")
+	/**
+	 * 025-w1b B — /search full-text query over the durable journal. The bridge
+	 * now serves `session.search` through the generated capcontract chain
+	 * (table lookup → host sessionController.search), replying a whitelisted
+	 * `{items:[{id,snippet}]}`. A transport without the frame rejects
+	 * UNSUPPORTED (never a fake empty result); an empty store is a real `[]`.
+	 */
+	async searchSessions(query: string): Promise<{ id: string; snippet: string }[]> {
+		const value = asRecord(await this.#transport.request("session.search", { query }))
+		const rows = Array.isArray(value.items) ? value.items : []
+		return rows.map((row) => {
+			const r = asRecord(row)
+			return {
+				id: typeof r.id === "string" ? r.id : "",
+				snippet: typeof r.snippet === "string" ? r.snippet : "",
+			}
+		}).filter((row) => row.id)
 	}
 
 	async renameSession(_title: string): Promise<{ title: string; seq: number } | undefined> {
