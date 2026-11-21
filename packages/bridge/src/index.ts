@@ -4145,11 +4145,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // additionalProperties:true — neither is ever copied verbatim. The seam
     // applies a SECOND whitelist on top. The E5 wire SENTINEL (generic refusal
     // with a hostile reply) stays in cap-generic-arm.test.ts.
-    const discoverMethodId = CAP_GENERIC_WIRE_METHODS['llm.discoverModels']
-    if (req.method === 'llm.discoverModels' && discoverMethodId !== undefined) {
+    // The wire name is resolved from the GENERATED tables (C5) — no hand-copied
+    // method-name line, which the ledger wired_protocol (ADR-0010 only)
+    // reconciliation does not own. `CAP_PROJECTED_BY_HAND` has exactly one
+    // member (llm/discoverModels, AMEND-2), so this branch is that id alone.
+    const projectedByHandIds = [...CAP_PROJECTED_BY_HAND]
+    const invokedCapId = (CAP_GENERIC_WIRE_METHODS as Record<string, string | undefined>)[req.method]
+    if (projectedByHandIds.length === 1 && invokedCapId === projectedByHandIds[0]) {
       try {
         const value = await createCapInvoke(ctx)({
-          methodId: discoverMethodId as never,
+          methodId: invokedCapId as never,
           params: req.params ?? {},
         })
         replyOk(req.id, { value: projectDiscoverModelsForWire(value) })
