@@ -609,10 +609,27 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
     "@deepseek-ai/dsh-web#web/listProviders",
     "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
   ]
-  const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED, ...W2_3_WRITE_RELEASED, ...W2_4_DIRECTORY_RELEASED]
+  // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
+  //   const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED, ...W2_3_WRITE_RELEASED, ...W2_4_DIRECTORY_RELEASED]
+  //   // (old) expected 23 released ids (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5)
+  // W2-5 releases seven goals ids (plan §4.2): goals/{create,get,edit,complete,pause,resume,clear}.
+  // All unary/service=goals; NONE in CAP_PROJECTED_BY_HAND (AMEND-2 static scan) —
+  // the blind-spot family is covered by the seam second-whitelist projection.
+  const W2_5_GOALS_RELEASED = [
+    "@deepseek-ai/dsh-goal#goals/create",
+    "@deepseek-ai/dsh-goal#goals/get",
+    "@deepseek-ai/dsh-goal#goals/edit",
+    "@deepseek-ai/dsh-goal#goals/complete",
+    "@deepseek-ai/dsh-goal#goals/pause",
+    "@deepseek-ai/dsh-goal#goals/resume",
+    "@deepseek-ai/dsh-goal#goals/clear",
+  ]
+  const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED, ...W2_3_WRITE_RELEASED, ...W2_4_DIRECTORY_RELEASED, ...W2_5_GOALS_RELEASED]
   const adapterSet = new Set(adapters)
   if (adapters.length !== RELEASED.length) {
-    offenders.push(`CAP_GENERIC_ADAPTERS expected ${RELEASED.length} released ids (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 = 23), got ${adapters.length}`)
+    // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
+    //   offenders.push(`CAP_GENERIC_ADAPTERS expected ${RELEASED.length} released ids (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 = 23), got ${adapters.length}`)
+    offenders.push(`CAP_GENERIC_ADAPTERS expected ${RELEASED.length} released ids (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 + W2-5 7 = 30), got ${adapters.length}`)
   }
   for (const id of RELEASED) {
     if (!adapterSet.has(id)) offenders.push("CAP_GENERIC_ADAPTERS missing released id " + id)
@@ -620,7 +637,9 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
   }
   const wantWire = capirMethods.filter((m) => !DENY_NS.has(m.namespace)).length
   if (wire.length !== wantWire) offenders.push(`wire rows ${wire.length} != ${wantWire} non-denied methods`)
-  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 = 23)`)
+  // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
+  //   if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 = 23)`)
+  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 + W2-5 7 = 30)`)
   else bad("16. generic wire table", offenders.join("; "))
 }
 

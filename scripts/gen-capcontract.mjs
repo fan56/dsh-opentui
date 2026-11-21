@@ -169,8 +169,25 @@ const W2_4_DIRECTORY_ADAPTERS = [
   "@deepseek-ai/dsh-web#web/listProviders",
   "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
 ]
-// Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 = 23).
-const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS]
+// W2-5 /goals face: seven goals ids (plan §4.2). All unary, all service=goals,
+// scope {context:agent, wire:agentId} (caller passes agentId explicitly — the
+// generic arm does NOT do scope substitution). NO stream / deny-family id
+// (fail-loud below). goals/create has implementation alias remoteExportCreate.
+// AMEND-2 blind spot: goals/get result jsonSchema=null and every other goal
+// result has additionalProperties:true — NONE is in CAP_PROJECTED_BY_HAND by the
+// static scan, so the load-bearing defence is the hand-written seam whitelist
+// projection (declared per-id in .proof/025-w2-5/00-preregistered-expected.md §1 E5.b).
+const W2_5_GOALS_ADAPTERS = [
+  "@deepseek-ai/dsh-goal#goals/create",
+  "@deepseek-ai/dsh-goal#goals/get",
+  "@deepseek-ai/dsh-goal#goals/edit",
+  "@deepseek-ai/dsh-goal#goals/complete",
+  "@deepseek-ai/dsh-goal#goals/pause",
+  "@deepseek-ai/dsh-goal#goals/resume",
+  "@deepseek-ai/dsh-goal#goals/clear",
+]
+// Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 + W2-5 7 = 30).
+const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS, ...W2_5_GOALS_ADAPTERS]
 for (const id of RELEASED_ADAPTERS) {
   if (!ids.includes(id)) fail("released adapter id not in CapIR: " + id)
 }

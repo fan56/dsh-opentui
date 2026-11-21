@@ -1002,6 +1002,8 @@ export function createCapHostInvoke(
     // OLD W2-2 count criterion (38) kept VERBATIM in tests/docs (do not delete).
     // W2-4 round log: 5 directory ids (llm x3 / web / permissionPresets) join -> 28+23=51.
     // OLD W2-3 count criterion (46) kept VERBATIM in tests/docs (do not delete).
+    // W2-5 round log: 7 goals ids join -> 28+30=58.
+    // OLD W2-4 count criterion (51) kept VERBATIM in tests/docs (do not delete).
     const handWired = (CAP_HOST_WIRED_IDS as readonly string[]).includes(methodId)
     const genericReleased = generic.adapters.has(methodId)
     if (!handWired && !genericReleased) {
@@ -2256,6 +2258,15 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         try { webPresent = ctx.get?.('web') !== undefined } catch { /* keep false */ }
         try { permissionPresetsPresent = ctx.get?.('permissionPresets') !== undefined } catch { /* keep false */ }
         emit('I-probe W2-4 services', { llmPresent, webPresent, permissionPresetsPresent })
+
+        // 025-w2-5 W2-5a A-1 — service-key presence probe for the NEW service key
+        // the 7 goals ids bind to (goals). Boolean only (key name + presence), no
+        // value — the wrapped ctx.get seam the generic arm uses. Records
+        // present/absent honestly (NEVER an environment-dependent assertion; W5
+        // prevention rule 2). goals is a new key (A-1/R4): unresolvable -> park.
+        let goalsPresent = false
+        try { goalsPresent = ctx.get?.('goals') !== undefined } catch { /* keep false */ }
+        emit('I-probe W2-5 services', { goalsPresent })
 
         // E1: the 10 unary account methods via the shipped generated chain.
         // getState is the shape-critical one; the rest are reachability probes.

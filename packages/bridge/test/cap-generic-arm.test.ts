@@ -306,12 +306,15 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(10)
     // W2-4 round log — OLD W2-3 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(18)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
+    // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
     expect(inject).toEqual(['agents', 'typert'])
     expect(inject).not.toContain('pluginManager')
     expect(inject).not.toContain('llm')
     expect(inject).not.toContain('web')
     expect(inject).not.toContain('permissionPresets')
+    expect(inject).not.toContain('goals')
 
     const controllerStub = { list: () => ({ items: [{ id: 'from-per-id-arm' }] }) }
     const ctx = {
@@ -357,10 +360,12 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(prodGhost).toContain('in_wired=38/257')
     // W2-4 round log — OLD W2-3 criterion kept VERBATIM (do not delete):
     //   expect(prodGhost).toContain('in_wired=46/257')
+    // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
+    //   expect(prodGhost).toContain('in_wired=51/257')
     const prodConfig = makeConfig({ adapters: CAP_GENERIC_ADAPTERS })
     const prodInvoke = createCapHostInvoke(ctx, prodConfig)
     const prodGhost = await rejectionMessage(() => prodInvoke(GHOST_ID as never, 'unary', {}))
-    expect(prodGhost).toContain('in_wired=51/257')
+    expect(prodGhost).toContain('in_wired=58/257')
   })
 
   // W2-1 E4: the three released side-session ids are in the production set with
@@ -638,7 +643,10 @@ describe('W2-3a plugin-manager write ids — E0/E2/E4/E5', () => {
     // W2-4 round log — OLD W2-3 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(18)
     // W2-4 releases 5 more directory ids -> 23; W2-3 write ids still all present.
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
+    // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
+    // W2-5 releases 7 goals ids -> 30; W2-3 write ids still all present.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
     expect(CAP_WRITE_CONFIRM_IDS.size).toBe(8)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
@@ -827,7 +835,9 @@ describe('W2-4a directory ids — E2/E4/E5 (AMEND-2 wire SENTINEL)', () => {
   // Release-set integrity: 5 directory ids in adapters, wired service/params;
   // discoverModels is the ONLY one in PROJECTED_BY_HAND (AMEND-2 scan fact).
   test('W2-4a release set: 5 directory ids in adapters + wired service/params; only discoverModels PROJECTED', () => {
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
+    // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
       expect(CAP_SERVICE_TABLE[id as never]?.service).toBeDefined()
@@ -935,6 +945,173 @@ describe('W2-4a directory ids — E2/E4/E5 (AMEND-2 wire SENTINEL)', () => {
       [IDS.catalog]: 'permissionPresets.catalog',
     }
     for (const [id, wire] of Object.entries(expectWire)) {
+      expect(resolveGenericWireMethod(wire, CAP_GENERIC_WIRE_METHODS, config)).toBe(id)
+    }
+  })
+})
+
+/**
+ * 025 W2-5a — the seven goals ids released into the generic arm (plan §4.2).
+ * All unary/service=goals, scope agentId passed by caller (generic arm does no
+ * scope substitution). Synthetic fixtures only: no real service, no real
+ * credential value (SENTINEL is a fixed fake string). E2 per-id BAD_PARAMS,
+ * E4 positional fidelity (R3, all args table-ordered, NO trailing signal),
+ * E5 AMEND-2 blind-spot registration (ALL 7 ids are schema-open/null — none is
+ * PROJECTED_BY_HAND — so the load-bearing defence is the seam second whitelist,
+ * projected in W2-5b; here we pin the wire-layer control + the scan fact).
+ */
+describe('W2-5a goals ids — E2/E4/E5 (AMEND-2 blind-spot family)', () => {
+  const G = '@deepseek-ai/dsh-goal#goals/'
+  const IDS = {
+    create: G + 'create',
+    get: G + 'get',
+    edit: G + 'edit',
+    complete: G + 'complete',
+    pause: G + 'pause',
+    resume: G + 'resume',
+    clear: G + 'clear',
+  }
+  const ALL = Object.values(IDS)
+
+  let calls: Record<string, unknown[][]> = {}
+  function svc(): Record<string, (...a: unknown[]) => unknown> {
+    calls = {}
+    const make = (key: string) => (...args: unknown[]) => {
+      ;(calls[key] ??= []).push(args)
+      return { id: 'g-probe', revision: 1 }
+    }
+    // Explicit named methods (no dynamic proxy). create resolves via its
+    // implementation alias remoteExportCreate (NOT the method name).
+    return {
+      remoteExportCreate: make('remoteExportCreate'),
+      get: make('get'),
+      edit: make('edit'),
+      complete: make('complete'),
+      pause: make('pause'),
+      resume: make('resume'),
+      clear: make('clear'),
+    }
+  }
+  function goalsConfig(service: Record<string, (...a: unknown[]) => unknown> | undefined) {
+    return makeConfig({
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: CAP_SERVICE_TABLE,
+      params: CAP_PARAMS_TABLE,
+      projectedByHand: CAP_PROJECTED_BY_HAND,
+      kindOf: () => 'unary',
+      getService: (name) => (name === 'goals' ? service : undefined),
+    })
+  }
+
+  // Release-set integrity: 7 goals ids in adapters + wired service/params;
+  // create has the remoteExportCreate alias; NO id carries cancel:'signal';
+  // NONE is in PROJECTED_BY_HAND (the AMEND-2 blind-spot family).
+  test('W2-5a release set: 7 goals ids wired; create=remoteExportCreate alias; none PROJECTED/cancel', () => {
+    // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(30)
+    for (const id of ALL) {
+      expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
+      expect(CAP_SERVICE_TABLE[id as never]?.service).toBe('goals')
+      expect(Object.prototype.hasOwnProperty.call(CAP_PARAMS_TABLE, id)).toBe(true)
+      expect(CAP_PROJECTED_BY_HAND.has(id as never)).toBe(false)
+      expect(CAP_SERVICE_TABLE[id as never]?.cancel).toBeUndefined()
+    }
+    expect(CAP_SERVICE_TABLE[IDS.create as never]?.implementation).toBe('remoteExportCreate')
+    for (const id of ALL.filter((x) => x !== IDS.create)) {
+      expect(CAP_SERVICE_TABLE[id as never]?.implementation).toBe(id.slice(G.length))
+    }
+  })
+
+  // E2: every id has required params (agentId mandatory, write ids add ref/request).
+  // Each gets a BAD_PARAMS negative naming the FULL id; host ZERO-called.
+  test('E2 — all 7 goals ids: BAD_PARAMS missing/wrong-type, full id, hostCalls=0', async () => {
+    const service = svc()
+    const config = goalsConfig(service)
+    const cases: Array<[string, unknown, string, string]> = [
+      [IDS.get, {}, 'agentId', 'required'],
+      [IDS.get, { agentId: 42 }, 'agentId', 'must be string'],
+      [IDS.create, {}, 'agentId', 'required'],
+      [IDS.create, { agentId: 'a' }, 'request', 'required'],
+      [IDS.create, { agentId: 'a', request: 'x' }, 'request', 'must be object'],
+      [IDS.edit, { agentId: 'a', ref: {} }, 'request', 'required'],
+      [IDS.edit, { agentId: 'a', ref: {}, request: 42 }, 'request', 'must be object'],
+      [IDS.complete, { agentId: 'a' }, 'ref', 'required'],
+      [IDS.complete, { agentId: 'a', ref: 42 }, 'ref', 'must be object'],
+      [IDS.pause, { agentId: 'a' }, 'ref', 'required'],
+      [IDS.resume, { agentId: 'a' }, 'ref', 'required'],
+      [IDS.clear, { agentId: 'a' }, 'ref', 'required'],
+    ]
+    for (const [id, params, param, reason] of cases) {
+      const msg = await rejectionMessage(() => invokeGenericCap(config, id, 'unary', params))
+      expect(msg).toContain('BAD_PARAMS: ' + id + ' ' + param + ' ' + reason)
+    }
+    expect(Object.values(calls).flat().length).toBe(0)
+  })
+
+  // E4 (R3): positional args per id BY TABLE ORDER. No id carries cancel:'signal'
+  // -> no trailing AbortSignal. agentId string + ref/request object identity
+  // preserved; create resolves via remoteExportCreate alias.
+  test('E4 — positional args: create[agentId,request] via alias, get[agentId], edit[agentId,ref,request], others[agentId,ref]', async () => {
+    const service = svc()
+    const config = goalsConfig(service)
+
+    const request = { objective: 'ship it' }
+    await invokeGenericCap(config, IDS.create, 'unary', { agentId: 'ag', request })
+    expect(calls.remoteExportCreate![0]).toEqual(['ag', request])
+    expect(calls.remoteExportCreate![0]![1]).toBe(request)
+
+    await invokeGenericCap(config, IDS.get, 'unary', { agentId: 'ag' })
+    expect(calls.get![0]).toEqual(['ag'])
+
+    const ref = { id: 'g-1', revision: 3 }, editReq = { objective: 'new' }
+    await invokeGenericCap(config, IDS.edit, 'unary', { agentId: 'ag', ref, request: editReq })
+    expect(calls.edit![0]).toEqual(['ag', ref, editReq])
+    expect(calls.edit![0]![1]).toBe(ref)
+    expect(calls.edit![0]![2]).toBe(editReq)
+
+    for (const key of ['complete', 'pause', 'resume', 'clear'] as const) {
+      const r = { id: 'g-1', revision: 3 }
+      await invokeGenericCap(config, IDS[key], 'unary', { agentId: 'ag', ref: r })
+      expect(calls[key]![0]).toEqual(['ag', r])
+      expect(calls[key]![0]![1]).toBe(r)
+    }
+    // No trailing signal on ANY goals id (no cancel:'signal' in capir.json).
+    for (const args of Object.values(calls).flat()) {
+      for (const a of args) expect(a).not.toBeInstanceOf(AbortSignal)
+    }
+  })
+
+  // E5 / AMEND-2 blind-spot family registration. ALL 7 goals ids are schema-open
+  // (additionalProperties:true) or null-schema (get): the static sensitive-key
+  // scan sees NO declared sensitive key, so none is PROJECTED_BY_HAND. The wire
+  // default projection would therefore LET general sensitive keys through (the
+  // C-1 blind spot, control proven here); the load-bearing defence is the seam
+  // SECOND whitelist (W2-5b bridge-goals.test.ts + bridge-session-seam.test.ts),
+  // not the wire layer. This test pins that fact honestly — no fake "safe" claim.
+  test('E5 — AMEND-2 blind spot: goals ids NOT PROJECTED (control wire leaks; seam whitelist is the defence)', () => {
+    const config = goalsConfig(undefined)
+    const hostile = {
+      id: 'g-1', revision: 1, objective: 'safe',
+      apiKey: SENTINEL, token: SENTINEL, secret: SENTINEL,
+      password: SENTINEL, credential: SENTINEL, safe: 'visible',
+    }
+    // Scan fact: no goals id is a hand-projection exception.
+    for (const id of ALL) expect(CAP_PROJECTED_BY_HAND.has(id as never)).toBe(false)
+    // Control: the generic wire default (OAuth-only sanitizer) would leak the
+    // general sensitive keys — this is exactly the blind spot C-1 registered;
+    // seam whitelist (W2-5b) is what actually blocks them from reaching the TUI.
+    const wire = projectGenericWireReply(config, IDS.get, hostile, sanitizeFrameForWire)
+    expect(JSON.stringify(wire)).toContain(SENTINEL)
+    expect(JSON.stringify(wire)).toContain('"apiKey"')
+  })
+
+  // C5 wire-name resolution: all seven goals ids resolve via the GENERATED wire
+  // table (no hand-copied wire line, C5).
+  test('C5 — all seven goals ids resolve via generated wire table', () => {
+    const config = goalsConfig(undefined)
+    for (const id of ALL) {
+      const wire = 'goals.' + id.slice(G.length)
       expect(resolveGenericWireMethod(wire, CAP_GENERIC_WIRE_METHODS, config)).toBe(id)
     }
   })
