@@ -1434,6 +1434,16 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * crosses). A service-absent / NOT_WIRED reply rejects UNSUPPORTED and marks
 	 * availability false — never a fake empty value. The boolean is an honest
 	 * observation of THIS process, never a test `present === true` premise.
+	 *
+	 * W2-2 C-2 — error classification is faithful: ONLY a service-absent class
+	 * (wire UNSUPPORTED — the bridge's mapping of NOT_WIRED / unavailable — or a
+	 * raw NOT_WIRED/unavailable rejection) flips `available=false`. A host business
+	 * error (wire INTERNAL, e.g. plugin-manager/unknown-bundle) or a BAD_PARAMS
+	 * validation error keeps its OWN code and leaves availability untouched — a
+	 * single failed request is not "the manager is gone", otherwise the panel
+	 * falsely degrades (fatal once W2-3 write faces ship, where refusals are
+	 * routine). The transport already preserves the frame code on the error
+	 * (bridge-transport.ts); this layer must not flatten it again.
 	 */
 	async #pmRequest<T>(
 		method: string,
@@ -1446,9 +1456,20 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#pluginsManagerAvailable = true
 			return projected
 		} catch (err) {
-			this.#pluginsManagerAvailable = false
+			const code = err instanceof BridgeProtocolError ? err.code : undefined
 			const message = err instanceof Error ? err.message : String(err)
-			throw new BridgeProtocolError("UNSUPPORTED", `${method}: ${message}`)
+			const serviceAbsent =
+				code === "UNSUPPORTED" ||
+				code === "NOT_WIRED" ||
+				code === "UNAVAILABLE" ||
+				(code === undefined && (/^NOT_WIRED/.test(message) || /unavailable/i.test(message)))
+			if (serviceAbsent) {
+				this.#pluginsManagerAvailable = false
+				throw new BridgeProtocolError("UNSUPPORTED", `${method}: ${message}`)
+			}
+			// Business / validation error: surface the original code + message.
+			// Do NOT touch availability — the manager is still wired and available.
+			throw err
 		}
 	}
 

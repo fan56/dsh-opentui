@@ -3245,4 +3245,76 @@ describe("025-w2-2 pluginsManager face — real data + honest degrade", () => {
 		expect(h.seam.pluginsManager!.available()).toBe(true)
 		expect(h.seam.pluginBundles!()).toHaveLength(2)
 	})
+
+	// W2-2 C-2 — error classification fidelity. A host business error must keep
+	// its own wire code and must NOT poison `available` (no fake panel degrade).
+	test("business INTERNAL error keeps its code, leaves available=true, panel stays on real rows (W2-2 C-2)", async () => {
+		const h = makeHarness()
+		// First a good read warms availability + the real bundle cache.
+		h.replies.set("pluginManager.listBundles", { kind: "value", value: BUNDLES })
+		await h.seam.pluginsManager!.listBundles()
+		expect(h.seam.pluginsManager!.available()).toBe(true)
+		// Now a host business error on a read (e.g. selecting an already-removed bundle).
+		h.replies.set("pluginManager.readBundleDetail", {
+			kind: "error",
+			error: new BridgeProtocolError("INTERNAL", "plugin-manager/unknown-bundle: no such bundle"),
+		})
+		let caught: unknown
+		try {
+			await h.seam.pluginsManager!.readBundleDetail("gone-bundle", "en")
+		} catch (err) {
+			caught = err
+		}
+		expect(caught).toBeInstanceOf(BridgeProtocolError)
+		expect((caught as BridgeProtocolError).code).toBe("INTERNAL") // not flattened to UNSUPPORTED
+		expect((caught as BridgeProtocolError).message).toContain("plugin-manager/unknown-bundle")
+		expect(h.seam.pluginsManager!.available()).toBe(true) // availability untouched
+		// Panel still shows the REAL cached rows — no stateUnknown degrade.
+		const rows = h.seam.pluginBundles!()
+		expect(rows).toHaveLength(2)
+		expect(rows.every((r) => r.stateUnknown !== true)).toBe(true)
+	})
+
+	test("BAD_PARAMS validation error keeps its code and does not poison availability (W2-2 C-2)", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.listBundles", { kind: "value", value: BUNDLES })
+		await h.seam.pluginsManager!.listBundles()
+		expect(h.seam.pluginsManager!.available()).toBe(true)
+		h.replies.set("pluginManager.listVersions", {
+			kind: "error",
+			error: new BridgeProtocolError("BAD_PARAMS", "BAD_PARAMS: pluginManager.listVersions name required"),
+		})
+		let code = ""
+		try {
+			await h.seam.pluginsManager!.listVersions("x")
+		} catch (err) {
+			code = err instanceof BridgeProtocolError ? err.code : ""
+		}
+		expect(code).toBe("BAD_PARAMS")
+		expect(h.seam.pluginsManager!.available()).toBe(true)
+	})
+
+	test("genuine NOT_WIRED (wire UNSUPPORTED) STILL poisons available and degrades rows (W2-2 C-2 contrast)", async () => {
+		const h = scratchSeam()
+		const nm = join(h.home, "profiles", "opentui", "node_modules")
+		mkdirSync(join(nm, "local-plugin"), { recursive: true })
+		writeFileSync(join(nm, "local-plugin", "package.json"), JSON.stringify({ name: "local-plugin", version: "9.9.9" }))
+		// The wire maps NOT_WIRED/unavailable -> UNSUPPORTED (bridge index.ts:4111-4119).
+		h.replies.set("pluginManager.listBundles", {
+			kind: "error",
+			error: new BridgeProtocolError("UNSUPPORTED", "NOT_WIRED: pluginManager service unavailable"),
+		})
+		let code = ""
+		try {
+			await h.seam.pluginsManager!.listBundles()
+		} catch (err) {
+			code = err instanceof BridgeProtocolError ? err.code : ""
+		}
+		expect(code).toBe("UNSUPPORTED")
+		expect(h.seam.pluginsManager!.available()).toBe(false)
+		const rows = h.seam.pluginBundles!()
+		expect(rows).toHaveLength(1)
+		expect(rows[0]).toMatchObject({ name: "local-plugin", stateUnknown: true })
+		rmSync(h.home, { recursive: true, force: true })
+	})
 })
