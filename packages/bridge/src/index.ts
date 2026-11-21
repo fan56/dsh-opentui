@@ -994,6 +994,8 @@ export function createCapHostInvoke(
     //   `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`
     // At W2-0 base CAP_GENERIC_ADAPTERS was empty so 28/28 was correct; W2-1
     // releases 3 generic ids, so the two-sets-outside id now reports 31/257.
+    // W2-2 round log: 7 pluginManager read ids join the set -> union 28+10=38.
+    // OLD W2-1 count criterion kept VERBATIM above (do not delete).
     const handWired = (CAP_HOST_WIRED_IDS as readonly string[]).includes(methodId)
     const genericReleased = generic.adapters.has(methodId)
     if (!handWired && !genericReleased) {
@@ -2227,6 +2229,14 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         try { accountPresent = ctx.get?.('deepseekAccount') !== undefined } catch { /* keep false */ }
         try { credsPresent = ctx.get?.('credentialsController') !== undefined } catch { /* keep false */ }
         emit('I-probe S2 services', { deepseekAccountPresent: accountPresent, credentialsControllerPresent: credsPresent })
+
+        // 025-w2-2 W2-2a E1 — A-1 service-key presence probe for pluginManager.
+        // Boolean only (key name + presence), no value: this is the wrapped
+        // ctx.get seam the generic arm uses for the 7 W2-2 read ids. It records
+        // present/absent honestly (NEVER an environment-dependent assertion).
+        let pluginManagerPresent = false
+        try { pluginManagerPresent = ctx.get?.('pluginManager') !== undefined } catch { /* keep false */ }
+        emit('I-probe W2-2 service', { pluginManagerPresent })
 
         // E1: the 10 unary account methods via the shipped generated chain.
         // getState is the shape-critical one; the rest are reachability probes.

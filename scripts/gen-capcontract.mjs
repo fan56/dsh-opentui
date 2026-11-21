@@ -21,6 +21,7 @@
  *  - CAP_GENERIC_ADAPTERS is an explicit per-id release whitelist. W2-0 base:
  *    empty (AMEND-4); wired count unchanged (28), bridge observable behaviour 0 delta.
  *    W2-1 releases the three side-session ids (session/create|prompt|wait).
+ *    W2-2 releases seven pluginManager read ids (plan §5.2); writes stay W2-3.
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
@@ -125,10 +126,25 @@ const W2_1_ADAPTERS = [
   "@deepseek-ai/dsh-api-session-controller#session/prompt",
   "@deepseek-ai/dsh-api-session-controller#session/wait",
 ]
-for (const id of W2_1_ADAPTERS) {
-  if (!ids.includes(id)) fail("W2-1 adapter id not in CapIR: " + id)
+// W2-2 /plugins read face: seven pluginManager READ ids (plan §5.2). All unary,
+// all service=pluginManager, NO write/install id (those stay W2-3). Release is
+// batch-segmented (W2-1 review carry-in #1) so the round log stays auditable.
+const W2_2_READ_ADAPTERS = [
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/listBundles",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/listPlugins",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersionExemptions",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/registries",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/inspect",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersions",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/readBundleDetail",
+]
+// Union of every released id across batches (W2-1 3 + W2-2 7 = 10).
+const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS]
+for (const id of RELEASED_ADAPTERS) {
+  if (!ids.includes(id)) fail("released adapter id not in CapIR: " + id)
 }
-const adapterBlock = W2_1_ADAPTERS.map((id) => `  ${q(id)},`).join("\n")
+if (new Set(RELEASED_ADAPTERS).size !== RELEASED_ADAPTERS.length) fail("duplicate released adapter id")
+const adapterBlock = RELEASED_ADAPTERS.map((id) => `  ${q(id)},`).join("\n")
 
 const types = header("types: generated capability id/shape surface") + `
 /** Transport kind of a capability method (CapIR field: kind). */
@@ -216,7 +232,7 @@ export const CAP_GENERIC_WIRE_BY_ID = {
 ${wireRevBlock}
 } as const
 
-/** Explicit per-id generic-adapter release whitelist; W2-0 base is empty (AMEND-4). */
+/** Explicit per-id generic-adapter release whitelist (W2-0 empty -> W2-1 3 -> W2-2 10). */
 export const CAP_GENERIC_ADAPTERS: ReadonlySet<CapMethodId> = new Set([
 ${adapterBlock}
 ] as const)
@@ -348,5 +364,5 @@ if (checkMode) {
   for (const [name, text] of Object.entries(files)) {
     writeFileSync(resolve(OUT_DIR, name), text, "utf8")
   }
-  console.log(`gen-capcontract: wrote ${Object.keys(files).join(", ")} -> ${OUT_DIR} (${methods.length} methods; deny=${methods.length - genericMethods.length} projected=${projected.length} adapters=${W2_1_ADAPTERS.length})`)
+  console.log(`gen-capcontract: wrote ${Object.keys(files).join(", ")} -> ${OUT_DIR} (${methods.length} methods; deny=${methods.length - genericMethods.length} projected=${projected.length} adapters=${RELEASED_ADAPTERS.length})`)
 }

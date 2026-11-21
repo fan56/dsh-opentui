@@ -2261,11 +2261,18 @@ export const CAP_GENERIC_WIRE_BY_ID = {
   "@deepseek-ai/dsh-web#web/listProviders": "web.listProviders",
 } as const
 
-/** Explicit per-id generic-adapter release whitelist; W2-0 base is empty (AMEND-4). */
+/** Explicit per-id generic-adapter release whitelist (W2-0 empty -> W2-1 3 -> W2-2 10). */
 export const CAP_GENERIC_ADAPTERS: ReadonlySet<CapMethodId> = new Set([
   "@deepseek-ai/dsh-api-session-controller#session/create",
   "@deepseek-ai/dsh-api-session-controller#session/prompt",
   "@deepseek-ai/dsh-api-session-controller#session/wait",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/listBundles",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/listPlugins",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersionExemptions",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/registries",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/inspect",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersions",
+  "@deepseek-ai/dsh-plugin-manager#pluginManager/readBundleDetail",
 ] as const)
 
 /** ids whose result jsonSchema carries sensitive keys; forced hand projection (AMEND-2). */

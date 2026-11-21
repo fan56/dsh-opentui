@@ -14,6 +14,8 @@ import {
   CAP_GENERIC_ADAPTERS,
   CAP_GENERIC_WIRE_METHODS,
   CAP_PROJECTED_BY_HAND,
+  CAP_SERVICE_TABLE,
+  CAP_PARAMS_TABLE,
 } from '../../../capcontract/types'
 import {
   capIdNamespace,
@@ -296,7 +298,9 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     expect(CAP_HOST_WIRED_IDS.length).toBe(28)
     // W2-1 round log — OLD W2-0 base criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(0)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(3)
+    // W2-2 round log — OLD W2-1 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(3)
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(10)
     expect(inject).toEqual(['agents', 'typert'])
     expect(inject).not.toContain('pluginManager')
     expect(inject).not.toContain('llm')
@@ -337,11 +341,14 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     expect(ghost).toContain(GHOST_ID)
     expect(ghost).toContain('in_wired=30/257')
 
-    // Production release set (3 ids) reports the union count 28 + 3 = 31 (S-1).
+    // Production release set reports the union count 28 + released = 38 (S-1).
+    // W2-2 round log — OLD W2-1 criterion kept VERBATIM (do not delete):
+    //   // Production release set (3 ids) reports the union count 28 + 3 = 31 (S-1).
+    //   expect(prodGhost).toContain('in_wired=31/257')
     const prodConfig = makeConfig({ adapters: CAP_GENERIC_ADAPTERS })
     const prodInvoke = createCapHostInvoke(ctx, prodConfig)
     const prodGhost = await rejectionMessage(() => prodInvoke(GHOST_ID as never, 'unary', {}))
-    expect(prodGhost).toContain('in_wired=31/257')
+    expect(prodGhost).toContain('in_wired=38/257')
   })
 
   // W2-1 E4: the three released side-session ids are in the production set with
@@ -390,5 +397,159 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
       expect(args[1]).toBeInstanceOf(AbortSignal)
       expect((args[1] as AbortSignal).aborted).toBe(false)
     }
+  })
+})
+
+/**
+ * 025 W2-2a — the seven pluginManager READ ids released into the generic arm
+ * (plan §5.2). All synthetic fixtures: no real service, no real credential
+ * value (SENTINEL is a fixed fake string). E2 per-id negatives (S-1), E4
+ * positional fidelity (R3), E5 wire sanitize defence-in-depth.
+ */
+describe('W2-2a plugin-manager read ids — per-id E2/E4/E5', () => {
+  const PM = '@deepseek-ai/dsh-plugin-manager#pluginManager/'
+  const IDS = {
+    listBundles: PM + 'listBundles',
+    listPlugins: PM + 'listPlugins',
+    listVersionExemptions: PM + 'listVersionExemptions',
+    registries: PM + 'registries',
+    inspect: PM + 'inspect',
+    listVersions: PM + 'listVersions',
+    readBundleDetail: PM + 'readBundleDetail',
+  }
+  const ALL = Object.values(IDS)
+  const VALID: Record<string, unknown> = {
+    [IDS.inspect]: { spec: '@scope/pkg' },
+    [IDS.listVersions]: { name: '@scope/pkg' },
+    [IDS.readBundleDetail]: { name: '@scope/pkg', language: 'en' },
+    [IDS.listBundles]: {},
+    [IDS.listPlugins]: {},
+    [IDS.listVersionExemptions]: {},
+    [IDS.registries]: {},
+  }
+
+  function pmConfig(service: Record<string, (...a: unknown[]) => unknown> | undefined) {
+    return makeConfig({
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: CAP_SERVICE_TABLE,
+      params: CAP_PARAMS_TABLE,
+      projectedByHand: CAP_PROJECTED_BY_HAND,
+      kindOf: () => 'unary',
+      getService: (name) => (name === 'pluginManager' ? service : undefined),
+    })
+  }
+
+  // All 7 ids live in the production release set + generated tables.
+  test('W2-2a release set: 7 read ids in adapters + wired service/params, none PROJECTED_BY_HAND', () => {
+    for (const id of ALL) {
+      expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
+      expect(CAP_SERVICE_TABLE[id as never]?.service).toBe('pluginManager')
+      expect(Object.prototype.hasOwnProperty.call(CAP_PARAMS_TABLE, id)).toBe(true)
+      // Negative guard: none of the read ids may be a hand-projection exception.
+      expect(CAP_PROJECTED_BY_HAND.has(id as never)).toBe(false)
+    }
+  })
+
+  // E2 (S-1): every id carries >= 1 service-absent NOT_WIRED negative with the
+  // FULL CapIR id in the message (no-param ids have no BAD_PARAMS surface).
+  test('E2 — all 7 ids: service-absent NOT_WIRED negative names the full id', async () => {
+    const config = pmConfig(undefined)
+    for (const id of ALL) {
+      const msg = await rejectionMessage(() => invokeGenericCap(config, id, 'unary', VALID[id]))
+      expect(msg).toContain('NOT_WIRED')
+      expect(msg).toContain(id)
+      expect(msg).toContain('pluginManager service unavailable')
+    }
+  })
+
+  // E2 (S-1): the three ids with required params get explicit BAD_PARAMS negatives;
+  // the host method is ZERO-called on every rejection.
+  test('E2 — required-param ids: BAD_PARAMS missing/wrong-type, hostCalls=0', async () => {
+    let hostCalls = 0
+    const svc = {
+      inspect() { hostCalls++; return {} },
+      listVersions() { hostCalls++; return {} },
+      readBundleDetail() { hostCalls++; return {} },
+    }
+    const config = pmConfig(svc)
+    const cases: Array<[string, unknown, string, string]> = [
+      [IDS.inspect, {}, 'spec', 'required'],
+      [IDS.inspect, { spec: 42 }, 'spec', 'must be string'],
+      [IDS.listVersions, {}, 'name', 'required'],
+      [IDS.listVersions, { name: 42 }, 'name', 'must be string'],
+      [IDS.readBundleDetail, { name: 'pkg' }, 'language', 'required'],
+      [IDS.readBundleDetail, { name: 'pkg', language: 42 }, 'language', 'must be string'],
+    ]
+    for (const [id, params, param, reason] of cases) {
+      const msg = await rejectionMessage(() => invokeGenericCap(config, id, 'unary', params))
+      expect(msg).toContain('BAD_PARAMS: ' + id + ' ' + param + ' ' + reason)
+    }
+    expect(hostCalls).toBe(0)
+  })
+
+  // E4 (R3): positional arg order/values per id. No-param ids receive [];
+  // cancel:'signal' ids get an owned, never-aborted trailing AbortSignal AFTER
+  // the table-ordered prefix; an omitted optional keeps its slot (no left shift).
+  test('E4 — positional args per id: no-param [], inspect/listVersions signal, readBundleDetail 3 args', async () => {
+    const captured: Record<string, unknown[][]> = {}
+    const svc = {
+      listBundles(...a: unknown[]) { captured.listBundles = [a]; return [] },
+      listPlugins(...a: unknown[]) { captured.listPlugins = [a]; return [] },
+      listVersionExemptions(...a: unknown[]) { captured.listVersionExemptions = [a]; return {} },
+      registries(...a: unknown[]) { captured.registries = [a]; return {} },
+      inspect(...a: unknown[]) { (captured.inspect ??= []).push(a); return {} },
+      listVersions(...a: unknown[]) { (captured.listVersions ??= []).push(a); return {} },
+      readBundleDetail(...a: unknown[]) { captured.readBundleDetail = [a]; return {} },
+    }
+    const config = pmConfig(svc)
+    for (const key of ['listBundles', 'listPlugins', 'listVersionExemptions', 'registries'] as const) {
+      await invokeGenericCap(config, IDS[key], 'unary', {})
+      expect(captured[key]![0]).toEqual([])
+    }
+    const opt1 = { registry: 'r' }
+    const opt2 = { registry: null }
+    await invokeGenericCap(config, IDS.inspect, 'unary', { spec: 'spec-val', options: opt1 })
+    await invokeGenericCap(config, IDS.inspect, 'unary', { spec: 'spec-val' })
+    await invokeGenericCap(config, IDS.listVersions, 'unary', { name: 'name-val', options: opt2 })
+    await invokeGenericCap(config, IDS.listVersions, 'unary', { name: 'name-val' })
+    const opt3 = { npmFileSources: ['jsdelivr'] }
+    await invokeGenericCap(config, IDS.readBundleDetail, 'unary', { name: 'n', language: 'en', options: opt3 })
+
+    // inspect/listVersions: prefix [required, optional] + owned trailing signal.
+    for (const [key, required, opt] of [
+      ['inspect', 'spec-val', opt1],
+      ['listVersions', 'name-val', opt2],
+    ] as const) {
+      const withOpt = captured[key]![0]!
+      expect(withOpt).toHaveLength(3)
+      expect(withOpt[0]).toBe(required)
+      expect(withOpt[1]).toBe(opt)
+      expect(withOpt[2]).toBeInstanceOf(AbortSignal)
+      expect((withOpt[2] as AbortSignal).aborted).toBe(false)
+      const withoutOpt = captured[key]![1]!
+      expect(withoutOpt).toHaveLength(3)
+      expect(withoutOpt[1]).toBeUndefined() // optional slot preserved, no left shift
+      expect(withoutOpt[2]).toBeInstanceOf(AbortSignal)
+    }
+    // readBundleDetail: 3 table-ordered args, NO signal (cancel not set).
+    const detailArgs = captured.readBundleDetail![0]!
+    expect(detailArgs).toHaveLength(3)
+    expect(detailArgs[0]).toBe('n')
+    expect(detailArgs[1]).toBe('en')
+    expect(detailArgs[2]).toBe(opt3)
+  })
+
+  // E5 (defence in depth): the generic wire projection strips ALL S4
+  // auth-material keys from a hostile reply before any frame is emitted.
+  test('E5 — wire projection strips S4 auth keys; no SENTINEL in frame', () => {
+    const config = pmConfig(undefined)
+    const hostile = [
+      { name: 'pkg', version: '1', access_token: SENTINEL, id_token: SENTINEL, authorizeUrl: SENTINEL },
+    ]
+    const framed = projectGenericWireReply(config, IDS.listBundles, hostile, sanitizeFrameForWire)
+    const text = JSON.stringify(framed)
+    expect(text).not.toContain(SENTINEL)
+    for (const key of ['access_token', 'id_token', 'authorizeUrl']) expect(text).not.toContain(key)
+    expect(text).toContain('pkg')
   })
 })

@@ -568,17 +568,32 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
     "@deepseek-ai/dsh-api-session-controller#session/prompt",
     "@deepseek-ai/dsh-api-session-controller#session/wait",
   ]
+  // W2-2 round log — OLD W2-1 criterion kept VERBATIM (do not delete):
+  //   if (adapters.length !== W2_1_RELEASED.length) {
+  //     offenders.push(`CAP_GENERIC_ADAPTERS expected ${W2_1_RELEASED.length} W2-1 released ids, got ${adapters.length}`)
+  //   }
+  // W2-2 releases seven pluginManager READ ids (plan §5.2). Writes stay W2-3.
+  const W2_2_READ_RELEASED = [
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/listBundles",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/listPlugins",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersionExemptions",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/registries",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/inspect",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/listVersions",
+    "@deepseek-ai/dsh-plugin-manager#pluginManager/readBundleDetail",
+  ]
+  const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED]
   const adapterSet = new Set(adapters)
-  if (adapters.length !== W2_1_RELEASED.length) {
-    offenders.push(`CAP_GENERIC_ADAPTERS expected ${W2_1_RELEASED.length} W2-1 released ids, got ${adapters.length}`)
+  if (adapters.length !== RELEASED.length) {
+    offenders.push(`CAP_GENERIC_ADAPTERS expected ${RELEASED.length} released ids (W2-1 3 + W2-2 7), got ${adapters.length}`)
   }
-  for (const id of W2_1_RELEASED) {
-    if (!adapterSet.has(id)) offenders.push("CAP_GENERIC_ADAPTERS missing W2-1 id " + id)
+  for (const id of RELEASED) {
+    if (!adapterSet.has(id)) offenders.push("CAP_GENERIC_ADAPTERS missing released id " + id)
     if (!wire.some(([, wid]) => wid === id)) offenders.push("released adapter has no wire row: " + id)
   }
   const wantWire = capirMethods.filter((m) => !DENY_NS.has(m.namespace)).length
   if (wire.length !== wantWire) offenders.push(`wire rows ${wire.length} != ${wantWire} non-denied methods`)
-  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 side-session 3)`)
+  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 3 + W2-2 7 = 10)`)
   else bad("16. generic wire table", offenders.join("; "))
 }
 
