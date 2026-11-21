@@ -16,11 +16,11 @@
 严格 JSON（2 空格缩进、稳定排序、文件尾换行）。`attribution` 为第一个键并保持在第 1 物理行，
 便于 CI 同时按字段与按行断言。JSON 无注释语法，故声明落为字段而非 `//` 注释。
 
-schema = `dsh-opentui.capir/2`。相对 `/1` 的变化：每个工件的 `endpoints_map` 更名为
-`endpoints_count`（该值实为每工件方法数计数，非映射；extractor 输入仍保留其原生字段名）。
+schema = `dsh-opentui.capir/3`（CapIR v3，025 W2-0 起）。相对 `/2` 的变化：method 条目在原有五键上追加 `service` / `params[]` / `result` 及可选 `implementation` / `stream` / `cancel` / `scope`（additive-only，既有键值逐字节不变）；相对 `/1` 的历史变化：`endpoints_map` → `endpoints_count`（每工件方法数计数，非映射）。
+参数签名双源交叉：`.d.ts` `TYPERT_REMOTE` 字面量（字段名/顺序/可选性权威）× `typert.host.js` manifest `parameters[]`（jsonSchema）；`params[]` 归一档 `{name,required,type,enum?}`，完整 jsonSchema 留 capir 数据层。
 
 顶层字段：`attribution` / `schema` / `provenance` / `counting_rules` / `totals` / `artifacts`。
-每个 method：`id` / `namespace` / `name` / `kind` / `class`。
+每个 method：`id` / `namespace` / `name` / `kind` / `class` + `service` / `params[]` / `result`（可选 `implementation` / `stream` / `cancel` / `scope`）；257 方法全带 service/params/result，`totals.methods_with_params = 257`。
 
 ## id 体系
 
