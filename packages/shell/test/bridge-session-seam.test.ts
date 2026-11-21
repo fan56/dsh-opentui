@@ -269,6 +269,24 @@ describe("storedTranscript", () => {
 		expect(rows.map((r) => r.kind)).toEqual(["tool", "assistant"])
 	})
 
+	test("025-w1a seam.sessionJournal projects raw journal.replay rows into HistoryJournalEntry shape", async () => {
+		const h = makeHarness()
+		h.replies.set("journal.replay", { kind: "value", value: { rows: REPLAY_ROWS, cursor: 10 } })
+		const rows = await h.seam.sessionJournal("sess-x")
+		const req = h.lastRequest("journal.replay")!
+		expect(req.params).toEqual({ sessionId: "sess-x" })
+		// Raw fold input: {type,seq,time,data}; data=asRecord(payload); time=0
+		// (the bridge wire carries no clock) — identical to the transcript row
+		// construction, but WITHOUT the transcript projection (call/ask merge).
+		expect(rows).toEqual(REPLAY_ROWS.map((r) => ({ type: r.type, seq: r.seq, time: 0, data: r.payload })))
+	})
+
+	test("025-w1a seam.sessionJournal propagates journal.replay failure (no fake empty journal)", async () => {
+		const h = makeHarness()
+		h.replies.set("journal.replay", { kind: "error", error: unsupportedError("journal.replay") })
+		await expect(h.seam.sessionJournal("sess-x")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+	})
+
 	test("ask tool call+result merge into an ask row (remote pairing preserved)", () => {
 		const rows = bridgeReplayRowsToSeamTranscript([
 			{

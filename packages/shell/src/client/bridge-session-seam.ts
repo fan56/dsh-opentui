@@ -48,6 +48,9 @@ import type {
 } from "../../../tui-base/src/seams/session"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
 import { journalToTranscriptRows } from "./remote-session-ops.ts"
+// 025-w1a — /export sessionJournal face: HistoryJournalEntry is the /history
+// fold input (the exact shape remote sessionJournal() returns).
+import type { HistoryJournalEntry } from "../../../tui-base/src/routes/session/history-data.ts"
 // S6: the shared journal projector moved to its permanent home so the bridge
 // path survives the legacy seam deletion (zero behavior change).
 import { projectJournalRecord } from "./journal-projection.ts"
@@ -2973,6 +2976,27 @@ export class BridgeSessionSeam implements SessionSeam {
 		// it settles only children that are locally running AND host-stopped.
 		void this.#sweepSubagents(id)
 		return bridgeReplayRowsToSeamTranscript(rows, skip)
+	}
+
+	/**
+	 * 025-w1a — /export sessionJournal face. The durable journal is already
+	 * read by `storedTranscript` via the wired `journal.replay` protocol frame;
+	 * this face exposes the RAW row shape the /history fold and /export JSONL
+	 * writer consume (`{type,seq,time,data}`, oldest-first). NO new frame, NO
+	 * new projection rule: `data = asRecord(payload)`, `time = 0` — identical
+	 * to `bridgeReplayRowsToSeamTranscript`'s row construction (single source
+	 * of truth). A transport without the frame rejects (UNSUPPORTED), never
+	 * resolving a fake empty journal.
+	 */
+	async sessionJournal(id: string): Promise<HistoryJournalEntry[]> {
+		const value = await this.#transport.request("journal.replay", { sessionId: id })
+		const rows = (Array.isArray(asRecord(value).rows) ? asRecord(value).rows : []) as BridgeReplayRow[]
+		return rows.map((row) => ({
+			type: row.type,
+			seq: row.seq,
+			time: 0,
+			data: asRecord(row.payload),
+		}))
 	}
 
 	async currentModelSelection(): Promise<{ providerID: string; modelID: string } | undefined> {
