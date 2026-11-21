@@ -38,7 +38,7 @@ run(ctx) {
 
 审计结论（`025-command-surface-audit.md:42,59,75,91-92,106-118,143`）：
 
-- 0.24 状态：**降级**（`if (!ctx.seam.plugins)` 命中 unavailable）；`openPlugins` 在 `v2-entry.tsx:1026` 已接但到不了。
+- 0.24 状态：**降级**（`if (!ctx.seam.plugins)` 命中 unavailable）；`openPlugins` 在 `v2-entry.tsx:1023` 已接但到不了。
 - 根因两类：① `seam.plugins` face 未实现（host manager 15 条 RPC 全缺，CapIR gap）；② `plugins()` 本身可读本地列表，但 seam 没接。
 - 15 条 plugin-manager gap：`cancelInstall/inspect/installBundle/listBundles/listPlugins/listVersionExemptions/listVersions/readBundleDetail/registries/removeBundle/setBundleEnabled/setPluginEnabled/setVersionExemption/updateBundle/waitForInstall`（`025-command-surface-audit.md:91-92`）。
 - 补齐路径裁决：若只做「本地插件列表可读」→ 补 `seam.plugins` face（低成本，属 seam face 未实现类）；若要做完整管理器面板 → 15 条 RPC 需进 expected 面，走 W1 全链 + 可能 W8 解冻。
