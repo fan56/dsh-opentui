@@ -4,7 +4,6 @@
 
 export declare const BRIDGE_REPAIR_COMMAND: string
 export declare const BRIDGE_APPEND_PRESET_NOTICE: string
-export declare const BRIDGE_LEGACY_REMOTE_HINT: string
 export declare const BRIDGE_REPAIR_HINT: string
 
 export declare function formatBridgeFailFastMessage(

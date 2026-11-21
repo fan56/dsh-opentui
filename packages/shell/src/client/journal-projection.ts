@@ -3,16 +3,27 @@
  *
  * S6 deletes RemoteSessionSeam (session-seam-adapter.ts) but the BridgeSessionSeam
  * reuses `projectJournalRecord` in production (bridge-session-seam.ts:53) via
- * the recovery drain. This module is that projector's permanent home so the
- * bridge path survives the deletion with ZERO behavior change.
+ * the recovery drain. This module is that projector's permanent home.
  *
- * Extracted verbatim from session-seam-adapter.ts: NOTICE_SOURCE_KINDS,
- * projectJournalRecord, and its private helpers (blocksText / assistantTextValue).
- * `blocksText` is the union of the former local variant and remote-follow's
- * variant (string-or-blocks), which is identical for all journal record shapes.
+ * projectJournalRecord and NOTICE_SOURCE_KINDS were moved verbatim from
+ * session-seam-adapter.ts. The two text helpers it needs — `blocksText` and
+ * `turnEndErrorMessage` — are NOT duplicated here: they are imported from
+ * remote-follow.ts (S6 final-review C3), which is in the RETAIN set and is the
+ * single implementation for both the live follow stream and this projector.
+ *
+ * Behavior note (S6 final-review C3, correcting the earlier "ZERO behavior
+ * change" wording): the old adapter's LOCAL blocksText had no plain-string
+ * fast-path — a `user/message` with a flat-string content produced "" and was
+ * dropped. The shared remote-follow helper does have that fast-path, so such
+ * records now project as a `message.updated` row. The journal-record content
+ * shape distribution was not proven either way, so this is a declared, narrow
+ * behavior window (aligned with remote-follow's "never silently dropped"
+ * philosophy), not a claimed zero-diff. Block-array content — the shape the
+ * projector tests cover — is unchanged.
  *
  * Dependencies are all in the RETAIN set (host client layer): ask-transcript,
- * seam-types, tui-base seams/session. No deleted module is imported here.
+ * seam-types, remote-follow, tui-base seams/session. No deleted module is
+ * imported here.
  */
 import type { StoredTranscriptRow } from "./seam-types.ts"
 import {
@@ -23,26 +34,11 @@ import {
 } from "../features/ask-transcript.ts"
 import type { SeamSessionEvent } from "../../../tui-base/src/seams/session"
 import type { RemoteJournalEntry } from "./remote-session-ops.ts"
+import { blocksText, turnEndErrorMessage } from "./remote-follow.ts"
 
-function asRecord(value: unknown): Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {}
-}
-
-/** Concatenated text of a record's content blocks ({type:"text",text}) or a
- * plain string. Union of the former session-seam-adapter + remote-follow
- * variants (identical for journal record shapes). */
-export function blocksText(content: unknown): string {
-	if (typeof content === "string") return content.trim()
-	const blocks = Array.isArray(content) ? content : []
-	let text = ""
-	for (const block of blocks) {
-		const typed = block as { type?: unknown; text?: unknown } | null
-		if (typed?.type === "text" && typeof typed.text === "string") {
-			text += (text === "" ? "" : "\n") + typed.text
-		}
-	}
-	return text.trim()
-}
+// Re-export kept for API parity with the pre-C3 module surface; the single
+// implementation lives in remote-follow.ts (live follow stream + projector).
+export { blocksText, turnEndErrorMessage }
 
 /** One durable journal record → seam-rows event shapes (0..n events).
  * Payload contracts are EXACTLY what seam-rows.ts apply() consumes. */
@@ -51,15 +47,6 @@ export const NOTICE_SOURCE_KINDS: ReadonlySet<string> = new Set(["subagent-settl
 function assistantTextValue(data: Record<string, unknown>): string {
 	if (typeof data.text === "string") return data.text.trim()
 	return blocksText(data.content ?? data.parts)
-}
-
-/** Error text of a `turn/end` failure record (former remote-follow helper). */
-export function turnEndErrorMessage(data: Record<string, unknown>): string | undefined {
-	const reason = asRecord(data.reason)
-	if (reason.kind !== "error") return undefined
-	const error = asRecord(reason.error)
-	const message = error.message ?? reason.error
-	return String(message ?? "turn error").slice(0, 300)
 }
 
 export function projectJournalRecord(entry: RemoteJournalEntry, sessionId: string): SeamSessionEvent[] {

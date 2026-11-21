@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 024 real-client gate — ONE repeatable recipe for the three slices whose
 # real-machine items were BLOCKED (S1 /model, S2 account, SK keymap) plus the
-# shared verify70 (70-item) gate.
+# shared verify70 (64-item) gate.
 #
 #   scripts/real-client-gate.sh [--out DIR] [--boot-timeout SEC]
 #                               [--keep] [--only smoke|frames|verify70|all]
@@ -21,7 +21,7 @@
 #   5. capture .ans frames (tmux `capture-pane -e -p`, NUMERIC ANSI only — no
 #      PNG, no visual model): S1 /model, S2 account (/settings -> Account),
 #      SK four keymap scenarios (modal / turn-Esc / panel-PgUp-PgDn / basic)
-#   6. run the shared 70-item gate `verify/agents-mount-repro.mjs` (it now
+#   6. run the shared 64-item gate `verify/agents-mount-repro.mjs` (it now
 #      self-provisions its own scratch home with the same recipe)
 #   7. cleanup tmux session + scratch home; every failure dumps diagnostics
 #      (last pane, client stderr, host probe stderr, env snapshot) and exits
@@ -251,7 +251,7 @@ if [ "$ONLY" = all ] || [ "$ONLY" = verify70 ]; then
   log "running verify70: node verify/agents-mount-repro.mjs"
   ( cd "$REPO" && node verify/agents-mount-repro.mjs ) >"$OUT/verify70.log" 2>&1
   V70_RC=$?
-  if [ "$V70_RC" -eq 0 ]; then pass "verify70: exit 0 (all 70 items)"; else fail "verify70: exit $V70_RC (see $OUT/verify70.log)"; fi
+  if [ "$V70_RC" -eq 0 ]; then pass "verify70: exit 0 (all 64 items)"; else fail "verify70: exit $V70_RC (see $OUT/verify70.log)"; fi
 fi
 
 # --------------------------------------------------------------- 7. verdict
