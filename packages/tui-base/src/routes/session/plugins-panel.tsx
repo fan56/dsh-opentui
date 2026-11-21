@@ -340,9 +340,12 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			.finally(() => { if (!stale) setDetailLoading(false) })
 	})
 
-	/** Whether the honest-degrade banner and the real detail region show. */
-	const degraded = () => props.seam.pluginsManager?.available?.() === false
-	const showDetail = () => props.seam.pluginsManager?.available?.() === true && current() !== undefined
+	/** Honest-degrade banner visibility. A memo (not a plain function call) so
+	 *  Solid tracks it in `<Show when={...}>`; the detail lines instead render
+	 *  unconditionally and gate their TEXT on the `detail()` signal directly —
+	 *  a plain `showDetail()` memo reading the seam's non-reactive available()
+	 *  was NOT repainted (W2-2c render-gap finding). */
+	const degraded = createMemo(() => props.seam.pluginsManager?.available?.() === false)
 
 	function moveCursor(delta: number) {
 		const count = visible().length
@@ -574,7 +577,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			<box
 				flexShrink={0}
 				width="100%"
-				height={1 + 1 + (degraded() ? 1 : 0) + Math.min(visible().length || 1, 12) + (showDetail() ? 2 : 0) + (status() !== undefined ? 1 : 0) + 1}
+				height={1 + 1 + (degraded() ? 1 : 0) + Math.min(visible().length || 1, 12) + 2 + (status() !== undefined ? 1 : 0) + 1}
 				flexDirection="column"
 				border={["left"]}
 				borderColor={theme?.border.base ?? "#7aa2f7"}
@@ -668,22 +671,20 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 						)}
 					</For>
 					</Show>
-					{/* 025-w2-2 — selected bundle detail from the real manager's
-					    readBundleDetail. Two fixed-height lines: a labelled header
-					    and the answer-bearing markdown preview (never a placeholder
-					    if the host returned a real document). */}
-					<Show when={showDetail()}>
-						<box height={1} flexShrink={0}>
-							<text fg={theme?.text.base ?? "#e6e6e6"} attributes={TextAttributes.BOLD} wrapMode="none">
-								{t("panel.plugins.detail.title", { name: current()?.name ?? "" })}
-							</text>
-						</box>
-						<box height={1} flexShrink={0}>
-							<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
-								{pluginDetailPreview(detail(), detailLoading())}
-							</text>
-						</box>
-					</Show>
+				{/* 025-w2-2 — selected bundle detail from the real manager's
+				    readBundleDetail. Two ALWAYS-present fixed-height lines whose
+				    text is reactive (a plain <Show when={fn()}> was NOT tracked
+				    by the compiler — render-gap adjudication, W2-2c). */}
+				<box height={1} flexShrink={0}>
+					<text fg={theme?.text.base ?? "#e6e6e6"} attributes={TextAttributes.BOLD} wrapMode="none">
+						{detail() !== undefined ? t("panel.plugins.detail.title", { name: current()?.name ?? "" }) : ""}
+					</text>
+				</box>
+				<box height={1} flexShrink={0}>
+					<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
+						{detail() !== undefined ? pluginDetailPreview(detail(), detailLoading()) : ""}
+					</text>
+				</box>
 					<Show when={status() !== undefined}>
 						<box height={1} flexShrink={0}>
 							<text fg={warningColor(theme ?? undefined)} wrapMode="none">
