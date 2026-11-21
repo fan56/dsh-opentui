@@ -14,21 +14,27 @@ for IR data. The name matches the redesign v3 §3.0 "capcontract" layer.
 Files:
 
 - `types.ts` — generated capability id union, per-method shape rows, totals.
-- `dispatch.ts` — generic W dispatcher over `typert.local`, id→kind table,
-  declarative `inject: ['typert']` contract, identity id mapping for the
-  handshake comparison key.
-- `binder.ts` — stdio wire frame → dispatcher projection binder, same inject
-  declaration, id-set membership check.
+- `dispatch.ts` — generic W dispatcher over an injected `CapHostInvoke` (the
+  host adapter is supplied by the bridge), id→kind table (`CAP_DISPATCH_TABLE`,
+  257 rows), identity id mapping for the handshake comparison key. Declares
+  zero cordis inject.
+- `binder.ts` — stdio wire frame → dispatcher projection binder; no cordis
+  inject / ctx access, id-set membership check, hostInvoke injected by the
+  bridge.
 
 Constraints held:
 
 - zero `@deepseek-ai` import — capability ids are string data, not host symbols.
 - every file starts with the provenance declaration line.
-- no bare `ctx.<service>` property access; the only service read is `typert`,
-  declared via `inject: ['typert']`.
+- no bare `ctx.<service>` property access and no cordis `inject` in the generated
+  layer: `inject` is owned solely by the bridge (`['agents','typert']`); the
+  generated dispatcher takes an injected `CapHostInvoke` (oldfox R2/R3).
 
-CapIR status (honest gaps — see TODO markers in the generated files): CapIR
-carries `id / namespace / name / kind / class` only. It has **no parameter
-schema, no result schema, no codec/schema field and no event-frame `sessionId`
-field**. Those are marked `TODO(CapIR)` and must be filled by a later slice that
-extends the extractor; nothing is fabricated here.
+CapIR status (honest gaps — see TODO markers in the generated files): CapIR v3
+(schema `dsh-opentui.capir/3`) carries `id / namespace / name / kind / class`
+plus `service`, `params[]` and `result` (all 257 methods; params/result extracted
+from two sources — `.d.ts` `TYPERT_REMOTE` literals × `typert.host.js` manifest
+`parameters[]` jsonSchema). The generated `CAP_PARAMS_TABLE` holds 257 normalized
+rows and full JSON Schema stays in `capir.json`. Only the codec/schema field and
+the event-frame `sessionId` field remain `TODO(CapIR)`; nothing is fabricated
+here.
