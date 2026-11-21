@@ -43,9 +43,36 @@ import { join } from "node:path"
 const RECORD_KEY = "client-connection/browser-session"
 /** Host default `cookieMaxAgeDays`; larger lifetimes are clamped to it. */
 const DEFAULT_MAX_AGE_MS = 30 * 86_400_000
-/** First-boot retry cadence: the Host writes the grant during activation. */
-const RETRY_INTERVAL_MS = 100
-const RETRY_WINDOW_MS = 2000
+/**
+ * First-boot retry cadence: the Host writes the grant during activation.
+ * 100ms matches the readiness/handshake poll cadence (host-launch.ts
+ * DEFAULT_POLL_MS, packages/bridge/src/handshake.ts DEFAULT_POLL_INTERVAL_MS):
+ * frequent enough to catch the grant promptly, sparse enough to avoid hot
+ * re-reads of the credentials file.
+ */
+const DEFAULT_RETRY_INTERVAL_MS = 100
+/**
+ * First-boot grant wait budget. The Host writes the browser-session grant
+ * during connection activation, which can race a fast client start. A fixed
+ * 2000ms window was proven too short on a cold/slow VM: the 024 container
+ * E2E (`20-start`) failed with `CredentialsFileMissingError` at
+ * host-launch.ts:562 after 2s while the Host was still booting
+ * (evidence: 024-e2e-rework-evidence/container-run-blocked.log, 1pass/11fail).
+ *
+ * Constant derived from same-class evidence, not a guess:
+ *  - the capability handshake waits 10s for async host capability registration
+ *    (packages/bridge/src/handshake.ts DEFAULT_TIMEOUT_MS = 10_000);
+ *  - the whole host claim→ready budget is 5 minutes
+ *    (host-launch.ts DEFAULT_LAUNCH_TIMEOUT_MS);
+ *  - the e2e TUI readiness ceiling is 180s (e2e/scenarios/20-start.sh).
+ * 3 × the handshake window = 30s, still 1/10 of the launch budget and 1/6 of
+ * the TUI ceiling. The wait is a bounded poll (never a fixed sleep), is
+ * overridable via `DSH_OPENTUI_COOKIE_MINT_TIMEOUT_MS` for slower hosts or
+ * deterministic tests, and still ends in a typed, secret-free error rather
+ * than a silent failure.
+ */
+const DEFAULT_RETRY_WINDOW_MS = 30_000
+const RETRY_WINDOW_ENV = "DSH_OPENTUI_COOKIE_MINT_TIMEOUT_MS"
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 export interface MintOwnerCookieOptions {
@@ -55,6 +82,28 @@ export interface MintOwnerCookieOptions {
 	authority: string
 	/** Cookie lifetime; clamped to the Host's 30-day default window. */
 	maxAgeMs?: number
+	/**
+	 * First-boot grant wait budget (ms). Defaults to
+	 * `DSH_OPENTUI_COOKIE_MINT_TIMEOUT_MS` when valid, else 30s. A positive
+	 * finite override wins over the env; invalid values fall back to the env.
+	 */
+	timeoutMs?: number
+	/** Poll cadence (ms) for the first-boot grant wait. Defaults to 100ms. */
+	retryIntervalMs?: number
+}
+
+/** Resolve the grant wait budget: per-call option > env > evidence default. */
+function resolveRetryWindow(option: number | undefined): number {
+	if (option !== undefined && Number.isFinite(option) && option > 0) return option
+	const env = Number(process.env[RETRY_WINDOW_ENV])
+	if (Number.isFinite(env) && env > 0) return env
+	return DEFAULT_RETRY_WINDOW_MS
+}
+
+/** Resolve the poll cadence (positive finite option only, else the default). */
+function resolveRetryInterval(option: number | undefined): number {
+	if (option !== undefined && Number.isFinite(option) && option > 0) return option
+	return DEFAULT_RETRY_INTERVAL_MS
 }
 
 /** Base class for every mint failure; messages are always secret-free. */
@@ -90,7 +139,7 @@ export function mintOwnerCookie(options: MintOwnerCookieOptions): string {
 	if (typeof authority !== "string" || authority.length === 0 || /[\r\n/]/.test(authority)) {
 		throw new OwnerCookieError("authority must be a non-empty host:port without scheme or path separators")
 	}
-	const secret = readGrantSecret(options.home)
+	const secret = readGrantSecret(options.home, resolveRetryWindow(options.timeoutMs), resolveRetryInterval(options.retryIntervalMs))
 	const issuedAt = Date.now()
 	const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS
 	const expiresAt = issuedAt + Math.min(maxAgeMs, DEFAULT_MAX_AGE_MS)
@@ -99,10 +148,10 @@ export function mintOwnerCookie(options: MintOwnerCookieOptions): string {
 	return `${ownerCookieName(authority)}=v1.${body}.${signature}`
 }
 
-/** Read + validate the grant secret from `<home>/.credentials.yaml` (with first-boot retries). */
-function readGrantSecret(home: string): Buffer {
+/** Read + validate the grant secret from `<home>/.credentials.yaml` (bounded first-boot poll). */
+function readGrantSecret(home: string, timeoutMs: number, retryIntervalMs: number): Buffer {
 	const path = join(home, ".credentials.yaml")
-	const deadline = Date.now() + RETRY_WINDOW_MS
+	const deadline = Date.now() + timeoutMs
 	let sawFile = false
 	while (true) {
 		let file = ""
@@ -119,16 +168,18 @@ function readGrantSecret(home: string): Buffer {
 			if (secret !== undefined) return decodeSecret(secret, path)
 		}
 		if (Date.now() >= deadline) {
+			// Typed, secret-free, and explicit about the configured budget —
+			// never a silent failure even after the extended window.
 			if (!sawFile) {
 				throw new CredentialsFileMissingError(
-					`no credentials file at ${path} within ${RETRY_WINDOW_MS}ms (host first boot still pending?)`,
+					`no credentials file at ${path} within ${timeoutMs}ms (host first boot still pending?)`,
 				)
 			}
 			throw new CredentialsGrantMissingError(
-				`credentials record "${RECORD_KEY}" absent in ${path} within ${RETRY_WINDOW_MS}ms (host first boot still pending?)`,
+				`credentials record "${RECORD_KEY}" absent in ${path} within ${timeoutMs}ms (host first boot still pending?)`,
 			)
 		}
-		sleepSync(RETRY_INTERVAL_MS)
+		sleepSync(retryIntervalMs)
 	}
 }
 

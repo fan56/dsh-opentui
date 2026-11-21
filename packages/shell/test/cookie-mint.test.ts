@@ -7,6 +7,7 @@
 // secret-leakage scan across every thrown message (nothing minted ever
 // appears in an error).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { spawn } from "node:child_process"
 import { createHash, createHmac } from "node:crypto"
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -190,29 +191,33 @@ describe("rotation and re-read", () => {
 })
 
 describe("missing / invalid grants", () => {
-	test("missing file: retries then raises the typed missing-file error (~2s)", async () => {
+	// The default wait is 30s (see cookie-mint.ts); pass a short per-call
+	// budget so the negative cases stay fast while still crossing a real poll.
+	test("missing file: polls to the configured deadline then raises the typed missing-file error", async () => {
 		const start = Date.now()
 		try {
-			mintOwnerCookie({ home, authority: AUTHORITY })
+			mintOwnerCookie({ home, authority: AUTHORITY, timeoutMs: 250 })
 			throw new Error("expected CredentialsFileMissingError")
 		} catch (error) {
 			expect(credentialsAbsentError(error)).toBe(true)
-			expect(Date.now() - start).toBeGreaterThanOrEqual(2000)
+			expect(Date.now() - start).toBeGreaterThanOrEqual(200)
+			expect((error as Error).message).toContain("within 250ms")
 		}
 	})
 
-	test("missing record: retries then raises the typed missing-grant error (~2s)", () => {
+	test("missing record: polls to the configured deadline then raises the typed missing-grant error", () => {
 		writeCredentials(SECRET_A)
 		// rewrite without the record
 		writeFileSync(join(home, ".credentials.yaml"), "version: 1\nrecords: {}\n")
 		chmodSync(join(home, ".credentials.yaml"), 0o600)
 		const start = Date.now()
 		try {
-			mintOwnerCookie({ home, authority: AUTHORITY })
+			mintOwnerCookie({ home, authority: AUTHORITY, timeoutMs: 250 })
 			throw new Error("expected CredentialsGrantMissingError")
 		} catch (error) {
 			expect(error).toBeInstanceOf(CredentialsGrantMissingError)
-			expect(Date.now() - start).toBeGreaterThanOrEqual(2000)
+			expect(Date.now() - start).toBeGreaterThanOrEqual(200)
+			expect((error as Error).message).toContain("within 250ms")
 		}
 	})
 
@@ -308,7 +313,7 @@ describe("no secret leakage in errors", () => {
 			probe.setup()
 			let thrown: unknown
 			try {
-				mintOwnerCookie({ home, authority: AUTHORITY })
+				mintOwnerCookie({ home, authority: AUTHORITY, timeoutMs: 250 })
 			} catch (error) {
 				thrown = error
 			}
@@ -318,4 +323,69 @@ describe("no secret leakage in errors", () => {
 			expect(message).not.toContain("dsh-auth-")
 		})
 	}
+})
+
+describe("first-boot grant wait (bounded poll)", () => {
+	test("polls until a late grant lands inside the window (no premature fail)", () => {
+		// A child process writes the credentials after ~300ms while the
+		// synchronous mint is parked in Atomics.wait — proving the poll sees a
+		// grant that appears after the first read, within the budget.
+		const yaml = [
+			"version: 1",
+			"records:",
+			`  ${RECORD}:`,
+			"    kind: grant",
+			"    payload:",
+			"      version: 1",
+			`      secret: ${SECRET_A}`,
+			"",
+		].join("\n")
+		const src = join(home, "late-grant.yaml")
+		const dst = join(home, ".credentials.yaml")
+		writeFileSync(src, yaml)
+		const writer = spawn("sh", ["-c", 'sleep 0.3; cp "$1" "$2"; chmod 600 "$2"', "sh", src, dst], { stdio: "ignore" })
+		const start = Date.now()
+		try {
+			const cookie = mintOwnerCookie({ home, authority: AUTHORITY, timeoutMs: 3000 })
+			expect(cookie).toContain("dsh-auth-")
+			expect(Date.now() - start).toBeGreaterThanOrEqual(250)
+		} finally {
+			writer.kill()
+		}
+	})
+
+	test("env override DSH_OPENTUI_COOKIE_MINT_TIMEOUT_MS sets the budget", () => {
+		const envKey = "DSH_OPENTUI_COOKIE_MINT_TIMEOUT_MS"
+		const previous = process.env[envKey]
+		process.env[envKey] = "321"
+		try {
+			try {
+				mintOwnerCookie({ home, authority: AUTHORITY })
+				throw new Error("expected CredentialsFileMissingError")
+			} catch (error) {
+				expect(error).toBeInstanceOf(CredentialsFileMissingError)
+				expect((error as Error).message).toContain("within 321ms")
+			}
+		} finally {
+			if (previous === undefined) delete process.env[envKey]
+			else process.env[envKey] = previous
+		}
+	})
+
+	test("a positive per-call option overrides the env budget", () => {
+		const envKey = "DSH_OPENTUI_COOKIE_MINT_TIMEOUT_MS"
+		const previous = process.env[envKey]
+		process.env[envKey] = "5000"
+		try {
+			try {
+				mintOwnerCookie({ home, authority: AUTHORITY, timeoutMs: 250 })
+				throw new Error("expected CredentialsFileMissingError")
+			} catch (error) {
+				expect((error as Error).message).toContain("within 250ms")
+			}
+		} finally {
+			if (previous === undefined) delete process.env[envKey]
+			else process.env[envKey] = previous
+		}
+	})
 })
