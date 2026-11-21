@@ -254,6 +254,23 @@ if [ "$ONLY" = all ] || [ "$ONLY" = verify70 ]; then
   if [ "$V70_RC" -eq 0 ]; then pass "verify70: exit 0 (all 64 items)"; else fail "verify70: exit $V70_RC (see $OUT/verify70.log)"; fi
 fi
 
+# ------------------------------------------- 6b. answer-bearing frame assert
+# W2-3 review C-2: the gate used to emit picker=yes/section=yes as INFO only —
+# a fake-empty .ans could never fail the verdict. Chain the answer-bearing
+# assertion so its exit code IS part of the gate verdict (W2-2 S-3 ruling).
+# Only when frames were actually captured (frames/ALL modes); verify70-only
+# runs capture none and are covered by verify70's own verdict.
+if { [ "$ONLY" = all ] || [ "$ONLY" = frames ]; } && [ "$BOOTED" -eq 1 ]; then
+  node "$REPO/scripts/verify-real-client-frames.mjs" "$OUT" >"$OUT/frame-assert.log" 2>&1
+  FRAME_ASSERT_RC=$?
+  cat "$OUT/frame-assert.log" | tee -a "$RUN_LOG"
+  if [ "$FRAME_ASSERT_RC" -eq 0 ]; then
+    pass "frames: answer-bearing assert exit 0 (see frame-assert.log)"
+  else
+    fail "frames: answer-bearing assert exit $FRAME_ASSERT_RC (fake-empty frame, see $OUT/frame-assert.log)"
+  fi
+fi
+
 # --------------------------------------------------------------- 7. verdict
 log "=== verdict: FAIL=$FAIL ==="
 if [ "$FAIL" -ne 0 ]; then dump_diagnostics; exit 1; fi
