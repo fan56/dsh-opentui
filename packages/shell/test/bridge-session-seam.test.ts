@@ -3032,3 +3032,72 @@ describe("025-w1b D — seam subagentTranscript / steerChild (protocol frames un
 		expect(h.seam.interruptChild).toBeDefined()
 	})
 })
+
+describe("025-w1b E — account face whitelist projection + strict separation from login", () => {
+	test("account and login are two distinct face objects with non-overlapping fields", () => {
+		const h = makeHarness()
+		expect(h.seam.account).toBeDefined()
+		expect(h.seam.login).toBeDefined()
+		expect(h.seam.account).not.toBe(h.seam.login)
+		const accountFields = Object.keys(h.seam.account!).sort()
+		const loginFields = Object.keys(h.seam.login!).sort()
+		expect(accountFields).toEqual(["cancelSignIn", "getState", "hasRunningAccountTasks", "signOut", "startSignIn"])
+		expect(loginFields).toEqual(["credentialStatus", "login", "logout", "registerRoute", "routes"])
+		expect(accountFields.filter((f) => loginFields.includes(f))).toEqual([])
+	})
+
+	test("getState/startSignIn/cancelSignIn/signOut project to the fixed 4-field shape (no URL value)", async () => {
+		const h = makeHarness()
+		// A HOSTILE frame carrying an authorize URL / token value: only the four
+		// whitelisted fields may survive; the URL VALUE must never reach the seam.
+		const hostile = {
+			status: "credential-stored",
+			attemptPhase: "waiting-browser",
+			authorizeUrlReady: true,
+			linksPresent: true,
+			authorizeUrl: "https://auth.example/?code_challenge=SENTINEL_AUTH_URL",
+			access_token: "SENTINEL_TOKEN",
+		}
+		for (const method of ["account.getState", "account.startSignIn", "account.cancelSignIn", "account.signOut"] as const) {
+			h.replies.set(method, { kind: "value", value: hostile })
+		}
+		for (const [name, call] of [
+			["getState", () => h.seam.account!.getState()],
+			["startSignIn", () => h.seam.account!.startSignIn("http://localhost", "desktop")],
+			["cancelSignIn", () => h.seam.account!.cancelSignIn("att-1")],
+			["signOut", () => h.seam.account!.signOut()],
+		] as const) {
+			const state = await call()
+			expect(state).toEqual({
+				status: "credential-stored", attemptPhase: "waiting-browser",
+				authorizeUrlReady: true, linksPresent: true,
+			})
+			expect(JSON.stringify(state)).not.toContain("SENTINEL")
+			expect(JSON.stringify(state)).not.toContain('"authorizeUrl":') // the URL VALUE key; authorizeUrlReady boolean is allowed
+		}
+		// startSignIn/signOut send caller metadata; no secret is sent from the UI.
+		const startReq = h.lastRequest("account.startSignIn")!
+		expect(startReq.params).toMatchObject({ callbackOrigin: "http://localhost", loginSource: "desktop" })
+		expect(startReq.params!.client).toMatchObject({ version: expect.any(String) })
+		expect(h.lastRequest("account.cancelSignIn")!.params).toEqual({ attemptId: "att-1" })
+	})
+
+	test("unknown status/phase values degrade to null (bounded whitelist, no pass-through)", async () => {
+		const h = makeHarness()
+		h.replies.set("account.getState", { kind: "value", value: {
+			status: "bogus-status", attemptPhase: "evil-phase", authorizeUrlReady: "yes", linksPresent: 1,
+			authorizeUrl: "https://x/?code=SENTINEL",
+		} })
+		const state = await h.seam.account!.getState()
+		expect(state).toEqual({ status: null, attemptPhase: null, authorizeUrlReady: false, linksPresent: false })
+		expect(JSON.stringify(state)).not.toContain("SENTINEL")
+	})
+
+	test("hasRunningAccountTasks is boolean-only", async () => {
+		const h = makeHarness()
+		h.replies.set("account.hasRunningAccountTasks", { kind: "value", value: { running: true } })
+		expect(await h.seam.account!.hasRunningAccountTasks()).toBe(true)
+		h.replies.set("account.hasRunningAccountTasks", { kind: "value", value: {} })
+		expect(await h.seam.account!.hasRunningAccountTasks()).toBe(false)
+	})
+})

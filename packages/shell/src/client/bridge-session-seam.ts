@@ -32,6 +32,7 @@
 
 import type {
 	BridgeLinkStatus,
+	SeamAccountState,
 	SeamApprovalVerdict,
 	SeamAskPick,
 	SeamAskQuestion,
@@ -359,6 +360,34 @@ function asRecord(value: unknown): Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: {}
+}
+
+// 025-w1b E — account domain helpers. The bridge already projects account
+// frames to the four bounded fields; these re-project defensively so no future
+// frame shape can leak an authorize URL / token value into the TUI.
+const ACCOUNT_STATUSES: ReadonlySet<string> = new Set(["signed-out", "credential-stored"])
+const ACCOUNT_PHASES: ReadonlySet<string> = new Set([
+	"initializing", "waiting-browser", "exchanging", "committing",
+	"succeeded", "cancelled", "expired", "failed",
+])
+
+function projectSeamAccountView(value: unknown): SeamAccountState {
+	const v = asRecord(value)
+	return {
+		status: typeof v.status === "string" && ACCOUNT_STATUSES.has(v.status) ? v.status : null,
+		attemptPhase: typeof v.attemptPhase === "string" && ACCOUNT_PHASES.has(v.attemptPhase) ? v.attemptPhase : null,
+		authorizeUrlReady: v.authorizeUrlReady === true,
+		linksPresent: v.linksPresent === true,
+	}
+}
+
+/** Caller metadata for account.* frames — no credential value, just identity. */
+function accountClientMeta(): { version: string; locale: string; timezoneOffsetSeconds: number } {
+	return {
+		version: "0.25-w1b",
+		locale: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().locale : "en",
+		timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+	}
 }
 
 /** Build the honest UNSUPPORTED rejection for an absent async capability. */
@@ -1300,6 +1329,32 @@ export class BridgeSessionSeam implements SessionSeam {
 		logout: (ref) => { this.#localLogin.logout(ref); return Promise.resolve() },
 		routes: () => Promise.resolve(this.#localLogin.routes()),
 		registerRoute: (providerId, profile) => Promise.resolve(this.#localLogin.registerRoute(providerId, profile)),
+	}
+
+	/**
+	 * 025-w1b E — ACCOUNT login-state face, a SEPARATE domain from `login`
+	 * above. Rides the S4-wired `account.*` plaintext frames (already served by
+	 * the bridge); the bridge's `projectAccountViewForFrame` whitelist guarantees
+	 * the authorize URL VALUE never reaches this seam — only four bounded fields
+	 * do. This face re-projects defensively to those same four fields, so a
+	 * future/unexpected frame shape can never smuggle a URL/token into the TUI.
+	 * NO credential value is stored/logged/echoed here.
+	 */
+	account: NonNullable<SessionSeam["account"]> = {
+		getState: async () => projectSeamAccountView(await this.#transport.request("account.getState")),
+		startSignIn: async (callbackOrigin, loginSource) => projectSeamAccountView(await this.#transport.request(
+			"account.startSignIn", { client: accountClientMeta(), callbackOrigin, loginSource },
+		)),
+		cancelSignIn: async (attemptId) => projectSeamAccountView(await this.#transport.request(
+			"account.cancelSignIn", { attemptId },
+		)),
+		signOut: async () => projectSeamAccountView(await this.#transport.request(
+			"account.signOut", { client: accountClientMeta() },
+		)),
+		hasRunningAccountTasks: async () => {
+			const value = asRecord(await this.#transport.request("account.hasRunningAccountTasks"))
+			return value.running === true
+		},
 	}
 
 	/**

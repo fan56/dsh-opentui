@@ -505,6 +505,19 @@ export interface SeamLoginRoute {
 	declared?: boolean
 }
 
+/**
+ * 025-w1b E — the ONLY account state shape that crosses the seam. Field-by-field
+ * whitelist projection of the host AccountView: a bounded status enum, a bounded
+ * attempt phase, and booleans. The authorize URL VALUE (and the code_challenge /
+ * state it carries) is NEVER part of this shape — only `authorizeUrlReady`.
+ */
+export interface SeamAccountState {
+	status: string | null
+	attemptPhase: string | null
+	authorizeUrlReady: boolean
+	linksPresent: boolean
+}
+
 /** What the vendored view needs from a session backend, no more. */
 export interface SessionSeam {
 	/** Lifecycle + connection state (session-tabs idle polling, status bar). */
@@ -801,6 +814,29 @@ export interface SessionSeam {
 		 * llm-pi-ai settings namespace; false when the backend rejected it.
 		 */
 		registerRoute(providerId: string, profile: Record<string, unknown> | undefined): Promise<boolean>
+	}
+	/**
+	 * 025-w1b E — ACCOUNT login-state face (PKCE / DeepSeek account). STRICTLY
+	 * SEPARATE from `login` above: `login` = provider credential/route double
+	 * write (local file I/O); `account` = account sign-in state over the already
+	 * wired S4 `account.*` plaintext frames. They share no field and never call
+	 * each other — the two domains were explicitly partitioned by review.
+	 *
+	 * Every field is whitelist-projected by the bridge (`projectAccountViewForFrame`):
+	 * the authorize URL VALUE never crosses a frame — only `authorizeUrlReady`
+	 * (a boolean) does. No auth URL / token / credential value reaches the TUI.
+	 */
+	account?: {
+		/** Current account state (status + bounded phase + presence booleans only). */
+		getState(): Promise<SeamAccountState>
+		/** Begin PKCE sign-in; resolves the projected state (URL value never returned). */
+		startSignIn(callbackOrigin: string, loginSource: "web" | "desktop"): Promise<SeamAccountState>
+		/** Cancel an in-flight sign-in attempt; resolves the projected state. */
+		cancelSignIn(attemptId: string): Promise<SeamAccountState>
+		/** Sign out; resolves the projected state. */
+		signOut(): Promise<SeamAccountState>
+		/** Whether any account task is running (boolean only). */
+		hasRunningAccountTasks(): Promise<boolean>
 	}
 	/**
 	 * Subagent marker face (batch F6): the live subagent rows snapshot, and

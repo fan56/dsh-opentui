@@ -20,7 +20,7 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import { t, activeLanguage, installedLanguages, setLanguage, LANGUAGE_CHOICES } from "../../i18n"
-import type { SeamEffortOption, SeamLoginRoute, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
+import type { SeamAccountState, SeamEffortOption, SeamLoginRoute, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { stopEverything } from "./stop-all"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
@@ -1631,6 +1631,44 @@ export function coreCommands(): SlashCommand[] {
 							: []),
 				]
 				ctx.say(t("command.stop.done", { parts: parts.join(", ") }))
+			},
+		},
+		{
+			// 025-w1b E — account sign-in state entry, appended LAST so the
+			// index-based command tests keep their positions. STRICTLY SEPARATE
+			// from /login (provider credentials): this drives the S4-wired
+			// account.* plaintext frames via ctx.seam.account, whose state is
+			// whitelist-projected (status/phase/booleans; no URL value shows).
+			name: "/account",
+			description: t("command.account.description"),
+			async run(ctx, argText) {
+				const face = ctx.seam.account
+				if (!face) {
+					ctx.say(t("command.account.unavailable"))
+					return
+				}
+				const show = (state: SeamAccountState): void => {
+					ctx.say(t("command.account.state", {
+						status: state.status ?? "—",
+						phase: state.attemptPhase ?? "—",
+						urlReady: state.authorizeUrlReady ? "✓" : "—",
+						links: state.linksPresent ? "✓" : "—",
+					}))
+				}
+				const arg = argText.trim().toLowerCase()
+				try {
+					if (!arg || arg === "state") {
+						show(await face.getState())
+					} else if (arg === "signin") {
+						show(await face.startSignIn("http://localhost", "desktop"))
+					} else if (arg === "signout") {
+						show(await face.signOut())
+					} else {
+						ctx.say(t("command.account.unknownAction", { action: argText.trim() }))
+					}
+				} catch (error) {
+					ctx.say(t("command.account.failed", { reason: seamFailureReason(error) }))
+				}
 			},
 		},
 	]

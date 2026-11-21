@@ -346,8 +346,10 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/theme",
 			"/preset",
 			"/stop",
+			"/account",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
+		expect(filterCommands(commands, "/a").map((c) => c.name)).toEqual(["/agents", "/account"])
 		expect(filterCommands(commands, "/pl").map((c) => c.name)).toEqual(["/plugins"])
 		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual(["/login", "/logout", "/language"])
 		expect(filterCommands(commands, "/logo").map((c) => c.name)).toEqual(["/logout"])
@@ -386,6 +388,8 @@ describe("core commands", () => {
 			"/theme — switch theme (opens the picker)",
 			"/preset — switch agent preset (bare opens the picker, next rotates)",
 			"/stop — stop the main turn and all running subagents",
+			// 025-w1b E — appended last so index-based command tests keep positions.
+			"/account — show account sign-in state (signin/signout)",
 		])
 	})
 
@@ -2016,5 +2020,60 @@ describe("C13: /resume repair flow", () => {
 		await coreCommands().find((c) => c.name === "/resume")!.run(ctx, "")
 		expect(ctx.hooks.picks).toHaveLength(1)
 		expect(ctx.lines).toEqual(["resumed s2"])
+	})
+})
+
+describe("025-w1b E — /account command (separate from /login)", () => {
+	const ACCOUNT_STATE = {
+		status: "credential-stored", attemptPhase: null,
+		authorizeUrlReady: false, linksPresent: true,
+	}
+
+	function accountCtx(state = ACCOUNT_STATE) {
+		const lines: string[] = []
+		const face = {
+			getState: async () => state,
+			startSignIn: async (_origin: string, _src: "web" | "desktop") => state,
+			cancelSignIn: async (_id: string) => state,
+			signOut: async () => state,
+			hasRunningAccountTasks: async () => false,
+		}
+		const seam = { account: face } as any
+		const ctx = {
+			seam,
+			say: (text: string) => lines.push(text),
+			clear() {}, reload() {}, quit() {}, refreshFooter() {}, invalidateFooter() {},
+			pickOne: async () => undefined,
+			promptText: async () => undefined,
+		} as any
+		return { ctx, lines, face }
+	}
+
+	test("/account without arg prints the whitelisted state (no URL value)", async () => {
+		const { ctx, lines } = accountCtx()
+		const cmd = coreCommands().find((c) => c.name === "/account")!
+		await cmd.run(ctx, "")
+		expect(lines[0]).toContain("credential-stored")
+		expect(lines.join("\n")).not.toMatch(/https?:\/\//)
+	})
+
+	test("/account signin/signout route to the account face, not login", async () => {
+		const { ctx, lines, face } = accountCtx()
+		let signin = 0, signout = 0
+		face.startSignIn = async () => { signin++; return ACCOUNT_STATE }
+		face.signOut = async () => { signout++; return ACCOUNT_STATE }
+		const cmd = coreCommands().find((c) => c.name === "/account")!
+		await cmd.run(ctx, "signin")
+		await cmd.run(ctx, "signout")
+		expect(signin).toBe(1)
+		expect(signout).toBe(1)
+	})
+
+	test("/account degrades honestly when the face is absent", async () => {
+		const lines: string[] = []
+		const ctx = { seam: {} as any, say: (t: string) => lines.push(t) } as any
+		const cmd = coreCommands().find((c) => c.name === "/account")!
+		await cmd.run(ctx, "")
+		expect(lines[0]).toContain("unavailable")
 	})
 })
