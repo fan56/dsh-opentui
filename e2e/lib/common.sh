@@ -207,6 +207,27 @@ ensure_client_profile() {
   if [ ! -f "$FACE_PATCH" ]; then
     DSH_HOME="$FACE_HOME" node /src/packages/shell/scripts/provision-opentui-profile.mjs || return 1
   fi
+  # The bridge seam (S6 sole topology) boots `dsh --profile opentui-inproc`.
+  # The thin root /src/dsh-opentui launcher execs the bun client directly and
+  # does NOT provision that profile (only the packaged bin does, on every
+  # launch). real-client-gate.sh and e2e/families both provision it explicitly;
+  # the legacy container harness was the outlier. Without it the boot reached
+  # createBridgeSessionSeam and died with `profile "opentui-inproc" does not
+  # exist` — masked until the cookie-mint first-boot wait was extended (before
+  # that the boot failed earlier, in ensureHost). Mirror the canonical --repair
+  # recipe so the legacy container scenarios run the same host topology.
+  if [ ! -d "$FACE_HOME/profiles/opentui-inproc" ]; then
+    DSH_HOME="$FACE_HOME" node /src/packages/shell/scripts/provision-inproc-profile.mjs --repair || return 1
+    [ -d "$FACE_HOME/profiles/opentui-inproc" ] || return 1
+    # Re-pin the inproc profile's model route to the same zai-coding-cn /
+    # glm-5.3-flash the legacy footer markers assert (the inproc template's
+    # own default is opencode-go / deepseek-v4.1-flash), and point that
+    # provider at the in-container mock. Same recipe as the `opentui` profile
+    # bakes below; keeps the assertions at the pinned route instead of
+    # weakening them to a topology default.
+    DSH_HOME="$FACE_HOME" node /e2e/lib/bake-inproc-model-pin.mjs || return 1
+    DSH_HOME="$FACE_HOME" MOCK_PROFILE=opentui-inproc node /e2e/lib/bake-mock-endpoint.mjs || return 1
+  fi
   # Each bake is probed INDEPENDENTLY. They used to ride one guard keyed on
   # the registry dep, so a scenario that had already installed the registry
   # (62 runs before 65/70) silently skipped the jev chain bake and later
