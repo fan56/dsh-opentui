@@ -6,11 +6,11 @@ new architecture, not a reskin of dsh-tui-pi. Built on
 running on Bun.
 
 The repo's product is the **architecture**; the shipped Shell is a working
-chat agent TUI on top of it. By default it boots an in-process session bridge
-inside the dsh host and drives the OpenTUI client over a stdio JSON-lines
-channel; the legacy thin client over the host's remote API is retained only as
-an escape hatch (`DSH_OPENTUI_INPROC=0`). The `--remote` flag was removed in
-0.23.0.
+chat agent TUI on top of it. It boots an in-process session bridge inside the
+dsh host and drives the OpenTUI client over a stdio JSON-lines channel — the
+bridge is the only session seam. The legacy remote thin-client seam and its
+`DSH_OPENTUI_INPROC=0` escape hatch were removed in 0.24.0; the `--remote`
+flag was removed earlier, in 0.23.0.
 
 | Package | What it is |
 |---|---|
@@ -22,7 +22,9 @@ See [CONTEXT.md](CONTEXT.md) for the glossary and [docs/adr/](docs/adr/)
 for decisions: Solid (0001), two integration channels with no compat shim
 (0002), Bun single-process distribution (0003), host profile route (0004),
 client mode (0005, superseded as the sole TUI path by the in-process bridge,
-0009), session seam lifecycle (0010) and the ask/permission channel (0011).
+0009), session seam lifecycle (0010), the ask/permission channel (0011),
+table-driven CapIR v3 dispatch (0012) and retirement of the legacy container
+e2e layer (0013).
 
 ## Install
 
@@ -37,11 +39,11 @@ npm i -g @aiwayds/dsh-opentui
 dsh-opentui
 ```
 
-The first launch automatically provisions the `opentui-inproc` profile (bridge
-dependencies are symlinked from the dsh install, never copied). If that bridge
-install is damaged, rerun with `dsh-opentui --repair-bridge`. To fall back to
-the legacy remote thin client for a launch, set `DSH_OPENTUI_INPROC=0` — that
-skips in-process provisioning and selects the remote seam.
+The first launch automatically provisions the `opentui-inproc` profile: the
+shipped bridge bundle is materialized as a real directory copy of this
+installation (no symlink, no copy of any `@deepseek-ai/*` package into the
+profile) and checked against a build-time fingerprint. If that bridge install
+is damaged, rerun with `dsh-opentui --repair-bridge`.
 
 Run `dsh-opentui --help` for the full list of launcher options.
 
@@ -106,45 +108,54 @@ and keeps the plugin set it booted with, so a plugin upgrade never applies to
 the current one. CI and scripted runs must pass `--yes` — without a TTY the
 confirmation prompt is refused.
 
-## Client mode
+## Session topology
 
-> Since 0.23.0 the default TUI path is the in-process session bridge
-> (`opentui-inproc` profile, see ADR-0009). The thin-client topology below is
-> the legacy path, reachable only through the `DSH_OPENTUI_INPROC=0` escape
-> hatch. The old `--remote` flag was removed in 0.23.0; passing it is a usage
-> error (exit 2).
+> Since 0.24.0 the in-process session bridge (`opentui-inproc` profile, see
+> ADR-0009) is the **only** session seam: the Bun TUI talks stdio JSON-lines to
+> a bridge loaded inside a `dsh --profile opentui-inproc` host process. The
+> legacy remote thin-client seam, its `DSH_OPENTUI_INPROC=0` escape hatch and
+> the `--remote` flag are all gone (the flag has been a usage error, exit 2,
+> since 0.23.0).
 
-With `DSH_OPENTUI_INPROC=0`, `dsh-opentui` starts a thin client TUI
-(`dist/client/index.js` under Bun) that connects to a resident
-`dsh --profile opentui` host process. The launcher handles everything on
-startup:
+The Node launcher spawns the Bun TUI in the foreground (forwarding
+SIGINT/SIGTERM/SIGHUP); the TUI starts the dsh host, which loads the bridge
+in-process. A boot handshake compares the client's expected capability surface
+with the bridge and degrades honestly on a mismatch.
 
-- **Profile bootstrap** — `$DSH_HOME/profiles/opentui` is provisioned on
-  EVERY launch (idempotent; a no-op pass is sub-second). Pass `--provider` /
-  `--model` / `--reasoning-effort` to pin a different default model (default
-  `zai-coding-cn/glm-5.3-flash/high`).
-- **Default plugins** — the first run installs the plugin set below into the
-  profile and prints its progress (`[3/5] plugins …`). Later runs only repair
-  what is missing: nothing is reinstalled when the dependency, the installed
-  version and the bundle entry already agree. `--dry-run` (or
-  `DSH_PROVISION_DRY_RUN=1`) prints the commands without executing them.
-- **Legacy migration** — a pre-retirement `profiles/dsh-opentui` profile is
-  detected once and its theme / config preferences are conservatively copied
-  into the `opentui` profile (only keys the target does not already have).
-  The legacy profile is kept, never deleted.
-- **SDK closure link** — the client imports `@deepseek-ai/dsh-client-connection`
-  at runtime. That SDK is not on the public npm registry; it ships inside the
-  globally-installed dsh's own `node_modules` closure, and the launcher
-  symlinks it in (idempotent). This is why the dsh CLI is a hard prerequisite.
+Every launch provisions two profiles:
 
-Architecture: one resident host serves the workspace; a crashed or quit client
-re-attaches (or a fresh one adopts) the running host; `/reload` restarts the
-host on the same port without losing the session. Multiple clients can attach
-to the same host.
+- **`opentui-inproc`** — the bridge profile, provisioned synchronously (a
+  failure here is fatal): a real directory copy of this installation's bundled
+  bridge, the session shim, a host-version compatibility exemption, the
+  approval gate and an inproc-only cordis patch. A damaged bridge is repaired
+  with `--repair-bridge`.
+- **`opentui`** — provisioned on EVERY launch, best-effort (a no-op pass is
+  sub-second). Pass `--provider` / `--model` / `--reasoning-effort` to pin a
+  different default model (default `zai-coding-cn/glm-5.3-flash/high`).
+  Provisioning also handles:
+  - **Default plugins** — the first run installs the plugin set below into the
+    profile and prints its progress (`[3/5] plugins …`). Later runs only repair
+    what is missing: nothing is reinstalled when the dependency, the installed
+    version and the bundle entry already agree. `--dry-run` (or
+    `DSH_PROVISION_DRY_RUN=1`) prints the commands without executing them.
+  - **Legacy migration** — a pre-retirement `profiles/dsh-opentui` profile is
+    detected once and its theme / config preferences are conservatively copied
+    into the `opentui` profile (only keys the target does not already have).
+    The legacy profile is kept, never deleted.
+  - **SDK closure link** — the client still imports
+    `@deepseek-ai/dsh-client-connection` at runtime (host label/lifecycle).
+    That SDK is not on the public npm registry; it ships inside the
+    globally-installed dsh's own `node_modules` closure, and the launcher
+    symlinks it into the installed package's `node_modules` (idempotent). This
+    is why the dsh CLI is a hard prerequisite.
 
 ### Default plugins
 
-Every launch converges the `opentui` profile to this set (pinned versions):
+The live session runs on the `opentui-inproc` profile, whose cordis patch
+registers the tool, ask-user and MCP rows directly. The `opentui` profile below
+is still provisioned on every launch and is what `upgrade` targets, but its
+plugin set is not loaded by the in-process host. Every launch converges it to
+this set (pinned versions):
 
 | Tier | Package | Why |
 |---|---|---|
@@ -155,7 +166,7 @@ Every launch converges the `opentui` profile to this set (pinned versions):
 | core | `@aiwayds/dsh-mcp-adapter` | MCP catalog/dispatch meta-tools (`mcp_list` / `mcp_call`) |
 | core | `@aiwayds/dsh-approval-policy` | tool-approval policy |
 | core | `@aiwayds/dsh-model-sync` | keeps the model list in sync with the provider catalog |
-| recommended | `@aiwayds/dsh-llm-stats` | token/cost accounting behind `/usage` |
+| recommended | `@aiwayds/dsh-llm-stats` | token/cost accounting (usage limits) |
 | recommended | `@aiwayds/dsh-topics-memory` | cross-session topic memory |
 | recommended | `@aiwayds/dsh-cron` | scheduled prompts |
 | recommended | `@aiwayds/dsh-workflow` | dynamic workflow runs |
@@ -230,9 +241,12 @@ The model's thinking streams
 dim; write-class tool calls (bash / write / edit / apply_patch) pop an approval
 card — **Enter** allows once, **Esc** declines (fail-closed); read-only tools
 such as read_file pass straight through. `esc` ×2 + confirm stops a running
-turn. Ctrl+C twice quits. Commands:
-`/help` `/model [provider/id]` `/usage` `/clear` `/login` `/logout` `/resume`
-`/search` `/new` `/quit` and more — see `/help` inside the TUI.
+turn. Ctrl+C twice quits. Commands (see `/help` inside the TUI for the full
+list): `/help` `/model [provider/id]` `/model discover` `/btw` `/plugins`
+`/goals` `/login` `/logout` `/account` `/settings` `/agents` `/skills`
+`/search` `/history` `/subagents` `/session` `/export` `/think` `/preset`
+`/theme` `/language` `/motion` `/hints` `/hotkeys` `/stop` `/resume` `/new`
+`/clear` `/flush` `/quit`.
 
 **Approval by default (inproc profile)**: the generated profile pins
 `defaultPreset: workspace-write` (`approval: ask`) and arms the pre-execute
@@ -253,6 +267,48 @@ notice — set `"autoResume": "last"` in
 `"autoResumeDays": N`), or pass `--resume-last` for one launch (it overrides
 the config). `--new` always starts fresh and wins over both; `--session <id>`
 pins a specific session.
+
+## Capability surface
+
+The capability layer is table-driven: `capir/capir.json` (CapIR v3 — 257
+wire→client methods over 43 host artifacts) is the single source of truth, and
+`scripts/gen-capcontract.mjs` generates the id/kind/params/service tables plus
+a generic dispatcher; `node scripts/check-capcontract.mjs` byte-compares the
+generated files (22 assertions). Capabilities are released by an explicit
+per-id allowlist, not a blanket grant. The in-process host currently wires
+**58 of 257** methods (28 hand-written adapters + 30 released generic ids);
+everything else fails explicitly as `NOT_WIRED`, never a silent empty result.
+The `account` / `credentials` / `settings` families are deny-listed from the
+generic arm and served only by hand-written faces with per-field whitelist
+projection. Credential values are redacted to key name + presence before they
+cross the stdio bridge and never land in logs or evidence.
+
+Write-side operations (plugin install/uninstall/enable/disable, goal edits)
+are gated twice — a bridge-side confirm set (8 write ids) and a TUI
+confirmation modal — and values crossing the bridge pass through per-field
+whitelist projection.
+
+Command faces backed by real host data (0.24–0.25):
+
+- **`/btw`** — a side question answered in a throwaway side session; it runs
+  alongside a busy main turn (bare `/btw` reopens the last answer).
+- **`/plugins`** — a plugin-manager panel with list + detail and install /
+  uninstall / enable / disable behind a confirmation modal; install progress
+  is polled with a bounded wait and can be cancelled.
+- **`/goals`** — goal data with 7 operations: status, create, edit, pause,
+  resume, complete, clear; writes confirm first.
+- **`/model discover`** — query the current provider for its model list. The
+  positive path is environment-dependent and was NOT RUN in the scratch gate
+  (no discovery source registered); the honest degrade path is verified.
+- **`/login`** / **`/logout`** / **`/account`** — provider login picker
+  (including a Custom form) and account sign-in state, kept in separate
+  domains.
+- **`/search`** / **`/history`** / **`/subagents`** — full-text search over
+  stored sessions, completed-turn browse/refill/switch/fork, and live subagent
+  transcripts with steer/stop.
+- **`/settings`** — now shows a real permission-preset row; config/agents
+  faces became real (no degrade notice) in 0.24. `/model` has used the real
+  model catalog and selection since 0.24.
 
 ## Develop
 
@@ -281,7 +337,22 @@ Note on the @opentui/solid preload and bunfig scope:
 
 To rebuild the client bundle that `prepack` ships: `bun scripts/build-client.mjs`.
 
-### Verification gates (live, client topology)
+### Verification gates
+
+CI runs the integrity and test gates: `node scripts/check-capcontract.mjs`
+(22 byte-level/consistency assertions over the generated capability tables),
+per-package `bun test`, `bun run test:ft`, `bun run typecheck:entry` and the
+`^verify:` assembly tests, plus the `pack-cold-start` job (npm pack → fresh
+install → bridge identity → stdio handshake). The real-machine tmux recipe
+(`scripts/real-client-gate.sh`, historically named "verify70") runs **64**
+items against a live TUI; its CI job is opt-in and needs a self-hosted runner
+with `dsh`, tmux, a provisioned profile and a provider key, so a local run is
+required before keymap/panel/command-surface changes. The legacy podman
+`e2e/scenarios/` container layer was retired in 0.25 (ADR-0013); its still-valid
+assertions moved to the host families, verify70, unit tests and the
+`pack-cold-start` gate.
+
+Live client-topology gates (local / self-hosted, not hosted CI):
 
 ```bash
 node packages/shell/scripts/e2e-sweep.mjs   # full command-surface sweep
@@ -329,4 +400,24 @@ scene UI matrix and a real-client e2e flow suite), hardens first-connect
 HTTP + `$events`, retries capped at 3 with the host stderr tail surfaced),
 and fixes footer wrapping on narrow terminals, tool-dock clipping, the
 message count after `--resume-last`, and duplicate terminal-size listeners.
-Roadmap: platform + Kit polish.
+
+0.24.0 completes the in-process bridge as the sole session seam (the `--remote`
+flag and the `DSH_OPENTUI_INPROC=0` escape hatch are both gone). It adds the
+CapIR/capcontract layer with a startup capability handshake, a FocusRouter
+keymap with a four-tier capture stack, and the S1–S6 capability surface: a real
+`/model` catalog, credentials/account with PKCE authorization, and real
+config/settings/agents faces. The `pack-cold-start` CI gate and the real-machine
+verify70 gate went green; 28 methods were hand-wired and `@manual` reached 0.
+
+0.25.0 (npm `latest`) makes capability release table-driven: CapIR v3 parameter
+tables plus a generic dispatch arm (ADR-0012) and a per-id allowlist take the
+wired set to 58/257 while `check-capcontract` stays green at 22/22 assertions.
+New command faces ride real host data — `/btw` side sessions, a `/plugins`
+manager panel with confirm-gated writes and bounded install progress, `/goals`
+with 7 operations, `/model discover`, separate `/login` and `/account` domains,
+and real `/search`, `/history` and `/subagents` data. The legacy podman
+`e2e/scenarios/` container layer was retired (ADR-0013), verify70 closed at
+64/64, and the `pack-cold-start` gate is required. `/model discover`'s positive
+path is environment-dependent; it was NOT RUN where no discovery source is
+registered, and is not faked. Current focus: capability-surface polish and
+honest degradation.
