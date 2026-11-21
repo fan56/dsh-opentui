@@ -17,7 +17,7 @@
  * the generated capcontract tables verbatim.
  */
 
-import type { CapParamRow } from '../../../capcontract/types'
+import type { CapParamRow, CapScopeMeta } from '../../../capcontract/types'
 
 /** Binding row from CAP_SERVICE_TABLE (service key + host method name).
  *  W2-1: `cancel` (from capir.json) marks host methods whose signature takes a
@@ -51,6 +51,15 @@ export interface GenericCapConfig {
   readonly kindOf: (id: string) => 'unary' | 'stream'
   /** wrapped ctx.get(service) — try/catch lives here, never a declared inject (C-R5). */
   readonly getService: (service: string) => unknown
+  /** id -> CapIR scope lookup metadata (CAP_SCOPE_TABLE). Additive: only scope-bearing
+   *  methods carry a row. Absent config keeps the legacy pass-through behaviour, so
+   *  W2-0 fixture tests and all non-scope ids are byte-for-byte unaffected. */
+  readonly scopes?: Readonly<Record<string, CapScopeMeta>>
+  /** Injected scope resolver: (context, wire, wireValue) -> live host object.
+   *  Production wires this to the host agents registry via `ctx.get('agents').get`;
+   *  tests inject a mock. A missing/failed lookup fails closed (BAD_PARAMS), never
+   *  a fake-empty or a crash. NO namespace/id branch lives in the arm (C5). */
+  readonly resolveScope?: (context: string, wire: string, wireValue: unknown) => unknown | Promise<unknown>
 }
 
 /** Namespace of a CapIR id: `<pkg>#<ns>/<name>` -> `<ns>`. */
@@ -81,6 +90,44 @@ function coarseTypeOk(type: CapParamRow['type'], value: unknown): boolean {
     case 'object': return typeof value === 'object' && value !== null && !Array.isArray(value)
     case 'union': return true // union shape is opaque at the coarse layer; host deep-validates
   }
+}
+
+/**
+ * W2-0 data-driven scope lookup resolution. A CapIR scope block marks a param
+ * as a LOOKUP handle, not the value the host method wants: the goal-family host
+ * methods (and every other scope-bearing family) take a live Agent object and
+ * assert `ctx.agents.get(agent.id) === agent` (deepseek-harness-pr
+ * packages/goal/goal/src/index.ts:472-475). The wire carries only the id string,
+ * so the injected resolver (production: the agents registry via ctx.get) turns
+ * it into the live object. Both the context and the wire name come from the
+ * generated table — there is NO goals-specific branch here (C5).
+ *
+ * Fail closed: no resolver / resolver returns null|undefined / resolver throws
+ * -> BAD_PARAMS with the FULL CapIR id and the FULL wire id value; the host
+ * method is never reached. No fabricated empty success, no crash.
+ */
+async function resolveScopeArg(
+  config: GenericCapConfig,
+  methodId: string,
+  scope: CapScopeMeta,
+  wireValue: unknown,
+): Promise<unknown> {
+  const resolve = config.resolveScope
+  if (typeof resolve !== 'function') {
+    throw new Error(`BAD_PARAMS: ${methodId} ${scope.wire} scope lookup ${scope.context} has no resolver`)
+  }
+  let live: unknown
+  try {
+    live = await resolve(scope.context, scope.wire, wireValue)
+  } catch {
+    live = undefined
+  }
+  if (live === undefined || live === null) {
+    throw new Error(
+      `BAD_PARAMS: ${methodId} ${scope.wire} scope lookup ${scope.context} failed for id "${String(wireValue)}"`,
+    )
+  }
+  return live
 }
 
 /**
@@ -154,6 +201,10 @@ export async function invokeGenericCap(
   const named = (params !== null && typeof params === 'object' && !Array.isArray(params))
     ? params as Record<string, unknown>
     : {}
+  // W2-0: data-driven scope metadata (from CAP_SCOPE_TABLE). For a scope-bearing
+  // id, the wire param is a lookup handle substituted IN PLACE below; the slot
+  // index is unchanged so every later param keeps its table-order position (R3).
+  const scope = config.scopes?.[methodId]
   const positional: unknown[] = []
   for (const row of rows) {
     const value = named[row.name]
@@ -169,7 +220,11 @@ export async function invokeGenericCap(
     if (row.enum !== undefined && !row.enum.includes(value as never)) {
       throw new Error(`BAD_PARAMS: ${methodId} ${row.name} outside enum`)
     }
-    positional.push(value)
+    positional.push(
+      scope !== undefined && row.name === scope.wire
+        ? await resolveScopeArg(config, methodId, scope, value)
+        : value,
+    )
   }
   // W2-1: host methods carrying `cancel: 'signal'` (capir.json) require a
   // trailing AbortSignal — session/prompt and session/wait both call

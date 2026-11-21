@@ -74,6 +74,7 @@ import {
   CAP_GENERIC_WIRE_METHODS,
   CAP_PARAMS_TABLE,
   CAP_PROJECTED_BY_HAND,
+  CAP_SCOPE_TABLE,
   CAP_SERVICE_TABLE,
   CAP_WRITE_CONFIRM_IDS,
 } from '../../../capcontract/types'
@@ -976,6 +977,19 @@ export function createProductionGenericConfig(ctx: BridgeContext): GenericCapCon
     denyNamespaces: GENERIC_DENY_NAMESPACES,
     kindOf: (id) => lookupCapKind(id),
     getService: (service) => (typeof ctx.get === 'function' ? ctx.get(service) : undefined),
+    // W2-0 scope-lookup fix: data-driven metadata from the generated table, plus
+    // the one bridge-owned resolver seam. Production resolves the "agent" scope
+    // through the EXISTING agents registry path (resolveAgents -> ctx.get('agents')
+    // ?? ctx.agents, .get(id)) — the same `ctx.agents.get(agent.id) === agent`
+    // identity the host goal service asserts (deepseek-harness-pr
+    // packages/goal/goal/src/index.ts:472-475). No new cordis inject (R5); any
+    // other context / absent registry fails closed inside resolveScopeArg.
+    scopes: CAP_SCOPE_TABLE,
+    resolveScope: (context, _wire, wireValue) => {
+      if (context !== 'agent') return undefined
+      const agents = resolveAgents(ctx)
+      return agents === undefined ? undefined : agents.get(String(wireValue))
+    },
   }
 }
 
