@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-11-22
+
+### Added
+
+- **Capability release is table-driven.** CapIR v3 adds per-method parameter /
+  service tables and a generated generic dispatch arm (ADR-0012); new capabilities
+  are released through an explicit per-id allowlist instead of a blanket grant.
+  The in-process host now wires **58 of 257** methods (28 hand-written adapters
+  plus 30 released generic ids); every other id fails explicitly as `NOT_WIRED`,
+  never a silent empty result. `scripts/check-capcontract.mjs` byte-compares the
+  generated tables with **22 assertions**.
+- **New command faces ride real host data.** `/btw` answers a side question in a
+  throwaway side session alongside a busy main turn; `/plugins` opens a real
+  plugin-manager panel (list + detail, install / uninstall / enable / disable
+  behind a confirmation modal, bounded install-progress polling with cancel);
+  `/goals` exposes 7 goal operations with a TUI confirmation before each write;
+  `/model discover` queries the current provider for its model list; `/login` /
+  `/logout` and `/account` are separate provider-login and account domains;
+  `/search`, `/history` and `/subagents` read real host data. `/settings` shows a
+  real permission-preset row.
+
+### Changed
+
+- **The legacy podman `e2e/scenarios/` container layer was retired (ADR-0013).**
+  Its 21 scenarios were inventoried and each still-valid assertion was shown to
+  be taken over by the host families, the real-machine gate, unit tests and the
+  CI `pack-cold-start` gate before deletion. The container slot is recorded as
+  NOT RUN, never a fake green. The real-machine tmux recipe (historically
+  "verify70") closed at **64/64** items; the `pack-cold-start` gate is required.
+
+### Known
+
+- `/model discover`'s positive path is environment-dependent and was NOT RUN
+  where no discovery source is registered; the honest degrade path is verified
+  and no model list is fabricated. The real-machine CI job remains opt-in and
+  needs a self-hosted runner with `dsh`, tmux, a provisioned profile and a
+  provider key.
+
+## [0.24.0] - 2026-11-21
+
+### Added
+
+- **The in-process bridge is the sole session seam.** All TUI traffic runs over
+  a stdio JSON-lines channel to a bridge loaded inside the `dsh --profile
+  opentui-inproc` host; the legacy remote thin-client seam and its
+  `DSH_OPENTUI_INPROC=0` escape hatch were removed. A boot handshake compares
+  the client's expected capability surface with the bridge and degrades honestly
+  on a mismatch.
+- **The CapIR / capcontract layer** makes `capir/capir.json` the single source of
+  truth for capability interface shapes, with generated contract tables checked
+  byte-for-byte in CI.
+- **A FocusRouter keymap with a four-tier capture stack** (ADR-0008), and the S1–S6
+  capability surface: a real `/model` catalog, credentials / account with PKCE
+  authorization, and real config / settings / agents faces (no degrade notice).
+
+### Changed
+
+- **The bridge is now a real directory copy** of this installation's bundled
+  artifact, guarded by a build-time fingerprint and a host-version compatibility
+  window — no absolute symlink, and no `@deepseek-ai/*` package copied into the
+  profile. It converges idempotently on every launch; `--repair-bridge` is still
+  accepted but is a no-op, while a fingerprint mismatch still fails loud.
+- **28 methods are hand-wired and `@manual` reached 0.** The `pack-cold-start` CI
+  gate (npm pack → fresh install → bridge identity → stdio handshake) and the
+  real-machine `verify70` gate went green.
+
 ## [0.23.3] - 2026-11-20
 
 ### Changed
