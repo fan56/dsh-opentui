@@ -68,7 +68,21 @@ import { attachHandshake, HANDSHAKE_ICLASS_KEYS_BASE, HANDSHAKE_INJECT, S2_OBSER
 // binder/dispatcher own only id/kind data + membership checks; the bridge
 // injects real host invocation and marks every other CapIR W id NOT_WIRED.
 import { createProjectionBinder, type WireFrameHandler } from '../../../capcontract/binder'
-import type { CapHostInvoke } from '../../../capcontract/dispatch'
+import { lookupCapKind, type CapHostInvoke } from '../../../capcontract/dispatch'
+import {
+  CAP_GENERIC_ADAPTERS,
+  CAP_GENERIC_WIRE_METHODS,
+  CAP_PARAMS_TABLE,
+  CAP_PROJECTED_BY_HAND,
+  CAP_SERVICE_TABLE,
+} from '../../../capcontract/types'
+// 025 wave2 W2-0d — table-driven generic arm (dormant at base: adapters empty).
+import {
+  invokeGenericCap,
+  projectGenericWireReply,
+  resolveGenericWireMethod,
+  type GenericCapConfig,
+} from './cap-generic'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -941,12 +955,56 @@ function streamSignalFrom(params: unknown, label: string): AbortSignal | undefin
  *  (`modelCatalog` / `selectModel` / `initializeDefaultModel`) via the SAME
  *  resolved service; params are passed through with decidable validation so a
  *  bad selection is rejected (BAD_PARAMS) rather than reaching the host. */
-export function createCapHostInvoke(ctx: BridgeContext): CapHostInvoke {
+/**
+ * W2-0d deny-list namespaces (AMEND-1). Mirrors the generator's DENY_NS and
+ * check-capcontract #14 exactly; these families only ever use their dedicated
+ * hand-written arms + bespoke projection, never generic dispatch.
+ */
+export const GENERIC_DENY_NAMESPACES: ReadonlySet<string> = new Set(['account', 'credentials', 'settings'])
+
+/** Production generic-arm config: generated tables verbatim + wrapped ctx.get.
+ *  NO new cordis inject (R5 — inject stays ['agents', ...HANDSHAKE_INJECT]);
+ *  the try/catch resolution lives in cap-generic.ts's getService contract. */
+export function createProductionGenericConfig(ctx: BridgeContext): GenericCapConfig {
+  return {
+    adapters: CAP_GENERIC_ADAPTERS,
+    services: CAP_SERVICE_TABLE,
+    params: CAP_PARAMS_TABLE,
+    projectedByHand: CAP_PROJECTED_BY_HAND,
+    denyNamespaces: GENERIC_DENY_NAMESPACES,
+    kindOf: (id) => lookupCapKind(id),
+    getService: (service) => (typeof ctx.get === 'function' ? ctx.get(service) : undefined),
+  }
+}
+
+export function createCapHostInvoke(
+  ctx: BridgeContext,
+  generic: GenericCapConfig = createProductionGenericConfig(ctx),
+): CapHostInvoke {
   return async (methodId, kind, params) => {
-    if (!CAP_HOST_WIRED_IDS.includes(methodId)) {
+    // S1 (W2-0d): first gate is now (hand-written ∪ generic) union membership.
+    // OLD first gate, kept VERBATIM for the wired-count round log (do not delete):
+    //   if (!CAP_HOST_WIRED_IDS.includes(methodId)) {
+    //     throw new Error(
+    //       `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`,
+    //     )
+    //   }
+    // Count text stays `in_wired=28/257` because CAP_GENERIC_ADAPTERS is empty
+    // at W2-0 base (CAP_HOST_WIRED_IDS.length === 28).
+    const handWired = (CAP_HOST_WIRED_IDS as readonly string[]).includes(methodId)
+    const genericReleased = generic.adapters.has(methodId)
+    if (!handWired && !genericReleased) {
       throw new Error(
         `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`,
       )
+    }
+
+    // §3.1 generic arm — checked before the per-family chain so ids sharing a
+    // hand-written namespace prefix (e.g. a future session/create) are not
+    // swallowed by that family's default arm. `!handWired` makes the per-id arm
+    // strictly win if an id is ever in both sets (S2 disjointness is a gate).
+    if (genericReleased && !handWired) {
+      return invokeGenericCap(generic, methodId, kind, params)
     }
 
     // --- S1 session/model family (unchanged arm bodies) ----------------------
@@ -4016,6 +4074,36 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         const message = err instanceof Error ? err.message : String(err)
         const degraded = message.startsWith('NOT_WIRED') || message.includes('unavailable')
         replyError(req.id, degraded ? 'UNSUPPORTED' : 'INTERNAL', message)
+      }
+      return
+    }
+    // W2-0d — generic wire branch (§3.2). LAST on purpose: every existing
+    // hand-wired name above wins, so W2-0 observable behaviour is unchanged.
+    // The wire name -> CapIR id lookup rides the GENERATED CAP_GENERIC_WIRE_METHODS
+    // table (no hand-copied wire line, C5). With CAP_GENERIC_ADAPTERS empty at
+    // base, `createCapInvoke` fails NOT_WIRED on every generic id and this branch
+    // never emits a value frame — the arm is dormant. When a later batch adds an
+    // id to the whitelist, default replies use sanitizeFrameForWire + record wrap;
+    // CAP_PROJECTED_BY_HAND ids refuse generic projection (AMEND-2) so no
+    // token/secret/password-class key can ever cross the wire for them.
+    const genericConfig = createProductionGenericConfig(ctx)
+    const genericMethodId = resolveGenericWireMethod(req.method, CAP_GENERIC_WIRE_METHODS, genericConfig)
+    if (genericMethodId !== undefined && genericConfig.adapters.has(genericMethodId)) {
+      try {
+        const value = await createCapInvoke(ctx)({
+          methodId: genericMethodId as never,
+          params: req.params ?? {},
+        })
+        replyOk(req.id, projectGenericWireReply(genericConfig, genericMethodId, value, sanitizeFrameForWire))
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        const code = message.startsWith('BAD_PARAMS') ? 'BAD_PARAMS'
+          : message.startsWith('BAD_KIND') ? 'UNSUPPORTED'
+            : message.startsWith('NOT_WIRED') || message.includes('unavailable') ||
+              message.startsWith('HAND_PROJECTION_REQUIRED')
+              ? 'UNSUPPORTED'
+              : 'INTERNAL'
+        replyError(req.id, code, message)
       }
       return
     }
