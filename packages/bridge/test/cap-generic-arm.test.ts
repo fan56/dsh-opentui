@@ -14,6 +14,7 @@ import {
   CAP_GENERIC_ADAPTERS,
   CAP_GENERIC_WIRE_METHODS,
   CAP_PROJECTED_BY_HAND,
+  CAP_SCOPE_TABLE,
   CAP_SERVICE_TABLE,
   CAP_PARAMS_TABLE,
   CAP_WRITE_CONFIRM_IDS,
@@ -28,6 +29,7 @@ import {
 import {
   CAP_HOST_WIRED_IDS,
   createCapHostInvoke,
+  createProductionGenericConfig,
   GENERIC_DENY_NAMESPACES,
   inject,
   sanitizeFrameForWire,
@@ -1114,5 +1116,206 @@ describe('W2-5a goals ids — E2/E4/E5 (AMEND-2 blind-spot family)', () => {
       const wire = 'goals.' + id.slice(G.length)
       expect(resolveGenericWireMethod(wire, CAP_GENERIC_WIRE_METHODS, config)).toBe(id)
     }
+  })
+})
+
+/**
+ * 025 W2-0 scope-lookup fix — data-driven resolver injection in the generic arm.
+ * The goal-family host methods take a LIVE Agent object (assertLive:
+ * ctx.agents.get(agent.id) === agent, deepseek-harness-pr goal/src/index.ts:472-475);
+ * the wire carries only agentId:string. CAP_SCOPE_TABLE (generated from capir.json
+ * `scope`) drives the substitution; there is NO goals-specific branch in the arm.
+ * Synthetic fixtures only — no real agent, no credential value.
+ */
+describe('W2-0 scope-lookup — data-driven resolver (no goals branch)', () => {
+  const G = '@deepseek-ai/dsh-goal#goals/'
+  const GOALS = {
+    create: G + 'create',
+    get: G + 'get',
+    edit: G + 'edit',
+    complete: G + 'complete',
+    pause: G + 'pause',
+    resume: G + 'resume',
+    clear: G + 'clear',
+  }
+  // A non-goal scope-bearing id proves the mechanism is table-driven, not a
+  // goals-only special case. terminal/create also carries cancel:'signal'.
+  const TERMINAL_CREATE = '@deepseek-ai/dsh-api-terminal-controller#terminal/create'
+  const AGENT_ID = 'live-agent-1'
+  const LIVE_AGENT = { id: AGENT_ID, marker: 'LIVE_AGENT_OBJECT' }
+
+  // E1: generated scope metadata is complete + a non-goal scope id is present.
+  test('E1 — CAP_SCOPE_TABLE carries 7 goals ids + non-goal scope ids, context/wire from capir', () => {
+    expect(Object.keys(CAP_SCOPE_TABLE).length).toBe(34)
+    for (const id of Object.values(GOALS)) {
+      expect(CAP_SCOPE_TABLE[id as never]).toEqual({ context: 'agent', wire: 'agentId' })
+    }
+    expect(CAP_SCOPE_TABLE[TERMINAL_CREATE as never]).toEqual({ context: 'agent', wire: 'agentId' })
+  })
+
+  // E2 (R3/E4): resolver receives (context, wire, raw wire value); the returned
+  // live object lands in the SAME positional slot. Later params keep their
+  // index (no left shift) and object identity is preserved.
+  test('E2 — resolver call args + live object at param index 0, later indices unshifted', async () => {
+    const calls: Record<string, unknown[][]> = {}
+    const svc = {
+      get: (...a: unknown[]) => { (calls.get ??= []).push(a); return { objective: 'real' } },
+      edit: (...a: unknown[]) => { (calls.edit ??= []).push(a); return { objective: 'edited' } },
+      remoteExportCreate: (...a: unknown[]) => { (calls.create ??= []).push(a); return { ref: { id: 'g', revision: 1 } } },
+    }
+    const resolveCalls: Array<[string, string, unknown]> = []
+    const config = makeConfig({
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: CAP_SERVICE_TABLE,
+      params: CAP_PARAMS_TABLE,
+      scopes: CAP_SCOPE_TABLE,
+      kindOf: () => 'unary',
+      getService: (name) => (name === 'goals' ? svc : undefined),
+      resolveScope: (context, wire, value) => {
+        resolveCalls.push([context, wire, value])
+        return context === 'agent' && wire === 'agentId' && value === AGENT_ID ? LIVE_AGENT : undefined
+      },
+    })
+
+    await invokeGenericCap(config, GOALS.get, 'unary', { agentId: AGENT_ID })
+    const ref = { id: 'g-1', revision: 3 }, request = { objective: 'new' }
+    await invokeGenericCap(config, GOALS.edit, 'unary', { agentId: AGENT_ID, ref, request })
+    const createRequest = { objective: 'ship' }
+    await invokeGenericCap(config, GOALS.create, 'unary', { agentId: AGENT_ID, request: createRequest })
+
+    expect(resolveCalls).toEqual([
+      ['agent', 'agentId', AGENT_ID],
+      ['agent', 'agentId', AGENT_ID],
+      ['agent', 'agentId', AGENT_ID],
+    ])
+    expect(calls.get![0]).toEqual([LIVE_AGENT])
+    expect(calls.get![0]![0]).toBe(LIVE_AGENT) // live object, NOT the agentId string
+    expect(calls.edit![0]).toEqual([LIVE_AGENT, ref, request])
+    expect(calls.edit![0]![1]).toBe(ref) // indices 1/2 unchanged, identity preserved
+    expect(calls.edit![0]![2]).toBe(request)
+    expect(calls.create![0]).toEqual([LIVE_AGENT, createRequest]) // implementation alias
+    expect(calls.create![0]![1]).toBe(createRequest)
+  })
+
+  // E2 data-driven control: a NON-goal scope id resolves through the same table
+  // (no goals hardcode). cancel:'signal' still appends AFTER the resolved slot.
+  test('E2 — non-goal scope id resolves too (terminal/create [live, request, signal])', async () => {
+    const args: unknown[][] = []
+    const svc = { create: (...a: unknown[]) => { args.push(a); return {} } }
+    const resolveCalls: Array<[string, string, unknown]> = []
+    const config = makeConfig({
+      adapters: new Set([TERMINAL_CREATE]),
+      services: { [TERMINAL_CREATE]: { service: 'terminalController', implementation: 'create', cancel: 'signal' } },
+      params: { [TERMINAL_CREATE]: CAP_PARAMS_TABLE[TERMINAL_CREATE as never] },
+      scopes: CAP_SCOPE_TABLE,
+      kindOf: () => 'unary',
+      getService: () => svc,
+      resolveScope: (context, wire, value) => { resolveCalls.push([context, wire, value]); return LIVE_AGENT },
+    })
+    const request = { id: 't', cols: 80, rows: 24 }
+    await invokeGenericCap(config, TERMINAL_CREATE, 'unary', { agentId: AGENT_ID, request })
+    expect(resolveCalls).toEqual([['agent', 'agentId', AGENT_ID]])
+    expect(args[0]).toHaveLength(3)
+    expect(args[0]![0]).toBe(LIVE_AGENT)
+    expect(args[0]![1]).toBe(request)
+    expect(args[0]![2]).toBeInstanceOf(AbortSignal)
+  })
+
+  // E3: every failure mode fails closed (no crash / no fake empty), message
+  // carries the FULL CapIR id + the FULL wire id value; host zero-called.
+  test('E3 — lookup failure negatives: no resolver / undefined / null / throw / unknown context', async () => {
+    let hostCalls = 0
+    const svc = { get: (..._a: unknown[]) => { hostCalls++; return {} } }
+    const base = {
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: CAP_SERVICE_TABLE,
+      params: CAP_PARAMS_TABLE,
+      scopes: CAP_SCOPE_TABLE,
+      kindOf: () => 'unary' as const,
+      getService: () => svc,
+    }
+    const noResolver = makeConfig(base)
+    const msg1 = await rejectionMessage(() => invokeGenericCap(noResolver, GOALS.get, 'unary', { agentId: AGENT_ID }))
+    expect(msg1).toContain('BAD_PARAMS: ' + GOALS.get + ' agentId scope lookup agent has no resolver')
+    expect(msg1).toContain(GOALS.get)
+
+    for (const resolveScope of [
+      () => undefined,
+      () => null,
+      () => { throw new Error('registry gone') },
+    ]) {
+      const config = makeConfig({ ...base, resolveScope })
+      const msg = await rejectionMessage(() => invokeGenericCap(config, GOALS.get, 'unary', { agentId: AGENT_ID }))
+      expect(msg).toContain('BAD_PARAMS: ' + GOALS.get + ' agentId scope lookup agent failed for id "' + AGENT_ID + '"')
+      expect(msg).toContain(GOALS.get)
+    }
+
+    const unknownContext = makeConfig({
+      ...base,
+      scopes: { [GOALS.get]: { context: 'mystery', wire: 'agentId' } },
+      resolveScope: () => undefined,
+    })
+    const msg2 = await rejectionMessage(() => invokeGenericCap(unknownContext, GOALS.get, 'unary', { agentId: AGENT_ID }))
+    expect(msg2).toContain('BAD_PARAMS: ' + GOALS.get + ' agentId scope lookup mystery failed')
+    expect(hostCalls).toBe(0)
+  })
+
+  // E4: >=2 goals ids traverse the REAL production wiring (createCapHostInvoke
+  // default config) end-to-end. The production resolver uses the existing agents
+  // registry path (ctx.get('agents') -> .get); the mock registry returns LIVE_AGENT.
+  test('E4 — end-to-end via production config: goals.get + goals.create deliver live agent', async () => {
+    const calls: Record<string, unknown[][]> = {}
+    const goalsSvc = {
+      get: (...a: unknown[]) => { (calls.get ??= []).push(a); return { objective: 'real goal', phase: 'active' } },
+      remoteExportCreate: (...a: unknown[]) => { (calls.create ??= []).push(a); return { ref: { id: 'g', revision: 1 } } },
+    }
+    const agents = {
+      create: async () => ({ agent: LIVE_AGENT, dispose: async () => {} }),
+      resume: async () => ({ agent: LIVE_AGENT, dispose: async () => {} }),
+      get: (id: string) => (id === AGENT_ID ? LIVE_AGENT : undefined),
+    }
+    const ctx = {
+      get: (name: string) => (name === 'goals' ? goalsSvc : name === 'agents' ? agents : undefined),
+    } as unknown as BridgeContext
+
+    // Injection point documented by direct assertion: production resolver is the
+    // existing agents registry path, and unknown context / absent registry fail closed.
+    const prod = createProductionGenericConfig(ctx)
+    expect(await prod.resolveScope?.('agent', 'agentId', AGENT_ID)).toBe(LIVE_AGENT)
+    expect(await prod.resolveScope?.('other', 'agentId', AGENT_ID)).toBeUndefined()
+    const noAgents = createProductionGenericConfig({ get: () => undefined } as unknown as BridgeContext)
+    expect(await noAgents.resolveScope?.('agent', 'agentId', AGENT_ID)).toBeUndefined()
+
+    const invoke = createCapHostInvoke(ctx) // production generic config (no override)
+    await invoke(GOALS.get as never, 'unary', { agentId: AGENT_ID })
+    const request = { objective: 'probe' }
+    await invoke(GOALS.create as never, 'unary', { agentId: AGENT_ID, request })
+
+    expect(calls.get![0]).toEqual([LIVE_AGENT])
+    expect(calls.get![0]![0]).toBe(LIVE_AGENT)
+    expect(calls.create![0]).toEqual([LIVE_AGENT, request])
+    expect(calls.create![0]![0]).toBe(LIVE_AGENT)
+
+    // The raw agentId string must NEVER reach the host as the live-agent arg.
+    for (const args of Object.values(calls).flat()) expect(args[0]).not.toBe(AGENT_ID)
+  })
+
+  // E5: a lookup failure for an unlive id is a hard error through the full
+  // dispatcher path too (real seam degrades honestly — no fabricated success).
+  test('E5 — production path unlive agent id -> BAD_PARAMS with full id, no host call', async () => {
+    let hostCalls = 0
+    const goalsSvc = { get: (..._a: unknown[]) => { hostCalls++; return {} } }
+    const agents = {
+      create: async () => ({ agent: LIVE_AGENT, dispose: async () => {} }),
+      resume: async () => ({ agent: LIVE_AGENT, dispose: async () => {} }),
+      get: () => undefined, // no live agent for the wire id
+    }
+    const ctx = {
+      get: (name: string) => (name === 'goals' ? goalsSvc : name === 'agents' ? agents : undefined),
+    } as unknown as BridgeContext
+    const invoke = createCapHostInvoke(ctx)
+    const msg = await rejectionMessage(() => invoke(GOALS.get as never, 'unary', { agentId: 'unlive-agent-x' }))
+    expect(msg).toContain('BAD_PARAMS: ' + GOALS.get + ' agentId scope lookup agent failed for id "unlive-agent-x"')
+    expect(hostCalls).toBe(0)
   })
 })
