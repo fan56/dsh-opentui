@@ -304,10 +304,14 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(3)
     // W2-3 round log — OLD W2-2 criterion kept VERBATIM (do not delete):
     //   expect(CAP_GENERIC_ADAPTERS.size).toBe(10)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(18)
+    // W2-4 round log — OLD W2-3 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(18)
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
     expect(inject).toEqual(['agents', 'typert'])
     expect(inject).not.toContain('pluginManager')
     expect(inject).not.toContain('llm')
+    expect(inject).not.toContain('web')
+    expect(inject).not.toContain('permissionPresets')
 
     const controllerStub = { list: () => ({ items: [{ id: 'from-per-id-arm' }] }) }
     const ctx = {
@@ -351,10 +355,12 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     //   expect(prodGhost).toContain('in_wired=31/257')
     // W2-3 round log — OLD W2-2 criterion kept VERBATIM (do not delete):
     //   expect(prodGhost).toContain('in_wired=38/257')
+    // W2-4 round log — OLD W2-3 criterion kept VERBATIM (do not delete):
+    //   expect(prodGhost).toContain('in_wired=46/257')
     const prodConfig = makeConfig({ adapters: CAP_GENERIC_ADAPTERS })
     const prodInvoke = createCapHostInvoke(ctx, prodConfig)
     const prodGhost = await rejectionMessage(() => prodInvoke(GHOST_ID as never, 'unary', {}))
-    expect(prodGhost).toContain('in_wired=46/257')
+    expect(prodGhost).toContain('in_wired=51/257')
   })
 
   // W2-1 E4: the three released side-session ids are in the production set with
@@ -629,7 +635,10 @@ describe('W2-3a plugin-manager write ids — E0/E2/E4/E5', () => {
   // Release-set integrity: 8 write ids in adapters + confirm set, service binding
   // and params present; none is a hand-projection exception (AMEND-2).
   test('W2-3a release set: 8 write ids in adapters + confirm set, wired service/params, none PROJECTED_BY_HAND', () => {
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(18)
+    // W2-4 round log — OLD W2-3 criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(18)
+    // W2-4 releases 5 more directory ids -> 23; W2-3 write ids still all present.
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
     expect(CAP_WRITE_CONFIRM_IDS.size).toBe(8)
     for (const id of ALL) {
       expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
@@ -758,5 +767,175 @@ describe('W2-3a plugin-manager write ids — E0/E2/E4/E5', () => {
       expect(text).not.toContain(key)
     }
     expect(text).toContain('applied')
+  })
+})
+
+/**
+ * 025 W2-4a — the five directory READ ids released into the generic arm (plan
+ * §4.2). Synthetic fixtures only: no real service, no real credential value
+ * (SENTINEL is a fixed fake string). E2 per-id negative, E4 positional fidelity
+ * (R3, incl. discoverModels' trailing owned AbortSignal), E5 AMEND-2 wire-layer
+ * SENTINEL for the one PROJECTED_BY_HAND id (llm/discoverModels).
+ */
+describe('W2-4a directory ids — E2/E4/E5 (AMEND-2 wire SENTINEL)', () => {
+  const LLM = '@deepseek-ai/dsh-llm#llm/'
+  const IDS = {
+    listProviders: LLM + 'listProviders',
+    listConfigurableProviders: LLM + 'listConfigurableProviders',
+    discoverModels: LLM + 'discoverModels',
+    webListProviders: '@deepseek-ai/dsh-web#web/listProviders',
+    catalog: '@deepseek-ai/dsh-permission-presets#permissionPresets/catalog',
+  }
+  const ALL = Object.values(IDS)
+  const ZERO_PARAM = [IDS.listProviders, IDS.listConfigurableProviders, IDS.webListProviders, IDS.catalog]
+
+  let calls: Record<string, unknown[][]> = {}
+  function svc(): Record<string, (...a: unknown[]) => unknown> {
+    calls = {}
+    const make = (key: string) => (...args: unknown[]) => {
+      ;(calls[key] ??= []).push(args)
+      return [{ id: 'probe-provider', name: 'Probe' }]
+    }
+    // Explicit named methods (no dynamic proxy) so positional reconstruction
+    // is observable, including the trailing signal for discoverModels.
+    return {
+      listProviders: make('listProviders'),
+      listConfigurableProviders: make('listConfigurableProviders'),
+      remoteDiscoverModels: make('remoteDiscoverModels'), // implementation alias, not method name
+      listProviders_web: make('listProviders_web'),
+      catalog: make('catalog'),
+    }
+  }
+
+  function dirConfig(service: Record<string, (...a: unknown[]) => unknown> | undefined) {
+    return makeConfig({
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: {
+        // The web/listProviders binding must resolve to a distinct fn from the
+        // llm one — the real service keys differ (web vs llm).
+        ...CAP_SERVICE_TABLE,
+        [IDS.webListProviders]: { service: 'web', implementation: 'listProviders_web' },
+      },
+      params: CAP_PARAMS_TABLE,
+      projectedByHand: CAP_PROJECTED_BY_HAND,
+      confirmIds: CAP_WRITE_CONFIRM_IDS,
+      kindOf: () => 'unary',
+      getService: (name) => (name === 'llm' || name === 'web' || name === 'permissionPresets' ? service : undefined),
+    })
+  }
+
+  // Release-set integrity: 5 directory ids in adapters, wired service/params;
+  // discoverModels is the ONLY one in PROJECTED_BY_HAND (AMEND-2 scan fact).
+  test('W2-4a release set: 5 directory ids in adapters + wired service/params; only discoverModels PROJECTED', () => {
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(23)
+    for (const id of ALL) {
+      expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
+      expect(CAP_SERVICE_TABLE[id as never]?.service).toBeDefined()
+      expect(Object.prototype.hasOwnProperty.call(CAP_PARAMS_TABLE, id)).toBe(true)
+    }
+    expect(CAP_SERVICE_TABLE[IDS.discoverModels as never]?.implementation).toBe('remoteDiscoverModels')
+    expect(CAP_SERVICE_TABLE[IDS.discoverModels as never]?.cancel).toBe('signal')
+    for (const id of ZERO_PARAM) {
+      expect((CAP_PARAMS_TABLE[id as never] ?? []).length).toBe(0)
+      expect(CAP_PROJECTED_BY_HAND.has(id as never)).toBe(false)
+    }
+    // AMEND-2 fact: the handoff's "listProviders/web are PROJECTED" is an
+    // erratum; the deterministic scan pins discoverModels (maxTokens→/token/).
+    expect(CAP_PROJECTED_BY_HAND.has(IDS.discoverModels as never)).toBe(true)
+    expect(CAP_PROJECTED_BY_HAND.has(IDS.listProviders as never)).toBe(false)
+    expect(CAP_PROJECTED_BY_HAND.has(IDS.webListProviders as never)).toBe(false)
+  })
+
+  // E2: discoverModels is the only directory id with required params. Both
+  // required params get BAD_PARAMS negatives naming the FULL CapIR id; the four
+  // zero-param ids have no required field to omit (objective fact, registered
+  // honestly) — they are proven reachable via E4 below.
+  test('E2 — discoverModels BAD_PARAMS (missing settingsNs / request), full id, hostCalls=0', async () => {
+    const service = svc()
+    const config = dirConfig(service)
+    const cases: Array<[unknown, string, string]> = [
+      [{ request: { model: 'm' } }, 'settingsNs', 'required'],
+      [{ settingsNs: 'ns' }, 'request', 'required'],
+      [{ settingsNs: 42, request: { model: 'm' } }, 'settingsNs', 'must be string'],
+      [{ settingsNs: 'ns', request: 'not-object' }, 'request', 'must be object'],
+    ]
+    for (const [params, param, reason] of cases) {
+      const msg = await rejectionMessage(() => invokeGenericCap(config, IDS.discoverModels, 'unary', params))
+      expect(msg).toContain('BAD_PARAMS: ' + IDS.discoverModels + ' ' + param + ' ' + reason)
+    }
+    expect(Object.values(calls).flat().length).toBe(0)
+  })
+
+  // E4 (R3): zero-param ids call with exactly []; discoverModels reconstructs
+  // [settingsNs, request, signal] BY TABLE ORDER with a trailing owned signal,
+  // object identity preserved (no left shift / no extra args).
+  test('E4 — positional args: zero-param ids [] and discoverModels [settingsNs, request, signal]', async () => {
+    const service = svc()
+    const config = dirConfig(service)
+
+    await invokeGenericCap(config, IDS.listProviders, 'unary', {})
+    expect(calls.listProviders![0]).toEqual([])
+    await invokeGenericCap(config, IDS.listConfigurableProviders, 'unary', {})
+    expect(calls.listConfigurableProviders![0]).toEqual([])
+    await invokeGenericCap(config, IDS.webListProviders, 'unary', {})
+    expect(calls.listProviders_web![0]).toEqual([])
+    await invokeGenericCap(config, IDS.catalog, 'unary', {})
+    expect(calls.catalog![0]).toEqual([])
+
+    const req = { model: 'm', endpoint: 'https://example.invalid' }
+    await invokeGenericCap(config, IDS.discoverModels, 'unary', { settingsNs: 'llm', request: req })
+    const args = calls.remoteDiscoverModels![0]!
+    expect(args.length).toBe(3)
+    expect(args[0]).toBe('llm')
+    expect(args[1]).toBe(req)
+    expect(args[1]).toBe(req) // identity, not a copy
+    expect(args[2]).toBeInstanceOf(AbortSignal)
+  })
+
+  // E5 / AMEND-2 (first true trigger): the PROJECTED id llm/discoverModels must
+  // NEVER traverse the generic default wire projection — a hostile reply with
+  // sensitive keys emits NO frame (HAND_PROJECTION_REQUIRED), while a control
+  // non-exception id WOULD leak the SENTINEL under the legacy OAuth-only
+  // sanitizer. This is the wire-layer negative the W2-3 review singled out.
+  test('E5 — AMEND-2 wire SENTINEL: discoverModels hostile reply emits no frame; control leaks', () => {
+    const config = dirConfig(undefined)
+    const hostile = {
+      id: 'm', name: 'Probe', maxTokens: 128,
+      apiKey: SENTINEL, token: SENTINEL, secret: SENTINEL,
+      password: SENTINEL, credential: SENTINEL, safe: 'visible',
+    }
+    let emitted: string | undefined
+    let threw = false
+    try {
+      emitted = JSON.stringify(projectGenericWireReply(config, IDS.discoverModels, hostile, sanitizeFrameForWire))
+    } catch (err) {
+      threw = true
+      expect((err as Error).message).toContain('HAND_PROJECTION_REQUIRED: ' + IDS.discoverModels)
+      expect((err as Error).message).not.toContain(SENTINEL)
+    }
+    expect(threw).toBe(true)
+    expect(emitted ?? '').not.toContain(SENTINEL)
+    expect(emitted ?? '').not.toMatch(/"apiKey"|"token"|"secret"|"password"|"credential"/i)
+
+    // Control: the legacy OAuth-only sanitizer would leak general sensitive keys.
+    const wouldLeak = projectGenericWireReply(config, IDS.listProviders, hostile, sanitizeFrameForWire)
+    expect(JSON.stringify(wouldLeak)).toContain(SENTINEL)
+    expect(JSON.stringify(wouldLeak)).toContain('"apiKey"')
+  })
+
+  // Wire-name resolution: all five directory ids resolve via the GENERATED
+  // CAP_GENERIC_WIRE_METHODS table (no hand-copied wire line, C5).
+  test('C5 — all five directory ids resolve via generated wire table', () => {
+    const config = dirConfig(undefined)
+    const expectWire: Record<string, string> = {
+      [IDS.listProviders]: 'llm.listProviders',
+      [IDS.listConfigurableProviders]: 'llm.listConfigurableProviders',
+      [IDS.discoverModels]: 'llm.discoverModels',
+      [IDS.webListProviders]: 'web.listProviders',
+      [IDS.catalog]: 'permissionPresets.catalog',
+    }
+    for (const [id, wire] of Object.entries(expectWire)) {
+      expect(resolveGenericWireMethod(wire, CAP_GENERIC_WIRE_METHODS, config)).toBe(id)
+    }
   })
 })

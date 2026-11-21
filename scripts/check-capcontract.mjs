@@ -596,10 +596,23 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
     "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
     "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
   ]
-  const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED, ...W2_3_WRITE_RELEASED]
+  // W2-4 round log — OLD W2-3 criterion kept VERBATIM (do not delete):
+  //   const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED, ...W2_3_WRITE_RELEASED]
+  //   // (old) expected 18 released ids (W2-1 3 + W2-2 7 + W2-3 8)
+  // W2-4 releases five directory READ ids (plan §4.2): llm x3 / web x1 /
+  // permissionPresets x1. llm/discoverModels is in CAP_PROJECTED_BY_HAND —
+  // AMEND-2 wire SENTINEL obligation; hand projection required.
+  const W2_4_DIRECTORY_RELEASED = [
+    "@deepseek-ai/dsh-llm#llm/listProviders",
+    "@deepseek-ai/dsh-llm#llm/listConfigurableProviders",
+    "@deepseek-ai/dsh-llm#llm/discoverModels",
+    "@deepseek-ai/dsh-web#web/listProviders",
+    "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
+  ]
+  const RELEASED = [...W2_1_RELEASED, ...W2_2_READ_RELEASED, ...W2_3_WRITE_RELEASED, ...W2_4_DIRECTORY_RELEASED]
   const adapterSet = new Set(adapters)
   if (adapters.length !== RELEASED.length) {
-    offenders.push(`CAP_GENERIC_ADAPTERS expected ${RELEASED.length} released ids (W2-1 3 + W2-2 7 + W2-3 8 = 18), got ${adapters.length}`)
+    offenders.push(`CAP_GENERIC_ADAPTERS expected ${RELEASED.length} released ids (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 = 23), got ${adapters.length}`)
   }
   for (const id of RELEASED) {
     if (!adapterSet.has(id)) offenders.push("CAP_GENERIC_ADAPTERS missing released id " + id)
@@ -607,7 +620,7 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
   }
   const wantWire = capirMethods.filter((m) => !DENY_NS.has(m.namespace)).length
   if (wire.length !== wantWire) offenders.push(`wire rows ${wire.length} != ${wantWire} non-denied methods`)
-  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 3 + W2-2 7 + W2-3 8 = 18)`)
+  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 = 23)`)
   else bad("16. generic wire table", offenders.join("; "))
 }
 

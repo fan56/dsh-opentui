@@ -155,8 +155,22 @@ const W2_3_WRITE_ADAPTERS = [
   "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
   "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
 ]
-// Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 = 18).
-const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS]
+// W2-4 /directory truth face: five READ directory ids (plan §4.2). All unary,
+// no stream / deny-family id (fail-loud below). service=llm(3)/web(1)/
+// permissionPresets(1). NOTE: llm/discoverModels IS in CAP_PROJECTED_BY_HAND
+// (maxTokens→/token/) — its generic wire reply is refused with
+// HAND_PROJECTION_REQUIRED (AMEND-2); the face must hand-project. The handoff
+// id claim (listProviders/web in PROJECTED) is a documented erratum — see
+// .proof/025-w2-4/00-preregistered-expected.md §1 E5.
+const W2_4_DIRECTORY_ADAPTERS = [
+  "@deepseek-ai/dsh-llm#llm/listProviders",
+  "@deepseek-ai/dsh-llm#llm/listConfigurableProviders",
+  "@deepseek-ai/dsh-llm#llm/discoverModels",
+  "@deepseek-ai/dsh-web#web/listProviders",
+  "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
+]
+// Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 = 23).
+const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS]
 for (const id of RELEASED_ADAPTERS) {
   if (!ids.includes(id)) fail("released adapter id not in CapIR: " + id)
 }

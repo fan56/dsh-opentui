@@ -2281,6 +2281,11 @@ export const CAP_GENERIC_ADAPTERS: ReadonlySet<CapMethodId> = new Set([
   "@deepseek-ai/dsh-plugin-manager#pluginManager/setVersionExemption",
   "@deepseek-ai/dsh-plugin-manager#pluginManager/cancelInstall",
   "@deepseek-ai/dsh-plugin-manager#pluginManager/waitForInstall",
+  "@deepseek-ai/dsh-llm#llm/listProviders",
+  "@deepseek-ai/dsh-llm#llm/listConfigurableProviders",
+  "@deepseek-ai/dsh-llm#llm/discoverModels",
+  "@deepseek-ai/dsh-web#web/listProviders",
+  "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
 ] as const)
 
 /** W2-3 write ids (R6): generic-arm refuses these unless a confirm marker is present. */
