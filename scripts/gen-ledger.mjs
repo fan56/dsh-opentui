@@ -75,6 +75,27 @@ for (const id of generatedWiredIds) {
   if (!allIds.has(id)) throw new Error(`generated wired id not in CapIR full set: ${id}`)
 }
 
+// --- C3 (025-wave2 W2-0e): deferred_reason additive-only gate ---------------
+// Provenance carries the 19 显式不做 ids from plan §4.4 (52 gap - 30 必做 - 3 可选).
+// The key lands on those gap rows only; ledger schema stays /1 (no bump), and no
+// existing key/value is touched. Fail loud on any drift — never silently patch.
+const DEFERRED_REASON_VALUES = new Set(['no-tui-consumer', 'stream-no-relay', 'dual-source-risk'])
+const deferredBlock = prov.deferred_reasons
+if (deferredBlock === undefined) throw new Error('C3: ledger/provenance.json missing deferred_reasons (W2-0e front-door data)')
+const declaredEnum = [...(deferredBlock.enum ?? [])].sort()
+if (JSON.stringify(declaredEnum) !== JSON.stringify([...DEFERRED_REASON_VALUES].sort())) {
+  throw new Error(`C3: deferred_reasons.enum drift: ${declaredEnum.join(', ')}`)
+}
+const deferred = deferredBlock.ids ?? {}
+const deferredIds = Object.keys(deferred)
+if (deferredIds.length !== 19) throw new Error(`C3: deferred_reasons.ids must carry exactly 19 ids, got ${deferredIds.length}`)
+for (const [id, reason] of Object.entries(deferred)) {
+  if (!DEFERRED_REASON_VALUES.has(reason)) throw new Error(`C3: bad deferred_reason "${reason}" for ${id}`)
+  if (!allIds.has(id)) throw new Error(`C3: deferred id not in CapIR full set: ${id}`)
+  if (!expected.has(id)) throw new Error(`C3: deferred id not in profile expected surface: ${id}`)
+  if (wiredCapirIds.has(id)) throw new Error(`C3: deferred id is wired (gap-only): ${id}`)
+}
+
 const rows = allMethods
   .map((m) => ({
     id: m.id,
@@ -89,6 +110,8 @@ const rows = allMethods
     provenance: expected.has(m.id)
       ? (basePkgs.includes(m.id.slice(0, m.id.indexOf('#'))) ? 'base-closure' : 'profile-patch')
       : 'full-only',
+    // additive-only: present on the 19 deferred ids, absent on the other 238.
+    ...(deferred[m.id] === undefined ? {} : { deferred_reason: deferred[m.id] }),
   }))
   .sort((a, b) => a.id.localeCompare(b.id))
 
@@ -242,6 +265,15 @@ md.push('')
 md.push('| # | id | kind | in_full | in_expected | in_wired | provenance |')
 md.push('|---:|---|---|:---:|:---:|:---:|---|')
 rows.forEach((r, i) => md.push(`| ${i + 1} | ${r.id} | ${r.kind} | ${r.in_full ? 'Y' : 'N'} | ${r.in_expected ? 'Y' : 'N'} | ${r.in_wired ? 'Y' : 'N'} | ${r.provenance} |`))
+// C3 (W2-0e) — appended section only; no existing line above is rewritten.
+md.push('')
+md.push('## Deferred (no-do) methods — 19 (W2-0e, C3 additive-only)')
+md.push('')
+md.push('> `deferred_reason` is an additive-only key on the 19 gap rows; schema stays `dsh-opentui.ledger/1`. Source: `025-wave2-plan.md` v1.1 §4.4 显式不做清单.')
+md.push('')
+md.push('| id | deferred_reason |')
+md.push('|---|---|')
+for (const [id, reason] of Object.entries(deferred)) md.push(`| ${id} | ${reason} |`)
 
 writeFileSync(resolve(ROOT, 'ledger/ledger.md'), md.join('\n') + '\n')
 

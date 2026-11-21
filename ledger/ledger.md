@@ -383,3 +383,29 @@ Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by c
 | 255 | @deepseek-ai/dsh-user-questions#userQuestions/answer | unary | Y | Y | N | base-closure |
 | 256 | @deepseek-ai/dsh-user-questions#userQuestions/attachWait | stream | Y | Y | N | base-closure |
 | 257 | @deepseek-ai/dsh-web#web/listProviders | unary | Y | Y | N | base-closure |
+
+## Deferred (no-do) methods — 19 (W2-0e, C3 additive-only)
+
+> `deferred_reason` is an additive-only key on the 19 gap rows; schema stays `dsh-opentui.ledger/1`. Source: `025-wave2-plan.md` v1.1 §4.4 显式不做清单.
+
+| id | deferred_reason |
+|---|---|
+| @deepseek-ai/dsh-api-session-controller#session/events | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/page | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/projections | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/state | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/updateQueue | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/cancel | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/attachment | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/canOpenWorkspacePath | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/openWorkspacePath | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/workspacePathApplications | no-tui-consumer |
+| @deepseek-ai/dsh-api-session-controller#session/control | stream-no-relay |
+| @deepseek-ai/dsh-api-session-controller#session/follow | stream-no-relay |
+| @deepseek-ai/dsh-api-remote-access#remoteAccess/follow | stream-no-relay |
+| @deepseek-ai/dsh-user-questions#userQuestions/attachWait | stream-no-relay |
+| @deepseek-ai/dsh-commands#commands/list | dual-source-risk |
+| @deepseek-ai/dsh-commands#commands/execute | dual-source-risk |
+| @deepseek-ai/dsh-user-questions#userQuestions/answer | no-tui-consumer |
+| @deepseek-ai/dsh-agent-team#agentTeams/setEnabled | no-tui-consumer |
+| @deepseek-ai/dsh-command-feedback#sessionFeedback/record | no-tui-consumer |

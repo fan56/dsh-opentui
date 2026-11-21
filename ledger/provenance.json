@@ -387,5 +387,35 @@
       }
     ],
     "count": 6
+  },
+  "deferred_reasons": {
+    "mark": "025-wave2 W2-0e — additive-only new key; ledger schema stays dsh-opentui.ledger/1",
+    "source": "025-wave2-plan.md v1.1 §4.4 显式不做清单 (19 ids = 52 gap - 30 必做 - 3 可选)",
+    "enum": [
+      "no-tui-consumer",
+      "stream-no-relay",
+      "dual-source-risk"
+    ],
+    "ids": {
+      "@deepseek-ai/dsh-api-session-controller#session/events": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/page": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/projections": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/state": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/updateQueue": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/cancel": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/attachment": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/canOpenWorkspacePath": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/openWorkspacePath": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/workspacePathApplications": "no-tui-consumer",
+      "@deepseek-ai/dsh-api-session-controller#session/control": "stream-no-relay",
+      "@deepseek-ai/dsh-api-session-controller#session/follow": "stream-no-relay",
+      "@deepseek-ai/dsh-api-remote-access#remoteAccess/follow": "stream-no-relay",
+      "@deepseek-ai/dsh-user-questions#userQuestions/attachWait": "stream-no-relay",
+      "@deepseek-ai/dsh-commands#commands/list": "dual-source-risk",
+      "@deepseek-ai/dsh-commands#commands/execute": "dual-source-risk",
+      "@deepseek-ai/dsh-user-questions#userQuestions/answer": "no-tui-consumer",
+      "@deepseek-ai/dsh-agent-team#agentTeams/setEnabled": "no-tui-consumer",
+      "@deepseek-ai/dsh-command-feedback#sessionFeedback/record": "no-tui-consumer"
+    }
   }
 }
