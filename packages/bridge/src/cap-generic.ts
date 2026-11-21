@@ -117,15 +117,20 @@ async function resolveScopeArg(
     throw new Error(`BAD_PARAMS: ${methodId} ${scope.wire} scope lookup ${scope.context} has no resolver`)
   }
   let live: unknown
+  let resolveCause: unknown
   try {
     live = await resolve(scope.context, scope.wire, wireValue)
-  } catch {
+  } catch (err) {
     live = undefined
+    // W2-6 S-2: preserve the resolver failure as `cause` so a registry fault
+    // (e.g. ctx.get throw) is distinguishable from an id-not-present result.
+    // The BAD_PARAMS message string is kept VERBATIM (E3 assertions unchanged);
+    // cause is an in-memory Error property only — never serialized to disk/wire.
+    resolveCause = err
   }
   if (live === undefined || live === null) {
-    throw new Error(
-      `BAD_PARAMS: ${methodId} ${scope.wire} scope lookup ${scope.context} failed for id "${String(wireValue)}"`,
-    )
+    const message = `BAD_PARAMS: ${methodId} ${scope.wire} scope lookup ${scope.context} failed for id "${String(wireValue)}"`
+    throw resolveCause === undefined ? new Error(message) : new Error(message, { cause: resolveCause })
   }
   return live
 }

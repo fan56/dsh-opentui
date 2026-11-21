@@ -1262,6 +1262,44 @@ describe('W2-0 scope-lookup — data-driven resolver (no goals branch)', () => {
     expect(hostCalls).toBe(0)
   })
 
+  // W2-6 S-2: a resolver THROW keeps its original error as `cause` on the
+  // BAD_PARAMS error (registry fault distinguishable from id-not-present).
+  // The message string stays VERBATIM; cause is in-memory only, never written
+  // to disk/wire (credential-value hygiene).
+  test('S-2 — resolver throw attaches cause; message unchanged; no-cause when id absent', async () => {
+    const registryFault = new Error('registry gone: ctx.get failed')
+    const svc = { get: (..._a: unknown[]) => ({}) }
+    const base = {
+      adapters: CAP_GENERIC_ADAPTERS,
+      services: CAP_SERVICE_TABLE,
+      params: CAP_PARAMS_TABLE,
+      scopes: CAP_SCOPE_TABLE,
+      kindOf: () => 'unary' as const,
+      getService: () => svc,
+    }
+    const thrownConfig = makeConfig({ ...base, resolveScope: () => { throw registryFault } })
+    let caught: unknown
+    try {
+      await invokeGenericCap(thrownConfig, GOALS.get, 'unary', { agentId: AGENT_ID })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(Error)
+    const err = caught as Error
+    expect(err.message).toBe(`BAD_PARAMS: ${GOALS.get} agentId scope lookup agent failed for id "${AGENT_ID}"`)
+    expect(err.cause).toBe(registryFault)
+
+    // id-not-present (resolver returned undefined/null) still fails closed with NO cause.
+    const absentConfig = makeConfig({ ...base, resolveScope: () => undefined })
+    let caught2: unknown
+    try {
+      await invokeGenericCap(absentConfig, GOALS.get, 'unary', { agentId: AGENT_ID })
+    } catch (err) {
+      caught2 = err
+    }
+    expect((caught2 as Error).cause).toBeUndefined()
+  })
+
   // E4: >=2 goals ids traverse the REAL production wiring (createCapHostInvoke
   // default config) end-to-end. The production resolver uses the existing agents
   // registry path (ctx.get('agents') -> .get); the mock registry returns LIVE_AGENT.
