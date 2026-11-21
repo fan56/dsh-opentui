@@ -588,6 +588,71 @@ describe("async UNSUPPORTED members", () => {
 })
 
 // ---------------------------------------------------------------------------
+// 025-w1a /think — real effort ladder from the host catalog
+// ---------------------------------------------------------------------------
+
+describe("025-w1a thinking face (real host effort ladder)", () => {
+	const CATALOG = {
+		default: { provider: "p1", model: "m1", reasoningEffort: "medium" },
+		groups: [
+			{ id: "p1", models: [
+				{ id: "m1", reasoning: { efforts: [
+					{ id: "low", name: "Low", description: "quick" },
+					{ id: "medium", name: "Medium" },
+					{ id: "high", name: "High", description: "deep" },
+				] } },
+				{ id: "m2" }, // no ladder → empty
+			] },
+			{ id: "p2", models: [{ id: "m3", reasoning: { efforts: [{ id: "x", name: "X" }] } }] },
+		],
+	}
+
+	test("efforts() reads the CURRENT route's real reasoning.efforts (no hardcoded tiers)", async () => {
+		const h = makeHarness()
+		h.replies.set("modelCatalog", { kind: "value", value: CATALOG })
+		expect(await h.seam.thinking.efforts()).toEqual([
+			{ id: "low", name: "Low", description: "quick" },
+			{ id: "medium", name: "Medium" },
+			{ id: "high", name: "High", description: "deep" },
+		])
+	})
+
+	test("effortsFor() reads ANY route's ladder; empty ladder → []", async () => {
+		const h = makeHarness()
+		h.replies.set("modelCatalog", { kind: "value", value: CATALOG })
+		expect(await h.seam.thinking.effortsFor!("p2", "m3")).toEqual([{ id: "x", name: "X" }])
+		expect(await h.seam.thinking.effortsFor!("p1", "m2")).toEqual([])
+	})
+
+	test("efforts() degrades honestly to [] when the catalog frame is absent", async () => {
+		const h = makeHarness()
+		expect(await h.seam.thinking.efforts()).toEqual([])
+	})
+
+	test("currentEffort() reads reasoningEffort from model.currentSelection", async () => {
+		const h = makeHarness()
+		h.replies.set("model.currentSelection", { kind: "value", value: { provider: "p1", model: "m1", reasoningEffort: "high" } })
+		expect(await h.seam.thinking.currentEffort()).toBe("high")
+		h.replies.set("model.currentSelection", { kind: "value", value: { provider: "p1", model: "m1" } })
+		expect(await h.seam.thinking.currentEffort()).toBeUndefined()
+	})
+
+	test("selectEffort() forwards provider/model/reasoningEffort to selectModel and rejects on failure", async () => {
+		const h = makeHarness()
+		h.replies.set("model.currentSelection", { kind: "value", value: { provider: "p1", model: "m1" } })
+		h.replies.set("selectModel", { kind: "value", value: { selected: { provider: "p1", model: "m1", reasoningEffort: "high" } } })
+		await h.seam.thinking.selectEffort("high")
+		expect(h.lastRequest("selectModel")!.params).toMatchObject({ provider: "p1", model: "m1", reasoningEffort: "high" })
+		// Clearing the override omits reasoningEffort.
+		await h.seam.thinking.selectEffort(undefined)
+		expect(h.lastRequest("selectModel")!.params).not.toHaveProperty("reasoningEffort")
+		// Host refusal propagates.
+		h.replies.set("selectModel", { kind: "error", error: unsupportedError("selectModel") })
+		await expect(h.seam.thinking.selectEffort("low")).rejects.toMatchObject({ code: "UNSUPPORTED" })
+	})
+})
+
+// ---------------------------------------------------------------------------
 // COVERED members + turn/event state machine + dispose
 // ---------------------------------------------------------------------------
 

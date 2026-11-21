@@ -35,6 +35,7 @@ import type {
 	SeamApprovalVerdict,
 	SeamAskPick,
 	SeamAskQuestion,
+	SeamEffortOption,
 	SeamPermissionCatalog,
 	SeamProviderModel,
 	SeamSessionEvent,
@@ -1251,6 +1252,80 @@ export class BridgeSessionSeam implements SessionSeam {
 		body: (name) => this.#localAgents.body(name),
 		modelEfforts: (providerID, modelID) => this.#localAgents.modelEfforts(providerID, modelID),
 		officialCaps: () => this.#localAgents.officialCaps(),
+	}
+
+	/**
+	 * 025-w1a — /think reasoning-effort face. The effort ladder is REAL host
+	 * catalog data (`reasoning.efforts` on each model group), the SAME raw shape
+	 * `LocalAgentsFace.modelEfforts` already consumes — NOT a hardcoded tier set.
+	 * `selectEffort` rides `selectModel`'s existing reasoningEffort arm (next-turn
+	 * effect); rejections propagate so a host refusal surfaces in the transcript.
+	 * An absent frame / empty ladder degrades honestly (empty [] / undefined),
+	 * never a fabricated default tier.
+	 */
+	thinking: NonNullable<SessionSeam["thinking"]> = {
+		efforts: () => this.#catalogEfforts(),
+		effortsFor: (providerID, modelID) => this.#catalogEfforts(providerID, modelID),
+		currentEffort: async () => {
+			const selection = await this.#transport.request("model.currentSelection")
+			const value = asRecord(selection).reasoningEffort
+			return typeof value === "string" && value !== "" ? value : undefined
+		},
+		selectEffort: async (effort) => {
+			// Mirror selectModel's effort arm: the host's session/selectModel
+			// validates sessionId + provider + model (bridge:940-955), so the
+			// current route must accompany the new effort. Rejections propagate.
+			const selection = await this.currentModelSelection()
+			if (selection === undefined) return unsupported("selectEffort")
+			const sessionId = this.#currentSessionId ?? this.stagedSessionId()
+			const reply = await this.#transport.request("selectModel", {
+				provider: selection.providerID,
+				model: selection.modelID,
+				...(effort === undefined ? {} : { reasoningEffort: effort }),
+				...(sessionId !== undefined && sessionId !== "" ? { sessionId } : {}),
+			})
+			const r = reply as { selected?: unknown } | undefined
+			if (r === undefined || r === null || r.selected === undefined) {
+				return unsupported("selectEffort")
+			}
+		},
+	}
+
+	/** Raw modelCatalog groups → SeamEffortOption ladder for one model route.
+	 *  No providerID/modelID → the CURRENT route (the default selection group). */
+	async #catalogEfforts(providerID?: string, modelID?: string): Promise<SeamEffortOption[]> {
+		const raw = await this.#transport.request("modelCatalog") as {
+			groups?: {
+				id?: unknown
+				models?: { id?: unknown; reasoning?: { efforts?: unknown } }[]
+			}[]
+			default?: { provider?: unknown; model?: unknown }
+		} | undefined
+		if (raw === undefined || raw === null || !Array.isArray(raw.groups)) return []
+		let group = raw.groups.find((g) => typeof g?.id === "string" && g.id === providerID)
+		let model = group?.models?.find((m) => typeof m?.id === "string" && m.id === modelID)
+		if (providerID === undefined || modelID === undefined) {
+			// Current route = catalog.default (the host's real selection), falling
+			// back to the first group/model when the default is absent.
+			const d = raw.default
+			group = raw.groups.find((g) => typeof g?.id === "string" && g.id === d?.provider) ?? raw.groups[0]
+			model = group?.models?.find((m) => typeof m?.id === "string" && m.id === d?.model) ?? group?.models?.[0]
+		}
+		const efforts = model?.reasoning?.efforts
+		if (!Array.isArray(efforts)) return []
+		const out: SeamEffortOption[] = []
+		for (const e of efforts) {
+			const row = asRecord(e)
+			const id = typeof row.id === "string" ? row.id : ""
+			const name = typeof row.name === "string" ? row.name : ""
+			if (!id) continue
+			out.push({
+				id,
+				name: name || id,
+				...(typeof row.description === "string" && row.description !== "" ? { description: row.description } : {}),
+			})
+		}
+		return out
 	}
 
 	readonly #unsubEvent: () => void
