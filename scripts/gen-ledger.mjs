@@ -59,11 +59,13 @@ for (const id of expected) {
 
 // --- assemble ledger -------------------------------------------------------
 const wired = prov.wired_surface_manual.methods
-// S1: the wired CapIR set is the UNION of (a) hand-wired @manual wire lines that
-// carry a capir_id (session/list) and (b) generated-capcontract wired ids
-// (the three S1 model methods). The @manual WIRE surface count stays 11 — the
-// generated ids are NOT hand-copied req.method lines, so they must not inflate
-// dimensions.wired.count or the check-capcontract #8 name set.
+// S1 + 0.24 final knife: the wired CapIR set is the UNION of (a) hand-wired
+// @manual wire lines that carry a capir_id and (b) generated-capcontract wired
+// ids. Both model.currentSelection (S1) and session.list (0.24 final knife)
+// were migrated off their hand-wire onto the generated chain via a table lookup,
+// so the @manual WIRE surface count drops 12 -> 11 -> 10 and session/list now
+// lives in wired_capir_generated. Generated ids are NOT hand-copied req.method
+// lines, so they must not inflate dimensions.wired.count or the #8 name set.
 const generatedWiredIds = (prov.wired_capir_generated?.ids ?? [])
 const wiredCapirIds = new Set([...wired.map((w) => w.capir_id).filter(Boolean), ...generatedWiredIds])
 for (const id of generatedWiredIds) {

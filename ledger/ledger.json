@@ -124,7 +124,7 @@
     },
     "wired": {
       "mark": "derived-from-manual",
-      "count": 11,
+      "count": 10,
       "methods": [
         {
           "method": "bridge.ping",
@@ -137,12 +137,6 @@
           "kind": "meta",
           "source_line": 2256,
           "capir_id": null
-        },
-        {
-          "method": "session.list",
-          "kind": "business",
-          "source_line": 2294,
-          "capir_id": "@deepseek-ai/dsh-api-session-controller#session/list"
         },
         {
           "method": "subagents.interrupt",
@@ -198,8 +192,9 @@
     },
     "wired_capir_generated": {
       "mark": "S1+S2+S3+S5-generated-capcontract",
-      "count": 23,
+      "count": 24,
       "ids": [
+        "@deepseek-ai/dsh-api-session-controller#session/list",
         "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
         "@deepseek-ai/dsh-api-session-controller#session/selectModel",
         "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel",

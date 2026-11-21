@@ -12,8 +12,8 @@ attribution: Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 
 |---|---:|---|
 | Full (CapIR) | 257 methods / 43 artifacts | unary 226 / stream 31; class W 257; endpoints: sc 27, global map sum 257 |
 | Profile expected | 75 methods | profile opentui-inproc; 13 contribution packages; 1 method exclusion(s) |
-| Wired (manual @manual wire) | 11 methods | derived-from-manual |
-| Wired (generated capcontract, S1) | 23 methods | S1+S2+S3+S5-generated-capcontract |
+| Wired (manual @manual wire) | 10 methods | derived-from-manual |
+| Wired (generated capcontract, S1) | 24 methods | S1+S2+S3+S5-generated-capcontract |
 | in_wired total (of 257) | 24 methods | union of @manual capir_id + generated ids |
 | I-class (manual) | 6 services | derived-from-manual (v3 proposal 口径) |
 
@@ -56,7 +56,6 @@ Corrections applied in provenance mapping data:
 |---|---|---:|---|
 | bridge.ping | meta | 2247 | — |
 | bridge.hello | meta | 2256 | — |
-| session.list | business | 2294 | @deepseek-ai/dsh-api-session-controller#session/list |
 | subagents.interrupt | business | 2300 | — |
 | subagents.stopChildren | business | 2304 | — |
 | session.open | business | 2308 | — |
@@ -70,6 +69,7 @@ Corrections applied in provenance mapping data:
 
 Not hand-copied `req.method` lines — reconciled with `CAP_HOST_WIRED_IDS` by check-capcontract #10.
 
+- @deepseek-ai/dsh-api-session-controller#session/list
 - @deepseek-ai/dsh-api-session-controller#session/modelCatalog
 - @deepseek-ai/dsh-api-session-controller#session/selectModel
 - @deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel

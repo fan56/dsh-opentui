@@ -1209,6 +1209,18 @@ const CAP_MODEL_WIRE_METHODS: Readonly<Record<string, string>> = {
  *  (it is a reply-shape projection inside generated dispatch, not a hand-wire). */
 const CAP_SELECTION_READ_METHOD = 'model.currentSelection'
 
+/**
+ * 0.24 final knife — `session.list` joins the generated capcontract chain on
+ * the S1 model template. Same table-lookup shape as CAP_MODEL_WIRE_METHODS:
+ * the client-facing wire frame name is preserved (seam/client zero change),
+ * but the 1:1 host call is no longer a hand-copied `controller.list(...)` line.
+ * It rides createCapInvoke -> binder -> dispatcher -> createCapHostInvoke's
+ * `session/list` arm, which reuses resolveSessionController (no new host API).
+ */
+const CAP_SESSION_WIRE_METHODS: Readonly<Record<string, string>> = {
+  'session.list': '@deepseek-ai/dsh-api-session-controller#session/list',
+}
+
 /** S5 /settings — client-facing wire method names → CapIR W ids for the two
  *  settings-document methods, served through the SAME generated capcontract
  *  chain as the model frames (table lookup, NOT a hand-copied `req.method ===`
@@ -3363,15 +3375,6 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *   `{ok:true,result:{items:[]}}` and "capability unavailable" stay distinct.
    */
   async function handleListSessions(req: ParsedRequest): Promise<void> {
-    const controller = resolveSessionController(ctx)
-    if (controller === undefined) {
-      replyError(req.id, 'UNSUPPORTED', 'sessionController service unavailable: session.list capability not present', {
-        capability: 'session.list',
-        service: 'sessionController',
-      })
-      return
-    }
-
     const cursor = req.params.cursor
     if (cursor !== undefined && typeof cursor !== 'string') {
       replyError(req.id, 'BAD_PARAMS', 'session.list cursor must be a string')
@@ -3379,7 +3382,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
 
     try {
-      const raw: unknown = await controller.list({ _request: cursor !== undefined ? { cursor } : {} })
+      // 0.24 final knife: the 1:1 host call now rides the generated capcontract
+      // chain (table lookup -> binder -> dispatcher -> createCapHostInvoke's
+      // session/list arm), which reuses resolveSessionController + controller.list.
+      const raw: unknown = await createCapInvoke(ctx)({
+        methodId: CAP_SESSION_WIRE_METHODS['session.list'] as never,
+        params: cursor !== undefined ? { cursor } : {},
+      })
       // A malformed host reply means "host is broken", NOT "no sessions". Never
       // flatten it to an empty success: that would be indistinguishable from a
       // genuinely empty store (see ADR-0010 session.list contract).
@@ -3402,6 +3411,21 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       replyOk(req.id, { items })
     } catch (err) {
       logger.error('[dsh-opentui-bridge] session.list failed: %s', err)
+      const message = err instanceof Error ? err.message : String(err)
+      // The generated chain reports a missing service / unwired id as NOT_WIRED;
+      // keep the ADR-0010 UNSUPPORTED contract (distinct from an empty list) and
+      // the BAD_PARAMS cursor rejection the hand-wire used to own.
+      if (message.startsWith('NOT_WIRED') || message.includes('unavailable')) {
+        replyError(req.id, 'UNSUPPORTED', 'sessionController service unavailable: session.list capability not present', {
+          capability: 'session.list',
+          service: 'sessionController',
+        })
+        return
+      }
+      if (message.startsWith('BAD_PARAMS')) {
+        replyError(req.id, 'BAD_PARAMS', message)
+        return
+      }
       const mapped = mapHostError(err)
       replyError(req.id, mapped.code, mapped.message, mapped.detail)
     }
@@ -3664,7 +3688,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     // not `req.method ===`; see CAP_MODEL_WIRE_METHODS), projected from the
     // host's modelCatalog().default. The seam keeps the same frame name + reply
     // shape, so inproc boot is unchanged and the @manual count drops 12 → 11.
-    if (req.method === 'session.list') {
+    // 0.24 final knife: `session.list` follows the same S1 table-lookup pattern
+    // (CAP_SESSION_WIRE_METHODS) — no hand-copied `req.method ===` line. The
+    // frame name/reply shape are unchanged; only the host call moved onto the
+    // generated chain, so @manual drops 11 → 10.
+    if (CAP_SESSION_WIRE_METHODS[req.method] !== undefined) {
       await handleListSessions(req)
       return
     }
