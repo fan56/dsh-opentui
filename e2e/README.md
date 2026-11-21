@@ -22,8 +22,29 @@ Families: `00-pack-gate` (outermost), `10-capability-domains`
 (128+N framing + quit-confirm exit 0), `80-keymap-modality` (FocusRouter
 layer), plus the `verify70` gate family via `scripts/real-client-gate.sh`.
 The accurate verify count is **64/64** (the "70" in the gate script's banner
-is stale 0.23 text). The legacy `scenarios/` suite stays in service until
-the new families are all green; flaky laws are in `families/FLAKY-LAWS.md`.
+is stale 0.23 text). Flaky laws are in `families/FLAKY-LAWS.md`.
+
+### Legacy `scenarios/` retirement — explicitly deferred past 0.24
+
+The container family was unblocked during tag prep (legacy `20-start` went
+from 1pass/11fail to **11pass/0fail** on IMAGE ID `7ee869bb75ff…`, see
+`research/024-tag-prep-fixups.md` A.2), which is the condition the E2E rework
+§5 set for retiring the old `e2e/scenarios/` (21 scenarios + `run-all.sh`).
+Retirement is nevertheless **deferred to post-0.24**, by the adjudication-
+approved "显式改期并写明理由" option (`024-tag-premise-adjudication-oldfox.md`,
+final "知晓项"): the legacy scenarios are NOT yet fully replaced — the unified
+runner still depends on them for its container leg:
+
+- `e2e/families/run-all.sh:80` calls `e2e/run-e2e.sh` for the container family;
+- `e2e/run-e2e.sh:87` runs `bash /e2e/scenarios/run-all.sh` inside the image.
+
+Deleting `scenarios/` now would break `families/run-all.sh` (and
+`scripts/test-tier.mjs` e2e tier, which also drives `run-e2e.sh`). Retirement
+requires first reimplementing the in-container scenario layer on the families
+side, then rewiring those two callers — post-0.24 test-infrastructure work,
+not a tag premise. Until then `scenarios/` stays in service as the container
+entry point; the host-side families have fully taken over the non-container
+surface. No assertion or product logic changes are made by this deferral.
 
 ## What boots in the container
 
