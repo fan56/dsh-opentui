@@ -1763,6 +1763,53 @@ export const CAP_PARAMS_TABLE = {
   ],
 } as const
 
+/** Scope lookup metadata (CapIR "scope" block) for the generic arm's data-driven
+ *  scope resolver. Only scope-bearing methods get a row; "context" names the
+ *  lookup provider (e.g. "agent") and "wire" names the param carrying the wire id.
+ *  The arm NEVER hard-codes any namespace/id — it consumes this table verbatim. */
+export interface CapScopeMeta {
+  readonly context: string
+  readonly wire: string
+}
+
+/** id -> {context, wire}; absent for methods without a CapIR scope block. */
+export const CAP_SCOPE_TABLE: Readonly<Partial<Record<CapMethodId, CapScopeMeta>>> = {
+  "@deepseek-ai/dsh-api-session-controller#fileReferences/list": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-api-terminal-controller#terminal/attach": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-api-terminal-controller#terminal/close": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-api-terminal-controller#terminal/create": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-api-terminal-controller#terminal/environment": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-api-terminal-controller#terminal/rename": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-api-terminal-controller#terminal/shells": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-client-file-upload#fileUploads/upload": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-session-reference#sessionReferenceResolver/candidates": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-action-cards#actionCards/act": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-experimental-claude-code-mods#claudeCodeMods/pressBand": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-experimental-claude-code-mods#claudeCodeMods/watchBand": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-plugin-recommendations#pluginRecommendations/describe": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/getClientCode": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/reportClientGuardFailure": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/reportRenderFailure": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/resolveInspectQuery": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/runHostHalf": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/settleUserRun": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/stopFromPanel": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/undefineFromPanel": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-goal#goals/clear": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-goal#goals/complete": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-goal#goals/create": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-goal#goals/edit": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-goal#goals/get": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-goal#goals/pause": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-goal#goals/resume": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-commands#commands/execute": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-commands#commands/list": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-user-questions#userQuestions/answer": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-user-questions#userQuestions/attachWait": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-agent-preset-registry#agentPresets/select": { context: "agent", wire: "agentId" },
+  "@deepseek-ai/dsh-agent-team#agentTeams/setEnabled": { context: "agent", wire: "agentId" },
+} as const
+
 /** Map a normalised param type to a structural TS type (no host import, no any). */
 export type CapParamType<T extends CapParamRow["type"]> =
   T extends "string" ? string :

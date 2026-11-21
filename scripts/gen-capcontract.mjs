@@ -92,6 +92,30 @@ const paramsBlock = methods.map((m) => {
   return `  ${q(m.id)}: [\n${rows.join("\n")}\n  ],`
 }).join("\n")
 
+// --- scope table: id -> {context, wire} for CapIR methods carrying a scope block ---
+// W2-0 scope-lookup fix. The data is additive (only the 34 scope-bearing methods
+// get a row); the generic arm consumes it via injected table to resolve the
+// scope wire (e.g. agentId:string) into the live host object the goal-family
+// methods require. Fail loud on any malformed scope so a silent wrong shape can
+// never reach the generated table. NO goals-specific branch lives in the arm.
+const scopeEntries = methods.filter((m) => m.scope !== undefined)
+for (const m of scopeEntries) {
+  const s = m.scope
+  if (s === null || typeof s !== 'object' || Array.isArray(s)
+    || typeof s.context !== 'string' || s.context === ''
+    || typeof s.wire !== 'string' || s.wire === '') {
+    fail("malformed scope block: " + m.id)
+  }
+  // The scope wire MUST be a declared param of the method (else the resolver
+  // would have nothing to substitute) — cross-check against capir params.
+  if (!(m.params ?? []).some((p) => p.name === s.wire)) {
+    fail("scope wire not present in params: " + m.id + " wire=" + s.wire)
+  }
+}
+const scopeBlock = scopeEntries.map((m) =>
+  `  ${q(m.id)}: { context: ${q(m.scope.context)}, wire: ${q(m.scope.wire)} },`
+).join("\n")
+
 // --- wire table: <namespace>.<name> -> id (deny-list filtered, bidirectional) ---
 const wireEntries = genericMethods.map((m) => ({ wire: `${m.namespace}.${m.name}`, id: m.id }))
 const wireSeen = new Set()
@@ -261,6 +285,20 @@ ${serviceBlock}
 /** id -> ordered coarse params rows. FULL JSON Schema stays in capir.json, not here. */
 export const CAP_PARAMS_TABLE = {
 ${paramsBlock}
+} as const
+
+/** Scope lookup metadata (CapIR "scope" block) for the generic arm's data-driven
+ *  scope resolver. Only scope-bearing methods get a row; "context" names the
+ *  lookup provider (e.g. "agent") and "wire" names the param carrying the wire id.
+ *  The arm NEVER hard-codes any namespace/id — it consumes this table verbatim. */
+export interface CapScopeMeta {
+  readonly context: string
+  readonly wire: string
+}
+
+/** id -> {context, wire}; absent for methods without a CapIR scope block. */
+export const CAP_SCOPE_TABLE: Readonly<Partial<Record<CapMethodId, CapScopeMeta>>> = {
+${scopeBlock}
 } as const
 
 /** Map a normalised param type to a structural TS type (no host import, no any). */

@@ -678,6 +678,46 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
   else bad("17. W2-3 confirm gate set", offenders.join("; "))
 }
 
+// 18. W2-0 scope-lookup table (CAP_SCOPE_TABLE): exact match to capir.json scope
+// blocks; context/wire non-empty and wire declared in that method's params; the
+// seven goals ids (the first released scope-bearing family) must all be present.
+// This is the data-driven metadata source the generic arm consumes — no goals
+// branch is allowed in the arm, so the table itself is the structural gate.
+{
+  const body = sliceBlock(
+    typesText,
+    "export const CAP_SCOPE_TABLE: Readonly<Partial<Record<CapMethodId, CapScopeMeta>>> = {\n",
+    "\n} as const",
+  )
+  const offenders = []
+  let rows = []
+  if (body === null) offenders.push("CAP_SCOPE_TABLE block missing in types.ts")
+  else {
+    rows = [...body.matchAll(/^  "([^"]+)": \{ context: "([^"]+)", wire: "([^"]+)" \},$/gm)]
+      .map((m) => ({ id: m[1], context: m[2], wire: m[3] }))
+    const want = capirMethods.filter((m) => m.scope !== undefined)
+    const wantById = new Map(want.map((m) => [m.id, m.scope]))
+    if (rows.length !== want.length) offenders.push(`rows ${rows.length} != ${want.length} capir scope blocks`)
+    for (const r of rows) {
+      const s = wantById.get(r.id)
+      if (!s) { offenders.push("extra scope row: " + r.id); continue }
+      if (r.context !== s.context || r.wire !== s.wire) {
+        offenders.push(`${r.id}: got ${r.context}/${r.wire} want ${s.context}/${s.wire}`)
+      }
+      const meth = capirMethods.find((m) => m.id === r.id)
+      if (!meth || !(meth.params ?? []).some((p) => p.name === r.wire)) {
+        offenders.push("scope wire not in params: " + r.id)
+      }
+    }
+    for (const id of wantById.keys()) if (!rows.some((r) => r.id === id)) offenders.push("missing scope row: " + id)
+    const goalsScope = rows.filter((r) => r.id.startsWith("@deepseek-ai/dsh-goal#goals/"))
+    if (goalsScope.length !== 7) offenders.push(`goals scope rows ${goalsScope.length} != 7`)
+  }
+  if (offenders.length === 0) {
+    ok("18. SCOPE table matches capir scope blocks", `${rows.length} rows (7 goals), context/wire non-empty & wire in params`)
+  } else bad("18. SCOPE table matches capir scope blocks", offenders.slice(0, 6).join("; "))
+}
+
 // --- summary ---
 console.log("")
 console.log(`summary: PASS=${passes} NOT_RUN=${notRuns} FAIL=${failures.length}`)
