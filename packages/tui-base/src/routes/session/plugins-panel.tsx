@@ -24,7 +24,7 @@
  * rows arrive through the seam getter prop (reactive-prop law: getters,
  * never eager reads).
  */
-import { createEffect, createMemo, createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onCleanup, Show, type Accessor } from "solid-js"
 import type { InputRenderable } from "@opentui/core"
 import { TextAttributes } from "@opentui/core"
 import { Keymap } from "../../context/keymap"
@@ -214,6 +214,27 @@ export function pluginDetailPreview(detail: SeamPluginDetail | undefined, loadin
 	return preview === "" ? t("panel.plugins.detail.none") : preview
 }
 
+/**
+ * Reactive visibility of the honest-degrade banner (W2-2 C-1). The seam's
+ * `available()` is a PLAIN probe, not a signal, so a memo whose body reads only
+ * `available()` has zero reactive dependencies: it computes once at open
+ * (available undefined -> false) and never recomputes when the async refresh
+ * flips availability to false — the "manager unavailable" banner then never
+ * appears. Reading `refreshTick()` in the body gives the memo a real tracked
+ * dependency (the panel bumps the tick after every refresh settles), so the
+ * banner repaints in BOTH directions. Exported so the flip-state regression
+ * test drives the exact production predicate.
+ */
+export function createDegradedMemo(
+	available: () => boolean | undefined,
+	refreshTick: Accessor<number>,
+): Accessor<boolean> {
+	return createMemo(() => {
+		void refreshTick()
+		return available() === false
+	})
+}
+
 export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }) {
 	const theme = useThemeOptional()
 	const dialog = useDialog()
@@ -340,12 +361,16 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			.finally(() => { if (!stale) setDetailLoading(false) })
 	})
 
-	/** Honest-degrade banner visibility. A memo (not a plain function call) so
-	 *  Solid tracks it in `<Show when={...}>`; the detail lines instead render
-	 *  unconditionally and gate their TEXT on the `detail()` signal directly —
-	 *  a plain `showDetail()` memo reading the seam's non-reactive available()
-	 *  was NOT repainted (W2-2c render-gap finding). */
-	const degraded = createMemo(() => props.seam.pluginsManager?.available?.() === false)
+	/** Honest-degrade banner visibility. The memo's body reads refreshTick() so
+	 *  Solid tracks it across the async refresh flip (W2-2 C-1): a memo reading
+	 *  ONLY the seam's non-reactive available() has zero deps, caches false at
+	 *  open, and never repaints when the refresh marks the manager unavailable.
+	 *  The detail lines instead render unconditionally and gate their TEXT on
+	 *  the `detail()` signal directly (W2-2c render-gap finding). */
+	const degraded = createDegradedMemo(
+		() => props.seam.pluginsManager?.available?.(),
+		refreshTick,
+	)
 
 	function moveCursor(delta: number) {
 		const count = visible().length
