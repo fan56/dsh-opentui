@@ -46,6 +46,7 @@ import {
 } from "./goals-command"
 import {
 	buildModelPickerRows,
+	formatDiscoveredModels,
 	modelKey,
 	readModelPrefsFromConfig,
 	toggleStringList,
@@ -679,6 +680,34 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(t("command.model.stagedSwitchFailed", { reason: pendingSelectionError }))
 				}
 				const arg = argText.trim()
+				// 025-w3-2 — minimal discovery entry: `/model discover` asks the
+				// hand-written llm/discoverModels face for the current provider's
+				// models. No credential is passed (the seam request shape has no
+				// apiKey); service absence / no source degrades honestly.
+				if (arg === "discover") {
+					const discover = ctx.seam.providerDirectory?.discover
+					if (typeof discover !== "function") {
+						ctx.say(t("command.model.discoverUnavailable", { reason: "no discovery face" }))
+						return
+					}
+					let providerID = "default"
+					try {
+						providerID = (await ctx.seam.currentModelSelection?.())?.providerID ?? "default"
+					} catch { /* provider is only a discovery hint */ }
+					ctx.say(t("command.model.discovering", { provider: providerID }))
+					try {
+						const models = await discover("llm", { provider: providerID })
+						if (models.length === 0) {
+							ctx.say(t("command.model.discoverEmpty"))
+							return
+						}
+						const list = formatDiscoveredModels(models)
+						ctx.say(t("command.model.discovered", { n: models.length, list }))
+					} catch (error) {
+						ctx.say(t("command.model.discoverUnavailable", { reason: seamFailureReason(error) }))
+					}
+					return
+				}
 				if (arg) {
 					const [providerID, modelID] = arg.split("/")
 					if (!providerID || !modelID) {

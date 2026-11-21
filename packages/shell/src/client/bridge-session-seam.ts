@@ -37,7 +37,9 @@ import type {
 	SeamAskPick,
 	SeamAskQuestion,
 	SeamConfigurableProviderRow,
+	SeamDiscoveredModel,
 	SeamEffortOption,
+	SeamModelDiscoveryRequest,
 	SeamGoalRef,
 	SeamGoalView,
 	SeamLlmProviderRow,
@@ -100,6 +102,7 @@ import {
 // 025-w2-4 — hand-written directory faces + second whitelist projection.
 import {
 	projectConfigurableProviders,
+	projectDiscoverModels,
 	projectLlmProviders,
 	projectPermissionCatalog,
 } from "./bridge-directory.ts"
@@ -1383,6 +1386,11 @@ export class BridgeSessionSeam implements SessionSeam {
 			this.#directoryRequest("llm.listProviders", projectLlmProviders),
 		configurable: (): Promise<SeamConfigurableProviderRow[]> =>
 			this.#directoryRequest("llm.listConfigurableProviders", projectConfigurableProviders),
+		// 025-w3-2 — the one PROJECTED_BY_HAND id. The bridge hand-wired branch
+		// applies a fixed wire whitelist; this SECOND projection repeats it.
+		// Service absence / no discovery source REJECTS — never a fake-empty list.
+		discover: (settingsNs: string, request: SeamModelDiscoveryRequest): Promise<SeamDiscoveredModel[]> =>
+			this.#directoryRequest("llm.discoverModels", projectDiscoverModels, { settingsNs, request }),
 	}
 
 	/**
@@ -1533,8 +1541,10 @@ export class BridgeSessionSeam implements SessionSeam {
 	 * caller (login picker) catches and degrades honestly. No fake empty value,
 	 * no host object crosses (the projector whitelists every field).
 	 */
-	async #directoryRequest<T>(method: string, project: (raw: unknown) => T): Promise<T> {
-		const reply = await this.#transport.request(method)
+	async #directoryRequest<T>(method: string, project: (raw: unknown) => T, params?: Record<string, unknown>): Promise<T> {
+		const reply = params === undefined
+			? await this.#transport.request(method)
+			: await this.#transport.request(method, params)
 		return project(reply)
 	}
 

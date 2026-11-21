@@ -97,3 +97,46 @@ describe("W2-4b settings.permissionCatalog face — real catalog / honest fallba
 		expect(text).not.toMatch(/"apiKey"|"token"|"secret"/i)
 	})
 })
+
+// 025-w3-2 — the one PROJECTED_BY_HAND id now has a hand-written seam face.
+describe("W3-2 providerDirectory.discover — hand projection + safe request", () => {
+	test("llm.discoverModels -> SECOND-whitelisted models; request params forwarded without a key", async () => {
+		const { seam, requests } = harness({
+			"llm.discoverModels": { value: [
+				{ id: "m1", name: "Model One", contextWindow: 128000, maxTokens: 8192, inputModalities: ["text", "image"], apiKey: SENTINEL, baseURL: "https://secret" },
+				{ id: "m2", name: "Model Two", inputModalities: ["voice"] },
+			] },
+		})
+		const models = await seam.providerDirectory!.discover!("llm", { provider: "p1" })
+		expect(models).toEqual([
+			{ id: "m1", name: "Model One", contextWindow: 128000, maxTokens: 8192, inputModalities: ["text", "image"] },
+			{ id: "m2", name: "Model Two" },
+		])
+		expect(requests).toEqual([{ method: "llm.discoverModels", params: { settingsNs: "llm", request: { provider: "p1" } } }])
+		const text = JSON.stringify(models)
+		expect(text).not.toContain(SENTINEL)
+		expect(text).not.toContain("https://secret")
+		expect(text).not.toMatch(/"apiKey"|"baseURL"|"voice"/)
+	})
+
+	test("service absent -> UNSUPPORTED (never a fake-empty discovered list)", async () => {
+		const { seam } = harness({})
+		let rejected = false
+		try { await seam.providerDirectory!.discover!("llm", {}) } catch (err) {
+			rejected = err instanceof BridgeProtocolError && err.code === "UNSUPPORTED"
+		}
+		expect(rejected).toBe(true)
+	})
+
+	test("hostile reply: only whitelisted fields survive", async () => {
+		const { seam } = harness({
+			"llm.discoverModels": { value: [
+				{ id: "ok", token: SENTINEL, password: SENTINEL, extra: SENTINEL },
+				{ name: "no id" },
+			] },
+		})
+		const models = await seam.providerDirectory!.discover!("llm", {})
+		expect(models).toEqual([{ id: "ok" }])
+		expect(JSON.stringify(models)).not.toContain(SENTINEL)
+	})
+})

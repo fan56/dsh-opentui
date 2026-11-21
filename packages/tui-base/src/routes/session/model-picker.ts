@@ -110,3 +110,16 @@ export function buildModelPickerRows(
 
 	return [...favoriteRows, ...normalRows, ...hiddenRows]
 }
+
+/**
+ * 025-w3-2 — pure formatter for the discovered-model list rendered by the
+ * `/model discover` action. Kept here (no TUI imports) so the exact production
+ * text is shared by the seam-consumption unit test and the real-machine frame.
+ * Only the seam's SECOND-whitelisted fields are read — never a raw host row.
+ */
+export function formatDiscoveredModels(
+  models: ReadonlyArray<{ id: string; name?: string }>,
+  limit = 8,
+): string {
+  return models.slice(0, limit).map((m) => (m.name !== undefined ? `${m.id} (${m.name})` : m.id)).join(", ")
+}

@@ -85,6 +85,9 @@ import {
   resolveGenericWireMethod,
   type GenericCapConfig,
 } from './cap-generic'
+// 025-w3-2 — hand projection for the one PROJECTED_BY_HAND id; the generic
+// branch below refuses it, so this dedicated branch owns its wire reply.
+import { projectDiscoverModelsForWire } from './cap-discover-models'
 // NOTE: the bridge deliberately does NOT import `@deepseek-ai/dsh-llm/message`.
 // Keeping that import external (build script) made a clean npm-prefix install
 // fail at module load with ERR_MODULE_NOT_FOUND: the profile has no host
@@ -4131,6 +4134,31 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         const message = err instanceof Error ? err.message : String(err)
         const degraded = message.startsWith('NOT_WIRED') || message.includes('unavailable')
         replyError(req.id, degraded ? 'UNSUPPORTED' : 'INTERNAL', message)
+      }
+      return
+    }
+    // 025-w3-2 — hand-wired `llm/discoverModels` (the ONLY CAP_PROJECTED_BY_HAND
+    // id, AMEND-2). The generic branch below would refuse it with
+    // HAND_PROJECTION_REQUIRED -> UNSUPPORTED, so invoke the host adapter here
+    // and apply a FIXED whitelist before any frame crosses the wire. The
+    // request jsonSchema carries `apiKey` and the result has
+    // additionalProperties:true — neither is ever copied verbatim. The seam
+    // applies a SECOND whitelist on top. The E5 wire SENTINEL (generic refusal
+    // with a hostile reply) stays in cap-generic-arm.test.ts.
+    const discoverMethodId = CAP_GENERIC_WIRE_METHODS['llm.discoverModels']
+    if (req.method === 'llm.discoverModels' && discoverMethodId !== undefined) {
+      try {
+        const value = await createCapInvoke(ctx)({
+          methodId: discoverMethodId as never,
+          params: req.params ?? {},
+        })
+        replyOk(req.id, { value: projectDiscoverModelsForWire(value) })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        const code = message.startsWith('BAD_PARAMS') ? 'BAD_PARAMS'
+          : message.startsWith('NOT_WIRED') || message.includes('unavailable') ? 'UNSUPPORTED'
+            : 'INTERNAL'
+        replyError(req.id, code, message)
       }
       return
     }

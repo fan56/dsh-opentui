@@ -168,6 +168,29 @@ export interface SeamConfigurableProviderRow {
 }
 
 /**
+ * 025-w3-2 — the safe subset of `llm/discoverModels`' request. The host's
+ * schema also accepts an `apiKey`, but the TUI NEVER passes a credential to a
+ * discovery call: this closed shape has no key field at all. `baseURL` is an
+ * optional endpoint the user typed (it is the user's own value, not a host
+ * secret); the seam does not log it.
+ */
+export interface SeamModelDiscoveryRequest {
+	provider?: string
+	baseURL?: string
+	api?: string
+}
+
+/** 025-w3-2 — one discovered model from `llm/discoverModels` (SECOND whitelist:
+ * only the rendered fields cross; the result schema is additionalProperties:true). */
+export interface SeamDiscoveredModel {
+	id: string
+	name?: string
+	contextWindow?: number
+	maxTokens?: number
+	inputModalities?: Array<"text" | "image">
+}
+
+/**
  * 025-w2-5 — goal ref (`GoalRef`, hand-projected). The CAS token every goal
  * mutation rides; only stable id + positive revision cross the seam.
  */
@@ -812,6 +835,10 @@ export interface SessionSeam {
 	providerDirectory?: {
 		registered(): Promise<SeamLlmProviderRow[]>
 		configurable(): Promise<SeamConfigurableProviderRow[]>
+		/** 025-w3-2 — hand-written discovery face (the one PROJECTED_BY_HAND id).
+		 *  Service absence / no remote source REJECTS (UNSUPPORTED) — callers
+		 *  degrade honestly, never a fake-empty list. SECOND whitelist applies. */
+		discover?(settingsNs: string, request: SeamModelDiscoveryRequest): Promise<SeamDiscoveredModel[]>
 	}
 	/**
 	 * 025-w2-5 — goals status face (the `goals/*` ids). Optional; a seam without

@@ -10,11 +10,13 @@
  * never resolved values. Every function is pure and unit-testable without a
  * live host, and every hostile key is dropped.
  *
- * llm/discoverModels is NOT projected here: it is in CAP_PROJECTED_BY_HAND, so
- * its generic wire reply is refused with HAND_PROJECTION_REQUIRED. Its
- * AMEND-2 wire SENTINEL obligation is discharged in the W2-4a bridge unit
- * test; the network-dependent method has no UI consumer this batch (registered
- * NOT RUN in the proof backfill) — no dead face is added.
+ * llm/discoverModels IS projected here as of 025-w3-2: it remains in
+ * CAP_PROJECTED_BY_HAND (the generic wire still refuses it — the AMEND-2 E5
+ * SENTINEL test stays in cap-generic-arm.test.ts), but a hand-wired bridge
+ * branch now invokes the host adapter and applies a FIXED wire whitelist, and
+ * this SECOND projection repeats the whitelist at the seam boundary. Only
+ * id/name/contextWindow/maxTokens/inputModalities cross; the request's
+ * `apiKey` and the schema-open result never do.
  */
 import type {
   SeamPermissionCatalog,
@@ -141,4 +143,54 @@ export function projectPermissionCatalog(raw: unknown): SeamPermissionCatalog | 
   const defaultPreset = text(rec.defaultPreset, MAX_SHORT) ?? ""
   if (options.length === 0 && defaultOptions.length === 0 && defaultPreset === "") return undefined
   return { options, defaultOptions, defaultPreset }
+}
+
+/**
+ * 025-w3-2 — SECOND whitelist for the hand-wired `llm/discoverModels` face.
+ * Mirrors the bridge-side fixed whitelist (`cap-discover-models.ts`): only the
+ * five rendered fields cross, from an array (or its `{value:[...]}` wrap).
+ * `additionalProperties:true` on the result schema means hostile keys (apiKey,
+ * baseURL, token, ...) may hide in any row — every one is dropped here.
+ */
+export interface SeamDiscoveredModel {
+  id: string
+  name?: string
+  contextWindow?: number
+  maxTokens?: number
+  inputModalities?: Array<"text" | "image">
+}
+
+const MAX_NUM = 10_000_000
+
+function cappedNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.min(value, MAX_NUM)
+    : undefined
+}
+
+export function projectDiscoverModels(raw: unknown): SeamDiscoveredModel[] {
+  const value = unwrapWireValue(raw)
+  if (!Array.isArray(value)) return []
+  const out: SeamDiscoveredModel[] = []
+  for (const entry of value) {
+    const row = asRecord(entry)
+    const id = text(row.id, MAX_SHORT)
+    if (id === undefined || id === "") continue
+    const projected: SeamDiscoveredModel = { id }
+    const name = text(row.name, MAX_SHORT)
+    if (name !== undefined) projected.name = name
+    const cw = cappedNumber(row.contextWindow)
+    if (cw !== undefined) projected.contextWindow = cw
+    const mt = cappedNumber(row.maxTokens)
+    if (mt !== undefined) projected.maxTokens = mt
+    if (Array.isArray(row.inputModalities)) {
+      const mods = row.inputModalities
+        .filter((m): m is "text" | "image" => m === "text" || m === "image")
+        .slice(0, 4)
+      if (mods.length > 0) projected.inputModalities = mods
+    }
+    out.push(projected)
+    if (out.length >= MAX_ROWS) break
+  }
+  return out
 }

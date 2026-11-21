@@ -5,9 +5,11 @@
  * through the config seam, and the reactive getOptions source reflects the
  * toggles (favorites pinned to the top with a ★ prefix).
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import {
 	buildModelPickerRows,
+	formatDiscoveredModels,
 	modelKey,
 	narrowStringList,
 	readModelPrefsFromConfig,
@@ -223,4 +225,56 @@ describe("/model f/h wiring (A4)", () => {
 		])
 		expect(seamConfig().favoriteModels).toEqual(["anthropic/claude-x", "bigmodel/glm-5.3-flash"])
 	})
+})
+
+// 025-w3-2 — `/model discover` consumes the hand-written discoverModels face.
+describe("W3-2 discoverModels consumption", () => {
+	test("formatDiscoveredModels: SECOND-whitelisted fields only, bounded list", () => {
+		const list = formatDiscoveredModels([
+			{ id: "a", name: "A" }, { id: "b" }, { id: "c", name: "C" },
+		], 2)
+		expect(list).toBe("a (A), b")
+		expect(formatDiscoveredModels([])).toBe("")
+	})
+
+	test("/model discover renders found models; no credential in the request", async () => {
+		const calls: Array<[string, unknown]> = []
+		const seam = {
+			lastSelectionError: () => undefined,
+			currentModelSelection: async () => ({ providerID: "p1", modelID: "m0" }),
+			providerDirectory: {
+				discover: async (ns: string, req: unknown) => {
+					calls.push([ns, req]); return [{ id: "p1/m1", name: "M1" }, { id: "p1/m2" }]
+				},
+			},
+		} as unknown as SessionSeam
+		const lines: string[] = []
+		const ctx: SlashCommandContext = {
+			seam, say: (s) => lines.push(s), clear: () => {}, reload: () => {}, quit: () => {},
+			refreshFooter: () => {}, pickOne: async () => undefined,
+		}
+		const cmd = coreCommands().find((c) => c.name === "/model")!
+		await cmd.run(ctx, "discover")
+		expect(calls).toEqual([["llm", { provider: "p1" }]])
+		expect(JSON.stringify(calls)).not.toMatch(/apiKey|key|token/i)
+		expect(lines.some((l) => l.includes("p1/m1") && l.includes("M1"))).toBe(true)
+	})
+
+	test("/model discover with no face degrades honestly", async () => {
+		const seam = { lastSelectionError: () => undefined } as unknown as SessionSeam
+		const lines: string[] = []
+		const ctx: SlashCommandContext = {
+			seam, say: (s) => lines.push(s), clear: () => {}, reload: () => {}, quit: () => {},
+			refreshFooter: () => {}, pickOne: async () => undefined,
+		}
+		const cmd = coreCommands().find((c) => c.name === "/model")!
+		await cmd.run(ctx, "discover")
+		expect(lines.some((l) => /unavailable|不可用/.test(l))).toBe(true)
+		expect(lines.some((l) => /discovering|发现/.test(l))).toBe(false)
+	})
+})
+
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
 })
