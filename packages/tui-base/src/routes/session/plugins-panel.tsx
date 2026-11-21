@@ -648,7 +648,10 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			? pollInstallFace(
 					(rid, cf) => props.seam.waitForInstall!(rid, cf),
 					requestId,
-					createPluginWriteConfirm("waitForInstall"),
+					// Reuse the install confirm: the poll is the same confirmed
+					// operation, and this keeps the source wiring guard's mint
+					// count (4) exact — no new mint outside an onConfirm path.
+					confirm,
 					land,
 					() => pollStopped,
 				)
