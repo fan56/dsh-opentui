@@ -383,7 +383,15 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	async function toggle(row: PluginBundleView | undefined) {
 		if (row === undefined) return
 		if (busy()) return
-		if (!row.toggleable || typeof props.seam.setPluginBundleEnabled !== "function") {
+		// W2-2 S-5 (review S-4): the keymap advertises "enter toggle" while the
+		// phase-1 seam has no setPluginBundleEnabled face. That is "not wired
+		// yet", NOT a host-declared read-only — keep the wording honest instead
+		// of mislabeling every unwired press as "read-only".
+		if (typeof props.seam.setPluginBundleEnabled !== "function") {
+			flash(t("panel.plugins.status.toggleUnavailable", { name: row.name }), 4000)
+			return
+		}
+		if (!row.toggleable) {
 			flash(
 				row.readOnlyReason
 					? t("panel.plugins.status.readOnlyReason", { name: row.name, reason: row.readOnlyReason })

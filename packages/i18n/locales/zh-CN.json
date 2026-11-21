@@ -358,6 +358,7 @@
   "panel.plugins.dialog.installBodyDescription": "{preview} — {description}",
   "panel.plugins.status.readOnly": "{name}：只读",
   "panel.plugins.status.readOnlyReason": "{name}：只读（{reason}）",
+  "panel.plugins.status.toggleUnavailable": "{name}：此连接不支持切换（写接口尚未接线）",
   "panel.plugins.status.disabling": "正在禁用 {name}…",
   "panel.plugins.status.enabling": "正在启用 {name}…",
   "panel.plugins.status.changeFailed": "{name}：变更失败 — {error}",

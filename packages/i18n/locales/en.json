@@ -358,6 +358,7 @@
   "panel.plugins.dialog.installBodyDescription": "{preview} — {description}",
   "panel.plugins.status.readOnly": "{name}: read-only",
   "panel.plugins.status.readOnlyReason": "{name}: read-only ({reason})",
+  "panel.plugins.status.toggleUnavailable": "{name}: toggling unavailable on this seam (write face not wired yet)",
   "panel.plugins.status.disabling": "disabling {name}…",
   "panel.plugins.status.enabling": "enabling {name}…",
   "panel.plugins.status.changeFailed": "{name}: change failed — {error}",
