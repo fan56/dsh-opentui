@@ -622,18 +622,80 @@ describe("025-w1a plugins face (profile node_modules install manifest)", () => {
 })
 
 // ---------------------------------------------------------------------------
-// 025-w1a /btw — face wired + honest degradation (no fake answer)
+// 025-w2-1 /btw — real side session over the generic arm (no fake answer)
 // ---------------------------------------------------------------------------
 
-describe("025-w1a btwAsk face (wired + honest degrade)", () => {
-	test("btwAsk is a function; calling it rejects with an explicit side-session reason (never a fake answer)", async () => {
+const waitValue = (text: string) => ({
+	reason: "idle",
+	state: { cursor: 1, active: false, running: false, queue: null, pendingInput: [] },
+	output: { records: [{ type: "event", event: { type: "assistant/message", seq: 1, time: 1, data: { text } } }], truncated: false },
+})
+
+describe("025-w2-1 btwAsk face (real side session over generic arm)", () => {
+	test("btwAsk drives session.create -> prompt -> wait and returns the projected answer", async () => {
 		const h = makeHarness()
 		expect(typeof h.seam.btwAsk).toBe("function")
+		h.replies.set("session.create", { kind: "value", value: { sessionId: "side-1" } })
+		h.replies.set("session.prompt", { kind: "value", value: { accepted: true } })
+		h.replies.set("session.wait", { kind: "value", value: waitValue("pong answer") })
+
+		const answer = await h.seam.btwAsk("Reply with pong", ["ctx line"])
+		expect(answer).toBe("pong answer")
+		expect(h.requests.map((r) => r.method)).toEqual(["session.create", "session.prompt", "session.wait"])
+		// snapshot is reference-only, never the main session state
+		const prompt = h.lastRequest("session.prompt")?.params?.request as Record<string, unknown>
+		expect(prompt.mode).toBe("queue")
+		expect(JSON.stringify(prompt.content)).toContain("Reply with pong")
+	})
+
+	test("domain separation: a side session never rewrites currentSessionId", async () => {
+		const h = makeHarness()
+		h.replies.set("session.create", { kind: "value", value: { sessionId: "side-1" } })
+		h.replies.set("session.prompt", { kind: "value", value: { accepted: true } })
+		h.replies.set("session.wait", { kind: "value", value: waitValue("answer") })
+		expect(h.seam.currentSessionId()).toBeUndefined()
+		await h.seam.btwAsk("q", [])
+		expect(h.seam.currentSessionId()).toBeUndefined() // bound main session untouched
+		expect(h.seam.status().sessionAttached).toBe(false)
+	})
+
+	test("E3 NOT_WIRED degrades to UNSUPPORTED face reject (never a fake answer)", async () => {
+		const h = makeHarness()
+		h.replies.set("session.create", { kind: "error", error: new Error("NOT_WIRED: sessionController unavailable") })
 		const err = await h.seam.btwAsk("ping", []).then(() => undefined, (e) => e)
 		expect(err).toBeInstanceOf(BridgeProtocolError)
-		expect(err.code).toBe("SIDE_SESSION_NOT_WIRED")
-		expect(String(err.message)).toContain("side-session")
-		expect(String(err.message)).toContain("波2")
+		expect(err.code).toBe("UNSUPPORTED")
+		expect(String(err.message)).toContain("NOT_WIRED")
+	})
+
+	test("E5 SENTINEL: hostile keys in the wait reply never reach the side answer", async () => {
+		const h = makeHarness()
+		const hostile = waitValue("safe answer")
+		;(hostile.output.records[0]!.event.data as Record<string, unknown>).apiKey = "W21_SENTINEL"
+		;(hostile.output.records[0]!.event.data as Record<string, unknown>).token = "W21_SENTINEL"
+		h.replies.set("session.create", { kind: "value", value: { sessionId: "side-1" } })
+		h.replies.set("session.prompt", { kind: "value", value: { accepted: true } })
+		h.replies.set("session.wait", { kind: "value", value: hostile })
+		const answer = await h.seam.btwAsk("q", [])
+		expect(answer).toBe("safe answer")
+		expect(answer).not.toContain("W21_SENTINEL")
+		expect(answer).not.toMatch(/apiKey|token/i)
+	})
+
+	test("single in-flight side call: a concurrent btwAsk rejects SIDE_SESSION_BUSY", async () => {
+		const h = makeHarness()
+		let release!: (v: unknown) => void
+		const gate = new Promise<unknown>((resolve) => { release = resolve })
+		h.replies.set("session.create", { kind: "fn", fn: () => ({ kind: "value", value: gate }) as never })
+		const first = h.seam.btwAsk("q1", [])
+		await Promise.resolve() // let the first claim the in-flight flag
+		const second = await h.seam.btwAsk("q2", []).then(() => undefined, (e) => e)
+		expect(second).toBeInstanceOf(BridgeProtocolError)
+		expect((second as BridgeProtocolError).code).toBe("SIDE_SESSION_BUSY")
+		release({ sessionId: "side-1" })
+		h.replies.set("session.prompt", { kind: "value", value: { accepted: true } })
+		h.replies.set("session.wait", { kind: "value", value: waitValue("q1 answer") })
+		expect(await first).toBe("q1 answer")
 	})
 })
 

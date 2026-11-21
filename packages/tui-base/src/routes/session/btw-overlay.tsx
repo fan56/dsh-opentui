@@ -34,6 +34,19 @@ export type BtwAskFn = (
 	onDelta: (full: string) => void,
 ) => Promise<string>
 
+/**
+ * 025-w2-1 — map a side-session failure code to the honest locale degrade text.
+ * Unknown/codes we do not own fall back to the raw `error: …` message so the
+ * generic-Error contract (and existing overlay tests) is unchanged.
+ */
+export function btwDegradeText(code: unknown): string | undefined {
+  if (code === "UNSUPPORTED" || code === "SIDE_SESSION_UNAVAILABLE") return `error: ${t("command.btw.noModel")}`
+  if (code === "SIDE_SESSION_NO_ANSWER") return `error: ${t("command.btw.noAnswer")}`
+  if (code === "SIDE_SESSION_BUSY") return `error: ${t("command.btw.busy")}`
+  if (code === "SIDE_SESSION_FAILED" || code === "SIDE_SESSION_PROMPT_REJECTED") return `error: ${t("command.btw.failed")}`
+  return undefined
+}
+
 /** Max queued questions behind a running side call (reference parity: bounded). */
 export const BTW_QUEUE_CAPACITY = 3
 
@@ -129,7 +142,9 @@ export class BtwController {
 				this.#settle(answer.startsWith("error:") ? "error" : "settled", answer)
 			})
 			.catch((error: unknown) => {
-				this.#settle("error", `error: ${error instanceof Error ? error.message : String(error)}`)
+				const code = error !== null && typeof error === "object" ? (error as { code?: unknown }).code : undefined
+				const degrade = btwDegradeText(code)
+				this.#settle("error", degrade ?? `error: ${error instanceof Error ? error.message : String(error)}`)
 			})
 	}
 

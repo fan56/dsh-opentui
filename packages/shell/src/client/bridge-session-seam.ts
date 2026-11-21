@@ -56,6 +56,8 @@ import type { HistoryJournalEntry } from "../../../tui-base/src/routes/session/h
 // S6: the shared journal projector moved to its permanent home so the bridge
 // path survives the legacy seam deletion (zero behavior change).
 import { projectJournalRecord } from "./journal-projection.ts"
+// 025-w2-1 — /btw side session (create -> prompt -> wait) over the generic arm.
+import { runSideSession, SideSessionError } from "./bridge-side-session.ts"
 import { tokensPerSecond } from "../agent/loop.ts"
 // S5 — real local config/settings/agents faces replace the old `{}` / honest-
 // failure degrades (no mocks; every read/write touches the operator's files).
@@ -1582,6 +1584,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	#pendingOpen: { mode: "resume"; id: string } | { mode: "new" } | undefined
 	/** Turn id of the single in-flight turn (drives interrupt()/status()). */
 	#inFlightTurnId: string | undefined
+	/** 025-w2-1 /btw: single in-flight side call + last throwaway id (domain
+	 *  SEPARATE from #currentSessionId / SessionBinding — a side session never
+	 *  rewrites the bound main session). */
+	#sideSessionInFlight = false
+	#lastSideSessionId: string | undefined
 	/** Live callbacks of the in-flight turn (set before send to catch early deltas). */
 	#activeCallbacks: SeamTurnCallbacks | undefined
 	/** Terminal-event waiter for the in-flight turn. */
@@ -3481,21 +3488,54 @@ export class BridgeSessionSeam implements SessionSeam {
 	// ----- out-of-batch members: honest D3 stubs (later batch) --------------
 
 	/**
-	 * 025-w1a — /btw side-question face (coordinator ruling 2: wire the face +
-	 * HONEST degradation, no fake answer, NOT a NOT RUN). The remote adapter
-	 * serves btwAsk over a throwaway second session (`session/create` + follow),
-	 * but the inproc bridge has no side-session route and `session/create` is a
-	 * CapIR gap (audit §2). So the face exists — the /btw command no longer
-	 * hits `!ctx.seam.btwAsk` — but calling it rejects with an explicit reason
-	 * the overlay paints as `error: …` (the honest degrade contract). 波2 wires
-	 * the throwaway session and this same face becomes real without a command
-	 * change. No mocked LLM answer is ever resolved.
+	 * 025-w2-1 — /btw side-question face, now REAL over the generic arm.
+	 *
+	 * The three side-session ids (session/create|prompt|wait) were released into
+	 * CAP_GENERIC_ADAPTERS in W2-1a; this face drives the seam-side lifecycle
+	 * module (create -> prompt -> wait, bounded plain-text projection). Domain
+	 * separation (plan §5.1): the throwaway id lives in #lastSideSessionId,
+	 * NEVER in #currentSessionId / SessionBinding. A service-absent / empty /
+	 * timeout result rejects or resolves-empty with an HONEST degrade — no
+	 * mocked LLM answer is ever fabricated. One side call at a time (simple
+	 * lifecycle, no pool — deferred concurrency stays documented).
 	 */
-	btwAsk(_question: string, _snapshot: string[], _onDelta?: (full: string) => void): Promise<string> {
-		return Promise.reject(new BridgeProtocolError(
-			"SIDE_SESSION_NOT_WIRED",
-			"/btw: side-session 未在 inproc 接线（session/create 属 CapIR gap）；波2 接线后本 face 自然激活",
-		))
+	async btwAsk(question: string, snapshot: string[], onDelta?: (full: string) => void): Promise<string> {
+		if (this.#sideSessionInFlight) {
+			throw new BridgeProtocolError("SIDE_SESSION_BUSY", "/btw: a side question is already running")
+		}
+		this.#sideSessionInFlight = true
+		try {
+			const result = await runSideSession({
+				rpc: (method, params) => this.#transport.request(method, params),
+				question,
+				snapshot,
+				onDelta,
+				...(this.#lastSideSessionId !== undefined ? { sessionId: this.#lastSideSessionId } : {}),
+			})
+			// Reuse the throwaway for the next question (one-session pollution cap).
+			this.#lastSideSessionId = result.sessionId
+			if (result.answer === "") {
+				// Honest degrade: no model / timeout / all records filtered. Never
+				// a fabricated answer, never a silent empty success the UI paints
+				// as a real reply. Message is i18n-free structural text; the layer
+				// above maps UNSUPPORTED/no-answer to the locale degrade key.
+				throw new BridgeProtocolError(
+					"SIDE_SESSION_NO_ANSWER",
+					`/btw: side-session produced no answer (${result.reason})${result.truncated ? ", truncated" : ""}`,
+				)
+			}
+			return result.answer
+		} catch (err) {
+			if (err instanceof SideSessionError) {
+				// Map the module's precise code to the ADR-0010 reply surface:
+				// UNAVAILABLE -> UNSUPPORTED (face reject -> locale degrade text).
+				const code = err.code === "SIDE_SESSION_UNAVAILABLE" ? "UNSUPPORTED" : err.code
+				throw new BridgeProtocolError(code, err.message)
+			}
+			throw err
+		} finally {
+			this.#sideSessionInFlight = false
+		}
 	}
 
 	/**
