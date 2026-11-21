@@ -81,6 +81,7 @@
   "command.goals.description": "show the current goal / manage goals",
   "command.goals.unavailable": "/goals unavailable in this session",
   "command.goals.degraded": "/goals: goals service unavailable or no active session",
+  "command.goals.unknownOp": "unknown /goals subcommand \"{op}\" — showing status (try: create, edit, pause, resume, complete, clear)",
   "command.goals.none": "no current goal",
   "command.goals.header": "Current goal",
   "command.goals.objective": "  objective: {text}",

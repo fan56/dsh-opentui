@@ -18,7 +18,26 @@ export type GoalsOp =
 	| { kind: "edit"; objective: string }
 	| { kind: "pause" | "resume" | "complete" | "clear" }
 
-const WRITE_OPS = new Set(["create", "edit", "pause", "resume", "complete", "clear"])
+const KNOWN_OPS = new Set(["create", "edit", "pause", "resume", "complete", "clear"])
+
+/**
+ * The misspelled subcommand token, or undefined when the input is a bare read
+ * or a recognized op. `parseGoalsArgs` keeps its historical status fallback;
+ * this separate probe lets the command surface an explicit hint so a typo like
+ * `/goals destory` no longer silently degrades to a status read.
+ */
+export function goalsUnknownOp(argText: string): string | undefined {
+	const trimmed = argText.trim()
+	if (trimmed === "") return undefined
+	const space = trimmed.search(/\s/)
+	const token = (space < 0 ? trimmed : trimmed.slice(0, space)).toLowerCase()
+	return KNOWN_OPS.has(token) ? undefined : token
+}
+
+/** i18n hint for a misspelled `/goals` subcommand (en/zh keyed, parity-checked). */
+export function goalsUnknownOpHint(token: string): string {
+	return t("command.goals.unknownOp", { op: token.slice(0, 48) })
+}
 
 /**
  * Parse `/goals [op] [text]`. Unknown or missing op -> status; bare write op
@@ -77,8 +96,5 @@ export function goalsConfirmOptions(): { title: string; value: string }[] {
 
 export function goalsConfirmTitle(op: GoalsOp): string {
 	if (op.kind === "status") return ""
-	if (op.kind === "create" || op.kind === "edit") return t(`command.goals.confirm.${op.kind}`)
 	return t(`command.goals.confirm.${op.kind}`)
 }
-
-export const GOALS_WRITE_OPS = WRITE_OPS

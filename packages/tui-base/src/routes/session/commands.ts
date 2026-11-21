@@ -40,6 +40,8 @@ import {
 	formatGoalStatus,
 	goalsConfirmOptions,
 	goalsConfirmTitle,
+	goalsUnknownOp,
+	goalsUnknownOpHint,
 	parseGoalsArgs,
 } from "./goals-command"
 import {
@@ -1172,6 +1174,10 @@ export function coreCommands(): SlashCommand[] {
 					ctx.say(t("command.goals.unavailable"))
 					return
 				}
+				// W2-5 S-3 hygiene: a misspelled subcommand used to fall through to
+				// status silently. Surface an explicit, i18n-keyed hint first.
+				const unknownOp = goalsUnknownOp(argText)
+				if (unknownOp !== undefined) ctx.say(goalsUnknownOpHint(unknownOp))
 				const op = parseGoalsArgs(argText)
 				if (op.kind === "status") {
 					try {

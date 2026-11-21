@@ -10,6 +10,8 @@ import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
 import { coreCommands, type SlashCommandContext } from "../src/routes/session/commands"
 import {
 	formatGoalStatus,
+	goalsUnknownOp,
+	goalsUnknownOpHint,
 	isGoalsWriteOp,
 	parseGoalsArgs,
 } from "../src/routes/session/goals-command"
@@ -36,6 +38,22 @@ describe("goals pure helpers", () => {
 		expect(parseGoalsArgs("COMPLETE")).toEqual({ kind: "complete" })
 		expect(isGoalsWriteOp({ kind: "status" })).toBe(false)
 		expect(isGoalsWriteOp({ kind: "clear" })).toBe(true)
+	})
+
+	test("goalsUnknownOp: bare/read and known ops return undefined; typo returns the token", () => {
+		expect(goalsUnknownOp("")).toBeUndefined()
+		expect(goalsUnknownOp("  ")).toBeUndefined()
+		expect(goalsUnknownOp("create make it green")).toBeUndefined()
+		expect(goalsUnknownOp("PAUSE")).toBeUndefined() // case-insensitive
+		expect(goalsUnknownOp("destory everything")).toBe("destory")
+		expect(goalsUnknownOp("  Destory  everything  ")).toBe("destory")
+	})
+
+	test("goalsUnknownOpHint: i18n-keyed, echoes the capped token", () => {
+		const hint = goalsUnknownOpHint("destory")
+		expect(hint).toContain("destory")
+		expect(hint.toLowerCase()).toContain("unknown")
+		expect(goalsUnknownOpHint("x".repeat(200))).toContain("x".repeat(48))
 	})
 
 	test("formatGoalStatus: answer-bearing rows carry objective/phase/ref; no raw object", () => {
@@ -100,6 +118,16 @@ describe("/goals command — status / degrade / explicit confirm", () => {
 		await runGoals(ctx, "")
 		expect(lines.join("\n")).toContain("Reach 100% green")
 		expect(writes).toBe(0)
+	})
+
+	test("misspelled subcommand -> explicit hint, then the historical status fallback", async () => {
+		const { ctx, lines } = makeCtx(undefined)
+		await runGoals(ctx, "destory")
+		const out = lines.join("\n")
+		expect(out).toContain("unknown /goals subcommand")
+		expect(out).toContain("destory")
+		// status fallback preserved (parseGoalsArgs contract unchanged)
+		expect(out).toContain("Reach 100% green")
 	})
 
 	test("no seam face -> honest unavailable notice", async () => {
