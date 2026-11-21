@@ -32,6 +32,7 @@
                        │   packages/shell/bin/dsh-opentui.mjs         │
                        │   · spawn bun + 转发 SIGINT/SIGTERM/SIGHUP   │
                        │     (bin:534,550-552)                        │
+                       │   · spawn 无 detached（保 TTY/Ctrl-C）        │
                        │   · 信号退出码 128+N；正常透传 client rc      │
                        │     (bin:557-560)                            │
                        └───────────────────┬──────────────────────────┘
@@ -41,24 +42,24 @@
                        │   client-entry.tsx:440-459                   │
                        │     → v2-entry.tsx 生产 boot 合成根           │
                        │   · ClientConnection / RemoteHostSession      │
-                       │     (HTTP 宿主：config/label/lifecycle 保留面)│
-                       │     (v2-entry.tsx:1587-1605)                  │
+                       │     (HTTP 宿主：label/lifecycle + boot 期     │
+                       │      theme/skin 残留；v2-entry.tsx:1587-1605) │
                        │   · StdioBridgeTransport → BridgeSessionSeam  │
                        │     (唯一 session seam, v2-entry.tsx:1625)    │
                        │   · FocusRouter / 27 命令 / panel-kit         │
                        └────────┬──────────────────────┬───────────────┘
                                 │ stdio JSON-lines     │ HTTP (cookie / authority)
-                                │ DSH_OPENTUI_         │ ADR-0009 0.22.0 已知过渡债
-                                │ BRIDGE_STDIO=1       │ (非从属 TUI 的 config 宿主)
+                                │ DSH_OPENTUI_         │ ADR-0009 双宿主过渡债
+                                │ BRIDGE_STDIO=1       │ （S5 已 config 本地化，通路未拆）
                                 │ (bridge-transport.ts │
                                 │  :183-190)           │
                 ┌───────────────▼──────────────────┐  ┌─▼──────────────────────┐
                 │ 段 3  宿主 node 进程              │  │ detached HTTP 宿主      │
                 │   dsh --profile opentui-inproc    │  │  lifecycle.ensureV2Host │
                 │   硬桩①：宿主不能跑 bun            │  │  (v2-entry.tsx:1561)   │
-                │   (ADR-0009:27)                   │  │  仅 config 面           │
-                │ ┌───────────────────────────────┐ │  └────────────────────────┘
-                │ │ bridge = cordis bundle        │ │
+                │   (ADR-0009:27)                   │  │  label/lifecycle +      │
+                │ ┌───────────────────────────────┐ │  │  boot theme/skin 残留   │
+                │ │ bridge = cordis bundle        │ │  └────────────────────────┘
                 │ │  packages/bridge (宿主进程内)  │ │
                 │ │  inject: ['agents','typert']   │ │
                 │ │  (index.ts:568)               │ │
@@ -71,7 +72,9 @@
                 └────────────────────────────────────┘
 ```
 
-硬桩（两进程方案的不可消解约束）：宿主不能跑 bun（N-API addon 调 Node 私有模块，`docs/adr/0009-inprocess-session-bridge.md:27`）；node 后端 OpenTUI 0.8.x 不 flush 帧（同 ADR `:28`；本仓 `CHANGELOG.md:968` 现文，ADR 原引 `:564` 已随 CHANGELOG 演进空白）。因此「单进程 + 现有渲染栈」不可行，取方案 D：bridge 作为宿主进程内 bundle，TUI 仍是独立 bun 进程（`ADR-0009:44`）。
+> 段 1「spawn 无 detached」补注来源：`025-architecture-doc-review-oldfox.md` §三 SUGGESTION-3（`bin/dsh-opentui.mjs:534-539`：client 留在 launcher 前台进程组，保 TTY/Ctrl-C 语义——排障「为何 Ctrl-C 两进程都收到」的关键结构事实）。
+
+硬桩（两进程方案的不可消解约束）：宿主不能跑 bun（N-API addon 调 Node 私有模块，`docs/adr/0009-inprocess-session-bridge.md:27`）；node 后端 OpenTUI 0.8.x 不 flush 帧（同 ADR `:28`；本仓 `CHANGELOG.md:968` 现文；ADR 原引 `:564` 的内容已随 CHANGELOG 演进不再对应（现为无关段落），故按现文定位）。因此「单进程 + 现有渲染栈」不可行，取方案 D：bridge 作为宿主进程内 bundle，TUI 仍是独立 bun 进程（`ADR-0009:44`）。
 
 ## 阅读顺序
 

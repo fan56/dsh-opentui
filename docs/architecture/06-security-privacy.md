@@ -29,12 +29,12 @@ auth URL（`SignInAttemptView.authorizeUrl`，含 `code_challenge`/`state`；PKC
 
 键名剥离不够时改用构造式白名单：
 
-- **account**：`projectAccountViewForFrame` 只产出 `status ∈ {signed-out, credential-stored}`、`attemptPhase ∈ {7 个有界枚举}`、`authorizeUrlReady`（布尔，仅存在性）、`linksPresent`（布尔）；非白名单一律 `null`/布尔（`index.ts:370-408`）。非 view unary 方法用 `projectAccountScalarResult` 只回 `running/present/count/ok`（`:410-432`）。四个 view 返回方法必须走投影，**不得依赖键名剥离**——后者会放过 `links.usageUrl/topUpUrl` 原文（`024-s4-review-oldfox.md:96`；`index.ts:1260-1264`）。
+- **account**：`projectAccountViewForFrame` 只产出 `status ∈ {signed-out, credential-stored}`、`attemptPhase ∈ {8 个有界枚举}`、`authorizeUrlReady`（布尔，仅存在性）、`linksPresent`（布尔）；非白名单一律 `null`/布尔（`index.ts:370-408`）。非 view unary 方法用 `projectAccountScalarResult` 只回 `running/present/count/ok`（`:410-432`）。四个 view 返回方法必须走投影，**不得依赖键名剥离**——后者会放过 `links.usageUrl/topUpUrl` 原文（`024-s4-review-oldfox.md:96`；`index.ts:1260-1264`）。
 - **settings**：`LocalSettingsStore.describe()` 对三个 namespace（`subagent`/`permission`/`session-log-deepseek`）按 `NS_VALUE_FIELDS` **逐字段构造** value 与 schema，无宿主对象 spread；非白名单 ns 只给 `{ns, revision}` 零 value 字段；`mutate()` 只接受白名单 ns + 首段路径（`packages/shell/src/client/local-config-faces.ts:47-72,189-235,239-261`；评审 `024-s5-review-oldfox.md:28`）。`configSave()` 只接受 `CONFIG_KEYS`（`local-config-faces.ts:76-82,318`）。
 
 ## 6.4 凭据纪律（只报键名）
 
-`CredentialInfo` 由宿主逐字段 redact 成「键名 + 有无」，永不有值（`index.ts:330-342`，`credentials.ts:63-66,88-90`）；桥不 import 宿主包，按稳定 `this.name` 映射错误类（`ADR-0010:144-154`）。证据与日志约定：凭据/密钥值零落盘，只记键名与有无/布尔；sentinel 运行时构造、不入盘（`024-s2-credentials-slice.md:8`；`024-s4-pkce-slice.md:151`；`024-s5-config-slice.md:157,172`）。
+`CredentialInfo` 由宿主逐字段 redact 成「键名 + 有无」，永不有值（`index.ts:330-342`；宿主侧 `@deepseek-ai/dsh-api-settings-controller/src/credentials.ts:63-66,88-90`，非本仓文件）；桥不 import 宿主包，按稳定 `this.name` 映射错误类（`ADR-0010:144-154`）。证据与日志约定：凭据/密钥值零落盘，只记键名与有无/布尔；sentinel 运行时构造、不入盘（`024-s2-credentials-slice.md:8`；`024-s4-pkce-slice.md:151`；`024-s5-config-slice.md:157,172`）。
 
 ## 6.5 N1 转义段冻结（禁扩 needle）
 
