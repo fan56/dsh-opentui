@@ -32,7 +32,7 @@ const fail = (msg) => {
 
 const capir = JSON.parse(readFileSync(CAPIR_PATH, "utf8"))
 if (capir.attribution !== ATTRIBUTION) fail("capir attribution mismatch")
-if (capir.schema !== "dsh-opentui.capir/2") fail("unexpected capir schema: " + capir.schema)
+if (capir.schema !== "dsh-opentui.capir/3") fail("unexpected capir schema: " + capir.schema)
 
 const methods = capir.artifacts.flatMap((a) => a.methods)
 const ids = methods.map((m) => m.id)

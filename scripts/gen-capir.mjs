@@ -26,7 +26,7 @@ import { fileURLToPath } from "node:url"
 
 const ATTRIBUTION =
   "Derived from deepseek-ai/deepseek-harness (MIT, Copyright (c) 2026 DeepSeek)"
-const SCHEMA = "dsh-opentui.capir/2"
+const SCHEMA = "dsh-opentui.capir/3"
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
 const fail = (msg) => {
@@ -74,13 +74,47 @@ const artifacts = src.artifacts.map((a) => {
     // own input key `endpoints_map`; only the emitted CapIR field changes).
     endpoints_count: a.endpoints_map,
     scope_variants: a.scope_variants,
-    methods: a.methods.map((m) => ({
-      id: `${a.package}#${m.key}`,
-      namespace: m.namespace,
-      name: m.name,
-      kind: m.kind,
-      class: m.class,
-    })),
+    methods: a.methods.map((m) => {
+      // Under schema/3 the five legacy keys stay first and byte-identical;
+      // every v3 field is appended AFTER them so the diff is pure addition
+      // (hidden coupling 2 / §10 of the wave-2 plan: no key reordering).
+      const row = {
+        id: `${a.package}#${m.key}`,
+        namespace: m.namespace,
+        name: m.name,
+        kind: m.kind,
+        class: m.class,
+      }
+      // v3 additive dimensions — all sourced from the in-repo extractor v2.
+      if (typeof m.service !== "string" || m.service.length === 0) {
+        fail("extractor JSON method missing service: " + m.key)
+      }
+      if (!Array.isArray(m.params)) fail("extractor JSON method missing params[]: " + m.key)
+      const ALLOWED_TYPES = new Set(["string", "boolean", "number", "object", "array", "union"])
+      const params = m.params.map((p) => {
+        if (typeof p.name !== "string" || typeof p.required !== "boolean" || !ALLOWED_TYPES.has(p.type)) {
+          fail("extractor JSON bad param row in " + m.key)
+        }
+        const np = { name: p.name, required: p.required, type: p.type }
+        if (p.typeSymbol !== undefined) np.typeSymbol = p.typeSymbol
+        if (p.enum !== undefined) np.enum = p.enum
+        np.jsonSchema = p.jsonSchema === undefined ? null : p.jsonSchema
+        return np
+      })
+      row.service = m.service
+      if (m.implementation !== undefined) row.implementation = m.implementation
+      row.params = params
+      if (m.result !== undefined) {
+        const r = {}
+        if (m.result.typeSymbol !== undefined) r.typeSymbol = m.result.typeSymbol
+        r.jsonSchema = m.result.jsonSchema === undefined ? null : m.result.jsonSchema
+        row.result = r
+      }
+      if (m.stream !== undefined) row.stream = m.stream
+      if (m.cancel !== undefined) row.cancel = m.cancel
+      if (m.scope !== undefined) row.scope = m.scope
+      return row
+    }),
   }
 })
 
@@ -122,6 +156,8 @@ const capir = {
     endpoints_session_controller: src.totals.endpoints_session_controller_map,
     endpoints_global_map_sum: src.totals.endpoints_global_map_sum,
     scope_variants_global: src.totals.scope_variants_global,
+    // v3 additive count: every method carries params[] (empty array for zero-arg methods).
+    methods_with_params: allMethods.filter((m) => Array.isArray(m.params)).length,
   },
   artifacts,
 }
