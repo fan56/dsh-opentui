@@ -28,7 +28,7 @@
 
 ## 8.4 已知残留（不阻塞冻结，随切片/末期处置）
 
-路线 b（全集 257 通用调用）待 CapIR params schema，属底座解冻事项，非 tag 前提（`024-base-frozen.md:25`；`024-tag-premise-adjudication-oldfox.md:60-65`）。#9 deny-list 换名臆造盲区（N3.1）、#10 静态半边依赖 smoke 时点（N3.2）、UJ1 stdio 尾随文案、NOT RUN 清单均原样登记（同冻结报告 `:22-28`）。
+路线 b（全集 257 通用调用）待 CapIR params schema 的残留已关闭：CapIR v3 已解冻再冻结 @ `bd37e9e`（025 波2 W2-0e，additive-only params/service/result + 休眠 generic arm + ledger deferred_reason；证据链 `docs/025-wave2-w8-unfreeze-refreeze.md`，决策 `docs/adr/0012-wave2-params-table-generic-dispatch.md`）。#9 deny-list 换名臆造盲区（N3.1）、#10 静态半边依赖 smoke 时点（N3.2）、UJ1 stdio 尾随文案、NOT RUN 清单均原样登记（同冻结报告 `:22-28`）。
 
 ## 维护责任
 
