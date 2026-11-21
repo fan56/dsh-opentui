@@ -111,9 +111,11 @@ resize、空转录、dock 隐藏、错误态）、按键路由 6 case（`key-rou
 3. **ft 覆盖集中 tui-base**：`packages/shell` 没有 renderer 级测试，客户端协议的"真帧"路径
    只由 e2e 覆盖。
 4. **e2e 的 live 腿依赖真实模型**：输出受模型/网络影响，断言以回执行文本为主，存在 flake 风险。
-   因此 live 腿是显式 opt-in（`DSH_E2E_LIVE=1`），默认 `bun run test:e2e` 不跑；默认基线是
-   本地 flows（本地假模型）+ 容器套件（mock 模型）。key 失效不会把整层打红 —— 但也不会被算作通过，
-   输出里逐条打印 `SKIP ... 原因`。
+   因此 live 腿是显式 opt-in（`DSH_E2E_LIVE=1`），默认 `bun run test:e2e` 不跑；该命令的默认
+   基线是本地 flows（本地假模型）。旧 podman 容器套件已于 025-w3-2 下线（ADR-0013），容器槽记
+   NOT RUN、不计绿；现行 e2e 覆盖由 host families（`e2e/families/`）+ verify70 真机配方
+   （实 64 项）+ 单测 / CI pack gate 接管（同 §1.2 与 §5）。key 失效不会把整层打红 —— 但也不会
+   被算作通过，输出里逐条打印 `SKIP ... 原因`。
 5. **Windows 不支持 ui/e2e**：tmux 依赖使其只能在 macOS/Linux 跑；unit/ft 跨平台。
 6. **对比度只测默认主题**：`ui-matrix` 用主题默认 fg/bg 计算 WCAG 比值，主题切换后的对比度
    未矩阵化。
