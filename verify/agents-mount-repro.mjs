@@ -1202,8 +1202,16 @@ try {
   // a `dsh  … 🤖 …` powerline plus a `⌨ …` hint row (frame evidence: both
   // geometries have zero 🧠). Keying on 🧠 gave powerIdx=-1 → false red. Locate
   // the footer by the `⌨` hint row, falling back to the `dsh ` powerline row.
-  const hintIdx = lines.map((l) => l.includes('⌨')).lastIndexOf(true)
-  const dshIdx = lines.map((l) => /^\s*dsh\s/.test(l)).lastIndexOf(true)
+  // 025-w1a [H] locator fix (baseline fab41ac red on this item): the powerline
+  // row is SGR-colored, so its text starts with `\x1b[…m` AFTER the leading
+  // spaces — `^\s*dsh` saw -1 even though the row was painted. Strip ANSI
+  // before matching. The ASSERTION below is byte-for-byte unchanged: still
+  // "composer box on screen, powerline row present & after the box, editor
+  // row not pushed off" — this only fixes a false-negative locator, not the
+  // pass criterion (W2 预防条款1 / oldfox review to double-check equivalence).
+  const plain = (s) => s.replace(/\x1b\[[0-9;]*m/g, '')
+  const hintIdx = lines.map((l) => plain(l).includes('⌨')).lastIndexOf(true)
+  const dshIdx = lines.map((l) => /^\s*dsh\b/.test(plain(l))).lastIndexOf(true)
   const powerIdx = hintIdx >= 0 ? hintIdx : dshIdx
   const rows80 = composerRows(out80).map((l) => l.trimStart())
   const editorRow = rows80.at(-1) ?? ''
