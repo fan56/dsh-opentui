@@ -180,6 +180,50 @@ function atomicWrite(path: string, text: string): void {
 	}
 }
 
+/**
+ * 025-w1b C1 — field-by-field whitelisted YAML block for one provider route.
+ * Every value is validated and quoted so NO unknown key, newline or YAML
+ * injection can cross from the login form into the user-owned patch. Returns
+ * undefined on any invalid field (the caller then refuses the write entirely).
+ * Only the five providerProfileFor() fields are recognised; extra keys are
+ * dropped, never passed through.
+ */
+function buildLoginRouteBlock(providerId: string, profile: Record<string, unknown>): string[] | undefined {
+	const block = [`      ${providerId}:`]
+	const apiKeyEnv = typeof profile.apiKeyEnv === "string" ? profile.apiKeyEnv : ""
+	if (apiKeyEnv !== "") {
+		if (!/^[A-Za-z0-9_]+$/.test(apiKeyEnv)) return undefined
+		block.push(`        apiKeyEnv: ${apiKeyEnv}`)
+	}
+	if (profile.api !== undefined) {
+		if (typeof profile.api !== "string" || !/^[A-Za-z0-9_.-]+$/.test(profile.api)) return undefined
+		block.push(`        api: ${profile.api}`)
+	}
+	if (profile.baseURL !== undefined) {
+		if (typeof profile.baseURL !== "string" || !/^https?:\/\/\S+$/.test(profile.baseURL)) return undefined
+		block.push(`        baseURL: ${JSON.stringify(profile.baseURL)}`)
+	}
+	if (profile.displayName !== undefined) {
+		if (typeof profile.displayName !== "string" || /[\r\n]/.test(profile.displayName)) return undefined
+		block.push(`        displayName: ${JSON.stringify(profile.displayName)}`)
+	}
+	if (profile.models !== undefined) {
+		if (!Array.isArray(profile.models)) return undefined
+		block.push("        models:")
+		for (const entry of profile.models) {
+			const m = asRecord(entry)
+			const id = m.id
+			if (typeof id !== "string" || !id || /[\r\n\x00-\x1f]/.test(id)) return undefined
+			block.push(`          - id: ${JSON.stringify(id)}`)
+			if (m.name !== undefined) {
+				if (typeof m.name !== "string" || /[\r\n\x00-\x1f]/.test(m.name)) return undefined
+				block.push(`            name: ${JSON.stringify(m.name)}`)
+			}
+		}
+	}
+	return block
+}
+
 // ---------------------------------------------------------------------------
 // Local settings document face
 // ---------------------------------------------------------------------------
@@ -649,9 +693,15 @@ export class LocalLoginFace {
 			if (pStart < 0) return true // clearing an absent route is a no-op
 			lines.splice(pStart, pEnd - pStart)
 		} else {
-			const apiKeyEnv = typeof profile.apiKeyEnv === "string" ? profile.apiKeyEnv : ""
-			const safeRef = /^[A-Za-z0-9_]+$/.test(apiKeyEnv) ? apiKeyEnv : ""
-			const block = [`      ${providerId}:`, ...(safeRef ? [`        apiKeyEnv: ${safeRef}`] : [])]
+			// C1 (025-w1b) — a custom route is only usable if ALL of its profile
+			// fields are persisted. providerProfileFor() hands us
+			// {apiKeyEnv, api, baseURL, models, displayName}; dropping the last
+			// four made the form report `subscribed` while the route stayed dead.
+			// C2 — providerId now passes the same charset gate as routes()/validateRouteId
+			// before it is spliced into a YAML key line (apiKeyEnv already had safeRef).
+			if (!/^[A-Za-z0-9_.-]+$/.test(providerId)) return false
+			const block = buildLoginRouteBlock(providerId, profile)
+			if (block === undefined) return false
 			if (pStart >= 0) lines.splice(pStart, pEnd - pStart, ...block)
 			else lines.splice(providersLine + 1, 0, ...block)
 		}
@@ -672,7 +722,16 @@ export class LocalLoginFace {
 
 	#writeKeys(keys: Record<string, string>): void {
 		mkdirSync(dirname(this.#keysPath), { recursive: true })
-		atomicWrite(this.#keysPath, JSON.stringify(keys, null, 2) + "\n")
-		try { chmodSync(this.#keysPath, 0o600) } catch { /* best effort on non-posix */ }
+		// C3 (025-w1b) — create the temp file ALREADY owner-only so there is no
+		// 0644 window between atomicWrite (rename) and a later chmod.
+		const tmp = `${this.#keysPath}.${process.pid}.s5.tmp`
+		try {
+			writeFileSync(tmp, JSON.stringify(keys, null, 2) + "\n", { mode: 0o600 })
+			try { chmodSync(tmp, 0o600) } catch { /* best effort on non-posix */ }
+			renameSync(tmp, this.#keysPath)
+		} catch (err) {
+			try { rmSync(tmp, { force: true }) } catch { /* best effort */ }
+			throw err
+		}
 	}
 }

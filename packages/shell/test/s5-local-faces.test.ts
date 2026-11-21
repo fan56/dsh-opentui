@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, statSync }
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { LocalAgentsFace, LocalConfigStore, LocalLoginFace, LocalPresetFace, LocalSettingsStore } from "../src/client/local-config-faces.ts"
+import { buildCustomEntry, providerProfileFor } from "../../tui-base/src/routes/session/login.ts"
 
 function scratch() {
 	const home = mkdtempSync(join(tmpdir(), "s5-faces-"))
@@ -256,6 +257,99 @@ describe("025-w1a LocalLoginFace — provider routes + boolean credentials, valu
 	test("routes() degrades honestly to [] when the patch is absent", () => {
 		const s = scratch()
 		expect(new LocalLoginFace(s.home, s.profile).routes()).toEqual([])
+		rmSync(s.home, { recursive: true, force: true })
+	})
+})
+
+describe("025-w1b C1/C2/C3 — registerRoute persists the full custom route, value never crosses", () => {
+	const PATCH_EMPTY = [
+		"- id: llm-pi-ai",
+		"  name: '@deepseek-ai/dsh-llm-pi-ai'",
+		"  config:",
+		"    providers:",
+		"      zai-coding-cn:",
+		"        apiKeyEnv: ZAI_CODING_CN_API_KEY",
+		"- id: permission",
+		"  config:",
+		"    defaultPreset: workspace-write",
+		"",
+	].join("\n")
+
+	test("C1 round-trip: providerProfileFor -> registerRoute -> patch/routes keeps api/baseURL/models/displayName", () => {
+		const s = scratch()
+		writeFileSync(s.patch, PATCH_EMPTY)
+		// The six-step form's committed entry, exactly as /login builds it.
+		const entry = buildCustomEntry({
+			routeId: "my-llm",
+			displayName: "My LLM",
+			protocol: "openai-completions",
+			baseURL: "https://llm.example.test/v1",
+			models: "glm-5, deepseek-chat",
+		})
+		const profile = providerProfileFor(entry) // {apiKeyEnv,api,baseURL,models,displayName}
+		const face = new LocalLoginFace(s.home, s.profile)
+		expect(face.registerRoute(entry.id, profile)).toBe(true)
+
+		const text = readFileSync(s.patch, "utf8")
+		for (const field of [
+			"my-llm:",
+			"apiKeyEnv: MY_LLM_API_KEY",
+			"api: openai-completions",
+			'baseURL: "https://llm.example.test/v1"',
+			'displayName: "My LLM"',
+			'- id: "glm-5"',
+			'- id: "deepseek-chat"',
+		]) expect(text).toContain(field)
+
+		const rows = face.routes()
+		const row = rows.find((r) => r.id === "my-llm")!
+		expect(row.apiKeyEnv).toBe("MY_LLM_API_KEY")
+		expect(row.displayName).toBe("My LLM")
+		expect(row.declared).toBe(true) // api/baseURL/models mark the live declaration
+		expect(rows.some((r) => r.id === "zai-coding-cn")).toBe(true) // original route untouched
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("C1 negative: unknown profile keys + YAML injection values never land in the patch", () => {
+		const s = scratch()
+		writeFileSync(s.patch, PATCH_EMPTY)
+		const face = new LocalLoginFace(s.home, s.profile)
+		const evil = {
+			apiKeyEnv: "EVIL_KEY",
+			baseURL: "https://ok.test/v1\n  injected: pwned", // newline YAML injection
+			displayName: 'bad"name\r\n  injected: pwned',
+			evilKey: "SENTINEL_MUST_NOT_CROSS", // unknown key
+			models: [{ id: "ok-model\n  injected: pwned" }],
+		}
+		expect(face.registerRoute("evil-route", evil)).toBe(false)
+		const text = readFileSync(s.patch, "utf8")
+		for (const marker of ["SENTINEL", "injected: pwned", "evilKey", "evil-route:"]) {
+			expect(text).not.toContain(marker)
+		}
+		expect(face.routes().some((r) => r.id === "evil-route")).toBe(false)
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("C2 negative: providerId charset gate rejects YAML-special ids (apiKeyEnv had safeRef)", () => {
+		const s = scratch()
+		writeFileSync(s.patch, PATCH_EMPTY)
+		const face = new LocalLoginFace(s.home, s.profile)
+		const before = readFileSync(s.patch, "utf8")
+		// Leading/embedded '-' is valid (validateRouteId allows it); YAML-special
+		// chars (space, colon, newline, hash, quotes) are not.
+		for (const badId of ["bad id", "bad:id", "bad\nid", "bad#id", 'bad"id']) {
+			expect(face.registerRoute(badId, { apiKeyEnv: "OK_KEY" })).toBe(false)
+		}
+		expect(readFileSync(s.patch, "utf8")).toBe(before) // file byte-identical after all rejects
+		rmSync(s.home, { recursive: true, force: true })
+	})
+
+	test("C3: an owner-only keys file is 0600 from first creation (no 0644 window)", () => {
+		const s = scratch()
+		const face = new LocalLoginFace(s.home, s.profile)
+		face.login("C3_TEST_API_KEY", "SENTINEL_SECRET_VALUE")
+		const storePath = join(s.home, "profiles", s.profile, "provider-keys.json")
+		if (process.platform !== "win32") expect(statSync(storePath).mode & 0o777).toBe(0o600)
 		rmSync(s.home, { recursive: true, force: true })
 	})
 })
