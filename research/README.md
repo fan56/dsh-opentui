@@ -146,3 +146,15 @@ journal is unreadable (EACCES) or whose header id/cwd does not match its path
 causes the entire list RPC to reject, and the client degrades to "no stored
 sessions". Found while staging the verification above. This is upstream
 @deepseek-ai/dsh behavior, not this repo — recorded only, no fix planned here.
+
+## 025 波3 决策文档落点（收尾补索引，S-2）
+
+本目录（`dsh-opentui` 仓 `research/`，tracked）除上述测试架构调研外，还存放两份
+025 波3 决策文档——它们**在本仓，不在** `wayfinder-web-profile/research/`：
+
+- [`025-w3-ci-gate-decision.md`](025-w3-ci-gate-decision.md) — CI 真机门禁启用决策（结构性不可行 + 条件 skip）。
+- [`025-w3-rc-upgrade-drill.md`](025-w3-rc-upgrade-drill.md) — W7 rc 升级演练（scratch rc4→rc5→回滚 PASS）。
+
+其余 025 执行/评审报告（含 `025-w3-review-oldfox.md`）仍在 `wayfinder-web-profile/research/`；
+波3 收尾反思报告 `025-reflection-docs-update.md` 亦落在该目录。此节仅为落点对账，
+防后续按错路径找不到（`025-w3-review-oldfox.md` S-2）。

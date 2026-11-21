@@ -38,8 +38,11 @@ passed as `messages: remoteInfo()?.messageCount` in
   host is an external binary; no `host-session.ts` source is present — see
   `find . -name host-session.ts` → empty). If it does, it inflates the `user`-row
   count; the client mapper would count it (`remote-session-ops.ts:90-94`). The
-  e2e confirms "round" is the host's LLM-trip unit (`e2e/scenarios/70-steer.sh:128`),
-  but says nothing durable about steer journaling.
+  The retired 024 container e2e `70-steer` (offlined 025-w3-2, ADR-0013) confirmed
+  "round" is the host's LLM-trip unit; its in-service takeover record is
+  `verify/steer-queue-repro.mjs:316` ("the steer receipt flips to delivered at
+  turn end", takeover-table row 18 in `.proof/025-w3-2/01-legacy-retirement/`).
+  Neither says anything durable about steer journaling.
 - **queued message** — the prompt queue is client-side in ShellHost
   (`remote-host-session.ts:9-12`); each queued send is another real `turn()` →
   another genuine user turn. Not an inflation (it is a real turn).

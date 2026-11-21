@@ -12,8 +12,11 @@
 # that would race the gate (the 025-w1a 3/64 mass-red root cause). PID lists are
 # written to $OUT/env-precheck.log and (after cleanup) $OUT/env-postcheck.log;
 # POST-CHECK filters its own PIDs and re-verifies each PID before listing it
-# (W2-1 C5: never report a bare grep count). PID 98608 (dsh-jev-mcp) is a
-# protected, whitelisted process — reported but never counted or killed.
+# (W2-1 C5: never report a bare grep count). An OPTIONAL single PID can be
+# whitelist-excluded via the PROTECTED_PID env var (default empty); PIDs are
+# volatile and non-portable, so this is a per-run aid, never a durable rule —
+# the durable exclusion is by command-line pattern (dsh-jev-mcp, below).
+# Historically PROTECTED_PID=98608 (dsh-jev-mcp) on the author's host.
 # `--skip-env-check` is the documented escape hatch for known-clean hosts.
 #
 # What it does (all writes to a FRESH scratch DSH_HOME; ~/.dsh is never touched):
@@ -52,7 +55,11 @@ BOOT_TIMEOUT=90
 KEEP=0
 ONLY=all
 SKIP_ENV_CHECK=0
-PROTECTED_PID=98608
+# 025 wave3 final C-3: PID is volatile/non-portable — never hardcode it.
+# Inject via env (e.g. PROTECTED_PID=98608 ./scripts/real-client-gate.sh ...).
+# Default empty = no PID whitelist; the durable dsh-jev-mcp exclusion below is
+# by command-line pattern, which survives restarts and machine changes.
+PROTECTED_PID="${PROTECTED_PID:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -85,7 +92,7 @@ env_orphan_pids() {
   for p in $(pgrep -f "$pattern" 2>/dev/null); do
     case "$p" in ''|*[!0-9]*) continue ;; esac
     env_is_self "$p" && continue
-    [ "$p" = "$PROTECTED_PID" ] && continue
+    [ -n "$PROTECTED_PID" ] && [ "$p" = "$PROTECTED_PID" ] && continue
     ps -p "$p" -o pid= >/dev/null 2>&1 || continue
     printf 'ORPHAN %s %s\n' "$p" "$(ps -p "$p" -o command= 2>/dev/null | cut -c1-160)"
   done
@@ -94,17 +101,27 @@ env_orphan_pids() {
 # Write one labelled snapshot to $1 and echo the ORPHAN-line count on stdout
 # (captured by the caller; redirected file output never pollutes the count).
 env_probe() {
-  local logfile="$1" label="$2" orphans tmux_orphans
+  local logfile="$1" label="$2" orphans tmux_orphans jev_lines
   {
     printf '%s %s\n' "$label" "$(date -u +%FT%TZ)"
-    printf '%s\n' "--- protected PID $PROTECTED_PID ---"
-    if ps -p "$PROTECTED_PID" -o pid= >/dev/null 2>&1; then
-      printf '%s\n' "PRESENT (whitelist excluded, untouched)"
+    # C-3: PROTECTED_PID is now env-injected and may be empty — no PID
+    # whitelist in that case. A literal empty `ps -p ''` would be misleading.
+    if [ -n "$PROTECTED_PID" ]; then
+      printf '%s\n' "--- protected PID $PROTECTED_PID (env-injected) ---"
+      if ps -p "$PROTECTED_PID" -o pid= >/dev/null 2>&1; then
+        printf '%s\n' "PRESENT (whitelist excluded, untouched)"
+      else
+        printf '%s\n' "NOT PRESENT"
+      fi
     else
-      printf '%s\n' "NOT PRESENT"
+      printf '%s\n' "--- protected PID: none configured (PROTECTED_PID unset; pattern exclusion active) ---"
     fi
-    printf '%s\n' "--- dsh-jev-mcp (excluded, untouched) ---"
-    pgrep -fl 'dsh-jev-mcp' 2>/dev/null | sed 's/^/EXCLUDED /' || printf '%s\n' "(none)"
+    # C-3: pattern-based exclusion (survives restarts). The old
+    # `pgrep ... | sed ... || printf '(none)'` never printed (none) because sed
+    # always exits 0; decide by the captured output instead of the pipeline rc.
+    printf '%s\n' "--- dsh-jev-mcp (excluded, untouched; pattern-based) ---"
+    jev_lines="$(pgrep -fl 'dsh-jev-mcp' 2>/dev/null | sed 's/^/EXCLUDED /')"
+    if [ -n "$jev_lines" ]; then printf '%s\n' "$jev_lines"; else printf '%s\n' "(none)"; fi
     printf '%s\n' "--- orphan dsh --profile opentui --no-open (PID-verified, self-filtered) ---"
     orphans="$(env_orphan_pids 'dsh --profile opentui --no-open')"
     [ -n "$orphans" ] && printf '%s\n' "$orphans" || printf '%s\n' "none"
@@ -117,6 +134,32 @@ env_probe() {
     [ -n "$tmux_orphans" ] && printf '%s\n' "$tmux_orphans" || printf '%s\n' "none"
   } > "$logfile"
   grep -c '^ORPHAN ' "$logfile" || true
+}
+
+# --- bounded idle-out poll (025 wave3 final C-4) ---------------------------
+# The detached bridge host idles out ~5s after its client exits. A fixed
+# `sleep 6` both over-waits on a fast host and under-waits under load (which
+# would misreport our own host as an orphan → false red). Poll on a bounded
+# tick until no candidate orphan PID remains; the wall-clock window is DERIVED
+# from the documented idle-out + headroom, never a literal sleep value.
+IDLE_OUT_TICK_MS=500             # wall-clock per poll tick (0.5s); integer for arithmetic
+IDLE_OUT_TICK_SEC="0.5"          # same tick as a sleep argument (fractional)
+IDLE_OUT_BASE_SEC=5              # documented detached-host idle-out (client-entry.tsx:20)
+IDLE_OUT_HEADROOM_SEC=5          # loaded-host headroom → 10s ceiling
+# ceiling(seconds) × 1000 / tick(ms) = max ticks (integer arithmetic only)
+IDLE_OUT_MAX_TICKS=$(( (IDLE_OUT_BASE_SEC + IDLE_OUT_HEADROOM_SEC) * 1000 / IDLE_OUT_TICK_MS ))
+wait_host_idle_out() {
+  local tick=0
+  while [ "$tick" -lt "$IDLE_OUT_MAX_TICKS" ]; do
+    # Reuse the very same PID-verified detectors the postcheck uses, so "host
+    # gone" means exactly what the orphan verdict will see.
+    if [ -z "$(env_orphan_pids 'dsh --profile opentui --no-open')$(env_orphan_pids 'mock-llm.mjs')" ]; then
+      return 0
+    fi
+    tick=$((tick + 1))
+    sleep "$IDLE_OUT_TICK_SEC"
+  done
+  return 1
 }
 
 SESS="rc-gate-$$"
@@ -142,9 +185,11 @@ dump_diagnostics() {
 cleanup() {
   if [ "$KEEP" -eq 0 ]; then
     tmux kill-session -t "$SESS" 2>/dev/null || true
-    # The detached bridge host idles out ~5s after its client exits; give it a
-    # beat so it stops recreating lock/session files under the scratch home.
-    sleep 6
+    # C-4: bounded idle-out poll (window derived from constants) replaces the
+    # fixed `sleep 6`, so a loaded host is not torn down while still recreating
+    # lock/session files. Failure to converge is logged, never fatal here —
+    # the postcheck PID list is authoritative for the orphan verdict.
+    [ -n "$SCRATCH" ] && wait_host_idle_out || true
     if [ -n "$SCRATCH" ] && [ -d "$SCRATCH" ]; then rm -rf "$SCRATCH" 2>/dev/null || true; fi
   else
     log "kept tmux session $SESS and scratch home $SCRATCH (--keep)"
@@ -347,12 +392,16 @@ fi
 
 # ------------------------------------------- 6c. environment post-check
 if [ "$SKIP_ENV_CHECK" -eq 0 ]; then
-  # Retire OUR tmux session first and let the detached host idle out (~5s), so
-  # the gate's own processes are never reported as orphans. The EXIT trap's
-  # cleanup is idempotent (second kill is a no-op).
+  # Retire OUR tmux session first, then poll (bounded, window from constants)
+  # until the detached host actually idles out, so the gate's own processes are
+  # never reported as orphans even under load. The EXIT trap's cleanup is
+  # idempotent (second kill is a no-op). A non-converged poll only logs here —
+  # the PID-verified postcheck below is the authoritative orphan verdict.
   if [ "$KEEP" -eq 0 ]; then
     tmux kill-session -t "$SESS" 2>/dev/null || true
-    sleep 6
+    if [ -n "$SCRATCH" ] && ! wait_host_idle_out; then
+      log "WARN  postcheck idle-out poll did not converge within $((IDLE_OUT_MAX_TICKS)) ticks (~$((IDLE_OUT_MAX_TICKS / 2))s); PID list below is authoritative"
+    fi
   fi
   log "=== env postcheck $(date -u +%FT%TZ) ==="
   POST_ORPHANS="$(env_probe "$OUT/env-postcheck.log" "post-check")"

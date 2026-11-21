@@ -64,9 +64,14 @@ const DEFAULT_RETRY_INTERVAL_MS = 100
  *    (packages/bridge/src/handshake.ts DEFAULT_TIMEOUT_MS = 10_000);
  *  - the whole host claim→ready budget is 5 minutes
  *    (host-launch.ts DEFAULT_LAUNCH_TIMEOUT_MS);
- *  - the e2e TUI readiness ceiling is 180s (e2e/scenarios/20-start.sh).
+ *  - the retired 024 container e2e `20-start` (offlined 025-w3-2, ADR-0013)
+ *    had a 180s TUI readiness ceiling; its in-service takeover record is
+ *    `verify/agents-mount-repro.mjs:575` ("composer context: the composer top
+ *    border embeds the working directory", takeover-table row 3 in
+ *    `.proof/025-w3-2/01-legacy-retirement/`).
  * 3 × the handshake window = 30s, still 1/10 of the launch budget and 1/6 of
- * the TUI ceiling. The wait is a bounded poll (never a fixed sleep), is
+ * that historical 180s TUI ceiling. The wait is a bounded poll (never a fixed
+ * sleep), is
  * overridable via `DSH_OPENTUI_COOKIE_MINT_TIMEOUT_MS` for slower hosts or
  * deterministic tests, and still ends in a typed, secret-free error rather
  * than a silent failure.
