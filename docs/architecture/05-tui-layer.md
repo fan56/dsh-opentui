@@ -45,6 +45,8 @@ if (!ctx.seam.<face>) { ctx.say(t("command.<x>.unavailable")); return }
 
 S5 起，config/settings/agents 三面由本地真实现供给，不再 `{}` 降级：`LocalConfigStore` / `LocalSettingsStore` / `LocalAgentsFace`（`packages/shell/src/client/local-config-faces.ts:278,182,353`；`024-s5-config-slice.md:81-82`）。其中 settings 走**逐字段白名单构造式**投影（见 [06](06-security-privacy.md) §6.3）。
 
+025-w2-2 `/plugins` 分两**并列不合并**的 face（方案 §5.2，account/login 分域先例同款）：`seam.plugins()` = phase-1 本地安装清单（`<dshHome>/profiles/<profile>/node_modules` 扫描，回答「装了什么」）；`seam.pluginsManager`（手写 face + 二次白名单投影 `bridge-plugins-manager.ts`，回答「管理器视角：enabled/state/version 豁免」）读真 `pluginManager/{listBundles,listPlugins,readBundleDetail,...}` 七条只读 id（W2-2a 放行）。`pluginBundles()` state 列取真数据；服务缺位回退 phase-1 本地清单并标 `stateUnknown`（不假 enabled）+「管理器不可用」行；detail 区读 `readBundleDetail`。写面（8 id）留 W2-3。
+
 ## 5.4 27 命令注册表
 
 `packages/tui-base/src/routes/session/commands.ts:597` 的 `coreCommands()` 实读 **27 条**（`/help /new /model /login /logout /quit /resume /clear /flush /btw /session /plugins /skills /search /agents /settings /history /export /subagents /think /hints /language /motion /hotkeys /theme /preset /stop`）。`v2-entry.tsx:365` 以 `withSkillCommands(coreCommands(), skillRows())` 追加 skill 命令后作为 `commands` prop 传给页面（`:976`）。注册表是 `{ name, description, run }` 表，`run` 只通过注入 hooks 触 UI，故可在无渲染器下做表驱动测试（`commands.ts:1-10`）。

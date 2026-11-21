@@ -34,7 +34,7 @@ import { useDialog } from "../../ui/dialog"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useThemeOptional } from "../../context/theme"
 import { successColor, warningColor } from "../../skin/semantic"
-import type { SeamPluginBundleRow, SeamPluginChange, SeamPluginInspection, SessionSeam } from "../../seams/session"
+import type { SeamPluginBundleRow, SeamPluginChange, SeamPluginDetail, SeamPluginInspection, SessionSeam } from "../../seams/session"
 
 const [bridgeOpen, setBridgeOpen] = createSignal(false)
 // Module-scope open state: the session sidebar Esc layer (priority 10)
@@ -75,6 +75,8 @@ export type PluginBundleView = {
 	toggleable: boolean
 	readOnlyReason?: string
 	error?: string
+	/** 025-w2-2 honest degrade: enabled is unknowable (phase-1 local fallback). */
+	stateUnknown?: boolean
 }
 
 /** The mutations the panel drives (structurally the seam's optional faces). */
@@ -108,7 +110,12 @@ export function bundleStateText(row: {
 	enabled: boolean
 	readOnlyReason?: string
 	error?: string
+	/** 025-w2-2 honest degrade — enabled is unknowable, never paint on/off. */
+	stateUnknown?: boolean
 }): string {
+	// W2-2: a phase-1 local-manifest fallback row has NO real enablement. Say so
+	// instead of fabricating "off" (plan §5.2 honest degrade, no fake enabled).
+	if (row.stateUnknown === true) return t("panel.plugins.state.unknown")
 	const base =
 		!row.installed && row.optional ? t("panel.plugins.state.available") : row.enabled ? t("panel.plugins.state.on") : t("panel.plugins.state.off")
 	if (row.error !== undefined && row.error !== "") return t("panel.plugins.state.error", { state: base })
@@ -133,9 +140,12 @@ export function pluginBundleViews(bundles: readonly SeamPluginBundleRow[]): Plug
 			installed: bundle.installed === true,
 			optional: bundle.optional === true,
 			removable: bundle.removable === true,
-			toggleable: bundle.readOnlyReason === undefined && (bundle.error === undefined || bundle.error === ""),
+			// A stateUnknown (phase-1 fallback) row can never be toggled — its
+			// real enablement is unknowable without the manager service.
+			toggleable: bundle.stateUnknown !== true && bundle.readOnlyReason === undefined && (bundle.error === undefined || bundle.error === ""),
 			readOnlyReason: bundle.readOnlyReason,
 			error: bundle.error,
+			stateUnknown: bundle.stateUnknown,
 		}))
 }
 
@@ -186,6 +196,24 @@ export function installPreviewLine(inspection: Extract<PluginInspection, { statu
 	return inspection.bundle === false ? t("panel.plugins.preview.notBundle", { spec }) : spec
 }
 
+/**
+ * 025-w2-2 — the detail view's one-line preview of a `readBundleDetail`
+ * document. Pure (no seam/transport), so the answer-bearing `.ans` assertion
+ * and a unit test can share the exact extraction rule. Strips markdown headers
+ * (they are decoration, not the document's answer-bearing content).
+ */
+export function pluginDetailPreview(detail: SeamPluginDetail | undefined, loading: boolean): string {
+	if (loading) return t("panel.plugins.detail.loading")
+	if (detail === undefined) return t("panel.plugins.detail.unavailable")
+	if (detail.status === "none") return t("panel.plugins.detail.none")
+	const lines = detail.markdown
+		.split("\n")
+		.map((line) => line.trim())
+		.filter((line) => line !== "" && !line.startsWith("#"))
+	const preview = lines.slice(0, 2).join(" ").slice(0, 180)
+	return preview === "" ? t("panel.plugins.detail.none") : preview
+}
+
 export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }) {
 	const theme = useThemeOptional()
 	const dialog = useDialog()
@@ -201,6 +229,11 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	const [status, setStatus] = createSignal<string | undefined>(undefined)
 	const [installOpen, setInstallOpen] = createSignal(false)
 	const [installText, setInstallText] = createSignal("")
+	// 025-w2-2 — detail view state + a refresh tick that re-reads the async
+	// plugin-manager bundle cache after each panel open.
+	const [detail, setDetail] = createSignal<SeamPluginDetail | undefined>(undefined)
+	const [detailLoading, setDetailLoading] = createSignal(false)
+	const [refreshTick, setRefreshTick] = createSignal(0)
 	let statusTimer: ReturnType<typeof setTimeout> | undefined
 	onCleanup(() => clearTimeout(statusTimer))
 
@@ -212,7 +245,16 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			setInstallOpen(false)
 			setInstallText("")
 			setCursor(0)
+			setDetail(undefined)
 			setOpen(true)
+			// The cache fills ASYNC (pluginManager.listBundles over the generic
+			// arm); bump the tick when it settles so the rows memo re-reads.
+			const seam = props.seam
+			if (typeof seam.refreshPluginBundles === "function") {
+				void seam.refreshPluginBundles()
+					.then(() => setRefreshTick((n) => n + 1))
+					.catch(() => setRefreshTick((n) => n + 1))
+			}
 		}
 	})
 
@@ -257,6 +299,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	// every panel open re-read the cache.
 	const bundles = createMemo<PluginBundleView[]>(() => {
 		void open()
+		void refreshTick()
 		try {
 			const seam = props.seam
 			if (typeof seam.pluginBundles === "function") return pluginBundleViews(seam.pluginBundles())
@@ -274,6 +317,32 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 	})
 	/** The selected row's index within the painted window (−1 = none). */
 	const cursorIndex = createMemo(() => visible().slice(0, 12).indexOf(current()))
+
+	// 025-w2-2 — the selected row's detail document via the real manager face.
+	// Language pinned to "en" (the gate's locale pin; the doc source picks the
+	// nearest available translation). A stale-response guard prevents an older
+	// row's detail from painting after the cursor moved.
+	createEffect(() => {
+		const row = current()
+		const manager = props.seam.pluginsManager
+		if (row === undefined || typeof manager?.readBundleDetail !== "function" || manager.available?.() !== true) {
+			setDetail(undefined)
+			setDetailLoading(false)
+			return
+		}
+		const name = row.name
+		let stale = false
+		onCleanup(() => { stale = true })
+		setDetailLoading(true)
+		void manager.readBundleDetail(name, "en")
+			.then((d) => { if (!stale) setDetail(d) })
+			.catch(() => { if (!stale) setDetail(undefined) })
+			.finally(() => { if (!stale) setDetailLoading(false) })
+	})
+
+	/** Whether the honest-degrade banner and the real detail region show. */
+	const degraded = () => props.seam.pluginsManager?.available?.() === false
+	const showDetail = () => props.seam.pluginsManager?.available?.() === true && current() !== undefined
 
 	function moveCursor(delta: number) {
 		const count = visible().length
@@ -505,7 +574,7 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			<box
 				flexShrink={0}
 				width="100%"
-				height={1 + 1 + Math.min(visible().length || 1, 12) + (status() !== undefined ? 1 : 0) + 1}
+				height={1 + 1 + (degraded() ? 1 : 0) + Math.min(visible().length || 1, 12) + (showDetail() ? 2 : 0) + (status() !== undefined ? 1 : 0) + 1}
 				flexDirection="column"
 				border={["left"]}
 				borderColor={theme?.border.base ?? "#7aa2f7"}
@@ -521,6 +590,13 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 						{t("panel.plugins.header.bar", { visible: String(visible().length), total: String(bundles().length) })}
 					</text>
 				</box>
+				<Show when={degraded()}>
+					<box height={1} flexShrink={0}>
+						<text fg={warningColor(theme ?? undefined)} wrapMode="none">
+							{t("panel.plugins.degrade.unavailable")}
+						</text>
+					</box>
+				</Show>
 				<Show
 					when={!installOpen()}
 					fallback={
@@ -591,14 +667,30 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 							</box>
 						)}
 					</For>
-				</Show>
-				<Show when={status() !== undefined}>
-					<box height={1} flexShrink={0}>
-						<text fg={warningColor(theme ?? undefined)} wrapMode="none">
-							{status()}
-						</text>
-					</box>
-				</Show>
+					</Show>
+					{/* 025-w2-2 — selected bundle detail from the real manager's
+					    readBundleDetail. Two fixed-height lines: a labelled header
+					    and the answer-bearing markdown preview (never a placeholder
+					    if the host returned a real document). */}
+					<Show when={showDetail()}>
+						<box height={1} flexShrink={0}>
+							<text fg={theme?.text.base ?? "#e6e6e6"} attributes={TextAttributes.BOLD} wrapMode="none">
+								{t("panel.plugins.detail.title", { name: current()?.name ?? "" })}
+							</text>
+						</box>
+						<box height={1} flexShrink={0}>
+							<text fg={theme?.text.muted ?? "#565f89"} wrapMode="none">
+								{pluginDetailPreview(detail(), detailLoading())}
+							</text>
+						</box>
+					</Show>
+					<Show when={status() !== undefined}>
+						<box height={1} flexShrink={0}>
+							<text fg={warningColor(theme ?? undefined)} wrapMode="none">
+								{status()}
+							</text>
+						</box>
+					</Show>
 			</box>
 		</Show>
 	)

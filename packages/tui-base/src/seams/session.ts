@@ -184,6 +184,66 @@ export interface SeamPluginBundleRow {
 	readOnlyReason?: string
 	/** Last listing diagnostic for the row (compatibility gate rejections). */
 	error?: string
+	/**
+	 * 025-w2-2 honest-degrade flag: the row came from the phase-1 local install
+	 * manifest because the pluginManager service is absent — its enabled state
+	 * is UNKNOWABLE, so `enabled` is forced false and the panel must NOT paint
+	 * it as a real on/off. Never set on real manager rows.
+	 */
+	stateUnknown?: boolean
+}
+
+/** 025-w2-2 — one `pluginManager/readBundleDetail` result, hand-projected.
+ * `markdown` is length-capped; no host object crosses the seam. */
+export type SeamPluginDetail =
+	| { status: "found"; origin: "locale" | "readme"; path: string; markdown: string }
+	| { status: "none" }
+
+/** 025-w2-2 — `pluginManager/registries`, hand-projected (URLs are text, never
+ * a credential value; free text capped). */
+export interface SeamPluginRegistries {
+	registry: string | null
+	fallbackRegistries: readonly string[]
+	resolved: string | null
+}
+
+/** 025-w2-2 — `pluginManager/listVersionExemptions`, hand-projected. */
+export interface SeamVersionExemptions {
+	exemptions: Readonly<Record<string, readonly string[]>>
+	warnings: readonly string[]
+}
+
+/**
+ * 025-w2-2 — the real plugin-manager READ face (plan §5.2), hand-written and
+ * second-whitelist-projected. Coexists with the phase-1 local `plugins()` face
+ * (local = what is installed; manager = enabled/state/version-exemption view).
+ * Every method rejects with BridgeProtocolError(UNSUPPORTED) on a service-absent
+ * / NOT_WIRED reply — never a fake empty value.
+ */
+export interface SeamPluginsManager {
+	/** Real `listBundles` rows with the live enabled/state flags. */
+	listBundles(): Promise<SeamPluginBundleRow[]>
+	/** Real `listPlugins` rows (name/version only; no fabricated enabled flag). */
+	listPlugins(): Promise<readonly PluginRowView[]>
+	/** Selected bundle's detail document (markdown capped). */
+	readBundleDetail(name: string, language: string): Promise<SeamPluginDetail>
+	/** Install-dialog preinformation (read-only). */
+	registries(): Promise<SeamPluginRegistries>
+	listVersions(name: string): Promise<readonly string[]>
+	listVersionExemptions(): Promise<SeamVersionExemptions>
+	inspect(spec: string): Promise<SeamPluginInspection>
+	/**
+	 * Honest service availability: `undefined` until first probed, `true` after
+	 * a successful read, `false` after a service-absent / NOT_WIRED reply.
+	 * NEVER an environment-dependent `present === true` assertion.
+	 */
+	available(): boolean | undefined
+}
+
+/** Minimal name/version row from `pluginManager/listPlugins`. */
+export interface PluginRowView {
+	name: string
+	version: string
 }
 
 /** Structural face of the pluginManager ChangeResult (C1). `applied` means
@@ -730,6 +790,20 @@ export interface SessionSeam {
 	 * read-only name@version listing.
 	 */
 	pluginBundles?(): SeamPluginBundleRow[]
+	/**
+	 * 025-w2-2 — warm/refresh the real plugin-manager bundle cache. The panel
+	 * calls this on every open (the cache fills ASYNC after boot; a sync open
+	 * read would see stale/empty rows). Optional — seams whose pluginBundles is
+	 * already live (RemoteHostSession) keep their own refresh strategy.
+	 */
+	refreshPluginBundles?(): Promise<void>
+	/**
+	 * 025-w2-2 — the real plugin-manager READ face (hand-projected). Coexists
+	 * with the phase-1 local `plugins()`; the /plugins detail view reads
+	 * `readBundleDetail` from here. Optional — absent on seams without the
+	 * generic-arm plugin manager service.
+	 */
+	pluginsManager?: SeamPluginsManager
 	/** Toggle a bundle on/off (the host persists the selection AND tries a
 	 * live apply — `application` reports which). Optional with pluginBundles. */
 	setPluginBundleEnabled?(name: string, enabled: boolean): Promise<SeamPluginChange>

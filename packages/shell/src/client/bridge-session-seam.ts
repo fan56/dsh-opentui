@@ -37,8 +37,15 @@ import type {
 	SeamAskPick,
 	SeamAskQuestion,
 	SeamEffortOption,
+	PluginRowView,
 	SeamPermissionCatalog,
+	SeamPluginBundleRow,
+	SeamPluginDetail,
+	SeamPluginInspection,
+	SeamPluginRegistries,
+	SeamPluginsManager,
 	SeamProviderModel,
+	SeamVersionExemptions,
 	SeamSessionEvent,
 	SeamSessionInfo,
 	SeamSessionSummary,
@@ -67,6 +74,16 @@ import { DEFAULT_PROFILE } from "./lifecycle.ts"
 // 025-w1a — /plugins phase-1 local install manifest (profile node_modules).
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
+// 025-w2-2 — hand-written plugin-manager read face + second whitelist projection.
+import {
+	projectBundleRows,
+	projectDetail,
+	projectInspection,
+	projectPluginRows,
+	projectRegistries,
+	projectVersionExemptions,
+	projectVersions,
+} from "./bridge-plugins-manager.ts"
 
 // ---------------------------------------------------------------------------
 // Injected transport surface (ADR-0010 frame shapes)
@@ -1287,6 +1304,12 @@ export class BridgeSessionSeam implements SessionSeam {
 	readonly #localPresets: LocalPresetFace
 	readonly #localLogin: LocalLoginFace
 
+	// 025-w2-2 — real plugin-manager bundle cache (fills ASYNC via the generic
+	// arm) + honest availability. `undefined` = not probed yet, never a
+	// `present === true` environment assertion.
+	#pluginBundlesCache: SeamPluginBundleRow[] = []
+	#pluginsManagerAvailable: boolean | undefined = undefined
+
 	/** S5 /settings host face — real local file I/O, field-level whitelist
 	 *  projection (oldfox S4 review §六.2). Never a `{}` degrade. */
 	settings: NonNullable<SessionSeam["settings"]> = {
@@ -1403,6 +1426,80 @@ export class BridgeSessionSeam implements SessionSeam {
 			}
 		}
 		return out
+	}
+
+	/**
+	 * 025-w2-2 — real plugin-manager READ face over the generic arm. Every call
+	 * goes through the hand-written second whitelist projection (no host object
+	 * crosses). A service-absent / NOT_WIRED reply rejects UNSUPPORTED and marks
+	 * availability false — never a fake empty value. The boolean is an honest
+	 * observation of THIS process, never a test `present === true` premise.
+	 */
+	async #pmRequest<T>(
+		method: string,
+		params: Record<string, unknown>,
+		project: (raw: unknown) => T,
+	): Promise<T> {
+		try {
+			const reply = await this.#transport.request(method, params)
+			const projected = project(reply)
+			this.#pluginsManagerAvailable = true
+			return projected
+		} catch (err) {
+			this.#pluginsManagerAvailable = false
+			const message = err instanceof Error ? err.message : String(err)
+			throw new BridgeProtocolError("UNSUPPORTED", `${method}: ${message}`)
+		}
+	}
+
+	pluginsManager: SeamPluginsManager = {
+		listBundles: async () => {
+			const rows = await this.#pmRequest("pluginManager.listBundles", {}, projectBundleRows)
+			this.#pluginBundlesCache = rows
+			return rows
+		},
+		listPlugins: async () => this.#pmRequest("pluginManager.listPlugins", {}, projectPluginRows),
+		readBundleDetail: async (name, language) =>
+			this.#pmRequest("pluginManager.readBundleDetail", { name, language }, projectDetail),
+		registries: async () => this.#pmRequest("pluginManager.registries", {}, projectRegistries),
+		listVersions: async (name) => this.#pmRequest("pluginManager.listVersions", { name }, projectVersions),
+		listVersionExemptions: async () =>
+			this.#pmRequest("pluginManager.listVersionExemptions", {}, projectVersionExemptions),
+		inspect: async (spec) => this.#pmRequest("pluginManager.inspect", { spec }, projectInspection),
+		available: () => this.#pluginsManagerAvailable,
+	}
+
+	/**
+	 * 025-w2-2 — warm/refresh the real bundle cache (the panel calls this on
+	 * every open; boot warm alone is racy). On failure the previous cache and
+	 * the honest availability=false degrade are preserved.
+	 */
+	async refreshPluginBundles(): Promise<void> {
+		try {
+			await this.pluginsManager.listBundles()
+		} catch {
+			// degrade path: pluginBundles() falls back to the phase-1 local
+			// manifest with stateUnknown rows — never a fabricated enabled flag.
+		}
+	}
+
+	/**
+	 * 025-w2-2 — /plugins state rows. When the manager is in fact available,
+	 * return the real listBundles projection. Otherwise fall back to the
+	 * phase-1 local install manifest, explicitly marked `stateUnknown` so the
+	 * panel never paints a fake on/off (honest degrade, plan §5.2).
+	 */
+	pluginBundles(): SeamPluginBundleRow[] {
+		if (this.#pluginsManagerAvailable === true) return [...this.#pluginBundlesCache]
+		return this.plugins().map((row) => ({
+			name: row.name,
+			version: row.version,
+			enabled: false,
+			installed: true,
+			optional: false,
+			removable: false,
+			stateUnknown: true,
+		}))
 	}
 
 	/**

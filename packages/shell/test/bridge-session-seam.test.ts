@@ -3163,3 +3163,86 @@ describe("025-w1b E — account face whitelist projection + strict separation fr
 		expect(await h.seam.account!.hasRunningAccountTasks()).toBe(false)
 	})
 })
+
+// ---------------------------------------------------------------------------
+// 025-w2-2 — real plugin-manager READ face over the generic arm (W2-2a 7 ids)
+// ---------------------------------------------------------------------------
+describe("025-w2-2 pluginsManager face — real data + honest degrade", () => {
+	const BUNDLES = {
+		value: [
+			{
+				name: "alpha-bundle", version: "1.0.0", enabled: true, installed: true,
+				optional: false, removable: true, description: "alpha",
+			},
+			{
+				name: "beta-bundle", version: "2.0.0", enabled: false, installed: true,
+				optional: false, removable: true, apiKey: "W22_SENTINEL_synthetic",
+			},
+		],
+	}
+
+	test("listBundles: real wire response is hand-projected; available=true; pluginBundles returns real rows", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.listBundles", { kind: "value", value: BUNDLES })
+		expect(h.seam.pluginsManager!.available()).toBeUndefined() // not probed yet
+		const rows = await h.seam.pluginsManager!.listBundles()
+		expect(rows).toHaveLength(2)
+		expect(rows[0]).toMatchObject({ name: "alpha-bundle", enabled: true, installed: true })
+		expect(rows[1]).toMatchObject({ name: "beta-bundle", enabled: false })
+		expect(JSON.stringify(rows)).not.toContain("apiKey")
+		expect(JSON.stringify(rows)).not.toContain("W22_SENTINEL_synthetic")
+		expect(h.seam.pluginsManager!.available()).toBe(true)
+		expect(h.seam.pluginBundles!()).toEqual(rows)
+		expect(h.lastRequest("pluginManager.listBundles")).toBeDefined()
+	})
+
+	test("readBundleDetail: request carries name+language; response hand-projected (E5 markdown capped)", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.readBundleDetail", {
+			kind: "value",
+			value: { status: "found", origin: "readme", path: "/README.md", markdown: "W22PONG detail\n" + "x".repeat(9000), token: "W22_SENTINEL_synthetic" },
+		})
+		const detail = await h.seam.pluginsManager!.readBundleDetail("alpha-bundle", "en")
+		expect(detail.status).toBe("found")
+		if (detail.status !== "found") throw new Error("expected found")
+		expect(detail.origin).toBe("readme")
+		expect(detail.markdown.startsWith("W22PONG detail")).toBe(true)
+		expect(detail.markdown.length).toBe(4096)
+		expect(JSON.stringify(detail)).not.toContain("W22_SENTINEL_synthetic")
+		const req = h.lastRequest("pluginManager.readBundleDetail")!
+		expect(req.params).toEqual({ name: "alpha-bundle", language: "en" })
+	})
+
+	test("service absent: read rejects UNSUPPORTED, available=false, pluginBundles degrades to stateUnknown local rows", async () => {
+		const h = scratchSeam()
+		// seed a local installed plugin (phase-1 manifest)
+		const nm = join(h.home, "profiles", "opentui", "node_modules")
+		mkdirSync(join(nm, "local-plugin"), { recursive: true })
+		writeFileSync(join(nm, "local-plugin", "package.json"), JSON.stringify({ name: "local-plugin", version: "9.9.9" }))
+
+		h.replies.set("pluginManager.readBundleDetail", {
+			kind: "error",
+			error: new BridgeProtocolError("UNSUPPORTED", "NOT_WIRED: pluginManager service unavailable for detail"),
+		})
+		let code = ""
+		try {
+			await h.seam.pluginsManager!.readBundleDetail("x", "en")
+		} catch (err) {
+			code = err instanceof BridgeProtocolError ? err.code : ""
+		}
+		expect(code).toBe("UNSUPPORTED")
+		expect(h.seam.pluginsManager!.available()).toBe(false)
+		const rows = h.seam.pluginBundles!()
+		expect(rows).toHaveLength(1)
+		expect(rows[0]).toMatchObject({ name: "local-plugin", version: "9.9.9", enabled: false, installed: true, stateUnknown: true })
+		rmSync(h.home, { recursive: true, force: true })
+	})
+
+	test("refreshPluginBundles warms the cache even when called before any open", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.listBundles", { kind: "value", value: BUNDLES })
+		await h.seam.refreshPluginBundles!()
+		expect(h.seam.pluginsManager!.available()).toBe(true)
+		expect(h.seam.pluginBundles!()).toHaveLength(2)
+	})
+})
