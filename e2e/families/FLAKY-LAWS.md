@@ -3,6 +3,12 @@
 交付计划 §四「flaky 约束写入（沿坑清单）」的落地。适用于 `e2e/families/`
 下全部场景族与容器跑法。
 
+> **025-w3-2 状态**：旧 podman 容器族（`e2e/scenarios/` + `run-e2e.sh` +
+> `Containerfile`）已下线（A.5 口径逐条接管证明见
+> `.proof/025-w3-2/01-legacy-retirement/takeover-table.md`）。§2/§3/§4/§6 中
+> 关于容器的条目保留为**历史口径**（若未来重建容器内族仍适用），当前已无在役
+> 容器族；`run-all.sh` 的 container 槽记 NOT RUN（≠ PASS）。§1/§5 对在役族继续生效。
+
 ## 1. 墙钟窗口：常量推导 + 轮询 + 故障注入
 
 - 所有等待窗口从 **一个常量** `E2E_TICK`（默认 1s）+ 有界轮询次数推导：

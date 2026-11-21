@@ -70,18 +70,16 @@ else
   log "FAMILY verify-gate FAIL (see $OUT/verify-gate)"; FAILED=$((FAILED+1))
 fi
 
-# Container family — only when the podman VM is runnable; otherwise recorded
-# as BLOCKED (not faked). The canonical path bakes source into the image and
-# does NOT mount the worktree (E2E_SCENARIOS selects a subset; VM 5CPU/2GiB
-# concurrency <= 2).
+# Container family — RETIRED in 025-w3-2 (the old e2e/scenarios/ podman layer).
+# The 21 legacy scenarios were offlined under the A.5 ruling: every still-valid
+# assertion was shown taken over by the host families / verify70 / unit tests /
+# the CI pack-cold-start gate before deletion. First-hand evidence:
+#   .proof/025-w3-2/01-legacy-retirement/takeover-table.md (21 rows, STOP=0)
+#   docs/adr/0013-legacy-container-e2e-retirement.md
+# This slot is deliberately NOT RUN — NOT RUN is NOT a pass, and the family is
+# NOT counted as green. --skip-container is kept as a no-op for caller compat.
 if [ "$SKIP_CONTAINER" -eq 0 ]; then
-  if command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
-    log "=== family: container (podman) ==="
-    E2E_SCENARIOS="${E2E_SCENARIOS:-20-start 30-commands}" "$REPO/e2e/run-e2e.sh" >"$OUT/container.log" 2>&1 \
-      && log "FAMILY container PASS" || { log "FAMILY container FAIL (see $OUT/container.log)"; FAILED=$((FAILED+1)); }
-  else
-    log "FAMILY container BLOCKED (podman VM not runnable) — recorded, not faked"
-  fi
+  log "FAMILY container RETIRED (025-w3-2: legacy scenarios offlined, coverage taken over by families/verify70/unit/CI) — NOT RUN, not counted as PASS"
 fi
 
 log "=== unified verdict: FAILED_FAMILIES=$FAILED ==="

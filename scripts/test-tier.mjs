@@ -144,9 +144,10 @@ const envMissing = (kind) => {
 		)
 	if (kind === "e2e" && LIVE_ENABLED && !existsSync(join(REAL_HOME, ".credentials.yaml")))
 		missing.push(`no provider credentials at ${join(REAL_HOME, ".credentials.yaml")} (DSH_E2E_LIVE=1 needs a real model turn)`)
-	if (kind === "e2e" && process.env.DSH_E2E_PODMAN !== "0" && !commandExists("podman"))
-		missing.push("podman not on PATH (the container e2e suite; set DSH_E2E_PODMAN=0 to run only the local legs — that is a partial result, exit 2)")
-	if (!commandExists("bash") && kind === "e2e") missing.push("bash not on PATH (the container e2e driver is a bash script)")
+	// 025-w3-2: the podman container suite (e2e/run-e2e.sh + e2e/scenarios/) is
+	// retired — its still-valid coverage was taken over by families/verify70/
+	// unit tests before deletion (.proof/025-w3-2/01-legacy-retirement/).
+	// No podman/bash prerequisite is required by the e2e tier any more.
 	return missing
 }
 
@@ -174,7 +175,6 @@ const runUi = () => {
 
 const runE2e = () => {
 	requireEnv("e2e")
-	const podman = process.env.DSH_E2E_PODMAN !== "0"
 	let failed = 0
 
 	// Default leg: local flows — real client + real resident host + a local
@@ -201,15 +201,12 @@ const runE2e = () => {
 		console.log("  reason: opt-in via DSH_E2E_LIVE=1 (needs a valid provider key; the default run stays deterministic)")
 	}
 
-	if (podman) {
-		banner("test:e2e — container suite (real client + scratch DSH_HOME + mock model)")
-		failed = run("bash", ["e2e/run-e2e.sh"], { cwd: ROOT, env: { ...process.env, E2E_FACE: "client" } }) || failed
-	} else {
-		console.error(
-			"\ntest:e2e: container suite disabled by DSH_E2E_PODMAN=0 — NOT RUN (this is not a pass; the container suite is the mock-model baseline)",
-		)
-		return 2
-	}
+	// 025-w3-2: the container suite leg is retired (old e2e/scenarios/ podman
+	// layer). Its still-valid coverage is taken over by the host families /
+	// verify70 / unit gates and the CI pack-cold-start job — see
+	// .proof/025-w3-2/01-legacy-retirement/takeover-table.md. NOT RUN here is
+	// NOT a pass and is not counted; the local-flows leg above is the e2e tier.
+	console.log("SKIP retired container suite (025-w3-2: legacy e2e/scenarios offlined) — NOT RUN, not counted as passed")
 	return failed
 }
 
@@ -220,7 +217,7 @@ const printMatrix = () => {
 			name === "ui"
 				? ["verify/ui-matrix.mjs", "verify/agents-mount-repro.mjs", "verify/text-leak-audit.mjs"]
 				: name === "e2e"
-					? ["verify/e2e-flows/run-flows.mjs", ...tiers.e2e, "verify/steer-queue-repro.mjs", "verify/queue-flush-repro.mjs", "e2e/run-e2e.sh"]
+					? ["verify/e2e-flows/run-flows.mjs", ...tiers.e2e, "verify/steer-queue-repro.mjs", "verify/queue-flush-repro.mjs"]
 					: tiers[name]
 		console.log(`\n# ${name} (${files.length})`)
 		for (const file of files.sort()) console.log(`  ${relative(ROOT, file)}`)

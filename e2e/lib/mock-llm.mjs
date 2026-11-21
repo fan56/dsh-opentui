@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // Mock OpenAI-compatible chat/completions server — ported VERBATIM from
 // dsh-tui-pi e2e/lib/mock-llm.mjs (same dsh closure, same pi-ai
-// openai-completions wire, so every phase works unchanged here; the bake
-// step in e2e/Containerfile points the pinned provider route at it).
+// openai-completions wire, so every phase works unchanged here; the in-service
+// verify/* scripts point the pinned provider route at it — the legacy
+// e2e/Containerfile bake step was retired with the container suite in
+// 025-w3-2). This file is KEPT as the shared offline fake model of the
+// host-side families / verify70 layer.
 // It stands in for a real LLM so the FULL agent chain runs offline:
 // user message -> dsh agent loop -> pi-ai
 // chain runs offline: user message -> dsh agent loop -> pi-ai

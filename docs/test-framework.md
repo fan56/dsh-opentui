@@ -41,9 +41,11 @@ excluded from unit/ft counts): `packages/shell/test/agents-mount-client.test.ts`
 (`DSH_REMOTE_SMOKE`). Everything else is **unit**.
 
 `ui` is two tmux scripts (`verify/ui-matrix.mjs`, `verify/agents-mount-repro.mjs`);
-`e2e` additionally owns `verify/e2e-flows/run-flows.mjs`, the podman container
-suite (`e2e/run-e2e.sh`), and two opt-in live scripts
-(`verify/steer-queue-repro.mjs`, `verify/queue-flush-repro.mjs`).
+`e2e` additionally owns `verify/e2e-flows/run-flows.mjs` and two opt-in live
+scripts (`verify/steer-queue-repro.mjs`, `verify/queue-flush-repro.mjs`).
+The former podman container suite (`e2e/run-e2e.sh` + `e2e/scenarios/`) was
+retired in 025-w3-2 (A.5 takeover evidence in
+`.proof/025-w3-2/01-legacy-retirement/`); it is NOT RUN, not a green tier.
 
 ### Current counts (measured, `bun run test:list`, 2026-11-14)
 
@@ -52,7 +54,7 @@ suite (`e2e/run-e2e.sh`), and two opt-in live scripts
 | unit | 77 | panel-kit 4, runtime 1, shell 27, tui-base 45 |
 | ft | 32 | panel-kit 10, shell 6, tui-base 16 |
 | ui | 2 scripts | geometry matrix over 5 geometries + agents-mount suite |
-| e2e | 6 entries | 2 bun files + 4 scripts/suites |
+| e2e | 5 entries | 2 bun files + 3 scripts (container suite retired 025-w3-2) |
 
 The shell ft files (the renderer pilot): `solid-reactivity-canary-ft` (3 cases,
 the false-green canary), `shell-render-smoke-ft` (4), `shell-render-regression-ft`
@@ -303,7 +305,8 @@ each package's `bunfig.toml` for the `[test].preload`.
 | Assembly | `bun run verify:assembly` (= `cd packages/tui-base && bun test -t '^verify:'`) | entry→host wiring contracts |
 
 `bun run test:ui` / `test:e2e` are local (or self-hosted) only — they need
-tmux, a global `dsh`, a provisioned profile, and (for e2e) podman.
+tmux, a global `dsh`, and a provisioned profile (the former e2e podman
+requirement was retired with the container suite in 025-w3-2).
 
 ### Hosted CI (`.github/workflows/ci.yml`, `test` job, macOS + Ubuntu matrix)
 

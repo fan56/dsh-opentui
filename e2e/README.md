@@ -1,171 +1,55 @@
-# dsh-opentui e2e (podman)
+# dsh-opentui e2e
 
-Podman-based end-to-end harness for the opentui client, ported from the
-`dsh-tui-pi` e2e suite (`~/repo/dsh-tui-pi/e2e`): same structure
-(Containerfile + lib/ + scenarios/ + run-e2e.sh), same assertion
-primitives, same aggregation rules — adapted to this repo's boot path and
-markers.
-
-## 0.24 unified E2E (the single test-layer investment)
-
-`families/` is the 0.24 unified E2E layer (delivery plan §四). One command
-runs every family with the pack gate outermost:
+This directory hosts the **024 unified E2E layer** (`families/`) and the shared
+offline mock model (`lib/mock-llm.mjs`). One command runs every in-service family:
 
 ```sh
-bash e2e/families/run-all.sh            # all families incl. container (if podman runnable)
-bash e2e/families/run-all.sh --skip-container
+bash e2e/families/run-all.sh            # all in-service families
+bash e2e/families/run-all.sh --skip-container   # --skip-container is a retained no-op
 ```
 
-Families: `00-pack-gate` (outermost), `10-capability-domains`
+In-service families: `00-pack-gate` (outermost), `10-capability-domains`
 (handshake±/degrade, session, sessionId isolation, push, model),
-`20-model-domain`, `30-account-credentials-domain`, `40-exit-code`
-(128+N framing + quit-confirm exit 0), `80-keymap-modality` (FocusRouter
-layer), plus the `verify70` gate family via `scripts/real-client-gate.sh`.
-The accurate verify count is **64/64** (the "70" in the gate script's banner
-is stale 0.23 text). Flaky laws are in `families/FLAKY-LAWS.md`.
+`20-model-domain`, `30-account-credentials-domain`, `40-exit-code`,
+`80-keymap-modality`, plus the `verify70` gate family via
+`scripts/real-client-gate.sh`. The accurate verify count is **64/64** (the
+"70" in the gate script's banner is stale 0.23 text). Flaky laws are in
+`families/FLAKY-LAWS.md`.
 
-### Legacy `scenarios/` retirement — explicitly deferred past 0.24
+## Legacy `scenarios/` container layer — RETIRED in 025-w3-2
 
-The container family was unblocked during tag prep (legacy `20-start` went
-from 1pass/11fail to **11pass/0fail** on IMAGE ID `7ee869bb75ff…`, see
-`research/024-tag-prep-fixups.md` A.2), which is the condition the E2E rework
-§5 set for retiring the old `e2e/scenarios/` (21 scenarios + `run-all.sh`).
-Retirement is nevertheless **deferred to post-0.24**, by the adjudication-
-approved "显式改期并写明理由" option (`024-tag-premise-adjudication-oldfox.md`,
-final "知晓项"): the legacy scenarios are NOT yet fully replaced — the unified
-runner still depends on them for its container leg:
+The former podman container suite (`scenarios/` — 21 scenarios + `run-all.sh`,
+plus `Containerfile`, `run-e2e.sh`, `run-client-e2e.sh`, `lib/common.sh`, the
+bake helpers, `mock-jev.mjs` and the upgrade-registry fixture) was **offlined**
+under the A.5 ruling of `docs/workflows/w4-review-gate.md` §二: the red line
+"never delete existing tests" means "never delete *still-valid coverage*".
+Each of the 21 scenarios was inventoried, and every still-valid assertion was
+shown to be taken over by the new architecture (host `families/`, the
+`verify70` gate, unit tests, and the CI `pack-cold-start` gate) before deletion.
 
-- `e2e/families/run-all.sh:80` calls `e2e/run-e2e.sh` for the container family;
-- `e2e/run-e2e.sh:87` runs `bash /e2e/scenarios/run-all.sh` inside the image.
+First-hand evidence:
 
-Deleting `scenarios/` now would break `families/run-all.sh` (and
-`scripts/test-tier.mjs` e2e tier, which also drives `run-e2e.sh`). Retirement
-requires first reimplementing the in-container scenario layer on the families
-side, then rewiring those two callers — post-0.24 test-infrastructure work,
-not a tag premise. Until then `scenarios/` stays in service as the container
-entry point; the host-side families have fully taken over the non-container
-surface. No assertion or product logic changes are made by this deferral.
+- `.proof/025-w3-2/01-legacy-retirement/inventory.md` — 21-scenario assertion inventory
+- `.proof/025-w3-2/01-legacy-retirement/takeover-table.md` — 21-row takeover table (STOP=0)
+- `.proof/025-w3-2/01-legacy-retirement/deletion-list.md` — deleted-file manifest
+- `docs/adr/0013-legacy-container-e2e-retirement.md` — the ADR
 
-## What boots in the container
+The retirement was pre-registered and explicitly deferred past 0.24 at
+`024-tag-prep-final.md` §D (commit `988c6f0`); this batch executes that
+promise. Callers were rewired: `families/run-all.sh` records the container
+slot as **NOT RUN** (not a pass, not a green family), and `scripts/test-tier.mjs`
+no longer drives the container driver. Container-specific historical flaky
+laws are kept (marked historical) in `families/FLAKY-LAWS.md` in case an
+in-container family is ever rebuilt.
 
-Client mode only (batch B5; the plugin face is retired — ADR-0005, batch
-B4 removed the `--plugin` chain). The image carries bun + a workspace
-snapshot at `/src`, and the suite boots the repo-root `./dsh-opentui`
-launcher, which execs `bun --preload ... client-entry.tsx` (the bun TUI).
-The client spawns/joins the resident `dsh --profile opentui` host (node,
-from the global dsh closure) through the single-instance lifecycle.
+`e2e/lib/mock-llm.mjs` is deliberately **kept**: it is the shared offline fake
+model now owned by the in-service layer (`verify/*-repro.mjs`, `verify/ui-matrix.mjs`,
+`verify/text-leak-audit.mjs`, `verify/e2e-flows/*`, and
+`packages/shell/test/remote-btw-restart.test.ts` import it). It is not part of
+the retired container layer.
 
-Node 26 (>= 26.4) is a hard requirement of the resident host: OpenTUI's
-native core needs `--experimental-ffi`, which node 22 rejects as a bad
-option. (The `dsh-tui-pi` image runs node 22; this one cannot.)
+## Real-machine gate vs. the E2E families
 
-The `opentui` profile is NOT baked into the image: `lib/common.sh`'s
-`start_tui` / `ensure_client_profile` provisions it at runtime into the
-scratch `DSH_HOME` (`/tmp/client-dsh`) from the workspace snapshot —
-`provision-opentui-profile.mjs` for the profile, then the bake scripts
-(mock LLM endpoint into the patch layer, jev dispatch chain +
-subagent-registry bundle members, hoisted `pnpm install` inside the
-profile). Nothing touches host state — every boot happens inside the
-container's own scratch home.
-
-## Files
-
-- `Containerfile` — ubuntu 24.04 + node 26 + tmux + global
-  `pnpm`/`dsh` + bun + the `/src` workspace snapshot
-- `lib/common.sh` — markers, tmux driving (start/wait/quit), assert
-  primitives (copied as-is from dsh-tui-pi)
-- `scenarios/11-upgrade.sh` — `dsh-opentui upgrade` against the offline
-  registry fixture: dry-run plan with zero writes, real install with
-  `--save-exact` reaching pnpm, `upgrade-overrides.json`, and provisioning
-  honouring the override (no reinstall/downgrade)
-- `fixtures/upgrade-registry/` — fixture generator (stub tarballs + packuments
-  derived from the shipped PLUGIN_SET, one patch bump) and the `127.0.0.1`
-  registry server that both the query and install paths point at (see its
-  README)
-- `scenarios/20-start.sh` — first screen: composer placeholder, powerline
-  provider/model segments, ticking clock, editor echo + backspace clear
-- `scenarios/30-commands.sh` — slash commands over the 6-command core set:
-  palette open (all rows, shape, first-row highlight), `/cl` + `/mo`
-  filtering, clear-restore, Esc close, bare `/model`, unknown `/nope`,
-  editor liveness (palette mirror) after every cycle
-- `scenarios/run-all.sh` — in-container master runner + aggregation
-- `run-e2e.sh` — host driver: resolve dsh version (newest of
-  latest/next), podman build, podman run
-
-## Markers (derived from a real boot capture inside the container)
-
-| assertion            | text                                                     |
-| -------------------- | -------------------------------------------------------- |
-| composer placeholder | `Type a message (enter send, alt+enter newline)`         |
-| composer hint line   | `enter send · alt+enter newline · ↑↓ history`            |
-| provider segment     | `zai-coding-cn`                                          |
-| model segment        | `glm-5.3-flash` / powerline pairing `🤖 glm-5.3-flash`   |
-| clock                | ERE `[0-9]{2}:[0-9]{2}:[0-9]{2}`, two captures differ    |
-
-Editor echo/backspace are asserted through the slash palette (it repaints
-reliably and mirrors the composer buffer): typing `/quit` must list the
-`/quit exit the app` row AND filter out the `/help` row; backspaces +
-a trailing `/` must restore the unfiltered list (`/help show available
-commands`). Rationale: OpenTUI's diff paint has a known upstream bug
-(`docs/upstream-opentui-paint-bug-draft.md` — "the process stays alive and
-keeps processing input correctly — only the screen is wrong"), so the
-composer value line itself can render stale while typing; palette
-keystrokes trigger the repaint.
-
-Scenario 30 markers (same discipline — real capture):
-
-| assertion               | text                                                   |
-| ----------------------- | ------------------------------------------------------ |
-| palette rows (6)        | `/help show available commands`, `/new start a fresh session`, `/model switch model (bare opens the picker, then the effort picker)`, `/quit exit the app`, `/sessions list and resume stored sessions`, `/clear clear the transcript` |
-| first-row highlight     | SGR `38;5;238m/help` (active fg) vs `38;5;255m/new` (base fg) |
-| `/cl` / `/mo` filter    | only the `/clear` / `/model` row; `/help` row absent    |
-| bare `/model`           | `no models in the catalog`; `Select model` absent       |
-| unknown command         | `unknown command: /nope (try /help)`                    |
-
-In-container input law (captured, see `lib/common.sh` `ensure_editor_ready`):
-text must land as ONE tmux write from a CLOSED palette — appending text
-while the palette is open breaks it (rows vanish, buffer undefined); so
-filters are typed as `/cl` in one write, never `/` then `cl`. Backspaces
-must be spaced: a no-sleep flood drains asynchronously and can eat keys
-typed seconds later. `ensure_editor_ready` proves the editor through the
-palette mirror (`/quit` echo, backspaces + trailing `/` clear), not the
-composer value row.
-
-Known anomaly (plugin-era record, kept for history): bare `/model` used to
-never open the picker in the container — the retired plugin seam's
-`modelCatalog()` was built from an empty `listProviders()`; `/model`
-printed `no models in the catalog`. The client face resolves the catalog
-through the resident host, so scenario 30's captured-behavior assertion may
-flip once the picker opens there — update the scenario then.
-
-Known limitation: `/quit`, Ctrl+C x2 and Ctrl+D do not currently exit the
-app inside this container (same upstream bug family) — `lib/common.sh`'s
-`quit_tui` documents it, scenario 20 does not assert quit, and runners
-clean up via `kill_tui` + container exit.
-
-## Run
-
-```sh
-# everything (builds the image, runs the suite — client face only):
-./e2e/run-e2e.sh
-
-# subset only:
-E2E_SCENARIOS="20-start" ./e2e/run-e2e.sh
-
-# client face via the runtime-assembly path (no image rebuild; pulls from
-# the npmmirror — use when the podman VM cannot reach registry.npmjs.org):
-E2E_SCENARIOS="20-start" ./e2e/run-client-e2e.sh
-
-# directly against an already-built image:
-podman run --rm -v "$PWD/e2e:/e2e:ro" localhost/dsh-opentui-e2e:latest \
-  bash /e2e/scenarios/run-all.sh
-```
-
-Requirements: podman with a running machine. The default mirrors
-(`docker.m.daocloud.io` base image, `npmmirror.com/mirrors/node` node
-dist) exist because docker.io / nodejs.org are not reachable from this
-network's podman VM; on a clean network drop the prefixes (see
-`Containerfile` build args).
-
-Results print per-scenario counters and a final `E2E RESULT: PASS/FAIL`;
-run-e2e.sh exits non-zero on failure.
+`scripts/real-client-gate.sh` and the cap-smoke scripts run on the host macOS
+with a real dsh (rc.5); the families run on the host with a scratch `DSH_HOME`.
+They are separate environments and never stand in for each other's evidence.
