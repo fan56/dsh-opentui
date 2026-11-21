@@ -30,6 +30,7 @@ import {
 	type BridgeReplayRow,
 	type BridgeTransport,
 } from "../src/client/bridge-session-seam.ts"
+import { createPluginWriteConfirm } from "../../tui-base/src/seams/session.ts"
 import type { SeamSubagentView } from "../../tui-base/src/seams/session.ts"
 import { journalToTranscriptRows, type RemoteJournalEntry } from "../src/client/remote-session-ops.ts"
 // S5 — deterministic scratch fixture for the REAL local config/settings faces.
@@ -3316,5 +3317,112 @@ describe("025-w2-2 pluginsManager face — real data + honest degrade", () => {
 		expect(rows).toHaveLength(1)
 		expect(rows[0]).toMatchObject({ name: "local-plugin", stateUnknown: true })
 		rmSync(h.home, { recursive: true, force: true })
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 025-w2-3b — plugin-manager WRITE faces: seam-side confirm gate (R6) + wire
+// translation. Every synthetic reply uses a fixed fake SENTINEL; no real value.
+// ---------------------------------------------------------------------------
+describe("025-w2-3b pluginManager write faces — seam confirm gate (R6)", () => {
+	const CHANGE = { changed: true, application: "applied", target: "@scope/pkg" }
+
+	// E0 SEAM HALF: no confirm token -> CONFIRM_REQUIRED, ZERO transport calls.
+	test("E0 — no confirm token: all write faces reject CONFIRM_REQUIRED, transport zero calls", async () => {
+		const h = makeHarness()
+		const calls: Array<() => Promise<unknown>> = [
+			() => h.seam.setPluginBundleEnabled!("n", true, undefined as never),
+			() => h.seam.removePluginBundle!("n", undefined as never),
+			() => h.seam.installPluginSpec!("spec", undefined as never),
+			() => h.seam.updatePluginBundle!("n", "2", undefined as never),
+			() => h.seam.setPluginEnabled!("id", true, undefined as never),
+			() => h.seam.setVersionExemption!("1", "rc", true, true, undefined as never),
+		]
+		for (const call of calls) {
+			let code = ""
+			try { await call() } catch (err) { code = err instanceof BridgeProtocolError ? err.code : "" }
+			expect(code).toBe("CONFIRM_REQUIRED")
+		}
+		expect(h.requests.filter((r) => r.method.startsWith("pluginManager.")).length).toBe(0)
+	})
+
+	// E0 control: a forged structurally-invalid token is also refused.
+	test("E0 — forged confirm token rejected", async () => {
+		const h = makeHarness()
+		let code = ""
+		try {
+			await h.seam.removePluginBundle!("n", { __pluginWriteConfirm: false, operation: "x" } as never)
+		} catch (err) { code = err instanceof BridgeProtocolError ? err.code : "" }
+		expect(code).toBe("CONFIRM_REQUIRED")
+		expect(h.lastRequest("pluginManager.removeBundle")).toBeUndefined()
+	})
+
+	// Every write face with a valid token reaches the wire WITH __confirm:true.
+	test("write faces: valid token -> correct wire method/params + __confirm marker", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.setBundleEnabled", { kind: "value", value: CHANGE })
+		h.replies.set("pluginManager.removeBundle", { kind: "value", value: CHANGE })
+		h.replies.set("pluginManager.installBundle", { kind: "value", value: CHANGE })
+		h.replies.set("pluginManager.updateBundle", { kind: "value", value: CHANGE })
+		h.replies.set("pluginManager.setPluginEnabled", { kind: "value", value: CHANGE })
+		h.replies.set("pluginManager.setVersionExemption", { kind: "value", value: CHANGE })
+
+		await h.seam.setPluginBundleEnabled!("n", false, createPluginWriteConfirm("setBundleEnabled"))
+		expect(h.lastRequest("pluginManager.setBundleEnabled")?.params).toEqual({ name: "n", enabled: false, __confirm: true })
+
+		await h.seam.removePluginBundle!("n", createPluginWriteConfirm("removeBundle"))
+		expect(h.lastRequest("pluginManager.removeBundle")?.params).toEqual({ name: "n", __confirm: true })
+
+		const installed = await h.seam.installPluginSpec!("@scope/pkg", createPluginWriteConfirm("installBundle"))
+		const installReq = h.lastRequest("pluginManager.installBundle")!
+		expect(installReq.params!.spec).toBe("@scope/pkg")
+		expect((installReq.params!.options as Record<string, unknown>).enabled).toBe(true)
+		expect((installReq.params!.options as Record<string, unknown>).requestId).toBe(installed.requestId)
+		expect((installReq.params! as Record<string, unknown>).__confirm).toBe(true)
+
+		await h.seam.updatePluginBundle!("n", "2.0.0", createPluginWriteConfirm("updateBundle"))
+		expect(h.lastRequest("pluginManager.updateBundle")?.params).toEqual({ name: "n", version: "2.0.0", options: {}, __confirm: true })
+
+		await h.seam.setPluginEnabled!("id", true, createPluginWriteConfirm("setPluginEnabled"))
+		expect(h.lastRequest("pluginManager.setPluginEnabled")?.params).toEqual({ id: "id", enabled: true, __confirm: true })
+
+		await h.seam.setVersionExemption!("1.0.0", "rc.5", true, true, createPluginWriteConfirm("setVersionExemption"))
+		expect(h.lastRequest("pluginManager.setVersionExemption")?.params).toEqual({
+			packageVersion: "1.0.0", runtimeVersion: "rc.5", enabled: true, acceptRisk: true, __confirm: true,
+		})
+	})
+
+	// E5: hostile write reply does not leak apiKey/token SENTINEL into seam shape.
+	test("E5 — hostile write reply: SENTINEL keys dropped by second whitelist", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.removeBundle", {
+			kind: "value",
+			value: { ...CHANGE, apiKey: "W23_SENTINEL_synthetic", token: "W23_SENTINEL_synthetic", error: { incompatible: [{ x: 1 }], diagnostic: "bad" } },
+		})
+		const change = await h.seam.removePluginBundle!("n", createPluginWriteConfirm("removeBundle"))
+		expect(change.error).toBe("bad")
+		const text = JSON.stringify(change)
+		expect(text).not.toContain("W23_SENTINEL_synthetic")
+		expect(text).not.toContain("apiKey")
+		expect(text).not.toContain("incompatible")
+	})
+
+	// C-2 classification: a write business error keeps its code and does NOT
+	// poison availability; a service-absent error still degrades honestly.
+	test("write business error keeps code; service-absent still degrades (C-2)", async () => {
+		const h = makeHarness()
+		h.replies.set("pluginManager.listBundles", { kind: "value", value: {
+			value: [{ name: "a", version: "1", enabled: true, installed: true }],
+		} })
+		await h.seam.pluginsManager!.listBundles()
+		expect(h.seam.pluginsManager!.available()).toBe(true)
+		h.replies.set("pluginManager.removeBundle", {
+			kind: "error", error: new BridgeProtocolError("INTERNAL", "plugin-manager/bundle-in-use"),
+		})
+		let code = ""
+		try { await h.seam.removePluginBundle!("a", createPluginWriteConfirm("removeBundle")) }
+		catch (err) { code = err instanceof BridgeProtocolError ? err.code : "" }
+		expect(code).toBe("INTERNAL")
+		expect(h.seam.pluginsManager!.available()).toBe(true)
 	})
 })

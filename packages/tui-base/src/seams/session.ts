@@ -254,12 +254,39 @@ export interface SeamPluginChange {
 	application: "applied" | "restart-required" | "overridden" | "failed" | "cancelled"
 	target: string
 	error?: string
+	/** 025-w2-3 — caller-supplied install request id, echoed so the progress
+	 *  face can poll waitForInstall / drive cancelInstall. Only on install. */
+	requestId?: string
 }
 
 /** Structural face of `pluginManager/inspect` (C1 — the install preview). */
 export type SeamPluginInspection =
 	| { status: "accepted"; name?: string; version?: string; description?: string; bundle: boolean | null }
 	| { status: "refused"; problem: string; reason: string }
+
+/**
+ * 025-w2-3 (R6) — the seam-side confirmation proof. The ONLY producer intended
+ * for production is a TUI confirm modal's `onConfirm` callback via
+ * `createPluginWriteConfirm`; the bridge seam's write faces refuse any call
+ * without a structurally-valid token (zero wire traffic). This is a discipline
+ * gate, not cryptography: its job is to make "no write fires before the modal
+ * is accepted" an enforceable, unit-testable invariant. Structural brand (no
+ * module-identity dependency) so tui-base and shell can share it across bundles.
+ */
+export interface PluginWriteConfirm {
+	readonly __pluginWriteConfirm: true
+	readonly operation: string
+}
+export function createPluginWriteConfirm(operation: string): PluginWriteConfirm {
+	return { __pluginWriteConfirm: true, operation }
+}
+export function isPluginWriteConfirm(value: unknown): value is PluginWriteConfirm {
+	return (
+		typeof value === "object" && value !== null &&
+		(value as Record<string, unknown>).__pluginWriteConfirm === true &&
+		typeof (value as Record<string, unknown>).operation === "string"
+	)
+}
 
 /** One selectable new-session permission preset (`permissionPresets/catalog`
  * — the same process catalog the web client's General settings reads). */
@@ -805,14 +832,24 @@ export interface SessionSeam {
 	 */
 	pluginsManager?: SeamPluginsManager
 	/** Toggle a bundle on/off (the host persists the selection AND tries a
-	 * live apply — `application` reports which). Optional with pluginBundles. */
-	setPluginBundleEnabled?(name: string, enabled: boolean): Promise<SeamPluginChange>
-	/** Uninstall a bundle's package (behind the panel's confirm). */
-	removePluginBundle?(name: string): Promise<SeamPluginChange>
-	/** Inspect an install spec (the `i` flow's preview half). */
+	 * live apply — `application` reports which). Optional with pluginBundles.
+	 * R6: `confirm` MUST come from a confirmed TUI modal (seam-side gate). */
+	setPluginBundleEnabled?(name: string, enabled: boolean, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
+	/** Uninstall a bundle's package (behind the panel's confirm). R6 gated. */
+	removePluginBundle?(name: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
+	/** Inspect an install spec (the `i` flow's preview half; read-only, no gate). */
 	inspectPluginSpec?(spec: string): Promise<SeamPluginInspection>
-	/** Install a spec as an enabled bundle (the `i` flow's apply half). */
-	installPluginSpec?(spec: string): Promise<SeamPluginChange>
+	/** Install a spec as an enabled bundle (the `i` flow's apply half). R6 gated.
+	 *  The returned ChangeResult's `target` carries the install requestId so the
+	 *  progress face can poll `waitForInstall`. */
+	installPluginSpec?(spec: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
+	/** Update an installed bundle to a target version (R6 gated; dry-run via inspect). */
+	updatePluginBundle?(name: string, version: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
+	/** Set a plugin entry enabled (bundle-independent id; R6 gated). */
+	setPluginEnabled?(id: string, enabled: boolean, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
+	/** Grant/clear a version exemption. acceptRisk MUST be true for a grant
+	 *  after the user accepts the crash/data-loss risk in the confirm modal (R6 gated). */
+	setVersionExemption?(packageVersion: string, runtimeVersion: string, enabled: boolean, acceptRisk: boolean, confirm: PluginWriteConfirm): Promise<SeamPluginChange>
 	/**
 	 * Session-scoped skill catalog (`skills/list`): the host's composed
 	 * human-invocable skills, including plugin-provided rows a boot-time

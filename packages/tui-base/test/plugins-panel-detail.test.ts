@@ -8,6 +8,10 @@ import {
 	bundleStateText,
 	pluginBundleViews,
 	pluginDetailPreview,
+	versionExemptionRiskLine,
+	writeConfirmConsequence,
+	writeConfirmObject,
+	writeDryRunLine,
 } from "../src/routes/session/plugins-panel.tsx"
 
 // Boot the bundled locale registry so `t()` resolves real copy (not raw keys).
@@ -55,5 +59,35 @@ describe("W2-2b /plugins detail + honest degrade", () => {
 		expect(local.toggleable).toBe(false)
 		expect(local.stateUnknown).toBe(true)
 		expect(real.toggleable).toBe(true)
+	})
+})
+
+// 025-w2-3b — confirm-modal elements + acceptRisk risk wording (pure helpers).
+describe("W2-3b write confirm modal helpers", () => {
+	test("writeConfirmObject/Consequence: object + consequence are non-empty and distinct per operation", () => {
+		const obj = writeConfirmObject("installBundle", "@scope/pkg")
+		const cons = writeConfirmConsequence("installBundle")
+		expect(obj).toContain("@scope/pkg")
+		expect(obj).not.toBe("")
+		expect(cons).not.toBe("")
+		expect(cons).not.toContain("{") // interpolation resolved
+		expect(writeConfirmConsequence("removeBundle")).not.toBe(cons)
+	})
+
+	test("versionExemptionRiskLine: risk text ONLY on grant with acceptRisk=true", () => {
+		expect(versionExemptionRiskLine(true, true)).toBeTruthy()
+		expect(versionExemptionRiskLine(true, true)).toContain("crash")
+		expect(versionExemptionRiskLine(true, false)).toBeUndefined()
+		expect(versionExemptionRiskLine(false, true)).toBeUndefined()
+		expect(versionExemptionRiskLine(false, false)).toBeUndefined()
+	})
+
+	test("writeDryRunLine: accepted inspection carries spec; refused carries problem+reason", () => {
+		const accepted = writeDryRunLine("update", { status: "accepted", bundle: true, name: "@s/p", version: "2" })
+		expect(accepted).toContain("@s/p")
+		expect(accepted).toContain("2")
+		const refused = writeDryRunLine("remove", { status: "refused", problem: "not-bundle", reason: "no bundle" })
+		expect(refused).toContain("not-bundle")
+		expect(refused).toContain("no bundle")
 	})
 })

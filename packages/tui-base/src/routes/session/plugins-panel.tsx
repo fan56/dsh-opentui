@@ -34,6 +34,7 @@ import { useDialog } from "../../ui/dialog"
 import { DialogConfirm } from "../../ui/dialog-confirm"
 import { useThemeOptional } from "../../context/theme"
 import { successColor, warningColor } from "../../skin/semantic"
+import { createPluginWriteConfirm } from "../../seams/session"
 import type { SeamPluginBundleRow, SeamPluginChange, SeamPluginDetail, SeamPluginInspection, SessionSeam } from "../../seams/session"
 
 const [bridgeOpen, setBridgeOpen] = createSignal(false)
@@ -194,6 +195,40 @@ export function pluginChangeNotice(change: PluginChange): string {
 export function installPreviewLine(inspection: Extract<PluginInspection, { status: "accepted" }>): string {
 	const spec = `${inspection.name ?? "spec"}${inspection.version !== undefined && inspection.version !== "" ? `@${inspection.version}` : ""}`
 	return inspection.bundle === false ? t("panel.plugins.preview.notBundle", { spec }) : spec
+}
+
+/**
+ * 025-w2-3 — the three confirm-modal elements the write discipline requires
+ * (plan §5.2 / review §4 item 4): the write OBJECT, its CONSEQUENCE, and an
+ * explicit CANCEL item. These pure helpers make each element machine-assertable
+ * in a unit test (no dialog/transport needed). Esc=cancel / enter=confirm is
+ * DialogConfirm's existing keymap; the modal shows these lines.
+ */
+export function writeConfirmObject(operation: string, target: string): string {
+	return t("panel.plugins.confirm.object", { operation: t(`panel.plugins.confirm.op.${operation}`), target })
+}
+export function writeConfirmConsequence(operation: string): string {
+	return t(`panel.plugins.confirm.consequence.${operation}`)
+}
+
+/**
+ * 025-w2-3 — `setVersionExemption(acceptRisk=true)` risk text (host manifest:
+ * "Required true for grants after the user accepts possible crashes and data
+ * loss"). Pure so a test can assert the risk wording is present ONLY on a grant
+ * with acceptRisk=true, never on a clear or a non-risk grant.
+ */
+export function versionExemptionRiskLine(enabled: boolean, acceptRisk: boolean): string | undefined {
+	if (enabled && acceptRisk) return t("panel.plugins.confirm.risk.versionExemption")
+	return undefined
+}
+
+/** 025-w2-3 — a remove/update dry-run line from an inspected spec (review §4). */
+export function writeDryRunLine(operation: "remove" | "update", inspection: PluginInspection): string {
+	if (inspection.status === "refused") {
+		return t("panel.plugins.dryRun.refused", { problem: inspection.problem, reason: inspection.reason })
+	}
+	const label = installPreviewLine(inspection)
+	return t("panel.plugins.dryRun.accepted", { operation: t(`panel.plugins.confirm.op.${operation}`), spec: label })
 }
 
 /**
@@ -379,14 +414,11 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		setCursor(next)
 	}
 
-	/** Enter/space: toggle the selected bundle on/off (guarded, busy-safe). */
-	async function toggle(row: PluginBundleView | undefined) {
-		if (row === undefined) return
-		if (busy()) return
-		// W2-2 S-5 (review S-4): the keymap advertises "enter toggle" while the
-		// phase-1 seam has no setPluginBundleEnabled face. That is "not wired
-		// yet", NOT a host-declared read-only — keep the wording honest instead
-		// of mislabeling every unwired press as "read-only".
+	/** Enter/space: toggle the selected bundle on/off — ALWAYS behind a confirm
+	 *  modal (plan §5.2: setEnabled must not fire silently / R6). The confirm
+	 *  token is minted ONLY in onConfirm, so Escape/cancel cannot fire a write. */
+	function toggle(row: PluginBundleView | undefined) {
+		if (row === undefined || busy()) return
 		if (typeof props.seam.setPluginBundleEnabled !== "function") {
 			flash(t("panel.plugins.status.toggleUnavailable", { name: row.name }), 4000)
 			return
@@ -400,36 +432,16 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			)
 			return
 		}
-		setBusy(true)
-		flash(row.enabled ? t("panel.plugins.status.disabling", { name: row.name }) : t("panel.plugins.status.enabling", { name: row.name }))
-		try {
-			const change = await props.seam.setPluginBundleEnabled(row.name, !row.enabled)
-			flash(pluginChangeNotice(change), 6000)
-		} catch (error) {
-			// P2-3: RemoteHostSession folds throws into failed Changes, but a
-			// rejecting seam adapter (local/test) would surface as an unhandled
-			// rejection with no panel feedback — flash it instead.
-			flash(t("panel.plugins.status.changeFailed", { name: row.name, error: errorMessage(error) }), 8000)
-		} finally {
-			setBusy(false)
-		}
-	}
-
-	/** `d`: uninstall behind a confirm (the reference's PluginConfirm shape). */
-	function confirmRemove(row: PluginBundleView | undefined) {
-		if (row === undefined || busy()) return
-		if (!row.removable) {
-			flash(t("panel.plugins.status.notRemovable", { name: row.name }), 4000)
-			return
-		}
 		const name = row.name
+		const enabled = !row.enabled
+		const operation = "setBundleEnabled"
 		dialog.replace(
 			() => (
 				<DialogConfirm
-					title={t("panel.plugins.dialog.uninstallTitle", { name })}
-					message={t("panel.plugins.dialog.uninstallMessage", { name })}
-					label={{ confirm: t("panel.plugins.dialog.uninstallConfirm"), cancel: t("panel.plugins.dialog.keep") }}
-					onConfirm={() => void remove(name)}
+					title={t("panel.plugins.dialog.actionTitle", { operation: t(`panel.plugins.confirm.op.${operation}`) })}
+					message={`${writeConfirmObject(operation, name)}\n${writeConfirmConsequence(operation)}`}
+					label={{ confirm: t("panel.plugins.dialog.actionConfirm"), cancel: t("panel.plugins.dialog.cancel") }}
+					onConfirm={() => void toggleApply(name, enabled, operation)}
 				/>
 			),
 			undefined,
@@ -437,13 +449,54 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		)
 	}
 
-	async function remove(name: string) {
+	async function toggleApply(name: string, enabled: boolean, operation: string) {
+		if (busy()) return
+		if (typeof props.seam.setPluginBundleEnabled !== "function") return
+		setBusy(true)
+		flash(t(enabled ? "panel.plugins.status.enabling" : "panel.plugins.status.disabling", { name }))
+		try {
+			const change = await props.seam.setPluginBundleEnabled(name, enabled, createPluginWriteConfirm(operation))
+			flash(pluginChangeNotice(change), 6000)
+		} catch (error) {
+			flash(t("panel.plugins.status.changeFailed", { name, error: errorMessage(error) }), 8000)
+		} finally {
+			setBusy(false)
+		}
+	}
+
+	/** `d`: uninstall behind a confirm (the reference's PluginConfirm shape).
+	 *  The confirm shows the object + consequence + a dry-run line (the local
+	 *  bundle row we already have); the token is minted only on accept (R6). */
+	function confirmRemove(row: PluginBundleView | undefined) {
+		if (row === undefined || busy()) return
+		if (!row.removable) {
+			flash(t("panel.plugins.status.notRemovable", { name: row.name }), 4000)
+			return
+		}
+		const name = row.name
+		const operation = "removeBundle"
+		const dryRun = t("panel.plugins.dryRun.remove", { name, version: row.version || "?" })
+		dialog.replace(
+			() => (
+				<DialogConfirm
+					title={t("panel.plugins.dialog.uninstallTitle", { name })}
+					message={`${writeConfirmObject(operation, name)}\n${writeConfirmConsequence(operation)}\n${dryRun}`}
+					label={{ confirm: t("panel.plugins.dialog.uninstallConfirm"), cancel: t("panel.plugins.dialog.keep") }}
+					onConfirm={() => void remove(name, operation)}
+				/>
+			),
+			undefined,
+			{ tone: "warning" },
+		)
+	}
+
+	async function remove(name: string, operation: string) {
 		if (busy()) return
 		if (typeof props.seam.removePluginBundle !== "function") return
 		setBusy(true)
 		flash(t("panel.plugins.status.uninstalling", { name }))
 		try {
-			const change = await props.seam.removePluginBundle(name)
+			const change = await props.seam.removePluginBundle(name, createPluginWriteConfirm(operation))
 			flash(pluginChangeNotice(change), 8000)
 		} catch (error) {
 			flash(t("panel.plugins.status.changeFailed", { name, error: errorMessage(error) }), 8000)
@@ -490,17 +543,20 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 			return
 		}
 		const accepted = inspection
+		const operation = "installBundle"
+		// Inspect result = the dry-run info shown before the write (review §4).
+		const dryRun = t("panel.plugins.dryRun.install", { spec: installPreviewLine(accepted) })
 		dialog.replace(
 			() => (
 				<DialogConfirm
 					title={t("panel.plugins.dialog.installTitle")}
 					message={
-						accepted.description
-							? t("panel.plugins.dialog.installBodyDescription", { preview: installPreviewLine(accepted), description: accepted.description })
-							: t("panel.plugins.dialog.installBody", { preview: installPreviewLine(accepted) })
+						`${writeConfirmObject(operation, installPreviewLine(accepted))}\n` +
+						`${writeConfirmConsequence(operation)}\n${dryRun}` +
+						(accepted.description ? `\n${accepted.description}` : "")
 					}
 					label={{ confirm: t("panel.plugins.dialog.installConfirm"), cancel: t("panel.plugins.dialog.cancel") }}
-					onConfirm={() => void install(spec)}
+					onConfirm={() => void install(spec, operation)}
 				/>
 			),
 			undefined,
@@ -508,14 +564,16 @@ export function PluginsPanel(props: { seam: SessionSeam; onClosed?: () => void }
 		)
 	}
 
-	async function install(spec: string) {
+	async function install(spec: string, operation: string) {
 		if (busy()) return
 		if (typeof props.seam.installPluginSpec !== "function") return
 		setBusy(true)
 		flash(t("panel.plugins.status.installing", { spec }))
 		try {
-			const change = await props.seam.installPluginSpec(spec)
+			const change = await props.seam.installPluginSpec(spec, createPluginWriteConfirm(operation))
 			flash(pluginChangeNotice(change), 8000)
+			// W2-3c will drive waitForInstall from change.requestId; for now the
+			// post-write refresh in the seam repaints the row (W2-3b).
 		} catch (error) {
 			flash(t("panel.plugins.status.changeFailed", { name: spec, error: errorMessage(error) }), 8000)
 		} finally {

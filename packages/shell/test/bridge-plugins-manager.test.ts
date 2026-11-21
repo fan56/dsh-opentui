@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test"
 import {
 	projectBundleRows,
+	projectChange,
 	projectDetail,
 	projectInspection,
 	projectPluginRows,
@@ -104,5 +105,51 @@ describe("W2-2b plugin-manager read projection — second whitelist (E5)", () =>
 		expect(JSON.stringify(accepted)).not.toContain(SENTINEL)
 		const refused = projectInspection({ status: "refused", problem: "not-found", reason: "r", apiKey: SENTINEL })
 		expect(refused).toEqual({ status: "refused", problem: "not-found", reason: "r" })
+	})
+})
+
+// 025-w2-3b — write ChangeResult projection (E5 second whitelist).
+describe("W2-3b plugin-manager write projection — second whitelist (E5)", () => {
+	test("projectChange: only closed enum + bounded target/error/requestId cross; host object keys dropped", () => {
+		const raw = {
+			changed: true,
+			application: "restart-required",
+			stage: "install",
+			target: "@scope/pkg",
+			requestId: "w23-req-1",
+			error: { code: "incompatible-version", diagnostic: "needs rc.6", incompatible: [{ name: "x" }] },
+			apiKey: "W22_SENTINEL_synthetic", token: "W22_SENTINEL_synthetic",
+			packageResult: { nested: "host object must not cross" }, pendingBuilds: ["a"],
+		}
+		const out = projectChange(raw)
+		expect(out).toEqual({
+			changed: true,
+			application: "restart-required",
+			target: "@scope/pkg",
+			requestId: "w23-req-1",
+			error: "needs rc.6",
+		})
+		const text = JSON.stringify(out)
+		expect(text).not.toContain("W22_SENTINEL_synthetic")
+		for (const key of ["apiKey", "token", "packageResult", "pendingBuilds", "incompatible", "stage"]) {
+			expect(text).not.toContain(key)
+		}
+	})
+
+	test("projectChange: hostile application value falls back to failed (never painted success)", () => {
+		const out = projectChange({ application: "totally-fine", target: "pkg", changed: true })
+		expect(out.application).toBe("failed")
+		expect(out.changed).toBe(false)
+	})
+
+	test("projectChange: error.code fallback when no diagnostic; string error; wrapped {value} shape", () => {
+		expect(projectChange({ value: { application: "cancelled", target: "p", error: { code: "stopped" } } }).error).toBe("stopped")
+		expect(projectChange({ application: "failed", target: "p", error: "plain-diagnostic" }).error).toBe("plain-diagnostic")
+	})
+
+	test("projectChange: long diagnostic capped; empty target normalised", () => {
+		const out = projectChange({ application: "failed", error: { diagnostic: "x".repeat(9000) } })
+		expect(out.target).toBe("")
+		expect(out.error!.length).toBe(240)
 	})
 })

@@ -39,7 +39,9 @@ import type {
 	SeamEffortOption,
 	PluginRowView,
 	SeamPermissionCatalog,
+	PluginWriteConfirm,
 	SeamPluginBundleRow,
+	SeamPluginChange,
 	SeamPluginDetail,
 	SeamPluginInspection,
 	SeamPluginRegistries,
@@ -74,9 +76,12 @@ import { DEFAULT_PROFILE } from "./lifecycle.ts"
 // 025-w1a — /plugins phase-1 local install manifest (profile node_modules).
 import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { join } from "node:path"
+// 025-w2-3 — install request id (echoed to drive waitForInstall / cancelInstall).
+import { randomUUID } from "node:crypto"
 // 025-w2-2 — hand-written plugin-manager read face + second whitelist projection.
 import {
 	projectBundleRows,
+	projectChange,
 	projectDetail,
 	projectInspection,
 	projectPluginRows,
@@ -84,6 +89,22 @@ import {
 	projectVersionExemptions,
 	projectVersions,
 } from "./bridge-plugins-manager.ts"
+
+/**
+ * 025-w2-3 (R6) — seam-side confirm gate (structural mirror of the tui-base
+ * guard). Kept local so shell never imports a runtime value from tui-base's
+ * seam module (bundle-boundary safety). A write face refuses any call whose
+ * `confirm` is not a structurally-valid token BEFORE touching the transport.
+ */
+function writeConfirmed(confirm: PluginWriteConfirm | undefined): boolean {
+	return (
+		typeof confirm === "object" && confirm !== null &&
+		(confirm as unknown as Record<string, unknown>).__pluginWriteConfirm === true &&
+		typeof (confirm as unknown as Record<string, unknown>).operation === "string"
+	)
+}
+const CONFIRM_REQUIRED = (method: string) =>
+	new BridgeProtocolError("CONFIRM_REQUIRED", `${method}: write requires a confirmed TUI modal token`)
 
 // ---------------------------------------------------------------------------
 // Injected transport surface (ADR-0010 frame shapes)
@@ -1473,6 +1494,30 @@ export class BridgeSessionSeam implements SessionSeam {
 		}
 	}
 
+	/**
+	 * 025-w2-3 (R6) — seam-side SECOND gate for every pluginManager WRITE face.
+	 * Refuses any call without a structurally-valid confirm token BEFORE any
+	 * transport traffic (zero wire calls on rejection), then forwards `__confirm:
+	 * true` so the bridge generic-arm first gate admits it. Error classification
+	 * stays faithful via #pmRequest (C-2): a business refusal keeps its own code
+	 * and does NOT poison availability. On success the bundle cache is refreshed
+	 * (review §4 item 6) so a toggle/remove/install is reflected on next paint.
+	 */
+	async #pmWrite(
+		method: string,
+		params: Record<string, unknown>,
+		confirm: PluginWriteConfirm | undefined,
+		target: string,
+	): Promise<SeamPluginChange> {
+		if (!writeConfirmed(confirm)) throw CONFIRM_REQUIRED(method)
+		const reply = await this.#pmRequest(method, { ...params, __confirm: true }, projectChange)
+		// Normalise an empty/short target from the host to the caller's target so
+		// the status line always names what changed.
+		if (reply.target === "" && target !== "") reply.target = target
+		void this.refreshPluginBundles()
+		return reply
+	}
+
 	pluginsManager: SeamPluginsManager = {
 		listBundles: async () => {
 			const rows = await this.#pmRequest("pluginManager.listBundles", {}, projectBundleRows)
@@ -1489,6 +1534,53 @@ export class BridgeSessionSeam implements SessionSeam {
 		inspect: async (spec) => this.#pmRequest("pluginManager.inspect", { spec }, projectInspection),
 		available: () => this.#pluginsManagerAvailable,
 	}
+
+	// 025-w2-3 (R6) — hand-written WRITE faces over the generic arm. Each goes
+	// through #pmWrite (seam confirm gate + bridge __confirm marker + faithful
+	// error classification + post-write refresh). No face fires without a token
+	// minted by a confirmed TUI modal.
+	setPluginBundleEnabled = (name: string, enabled: boolean, confirm: PluginWriteConfirm): Promise<SeamPluginChange> =>
+		this.#pmWrite("pluginManager.setBundleEnabled", { name, enabled }, confirm, name)
+
+	removePluginBundle = (name: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange> =>
+		this.#pmWrite("pluginManager.removeBundle", { name }, confirm, name)
+
+	inspectPluginSpec = (spec: string): Promise<SeamPluginInspection> =>
+		this.pluginsManager.inspect(spec)
+
+	installPluginSpec = async (spec: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange> => {
+		const requestId = `w23-${randomUUID()}`
+		const change = await this.#pmWrite(
+			"pluginManager.installBundle",
+			{ spec, options: { enabled: true, requestId } },
+			confirm,
+			spec,
+		)
+		// Echo the caller-supplied requestId so the progress face can poll it,
+		// even though the host's ChangeResult does not carry it back.
+		change.requestId = requestId
+		return change
+	}
+
+	updatePluginBundle = (name: string, version: string, confirm: PluginWriteConfirm): Promise<SeamPluginChange> =>
+		this.#pmWrite("pluginManager.updateBundle", { name, version, options: {} }, confirm, name)
+
+	setPluginEnabled = (id: string, enabled: boolean, confirm: PluginWriteConfirm): Promise<SeamPluginChange> =>
+		this.#pmWrite("pluginManager.setPluginEnabled", { id, enabled }, confirm, id)
+
+	setVersionExemption = (
+		packageVersion: string,
+		runtimeVersion: string,
+		enabled: boolean,
+		acceptRisk: boolean,
+		confirm: PluginWriteConfirm,
+	): Promise<SeamPluginChange> =>
+		this.#pmWrite(
+			"pluginManager.setVersionExemption",
+			{ packageVersion, runtimeVersion, enabled, acceptRisk },
+			confirm,
+			`${packageVersion}@${runtimeVersion}`,
+		)
 
 	/**
 	 * 025-w2-2 — warm/refresh the real bundle cache (the panel calls this on

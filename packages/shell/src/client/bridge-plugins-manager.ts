@@ -11,6 +11,7 @@
 import type {
 	PluginRowView,
 	SeamPluginBundleRow,
+	SeamPluginChange,
 	SeamPluginDetail,
 	SeamPluginInspection,
 	SeamPluginRegistries,
@@ -164,4 +165,41 @@ export function projectVersions(raw: unknown): string[] {
 	const value = unwrapWireValue(raw)
 	if (!Array.isArray(value)) return []
 	return value.map((v) => text(v, MAX_SHORT) ?? "").filter((v) => v !== "")
+}
+
+/**
+ * 025-w2-3b — one pluginManager WRITE result (ChangeResult) -> the seam shape.
+ * SECOND whitelist (E5): only the closed `application` enum, a short `target`,
+ * a bounded diagnostic string and an optional install `requestId` cross. Host
+ * objects (error.incompatible[], packageResult, pendingBuilds, registries,
+ * apiKey/token/...) never cross. A malformed/hostile application value falls
+ * back to "failed" — never painted as a success.
+ */
+export function projectChange(raw: unknown): SeamPluginChange {
+	const value = unwrapWireValue(raw)
+	const row = asRecord(value)
+	const application = row.application
+	const safeApplication =
+		application === "applied" || application === "restart-required" ||
+		application === "overridden" || application === "failed" || application === "cancelled"
+			? application
+			: "failed"
+	const target = text(row.target, MAX_SHORT) ?? ""
+	const requestId = text(row.requestId, MAX_SHORT)
+	const errorObj = row.error
+	// `error` is a host ManagementError object; only a short diagnostic/code
+	// string crosses (never the object, never arrays it may contain).
+	const error = typeof errorObj === "string"
+		? errorObj.slice(0, MAX_SHORT)
+		: text(asRecord(errorObj).diagnostic, MAX_SHORT) ?? text(asRecord(errorObj).code, MAX_SHORT)
+	const out: SeamPluginChange = {
+		// A hostile/unknown application is forced to "failed"; never let a
+		// failed change claim changed:true (would paint a false success).
+		changed: safeApplication === "failed" ? false : row.changed === true,
+		application: safeApplication,
+		target,
+	}
+	if (error !== undefined) out.error = error
+	if (requestId !== undefined && requestId !== "") out.requestId = requestId
+	return out
 }
