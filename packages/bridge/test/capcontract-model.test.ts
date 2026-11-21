@@ -13,7 +13,11 @@ const ID = {
   catalog: "@deepseek-ai/dsh-api-session-controller#session/modelCatalog",
   select: "@deepseek-ai/dsh-api-session-controller#session/selectModel",
   init: "@deepseek-ai/dsh-api-session-controller#session/initializeDefaultModel",
-  unwired: "@deepseek-ai/dsh-api-session-controller#session/create",
+  // W2-1 round log — OLD unwired sentinel was session/create (verbatim):
+  //   unwired: "@deepseek-ai/dsh-api-session-controller#session/create",
+  // W2-1 releases session/create into the generic set, so use a genuinely
+  // un-wired CapIR id (same sentinel s4 uses) for the NOT_WIRED negative test.
+  unwired: "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/resolveInspectQuery",
 } as const
 
 const CATALOG = {
@@ -137,9 +141,12 @@ describe("S1 /model — createCapHostInvoke model arms", () => {
   test("non-wired CapIR id stays NOT_WIRED (膨胀期望面 negative)", async () => {
     // Old criteria (verbatim): S1 /ledger in_wired=4\/257/; S2 /ledger in_wired=19\/257/.
     // S3: 22/257; S5: 24/257; 025-w1b: 28/257 (exact count, still checks the explicit NOT_WIRED text).
+    // W2-1 round log — OLD W2-0 base criterion kept VERBATIM (do not delete):
+    //   /NOT_WIRED:.*ledger in_wired=28\/257/
+    // W2-1 releases 3 generic ids -> union count 28 + 3 = 31.
     const invoke = createCapHostInvoke(ctxWith(stubController()))
     await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(
-      /NOT_WIRED:.*ledger in_wired=28\/257/,
+      /NOT_WIRED:.*ledger in_wired=31\/257/,
     )
   })
 })

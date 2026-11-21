@@ -20,6 +20,7 @@
  *    the id into a hand-projection exception set.
  *  - CAP_GENERIC_ADAPTERS is an explicit per-id release whitelist. W2-0 base:
  *    empty (AMEND-4); wired count unchanged (28), bridge observable behaviour 0 delta.
+ *    W2-1 releases the three side-session ids (session/create|prompt|wait).
  */
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
 import { dirname, resolve } from "node:path"
@@ -69,8 +70,12 @@ const isDenied = (m) => DENY_NAMESPACES.has(m.namespace)
 const genericMethods = methods.filter((m) => !isDenied(m))
 
 // --- service table: id -> cordis service key + target method name ---
+// W2-1: carry `cancel: "signal"` through from capir.json so the generic arm can
+// append an owned AbortSignal for methods whose host signature requires one
+// (session/prompt & session/wait call signal.throwIfAborted() unconditionally).
+// Data is additive (only methods with a `cancel` field get the row property).
 const serviceBlock = methods.map((m) =>
-  `  ${q(m.id)}: { service: ${q(m.service)}, implementation: ${q(m.implementation ?? m.name)} },`
+  `  ${q(m.id)}: { service: ${q(m.service)}, implementation: ${q(m.implementation ?? m.name)}${m.cancel !== undefined ? `, cancel: ${q(m.cancel)}` : ""} },`
 ).join("\n")
 
 // --- params table: id -> ordered normalised rows (jsonSchema NOT emitted) ---
@@ -112,8 +117,18 @@ const projected = methods.filter((m) => {
   return [...acc].some((k) => SENSITIVE_RE.test(k))
 })
 const projectedBlock = projected.map((m) => `  ${q(m.id)},`).join("\n")
-// W2-0 base: no generic adapters released yet (AMEND-4). Release is per-id per batch.
-const adapterBlock = ""
+// W2-1 /btw activation: first generic release — the three side-session ids
+// (session/create -> prompt -> wait). Explicit per-id whitelist; every other id
+// stays hand-wired or NOT_WIRED. Release is per-id per batch (plan §3.1).
+const W2_1_ADAPTERS = [
+  "@deepseek-ai/dsh-api-session-controller#session/create",
+  "@deepseek-ai/dsh-api-session-controller#session/prompt",
+  "@deepseek-ai/dsh-api-session-controller#session/wait",
+]
+for (const id of W2_1_ADAPTERS) {
+  if (!ids.includes(id)) fail("W2-1 adapter id not in CapIR: " + id)
+}
+const adapterBlock = W2_1_ADAPTERS.map((id) => `  ${q(id)},`).join("\n")
 
 const types = header("types: generated capability id/shape surface") + `
 /** Transport kind of a capability method (CapIR field: kind). */
@@ -333,5 +348,5 @@ if (checkMode) {
   for (const [name, text] of Object.entries(files)) {
     writeFileSync(resolve(OUT_DIR, name), text, "utf8")
   }
-  console.log(`gen-capcontract: wrote ${Object.keys(files).join(", ")} -> ${OUT_DIR} (${methods.length} methods; deny=${methods.length - genericMethods.length} projected=${projected.length} adapters=0)`)
+  console.log(`gen-capcontract: wrote ${Object.keys(files).join(", ")} -> ${OUT_DIR} (${methods.length} methods; deny=${methods.length - genericMethods.length} projected=${projected.length} adapters=${W2_1_ADAPTERS.length})`)
 }

@@ -292,9 +292,11 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
   // §3.3 coexistence + S1 union gate + frozen invariants. Existing 28 per-id
   // arms win over generic; the union first gate admits both sets; the empty
   // adapters set and unchanged inject prove the W2-0 dormant contract.
-  test('coexistence: per-id wins, union gate admits both sets, 28/0/inject invariants hold', async () => {
+  test('coexistence: per-id wins, union gate admits both sets, 28/inject invariants hold', async () => {
     expect(CAP_HOST_WIRED_IDS.length).toBe(28)
-    expect(CAP_GENERIC_ADAPTERS.size).toBe(0)
+    // W2-1 round log — OLD W2-0 base criterion kept VERBATIM (do not delete):
+    //   expect(CAP_GENERIC_ADAPTERS.size).toBe(0)
+    expect(CAP_GENERIC_ADAPTERS.size).toBe(3)
     expect(inject).toEqual(['agents', 'typert'])
     expect(inject).not.toContain('pluginManager')
     expect(inject).not.toContain('llm')
@@ -326,10 +328,67 @@ describe('W2-0d generic arm — table-driven dispatch (dormant at base)', () => 
     expect(genericTouched).toBe(0)
     // a generic-released id passes the union gate and reaches the generic arm
     expect(await hostInvoke(GENERIC_ID as never, 'unary', {})).toEqual({ via: 'generic' })
-    // an id in NEITHER set fails the union gate with the unchanged 28 count text
+    // an id in NEITHER set fails the union gate with the union count text.
+    // bothSets has 2 generic ids -> 28 + 2 = 30. W2-1 round log — OLD W2-0
+    // base criterion kept VERBATIM (do not delete):
+    //   expect(ghost).toContain('in_wired=28/257')
     const ghost = await rejectionMessage(() => hostInvoke(GHOST_ID as never, 'unary', {}))
     expect(ghost).toContain('NOT_WIRED')
     expect(ghost).toContain(GHOST_ID)
-    expect(ghost).toContain('in_wired=28/257')
+    expect(ghost).toContain('in_wired=30/257')
+
+    // Production release set (3 ids) reports the union count 28 + 3 = 31 (S-1).
+    const prodConfig = makeConfig({ adapters: CAP_GENERIC_ADAPTERS })
+    const prodInvoke = createCapHostInvoke(ctx, prodConfig)
+    const prodGhost = await rejectionMessage(() => prodInvoke(GHOST_ID as never, 'unary', {}))
+    expect(prodGhost).toContain('in_wired=31/257')
+  })
+
+  // W2-1 E4: the three released side-session ids are in the production set with
+  // the correct service binding; cancel:'signal' ids get an owned, un-aborted
+  // trailing AbortSignal appended AFTER the table-ordered request (R3 prefix).
+  test('W2-1 release set + cancel signal: create=1 arg, prompt/wait=2 args with owned AbortSignal', async () => {
+    const createId = '@deepseek-ai/dsh-api-session-controller#session/create'
+    const promptId = '@deepseek-ai/dsh-api-session-controller#session/prompt'
+    const waitId = '@deepseek-ai/dsh-api-session-controller#session/wait'
+    for (const id of [createId, promptId, waitId]) {
+      expect(CAP_GENERIC_ADAPTERS.has(id as never)).toBe(true)
+    }
+    const captured: Record<string, unknown[][]> = {}
+    const request = { sessionId: 'side-test' }
+    const svc = {
+      create(...args: unknown[]) { captured.create = [args]; return { sessionId: 'side-test' } },
+      prompt(...args: unknown[]) { captured.prompt = [args]; return { accepted: true } },
+      wait(...args: unknown[]) { captured.wait = [args]; return { reason: 'idle' } },
+    }
+    const config = makeConfig({
+      adapters: new Set([createId, promptId, waitId]),
+      services: {
+        [createId]: { service: 'sessionController', implementation: 'create' },
+        [promptId]: { service: 'sessionController', implementation: 'prompt', cancel: 'signal' },
+        [waitId]: { service: 'sessionController', implementation: 'wait', cancel: 'signal' },
+      },
+      params: {
+        [createId]: [{ name: 'request', required: true, type: 'object' }],
+        [promptId]: [{ name: 'request', required: true, type: 'object' }],
+        [waitId]: [{ name: 'request', required: true, type: 'object' }],
+      },
+      getService: () => svc,
+    })
+    await invokeGenericCap(config, createId, 'unary', { request })
+    await invokeGenericCap(config, promptId, 'unary', { request })
+    await invokeGenericCap(config, waitId, 'unary', { request })
+
+    // create (no cancel) gets exactly the table-ordered request, identity preserved.
+    expect(captured.create![0]).toEqual([request])
+    expect(captured.create![0]![0]).toBe(request)
+    // prompt/wait (cancel:'signal') get request + an owned, never-aborted signal.
+    for (const key of ['prompt', 'wait'] as const) {
+      const args = captured[key]![0]!
+      expect(args).toHaveLength(2)
+      expect(args[0]).toBe(request)
+      expect(args[1]).toBeInstanceOf(AbortSignal)
+      expect((args[1] as AbortSignal).aborted).toBe(false)
+    }
   })
 })

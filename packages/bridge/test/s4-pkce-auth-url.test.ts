@@ -258,7 +258,10 @@ describe("S4 / E6 — negative controls", () => {
     const absent = createCapHostInvoke(ctxWith(undefined))
     await expect(absent(ID.start as CapMethodId, "unary", { client: CLIENT, callbackOrigin: "http://localhost", loginSource: "desktop" })).rejects.toThrow("NOT_WIRED: deepseekAccount unavailable")
     const invoke = createCapHostInvoke(ctxWith(accountWithLogin()))
-    await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=28\/257/)
+    // W2-1 round log — OLD W2-0 base criterion kept VERBATIM (do not delete):
+    //   /NOT_WIRED:.*ledger in_wired=28\/257/
+    // W2-1 releases 3 generic ids -> union count 28 + 3 = 31.
+    await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=31\/257/)
   })
 
   test("bad signal param -> BAD_PARAMS (never reaches host stream)", async () => {

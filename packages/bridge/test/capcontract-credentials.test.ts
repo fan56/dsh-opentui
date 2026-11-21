@@ -21,7 +21,11 @@ const ID = {
   desc: "@deepseek-ai/dsh-api-settings-controller#credentials/describe",
   set: "@deepseek-ai/dsh-api-settings-controller#credentials/set",
   unset: "@deepseek-ai/dsh-api-settings-controller#credentials/unset",
-  unwired: "@deepseek-ai/dsh-api-session-controller#session/create",
+  // W2-1 round log — OLD unwired sentinel was session/create (verbatim):
+  //   unwired: "@deepseek-ai/dsh-api-session-controller#session/create",
+  // W2-1 releases session/create into the generic set; use a genuinely un-wired
+  // CapIR id for the NOT_WIRED negative test.
+  unwired: "@deepseek-ai/dsh-cordis-host-runner#dynamicCordisRunner/resolveInspectQuery",
 } as const
 
 const CLIENT = { version: "0.24-probe", locale: "en-US", timezoneOffsetSeconds: 0 }
@@ -191,10 +195,14 @@ describe("S2 — credentials arms + DATAFLOW + desensitization", () => {
 
 describe("S2/S3 — negative control", () => {
   // Old criterion (verbatim): /NOT_WIRED:.*ledger in_wired=19\/257/. S3: 22/257; S5: 24/257; 025-w1b: 28/257.
+  // W2-1 round log — OLD W2-0 base criterion kept VERBATIM (do not delete):
+  //   /NOT_WIRED:.*ledger in_wired=28\/257/
+  // W2-1 releases 3 generic ids -> union count 28 + 3 = 31. Test name keeps the
+  // old count for the round log; assertion checks the new union count.
   test("non-wired CapIR id stays NOT_WIRED with ledger in_wired=28/257", async () => {
     const invoke = createCapHostInvoke(ctxWith({ account: stubAccount(), creds: stubCreds() }))
     await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(
-      /NOT_WIRED:.*ledger in_wired=28\/257/,
+      /NOT_WIRED:.*ledger in_wired=31\/257/,
     )
   })
 })

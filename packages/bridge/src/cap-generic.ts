@@ -19,10 +19,13 @@
 
 import type { CapParamRow } from '../../../capcontract/types'
 
-/** Binding row from CAP_SERVICE_TABLE (service key + host method name). */
+/** Binding row from CAP_SERVICE_TABLE (service key + host method name).
+ *  W2-1: `cancel` (from capir.json) marks host methods whose signature takes a
+ *  trailing AbortSignal (session/prompt & session/wait call signal.throwIfAborted()). */
 export interface GenericServiceBinding {
   readonly service: string
   readonly implementation: string
+  readonly cancel?: string
 }
 
 /**
@@ -150,6 +153,16 @@ export async function invokeGenericCap(
       throw new Error(`BAD_PARAMS: ${methodId} ${row.name} outside enum`)
     }
     positional.push(value)
+  }
+  // W2-1: host methods carrying `cancel: 'signal'` (capir.json) require a
+  // trailing AbortSignal — session/prompt and session/wait both call
+  // signal.throwIfAborted() unconditionally. A unary stdio frame has no caller
+  // cancellation channel, so supply an OWNED, never-aborted signal (same as the
+  // hand-wired session/search + runtime.prompt arms, index.ts:1071/1332).
+  // Appended AFTER the table-ordered params so the positional prefix (R3) is
+  // unchanged; no new cordis inject (R5).
+  if (binding.cancel === 'signal') {
+    positional.push(new AbortController().signal)
   }
   return (fn as (...args: unknown[]) => unknown).apply(service, positional)
 }

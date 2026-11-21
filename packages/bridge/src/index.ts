@@ -989,13 +989,16 @@ export function createCapHostInvoke(
     //       `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`,
     //     )
     //   }
-    // Count text stays `in_wired=28/257` because CAP_GENERIC_ADAPTERS is empty
-    // at W2-0 base (CAP_HOST_WIRED_IDS.length === 28).
+    // W2-1 round log (S-1): count text now uses the UNION size (hand 28 + generic
+    // released N). OLD count line kept VERBATIM as the W2-0 base criterion:
+    //   `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`
+    // At W2-0 base CAP_GENERIC_ADAPTERS was empty so 28/28 was correct; W2-1
+    // releases 3 generic ids, so the two-sets-outside id now reports 31/257.
     const handWired = (CAP_HOST_WIRED_IDS as readonly string[]).includes(methodId)
     const genericReleased = generic.adapters.has(methodId)
     if (!handWired && !genericReleased) {
       throw new Error(
-        `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length}/257)`,
+        `NOT_WIRED: ${methodId} has no inproc host adapter (ledger in_wired=${CAP_HOST_WIRED_IDS.length + generic.adapters.size}/257)`,
       )
     }
 

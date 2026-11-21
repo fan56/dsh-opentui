@@ -479,19 +479,31 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
   else bad("12. PARAMS names match capir.json", offenders.slice(0, 6).join("; ") || `checked=${checked}`)
 }
 
-// 13. CAP_SERVICE_TABLE complete + non-empty service/implementation.
+// 13. CAP_SERVICE_TABLE complete + non-empty service/implementation + cancel parity.
 {
   const body = sliceBlock(typesText, "export const CAP_SERVICE_TABLE = {\n", "\n} as const")
   const offenders = []
   let rows = []
   if (body === null) offenders.push("CAP_SERVICE_TABLE block missing")
   else {
-    rows = [...body.matchAll(/^  "([^"]+)": \{ service: "([^"]*)", implementation: "([^"]*)" \},$/gm)]
+    // W2-1: optional `, cancel: "signal"` (from capir.json) on cancelling methods.
+    rows = [...body.matchAll(/^  "([^"]+)": \{ service: "([^"]*)", implementation: "([^"]*)"(?:, cancel: "([^"]*)")? \},$/gm)]
     if (rows.length !== capirMethods.length) offenders.push(`rows ${rows.length} != ${capirMethods.length}`)
-    for (const m of rows) if (!m[2] || !m[3]) offenders.push("empty service/implementation: " + m[1])
+    for (const m of rows) {
+      if (!m[2] || !m[3]) offenders.push("empty service/implementation: " + m[1])
+      // cancel field must match capir.json exactly (present <=> capir has cancel).
+      const capirMethod = capirMethods.find((c) => c.id === m[1])
+      const expectedCancel = capirMethod?.cancel
+      if (expectedCancel !== undefined && m[4] !== expectedCancel) {
+        offenders.push(`cancel mismatch ${m[1]}: table=${m[4]} capir=${expectedCancel}`)
+      }
+      if (expectedCancel === undefined && m[4] !== undefined) {
+        offenders.push(`unexpected cancel ${m[1]}: ${m[4]}`)
+      }
+    }
   }
-  if (offenders.length === 0) ok("13. SERVICE table complete", `${rows.length} rows, all service/implementation non-empty`)
-  else bad("13. SERVICE table complete", offenders.join("; "))
+  if (offenders.length === 0) ok("13. SERVICE table complete", `${rows.length} rows, all service/implementation non-empty, cancel matches capir`)
+  else bad("13. SERVICE table complete", offenders.slice(0, 6).join("; "))
 }
 
 // 14. deny-list (AMEND-1): the three families are absent from BOTH generic tables.
@@ -536,7 +548,7 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
   }
 }
 
-// 16. generic wire table bidirectional + uniqueness + empty release whitelist (W2-0 base).
+// 16. generic wire table bidirectional + uniqueness + explicit release whitelist.
 {
   const wire = objEntries(typesText, "CAP_GENERIC_WIRE_METHODS") ?? []
   const rev = objEntries(typesText, "CAP_GENERIC_WIRE_BY_ID") ?? []
@@ -548,10 +560,25 @@ const DENY_NS = new Set(["account", "credentials", "settings"])
     seen.add(w)
     if (rev.find(([id2]) => id2 === id)?.[1] !== w) offenders.push("reverse mismatch: " + w)
   }
-  if (adapters.length !== 0) offenders.push("CAP_GENERIC_ADAPTERS must be empty at W2-0 base, got " + adapters.length)
+  // W2-1 round log — OLD W2-0 base criterion kept VERBATIM (do not delete):
+  //   if (adapters.length !== 0) offenders.push("CAP_GENERIC_ADAPTERS must be empty at W2-0 base, got " + adapters.length)
+  // W2-1 releases exactly the three side-session ids into the generic arm.
+  const W2_1_RELEASED = [
+    "@deepseek-ai/dsh-api-session-controller#session/create",
+    "@deepseek-ai/dsh-api-session-controller#session/prompt",
+    "@deepseek-ai/dsh-api-session-controller#session/wait",
+  ]
+  const adapterSet = new Set(adapters)
+  if (adapters.length !== W2_1_RELEASED.length) {
+    offenders.push(`CAP_GENERIC_ADAPTERS expected ${W2_1_RELEASED.length} W2-1 released ids, got ${adapters.length}`)
+  }
+  for (const id of W2_1_RELEASED) {
+    if (!adapterSet.has(id)) offenders.push("CAP_GENERIC_ADAPTERS missing W2-1 id " + id)
+    if (!wire.some(([, wid]) => wid === id)) offenders.push("released adapter has no wire row: " + id)
+  }
   const wantWire = capirMethods.filter((m) => !DENY_NS.has(m.namespace)).length
   if (wire.length !== wantWire) offenders.push(`wire rows ${wire.length} != ${wantWire} non-denied methods`)
-  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters empty (W2-0 base)`)
+  if (offenders.length === 0) ok("16. generic wire table", `${wire.length} unique bidirectional rows; adapters=${adapters.length} (W2-1 side-session 3)`)
   else bad("16. generic wire table", offenders.join("; "))
 }
 
