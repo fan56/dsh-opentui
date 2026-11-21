@@ -954,9 +954,11 @@ describe('W2-4a directory ids — E2/E4/E5 (AMEND-2 wire SENTINEL)', () => {
 
 /**
  * 025 W2-5a — the seven goals ids released into the generic arm (plan §4.2).
- * All unary/service=goals, scope agentId passed by caller (generic arm does no
- * scope substitution). Synthetic fixtures only: no real service, no real
- * credential value (SENTINEL is a fixed fake string). E2 per-id BAD_PARAMS,
+ * All unary/service=goals, scope agentId carried as a wire STRING and resolved
+ * in place by the arm via CAP_SCOPE_TABLE (data-driven scope substitution,
+ * d94161a, table-driven — AMEND-5 erratum). Synthetic fixtures only: no real
+ * service, no real credential value (SENTINEL is a fixed fake string).
+ * E2 per-id BAD_PARAMS,
  * E4 positional fidelity (R3, all args table-ordered, NO trailing signal),
  * E5 AMEND-2 blind-spot registration (ALL 7 ids are schema-open/null — none is
  * PROJECTED_BY_HAND — so the load-bearing defence is the seam second whitelist,

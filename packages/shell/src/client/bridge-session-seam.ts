@@ -1388,9 +1388,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	/**
 	 * 025-w2-5 — goals status face over the generic arm. Every call goes through
 	 * the hand-written SECOND whitelist projection (schema-open/null blind spot —
-	 * AMEND-2 C-1). `agentId` is the goals scope wire: supplied explicitly from
-	 * `currentSessionId()` (the generic arm does NOT do scope substitution); no
-	 * active session -> UNSUPPORTED reject (honest, no fabricated agentId). Service
+	 * AMEND-2 C-1). `agentId` is the goals scope wire: the wire carries the id
+	 * STRING from `currentSessionId()`; the generic arm resolves it in place at
+	 * the host-call boundary via CAP_SCOPE_TABLE (data-driven scope substitution,
+	 * d94161a, table-driven — AMEND-5 erratum; NOT caller-side live injection).
+	 * no active session -> UNSUPPORTED reject (honest, no fabricated agentId). Service
 	 * absence rejects UNSUPPORTED (never fake-empty); business/validation errors
 	 * keep their own code and do NOT poison availability (W2-3 C-2 classification).
 	 */
@@ -1552,9 +1554,11 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
-	 * 025-w2-5 — generic goals request. Injects the goals scope wire `agentId`
-	 * from the bound session (generic arm does no scope substitution); with no
-	 * active session it rejects UNSUPPORTED honestly — never a fabricated id.
+	 * 025-w2-5 — generic goals request. Sends the goals scope wire `agentId` as
+	 * a STRING from the bound session; the arm resolves it in place at the host
+	 * boundary via CAP_SCOPE_TABLE (data-driven scope substitution, d94161a,
+	 * table-driven — AMEND-5 erratum). with no active session it rejects
+	 * UNSUPPORTED honestly — never a fabricated id.
 	 * Hand-written SECOND whitelist projection on every reply (AMEND-2 blind spot).
 	 * Service-absent class flips `available=false`; business/validation errors
 	 * keep their own code and do NOT poison availability (W2-3 C-2 classification).

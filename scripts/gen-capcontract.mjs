@@ -194,8 +194,10 @@ const W2_4_DIRECTORY_ADAPTERS = [
   "@deepseek-ai/dsh-permission-presets#permissionPresets/catalog",
 ]
 // W2-5 /goals face: seven goals ids (plan §4.2). All unary, all service=goals,
-// scope {context:agent, wire:agentId} (caller passes agentId explicitly — the
-// generic arm does NOT do scope substitution). NO stream / deny-family id
+// scope {context:agent, wire:agentId} — the wire carries the agentId STRING and
+// the arm resolves it in place via CAP_SCOPE_TABLE (data-driven scope
+// substitution, d94161a, table-driven — AMEND-5 erratum; not caller-side live).
+// NO stream / deny-family id
 // (fail-loud below). goals/create has implementation alias remoteExportCreate.
 // AMEND-2 blind spot: goals/get result jsonSchema=null and every other goal
 // result has additionalProperties:true — NONE is in CAP_PROJECTED_BY_HAND by the
