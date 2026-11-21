@@ -40,7 +40,7 @@ wire frame → createProjectionBinder → createCapDispatcher → lookupCapKind 
 出处：capcontract/binder.ts:28-35, dispatch.ts:284-307, bridge/index.ts:1181-1185
 ```
 
-`inject` 由 bridge 单独拥有（现为 `['agents','typert']`，见 `bridge/index.ts` 的 `inject` 常量与 R5 红线单测）——注意 `capcontract/README.md:27-28` 仍表述为「生成层声明 inject」，与当前源不一致；**以源码为准**。**R5 红线**：新服务键一律走包裹式 `ctx.get`（含 try/catch），禁止加入 cordis `inject` 数组（declared-but-absent required inject 会停用整个插件）。TODO(CapIR) 残留缺口（codec、事件帧 sessionId）显式标注、不伪造；params/result schema 已由 CapIR v3 补齐（`binder.ts:15-17`）。
+`inject` 由 bridge 单独拥有（现为 `['agents','typert']`，见 `bridge/index.ts` 的 `inject` 常量与 R5 红线单测）。**R5 红线**：新服务键一律走包裹式 `ctx.get`（含 try/catch），禁止加入 cordis `inject` 数组（declared-but-absent required inject 会停用整个插件）。TODO(CapIR) 残留缺口（codec、事件帧 sessionId）显式标注、不伪造；params/result schema 已由 CapIR v3 补齐（`binder.ts:15-17`）。
 
 ## 2.3 hostInvoke 注册表模式（手写 arm ∪ 通用 arm）
 

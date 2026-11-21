@@ -35,6 +35,6 @@ CapIR status (honest gaps — see TODO markers in the generated files): CapIR v3
 plus `service`, `params[]` and `result` (all 257 methods; params/result extracted
 from two sources — `.d.ts` `TYPERT_REMOTE` literals × `typert.host.js` manifest
 `parameters[]` jsonSchema). The generated `CAP_PARAMS_TABLE` holds 257 normalized
-rows and full JSON Schema stays in `capir.json`. Only the codec/schema field and
-the event-frame `sessionId` field remain `TODO(CapIR)`; nothing is fabricated
-here.
+rows and full JSON Schema stays in `capir.json`. The only `TODO(CapIR)` markers
+in the generated trio are the event-frame `sessionId` field (`binder.ts:15`,
+`types.ts:23,31`); there is no codec/schema marker. Nothing is fabricated here.
