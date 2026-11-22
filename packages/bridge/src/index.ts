@@ -2780,10 +2780,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  Triggers: (a) parent catalog frame; (b) parent `approval/policy` event →
    *  all (live) children of the binding; (b2) parent `turn/start` → full re-sync
    *  from LIVE policy (no-op on detached children); (b3) a KNOWN child's OWN
-   *  `turn/start` → re-sync that child from LIVE policy (the resume/re-attach
-   *  path, both never→ask and ask→never); (c) an unknown child's FIRST live event
-   *  (claimed into the index via noteCatalog, then deferred — a synchronous
-   *  re-append inside that session's own publish is rejected as reentrant);
+   *  `turn/start` → re-sync that child from LIVE policy (resume/re-attach, both
+   *  never→ask and ask→never) — DEFERRED via queueMicrotask, as it is published
+   *  inside that child's own commit (synchronous append would hit the same
+   *  reentrant-append guard as (c)); (c) an unknown child's FIRST live event
+   *  (claimed into the index via noteCatalog, then deferred for the same reason);
    *  (i) bind completion + post-reconcile full re-sync of all known rows (also
    *  the F2 self-heal hook). Self-heal chain: (c) fail → (a) catalog fallback →
    *  (b)/(b2) parent event → (b3) child re-attach → (i) Stop full re-sync. */
@@ -2979,21 +2980,27 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         const index = getSubagentIndex(ctx)
         if (index.has(sessionId)) {
           // (b3) FIELD 2026-11-23 root cause — a KNOWN child whose own turn starts.
-          // The host detaches a child from the `sessions` service when its turn
-          // ends (`sessions.get(childId)` => undefined afterwards), so parent-side
-          // triggers (b)/(b2) silently no-op on that child. When a settled/resumed
-          // child is continued, the host RE-ATTACHES it and its FIRST live event is
-          // `turn/start` — before any gated tool call in that turn. Re-sync here
-          // (desired = LIVE effectivePolicy) so:
+          // The host DETACHES a child from the `sessions` service at agent teardown
+          // (`sessions.get(childId)` => undefined afterwards), so parent-side triggers
+          // (b)/(b2) silently no-op on that child. On continue/resume the host
+          // RE-ATTACHES it; this `turn/start` IS the proof it is live/attached again,
+          // so there is no "still detached → no-op" case to guard here. Re-sync:
           //   - parent never→ask: re-pin ask → this turn's writes raise a card;
           //   - parent ask→never: mirror never → this turn's writes raise none.
           // No header check needed: index membership is the durable parentage fact.
-          // syncChildApprovalPolicy remains fail-closed — if the child is still
-          // detached at this instant, sessions.get returns undefined and it no-ops.
+          // MUST DEFER (queueMicrotask, same as (c)): this event is published from
+          // THIS child's own commit() (publicationEntry.appending === true,
+          // dsh-session/lib/index.js:1652), so a synchronous append to the same
+          // session throws "cannot reenter" and is swallowed as a warn — replaying
+          // the exact field bug. A microtask runs after the turn/start commit stack
+          // unwinds, still far ahead of this turn's first tool call (which follows
+          // an awaited LLM step), so the re-pin lands before any gated tool runs.
           if (type === 'turn/start') {
             const row = index.get(sessionId)
             if (row !== undefined && row.parentSessionId === binding.sessionId) {
-              syncChildApprovalPolicy(sessionId, binding.sessionId)
+              const childId = sessionId
+              const parentId = binding.sessionId
+              queueMicrotask(() => syncChildApprovalPolicy(childId, parentId))
             }
           }
         } else {

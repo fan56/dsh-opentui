@@ -789,15 +789,18 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
   function makeChildSession(id: string) {
     const appended: Array<{ type: string; data: Record<string, unknown> }> = []
     const header: { parentSession?: string; origin?: string } = {}
-    return {
-      appended,
+    const session = {
+      id,
       header,
-      session: {
-        id,
-        header,
-        append(type: string, data: Record<string, unknown>) { appended.push({ type, data }) },
+      // Faithful reentrancy guard (dsh-session/lib/index.js:1652 publicationEntry):
+      // a synchronous re-append while THIS session's publish is in flight throws.
+      appending: false,
+      append(type: string, data: Record<string, unknown>) {
+        if (session.appending) throw new Error('session append cannot reenter while another append is being published')
+        appended.push({ type, data })
       },
     }
+    return { appended, header, session }
   }
 
   interface SyncOptions {
@@ -891,9 +894,18 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
       emitParentTurnStart(parentId: string) {
         h.emitSessionEvent({ id: parentId }, { type: 'turn/start', data: { turn: 1 } })
       },
-      /** (b3) the child's OWN turn/start (session id === child id). */
+      /** (b3) the child's OWN turn/start (session id === child id). The host
+       *  publishes this from the child's own commit(), so the child's `appending`
+       *  guard is TRUE for the whole listener dispatch — a synchronous append to
+       *  the same child must throw (mirrors session-event-scope.test.ts). */
       emitChildTurnStart(childId: string) {
-        h.emitSessionEvent({ id: childId }, { type: 'turn/start', data: { turn: 2 } })
+        const target = childId === CHILD ? child : extras.get(childId)
+        if (target !== undefined) target.session.appending = true
+        try {
+          h.emitSessionEvent({ id: childId }, { type: 'turn/start', data: { turn: 2 } })
+        } finally {
+          if (target !== undefined) target.session.appending = false
+        }
       },
       setChildDetached(detached: boolean) { childDetached = detached },
       emitChildDelegation(childId: string, parentId: string) {
@@ -1042,6 +1054,7 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
     expect(r.child.appended).toEqual(ask('ask'))  // still ask while detached
     r.setChildDetached(false)                     // resume/continue → host re-attaches
     r.emitChildTurnStart(CHILD)                   // (b3): child known + turn/start
+    await r.flushMicrotasks()                     // deferred to dodge reentrant-append guard
     expect(r.child.appended).toEqual([...ask('ask'), ...ask('never')])
   })
 
@@ -1056,6 +1069,7 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
     expect(r.child.appended).toHaveLength(0)
     r.setChildDetached(false)                     // re-attach on resume
     r.emitChildTurnStart(CHILD)                   // (b3): re-pin ask → writes get a card
+    await r.flushMicrotasks()                     // deferred to dodge reentrant-append guard
     expect(r.child.appended).toEqual(ask('ask'))
   })
 
