@@ -26,6 +26,7 @@ import {
 	bridgeSweepSettledChildIds,
 	projectBridgeEvent,
 	projectBridgeSessionList,
+	projectCurrentCwd,
 	type BridgeEventFrame,
 	type BridgeReplayRow,
 	type BridgeTransport,
@@ -3555,5 +3556,58 @@ describe("026 permission face — commands/execute", () => {
 		const cat = await h.seam.permission!.catalog()
 		expect(cat?.defaultPreset).toBe("workspace-write")
 		expect(cat?.options[0]?.description).toBe("sandboxed")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 026 web-mirror — cwd display (SECOND whitelist projection + seam face)
+// ---------------------------------------------------------------------------
+describe("026 projectCurrentCwd — SECOND whitelist (no new wire id)", () => {
+	test("returns only the current session's cwd string", () => {
+		const rows = [
+			{ sessionId: "other", cwd: "/should/not/leak" },
+			{ sessionId: "cur", cwd: "/Users/qingguee/repo/dsh-opentui" },
+		]
+		expect(projectCurrentCwd(rows, "cur")).toBe("/Users/qingguee/repo/dsh-opentui")
+	})
+
+	test("drops absent session, empty/non-string cwd, hostile keys (SENTINEL)", () => {
+		expect(projectCurrentCwd([], undefined)).toBeUndefined()
+		expect(projectCurrentCwd([], "cur")).toBeUndefined()
+		expect(projectCurrentCwd([{ sessionId: "cur", cwd: "" }], "cur")).toBeUndefined()
+		expect(projectCurrentCwd([{ sessionId: "cur", cwd: 42 }], "cur")).toBeUndefined()
+		const hostile = {
+			sessionId: "cur", cwd: "/real/path",
+			apiKey: "O26_SENTINEL_synthetic_no_real_secret", token: "secret",
+		}
+		const out = projectCurrentCwd([hostile], "cur")
+		expect(out).toBe("/real/path")
+		expect(JSON.stringify(out)).not.toContain("O26_SENTINEL_synthetic_no_real_secret")
+		expect(JSON.stringify(out)).not.toContain("apiKey")
+		expect(JSON.stringify(out)).not.toContain("token")
+	})
+})
+
+describe("026 cwd face — session/list.cwd (answer-bearing + honest degrade)", () => {
+	test("cwd() returns the bound session's cwd from session.list", async () => {
+		const h = makeHarness()
+		await bindPerm(h, "s-cwd")
+		h.replies.set("session.list", {
+			kind: "value",
+			value: {
+				items: [
+					{ sessionId: "other", cwd: "/leak" },
+					{ sessionId: "s-cwd", cwd: "/Users/qingguee/repo/dsh-opentui", title: "hostile" },
+				],
+			},
+		})
+		expect(await h.seam.cwd!()).toBe("/Users/qingguee/repo/dsh-opentui")
+		expect(h.lastRequest("session.list")).toBeDefined()
+	})
+
+	test("cwd() with no bound session -> undefined, zero session.list calls", async () => {
+		const h = makeHarness()
+		expect(await h.seam.cwd!()).toBeUndefined()
+		expect(h.requests.filter((r) => r.method === "session.list")).toHaveLength(0)
 	})
 })

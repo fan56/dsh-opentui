@@ -500,6 +500,23 @@ export function projectBridgeSessionList(items: unknown, limit = 12): SeamSessio
 	return out.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""))).slice(0, limit)
 }
 
+/**
+ * 026 — `session/list` wire rows -> the current session's working directory.
+ * SECOND whitelist: only a non-empty string `cwd` on the row whose `sessionId`
+ * equals the bound current session crosses; the row's other fields / a hostile
+ * object / an empty string are dropped (undefined = honest absence). The wire
+ * is already hand-wired (`session/list`), so this adds NO capability id.
+ */
+export function projectCurrentCwd(items: unknown, sessionId: string | undefined): string | undefined {
+	if (sessionId === undefined || sessionId === "" || !Array.isArray(items)) return undefined
+	for (const item of items) {
+		const row = asRecord(item)
+		if (row.sessionId !== sessionId) continue
+		return typeof row.cwd === "string" && row.cwd !== "" ? row.cwd : undefined
+	}
+	return undefined
+}
+
 /** One `journal.replay` row (the bridge's read-only durable row shape). */
 export interface BridgeReplayRow {
 	seq: number
@@ -3664,6 +3681,19 @@ export class BridgeSessionSeam implements SessionSeam {
 		// "capability unavailable" answer).
 		const value = await this.#transport.request("session.list")
 		return projectBridgeSessionList(asRecord(value).items, limit)
+	}
+
+	/**
+	 * 026 — current session working directory (cwd display only). Reuses the
+	 * already-wired `session.list` frame (ZERO new capability id) and the SECOND
+	 * whitelist `projectCurrentCwd`; a transport failure propagates (no fake cwd).
+	 * `undefined` when no session is attached or the row carries no cwd.
+	 */
+	async cwd(): Promise<string | undefined> {
+		const sessionId = this.currentSessionId()
+		if (sessionId === undefined || sessionId === "") return undefined
+		const value = await this.#transport.request("session.list")
+		return projectCurrentCwd(asRecord(value).items, sessionId)
 	}
 
 	async storedTranscript(id: string, skip = 0): Promise<SeamTranscriptRow[]> {

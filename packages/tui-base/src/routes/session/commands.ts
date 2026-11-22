@@ -389,6 +389,19 @@ export function isRiskPermissionPreset(value: string, name?: string): boolean {
 	return /danger-full-access|full.?access|auto/i.test(`${value} ${name ?? ""}`)
 }
 
+/**
+ * 026 — basename of a cwd (深读 #1 `workspaceLabel(cwd)`): last path segment,
+ * trailing separators stripped, root `/` preserved. undefined/empty stays
+ * undefined (honest absence). Pure + table-testable.
+ */
+export function cwdBasename(cwd: string | undefined): string | undefined {
+	if (cwd === undefined || cwd === "") return undefined
+	const trimmed = cwd.replace(/[\\/]+$/, "")
+	if (trimmed === "") return cwd // root "/"
+	const parts = trimmed.split(/[\\/]/)
+	return parts[parts.length - 1] || trimmed
+}
+
 /** Bare `/permission` view lines from a catalog — web handler text
  *  `current preset X (available: …)` (深读 2.2(1)) + a description line per
  *  option (optionsOf detail, 深读 2.2(4)). Pure for unit testing. */
@@ -1911,6 +1924,33 @@ export function coreCommands(): SlashCommand[] {
 					await ctx.reload()
 				} catch (error) {
 					ctx.say(t("command.permission.failed", { reason: seamFailureReason(error) }))
+				}
+			},
+		},
+		{
+			// 026 web-mirror — cwd display (映射 #1/#2). Reads the already-wired
+			// session/list.cwd via seam.cwd() (SECOND whitelist projector; zero new
+			// capability id) and shows the basename, mirroring the web chip's
+			// workspaceLabel(cwd) fallback. Display only: rc.5 has no SDK
+			// working-directory switch method (映射 #3 / K5), so no cd here.
+			// Appended LAST so index-based command tests keep their positions.
+			name: "/cwd",
+			description: t("command.cwd.description"),
+			async run(ctx) {
+				if (!ctx.seam.cwd) {
+					ctx.say(t("command.cwd.unavailable"))
+					return
+				}
+				try {
+					const cwd = await ctx.seam.cwd()
+					const label = cwdBasename(cwd)
+					if (label === undefined) {
+						ctx.say(t("command.cwd.none"))
+						return
+					}
+					ctx.say(t("command.cwd.current", { cwd: label }))
+				} catch (error) {
+					ctx.say(t("command.cwd.failed", { reason: seamFailureReason(error) }))
 				}
 			},
 		},

@@ -6,6 +6,7 @@ import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:tes
 import { activeLanguage, bundledLocalesDir, loadLocales, setLanguage, setLanguages, t } from "@dsh-opentui/i18n"
 import {
 	MODEL_DEFAULT_EFFORT_PICK,
+	cwdBasename,
 	coreCommands,
 	dispatchLine,
 	filterCommands,
@@ -73,6 +74,10 @@ class RecordingSeam {
 	permissionSwitchResult: SeamPermissionSwitchResult = { ok: true, matched: true, text: "preset workspace-write" }
 	/** 026 /permission: presets passed to face.switch(). */
 	permissionSwitchCalls: string[] = []
+	/** 026 /cwd: the cwd the seam reports (undefined = no cwd). */
+	cwdValue: string | undefined = "/Users/test/project"
+	/** 026 /cwd: set to make cwd() reject. */
+	cwdFailure: Error | undefined = undefined
 
 	readonly seam: SessionSeam = {
 		status: () => ({ connection: "connected", turn: this.stopTurn, sessionAttached: true }),
@@ -93,6 +98,10 @@ class RecordingSeam {
 				this.permissionSwitchCalls.push(preset)
 				return this.permissionSwitchResult
 			},
+		},
+		cwd: async () => {
+			if (this.cwdFailure) throw this.cwdFailure
+			return this.cwdValue
 		},
 		resumeSession: (id) => {
 			this.calls.push(`resumeSession:${id}`)
@@ -375,8 +384,9 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/preset",
 			"/stop",
 			"/account",
-			// 026 — /permission appended last (index-based command tests keep positions).
+			// 026 — /permission, /cwd appended last (index-based tests keep positions).
 			"/permission",
+			"/cwd",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
 		expect(filterCommands(commands, "/pe").map((c) => c.name)).toEqual(["/permission"])
@@ -422,8 +432,9 @@ describe("core commands", () => {
 			"/stop — stop the main turn and all running subagents",
 			// 025-w1b E — appended last so index-based command tests keep positions.
 			"/account — show account sign-in state (signin/signout)",
-			// 026 — /permission appended last (index-based command tests keep positions).
+			// 026 — /permission, /cwd appended last (index-based tests keep positions).
 			"/permission — show or switch the current session permission preset",
+			"/cwd — show the current session working directory (basename)",
 		])
 	})
 
@@ -2218,6 +2229,56 @@ describe("026 /permission — current session preset mirror", () => {
 		const ctx = makeCtx(seam)
 		await permCmd().run(ctx, "")
 		expect(ctx.lines[0]).toContain("not available on this host")
+	})
+})
+
+// ---------------------------------------------------------------------------
+// 026 web-mirror — /cwd display (mapping #1/#2, basename not full path)
+// ---------------------------------------------------------------------------
+describe("026 /cwd — current session working directory", () => {
+	const cwdCmd = () => coreCommands().find((c) => c.name === "/cwd")!
+
+	test("pure helper: cwdBasename (trailing slash / root / windows / empty)", () => {
+		expect(cwdBasename("/Users/qingguee/repo/dsh-opentui")).toBe("dsh-opentui")
+		expect(cwdBasename("/Users/qingguee/repo/dsh-opentui/")).toBe("dsh-opentui")
+		expect(cwdBasename("/")).toBe("/")
+		expect(cwdBasename("C:\\work\\proj")).toBe("proj")
+		expect(cwdBasename(undefined)).toBeUndefined()
+		expect(cwdBasename("")).toBeUndefined()
+	})
+
+	test("/cwd prints the basename (answer-bearing, not the full path)", async () => {
+		const seam = new RecordingSeam()
+		seam.cwdValue = "/Users/qingguee/repo/dsh-opentui"
+		const ctx = makeCtx(seam)
+		await cwdCmd().run(ctx, "")
+		expect(ctx.lines).toHaveLength(1)
+		expect(ctx.lines[0]).toBe("working directory: dsh-opentui")
+		expect(ctx.lines[0]).not.toContain("/Users/")
+	})
+
+	test("/cwd with no cwd -> honest no-working-directory notice", async () => {
+		const seam = new RecordingSeam()
+		seam.cwdValue = undefined
+		const ctx = makeCtx(seam)
+		await cwdCmd().run(ctx, "")
+		expect(ctx.lines[0]).toContain("no working directory")
+	})
+
+	test("/cwd transport failure -> honest failed notice (no fake cwd)", async () => {
+		const seam = new RecordingSeam()
+		seam.cwdFailure = new Error("boom")
+		const ctx = makeCtx(seam)
+		await cwdCmd().run(ctx, "")
+		expect(ctx.lines[0]).toContain("failed")
+	})
+
+	test("/cwd degrades honestly when the seam has no cwd face", async () => {
+		const seam = new RecordingSeam()
+		Object.defineProperty(seam.seam, "cwd", { value: undefined, configurable: true })
+		const ctx = makeCtx(seam)
+		await cwdCmd().run(ctx, "")
+		expect(ctx.lines[0]).toContain("unavailable")
 	})
 })
 

@@ -731,6 +731,13 @@ export interface SessionSeam {
 	storedTranscript(id: string, skip?: number): Promise<SeamTranscriptRow[]>
 	currentSessionId(): string | undefined
 	/**
+	 * 026 — the current session's working directory, hand-projected from the
+	 * already-wired `session/list.cwd` row (no new capability id). Resolves
+	 * undefined when no session is attached or the row carries no cwd.
+	 * Optional — a seam without it degrades /cwd to an honest notice.
+	 */
+	cwd?(): Promise<string | undefined>
+	/**
 	 * The stored session id STAGED by `resumeSession()` (auto-resume,
 	 * /search Enter-resume, fork resume): bound to a live session only at the
 	 * next turn, so `currentSessionId()` is undefined until then. Optional —
