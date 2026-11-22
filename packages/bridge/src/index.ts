@@ -2771,15 +2771,22 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  a parent `approval/policy` event) is authoritative when supplied, so the
    *  sync never depends on projection-listener registration order.
    *
+   *  HOST SESSION LIFECYCLE (FIELD 2026-11-23 root cause): `sessions.get(id)`
+   *  resolves ONLY live sessions — the host DETACHES a child when its turn ends,
+   *  so parent-side triggers (b)/(b2) silently no-op on a settled child. The child
+   *  is re-attached when continued/resumed; its FIRST live event then is its own
+   *  `turn/start`, which trigger (b3) uses. See 03-live-trigger-diagnosis.md.
+   *
    *  Triggers: (a) parent catalog frame; (b) parent `approval/policy` event →
-   *  all known children of the binding; (b2) parent `turn/start` → full re-sync
-   *  from LIVE policy (FIELD 2026-11-23 redundant signal — (b)'s single event was
-   *  not observed on the real machine; see 03-live-trigger-diagnosis.md);
-   *  (c) an unknown child's FIRST live event (claimed into the index via
-   *  noteCatalog, then deferred — a synchronous re-append inside that session's
-   *  own publish is rejected as reentrant); (i) bind completion + post-reconcile
-   *  full re-sync of all known rows (also the F2 self-heal hook). Self-heal chain:
-   *  (c) fail → (a) catalog fallback → (b)/(b2) parent event / Stop full re-sync. */
+   *  all (live) children of the binding; (b2) parent `turn/start` → full re-sync
+   *  from LIVE policy (no-op on detached children); (b3) a KNOWN child's OWN
+   *  `turn/start` → re-sync that child from LIVE policy (the resume/re-attach
+   *  path, both never→ask and ask→never); (c) an unknown child's FIRST live event
+   *  (claimed into the index via noteCatalog, then deferred — a synchronous
+   *  re-append inside that session's own publish is rejected as reentrant);
+   *  (i) bind completion + post-reconcile full re-sync of all known rows (also
+   *  the F2 self-heal hook). Self-heal chain: (c) fail → (a) catalog fallback →
+   *  (b)/(b2) parent event → (b3) child re-attach → (i) Stop full re-sync. */
   function syncChildApprovalPolicy(childId: string, parentSessionId: string, desiredOverride?: unknown): void {
     if (binding === undefined || parentSessionId !== binding.sessionId) return
     const get = ctx.get
@@ -2948,7 +2955,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // (no override) so this converges to whatever the parent's effective policy
       // is now, independent of which event carried the switch. Idempotent (no-op
       // when current === desired). Placed here, before the activeTurn gate below,
-      // so it fires even when no turn state is tracked yet.
+      // so it fires even when no turn state is tracked yet. NOTE: `sessions.get`
+      // resolves only LIVE sessions — a DETACHED (settled) child is silently
+      // skipped here; trigger (b3) below covers it on re-attach.
       if (type === 'turn/start' && sessionId === binding.sessionId) {
         syncKnownChildrenOfBinding(sessionId)
       }
@@ -2968,7 +2977,26 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // parent policy event / Stop-driven full re-sync (i).
       if (sessionId !== binding.sessionId) {
         const index = getSubagentIndex(ctx)
-        if (!index.has(sessionId)) {
+        if (index.has(sessionId)) {
+          // (b3) FIELD 2026-11-23 root cause — a KNOWN child whose own turn starts.
+          // The host detaches a child from the `sessions` service when its turn
+          // ends (`sessions.get(childId)` => undefined afterwards), so parent-side
+          // triggers (b)/(b2) silently no-op on that child. When a settled/resumed
+          // child is continued, the host RE-ATTACHES it and its FIRST live event is
+          // `turn/start` — before any gated tool call in that turn. Re-sync here
+          // (desired = LIVE effectivePolicy) so:
+          //   - parent never→ask: re-pin ask → this turn's writes raise a card;
+          //   - parent ask→never: mirror never → this turn's writes raise none.
+          // No header check needed: index membership is the durable parentage fact.
+          // syncChildApprovalPolicy remains fail-closed — if the child is still
+          // detached at this instant, sessions.get returns undefined and it no-ops.
+          if (type === 'turn/start') {
+            const row = index.get(sessionId)
+            if (row !== undefined && row.parentSessionId === binding.sessionId) {
+              syncChildApprovalPolicy(sessionId, binding.sessionId)
+            }
+          }
+        } else {
           const header = (s as { header?: { parentSession?: unknown; origin?: unknown } }).header
           if (header?.origin === 'subagent' && header?.parentSession === binding.sessionId) {
             index.noteCatalog(sessionId, binding.sessionId)

@@ -821,12 +821,15 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
     // simulate "resume with empty index, policy switches, then Stop reconcile".
     const live = { parentPolicy: options.parentPolicy }
     let hostRows: Array<Record<string, unknown>> = []
+    // FIELD root cause: sessions.get resolves only LIVE sessions; the host detaches
+    // a child when its turn ends. Toggle to simulate detach / re-attach on resume.
+    let childDetached = false
     const h = makeHarness({
       repinGet(name: string) {
         if (name === 'sessions') {
           return {
             get(id: string) {
-              if (id === CHILD) return child.session
+              if (id === CHILD) return childDetached ? undefined : child.session
               const extra = extras.get(id)
               if (extra !== undefined) return extra.session
               if (id === boundParentId) {
@@ -888,6 +891,11 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
       emitParentTurnStart(parentId: string) {
         h.emitSessionEvent({ id: parentId }, { type: 'turn/start', data: { turn: 1 } })
       },
+      /** (b3) the child's OWN turn/start (session id === child id). */
+      emitChildTurnStart(childId: string) {
+        h.emitSessionEvent({ id: childId }, { type: 'turn/start', data: { turn: 2 } })
+      },
+      setChildDetached(detached: boolean) { childDetached = detached },
       emitChildDelegation(childId: string, parentId: string) {
         h.emitSessionEvent(
           { id: childId, header: { parentSession: parentId, origin: 'subagent' } },
@@ -1014,6 +1022,51 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
     // Idempotent: a second turn/start does not re-append.
     r.emitParentTurnStart(parentId)
     expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  // ---- (b3) FIELD root cause: known child re-attached on turn/start ------------
+
+  test('(b3) detached child + parent flips ask→never → child turn/start mirrors never', async () => {
+    // FIELD root cause: sessions.get resolves only LIVE sessions. The child was
+    // settled (detached) when the parent flipped to never, so (b)/(b2) no-op.
+    // When the child is continued, the host re-attaches it and its turn/start
+    // (before any tool call) must mirror the LIVE parent policy.
+    const r = makeSyncHarness({ parentPolicy: 'ask', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(51)
+    r.emitCatalog(parentId)                       // live ask, child never → re-pin ask
+    expect(r.child.appended).toEqual(ask('ask'))
+    r.setChildDetached(true)                      // child's turn ends → host detaches
+    r.setParentPolicy('never')
+    r.emitParentPolicy(parentId, 'never')         // (b) : child UNDEF → no-op
+    r.emitParentTurnStart(parentId)               // (b2): child UNDEF → no-op
+    expect(r.child.appended).toEqual(ask('ask'))  // still ask while detached
+    r.setChildDetached(false)                     // resume/continue → host re-attaches
+    r.emitChildTurnStart(CHILD)                   // (b3): child known + turn/start
+    expect(r.child.appended).toEqual([...ask('ask'), ...ask('never')])
+  })
+
+  test('(b3) detached child + parent flips never→ask → child turn/start re-pins ask (danger direction)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'never', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(52)
+    r.emitCatalog(parentId)                       // parent never == child never → no append
+    expect(r.child.appended).toHaveLength(0)
+    r.setChildDetached(true)
+    r.setParentPolicy('ask')
+    r.emitParentPolicy(parentId, 'ask')           // (b): no-op (detached)
+    expect(r.child.appended).toHaveLength(0)
+    r.setChildDetached(false)                     // re-attach on resume
+    r.emitChildTurnStart(CHILD)                   // (b3): re-pin ask → writes get a card
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('(b3) negative: unknown child turn/start with no index row is NOT synced (no false claim)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    await r.bindParent(53)
+    // No catalog — child not in index. A turn/start from a session that is not a
+    // known child must not drive (b3); header-less → (c) guard also rejects it.
+    r.emitChildTurnStart('never-seen-child')
+    expect(r.indexChildIds()).toEqual([])
+    expect(r.child.appended).toHaveLength(0)
   })
 
   // ---- R2-1(i) / R2-2: resume self-heal --------------------------------------
