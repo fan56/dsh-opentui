@@ -139,7 +139,9 @@ const HINT_LABEL_KEYS: Record<HintSegmentId, HintLabelKeys> = {
 	history: { idle: "footer.hint.history.idle", busy: null },
 	stop: { idle: null, busy: "footer.hint.stop.busy" },
 	subagentPanel: { idle: "footer.hint.subagentPanel", busy: "footer.hint.subagentPanel" },
-	quit: { idle: "footer.hint.quit", busy: "footer.hint.quit" },
+	// Busy ctrl+c interrupts the running turn; only idle ctrl+c opens the quit
+	// confirm (see turn-cancel.tsx). The two states need different wording.
+	quit: { idle: "footer.hint.quit", busy: "footer.hint.quit.busy" },
 	scroll: { idle: "footer.hint.scroll", busy: "footer.hint.scroll" },
 	search: { idle: "footer.hint.search", busy: "footer.hint.search" },
 	subagents: { idle: "footer.hint.subagents", busy: "footer.hint.subagents" },
