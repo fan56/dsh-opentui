@@ -60,9 +60,15 @@ oldfox round2 指出原 §4 只写了"seed 不发布"，漏掉更结构性的一
 
 覆盖形态：`resume 后父已 ask`（(b) 空表 no-op → Stop reconcile → (i) 重钉）与 `resume 后父切 ask`（事件到达时空表 → Stop reconcile 读实时 ask → 重钉）；测试还覆盖 (ii) header 不匹配不入表不同步、无 live 事件不误入表。
 
-### 4.3 残余竞态（登记，本批不修）
+### 4.3 真机根因（2026-11-23 探针确认）与 (b3) 修复
 
-resume 子的**第一条 live 事件就是被门控工具执行本身**时，门的 `tools/pre-execute` 可能先于 (ii) 的 deferred sync 读到子的 stale `never` → 该次调用被静默放行。加剧情形：该子尚未被 `session.list` 收录（syncFromList 也拿不到），此调用后既不产生 catalog 也无后续 live 事件兜底。有 (i) 后面已经足够窄（仅限"list 里都没有的晚 resume 子 + 首事件即门控执行"的交集），本批不修；登记的下批方向：gate 对 origin==='subagent' 且非本 binding 已知子系的 session 不走 bypass（见 §5 R2-3 守卫思路）。
+真机 boot 探针铁证：子会话在**自己 turn 结束时被宿主 detach**，此后 `sessions.get(childId)` 返回 `undefined`。父侧 (b)/(b2) 虽收到 `approval/policy` 事件（探针证实投递正常），但 `syncChildApprovalPolicy` 在 `childSession === undefined` 时静默早返回——无 append、无 warn。这就是前三轮 A/B「(b) 死路」的真正根因（不是事件不到，也不是宿主类型过滤）。详见 `03-live-trigger-diagnosis.md`。
+
+修复 **(b3)**：已知 index 子的**自己的 `turn/start`** 触发 re-sync（desired 走实时 `effectivePolicy`）。resume/续跑 continuable 子时宿主把它重新挂回 sessions 服务，子 turn/start 先于本轮任何工具调用，于是 never→ask 与 ask→never 两方向都在工具执行前修正。(b)/(b2)/(c)/(i) 保留：(b)/(b2) 覆盖仍 live 的子，(i) 覆盖 restart/Stop，(c) 覆盖未知子首事件；(b2) 对 detached 子天然 no-op，(b3) 补此缺口。
+
+### 4.4 残余竞态（登记，本批不修）
+
+resume 子的**第一条 live 事件就是被门控工具执行本身**（而非先有 `turn/start`）时，门的 `tools/pre-execute` 可能先于 (b3)/(ii) 的 sync 读到子的 stale `never` → 该次调用被静默放行。**有 (b3) 后此窗口已极窄**：宿主 resume/续跑会先写 `turn/start` 再执行工具，实测 turn/start 先于工具调用，故仅剩异常序列。本批不修；登记的下批方向：gate 对 origin==='subagent' 且非本 binding 已知子系的 session 不走 bypass（见 §5 R2-3 守卫思路）。
 
 ## 5. R2-3 / R2-4 登记项
 

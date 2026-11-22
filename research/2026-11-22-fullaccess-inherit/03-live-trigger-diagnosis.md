@@ -4,6 +4,30 @@
 
 诊断测试：`packages/bridge/test/live-trigger-diagnosis.test.ts`（导入真实 `@deepseek-ai/cordis` 4.1.0 / `dsh-session` 0.2.2-rc.5 / `dsh-session-projection` / `dsh-user-approval`，绝对路径指向宿主安装闭包）。3 pass / 0 fail。另用一次性端到端脚本把真实 bridge `apply()` 接到真实 cordis 事件总线 + 真实 SessionStore + 真实 ApprovalService 上跑全链。
 
+## 真机铁证（boot 实测，env-gated 诊断探针，探针代码未提交已 checkout 丢弃）
+
+用户在家用真机加环境变量门控探针，boot 实测拿到决定性证据：
+
+```
+dispatch 时 sync：SYNC-STEP childSession=ok appendFn=function        → append 成功（子活着，catalog/(c) 路径）
+switch 时 (b) sync：SYNC desiredOverride=never
+                    SYNC-STEP childSession=UNDEF appendFn=undefined → 静默跳过
+```
+
+**真机根因**：子会话在自己 turn 结束时被宿主从 `sessions` 服务 **detach**，`sessions.get(childId)` 返回 `undefined`。`syncChildApprovalPolicy` 在 `childSession === undefined` 时静默早返回（无 append、无 warn）——这正好复现「父日志有 approval/policy、子无新 append、无 warn」。(a)/(c) 触发器之所以一直正常，是因为它们只在子活着时（spawn / 首事件）触发；而 (b)/(b2) 发生在父侧切换时刻，此时子已 detach。
+
+旁证（同一探针，纠正先前误判）：
+- **(b) 投递正常**：`approval/policy` 事件确实到达 BINDING（探针有行），故不是「事件不到」。
+- **(c) 真机活着**：未知子首事件触发的 SYNC 比 catalog 早 5ms（(c) 抢先入表 + sync）。
+- **setPolicy 幂等短路**：preset 全局状态与会话策略分离，会让人误以为切换没生效（只是观测假象）。
+- 早期 A/B 的「真机死路」全部由此根因解释；boot 2 里 boot 1 的孩子本就不在 index，(b) 不认是**正确行为**（会话归属隔离生效），非缺陷。
+
+**客户端修法 (b3)**：扩展 `onSessionEvent` 的 `sessionId !== binding.sessionId` 分支——来自**已知 index 子**（`index.has(sessionId)`，parentage 已是 durable 事实，无需 header）且 `type === 'turn/start'` → `syncChildApprovalPolicy(sessionId, binding.sessionId)`（desired 走实时 `effectivePolicy`）。子 turn/start 先于本轮任何工具调用；宿主 resume/续跑 continuable 子时重新挂回 sessions 服务（此刻 `sessions.get` 可解析、append 可用），于是：
+- never→ask（危险方向）：resume 子首事件=turn/start → 重钉 ask → 本轮写操作正常弹卡；
+- ask→never：resume 子 → 镜像 never → 本轮写零卡。
+
+保留 (b)/(b2)/(c)/(i) 不动（各自覆盖活着子的即时路径 / restart 路径）。(b2) 对 detached 子天然 no-op（`sessions.get` 只解析 live 会话，已在注释写明）。
+
 ## 一手代码证据（宿主路径前缀 `HOST=/opt/homebrew/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai`）
 
 - `dsh-session/lib/index.js:1561-1568` `append(type,data)` → `commit(event, entry)`；`:1660-1674` `commit()` **不区分事件类型**，一律 `collectSessionCallbacks(entry.emitCtx, [entry.carrier, "session/event", ...args])` → `invokeContainedSessionObservers(...)`。
@@ -29,20 +53,16 @@
 
 但确实存在**一个**宿主机制能产出「日志增长、无监听器、无 warn」：未 `enter` 进 store 的**独立 session**（`Session.create()` 不走 `sessions.enter`）的 `append` 落进自己的 log，却因 `entry === undefined` 被 `commit` 跳过 observer 通知（`:1666,1673`）。测试 H4 证明：detached session 写入后本 session log 增长，根 ctx 的 `session/event` 监听器只看到 attached session 那一条。
 
-## 根因结论
+## 根因结论（已由真机探针确认，取代本文早前的候选推断）
 
-**宿主对 `approval/policy` 没有按类型的发布过滤，也没有别的静默写入路径能解释「日志增长 + 子无 append + catalog 正常」的组合；H1/H2/H3 三项一手实证共同否证了「真机 (b) 死因是 approval/policy 不发布」这一假设。**
+**真机根因：`sessions.get(id)` 只解析 live（store-attached）会话。子会话在自己 turn 结束时被宿主 detach；此后父侧 (b)/(b2) 即便收到 `approval/policy` 事件，`sessions.get(childId)` 也返回 `undefined`，`syncChildApprovalPolicy` 静默早返回——无 append、无 warn。** 铁证见上节 boot 探针两行对照（`childSession=ok` vs `childSession=UNDEF`）。H1/H2/H3 一手实证仍成立：宿主对 `approval/policy` 无类型过滤、形状完好、策略读取正常；先前「宿主不发布」的假设已被否证，而真机差额的真相是**子会话已 detach**。
 
-把真实 bridge `apply()` 接到真实 cordis 事件总线 + 真实 SessionStore + 真实 ApprovalService、真实 `session.open` 绑定后跑全链：catalog 触发 (a) 重钉 ask 成功；随后真实 `approval.setPolicy` 切 never，(b) 立即把子镜像到 never（`child override after parent never: never`，子日志 `never,ask,never`），无 warn。**即在可复现的真宿主装配下 (b) 是通的。**
+(b)/(c) 历史表现由此统一解释：(a)/(c) 在子 spawn/首事件时触发，子必 live，故一直正常；(b)/(b2) 在父侧切换时触发，子常已 settle/detach，故静默跳过。早期 A/B 的「真机死路」及 boot 2 里 boot 1 的孩子不在 index，均为 detach + 会话归属隔离的正确行为，非缺陷。
 
-真机与探针的差额无法在离线探针内复现，候选（需真机进一步取证，不在无证据下断定）：
-
-1. 切策略那一刻该 parent 的 live append 落在一个**非 bridge 监听 ctx 可见 scope 的 session 实例**（H4 类机制：agent 实例/emitCtx 与 bridge 绑定不一致）；catalog 因由另一路径 note 到 index，给人「同一 session」的错觉。
-2. 切策略那一刻 bridge 的 `binding` 为空或 index 行 parentSessionId 与事件 sessionId 不等，使 (b) 的守卫/行过滤静默跳过；此路径 `syncChildApprovalPolicy` 不被调用，故无 warn。
-
-**不是宿主行为缺陷、不属于「红牌停车」情形**：宿主发布与读取均已实证正常。但 (b) 是恢复路径的**单点依赖**——它要求那一条父 `approval/policy` 事件恰好被 bridge 的 listener 收到。按评审认可的方向，补一条**已被证明可达的冗余触发器**（父 `turn/start` 时对已知子做全量 re-sync，desired 取实时 `effectivePolicy`），使恢复不再单点依赖那一条事件；不改宿主、不改冻结面。
+**修法 (b3)（客户端、不改宿主/冻结面）**：已知 index 子的**自己的 `turn/start`** 触发 re-sync（desired 走实时 `effectivePolicy`）。宿主 resume/续跑 continuable 子时会把它重新挂回 sessions 服务，此刻 `sessions.get` 可解析、append 可用；子的 turn/start 先于本轮任何工具调用，因此 both directions 都覆盖。(b)/(b2)/(c)/(i) 保留，各司其职。
 
 ## 残余 / 登记
 
-- turn/start 冗余钩子要求策略切换后父会话至少再起一个 turn；`/permission` 的 `agent.inject` 会排一个 `user/message`，通常会带起 turn，但若进程在切策略后立即空闲且无后续 turn，(b) 仍是唯一即时路径——保留 (b) 不删。
-- 真机复验建议：切 `/permission` 后立刻在父日志确认 `approval/policy` 条目的 `entry.emitCtx` 归属与 bridge 绑定 session 是否同一实例；若不一致则以本冗余触发器接管。
+- **「首事件即被门控工具执行」竞态（仍登记，面已极窄）**：若 resume 子的第一条 live 事件**就是**被门控工具执行本身（而非先有 turn/start），(b3) 来不及在门读策略前重钉。但宿主 resume/续跑会先写 `turn/start` 再执行工具，实测 turn/start 先于工具调用，故该窗口仅剩异常序列，本批不修。
+- (b2) 父 turn/start 冗余钩子对 detached 子天然 no-op（`sessions.get` 只解析 live 会话）——这是 (b3) 存在的原因，两者互补而非重叠。
+- 真机复验（不依赖探针）：切 full access 后续跑同一子 → 写零卡；切回 ask 后续跑 → 卡恢复。
