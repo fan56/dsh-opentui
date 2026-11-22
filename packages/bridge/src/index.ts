@@ -2772,12 +2772,14 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  sync never depends on projection-listener registration order.
    *
    *  Triggers: (a) parent catalog frame; (b) parent `approval/policy` event →
-   *  all known children of the binding; (c) an unknown child's FIRST live event
-   *  (claimed into the index via noteCatalog, then deferred — a synchronous
-   *  re-append inside that session's own publish is rejected as reentrant);
-   *  (i) bind completion + post-reconcile full re-sync of all known rows (also
-   *  the F2 self-heal hook). Self-heal chain: (c) fail → (a) catalog fallback →
-   *  (b) next parent policy event / Stop-driven full re-sync. */
+   *  all known children of the binding; (b2) parent `turn/start` → full re-sync
+   *  from LIVE policy (FIELD 2026-11-23 redundant signal — (b)'s single event was
+   *  not observed on the real machine; see 03-live-trigger-diagnosis.md);
+   *  (c) an unknown child's FIRST live event (claimed into the index via
+   *  noteCatalog, then deferred — a synchronous re-append inside that session's
+   *  own publish is rejected as reentrant); (i) bind completion + post-reconcile
+   *  full re-sync of all known rows (also the F2 self-heal hook). Self-heal chain:
+   *  (c) fail → (a) catalog fallback → (b)/(b2) parent event / Stop full re-sync. */
   function syncChildApprovalPolicy(childId: string, parentSessionId: string, desiredOverride?: unknown): void {
     if (binding === undefined || parentSessionId !== binding.sessionId) return
     const get = ctx.get
@@ -2935,6 +2937,20 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
           if (row.parentSessionId !== sessionId) continue
           syncChildApprovalPolicy(childId, sessionId, data.policy)
         }
+      }
+
+      // (b2) FIELD 2026-11-23 — redundant full re-sync on the parent's
+      // `turn/start`. Diagnosis (research/…/03-live-trigger-diagnosis.md) proved
+      // the host DOES publish `approval/policy` with intact shape and the policy
+      // reads work, yet on the real machine (b) was never observed — so recovery
+      // must not hang on that ONE event. `setPolicy` injects a user message that
+      // starts a turn, and turn events are proven reachable; read desired LIVE
+      // (no override) so this converges to whatever the parent's effective policy
+      // is now, independent of which event carried the switch. Idempotent (no-op
+      // when current === desired). Placed here, before the activeTurn gate below,
+      // so it fires even when no turn state is tracked yet.
+      if (type === 'turn/start' && sessionId === binding.sessionId) {
+        syncKnownChildrenOfBinding(sessionId)
       }
 
       // (c) R2-1(ii): the FIRST live event from a session that is neither the

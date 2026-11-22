@@ -885,6 +885,9 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
       emitParentPolicy(parentId: string, policy: string) {
         h.emitSessionEvent({ id: parentId }, { type: 'approval/policy', data: { policy } })
       },
+      emitParentTurnStart(parentId: string) {
+        h.emitSessionEvent({ id: parentId }, { type: 'turn/start', data: { turn: 1 } })
+      },
       emitChildDelegation(childId: string, parentId: string) {
         h.emitSessionEvent(
           { id: childId, header: { parentSession: parentId, origin: 'subagent' } },
@@ -993,6 +996,24 @@ describe('F1 policy mirror (R2) — (a) catalog / (b) 父策略事件 / (c) 未�
     const policyThrowsParentId = await policyThrows.bindParent(31)
     policyThrows.emitCatalog(policyThrowsParentId)
     expect(policyThrows.child.appended).toHaveLength(0)
+  })
+
+  test('(b2) FIELD 2026-11-23: parent turn/start re-syncs known child from LIVE policy (redundant recovery)', async () => {
+    // The real machine saw (b)'s approval/policy event not trigger a mirror even
+    // though the host publishes it (see 03-live-trigger-diagnosis.md). The redundant
+    // turn/start hook re-syncs from the LIVE effective policy, so this recovers even
+    // when the policy value changed without an approval/policy event reaching (b).
+    const r = makeSyncHarness({ parentPolicy: 'never', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(39)
+    r.emitCatalog(parentId)                 // parent never == child never → no append
+    expect(r.child.appended).toHaveLength(0)
+    // Policy switched live to ask; no approval/policy event—only a turn/start.
+    r.setParentPolicy('ask')
+    r.emitParentTurnStart(parentId)
+    expect(r.child.appended).toEqual(ask('ask'))
+    // Idempotent: a second turn/start does not re-append.
+    r.emitParentTurnStart(parentId)
+    expect(r.child.appended).toEqual(ask('ask'))
   })
 
   // ---- R2-1(i) / R2-2: resume self-heal --------------------------------------
