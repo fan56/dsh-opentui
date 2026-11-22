@@ -1,0 +1,208 @@
+/**
+ * Behaviour tests for the inproc companion step of provision-inproc-profile.mjs.
+ *
+ * The script is spawned against a throwaway DSH_HOME with a stub `dsh` and a
+ * stub `npm` first on PATH; the bridge artifact is a small fixture whose
+ * index.js hash matches its bundle-fingerprint.json. Nothing touches the real
+ * ~/.dsh and nothing reaches the network. Assertions read the stub's argv log,
+ * the converged profile manifest and the script's stdout/stderr.
+ */
+import { afterEach, describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
+const REGISTRY = '@aiwayds/dsh-subagent-registry'
+const tempDirs: string[] = []
+
+const STUB_DSH = `#!/usr/bin/env node
+const fs = require('node:fs')
+const path = require('node:path')
+const args = process.argv.slice(2)
+if (process.env.DSH_STUB_LOG) fs.appendFileSync(process.env.DSH_STUB_LOG, args.join(' ') + '\\n')
+if (args[0] === 'plugin' && args[1] === '--profile' && args[2] === 'opentui-inproc' && args[3] === 'add') {
+  if (process.env.DSH_STUB_ADD_FAIL === '1') { console.error('ERR_PNPM_META_FETCH_FAIL stub'); process.exit(1) }
+  const home = process.env.DSH_HOME
+  const dir = path.join(home, 'profiles', 'opentui-inproc')
+  const manifestPath = path.join(dir, 'package.json')
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  manifest.dependencies = manifest.dependencies || {}
+  manifest.dsh = manifest.dsh || {}
+  manifest.dsh.profile = manifest.dsh.profile || {}
+  manifest.dsh.profile.bundles = manifest.dsh.profile.bundles || []
+  for (const spec of args.slice(4)) {
+    const at = spec.lastIndexOf('@')
+    const name = spec.slice(0, at)
+    const version = spec.slice(at + 1) === 'latest' ? '0.21.0' : spec.slice(at + 1)
+    manifest.dependencies[name] = version
+    if (!manifest.dsh.profile.bundles.includes(name)) manifest.dsh.profile.bundles.push(name)
+    const pkgDir = path.join(dir, 'node_modules', ...name.split('/'))
+    fs.mkdirSync(pkgDir, { recursive: true })
+    fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name, version }))
+  }
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\\n')
+  process.exit(0)
+}
+process.exit(0)
+`
+const STUB_NPM = `#!/usr/bin/env node
+if (process.env.DSH_STUB_NPM_FAIL === '1') { console.error('offline stub'); process.exit(1) }
+process.stdout.write(JSON.stringify({ latest: process.env.DSH_STUB_LATEST || '0.21.0' }) + '\\n')
+`
+
+function fixture(): { home: string; bridge: string; bin: string; log: string } {
+  const root = mkdtempSync(join(tmpdir(), 'inproc-companions-'))
+  tempDirs.push(root)
+  const home = join(root, 'home')
+  const bridge = join(root, 'bridge')
+  const bin = join(root, 'bin')
+  for (const dir of [home, bridge, bin]) mkdirSync(dir, { recursive: true })
+  const indexJs = '// fixture bridge index\n'
+  writeFileSync(join(bridge, 'index.js'), indexJs)
+  writeFileSync(join(bridge, 'package.json'), JSON.stringify({ name: '@aiwayds/dsh-opentui-bridge', version: '0.1.0' }))
+  writeFileSync(join(bridge, 'bundle-fingerprint.json'), JSON.stringify({
+    name: '@aiwayds/dsh-opentui-bridge',
+    version: '0.1.0',
+    sha256: createHash('sha256').update(indexJs).digest('hex'),
+  }))
+  writeFileSync(join(bin, 'dsh'), STUB_DSH, { mode: 0o755 })
+  writeFileSync(join(bin, 'npm'), STUB_NPM, { mode: 0o755 })
+  chmodSync(join(bin, 'dsh'), 0o755)
+  chmodSync(join(bin, 'npm'), 0o755)
+  return { home, bridge, bin, log: join(root, 'dsh.log') }
+}
+
+function provision(fx: ReturnType<typeof fixture>, env: Record<string, string> = {}) {
+  return Bun.spawnSync({
+    cmd: [process.execPath, SCRIPT],
+    env: {
+      ...process.env,
+      DSH_HOME: fx.home,
+      DSH_OPENTUI_TEST_BRIDGE_DIR: fx.bridge,
+      // The stub dsh only implements `plugin add`; pin the host version so the
+      // step-1 compatibility gate is exercised without a version-printing host.
+      DSH_OPENTUI_HOST_VERSION: '0.2.2-rc.5',
+      DSH_STUB_LOG: fx.log,
+      PATH: `${fx.bin}:${process.env.PATH ?? ''}`,
+      ...env,
+    },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  })
+}
+
+const text = (buf: Uint8Array | undefined) => new TextDecoder().decode(buf ?? new Uint8Array())
+const stubCalls = (fx: ReturnType<typeof fixture>) => {
+  try { return readFileSync(fx.log, 'utf8').split('\n').filter(Boolean) } catch { return [] }
+}
+
+afterEach(() => {
+  while (tempDirs.length) rmSync(tempDirs.pop()!, { recursive: true, force: true })
+})
+
+describe('provision-inproc-profile.mjs companion step (spawned, offline)', () => {
+  test('fresh profile: installs the registry at the resolved latest and records a consistent manifest', () => {
+    const fx = fixture()
+    const run = provision(fx)
+    expect(run.exitCode).toBe(0)
+    expect(text(run.stdout)).toContain('[4/8] companions — installed 1 of 1')
+    expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${REGISTRY}@0.21.0`])
+    const manifest = JSON.parse(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8'))
+    expect(manifest.dependencies[REGISTRY]).toBe('0.21.0')
+    expect(manifest.dsh.profile.bundles).toContain(REGISTRY)
+    expect(existsSync(join(fx.home, 'profiles', 'opentui-inproc', 'node_modules', ...REGISTRY.split('/'), 'package.json'))).toBe(true)
+  })
+
+  test('second run is idempotent: no second install, no manifest rewrite', () => {
+    const fx = fixture()
+    expect(provision(fx).exitCode).toBe(0)
+    const callsAfterFirst = stubCalls(fx).length
+    const manifestBefore = readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8')
+    const second = provision(fx)
+    expect(second.exitCode).toBe(0)
+    expect(text(second.stdout)).toContain('already satisfied (1/1)')
+    expect(stubCalls(fx)).toHaveLength(callsAfterFirst)
+    expect(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8')).toBe(manifestBefore)
+  })
+
+  test('DSH_OPENTUI_COMPANION_LATEST=off skips the install but leaves an existing install alone', () => {
+    const fx = fixture()
+    expect(provision(fx).exitCode).toBe(0)
+    const callsAfterFirst = stubCalls(fx).length
+    const off = provision(fx, { DSH_OPENTUI_COMPANION_LATEST: 'off' })
+    expect(off.exitCode).toBe(0)
+    expect(text(off.stdout)).toContain('skipped (DSH_OPENTUI_COMPANION_LATEST=off)')
+    expect(stubCalls(fx)).toHaveLength(callsAfterFirst)
+    expect(JSON.parse(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8')).dependencies[REGISTRY]).toBe('0.21.0')
+  })
+
+  test('a failed install is a WARN, not a boot blocker', () => {
+    const fx = fixture()
+    const run = provision(fx, { DSH_STUB_ADD_FAIL: '1' })
+    expect(run.exitCode).toBe(0)
+    expect(text(run.stderr)).toContain('companions are optional')
+    expect(text(run.stdout)).toContain('installed 0 of 1')
+  })
+
+  test('verify catches a declared-but-missing companion (two-state drift)', () => {
+    const fx = fixture()
+    // Provision once to materialise everything, then delete only the mounted
+    // package while the manifest still declares it; disable the step so it
+    // cannot self-heal and step [5/8] is the one that reports the drift.
+    expect(provision(fx).exitCode).toBe(0)
+    rmSync(join(fx.home, 'profiles', 'opentui-inproc', 'node_modules', ...REGISTRY.split('/')), { recursive: true, force: true })
+    const run = provision(fx, { DSH_OPENTUI_COMPANION_LATEST: 'off' })
+    expect(run.exitCode).toBe(1)
+    expect(text(run.stderr)).toContain('companion drift')
+    expect(text(run.stderr)).toContain(REGISTRY)
+  })
+
+  test('an unresolved registry answer uses the @latest fallback on a fresh profile', () => {
+    const fx = fixture()
+    const run = provision(fx, { DSH_STUB_NPM_FAIL: '1' })
+    expect(run.exitCode).toBe(0)
+    expect(stubCalls(fx)).toEqual([`plugin --profile opentui-inproc add ${REGISTRY}@latest`])
+  })
+})
+
+/**
+ * Real-host integration assertion (opt-in, not part of the offline gate).
+ *
+ * DSH_INPROC_COMPANION_LIVE=1 DSH_INPROC_COMPANION_HOME=<scratch home> \
+ *   bun test test/provision-inproc-companions.test.ts
+ *
+ * `use_agent` is a runtime tool registered by the mounted plugin, so a
+ * compose-only `--dump-config` cannot name it directly: what it DOES prove is
+ * that the registry bundle row which registers it is present in the composed
+ * tree. The actual tool call is covered by the fresh-home dispatch check.
+ */
+test.skipIf(process.env.DSH_INPROC_COMPANION_LIVE !== '1')(
+  'real host: provisioned profile composes the use_agent-registering bundle',
+  () => {
+    const home = process.env.DSH_INPROC_COMPANION_HOME
+    expect(home).toBeDefined()
+    const run = Bun.spawnSync({
+      cmd: ['dsh', '--profile', 'opentui-inproc', '--dump-config'],
+      env: { ...process.env, DSH_HOME: home! },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    expect(run.exitCode).toBe(0)
+    const dump = text(run.stdout)
+    expect(dump).toContain('- id: dsh-subagent-registry')
+    expect(dump).toContain("name: '@aiwayds/dsh-subagent-registry'")
+    // The legacy list_agents bridge rides the same bundle.
+    expect(dump).toContain('@aiwayds/dsh-subagent-registry/legacy-subagent-list-agents')
+  },
+)
