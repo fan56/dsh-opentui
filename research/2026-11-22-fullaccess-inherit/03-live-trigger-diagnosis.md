@@ -14,7 +14,7 @@ switch 时 (b) sync：SYNC desiredOverride=never
                     SYNC-STEP childSession=UNDEF appendFn=undefined → 静默跳过
 ```
 
-**真机根因**：子会话在自己 turn 结束时被宿主从 `sessions` 服务 **detach**，`sessions.get(childId)` 返回 `undefined`。`syncChildApprovalPolicy` 在 `childSession === undefined` 时静默早返回（无 append、无 warn）——这正好复现「父日志有 approval/policy、子无新 append、无 warn」。(a)/(c) 触发器之所以一直正常，是因为它们只在子活着时（spawn / 首事件）触发；而 (b)/(b2) 发生在父侧切换时刻，此时子已 detach。
+**真机根因**：子会话在 agent teardown（子 agent 生命周期结束）时被宿主从 `sessions` 服务 **detach**（措辞为 agent teardown，非字面「turn 结束」——一个 continuable 子可以跨多个 turn 存活直至 teardown），此后 `sessions.get(childId)` 返回 `undefined`。`syncChildApprovalPolicy` 在 `childSession === undefined` 时静默早返回（无 append、无 warn）——这正好复现「父日志有 approval/policy、子无新 append、无 warn」。(a)/(c) 触发器之所以一直正常，是因为它们只在子活着时（spawn / 首事件）触发；而 (b)/(b2) 发生在父侧切换时刻，此时子可能已被 detach。
 
 旁证（同一探针，纠正先前误判）：
 - **(b) 投递正常**：`approval/policy` 事件确实到达 BINDING（探针有行），故不是「事件不到」。
@@ -22,7 +22,7 @@ switch 时 (b) sync：SYNC desiredOverride=never
 - **setPolicy 幂等短路**：preset 全局状态与会话策略分离，会让人误以为切换没生效（只是观测假象）。
 - 早期 A/B 的「真机死路」全部由此根因解释；boot 2 里 boot 1 的孩子本就不在 index，(b) 不认是**正确行为**（会话归属隔离生效），非缺陷。
 
-**客户端修法 (b3)**：扩展 `onSessionEvent` 的 `sessionId !== binding.sessionId` 分支——来自**已知 index 子**（`index.has(sessionId)`，parentage 已是 durable 事实，无需 header）且 `type === 'turn/start'` → `syncChildApprovalPolicy(sessionId, binding.sessionId)`（desired 走实时 `effectivePolicy`）。子 turn/start 先于本轮任何工具调用；宿主 resume/续跑 continuable 子时重新挂回 sessions 服务（此刻 `sessions.get` 可解析、append 可用），于是：
+**客户端修法 (b3)**：扩展 `onSessionEvent` 的 `sessionId !== binding.sessionId` 分支——来自**已知 index 子**（`index.has(sessionId)`，parentage 已是 durable 事实，无需 header）且 `type === 'turn/start'` → `queueMicrotask(() => syncChildApprovalPolicy(sessionId, binding.sessionId))`（desired 走实时 `effectivePolicy`）。**必须 deferred**：该 turn/start 由子自己的 `commit()` 发布，dispatch 期间 `publicationEntry.appending === true`（`dsh-session/lib/index.js:1652`），同步 append 同一 session 必 throw "cannot reenter" 被吞成 warn——这正是真机缺陷的同一守卫（与 (c) 当初改 microtask 同理）。microtask 在 commit 栈展开后执行，仍远早于本轮首个工具调用（工具在 await LLM 之后）。宿主 resume/续跑 continuable 子时重新挂回 sessions 服务（此刻 `sessions.get` 可解析；append 须待 microtask 避开重入守卫），于是：
 - never→ask（危险方向）：resume 子首事件=turn/start → 重钉 ask → 本轮写操作正常弹卡；
 - ask→never：resume 子 → 镜像 never → 本轮写零卡。
 
@@ -59,10 +59,16 @@ switch 时 (b) sync：SYNC desiredOverride=never
 
 (b)/(c) 历史表现由此统一解释：(a)/(c) 在子 spawn/首事件时触发，子必 live，故一直正常；(b)/(b2) 在父侧切换时触发，子常已 settle/detach，故静默跳过。早期 A/B 的「真机死路」及 boot 2 里 boot 1 的孩子不在 index，均为 detach + 会话归属隔离的正确行为，非缺陷。
 
-**修法 (b3)（客户端、不改宿主/冻结面）**：已知 index 子的**自己的 `turn/start`** 触发 re-sync（desired 走实时 `effectivePolicy`）。宿主 resume/续跑 continuable 子时会把它重新挂回 sessions 服务，此刻 `sessions.get` 可解析、append 可用；子的 turn/start 先于本轮任何工具调用，因此 both directions 都覆盖。(b)/(b2)/(c)/(i) 保留，各司其职。
+**修法 (b3)（客户端、不改宿主/冻结面）**：已知 index 子的**自己的 `turn/start`** 触发 re-sync（desired 走实时 `effectivePolicy`），**经 `queueMicrotask` deferred**（子自己的 commit 在 dispatch 期间持重入守卫，同步 append 必 throw——已由测试先红后绿实证，见 §测试）。宿主 resume/续跑 continuable 子时把它重新挂回 sessions 服务，`sessions.get` 可解析；turn/start 先于本轮任何工具调用，microtask 又在本 commit 栈之后、工具调用之前执行，因此 both directions 都覆盖。(b)/(b2)/(c)/(i) 保留，各司其职。
+
+## 测试（重入守卫先红后绿）
+
+`ask-answerers.test.ts` 的 fake `append` 补 `appending` 守卫（复刻 `session-event-scope.test.ts` 的宿主形态）：子 turn/start 的 emit 期间子 `appending=true`，同步 append 必 throw "cannot reenter"。
+- 守卫先行、(b3) 仍同步：`(b3) ... mirrors never` 与 `(b3) ... re-pins ask` 两用例 **RED**（45 pass / 2 fail），证据 `/tmp/b3-red.txt`。
+- (b3) 改 `queueMicrotask` 后：同两用例 **GREEN**（47 pass / 0 fail），证据 `/tmp/b3-green.txt`。负向用例（未知子）两阶段均绿。
 
 ## 残余 / 登记
 
-- **「首事件即被门控工具执行」竞态（仍登记，面已极窄）**：若 resume 子的第一条 live 事件**就是**被门控工具执行本身（而非先有 turn/start），(b3) 来不及在门读策略前重钉。但宿主 resume/续跑会先写 `turn/start` 再执行工具，实测 turn/start 先于工具调用，故该窗口仅剩异常序列，本批不修。
+- **「首事件即被门控工具执行」竞态（仍登记，面已极窄）**：若 resume 子的第一条 live 事件**就是**被门控工具执行本身（而非先有 turn/start），(b3) 来不及在门读策略前重钉。但宿主 resume/续跑会先写 `turn/start` 再执行工具，实测 turn/start 先于工具调用，(b3) 的 microtask 也在工具调用前展开，故该窗口仅剩异常序列，本批不修。
 - (b2) 父 turn/start 冗余钩子对 detached 子天然 no-op（`sessions.get` 只解析 live 会话）——这是 (b3) 存在的原因，两者互补而非重叠。
-- 真机复验（不依赖探针）：切 full access 后续跑同一子 → 写零卡；切回 ask 后续跑 → 卡恢复。
+- 真机复验（不依赖探针）：切 full access 后续跑同一子 → 写零卡；切回 ask 后续跑 → 卡恢复；并确认日志无 "cannot reenter" 痕迹（(b3) 已 deferred）。

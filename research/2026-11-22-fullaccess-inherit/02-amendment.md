@@ -62,13 +62,13 @@ oldfox round2 指出原 §4 只写了"seed 不发布"，漏掉更结构性的一
 
 ### 4.3 真机根因（2026-11-23 探针确认）与 (b3) 修复
 
-真机 boot 探针铁证：子会话在**自己 turn 结束时被宿主 detach**，此后 `sessions.get(childId)` 返回 `undefined`。父侧 (b)/(b2) 虽收到 `approval/policy` 事件（探针证实投递正常），但 `syncChildApprovalPolicy` 在 `childSession === undefined` 时静默早返回——无 append、无 warn。这就是前三轮 A/B「(b) 死路」的真正根因（不是事件不到，也不是宿主类型过滤）。详见 `03-live-trigger-diagnosis.md`。
+真机 boot 探针铁证：子会话在 **agent teardown**（措辞为 agent 生命周期结束，非字面 turn 结束）时被宿主 detach，此后 `sessions.get(childId)` 返回 `undefined`。父侧 (b)/(b2) 虽收到 `approval/policy` 事件（探针证实投递正常），但 `syncChildApprovalPolicy` 在 `childSession === undefined` 时静默早返回——无 append、无 warn。这就是前三轮 A/B「(b) 死路」的真正根因（不是事件不到，也不是宿主类型过滤）。详见 `03-live-trigger-diagnosis.md`。
 
-修复 **(b3)**：已知 index 子的**自己的 `turn/start`** 触发 re-sync（desired 走实时 `effectivePolicy`）。resume/续跑 continuable 子时宿主把它重新挂回 sessions 服务，子 turn/start 先于本轮任何工具调用，于是 never→ask 与 ask→never 两方向都在工具执行前修正。(b)/(b2)/(c)/(i) 保留：(b)/(b2) 覆盖仍 live 的子，(i) 覆盖 restart/Stop，(c) 覆盖未知子首事件；(b2) 对 detached 子天然 no-op，(b3) 补此缺口。
+修复 **(b3)**：已知 index 子的**自己的 `turn/start`** 触发 re-sync（desired 走实时 `effectivePolicy`），**经 `queueMicrotask` deferred**。该 turn/start 由子自己的 commit() 发布，dispatch 期间子 `publicationEntry.appending === true`（`dsh-session/lib/index.js:1652`），同步 append 同一 session 必 throw "cannot reenter" 被吞成 warn——与 (c) 当初的守卫完全相同，故必须 deferred（测试先红后绿实证）。microtask 在 commit 栈后、本轮首个工具调用前（工具在 await LLM 之后）执行。resume/续跑 continuable 子时宿主把它重新挂回 sessions 服务，于是 never→ask 与 ask→never 两方向都在工具执行前修正。(b)/(b2)/(c)/(i) 保留：(b)/(b2) 覆盖仍 live 的子，(i) 覆盖 restart/Stop，(c) 覆盖未知子首事件；(b2) 对 detached 子天然 no-op，(b3) 补此缺口。
 
 ### 4.4 残余竞态（登记，本批不修）
 
-resume 子的**第一条 live 事件就是被门控工具执行本身**（而非先有 `turn/start`）时，门的 `tools/pre-execute` 可能先于 (b3)/(ii) 的 sync 读到子的 stale `never` → 该次调用被静默放行。**有 (b3) 后此窗口已极窄**：宿主 resume/续跑会先写 `turn/start` 再执行工具，实测 turn/start 先于工具调用，故仅剩异常序列。本批不修；登记的下批方向：gate 对 origin==='subagent' 且非本 binding 已知子系的 session 不走 bypass（见 §5 R2-3 守卫思路）。
+resume 子的**第一条 live 事件就是被门控工具执行本身**（而非先有 `turn/start`）时，门的 `tools/pre-execute` 可能先于 (b3)/(ii) 的 sync 读到子的 stale `never` → 该次调用被静默放行。**有 (b3) 后此窗口已极窄**：宿主 resume/续跑会先写 `turn/start` 再执行工具；(b3) 的 microtask 在该 commit 栈之后、工具调用之前展开，故仅剩异常序列。本批不修；登记的下批方向：gate 对 origin==='subagent' 且非本 binding 已知子系的 session 不走 bypass（见 §5 R2-3 守卫思路）。另：真机日志若再见 "cannot reenter" 即为 (b3) 未 deferred 的回归信号（本批已修）。
 
 ## 5. R2-3 / R2-4 登记项
 
