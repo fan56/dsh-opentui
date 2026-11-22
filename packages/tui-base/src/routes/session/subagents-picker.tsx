@@ -47,6 +47,7 @@ import {
   subagentSteerWired,
   type SubagentMarkerView,
 } from "./subagent-markers"
+import { subagentNamePrefix } from "./subagent-name"
 import type { SessionSeam } from "../../seams/session"
 
 /**
@@ -237,7 +238,8 @@ export function pickerLineText(entries: readonly SubagentMarkerView[], selected:
   }
   const glyph = subagentHardStopGlyph(entry)
   const suffix = subagentMarkerSuffix(entry)
-  const label = `${glyph ? `${glyph} ` : ""}${Locale.titlecase(entry.label)}`
+  const namePrefix = subagentNamePrefix(entry.name, entry.label)
+  const label = `${glyph ? `${glyph} ` : ""}${namePrefix}${Locale.titlecase(entry.label)}`
   const status = entry.status === "running" ? t("overlay.picker.statusRunning") : ""
   return t("overlay.picker.row", {
     label,

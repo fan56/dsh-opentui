@@ -131,7 +131,16 @@ describe("hint bar: 9 segments, en/zh golden wording (tui-pi FooterHints parity)
 
 	test("busy text leads with the running-turn keys", () => {
 		const text = hintsText(true)
-		expect(text).toBe("⌨ enter steer · esc stop · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c quit")
+		expect(text).toBe("⌨ enter steer · esc stop · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c stop")
+	})
+
+	test("ctrl+c hint wording is state-specific (idle opens quit confirm, busy interrupts)", () => {
+		expect(hintLabel("quit", false)).toBe("ctrl+c quit")
+		expect(hintLabel("quit", true)).toBe("ctrl+c stop")
+		setLanguages(languages, "zh-CN")
+		expect(hintLabel("quit", false)).toBe("ctrl+c 退出")
+		expect(hintLabel("quit", true)).toBe("ctrl+c 打断")
+		setLanguages(languages)
 	})
 
 	test("subagentPanel is unconditional (no running-agent gate) and independently toggleable", () => {
@@ -195,7 +204,7 @@ describe("hint bar: 9 segments, en/zh golden wording (tui-pi FooterHints parity)
 		expect(hintsText(false)).toBe("⌨ enter send · alt+enter newline · ↑↓ history · ctrl+g subagents panel · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c quit")
 		setLanguages(languages, "zh-CN")
 		expect(hintsText(false)).toBe("⌨ enter 发送 · alt+enter 换行 · ↑↓ 历史 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c 退出")
-		expect(hintsText(true)).toBe("⌨ enter 插话 · esc 停止 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c 退出")
+		expect(hintsText(true)).toBe("⌨ enter 插话 · esc 停止 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c 打断")
 		expect(hintsText(true, true, true)).toContain("↓ 子代理")
 		setLanguages(languages)
 		expect(hintsLocale()).toBe("en")
@@ -266,6 +275,7 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		search: "ctrl+shift+f search",
 		scroll: "pgup/pgdn scroll",
 		quit: "ctrl+c quit",
+		quitBusy: "ctrl+c stop",
 	}
 	const ZH = {
 		sendIdle: "enter 发送",
@@ -278,6 +288,7 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		search: "ctrl+shift+f 搜索",
 		scroll: "pgup/pgdn 滚动",
 		quit: "ctrl+c 退出",
+		quitBusy: "ctrl+c 打断",
 	}
 
 	let languages: Map<string, import("@dsh-opentui/i18n").LocaleTable>
@@ -331,11 +342,11 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 	})
 
 	test("en busy: esc + ctrl+c survive 80 columns; search/scroll drop", () => {
-		const all = [EN.sendBusy, EN.stop, EN.subagentPanel, EN.search, EN.scroll, EN.quit]
+		const all = [EN.sendBusy, EN.stop, EN.subagentPanel, EN.search, EN.scroll, EN.quitBusy]
 		const cases: { width: number; present: string[] }[] = [
-			// The shorter `ctrl+c quit` label now fits beside steer/stop at 40.
-			{ width: 40, present: [EN.sendBusy, EN.stop, EN.quit] },
-			{ width: 80, present: [EN.sendBusy, EN.stop, EN.subagentPanel, EN.quit] },
+			// The width-neutral `ctrl+c stop` label now fits beside steer/stop at 40.
+			{ width: 40, present: [EN.sendBusy, EN.stop, EN.quitBusy] },
+			{ width: 80, present: [EN.sendBusy, EN.stop, EN.subagentPanel, EN.quitBusy] },
 			{ width: 120, present: all },
 			{ width: 160, present: all },
 		]
@@ -343,11 +354,11 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 			const row = hintsTextAtWidth(true, true, false, width, { ...DEFAULT_FOOTER_HINTS })
 			expectSegments(row, present, all.filter((seg) => !present.includes(seg)), width)
 		}
-		// The core observable of the fix: esc stop and ctrl+c quit are both
+		// The core observable of the fix: esc stop and busy ctrl+c are both
 		// still on an 80-column bar even though new low-tier segments were added.
 		const at80 = hintsTextAtWidth(true, true, false, 80, { ...DEFAULT_FOOTER_HINTS })
 		expect(at80).toContain(EN.stop)
-		expect(at80).toContain(EN.quit)
+		expect(at80).toContain(EN.quitBusy)
 	})
 
 	test("zh-CN idle/busy fold on the same priorities (CJK columns)", () => {
@@ -371,9 +382,9 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		)
 		expectSegments(hintsTextAtWidth(false, true, false, 160, { ...DEFAULT_FOOTER_HINTS }), idleAll, [], 160)
 		const busyAt80 = hintsTextAtWidth(true, true, false, 80, { ...DEFAULT_FOOTER_HINTS })
-		expectSegments(busyAt80, [ZH.sendBusy, ZH.stop, ZH.subagentPanel, ZH.quit], [ZH.search, ZH.scroll], 80)
+		expectSegments(busyAt80, [ZH.sendBusy, ZH.stop, ZH.subagentPanel, ZH.quitBusy], [ZH.search, ZH.scroll], 80)
 		expect(busyAt80).toContain(ZH.stop)
-		expect(busyAt80).toContain(ZH.quit)
+		expect(busyAt80).toContain(ZH.quitBusy)
 		setLanguages(languages, "en")
 	})
 

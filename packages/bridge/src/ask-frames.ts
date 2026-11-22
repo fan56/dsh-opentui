@@ -96,6 +96,9 @@ export interface AskAnswer {
 export interface AskRequestPayload {
   /** `${turnId}:ask-${seq}`, turn-scoped monotonic — the lifecycle key. */
   eventId: string
+  /** Delivery addressee. For a subagent ask this stays the PARENT session id:
+   *  `ask.response` from the client is answered against the bound session, and
+   *  grants / clearSession are keyed on it. Do not change to the child id. */
   sessionId: string
   kind: AskKind
   toolName?: string
@@ -105,6 +108,14 @@ export interface AskRequestPayload {
   deadlineAt?: number
   detachGraceMs?: number
   escalation?: boolean
+  /** F1-A1: present only when the ask originated from a subagent tool call.
+   *  The requesting child session id (from the catalog-driven target table) —
+   *  the TUI uses it to distinguish a child card from a parent card. */
+  childSessionId?: string
+  /** F1-A1: present only on a child ask. Parent session whose ask channel
+   *  carries this ask; equals `sessionId`. Lets the TUI mount the child card
+   *  under the parent trajectory without a duplicate parent card. */
+  parentSessionId?: string
 }
 
 export interface AskCancelPayload {
@@ -274,6 +285,10 @@ export function validateAskRequest(value: unknown): ParseResult<AskRequestPayloa
   if (typeof detachGraceMs === 'number' && detachGraceMs < 0) return bad(code, 'detachGraceMs must be >= 0')
   const escalation = optionalBoolean(value.escalation, 'escalation', code)
   if (typeof escalation === 'object') return escalation
+  const childSessionId = optionalString(value.childSessionId, 'childSessionId', code)
+  if (typeof childSessionId === 'object') return childSessionId
+  const parentSessionId = optionalString(value.parentSessionId, 'parentSessionId', code)
+  if (typeof parentSessionId === 'object') return parentSessionId
 
   let questions: AskQuestion[] | undefined
   if (value.questions !== undefined) {
@@ -299,6 +314,8 @@ export function validateAskRequest(value: unknown): ParseResult<AskRequestPayloa
       ...(deadlineAt !== undefined ? { deadlineAt } : {}),
       ...(detachGraceMs !== undefined ? { detachGraceMs } : {}),
       ...(escalation !== undefined ? { escalation } : {}),
+      ...(childSessionId !== undefined ? { childSessionId } : {}),
+      ...(parentSessionId !== undefined ? { parentSessionId } : {}),
     },
   }
 }

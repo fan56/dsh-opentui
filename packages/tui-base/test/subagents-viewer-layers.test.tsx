@@ -54,28 +54,56 @@ interface FakeSubagents {
 	seam: SessionSeam
 	interrupted: string[]
 	steered: { id: string; text: string }[]
+	transcriptCalls: string[]
 }
 
-function fakeSeam(): FakeSubagents {
-	const views: SeamSubagentView[] = [
+/**
+ * Method-form fake: `subagentTranscript` / `interruptChild` are real methods
+ * that read `this`, mirroring BridgeSessionSeam's private fields. Extracting
+ * either into a bare function (`const face = seam.x; face(id)`) throws here —
+ * a pure-function fake used to give F2 a false green.
+ */
+class ReceiverSensitiveFakeSeam {
+	readonly views: SeamSubagentView[] = [
 		{ id: CHILD_A, label: "workhorse", status: "running", rounds: 1, startedAt: Date.now() },
 		{ id: CHILD_B, label: "scout", status: "running", rounds: 2, startedAt: Date.now() },
 	]
-	const interrupted: string[] = []
-	const steered: { id: string; text: string }[] = []
-	const seam = {
-		subagentViews: () => views,
-		onSubagentViews: () => () => {},
-		subagentTranscript: (id: string) => [`line-1-${id}`, `line-2-${id}`],
-		interruptChild: async (id: string) => {
-			interrupted.push(id)
-		},
-		steerChild: (id: string, text: string) => {
-			steered.push({ id, text })
-			return true
-		},
-	} as unknown as SessionSeam
-	return { seam, interrupted, steered }
+	readonly interrupted: string[] = []
+	readonly steered: { id: string; text: string }[] = []
+	readonly transcriptCalls: string[] = []
+	readonly #transcripts = new Map<string, string[]>([
+		[CHILD_A, [`line-1-${CHILD_A}`, `line-2-${CHILD_A}`]],
+		[CHILD_B, [`line-1-${CHILD_B}`, `line-2-${CHILD_B}`]],
+	])
+
+	subagentViews(): SeamSubagentView[] {
+		return this.views
+	}
+	onSubagentViews(): () => void {
+		return () => {}
+	}
+	subagentTranscript(id: string): string[] {
+		const lines = this.#transcripts.get(id) ?? [] // throws if `this` is lost
+		this.transcriptCalls.push(id)
+		return [...lines]
+	}
+	async interruptChild(id: string): Promise<void> {
+		this.interrupted.push(id) // throws if `this` is lost
+	}
+	steerChild(id: string, text: string): boolean {
+		this.steered.push({ id, text })
+		return true
+	}
+}
+
+function fakeSeam(): FakeSubagents {
+	const fake = new ReceiverSensitiveFakeSeam()
+	return {
+		seam: fake as unknown as SessionSeam,
+		interrupted: fake.interrupted,
+		steered: fake.steered,
+		transcriptCalls: fake.transcriptCalls,
+	}
 }
 
 function Harness(props: { seam: SessionSeam }) {
@@ -210,6 +238,28 @@ describe("/subagents transcript-layer keys on the real stack (transcriptHandle r
 			expect(fake.interrupted.length).toBe(2)
 			expect(fake.interrupted).toContain(CHILD_A)
 			expect(fake.interrupted).toContain(CHILD_B)
+		} finally {
+			await setup.dispose()
+		}
+	})
+
+	test("transcript + stop faces are called through the seam, not as bare functions (F2)", async () => {
+		const fake = fakeSeam()
+		const setup = await mount(fake.seam)
+		try {
+			// Both faces read `this` in the fake. A `const face = seam.x; face(id)`
+			// extraction throws a TypeError here — the exact ctrl+g crash. Going
+			// through the component proves the receiver survives to the call.
+			await enterTranscript(setup)
+			expect(fake.transcriptCalls).toContain(CHILD_A)
+			expect(frame(setup)).toContain(`line-1-${CHILD_A}`)
+
+			setup.mockInput.pressKey("x")
+			await new Promise((resolve) => setTimeout(resolve, 140))
+			await setup.renderOnce()
+			setup.mockInput.pressKey("x")
+			await settle(setup)
+			expect(fake.interrupted).toContain(CHILD_A)
 		} finally {
 			await setup.dispose()
 		}

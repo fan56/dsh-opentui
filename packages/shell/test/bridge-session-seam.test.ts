@@ -1688,6 +1688,9 @@ describe("subagent lifecycle rows (inproc visibility)", () => {
 		expect(views[0]).toMatchObject({
 			id: "child-cat",
 			label: "List and verify primes",
+			// F5: the fold must carry name into the view — without this the
+			// renderer has no independent name channel (fake wiring).
+			name: "primes",
 			status: "running",
 			rounds: 0,
 			// P3-2: a catalog row carries the host's real childCreatedAt (epoch ms),
@@ -1720,6 +1723,8 @@ describe("subagent lifecycle rows (inproc visibility)", () => {
 		expect(views).toHaveLength(1)
 		expect(views[0]).toMatchObject({
 			id: "child-settle", label: "primes", status: "completed",
+			// F5: settling must not drop the carried child name.
+			name: "prime-checker",
 			// childCreatedAt anchors the duration; now freezes it at settle.
 			elapsedSec: 10, endedAt: t0,
 		})

@@ -286,6 +286,13 @@ export interface BridgeAskRequestPayload {
 	deadlineAt?: number
 	detachGraceMs?: number
 	escalation?: boolean
+	/** F1-A3: present only on a subagent ask — the requesting child session id.
+	 *  Lets the TUI tell a child card apart from a parent card. */
+	childSessionId?: string
+	/** F1-A3: present only on a subagent ask — the parent session whose ask
+	 *  channel carries it (equals `sessionId`). Lets the TUI mount the child
+	 *  card under the parent trajectory. A parent ask carries neither field. */
+	parentSessionId?: string
 }
 
 /** Derive the turn id from the ADR-0011 association key `${turnId}:ask-${seq}`. */
@@ -311,7 +318,9 @@ function parseAskRequest(value: unknown): BridgeAskRequestPayload | undefined {
 		return undefined
 	}
 	const out: BridgeAskRequestPayload = { eventId, sessionId, kind }
-	for (const key of ["toolName", "callId", "reason"] as const) {
+	// F1-A3: the two child-ask identity fields ride the same wire payload. They
+	// are optional — a parent ask omits both, so parsing stays backward-safe.
+	for (const key of ["toolName", "callId", "reason", "childSessionId", "parentSessionId"] as const) {
 		const v = optionalStringField(row, key)
 		if (v !== undefined) out[key] = v
 	}
@@ -356,11 +365,18 @@ function parseAskRequest(value: unknown): BridgeAskRequestPayload | undefined {
 type BridgeApproveVerdict = SeamApprovalVerdict | "always" | "session"
 
 /** Args passed to `onApprove(name, args)` — the ask.request wire carries no
- *  tool arguments, so surface the identifying fields the host did send. */
+ *  tool arguments, so surface the identifying fields the host did send.
+ *
+ *  F1-A3: a child ask also carries `eventId`, which is the globally-unique
+ *  `${parentTurnId}:ask-N` key. When a parent card and a child card coexist in
+ *  the same turn, the controller uses it to correlate each card to its own
+ *  snapshot row (no cross-over / no double card). A parent ask keeps the
+ *  legacy `{callId, reason}` shape — it is the single-card path. */
 function approvalArgs(request: BridgeAskRequestPayload): Record<string, unknown> {
 	return {
 		...(request.callId !== undefined ? { callId: request.callId } : {}),
 		...(request.reason !== undefined ? { reason: request.reason } : {}),
+		...(request.parentSessionId !== undefined ? { eventId: request.eventId } : {}),
 	}
 }
 
@@ -744,6 +760,7 @@ function bridgeSettleChild(
 	return {
 		id: existing.id,
 		label: existing.label,
+		...(existing.name !== undefined ? { name: existing.name } : {}),
 		...(existing.model !== undefined ? { model: existing.model } : {}),
 		status: bridgeSettledStatus(outcome),
 		rounds: existing.rounds,
@@ -779,6 +796,10 @@ function bridgeFoldAgentRecord(
 	now: number,
 	live: boolean,
 ): boolean {
+	// F5: both families carry the host's optional child reservation `name`
+	// (raw catalog rows directly; agent.spawn frames forwarded by the bridge).
+	// Empty/missing stays absent so the renderer can fall back to label alone.
+	const name = typeof data.name === "string" && data.name !== "" ? data.name : undefined
 	// P1-2 (catalog-family terminal): the host journals an async child's settle
 	// as a `user/message` notice, NOT an agent-end. Real evidence — ad45fecb
 	// seq37 source = {kind:"subagent-settled", stopReason:"completed",
@@ -818,9 +839,11 @@ function bridgeFoldAgentRecord(
 		// family's no-revive guard below — revive permission is PER ROW FAMILY.
 		if (existing !== undefined && existing.status !== "running") {
 			runSeq.set(bridgeAgentRunKey(`${BRIDGE_CATALOG_RUN_PREFIX}${childId}`, 0), childId)
+			const revivedName = name ?? existing.name
 			children.set(childId, {
 				id: existing.id,
 				label: label || existing.label,
+				...(revivedName !== undefined ? { name: revivedName } : {}),
 				status: "running",
 				rounds: 0,
 				startedAt: childCreatedAt ?? now,
@@ -831,6 +854,7 @@ function bridgeFoldAgentRecord(
 		}
 		return bridgeFoldAgentRecord(children, runSeq, liveStarts, BRIDGE_AGENT_START, {
 			childId, label, runId: `${BRIDGE_CATALOG_RUN_PREFIX}${childId}`, seq: 0,
+			...(name !== undefined ? { name } : {}),
 			...(childCreatedAt !== undefined ? { childCreatedAt } : {}),
 			viaCatalog: true,
 		}, now, live)
@@ -858,22 +882,28 @@ function bridgeFoldAgentRecord(
 			// P3-5: a later spawn may refine the label (remote #registerChild parity).
 			const newLabel = typeof data.label === "string" ? data.label : ""
 			const labelChanged = newLabel !== "" && newLabel !== existing.label
+			// F5: a later spawn may also fill/refine the child reservation name.
+			const nameChanged = name !== undefined && name !== existing.name
 			// A live spawn arriving after a replay approximation upgrades the start
 			// clock to a real wall clock; a replay sweep never downgrades it.
 			// P3-1: only a RUNNING row may take that upgrade — a spawn arriving after
 			// settle must not revive the row or overwrite its frozen start clock.
 			const upgradeStart = live && existing.status === "running" && !liveStarts.has(childId)
-			if (!labelChanged && !upgradeStart) return false
+			if (!labelChanged && !nameChanged && !upgradeStart) return false
 			children.set(childId, {
 				...existing,
 				...(labelChanged ? { label: newLabel } : {}),
+				...(nameChanged ? { name } : {}),
 				...(upgradeStart ? { startedAt: childCreatedAt ?? now } : {}),
 			})
 			if (upgradeStart) liveStarts.add(childId)
 			return true
 		}
 		const label = typeof data.label === "string" && data.label ? data.label : `subagent ${childId.slice(0, 8)}`
-		children.set(childId, { id: childId, label, status: "running", rounds: 0, startedAt: childCreatedAt ?? now })
+		children.set(childId, {
+			id: childId, label, status: "running", rounds: 0, startedAt: childCreatedAt ?? now,
+			...(name !== undefined ? { name } : {}),
+		})
 		if (live) liveStarts.add(childId)
 		return true
 	}
@@ -4283,6 +4313,22 @@ export class BridgeSessionSeam implements SessionSeam {
 		for (const eventId of [...this.#pendingAsks.keys()]) this.#settlePendingAsk(eventId)
 	}
 
+	/**
+	 * F1-A3: anchor a received ask on its parent trajectory. A subagent ask's
+	 * wire `sessionId` is ALREADY the parent session (that is the binding /
+	 * answer / grant key — it must stay the parent), and `parentSessionId` is
+	 * the explicit trajectory anchor. Normalizing to `parentSessionId` keeps the
+	 * card on the parent queue even if a future wire ever writes a child id in
+	 * `sessionId`; the card is told apart from the parent's only by its unique
+	 * `${parentTurnId}:ask-N` eventId. A parent ask (no parentSessionId) is
+	 * returned untouched — the ordinary path is unchanged.
+	 */
+	#mountAskOnParentTrajectory(request: BridgeAskRequestPayload): BridgeAskRequestPayload {
+		const parent = request.parentSessionId
+		if (parent === undefined || parent === request.sessionId) return request
+		return { ...request, sessionId: parent }
+	}
+
 	/** Handle the four host→client ask events. Returns true when consumed. */
 	#onAskEvent(frame: BridgeEventFrame): boolean {
 		const payload = asRecord(frame.payload)
@@ -4293,7 +4339,11 @@ export class BridgeSessionSeam implements SessionSeam {
 		switch (frame.type) {
 			case "ask.request": {
 				const request = parseAskRequest(frame.payload)
-				if (request !== undefined) this.#enqueueAsk(request)
+				if (request !== undefined) {
+					// Child asks hang off the parent trajectory (by parentSessionId,
+					// distinguished by eventId); parent asks take the same path.
+					this.#enqueueAsk(this.#mountAskOnParentTrajectory(request))
+				}
 				return true
 			}
 			case "ask.cancel": {

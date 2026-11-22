@@ -725,6 +725,7 @@
   "turn.quit.confirmLabel": "退出",
   "turn.quit.cancelLabel": "继续",
   "footer.hint.quit": "ctrl+c 退出",
+  "footer.hint.quit.busy": "ctrl+c 打断",
   "footer.hint.scroll": "pgup/pgdn 滚动",
   "footer.hint.search": "ctrl+shift+f 搜索",
   "footer.hint.subagents": "↓ 子代理",

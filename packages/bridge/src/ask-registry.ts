@@ -119,6 +119,10 @@ interface SettleOptions {
 
 const DEFAULT_RECORD_LIMIT = 256
 
+/** Absolute hard cap default (1h). Exported so the bridge's profile-patch
+ *  askDeadlineMs validation clamps to the SAME value this registry enforces. */
+export const DEFAULT_MAX_ASK_WAIT_MS = 3_600_000
+
 /** Bounded insertion-ordered id memory (Set removes oldest first). */
 function remember(ids: Set<string>, id: string, limit: number): void {
   ids.add(id)
@@ -164,7 +168,7 @@ export class AskRegistry {
   constructor(options: AskRegistryOptions = {}) {
     this.#askDeadlineMs = options.askDeadlineMs === undefined ? null : options.askDeadlineMs
     this.#detachGraceMs = options.detachGraceMs ?? 30_000
-    this.#maxAskWaitMs = options.maxAskWaitMs ?? 3_600_000
+    this.#maxAskWaitMs = options.maxAskWaitMs ?? DEFAULT_MAX_ASK_WAIT_MS
     this.#recordLimit = options.recordLimit ?? DEFAULT_RECORD_LIMIT
     this.#now = options.now ?? Date.now
     this.#sink = options.sink ?? (() => {})

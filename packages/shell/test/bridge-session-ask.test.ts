@@ -595,3 +595,145 @@ describe("A6: invalidated terminal state on a dead ask.response", () => {
 		expect(h.seam.pendingAsks().map((a) => a.eventId)).toEqual([])
 	})
 })
+
+// ---------------------------------------------------------------------------
+// F1-A3 — child-session ask identity on the seam queue + TUI mount + close loop
+// ---------------------------------------------------------------------------
+//
+// Known semantic boundary (NOT fixed here, by design): routing a child ask
+// onto the PARENT channel means a parent `always`/session grant keyed on the
+// parent session still covers the child ask — the child will not pop a card
+// after the parent granted always. That is a necessary consequence of keeping
+// `sessionId` (the grant/clearSession/deliveredTo key) on the parent; changing
+// it to childSessionId would require reworking index.ts handleAskResponse and
+// is explicitly out of this slice's scope.
+describe("F1-A3 — child ask identity, parent-trajectory mount and answer loop", () => {
+	test("parseAskRequest keeps child identity on the pending entry; a parent ask omits both fields", async () => {
+		const h = makeAskHarness()
+		const gate = deferred<SeamAskPick[]>()
+		h.seam.registerAskProvider(async () => gate.promise)
+
+		// Child ask: wire sessionId is the PARENT; identity fields ride along.
+		h.emit("ask.request", askRequest({
+			eventId: "t1:ask-child",
+			kind: "questions",
+			sessionId: "parent-session",
+			childSessionId: "child-1",
+			parentSessionId: "parent-session",
+			questions: QUESTIONS.slice(0, 1),
+		}))
+		await h.flush()
+		expect(h.seam.pendingAsks()[0]).toMatchObject({
+			eventId: "t1:ask-child",
+			sessionId: "parent-session", // answer / grant key stays the parent
+			childSessionId: "child-1",
+			parentSessionId: "parent-session",
+		})
+
+		// Parent ask: no identity fields — backward-compatible with every
+		// pre-F1 client frame (and with the existing ask queue tests).
+		h.emit("ask.request", askRequest({
+			eventId: "t1:ask-parent",
+			kind: "questions",
+			sessionId: "parent-session",
+			questions: QUESTIONS.slice(0, 1),
+		}))
+		await h.flush()
+		const parent = h.seam.pendingAsks()[1]
+		expect(parent?.eventId).toBe("t1:ask-parent")
+		expect(parent).not.toHaveProperty("childSessionId")
+		expect(parent).not.toHaveProperty("parentSessionId")
+
+		gate.resolve([{ questionId: "q1", selected: "A" }])
+		await h.flush()
+	})
+
+	test("child ask mounts on the parent trajectory by parentSessionId (wire key stays parent)", async () => {
+		const h = makeAskHarness()
+		const gate = deferred<SeamAskPick[]>()
+		h.seam.registerAskProvider(async () => gate.promise)
+
+		// Even if a future wire accidentally writes the child id in sessionId,
+		// the parentSessionId anchor keeps the card on the PARENT queue — the
+		// binding/answer/grant key never becomes the child session.
+		h.emit("ask.request", askRequest({
+			eventId: "t1:ask-mount",
+			kind: "questions",
+			sessionId: "child-1",
+			childSessionId: "child-1",
+			parentSessionId: "parent-session",
+			questions: QUESTIONS.slice(0, 1),
+		}))
+		await h.flush()
+		expect(h.seam.pendingAsks().map((a) => [a.eventId, a.sessionId])).toEqual([
+			["t1:ask-mount", "parent-session"],
+		])
+		gate.resolve([{ questionId: "q1", selected: "A" }])
+		await h.flush()
+	})
+
+	test("same turn: parent + child approval asks open two cards keyed by eventId (no double card)", async () => {
+		const h = makeAskHarness()
+		h.replies.set("session.send", { value: { turnId: "t-live" } })
+		const approveCalls: { name: string; args: Record<string, unknown> }[] = []
+		const turn = h.seam.turn("go", noopCallbacks({
+			onApprove: async (name, args) => {
+				approveCalls.push({ name, args })
+				return "allowed-once"
+			},
+		}))
+		await h.flush()
+
+		h.emit("ask.request", askRequest({
+			eventId: "t-live:ask-1", toolName: "bash", callId: "c-parent", reason: "parent write",
+		}))
+		h.emit("ask.request", askRequest({
+			eventId: "t-live:ask-2", toolName: "bash", callId: "c-child", reason: "child write",
+			childSessionId: "child-9", parentSessionId: "s1",
+		}))
+		await h.flush()
+
+		// The child card carries its globally-unique eventId so the controller
+		// can correlate it independently of the parent card; the parent ask
+		// keeps the legacy args shape (regression).
+		expect(approveCalls).toHaveLength(2)
+		expect(approveCalls[0]!.args).toEqual({ callId: "c-parent", reason: "parent write" })
+		expect(approveCalls[1]!.args).toEqual({ callId: "c-child", reason: "child write", eventId: "t-live:ask-2" })
+		// Two asks → exactly two responses, each keyed by its own eventId.
+		expect(h.responses().map((r) => r.params)).toEqual([
+			{ eventId: "t-live:ask-1", kind: "approval", verdict: "allowed-once" },
+			{ eventId: "t-live:ask-2", kind: "approval", verdict: "allowed-once" },
+		])
+
+		h.emit("turn.end", { turnId: "t-live", text: "" })
+		await turn
+	})
+
+	test("child ask answer closes the loop: one ask.response keyed by the child eventId, no answer re-key", async () => {
+		const h = makeAskHarness()
+		h.seam.registerAskProvider(async () => [{ questionId: "q1", selected: "A" }])
+
+		h.emit("ask.request", askRequest({
+			eventId: "t1:ask-loop",
+			kind: "questions",
+			sessionId: "parent-session",
+			childSessionId: "child-1",
+			parentSessionId: "parent-session",
+			questions: QUESTIONS.slice(0, 1),
+		}))
+		await h.flush()
+
+		// The client answers against the binding (parent) session: ask.response
+		// carries only the eventId — never a child-session key. The bridge's
+		// handleAskResponse keeps deliveredTo / grant / clearSession on the
+		// parent (proved by the F1-A1 registry round-trip test in the bridge
+		// package). Re-keying deliveredTo to the child is out of scope.
+		expect(h.responses()).toHaveLength(1)
+		expect(h.lastResponse()).toEqual({
+			eventId: "t1:ask-loop",
+			kind: "questions",
+			answers: [{ id: "q1", selected: ["A"] }],
+		})
+		expect(JSON.stringify(h.lastResponse())).not.toContain("child-1")
+	})
+})

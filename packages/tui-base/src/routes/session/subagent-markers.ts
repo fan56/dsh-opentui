@@ -12,6 +12,8 @@ import { t } from "../../i18n"
 export interface SubagentMarkerView {
 	id: string
 	label: string
+	/** Batch F5: optional host child reservation name (SeamSubagentView.name). */
+	name?: string
 	status: "running" | "completed" | "failed" | "cancelled" | "interrupted"
 	rounds: number
 	injectedRound?: number

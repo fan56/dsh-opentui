@@ -41,7 +41,7 @@ import { dirname, join } from 'node:path'
 // this module only connects them to dispatch + turn/session lifecycle.
 import { ASK_FRAME_TYPES, validateAskResponse } from './ask-frames'
 import type { AskOutcome, AskRequestPayload, AskResponseParams, AskSettledPayload } from './ask-frames'
-import { AskRegistry } from './ask-registry'
+import { AskRegistry, DEFAULT_MAX_ASK_WAIT_MS } from './ask-registry'
 // ADR-0011 T7 — redacted decision journal + session-scoped permission summary.
 import { alwaysGrantToolsFromJournal, askPluginRecordType, type AskJournalEvent } from './ask-journal'
 // M3-02 — section registration skeleton lives in append-section.ts; index.ts
@@ -1950,6 +1950,32 @@ function parseRequest(raw: string): ParsedRequest {
   return { id, method: obj.method, params }
 }
 
+/**
+ * oldfox S1 (终审返工): normalize the profile-patch `askDeadlineMs` at the one
+ * AskRegistry construction point. A non-number / NaN / negative value is
+ * IGNORED (null → no per-ask clock) with ONE warn; a value above the registry's
+ * maxAskWaitMs hard cap is CLAMPED to the cap with ONE warn. Otherwise the
+ * number passes through. `warn` is injectable so the two cases are unit-testable
+ * without a live bridge, and the cap is the same exported constant the registry
+ * arms its hard-cap timer with (no drift between check and enforcement).
+ */
+export function resolveAskDeadlineMs(
+  raw: unknown,
+  maxAskWaitMs: number = DEFAULT_MAX_ASK_WAIT_MS,
+  warn: (format: unknown, ...params: unknown[]) => void = () => {},
+): number | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'number' || Number.isNaN(raw) || raw < 0) {
+    warn('[dsh-opentui-bridge] invalid askDeadlineMs %s ignored (no per-ask deadline)', String(raw))
+    return null
+  }
+  if (raw > maxAskWaitMs) {
+    warn('[dsh-opentui-bridge] askDeadlineMs %d exceeds maxAskWaitMs %d; clamped to hard cap', raw, maxAskWaitMs)
+    return maxAskWaitMs
+  }
+  return raw
+}
+
 export function apply(ctx: BridgeContext, config: unknown): unknown {
   const logger = ctx.logger
 
@@ -2538,7 +2564,21 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  // F1-A2: per-ask wall clock, overridable from the profile patch config.
+  // Default stays null (no per-ask deadline) so the 1h maxAskWaitMs hard cap
+  // remains the only fallback — changing the default is out of scope.
+  const askDeadlineMsRaw = config !== null && typeof config === 'object'
+    ? (config as { askDeadlineMs?: unknown }).askDeadlineMs
+    : undefined
+  // S1: validate once here (never per ask) — invalid/negative → ignored + warn;
+  // above the 1h hard cap → clamped + warn (else the config silently loses to
+  // the cap timer). The registry still owns the cap it actually enforces.
+  const askDeadlineMs = resolveAskDeadlineMs(askDeadlineMsRaw, DEFAULT_MAX_ASK_WAIT_MS, (fmt, ...params) =>
+    logger.warn(fmt, ...params),
+  )
+
   const ask = new AskRegistry({
+    askDeadlineMs,
     logger,
     journal: writeAskJournal,
     sink: (frame) => {
@@ -2694,6 +2734,80 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  // ---- F1: delegated child approval policy re-pin -------------------------
+  /** Local structural faces for the host services consulted when re-pinning a
+   *  delegated child's approval policy. No runtime @deepseek-ai/* import — same
+   *  no-import discipline as the other host faces in this file. */
+  interface SessionsServiceLike {
+    get?(id: string): unknown
+  }
+  interface ApprovalServiceLike {
+    overrideOf?(session: unknown): string | undefined
+  }
+  interface WritableSessionLike {
+    append(type: string, data: Record<string, unknown>): unknown
+  }
+
+  /** Child ids already processed by the re-pin guard (idempotent: a replayed
+   *  catalog row must not append a second policy event). */
+  const repinnedChildren = new Set<string>()
+
+  /** F1 (2026-11-22 real-machine收尾): the host pins EVERY delegated child's
+   *  approval policy to 'never' (`dsh-subagent` captureDelegatedPolicyOverrides /
+   *  appendDelegatedPolicyOverrides, source:'delegation'). `dsh-user-approval`'s
+   *  `decide()` returns 'rejected' on that policy BEFORE dispatching the
+   *  'approval/request' waterfall — so this bridge's F1 answerer is never
+   *  invoked for a child, no `ask.request` frame is emitted and no child card
+   *  can appear (evidence: .proof/f1-a1-ask-routing/01-child-approval-rejection-evidence.md).
+   *
+   *  Re-pin the delegation 'never' to 'ask' on the CHILD session log so child
+   *  approvals flow through the parent ask channel and the F1 card. Idempotent
+   *  and fail-closed: we only touch a child of THIS binding, never re-append when
+   *  the child is already answerable, and if the child session / services cannot
+   *  be resolved we leave policy intact (host keeps its never→rejected default). */
+  function repinChildApprovalPolicy(childId: string, parentSessionId: string): void {
+    if (binding === undefined || parentSessionId !== binding.sessionId) return
+    if (repinnedChildren.has(childId)) return
+    const get = ctx.get
+    if (typeof get !== 'function') return
+    let sessions: SessionsServiceLike | undefined
+    let approval: ApprovalServiceLike | undefined
+    try {
+      sessions = get.call(ctx, 'sessions') as SessionsServiceLike | undefined
+      approval = get.call(ctx, 'approval') as ApprovalServiceLike | undefined
+    } catch {
+      return
+    }
+    if (typeof sessions?.get !== 'function') return
+    let childSession: WritableSessionLike | undefined
+    try {
+      childSession = sessions.get(childId) as WritableSessionLike | undefined
+    } catch {
+      return
+    }
+    if (childSession === undefined || typeof childSession.append !== 'function') return
+    // Only re-pin a 'never' (the delegation pin) or an unset policy. An
+    // already-answerable 'ask' policy needs no append — avoid duplicate churn
+    // on replayed catalog rows and on children forked with an explicit 'ask'.
+    if (approval !== undefined && typeof approval.overrideOf === 'function') {
+      const current = approval.overrideOf(childSession)
+      if (current !== undefined && current !== 'never') {
+        repinnedChildren.add(childId)
+        return
+      }
+    }
+    try {
+      childSession.append('approval/policy', { policy: 'ask' })
+      repinnedChildren.add(childId)
+      logger.info(
+        '[dsh-opentui-bridge] child approval re-pinned to ask child=%s parent=%s (delegation never pin overridden)',
+        childId, parentSessionId,
+      )
+    } catch (err) {
+      logger.warn('[dsh-opentui-bridge] child approval re-pin failed child=%s: %s', childId, String(err))
+    }
+  }
+
   /** `session/event` listener. TURN event types are gated on the currently open
    *  session id AND the in-flight turn's numeric turn, so other sessions —
    *  including subagent child sessions riding the same firehose — never leak
@@ -2748,15 +2862,29 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // the host-local index with its parent (the bound session) and the host's
       // real wall clock. This covers the gap before `session.list` publishes the
       // row — exactly the window where 0.23.0's client roster was empty.
+      // F1-A1: this same row is the ask-routing target table child key —
+      // askTarget() resolves a subagent approval ask via this catalog fact
+      // (childId === child session id), so a child ask routes to the parent's
+      // channel only after the parent journal has established the child.
       getSubagentIndex(ctx).noteCatalog(
         childId,
         sessionId,
         typeof data.childCreatedAt === 'number' ? data.childCreatedAt : undefined,
       )
+      // F1: the host pins this child's approval policy to 'never' at delegation,
+      // which short-circuits decide() before our F1 answerer ever sees a child
+      // ask (no card, child tool auto-rejected). Re-pin to 'ask' on the child log
+      // so the child's approvals route through this bridge's parent channel.
+      repinChildApprovalPolicy(childId, sessionId)
       const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
       const label = typeof data.label === 'string' && data.label !== ''
         ? data.label
         : (typeof data.name === 'string' ? data.name : '')
+      // F5: forward the host's v3 child reservation `name` verbatim. It is a
+      // sibling-unique child slug (NOT a registry agent name) and the seam
+      // needs it as a separate channel; `label` alone cannot distinguish an
+      // ad-hoc child titled with a task from a `use_agent` agent name.
+      const name = typeof data.name === 'string' && data.name !== '' ? data.name : ''
       // Stable synthetic pairing key; no agent.settle is emitted for catalog
       // children, so runId:seq is only the roster map key here. childCreatedAt
       // is the host's real wall clock (epoch ms) — forward it so the seam can
@@ -2766,6 +2894,7 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         sessionId: boundId,
         childId,
         label,
+        ...(name !== '' ? { name } : {}),
         runId: `catalog:${childId}`,
         seq: 0,
         ...(typeof data.childCreatedAt === 'number' ? { childCreatedAt: data.childCreatedAt } : {}),
@@ -2907,17 +3036,47 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   }
 
   // ---- ADR-0011 T4 — host waterfall answerers -------------------------------
-  /** Resolve the single deliverable (session, turn) for an inbound ask. The
-   *  bridge owns one binding and one in-flight turn; an ask is deliverable only
-   *  while that turn is live. `agent.session.id` is the host's routing identity
-   *  (waterfall `claims()`) — a foreign session is NEVER answered here. */
-  function askTarget(agent: unknown): { turn: TurnStreamState; sessionId: string } | undefined {
+  /** F1-A1: resolved ask channel. `sessionId` stays the parent binding session
+   *  for BOTH parent and child asks (that is the `ask.response` addressee and
+   *  the grant / clearSession key). `childSessionId` is set only for a routed
+   *  subagent ask and is projected on the wire for TUI card attribution. */
+  interface AskTarget {
+    turn: TurnStreamState
+    sessionId: string
+    childSessionId?: string
+  }
+
+  /** Resolve the deliverable ask channel for an inbound request.
+   *
+   *  - Parent session (`agent.session.id === binding.sessionId`, or absent):
+   *    unchanged ADR-0011 T4 behaviour — the one live in-flight turn.
+   *  - Child session: look the requesting session up in the catalog-driven
+   *    `SubagentIndex` (childId === child session id, parentSessionId from the
+   *    parent's `subagent/catalog` journal row). Only a registered, still-running
+   *    child of THIS binding routes, and it routes onto the parent's ask channel
+   *    (the only channel the bridge can answer). Unknown / foreign / settled
+   *    children stay fail-closed — the security boundary is NOT widened.
+   *
+   *  `agent.session.id` is the host's routing identity (waterfall `claims()`);
+   *  the index row is created only from a parent-journal catalog fact, never
+   *  from the self-reported agent string, so spoofing is contained. */
+  function askTarget(agent: unknown): AskTarget | undefined {
     const state = activeTurn
     if (state === undefined || state.ended || binding === undefined) return undefined
     if (state.sessionId !== binding.sessionId) return undefined
-    const agentSessionId = (agent as ApprovalAgentLike | undefined)?.session?.id
-    if (agentSessionId !== undefined && idString(agentSessionId) !== binding.sessionId) return undefined
-    return { turn: state, sessionId: binding.sessionId }
+    const rawSessionId = (agent as ApprovalAgentLike | undefined)?.session?.id
+    if (rawSessionId === undefined) return { turn: state, sessionId: binding.sessionId }
+    const agentSessionId = idString(rawSessionId)
+    if (agentSessionId === binding.sessionId) return { turn: state, sessionId: binding.sessionId }
+    const child = getSubagentIndex(ctx).get(agentSessionId)
+    if (child === undefined || child.parentSessionId !== binding.sessionId || child.status === 'settled') {
+      logger.warn(
+        '[dsh-opentui-bridge] ask target rejected child session=%s parent=%s (unknown/foreign/settled) — fail-closed',
+        agentSessionId, binding.sessionId,
+      )
+      return undefined
+    }
+    return { turn: state, sessionId: binding.sessionId, childSessionId: agentSessionId }
   }
 
   /** Deterministic audit placeholder for a fail-closed ask with no deliverable
@@ -2984,6 +3143,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         ...(callId !== undefined ? { callId } : {}),
         ...(reason !== undefined ? { reason } : {}),
         escalation: true,
+        // F1-A1: a routed child ask carries the child identity on the frame;
+        // parentSessionId lets the TUI mount it under the parent (batch 3).
+        ...(target.childSessionId !== undefined
+          ? { childSessionId: target.childSessionId, parentSessionId: target.sessionId }
+          : {}),
       })
     } catch (err) {
       logger.error('[dsh-opentui-bridge] ask.create(approval) failed: %s', err)
@@ -3034,6 +3198,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         kind: 'questions',
         questions,
         ...(callId !== undefined ? { callId } : {}),
+        ...(target.childSessionId !== undefined
+          ? { childSessionId: target.childSessionId, parentSessionId: target.sessionId }
+          : {}),
       })
     } catch (err) {
       logger.error('[dsh-opentui-bridge] ask.create(questions) failed: %s', err)

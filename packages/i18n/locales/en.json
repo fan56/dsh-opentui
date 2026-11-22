@@ -725,6 +725,7 @@
   "footer.msgs.one": "💬 {n} msg",
   "footer.msgs.many": "💬 {n} msgs",
   "footer.hint.quit": "ctrl+c quit",
+  "footer.hint.quit.busy": "ctrl+c stop",
   "footer.hint.scroll": "pgup/pgdn scroll",
   "footer.hint.search": "ctrl+shift+f search",
   "footer.hint.subagents": "↓ subagents",

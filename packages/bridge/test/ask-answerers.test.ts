@@ -18,8 +18,10 @@
  *  - terminal / teardown settles the answerer promise (never hangs).
  */
 import { afterEach, describe, expect, test } from 'bun:test'
-import { apply, getAskRegistry } from '../src/index'
+import { apply, getAskRegistry, resolveAskDeadlineMs } from '../src/index'
+import { DEFAULT_MAX_ASK_WAIT_MS } from '../src/ask-registry'
 import { ASK_ERROR_CODES } from '../src/ask-frames'
+import { getSubagentIndex } from '../src/subagent-index'
 import type { AskRegistry } from '../src/ask-registry'
 
 const STDIO_SWITCH = 'DSH_OPENTUI_BRIDGE_STDIO'
@@ -45,6 +47,8 @@ interface Harness {
   frames: string[]
   registry: AskRegistry
   ctx: any
+  /** S1: formatted logger.warn calls, including construction-time config warns. */
+  warns: string[]
   listeners: Map<string, Array<(...args: any[]) => any>>
   send(frame: unknown): void
   latest(id: number | string): Frame | undefined
@@ -60,7 +64,7 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()!()
 })
 
-function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean } = {}): Harness {
+function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean; askDeadlineMs?: unknown } = {}): Harness {
   const previousSwitch = process.env[STDIO_SWITCH]
   process.env[STDIO_SWITCH] = '1'
 
@@ -119,8 +123,9 @@ function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean } = {}): Ha
     },
   }
   let disposeBridge: (() => void) | undefined
+  const warns: string[] = []
   const ctx: any = {
-    logger: { info() {}, warn() {}, error() {}, debug() {} },
+    logger: { info() {}, warn(format: unknown, ...params: unknown[]) { warns.push(`${String(format)} ${params.map(String).join(' ')}`) }, error() {}, debug() {} },
     effect(execute: () => () => void) {
       disposeBridge = execute()
       return { dispose: () => disposeBridge?.() }
@@ -142,8 +147,10 @@ function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean } = {}): Ha
     },
   }
   if (overrides.noOn) delete ctx.on
+  // F1-A2: the construction point reads askDeadlineMs from the plugin config.
+  const config = overrides.askDeadlineMs !== undefined ? { askDeadlineMs: overrides.askDeadlineMs } : {}
   // apply() must never throw even when ctx.on is missing or throws.
-  apply(ctx, {})
+  apply(ctx, config)
   const registry = getAskRegistry(ctx)
   if (registry === undefined) throw new Error('apply() did not register an AskRegistry')
 
@@ -179,6 +186,7 @@ function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean } = {}): Ha
     frames,
     registry,
     ctx,
+    warns,
     listeners,
     send(frame: unknown) {
       const line = `${JSON.stringify(frame)}\n`
@@ -421,6 +429,186 @@ describe('ADR-0011 T4 — fail-closed + cleanup settle', () => {
   })
 })
 
+describe('F1-A1 — multi-session ask routing (catalog-driven child → parent ask channel)', () => {
+  const CHILD = 'child-session-1'
+
+  /** The parent journal's `subagent/catalog` row is the ONLY fact that creates
+   *  an ask-routing target — mirroring the host's `establishCatalogChild`. */
+  function registerChild(h: Harness, childId: string, parent: string): void {
+    h.emitSessionEvent({ id: parent }, { type: 'subagent/catalog', data: { childId, childCreatedAt: 1 } })
+  }
+
+  test('catalog-registered child ask routes onto the parent channel with identity fields and round-trips', async () => {
+    const h = makeHarness()
+    const { sessionId: parent, turnId } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent)
+
+    const pending = h.emitHost('approval/request', approvalReq(CHILD))[0]
+    await sleep(0)
+
+    const asks = h.askFrames('ask.request')
+    expect(asks).toHaveLength(1)
+    const payload = asks[0].payload
+    // Delivery addressee stays the parent: ask.response / grant / clearSession
+    // all still key on the bound session, so the card is answerable.
+    expect(payload.sessionId).toBe(parent)
+    expect(payload.eventId).toBe(`${turnId}:ask-1`)
+    expect(payload.kind).toBe('approval')
+    expect(payload.childSessionId).toBe(CHILD)
+    expect(payload.parentSessionId).toBe(parent)
+
+    h.send({ id: 20, method: 'ask.response', params: {
+      eventId: payload.eventId, kind: 'approval', verdict: 'allowed-once',
+    } })
+    expect((await h.waitFor(20)).ok).toBe(true)
+    expect(await mustSettle(pending, 'routed child ask')).toBe('allowed-once')
+    // The answer reached the registry as a normal settlement, not a fail-closed.
+    expect(h.registry.settlements()[0].outcome).toBe('approved')
+  })
+
+  test('parent ask is unchanged: no child identity fields on the frame', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent) // presence of a child must not alter a parent ask
+
+    const pending = h.emitHost('approval/request', approvalReq(parent))[0]
+    await sleep(0)
+    const payload = h.askFrames('ask.request').at(-1)!.payload
+    expect(payload.sessionId).toBe(parent)
+    expect(payload.childSessionId).toBeUndefined()
+    expect(payload.parentSessionId).toBeUndefined()
+
+    h.send({ id: 21, method: 'ask.response', params: {
+      eventId: payload.eventId, kind: 'approval', verdict: 'allowed-once',
+    } })
+    expect((await h.waitFor(21)).ok).toBe(true)
+    expect(await mustSettle(pending, 'parent regression')).toBe('allowed-once')
+  })
+
+  test('unknown child and child of another parent stay fail-closed (no frame)', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    // A target row only count when its parentSessionId is THIS binding.
+    getSubagentIndex(h.ctx).noteCatalog('child-of-other', 'other-parent')
+
+    const unknown = h.emitHost('approval/request', approvalReq('never-registered'))[0]
+    expect(await mustSettle(unknown, 'unknown child')).toBe('unavailable')
+    const foreign = h.emitHost('approval/request', approvalReq('child-of-other'))[0]
+    expect(await mustSettle(foreign, 'child of different parent')).toBe('unavailable')
+
+    expect(h.askFrames('ask.request')).toHaveLength(0)
+    expect(h.registry.settlements().map((s) => s.code)).toEqual([
+      ASK_ERROR_CODES.CHANNEL_UNAVAILABLE,
+      ASK_ERROR_CODES.CHANNEL_UNAVAILABLE,
+    ])
+  })
+
+  test('settled child no longer routes (fail-closed)', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent)
+    // The child's own turn/end flips its index status to settled.
+    h.emitSessionEvent({ id: CHILD }, { type: 'turn/end', data: {} })
+
+    const pending = h.emitHost('approval/request', approvalReq(CHILD))[0]
+    expect(await mustSettle(pending, 'settled child')).toBe('unavailable')
+    expect(h.askFrames('ask.request')).toHaveLength(0)
+  })
+
+  test('no in-flight turn fails closed even for a registered child (regression)', async () => {
+    const h = makeHarness()
+    // No session.open / session.send → no binding, no activeTurn.
+    getSubagentIndex(h.ctx).noteCatalog(CHILD, 'parent-with-no-turn')
+    const pending = h.emitHost('approval/request', approvalReq(CHILD))[0]
+    expect(await mustSettle(pending, 'registered child but no turn')).toBe('unavailable')
+    expect(h.askFrames('ask.request')).toHaveLength(0)
+    expect(h.registry.settlements()[0].code).toBe(ASK_ERROR_CODES.CHANNEL_UNAVAILABLE)
+  })
+})
+
+describe('F1-A2 — askDeadlineMs config wiring + timeout outcome decision', () => {
+  test('config askDeadlineMs times out an approval as denied (host sees rejected)', async () => {
+    const h = makeHarness({ askDeadlineMs: 20 })
+    const { sessionId } = await startTurn(h, 1)
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    expect(h.registry.timerCount()).toBe(2) // deadline + hard cap
+    await sleep(70)
+
+    const settled = h.registry.settlements()[0]
+    expect(settled.outcome).toBe('denied') // F1-A2 decision: timeout = denied, not unavailable
+    expect(settled.code).toBe(ASK_ERROR_CODES.DEADLINE_EXCEEDED)
+    expect(await mustSettle(pending, 'timed-out approval')).toBe('rejected')
+    expect(h.askFrames('ask.settled').some((f) =>
+      f.payload.eventId === settled.eventId && f.payload.outcome === 'denied')).toBe(true)
+    expect(h.askFrames('ask.cancel').some((f) => f.payload.reason === 'deadline')).toBe(true)
+  })
+
+  test('default config keeps askDeadlineMs=null: no per-ask wall clock (regression)', async () => {
+    const h = makeHarness()
+    const { sessionId } = await startTurn(h, 1)
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+    expect(h.registry.timerCount()).toBe(1) // hard cap only
+    await sleep(60)
+    expect(h.registry.settlements()).toHaveLength(0)
+    expect(h.registry.pendingCount()).toBe(1)
+
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    h.send({ id: 30, method: 'ask.response', params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once' } })
+    expect((await h.waitFor(30)).ok).toBe(true)
+    expect(await mustSettle(pending, 'answered while default deadline off')).toBe('allowed-once')
+  })
+
+  test('F1 routing coexists: catalog-routed child ask also times out denied', async () => {
+    const h = makeHarness({ askDeadlineMs: 20 })
+    const { sessionId: parent } = await startTurn(h, 1)
+    h.emitSessionEvent({ id: parent }, { type: 'subagent/catalog', data: { childId: 'child-deadline', childCreatedAt: 1 } })
+    const pending = h.emitHost('approval/request', approvalReq('child-deadline'))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    expect(ask.sessionId).toBe(parent)
+    expect(ask.childSessionId).toBe('child-deadline')
+
+    await sleep(70)
+    expect(h.registry.settlements()[0].outcome).toBe('denied')
+    expect(h.registry.settlements()[0].code).toBe(ASK_ERROR_CODES.DEADLINE_EXCEEDED)
+    expect(await mustSettle(pending, 'timed-out child ask')).toBe('rejected')
+  })
+
+  // oldfox S1: config validation at the single construction point.
+  test('S1: non-number / NaN / negative askDeadlineMs is ignored with ONE warn', async () => {
+    const warns: unknown[][] = []
+    const warn = (...args: unknown[]) => { warns.push(args) }
+    for (const raw of ['20', NaN, -1]) {
+      expect(resolveAskDeadlineMs(raw, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBeNull()
+    }
+    expect(warns).toHaveLength(3) // one warn per ignored config, not one per ask
+
+    // The real apply() path uses the same helper and warns at construction.
+    const h = makeHarness({ askDeadlineMs: -1 })
+    expect(h.warns.filter((line) => line.includes('invalid askDeadlineMs'))).toHaveLength(1)
+    const { sessionId } = await startTurn(h, 1)
+    h.emitHost('approval/request', approvalReq(sessionId))
+    await sleep(0)
+    expect(h.registry.timerCount()).toBe(1) // hard cap only — no per-ask clock
+  })
+
+  test('S1: askDeadlineMs above maxAskWaitMs is clamped to the hard cap with ONE warn', async () => {
+    const warns: unknown[][] = []
+    const warn = (...args: unknown[]) => { warns.push(args) }
+    expect(resolveAskDeadlineMs(DEFAULT_MAX_ASK_WAIT_MS + 1, DEFAULT_MAX_ASK_WAIT_MS, warn)).toBe(DEFAULT_MAX_ASK_WAIT_MS)
+    expect(warns).toHaveLength(1)
+    expect(String(warns[0]![0])).toContain('clamped')
+
+    const h = makeHarness({ askDeadlineMs: DEFAULT_MAX_ASK_WAIT_MS + 1 })
+    expect(h.warns.filter((line) => line.includes('clamped to hard cap'))).toHaveLength(1)
+    const { sessionId } = await startTurn(h, 1)
+    h.emitHost('approval/request', approvalReq(sessionId))
+    await sleep(0)
+    expect(h.registry.timerCount()).toBe(2) // deadline (at the cap) + hard cap still armed
+  })
+})
+
 describe('ADR-0011 Q3/T7 — always grant is reachable through the real answerer', () => {
   test('UI always → ask.response → session summary → no card on the next approval', async () => {
     const h = makeHarness()
@@ -478,5 +666,106 @@ describe('ADR-0011 Q3/T7 — always grant is reachable through the real answerer
 
     // A new card really was pushed for the denied tool (no false short-circuit).
     expect(h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId)).toHaveLength(2)
+  })
+})
+
+describe('C2 (2026-11-22 拍板) — always-grant scope covers the parent and all its subagents', () => {
+  // "父会话管到底": askTarget() resolves a registered child ask onto the
+  // parent channel, so the grant key is ALWAYS the parent session. A parent
+  // grant silently covers every registered child of the same tool; a child
+  // card answered 'always' writes (parent, tool); the fail-closed routing gate
+  // (unknown / foreign child) is NOT widened by any grant.
+  const CHILD = 'grant-child-1'
+  const SIBLING = 'grant-child-2'
+
+  function registerChild(h: Harness, childId: string, parent: string): void {
+    h.emitSessionEvent({ id: parent }, { type: 'subagent/catalog', data: { childId, childCreatedAt: 1 } })
+  }
+
+  /** Establish an always grant on `sessionId` through the REAL answerer path. */
+  async function grantAlways(h: Harness, sessionId: string, toolName: string, id: number): Promise<void> {
+    const pending = h.emitHost('approval/request', approvalReq(sessionId, { toolName }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').filter((f) => f.payload.sessionId === sessionId).at(-1)!.payload
+    expect(ask.escalation).toBe(true)
+    h.send({
+      id, method: 'ask.response',
+      params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once', behavior: 'always', escalation: true },
+    })
+    expect((await h.waitFor(id)).ok).toBe(true)
+    expect(await mustSettle(pending, 'grant setup')).toBe('allowed-once')
+    expect(h.registry.hasGrant(sessionId, toolName)).toBe(true)
+  }
+
+  test('parent always-grant silently covers a registered child same-tool ask (no card)', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent)
+    await grantAlways(h, parent, 'bash', 100)
+
+    const cardCountBefore = h.askFrames('ask.request').length
+    const pendingBefore = h.registry.pendingCount()
+    const childAsk = h.emitHost('approval/request', approvalReq(CHILD, { toolName: 'bash' }))[0]
+    expect(await mustSettle(childAsk, 'child covered by parent grant')).toBe('allowed-once')
+    // Grant-hit path: no new card, no new pending ask, not a fail-closed settle.
+    expect(h.askFrames('ask.request')).toHaveLength(cardCountBefore)
+    expect(h.registry.pendingCount()).toBe(pendingBefore)
+    expect(h.registry.settlements().some((s) => s.code === ASK_ERROR_CODES.CHANNEL_UNAVAILABLE)).toBe(false)
+  })
+
+  test('child ask answered always writes the grant to the parent key (parent + sibling inherit)', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    registerChild(h, CHILD, parent)
+    registerChild(h, SIBLING, parent)
+
+    // The child card is delivered on the parent channel; 'always' on it must
+    // write (parent, 'bash'), not (child, 'bash').
+    const childAsk = h.emitHost('approval/request', approvalReq(CHILD, { toolName: 'bash' }))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').filter((f) => f.payload.childSessionId === CHILD).at(-1)!.payload
+    expect(ask.sessionId).toBe(parent)
+    h.send({
+      id: 101, method: 'ask.response',
+      params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once', behavior: 'always', escalation: true },
+    })
+    expect((await h.waitFor(101)).ok).toBe(true)
+    expect(await mustSettle(childAsk, 'child always → host')).toBe('allowed-once')
+    expect(h.registry.hasGrant(parent, 'bash')).toBe(true)
+    expect(h.registry.hasGrant(CHILD, 'bash')).toBe(false)
+    expect(h.registry.sessionGrants(parent)).toContain('bash')
+
+    // The same tool on the parent now short-circuits: no new card.
+    let cards = h.askFrames('ask.request').length
+    const parentAsk = h.emitHost('approval/request', approvalReq(parent, { toolName: 'bash' }))[0]
+    expect(await mustSettle(parentAsk, 'parent inherits child grant')).toBe('allowed-once')
+    expect(h.askFrames('ask.request')).toHaveLength(cards)
+
+    // A sibling child of the same parent inherits it too.
+    cards = h.askFrames('ask.request').length
+    const siblingAsk = h.emitHost('approval/request', approvalReq(SIBLING, { toolName: 'bash' }))[0]
+    expect(await mustSettle(siblingAsk, 'sibling inherits child grant')).toBe('allowed-once')
+    expect(h.askFrames('ask.request')).toHaveLength(cards)
+  })
+
+  test('grant never widens fail-closed: foreign-parent and unregistered children stay unavailable', async () => {
+    const h = makeHarness()
+    const { sessionId: parent } = await startTurn(h, 1)
+    await grantAlways(h, parent, 'bash', 100)
+    expect(h.registry.hasGrant(parent, 'bash')).toBe(true)
+
+    // A child of a DIFFERENT parent is foreign to this binding even when this
+    // parent has granted the tool — the routing gate is consulted first.
+    getSubagentIndex(h.ctx).noteCatalog('foreign-child', 'other-parent')
+    const foreign = h.emitHost('approval/request', approvalReq('foreign-child', { toolName: 'bash' }))[0]
+    expect(await mustSettle(foreign, 'foreign child despite grant')).toBe('unavailable')
+
+    // An unregistered child stays unknown, grant or no grant.
+    const unknown = h.emitHost('approval/request', approvalReq('never-registered', { toolName: 'bash' }))[0]
+    expect(await mustSettle(unknown, 'unknown child despite grant')).toBe('unavailable')
+
+    expect(h.askFrames('ask.request').filter((f) => f.payload.childSessionId !== undefined)).toHaveLength(0)
+    const failClosed = h.registry.settlements().filter((s) => s.code === ASK_ERROR_CODES.CHANNEL_UNAVAILABLE)
+    expect(failClosed).toHaveLength(2)
   })
 })

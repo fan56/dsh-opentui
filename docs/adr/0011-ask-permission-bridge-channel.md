@@ -133,6 +133,19 @@ HEAD `46ed988` 已把 bridge seam 设为 inproc 默认并 deprecate `--remote`�
 - **Q3 — 'always'/escalation 的作用域与授权边界**（已确认 2026-11-18，按推荐值）：当前会话级摘要（compaction 不清），未授予 escalation 时收到 `behavior:'always'` 回 `ASK_INVALID_RESPONSE`（D7 + §5）。
 - **Q4 — UI 明示义务的范围**（已确认 2026-11-19，按推荐值，用户授权直接用推荐）：是否除审批卡/提问面板外，还要常驻显示"审批通道不可用"状态位？**结论**：不常驻；在 `permissionCatalog()` 探测到无 provider 时显示一次性提示（矩阵 `:88,100`、`packages/shell/src/client/bridge-session-seam.ts` 的 `onSessionEvent` / `ask.no-provider` degrade）。**落地（本提交，基于 `1b103dc`）**：`BridgeSessionSeam.permissionCatalog()` 以「ask 帧可用性 + 本地 answerer + `ask.no-provider` degrade + bridge 连接态」为探测依据——bridge 无能力声明（`bridge.hello`/`ping` 仅回版本三元组）、无 `permissionPresets/catalog` RPC，故返回与 `SeamPermissionCatalog` 同形的**空目录**（不臆造 preset 值），无法确认 provider 时返回 `undefined`；经 `BridgeSessionSeamOptions.onPermissionUnavailable` 由 v2-entry 用 `showNotice` 显示一次性 fail-closed 提示，进程内 once 标志为 seam 私有字段 `#permissionNoticeShown`，触发点为真实 fail-closed ask（非 boot，避免误报）。i18n 键 `notice.permission.unavailable` / `notice.permission.reason.*`（en + zh-CN）。单测 `packages/shell/test/bridge-permission-catalog.test.ts`。
 
+### F1-A2 拍板（2026-11-22）：per-ask deadline 超时 outcome
+
+- **超时 outcome = `denied`**（host 收到 `rejected`），沿用 `ask-registry.ts:337-342` 既有语义，不新造 `unavailable` 分支；`maxAskWaitMs` 1h 硬帽仍落 `unavailable`（D6），两者不混。
+- 理由：挂死根因（子会话无卡片）已在 F1-A1 路由层修掉；`askDeadlineMs` 只兜「卡片已弹但无人应答」，按用户拒绝处理，与 Q1 推荐值一致。
+- 默认 `askDeadlineMs=null`（不装墙钟）：默认行为不变，1h 硬上限仍是唯一兜底；启用须 profile patch config 显式配置，改默认值超出本刀授权。
+
+### F1-A1/C2 拍板（2026-11-22）：父会话管到底（always grant 覆盖子代理）
+
+- **语义（用户拍板）**：子会话 ask 经父通道路由（`askTarget` 落点恒为父 `sessionId`），故 `behavior:'always'` grant 的作用域 = 本会话 + 该父会话下全部注册子代理的同名工具：父已 grant 的工具，其注册子会话的 ask 不弹卡直接放行；子卡上按 always 写入父 grant 键，父与兄弟子会话随后均命中。逻辑不变，仅钉测试并文档化。
+- **一致性**：与业界 subagent 继承会话授权的惯例一致（授权挂在父会话，子代理复用同一授权域），不改 Q3 的会话级摘要实现。
+- **边界不变**：grant 只影响已通过 fail-closed 路由门的注册子会话；foreign-parent / 未注册子会话仍 `unavailable`，授权面不因 grant 放宽。
+- **风险提示**：给子代理长期放行等同于授权其同类写操作（含其后续同类工具调用）；用户按 always 时应知悉该授权覆盖当前及未来全部子代理，范围大于单会话。
+
 ## 9. 风险（Risks）
 
 - **跨会话串帧**：多会话共用一条 bridge 连接，`approval/request` 按 `agentId` claim（`remote-waterfall.ts:128-131`）；bridge 必须按 `deliveredTo === sessionId` gate，否则 A 的审批会落到 B 的 turn。缓解：`onSessionEvent` 的 sessionId gate 模式（`packages/bridge/src/index.ts:739-743`）。
