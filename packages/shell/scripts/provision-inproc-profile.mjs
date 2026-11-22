@@ -590,10 +590,22 @@ const PATCH_TEMPLATE = `# model route (managed by provision-opentui-profile.mjs 
     model: deepseek-v4.1-flash
     reasoningEffort: high
 
+# Delegation depth cap (full-access-inherit R2-3). The host's maxDepth is an
+# ABSOLUTE depth: lead=0, direct child=1, resolveChildDepth rejects when
+# childDepth > maxDepth (dsh-subagent:2963 schema default(1), :3007 read every
+# dispatch, :1497 decision). Pin 1 = only the main Agent may spawn direct
+# children; grandchildren (depth 2) are rejected, closing the R2-3 silent-pass
+# hole. Pinning also survives any host schema-default drift. NEVER use 0 here:
+# a direct child is depth 1 > 0, so every delegation is refused (dispatch dead).
+# maxDepth is volatile() (runtime-changeable); this patch sets its INITIAL
+# default, which is exactly what the host validates into the volatile ref.
+# Only this inproc template carries a subagent config row (dsh-base/web rows
+# have none), so no other supply template needs the pin.
 - id: subagent
   name: "@deepseek-ai/dsh-subagent"
   config:
     maxActiveSubagents: 3
+    maxDepth: 1
 
 # Companion mounts (2026-11-22 unfreeze). The minimal set installed by
 # provision-inproc-profile.mjs step [4/8] is @aiwayds/dsh-subagent-registry,
