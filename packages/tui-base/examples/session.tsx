@@ -326,12 +326,11 @@ function SessionPage() {
 			<TranscriptScrollKeys scroll={() => transcriptScroll} enabled={() => dialog.stack.length === 0} />
 			{/* Pane focus keys (pane-focus.tsx): F6 toggles transcript/composer;
 			    transcript-focused arrows/page/home/end scroll it, Tab/idle Esc
-			    return to the composer. No subagent picker is mounted here. */}
+			    return to the composer. */}
 			<PaneFocusKeys
 				pane={paneFocus.pane}
 				keysEnabled={() => dialog.stack.length === 0}
 				slashOpen={() => slash.controller.open}
-				pickerOpen={() => false}
 				busy={busy}
 				scroll={() => transcriptScroll}
 				toggle={paneFocus.toggle}

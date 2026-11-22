@@ -52,15 +52,14 @@ describe("pane classification (renderer focus is the truth source)", () => {
 })
 
 describe("key-layer gates (overlays never lose their keys)", () => {
-	const base = { pane: "composer" as const, keysEnabled: true, slashOpen: false, pickerOpen: false }
+	const base = { pane: "composer" as const, keysEnabled: true, slashOpen: false }
 
-	test("F6 toggles only in a pane with no dialog/slash menu/subagent picker", () => {
+	test("F6 toggles only in a pane with no dialog/slash menu", () => {
 		expect(paneToggleEnabled(base)).toBe(true)
 		expect(paneToggleEnabled({ ...base, pane: "transcript" })).toBe(true)
 		expect(paneToggleEnabled({ ...base, pane: undefined })).toBe(false)
 		expect(paneToggleEnabled({ ...base, keysEnabled: false })).toBe(false)
 		expect(paneToggleEnabled({ ...base, slashOpen: true })).toBe(false)
-		expect(paneToggleEnabled({ ...base, pickerOpen: true })).toBe(false)
 	})
 
 	test("transcript scroll keys run only while the transcript is focused and no overlay is open", () => {
@@ -183,7 +182,6 @@ describe("wiring source guards", () => {
 		expect(entry).toMatch(/focused: paneFocus\.transcriptFocused/)
 		expect(entry).toMatch(/pane: paneFocus\.pane,/)
 		expect(entry).toMatch(/slashOpen: \(\) => slash\.controller\.open/)
-		expect(entry).toContain("pickerOpen: subagentsPickerOpen")
 		expect(entry).toMatch(/\{ useMouse: true, exitOnCtrlC: false \}/)
 	})
 

@@ -137,7 +137,7 @@ export const Definitions = {
   "queued_prompt.delete": keybind("ctrl+d", "Delete queued prompt"),
   "session.toggle.exploration_grouping": keybind("none", "Toggle related tool call grouping"),
   "session.verbosity.cycle": keybind("none", "Cycle transcript verbosity"),
-  "session.child.first": keybind("down", "Toggle subagent picker"),
+  "session.child.first": keybind("none", "Deprecated: subagent picker was removed"),
   // ctrl+g owns the live subagents panel (tui-pi parity); this is the command
   // dispatch path, so no viewer internals are imported by the keybind layer.
   "session.subagents": keybind("ctrl+g", "Open the subagents activity panel"),

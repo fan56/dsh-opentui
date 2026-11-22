@@ -105,7 +105,7 @@ export const Definitions = {
   session_compact: keybind("<leader>c", "Compact the session"),
   session_queued_prompts: keybind("<leader>q", "View queued prompts"),
   queued_prompt_delete: keybind("ctrl+d", "Delete queued prompt"),
-  session_child_first: keybind("down", "Toggle subagent picker"),
+  session_child_first: keybind("none", "Deprecated: subagent picker was removed"),
   // ctrl+g owns the live subagents panel (tui-pi parity); mirrors config/keybind.ts.
   subagents: keybind("ctrl+g", "Open the subagents activity panel"),
   session_parent: keybind("up", "Go to parent session"),

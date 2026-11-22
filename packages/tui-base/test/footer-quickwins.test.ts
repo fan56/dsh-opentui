@@ -5,7 +5,9 @@
  *   - provider segment's 🌐 lead
  *   - tools / tps / durable-message wiring through sessionFooterSegments
  *   - the 9-segment hint bar: per-segment toggles, busy/idle state wording,
- *     the conditional ↓ subagents gate, the en/zh golden label wording
+ *     the en/zh golden label wording (the retired `subagents` id stays in the
+ *     config vocabulary but its `footer.hint.subagents` key is gone, so it
+ *     never renders)
  *     (T8 fold — the labels are `footer.hint.*` registry keys now), and the
  *     width-fitted folding: whole low-priority segments drop as the terminal
  *     narrows so the core keys (enter / esc / ctrl+c) always stay visible.
@@ -189,13 +191,6 @@ describe("hint bar: 9 segments, en/zh golden wording (tui-pi FooterHints parity)
 		expect(hintsText(true, true, true, off)).toBe("")
 	})
 
-	test("↓ subagents renders only while live AND its segment is on", () => {
-		expect(hintsText(true, true, true)).toContain("↓ subagents")
-		expect(hintsText(true, true, false)).not.toContain("↓ subagents")
-		setFooterHints((hints) => ({ ...hints, subagents: false }))
-		expect(hintsText(true, true, true)).not.toContain("↓ subagents")
-	})
-
 	test("en + zh-CN golden wording matches the folded table verbatim (design §5.6)", () => {
 		// T8: the label language is the boot-fixed registry language, so the
 		// golden check flips it via setLanguages (the hintsLocale signal is
@@ -205,7 +200,6 @@ describe("hint bar: 9 segments, en/zh golden wording (tui-pi FooterHints parity)
 		setLanguages(languages, "zh-CN")
 		expect(hintsText(false)).toBe("⌨ enter 发送 · alt+enter 换行 · ↑↓ 历史 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c 退出")
 		expect(hintsText(true)).toBe("⌨ enter 插话 · esc 停止 · ctrl+g 子代理活动面板 · ctrl+shift+f 搜索 · pgup/pgdn 滚动 · ctrl+c 打断")
-		expect(hintsText(true, true, true)).toContain("↓ 子代理")
 		setLanguages(languages)
 		expect(hintsLocale()).toBe("en")
 		expect(hintsText(false)).toContain("enter send")
@@ -229,9 +223,9 @@ describe("hint bar width upper bounds (en/zh, terminal columns)", () => {
 	// "ctrl+g subagents panel" (22 ascii); one segment never eats more than
 	// ~¼ of the common 80-column viewport's 78 usable columns.
 	const SEGMENT_CAP = 22
-	// All-on full-row ceilings measured at implementation (idle includes the
-	// conditional ↓ subagents segment live; busy likewise). en idle (142) is
-	// the global worst case — the designed maximum row.
+	// All-on full-row ceilings measured at implementation (the retired
+	// ↓ subagents segment no longer renders, so these remain safe upper
+	// bounds). en idle (142) is the designed maximum row.
 	const ROW_CAPS = { en: 142, "zh-CN": 128 }
 	const BUSY_ROW_CAPS = { en: 121, "zh-CN": 112 }
 
@@ -271,7 +265,6 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		history: "↑↓ history",
 		stop: "esc stop",
 		subagentPanel: "ctrl+g subagents panel",
-		subagents: "↓ subagents",
 		search: "ctrl+shift+f search",
 		scroll: "pgup/pgdn scroll",
 		quit: "ctrl+c quit",
@@ -284,7 +277,6 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		history: "↑↓ 历史",
 		stop: "esc 停止",
 		subagentPanel: "ctrl+g 子代理活动面板",
-		subagents: "↓ 子代理",
 		search: "ctrl+shift+f 搜索",
 		scroll: "pgup/pgdn 滚动",
 		quit: "ctrl+c 退出",
@@ -316,7 +308,7 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 		// after the core three so a 40-column bar keeps quit (display-order tie).
 		for (const core of ["send", "stop", "quit"] as const) {
 			expect(HINT_SEGMENT_PRIORITY[core]).toBeLessThan(HINT_SEGMENT_PRIORITY.subagentPanel)
-			for (const optional of ["history", "newline", "subagents", "search", "scroll"] as const) {
+			for (const optional of ["history", "newline", "search", "scroll"] as const) {
 				expect(HINT_SEGMENT_PRIORITY[core]).toBeLessThan(HINT_SEGMENT_PRIORITY[optional])
 			}
 		}
@@ -389,9 +381,9 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 	})
 
 	test("160 columns: no folding — every present segment visible in both states", () => {
-		// No single state renders all 9 at once (stop is busy-only, newline /
-		// history idle-only), so "all 9" means: both states render their full
-		// segment set unfolded, whose union covers the 9 ids.
+		// No single state renders every id at once (stop is busy-only, newline /
+		// history idle-only, the retired subagents id never renders), so the
+		// check is: both states render their full segment set unfolded.
 		for (const busy of [false, true]) {
 			const hints = { ...DEFAULT_FOOTER_HINTS }
 			const full = hintsText(busy, true, true, hints)
@@ -403,14 +395,15 @@ describe("hint bar width folding (whole-segment priority collapse)", () => {
 			}
 		}
 		const union = FOOTER_HINT_IDS.filter((id) => hintLabel(id, false) || hintLabel(id, true))
-		expect(union.length).toBe(9)
+		expect(union.length).toBe(8)
 	})
 
 	test("survivors keep display order; folding never promotes a lower-priority segment", () => {
 		for (const width of [40, 80, 120, 160]) {
 			const row = hintsTextAtWidth(false, true, false, width, { ...DEFAULT_FOOTER_HINTS })
 			// Display order from FOOTER_HINT_IDS: send < newline < history <
-			// subagentPanel < search < scroll < quit (stop/subagents absent here).
+			// subagentPanel < search < scroll < quit (stop absent here; the
+			// retired subagents id never renders).
 			const order = [EN.sendIdle, EN.newline, EN.history, EN.subagentPanel, EN.search, EN.scroll, EN.quit]
 			const indices = order.filter((seg) => row.includes(seg)).map((seg) => row.indexOf(seg))
 			expect(indices).toEqual([...indices].sort((a, b) => a - b))

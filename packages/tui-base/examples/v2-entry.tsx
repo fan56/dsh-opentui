@@ -40,7 +40,6 @@ import { parseLaunchArgs, runAutoResume } from "../src/routes/session/auto-resum
 import { WelcomeHero } from "../src/routes/welcome-hero"
 import { useTerminalSize } from "../src/routes/session/terminal-size"
 import { pickDailyQuote } from "../src/routes/quotes"
-import { SubagentsPicker } from "../src/routes/session/subagents-picker"
 import { registerSubagentSteerFeedback } from "../src/routes/session/subagent-markers"
 import { createSeamRows } from "../src/routes/session/seam-rows"
 import {
@@ -63,7 +62,6 @@ import { t } from "../src/i18n"
 import { SearchOverlay } from "../src/routes/session/search-overlay"
 import { TranscriptScrollKeys } from "../src/routes/session/transcript-scroll"
 import { createPaneFocus, PaneFocusKeys } from "../src/routes/session/pane-focus"
-import { subagentsPickerOpen } from "../src/routes/session/subagents-picker"
 import { TurnCancelKeys } from "../src/routes/session/turn-cancel"
 import { stopEverything } from "../src/routes/session/stop-all"
 import { TurnOverlayController } from "../src/routes/session/turn-overlay-controller"
@@ -1413,16 +1411,6 @@ function V2SessionPageBody(props: {
 				// A8: persistent recovery banner — reason + reconnect /
 				// new-session / quit actions. Zero rows until failed/locked.
 				createComponent(RecoveryBanner, { controller: recovery }),
-				// Subagents picker (batch C10a mount-gap fix): the seam-native
-				// edition of the vendored SubagentsTab (rows off the
-				// subagent-markers store, steer through the module bridge),
-				// toggled by the vendored `session.child.first` keybind (down).
-				// Getter-prop law: the seam rides a getter.
-				createComponent(SubagentsPicker, {
-					get seam() {
-						return seam
-					},
-				}),
 				// Transcript scrollback keys (batch 10f, ./transcript-scroll.tsx):
 				// PgUp/PgDn scroll the transcript while the composer keeps focus;
 				// gated OFF while any dialog (approval/ask//model) is open.
@@ -1434,8 +1422,8 @@ function V2SessionPageBody(props: {
 					// Pane focus keys (./pane-focus.tsx): F6 toggles the two
 					// panes; while the transcript is focused ↑↓/PgUp/PgDn/Home/End
 					// scroll it, Tab and idle Esc return to the composer. The F6
-					// layer yields to dialogs, the slash menu and the subagent
-					// picker, so no overlay ever loses its keys.
+					// layer yields to dialogs and the slash menu, so no overlay
+					// ever loses its keys.
 					createComponent(PaneFocusKeys, {
 						pane: paneFocus.pane,
 						// Both pane layers (F6 and transcript keys) gate on the
@@ -1444,7 +1432,6 @@ function V2SessionPageBody(props: {
 						// above the page must win (ADR-0008 consequences).
 						keysEnabled: pageOwns,
 						slashOpen: () => slash.controller.open,
-						pickerOpen: subagentsPickerOpen,
 						busy,
 						scroll: () => transcriptScroll,
 						toggle: paneFocus.toggle,

@@ -23,8 +23,8 @@
  *
  * Keys (`PaneFocusKeys`, two global layers, priority 1):
  *   F6                     toggle transcript ↔ composer  (gated: no dialog,
- *                          focus in one of the two panes, slash menu closed,
- *                          subagent picker closed — never steals overlay keys)
+ *                          focus in one of the two panes, slash menu closed —
+ *                          never steals overlay keys)
  *   transcript focused:
  *     ↑/↓                  scroll one line
  *     PgUp/PgDn            scroll one viewport
@@ -84,15 +84,14 @@ export function paneForFocused(current: Renderable | null | undefined, nodes: Pa
 }
 
 /** F6 may toggle only while the app owns the keys and focus sits in one of
- * the two panes (never while a dialog, the slash menu or the subagent picker
- * is open — those own their own keys). */
+ * the two panes (never while a dialog or the slash menu is open — those own
+ * their own keys). */
 export function paneToggleEnabled(gate: {
 	pane: Pane | undefined
 	keysEnabled: boolean
 	slashOpen: boolean
-	pickerOpen: boolean
 }): boolean {
-	return gate.keysEnabled && gate.pane !== undefined && !gate.slashOpen && !gate.pickerOpen
+	return gate.keysEnabled && gate.pane !== undefined && !gate.slashOpen
 }
 
 /** Transcript scroll keys: only while the transcript is the focused pane and
@@ -139,7 +138,6 @@ export type PaneFocusKeysProps = {
 	 * `dialog.stack.length === 0`). */
 	keysEnabled: Accessor<boolean>
 	slashOpen: Accessor<boolean>
-	pickerOpen: Accessor<boolean>
 	/** A turn is running (busy Esc stays the stop-turn gesture). */
 	busy: Accessor<boolean>
 	scroll: () => ScrollBoxRenderable | undefined
@@ -181,7 +179,6 @@ export function PaneFocusKeys(props: PaneFocusKeysProps) {
 			pane: props.pane(),
 			keysEnabled: props.keysEnabled(),
 			slashOpen: props.slashOpen(),
-			pickerOpen: props.pickerOpen(),
 		}),
 		commands: [
 			{
