@@ -10,6 +10,8 @@ import {
 	dispatchLine,
 	filterCommands,
 	findPresetRow,
+	isRiskPermissionPreset,
+	permissionCatalogLines,
 	presetLabelFor,
 	presetNextRow,
 	unknownCommandRow,
@@ -20,7 +22,7 @@ import { emptyFilteredCopy } from "../src/routes/session/resume-picker"
 import { RecoveryUiController, type RecoveryTexts } from "../src/routes/session/recovery-ui"
 import { getMotionTier, setMotionTier } from "../src/skin/motion"
 import { footerHints, hintsLocale, setFooterHints, setHintsLocale, DEFAULT_FOOTER_HINTS, HINT_LOCALES } from "../src/routes/session/hints-line"
-import type { SessionSeam, SeamProviderModel, SeamSessionSummary, SeamStatus, SeamSubagentView } from "../src/seams/session"
+import type { SessionSeam, SeamPermissionCatalog, SeamPermissionSwitchResult, SeamProviderModel, SeamSessionSummary, SeamStatus, SeamSubagentView } from "../src/seams/session"
 
 // The command copy resolves through `t()` (T4 facet migration): boot the
 // bundled registry so the en-literal assertions stay hermetic in isolation.
@@ -56,6 +58,21 @@ class RecordingSeam {
 	stopViews: SeamSubagentView[] = []
 	/** /stop: a child id whose interrupt rejects (isolation test). */
 	stopFailingChild: string | undefined
+	/** 026 /permission: catalog returned by face.catalog(). */
+	permissionCatalog: SeamPermissionCatalog | undefined = {
+		options: [
+			{ value: "workspace-write", name: "Workspace write", description: "sandboxed" },
+			{ value: "danger-full-access", name: "Full access", description: "unrestricted" },
+		],
+		defaultOptions: [],
+		defaultPreset: "workspace-write",
+	}
+	/** 026 /permission: catalog read failure (honest degrade). */
+	permissionCatalogFailure: Error | undefined = undefined
+	/** 026 /permission: result returned by face.switch(). */
+	permissionSwitchResult: SeamPermissionSwitchResult = { ok: true, matched: true, text: "preset workspace-write" }
+	/** 026 /permission: presets passed to face.switch(). */
+	permissionSwitchCalls: string[] = []
 
 	readonly seam: SessionSeam = {
 		status: () => ({ connection: "connected", turn: this.stopTurn, sessionAttached: true }),
@@ -67,6 +84,16 @@ class RecordingSeam {
 		searchSessions: async () => [],
 		storedTranscript: async () => [],
 		currentSessionId: () => "s-current",
+		permission: {
+			catalog: async () => {
+				if (this.permissionCatalogFailure) throw this.permissionCatalogFailure
+				return this.permissionCatalog
+			},
+			switch: async (preset) => {
+				this.permissionSwitchCalls.push(preset)
+				return this.permissionSwitchResult
+			},
+		},
 		resumeSession: (id) => {
 			this.calls.push(`resumeSession:${id}`)
 			return "ok"
@@ -348,8 +375,11 @@ describe("filterCommands (palette prefix filter)", () => {
 			"/preset",
 			"/stop",
 			"/account",
+			// 026 — /permission appended last (index-based command tests keep positions).
+			"/permission",
 		])
 		expect(filterCommands(commands, "/cl").map((c) => c.name)).toEqual(["/clear"])
+		expect(filterCommands(commands, "/pe").map((c) => c.name)).toEqual(["/permission"])
 		expect(filterCommands(commands, "/a").map((c) => c.name)).toEqual(["/agents", "/account"])
 		expect(filterCommands(commands, "/pl").map((c) => c.name)).toEqual(["/plugins"])
 		expect(filterCommands(commands, "/l").map((c) => c.name)).toEqual(["/login", "/logout", "/language"])
@@ -392,6 +422,8 @@ describe("core commands", () => {
 			"/stop — stop the main turn and all running subagents",
 			// 025-w1b E — appended last so index-based command tests keep positions.
 			"/account — show account sign-in state (signin/signout)",
+			// 026 — /permission appended last (index-based command tests keep positions).
+			"/permission — show or switch the current session permission preset",
 		])
 	})
 
@@ -2065,17 +2097,127 @@ describe("025-w1b E — /account command (separate from /login)", () => {
 		face.startSignIn = async () => { signin++; return ACCOUNT_STATE }
 		face.signOut = async () => { signout++; return ACCOUNT_STATE }
 		const cmd = coreCommands().find((c) => c.name === "/account")!
-		await cmd.run(ctx, "signin")
-		await cmd.run(ctx, "signout")
-		expect(signin).toBe(1)
-		expect(signout).toBe(1)
-	})
+			await cmd.run(ctx, "signin")
+			await cmd.run(ctx, "signout")
+			expect(signin).toBe(1)
+			expect(signout).toBe(1)
+		})
 
 	test("/account degrades honestly when the face is absent", async () => {
 		const lines: string[] = []
 		const ctx = { seam: {} as any, say: (t: string) => lines.push(t) } as any
 		const cmd = coreCommands().find((c) => c.name === "/account")!
-		await cmd.run(ctx, "")
-		expect(lines[0]).toContain("unavailable")
+			await cmd.run(ctx, "")
+			expect(lines[0]).toContain("unavailable")
+		})
+	})
+
+// ---------------------------------------------------------------------------
+// 026 web-mirror — /permission full mirror (mapping #12–#22)
+// ---------------------------------------------------------------------------
+describe("026 /permission — current session preset mirror", () => {
+	const permCmd = () => coreCommands().find((c) => c.name === "/permission")!
+
+	test("pure helpers: risk classification + catalog lines (answer-bearing)", () => {
+		expect(isRiskPermissionPreset("danger-full-access", "Full access")).toBe(true)
+		expect(isRiskPermissionPreset("auto", "Auto review")).toBe(true)
+		expect(isRiskPermissionPreset("workspace-write", "Workspace write")).toBe(false)
+		const lines = permissionCatalogLines({
+			options: [
+				{ value: "workspace-write", name: "Workspace write", description: "sandboxed" },
+				{ value: "danger-full-access", name: "Full access" },
+			],
+			defaultOptions: [],
+			defaultPreset: "workspace-write",
+		})
+		expect(lines[0]).toBe("current preset workspace-write (available: workspace-write, danger-full-access)")
+		expect(lines).toContain("workspace-write — sandboxed")
+		expect(lines[lines.length - 1]).toBe("default preset: workspace-write")
+	})
+
+	test("bare shows current preset + catalog lines with descriptions (E6 answer-bearing)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		await permCmd().run(ctx, "")
+		expect(ctx.lines[0]).toBe("current preset workspace-write (available: workspace-write, danger-full-access)")
+		expect(ctx.lines.some((l) => l.includes("sandboxed"))).toBe(true)
+		expect(ctx.lines.some((l) => l.includes("default preset"))).toBe(true)
+		expect(seam.permissionSwitchCalls).toHaveLength(0)
+	})
+
+	test("unknown preset -> web-semantic error, no switch (E2 negative)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam)
+		await permCmd().run(ctx, "nope")
+		expect(ctx.lines[0]).toContain("unknown preset")
+		expect(ctx.lines[0]).toContain("nope")
+		expect(seam.permissionSwitchCalls).toHaveLength(0)
+	})
+
+	test("legal non-risk preset -> direct switch (no confirm) + set line", async () => {
+		const seam = new RecordingSeam()
+		// Make the target differ from the default so it is not short-circuited.
+		seam.permissionCatalog = {
+			options: [
+				{ value: "workspace-write", name: "Workspace write" },
+				{ value: "safe-extra", name: "Safe extra" },
+			],
+			defaultOptions: [],
+			defaultPreset: "workspace-write",
+		}
+		const ctx = makeCtx(seam)
+		await permCmd().run(ctx, "safe-extra")
+		expect(ctx.hooks.picks).toHaveLength(0)
+		expect(seam.permissionSwitchCalls).toEqual(["safe-extra"])
+		expect(ctx.lines[0]).toContain("permission preset set to safe-extra")
+	})
+
+	test("full-access preset -> confirm modal; cancel does NOT switch (negative)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "cancel")
+		await permCmd().run(ctx, "danger-full-access")
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(ctx.hooks.picks[0]!.title).toContain("danger-full-access")
+		expect(ctx.hooks.picks[0]!.options.map((o) => o.title).join(" ")).toContain("risk")
+		expect(seam.permissionSwitchCalls).toHaveLength(0)
+		expect(ctx.lines[0]).toContain("unchanged")
+	})
+
+	test("full-access preset -> ack switches (explicit acknowledge)", async () => {
+		const seam = new RecordingSeam()
+		const ctx = makeCtx(seam, "ack")
+		await permCmd().run(ctx, "danger-full-access")
+		expect(ctx.hooks.picks).toHaveLength(1)
+		expect(seam.permissionSwitchCalls).toEqual(["danger-full-access"])
+	})
+
+	test("matched=false -> honest 'no /permission command' notice (negative)", async () => {
+		const seam = new RecordingSeam()
+		seam.permissionSwitchResult = { ok: false, matched: false, text: "" }
+		seam.permissionCatalog = {
+			options: [{ value: "workspace-write", name: "w" }, { value: "other", name: "o" }],
+			defaultOptions: [],
+			defaultPreset: "workspace-write",
+		}
+		const ctx = makeCtx(seam)
+		await permCmd().run(ctx, "other")
+		expect(ctx.lines[0]).toContain("no /permission command")
+	})
+
+	test("degraded face -> unavailable notice", async () => {
+		const seam = new RecordingSeam()
+		Object.defineProperty(seam.seam, "permission", { value: undefined, configurable: true })
+		const ctx = makeCtx(seam)
+		await permCmd().run(ctx, "")
+		expect(ctx.lines[0]).toContain("unavailable")
+	})
+
+	test("catalog failure -> honest catalog-unavailable notice", async () => {
+		const seam = new RecordingSeam()
+		seam.permissionCatalogFailure = new Error("boom")
+		const ctx = makeCtx(seam)
+		await permCmd().run(ctx, "")
+		expect(ctx.lines[0]).toContain("not available on this host")
 	})
 })
+

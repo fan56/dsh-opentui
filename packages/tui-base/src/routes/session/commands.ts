@@ -20,7 +20,7 @@
  *   plain text            → not a command; caller sends/steers as batch 4
  */
 import { t, activeLanguage, installedLanguages, setLanguage, LANGUAGE_CHOICES } from "../../i18n"
-import type { SeamAccountState, SeamEffortOption, SeamLoginRoute, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
+import type { SeamAccountState, SeamEffortOption, SeamLoginRoute, SeamPermissionCatalog, SeamPresetRow, SeamSessionSummary, SessionSeam } from "../../seams/session"
 import type { ComposerFlushResult } from "./composer-state"
 import { stopEverything } from "./stop-all"
 import { hotkeyRows, hotkeysHeader } from "./hotkeys"
@@ -379,6 +379,28 @@ export function presetLabelFor(rows: SeamPresetRow[], currentId: string | undefi
 	if (currentId !== undefined) return rows.find((row) => row.id === currentId)?.name
 	const marked = rows.find((row) => row.isDefault) ?? rows.find((row) => row.id === "standard")
 	return (marked ?? rows[0])?.name
+}
+
+// ------------------------------------------------- /permission helpers (026) --
+// Pure + table-testable. Mirrors the web permission-presets `optionsOf` risk
+// classification (深读 A2-8): full-access / auto presets get a second
+// confirmation with an explicit acknowledge; ordinary presets switch directly.
+export function isRiskPermissionPreset(value: string, name?: string): boolean {
+	return /danger-full-access|full.?access|auto/i.test(`${value} ${name ?? ""}`)
+}
+
+/** Bare `/permission` view lines from a catalog — web handler text
+ *  `current preset X (available: …)` (深读 2.2(1)) + a description line per
+ *  option (optionsOf detail, 深读 2.2(4)). Pure for unit testing. */
+export function permissionCatalogLines(catalog: SeamPermissionCatalog): string[] {
+	const names = catalog.options.map((option) => option.value).join(", ")
+	const lines = [`current preset ${catalog.defaultPreset} (available: ${names})`]
+	for (const option of catalog.options) {
+		const detail = option.description === undefined || option.description === "" ? "" : ` — ${option.description}`
+		lines.push(`${option.value}${detail}`)
+	}
+	lines.push(`default preset: ${catalog.defaultPreset}`)
+	return lines
 }
 
 // ----------------------------------------------------------- /login helpers --
@@ -1820,6 +1842,75 @@ export function coreCommands(): SlashCommand[] {
 					}
 				} catch (error) {
 					ctx.say(t("command.account.failed", { reason: seamFailureReason(error) }))
+				}
+			},
+		},
+		{
+			// 026 web-mirror — /permission full mirror (深读映射 #12–#22). bare
+			// prints the catalog + current default (web `current preset …`);
+			// `<preset>` validates against the catalog (unknown -> web-semantic
+			// error) then submits the host `/permission <preset>` command over
+			// the generic commands/execute wire. full-access/auto presets get a
+			// second confirmation with explicit acknowledge (A2-8 RiskConfirmation).
+			// Appended LAST so index-based command tests keep their positions.
+			name: "/permission",
+			description: t("command.permission.description"),
+			async run(ctx, argText) {
+				const face = ctx.seam.permission
+				if (!face) {
+					ctx.say(t("command.permission.unavailable"))
+					return
+				}
+				let catalog: SeamPermissionCatalog | undefined
+				try {
+					catalog = await face.catalog()
+				} catch {
+					catalog = undefined
+				}
+				if (catalog === undefined) {
+					ctx.say(t("command.permission.catalogUnavailable"))
+					return
+				}
+				const arg = argText.trim()
+				if (arg === "") {
+					for (const line of permissionCatalogLines(catalog)) ctx.say(line)
+					return
+				}
+				const target = catalog.options.find((option) => option.value === arg || option.name === arg)
+				if (target === undefined) {
+					const names = catalog.options.map((option) => option.value).join(", ")
+					ctx.say(t("command.permission.unknown", { name: arg, available: names }))
+					return
+				}
+				if (target.value === catalog.defaultPreset) {
+					ctx.say(t("command.permission.already", { name: target.value }))
+					return
+				}
+				if (isRiskPermissionPreset(target.value, target.name)) {
+					const verdict = await ctx.pickOne(t("command.permission.riskTitle", { name: target.value }), [
+						{ title: t("command.permission.riskAck"), value: "ack" },
+						{ title: t("command.permission.cancel"), value: "cancel" },
+					])
+					if (verdict !== "ack") {
+						ctx.say(t("command.permission.cancelled"))
+						return
+					}
+				}
+				try {
+					const result = await face.switch(target.value)
+					if (!result.matched) {
+						ctx.say(t("command.permission.noCommand"))
+						return
+					}
+					if (!result.ok) {
+						ctx.say(t("command.permission.failed", { reason: result.text || "error" }))
+						return
+					}
+					ctx.say(t("command.permission.set", { name: target.value }))
+					if (result.text !== "") ctx.say(result.text)
+					await ctx.reload()
+				} catch (error) {
+					ctx.say(t("command.permission.failed", { reason: seamFailureReason(error) }))
 				}
 			},
 		},

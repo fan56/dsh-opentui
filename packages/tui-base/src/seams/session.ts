@@ -393,6 +393,32 @@ export interface SeamPermissionCatalog {
 }
 
 /**
+ * 026 — closed result of one `/permission <preset>` command round-trip.
+ * `matched=false` means the host offers no `/permission` command (web
+ * `result.value === undefined`); `ok=false` means the command ran but rejected
+ * the preset. `text` is the capped/control-stripped host message, never a raw
+ * host object (see bridge-permission.ts SECOND whitelist).
+ */
+export interface SeamPermissionSwitchResult {
+	ok: boolean
+	matched: boolean
+	text: string
+}
+
+/**
+ * 026 web-mirror — current-session permission preset mirror (web /permission
+ * parity). `catalog` reads the already-wired `permissionPresets/catalog`;
+ * `switch` sends the host's registered `/permission <preset>` command through
+ * the generic `commands/execute` wire id (agent scope, agentId = session id).
+ * Optional — a host without the generic release degrades /permission to an
+ * honest notice; a host without the command yields `matched=false`.
+ */
+export interface SeamPermissionFace {
+	catalog(): Promise<SeamPermissionCatalog | undefined>
+	switch(preset: string): Promise<SeamPermissionSwitchResult>
+}
+
+/**
  * Tool-approval verdict — the exact strings the session layer's approval
  * waterfall expects (shell parity: `ok ? "allowed-once" : "rejected"`, with
  * host adapters mapping "allowed-once" to the allow branch and everything
@@ -770,6 +796,12 @@ export interface SessionSeam {
 	 * the local zone and shows the host zone read-only.
 	 */
 	settings?: SeamSettingsFace
+	/**
+	 * 026 web-mirror — current-session permission preset mirror (catalog read +
+	 * commands/execute switch). Optional — a host without the generic release
+	 * degrades /permission to an honest notice.
+	 */
+	permission?: SeamPermissionFace
 	resumeSession(id: string): "ok" | "owned"
 	/**
 	 * C13 /resume repair flow, probe half (tui-pi loadSessionPreviews

@@ -273,7 +273,10 @@ describe("S4 / E6 — negative controls", () => {
     // W2-5 round log — OLD W2-4 criterion kept VERBATIM (do not delete):
     //   /NOT_WIRED:.*ledger in_wired=51\/257/
     // W2-5 releases 7 goals ids -> union count 28 + 30 = 58.
-    await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=58\/257/)
+    // 026 round log — OLD W2-5 criterion kept VERBATIM (do not delete):
+    //   /NOT_WIRED:.*ledger in_wired=58\/257/
+    // 026 releases 1 commands id -> union count 28 + 31 = 59.
+    await expect(invoke(ID.unwired as CapMethodId, "unary", {})).rejects.toThrow(/NOT_WIRED:.*ledger in_wired=59\/257/)
   })
 
   test("bad signal param -> BAD_PARAMS (never reaches host stream)", async () => {

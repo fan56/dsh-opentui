@@ -45,6 +45,7 @@ import type {
 	SeamLlmProviderRow,
 	PluginRowView,
 	SeamPermissionCatalog,
+	SeamPermissionSwitchResult,
 	PluginWriteConfirm,
 	SeamInstallCancellation,
 	SeamInstallProgress,
@@ -113,6 +114,9 @@ import {
 	projectGoalRef,
 	projectGoalView,
 } from "./bridge-goals.ts"
+// 026 web-mirror — hand-written SECOND whitelist for commands/execute
+// (jsonSchema:null blind-spot family; see bridge-permission.ts).
+import { projectPermissionSwitch } from "./bridge-permission.ts"
 
 /**
  * 025-w2-3 (R6) — seam-side confirm gate (structural mirror of the tui-base
@@ -1375,6 +1379,19 @@ export class BridgeSessionSeam implements SessionSeam {
 	}
 
 	/**
+	 * 026 web-mirror — current-session permission preset mirror. `catalog`
+	 * reuses the already-wired permissionPresets/catalog read; `switch` sends the
+	 * host's registered `/permission <preset>` command over the generic
+	 * `commands.execute` wire (agent scope; agentId = current session id string,
+	 * resolved to a live agent at the host arm). Service absence / no session
+	 * rejects honestly — never a fabricated success (W5 E1/E4/E5).
+	 */
+	permission: NonNullable<SessionSeam["permission"]> = {
+		catalog: () => this.#readPermissionCatalog(),
+		switch: (preset) => this.#permissionSwitch(preset),
+	}
+
+	/**
 	 * 025-w2-4 — real provider directory (llm/listProviders + llm/listConfigurableProviders)
 	 * over the generic arm. Each face rides the generated wire name and applies
 	 * the hand-written SECOND whitelist projection. Service absence rejects with
@@ -1561,6 +1578,29 @@ export class BridgeSessionSeam implements SessionSeam {
 		} catch {
 			return undefined
 		}
+	}
+
+	/**
+	 * 026 web-mirror — switch the CURRENT session's permission preset via the
+	 * host's registered `/permission <preset>` command (the web UI's real write
+	 * path). Sends `commands.execute {agentId, line, submittedAttachments:[]}`:
+	 * agentId is the bound session id STRING (the generic arm resolves it to a
+	 * live agent at the host boundary — W2-0 scope lookup, W2 预防条款 5). line
+	 * carries the leading `/` that `dsh-commands` parseCommand requires. The
+	 * reply passes through the hand-written SECOND whitelist (E5).
+	 */
+	async #permissionSwitch(preset: string): Promise<SeamPermissionSwitchResult> {
+		const agentId = this.currentSessionId()
+		if (agentId === undefined || agentId === "") {
+			throw new BridgeProtocolError("UNSUPPORTED", "permission.switch: no active session (agentId unavailable)")
+		}
+		const line = `/permission ${preset}`
+		const reply = await this.#transport.request("commands.execute", {
+			agentId,
+			line,
+			submittedAttachments: [],
+		})
+		return projectPermissionSwitch(reply)
 	}
 
 	/**

@@ -3478,3 +3478,82 @@ describe("025-w2-3c install progress/cancel faces (R6 gated, closed states)", ()
 		expect(p.state).toBe("failed")
 	})
 })
+
+// ---------------------------------------------------------------------------
+// 026 web-mirror — permission face (commands/execute wire args, E4/E5)
+// ---------------------------------------------------------------------------
+async function bindPerm(h: ReturnType<typeof makeHarness>, sessionId = "s-perm"): Promise<void> {
+	h.replies.set("session.open", { kind: "value", value: { sessionId } })
+	h.replies.set("session.send", { kind: "value", value: { turnId: "t-perm" } })
+	h.seam.resumeSession(sessionId)
+	const done = h.seam.turn("go", {
+		onThinkingDelta() {}, onContentDelta() {}, onApprove: async () => "allowed-once", onError() {},
+	})
+	await Bun.sleep(0)
+	h.emit({ type: "turn.end", payload: { turnId: "t-perm", text: "" } })
+	await done
+	await Bun.sleep(0)
+}
+
+describe("026 permission face — commands/execute", () => {
+	test("switch sends commands.execute {agentId, line, []} and projects the reply", async () => {
+		const h = makeHarness()
+		await bindPerm(h, "s-perm")
+		expect(h.seam.currentSessionId()).toBe("s-perm")
+		h.replies.set("commands.execute", {
+			kind: "value",
+			value: { commandId: "c-1", result: { kind: "success", text: "preset workspace-write" } },
+		})
+		const out = await h.seam.permission!.switch("workspace-write")
+		expect(out).toEqual({ ok: true, matched: true, text: "preset workspace-write" })
+		const r = h.lastRequest("commands.execute")!
+		expect(r.params).toEqual({
+			agentId: "s-perm",
+			line: "/permission workspace-write",
+			submittedAttachments: [],
+		})
+	})
+
+	test("no bound session -> UNSUPPORTED, zero commands.execute calls", async () => {
+		const h = makeHarness()
+		await expect(h.seam.permission!.switch("x")).rejects.toThrow(/no active session/)
+		expect(h.requests.filter((r) => r.method === "commands.execute")).toHaveLength(0)
+	})
+
+	test("unmatched reply (no result) -> matched=false, no fabricated success", async () => {
+		const h = makeHarness()
+		await bindPerm(h)
+		h.replies.set("commands.execute", { kind: "value", value: {} })
+		expect(await h.seam.permission!.switch("x")).toEqual({ ok: false, matched: false, text: "" })
+	})
+
+	test("SENTINEL hostile reply -> only fixed fields cross (E5)", async () => {
+		const h = makeHarness()
+		await bindPerm(h)
+		h.replies.set("commands.execute", {
+			kind: "value",
+			value: {
+				result: { kind: "success", text: "preset x", apiKey: "O26_SENTINEL_synthetic_no_real_secret" },
+				token: "O26_SENTINEL_synthetic_no_real_secret", secret: "O26_SENTINEL_synthetic_no_real_secret",
+			},
+		})
+		const out = await h.seam.permission!.switch("x")
+		expect(out).toEqual({ ok: true, matched: true, text: "preset x" })
+		expect(JSON.stringify(out)).not.toContain("O26_SENTINEL_synthetic_no_real_secret")
+	})
+
+	test("catalog() reads the wired permissionPresets.catalog", async () => {
+		const h = makeHarness()
+		h.replies.set("permissionPresets.catalog", {
+			kind: "value",
+			value: {
+				options: [{ value: "workspace-write", name: "Workspace write", description: "sandboxed" }],
+				defaultOptions: [],
+				defaultPreset: "workspace-write",
+			},
+		})
+		const cat = await h.seam.permission!.catalog()
+		expect(cat?.defaultPreset).toBe("workspace-write")
+		expect(cat?.options[0]?.description).toBe("sandboxed")
+	})
+})

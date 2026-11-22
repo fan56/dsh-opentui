@@ -212,8 +212,24 @@ const W2_5_GOALS_ADAPTERS = [
   "@deepseek-ai/dsh-goal#goals/resume",
   "@deepseek-ai/dsh-goal#goals/clear",
 ]
+// 026 — commands/execute: the host's registered `/permission <preset>` command
+// runner (PV-A). One id, unary, service=commands/impl=execute/cancel=signal,
+// scope {context:agent, wire:agentId} — the wire carries the session id STRING
+// and the arm resolves it to the live agent (same as goals). result jsonSchema
+// is null (W2-4 blind-spot family): default projection assumption declared in
+// .proof/026-web-mirror/00-preregistered-expected.md §1 E5; the seam applies
+// a hand-written second whitelist. NOT a write-confirm id: the full-access
+// confirmation is a TUI modal (W2-3 confirm MODAL paradigm), not the bridge
+// __confirm double-gate.
+const W2_6_COMMANDS_ADAPTERS = [
+  "@deepseek-ai/dsh-commands#commands/execute",
+]
 // Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 + W2-5 7 = 30).
-const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS, ...W2_5_GOALS_ADAPTERS]
+// 026 round log — OLD W2-5 union kept VERBATIM (do not delete):
+//   // Union of every released id across batches (W2-1 3 + W2-2 7 + W2-3 8 + W2-4 5 + W2-5 7 = 30).
+//   const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS, ...W2_5_GOALS_ADAPTERS]
+// 026 releases 1 commands id -> 31.
+const RELEASED_ADAPTERS = [...W2_1_ADAPTERS, ...W2_2_READ_ADAPTERS, ...W2_3_WRITE_ADAPTERS, ...W2_4_DIRECTORY_ADAPTERS, ...W2_5_GOALS_ADAPTERS, ...W2_6_COMMANDS_ADAPTERS]
 for (const id of RELEASED_ADAPTERS) {
   if (!ids.includes(id)) fail("released adapter id not in CapIR: " + id)
 }
