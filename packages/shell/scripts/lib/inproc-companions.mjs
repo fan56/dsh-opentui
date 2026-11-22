@@ -28,14 +28,15 @@ export const COMPANIONS_ENV = 'DSH_OPENTUI_COMPANIONS'
  * The companion catalog.
  *
  * `short` is the token accepted by DSH_OPENTUI_COMPANIONS. `declaredRange` is
- * the caret range used ONLY as a cross-major guard against a moved `latest`
- * dist-tag — it is never installed. `defaultOn` marks the minimal set.
+ * the caret range used ONLY as a breaking-version guard against a moved
+ * `latest` dist-tag (major, plus minor while still 0.x) — it is never
+ * installed. `defaultOn` marks the minimal set.
  */
 export const COMPANIONS = Object.freeze([
   Object.freeze({
     name: '@aiwayds/dsh-subagent-registry',
     short: 'registry',
-    declaredRange: '^0.20.1',
+    declaredRange: '^0.21.0',
     defaultOn: true,
     reason: 'registers the `use_agent` (by-name custom-agent dispatch) and `ask_agent` follow-up tools; the inproc delegation roster and the APPEND_SYSTEM.md "subagent" vocabulary need a named dispatch entry. Its own cordis.patch.yml mounts it when its bundle is selected.',
   }),
@@ -153,7 +154,8 @@ const install = (spec, reason) => ({ action: 'install', spec, reason })
  *
  * - unresolved dist-tag + already installed => skip (offline: keep the pin)
  * - unresolved dist-tag + nothing installed => install `@latest` (pnpm resolves)
- * - cross-major latest vs declaredRange => skip (never jump a major silently)
+ * - breaking latest vs declaredRange => skip (major change, or minor change
+ *   while 0.x — under 0.x the minor IS the breaking boundary)
  * - installed version === latest => skip (idempotent, no add on every launch)
  * - installed version > latest => skip (never downgrade)
  * - otherwise => install the exact `pkg@<resolved>` spec
@@ -174,6 +176,11 @@ export function decideCompanionInstall({
   }
   if (resolvedCore.major !== declaredCore.major) {
     return skip(`cross_major (${normalized} outside ${declaredRange})`)
+  }
+  // `^0.21.0` excludes 0.22.0: while major is 0 the minor is the breaking
+  // boundary, so a major-only guard would let breaking bumps into the profile.
+  if (resolvedCore.major === 0 && resolvedCore.minor !== declaredCore.minor) {
+    return skip(`cross_minor (${normalized} outside ${declaredRange})`)
   }
   if (currentPin) {
     const cmp = compareCore(normalized, currentPin)

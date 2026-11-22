@@ -40,12 +40,17 @@
 //                    Resolves `latest`, guards major/downgrade, skips when
 //                    already at that version, and is disabled wholesale by
 //                    DSH_OPENTUI_COMPANION_LATEST=off. A failed install is a
-//                    WARN (never a boot blocker); step 5 then verifies that
-//                    whatever IS declared in the manifest is fully mounted.
+//                    WARN (never a boot blocker): stale manifest declarations
+//                    from a half-write are removed and offline starts skip
+//                    companions with a warning. Step 5 then verifies that
+//                    whatever remains declared in the manifest is fully mounted.
 //   [5/8] verify   — confirm the bridge is a real directory carrying the
 //                    shipped files; refuse any @deepseek-ai copy in the profile;
 //                    cross-check companion manifest deps <-> bundle entries <-
 //                    -> installed node_modules (no half-provisioned state).
+//                    Step 4 drops stale declarations an unsuccessful add left
+//                    behind, so this guard never blocks a boot for something
+//                    the provisioning pass itself could not install offline.
 //   [6/8] identity — T5 guard: hash the materialized bridge's index.js and
 //                    compare with the build-time fingerprint shipped in THIS
 //                    installation's dist/bridge/bundle-fingerprint.json, plus
@@ -875,6 +880,38 @@ function installedCompanionVersion(name) {
   }
 }
 
+/**
+ * A failed `dsh plugin add` can leave a dependency + bundle row behind without
+ * ever installing node_modules. Left alone, step [5/8] would turn that
+ * half-write into a permanent boot blocker on later (offline) starts, with no
+ * self-heal path. Drop only the stale declarations — healthy companions and
+ * the user's own dependencies are untouched — so the failure stays a WARN and
+ * provisioning always yields a usable profile.
+ */
+function dropUnmountedCompanions(reason, only = null) {
+  const manifest = readManifest()
+  if (!manifest?.dependencies || typeof manifest.dependencies !== 'object') return 0
+  const bundles = Array.isArray(manifest.dsh?.profile?.bundles) ? manifest.dsh.profile.bundles : null
+  const stale = COMPANIONS.filter((entry) =>
+    (!only || only.includes(entry.name)) &&
+    Object.prototype.hasOwnProperty.call(manifest.dependencies, entry.name) &&
+    installedCompanionVersion(entry.name) === undefined)
+  if (stale.length === 0) return 0
+  for (const entry of stale) {
+    delete manifest.dependencies[entry.name]
+    if (bundles) {
+      const at = bundles.indexOf(entry.name)
+      if (at !== -1) bundles.splice(at, 1)
+    }
+    warn(`companion ${entry.name}: ${reason}; dropping stale declaration (companions are optional)`)
+  }
+  const tmpPath = `${manifestPath}.tmp-${process.pid}-${Date.now()}`
+  writeFileSync(tmpPath, `${JSON.stringify(manifest, null, 2)}\n`)
+  renameSync(tmpPath, manifestPath)
+  say(4, 'companions', `dropped ${stale.length} stale companion declaration(s) — profile stays usable`)
+  return stale.length
+}
+
 /** Only the companion step needs a global dsh; a satisfied run stays offline. */
 function requireDshOnPath() {
   const which = spawnSync('which', ['dsh'], { encoding: 'utf8' })
@@ -898,6 +935,11 @@ function requireDshOnPath() {
  * probe then finds in the profile. With `nodeLinker: hoisted` +
  * `autoInstallPeers: false` in this profile, no @deepseek-ai peer is copied
  * into the profile, so step [5/8]'s no-@deepseek-ai guard still holds.
+ *
+ * Companions are optional: an install failure is a WARN, never a boot blocker.
+ * A half-write (dependency declared, package missing) is cleaned up here —
+ * immediately after a failed add, and on later offline starts — so step [5/8]
+ * never hard-fails on a state this step itself could not resolve.
  */
 function provisionCompanions() {
   const selected = selectCompanions(process.env)
@@ -909,9 +951,20 @@ function provisionCompanions() {
 
   const manifest = readManifest() ?? {}
   const specs = []
+  let unavailable = 0
   for (const entry of selected) {
     const currentPin = installedCompanionVersion(entry.name)
     const resolved = queryDistTagLatest(entry.name, { cwd: profileDir, env: process.env })
+    if (resolved === null && currentPin === undefined &&
+        Object.prototype.hasOwnProperty.call(manifest.dependencies ?? {}, entry.name)) {
+      // A previous add left the dependency behind but never mounted the
+      // package. Offline there is no way to heal it: drop the stale declaration
+      // instead of handing step [5/8] an unrecoverable hard fail.
+      dropUnmountedCompanions('declared but not installed, and offline', [entry.name])
+      note(`companion ${entry.name}: skip (offline-stale)`)
+      unavailable++
+      continue
+    }
     const decision = decideCompanionInstall({
       packageName: entry.name,
       declaredRange: entry.declaredRange,
@@ -927,7 +980,9 @@ function provisionCompanions() {
   }
 
   if (specs.length === 0) {
-    say(4, 'companions', `already satisfied (${selected.length}/${selected.length})`)
+    say(4, 'companions', unavailable > 0
+      ? `skipped ${unavailable} of ${selected.length} (unavailable)`
+      : `already satisfied (${selected.length}/${selected.length})`)
     return
   }
 
@@ -940,11 +995,13 @@ function provisionCompanions() {
   })
   if (run.error) {
     warn(`companion install failed to start: ${run.error.message}`)
+    dropUnmountedCompanions('install failed to start')
     say(4, 'companions', `installed 0 of ${specs.length} (failed to start)`)
     return
   }
   if (run.status !== 0) {
     warn(`dsh plugin add exited ${run.status}; companions are optional — the client still launches`)
+    dropUnmountedCompanions(`dsh plugin add exited ${run.status}`)
     say(4, 'companions', `installed 0 of ${specs.length} (exit ${run.status})`)
     return
   }
@@ -960,6 +1017,7 @@ function provisionCompanions() {
   if (landed.length !== specs.length) {
     const missing = specs.filter((spec) => !landed.includes(spec))
     warn(`companion version readback mismatch: ${missing.join(', ')}`)
+    dropUnmountedCompanions('version readback mismatch')
   }
   say(4, 'companions', `installed ${landed.length} of ${specs.length}`)
 }

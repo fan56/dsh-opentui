@@ -33,6 +33,7 @@ const args = process.argv.slice(2)
 if (process.env.DSH_STUB_LOG) fs.appendFileSync(process.env.DSH_STUB_LOG, args.join(' ') + '\\n')
 if (args[0] === 'plugin' && args[1] === '--profile' && args[2] === 'opentui-inproc' && args[3] === 'add') {
   if (process.env.DSH_STUB_ADD_FAIL === '1') { console.error('ERR_PNPM_META_FETCH_FAIL stub'); process.exit(1) }
+  const halfFail = process.env.DSH_STUB_ADD_HALF_FAIL === '1'
   const home = process.env.DSH_HOME
   const dir = path.join(home, 'profiles', 'opentui-inproc')
   const manifestPath = path.join(dir, 'package.json')
@@ -47,11 +48,13 @@ if (args[0] === 'plugin' && args[1] === '--profile' && args[2] === 'opentui-inpr
     const version = spec.slice(at + 1) === 'latest' ? '0.21.0' : spec.slice(at + 1)
     manifest.dependencies[name] = version
     if (!manifest.dsh.profile.bundles.includes(name)) manifest.dsh.profile.bundles.push(name)
+    if (halfFail) continue
     const pkgDir = path.join(dir, 'node_modules', ...name.split('/'))
     fs.mkdirSync(pkgDir, { recursive: true })
     fs.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name, version }))
   }
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\\n')
+  if (halfFail) { console.error('ERR_PNPM_META_FETCH_FAIL stub (half-write)'); process.exit(1) }
   process.exit(0)
 }
 process.exit(0)
@@ -153,6 +156,38 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     expect(run.exitCode).toBe(0)
     expect(text(run.stderr)).toContain('companions are optional')
     expect(text(run.stdout)).toContain('installed 0 of 1')
+  })
+
+  test('a half-written manifest from a failed add is dropped, not a boot blocker', () => {
+    const fx = fixture()
+    // The stub writes the dependency + bundle row but fails before installing
+    // node_modules — the exact half-write that used to hard-fail step [5/8].
+    const run = provision(fx, { DSH_STUB_ADD_HALF_FAIL: '1' })
+    expect(run.exitCode).toBe(0)
+    expect(text(run.stderr)).toContain('companions are optional')
+    expect(text(run.stderr)).toContain('dropping stale declaration')
+    expect(text(run.stdout)).toContain('profile stays usable')
+    const manifest = JSON.parse(readFileSync(join(fx.home, 'profiles', 'opentui-inproc', 'package.json'), 'utf8'))
+    expect(manifest.dependencies?.[REGISTRY]).toBeUndefined()
+    expect(manifest.dsh.profile.bundles).not.toContain(REGISTRY)
+  })
+
+  test('a later offline start skips a stale declaration with a WARN and stays bootable', () => {
+    const fx = fixture()
+    expect(provision(fx).exitCode).toBe(0)
+    const profile = join(fx.home, 'profiles', 'opentui-inproc')
+    rmSync(join(profile, 'node_modules', ...REGISTRY.split('/')), { recursive: true, force: true })
+    const callsAfterFirst = stubCalls(fx).length
+    const run = provision(fx, { DSH_STUB_NPM_FAIL: '1' })
+    expect(run.exitCode).toBe(0)
+    expect(text(run.stdout)).toContain('skip (offline-stale)')
+    expect(text(run.stderr)).toContain('declared but not installed, and offline')
+    expect(text(run.stderr)).toContain('dropping stale declaration')
+    // No dsh add is attempted while offline; the stale declaration is skipped.
+    expect(stubCalls(fx)).toHaveLength(callsAfterFirst)
+    const manifest = JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8'))
+    expect(manifest.dependencies?.[REGISTRY]).toBeUndefined()
+    expect(manifest.dsh.profile.bundles).not.toContain(REGISTRY)
   })
 
   test('verify catches a declared-but-missing companion (two-state drift)', () => {

@@ -4,7 +4,8 @@
  * Pure: no network, no real profile, no process spawn. The policy module takes
  * its environment and registry answer as arguments; this file pins the
  * minimal-set decision, the kill switch, the opt-in list and the no-downgrade
- * / idempotence / cross-major guards that keep a `latest` install safe.
+ * / idempotence / breaking-version guards (major, plus minor in 0.x) that keep
+ * a `latest` install safe.
  */
 import { describe, expect, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
@@ -32,10 +33,12 @@ describe('inproc companion catalog', () => {
     }
   })
 
-  test('registry carries the use_agent justification and a cross-major guard range', () => {
+  test('registry carries the use_agent justification and a breaking-version guard range', () => {
     const registry = COMPANIONS.find((entry) => entry.name === '@aiwayds/dsh-subagent-registry')
     expect(registry?.short).toBe('registry')
     expect(registry?.reason).toContain('use_agent')
+    // The guard range must admit the shipped latest but stop the next 0.x minor.
+    expect(registry?.declaredRange).toBe('^0.21.0')
   })
 })
 
@@ -67,7 +70,7 @@ describe('companion selection + switch', () => {
 })
 
 describe('decideCompanionInstall', () => {
-  const base = { packageName: '@aiwayds/dsh-subagent-registry', declaredRange: '^0.20.1' }
+  const base = { packageName: '@aiwayds/dsh-subagent-registry', declaredRange: '^0.21.0' }
 
   test('exact latest pin becomes one exact spec; v-prefix normalises', () => {
     expect(decideCompanionInstall({ ...base, resolved: 'v0.21.0' })).toEqual({
@@ -79,13 +82,31 @@ describe('decideCompanionInstall', () => {
   test('same version is idempotent and a newer pin is never downgraded', () => {
     expect(decideCompanionInstall({ ...base, resolved: '0.21.0', currentPin: '0.21.0' }).action).toBe('skip')
     expect(decideCompanionInstall({ ...base, resolved: '0.21.0', currentPin: '0.21.0' }).reason).toBe('idempotent')
-    const downgrade = decideCompanionInstall({ ...base, resolved: '0.20.1', currentPin: '0.21.0' })
+    const downgrade = decideCompanionInstall({ ...base, resolved: '0.21.0', currentPin: '0.21.1' })
     expect(downgrade.action).toBe('skip')
     expect(downgrade.reason).toContain('downgrade')
   })
 
   test('a cross-major latest is skipped, not installed', () => {
     const cross = decideCompanionInstall({ ...base, resolved: '1.0.0' })
+    expect(cross.action).toBe('skip')
+    expect(cross.reason).toContain('cross_major')
+  })
+
+  test('0.x minor bumps are breaking: a newer minor is skipped, same minor is allowed', () => {
+    const cross = decideCompanionInstall({ ...base, resolved: '0.22.0' })
+    expect(cross.action).toBe('skip')
+    expect(cross.reason).toContain('cross_minor')
+    const sameMinor = decideCompanionInstall({ ...base, resolved: '0.21.9' })
+    expect(sameMinor).toEqual({
+      action: 'install', spec: '@aiwayds/dsh-subagent-registry@0.21.9', reason: 'latest',
+    })
+  })
+
+  test('at 1.x the guard stays major-only (minor jumps are allowed)', () => {
+    const pkg = { packageName: 'pkg', declaredRange: '^1.2.0' }
+    expect(decideCompanionInstall({ ...pkg, resolved: '1.9.3' }).action).toBe('install')
+    const cross = decideCompanionInstall({ ...pkg, resolved: '2.0.0' })
     expect(cross.action).toBe('skip')
     expect(cross.reason).toContain('cross_major')
   })

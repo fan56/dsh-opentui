@@ -1429,7 +1429,7 @@ export function Session(props: {
       },
     },
     {
-      title: "Toggle subagent picker",
+      title: "Toggle subagents panel",
       id: "session.child.first",
       group: "Session",
       run: () => {
