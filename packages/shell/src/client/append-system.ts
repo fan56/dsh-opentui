@@ -66,7 +66,10 @@ deleting this file switches the append off (it is not re-seeded).
 ## Vocabulary
 
 - "subagent" means the registered subagents only; never invent or use
-  unregistered subagents.
+  unregistered subagents. There are two by-name entrances: the native
+  \`subagent\` / \`subagent_fork\` tools, and the \`use_agent\` roster of
+  locally-defined agents under \`$DSH_HOME/agents/\` (with \`ask_agent\` for
+  follow-ups). Use the roster entry whose name matches the role you need.
 
 ## Additions
 
@@ -187,6 +190,13 @@ ${APPEND_SYSTEM_MARKER} persona suffix = $DSH_HOME/APPEND_SYSTEM.md, evaluated b
             isolate:
               workflowEngine: true
             config:
+              # The by-name custom-agent entrances (use_agent / ask_agent) are
+              # registered globally by the @aiwayds/dsh-subagent-registry
+              # companion, not by a preset row — declaring them here would
+              # double-mount the plugin. Its delegation-guidance listener also
+              # rewrites the host delegation section to point at the roster, so
+              # do not duplicate that prose here. This group only carries the
+              # native subagent/workflow tools.
               - id: tool-subagent-control
                 name: '@deepseek-ai/dsh-tool-subagent-control'
                 config:
