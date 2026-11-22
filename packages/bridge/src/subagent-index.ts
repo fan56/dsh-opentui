@@ -12,6 +12,13 @@
  * Shape (user-approved plan):
  *   Map<childId, { parentSessionId, startedAt, status, lastSeq? }>
  *
+ * F1-A1: the same catalog-built row is the multi-session ask-routing target —
+ *  `askTarget()` looks up a requesting child session here and, only when its
+ *  `parentSessionId` is the bound session, routes its approval/questions ask
+ *  onto the parent's ask channel. `status` gates out settled children; an
+ *  unknown/foreign child stays fail-closed. This reuses one catalog-driven
+ *  table instead of minting a second one (single source of child identity).
+ *
  * Lifecycle:
  *  - build: `syncFromList` over a full `session.list` snapshot (first use or
  *    bridge reset), filtered to `origin === 'subagent'`.

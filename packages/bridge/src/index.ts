@@ -2748,6 +2748,10 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       // the host-local index with its parent (the bound session) and the host's
       // real wall clock. This covers the gap before `session.list` publishes the
       // row — exactly the window where 0.23.0's client roster was empty.
+      // F1-A1: this same row is the ask-routing target table child key —
+      // askTarget() resolves a subagent approval ask via this catalog fact
+      // (childId === child session id), so a child ask routes to the parent's
+      // channel only after the parent journal has established the child.
       getSubagentIndex(ctx).noteCatalog(
         childId,
         sessionId,
@@ -2907,17 +2911,47 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
   }
 
   // ---- ADR-0011 T4 — host waterfall answerers -------------------------------
-  /** Resolve the single deliverable (session, turn) for an inbound ask. The
-   *  bridge owns one binding and one in-flight turn; an ask is deliverable only
-   *  while that turn is live. `agent.session.id` is the host's routing identity
-   *  (waterfall `claims()`) — a foreign session is NEVER answered here. */
-  function askTarget(agent: unknown): { turn: TurnStreamState; sessionId: string } | undefined {
+  /** F1-A1: resolved ask channel. `sessionId` stays the parent binding session
+   *  for BOTH parent and child asks (that is the `ask.response` addressee and
+   *  the grant / clearSession key). `childSessionId` is set only for a routed
+   *  subagent ask and is projected on the wire for TUI card attribution. */
+  interface AskTarget {
+    turn: TurnStreamState
+    sessionId: string
+    childSessionId?: string
+  }
+
+  /** Resolve the deliverable ask channel for an inbound request.
+   *
+   *  - Parent session (`agent.session.id === binding.sessionId`, or absent):
+   *    unchanged ADR-0011 T4 behaviour — the one live in-flight turn.
+   *  - Child session: look the requesting session up in the catalog-driven
+   *    `SubagentIndex` (childId === child session id, parentSessionId from the
+   *    parent's `subagent/catalog` journal row). Only a registered, still-running
+   *    child of THIS binding routes, and it routes onto the parent's ask channel
+   *    (the only channel the bridge can answer). Unknown / foreign / settled
+   *    children stay fail-closed — the security boundary is NOT widened.
+   *
+   *  `agent.session.id` is the host's routing identity (waterfall `claims()`);
+   *  the index row is created only from a parent-journal catalog fact, never
+   *  from the self-reported agent string, so spoofing is contained. */
+  function askTarget(agent: unknown): AskTarget | undefined {
     const state = activeTurn
     if (state === undefined || state.ended || binding === undefined) return undefined
     if (state.sessionId !== binding.sessionId) return undefined
-    const agentSessionId = (agent as ApprovalAgentLike | undefined)?.session?.id
-    if (agentSessionId !== undefined && idString(agentSessionId) !== binding.sessionId) return undefined
-    return { turn: state, sessionId: binding.sessionId }
+    const rawSessionId = (agent as ApprovalAgentLike | undefined)?.session?.id
+    if (rawSessionId === undefined) return { turn: state, sessionId: binding.sessionId }
+    const agentSessionId = idString(rawSessionId)
+    if (agentSessionId === binding.sessionId) return { turn: state, sessionId: binding.sessionId }
+    const child = getSubagentIndex(ctx).get(agentSessionId)
+    if (child === undefined || child.parentSessionId !== binding.sessionId || child.status === 'settled') {
+      logger.warn(
+        '[dsh-opentui-bridge] ask target rejected child session=%s parent=%s (unknown/foreign/settled) — fail-closed',
+        agentSessionId, binding.sessionId,
+      )
+      return undefined
+    }
+    return { turn: state, sessionId: binding.sessionId, childSessionId: agentSessionId }
   }
 
   /** Deterministic audit placeholder for a fail-closed ask with no deliverable
@@ -2984,6 +3018,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         ...(callId !== undefined ? { callId } : {}),
         ...(reason !== undefined ? { reason } : {}),
         escalation: true,
+        // F1-A1: a routed child ask carries the child identity on the frame;
+        // parentSessionId lets the TUI mount it under the parent (batch 3).
+        ...(target.childSessionId !== undefined
+          ? { childSessionId: target.childSessionId, parentSessionId: target.sessionId }
+          : {}),
       })
     } catch (err) {
       logger.error('[dsh-opentui-bridge] ask.create(approval) failed: %s', err)
@@ -3034,6 +3073,9 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         kind: 'questions',
         questions,
         ...(callId !== undefined ? { callId } : {}),
+        ...(target.childSessionId !== undefined
+          ? { childSessionId: target.childSessionId, parentSessionId: target.sessionId }
+          : {}),
       })
     } catch (err) {
       logger.error('[dsh-opentui-bridge] ask.create(questions) failed: %s', err)
