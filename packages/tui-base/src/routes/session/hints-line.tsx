@@ -5,7 +5,7 @@
  * strip; every key hint (the composer's old idle footer + the powerline's
  * `Ctrl+Shift+F: search` segment) lives here.
  *
- *   idle  `⌨ enter send · alt+enter newline · ↑↓ history · ↓ subagents · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c quit`
+ *   idle  `⌨ enter send · alt+enter newline · ↑↓ history · ctrl+shift+f search · pgup/pgdn scroll · ctrl+c quit`
  *   busy  `⌨ enter steer · esc stop · …` (the running-turn keys lead)
  *
  * HUD merge (2026-11-17): the busy 🐳 comet track moved HERE — this is the
@@ -26,8 +26,10 @@
  * bundled file and degrade to en). Toggle surface: `/hints` flips the bar (zero rows when off),
  * `/hints <segment> [on|off]` one segment, `/hints lang <locale>` the
  * language. Store law: module-level state, getter-prop busy. The busy/idle
- * two-state wording and the conditional `↓ subagents` segment (only while a
- * child runs — the SubagentsPicker toggle gate) are preserved.
+ * two-state wording is preserved. The `subagents` (↓ subagents) hint was
+ * retired with the SubagentsPicker: its `footer.hint.subagents` i18n keys are
+ * gone, so `hintLabel` renders '' and the segment never reaches the bar (the
+ * id stays in the config vocabulary so stored `footerHints` values replay).
  */
 import { createSignal, Show, type JSX } from "solid-js"
 import { onAnimationTick } from "@opentui/solid"
@@ -112,7 +114,7 @@ export const HINT_SEGMENT_PRIORITY: Readonly<Record<HintSegmentId, number>> = Ob
 	subagentPanel: 15, // ctrl+g — core-adjacent: fits 80 cols beside quit, yields to quit at 40
 	history: 20, // ↑↓ history — recall the last input
 	newline: 30, // alt+enter newline — multiline input
-	subagents: 40, // ↓ subagents — contextual: only while a child runs
+	subagents: 40, // retired with the picker; id kept for config replay, never renders
 	search: 60, // ctrl+shift+f — full-text search
 	scroll: 70, // pgup/pgdn — page the transcript (first to go)
 })
@@ -144,7 +146,7 @@ const HINT_LABEL_KEYS: Record<HintSegmentId, HintLabelKeys> = {
 	quit: { idle: "footer.hint.quit", busy: "footer.hint.quit.busy" },
 	scroll: { idle: "footer.hint.scroll", busy: "footer.hint.scroll" },
 	search: { idle: "footer.hint.search", busy: "footer.hint.search" },
-	subagents: { idle: "footer.hint.subagents", busy: "footer.hint.subagents" },
+	subagents: { idle: "footer.hint.subagents", busy: "footer.hint.subagents" }, // key removed → never renders
 }
 
 /** The per-segment on/off selection (module-level store, tui-pi FooterHints). */
@@ -242,10 +244,11 @@ interface HintPart {
 }
 
 /**
- * The present segments in display order (busy/idle leads → conditional
- * `↓ subagents` → common tail). Batch D5b: `↓ subagents` only while a child
- * runs AND its segment is on. Shared by the unclipped and width-fitted rows so
- * wording and order semantics stay identical — folding only removes segments.
+ * The present segments in display order (busy/idle leads → common tail).
+ * The former conditional `↓ subagents` segment is retired: its i18n keys are
+ * gone, so `hintLabel` returns '' and it never reaches the row. Shared by the
+ * unclipped and width-fitted rows so wording and order semantics stay identical
+ * — folding only removes segments.
  */
 function hintParts(busy: boolean, shown: boolean, subagentsLive: boolean, hints: FooterHints): HintPart[] {
 	if (!shown) return []
