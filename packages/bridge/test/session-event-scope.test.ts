@@ -1,9 +1,15 @@
 /**
- * F1 (c) verification — REAL-PACKAGE evidence for the `session/event` firehose.
+ * F1 (c) verification — firehose scope / reentrant-append evidence.
  *
- * Imports the actual `@deepseek-ai/cordis` + `@deepseek-ai/dsh-scope` (the same
- * versions the bridge declares as devDeps) and reproduces the host's exact
- * dispatch shape from `dsh-session/lib/index.js`:
+ * This test imports the REAL `@deepseek-ai/cordis` + `@deepseek-ai/dsh-scope`
+ * packages (the bridge's declared devDeps) and exercises their real dispatch /
+ * scope-filter code. The `dsh-session` publication + reentrancy guard it mirrors
+ * below is a FAITHFUL RE-IMPLEMENTATION of the host lib (`dsh-session/lib/index.js`),
+ * NOT an import of that package — the host binary is installed outside the
+ * workspace and is deliberately not a bridge devDep. Every such mirror is cited
+ * with its exact host line so it can be re-checked against the installed closure.
+ *
+ * Reproduced host shape from `dsh-session/lib/index.js`:
  *   - `commit()` / `appendBatch()` publish via
  *     `collectSessionCallbacks(entry.emitCtx, [entry.carrier, 'session/event', session, event])`
  *     → `ctx.events.emit(carrier, 'session/event', session, event)`;
