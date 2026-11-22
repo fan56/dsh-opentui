@@ -2772,9 +2772,12 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
    *  sync never depends on projection-listener registration order.
    *
    *  Triggers: (a) parent catalog frame; (b) parent `approval/policy` event →
-   *  all known children of the binding; (c) child delegation-pin event (deferred
-   *  by the caller — a synchronous re-append inside that session's own publish
-   *  is rejected by the host as reentrant). */
+   *  all known children of the binding; (c) an unknown child's FIRST live event
+   *  (claimed into the index via noteCatalog, then deferred — a synchronous
+   *  re-append inside that session's own publish is rejected as reentrant);
+   *  (i) bind completion + post-reconcile full re-sync of all known rows (also
+   *  the F2 self-heal hook). Self-heal chain: (c) fail → (a) catalog fallback →
+   *  (b) next parent policy event / Stop-driven full re-sync. */
   function syncChildApprovalPolicy(childId: string, parentSessionId: string, desiredOverride?: unknown): void {
     if (binding === undefined || parentSessionId !== binding.sessionId) return
     const get = ctx.get
@@ -2884,6 +2887,20 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  /** R2-1(i) / R2-2 — mirror the parent's LIVE policy onto EVERY child the index
+   *  currently knows for this binding. Called at bind completion and after each
+   *  `reconcileSubagentIndex` `syncFromList` (Stop action). This is the F2 self-heal
+   *  hook: a sync that was skipped earlier is retried on the next bind or Stop.
+   *  Desired is read live via `effectivePolicy` (no override) so it reflects any
+   *  policy switch that happened while the index was empty. Per-child failures are
+   *  contained inside `syncChildApprovalPolicy` — one bad child never blocks the rest. */
+  function syncKnownChildrenOfBinding(bindingSessionId: string): void {
+    for (const [childId, row] of getSubagentIndex(ctx).rows) {
+      if (row.parentSessionId !== bindingSessionId) continue
+      syncChildApprovalPolicy(childId, bindingSessionId)
+    }
+  }
+
   /** `session/event` listener. TURN event types are gated on the currently open
    *  session id AND the in-flight turn's numeric turn, so other sessions —
    *  including subagent child sessions riding the same firehose — never leak
@@ -2901,37 +2918,48 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     const type = typeof e?.type === 'string' ? e.type : ''
     const data = e?.data !== null && typeof e?.data === 'object' ? (e.data as Record<string, unknown>) : {}
 
-    // ---- F1 policy mirror (amended): parent policy switch and child delegation
-    // pin. The bridge's root `session/event` subscription sees EVERY session's
-    // live events (proved in test/session-event-scope.test.ts); all guards below
-    // are explicit so unrelated sessions can never drive a sync.
-    if (type === 'approval/policy' && binding !== undefined) {
-      if (sessionId === binding.sessionId) {
+    // ---- F1 policy mirror (R2 amended): parent policy switch, unknown-child
+    // first live event, and full re-sync hooks. The bridge's root `session/event`
+    // subscription sees EVERY session's live events (proved in
+    // test/session-event-scope.test.ts); all guards are explicit so unrelated
+    // sessions can never drive a sync.
+    if (binding !== undefined) {
+      if (type === 'approval/policy' && sessionId === binding.sessionId) {
         // (b) Parent policy switch → mirror EVERY known child of this binding.
         // `data.policy` is the newly committed override value, so the sync does
         // not depend on projection-listener registration order. This is the REAL
         // full-access recovery path: the host never replays subagent/catalog.
+        // NOTE: a fresh bridge has an EMPTY index here (resume), so (b) alone is
+        // structurally insufficient — (i) bind/Stop re-sync and (ii) below fill it.
         for (const [childId, row] of getSubagentIndex(ctx).rows) {
           if (row.parentSessionId !== sessionId) continue
           syncChildApprovalPolicy(childId, sessionId, data.policy)
         }
-      } else {
-        // (c) Child-side delegation pin (`approval/policy` source:'delegation'),
-        // appended by the host BEFORE the child's first turn and BEFORE the
-        // parent's catalog fact. Sync here closes the catalog timing window.
-        // Guard on the child's durable header (parentSession + origin) because
-        // the child is not yet in the subagent index at this point. Defer the
-        // append: the host rejects a reentrant append while THIS child's own
-        // publish is in flight (same real-package test as above).
-        const header = (s as { header?: { parentSession?: unknown; origin?: unknown } }).header
-        if (
-          data.source === 'delegation' &&
-          header?.origin === 'subagent' &&
-          header?.parentSession === binding.sessionId
-        ) {
-          const childId = sessionId
-          const parentId = binding.sessionId
-          queueMicrotask(() => syncChildApprovalPolicy(childId, parentId))
+      }
+
+      // (c) R2-1(ii): the FIRST live event from a session that is neither the
+      // binding nor already in the index. This subsumes the old narrow
+      // "delegation pin + source:'delegation'" trigger and closes the resume
+      // window: a resumed child's delegation pin / catalog were SEED events
+      // (never published), so its first live event is the only observable hello.
+      // CRITICAL: claim the child into the INDEX via noteCatalog (NOT a one-shot
+      // seen-set) so trigger (b) can take over on the next parent policy switch —
+      // a seen-set would exclude the resumed child from (b) and recreate F1.
+      // Guard on the child's durable header (origin + parentSession) — at this
+      // point the child is not yet in the index. Defer the append: the host
+      // rejects a reentrant append while THIS session's publish is in flight.
+      // Self-heal chain (R2-2): (c) failure → (a) catalog fallback → (b) next
+      // parent policy event / Stop-driven full re-sync (i).
+      if (sessionId !== binding.sessionId) {
+        const index = getSubagentIndex(ctx)
+        if (!index.has(sessionId)) {
+          const header = (s as { header?: { parentSession?: unknown; origin?: unknown } }).header
+          if (header?.origin === 'subagent' && header?.parentSession === binding.sessionId) {
+            index.noteCatalog(sessionId, binding.sessionId)
+            const childId = sessionId
+            const parentId = binding.sessionId
+            queueMicrotask(() => syncChildApprovalPolicy(childId, parentId))
+          }
         }
       }
     }
@@ -3550,6 +3578,13 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         // A4/D7: rebuild always-grants from the durable journal as well. Set
         // union makes this idempotent against the already-live in-memory grants.
         restoreSessionGrantsFromJournal(binding.sessionId)
+        // R2-1(i): reconnect with a warm index — re-mirror the live parent policy
+        // onto known children (F2 self-heal). Contained; never blocks the reply.
+        try {
+          syncKnownChildrenOfBinding(binding.sessionId)
+        } catch (err) {
+          logger.warn('[dsh-opentui-bridge] resume child approval sync failed session=%s: %s', binding.sessionId, String(err))
+        }
         return
       }
       if (!replace) {
@@ -3647,6 +3682,17 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       if (mode === 'resume') {
         pushResumePendingSnapshot(sessionId)
         restoreSessionGrantsFromJournal(sessionId)
+      }
+      // R2-1(i): after bind completes (fresh open OR resume), mirror the parent's
+      // live policy onto every child the index already knows. On a TUI restart
+      // the index starts empty, so this is a no-op until a Stop reconcile (i/R2-2)
+      // or an unknown-child first live event (ii) populates it; on an in-process
+      // resume with a warm index this self-heals skipped syncs immediately.
+      // Contained: never let a sync failure turn a successful open into an error.
+      try {
+        syncKnownChildrenOfBinding(sessionId)
+      } catch (err) {
+        logger.warn('[dsh-opentui-bridge] bind-time child approval sync failed session=%s: %s', sessionId, String(err))
       }
     } catch (err) {
       logger.error('[dsh-opentui-bridge] session.open failed: %s', err)
@@ -3983,6 +4029,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
       if (raw !== null && typeof raw === 'object' && !Array.isArray(raw) && Array.isArray((raw as { items?: unknown }).items)) {
         const count = getSubagentIndex(ctx).syncFromList((raw as SessionListValueLike).items)
         logger.info('[dsh-opentui-bridge] subagent index reconciled: subagents=%d rows=%d', count, getSubagentIndex(ctx).rows.size)
+        // R2-1(i)/R2-2: a full index refresh is the resume self-heal point —
+        // mirror the parent's LIVE policy onto every row just learned from the
+        // authoritative list. This covers resumed children whose delegation pin
+        // / catalog were seed events (never published) and so missed (a)/(c).
+        if (binding !== undefined) syncKnownChildrenOfBinding(binding.sessionId)
       } else {
         logger.warn('[dsh-opentui-bridge] subagent index reconcile skipped: malformed session.list reply')
       }
