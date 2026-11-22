@@ -5,13 +5,32 @@
  * The engine test pins the fall-through: with the toggle layer's gate off,
  * ↓ reaches the lower (composer) handler.
  */
-import { describe, expect, test } from "bun:test"
+import { beforeAll, describe, expect, test } from "bun:test"
 import { registerDefaultKeys, registerEnabledFields } from "@opentui/keymap/addons"
 import { createTestKeymap } from "@opentui/keymap/testing"
-import { pickerShouldAutoClose, pickerToggleEnabled } from "../src/routes/session/subagents-picker"
+import { bundledLocalesDir, loadLocales, setLanguages } from "@dsh-opentui/i18n"
+import { pickerLineText, pickerShouldAutoClose, pickerToggleEnabled } from "../src/routes/session/subagents-picker"
 import type { SubagentMarkerView } from "../src/routes/session/subagent-markers"
 
+beforeAll(() => {
+	const { languages } = loadLocales({ bundledDir: bundledLocalesDir() })
+	setLanguages(languages)
+})
+
 const view = (status: SubagentMarkerView["status"]): SubagentMarkerView => ({ id: status, label: "looper", status, rounds: 1 })
+
+describe("picker row text (F5)", () => {
+	test("a distinct child name prefixes the label; name===label and absent fall back", () => {
+		const withName: SubagentMarkerView = { id: "s1", name: "child-7", label: "workhorse", status: "running", rounds: 1 }
+		expect(pickerLineText([withName], 0, true)).toContain("child-7: Workhorse")
+		const duplicate = pickerLineText([{ ...withName, name: "workhorse" }], 0, true)
+		expect(duplicate).toContain("Workhorse")
+		expect(duplicate).not.toContain("workhorse:")
+		const bare = pickerLineText([{ ...withName, name: undefined }], 0, true)
+		expect(bare).toContain("Workhorse")
+		expect(bare).not.toContain(":")
+	})
+})
 
 describe("subagents bar gates (D5b)", () => {
 	test("no children: ↓ does not open; bar closes", () => {

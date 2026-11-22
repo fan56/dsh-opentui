@@ -52,6 +52,7 @@ import { useThemeOptional } from "../../context/theme"
 import { Locale } from "../../util/locale"
 import { clipToWidth } from "./tool-summarize"
 import { subagentHardStopGlyph, subagentMarkerSuffix } from "./subagent-markers"
+import { subagentNamePrefix } from "./subagent-name"
 import type { SeamSubagentView, SessionSeam } from "../../seams/session"
 
 /** Rows of the list layer visible without scrolling (the history law). */
@@ -131,7 +132,8 @@ export function viewerRowText(
 						? "⊘"
 						: "—"
 	const stop = subagentHardStopGlyph(view)
-	const label = `${stop ? `${stop} ` : ""}${Locale.titlecase(view.label)}`
+	const namePrefix = subagentNamePrefix(view.name, view.label)
+	const label = `${stop ? `${stop} ` : ""}${namePrefix}${Locale.titlecase(view.label)}`
 	const suffix = subagentMarkerSuffix(view)
 	const cap = roundCap !== undefined && roundCap > 0 ? `/${roundCap}` : ""
 	const elapsed = elapsedText !== undefined && elapsedText !== "" ? ` · ${elapsedText}` : ""
