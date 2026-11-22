@@ -173,14 +173,17 @@ describe('approval gate: listener policy bypass (session effective policy)', () 
   } = {}) {
     const listeners = new Map<string, Listener>()
     const infoLogs: string[] = []
+    const debugLogs: string[] = []
+    const format = (fmt: unknown, params: unknown[]) => {
+      let text = String(fmt)
+      for (const param of params) text = text.replace('%s', String(param))
+      return text
+    }
     const ctx: any = {
       logger: {
-        info(format: unknown, ...params: unknown[]) {
-          let text = String(format)
-          for (const param of params) text = text.replace('%s', String(param))
-          infoLogs.push(text)
-        },
+        info(fmt: unknown, ...params: unknown[]) { infoLogs.push(format(fmt, params)) },
         warn() {},
+        debug(fmt: unknown, ...params: unknown[]) { debugLogs.push(format(fmt, params)) },
       },
       on(name: string, listener: Listener) {
         listeners.set(name, listener)
@@ -197,7 +200,7 @@ describe('approval gate: listener policy bypass (session effective policy)', () 
     apply(ctx, { enabled: true, reason: 'r', tools: { bash: 'ask', write: 'ask' } })
     const listener = listeners.get('tools/pre-execute')
     if (listener === undefined) throw new Error('gate did not register tools/pre-execute')
-    return { listener, infoLogs }
+    return { listener, infoLogs, debugLogs }
   }
 
   const execWithSession = (name: string, sessionId = 'sess-1'): GateExecLike => ({
@@ -214,16 +217,17 @@ describe('approval gate: listener policy bypass (session effective policy)', () 
     return { decision, nextCalls }
   }
 
-  test('effectivePolicy=never → next() passes the write with no ask, info logged', async () => {
-    const { listener, infoLogs } = makeGateListener({
+  test('effectivePolicy=never → next() passes the write with no ask, debug logged (not info)', async () => {
+    const { listener, infoLogs, debugLogs } = makeGateListener({
       getApproval: () => ({ effectivePolicy: () => 'never' }),
     })
     const { decision, nextCalls } = await run(listener, execWithSession('bash'))
     expect(decision).toEqual({ kind: 'allow' })
     expect(nextCalls).toBe(1)
-    expect(infoLogs.some((line) => line.includes(
+    expect(debugLogs.some((line) => line.includes(
       'policy bypass: bash passes without ask (session sess-1 effective policy never)',
     ))).toBe(true)
+    expect(infoLogs.some((line) => line.includes('policy bypass'))).toBe(false)
   })
 
   test('effectivePolicy=ask → still emits ask (no bypass)', async () => {
@@ -264,6 +268,13 @@ describe('approval gate: listener policy bypass (session effective policy)', () 
 
   test('ctx.get absent → still emits ask', async () => {
     const { listener } = makeGateListener({ noGet: true })
+    const { decision, nextCalls } = await run(listener, execWithSession('bash'))
+    expect((decision as { kind: string }).kind).toBe('ask')
+    expect(nextCalls).toBe(0)
+  })
+
+  test('ctx.get throwing → lookup contained, still emits ask', async () => {
+    const { listener } = makeGateListener({ getThrows: true })
     const { decision, nextCalls } = await run(listener, execWithSession('bash'))
     expect((decision as { kind: string }).kind).toBe('ask')
     expect(nextCalls).toBe(0)

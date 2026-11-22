@@ -181,6 +181,7 @@ export interface GateContext {
   logger?: {
     info(format: unknown, ...params: unknown[]): void
     warn(format: unknown, ...params: unknown[]): void
+    debug?(format: unknown, ...params: unknown[]): void
   }
   on?(name: string, listener: (...args: unknown[]) => unknown): () => void
   effect(execute: () => () => void | Promise<void>, label?: string): unknown
@@ -234,7 +235,8 @@ export function apply(ctx: GateContext, config: unknown): unknown {
     }
     const onBypass = (exec: GateExecLike): void => {
       const toolName = typeof exec.name === 'string' && exec.name !== '' ? exec.name : '(unknown)'
-      ctx.logger?.info(
+      // Per-call debug only: under full access EVERY gated write would log here.
+      ctx.logger?.debug?.(
         '[approval-gate] policy bypass: %s passes without ask (session %s effective policy never)',
         toolName,
         sessionIdOf(exec.agent?.session),
