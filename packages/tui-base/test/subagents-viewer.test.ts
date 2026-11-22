@@ -95,6 +95,17 @@ describe("viewer row text", () => {
 		expect(text).toContain("glm-5.3")
 	})
 
+	test("F5: a distinct child name prefixes the label; name===label and absent fall back", () => {
+		const named = viewerRowText(view({ id: "s1", name: "child-7", label: "workhorse", rounds: 1 }), undefined, undefined)
+		expect(named).toContain("child-7: Workhorse")
+		const duplicate = viewerRowText(view({ id: "s1", name: "workhorse", label: "workhorse", rounds: 1 }), undefined, undefined)
+		expect(duplicate).toContain("Workhorse")
+		expect(duplicate).not.toContain("workhorse:")
+		const bare = viewerRowText(view({ id: "s1", label: "workhorse", rounds: 1 }), undefined, undefined)
+		expect(bare).toContain("Workhorse")
+		expect(bare).not.toContain(":")
+	})
+
 	test("the F6 marker suffix rides the row (⚡ injected / ⏻ hard-stopped)", () => {
 		const text = viewerRowText(view({ id: "s1", injectedRound: 4, hardStopRound: 6 }), 0, undefined)
 		expect(text).toContain("⏻ hard-stopped @6")

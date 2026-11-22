@@ -744,6 +744,7 @@ function bridgeSettleChild(
 	return {
 		id: existing.id,
 		label: existing.label,
+		...(existing.name !== undefined ? { name: existing.name } : {}),
 		...(existing.model !== undefined ? { model: existing.model } : {}),
 		status: bridgeSettledStatus(outcome),
 		rounds: existing.rounds,
@@ -779,6 +780,10 @@ function bridgeFoldAgentRecord(
 	now: number,
 	live: boolean,
 ): boolean {
+	// F5: both families carry the host's optional child reservation `name`
+	// (raw catalog rows directly; agent.spawn frames forwarded by the bridge).
+	// Empty/missing stays absent so the renderer can fall back to label alone.
+	const name = typeof data.name === "string" && data.name !== "" ? data.name : undefined
 	// P1-2 (catalog-family terminal): the host journals an async child's settle
 	// as a `user/message` notice, NOT an agent-end. Real evidence — ad45fecb
 	// seq37 source = {kind:"subagent-settled", stopReason:"completed",
@@ -818,9 +823,11 @@ function bridgeFoldAgentRecord(
 		// family's no-revive guard below — revive permission is PER ROW FAMILY.
 		if (existing !== undefined && existing.status !== "running") {
 			runSeq.set(bridgeAgentRunKey(`${BRIDGE_CATALOG_RUN_PREFIX}${childId}`, 0), childId)
+			const revivedName = name ?? existing.name
 			children.set(childId, {
 				id: existing.id,
 				label: label || existing.label,
+				...(revivedName !== undefined ? { name: revivedName } : {}),
 				status: "running",
 				rounds: 0,
 				startedAt: childCreatedAt ?? now,
@@ -831,6 +838,7 @@ function bridgeFoldAgentRecord(
 		}
 		return bridgeFoldAgentRecord(children, runSeq, liveStarts, BRIDGE_AGENT_START, {
 			childId, label, runId: `${BRIDGE_CATALOG_RUN_PREFIX}${childId}`, seq: 0,
+			...(name !== undefined ? { name } : {}),
 			...(childCreatedAt !== undefined ? { childCreatedAt } : {}),
 			viaCatalog: true,
 		}, now, live)
@@ -858,22 +866,28 @@ function bridgeFoldAgentRecord(
 			// P3-5: a later spawn may refine the label (remote #registerChild parity).
 			const newLabel = typeof data.label === "string" ? data.label : ""
 			const labelChanged = newLabel !== "" && newLabel !== existing.label
+			// F5: a later spawn may also fill/refine the child reservation name.
+			const nameChanged = name !== undefined && name !== existing.name
 			// A live spawn arriving after a replay approximation upgrades the start
 			// clock to a real wall clock; a replay sweep never downgrades it.
 			// P3-1: only a RUNNING row may take that upgrade — a spawn arriving after
 			// settle must not revive the row or overwrite its frozen start clock.
 			const upgradeStart = live && existing.status === "running" && !liveStarts.has(childId)
-			if (!labelChanged && !upgradeStart) return false
+			if (!labelChanged && !nameChanged && !upgradeStart) return false
 			children.set(childId, {
 				...existing,
 				...(labelChanged ? { label: newLabel } : {}),
+				...(nameChanged ? { name } : {}),
 				...(upgradeStart ? { startedAt: childCreatedAt ?? now } : {}),
 			})
 			if (upgradeStart) liveStarts.add(childId)
 			return true
 		}
 		const label = typeof data.label === "string" && data.label ? data.label : `subagent ${childId.slice(0, 8)}`
-		children.set(childId, { id: childId, label, status: "running", rounds: 0, startedAt: childCreatedAt ?? now })
+		children.set(childId, {
+			id: childId, label, status: "running", rounds: 0, startedAt: childCreatedAt ?? now,
+			...(name !== undefined ? { name } : {}),
+		})
 		if (live) liveStarts.add(childId)
 		return true
 	}

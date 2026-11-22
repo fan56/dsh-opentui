@@ -17,6 +17,7 @@ import type { Todo } from "../../util/todo"
 import { graphemes, takeWidth } from "../../util/locale"
 import { stringWidth } from "../../util/string-width"
 import type { SeamRow } from "./seam-rows"
+import { subagentNamePrefix } from "./subagent-name"
 import {
 	activityScene,
 	skinStopAt,
@@ -393,12 +394,16 @@ function agentLine(agent: MergedAgent, position: number, count: number, parentIn
 	const indent = parentIndex === undefined ? "" : " ".repeat(stringWidth(`${TODO_STATUS_GLYPHS.in_progress} ${parentIndex} `))
 	const elapsed = secsFrom(agent.startedAt, agent.elapsedSec, now)
 	const tail = widthTail(agent.lastLine ?? "", 32)
+	const namePrefix = subagentNamePrefix(agent.name, agent.label)
 	const content = `${agent.label} · ${elapsed} · round ${agent.rounds} · ${tail}`
 	return {
 		kind: "agent",
 		index: parentIndex,
 		segments: [
 			{ text: `${indent}${branch}`, tone: "muted" },
+			// F5: the child reservation name is a secondary identifier — muted,
+			// never painted with the row's `agent` accent.
+			...(namePrefix !== "" ? [{ text: namePrefix, tone: "muted" as const }] : []),
 			// Cool blue accent separates a running subagent from the amber
 			// `tone:"running"` body copy and from the green todo tree rows.
 			{ text: content, tone: "running", accent: "agent" },

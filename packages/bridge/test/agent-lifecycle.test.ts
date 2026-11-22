@@ -261,9 +261,24 @@ describe("subagent lifecycle frames (inproc visibility)", () => {
 			sessionId,
 			childId: "child-catalog",
 			label: "List and verify primes",
+			// F5: the host v3 child reservation name rides through as its own
+			// field (not folded into label) so the seam can render it.
+			name: "primes",
 			runId: "catalog:child-catalog",
 			seq: 0,
 		})
+	})
+
+	test("subagent/catalog without a host name forwards no name field", async () => {
+		const h = makeHarness()
+		const { sessionId } = await startTurn(h, 1)
+		h.emitSessionEvent(
+			{ id: sessionId },
+			{ type: "subagent/catalog", data: { version: 3, childId: "c-noname", label: "task" } },
+		)
+		const spawns = h.eventFrames("agent.spawn")
+		expect(spawns).toHaveLength(1)
+		expect(spawns[0].payload).not.toHaveProperty("name")
 	})
 
 	test("subagent/catalog from a different session is dropped", async () => {

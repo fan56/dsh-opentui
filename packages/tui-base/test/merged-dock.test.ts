@@ -304,6 +304,29 @@ describe("mergedDockLines — active-only bodies, agents, 10-line cap (D6/D7/D8)
 	})
 })
 
+describe("mergedDockLines — agent name (F5)", () => {
+	const agentLinesFor = (a: MergedAgent) =>
+		mergedDockLines({ tools: [], todos: [], agents: [a] }, { innerWidth: 80, now: 4_000 })
+			.filter((line) => line.kind === "agent")
+
+	test("a distinct child name renders as a muted prefix before the label", () => {
+		const line = agentLinesFor(agent("a", { name: "child-7", label: "workhorse" }))[0]!
+		expect(textOf(line)).toContain("child-7: workhorse")
+		const nameSegment = line.segments.find((segment) => segment.text === "child-7: ")
+		expect(nameSegment?.tone).toBe("muted")
+		expect(nameSegment?.accent).toBeUndefined()
+	})
+
+	test("name===label or absent falls back to label alone (no prefix segment)", () => {
+		for (const a of [agent("a", { name: "workhorse", label: "workhorse" }), agent("a", { label: "workhorse" })]) {
+			const line = agentLinesFor(a)[0]!
+			expect(textOf(line)).toContain("workhorse")
+			expect(textOf(line)).not.toContain(":")
+			expect(line.segments.some((segment) => segment.text.includes(": "))).toBe(false)
+		}
+	})
+})
+
 describe("mergedDockLines — think row above tool (D1/D5)", () => {
 	const now = 4_000 // 3.0s elapsed for entries started at 1000
 
