@@ -286,6 +286,13 @@ export interface BridgeAskRequestPayload {
 	deadlineAt?: number
 	detachGraceMs?: number
 	escalation?: boolean
+	/** F1-A3: present only on a subagent ask — the requesting child session id.
+	 *  Lets the TUI tell a child card apart from a parent card. */
+	childSessionId?: string
+	/** F1-A3: present only on a subagent ask — the parent session whose ask
+	 *  channel carries it (equals `sessionId`). Lets the TUI mount the child
+	 *  card under the parent trajectory. A parent ask carries neither field. */
+	parentSessionId?: string
 }
 
 /** Derive the turn id from the ADR-0011 association key `${turnId}:ask-${seq}`. */
@@ -311,7 +318,9 @@ function parseAskRequest(value: unknown): BridgeAskRequestPayload | undefined {
 		return undefined
 	}
 	const out: BridgeAskRequestPayload = { eventId, sessionId, kind }
-	for (const key of ["toolName", "callId", "reason"] as const) {
+	// F1-A3: the two child-ask identity fields ride the same wire payload. They
+	// are optional — a parent ask omits both, so parsing stays backward-safe.
+	for (const key of ["toolName", "callId", "reason", "childSessionId", "parentSessionId"] as const) {
 		const v = optionalStringField(row, key)
 		if (v !== undefined) out[key] = v
 	}
@@ -356,11 +365,18 @@ function parseAskRequest(value: unknown): BridgeAskRequestPayload | undefined {
 type BridgeApproveVerdict = SeamApprovalVerdict | "always" | "session"
 
 /** Args passed to `onApprove(name, args)` — the ask.request wire carries no
- *  tool arguments, so surface the identifying fields the host did send. */
+ *  tool arguments, so surface the identifying fields the host did send.
+ *
+ *  F1-A3: a child ask also carries `eventId`, which is the globally-unique
+ *  `${parentTurnId}:ask-N` key. When a parent card and a child card coexist in
+ *  the same turn, the controller uses it to correlate each card to its own
+ *  snapshot row (no cross-over / no double card). A parent ask keeps the
+ *  legacy `{callId, reason}` shape — it is the single-card path. */
 function approvalArgs(request: BridgeAskRequestPayload): Record<string, unknown> {
 	return {
 		...(request.callId !== undefined ? { callId: request.callId } : {}),
 		...(request.reason !== undefined ? { reason: request.reason } : {}),
+		...(request.parentSessionId !== undefined ? { eventId: request.eventId } : {}),
 	}
 }
 
@@ -4297,6 +4313,22 @@ export class BridgeSessionSeam implements SessionSeam {
 		for (const eventId of [...this.#pendingAsks.keys()]) this.#settlePendingAsk(eventId)
 	}
 
+	/**
+	 * F1-A3: anchor a received ask on its parent trajectory. A subagent ask's
+	 * wire `sessionId` is ALREADY the parent session (that is the binding /
+	 * answer / grant key — it must stay the parent), and `parentSessionId` is
+	 * the explicit trajectory anchor. Normalizing to `parentSessionId` keeps the
+	 * card on the parent queue even if a future wire ever writes a child id in
+	 * `sessionId`; the card is told apart from the parent's only by its unique
+	 * `${parentTurnId}:ask-N` eventId. A parent ask (no parentSessionId) is
+	 * returned untouched — the ordinary path is unchanged.
+	 */
+	#mountAskOnParentTrajectory(request: BridgeAskRequestPayload): BridgeAskRequestPayload {
+		const parent = request.parentSessionId
+		if (parent === undefined || parent === request.sessionId) return request
+		return { ...request, sessionId: parent }
+	}
+
 	/** Handle the four host→client ask events. Returns true when consumed. */
 	#onAskEvent(frame: BridgeEventFrame): boolean {
 		const payload = asRecord(frame.payload)
@@ -4307,7 +4339,11 @@ export class BridgeSessionSeam implements SessionSeam {
 		switch (frame.type) {
 			case "ask.request": {
 				const request = parseAskRequest(frame.payload)
-				if (request !== undefined) this.#enqueueAsk(request)
+				if (request !== undefined) {
+					// Child asks hang off the parent trajectory (by parentSessionId,
+					// distinguished by eventId); parent asks take the same path.
+					this.#enqueueAsk(this.#mountAskOnParentTrajectory(request))
+				}
 				return true
 			}
 			case "ask.cancel": {

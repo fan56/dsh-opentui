@@ -360,3 +360,74 @@ describe("RM-2b V3: bridge.dead invalidates every pending card", () => {
 		expect(await pending).toBe("rejected")
 	})
 })
+
+// ---------------------------------------------------------------------------
+// F1-A3 — parent + child approval cards in one turn, keyed by eventId
+// ---------------------------------------------------------------------------
+describe("F1-A3 — parent/child approval cards coexist (eventId correlation)", () => {
+	test("eventId in args correlates each card to its own snapshot row (no borrowed escalation)", async () => {
+		const seam = bridgeLike([
+			ask({ eventId: "t1:ask-parent", callId: "c-p", toolName: "bash", escalation: false }),
+			ask({
+				eventId: "t1:ask-child",
+				callId: "c-c",
+				toolName: "bash",
+				escalation: true,
+				parentSessionId: "s1",
+				childSessionId: "child-1",
+			}),
+		])
+		const controller = new TurnOverlayController()
+		registerTurnOverlays(seam, controller)
+
+		// Parent card: legacy args (no eventId) — matches by callId.
+		const parent = controller.requestApproval("bash", { callId: "c-p" })
+		expect(controller.pendingApproval?.eventId).toBe("t1:ask-parent")
+		expect(controller.pendingApproval?.escalation).toBe(false)
+
+		// Child card: the seam supplies its unique eventId; the controller must
+		// key on it rather than borrow the parent card's row.
+		const child = controller.requestApproval("bash", { callId: "c-c", eventId: "t1:ask-child" })
+		expect(controller.pendingApprovalCount).toBe(2) // two cards, no double card
+		controller.confirmApproval()
+		expect(await parent).toBe("allowed-once")
+		expect(controller.pendingApproval?.eventId).toBe("t1:ask-child")
+		expect(controller.pendingApproval?.escalation).toBe(true)
+		controller.confirmApproval()
+		expect(await child).toBe("allowed-once")
+		expect(controller.pendingApprovalCount).toBe(0)
+	})
+
+	test("a mismatching eventId is a strong no-match, never a fuzzy fallback", async () => {
+		const seam = bridgeLike([ask({ eventId: "t1:ask-parent", callId: "c-p", escalation: true })])
+		const controller = new TurnOverlayController()
+		registerTurnOverlays(seam, controller)
+		const pending = controller.requestApproval("bash", { callId: "c-p", eventId: "t1:ask-gone" })
+		expect(controller.pendingApproval?.eventId).toBeUndefined()
+		expect(controller.pendingApproval?.escalation).toBe(false)
+		controller.rejectApproval()
+		expect(await pending).toBe("rejected")
+	})
+
+	test("sync closes only the cancelled child card; the parent card stays (no double card)", async () => {
+		const seam = bridgeLike([
+			ask({ eventId: "t1:ask-parent", callId: "c-p" }),
+			ask({ eventId: "t1:ask-child", callId: "c-c", parentSessionId: "s1", childSessionId: "child-1" }),
+		])
+		const controller = new TurnOverlayController()
+		registerTurnOverlays(seam, controller)
+		const parent = controller.requestApproval("bash", { callId: "c-p" })
+		const child = controller.requestApproval("bash", { callId: "c-c", eventId: "t1:ask-child" })
+		expect(controller.pendingApprovalCount).toBe(2)
+
+		// Host settles/cancels ONLY the child ask; the parent card must survive.
+		seam.setAsks([ask({ eventId: "t1:ask-parent", callId: "c-p" })])
+		controller.syncPendingAsks()
+		expect(await child).toBe("rejected")
+		expect(controller.pendingApprovalCount).toBe(1)
+		expect(controller.pendingApproval?.eventId).toBe("t1:ask-parent")
+		controller.confirmApproval()
+		expect(await parent).toBe("allowed-once")
+		expect(controller.pendingApprovalCount).toBe(0)
+	})
+})

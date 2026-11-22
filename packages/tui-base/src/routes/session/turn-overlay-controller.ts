@@ -75,6 +75,11 @@ export type BridgeAskSnapshot = {
 	callId?: string
 	reason?: string
 	escalation?: boolean
+	/** F1-A3: present only on a subagent ask — requesting child / parent session.
+	 *  Carried from the seam's read-only snapshot for source identification; the
+	 *  card is still keyed and answered by `eventId`. */
+	childSessionId?: string
+	parentSessionId?: string
 	/** Question rows of a `kind:"questions"` ask. Used to correlate the
 	 *  provider's `answer(questions)` call to its seam entry so a host cancel /
 	 *  turn end can close the panel (ADR-0011 T5b). */
@@ -355,6 +360,15 @@ export class TurnOverlayController {
 	#matchApproval(name: string, args: Record<string, unknown>): BridgeAskSnapshot | undefined {
 		const asks = (this.#pendingAsks?.() ?? []).filter((ask) => ask.kind === "approval")
 		if (asks.length === 0) return undefined
+		// F1-A3: eventId is the globally-unique `${parentTurnId}:ask-N` key. The
+		// seam supplies it for a child ask so a parent card and a child card
+		// pending in the SAME turn each correlate to their own snapshot row —
+		// never borrow the other's escalation / eventId (no double card). A
+		// mismatch is a strong NO-match, like callId, not a fuzzy fallback.
+		const eventId = typeof args.eventId === "string" ? args.eventId : undefined
+		if (eventId !== undefined) {
+			return asks.find((ask) => ask.eventId === eventId)
+		}
 		const callId = typeof args.callId === "string" ? args.callId : undefined
 		if (callId !== undefined) {
 			// callId is a strong identifier: a mismatch means NO match. Falling
