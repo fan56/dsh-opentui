@@ -312,9 +312,12 @@ export function SubagentsViewer(props: {
 		void tick()
 		const id = browsingId()
 		if (id === undefined) return []
-		const face = props.seam.subagentTranscript
-		if (face === undefined) return []
-		return face(id)
+		const seam = props.seam
+		// Keep the receiver: the seam's face is a class method reading a private
+		// field. A bare `const face = seam.subagentTranscript; face(id)` loses
+		// `this` and crashes the ctrl+g transcript view (F2).
+		if (seam.subagentTranscript === undefined) return []
+		return seam.subagentTranscript(id)
 	})
 	const window = createMemo(() => transcriptWindow(transcript().length, scrollOffset(), TRANSCRIPT_ROWS))
 
@@ -409,12 +412,14 @@ export function SubagentsViewer(props: {
 			flash(t("panel.subagents.status.nothingToStop"))
 			return
 		}
-		const face = props.seam.interruptChild
-		if (face === undefined) {
+		const seam = props.seam
+		// Same receiver law as the transcript face: `interruptChild` is a class
+		// method on the real seam, so call it through the object, never bare.
+		if (seam.interruptChild === undefined) {
 			flash(t("panel.subagents.status.stopUnavailable"))
 			return
 		}
-		void face(id)
+		void seam.interruptChild(id)
 			.then(() => flash(t("panel.subagents.status.stopRequested", { name: Locale.titlecase(view.label) })))
 			.catch((error: unknown) => {
 				flash(t("panel.subagents.status.stopFailed", { error: String(error instanceof Error ? error.message : error).slice(0, 120) }))
