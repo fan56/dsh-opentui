@@ -61,7 +61,7 @@ afterEach(() => {
   while (cleanups.length > 0) cleanups.pop()!()
 })
 
-function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean } = {}): Harness {
+function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean; askDeadlineMs?: number } = {}): Harness {
   const previousSwitch = process.env[STDIO_SWITCH]
   process.env[STDIO_SWITCH] = '1'
 
@@ -143,8 +143,10 @@ function makeHarness(overrides: { onThrows?: boolean; noOn?: boolean } = {}): Ha
     },
   }
   if (overrides.noOn) delete ctx.on
+  // F1-A2: the construction point reads askDeadlineMs from the plugin config.
+  const config = overrides.askDeadlineMs !== undefined ? { askDeadlineMs: overrides.askDeadlineMs } : {}
   // apply() must never throw even when ctx.on is missing or throws.
-  apply(ctx, {})
+  apply(ctx, config)
   const registry = getAskRegistry(ctx)
   if (registry === undefined) throw new Error('apply() did not register an AskRegistry')
 
@@ -516,6 +518,56 @@ describe('F1-A1 — multi-session ask routing (catalog-driven child → parent a
     expect(await mustSettle(pending, 'registered child but no turn')).toBe('unavailable')
     expect(h.askFrames('ask.request')).toHaveLength(0)
     expect(h.registry.settlements()[0].code).toBe(ASK_ERROR_CODES.CHANNEL_UNAVAILABLE)
+  })
+})
+
+describe('F1-A2 — askDeadlineMs config wiring + timeout outcome decision', () => {
+  test('config askDeadlineMs times out an approval as denied (host sees rejected)', async () => {
+    const h = makeHarness({ askDeadlineMs: 20 })
+    const { sessionId } = await startTurn(h, 1)
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    expect(h.registry.timerCount()).toBe(2) // deadline + hard cap
+    await sleep(70)
+
+    const settled = h.registry.settlements()[0]
+    expect(settled.outcome).toBe('denied') // F1-A2 decision: timeout = denied, not unavailable
+    expect(settled.code).toBe(ASK_ERROR_CODES.DEADLINE_EXCEEDED)
+    expect(await mustSettle(pending, 'timed-out approval')).toBe('rejected')
+    expect(h.askFrames('ask.settled').some((f) =>
+      f.payload.eventId === settled.eventId && f.payload.outcome === 'denied')).toBe(true)
+    expect(h.askFrames('ask.cancel').some((f) => f.payload.reason === 'deadline')).toBe(true)
+  })
+
+  test('default config keeps askDeadlineMs=null: no per-ask wall clock (regression)', async () => {
+    const h = makeHarness()
+    const { sessionId } = await startTurn(h, 1)
+    const pending = h.emitHost('approval/request', approvalReq(sessionId))[0]
+    await sleep(0)
+    expect(h.registry.timerCount()).toBe(1) // hard cap only
+    await sleep(60)
+    expect(h.registry.settlements()).toHaveLength(0)
+    expect(h.registry.pendingCount()).toBe(1)
+
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    h.send({ id: 30, method: 'ask.response', params: { eventId: ask.eventId, kind: 'approval', verdict: 'allowed-once' } })
+    expect((await h.waitFor(30)).ok).toBe(true)
+    expect(await mustSettle(pending, 'answered while default deadline off')).toBe('allowed-once')
+  })
+
+  test('F1 routing coexists: catalog-routed child ask also times out denied', async () => {
+    const h = makeHarness({ askDeadlineMs: 20 })
+    const { sessionId: parent } = await startTurn(h, 1)
+    h.emitSessionEvent({ id: parent }, { type: 'subagent/catalog', data: { childId: 'child-deadline', childCreatedAt: 1 } })
+    const pending = h.emitHost('approval/request', approvalReq('child-deadline'))[0]
+    await sleep(0)
+    const ask = h.askFrames('ask.request').at(-1)!.payload
+    expect(ask.sessionId).toBe(parent)
+    expect(ask.childSessionId).toBe('child-deadline')
+
+    await sleep(70)
+    expect(h.registry.settlements()[0].outcome).toBe('denied')
+    expect(h.registry.settlements()[0].code).toBe(ASK_ERROR_CODES.DEADLINE_EXCEEDED)
+    expect(await mustSettle(pending, 'timed-out child ask')).toBe('rejected')
   })
 })
 

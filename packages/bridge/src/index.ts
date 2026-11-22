@@ -2538,7 +2538,16 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
   }
 
+  // F1-A2: per-ask wall clock, overridable from the profile patch config.
+  // Default stays null (no per-ask deadline) so the 1h maxAskWaitMs hard cap
+  // remains the only fallback — changing the default is out of scope.
+  const askDeadlineMsRaw = config !== null && typeof config === 'object'
+    ? (config as { askDeadlineMs?: unknown }).askDeadlineMs
+    : undefined
+  const askDeadlineMs = typeof askDeadlineMsRaw === 'number' ? askDeadlineMsRaw : null
+
   const ask = new AskRegistry({
+    askDeadlineMs,
     logger,
     journal: writeAskJournal,
     sink: (frame) => {
