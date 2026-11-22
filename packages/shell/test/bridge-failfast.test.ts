@@ -105,10 +105,14 @@ function runProvision(home: string, bridgeDir?: string): { status: number | null
 	// Hosted runners have no ambient `dsh`, so auto-detection would fail before
 	// the fingerprint path under test. Declare the pinned host explicitly here;
 	// host-version scenarios belong to host-compat.test.ts and are untouched.
+	// Companions are a separate concern (provision-inproc-companions.test.ts):
+	// disable them explicitly so the assertion depends only on the fingerprint
+	// path — identical result with or without a global dsh on the runner.
 	const result = Bun.spawnSync([process.execPath, SCRIPT], {
 		env: {
 			...process.env,
 			DSH_HOME: home,
+			DSH_OPENTUI_COMPANION_LATEST: "off",
 			[HOST_VERSION_ENV]: "0.2.2-rc.3",
 			...(bridgeDir ? { DSH_OPENTUI_TEST_BRIDGE_DIR: bridgeDir } : {}),
 		},

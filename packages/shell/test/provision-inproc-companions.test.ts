@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const SCRIPT = fileURLToPath(new URL('../scripts/provision-inproc-profile.mjs', import.meta.url))
@@ -62,6 +62,12 @@ process.exit(0)
 const STUB_NPM = `#!/usr/bin/env node
 if (process.env.DSH_STUB_NPM_FAIL === '1') { console.error('offline stub'); process.exit(1) }
 process.stdout.write(JSON.stringify({ latest: process.env.DSH_STUB_LATEST || '0.21.0' }) + '\\n')
+`
+// A `which` stub that never finds its target: putting this first on PATH
+// deterministically simulates a host with no global `dsh`, independent of
+// whatever is installed on the runner (the local dev box has one; CI does not).
+const STUB_WHICH_MISS = `#!/usr/bin/env node
+process.exit(1)
 `
 
 function fixture(): { home: string; bridge: string; bin: string; log: string } {
@@ -156,6 +162,37 @@ describe('provision-inproc-profile.mjs companion step (spawned, offline)', () =>
     expect(run.exitCode).toBe(0)
     expect(text(run.stderr)).toContain('companions are optional')
     expect(text(run.stdout)).toContain('installed 0 of 1')
+  })
+
+  test('no global dsh on PATH degrades to WARN-skip and still yields a usable profile', () => {
+    const fx = fixture()
+    // A bin with npm (dist-tag query works) but a `which` that never finds
+    // `dsh` — deterministically simulates a runner without the global CLI.
+    const noDshBin = join(dirname(fx.bin), 'bin-no-dsh')
+    mkdirSync(noDshBin, { recursive: true })
+    writeFileSync(join(noDshBin, 'npm'), STUB_NPM, { mode: 0o755 })
+    writeFileSync(join(noDshBin, 'which'), STUB_WHICH_MISS, { mode: 0o755 })
+    chmodSync(join(noDshBin, 'npm'), 0o755)
+    chmodSync(join(noDshBin, 'which'), 0o755)
+
+    const run = provision(fx, {
+      PATH: `${noDshBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
+    })
+    expect(run.exitCode).toBe(0)
+    expect(text(run.stdout)).toContain('PASS')
+    // Actionable WARN, no FAIL — the user knows how to get companions back.
+    expect(text(run.stderr)).toContain('WARN')
+    expect(text(run.stderr)).toContain('no global `dsh`')
+    expect(text(run.stderr)).toContain('Install dsh')
+    expect(text(run.stderr)).toContain('DSH_OPENTUI_COMPANION_LATEST=off')
+    expect(text(run.stdout)).toContain('[4/8] companions — skipped (no global `dsh`')
+    // No add attempted, but the profile is fully provisioned and bootable.
+    expect(stubCalls(fx)).toEqual([])
+    const profile = join(fx.home, 'profiles', 'opentui-inproc')
+    expect(existsSync(join(profile, 'node_modules', '@aiwayds', 'dsh-opentui-bridge', 'index.js'))).toBe(true)
+    const manifest = JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8'))
+    expect(manifest.dsh.profile.bundles).toContain('@aiwayds/dsh-opentui-bridge')
+    expect(manifest.dependencies?.[REGISTRY]).toBeUndefined()
   })
 
   test('a half-written manifest from a failed add is dropped, not a boot blocker', () => {

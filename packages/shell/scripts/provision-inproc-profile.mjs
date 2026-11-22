@@ -39,11 +39,12 @@
 //                    the `use_agent` tool through its own cordis.patch.yml).
 //                    Resolves `latest`, guards major/downgrade, skips when
 //                    already at that version, and is disabled wholesale by
-//                    DSH_OPENTUI_COMPANION_LATEST=off. A failed install is a
-//                    WARN (never a boot blocker): stale manifest declarations
-//                    from a half-write are removed and offline starts skip
-//                    companions with a warning. Step 5 then verifies that
-//                    whatever remains declared in the manifest is fully mounted.
+//                    DSH_OPENTUI_COMPANION_LATEST=off. A failed install OR a
+//                    missing global `dsh` is a WARN (never a boot blocker):
+//                    stale manifest declarations from a half-write are removed
+//                    and hosts without dsh skip companions with a warning.
+//                    Step 5 then verifies that whatever remains declared in
+//                    the manifest is fully mounted.
 //   [5/8] verify   — confirm the bridge is a real directory carrying the
 //                    shipped files; refuse any @deepseek-ai copy in the profile;
 //                    cross-check companion manifest deps <-> bundle entries <-
@@ -912,15 +913,18 @@ function dropUnmountedCompanions(reason, only = null) {
   return stale.length
 }
 
-/** Only the companion step needs a global dsh; a satisfied run stays offline. */
-function requireDshOnPath() {
-  const which = spawnSync('which', ['dsh'], { encoding: 'utf8' })
-  if (which.status !== 0 || !which.stdout.trim()) {
-    fail(
-      'no global `dsh` on PATH for companion installation',
-      `Step [4/8] needs the host CLI to run \`dsh plugin --profile ${PROFILE} add\`. ` +
-        `Install dsh, or set ${COMPANION_LATEST_ENV}=off to skip companions.`,
-    )
+/**
+ * Only the companion step needs a global dsh; a satisfied run stays offline.
+ * Absence is NOT an error: companions are optional, so the caller degrades to
+ * a WARN and leaves the profile fully bootable (e.g. hosted CI runners have no
+ * global dsh). `which` itself missing/failing is treated the same way.
+ */
+function dshOnPath() {
+  try {
+    const which = spawnSync('which', ['dsh'], { encoding: 'utf8' })
+    return which.status === 0 && Boolean(which.stdout.trim())
+  } catch {
+    return false
   }
 }
 
@@ -986,7 +990,19 @@ function provisionCompanions() {
     return
   }
 
-  requireDshOnPath()
+  if (!dshOnPath()) {
+    // Companions are optional: a missing host CLI is a WARN, never a boot
+    // blocker. Give an actionable next step and leave a usable profile.
+    warn(
+      `no global \`dsh\` on PATH; skipping optional companions. ` +
+        `Install dsh and re-run provisioning to auto-install them, or set ${COMPANION_LATEST_ENV}=off to skip them permanently.`,
+    )
+    // A previous failed add may have left a half-written declaration. Drop it
+    // so step [5/8] never blocks a boot over a package we cannot install here.
+    dropUnmountedCompanions('no global dsh on PATH')
+    say(4, 'companions', 'skipped (no global `dsh` on PATH; companions are optional)')
+    return
+  }
   const run = spawnSync('dsh', ['plugin', '--profile', PROFILE, 'add', ...specs], {
     stdio: 'inherit',
     env: { ...process.env, DSH_HOME: dshHome },
