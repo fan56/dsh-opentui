@@ -2749,32 +2749,34 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     append(type: string, data: Record<string, unknown>): unknown
   }
 
-  /** Child ids already processed by the re-pin guard (idempotent: a replayed
-   *  catalog row must not append a second policy event). */
-  const repinnedChildren = new Set<string>()
-
-  /** F1 (2026-11-22 real-machine收尾): the host pins EVERY delegated child's
-   *  approval policy to 'never' (`dsh-subagent` captureDelegatedPolicyOverrides /
-   *  appendDelegatedPolicyOverrides, source:'delegation'). `dsh-user-approval`'s
-   *  `decide()` returns 'rejected' on that policy BEFORE dispatching the
-   *  'approval/request' waterfall — so this bridge's F1 answerer is never
-   *  invoked for a child, no `ask.request` frame is emitted and no child card
-   *  can appear (evidence: .proof/f1-a1-ask-routing/01-child-approval-rejection-evidence.md).
+  /** F1 (2026-11-22, amended): mirror the PARENT's current effective approval
+   *  policy onto every delegated child of THIS binding. The host pins every
+   *  child to 'never' at delegation (`dsh-subagent`
+   *  appendDelegatedPolicyOverrides, source:'delegation'); `dsh-user-approval`
+   *  `decide()` short-circuits to 'rejected' before dispatching the
+   *  'approval/request' waterfall, so without a sync the child has no card.
    *
-   *  Re-pin the delegation 'never' to 'ask' on the CHILD session log so child
-   *  approvals flow through the parent ask channel and the F1 card — but ONLY
-   *  when the PARENT's current effective policy is 'ask'. Under full access the
-   *  parent is 'never' (asking is pointless: it is auto-rejected), so we leave the
-   *  child policy untouched and, crucially, do NOT mark the child repinned — a
-   *  later switch back to 'ask' plus a catalog replay can still re-pin it.
+   *  Direction is BIDIRECTIONAL and follows the parent's LIVE policy:
+   *    - parent 'ask'  → child 'ask'  (delegation never pin overridden; F1 card works);
+   *    - parent 'never' (full access) → child 'never' (no pointless ask that would
+   *      only be auto-rejected).
+   *  Recovery from full access is driven by the PARENT's `approval/policy` event
+   *  (see onSessionEvent trigger (b)) — NOT by a catalog replay: the host appends
+   *  a child's `subagent/catalog` fact exactly once and never replays it.
    *
-   *  Idempotent and fail-CLOSED: we only touch a child of THIS binding, never
-   *  re-append when the child is already answerable, and if the parent session /
-   *  approval service / effectivePolicy cannot be resolved we never touch the
-   *  child log (host keeps its never→rejected default). */
-  function repinChildApprovalPolicy(childId: string, parentSessionId: string): void {
+   *  Idempotent by current-vs-desired comparison (NO one-shot set — a mirror must
+   *  be able to flip both ways). Fail-CLOSED: if the parent session, the approval
+   *  service, effectivePolicy/overrideOf or the desired value cannot be resolved,
+   *  the child log is left untouched. `desiredOverride` (the new value carried by
+   *  a parent `approval/policy` event) is authoritative when supplied, so the
+   *  sync never depends on projection-listener registration order.
+   *
+   *  Triggers: (a) parent catalog frame; (b) parent `approval/policy` event →
+   *  all known children of the binding; (c) child delegation-pin event (deferred
+   *  by the caller — a synchronous re-append inside that session's own publish
+   *  is rejected by the host as reentrant). */
+  function syncChildApprovalPolicy(childId: string, parentSessionId: string, desiredOverride?: unknown): void {
     if (binding === undefined || parentSessionId !== binding.sessionId) return
-    if (repinnedChildren.has(childId)) return
     const get = ctx.get
     if (typeof get !== 'function') return
     let sessions: SessionsServiceLike | undefined
@@ -2782,10 +2784,14 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     try {
       sessions = get.call(ctx, 'sessions') as SessionsServiceLike | undefined
       approval = get.call(ctx, 'approval') as ApprovalServiceLike | undefined
-    } catch {
+    } catch (err) {
+      logger.warn('[dsh-opentui-bridge] child approval sync skipped: service lookup failed child=%s parent=%s: %s', childId, parentSessionId, String(err))
       return
     }
-    if (typeof sessions?.get !== 'function') return
+    if (typeof sessions?.get !== 'function') {
+      logger.warn('[dsh-opentui-bridge] child approval sync skipped: sessions.get unavailable child=%s parent=%s', childId, parentSessionId)
+      return
+    }
     let childSession: WritableSessionLike | undefined
     try {
       childSession = sessions.get(childId) as WritableSessionLike | undefined
@@ -2794,74 +2800,87 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     }
     if (childSession === undefined || typeof childSession.append !== 'function') return
 
-    // Parent-policy gate: re-pin only when the PARENT's effective policy is
-    // 'ask'. Under full access ('never') a child ask would be auto-rejected
-    // before the bridge answerer runs, so asking is pointless — leave the child
-    // log alone. Fail-closed: any inability to READ the parent policy (missing
-    // service, unresolved parent, throwing effectivePolicy, non-'ask' value)
-    // means we never modify the child log. The 'never' path deliberately does
-    // NOT add to repinnedChildren so a later 'ask' + catalog replay can re-pin.
     let parentSession: unknown
     try {
       parentSession = sessions.get(parentSessionId)
     } catch (err) {
       logger.warn(
-        '[dsh-opentui-bridge] child approval re-pin skipped: parent session lookup failed child=%s parent=%s: %s',
+        '[dsh-opentui-bridge] child approval sync skipped: parent session lookup failed child=%s parent=%s: %s',
         childId, parentSessionId, String(err),
       )
       return
     }
     if (parentSession === undefined) {
-      logger.info(
-        '[dsh-opentui-bridge] child approval re-pin skipped: parent session not found child=%s parent=%s',
+      logger.warn(
+        '[dsh-opentui-bridge] child approval sync skipped: parent session not found child=%s parent=%s',
         childId, parentSessionId,
       )
       return
     }
-    if (approval === undefined || typeof approval.effectivePolicy !== 'function') {
+    if (approval === undefined || typeof approval.effectivePolicy !== 'function' || typeof approval.overrideOf !== 'function') {
       logger.warn(
-        '[dsh-opentui-bridge] child approval re-pin skipped: approval.effectivePolicy unavailable child=%s parent=%s',
+        '[dsh-opentui-bridge] child approval sync skipped: approval service/effectivePolicy/overrideOf unavailable child=%s parent=%s',
         childId, parentSessionId,
-      )
-      return
-    }
-    let parentPolicy: string | undefined
-    try {
-      parentPolicy = approval.effectivePolicy(parentSession)
-    } catch (err) {
-      logger.warn(
-        '[dsh-opentui-bridge] child approval re-pin skipped: effectivePolicy threw child=%s parent=%s: %s',
-        childId, parentSessionId, String(err),
-      )
-      return
-    }
-    if (parentPolicy !== 'ask') {
-      logger.info(
-        '[dsh-opentui-bridge] child approval re-pin skipped: parent effective policy=%s (not ask) child=%s parent=%s',
-        String(parentPolicy), childId, parentSessionId,
       )
       return
     }
 
-    // Only re-pin a 'never' (the delegation pin) or an unset policy. An
-    // already-answerable 'ask' policy needs no append — avoid duplicate churn
-    // on replayed catalog rows and on children forked with an explicit 'ask'.
-    if (approval !== undefined && typeof approval.overrideOf === 'function') {
-      const current = approval.overrideOf(childSession)
-      if (current !== undefined && current !== 'never') {
-        repinnedChildren.add(childId)
+    // Desired policy: the parent's event value is authoritative when present
+    // (trigger b); otherwise read the parent's live effective policy per call.
+    let desired: string | undefined
+    if (desiredOverride === 'ask' || desiredOverride === 'never') {
+      desired = desiredOverride
+    } else {
+      try {
+        desired = approval.effectivePolicy(parentSession)
+      } catch (err) {
+        logger.warn(
+          '[dsh-opentui-bridge] child approval sync skipped: effectivePolicy threw child=%s parent=%s: %s',
+          childId, parentSessionId, String(err),
+        )
         return
       }
     }
-    try {
-      childSession.append('approval/policy', { policy: 'ask' })
-      repinnedChildren.add(childId)
-      logger.info(
-        '[dsh-opentui-bridge] child approval re-pinned to ask child=%s parent=%s (delegation never pin overridden)',
-        childId, parentSessionId,
+    if (desired !== 'ask' && desired !== 'never') {
+      logger.warn(
+        '[dsh-opentui-bridge] child approval sync skipped: unresolved desired policy=%s child=%s parent=%s',
+        String(desired), childId, parentSessionId,
       )
+      return
+    }
+
+    let current: string | undefined
+    try {
+      current = approval.overrideOf(childSession)
     } catch (err) {
-      logger.warn('[dsh-opentui-bridge] child approval re-pin failed child=%s: %s', childId, String(err))
+      logger.warn(
+        '[dsh-opentui-bridge] child approval sync skipped: overrideOf threw child=%s parent=%s: %s',
+        childId, parentSessionId, String(err),
+      )
+      return
+    }
+    // Idempotency: identical current/desired means no append. This replaces the
+    // old one-shot repinnedChildren set so the mirror can flip either way.
+    if (current === desired) return
+
+    try {
+      childSession.append('approval/policy', { policy: desired })
+      if (current === 'never' && desired === 'ask') {
+        logger.warn(
+          '[dsh-opentui-bridge] child approval self-healed never→ask child=%s parent=%s (policy mirror recovered a skipped sync)',
+          childId, parentSessionId,
+        )
+      } else {
+        logger.info(
+          '[dsh-opentui-bridge] child approval mirrored to %s child=%s parent=%s (was %s)',
+          desired, childId, parentSessionId, String(current),
+        )
+      }
+    } catch (err) {
+      logger.warn(
+        '[dsh-opentui-bridge] child approval sync append failed child=%s parent=%s: %s',
+        childId, parentSessionId, String(err),
+      )
     }
   }
 
@@ -2881,6 +2900,41 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
     const e = event as { type?: unknown; data?: unknown }
     const type = typeof e?.type === 'string' ? e.type : ''
     const data = e?.data !== null && typeof e?.data === 'object' ? (e.data as Record<string, unknown>) : {}
+
+    // ---- F1 policy mirror (amended): parent policy switch and child delegation
+    // pin. The bridge's root `session/event` subscription sees EVERY session's
+    // live events (proved in test/session-event-scope.test.ts); all guards below
+    // are explicit so unrelated sessions can never drive a sync.
+    if (type === 'approval/policy' && binding !== undefined) {
+      if (sessionId === binding.sessionId) {
+        // (b) Parent policy switch → mirror EVERY known child of this binding.
+        // `data.policy` is the newly committed override value, so the sync does
+        // not depend on projection-listener registration order. This is the REAL
+        // full-access recovery path: the host never replays subagent/catalog.
+        for (const [childId, row] of getSubagentIndex(ctx).rows) {
+          if (row.parentSessionId !== sessionId) continue
+          syncChildApprovalPolicy(childId, sessionId, data.policy)
+        }
+      } else {
+        // (c) Child-side delegation pin (`approval/policy` source:'delegation'),
+        // appended by the host BEFORE the child's first turn and BEFORE the
+        // parent's catalog fact. Sync here closes the catalog timing window.
+        // Guard on the child's durable header (parentSession + origin) because
+        // the child is not yet in the subagent index at this point. Defer the
+        // append: the host rejects a reentrant append while THIS child's own
+        // publish is in flight (same real-package test as above).
+        const header = (s as { header?: { parentSession?: unknown; origin?: unknown } }).header
+        if (
+          data.source === 'delegation' &&
+          header?.origin === 'subagent' &&
+          header?.parentSession === binding.sessionId
+        ) {
+          const childId = sessionId
+          const parentId = binding.sessionId
+          queueMicrotask(() => syncChildApprovalPolicy(childId, parentId))
+        }
+      }
+    }
 
     // Subagent lifecycle (row 33 in the seam capability matrix). The host writes
     // `tool-workflow/agent-start|agent-end` as DURABLE parent-journal records on
@@ -2928,11 +2982,11 @@ export function apply(ctx: BridgeContext, config: unknown): unknown {
         sessionId,
         typeof data.childCreatedAt === 'number' ? data.childCreatedAt : undefined,
       )
-      // F1: the host pins this child's approval policy to 'never' at delegation,
-      // which short-circuits decide() before our F1 answerer ever sees a child
-      // ask (no card, child tool auto-rejected). Re-pin to 'ask' on the child log
-      // so the child's approvals route through this bridge's parent channel.
-      repinChildApprovalPolicy(childId, sessionId)
+      // F1 trigger (a): catalog frame. Mirror the parent's LIVE policy onto this
+      // child (delegation 'never' → 'ask' under normal policy; left 'never' under
+      // full access). Parent policy switches are handled by trigger (b) below —
+      // the host appends this catalog fact once and never replays it.
+      syncChildApprovalPolicy(childId, sessionId)
       const turnId = state !== undefined && !state.ended ? state.turnId : (inFlightTurnId ?? '')
       const label = typeof data.label === 'string' && data.label !== ''
         ? data.label

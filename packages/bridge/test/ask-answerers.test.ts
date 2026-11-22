@@ -779,25 +779,28 @@ describe('C2 (2026-11-22 拍板) — always-grant scope covers the parent and al
   })
 })
 
-describe('F1 repin 父策略继承（2026-11-22）— 父 ask 才重钉，读不到父策略 fail-closed', () => {
-  // The base makeHarness fake ctx has NO get, so repin early-returns at
-  // `typeof ctx.get !== 'function'`. Every test here passes an explicit
-  // `repinGet` so the re-pin guard genuinely reaches ctx.get('sessions'/'approval')
-  // (research red-flag #4: without this the assertions are false greens).
-  const CHILD = 'repin-child-1'
+describe('F1 policy mirror (amended) — 三触发器 (a) catalog / (b) 父策略事件 / (c) 子委派钉', () => {
+  // The base makeHarness fake ctx has NO get, so the sync guard early-returns at
+  // `typeof ctx.get !== 'function'`. Every test here passes an explicit `repinGet`
+  // so the sync genuinely reaches ctx.get('sessions'/'approval') (research
+  // red-flag #4: without this the assertions are false greens).
+  const CHILD = 'mirror-child-1'
 
   function makeChildSession(id: string) {
     const appended: Array<{ type: string; data: Record<string, unknown> }> = []
+    const header: { parentSession?: string; origin?: string } = {}
     return {
       appended,
+      header,
       session: {
         id,
+        header,
         append(type: string, data: Record<string, unknown>) { appended.push({ type, data }) },
       },
     }
   }
 
-  interface RepinOptions {
+  interface SyncOptions {
     parentPolicy?: string | undefined
     overrideOfChild?: string | undefined
     parentResolves?: boolean
@@ -806,9 +809,8 @@ describe('F1 repin 父策略继承（2026-11-22）— 父 ask 才重钉，读不
     effectivePolicyThrows?: boolean
   }
 
-  function makeRepinHarness(options: RepinOptions = {}) {
+  function makeSyncHarness(options: SyncOptions = {}) {
     const child = makeChildSession(CHILD)
-    const parent = { id: 'host-parent-session' }
     let boundParentId = ''
     const h = makeHarness({
       repinGet(name: string) {
@@ -818,7 +820,7 @@ describe('F1 repin 父策略继承（2026-11-22）— 父 ask 才重钉，读不
               if (id === CHILD) return child.session
               if (id === boundParentId) {
                 if (options.sessionsGetThrows) throw new Error('sessions.get(parent) boom')
-                return options.parentResolves === false ? undefined : parent
+                return options.parentResolves === false ? undefined : { id: boundParentId }
               }
               return undefined
             },
@@ -829,10 +831,16 @@ describe('F1 repin 父策略继承（2026-11-22）— 父 ask 才重钉，读不
           return {
             effectivePolicy(s: unknown) {
               if (options.effectivePolicyThrows) throw new Error('effectivePolicy boom')
-              return s === parent ? options.parentPolicy : undefined
+              return s !== null && typeof s === 'object' && (s as { id?: unknown }).id === boundParentId
+                ? options.parentPolicy
+                : undefined
             },
             overrideOf(s: unknown) {
-              return s === child.session ? options.overrideOfChild : undefined
+              if (s !== child.session) return undefined
+              // Faithful fake: reflect the last mirrored policy so repeat events
+              // are genuine idempotency checks, not false greens.
+              const last = child.appended.at(-1)
+              return last ? (last.data.policy as string) : options.overrideOfChild
             },
           }
         }
@@ -845,6 +853,8 @@ describe('F1 repin 父策略继承（2026-11-22）— 父 ask 才重钉，读不
       async bindParent(id: number): Promise<string> {
         const { sessionId } = await startTurn(h, id)
         boundParentId = sessionId
+        child.header.parentSession = sessionId
+        child.header.origin = 'subagent'
         return sessionId
       },
       emitCatalog(parentId: string, createdAt = 1) {
@@ -853,60 +863,103 @@ describe('F1 repin 父策略继承（2026-11-22）— 父 ask 才重钉，读不
           data: { childId: CHILD, childCreatedAt: createdAt },
         })
       },
+      emitParentPolicy(parentId: string, policy: string) {
+        h.emitSessionEvent({ id: parentId }, { type: 'approval/policy', data: { policy } })
+      },
+      emitChildDelegation(childId: string, parentId: string) {
+        h.emitSessionEvent(
+          { id: childId, header: { parentSession: parentId, origin: 'subagent' } },
+          { type: 'approval/policy', data: { policy: 'never', source: 'delegation' } },
+        )
+      },
+      /** (c) sync is deferred via queueMicrotask (host rejects reentrant append). */
+      flushMicrotasks() { return Promise.resolve().then(() => {}) },
     }
   }
 
-  const ASK_APPEND = [{ type: 'approval/policy', data: { policy: 'ask' } }]
+  const ask = (policy: string) => [{ type: 'approval/policy', data: { policy } }]
 
-  test('父 effectivePolicy=ask → 子会话日志 append approval/policy ask', async () => {
-    const r = makeRepinHarness({ parentPolicy: 'ask' })
-    const parentId = await r.bindParent(11)
+  test('(a) catalog + parent ask → child log append approval/policy ask', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(21)
     r.emitCatalog(parentId)
-    expect(r.child.appended).toEqual(ASK_APPEND)
+    expect(r.child.appended).toEqual(ask('ask'))
   })
 
-  test('父 effectivePolicy=never → 不 append；切回 ask + catalog 重放仍可重钉', async () => {
-    const options: RepinOptions = { parentPolicy: 'never' }
-    const r = makeRepinHarness(options)
-    const parentId = await r.bindParent(12)
+  test('(a) catalog + parent full access(never) → child mirrors to never (no pointless ask)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'never' })
+    const parentId = await r.bindParent(22)
     r.emitCatalog(parentId)
+    expect(r.child.appended).toEqual(ask('never'))
+  })
+
+  test('(b) parent approval/policy ask→never → already-ask child mirrored to never', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(23)
+    r.emitCatalog(parentId)                 // (a): child → ask
+    expect(r.child.appended).toEqual(ask('ask'))
+    r.emitParentPolicy(parentId, 'never')   // (b): mirror every known child → never
+    expect(r.child.appended).toEqual([...ask('ask'), ...ask('never')])
+  })
+
+  test('(b) parent never→ask → never child self-healed to ask (REAL recovery path, no catalog replay)', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'never', overrideOfChild: 'never' })
+    const parentId = await r.bindParent(24)
+    r.emitCatalog(parentId)                 // (a): parent never == child never → no append
     expect(r.child.appended).toHaveLength(0)
-    // never 分支没有把 child 标成已重钉，父切回 ask 后重放同一 catalog 仍生效。
-    options.parentPolicy = 'ask'
-    r.emitCatalog(parentId, 2)
-    expect(r.child.appended).toEqual(ASK_APPEND)
+    r.emitParentPolicy(parentId, 'ask')     // (b): recovery via parent policy event
+    expect(r.child.appended).toEqual(ask('ask'))
+    expect(r.h.warns.some((line) => line.includes('self-healed never→ask'))).toBe(true)
   })
 
-  test('父会话解析失败（get 返回 undefined / 抛错）→ 不 append', async () => {
-    const missing = makeRepinHarness({ parentPolicy: 'ask', parentResolves: false })
-    const missingParentId = await missing.bindParent(13)
+  test('(c) child delegation pin BEFORE catalog → child synced without any catalog frame', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(25)
+    r.emitChildDelegation(CHILD, parentId)  // no catalog at all
+    await r.flushMicrotasks()               // deferred to dodge host reentrant-append guard
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('sync idempotency: repeated parent policy events do not re-append', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(26)
+    r.emitCatalog(parentId)
+    r.emitParentPolicy(parentId, 'ask')
+    r.emitParentPolicy(parentId, 'ask')
+    expect(r.child.appended).toEqual(ask('ask'))
+  })
+
+  test('(b)/(c) scope guard: unrelated session events never drive a sync', async () => {
+    const r = makeSyncHarness({ parentPolicy: 'ask' })
+    const parentId = await r.bindParent(27)
+    // (b) an unrelated session's policy change is not the binding's parent.
+    r.emitParentPolicy('some-other-session', 'never')
+    expect(r.child.appended).toHaveLength(0)
+    // (c) a delegation pin whose header.parentSession is another session.
+    r.emitChildDelegation('unrelated-child', 'another-parent')
+    await r.flushMicrotasks()
+    expect(r.child.appended).toHaveLength(0)
+  })
+
+  test('fail-closed: unresolved parent / missing approval / throwing effectivePolicy → no append', async () => {
+    const missing = makeSyncHarness({ parentPolicy: 'ask', parentResolves: false })
+    const missingParentId = await missing.bindParent(28)
     missing.emitCatalog(missingParentId)
     expect(missing.child.appended).toHaveLength(0)
 
-    const throwing = makeRepinHarness({ parentPolicy: 'ask', sessionsGetThrows: true })
-    const throwingParentId = await throwing.bindParent(14)
+    const throwing = makeSyncHarness({ parentPolicy: 'ask', sessionsGetThrows: true })
+    const throwingParentId = await throwing.bindParent(29)
     throwing.emitCatalog(throwingParentId)
     expect(throwing.child.appended).toHaveLength(0)
-  })
 
-  test('子会话已是 ask → 不 append（幂等既有行为保持）', async () => {
-    const r = makeRepinHarness({ parentPolicy: 'ask', overrideOfChild: 'ask' })
-    const parentId = await r.bindParent(15)
-    r.emitCatalog(parentId)
-    expect(r.child.appended).toHaveLength(0)
-    r.emitCatalog(parentId, 2)
-    expect(r.child.appended).toHaveLength(0)
-  })
-
-  test('approval 服务缺失 / effectivePolicy 抛错 → fail-closed，不 append', async () => {
-    const noApproval = makeRepinHarness({ approvalMissing: true })
-    const noApprovalParentId = await noApproval.bindParent(16)
+    const noApproval = makeSyncHarness({ approvalMissing: true })
+    const noApprovalParentId = await noApproval.bindParent(30)
     noApproval.emitCatalog(noApprovalParentId)
     expect(noApproval.child.appended).toHaveLength(0)
 
-    const throwing = makeRepinHarness({ parentPolicy: 'ask', effectivePolicyThrows: true })
-    const throwingParentId = await throwing.bindParent(17)
-    throwing.emitCatalog(throwingParentId)
-    expect(throwing.child.appended).toHaveLength(0)
+    const policyThrows = makeSyncHarness({ parentPolicy: 'ask', effectivePolicyThrows: true })
+    const policyThrowsParentId = await policyThrows.bindParent(31)
+    policyThrows.emitCatalog(policyThrowsParentId)
+    expect(policyThrows.child.appended).toHaveLength(0)
   })
 })
